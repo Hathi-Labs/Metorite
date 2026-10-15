@@ -27,6 +27,16 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
+
+from acb_common.paging import bounds, page_line
+
+#: Lines in one page of ``recall_notes`` (2026-10-15, agent reads page part
+#: 2). A notes file grows for the life of the agent, and one read of all of it
+#: floods the context. ``offset`` reads the next page.
+NOTES_PAGE_LINES = 200
+#: A page also ends before this many characters, on a line.
+NOTES_PAGE_CHARS = 20_000
 
 
 def _get_agent_dir() -> str:
@@ -171,13 +181,32 @@ async def save_note(path: str, fact: str) -> str:
     return f"Saved to {clean}"
 
 
-async def recall_notes(path: str, query: str = "") -> str:
+def _notes_page(lines: list[str], offset: Any) -> tuple[list[str], str]:
+    """One page of notes lines, and the line that says what is left.
+
+    At most :data:`NOTES_PAGE_LINES` lines. A page also ends before it passes
+    :data:`NOTES_PAGE_CHARS`, on a line, and always holds one line.
+    """
+    start, size = bounds(offset, NOTES_PAGE_LINES, default=NOTES_PAGE_LINES,
+                         maximum=NOTES_PAGE_LINES)
+    chunk: list[str] = []
+    used = 0
+    for line in lines[start:start + size]:
+        if chunk and used + len(line) + 1 > NOTES_PAGE_CHARS:
+            break
+        chunk.append(line)
+        used += len(line) + 1
+    return chunk, page_line(len(lines), start, len(chunk), noun="lines")
+
+
+async def recall_notes(path: str, query: str = "", offset: int = 0) -> str:
     """Read back a notes file, optionally filtered by a search query.
 
     Args:
         path: Relative path to the notes file (e.g. ``"NOTES.md"``).
         query: Optional case-insensitive filter string.  Only lines
                containing *query* are returned.  Empty = return all lines.
+        offset: The first line of the page, 0 by default.
 
     Returns:
         The file contents (or filtered lines), or ``"(empty)"`` if the
@@ -215,10 +244,16 @@ async def recall_notes(path: str, query: str = "") -> str:
 
     content = target.read_text(encoding="utf-8")
     if not query.strip():
-        return content if content.strip() else f"{clean}: (empty)"
-
-    q = query.strip().lower()
-    filtered = [line for line in content.splitlines() if q in line.lower()]
-    if not filtered:
-        return f"{clean}: no lines matching {query!r}"
-    return "\n".join(filtered)
+        if not content.strip():
+            return f"{clean}: (empty)"
+        lines = content.splitlines()
+    else:
+        q = query.strip().lower()
+        lines = [line for line in content.splitlines() if q in line.lower()]
+        if not lines:
+            return f"{clean}: no lines matching {query!r}"
+    chunk, line = _notes_page(lines, offset)
+    if not line and not query.strip():
+        # The whole file on one page reads as it always did.
+        return content
+    return "\n".join([*chunk, line]) if line else "\n".join(chunk)
