@@ -10,6 +10,8 @@ manifest, so a change to any of the three cannot drift silently.
 The four rules of §9.5. EA-3a built rules 1 and 2, the gateway half. EA-3b-1
 adds rules 3 and 4, which read the edge's tool records
 (``agent_edge/tools.py``). EA-6a widens each rule for a listed write pair.
+EA-6d adds the task create pair, one non-idempotent write (``create_task``)
+and one edge input (its ``idempotency_key``).
 
 1. Each pair in ``MCP_ROUTES`` is a route the gateway serves. Its method is
    ``GET``, or ``PATCH`` or ``POST`` for a pair of ``MCP_WRITE_ROUTES``, which
@@ -75,11 +77,13 @@ def test_the_allowlist_is_not_empty_and_is_get_only_outside_the_write_pairs():
     assert {method for method, _ in MCP_WRITE_ROUTES} <= WRITE_METHODS
 
 
-def test_the_write_pairs_are_the_two_of_ea_6a():
-    """A new write pair needs a spec amendment (§9.2, EA3-31)."""
+def test_the_write_pairs_are_those_of_ea_6a_and_ea_6d():
+    """A new write pair needs a spec amendment (§9.2, EA3-31). EA-6a listed
+    the PATCH and the references POST. EA-6d adds the task create."""
     expected = {
         ("PATCH", "/projects/tasks/{task_id}"),
         ("POST", "/projects/tasks/{task_id}/refs"),
+        ("POST", "/projects/tasks"),
     }
     assert expected == set(MCP_WRITE_ROUTES)
 
@@ -129,6 +133,15 @@ READ_HINTS = {
 
 #: The four annotations of a write tool of EA-6a (§9.2).
 WRITE_HINTS = {**READ_HINTS, "readOnlyHint": False}
+
+#: The write tools whose ``idempotentHint`` is false, each with its reason. A
+#: new entry needs a spec amendment (§9.2).
+NON_IDEMPOTENT_WRITES: dict[str, str] = {
+    "create_task": (
+        "EA-6d. The hint is one value for every call, and a call with no"
+        " idempotency_key makes a new task each time (spec §9.2)."
+    ),
+}
 
 
 def _tools() -> list:
@@ -188,7 +201,10 @@ def test_rule_3_each_tool_declares_its_scope_hints_and_schemas():
         elif tool.required_scope is not None and tool.required_scope not in RESOURCE_SCOPES:
             wrong.append(f"{tool.name}: required_scope {tool.required_scope!r}")
         write = tool.method != "GET"
-        if dict(tool.annotations) != (WRITE_HINTS if write else READ_HINTS):
+        hints = WRITE_HINTS if write else READ_HINTS
+        if write and tool.name in NON_IDEMPOTENT_WRITES:
+            hints = {**WRITE_HINTS, "idempotentHint": False}
+        if dict(tool.annotations) != hints:
             wrong.append(f"{tool.name}: annotations {dict(tool.annotations)}")
         if write and tool.required_scope != PROJECTS_WRITE:
             wrong.append(f"{tool.name}: a write needs {PROJECTS_WRITE}")
@@ -211,6 +227,9 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     ("list_projects", "text"),
     ("list_projects", "limit"),
     ("list_projects", "cursor"),
+    # EA-6d. The edge keeps the key in its own slot (`agent_edge.idempotency`),
+    # and the route takes no such field (spec §9.2 and §9.5 rule 4).
+    ("create_task", "idempotency_key"),
 })
 
 
@@ -245,6 +264,12 @@ def test_rule_4_reads_the_body_fields_of_a_write():
     assert "If-Match" in params[("PATCH", "/projects/tasks/{task_id}")]
     assert {"url", "title"} <= params[("POST", "/projects/tasks/{task_id}/refs")]
     assert "no_such_field" not in params[("PATCH", "/projects/tasks/{task_id}")]
+    # EA-6d: the create body and the fields of `update_task`.
+    assert {"project_id", "title", "parent_task_id", "status_id", "tags",
+            "due_at"} <= params[("POST", "/projects/tasks")]
+    assert {"title", "description", "tags", "due_at", "custom_fields"} <= (
+        params[("PATCH", "/projects/tasks/{task_id}")])
+    assert "idempotency_key" not in params[("POST", "/projects/tasks")]
 
 
 def test_rule_4_the_edge_inputs_are_exactly_the_named_exceptions():
