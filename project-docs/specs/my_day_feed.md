@@ -3425,8 +3425,8 @@ names it. These are the parts:
   reads the zone, and then it runs the three reads.
 - `crm/activities.py`: `my_due_activities`. It gives one row for each
   record, with the earliest open due time.
-- `shell/search.py`: `crm_href`, the one link to a CRM record. The search
-  bar calls it too.
+- `retrieval/sources.py`: `crm_href`, the one link to a CRM record. The
+  search sources call it too. It moved there with the search refactor on main.
 - `crm/settings.py`: `PATCH /crm/settings` calls `bump_org` after the
   commit.
 - `feed.ts` did not change. MD-3c added the three labels.

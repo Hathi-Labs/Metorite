@@ -682,7 +682,7 @@ register(Provider("email_followups", ("email",), _email_followups, MAIL_FOLLOWUP
 
 #: The kinds of the source (§5.9 item 13).
 CRM_KINDS = frozenset({"crm_followup_due", "deal_quiet", "deal_close_passed"})
-#: The record word of a signal id → the kind of ``search._CRM_KINDS``.
+#: The record word of a signal id → the kind of ``sources.CRM_KINDS``.
 _CRM_RECORDS = {"deal": "deal", "lead": "lead", "contact": "contact",
                 "organization": "company"}
 
@@ -706,10 +706,10 @@ def _crm_signal(kind: str, record: str, record_id: str, label: Any, *, facts: di
 def _followup_signal(row: dict[str, Any]) -> Signal:
     """``crm_followup_due``: the earliest open follow-up on one record. Its
     ``urgent_at`` is its ``due_at`` (§5.9 item 13)."""
-    from gateway.routes.shell.search import _CRM_KINDS
+    from gateway.retrieval.sources import CRM_KINDS as RECORD_KINDS
 
     record = str(row["record_kind"])
-    noun = _CRM_KINDS[_CRM_RECORDS[record]][0].lower()
+    noun = RECORD_KINDS[_CRM_RECORDS[record]][0].lower()
     due = _iso(row.get("due_at"))
     return _crm_signal("crm_followup_due", record, str(row["record_id"]), row.get("label"),
                        facts={"due_at": due, "subject": row.get("subject")},

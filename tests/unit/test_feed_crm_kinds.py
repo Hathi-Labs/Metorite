@@ -45,7 +45,7 @@ from gateway.routes.crm import access as crm_access
 from gateway.routes.crm import activities as crm_activities
 from gateway.routes.crm import aggregate as crm_aggregate
 from gateway.routes.crm import core as crm_core
-from gateway.routes.shell import feed, feed_rank, search, state
+from gateway.routes.shell import feed, feed_rank, state
 from gateway.routes.shell import needs as shell
 
 from tests.unit._crm_fakes import crm_switch_on
