@@ -105,6 +105,7 @@ from orchestrator._tool_injection import (
     _close_mcp_tools,
     _inject_mcp_servers,
     NoEgressRefused,
+    _run_covered,
     _run_no_egress,
     _tool_name,
     _withheld_shell_tools,
@@ -3052,7 +3053,16 @@ async def _run_agent_inner(
     # H-236: decide this run's no_egress once, from the parent's binding and
     # this agent's own cover, and bind it before anything can fail. A load
     # error then retries (self-anneal) with this answer, never the parent's.
-    _no_egress = _run_no_egress(agent_name, _parent_ctx, organization_id)
+    if _parent_ctx.get("run_id") and _parent_ctx.get("run_id") == run_id:
+        # The batch fallback of a streaming sub-run (_run_sub_agent_streaming)
+        # reads its OWN streaming frame as its parent. That frame decided
+        # this run's no_egress BEFORE it marked the session for a mail agent
+        # (WS-17 EM-G11f3), so keep its decision, plus this agent's own cover.
+        # Asking the mark again here would read the run's own mark.
+        _no_egress = (_parent_ctx.get("no_egress", False) is not False
+                      or _run_covered(agent_name, organization_id))
+    else:
+        _no_egress = _run_no_egress(agent_name, _parent_ctx, organization_id)
     derive_artifact_context(no_egress=_no_egress)
     # WS-17 EM-G11f3: the batch twin of the mark in _run_sub_agent_streaming.
     await _mark_untrusted_session(agent_name, _parent_ctx)
