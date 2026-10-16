@@ -1,6 +1,6 @@
 """A report from the chat: one file, one card and one PDF (B1).
 
-Spec: ``project-docs/specs/projects_ai_chat.md`` §14.9.
+Spec: ``project-docs/specs/projects_ai_chat.md`` §14.10.
 
 ``acb_skills.reports.make_report`` takes ONE spec. It checks it with the
 checks of ``acb_skills.documents``, writes ``outputs/<stem>.report.json`` and
@@ -14,7 +14,7 @@ The tests write into a real working dir. The blob mirror, the file card
 R7 fences named here:
 
 * ``report-checks``: a bad spec writes nothing and says what to fix.
-* ``report-file``: the file holds the contract of §14.9.3, visuals as data.
+* ``report-file``: the file holds the contract of §14.10.3, visuals as data.
 * ``report-card``: one ``report`` card, whose data is the file plus its path.
   Its two files register the workspace and get no file card. With no report
   card, the PDF gets its file card.

@@ -794,7 +794,7 @@ def _status_report_spec(
     forecast: str,
 ) -> dict[str, Any]:
     """The W2 status report as a ``make_report`` spec (``projects_ai_chat.md``
-    §14.9). Code builds it from the reads of :func:`status_report`, so every
+    §14.10). Code builds it from the reads of :func:`status_report`, so every
     number in it is the analytics routes' number, never the model's.
 
     Member text (a task title, a name) goes only into TABLE cells. Both
@@ -999,7 +999,7 @@ async def status_report(project_id: str = "", make_report: bool = False) -> str:
     )
     text_lines = [legend(), *md]
     if make_report:
-        # §14.9 (owner, 2026-10-16): code makes the report from these reads.
+        # §14.10 (owner, 2026-10-16): code makes the report from these reads.
         # The model copies no number, so it can drop or change none.
         from acb_skills.reports import make_report as _make_report
 

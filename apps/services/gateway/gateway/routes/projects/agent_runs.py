@@ -9,6 +9,9 @@ decisions EA12-1 to EA12-13) and row EA-12a of §15.
     GET  /projects/agent-runs/{run_id}            → {run, activities, cursor}
     POST /projects/agent-runs/{run_id}/activities → {activity, run, created}
     POST /projects/agent-runs/{run_id}/finish     → {run, activity}
+    POST /projects/tasks/{task_id}/archive-request    → {activity, run, created}
+    POST /projects/agent-runs/{run_id}/archive-approval
+                                                  → {activity, run, created, archived}
 
 An outside agent works on a task inside a RUN. The run holds typed
 ACTIVITIES: ``prompt``, ``thought``, ``action``, ``response``,
@@ -43,6 +46,16 @@ The rules, each one stated in the spec:
   does not drop the member.
 * **The long poll holds no session while it sleeps** (EA12-4). Each read
   opens and closes its own session and checks the task again.
+* **The archive with an approval** (WS-55 EA-6g, EA3-33 and EA3-40). An
+  agent asks with ``archive-request``. The route writes an elicitation that
+  the SERVER types: ``content_metadata.request`` holds the kind and the
+  expiry, and the server fixes the two options. No body can write
+  ``content_metadata``, so a free question with an option ``approve`` is
+  never a request. Only the run's member answers, through
+  ``archive-approval``, which is NOT in ``MCP_ROUTES``. An approve writes
+  the answer and archives the task in ONE transaction, through
+  ``tasks.archive_task_in``, and never the subtasks. The generic answer
+  route refuses a ``prompt`` on a typed request.
 """
 
 from __future__ import annotations
@@ -52,6 +65,7 @@ import json
 import re
 import time
 import uuid
+from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
@@ -59,6 +73,7 @@ from acb_auth.agent_oauth import ACTOR_VIA_PATTERN, PROJECTS_WRITE, actor_via_fo
 from acb_common import get_logger
 from fastapi import Depends, HTTPException, Query, Response
 from gateway.routes.projects.core import (
+    TaskModel,
     _tenant_session,
     actor,
     emit,
@@ -67,6 +82,7 @@ from gateway.routes.projects.core import (
     record_activity,
     resolve_visibility,
     router,
+    row_to_dict,
     task_visibility_clause,
     wire,
 )
@@ -74,8 +90,10 @@ from gateway.routes.projects.filters import (
     AGENT_RUN_OPEN_STATUSES,
     AGENT_RUN_STATE_SQL,
     agent_runs_enabled,
+    attach_agent_state,
 )
 from gateway.routes.projects.notifications import excerpt_of, notify, task_audience
+from gateway.routes.projects.tasks import archive_task_in
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 
@@ -119,6 +137,22 @@ MAX_PARAMETER_VALUE = 2_000
 
 _OPTION_ID = r"^[A-Za-z0-9_-]{1,64}$"
 _ACTION_NAME = re.compile(r"^[A-Za-z0-9_.:/-]{1,200}$")
+
+# ── The archive with an approval (EA-6g, EA3-40) ────────────────────────────
+
+#: The ``kind`` of a typed archive request, in ``content_metadata.request``.
+ARCHIVE_REQUEST_KIND = "archive_task"
+#: A typed archive request lives this long (EA3-40 rule 5). No sweeper: the
+#: approval route checks ``expires_at`` when it reads the request.
+ARCHIVE_REQUEST_TTL = timedelta(hours=24)
+#: The two decisions of the member, and the option ids of the request.
+ARCHIVE_APPROVE = "approve"
+ARCHIVE_DECLINE = "decline"
+#: The text of the request, fixed by the server. The agent sends no text.
+ARCHIVE_REQUEST_BODY = (
+    "The agent asks to archive this task. The subtasks stay where they are. "
+    "Only the member of this agent run can approve or decline."
+)
 
 #: The sleep of the long poll. A name of its own, so the fence of R11 can
 #: wrap it and assert that no session is open while it runs.
@@ -199,6 +233,61 @@ class FinishIn(BaseModel):
 
     summary: str | None = Field(default=None, max_length=MAX_BODY)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class ArchiveRequestIn(BaseModel):
+    """``POST /projects/tasks/{id}/archive-request`` (EA-6g). The key only.
+    The target is the task of the path, the text and the options are the
+    server's, and the expiry is the server's clock (EA3-40 rule 1)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
+class ArchiveApprovalIn(BaseModel):
+    """``POST /projects/agent-runs/{id}/archive-approval`` (EA-6g). The run's
+    member answers a typed archive request (EA3-40 rule 2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["approve", "decline"]
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
+#: The two options of every typed archive request. The server fixes them,
+#: and no input names them (EA3-40 rule 1).
+ARCHIVE_OPTIONS: tuple[OptionIn, ...] = (
+    OptionIn(id=ARCHIVE_APPROVE, label="Approve"),
+    OptionIn(id=ARCHIVE_DECLINE, label="Decline"),
+)
+
+
+def archive_request_of(row: Any) -> dict[str, Any] | None:
+    """The typed archive request of an elicitation row, or ``None``.
+
+    Only :func:`request_task_archive` writes ``content_metadata.request``. No
+    request body can carry it (``extra="forbid"``), so an option id
+    ``approve`` on a free question is never a request (EA3-40, G2).
+    """
+    if row is None or getattr(row, "type", None) != "elicitation":
+        return None
+    request = (from_jsonb(row.content_metadata) or {}).get("request")
+    if isinstance(request, dict) and request.get("kind") == ARCHIVE_REQUEST_KIND:
+        return request
+    return None
+
+
+def _request_expired(request: dict[str, Any], at: Any) -> bool:
+    """True when *request* expired at the instant *at*. A stamp that does
+    not parse reads as expired, so it never approves."""
+    try:
+        expires = datetime.fromisoformat(str(request.get("expires_at")))
+    except ValueError:
+        return True
+    if expires.tzinfo is None:
+        return True
+    return bool(at >= expires)
 
 
 # ── The status machine (EA12-5) ─────────────────────────────────────────────
@@ -575,6 +664,7 @@ async def _has_answered_select(db: Any, run_id: str) -> bool:
 
 async def _answer(
     db: Any, run_id: str, content: dict[str, Any], selected: list[str] | None,
+    *, typed: bool = False, status: str | None = None,
 ) -> tuple[str | None, dict[str, Any] | None]:
     """``(in_reply_to, content_metadata)`` of a member prompt (EA12-7).
 
@@ -582,8 +672,32 @@ async def _answer(
     never takes it from input. ``selected`` is valid only on a ``select``: the
     ids must be options of that question, one id unless ``allow_multiple``
     (R3). The labels go into *content*, so a reader gets them with the ids.
+
+    A typed archive request (EA-6g) takes an answer ONLY from the approval
+    route, which passes *typed*. A generic prompt with ``selected`` gets 422
+    (EA3-40 rule 4). While the run is ``awaiting`` (*status*), a generic
+    prompt with a body only gets 409: it would close the request, and only
+    the run's member may close it (rule 3). On a run that no longer waits,
+    or after the request expired (fix round 1), the request is stale. A
+    reply then answers nothing and moves the run on, so an expired request
+    never holds a run in ``awaiting``.
     """
     question = await _newest_open_question(db, run_id)
+    request = archive_request_of(question)
+    if typed and request is None:
+        raise HTTPException(status_code=409, detail="This run waits for no archive request.")
+    if not typed and request is not None:
+        if selected is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="Answer an archive request with Approve or Decline on the task.",
+            )
+        if status == "awaiting" and not _request_expired(request, await _clock(db)):
+            raise HTTPException(
+                status_code=409,
+                detail="This agent run waits for an archive approval. Only its member answers it.",
+            )
+        question = None
     reply = str(question.id) if question is not None else None
     if selected is None:
         return reply, None
@@ -631,12 +745,20 @@ async def _write_activity(
     parameters: dict[str, str] | None = None,
     signal: str | None = None,
     event: str | None = None,
+    request: dict[str, Any] | None = None,
+    typed: bool = False,
+    extra: dict[str, Any] | None = None,
 ) -> _Written:
     """Write one activity on a LOCKED run, inside the caller's transaction.
 
     The idempotency check runs first, so a replay writes nothing and moves no
     status (R5). Then the status machine, the row, the cap of ephemeral rows,
     the comment, the notifications and the run's new status.
+
+    EA-6g. *request* types an elicitation as an archive request: it goes into
+    ``content_metadata``, and the question notifies the run's member only.
+    *typed* lets a prompt answer such a request, and only the approval route
+    passes it. *extra* adds the server's own keys to ``content``.
     """
     run_id = str(run.id)
     task_id = str(run.task_id)
@@ -663,6 +785,8 @@ async def _write_activity(
             "options": [o.model_dump(exclude_none=True) for o in options],
             "allow_multiple": bool(allow_multiple),
         }
+        if request is not None:
+            content_metadata = {"request": dict(request)}
     elif kind == "action":
         content["action"] = action
         content["parameters"] = dict(parameters or {})
@@ -670,7 +794,11 @@ async def _write_activity(
         signal_out = signal or "continue"
         content["signal"] = signal_out
         if signal_out != "stop":
-            in_reply_to, content_metadata = await _answer(db, run_id, content, selected)
+            in_reply_to, content_metadata = await _answer(
+                db, run_id, content, selected, typed=typed, status=run.status,
+            )
+    if extra:
+        content.update(extra)
 
     ts = await _clock(db)
     ephemeral = kind in EPHEMERAL_TYPES
@@ -716,6 +844,7 @@ async def _write_activity(
             db, run, made, author=me, via=via,
             text_=_comment_body(kind, content, signal_meta) or kind,
             question=(kind == "elicitation" and new_status == "awaiting"),
+            member_only=request is not None,
         )
 
     await _move_run(
@@ -729,7 +858,7 @@ async def _write_activity(
 
 async def _comment(
     db: Any, run: Any, made: Any, *, author: str, via: str | None, text_: str,
-    question: bool,
+    question: bool, member_only: bool = False,
 ) -> Any:
     """The timeline comment of one non-ephemeral activity, and its bell rows.
 
@@ -739,6 +868,9 @@ async def _comment(
     kind ``agent_question`` and the CLIENT as the actor (EA12-8). Every other
     comment sends the ``comment`` kind to ``task_audience()``, as
     ``add_comment`` does, with no mention pass.
+
+    A typed archive request (EA-6g, *member_only*) notifies the run's member
+    only, because nobody else may answer it (EA12-8 as amended by EA3-40).
     """
     task_id = str(run.task_id)
     meta: dict[str, Any] = {
@@ -759,7 +891,7 @@ async def _comment(
         ),
         {"pm": str(comment.id), "aid": str(made.id)},
     )).fetchone()
-    audience = await task_audience(db, task_id)
+    audience = [] if member_only else await task_audience(db, task_id)
     snippet = excerpt_of(text_)
     if question:
         await notify(
@@ -1158,15 +1290,226 @@ async def finish_agent_run(
     return {"run": out_run, "activity": out_activity}
 
 
+# ── The archive with an approval (EA-6g, EA3-33 and EA3-40) ─────────────────
+
+
+_KEY_USED = "This idempotency_key was used for another activity. Send a new key."
+
+
+async def _earlier_archive_request(db: Any, task_id: str, me: str, key: str) -> Any | None:
+    """The activity that this member wrote with *key* on a run of this task,
+    or ``None``. A replay finds its first request here, also after its run
+    moved on, so a replay never starts a second run."""
+    return (await db.execute(
+        text(
+            "SELECT a.* FROM pm_agent_run_activities a "
+            "  JOIN pm_agent_runs r ON r.id = a.run_id "
+            " WHERE r.task_id = CAST(:tid AS uuid) AND r.member_email = :me "
+            "   AND a.idempotency_key = :key "
+            " ORDER BY a.seq DESC LIMIT 1"
+        ),
+        {"tid": task_id, "me": me, "key": key},
+    )).fetchone()
+
+
+async def _open_or_new_run(db: Any, user: UserContext, task_id: str, me: str,
+                           via: str) -> Any:
+    """The open run of this member and client on the task, or a new
+    ``in_progress`` run, LOCKED for this transaction (EA12-6, as
+    ``ask_on_task`` gets it through the start)."""
+    open_sql = (
+        f"{_RUN_SELECT} WHERE r.task_id = CAST(:tid AS uuid) AND r.member_email = :me "
+        "   AND r.client_via = :via AND r.status = ANY(:open)"
+    )
+    open_args = {"tid": task_id, "me": me, "via": via,
+                 "open": list(AGENT_RUN_OPEN_STATUSES)}
+    existing = (await db.execute(text(open_sql), open_args)).fetchone()
+    if existing is None:
+        ts = await _clock(db)
+        made = (await db.execute(text(_INSERT_RUN_SQL), {
+            "tid": task_id, "me": me, "cid": str(user.agent.connection_id),  # type: ignore[union-attr]
+            "via": via, "status": "in_progress", "by": via, "started": ts,
+            "link": None, "ts": ts, "agent_ts": ts, "key": None,
+        })).fetchone()
+        if made is not None:
+            return await _lock_run(db, str(made.id))
+        # A concurrent start won the open-run index. Its run is the answer.
+        existing = (await db.execute(text(open_sql), open_args)).fetchone()
+        if existing is None:
+            raise HTTPException(status_code=409, detail="Send the request again.")
+    return await _lock_run(db, str(existing.id))
+
+
+@router.post("/tasks/{task_id}/archive-request", status_code=201, dependencies=_ENABLED)
+async def request_task_archive(
+    task_id: str, payload: ArchiveRequestIn, response: Response,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """An agent asks the run's member to archive this task (EA3-40 rule 1).
+
+    It starts or reuses the member's open run, as ``ask_on_task`` does, and
+    writes ONE typed elicitation: ``content_metadata.request`` holds the kind
+    and ``expires_at``, the options are the server's two, and the target is
+    the run's task. It archives nothing. 201 with ``created: true``, or 200
+    with the first request of this ``idempotency_key``.
+    """
+    task_id = _parse_uuid(task_id, "Task")
+    _require_write_scope(user)
+    via = _agent_via(user)
+    if via is None:
+        raise HTTPException(
+            status_code=403, detail="Only an agent asks to archive a task. A member archives it.",
+        )
+    me = _member(user)
+    key = payload.idempotency_key
+    written: _Written | None = None
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        await load_visible_task(db, vis, task_id)
+        found = await _earlier_archive_request(db, task_id, me, key)
+        if found is not None:
+            if archive_request_of(found) is None:
+                raise HTTPException(status_code=409, detail=_KEY_USED)
+            response.status_code = 200
+            run = await _load_run(db, str(found.run_id))
+            return {"activity": _activity_out(found),
+                    "run": (await _runs_out(db, [run]))[0], "created": False}
+        run = await _open_or_new_run(db, user, task_id, me, via)
+        if run.status == "stopping":
+            # A Stop waits. The agent must stop, not ask for an archive.
+            raise HTTPException(
+                status_code=409, detail="This agent run is stopping. It cannot take this activity.",
+            )
+        expires = await _clock(db) + ARCHIVE_REQUEST_TTL
+        written = await _write_activity(
+            db, run, user, kind="elicitation", key=key, body=ARCHIVE_REQUEST_BODY,
+            options=list(ARCHIVE_OPTIONS),
+            request={"kind": ARCHIVE_REQUEST_KIND, "expires_at": expires.isoformat()},
+        )
+        if not written.created:
+            # The same key, written by a concurrent call on this run.
+            if archive_request_of(written.activity) is None:
+                raise HTTPException(status_code=409, detail=_KEY_USED)
+            response.status_code = 200
+        out_run = (await _runs_out(db, [await _load_run(db, str(run.id))]))[0]
+        out_activity = _activity_out(written.activity)
+    if written.commented:
+        await emit("pm.task.comment_added", {"task_id": task_id})
+    return {"activity": out_activity, "run": out_run, "created": written.created}
+
+
+def _replayed_decision(row: Any) -> str | None:
+    """The decision of an earlier answer to a typed request, or ``None`` when
+    *row* is not such an answer."""
+    content = from_jsonb(row.content) or {}
+    if row.type != "prompt" or "archived" not in content:
+        return None
+    selected = content.get("selected") or []
+    return selected[0] if len(selected) == 1 else None
+
+
+@router.post("/agent-runs/{run_id}/archive-approval", dependencies=_ENABLED)
+async def approve_task_archive(
+    run_id: str, payload: ArchiveApprovalIn, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The run's member approves or declines a typed archive request.
+
+    ⚠️ This route is NOT in ``MCP_ROUTES``, so branch 0 refuses a signed
+    request to it with 401 (EA3-40 rule 2). It refuses an agent caller too.
+
+    * Only ``run.member_email`` answers. Another member who sees the task
+      gets 403, and nothing changes (rule 3). A hidden run is 404.
+    * A run that is not ``awaiting`` on an open typed request gets 409, and
+      nothing changes. An APPROVE past ``expires_at`` gets 409 too (rule 5).
+      A decline still closes an expired request (fix round 1): it archives
+      nothing and moves the run on, so the run never stays ``awaiting``.
+    * An approve archives the task through ``tasks.archive_task_in``, with no
+      cascade to the subtasks, and writes the answer through
+      :func:`_write_activity`, in ONE transaction (rule 2). The answer's
+      ``content`` carries ``archived``.
+    * The same ``idempotency_key`` again returns the first answer with 200.
+      A second answer with a new key finds no open request: 409. So a second
+      approve never archives twice. Every answer, a replay too, returns the
+      task as it is now, so a retried click shows ``archived_at``.
+    """
+    run_id = _parse_uuid(run_id, "Agent run")
+    if _agent_via(user) is not None:
+        raise HTTPException(status_code=403, detail="Only the member approves an archive.")
+    me = _member(user)
+    decision = payload.decision
+    key = payload.idempotency_key
+    outcome = None
+    written: _Written | None = None
+    async with _tenant_session() as db:
+        await _load_visible_run(db, user, run_id)
+        run = await _lock_run(db, run_id)
+        if run.member_email != me:
+            raise HTTPException(
+                status_code=403, detail="Only the member of this agent run answers it.",
+            )
+        replay = await _existing_activity(db, run_id, key)
+        if replay is not None:
+            if _replayed_decision(replay) != decision:
+                raise HTTPException(status_code=409, detail=_KEY_USED)
+            out_run = (await _runs_out(db, [run]))[0]
+            archived = bool((from_jsonb(replay.content) or {}).get("archived"))
+            return {"activity": _activity_out(replay), "run": out_run, "created": False,
+                    "archived": archived, "task": await _task_now(db, user, str(run.task_id))}
+        request = archive_request_of(await _newest_open_question(db, run_id))
+        if run.status != "awaiting" or request is None:
+            raise HTTPException(status_code=409, detail="This run waits for no archive request.")
+        if decision == ARCHIVE_APPROVE and _request_expired(request, await _clock(db)):
+            raise HTTPException(
+                status_code=409, detail="This archive request expired. Decline it to close it.",
+            )
+        archived = False
+        if decision == ARCHIVE_APPROVE:
+            vis = await resolve_visibility(db, user)
+            task = await load_visible_task(db, vis, str(run.task_id))
+            # The ONE core, never the subtree (EA3-33).
+            outcome = await archive_task_in(db, vis, task, user, include_subtasks=False)
+            archived = True
+        written = await _write_activity(
+            db, run, user, kind="prompt", key=key, body=None, selected=[decision],
+            typed=True, extra={"archived": archived},
+        )
+        out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
+        out_activity = _activity_out(written.activity)
+        task_now = (outcome.row if outcome is not None
+                    else await _task_now(db, user, str(run.task_id)))
+    if written.commented:
+        await emit("pm.task.comment_added", {"task_id": out_run["task_id"]})
+    if outcome is not None and not outcome.was_archived:
+        await emit("pm.task.archived", {"task_id": out_run["task_id"]})
+    return {"activity": out_activity, "run": out_run, "created": written.created,
+            "archived": archived, "task": task_now}
+
+
+async def _task_now(db: Any, user: UserContext, task_id: str) -> dict[str, Any]:
+    """The task as the member sees it now, with its agent pill."""
+    vis = await resolve_visibility(db, user)
+    row = row_to_dict(await load_visible_task(db, vis, task_id), TaskModel)
+    await attach_agent_state(db, [row])
+    return row
+
+
 __all__ = [
     "ACTIVITY_TYPES",
+    "ARCHIVE_APPROVE",
+    "ARCHIVE_DECLINE",
+    "ARCHIVE_OPTIONS",
+    "ARCHIVE_REQUEST_KIND",
+    "ARCHIVE_REQUEST_TTL",
     "EPHEMERAL_CAP",
     "MAX_WAIT_S",
     "POLL_S",
     "RUN_STATUSES",
     "ActivityIn",
+    "ArchiveApprovalIn",
+    "ArchiveRequestIn",
     "FinishIn",
     "OptionIn",
     "StartIn",
+    "archive_request_of",
     "transition",
 ]

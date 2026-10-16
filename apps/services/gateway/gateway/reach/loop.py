@@ -25,6 +25,26 @@ Every 60 seconds, for each org of ``REACH_ORGS`` and each member of
    the daily cap they are logged ``capped``. Neither sends.
    A member with no link is not held: the pass plans, and the channel skips
    with ``no_link``, as before.
+7. **The requests** of "Tell me on WhatsApp" (RE-5, §11.3). Each open
+   request is a card of kind ``notify_me``, never baselined. An expired one
+   is logged ``expired``. The member's own request ignores the cap and quiet
+   hours. A rule's ``urgent`` request ignores quiet hours and may use one
+   send past the cap. A rule's ``normal`` request keeps both. A request that
+   may not go now WAITS: nothing is logged, so a later pass sends it before
+   it expires. A closed window holds every request, because no template
+   fits one. A pass that sent a brief sends no request: one message for
+   each pass. The requests ride in the message of the interrupts, and a
+   message of only the member's own requests is kind ``request``, which the
+   cap does not count. In quiet hours an urgent request goes only when no
+   urgent message went today. Its key starts ``urgent:``, so the outbox
+   counts it (review of RE-5, P2-1).
+8. **The batch window** (D-RE-4). A message of interrupts or of requests
+   that the member did not ask for now goes only when no such message went
+   in the last 15 minutes. The cards wait, unlogged. The member's own
+   request does not wait.
+9. **A failed send** logs no request. The request stays open until it
+   expires, and its key holds a 10-minute bucket, so the send retries at
+   most once in 10 minutes. A sent request is logged and never goes again.
 
 **Dark by default.** ``REACH_ENABLED`` is off, and :func:`start_reach_loop`
 then starts no task. The org list and the member list are empty by default,
@@ -42,12 +62,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from acb_common import get_logger
 
-from gateway.reach import flags, outbox, plan
+from gateway.reach import flags, outbox, plan, requests
 from gateway.reach import whatsapp as channel
 
 _log = get_logger("reach.loop")
@@ -55,6 +75,16 @@ _log = get_logger("reach.loop")
 TICK_SECONDS = 60.0
 MEMBER_TIMEOUT_S = 45.0
 STOP_GRACE_SECONDS = 30.0
+#: The most "Tell me on WhatsApp" requests in one message (§9.2: 3 items).
+MAX_REQUESTS = 3
+#: A message that the member did not ask for now waits this long after the
+#: last one (D-RE-4). So a backlog does not use the whole cap in minutes.
+BATCH_WINDOW = timedelta(minutes=15)
+#: A message that carries a request may retry a failed send once in this
+#: many seconds: its outbox key holds the bucket (review of RE-5, P2-3).
+RETRY_BUCKET_SECONDS = 600
+#: The key prefix of a message that used the urgent allowance.
+URGENT_PREFIX = "urgent:"
 #: The one row a first run writes when the member has no card, so the next
 #: run is not a first run too.
 BASELINE_MARK = ("reach:baseline", "0")
@@ -134,20 +164,24 @@ class Template:
 async def _send(org: str, member: str, *, kind: str, cards: list[dict[str, Any]],
                 key: str, body: str, local_date: date | None,
                 template: Template | None = None,
-                reach: tuple[str | None, bool] | None = None) -> str:
+                reach: tuple[str | None, bool] | None = None,
+                record: str | None = None) -> str:
     """Plan one message, send it, and close its row. Answers the outcome.
 
     Shielded: the member timeout must not cut between the send and the log,
-    or the row stays planned and the items go out again in a later batch."""
+    or the row stays planned and the items go out again in a later batch.
+    *record* is what the member's thread records, when it is not *body*."""
     return await asyncio.shield(_send_now(org, member, kind=kind, cards=cards, key=key,
                                           body=body, local_date=local_date,
-                                          template=template, reach=reach))
+                                          template=template, reach=reach,
+                                          record=record))
 
 
 async def _send_now(org: str, member: str, *, kind: str, cards: list[dict[str, Any]],
                     key: str, body: str, local_date: date | None,
                     template: Template | None,
-                    reach: tuple[str | None, bool] | None) -> str:
+                    reach: tuple[str | None, bool] | None,
+                    record: str | None = None) -> str:
     outbox_id = await outbox.plan(org, member, kind=kind,
                                   signal_ids=[c["signal_id"] for c in cards],
                                   key=key, body=body, local_date=local_date)
@@ -156,15 +190,22 @@ async def _send_now(org: str, member: str, *, kind: str, cards: list[dict[str, A
     got = await channel.deliver(org, member, kind=kind, body=body, outbox_id=outbox_id,
                                 template=template.name if template else None,
                                 template_params=template.params if template else None,
-                                reach=reach)
+                                reach=reach, record=record)
     await outbox.finish(org, outbox_id, state=got.state, regime=got.regime,
                         reason=got.reason, provider_message_id=got.provider_message_id)
     outcome = "sent" if got.state == "sent" else "skipped"
-    if kind == "interrupt" and not (template is not None and got.state != "sent"):
+    if kind in ("interrupt", "request") and not (template is not None and got.state != "sent"):
         # A template that Meta refused logs nothing: the cards stay held, and
         # the first open window sends them as free text. Its key ends in
         # ":tpl", so that free text is a new row (review of RE-2a, P2).
-        await outbox.log(org, member, map(plan.pair, cards), outcome, outbox_id)
+        logs = cards
+        if got.state == "failed" and got.reason == "send_retry":
+            # A request stays open until it expires, and its key's bucket
+            # lets a later pass try again (review of RE-5, P2-3). Only a send
+            # that surely did not reach Meta, or a 429, is tried again. A
+            # timeout may have delivered, so it is logged and never resent.
+            logs = [c for c in cards if not plan.is_request(c)]
+        await outbox.log(org, member, map(plan.pair, logs), outcome, outbox_id)
     _log.info("reach.message", kind=kind, state=got.state, reason=got.reason,
               items=len(cards))
     return got.state if got.reason is None else f"{got.state}:{got.reason}"
@@ -263,8 +304,6 @@ async def member_pass(org: str, member: str, now: datetime | None = None) -> str
     except Exception as exc:
         _log.warning("reach.state_failed", error_class=type(exc).__name__)
         return "state_failed"
-    wa_id, is_open = reach
-    closed = wa_id is not None and not is_open
 
     did: list[str] = []
     logged = await outbox.logged_pairs(org, member)
@@ -282,31 +321,183 @@ async def member_pass(org: str, member: str, now: datetime | None = None) -> str
         await outbox.log(org, member, map(plan.pair, candidates), "deferred")
         candidates = []
 
+    # The requests of "Tell me on WhatsApp" (RE-5). A pass that sent a brief
+    # sends no request, so one pass sends one message at most.
+    asks = await _request_cards(org, member, snap, did)
+    if asks and how != "none":
+        did.append("requests_wait")
+        asks = []
+    await _message_step(org, member, snap, reach, candidates, asks, did)
+    return ",".join(did) or "nothing"
+
+
+class _Budget:
+    """The member's interrupts of today, read once and only when needed."""
+
+    def __init__(self, org: str, member: str, snap: Snapshot) -> None:
+        self.org, self.member, self.snap = org, member, snap
+        self._sent: int | None = None
+        self._urgent: int | None = None
+        self._recent: bool | None = None
+
+    async def sent(self) -> int:
+        if self._sent is None:
+            self._sent = await outbox.interrupts_since(
+                self.org, self.member, self.snap.day.day_start(self.snap.now))
+        return self._sent
+
+    async def urgent(self) -> int:
+        """The urgent messages of today (review of RE-5, P2-1)."""
+        if self._urgent is None:
+            self._urgent = await outbox.urgent_since(
+                self.org, self.member, self.snap.day.day_start(self.snap.now))
+        return self._urgent
+
+    async def recent(self) -> bool:
+        """True when an interrupt went in the last :data:`BATCH_WINDOW`."""
+        if self._recent is None:
+            self._recent = await outbox.interrupts_since(
+                self.org, self.member, self.snap.now - BATCH_WINDOW) > 0
+        return self._recent
+
+
+def is_urgent_request(card: dict[str, Any]) -> bool:
+    """A request of a rule or a workflow at ``urgent``."""
+    return (plan.is_request(card) and not plan.is_self_request(card)
+            and (card.get("facts") or {}).get("urgency") == "urgent")
+
+
+async def _ready_requests(asks: list[dict[str, Any]], *, quiet: bool,
+                          budget: _Budget) -> list[dict[str, Any]]:
+    """The requests that may go now, by §11.3. The member's own first, then
+    at most :data:`MAX_REQUESTS` (§9.2). The rest wait for a later pass.
+
+    A request that the member did not ask for now waits for the batch
+    window. In quiet hours an urgent one goes only when no urgent message
+    went today, so the night holds one urgent message at most."""
+    cap = flags.daily_cap()
+    ready = []
+    for ask in asks:
+        if plan.is_self_request(ask):
+            ready.append(ask)  # past the cap, quiet hours and the batch window
+            continue
+        if await budget.recent():
+            continue
+        if is_urgent_request(ask):
+            # The urgent allowance (§6.1): one send past the cap.
+            if await budget.sent() < cap + 1 and not (quiet and await budget.urgent()):
+                ready.append(ask)
+        elif not quiet and await budget.sent() < cap:
+            ready.append(ask)
+    ready.sort(key=lambda c: not plan.is_self_request(c))
+    ready = ready[:MAX_REQUESTS]
+    if quiet and sum(map(is_urgent_request, ready)) > 1:
+        # One urgent message holds them all, so a second one waits.
+        first = next(c for c in ready if is_urgent_request(c))
+        ready = [c for c in ready if c is first or not is_urgent_request(c)]
+    return ready
+
+
+def message_key(member: str, cards: list[dict[str, Any]], now: datetime) -> str:
+    """The outbox key of one message of interrupts or requests.
+
+    A message that carries a request adds a bucket of
+    :data:`RETRY_BUCKET_SECONDS`, so a failed send may try again in the
+    next bucket. A message with an urgent request starts with
+    :data:`URGENT_PREFIX`, so the outbox counts it."""
+    key = plan.interrupt_key(member, cards)
+    if any(plan.is_request(c) for c in cards):
+        key = f"{key}:t{int(now.timestamp()) // RETRY_BUCKET_SECONDS}"
+    if any(is_urgent_request(c) for c in cards):
+        key = f"{URGENT_PREFIX}{key}"
+    return key
+
+
+async def _message_step(org: str, member: str, snap: Snapshot,
+                        reach: tuple[str | None, bool], candidates: list[dict[str, Any]],
+                        asks: list[dict[str, Any]], did: list[str]) -> None:
+    """The one message of the pass after the brief: the interrupts and the
+    requests, under the window, quiet hours and the cap."""
+    wa_id, is_open = reach
+    closed = wa_id is not None and not is_open
+    quiet = plan.in_quiet_hours(snap.day, snap.now, snap.working_day)
+    budget = _Budget(org, member, snap)
+
+    go: list[dict[str, Any]] = []
+    needs_you: str | None = None
     if candidates:
         needs_you = flags.needs_you_template() if closed else None
         if closed and needs_you is None:
             # HELD: no plan and no log. The first pass with the window open
             # sends them, and the cap and the quiet hours apply then.
             did.append("held")
-        elif plan.in_quiet_hours(snap.day, snap.now, snap.working_day):
+        elif quiet:
             await outbox.log(org, member, map(plan.pair, candidates), "quiet")
             did.append("quiet")
-        elif await outbox.interrupts_since(
-                org, member, snap.day.day_start(snap.now)) >= flags.daily_cap():
+        elif await budget.sent() >= flags.daily_cap():
             await outbox.log(org, member, map(plan.pair, candidates), "capped")
             did.append("capped")
+        elif await budget.recent():
+            # The batch window (D-RE-4): no plan and no log, so the first
+            # pass after the window sends them in one message.
+            did.append("batch_wait")
         else:
-            body = plan.compose_interrupt(candidates, app_url(), now=snap.now)
-            sends = None
-            if needs_you is not None:
-                name = await first_name(org, member)
-                sends = Template(needs_you, plan.needs_you_params(name, candidates, snap.now))
-            key = plan.interrupt_key(member, candidates)
-            sent = await _send(org, member, kind="interrupt", cards=candidates,
-                               key=f"{key}:tpl" if sends is not None else key, body=body,
-                               local_date=snap.local_date, template=sends, reach=reach)
-            did.append(f"interrupt:{sent}")
-    return ",".join(did) or "nothing"
+            go = candidates
+
+    if asks and closed:
+        # HELD: no template fits a request. Nothing is logged, so the first
+        # pass with the window open sends it, inside its own rules.
+        did.append("requests_held")
+        asks = []
+
+    if go and needs_you is not None:
+        name = await first_name(org, member)
+        sends = Template(needs_you, plan.needs_you_params(name, go, snap.now))
+        key = plan.interrupt_key(member, go)
+        sent = await _send(org, member, kind="interrupt", cards=go, key=f"{key}:tpl",
+                           body=plan.compose_interrupt(go, app_url(), now=snap.now),
+                           local_date=snap.local_date, template=sends, reach=reach)
+        did.append(f"interrupt:{sent}")
+        return
+
+    ready = await _ready_requests(asks, quiet=quiet, budget=budget) if asks else []
+    if len(ready) < len(asks):
+        did.append("requests_wait")
+    # The member's own requests first, then the feed, then rule and workflow
+    # requests, so a long request body never pushes a feed line out of the
+    # message (review of RE-5 fix round 1, P2).
+    own = [c for c in ready if (c.get("facts") or {}).get("self")]
+    rest = [c for c in ready if not (c.get("facts") or {}).get("self")]
+    body, cards = plan.compose_message(own + go + rest, app_url(), now=snap.now) \
+        if ready or go else ("", [])
+    if not cards:
+        return
+    if len(cards) < len(ready) + len(go):
+        # The lines that did not fit stay open for a later pass (P1-5).
+        did.append("overflow_wait")
+    kind = "request" if all(plan.is_self_request(c) for c in cards) else "interrupt"
+    sent = await _send(org, member, kind=kind, cards=cards,
+                       key=message_key(member, cards, snap.now), body=body,
+                       local_date=snap.local_date, reach=reach,
+                       record=plan.thread_record(cards, body))
+    did.append(f"{kind}:{sent}")
+
+
+async def _request_cards(org: str, member: str, snap: Snapshot,
+                         did: list[str]) -> list[dict[str, Any]]:
+    """The cards of the member's open requests. Logs the expired ones
+    ``expired``. A failed read only waits for the next pass."""
+    try:
+        rows = await requests.undelivered(org, member)
+    except Exception as exc:
+        _log.warning("reach.requests_failed", error_class=type(exc).__name__)
+        return []
+    live, gone = requests.split(rows, snap.now)
+    if gone:
+        await outbox.log(org, member,
+                         (plan.pair(requests.card(r, member)) for r in gone), "expired")
+        did.append(f"expired:{len(gone)}")
+    return [requests.card(r, member) for r in live]
 
 
 # ── The loop ────────────────────────────────────────────────────────────────

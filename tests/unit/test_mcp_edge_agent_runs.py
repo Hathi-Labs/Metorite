@@ -315,6 +315,15 @@ class TestTheInstructions:
                        "get_agent_run with wait_seconds 20", "stopping", "stop the work at once"):
             assert needed in text, needed
         assert "read the projects" not in text  # the old reads-only wording
+        # WS-55 EA-6g: the archive goes through the member, never the subtasks.
+        for needed in ("request_task_archive", "Only the member can approve it",
+                       "never takes the subtasks"):
+            assert needed in text, needed
+
+    async def test_with_the_flag_off_initialize_names_no_archive(self, edge, monkeypatch):  # noqa: F811 — a fixture
+        """WS-55 EA-6g: the archive line shows only with the runs, as its tool."""
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", False)
+        assert "request_task_archive" not in await self._instructions()
 
     async def test_with_the_flag_off_initialize_names_no_run_tool(self, edge, monkeypatch):  # noqa: F811 — a fixture
         monkeypatch.setattr(get_settings(), "agent_runs_enabled", False)

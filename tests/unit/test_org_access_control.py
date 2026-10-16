@@ -515,6 +515,50 @@ def test_people_is_registered_on_both_sides() -> None:
     assert "people" in _catalog_slugs()
 
 
+def test_knowledge_is_registered_on_both_sides() -> None:
+    """WS-61 KB-0's registration (`knowledge_base.md` §5.2), by name.
+
+    The generic pair above passes when BOTH sides miss a slug, so this test
+    names the slug that KB-0 adds.
+    """
+    assert "knowledge" in FEATURES
+    assert "knowledge" in _catalog_slugs()
+
+
+def test_knowledge_is_a_default_feature_in_its_migration() -> None:
+    """§5.2 says `is_default true`. The row is found by content, not number.
+
+    A `false` here would hide the app from a member whose role has no
+    `feature:*`, and nothing else in this file reads the flag.
+    """
+    rows = []
+    for path in sorted(MIGRATIONS.glob("*.sql")):
+        if path.name == "schema.generated.sql":
+            continue
+        sql = path.read_text(encoding="utf-8", errors="replace")
+        for insert in _CATALOG_INSERT_RE.finditer(sql):
+            rows += re.findall(r"\(\s*'knowledge'\s*,[^)]*\)", insert.group(1))
+    assert len(rows) == 1, rows
+    assert re.search(r",\s*true\s*\)$", rows[0], re.I), rows[0]
+
+
+def test_knowledge_manage_is_a_capability_that_no_feature_grants() -> None:
+    """`knowledge:manage` (§5.2): the owner holds it, a feature grant does not.
+
+    The owner holds it through `*`. Migration 207 gives `feature:*` to
+    member and manager, and that grant must not reach this verb, or every
+    member could change the grants of every space.
+    """
+    assert "knowledge:manage" in CAPABILITIES
+    assert "knowledge:manage" not in FEATURES
+    validate_permission("knowledge:manage")
+    assert permission_matches("*", "knowledge:manage")
+    assert not permission_matches("feature:*", "knowledge:manage")
+    assert not permission_matches("feature:knowledge", "knowledge:manage")
+    assert build_access(["*"]).has("knowledge:manage")
+    assert not build_access(["feature:*"]).has("knowledge:manage")
+
+
 def test_agent_service_is_not_assignable_to_people() -> None:
     assert "agent_service" in SYSTEM_ROLES
     assert "agent_service" not in ASSIGNABLE_SYSTEM_ROLES

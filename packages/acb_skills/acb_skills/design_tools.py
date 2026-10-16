@@ -44,7 +44,7 @@ _ALIASES = {
 }
 
 #: ``load_design_system("report")`` is the field guide of ``make_report``
-#: (``projects_ai_chat.md`` §14.9). Until 2026-10-16 the name read the
+#: (``projects_ai_chat.md`` §14.10). Until 2026-10-16 the name read the
 #: ``cc-report`` HTML kit, which "blocks" still serves. A report is now a
 #: ``make_report`` call, never a hand-made HTML or Markdown file.
 _REPORT = "report"

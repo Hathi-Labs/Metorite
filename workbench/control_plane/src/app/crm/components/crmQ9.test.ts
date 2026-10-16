@@ -2,10 +2,13 @@
 // The runner has no DOM, so each component is rendered to a string.
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
+import * as api from "../lib/api";
+import { syncFailureMessage } from "../lib/connect";
 import {
   HIDDEN_SENTENCE,
+  LARGE_MODULE_RECORDS,
   UNAVAILABLE_SENTENCE,
   agoLabel,
   creditsPercent,
@@ -13,11 +16,21 @@ import {
   differenceLabel,
   entityLabel,
   errorSentence,
+  heldKeys,
+  holdFailureMessage,
+  holdSentence,
+  holdsOf,
+  isHeld,
+  isHoldable,
   isRunning,
+  largeSentence,
+  largeUnheld,
   moduleState,
+  recordsOf,
   statusLines,
   type HealthEntity,
   type SyncHealth,
+  type SyncHold,
 } from "../lib/syncHealth";
 import PipelineSettings from "./PipelineSettings";
 import { SyncHealthCardView } from "./SyncHealthCard";
@@ -303,5 +316,206 @@ describe("where the card appears", () => {
 
   it("shows for an admin in Mirror mode", () => {
     expect(page({ readOnly: true })).toContain("Sync health");
+  });
+});
+
+describe("a held module (CRM-Q16, spec section 18.8)", () => {
+  const hold = (count: number | null, held = true): SyncHold => ({
+    held,
+    by: "auto",
+    count,
+    at: minutesAgo(30),
+  });
+
+  it("shows the Held badge, the sentence with the count, and Sync it on its own", () => {
+    const html = draw(
+      healthy({
+        entities: [entity("contacts", 805, 805), entity("activities", 18674, 3848, { held: 1 })],
+        holds: { activities: hold(18674) },
+      }),
+    );
+    expect(html).toContain("Held");
+    expect(html).toContain(
+      "Activities has 18,674 records in Zoho. Sync it on its own when Metorite is quiet, so the rest stays fast",
+    );
+    expect(html).toContain("Sync it on its own");
+    // The table reads 18,674 like the sentence, and a held row gets no difference badge.
+    expect(html).toContain(">18,674<");
+    expect(html).not.toContain("-14826");
+    expect(html).not.toContain("-14,826");
+    // The Sync switch of the held row is off, and the other row is on.
+    const box = (name: string) => html.match(new RegExp(`<input[^>]*aria-label="Sync ${name}"[^>]*>`))?.[0] ?? "";
+    expect(box("Activities")).toContain('type="checkbox"');
+    expect(box("Activities")).not.toContain('checked=""');
+    expect(box("Contacts")).toContain('checked=""');
+    // A held row is not also suggested for a hold.
+    expect(html).not.toContain("Hold it");
+  });
+
+  it("shows the badge and the button, and no sentence, when the count is not known", () => {
+    const html = draw(healthy({ entities: [entity("tasks", null, 0)], holds: { tasks: hold(null) } }));
+    expect(html).toContain("Held");
+    expect(html).toContain("Sync it on its own");
+    expect(html).not.toContain("records in Zoho");
+  });
+
+  it("treats a hold with held:false as on", () => {
+    const health = healthy({ holds: { leads: hold(9000, false) } });
+    expect(isHeld(health, "leads")).toBe(false);
+    expect(heldKeys(health)).toEqual([]);
+    expect(draw(health)).not.toContain("Sync it on its own when");
+  });
+
+  it("still renders a health answer with no holds (an older gateway)", () => {
+    const old = healthy();
+    delete old.holds;
+    const html = draw(old);
+    expect(html).toContain("Sync health");
+    expect(html).toContain(">Sync<");
+    expect(html).not.toContain("Held");
+    expect(isHeld(old, "leads")).toBe(false);
+    expect(holdsOf(old)).toEqual({});
+    expect(heldKeys(null)).toEqual([]);
+  });
+
+  it("draws no switch for a key that cannot be held", () => {
+    const html = draw(healthy({ entities: [entity("converted_leads", null, 3)] }));
+    expect(html).not.toContain('aria-label="Sync Converted leads"');
+    expect(isHoldable("converted_leads")).toBe(false);
+    expect(isHoldable("deal_contacts")).toBe(false);
+    expect(isHoldable("activities")).toBe(true);
+    expect(isHoldable("module:Installs")).toBe(true);
+    expect(isHoldable("module:")).toBe(false);
+  });
+});
+
+describe("module keys (CRM-Q16)", () => {
+  const mod = "module:Custom_Installs";
+  const health = healthy({
+    entities: [entity("leads", 40, 40), entity(mod, 7200, 100)],
+    holds: { [mod]: { held: true, by: "admin", count: 7200, at: null } },
+  });
+
+  it("names a module key from its Zoho label, or from its API name", () => {
+    expect(entityLabel(mod)).toBe("Custom Installs");
+    expect(
+      entityLabel(mod, [
+        { api_name: "Custom_Installs", label: "Installs", custom: true, api_supported: true, mirrored: true },
+      ]),
+    ).toBe("Installs");
+  });
+
+  it("reads the hold and the count of a module key", () => {
+    expect(isHeld(health, mod)).toBe(true);
+    expect(heldKeys(health)).toEqual([mod]);
+    expect(recordsOf(health, mod)).toBe(7200);
+    expect(holdSentence("Custom Installs", 7200)).toBe(
+      "Custom Installs has 7,200 records in Zoho. Sync it on its own when Metorite is quiet, so the rest stays fast",
+    );
+    const html = draw(health);
+    expect(html).toContain("Custom Installs has 7,200 records in Zoho.");
+    expect(html).toContain('aria-label="Sync Custom Installs"');
+  });
+
+  it("lists a held key that has no entity row", () => {
+    const h = healthy({ holds: { "module:Quotes": { held: true, by: "auto", count: 6001, at: null } } });
+    expect(heldKeys(h)).toEqual(["module:Quotes"]);
+    expect(draw(h)).toContain("Quotes has 6,001 records in Zoho.");
+  });
+});
+
+describe("a large module that is not held (CRM-Q16)", () => {
+  it("suggests a hold above the limit while records remain and nobody decided", () => {
+    expect(LARGE_MODULE_RECORDS).toBe(5000);
+    const big = entity("contacts", 12000, 800);
+    const health = healthy({ entities: [entity("leads", 40, 40), big] });
+    expect(largeUnheld(health, big)).toBe(true);
+    const html = draw(health);
+    expect(html).toContain("Large");
+    expect(html).toContain("Contacts has 12,000 records. Hold it, and sync it on its own when Metorite is quiet");
+    expect(html).toContain("Hold it");
+
+    const fresh = entity("contacts", 6000, 100);
+    expect(largeUnheld(healthy({ entities: [fresh] }), fresh)).toBe(true);
+    const unknown = entity("contacts", 6000, null);
+    expect(largeUnheld(healthy({ entities: [unknown] }), unknown)).toBe(true);
+  });
+
+  it("does not nag about a module that is already in, nor after an admin decided (review P2)", () => {
+    const done = entity("contacts", 6000, 6000);
+    expect(largeUnheld(healthy({ entities: [done] }), done)).toBe(false);
+    expect(draw(healthy({ entities: [done] }))).not.toContain("Hold it");
+
+    const decided = entity("contacts", 6000, 100);
+    const released = healthy({
+      entities: [decided],
+      holds: { contacts: { held: false, by: "admin", count: 6000, at: null } },
+    });
+    expect(largeUnheld(released, decided)).toBe(false);
+    expect(draw(released)).not.toContain("Hold it");
+  });
+
+  it("does not suggest at or below the limit, nor for a held row", () => {
+    const at = entity("contacts", 5000, 5000);
+    expect(largeUnheld(healthy({ entities: [at] }), at)).toBe(false);
+    const big = entity("contacts", 12000, 800);
+    const held = healthy({
+      entities: [big],
+      holds: { contacts: { held: true, by: "auto", count: 12000, at: null } },
+    });
+    expect(largeUnheld(held, big)).toBe(false);
+    expect(draw(held)).not.toContain("Hold it");
+    expect(largeSentence("Contacts", 12000)).toBe(
+      "Contacts has 12,000 records. Hold it, and sync it on its own when Metorite is quiet",
+    );
+  });
+});
+
+describe("the hold requests (CRM-Q16)", () => {
+  const calls: [string, RequestInit | undefined][] = [];
+  const original = globalThis.fetch;
+  const stub = (status: number, body: unknown) => {
+    calls.length = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push([String(input), init]);
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      } as Response;
+    }) as typeof globalThis.fetch;
+  };
+  afterEach(() => {
+    globalThis.fetch = original;
+  });
+
+  it("holds a module key with PUT, and encodes the colon", async () => {
+    stub(200, { holds: {} });
+    await api.setModuleSync("module:Quotes", false);
+    expect(calls[0][0]).toBe("/api/crm/sync/modules/module%3AQuotes");
+    expect(calls[0][1]?.method).toBe("PUT");
+    expect(JSON.parse(String(calls[0][1]?.body))).toEqual({ sync: false });
+  });
+
+  it("posts only for one module, and no body for Sync now", async () => {
+    stub(202, { started: true });
+    await api.syncZohoNow({ only: "activities" });
+    expect(calls[0][0]).toBe("/api/crm/sync/zoho");
+    expect(JSON.parse(String(calls[0][1]?.body))).toEqual({ only: "activities" });
+    await api.syncZohoNow();
+    expect(calls[1][1]?.body).toBeUndefined();
+  });
+
+  it("keeps the code of a refusal, and words it", async () => {
+    stub(422, { detail: "unknown_module" });
+    await expect(api.setModuleSync("module:Nope", false)).rejects.toMatchObject({
+      status: 422,
+      code: "unknown_module",
+    });
+    expect(holdFailureMessage(422, "unknown_module")).toContain("no such module");
+    expect(holdFailureMessage(409, "no_settings")).toContain("Set up the CRM");
+    expect(holdFailureMessage(403, undefined)).toContain("admin");
+    expect(syncFailureMessage(422, "unknown_module")).toContain("no such module");
   });
 });

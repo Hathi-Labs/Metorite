@@ -1201,7 +1201,7 @@ def _report_file(root, card: dict) -> dict:
 
 
 async def test_status_report_makes_the_report_by_code(monkeypatch, report_chat) -> None:
-    """projects_ai_chat.md §14.9 (owner, 2026-10-16): with make_report=true,
+    """projects_ai_chat.md §14.10 (owner, 2026-10-16): with make_report=true,
     status_report makes the report itself from its own reads. The model copies
     no number, so the card and the file hold the routes' numbers."""
     root, specs = report_chat

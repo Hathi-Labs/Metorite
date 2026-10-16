@@ -537,6 +537,11 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: share the cap of EA3-30 (EA12-13).
 #: EA-6c adds the comment POST, the route of ``add_comment`` (EA3-35).
 #: EA-6b adds the claim, the route of ``claim_task`` (EA3-34).
+#: EA-6g adds the archive request, the route of ``request_task_archive``
+#: (EA3-40). ⚠️ The approval route ``POST
+#: /projects/agent-runs/{run_id}/archive-approval`` and ``POST
+#: /projects/tasks/{task_id}/archive`` stay OUT of both sets: only the
+#: member archives, and branch 0 refuses a signed request to either.
 #: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2).
 MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("PATCH", "/projects/tasks/{task_id}"),
@@ -547,6 +552,7 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/tasks/{task_id}/agent-runs"),
     ("POST", "/projects/agent-runs/{run_id}/activities"),
     ("POST", "/projects/agent-runs/{run_id}/finish"),
+    ("POST", "/projects/tasks/{task_id}/archive-request"),
 })
 
 #: The ONE allowlist of the MCP edge (EA3-6). Each pair is a method and the

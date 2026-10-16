@@ -119,14 +119,151 @@ export function canDownloadPdf(kind: ArtifactKind): boolean {
 /**
  * The one address of a workspace file, raw or as a PDF. Every viewer builds
  * its links here, so the PDF link and the raw link cannot name two files.
+ *
+ * `download` marks the address of a Download button (owner report,
+ * 2026-10-16). The proxy route sends the raw bytes for it, and never the
+ * rendered page of {@link rendersAsPage}.
  */
 export function workspaceFileUrl(
   sessionId: string,
   path: string,
-  opts: { pdf?: boolean } = {},
+  opts: { pdf?: boolean; download?: boolean } = {},
 ): string {
   const base = `/api/agent/workspace/${sessionId}/file?path=${encodeURIComponent(path)}`;
-  return opts.pdf ? `${base}&format=pdf` : base;
+  if (opts.pdf) return `${base}&format=pdf`;
+  return opts.download ? `${base}&download=1` : base;
+}
+
+// ─── A link to a workspace file (owner report, 2026-10-16) ────────────────
+//
+// The owner asked for a report. The agent wrote a Markdown file and pasted
+// its `download_url` into the reply. The chat opened that link in a new tab,
+// and the browser showed the raw Markdown. So a link to a workspace file now
+// opens the app's own viewer, and a direct open of a Markdown address goes to
+// the rendered view. Fences: `artifactLink.test.ts` and
+// `artifactLinkRoute.test.ts`.
+
+/** The proxy route of one workspace file. */
+const FILE_ROUTE = /^\/api\/agent\/workspace\/([^/]+)\/file$/;
+/** A session id: a UUID or a slug. Never a dot, a slash or a space. */
+const SESSION_ID = /^[A-Za-z0-9_-]+$/;
+/** A backslash, or a control mark such as a tab, CR or LF. */
+const OFF_PATH_MARKS = /[\\\u0000-\u001f\u007f]/;
+/** The origin a link is read against on the server, where no page exists. */
+const SERVER_ORIGIN = "https://in-app.invalid";
+
+/** The session and the path that a workspace file link names. */
+export interface WorkspaceFileRef {
+  sessionId: string;
+  path: string;
+  name: string;
+}
+
+/**
+ * The workspace file that `href` names, else `null`.
+ *
+ * It reads the address that {@link workspaceFileUrl} builds, and the
+ * `download_url` that the agent tools return. That is the same address with
+ * the path not encoded. A PDF link (`format=pdf`) is not a file to view, so it
+ * gives `null`. A link to another origin gives `null` too. So do a backslash
+ * and a control mark, which each URL parser reads in its own way.
+ *
+ * `origin` is the app's origin. It defaults to the page's own.
+ */
+export function workspaceFileOfHref(
+  href: string | undefined,
+  origin?: string,
+): WorkspaceFileRef | null {
+  if (!href || OFF_PATH_MARKS.test(href)) return null;
+  const base = origin
+    ?? (typeof window !== "undefined" ? window.location.origin : SERVER_ORIGIN);
+  let url: URL;
+  try {
+    url = new URL(href, base);
+  } catch {
+    return null;
+  }
+  if (url.origin !== new URL(base).origin) return null;
+  const match = FILE_ROUTE.exec(url.pathname);
+  if (!match) return null;
+  let sessionId: string;
+  try {
+    sessionId = decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
+  if (!SESSION_ID.test(sessionId)) return null;
+  const path = url.searchParams.get("path");
+  if (!path || url.searchParams.has("format")) return null;
+  return { sessionId, path, name: path.split("/").pop() || path };
+}
+
+/**
+ * The address of the rendered view of one workspace file: the Artifacts app,
+ * with the file open in its viewer. The proxy route sends a direct open of a
+ * Markdown file here, and a chat link carries it as its `href`.
+ */
+export function artifactViewUrl(sessionId: string, path: string): string {
+  return `/artifacts?session=${encodeURIComponent(sessionId)}&file=${encodeURIComponent(path)}`;
+}
+
+/** The request facts that {@link rendersAsPage} reads. */
+export interface FileRequestFacts {
+  /** The `Sec-Fetch-Dest` header, or `null` when the browser sends none. */
+  dest: string | null;
+  /** The `Accept` header. */
+  accept: string | null;
+  /** True when the address carries `download`, from a Download button. */
+  download: boolean;
+  /** The `format` value, such as `pdf`. */
+  format: string | null;
+}
+
+/**
+ * True when a GET of a workspace file is a member who opens the address
+ * itself, in a tab, and the file is Markdown. The proxy route then sends the
+ * rendered view ({@link artifactViewUrl}) and not the raw text.
+ *
+ * A viewer's `fetch`, an `<img>` and a Download button each get the raw
+ * bytes. A fetch sends `Sec-Fetch-Dest: empty`, and a Download button names
+ * `download`. Only a Markdown file changes. An HTML file keeps its old answer,
+ * so this adds nothing to HANDOFF H-238. A browser that sends no
+ * `Sec-Fetch-Dest` is read by its `Accept` header.
+ */
+export function rendersAsPage(path: string, req: FileRequestFacts): boolean {
+  if (req.download || req.format) return false;
+  const name = path.split("/").pop() ?? path;
+  if (classifyArtifact(name, path) !== "markdown") return false;
+  if (req.dest) return req.dest === "document";
+  return (req.accept ?? "").includes("text/html");
+}
+
+/**
+ * True when a file has a rendered view worth opening: Markdown, HTML, or a
+ * React artifact. Moved here from `ArtifactCard` on 2026-10-16, so the card
+ * and a link in the chat text read one rule.
+ */
+export function hasRenderedView(name: string, path: string): boolean {
+  const kind = classifyArtifact(name, path);
+  return kind === "markdown" || isRenderable(kind);
+}
+
+/** Where a chat opens a file: the side panel or the full viewer. */
+export type ArtifactSurface = "panel" | "modal";
+
+/**
+ * Where a click on a chat file opens it. A document goes to the side panel
+ * on a desktop, when the chat has a panel that fits. A phone has no side
+ * panel, and every other kind of file has no panel view, so those open in
+ * the full viewer (`ArtifactViewerModal`). The file card and a file link in
+ * the reply both read this one rule.
+ */
+export function artifactOpenSurface(
+  name: string,
+  path: string,
+  opts: { isMobile: boolean; panel: boolean },
+): ArtifactSurface {
+  return hasRenderedView(name, path) && !opts.isMobile && opts.panel ? "panel" : "modal";
 }
 
 /** `status.md` → `status.pdf`, the name the gateway also sends. */

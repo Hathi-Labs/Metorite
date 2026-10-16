@@ -9,6 +9,8 @@ import {
   type AgentStartBody,
   type AgentStartResult,
   type AgentState,
+  type ArchiveApprovalBody,
+  type ArchiveApprovalResult,
   agentRunRows,
   normalizeRunDetail,
 } from "./agentRuns";
@@ -2502,6 +2504,17 @@ export const agentRunsApi = {
    */
   start: (taskId: string, body: AgentStartBody) =>
     call<AgentStartResult>(`tasks/${encodeURIComponent(taskId)}/agent-runs`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  /**
+   * EA-6g (EA3-40). The run's member approves or declines an agent's
+   * archive request. An approve archives the task, never its subtasks. Any
+   * other member gets 403, and a request past its expiry gets 409.
+   */
+  archiveApproval: (runId: string, body: ArchiveApprovalBody) =>
+    call<ArchiveApprovalResult>(`agent-runs/${encodeURIComponent(runId)}/archive-approval`, {
       method: "POST",
       body: JSON.stringify(body),
     }),

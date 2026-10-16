@@ -130,7 +130,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     # H-315 (WS-47 WAC-12, owner 2026-10-15): a deck or a report as a PDF
     # file in the chat, through the one PDF seam. A family, not the floor:
     # its spec is long, and only the assistants that make documents hold it.
-    # projects_ai_chat.md §14.9 (2026-10-16): make_report joins it. A report
+    # projects_ai_chat.md §14.10 (2026-10-16): make_report joins it. A report
     # is a card in the chat, a full view and the same PDF.
     "documents": {
         "label": "Documents",

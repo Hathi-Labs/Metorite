@@ -851,7 +851,7 @@ async def queue_document(layout: dict[str, Any], name: str) -> dict[str, Any]:
     """Queue a layout that ``documents.prepare`` made, as ONE PDF element.
 
     ``reports.make_report`` calls it in a WhatsApp run (``projects_ai_chat.md``
-    §14.9). A report reaches the member as this PDF, never as a card. The
+    §14.10). A report reaches the member as this PDF, never as a card. The
     limits of kind "document" apply.
     """
     run = _RUN.get()

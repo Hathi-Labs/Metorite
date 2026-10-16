@@ -34,8 +34,9 @@ built and deployed on 2026-10-04 (PR #618). H-227 (§22.9) was built
 private to their thread. §24.9 (a card keeps its place in the stream, and
 a recommended option says so) was built 2026-10-09 on a branch, not
 merged. §21.18 (a NUL in a tool result fails no save) was built
-2026-10-09. §14.9 B1 (`make_report`: a report as a chat card, a file and a
-PDF) was built 2026-10-16.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+2026-10-09. §14.9 (a file link opens the viewer, never raw text) was built
+2026-10-16, on a branch. §14.10 B1 (`make_report`: a report as a chat card, a file
+and a PDF) was built 2026-10-16.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -1843,7 +1844,8 @@ download a report as a PDF.
 
 **Status: BUILT 2026-09-24.** A follow-up of the same date bounds a long
 run of break characters, and it wraps a long line in a code block. It
-also lets a colleague wait for a render (rules 6 and 7).
+also lets a colleague wait for a render (rules 6 and 7). §14.9 (a file link
+opens the viewer, never raw text) was built 2026-10-16, on a branch.
 
 ### 14.1 The answer
 
@@ -2154,7 +2156,45 @@ a new `react-markdown` renderer skips `MarkdownImage`, `markdownUrlTransform` or
 the raw-HTML gate. The app sends no CSP that limits `img-src`. H-238 holds that
 follow-up.
 
-### 14.9 Reports from the chat (B1, 2026-10-16)
+### 14.9 A file link opens the viewer, never raw text (owner report, 2026-10-16)
+
+**Status: BUILT 2026-10-16, on a branch.**
+
+**The report.** The owner asked for a report. The agent wrote a Markdown file
+and pasted its link into the reply. The link opened in a new tab as raw
+Markdown text.
+
+**The cause.** `write_artifact` and `share_artifact` told the model to paste
+`download_url`, and the addendum told it not to. The chat drew every `/api/`
+link as an external link in a new tab. The gateway serves `.md` as
+`text/markdown`, inline.
+
+**The fix, in three parts.**
+
+1. **The prompt.** Each tool and the note of a delegated run now say this:
+   name the file, and paste no link. The card is the link. The
+   result keeps `download_url`, because a delegated run still reads it. Both
+   floor tools got smaller.
+2. **A link in the reply.** `MarkdownLink` reads a workspace file link with
+   `workspaceFileOfHref`. A plain click opens the file as its card opens it.
+   A document opens in the side panel on a desktop. Each other file, and
+   each file on a phone, opens in the full viewer. `artifactOpenSurface` is
+   that one rule. The link's `href` is the rendered view, so a modified
+   click opens a tab that shows it rendered.
+3. **A direct open.** A tab that opens the address of a Markdown file gets a
+   303 to `/artifacts?session=<id>&file=<path>`. That page opens the file in
+   `ArtifactViewerModal`. A fetch, an image, a PDF and a Download button get
+   the raw bytes. A Download button names `download=1`.
+
+**H-238 does not change.** Only a Markdown file goes to the view. An HTML
+file keeps its old answer.
+
+**Fences.** `tests/unit/test_artifact_link_prompts.py`,
+`tests/unit/test_tool_schema_diet.py`, `src/components/artifactLink.test.ts`,
+`src/app/api/agent/workspace/[sessionId]/file/artifactLinkRoute.test.ts` and
+`src/app/artifacts/lib/chatFiles.test.ts`.
+
+### 14.10 Reports from the chat (B1, 2026-10-16)
 
 **Owner directive, 2026-10-16.** When a member asks an agent for a report,
 the agent must make "a proper report with proper imagery and graphs". The
@@ -2168,7 +2208,7 @@ guidance and this section. B2 builds the card and the full view: the
 cannot draw the card, so `make_report` returns a link to the PDF. B3 adds
 mappers that build a spec by code from `report_render` and `crm_report`.
 
-#### 14.9.1 The answer
+#### 14.10.1 The answer
 
 1. **One tool.** `acb_skills/reports.py` holds `make_report(spec)`. The
    `documents` skill family holds it beside `make_document`, so the core
@@ -2183,7 +2223,7 @@ mappers that build a spec by code from `report_render` and `crm_report`.
 5. **WhatsApp.** The tool writes no file and draws no card. It queues the
    same PDF as one element through `whatsapp_ui.queue_document`.
 
-#### 14.9.2 The seams it uses
+#### 14.10.2 The seams it uses
 
 - `documents.py` checks the spec: the refused keys, the text limits, the
   section rule and the visual kinds. `reports.py` keeps no copy of a check.
@@ -2205,7 +2245,7 @@ mappers that build a spec by code from `report_render` and `crm_report`.
 - `whatsapp_ui` keeps the WhatsApp delivery. `queue_document` is the second
   half of its kind `document`. B1 split it out, so a ready layout can use it.
 
-#### 14.9.3 The file contract
+#### 14.10.3 The file contract
 
 The file is UTF-8 JSON. B2 builds against this shape. A change of the shape
 changes this section in the same pull request.
@@ -2246,7 +2286,7 @@ changes this section in the same pull request.
 model gave, with `kind` in lower case. The PDF draws the same data. No other
 field changes between the spec and the file.
 
-#### 14.9.4 The PDF
+#### 14.10.4 The PDF
 
 - The summary and the KPI tiles come first, as one section with a `stats`
   visual. The sources come last.
@@ -2257,7 +2297,7 @@ field changes between the spec and the file.
 - A list item of the summary prints with a bullet, and italic prints as
   plain words. `pdf_render` draws bold and line breaks.
 
-#### 14.9.5 Names, writes and the card
+#### 14.10.5 Names, writes and the card
 
 - The PDF goes to `outputs/<slug>.pdf`. The slug comes from `filename`,
   else from the title, in lower case with hyphens.
@@ -2280,7 +2320,7 @@ field changes between the spec and the file.
   (#1063) does for every file. The result keeps `download_url`.
 - `make_document` says the same in its docstring and its note.
 
-#### 14.9.6 Reach and guidance
+#### 14.10.6 Reach and guidance
 
 - Six chat assistants name `make_report` in `tool_scope`: orchestrator,
   projects, crm, email-assistant, task-manager and whatsapp-assistant.
@@ -2306,7 +2346,7 @@ field changes between the spec and the file.
   never the function (owner rule, 2026-10-10).
   `whatsapp_assistant_channel.md` §15 owns the kind `document`.
 
-#### 14.9.7 Fences (R7)
+#### 14.10.7 Fences (R7)
 
 - `tests/unit/test_chat_reports.py`: the checks, the file, the card, the
   visuals in the PDF, WhatsApp and the reach.
@@ -2315,7 +2355,7 @@ field changes between the spec and the file.
 - `tests/unit/test_design_tools.py`: "report" returns the field guide.
 - `tests/unit/test_tool_schema_diet.py`: the call contract of `make_report`.
 
-#### 14.9.8 What B1 does not do
+#### 14.10.8 What B1 does not do
 
 - It draws no card. B2 owns the `report` template on both sides,
   `GENUI_TEMPLATES` and the `.report.json` viewer.

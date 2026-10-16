@@ -455,6 +455,12 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/tasks/{task_id}/agent-runs", "start_agent_run", "B"),
     Route("POST", "/projects/agent-runs/{run_id}/activities", "post_agent_activity", "B"),
     Route("POST", "/projects/agent-runs/{run_id}/finish", "finish_agent_run", "B"),
+    # WS-55 EA-6g (EA3-40). An outside agent ASKS to archive over MCP: the
+    # request writes a question and archives nothing, so it is class B. The
+    # run's member answers on the task. The approval archives, so it is
+    # class C, and it stays out of MCP_ROUTES (external_agent_access.md §9.5).
+    Route("POST", "/projects/tasks/{task_id}/archive-request", "request_task_archive", "B"),
+    Route("POST", "/projects/agent-runs/{run_id}/archive-approval", "approve_task_archive", "C"),
     Route("PUT", "/projects/tasks/{task_id}/watch", "watch", "B"),
     Route("DELETE", "/projects/tasks/{task_id}/watch", "watch", "B"),
     Route("GET", "/projects/tasks/{task_id}/watchers", "watchers", "A"),
@@ -495,6 +501,13 @@ PLANNED: dict[str, str] = {
     # WS-55 EA-6b (2026-10-15) added the claim route for an outside agent.
     # The chat assigns through `assign` and moves through `update_task`.
     "claim_task": "WS-55, in-product chat parity, after EA-12e",
+    # WS-55 EA-6g (2026-10-15) added the archive request and its approval.
+    # The chat archives through `archive_task`.
+    "request_task_archive": "WS-55, in-product chat parity, after EA-12e",
+    # ⚠️ NEVER a chat tool (EA3-40): only the run's member answers, in the
+    # card. Do not build it for the assistant. It stays here so the
+    # chat-coverage fence knows the route.
+    "approve_task_archive": "WS-55 EA3-40: member-only answer in the card, never a chat tool",
 }
 
 
@@ -1175,6 +1188,11 @@ FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/projects/agent-runs/{run_id}/finish"): {
         "summary": "G23", "idempotency_key": "G23",
     },
+    # WS-55 EA-6g (EA3-40): the archive request and its approval.
+    ("POST", "/projects/tasks/{task_id}/archive-request"): {"idempotency_key": "G23"},
+    ("POST", "/projects/agent-runs/{run_id}/archive-approval"): {
+        "decision": "G23", "idempotency_key": "G23",
+    },
 }
 
 
@@ -1290,6 +1308,8 @@ UI_ACTIONS: dict[str, str] = {
     # EA-12d: "Ask an agent", a member starts a run for their own agent.
     "agentRunsApi.start": "start_agent_run",
     "agentRunsApi.enabled": "agent_runs",
+    # EA-6g: the run's member approves or declines an archive request.
+    "agentRunsApi.archiveApproval": "approve_task_archive",
     # ── notificationsApi ─────────────────────────────────────────────────
     "notificationsApi.list": "notifications",
     "notificationsApi.markRead": "mark_notifications_read",

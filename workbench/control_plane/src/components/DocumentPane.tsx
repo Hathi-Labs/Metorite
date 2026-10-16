@@ -203,7 +203,8 @@ export default function DocumentPane({ sessionId, path, name, live }: DocumentPa
           </>
         )}
         <a
-          href={fileUrl}
+          // `download` keeps the raw bytes, never the rendered page (2026-10-16).
+          href={workspaceFileUrl(sessionId, path, { download: true })}
           download={name}
           className="flex items-center gap-1 rounded px-2 py-1 text-[11px] text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
           title={`Download ${name}`}

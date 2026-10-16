@@ -697,7 +697,7 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: is no `_HOST_FILE_TOOLS` member, and it says open_world=False.
 #: 2026-10-15 (H-315): make_document joined by scope. It lays out a PDF in the
 #: gateway's own child and writes the chat's outputs, and says open_world=False.
-#: 2026-10-16 (projects_ai_chat.md §14.9): make_report joined by scope, with the
+#: 2026-10-16 (projects_ai_chat.md §14.10): make_report joined by scope, with the
 #: same PDF seam, the same writes and open_world=False.
 COVERED_PROJECTS_TOOLS = frozenset({
     "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",

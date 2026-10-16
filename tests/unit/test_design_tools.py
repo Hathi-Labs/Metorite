@@ -123,7 +123,7 @@ def test_section_aliases_and_case_insensitivity():
 
 
 def test_report_is_the_field_guide_of_make_report():
-    """projects_ai_chat.md §14.9: "report" names the make_report guide, in
+    """projects_ai_chat.md §14.10: "report" names the make_report guide, in
     any case, and no longer the cc-report HTML kit ("blocks" serves that)."""
     from acb_skills.reports import REPORT_GUIDE
 

@@ -1140,6 +1140,23 @@ def _edge_files() -> list[Path]:
 #: the old refusal exempts, and the AST tests below hold it instead.
 _MAPPING_FILE = _EDGE_DIR / "tools.py"
 
+#: The module of the MCP prompt (EA-6e). Its message carries the MCP role
+#: ``"user"``, which is a protocol value and not an identity input.
+_PROMPTS_FILE = _EDGE_DIR / "prompts.py"
+
+
+def _prompt_role_ids(tree: ast.Module) -> set[int]:
+    """The ids of each ``"user"`` that is the value of a ``"role"`` key in a
+    dict display (EA-6e). No other position is exempt."""
+    found: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values, strict=True):
+                if (isinstance(key, ast.Constant) and key.value == "role"
+                        and isinstance(value, ast.Constant) and value.value == "user"):
+                    found.add(id(value))
+    return found
+
 #: The attributes that read a request input in Starlette and FastAPI.
 _REQUEST_READ_ATTRIBUTES = frozenset({
     "headers", "query_params", "form", "cookies", "path_params", "scope", "url"})
@@ -1246,11 +1263,24 @@ class TestTheStructuralFences:
         """
         tree = _module_tree(path)
         docs = _docstring_ids(tree)
+        roles = _prompt_role_ids(tree) if path == _PROMPTS_FILE else set()
         for node in ast.walk(tree):
             if (isinstance(node, ast.Constant) and isinstance(node.value, str)
-                    and id(node) not in docs):
+                    and id(node) not in docs and id(node) not in roles):
                 assert node.value.strip().lower() not in _IDENTITY_INPUTS, (
                     f"{path.name}:{node.lineno} names {node.value!r}")
+
+    def test_the_prompt_role_is_the_one_exempt_position(self):
+        """EA-6e. ``prompts.py`` may name ``"user"`` only as the value of
+        ``"role"`` in a dict display: the role of an MCP prompt message. The
+        same word anywhere else in the file still fails."""
+        assert _PROMPTS_FILE.is_file(), "prompts.py moved: update the fence"
+        allowed = ast.parse('m = {"role": "user", "content": {}}')
+        assert len(_prompt_role_ids(allowed)) == 1
+        for source in ('m = {"role": "member"}', 'm = {"who": "user"}',
+                       'm = {"user": "role"}', 'm = ("role", "user")',
+                       'h.get("user")'):
+            assert not _prompt_role_ids(ast.parse(source)), source
 
     def test_the_exemption_is_the_one_mapping_module(self):
         """EA3-9. Exactly one edge file leaves the old refusal, and it exists."""

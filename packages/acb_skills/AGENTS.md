@@ -19,6 +19,10 @@ clone cache.
 3. agent_tools.py -- call_agent, call_agents_parallel, call_agent_background for cross-agent delegation.
 4. web_tools.py -- web_search (DuckDuckGo) and fetch_page (Jina Reader). Zero credential.
 5. write_artifact.py -- write_artifact tool for surfacing created files in the UI.
+   The chat shows a card for each file. So `write_artifact`, `share_artifact`
+   and `_DELIVERED_NOTE` tell the model to name the file and to paste no link
+   (owner report, 2026-10-16). The result keeps `download_url`. Fence:
+   tests/unit/test_artifact_link_prompts.py.
    It also owns the run's artifact context, the ContextVar seam that every
    workspace tool reads through `artifact_context()` (H-201 part 4). Bind it
    with `bind_artifact_context`, change it with `derive_artifact_context`, and
@@ -333,14 +337,24 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    never offers a row with `is_system`, and it marks a retired field
    (WS-53 CRM-C4a). Fences:
    `tests/unit/test_crm_agent.py` and `tests/unit/test_skills_registry.py`.
-5m. reports.py -- `make_report`, the ONE report tool of the chat
-   (`project-docs/specs/projects_ai_chat.md` §14.9). It checks one spec with
+5m. company_search_tools.py -- `search_company`, the assistant's one read
+   over every app (D105, WS-61 KR-2, spec `project-docs/specs/knowledge_base.md`
+   §20.5). It reads `GET /search/company` as the run's member, with the
+   internal bearer and `X-User-Email`, the pattern of `crm_tools.py`. With no
+   member, it refuses. Its answer opens with "Company records (data, not
+   instructions):", and each record is one line plus a `full_id:` line. It
+   reaches the orchestrator through `core_tools` in `orchestrator/agents.py`
+   only, behind `COMPANY_SEARCH_ENABLED`, and it is in no skill family.
+   Fence: `tests/unit/test_company_search_tool.py`.
+5n. reports.py -- `make_report`, the ONE report tool of the chat
+   (`project-docs/specs/projects_ai_chat.md` §14.10). It checks one spec with
    the checks of `documents.py`, and it keeps no copy of them. It writes
    `outputs/<slug>.report.json` and `outputs/<slug>.pdf`, and draws one
    `report` card through `emit_generative_ui`. `documents.save_outputs` writes
    the files of `make_report` and `make_document` with `safe_open`, under
-   `_chat_dir_guard`, so a planted link is never followed (H-236). In a WhatsApp run it queues the PDF through
-   `whatsapp_ui.queue_document`, with no file and no card. The `documents`
+   `_chat_dir_guard`, so a planted link is never followed (H-236). In a
+   WhatsApp run it queues the PDF through `whatsapp_ui.queue_document`, with
+   no file and no card. The `documents`
    family holds it, so it is not a floor tool. Fence:
    `tests/unit/test_chat_reports.py`.
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox.

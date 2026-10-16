@@ -1,6 +1,6 @@
 """A report from the chat: one file the web draws, and one PDF (B1).
 
-Spec: ``project-docs/specs/projects_ai_chat.md`` §14.9.
+Spec: ``project-docs/specs/projects_ai_chat.md`` §14.10.
 
 Owner directive, 2026-10-16: a report that a member asks for must be "a proper
 report with proper imagery and graphs", drawn as a card in the chat, and it

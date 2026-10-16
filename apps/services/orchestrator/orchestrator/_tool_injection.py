@@ -1428,7 +1428,7 @@ def _collect_injectable_platform_tools(agent_name: str | None = None) -> list[An
         pass
 
     # A report: one file the chat draws as a card, and its PDF, from one spec
-    # (projects_ai_chat.md §14.9). The same family and the same PDF seam.
+    # (projects_ai_chat.md §14.10). The same family and the same PDF seam.
     try:
         from acb_skills.reports import make_report
         _all_tools = [*_all_tools, make_report]

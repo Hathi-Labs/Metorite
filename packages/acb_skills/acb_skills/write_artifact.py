@@ -10,7 +10,9 @@ The tool:
 4. Emits an AG-UI ``CUSTOM`` event ``artifact_created`` / ``artifact_updated``
    so the Control Plane sidebar updates in real time.
 5. PATCHes the gateway to register the workspace root on the session.
-6. Returns a ``download_url`` the agent SHOULD embed in its text response.
+6. Returns a ``download_url``. The chat already shows a card for the file,
+   so the agent names the file in words and pastes no link (owner report,
+   2026-10-16: a pasted link opened the raw Markdown).
 
 In a shared agent's tenant dir (store key ``o:<org>``), every member of the
 organization opens the same dir. So a document of one chat goes to that
@@ -21,7 +23,7 @@ serve it only to a session of that thread (H-227, D12).
 Usage by agents:
     result = await write_artifact("summary.md", "# Sales Summary\\n...")
     # File lands in outputs/summary.md (auto-prefixed)
-    # Agent outputs: [📄 Download summary.md]({download_url})
+    # The chat shows its card. The agent says: "The summary is in summary.md."
 """
 from __future__ import annotations
 
@@ -691,11 +693,12 @@ async def _deliver(
     }
 
 
-#: Told to a delegated run, so it hands the link on and does not look for
-#: the file in its own working dir.
+#: Told to a delegated run, so it does not look for the file in its own
+#: working dir. The calling chat already shows the file's card, so the run
+#: names the file and passes on no link (owner report, 2026-10-16).
 _DELIVERED_NOTE = (
     "This file is in the chat that called you, not in your own workspace. "
-    "Give that chat the download_url."
+    "That chat shows its card. Name the file, and paste no link."
 )
 
 
@@ -759,8 +762,8 @@ async def write_artifact(
     In a chat of a shared agent, ``outputs/`` and ``inputs/`` are that chat's
     own folders, so the returned ``path`` shows where the file went.
 
-    After calling this, **embed the returned ``download_url`` in your text
-    response** so the operator can click to download.
+    The chat shows a card that opens and downloads the file. Name the file in
+    your reply, and do not paste ``download_url``.
 
     Args:
         path:     Relative file path, e.g. ``"summary.md"`` or
@@ -780,10 +783,8 @@ async def write_artifact(
     Returns:
         ``{"path": str, "size": int, "sha256": str, "download_url": str}``
 
-        ``path``/``download_url`` reflect the file *actually* written (which may
-        be a uniquified name if a file already existed and ``overwrite`` is off).
-        *download_url* is a relative URL suitable for a clickable markdown
-        link, e.g. ``/api/agent/workspace/{session}/file?path=outputs/x.md``.
+        ``path`` is the file *actually* written (which may be a uniquified
+        name if a file already existed and ``overwrite`` is off).
     """
     import asyncio
 
@@ -1053,8 +1054,8 @@ async def share_artifact(path: str) -> dict:
     """Show a file you ALREADY created as a download and preview card in the chat.
 
     Use it for a file you made with your own tools (shell, editor, a script)
-    instead of ``write_artifact``. Do not re-create or re-read the file. Never
-    build a URL: the returned ``download_url`` is the link.
+    instead of ``write_artifact``. Do not re-create or re-read the file. Name
+    it in your reply, and paste no link.
 
     Args:
         path: A file or a directory (every file inside it) in your workspace,
@@ -1233,7 +1234,7 @@ async def _notify(
 
     ``announce=False`` registers the workspace and emits no card. A report
     file has its own ``report`` card (``reports.make_report``), so its files
-    get no second card (``projects_ai_chat.md`` §14.9). Code passes it, never
+    get no second card (``projects_ai_chat.md`` §14.10). Code passes it, never
     a tool argument.
     """
     if not announce:
