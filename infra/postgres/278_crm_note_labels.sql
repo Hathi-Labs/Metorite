@@ -1,5 +1,5 @@
 -- ============================================================================
--- 277_crm_note_labels.sql — the decide labels of one CRM note.
+-- 278_crm_note_labels.sql — the decide labels of one CRM note.
 --
 -- What: one new table, `crm_note_labels`. After a sync run, a background step
 --       asks `decide` about each new or changed note, in `shadow` and in
@@ -29,8 +29,9 @@
 -- <table>_org_fk`, because generated phase 3 adds that name.
 -- The CHECKs keep each label column to our own keys, so a vendor string can
 -- never land in a row.
--- The number is taken at build time (R1). On 2026-10-16 origin/main held 275,
--- the branch crm-q17a1 held 274, and crm-q18 had 276. Check it again at merge.
+-- The number is taken at build time (R1). On 2026-10-16 origin/main held 276
+-- (#1095), the branch crm-q17a1 held 274, and crm-q18 took 277. Check it again
+-- at merge.
 -- Pinned by tests/unit/test_crm_note_labels_r8.py, which finds this file by
 -- CONTENT, never by number (R1).
 -- ============================================================================

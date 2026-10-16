@@ -40,7 +40,7 @@
 > **Built later:** CRM-Q7b, the proposer of field rules (2026-10-14). It adds no migration. See §18.7.
 >
 > **Built later:** CRM-Q26, labels on CRM notes on the decide tier, dark
-> (2026-10-16, migration 277). See §18.11.
+> (2026-10-16, migration 278). See §18.11.
 >
 > **Built from §19:** CRM-X4, the record page v2 (2026-10-12, §19.8).
 >
@@ -2618,7 +2618,7 @@ Files: `gateway/decide_features.py`, `acb_common/settings.py`, a new
 `routes/crm/core.py`, `routes/crm/settings.py`, the migration and
 `infra/postgres/generated/`, `evals/crm_note_labels/` and `tests/unit/`.
 
-**Built as (2026-10-16, branch `crm-q26`, not merged).** Migration 277 adds
+**Built as (2026-10-16, branch `crm-q26`, not merged).** Migration 278 adds
 the table. `gateway/crm_sync/note_labels.py` holds the step, and
 `scheduler.start_labels` starts it. The mode ships `off`, and
 `CRM_DECIDE_ORGS` ships empty. A source fence and an R8 read of a company
