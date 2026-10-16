@@ -1303,20 +1303,31 @@ def test_recall_notes_pages_the_matching_lines_and_bounds_the_characters(
 
 def test_list_workflows_pages(monkeypatch) -> None:
     import gateway.routes.workflows.service as svc
+    from acb_common.db import bind_tenant, release_tenant
     from orchestrator import workflow_tools
 
-    async def published() -> list[dict[str, Any]]:
+    orgs: list[str] = []
+
+    async def published(*, organization_id: str) -> list[dict[str, Any]]:
+        orgs.append(organization_id)
         return [{"id": f"w{k}", "name": f"Flow {k}", "description": "", "version": 1}
                 for k in range(30)]
 
     monkeypatch.setattr(svc, "list_published_workflows", published)
-    out = run(workflow_tools.list_workflows())
-    rows, line = _history_rows(out)
-    assert len(rows) == workflow_tools.WORKFLOWS_PAGE == 25
-    assert line == "Showing 1-25 of 30. Call again with offset=25 for the rest."
-    rows, line = _history_rows(run(workflow_tools.list_workflows(offset=25)))
-    assert [r["id"] for r in rows] == [f"w{k}" for k in range(25, 30)]
-    assert line == "Showing 26-30 of 30. This is the last page."
+    # The tool takes the org from the run binding (PR #1052). The real
+    # binding under FORCE RLS: ``test_workflows_tool_rls_r8.py``.
+    token = bind_tenant("org-paging")
+    try:
+        out = run(workflow_tools.list_workflows())
+        rows, line = _history_rows(out)
+        assert len(rows) == workflow_tools.WORKFLOWS_PAGE == 25
+        assert line == "Showing 1-25 of 30. Call again with offset=25 for the rest."
+        rows, line = _history_rows(run(workflow_tools.list_workflows(offset=25)))
+        assert [r["id"] for r in rows] == [f"w{k}" for k in range(25, 30)]
+        assert line == "Showing 26-30 of 30. This is the last page."
+    finally:
+        release_tenant(token)
+    assert orgs == ["org-paging", "org-paging"]
 
 
 def test_my_tasks_list_schedule_pages(monkeypatch) -> None:

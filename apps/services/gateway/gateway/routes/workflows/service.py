@@ -52,6 +52,18 @@ from typing import Any
 # opens `_tenant_session(org)` for the sweep — an EXPLICIT tenant from a stored
 # fact, which is what H4 asks for, not the ambient inheritance it forbids. It
 # is the shape the rest of this module's sites will take.
+#
+# ⚠️ A SECOND EXCEPTION (2026-10-15): the F13 agent entry points. The agent
+# tools pass the run's organization, which the orchestrator takes from the run
+# binding. `list_published_workflows`, `run_published_workflow` and
+# `run_summary` read inside `_tenant_session(org)`, and refuse with no org.
+# A run they start carries that org, so `start_run`, `_finish_run` and
+# `_hold_at_gate` write it through `_run_session(org)`. An approval resumes
+# through `resume_run(org)`, with the approver's org. A long wait refuses at
+# the start, because the wait scan is unbound. A run with no org (manual,
+# schedule, webhook, event, the wait scan) keeps the unbound path above.
+# Fence: `tests/unit/test_workflows_tool_rls_r8.py`.
+from acb_common.db import TenantUnbound
 from gateway.routes.workflows.core import (
     _get_db,
     _log,
@@ -60,8 +72,10 @@ from gateway.routes.workflows.core import (
     publish_workflow_activity,
 )
 from gateway.routes.workflows.engine.handlers import (
+    WAIT_INLINE_MAX_SECONDS,
     NodeExecutionError,
     NodeServices,
+    resolve_wait_seconds,
 )
 from gateway.routes.workflows.engine.runner import execute_workflow
 from gateway.routes.workflows.tools import (
@@ -452,6 +466,70 @@ def build_node_services(actor: str, workflow_id: str = "") -> NodeServices:
 # ── Run lifecycle ────────────────────────────────────────────────────────────
 
 
+@contextlib.asynccontextmanager
+async def _run_session(organization_id: str | None) -> Any:
+    """One session for one run-lifecycle write. It commits on a clean exit.
+
+    A run that carries an organization writes through
+    ``_tenant_session(organization_id)``. Only the F13 agent entry points
+    start such a run, with the org of the agent run. The org is never
+    inherited from the ambient context, which is what H4 forbids.
+
+    A run with no organization keeps the unbound ``_get_db()`` (the H4 note at
+    the top of this module). Under FORCE RLS that write fails, and H4 slice 6c
+    owns the conversion.
+    """
+    if organization_id:
+        async with _tenant_session(organization_id) as db:
+            yield db
+        return
+    db = await _get_db()
+    try:
+        yield db
+        await db.commit()
+    finally:
+        await db.close()
+
+
+def _long_wait_nodes(serialized: dict[str, Any]) -> list[str]:
+    """Ids of the wait nodes in *serialized* that can pause the run.
+
+    A wait of up to ``WAIT_INLINE_MAX_SECONDS`` runs inline and never pauses.
+    A longer wait, or a duration that only the trigger data decides, can
+    pause. Only the schedule scanner resumes such a pause, and its scan is
+    not tenant-bound yet (H4 slice 6c). So the F13 entry point refuses these
+    workflows rather than start a run that stays paused for good.
+    """
+    out: list[str] = []
+    for block in serialized.get("blocks") or []:
+        if str(block.get("type") or "") != "wait":
+            continue
+        try:
+            seconds = resolve_wait_seconds(block.get("config") or {}, {})
+        except NodeExecutionError:
+            out.append(str(block.get("id")))
+            continue
+        if seconds > WAIT_INLINE_MAX_SECONDS:
+            out.append(str(block.get("id")))
+    return out
+
+
+def _require_org(organization_id: str | None) -> str:
+    """The explicit org of an F13 entry point, or :class:`TenantUnbound`.
+
+    ``_tenant_session`` falls back to the ambient tenant when it gets no
+    argument. These entry points must name the org, so an empty value
+    refuses here and never reaches that fallback.
+    """
+    org = str(organization_id or "").strip()
+    if not org:
+        raise TenantUnbound(
+            "a workflow agent tool needs the run's organization — none was "
+            "passed, so nothing is read and nothing runs"
+        )
+    return org
+
+
 async def load_version_serialized(
     db: Any,
     workflow_id: str,
@@ -478,8 +556,13 @@ async def start_run(
     trigger_payload: dict[str, Any],
     variables: dict[str, Any] | None = None,
     started_by: str = "",
+    organization_id: str | None = None,
 ) -> str:
-    """Create the run row + hub entry and launch the supervised task."""
+    """Create the run row + hub entry and launch the supervised task.
+
+    *organization_id* binds the run's writes (:func:`_run_session`). Only the
+    F13 agent entry point passes it, from the agent run's binding.
+    """
     global _ACTIVE_TOTAL
     if _ACTIVE_TOTAL >= MAX_CONCURRENT_RUNS:
         raise RunRejected("the platform run concurrency limit is reached — retry shortly")
@@ -487,8 +570,7 @@ async def start_run(
         raise RunRejected("this workflow already has the maximum concurrent runs")
 
     run_id = str(uuid.uuid4())
-    db = await _get_db()
-    try:
+    async with _run_session(organization_id) as db:
         await db.execute(
             text(
                 """INSERT INTO workflow_runs
@@ -507,9 +589,6 @@ async def start_run(
                 "by": started_by,
             },
         )
-        await db.commit()
-    finally:
-        await db.close()
 
     _HUBS[run_id] = RunHub()
     _ACTIVE_TOTAL += 1
@@ -524,6 +603,7 @@ async def start_run(
             variables=variables or {},
             started_by=started_by,
             trigger_kind=trigger_kind,
+            organization_id=organization_id,
         ),
         name=f"workflow-run:{run_id}",
     )
@@ -623,6 +703,7 @@ async def _execute_run(
     precomputed: dict[str, Any] | None = None,
     resolved_approvals: set[str] | None = None,
     elapsed_waits: set[str] | None = None,
+    organization_id: str | None = None,
 ) -> None:
     global _ACTIVE_TOTAL
     actor = f"workflow:{workflow_name or workflow_id}"
@@ -681,6 +762,7 @@ async def _execute_run(
             variables=outcome.state,
             node_results=outcome.node_results,
             outputs=outcome.outputs,
+            organization_id=organization_id,
         )
         if status == "paused" and outcome.paused_nodes:
             node_id = outcome.paused_nodes[0]
@@ -694,6 +776,7 @@ async def _execute_run(
                 variables=variables,
                 started_by=started_by,
                 resume_at=outcome.wait_until.get(node_id),
+                organization_id=organization_id,
             )
     except Exception as exc:  # engine bugs must still close the run out
         error = f"{type(exc).__name__}: {exc}"[:500]
@@ -705,6 +788,7 @@ async def _execute_run(
             variables={},
             node_results={},
             outputs=[],
+            organization_id=organization_id,
         )
     finally:
         _ACTIVE_TOTAL = max(0, _ACTIVE_TOTAL - 1)
@@ -756,10 +840,10 @@ async def _finish_run(
     variables: dict[str, Any],
     node_results: dict[str, Any],
     outputs: list[Any],
+    organization_id: str | None = None,
 ) -> None:
     try:
-        db = await _get_db()
-        try:
+        async with _run_session(organization_id) as db:
             # A paused run has not finished — finished_at stays NULL until
             # the resumed execution reaches a terminal status.
             finished = "now()" if status != "paused" else "NULL"
@@ -782,9 +866,6 @@ async def _finish_run(
                     "output": json.dumps(outputs, default=str),
                 },
             )
-            await db.commit()
-        finally:
-            await db.close()
     except Exception as exc:  # pragma: no cover - best effort persistence
         _log.warning("workflows.finish_persist_failed", run_id=run_id, error=str(exc)[:160])
 
@@ -957,6 +1038,7 @@ async def _hold_at_gate(
     variables: dict[str, Any],
     started_by: str,
     resume_at: float | None = None,
+    organization_id: str | None = None,
 ) -> None:
     """Persist the pause; for an APPROVAL gate, also file the inbox proposal.
 
@@ -1005,8 +1087,7 @@ async def _hold_at_gate(
         except Exception as exc:
             _log.warning("workflows.approval_propose_failed", run_id=run_id, error=str(exc)[:160])
     try:
-        db = await _get_db()
-        try:
+        async with _run_session(organization_id) as db:
             await db.execute(
                 text(
                     """INSERT INTO workflow_run_pauses
@@ -1033,24 +1114,29 @@ async def _hold_at_gate(
                     ),
                 },
             )
-            await db.commit()
-        finally:
-            await db.close()
     except Exception as exc:  # pragma: no cover - best effort persistence
         _log.warning("workflows.pause_persist_failed", run_id=run_id, error=str(exc)[:160])
 
 
-async def resume_run(run_id: str, *, resumed_by: str = "approver") -> dict[str, Any]:
+async def resume_run(
+    run_id: str, *, resumed_by: str = "approver", organization_id: str | None = None,
+) -> dict[str, Any]:
     """Resume a paused run: replay completed nodes from stored outputs and
     let the gate node through.
 
     Two callers, one path: the broker handler when a human approves, and the
     schedule scanner when a long wait's deadline passes. The pause row's
     ``reason`` decides which gate is cleared — an elapsed wait must not also
-    clear an approval further down the graph."""
+    clear an approval further down the graph.
+
+    *organization_id* binds the read, the claim and the resumed run
+    (:func:`_run_session`). The broker handler passes the approver's org.
+    Under FORCE RLS a run of another org is not visible, so it reads as
+    ``no run`` and nothing resumes. The schedule scanner passes no org yet
+    (H4 slice 6c), so the agent entry point refuses a long wait.
+    """
     global _ACTIVE_TOTAL
-    db = await _get_db()
-    try:
+    async with _run_session(organization_id) as db:
         run = (
             await db.execute(
                 text("SELECT * FROM workflow_runs WHERE id = :id"),
@@ -1086,10 +1172,7 @@ async def resume_run(run_id: str, *, resumed_by: str = "approver") -> dict[str, 
             text("UPDATE workflow_runs SET status = 'running' WHERE id = :id"),
             {"id": run_id},
         )
-        await db.commit()
         node_results = parse_jsonb(run.node_results, {}) or {}
-    finally:
-        await db.close()
 
     gate_node = str(pause.node_id)
     is_wait = str(getattr(pause, "reason", "approval") or "approval") == "wait"
@@ -1119,18 +1202,26 @@ async def resume_run(run_id: str, *, resumed_by: str = "approver") -> dict[str, 
             precomputed=precomputed,
             resolved_approvals=set() if is_wait else {gate_node},
             elapsed_waits={gate_node} if is_wait else set(),
+            organization_id=organization_id,
         ),
         name=f"workflow-resume:{run_id}",
     )
     return {"ok": True, "resumed": True, "run_id": run_id, "node_id": gate_node}
 
 # ── Programmatic entry points (F13: workflows as agent tools) ────────────────
+#
+# ⚠️ Each one takes the org EXPLICITLY and reads inside `_tenant_session(org)`
+# (2026-10-15). `workflows` and `workflow_runs` have FORCE RLS, so the unbound
+# `_get_db()` these used to open read ZERO rows in production, and an agent
+# saw no workflow at all. The caller passes the org of the agent run, which
+# the orchestrator takes from the run binding, never from tool input (R5,
+# R11). An empty org raises `TenantUnbound` and reads nothing.
 
 
-async def list_published_workflows() -> list[dict[str, Any]]:
-    """Published workflows an agent (or API caller) may trigger."""
-    db = await _get_db()
-    try:
+async def list_published_workflows(*, organization_id: str) -> list[dict[str, Any]]:
+    """Published workflows of *organization_id* that an agent may trigger."""
+    org = _require_org(organization_id)
+    async with _tenant_session(org) as db:
         rows = (
             await db.execute(
                 text(
@@ -1141,8 +1232,6 @@ async def list_published_workflows() -> list[dict[str, Any]]:
                 ),
             )
         ).fetchall()
-    finally:
-        await db.close()
     return [
         {
             "id": str(r.id),
@@ -1155,16 +1244,18 @@ async def list_published_workflows() -> list[dict[str, Any]]:
 
 
 async def run_published_workflow(
-    ref: str, payload: dict[str, Any], *, started_by: str
+    ref: str, payload: dict[str, Any], *, started_by: str, organization_id: str
 ) -> dict[str, Any]:
-    """Start a published workflow by name (case-insensitive) or id.
+    """Start a published workflow of *organization_id* by name or id.
 
     The programmatic twin of the manual Run button — same entrypoint, same
     concurrency caps, trigger kind ``api``. Returns ``{run_id, …}`` or
-    ``{error}`` (ambiguous/unknown refs are reported, never guessed).
+    ``{error}`` (ambiguous/unknown refs are reported, never guessed). The
+    name match is case-insensitive. The run carries the org, so its writes
+    bind it too (:func:`_run_session`).
     """
-    db = await _get_db()
-    try:
+    org = _require_org(organization_id)
+    async with _tenant_session(org) as db:
         rows = (
             await db.execute(
                 text(
@@ -1184,10 +1275,15 @@ async def run_published_workflow(
             }
         row = rows[0]
         serialized = await load_version_serialized(db, str(row.id), int(row.latest_version))
-    finally:
-        await db.close()
     if serialized is None:
         return {"error": f"published version missing for workflow '{row.name}'"}
+    long_waits = _long_wait_nodes(serialized)
+    if long_waits:
+        return {
+            "error": f"workflow '{row.name}' has a wait node that can pause the "
+            f"run ({', '.join(long_waits)}). An agent cannot start it yet, "
+            "because nothing can resume that pause for this organization."
+        }
     try:
         run_id = await start_run(
             workflow_id=str(row.id),
@@ -1198,6 +1294,7 @@ async def run_published_workflow(
             trigger_payload=payload,
             variables=parse_jsonb(row.variables, {}),
             started_by=started_by,
+            organization_id=org,
         )
     except RunRejected as exc:
         return {"error": str(exc)}
@@ -1209,10 +1306,13 @@ async def run_published_workflow(
     }
 
 
-async def run_summary(run_id: str) -> dict[str, Any]:
-    """Status + outputs for one run (the polling half of workflow-as-tool)."""
-    db = await _get_db()
-    try:
+async def run_summary(run_id: str, *, organization_id: str) -> dict[str, Any]:
+    """Status + outputs for one run of *organization_id* (the polling half).
+
+    A run of another org reads as ``no run``: RLS hides the row.
+    """
+    org = _require_org(organization_id)
+    async with _tenant_session(org) as db:
         row = (
             await db.execute(
                 text(
@@ -1222,8 +1322,6 @@ async def run_summary(run_id: str) -> dict[str, Any]:
                 {"id": run_id},
             )
         ).fetchone()
-    finally:
-        await db.close()
     if row is None:
         return {"error": f"no run {run_id}"}
     status = row.status
