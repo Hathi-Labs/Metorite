@@ -24,6 +24,11 @@ literal of this module, and a bucket picks its unit and format from
 ``decimal``, ``currency`` or ``percent``. A group takes ``select`` (a picklist),
 ``boolean`` and ``lookup`` by value, and ``date`` and ``datetime`` by a bucket.
 Any other type is a 422.
+
+**One zone for each month** (CRM-Q25b). :func:`crm_zone` gives the CRM zone,
+the zone of the Zoho org, or UTC. A ``datetime`` field and the fixed month
+groups of ``aggregate.py`` take their month on that clock, through
+:func:`zoned` and the bound :data:`ZONE_PARAM`. A ``date`` keeps its day.
 """
 
 from __future__ import annotations
@@ -82,6 +87,22 @@ _NUMBER_TEXT = r"'^\s*-?[0-9]{1,30}(\.[0-9]{1,30})?\s*$'"
 #: with one too. The year starts at 1000, so ``make_date`` takes every year
 #: that passes. The day is checked against its month in :func:`_date`.
 _DATE_TEXT = r"'^[1-9][0-9]{3}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])'"
+
+#: A whole datetime with its offset, as Zoho writes it:
+#: ``2026-11-01T00:30:00+05:30``. Each part is in range, so the cast in
+#: :func:`_instant` cannot fail on a value that passes. The day is checked
+#: against its month by :func:`_date`. Offsets stop at 14 hours.
+_DATETIME_TEXT = (
+    r"'^[1-9][0-9]{3}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])"
+    r"[T ]([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9](\.[0-9]{1,9})?)?"
+    r"(Z|[+-](0[0-9]|1[0-4])(:?[0-5][0-9])?)$'"
+)
+
+#: The CRM zone when no profile names a real one (CRM-Q25b).
+DEFAULT_ZONE = "UTC"
+
+#: The bound name of the CRM zone. Every month of one answer reads it.
+ZONE_PARAM = "agf_zone"
 
 #: The bounds of a number in a filter. ``1e1000000`` is finite, and Postgres
 #: still refuses it, so a larger number is a 422 before any statement.
@@ -279,6 +300,54 @@ def _date(column: str, p: str) -> str:
     )
 
 
+def _instant(column: str, p: str) -> str:
+    """The field value as a ``timestamptz`` with its own offset, or NULL
+    (CRM-Q25b). A value that is not a whole datetime with an offset, or not
+    a real day, is NULL, never an error. Nested CASEs keep the order."""
+    v = f"({column} ->> :{p})"
+    return (
+        f"(CASE WHEN {v} ~ " + _DATETIME_TEXT + " "
+        f"THEN (CASE WHEN {_date(column, p)} IS NOT NULL "
+        f"THEN CAST({v} AS timestamptz) END) END)"
+    )
+
+
+def zoned(instant_sql: str) -> str:
+    """*instant_sql*, a ``timestamptz``, as the time on the clock of the CRM
+    zone (CRM-Q25b). The zone is the bound :data:`ZONE_PARAM`, never text."""
+    return f"({instant_sql} AT TIME ZONE CAST(:{ZONE_PARAM} AS text))"
+
+
+def _calendar_day(column: str, ref: FieldRef, p: str) -> str:
+    """The calendar day of a date or a datetime field. A ``date`` keeps the
+    day that Zoho wrote, because a date has no time. A ``datetime`` takes
+    its day in the CRM zone (CRM-Q25b)."""
+    if ref.type == "datetime":
+        return f"CAST({zoned(_instant(column, p))} AS date)"
+    return _date(column, p)
+
+
+async def crm_zone(db: Any, org: Any) -> str:
+    """The CRM zone of *org*: the IANA zone of its Zoho org (WS-53 CRM-Q25b).
+
+    Metorite keeps no zone for an org. The newest source profile keeps the
+    zone of the Zoho org at ``profile -> 'org' ->> 'time_zone'``
+    (``mapping._org_summary``). A Native CRM, an org with no profile, a
+    profile with no zone and a name that is not an IANA zone give
+    :data:`DEFAULT_ZONE`. ``personal.zone_name`` is the one rule of a zone
+    name. Each bucket and each datetime range of one answer uses this zone.
+    """
+    from gateway.crm_sync import profiles
+    from gateway.routes.crm.core import is_mirror_mode
+    from gateway.routes.projects.personal import zone_name
+
+    if not org or not await is_mirror_mode(db, str(org)):
+        return DEFAULT_ZONE
+    latest = await profiles.latest(db, str(org))
+    summary = latest.profile.get("org") if latest is not None else None
+    return zone_name(summary.get("time_zone") if isinstance(summary, dict) else None)
+
+
 def _lookup_id(column: str, p: str) -> str:
     """A lookup's id when the value is ``{id, name}``, else the text."""
     return (
@@ -298,16 +367,24 @@ def measure_sql(scope: FieldScope, ref: FieldRef, measure: str) -> MeasureSql:
     )
 
 
-def group_sql(scope: FieldScope, ref: FieldRef, bucket: str | None) -> GroupSql:
-    """The group key of the field *ref*. A date groups by its bucket."""
+def group_sql(
+    scope: FieldScope, ref: FieldRef, bucket: str | None, *, zone: str,
+) -> GroupSql:
+    """The group key of the field *ref*. A date groups by its bucket.
+
+    A ``date`` keeps the day that Zoho wrote. A ``datetime`` reads the whole
+    value with its offset, and takes its bucket on the clock of *zone*, the
+    CRM zone (CRM-Q25b). So it agrees with ``created_month``.
+    """
     column, p = scope.column, _GROUP_KEY
     if ref.type in DATE_TYPES:
         unit, fmt = BUCKETS[bucket or ""]
-        key = (
-            f"to_char(date_trunc('{unit}', CAST({_date(column, p)} AS timestamp)), "
-            f"'{fmt}')"
+        when = (
+            zoned(_instant(column, p)) if ref.type == "datetime"
+            else f"CAST({_date(column, p)} AS timestamp)"
         )
-        return GroupSql(key=key, label="NULL", params={p: ref.key})
+        key = f"to_char(date_trunc('{unit}', {when}), '{fmt}')"
+        return GroupSql(key=key, label="NULL", params={p: ref.key, ZONE_PARAM: zone})
     if ref.type == "lookup":
         return GroupSql(
             key=_lookup_id(column, p),
@@ -355,8 +432,9 @@ def _filter(column: str, ref: FieldRef, end: str | None, k: str, v: str,
             raise _refuse(
                 f"'{ref.key}' is a {ref.type} field. A range takes a date field.",
             )
+        # CRM-Q25b: a datetime takes its day in the CRM zone, as its bucket.
         return (
-            f"{_date(column, k)} {RANGE_ENDS[end]} CAST(:{v} AS date)",
+            f"{_calendar_day(column, ref, k)} {RANGE_ENDS[end]} CAST(:{v} AS date)",
             _iso_date(ref.key + end, value),
         )
     if ref.type in DATE_TYPES:
@@ -394,15 +472,16 @@ def _filter(column: str, ref: FieldRef, end: str | None, k: str, v: str,
 
 
 def module_where(
-    scope: FieldScope, module: str, pairs: list[tuple[str, str]],
+    scope: FieldScope, module: str, pairs: list[tuple[str, str]], *, zone: str,
 ) -> WhereSql:
     """The WHERE clause of one module: the module, and each field filter.
 
     Each name is checked against *scope* first, so an unknown name is a 422
-    before any statement runs.
+    before any statement runs. A range on a datetime field reads *zone*,
+    the CRM zone (CRM-Q25b).
     """
     clauses = [f"module = :{_MODULE}"]
-    params: dict[str, Any] = {_MODULE: module}
+    params: dict[str, Any] = {_MODULE: module, ZONE_PARAM: zone}
     for index, (name, value) in enumerate(pairs):
         ref, end = _split(scope, name)
         k, v = f"agf_k{index}", f"agf_v{index}"
@@ -414,8 +493,9 @@ def module_where(
 
 
 __all__ = [
-    "BUCKETS", "DATE_TYPES", "FIELD_MEASURES", "FIELD_PREFIX", "MEASURE_TYPES",
-    "VALUE_GROUP_TYPES", "FieldRef", "FieldScope", "GroupSql", "MeasureSql",
-    "WhereSql", "check_group", "check_measure", "core_scope", "field_pairs",
-    "group_sql", "measure_sql", "module_scope", "module_where",
+    "BUCKETS", "DATE_TYPES", "DEFAULT_ZONE", "FIELD_MEASURES", "FIELD_PREFIX",
+    "MEASURE_TYPES", "VALUE_GROUP_TYPES", "ZONE_PARAM", "FieldRef", "FieldScope",
+    "GroupSql", "MeasureSql", "WhereSql", "check_group", "check_measure",
+    "core_scope", "crm_zone", "field_pairs", "group_sql", "measure_sql",
+    "module_scope", "module_where", "zoned",
 ]

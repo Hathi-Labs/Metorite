@@ -46,6 +46,12 @@ the measure over the rest, and ``omitted`` counts them. The order stays: the
 status groups in board order, the month and date buckets in time order, and
 each other group largest first.
 
+**One zone for each month** (CRM-Q25b). ``created_month``, ``updated_month``
+and a ``datetime`` bucket take the month on the clock of the CRM zone,
+``field_sql.crm_zone``: the zone of the Zoho org, or UTC. The zone is a bound
+value, and the answer names it in ``zone``. ``close_month`` and a ``date``
+field keep their day, because a date has no time.
+
 **Weighted ₹ reuses ``core.WEIGHTED_SQL``.** That expression binds the lane's
 own probability as ``:stage_probability``, so the weighted measure runs one
 grouped statement for each open or ongoing deal lane and adds the results.
@@ -88,16 +94,19 @@ from gateway.routes.crm.field_sql import (
     DATE_TYPES,
     FIELD_MEASURES,
     FIELD_PREFIX,
+    ZONE_PARAM,
     FieldRef,
     FieldScope,
     check_group,
     check_measure,
     core_scope,
+    crm_zone,
     field_pairs,
     group_sql,
     measure_sql,
     module_scope,
     module_where,
+    zoned,
 )
 from gateway.routes.crm.modules import _require_module, mirrored_modules
 from gateway.routes.crm.records import ListParams, list_query, refuse_nul
@@ -126,12 +135,14 @@ GROUPS: dict[str, str] = {
     "owner": "lower(owner_email)",
     "pipeline": "pipeline_id",
     "source": "source",
-    "created_month": "to_char(date_trunc('month', created_at), 'YYYY-MM')",
+    # CRM-Q25b: a month on the clock of the CRM zone, the bound ZONE_PARAM.
+    "created_month": f"to_char(date_trunc('month', {zoned('created_at')}), 'YYYY-MM')",
     # The provider's modified time when the row has one, as the Q8 filter.
     "updated_month": (
-        "to_char(date_trunc('month', coalesce(ext_modified_at, updated_at)), "
-        "'YYYY-MM')"
+        "to_char(date_trunc('month', "
+        f"{zoned('coalesce(ext_modified_at, updated_at)')}), 'YYYY-MM')"
     ),
+    # A date has no time, so the close month takes no zone.
     "close_month": (
         "to_char(date_trunc('month', expected_close_date), 'YYYY-MM')"
     ),
@@ -142,10 +153,12 @@ GROUPS: dict[str, str] = {
 #: The owner is the member email of the Zoho owner, NULL for a non-member.
 MODULE_GROUPS: dict[str, str] = {
     "owner": "lower(owner_email)",
-    "created_month": "to_char(date_trunc('month', ext_created_at), 'YYYY-MM')",
+    "created_month": (
+        f"to_char(date_trunc('month', {zoned('ext_created_at')}), 'YYYY-MM')"
+    ),
     "updated_month": (
-        "to_char(date_trunc('month', coalesce(ext_modified_at, updated_at)), "
-        "'YYYY-MM')"
+        "to_char(date_trunc('month', "
+        f"{zoned('coalesce(ext_modified_at, updated_at)')}), 'YYYY-MM')"
     ),
 }
 
@@ -221,6 +234,9 @@ class AggregateResponse(BaseModel):
     other: float | None = 0
     #: The count of groups past :data:`MAX_GROUPS`.
     omitted: int = 0
+    #: The CRM zone of every month and datetime bucket (CRM-Q25b): the zone
+    #: of the Zoho org, or UTC.
+    zone: str = "UTC"
 
 
 class StageDwell(BaseModel):
@@ -435,6 +451,7 @@ class _Read:
     order: dict[str, int]
     measured: FieldRef | None
     grouped: FieldRef | None
+    zone: str
 
 
 def _is_timeout(exc: DBAPIError) -> bool:
@@ -453,10 +470,13 @@ async def _read(
     """Every statement of one aggregate, in the caller's tenant session."""
     await db.execute(text(_TIMEOUT_SQL), {"ms": str(STATEMENT_TIMEOUT_MS)})
     scope: FieldScope | None = None
+    zone = ""
     if module is not None:
         _require_module(await mirrored_modules(db), module)
         scope = await module_scope(db, module)
-        where = module_where(scope, module, pairs)
+        # CRM-Q25b: one zone for each bucket and each range of the answer.
+        zone = await crm_zone(db, current_tenant())
+        where = module_where(scope, module, pairs, zone=zone)
         table, where_sql, bound = MODULE_TABLE, where.sql, dict(where.params)
     else:
         assert found is not None
@@ -471,15 +491,18 @@ async def _read(
         table, where_sql, bound = found.table, query.where, dict(query.params)
         if field or group_field:
             scope = await core_scope(db, found.slug)
+        zone = await crm_zone(db, current_tenant())
     measured = check_measure(scope, field) if field and scope else None
     grouped = check_group(scope, group_field, bucket) if group_field and scope else None
     if grouped is not None and scope is not None:
-        group = group_sql(scope, grouped, bucket)
+        group = group_sql(scope, grouped, bucket, zone=zone)
         key_sql, label_sql = group.key, group.label
         bound.update(group.params)
     else:
         key_sql = (MODULE_GROUPS if module is not None else GROUPS)[group_by or ""]
         label_sql = "NULL"
+    # The fixed month groups read the zone too. A bound value, never text.
+    bound[ZONE_PARAM] = zone
     if measure == "weighted":
         values = await _weighted(db, key_sql, label_sql, where_sql, bound)
     else:
@@ -507,7 +530,7 @@ async def _read(
     order = (
         await _status_order(db, found) if found and group_by == "status" else {}
     )
-    return _Read(values, labels, order, measured, grouped)
+    return _Read(values, labels, order, measured, grouped, zone)
 
 
 @router.get("/aggregate", response_model=AggregateResponse)
@@ -577,6 +600,7 @@ async def aggregate(
         total=_rounded(_combine(measure, [acc for _g, acc in groups])),
         other=_rounded(_combine(measure, [acc for _g, acc in rest])) if rest else 0,
         omitted=len(rest),
+        zone=read.zone,
     )
 
 

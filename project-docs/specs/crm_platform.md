@@ -3157,8 +3157,10 @@ added to it, and
 ### 18.11 Insights on the mirrored data (CRM-Q25 to CRM-Q28, 2026-10-16)
 
 **Status (2026-10-16).** CRM-Q25: merged (#1104), no migration. CRM-Q26:
-merged (#1100, migration 278), dark. CRM-Q25b, CRM-Q27 and CRM-Q28:
-specified, not built. Verified against code at `origin/main` `634cf54ee`.
+merged (#1100, migration 278), dark. CRM-Q25b and CRM-Q25c: built on
+2026-10-16 on the branch `crm-q25bc-aggregate-fixes`, no migration.
+CRM-Q27 and CRM-Q28: specified, not built. Verified against code at
+`origin/main` `634cf54ee`.
 
 **Owner direction (2026-10-16, in chat).** Use the decide, balanced and
 powerful tiers to run inference on the CRM data and produce insights. Build
@@ -3263,7 +3265,7 @@ character in a query name or value gives 422. A number filter takes at most
 that is no real date, for example `2026-02-30`, counts as NULL. That check
 runs on each Postgres version, because `pg_input_is_valid` needs version 16.
 
-**Known difference, not fixed.** On a module, `created_month` and
+**Known difference, fixed by CRM-Q25b (2026-10-16).** On a module, `created_month` and
 `updated_month` take the month of the time in UTC. A Zoho time in IST just
 after midnight on the first day of a month falls in the month before. The
 date buckets of a field use the date that Zoho wrote, so they do not move.
@@ -3405,6 +3407,23 @@ Files: `routes/crm/aggregate.py`, `routes/crm/field_sql.py`,
 Waits for: CRM-Q25, merged as #1104.
 Verify with the commands of §18.11.3.
 
+**Built as (2026-10-16).** No migration. `field_sql.crm_zone` reads the zone
+of the newest profile through `personal.zone_name`, and a Native CRM gets
+UTC. `field_sql.zoned` gives the time of a `timestamptz` on the clock of the
+zone. The zone is the bound value `agf_zone`. The month groups of a module
+and of a core entity use it.
+
+A `datetime` value must be a full datetime with an offset, or it counts as
+NULL. So a value with no offset, or a date alone, now counts as NULL. Before
+this slice it gave a month. The range filter of a `datetime` field uses the
+same day as the bucket. The tool adds the line "Months count in the CRM time
+zone, <zone>." when the answer counts months. R8: six new tests in
+`test_crm_aggregate_fields_r8.py`.
+
+Not changed: the filter of one value, `field.<key>=<date>`, on a `datetime`
+field still reads the first 10 characters of the value. Item 4 names the
+range only.
+
 **CRM-Q25c · A NUL byte in a list query answers 422 (2026-10-16).** The
 verifier of the CRM-Q25 fix round found this on `origin/main`.
 `GET /crm/deals?q=%00` raises `CharacterNotInRepertoireError` from asyncpg,
@@ -3420,6 +3439,19 @@ Done when:
 
 Files: `routes/crm/records.py`, `routes/crm/aggregate.py` and
 `tests/unit/`. Gate: AGENT-SAFE. Size: S. Waits for: nothing.
+
+**Built as (2026-10-16).** No migration. `records.refuse_nul` is the one
+guard, and the `_refuse_nul` of `aggregate.py` moved there. `ListParams`
+calls it, so the four lists and the aggregate get it. `export.ExportParams`,
+the module list and `search_records` call it too. So the slice also changes
+`export.py` and `modules.py`, with one call in each. Those routes read their
+query string there.
+
+`search_records` is no route. Its 422 makes the command bar leave the CRM
+group out, as a database error did before. The fence is
+`tests/unit/test_crm_nul_guard_r8.py`. Its first half reads the source, so
+it never skips. Verify with `uv run pytest tests/unit/test_crm_nul_guard_r8.py -q`,
+with no test skipped.
 
 **CRM-Q27 · Search of note text by meaning.**
 

@@ -891,6 +891,10 @@ _OVERALL: dict[str, str] = {
 }
 
 
+#: The fixed groups of the aggregate that take a month in the CRM zone.
+_ZONED_GROUPS = ("created_month", "updated_month")
+
+
 def _number(value: float) -> str:
     """A number with at most two decimals, and no trailing zero."""
     text = f"{value:,.2f}"
@@ -973,6 +977,10 @@ async def crm_aggregate(
             f"Other ({omitted} smaller groups): {fmt(data.get('other'))}. "
             "The total counts them. Narrow the filter to see them."
         )
+    zone = data.get("zone")
+    if zone and (bucket or group_by in _ZONED_GROUPS):
+        # CRM-Q25b: the route took each month on the clock of the CRM zone.
+        lines.append(f"Months count in the CRM time zone, {zone}.")
     return "\n".join(lines)
 
 

@@ -142,7 +142,7 @@ def test_the_field_sql_binds_every_name_and_value() -> None:
                          ("date", "year")):
         scope = fs.FieldScope(column="custom", owner="deals",
                               fields={_HOSTILE_KEY: ref(_HOSTILE_KEY, kind)})
-        sql = fs.group_sql(scope, scope.fields[_HOSTILE_KEY], bucket)
+        sql = fs.group_sql(scope, scope.fields[_HOSTILE_KEY], bucket, zone="UTC")
         pieces.append((f"{sql.key} {sql.label}", sql.params))
     for kind, pairs in (
         ("select", [(_HOSTILE_KEY, _HOSTILE_VALUE)]),
@@ -151,10 +151,11 @@ def test_the_field_sql_binds_every_name_and_value() -> None:
         ("number", [(_HOSTILE_KEY, "12.5")]),
         ("date", [(_HOSTILE_KEY + ".from", "2026-01-01"),
                   (_HOSTILE_KEY + ".to", "2026-12-31")]),
+        ("datetime", [(_HOSTILE_KEY + ".from", "2026-01-01")]),
     ):
         scope = fs.FieldScope(column="fields", owner="module:X",
                               fields={_HOSTILE_KEY: ref(_HOSTILE_KEY, kind)})
-        where = fs.module_where(scope, _HOSTILE_VALUE, pairs)
+        where = fs.module_where(scope, _HOSTILE_VALUE, pairs, zone="UTC")
         pieces.append((where.sql, where.params))
     for sql, params in pieces:
         assert _HOSTILE_KEY not in sql and _HOSTILE_VALUE not in sql, sql
@@ -186,3 +187,86 @@ def test_the_list_routes_use_the_same_builder() -> None:
     }
     assert "list_query" in calls
     assert "extra_filters" not in calls and "list_contract" not in calls
+
+
+# ── One zone for each month bucket (WS-53 CRM-Q25b, crm_platform.md §18.11) ──
+
+_HOSTILE_ZONE = "Asia/Kolkata'; DROP TABLE crm_deals; --"
+
+
+def test_each_month_group_reads_the_bound_zone() -> None:
+    """Done-when 2: created_month and updated_month, of a module and of a
+    core entity, take the month of ``<column> AT TIME ZONE :zone``. The
+    close month is a date, and it takes no zone (done-when 7)."""
+    from gateway.routes.crm import aggregate as agg
+    from gateway.routes.crm import field_sql as fs
+
+    bound = f"AT TIME ZONE CAST(:{fs.ZONE_PARAM} AS text)"
+    for groups in (agg.GROUPS, agg.MODULE_GROUPS):
+        for key in ("created_month", "updated_month"):
+            assert bound in groups[key], (key, groups[key])
+    assert "ZONE" not in agg.GROUPS["close_month"]
+
+
+def test_a_datetime_bucket_and_range_read_the_zone_and_a_date_does_not() -> None:
+    """Done-when 3 and 4: a datetime field reads its value with its offset
+    and takes its day in the zone, for the bucket and for the range. A date
+    keeps the day that Zoho wrote. The zone is a bound value, never text."""
+    from gateway.routes.crm import field_sql as fs
+
+    def scope(kind: str) -> fs.FieldScope:
+        return fs.FieldScope(column="fields", owner="module:X", fields={
+            "When": fs.FieldRef(key="When", type=kind, label="When", options={}),
+        })
+
+    stamp = fs.group_sql(scope("datetime"), scope("datetime").fields["When"],
+                         "month", zone=_HOSTILE_ZONE)
+    assert "AS timestamptz" in stamp.key and "AT TIME ZONE" in stamp.key
+    assert stamp.params[fs.ZONE_PARAM] == _HOSTILE_ZONE
+    day = fs.group_sql(scope("date"), scope("date").fields["When"], "month",
+                       zone=_HOSTILE_ZONE)
+    assert "timestamptz" not in day.key and "TIME ZONE" not in day.key
+    ranged = fs.module_where(scope("datetime"), "X", [("When.from", "2026-11-01")],
+                             zone=_HOSTILE_ZONE)
+    assert "AT TIME ZONE" in ranged.sql and "AS timestamptz" in ranged.sql
+    assert ranged.params[fs.ZONE_PARAM] == _HOSTILE_ZONE
+    plain = fs.module_where(scope("date"), "X", [("When.from", "2026-11-01")],
+                            zone=_HOSTILE_ZONE)
+    assert "TIME ZONE" not in plain.sql
+    for sql in (stamp.key, day.key, ranged.sql, plain.sql):
+        assert "Kolkata" not in sql and "DROP" not in sql, sql
+
+
+def test_the_aggregate_reads_one_zone_from_crm_zone() -> None:
+    """Done-when 1: one function gives the zone, and it lives in
+    ``field_sql.py``. ``aggregate.py`` calls it and names no zone itself."""
+    source = (_CRM / "aggregate.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    calls = {
+        n.func.id for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    }
+    assert "crm_zone" in calls
+    # No second read of the profile's zone.
+    assert "'time_zone'" not in source and '"time_zone"' not in source
+    field_sql = (_CRM / "field_sql.py").read_text(encoding="utf-8")
+    assert field_sql.count("async def crm_zone(") == 1
+
+
+async def test_the_tool_names_the_zone_of_a_month(monkeypatch) -> None:
+    """Done-when 5: the answer carries ``zone``, and crm_aggregate names it
+    in one line when the answer counts months."""
+    import acb_skills.crm_tools as tools
+
+    async def _get(path: str, params: dict | None = None) -> dict:
+        return {
+            "entity": "module:Products", "measure": "count", "zone": "Asia/Kolkata",
+            "groups": [{"key": "2026-11", "label": "2026-11", "value": 1}],
+            "total": 1, "other": 0, "omitted": 0,
+        }
+
+    monkeypatch.setattr(tools, "_get", _get)
+    month = await tools.crm_aggregate("module:Products", group_by="created_month")
+    assert "Months count in the CRM time zone, Asia/Kolkata." in month.splitlines()
+    owner = await tools.crm_aggregate("module:Products", group_by="owner")
+    assert "time zone" not in owner
