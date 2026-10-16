@@ -24,7 +24,10 @@ R7 fences named here:
   the normal answer and its card, and no file.
 * ``by-code-whatsapp``: a WhatsApp run gets the PDF, and no file or card.
 * ``by-code-class``: each tool that can write files says so in its risk.
-* ``by-code-cap``: a report of every section keeps to 12 visuals.
+* ``by-code-cap``: a report of every section keeps to 12 visuals. A table
+  that the cap leaves out says why, and keeps its notes.
+* ``by-code-currency``: the CRM route sends no currency, so a report of
+  amounts says that they are summed across deal currencies.
 
 Mutations this file kills, one for each behaviour (run 2026-10-16, 12 of 12):
 the gate makes a report with no ``make_report``. The pipeline value tile
@@ -302,7 +305,8 @@ async def test_crm_report_makes_the_report_from_the_route_data(
     data, body = _report(chat)
     for report in (data, body):
         CRM_CHECKS[kind](report)
-        assert report["sources"] == [f"CRM {kind}, {report['date']}"]
+        money = [crm_tools.CURRENCY_NOTE] if kind != "funnel" else []
+        assert report["sources"] == [f"CRM {kind}, {report['date']}", *money]
         assert report["title"].startswith("CRM report · ")
     assert {k: v for k, v in data.items() if k != "path"} == body
 
@@ -318,6 +322,7 @@ async def test_the_crm_pdf_holds_the_route_numbers(
     pdf = _pdf_text(chat, data)
     assert "Open deals" in pdf and "6000000 INR" in pdf and "2160000 INR" in pdf
     assert "Value by stage (INR)" in pdf and "Qualified <b>" in pdf
+    assert "Amounts are summed across deal currencies." in pdf
 
 
 async def test_a_long_pipeline_keeps_to_the_caps_and_says_so(
@@ -417,6 +422,52 @@ async def test_the_projects_pdf_holds_the_route_numbers(
     pdf = _pdf_text(chat, data)
     assert "Tasks finished by project" in pdf and "Web <App>" in pdf
     assert "Median hours" in pdf and "30.5" in pdf
+
+
+def test_the_crm_route_carries_no_currency_so_the_report_says_how_it_summed() -> None:
+    """by-code-currency (review of #1080). The report route sums
+    ``crm_deals.amount`` over every currency and sends no currency field. So
+    the report keeps the INR label of the text answer and says so in its
+    sources. HANDOFF H-333 owns the route fix."""
+    from gateway.routes.crm import reports as crm_routes
+
+    for model in (crm_routes.PipelineReport, crm_routes.StageTotals,
+                  crm_routes.WinLossReport, crm_routes.LostReasonShare,
+                  crm_routes.OwnerLeaderboard, crm_routes.OwnerRow):
+        assert not any("currency" in f for f in model.model_fields), model
+    for kind, data in CRM_DATA.items():
+        spec = crm_tools._crm_report_spec(kind, json.loads(json.dumps(data)))
+        money = kind != "funnel"
+        assert (crm_tools.CURRENCY_NOTE in spec["sources"]) is money, kind
+
+
+def test_a_note_of_the_card_ends_with_one_full_stop() -> None:
+    """Review of #1080. The HR hint ends with a full stop, and the report
+    added a second: "Ask an admin if you need it..". """
+    section = {"at_risk_total": 2, "idle_total": 1, "hr_visible": False, "at_risk": []}
+    payload = {**RENDERED, "sections": {"rebalance": section,
+                                        "load": RENDERED["sections"]["load"]}}
+    spec = views._report_spec(payload)
+    text = " ".join(s.get("text", "") for s in spec["sections"])
+    hint = views.REPORT_CARD_SECTIONS["rebalance"]["hr_hint"]
+    assert hint in text and ".." not in text, text
+    assert "This report hides 1 other person." in text
+
+
+def test_a_table_the_cap_leaves_out_says_why_and_keeps_its_notes() -> None:
+    """Review of #1080. The cause is the 12-visual budget, not the length of
+    the table, and the hidden-people line of that part stays."""
+    hidden = "This report hides 2 other people."
+    parts = [{"heading": f"T{i}", "facts": "", "cut": "", "note": "",
+              "visual": {"kind": "table"}} for i in range(12)]
+    parts[-1].update(cut="The table shows 20 of 30 rows. The Reports app shows them all.",
+                     note=hidden)
+    views._cap_visuals(parts, 11)
+    assert [p["heading"] for p in parts if not p["visual"]] == ["T11"]
+    text = views._report_part(parts[-1])["text"]
+    assert text == f"{views.REPORT_TABLE_LEFT_OUT} {hidden}"
+    assert views.REPORT_TABLE_LEFT_OUT == (
+        "This report holds at most 12 visuals, so this table is left out.")
 
 
 def test_a_report_of_every_section_keeps_to_twelve_visuals() -> None:

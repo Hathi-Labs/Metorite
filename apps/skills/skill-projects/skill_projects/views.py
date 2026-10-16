@@ -674,17 +674,29 @@ def _report_chart(name: str, section: dict[str, Any]) -> tuple[dict[str, Any] | 
             "values": [value for _, value in shown]}, note
 
 
+#: The line of a table that the visual cap of a report leaves out.
+REPORT_TABLE_LEFT_OUT = (f"This report holds at most {REPORT_VISUALS} visuals, "
+                         "so this table is left out.")
+
+
+def _sentence(text: str) -> str:
+    """*text* with one full stop at its end, never two."""
+    text = text.rstrip()
+    return text if text.endswith((".", "!", "?")) else f"{text}."
+
+
 def _report_table(
     name: str, section: dict[str, Any], table: dict[str, Any] | None,
-) -> tuple[dict[str, Any] | None, list[str]]:
-    """The card's table of one section as a table visual, and its notes.
+) -> tuple[dict[str, Any] | None, list[str], str]:
+    """The card's table of one section as a table visual, its notes, and the
+    line that says when the table shows only part of the rows.
 
     A note row of the card (the hidden-people line, the HR hint) becomes a
     line of text, because each is code's own words. Every other cell stays a
     cell: a project name, a task title or a sentence that a member wrote is
     text in a cell, so no markdown-lite check reads it."""
     if not table:
-        return None, []
+        return None, [], ""
     known = set(_report_card_notes(name, section))
     if name == "pulse" and (line := hidden_people_line(section)):
         known.add(line)
@@ -696,31 +708,30 @@ def _report_table(
     for row in table.get("rows") or []:
         cells = list(row.get("cells") or []) if isinstance(row, dict) else []
         if cells and cells[0] in known and all(c == "" for c in cells[1:]):
-            notes.append(str(cells[0]) + ".")
+            notes.append(_sentence(str(cells[0])))
         elif cells:
             rows.append(cells)
     if not rows:
-        return None, notes
+        return None, notes, ""
     shown = paged(rows, 0, REPORT_ROWS, default=REPORT_ROWS, maximum=REPORT_ROWS).items
-    if len(rows) > len(shown):
-        notes.insert(0, f"The table shows {len(shown)} of {len(rows)} rows. "
-                        "The Reports app shows them all.")
+    cut = (f"The table shows {len(shown)} of {len(rows)} rows. "
+           "The Reports app shows them all." if len(rows) > len(shown) else "")
     return {"kind": "table", "title": str(table.get("title") or "")[:80],
-            "columns": list(table.get("columns") or []), "rows": shown}, notes
+            "columns": list(table.get("columns") or []), "rows": shown}, notes, cut
 
 
 def _cap_visuals(parts: list[dict[str, Any]], budget: int) -> None:
     """Keep at most *budget* visuals: drop the charts first, from the end,
-    then the tables. A dropped table says where the member finds it."""
+    then the tables. A dropped visual loses its cut line, and a dropped table
+    says why it is not there. The notes of the part (the hidden-people line,
+    the HR hint) stay."""
     for drop_charts in (True, False):
         for part in reversed(parts):
             if sum(1 for p in parts if p.get("visual")) <= budget:
                 return
             if part.get("visual") and bool(part.get("chart")) == drop_charts:
                 part["visual"] = None
-                part["note"] = ("" if drop_charts
-                                else "This table is too long for one report. "
-                                     "The Reports app shows it.")
+                part["cut"] = "" if drop_charts else REPORT_TABLE_LEFT_OUT
 
 
 def _report_part(part: dict[str, Any]) -> dict[str, Any]:
@@ -728,7 +739,7 @@ def _report_part(part: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     if part.get("heading"):
         out["heading"] = part["heading"]
-    text = " ".join(t for t in (part.get("facts"), part.get("note")) if t)
+    text = " ".join(t for t in (part.get("facts"), part.get("cut"), part.get("note")) if t)
     if text:
         out["text"] = text
     if part.get("visual"):
@@ -756,15 +767,15 @@ def _report_spec(payload: dict[str, Any]) -> dict[str, Any]:
         heading = (REPORT_CARD_SECTIONS.get(name) or {}).get("title") or _human(name)
         facts = " ".join(f"{s['label']}: {_figure(s['value'])}." for s in stats)
         chart, chart_note = _report_chart(name, section)
-        table, notes = _report_table(name, section, card_table)
+        table, notes, cut = _report_table(name, section, card_table)
         if chart:
-            parts.append({"heading": heading, "facts": facts, "note": chart_note,
+            parts.append({"heading": heading, "facts": facts, "cut": chart_note,
                           "visual": chart, "chart": True})
             if table or notes:
-                parts.append({"facts": "", "note": " ".join(notes), "visual": table})
+                parts.append({"cut": cut, "note": " ".join(notes), "visual": table})
         else:
-            parts.append({"heading": heading, "facts": facts, "note": " ".join(notes),
-                          "visual": table})
+            parts.append({"heading": heading, "facts": facts, "cut": cut,
+                          "note": " ".join(notes), "visual": table})
     _cap_visuals(parts, REPORT_VISUALS - (1 if kpis else 0))
     sections = [out for part in parts if (out := _report_part(part))]
     if not sections:

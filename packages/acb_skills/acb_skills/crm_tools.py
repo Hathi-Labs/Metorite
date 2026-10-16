@@ -598,6 +598,12 @@ _REPORT_TITLES: dict[str, str] = {
     "pipeline": "Pipeline", "funnel": "Funnel", "win-loss": "Win and loss",
     "owners": "Owners",
 }
+#: The kinds whose route sums ``crm_deals.amount``. The route carries no
+#: currency: it adds the amounts of every deal currency into one figure
+#: (``gateway/routes/crm/reports.py``, HANDOFF H-333). So the INR label is the
+#: label the text answer uses, and the report says how the sum was made.
+_MONEY_KINDS = frozenset({"pipeline", "win-loss", "owners"})
+CURRENCY_NOTE = "Amounts are summed across deal currencies."
 #: A bar chart holds 12 bars, and a table visual 20 rows.
 REPORT_CHART_BARS = 12
 REPORT_TABLE_ROWS = 20
@@ -780,7 +786,9 @@ def _crm_report_spec(report: str, data: dict[str, Any],
     day = (today or date.today()).strftime("%d %b %Y")
     return {"title": f"CRM report · {_REPORT_TITLES[report]}",
             **_REPORT_SPECS[report](data),
-            "date": day, "sources": [f"CRM {report}, {day}"]}
+            "date": day,
+            "sources": [f"CRM {report}, {day}",
+                        *([CURRENCY_NOTE] if report in _MONEY_KINDS else [])]}
 
 
 # read_only=False, idempotent=False in TOOL_ANNOTATIONS (§14.10.9): with
