@@ -569,7 +569,15 @@ async def test_a_kept_id_that_never_writes_leaves_at_the_retry_limit(mz, monkeyp
 
 async def test_an_id_that_a_read_cannot_send_leaves_without_a_call(mz) -> None:
     p, a, _b = mz
-    await _kept_on_i2(p, a, "n1", "bad-1")
+    _seed(a)
+    _note(a, "n1", 30, "i2")
+    _note(a, "bad-1", 31, "i2")
+    await _connect_all(p, p.org_a, a)
+    assert (await _run(p.org_a)).status == "ok"
+    assert set(_kept(p, p.org_a)) == {"n1"}, "the step drops bad-1 at once"
+    assert a.ids_reads == []
+    a.add("Install_Base", "i2", 300, Name="A-Late", Account={"id": "a1", "name": "x"})
+    _age_module_reads(p, p.org_a)
     result = await _run(p.org_a)
     assert (result.status, result.error) == ("ok", None)
     assert a.ids_reads == [("Notes", ["n1"])], "the bad id holds back no call"
