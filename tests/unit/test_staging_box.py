@@ -110,6 +110,15 @@ def test_the_refresh_drops_only_the_public_schema_entry() -> None:
     assert kept == toc[1:]
 
 
+def test_the_staging_env_names_the_gateway_port() -> None:
+    """The deploy's health probe reads GATEWAY_PORT (default 8000), and the unit
+    listens on 8080. Without the name, the first live apply failed its probe
+    (2026-10-16 20:40 UTC)."""
+    unit = (_ROOT / "deploy/hostinger/acb-gateway.service").read_text(encoding="utf-8")
+    port = re.search(r"--port (\d+)", unit).group(1)
+    assert f'set_kv "$env" GATEWAY_PORT {port}' in _code(_BOOT)
+
+
 def test_the_refresh_never_touches_production() -> None:
     body = _code(_REFRESH)
     assert "rrsync" not in body, "the read-only limit belongs to the production side's key line"
