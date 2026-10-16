@@ -150,8 +150,12 @@ const NOT_OURS = [
 //   * a file in no repo at all was linted as a repo doc. Agent memory lives
 //     under ~/.claude/projects/, so `.claude/` made it STRICT, and each error
 //     forced a rewrite of a note no reader of the repo ever sees.
+// A Git Bash path (/c/wt-x/...) names drive C:, not a folder `c` on ROOT's drive.
+const absOf = (file) =>
+  path.resolve(ROOT, process.platform === 'win32' ? file.replace(/^\/([a-z])\//i, '$1:/') : file)
+
 function repoOf(file) {
-  let dir = path.dirname(path.resolve(ROOT, file))
+  let dir = path.dirname(absOf(file))
   for (;;) {
     if (existsSync(path.join(dir, '.git'))) return dir
     const up = path.dirname(dir)
@@ -160,7 +164,7 @@ function repoOf(file) {
   }
 }
 const relOf = (file) =>
-  path.relative(repoOf(file) ?? ROOT, path.resolve(ROOT, file)).replace(/\\/g, '/')
+  path.relative(repoOf(file) ?? ROOT, absOf(file)).replace(/\\/g, '/')
 const ours = (file) => repoOf(file) !== null && !NOT_OURS.some((re) => re.test(relOf(file)))
 
 function tierFor(file, text = '') {

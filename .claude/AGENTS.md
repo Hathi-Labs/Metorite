@@ -9,7 +9,7 @@ Nothing here ships to the VPS.
 
 | Path | Kind | Purpose |
 |---|---|---|
-| `commands/next-ticket.md` | slash command | One supervisor cycle: select → audit → build → verify → review → PR |
+| `commands/next-ticket.md` | slash command | One supervisor cycle: select → tier → audit → build → verify → review (not for LOW) → PR |
 | `agents/spec-auditor.md` | subagent | Is this WS dispatchable at all? Gatekeeper, read-only |
 | `agents/ws-implementer.md` | subagent | Builds one cleared slice on a branch |
 | `agents/ws-verifier.md` | subagent | Re-runs acceptance on its own, read-only |

@@ -12,7 +12,7 @@
  */
 import { lintText } from './ste-lint.mjs'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -202,6 +202,10 @@ const HOOK_CASES = [
   ['a file in no repo is not ours', { tool_name: 'Write', tool_input: { file_path: path.join(OUTSIDE, '.claude', 'memory', 'x.md'), content: 'Utilize it.' } }, 0],
   ['a vendored skill in a worktree is not ours', { tool_name: 'Write', tool_input: { file_path: path.join(WORKTREE, 'skills', 'upstream', 'x', 'SKILL.md'), content: 'Utilize it.' } }, 0],
   ['a doc in a worktree is still strict', { tool_name: 'Write', tool_input: { file_path: path.join(WORKTREE, 'docs', 'x.md'), content: 'However, it is open.' } }, 2],
+  // On Windows, a Git Bash path names a drive. Elsewhere `/c/...` is a real path.
+  ...(process.platform === 'win32'
+    ? [['a Git Bash path is still ours', { tool_name: 'Write', tool_input: { file_path: '/' + WORKTREE[0].toLowerCase() + WORKTREE.slice(2).replace(/\\/g, '/') + '/docs/x.md', content: 'However, it is open.' } }, 2]]
+    : []),
 ]
 
 for (const [name, payload, expected] of HOOK_CASES) {
@@ -214,4 +218,6 @@ for (const [name, payload, expected] of HOOK_CASES) {
 
 const total = CASES.length + HOOK_CASES.length
 console.log(failed === 0 ? `\nall ${total} cases passed` : `\n${failed} of ${total} FAILED`)
+rmSync(OUTSIDE, { recursive: true, force: true })
+rmSync(WORKTREE, { recursive: true, force: true })
 process.exit(failed === 0 ? 0 : 1)

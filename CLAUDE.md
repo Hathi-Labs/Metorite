@@ -279,7 +279,7 @@ delivery makes that failure more likely, not less.
 
 > **audit** the spec is dispatchable → **implement** one narrowed slice →
 > **verify** independently against the acceptance criteria → **review** the diff
-> adversarially → **open a PR** → **merge it, and watch it deploy**.
+> adversarially (by risk tier) → **open a PR** → **merge it, and watch it deploy**.
 >
 > ⚠️ **The last step changed on 2026-09-01, and only until 2026-09-30.** It read
 > "stop before merge". That was the single largest brake on delivery, because

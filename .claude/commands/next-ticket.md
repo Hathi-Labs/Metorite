@@ -1,5 +1,5 @@
 ---
-description: Run one full supervisor cycle against the work plan — audit, build, verify, review, PR — for the next dispatchable WS ticket (or the one named).
+description: Run one full supervisor cycle against the work plan — audit, build, verify, review by risk tier, PR — for the next dispatchable WS ticket (or the one named).
 argument-hint: "[WS-n | 'next']"
 ---
 
@@ -60,7 +60,9 @@ second implementer to route around a block.
 
 **5 — Verify.** Dispatch `ws-verifier`.
 - `FAIL` → send the findings back to a fresh `ws-implementer` with the original
-  verdict block plus the findings. **The tier (1b) sets the repair rounds.** If it still
+  verdict block plus the findings. **The tier (1b) sets the repair rounds.**
+  For a STANDARD or LOW slice, land it if no remaining finding can reach a
+  customer, and record those findings in `HANDOFF.md`. If it still
   fails, stop, leave the branch in place, and report what is unresolved. A loop
   that grinds on a stuck ticket burns budget and produces nothing.
 
@@ -115,7 +117,8 @@ CYCLE: WS-n — <slice>
 AUDIT:    GO | GO-NARROWED | NO-GO — <one line>
 BUILT:    <one line>
 VERIFY:   PASS | FAIL — <the decisive evidence>
-REVIEW:   APPROVE | n findings
+TIER:     HIGH | STANDARD | LOW — <one line why>
+REVIEW:   APPROVE | n findings | skipped (LOW)
 PR:       <url, or why none>
 BOARD:    <how the WS row now reads>
 OWNER NEEDS TO: <gated actions, or "nothing">
