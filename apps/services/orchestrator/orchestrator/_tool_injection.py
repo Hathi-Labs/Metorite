@@ -18,6 +18,7 @@ as ``orchestrator.executor.<name>``): ``_gate_injected_tool``, ``_tool_name``,
 """
 from __future__ import annotations
 
+import asyncio
 import functools
 import os
 from typing import Any
@@ -325,13 +326,65 @@ def _run_covered(agent_name: str, organization_id: str | None = None) -> bool:
         return True
 
 
-def _delegated_no_egress(parent_ctx: Any) -> bool:
+#: Agents whose context holds text that a stranger wrote (WS-17 EM-G11d,
+#: UMCC, ``email_app_master_plan.md`` §12.3.13.8). Their own run keeps its own
+#: tools, because the email assistant's writes ask a card (EM-G11c1). But a
+#: mail can steer the model, so H-236 holds what it reaches past its own tools:
+#:
+#: * each run that it delegates to binds ``no_egress``
+#:   (:func:`_delegated_no_egress`), so ``call_agent`` cannot reach an agent
+#:   that holds ``fetch_page``;
+#: * it gets no registry MCP server (:func:`_inject_mcp_servers`).
+#:
+#: Its own ``web_search`` and ``fetch_page`` leave through ``config.json:
+#: floor_opt_out``. Its answer UP is held too: a CHAT SESSION that read it
+#: (``acb_skills.egress``, keyed in Redis, round 3) asks a card for each
+#: egress call (``permission_policy.UNTRUSTED_ANSWER_CONFIRM``), and each run
+#: that it delegates to binds ``no_egress``. The set lives in
+#: ``acb_skills.egress``, because ``agent_tools`` reads it too. Fences:
+#: ``tests/unit/test_delegation_no_egress.py`` and
+#: ``tests/unit/test_untrusted_frame.py``.
+try:
+    from acb_skills.egress import (
+        MARK_CLEAR,
+        MARK_MARKED,
+        UNTRUSTED_INPUT_AGENTS,
+        is_delegation_tool,
+        read_untrusted_answer,
+        session_is_marked,
+        session_mark_state,
+    )
+except ImportError:  # pragma: no cover - acb_skills ships with the platform
+    UNTRUSTED_INPUT_AGENTS = frozenset({"email-assistant"})
+    MARK_CLEAR, MARK_MARKED = "clear", "marked"
+
+    def is_delegation_tool(tool: Any) -> bool:
+        return False
+
+    async def session_mark_state(ctx: Any = None) -> str:
+        """Fail closed: with no reader, each session reads marked."""
+        return MARK_MARKED
+
+    def read_untrusted_answer(ctx: Any = None) -> bool:
+        """Fail closed (round 3): with no reader, each session reads marked."""
+        return True
+
+    async def session_is_marked(ctx: Any = None) -> bool:
+        """Fail closed: with no reader, each session reads marked."""
+        return True
+
+
+def _delegated_no_egress(parent_ctx: Any, child: str | None = None) -> bool:
     """True when the PARENT of a run that starts on this frame was no_egress.
 
     *parent_ctx* is the artifact context of the frame, read BEFORE the new run
     binds its own. An empty context means no parent. A parent that holds
     ``no_egress`` passes it on, so a child can never clear it, and a value that
-    is not an explicit ``False`` reads as set. Else the cover of the parent's
+    is not an explicit ``False`` reads as set. A parent in
+    :data:`UNTRUSTED_INPUT_AGENTS` passes it on to any OTHER agent *child*
+    (EM-G11d). The streaming sub-agent path binds the child's own name before
+    it starts the batch run, so that run reads itself as its parent, and the
+    same agent holds the same tools in both. Else the cover of the parent's
     agent decides, asked again now: that can only ADD the flag, so a parent
     whose binding predates a scope change, or a parent that bound no flag,
     still passes it on. No request field and no tool argument reaches this
@@ -341,7 +394,13 @@ def _delegated_no_egress(parent_ctx: Any) -> bool:
         return False
     if parent_ctx.get("no_egress", False) is not False:
         return True
-    return _run_covered(str(parent_ctx.get("agent_name") or ""))
+    parent = str(parent_ctx.get("agent_name") or "")
+    if parent in UNTRUSTED_INPUT_AGENTS and parent != (child or ""):
+        return True
+    # Round 2: a parent that read an untrusted agent's answer passes it on.
+    if read_untrusted_answer(parent_ctx):
+        return True
+    return _run_covered(parent)
 
 
 def _run_no_egress(
@@ -354,7 +413,7 @@ def _run_no_egress(
     this run's own agent is covered (:func:`_run_covered`), whatever its parent.
     Each run boundary computes it once, before anything can fail, and binds it.
     """
-    return _delegated_no_egress(parent_ctx) or _run_covered(
+    return _delegated_no_egress(parent_ctx, str(agent_name or "")) or _run_covered(
         str(agent_name or ""), organization_id,
     )
 
@@ -868,6 +927,7 @@ def _whatsapp_tool_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) 
 def _permission_gate(
     tool_name: str, call_kwargs: dict[str, Any] | None, *, surface: str,
     facts: dict[str, Any] | None = None,
+    after_untrusted_answer: bool = False,
 ) -> tuple[bool, str]:
     """Return (allowed, reason) for one tool call. Never raises. Logs EVERY decision.
 
@@ -901,6 +961,12 @@ def _permission_gate(
         request = build_tool_call_context(tool_name, call_kwargs or {})
         if facts:
             request.update(facts)
+        # WS-17 EM-G11d: the session's mark, set last, so neither a tool
+        # argument nor a caller fact writes it. An async caller passes what
+        # Redis said (``session_is_marked``, which fails closed). The sync
+        # reader adds what this process saw (round 3).
+        request["after_untrusted_answer"] = (
+            bool(after_untrusted_answer) or read_untrusted_answer())
         ok, code, _ = decide(request)
         mode = os.environ.get(
             "AGENT_PERMISSION_MODE", "enforce"
@@ -934,8 +1000,11 @@ def _gate_injected_tool(fn: Any) -> Any:
 
     tool_name = getattr(fn, "__name__", "tool")
 
-    def _gate(call_kwargs: dict[str, Any] | None = None) -> tuple[bool, str]:
-        return _permission_gate(tool_name, call_kwargs, surface="injected_tool")
+    def _gate(
+        call_kwargs: dict[str, Any] | None = None, marked: bool = False,
+    ) -> tuple[bool, str]:
+        return _permission_gate(tool_name, call_kwargs, surface="injected_tool",
+                                after_untrusted_answer=marked)
 
     # Mid-run steer (docs/multiplayer/README.md §4.6): this wrapper is the one
     # tool boundary that exists on EVERY tier — the executor's Tier-2 shim never
@@ -956,9 +1025,21 @@ def _gate_injected_tool(fn: Any) -> Any:
     if inspect.iscoroutinefunction(fn):
         @functools.wraps(fn)
         async def _agated(*args: Any, **kwargs: Any) -> Any:
-            allowed, reason = _gate(kwargs)
+            # EM-G11d round 3: an egress call asks Redis whether this chat
+            # session read an untrusted agent's answer, on any turn. A call
+            # that reaches nothing asks nothing. An UNKNOWN state (a Redis
+            # fault) fails closed for an egress act, so it asks the card. A
+            # delegation is not one: each egress tool of the run that it
+            # starts asks its own card, so a blip never holds a send.
+            state = await session_mark_state() if _is_egress(fn) else MARK_CLEAR
+            marked = state == MARK_MARKED or (
+                state != MARK_CLEAR and not is_delegation_tool(fn))
+            allowed, reason = _gate(kwargs, marked)
             if not allowed:
                 return f"[blocked by permission policy: {reason}]"
+            if _after_untrusted_answer(reason, marked) and not await _untrusted_answer_card(
+                    tool_name, kwargs):
+                return UNTRUSTED_ANSWER_REFUSED.format(tool=tool_name)
             # WS-47 WAC-4: name the call for the WhatsApp card gate. A no-op
             # outside a WhatsApp run with writes on.
             with _whatsapp_tool_call(fn, args, kwargs):
@@ -970,8 +1051,79 @@ def _gate_injected_tool(fn: Any) -> Any:
         allowed, reason = _gate(kwargs)
         if not allowed:
             return f"[blocked by permission policy: {reason}]"
+        if _after_untrusted_answer(reason):
+            # A sync tool cannot wait for a card, so it is refused.
+            return UNTRUSTED_ANSWER_REFUSED.format(tool=tool_name)
         return _with_steer(fn(*args, **kwargs))
     return _register_platform_wrapper(fn, _sgated)
+
+
+#: The answer of an egress call that the member did not approve, in a run
+#: that read an untrusted agent's answer (WS-17 EM-G11d round 2).
+UNTRUSTED_ANSWER_REFUSED = (
+    "{tool} did not run. This chat read an answer of an agent that reads "
+    "outside email, so a call that reaches outside needs the member's "
+    "approval, and the member did not approve it. Do not ask again for the "
+    "same call. Answer with what you have."
+)
+
+
+def _after_untrusted_answer(reason: str, marked: bool = False) -> bool:
+    """True when the decision was the untrusted-answer card. A gate fault in a
+    marked session counts too, so a bug never opens the control."""
+    try:
+        from acb_skills.permission_policy import UNTRUSTED_ANSWER_CONFIRM
+    except ImportError:  # pragma: no cover
+        return True
+    return reason == UNTRUSTED_ANSWER_CONFIRM or (
+        reason == "gate_error" and (marked or read_untrusted_answer()))
+
+
+def _untrusted_answer_card_refusal() -> str | None:
+    """Why this run cannot show the card, as a code, or None (round 3).
+
+    The one rule of ``_maf_mcp._card_refusal``: a WhatsApp run, a run with
+    no member, a batch run and a run with no card channel cannot show a card.
+    Then the call is refused at once, and never parks for an hour on the
+    relay. The member and the batch flag come from the run's bound context."""
+    try:
+        from acb_skills.write_artifact import artifact_context
+
+        from orchestrator._maf_mcp import _card_refusal
+
+        ctx = artifact_context()
+        member_present = bool(ctx.get("member")) and ctx.get("batch_thread") is not True
+        refusal = _card_refusal(member_present)
+    except Exception:  # fail closed: a fault refuses
+        return "card_check_failed"
+    return refusal[1] if refusal is not None else None
+
+
+async def _untrusted_answer_card(tool_name: str, call_kwargs: dict[str, Any]) -> bool:
+    """The member's card for one egress call after an untrusted answer. True
+    only when the member approved it. A run that cannot show a card, and a
+    fault, are a no at once (round 3)."""
+    import json
+
+    refusal = _untrusted_answer_card_refusal()
+    if refusal is not None:
+        _log.info("permission.untrusted_answer_refused", tool=tool_name, outcome=refusal)
+        return False
+    try:
+        from acb_skills.ask_tools import request_confirmation
+
+        shown = json.dumps(call_kwargs or {}, ensure_ascii=False, default=str)[:600]
+        answer = await request_confirmation(
+            f"Run {tool_name}? It reaches outside Metorite",
+            "This chat read an answer from the email assistant, which reads "
+            "outside email. A mail could ask for this call.",
+            f"{tool_name} {shown}",
+        )
+        return answer is True
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # a fault is a no
+        return False
 
 
 def _gate_own_maf_tools(tools: list[Any]) -> int:
@@ -2261,6 +2413,12 @@ async def _inject_mcp_servers(
     ``tests/unit/test_mcp_registry_r8.py``.
     """
     from orchestrator import _maf_mcp
+
+    if agent_name in UNTRUSTED_INPUT_AGENTS:
+        # EM-G11d (UMCC): a mail could tell the model to send mailbox data to
+        # a server, and no check here can prove that a server cannot fetch.
+        _log.info("mcp.untrusted_input_agent_skipped", agent=agent_name)
+        return
 
     org = organization_id or _run_org_or_none()
     if not org:

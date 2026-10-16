@@ -111,7 +111,7 @@ async def _load_assistant_about(
     if learned_style.strip():
         parts.append(
             "<learned_writing_style>\n"
-            f"{learned_style.strip()}\n</learned_writing_style>"
+            f"{_learned_text(learned_style)}\n</learned_writing_style>"
         )
     if kb_rows:
         kb_text, budget = [], 4000
@@ -137,11 +137,28 @@ async def _load_assistant_about(
     if lp_rows:
         parts.append(
             "<learned_patterns>\n"
-            + "\n".join(f"- {r.pattern}" for r in lp_rows)
+            + "\n".join(f"- {_learned_text(r.pattern, one_line=True)}" for r in lp_rows)
             + "\n</learned_patterns>"
         )
 
     return "\n\n".join(parts), signature
+
+
+def _learned_text(value: Any, *, one_line: bool = False) -> str:
+    """Text that a model learned from mail, for the prompt of a drafter.
+
+    WS-17 EM-G11d (UMCC). The reply-memory extractor and the style learner
+    read mail, so a mail could steer what they store. The drafter trusts this
+    text outside every frame, so it takes mode (b) of ``acb_skills.untrusted``
+    (round 3): :func:`~acb_skills.untrusted.defang_trusted` turns EVERY angle
+    bracket, of any form, into ``(`` or ``)``. So it can never close
+    ``<learned_patterns>`` or open ``<personal_instructions>``, in any spacing
+    or with any name. With *one_line*, as for a bullet, the text collapses
+    first."""
+    from acb_skills.untrusted import collapse, defang_trusted
+
+    text = collapse(value) if one_line else str(value or "").strip()
+    return defang_trusted(text)
 
 
 # The tier of each email AI task (D-EM-61, owner, 2026-10-09). Our code

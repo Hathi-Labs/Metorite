@@ -152,6 +152,11 @@ def _is_within(path: str, root: str) -> bool:
 MCP_CONFIRM = "mcp_confirm"
 #: The code of an MCP tool that runs at once. No other code skips the card.
 MCP_READ_ONLY = "mcp_read_only"
+#: The code of an egress call in a run that read an answer of an agent that
+#: reads stranger text (WS-17 EM-G11d round 2, ``acb_skills.egress``). It needs
+#: the member's card, and with no card channel it is refused. The caller sets
+#: the fact ``after_untrusted_answer``, never a tool argument.
+UNTRUSTED_ANSWER_CONFIRM = "untrusted_answer_confirm"
 #: The code of a tool of a server that an admin set to "always confirm"
 #: (H-300). Every tool of that server needs the card, whatever its hints say,
 #: because the server writes its own hints and a hostile server can lie.
@@ -252,6 +257,13 @@ def decide(request: Any) -> tuple[bool, str, str]:
         if root and target and not _is_within(target, root):
             return False, "write_out_of_workspace", target[:200]
 
+    # 3a. WS-17 EM-G11d round 2: the run read an answer of an agent that reads
+    #     stranger text (``acb_skills.egress.mark_untrusted_answer``). Each
+    #     call that can reach outside now needs the member's card: an egress
+    #     tool, an MCP tool, or a request with a URL.
+    if _field(request, "after_untrusted_answer") and _reaches_out(request, tool_name, url):
+        return True, UNTRUSTED_ANSWER_CONFIRM, tool_name or str(url or "")[:200]
+
     # 3b. A tool of an MCP server (WS-8c, H-299) → its own rule, BEFORE the
     #     platform annotations, so a server tool never borrows the hints of a
     #     platform tool of the same name. Approved, and the caller shows a
@@ -304,6 +316,20 @@ def decide(request: Any) -> tuple[bool, str, str]:
 
     # 8. Unknown / unclassifiable → fail OPEN but LOUD (near-term slice).
     return True, "unknown_allowed", tool_name or "(unclassified request)"
+
+
+def _reaches_out(request: Any, tool_name: str, url: Any) -> bool:
+    """True when the call can send data off the platform (H-236's own test)."""
+    if _field(request, "mcp_tool") or url:
+        return True
+    if not tool_name:
+        return False
+    try:
+        from acb_skills.egress import is_egress_tool
+
+        return bool(is_egress_tool(tool_name))
+    except Exception:  # fail closed: an unreadable rule reaches out
+        return True
 
 
 def _decide_read(path: str) -> tuple[bool, str, str]:
@@ -723,15 +749,18 @@ def guard_shared_agent_shell(handler: Any, *, tools: Any = None) -> Any:
 
     @functools.wraps(handler)
     def _guarded(request: Any, invocation: Any) -> Any:
-        from acb_skills.egress import no_egress_for_this_run
+        from acb_skills.egress import no_egress_for_this_run, read_untrusted_answer
 
-        if no_egress_for_this_run() and is_egress_request(request, tools):
+        # WS-17 EM-G11d round 2: a run that read an untrusted agent's answer
+        # cannot show a card from this sync handler, so its egress is refused.
+        held = no_egress_for_this_run()
+        if (held or read_untrusted_answer()) and is_egress_request(request, tools):
             _log.info(
                 "permission.decision",
                 mode=_mode(),
                 approved=False,
                 would_deny=True,
-                reason="no_egress",
+                reason="no_egress" if held else UNTRUSTED_ANSWER_CONFIRM,
                 detail=str(_field(request, "kind") or "")[:40],
                 surface="copilot_no_egress",
             )

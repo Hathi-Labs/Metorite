@@ -502,6 +502,9 @@ def _load_specialist_agents_as_tools() -> list[Any]:
 
             _specialist_fn.__name__ = _tool_name
             _specialist_fn.__doc__ = _description
+            # WS-17 EM-G11d: a delegation, so a Redis fault on the egress
+            # mark asks no card for it (acb_skills.egress.is_delegation_tool).
+            _specialist_fn.__delegates_to__ = name  # type: ignore[attr-defined]
             # H-236: open_world, as call_agent says. A specialist acts beyond
             # this run's view, so a run that a covered run delegates to does
             # not hold these. It keeps call_agent and delegate_to_agent, and

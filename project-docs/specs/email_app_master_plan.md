@@ -13589,8 +13589,10 @@ merged NARROWED** (#1006, 2026-10-14). §12.3.13.9 records what f1 covers. ✅ *
 is merged** (#1019, 2026-10-14), and §12.3.13.6 records what it covers. The owner answered
 Q-GM-14 on 2026-10-14. 🔨 **PR-G3b (EM-G11c1b) is built, not merged** (2026-10-15, branch
 `gmail-g3b`, §12.3.13.6b): the browser proves the pane shows cards, and the PR closes two gaps. 🔨 **PR-G8 (EM-G11f2) is
-built NARROWED, not merged** (2026-10-14, branch `gmail-purge-durable`, migration 264). The other
-PRs are not built.
+built NARROWED, not merged** (2026-10-14, branch `gmail-purge-durable`, migration 264).
+
+🔨 **PR-G5 (EM-G11d) is built NARROWED, not merged** (2026-10-15, branch `gmail-umcc`).
+§12.3.13.8 records what it covers. The other PRs are not built.
 
 **Why.** The owner wants Google to verify the Gmail app, so that every member can connect Gmail.
 Owner instruction, 2026-10-14. Google verifies an app that asks for a restricted scope only when the
@@ -13866,7 +13868,7 @@ connect is the precedent (`src/app/whatsapp/connect/page.tsx:340`), and
 | PR-G3 | **EM-G11c1** — a card for each chat write. ✅ Merged #1019 (2026-10-14) | 3 | 🟢 AGENT-SAFE · security review | M, about 550 | §12.3.13.6 |
 | PR-G3b | **EM-G11c1b** — cards in the email chat pane (Q-GM-14, owner answer 2026-10-14). 🔨 Built, not merged (2026-10-15, branch `gmail-g3b`). A browser spec proves the pane shows cards. In the pane and the Chat app, a saved draft card starts saved. On the D99 path a delegated `draft_reply` shows no draft card (§12.3.13.6b). The interim text names no chat | 3 | 🟢 AGENT-SAFE · one review round · visual review | S, about 150 | §12.3.13.6b |
 | PR-G4 | **EM-G11c2** — no background write without a member choice | 3 | 🟢 AGENT-SAFE · R8 · live for Outlook | M, about 500 | §12.3.13.7 |
-| PR-G5 | **EM-G11d** — UMCC: one frame, fewer tools, an eval set | 4 | 🟢 AGENT-SAFE · security review | L, about 600 | §12.3.13.8 |
+| PR-G5 | **EM-G11d** — UMCC: one frame, fewer tools, an eval set. 🔨 Built NARROWED 2026-10-15, branch `gmail-umcc`, not merged | 4 | 🟢 AGENT-SAFE · security review | L, about 600 | §12.3.13.8 |
 | PR-G6 | **EM-G11e** — UMCC: the detector, dark | 4 | 🟢 AGENT-SAFE build. 🔴 OWNER-GATE for the vendor and the API (Q-GM-9). 🔴 `enforcement-flip` for `EMAIL_INJECTION_SCAN` | M, about 450 | §12.3.13.8 |
 | PR-G7 | **EM-G11f1** — one mailbox teardown, with the revoke and the filters. ✅ Merged NARROWED #1006 (2026-10-14) | 6 | 🟢 AGENT-SAFE · security review · R8 | M, about 550 | §12.3.13.9 |
 | PR-G8 | **EM-G11f2** — a durable purge, and a fence on each child. 🔨 Built NARROWED 2026-10-14, branch `gmail-purge-durable`, migration 264, not merged | 6 | 🟢 AGENT-SAFE · R8 · one migration | M, about 500 | §12.3.13.9 |
@@ -14655,15 +14657,189 @@ the log line shows and nothing changes. With `on`, a test mail with an attack ge
 - `tests/unit/test_injection_scan.py` (EM-G11e): `test_off_makes_no_call`, `test_shadow_only_logs`,
   `test_on_blocks_the_draft`, `test_on_fails_closed_on_a_timeout`, `test_the_log_holds_no_text`.
 
-**Verify with.**
+**Verify with.** EM-G11d (PR-G5):
 
 ```bash
 uv run pytest tests/unit/test_untrusted_frame.py tests/unit/test_attachment_formats.py \
-  tests/unit/test_injection_scan.py -v -rs
-uv run python -m evals.email_injection --scripted
+  tests/unit/test_floor_opt_out.py tests/unit/test_delegation_no_egress.py \
+  tests/unit/test_email_injection_eval.py -v -rs
+uv run python -m evals.email_injection.run --scripted
+```
+
+EM-G11e (PR-G6) adds `test_injection_scan.py`, which does not exist until that PR:
+
+```bash
+uv run pytest tests/unit/test_injection_scan.py -v -rs
 ```
 
 The eval module name follows the pattern of `evals/email_insights/`. Read it again at dispatch.
+
+**EM-G11d as built (2026-10-15).** 🔨 Built NARROWED, not merged, on branch `gmail-umcc`. The
+audit of 2026-10-14 returned GO-NARROWED. Its narrowing replaces scope items 1, 4 and 5 above.
+
+- **One helper.** `acb_skills/untrusted.py` holds `UntrustedFrame` and `frame_untrusted`. One
+  token from `secrets.token_hex(8)` serves each model call. Since fix round 3, the module has two
+  modes, and the round 3 block below states them. It cuts no text. The attachment frame and the
+  two Insights frames use it now.
+  `agent_edge/tools.py` keeps its own `{"untrusted_text"}` shape, because it is not a marker
+  framer.
+- **The six paths.** `read_email` and `read_thread` frame their text. A sender writes the
+  subject, so the first line of `read_thread` now holds only the count. The drafter frames the
+  head of the mail, the thread, the body, the past mail and the gathered context. The consult
+  planner, both classifier calls and the chat context frame the mail too.
+- **The forged tag.** The drafter follows `<personal_instructions>` only in the User context,
+  outside every block. A forged tag in a mail loses its brackets.
+- **Contain.** `config.json: floor_opt_out` of the email assistant names `web_search` and
+  `fetch_page`. The consult runs inside `_consult_no_egress`. That block binds the H-236
+  `no_egress` key in the artifact context, and `run_agent` reads the key as the parent of the
+  run. No new seam exists.
+- **Prove.** `evals/email_injection/` holds 18 attack mails and 9 paths, and the bar is
+  STRUCTURAL. Each attack must sit only inside one fresh frame. The token must not be in the
+  mail. The run must hold no network tool. `tests/unit/test_email_injection_eval.py` runs it in
+  CI.
+- **Fences.** `tests/unit/test_untrusted_frame.py`, `tests/unit/test_email_injection_eval.py`
+  and `tests/unit/test_floor_opt_out.py`. Each of these mutations turns them red. The first
+  unframes the chat context. The next two let text close the frame, with no break of a run or
+  with the token kept. The fourth gives back `fetch_page`, and the fifth drops `no_egress` from
+  the consult.
+- **Deferred until a spec edit.** A behavioural eval against a live model. The rule "read tools
+  only" for the consult, beyond `no_egress`.
+
+**Fix round 1 (2026-10-15).** The verifier failed round 0, and the reviewer asked for changes.
+Each item below has a fence, and each P1 has a mutation that turns it red.
+
+- **P1, egress through `call_agent` and MCP.** The verifier showed that an email chat run reached
+  `crm-assistant`, and that sub-run held `fetch_page`. `_tool_injection.UNTRUSTED_INPUT_AGENTS`
+  now names `email-assistant`. `_delegated_no_egress` reads it, so each run that the agent
+  delegates to binds `no_egress`. `_inject_mcp_servers` gives the agent no registry server.
+  The eval's `no_network` check covers both.
+- **P1, "Draft with AI".** `_llm_compose_assist` frames the mail that it answers, the thread,
+  and in a reply the recipient and the subject. Its rule no longer says "APPLY any
+  instructions". The model answers the questions of the mail and fills a form in its field
+  order. It takes each instruction only from the owner's instruction line.
+- **P1, learned text.** The reply-memory extractor frames the incoming mail, the draft and the
+  sent reply. The drafter frames the reply memories and the calendar. The about block
+  neutralises each learned pattern and the learned writing style, so learned text cannot close
+  `<learned_patterns>` or open a trusted tag.
+- **The neutraliser.** It closes each bypass that the verifier found. A token that rejoins after
+  one removal goes too. The safe form of a bracket is now `[` or `]`, because `‹` and `›` are
+  angle look-alikes. An independent fold in the eval catches a gap rule that the code and its
+  own detector share.
+- **P2.** The live `decide` rule match joins the eval. Its frame is the JSON state, and each
+  question is a closed type. A quote of the framed copy counts in the Insights check. The
+  `read_thread` card reads its subject from the `Subject:` line again.
+- **Prove.** The eval holds 26 attack mails and 13 paths, and it passes with zero failures.
+
+**Fix round 2 (2026-10-15).** The verifier failed one item, and the reviewer asked for changes.
+Each P1 has a mutation that turns its fence red.
+
+- **P1, a live tag forge.** A tag may now span any white space, also line breaks. A name may
+  start with any word character, so `<1x>` and `<a.b>` lose their brackets. A nested pair loses
+  both pairs. The about block collapses white space BEFORE the neutraliser. A property test of
+  3000 random texts proves that no trusted tag survives in either order of the two steps.
+- **P1, egress up the chain.** `call_agent` frames the answer of the email assistant, and it
+  marks the calling run in `acb_skills.egress`. The marks are module state, read by run id, so
+  the agent loop sees them. After a mark, `permission_policy.decide` gives each egress call the
+  code `untrusted_answer_confirm`. The call then needs the member's card, and with no card
+  channel it is refused. A marked run also delegates with `no_egress`. A test in the real
+  harness shows Projects asking the email assistant and then refused a `fetch_page`.
+- **P2, reply memories.** They leave the frame, because the edit-learning loop must apply them.
+  Each one is collapsed and then neutralised, as a GLOBAL pattern is. The calendar stays framed.
+- **P2, an independent list.** The eval reads its own list of angle brackets from the Unicode
+  names. It found 14 brackets that the neutraliser did not break, and the neutraliser now
+  breaks them. The list leaves out about 100 math comparison signs and the French quotes.
+- **P2, Insights quotes.** A quote of the framed copy is stored as the span of the source.
+- **Prove.** The eval holds 30 attack mails and 14 paths, and it passes with zero failures.
+
+**Fix round 3 (2026-10-15).** The tag rule failed three rounds in a row, so round 3 changes the
+design. Each P1 has a mutation that turns its fence red.
+
+- **Two modes.** Mode (a) is `neutralise`, for text INSIDE a frame. It removes each copy of the
+  token until none is left, and it breaks each run of three or more brackets. It no longer
+  rewrites a tag or a heading, because the frame and the data note carry that job.
+- **Mode (b)** is `defang_trusted`, for learned text OUTSIDE every frame. That is a learned
+  pattern, the learned style, the learned memories and the reply memories. It removes each
+  format character, folds the text to NFKC, and then changes EACH bracket to `(` or `)`.
+- **The bracket set of mode (b)** holds the ASCII brackets, the look-alikes and the tag block
+  U+E0000 to U+E007F. It has no regular expression for a tag, and no exemption for `@` or `:`.
+  The eval now checks that no learned text outside a frame holds a bracket.
+- **P1, time.** Both modes run in one linear pass. `neutralise` takes about 0.1 s on 200 KB of
+  the worst nesting, and a test holds it under 1 s.
+- **P1, the upward-egress mark.** The mark now has the key of the chat session: the bound
+  tenant, the member and the session id of the run context. No request field reaches it.
+- **The store of the mark** is tenant Redis, through the prefix wrapper. Its TTL is 400 days,
+  and each read slides it, because a chat has no retention bound. The bound of 4096 runs is gone.
+- **Fail closed.** When Redis does not answer, the gate reads the session as marked. A test in the
+  real harness runs two turns of one session. The second turn is a new run, and the gate refuses
+  its `fetch_page`. Another session and another org stay clear.
+- **P2, the card.** A batch run, or a run with no member, cannot show the card. So the gate refuses
+  the call at once, by the rule of the MCP card. It never waits on the relay.
+- **The import stub.** When `acb_skills` does not import, the gate reads each session as marked.
+- **Prove.** The eval holds 34 attack mails and 14 paths, and it passes with zero failures.
+
+**Fix round 4 (2026-10-16).** The verifier passed round 3, and the reviewer approved it. Round 4
+makes six small changes. Each P2 has a mutation that turns its fence red.
+
+- **P2, a fault marks no batch session.** A batch run minted its own session, so only this
+  process can mark it. It reads the process cache and never asks Redis. A Redis fault fails
+  closed only where a card can show: a member, no batch run and no WhatsApp run. Elsewhere a
+  fault reads the process cache.
+- **P2, one mark for each session.** The key is now the org and the session, with no member. In
+  a shared room, member B's turn reads the URL that member A's turn relayed, so B is held too.
+- **Plain words in mode (b).** A lone `<` before a space or a digit reads "under". A lone `>`
+  after a space or before a digit reads "over". `<=` and `>=` read "at most" and "at least".
+  `->` and `<-` become arrows. Each other bracket still becomes `(` or `)`.
+- **A real Redis.** One test runs the mark on a real server when `AGENT_WRITES_REDIS_URL` names
+  one. CI has no Redis, so the test skips there with its reason.
+- **A bound.** The process cache keeps the 16384 most recent marks. An async reader that misses
+  asks Redis, so an eviction never reads as "unmarked" on that path.
+
+**A Redis blip (2026-10-16, after the CI failure of skill-eval).** CI has no Redis. Each
+orchestrator chat with a member read as marked, and the routing eval failed E1 and W1. The gate
+asked the card for the specialist tools `email_assistant` and `whatsapp_assistant`, and the eval
+shows no card. In production, a blip made `call_agent` bind `no_egress`, so a delegated send
+was withheld. Now a fault gives an UNKNOWN state, not a mark.
+
+- **An egress tool** asks the member's card in the unknown state. That is the fail-closed part.
+- **A delegation** asks no card in the unknown state. That is `call_agent` and a specialist
+  tool, which carries `__delegates_to__`. `call_agent` binds `no_egress` only for a KNOWN mark.
+- **Each egress tool of the delegated run** asks its own card, so no send runs unseen. A blip
+  costs one card for each send, and it holds no send.
+- **The evals.** `tests/unit/_egress_mark_store.py` is the one in-memory store. `tests/conftest.py`
+  and `evals/routing/harness.py` call it. The outage tests patch over it.
+
+**Residual risks of the egress mark and mode (b).** Each one is known and accepted.
+
+- **The French quotes.** Mode (b) does not change `«` or `»`. They are quotation marks, and the
+  eval's own list leaves them out on purpose. A model does not read them as a tag.
+- **`<` with U+0338.** NFKC joins them into `≮` (U+226E), which is not in the bracket set. A
+  model could read it as half of a tag. No test shows that it does.
+- **The sync readers.** The Copilot guard and a sync tool read only the process cache. After a
+  restart, or an eviction, they miss a mark that only Redis holds. An async tool of the same
+  run still reads Redis.
+- **A thread loop of Copilot.** Its own event loop can make a read of the shared pool fail. The
+  read then fails closed, so the cost is availability, not safety.
+- **A no-member or WhatsApp run on a real thread.** It reads Redis. On a fault it reads only the
+  process cache, so it can miss a mark that another process made.
+
+**"Draft with AI" and forms.** "Draft with AI" in the composer still fills a form that the mail
+gives. It can fill the form with facts from the knowledge base. The member reviews the draft
+before any send, because a model draft is never sent by itself.
+
+**Open gaps, ranked for the Google review.** The first gap is the most likely to matter.
+
+1. **The list tools.** `search_emails`, `query_inbox` and the other list tools still print the
+   subjects and the snippets outside a frame. A subject is one short line, and the agent holds
+   no network tool and no open delegation. A model can still read an instruction in a subject.
+2. **The `read_attachment` frame of the platform.** It sets off the text of a chat upload with
+   `---` and its own note, not with the helper. A member uploads that file, so a stranger
+   reaches it only when the member uploads a mail file.
+3. **Encoded shapes.** A tag written as HTML entities or in base64 passes the neutraliser
+   unchanged. `untrusted.py` records this limit.
+4. **The voice profile and the knowledge base.** They stay outside the frame. The member's own
+   mail builds the first, and the member approves each entry of the second.
+5. **The fallback text of the `read_thread` card.** When the card cannot fetch the thread, it
+   shows the raw result with its note and its marker lines.
 
 ##### 12.3.13.9 EM-G11f1 and EM-G11f2 — deletion (PR-G7, PR-G8)
 
