@@ -70,6 +70,7 @@ __all__ = [
     "is_delegation_tool",
     "is_egress_tool",
     "mark_untrusted_answer",
+    "mark_untrusted_session",
     "no_egress_for_this_run",
     "read_untrusted_answer",
     "run_holds_mail",
@@ -247,18 +248,22 @@ def get_tenant_redis() -> Any:
     return _client()
 
 
-async def mark_untrusted_answer() -> bool:
+async def mark_untrusted_answer(ctx: Mapping[str, Any] | None = None) -> bool:
     """Mark the chat session of the run on this frame: it read the answer of
     an agent of :data:`UNTRUSTED_INPUT_AGENTS`. Returns False when the frame
     names no session or the write failed. The process set is marked either
-    way, so this process holds the mark at once."""
-    session = _session_of()
+    way, so this process holds the mark at once.
+
+    *ctx* is the bound artifact context of the CALLING run, for a caller that
+    has already opened the context of the run it starts. Omit it to read the
+    context of this frame."""
+    session = _session_of(ctx)
     if session is None:
         _log.warning("egress.untrusted_answer_unmarked")
         return False
     with _MARKED_LOCK:
         _MARKED_SESSIONS.add(session)
-    if _minted_session(_bound_context()):
+    if _minted_session(ctx if ctx is not None else _bound_context()):
         _log.info("egress.untrusted_answer_marked", store="process")
         return True
     org, thread = session
@@ -273,6 +278,29 @@ async def mark_untrusted_answer() -> bool:
         return False
     _log.info("egress.untrusted_answer_marked")
     return True
+
+
+async def mark_untrusted_session(
+    agent_name: str | None, ctx: Mapping[str, Any] | None = None,
+) -> bool:
+    """THE one place that marks a session for a run of an agent that reads
+    stranger text (WS-17 EM-G11f3, fix round 1).
+
+    Each path that starts a run of an agent of :data:`UNTRUSTED_INPUT_AGENTS`
+    calls it with the context of the CALLING run, BEFORE the run does any
+    work: the executor's streaming sub-run (``_run_sub_agent_streaming``,
+    which ``call_agent``, ``delegate_to_agent`` and each specialist tool of
+    the orchestrator use) and its batch run (``_run_agent_inner``). So a
+    cancel or an error in the sub-run cannot leave the session unmarked.
+    ``agent_tools._answer_of`` calls it too, after the answer, as a second
+    write. A run with no calling chat session (a top-level, workflow or
+    scheduled run) has nothing to mark, and this returns False. Another
+    agent returns False at once."""
+    if str(agent_name or "") not in UNTRUSTED_INPUT_AGENTS:
+        return False
+    if _session_of(ctx) is None:
+        return False
+    return await mark_untrusted_answer(ctx)
 
 
 #: The three answers of :func:`session_mark_state`.

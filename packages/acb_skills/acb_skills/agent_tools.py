@@ -260,11 +260,13 @@ async def _answer_of(agent_name: str, text: str) -> str:
     the member's card (``permission_policy.UNTRUSTED_ANSWER_CONFIRM``), and
     each run that it delegates to binds ``no_egress``. The answer of any
     other agent passes unchanged."""
-    from acb_skills.egress import UNTRUSTED_INPUT_AGENTS, mark_untrusted_answer
+    from acb_skills.egress import UNTRUSTED_INPUT_AGENTS, mark_untrusted_session
 
     if agent_name not in UNTRUSTED_INPUT_AGENTS:
         return text
-    await mark_untrusted_answer()
+    # The executor marked the session before the sub-run started (EM-G11f3).
+    # This second write keeps the mark when that write failed.
+    await mark_untrusted_session(agent_name)
     from acb_skills.untrusted import UntrustedFrame
 
     frame = UntrustedFrame.new()

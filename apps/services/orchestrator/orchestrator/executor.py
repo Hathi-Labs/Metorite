@@ -353,6 +353,18 @@ def _remember_no_egress_run(run_id: str | None) -> None:
         _NO_EGRESS_RUNS.pop(next(iter(_NO_EGRESS_RUNS)))
 
 
+async def _mark_untrusted_session(agent_name: str, parent_ctx: Any) -> None:
+    """``acb_skills.egress.mark_untrusted_session`` for a run that starts now,
+    with the context of the run that started it. Never raises: the write
+    logs its own failure, and each reader fails closed on a fault."""
+    try:
+        from acb_skills.egress import mark_untrusted_session
+
+        await mark_untrusted_session(agent_name, parent_ctx)
+    except Exception:  # noqa: BLE001 — the mark must never kill the run
+        _log.warning("executor.untrusted_session_mark_failed", agent=agent_name)
+
+
 def run_was_no_egress(run_id: str | None) -> bool:
     """True when the streamed run *run_id* bound ``no_egress=True`` (H-236).
 
@@ -1200,8 +1212,14 @@ async def _run_sub_agent_streaming(
     # H-236: no egress tool for this sub-run when its parent was no_egress,
     # or when its own agent is covered. Decided once, from the parent's
     # binding, and bound at once, so no later path reads the parent's frame.
-    _sub_no_egress = _run_no_egress(agent_name, artifact_context())
+    _parent_ctx_sub = artifact_context()
+    _sub_no_egress = _run_no_egress(agent_name, _parent_ctx_sub)
     derive_artifact_context(no_egress=_sub_no_egress)
+    # WS-17 EM-G11f3: a run of an agent that reads mail marks the CALLING
+    # session now, before it does any work, so a cancel or an error cannot
+    # skip the mark. After the no_egress decision, so the sub-run's tools do
+    # not change. The specialist tools and delegate_to_agent come here.
+    await _mark_untrusted_session(agent_name, _parent_ctx_sub)
 
     # ── Redis relay fallback for paths without _active_run_queue ──────
     # Tier 1 (MAF AG-UI) and Tier 1.5 (Copilot SDK) don't set
@@ -3036,6 +3054,8 @@ async def _run_agent_inner(
     # error then retries (self-anneal) with this answer, never the parent's.
     _no_egress = _run_no_egress(agent_name, _parent_ctx, organization_id)
     derive_artifact_context(no_egress=_no_egress)
+    # WS-17 EM-G11f3: the batch twin of the mark in _run_sub_agent_streaming.
+    await _mark_untrusted_session(agent_name, _parent_ctx)
     # WS-45 S4: a covered batch run has its own tier policy (below). Its
     # effort is the payload's, else the parent run's, from the parent's
     # bound context (a sub-agent). Both are read for a covered agent only.

@@ -575,3 +575,86 @@ def test_the_structural_fence_bites(tmp_path) -> None:
     tree = ast.parse(src)
     fns = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)}
     assert not _asks(fns["bad"]) and _asks(fns["good"])
+
+
+# ── fix round 1, P0: the REAL specialist path marks the session ────────────
+
+def _email_specialist(monkeypatch) -> Any:
+    """The orchestrator's own ``email_assistant`` specialist tool, built by
+    ``_load_specialist_agents_as_tools`` from a one-entry registry."""
+    import orchestrator.agents as orch_pkg
+    from gateway.routes import agent as routes_agent
+
+    # The package shadows ``orchestrator/agents.py`` and loads it as ``_mod``.
+    # The tool builder and ``delegate_to_agent`` live in that module.
+    orch_agents = orch_pkg._mod
+    monkeypatch.setattr(routes_agent, "_load_dynamic_agents",
+                        lambda: [{"name": MAIL_AGENT, "description": "Reads mail."}])
+    monkeypatch.setattr(routes_agent, "_AGENT_REGISTRY", [])
+    tool = next(t for t in orch_agents._load_specialist_agents_as_tools()
+                if t.name == "email_assistant")
+    return tool.func
+
+
+class _SubRunStopped(RuntimeError):
+    pass
+
+
+@pytest.mark.parametrize("streaming", [True, False], ids=["streaming", "batch"])
+def test_the_specialist_path_marks_the_session(monkeypatch, streaming: bool) -> None:
+    """Acceptance 2 through the D99 path: the orchestrator calls its
+    ``email_assistant`` specialist tool. The executor marks the calling
+    session BEFORE the sub-run does any work, so the sub-run here stops at
+    its first check and the mark still holds. Then the run end holds mail,
+    and a ``fetch_page`` of the same session asks the member's card."""
+    import orchestrator.executor as executor
+
+    specialist = _email_specialist(monkeypatch)
+
+    async def _refuse(_name: str) -> None:
+        raise _SubRunStopped("the sub-run stops before any work")
+
+    monkeypatch.setattr(executor, "_assert_may_run_agent", _refuse)
+    cards: list[str] = []
+
+    async def _card(tool_name: str, _kwargs: dict[str, Any]) -> bool:
+        cards.append(tool_name)
+        return False
+
+    monkeypatch.setattr(ti, "_untrusted_answer_card", _card)
+    fetched: list[str] = []
+
+    async def fetch_page(url: str) -> str:
+        fetched.append(url)
+        return "page"
+
+    gated_fetch = ti._gate_injected_tool(fetch_page)
+    thread = f"g8b-specialist-{'s' if streaming else 'b'}"
+
+    async def _go() -> tuple[bool, bool, str]:
+        token = bind_tenant(_ORG)
+        try:
+            with artifact_context_scope():
+                bind_artifact_context(
+                    session_id=thread, agent_name=OTHER_AGENT, member=_ALICE)
+                q_token = executor._active_run_queue.set(
+                    asyncio.Queue() if streaming else None)
+                try:
+                    await specialist(task="Summarise my unread mail")
+                finally:
+                    executor._active_run_queue.reset(q_token)
+                clear_marks()  # read the store, as the run end on any worker does
+                ctx = {"session_id": thread, "member": _ALICE}
+                holds = await egress.run_holds_mail(OTHER_AGENT, ctx)
+                clean = await egress.run_holds_mail(
+                    OTHER_AGENT, {"session_id": thread + "-other", "member": _ALICE})
+                answer = await gated_fetch(url="https://example.test/?d=1")
+                return holds, clean, answer
+        finally:
+            release_tenant(token)
+
+    holds, clean, answer = asyncio.run(_go())
+    assert holds is True, "the specialist path left the session unmarked"
+    assert clean is False, "only the calling session is marked"
+    assert cards == ["fetch_page"], "a fetch in a marked session asks the card"
+    assert fetched == [] and "did not run" in answer
