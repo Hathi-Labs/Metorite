@@ -546,6 +546,19 @@ async def bump_org_safe(organization_id: Any) -> None:
                        extra={"error": type(exc).__name__})
 
 
+async def bump_member_safe(organization_id: Any, email: Any) -> None:
+    """:func:`bump_member` for a write of ANOTHER app, after its commit
+    (WS-58 MD-3f fix round 1). It waits ``BUMP_SAFE_WAIT_S`` at most, and it
+    never raises, as :func:`bump_org_safe` does. The chat questions call it:
+    the insert and the settle in ``orchestrator.pending_ask``, and the late
+    answer in ``routes/agent.py``. So a bump never breaks an ask."""
+    try:
+        await asyncio.wait_for(bump_member(organization_id, email), BUMP_SAFE_WAIT_S)
+    except Exception as exc:  # TimeoutError too: the write stands
+        logger.warning("shell.feed.cache member bump skipped",
+                       extra={"error": type(exc).__name__})
+
+
 async def on_event(source: str, event_type: str, payload: dict[str, Any]) -> None:
     """The change sink (§8.2, §8.4 items 1 and 20): a ``pm.*`` event sets
     the org version with ONE ``SET``. It runs no SQL.
