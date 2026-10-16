@@ -23,8 +23,9 @@ export default function FieldValue({
 }) {
   switch (value.kind) {
     case "chips":
+      // A list cell keeps its chips on one line (CRM-Q17a-2 item 3).
       return (
-        <span className="flex flex-wrap gap-1">
+        <span className={compact ? "flex gap-1 overflow-hidden" : "flex flex-wrap gap-1"}>
           {value.items.slice(0, compact ? CHIP_CAP_CELL : CHIP_CAP_RECORD).map((item, i) => (
             <span
               key={`${item}-${i}`}

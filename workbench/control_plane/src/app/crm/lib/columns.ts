@@ -109,3 +109,18 @@ export const COLUMNS: Record<EntitySlug, CrmColumn[]> = {
     { key: "last_activity_at", label: "Last touched", sort: "last_activity_at" },
   ],
 };
+
+/**
+ * The columns a list draws (WS-53 CRM-Q17a-2 item 1): each column of
+ * `columns` that is not in `emptyColumns`. The gateway serves that set on
+ * the layout (`empty_columns`). It holds the standard keys that no record
+ * fills, and `null` or `[]` hides nothing. The first column is the name of
+ * the record, and it always shows.
+ */
+export function shownColumns(
+  columns: readonly CrmColumn[],
+  emptyColumns: readonly string[] | null | undefined,
+): CrmColumn[] {
+  const empty = new Set(emptyColumns ?? []);
+  return columns.filter((column, index) => index === 0 || !empty.has(column.key));
+}

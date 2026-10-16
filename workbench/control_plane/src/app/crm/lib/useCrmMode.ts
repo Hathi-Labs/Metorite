@@ -32,6 +32,7 @@ import {
   type SyncStatus,
 } from "./connect";
 import type { CrmModule } from "./modules";
+import type { SourceLabels } from "./views";
 
 const KEY_CONNECTION = "crm:connection";
 const KEY_SETTINGS = "crm:settings";
@@ -199,6 +200,24 @@ export function useSyncHealth(enabled: boolean): SyncHealthState {
   }, [enabled, running, refresh]);
 
   return { health, loading: enabled && res.loading, error: res.error, refresh };
+}
+
+/**
+ * The source's names of the core entities (CRM-Q17a-2 item 7), from
+ * `GET /crm/mode`. Only Mirror mode reads it. A failure, a Native CRM and an
+ * org off `CRM_FILL_RANK_ORGS` each give `null`, and the CRM keeps its own
+ * names. A label that fails to load must not stop the CRM.
+ */
+export function useSourceLabels(enabled: boolean): SourceLabels | null {
+  const res = useCachedResource<SourceLabels | null>(
+    enabled ? "crm:mode" : null,
+    () =>
+      api
+        .getCrmMode()
+        .then((body) => (body.labels && typeof body.labels === "object" ? body.labels : null))
+        .catch(() => null),
+  );
+  return enabled ? (res.data ?? null) : null;
 }
 
 export type ModulesState = { modules: CrmModule[] | null; loading: boolean };

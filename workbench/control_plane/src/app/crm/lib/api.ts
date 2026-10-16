@@ -19,6 +19,7 @@ import type { FieldMap, FieldRule, FieldSuggestion } from "./fieldMap";
 import type { CrmOwner } from "./filterBar";
 import type { SavedView, SavedViewBody } from "./savedViews";
 import type { SyncHealth, SyncHold } from "./syncHealth";
+import type { SourceLabels } from "./views";
 import type { RecordCounts, ResetThen } from "./setup";
 import type { ResetResult } from "./startOver";
 import type {
@@ -476,6 +477,18 @@ export function getSyncHealth(): Promise<SyncHealth | null> {
 /** Admin only. A member gets 403, which the caller treats as "unknown". */
 export function getCrmSettings(): Promise<CrmSettings> {
   return call<CrmSettings>("/settings");
+}
+
+/** The body of `GET /crm/mode`. */
+export type CrmModeBody = { mode: string | null; labels?: SourceLabels | null };
+
+/**
+ * `GET /crm/mode`, for each member the access rule admits. In Mirror mode,
+ * for an org on `CRM_FILL_RANK_ORGS`, it also holds the source's names of the
+ * core entities (CRM-Q17a-1 item 6). Each other body has no `labels` key.
+ */
+export function getCrmMode(): Promise<CrmModeBody> {
+  return call<CrmModeBody>("/mode");
 }
 
 /** Admin only. Choose who may open the CRM (CRM-T5). Each group is `group:<slug>`. */

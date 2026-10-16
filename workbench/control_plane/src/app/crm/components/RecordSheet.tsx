@@ -35,6 +35,7 @@ import type { FieldLayout } from "../lib/fieldLayout";
 import { useCrmStore, type CrmRefusal } from "../lib/store";
 import { recordTabsFor, shownRecordTab, type RecordTab } from "../lib/urlState";
 import { useFieldDefs, useFieldLayout } from "../lib/useCrmMode";
+import { sourceSingular, type SourceLabels } from "../lib/views";
 import FieldsPanel from "./FieldsPanel";
 import { RecordFacts, RecordModal, RecordTabBar } from "./RecordShell";
 import StatusPill from "./StatusPill";
@@ -109,6 +110,7 @@ export default function RecordSheet({
   order = null,
   onStep,
   related = NO_RELATED,
+  labels = null,
   ...actions
 }: {
   entity: EntitySlug;
@@ -121,6 +123,11 @@ export default function RecordSheet({
   /** The tab of `?rtab=`. */
   tab: RecordTab;
   onTab: (tab: RecordTab) => void;
+  /**
+   * The source's names of the core entities (CRM-Q17a-2 item 7). In Mirror
+   * mode a contact can read "Existing Site". `null` keeps the CRM's noun.
+   */
+  labels?: SourceLabels | null;
 } & RecordActions &
   RecordOrder) {
   const { defs } = useFieldDefs(entity);
@@ -169,7 +176,12 @@ export default function RecordSheet({
     // The page mounts it from `?deal=` and the rest, and every way out runs
     // `onClose`, which is `closeRecord`. Back closes it too, because Back
     // drops the parameter. The drawer is the shared shell (`RecordShell`).
-    <RecordModal title={title} noun={ENTITY_NOUN[entity]} zoho={zoho} onClose={onClose}>
+    <RecordModal
+      title={title}
+      noun={sourceSingular(entity, labels) ?? ENTITY_NOUN[entity]}
+      zoho={zoho}
+      onClose={onClose}
+    >
       {record === null ? (
         <p className="p-8 text-center text-xs text-muted-foreground">Loading…</p>
       ) : (

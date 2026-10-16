@@ -11,6 +11,11 @@
 // keyboard opens the record (2026-10-16, `crmRowKeyboard.test.ts`). The flag
 // changes nothing there, so both sides of the compare draw the button.
 //
+// A second later edit: `list.html` draws each cell on one line, with its
+// full text in the title (WS-53 CRM-Q17a-2 item 3, 2026-10-16). The flag
+// changes nothing there either. Only `list.html` changed: the other three
+// files came out the same from this tree.
+//
 // The runner has no DOM. So `Modal` draws its children in a plain `div`, and
 // for the list one `useState(false)` starts true, which opens the Columns
 // chooser. Both sides of the compare run under the same two mocks.

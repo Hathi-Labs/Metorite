@@ -19,6 +19,18 @@
  * Inline edit rather than an edit mode: a CRM record is corrected constantly
  * — a phone number, a close date, a next step — and a form that has to be
  * opened and saved is a form nobody opens.
+ *
+ * The fill rank (WS-53 CRM-Q17a-2, `crm_platform.md` section 18.9.6). While
+ * the gateway sends fill numbers (`fillRankOn`):
+ *
+ * - Overview draws the filled fixed fields first, by the fill of each field.
+ *   The empty ones follow.
+ * - The Fields tab keeps its sections, with a filter box on top. The empty
+ *   fields fold behind "Show n empty fields".
+ *
+ * With no fill numbers, each part draws as before. In every case the Zoho
+ * system keys (`ZOHO_SYSTEM_KEYS`) and `_owner_name` never show as a row, and
+ * an owner who is not a member shows by the Zoho name, with "Zoho only".
  */
 
 import Icon from "@/components/Icon";
@@ -30,9 +42,18 @@ import { formValue, type FieldLayout } from "../lib/fieldLayout";
 import {
   contactValue,
   fieldRows,
+  fillRankOn,
+  filledFirst,
+  foldFields,
+  foldLabel,
+  hiddenOnRecordPage,
   layoutGroups,
   undefinedRows,
+  zohoOwnerName,
+  zohoOwnerText,
   type FieldDef,
+  type FieldRow,
+  type FieldValue as Value,
 } from "../lib/fields";
 import { money, shortDate } from "../lib/format";
 import {
@@ -52,7 +73,7 @@ import type { DealContact, EntitySlug, Status } from "../lib/types";
 
 type Row = Record<string, unknown>;
 
-type Field = {
+export type Field = {
   key: string;
   label: string;
   kind?: "text" | "number" | "date";
@@ -72,6 +93,31 @@ type Field = {
    */
   link?: "email" | "phone";
 };
+
+/**
+ * The owner as Overview reads it: the member's email, else the Zoho name of
+ * an owner who is not a member, with "Zoho only" (CRM-Q17a-2 item 4).
+ */
+function ownerShow(row: Row): string {
+  const zoho = zohoOwnerName(row);
+  if (zoho) return zohoOwnerText(zoho);
+  const email = row.owner_email;
+  return email === null || email === undefined || email === "" ? "—" : String(email);
+}
+
+/** The owner of the layout's Fields tab, when Zoho names one who is not a member. */
+function zohoOwnerValue(def: FieldDef, record: Row): Value | null {
+  if (!def.is_system || def.key !== "owner_email") return null;
+  const zoho = zohoOwnerName(record);
+  return zoho ? { kind: "text", text: zohoOwnerText(zoho) } : null;
+}
+
+/** A fixed field holds a value on this record. */
+function fixedFilled(field: Field, row: Row): boolean {
+  const raw = row[field.key];
+  if (raw !== null && raw !== undefined && raw !== "") return true;
+  return field.key === "owner_email" && zohoOwnerName(row) !== null;
+}
 
 const FIELDS: Record<EntitySlug, Field[]> = {
   deals: [
@@ -102,7 +148,7 @@ const FIELDS: Record<EntitySlug, Field[]> = {
       show: (r) => shortDate(r.expected_close_date as string | null),
     },
     { key: "next_step", label: "Next step" },
-    { key: "owner_email", label: "Owner" },
+    { key: "owner_email", label: "Owner", show: ownerShow },
     { key: "description", label: "Notes" },
   ],
   leads: [
@@ -113,7 +159,7 @@ const FIELDS: Record<EntitySlug, Field[]> = {
     { key: "email", label: "Email", link: "email" },
     { key: "phone", label: "Phone", link: "phone" },
     { key: "lead_source", label: "Source" },
-    { key: "owner_email", label: "Owner" },
+    { key: "owner_email", label: "Owner", show: ownerShow },
     { key: "description", label: "Notes" },
   ],
   contacts: [
@@ -123,7 +169,7 @@ const FIELDS: Record<EntitySlug, Field[]> = {
     { key: "email", label: "Email", link: "email" },
     { key: "phone", label: "Phone", link: "phone" },
     { key: "mobile", label: "Mobile", link: "phone" },
-    { key: "owner_email", label: "Owner" },
+    { key: "owner_email", label: "Owner", show: ownerShow },
     { key: "description", label: "Notes" },
   ],
   organizations: [
@@ -132,7 +178,7 @@ const FIELDS: Record<EntitySlug, Field[]> = {
     { key: "industry", label: "Industry" },
     { key: "phone", label: "Phone", link: "phone" },
     { key: "email", label: "Email", link: "email" },
-    { key: "owner_email", label: "Owner" },
+    { key: "owner_email", label: "Owner", show: ownerShow },
     { key: "description", label: "Notes" },
   ],
 };
@@ -278,6 +324,7 @@ export default function FieldsPanel({
   if (part === "fields" && layout?.studio === true) {
     return (
       <LayoutFields
+        tools={fillRankOn(layout.fields)}
         layout={layout}
         record={record}
         statuses={statuses}
@@ -292,6 +339,27 @@ export default function FieldsPanel({
 
   if (part === "fields") {
     const custom = fieldRows(record, fieldDefs);
+    // CRM-Q17a-2 item 5: the filter box and the fold, while the fill rank is on.
+    if (fillRankOn(fieldDefs) || fillRankOn(layout?.fields)) {
+      return (
+        <FoldedFields
+          rows={custom}
+          emptyText="No custom fields on this record."
+          renderRows={(rows) => (
+            <dl className="divide-y divide-border/60">
+              {rows.map((row) => (
+                <div key={row.key} className="flex items-start gap-3 px-4 py-2">
+                  <dt className={LABEL}>{row.label}</dt>
+                  <dd className="min-w-0 flex-1 break-words text-xs text-foreground">
+                    <FieldValue value={row.value} />
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
+        />
+      );
+    }
     return custom.length === 0 ? (
       <p className="px-4 py-8 text-center text-xs text-muted-foreground">
         No custom fields on this record.
@@ -329,7 +397,7 @@ export default function FieldsPanel({
       )}
 
       <dl className="divide-y divide-border/60">
-        {FIELDS[entity].map((field) => (
+        {overviewFields(entity, record, layout).map((field) => (
           <EditableField
             key={field.key}
             field={field}
@@ -341,6 +409,116 @@ export default function FieldsPanel({
           />
         ))}
       </dl>
+    </div>
+  );
+}
+
+/**
+ * The fixed fields of Overview, in the order they draw (CRM-Q17a-2 item 5).
+ * While the layout carries fill numbers, the filled fields come first, by
+ * the fill of each field, and the empty ones follow. Else the order of today.
+ */
+export function overviewFields(
+  entity: EntitySlug,
+  record: Row,
+  layout: FieldLayout | null,
+): Field[] {
+  const defs = layout?.fields ?? null;
+  if (!fillRankOn(defs)) return FIELDS[entity];
+  const system = new Map((defs ?? []).filter((d) => d.is_system).map((d) => [d.key, d]));
+  return filledFirst(
+    FIELDS[entity],
+    (field) => fixedFilled(field, record),
+    (field) => system.get(field.key),
+  );
+}
+
+// ── The filter box and the fold of the Fields tab (CRM-Q17a-2 item 5) ──────
+
+/** The filter box of the Fields tab. */
+export function FieldFilterBox({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="border-b border-border/60 px-4 py-2">
+      <Input
+        icon="Search"
+        inputSize="sm"
+        type="search"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Filter fields"
+        aria-label="Filter fields"
+      />
+    </div>
+  );
+}
+
+/** "Show n empty fields", and "Hide empty fields" while they show. */
+export function EmptyFold({
+  empty,
+  open,
+  onToggle,
+}: {
+  empty: number;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  if (empty === 0) return null;
+  return (
+    <div className="border-t border-border/60 px-4 py-2">
+      <Button
+        variant="ghost"
+        size="sm"
+        icon={open ? "ChevronUp" : "ChevronDown"}
+        aria-expanded={open}
+        onClick={onToggle}
+      >
+        {foldLabel(empty, open)}
+      </Button>
+    </div>
+  );
+}
+
+/** The line in place of the rows when the filter or the fold leaves none. */
+function noRowsText(query: string, folded: number, emptyText: string): string {
+  if (query.trim()) return "No field matches the filter.";
+  if (folded > 0) return "Each field of this record is empty.";
+  return emptyText;
+}
+
+/**
+ * The rows of a Fields tab with the filter box and the fold. The record page
+ * of a generic module draws its Fields tab with it too, so both tabs act
+ * the same. `renderRows` draws the rows that show.
+ */
+export function FoldedFields<R extends FieldRow>({
+  rows,
+  emptyText,
+  renderRows,
+}: {
+  rows: R[];
+  emptyText: string;
+  renderRows: (rows: R[]) => React.ReactNode;
+}) {
+  const [query, setQuery] = useState("");
+  const [showEmpty, setShowEmpty] = useState(false);
+  const fold = foldFields(rows, query, showEmpty, (row) => row.value.kind === "empty");
+  return (
+    <div className="flex flex-col">
+      <FieldFilterBox value={query} onChange={setQuery} />
+      {fold.shown.length > 0 ? (
+        renderRows(fold.shown)
+      ) : (
+        <p className="px-4 py-8 text-center text-xs text-muted-foreground">
+          {noRowsText(query, fold.folded, emptyText)}
+        </p>
+      )}
+      <EmptyFold empty={fold.empty} open={showEmpty} onToggle={() => setShowEmpty((v) => !v)} />
     </div>
   );
 }
@@ -486,6 +664,7 @@ const LABEL = "w-28 shrink-0 pt-0.5 text-[10px] uppercase tracking-wide text-mut
  * key that no definition describes follows, read only, as before.
  */
 export function LayoutFields({
+  tools = false,
   layout,
   record,
   statuses,
@@ -495,6 +674,11 @@ export function LayoutFields({
   locked,
   onPatch,
 }: {
+  /**
+   * CRM-Q17a-2 item 5: the filter box and the fold. The page turns it on
+   * while the layout carries fill numbers. Off, the tab draws as before.
+   */
+  tools?: boolean;
   layout: FieldLayout;
   record: Row;
   statuses: Status[];
@@ -505,10 +689,46 @@ export function LayoutFields({
   locked: boolean;
   onPatch: (body: Record<string, unknown>) => void | Promise<boolean>;
 }) {
-  const groups = layoutGroups(layout);
-  const extra = undefinedRows(record, layout.fields);
+  const [query, setQuery] = useState("");
+  const [showEmpty, setShowEmpty] = useState(false);
+  // CRM-Q17a-2 item 6: no Zoho system key is a row.
+  const all = layoutGroups(layout, (d) => !hiddenOnRecordPage(d.key));
+  /** What a field shows: a reference by name, the Zoho owner, or its value. */
+  const valueOf = (def: FieldDef): Value | null =>
+    isReference(def)
+      ? referenceValue(def, record, statuses, companyName)
+      : (zohoOwnerValue(def, record) ?? layoutValue(def, record, statuses));
+  // With `tools` off, nothing folds and nothing filters: the tab of before.
+  const folds = all.map((group) => {
+    const rows = group.fields
+      .map((def) => ({ key: def.key, label: def.label, def, value: valueOf(def) }))
+      .filter((row) => !tools || row.value !== null);
+    return {
+      section: group.section,
+      fold: foldFields(rows, tools ? query : "", !tools || showEmpty, (row) => row.value?.kind === "empty"),
+    };
+  });
+  const groups = folds
+    .map(({ section, fold }) => ({ section, fields: fold.shown.map((row) => row.def) }))
+    .filter((group) => !tools || group.fields.length > 0);
+  const undefinedFold = foldFields(
+    undefinedRows(record, layout.fields),
+    tools ? query : "",
+    !tools || showEmpty,
+    (row) => row.value.kind === "empty",
+  );
+  const extra = undefinedFold.shown;
+  const emptyCount = folds.reduce((sum, { fold }) => sum + fold.empty, undefinedFold.empty);
+  const foldedCount = folds.reduce((sum, { fold }) => sum + fold.folded, undefinedFold.folded);
+  const nothing = tools && groups.length === 0 && extra.length === 0;
   return (
     <div className="flex flex-col">
+      {tools && <FieldFilterBox value={query} onChange={setQuery} />}
+      {nothing && (
+        <p className="px-4 py-8 text-center text-xs text-muted-foreground">
+          {noRowsText(query, foldedCount, "No fields on this record.")}
+        </p>
+      )}
       {groups.map((group) => (
         <section
           key={group.section?.id ?? "none"}
@@ -561,6 +781,9 @@ export function LayoutFields({
           ))}
         </dl>
       )}
+      {tools && (
+        <EmptyFold empty={emptyCount} open={showEmpty} onToggle={() => setShowEmpty((v) => !v)} />
+      )}
     </div>
   );
 }
@@ -608,7 +831,8 @@ function LayoutFieldRow({
   const id = useId();
   const editId = `${id}-edit`;
   const stored = storedValue(def, record);
-  const shown = layoutValue(def, record, statuses);
+  // CRM-Q17a-2 item 4: an owner who is not a member, by the Zoho name.
+  const shown = zohoOwnerValue(def, record) ?? layoutValue(def, record, statuses);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<unknown>(null);
   /** The message of the client check. */
