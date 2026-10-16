@@ -5760,6 +5760,17 @@ and one thing that cannot be written until a second person exists.
 > app, is owner-only because it reaches a real person. `specs/my_day_feed.md`
 > §17.1 is the authority. No plan-guard rule names these flags either.
 >
+> **WS-53 — the CRM note labels.** *(Registered 2026-10-16 with CRM-Q26.)* To
+> build CRM-Q26 is AGENT-SAFE, and it ships dark. A mode other than `off` for
+> `crm.note_labels` in `DECIDE_FEATURE_MODES` is an owner flip, because each
+> label request spends the org's credits (CLAUDE.md §3a rule 3). A `crm.` mode
+> spends only for an org in `CRM_DECIDE_ORGS`, so a name in that list is half
+> of the same flip. The grant `enforcement-flip` covers neither.
+>
+> The backlog of an org with many notes costs credits for days, so ask the
+> owner first. `specs/crm_platform.md` §18.11 is the authority. No plan-guard
+> rule names these flags either.
+>
 > **WS-29 — moving any customer onto the pooled tier.** Cutover is a data move against
 > live customer data. AGENT-SAFE to build; **OWNER-GATE to execute.**
 >

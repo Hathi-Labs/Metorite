@@ -2523,8 +2523,10 @@ each value. Embeddings help the model find text. They never make a number.
 | CRM-Q28 | A weekly digest on the powerful tier | AGENT-SAFE | M | CRM-Q25 |
 
 CRM-Q27 and CRM-Q28 get their done-when lists in a later edit of this
-section. A flag flip to `shadow` or `on` for an org is gate
-`enforcement-flip`.
+section. To build each ticket is AGENT-SAFE. For CRM-Q26, a mode other than
+`off` for `crm.note_labels` is an owner flip, because each request spends the
+org's credits (CLAUDE.md §3a rule 3). So is a name in `CRM_DECIDE_ORGS`. The
+grant `enforcement-flip` does not cover them. `work_plan.md` §6 registers both.
 
 **Not in scope.** A write to the source. A model that writes SQL. A number
 that comes from a model. A per-member record scope (§18.5, CRM-Q12).
@@ -2560,37 +2562,66 @@ Files: `routes/crm/aggregate.py`, `routes/crm/modules.py`,
 **CRM-Q26 · Labels on notes, in shadow.** Done when:
 
 1. The decide registry (`gateway/decide_features.py`) gains the feature
-   `crm.note_labels`. It joins `FEATURES`, `REGISTERED` and `ON_FEATURES`,
-   and it starts `off` for every org.
-2. A migration (next free number at build time) adds the tenant table
-   `crm_note_labels`, with FORCE RLS. It holds the activity, the kind, the
-   need for action, the urgency, the confidence of each, and the time.
-3. After a sync run, a background step labels the new or changed notes. It
-   does so only for an org whose feature is `shadow` or `on`. It runs outside the run lock. It takes
-   at most 200 notes in one step.
-4. One decide request holds up to 5 notes, and 3 questions for each note.
+   `crm.note_labels`, in a new tuple `CRM_FEATURES`. It joins `REGISTERED`
+   and `ON_FEATURES`, and it starts `off` for every org. It does not join
+   `FEATURES`. That tuple is the email set: two email suites pin it, and the
+   email start-up check `configured_on()` reads it.
+2. A new setting `crm_decide_orgs` (`CRM_DECIDE_ORGS`) lists the orgs that may
+   run a `crm.` feature. It is empty by default. For a `crm.` feature,
+   `mode_for` reads it and not `DECIDE_FEATURE_ORGS`. So a change of mode
+   never starts every CRM org at once.
+3. A migration (next free number at build time) adds the tenant table
+   `crm_note_labels`. It has FORCE RLS and an inline foreign key to the org. Its
+   `activity_id` is unique, and it references `crm_activities (id)` with ON
+   DELETE CASCADE. A row holds the kind, the probability of "needs action",
+   the urgency, and the confidence and probabilities of each. It also holds
+   `body_md5` of the labeled text, `labeled_at` and `request_id`.
+4. The CRM start over deletes the table (`core.RESET_TABLES` and
+   `settings._RESET_DELETES`). The generated phases carry it.
+5. After a sync run, a background step labels the new or changed notes. It
+   runs only for an org whose feature is `shadow` or `on`. It runs outside
+   the run lock: after `engine.run_org` in `scheduler._run_one`, and after the
+   run that `scheduler.spawn` starts for a request. It binds
+   `tenant_session(org)`.
+6. A note is new when it has no label row. It has changed when the md5 of its
+   subject and body differs from `body_md5`. The step takes the newest first
+   (`COALESCE(ext_modified_at, created_at)`). It takes at most 200 notes in one
+   step, and at most 1,000 notes for each org in one day.
+7. In `shadow` and in `on`, the step calls `decide_features.ask()`, because
+   no old path exists. It names `module_slug="crm"`. It names the
+   `connected_by` of the Zoho connection as a proven member, as email names
+   the mailbox owner. With no member, the step skips and logs a count.
+8. One decide request holds up to 5 notes, and 3 questions for each note.
    The first question is a choice of kind: payment, site issue, commercial,
-   follow-up, internal or other. The second is a boolean, "needs action".
-   The third is a score of urgency with 3 levels. The state cuts each note body to 2,000
-   characters. A question names its note by path.
-5. In `shadow`, the labels are stored and shown nowhere. In `on`, the
-   timeline and CRM-Q25 can read them.
-6. Each step logs counts and request ids only, never note text. A 402
-   starts the cool-down of the registry, and the step stops.
-7. `evals/crm_note_labels/` holds synthetic notes with expected labels, and
-   it passes in `--scripted` mode.
-8. R8 tests cover the table and its RLS, and a step that labels notes
-   through a fake decide. They also cover the 200 cap, the feature `off`
-   path, and tenant isolation.
+   follow-up, internal or other. The second is a boolean, "needs action". The
+   third is a score of urgency with 3 levels. The step clips the subject and
+   the body with `clip_fact`, and the body to 2,000 characters. A question
+   names its note by its id in `state.notes`.
+9. In `shadow` and in `on`, no route returns the labels, and a test proves
+   it. A later ticket reads them on the timeline and in CRM-Q25.
+10. Each step logs counts and request ids only, never note text. For a `crm.`
+    feature, only a 402 starts the cool-down of the registry, and the step
+    stops. A 403 starts no cool-down, so it never pauses email `on` for the
+    org.
+11. `evals/crm_note_labels/` holds synthetic notes with expected labels. It
+    passes with `uv run python -m evals.crm_note_labels.run --scripted`.
+12. R8 tests cover the table and its RLS, and a step that labels notes
+    through a fake decide. They also cover the 200 cap, the daily cap, a
+    changed note, the feature `off` path and tenant isolation.
+
+Files: `gateway/decide_features.py`, `acb_common/settings.py`, a new
+`gateway/crm_sync/note_labels.py`, `gateway/crm_sync/scheduler.py`,
+`routes/crm/core.py`, `routes/crm/settings.py`, the migration and
+`infra/postgres/generated/`, `evals/crm_note_labels/` and `tests/unit/`.
 
 #### 18.11.3 Verification
 
 - `bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"`
 - `uv run pytest tests/unit/test_crm_aggregate*.py tests/unit/test_crm_note_labels*.py tests/unit/test_crm_mirror_run_tools.py -q`,
   with no test skipped.
-- `uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_feed_decide.py -q`.
+- `uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py tests/unit/test_feed_decide.py -q`.
   The email and My Day features must behave as before.
-- `uv run python -m evals.crm_note_labels --scripted`
+- `uv run python -m evals.crm_note_labels.run --scripted`
 - `uv run python scripts/affected_tests.py --run`
 
 ---
