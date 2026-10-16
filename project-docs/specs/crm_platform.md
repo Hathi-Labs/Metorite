@@ -3676,6 +3676,11 @@ The build made four choices that the list above does not name.
   label. So a row never pairs a new md5 with the vector of an older text.
 - The tool puts each snippet in the frame of `acb_skills/untrusted.py`,
   because a person wrote the note.
+- Fix round (2026-10-17): the addendum names `crm_search_notes` in a
+  section of its own, gated on that one tool. The `crm` family section
+  renders for an agent that holds any CRM tool, and the orchestrator holds
+  12 of 13. Fence: `test_the_orchestrator_is_not_told_about_the_note_search`
+  in `test_crm_agent.py`, which renders the orchestrator's real scope.
 - A `limit` outside 1 to 20 gives 422, and so does a blank `q`. The query
   goes to the embed door only and never to SQL, so the route needs no NUL
   guard.

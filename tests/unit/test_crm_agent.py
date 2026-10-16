@@ -1353,3 +1353,50 @@ def test_the_crm_context_block_is_still_unfilled() -> None:
     model = wa_context.ChatContextModel(chat_id="c1")
     assert model.crm is None
     assert wa_context.ChatContextModel.model_fields["crm"].default is None
+
+
+# ── CRM-Q27 fix round: the addendum names only a tool that the agent holds ──
+
+
+def _addendum_for(agent_dir: str, *, sub_agent: bool) -> tuple[set[str], str]:
+    """The resolved scope of a first-party agent, and its addendum, through
+    the real resolver and the real renderer."""
+    ti = pytest.importorskip("orchestrator._tool_injection")
+    from acb_skills.addendum import render_injected_tools_addendum
+
+    config = json.loads(
+        (REPO_ROOT / "apps" / "agents" / agent_dir / "config.json").read_text(encoding="utf-8"),
+    )
+    scope = ti._resolve_injected_scope(config.get("tool_scope"))
+    assert scope is not None, agent_dir
+    text = render_injected_tools_addendum(
+        is_sub_agent=sub_agent, effective_scope=frozenset(scope),
+        registry_block="", risk_block="",
+    )
+    return scope, text
+
+
+@pytest.mark.parametrize("sub_agent", [False, True])
+def test_the_orchestrator_is_not_told_about_the_note_search(sub_agent: bool) -> None:
+    """The orchestrator holds 12 of the 13 CRM tools. The family section
+    renders for it, and once named ``crm_search_notes``, a tool it lacks."""
+    scope, text = _addendum_for("agent-orchestrator", sub_agent=sub_agent)
+    assert "crm_search_notes" not in scope
+    assert "crm_aggregate" in text
+    assert "crm_search_notes" not in text
+
+
+@pytest.mark.parametrize("sub_agent", [False, True])
+def test_a_scope_that_holds_the_note_search_is_told_about_it(sub_agent: bool) -> None:
+    """The same scope with the tool added renders the line. The CRM agent
+    holds the tool as its own tool, so the platform addendum is not its
+    source, and an unscoped agent renders every section."""
+    from acb_skills.addendum import render_injected_tools_addendum
+
+    scope, _text = _addendum_for("agent-orchestrator", sub_agent=sub_agent)
+    for effective in (frozenset(scope | {"crm_search_notes"}), None):
+        text = render_injected_tools_addendum(
+            is_sub_agent=sub_agent, effective_scope=effective,
+            registry_block="", risk_block="",
+        )
+        assert "crm_search_notes" in text
