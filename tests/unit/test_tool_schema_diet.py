@@ -90,7 +90,9 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
                                     'q': 'string', 'status': 'string',
                                     'updated_from': 'string', 'updated_to': 'string'},
                          'required': ['entity']},
-    'crm_report': {'params': {'kind': 'string', 'page': 'integer'}, 'required': ['kind']},
+    # projects_ai_chat.md §14.10.9 (B3): make_report makes a kept report by code.
+    'crm_report': {'params': {'kind': 'string', 'make_report': 'boolean', 'page': 'integer'},
+                   'required': ['kind']},
     'crm_stage_dwell': {'params': {'days': 'integer', 'page': 'integer'}, 'required': []},
     # WS-31 CP-13d (D75). One question per call. The schema has NO member
     # field on purpose: the member never comes from a tool argument.

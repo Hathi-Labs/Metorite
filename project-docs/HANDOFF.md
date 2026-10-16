@@ -5685,6 +5685,42 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/my_day_feed.md` (WS-58), `CLAUDE.md` §3 rule 8
 - **Added:** 2026-10-16 · WS-61 KB-2a CI
 
+### H-332 · With two panes open, the chat column on `/chat` is too narrow for a card · [AGENT]
+- **Check:** open `/chat` at a width of 1440 px. Open the Documents pane and
+  the Files pane. Measure the message column. A width under 400 px means
+  this is open.
+- **Why.** The review of the report slices (B2, B3) saw the column fall to
+  about 128 to 160 px with both panes open. So the column crushes every card
+  in it, the report card too. The layout is in `src/app/chat/page.tsx`, near the
+  `flex-1 min-w-0` row at line 1258. No test holds a minimum width for the
+  column.
+- **Do this:** give the message column a minimum width. When the two panes
+  do not fit beside it, close one pane or show it over the column. Add a
+  test that measures the column at 1440 px with both panes open. Then look
+  at the result in light mode, at compact density and under a changed
+  accent.
+- **Authority:** `specs/projects_ai_chat.md` §14.9 and §14.10,
+  `workbench/control_plane/DESIGN_SYSTEM.md`
+- **Added:** 2026-10-16 · WS-27bm §14.10.9 B3 review
+
+### H-333 · The CRM report routes add amounts of different currencies into one figure · [AGENT]
+- **Check:** `rg -n "SUM\(amount\)" apps/services/gateway/gateway/routes/crm/reports.py`.
+  A hit with no `currency` in the same statement means this is open.
+- **Why.** `_lane_totals` sums `crm_deals.amount` over every deal, and
+  `_amount` does the same for win and loss. Each deal has its own
+  `currency`. So a CRM with USD and INR deals gets one meaningless total.
+  The models of the four report routes carry no currency field. The text
+  answer of `crm_report` labels every amount INR, and since #1080 a kept
+  report does too, with the source line "Amounts are summed across deal
+  currencies."
+- **Do this:** group each total by `currency` in the routes, or convert to
+  the currency of the organization with a named rate. Add the currency to
+  the route models. Then label each amount in `crm_tools.crm_report` and in
+  `_crm_report_spec` with its own currency, and delete `CURRENCY_NOTE`.
+  Add an R8 test with two currencies in one lane.
+- **Authority:** `specs/crm_app.md` (the reports routes), `specs/projects_ai_chat.md` §14.10.9
+- **Added:** 2026-10-16 · WS-27bm §14.10.9 B3 review
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
