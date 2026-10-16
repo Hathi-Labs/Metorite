@@ -352,7 +352,11 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    block does not list them. `crm_mode()` is not a tool: the orchestrator
    reads it to drop the record writes in Mirror mode. `crm_list_fields`
    never offers a row with `is_system`, and it marks a retired field
-   (WS-53 CRM-C4a). `crm_report(make_report=true)` builds a kept report by
+   (WS-53 CRM-C4a). `crm_aggregate` and `crm_list_fields` also take a
+   module as `module:<api_name>` (CRM-Q25). `_entity_slug` takes one only
+   with `allow_module=True`, so no record tool builds a module path.
+   `crm_aggregate` shows INR only for a `currency` field, `sum_amount` and
+   `weighted`. `crm_report(make_report=true)` builds a kept report by
    code from the route data (`projects_ai_chat.md` §14.10.9). So it carries
    `read_only=False` and `idempotent=False`, and it still sends only GET.
    Fences: `tests/unit/test_crm_agent.py`, `tests/unit/test_skills_registry.py`

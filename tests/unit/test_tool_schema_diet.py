@@ -58,15 +58,23 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     # crm_deal_contacts, crm_get_module_record, crm_list_fields,
     # crm_list_modules and crm_report. Each cut its list at 50 with no way
     # to read the rest. A new optional argument, so no call breaks.
-    'crm_aggregate': {'params': {'close_from': 'string', 'close_to': 'string',
+    # WS-53 CRM-Q25 (crm_platform.md §18.11, done-when 7): the typed aggregate.
+    # `field` names the field of a sum/avg/min/max, `group_field` and
+    # `bucket` group by one field, and `field_filters` filters a module.
+    # `group_by` is no longer required, because a call gives group_by OR
+    # group_field. Every argument that existed keeps its name and type.
+    'crm_aggregate': {'params': {'bucket': 'string',
+                                 'close_from': 'string', 'close_to': 'string',
                                  'created_from': 'string', 'created_to': 'string',
                                  'custom': 'object', 'entity': 'string',
-                                 'group_by': 'string', 'measure': 'string',
+                                 'field': 'string', 'field_filters': 'object',
+                                 'group_by': 'string', 'group_field': 'string',
+                                 'measure': 'string',
                                  'owner': 'string', 'page': 'integer',
                                  'pipeline_id': 'string',
                                  'q': 'string', 'status': 'string',
                                  'updated_from': 'string', 'updated_to': 'string'},
-                      'required': ['entity', 'group_by']},
+                      'required': ['entity']},
     'crm_deal_contacts': {'params': {'deal_id': 'string', 'page': 'integer'},
                           'required': ['deal_id']},
     'crm_get_module_record': {'params': {'module': 'string', 'page': 'integer',
