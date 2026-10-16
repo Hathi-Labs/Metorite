@@ -1,0 +1,13 @@
+# 03:30 UTC (09:00 IST). The production backup starts at 02:30 UTC, and its
+# verify, which writes the export, ends well before this. A missed night runs
+# at the next boot.
+[Unit]
+Description=Metorite STAGING nightly rebuild
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+Persistent=true
+Unit=acb-staging-refresh.service
+
+[Install]
+WantedBy=timers.target
