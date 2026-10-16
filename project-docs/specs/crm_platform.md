@@ -306,7 +306,7 @@ it blocks the tenant column (CR-2).
 |---|---|
 | table `crm_organizations` | `crm_companies` |
 | column `organization_id` on `crm_contacts`, `crm_deals`, `crm_activities` | `company_id` |
-| UI label "Organizations" | "Companies" |
+| UI label "Organizations" | "Companies". *In Mirror mode, the source's own label (amended 2026-10-15, §18.9.1)* |
 | tenant column | `organization_id` on every `crm_*` table, `REFERENCES organization(id)` |
 
 "Company" is the word HubSpot uses. Zoho and Salesforce say "Account", but
@@ -1132,7 +1132,7 @@ working note.
 | Fracktal's Zoho edition | Professional | Products and Quotes exist to mirror. Pipelines stay P0, because the mirror must not assume one edition |
 | Does Fracktal rely on Zoho sharing rules? | No. Everyone sees all | Per-owner visibility in the mirror stays P1 |
 | Deal currencies | INR only | Currency conversion in totals moves to P1 |
-| "Accounts" or "Companies" in Mirror mode | "Companies" everywhere | No label alias. D95.2 holds |
+| "Accounts" or "Companies" in Mirror mode | "Companies" everywhere | No label alias. D95.2 holds. *Amended 2026-10-15: Mirror mode shows the source's own labels (§18.9.1). Native keeps "Companies"* |
 
 ### 18.3 The adaptive mirror
 
@@ -2136,17 +2136,29 @@ screen ("value_map", "plan v1", "0.68").
 
 The fill rank is the one input of CRM-Q17. It needs no AI.
 
-1. After a run changes an entity or a module, the sync computes two numbers
-   for each field. They are the share of records with a value, and the
-   distinct count.
-   One SQL statement per entity does it. A field that the run did not touch
-   keeps its last numbers.
-2. The standard columns of the four core entities get the same numbers.
-3. Only the sync writes them, in the tenant session of the run (R5).
-4. `GET /crm/fields/{entity}` and `GET /crm/modules` serve them. No request
-   computes them.
-5. A Native CRM gets them too, so a Native list with empty columns gets the
-   same help.
+1. After a run changes an entity or a module, the sync computes `filled`,
+   `total` and `distinct_count` for each key. One SQL
+   statement per entity does it. A key of an entity that did not change keeps
+   its last numbers.
+2. The keys are the real columns behind the list columns. They also include
+   each standard field of the four core entities, each `custom` key, and each
+   key of a module's `fields`.
+3. Only the sync writes them, in its own tenant session after the module step
+   (R5). They live in one new tenant table with FORCE RLS. Not on
+   `crm_field_defs`, because a standard column has no row there. Not on the
+   source profile, because the profile is versioned and hashed.
+4. **Cost bound.** The sync computes an entity again at most once in 24
+   hours. An entity whose first import finished in the same run is the
+   exception. An R8 test measures the
+   statement on 30,000 module rows.
+5. `GET /crm/fields/{entity}` and the module list and record routes serve
+   them, on each field definition. No request computes them.
+6. **Ship dark.** The list `CRM_FILL_RANK_ORGS` names the orgs that get the
+   fill rank and the source labels. It ships empty, and `*` means every org.
+   An org outside the list gets no fill work and sees the CRM as before. A
+   flip is gate `enforcement-flip`.
+7. A Native CRM is not in this slice. It never runs a sync, so it needs its
+   own writer. A later ticket adds one.
 
 #### 18.9.4 The engine of the mapping: a fixed pipeline
 
@@ -2219,7 +2231,7 @@ with 16 questions, to learn whether the vendor bills the state once.
 
 | Ticket | Slice | Gate | Size | Waits for |
 |---|---|---|---|---|
-| CRM-Q17a | Lists and records by fill rank. No AI | AGENT-SAFE | M | — |
+| CRM-Q17a | Lists and records by fill rank, in two slices (Q17a-1, Q17a-2). No AI | AGENT-SAFE | M | — |
 | CRM-Q17b | Getting around: rail, first screen, filters, Columns, phone, Sync health. No AI | AGENT-SAFE | M | CRM-Q17a |
 | CRM-Q18 | One plan: a kind, a version and an approval state | AGENT-SAFE | M | — |
 | CRM-Q19 | The executor and the 200-record preview | AGENT-SAFE | M | CRM-Q18 |
@@ -2229,29 +2241,54 @@ with 16 questions, to learn whether the vendor bills the state once.
 
 A flag flip to `shadow` or `on` for an org is gate `enforcement-flip`.
 
-**CRM-Q17a · Lists and records by fill rank.** Done when:
+**CRM-Q17a · Lists and records by fill rank.** It ships in two slices. The
+spec audit of 2026-10-16 narrowed it.
 
-1. The sync writes the fill rank of §18.9.3, and the two routes serve it.
-2. The list hides a standard column with no value on any record of the
-   org. The CSV export of that list hides it too.
-3. With no saved choice, the list shows the custom fields with the highest
-   fill, up to the column limit. A saved view or a member's choice wins.
-4. A list cell does not wrap. Long text ends in an ellipsis, and the full
+**CRM-Q17a-1 · The backend.** Done when:
+
+1. A migration (next free number at build time) adds the tenant table of the
+   fill numbers, with FORCE RLS. It is expand-only and passes
+   `test_tenant_coverage.py`.
+2. The sync writes the numbers of §18.9.3 for each org in
+   `CRM_FILL_RANK_ORGS`, under its cost bound. An R8 test proves each case.
+3. `GET /crm/fields/{entity}` (also with `?layout=1`) and the module list and
+   record routes serve `fill` and `distinct` on each definition.
+4. `GET /crm/fields/{entity}` serves `empty_columns`: the standard keys of
+   the entity with `total > 0` and `filled = 0`. The name column and
+   `last_activity_at` never show in it. One gateway function gives the set.
+5. The CSV export leaves out each key of `empty_columns`, through the same
+   function. `test_crm_export.py` stays green, and its static parity test
+   does not change.
+6. In Mirror mode, one route serves the source's plural and singular labels
+   of the four core entities. In Native mode it serves none.
+7. An org outside `CRM_FILL_RANK_ORGS` gets none of items 2 to 6.
+
+**CRM-Q17a-2 · The screens.** It waits for CRM-Q17a-1. Done when:
+
+1. The list hides each key of `empty_columns`.
+2. With no saved choice, the list shows the custom fields with the highest
+   fill, up to the column limit. A saved view or a member's choice wins. The
+   code tells "nothing saved" from "saved empty".
+3. A list cell does not wrap. Long text ends in an ellipsis, and the full
    text is in its title.
-5. A record whose owner is not a member shows `custom._owner_name`, with
+4. A record whose owner is not a member shows `custom._owner_name`, with
    "Zoho only". The key `_owner_name` leaves the Fields tab.
-6. Overview shows the filled fields first, by fill rank. The Fields tab keeps
-   the Zoho sections and has a filter box. It folds the empty fields behind
-   "Show n empty fields".
-7. Zoho system keys (such as `Layout`, `Record_Image`, `Tag`) leave the
-   record page.
-8. In Mirror mode a core entity shows the source's plural label, for
-   example Contacts as "Existing Sites". The rail, the list and the record
-   show it. A Native CRM shows "Companies" as before.
+5. Overview shows the filled fields first, by fill rank. The Fields tab keeps
+   the sections it draws today and has a filter box. It folds the empty
+   fields behind "Show n empty fields".
+6. The record page leaves out the Zoho system keys `Layout`, `Record_Image`
+   and `Tag`. One named constant holds the list.
+7. In Mirror mode a core entity shows the source's plural label. For
+   example, Contacts shows as "Existing Sites". The rail, the list heading
+   and the record show it. A Native CRM shows "Companies" as before.
 
-Files: `crm_sync/engine.py` (or a module beside it), `routes/crm/fields.py`,
-`routes/crm/modules.py`, `src/app/crm/lib/columns.ts`, `lib/fields.ts`,
-`RecordList.tsx`, `FieldsPanel.tsx` and `ModuleRecordSheet.tsx`.
+Backend files: `crm_sync/engine.py` (or a module beside it),
+`routes/crm/fields.py`, `routes/crm/modules.py`, `routes/crm/export.py`,
+`routes/crm/core.py` and `tests/unit/test_crm_export.py`.
+
+Frontend files, under `src/app/crm/`: `lib/columns.ts`, `lib/fields.ts`,
+`lib/views.ts`, `RecordList.tsx`, `FieldsPanel.tsx`, `RecordSheet.tsx`,
+`ModuleRecordSheet.tsx` and `CrmRail.tsx`.
 
 **CRM-Q17b · Getting around.** Done when:
 

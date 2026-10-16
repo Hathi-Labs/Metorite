@@ -4984,6 +4984,11 @@ owner took five recommendations.
    adapter, and its credential lives in `integration_connections` only. *(Amended 2026-10-11: the store is general, not CRM-only, so the Integrations app, WS-54, reads one registry.)*
 5. **CRM follow-ups live in `pm_tasks`.** This applies D52 and D53 to the CRM.
 
+*Amended 2026-10-15 (owner, in chat): in Mirror mode, the CRM shows the
+source's own labels, for example Contacts as "Existing Sites". A Native CRM
+keeps "Companies". This narrows D95.2 for Mirror mode only
+(`crm_platform.md` §18.9.1).*
+
 **What it does not change.** D52 still retires ClickUp. D52.4 already allows a
 read-mostly mirror of Zoho, and D95.3 stays inside it. The flat ₹500 seat
 holds, and the mirror is inside it.
