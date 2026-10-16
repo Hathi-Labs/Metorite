@@ -51,6 +51,7 @@ _log = get_logger("acb_skills.egress")
 __all__ = [
     "DELEGATION_TOOLS",
     "EGRESS_WITHHELD_ANSWER",
+    "MAIL_STORE_WRITE_REFUSED",
     "MARK_CACHE_MAX",
     "MARK_CLEAR",
     "MARK_MARKED",
@@ -71,6 +72,7 @@ __all__ = [
     "mark_untrusted_answer",
     "no_egress_for_this_run",
     "read_untrusted_answer",
+    "run_holds_mail",
     "session_is_known_marked",
     "session_is_marked",
     "session_mark_state",
@@ -343,6 +345,40 @@ async def session_is_known_marked(ctx: Mapping[str, Any] | None = None) -> bool:
     blip never holds a send. Each egress tool of that run still asks its
     card through :func:`session_is_marked`."""
     return await session_mark_state(ctx) == MARK_MARKED
+
+
+async def run_holds_mail(
+    agent_name: str | None, ctx: Mapping[str, Any] | None = None,
+) -> bool:
+    """True when the run can hold mail text (WS-17 EM-G11f3, §12.3.13.9.1).
+
+    The one predicate of the chat memory stores. It is true when *agent_name*
+    is in :data:`UNTRUSTED_INPUT_AGENTS`, or when the session's mark is not
+    :data:`MARK_CLEAR`. So :data:`MARK_UNKNOWN` (a Redis fault in a run that
+    can show a card) counts as true, and the predicate fails closed.
+
+    *ctx* is the run context that the server bound: ``session_id`` and
+    ``member``. Omit it to read the artifact context of this frame. The
+    tenant is the bound tenant. No request field reaches this function.
+    A caller that passes no ``member`` reads a Redis fault as clear, so a
+    run-end caller passes the member of the run.
+
+    A run for which this is true writes no Mem0 memory and no Graphiti
+    episode, keeps no ``agent_run`` trace body, and holds no tool of
+    :data:`STORE_WRITES`. Fence: ``tests/unit/test_mail_copies_in_chat_stores.py``.
+    """
+    if str(agent_name or "") in UNTRUSTED_INPUT_AGENTS:
+        return True
+    return await session_mark_state(ctx) != MARK_CLEAR
+
+
+#: The answer of a :data:`STORE_WRITES` tool in a run that holds mail
+#: (:func:`run_holds_mail`). The tool gate gives it at once and asks no card,
+#: because a hidden store is not a copy that the member can see or delete.
+MAIL_STORE_WRITE_REFUSED = (
+    "{tool} did not run. This chat holds text from email, and Metorite keeps "
+    "no copy of email in a memory store or a note. Answer with what you have."
+)
 
 
 def read_untrusted_answer(ctx: Mapping[str, Any] | None = None) -> bool:
