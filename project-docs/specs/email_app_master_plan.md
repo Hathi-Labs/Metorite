@@ -15271,7 +15271,8 @@ agent and the trace of a live store. `deploy-write` for the line of `deploy.sh`,
 and 10. Item 11 waits for a live Outlook check. 🔨 PR-G7c built, not merged (2026-10-16, branch
 `gmail-org-purge`, audit GO-NARROWED). Its items 1 to 5 are built, with acceptance 1, 4 and 5 for
 the org door, and acceptance 8 and 9 on R8. Migration 276 holds the detached table. The security
-review is open. Item 12 waits for the owner. This section closes the open points of the f1 and f2 blocks: the two
+review gave APPROVE with three P2 findings, and fix round 1 closes all three, with the org row lock
+(as-built block below). Item 12 waits for the owner. This section closes the open points of the f1 and f2 blocks: the two
 purges, the Outlook rules and `test_three_paths_call_one_teardown`.
 
 **Paths.** `GW` is as in §12.3.13.2.
@@ -15397,8 +15398,29 @@ The rules of the composition:
   purge that the org still owes, and with Mem0 off that is every one.
 - **Why the detached table has no RLS.** The tenant of each row no longer exists, so no session can
   bind it. The table goes into `gen_tenant_migration.EXEMPT` with that reason (R5 (a)). It holds an
-  address and a mailbox id, and no mail. Its grants follow migration 263: no PUBLIC, no Supabase
-  role, and `acb_app` only.
+  address and a mailbox id, and no mail. No PUBLIC grant, no Supabase role, and no `acb_app` grant
+  on the table (as built, fix round 1).
+- **As built, fix round 1 (security review, 2026-10-16).** The sweeper deletes the Mem0 key that a
+  row names, with no tenant bound. So a row must never name a live mailbox, and the database holds
+  that rule, not the app code:
+  1. No app role has a grant on the table. Three SECURITY DEFINER functions of migration 276 are
+     the only way in, each with a fixed `search_path` and EXECUTE to `acb_app` only.
+  2. `record_detached_purges(org)` reads rows only from `email_accounts` and the open
+     `email_mailbox_purges` of that org. It refuses an org that the transaction does not bind. The
+     purge binds the org before its callback, so the owner of the function reads the same rows
+     under FORCE RLS. An owner that bypasses RLS still reads one org, because each statement
+     names it.
+  3. A deferred trigger fails the COMMIT while the org of a new row exists. So a row commits only
+     with the delete of its org, and each mailbox of that org goes in the same cascade.
+  4. `claim_detached_purge` and `settle_detached_purge` change only the state of a row. A row that
+     closes (`done` or `refused`) gets an empty `owner_email`. The purge receipt lists the table
+     in `kept`.
+  5. `_detached_session` stays the ONE unbound session, with `run_tick` as its one caller. Each of
+     its statements calls one of those functions and names no table.
+     `TestTheUnboundSessionIsPinned` fences both.
+  6. The callback locks the org row first (`SELECT ... FOR UPDATE`). A mailbox connect waits on
+     its foreign key and then fails, so no mailbox joins the org between the plan read and the
+     cascade.
 - ⚠️ This is a second purge table, and it is not a second way. The same sweeper, the same pass and
   the same SQL shape serve both tables. Only the store differs, because the tenant is gone.
 
