@@ -34,6 +34,15 @@ parks with a NULL column.
 ``POST /crm/field-rules`` (``_field_type`` and ``_check_legal``), so a restore
 of an old version cannot bring back a rule that is not legal now.
 
+**An empty column opens (CRM-Q18-3).** Each ``field`` item of a snapshot
+carries ``opened_empty``, and so does its row. The check passes the empty keys
+of the entity (``field_rules._empty``) and sets the mark when only they open
+the column. Once the rule fills its column, the fill is no longer 0. So
+``_checked`` skips the empty test for an item that carries the mark: a
+restore, a draft approve or a park of an opened rule gives no 422. A put with
+a new ``target_column`` clears the mark (:func:`_put_rule`), so the empty test
+runs again for the new column.
+
 **The plan follows the live set.** The sync can make an approved rule
 ``stale`` (``crm_sync/field_rules.mark_stale``). Before each change, and on a
 read, :func:`lock_plan` compares the approved snapshot with the approved rows.
@@ -64,7 +73,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Literal
 
@@ -84,6 +93,7 @@ from gateway.routes.crm.field_rules import (
     PROVIDER,
     _check_legal,
     _db_conflict,
+    _empty,
     _entity,
     _field_type,
     _organization,
@@ -150,7 +160,8 @@ _APPROVE_DRAFT_SQL = (
 )
 
 _LIVE_COLUMNS = (
-    "id, entity, field_api_name, field_type, profile_version, target_column, status"
+    "id, entity, field_api_name, field_type, profile_version, target_column, status, "
+    "opened_empty"
 )
 #: Every rule row of the provider, in any status.
 _LIVE_SQL = (
@@ -175,7 +186,7 @@ _PARK_SQL = (
 _ENTER_SQL = (
     "UPDATE crm_field_rules SET status = 'approved', "
     "target_column = CAST(:column AS text), field_type = :type, "
-    "profile_version = :version, "
+    "profile_version = :version, opened_empty = :opened, "
     "proposed_by = CASE WHEN status = 'proposed' AND "
     "target_column IS NOT DISTINCT FROM CAST(:column AS text) "
     "THEN proposed_by ELSE 'admin' END, "
@@ -190,9 +201,10 @@ _ENTER_SQL = (
 )
 _INSERT_RULE_SQL = (
     "INSERT INTO crm_field_rules (ext_source, entity, field_api_name, field_type, "
-    "profile_version, target_column, status, proposed_by, decided_by, decided_at) "
+    "profile_version, target_column, status, proposed_by, decided_by, decided_at, "
+    "opened_empty) "
     "VALUES (:src, :entity, :field, :type, :version, :column, 'approved', 'admin', "
-    ":by, now())"
+    ":by, now(), :opened)"
 )
 
 
@@ -202,13 +214,18 @@ _INSERT_RULE_SQL = (
 @dataclass(frozen=True)
 class PlanRule:
     """One rule of kind ``field`` in a snapshot: the columns of an approved
-    ``crm_field_rules`` row that define it."""
+    ``crm_field_rules`` row that define it.
+
+    ``opened_empty`` (CRM-Q18-3) is True when an empty column opened the rule.
+    It is not part of :attr:`identity`.
+    """
 
     entity: str
     field_api_name: str
     field_type: str
     target_column: str
     profile_version: int
+    opened_empty: bool = False
 
     @property
     def key(self) -> tuple[str, str]:
@@ -224,6 +241,7 @@ class PlanRule:
             "field_api_name": self.field_api_name, "field_type": self.field_type,
             "target_column": self.target_column,
             "profile_version": self.profile_version,
+            "opened_empty": self.opened_empty,
         }
 
 
@@ -235,6 +253,8 @@ def _rule_of(item: Mapping[str, Any]) -> PlanRule | None:
     return PlanRule(
         *values,  # type: ignore[arg-type]
         profile_version=version if isinstance(version, int) else 0,
+        # A snapshot from before CRM-Q18-3 has no mark: False.
+        opened_empty=item.get("opened_empty") is True,
     )
 
 
@@ -271,6 +291,8 @@ def _rule_from_row(row: Any) -> PlanRule:
     return PlanRule(
         str(row.entity), str(row.field_api_name), str(row.field_type),
         str(row.target_column), int(row.profile_version),
+        # NULL on a row from before CRM-Q18-3: False.
+        opened_empty=row.opened_empty is True,
     )
 
 
@@ -359,12 +381,22 @@ async def lock_plan(db: Any, by: str) -> Any:
 # ── The one approve ─────────────────────────────────────────────────────────
 
 
-async def _checked(db: Any, rule: PlanRule, profile: Any, version: int | None) -> PlanRule:
+async def _checked(
+    db: Any, rule: PlanRule, profile: Any, version: int | None, empty: frozenset[str],
+) -> PlanRule:
     """The checks of ``POST /crm/field-rules``, and the rule with the type and
-    the profile version of today. A 422 names the field."""
+    the profile version of today. A 422 names the field.
+
+    *empty* holds the empty keys of the entity of the rule (CRM-Q18-3). An
+    item that carries ``opened_empty`` skips the empty test and keeps its
+    mark. Else the mark is True when only *empty* opens the column.
+    """
     try:
         kind = await _field_type(db, rule.entity, rule.field_api_name, profile)
-        _check_legal(rule.entity, kind, rule.target_column, profile)
+        opened = _check_legal(
+            rule.entity, kind, rule.target_column, profile, empty,
+            opened=rule.opened_empty,
+        )
     except HTTPException as exc:
         if isinstance(exc.detail, dict):
             exc.detail = {
@@ -373,7 +405,24 @@ async def _checked(db: Any, rule: PlanRule, profile: Any, version: int | None) -
         raise
     return PlanRule(
         rule.entity, rule.field_api_name, kind, rule.target_column, int(version or 0),
+        opened_empty=opened,
     )
+
+
+def _put_rule(old: PlanRule | None, new: PlanRule) -> PlanRule:
+    """The item that a ``put`` of *new* writes over *old*, the item of the same
+    field (CRM-Q18-3).
+
+    On the same column the item keeps the mark of *old*, because the rule
+    may have filled the column since an empty column opened it. A new
+    ``target_column`` clears the mark, so the empty test runs again for the
+    new column. With no *old*, *new* stays as it is.
+    """
+    if old is None:
+        return new
+    if old.target_column == new.target_column:
+        return replace(new, opened_empty=new.opened_empty or old.opened_empty)
+    return replace(new, opened_empty=False)
 
 
 async def _write_live_set(
@@ -398,7 +447,7 @@ async def _write_live_set(
         row = rows.get(rule.key)
         params = {
             "column": rule.target_column, "type": rule.field_type,
-            "version": rule.profile_version, "by": by,
+            "version": rule.profile_version, "by": by, "opened": rule.opened_empty,
         }
         if row is None:
             await db.execute(text(_INSERT_RULE_SQL), {
@@ -435,13 +484,18 @@ async def commit(
         for r in await lock_rules(db)
     }
     version, profile = await _profile(db, org)
+    # CRM-Q18-3: the empty keys of each entity, read once and only when a rule
+    # of it is checked.
+    empties: dict[str, frozenset[str]] = {}
     final: list[PlanRule] = []
     for rule in fields:
         row = rows.get(rule.key)
         if row is not None and row.status == "approved" and row.target_column == rule.target_column:
             final.append(_rule_from_row(row))
-        else:
-            final.append(await _checked(db, rule, profile, version))
+            continue
+        if rule.entity not in empties:
+            empties[rule.entity] = await _empty(db, org, rule.entity)
+        final.append(await _checked(db, rule, profile, version, empties[rule.entity]))
     _check_unique(final)
 
     if draft is None:
@@ -473,7 +527,7 @@ async def change_rule(
     if remove is not None:
         current.pop(remove, None)
     if put is not None:
-        current[put.key] = put
+        current[put.key] = _put_rule(current.get(put.key), put)
     return await commit(
         db, org=org, fields=list(current.values()), others=others, by=by,
         based_on=int(approved.version),
@@ -487,8 +541,8 @@ class MappingPlanModel(BaseModel):
     version: int
     state: Literal["draft", "approved", "superseded"]
     #: Each item has a ``kind``. A ``field`` item holds ``entity``,
-    #: ``field_api_name``, ``field_type``, ``target_column`` and
-    #: ``profile_version``.
+    #: ``field_api_name``, ``field_type``, ``target_column``,
+    #: ``profile_version`` and ``opened_empty`` (CRM-Q18-3).
     rules: list[dict[str, Any]]
     created_by: str
     created_at: datetime | None = None
@@ -616,6 +670,7 @@ async def create_mapping_plan_draft(
         version, profile = await _profile(db, org)
         fields, others = split_rules(approved.rules)
         current = {r.key: r for r in fields}
+        empties: dict[str, frozenset[str]] = {}
         for change in payload.changes:
             key = (_entity(change.entity), change.field_api_name.strip())
             if change.op == "remove":
@@ -634,8 +689,11 @@ async def create_mapping_plan_draft(
                     "message": "A put needs a target column.",
                     "entity": key[0], "field_api_name": key[1],
                 })
+            if key[0] not in empties:
+                empties[key[0]] = await _empty(db, org, key[0])
             current[key] = await _checked(
-                db, PlanRule(key[0], key[1], "", column, 0), profile, version,
+                db, _put_rule(current.get(key), PlanRule(key[0], key[1], "", column, 0)),
+                profile, version, empties[key[0]],
             )
         drafted = list(current.values())
         _check_unique(drafted)

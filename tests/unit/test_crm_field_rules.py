@@ -17,7 +17,10 @@ What this pins:
   rule stale;
 - the profile gains ``layout_fields`` with no new provider call;
 - the door refuses a column that is not a target, and a clear of a fixed
-  column.
+  column;
+- CRM-Q18-3: an empty fixed column opens, the ``opened_empty`` mark, a rule
+  with the mark never goes stale for its layout, the value of the standard
+  field still wins, and a put with a new column clears the mark.
 """
 
 from __future__ import annotations
@@ -360,3 +363,198 @@ def test_a_deadlock_or_a_unique_violation_is_a_409(sqlstate: str, code: str) -> 
         assert conflict.headers == {"Retry-After": "1"}
     other = DBAPIError("SELECT 1", {}, _PgError("42P01"))
     assert field_rules._db_conflict(other) is None, "any other error stays a 500"
+
+
+# ── CRM-Q18-3: a column that is empty opens ─────────────────────────────────
+
+#: Email and Company are on the Leads layout. Phone is not.
+ON_LAYOUT = frozenset({"Email", "Company"})
+
+
+def test_q18_3_an_empty_fixed_column_opens_and_the_type_test_still_counts() -> None:
+    """Items 1 and 4: ``rule_problem`` takes the empty keys as an argument."""
+    assert rule_problem("lead", "text", "email", ON_LAYOUT) == "standard_field_on_layout"
+    assert rule_problem("lead", "text", "email", ON_LAYOUT, {"email"}) is None
+    assert rule_problem("lead", "text", "email", None) == "layout_unknown"
+    assert rule_problem("lead", "text", "email", None, {"email"}) is None
+    assert rule_problem("lead", "date", "email", ON_LAYOUT, {"email"}) == "type_mismatch"
+    assert rule_problem(
+        "lead", "text", "email", ON_LAYOUT, {"phone"},
+    ) == "standard_field_on_layout", "another empty key opens no other column"
+    assert rule_problem(
+        "lead", "text", "lead_name", ON_LAYOUT, {"lead_name"},
+    ) == "unknown_target", "an empty key opens only a legal target"
+    assert "email" in mapping.legal_columns("lead", "text", ON_LAYOUT, {"email"})
+    assert "email" not in mapping.legal_columns("lead", "text", ON_LAYOUT)
+
+
+def test_q18_3_the_mark_names_a_column_that_only_its_fill_opened() -> None:
+    """Item 5: the approve marks a rule only when item 1 opened its column."""
+    opened = mapping.opened_by_empty
+    assert opened("lead", "email", ON_LAYOUT, {"email"}) is True
+    assert opened("lead", "email", None, {"email"}) is True
+    assert opened("lead", "phone", ON_LAYOUT, {"phone"}) is False, "the layouts open it"
+    assert opened("lead", "lost_note", ON_LAYOUT, {"lost_note"}) is False, "a free column"
+    assert opened("lead", "email", ON_LAYOUT, ()) is False
+    assert opened("lead", "lead_name", ON_LAYOUT, {"lead_name"}) is False
+
+
+def test_q18_3_the_mapping_functions_stay_pure() -> None:
+    """Item 4: the empty keys go in as an argument. ``mapping.py`` reads no
+    fill and imports no route."""
+    import inspect
+    import re
+
+    source = inspect.getsource(mapping)
+    imports = re.findall(r"^\s*(?:from|import)\s+(\S+)", source, re.MULTILINE)
+    assert not [m for m in imports if "routes" in m or "fill" in m or "sqlalchemy" in m]
+    for function in (rule_problem, mapping.legal_columns, mapping.opened_by_empty):
+        assert "empty" in inspect.signature(function).parameters
+
+
+def test_q18_3_an_opened_rule_never_goes_stale_for_its_layout() -> None:
+    """Item 2: the other two reasons still apply."""
+    types = {"Why_Lost": "textarea"}
+    assert rule_stale_reason(
+        "lead", "Why_Lost", "email", types, ON_LAYOUT,
+    ) == "standard_field_on_layout"
+    assert rule_stale_reason("lead", "Why_Lost", "email", types, ON_LAYOUT, opened=True) is None
+    assert rule_stale_reason(
+        "lead", "Gone", "email", types, ON_LAYOUT, opened=True,
+    ) == "field_gone"
+    assert rule_stale_reason(
+        "lead", "Why_Lost", "email", {"Why_Lost": "date"}, ON_LAYOUT, opened=True,
+    ) == "type_mismatch"
+
+
+def test_q18_3_the_value_of_the_standard_field_still_wins_on_an_opened_column() -> None:
+    """Item 8: ``apply_field_rules`` applies a rule only where the fixed map
+    gives NULL, also on a column that an empty fill opened."""
+    rules = {"email": "Why_Lost"}
+    zoho = map_record("lead", {
+        "id": "l1", "Email": "ann@lead.test", "Why_Lost": "Price",
+    }, modified_at=None, owners={}, rules=rules)
+    assert zoho.values["email"] == "ann@lead.test"
+    blank = map_record("lead", {"id": "l2", "Why_Lost": "Price"},
+                       modified_at=None, owners={}, rules=rules)
+    assert blank.values["email"] == "Price"
+
+
+class _Rows:
+    def __init__(self, rows: list[Any]) -> None:
+        self._rows = rows
+
+    def fetchall(self) -> list[Any]:
+        return self._rows
+
+
+class _LockDb:
+    """Gives *rows* for each statement, and records each statement."""
+
+    def __init__(self, rows: list[Any]) -> None:
+        self.rows = rows
+        self.sql: list[str] = []
+        self.params: list[Any] = []
+
+    async def execute(self, statement: Any, params: Any = None) -> Any:
+        self.sql.append(str(statement))
+        self.params.append(params)
+        return _Rows(self.rows)
+
+
+def test_q18_3_mark_stale_reads_the_mark_through_the_one_lock() -> None:
+    """Item 6: ``FIELD_RULE_LOCK_SQL`` reads ``opened_empty``, and
+    ``mark_stale`` passes it to ``rule_stale_reason``."""
+    from types import SimpleNamespace as Row
+
+    from gateway.crm_sync import field_rules as sync_rules
+    from gateway.routes.crm.core import FIELD_RULE_LOCK_SQL
+
+    assert "opened_empty" in FIELD_RULE_LOCK_SQL
+    opened_id = "00000000-0000-0000-0000-000000000001"
+    plain_id = "00000000-0000-0000-0000-000000000002"
+    db = _LockDb([
+        Row(id=opened_id, entity="lead", field_api_name="Why_Lost",
+            target_column="email", status="approved", opened_empty=True),
+        # NULL from a row of before CRM-Q18-3 means false.
+        Row(id=plain_id, entity="lead", field_api_name="Note_X",
+            target_column="phone", status="approved", opened_empty=None),
+    ])
+    profile = {
+        "layout_fields": {"lead": ["Email", "Phone"]},
+        "custom_field_types": {"lead": {"Why_Lost": "textarea", "Note_X": "text"}},
+    }
+    stale = asyncio.run(sync_rules.mark_stale(db, mapping, "zoho", profile))
+    assert stale == [plain_id]
+    assert db.sql[0] == FIELD_RULE_LOCK_SQL
+
+
+def test_q18_3_the_approve_check_marks_and_skips_the_empty_test() -> None:
+    """Items 4 and 7: ``_check_legal`` returns the mark, and an item that
+    carries it skips the empty test. The type test still applies."""
+    from fastapi import HTTPException
+    from gateway.routes.crm import field_rules
+
+    profile = {"layout_fields": {"lead": sorted(ON_LAYOUT)}}
+    with pytest.raises(HTTPException) as closed:
+        field_rules._check_legal("lead", "text", "email", profile)
+    assert closed.value.detail["code"] == "standard_field_on_layout"
+    assert field_rules._check_legal("lead", "text", "email", profile, {"email"}) is True
+    assert field_rules._check_legal("lead", "text", "phone", profile, {"phone"}) is False
+    assert field_rules._check_legal("lead", "text", "email", profile, opened=True) is True
+    with pytest.raises(HTTPException) as mismatch:
+        field_rules._check_legal("lead", "date", "email", profile, opened=True)
+    assert mismatch.value.detail["code"] == "type_mismatch"
+
+    targets = {t.column: t for t in field_rules._targets("lead", profile, {"email"})}
+    assert (targets["email"].open, targets["email"].reason) == (True, None)
+    assert targets["organization_name"].open is False
+    kept, dropped = field_rules.keep_proposals(
+        "lead", [{"field_api_name": "Why", "target_column": "email"}], {"Why": "text"},
+        {"email"}, ON_LAYOUT, {"email"},
+    )
+    assert ([k.target_column for k in kept], dropped) == (["email"], 0)
+    kept, dropped = field_rules.keep_proposals(
+        "lead", [{"field_api_name": "Why", "target_column": "email"}], {"Why": "text"},
+        {"email"}, ON_LAYOUT,
+    )
+    assert (kept, dropped) == ([], 1)
+
+
+def test_q18_3_each_field_item_of_a_snapshot_carries_the_mark() -> None:
+    """Item 7: through ``PlanRule.as_json`` and ``_rule_of``."""
+    from gateway.routes.crm import mapping_plans as plans
+
+    rule = plans.PlanRule("lead", "Why_Lost", "textarea", "email", 3, opened_empty=True)
+    item = rule.as_json()
+    assert item["opened_empty"] is True
+    assert plans._rule_of(item) == rule
+    before = {k: v for k, v in item.items() if k != "opened_empty"}
+    assert plans._rule_of(before).opened_empty is False, "a snapshot from before"
+    assert rule.identity == ("lead", "Why_Lost", "email"), "the mark is not identity"
+
+
+def test_q18_3_a_put_with_a_new_column_clears_the_mark(monkeypatch) -> None:
+    """Item 7: ``change_rule`` keeps the mark on the same column and clears
+    it on a new one, so the empty test runs again."""
+    from types import SimpleNamespace as Row
+
+    from gateway.routes.crm import mapping_plans as plans
+
+    seen: dict[str, Any] = {}
+
+    async def commit(db: Any, *, fields: Any, **_kw: Any) -> str:
+        seen["rules"] = {r.key: r for r in fields}
+        return "plan"
+
+    monkeypatch.setattr(plans, "commit", commit)
+    opened = plans.PlanRule("lead", "Why_Lost", "textarea", "email", 3, opened_empty=True)
+    approved = Row(rules=[opened.as_json()], version=4)
+    key = ("lead", "Why_Lost")
+
+    asyncio.run(plans.change_rule(None, approved, org=ORG, by="a", put=plans.PlanRule(
+        "lead", "Why_Lost", "textarea", "description", 3, opened_empty=True)))
+    assert seen["rules"][key].opened_empty is False, "a new column clears it"
+    asyncio.run(plans.change_rule(None, approved, org=ORG, by="a", put=plans.PlanRule(
+        "lead", "Why_Lost", "textarea", "email", 5)))
+    assert seen["rules"][key].opened_empty is True, "the same column keeps it"

@@ -2432,9 +2432,15 @@ FIELD_RULE_LOCK_ORDER = 'entity COLLATE "C", field_api_name COLLATE "C"'
 #: (``routes/crm/field_rules.py``) all lock through it before they write a
 #: rule row, so none waits on another in a cycle (a 40P01 deadlock). Fence:
 #: ``tests/unit/test_crm_map_plan_r8.py`` (the lock-order tests).
+#:
+#: CRM-Q18-3: it also reads ``opened_empty``, the column of the migration of
+#: CRM-Q18-3. The sync's ``mark_stale`` passes it to
+#: ``mapping.rule_stale_reason``, and the approve keeps it on a rule that
+#: stays as it is. NULL means false.
 FIELD_RULE_LOCK_SQL = (
     "SELECT id, entity, field_api_name, field_type, profile_version, "
-    "target_column, status FROM crm_field_rules WHERE ext_source = :src "
+    "target_column, status, opened_empty FROM crm_field_rules "
+    "WHERE ext_source = :src "
     f"ORDER BY {FIELD_RULE_LOCK_ORDER} FOR UPDATE"
 )
 

@@ -28,6 +28,12 @@ item of §18.7:
 10. a reject of a rule on a free column sets that column to NULL;
 11. a second approved rule for the same column is a 409.
 
+The section CRM-Q18-3 (§18.9.6, "A column that is empty opens") proves the
+five cases of its item 9: a fixed column that is empty opens, a stale entity
+opens none, an opened rule does not go stale for its layout, a restore of an
+opened rule gives no 422, and an org outside ``CRM_FILL_RANK_ORGS`` opens
+none. It also proves the migration of the ``opened_empty`` mark.
+
 ``tests/unit/test_crm_field_rules.py`` holds the rules that need no database.
 """
 
@@ -720,6 +726,239 @@ async def test_a_profile_with_no_layout_list_is_read_again_at_once(fr) -> None:
     assert (await _run(p.org_a)).status == "ok"
     assert a.org_reads == reads + 1, "the run read the profile again"
     assert (await _post(p.org_a, "Custom_Industry", "industry")).status_code == 201
+
+
+# ── CRM-Q18-3: a column that is empty opens ──────────────────────────────────
+#
+# Org A is on ``CRM_FILL_RANK_ORGS`` and org B is not. No seeded lead holds an
+# Email, so the fixed column ``email`` has a fill of 0, and its standard field
+# ``Email`` is on the Leads layout. ``organization_name`` (``Company``) is on
+# the layout too, and each lead fills it.
+
+
+@pytest.fixture
+def fe(fr, monkeypatch):
+    """``fr``, with org A (only) on ``CRM_FILL_RANK_ORGS``."""
+    from acb_common import get_settings
+
+    p, a, b = fr
+    monkeypatch.setattr(get_settings(), "crm_fill_rank_orgs", p.org_a, raising=False)
+    yield p, a, b
+    with p.admin_engine.begin() as c:
+        for org in (p.org_a, p.org_b):
+            c.execute(text("DELETE FROM crm_field_fill WHERE organization_id = "
+                           "CAST(:o AS uuid)"), {"o": org})
+
+
+def _opened(p: Any, org: str) -> dict[str, tuple[Any, ...]]:
+    """Each rule row of *org* by field: status, column and ``opened_empty``."""
+    rows = _q(p, "SELECT field_api_name, status, target_column, opened_empty "
+                 "FROM crm_field_rules WHERE organization_id = CAST(:o AS uuid)", o=org)
+    return {r[0]: tuple(r[1:]) for r in rows}
+
+
+async def _snapshot(org: str) -> dict[str, dict[str, Any]]:
+    """The ``field`` items of the approved version, by field."""
+    plans = await _req(_admin_of(org), "GET", "/crm/mapping/plans")
+    assert plans.status_code == 200, plans.text
+    one = await _req(_admin_of(org), "GET", f"/crm/mapping/plans/{plans.json()['approved']}")
+    assert one.status_code == 200, one.text
+    return {r["field_api_name"]: r for r in one.json()["rules"]}
+
+
+async def _lead_targets(org: str) -> dict[str, Any]:
+    view = await _req(_admin_of(org), "GET", "/crm/field-rules?entity=leads")
+    assert view.status_code == 200, view.text
+    return view.json()
+
+
+def _fill_email(p: Any, org: str) -> None:
+    """The fill of ``email`` is no longer 0, as after the rule filled it."""
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE crm_field_fill SET filled = total WHERE organization_id "
+                       "= CAST(:o AS uuid) AND entity = 'lead' AND key = 'email'"),
+                  {"o": org})
+
+
+async def test_q18_3_an_empty_fixed_column_opens(fe) -> None:
+    """Items 1, 3, 4 and 5, and case 1 of item 9."""
+    p, a, _b = fe
+    # Mobile goes on the layout too, so only its fill can open it.
+    a.layout["Leads"].append("Mobile")
+    await _imported(p, p.org_a, a)
+    layout = await _req(_admin_of(p.org_a), "GET", "/crm/fields/leads?layout=1")
+    assert {"email", "mobile"} <= set(layout.json()["empty_columns"])
+    assert "organization_name" not in layout.json()["empty_columns"]
+
+    view = await _lead_targets(p.org_a)
+    targets = {t["column"]: t for t in view["targets"]}
+    assert (targets["email"]["open"], targets["email"]["reason"]) == (True, None)
+    assert targets["organization_name"]["open"] is False
+    assert targets["organization_name"]["reason"] == "standard_field_on_layout"
+    by_key = {f["key"]: f for f in view["fields"]}
+    assert "email" in by_key["Why_Lost"]["targets"]
+    assert "organization_name" not in by_key["Why_Lost"]["targets"]
+
+    made = await _post(p.org_a, "Why_Lost", "email")
+    assert made.status_code == 201, made.text
+    assert _opened(p, p.org_a)["Why_Lost"] == ("approved", "email", True)
+    assert (await _snapshot(p.org_a))["Why_Lost"]["opened_empty"] is True
+
+    # A filled fixed column on a layout stays closed.
+    filled = await _post(p.org_a, "Custom_Industry", "organization_name")
+    assert filled.status_code == 422, filled.text
+    assert filled.json()["detail"]["code"] == "standard_field_on_layout"
+    # A fixed column with no fill row stays closed.
+    with p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM crm_field_fill WHERE organization_id = "
+                       "CAST(:o AS uuid) AND entity = 'lead' AND key = 'mobile'"),
+                  {"o": p.org_a})
+    no_row = await _post(p.org_a, "Custom_Industry", "mobile")
+    assert no_row.status_code == 422, no_row.text
+    assert no_row.json()["detail"]["code"] == "standard_field_on_layout"
+
+    # The layouts open phone already, so its fill did not open it: no mark.
+    assert (await _post(p.org_a, "Custom_Industry", "phone")).status_code == 201
+    assert _opened(p, p.org_a)["Custom_Industry"] == ("approved", "phone", False)
+    assert (await _snapshot(p.org_a))["Custom_Industry"]["opened_empty"] is False
+
+
+async def test_q18_3_a_stale_entity_opens_no_fixed_column(fe) -> None:
+    """Item 3 and case 2 of item 9: stale numbers give ``[]``."""
+    p, a, _b = fe
+    await _imported(p, p.org_a, a)
+    fresh = await _req(_admin_of(p.org_a), "GET", "/crm/fields/leads?layout=1")
+    assert "email" in fresh.json()["empty_columns"], "fresh numbers open email"
+    # The leads wait for the 24-hour bound, and no "still empty" check serves.
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_sync_cursors SET cursor_state = jsonb_set(cursor_state - "
+            "'still_empty', '{pending}', '[\"lead\"]') WHERE organization_id = "
+            "CAST(:o AS uuid) AND module = 'zoho:fill_rank'"), {"o": p.org_a})
+    layout = await _req(_admin_of(p.org_a), "GET", "/crm/fields/leads?layout=1")
+    assert layout.json()["empty_columns"] == []
+    targets = {t["column"]: t for t in (await _lead_targets(p.org_a))["targets"]}
+    assert targets["email"]["open"] is False
+    stale = await _post(p.org_a, "Why_Lost", "email")
+    assert stale.status_code == 422, stale.text
+    assert stale.json()["detail"]["code"] == "standard_field_on_layout"
+    assert _count(p, "crm_field_rules", p.org_a) == 0
+
+
+async def test_q18_3_an_opened_rule_does_not_go_stale_for_its_layout(fe) -> None:
+    """Items 2, 6 and 8, and case 3 of item 9."""
+    p, a, _b = fe
+    await _imported(p, p.org_a, a)
+    assert (await _post(p.org_a, "Why_Lost", "email")).status_code == 201
+    # The layouts open phone, so this rule has no mark.
+    assert (await _post(p.org_a, "Custom_Industry", "phone")).status_code == 201
+    assert (await _run(p.org_a)).status == "ok"
+
+    def emails() -> dict[str, Any]:
+        return {r[0]: r[1] for r in _q(
+            p, "SELECT ext_id, email FROM crm_leads WHERE organization_id = "
+               "CAST(:o AS uuid)", o=p.org_a)}
+
+    assert emails()["l1"] == "Price", "the backfill filled the empty column"
+    # Item 8: a value of the standard field from Zoho still wins.
+    a.add("Leads", "l3", 30, Last_Name="Three", Email="three@lead.test", Why_Lost="Slow")
+    assert (await _run(p.org_a)).status == "ok"
+    assert emails()["l3"] == "three@lead.test"
+
+    # Email stays on the layout, and Phone comes onto it. The next discovery
+    # makes the rule with no mark stale, and keeps the opened one.
+    a.layout["Leads"].append("Phone")
+    _age_profile(p, p.org_a)
+    assert (await _run(p.org_a)).status == "ok"
+    rules = _opened(p, p.org_a)
+    assert rules["Why_Lost"] == ("approved", "email", True)
+    assert rules["Custom_Industry"][0] == "stale"
+    assert emails()["l1"] == "Price", "the opened rule still applies"
+
+
+async def test_q18_3_a_restore_of_an_opened_rule_gives_no_422(fe) -> None:
+    """Item 7 and case 4 of item 9: the restore, the draft approve and a put
+    with a new column."""
+    p, a, _b = fe
+    await _imported(p, p.org_a, a)
+    made = await _post(p.org_a, "Why_Lost", "email")
+    assert made.status_code == 201, made.text
+    opened_version = (await _req(_admin_of(p.org_a), "GET", "/crm/mapping/plans")).json()[
+        "approved"]
+    assert (await _patch(p.org_a, made.json()["id"], "rejected")).status_code == 200
+    _fill_email(p, p.org_a)
+    assert (await _post(p.org_a, "Why_Lost", "email")).status_code == 422, (
+        "a new rule meets the empty test")
+
+    restored = await _req(_admin_of(p.org_a), "POST",
+                          f"/crm/mapping/plans/{opened_version}/restore")
+    assert restored.status_code == 201, restored.text
+    assert _opened(p, p.org_a)["Why_Lost"] == ("approved", "email", True)
+    assert (await _snapshot(p.org_a))["Why_Lost"]["opened_empty"] is True
+
+    # A put with a new column clears the mark, so the empty test runs again.
+    moved = await _req(_admin_of(p.org_a), "POST", "/crm/mapping/plans", {"changes": [
+        {"op": "put", "entity": "leads", "field_api_name": "Why_Lost",
+         "target_column": "organization_name"}]})
+    assert moved.status_code == 422, moved.text
+    assert moved.json()["detail"]["code"] == "standard_field_on_layout"
+    draft = await _req(_admin_of(p.org_a), "POST", "/crm/mapping/plans", {"changes": [
+        {"op": "put", "entity": "leads", "field_api_name": "Why_Lost",
+         "target_column": "description"}]})
+    assert draft.status_code == 201, draft.text
+    assert draft.json()["rules"][0]["opened_empty"] is False
+    approved = await _req(_admin_of(p.org_a), "POST",
+                          f"/crm/mapping/plans/{draft.json()['version']}/approve")
+    assert approved.status_code == 200, approved.text
+    assert _opened(p, p.org_a)["Why_Lost"] == ("approved", "description", False)
+
+
+async def test_q18_3_a_draft_approve_of_an_opened_rule_gives_no_422(fe) -> None:
+    """Item 7: a draft made while the column was empty approves after a fill."""
+    p, a, _b = fe
+    await _imported(p, p.org_a, a)
+    draft = await _req(_admin_of(p.org_a), "POST", "/crm/mapping/plans", {"changes": [
+        {"op": "put", "entity": "leads", "field_api_name": "Why_Lost",
+         "target_column": "email"}]})
+    assert draft.status_code == 201, draft.text
+    assert draft.json()["rules"][0]["opened_empty"] is True
+    _fill_email(p, p.org_a)
+    approved = await _req(_admin_of(p.org_a), "POST",
+                          f"/crm/mapping/plans/{draft.json()['version']}/approve")
+    assert approved.status_code == 200, approved.text
+    assert _opened(p, p.org_a)["Why_Lost"] == ("approved", "email", True)
+
+
+async def test_q18_3_an_org_outside_the_list_opens_no_fixed_column(fe) -> None:
+    """Case 5 of item 9."""
+    p, _a, b = fe
+    await _imported(p, p.org_b, b)
+    assert _count(p, "crm_field_fill", p.org_b) == 0
+    targets = {t["column"]: t for t in (await _lead_targets(p.org_b))["targets"]}
+    assert targets["email"]["open"] is False
+    refused = await _post(p.org_b, "Why_Lost", "email")
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["detail"]["code"] == "standard_field_on_layout"
+
+
+def test_q18_3_the_migration_is_found_by_content_replays_and_expands_only(fr) -> None:
+    """Item 5: one nullable BOOLEAN with no default, and nothing else."""
+    p, _a, _b = fr
+    sql = re.compile(r"ADD COLUMN IF NOT EXISTS opened_empty BOOLEAN")
+    found = [f for f in _MIGRATIONS.glob("*.sql")
+             if f.name != "schema.generated.sql"
+             and sql.search(f.read_text(encoding="utf-8"))]
+    assert len(found) == 1, found
+    body = found[0].read_text(encoding="utf-8")
+    for word in ("DROP ", "RENAME", "INSERT INTO", "UPDATE ", "NOT NULL", "DEFAULT"):
+        assert word not in body.split("BEGIN;", 1)[1], word
+    with p.admin_engine.begin() as c:
+        _exec_file(c, str(found[0]))
+        _exec_file(c, str(found[0]))
+    column = _q(p, "SELECT data_type, is_nullable, column_default FROM "
+                   "information_schema.columns WHERE table_name = 'crm_field_rules' "
+                   "AND column_name = 'opened_empty'")
+    assert column == [("boolean", "YES", None)]
 
 
 # ── The migration ────────────────────────────────────────────────────────────

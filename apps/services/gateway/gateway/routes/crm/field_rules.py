@@ -26,8 +26,17 @@ version. The proposer writes ``proposed`` rows only, and no version.
 
 **What is legal.** The rules of ``mapping.rule_problem``: the target is one of
 ``FIELD_RULE_TARGETS``, the field's type agrees with the column, and a fixed
-column opens only when its standard field is off every layout of the latest
-source profile. Any other rule is a 422 that names the reason. The field must
+column opens when its standard field is off every layout of the latest
+source profile. Any other rule is a 422 that names the reason.
+
+**An empty column opens (CRM-Q18-3).** A fixed column also opens when it is in
+``fill_rank.empty_columns`` of the entity (:func:`_empty`), the one gateway
+function. An org outside ``CRM_FILL_RANK_ORGS`` and stale numbers give no
+key, so they open no fixed column. The approve marks such a rule
+``opened_empty``, and the sync then never makes it stale for its standard
+field on a layout. The value of the fixed map still wins where Zoho fills
+it. ``_targets``, :func:`_check_legal` and ``mapping.rule_problem`` are the
+one home of this rule, for the target list, the proposer and the approve. The field must
 be a field that goes to ``custom`` today (a ``crm_field_defs`` row of the
 entity). Only one approved rule may fill a column, and only one rule exists for
 each field. A second approved rule for a column is a 409.
@@ -99,6 +108,8 @@ _ENTITY_WORDS: dict[str, str] = {
     **FIELD_ENTITY_BY_SLUG,
     **{word: word for word in FIELD_ENTITY_BY_SLUG.values()},
 }
+#: The stored entity word → its API slug, the word of ``fill_rank``.
+_SLUG_BY_ENTITY: dict[str, str] = {v: k for k, v in FIELD_ENTITY_BY_SLUG.items()}
 
 _GUARDS = [Depends(require_crm_mirror), require_permission(ADMIN_PERMISSION)]
 
@@ -194,7 +205,8 @@ class FieldMapField(BaseModel):
 
 class FieldMapTarget(BaseModel):
     """One legal column. ``open`` is False for a fixed column whose standard
-    field is still on a layout, or whose layouts are not read yet."""
+    field is still on a layout, or whose layouts are not read yet. An empty
+    fixed column is open in both cases (CRM-Q18-3)."""
 
     column: str
     column_type: str
@@ -307,15 +319,49 @@ def _field_kind(field: Any, known: dict[str, str] | None) -> str | None:
     return known.get(field.key)
 
 
-def _check_legal(entity: str, field_type: str, column: str, profile: Any) -> None:
+async def _empty(db: Any, org: str, entity: str) -> frozenset[str]:
+    """CRM-Q18-3: the keys of *entity* whose fill is 0 now.
+
+    It reads ``fill_rank.empty_columns``, the one gateway function, in the
+    caller's tenant session. An org outside ``CRM_FILL_RANK_ORGS`` gets
+    ``None`` there, and stale numbers give ``[]``. Both give the empty set
+    here, so they open no fixed column.
+    """
+    from gateway.routes.crm import fill_rank
+
+    return frozenset(await fill_rank.empty_columns(db, org, _SLUG_BY_ENTITY[entity]) or ())
+
+
+def _check_legal(
+    entity: str,
+    field_type: str,
+    column: str,
+    profile: Any,
+    empty: Collection[str] = (),
+    *,
+    opened: bool = False,
+) -> bool:
+    """422 when the rule is not legal (``mapping.rule_problem``).
+
+    *empty* holds the empty keys of the entity (:func:`_empty`). Returns True
+    when the rule holds a fixed column only because that column is empty, so
+    the approve marks it ``opened_empty`` (CRM-Q18-3). *opened* is the mark of
+    a snapshot item that an empty column opened before: the empty test is
+    skipped for it, because the rule filled the column since then. Such an
+    item keeps its mark.
+    """
     mapping = mapping_for(PROVIDER)
-    problem = mapping.rule_problem(
-        entity, field_type, column, mapping.entity_layout_fields(profile, entity),
-    )
+    layout = mapping.entity_layout_fields(profile, entity)
+    if opened:
+        empty = {*empty, column}
+    problem = mapping.rule_problem(entity, field_type, column, layout, empty)
     if problem is not None:
         raise HTTPException(status_code=422, detail={
             "code": problem, "message": _PROBLEMS.get(problem, "That rule is not legal."),
         })
+    target = mapping.rule_target(entity, column)
+    fixed = target is not None and target.standard_field is not None
+    return (opened and fixed) or mapping.opened_by_empty(entity, column, layout, empty)
 
 
 async def _check_free(db: Any, entity: str, column: str, field: str, rule_id: str | None) -> None:
@@ -381,13 +427,17 @@ def _db_conflict(exc: DBAPIError) -> HTTPException | None:
     return None
 
 
-def _targets(entity: str, profile: Any) -> list[FieldMapTarget]:
+def _targets(
+    entity: str, profile: Any, empty: Collection[str] = (),
+) -> list[FieldMapTarget]:
+    """The legal columns of *entity*. A fixed column is open when its standard
+    field is off every layout, or when it is in *empty* (CRM-Q18-3)."""
     mapping = mapping_for(PROVIDER)
     layout = mapping.entity_layout_fields(profile, entity)
     out: list[FieldMapTarget] = []
     for target in mapping.FIELD_RULE_TARGETS[entity].values():
         reason = None
-        if target.standard_field is not None:
+        if target.standard_field is not None and target.column not in empty:
             if layout is None:
                 reason = "layout_unknown"
             elif target.standard_field in layout:
@@ -417,6 +467,7 @@ async def get_field_rules(
         rules = (await db.execute(
             text(_RULES_SQL), {"entity": word, "src": PROVIDER},
         )).fetchall()
+        empty = await _empty(db, org, word)
     mapping = mapping_for(PROVIDER)
     layout = mapping.entity_layout_fields(profile, word)
     known = mapping.entity_field_types(profile, word)
@@ -424,7 +475,7 @@ async def get_field_rules(
     def legal(field: Any) -> list[str]:
         kind = _field_kind(field, known)
         # A field that the latest profile no longer lists fills nothing.
-        return [] if kind is None else mapping.legal_columns(word, kind, layout)
+        return [] if kind is None else mapping.legal_columns(word, kind, layout, empty)
 
     return FieldMapModel(
         entity=word,
@@ -438,7 +489,7 @@ async def get_field_rules(
             for f in fields
         ],
         rules=[_wire(r) for r in rules],
-        targets=_targets(word, profile),
+        targets=_targets(word, profile, empty),
     )
 
 
@@ -465,10 +516,14 @@ async def create_field_rule(
             approved = await mapping_plans.lock_plan(db, by)
             version, profile = await _profile(db, org)
             field_type = await _field_type(db, word, field, profile)
-            _check_legal(word, field_type, column, profile)
+            opened = _check_legal(
+                word, field_type, column, profile, await _empty(db, org, word),
+            )
             await _check_free(db, word, column, field, None)
             await mapping_plans.change_rule(db, approved, org=org, by=by, put=(
-                mapping_plans.PlanRule(word, field, field_type, column, int(version or 0))
+                mapping_plans.PlanRule(
+                    word, field, field_type, column, int(version or 0), opened_empty=opened,
+                )
             ))
             row = (await db.execute(text(_FIELD_RULE_SQL), {
                 "src": PROVIDER, "entity": word, "field": field,
@@ -510,13 +565,17 @@ async def decide_field_rule(
             version, profile = await _profile(db, org)
             field_type = str(current.field_type)
             stamp = int(version if version is not None else current.profile_version)
+            opened = False
             if payload.status == "approved":
                 if current.status == "approved":
                     return _wire(current)
                 field_type = await _field_type(
                     db, current.entity, current.field_api_name, profile,
                 )
-                _check_legal(current.entity, field_type, current.target_column, profile)
+                opened = _check_legal(
+                    current.entity, field_type, current.target_column, profile,
+                    await _empty(db, org, current.entity),
+                )
                 await _check_free(
                     db, current.entity, current.target_column, current.field_api_name, wanted,
                 )
@@ -538,6 +597,7 @@ async def decide_field_rule(
                     db, approved, org=org, by=by,
                     put=mapping_plans.PlanRule(
                         key[0], key[1], field_type, str(current.target_column), stamp,
+                        opened_empty=opened,
                     ) if payload.status == "approved" else None,
                     remove=key if payload.status == "rejected" else None,
                 )
@@ -742,13 +802,15 @@ def keep_proposals(
     field_types: Mapping[str, str],
     open_columns: Collection[str],
     layout: Collection[str] | None,
+    empty: Collection[str] = (),
 ) -> tuple[list[Proposal], int]:
     """The items that the server keeps, and the count it drops (§18.7 "What it
     writes").
 
     It drops an item when its field was not in the input (``field_types``),
     when its target is not one of ``open_columns`` or is not legal by
-    ``mapping.rule_problem``, or when the types disagree. It keeps the first
+    ``mapping.rule_problem`` (with the empty keys *empty*, CRM-Q18-3), or
+    when the types disagree. It keeps the first
     item for each field. Each kept item becomes a ``proposed`` row, never an
     ``approved`` one, whatever the item says.
     """
@@ -764,7 +826,7 @@ def keep_proposals(
         field_type = field_types.get(field)
         if field_type is None or field in seen or column not in open_columns:
             continue
-        if mapping.rule_problem(entity, field_type, column, layout) is not None:
+        if mapping.rule_problem(entity, field_type, column, layout, empty) is not None:
             continue
         seen.add(field)
         kept.append(Proposal(
@@ -874,6 +936,7 @@ async def suggest_field_rules(
         rules = (await db.execute(
             text(_RULES_SQL), {"entity": word, "src": PROVIDER},
         )).fetchall()
+        empty = await _empty(db, org, word)
     stamp = int(version or 0)
     # Only an open proposal counts. An approve or a reject stamps its row with
     # the version of today, and a decided row must not stop a new field.
@@ -893,7 +956,7 @@ async def suggest_field_rules(
     taken = {r.target_column for r in rules if r.status == "approved"}
     targets = [
         mapping.FIELD_RULE_TARGETS[word][t.column]
-        for t in _targets(word, profile) if t.open and t.column not in taken
+        for t in _targets(word, profile, empty) if t.open and t.column not in taken
     ]
     # A field that an admin decided, or whose rule is stale, gets no proposal.
     decided = {
@@ -945,7 +1008,7 @@ async def suggest_field_rules(
         )
     kept, dropped = keep_proposals(
         word, items, {c.key: c.type for c in candidates},
-        {t.column for t in targets}, layout,
+        {t.column for t in targets}, layout, empty,
     )
     from gateway.routes.crm import mapping_plans
 
