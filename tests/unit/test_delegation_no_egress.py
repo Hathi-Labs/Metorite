@@ -1964,11 +1964,14 @@ def test_every_artifact_context_site_binds_no_egress() -> None:
 
 
 def test_every_injection_and_the_self_anneal_pass_no_egress() -> None:
-    """All five calls of ``_inject_agent_tools`` (the three run boundaries
-    and the two self-anneal retries) and the call of ``_self_anneal`` pass
-    the run's answer by name. The default is ``False``, so a call that
+    """All three calls of ``_inject_agent_tools`` (the stream run, the
+    sub-agent and the one batch assembly), both calls of that assembly (the
+    batch run and the self-anneal retry) and the call of ``_self_anneal``
+    pass the run's answer by name. The default is ``False``, so a call that
     forgot it would fail open. This fence checks only that the keyword is
-    there; ``test_a_self_anneal_retry_keeps_the_runs_answer`` fences the value."""
+    there; ``test_a_self_anneal_retry_keeps_the_runs_answer`` fences the value.
+    The retry injects only through the assembly of the first attempt
+    (``tests/unit/test_anneal_retry_scope.py``)."""
     tree = ast.parse(EXECUTOR_PY.read_text(encoding="utf-8"))
     by_fn: dict[str, list[bool]] = {}
     for fn in ast.walk(tree):
@@ -1976,18 +1979,23 @@ def test_every_injection_and_the_self_anneal_pass_no_egress() -> None:
             continue
         for node in ast.walk(fn):
             if isinstance(node, ast.Call) and getattr(node.func, "id", None) in (
-                "_inject_agent_tools", "_self_anneal",
+                "_inject_agent_tools", "_self_anneal", "_assemble_batch_agents",
             ):
                 by_fn.setdefault(f"{fn.name}:{node.func.id}", []).append(
                     any(kw.arg == "no_egress" for kw in node.keywords),
                 )
     want = {
         "run_agent_stream:_inject_agent_tools": [True],
-        "_run_agent_inner:_inject_agent_tools": [True],
+        "_assemble_batch_agents:_inject_agent_tools": [True],
         "_run_sub_agent_streaming:_inject_agent_tools": [True],
-        "_self_anneal:_inject_agent_tools": [True, True],
+        "_run_agent_inner:_assemble_batch_agents": [True],
+        "_self_anneal:_assemble_batch_agents": [True],
         "_run_agent_inner:_self_anneal": [True],
     }
+    # No second injection path: neither the batch run nor the retry injects
+    # around the assembly.
+    assert "_run_agent_inner:_inject_agent_tools" not in by_fn, by_fn
+    assert "_self_anneal:_inject_agent_tools" not in by_fn, by_fn
     for key, expect in want.items():
         assert by_fn.get(key) == expect, (key, by_fn.get(key))
 

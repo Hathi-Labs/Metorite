@@ -5540,8 +5540,9 @@ findings.
 - **The `own` count comes before H-236.** Each site counts `own` before `_inject_agent_tools`. The
   H-236 step in that call can take egress tools out of the own pool. So `own` means "own after
   scope, before H-236". Read the log with that label.
-- **The self-anneal sites skip the own scope.** The two `_inject_agent_tools` calls near
-  `executor.py:5683` and `:5731` do not call `_apply_own_tool_scope`.
+- ✅ **FIXED 2026-10-16. The self-anneal sites skipped the own scope.** The two retries also
+  skipped `tool_scope`. They now call `_assemble_batch_agents`, the assembly of the first try,
+  and narrow to the tools that the first try held. Fence: `tests/unit/test_anneal_retry_scope.py`.
 - **The pool list has three copies.** `_own_tool_pools`, `_inspectable` and
   `_withhold_egress_from_agent` each list the tool pools. `_own_tool_pools` does not read the
   Copilot `_default_options`.
@@ -13595,6 +13596,10 @@ merged** (2026-10-15, branch `gmail-bg-writes`, §12.3.13.7).
 ✅ **PR-G5 (EM-G11d) is merged NARROWED** (#1060, 2026-10-16).
 §12.3.13.8 records what it covers. The other PRs are not built.
 
+📝 **This spec added three PRs on 2026-10-16, and no audit has read them.** PR-G8b (EM-G11f3) stops the copies
+of mail in chat memory stores (§12.3.13.9.1). PR-G7b and PR-G7c (EM-G11f1b, EM-G11f1c) put the
+teardown into the member purge and the org purge (§12.3.13.9.2).
+
 **Why.** The owner wants Google to verify the Gmail app, so that every member can connect Gmail.
 Owner instruction, 2026-10-14. Google verifies an app that asks for a restricted scope only when the
 app meets the Workspace API user-data policy and passes CASA. This slice closes the product and code
@@ -13829,6 +13834,9 @@ calls `/email/ai/chat`.
 - **Copies in other apps.** `pm_tasks.origin` keeps the subject and the sender name of a captured
   mail (`infra/postgres/211_pm_tasks_origin.sql`). CRM leads and `my_day_card_state` stay. Q-GM-11
   asks the owner.
+- **Copies in chat stores** (added 2026-10-16). A chat turn about mail goes to Mem0, Graphiti, the
+  `agent_run` trace and the chat thread rows, under the member. No mailbox purge reaches them.
+  §12.3.13.9.1 lists nine writers.
 - **Fences today.** `tests/unit/test_email_disconnect_order.py:693-719` checks the messages cascade
   on a real database. No test checks the other children.
 
@@ -13873,6 +13881,9 @@ connect is the precedent (`src/app/whatsapp/connect/page.tsx:340`), and
 | PR-G6 | **EM-G11e** — UMCC: the detector, dark | 4 | 🟢 AGENT-SAFE build. 🔴 OWNER-GATE for the vendor and the API (Q-GM-9). 🔴 `enforcement-flip` for `EMAIL_INJECTION_SCAN` | M, about 450 | §12.3.13.8 |
 | PR-G7 | **EM-G11f1** — one mailbox teardown, with the revoke and the filters. ✅ Merged NARROWED #1006 (2026-10-14) | 6 | 🟢 AGENT-SAFE · security review · R8 | M, about 550 | §12.3.13.9 |
 | PR-G8 | **EM-G11f2** — a durable purge, and a fence on each child. ✅ Merged NARROWED #1020 (2026-10-14), migration 264 | 6 | 🟢 AGENT-SAFE · R8 · one migration | M, about 500 | §12.3.13.9 |
+| PR-G7b | **EM-G11f1b** — the teardown in the member purge, and the Outlook rules. 📝 Specified (2026-10-16) | 6 | 🟢 AGENT-SAFE · security review · R8 · live for Outlook | M, about 550 | §12.3.13.9.2 |
+| PR-G7c | **EM-G11f1c** — the teardown in the org purge, and a purge record that outlives the org. 📝 Specified (2026-10-16) | 6 | 🟢 AGENT-SAFE · R8 · one migration · security review | M, about 450 | §12.3.13.9.2 |
+| PR-G8b | **EM-G11f3** — no copy of mail in a chat memory store, and no email chat route with no client. 📝 Specified (2026-10-16) | 6 | 🟢 AGENT-SAFE · security review. `deploy-write` for one line of `deploy.sh` (granted). 🔴 Merges before the WS-7 memory flips | M, about 400 added and 650 deleted | §12.3.13.9.1 |
 | PR-G9 | **EM-G11g1** — envelope encryption in the key store, dark | 5 | 🟢 AGENT-SAFE build · security review. 🔴 OWNER-GATE for KMS billing (Q-GM-8). 🔴 `enforcement-flip` for `KEY_STORE_ENVELOPE` | M, about 550 | §12.3.13.10 |
 | PR-G10 | **EM-G11g2** — the rewrap job and the rotation | 5 | 🟢 AGENT-SAFE · R8. 🔴 `deploy` to run the job on production | M, about 450 | §12.3.13.10 |
 | — | **EM-G11r** — the reviewer path, the video, the publish order and the scope text | 7, 9, 10, 11 | 🔴 OWNER-GATE (Google account, money, third party). Parts are agent acts, named in each step | Runbook | §12.3.13.11 to §12.3.13.14 |
@@ -13889,14 +13900,16 @@ connect is the precedent (`src/app/whatsapp/connect/page.tsx:340`), and
    change `delete_account`.
 5. **PR-G6, PR-G9 and PR-G10** come before CASA, not before the submission. Each one waits for an
    owner answer.
+6. **PR-G8b, PR-G7b and PR-G7c** (added 2026-10-16). PR-G8b has no dependency. PR-G7b comes after
+   PR-G8, and PR-G7c comes after PR-G7b, because it uses the split of PR-G7b.
 
 **What must merge before which owner step.**
 
 | Owner step (§12.3.13.13) | Needs merged |
 |---|---|
 | Step 3, publish the app | PR-G1, PR-G2 |
-| Step 4, submit for verification, and record the video | PR-G1 to PR-G5, PR-G7 and PR-G8 |
-| Step 5, CASA | Each PR above, and PR-G6 when Q-GM-9 chooses a detector |
+| Step 4, submit for verification, and record the video | PR-G1 to PR-G5, PR-G7, PR-G8, PR-G7b and PR-G8b |
+| Step 5, CASA | Each PR above, PR-G7c, and PR-G6 when Q-GM-9 chooses a detector |
 
 **What binds each PR.** A PR that merges updates its row here and the WS-17 row in the same PR (R4).
 ⚠️ PR-G3, PR-G4, PR-G5 and PR-G7 change code that is live for Outlook. Each one carries an Outlook
@@ -15003,11 +15016,12 @@ The spec-auditor returned GO-NARROWED. The narrowed scope wires the teardown int
   and its grants, and shows that the app role reads no row of the other organization.
 - **Open point, the Outlook filters.** Step 1.2 names each provider, but the Outlook acceptance
   item says "as on main". f1 removes the Metorite filters of Gmail only. An Outlook row keeps its
-  rules, as on main. A spec edit must decide the Outlook leg.
+  rules, as on main. A spec edit must decide the Outlook leg. **Decided on 2026-10-16:** the
+  teardown removes the Outlook rules too (§12.3.13.9.2, PR-G7b).
 - **Not in f1.** The admin member purge (`GW/admin/members.py`) and the org purge (`offboard.py`,
   `operator.py`) wait for a spec edit. So does `test_three_paths_call_one_teardown`. The help line
   of item 3 is not in f1. The check of Google's "third-party apps" page needs a real Gmail account,
-  and it is the owner's.
+  and it is the owner's. **§12.3.13.9.2 specifies the two purges and the fence (2026-10-16).**
 
 **EM-G11f2 as built (2026-10-14).** 🔨 Built NARROWED, not merged, on branch
 `gmail-purge-durable`. The audit returned GO-NARROWED. The scope is items 1 to 3, for
@@ -15053,7 +15067,446 @@ The spec-auditor returned GO-NARROWED. The narrowed scope wires the teardown int
   tenant. A safe reconcile needs a check across tenants and a read of Mem0's own table. Each one is
   a decision that the spec does not record.
 - **Not in f2.** The admin member purge, the org purge and `test_three_paths_call_one_teardown`
-  wait for a spec edit.
+  wait for a spec edit. §12.3.13.9.2 specifies them (2026-10-16).
+- **Not in f1 or f2: copies of mail in chat stores.** A chat turn about mail goes to stores that
+  no mailbox purge reaches. §12.3.13.9.1 (EM-G11f3) specifies the work, and H-308 links there.
+
+###### 12.3.13.9.1 EM-G11f3 — copies of mail in chat stores (PR-G8b)
+
+**Status.** 📝 Specified (2026-10-16). Verified against code on 2026-10-16, at `origin/main`
+`0a14f7552`. Not audited and not built. A spec-auditor found that no section covered these
+copies. H-308 cited §12.3.13.9, and §12.3.13.9 did not cover them. This section is the one owner
+of the work (`work_plan.md` §1, point 6). H-308 links here.
+
+**Paths.** `GW` is as in §12.3.13.2. `GWP` is `apps/services/gateway/gateway/`, and `CP` is
+`workbench/control_plane/src/`.
+
+**Why.** The disclosure says that a disconnect deletes the copy that Metorite keeps (§12.3.13.4.1,
+and rule 6 of §12.3.13.0). The purge of f1 and f2 reaches only the Mem0 key `<owner>#acct:<id>`
+(`GW/email/memory_purge.py:82`, `:192`). A chat turn about mail goes to stores keyed on the member,
+the agent or the organization. No purge reaches those stores, and the member cannot see most of
+them.
+
+**Measured state.** Each writer below copies mail text, or can copy it, into a store that no
+mailbox purge reaches. The column "Writes today" is the state on production.
+
+| # | Writer | Store and key | What it copies | Writes today |
+|---|---|---|---|---|
+| W1 | `GW/agent.py:2866-2879`, at the start of each `/agent/run/stream` run | Graphiti, `group_id` is the member | The message of the member, 500 characters | No, Graphiti is off |
+| W2 | `GW/agent.py:2433-2477` (`_extract_run_memory`), called at `:2974` from `_persist_on_complete` | Mem0, the member key (`:2939`), or the clearance key in a shared room | The whole turn with the folded answer (`GWP/chat_fold.py:351-383`) | No, Mem0 is off |
+| W3 | `GWP/main.py:1206-1240`, the run end of the orchestrator path | Mem0 and Graphiti, the member key | The turn with the folded answer, and the last message of the member | No |
+| W4 | `GWP/main.py:1337-1356`, the fallback with no thread | Mem0 and Graphiti, the member key | The input messages | No |
+| W5 | `GWP/main.py:2246-2262`, `POST /pull` | Mem0 and Graphiti, the member key | The question, and 500 characters of the answer | No |
+| W6 | `GW/email/automation/chat.py:355-368`, `POST /email/ai/chat` | Graphiti, `group_id` is the member | 300 characters of the question and 500 of the answer | No, and the route has no client |
+| W7 | `packages/acb_skills/acb_skills/memory_tools.py:261-300` (`save_memory`), and each tool of `STORE_WRITES` (`packages/acb_skills/acb_skills/egress.py:102-104`) | Mem0 or Graphiti, keyed on the member, the agent or the organization. `save_note` writes `agent-data/NOTES.md` | A fact that the model chooses, which can quote a mail | `save_note` only |
+| W8 | `GWP/run_trace.py:88`, `:113-121` | `agent_run.trace`, keyed on the member | The folded answer, each tool result and the reasoning of an errored or flagged run | Yes |
+| W9 | `GWP/chat_fold.py:217-240`, folded into `chat_message` by `persist_final_assistant_message` | `chat_message`, in a session of the member | Each tool result in full (`read_email` gives the body), and the answer | Yes |
+
+The facts behind the table:
+
+- `/email/ai/chat` (`chat.py:168`) and `/email/ai/quick-action` (`:381`) have no client.
+  `GW/email/automation/__init__.py:13` imports the module, so each route registers, and the
+  BFF catch-all forwards it. `CP/app/api/email/[...path]/postTimeout.ts:32-33` lists both paths.
+- The Email pane runs `AgentChat` on `/agent/run/stream` (`CP/app/email/components/EmailAssistantChat.tsx:324-326`).
+  So W1, W2 and W9 are its writers. With the D99 flags on, the pane opens the one assistant, and
+  that assistant delegates to the email assistant. Then W2 or W3 runs for the calling agent.
+- The email writers of f2 (the draft precedent, the learning job and the writing style) key on the
+  mailbox. The purge reaches them, and f3 does not change them.
+- `POST /memory/{scope}/add` (`GW/memory.py`) takes its text from the caller, and no client
+  calls it. It copies no mail from a store of Metorite, so the table leaves it out.
+- **Each Mem0 and Graphiti writer is LATENT.** Measured on the box on 2026-10-16:
+  `MEM0_ENABLED=false` and `GRAPHITI_ENABLED=false`. The defaults are false
+  (`packages/acb_common/acb_common/settings.py:1118`, `:1122`), and `deploy/hostinger/deploy.sh:53-55` sets Graphiti
+  to false at each deploy. So W1 to W6 and the Mem0 and Graphiti tools of W7 write nothing today.
+  They start on the day that WS-7 flips either flag.
+- ⚠️ `deploy.sh:43-47` writes the line `MEM0_ENABLED` with the value `true` when `.env` holds no
+  such line. So a deleted line turns Mem0 on at the next deploy, with no owner act.
+- `memory_purge.py` purges only `<owner>#acct:<id>`. A disconnect, the member purge and the org
+  purge delete no member key, no Graphiti group and no `agent_run` trace.
+
+**The choice for H-308: path 2, store no mail there.** H-308 gives two paths. Path 1 keys the
+copy on the mailbox, so the purge of f2 reaches it. Path 2 stops the copy. This section takes
+path 2, for four reasons.
+
+1. A turn does not belong to one mailbox. In All inboxes, one turn reads several mailboxes. A
+   delegated turn reads mail under the key of the calling agent. No one mailbox key is true for the
+   whole turn.
+2. Path 1 for Graphiti needs a purge of a Graphiti group. No such purge exists, and the store is
+   off on production. Path 2 needs no new purge.
+3. Path 1 moves the facts out of the member key, and the reader of the member key never finds them
+   again. So path 1 keeps the risk and loses the use.
+4. Path 2 holds for each answer to Q-GM-11. Q-GM-11 asks whether a copy that the member made on
+   purpose stays. A hidden memory is not such a copy. The member did not make it, and cannot see it.
+
+**The line between the two kinds of copy.** A copy that the member sees and can delete is a
+Q-GM-11 copy: a task, a CRM lead, a chat thread. The owner decides whether it stays. A copy that the
+member cannot see must have the mailbox key, or Metorite must not write it. The chat thread rows
+(W9) are a Q-GM-11 copy. The member reads each turn, and deletes a chat from the session list. So
+f3 keeps W9, and Q-GM-11 now names it (§12.5). If the owner answers "delete", a later slice,
+EM-G11f3b, deletes each email-assistant session whose tool events name the mailbox. This section
+does not specify EM-G11f3b.
+
+**Scope (PR-G8b).**
+
+1. **One predicate.** Add `run_holds_mail(agent_name, ctx)` to `packages/acb_skills/acb_skills/egress.py`, beside the
+   EM-G11d mark. It answers true in two cases:
+   - the agent is in `UNTRUSTED_INPUT_AGENTS` (`egress.py:139`), which today is `email-assistant`.
+   - `session_mark_state(ctx)` (`egress.py:292`) is not `clear`. The mark says that the session
+     read an answer of the email assistant (§12.3.13.8). The state `unknown` counts as true, so the
+     predicate fails closed.
+
+   The tenant and the session come from the run that the server bound, never from a request field
+   (R5 (e)). Do not add a second mark or a second list of mail agents.
+2. **W1 and W2.** `_extract_run_memory` skips a run for which the predicate is true. It logs
+   `agent.run_end_memory_extraction_skipped_mail` with the prefix of the thread id. Move the
+   Graphiti episode of W1 from the run start into `_persist_on_complete`, after the same check. Then
+   one check guards both writes, at the run end, when the mark is known.
+3. **W3 to W5.** The run end of the orchestrator path (W3) asks the same predicate, with the agent
+   `orchestrator` and the thread and the tenant of the run. The fallback (W4) has no thread, so it
+   cannot read a mark, and it writes nothing. `POST /pull` (W5) has no session to mark, so it
+   writes nothing.
+4. **W6.** Delete `GW/email/automation/chat.py`, so `/email/ai/chat` and
+   `/email/ai/quick-action` go. Remove `chat` from `automation/__init__.py` (the import at `:13`
+   and the loop at `:31`). Remove `"ai/chat"` and `"ai/quick-action"` from `postTimeout.ts:32-33`.
+   Correct the comments that name the route: `apps/services/orchestrator/orchestrator/executor.py:3758`,
+   `packages/acb_skills/acb_skills/ask_tools.py:97` and `CP/app/email/lib/api.ts:1315-1319`. R6 is not involved,
+   because a route is not schema. An old client gets 404, and no client exists.
+5. **W7.** A run for which the predicate is true holds no tool of `STORE_WRITES`. For the email
+   assistant, drop the set where a `no_egress` run drops it (H-236), so one path removes it. A
+   session can get its mark in the middle of a run. So each tool of the set also refuses in a
+   marked session, through the gate that EM-G11d uses for egress. Do not add a second gate.
+6. **W8.** For a run for which the predicate is true, `build_run_trace_row` keeps the error and the
+   tool summary. It keeps no `content`, `tool_events`, `reasoning` or `custom_events`. The gateway
+   passes the answer of the predicate, so `run_trace.py` reads no Redis.
+7. **The deploy default.** `deploy.sh:43-47` writes `MEM0_ENABLED=false` when `.env` has no such line.
+   The flip stays an owner act (WS-7).
+8. **W9 stays** until the owner answers Q-GM-11. No code changes it.
+
+**Non-goals.** No change to the email writers of f2, which key on the mailbox. No purge of the
+member-key memories that Mem0 wrote in the past: Mem0 stores no mailbox and no organization for
+them, and H-307 holds the reconcile of old memories. No flip of `MEM0_ENABLED` or
+`GRAPHITI_ENABLED`. No new store and no migration. No change to the WhatsApp channel, which calls
+no memory writer.
+
+**The tests that call the removed routes.** Change each one in the same PR.
+
+| File | What changes |
+|---|---|
+| `tests/unit/test_email_chat_context_owner.py` | Delete the four chat cases (`:167`, `:194`, `:249`, `:272`) and the R7 names `email-chat-context-owned-only` and `email-chat-no-stored-tier`. Keep the task-close case (`:307`, `email-task-close-owned-only`), and make the docstring name it only |
+| `tests/unit/test_email_chat_tier_routing.py` | Delete the file. Both of its cases (`:88`, `:97`) run `ai_chat` |
+| `tests/unit/test_email_llm_cap.py` | Delete `test_a_model_call_from_the_chat_takes_no_permit_and_counts_nothing` (`:934-954`). Remove the `chat.py` entry of `MEMBER_DRIVEN` (`:983`) and the read of `chat.py` at `:1387-1388`. Keep the `run_agent_stream` entry of `EXEMPT` (`:1181`) while a caller of the email model seam remains |
+| `tests/unit/test_email_owner_scope_fence.py` | Remove the `ai_chat` and `quick_action` entries of `OWNER_SCOPE_EXEMPT` (`:66-76`) |
+| `tests/unit/test_maf_mcp_confirm.py` | Remove the `chat.py` assertion of `test_every_stream_declares_if_it_shows_cards` (`:790`, `:792`). Check the floor `len(calls) >= 4` (`:783`) against the callers that remain |
+| `tests/unit/test_untrusted_frame.py` | Remove `chat.py` from the list of `test_each_framing_module_uses_the_helper` (`:111`) |
+| `tests/unit/test_email_tool_consolidation.py` | Correct the docstring (`:6-7`) and the comment at `:146`. `suggest_unsubscribes` stays, because the agent calls it (`apps/agents/agent-email-assistant/agents.py:4383`) |
+| `CP/app/email/components/emailPaneCards.test.ts` | Keep it, because it fails when a client names `ai/chat` again. Correct its comment (`:8`) |
+
+**The fences of D-EM-4 and D-EM-61.** The deleted cases fenced the owner check and the fixed tier
+of the removed route. The path of the pane keeps its own fences: `CP/app/email/lib/noTierChoice.test.ts`,
+`CP/app/email/lib/chatScope.test.ts` and `tests/unit/test_email_no_tier_choice.py`. The audit
+confirms at dispatch that each one still runs.
+
+**Acceptance (done when).** An agent runs each item as a test.
+
+1. With Mem0 and Graphiti on, a run of `email-assistant` on `/agent/run/stream` calls neither
+   `add_memories_background` nor `add_episode`. A run of another agent with no mark calls each one
+   once, at the run end.
+2. A run of the orchestrator that delegates to the email assistant marks its session. Its run end
+   writes to neither store, on `/agent/run/stream` and on the path of `GWP/main.py`. The next turn
+   of that session writes to neither store.
+3. A Redis fault on the read of the mark writes to neither store.
+4. The fallback path and `POST /pull` write to neither store.
+5. A run of the email assistant holds no tool of `STORE_WRITES`. In a marked session, `save_memory`
+   gives the fixed refusal and calls no writer.
+6. An errored run of the email assistant writes an `agent_run` row with the error and the tool
+   summary, and `trace` is NULL. An errored run of another agent keeps its trace, as on main.
+7. `POST /email/ai/chat` and `POST /email/ai/quick-action` answer 404. No file under `apps/`,
+   `packages/` or `workbench/` names either path, except a test that fences its absence.
+8. `deploy.sh` writes `MEM0_ENABLED=false` for a missing line.
+9. Outlook item: the Email pane chat of an Outlook mailbox answers as on main, and its thread rows
+   land as on main. The browser spec `email-pane-confirm-card.spec.ts` stays green.
+
+**Fences (R7).** `tests/unit/test_mail_copies_in_chat_stores.py` (new, hermetic):
+
+- `test_a_mail_run_writes_no_memory` (acceptance 1, 2 and 4),
+- `test_an_unknown_mark_writes_no_memory` (3),
+- `test_a_mail_run_holds_no_store_write` (5),
+- `test_a_mail_run_keeps_no_trace_body` (6),
+- `test_the_email_chat_routes_are_gone` (7). It reads the route table of the app and the tree.
+- `test_each_memory_writer_asks_the_predicate`, a structural fence. It walks `apps/` and
+  `packages/` for each call of `add_memories_background`, `add_episode` and `add_memories`. Each
+  call sits in a function that asks `run_holds_mail`, or in an allowlist entry with a reason. The
+  allowlist holds the mailbox writers of f2, `GW/memory.py` and `acb_memory` itself. So a
+  new writer fails the test until a person decides.
+
+`tests/unit/test_deploy_memory_default.py` (new) reads `deploy.sh`. It fails when the default value
+that the script writes for `MEM0_ENABLED` is `true` (acceptance 8). Each of these mutations fails a
+fence: the extraction with no check, the episode back at the run start, `unknown` read as clear, a
+store write left in the email assistant, and a trace body kept.
+
+**Verify with.**
+
+```bash
+uv run pytest tests/unit/test_mail_copies_in_chat_stores.py tests/unit/test_deploy_memory_default.py \
+  tests/unit/test_delegation_no_egress.py tests/unit/test_untrusted_frame.py \
+  tests/unit/test_maf_mcp_confirm.py tests/unit/test_email_llm_cap.py \
+  tests/unit/test_email_owner_scope_fence.py tests/unit/test_email_tool_consolidation.py -v -rs
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_chat_context_owner.py -v -rs
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email src/app/api/email
+```
+
+**Gate.** 🟢 AGENT-SAFE build · security review, because the PR changes the tool set of a live
+agent and the trace of a live store. `deploy-write` for the line of `deploy.sh`, which
+`.claude/OWNER_GRANTS.md` grants to 2026-11-30. 🔴 The flips of `MEM0_ENABLED` and
+`GRAPHITI_ENABLED` stay OWNER-GATE (WS-7). **This PR merges before either flip.** Size M: about
+400 lines added, and about 650 lines deleted with the module and its tests.
+
+**Order.** No other PR blocks it. It merges before WS-7 flips a memory flag, and before Step 4 of
+§12.3.13.13.
+
+###### 12.3.13.9.2 EM-G11f1b and EM-G11f1c — the teardown in the member purge and the org purge (PR-G7b, PR-G7c)
+
+**Status.** 📝 Specified (2026-10-16). Verified against code on 2026-10-16, at `origin/main`
+`0a14f7552`. Not audited and not built. This section closes the open points of the f1 and f2
+blocks: the two purges, the Outlook rules and `test_three_paths_call_one_teardown`.
+
+**Paths.** `GW` is as in §12.3.13.2.
+
+**Measured state.**
+
+- `delete_account` (`GW/email/transport/accounts.py:640`) is the one caller of the legs of
+  `GW/email/teardown.py`. Its order: the ownership read with the filter ids (about `:697-710`), the
+  stop (`_stop_sync`), then the `DELETE` with `RECORD_PURGE_SQL` in one block (`:716-748`). After
+  the commit: the Mem0 task (`:772`), the filters, the revoke, the Graph subscription and the Redis
+  keys.
+- The member purge has two doors and one body. `DELETE /admin/members/{email}/purge`
+  (`GW/admin/members.py:769`) and the operator door with `mode=purge` (`GW/operator.py:143`,
+  the call at `:209`) each open one tenant session and call `purge_member_rows` (`members.py:860`).
+  The body runs each statement of `_PURGE_DELETES` (`:666`) in the transaction of the caller. It
+  opens nothing and commits nothing.
+- `_PURGE_DELETES` deletes `email_accounts` by `lower(user_id) = :email` (`members.py:687`). The
+  cascade deletes each child, and `email_newsletters` with its filter ids (`_CREDENTIAL_CASCADES`,
+  `:624`).
+- The org purge is `purge_tenant_organization` (`packages/acb_auth/acb_auth/offboard.py:120`),
+  called by `DELETE /operator/organizations/{slug}` (`operator.py:104`). One `tenant_session`
+  deletes the CRM rows (`:152-157`) and then the `organization` row (`:158`).
+  `email_accounts.organization_id` cascades from `organization` (migration 223, `:55-58`). So the
+  org delete deletes each mailbox and each child.
+- ⚠️ The docstring of `offboard.py` (`:44-53`) says that the email tables carry no
+  `organization_id`. That is stale since migration 223. PR-G7c corrects it.
+- `email_mailbox_purges` (migration 264) has `organization_id` with `ON DELETE CASCADE`. The sweeper
+  finds its tenants in the `organization` table (`memory_purge.py:483-494`). So the org delete
+  deletes each purge row of the org in the same statement, and no sweep can find the row after.
+- Neither purge stops a sync loop, removes a filter, revokes a grant, drops a Graph subscription,
+  deletes a Redis key or writes a purge row.
+- `OutlookProvider.delete_filter` exists (`apps/services/email_ingestion/email_ingestion/providers/outlook.py:1581`), and it
+  accepts 403 and 404. `GW/email/automation/senders.py:831` writes the id of an Outlook rule into
+  `auto_archive_filter_id`, as for Gmail. f1 reads and removes the Gmail ids only (`accounts.py:709`,
+  `teardown.py:132`).
+
+**The design: one teardown, three paths.** Split `teardown.py` into two calls, and make each path
+call both.
+
+1. `read_teardown_plans(db, scope)` runs INSIDE the transaction of the caller, BEFORE the delete of
+   the caller. The scope is one mailbox (the disconnect), each mailbox of one member (the member
+   purge), or each mailbox of the bound tenant (the org purge). Each plan holds the id, the owner,
+   the provider, the address, the credential blob, the Graph subscription id and the filter ids.
+   The owner is the `user_id` of the row, which is the key of the Mem0 writers. The read runs under
+   FORCE RLS in the session of the caller. It makes no network call, and it waits for no task.
+2. `finish_teardowns(org, plans, ...)` runs AFTER the commit of the caller, with no session open
+   across a network call. For each plan, in this order, it:
+   1. stops the sync loop,
+   2. removes the Metorite filters,
+   3. revokes the grant, for Gmail only, with the shared-grant check of migration 263,
+   4. drops the Graph subscription,
+   5. deletes the Redis keys of the mailbox.
+
+   Then it bumps the My Day of each owner that still exists. A failed leg logs and never raises, as
+   in f1.
+
+The table names the hooks of each path.
+
+| Path | Before the delete, in the transaction of the caller | The delete of the caller | After the commit |
+|---|---|---|---|
+| Disconnect (`delete_account`) | The plan of one mailbox, in the ownership block. The stop stays BEFORE the `DELETE`, with no block open (EM-T4f). The purge row goes in the `DELETE` block, as on main | `DELETE FROM email_accounts` | The Mem0 task, as on main. Then `finish_teardowns`, with the stop done |
+| Member purge, both doors | In `purge_member_rows`, before the first statement of `_PURGE_DELETES`: the plans of the member, and one purge row for each mailbox, in one set-based statement | `_PURGE_DELETES` | Each door calls `finish_teardowns` after its session block exits |
+| Org purge | A callback that `purge_tenant_organization` runs in its session, before `_DELETE_ORG_SQL`: the plans of the tenant, and one detached purge row for each mailbox | `DELETE FROM organization`, with its cascade | The operator door calls `finish_teardowns` after the purge returns |
+
+The rules of the composition:
+
+- **Atomic.** A purge row commits with the delete that owes it, or neither commits. An exception in
+  a purge rolls back the rows with the delete, and `finish_teardowns` never runs. So a 409 from
+  `assert_owner_survives` changes nothing at Google or at Microsoft.
+- **The member purge stops the loop AFTER the commit.** The disconnect stops it before, because its
+  `DELETE` has a `lock_timeout` and answers 409 (EM-T4f). The member purge has no such bound, and it
+  must not wait for a sync task inside its transaction. So its `DELETE` waits for a sync phase in
+  flight, as the org purge does today. Then `finish_teardowns` stops the loop. An R8 case proves
+  that a sync after the commit writes no child row.
+- **The package does not import the gateway.** `purge_tenant_organization` gets one optional
+  argument, `before_delete`. It is a callable that takes the session and the org id, and the purge
+  gives its answer back in the receipt. The operator door passes the callback of the gateway, so
+  the door holds the plans. `acb_auth` imports nothing new.
+- **A purge starts no Mem0 task.** The sweeper runs each pass of each row, one row at a time
+  (`memory_purge.py:418`). So a purge of N mailboxes never starts N tasks.
+
+**The bound for N mailboxes.**
+
+- `read_teardown_plans` refuses a scope of more than `TEARDOWN_MAX_MAILBOXES = 1000` mailboxes. It
+  raises before any delete, so the purge rolls back and answers 409 with the count. Above the cap,
+  the operator asks for a change of the cap. A purge must not skip a revoke without a record.
+- `finish_teardowns` runs at most `TEARDOWN_CONCURRENCY = 4` mailboxes at once. Each mailbox has a
+  bound of `MAILBOX_TEARDOWN_BOUND_S = 30` seconds for all of its legs. The bound of each f1 leg
+  stays: 10 s for the filters, 5 s for the revoke, 5 s for the Graph call and 5 s for Redis.
+- A door waits `TEARDOWN_WAIT_S = 60` seconds at most. The mailboxes that remain continue in a task
+  that the module holds, as `_PURGES` does. The door logs `email.teardown.continuing` with the
+  count, and its receipt says how many finished.
+- So the worst case is 1000 mailboxes at 4 at a time and 30 s each: about 2 hours, in the
+  background. A restart in that time loses the revokes and the filter removals that remain. The
+  credentials went with the rows, so nothing can do them again. The start line
+  `email.teardown.started` names the count, so a lost teardown shows as a start line with no end
+  line.
+
+**The purge rows (migration 264).**
+
+- **The member purge writes them.** It writes one `email_mailbox_purges` row for each mailbox of
+  the member, in its transaction, as `RECORD_PURGE_SQL` does. The lease is 0, because no task runs
+  the passes. The org survives, so the row survives, and the sweeper finishes it. `owner_email` is
+  the `user_id` of the mailbox row, not the address in the request.
+- **The org purge writes them to a detached record.** A row of `email_mailbox_purges` would go in
+  the cascade of the org delete. So PR-G7c adds one table, `email_detached_purges`. It has the
+  columns of migration 264, NO `organization_id`, and a plain `purged_org_id` with no foreign key.
+  The callback writes one row for each mailbox, in the transaction of the org delete. Each tick of
+  the sweeper sweeps the table once, after the organizations, with the same claim, lease and
+  back-off.
+- **Why the detached table has no RLS.** The tenant of each row no longer exists, so no session can
+  bind it. The table goes into `gen_tenant_migration.EXEMPT` with that reason (R5 (a)). It holds an
+  address and a mailbox id, and no mail. Its grants follow migration 263: no PUBLIC, no Supabase
+  role, and `acb_app` only.
+- ⚠️ This is a second purge table, and it is not a second way. The same sweeper, the same pass and
+  the same SQL shape serve both tables. Only the store differs, because the tenant is gone.
+
+**The Outlook rules: the teardown removes them.** Metorite made each rule, its id is in
+`email_newsletters`, and the cascade deletes the id. After a disconnect nothing can find the rule,
+and it archives the mail of the member with no end. So the plan reads the filter ids of an
+`outlook` row too, and `remove_metorite_filters` calls `OutlookProvider.delete_filter` for each
+one. The Outlook grant stays, because Microsoft has no revoke for one delegated grant (f1). This
+changes live Outlook behaviour, so it has an Outlook acceptance item. An IMAP row has no filters.
+
+**Scope.**
+
+PR-G7b (EM-G11f1b): the member purge and the Outlook rules, with no migration.
+
+1. Split `teardown.py` into `read_teardown_plans` and `finish_teardowns`. Move `delete_account`
+   onto them, with no change to its order or its answers.
+2. Wire the member purge: the plans and the purge rows in `purge_member_rows`, and
+   `finish_teardowns` in each of the two doors.
+3. The Outlook rules, in each path.
+4. `PurgeResult` gets one additive field, `mailboxes`, with the counts `planned`, `finished` and
+   `continuing`. The Members page can read it or ignore it.
+5. The cap and its 409.
+
+PR-G7c (EM-G11f1c): the org purge, with one migration.
+
+1. The migration of `email_detached_purges`, expand only, at the next free number at build time
+   (R1). Check the number again at merge.
+2. `before_delete` in `purge_tenant_organization`, and the callback of the gateway.
+3. `finish_teardowns` in `DELETE /operator/organizations/{slug}`, and the `mailboxes` counts in its
+   receipt.
+4. The sweeper sweeps the detached table.
+5. Correct the stale docstring of `offboard.py:44-53`.
+
+**Non-goals.** No help line in the dialog (f1 item 3 stays open). No purge of the member key of
+Mem0 or of a Graphiti group, because §12.3.13.9.1 stops those writes. No change to
+`_PURGE_KEEPS`. No revoke at Microsoft. No change to the Console half of the org purge.
+
+**Acceptance (done when).** Each group names who checks it.
+
+*An agent, hermetic:*
+
+1. Each of the three paths calls `read_teardown_plans` before its delete, and `finish_teardowns`
+   after its commit. No other code calls a leg of `teardown.py`.
+2. A member purge that `assert_owner_survives` refuses calls no provider and stops no loop.
+3. An Outlook plan with two filter ids calls `delete_filter` twice and calls no revoke.
+4. A scope of 1001 mailboxes answers 409 and deletes nothing.
+5. With 10 mailboxes and a slow leg, the door answers after at most 60 s of teardown, and the
+   receipt counts the mailboxes that continue.
+
+*An agent, R8, on a real Postgres as `acb_app_h3rls` under FORCE RLS:*
+
+6. A member purge of a member with one Gmail and one Outlook mailbox writes two purge rows in its
+   transaction. After it, each child of each mailbox is empty. A mailbox of another member of the
+   same org keeps its rows and its filters.
+7. A member purge that rolls back leaves no purge row.
+8. An org purge writes one detached row for each mailbox of the org, and none for the neighbour org.
+   After it, `email_mailbox_purges` holds no row of the dead org, and the detached rows survive. The
+   neighbour keeps each mailbox and each purge row.
+9. With Mem0 on (the `mem0` fixture of f2), the sweeper closes a detached row after two good passes.
+10. A sync of a purged mailbox that runs after the commit writes no child row.
+
+*Outlook, live (the owner, or an agent with a test Outlook mailbox):*
+
+11. An Outlook disconnect removes each rule that Metorite made, answers 204 and drops the Graph
+    subscription. The evidence is a Graph read of `messageRules` before and after.
+
+*The owner, live (it needs a real Google account):*
+
+12. After a member purge of a member with a Gmail mailbox, Google's third-party apps page
+    (`https://myaccount.google.com/connections`) lists no Metorite for that account. The same holds
+    after an org purge.
+
+**Fences (R7).**
+
+- `tests/unit/test_email_mailbox_teardown.py`:
+  - `test_three_paths_call_one_teardown`. An AST fence over `accounts.py::delete_account`,
+    `members.py::purge_member_rows` with its two doors, and `operator.py::purge_organization` with
+    its callback. It fails when a path skips a call, or puts a call on the wrong side of its delete
+    or of its session block.
+  - `test_no_other_caller_reaches_a_leg`. No module outside `teardown.py` calls
+    `remove_metorite_filters`, `revoke_grant` or `drop_mailbox_cache`.
+  - `test_each_delete_of_a_mailbox_is_a_known_path`. It reads `apps/`, `packages/` and `scripts/`
+    for `DELETE FROM email_accounts`, `DELETE FROM organization` and a `_PersonRows` of
+    `email_accounts`. Each hit is one of the three paths, or `scripts/demo_seed/seed_demo.py:768`
+    with its reason: a demo seed on a dev box.
+  - `test_outlook_removes_its_rules_and_revokes_nothing` replaces `test_outlook_revokes_nothing`
+    (`:383-390`), which asserts that the rules stay.
+  - `test_a_refused_purge_reaches_no_provider`, `test_the_mailbox_cap` and
+    `test_the_door_waits_a_bounded_time`.
+- `tests/unit/test_email_purge_wiring.py` (new, R8, with `pytestmark = _DB_GATE` as the suite of f2
+  has): acceptance 6 to 10.
+- `tests/unit/test_email_mailbox_purge_durable.py`: the child fence of f2 item 3 adds the member
+  purge and the org purge as two more deletes.
+- `tests/unit/test_tenant_coverage.py` reads the `EXEMPT` entry of the detached table.
+- Keep green: `tests/unit/test_admin_member_purge.py` (the cascade map and the KEEP fences),
+  `tests/unit/test_operator_door.py`, `tests/unit/test_org_purge_tenant.py`,
+  `tests/unit/test_email_disconnect_order.py` and `tests/unit/test_email_disconnect_memory_purge.py`.
+
+**Verify with.**
+
+```bash
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_mailbox_teardown.py tests/unit/test_email_purge_wiring.py \
+  tests/unit/test_email_mailbox_purge_durable.py tests/unit/test_email_disconnect_order.py \
+  tests/unit/test_email_disconnect_memory_purge.py tests/unit/test_admin_member_purge.py \
+  tests/unit/test_operator_door.py tests/unit/test_org_purge_tenant.py \
+  tests/unit/test_tenant_coverage.py -v -rs
+```
+
+The `-rs` output must list no skip in `test_email_purge_wiring.py`. A skip means that no database
+ran, and the R8 cases proved nothing.
+
+**Gate.** PR-G7b: 🟢 AGENT-SAFE · security review · R8 · live for Outlook. Size M, about 550.
+PR-G7c: 🟢 AGENT-SAFE · R8 · one migration · security review. Size M, about 450. 🔴 A member purge
+or an org purge of a live organization stays an owner act (§3a rule 3 of `CLAUDE.md`, and the §6
+registry). The PRs build the wiring. They run neither purge on production.
+
+**Order.** PR-G7b first, because PR-G7c uses its split. Both come after PR-G8, which is on `main`.
+PR-G7b merges before Step 4 of §12.3.13.13, because rule 6 of §12.3.13.0 promises the purges.
+PR-G7c merges before Step 5, CASA.
+
+**Single owner.** This section owns the wiring. The build PR adds one line to
+`specs/colleague_onboarding.md` §2 Step 5, and one line to `specs/customer_console.md` CP-2g. Each
+line links here and adds nothing.
 
 ##### 12.3.13.10 EM-G11g1 and EM-G11g2 — envelope encryption and rotation (PR-G9, PR-G10)
 
@@ -15574,6 +16027,12 @@ The questions of EM-G11 (§12.3.13, 2026-10-14):
 - **Q-GM-11. Do the copies of mail in other apps go on disconnect?** A captured task keeps the
   subject and the sender (`pm_tasks.origin`). CRM leads and their Zoho copies stay. The proposal is
   to keep them, because the member made them on purpose, and to say so in the privacy page.
+  **Widened on 2026-10-16 (§12.3.13.9.1).** The chat threads of the email assistant keep each tool
+  result, so they keep the body of each mail that a tool read. The proposal is the same: keep them,
+  because the member sees each thread and can delete it. The privacy page and the disclosure text
+  (Q-GM-7) then say "Your chats about your mail stay until you delete them." If the owner answers
+  "delete", EM-G11f3b deletes the threads. The hidden copies (Mem0, Graphiti, the run trace) go in
+  each case, because PR-G8b stops them.
 - **Q-GM-12. Meeting-note dispatch sends mail by itself, and its default is ON.** EM-G11c2 makes
   it draft-only for Gmail. Should Outlook also go draft-only, or should the default go OFF for
   each new member?

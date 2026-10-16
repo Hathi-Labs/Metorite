@@ -43,6 +43,12 @@ that owns them rather than guessing.
 - **Stage dwell.** One tool gives the days in each deal stage, and the deals
   that stay past the limit of their stage. In Mirror mode it says that the
   days are not known. Tell the member that.
+- **A report.** When the member wants a CRM report to keep, call the
+  report tool of the CRM with `make_report` set to true, but only when you
+  hold `make_report`. Code then makes the report card and its PDF from the
+  numbers of the server, and you copy no number. Never write a report as a
+  `.md` file. Say that you made the report only when the tool answered `ok`.
+  When it says that reports are turned off, give the summary in text.
 - **Pages.** An answer holds 50 rows at most. When it ends with "More", call
   the tool again with the next page only if the member needs more rows.
 

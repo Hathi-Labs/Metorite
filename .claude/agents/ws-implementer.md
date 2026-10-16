@@ -87,7 +87,9 @@ look for a way around it; that block is the correct outcome.
 
 - The cleared scope is built, in its architecturally-correct home.
 - The spec's own verification commands pass. Run them; quote the real output.
-- `uv run ruff check .` and `uv run pytest` are clean for what you touched.
+- `uv run ruff check .` is clean, and so is
+  `uv run python scripts/affected_tests.py --run`. That script runs the tests
+  your diff can affect. Do not run all of `tests/unit/`. pr-check does that.
 - The owning spec's status header is updated (R4).
 - Everything is committed on the branch with a message naming the WS.
 

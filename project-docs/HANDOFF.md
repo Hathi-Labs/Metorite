@@ -3080,6 +3080,8 @@ line — never reclaim a number by deleting the other entry.
   📌 **Worth knowing before deciding:** staging is a *nightly re-derivation* of
   production, not a maintained copy (D55.5), so it can be smaller than production and can
   be torn down and rebuilt. It is a cost that scales with nothing.
+  🆕 **2026-10-15:** read `specs/staging_and_daily_release.md` §5 and §7 first. It
+  recommends the dev box `srv1747539` for staging and a daily release at 21:30 UTC.
 - **Authority:** `work_plan.md` D55.9 · §2 WS-38 ·
   `specs/development_and_delivery_framework.md` §9 D-D · §3.5
 - **Added:** 2026-08-26 · delivery + model-management decision session
@@ -5300,19 +5302,27 @@ line — never reclaim a number by deleting the other entry.
   as-built block · PR-G8 fix round 1
 - **Added:** 2026-10-14 · PR-G8 (`gmail-purge-durable`), fix round 2
 
-### H-308 · Purge the email chat turns that Graphiti stores, or stop storing mail there · [AGENT]
-- **Check:** `git grep -n "add_episode" -- apps/services/gateway/gateway/routes/email`.
-  A hit in `automation/chat.py` means the write still exists, and this entry stays.
-- **Why.** `routes/email/automation/chat.py` (about line 332) writes each email
-  chat turn to Graphiti with `add_episode`. Its `group_id` is the member key,
-  not a mailbox key. So no mailbox purge reaches it, and a disconnect leaves
-  mail text in the graph. Google Limited Use and the deletion promise of
-  §12.3.13.9 both need that text to go.
-- **Do this:** choose one of the two paths, and write the choice in §12.3.13.9.
-  1. Key the episode on the mailbox, and add a Graphiti purge to the teardown.
-  2. Stop storing mail content in Graphiti from the email chat.
-- **Authority:** `specs/email_app_master_plan.md` §12.3.13.9 · PR-G8 review
+### H-308 · Stop the copies of mail in the chat memory stores (EM-G11f3) · [AGENT]
+- **Check:** run the two commands. The entry stays while either one fails.
+  1. `git grep -n "add_episode" -- apps/services/gateway/gateway/routes/email`
+     must give no hit. A hit means that the email chat route still writes to Graphiti.
+  2. `git grep -c "run_holds_mail" -- apps/services/gateway/gateway/routes/agent.py apps/services/gateway/gateway/main.py`
+     must give a count for each of the two files. A file with no count still writes
+     a turn that holds mail to Mem0 or to Graphiti, under the member key.
+- **Why.** Nine writers copy mail text into stores under the member, the
+  agent or the organization (§12.3.13.9.1, W1 to W9). The writers are in
+  `routes/agent.py`, in `main.py`, in the email chat route, in the memory
+  tools and in the run trace. No mailbox purge reaches these stores. So a
+  disconnect leaves mail text there. Google Limited Use and the deletion
+  promise of §12.3.13.9 both need that text to go. Mem0 and Graphiti are off
+  on production (2026-10-16), so most of these writers are latent today.
+- **Do this:** build PR-G8b as §12.3.13.9.1 specifies. The section chose
+  path 2: Metorite stores no mail content there. Run the spec-auditor first.
+  The PR merges before WS-7 turns on Mem0 or Graphiti.
+- **Authority:** `specs/email_app_master_plan.md` §12.3.13.9.1 · PR-G8 review
 - **Added:** 2026-10-14 · PR-G8 (`gmail-purge-durable`), fix round 2
+- **Widened:** 2026-10-16 · the Check now reads `routes/agent.py` and
+  `main.py` too, after a spec-auditor finding
 
 ### H-309 · Create the WS-59 tasks in the Metorite project "Proactive Intelligence" · [AGENT]
 - **Check:** in a session with the Metorite MCP, run `search_tasks` with the
@@ -5676,6 +5686,42 @@ line — never reclaim a number by deleting the other entry.
   retry.
 - **Authority:** `specs/my_day_feed.md` (WS-58), `CLAUDE.md` §3 rule 8
 - **Added:** 2026-10-16 · WS-61 KB-2a CI
+
+### H-332 · With two panes open, the chat column on `/chat` is too narrow for a card · [AGENT]
+- **Check:** open `/chat` at a width of 1440 px. Open the Documents pane and
+  the Files pane. Measure the message column. A width under 400 px means
+  this is open.
+- **Why.** The review of the report slices (B2, B3) saw the column fall to
+  about 128 to 160 px with both panes open. So the column crushes every card
+  in it, the report card too. The layout is in `src/app/chat/page.tsx`, near the
+  `flex-1 min-w-0` row at line 1258. No test holds a minimum width for the
+  column.
+- **Do this:** give the message column a minimum width. When the two panes
+  do not fit beside it, close one pane or show it over the column. Add a
+  test that measures the column at 1440 px with both panes open. Then look
+  at the result in light mode, at compact density and under a changed
+  accent.
+- **Authority:** `specs/projects_ai_chat.md` §14.9 and §14.10,
+  `workbench/control_plane/DESIGN_SYSTEM.md`
+- **Added:** 2026-10-16 · WS-27bm §14.10.9 B3 review
+
+### H-333 · The CRM report routes add amounts of different currencies into one figure · [AGENT]
+- **Check:** `rg -n "SUM\(amount\)" apps/services/gateway/gateway/routes/crm/reports.py`.
+  A hit with no `currency` in the same statement means this is open.
+- **Why.** `_lane_totals` sums `crm_deals.amount` over every deal, and
+  `_amount` does the same for win and loss. Each deal has its own
+  `currency`. So a CRM with USD and INR deals gets one meaningless total.
+  The models of the four report routes carry no currency field. The text
+  answer of `crm_report` labels every amount INR, and since #1080 a kept
+  report does too, with the source line "Amounts are summed across deal
+  currencies."
+- **Do this:** group each total by `currency` in the routes, or convert to
+  the currency of the organization with a named rate. Add the currency to
+  the route models. Then label each amount in `crm_tools.crm_report` and in
+  `_crm_report_spec` with its own currency, and delete `CURRENCY_NOTE`.
+  Add an R8 test with two currencies in one lane.
+- **Authority:** `specs/crm_app.md` (the reports routes), `specs/projects_ai_chat.md` §14.10.9
+- **Added:** 2026-10-16 · WS-27bm §14.10.9 B3 review
 
 # DONE — deleted, not archived
 
