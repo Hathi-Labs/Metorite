@@ -204,6 +204,17 @@ CRM_KINDS: dict[str, tuple[str, tuple[str, ...], str, str]] = {
 }
 
 
+def crm_href(kind: str, record_id: Any) -> str:
+    """The link that opens one CRM record: ``/crm?tab=<tab>&<param>=<id>``.
+
+    ``kind`` is a key of ``CRM_KINDS`` (``lead``, ``deal``, ``contact`` or
+    ``company``). The ONE builder of this link. The search sources and the
+    My Day feed (WS-58 MD-3e, ``my_day_feed.md`` §5.9 rule 10.4) both call
+    it, so the two cannot open a record in two ways."""
+    _noun, _fields, tab, param = CRM_KINDS[kind]
+    return f"/crm?tab={tab}&{param}={quote(str(record_id))}"
+
+
 def _crm_title(kind: str, row: dict[str, Any]) -> str:
     if kind == "lead":
         return row.get("lead_name") or ""
@@ -229,12 +240,12 @@ async def _crm(user: UserContext, q: str, k: int) -> list[Hit]:
     await access.require_crm_access(user)
     out = []
     for kind, row in await records.search_records(user, q, k):
-        noun, fields, tab, param = CRM_KINDS[kind]
+        noun, fields, _tab, _param = CRM_KINDS[kind]
         extra = next((str(row[f]).strip() for f in fields if str(row.get(f) or "").strip()), "")
         out.append(Hit(
             app="crm", kind=kind, id=str(row["id"]), title=_title(_crm_title(kind, row)),
             hint=f"{noun} · {extra}" if extra else noun,
-            href=f"/crm?tab={tab}&{param}={quote(str(row['id']))}",
+            href=crm_href(kind, row["id"]),
             snippet=_clip(extra), when=_when(row.get("last_activity_at")),
         ))
     return out

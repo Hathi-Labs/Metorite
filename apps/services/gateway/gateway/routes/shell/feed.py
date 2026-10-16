@@ -663,6 +663,153 @@ async def _email_followups(user: UserContext) -> Found:
 # `email` app's, and no Handled read: a closed thread is the needs source's.
 register(Provider("email_followups", ("email",), _email_followups, MAIL_FOLLOWUP_KINDS,
                   needs=False, gated=True, app="email"))
+# ── The CRM kinds (§5.9 item 13, MD-3e, feed only, gated) ───────────────────
+#
+# The source `crm`: `crm_followup_due`, `deal_quiet` and `deal_close_passed`.
+# Each keys on `crm:<deal|lead|contact|organization>:<id>`, so one record
+# gives one card, and links to the record through `sources.crm_href`.
+#
+# The gate, in the order of the CRM router: `feature:crm` (the Provider),
+# then the kill switch, then the access rule. A closed switch and a 403 of
+# the access rule each raise `SourceAbsent`, BEFORE any CRM read, so the
+# source reads `absent` and not `failed` (§5.8 item 4).
+#
+# Two sessions at most (§5.9 item 7): the access rule opens one for a member
+# who is not an admin, and `aggregate.my_day_rows` opens one for the zone and
+# the three reads. This file opens none. ⚠️ Never `stage_dwell`: that read
+# covers the whole organization. Fence:
+# `tests/unit/test_feed_crm_kinds.py` and `test_feed_crm_kinds_r8.py`.
+
+#: The kinds of the source (§5.9 item 13).
+CRM_KINDS = frozenset({"crm_followup_due", "deal_quiet", "deal_close_passed"})
+#: The record word of a signal id → the kind of ``sources.CRM_KINDS``.
+_CRM_RECORDS = {"deal": "deal", "lead": "lead", "contact": "contact",
+                "organization": "company"}
+
+
+def _crm_signal(kind: str, record: str, record_id: str, label: Any, *, facts: dict[str, Any],
+                act: tuple[str, str], at: Any, urgent_at: Any = None) -> Signal:
+    """One CRM signal. ``record`` is ``deal``, ``lead``, ``contact`` or
+    ``organization``. Its one act is a link to the record (§5.9 item 13)."""
+    from gateway.retrieval.sources import crm_href
+
+    href = crm_href(_CRM_RECORDS[record], record_id)
+    title = str(label or "").strip() or "(untitled)"
+    return Signal(
+        signal_id=f"crm:{record}:{record_id}", app="crm", kind=kind,
+        entity={"type": record, "id": str(record_id), "label": title}, title=title,
+        facts=facts, href=href, acts=(link(act[0], act[1], href),),
+        at=_iso(at), urgent_at=_iso(urgent_at),
+    )
+
+
+def _followup_signal(row: dict[str, Any], tz: ZoneInfo) -> Signal:
+    """``crm_followup_due``: the earliest open follow-up on one record
+    (§5.9 item 13), by the one CRM day rule (``crm_platform.md`` §19.7).
+
+    A task (``all_day``) holds a DATE at 00:00 UTC. Its ``due_at`` here is
+    00:00 of that date in my zone, as ``deal_close_passed`` does, and it has
+    no ``urgent_at``: a midnight is not a time, so it never lifts a card to
+    Now. A call or a meeting keeps its real time, and its ``urgent_at`` is
+    its ``due_at``."""
+    from gateway.retrieval.sources import CRM_KINDS as RECORD_KINDS
+
+    record = str(row["record_kind"])
+    noun = RECORD_KINDS[_CRM_RECORDS[record]][0].lower()
+    at = _instant(row.get("due_at"))
+    all_day = bool(row.get("all_day"))
+    if all_day and at is not None:
+        due = _iso(datetime.combine(at.astimezone(ZoneInfo("UTC")).date(), time.min,
+                                         tzinfo=tz))
+        urgent = None
+    else:
+        due = urgent = _iso(at)
+    facts: dict[str, Any] = {"due_at": due, "subject": row.get("subject")}
+    if all_day:
+        facts["all_day"] = True
+    return _crm_signal("crm_followup_due", record, str(row["record_id"]), row.get("label"),
+                       facts=facts, act=("open-record", f"Open {noun}"), at=due,
+                       urgent_at=urgent)
+
+
+def _quiet_deal_signal(row: dict[str, Any], now: datetime) -> Signal:
+    """``deal_quiet``: an open deal of mine past the limit of its stage. The
+    state fact is ``waiting_since``, the stage clock (§5.9 item 4).
+    ``stage_days`` rounds the time in the stage UP, the rule of the SQL: a
+    deal fires once it is MORE than ``limit`` days in the stage, so on its
+    first day it reads ``limit + 1``, never ``limit``."""
+    since = _instant(row.get("status_changed_at"))
+    days = 0 if since is None else max(0, math.ceil((now - since).total_seconds() / 86400))
+    return _crm_signal(
+        "deal_quiet", "deal", str(row["id"]), row.get("name"),
+        facts={"stage": row.get("stage"), "stage_days": days,
+               "stage_limit": row.get("limit_days"), "waiting_since": _iso(since)},
+        act=("log-call", "Log a call"), at=since)
+
+
+def _close_passed_signal(row: dict[str, Any], tz: ZoneInfo) -> Signal:
+    """``deal_close_passed``: an open deal of mine whose close date passed.
+    ``due_at`` is the close date at 00:00 in the member's zone (§5.9 item 4)."""
+    day = row["expected_close_date"]
+    if not isinstance(day, date):
+        day = date.fromisoformat(str(day))
+    due = _iso(datetime.combine(day, time.min, tzinfo=tz))
+    return _crm_signal("deal_close_passed", "deal", str(row["id"]), row.get("name"),
+                       facts={"due_at": due}, act=("move-date", "Move the date"), at=due)
+
+
+def _crm_order(signal: Signal, today: date, tz: ZoneInfo) -> tuple[int, int, float, str]:
+    """By ``BASE``, then a follow-up due from my local today on before an
+    older one, then by age (§5.9 item 13). So the cap of 15 never cuts a
+    follow-up of today for a stale one, as the read's LIMIT does not."""
+    at = _instant(signal.at)
+    day0 = datetime.combine(today, time.min, tzinfo=tz)
+    stale = signal.kind == "crm_followup_due" and (at is None or at < day0)
+    return (-feed_rank.base(signal.kind), int(stale),
+            at.timestamp() if at is not None else float("inf"), signal.signal_id)
+
+
+async def _crm_gate(user: UserContext) -> None:
+    """The kill switch, then the access rule, as the CRM router applies them.
+    Each refusal raises ``SourceAbsent`` (§5.8 item 4), and no CRM read runs
+    before both pass."""
+    from gateway.routes.crm import access, flags
+
+    if not flags.crm_org_allowed(user.organization_id):
+        raise needs.SourceAbsent
+    try:
+        await access.require_crm_access(user)
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            raise needs.SourceAbsent from None
+        raise
+
+
+async def _crm(user: UserContext) -> Found:
+    from gateway.routes.crm.aggregate import my_day_rows
+
+    await _crm_gate(user)
+    now = needs._now()  # the feed's one clock (needs._now)
+    size = PER_APP + 1  # one row more than the cap, so the cap is known
+    # The CRM app's own read: the zone and the three reads in ONE session.
+    rows = await my_day_rows(user, now=now, limit=size)
+    zone, today = rows["zone"], rows["today"]
+    tz = ZoneInfo(zone)
+    due, quiet, passed = rows["due"], rows["quiet"], rows["passed"]
+
+    signals: list[Signal] = [_followup_signal(r, tz) for r in due]
+    signals += [_quiet_deal_signal(r, now) for r in quiet]
+    signals += [_close_passed_signal(r, tz) for r in passed]
+    signals.sort(key=lambda s: _crm_order(s, today, tz))
+    full = any(len(part) >= size for part in (due, quiet, passed))
+    return Found([], 0, capped=full or len(signals) > PER_APP,
+                 signals=lambda: signals[:PER_APP], zone=zone)
+
+
+# The gate (§5.9 item 13): `feature:crm`. Gated, so it runs only while
+# MY_DAY_PROVIDERS lists it (§5.8 item 1). The source id is the app id, so
+# the carry needs no `source` field, and it has no Handled read.
+register(Provider("crm", ("crm",), _crm, CRM_KINDS, needs=False, gated=True))
 
 
 # ── The templates (§4.2): code writes every why line ────────────────────────
@@ -784,6 +931,19 @@ def _absent_line(facts: dict[str, Any], today: date) -> str:
     return f"Due {_day_words(day, today)}. You are away that day."
 
 
+def _followup_line(facts: dict[str, Any], tz: ZoneInfo, today: date) -> str:
+    """The why line of ``crm_followup_due`` (§5.9 item 13). A task holds a
+    date and no time (``crm_platform.md`` §19.7), so it names no clock."""
+    due = facts.get("due_at")
+    when = _when(due, tz, today)
+    if not facts.get("all_day"):
+        when = f"{when} at {_clock(due, tz)}"
+    subject = str(facts.get("subject") or "").strip()
+    if subject:
+        return f"{subject[:1].upper()}{subject[1:]} is due {when}."
+    return f"A follow-up is due {when}."
+
+
 def _colleague_line(facts: dict[str, Any]) -> str:
     names = [str(n) for n in facts.get("out") or [] if n]
     task = facts.get("task") or "a task"
@@ -822,12 +982,7 @@ def _md3_why(kind: str, facts: dict[str, Any], tz: ZoneInfo,
                              f"{facts.get('who') or 'They'} "
                              f"{'has' if facts.get('who') else 'have'} not answered.")
     if kind == "crm_followup_due":
-        due = facts.get("due_at")
-        when = f"{_when(due, tz, today)} at {_clock(due, tz)}"
-        subject = str(facts.get("subject") or "").strip()
-        if subject:
-            return "followup_due", f"{subject[:1].upper()}{subject[1:]} is due {when}."
-        return "followup_due", f"A follow-up is due {when}."
+        return "followup_due", _followup_line(facts, tz, today)
     if kind == "deal_quiet":
         return "in_stage", (f"In {facts.get('stage') or 'this stage'} for "
                             f"{_days(facts.get('stage_days'))}. The stage limit is "
