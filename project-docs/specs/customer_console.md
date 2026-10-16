@@ -12,8 +12,9 @@ are dark behind `DECIDE_ENABLED`.
 CP-13h, Jev through the AI/ML API reseller, is BUILT on branch `cp13-aimlapi`
 (2026-09-24). CP-13e to CP-13g are SPEC ONLY. **§6A.14** is the contract.
 
-🆕 **CP-EMB, the embedding door, is SPEC (2026-10-17).** `POST /v1/embeddings`
-serves `tier-embed` on the AI/ML API account, and `kb_index` moves onto it.
+🆕 **CP-EMB, the embedding door, is BUILT on branch `console-embed-door`
+(2026-10-17).** `POST /v1/embeddings` serves `tier-embed` on the AI/ML API
+account, and `kb_index` moves onto it. Migration 037 seeds the binding.
 **§6A.16** is the contract.
 
 🆕 **§4.3a is BUILT on branch `ai-call-attribution` (2026-10-10).** A
@@ -10664,10 +10665,26 @@ logs `router.dsml_chunk_unreadable` and sends a minimal copy of the chunk.
   and they read no clock. Two of them hold a closing tag open with 200 KB of
   whitespace.
 
-### 6A.16 CP-EMB · the embedding door — SPEC (2026-10-17)
+### 6A.16 CP-EMB · the embedding door — BUILT (2026-10-17)
 
-**Status:** SPEC, written 2026-10-17. Anchors verified against the code on
-2026-10-17. Board row `WS-31`. Owner directive of 2026-10-16.
+**Status:** BUILT 2026-10-17 on branch `console-embed-door`. Anchors
+verified against the code on 2026-10-17. Board row `WS-31`. Owner directive
+of 2026-10-16.
+
+**Built as.**
+
+- The route is `main.py::embeddings`, with `EmbeddingRequest` and
+  `EMBED_TASK`. It takes at most 128 texts, each 1 to 32,000 characters.
+  `dimensions` and `encoding_format` are a 422.
+- `router.litellm_target` holds the rewrite, and `router.embedding_vectors`
+  reads the answer. An answer it cannot read is a 502 after the row.
+- The migration is `037_embed_door.sql`. It seeds the binding with
+  `effective_from = now()` at the first deploy.
+- The client is `console_resolve.embeddings_on_console`, the eleventh
+  caller that `test_console_dependency_boundary.py` admits.
+- `kb_index/embed.py` sends the member that the run context holds. A
+  deployment-key box with no proven member sends nothing, and the caller
+  reads `None`.
 
 **The problem, in one line.** Production makes no vectors.
 `gateway/kb_index/embed.py` posts to the gateway's own `/v1/embeddings`.
@@ -10757,7 +10774,10 @@ uv run pytest tests/unit/test_customer_console_embed.py \
   tests/unit/test_customer_console_tasks.py \
   tests/unit/test_customer_console_tier_pricing.py \
   tests/unit/test_customer_console_payments.py \
-  tests/unit/test_kb_chunk.py tests/unit/test_kb_one_index.py -q
+  tests/unit/test_customer_console_resolve.py \
+  tests/unit/test_kb_chunk.py tests/unit/test_kb_one_index.py \
+  tests/unit/test_kb_search_r8.py \
+  tests/unit/test_console_dependency_boundary.py -q
 ```
 
 **Gate.** 🟢 AGENT-SAFE to build. The owner made the commercial call on
