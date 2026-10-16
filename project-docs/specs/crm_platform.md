@@ -3436,6 +3436,13 @@ Done when:
    `_refuse_nul`. It is not a second copy.
 2. A test sends `q=%00` and a NUL in a filter value to each route, and gets
    422. A mutation that removes the guard turns the test red.
+3. Added 2026-10-16, after a production check on DEWiN at 20:20 UTC. A
+   `sum`, `avg`, `min` or `max` of a field that holds no value in any row
+   gives `total` null and each group value null, not 0. The answer carries
+   `values`, the count of values that the measure read. A `count` stays a
+   number. `crm_aggregate` says "no values recorded for <field>" when
+   `values` is 0. An R8 test on a field that every row leaves empty, and one
+   mutation, prove it.
 
 Files: `routes/crm/records.py`, `routes/crm/aggregate.py` and
 `tests/unit/`. Gate: AGENT-SAFE. Size: S. Waits for: nothing.
@@ -3452,6 +3459,14 @@ group out, as a database error did before. The fence is
 `tests/unit/test_crm_nul_guard_r8.py`. Its first half reads the source, so
 it never skips. Verify with `uv run pytest tests/unit/test_crm_nul_guard_r8.py -q`,
 with no test skipped.
+
+Item 3 lives in `aggregate.py`. The route adds the count of values of each
+group. When the sum is 0, it sets each group value, `total` and `other` to
+null. A group with no value beside groups with values still gives 0 for
+`sum`, as CRM-Q25 item 2 says. `values` is null for `count`, `sum_amount`
+and `weighted`, because they read no field. The fence is
+`test_a_field_that_every_row_leaves_empty_has_no_total` in
+`test_crm_aggregate_fields_r8.py`.
 
 **CRM-Q27 · Search of note text by meaning.**
 

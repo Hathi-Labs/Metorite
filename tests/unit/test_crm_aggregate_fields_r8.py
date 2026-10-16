@@ -630,6 +630,35 @@ async def test_no_row_of_org_b_reaches_org_a(mods, app_engine) -> None:
     assert [f["key"] for f in fields_a.json()][:2] == ["Unit_Price", "Qty"]
 
 
+# ── 7a. An empty field has no total (CRM-Q25c item 3) ────────────────────────
+
+
+async def test_a_field_that_every_row_leaves_empty_has_no_total(mods, app_engine) -> None:
+    """Found on DEWiN (2026-10-16): a sum over a field with no value gave a
+    total of 0, and the assistant told a member "the total is 0". With no
+    value, ``total`` and each group value are None, and ``values`` is 0. A
+    count stays a number."""
+    a = mods.org_a
+    with mods.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_field_defs (organization_id, entity, key, label, type, "
+            "source, provider_api_name, position) VALUES (CAST(:o AS uuid), "
+            "'module:Products', 'Discount', 'Discount', 'currency', 'zoho', "
+            "'Discount', 99)"), {"o": a})
+    for measure in ("sum", "avg", "min", "max"):
+        for group in ({"group_by": "owner"}, {"group_field": "Category"}):
+            body = await _agg(mods, a, entity="module:Products", measure=measure,
+                              field="Discount", **group)
+            assert (body["total"], body["values"]) == (None, 0), (measure, group)
+            assert {g["value"] for g in body["groups"]} == {None}, (measure, body)
+    # A field with values still sums them, and says how many it read.
+    full = await _agg(mods, a, entity="module:Products", measure="sum",
+                      field="Unit_Price", group_by="owner")
+    assert (full["total"], full["values"]) == (350.5, 2)
+    count = await _agg(mods, a, entity="module:Products", group_by="owner")
+    assert count["total"] == 4 and count["values"] is None
+
+
 # ── 7b. One zone for each month bucket (CRM-Q25b) ────────────────────────────
 
 #: One record made at 00:30 IST on 1 November 2026. Its UTC month is

@@ -270,3 +270,23 @@ async def test_the_tool_names_the_zone_of_a_month(monkeypatch) -> None:
     assert "Months count in the CRM time zone, Asia/Kolkata." in month.splitlines()
     owner = await tools.crm_aggregate("module:Products", group_by="owner")
     assert "time zone" not in owner
+
+
+async def test_the_tool_says_an_empty_field_has_no_values(monkeypatch) -> None:
+    """CRM-Q25c item 3: with ``values`` 0 the tool says the field is empty,
+    and never "0"."""
+    import acb_skills.crm_tools as tools
+
+    async def _get(path: str, params: dict | None = None) -> dict:
+        return {
+            "entity": "module:Products", "measure": "sum", "field": "Discount",
+            "field_type": "currency", "values": 0, "total": None,
+            "groups": [{"key": "a", "label": "a@x.test", "value": None}],
+            "other": 0, "omitted": 0,
+        }
+
+    monkeypatch.setattr(tools, "_get", _get)
+    out = await tools.crm_aggregate("module:Products", group_by="owner",
+                                    measure="sum", field="Discount")
+    assert out == "Products, sum of Discount by owner: no values recorded for Discount."
+    assert "0" not in out

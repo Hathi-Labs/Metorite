@@ -237,6 +237,11 @@ class AggregateResponse(BaseModel):
     #: The CRM zone of every month and datetime bucket (CRM-Q25b): the zone
     #: of the Zoho org, or UTC.
     zone: str = "UTC"
+    #: The count of field values that a ``sum``, ``avg``, ``min`` or ``max``
+    #: read (CRM-Q25c item 3). 0 means the field is empty in every row, and
+    #: then ``total`` and each group value are None. None for ``count``,
+    #: ``sum_amount`` and ``weighted``, which read no field.
+    values: int | None = None
 
 
 class StageDwell(BaseModel):
@@ -568,6 +573,13 @@ async def aggregate(
     measured, grouped = read.measured, read.grouped
     bucketed = grouped is not None and grouped.type in DATE_TYPES
     options = grouped.options if grouped is not None else {}
+    # CRM-Q25c item 3: the count of field values that the measure read. With
+    # none, the field is empty, so no group and no total holds a number. A
+    # sum of nothing is NULL in SQL, and an answer of 0 would say "zero".
+    values = sum(acc.n for acc in read.values.values()) if measured else None
+    if values == 0:
+        for acc in read.values.values():
+            acc.value = None
     groups = [
         (
             AggregateGroup(
@@ -597,10 +609,17 @@ async def aggregate(
         field_type=measured.type if measured is not None else None,
         bucket=bucket if bucketed else None,
         groups=shown,
-        total=_rounded(_combine(measure, [acc for _g, acc in groups])),
-        other=_rounded(_combine(measure, [acc for _g, acc in rest])) if rest else 0,
+        total=(
+            None if values == 0
+            else _rounded(_combine(measure, [acc for _g, acc in groups]))
+        ),
+        other=(
+            (None if values == 0 else _rounded(_combine(measure, [acc for _g, acc in rest])))
+            if rest else 0
+        ),
         omitted=len(rest),
         zone=read.zone,
+        values=values,
     )
 
 

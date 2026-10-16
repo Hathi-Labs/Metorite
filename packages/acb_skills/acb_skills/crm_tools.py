@@ -965,6 +965,9 @@ async def crm_aggregate(
     by = group_by or f"{group_field}" + (f" ({bucket})" if bucket else "")
     shown = _page_of(groups, page, "groups")
     plural = f"{ENTITY_LABELS[slug]}s" if slug in ENTITY_LABELS else _entity_label(slug)
+    if field and data.get("values") == 0:
+        # CRM-Q25c item 3: an empty field has no total, and 0 would be false.
+        return f"{plural}, {what} by {by}: no values recorded for {field}."
     lines = [f"{plural}, {what} by {by}:"]
     lines.extend(f"- {g['label']}: {fmt(g.get('value'))}" for g in shown.items)
     lines.append(f"{_OVERALL.get(measure, 'Total')}: {fmt(data.get('total'))}.")
