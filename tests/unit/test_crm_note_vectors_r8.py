@@ -484,6 +484,28 @@ async def test_the_daily_cap_counts_requests_over_the_whole_utc_day(nv, monkeypa
     assert nxt.embedded == 4 and _requests_today(nv, a, "2026-10-17") == 2
 
 
+async def test_the_cap_holds_when_the_count_moves_after_the_read(nv, monkeypatch) -> None:
+    """A second worker spends the org's requests after this step read the
+    count. The reserve before each request still holds the cap."""
+    from gateway.crm_sync import note_vectors
+
+    monkeypatch.setattr(note_vectors, "DAILY_REQUESTS", 2)
+    a = nv.org_a
+    _connect(nv, a)
+    company = _company(nv, a)
+    for i in range(5):
+        _note(nv, a, company, minutes=i)
+
+    async def _stale(org, utc_date):
+        return 0
+
+    monkeypatch.setattr(note_vectors, "requests_used", _stale)
+    nv.redis.store[f"cc:{a}:{note_vectors.NAMESPACE}:requests:2026-10-16"] = "2"
+    got = await _step(nv, a, now=DAY)
+    assert got.reason == "daily_cap" and got.requests == 0 and nv.door.calls == []
+    assert _requests_today(nv, a, "2026-10-16") == 2
+
+
 async def test_a_redis_failure_embeds_nothing(nv) -> None:
     a = nv.org_a
     _connect(nv, a)
