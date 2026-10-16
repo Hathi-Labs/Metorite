@@ -600,7 +600,7 @@ A shared room gets no block, because the block lists the spaces of one member.
 **Where it is built (KB-4a audit, 2026-10-16).** The orchestrator's executor
 builds it in `_context_preamble_parts`, on the server, for the orchestrator
 only. It is not built in the browser, because the WhatsApp channel runs the
-same assistant with no browser. It sits after the Organisation line.
+same assistant with no browser. It sits after the Organisation and integrations lines.
 
 That part of the prompt comes after the cache break, so the block is paid on
 each turn. The 300-token cap and the rule "no pages, no block" keep that cost
