@@ -551,6 +551,70 @@ async def test_a_failing_batch_goes_to_the_back_and_parks(lb, monkeypatch) -> No
     assert tuple(row) == (0, True)
 
 
+async def test_a_poison_note_parks_alone_with_no_fresh_notes(lb, monkeypatch) -> None:
+    """Round 2, P2-1: the steady state with no fresh note. A poison note and
+    its four batch-mates fail once together. Then each goes out alone, so the
+    four land and only the poison note parks."""
+    import acb_llm
+
+    real = lb.fake
+
+    async def _picky(state, questions, **kw):
+        if any(n["body"] == "POISON" for n in state["notes"]):
+            raise acb_llm.DecideRequestInvalid(400, {"reason": "bad"})
+        return await real(state, questions, **kw)
+
+    monkeypatch.setattr(acb_llm, "decide", _picky)
+    a = lb.org_a
+    _connect(lb, a)
+    company = _company(lb, a)
+    poison = _note(lb, a, company, body="POISON", minutes=100)
+    mates = [_note(lb, a, company, body=f"mate {i}", minutes=i) for i in range(4)]
+    for _ in range(6):
+        await _step(lb, a, now=DAY)
+    labels = _labels(lb, a)
+    assert {m for m in mates if labels[m][11] is not None} == set(mates)
+    assert labels[poison][11] is None
+    state = _q(lb, "SELECT failures FROM crm_note_labels WHERE activity_id = "
+                   "CAST(:i AS uuid)", i=poison)[0][0]
+    assert state == 3
+    # A retried note goes out alone: no request after the first holds two.
+    assert [len(c["state"]["notes"]) for c in lb.fake.calls] == [1, 1, 1, 1]
+    assert (await _step(lb, a, now=DAY)).reason == "none"
+
+
+async def test_a_failure_after_a_text_change_keeps_no_old_label(lb, monkeypatch) -> None:
+    """Round 2, P2-2: the failure row pairs the NEW md5 with no label, never
+    with the label of the old text."""
+    import acb_llm
+
+    a = lb.org_a
+    _connect(lb, a)
+    act = _note(lb, a, _company(lb, a), body="text A")
+    assert (await _step(lb, a, now=DAY)).labeled == 1
+    before = _labels(lb, a)[act]
+    assert before[1] == "payment" and before[10] == "req-1"
+
+    async def _invalid(state, questions, **kw):
+        raise acb_llm.DecideRequestInvalid(400, {"reason": "bad"})
+
+    monkeypatch.setattr(acb_llm, "decide", _invalid)
+    with lb.admin_engine.begin() as c:
+        c.execute(text("UPDATE crm_activities SET body = 'text B' WHERE id = CAST(:i AS uuid)"),
+                  {"i": act})
+    assert (await _step(lb, a, now=DAY)).reason == "batch_failed"
+    row = _labels(lb, a)[act]
+    md5_b = _q(lb, "SELECT md5(coalesce(subject, '') || coalesce(body, '')) FROM "
+                   "crm_activities WHERE id = CAST(:i AS uuid)", i=act)[0][0]
+    assert row[8] == md5_b and row[11] is None
+    # kind, its confidence and probabilities, needs_action, urgency, its
+    # confidence and probabilities, and the request id: all cleared.
+    assert [row[i] for i in (1, 2, 3, 4, 5, 6, 7, 10)] == [None] * 8
+    failures = _q(lb, "SELECT failures FROM crm_note_labels WHERE activity_id = "
+                      "CAST(:i AS uuid)", i=act)[0][0]
+    assert failures == 1
+
+
 async def test_a_parked_note_waits_seven_days(lb, monkeypatch) -> None:
     a = lb.org_a
     _connect(lb, a)

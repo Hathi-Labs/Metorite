@@ -47,7 +47,9 @@ step skips, logs a count, and spends nothing.
 the shared cool-down (a ``crm.`` call starts it on a 402 only, so a 403
 never pauses email). A failure that the batch can cause (an invalid
 request, an answer that cannot be read, a timeout) counts one failure for
-each of its notes. A failed note goes to the back of the queue, and after
+each of its notes. A failed note goes to the back of the queue, and from
+then on it goes out in a request of its own, so only a poison note parks,
+and never its batch-mates. After
 :data:`MAX_FAILURES` (3) it waits :data:`PARK_DAYS` (7) days or until its
 text changes. So one bad note cannot block the queue. The next sync run
 tries again. It also stops when the scheduler stops.
@@ -180,12 +182,15 @@ def enabled_for(org: str) -> bool:
 
 @dataclass(frozen=True)
 class Note:
-    """One note to label. ``body_md5`` is the md5 the step read with it."""
+    """One note to label. ``body_md5`` is the md5 the step read with it.
+    ``failures`` counts the failed batches of this text, and a note with one
+    or more goes out in a request of its own (:func:`pack`)."""
 
     id: str
     subject: str | None
     body: str | None
     body_md5: str
+    failures: int = 0
 
 
 def note_state(ref: str, note: Note) -> dict[str, str]:
@@ -218,13 +223,31 @@ def questions_for(ref: str) -> dict[str, Any]:
     }
 
 
+def _chunks(notes: Sequence[Note]) -> list[list[Note]]:
+    """The notes of each request. A note that failed before goes alone, so a
+    poison note fails, and parks, on its own: its old batch-mates land."""
+    out: list[list[Note]] = []
+    fresh: list[Note] = []
+    for note in notes:
+        if note.failures > 0:
+            out.append([note])
+            continue
+        fresh.append(note)
+        if len(fresh) == NOTES_PER_REQUEST:
+            out.append(fresh)
+            fresh = []
+    if fresh:
+        out.append(fresh)
+    return out
+
+
 def pack(notes: Sequence[Note]) -> list[tuple[dict[str, Any], dict[str, Any], list[tuple[str, Note]]]]:
     """The requests for ``notes``: up to :data:`NOTES_PER_REQUEST` notes and
-    their questions in each. Each item is ``(state, questions, refs)``, and
-    ``refs`` pairs each note id of the state with its note."""
+    their questions in each, and a note that failed before alone. Each item
+    is ``(state, questions, refs)``, and ``refs`` pairs each note id of the
+    state with its note."""
     out: list[tuple[dict[str, Any], dict[str, Any], list[tuple[str, Note]]]] = []
-    for start in range(0, len(notes), NOTES_PER_REQUEST):
-        chunk = notes[start:start + NOTES_PER_REQUEST]
+    for chunk in _chunks(notes):
         refs = [(f"n{i}", note) for i, note in enumerate(chunk)]
         questions: dict[str, Any] = {}
         for ref, _note in refs:
@@ -329,7 +352,8 @@ _FAILURES_NOW = (
 )
 
 _PENDING_SQL = (
-    f"SELECT a.id::text AS id, a.subject, a.body, {_MD5} AS body_md5 "
+    f"SELECT a.id::text AS id, a.subject, a.body, {_MD5} AS body_md5, "
+    f"{_FAILURES_NOW} AS failures "
     + _WAITING
     + f"ORDER BY {_FAILURES_NOW}, COALESCE(a.ext_modified_at, a.created_at) DESC, a.id "
     "LIMIT :n"
@@ -365,7 +389,8 @@ _UPSERT_SQL = (
 )
 
 #: One failure of a batch, for each of its notes. The count starts again at
-#: 1 when the text changed. A failure keeps no label of an older text.
+#: 1 when the text changed. A failure keeps no label of an older text: the
+#: conflict branch clears every label column with the md5 it writes.
 _FAILED_SQL = (
     "INSERT INTO crm_note_labels (organization_id, activity_id, body_md5, mode, "
     "labeled_at, failures, failed_at) "
@@ -377,7 +402,9 @@ _FAILED_SQL = (
     "AND crm_note_labels.labeled_at IS NULL "
     "THEN crm_note_labels.failures + 1 ELSE 1 END, "
     "labeled_at = NULL, failed_at = now(), body_md5 = EXCLUDED.body_md5, "
-    "mode = EXCLUDED.mode"
+    "mode = EXCLUDED.mode, kind = NULL, kind_confidence = NULL, "
+    "kind_probabilities = NULL, needs_action = NULL, urgency = NULL, "
+    "urgency_confidence = NULL, urgency_probabilities = NULL, request_id = NULL"
 )
 
 
@@ -414,8 +441,8 @@ async def _pending(db: Any, org: str, limit: int) -> list[Note]:
     rows = (await db.execute(text(_PENDING_SQL), {
         "o": org, "n": limit, "max_failures": MAX_FAILURES, "park_days": PARK_DAYS,
     })).all()
-    return [Note(id=str(r.id), subject=r.subject, body=r.body, body_md5=str(r.body_md5))
-            for r in rows]
+    return [Note(id=str(r.id), subject=r.subject, body=r.body, body_md5=str(r.body_md5),
+                 failures=int(r.failures or 0)) for r in rows]
 
 
 async def _backlog(db: Any, org: str) -> int:

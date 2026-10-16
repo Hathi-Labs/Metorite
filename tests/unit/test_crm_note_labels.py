@@ -325,6 +325,24 @@ class TestThePack:
         assert [len(q) for _s, q, _r in packed] == [15, 15, 6]
         assert all(len(q) <= df.QUESTION_LIMIT for _s, q, _r in packed)
 
+    def test_a_note_that_failed_before_goes_out_alone(self):
+        """Round 2, P2-1: a poison note never drags its batch-mates again."""
+        notes = _notes(9)
+        notes[3] = nl.Note(id="failed", subject="s", body="b", body_md5="m", failures=1)
+        packed = nl.pack(notes)
+        sizes = [len(state["notes"]) for state, _q, _r in packed]
+        assert sizes == [1, 5, 3]
+        assert [n.id for _ref, n in packed[0][2]] == ["failed"]
+        assert all(n.failures == 0 for _s, _q, refs in packed[1:] for _r, n in refs)
+
+    def test_the_failure_sql_clears_every_label_column(self):
+        """Round 2, P2-2: the text of the fence, beside the R8 proof."""
+        branch = nl._FAILED_SQL.split("DO UPDATE SET", 1)[1]
+        for column in ("kind", "kind_confidence", "kind_probabilities", "needs_action",
+                       "urgency", "urgency_confidence", "urgency_probabilities",
+                       "request_id", "labeled_at"):
+            assert f"{column} = NULL" in branch, column
+
     def test_three_questions_for_each_note_in_order_kind_action_urgency(self):
         (_state, questions, refs), = nl.pack(_notes(2))
         assert list(questions) == ["n0.kind", "n0.action", "n0.urgency",
