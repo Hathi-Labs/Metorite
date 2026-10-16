@@ -2435,25 +2435,37 @@ their column. The mirror stamps `zoho_id`, so the push skips the row.
 `test_crm_module_activities_r8.py`, `test_crm_migration.py` and
 `test_crm_sync_engine.py`.
 
-**CRM-Q23b · Recover a dropped activity.** Done when:
+**CRM-Q23b · Recover a dropped activity.** The spec audit of 2026-10-16
+narrowed it. Done when:
 
-1. Take an activity whose `$se_module` is a mirrored module, but whose
-   record is not in yet. The sync keeps its Zoho id in the cursor state of
-   its entity. The list holds at most 5,000 ids for each entity.
-2. After the module pass, the sync reads the kept ids of each entity, 100
-   ids in each call. Check the `ids=` parameter against Zoho at build time. A
-   linked activity leaves the list. An id that stays unlinked for 7 days
-   leaves it too.
-3. A list that overflows marks its entity for one full read after the next
-   module pass. It respects a CRM-Q16 hold, and it never queues while the
-   first import of the activity entity is not done.
-4. An R8 test proves the case of a new record and a new task in one run.
-5. The sync queues one full read of note, call and meeting, through the
-   existing re-read list. It does so one time for each org with mirrored
-   module records.
-   The records that a run read before CRM-Q23a sit behind the cursor, so
-   only this read brings them back. It runs before an admin releases a
-   CRM-Q16 hold on `activities`, and it respects that hold.
+1. A dropped activity whose `$se_module` names a mirrored module is kept in
+   the cursor state of its entity. The entry is
+   `{id: [module, parent_ext_id, first_seen]}`, at most 5,000 for each entity.
+   The final-page state, the mid-read state and
+   `_KEPT_WHEN_UNAVAILABLE` keep it. A unit test proves each of the three.
+2. After `_module_records`, one tenant-session query selects the kept entries
+   whose parent now exists. Only those are read again, 100 ids in each call
+   (`GET /crm/v2/{Module}?ids=a,b,…`). The step skips a held key
+   (`_skip_held`) and stops at `MODULES_RESERVE`. A linked id leaves the list.
+   An id older than 7 days leaves it, and a later re-add keeps its first
+   `first_seen`. A test proves that 0 recoverable entries make 0 provider calls.
+3. An overflow queues one full read through the re-read list. It does so only
+   when the first import of the activity entity is done. Every mirrored module
+   named in the list must also have `initial_done_at`. It queues at most
+   one time in 7 days for each entity. A test proves that a second overflow
+   inside 7 days queues nothing.
+4. An R8 test proves a new module record and a new note in one run. The note
+   links in the same run's recovery step.
+5. Take an org with no `zoho:activity_backfill` cursor row, whose profile
+   mirrors at least one module. The sync queues one full read of note, call,
+   meeting and task. It writes that row in the same transaction. A second run queues
+   nothing. An R8 test proves that a hold on `activities` keeps the entry until
+   release.
+
+Files: `crm_sources/base.py`, `crm_sources/zoho/client.py`,
+`crm_sync/engine.py`, a new `crm_sync/recover.py`, and the tests
+`test_crm_activity_recover.py`, `test_crm_activity_recover_r8.py` and
+`test_crm_sources_zoho.py`. No migration: the cursor state is `jsonb`.
 
 **CRM-Q23c · The timeline on a module record.** Done when:
 
