@@ -3,7 +3,7 @@
 **Status:** 🟠 **PROPOSED, 2026-10-15. Revised 2026-10-16:** staging goes on the dev box (§5).
 
 **Built:** 🔨 phase 1, the daily clock (§5.7), and 🔨 phase 2 slice S-4, `DEPLOY_ENV` (§5.8).
-Both on 2026-10-16, on the owner's go-ahead. S-3, S-7 and phases 3 to 5 are not built.
+Both on 2026-10-16, on the owner's go-ahead. S-7, the staging band, is built (§5.9). S-3 needs no code (§5.9). Phases 3 to 5 are not built.
 
 **Owner:** vjvarada ·
 **Board row:** WS-38 (this is the concrete answer to its **D-D**, and a proposed
@@ -394,6 +394,30 @@ value stops the round before the lock. Fence: `tests/unit/test_deploy_env.py`.
 `WHATSAPP_BRIDGE_ENABLED=0` and `MEETING_BOT_ENABLED=0`. The Customer Console and
 the operator console run only when their units are enabled, and the bootstrap
 enables neither. The Console ladder is then skipped (§5.4).
+
+### 5.9 S-3 and S-7, 2026-10-16
+
+**S-3 needs no code.** A re-measure found five host names in code that no
+setting moves. None of them reaches a person from staging:
+
+- The WhatsApp link host (`whatsapp_ui.py` `LINK_HOST`, `views.py` `APP_URL`,
+  and the `bot_run.py` prompt) is a security allowlist against a phishing link.
+  WhatsApp is off on staging. A setting there would widen the allowlist for no
+  gain.
+- `INVITE_SIGNIN_FALLBACK_ORIGIN` applies only when the box declares no public
+  URL. The staging box declares one.
+- `agent_authorize_url` and `SMOKE_BASE_URL` are settings already, so `.env`
+  can move them.
+
+**S-7 is built.** `src/components/StagingBand.tsx` draws a 4px `bg-warning`
+stripe across the top of every page when `DEPLOY_ENV=staging`. The tab title
+reads `[Staging] Metorite`. Both read the setting on the server, and production
+renders nothing new.
+
+The stripe is an overlay that takes no space and no clicks, because the shell
+fills 100dvh. Fence:
+`src/lib/deploy/deployEnv.test.ts`. A visual review on 2026-10-16 captured it in
+eight contexts on two pages, and it found no P0 and no P1.
 
 ## 6. The build tickets
 
