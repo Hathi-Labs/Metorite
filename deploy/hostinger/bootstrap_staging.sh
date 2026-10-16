@@ -196,6 +196,9 @@ set_kv "$env" DEPLOY_ENV staging
 set_kv "$env" ACB_MASTER_KEY "$(gen)" keep
 set_kv "$env" GATEWAY_INTERNAL_TOKEN "$(gen)" keep
 set_kv "$env" GATEWAY_PUBLIC_URL "$api"
+# acb-gateway.service listens on 8080. Without this name the deploy's health
+# probe (scripts/check_infra.py) asks the default, 8000, and fails the apply.
+set_kv "$env" GATEWAY_PORT 8080
 set_kv "$env" WORKBENCH_PUBLIC_URL "$web"
 set_kv "$env" AGENT_AUTHORIZE_URL "$web/connect/authorize"
 set_kv "$env" SMOKE_BASE_URL "$web"

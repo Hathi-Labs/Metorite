@@ -95,7 +95,9 @@ while IFS= read -r role; do
 done < "$import_dir/roles.txt"
 available="$(dpsql -d postgres -tA -c "select name from pg_available_extensions" < /dev/null)"
 while IFS='|' read -r ext nsp; do
-  [[ "$ext" =~ ^[a-z0-9_]+$ && "$nsp" =~ ^[a-z0-9_]+$ ]] || continue
+  # A name may hold a hyphen: production's uuid-ossp gives the column defaults
+  # public.uuid_generate_v4(). The SQL below quotes the name.
+  [[ "$ext" =~ ^[a-z0-9_-]+$ && "$nsp" =~ ^[a-z0-9_]+$ ]] || continue
   if printf '%s\n' "$available" | grep -qxF "$ext"; then
     dpsql -d postgres -c "CREATE SCHEMA IF NOT EXISTS \"$nsp\"; CREATE EXTENSION IF NOT EXISTS \"$ext\" WITH SCHEMA \"$nsp\" CASCADE" < /dev/null
   else
@@ -104,8 +106,14 @@ while IFS='|' read -r ext nsp; do
 done < "$import_dir/extensions.txt"
 log="$import_dir/restore.log"
 rc=0
-docker exec -i "$ctr" pg_restore -U postgres -d postgres --no-owner --no-acl \
-  < "$import_dir/staging.dump" > "$log" 2>&1 || rc=$?
+# A dump of --schema=public creates the schema public, and CREATE DATABASE has
+# made it already. Restore from a list without that one entry, so the restore
+# has no error. pg_restore needs a file it can seek in for -L.
+docker cp "$import_dir/staging.dump" "$ctr:/tmp/staging.dump"
+docker exec "$ctr" sh -c 'pg_restore -l /tmp/staging.dump | grep -vE "^[0-9]+; [0-9]+ [0-9]+ SCHEMA - public " > /tmp/staging.list'
+docker exec "$ctr" pg_restore -U postgres -d postgres --no-owner --no-acl \
+  -L /tmp/staging.list /tmp/staging.dump > "$log" 2>&1 || rc=$?
+docker exec "$ctr" rm -f /tmp/staging.dump /tmp/staging.list
 if [ "$rc" != "0" ] || grep -qE '^pg_restore: error' "$log"; then
   grep -E '^pg_restore: error' "$log" | head -20 >&2 || true
   fail "pg_restore failed (exit $rc). See $log"
