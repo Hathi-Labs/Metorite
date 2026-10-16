@@ -2577,6 +2577,14 @@ Files: `routes/crm/aggregate.py`, `routes/crm/field_sql.py`,
 (`crm_tools.py`), `tests/unit/test_crm_aggregate.py`,
 `tests/unit/test_tool_schema_diet.py` and `tests/unit/`.
 
+**Built as (2026-10-16).** `routes/crm/field_sql.py` holds the field SQL.
+`aggregate.py` reads it, and `GET /crm/fields/module:<ApiName>` lists the
+fields of a module. A statement past the timeout gives 503
+`aggregate_timeout`. For `avg`, `min` and `max`, `other` holds that measure
+over the folded groups. R8: `tests/unit/test_crm_aggregate_fields_r8.py`.
+On the scratch database, one request on a warm engine took 0.10 to 0.18 s
+over 30,000 rows, and the test asserts 1 s.
+
 **CRM-Q26 · Labels on notes, in shadow.** Done when:
 
 1. The decide registry (`gateway/decide_features.py`) gains the feature
