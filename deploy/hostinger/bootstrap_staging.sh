@@ -13,7 +13,8 @@
 # --secrets FILE is optional. It holds NAME=VALUE lines, and only these names
 # are read: AUTH_GOOGLE_ID, AUTH_GOOGLE_SECRET, AUTH_MICROSOFT_ENTRA_ID_ID,
 # AUTH_MICROSOFT_ENTRA_ID_SECRET (the STAGING OAuth clients, never production's)
-# and CUSTOMER_CONSOLE_ORG_KEY (the `Metorite Staging` organization's key).
+# and CUSTOMER_CONSOLE_ORG_KEY (a staging key of `hathi-labs-llp`, minted in
+# project-docs/STAGING_SETUP_RUNBOOK.md part D).
 # Without them staging serves pages, but nobody can sign in and the chat has
 # no model.
 #
