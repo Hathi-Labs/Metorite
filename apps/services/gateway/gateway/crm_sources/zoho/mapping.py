@@ -64,6 +64,9 @@ _ACTIVITY_COLUMN = {
     "deal": "deal_id",
 }
 
+#: The column a generic module record fills on ``crm_activities`` (CRM-Q23a).
+MODULE_RECORD_COLUMN = "module_record_id"
+
 ENTITY_TABLES: Mapping[str, str] = {
     "company": "crm_companies",
     "contact": "crm_contacts",
@@ -111,6 +114,10 @@ class Mapped:
     pipeline: tuple[str | None, str | None] | None = None
     #: A free note on what the engine must derive, for example the lead name.
     derived: tuple[str, ...] = field(default=())
+    #: An activity: the module of its parent, as the provider names it. The
+    #: engine counts a dropped activity under it (CRM-Q23a). ``None`` for any
+    #: other entity, and for an activity that names no module.
+    parent_module: str | None = None
 
 
 # ── Small coercions ─────────────────────────────────────────────────────────
@@ -317,30 +324,47 @@ def _deal(fields: Mapping[str, Any]) -> dict[str, Any]:
     return values
 
 
+def parent_module(fields: Mapping[str, Any]) -> str | None:
+    """The module of an activity's parent, as Zoho names it (``$se_module``),
+    or ``None`` when the record names none."""
+    return text_value(fields.get("$se_module"))
+
+
 def _activity_links(entity: str, fields: Mapping[str, Any]) -> tuple[Link, ...]:
     """The records an activity belongs to. A note has a parent, a call or
-    meeting has a person (``Who_Id``) and a thing (``What_Id``)."""
-    se_module = _MODULE_ENTITY.get(text_value(fields.get("$se_module")) or "")
+    meeting has a person (``Who_Id``) and a thing (``What_Id``).
+
+    CRM-Q23a (``crm_platform.md`` §18.10): when ``$se_module`` names any module
+    but the four core ones, the parent is a record of that module in
+    ``crm_module_records``. The one candidate is then ``module_record_id`` with
+    the entity ``module:<ApiName>``. It never falls back to the core
+    candidates, because the id of a custom record is no id of a deal.
+    """
+    named = parent_module(fields)
+    se_module = _MODULE_ENTITY.get(named or "")
+    generic = module_entity(named) if named and se_module is None else None
+
+    def parent(ext_id: str, fallback: tuple[tuple[str, str], ...]) -> Link:
+        if se_module:
+            return Link(ext_id, ((_ACTIVITY_COLUMN[se_module], se_module),))
+        if generic:
+            return Link(ext_id, ((MODULE_RECORD_COLUMN, generic),))
+        return Link(ext_id, fallback)
+
     links: list[Link] = []
     if entity == "note":
-        parent = lookup_id(fields.get("Parent_Id"))
-        if parent:
-            if se_module:
-                links.append(Link(parent, ((_ACTIVITY_COLUMN[se_module], se_module),)))
-            else:
-                links.append(Link(parent, tuple(
-                    (column, kind) for kind, column in _ACTIVITY_COLUMN.items()
-                )))
+        parent_id = lookup_id(fields.get("Parent_Id"))
+        if parent_id:
+            links.append(parent(parent_id, tuple(
+                (column, kind) for kind, column in _ACTIVITY_COLUMN.items()
+            )))
         return tuple(links)
     who = lookup_id(fields.get("Who_Id"))
     if who:
         links.append(Link(who, (("contact_id", "contact"), ("lead_id", "lead"))))
     what = lookup_id(fields.get("What_Id"))
     if what:
-        if se_module:
-            links.append(Link(what, ((_ACTIVITY_COLUMN[se_module], se_module),)))
-        else:
-            links.append(Link(what, (("deal_id", "deal"), ("company_id", "company"))))
+        links.append(parent(what, (("deal_id", "deal"), ("company_id", "company"))))
     return tuple(links)
 
 
@@ -442,10 +466,12 @@ def map_record(
     conversion: dict[str, str] | None = None
     derived: tuple[str, ...] = ()
     pipeline: tuple[str | None, str | None] | None = None
+    parent: str | None = None
 
     if entity in _ACTIVITY_TYPES:
         values = _activity(entity, fields)
         links = _activity_links(entity, fields)
+        parent = parent_module(fields)
     else:
         values = _BUILDERS[entity](fields)
         if entity == "contact":
@@ -490,6 +516,7 @@ def map_record(
         owner_name=owner_name,
         pipeline=pipeline,
         derived=derived,
+        parent_module=parent,
     )
 
 
