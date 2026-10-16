@@ -67,8 +67,8 @@ def test_the_cap_keeps_the_old_entries_and_marks_an_overflow(monkeypatch) -> Non
 
 def test_the_real_cap_is_5000() -> None:
     assert recover.CAP == 5_000
-    assert recover.MAX_AGE == timedelta(days=7)
-    assert recover.OVERFLOW_EVERY == timedelta(days=7)
+    assert timedelta(days=7) == recover.MAX_AGE
+    assert timedelta(days=7) == recover.OVERFLOW_EVERY
 
 
 def test_an_entry_older_than_7_days_leaves() -> None:

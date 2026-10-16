@@ -444,12 +444,12 @@ async def test_a_hold_on_activities_keeps_the_backfill_entry_until_release(mz) -
     assert (await _run(p.org_a)).status == "ok"
     marker = _state(p, p.org_a, BACKFILL)
     assert marker is not None
-    assert ACTIVITIES <= _rereads(p, p.org_a), "held: the entries wait"
+    assert _rereads(p, p.org_a) >= ACTIVITIES, "held: the entries wait"
     assert "task" not in _rereads(p, p.org_a), "tasks are not held, so they read"
     assert "n1" not in _linked(p, p.org_a)
 
     assert (await _run(p.org_a)).status == "ok"
-    assert ACTIVITIES <= _rereads(p, p.org_a), "still held, still waiting"
+    assert _rereads(p, p.org_a) >= ACTIVITIES, "still held, still waiting"
     assert _state(p, p.org_a, BACKFILL) == marker, "and queued one time only"
 
     _hold(p, p.org_a, "activities", held=False)
