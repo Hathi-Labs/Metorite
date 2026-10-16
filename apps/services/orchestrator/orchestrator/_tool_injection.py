@@ -346,17 +346,28 @@ def _run_covered(agent_name: str, organization_id: str | None = None) -> bool:
 #: ``tests/unit/test_untrusted_frame.py``.
 try:
     from acb_skills.egress import (
+        MAIL_STORE_WRITE_REFUSED,
         MARK_CLEAR,
         MARK_MARKED,
+        STORE_WRITES,
         UNTRUSTED_INPUT_AGENTS,
         is_delegation_tool,
         read_untrusted_answer,
+        run_holds_mail,
         session_is_marked,
         session_mark_state,
     )
 except ImportError:  # pragma: no cover - acb_skills ships with the platform
     UNTRUSTED_INPUT_AGENTS = frozenset({"email-assistant"})
     MARK_CLEAR, MARK_MARKED = "clear", "marked"
+    STORE_WRITES = frozenset({
+        "save_memory", "save_episode", "save_agent_memory", "save_org_memory", "save_note",
+    })
+    MAIL_STORE_WRITE_REFUSED = "{tool} did not run."
+
+    async def run_holds_mail(agent_name: Any = None, ctx: Any = None) -> bool:
+        """Fail closed: with no reader, each run holds mail."""
+        return True
 
     def is_delegation_tool(tool: Any) -> bool:
         return False
@@ -965,8 +976,12 @@ def _permission_gate(
         # argument nor a caller fact writes it. An async caller passes what
         # Redis said (``session_is_marked``, which fails closed). The sync
         # reader adds what this process saw (round 3).
+        # WS-17 EM-G11f3 round 2: a run of the mail agent itself ignores the
+        # mark. Its own tools ask their own cards (EM-G11c1), as in a direct
+        # pane run, and the untrusted card would be a second card.
         request["after_untrusted_answer"] = (
-            bool(after_untrusted_answer) or read_untrusted_answer())
+            bool(after_untrusted_answer) or read_untrusted_answer()
+        ) and not _run_reads_mail_itself()
         ok, code, _ = decide(request)
         mode = os.environ.get(
             "AGENT_PERMISSION_MODE", "enforce"
@@ -1031,7 +1046,20 @@ def _gate_injected_tool(fn: Any) -> Any:
             # fault) fails closed for an egress act, so it asks the card. A
             # delegation is not one: each egress tool of the run that it
             # starts asks its own card, so a blip never holds a send.
-            state = await session_mark_state() if _is_egress(fn) else MARK_CLEAR
+            # WS-17 EM-G11f3: a store write in a run that holds mail gives
+            # the fixed refusal at once. It asks no card, because a hidden
+            # store is not a copy that the member can see or delete. An
+            # UNKNOWN mark counts as mail (``run_holds_mail`` fails closed).
+            if tool_name in STORE_WRITES and await _run_holds_mail_here():
+                _log.info("permission.mail_store_write_refused", tool=tool_name)
+                return MAIL_STORE_WRITE_REFUSED.format(tool=tool_name)
+            # WS-17 EM-G11f3 round 2: the mail agent's own run reads no mark
+            # (:func:`_run_reads_mail_itself`). The executor marks the calling
+            # session BEFORE the sub-run starts, so without this its own
+            # writes would ask the untrusted card as well as their own card.
+            state = (await session_mark_state()
+                     if _is_egress(fn) and not _run_reads_mail_itself()
+                     else MARK_CLEAR)
             marked = state == MARK_MARKED or (
                 state != MARK_CLEAR and not is_delegation_tool(fn))
             allowed, reason = _gate(kwargs, marked)
@@ -1058,6 +1086,37 @@ def _gate_injected_tool(fn: Any) -> Any:
     return _register_platform_wrapper(fn, _sgated)
 
 
+def _run_reads_mail_itself() -> bool:
+    """True when the run on this frame IS an agent of
+    :data:`UNTRUSTED_INPUT_AGENTS` (WS-17 EM-G11f3, round 2).
+
+    The agent name comes from the run's bound artifact context, never from a
+    request field or a tool argument. Such a run ignores the session's
+    untrusted-answer mark: the mark holds what the CALLER does after the
+    answer, and each write of the mail agent asks its own card. A fault reads
+    False, so the mark applies and the gate fails closed."""
+    try:
+        from acb_skills.write_artifact import artifact_context
+
+        name = str((artifact_context() or {}).get("agent_name") or "")
+    except Exception:
+        return False
+    return name in UNTRUSTED_INPUT_AGENTS
+
+
+async def _run_holds_mail_here() -> bool:
+    """``acb_skills.egress.run_holds_mail`` for the run on this frame. The
+    agent and the session come from the run's bound artifact context. A
+    fault reads as mail, so it fails closed."""
+    try:
+        from acb_skills.write_artifact import artifact_context
+
+        agent = str((artifact_context() or {}).get("agent_name") or "")
+        return await run_holds_mail(agent)
+    except Exception:  # fail closed
+        return True
+
+
 #: The answer of an egress call that the member did not approve, in a run
 #: that read an untrusted agent's answer (WS-17 EM-G11d round 2).
 UNTRUSTED_ANSWER_REFUSED = (
@@ -1076,7 +1135,8 @@ def _after_untrusted_answer(reason: str, marked: bool = False) -> bool:
     except ImportError:  # pragma: no cover
         return True
     return reason == UNTRUSTED_ANSWER_CONFIRM or (
-        reason == "gate_error" and (marked or read_untrusted_answer()))
+        reason == "gate_error" and (marked or read_untrusted_answer())
+        and not _run_reads_mail_itself())
 
 
 def _untrusted_answer_card_refusal() -> str | None:
@@ -1904,6 +1964,12 @@ def _inject_agent_tools(
         frozenset(fn.__name__ for fn in _all_tools if _is_egress(fn))
         if no_egress else frozenset()
     )
+    # WS-17 EM-G11f3: an agent that reads mail holds no store write, so no
+    # mail text reaches a memory store or a note (§12.3.13.9.1 item 5). The
+    # names leave the SCOPE and the final list, where H-236 drops its set.
+    _mail_store = (
+        STORE_WRITES if (agent_name or "") in UNTRUSTED_INPUT_AGENTS else frozenset()
+    )
     # The agent's own floor opt-out (config.json: floor_opt_out). The names
     # leave the SCOPE, so no prompt text offers them, and the final list
     # below, so no fallback branch brings them back.
@@ -1921,7 +1987,7 @@ def _inject_agent_tools(
         _drop_own_tools(agents, _wa_withheld)
     _scope_names = _resolve_injected_scope(
         tool_scope, disabled_families=_disabled_families,
-        withheld=_withheld | _egress | _opted_out | _wa_withheld,
+        withheld=_withheld | _egress | _mail_store | _opted_out | _wa_withheld,
     )
     if _scope_names is not None:
         # Scope-typo guard (multi_agent_orchestration.md Phase 0.3): an entry
@@ -1991,6 +2057,8 @@ def _inject_agent_tools(
     # the platform leaves too, whatever branch added it.
     if no_egress:
         _extra_tools = [fn for fn in _extra_tools if not _is_egress(fn)]
+    if _mail_store:
+        _extra_tools = _drop_withheld(_extra_tools, _mail_store)
     # WAC-10a: the WhatsApp UI tool goes to the run's own agent only. An agent
     # it calls answers in text.
     if _wa_withheld:

@@ -13,8 +13,10 @@ once, and a later PR removes them (HANDOFF).
 Hermetic. Each behaviour test hands the route a session that answers EVERY
 query with a stored row that names the other tier. A route that read the
 stored choice would send that tier, so the test fails. R8 for the PUT and
-GET SQL is ``test_email_assistant_settings.py``, and R8 for the chat is
-``test_email_chat_context_owner.py``.
+GET SQL is ``test_email_assistant_settings.py``. The email chat route and
+its R8 cases are gone (WS-17 EM-G11f3). The chat pane runs on
+``/agent/run/stream``, and its tier fences are ``noTierChoice.test.ts`` and
+``chatScope.test.ts``.
 
 Mutations this file catches (R7):
 

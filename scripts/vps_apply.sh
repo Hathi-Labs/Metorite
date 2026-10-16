@@ -698,7 +698,8 @@ env_edit_in_place() {
 for _var in MEM0_ENABLED GRAPHITI_ENABLED; do
   if ! grep -qE "^${_var}=" "$ENV_FILE" 2>/dev/null; then
     case "$_var" in
-      MEM0_ENABLED)       echo "MEM0_ENABLED=true" >> "$ENV_FILE" ;;
+      # WS-17 EM-G11f3: a missing line means OFF. Mem0 on is an owner act (WS-7).
+      MEM0_ENABLED)       echo "MEM0_ENABLED=false" >> "$ENV_FILE" ;;
       GRAPHITI_ENABLED)   echo "GRAPHITI_ENABLED=false" >> "$ENV_FILE" ;;
     esac
     echo "    + added $_var to .env"

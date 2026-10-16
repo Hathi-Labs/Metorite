@@ -787,9 +787,7 @@ def test_every_stream_declares_if_it_shows_cards() -> None:
     declared = {p: next(k.value for k in node.keywords if k.arg == "shows_cards")
                 for p, node in calls}
     chat = declared["apps/services/gateway/gateway/routes/agent.py"]
-    email = declared["apps/services/gateway/gateway/routes/email/automation/chat.py"]
     assert isinstance(chat, __import__("ast").Constant) and chat.value is True
-    assert isinstance(email, __import__("ast").Constant) and email.value is False
 
 
 def test_the_default_of_shows_cards_is_no() -> None:

@@ -3,8 +3,9 @@ the right endpoint per their mode/kind arg, and the old behaviours must still be
 reachable (so the consolidation is behaviour-preserving, just fewer tools).
 
 Also asserts the registered tool surface shrank and no longer exposes the merged
-names, while the quick-action helper functions (search_emails / find_urgent)
-remain importable for the gateway's /ai/quick-action endpoint.
+names, while the old helper functions (search_emails / find_urgent /
+suggest_unsubscribes) stay importable. The gateway route that called them is
+gone (WS-17 EM-G11f3). The agent still calls suggest_unsubscribes.
 """
 from __future__ import annotations
 
@@ -143,7 +144,7 @@ def test_surface_shrank_and_merged_names_gone() -> None:
         assert new in tools
     # Quick-action helpers stay importable even though they're unregistered.
     assert callable(agents.search_emails) and callable(agents.find_urgent)
-    assert callable(agents.suggest_unsubscribes)  # /ai/quick-action=unsubscribe
+    assert callable(agents.suggest_unsubscribes)  # the agent calls it
 
 
 # ── run_rules(scope) + install_default_rules(reset) + manage_inbox(move) ──────

@@ -61,7 +61,8 @@ describe("email-storage-proxy-budget (A12)", () => {
   });
 
   it("keeps the AI and agent paths at 120,000 ms", () => {
-    expect(AI_SLOW_POST_PATHS.size).toBe(14);
+    // WS-17 EM-G11f3 deleted the two email chat routes, so twelve remain.
+    expect(AI_SLOW_POST_PATHS.size).toBe(12);
     for (const joined of AI_SLOW_POST_PATHS) {
       expect(postTimeoutMs(joined.split("/")), joined).toBe(120_000);
     }
