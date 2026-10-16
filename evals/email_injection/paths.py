@@ -500,36 +500,6 @@ class _Result:
         return self._rows[0] if self._rows else None
 
 
-def chat_context(mail: Mail) -> Capture:
-    """``chat._build_chat_context``: the email open in the reader."""
-    from gateway.routes.email.automation import chat
-
-    row = SimpleNamespace(
-        subject=mail.value("subject"), body_text=mail.value("body"),
-        from_address={"name": mail.value("from_name"), "email": mail.value("from")},
-        received_at="2026-10-14 09:00:00+00")
-
-    class _Db:
-        async def execute(self, statement: Any, params: dict[str, Any]) -> _Result:
-            sql = str(statement)
-            if "FROM email_accounts" in sql and "email_messages" not in sql:
-                return _Result([SimpleNamespace(id=_ACCOUNT,
-                                                email_address="owner@company.example")])
-            if "em.body_text" in sql:
-                return _Result([row])
-            return _Result([])
-
-    @contextlib.asynccontextmanager
-    async def session() -> Any:
-        yield _Db()
-
-    with _patched((chat, "_tenant_session", session)):
-        _account, parts = asyncio.run(chat._build_chat_context(
-            "owner@company.example", None, _MAIL_ID, False))
-    return _assistant_capture("chat_context", [["\n\n".join(parts)]],
-                              {"from_name", "from", "subject", "body"})
-
-
 #: Every path of the eval, by name. ``consult_run`` reads no text into a
 #: prompt of ours. It proves the no-egress half of the consult.
 PATHS: dict[str, Callable[[Mail], Capture]] = {
@@ -546,5 +516,8 @@ PATHS: dict[str, Callable[[Mail], Capture]] = {
     "classifier_one": classifier_one,
     "classifier_decide": classifier_decide,
     "classifier_many": classifier_many,
-    "chat_context": chat_context,
 }
+# WS-17 EM-G11f3 (``email_app_master_plan.md`` §12.3.13.9.1) deleted the email
+# chat route, and with it ``chat_context``. The live chat pane runs the email
+# assistant on ``/agent/run/stream``, and its mail text arrives through
+# ``read_email`` and ``read_thread``, which stay above.

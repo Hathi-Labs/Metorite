@@ -1312,11 +1312,10 @@ export async function forwardEmail(body: ForwardBody): Promise<ForwardResult> {
   });
 }
 
-// NOTE: The email AI chat now runs through the shared chat pipeline
-// (@/components/AgentChat → /api/agent/chat → the `email-assistant` agent), so
-// the old bespoke streamAIChat / triggerQuickAction clients (which hit
-// /api/email/ai/chat and /email/ai/quick-action) were removed. The backend
-// endpoints still exist for any external callers.
+// NOTE: The email AI chat runs through the shared chat pipeline
+// (@/components/AgentChat → /api/agent/chat → the `email-assistant` agent).
+// The old bespoke chat and quick-action clients were removed, and WS-17
+// EM-G11f3 deleted their two gateway routes.
 
 // ── OAuth ────────────────────────────────────────────────────────────────
 

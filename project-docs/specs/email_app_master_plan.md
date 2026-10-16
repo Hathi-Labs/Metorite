@@ -13596,8 +13596,9 @@ merged** (2026-10-15, branch `gmail-bg-writes`, §12.3.13.7).
 ✅ **PR-G5 (EM-G11d) is merged NARROWED** (#1060, 2026-10-16).
 §12.3.13.8 records what it covers. The other PRs are not built.
 
-📝 **This spec added three PRs on 2026-10-16, and no audit has read them.** PR-G8b (EM-G11f3) stops the copies
-of mail in chat memory stores (§12.3.13.9.1). PR-G7b and PR-G7c (EM-G11f1b, EM-G11f1c) put the
+📝 **This spec added three PRs on 2026-10-16.** 🔨 PR-G8b (EM-G11f3) is built and not merged
+(branch `gmail-chat-copies`, audit GO-NARROWED). It stops the copies of mail in chat memory
+stores (§12.3.13.9.1). PR-G7b and PR-G7c (EM-G11f1b, EM-G11f1c) put the
 teardown into the member purge and the org purge (§12.3.13.9.2).
 
 **Why.** The owner wants Google to verify the Gmail app, so that every member can connect Gmail.
@@ -13772,7 +13773,10 @@ calls `/email/ai/chat`.
   - The reply drafter (`GW/email/automation/drafting.py:843-889`, `:951-969`).
   - The consult planner (`drafting.py:1194-1217`).
   - The old rule classifier (`GW/email/automation/engine.py:148-177`, `:845-857`, `:929-943`).
-  - The chat context of the open mail (`GW/email/automation/chat.py:122-135`).
+  - The chat context of the open mail (`GW/email/automation/chat.py:122-135`). ⚠️ Amended
+    2026-10-16: EM-G11f3 deletes that route (§12.3.13.9.1, item 4). So five paths remain, and
+    the eval drops `chat_context`. The live chat pane reads mail through `read_email` and
+    `read_thread`, which the eval keeps.
 - **Forged tags.** The drafter tells the model to follow
   `<personal_instructions>` (`drafting.py:879`), and a mail body can forge that tag. The chat
   context puts up to 5000 characters of body under a `##` heading, so a body can forge a section.
@@ -13883,7 +13887,7 @@ connect is the precedent (`src/app/whatsapp/connect/page.tsx:340`), and
 | PR-G8 | **EM-G11f2** — a durable purge, and a fence on each child. ✅ Merged NARROWED #1020 (2026-10-14), migration 264 | 6 | 🟢 AGENT-SAFE · R8 · one migration | M, about 500 | §12.3.13.9 |
 | PR-G7b | **EM-G11f1b** — the teardown in the member purge, and the Outlook rules. ✅ Merged #1089 (2026-10-16) | 6 | 🟢 AGENT-SAFE · security review · R8 · live for Outlook | M, about 550 | §12.3.13.9.2 |
 | PR-G7c | **EM-G11f1c** — the teardown in the org purge, and a purge record that outlives the org. 🔨 Built, not merged (2026-10-16, branch `gmail-org-purge`, migration 276) | 6 | 🟢 AGENT-SAFE · R8 · one migration · security review | M, about 450 | §12.3.13.9.2 |
-| PR-G8b | **EM-G11f3** — no copy of mail in a chat memory store, and no email chat route with no client. 📝 Specified (2026-10-16) | 6 | 🟢 AGENT-SAFE · security review. `deploy-write` for one line of `deploy.sh` (granted). 🔴 Merges before the WS-7 memory flips | M, about 400 added and 650 deleted | §12.3.13.9.1 |
+| PR-G8b | **EM-G11f3** — no copy of mail in a chat memory store, and no email chat route with no client. 🔨 Built, not merged (2026-10-16, branch `gmail-chat-copies`) | 6 | 🟢 AGENT-SAFE · security review. `deploy-write` for one line of `deploy.sh` (granted). 🔴 Merges before the WS-7 memory flips | M, about 400 added and 650 deleted | §12.3.13.9.1 |
 | PR-G9 | **EM-G11g1** — envelope encryption in the key store, dark | 5 | 🟢 AGENT-SAFE build · security review. 🔴 OWNER-GATE for KMS billing (Q-GM-8). 🔴 `enforcement-flip` for `KEY_STORE_ENVELOPE` | M, about 550 | §12.3.13.10 |
 | PR-G10 | **EM-G11g2** — the rewrap job and the rotation | 5 | 🟢 AGENT-SAFE · R8. 🔴 `deploy` to run the job on production | M, about 450 | §12.3.13.10 |
 | — | **EM-G11r** — the reviewer path, the video, the publish order and the scope text | 7, 9, 10, 11 | 🔴 OWNER-GATE (Google account, money, third party). Parts are agent acts, named in each step | Runbook | §12.3.13.11 to §12.3.13.14 |
@@ -14894,6 +14898,10 @@ before any send, because a model draft is never sent by itself.
    unchanged. `untrusted.py` records this limit.
 4. **The voice profile and the knowledge base.** They stay outside the frame. The member's own
    mail builds the first, and the member approves each entry of the second.
+5. **The open mail in the pane's persona** (recorded 2026-10-16, PR-G8b review). The Email pane
+   puts the subject and the sender name of the open mail into `system_context` with no frame
+   (`workbench/control_plane/src/app/email/lib/emailAssistantPersona.ts:222-230`). A stranger
+   writes both. They are short lines, as in gap 1, but they reach the system context. Not fixed.
 5. **The fallback text of the `read_thread` card.** When the card cannot fetch the thread, it
    shows the raw result with its note and its marker lines.
 
@@ -15073,10 +15081,12 @@ The spec-auditor returned GO-NARROWED. The narrowed scope wires the teardown int
 
 ###### 12.3.13.9.1 EM-G11f3 — copies of mail in chat stores (PR-G8b)
 
-**Status.** 📝 Specified (2026-10-16). Verified against code on 2026-10-16, at `origin/main`
-`0a14f7552`. Not audited and not built. A spec-auditor found that no section covered these
+**Status.** 🔨 Built, not merged (2026-10-16, branch `gmail-chat-copies`). The spec-auditor
+returned GO-NARROWED at `260c14705`: items 1 to 8 are the scope, and item 9 is a live Outlook
+check after the merge. Its four blockers B1 to B4 are in the text below. Verified against code
+on 2026-10-16, at `origin/main` `0a14f7552`. A spec-auditor found that no section covered these
 copies. H-308 cited §12.3.13.9, and §12.3.13.9 did not cover them. This section is the one owner
-of the work (`work_plan.md` §1, point 6). H-308 links here.
+of the work (`work_plan.md` §1, point 6). H-308 linked here. PR-G8b deleted it, because its Check passes, and H-336 holds W10.
 
 **Paths.** `GW` is as in §12.3.13.2. `GWP` is `apps/services/gateway/gateway/`, and `CP` is
 `workbench/control_plane/src/`.
@@ -15112,15 +15122,20 @@ The facts behind the table:
   that assistant delegates to the email assistant. Then W2 or W3 runs for the calling agent.
 - The email writers of f2 (the draft precedent, the learning job and the writing style) key on the
   mailbox. The purge reaches them, and f3 does not change them.
-- `POST /memory/{scope}/add` (`GW/memory.py`) takes its text from the caller, and no client
-  calls it. It copies no mail from a store of Metorite, so the table leaves it out.
+- `POST /memory/{scope}/add` (`GW/memory.py`) takes its text from the caller. ⚠️ Corrected
+  2026-10-16 at build time: a client calls it. `AgentChat` posts the turns of the default agent
+  to `/api/chat/memories` on unmount (`CP/lib/chatMemorySave.ts`), and that route calls
+  `saveConversation` (`CP/lib/memory.ts:154`). An orchestrator turn that delegated to the email
+  assistant can quote a mail. This is **W10**. It is latent while Mem0 is off, PR-G8b does not
+  change it, and HANDOFF holds the follow-up.
 - **Each Mem0 and Graphiti writer is LATENT.** Measured on the box on 2026-10-16:
   `MEM0_ENABLED=false` and `GRAPHITI_ENABLED=false`. The defaults are false
   (`packages/acb_common/acb_common/settings.py:1118`, `:1122`), and `deploy/hostinger/deploy.sh:53-55` sets Graphiti
   to false at each deploy. So W1 to W6 and the Mem0 and Graphiti tools of W7 write nothing today.
   They start on the day that WS-7 flips either flag.
 - ⚠️ `deploy.sh:43-47` writes the line `MEM0_ENABLED` with the value `true` when `.env` holds no
-  such line. So a deleted line turns Mem0 on at the next deploy, with no owner act.
+  such line. The CI deploy runs `scripts/vps_apply.sh`, not `deploy.sh` (`deploy.yml:291`), and
+  `vps_apply.sh:617-620` has the same default (B1). So a deleted line turns Mem0 on at the next deploy, with no owner act.
 - `memory_purge.py` purges only `<owner>#acct:<id>`. A disconnect, the member purge and the org
   purge delete no member key, no Graphiti group and no `agent_run` trace.
 
@@ -15169,16 +15184,30 @@ does not specify EM-G11f3b.
    `/email/ai/quick-action` go. Remove `chat` from `automation/__init__.py` (the import at `:13`
    and the loop at `:31`). Remove `"ai/chat"` and `"ai/quick-action"` from `postTimeout.ts:32-33`.
    Correct the comments that name the route: `apps/services/orchestrator/orchestrator/executor.py:3758`,
-   `packages/acb_skills/acb_skills/ask_tools.py:97` and `CP/app/email/lib/api.ts:1315-1319`. R6 is not involved,
-   because a route is not schema. An old client gets 404, and no client exists.
+   `packages/acb_skills/acb_skills/ask_tools.py:97` and `CP/app/email/lib/api.ts:1315-1319`. Correct
+   `workbench/AGENTS.md:270` too (B3). The EM-G11d eval reads the deleted module (B2), so drop
+   `chat_context` from `evals/email_injection/paths.py:503-529,549` and from the list of
+   `tests/unit/test_untrusted_frame.py:383-386`, and make `SPEC_PATHS` of
+   `tests/unit/test_email_injection_eval.py:29-30` five paths. The eval must still pass. The
+   choice is to DROP the path, not to repoint it: the pane builds its open-mail text in the
+   browser (`buildEmailAssistantPersona`), and the agent reads mail through `read_email` and
+   `read_thread`, which the eval keeps. R6 is not involved, because a route is not schema. An
+   old client gets 404, and no client exists.
 5. **W7.** A run for which the predicate is true holds no tool of `STORE_WRITES`. For the email
    assistant, drop the set where a `no_egress` run drops it (H-236), so one path removes it. A
    session can get its mark in the middle of a run. So each tool of the set also refuses in a
    marked session, through the gate that EM-G11d uses for egress. Do not add a second gate.
+   (B4) Today that gate asks a CARD for `save_memory` in a marked session, because
+   `is_egress_tool` treats `STORE_WRITES` as egress. The new rule is ahead of the card: in a run
+   for which the predicate is true, a `STORE_WRITES` tool answers
+   `acb_skills.egress.MAIL_STORE_WRITE_REFUSED` at once and asks no card. An unknown mark
+   refuses too. The orchestrator file is `_tool_injection.py` (`_gate_injected_tool` and
+   `_inject_agent_tools`).
 6. **W8.** For a run for which the predicate is true, `build_run_trace_row` keeps the error and the
    tool summary. It keeps no `content`, `tool_events`, `reasoning` or `custom_events`. The gateway
    passes the answer of the predicate, so `run_trace.py` reads no Redis.
-7. **The deploy default.** `deploy.sh:43-47` writes `MEM0_ENABLED=false` when `.env` has no such line.
+7. **The deploy default.** `deploy.sh:43-47` and `scripts/vps_apply.sh:617-620` (B1) each write
+   `MEM0_ENABLED=false` when `.env` has no such line.
    The flip stays an owner act (WS-7).
 8. **W9 stays** until the owner answers Q-GM-11. No code changes it.
 
@@ -15200,6 +15229,11 @@ no memory writer.
 | `tests/unit/test_untrusted_frame.py` | Remove `chat.py` from the list of `test_each_framing_module_uses_the_helper` (`:111`) |
 | `tests/unit/test_email_tool_consolidation.py` | Correct the docstring (`:6-7`) and the comment at `:146`. `suggest_unsubscribes` stays, because the agent calls it (`apps/agents/agent-email-assistant/agents.py:4383`) |
 | `CP/app/email/components/emailPaneCards.test.ts` | Keep it, because it fails when a client names `ai/chat` again. Correct its comment (`:8`) |
+| `evals/email_injection/paths.py` | (B2) Delete `chat_context` (`:503-529`) and its `PATHS` entry (`:549`) |
+| `tests/unit/test_email_injection_eval.py` | (B2) `SPEC_PATHS` (`:29-30`) holds five paths, and the test asserts that `chat_context` is gone |
+| `tests/unit/test_untrusted_frame.py` | (B2) Also drop `chat_context` from the list of `test_each_mail_path_frames_its_text` (`:383-386`) |
+| `CP/app/api/email/[...path]/postTimeout.test.ts` | Found at build time: the size check of `AI_SLOW_POST_PATHS` (`:64`) reads 12, not 14 |
+| `tests/unit/test_floor_opt_out.py` | Found at build time: `EMAIL_KEEPS` (`:63-67`) drops `save_memory` and `save_note`, and the test asserts that the email assistant holds no `STORE_WRITES` tool |
 
 **The fences of D-EM-4 and D-EM-61.** The deleted cases fenced the owner check and the fixed tier
 of the removed route. The path of the pane keeps its own fences: `CP/app/email/lib/noTierChoice.test.ts`,
@@ -15217,12 +15251,12 @@ confirms at dispatch that each one still runs.
 3. A Redis fault on the read of the mark writes to neither store.
 4. The fallback path and `POST /pull` write to neither store.
 5. A run of the email assistant holds no tool of `STORE_WRITES`. In a marked session, `save_memory`
-   gives the fixed refusal and calls no writer.
+   gives `MAIL_STORE_WRITE_REFUSED`, calls no writer and asks no card (B4).
 6. An errored run of the email assistant writes an `agent_run` row with the error and the tool
    summary, and `trace` is NULL. An errored run of another agent keeps its trace, as on main.
 7. `POST /email/ai/chat` and `POST /email/ai/quick-action` answer 404. No file under `apps/`,
    `packages/` or `workbench/` names either path, except a test that fences its absence.
-8. `deploy.sh` writes `MEM0_ENABLED=false` for a missing line.
+8. `deploy.sh` and `scripts/vps_apply.sh` each write `MEM0_ENABLED=false` for a missing line (B1).
 9. Outlook item: the Email pane chat of an Outlook mailbox answers as on main, and its thread rows
    land as on main. The browser spec `email-pane-confirm-card.spec.ts` stays green.
 
@@ -15239,8 +15273,9 @@ confirms at dispatch that each one still runs.
   allowlist holds the mailbox writers of f2, `GW/memory.py` and `acb_memory` itself. So a
   new writer fails the test until a person decides.
 
-`tests/unit/test_deploy_memory_default.py` (new) reads `deploy.sh`. It fails when the default value
-that the script writes for `MEM0_ENABLED` is `true` (acceptance 8). Each of these mutations fails a
+`tests/unit/test_deploy_memory_default.py` (new) reads `deploy.sh` and `scripts/vps_apply.sh`. It
+fails when the default value that either script writes for `MEM0_ENABLED` is not `false`
+(acceptance 8). Each of these mutations fails a
 fence: the extraction with no check, the episode back at the run start, `unknown` read as clear, a
 store write left in the email assistant, and a trace body kept.
 
@@ -15264,6 +15299,65 @@ agent and the trace of a live store. `deploy-write` for the line of `deploy.sh`,
 
 **Order.** No other PR blocks it. It merges before WS-7 flips a memory flag, and before Step 4 of
 §12.3.13.13.
+
+**As built (2026-10-16, branch `gmail-chat-copies`).**
+
+- `egress.run_holds_mail` and `MAIL_STORE_WRITE_REFUSED` sit beside the EM-G11d mark. No second
+  mark and no second list of mail agents.
+- `/agent/run/stream` asks the predicate ONCE at the run end, before the fold, with
+  `{"session_id": thread_id, "member": <the member>}`. The trace and both memory writes read
+  that answer. The Graphiti episode moved from the run start to `_extract_run_memory`.
+- **Fix round 1, P0.** The orchestrator's specialist tools (`_specialist_fn`) and
+  `delegate_to_agent` ran the email assistant through the executor, and only
+  `agent_tools._answer_of` marked a session. So the D99 path left the session unmarked. ONE
+  helper now marks it, `egress.mark_untrusted_session`. The executor calls it with the CALLING
+  run's context in `_run_sub_agent_streaming` and in `_run_agent_inner`, after the sub-run's
+  `no_egress` decision and before the sub-run does any work. A cancel or an error cannot skip
+  the mark. `_answer_of` calls the same helper as a second write. The MAF batch fallback of a
+  streaming sub-run keeps the decision of its streaming frame, so the delegated tools stay as on
+  main. Fence: `test_the_specialist_path_marks_the_session` drives the real specialist tool.
+- **Every path that can run the email assistant** (fix round 1). Each delegation goes through the
+  executor, so the mark covers `call_agent`, `call_agents_parallel`, `call_agent_background`,
+  `delegate_to_agent` and each specialist tool, from a MAF or a Copilot agent. WhatsApp runs the
+  orchestrator, and its delegations take the same path. The pane runs the email assistant on
+  `/agent/run/stream`, and `run_holds_mail` is true for it by name. A run with no calling chat
+  session has nothing to mark: `POST /agent/run`, its async twin, the event trigger, a workflow
+  node and a schedule. The MCP edge starts no agent run. The drafter's consult runs
+  `crm-assistant` or `task-manager`, never the email assistant.
+- ⚠️ Residual risk (fix round 1): one chat can switch agents. A turn of the email assistant does
+  not mark its own session, so a later turn of another agent in that session reads the mail
+  text in its history with no mark. The run end of the email-assistant turn holds mail by name.
+  Marking its own session would make each egress tool of the pane ask a card, so this PR does
+  not do it.
+- **Round 2, P1.** A run of an agent of `UNTRUSTED_INPUT_AGENTS` ignores the untrusted-answer
+  mark at the tool gate (`_tool_injection._run_reads_mail_itself`, the agent name from the bound
+  context). Its own writes ask their own EM-G11c1 card, as in a direct pane run. Measured: the
+  native MAF email assistant runs through the batch fallback, which binds a session of its own,
+  so on a healthy store it read no mark of the caller. With Redis down its own session read
+  UNKNOWN, which gave a second card, or a refusal with no card channel. The caller's own egress
+  after the hand-off still asks the card. Fences: the three `delegated_mail_write` and
+  `callers_own_egress` cases in `test_delegation_no_egress.py`, each with Redis up and down.
+- **Fix round 1, F3.** `run_holds_mail` reads a Redis fault as unknown for EVERY run, with or
+  without a member (`session_mark_state(fail_closed=True)`). The restart sweep can fold a run
+  with an empty actor, and that fold read a fault as clear. Fence:
+  `test_a_sweep_fold_with_no_actor_fails_closed`.
+- **Fix round 1, F2.** `test_a_mail_run_with_no_scope_holds_no_store_write` drives the no-match
+  fallback of the injection (`_all_tools`), in `enforce` and in `approve_all`, where the last-word
+  drop is the only guard.
+- **W10 stays open, and it blocks the Mem0 flip.** The unmount save of `AgentChat` reaches
+  `POST /memory/{scope}/add` with no session that the server bound, so the route cannot read the
+  mark. HANDOFF H-336 holds it, and WS-7 must not turn Mem0 on while H-336 is open.
+- `chat_fold.persist_final_assistant_message` takes `holds_mail`. With `None` it asks the
+  predicate under the run's tenant, so the restart sweep (`chat_recovery.py`) drops the trace
+  body of a mail run too.
+- The structural fence also counts `add_scoped_memories`. Its allowlist holds `acb_memory`, the
+  two f2 writers, `memory_tools.py` (the gate) and `routes/tasks/task_memory.py` (a task
+  decision, not a chat turn). ⚠️ It cannot see W10, which calls the Mem0 client directly.
+- Residual risk: `/copilot/chat` binds no artifact context, so a delegation there marks no
+  session. No client calls that route today (the BFF sends the orchestrator to
+  `/agent/run/stream`). The `run_holds_mail` check at its run end holds once a mark exists.
+- Residual risk: with `AGENT_PERMISSION_MODE=approve_all` the tool gate does not run. The email
+  assistant still holds no store write.
 
 ###### 12.3.13.9.2 EM-G11f1b and EM-G11f1c — the teardown in the member purge and the org purge (PR-G7b, PR-G7c)
 

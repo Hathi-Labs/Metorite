@@ -21,8 +21,9 @@ reason fails. Synthetic sources prove that each scan can still go red.
 ⚠️ **Limit (stated, R7).** The fence reads one function at a time. It does not
 follow data, and it does not read helpers that a handler calls. A handler that
 reads ``email_accounts WHERE user_id = :uid`` and then uses a body-supplied id
-anyway passes it. ``test_email_chat_context_owner.py`` (R8) covers the one leak
-of that shape that was measured on 2026-10-02.
+anyway passes it. The one leak of that shape that was measured on 2026-10-02
+was in the email chat route, which WS-17 EM-G11f3 deleted.
+``test_email_chat_context_owner.py`` (R8) still covers the task-close hop.
 
 Run::
 
@@ -63,17 +64,6 @@ _OWNER_PREDICATE = re.compile(
 #: EM-T3d added the fourteenth, and EM-G7 added ``oauth_providers``. A new
 #: entry needs a reason that a reviewer can check against the code.
 OWNER_SCOPE_EXEMPT: dict[str, str] = {
-    "ai_chat": (
-        "Delegates to _build_chat_context, which keeps account_id only when "
-        "email_accounts WHERE user_id = :uid lists it, else the one mailbox "
-        "of the member, else None. No settings read follows (D-EM-61). "
-        "R8: test_email_chat_context_owner.py."
-    ),
-    "quick_action": (
-        "Reads no table. It calls the email-assistant agent tools as the "
-        "member (_set_memory_user_id), and each tool reaches a gateway route "
-        "that makes its own owner check."
-    ),
     "cleanup_status": (
         "Reads the in-process _SWEEP_JOBS registry, and answers idle unless "
         "the job's owner is the caller. No table read."
