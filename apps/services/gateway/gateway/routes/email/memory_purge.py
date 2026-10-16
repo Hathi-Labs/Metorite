@@ -58,9 +58,24 @@ The rules of this module:
    client off the event loop, and a failed build waits ``MEM0_RETRY_S``.
 8. A failed pass logs ``email.disconnect.memory_purge_failed`` with the pass
    and the error class only. No log line holds memory text or an address.
+9. **The org purge** (EM-G11f1c, migration 276). ``DELETE FROM organization``
+   cascades each ``email_mailbox_purges`` row of the org, so the org purge
+   writes ``email_detached_purges`` instead, in the same transaction
+   (:data:`RECORD_DETACHED_PURGES_SQL`). It also carries each open row of the
+   org there (:data:`CARRY_OPEN_PURGES_SQL`). That table is RLS-EXEMPT,
+   because its tenant no longer exists. Each tick sweeps it as one more lane,
+   after the organizations of each round, through ONE unbound session
+   (:func:`_detached_session`). That is safe for three reasons. Only the org
+   purge writes a row, in the session that it bound to the org, from the
+   ``email_accounts`` rows that FORCE RLS shows to it. The sweeper acts only
+   on the key that a row names, ``<owner>#acct:<mailbox id>``, and
+   :func:`mailbox_memory_scope` refuses a key with no mailbox id. A mailbox
+   id is a UUID that the purge deleted, so no live mailbox of any tenant
+   shares the key.
 
-Fences: ``tests/unit/test_email_disconnect_memory_purge.py`` and
-``tests/unit/test_email_mailbox_purge_durable.py`` (R8).
+Fences: ``tests/unit/test_email_disconnect_memory_purge.py``,
+``tests/unit/test_email_mailbox_purge_durable.py`` (R8) and
+``tests/unit/test_email_purge_wiring.py`` (R8, rule 9).
 """
 
 from __future__ import annotations
@@ -68,14 +83,15 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
 from acb_common import get_settings
 from gateway.db import get_db
 from gateway.routes.email.core import _log, _tenant_session, email_memory_scope
-from gateway.routes.email.teardown import MEMBER_MAILBOXES_WHERE
+from gateway.routes.email.teardown import MEMBER_MAILBOXES_WHERE, ORG_MAILBOXES_WHERE
 from sqlalchemy import text
 
 #: The part of a Mem0 key that names one mailbox. ``email_memory_scope``
@@ -155,28 +171,79 @@ RECORD_MEMBER_PURGES_SQL = f"""INSERT INTO email_mailbox_purges
                                 WHERE {MEMBER_MAILBOXES_WHERE}
                                ON CONFLICT (organization_id, account_id) DO NOTHING"""
 
+#: Rule 9, the org purge (EM-G11f1c, §12.3.13.9.2). One detached row for each
+#: mailbox of the org, in ONE set-based statement, in the transaction of
+#: ``DELETE FROM organization`` and before it. ``purged_org_id`` is the
+#: ``organization_id`` of the mailbox row, read under FORCE RLS in the session
+#: that the purge bound. The clause names the org too
+#: (``teardown.ORG_MAILBOXES_WHERE``), so the plans, these rows and the cascade
+#: name one set of rows. The lease is 0, as for the member purge.
+RECORD_DETACHED_PURGES_SQL = f"""INSERT INTO email_detached_purges
+                                   (purged_org_id, owner_email, account_id, next_try_at)
+                                 SELECT organization_id, user_id, id, now()
+                                   FROM email_accounts
+                                  WHERE {ORG_MAILBOXES_WHERE}
+                                 ON CONFLICT (purged_org_id, account_id) DO NOTHING"""
+
+#: Rule 9 too. The cascade of the org delete also deletes each OPEN
+#: ``email_mailbox_purges`` row of the org: a disconnect or a member purge
+#: whose Mem0 passes have not finished. Each one moves to the detached table
+#: in the same statement block, with its passes, its tries and its next try,
+#: so no purge that the org owes is lost.
+CARRY_OPEN_PURGES_SQL = """INSERT INTO email_detached_purges
+                             (purged_org_id, owner_email, account_id, passes,
+                              tries, next_try_at)
+                           SELECT organization_id, owner_email, account_id, passes,
+                                  tries, next_try_at
+                             FROM email_mailbox_purges
+                            WHERE state = 'open'
+                              AND organization_id = CAST(:org AS uuid)
+                           ON CONFLICT (purged_org_id, account_id) DO NOTHING"""
+
 #: Rule 5. The route's task closes the row after two good passes.
 _TASK_DONE_SQL = """UPDATE email_mailbox_purges
                        SET state = 'done', passes = 2, last_error = NULL,
                            done_at = now(), updated_at = now()
                      WHERE account_id = CAST(:aid AS uuid) AND state = 'open'"""
 
-#: Rule 6. Take ONE due row of one organization, and hold it for
-#: ``SWEEP_LEASE_S``. ``SKIP LOCKED`` lets two gateways sweep at once.
-_CLAIM_SQL = """UPDATE email_mailbox_purges p
+
+@dataclass(frozen=True)
+class _PurgeStore:
+    """One table of purge rows, and the four statements of the sweeper on it.
+
+    Two tables hold purge rows: ``email_mailbox_purges`` (a tenant's, under
+    FORCE RLS) and ``email_detached_purges`` (an org purge's, RLS-EXEMPT).
+    This is not a second way. One builder writes the four statements of both,
+    and one pass runs both. Only the store differs, and the claim of the
+    tenant store names its org.
+    """
+
+    table: str
+    claim_sql: str
+    pass_done_sql: str
+    pass_failed_sql: str
+    refused_sql: str
+
+
+def _purge_store(table: str, *, claim_scope: str) -> _PurgeStore:
+    """The four statements of the sweeper on ``table``. ``table`` and
+    ``claim_scope`` are literals of this module, never caller text."""
+    return _PurgeStore(
+        table=table,
+        # Rule 6. Take ONE due row and hold it for ``SWEEP_LEASE_S``.
+        # ``SKIP LOCKED`` lets two gateways sweep at once.
+        claim_sql=f"""UPDATE {table} p
                    SET tries = p.tries + 1, updated_at = now(),
                        next_try_at = now() + make_interval(secs => :lease)
                  WHERE p.id IN (
-                       SELECT id FROM email_mailbox_purges
-                        WHERE state = 'open' AND next_try_at <= now()
-                          AND organization_id = CAST(:org AS uuid)
+                       SELECT id FROM {table}
+                        WHERE state = 'open' AND next_try_at <= now(){claim_scope}
                         ORDER BY next_try_at
                         LIMIT 1
                         FOR UPDATE SKIP LOCKED)
-             RETURNING p.id, p.owner_email, p.account_id, p.passes, p.tries"""
-
-#: A good pass. The second one closes the row.
-_PASS_DONE_SQL = """UPDATE email_mailbox_purges
+             RETURNING p.id, p.owner_email, p.account_id, p.passes, p.tries""",
+        # A good pass. The second one closes the row.
+        pass_done_sql=f"""UPDATE {table}
                        SET passes = CAST(:passes AS smallint), last_error = NULL,
                            updated_at = now(),
                            state = CASE WHEN CAST(:passes AS smallint) >= 2
@@ -184,19 +251,30 @@ _PASS_DONE_SQL = """UPDATE email_mailbox_purges
                            done_at = CASE WHEN CAST(:passes AS smallint) >= 2
                                           THEN now() END,
                            next_try_at = now() + make_interval(secs => :delay)
-                     WHERE id = CAST(:id AS uuid) AND state = 'open'"""
-
-#: A failed pass. The row stays open, and waits for the back-off.
-_PASS_FAILED_SQL = """UPDATE email_mailbox_purges
+                     WHERE id = CAST(:id AS uuid) AND state = 'open'""",
+        # A failed pass. The row stays open, and waits for the back-off.
+        pass_failed_sql=f"""UPDATE {table}
                          SET last_error = :error, updated_at = now(),
                              next_try_at = now() + make_interval(secs => :delay)
-                       WHERE id = CAST(:id AS uuid) AND state = 'open'"""
-
-#: A key that no purge can delete. It closes as ``refused``, never ``done``.
-_REFUSED_SQL = """UPDATE email_mailbox_purges
+                       WHERE id = CAST(:id AS uuid) AND state = 'open'""",
+        # A key that no purge can delete. It closes as ``refused``, never
+        # ``done``.
+        refused_sql=f"""UPDATE {table}
                      SET state = 'refused', last_error = 'scope_refused',
                          updated_at = now()
-                   WHERE id = CAST(:id AS uuid) AND state = 'open'"""
+                   WHERE id = CAST(:id AS uuid) AND state = 'open'""",
+    )
+
+
+#: The rows of a tenant. Each claim names one organization.
+_TENANT_STORE = _purge_store(
+    "email_mailbox_purges",
+    claim_scope="\n                          AND organization_id = CAST(:org AS uuid)")
+
+#: The rows of a purged org (rule 9). The claim names no org: the table has
+#: no RLS, and its tenant is gone.
+_DETACHED_STORE = _purge_store("email_detached_purges", claim_scope="")
+
 
 
 class ScopeRefused(ValueError):
@@ -399,57 +477,87 @@ async def _bounded_pass(scope: str, shown: str, phase: str) -> int | None:
         return None
 
 
-async def _sweep_row(org: str, row: Any, open_session: Callable[..., Any]) -> bool:
+@dataclass(frozen=True)
+class _Lane:
+    """One place that the sweeper takes rows from: one organization of
+    ``email_mailbox_purges``, or the whole of ``email_detached_purges``.
+
+    ``open_block`` opens one transaction for one statement block. ``name``
+    goes in a log line, and is an org id or ``"detached"``."""
+
+    name: str
+    store: _PurgeStore
+    open_block: Callable[[], Any]
+    claim_params: dict[str, Any]
+
+
+def _org_lane(org: str, open_session: Callable[..., Any]) -> _Lane:
+    return _Lane(org, _TENANT_STORE, lambda: open_session(org),
+                 {"org": org, "lease": SWEEP_LEASE_S})
+
+
+#: The name of the detached lane in a log line.
+DETACHED_LANE = "detached"
+
+
+def _detached_lane(open_detached: Callable[[], Any]) -> _Lane:
+    return _Lane(DETACHED_LANE, _DETACHED_STORE, open_detached,
+                 {"lease": SWEEP_LEASE_S})
+
+
+async def _sweep_row(lane: _Lane, row: Any) -> bool:
     """One pass for one claimed row, with no session open across Mem0. Then
     one block records the outcome. True when the row closed ``done``.
 
     ⚠️ The row closes only AFTER its second good pass. A failed pass keeps it
-    open with a back-off.
+    open with a back-off. The Mem0 key comes from the row and from nothing
+    else: :func:`mailbox_memory_scope` of its owner and its mailbox id.
     """
     shown = str(row.account_id)
     try:
         scope = mailbox_memory_scope(row.owner_email, row.account_id)
     except ScopeRefused:
         _log.warning("email.purge_sweep.refused", account_id=shown)
-        async with open_session(org) as db:
-            await db.execute(text(_REFUSED_SQL), {"id": str(row.id)})
+        async with lane.open_block() as db:
+            await db.execute(text(lane.store.refused_sql), {"id": str(row.id)})
         return False
     phase = "first" if int(row.passes) == 0 else "second"
     count = await _bounded_pass(scope, shown, phase)
     passes = int(row.passes) + 1
-    async with open_session(org) as db:
+    async with lane.open_block() as db:
         if count is None:
-            await db.execute(text(_PASS_FAILED_SQL), {
+            await db.execute(text(lane.store.pass_failed_sql), {
                 "id": str(row.id), "error": "pass_failed",
                 "delay": retry_delay_s(int(row.tries))})
             return False
-        await db.execute(text(_PASS_DONE_SQL), {
+        await db.execute(text(lane.store.pass_done_sql), {
             "id": str(row.id), "passes": passes, "delay": SECOND_PASS_DELAY_S})
     _log.info("email.purge_sweep.pass", account_id=shown, phase=phase,
               count=count, done=passes >= 2)
     return passes >= 2
 
 
-async def _claim_one(org: str, open_session: Callable[..., Any]) -> Any | None:
-    """Claim ONE due row of one organization, or ``None``."""
-    async with open_session(org) as db:
-        return (await db.execute(text(_CLAIM_SQL), {
-            "org": org, "lease": SWEEP_LEASE_S})).fetchone()
+async def _claim_one(lane: _Lane) -> Any | None:
+    """Claim ONE due row of one lane, or ``None``."""
+    async with lane.open_block() as db:
+        return (await db.execute(text(lane.store.claim_sql),
+                                 lane.claim_params)).fetchone()
 
 
-async def _turn(org: str, open_session: Callable[..., Any]) -> tuple[bool, int]:
-    """One turn of one organization: claim ONE due row and pass it. Answers
-    whether the organization had a row, and 1 when that row closed ``done``.
-    A failed claim counts as no row, so that organization leaves the tick."""
+async def _turn(lane: _Lane) -> tuple[bool, int]:
+    """One turn of one lane: claim ONE due row and pass it. Answers whether
+    the lane had a row, and 1 when that row closed ``done``. A failed claim
+    counts as no row, so that lane leaves the tick."""
     try:
-        row = await _claim_one(org, open_session)
+        row = await _claim_one(lane)
     except Exception as exc:
-        _log.warning("email.purge_sweep.org_failed", org=org, error=type(exc).__name__)
+        _log.warning("email.purge_sweep.org_failed", org=lane.name,
+                     error=type(exc).__name__)
         return False, 0
     if row is None:
         return False, 0
     try:
-        return True, int(await _sweep_row(org, row, open_session))
+        return True, int(await _sweep_row(lane, row))
     except Exception as exc:
         # The lease frees the row, and a later tick takes it again.
         _log.warning("email.purge_sweep.row_failed",
@@ -461,6 +569,7 @@ async def sweep_mailbox_purges(
     org_ids: Iterable[str],
     *, open_session: Callable[..., Any] = _tenant_session,
     budget_s: float = SWEEP_BUDGET_S,
+    open_detached: Callable[[], Any] | None = None,
 ) -> int:
     """Run one pass for each due purge row of each organization. Answers the
     count of rows that closed ``done``.
@@ -470,25 +579,33 @@ async def sweep_mailbox_purges(
     next one (fix round 2). An organization leaves the tick when it has no
     due row or after ``SWEEP_BATCH`` rows. The tick stops at the budget.
 
+    With ``open_detached`` (rule 9), the detached table takes a turn too,
+    after the organizations of each round, with the same claim, lease, pass
+    and back-off. ``run_tick`` passes it.
+
     With Mem0 off it returns 0 before any database read (rule 7). Each
     organization runs in its own ``tenant_session(org)`` blocks, and a failure
-    in one organization does not stop the others. It never raises.
+    in one lane does not stop the others. It never raises.
     """
     if not await mem0_on():
         return 0
     deadline = time.monotonic() + budget_s
-    taken = {str(org): 0 for org in org_ids}
+    lanes = [_org_lane(str(org), open_session) for org in org_ids]
+    if open_detached is not None:
+        lanes.append(_detached_lane(open_detached))
+    by_name = {lane.name: lane for lane in lanes}
+    taken = dict.fromkeys(by_name, 0)
     done = 0
     while taken:
-        for org in list(taken):
+        for name in list(taken):
             if time.monotonic() >= deadline:
                 _log.info("email.purge_sweep.budget_spent")
                 return done
-            had_row, closed = await _turn(org, open_session)
+            had_row, closed = await _turn(by_name[name])
             done += closed
-            taken[org] += 1
-            if not had_row or taken[org] >= SWEEP_BATCH:
-                del taken[org]
+            taken[name] += 1
+            if not had_row or taken[name] >= SWEEP_BATCH:
+                del taken[name]
     return done
 
 
@@ -509,11 +626,32 @@ async def _organization_ids() -> list[str]:
     return [str(r.id) for r in rows]
 
 
+@contextlib.asynccontextmanager
+async def _detached_session() -> AsyncIterator[Any]:
+    """One transaction on the RLS-EXEMPT ``email_detached_purges``, with NO
+    tenant bound (rule 9).
+
+    The tenant of each row no longer exists, so no ``tenant_session`` can bind
+    it. The table has no policy, so an unbound session sees each row. The
+    sweeper runs only the four statements of ``_DETACHED_STORE`` here, and
+    each names this table and no other. It is a tenant-discovery site of
+    ``test_db_engine_seam.py``.
+    """
+    db = await get_db()
+    try:
+        async with db.begin():
+            yield db
+    finally:
+        await db.close()
+
+
 async def run_tick() -> int:
-    """One tick: with Mem0 on, list the organizations and sweep them."""
+    """One tick: with Mem0 on, list the organizations and sweep them, and
+    then the detached rows of the purged organizations (rule 9)."""
     if not await mem0_on():
         return 0
-    return await sweep_mailbox_purges(await _organization_ids())
+    return await sweep_mailbox_purges(await _organization_ids(),
+                                      open_detached=_detached_session)
 
 
 async def _loop(stopping: asyncio.Event) -> None:

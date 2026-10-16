@@ -42,15 +42,31 @@ What is deliberately KEPT:
   own schedule.
 
 ⚠️ **What this purge CANNOT reach — the honest boundary** (review round 1,
-measured): ~119 of the tenant database's ~155 tables carry NO
-``organization_id`` and no FK path to ``organization`` at all — the
-un-threaded MT-1j remainder (chat, email, WhatsApp, meetings, GTD, apps,
-workflows), where rows are keyed by email or by nothing. Their data is
-not attributable to a tenant, so no per-tenant delete can exist for it until
-threading lands; deleting by member email would be WRONG (an address can
-belong to a future org). The operator-facing copy states this instead of
-promising "everything", and WS-29's board row carries it as the standing
-finding it already is.
+measured 2026-08-24): ~119 of the tenant database's ~155 tables then carried
+NO ``organization_id`` and no FK path to ``organization`` at all — the
+un-threaded MT-1j remainder, where rows are keyed by email or by nothing.
+Their data is not attributable to a tenant, so no per-tenant delete can exist
+for it until threading lands. Deleting by member email would be WRONG,
+because an address can belong to a future org. The operator-facing copy
+states this instead of promising "everything", and WS-29's board row carries
+it as the standing finding it already is.
+
+**The email tables are NOT in that remainder** (corrected by WS-17
+EM-G11f1c, 2026-10-16). Migration 223 gave ``email_accounts`` an
+``organization_id`` that cascades from ``organization``. Each child of a
+mailbox cascades from ``email_accounts``. So the one DELETE below deletes
+each mailbox of the org and every row under it.
+
+**A mailbox has a life outside this database.** A Google grant, the filters
+and rules that Metorite made, a Graph subscription, Redis keys and the Mem0
+memory of the mailbox all outlive the row. The cascade cannot reach them, and
+after it nothing can find them. So the caller may pass ``before_delete``. The
+purge runs it in its tenant session, before the first delete, and returns its
+answer in the receipt. The gateway passes the callback of the email teardown
+(``gateway/routes/operator.py``, ``email_app_master_plan.md`` §12.3.13.9.2).
+It reads what the teardown needs and records the Mem0 purges that the org
+owes, in the transaction of this delete. This package imports no gateway
+code: the callback comes in as an argument.
 
 Unlike this module's neighbour ``promote_invited_member`` (best-effort, never
 raises), **this function RAISES on failure** — a purge that half-happened must
@@ -62,6 +78,7 @@ an organization the Console already holds at ``status = 'deleted'``.
 """
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from acb_common import get_logger
@@ -117,13 +134,27 @@ async def organization_id_for_slug(slug: str) -> str | None:
     return None if org_id is None else str(org_id)
 
 
-async def purge_tenant_organization(*, slug: str) -> dict[str, Any]:
+#: The callback of :func:`purge_tenant_organization`. It takes the tenant
+#: session of the purge and the org id, and its answer goes in the receipt.
+BeforeDelete = Callable[[Any, str], Awaitable[Any]]
+
+
+async def purge_tenant_organization(
+    *, slug: str, before_delete: BeforeDelete | None = None,
+) -> dict[str, Any]:
     """Destroy every tenant-plane row the organization owns. Idempotent.
 
     Returns a receipt: per-table counts for the explicit deletes, ``1`` for the
     organization row (whose FK cascade removes the other 33 tables' rows), or
     ``{"already_absent": True}`` when no such org exists — the retry arm, so a
     purge whose Console half failed can simply be run again.
+
+    ``before_delete`` (WS-17 EM-G11f1c) runs INSIDE the tenant session, BEFORE
+    the first delete, with the session and the org id. Its writes commit with
+    the delete, or neither commits. An exception from it rolls the whole purge
+    back and propagates unchanged, so a 409 of the caller reaches the caller.
+    Its answer is the receipt's ``before_delete`` key, which the caller must
+    take out before it relays the receipt. An absent org never runs it.
     """
     # Whitespace-trim ONLY — never case-fold. The tenant lookup must be
     # byte-symmetric with what the Console's org list reported, or a
@@ -141,10 +172,15 @@ async def purge_tenant_organization(*, slug: str) -> dict[str, Any]:
         return {"slug": slug, "already_absent": True, "deleted": {}}
 
     deleted: dict[str, int] = {}
+    answer: Any = None
     # One DELETE whose FK cascade is the purge. Bound through tenant_session
     # (the ONE GUC seam, R5) for uniformity — ``organization`` itself is
     # RLS-exempt, and referential cascades run below RLS either way.
     async with tenant_session(org_id) as session:
+        # EM-G11f1c: the callback of the caller, before any delete, in this
+        # transaction. The cascade below removes what it reads.
+        if before_delete is not None:
+            answer = await before_delete(session, org_id)
         # Each DELETE names the org itself: a role that bypasses RLS (a superuser,
         # or any pre-promotion database) would otherwise delete every org's rows.
         # Only non-zero counts reach the
@@ -167,7 +203,7 @@ async def purge_tenant_organization(*, slug: str) -> dict[str, Any]:
     _log.warning(
         "tenant_org_purged", slug=slug, organization_id=org_id, deleted=deleted
     )
-    return {
+    receipt: dict[str, Any] = {
         "slug": slug,
         "organization_id": org_id,
         "already_absent": False,
@@ -176,7 +212,10 @@ async def purge_tenant_organization(*, slug: str) -> dict[str, Any]:
         "kept": [
             "user_identity",
             "auth_email_otp_token",
-            "un-threaded tables (chat/email/wa/meetings/gtd/apps/workflows "
+            "un-threaded tables (chat/wa/meetings/gtd/apps/workflows "
             "— no tenancy column yet; the MT-1j remainder)",
         ],
     }
+    if before_delete is not None:
+        receipt["before_delete"] = answer
+    return receipt
