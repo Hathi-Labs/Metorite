@@ -745,12 +745,15 @@ jobs:
       - uses: actions/checkout@v5
       - name: caddy validate + caddy fmt (caddy:2.11.4)
         run: |
+          # WS-38 S-4: the staging box installs Caddyfile.staging. Check both.
           docker run --rm -v "$PWD/deploy/hostinger/caddy:/cfg:ro" caddy:2.11.4 sh -ec '
-            caddy validate --config /cfg/Caddyfile --adapter caddyfile
-            caddy fmt --diff /cfg/Caddyfile > /tmp/fmt.diff || true
-            if grep -qE "^[-+]" /tmp/fmt.diff; then
-              echo "Caddyfile is not formatted. Run: caddy fmt --overwrite"; cat /tmp/fmt.diff; exit 1
-            fi'
+            for f in Caddyfile Caddyfile.staging; do
+              caddy validate --config /cfg/$f --adapter caddyfile
+              caddy fmt --diff /cfg/$f > /tmp/fmt.diff || true
+              if grep -qE "^[-+]" /tmp/fmt.diff; then
+                echo "$f is not formatted. Run: caddy fmt --overwrite"; cat /tmp/fmt.diff; exit 1
+              fi
+            done'
 
   secret-scan:
     name: "Secret scan"

@@ -39,6 +39,37 @@
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/acb/app}"
+# ── WHICH DEPLOYMENT THIS BOX IS (WS-38 S-4) ────────────────────────────────
+# One setting, DEPLOY_ENV in the box's own .env, says production or staging.
+# Absent means production, so the production box needs no edit. Any other
+# value stops here: a typo must not quietly deploy a box as the wrong thing.
+# vps_apply.sh reads it the same way. Fence: tests/unit/test_deploy_env.py.
+#   production  release ref `release`, ./caddy/Caddyfile, every timer
+#   staging     release ref `staging`, ./caddy/Caddyfile.staging, two timers
+# ⚠️ `|| true` is load-bearing: vps_pull.sh runs under `set -euo pipefail`, and
+# a grep that finds no line (the production box today) exits 1 and would kill
+# the script at this line.
+DEPLOY_ENV="$( { grep -E '^DEPLOY_ENV=' "$APP_DIR/.env" 2>/dev/null || true; } | tail -1 | cut -d= -f2- | tr -d "\"' \r")"
+# Fail closed on the two shapes that would otherwise read as production on a
+# staging box: an .env that exists and cannot be read, and a DEPLOY_ENV line in
+# any other form (`export DEPLOY_ENV=…`, `DEPLOY_ENV = …`, a leading space).
+# awk, not a grep pipe: under pipefail an early `grep -q` exit is a SIGPIPE.
+if [ -e "$APP_DIR/.env" ] && [ ! -r "$APP_DIR/.env" ]; then
+  echo "!! $APP_DIR/.env exists and cannot be read, so DEPLOY_ENV is unknown. This round did NOTHING."
+  exit 1
+fi
+if awk '/^[[:space:]]*(export[[:space:]]+)?DEPLOY_ENV[[:space:]]*=/ && !/^DEPLOY_ENV=/ { bad = 1 } END { exit !bad }' "$APP_DIR/.env" 2>/dev/null; then
+  echo "!! $APP_DIR/.env names DEPLOY_ENV in a form other than DEPLOY_ENV=<value>. This round did NOTHING."
+  exit 1
+fi
+DEPLOY_ENV="${DEPLOY_ENV:-production}"
+case "$DEPLOY_ENV" in
+  production) ;;
+  staging) RELEASE_REF="${RELEASE_REF:-staging}" ;;
+  *)
+    echo "!! DEPLOY_ENV=$DEPLOY_ENV in $APP_DIR/.env is not production or staging. This round did NOTHING."
+    exit 1 ;;
+esac
 RELEASE_REF="${RELEASE_REF:-release}"
 STATE_DIR="${STATE_DIR:-/var/lib/acb}"
 # MODE comes from the argument, or else from the environment. The give-up
