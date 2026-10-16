@@ -88,6 +88,13 @@ second implementer to route around a block.
   `gh workflow run deploy.yml --ref main -f reason="<why>"`. Watch that run, and
   report the SHA that `GET /version` serves. Do not call a hotfix done before
   you see that SHA.
+- **⚠️ Test it on staging (owner directive, 2026-10-17).** Wait until
+  `curl -s https://api.dev.metorite.com/version` shows your merge SHA, or a later
+  one, as `sha` and `applied_sha`. Then test the change on
+  `https://dev.metorite.com` against the acceptance criteria. Report "verified on
+  staging at `<sha>`". If staging shows a defect, fix forward or revert before
+  21:30 UTC. Until HANDOFF H-335 closes, staging may not serve. Then write
+  "staging not up", and do not claim the test. `CLAUDE.md` §4 owns this rule.
 - Watch the job `Unit tests (a signal on a push, a gate on a release)` in that
   same `deploy` run to its end. On a push it does not gate, so two PRs that
   pass alone and fail together can land on `main`. A red `main` also blocks

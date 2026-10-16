@@ -59,6 +59,11 @@ enforces it, or be labelled advisory. "We should always…" is not a rule.
 > Owning spec: `specs/development_and_delivery_framework.md` §3 (ADOPTED, board
 > **WS-38**); the parity contract is its §3.4.
 >
+> ⚠️ **PHASE 0 HAS ENDED (2026-10-17).** Staging now runs at `dev.metorite.com`
+> (WS-38, `specs/staging_and_daily_release.md`). A merge reaches staging first,
+> and production takes one release a day. Test on staging before production.
+> `CLAUDE.md` §4 carries the steps. The note below is the record of Phase 0.
+>
 > ⏳ **In force until it isn't: PHASE 0.** Until customer #2, a second contributor, or
 > H3 — whichever comes first — **we work directly in production** (D55.2). So for
 > today the paragraph below still describes what we run; §3.5 of the framework carries
