@@ -2864,13 +2864,18 @@ class _BatchRunInputs:
     narrows to *held*, so it can never hold more than the first attempt.
     *run_tools* is the platform tool names that the first attempt bound as
     ``run_tools`` (``write_artifact.run_holds_tool``). A retry binds them
-    again, narrowed to what it holds, and never wider.
+    again, narrowed to what it holds, and never wider. *integrations* is the
+    credential names the first attempt resolved, after the acting member's
+    filter. A retry resolves no authority again: it gets those names only.
+    ``None`` on any of the three means the first attempt failed before that
+    step, and the retry then fails closed (nothing).
     """
 
     repo_name: str | None = None
     local_path: str | None = None
     held: frozenset[str] | None = None
     run_tools: frozenset[str] | None = None
+    integrations: frozenset[str] | None = None
 
 
 async def _assemble_batch_agents(
@@ -3249,6 +3254,10 @@ async def _run_agent_inner(
             integrations, integration_warnings = build_integrations(
                 mandatory_integrations, optional_integrations, settings,
                 is_authorized=await _integration_authorizer(event_payload, thread_id),
+            )
+            # The retry gets these credential names and no others.
+            _anneal_inputs = dataclasses.replace(
+                _anneal_inputs, integrations=frozenset(integrations),
             )
             if integration_warnings:
                 _log.warning(
@@ -6191,25 +6200,40 @@ async def _self_anneal(
             agent_name, run_id=run_id,
             repo_name=inputs.repo_name, local_path=inputs.local_path,
         ) as loaded:
-            # The acting member's filter, as on the first attempt (org access
-            # control): a retry never hands the run a credential it refused.
+            # Org access control: the retry resolves no authority again. A
+            # shared session's fold can fall back to one actor's wider access
+            # on a database fault, so the retry takes only the credential
+            # names that the first attempt's filter gave. A first attempt that
+            # resolved none gives the retry none (fail closed).
+            allowed = inputs.integrations or frozenset()
             integrations, integration_warnings = _bi(
                 loaded.config.get("integrations", []),
                 loaded.config.get("optional_integrations", []),
                 settings,
-                is_authorized=await _integration_authorizer(event_payload, thread_id),
+                is_authorized=lambda service: service in allowed,
             )
+            integrations = {k: v for k, v in integrations.items() if k in allowed}
+            if inputs.integrations is None:
+                # The first attempt armed no memory gate, and an unarmed gate
+                # allows everything. Close it for the retry.
+                try:
+                    from acb_skills.memory_tools import _set_memory_permission
+                    _set_memory_permission(lambda _permission: False)
+                except Exception:
+                    pass
             agents, _md_spec, run_tools = await _assemble_batch_agents(
                 loaded, agent_name=agent_name,
                 no_egress=no_egress,  # H-236
                 held=inputs.held,
             )
-            # The first attempt bound ``run_tools`` (§14.10). The retry binds
-            # what it holds of them, so ``run_holds_tool`` never widens. A
-            # first attempt that bound none leaves the run holding nothing.
-            if inputs.run_tools is not None:
-                from acb_skills.write_artifact import derive_artifact_context
-                derive_artifact_context(run_tools=run_tools & inputs.run_tools)
+            # ``run_tools`` (§14.10): the retry ALWAYS binds its own, the part
+            # of the first attempt's set that it holds. A first attempt that
+            # bound none gives an empty set, so ``run_holds_tool`` fails
+            # closed. A delegated child never answers from its parent's set.
+            from acb_skills.write_artifact import derive_artifact_context
+            derive_artifact_context(
+                run_tools=run_tools & (inputs.run_tools or frozenset()),
+            )
             return await _run_with_maf_agent(
                 agents,
                 agent_name=agent_name,

@@ -20,9 +20,14 @@ What breaks this fence (R7), each run red by hand on 2026-10-16:
 * M3, the first attempt captures no held set;
 * M4, ``_narrow_to_held`` keeps every tool;
 * M5, the retry loads with no ``repo_name`` or ``local_path``;
-* M6, the retry builds the integrations with no member filter;
+* M6, the retry resolves the member's authority again, so a shared
+  session's fallback to one actor can give it a credential;
 * M7, the retry binds the ``run_tools`` that its injection returned, with
-  neither narrowing (to the held set, and to the first attempt's).
+  neither narrowing (to the held set, and to the first attempt's);
+* M8, the retry binds ``run_tools`` only when the first attempt bound some,
+  so a delegated child that failed early answers from its parent's set;
+* M9, a first attempt that resolved no credential leaves the memory gate of
+  the retry open.
 
 The model call, the store, the integrations and the toggle read are stubbed,
 so the suite needs no database. The first attempt fails with a transient
@@ -122,36 +127,55 @@ def run(tmp_path, monkeypatch):
     ])
     monkeypatch.setattr(agent_routes, "_load_dynamic_agents", lambda: [])
 
+    def _authorizer_fn(_name: str) -> bool:
+        return False
+
     state: dict[str, Any] = {
-        "config": {"name": AGENT}, "loads": [], "authorized": [], "attempts": [],
-        "disabled": [frozenset()], "bound": [], "holds": [],
+        "config": {"name": AGENT}, "loads": [], "attempts": [],
+        "disabled": [frozenset()], "bound": [], "holds": [], "make_report": [],
+        "creds": [], "memory": [], "authorizer_calls": 0, "builds": 0,
+        "integration_calls": 0,
+        # Where the first attempt fails: "run" (the model call), "build"
+        # (``build_agents``, before the assembly) or "integrations".
+        "fail": "run",
+        # One answer per authority lookup. The last one repeats.
+        "authorizers": [_authorizer_fn],
     }
+
+    def _build():
+        state["builds"] += 1
+        if state["fail"] == "build" and state["builds"] == 1:
+            raise RuntimeError("connection timed out")
+        return [_NativeAgent()]
 
     @contextmanager
     def _load(name, **kw):
         state["loads"].append(kw)
         cfg = json.loads(json.dumps(state["config"]))
         yield types.SimpleNamespace(
-            agent_dir=clone, agent_name=name, config=cfg,
-            build_agents=lambda: [_NativeAgent()],
+            agent_dir=clone, agent_name=name, config=cfg, build_agents=_build,
         )
 
-    def _integrations(_m, _o, _s, *, is_authorized=None):
-        state["authorized"].append(is_authorized)
-        return {}, {}
-
-    def _authorizer_fn(_name: str) -> bool:
-        return False
+    def _integrations(m, o, _s, *, is_authorized=None):
+        state["integration_calls"] += 1
+        if state["fail"] == "integrations" and state["integration_calls"] == 1:
+            raise RuntimeError("connection reset by peer")
+        names = list(m) + list(o)
+        ok = {n: {"token": "x"} for n in names if is_authorized is None or is_authorized(n)}
+        return ok, {n: "refused" for n in names if n not in ok}
 
     async def _authorizer(_payload, _thread=None):
-        return _authorizer_fn
+        state["authorizer_calls"] += 1
+        seq = state["authorizers"]
+        return seq.pop(0) if len(seq) > 1 else seq[0]
 
     def _disabled(_name):
         # One answer per read. The last one repeats.
         seq = state["disabled"]
         return seq.pop(0) if len(seq) > 1 else seq[0]
 
-    async def _run_maf(agents, **_kw):
+    async def _run_maf(agents, **kw):
+        from acb_skills.memory_tools import _memory_permission
         from acb_skills.write_artifact import artifact_context, run_holds_tool
 
         state["attempts"].append(_names(agents))
@@ -160,7 +184,10 @@ def run(tmp_path, monkeypatch):
         state["holds"].append(
             frozenset(fn.__name__ for fn in _PLATFORM if run_holds_tool(fn.__name__)),
         )
-        if len(state["attempts"]) == 1:
+        state["make_report"].append(run_holds_tool("make_report"))
+        state["creds"].append(sorted(kw.get("integrations") or {}))
+        state["memory"].append(_memory_permission.get())
+        if state["fail"] == "run" and len(state["attempts"]) == 1:
             raise RuntimeError("connection reset by peer")
         return {"answer": "ok"}
 
@@ -191,14 +218,23 @@ def run(tmp_path, monkeypatch):
     monkeypatch.setattr(ti, "_load_disabled_skill_families", _disabled)
     monkeypatch.setattr(app_tools, "load_app_action_tools", lambda *_a, **_k: [])
     monkeypatch.setattr(workflow_tools, "load_workflow_tools", lambda *_a, **_k: [])
-    state["authorizer"] = _authorizer_fn
+    def _go(parent_run_tools: frozenset[str] | None = None) -> dict[str, Any]:
+        from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
 
-    def _go() -> dict[str, Any]:
-        out = asyncio.run(executor.run_agent(
-            AGENT, {"message": "hi"}, run_id="r-anneal", organization_id=ORG,
-        ))
+        with artifact_context_scope():
+            if parent_run_tools is not None:
+                # A batch parent that called this agent (call_agent). The
+                # child's context derives from this one.
+                bind_artifact_context(
+                    agent_name="parent-agent", run_id="r-parent",
+                    run_tools=parent_run_tools,
+                )
+            out = asyncio.run(executor.run_agent(
+                AGENT, {"message": "hi"}, run_id="r-anneal", organization_id=ORG,
+            ))
         assert out == {"answer": "ok"}
-        assert len(state["attempts"]) == 2, "the retry never ran"
+        want = 2 if state["fail"] == "run" else 1
+        assert len(state["attempts"]) == want, "the retry never ran"
         return state
 
     state["go"] = _go
@@ -258,10 +294,55 @@ def test_the_retry_loads_the_same_agent(run) -> None:
     assert first.get("local_path")
 
 
-def test_the_retry_filters_the_integrations_by_the_member(run) -> None:
-    """The retry hands the run no credential its member may not use (M6)."""
+def test_the_retry_gets_only_the_first_attempts_credentials(run) -> None:
+    """The first attempt's filter refuses ``zoho-crm``. On the retry the
+    authority would allow it (a shared session's fold fell back to one actor
+    on a database fault). The retry resolves no authority, and gets no zoho
+    (M6)."""
+    def slack_only(name: str) -> bool:
+        return name == "slack"
+
+    run["config"] = {"name": AGENT, "integrations": ["zoho-crm"],
+                     "optional_integrations": ["slack"]}
+    run["authorizers"] = [slack_only, lambda _name: True]
     state = run["go"]()
-    assert state["authorized"] == [state["authorizer"], state["authorizer"]]
+    assert state["creds"] == [["slack"], ["slack"]], state["creds"]
+    assert state["authorizer_calls"] == 1
+
+
+def test_a_first_attempt_with_no_credential_gives_the_retry_none(run) -> None:
+    """The first attempt fails while it builds the integrations. The retry
+    then holds no credential and a closed memory gate, and it does not ask
+    the authority again (M9)."""
+    run["config"] = {"name": AGENT, "integrations": ["zoho-crm"]}
+    run["fail"] = "integrations"
+    run["authorizers"] = [lambda _name: True]
+    state = run["go"]()
+    assert state["creds"] == [[]], state["creds"]
+    gate = state["memory"][0]
+    assert gate is not None and gate("memory:write") is False
+    assert state["authorizer_calls"] == 1  # the first attempt only
+
+
+def test_a_retry_after_a_failure_before_the_assembly_keeps_the_scope(run) -> None:
+    """``build_agents`` fails on the first attempt, so it held nothing yet.
+    The retry assembles through the same function and keeps the scope."""
+    run["config"] = {"name": AGENT, "tool_scope": ["query_history"]}
+    run["fail"] = "build"
+    (retry,) = run["go"]()["attempts"]
+    assert "query_history" in retry and "github_search" not in retry
+
+
+def test_a_delegated_child_never_answers_from_its_parents_run_tools(run) -> None:
+    """A batch parent holds ``make_report``, and calls this agent, whose
+    scope leaves it out. The child's first attempt fails in
+    ``build_agents``, before it binds its own ``run_tools``. After the
+    retry, ``run_holds_tool("make_report")`` is False (M8)."""
+    run["config"] = {"name": AGENT, "tool_scope": ["query_history"]}
+    run["fail"] = "build"
+    state = run["go"](parent_run_tools=frozenset({"make_report", "github_search"}))
+    assert state["make_report"] == [False]
+    assert state["bound"] == [frozenset()], state["bound"]
 
 
 # ── The two helpers, on every pool ───────────────────────────────────────────
