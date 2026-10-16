@@ -395,7 +395,9 @@ def test_every_executor_call_site_passes_the_agent_config() -> None:
             calls[name].append(node.lineno)
             if not any(kw.arg == "agent_config" for kw in node.keywords):
                 missing.append(f"{name} at executor.py:{node.lineno}")
-    assert len(calls["_inject_agent_tools"]) >= 5, calls
+    # Three: the stream run, the sub-agent and the one batch assembly. The
+    # self-anneal retry injects through that assembly (2026-10-16).
+    assert len(calls["_inject_agent_tools"]) >= 3, calls
     assert len(calls["materialize_skill_bodies_for_agent"]) >= 3, calls
     assert not missing, f"these call sites pass no agent_config: {missing}"
 

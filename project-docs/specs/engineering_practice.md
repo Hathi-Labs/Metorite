@@ -270,10 +270,13 @@ three distinct symptoms, one cause.
 bandwidth, and that is one person. Three or four open branches is the ceiling. A
 queue of six (2026-08-09) is above it.
 
-**The supervisor loop's shape is right and should not be diluted:** audit the
-spec (is it dispatchable?) → implement one narrowed slice → **independently**
-verify against the acceptance criteria → adversarially review the diff → open a
-PR and **stop before merge**. Two properties make it work:
+**The supervisor loop:** audit the spec (is it dispatchable?) → set the risk
+tier → implement one narrowed slice → **independently** verify against the
+acceptance criteria → adversarially review the diff (HIGH and STANDARD tiers,
+not LOW) → open a PR → merge, and watch the deploy and the `main` unit job.
+`.claude/commands/next-ticket.md` owns the steps and the tiers (owner decision,
+2026-10-16). Locally, run `scripts/affected_tests.py`. pr-check runs the
+whole suite. Two properties make it work:
 
 1. **The verifier must not be the implementer**, and re-derives its facts from
    the code rather than trusting the write-up.

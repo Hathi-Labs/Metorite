@@ -1663,7 +1663,8 @@ async def report_list() -> str:
 async def report_render(report_id: str) -> str:
     """Render one saved report now, from the same numbers that the Overview
     of the Reports app shows. The member's own visibility applies. This never sends anything;
-    delivery lives in the Reports app."""
+    delivery lives in the Reports app. For a report the member keeps, call
+    render_report with make_report=true."""
     rid = uuid_of(report_id, "report_id")
     definition = await get(f"/projects/reports/{rid}")
     body = await get(f"/projects/reports/{rid}/render")

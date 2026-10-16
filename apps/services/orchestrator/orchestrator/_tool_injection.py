@@ -1549,6 +1549,56 @@ def _log_agent_tools_resolved(
     )
 
 
+# ── A retry holds no more than the first attempt (access is an intersection) ──
+# The batch self-anneal builds the agents again. It assembles them through the
+# same function as the first attempt, so it reads the same scope, toggles and
+# withholdings. These two then narrow it to the names the first attempt held,
+# so a toggle read again, or a wider fallback, cannot widen a retry.
+# Fence: ``tests/unit/test_anneal_retry_scope.py``.
+
+
+def _run_tool_pools(agent: Any) -> list[list[Any]]:
+    """Every tool list of ONE agent that the model can call from, each once.
+
+    The pools of :func:`_own_tool_pools`, and the legacy Copilot
+    ``_default_options["tools"]``, which :func:`_inject_agent_tools` also
+    fills and :func:`_own_tool_pools` does not read.
+    """
+    pools = [pool for _label, pool in _own_tool_pools(agent)]
+    opts = getattr(agent, "_default_options", None)
+    legacy = opts.get("tools") if isinstance(opts, dict) else getattr(opts, "tools", None)
+    if isinstance(legacy, list) and all(legacy is not p for p in pools):
+        pools.append(legacy)
+    return pools
+
+
+def _held_tool_names(agents: list[Any]) -> frozenset[str]:
+    """The names of every tool that *agents* hold, after every narrowing."""
+    return frozenset(
+        _tool_name(t) for agent in agents for pool in _run_tool_pools(agent) for t in pool
+    )
+
+
+def _narrow_to_held(
+    agents: list[Any], held: frozenset[str], agent_name: str | None = None,
+) -> None:
+    """Take out of *agents* each tool whose name is not in *held*, in place.
+
+    *held* is what the first attempt of the run held (:func:`_held_tool_names`).
+    A retry may only narrow it. A change in place holds for this run only,
+    because ``build_agents()`` makes the agents again for each run.
+    """
+    dropped: set[str] = set()
+    for agent in agents:
+        for pool in _run_tool_pools(agent):
+            dropped.update(_tool_name(t) for t in pool if _tool_name(t) not in held)
+            pool[:] = [t for t in pool if _tool_name(t) in held]
+    if dropped:
+        _log.warning(
+            "executor.retry_tools_narrowed", agent=agent_name, tools=sorted(dropped),
+        )
+
+
 def _collect_injectable_platform_tools(agent_name: str | None = None) -> list[Any]:
     """Import + return the statically importable platform tools, in injection order.
 

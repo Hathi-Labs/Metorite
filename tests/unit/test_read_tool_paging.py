@@ -148,12 +148,14 @@ ALLOWED: dict[str, str] = {
         "A rendered report section. It prints '(and N more)', and list_tasks pages the tasks.",
     'apps/skills/skill-projects/skill_projects/reads.py::_report_section::rows[:25]':
         "A rendered report section. It prints '(and N more rows)', and the section's own read pages.",
-    'apps/skills/skill-projects/skill_projects/views.py::_card_section::(rows if isinstance(rows, list) else [])[:25]':
-        'A chat card. The text the model reads carries the count.',
+    'apps/skills/skill-projects/skill_projects/views.py::_card_section::(rows if isinstance(rows, list) else [])[:rows_max]':
+        'A chat card (25 rows). The text the model reads carries the count. The kept '
+        'report (§14.10.9) passes a rows_max above every list and cuts with paged.',
     'apps/skills/skill-projects/skill_projects/views.py::_card_section::[(k, _human(k)) for k in rows[0] if not isinstance(rows[0][k], dict | list)][:6]':
         'The columns of a chat card. Not rows.',
-    'apps/skills/skill-projects/skill_projects/views.py::_card_section::rows[:25]':
-        'A chat card. The text the model reads carries the count.',
+    'apps/skills/skill-projects/skill_projects/views.py::_card_section::rows[:rows_max]':
+        'A chat card (25 rows). The text the model reads carries the count. The kept '
+        'report (§14.10.9) passes a rows_max above every list and cuts with paged.',
     "apps/skills/skill-projects/skill_projects/views.py::status_report::[p for p in people if int(p.get('open_tasks') or 0)][:10]":
         'A written status report. analytics_load pages every person.',
     'apps/skills/skill-projects/skill_projects/views.py::status_report::blocked_rows[:20]':

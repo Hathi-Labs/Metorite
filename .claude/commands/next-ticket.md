@@ -1,5 +1,5 @@
 ---
-description: Run one full supervisor cycle against the work plan — audit, build, verify, review, PR — for the next dispatchable WS ticket (or the one named).
+description: Run one full supervisor cycle against the work plan — audit, build, verify, review by risk tier, PR — for the next dispatchable WS ticket (or the one named).
 argument-hint: "[WS-n | 'next']"
 ---
 
@@ -31,6 +31,18 @@ Otherwise choose the highest-leverage 🟢 row whose notes do not read as
 owner-gated end to end, preferring rows that unblock others (the board's own
 dependency notes tell you which). Say which you picked and why, in one line.
 
+**1b — Set the risk tier.** The tier sets how much review the slice gets.
+Owner decision, 2026-10-16. Say the tier and the reason in one line.
+- **HIGH**: tenancy, RLS, auth, identity, a migration, money, credits,
+  secrets, a member or role write, or the deploy path. Verifier, then
+  reviewer. At most two repair rounds.
+- **STANDARD**: other product code. Verifier, then reviewer. One repair
+  round. After it, record in `HANDOFF.md` each finding that cannot reach a
+  customer, and land the slice.
+- **LOW**: tooling, tests, docs, or a style change with no data path.
+  Verifier only. Skip the reviewer. One repair round.
+If you are not sure, take the higher tier. The verifier is never skipped.
+
 **2 — Audit.** Dispatch `spec-auditor` on that WS.
 - `NO-GO` → stop the cycle. If the blocker is documentation, that *is* the next
   ticket: report it as such and offer to run a §5-style remediation instead.
@@ -48,12 +60,14 @@ second implementer to route around a block.
 
 **5 — Verify.** Dispatch `ws-verifier`.
 - `FAIL` → send the findings back to a fresh `ws-implementer` with the original
-  verdict block plus the findings. **At most two repair rounds.** If it still
+  verdict block plus the findings. **The tier (1b) sets the repair rounds.**
+  For a STANDARD or LOW slice, land it if no remaining finding can reach a
+  customer, and record those findings in `HANDOFF.md`. If it still
   fails, stop, leave the branch in place, and report what is unresolved. A loop
   that grinds on a stuck ticket burns budget and produces nothing.
 
-**6 — Review.** Dispatch `diff-reviewer`.
-- Any `P0` → repair round (counts against the same two-round budget).
+**6 — Review.** Skip this step for a LOW slice. Otherwise dispatch `diff-reviewer`.
+- Any `P0` → repair round (counts against the same tier budget).
 - `P1`/`P2` → carry into the PR body as known findings; do not block on them.
 
 **7 — Land.**
@@ -65,11 +79,20 @@ second implementer to route around a block.
 - Commit, push the branch, open a PR with `gh`. The PR body: WS id, the slice
   built, acceptance evidence, verification output, reviewer findings, and what
   was deferred.
-- **⚠️ DEV PHASE, until 2026-09-30 — merge it and watch it ship.** Wait for
-  `pr-check` to go green. Merge with `gh pr merge --squash`. Then watch the
-  `deploy` run, and report the SHA that `GET /version` serves.
-  **Do not report done until you have seen that SHA.** Merging to `main` is the
-  deploy, so an unwatched merge is an unverified release.
+- **⚠️ DEV PHASE — merge it and watch it.** Wait for `pr-check` to go green.
+  Merge with `gh pr merge --squash`. Then watch the `deploy` run to green.
+- **⚠️ A merge does NOT deploy to production (WS-38, since 2026-10-16).** The
+  push run moves the `staging` ref only. Production moves at 21:30 UTC (03:00
+  IST) each day. Report the merge as "reaches production at the next daily
+  release". A fix that cannot wait is a manual run:
+  `gh workflow run deploy.yml --ref main -f reason="<why>"`. Watch that run, and
+  report the SHA that `GET /version` serves. Do not call a hotfix done before
+  you see that SHA.
+- Watch the job `Unit tests (a signal on a push, a gate on a release)` in that
+  same `deploy` run to its end. On a push it does not gate, so two PRs that
+  pass alone and fail together can land on `main`. A red `main` also blocks
+  that night's release. If the job is red, fix forward or revert at once, and
+  say so in the report. (No merge queue. Owner decision, 2026-10-16.)
 - Deploy auto-applies migrations and you cannot undo a bad one (R6). Before a
   migration reaches production, confirm the pre-migration backup completed.
 - On 2026-10-01 this step reverts to: **stop there, merging is the owner's**.
@@ -98,7 +121,8 @@ CYCLE: WS-n — <slice>
 AUDIT:    GO | GO-NARROWED | NO-GO — <one line>
 BUILT:    <one line>
 VERIFY:   PASS | FAIL — <the decisive evidence>
-REVIEW:   APPROVE | n findings
+TIER:     HIGH | STANDARD | LOW — <one line why>
+REVIEW:   APPROVE | n findings | skipped (LOW)
 PR:       <url, or why none>
 BOARD:    <how the WS row now reads>
 OWNER NEEDS TO: <gated actions, or "nothing">

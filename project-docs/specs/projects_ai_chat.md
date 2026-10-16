@@ -36,7 +36,8 @@ a recommended option says so) was built 2026-10-09 on a branch, not
 merged. §21.18 (a NUL in a tool result fails no save) was built
 2026-10-09. §14.9 (a file link opens the viewer, never raw text) was built
 2026-10-16, on a branch. §14.10 B1 (`make_report`: a report as a chat card, a file
-and a PDF) was built 2026-10-16.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+and a PDF) was built 2026-10-16. §14.10.9 B3 (`crm_report` and
+`render_report` make a kept report by code) was built 2026-10-16.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -2206,8 +2207,8 @@ slice, the agent wrote a `.md` file. Its link showed the member the raw text.
 guidance and this section. B2 builds the card and the full view: the
 `report` template and the `.report.json` viewer. B2 merged on 2026-10-16
 (#1065). When a chat cannot draw the card, `make_report` returns the PDF.
-B3 adds mappers that build a spec by code from `report_render` and
-`crm_report`.
+B3 BUILT 2026-10-16: `crm_report` and `render_report` build a spec by code
+from their own route data (§14.10.9).
 
 #### 14.10.1 The answer
 
@@ -2372,6 +2373,8 @@ field changes between the spec and the file.
   `make_report` accepts, with the numbers of the routes.
 - `tests/unit/test_design_tools.py`: "report" returns the field guide.
 - `tests/unit/test_tool_schema_diet.py`: the call contract of `make_report`.
+- `tests/unit/test_reports_by_code.py`: the reports that code builds (B3,
+  §14.10.9).
 
 #### 14.10.8 What B1 does not do
 
@@ -2381,6 +2384,102 @@ field changes between the spec and the file.
   and they call `make_report` with a ready spec.
 - It adds no second card for the two files. Their `artifact_created`
   events are quiet (§14.10.5).
+
+#### 14.10.9 Reports built by code (B3, 2026-10-16)
+
+**Owner directive, 2026-10-16:** use the programmatic systems that exist,
+"instead of needing to generate everything using the AI". B3 extends the
+pattern of `status_report` to the other report sources. It adds no second
+report pipeline.
+
+**Status: B3 BUILT 2026-10-16.**
+
+1. **One gate.** `reports.by_code` is the ONE gate of a report that a tool
+   builds from its own reads. It asks `run_holds_tool("make_report")`. It
+   builds the spec only when the member asked and the run holds the tool,
+   and then it calls `make_report`. `status_report`, `render_report` and
+   `crm_report` use it.
+2. **The flag.** Each of the three tools takes `make_report: bool = False`.
+   With the flag and the tool, code makes the report card, the file and the
+   PDF. The tool then draws no card of its own.
+3. **No tool.** When the run does not hold `make_report`, the tool says
+   `REPORTS_OFF` and gives its normal answer and its card. It writes no file.
+4. **The offer.** Without the flag, a run that holds `make_report` reads one
+   line that says how to ask for a report to keep. A run without the tool
+   reads nothing about it.
+5. **Text and cells.** The text fields hold the words and numbers of code
+   only. A stage name, a lost reason, an owner, a project name or a task
+   title goes into a table cell or a chart label. The markdown-lite check
+   reads the text fields only. So a URL or a tag in member text cannot
+   refuse a report.
+6. **WhatsApp.** The tool says that the member gets the report as a PDF.
+   `make_report` queues the PDF, as it does for every report.
+7. **Risk.** `crm_report` and `render_report` now carry `read_only=False`
+   and `idempotent=False`, as `status_report` does. Each one still reaches
+   only read routes. `CHAT_FILE_WRITERS` in `test_projects_chat_coverage.py`
+   names the two Projects tools. `CRM_FILE_WRITERS` in `test_crm_agent.py`
+   names `crm_report`.
+
+**The CRM mapping.** `crm_tools._crm_report_spec` reads the data of
+`GET /crm/reports/{kind}`. An amount is in whole rupees, as the text answer
+prints it.
+
+| Kind | KPI tiles | Visuals |
+|---|---|---|
+| `pipeline` | Open deals, Pipeline value, Weighted forecast, Open stages | A bar chart of the value of each stage. A table of each stage. |
+| `funnel` | Deals, Stages, Stage moves read, Unknown stage names | A bar chart of the deals that entered each stage. A table of conversion and dwell. A table of the names that match no stage. |
+| `win-loss` | Won, Lost, Win rate, Won value, Lost value, Average cycle, Closed with no date | A donut of the deals won and lost. A table of the lost reasons. |
+| `owners` | Owners in the report, Owners not in the report, Won window | A table of each owner. |
+
+- The source line is "CRM <kind>, <date>". The period of `win-loss` is the
+  window of the route.
+- The route sums the amounts of every deal currency, and it sends no
+  currency. So a report of amounts keeps the INR label of the text answer,
+  and its sources add "Amounts are summed across deal currencies." HANDOFF
+  H-333 owns the route fix.
+- A bar chart holds 12 bars and a table holds 20 rows. Each cut adds one
+  line that says so.
+- The funnel draws as a bar chart, not as the chart type `funnel`. The PDF
+  must draw with the chart engine off, and the old renderer draws only bar,
+  line, progress and donut.
+
+**The Projects mapping.** `views._report_spec` reads the payload of the
+render route or of the preview route: `{report, period_start, period_end,
+sections}`. Both forms of `render_report` call it.
+
+- `_card_section` reads each section. It is the function that draws the
+  report card of W3, so the chat knows each section in ONE place. The report
+  passes `numbers=True`, so a cell keeps the number of the route.
+- The tiles of the sections are the KPI tiles, at most 8, as on the card.
+  The text of each section names its own tiles, so no number is lost.
+- Each table of the card becomes a table visual. A note row of the card,
+  for example the hidden-people line or the HR hint, becomes text, because
+  each one holds the words of code.
+- `REPORT_CHARTS` adds a chart to four sections. `finished` and `stuck` get
+  a bar chart by project. `load` gets a bar chart by person. `throughput`
+  gets a line chart by week.
+- A report holds 12 visuals. When the sections need more, the charts go
+  first, from the end, and then the tables. A dropped table says "This
+  report holds at most 12 visuals, so this table is left out." Its
+  hidden-people line stays.
+- The title is the name of the report. The period and the source line hold
+  the dates of the payload.
+- `report_render` stays a read. Its docstring points at `render_report`
+  with `make_report=true`.
+
+**Fences (R7).** `tests/unit/test_reports_by_code.py` checks these facts:
+
+- The card and the file hold the numbers of the route, for each CRM kind
+  and for both forms of `render_report`. The PDF holds them too.
+- Member text with a URL or a tag lands in a cell, and `make_report`
+  accepts it.
+- A run without `make_report` gets `REPORTS_OFF` and no file.
+- A WhatsApp run gets the PDF, and no file or card.
+- Twelve mutations, one for each behaviour. The tests killed all twelve.
+
+**What B3 does not do.** It does not change `addendum.py`. The CRM line
+there still names `crm_report(kind)`, and the docstring of the tool carries
+the flag.
 
 ---
 
