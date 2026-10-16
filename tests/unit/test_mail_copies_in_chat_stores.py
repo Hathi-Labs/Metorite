@@ -125,7 +125,7 @@ class _RedisDown:
         return _fail
 
 
-def _stream_run(monkeypatch, route_world, writes: _Writes, agent: str,
+def _stream_run(monkeypatch, route_world, writes: _Writes, agent: str,  # noqa: F811
                 thread: str) -> Any:
     """Drive ``POST /agent/run/stream`` for *agent* and return the run-end
     hook that the route hands to ``run_detached``. The fold is a spy that
@@ -181,7 +181,7 @@ def _called(node: ast.AST, name: str) -> list[ast.Call]:
 
 # ── acceptance 1, 2 and 4 ──────────────────────────────────────────────────
 
-def test_a_mail_run_writes_no_memory(monkeypatch, route_world, writes) -> None:
+def test_a_mail_run_writes_no_memory(monkeypatch, route_world, writes) -> None:  # noqa: F811
     # 1. The email assistant's own run writes to neither store.
     hook = _stream_run(monkeypatch, route_world, writes, MAIL_AGENT, "g8b-mail")
     _complete(hook)
@@ -242,7 +242,8 @@ def test_pull_writes_no_memory(monkeypatch, writes) -> None:
     from gateway import main as gw_main
 
     class _Agent:
-        default_options: dict[str, Any] = {}
+        def __init__(self) -> None:
+            self.default_options: dict[str, Any] = {}
 
         async def __aenter__(self) -> _Agent:
             return self
@@ -272,7 +273,9 @@ def test_pull_writes_no_memory(monkeypatch, writes) -> None:
 
 # ── acceptance 3 ───────────────────────────────────────────────────────────
 
-def test_an_unknown_mark_writes_no_memory(monkeypatch, route_world, writes) -> None:
+def test_an_unknown_mark_writes_no_memory(
+    monkeypatch, route_world, writes,  # noqa: F811
+) -> None:
     hook = _stream_run(monkeypatch, route_world, writes, OTHER_AGENT, "g8b-down")
     clear_marks()
     monkeypatch.setattr(egress, "get_tenant_redis", lambda: _RedisDown())
