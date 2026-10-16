@@ -399,6 +399,7 @@ def test_3_owner_takes_the_email_of_the_owner() -> None:
     assert owner(target, {"id": "1", "name": "Ann", "email": "Ann@X.co"}) == Outcome("ann@x.co")
     assert owner(target, "bob@x.co") == Outcome("bob@x.co")
     assert owner(target, {"id": "1", "name": "Ann"}) == Outcome(None, unmapped=True)
+    assert owner(target, {"id": "1", "email": "not an email"}) == Outcome(None, unmapped=True)
     with pytest.raises(ValueError, match="TEXT"):
         owner(_target("deal", "probability"), "a@b.co")
 
