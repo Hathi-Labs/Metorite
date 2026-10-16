@@ -1,0 +1,6 @@
+# The ONE line that the production box's /home/acb/.ssh/authorized_keys gets
+# for the staging box (WS-38 §5.3 and T-9). Replace KEY with the public half of
+# /home/acb/.ssh/staging_link on the staging box. The key can forward one port,
+# the Console, and can read the staging export folder, and nothing else: no
+# shell, no pty, no agent, no X11, no other port.
+restrict,port-forwarding,permitopen="127.0.0.1:8090",command="/usr/bin/rrsync -ro /var/lib/acb/staging-export/current" KEY acb-staging-link

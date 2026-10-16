@@ -1,0 +1,24 @@
+# The staging box's one door to the production Customer Console (WS-38 §5.3).
+# The Console listens on 127.0.0.1:8090 of the production box only, and that
+# box's firewall opens 22, 80 and 443 only. This tunnel carries one port. Its
+# key is restricted on the production side to that port and to a read-only
+# rsync of the staging export (deploy/hostinger/staging/authorized_keys.line).
+# Staging then sets CUSTOMER_CONSOLE_URL=http://127.0.0.1:18090.
+[Unit]
+Description=Metorite STAGING tunnel to the production Customer Console
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/home/acb/.ssh/staging_link
+
+[Service]
+Type=simple
+User=acb
+ExecStart=/usr/bin/ssh -N -i /home/acb/.ssh/staging_link \
+  -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
+  -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/opt/acb/app/deploy/hostinger/known_hosts \
+  -L 127.0.0.1:18090:127.0.0.1:8090 acb@187.127.172.200
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

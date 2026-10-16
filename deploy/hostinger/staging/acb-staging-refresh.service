@@ -1,0 +1,14 @@
+# Rebuild the staging database from last night's reduced copy of production
+# (WS-38 T-9). scripts/staging_refresh.sh refuses to run unless this box's .env
+# says DEPLOY_ENV=staging.
+[Unit]
+Description=Metorite STAGING nightly rebuild from the production copy
+After=network-online.target acb-staging-db.service
+Wants=network-online.target
+Requires=acb-staging-db.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/bin/bash /opt/acb/app/scripts/staging_refresh.sh
+TimeoutStartSec=3600
