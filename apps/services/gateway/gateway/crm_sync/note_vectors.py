@@ -45,6 +45,13 @@ failure: the door is down, and the next run tries again. So an outage never
 parks a batch of notes. A request of one note counts its failure, because
 it cannot tell an outage from a bad note, and a bad note alone must park.
 
+**A note with no text** (fix round 2 of 2026-10-17). The vendor refuses an
+empty input for the whole request, so a note whose :func:`note_text` is
+empty never goes out. The SQL leaves out a note of ASCII whitespace only
+(:func:`_filled`), and the step marks any other empty note done with no
+vector (:data:`_EMPTY_SQL`). An empty note is no error: it counts no failure,
+and it waits again only when its text changes.
+
 **No tenant text out.** A row holds a key, an md5, a vector and numbers. A
 log line holds the org id, counts, the reason and the time.
 
@@ -153,14 +160,25 @@ def usable(vector: Any) -> list[float] | None:
 #: and in the anti-join, so a note that did not change is never sent again.
 _MD5 = "md5(coalesce(a.subject, '') || coalesce(a.body, ''))"
 
+def _filled(column: str) -> str:
+    """True in SQL when *column* holds more than ASCII whitespace: the rule
+    of :func:`note_text`, which strips each part. ``btrim`` takes the six
+    ASCII whitespace characters (``\\x0B`` is the vertical tab, because an
+    E-string reads ``\\v`` as a plain ``v``). Python's ``strip`` also takes
+    Unicode spaces. A note that only that difference admits gets the empty
+    mark of :data:`_EMPTY_SQL`, so the two rules never disagree twice."""
+    return f"btrim(coalesce({column}, ''), E' \\t\\n\\r\\f\\x0B') <> ''"
+
+
 #: A note waits when it has no row, when its text changed, or when it failed
 #: fewer than :data:`MAX_FAILURES` times. A note that failed that often waits
-#: again after :data:`PARK_DAYS` days, or as soon as its text changes.
+#: again after :data:`PARK_DAYS` days, or as soon as its text changes. A note
+#: of whitespace only never waits (fix round 2 of 2026-10-17).
 _WAITING = (
     "FROM crm_activities a "
     "LEFT JOIN crm_note_vectors v ON v.activity_id = a.id "
     "WHERE a.organization_id = CAST(:o AS uuid) AND a.type = 'note' "
-    "AND (coalesce(a.subject, '') <> '' OR coalesce(a.body, '') <> '') "
+    f"AND ({_filled('a.subject')} OR {_filled('a.body')}) "
     f"AND (v.activity_id IS NULL OR v.body_md5 <> {_MD5} "
     "OR (v.embedded_at IS NULL AND (v.failures < :max_failures "
     "OR v.failed_at < now() - make_interval(days => :park_days)))) "
@@ -211,6 +229,22 @@ _FAILED_SQL = (
     "body_md5 = EXCLUDED.body_md5"
 )
 
+#: The mark of a note with no text to embed (fix round 2 of 2026-10-17). An
+#: empty note is not an error, so it counts no failure. The row says "done,
+#: and no vector": ``embedded_at`` is set and ``embedding`` is NULL. So
+#: :data:`_WAITING` never picks it again until its md5 changes, and the
+#: search, which reads ``embedding IS NOT NULL`` only, never finds it.
+_EMPTY_SQL = (
+    "INSERT INTO crm_note_vectors (organization_id, activity_id, body_md5, "
+    "embedding, embedded_at, failures, failed_at) "
+    "SELECT a.organization_id, a.id, :body_md5, NULL, now(), 0, NULL "
+    "FROM crm_activities a "
+    "WHERE a.id = CAST(:activity_id AS uuid) AND a.organization_id = CAST(:o AS uuid) "
+    "ON CONFLICT (activity_id) DO UPDATE SET body_md5 = EXCLUDED.body_md5, "
+    "embedding = NULL, embedded_at = EXCLUDED.embedded_at, "
+    "failures = 0, failed_at = NULL"
+)
+
 
 async def _pending(db: Any, org: str, limit: int) -> list[Note]:
     rows = (await db.execute(text(_PENDING_SQL), {
@@ -237,6 +271,16 @@ async def _write(
                     text(_VECTOR_SQL), {**params, "vec": vector_literal(vector)})
                 embedded += int(result.rowcount or 0)
     return embedded, failed
+
+
+async def _mark_empty(org: str, notes: Sequence[Note]) -> None:
+    """Write the empty mark (:data:`_EMPTY_SQL`) for each note in one
+    transaction. No door call and no failure count."""
+    async with tenant_session(org) as db:
+        for note in notes:
+            await db.execute(text(_EMPTY_SQL), {
+                "o": org, "activity_id": note.id, "body_md5": note.body_md5,
+            })
 
 
 # ── The request counter (Redis, as CRM-Q26 counts its requests) ─────────────
@@ -294,6 +338,8 @@ class Embedded:
     embedded: int = 0
     failed: int = 0
     requests: int = 0
+    #: The notes with no text to embed, marked done with no vector.
+    empty: int = 0
 
 
 async def embed_after_run(
@@ -319,7 +365,7 @@ async def embed_after_run(
     if result.reason not in ("off", "none"):
         _log.info("crm.note_vectors.step", organization_id=org, reason=result.reason,
                   notes=result.notes, embedded=result.embedded, failed=result.failed,
-                  requests=result.requests,
+                  requests=result.requests, empty=result.empty,
                   elapsed_ms=int((time.monotonic() - started) * 1000))
     return result
 
@@ -338,8 +384,17 @@ async def _embed(org: str, should_stop: Callable[[], bool], utc_date: str) -> Em
     async with tenant_session(org) as db:
         member = await note_labels._member(db, org)
         notes = await _pending(db, org, min(STEP_LIMIT, room * NOTES_PER_REQUEST))
+    # Fix round 2 (2026-10-17): a note with no text to embed never goes out.
+    # The vendor refuses an empty input for the WHOLE request, so one such
+    # note in a chunk gave no vector for any note of it, and the outage rule
+    # stopped the step on the same chunk in each run. The mark costs no
+    # request and no payer, so it runs before the payer check.
+    empty = [n for n in notes if not note_text(n)]
+    if empty:
+        await _mark_empty(org, empty)
+        notes = [n for n in notes if note_text(n)]
     if not notes:
-        return Embedded("none")
+        return Embedded("done" if empty else "none", empty=len(empty))
     if member is None:
         return Embedded("no_member", notes=len(notes))
     if await note_labels._member_left(org, member) is not None:
@@ -376,7 +431,7 @@ async def _embed(org: str, should_stop: Callable[[], bool], utc_date: str) -> Em
         embedded += done
         failed += lost
     return Embedded(reason, notes=len(notes), embedded=embedded, failed=failed,
-                    requests=requests)
+                    requests=requests, empty=len(empty))
 
 
 __all__ = [

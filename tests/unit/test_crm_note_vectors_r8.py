@@ -98,6 +98,9 @@ class FakeDoor:
     async def __call__(self, texts, *, org=None, timeout=20.0):
         self.calls.append(list(texts))
         self.open_at_call.append(self.open())
+        if any(not t for t in texts):
+            # The vendor refuses an empty input for the WHOLE request.
+            return [None] * len(texts)
         out: list[Any] = []
         for t in texts:
             if self.down or "BAD" in t:
@@ -586,6 +589,40 @@ async def test_a_door_that_is_down_stops_the_step_after_one_request(nv) -> None:
     got = await _step(nv, a, now=DAY)
     assert got.reason == "no_vectors" and got.requests == 1 and got.failed == 0
     assert len(nv.door.calls) == 1
+
+
+async def test_a_note_with_no_text_never_blocks_a_chunk(nv) -> None:
+    """Fix round 2 of 2026-10-17 (the reviewer's case). A note of ASCII
+    whitespace only, and one of Unicode spaces only, sit among 70 good
+    notes, newest first, so both fall in the first chunk. The SQL leaves
+    out the first. ``note_text`` strips the second to "", and the step
+    marks it done with no vector and sends it never. Before the fix the
+    door refused the whole chunk, and each run stopped on it."""
+    a = nv.org_a
+    _connect(nv, a)
+    company = _company(nv, a)
+    for i in range(70):
+        _note(nv, a, company, body=f"good {i}", minutes=i)
+    ascii_blank = _note(nv, a, company, subject=" ", body=" \n\t ", minutes=200)
+    unicode_blank = _note(nv, a, company, subject=None, body=chr(0xA0) + chr(0x2003), minutes=201)
+
+    embedded = 0
+    for _ in range(2):
+        embedded += (await _step(nv, a, now=DAY)).embedded
+    assert embedded == 70
+    assert all(t.strip() for t in nv.door.texts()), "an empty text went out"
+    rows = _rows(nv, a)
+    assert ascii_blank not in rows
+    # Done, with no vector and no failure.
+    assert rows[unicode_blank] == (_md5(nv, unicode_blank), False, True, 0, False)
+    calls = len(nv.door.calls)
+    assert (await _step(nv, a, now=DAY)).reason == "none"
+    assert len(nv.door.calls) == calls
+    # A real text brings it back.
+    with nv.admin_engine.begin() as c:
+        c.execute(text("UPDATE crm_activities SET body = 'pump fixed' "
+                       "WHERE id = CAST(:i AS uuid)"), {"i": unicode_blank})
+    assert (await _step(nv, a, now=DAY)).embedded == 1
 
 
 async def test_an_outage_parks_no_note(nv) -> None:
