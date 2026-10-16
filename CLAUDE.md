@@ -298,6 +298,30 @@ delivery makes that failure more likely, not less.
 > `gh workflow run deploy.yml --ref main -f reason="<why>"`. Watch that run and
 > report the SHA that `GET /version` serves. `specs/staging_and_daily_release.md`
 > owns this, and `tests/unit/test_daily_release.py` is the fence.
+>
+> ⚠️ **TEST ON STAGING BEFORE PRODUCTION** *(owner directive, 2026-10-17)*.
+> Staging is `https://dev.metorite.com`, and its API is
+> `https://api.dev.metorite.com`. It serves the `staging` ref, so it takes each
+> merge in about 15 minutes. After a merge, do these three steps:
+>
+> 1. Wait until `curl -s https://api.dev.metorite.com/version` shows your merge
+>    SHA, or a later one, as both `sha` and `applied_sha`.
+> 2. Test the change on `dev.metorite.com` against its acceptance criteria. Sign
+>    in with Google or Microsoft, with the same account as on production.
+> 3. Report "verified on staging at `<sha>`, reaches production at the next
+>    daily release".
+>
+> If staging shows a defect, fix forward or revert before 21:30 UTC. To stop
+> that night's release, set the repository variable `RELEASE_HOLD` to `1`. A
+> hotfix goes to staging first too, unless production is down.
+>
+> Staging holds a reduced copy of four organizations, and the copy is rebuilt
+> each day at 09:00 IST. Every outbound switch is OFF there, so staging sends no
+> mail and calls no CRM. Write nothing there that must last.
+> ⚠️ **The dev box `srv1747539` is also the staging box.** A session on it must
+> not listen on port 80, 443, 3001, 8080, 8091, 5435 or 18090.
+> Until HANDOFF H-335 closes, staging may not serve. Then write "staging not up"
+> in the report, and do not claim a staging test.
 
 Rules that make it work:
 
