@@ -76,6 +76,21 @@ def artifact_context() -> Mapping[str, Any]:
     return _NO_RUN if ctx is None else ctx
 
 
+def run_holds_tool(name: str) -> bool:
+    """True when the run on this frame holds the platform tool *name*.
+
+    The ONE answer for a tool that reaches another tool in-process, for
+    example ``status_report(make_report=true)``. The executor binds
+    ``run_tools``, the names that ``_tool_injection._inject_agent_tools``
+    left after the scope, the admin's skill toggles, D85, H-236, the floor
+    opt-out and WhatsApp. So access stays an intersection. It FAILS CLOSED: a
+    frame with no run, or a run that bound no ``run_tools``, holds nothing
+    (``projects_ai_chat.md`` §14.10).
+    """
+    tools = artifact_context().get("run_tools")
+    return isinstance(tools, (frozenset, set, tuple, list)) and name in tools
+
+
 def bind_artifact_context(**values: Any) -> None:
     """Set a NEW artifact context for the run on this frame.
 
@@ -1222,6 +1237,7 @@ async def _notify(
     gateway_url: str,
     gateway_token: str,
     mirror_task: Any = None,
+    announce: bool = True,
 ) -> None:
     """Background task: push CUSTOM SSE event into the active run queue AND
     register workspace on the gateway.  Non-fatal — all errors are swallowed.
@@ -1230,6 +1246,12 @@ async def _notify(
     it, briefly, so the card carries the registry id (WS-60 AM-1). With no
     task, or a slow store, the card goes out with ``artifact_id`` ``None`` and
     opens through the session and the path as before.
+
+    ``announce=False`` sends the same event with ``"quiet": true``. The chat
+    then draws no FILE CARD for it, and its Files tree still lists the file
+    (``lib/artifactCards.ts``). A report file has its own ``report`` card
+    (``reports.make_report``), so its files get no second card
+    (``projects_ai_chat.md`` §14.10). Code passes it, never a tool argument.
     """
     artifact_id = None
     if mirror_task is not None and _registry_on():
@@ -1256,6 +1278,8 @@ async def _notify(
                 "mime_type": artifact.get("mime_type"),
                 "artifact_id": artifact.get("artifact_id"),
             }
+            if not announce:
+                _artifact_data["quiet"] = True
             await queue.put({
                 "type": "CUSTOM",
                 "name": "artifact_created",
@@ -1293,6 +1317,7 @@ async def _notify(
                     "sha256": artifact.get("sha256"),
                     "size": artifact.get("size"),
                     "artifact_id": artifact.get("artifact_id"),
+                    **({} if announce else {"quiet": True}),
                 },
                 headers=headers,
             )

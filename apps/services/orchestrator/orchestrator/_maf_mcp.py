@@ -1386,11 +1386,17 @@ def _make_gate_class() -> type:
             server, remote, meta = self.owner_of(function)
             # H-300: the admin's switch on the server. The owner holds it.
             always = server_always_confirms(_owner_tool(self.tools, function))
+            # WS-17 EM-G11d round 3: a chat session that read an untrusted
+            # agent's answer asks a card for each MCP call. The read of the
+            # mark fails closed.
+            from acb_skills.egress import session_is_marked
+
             allowed, reason = _permission_gate(
                 name, arguments, surface="mcp_tool",
                 facts={"mcp_tool": True,
                        "mcp_annotations": meta.hints if meta is not None else None,
                        "mcp_always_confirm": always},
+                after_untrusted_answer=await session_is_marked(),
             )
             if not allowed:
                 context.result = f"[blocked by permission policy: {reason}]"

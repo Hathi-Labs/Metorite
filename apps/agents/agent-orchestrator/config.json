@@ -30,6 +30,7 @@
     "remember",
     "emit_generative_ui",
     "make_document",
+    "make_report",
     "crm_list_records",
     "crm_get_record",
     "crm_list_fields",

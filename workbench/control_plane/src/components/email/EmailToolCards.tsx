@@ -295,13 +295,7 @@ function ReadGroupCard({ events }: { events: ToolEvent[] }) {
  *  N separate email cards. The body fetches the real conversation (so each
  *  message is openable) and falls back to the tool's text summary if that fails. */
 function ThreadCard({ event, accountId }: { event: ToolEvent; accountId?: string | null }) {
-  const first = (event.result || "").split("\n")[0] || "Email thread";
-  // "Thread: <subject> — N message(s), oldest first:" → just the subject + count.
-  const title =
-    first
-      .replace(/^Thread:\s*/i, "")
-      .replace(/,?\s*oldest first:?\s*$/i, "")
-      .trim() || "Email thread";
+  const title = threadTitle(event.result);
   return (
     <ToolCardShell
       title={title}
@@ -2217,6 +2211,23 @@ export function threadText(raw: string | null | undefined): string {
     .map((line) => withoutIds(line))
     .join("\n")
     .trim();
+}
+
+/** The title of a `read_thread` card: the subject and the count.
+ *  WS-17 EM-G11d: a sender writes the subject, so the agent puts it inside
+ *  the framed block as a `Subject:` line, and the first line holds only
+ *  "Thread: N message(s), oldest first:". An older result kept the subject
+ *  in the first line ("Thread: <subject> — N message(s), …"), and it still
+ *  reads as before. Exported for its test. */
+export function threadTitle(raw: string | null | undefined): string {
+  const text = raw || "";
+  const first = (text.split("\n")[0] || "")
+    .replace(/^Thread:\s*/i, "")
+    .replace(/,?\s*oldest first:?\s*$/i, "")
+    .trim();
+  const subject = text.match(/^Subject:\s*(.+)$/m)?.[1]?.trim() ?? "";
+  if (subject && /^\d+ message\(s\)$/.test(first)) return `${subject} — ${first}`;
+  return first || subject || "Email thread";
 }
 
 /** True when a `read_thread` result read a thread: it starts "Thread:". */

@@ -1284,7 +1284,7 @@ async def _run_sub_agent_streaming(
             # CRM-C7: no CRM record write in Mirror mode, read as the member.
             await _drop_mirror_record_writes(agents, no_egress=_sub_no_egress)
             _sub_own_tools = _count_agent_tools(agents)  # WS-8o
-            _inject_agent_tools(
+            _sub_run_tools = _inject_agent_tools(
                 agents,
                 is_sub_agent=True,
                 tool_scope=_sub_tool_scope,
@@ -1376,6 +1376,8 @@ async def _run_sub_agent_streaming(
                 # The chat that asked. The batch run of a MAF sub-agent
                 # passes it on (``delegation_target``).
                 deliver_to=_deliver_to,
+                # The SUB-agent's own tools (``run_holds_tool``, §14.10).
+                run_tools=_sub_run_tools,
             )
 
             # Skills-as-an-index bodies (QM-2). A sub-agent gets the COMPACT
@@ -2860,18 +2862,26 @@ class _BatchRunInputs:
     ``config.json``. *held* is the tool names the first attempt held after
     every narrowing, or ``None`` when it failed before its injection. A retry
     narrows to *held*, so it can never hold more than the first attempt.
+    *run_tools* is the platform tool names that the first attempt bound as
+    ``run_tools`` (``write_artifact.run_holds_tool``). A retry binds them
+    again, narrowed to what it holds, and never wider.
     """
 
     repo_name: str | None = None
     local_path: str | None = None
     held: frozenset[str] | None = None
+    run_tools: frozenset[str] | None = None
 
 
 async def _assemble_batch_agents(
     loaded: Any, *, agent_name: str, no_egress: bool,
     held: frozenset[str] | None = None,
-) -> tuple[list[Any], Any]:
-    """Build and arm the agents of a batch run. Returns ``(agents, md_spec)``.
+) -> tuple[list[Any], Any, frozenset[str]]:
+    """Build and arm the agents of a batch run.
+
+    Returns ``(agents, md_spec, run_tools)``. *run_tools* is the platform
+    tool names that :func:`_inject_agent_tools` left, narrowed to *held* on
+    a retry. The caller binds it as ``run_tools`` (§14.10).
 
     The first attempt and each self-anneal retry call this one function, so a
     retry reads the same ``tool_scope``, ``own_tool_scope``, skill toggles,
@@ -2889,7 +2899,7 @@ async def _assemble_batch_agents(
     # CRM-C7: no CRM record write in Mirror mode, read as the member.
     await _drop_mirror_record_writes(agents, no_egress=no_egress)
     own_tools = _count_agent_tools(agents)  # WS-8o
-    _inject_agent_tools(
+    run_tools = _inject_agent_tools(
         agents,
         tool_scope=loaded.config.get("tool_scope") or None,
         agent_name=agent_name,
@@ -2898,8 +2908,9 @@ async def _assemble_batch_agents(
     )  # inject call_agent / call_agent_background
     if held is not None:
         _narrow_to_held(agents, held, agent_name)
+        run_tools = frozenset(run_tools) & held
     _log_agent_tools_resolved(agent_name, agents, own_tools)
-    return agents, md_spec
+    return agents, md_spec, frozenset(run_tools)
 
 
 async def run_agent(
@@ -3248,13 +3259,13 @@ async def _run_agent_inner(
                 )
 
             # The one batch assembly. The self-anneal retry calls it too.
-            agents, _batch_md_spec = await _assemble_batch_agents(
+            agents, _batch_md_spec, _run_tools = await _assemble_batch_agents(
                 loaded, agent_name=agent_name,
                 no_egress=_no_egress,  # H-236: from the parent's binding
             )
             # The retry narrows to what this attempt holds (never a union).
             _anneal_inputs = dataclasses.replace(
-                _anneal_inputs, held=_held_tool_names(agents),
+                _anneal_inputs, held=_held_tool_names(agents), run_tools=_run_tools,
             )
             # WS-43n: the label OR the object, as the stream path decides. A
             # repo agent that declares no runtime is labelled "maf" (§15.5).
@@ -3309,6 +3320,9 @@ async def _run_agent_inner(
                 # WS-45 S4: the System-1 threshold of a covered run follows
                 # the effort. Absent for every other agent, as before.
                 **({"think_mode": _batch_effort} if _batch_covered else {}),
+                # The run's platform tools after every narrowing, for
+                # ``write_artifact.run_holds_tool`` (§14.10).
+                run_tools=_run_tools,
             )
             try:
                 _ws_root = Path(_effective_agent_dir)
@@ -4110,7 +4124,7 @@ async def run_agent_stream(
                 agents, no_egress=_stream_no_egress,
             )
             _own_tools = _count_agent_tools(agents)  # WS-8o
-            _inject_agent_tools(
+            _run_tools = _inject_agent_tools(
                 agents,
                 # .agent.md's VS Code tools widen (never narrow) the scope, so a
                 # declared capability like `codebase` resolves to a real tool.
@@ -4225,6 +4239,9 @@ async def run_agent_stream(
                 # WS-45 S1: the effort mode, so the System-1 `decide` reads
                 # its threshold from the run binding (ai_tier_routing.md §5).
                 think_mode=think_mode or "auto",
+                # The run's platform tools after every narrowing, for
+                # ``write_artifact.run_holds_tool`` (§14.10).
+                run_tools=_run_tools,
             )
             try:
                 # Ensure the three visible workspace directories exist so the
@@ -6182,11 +6199,17 @@ async def _self_anneal(
                 settings,
                 is_authorized=await _integration_authorizer(event_payload, thread_id),
             )
-            agents, _md_spec = await _assemble_batch_agents(
+            agents, _md_spec, run_tools = await _assemble_batch_agents(
                 loaded, agent_name=agent_name,
                 no_egress=no_egress,  # H-236
                 held=inputs.held,
             )
+            # The first attempt bound ``run_tools`` (§14.10). The retry binds
+            # what it holds of them, so ``run_holds_tool`` never widens. A
+            # first attempt that bound none leaves the run holding nothing.
+            if inputs.run_tools is not None:
+                from acb_skills.write_artifact import derive_artifact_context
+                derive_artifact_context(run_tools=run_tools & inputs.run_tools)
             return await _run_with_maf_agent(
                 agents,
                 agent_name=agent_name,

@@ -20,7 +20,9 @@ What breaks this fence (R7), each run red by hand on 2026-10-16:
 * M3, the first attempt captures no held set;
 * M4, ``_narrow_to_held`` keeps every tool;
 * M5, the retry loads with no ``repo_name`` or ``local_path``;
-* M6, the retry builds the integrations with no member filter.
+* M6, the retry builds the integrations with no member filter;
+* M7, the retry binds the ``run_tools`` that its injection returned, with
+  neither narrowing (to the held set, and to the first attempt's).
 
 The model call, the store, the integrations and the toggle read are stubbed,
 so the suite needs no database. The first attempt fails with a transient
@@ -122,7 +124,7 @@ def run(tmp_path, monkeypatch):
 
     state: dict[str, Any] = {
         "config": {"name": AGENT}, "loads": [], "authorized": [], "attempts": [],
-        "disabled": [frozenset()],
+        "disabled": [frozenset()], "bound": [], "holds": [],
     }
 
     @contextmanager
@@ -150,7 +152,14 @@ def run(tmp_path, monkeypatch):
         return seq.pop(0) if len(seq) > 1 else seq[0]
 
     async def _run_maf(agents, **_kw):
+        from acb_skills.write_artifact import artifact_context, run_holds_tool
+
         state["attempts"].append(_names(agents))
+        # What ``run_holds_tool`` answers on this attempt (§14.10).
+        state["bound"].append(artifact_context().get("run_tools"))
+        state["holds"].append(
+            frozenset(fn.__name__ for fn in _PLATFORM if run_holds_tool(fn.__name__)),
+        )
         if len(state["attempts"]) == 1:
             raise RuntimeError("connection reset by peer")
         return {"answer": "ok"}
@@ -284,3 +293,27 @@ def test_narrow_to_held_never_adds() -> None:
     agent = types.SimpleNamespace(default_options={"tools": [web_search]})
     _narrow_to_held([agent], frozenset({"web_search", "github_search"}))
     assert _held_tool_names([agent]) == {"web_search"}
+
+
+# ── run_tools (§14.10, PR #1064): the retry never widens run_holds_tool ──────
+
+
+def test_run_holds_tool_answers_the_same_after_the_retry(run) -> None:
+    """The toggle read on the retry says nothing, so its injection returns
+    ``github_search``. The retry still binds the first attempt's answer (M7)."""
+    run["disabled"] = [frozenset({"coding"}), frozenset()]
+    run["config"] = {"name": AGENT}
+    state = run["go"]()
+    first, retry = state["holds"]
+    assert first, "the first attempt bound no run_tools"
+    assert retry == first, (sorted(first), sorted(retry))
+    assert "github_search" not in retry
+    assert state["bound"][1] <= state["bound"][0]
+
+
+def test_a_scoped_run_holds_the_same_tools_after_the_retry(run) -> None:
+    run["config"] = {"name": AGENT, "tool_scope": ["query_history"]}
+    state = run["go"]()
+    first, retry = state["holds"]
+    assert retry == first
+    assert "query_history" in retry and "github_search" not in retry

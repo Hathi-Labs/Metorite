@@ -1176,6 +1176,169 @@ async def test_status_report_flags_a_leaf_project_from_its_own_work(monkeypatch)
     assert stats["Blocked"] == 1 and stats["On track"] == 0
 
 
+@pytest.fixture
+def report_chat(monkeypatch, tmp_path):
+    """A chat run on a real working dir, for status_report(make_report=True).
+    The blob mirror and the file card are faked, and each card is recorded."""
+    import importlib
+
+    wa = importlib.import_module("acb_skills.write_artifact")
+
+    async def _quiet(*_a: Any, **_kw: Any) -> None:
+        return None
+
+    monkeypatch.setattr(wa, "_notify", _quiet)
+    monkeypatch.setattr(wa, "mirror_to_blob_store", _quiet)
+    specs = drawn(monkeypatch)
+    with wa.artifact_context_scope():
+        # The run holds make_report, as the executor binds it (§14.10).
+        wa.bind_artifact_context(workspace_root=str(tmp_path), session_id="s1",
+                                 agent_name="projects-assistant",
+                                 run_tools=frozenset({"make_report", "emit_generative_ui"}))
+        yield tmp_path, specs
+
+
+def _report_file(root, card: dict) -> dict:
+    return json.loads((root / card["props"]["data"]["path"]).read_text(encoding="utf-8"))
+
+
+async def test_status_report_makes_the_report_by_code(monkeypatch, report_chat) -> None:
+    """projects_ai_chat.md §14.10 (owner, 2026-10-16): with make_report=true,
+    status_report makes the report itself from its own reads. The model copies
+    no number, so the card and the file hold the routes' numbers."""
+    root, specs = report_chat
+    fake_gateway(monkeypatch, _detail_responder)
+    text = await skill_projects.status_report(UUID, make_report=True)
+    assert "REPORT_SPEC" not in text and "make_report: " in text
+    (card,) = specs  # the report card only: no second dashboard card
+    assert card["props"]["name"] == "report"
+    for data in (card["props"]["data"], _report_file(root, card)):
+        kpis = {k["label"]: k["value"] for k in data["kpis"]}
+        assert kpis["Open tasks"] == 3 and kpis["Overdue tasks"] == 1
+        assert kpis["Blocked by open work"] == 1
+        assert kpis["Blocked projects"] == 1 and kpis["On track projects"] == 0
+        table = next(s for s in data["sections"] if s.get("heading") == "Projects")
+        assert table["visual"]["rows"] == [["Ops", "blocked", 3, 1]]
+        load = next(s for s in data["sections"] if s.get("heading") == "Load")
+        assert load["visual"]["rows"] == [["a@x.io", 4, 1]]
+
+
+@pytest.mark.parametrize("run_tools", [
+    frozenset({"emit_generative_ui", "write_artifact"}),  # documents turned off
+    None,  # a run that bound no tools: fail closed
+])
+async def test_status_report_refuses_when_the_run_does_not_hold_make_report(
+    monkeypatch, report_chat, run_tools,
+) -> None:
+    """Review P1 of #1064: access is an intersection. An admin who turned the
+    documents family off for projects-assistant gets no file and no report
+    card from status_report(make_report=true), and one clear line. Final
+    review P2: the member keeps the dashboard card of a plain status report."""
+    import importlib
+
+    from skill_projects.views import REPORTS_OFF
+
+    wa = importlib.import_module("acb_skills.write_artifact")
+    root, specs = report_chat
+    wa.derive_artifact_context(run_tools=run_tools)
+    fake_gateway(monkeypatch, _detail_responder)
+    text = await skill_projects.status_report(UUID, make_report=True)
+    assert REPORTS_OFF in text and "| Ops | blocked | 3 | 1 |" in text
+    assert "make_report=true" not in text
+    (card,) = specs
+    assert card["props"]["name"] == "statDashboard"
+    assert not (root / "outputs").exists() or not any((root / "outputs").rglob("*"))
+
+
+async def test_on_whatsapp_status_report_says_the_member_gets_a_pdf(
+    monkeypatch, report_chat,
+) -> None:
+    """The success line names the delivery of the channel: a PDF on WhatsApp."""
+    from acb_skills import whatsapp_ui as wui
+
+    async def _document(layout: dict) -> bytes:
+        return b"%PDF-1.7"
+
+    fake_gateway(monkeypatch, _detail_responder)
+    with wui.whatsapp_run("orchestrator", document=_document) as run:
+        text = await skill_projects.status_report(UUID, make_report=True)
+    assert "as a PDF" in text and "report card" not in text
+    assert [m.kind for m in run.outbox] == ["document"]
+
+
+def test_status_report_says_it_has_a_side_effect() -> None:
+    """Review P2 of #1064: with make_report=true it writes two files, so an
+    edited turn must not run it again unseen."""
+    from acb_skills.tool_annotations import TOOL_ANNOTATIONS
+    from gateway.chat_supersede import is_side_effect_tool
+
+    hints = TOOL_ANNOTATIONS["status_report"]
+    assert hints["read_only"] is False and hints["idempotent"] is False
+    assert hints["destructive"] is False and hints["open_world"] is False
+    assert is_side_effect_tool("status_report") is True
+
+
+async def test_status_report_hands_the_model_no_spec_to_copy(
+    monkeypatch, report_chat,
+) -> None:
+    """Review P1: a spec in the text is a spec the model can change. Without
+    make_report=true the tool says how to ask for the report, and gives none."""
+    fake_gateway(monkeypatch, _detail_responder)
+    text = await skill_projects.status_report(UUID)
+    assert "REPORT_SPEC" not in text and "Markdown artifact with write_artifact" not in text
+    assert "make_report=true" in text and "Never save a report as a .md file" in text
+
+
+async def test_status_report_offers_make_report_only_to_a_run_that_holds_it(
+    monkeypatch, report_chat,
+) -> None:
+    """Final review P2: a run without make_report (documents off) is never
+    told to pass make_report=true, as the addendum gates REPORT_RULE."""
+    import importlib
+
+    wa = importlib.import_module("acb_skills.write_artifact")
+    _root, specs = report_chat
+    wa.derive_artifact_context(run_tools=frozenset({"emit_generative_ui"}))
+    fake_gateway(monkeypatch, _detail_responder)
+    text = await skill_projects.status_report(UUID)
+    assert "make_report" not in text
+    (card,) = specs
+    assert card["props"]["name"] == "statDashboard"
+
+
+async def test_status_report_puts_member_text_in_cells_so_no_check_refuses_it(
+    monkeypatch, report_chat,
+) -> None:
+    """Review P1: a task title with a URL or a tag, or such a name, failed the
+    markdown-lite check of make_report. Member text now goes into TABLE
+    cells, which both renderers draw as text."""
+    root, specs = report_chat
+
+    def hostile(call: dict) -> Any:
+        if call["path"].startswith("/projects/analytics/stuck"):
+            return {"stale": [], "blocked_total": 2, "overdue": [], "blocked": [
+                {"id": UUID, "title": "Review https://github.com/acme/web/pull/12",
+                 "task_number": 12, "due_at": None, "project_id": UUID},
+                {"id": UUID, "title": "Fix <Button> focus ring",
+                 "task_number": 13, "due_at": None, "project_id": UUID},
+            ]}
+        if call["path"].startswith("/projects/analytics/load"):
+            return {"people": [{"assignee": "<Ops> lead www.ops.test", "open_tasks": 4,
+                                "overdue": 1}]}
+        return _detail_responder(call)
+
+    fake_gateway(monkeypatch, hostile)
+    text = await skill_projects.status_report(UUID, make_report=True)
+    assert "make_report failed" not in text, text
+    (card,) = specs
+    data = _report_file(root, card)
+    blocked = next(s for s in data["sections"] if s.get("heading") == "Blocked work")
+    assert [r[1] for r in blocked["visual"]["rows"]] == [
+        "Review https://github.com/acme/web/pull/12", "Fix <Button> focus ring"]
+    load = next(s for s in data["sections"] if s.get("heading") == "Load")
+    assert load["visual"]["rows"][0][0] == "<Ops> lead www.ops.test"
+
+
 async def test_every_view_and_form_card_is_inline(monkeypatch) -> None:
     """The Projects rail has no side-panel host, so a panel card opens nothing."""
     specs = drawn(monkeypatch)

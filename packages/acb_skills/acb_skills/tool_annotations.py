@@ -45,6 +45,9 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # H-315: lays out a PDF in the gateway's own child and writes it to the
     # chat's outputs. No network, no egress.
     "make_document":         {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # projects_ai_chat.md §14.10: the same PDF seam, a report file in the
+    # chat's outputs and one card. No network, no egress.
+    "make_report":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
     # H-229: the text of a file attached in this chat. Pure parsing, no code.
     "read_attachment":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     # Memory

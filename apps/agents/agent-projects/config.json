@@ -32,6 +32,7 @@
     "save_memory",
     "emit_generative_ui",
     "make_document",
+    "make_report",
     "write_artifact",
     "read_attachment",
     "call_agent"
