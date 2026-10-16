@@ -1,0 +1,161 @@
+"""The staging copy holds the allowlisted organizations, and nothing else.
+
+WS-38 T-9, ``project-docs/specs/staging_and_daily_release.md`` §3 and §5.10.
+``infra/staging/minimise.sql`` runs on a restore of the production dump, on the
+production box, before the copy travels to the staging box.
+
+R8: this runs the real file with ``psql`` against a production-SHAPED database:
+the whole ladder plus the four H3 phases, which is where the
+``organization_id`` columns of production come from. Each test works on its
+own clone (``CREATE DATABASE … TEMPLATE``), because the file deletes.
+
+What it fences:
+
+1. A customer that is not on the list leaves no row in any org-scoped table.
+2. The kept organization keeps its rows.
+3. An identity survives only for a member of a kept organization.
+4. It refuses, and changes nothing, on an unknown or empty slug list.
+5. It refuses a new table that has no ``organization_id`` and no rule.
+6. It refuses a credential-shaped column that still holds a value.
+"""
+
+from __future__ import annotations
+
+import itertools
+import pathlib
+import subprocess
+import uuid
+
+import pytest
+from sqlalchemy import create_engine, text
+
+from tests.unit.test_h3_rls_promotion_rehearsal import _DB_GATE, promoted  # noqa: F401
+
+pytestmark = _DB_GATE
+
+_ROOT = pathlib.Path(__file__).resolve().parents[2]
+_SQL = _ROOT / "infra/staging/minimise.sql"
+_n = itertools.count()
+
+
+@pytest.fixture
+def clone(promoted):  # noqa: F811
+    """A throwaway copy of the promoted database, as a superuser engine."""
+    base = promoted.admin_engine.url
+    name = f"{base.database}_mz{next(_n)}"
+    promoted.admin_engine.dispose()
+    maint = create_engine(base.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    with maint.connect() as c:
+        c.execute(text(f'DROP DATABASE IF EXISTS "{name}"'))
+        # A template must have no session. The fixture's own pool is disposed
+        # above, and a straggler (a previous clone's engine) is ended here.
+        c.execute(text(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            "WHERE datname = :d AND pid <> pg_backend_pid()"), {"d": base.database})
+        c.execute(text(f'CREATE DATABASE "{name}" TEMPLATE "{base.database}"'))
+    eng = create_engine(base.set(database=name))
+    eng.dsn = base.set(database=name).render_as_string(hide_password=False).replace("+psycopg", "")
+    eng.org_a, eng.org_b = promoted.org_a, promoted.org_b
+    try:
+        yield eng
+    finally:
+        eng.dispose()
+        with maint.connect() as c:
+            c.execute(text(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                "WHERE datname = :d AND pid <> pg_backend_pid()"), {"d": name})
+            c.execute(text(f'DROP DATABASE IF EXISTS "{name}"'))
+        maint.dispose()
+
+
+def _run(eng, slugs: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["psql", eng.dsn, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-v", f"keep_slugs={slugs}",
+         "-f", str(_SQL)],
+        capture_output=True, text=True, timeout=300,
+    )
+
+
+def _org_rows(eng, org: str) -> int:
+    """Rows of ``org`` across every org-scoped public table."""
+    with eng.connect() as c:
+        tables = c.execute(text(
+            "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = 'public' AND c.relkind IN ('r','p') AND NOT c.relispartition "
+            "AND EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid "
+            "AND a.attname = 'organization_id' AND NOT a.attisdropped)")).scalars().all()
+        return sum(
+            c.execute(text(f'SELECT count(*) FROM public."{t}" WHERE organization_id = :o'),
+                      {"o": org}).scalar_one()
+            for t in tables
+        )
+
+
+def _orgs(eng) -> set[str]:
+    with eng.connect() as c:
+        return set(c.execute(text("SELECT slug FROM organization")).scalars())
+
+
+def test_only_the_kept_organization_remains(clone) -> None:
+    before_a, before_b = _org_rows(clone, clone.org_a), _org_rows(clone, clone.org_b)
+    assert before_a > 0 and before_b > 0, "the fixture seeds rows for both organizations"
+    res = _run(clone, "h3rls-a")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert _orgs(clone) == {"h3rls-a"}
+    assert _org_rows(clone, clone.org_b) == 0, "a customer not on the list left rows behind"
+    assert _org_rows(clone, clone.org_a) == before_a, "a kept organization lost rows"
+    assert "kept h3rls-a" in res.stdout
+
+
+def test_an_identity_survives_only_for_a_kept_member(clone) -> None:
+    keep_id, drop_id = str(uuid.uuid4()), str(uuid.uuid4())
+    with clone.begin() as c:
+        c.execute(text("INSERT INTO user_identity (id, email) VALUES (:k, :ke), (:d, :de)"),
+                  {"k": keep_id, "ke": "owner@h3rls.test", "d": drop_id, "de": "gone@other.test"})
+    res = _run(clone, "h3rls-a")
+    assert res.returncode == 0, res.stdout + res.stderr
+    with clone.connect() as c:
+        left = set(c.execute(text("SELECT email FROM user_identity")).scalars())
+    assert "owner@h3rls.test" in left, "the kept organization's member lost the identity"
+    assert "gone@other.test" not in left
+
+
+@pytest.mark.parametrize("slugs", ["h3rls-a,no-such-org", "", "nope"],
+                         ids=["one-unknown", "empty", "all-unknown"])
+def test_a_bad_slug_list_refuses_and_changes_nothing(clone, slugs: str) -> None:
+    before, orgs = _org_rows(clone, clone.org_b), _orgs(clone)
+    res = _run(clone, slugs)
+    assert res.returncode != 0
+    assert _orgs(clone) == orgs
+    assert _org_rows(clone, clone.org_b) == before
+
+
+def test_an_unclassified_table_refuses(clone) -> None:
+    with clone.begin() as c:
+        c.execute(text("CREATE TABLE public.zz_new_global (id int, note text)"))
+    orgs = _orgs(clone)
+    res = _run(clone, "h3rls-a")
+    assert res.returncode != 0
+    assert "zz_new_global" in res.stderr
+    assert _orgs(clone) == orgs, "the refusal must roll everything back"
+
+
+def test_a_credential_left_behind_refuses(clone) -> None:
+    with clone.begin() as c:
+        c.execute(text("CREATE TABLE public.zz_cred (organization_id uuid, api_key text)"))
+        c.execute(text("INSERT INTO public.zz_cred VALUES (:o, 'sk-live-x')"), {"o": clone.org_a})
+    orgs = _orgs(clone)
+    res = _run(clone, "h3rls-a")
+    assert res.returncode != 0
+    assert "zz_cred.api_key" in res.stderr
+    assert _orgs(clone) == orgs
+
+
+def test_the_named_credentials_are_blanked(clone) -> None:
+    """Every credential column the file names exists on the production shape.
+    A rename would turn its UPDATE into an error, so this also catches drift."""
+    res = _run(clone, "h3rls-a")
+    assert res.returncode == 0, res.stdout + res.stderr
+    with clone.connect() as c:
+        for table in ("agent_token", "provider_keys", "agent_client", "auth_email_otp_token"):
+            assert c.execute(text(f"SELECT count(*) FROM public.{table}")).scalar_one() == 0, table
