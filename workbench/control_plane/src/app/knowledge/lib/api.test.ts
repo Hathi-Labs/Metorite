@@ -1,6 +1,7 @@
 /**
- * The /knowledge client (WS-61 KB-2a). Fence for `api.ts`: the revert
- * payload, the BFF paths, and a refusal that keeps its status.
+ * The /knowledge client (WS-61 KB-2a and KB-3b). Fence for `api.ts`: the
+ * revert payload, the BFF paths, the search request, and a refusal that
+ * keeps its status.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -13,6 +14,7 @@ import {
   publishPage,
   revertBody,
   revertPage,
+  searchKnowledge,
   updatePage,
 } from "./api";
 
@@ -74,6 +76,24 @@ describe("the routes", () => {
     ]);
     expect(JSON.parse(String(calls[3].init?.body))).toEqual({ title: "T" });
     expect(JSON.parse(String(calls[4].init?.body))).toEqual({ body_md: "B" });
+  });
+});
+
+describe("the search request", () => {
+  it("encodes the words and asks for 20 hits, with no hybrid and no space", async () => {
+    const calls = stubFetch(200, { query: "refund & 50% off", hits: [], degraded: true });
+    const answer = await searchKnowledge("refund & 50% off");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("/api/knowledge/search?q=refund%20%26%2050%25%20off&k=20");
+    expect(calls[0].init?.method).toBeUndefined();
+    expect(answer).toEqual({ query: "refund & 50% off", hits: [], degraded: true });
+  });
+
+  it("passes the signal through to fetch, so a newer keystroke cancels it", async () => {
+    const calls = stubFetch(200, { query: "refund", hits: [], degraded: false });
+    const ctrl = new AbortController();
+    await searchKnowledge("refund", { signal: ctrl.signal });
+    expect(calls[0].init?.signal).toBe(ctrl.signal);
   });
 });
 
