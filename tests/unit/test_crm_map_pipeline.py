@@ -569,6 +569,38 @@ class TestEachMode:
         assert not [i for i in result.items if i["kind"] == "stage"]
 
 
+class TestTheApprovedPlan:
+    async def test_an_approved_role_asks_only_its_open_targets(self):
+        """An approved role is no open slot, an approved target is no open
+        target, and an approved stage asks nothing (a new value is CRM-Q22)."""
+        schema = _schema("commercials")
+        approved = (
+            {"kind": "role", "slot": "deal", "module": "Commercials", "profile_version": 1},
+            {"kind": "target", "slot": "deal", "module": "Commercials", "target": "name",
+             "fields": ["Commercial_Name"], "transform": "copy"},
+            {"kind": "stage", "slot": "deal", "module": "Commercials",
+             "field_api_name": "Status", "values": {"Won": "won"}},
+        )
+        inputs = mp.Inputs(1, schema.inputs.modules, schema.inputs.slots, approved)
+        asker = eval_run.ScriptedAsker(_answers("commercials"))
+        result = await mp.Pipeline(inputs, ON, mp.Cache(), eval_run.EvalSource(schema),
+                                   asker).run()
+        asked = _asked(asker)
+        assert not [q for q in asked if q.startswith(("role.", "s."))]
+        assert "t.name" not in asked
+        kinds = sorted(i["kind"] for i in result.items)
+        assert kinds == ["target", "target", "target"]
+        assert {i["target"] for i in result.items} == {
+            "expected_close_date", "probability", "lost_note"}
+
+    async def test_one_module_named_for_two_slots_plays_neither(self):
+        answers = dict(_answers())
+        answers["role.deal"] = {"pick": "Operator Associates", "p": 0.9}
+        result, _asker = await _pipeline(answers=answers)
+        assert [i for i in result.items if i["kind"] == "role"] == []
+        assert result.unsure == 2
+
+
 # ── Item 8: the rules of the kinds ──────────────────────────────────────────
 
 

@@ -835,8 +835,13 @@ class Pipeline:
             more, still = self._read(decision, again, keys)
             found.update(more)
             self.result.unsure += len(still)
-        return {qid.split(".", 1)[1]: refs[ref].api_name
-                for qid, ref in found.items() if ref != _NONE}
+        picked = {qid.split(".", 1)[1]: refs[ref].api_name
+                  for qid, ref in found.items() if ref != _NONE}
+        # One module plays one slot. A module that two answers name plays
+        # neither: the answers disagree, so neither is sure.
+        counts = Counter(picked.values())
+        self.result.unsure += sum(1 for m in picked.values() if counts[m] > 1)
+        return {s: m for s, m in picked.items() if counts[m] == 1}
 
     @staticmethod
     def _role_question(slot: str, refs: Mapping[str, ModuleShape]) -> Any:
@@ -960,9 +965,7 @@ class _ModuleWork:
     def target_questions(self) -> dict[str, Any]:
         """Code answers first. Each target that code leaves open, and that
         has a candidate, gets one question."""
-        taken = {(i.get("target")) for i in self.p.inputs.approved
-                 if i.get("kind") == "target" and i.get("slot") == self.slot
-                 and i.get("module") == self.module.api_name}
+        taken = {i.get("target") for i in self._approved("target")}
         targets = [t for t in executor.slot_targets(self.slot) if t not in taken]
         used: set[str] = set()
         open_targets: list[tuple[str, list[FieldShape]]] = []
@@ -987,9 +990,18 @@ class _ModuleWork:
                 "No field fills this target.")
         return questions
 
+    def _approved(self, kind: str) -> list[Mapping[str, Any]]:
+        """The approved items of *kind* for this slot and module."""
+        return [i for i in self.p.inputs.approved
+                if i.get("kind") == kind and i.get("slot") == self.slot
+                and i.get("module") == self.module.api_name]
+
     def stage_question(self) -> dict[str, Any]:
         """The stage field: code first, else one question over the
-        picklists."""
+        picklists. An approved stage of this module asks nothing: a new
+        picklist value is CRM-Q22."""
+        if self._approved("stage"):
+            return {}
         self.stage_field = code_stage_field(self.module)
         if self.stage_field is not None:
             return {}
