@@ -29,9 +29,11 @@
 >
 > **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12). CRM-Q8, filters and saved views (2026-10-12, migration 250). The Deals board stages fix (2026-10-12, §18.5). CRM-Q10, a reconnect never freezes the mirror (2026-10-13, §18, a production hotfix). CRM-Q15, a Zoho module that the account turned off no longer stops the sync (2026-10-15, §18, a production hotfix). CRM-Q16, hold a module and sync one module on its own (2026-10-15, §18.8, migration 269). CRM-Q17a-1, the backend of the fill rank (2026-10-16, §18.9.3, migration 274). It is dark behind `CRM_FILL_RANK_ORGS`. CRM-Q23b, a dropped activity comes back once its module record is in (2026-10-16, §18.10, no migration).
 >
-> **Specified, not built:** CRM-Q17a to CRM-Q22, a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9). CRM-Q18-2 and CRM-Q18-3 are not built.
+> **Specified, not built:** CRM-Q17a to CRM-Q22, a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9). CRM-Q18-3 is not built.
 >
 > **Built later:** CRM-Q18-1, the backend of one plan (2026-10-16, §18.9.6, migration 277). The versions of the Field map live in `crm_mapping_plans`, and `crm_field_rules` stays the live set.
+>
+> **Built later:** CRM-Q18-2, the Field map screen of the plan (2026-10-16, §18.9.6, no migration). A pick by hand goes into a draft, and one press approves it.
 >
 > **Built later:** CRM-Q5, the data the mirror loses (2026-10-12). Migration 249 adds `crm_deal_contacts.ext_source`.
 >
@@ -1241,7 +1243,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q16** | ✅ built 2026-10-15. Hold a module, and sync one module on its own. The first import holds a module above 5,000 records and suggests a sync of it on its own. §18.8 | P0 |
 | **CRM-Q17a** | Lists and records by fill rank: default columns, empty columns hidden, owner names, Overview and Fields, Zoho labels in Mirror mode. No AI. §18.9 | P0 |
 | **CRM-Q17b** | Getting around: the rail group, the first screen, filters, the Columns picker, phone cards, and "Needs you" in Sync health. No AI. §18.9 | P0 |
-| **CRM-Q18** | One plan: the versions of the Field map in `crm_mapping_plans`, and `crm_field_rules` stays the live set. CRM-Q18-1 is built. §18.9 | P1 |
+| **CRM-Q18** | One plan: the versions of the Field map in `crm_mapping_plans`, and `crm_field_rules` stays the live set. CRM-Q18-1 and CRM-Q18-2 are built. §18.9 | P1 |
 | **CRM-Q19** | The executor and the 200-record preview. §18.9 | P1 |
 | **CRM-Q20** | The mapping pipeline on the decide tier, the suggestion in an empty slot, the panel and Undo. Replaces the CRM-Q7b proposer. §18.9 | P1 |
 | **CRM-Q21** | Promote a module into a core entity. §18.9 | P1 |
@@ -2063,6 +2065,10 @@ checkbox. H-321 is a generic module held past the 60 days of the deleted list.
 this section is specified, not built. Verified against code at `origin/main`
 `c4bef9ec0`.
 
+**Status (2026-10-16, later).** The branch `crm-q18-2-plan-ui` builds
+CRM-Q18-2, with no migration. The card shows the plan only where
+CRM-Q18-1 serves it, so it is dark behind `CRM_MIRROR` too.
+
 **Design record.** The owner's design page is "Source Mapping Studio" v4.
 Its link is https://claude.ai/artifact/QcBY3s2ATxo3Kb9QCpR3Zr. This section
 is the build contract, and it wins where the two differ.
@@ -2588,6 +2594,49 @@ Files: `components/FieldMapCard.tsx`, `lib/fieldMap.ts`, `lib/api.ts` and a
 new test file under `components/`. Gate: AGENT-SAFE. Size: S. Waits for:
 CRM-Q18-1 (merged). Build it after CRM-Q18-1b, so a 409 `plan_busy` is the
 answer that the card meets.
+
+**Built as (2026-10-16).** No migration and no flag. The card reads only the
+routes of CRM-Q18-1, and those routes stay behind `CRM_MIRROR`.
+
+- `lib/fieldMap.ts` holds the types and the rules. `openDraft` is the newest
+  draft whose base is the version in use. The card drops a draft on an older
+  base, because the gateway refuses its approve.
+- A pick by hand ("Map") calls `addToDraft`. It posts the changes of the open
+  draft and the new change, so one draft holds each pick. A pick of the column
+  in use sends no request. `POST /crm/field-rules` has no caller on the card
+  now.
+- The card finds the changes of a draft from the rules of two versions:
+  the version in use and the draft. So a reload shows the same draft.
+- `runPlanWrite` runs an approve or a restore. A 409 `plan_busy` waits 1 s and
+  runs it again one time. A second `plan_busy` and a `plan_moved` keep their
+  sentence on the card. `approveDraft` and `goBack` read the plan again after
+  each result.
+- "Go back" restores the newest version in the state `superseded`, by the time
+  of its approve. `ConfirmDialog` asks first and names that date.
+- The history lists each version. The card draws `approved` as "In use",
+  `superseded` as "Earlier", the open draft as "Draft, not applied", and an
+  older draft as "Draft, not used". "Show rules" reads one version.
+- A version that the sync approved names "the sync, after a change in Zoho".
+- The approve and the reject of one rule stay on `PATCH /crm/field-rules`.
+  Each write drops every key of the card, so the history reads again.
+- Fence: `components/fieldMapPlan.test.ts`, 41 tests. 12 mutations, one for
+  each key rule, each turned it red.
+- The `visual-review` rig captured the card with stubbed data. It covered
+  dark and light mode, compact and comfortable density, a violet accent, and
+  1920, 1440, 1280, 390 and 375 px, and also the Go back question. One defect
+  showed at 375 px: the rule count of a history row stood alone on a line. The
+  row is now one text run.
+
+Not in this slice:
+
+- The admin cannot discard a draft. No route deletes a draft. A later pick of the
+  same field replaces its change, but a new field stays in the draft until an
+  approve.
+- A per-rule approve or reject while a draft is open moves the version in
+  use. The card then drops the draft with no sentence.
+- The card still shows the confidence of a proposal ("62% sure").
+  §18.9.2 asks for no confidence number on screen. CRM-Q7a's fence holds the
+  label, so CRM-Q20 removes it with the proposer.
 
 **CRM-Q18-3 · A column that is empty opens.** It waits for migration 274
 (CRM-Q17a-1). Done when:
