@@ -40,7 +40,7 @@ import {
   type SourceLabels,
 } from "../lib/views";
 import CrmRail from "./CrmRail";
-import FieldsPanel, { LayoutFields, overviewFields } from "./FieldsPanel";
+import FieldsPanel, { LayoutFields, overviewEntries, type OverviewEntry } from "./FieldsPanel";
 import { ModuleRecordBody } from "./ModuleRecordSheet";
 import RecordList from "./RecordList";
 
@@ -330,6 +330,10 @@ const CONTACT = {
 
 const SYSTEM = (key: string, fill: number) => def(key, { is_system: true, fill });
 
+/** The key of each Overview row: `custom:<key>` for a custom field. */
+const entryKeys = (entries: OverviewEntry[]) =>
+  entries.map((e) => (e.kind === "fixed" ? e.field.key : `custom:${e.row.key}`));
+
 describe("Overview shows the filled fields first, by fill (item 5)", () => {
   const ranked = layout({
     fields: [
@@ -340,14 +344,17 @@ describe("Overview shows the filled fields first, by fill (item 5)", () => {
       SYSTEM("phone", 0),
       SYSTEM("mobile", 0.9),
       SYSTEM("owner_email", 0.7),
+      def("Site_Code", { label: "Site code", fill: 0.8 }),
+      def("Region", { label: "Region", fill: 0.95 }),
+      def("Notes", { label: "Notes", fill: 0.05 }),
     ],
   });
 
-  it("orders the filled fixed fields by fill, and the empty ones after", () => {
-    const keys = overviewFields("contacts", CONTACT, ranked).map((f) => f.key);
-    expect(keys).toEqual([
+  it("orders the filled fields by fill, the custom ones too, and the empty ones after", () => {
+    expect(entryKeys(overviewEntries("contacts", CONTACT, ranked))).toEqual([
       "first_name",
       "mobile",
+      "custom:Site_Code",
       "owner_email",
       "last_name",
       "title",
@@ -357,8 +364,32 @@ describe("Overview shows the filled fields first, by fill (item 5)", () => {
     ]);
   });
 
+  it("shows the fullest custom fields that the record fills, at most eight", () => {
+    const many = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`F${i}`, `v${i}`]));
+    const defs = Array.from({ length: 12 }, (_, i) => def(`F${i}`, { fill: i / 12 }));
+    const keys = entryKeys(
+      overviewEntries("contacts", { ...CONTACT, custom: many }, layout({ fields: defs })),
+    ).filter((k) => k.startsWith("custom:"));
+    expect(keys).toEqual(["F11", "F10", "F9", "F8", "F7", "F6", "F5", "F4"].map((k) => `custom:${k}`));
+  });
+
+  it("draws a custom row on Overview, read only", () => {
+    const html = renderToStaticMarkup(
+      createElement(FieldsPanel, {
+        ...panelProps,
+        part: "overview",
+        entity: "contacts",
+        record: CONTACT,
+        layout: ranked,
+      }),
+    );
+    expect(html).toContain("Site code");
+    expect(html).toContain("S-7");
+    expect(html.indexOf("S-7")).toBeLessThan(html.indexOf(">Title<"));
+  });
+
   it("keeps the order of before with no fill numbers", () => {
-    const keys = overviewFields("contacts", CONTACT, layout()).map((f) => f.key);
+    const keys = entryKeys(overviewEntries("contacts", CONTACT, layout()));
     expect(keys).toEqual([
       "first_name",
       "last_name",
@@ -369,7 +400,7 @@ describe("Overview shows the filled fields first, by fill (item 5)", () => {
       "owner_email",
       "description",
     ]);
-    expect(overviewFields("contacts", CONTACT, null).map((f) => f.key)).toEqual(keys);
+    expect(entryKeys(overviewEntries("contacts", CONTACT, null))).toEqual(keys);
   });
 
   it("puts a filled row first, then the higher fill, in a pure helper", () => {

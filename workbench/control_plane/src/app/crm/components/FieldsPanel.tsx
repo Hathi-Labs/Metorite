@@ -68,6 +68,7 @@ import type { CrmRefusal } from "../lib/store";
 import FieldInput from "./FieldInput";
 import FieldValue from "./FieldValue";
 import RelatedLists from "./RelatedLists";
+import { OVERVIEW_FIELDS } from "../lib/modules";
 import { NO_RELATED, type RelatedLists as Related } from "../lib/related";
 import type { DealContact, EntitySlug, Status } from "../lib/types";
 
@@ -397,40 +398,70 @@ export default function FieldsPanel({
       )}
 
       <dl className="divide-y divide-border/60">
-        {overviewFields(entity, record, layout).map((field) => (
-          <EditableField
-            key={field.key}
-            field={field}
-            row={record}
-            status={status}
-            saving={saving}
-            locked={mirrored}
-            onPatch={onPatch}
-          />
-        ))}
+        {overviewEntries(entity, record, layout).map((entry) =>
+          entry.kind === "fixed" ? (
+            <EditableField
+              key={entry.field.key}
+              field={entry.field}
+              row={record}
+              status={status}
+              saving={saving}
+              locked={mirrored}
+              onPatch={onPatch}
+            />
+          ) : (
+            // A custom field that this record fills, read only, as the
+            // Fields tab draws it.
+            <div key={`custom:${entry.row.key}`} className="flex items-start gap-3 px-4 py-2">
+              <dt className={LABEL}>{entry.row.label}</dt>
+              <dd className="min-w-0 flex-1 break-words text-xs text-foreground">
+                <FieldValue value={entry.row.value} />
+              </dd>
+            </div>
+          ),
+        )}
       </dl>
     </div>
   );
 }
 
+/** One row of Overview: a fixed field, or a custom field the record fills. */
+export type OverviewEntry =
+  | { kind: "fixed"; field: Field }
+  | { kind: "custom"; row: FieldRow };
+
 /**
- * The fixed fields of Overview, in the order they draw (CRM-Q17a-2 item 5).
+ * The rows of Overview, in the order they draw (CRM-Q17a-2 item 5).
+ *
  * While the layout carries fill numbers, the filled fields come first, by
- * the fill of each field, and the empty ones follow. Else the order of today.
+ * the fill of each field. They are the fixed fields that the record fills,
+ * and the custom fields that it fills, at most `OVERVIEW_FIELDS` of them, the
+ * fullest first. The empty fixed fields follow. In a Mirror org whose
+ * standard fields are empty, Overview then shows the data that the sync
+ * brought, not a column of dashes. With no fill numbers, Overview draws the
+ * fixed fields of today, in their order.
  */
-export function overviewFields(
+export function overviewEntries(
   entity: EntitySlug,
   record: Row,
   layout: FieldLayout | null,
-): Field[] {
+): OverviewEntry[] {
   const defs = layout?.fields ?? null;
-  if (!fillRankOn(defs)) return FIELDS[entity];
-  const system = new Map((defs ?? []).filter((d) => d.is_system).map((d) => [d.key, d]));
-  return filledFirst(
-    FIELDS[entity],
-    (field) => fixedFilled(field, record),
-    (field) => system.get(field.key),
-  );
+  const fixed = (field: Field): OverviewEntry => ({ kind: "fixed", field });
+  if (!fillRankOn(defs)) return FIELDS[entity].map(fixed);
+  const byKey = new Map((defs ?? []).map((d) => [`${d.is_system ? "s" : "c"}:${d.key}`, d]));
+  const defOf = (entry: OverviewEntry) =>
+    entry.kind === "fixed" ? byKey.get(`s:${entry.field.key}`) : byKey.get(`c:${entry.row.key}`);
+  const custom = filledFirst(
+    fieldRows(record, defs).filter((row) => row.value.kind !== "empty"),
+    () => true,
+    (row) => byKey.get(`c:${row.key}`),
+  )
+    .slice(0, OVERVIEW_FIELDS)
+    .map((row): OverviewEntry => ({ kind: "custom", row }));
+  const filled = (entry: OverviewEntry) =>
+    entry.kind === "custom" || fixedFilled(entry.field, record);
+  return filledFirst([...FIELDS[entity].map(fixed), ...custom], filled, defOf);
 }
 
 // ── The filter box and the fold of the Fields tab (CRM-Q17a-2 item 5) ──────
