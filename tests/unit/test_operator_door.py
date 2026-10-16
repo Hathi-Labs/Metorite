@@ -36,7 +36,7 @@ def calls(monkeypatch):
     """Record purge invocations; answer a canned receipt."""
     made: list[str] = []
 
-    async def fake_purge(*, slug: str):
+    async def fake_purge(*, slug: str, before_delete=None):
         made.append(slug)
         return {
             "slug": slug,
@@ -117,7 +117,7 @@ class TestTheTwoTokenLadder:
     def test_a_failing_purge_is_a_502_that_carries_the_cause(
         self, client, monkeypatch
     ):
-        async def boom(*, slug: str):
+        async def boom(*, slug: str, before_delete=None):
             raise RuntimeError("the database went away")
 
         monkeypatch.setattr(offboard, "purge_tenant_organization", boom)
