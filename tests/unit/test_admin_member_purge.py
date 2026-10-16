@@ -947,6 +947,32 @@ async def test_the_cached_access_is_dropped(db: _FakeDB) -> None:
     assert PRIYA in db.invalidated
 
 
+async def test_the_purge_tears_down_each_mailbox_after_the_commit(
+    db: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EM-G11f1b (``email_app_master_plan.md`` §12.3.13.9.2). The purge rows
+    go in the transaction, and the sync loop of each mailbox stops after the
+    commit. The answer counts the mailboxes. The other half of the fence is
+    ``test_email_mailbox_teardown.py``."""
+    import email_ingestion.scheduler as sched
+    from gateway.routes.admin.members import purge_member
+
+    stops: list[tuple[str, int]] = []
+
+    async def _stop(account_id: str) -> None:
+        stops.append((account_id, db.committed))
+
+    monkeypatch.setattr(sched, "remove_account_sync", _stop)
+    monkeypatch.setattr(sched, "get_scheduler_status", lambda: {"accounts": []})
+
+    out = await purge_member(PRIYA, admin=OWNER)
+
+    assert db.purge_rows == [PRIYA], "the purge wrote no purge row for the mailbox"
+    assert stops == [("acc-0", 1)], "the loop did not stop after the one commit"
+    assert out.mailboxes.model_dump() == {
+        "planned": 1, "finished": 1, "continuing": 0}
+
+
 def test_purge_is_a_separate_route_and_remove_is_unchanged() -> None:
     """N8 adds a door; it does not widen the existing one.
 

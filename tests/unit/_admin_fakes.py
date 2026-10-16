@@ -19,6 +19,7 @@ import re
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any, ClassVar
+
 from tests.unit._sql_match import hits
 
 ORG = "00000000-0000-0000-0000-00000000000a"
