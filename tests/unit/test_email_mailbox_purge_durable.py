@@ -335,6 +335,66 @@ class TestTheLeaseCoversOnePass:
         assert ledger.taken[:2] == ["org-a", "org-b"], "the orgs did not take turns"
 
 
+class TestTheDetachedRowsTakeATurn:
+    """Rule 9 (EM-G11f1c, §12.3.13.9.2). The detached table is one more lane
+    of the same sweep, after the organizations of each round."""
+
+    async def test_the_detached_lane_comes_after_the_orgs(self, monkeypatch):
+        ledger = _ClaimLedger({"org-a": [_due_row(), _due_row()]})
+        detached = [_due_row()]
+
+        def _open_detached() -> Any:
+            class _DB:
+                async def execute(self, stmt: Any, params: dict[str, Any]) -> Any:
+                    sql = " ".join(str(stmt).split())
+                    assert "email_mailbox_purges" not in sql, (
+                        "the detached lane touched a tenant table")
+                    if sql.startswith("UPDATE email_detached_purges p SET tries"):
+                        assert "organization_id" not in sql and "org" not in params
+                        assert "LIMIT 1" in sql, "a claim takes more than one row"
+                        ledger.events.append("claim")
+                        row = detached.pop(0) if detached else None
+                        if row is not None:
+                            ledger.taken.append("detached")
+                        return SimpleNamespace(fetchone=lambda: row)
+                    assert sql.startswith("UPDATE email_detached_purges")
+                    ledger.events.append("record")
+                    return SimpleNamespace(fetchone=lambda: None)
+
+            @contextlib.asynccontextmanager
+            async def _cm():
+                yield _DB()
+
+            return _cm()
+
+        async def _pass(_scope: str, _shown: str, _phase: str) -> int:
+            return 0
+
+        monkeypatch.setattr(memory_purge, "mem0_on", _mem0_on)
+        monkeypatch.setattr(memory_purge, "_one_pass", _pass)
+        await memory_purge.sweep_mailbox_purges(
+            ["org-a"], open_session=ledger.session, open_detached=_open_detached)
+        assert ledger.taken == ["org-a", "detached", "org-a"]
+
+    async def test_the_tick_sweeps_the_detached_rows(self, monkeypatch):
+        seen: dict[str, Any] = {}
+
+        async def _orgs() -> list[str]:
+            return ["org-a"]
+
+        async def _sweep(org_ids: Any, **kw: Any) -> int:
+            seen.update(kw, orgs=list(org_ids))
+            return 0
+
+        monkeypatch.setattr(memory_purge, "mem0_on", _mem0_on)
+        monkeypatch.setattr(memory_purge, "_organization_ids", _orgs)
+        monkeypatch.setattr(memory_purge, "sweep_mailbox_purges", _sweep)
+        await memory_purge.run_tick()
+        assert seen["orgs"] == ["org-a"]
+        assert seen.get("open_detached") is memory_purge._detached_session, (
+            "the tick does not sweep the detached rows")
+
+
 class TestOneMem0BuildAtATime:
 
     async def test_two_callers_at_once_build_one_client(self, monkeypatch):
