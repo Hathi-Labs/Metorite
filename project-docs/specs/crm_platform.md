@@ -41,6 +41,9 @@
 >
 > **Built later:** CRM-Q7b, the proposer of field rules (2026-10-14). It adds no migration. See §18.7.
 >
+> **Built later:** CRM-Q26, labels on CRM notes on the decide tier, dark
+> (2026-10-16, migration 278). See §18.11.
+>
 > **Built from §19:** CRM-X4, the record page v2 (2026-10-12, §19.8).
 >
 > **Built from §20:** CRM-C2, one board (2026-10-13, §20.5). CRM-C3, stages
@@ -1243,6 +1246,10 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q22** | Source changes as suggestions, then a CSV source, then HubSpot. §18.9 | P2 |
 | **CRM-Q23** | Link a Zoho activity to a custom-module record, and show it there, in three slices (Q23a, Q23b, Q23c). §18.10 | P0 |
 | **CRM-Q24** | A short read shows on the Sync health card. §18.10 | P1 |
+| **CRM-Q25** | The typed aggregate over every module and field, and its AI tool. §18.11 | P0 |
+| **CRM-Q26** | Labels on notes, on the decide tier, in shadow. §18.11 | P1 |
+| **CRM-Q27** | Search of note text by meaning. §18.11 | P2 |
+| **CRM-Q28** | A weekly digest on the powerful tier. §18.11 | P2 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
 
@@ -2694,6 +2701,174 @@ that it checks is mid-read. A module that comes back can stop at
 4. Sync health shows the activities that have no parent: "1,145 Zoho tasks
    belong to no record. Metorite leaves them out." It reads the `(none)`
    count of `activity_drops`.
+### 18.11 Insights on the mirrored data (CRM-Q25 to CRM-Q28, 2026-10-16)
+
+**Status (2026-10-16).** CRM-Q26: built on the branch `crm-q26`, dark.
+CRM-Q27 and CRM-Q28: specified, not built. CRM-Q25: not built on this
+branch. Verified against code at `origin/main` `02223e3e2`.
+
+**Owner direction (2026-10-16, in chat).** Use the decide, balanced and
+powerful tiers to run inference on the CRM data and produce insights. Build
+as much as possible the same day.
+
+#### 18.11.1 The rule: numbers come from SQL
+
+A model never adds up records, and it never writes SQL. A number that a
+member reads comes from one typed aggregate route. The model chooses a
+module, a measure, a field to group by and filters, by name. The route
+checks each name against the field definitions of the org, and it binds
+each value. Embeddings help the model find text. They never make a number.
+
+| Need | Mechanism | Tier |
+|---|---|---|
+| Totals, trends, aging and top lists | CRM-Q25, the typed aggregate over every module and field | No model in the query. The chat agent calls it |
+| Labels on note text | CRM-Q26, decide questions when a note arrives | Decide |
+| Search of note text by meaning | CRM-Q27, embeddings through `kb_index.embed` | Embedding model |
+| A weekly digest | CRM-Q28, a scheduled run over CRM-Q25 numbers | Powerful |
+| Questions in chat | The CRM agent with its tools (CRM-C7) | Balanced |
+
+#### 18.11.2 Tickets
+
+| Ticket | Slice | Gate | Size | Waits for |
+|---|---|---|---|---|
+| CRM-Q25 | The typed aggregate over every module and field, and its AI tool | AGENT-SAFE | M | — |
+| CRM-Q26 | Labels on notes, on the decide tier, in shadow | AGENT-SAFE | M | CRM-Q23a |
+| CRM-Q27 | Search of note text by meaning | AGENT-SAFE | M | CRM-Q26 |
+| CRM-Q28 | A weekly digest on the powerful tier | AGENT-SAFE | M | CRM-Q25 |
+
+CRM-Q27 and CRM-Q28 get their done-when lists in a later edit of this
+section. To build each ticket is AGENT-SAFE. For CRM-Q26, a mode other than
+`off` for `crm.note_labels` is an owner flip, because each request spends the
+org's credits (CLAUDE.md §3a rule 3). So is a name in `CRM_DECIDE_ORGS`. The
+grant `enforcement-flip` does not cover them. `work_plan.md` §6 registers both.
+
+**Not in scope.** A write to the source. A model that writes SQL. A number
+that comes from a model. A per-member record scope (§18.5, CRM-Q12).
+
+**CRM-Q25 · The typed aggregate.** Done when:
+
+1. `GET /crm/aggregate` also takes a generic module (`module:<ApiName>`) as
+   the entity. A module that the profile does not mirror gives 404.
+2. The measure can be `count`, or `sum`, `avg`, `min` or `max` of one field.
+   A field measure takes only a field of type number, decimal, currency or
+   percent.
+3. `group_by` can also name one field. A picklist, a boolean, a lookup and
+   the owner group by value. A date or a datetime groups by `month`,
+   `quarter` or `year`, given as `bucket`. Any other type gives 422.
+4. A filter can name a field with one value, or a date field with a range.
+   The core entities keep the list filters they have today.
+5. Each field name is checked against the field definitions of the org, or
+   of the module. A name never reaches the SQL text unchecked. Each value is
+   bound. A test sends names that try to inject SQL, and each one gives 422.
+6. An answer holds at most 50 groups, largest first, and one `other` total.
+   The statement runs under a LOCAL `statement_timeout` of 10 s.
+7. The AI tool `crm_aggregate` takes the new arguments.
+   `crm_list_fields` and the module record tools tell the model the legal
+   names and types.
+8. R8 tests cover a sum and a group on a module, a date bucket and a
+   filter. They also cover tenant isolation, and the time on 30,000 module
+   rows.
+
+Files: `routes/crm/aggregate.py`, `routes/crm/modules.py`,
+`routes/crm/fields.py`, the CRM tools module (`crm_tools.py`) and
+`tests/unit/`.
+
+**CRM-Q26 · Labels on notes, in shadow.** Done when:
+
+1. The decide registry (`gateway/decide_features.py`) gains the feature
+   `crm.note_labels`, in a new tuple `CRM_FEATURES`. It joins `REGISTERED`
+   and `ON_FEATURES`, and it starts `off` for every org. It does not join
+   `FEATURES`. That tuple is the email set: two email suites pin it, and the
+   email start-up check `configured_on()` reads it.
+2. A new setting `crm_decide_orgs` (`CRM_DECIDE_ORGS`) lists the orgs that may
+   run a `crm.` feature. It is empty by default. For a `crm.` feature,
+   `mode_for` reads it and not `DECIDE_FEATURE_ORGS`. So a change of mode
+   never starts every CRM org at once.
+3. A migration (next free number at build time) adds the tenant table
+   `crm_note_labels`. It has FORCE RLS and an inline foreign key to the org. Its
+   `activity_id` is unique, and it references `crm_activities (id)` with ON
+   DELETE CASCADE. A row holds the kind, the probability of "needs action",
+   the urgency, and the confidence and probabilities of each. It also holds
+   `body_md5` of the labeled text, `labeled_at` and `request_id`.
+4. The CRM start over deletes the table (`core.RESET_TABLES` and
+   `settings._RESET_DELETES`). The generated phases carry it.
+5. After a sync run, a background step labels the new or changed notes. It
+   runs only for an org whose feature is `shadow` or `on`. It runs outside
+   the run lock: after `engine.run_org` in `scheduler._run_one`, and after the
+   run that `scheduler.spawn` starts for a request. It binds
+   `tenant_session(org)`.
+6. A note is new when it has no label row. It has changed when the md5 of its
+   subject and body differs from `body_md5`. The step takes the newest first
+   (`COALESCE(ext_modified_at, created_at)`). It takes at most 200 notes in one
+   step. Each org has a cap of requests for each UTC day, counted before each
+   request goes out, so a billed request that fails still counts. The cap is
+   1,000 notes over 5 notes a request (`DAILY_NOTES`). While more than 1,000
+   notes wait (`BACKLOG_THRESHOLD`), the cap is 5,000 notes
+   (`BACKLOG_DAILY_NOTES`, owner decision of 2026-10-16).
+6a. A batch that fails for a cause of its own counts one failure for each of
+   its notes. Such a cause is an invalid request, an answer that the step
+   cannot read, or a timeout. A failed note goes to the back of the queue.
+   After 3 failures it waits 7 days, or until its text changes, so one bad
+   note cannot block the queue.
+7. In `shadow` and in `on`, the step calls `decide_features.ask()`, because
+   no old path exists. It names `module_slug="crm"`. It names the
+   `connected_by` of the Zoho connection as a proven member, as email names
+   the mailbox owner. With no member, the step skips and logs a count. The
+   member must still be an active member of this org
+   (`my_day_loop.departed`). When not, the step skips, logs a count, and
+   spends nothing, because the Console bills the org of the member.
+8. One decide request holds up to 5 notes, and 3 questions for each note.
+   The first question is a choice of kind: payment, site issue, commercial,
+   follow-up, internal or other. The second is a boolean, "needs action". The
+   third is a score of urgency with 3 levels. The step clips the subject and
+   the body with `clip_fact`, and the body to 2,000 characters. A question
+   names its note by its id in `state.notes`.
+9. In `shadow` and in `on`, no route returns the labels, and a test proves
+   it. A later ticket reads them on the timeline and in CRM-Q25.
+10. Each step logs counts and request ids only, never note text. For a `crm.`
+    feature, only a 402 starts the cool-down of the registry, and the step
+    stops. A 403 starts no cool-down, so it never pauses email `on` for the
+    org.
+11. `evals/crm_note_labels/` holds synthetic notes with expected labels. It
+    passes with `uv run python -m evals.crm_note_labels.run --scripted`.
+12. R8 tests cover the table and its RLS, and a step that labels notes
+    through a fake decide. They also cover the 200 cap, the daily cap, a
+    changed note, the feature `off` path and tenant isolation.
+
+Files: `gateway/decide_features.py`, `acb_common/settings.py`, a new
+`gateway/crm_sync/note_labels.py`, `gateway/crm_sync/scheduler.py`,
+`routes/crm/core.py`, `routes/crm/settings.py`, the migration and
+`infra/postgres/generated/`, `evals/crm_note_labels/` and `tests/unit/`.
+
+**Built as (2026-10-16, branch `crm-q26`, not merged).** Migration 278 adds
+the table. `gateway/crm_sync/note_labels.py` holds the step, and
+`scheduler.start_labels` starts it. The mode ships `off`, and
+`CRM_DECIDE_ORGS` ships empty. A source fence and an R8 read of a company
+timeline prove item 9. The model sweep of the eval is not built.
+
+Fix round (2026-10-16). The cap counts requests in Redis, as My Day counts
+its calls, under the key of the UTC day, with a life of 26 hours. The
+constants are `DAILY_NOTES` 1,000, `BACKLOG_DAILY_NOTES` 5,000 and
+`BACKLOG_THRESHOLD` 1,000. With them DEWiN's 18,674 notes take about 4 to 5
+days, not 19. A failing batch counts `failures` on its rows, and
+`MAX_FAILURES` 3 and `PARK_DAYS` 7 park it. `decide_features.last_no_answer`
+names the cause of a failure. The step checks the member with
+`my_day_loop.departed`, and a failed read spends nothing.
+
+Round 2 (2026-10-16). A note that failed before goes out in a request of
+its own, so only a poison note parks and its batch-mates land. A failure
+row clears every label column and the request id, so it never pairs a new
+md5 with the label of an older text.
+
+#### 18.11.3 Verification
+
+- `bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"`
+- `uv run pytest tests/unit/test_crm_aggregate*.py tests/unit/test_crm_note_labels*.py tests/unit/test_crm_mirror_run_tools.py -q`,
+  with no test skipped.
+- `uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py tests/unit/test_feed_decide.py -q`.
+  The email and My Day features must behave as before.
+- `uv run python -m evals.crm_note_labels.run --scripted`
+- `uv run python scripts/affected_tests.py --run`
 
 ---
 

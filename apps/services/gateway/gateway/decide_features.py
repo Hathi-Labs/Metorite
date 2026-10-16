@@ -71,6 +71,18 @@ the organization is in its cool-down (``my_day_feed.md`` §10.9 item 4).
 Before, an email feature in ``shadow`` went on calling after a 402. The
 email suites are the fence for the rest.
 
+WS-53 CRM-Q26 (``project-docs/specs/crm_platform.md`` §18.11.2) adds the
+CRM's one feature, and copies no helper:
+
+- ``crm.note_labels`` is in :data:`CRM_FEATURES`, :data:`REGISTERED` and
+  :data:`ON_FEATURES`, and ``off`` by default. It is not in
+  :data:`FEATURES`, because that tuple is the email set.
+- For a ``crm.`` feature, :func:`mode_for` reads ``crm_decide_orgs`` and not
+  ``decide_feature_orgs``, so a mode change never starts every CRM org.
+- A ``crm.`` call starts the shared cool-down on a 402 only, as My Day does.
+  The labels have no old path, so the step calls :func:`ask` in ``shadow``
+  and in ``on`` (``gateway/crm_sync/note_labels.py``).
+
 Fences: ``tests/unit/test_email_decide_shadow.py``,
 ``tests/unit/test_email_decide_questions.py`` and
 ``tests/unit/test_feed_decide.py``.
@@ -82,6 +94,7 @@ import functools
 import math
 import time
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any
@@ -96,6 +109,8 @@ __all__ = [
     "CHOICE_TEXT_BUDGET",
     "CORRECTIONS_CLIP",
     "CRITERION_CLIP",
+    "CRM_FEATURES",
+    "CRM_PREFIX",
     "DEFAULT_MODES",
     "FEATURES",
     "MODES",
@@ -117,6 +132,7 @@ __all__ = [
     "configured_on",
     "cooling",
     "instructions",
+    "last_no_answer",
     "mode_for",
     "score_level",
     "shadow",
@@ -156,6 +172,8 @@ ON_FEATURES: frozenset[str] = frozenset({
     "email.thread_status",
     "email.rule_match",
     "email.insights_screen",
+    # WS-53 CRM-Q26: the note labels have no old path, so `on` is legal.
+    "crm.note_labels",
 })
 
 #: WS-58 MD-6a-1: the eight My Day features (``my_day_feed.md`` §10.3), in
@@ -180,8 +198,18 @@ MY_DAY_FEATURES: tuple[str, ...] = (
 #: ``my_day_decide_orgs`` (``my_day_feed.md`` §10.9 item 5).
 MY_DAY_PREFIX = "my_day."
 
+#: WS-53 CRM-Q26: the CRM features (``crm_platform.md`` §18.11.2 item 1).
+#: They are not in :data:`FEATURES`, which is the email set: two email suites
+#: pin it, and the email start-up check :func:`configured_on` reads it. Each
+#: is ``off`` by default.
+CRM_FEATURES: tuple[str, ...] = ("crm.note_labels",)
+
+#: A feature with this prefix takes its organization list from
+#: ``crm_decide_orgs`` (``crm_platform.md`` §18.11.2 item 2).
+CRM_PREFIX = "crm."
+
 #: Every feature of the registry, email first.
-REGISTERED: tuple[str, ...] = FEATURES + MY_DAY_FEATURES
+REGISTERED: tuple[str, ...] = FEATURES + MY_DAY_FEATURES + CRM_FEATURES
 
 #: The value of ``decide_feature_orgs`` that allows every organization.
 ALL_ORGS = "*"
@@ -219,6 +247,11 @@ _COOLDOWN_STATUSES = frozenset({402, 403})
 #: must wait. A 403 can refuse My Day alone, and the cool-down is the whole
 #: org's, so it must not pause email's ``on``.
 _MY_DAY_COOLDOWN_STATUSES = frozenset({402})
+
+#: The prefixes whose calls start the cool-down on a 402 only: My Day and,
+#: since WS-53 CRM-Q26, the CRM. A 403 there names that app's grant, so it
+#: must not pause email `on` for the org.
+_402_ONLY_PREFIXES: tuple[str, ...] = (MY_DAY_PREFIX, CRM_PREFIX)
 
 #: Organization id → the monotonic time at which its cool-down ends.
 _cooldown_until: dict[str, float] = {}
@@ -416,7 +449,8 @@ def mode_for(feature: str) -> str:
 
     A ``my_day.`` feature reads ``my_day_decide_orgs`` instead, so My Day
     starts for one organization with no change to email's list (WS-58
-    MD-6a-1, ``my_day_feed.md`` §10.9 item 5).
+    MD-6a-1, ``my_day_feed.md`` §10.9 item 5). A ``crm.`` feature reads
+    ``crm_decide_orgs`` (WS-53 CRM-Q26, ``crm_platform.md`` §18.11.2).
     """
     settings = get_settings()
     mode = _parse_modes(settings.decide_feature_modes or "").get(feature, "off")
@@ -425,8 +459,12 @@ def mode_for(feature: str) -> str:
     org = current_tenant()
     if not org:
         return "off"
-    raw_orgs = (settings.my_day_decide_orgs if feature.startswith(MY_DAY_PREFIX)
-                else settings.decide_feature_orgs)
+    if feature.startswith(MY_DAY_PREFIX):
+        raw_orgs = settings.my_day_decide_orgs
+    elif feature.startswith(CRM_PREFIX):
+        raw_orgs = settings.crm_decide_orgs
+    else:
+        raw_orgs = settings.decide_feature_orgs
     orgs = _parse_orgs(raw_orgs or "")
     if ALL_ORGS not in orgs and str(org) not in orgs:
         return "off"
@@ -618,6 +656,19 @@ def _requests_of(built: Any) -> list[Request]:
     return [(state, questions) for state, questions in many if questions]
 
 
+#: The reason of the last call in this task that got no decision, or None.
+#: WS-53 CRM-Q26: the note-label step reads it after :func:`ask` returns
+#: None, to tell a failure of its own batch from an outage. It changes no
+#: answer and no log line, so every other caller is as before.
+_LAST_NO_ANSWER: ContextVar[str | None] = ContextVar("decide_last_no_answer", default=None)
+
+
+def last_no_answer() -> str | None:
+    """Why the last :func:`ask` of this task got no decision, or None after
+    a decision. A reason code only, never tenant text."""
+    return _LAST_NO_ANSWER.get()
+
+
 def _no_answer(
     ids: Mapping[str, Any], *, on: bool, shadow_event: str, reason: str,
     level: str = "info", **extra: Any,
@@ -629,6 +680,7 @@ def _no_answer(
     stays undecided (D-EM-8), and every cause logs ``decide.unavailable``
     with its reason (§10.4.8 EM-T5b-2 item 5).
     """
+    _LAST_NO_ANSWER.set(reason)
     if on:
         _log.warning("decide.unavailable", **ids, decide_reason=reason, **extra)
     elif shadow_event == "decide.fallback":
@@ -722,7 +774,7 @@ async def _ask_all(
         elif unavailable is not None:
             _no_answer(ids, on=on, shadow_event="decide.fallback",
                        reason=unavailable.reason)
-            starts = (_MY_DAY_COOLDOWN_STATUSES if feature.startswith(MY_DAY_PREFIX)
+            starts = (_MY_DAY_COOLDOWN_STATUSES if feature.startswith(_402_ONLY_PREFIXES)
                       else _COOLDOWN_STATUSES)
             if getattr(unavailable, "status", None) in starts:
                 _start_cooldown(ids, unavailable.status)
@@ -862,6 +914,7 @@ async def ask[R](
     ``decide.decided``. Never raises.
     """
     ids = _log_ids(feature, account_id, message_id, ids)
+    _LAST_NO_ANSWER.set(None)
     if _cooling(current_tenant()):
         # A 402 or 403 came back within REFUSAL_COOLDOWN_S. No Router call.
         _no_answer(ids, on=True, shadow_event="", reason="cooldown")

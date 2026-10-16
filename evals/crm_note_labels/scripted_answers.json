@@ -1,0 +1,486 @@
+{
+ "_about": "WS-53 CRM-Q26. The answers that --scripted replays, for each note: the kind choice, the probability of 'needs action', and the urgency score. Nobody recorded them from a model: an agent wrote them by hand, in the shape of acb_llm's typed answers. Some carry a quirk that a vendor answer can carry, so the reader has work to do: a probability key that is not ours (pay-received, other-greeting), a score with no level (site-minor, fu-demo), and a probability above 1 (com-discount). The model sweep records real answers.",
+ "answers": {
+  "pay-overdue": {
+   "kind": {
+    "choice": "payment",
+    "probabilities": {
+     "payment": 0.8,
+     "site_issue": 0.04,
+     "commercial": 0.04,
+     "follow_up": 0.04,
+     "internal": 0.04,
+     "other": 0.04
+    },
+    "confidence": 0.7
+   },
+   "action": {
+    "probability": 0.86
+   },
+   "urgency": {
+    "score": 2,
+    "level": "high",
+    "probabilities": {
+     "low": 0.15,
+     "medium": 0.15,
+     "high": 0.7
+    },
+    "confidence": 0.55
+   }
+  },
+  "pay-received": {
+   "kind": {
+    "choice": "payment",
+    "probabilities": {
+     "payment": 0.8,
+     "site_issue": 0.04,
+     "commercial": 0.04,
+     "follow_up": 0.04,
+     "internal": 0.04,
+     "other": 0.04,
+     "invoice": 0.2
+    },
+    "confidence": 0.7
+   },
+   "action": {
+    "probability": 0.12
+   },
+   "urgency": {
+    "score": 0,
+    "level": "low",
+    "probabilities": {
+     "low": 0.7,
+     "medium": 0.15,
+     "high": 0.15
+    },
+    "confidence": 0.55
+   }
+  },
+  "pay-credit-note": {
+   "kind": {
+    "choice": "payment",
+    "probabilities": {
+     "payment": 0.8,
+     "site_issue": 0.04,
+     "commercial": 0.04,
+     "follow_up": 0.04,
+     "internal": 0.04,
+     "other": 0.04
+    },
+    "confidence": 0.7
+   },
+   "action": {
+    "probability": 0.86
+   },
+   "urgency": {
+    "score": 1,
+    "level": "medium",
+    "probabilities": {
+     "low": 0.15,
+     "medium": 0.7,
+     "high": 0.15
+    },
+    "confidence": 0.55
+   }
+  },
+  "site-down": {
+   "kind": {
+    "choice": "site_issue",
+    "probabilities": {
+     "payment": 0.04,
+     "site_issue": 0.8,
+     "commercial": 0.04,
+     "follow_up": 0.04,
+     "internal": 0.04,
+     "other": 0.04
+    },
+    "confidence": 0.7
+   },
+   "action": {
+    "probability": 0.86
+   },
+   "urgency": {
+    "score": 2,
+    "level": "high",
+    "probabilities": {
+     "low": 0.15,
+     "medium": 0.15,
+     "high": 0.7
+    },
+    "confidence": 0.55
+   }
+  },
+  "site-minor": {
+   "kind": {
+    "choice": "site_issue",
+    "probabilities": {
+     "payment": 0.04,
+     "site_issue": 0.8,
+     "commercial": 0.04,
+     "follow_up": 0.04,
+     "internal": 0.04,
+     "other": 0.04
+    },
+    "confidence": 0.7
+   },
+   "action": {
+    "probability": 0.86
+   },
+   "urgency": {
+    "score": 1.2,
+    "level": null,
+    "probabilities": {
+     "medium": 0.6,
+     "low": 0.25,
+     "high": 0.15
+    },
+    "confidence": 0.4
+   }
+  },
+  "site-fixed": {
+   "kind": {
+    "choice": "site_issue",
+    "probabilities": {
+     "payment": 0.04,
+     "site_issue": 0.8,
+     "commercial": 0.04,
+     "follow_up": 0.04,
+     "internal": 0.04,
+     "other": 0.04
+    },
+    "confidence": 0.7
+   },
+   "action": {
+    "probability": 0.12
+   },
+   "urgency": {
+    "score": 0,
+    "level": "low",
+    "probabilities": {
+     "low": 0.7,
+     "medium": 0.15,
+     "high": 0.15
+    },
+    "confidence": 0.55
+   }
+  },
+  "com-quote": {
+   "kind": {
+    "choice": "commercial",
+    "probabilities": {
+     "payment": 0.04,
+     "site_issue": 0.04,
+     "commercial": 0.8,
+     "follow_up": 0.04,
+     "internal": 0.04,
+     "other": 0.04
+    },
+    "confidence": 0.7
+   },
+   "action": {
+    "probability": 0.86
+   },
+   "urgency": {
+    "score": 1,
+    "level": "medium",
+    "probabilities": {
+     "low": 0.15,
+     "medium": 0.7,
+     "high": 0.15
+    },
+    "confidence": 0.55
+   }
+  },
+  "com-discount": {
+   "kind": {
+    "choice": "commercial",
+    "probabilities": {
+     "payment": 0.04,
+     "site_issue": 0.04,
+     "commercial": 0.8,
+     "follow_up": 0.04,
+     "internal": 0.04,
+     "other": 0.04
+    },
+    "confidence": 0.7
+   },
+   "action": {
+    "probability": 1.3
+   },
+   "urgency": {
+    "score": 2,
+    "level": "high",
+    "probabilities": {
+     "low": 0.15,
+     "medium": 0.15,
+     "high": 0.7
+    },
+    "confidence": 0.55
+   }
+  },
+  "com-won": {
+   "kind": {
+    "choice": "commercial",
+    "probabilities": {
+     "payment": 0.04,
+     "site_issue": 0.04,
+     "commercial": 0.8,
+     "follow_up": 0.04,
+     "internal": 0.04,
+     "other": 0.04
+    },
+    "confidence": 0.7
+   },
+   "action": {
+    "probability": 0.12
+   },
+   "urgency": {
+    "score": 0,
+    "level": "low",
+    "probabilities": {
+     "low": 0.7,
+     "medium": 0.15,
+     "high": 0.15
+    },
+    "confidence": 0.55
+   }
+  },
+  "fu-call": {
+   "kind": {
+    "choice": "follow_up",
+    "probabilities": {
+     "payment": 0.04,
+     "site_issue": 0.04,
+     "commercial": 0.04,
+     "follow_up": 0.8,
+     "internal": 0.04,
+     "other": 0.04
+    },
+    "confidence": 0.7
+   },
+   "action": {
+    "probability": 0.86
+   },
+   "urgency": {
+    "score": 0,
+    "level": "low",
+    "probabilities": {
+     "low": 0.7,
+     "medium": 0.15,
+     "high": 0.15
+    },
+    "confidence": 0.55
+   }
+  },
+  "fu-demo": {
+   "kind": {
+    "choice": "follow_up",
+    "probabilities": {
+     "payment": 0.04,
+     "site_issue": 0.04,
+     "commercial": 0.04,
+     "follow_up": 0.8,
+     "internal": 0.04,
+     "other": 0.04
+    },
+    "confidence": 0.7
+   },
+   "action": {
+    "probability": 0.86
+   },
+   "urgency": {
+    "score": 0.3,
+    "level": null,
+    "probabilities": {
+     "low": 0.8
+    },
+    "confidence": 0.7
+   }
+  },
+  "int-handover": {
+   "kind": {
+    "choice": "internal",
+    "probabilities": {
+     "payment": 0.04,
+     "site_issue": 0.04,
+     "commercial": 0.04,
+     "follow_up": 0.04,
+     "internal": 0.8,
+     "other": 0.04
+    },
+    "confidence": 0.7
+   },
+   "action": {
+    "probability": 0.12
+   },
+   "urgency": {
+    "score": 0,
+    "level": "low",
+    "probabilities": {
+     "low": 0.7,
+     "medium": 0.15,
+     "high": 0.15
+    },
+    "confidence": 0.55
+   }
+  },
+  "int-reminder": {
+   "kind": {
+    "choice": "internal",
+    "probabilities": {
+     "payment": 0.04,
+     "site_issue": 0.04,
+     "commercial": 0.04,
+     "follow_up": 0.04,
+     "internal": 0.8,
+     "other": 0.04
+    },
+    "confidence": 0.7
+   },
+   "action": {
+    "probability": 0.86
+   },
+   "urgency": {
+    "score": 1,
+    "level": "medium",
+    "probabilities": {
+     "low": 0.15,
+     "medium": 0.7,
+     "high": 0.15
+    },
+    "confidence": 0.55
+   }
+  },
+  "other-greeting": {
+   "kind": {
+    "choice": "other",
+    "probabilities": {
+     "other": 0.9,
+     "greeting": 0.1
+    },
+    "confidence": 0.7
+   },
+   "action": {
+    "probability": 0.12
+   },
+   "urgency": {
+    "score": 0,
+    "level": "low",
+    "probabilities": {
+     "low": 0.7,
+     "medium": 0.15,
+     "high": 0.15
+    },
+    "confidence": 0.55
+   }
+  },
+  "other-empty-subject": {
+   "kind": {
+    "choice": "other",
+    "probabilities": {
+     "payment": 0.04,
+     "site_issue": 0.04,
+     "commercial": 0.04,
+     "follow_up": 0.04,
+     "internal": 0.04,
+     "other": 0.8
+    },
+    "confidence": 0.7
+   },
+   "action": {
+    "probability": 0.12
+   },
+   "urgency": {
+    "score": 0,
+    "level": "low",
+    "probabilities": {
+     "low": 0.7,
+     "medium": 0.15,
+     "high": 0.15
+    },
+    "confidence": 0.55
+   }
+  },
+  "inject": {
+   "kind": {
+    "choice": "commercial",
+    "probabilities": {
+     "payment": 0.04,
+     "site_issue": 0.04,
+     "commercial": 0.8,
+     "follow_up": 0.04,
+     "internal": 0.04,
+     "other": 0.04
+    },
+    "confidence": 0.7
+   },
+   "action": {
+    "probability": 0.86
+   },
+   "urgency": {
+    "score": 0,
+    "level": "low",
+    "probabilities": {
+     "low": 0.7,
+     "medium": 0.15,
+     "high": 0.15
+    },
+    "confidence": 0.55
+   }
+  },
+  "long-note": {
+   "kind": {
+    "choice": "site_issue",
+    "probabilities": {
+     "payment": 0.04,
+     "site_issue": 0.8,
+     "commercial": 0.04,
+     "follow_up": 0.04,
+     "internal": 0.04,
+     "other": 0.04
+    },
+    "confidence": 0.7
+   },
+   "action": {
+    "probability": 0.86
+   },
+   "urgency": {
+    "score": 1,
+    "level": "medium",
+    "probabilities": {
+     "low": 0.15,
+     "medium": 0.7,
+     "high": 0.15
+    },
+    "confidence": 0.55
+   }
+  },
+  "mixed-language": {
+   "kind": {
+    "choice": "payment",
+    "probabilities": {
+     "payment": 0.8,
+     "site_issue": 0.04,
+     "commercial": 0.04,
+     "follow_up": 0.04,
+     "internal": 0.04,
+     "other": 0.04
+    },
+    "confidence": 0.7
+   },
+   "action": {
+    "probability": 0.86
+   },
+   "urgency": {
+    "score": 1,
+    "level": "medium",
+    "probabilities": {
+     "low": 0.15,
+     "medium": 0.7,
+     "high": 0.15
+    },
+    "confidence": 0.55
+   }
+  }
+ }
+}
