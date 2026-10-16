@@ -185,6 +185,7 @@ __all__ = [
     "chat_completion_on_console",
     "create_order_on_console",
     "decide_on_console",
+    "embeddings_on_console",
     "invalidate",
     "invite_member_on_console",
     "is_wired",
@@ -2601,6 +2602,79 @@ async def decide_on_console(
         async with client:
             response = await client.post(
                 f"{base}/v1/decide", headers=headers, json=payload
+            )
+    except Exception as exc:
+        raise ConsoleRouterUnavailable(str(exc)[:200]) from exc
+
+    status = response.status_code
+    if status >= 500 or status in (401, 408, 429):
+        raise ConsoleRouterUnavailable(f"HTTP {status}")
+
+    try:
+        body = response.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    return status, body
+
+
+async def embeddings_on_console(
+    payload: dict[str, Any],
+    *,
+    timeout: float,
+    member: str | None = None,
+    #: Whether the gateway VERIFIED that member (H-73). A cap may key on it.
+    member_proven: bool = False,
+    agent: str | None = None,
+    module_slug: str | None = None,
+    run_id: str | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """Ask the Console's ``POST /v1/embeddings`` door for vectors.
+
+    WS-31 CP-EMB (``customer_console.md`` §6A.16). ``payload`` is the
+    OpenAI-shaped body: ``{"model": "tier-embed", "input": [...]}``.
+
+    Returns the Console's ``(status_code, body)``, and raises
+    :class:`ConsoleRouterUnavailable` when no answer was produced. The line
+    between the two is the one :func:`decide_on_console` draws: every 5xx,
+    401, 408 and 429 is an outage, because an embedding never streams.
+
+    🔴 **The credential path is the chat client's, exactly.** The same
+    :func:`router_is_wired` gate, the same :func:`router_credential` pick
+    and the same :func:`_attribution_headers`. A second credential picker
+    here would be the second Console client this module forbids.
+
+    ⚠️ **``timeout`` is the CALLER's.** A search embeds its words inside a
+    short bound and an index write takes longer. There is no retry, so one
+    request is one meter row at most.
+    """
+    if not router_is_wired():
+        raise ConsoleRouterUnavailable("unwired")
+
+    settings = get_settings()
+    base = settings.customer_console_url.strip().rstrip("/")
+    chosen = router_credential()
+    if chosen is None:  # pragma: no cover - `router_is_wired` guards above
+        raise ConsoleRouterUnavailable("unwired")
+    kind, key = chosen
+
+    # The same local refusal the chat and decide clients make.
+    _require_proven_member_on_deployment(kind, member, member_proven)
+
+    headers = {"Authorization": f"Bearer {key}"}
+    headers.update(
+        _attribution_headers(
+            member=member, agent=agent, module_slug=module_slug, run_id=run_id,
+            member_proven=member_proven,
+        )
+    )
+
+    try:
+        client = _new_http_client(timeout)
+        async with client:
+            response = await client.post(
+                f"{base}/v1/embeddings", headers=headers, json=payload
             )
     except Exception as exc:
         raise ConsoleRouterUnavailable(str(exc)[:200]) from exc

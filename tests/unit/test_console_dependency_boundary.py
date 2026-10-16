@@ -367,6 +367,23 @@ _THE_APPROVE_CALLER = "apps/services/gateway/gateway/routes/admin/access_request
 #: a body, a query parameter or a path segment. The entry is NARROWED by
 #: ``test_the_billing_proxy_touches_only_the_billing_read_client`` below.
 _THE_BILLING_CALLER = "apps/services/gateway/gateway/routes/billing.py"
+#: ⚠️ **The ELEVENTH entry — the embed door, CP-EMB, 2026-10-17 — and the
+#: argument, because this list's own rule is that a new entry states one.**
+#:
+#: ``gateway/kb_index/embed.py`` is the ONE function that makes a vector for
+#: Knowledge and for CRM note search. It calls ``embeddings_on_console`` and
+#: **allocates no seat**. The door it reaches serves vectors and nothing else,
+#: and it never touches ``resolve_for_signin``.
+#:
+#: **Why it had to be added.** The gateway's own ``/v1/embeddings`` needs an
+#: OpenAI key that production does not hold, so no vector was made
+#: (``customer_console.md`` §6A.16). The Router door serves the vectors on the
+#: account the Console holds.
+#:
+#: 📌 Like the in-product AI hop, it names the member from the RUN CONTEXT
+#: (``acb_llm.routed.run_attribution``), never from a request body. The entry
+#: is NARROWED by ``test_the_embed_door_touches_only_the_embed_client`` below.
+_THE_EMBED_CALLER = "apps/services/gateway/gateway/kb_index/embed.py"
 _ALLOWED_CALLERS = (
     _THE_IN_PRODUCT_AI_CALLER,
     _THE_ONE_CALLER,
@@ -378,10 +395,14 @@ _ALLOWED_CALLERS = (
     _THE_DECIDE_CALLER,
     _THE_APPROVE_CALLER,
     _THE_BILLING_CALLER,
+    _THE_EMBED_CALLER,
 )
 
 #: The ONLY names ``acb_llm/decide.py`` may read from ``console_resolve``.
 _DECIDE_ALLOWED_NAMES = frozenset({"decide_on_console", "ConsoleRouterUnavailable"})
+
+#: The ONLY name ``kb_index/embed.py`` may read from ``console_resolve``.
+_EMBED_ALLOWED_NAMES = frozenset({"embeddings_on_console"})
 
 #: The ONLY names ``routes/billing.py`` may read from ``console_resolve``: the
 #: billing READ client, the three CHECKOUT clients (H-152's second half), their
@@ -480,6 +501,21 @@ def test_the_decide_facade_touches_only_the_decide_client() -> None:
     )
 
 
+def test_the_embed_door_touches_only_the_embed_client() -> None:
+    """``kb_index/embed.py`` is on the list for ONE name, and this pins it.
+
+    The list admits the FILE. This admits only the embeddings client, so a
+    later edit cannot call ``resolve_for_signin`` or a seat write from the
+    index.
+    """
+    used, imported = _console_resolve_names(_tree(_REPO / _THE_EMBED_CALLER))
+    assert used or imported, "the embed door no longer reaches console_resolve"
+    assert (used | imported) <= _EMBED_ALLOWED_NAMES, (
+        f"kb_index/embed.py reads {sorted((used | imported) - _EMBED_ALLOWED_NAMES)} "
+        "from console_resolve. It may read only the embeddings client."
+    )
+
+
 def test_the_billing_proxy_touches_only_the_billing_read_client() -> None:
     """``routes/billing.py`` is on the list for SEVEN names, and this pins them.
 
@@ -538,6 +574,10 @@ def test_resolve_is_reachable_only_from_the_signin_path() -> None:
     SEVEN → EIGHT by WS-31 CP-13c (2026-09-24): ``acb_llm/decide.py``
     (``decide_on_console``, the ``decide`` facade). Each argument is written
     beside its name above.
+
+    ⚠️ The approve door, the billing proxy and, on 2026-10-17, CP-EMB's
+    ``kb_index/embed.py`` (``embeddings_on_console``) took the list to
+    ELEVEN. Each argument is written beside its name above.
 
     What stays forbidden is unchanged: wiring any of them behind
     ``resolve_access`` (six callers, one a room fan-out) = farmable seat burn.

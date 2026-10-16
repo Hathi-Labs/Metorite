@@ -164,6 +164,9 @@ model_list:
       api_base: https://openrouter.ai/api/v1
 
   # ── Embedding models ──────────────────────────────────────────────────
+  # ⚠️ Knowledge (`gateway/kb_index/embed.py`) no longer uses this route.
+  # Since CP-EMB (customer_console.md §6A.16) it asks the Console Router's
+  # /v1/embeddings on tier-embed. The route stays for the other writers.
   # Mem0 and other memory systems use these via the gateway /v1/embeddings.
   # No OPENAI_API_KEY required — the gateway routes to the backing provider.
   - model_name: text-embedding-3-small

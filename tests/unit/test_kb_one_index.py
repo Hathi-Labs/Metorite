@@ -10,8 +10,8 @@ Two rules, each a static read of the tree:
    covers ``CREATE TABLE`` and ``ALTER TABLE … ADD COLUMN``.
 2. **One door.** No module under ``gateway/kb_index/`` or
    ``gateway/routes/knowledge/`` imports ``litellm`` or ``openai``, or calls
-   ``aembedding``. The vector comes from ``kb_index.embed.embed``, which posts
-   to the gateway's own ``/v1/embeddings``.
+   ``aembedding``. The vector comes from ``kb_index.embed.embed``, which asks
+   the Console Router's ``/v1/embeddings`` (CP-EMB, 2026-10-17).
 
 Mutations this file catches (R7): a second ``kb_*`` table with a vector
 column, a vector column added to ``kb_pages``, and an import of ``litellm``
@@ -161,7 +161,7 @@ def test_no_vendor_sdk_and_no_aembedding_in_the_index() -> None:
                                      path.relative_to(_GATEWAY).as_posix()))
     assert not found, (
         "The index makes a vector through kb_index.embed.embed only, over the "
-        "gateway's /v1/embeddings (knowledge_base.md §6.4):\n" + "\n".join(found)
+        "Console Router's /v1/embeddings (knowledge_base.md §6.4):\n" + "\n".join(found)
     )
 
 

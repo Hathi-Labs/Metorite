@@ -10,8 +10,9 @@ session, and a package would import both upward (§6.3, KB-3 audit).
   a long section split on paragraphs, a table on its own. Each chunk has a
   ``content_sha``.
 * ``embed`` — ``embed(texts)``, the ONE function that makes a vector. It
-  posts to the gateway's ``/v1/embeddings`` over HTTP. A zero vector, an
-  error or a timeout is ``None``.
+  asks the Console Router's ``/v1/embeddings`` on ``tier-embed`` (CP-EMB,
+  ``customer_console.md`` §6A.16). A zero vector, a refusal, an error or a
+  timeout is ``None``, and it never raises.
 * ``index`` — ``reindex_page`` runs in the page write's transaction and
   leaves new rows with a NULL vector. ``embed_pending`` runs after the
   commit, as a background task, in three steps: select, compute with no
