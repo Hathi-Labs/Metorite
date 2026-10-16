@@ -13592,7 +13592,7 @@ browser proves the pane shows cards, and the PR closes two gaps. ✅ **PR-G8 (EM
 NARROWED** (#1020, 2026-10-14, migration 264). 🔨 **PR-G4 (EM-G11c2) is built NARROWED, not
 merged** (2026-10-15, branch `gmail-bg-writes`, §12.3.13.7).
 
-🔨 **PR-G5 (EM-G11d) is built NARROWED, not merged** (2026-10-15, branch `gmail-umcc`).
+✅ **PR-G5 (EM-G11d) is merged NARROWED** (#1060, 2026-10-16).
 §12.3.13.8 records what it covers. The other PRs are not built.
 
 **Why.** The owner wants Google to verify the Gmail app, so that every member can connect Gmail.
@@ -13869,7 +13869,7 @@ connect is the precedent (`src/app/whatsapp/connect/page.tsx:340`), and
 | PR-G3 | **EM-G11c1** — a card for each chat write. ✅ Merged #1019 (2026-10-14) | 3 | 🟢 AGENT-SAFE · security review | M, about 550 | §12.3.13.6 |
 | PR-G3b | **EM-G11c1b** — cards in the email chat pane (Q-GM-14, owner answer 2026-10-14). ✅ Merged #1030 (2026-10-15). A browser spec proves the pane shows cards. In the pane and the Chat app, a saved draft card starts saved. On the D99 path a delegated `draft_reply` shows no draft card (§12.3.13.6b). The interim text names no chat | 3 | 🟢 AGENT-SAFE · one review round · visual review | S, about 150 | §12.3.13.6b |
 | PR-G4 | **EM-G11c2** — no background write without a member choice. 🔨 Built NARROWED, not merged (2026-10-15, branch `gmail-bg-writes`) | 3 | 🟢 AGENT-SAFE · R8 · live for Outlook | M, about 500 | §12.3.13.7 |
-| PR-G5 | **EM-G11d** — UMCC: one frame, fewer tools, an eval set. 🔨 Built NARROWED 2026-10-15, branch `gmail-umcc`, not merged | 4 | 🟢 AGENT-SAFE · security review | L, about 600 | §12.3.13.8 |
+| PR-G5 | **EM-G11d** — UMCC: one frame, fewer tools, an eval set. ✅ Merged NARROWED #1060 (2026-10-16) | 4 | 🟢 AGENT-SAFE · security review | L, about 600 | §12.3.13.8 |
 | PR-G6 | **EM-G11e** — UMCC: the detector, dark | 4 | 🟢 AGENT-SAFE build. 🔴 OWNER-GATE for the vendor and the API (Q-GM-9). 🔴 `enforcement-flip` for `EMAIL_INJECTION_SCAN` | M, about 450 | §12.3.13.8 |
 | PR-G7 | **EM-G11f1** — one mailbox teardown, with the revoke and the filters. ✅ Merged NARROWED #1006 (2026-10-14) | 6 | 🟢 AGENT-SAFE · security review · R8 | M, about 550 | §12.3.13.9 |
 | PR-G8 | **EM-G11f2** — a durable purge, and a fence on each child. ✅ Merged NARROWED #1020 (2026-10-14), migration 264 | 6 | 🟢 AGENT-SAFE · R8 · one migration | M, about 500 | §12.3.13.9 |
@@ -14717,7 +14717,7 @@ uv run pytest tests/unit/test_injection_scan.py -v -rs
 
 The eval module name follows the pattern of `evals/email_insights/`. Read it again at dispatch.
 
-**EM-G11d as built (2026-10-15).** 🔨 Built NARROWED, not merged, on branch `gmail-umcc`. The
+**EM-G11d as built (2026-10-15).** ✅ Merged NARROWED as #1060 (2026-10-16). The
 audit of 2026-10-14 returned GO-NARROWED. Its narrowing replaces scope items 1, 4 and 5 above.
 
 - **One helper.** `acb_skills/untrusted.py` holds `UntrustedFrame` and `frame_untrusted`. One
