@@ -2575,6 +2575,13 @@ entry on an unavailable module is still read when its parent row is here.
 That read goes to the activity module, not to the refused module, and the
 activity then links and leaves.
 
+Fix round 2 (review of fix round 1) closes one more loop. The kept list can
+expire in the run that the 7 days of the last overflow read lapse. An empty
+list names no module, so the guard let the full read through. Now
+`recover_overflow_modules` keeps the modules of the drops that overflowed,
+beside `recover_overflow`. The guard checks those modules too. A held module
+now holds the guard, as an unavailable module does.
+
 **CRM-Q23c · The timeline on a module record.** Done when:
 
 1. `ModuleRecordSheet.tsx` shows the timeline of CRM-Q23a, read only.
