@@ -419,6 +419,30 @@ async def _run_authority(thread_id: str, actor: str) -> dict[str, Any] | None:
         return None
 
 
+async def _run_holds_mail(
+    agent_name: str, thread_id: str, member: str, organization_id: str | None,
+) -> bool:
+    """``acb_skills.egress.run_holds_mail`` for a run that this module folds.
+
+    The tenant is the run's own, which the caller resolved on the server, and
+    it is bound only for the read. A fault reads as mail, so it fails closed.
+    """
+    from acb_common.db import bind_tenant, current_tenant, release_tenant
+
+    token = None
+    try:
+        from acb_skills.egress import run_holds_mail
+
+        if organization_id and not current_tenant():
+            token = bind_tenant(str(organization_id))
+        return await run_holds_mail(
+            agent_name, {"session_id": thread_id, "member": member})
+    except Exception:  # noqa: BLE001 — fail closed: the run holds mail
+        return True
+    finally:
+        release_tenant(token)
+
+
 async def persist_final_assistant_message(
     thread_id: str,
     message_id: str,
@@ -429,8 +453,16 @@ async def persist_final_assistant_message(
     model: str | None = None,
     organization_id: str | None,
     expect_run_id: str | None = None,
+    holds_mail: bool | None = None,
 ) -> dict[str, Any] | None:
     """Replay the run's event log and upsert the authoritative message row.
+
+    ``holds_mail`` is the answer of ``acb_skills.egress.run_holds_mail`` for
+    this run (WS-17 EM-G11f3, ``email_app_master_plan.md`` section
+    12.3.13.9.1, item 6). True drops the body of the ``agent_run`` trace. A
+    run-end route passes the answer that it took once. ``None`` asks the
+    predicate here, under the run's tenant (:func:`_run_holds_mail`), and the
+    restart sweep relies on that. The message row itself (W9) does not change.
 
     ``expect_run_id`` makes the fold refuse a stream that belongs to ANOTHER
     run. The restart sweep folds a dead run after the fact (gateway.
@@ -504,6 +536,9 @@ async def persist_final_assistant_message(
         try:
             from gateway.run_trace import record_run_trace  # noqa: PLC0415
             _last_ms = (folded or {}).get("timestamp") or None
+            if holds_mail is None:
+                holds_mail = await _run_holds_mail(
+                    agent_name, thread_id, user_id, organization_id)
             await record_run_trace(
                 run_id=run_id or message_id,  # message_id is run-unique per turn
                 thread_id=thread_id,
@@ -514,6 +549,7 @@ async def persist_final_assistant_message(
                 folded=folded,
                 ended_ms=_last_ms,
                 organization_id=organization_id,
+                holds_mail=holds_mail,
             )
         except Exception:  # noqa: BLE001
             pass

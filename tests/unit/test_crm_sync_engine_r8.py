@@ -82,6 +82,12 @@ class ZohoTenant:
         self.low_credits: set[str] = set()  # modules whose reply reports few credits
         self.on_read: dict[str, Any] = {}
         self.requests: list[httpx.Request] = []
+        #: CRM-Q23b: each read by ids, as ``(module, ids)``, and the ids that
+        #: such a read leaves out.
+        self.ids_reads: list[tuple[str, list[str]]] = []
+        self.ids_missing: set[str] = set()
+        #: A fault on the reads by ids only: ``(status, body)``.
+        self.ids_fault: tuple[int, dict[str, Any]] | None = None
 
     def add(self, module: str, ident: str, minute: int, **fields: Any) -> None:
         self.data.setdefault(module, [])
@@ -123,6 +129,19 @@ class ZohoTenant:
             return self._page(request, self.tombstones.get(deleted.group(1), []),
                               deleted=True, module=deleted.group(1))
         records = re.match(r"/crm/v2/(\w+)$", path)
+        if records and "ids" in request.url.params:
+            # CRM-Q23b: a read by ids. The shape a live probe measured on
+            # 2026-10-16. It answers only the ids it holds, and 204 for none.
+            module = records.group(1)
+            wanted = request.url.params["ids"].split(",")
+            self.ids_reads.append((module, wanted))
+            if self.ids_fault is not None:
+                return httpx.Response(self.ids_fault[0], json=self.ids_fault[1])
+            found = [r for r in self.data.get(module, [])
+                     if r["id"] in wanted and r["id"] not in self.ids_missing]
+            if not found:
+                return httpx.Response(204)
+            return httpx.Response(200, json={"data": found})
         if records:
             module = records.group(1)
             self.reads[module] = self.reads.get(module, 0) + 1

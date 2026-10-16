@@ -60,10 +60,13 @@ PROJECTS_KEEPS = frozenset({
     "read_attachment", "remember", "save_memory", "recall_timeline",
     "web_search", "fetch_page", "share_artifact", "save_note",
 })
+#: WS-17 EM-G11f3 (``email_app_master_plan.md`` 12.3.13.9.1, item 5): the email
+#: assistant holds no ``STORE_WRITES`` tool, so ``save_memory`` and
+#: ``save_note`` are not here. ``test_mail_copies_in_chat_stores.py`` fences it.
 EMAIL_KEEPS = frozenset({
     "ask_questions", "call_agent", "emit_generative_ui", "write_artifact",
-    "remember", "save_memory", "recall_timeline",
-    "share_artifact", "save_note", "recall_notes",
+    "remember", "recall_timeline",
+    "share_artifact", "recall_notes",
 })
 
 
@@ -232,6 +235,10 @@ def test_each_agent_opts_out_of_what_it_never_calls(
     names = _names(_built(agent_dir, agent_name, monkeypatch))
     assert not names & opted_out, sorted(names & opted_out)
     missing = keeps - names
+    if agent_name == "email-assistant":
+        from acb_skills.egress import STORE_WRITES
+
+        assert not names & STORE_WRITES, sorted(names & STORE_WRITES)
     # web_search and fetch_page reach outside: a no_egress run drops them, a
     # plain run of the Projects agent keeps them. The email agent never holds
     # them (EM-G11d).

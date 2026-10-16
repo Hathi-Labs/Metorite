@@ -4529,9 +4529,11 @@ async def test_rule_match(
 
 # ── Tool registry ────────────────────────────────────────────────────────────
 
-# Tools attached to the MAF agent. call_agent / remember / save_memory /
-# web_search are injected by the executor, so the agent can hand off to the
-# sales / task-manager agents and read memory without listing them here.
+# Tools attached to the MAF agent. call_agent and remember are injected by the
+# executor, so the agent can hand off to the sales / task-manager agents and
+# read memory without listing them here. The executor withholds save_memory and
+# each other store write from this agent (WS-17 EM-G11f3), so no mail text
+# reaches a memory store.
 _TOOLS = [
     # Read / triage
     list_accounts,

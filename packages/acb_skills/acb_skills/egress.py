@@ -51,6 +51,7 @@ _log = get_logger("acb_skills.egress")
 __all__ = [
     "DELEGATION_TOOLS",
     "EGRESS_WITHHELD_ANSWER",
+    "MAIL_STORE_WRITE_REFUSED",
     "MARK_CACHE_MAX",
     "MARK_CLEAR",
     "MARK_MARKED",
@@ -69,8 +70,10 @@ __all__ = [
     "is_delegation_tool",
     "is_egress_tool",
     "mark_untrusted_answer",
+    "mark_untrusted_session",
     "no_egress_for_this_run",
     "read_untrusted_answer",
+    "run_holds_mail",
     "session_is_known_marked",
     "session_is_marked",
     "session_mark_state",
@@ -245,18 +248,22 @@ def get_tenant_redis() -> Any:
     return _client()
 
 
-async def mark_untrusted_answer() -> bool:
+async def mark_untrusted_answer(ctx: Mapping[str, Any] | None = None) -> bool:
     """Mark the chat session of the run on this frame: it read the answer of
     an agent of :data:`UNTRUSTED_INPUT_AGENTS`. Returns False when the frame
     names no session or the write failed. The process set is marked either
-    way, so this process holds the mark at once."""
-    session = _session_of()
+    way, so this process holds the mark at once.
+
+    *ctx* is the bound artifact context of the CALLING run, for a caller that
+    has already opened the context of the run it starts. Omit it to read the
+    context of this frame."""
+    session = _session_of(ctx)
     if session is None:
         _log.warning("egress.untrusted_answer_unmarked")
         return False
     with _MARKED_LOCK:
         _MARKED_SESSIONS.add(session)
-    if _minted_session(_bound_context()):
+    if _minted_session(ctx if ctx is not None else _bound_context()):
         _log.info("egress.untrusted_answer_marked", store="process")
         return True
     org, thread = session
@@ -271,6 +278,29 @@ async def mark_untrusted_answer() -> bool:
         return False
     _log.info("egress.untrusted_answer_marked")
     return True
+
+
+async def mark_untrusted_session(
+    agent_name: str | None, ctx: Mapping[str, Any] | None = None,
+) -> bool:
+    """THE one place that marks a session for a run of an agent that reads
+    stranger text (WS-17 EM-G11f3, fix round 1).
+
+    Each path that starts a run of an agent of :data:`UNTRUSTED_INPUT_AGENTS`
+    calls it with the context of the CALLING run, BEFORE the run does any
+    work: the executor's streaming sub-run (``_run_sub_agent_streaming``,
+    which ``call_agent``, ``delegate_to_agent`` and each specialist tool of
+    the orchestrator use) and its batch run (``_run_agent_inner``). So a
+    cancel or an error in the sub-run cannot leave the session unmarked.
+    ``agent_tools._answer_of`` calls it too, after the answer, as a second
+    write. A run with no calling chat session (a top-level, workflow or
+    scheduled run) has nothing to mark, and this returns False. Another
+    agent returns False at once."""
+    if str(agent_name or "") not in UNTRUSTED_INPUT_AGENTS:
+        return False
+    if _session_of(ctx) is None:
+        return False
+    return await mark_untrusted_answer(ctx)
 
 
 #: The three answers of :func:`session_mark_state`.
@@ -289,14 +319,20 @@ def is_delegation_tool(tool: Any) -> bool:
     return (tool if isinstance(tool, str) else tool_name(tool)) in DELEGATION_TOOLS
 
 
-async def session_mark_state(ctx: Mapping[str, Any] | None = None) -> str:
+async def session_mark_state(
+    ctx: Mapping[str, Any] | None = None, *, fail_closed: bool | None = None,
+) -> str:
     """The mark of the chat session of the run on this frame.
 
     :data:`MARK_MARKED` when this process or Redis holds the mark,
     :data:`MARK_CLEAR` when Redis answers that it does not, and
     :data:`MARK_UNKNOWN` when Redis does not answer in a run that can show a
     card. A run that cannot show a card reads its process cache on a fault.
-    A frame with no tenant or no session has nothing to key, and is clear."""
+    A frame with no tenant or no session has nothing to key, and is clear.
+
+    *fail_closed* overrides that choice for a fault: True reads a fault as
+    unknown for every run. :func:`run_holds_mail` passes True, because a
+    store write and a trace body need no card to fail closed."""
     session = _session_of(ctx)
     if session is None:
         return MARK_CLEAR
@@ -319,7 +355,7 @@ async def session_mark_state(ctx: Mapping[str, Any] | None = None) -> str:
                 return MARK_CLEAR
             await client.expire(mark, MARK_TTL_S)
     except Exception as exc:
-        unknown = _card_can_show(ctx)
+        unknown = _card_can_show(ctx) if fail_closed is None else bool(fail_closed)
         _log.warning("egress.untrusted_answer_read_failed",
                      error=type(exc).__name__, fail_closed=unknown)
         # Unknown only where a card can show, so the member can still
@@ -343,6 +379,40 @@ async def session_is_known_marked(ctx: Mapping[str, Any] | None = None) -> bool:
     blip never holds a send. Each egress tool of that run still asks its
     card through :func:`session_is_marked`."""
     return await session_mark_state(ctx) == MARK_MARKED
+
+
+async def run_holds_mail(
+    agent_name: str | None, ctx: Mapping[str, Any] | None = None,
+) -> bool:
+    """True when the run can hold mail text (WS-17 EM-G11f3, §12.3.13.9.1).
+
+    The one predicate of the chat memory stores. It is true when *agent_name*
+    is in :data:`UNTRUSTED_INPUT_AGENTS`, or when the session's mark is not
+    :data:`MARK_CLEAR`. So :data:`MARK_UNKNOWN` (a Redis fault in a run that
+    can show a card) counts as true, and the predicate fails closed.
+
+    *ctx* is the run context that the server bound: ``session_id`` and
+    ``member``. Omit it to read the artifact context of this frame. The
+    tenant is the bound tenant. No request field reaches this function.
+    A Redis fault reads as unknown for EVERY run, with or without a member
+    (fix round 1, F3: the restart sweep can fold a run with no actor).
+
+    A run for which this is true writes no Mem0 memory and no Graphiti
+    episode, keeps no ``agent_run`` trace body, and holds no tool of
+    :data:`STORE_WRITES`. Fence: ``tests/unit/test_mail_copies_in_chat_stores.py``.
+    """
+    if str(agent_name or "") in UNTRUSTED_INPUT_AGENTS:
+        return True
+    return await session_mark_state(ctx, fail_closed=True) != MARK_CLEAR
+
+
+#: The answer of a :data:`STORE_WRITES` tool in a run that holds mail
+#: (:func:`run_holds_mail`). The tool gate gives it at once and asks no card,
+#: because a hidden store is not a copy that the member can see or delete.
+MAIL_STORE_WRITE_REFUSED = (
+    "{tool} did not run. This chat holds text from email, and Metorite keeps "
+    "no copy of email in a memory store or a note. Answer with what you have."
+)
 
 
 def read_untrusted_answer(ctx: Mapping[str, Any] | None = None) -> bool:

@@ -5,9 +5,9 @@
 // the shared `AgentChat`, which runs the email assistant on
 // `/agent/run/stream` (`shows_cards=True`) and draws each
 // `confirmation_requested` event in `ConfirmationQueue`. The route
-// `/email/ai/chat` runs with `shows_cards=False` and forwards no card event,
-// so a pane that called it would refuse every card. These two scans keep the
-// pane on the one card path. The runner has no DOM, so both read the source.
+// `/email/ai/chat` ran with `shows_cards=False` and forwarded no card event.
+// WS-17 EM-G11f3 deleted it (§12.3.13.9.1), and these two scans fail when a
+// client names it again. The runner has no DOM, so both read the source.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 

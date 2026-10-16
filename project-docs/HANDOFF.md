@@ -5330,28 +5330,6 @@ line — never reclaim a number by deleting the other entry.
   as-built block · PR-G8 fix round 1
 - **Added:** 2026-10-14 · PR-G8 (`gmail-purge-durable`), fix round 2
 
-### H-308 · Stop the copies of mail in the chat memory stores (EM-G11f3) · [AGENT]
-- **Check:** run the two commands. The entry stays while either one fails.
-  1. `git grep -n "add_episode" -- apps/services/gateway/gateway/routes/email`
-     must give no hit. A hit means that the email chat route still writes to Graphiti.
-  2. `git grep -c "run_holds_mail" -- apps/services/gateway/gateway/routes/agent.py apps/services/gateway/gateway/main.py`
-     must give a count for each of the two files. A file with no count still writes
-     a turn that holds mail to Mem0 or to Graphiti, under the member key.
-- **Why.** Nine writers copy mail text into stores under the member, the
-  agent or the organization (§12.3.13.9.1, W1 to W9). The writers are in
-  `routes/agent.py`, in `main.py`, in the email chat route, in the memory
-  tools and in the run trace. No mailbox purge reaches these stores. So a
-  disconnect leaves mail text there. Google Limited Use and the deletion
-  promise of §12.3.13.9 both need that text to go. Mem0 and Graphiti are off
-  on production (2026-10-16), so most of these writers are latent today.
-- **Do this:** build PR-G8b as §12.3.13.9.1 specifies. The section chose
-  path 2: Metorite stores no mail content there. Run the spec-auditor first.
-  The PR merges before WS-7 turns on Mem0 or Graphiti.
-- **Authority:** `specs/email_app_master_plan.md` §12.3.13.9.1 · PR-G8 review
-- **Added:** 2026-10-14 · PR-G8 (`gmail-purge-durable`), fix round 2
-- **Widened:** 2026-10-16 · the Check now reads `routes/agent.py` and
-  `main.py` too, after a spec-auditor finding
-
 ### H-309 · Create the WS-59 tasks in the Metorite project "Proactive Intelligence" · [AGENT]
 - **Check:** in a session with the Metorite MCP, run `search_tasks` with the
   query `RE-1`. A hit in the project "Proactive Intelligence" means the tasks
@@ -5776,6 +5754,31 @@ line — never reclaim a number by deleting the other entry.
      `test_feed_mail_kinds_r8.py::TestTheTenantUnderTheOwnerRole`.
 - **Authority:** R5 · `specs/my_day_feed.md` §16 MD-3d (what the build found)
 - **Added:** 2026-10-15 · MD-3d build · rewritten 2026-10-16, MD-3d review
+
+### H-336 · W10: the chat's unmount save can copy mail into Mem0, so WS-7 keeps Mem0 off · [AGENT]
+- **Check:** run the two commands. Either one closes this entry.
+  1. `git grep -c "run_holds_mail" -- apps/services/gateway/gateway/routes/memory.py`
+     gives a count: the save route asks the mail predicate.
+  2. `git grep -n "saveConversationOnUnmount" -- workbench/control_plane/src ":!*.test.ts" ":!*.test.tsx"`
+     gives no hit: the unmount save is gone.
+  While both fail, this is open. ⚠️ While it is open, WS-7 must not turn
+  Mem0 on for any organization. The WS-7 row of `work_plan.md` names it.
+- **Why.** `AgentChat` posts the turns of the default agent to
+  `/api/chat/memories` when its panel closes (`lib/chatMemorySave.ts`). The
+  BFF route calls the gateway's `POST /memory/{scope}/add`, and that route
+  calls the Mem0 client with the text of its caller (`routes/memory.py`).
+  An orchestrator turn that delegated to the email assistant can quote a
+  mail. No mailbox purge reaches the member key. PR-G8b (EM-G11f3) closed
+  W1 to W8 and left this writer, because the route has no session that the
+  server bound, so it cannot read the mail mark. It is latent while Mem0 is
+  off on production.
+- **Do this:** give the save a session that the server binds, and refuse the
+  write when `acb_skills.egress.run_holds_mail` holds for it. Or remove the
+  unmount save, because the gateway already extracts each turn at the run
+  end. Never take the session from the request body. Add a test to
+  `tests/unit/test_mail_copies_in_chat_stores.py`.
+- **Authority:** `specs/email_app_master_plan.md` §12.3.13.9.1 (W10) · PR-G8b review, fix round 1
+- **Added:** 2026-10-16 · PR-G8b (`gmail-chat-copies`), fix round 1
 
 # DONE — deleted, not archived
 

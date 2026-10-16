@@ -32,6 +32,7 @@ import httpx
 import structlog
 
 from gateway.crm_sources.base import (
+    IDS_PER_CALL,
     BudgetExhausted,
     NeedsReconnect,
     OAuthClientConfig,
@@ -44,6 +45,7 @@ from gateway.crm_sources.base import (
     SourceRecord,
     SourceScopeError,
     UntrustedHost,
+    is_plain_id,
 )
 from gateway.crm_sources.zoho import auth, links
 
@@ -958,6 +960,44 @@ class ZohoSource:
                 role = role.get("name")
             out.append((contact, str(role).strip() or None if role else None))
         return out
+
+    # ── 12. Records by id (CRM-Q23b) ────────────────────────────────────────
+
+    async def list_by_ids(
+        self, entity: str, ext_ids: Sequence[str],
+    ) -> tuple[SourceRecord, ...]:
+        """The records of these ids: ``GET /crm/v2/{module}?ids=a,b,c``.
+
+        One credit for each call, through :meth:`_get`. A probe on a live
+        tenant on 2026-10-16 returned exactly the three records it asked for.
+        Zoho's documents cap one call at :data:`IDS_PER_CALL` ids, and this
+        method refuses more. An id Zoho does not return is absent from the
+        answer, and so is any record that the call did not ask for. A 204 is
+        an empty answer. The refusals are the ones of :meth:`list_changed`.
+        """
+        ids = [str(i) for i in ext_ids]
+        if not ids:
+            return ()
+        if len(ids) > IDS_PER_CALL:
+            raise ValueError(f"A read by ids takes at most {IDS_PER_CALL} ids")
+        if not all(is_plain_id(i) for i in ids):
+            raise SourceError("An id is not a plain id")
+        module = _module(entity)
+        path = f"/crm/{RECORDS_API_VERSION}/{module}"
+        r = await self._get(path, params={"ids": ",".join(ids)})
+        if r.status_code in (204, 304):
+            return ()
+        if _is_scope_refusal(r):
+            raise ZohoScopeError(
+                _read_scope(entity), str(_error_body(r).get("message") or "")[:200],
+            )
+        code = str(_error_body(r).get("code") or "")
+        if r.status_code != 401 and not r.is_success and code in _MODULE_REFUSAL_CODES:
+            raise ZohoModuleUnavailable(module, code)
+        self._raise_for_status(r, path)
+        wanted = set(ids)
+        records = _records(entity, _error_body(r).get("data"), _CHANGED_TIME_KEYS)
+        return tuple(rec for rec in records if rec.ext_id in wanted)
 
     # ── 3b. Discovery (CRM-Q1) ──────────────────────────────────────────────
 
