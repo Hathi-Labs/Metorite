@@ -8,6 +8,7 @@ ask of the same day. **Verified against code on 2026-10-10**, at `origin/main`
 |---|---|
 | S1 — one activity feed and the nav badges | **BUILT** 2026-10-10, branch `chat-activity-badges` |
 | S2 — a durable "needs input" | **BUILT** 2026-10-10, branch `ws51-s2-needs-input`, dark behind `CHAT_DURABLE_ASKS` |
+| S2b — a late Approve runs the same call, once | **BUILT** 2026-10-16, branch `late-confirm`, dark behind `CHAT_LATE_APPROVAL` |
 | S3 — the top-right activity control | **BUILT** 2026-10-10, branch `ws51-s3-activity`, no flag |
 | S4 — the server saves the prompt at run start | **BUILT** 2026-10-10, branch `ws51-s4-prompt-save` |
 | S5 — unread replies, the toast, the tab title and the phone pill | **BUILT** 2026-10-10, branch `ws51-s5-attention`, no flag |
@@ -395,6 +396,61 @@ answer to a parked card gets the old 409.
 `tests/unit/test_card_answer_display.py`, the R8 case in
 `tests/unit/test_chat_prompt_saved_at_start.py`, and
 `e2e/chat-card-restart.spec.ts`.
+
+### S2b — a late Approve runs the same call, once (BUILT 2026-10-16)
+
+**The defect.** A confirmation card parks after ten minutes (S2). The member
+approves it later, and the late answer starts a new run. That run makes the
+same call, and the gate raises a second card. The member approves twice, or
+asks the question again. The owner reported it on 2026-10-16.
+
+**The rule.** A late Approve is a grant for that one call. The grant is
+one-use, and it lasts `CHAT_LATE_APPROVAL_MINUTES` (60). The new run makes the
+same call, takes the grant, and runs with no new card. The agent needs no wait
+loop, because the card row and the new run's own message carry the context.
+
+1. **The fingerprint.** `pending_ask.grant_digest` hashes the card's title,
+   detail and body, the id, label and hint of each row, and `grant_extra`.
+   The MCP gate sets `grant_extra` to a digest of the RAW arguments. So a call
+   that differs only in a value the card hides is a different call. The card
+   event carries the fingerprint as `grant`, and the row keeps it in its
+   payload. A call with no `grant_extra` gets no grant, because the card text
+   is clipped. Today only the MCP gate passes one. Other callers ask again.
+2. **Taking the grant.** `request_confirmation` calls
+   `pending_ask.take_late_approval` before it asks a card. The org and the
+   member come from the run, server side. One SQL statement
+   (`consume_grant`) moves the row from `answered` to `closed`. The row must
+   carry `payload.late`, which only the late route writes. So an Approve that
+   a live run took is never a grant. The row must be a `confirmation` of the
+   same thread and of the member who was asked.
+   Its answer must start with `APPROVE`, and it must fall inside the window. Another
+   member, another thread, another call, a Reject and a late grant each ask
+   a new card.
+3. **The context.** `card_answer_from_ask` adds the card's detail and body to
+   the quoted question of the late message. It also adds one status line
+   that the platform writes: the same call runs with no new card. All of it
+   sits inside the fence, so the member cannot forge it through the card.
+4. **Any fault asks the card.** A database fault, a run with no member and
+   a flag that is OFF all give the old behaviour.
+5. **No change to the chat.** A parked card already stays answerable for
+   `CHAT_ASK_TTL_HOURS` (168), so the card itself needed no change.
+
+**Flags.** `CHAT_LATE_APPROVAL`, default OFF. It needs `CHAT_DURABLE_ASKS`.
+There is no migration, because `closed` is the used state of the existing row.
+
+**Fences.** `tests/unit/test_late_approval.py` holds the flow.
+`tests/unit/test_pending_ask_store.py` holds the SQL under R8. It has a race
+test of four runs that take one grant.
+
+**Four defects the tests now hold.**
+
+- The race test found that the outer `UPDATE` had no `state = 'answered'`.
+  Two runs both took the one grant.
+- The review found that an in-time Approve also leaves a row `answered`. It
+  now needs `payload.late`.
+- The review found that row labels were not in the digest. They are now.
+- The review found that a caller with no digest of its own got a grant from
+  clipped card text. It now gets none.
 
 ### S3 — the top-right activity control
 

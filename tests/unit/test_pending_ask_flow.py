@@ -87,14 +87,31 @@ class _AskDb:
         }
         return True
 
-    def move_ask(self, org, rid, *, to, from_states, answer=None):
+    def move_ask(self, org, rid, *, to, from_states, answer=None, late=False):
         row = self.rows.get((org, rid))
         if row is None or row["state"] not in from_states:
             return None
         row["state"] = to
         if to == "answered":
             row["answer"] = answer or ""
+            if late:
+                row["payload"] = {**(row.get("payload") or {}), "late": True}
         return dict(row)
+
+    def consume_grant(self, org, tid, actor, grant):
+        """The fake of ``pending_ask.consume_grant``: one use, same conditions."""
+        import re
+
+        for (o, _rid), row in self.rows.items():
+            if (o == org and row["thread_id"] == tid
+                    and row["actor_email"] == actor.strip().lower()
+                    and row["kind"] == "confirmation" and row["state"] == "answered"
+                    and (row.get("payload") or {}).get("grant") == grant
+                    and (row.get("payload") or {}).get("late") is True
+                    and re.match(r"(?i)^approve(\s|$)", row["answer"] or "")):
+                row["state"] = "closed"
+                return row["answer"]
+        return None
 
     def read_ask(self, org, rid):
         row = self.rows.get((org, rid))
@@ -116,7 +133,7 @@ class _AskDb:
 @pytest.fixture
 def ask_db(monkeypatch):
     db = _AskDb()
-    for name in ("insert_ask", "move_ask", "read_ask", "waiting_asks"):
+    for name in ("insert_ask", "move_ask", "read_ask", "waiting_asks", "consume_grant"):
         monkeypatch.setattr(pending_ask, name, getattr(db, name))
     pending_ask._reset_for_tests()
     executor._pending_user_input.clear()

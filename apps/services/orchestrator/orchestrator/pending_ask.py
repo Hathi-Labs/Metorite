@@ -93,6 +93,22 @@ def park_after_seconds() -> float:
         return 600.0
 
 
+def late_approval_enabled() -> bool:
+    """The one reader of ``CHAT_LATE_APPROVAL``. It needs the durable rows."""
+    try:
+        return bool(durable_asks_enabled()
+                    and getattr(get_settings(), "chat_late_approval", False))
+    except Exception:
+        return False
+
+
+def _grant_minutes() -> int:
+    try:
+        return max(1, int(getattr(get_settings(), "chat_late_approval_minutes", 60)))
+    except Exception:
+        return 60
+
+
 def _ttl_hours() -> int:
     try:
         return max(1, int(getattr(get_settings(), "chat_ask_ttl_hours", 168)))
@@ -214,8 +230,14 @@ def move_ask(
     to: str,
     from_states: tuple[str, ...],
     answer: str | None = None,
+    late: bool = False,
 ) -> dict[str, Any] | None:
     """Move one row to *to*, only from *from_states*. Returns the row, or None.
+
+    *late* (with ``to="answered"``) marks an answer that no run took: the late
+    answer of ``POST /agent/respond-input``. The mark joins the SAME update, as
+    ``payload.late``. Only a marked row can be a grant (:func:`consume_grant`),
+    so an Approve that a live run took can never run its call a second time.
 
     One statement, so two answers that race move the row once. The second
     gets ``None`` and resends nothing. An expired row never moves.
@@ -225,7 +247,8 @@ def move_ask(
 
     stamp = {
         "parked": "parked_at = now()",
-        "answered": "answered_at = now(), answer = :answer",
+        "answered": "answered_at = now(), answer = :answer"
+        + (", payload = payload || '{\"late\": true}'::jsonb" if late else ""),
         "closed": "answered_at = COALESCE(answered_at, now())",
     }.get(to)
     if stamp is None:
@@ -245,6 +268,91 @@ def move_ask(
             },
         ).first()
         return _row(r) if r is not None else None
+
+
+def grant_digest(title: str, detail: str, context: str,
+                 row_ids: tuple[str, ...] = (), extra: str = "") -> str:
+    """The fingerprint of one confirmation call: what the card says, plus *extra*.
+
+    Two calls with the same card text and the same *extra* are the same call.
+    The MCP gate passes a digest of the raw arguments as *extra*, because the
+    card hides a sensitive value and the digest still sees it.
+    """
+    import hashlib
+
+    h = hashlib.sha256()
+    for part in (title, detail, context, "\x1f".join(row_ids), extra):
+        h.update(part.encode("utf-8", "replace"))
+        h.update(b"\x00")
+    return h.hexdigest()
+
+
+def consume_grant(
+    organization_id: str, thread_id: str, actor_email: str, grant: str,
+) -> str | None:
+    """Take the late approval of one call, once. Returns its answer, or None.
+
+    A row is a grant when ALL of these hold: it is a confirmation, a member
+    answered it ``APPROVE`` after its run ended (state ``answered`` and
+    ``payload.late``, which only the late route writes), the
+    member who answered is the member who asked, it belongs to this thread
+    and carries this fingerprint, and it was answered inside the grant window.
+    One statement moves it to ``closed``, so two runs that race take it once.
+    ⚠️ The OUTER ``state = 'answered'`` is load-bearing: when a second run waits
+    on the first one's row lock, Postgres re-checks the outer conditions on the
+    new row version, and never re-runs the subquery. Without it, both runs
+    took the one grant (measured on the R8 race test).
+    """
+    from acb_graph import tenant_session  # type: ignore[import-untyped, unused-ignore]
+    from sqlalchemy import text
+
+    if not (organization_id and thread_id and actor_email and grant):
+        return None
+    with tenant_session(organization_id) as s:
+        r = s.execute(
+            text(
+                "UPDATE chat_pending_ask SET state = 'closed' "
+                "WHERE state = 'answered' "
+                "  AND (organization_id, request_id) = ("
+                "  SELECT organization_id, request_id FROM chat_pending_ask "
+                "  WHERE organization_id = CAST(:org AS uuid) "
+                "    AND thread_id = :tid AND actor_email = :actor "
+                "    AND kind = 'confirmation' AND state = 'answered' "
+                "    AND payload->>'grant' = :grant "
+                "    AND payload->>'late' = 'true' "
+                r"    AND answer ~* '^approve(\s|$)' "
+                "    AND answered_at > now() - make_interval(mins => :mins) "
+                "    AND expires_at > now() "
+                "  ORDER BY answered_at DESC LIMIT 1 FOR UPDATE SKIP LOCKED) "
+                "RETURNING answer"
+            ),
+            {"org": organization_id, "tid": thread_id,
+             "actor": actor_email.strip().lower(), "grant": grant,
+             "mins": _grant_minutes()},
+        ).first()
+        return str(r[0]) if r is not None else None
+
+
+async def take_late_approval(thread_id: str | None, grant: str) -> str | None:
+    """The answer of a late approval for *grant* in this run, or None.
+
+    The org and the member are the run's own, server side (the bound tenant
+    and the run's recorded actor), never a request field. Any fault, and a
+    run with no member, answer None: the card is asked as before.
+    """
+    if not thread_id or not grant or not late_approval_enabled():
+        return None
+    try:
+        org, _run_id, _agent, actor = await _run_facts(thread_id)
+        if not org or not actor:
+            return None
+        answer = await asyncio.to_thread(consume_grant, org, thread_id, actor, grant)
+    except Exception:
+        _log.warning("pending_ask.grant_failed", thread_id=thread_id[:12], exc_info=True)
+        return None
+    if answer is not None:
+        _log.info("pending_ask.grant_taken", thread_id=thread_id[:12])
+    return answer
 
 
 def close_thread_asks(session: Any, thread_id: str) -> int:

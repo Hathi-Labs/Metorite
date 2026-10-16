@@ -1024,6 +1024,14 @@ class Settings(BaseSettings):
     chat_ask_park_seconds: int = 600
     # How long a parked question stays answerable, in hours.
     chat_ask_ttl_hours: int = 168
+    # A late Approve of a parked confirmation is a one-use grant for that exact
+    # call (`CHAT_LATE_APPROVAL`, default OFF, needs `CHAT_DURABLE_ASKS`). The
+    # new run that the late answer starts makes the same call, and the card
+    # does not come back. The grant lasts this many minutes. The one reader is
+    # `orchestrator.pending_ask.late_approval_enabled`.
+    # Fence: tests/unit/test_late_approval.py.
+    chat_late_approval: bool = False
+    chat_late_approval_minutes: int = 60
 
     # ── The run cap (WS-51 D-3, owner decision 2026-10-10) ──────────────────
     #

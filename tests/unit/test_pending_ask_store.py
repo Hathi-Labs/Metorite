@@ -370,3 +370,123 @@ def test_deleting_the_chat_closes_its_questions(as_app, flag_on):
     assert pending_ask.read_ask(w.org_a, rid) is None
     waiting = pending_ask.waiting_asks(w.org_a, actor_email=_ALICE)
     assert tid not in {r["thread_id"] for r in waiting}
+
+
+# ---------------------------------------------------------------------------
+# 8. A late approval is taken once (CHAT_LATE_APPROVAL)
+# ---------------------------------------------------------------------------
+
+def _grant() -> str:
+    """A fingerprint no other test shares, so a row left by one cannot match."""
+    return uuid.uuid4().hex * 2
+
+
+def _approved(w, org: str, tid: str, grant: str, *, actor: str = _ALICE,
+              answer: str = "APPROVE", kind: str = "confirmation",
+              late: bool = True) -> str:
+    """A confirmation that parked and got its answer after the run ended."""
+    rid = uuid.uuid4().hex
+    assert pending_ask.insert_ask(org, {
+        "request_id": rid, "thread_id": tid, "actor_email": actor,
+        "kind": kind, "question": _QUESTION,
+        "payload": {"request_id": rid, "title": _QUESTION, "grant": grant},
+    })
+    pending_ask.move_ask(org, rid, to="parked", from_states=("open",))
+    pending_ask.move_ask(
+        org, rid, to="answered", from_states=pending_ask.WAITING, answer=answer,
+        late=late,
+    )
+    return rid
+
+
+def test_a_grant_is_taken_once_and_the_row_closes(as_app):
+    w = as_app
+    g = _grant()
+    rid = _approved(w, w.org_a, w.t_alice, g)
+
+    first = pending_ask.consume_grant(w.org_a, w.t_alice, _ALICE, g)
+    second = pending_ask.consume_grant(w.org_a, w.t_alice, _ALICE, g)
+
+    assert first == "APPROVE" and second is None
+    assert tuple(_admin_row(w, w.org_a, rid)) == ("closed", "APPROVE")
+
+
+def test_an_in_time_approve_is_not_a_grant(as_app):
+    """The run took this answer, so its row is ``answered`` with no late mark.
+    Without the mark the same call would run a second time with no card."""
+    w = as_app
+    g = _grant()
+    rid = _approved(w, w.org_a, w.t_alice, g, late=False)
+
+    assert pending_ask.consume_grant(w.org_a, w.t_alice, _ALICE, g) is None
+    assert tuple(_admin_row(w, w.org_a, rid)) == ("answered", "APPROVE")
+
+
+def test_a_grant_keeps_the_ticked_rows_of_the_answer(as_app):
+    w = as_app
+    g = _grant()
+    _approved(w, w.org_a, w.t_alice, g, answer='APPROVE {"rows": ["b"]}')
+
+    assert pending_ask.consume_grant(
+        w.org_a, w.t_alice, _ALICE.upper(), g,
+    ) == 'APPROVE {"rows": ["b"]}'
+
+
+@pytest.mark.parametrize("what", ["actor", "thread", "grant", "answer", "kind", "state"])
+def test_a_grant_needs_every_condition(as_app, what):
+    w = as_app
+    tid = w.t_alice
+    g = _grant()
+    kw = {}
+    if what == "answer":
+        kw["answer"] = "REJECT"
+    if what == "kind":
+        kw["kind"] = "ask_user"
+    rid = _approved(w, w.org_a, tid, g, **kw)
+    if what == "state":
+        with w.admin_engine.begin() as c:
+            c.execute(text(
+                "UPDATE chat_pending_ask SET state = 'parked' WHERE request_id = :r"),
+                {"r": rid})
+    args = {"actor": (_CAROL, tid, g), "thread": (_ALICE, "t-other", g),
+            "grant": (_ALICE, tid, _grant())}.get(what, (_ALICE, tid, g))
+
+    assert pending_ask.consume_grant(w.org_a, args[1], args[0], args[2]) is None
+    assert _admin_row(w, w.org_a, rid)[0] != "closed"
+
+
+def test_a_grant_ends_with_its_window(as_app):
+    w = as_app
+    g = _grant()
+    rid = _approved(w, w.org_a, w.t_alice, g)
+    with w.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE chat_pending_ask SET answered_at = now() - interval '2 hours' "
+            "WHERE request_id = :r"), {"r": rid})
+
+    assert pending_ask.consume_grant(w.org_a, w.t_alice, _ALICE, g) is None
+
+
+def test_another_org_never_takes_a_grant(as_app):
+    w = as_app
+    g = _grant()
+    rid = _approved(w, w.org_a, w.t_alice, g)
+
+    # Org B's session: the row is invisible under RLS even with the thread,
+    # the member's address and the grant all copied.
+    assert pending_ask.consume_grant(w.org_b, w.t_alice, _ALICE, g) is None
+    assert tuple(_admin_row(w, w.org_a, rid)) == ("answered", "APPROVE")
+
+
+def test_two_runs_that_race_take_a_grant_once(as_app):
+    w = as_app
+    g = _grant()
+    _approved(w, w.org_a, w.t_alice, g)
+    import concurrent.futures as cf
+
+    with cf.ThreadPoolExecutor(4) as pool:
+        got = list(pool.map(
+            lambda _i: pending_ask.consume_grant(w.org_a, w.t_alice, _ALICE, g),
+            range(4)))
+
+    assert got.count("APPROVE") == 1 and got.count(None) == 3

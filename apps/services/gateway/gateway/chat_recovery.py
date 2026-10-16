@@ -249,7 +249,37 @@ def _card_rows(value: dict[str, Any]) -> list[tuple[str, str]]:
     return out
 
 
-def card_question(kind: str, value: dict[str, Any] | None, question: str | None) -> str | None:
+#: How long the card's own words may run inside the quote of a late approval.
+_GRANT_QUOTE_CHARS = 4500
+
+
+def _late_approval_note(value: dict[str, Any]) -> str:
+    """What a late approval adds to the quote: the call and the new run's facts.
+
+    The card's detail and body say WHICH call the member approved (for an MCP
+    tool, the server, the tool and every argument the card shows). The last
+    line is a fact about the platform, written here and never taken from the
+    card: the call needs no new card. The whole text sits inside the quoted
+    fence, so the neutralising pass of :func:`compose_card_answer` covers it.
+    """
+    detail = _one_line(value.get("detail"), 500)
+    body = str(value.get("context") or "").strip()[:_GRANT_QUOTE_CHARS]
+    parts = ["\n\nThe member approved this card after your run had ended."]
+    if detail:
+        parts.append(f"Card detail: {detail}")
+    if body:
+        parts.append(f"Card body:\n{body}")
+    parts.append(
+        "Status: the approval is saved for this one call. Make the same call "
+        "again, with the same arguments, and it runs with no new card."
+    )
+    return "\n".join(parts)
+
+
+def card_question(
+    kind: str, value: dict[str, Any] | None, question: str | None,
+    granted: bool = False,
+) -> str | None:
     """The question that the envelope quotes for a card.
 
     A card with no rows quotes its question, exactly as before. A card with
@@ -260,9 +290,11 @@ def card_question(kind: str, value: dict[str, Any] | None, question: str | None)
     neutralising pass of :func:`compose_card_answer` covers each label.
     """
     q = (question or "").strip()
+    if granted and q and isinstance(value, dict):
+        q += _late_approval_note(value)
     rows = _card_rows(value) if kind == "confirmation" and isinstance(value, dict) else []
     if not q or not rows:
-        return question
+        return q if granted and q else question
     listed = "\n".join(f"{rid}: {label}" for rid, label in rows)
     return f"{q}\n\nThe card listed these rows, by id:\n{listed}"
 
@@ -485,11 +517,14 @@ class CardResend:
 
 def card_resend(
     kind: str, value: dict[str, Any] | None, question: str | None,
-    answer: str, request_id: str,
+    answer: str, request_id: str, granted: bool = False,
 ) -> CardResend:
-    """The envelope and the display of one card answer."""
+    """The envelope and the display of one card answer.
+
+    *granted* is True when the answer is an approval that the next run can take
+    (``CHAT_LATE_APPROVAL``): the quote then carries the card's own words."""
     return CardResend(
-        compose_card_answer(card_question(kind, value, question), answer),
+        compose_card_answer(card_question(kind, value, question, granted), answer),
         card_answer_display(kind, value, question, answer, request_id),
     )
 
@@ -642,10 +677,21 @@ async def card_answer_from_ask(
     elif state != "parked":
         return None
     payload = row.get("payload")
+    from orchestrator.pending_ask import late_approval_enabled
+
+    kind = str(row.get("kind") or "")
+    granted = bool(
+        kind == "confirmation"
+        and isinstance(payload, dict) and payload.get("grant")
+        and _CONFIRMATION_ANSWER.match((answer or "").strip())
+        and (answer or "").strip().upper().startswith("APPROVE")
+        and late_approval_enabled()
+    )
     return card_resend(
-        str(row.get("kind") or ""),
+        kind,
         payload if isinstance(payload, dict) else {},
         str(row.get("question") or "") or None,
         answer,
         str(row.get("request_id") or ""),
+        granted,
     )

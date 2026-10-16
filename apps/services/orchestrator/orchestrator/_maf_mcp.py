@@ -1419,7 +1419,7 @@ def _make_gate_class() -> type:
                 _log.info("mcp.confirm", server=server, tool=name, outcome="card_too_long")
                 context.result = CARD_TOO_LONG_TEXT.format(tool=name)
                 return
-            if not await self._confirmed(card):
+            if not await self._confirmed(card, arguments):
                 _log.info("mcp.confirm", server=server, tool=name, outcome="denied")
                 context.result = DENIED_TEXT.format(tool=name)
                 return
@@ -1427,12 +1427,22 @@ def _make_gate_class() -> type:
             await call_next()
 
         @staticmethod
-        async def _confirmed(card: tuple[str, str, str]) -> bool:
-            """True only when the member approved the card. A fault is a no."""
+        async def _confirmed(card: tuple[str, str, str],
+                             arguments: dict[str, Any] | None = None) -> bool:
+            """True only when the member approved the card. A fault is a no.
+
+            The digest of the RAW arguments joins the call's fingerprint, so a
+            late approval (``CHAT_LATE_APPROVAL``) covers this exact call and
+            not one that differs only in a value the card hides."""
+            import hashlib
+
             from acb_skills.ask_tools import request_confirmation
 
             try:
-                return await request_confirmation(*card) is True
+                extra = hashlib.sha256(json.dumps(
+                    arguments or {}, sort_keys=True, default=str,
+                    ensure_ascii=False).encode("utf-8", "replace")).hexdigest()
+                return await request_confirmation(*card, grant_extra=extra) is True
             except asyncio.CancelledError:
                 raise
             except Exception:
