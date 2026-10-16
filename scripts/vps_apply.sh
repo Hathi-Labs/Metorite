@@ -2388,6 +2388,12 @@ if [ "$DEPLOY_ENV" = "staging" ]; then
     fi
   done
   install_dropins "$st_dir"
+  # The slice drop-ins apply at a unit's next start, so restart a unit that
+  # started before its newest one (the BH-7 rule, for this folder).
+  restart_stale_dropin_units "$st_dir"
+  # The nightly rebuild runs as root, so it runs a ROOT-OWNED copy (BH-6).
+  sudo install -d -m 0755 -o root -g root /usr/local/lib/acb-staging
+  sudo install -m 0755 -o root -g root "$APP_DIR/scripts/staging_refresh.sh" /usr/local/lib/acb-staging/staging_refresh.sh
   sudo systemctl enable --now acb-staging-db.service acb-staging-refresh.timer >/dev/null 2>&1 \
     || echo "    !! staging: could not enable acb-staging-db or acb-staging-refresh.timer"
   sudo systemctl enable --now acb-console-tunnel.service >/dev/null 2>&1 \

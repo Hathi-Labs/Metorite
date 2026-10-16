@@ -25,7 +25,7 @@
 #   SHA256SUMS       of the four files above
 # The staging box pulls this folder with a key that can read it and nothing
 # else (rrsync -ro). A partial export never replaces a good one: the new files
-# are written beside it, and one rename swaps them in.
+# are written beside it, and one rename of the `current` symlink swaps them in.
 #
 # OFF BY DEFAULT: with STAGING_EXPORT_SLUGS unset, it exits 0 and does nothing.
 # The caller treats a failure as a warning: the backup's own result never
@@ -63,10 +63,10 @@ vpsql() { docker exec -i "$ctr" psql -X -q -v ON_ERROR_STOP=1 -U postgres -d "$d
 
 [ -L "$out" ] && { echo "staging export: $out is a symlink. Refusing." >&2; exit 2; }
 install -d -m 0750 -g "$group" "$out"   # root runs this, so root owns it
-next="$out/.next.$$"
+next="$out/r.$(date -u +%Y%m%dT%H%M%SZ).$$"
 rm -rf "$next"
 install -d -m 0750 -g "$group" "$next"
-trap 'rm -rf "$next"' EXIT
+trap 'rm -rf "$next" "$out/.current.new"' EXIT
 
 say "reducing the restored copy to: $slugs"
 vpsql -v keep_slugs="$slugs" < "$sql" > "$next/minimise.log" 2>&1 || {
@@ -107,9 +107,13 @@ flags_from() {
 chgrp "$group" "$next"/* && chmod 0640 "$next"/*
 
 # ── Swap it in with one rename ──────────────────────────────────────────────
-rm -rf "$out/previous"
-[ -d "$out/current" ] && mv "$out/current" "$out/previous"
-mv "$next" "$out/current"
+# `current` is a symlink to one r.<stamp> folder. `mv -T` of a new link over it
+# is a single rename(2), so a pull never meets a missing `current`.
+[ -d "$out/current" ] && [ ! -L "$out/current" ] && rm -rf "$out/current"
+ln -sfn "$(basename "$next")" "$out/.current.new"
+mv -T "$out/.current.new" "$out/current"
 trap - EXIT
-rm -rf "$out/previous"
+for old in "$out"/r.*; do
+  [ "$old" = "$next" ] || rm -rf "$old"
+done
 say "wrote $out/current ($(du -h "$out/current/staging.dump" | cut -f1), $(wc -l < "$out/current/flags.env") switch(es))"

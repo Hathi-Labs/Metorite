@@ -169,3 +169,34 @@ def test_a_varchar_credential_refuses(clone) -> None:
     res = _run(clone, "h3rls-a")
     assert res.returncode != 0
     assert "zz_v.foo_secret" in res.stderr
+
+
+def test_the_legacy_mcp_auth_is_blanked(clone) -> None:
+    """mcp_servers.headers and env_vars hold PLAINTEXT auth until a server moves
+    to the encrypted registry. A verifier proved they left production."""
+    with clone.begin() as c:
+        c.execute(text(
+            "INSERT INTO mcp_servers (name, label, organization_id, url, headers, env_vars) "
+            "VALUES ('zz', 'zz', :o, 'https://mcp.example.test', '{\"Authorization\": \"Bearer sk-live-abcdefghijklmnop\"}', "
+            "'{\"API\": \"k\"}')"), {"o": clone.org_a})
+    res = _run(clone, "h3rls-a")
+    assert res.returncode == 0, res.stdout + res.stderr
+    with clone.connect() as c:
+        row = c.execute(text("SELECT headers::text, env_vars::text FROM mcp_servers "
+                             "WHERE name = 'zz'")).one()
+    assert row == ("{}", "{}")
+
+
+@pytest.mark.parametrize("value", [
+    '{"auth": "Bearer abcdefghijklmnopqrstu"}', '{"k": "sk-ABCDEFGHIJKLMNOPQRSTUVWX"}',
+    '{"k": "ghp_ABCDEFGHIJKLMNOPQRSTUV"}', '{"k": "AKIAABCDEFGHIJKLMNOP"}',
+    '{"k": "-----BEGIN RSA PRIVATE KEY-----"}'],
+    ids=["bearer", "sk", "github", "aws", "pem"])
+def test_a_token_shaped_json_value_refuses(clone, value: str) -> None:
+    with clone.begin() as c:
+        c.execute(text("CREATE TABLE public.zz_j (organization_id uuid, meta jsonb)"))
+        c.execute(text("INSERT INTO public.zz_j VALUES (:o, CAST(:v AS jsonb))"),
+                  {"o": clone.org_a, "v": value})
+    res = _run(clone, "h3rls-a")
+    assert res.returncode != 0
+    assert "zz_j.meta" in res.stderr

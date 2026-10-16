@@ -24,6 +24,8 @@
 --      no production secret, so the ciphertext would only be dead weight.
 --   6. Refuses when any credential-shaped column still holds a value. A new
 --      credential column fails the export until it is blanked here.
+--   7. Refuses when any JSON value looks like a live token (a bearer header,
+--      an `sk-` key, a GitHub or Slack token, an AWS key, a private key).
 --
 -- FK triggers are off for the transaction (session_replication_role), because
 -- the deletes run table by table in no dependency order. Rows of a kept
@@ -108,6 +110,9 @@ BEGIN
   UPDATE public.task_accounts           SET credentials_encrypted = '', last_delta_token = NULL;
   UPDATE public.wa_accounts             SET credentials_encrypted = '', webhook_verify_token = NULL;
   UPDATE public.workflows               SET hook_token = NULL;
+  -- The legacy plaintext MCP auth (gateway/connections/mcp.py clears it only
+  -- when a server moves to the encrypted registry, one org at a time).
+  UPDATE public.mcp_servers             SET headers = '{}'::jsonb, env_vars = '{}'::jsonb;
 
   -- 6. Nothing credential-shaped is left. Counters (`*_tokens`, `token_cost`)
   --    are numbers, so the text and binary types alone are checked, by type
@@ -121,12 +126,35 @@ BEGIN
        AND a.attnum > 0 AND NOT a.attisdropped
        AND a.atttypid IN ('text'::regtype, 'bytea'::regtype, 'jsonb'::regtype,
                           'json'::regtype, 'varchar'::regtype, 'bpchar'::regtype)
-       AND a.attname ~* '(secret|password|passwd|credential|private_key|api_?key|access_key|cookie|encrypted|cipher|refresh_token|verify_token|hook_token|token_hash|client_state|^token$)'
+       AND a.attname ~* '(secret|password|passwd|credential|private_key|api_?key|access_key|cookie|encrypted|cipher|refresh_token|verify_token|hook_token|token_hash|client_state|^token$|^headers$|env_vars|^env$)'
   LOOP
-    EXECUTE format('SELECT count(*) FROM public.%I WHERE %I IS NOT NULL AND %I::text <> %L',
-                   t.relname, t.attname, t.attname, '') INTO n;
+    -- Blank is '', an empty JSON object or array, or JSON null.
+    EXECUTE format('SELECT count(*) FROM public.%I WHERE %I IS NOT NULL AND %I::text NOT IN (%L, %L, %L, %L)',
+                   t.relname, t.attname, t.attname, '', '{}', '[]', 'null') INTO n;
     IF n > 0 THEN
       RAISE EXCEPTION 'credential column %.% still holds % value(s). Blank it in infra/staging/minimise.sql.',
+        t.relname, t.attname, n;
+    END IF;
+  END LOOP;
+
+  -- 7. A name says little about a JSON column, so its VALUES are checked too:
+  --    nothing that looks like a live token may leave. A hit names the column,
+  --    and the export stops until the column is blanked above.
+  FOR t IN
+    SELECT c.relname, a.attname
+      FROM pg_attribute a
+      JOIN pg_class c ON c.oid = a.attrelid
+      JOIN pg_namespace ns ON ns.oid = c.relnamespace
+     WHERE ns.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition
+       AND a.attnum > 0 AND NOT a.attisdropped
+       AND a.atttypid IN ('jsonb'::regtype, 'json'::regtype)
+  LOOP
+    EXECUTE format(
+      'SELECT count(*) FROM public.%I WHERE %I::text ~ %L', t.relname, t.attname,
+      '(Bearer [A-Za-z0-9._~+/=-]{16,}|sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY)')
+      INTO n;
+    IF n > 0 THEN
+      RAISE EXCEPTION 'JSON column %.% holds % value(s) shaped like a live token. Blank it in infra/staging/minimise.sql.',
         t.relname, t.attname, n;
     END IF;
   END LOOP;

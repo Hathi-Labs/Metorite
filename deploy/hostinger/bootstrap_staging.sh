@@ -155,6 +155,10 @@ for p in 80 443 3001 8080 8091 5435 18090; do
   [ -z "$holder" ] && continue
   pid="${holder##*pid=}"
   owner="$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+  comm="$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+  # docker-proxy runs as root for ANY user's container, so it proves nothing,
+  # except on 5435, which is the staging database's own container.
+  if [ "$comm" = "docker-proxy" ] && [ "$p" != "5435" ]; then owner="docker:$comm"; fi
   case "$owner" in acb|root|caddy) ;; *) busy="$busy $p(${holder#users:((\"}, user $owner)" ;; esac
 done
 [ -z "$busy" ] || fail "these ports are held by another user:$busy. Stop those programs, then run this again."
@@ -244,6 +248,8 @@ for u in "$app"/deploy/hostinger/staging/*.service "$app"/deploy/hostinger/stagi
          "$app"/deploy/hostinger/staging/*.slice; do
   install -m 0644 "$u" /etc/systemd/system/
 done
+install -d -m 0755 -o root -g root /usr/local/lib/acb-staging
+install -m 0755 -o root -g root "$app/scripts/staging_refresh.sh" /usr/local/lib/acb-staging/staging_refresh.sh
 systemctl daemon-reload
 systemctl enable --now acb-staging-db.service >/dev/null
 for _ in $(seq 1 60); do
@@ -258,7 +264,7 @@ if sudo -u acb rsync --list-only \
      -e "ssh -i /home/acb/.ssh/staging_link -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/home/acb/.ssh/known_hosts_prod" \
      "acb@$prod_ip:./" >/dev/null 2>&1; then
   say "The production copy is reachable. Rebuilding staging from it"
-  bash "$app/scripts/staging_refresh.sh" --force
+  bash /usr/local/lib/acb-staging/staging_refresh.sh --force
   say "Staging is up at $web"
 else
   say "ONE STEP LEFT, on the production box"

@@ -159,7 +159,9 @@ exec 9<&-
 say "Applying the staging ref (pending migrations, build, restart)"
 ran=0
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-  out="$(sudo -u acb env MODE=force bash "$app_dir/scripts/vps_pull.sh" 2>&1)" || {
+  # The PATH of acb-pull.service, so the build finds acb's Node 20.20.2 and
+  # uv. sudo's secure_path would otherwise give the box's own Node.
+  out="$(sudo -u acb env PATH=/home/acb/.local/bin:/usr/local/bin:/usr/bin:/bin HOME=/home/acb MODE=force bash "$app_dir/scripts/vps_pull.sh" 2>&1)" || {
     printf '%s\n' "$out" | tail -30 >&2
     fail "the staging deploy failed. The database is rebuilt, and the services may be down."
   }

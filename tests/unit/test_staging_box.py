@@ -235,3 +235,29 @@ def test_staging_skips_the_pre_migration_dump() -> None:
     """The box's pg_dump is 16 and the server is 17, so the dump would fail
     and stop every staging migration. The database is rebuilt nightly."""
     assert 'set_kv "$env" SKIP_PRE_MIGRATION_BACKUP 1' in _BOOT.read_text(encoding="utf-8")
+
+
+def test_a_root_staging_unit_runs_only_root_owned_files() -> None:
+    """BH-6 for the staging folder, which test_root_units_root_owned.py does
+    not glob: a unit with no User= (root) never executes the acb checkout."""
+    for unit in _ST.glob("*.service"):
+        body = unit.read_text(encoding="utf-8")
+        if re.search(r"^User=(?!root)", body, re.M):
+            continue
+        for line in re.findall(r"^Exec\w*=(.+)$", body, re.M):
+            assert "/opt/acb/app" not in line, f"{unit.name} runs the acb-owned checkout: {line}"
+    refresh = (_ST / "acb-staging-refresh.service").read_text(encoding="utf-8")
+    assert "ExecStart=/bin/bash /usr/local/lib/acb-staging/staging_refresh.sh" in refresh
+    apply = (_ROOT / "scripts/vps_apply.sh").read_text(encoding="utf-8")
+    assert ('sudo install -m 0755 -o root -g root "$APP_DIR/scripts/staging_refresh.sh" '
+            "/usr/local/lib/acb-staging/staging_refresh.sh") in apply
+
+
+def test_the_refresh_deploys_with_acb_s_path() -> None:
+    body = _code(_REFRESH)
+    assert "sudo -u acb env PATH=/home/acb/.local/bin:" in body
+
+
+def test_a_docker_proxy_port_is_not_staging_s() -> None:
+    body = _code(_BOOT)
+    assert '[ "$comm" = "docker-proxy" ] && [ "$p" != "5435" ]' in body

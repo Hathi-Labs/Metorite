@@ -160,7 +160,8 @@ def test_a_refusal_keeps_the_previous_export(tmp_path: pathlib.Path, clone) -> N
     assert bad.returncode == 1
     assert "REFUSED" in bad.stderr
     assert (tmp_path / "out/current/SHA256SUMS").read_text(encoding="utf-8") == before
-    assert not list((tmp_path / "out").glob(".next.*")), "a refused export left its scratch"
+    assert len(list((tmp_path / "out").glob("r.*"))) == 1, "a refused export left its scratch"
+    assert (tmp_path / "out/current").is_symlink()
 
 
 @pytest.mark.parametrize("slugs", ["Default", "a,,b", "a;rm -rf /", "a b"])

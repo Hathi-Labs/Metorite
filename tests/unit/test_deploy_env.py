@@ -254,13 +254,14 @@ def test_production_runs_h132_s_loop_and_only_staging_skips_it(tmp_path: pathlib
     for env in ("production", "staging"):
         log = tmp_path / f"{env}.log"
         res = subprocess.run(
-            ["bash", "-c", f"APP_DIR={_ROOT}\nDEPLOY_ENV={env}\ninstall_dropins() {{ :; }}\n" + block],
+            ["bash", "-c", f"APP_DIR={_ROOT}\nDEPLOY_ENV={env}\ninstall_dropins() {{ :; }}\n"
+             "restart_stale_dropin_units() { :; }\n" + block],
             capture_output=True, text=True, timeout=30,
             env={"PATH": f"{stub}:/usr/bin:/bin", "SUDO_LOG": str(log)},
         )
         assert res.returncode == 0, res.stderr
         calls = log.read_text().splitlines()
-        def units(verb: str) -> list[str]:
+        def units(verb: str, calls: list[str] = calls) -> list[str]:
             return sorted(u for c in calls if c.startswith(f"systemctl {verb} --now")
                           for u in c.split()[3:])
         enabled, disabled = units("enable"), units("disable")

@@ -1,6 +1,10 @@
 # Rebuild the staging database from last night's reduced copy of production
 # (WS-38 T-9). scripts/staging_refresh.sh refuses to run unless this box's .env
 # says DEPLOY_ENV=staging.
+#
+# It runs as root from a ROOT-OWNED copy, never from the acb-owned checkout
+# (BH-6, deploy/AGENTS.md): vps_apply.sh's staging branch and the bootstrap
+# install /usr/local/lib/acb-staging/staging_refresh.sh.
 [Unit]
 Description=Metorite STAGING nightly rebuild from the production copy
 After=network-online.target acb-staging-db.service
@@ -10,5 +14,6 @@ Requires=acb-staging-db.service
 [Service]
 Type=oneshot
 User=root
-ExecStart=/bin/bash /opt/acb/app/scripts/staging_refresh.sh
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/bin/bash /usr/local/lib/acb-staging/staging_refresh.sh
 TimeoutStartSec=3600
