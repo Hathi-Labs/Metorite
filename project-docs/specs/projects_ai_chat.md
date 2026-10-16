@@ -2433,6 +2433,10 @@ prints it.
 
 - The source line is "CRM <kind>, <date>". The period of `win-loss` is the
   window of the route.
+- The route sums the amounts of every deal currency, and it sends no
+  currency. So a report of amounts keeps the INR label of the text answer,
+  and its sources add "Amounts are summed across deal currencies." HANDOFF
+  H-333 owns the route fix.
 - A bar chart holds 12 bars and a table holds 20 rows. Each cut adds one
   line that says so.
 - The funnel draws as a bar chart, not as the chart type `funnel`. The PDF
@@ -2455,8 +2459,9 @@ sections}`. Both forms of `render_report` call it.
   a bar chart by project. `load` gets a bar chart by person. `throughput`
   gets a line chart by week.
 - A report holds 12 visuals. When the sections need more, the charts go
-  first, from the end, and then the tables. A dropped table says that the
-  Reports app shows it.
+  first, from the end, and then the tables. A dropped table says "This
+  report holds at most 12 visuals, so this table is left out." Its
+  hidden-people line stays.
 - The title is the name of the report. The period and the source line hold
   the dates of the payload.
 - `report_render` stays a read. Its docstring points at `render_report`
