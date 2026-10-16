@@ -14898,6 +14898,10 @@ before any send, because a model draft is never sent by itself.
    unchanged. `untrusted.py` records this limit.
 4. **The voice profile and the knowledge base.** They stay outside the frame. The member's own
    mail builds the first, and the member approves each entry of the second.
+5. **The open mail in the pane's persona** (recorded 2026-10-16, PR-G8b review). The Email pane
+   puts the subject and the sender name of the open mail into `system_context` with no frame
+   (`workbench/control_plane/src/app/email/lib/emailAssistantPersona.ts:222-230`). A stranger
+   writes both. They are short lines, as in gap 1, but they reach the system context. Not fixed.
 5. **The fallback text of the `read_thread` card.** When the card cannot fetch the thread, it
    shows the raw result with its note and its marker lines.
 
@@ -15303,6 +15307,38 @@ agent and the trace of a live store. `deploy-write` for the line of `deploy.sh`,
 - `/agent/run/stream` asks the predicate ONCE at the run end, before the fold, with
   `{"session_id": thread_id, "member": <the member>}`. The trace and both memory writes read
   that answer. The Graphiti episode moved from the run start to `_extract_run_memory`.
+- **Fix round 1, P0.** The orchestrator's specialist tools (`_specialist_fn`) and
+  `delegate_to_agent` ran the email assistant through the executor, and only
+  `agent_tools._answer_of` marked a session. So the D99 path left the session unmarked. ONE
+  helper now marks it, `egress.mark_untrusted_session`. The executor calls it with the CALLING
+  run's context in `_run_sub_agent_streaming` and in `_run_agent_inner`, after the sub-run's
+  `no_egress` decision and before the sub-run does any work. A cancel or an error cannot skip
+  the mark. `_answer_of` calls the same helper as a second write. The MAF batch fallback of a
+  streaming sub-run keeps the decision of its streaming frame, so the delegated tools stay as on
+  main. Fence: `test_the_specialist_path_marks_the_session` drives the real specialist tool.
+- **Every path that can run the email assistant** (fix round 1). Each delegation goes through the
+  executor, so the mark covers `call_agent`, `call_agents_parallel`, `call_agent_background`,
+  `delegate_to_agent` and each specialist tool, from a MAF or a Copilot agent. WhatsApp runs the
+  orchestrator, and its delegations take the same path. The pane runs the email assistant on
+  `/agent/run/stream`, and `run_holds_mail` is true for it by name. A run with no calling chat
+  session has nothing to mark: `POST /agent/run`, its async twin, the event trigger, a workflow
+  node and a schedule. The MCP edge starts no agent run. The drafter's consult runs
+  `crm-assistant` or `task-manager`, never the email assistant.
+- ⚠️ Residual risk (fix round 1): one chat can switch agents. A turn of the email assistant does
+  not mark its own session, so a later turn of another agent in that session reads the mail
+  text in its history with no mark. The run end of the email-assistant turn holds mail by name.
+  Marking its own session would make each egress tool of the pane ask a card, so this PR does
+  not do it.
+- **Fix round 1, F3.** `run_holds_mail` reads a Redis fault as unknown for EVERY run, with or
+  without a member (`session_mark_state(fail_closed=True)`). The restart sweep can fold a run
+  with an empty actor, and that fold read a fault as clear. Fence:
+  `test_a_sweep_fold_with_no_actor_fails_closed`.
+- **Fix round 1, F2.** `test_a_mail_run_with_no_scope_holds_no_store_write` drives the no-match
+  fallback of the injection (`_all_tools`), in `enforce` and in `approve_all`, where the last-word
+  drop is the only guard.
+- **W10 stays open, and it blocks the Mem0 flip.** The unmount save of `AgentChat` reaches
+  `POST /memory/{scope}/add` with no session that the server bound, so the route cannot read the
+  mark. HANDOFF H-334 holds it, and WS-7 must not turn Mem0 on while H-334 is open.
 - `chat_fold.persist_final_assistant_message` takes `holds_mail`. With `None` it asks the
   predicate under the run's tenant, so the restart sweep (`chat_recovery.py`) drops the trace
   body of a mail run too.
