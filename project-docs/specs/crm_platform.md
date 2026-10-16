@@ -27,7 +27,7 @@
 > CRM-Q1 and CRM-Q2, discovery, the source profile and the deal pipelines
 > (2026-10-12, migration 247). The other slices are not built yet.
 >
-> **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12). CRM-Q8, filters and saved views (2026-10-12, migration 250). The Deals board stages fix (2026-10-12, §18.5). CRM-Q10, a reconnect never freezes the mirror (2026-10-13, §18, a production hotfix). CRM-Q15, a Zoho module that the account turned off no longer stops the sync (2026-10-15, §18, a production hotfix). CRM-Q16, hold a module and sync one module on its own (2026-10-15, §18.8, migration 269). CRM-Q17a-1, the backend of the fill rank (2026-10-16, §18.9.3, migration 274). It is dark behind `CRM_FILL_RANK_ORGS`.
+> **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12). CRM-Q8, filters and saved views (2026-10-12, migration 250). The Deals board stages fix (2026-10-12, §18.5). CRM-Q10, a reconnect never freezes the mirror (2026-10-13, §18, a production hotfix). CRM-Q15, a Zoho module that the account turned off no longer stops the sync (2026-10-15, §18, a production hotfix). CRM-Q16, hold a module and sync one module on its own (2026-10-15, §18.8, migration 269). CRM-Q17a-1, the backend of the fill rank (2026-10-16, §18.9.3, migration 274). It is dark behind `CRM_FILL_RANK_ORGS`. CRM-Q23b, a dropped activity comes back once its module record is in (2026-10-16, §18.10, no migration).
 >
 > **Specified, not built:** CRM-Q17a to CRM-Q22, a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9). CRM-Q18-2 and CRM-Q18-3 are not built.
 >
@@ -2504,8 +2504,9 @@ on the R8 database, with no test skipped.
 
 ### 18.10 Activities on a module record, and a short read that shows (CRM-Q23, CRM-Q24, 2026-10-16)
 
-**Status (2026-10-16).** CRM-Q23a: built, on the branch `crm-q23`. CRM-Q23b,
-CRM-Q23c and CRM-Q24: specified, not built. Verified against code at
+**Status (2026-10-16).** CRM-Q23a: built, on the branch `crm-q23`. CRM-Q23b:
+built, on the branch `crm-q23b`, with no migration. CRM-Q23c and CRM-Q24:
+specified, not built. Verified against code at
 `origin/main` `0a14f7552`. Found on DEWiN's import (H-326, H-327).
 
 #### 18.10.1 What the import found
@@ -2592,25 +2593,77 @@ their column. The mirror stamps `zoho_id`, so the push skips the row.
 `test_crm_module_activities_r8.py`, `test_crm_migration.py` and
 `test_crm_sync_engine.py`.
 
-**CRM-Q23b · Recover a dropped activity.** Done when:
+**CRM-Q23b · Recover a dropped activity.** The spec audit of 2026-10-16
+narrowed it. Done when:
 
-1. Take an activity whose `$se_module` is a mirrored module, but whose
-   record is not in yet. The sync keeps its Zoho id in the cursor state of
-   its entity. The list holds at most 5,000 ids for each entity.
-2. After the module pass, the sync reads the kept ids of each entity, 100
-   ids in each call. Check the `ids=` parameter against Zoho at build time. A
-   linked activity leaves the list. An id that stays unlinked for 7 days
-   leaves it too.
-3. A list that overflows marks its entity for one full read after the next
-   module pass. It respects a CRM-Q16 hold, and it never queues while the
-   first import of the activity entity is not done.
-4. An R8 test proves the case of a new record and a new task in one run.
-5. The sync queues one full read of note, call and meeting, through the
-   existing re-read list. It does so one time for each org with mirrored
-   module records.
-   The records that a run read before CRM-Q23a sit behind the cursor, so
-   only this read brings them back. It runs before an admin releases a
-   CRM-Q16 hold on `activities`, and it respects that hold.
+1. A dropped activity whose `$se_module` names a mirrored module is kept in
+   the cursor state of its entity. The entry is
+   `{id: [module, parent_ext_id, first_seen]}`, at most 5,000 for each entity.
+   The final-page state, the mid-read state and
+   `_KEPT_WHEN_UNAVAILABLE` keep it. A unit test proves each of the three.
+2. After `_module_records`, one tenant-session query selects the kept entries
+   whose parent now exists. Only those are read again, 100 ids in each call
+   (`GET /crm/v2/{Module}?ids=a,b,…`). The step skips a held key
+   (`_skip_held`) and stops at `MODULES_RESERVE`. A linked id leaves the list.
+   An id older than 7 days leaves it, and a later re-add keeps its first
+   `first_seen`. A test proves that 0 recoverable entries make 0 provider calls.
+3. An overflow queues one full read through the re-read list. It does so only
+   when the first import of the activity entity is done. Every mirrored module
+   named in the list must also have `initial_done_at`. It queues at most
+   one time in 7 days for each entity. A test proves that a second overflow
+   inside 7 days queues nothing.
+4. An R8 test proves a new module record and a new note in one run. The note
+   links in the same run's recovery step.
+5. Take an org with no `zoho:activity_backfill` cursor row, whose profile
+   mirrors at least one module. The sync queues one full read of note, call,
+   meeting and task. It writes that row in the same transaction. A second run queues
+   nothing. An R8 test proves that a hold on `activities` keeps the entry until
+   release.
+
+Files: `crm_sources/base.py`, `crm_sources/zoho/client.py`,
+`crm_sync/engine.py`, a new `crm_sync/recover.py`, and the tests
+`test_crm_activity_recover.py`, `test_crm_activity_recover_r8.py` and
+`test_crm_sources_zoho.py`. No migration: the cursor state is `jsonb`.
+
+**Built as (2026-10-16).** The kept list is the key `recover` of the activity
+cursor, and `recover_overflow` marks an overflow. `crm_sync/recover.py` holds
+the list rules. `engine._recover_activities` runs right after
+`_module_records`. `zoho:activity_backfill` holds `queued_at` and
+`overflow_at`.
+
+The one full read runs before the activity passes, so on a new org it is the
+first import and costs no second read. When an answer by ids lacks an id, the
+sync asks for it one more time, and then the id leaves the list. The probe of
+2026-10-16 proved the `ids=` read on 3 ids. The cap of 100 comes from Zoho's
+documents, and no probe tested it.
+
+Fix round 1 (review of 2026-10-16) stops three loops that spent credits:
+
+- An overflow queues no full read while a module that its list names is
+  unavailable. `_mark_unavailable` stamps `initial_done_at` too.
+- A refused read by ids pauses that entity for 24 hours
+  (`recover_paused_at`). A plain HTTP 401 or an untrusted host fails the run.
+- A kept id that a read returns, and that stays on the list, spends one try
+  (`recover_tries`). It leaves the list at `RETRY_LIMIT` tries.
+
+A recovery read takes the drop of the same run back out of
+`activity_drops`, so the count shows only what the run lost. The step takes
+an id that a read by ids cannot send off the list before the call. A source
+test fences the `organization_id` predicate of the recovery query. A kept
+entry on an unavailable module is still read when its parent row is here.
+That read goes to the activity module, not to the refused module, and the
+activity then links and leaves.
+
+Fix round 2 (review of fix round 1) closes one more loop. The kept list can
+expire in the run that the 7 days of the last overflow read lapse. An empty
+list names no module, so the guard let the full read through. Now
+`recover_overflow_modules` keeps the modules of the drops that overflowed,
+beside `recover_overflow`. The guard checks those modules too. A held module
+now holds the guard, as an unavailable module does.
+
+Fix round 3 (review of fix round 2): the guard also waits while a module
+that it checks is mid-read. A module that comes back can stop at
+`MODULES_RESERVE` before all its records are in.
 
 **CRM-Q23c · The timeline on a module record.** Done when:
 
