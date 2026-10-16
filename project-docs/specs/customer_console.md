@@ -6064,6 +6064,9 @@ onboarding").** ◐ **Ships dark** — the tenant half answers 503
 until `GATEWAY_OPERATOR_TOKEN` is set on the box and the console env gains
 `GATEWAY_INTERNAL_URL` + `GATEWAY_INTERNAL_TOKEN` + the operator token.
 
+**The mailboxes of a purge.** `email_app_master_plan.md` §12.3.13.9.2 (WS-17 EM-G11f1b and
+EM-G11f1c) owns the teardown of each mailbox that the member door and the org purge delete.
+
 **What this is.** The lifecycle already ends at `deleted`, reachable only
 through `cancelled` (the export window) — `customer_console.lifecycle`'s graph
 enforces the doctrine by construction, and `POST /orgs/lifecycle` already walks

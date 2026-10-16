@@ -347,6 +347,9 @@ Every step below is a real, shipped endpoint.
 the query, so a suspended member resolves to no access within the 60s cache TTL
 at worst (`acb_auth/access.py:209-215`).
 
+**The mailboxes of a purge.** `email_app_master_plan.md` §12.3.13.9.2 (WS-17 EM-G11f1b) owns the
+teardown of each mailbox that a purge deletes.
+
 **Three actions, and the difference between them is the point.** Suspend is
 reversible from this screen. Remove drops every role grant and keeps the
 `app_user` row, because ~every user-scoped table refers to people by address —
