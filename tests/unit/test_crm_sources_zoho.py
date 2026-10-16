@@ -44,7 +44,11 @@ from gateway.crm_sources import (
 )
 from gateway.crm_sources.registry import SOURCES, source_class
 from gateway.crm_sources.zoho import ZohoSource, auth
-from gateway.crm_sources.zoho.client import ZohoModuleUnavailable, ZohoScopeError
+from gateway.crm_sources.zoho.client import (
+    ZohoModuleUnavailable,
+    ZohoScopeError,
+    ZohoTieTooWide,
+)
 
 SECRET = "planted-client-secret-7f3a91"
 ACCESS = "planted-access-token-91c2e0"
@@ -457,6 +461,46 @@ async def test_a_tie_at_one_second_wider_than_a_page_reads_each_row_once(
         sent = [r.url.params for r in store.requests if "page_token" in r.url.params]
         assert sent, "the tie never used the page token"
         assert all("page" not in params for params in sent)
+
+
+@pytest.mark.parametrize("inclusive", [False, True], ids=["after", "at-or-after"])
+async def test_a_tie_wider_than_the_offset_limit_raises_and_never_ends_the_read(
+    leaks: list[str],
+    inclusive: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CRM-Q24 item 3 and item 7. Seven rows share one second. A page holds
+    two rows, and Zoho serves four by offset with no page token. The read
+    must raise ``ZohoTieTooWide`` before the page that starts past the limit,
+    and never return a last page (``next_cursor`` None) that ends it as done."""
+    from gateway.crm_sources.zoho import client
+
+    monkeypatch.setattr(client, "PER_PAGE", 2)
+    monkeypatch.setattr(client, "OFFSET_LIMIT", 4)
+    times = {"a": at(1), **{k: at(2) for k in "bcdefgh"}, "z": at(3)}
+    store = ZohoStore(times, inclusive=inclusive)
+    with pytest.raises(ZohoTieTooWide) as caught:
+        await read_all(store.source())
+    leaks.extend(exc_texts(caught.value))
+    assert isinstance(caught.value, SourceError)
+    assert caught.value.code == "tie_too_wide"
+    assert caught.value.read == 4
+    # The page that would start past the limit is never asked for.
+    asked = [int(r.url.params["page"]) for r in store.requests if "page" in r.url.params]
+    assert max(asked) * 2 <= 4
+
+
+async def test_a_tie_with_a_page_token_reads_past_the_offset_limit(
+    leaks: list[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CRM-Q24 item 7: the error applies only when Zoho sends no token."""
+    from gateway.crm_sources.zoho import client
+
+    monkeypatch.setattr(client, "PER_PAGE", 2)
+    monkeypatch.setattr(client, "OFFSET_LIMIT", 4)
+    times = {"a": at(1), **{k: at(2) for k in "bcdefgh"}, "z": at(3)}
+    got = await read_all(ZohoStore(times, tokens=True).source())
+    assert got == ["a", "b", "c", "d", "e", "f", "g", "h", "z"]
 
 
 async def test_a_resume_reads_the_boundary_second_again(leaks: list[str]) -> None:
