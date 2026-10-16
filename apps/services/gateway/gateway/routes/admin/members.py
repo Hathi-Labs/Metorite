@@ -12,6 +12,7 @@ trusting the model, so provenance is part of the API, not a debugging aid.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 from acb_auth import (
@@ -57,6 +58,19 @@ from gateway.routes.admin._common import (
     roles_for_user,
     router,
     set_roles,
+)
+
+# EM-G11f1b (email_app_master_plan.md §12.3.13.9.2). A purge deletes each
+# mailbox of the member, so it tears each one down: the plans and the purge
+# rows inside the transaction, and the teardown after the commit.
+from gateway.routes.email.memory_purge import RECORD_MEMBER_PURGES_SQL
+from gateway.routes.email.teardown import (
+    MEMBER_MAILBOXES_WHERE,
+    MemberScope,
+    TeardownCounts,
+    TeardownPlan,
+    finish_teardowns,
+    read_teardown_plans,
 )
 
 # D63 (H-49). The Projects package owns what a personal tree IS, so the seal
@@ -684,7 +698,9 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     _PersonRows("app_tool_grants", "app_tool_grants",
                 "lower(user_email) = :email"),
     # Credentials.
-    _PersonRows("email_accounts", "email_accounts", "lower(user_id) = :email"),
+    # The clause is the teardown's own (EM-G11f1b), so the plans, the purge
+    # rows and this delete name one set of mailboxes.
+    _PersonRows("email_accounts", "email_accounts", MEMBER_MAILBOXES_WHERE),
     _PersonRows("whatsapp_accounts", "wa_accounts", "lower(user_id) = :email"),
     _PersonRows("task_accounts", "task_accounts", "lower(user_id) = :email"),
     # Their own private conversations. ⚠️ `visibility = 'private'` is
@@ -764,6 +780,9 @@ class PurgeResult(BaseModel):
     email: str
     deleted: dict[str, int]
     kept: dict[str, int]
+    #: EM-G11f1b, additive. The mailboxes that the teardown planned, the ones
+    #: that finished before the answer, and the ones that continue after it.
+    mailboxes: TeardownCounts = Field(default_factory=TeardownCounts)
 
 
 @router.delete("/members/{email}/purge",
@@ -827,7 +846,7 @@ async def purge_member(
         assert_not_self_lockout(admin, member, status=PURGE_OUTCOME)
         # Invariant 1, the counts, the deletes and the pre-commit audit entry
         # all live in the shared body. The operator door calls the same body.
-        deleted, kept = await purge_member_rows(
+        deleted, kept, plans = await purge_member_rows(
             db, org_id, member, actor_email=admin.email,
         )
 
@@ -846,6 +865,13 @@ async def purge_member(
     await purge_identity_shadow(email=addr, org_id=org_id)
 
     invalidate_for(member["email"])
+    # EM-G11f1b: the mailboxes went with the commit, so tear each one down
+    # now, with the session block closed. Stop each sync loop, remove the
+    # filters, revoke the grant, drop the Graph subscription and the Redis
+    # keys. A bounded wait. The rest continues in a task.
+    mailboxes = await finish_teardowns(
+        org_id, plans, open_session=partial(_tenant_session, org_id),
+        stop_loops=True, bump_owners=False)
     _log.info("member_purged", email=member["email"], by=admin.email,
               deleted=deleted, kept=kept)
     # The registry has no hard delete. A purged person is a `removed`
@@ -854,7 +880,8 @@ async def purge_member(
     await _mirror_removal_to_console(
         actor_email=admin.email or "", member_email=member["email"],
     )
-    return PurgeResult(email=member["email"], deleted=deleted, kept=kept)
+    return PurgeResult(email=member["email"], deleted=deleted, kept=kept,
+                       mailboxes=mailboxes)
 
 
 async def purge_member_rows(
@@ -863,8 +890,8 @@ async def purge_member_rows(
     member: dict[str, Any],
     *,
     actor_email: str | None,
-) -> tuple[dict[str, int], dict[str, int]]:
-    """The in-transaction body of a purge. Returns ``(deleted, kept)``.
+) -> tuple[dict[str, int], dict[str, int], list[TeardownPlan]]:
+    """The in-transaction body of a purge. Returns ``(deleted, kept, plans)``.
 
     ONE copy, two callers: ``DELETE /admin/members/{email}/purge`` above and
     the operator door with ``mode=purge`` (``routes/operator.py``). Each caller
@@ -879,11 +906,26 @@ async def purge_member_rows(
 
     ``actor_email`` names who did it on the audit entry, which this function
     writes BEFORE the caller's commit (the admin route's docstring says why).
+
+    EM-G11f1b (``email_app_master_plan.md`` §12.3.13.9.2): before the first
+    statement of ``_PURGE_DELETES``, it reads the teardown plan of each
+    mailbox of the member and writes one ``email_mailbox_purges`` row for
+    each, in one set-based statement. Both commit with the deletes, or
+    neither does. The caller passes ``plans`` to ``finish_teardowns`` after
+    its session block exits. A refusal of invariant 1 raises before the
+    read, so it reaches no provider and stops no loop. More than
+    ``TEARDOWN_MAX_MAILBOXES`` mailboxes raise a 409 before any delete.
     """
     await assert_owner_survives(db, org_id, excluding_user_id=member["id"])
 
     addr = (member["email"] or "").strip().lower()
     uid = member["id"]
+
+    # EM-G11f1b: the plans, then the purge rows, before any delete. The
+    # cascade of `email_accounts` deletes the filter ids, and the purge row
+    # must commit with the delete that owes it.
+    plans = await read_teardown_plans(db, MemberScope(addr))
+    await db.execute(text(RECORD_MEMBER_PURGES_SQL), {"email": addr})
 
     # Count everything BEFORE anything is deleted — including the kept
     # side, which is the half that makes the report legible.
@@ -909,7 +951,7 @@ async def purge_member_rows(
     # docstring.
     record_admin_change(actor_email, "org.member_purged", f"user:{addr}",
                         deleted=deleted, kept=kept)
-    return deleted, kept
+    return deleted, kept, plans
 
 
 # ── Role assignment ─────────────────────────────────────────────────────────

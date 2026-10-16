@@ -75,6 +75,7 @@ from uuid import UUID
 from acb_common import get_settings
 from gateway.db import get_db
 from gateway.routes.email.core import _log, _tenant_session, email_memory_scope
+from gateway.routes.email.teardown import MEMBER_MAILBOXES_WHERE
 from sqlalchemy import text
 
 #: The part of a Mem0 key that names one mailbox. ``email_memory_scope``
@@ -139,6 +140,20 @@ RECORD_PURGE_SQL = """INSERT INTO email_mailbox_purges
                       VALUES (:owner, CAST(:aid AS uuid),
                               now() + make_interval(secs => :lease))
                       ON CONFLICT (organization_id, account_id) DO NOTHING"""
+
+#: Rule 1 for the member purge (EM-G11f1b, §12.3.13.9.2). One row for each
+#: mailbox of the member, in ONE set-based statement, in the transaction of
+#: ``_PURGE_DELETES`` and before its first statement. ``owner_email`` is the
+#: ``user_id`` of the mailbox row, the key of the Mem0 writers, never the
+#: address of the request. The lease is 0, because no task runs the passes:
+#: the sweeper takes the row on its next tick. The clause is the one that
+#: deletes the rows (``teardown.MEMBER_MAILBOXES_WHERE``).
+RECORD_MEMBER_PURGES_SQL = f"""INSERT INTO email_mailbox_purges
+                                 (owner_email, account_id, next_try_at)
+                               SELECT user_id, id, now()
+                                 FROM email_accounts
+                                WHERE {MEMBER_MAILBOXES_WHERE}
+                               ON CONFLICT (organization_id, account_id) DO NOTHING"""
 
 #: Rule 5. The route's task closes the row after two good passes.
 _TASK_DONE_SQL = """UPDATE email_mailbox_purges
