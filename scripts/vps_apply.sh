@@ -776,7 +776,9 @@ echo "==> Reconciling the workbench's DEPLOY_ENV (.env.local <- .env, WS-38 S-7)
 if [ ! -f "$WB_ENV" ]; then
   echo "    ! $WB_ENV missing — skipping (the token step above names the cause)"
 elif [ "$DEPLOY_ENV" = "staging" ]; then
-  if ! grep -qx 'DEPLOY_ENV=staging' "$WB_ENV"; then
+  # Exactly one line, and it says staging. A second DEPLOY_ENV line of any
+  # value is rewritten away, so the last-line-wins rule cannot hide the band.
+  if [ "$(grep -c '^DEPLOY_ENV=' "$WB_ENV" || true)" != "1" ] || ! grep -qx 'DEPLOY_ENV=staging' "$WB_ENV"; then
     # umask 077, and a write IN PLACE: .env.local holds secrets, and an `mv`
     # would give the file the temp file's mode.
     ( umask 077; grep -v '^DEPLOY_ENV=' "$WB_ENV" > "$WB_ENV.tmp" || true )

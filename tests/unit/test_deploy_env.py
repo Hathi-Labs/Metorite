@@ -312,10 +312,11 @@ def _wb_block() -> str:
         ("staging", "GATEWAY_INTERNAL_TOKEN=t\n", "GATEWAY_INTERNAL_TOKEN=t\nDEPLOY_ENV=staging\n"),
         ("staging", "A=1\nDEPLOY_ENV=production\nB=2\n", "A=1\nB=2\nDEPLOY_ENV=staging\n"),
         ("staging", "A=1\nDEPLOY_ENV=staging\n", "A=1\nDEPLOY_ENV=staging\n"),
+        ("staging", "DEPLOY_ENV=staging\nDEPLOY_ENV=production\n", "DEPLOY_ENV=staging\n"),
         ("production", "A=1\nDEPLOY_ENV=staging\n", "A=1\n"),
         ("production", "A=1\n", "A=1\n"),
     ],
-    ids=["staging-adds", "staging-replaces", "staging-unchanged",
+    ids=["staging-adds", "staging-replaces", "staging-unchanged", "staging-drops-a-second-line",
          "production-removes-a-stray-copy", "production-untouched"],
 )
 def test_the_workbench_gets_the_setting_from_the_root_env(

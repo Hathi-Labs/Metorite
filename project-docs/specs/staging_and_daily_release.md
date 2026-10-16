@@ -398,8 +398,8 @@ enables neither. The Console ladder is then skipped (§5.4).
 ### 5.9 S-3 and S-7, 2026-10-16
 
 **S-3 needs no code.** A re-measure found seven places in code that name a
-production host and that no setting moves. None of them reaches a person from
-staging:
+production host. Five of them no setting moves, and two are settings already.
+None of them reaches a person from staging:
 
 - The WhatsApp link host (`whatsapp_ui.py` `LINK_HOST`, `views.py` `APP_URL`,
   and the `bot_run.py` prompt) is a security allowlist against a phishing link.
