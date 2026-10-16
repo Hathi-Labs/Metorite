@@ -39,7 +39,7 @@ on:
   # required check uses. Fence: tests/unit/test_pr_check_triggers.py.
 
 # A new push to a PR cancels the run for its older commit. That run's result
-# no longer gates anything, and on the Free plan's 20-job cap its 12 jobs
+# no longer gates anything, and on the Free plan's 20-job cap its 17 jobs
 # held runners that the newer run then waited for (measured 2026-10-16).
 concurrency:
   group: pr-check-${{ github.event.pull_request.number || github.ref }}
