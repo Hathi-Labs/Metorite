@@ -302,7 +302,8 @@ describe("a change on the card makes a draft (item 3)", () => {
 
   it("marks the draft as not applied, and shows its changes against the map in use", () => {
     const html = drawPanel(view());
-    expect(html).toContain(DRAFT_LABEL);
+    // The visible mark, not only the region's name.
+    expect(html).toContain(`>${DRAFT_LABEL}</span>`);
     expect(html).toContain("Nothing changes until you approve");
     for (const row of planDiff(APPROVED, DRAFT)) expect(html).toContain(diffLine(row));
     expect(diffLine(planDiff(APPROVED, DRAFT)[0])).toBe("Change: Leads · Sector → Lost note, not Industry");
