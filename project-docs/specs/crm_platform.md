@@ -1239,6 +1239,8 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q20** | The mapping pipeline on the decide tier, the suggestion in an empty slot, the panel and Undo. Replaces the CRM-Q7b proposer. §18.9 | P1 |
 | **CRM-Q21** | Promote a module into a core entity. §18.9 | P1 |
 | **CRM-Q22** | Source changes as suggestions, then a CSV source, then HubSpot. §18.9 | P2 |
+| **CRM-Q23** | Link a Zoho activity to a custom-module record, and show it there. §18.10 | P0 |
+| **CRM-Q24** | A short read shows on the Sync health card. §18.10 | P1 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
 
@@ -2342,6 +2344,83 @@ density, a changed accent and 375 px.
 - Frontend: `npx tsc --noEmit && npx vitest run src/app/crm` in
   `workbench/control_plane`.
 - Screens: the `visual-review` skill on each changed surface.
+
+### 18.10 Activities on a module record, and a short read that shows (CRM-Q23, CRM-Q24, 2026-10-16)
+
+**Status (2026-10-16).** Specified, not built. Verified against code at
+`origin/main` `0a14f7552`. Found on DEWiN's import (H-326, H-327).
+
+#### 18.10.1 What the import found
+
+**Activities.** `mapping._activity_links` links a task, a note, a call or a
+meeting through `Who_Id` and `What_Id`. A `What_Id` resolves only through
+`_MODULE_ENTITY`, which holds Accounts, Contacts, Leads and Deals. An activity
+whose parent is any other module finds no target. `_write_record` then counts
+it `unlinked` and does not store it. The CHECK `crm_activities_target_required`
+(`144_crm.sql`) enforces the same rule.
+
+DEWiN's import read 1,145 tasks and linked none. It read 3,848 notes and
+linked 1. The 18,674 held activities will be lost the same way, so they stay
+held until CRM-Q23 ships.
+
+**Counts.** Zoho counted 4,947 Payment Made records, and the list returned
+3,003. A probe on 2026-10-16 found the cause. The list of v2 and of v8 both
+end at the same newest record, and no record waits for approval. Products
+gives 9 records to the list and 13 to the count. So the connected Zoho user
+cannot see the rest, and Zoho's count ignores that. No code can read a record
+that the user cannot see.
+
+#### 18.10.2 Tickets
+
+| Ticket | Slice | Gate | Size | Waits for |
+|---|---|---|---|---|
+| CRM-Q23 | Link an activity to a module record, and show it on that record | AGENT-SAFE | M | — |
+| CRM-Q24 | A short read shows on the Sync health card | AGENT-SAFE | S | — |
+
+**CRM-Q23 · Activities on a module record.** Done when:
+
+1. A migration (next free number at build time) adds
+   `crm_activities.module_record_id`, a nullable reference to
+   `crm_module_records (id)` with `ON DELETE CASCADE`, and a partial index.
+   It is expand-only (R6).
+2. The same migration widens `crm_activities_target_required` to accept
+   `module_record_id`. It replaces the CHECK with `NOT VALID`, then validates
+   it. A second run changes nothing.
+3. `_activity_links` links an activity to the module record when `$se_module`
+   is a mirrored generic module. A module that is not mirrored stays
+   unlinked.
+4. When the first import of a generic module completes, the sync reads note,
+   call, meeting and task in full once. The existing re-read set
+   (`_queue_dependents`) does it, so one run reads each entity once.
+5. Each run counts the dropped activities by `$se_module`, as numbers only,
+   in the run counts.
+6. `GET /crm/modules/{module}/records/{record_id}/timeline` serves the
+   activities of a module record. It is read only. An unknown module or
+   record gives 404. It keeps tenant isolation.
+7. Each reader that assumes a core parent still works: the activity edit and
+   delete routes, the next-activity statement and the export.
+8. `ModuleRecordSheet.tsx` shows that timeline, read only.
+
+R8 tests: the migration runs twice, the CHECK accepts a module-only row and
+refuses a row with no target, the cascade works, and RLS stops a read across
+orgs. A task and a note on a mirrored module link. A child read before its
+parent links after the re-read. The route serves the activity, gives 404 and
+keeps tenants apart.
+
+Files: `infra/postgres/`, `crm_sources/zoho/mapping.py`,
+`crm_sync/engine.py`, `routes/crm/core.py`, `routes/crm/activities.py`,
+`routes/crm/modules.py`, `routes/crm/export.py` and the frontend files
+`lib/modules.ts`, `ModuleRecordSheet.tsx` and `Timeline.tsx`.
+
+**CRM-Q24 · A short read shows.** Done when:
+
+1. When a full read of a module ends with fewer records than Zoho's count, the
+   cursor records `short_by`.
+2. The Sync health card shows it: "Zoho counts 4,947. The connected Zoho user
+   can read 3,003. Connect with a Zoho admin to read all of them."
+3. A read of more than 2,000 records inside one second, with no
+   `next_page_token`, raises a named error. It never ends the walk as done.
+   A unit test fences it.
 
 ---
 

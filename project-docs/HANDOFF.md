@@ -5603,13 +5603,12 @@ line — never reclaim a number by deleting the other entry.
   3,003 rows against an estimate of 4,947, this entry is open.
 - **Why.** The run of 2026-10-15 20:24 marked Payment_Made done with 3,003 of
   4,947 records. Products kept 9 of 13, and Operator_Associates 871 of 873.
-  Outstanding (3,623) matched. The cause is not known. Zoho's count call may
-  count records that the list call does not return. Or the walk may skip
-  records. All 3,003 kept rows were modified in one hour of 2025-06-06.
-- **Do this:** read one page of Payment_Made with and without the
-  `If-Modified-Since` header, and compare with the count call. Find the
-  missing ids. Then fix the walk, or show the difference on the Sync health
-  card as "not visible to the connected user".
+  Outstanding (3,623) matched. **Cause found 2026-10-16** (§18.10.1). The
+  connected Zoho user cannot see the other records, and Zoho's count ignores
+  that. A probe ruled out approval and a v2 or v8 difference.
+- **Do this:** build CRM-Q24, so the Sync health card shows the short read.
+  The owner asks DEWiN to reconnect with a Zoho admin user. That may also
+  open their fields, layouts and pipelines to discovery.
 - **Authority:** `crm_platform.md` §18.7 (the generic store) and §18.9.2
 - **Added:** 2026-10-16 · WS-53, DEWiN import
 
@@ -5620,8 +5619,8 @@ line — never reclaim a number by deleting the other entry.
   (`What_Id`) is a custom-module record finds no core parent, so the sync
   skips it. The member never sees those tasks. The 18,674 held activities
   will likely do the same when they sync.
-- **Do this:** link an activity to a `crm_module_records` row when its parent
-  is a mirrored module. Show it on the record page of that module.
+- **Do this:** build CRM-Q23 (§18.10). Keep DEWiN's Activities held until it
+  ships. Notes are hit too: the import linked 1 of 3,848.
 - **Authority:** `crm_platform.md` §18.7 and §18.9.2
 - **Added:** 2026-10-16 · WS-53, DEWiN import
 
