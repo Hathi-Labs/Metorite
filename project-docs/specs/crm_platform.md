@@ -2326,6 +2326,14 @@ ships in three slices.
    They
    prove that the ids of kept rules do not change, and that orgs stay apart.
 
+Built as (2026-10-16): migration 276 adds `crm_mapping_plans`.
+`routes/crm/mapping_plans.py` holds the four routes, and its `commit` is the
+one approve. `POST /crm/field-rules` and the PATCH call it too. A reject of a
+rule that is not approved writes no version. A draft approves only while it
+is built on the approved version, else 409 `plan_moved`. When the sync makes a
+rule stale, the next plan read or change writes a new approved version by
+`system`. Fence: `tests/unit/test_crm_map_plan_r8.py`.
+
 **CRM-Q18-2 · The Field map screen.** It waits for CRM-Q18-1. The Field map
 card shows the approved version and a draft. It approves a draft with one
 action, and it goes back to the version before.
