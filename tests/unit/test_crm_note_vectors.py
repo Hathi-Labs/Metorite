@@ -60,11 +60,13 @@ def _clean(monkeypatch):
     get_settings.cache_clear()
     scheduler._embedding.clear()
     scheduler._labeling.clear()
+    scheduler._label_tasks.clear()
     yield
     monkeypatch.undo()
     get_settings.cache_clear()
     scheduler._embedding.clear()
     scheduler._labeling.clear()
+    scheduler._label_tasks.clear()
 
 
 def _listed(monkeypatch, orgs: str = ORG) -> None:
@@ -248,6 +250,40 @@ class TestTheScheduler:
         gate.set()
         await _drain()
         assert order == ["run", "labels", "vectors"]
+
+    async def test_the_step_waits_for_a_label_step_of_an_earlier_run(self, monkeypatch):
+        """Fix round of 2026-10-17. A label step that an earlier run started
+        still runs, so ``start_labels`` answers None for this run. The
+        vector step still waits for it, and never runs beside it."""
+        _labels_on(monkeypatch)  # first: it clears the settings cache
+        _listed(monkeypatch)
+        order: list[str] = []
+        gate = asyncio.Event()
+
+        async def _label(org, *, should_stop):
+            await gate.wait()
+            order.append("labels")
+
+        async def _embed(org, *, should_stop):
+            order.append("vectors")
+            return nv.Embedded("done")
+
+        monkeypatch.setattr(nl, "label_after_run", _label)
+        monkeypatch.setattr(nv, "embed_after_run", _embed)
+        scheduler._stopping.clear()
+        earlier = scheduler.start_labels(ORG)
+        assert earlier is not None
+        assert scheduler.start_labels(ORG) is None, "one label step at a time"
+        vectors = scheduler.start_vectors(ORG, after=None)
+        assert vectors is not None
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert order == []
+        gate.set()
+        await vectors
+        assert order == ["labels", "vectors"]
+        await asyncio.sleep(0)
+        assert ORG not in scheduler._label_tasks
 
     async def test_spawn_starts_the_step_after_the_run(self, monkeypatch):
         _listed(monkeypatch)

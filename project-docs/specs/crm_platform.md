@@ -3671,7 +3671,12 @@ CRM-Q26 (merged, #1100) and CRM-Q25. CRM-Q25 also edits `crm_tools.py`,
 **Built as (2026-10-16, branch `crm-q27-note-search`, not merged).**
 Migration 279 adds `crm_note_vectors`. `crm_sync/note_vectors.py` holds the
 step, and `scheduler.start_vectors` starts it. The step waits for the label
-step of the run, and it runs alone when the label mode is `off`.
+step of the run, and it runs alone when the label mode is `off`. Fix round
+(2026-10-17): it also waits for a label step that an earlier run started and
+that still runs. `start_labels` answers None for that run, and the vector
+step started at once beside it. `scheduler._label_tasks` now holds the
+running label task of each org. Fence:
+`test_the_step_waits_for_a_label_step_of_an_earlier_run`.
 `routes/crm/note_search.py` holds the route, and `crm_search_notes` is the
 tool. `CRM_NOTE_SEARCH_ORGS` ships empty, so nothing runs for any org.
 
