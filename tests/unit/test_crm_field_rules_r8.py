@@ -929,16 +929,26 @@ async def test_q18_3_a_draft_approve_of_an_opened_rule_gives_no_422(fe) -> None:
     assert _opened(p, p.org_a)["Why_Lost"] == ("approved", "email", True)
 
 
-async def test_q18_3_an_org_outside_the_list_opens_no_fixed_column(fe) -> None:
-    """Case 5 of item 9."""
-    p, _a, b = fe
+async def test_q18_3_an_org_outside_the_list_opens_no_fixed_column(fe, monkeypatch) -> None:
+    """Case 5 of item 9. Org B was never on the list. Org A leaves it, and its
+    fill rows stay, so only the flag keeps the column closed."""
+    from acb_common import get_settings
+
+    p, a, b = fe
     await _imported(p, p.org_b, b)
     assert _count(p, "crm_field_fill", p.org_b) == 0
-    targets = {t["column"]: t for t in (await _lead_targets(p.org_b))["targets"]}
-    assert targets["email"]["open"] is False
-    refused = await _post(p.org_b, "Why_Lost", "email")
-    assert refused.status_code == 422, refused.text
-    assert refused.json()["detail"]["code"] == "standard_field_on_layout"
+    await _imported(p, p.org_a, a)
+    layout = await _req(_admin_of(p.org_a), "GET", "/crm/fields/leads?layout=1")
+    assert "email" in layout.json()["empty_columns"]
+
+    monkeypatch.setattr(get_settings(), "crm_fill_rank_orgs", "", raising=False)
+    for org in (p.org_a, p.org_b):
+        targets = {t["column"]: t for t in (await _lead_targets(org))["targets"]}
+        assert targets["email"]["open"] is False, org
+        refused = await _post(org, "Why_Lost", "email")
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["detail"]["code"] == "standard_field_on_layout"
+    assert _count(p, "crm_field_fill", p.org_a) > 0, "the rows of A stay"
 
 
 def test_q18_3_the_migration_is_found_by_content_replays_and_expands_only(fr) -> None:
