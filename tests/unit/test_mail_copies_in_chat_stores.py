@@ -283,8 +283,8 @@ def test_an_unknown_mark_writes_no_memory(
     assert writes.none(), (writes.mem0, writes.episodes)
     assert writes.folds == [True]
 
-    # Why the run end passes the member: with no member the run cannot show a
-    # card, so a fault reads clear, and that run would write memory.
+    # F3: the predicate fails closed with or without a member. A run with no
+    # member cannot show a card, and a fault still reads as mail.
     async def _states() -> tuple[bool, bool]:
         token = bind_tenant(_ORG)
         try:
@@ -296,7 +296,7 @@ def test_an_unknown_mark_writes_no_memory(
         finally:
             release_tenant(token)
 
-    assert asyncio.run(_states()) == (True, False)
+    assert asyncio.run(_states()) == (True, True)
 
 
 # ── acceptance 5 ───────────────────────────────────────────────────────────
@@ -391,7 +391,7 @@ _ERROR_EVENTS = [
 ]
 
 
-def _traced_row(monkeypatch, agent: str) -> dict[str, Any]:
+def _traced_row(monkeypatch, agent: str, actor: str = _ALICE) -> dict[str, Any]:
     """Fold an errored run through ``persist_final_assistant_message`` with no
     answer of the predicate, as the restart sweep does, and return the
     ``agent_run`` row that it would write."""
@@ -414,7 +414,7 @@ def _traced_row(monkeypatch, agent: str) -> dict[str, Any]:
 
     monkeypatch.setattr(chat_fold, "_run_authority", _no_authority)
     asyncio.run(chat_fold.persist_final_assistant_message(
-        "g8b-trace", "m-1", user_id=_ALICE, agent_name=agent, run_id="r-1",
+        "g8b-trace", "m-1", user_id=actor, agent_name=agent, run_id="r-1",
         organization_id=_ORG))
     assert len(rows) == 1
     return rows[0]
@@ -691,3 +691,16 @@ def test_a_mail_run_with_no_scope_holds_no_store_write(monkeypatch, no_db, mode:
     assert not (held & egress.STORE_WRITES), sorted(held & egress.STORE_WRITES)
     # The control: the same fallback gives another agent every store write.
     assert egress.STORE_WRITES <= _injected(OTHER_AGENT, {"floor_opt_out": []})
+
+
+# ── fix round 1, F3: the restart sweep with no actor ───────────────────────
+
+def test_a_sweep_fold_with_no_actor_fails_closed(monkeypatch) -> None:
+    """``chat_recovery.persist_interrupted`` folds a run with the stored
+    actor, which can be empty. With Redis down, that fold must read the mark
+    as unknown and keep no trace body, and not read it as clear."""
+    clear_marks()
+    monkeypatch.setattr(egress, "get_tenant_redis", lambda: _RedisDown())
+    row = _traced_row(monkeypatch, OTHER_AGENT, actor="")
+    assert row["status"] == "error" and row["trace"] is None
+    assert MAIL_TEXT not in json.dumps(row)

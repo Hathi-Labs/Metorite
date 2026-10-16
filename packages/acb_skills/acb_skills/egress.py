@@ -319,14 +319,20 @@ def is_delegation_tool(tool: Any) -> bool:
     return (tool if isinstance(tool, str) else tool_name(tool)) in DELEGATION_TOOLS
 
 
-async def session_mark_state(ctx: Mapping[str, Any] | None = None) -> str:
+async def session_mark_state(
+    ctx: Mapping[str, Any] | None = None, *, fail_closed: bool | None = None,
+) -> str:
     """The mark of the chat session of the run on this frame.
 
     :data:`MARK_MARKED` when this process or Redis holds the mark,
     :data:`MARK_CLEAR` when Redis answers that it does not, and
     :data:`MARK_UNKNOWN` when Redis does not answer in a run that can show a
     card. A run that cannot show a card reads its process cache on a fault.
-    A frame with no tenant or no session has nothing to key, and is clear."""
+    A frame with no tenant or no session has nothing to key, and is clear.
+
+    *fail_closed* overrides that choice for a fault: True reads a fault as
+    unknown for every run. :func:`run_holds_mail` passes True, because a
+    store write and a trace body need no card to fail closed."""
     session = _session_of(ctx)
     if session is None:
         return MARK_CLEAR
@@ -349,7 +355,7 @@ async def session_mark_state(ctx: Mapping[str, Any] | None = None) -> str:
                 return MARK_CLEAR
             await client.expire(mark, MARK_TTL_S)
     except Exception as exc:
-        unknown = _card_can_show(ctx)
+        unknown = _card_can_show(ctx) if fail_closed is None else bool(fail_closed)
         _log.warning("egress.untrusted_answer_read_failed",
                      error=type(exc).__name__, fail_closed=unknown)
         # Unknown only where a card can show, so the member can still
@@ -388,8 +394,8 @@ async def run_holds_mail(
     *ctx* is the run context that the server bound: ``session_id`` and
     ``member``. Omit it to read the artifact context of this frame. The
     tenant is the bound tenant. No request field reaches this function.
-    A caller that passes no ``member`` reads a Redis fault as clear, so a
-    run-end caller passes the member of the run.
+    A Redis fault reads as unknown for EVERY run, with or without a member
+    (fix round 1, F3: the restart sweep can fold a run with no actor).
 
     A run for which this is true writes no Mem0 memory and no Graphiti
     episode, keeps no ``agent_run`` trace body, and holds no tool of
@@ -397,7 +403,7 @@ async def run_holds_mail(
     """
     if str(agent_name or "") in UNTRUSTED_INPUT_AGENTS:
         return True
-    return await session_mark_state(ctx) != MARK_CLEAR
+    return await session_mark_state(ctx, fail_closed=True) != MARK_CLEAR
 
 
 #: The answer of a :data:`STORE_WRITES` tool in a run that holds mail
