@@ -416,7 +416,8 @@ async def test_5_a_restore_undoes_a_rule_through_the_existing_path(fr) -> None:
     with_link = body["version"] - 1
     again = await _restore(p.org_a, with_link)
     assert again.status_code == 201, again.text
-    assert _rules(p, p.org_a)["LinkedIn"][:2] == (made.json()["id"], "approved")
+    assert _rules(p, p.org_a)["LinkedIn"][1] == "approved"
+    assert str(_rules(p, p.org_a)["LinkedIn"][0]) == made.json()["id"], "same id"
     assert (await _run(p.org_a)).status == "ok"
     assert contact()[0] == "https://linkedin.example/A-ann", "backfilled again"
 
