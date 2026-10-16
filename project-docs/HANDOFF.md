@@ -5773,6 +5773,24 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/email_app_master_plan.md` §12.3.13.9.1 (W10) · PR-G8b review, fix round 1
 - **Added:** 2026-10-16 · PR-G8b (`gmail-chat-copies`), fix round 1
 
+### H-337 · A chat body can rebind the memory id in a shared room · [AGENT] · security
+- **Check:** `rg -n "user_email|user_id" apps/services/gateway/gateway/routes/agent.py`
+  near the call to `run_agent_stream` (~:3080). No strip of those two keys
+  from `req.payload` means this is open.
+- **Why.** In a shared room the chat route binds the memory id to
+  `room:<thread>`, so the Knowledge tools and the index block refuse there.
+  The route passes the client body on to `run_agent_stream`, and
+  `executor.py:2969` binds `_payload_user(payload)` over that scope. A member
+  who sends `payload.user_email` set to their own address rebinds the run
+  to themselves, and the room then sees that member's own space names and
+  pages. It reveals only the sender's own data, and it predates WS-61. Found
+  by the KB-4a re-review on 2026-10-16.
+- **Do this:** in the chat route, drop `user_email` and `user_id` from
+  `req.payload` before the call, because the session already names the
+  member. Add a test that a room run with those keys keeps the `room:` id.
+- **Authority:** `docs/multiplayer/memory-clearance.md`, `specs/knowledge_base.md` §6.5
+- **Added:** 2026-10-16 · WS-61 KB-4a review
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
