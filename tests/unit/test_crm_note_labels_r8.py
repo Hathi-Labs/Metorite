@@ -205,6 +205,23 @@ def test_force_rls_and_one_policy_with_using_and_with_check(lb) -> None:
     assert pol == [(True, True)]
 
 
+def test_the_migration_alone_sets_force_rls_and_its_policy(lb) -> None:
+    """The generated phase 4 also forces RLS on the table, so the catalog
+    above would read the same without the migration's own block. Strip the
+    RLS, replay the migration, and read it back."""
+    with lb.admin_engine.begin() as c:
+        c.execute(text("DROP POLICY IF EXISTS crm_note_labels_tenant_isolation "
+                       "ON crm_note_labels"))
+        c.execute(text("ALTER TABLE crm_note_labels NO FORCE ROW LEVEL SECURITY"))
+        c.execute(text("ALTER TABLE crm_note_labels DISABLE ROW LEVEL SECURITY"))
+    with lb.admin_engine.begin() as c:
+        _exec_file(c, str(_migration()))
+    assert _q(lb, "SELECT relrowsecurity, relforcerowsecurity FROM pg_class "
+                  "WHERE oid = to_regclass('public.crm_note_labels')") == [(True, True)]
+    assert _q(lb, "SELECT policyname FROM pg_policies WHERE tablename = 'crm_note_labels'"
+              ) == [("crm_note_labels_tenant_isolation",)]
+
+
 def test_the_checks_refuse_a_string_that_is_not_ours(lb) -> None:
     a = lb.org_a
     act = _note(lb, a, _company(lb, a))
