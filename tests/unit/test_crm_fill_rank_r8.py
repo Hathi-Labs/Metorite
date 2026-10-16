@@ -306,7 +306,9 @@ async def _both_synced(p: Any, a: Any, b: Any) -> None:
         assert (await _run(org)).status == "ok"
 
 
-async def test_the_fields_routes_serve_fill_distinct_and_empty_columns(fz) -> None:
+async def test_the_fields_routes_serve_fill_distinct_and_empty_columns(fz, monkeypatch) -> None:
+    from acb_common import get_settings
+
     p, a, b = fz
     await _both_synced(p, a, b)
 
@@ -329,6 +331,16 @@ async def test_the_fields_routes_serve_fill_distinct_and_empty_columns(fz) -> No
     assert {f["distinct"] for f in layout_b["fields"]} == {None}
     plain_b = (await _get(p.org_b, "/crm/fields/organizations")).json()
     assert [f["fill"] for f in plain_b] == [None]
+
+    # Org A leaves the list. Its rows stay, and no route reads them.
+    monkeypatch.setattr(get_settings(), "crm_fill_rank_orgs", "", raising=False)
+    layout_off = (await _get(p.org_a, "/crm/fields/organizations?layout=1")).json()
+    assert layout_off["empty_columns"] is None
+    assert {f["fill"] for f in layout_off["fields"]} == {None}
+    plain_off = (await _get(p.org_a, "/crm/fields/organizations")).json()
+    assert [f["fill"] for f in plain_off] == [None]
+    module_off = (await _get(p.org_a, "/crm/modules/Products/records")).json()
+    assert {d["fill"] for d in module_off["field_defs"]} == {None}
 
 
 async def test_the_deal_layout_names_a_joined_column_in_both_words(fz) -> None:
