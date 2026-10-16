@@ -41,7 +41,59 @@ export type FieldDef = {
   default_value?: unknown;
   /** CRM-C4a: the entity slug that a lookup names. */
   lookup_target?: string | null;
+  /**
+   * CRM-Q17a-1: the share of records that fill the field, from 0 to 1. The
+   * gateway sends `null` outside `CRM_FILL_RANK_ORGS`, and while it has no
+   * numbers. No request computes it: the sync writes it.
+   */
+  fill?: number | null;
+  /** CRM-Q17a-1: the count of different filled values, in a sample. */
+  distinct?: number | null;
 };
+
+// ── The keys a record page leaves out (WS-53 CRM-Q17a-2) ───────────────────
+
+/**
+ * The Zoho system keys that the record page leaves out (CRM-Q17a-2 item 6).
+ * The sync keeps them in `custom` or in a module's `fields`, because it keeps
+ * every key Zoho sends. They tell a member nothing, and `Layout` is filled on
+ * each record, so a fill rank would put it first.
+ */
+export const ZOHO_SYSTEM_KEYS: readonly string[] = ["Layout", "Record_Image", "Tag"];
+
+/**
+ * The key in `custom` that keeps the Zoho name of an owner who is not a
+ * member (`OWNER_NAME_KEY` in `crm_sources/zoho/mapping.py`). The record
+ * shows it as its owner (CRM-Q17a-2 item 4), so it leaves the Fields tab.
+ */
+export const OWNER_NAME_KEY = "_owner_name";
+
+/** The note after the name of an owner who is not a member. */
+export const ZOHO_ONLY = "Zoho only";
+
+/** True for a key that no Fields tab and no Overview draws. */
+export function hiddenOnRecordPage(key: string): boolean {
+  return key === OWNER_NAME_KEY || ZOHO_SYSTEM_KEYS.includes(key);
+}
+
+/**
+ * The Zoho name of the owner of a record whose owner is not a member, or
+ * null. A record with an `owner_email` names a member, and it wins.
+ */
+export function zohoOwnerName(record: Row | null | undefined): string | null {
+  if (!record) return null;
+  const email = record.owner_email;
+  if (typeof email === "string" && email.trim()) return null;
+  const custom = record.custom;
+  if (!custom || typeof custom !== "object" || Array.isArray(custom)) return null;
+  const name = (custom as Row)[OWNER_NAME_KEY];
+  return typeof name === "string" && name.trim() ? name.trim() : null;
+}
+
+/** The owner as text with the note: "Asha Rao (Zoho only)". */
+export function zohoOwnerText(name: string): string {
+  return `${name} (${ZOHO_ONLY})`;
+}
 
 /** One option of a picklist, with its retired flag (CRM-C4p). */
 export type FieldOption = { value: string; label: string; retired: boolean };
@@ -298,6 +350,11 @@ export function summaryFacts(
 ): FieldRow[] {
   const text = (value: unknown): FieldValue =>
     isBlank(value) ? EMPTY : { kind: "text", text: customValue(value) };
+  // CRM-Q17a-2 item 4: an owner who is not a member shows by the Zoho name.
+  const zohoOwner = zohoOwnerName(record);
+  const owner: FieldValue = zohoOwner
+    ? { kind: "text", text: zohoOwnerText(zohoOwner) }
+    : text(record.owner_email);
   const facts: Record<EntitySlug, FieldRow[]> = {
     deals: [
       {
@@ -308,7 +365,7 @@ export function summaryFacts(
             ? { kind: "text", text: money(record.amount, (record.currency as string) || "INR") }
             : EMPTY,
       },
-      { key: "owner_email", label: "Owner", value: text(record.owner_email) },
+      { key: "owner_email", label: "Owner", value: owner },
       {
         key: "expected_close_date",
         label: "Close",
@@ -319,7 +376,7 @@ export function summaryFacts(
     ],
     leads: [
       { key: "organization_name", label: "Company", value: text(record.organization_name) },
-      { key: "owner_email", label: "Owner", value: text(record.owner_email) },
+      { key: "owner_email", label: "Owner", value: owner },
     ],
     contacts: [
       { key: "title", label: "Title", value: text(record.title) },
@@ -330,7 +387,7 @@ export function summaryFacts(
     organizations: [
       { key: "industry", label: "Industry", value: text(record.industry) },
       { key: "phone", label: "Phone", value: contactValue("phone", record.phone) },
-      { key: "owner_email", label: "Owner", value: text(record.owner_email) },
+      { key: "owner_email", label: "Owner", value: owner },
     ],
   };
   return facts[entity].filter((fact) => fact.value.kind !== "empty");
@@ -342,7 +399,8 @@ export function summaryFacts(
  * With definitions: the order of `position`, the definition's label, and only
  * the visible ones. A key without a definition follows them, under its
  * humanised key. Without definitions: the keys in the record's order, as before.
- * Only a key that the record carries is a row.
+ * Only a key that the record carries is a row. A key of `hiddenOnRecordPage`
+ * is never a row (CRM-Q17a-2 items 4 and 6).
  */
 export function fieldRows(
   record: Row | null | undefined,
@@ -354,9 +412,9 @@ export function fieldRows(
   const byKey = new Map(customDefs(defs).map((d) => [d.key, d]));
   const known = [...byKey.values()]
     // CRM-C4a: a retire keeps `visible`, so the retired flag hides the field.
-    .filter((d) => d.visible && !d.retired && d.key in values)
+    .filter((d) => d.visible && !d.retired && d.key in values && !hiddenOnRecordPage(d.key))
     .sort((a, b) => a.position - b.position);
-  const unknown = Object.keys(values).filter((k) => !byKey.has(k));
+  const unknown = Object.keys(values).filter((k) => !byKey.has(k) && !hiddenOnRecordPage(k));
   return [
     ...known.map((d) => ({
       key: d.key,
@@ -384,7 +442,7 @@ export function undefinedRows(
   if (!custom || typeof custom !== "object" || Array.isArray(custom)) return [];
   const known = new Set((defs ?? []).map((d) => d.key));
   return Object.entries(custom as Row)
-    .filter(([key]) => !known.has(key))
+    .filter(([key]) => !known.has(key) && !hiddenOnRecordPage(key))
     .map(([key, value]) => ({ key, label: humanizeKey(key), value: formatField(null, value) }));
 }
 
@@ -448,16 +506,27 @@ function browserStore(): Store | null {
   }
 }
 
-/** The keys this browser chose for one entity. Never throws. */
-export function readColumns(entity: ColumnScope, store: Store | null = browserStore()): string[] {
+/**
+ * The keys this browser chose for one entity. Never throws.
+ *
+ * ⚠️ `null` is "nothing saved", and `[]` is "saved empty" (CRM-Q17a-2 item
+ * 2). Only `null` lets the fill rank choose the columns. A member who took
+ * each column off keeps a list with none. A value that is not a list of keys
+ * reads as nothing saved.
+ */
+export function readColumns(
+  entity: ColumnScope,
+  store: Store | null = browserStore(),
+): string[] | null {
   try {
     const raw = store?.getItem(columnsKey(entity));
-    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    if (raw === null || raw === undefined) return null;
+    const parsed: unknown = JSON.parse(raw);
     return Array.isArray(parsed)
       ? parsed.filter((k): k is string => typeof k === "string").slice(0, MAX_COLUMNS)
-      : [];
+      : null;
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -503,6 +572,111 @@ export function chosenDefs(chosen: string[], defs: FieldDef[] | null | undefined
     .map((k) => live.get(k))
     .filter((d): d is FieldDef => d !== undefined)
     .slice(0, MAX_COLUMNS);
+}
+
+// ── The fill rank on screen (WS-53 CRM-Q17a-2) ─────────────────────────────
+
+/**
+ * True when the gateway sent fill numbers (CRM-Q17a-1). It sends them only
+ * for an org on `CRM_FILL_RANK_ORGS`, after a sync wrote them. With no
+ * number, each surface of CRM-Q17a-2 that reads the fill rank draws as before.
+ */
+export function fillRankOn(defs: readonly FieldDef[] | null | undefined): boolean {
+  return (defs ?? []).some((d) => typeof d.fill === "number");
+}
+
+/** The fill of a definition, or -1 for none. Sorts a field with no number last. */
+function fillOf(def: FieldDef | undefined): number {
+  return typeof def?.fill === "number" ? def.fill : -1;
+}
+
+/**
+ * The custom columns of a list with no saved choice (CRM-Q17a-2 item 2): the
+ * pickable fields with the highest fill, up to `MAX_COLUMNS`. A tie goes to
+ * the field with more different values, then to the order of `position`. A
+ * field with no fill, or a fill of 0, is never a default. A Zoho system key
+ * (`ZOHO_SYSTEM_KEYS`) is never one either. With no fill numbers, it is `[]`,
+ * which is the list of before.
+ */
+export function defaultColumns(defs: FieldDef[] | null | undefined): string[] {
+  return pickable(defs)
+    .filter((d) => fillOf(d) > 0 && !hiddenOnRecordPage(d.key))
+    .map((d, index) => ({ d, index }))
+    .sort(
+      (a, b) =>
+        fillOf(b.d) - fillOf(a.d) ||
+        (b.d.distinct ?? 0) - (a.d.distinct ?? 0) ||
+        a.index - b.index,
+    )
+    .slice(0, MAX_COLUMNS)
+    .map(({ d }) => d.key);
+}
+
+/**
+ * The custom columns a list shows: the saved choice, else the defaults of
+ * the fill rank. `saved` is `null` for nothing saved. A saved `[]` wins, and
+ * the list shows no custom column.
+ */
+export function effectiveColumns(
+  saved: string[] | null,
+  defs: FieldDef[] | null | undefined,
+): string[] {
+  return saved ?? defaultColumns(defs);
+}
+
+/**
+ * The rows of a record page with the filled ones first (CRM-Q17a-2 item 5).
+ * The filled rows go by the fill of their field, the highest first. A tie,
+ * and a field with no number, keep the order of `rows`. The empty rows follow
+ * in their own order. `defOf` gives the definition of a row.
+ */
+export function filledFirst<R>(
+  rows: readonly R[],
+  filled: (row: R) => boolean,
+  defOf: (row: R) => FieldDef | undefined,
+): R[] {
+  const ranked = rows.map((row, index) => ({ row, index, fill: fillOf(defOf(row)) }));
+  const full = ranked
+    .filter((r) => filled(r.row))
+    .sort((a, b) => b.fill - a.fill || a.index - b.index);
+  const empty = ranked.filter((r) => !filled(r.row));
+  return [...full, ...empty].map((r) => r.row);
+}
+
+/**
+ * True when a row of the Fields tab matches the filter box. The text matches
+ * the label or the key, in any case. An empty filter matches each row.
+ */
+export function matchesFieldFilter(row: { key: string; label: string }, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return row.label.toLowerCase().includes(q) || row.key.toLowerCase().includes(q);
+}
+
+/**
+ * The rows of the Fields tab after the filter box and the fold (CRM-Q17a-2
+ * item 5). `shown` keeps the order of `rows`. `empty` counts the empty rows
+ * that match the filter. Without `showEmpty`, they stay behind "Show n empty
+ * fields", and `folded` is the same count. With `showEmpty`, `folded` is 0.
+ */
+export function foldFields<R extends { key: string; label: string }>(
+  rows: readonly R[],
+  query: string,
+  showEmpty: boolean,
+  isEmpty: (row: R) => boolean,
+): { shown: R[]; folded: number; empty: number } {
+  const matching = rows.filter((row) => matchesFieldFilter(row, query));
+  const filled = matching.filter((row) => !isEmpty(row));
+  const empty = matching.length - filled.length;
+  return showEmpty
+    ? { shown: matching, folded: 0, empty }
+    : { shown: filled, folded: empty, empty };
+}
+
+/** The words of the fold control. */
+export function foldLabel(empty: number, showEmpty: boolean): string {
+  if (showEmpty) return "Hide empty fields";
+  return empty === 1 ? "Show 1 empty field" : `Show ${empty} empty fields`;
 }
 
 /** Add or remove one key. A sixth key is refused and the list stays as it is. */

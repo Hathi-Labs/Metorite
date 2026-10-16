@@ -8,6 +8,7 @@
 // Pure, so the test can hold the rail to the grammar without a browser.
 
 import { moduleRailRows, type CrmModule, type ModuleRailRow } from "./modules";
+import type { EntitySlug } from "./types";
 import { isEntity, type CrmView } from "./urlState";
 
 export interface CrmRailView {
@@ -50,9 +51,45 @@ export const CRM_SETTINGS_VIEW: CrmRailView = {
 /** Every row the rail draws, settings last. */
 export const CRM_RAIL: readonly CrmRailView[] = [...CRM_VIEWS, CRM_SETTINGS_VIEW];
 
-/** The label of a view, for the phone bar's title. */
-export function viewLabel(tab: CrmView["tab"]): string {
-  return CRM_RAIL.find((v) => v.id === tab)?.label ?? "Deals";
+/** One core entity as the source names it (`EntityLabel` in `fill_rank.py`). */
+export type SourceLabel = { label: string; singular_label?: string | null };
+
+/**
+ * The source's names of the core entities, by API slug (CRM-Q17a-2 item 7).
+ * `GET /crm/mode` sends them as `labels` in Mirror mode, for an org on
+ * `CRM_FILL_RANK_ORGS`. Each other case has none, and the CRM keeps its own
+ * names. ⚠️ Only the label changes. The id of a view stays the URL.
+ */
+export type SourceLabels = Partial<Record<EntitySlug, SourceLabel>>;
+
+/** The plural label of the source, or null when it sent none. */
+function sourcePlural(id: CrmView["tab"], labels: SourceLabels | null | undefined): string | null {
+  if (!labels || !isEntity(id)) return null;
+  const label = labels[id]?.label;
+  return typeof label === "string" && label.trim() ? label.trim() : null;
+}
+
+/**
+ * The singular label of the source, for the record page, or null. A source
+ * with no singular label gives its plural one.
+ */
+export function sourceSingular(
+  entity: EntitySlug,
+  labels: SourceLabels | null | undefined,
+): string | null {
+  const singular = labels?.[entity]?.singular_label;
+  if (typeof singular === "string" && singular.trim()) return singular.trim();
+  return sourcePlural(entity, labels);
+}
+
+/** The label of a view, for the phone bar's title and the list heading. */
+export function viewLabel(tab: CrmView["tab"], labels?: SourceLabels | null): string {
+  return sourcePlural(tab, labels) ?? CRM_RAIL.find((v) => v.id === tab)?.label ?? "Deals";
+}
+
+/** The views of the rail, with the source's labels in place of the CRM's. */
+export function labelledViews(labels: SourceLabels | null | undefined): CrmRailView[] {
+  return CRM_VIEWS.map((view) => ({ ...view, label: viewLabel(view.id, labels) }));
 }
 
 /** One row of the rail: a view, or a generic Zoho module (CRM-Q6b). */
@@ -67,12 +104,19 @@ export type RailEntry =
  * is a collection (Deals), and before Reports. They keep the order of
  * `GET /crm/modules`, which is the profile order. With no module, or a failed
  * read, the group is absent and the rail is the one of CRM-Q3.
+ *
+ * With `labels`, a known view takes the source's plural label (CRM-Q17a-2
+ * item 7). Contacts can read "Existing Sites". With none, it reads as before.
  */
-export function railEntries(modules: readonly CrmModule[] | null | undefined): RailEntry[] {
+export function railEntries(
+  modules: readonly CrmModule[] | null | undefined,
+  labels?: SourceLabels | null,
+): RailEntry[] {
   const rows = moduleRailRows(modules);
-  const lastKnown = CRM_VIEWS.reduce((at, view, i) => (isEntity(view.id) ? i : at), -1);
+  const views = labelledViews(labels);
+  const lastKnown = views.reduce((at, view, i) => (isEntity(view.id) ? i : at), -1);
   const entries: RailEntry[] = [];
-  CRM_VIEWS.forEach((view, i) => {
+  views.forEach((view, i) => {
     entries.push({ kind: "view", view });
     if (i === lastKnown) entries.push(...rows.map((row) => ({ kind: "module" as const, row })));
   });

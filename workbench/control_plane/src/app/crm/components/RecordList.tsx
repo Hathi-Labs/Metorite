@@ -14,6 +14,16 @@
  * so the vocabulary is one declaration, read by a Python fence
  * (`tests/unit/test_crm_export.py`). What stays here is RENDERING, which is
  * JSX and per-theme and could not live in a `.ts` file anyway.
+ *
+ * The fill rank (WS-53 CRM-Q17a-2, `crm_platform.md` section 18.9.6):
+ *
+ * - The list hides each standard column of `empty_columns` (`shownColumns`).
+ * - With no saved choice, the custom columns are the fields with the highest
+ *   fill (`effectiveColumns`). A saved view or a member's choice wins, and a
+ *   saved empty list stays empty.
+ * - A cell does not wrap. Long text ends in an ellipsis, and the cell's title
+ *   holds the full text.
+ * - An owner who is not a member shows by the Zoho name, with "Zoho only".
  */
 
 import Icon from "@/components/Icon";
@@ -26,11 +36,15 @@ import {
   MAX_COLUMNS,
   chosenDefs,
   columnGroups,
+  effectiveColumns,
+  fieldText,
   listCell,
   pickable,
   readColumns,
   toggleColumn,
   writeColumns,
+  zohoOwnerName,
+  zohoOwnerText,
   type FieldDef,
   type FieldGroup,
 } from "../lib/fields";
@@ -39,7 +53,7 @@ import FieldValue from "./FieldValue";
 import { stageAccent } from "../lib/board";
 import type { CrmMode } from "../lib/connect";
 import { useCrmModeValue } from "../lib/modeContext";
-import { COLUMNS } from "../lib/columns";
+import { COLUMNS, shownColumns } from "../lib/columns";
 import { SORTS } from "../lib/filters";
 import { money, shortDate, shortEmail } from "../lib/format";
 import type { EntitySlug, Status } from "../lib/types";
@@ -69,7 +83,11 @@ function text(row: Row, key: string): string {
 const RENDERERS: Record<string, (row: Row, ctx: CellContext) => React.ReactNode> = {
   amount: (r) => money(r.amount as number | null, (r.currency as string) || "INR"),
   expected_close_date: (r) => shortDate(r.expected_close_date as string | null),
-  owner_email: (r) => shortEmail(r.owner_email as string | null),
+  // CRM-Q17a-2 item 4: an owner who is not a member, by the Zoho name.
+  owner_email: (r) => {
+    const zoho = zohoOwnerName(r);
+    return zoho ? zohoOwnerText(zoho) : shortEmail(r.owner_email as string | null);
+  },
   first_name: (r) => `${text(r, "first_name")} ${r.last_name ?? ""}`.trim(),
   // CRM-X1: the stage by name, with the dot of `stageAccent`, the one stage
   // colour of the CRM. A stage the vocabulary does not hold draws a muted dot.
@@ -99,6 +117,19 @@ const RENDERERS: Record<string, (row: Row, ctx: CellContext) => React.ReactNode>
 function cell(key: string, row: Row, ctx: CellContext): React.ReactNode {
   return (RENDERERS[key] ?? ((r: Row) => text(r, key)))(row, ctx);
 }
+
+/**
+ * The full text of a cell, for its title (CRM-Q17a-2 item 3). A cell that
+ * draws markup names its text here. An empty cell has no title.
+ */
+function cellTitle(key: string, row: Row, node: React.ReactNode): string | undefined {
+  if (typeof node === "string") return node && node !== "—" ? node : undefined;
+  if (key === "status_name" && row.status_name) return String(row.status_name);
+  return undefined;
+}
+
+/** A cell's content: one line, cut with an ellipsis (CRM-Q17a-2 item 3). */
+export const ONE_LINE = "block max-w-xs truncate";
 
 export default function RecordList({
   entity,
@@ -138,8 +169,9 @@ export default function RecordList({
    * The chosen custom columns of the saved view in effect (CRM-Q8). When it is
    * given, the view owns the choice and the browser's choice is left alone.
    * When it is absent, the choice is per entity and lives in this browser.
+   * `null` is a view that saved no choice: the fill rank chooses (CRM-Q17a-2).
    */
-  columnKeys?: string[];
+  columnKeys?: string[] | null;
   onColumnsChange?: (keys: string[]) => void;
   /** The stages or statuses of this entity, for the dot of the Stage column. */
   statuses?: ReadonlyArray<Status>;
@@ -152,23 +184,27 @@ export default function RecordList({
 }) {
   // CRM-C2: the Stage dot reads the mode, so it agrees with the board.
   const mode = useCrmModeValue();
-  const columns = columnsProp ?? COLUMNS[entity as EntitySlug];
   // The choice is per entity and lives in this browser. The state re-seats
   // while rendering when the entity changes, so no frame shows the old list's choice.
+  // `null` is "nothing saved", and `[]` is "saved empty" (CRM-Q17a-2 item 2).
   const [picked, setPicked] = useState(() => ({ entity, keys: readColumns(entity) }));
   const [choosing, setChoosing] = useState(false);
-  let chosen = picked.keys;
+  let saved = picked.keys;
   if (picked.entity !== entity) {
-    chosen = readColumns(entity);
-    setPicked({ entity, keys: chosen });
+    saved = readColumns(entity);
+    setPicked({ entity, keys: saved });
   }
   const owned = columnKeys !== undefined;
-  if (owned) chosen = columnKeys;
+  if (owned) saved = columnKeys;
   // CRM-C4b: with the field studio on, the Columns control reads the layout
   // and draws a heading for each section. A generic module has no layout.
   const { layout } = useFieldLayout(entity.startsWith("module:") ? null : (entity as EntitySlug));
   const studio = layout?.studio === true ? layout : null;
   const defs = studio ? studio.fields : fieldDefs;
+  // CRM-Q17a-2 item 1: a standard column that no record fills is not drawn.
+  const columns = shownColumns(columnsProp ?? COLUMNS[entity as EntitySlug], layout?.empty_columns);
+  // CRM-Q17a-2 item 2: with no saved choice, the fields with the highest fill.
+  const chosen = effectiveColumns(saved, defs);
   const available = pickable(defs);
   const groups: FieldGroup[] = studio
     ? columnGroups(studio)
@@ -209,7 +245,7 @@ export default function RecordList({
               {columns.map((column) => (
                 <th
                   key={column.key}
-                  className="px-4 py-2 text-left font-medium text-muted-foreground"
+                  className="whitespace-nowrap px-4 py-2 text-left font-medium text-muted-foreground"
                 >
                   {column.sort && sortable.has(column.sort) ? (
                     <button
@@ -232,7 +268,7 @@ export default function RecordList({
               {extra.map((def) => (
                 <th
                   key={`custom:${def.key}`}
-                  className="px-4 py-2 text-left font-medium text-muted-foreground"
+                  className="whitespace-nowrap px-4 py-2 text-left font-medium text-muted-foreground"
                 >
                   {def.label}
                 </th>
@@ -246,35 +282,53 @@ export default function RecordList({
                 onClick={() => onOpen(String(row.id))}
                 className="cursor-pointer border-b border-border/60 hover:bg-secondary/40 tech-transition"
               >
-                {columns.map((column, index) => (
-                  <td
-                    key={column.key}
-                    className={`px-4 py-2 text-muted-foreground ${column.className ?? ""}`}
-                  >
-                    {index === 0 ? (
-                      // The row opens on a click, and Tab cannot reach a row. So
-                      // the first cell is a real button: the keyboard opens the
-                      // record here (DESIGN_SYSTEM §9, fence `crmRowKeyboard.test.ts`).
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onOpen(String(row.id));
-                        }}
-                        className="cc-link rounded-sm text-left"
+                {columns.map((column, index) => {
+                  const content = cell(column.key, row, { statuses, mode });
+                  const title = cellTitle(column.key, row, content);
+                  return (
+                    <td
+                      key={column.key}
+                      className={`whitespace-nowrap px-4 py-2 text-muted-foreground ${column.className ?? ""}`}
+                    >
+                      {index === 0 ? (
+                        // The row opens on a click, and Tab cannot reach a row. So
+                        // the first cell is a real button: the keyboard opens the
+                        // record here (DESIGN_SYSTEM §9, fence `crmRowKeyboard.test.ts`).
+                        <button
+                          type="button"
+                          title={title}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onOpen(String(row.id));
+                          }}
+                          className={`cc-link rounded-sm text-left ${ONE_LINE}`}
+                        >
+                          {content}
+                        </button>
+                      ) : (
+                        <span className={ONE_LINE} title={title}>
+                          {content}
+                        </span>
+                      )}
+                    </td>
+                  );
+                })}
+                {extra.map((def) => {
+                  const value = listCell(row, def);
+                  return (
+                    <td
+                      key={`custom:${def.key}`}
+                      className="whitespace-nowrap px-4 py-2 text-muted-foreground"
+                    >
+                      <span
+                        className={ONE_LINE}
+                        title={value.kind === "empty" ? undefined : fieldText(value)}
                       >
-                        {cell(column.key, row, { statuses, mode })}
-                      </button>
-                    ) : (
-                      cell(column.key, row, { statuses, mode })
-                    )}
-                  </td>
-                ))}
-                {extra.map((def) => (
-                  <td key={`custom:${def.key}`} className="px-4 py-2 text-muted-foreground">
-                    <FieldValue value={listCell(row, def)} compact />
-                  </td>
-                ))}
+                        <FieldValue value={value} compact />
+                      </span>
+                    </td>
+                  );
+                })}
               </tr>
             ))}
           </tbody>

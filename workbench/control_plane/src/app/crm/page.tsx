@@ -68,7 +68,7 @@ import ModuleList from "./components/ModuleList";
 import ModuleRecordSheet from "./components/ModuleRecordSheet";
 import { moduleLabel, type ModuleLink } from "./lib/modules";
 import { openModuleRecord, selectModule } from "./lib/urlState";
-import { useModules } from "./lib/useCrmMode";
+import { useModules, useSourceLabels } from "./lib/useCrmMode";
 import * as api from "./lib/api";
 import { CrmError } from "./lib/api";
 import {
@@ -194,6 +194,9 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   const store = useCrmStore();
   // The mirrored generic Zoho modules, for the rail (CRM-Q6b). Native: none.
   const { modules } = useModules(ctx.mode === "mirror");
+  // CRM-Q17a-2 item 7: in Mirror mode, the source's names of the core
+  // entities. A Native CRM, or an org off the list, keeps the CRM's names.
+  const labels = useSourceLabels(ctx.mode === "mirror");
   /** The Refresh button of a module list reads page 1 again. */
   const [moduleReload, setModuleReload] = useState(0);
   const { isMobile } = useViewMode();
@@ -412,11 +415,16 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
 
   const barDefs = filterDefs;
 
-  /** The custom columns in effect: the view's own, or this browser's. */
+  /**
+   * The custom columns in effect: the view's own, or this browser's. `null`
+   * is "nothing saved", and the list then shows the columns of the fill rank.
+   * `[]` is "saved empty" (CRM-Q17a-2 item 2). A new view keeps the choice,
+   * not the defaults on screen, so it goes on following the fill rank.
+   */
   const draftOfView = draftColumns?.viewId === view.viewId ? draftColumns?.keys : undefined;
-  const viewColumns = draftOfView ?? activeSaved?.columns ?? [];
-  const currentColumns = (): string[] =>
-    activeSaved ? viewColumns : filterEntity ? readColumns(filterEntity) : [];
+  const viewColumns: string[] | null = draftOfView ?? activeSaved?.columns ?? null;
+  const currentColumns = (): string[] | null =>
+    activeSaved ? viewColumns : filterEntity ? readColumns(filterEntity) : null;
   const dirty = activeSaved
     ? viewDiverges(activeSaved, captureView(view, viewColumns, view.pipelineId))
     : false;
@@ -648,7 +656,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               : // A list view names itself. With the rail folded, the four
               // lists share one layout, and this line is all that tells
               // Deals from Contacts.
-              viewLabel(view.tab);
+              viewLabel(view.tab, labels);
   const mode = modeLine({ mode: ctx.mode, connection: ctx.connection, sync: ctx.sync });
   // CRM-X0: the mode part links an admin to the setup hub.
   const subtitle = mode ? (
@@ -725,7 +733,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           ]}
           mode={view.layout}
           onPick={(next) => go(selectLayout(view, next))}
-          label={`${viewLabel(view.tab)} layout`}
+          label={`${viewLabel(view.tab, labels)} layout`}
         />
       )}
       {dealBoard && (
@@ -833,6 +841,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                       saved={railSaved}
                       modules={railModules}
                       settings={railSettings}
+                      labels={labels}
                     />
                   </nav>
                 )
@@ -840,7 +849,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               className="inline-flex max-w-full items-center gap-1 align-middle tech-transition hover:opacity-80"
             >
               <span className="truncate">
-                {view.tab === "module" ? moduleLabel(modules, view.module) : viewLabel(view.tab)}
+                {view.tab === "module" ? moduleLabel(modules, view.module) : viewLabel(view.tab, labels)}
               </span>
               <Icon name="ChevronDown" size={14} className="shrink-0 text-muted-foreground" />
             </button>
@@ -868,6 +877,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               saved={railSaved}
               modules={railModules}
               settings={railSettings}
+              labels={labels}
             />
           </nav>
         ) : null}
@@ -1075,6 +1085,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
       {view.record && (
         <RecordSheet
           entity={view.record.entity}
+          labels={labels}
           record={store.record}
           statuses={statusesFor(view.record.entity)}
           timeline={store.timeline}

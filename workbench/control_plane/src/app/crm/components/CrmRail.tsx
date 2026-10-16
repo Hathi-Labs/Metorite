@@ -33,7 +33,12 @@ import type { SettingsSection, SettingsSectionId } from "../lib/settingsSections
 import type { EntitySlug } from "../lib/types";
 import type { CrmModule } from "../lib/modules";
 import type { CrmView } from "../lib/urlState";
-import { CRM_SETTINGS_VIEW, railEntries, type CrmRailView } from "../lib/views";
+import {
+  CRM_SETTINGS_VIEW,
+  railEntries,
+  type CrmRailView,
+  type SourceLabels,
+} from "../lib/views";
 
 export type RailViewActions = {
   views: Record<EntitySlug, SavedView[]>;
@@ -96,6 +101,7 @@ export default function CrmRail({
   saved,
   modules,
   settings,
+  labels = null,
 }: {
   tab: CrmView["tab"];
   onSelect: (tab: CrmView["tab"]) => void;
@@ -103,6 +109,11 @@ export default function CrmRail({
   modules?: RailModules;
   /** The settings sections. They show while the settings tab is on screen. */
   settings?: RailSettings;
+  /**
+   * The source's names of the core entities (CRM-Q17a-2 item 7). In Mirror
+   * mode Contacts can read "Existing Sites". `null` keeps the CRM's names.
+   */
+  labels?: SourceLabels | null;
 }) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -201,7 +212,7 @@ export default function CrmRail({
 
   return (
     <div className="flex flex-col gap-0.5">
-      {railEntries(modules?.modules).map((entry) => {
+      {railEntries(modules?.modules, labels).map((entry) => {
         if (entry.kind === "view") return row(entry.view);
         const selected = tab === "module" && modules?.active === entry.row.module;
         return (

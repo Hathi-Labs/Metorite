@@ -33,6 +33,12 @@ export type FieldLayout = {
   studio: boolean;
   /** The flag allows the org, the caller is an admin, and the mode is Native. */
   studio_admin: boolean;
+  /**
+   * CRM-Q17a-1: the standard keys of the entity that no record fills. `null`
+   * outside `CRM_FILL_RANK_ORGS`, and `[]` while the numbers are stale. The
+   * list hides each one (CRM-Q17a-2 item 1).
+   */
+  empty_columns?: string[] | null;
 };
 
 /**
@@ -54,6 +60,10 @@ export function asFieldLayout(raw: unknown): FieldLayout {
     fields: body.fields as FieldDef[],
     studio: body.studio === true,
     studio_admin: body.studio_admin === true,
+    // A gateway from before CRM-Q17a-1 sends no set, and nothing hides.
+    empty_columns: Array.isArray(body.empty_columns)
+      ? body.empty_columns.filter((k): k is string => typeof k === "string")
+      : null,
   };
 }
 

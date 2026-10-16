@@ -89,17 +89,23 @@ export function captureFilters(view: CrmView): SavedFilters {
   return out;
 }
 
-/** The screen, as a view would store it. */
+/**
+ * The screen, as a view would store it.
+ *
+ * `columns` is the member's choice: `null` for nothing saved, and `[]` for
+ * saved empty (CRM-Q17a-2 item 2). A view keeps that difference. A view with
+ * `null` shows the columns of the fill rank, and a view with `[]` shows none.
+ */
 export function captureView(
   view: CrmView,
-  columns: string[],
+  columns: string[] | null,
   pipelineId: string | null,
 ): ViewState {
   return {
     layout: hasBoard(view.tab) ? view.layout : "list",
     filters: captureFilters(view),
     sort: view.sort ? { key: view.sort, dir: view.dir } : null,
-    columns: columns.length > 0 ? columns.slice(0, MAX_COLUMNS) : null,
+    columns: columns === null ? null : columns.slice(0, MAX_COLUMNS),
     pipeline_id: view.tab === "deals" ? pipelineId : null,
   };
 }
@@ -141,13 +147,16 @@ function stable(value: unknown): string {
   return JSON.stringify(value ?? null);
 }
 
-/** What a saved view holds, as a `ViewState` (the stored shape of a column list is null or non-empty). */
+/**
+ * What a saved view holds, as a `ViewState`. The column list stays `null`
+ * (nothing saved) or a list, which can be empty (CRM-Q17a-2 item 2).
+ */
 export function stateOf(saved: SavedView): ViewState {
   return {
     layout: saved.layout,
     filters: saved.filters ?? {},
     sort: saved.sort,
-    columns: saved.columns && saved.columns.length > 0 ? saved.columns : null,
+    columns: Array.isArray(saved.columns) ? saved.columns : null,
     pipeline_id: saved.pipeline_id,
   };
 }

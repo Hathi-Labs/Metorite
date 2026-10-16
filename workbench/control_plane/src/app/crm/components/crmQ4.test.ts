@@ -241,7 +241,10 @@ describe("the column choice", () => {
     writeColumns("leads", ["c"], store);
     expect(readColumns("deals", store)).toEqual(["a", "b"]);
     expect(readColumns("leads", store)).toEqual(["c"]);
-    expect(readColumns("contacts", store)).toEqual([]);
+    // CRM-Q17a-2: nothing saved is null, and a saved empty list stays [].
+    expect(readColumns("contacts", store)).toBeNull();
+    writeColumns("organizations", [], store);
+    expect(readColumns("organizations", store)).toEqual([]);
     expect(Object.keys(store.data)).toContain(columnsKey("deals"));
   });
 
@@ -265,11 +268,12 @@ describe("the column choice", () => {
         throw new Error("blocked");
       },
     };
-    expect(readColumns("deals", broken)).toEqual([]);
+    // Each of these reads as nothing saved (CRM-Q17a-2 item 2).
+    expect(readColumns("deals", broken)).toBeNull();
     expect(() => writeColumns("deals", ["a"], broken)).not.toThrow();
-    expect(readColumns("deals", memoryStore({ [columnsKey("deals")]: "{not json" }))).toEqual([]);
-    expect(readColumns("deals", memoryStore({ [columnsKey("deals")]: '{"a":1}' }))).toEqual([]);
-    expect(readColumns("deals", null)).toEqual([]);
+    expect(readColumns("deals", memoryStore({ [columnsKey("deals")]: "{not json" }))).toBeNull();
+    expect(readColumns("deals", memoryStore({ [columnsKey("deals")]: '{"a":1}' }))).toBeNull();
+    expect(readColumns("deals", null)).toBeNull();
   });
 
   it("drops a choice that left the definitions or went hidden", () => {
