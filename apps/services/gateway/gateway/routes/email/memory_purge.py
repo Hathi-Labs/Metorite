@@ -60,18 +60,17 @@ The rules of this module:
    and the error class only. No log line holds memory text or an address.
 9. **The org purge** (EM-G11f1c, migration 276). ``DELETE FROM organization``
    cascades each ``email_mailbox_purges`` row of the org, so the org purge
-   writes ``email_detached_purges`` instead, in the same transaction
-   (:data:`RECORD_DETACHED_PURGES_SQL`). It also carries each open row of the
-   org there (:data:`CARRY_OPEN_PURGES_SQL`). That table is RLS-EXEMPT,
-   because its tenant no longer exists. Each tick sweeps it as one more lane,
-   after the organizations of each round, through ONE unbound session
-   (:func:`_detached_session`). That is safe for three reasons. Only the org
-   purge writes a row, in the session that it bound to the org, from the
-   ``email_accounts`` rows that FORCE RLS shows to it. The sweeper acts only
-   on the key that a row names, ``<owner>#acct:<mailbox id>``, and
-   :func:`mailbox_memory_scope` refuses a key with no mailbox id. A mailbox
-   id is a UUID that the purge deleted, so no live mailbox of any tenant
-   shares the key.
+   records ``email_detached_purges`` rows instead, in the same transaction
+   (:data:`RECORD_DETACHED_PURGES_SQL`). That table is RLS-EXEMPT, because its
+   tenant no longer exists, and the app role has NO grant on it. Three
+   SECURITY DEFINER functions are the only way in. Each tick sweeps it as one
+   more lane, after the organizations of each round, through ONE unbound
+   session (:func:`_detached_session`), which calls only those functions.
+   The key that the sweeper deletes cannot name a live mailbox. The record
+   function takes rows only from the org that the transaction binds, and a
+   deferred trigger fails the commit while that org exists, so a row commits
+   only with the delete of its org and of each of its mailboxes. A closed row
+   keeps no address.
 
 Fences: ``tests/unit/test_email_disconnect_memory_purge.py``,
 ``tests/unit/test_email_mailbox_purge_durable.py`` (R8) and
@@ -91,7 +90,7 @@ from uuid import UUID
 from acb_common import get_settings
 from gateway.db import get_db
 from gateway.routes.email.core import _log, _tenant_session, email_memory_scope
-from gateway.routes.email.teardown import MEMBER_MAILBOXES_WHERE, ORG_MAILBOXES_WHERE
+from gateway.routes.email.teardown import MEMBER_MAILBOXES_WHERE
 from sqlalchemy import text
 
 #: The part of a Mem0 key that names one mailbox. ``email_memory_scope``
@@ -171,34 +170,14 @@ RECORD_MEMBER_PURGES_SQL = f"""INSERT INTO email_mailbox_purges
                                 WHERE {MEMBER_MAILBOXES_WHERE}
                                ON CONFLICT (organization_id, account_id) DO NOTHING"""
 
-#: Rule 9, the org purge (EM-G11f1c, §12.3.13.9.2). One detached row for each
-#: mailbox of the org, in ONE set-based statement, in the transaction of
-#: ``DELETE FROM organization`` and before it. ``purged_org_id`` is the
-#: ``organization_id`` of the mailbox row, read under FORCE RLS in the session
-#: that the purge bound. The clause names the org too
-#: (``teardown.ORG_MAILBOXES_WHERE``), so the plans, these rows and the cascade
-#: name one set of rows. The lease is 0, as for the member purge.
-RECORD_DETACHED_PURGES_SQL = f"""INSERT INTO email_detached_purges
-                                   (purged_org_id, owner_email, account_id, next_try_at)
-                                 SELECT organization_id, user_id, id, now()
-                                   FROM email_accounts
-                                  WHERE {ORG_MAILBOXES_WHERE}
-                                 ON CONFLICT (purged_org_id, account_id) DO NOTHING"""
-
-#: Rule 9 too. The cascade of the org delete also deletes each OPEN
-#: ``email_mailbox_purges`` row of the org: a disconnect or a member purge
-#: whose Mem0 passes have not finished. Each one moves to the detached table
-#: in the same statement block, with its passes, its tries and its next try,
-#: so no purge that the org owes is lost.
-CARRY_OPEN_PURGES_SQL = """INSERT INTO email_detached_purges
-                             (purged_org_id, owner_email, account_id, passes,
-                              tries, next_try_at)
-                           SELECT organization_id, owner_email, account_id, passes,
-                                  tries, next_try_at
-                             FROM email_mailbox_purges
-                            WHERE state = 'open'
-                              AND organization_id = CAST(:org AS uuid)
-                           ON CONFLICT (purged_org_id, account_id) DO NOTHING"""
+#: Rule 9, the org purge (EM-G11f1c, §12.3.13.9.2). ONE call, in the
+#: transaction of ``DELETE FROM organization`` and before it. The SECURITY
+#: DEFINER function of migration 276 writes one detached row for each mailbox
+#: of the org and carries each open ``email_mailbox_purges`` row of the org.
+#: It refuses an org that the transaction does not bind, and a deferred
+#: trigger fails the commit while the org still exists. It answers the count
+#: of mailbox rows. The app role has no grant on the table itself.
+RECORD_DETACHED_PURGES_SQL = "SELECT public.record_detached_purges(CAST(:org AS uuid))"
 
 #: Rule 5. The route's task closes the row after two good passes.
 _TASK_DONE_SQL = """UPDATE email_mailbox_purges
@@ -213,9 +192,11 @@ class _PurgeStore:
 
     Two tables hold purge rows: ``email_mailbox_purges`` (a tenant's, under
     FORCE RLS) and ``email_detached_purges`` (an org purge's, RLS-EXEMPT).
-    This is not a second way. One builder writes the four statements of both,
-    and one pass runs both. Only the store differs, and the claim of the
-    tenant store names its org.
+    This is not a second way. The four statements of both take the same
+    parameters and give the same rows, and one pass runs both. Only the store
+    differs. The tenant store is plain SQL under RLS. The detached store is
+    the three SECURITY DEFINER functions of migration 276, because the app
+    role has no grant on that table.
     """
 
     table: str
@@ -271,9 +252,23 @@ _TENANT_STORE = _purge_store(
     "email_mailbox_purges",
     claim_scope="\n                          AND organization_id = CAST(:org AS uuid)")
 
-#: The rows of a purged org (rule 9). The claim names no org: the table has
-#: no RLS, and its tenant is gone.
-_DETACHED_STORE = _purge_store("email_detached_purges", claim_scope="")
+#: The rows of a purged org (rule 9). Each statement calls a function of
+#: migration 276 and names no table. The claim names no org: its tenant is
+#: gone. ``test_email_mailbox_purge_durable.py`` pins each statement.
+_DETACHED_STORE = _PurgeStore(
+    table="email_detached_purges",
+    claim_sql=("SELECT id, owner_email, account_id, passes, tries FROM "
+               "public.claim_detached_purge(CAST(:lease AS double precision))"),
+    pass_done_sql=("SELECT public.settle_detached_purge(CAST(:id AS uuid), 'pass', "
+                   "CAST(:passes AS smallint), CAST(:delay AS double precision), "
+                   "CAST(NULL AS text))"),
+    pass_failed_sql=("SELECT public.settle_detached_purge(CAST(:id AS uuid), 'failed', "
+                     "CAST(NULL AS smallint), CAST(:delay AS double precision), "
+                     "CAST(:error AS text))"),
+    refused_sql=("SELECT public.settle_detached_purge(CAST(:id AS uuid), 'refused', "
+                 "CAST(NULL AS smallint), CAST(0 AS double precision), "
+                 "CAST(NULL AS text))"),
+)
 
 
 
@@ -628,14 +623,14 @@ async def _organization_ids() -> list[str]:
 
 @contextlib.asynccontextmanager
 async def _detached_session() -> AsyncIterator[Any]:
-    """One transaction on the RLS-EXEMPT ``email_detached_purges``, with NO
-    tenant bound (rule 9).
+    """One transaction for the detached lane, with NO tenant bound (rule 9).
 
-    The tenant of each row no longer exists, so no ``tenant_session`` can bind
-    it. The table has no policy, so an unbound session sees each row. The
-    sweeper runs only the four statements of ``_DETACHED_STORE`` here, and
-    each names this table and no other. It is a tenant-discovery site of
-    ``test_db_engine_seam.py``.
+    The tenant of each detached row no longer exists, so no ``tenant_session``
+    can bind it. The app role has no grant on the table. The sweeper runs only
+    the four statements of ``_DETACHED_STORE`` here, and each one calls a
+    SECURITY DEFINER function of migration 276. It is a tenant-discovery site
+    of ``test_db_engine_seam.py``. ``run_tick`` is its ONE caller, and
+    ``test_email_mailbox_purge_durable.py`` fences that and each statement.
     """
     db = await get_db()
     try:

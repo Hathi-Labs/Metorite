@@ -113,7 +113,15 @@ def test_the_detached_purge_table_is_exempt_with_its_reason() -> None:
     assert "organization_id" not in create.split(");", 1)[0]
     assert "REVOKE ALL ON TABLE email_detached_purges FROM PUBLIC;" in body
     assert "ARRAY['anon', 'authenticated', 'service_role']" in body
-    assert "GRANT SELECT, INSERT, UPDATE ON TABLE email_detached_purges TO acb_app" in body
+    # Fix round 1 (security review): the app role has NO grant on the table.
+    # Three SECURITY DEFINER functions are the only way in.
+    assert "REVOKE ALL ON TABLE email_detached_purges FROM acb_app;" in body
+    assert "ON TABLE email_detached_purges TO" not in body, "a role got the table"
+    for fn in ("record_detached_purges(uuid)", "claim_detached_purge(double precision)"):
+        assert f"REVOKE ALL ON FUNCTION public.{fn} FROM PUBLIC;" in body
+        assert f"GRANT EXECUTE ON FUNCTION public.{fn} TO acb_app;" in body
+    assert len(re.findall(
+        r"SECURITY DEFINER\s+SET search_path = pg_catalog, pg_temp", body)) == 3
 
 
 def test_the_pending_ask_table_is_tenant_scoped() -> None:

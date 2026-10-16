@@ -73,10 +73,7 @@ from gateway.routes.admin.members import (
     purge_member_rows,
     remove_member_rows,
 )
-from gateway.routes.email.memory_purge import (
-    CARRY_OPEN_PURGES_SQL,
-    RECORD_DETACHED_PURGES_SQL,
-)
+from gateway.routes.email.memory_purge import RECORD_DETACHED_PURGES_SQL
 from gateway.routes.email.teardown import (
     OrgScope,
     TeardownCounts,
@@ -87,6 +84,13 @@ from gateway.routes.email.teardown import (
 from sqlalchemy import text
 
 _log = get_logger("gateway.routes.operator")
+
+#: The first statement of the org purge callback (EM-G11f1c, fix round 1).
+#: It locks the org row until the purge commits. A mailbox connect inserts an
+#: ``email_accounts`` row whose foreign key takes a KEY SHARE lock on that org
+#: row, so it waits for the purge and then fails on the foreign key. No
+#: mailbox can join the org between the plan read and the cascade.
+ORG_LOCK_SQL = "SELECT 1 FROM organization WHERE id = CAST(:org AS uuid) FOR UPDATE"
 
 router = APIRouter(prefix="/internal/operator", tags=["operator"])
 
@@ -125,22 +129,26 @@ async def plan_org_teardown(db: Any, org_id: str) -> list[TeardownPlan]:
     ``DELETE FROM organization`` or not at all. It opens nothing and commits
     nothing. It makes no network call.
 
+    0. It locks the org row (:data:`ORG_LOCK_SQL`), so no mailbox can join the
+       org before the cascade.
     1. It reads the teardown plan of each mailbox of the org, under FORCE RLS
        in the session that the purge bound. More than
        ``TEARDOWN_MAX_MAILBOXES`` mailboxes raise a 409, and the purge rolls
        back whole.
-    2. It writes one ``email_detached_purges`` row for each mailbox, and it
-       moves each open ``email_mailbox_purges`` row of the org there. The
-       cascade of the org delete would delete those rows, and then no sweep
-       could find the Mem0 purges that the org owes.
+    2. It calls the SECURITY DEFINER ``record_detached_purges`` of migration
+       276. That function writes one ``email_detached_purges`` row for each
+       mailbox, and moves each open ``email_mailbox_purges`` row of the org
+       there. The cascade of the org delete would delete those rows, and then
+       no sweep could find the Mem0 purges that the org owes. The function
+       takes rows only from the org that this transaction binds.
 
     It returns the plans, and the purge puts them in its receipt. The door
     takes them out before it answers, because a plan holds a credential blob.
     """
+    await db.execute(text(ORG_LOCK_SQL), {"org": org_id})
     plans = await read_teardown_plans(db, OrgScope(org_id))
-    recorded = (await db.execute(
-        text(RECORD_DETACHED_PURGES_SQL), {"org": org_id})).rowcount or 0
-    await db.execute(text(CARRY_OPEN_PURGES_SQL), {"org": org_id})
+    recorded = int((await db.execute(
+        text(RECORD_DETACHED_PURGES_SQL), {"org": org_id})).scalar() or 0)
     # A mailbox that a member connected after the plan read goes with the
     # delete, and it has no plan, so nothing revokes its grant. The line says
     # so, with counts and no address.

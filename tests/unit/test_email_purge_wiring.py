@@ -439,8 +439,36 @@ def make_detached_due(admin, org: str) -> None:
                   {"o": org})
 
 
+def _migration_276() -> str:
+    """Migration 276, found by CONTENT and never by number (R1)."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "infra" / "postgres"
+    [hit] = [f for f in root.glob("[0-9]*_*.sql")
+             if "CREATE TABLE IF NOT EXISTS email_detached_purges"
+             in f.read_text(encoding="utf-8")]
+    return hit.read_text(encoding="utf-8")
+
+
+def apply_prod_grants(admin) -> None:
+    """Run migration 276 again, with the rehearsal role in place of ``acb_app``.
+
+    Production created ``acb_app`` (handover §H3) BEFORE this migration ran,
+    so the file's REVOKE and GRANT EXECUTE act on it. The ``promoted``
+    fixture creates its role AFTER the ladder and grants it every table. A
+    second run of the file, which is idempotent, restores the production
+    order: the role keeps no table grant and holds EXECUTE on the three
+    functions only."""
+    from tests.unit.test_h3_rls_promotion_rehearsal import _APP_ROLE
+
+    body = _migration_276().replace("acb_app", _APP_ROLE)
+    with admin.begin() as c, c.connection.dbapi_connection.cursor() as cur:
+        cur.execute(body)
+
+
 async def org_purge(p, slug: str) -> dict[str, Any]:
-    """The REAL org door, as the app role."""
+    """The REAL org door, as the app role, with the grants of production."""
+    apply_prod_grants(p.admin_engine)
     app_dsn = p.app_url.render_as_string(hide_password=False)
     async with tenant_engine_scope(app_dsn):
         return await operator_door.purge_organization(
@@ -582,6 +610,7 @@ class TestTheOrgPurgeTearsDownEachMailbox:
             [row] = detached_rows(p.admin_engine, org)
             assert (row.state, row.passes, row.tries) == ("open", 1, 1), (
                 "the tick did not take the detached row")
+            assert row.owner_email == gone, "an open row lost its owner"
             assert m.fake.left(scope) == 0
             m.fake.seed(scope, "late")
             make_detached_due(p.admin_engine, org)
@@ -589,6 +618,7 @@ class TestTheOrgPurgeTearsDownEachMailbox:
                 await memory_purge.run_tick()
             [row] = detached_rows(p.admin_engine, org)
             assert (row.state, row.passes) == ("done", 2) and row.done_at is not None
+            assert row.owner_email == "", "a closed row kept the owner address"
             assert m.fake.left(scope) == 0
             assert m.fake.left(gone) == 2, "the sweep took the bare member key"
             assert m.fake.left(other) == 3, "the sweep took a key the row does not name"
@@ -615,3 +645,151 @@ class TestTheOrgPurgeTearsDownEachMailbox:
         assert _admin_read(p.admin_engine, "SELECT 1 FROM pg_class c, "
                            "aclexplode(c.relacl) a WHERE c.oid = "
                            "'email_detached_purges'::regclass AND a.grantee = 0") == []
+        # Fix round 1: the functions are closed to PUBLIC too.
+        for fn in ("record_detached_purges", "claim_detached_purge",
+                   "settle_detached_purge"):
+            assert _admin_read(p.admin_engine, "SELECT 1 FROM pg_proc f, "
+                               "aclexplode(f.proacl) a WHERE f.proname = :n "
+                               "AND a.grantee = 0", n=fn) == [], f"PUBLIC runs {fn}"
+
+
+# ── fix round 1: the table is reached only through its functions ────────────
+
+
+_RECORD = "SELECT public.record_detached_purges(CAST(:o AS uuid))"
+_BIND = "SELECT set_config('app.tenant_id', :o, true)"
+
+
+class TestTheDetachedTableIsClosed:
+    """Security review, fix round 1 (§12.3.13.9.2). The key safety of the
+    sweeper rests on four rules in migration 276, and each one is a fact of
+    the database, not of app code."""
+
+    def test_the_app_role_has_no_direct_access(self, promoted, app_engine):  # noqa: F811
+        """Rule 1. ``acb_app`` cannot SELECT, INSERT or UPDATE the table."""
+        _assert_non_priv(app_engine)
+        apply_prod_grants(promoted.admin_engine)
+        for sql in (
+            "SELECT owner_email FROM email_detached_purges",
+            "INSERT INTO email_detached_purges (purged_org_id, owner_email, "
+            "account_id) VALUES (gen_random_uuid(), 'x@g7c.test', gen_random_uuid())",
+            "UPDATE email_detached_purges SET owner_email = 'x@g7c.test'",
+        ):
+            with app_engine.connect() as c, pytest.raises(
+                    Exception, match="permission denied"):
+                c.execute(text(sql))
+
+    def test_the_record_takes_only_the_bound_org(self, promoted, app_engine):  # noqa: F811
+        """Rule 2. A transaction bound to org A cannot record org B, and the
+        record of org A counts only the mailboxes of org A."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        apply_prod_grants(p.admin_engine)
+        tag = uuid.uuid4().hex[:8]
+        a_owner, b_owner = f"a-{tag}@em-g11f1c.test", f"b-{tag}@em-g11f1c.test"
+        seed_mailbox(p.admin_engine, p.org_a, a_owner, provider="imap")
+        seed_mailbox(p.admin_engine, p.org_b, b_owner, provider="imap")
+        [(in_a,)] = _admin_read(p.admin_engine, "SELECT count(*) FROM email_accounts "
+                                "WHERE organization_id = CAST(:o AS uuid)", o=p.org_a)
+        try:
+            with app_engine.connect() as c, c.begin():
+                c.execute(text(_BIND), {"o": p.org_a})
+                with pytest.raises(Exception, match="does not bind organization"):
+                    c.execute(text(_RECORD), {"o": p.org_b})
+            with app_engine.connect() as c:
+                c.execute(text(_BIND), {"o": p.org_a})
+                assert c.execute(text(_RECORD), {"o": p.org_a}).scalar_one() == in_a
+                c.rollback()
+            assert detached_rows(p.admin_engine, p.org_a) == []
+            assert detached_rows(p.admin_engine, p.org_b) == []
+        finally:
+            wipe(p.admin_engine, a_owner, b_owner)
+
+    def test_a_row_commits_only_with_the_delete_of_its_org(self, promoted, app_engine):  # noqa: F811
+        """Rule 3. The record of an org that still exists cannot commit: a
+        deferred trigger fails the COMMIT. So no committed row can name a
+        mailbox that still exists, because the mailboxes of a deleted org go
+        with it (migration 223)."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        apply_prod_grants(p.admin_engine)
+        tag = uuid.uuid4().hex[:8]
+        owner = f"live-{tag}@em-g11f1c.test"
+        acc = seed_mailbox(p.admin_engine, p.org_b, owner, provider="imap")
+        try:
+            with app_engine.connect() as c:
+                c.execute(text(_BIND), {"o": p.org_b})
+                assert c.execute(text(_RECORD), {"o": p.org_b}).scalar_one() >= 1
+                with pytest.raises(Exception, match="still exists at commit"):
+                    c.commit()
+            assert _admin_read(p.admin_engine, "SELECT 1 FROM email_detached_purges "
+                               "WHERE account_id = CAST(:a AS uuid)", a=acc) == [], (
+                "a detached row of a live mailbox committed")
+        finally:
+            wipe(p.admin_engine, owner)
+
+    def test_a_closed_row_keeps_no_address(self, promoted, app_engine):  # noqa: F811
+        """Item 3. ``done`` and ``refused`` drop the owner address. An open row
+        keeps it, because the next pass needs the key."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        apply_prod_grants(p.admin_engine)
+        dead = str(uuid.uuid4())  # an org that does not exist, so the seed commits
+        ids = {}
+        with p.admin_engine.begin() as c:
+            for name, passes in (("done", 1), ("refused", 0), ("open", 0)):
+                ids[name] = str(c.execute(text(
+                    "INSERT INTO email_detached_purges (purged_org_id, owner_email, "
+                    "account_id, passes) VALUES (CAST(:o AS uuid), :e, "
+                    "gen_random_uuid(), :n) RETURNING id"),
+                    {"o": dead, "e": f"{name}@em-g11f1c.test", "n": passes}).scalar_one())
+        store = memory_purge._DETACHED_STORE
+        try:
+            with app_engine.begin() as c:
+                c.execute(text(store.pass_done_sql),
+                          {"id": ids["done"], "passes": 2, "delay": 120.0})
+                c.execute(text(store.refused_sql), {"id": ids["refused"]})
+                c.execute(text(store.pass_done_sql),
+                          {"id": ids["open"], "passes": 1, "delay": 120.0})
+            rows = {str(r.id): r for r in _admin_read(
+                p.admin_engine, "SELECT id, state, owner_email FROM email_detached_purges "
+                "WHERE purged_org_id = CAST(:o AS uuid)", o=dead)}
+            assert (rows[ids["done"]].state, rows[ids["done"]].owner_email) == ("done", "")
+            assert (rows[ids["refused"]].state,
+                    rows[ids["refused"]].owner_email) == ("refused", "")
+            assert (rows[ids["open"]].state,
+                    rows[ids["open"]].owner_email) == ("open", "open@em-g11f1c.test")
+        finally:
+            drop_org(p.admin_engine, dead)
+
+    async def test_the_callback_locks_the_org_row(self, promoted, app_engine, recorder):  # noqa: F811
+        """Item 4. While the purge transaction is open after its callback, a
+        new mailbox of the org cannot land: its foreign key waits on the org
+        row lock. Without the lock it would slip in between the plan read and
+        the cascade, with no plan and no revoke."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        apply_prod_grants(p.admin_engine)
+        tag = uuid.uuid4().hex[:8]
+        org, _slug = seed_org(p.admin_engine, tag)
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+
+        class _Rollback(Exception):
+            pass
+
+        try:
+            with pytest.raises(_Rollback):
+                async with tenant_engine_scope(app_dsn), tenant_session(org) as db:
+                    await operator_door.plan_org_teardown(db, org)
+                    with p.admin_engine.connect() as c:
+                        c.execute(text("SET LOCAL lock_timeout = '500ms'"))
+                        with pytest.raises(Exception, match="lock timeout"):
+                            c.execute(text(
+                                "INSERT INTO email_accounts (user_id, provider, "
+                                "email_address, credentials_encrypted, is_default, "
+                                "organization_id) VALUES ('late@em-g11f1c.test', "
+                                "'imap', 'late@em-g11f1c.test', 'blob', false, "
+                                "CAST(:o AS uuid))"), {"o": org})
+                    raise _Rollback
+        finally:
+            drop_org(p.admin_engine, org)
