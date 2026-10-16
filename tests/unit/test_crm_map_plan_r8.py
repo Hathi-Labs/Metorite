@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -123,9 +125,15 @@ def _identity(plan: dict[str, Any]) -> set[tuple[str, str, str]]:
     return {(r["entity"], r["field_api_name"], r["target_column"]) for r in plan["rules"]}
 
 
-def _approved(body: dict[str, Any]) -> dict[str, Any]:
-    (plan,) = [v for v in body["versions"] if v["state"] == "approved"]
-    assert plan["version"] == body["approved"]
+async def _approved(org: str, body: dict[str, Any]) -> dict[str, Any]:
+    """The approved version of the list, with its snapshot from
+    ``GET /crm/mapping/plans/{version}``."""
+    (summary,) = [v for v in body["versions"] if v["state"] == "approved"]
+    assert summary["version"] == body["approved"]
+    got = await _req(_admin_of(org), "GET", f"{PLANS}/{summary['version']}")
+    assert got.status_code == 200, got.text
+    plan = got.json()
+    assert len(plan["rules"]) == summary["rule_count"]
     return plan
 
 
@@ -207,7 +215,7 @@ async def test_2_the_first_read_builds_version_1_from_the_approved_rules(fr) -> 
 
     body = await _plans(p.org_a)
     assert [v["version"] for v in body["versions"]] == [1]
-    first = _approved(body)
+    first = await _approved(p.org_a, body)
     assert (first["state"], first["created_by"], first["approved_by"]) == (
         "approved", ADMIN, ADMIN)
     assert first["based_on"] is None
@@ -458,13 +466,13 @@ async def test_6_a_per_rule_post_or_patch_writes_a_new_approved_version(fr) -> N
     assert made.json()["proposed_by"] == "admin"
     body = await _plans(p.org_a)
     assert [v["version"] for v in body["versions"]] == [2, 1]
-    assert _identity(_approved(body)) == {("lead", "Custom_Industry", "industry")}
+    assert _identity(await _approved(p.org_a, body)) == {("lead", "Custom_Industry", "industry")}
     assert _versions(p, p.org_a)[1][1:] == ("approved", ADMIN, ADMIN, 1)
 
     rejected = await _patch(p.org_a, made.json()["id"], "rejected")
     assert rejected.status_code == 200 and rejected.json()["status"] == "rejected"
     body = await _plans(p.org_a)
-    assert body["approved"] == 3 and _identity(_approved(body)) == set()
+    assert body["approved"] == 3 and _identity(await _approved(p.org_a, body)) == set()
 
     # An AI proposal: the approve writes a version and keeps who proposed it.
     with p.admin_engine.begin() as c:
@@ -487,7 +495,7 @@ async def test_6_a_per_rule_post_or_patch_writes_a_new_approved_version(fr) -> N
         "approved", "ai", 0.8)
     body = await _plans(p.org_a)
     assert body["approved"] == 4
-    assert _identity(_approved(body)) == {("lead", "Why_Lost", "lost_note")}
+    assert _identity(await _approved(p.org_a, body)) == {("lead", "Why_Lost", "lost_note")}
     # A reject of a rule that is not approved writes no version.
     assert (await _patch(p.org_a, other, "rejected")).status_code == 200
     assert (await _plans(p.org_a))["approved"] == 4
@@ -509,7 +517,7 @@ async def test_6_the_plan_follows_a_rule_that_the_sync_made_stale(fr) -> None:
     assert _rules(p, p.org_a)["Why_Lost"][1] == "stale"
 
     body = await _plans(p.org_a)
-    plan = _approved(body)
+    plan = await _approved(p.org_a, body)
     assert plan["created_by"] == "system"
     assert _identity(plan) == {("lead", "Custom_Industry", "industry")}
     # An unrelated change still works, and keeps the stale row as it is.
@@ -577,7 +585,7 @@ async def test_8_orgs_stay_apart(fr, app_engine) -> None:
 
     seen_b = await _plans(p.org_b)
     assert [v["version"] for v in seen_b["versions"]] == [1]
-    assert _identity(_approved(seen_b)) == set()
+    assert _identity(await _approved(p.org_b, seen_b)) == set()
     assert (await _approve(p.org_b, draft["version"])).status_code == 404
     assert (await _restore(p.org_b, 2)).status_code == 404
     assert _versions(p, p.org_a)[-1][1] == "draft", "B moved nothing of A"
@@ -606,3 +614,116 @@ async def test_8_orgs_stay_apart(fr, app_engine) -> None:
     # B's approve and B's sync apply none of A's rules.
     assert (await _run(p.org_b)).status == "ok"
     assert _leads(p, p.org_b)["l1"][1] is None
+
+
+# ── Fix round: the list, the lock order, and the lock before the profile ────
+
+
+@contextmanager
+def _recorded() -> Iterator[list[str]]:
+    """Every SQL statement that the shared engine sends while the block runs,
+    with its white space folded."""
+    from acb_common import db as shared
+    from sqlalchemy import event
+
+    seen: list[str] = []
+    engine = shared.get_engine().sync_engine
+
+    def _record(_conn: Any, _cur: Any, statement: str, *_rest: Any) -> None:
+        seen.append(" ".join(statement.split()))
+
+    event.listen(engine, "before_cursor_execute", _record)
+    try:
+        yield seen
+    finally:
+        event.remove(engine, "before_cursor_execute", _record)
+
+
+#: The ordered lock of every rule row (``core.FIELD_RULE_LOCK_SQL``).
+LOCK_ALL = "FROM crm_field_rules WHERE ext_source = "
+LOCK_TAIL = "ORDER BY entity, field_api_name FOR UPDATE"
+
+
+def _first(seen: list[str], *parts: str) -> int:
+    hits = [i for i, s in enumerate(seen) if all(p in s for p in parts)]
+    assert hits, f"no statement holds {parts}"
+    return hits[0]
+
+
+async def test_fix_the_list_carries_no_snapshot_and_one_version_does(fr) -> None:
+    p, a, b = fr
+    await _imported(p, p.org_a, a)
+    await _imported(p, p.org_b, b)
+    for field, column in (("Custom_Industry", "industry"), ("Why_Lost", "lost_note")):
+        assert (await _post(p.org_a, field, column)).status_code == 201
+
+    body = await _plans(p.org_a)
+    assert [v["version"] for v in body["versions"]] == [3, 2, 1]
+    for item in body["versions"]:
+        assert "rules" not in item, "the list carries no snapshot"
+    assert [v["rule_count"] for v in body["versions"]] == [2, 1, 0]
+    one = await _req(_admin_of(p.org_a), "GET", f"{PLANS}/2")
+    assert one.status_code == 200, one.text
+    assert _identity(one.json()) == {("lead", "Custom_Industry", "industry")}
+    assert (await _req(_admin_of(p.org_a), "GET", f"{PLANS}/99")).status_code == 404
+    assert (await _req(_member_of(p.org_a), "GET", f"{PLANS}/2")).status_code == 403
+    # Org B has its own version 1 only. A's version 2 is not there.
+    await _plans(p.org_b)
+    assert (await _req(_admin_of(p.org_b), "GET", f"{PLANS}/2")).status_code == 404
+
+
+async def test_fix_mark_stale_locks_every_rule_row_in_the_one_order_first(fr) -> None:
+    """The sync and the approve lock the rule rows in ONE order, so neither
+    waits on the other in a cycle (reviewer P2, a 40P01 deadlock)."""
+    from gateway.routes.crm import core, mapping_plans
+
+    assert core.FIELD_RULE_LOCK_SQL.endswith(LOCK_TAIL)
+    assert mapping_plans._LIVE_LOCK_SQL is core.FIELD_RULE_LOCK_SQL
+
+    p, a, _b = fr
+    await _imported(p, p.org_a, a)
+    for field, column in (("Custom_Industry", "description"), ("Why_Lost", "lost_note")):
+        assert (await _post(p.org_a, field, column)).status_code == 201
+    a.fields["Leads"] = [
+        f for f in a.fields["Leads"] if f["api_name"] not in ("Why_Lost", "Custom_Industry")]
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE crm_source_profiles SET fetched_at = now() - "
+                       "interval '25 hours' WHERE organization_id = CAST(:o AS uuid)"),
+                  {"o": p.org_a})
+    with _recorded() as seen:
+        assert (await _run(p.org_a)).status == "ok"
+    stale = _first(seen, "UPDATE crm_field_rules SET status = 'stale'")
+    locked = [i for i, s in enumerate(seen) if LOCK_ALL in s and s.endswith(LOCK_TAIL)]
+    assert locked and locked[0] < stale, "mark_stale wrote before the ordered lock"
+    assert {r[1] for r in _rules(p, p.org_a).values()} == {"stale"}
+
+
+async def test_fix_a_patch_takes_the_ordered_lock_before_its_one_row_hold(fr) -> None:
+    p, a, _b = fr
+    await _imported(p, p.org_a, a)
+    with p.admin_engine.begin() as c:
+        proposed = str(c.execute(text(
+            "INSERT INTO crm_field_rules (organization_id, ext_source, entity, "
+            "field_api_name, field_type, profile_version, target_column, status, "
+            "proposed_by) VALUES (CAST(:o AS uuid), 'zoho', 'lead', 'Why_Lost', "
+            "'textarea', 1, 'lost_note', 'proposed', 'ai') RETURNING id"),
+            {"o": p.org_a}).scalar())
+    with _recorded() as seen:
+        ok = await _patch(p.org_a, proposed, "approved")
+    assert ok.status_code == 200, ok.text
+    hold = _first(seen, "FROM crm_field_rules WHERE id = ", "IS NOT DISTINCT FROM",
+                  "FOR UPDATE")
+    lock = _first(seen, LOCK_ALL, LOCK_TAIL)
+    assert lock < hold, "the one-row hold came before the ordered lock"
+
+
+async def test_fix_an_approve_locks_the_rule_rows_before_it_reads_the_profile(fr) -> None:
+    p, a, _b = fr
+    await _imported(p, p.org_a, a)
+    draft = (await _draft(p.org_a, _put("Why_Lost", "lost_note"))).json()
+    with _recorded() as seen:
+        done = await _approve(p.org_a, draft["version"])
+    assert done.status_code == 200, done.text
+    lock = _first(seen, LOCK_ALL, LOCK_TAIL)
+    profile = _first(seen, "FROM crm_source_profiles")
+    assert lock < profile, "commit read the profile before it locked the rule rows"

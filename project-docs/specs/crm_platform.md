@@ -29,7 +29,9 @@
 >
 > **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12). CRM-Q8, filters and saved views (2026-10-12, migration 250). The Deals board stages fix (2026-10-12, §18.5). CRM-Q10, a reconnect never freezes the mirror (2026-10-13, §18, a production hotfix). CRM-Q15, a Zoho module that the account turned off no longer stops the sync (2026-10-15, §18, a production hotfix). CRM-Q16, hold a module and sync one module on its own (2026-10-15, §18.8, migration 269).
 >
-> **Specified, not built:** CRM-Q17a to CRM-Q22, a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9).
+> **Specified, not built:** CRM-Q17a to CRM-Q22, a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9). CRM-Q18-2 and CRM-Q18-3 are not built.
+>
+> **Built later:** CRM-Q18-1, the backend of one plan (2026-10-16, §18.9.6, migration 276). The versions of the Field map live in `crm_mapping_plans`, and `crm_field_rules` stays the live set.
 >
 > **Built later:** CRM-Q5, the data the mirror loses (2026-10-12). Migration 249 adds `crm_deal_contacts.ext_source`.
 >
@@ -1234,7 +1236,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q16** | ✅ built 2026-10-15. Hold a module, and sync one module on its own. The first import holds a module above 5,000 records and suggests a sync of it on its own. §18.8 | P0 |
 | **CRM-Q17a** | Lists and records by fill rank: default columns, empty columns hidden, owner names, Overview and Fields, Zoho labels in Mirror mode. No AI. §18.9 | P0 |
 | **CRM-Q17b** | Getting around: the rail group, the first screen, filters, the Columns picker, phone cards, and "Needs you" in Sync health. No AI. §18.9 | P0 |
-| **CRM-Q18** | One plan: a kind, a version and an approval state on the field rules. §18.9 | P1 |
+| **CRM-Q18** | One plan: the versions of the Field map in `crm_mapping_plans`, and `crm_field_rules` stays the live set. CRM-Q18-1 is built. §18.9 | P1 |
 | **CRM-Q19** | The executor and the 200-record preview. §18.9 | P1 |
 | **CRM-Q20** | The mapping pipeline on the decide tier, the suggestion in an empty slot, the panel and Undo. Replaces the CRM-Q7b proposer. §18.9 | P1 |
 | **CRM-Q21** | Promote a module into a core entity. §18.9 | P1 |
@@ -2223,7 +2225,7 @@ with 16 questions, to learn whether the vendor bills the state once.
 |---|---|---|---|---|
 | CRM-Q17a | Lists and records by fill rank. No AI | AGENT-SAFE | M | — |
 | CRM-Q17b | Getting around: rail, first screen, filters, Columns, phone, Sync health. No AI | AGENT-SAFE | M | CRM-Q17a |
-| CRM-Q18 | One plan: a kind, a version and an approval state | AGENT-SAFE | M | — |
+| CRM-Q18 | One plan: a table of versions, and the live rule set | AGENT-SAFE | M | — |
 | CRM-Q19 | The executor and the 200-record preview | AGENT-SAFE | M | CRM-Q18 |
 | CRM-Q20 | The pipeline, the suggestion, the panel, Undo, and Settings → Suggestions | AGENT-SAFE | M + M | CRM-Q19 |
 | CRM-Q21 | Promote a module into a core entity | AGENT-SAFE | L | CRM-Q20 |
@@ -2333,6 +2335,13 @@ rule that is not approved writes no version. A draft approves only while it
 is built on the approved version, else 409 `plan_moved`. When the sync makes a
 rule stale, the next plan read or change writes a new approved version by
 `system`. Fence: `tests/unit/test_crm_map_plan_r8.py`.
+
+Fix round (2026-10-16): `GET /crm/mapping/plans` lists the versions with
+`rule_count` and no snapshot. `GET /crm/mapping/plans/{version}` returns one
+snapshot, and CRM-Q18-2 reads it. The approve and the sync's `mark_stale` lock
+the rule rows through `core.FIELD_RULE_LOCK_SQL`, in one order. A PATCH takes
+that lock before it holds one row. `commit` locks the rows before it reads the
+profile. A deadlock is a 409 `plan_busy`, and a retry is safe.
 
 **CRM-Q18-2 · The Field map screen.** It waits for CRM-Q18-1. The Field map
 card shows the approved version and a draft. It approves a draft with one

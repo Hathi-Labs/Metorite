@@ -40,6 +40,12 @@ read, :func:`lock_plan` compares the approved snapshot with the approved rows.
 When they differ, it writes a new approved version of the live set, by
 ``system``.
 
+**One lock order.** A writer takes the plan lock, then every rule row of
+the provider through ``core.FIELD_RULE_LOCK_SQL`` (by entity, then field),
+and only then reads the profile or locks one row. The sync's ``mark_stale``
+locks through the same statement, so the two never wait in a cycle. A
+deadlock that still occurs is a 409 ``plan_busy``, and a retry is safe.
+
 **The first read builds version 1** from the approved rules of the org, under
 the unique index on ``(organization_id, version)``, so two first reads write
 one row.
