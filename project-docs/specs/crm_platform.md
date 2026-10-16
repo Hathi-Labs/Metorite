@@ -31,7 +31,7 @@
 >
 > **Specified, not built:** CRM-Q17a to CRM-Q22, a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9). CRM-Q18-2 and CRM-Q18-3 are not built.
 >
-> **Built later:** CRM-Q18-1, the backend of one plan (2026-10-16, §18.9.6, migration 276). The versions of the Field map live in `crm_mapping_plans`, and `crm_field_rules` stays the live set.
+> **Built later:** CRM-Q18-1, the backend of one plan (2026-10-16, §18.9.6, migration 277). The versions of the Field map live in `crm_mapping_plans`, and `crm_field_rules` stays the live set.
 >
 > **Built later:** CRM-Q5, the data the mirror loses (2026-10-12). Migration 249 adds `crm_deal_contacts.ext_source`.
 >
@@ -2328,7 +2328,7 @@ ships in three slices.
    They
    prove that the ids of kept rules do not change, and that orgs stay apart.
 
-Built as (2026-10-16): migration 276 adds `crm_mapping_plans`.
+Built as (2026-10-16): migration 277 adds `crm_mapping_plans`.
 `routes/crm/mapping_plans.py` holds the four routes, and its `commit` is the
 one approve. `POST /crm/field-rules` and the PATCH call it too. A reject of a
 rule that is not approved writes no version. A draft approves only while it

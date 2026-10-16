@@ -1,5 +1,5 @@
 -- ============================================================================
--- 276_crm_mapping_plans.sql — the versions of the mapping plan of an org.
+-- 277_crm_mapping_plans.sql — the versions of the mapping plan of an org.
 --
 -- What: one new table, `crm_mapping_plans`. Each row is one version of the
 --       mapping plan of an organization: a version number, a state, a JSON

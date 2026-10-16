@@ -9,7 +9,7 @@ Spec: ``project-docs/specs/crm_platform.md`` §18.9.6, "CRM-Q18 · One plan".
     POST /crm/mapping/plans/{version}/approve    approve a draft
     POST /crm/mapping/plans/{version}/restore    approve a copy of an old version
 
-**Two tables, two jobs.** ``crm_mapping_plans`` (migration 276) holds the
+**Two tables, two jobs.** ``crm_mapping_plans`` (migration 277) holds the
 versions: ``draft``, ``approved`` and ``superseded``, one ``approved`` at most
 for each org. ``crm_field_rules`` stays the live set that the sync reads. A
 draft writes no row of ``crm_field_rules``.
@@ -320,7 +320,7 @@ async def _insert_approved(
     by: str, based_on: int | None,
 ) -> Any:
     """Supersede the approved version, then add a new approved one. The order
-    keeps the partial unique index of migration 276 whole."""
+    keeps the partial unique index of migration 277 whole."""
     await db.execute(text(_SUPERSEDE_SQL))
     return (await db.execute(text(_INSERT_APPROVED_SQL), {
         "v": await _next_version(db), "rules": _dump(fields, others),

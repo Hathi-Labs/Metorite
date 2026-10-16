@@ -1,7 +1,7 @@
 """R8 — one plan for the Field map, against a real Postgres (WS-53 CRM-Q18-1,
 ``crm_platform.md`` §18.9.6, "CRM-Q18 · One plan").
 
-Migration 276 adds ``crm_mapping_plans``: the versions of the plan of an org.
+Migration 277 adds ``crm_mapping_plans``: the versions of the plan of an org.
 ``crm_field_rules`` stays the live set that the sync reads. The routes are in
 ``gateway/routes/crm/mapping_plans.py``, and ``commit`` there is the one
 approve.
