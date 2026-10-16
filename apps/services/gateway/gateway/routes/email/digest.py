@@ -197,8 +197,8 @@ async def _digest_thread_list(
     SQL, because the list is the oldest first and stops at ``limit``: a
     filter after the read would lose a thread inside the window behind the
     old ones outside it. ``this_tenant`` names the session's bound tenant,
-    for a caller whose session may bypass RLS (the owner role of
-    production). With none of the three, the statement does not change, so
+    as defence in depth beside RLS (R5). With none of the three, the
+    statement does not change, so
     the digest does not change (fence: ``test_email_digest.py``)."""
     order = (f"{_PRIORITY_SCORE} DESC, ts.last_message_at ASC"
              if prioritized else "ts.last_message_at ASC")
@@ -325,8 +325,8 @@ async def awaiting_threads(
     ``before`` None is the mailbox's own cutoff (:func:`_awaiting_cutoff`),
     read in the same session. The owner check runs first and names the bound
     tenant, so a mailbox of another member, or of another organization, is
-    404 before any read. Each statement names the bound tenant, because the
-    owner role of production bypasses RLS. It raises on any error: the
+    404 before any read. Each statement names the bound tenant, as defence
+    in depth beside RLS (R5). It raises on any error: the
     caller must tell a failed read from an empty one. It writes nothing.
     Not a route: the shell calls it after its own ``feature:email`` check."""
     async with _tenant_session() as db:
@@ -417,6 +417,7 @@ async def _commitments_core(
     db: Any, account_id: str, *, horizon_days: int, limit: int,
     include_undated: bool = False, commitment: bool = False,
     this_tenant: bool = False, now: datetime | None = None,
+    owner: str | None = None,
 ) -> tuple[datetime, list[tuple[Any, datetime | None]], dict[str, str]]:
     """The reads of :func:`_digest_commitments`, with no ``try``: the instant
     of the horizon, the picked ``(task, due)`` pairs (soonest first, undated
@@ -427,16 +428,19 @@ async def _commitments_core(
     true`` (``capture_email.py``, ``item_lens.items_by_origin``). The digest
     passes no flag, so its call of the seam stays the same: the digest reads
     every task captured from the mailbox. ``this_tenant`` names the bound
-    tenant in the two statements of this module, as the seam's own read
+    tenant in the latest-message statement, as the seam's own read
     already does (``MY_TASKS_FROM``). ``now`` is the caller's clock, and
-    None reads the wall clock, as the digest always did."""
+    None reads the wall clock, as the digest always did. ``owner`` is the
+    mailbox owner that the caller's own owner check proved, so the core
+    reads no owner row again. None reads it, as the digest always did."""
     from gateway.routes.tasks.item_source import item_source
 
-    tenant = f" AND organization_id = {_bound_org()}" if this_tenant else ""
-    owner = (await db.execute(text(
-        "SELECT user_id FROM email_accounts WHERE id = :aid" + tenant
-    ), {"aid": account_id})).fetchone()
-    uid = str(getattr(owner, "user_id", "") or "") if owner else ""
+    uid = owner
+    if uid is None:
+        row = (await db.execute(text(
+            "SELECT user_id FROM email_accounts WHERE id = :aid"
+        ), {"aid": account_id})).fetchone()
+        uid = str(getattr(row, "user_id", "") or "") if row else ""
     at = now if now is not None else datetime.now(UTC)
     if not uid:
         return at, [], {}
@@ -461,12 +465,7 @@ async def _commitments_core(
     })
     latest: dict[str, str] = {}
     if threads:
-        sql = _LATEST_MESSAGE_SQL
-        if this_tenant:
-            sql = sql.replace(
-                "ANY(:tids)\n",
-                f"ANY(:tids)\n{_SQL_PAD}  AND em.organization_id = {_bound_org()}\n")
-        rows = (await db.execute(text(sql), {
+        rows = (await db.execute(text(_latest_message_sql(this_tenant)), {
             "aid": account_id, "tids": threads})).fetchall()
         latest = {str(r.thread_id): str(r.message_id) for r in rows}
     return at, picked, latest
@@ -474,16 +473,22 @@ async def _commitments_core(
 
 #: The left pad of the statement below, as the digest always sent it.
 _SQL_PAD = " " * 19
-#: The latest message of each linked thread. ⚠️ The text is the digest's own,
-#: byte for byte, from before MD-3d moved it out of ``_digest_commitments``
-#: (fence: ``test_email_digest.py``).
-_LATEST_MESSAGE_SQL = (
-    "SELECT DISTINCT ON (em.thread_id)\n"
-    f"{_SQL_PAD}       em.thread_id, em.id AS message_id\n"
-    f"{_SQL_PAD}FROM email_messages em\n"
-    f"{_SQL_PAD}WHERE em.account_id = :aid\n"
-    f"{_SQL_PAD}  AND em.thread_id = ANY(:tids)\n"
-    f"{_SQL_PAD}ORDER BY em.thread_id, em.received_at DESC NULLS LAST")
+
+
+def _latest_message_sql(this_tenant: bool = False) -> str:
+    """The latest message of each linked thread. ⚠️ With ``this_tenant`` off,
+    the text is the digest's own, byte for byte, from before MD-3d moved it
+    out of ``_digest_commitments`` (fence: ``test_email_digest.py``). On, one
+    more line names the bound tenant."""
+    tenant = (f"{_SQL_PAD}  AND em.organization_id = {_bound_org()}\n"
+              if this_tenant else "")
+    return ("SELECT DISTINCT ON (em.thread_id)\n"
+            f"{_SQL_PAD}       em.thread_id, em.id AS message_id\n"
+            f"{_SQL_PAD}FROM email_messages em\n"
+            f"{_SQL_PAD}WHERE em.account_id = :aid\n"
+            f"{_SQL_PAD}  AND em.thread_id = ANY(:tids)\n"
+            f"{tenant}"
+            f"{_SQL_PAD}ORDER BY em.thread_id, em.received_at DESC NULLS LAST")
 
 
 async def promise_tasks(
@@ -509,7 +514,8 @@ async def promise_tasks(
             db, account_id, user.email or "anonymous", this_tenant=True)
         at, picked, latest = await _commitments_core(
             db, account_id, horizon_days=horizon_days, limit=limit,
-            commitment=True, this_tenant=True, now=now)
+            commitment=True, this_tenant=True, now=now,
+            owner=user.email or "anonymous")
     out: list[dict[str, Any]] = []
     for it, due in picked:
         if due is None:

@@ -5372,11 +5372,12 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `git grep -n -A2 "WHERE user_id = :uid" -- apps/services/gateway/gateway/routes/tasks`.
   A statement that names no `organization_id` means this entry stays.
 - **Why.** Migration 239 keys `user_settings` on `(organization_id, user_id)`.
-  Production connects as the owner role, which reads past RLS. So a read by
-  `user_id` alone can return the row of another org, for a member who belongs
-  to two orgs. The data is the same person's own, so the impact is low. MD-3c
-  fixed `stored_zone`, `tasks.settings._load` and the work-schedule seed. These
-  reads still name no tenant:
+  The gateway connects as `acb_app`, which does not bypass RLS, and FORCE RLS
+  is on (measured on the box, 2026-10-16). So RLS keeps another org's row
+  out, and the org predicate is defence in depth (R5). A read by `user_id`
+  alone returns another org's row only for a role that bypasses RLS. MD-3c
+  fixed `stored_zone`, `tasks.settings._load` and the work-schedule seed.
+  These reads still name no tenant:
   1. `routes/tasks/settings.py` `task_models` (about :134).
   2. `routes/tasks/settings.py` `task_toggles` (about :156).
   3. `routes/tasks/calendar.py` (about :571, :608 and :1171).
@@ -5724,25 +5725,29 @@ line — never reclaim a number by deleting the other entry.
   Add an R8 test with two currencies in one lane.
 - **Authority:** `specs/crm_app.md` (the reports routes), `specs/projects_ai_chat.md` §14.10.9
 - **Added:** 2026-10-16 · WS-27bm §14.10.9 B3 review
-### H-334 · The mailbox lists of the email app name no tenant · [AGENT]
-- **Check:** `git grep -n -A2 "FROM email_accounts" -- apps/services/gateway/gateway/routes/email/transport/accounts.py`.
-  A `WHERE user_id = :user_id` with no `organization_id` term means this entry stays.
-- **Why.** Migration 223 lets one mailbox belong to a person in two orgs.
-  Production connects as the owner role, which reads past RLS. So two reads
-  can return the person's mailbox of another org. They are `feed_mailboxes`
-  and `list_accounts`, at about lines 361 and 320. So the LIVE bell can show
-  mail of org A in org B, and so can the mailbox list. The
-  mail is the same person's own, so no other member sees it. But it breaks
-  R5. MD-3d's wrappers refuse such a mailbox with a 404.
+### H-334 · The email owner check names no tenant by default · [AGENT]
+- **Check:** `git grep -n "this_tenant: bool = False" -- apps/services/gateway/gateway/routes/email/core.py`.
+  A hit means this entry stays.
+- **Why.** The gateway connects as `acb_app`. That role is not a superuser,
+  has no BYPASSRLS and does not own the tables, and FORCE RLS is on (measured
+  on the box, 2026-10-16). So RLS keeps another org's rows out, and a missing
+  org predicate is defence in depth (R5), not a live leak. It leaks only if
+  a path reads with a role that bypasses RLS. The gap is wide. The default of
+  `email/core.py` `_assert_account_owner` (about :870) is
+  `this_tenant=False`, and about 62 callers use it, some of them writes. An
+  example is `create_rule` (`automation/rules.py` :637). Only MD-3d's two
+  wrappers pass `this_tenant=True`.
 - **Do this:**
-  1. Add `AND organization_id = <the bound tenant>` to both reads, as
-     `people.core.find_self_row` does with `NULLIF(current_setting(...))`.
-  2. Check each other read in `routes/email` that selects by `user_id` alone,
-     including `resolve_self_addresses`.
-  3. Add an owner-role R8 case with one mailbox in two orgs, modelled on
+  1. Read each caller of `_assert_account_owner`. Then make `this_tenant`
+     default to True, and pass False only where a reason is written.
+  2. Name the tenant in the list reads: `transport/accounts.py`
+     `feed_mailboxes` (about :361) and `list_accounts` (about :302), and
+     `automation/identity.py` `resolve_self_addresses` (about :395).
+  3. Add one R8 case as a role that bypasses RLS, with one mailbox in two
+     orgs, modelled on
      `test_feed_mail_kinds_r8.py::TestTheTenantUnderTheOwnerRole`.
 - **Authority:** R5 · `specs/my_day_feed.md` §16 MD-3d (what the build found)
-- **Added:** 2026-10-15 · MD-3d build
+- **Added:** 2026-10-15 · MD-3d build · rewritten 2026-10-16, MD-3d review
 
 # DONE — deleted, not archived
 

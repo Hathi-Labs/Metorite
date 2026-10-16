@@ -873,10 +873,11 @@ async def _assert_account_owner(
     """Raise 404 if the account isn't owned by the user.
 
     ``this_tenant`` also names the session's bound tenant in the SQL (WS-58
-    MD-3d). A member may own one mailbox in each of two organizations, and the
-    owner role of production bypasses RLS, so only the predicate keeps the
-    other organization's mailbox out. Off by default, so the statement of
-    every other caller does not change."""
+    MD-3d). A member may own one mailbox in each of two organizations. RLS
+    keeps the other one out for production's role ``acb_app``, so the
+    predicate is defence in depth (R5): it holds also for a role that
+    bypasses RLS. Off by default, so the statement of every other caller does
+    not change (HANDOFF H-334)."""
     sql = "SELECT 1 FROM email_accounts WHERE id = :id AND user_id = :uid"
     if this_tenant:
         sql += f" AND organization_id = {_bound_org()}"

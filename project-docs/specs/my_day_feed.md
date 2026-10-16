@@ -770,6 +770,13 @@ These rows join the table of §4.3 and `feed_rank.group`.
 below. A fold must not change the state fingerprint (§6.8 item 1), so each
 task kind keeps to `due_at`.
 
+**The rule in code** (MD-3d fix round 1, 2026-10-16). A folded signal of a
+feed-only kind adds no state fact to its card (`feed._states_entity_facts`).
+The main signal keeps its own state facts, and a folded signal still adds
+its other facts. A folded needs kind keeps its state facts, because a new
+note is a change of the task. The fence covers every kind of `BASE`
+(`test_feed_fold_fingerprint.py`).
+
 | Kind | Its state facts |
 |---|---|
 | The task kinds and `promise_due` | `due_at` only, the due time of the task |
@@ -3314,12 +3321,21 @@ it. These are the parts:
 - The cutoff needs the mailbox's `follow_up_awaiting_days`, and the spec
   gave no session for that read. `awaiting_threads` reads it in its own
   session, when the caller gives no `before`.
-- `feed_mailboxes` names no tenant. Under the owner role it lists the
-  member's mailbox of another organization too. The wrappers refuse it with a
-  404, and the provider skips it. The needs provider `_email` still reads it,
-  and that is a finding for the board.
-- A `promise_due` that folds into a notification card adds `due_at` to the
-  card. So it changes the state fingerprint of that card, as item 4 allows.
+- `feed_mailboxes` names no tenant. RLS holds for `acb_app`, the role of
+  production, so this is defence in depth (R5). Read past RLS, the list would
+  hold the member's mailbox of another organization too. The wrappers refuse
+  it with a 404, and the provider skips it. HANDOFF H-334 holds the rest.
+
+**Fix round 1, 2026-10-16.** The review found that a fold moved the state
+fingerprint. A `promise_due` folded under a notification card added
+`due_at`, so a dismissed card came back when the promise came or went.
+`build_cards` now keeps the state facts of a folded feed-only kind out of the
+card (§5.9 item 4). A folded needs kind keeps them, so a new note still
+brings a task back (§6.8 item 1). The fence is
+`tests/unit/test_feed_fold_fingerprint.py`, for every kind of `BASE`.
+
+The same round reuses the owner check's row in `_commitments_core`, and builds
+the tenant line of the latest-message statement explicitly.
 
 **Mutations, run by hand on 2026-10-15.** Each one failed a fence:
 

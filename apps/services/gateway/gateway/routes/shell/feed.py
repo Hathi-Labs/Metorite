@@ -628,8 +628,8 @@ async def _email_followups(user: UserContext) -> Found:
                                                    needs.MAILBOX_TIMEOUT_S)
         except HTTPException as exc:
             if exc.status_code == 404:
-                # The owner check names the bound tenant. Under the owner role
-                # the mailbox list can hold the member's mailbox of another
+                # The owner check names the bound tenant. Read past RLS, the
+                # mailbox list could hold the member's mailbox of another
                 # organization, and it is not this feed's to read.
                 continue
             asked += 1
@@ -911,6 +911,24 @@ def _merge_acts(signals: list[Signal]) -> list[dict[str, Any]]:
     return acts
 
 
+def _states_entity_facts(kind: str) -> bool:
+    """Whether a FOLDED signal of ``kind`` may add a state fact
+    (``state.STATE_FACTS``) to its card (§5.9 item 4, MD-3d fix round 1).
+
+    Only a needs kind may (``needs.KIND_ORDER``). Its facts are the
+    entity's own: a task's unread notes, a thread's last message. So a new
+    note on a dismissed overdue task still brings it back (§6.8 item 1).
+
+    A feed-only kind (the Calendar kinds and every MD-3 kind) may not. Its
+    signal comes and goes with a window, a horizon or a failed source, so a
+    state fact of it would move the fingerprint with no change to the
+    entity, and a dismissed card would come back. Its own facts still drive
+    its own why clause, group and urgency, and as a MAIN kind it keeps them
+    all. Fence: ``test_feed_mail_kinds.py::TestAFoldNeverMovesTheStateFingerprint``.
+    """
+    return kind in needs.KIND_ORDER
+
+
 def build_cards(signals: list[Signal], now: datetime, tz: ZoneInfo,
                 today: date) -> list[dict[str, Any]]:
     """One card for each entity (§4.5), in the shape of §14.1a, unordered."""
@@ -927,6 +945,8 @@ def build_cards(signals: list[Signal], now: datetime, tz: ZoneInfo,
         facts = copy.deepcopy(ordered[0].facts)
         for signal in ordered[1:]:
             for name, value in signal.facts.items():
+                if name in state.STATE_FACTS and not _states_entity_facts(signal.kind):
+                    continue  # a fold must not move the state fingerprint
                 facts.setdefault(name, copy.deepcopy(value))
         parts[key] = (ordered, facts)
 

@@ -5,9 +5,10 @@ The two new wrappers of ``routes/email/digest.py`` (``awaiting_threads`` and
 ``promise_tasks``) run their real SQL on the phase-4-promoted catalog of
 ``test_h3_rls_promotion_rehearsal.py``. Most cases run as the NON-privileged
 role with RLS forced (``_as_member``). ``TestTheTenantUnderTheOwnerRole``
-runs as the superuser, which bypasses RLS as the owner role of production
-does, so only the SQL's own tenant predicate keeps the other organization
-out. The hermetic half is ``test_feed_mail_kinds.py``.
+runs as the superuser, which bypasses RLS, so only the SQL's own tenant
+predicate keeps the other organization out. Production's role ``acb_app``
+does not bypass RLS, so that class fences defence in depth (R5). The
+hermetic half is ``test_feed_mail_kinds.py``.
 
 The seed, in org B:
 
@@ -365,7 +366,12 @@ class TestTheSessions:
         assert {s.kind for s in found.signals()} == {"no_answer", "promise_due"}
 
 
-# ── The owner role bypasses RLS: each statement names the tenant ────────────
+# ── A role that bypasses RLS: each statement still names the tenant ─────────
+#
+# Production connects as `acb_app`: no superuser, no BYPASSRLS, not the table
+# owner, and FORCE RLS is on (measured on the box, 2026-10-16). So these
+# predicates are defence in depth (R5). They hold only if a path ever uses a
+# role that bypasses RLS, and this class proves that they hold then.
 
 
 @pytest.fixture(scope="module")
@@ -378,7 +384,8 @@ def two_orgs(promoted, seeded):  # noqa: F811
     s: dict[str, str] = {}
     with p.admin_engine.begin() as c:
         # One app_user row, in org B: the address is unique. Org A holds
-        # TWO's other mailbox and a promise of it, for the owner to leak.
+        # TWO's other mailbox and a promise of it, which a read past RLS
+        # with no predicate would leak.
         c.execute(text(
             "INSERT INTO app_user (email, display_name, role, status, organization_id) "
             "VALUES (:e, :e, 'employee', 'active', CAST(:o AS uuid))"), {"e": TWO, "o": b})
@@ -427,7 +434,8 @@ class TestTheTenantUnderTheOwnerRole:
 
     async def test_each_statement_names_the_tenant(self, promoted, two_orgs, monkeypatch):  # noqa: F811
         """Each read of the wrappers, alone, on org A's mailbox, bound to
-        org B under the owner role. With no predicate, each would answer."""
+        org B, as a role that bypasses RLS. With no predicate, each would
+        answer."""
         from acb_common.db import tenant_session
         from gateway.routes.email.automation import replyzero
 
@@ -458,13 +466,10 @@ class TestTheTenantUnderTheOwnerRole:
         from acb_common.db import tenant_session
 
         async with _as_owner(promoted, promoted.org_b), tenant_session() as db:
-            sql = digest._LATEST_MESSAGE_SQL
             params = {"aid": two_orgs["box_a"], "tids": [two_orgs["th_a"]]}
-            assert (await db.execute(text(sql), params)).fetchall()
-            tenant = sql.replace(
-                "ANY(:tids)\n",
-                f"ANY(:tids)\n{digest._SQL_PAD}  AND em.organization_id = {digest._bound_org()}\n")
-            assert (await db.execute(text(tenant), params)).fetchall() == []
+            assert (await db.execute(text(digest._latest_message_sql()), params)).fetchall()
+            assert (await db.execute(text(digest._latest_message_sql(True)),
+                                     params)).fetchall() == []
 
 
 def dataclass_dict(signal) -> dict:

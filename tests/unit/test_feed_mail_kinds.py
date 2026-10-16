@@ -344,9 +344,9 @@ class TestTheFailures:
         assert "email:a-two:th-two" in [c["signal_id"] for c in answer["cards"]]
 
     def test_a_mailbox_that_is_not_this_tenants_is_skipped(self, mail, monkeypatch):
-        """Under the owner role the mailbox list may hold the member's
-        mailbox of another organization. The owner check names the tenant,
-        so it answers 404, and the mailbox is no failure."""
+        """Read past RLS, the mailbox list could hold the member's mailbox
+        of another organization. The owner check names the tenant, so it
+        answers 404, and the mailbox is no failure."""
         _list(monkeypatch, "email_followups")
         _seed(mail)
         mail.fail[("awaiting_threads", "a-mine")] = HTTPException(status_code=404)
