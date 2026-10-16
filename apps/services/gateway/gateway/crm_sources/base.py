@@ -39,6 +39,10 @@ CANONICAL_ENTITIES: tuple[str, ...] = (
     "task",
 )
 
+#: The most ids that one call of :meth:`CrmSource.list_by_ids` takes
+#: (CRM-Q23b). Zoho's documents name 100.
+IDS_PER_CALL = 100
+
 
 # ── Credentials ─────────────────────────────────────────────────────────────
 
@@ -192,7 +196,8 @@ class UntrustedHost(SourceError):
 
 
 class CrmSource(Protocol):
-    """The operations of ``crm_platform.md`` §5.1 (nine, and the count of CRM-Z4).
+    """The operations of ``crm_platform.md`` §5.1 (nine, the count of CRM-Z4,
+    the deal roles of CRM-Q5 and the read by ids of CRM-Q23b).
 
     Each numbered comment names the operation of the spec.
     """
@@ -268,9 +273,18 @@ class CrmSource(Protocol):
     # One call for each deal (CRM-Q5).
     async def list_deal_contact_roles(self, deal_ext_id: str) -> list[tuple[str, str | None]]: ...
 
+    # 12. The records of a list of ids, one call (CRM-Q23b). At most
+    # IDS_PER_CALL ids. An id the provider does not return is absent from the
+    # answer. The sync reads a dropped activity again with it, once its parent
+    # is in.
+    async def list_by_ids(
+        self, entity: str, ext_ids: Sequence[str],
+    ) -> tuple[SourceRecord, ...]: ...
+
 
 __all__ = [
     "CANONICAL_ENTITIES",
+    "IDS_PER_CALL",
     "BudgetExhausted",
     "CrmSource",
     "NeedsReconnect",
