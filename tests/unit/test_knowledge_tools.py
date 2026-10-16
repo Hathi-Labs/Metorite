@@ -280,6 +280,22 @@ class TestTheAnswer:
         assert "- Shipping" not in out and "- Refund policy > Shipping" in out.splitlines()
         assert "30 days" not in out and kt.PAGE_HEADER not in out
 
+    def test_a_long_section_echo_cannot_pass_the_cap(self):
+        """Review of KB-4a, note 2: the echoed section is capped."""
+        out = kt.format_page(_page(), section="x" * 50_000)
+        assert len(out) <= kt.MAX_CHARS
+        assert "x" * 201 not in out
+        matched = kt.format_page(_page(body_md="# " + "y" * 30_000 + "\n\ntext"),
+                                 section="y" * 30_000)
+        assert len(matched) <= kt.MAX_CHARS
+
+    def test_a_space_the_member_cannot_name_prints_no_space_line(self):
+        """Review of KB-4a, P2: a reviewer with no grant gets no space name."""
+        lines = kt.format_page(_page(space_name=None)).splitlines()
+        assert not any(line.startswith("Space:") for line in lines)
+        assert lines[1] == "State: published. Updated: 2026-10-02."
+        assert lines[2] == f"Link: /knowledge/pages/{PAGE}"
+
     def test_a_page_with_many_headings_lists_them_all_within_the_cap(self):
         body = "\n\n".join(f"## Heading {i:03d}" for i in range(200))
         out = kt.format_page(_page(body_md=body), section="Warranty")

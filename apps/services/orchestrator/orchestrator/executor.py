@@ -654,6 +654,12 @@ def _kb_index_key(agent_name: str) -> tuple[str, str] | None:
     ``KNOWLEDGE_ORGS``. The org is :func:`_current_run_org` and the member is
     :func:`_verified_run_member`, both from the run boundary and never from
     the payload or the model (R5).
+
+    The member must also be the identity the tools act as, the run's memory
+    id. In a shared room the chat route binds the member who typed as the
+    verified member, and the memory id is ``room:<thread>``. That member's
+    spaces must not reach the room, so a room gets no block (review of
+    KB-4a, P1-a).
     """
     if agent_name != _KB_INDEX_AGENT:
         return None
@@ -667,6 +673,14 @@ def _kb_index_key(agent_name: str) -> tuple[str, str] | None:
     member = _verified_run_member()
     if not org or not member:
         return None
+    try:
+        from acb_skills.memory_tools import _get_memory_user_id
+
+        acting = str(_get_memory_user_id() or "").strip().lower()
+    except Exception:
+        return None
+    if acting != member:
+        return None
     if not _knowledge_org_allowed(org):
         return None
     return (str(org).strip().lower(), member)
@@ -675,8 +689,9 @@ def _kb_index_key(agent_name: str) -> tuple[str, str] | None:
 async def _prime_knowledge_index(agent_name: str) -> None:
     """Read the block of this run's member into the cache. Never raises.
 
-    ``run_agent_stream`` awaits it once, before the agent loads, so the sync
-    :func:`_context_preamble_parts` only reads the cache. The read is
+    ``run_agent_stream`` and the batch path (``_run_agent_inner``, which the
+    WhatsApp channel uses) each await it once, before the agent loads, so the
+    sync :func:`_context_preamble_parts` only reads the cache. The read is
     ``GET /knowledge/spaces`` as the member (``knowledge_tools.index_block``),
     at most once each ``_KB_INDEX_TTL_SECONDS`` for each org and member. A
     failed read keeps the last block, or none, and asks again after
@@ -3306,6 +3321,9 @@ async def _run_agent_inner(
         # §15.4: refused as absent unless a first-party admin runs it. An
         # AgentLoadError, so no self-anneal and no self-mutation follow.
         await _assert_may_run_agent(agent_name)
+        # WS-61 KB-4a: the orchestrator's Knowledge index block, as the
+        # stream path reads it. The WhatsApp channel runs this path.
+        await _prime_knowledge_index(agent_name)
         with load_agent(
             agent_name,
             run_id=run_id,

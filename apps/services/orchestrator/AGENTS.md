@@ -99,8 +99,9 @@ and streams chat responses as AG-UI events.
 21. **The orchestrator's per-turn context carries the Knowledge index block** (WS-61 KB-4a, `project-docs/specs/knowledge_base.md` §6.5).
    - `_context_preamble_parts` puts it after the Organisation and integrations lines, and before `memory_context`. Only the agent `orchestrator` gets it.
    - The block is absent unless `COMPANY_SEARCH_ENABLED` is on and the run's org is on `KNOWLEDGE_ENABLED` and `KNOWLEDGE_ORGS`. It is also absent when the member can read no published page.
-   - `run_agent_stream` awaits `_prime_knowledge_index` once, before the agent loads. It reads `GET /knowledge/spaces` as the verified member, through `acb_skills.knowledge_tools.index_block`.
+   - `run_agent_stream` and the batch path `_run_agent_inner` each await `_prime_knowledge_index` once, before the agent loads. The WhatsApp channel uses the batch path. The read is `GET /knowledge/spaces` as the verified member, through `acb_skills.knowledge_tools.index_block`.
    - The org comes from `_current_run_org()` and the member from `_verified_run_member()`, never from the payload.
+   - The verified member must equal the run's memory id, which the tools act as. In a shared room the memory id is `room:<thread>`, so the room gets no block.
    - `_KB_INDEX_CACHE` keeps the block for each org and member for 300 s, so two turns get the same bytes. The preamble reads only the cache.
    - Fences: `tests/unit/test_knowledge_index_block.py` and `evals/trajectories/test_knowledge_grounding_trajectory.py`.
 

@@ -444,6 +444,27 @@ async def test_a_draft_is_its_author_and_named_reviewers_only(ns, app_engine) ->
     assert await _status(ns, _principal(bystander_email, ns.org_a), draft["id"]) == 200
 
 
+async def test_a_reviewer_with_no_grant_gets_no_space_name(ns, app_engine) -> None:  # noqa: F811
+    """Review of KB-4a, P2. A named reviewer reads a draft in a space that
+    grants them nothing. The page answers, and the space's name does not."""
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    author_email, reviewer_email = _address("author"), _address("reviewer")
+    space = await _space(ns, admin, "Board papers", [
+        {"subject": author_email, "level": "write"},
+    ])
+    author = _principal(author_email, ns.org_a)
+    draft = await _ok(ns, author, "POST", "/knowledge/pages", {
+        "space_id": space, "title": "Q3 draft", "reviewers": [reviewer_email],
+    }, status=201)
+    seen = await _ok(ns, _principal(reviewer_email, ns.org_a), "GET",
+                     f"/knowledge/pages/{draft['id']}")
+    assert seen["level"] is None
+    assert seen["space_name"] is None
+    own = await _ok(ns, author, "GET", f"/knowledge/pages/{draft['id']}")
+    assert own["space_name"] == "Board papers"
+
+
 async def test_a_me_space_has_no_reviewers_and_no_grants(ns, app_engine) -> None:  # noqa: F811
     _assert_non_priv(app_engine)
     me_email = _address("me")
