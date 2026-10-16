@@ -1,7 +1,10 @@
 """The operator door — two acts on the tenant plane, both staff-only.
 
 1. **Organization purge (CP-2g).** ``DELETE /internal/operator/organizations/
-   {slug}`` destroys every tenant-plane row an organization owns.
+   {slug}`` destroys every tenant-plane row an organization owns. Since WS-17
+   EM-G11f1c it also tears down each mailbox of the org, as the member purge
+   does: :func:`plan_org_teardown` runs inside the purge, and
+   ``finish_teardowns`` runs after it.
 2. **Member removal (owner request, 2026-10-15).** ``DELETE /internal/operator/
    organizations/{slug}/members/{email}?mode=remove|purge&confirm=<email>``
    removes or purges ONE member of one organization. It runs the SAME
@@ -53,6 +56,7 @@ from __future__ import annotations
 
 import os
 import secrets
+from functools import partial
 from typing import Annotated, Any
 
 from acb_auth.access import mirror_membership_status, purge_identity_shadow
@@ -69,8 +73,24 @@ from gateway.routes.admin.members import (
     purge_member_rows,
     remove_member_rows,
 )
+from gateway.routes.email.memory_purge import RECORD_DETACHED_PURGES_SQL
+from gateway.routes.email.teardown import (
+    OrgScope,
+    TeardownCounts,
+    TeardownPlan,
+    finish_teardowns,
+    read_teardown_plans,
+)
+from sqlalchemy import text
 
 _log = get_logger("gateway.routes.operator")
+
+#: The first statement of the org purge callback (EM-G11f1c, fix round 1).
+#: It locks the org row until the purge commits. A mailbox connect inserts an
+#: ``email_accounts`` row whose foreign key takes a KEY SHARE lock on that org
+#: row, so it waits for the purge and then fails on the foreign key. No
+#: mailbox can join the org between the plan read and the cascade.
+ORG_LOCK_SQL = "SELECT 1 FROM organization WHERE id = CAST(:org AS uuid) FOR UPDATE"
 
 router = APIRouter(prefix="/internal/operator", tags=["operator"])
 
@@ -101,6 +121,43 @@ def _require_operator_token(presented: str | None) -> None:
         raise HTTPException(status_code=401, detail="operator token refused")
 
 
+async def plan_org_teardown(db: Any, org_id: str) -> list[TeardownPlan]:
+    """The callback of the org purge (WS-17 EM-G11f1c, §12.3.13.9.2).
+
+    ``acb_auth.offboard.purge_tenant_organization`` runs it in its tenant
+    session, BEFORE its first delete, so each write here commits with
+    ``DELETE FROM organization`` or not at all. It opens nothing and commits
+    nothing. It makes no network call.
+
+    0. It locks the org row (:data:`ORG_LOCK_SQL`), so no mailbox can join the
+       org before the cascade.
+    1. It reads the teardown plan of each mailbox of the org, under FORCE RLS
+       in the session that the purge bound. More than
+       ``TEARDOWN_MAX_MAILBOXES`` mailboxes raise a 409, and the purge rolls
+       back whole.
+    2. It calls the SECURITY DEFINER ``record_detached_purges`` of migration
+       276. That function writes one ``email_detached_purges`` row for each
+       mailbox, and moves each open ``email_mailbox_purges`` row of the org
+       there. The cascade of the org delete would delete those rows, and then
+       no sweep could find the Mem0 purges that the org owes. The function
+       takes rows only from the org that this transaction binds.
+
+    It returns the plans, and the purge puts them in its receipt. The door
+    takes them out before it answers, because a plan holds a credential blob.
+    """
+    await db.execute(text(ORG_LOCK_SQL), {"org": org_id})
+    plans = await read_teardown_plans(db, OrgScope(org_id))
+    recorded = int((await db.execute(
+        text(RECORD_DETACHED_PURGES_SQL), {"org": org_id})).scalar() or 0)
+    # A mailbox that a member connected after the plan read goes with the
+    # delete, and it has no plan, so nothing revokes its grant. The line says
+    # so, with counts and no address.
+    if recorded > len(plans):
+        _log.warning("email.teardown.unplanned_mailbox",
+                     planned=len(plans), deleted=recorded)
+    return plans
+
+
 @router.delete("/organizations/{slug}")
 async def purge_organization(
     slug: str,
@@ -117,6 +174,15 @@ async def purge_organization(
     ``already_absent: true`` (the retry arm for a half-failed two-plane purge;
     the BFF surfaces that answer to the operator rather than treating it as
     success — the wrong-box case must reach a human).
+
+    **The mailboxes (WS-17 EM-G11f1c).** The purge runs
+    :func:`plan_org_teardown` in its transaction, before its first delete.
+    Above the mailbox cap that callback answers 409, and the purge rolls back
+    whole. After the purge returns, the door logs the purge, and THEN tears
+    down each mailbox through ``finish_teardowns``: the sync loop, the
+    filters and rules, the Google grant, the Graph subscription and the Redis
+    keys. The door waits ``TEARDOWN_WAIT_S`` at most, and the receipt carries
+    the ``mailboxes`` counts. The plans never reach the receipt.
     """
     _require_operator_token(x_operator_token)
     if confirm != slug:
@@ -128,7 +194,12 @@ async def purge_organization(
     from acb_auth.offboard import purge_tenant_organization
 
     try:
-        receipt = await purge_tenant_organization(slug=slug)
+        receipt = await purge_tenant_organization(
+            slug=slug, before_delete=plan_org_teardown)
+    except HTTPException:
+        # The 409 of the mailbox cap. The purge rolled back and deleted
+        # nothing, and the operator must hear the count, not a 502.
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # a half-failed purge must be REPORTED, not 500'd bare
@@ -137,6 +208,21 @@ async def purge_organization(
             status_code=502,
             detail=f"tenant purge failed and was rolled back: {exc}",
         ) from exc
+    plans: list[TeardownPlan] = receipt.pop("before_delete", None) or []
+    org_id = receipt.get("organization_id")
+    if not plans or not org_id:
+        receipt["mailboxes"] = TeardownCounts().model_dump()
+        return receipt
+    # EM-G11f1c (email_app_master_plan.md §12.3.13.9.2): the same teardown as
+    # the member purge, after the commit. It goes LAST, after the log line,
+    # so a stop of the process in its wait loses no record. The org and its
+    # members are gone, so no My Day is bumped.
+    _log.warning("operator_org_purged", slug=slug, organization_id=org_id,
+                 mailboxes=len(plans))
+    mailboxes = await finish_teardowns(
+        org_id, plans, open_session=partial(_tenant_session, org_id),
+        stop_loops=True, bump_owners=False)
+    receipt["mailboxes"] = mailboxes.model_dump()
     return receipt
 
 
@@ -176,8 +262,10 @@ async def remove_organization_member(
     **After the commit.** ``remove`` mirrors the status into the identity
     shadow, drops the cached access and writes one audit entry.
     ``purge`` deletes the shadow row and drops the cached access. Its audit
-    entry is written before the commit, inside the shared body. Neither mode
-    calls the Customer Console, as the module docstring explains.
+    entry is written before the commit, inside the shared body. Then it tears
+    down each mailbox of the member through ``finish_teardowns`` (EM-G11f1b),
+    and the answer carries the ``mailboxes`` counts. Neither mode calls the
+    Customer Console, as the module docstring explains.
     """
     _require_operator_token(x_operator_token)
     if confirm != email:
@@ -206,7 +294,7 @@ async def remove_organization_member(
         if mode == "remove":
             tree_projects = await remove_member_rows(db, org_id, member)
         else:
-            deleted, kept = await purge_member_rows(
+            deleted, kept, plans = await purge_member_rows(
                 db, org_id, member, actor_email=_OPERATOR_ACTOR,
             )
 
@@ -228,5 +316,11 @@ async def remove_organization_member(
     invalidate_for(member["email"])
     _log.warning("operator_member_purged", slug=slug, email=member["email"],
                  deleted=deleted, kept=kept)
+    # EM-G11f1b (email_app_master_plan.md §12.3.13.9.2): the same teardown as
+    # the admin door, after the session block exits. It goes LAST, after the
+    # log line, so a stop of the process in its wait loses no record.
+    mailboxes = await finish_teardowns(
+        org_id, plans, open_session=partial(_tenant_session, org_id),
+        stop_loops=True, bump_owners=False)
     return PurgeResult(email=member["email"], deleted=deleted,
-                       kept=kept).model_dump()
+                       kept=kept, mailboxes=mailboxes).model_dump()

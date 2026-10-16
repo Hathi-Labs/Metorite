@@ -222,6 +222,10 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # and passes --homedir to gpg as well, and this is the second layer. zstd
     # reads ZSTD_CLEVEL and ZSTD_NBTHREADS.
     "BACKUP_", "KEEP_", "RCLONE_", "ZSTD_",
+    # WS-38 T-9: STAGING_EXPORT_SLUGS names the organizations whose data the
+    # nightly backup copies to the staging box. A tenant that set it could
+    # send its neighbours' data there.
+    "STAGING_",
     # Server and agent runtime switches.
     "UVICORN_", "V1_", "SKILLS_", "SUB_AGENT_", "TOOL_", "RUNTIME_",
     "SESSION_", "STREAM_", "HISTORY_", "PROMPT_", "RUN_", "WATCHDOG_",

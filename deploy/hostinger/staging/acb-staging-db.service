@@ -1,0 +1,24 @@
+# The STAGING database (WS-38 T-9). Postgres 17, the version of the production
+# cluster, because the nightly copy is a pg_dump of production. The data is
+# rebuilt from that copy each night (scripts/staging_refresh.sh), so the volume
+# holds nothing worth a backup. Loopback only. The password file is root's.
+[Unit]
+Description=Metorite STAGING database (Postgres 17, rebuilt each night)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/acb/staging-db.env
+ExecStartPre=-/usr/bin/docker rm -f acb-staging-db
+ExecStart=/usr/bin/docker run --rm --name acb-staging-db \
+  -p 127.0.0.1:5435:5432 -e POSTGRES_PASSWORD \
+  -v acb-staging-pg:/var/lib/postgresql/data \
+  --memory 1g --memory-swap 1g \
+  pgvector/pgvector:pg17
+ExecStop=/usr/bin/docker stop acb-staging-db
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

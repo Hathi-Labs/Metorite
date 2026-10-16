@@ -13881,8 +13881,8 @@ connect is the precedent (`src/app/whatsapp/connect/page.tsx:340`), and
 | PR-G6 | **EM-G11e** — UMCC: the detector, dark | 4 | 🟢 AGENT-SAFE build. 🔴 OWNER-GATE for the vendor and the API (Q-GM-9). 🔴 `enforcement-flip` for `EMAIL_INJECTION_SCAN` | M, about 450 | §12.3.13.8 |
 | PR-G7 | **EM-G11f1** — one mailbox teardown, with the revoke and the filters. ✅ Merged NARROWED #1006 (2026-10-14) | 6 | 🟢 AGENT-SAFE · security review · R8 | M, about 550 | §12.3.13.9 |
 | PR-G8 | **EM-G11f2** — a durable purge, and a fence on each child. ✅ Merged NARROWED #1020 (2026-10-14), migration 264 | 6 | 🟢 AGENT-SAFE · R8 · one migration | M, about 500 | §12.3.13.9 |
-| PR-G7b | **EM-G11f1b** — the teardown in the member purge, and the Outlook rules. 📝 Specified (2026-10-16) | 6 | 🟢 AGENT-SAFE · security review · R8 · live for Outlook | M, about 550 | §12.3.13.9.2 |
-| PR-G7c | **EM-G11f1c** — the teardown in the org purge, and a purge record that outlives the org. 📝 Specified (2026-10-16) | 6 | 🟢 AGENT-SAFE · R8 · one migration · security review | M, about 450 | §12.3.13.9.2 |
+| PR-G7b | **EM-G11f1b** — the teardown in the member purge, and the Outlook rules. ✅ Merged #1089 (2026-10-16) | 6 | 🟢 AGENT-SAFE · security review · R8 · live for Outlook | M, about 550 | §12.3.13.9.2 |
+| PR-G7c | **EM-G11f1c** — the teardown in the org purge, and a purge record that outlives the org. 🔨 Built, not merged (2026-10-16, branch `gmail-org-purge`, migration 276) | 6 | 🟢 AGENT-SAFE · R8 · one migration · security review | M, about 450 | §12.3.13.9.2 |
 | PR-G8b | **EM-G11f3** — no copy of mail in a chat memory store, and no email chat route with no client. 📝 Specified (2026-10-16) | 6 | 🟢 AGENT-SAFE · security review. `deploy-write` for one line of `deploy.sh` (granted). 🔴 Merges before the WS-7 memory flips | M, about 400 added and 650 deleted | §12.3.13.9.1 |
 | PR-G9 | **EM-G11g1** — envelope encryption in the key store, dark | 5 | 🟢 AGENT-SAFE build · security review. 🔴 OWNER-GATE for KMS billing (Q-GM-8). 🔴 `enforcement-flip` for `KEY_STORE_ENVELOPE` | M, about 550 | §12.3.13.10 |
 | PR-G10 | **EM-G11g2** — the rewrap job and the rotation | 5 | 🟢 AGENT-SAFE · R8. 🔴 `deploy` to run the job on production | M, about 450 | §12.3.13.10 |
@@ -15267,9 +15267,13 @@ agent and the trace of a live store. `deploy-write` for the line of `deploy.sh`,
 
 ###### 12.3.13.9.2 EM-G11f1b and EM-G11f1c — the teardown in the member purge and the org purge (PR-G7b, PR-G7c)
 
-**Status.** 📝 Specified (2026-10-16). Verified against code on 2026-10-16, at `origin/main`
-`0a14f7552`. Not audited and not built. This section closes the open points of the f1 and f2
-blocks: the two purges, the Outlook rules and `test_three_paths_call_one_teardown`.
+**Status.** ✅ PR-G7b merged (#1089, 2026-10-16). Items 1 to 5 are built, with acceptance 1 to 7
+and 10. Item 11 waits for a live Outlook check. 🔨 PR-G7c built, not merged (2026-10-16, branch
+`gmail-org-purge`, audit GO-NARROWED). Its items 1 to 5 are built, with acceptance 1, 4 and 5 for
+the org door, and acceptance 8 and 9 on R8. Migration 276 holds the detached table. The security
+review gave APPROVE with three P2 findings, and fix round 1 closes all three, with the org row lock
+(as-built block below). Item 12 waits for the owner. This section closes the open points of the f1 and f2 blocks: the two
+purges, the Outlook rules and `test_three_paths_call_one_teardown`.
 
 **Paths.** `GW` is as in §12.3.13.2.
 
@@ -15358,10 +15362,18 @@ The rules of the composition:
 - `finish_teardowns` runs at most `TEARDOWN_CONCURRENCY = 4` mailboxes at once. Each mailbox has a
   bound of `MAILBOX_TEARDOWN_BOUND_S = 30` seconds for all of its legs. The bound of each f1 leg
   stays: 10 s for the filters, 5 s for the revoke, 5 s for the Graph call and 5 s for Redis.
+- The stop of the sync loop runs before that bound and outside it, with its own bound,
+  `STOP_SYNC_BOUND_S = 15` seconds (fix round 1). `remove_account_sync` swallows the cancel of its
+  wait, so a slow stop inside the leg bound took the time of the revoke.
+- A door logs the purge, and the admin door mirrors it to the Console, BEFORE it calls
+  `finish_teardowns`. A stop of the process in the wait then loses no record (fix round 1).
+- `/internal/drain` counts the held task, so a deploy waits for it. A cancel of the task logs
+  `email.teardown.cancelled` with the id of each mailbox that did not finish. No ledger keeps a
+  token after the delete.
 - A door waits `TEARDOWN_WAIT_S = 60` seconds at most. The mailboxes that remain continue in a task
   that the module holds, as `_PURGES` does. The door logs `email.teardown.continuing` with the
   count, and its receipt says how many finished.
-- So the worst case is 1000 mailboxes at 4 at a time and 30 s each: about 2 hours, in the
+- So the worst case is 1000 mailboxes at 4 at a time and 45 s each: about 3 hours, in the
   background. A restart in that time loses the revokes and the filter removals that remain. The
   credentials went with the rows, so nothing can do them again. The start line
   `email.teardown.started` names the count, so a lost teardown shows as a start line with no end
@@ -15379,18 +15391,44 @@ The rules of the composition:
   The callback writes one row for each mailbox, in the transaction of the org delete. Each tick of
   the sweeper sweeps the table once, after the organizations, with the same claim, lease and
   back-off.
+- **The open purge rows of the org move too** (decided at build, 2026-10-16). The cascade also
+  deletes each OPEN `email_mailbox_purges` row of the org: a disconnect or a member purge whose
+  Mem0 passes did not finish. The callback copies each one into the detached table, with its
+  passes and its tries, in the same transaction. Without that copy, an org purge loses each
+  purge that the org still owes, and with Mem0 off that is every one.
 - **Why the detached table has no RLS.** The tenant of each row no longer exists, so no session can
   bind it. The table goes into `gen_tenant_migration.EXEMPT` with that reason (R5 (a)). It holds an
-  address and a mailbox id, and no mail. Its grants follow migration 263: no PUBLIC, no Supabase
-  role, and `acb_app` only.
+  address and a mailbox id, and no mail. No PUBLIC grant, no Supabase role, and no `acb_app` grant
+  on the table (as built, fix round 1).
+- **As built, fix round 1 (security review, 2026-10-16).** The sweeper deletes the Mem0 key that a
+  row names, with no tenant bound. So a row must never name a live mailbox, and the database holds
+  that rule, not the app code:
+  1. No app role has a grant on the table. Three SECURITY DEFINER functions of migration 276 are
+     the only way in, each with a fixed `search_path` and EXECUTE to `acb_app` only.
+  2. `record_detached_purges(org)` reads rows only from `email_accounts` and the open
+     `email_mailbox_purges` of that org. It refuses an org that the transaction does not bind. The
+     purge binds the org before its callback, so the owner of the function reads the same rows
+     under FORCE RLS. An owner that bypasses RLS still reads one org, because each statement
+     names it.
+  3. A deferred trigger fails the COMMIT while the org of a new row exists. So a row commits only
+     with the delete of its org, and each mailbox of that org goes in the same cascade.
+  4. `claim_detached_purge` and `settle_detached_purge` change only the state of a row. A row that
+     closes (`done` or `refused`) gets an empty `owner_email`. The purge receipt lists the table
+     in `kept`.
+  5. `_detached_session` stays the ONE unbound session, with `run_tick` as its one caller. Each of
+     its statements calls one of those functions and names no table.
+     `TestTheUnboundSessionIsPinned` fences both.
+  6. The callback locks the org row first (`SELECT ... FOR UPDATE`). A mailbox connect waits on
+     its foreign key and then fails, so no mailbox joins the org between the plan read and the
+     cascade.
 - ⚠️ This is a second purge table, and it is not a second way. The same sweeper, the same pass and
   the same SQL shape serve both tables. Only the store differs, because the tenant is gone.
 
 **The Outlook rules: the teardown removes them.** Metorite made each rule, its id is in
 `email_newsletters`, and the cascade deletes the id. After a disconnect nothing can find the rule,
-and it archives the mail of the member with no end. So the plan reads the filter ids of an
-`outlook` row too, and `remove_metorite_filters` calls `OutlookProvider.delete_filter` for each
-one. The Outlook grant stays, because Microsoft has no revoke for one delegated grant (f1). This
+and it archives the mail of the member with no end. So the plan reads the filter ids of a
+`microsoft` row too, which is the stored value of an Outlook row (`factory.py:22-23`). Then
+`remove_metorite_filters` calls `OutlookProvider.delete_filter` for each one. The Outlook grant stays, because Microsoft has no revoke for one delegated grant (f1). This
 changes live Outlook behaviour, so it has an Outlook acceptance item. An IMAP row has no filters.
 
 **Scope.**
@@ -15402,8 +15440,9 @@ PR-G7b (EM-G11f1b): the member purge and the Outlook rules, with no migration.
 2. Wire the member purge: the plans and the purge rows in `purge_member_rows`, and
    `finish_teardowns` in each of the two doors.
 3. The Outlook rules, in each path.
-4. `PurgeResult` gets one additive field, `mailboxes`, with the counts `planned`, `finished` and
-   `continuing`. The Members page can read it or ignore it.
+4. `PurgeResult` gets one additive field, `mailboxes`, with the counts `planned`, `finished`,
+   `failed` and `continuing`. `finished` means that each leg succeeded. The Members page can read
+   it or ignore it.
 5. The cap and its 409.
 
 PR-G7c (EM-G11f1c): the org purge, with one migration.
@@ -15427,7 +15466,7 @@ Mem0 or of a Graphiti group, because §12.3.13.9.1 stops those writes. No change
 1. Each of the three paths calls `read_teardown_plans` before its delete, and `finish_teardowns`
    after its commit. No other code calls a leg of `teardown.py`.
 2. A member purge that `assert_owner_survives` refuses calls no provider and stops no loop.
-3. An Outlook plan with two filter ids calls `delete_filter` twice and calls no revoke.
+3. A plan of a `microsoft` row (Outlook) with two filter ids calls `delete_filter` twice and calls no revoke.
 4. A scope of 1001 mailboxes answers 409 and deletes nothing.
 5. With 10 mailboxes and a slow leg, the door answers after at most 60 s of teardown, and the
    receipt counts the mailboxes that continue.

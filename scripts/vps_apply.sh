@@ -766,6 +766,36 @@ else
   fi
 fi
 
+echo "==> Reconciling the workbench's DEPLOY_ENV (.env.local <- .env, WS-38 S-7)"
+# The workbench reads DEPLOY_ENV from ITS OWN env file, for the staging band and
+# the "[Staging]" tab title. The root .env stays the one source: this copies the
+# value across, before the build below, because a static page takes it at
+# `next build` (a restart alone does not repaint it). On production it REMOVES
+# any DEPLOY_ENV line from .env.local, so a stray copy can never draw the band
+# on the production site. Fence: tests/unit/test_deploy_env.py.
+if [ ! -f "$WB_ENV" ]; then
+  echo "    ! $WB_ENV missing — skipping (the token step above names the cause)"
+elif [ "$DEPLOY_ENV" = "staging" ]; then
+  # Exactly one line, and it says staging. A second DEPLOY_ENV line of any
+  # value is rewritten away, so the last-line-wins rule cannot hide the band.
+  if [ "$(grep -c '^DEPLOY_ENV=' "$WB_ENV" || true)" != "1" ] || ! grep -qx 'DEPLOY_ENV=staging' "$WB_ENV"; then
+    # umask 077, and a write IN PLACE: .env.local holds secrets, and an `mv`
+    # would give the file the temp file's mode.
+    ( umask 077; grep -v '^DEPLOY_ENV=' "$WB_ENV" > "$WB_ENV.tmp" || true )
+    echo 'DEPLOY_ENV=staging' >> "$WB_ENV.tmp"
+    cat "$WB_ENV.tmp" > "$WB_ENV"; rm -f "$WB_ENV.tmp"
+    echo "    + DEPLOY_ENV=staging written to .env.local"
+  else
+    echo "    already DEPLOY_ENV=staging"
+  fi
+elif grep -q '^DEPLOY_ENV=' "$WB_ENV"; then
+  ( umask 077; grep -v '^DEPLOY_ENV=' "$WB_ENV" > "$WB_ENV.tmp" || true )
+  cat "$WB_ENV.tmp" > "$WB_ENV"; rm -f "$WB_ENV.tmp"
+  echo "    - removed a DEPLOY_ENV line from .env.local (this box is production)"
+else
+  echo "    production: no DEPLOY_ENV in .env.local, as it should be"
+fi
+
 # ── WS-49 BH-6: the root units run only root-owned files ────────────────────
 # 🔴 acb-backup, acb-health-watchdog and acb.service run as root. They ran
 # scripts and read the compose project from this checkout, which acb owns, and
@@ -2343,6 +2373,31 @@ if [ "$DEPLOY_ENV" = "staging" ]; then
       echo "    staging: $st_name disabled"
     fi
   done
+  # ── WS-38 T-9: the units that ONLY the staging box runs ──────────────────
+  # deploy/hostinger/staging/ holds them, and production never reads it: the
+  # loop below globs deploy/hostinger/*.timer, so H-132 is untouched. They are
+  # the staging database, the Console tunnel, the nightly rebuild and the slice
+  # that caps the staging services. README.md in that folder lists them.
+  st_dir="$APP_DIR/deploy/hostinger/staging"
+  for st_unit in "$st_dir"/*.service "$st_dir"/*.timer "$st_dir"/*.slice; do
+    [ -e "$st_unit" ] || continue
+    st_name="$(basename "$st_unit")"
+    if ! sudo cmp -s "$st_unit" "/etc/systemd/system/$st_name"; then
+      sudo install -m 0644 "$st_unit" "/etc/systemd/system/$st_name"
+      echo "    staging: installed $st_name"
+    fi
+  done
+  install_dropins "$st_dir"
+  # The slice drop-ins apply at a unit's next start, so restart a unit that
+  # started before its newest one (the BH-7 rule, for this folder).
+  restart_stale_dropin_units "$st_dir"
+  # The nightly rebuild runs as root, so it runs a ROOT-OWNED copy (BH-6).
+  sudo install -d -m 0755 -o root -g root /usr/local/lib/acb-staging
+  sudo install -m 0755 -o root -g root "$APP_DIR/scripts/staging_refresh.sh" /usr/local/lib/acb-staging/staging_refresh.sh
+  sudo systemctl enable --now acb-staging-db.service acb-staging-refresh.timer >/dev/null 2>&1 \
+    || echo "    !! staging: could not enable acb-staging-db or acb-staging-refresh.timer"
+  sudo systemctl enable --now acb-console-tunnel.service >/dev/null 2>&1 \
+    || echo "    staging: the Console tunnel is not up (no link key yet, or production has not authorised it)"
 else
 for timer in "$APP_DIR"/deploy/hostinger/*.timer; do
   [ -e "$timer" ] || continue

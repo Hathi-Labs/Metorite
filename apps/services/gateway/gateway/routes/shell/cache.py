@@ -136,7 +136,8 @@ def features_hash(user: Any) -> str:
     it, through ``needs.listed_sources``. A change of the list takes effect
     at the gateway restart that it needs, and no stored answer from before
     the restart is served after it. With no such permission and an empty
-    list, the hash is the hash of before MD-3b."""
+    list, the hash is the hash of before MD-3b. While ``crm`` is listed, the
+    CRM kill switch of the member's org joins it too (MD-3e)."""
     from acb_auth.permissions import FEATURES
     from gateway.routes.shell import needs
     from gateway.routes.shell.intent import ADMIN_PERMISSION
@@ -149,6 +150,14 @@ def features_hash(user: Any) -> str:
     listed = needs.listed_sources()
     if listed:
         held.append("providers=" + "|".join(sorted(listed)))
+    if "crm" in listed:
+        # MD-3e: the CRM kill switch gates the `crm` source per org. A stored
+        # answer must not outlive the org's place on the list. The part is
+        # there only while `crm` is listed, so no other hash changes.
+        from gateway.routes.crm.flags import crm_org_allowed
+
+        allowed = crm_org_allowed(getattr(user, "organization_id", None))
+        held.append(f"crm_org={int(allowed)}")
     return hashlib.sha256(",".join(held).encode("utf-8")).hexdigest()[:16]
 
 
@@ -534,6 +543,19 @@ async def bump_org_safe(organization_id: Any) -> None:
         await asyncio.wait_for(bump_org(organization_id), BUMP_SAFE_WAIT_S)
     except Exception as exc:  # TimeoutError too: the write stands
         logger.warning("shell.feed.cache org bump skipped",
+                       extra={"error": type(exc).__name__})
+
+
+async def bump_member_safe(organization_id: Any, email: Any) -> None:
+    """:func:`bump_member` for a write of ANOTHER app, after its commit
+    (WS-58 MD-3f fix round 1). It waits ``BUMP_SAFE_WAIT_S`` at most, and it
+    never raises, as :func:`bump_org_safe` does. The chat questions call it:
+    the insert and the settle in ``orchestrator.pending_ask``, and the late
+    answer in ``routes/agent.py``. So a bump never breaks an ask."""
+    try:
+        await asyncio.wait_for(bump_member(organization_id, email), BUMP_SAFE_WAIT_S)
+    except Exception as exc:  # TimeoutError too: the write stands
+        logger.warning("shell.feed.cache member bump skipped",
                        extra={"error": type(exc).__name__})
 
 

@@ -21,6 +21,7 @@ from gateway.routes.email.automation.identity import (
 from gateway.routes.email.automation.senders import canonical_cleanup_category
 from gateway.routes.email.core import (
     _assert_account_owner,
+    _bound_org,
     _llm_json,
     _log,
     _tenant_session,
@@ -174,6 +175,8 @@ _PRIORITY_SCORE = (
 async def _digest_thread_list(
     db: Any, account_id: str, status: str, limit: int,
     *, prioritized: bool = False, with_time: bool = False,
+    before: datetime | None = None, after: datetime | None = None,
+    this_tenant: bool = False,
 ) -> list[dict[str, Any]]:
     """Live threads in one status, with enough identity for the dashboard to
     open the thread: thread_id, the last message id, and the counterparty
@@ -187,9 +190,28 @@ async def _digest_thread_list(
 
     ``with_time`` adds ``last_message_at``, the ISO time of the last message,
     for a caller that shows when the thread went quiet (the shell's needs
-    feed, through :func:`needs_reply_threads`). Off, the rows do not change."""
+    feed, through :func:`needs_reply_threads`). Off, the rows do not change.
+
+    ``before`` and ``after`` bound ``last_message_at`` IN SQL, each one
+    strict (WS-58 MD-3d, ``my_day_feed.md`` §5.9 item 12). They must be in
+    SQL, because the list is the oldest first and stops at ``limit``: a
+    filter after the read would lose a thread inside the window behind the
+    old ones outside it. ``this_tenant`` names the session's bound tenant,
+    as defence in depth beside RLS (R5). With none of the three, the
+    statement does not change, so
+    the digest does not change (fence: ``test_email_digest.py``)."""
     order = (f"{_PRIORITY_SCORE} DESC, ts.last_message_at ASC"
              if prioritized else "ts.last_message_at ASC")
+    params: dict[str, Any] = {"aid": account_id, "lim": limit}
+    bounds = ""
+    if before is not None:
+        bounds += " AND ts.last_message_at < :before"
+        params["before"] = before
+    if after is not None:
+        bounds += " AND ts.last_message_at > :after"
+        params["after"] = after
+    if this_tenant:
+        bounds += f" AND ts.organization_id = {_bound_org()}"
     rows = (await db.execute(text(
         f"""SELECT ts.thread_id, ts.last_message_id, em.subject,
                    em.from_address->>'name'  AS from_name,
@@ -205,10 +227,10 @@ async def _digest_thread_list(
             LEFT JOIN email_messages em ON ts.last_message_id = em.id
             WHERE ts.account_id = :aid AND ts.status = '{status}'
               AND ts.last_message_at IS NOT NULL
-              AND {_LIVE_THREAD}
+              AND {_LIVE_THREAD}{bounds}
             ORDER BY {order}
             LIMIT :lim"""
-    ), {"aid": account_id, "lim": limit})).fetchall()
+    ), params)).fetchall()
     # A last message from ANY mailbox of the member is ours (D-EM-27), so the
     # counterparty is then its first recipient, not the member.
     selves = await resolve_self_addresses(db, account_id)
@@ -268,6 +290,55 @@ async def needs_reply_count(user: UserContext, account_id: str) -> int:
         return int(await _digest_needs_reply(db, account_id))
 
 
+#: The wait of a mailbox with no ``follow_up_awaiting_days`` of its own, in
+#: business days (``my_day_feed.md`` §5.9 item 12).
+NO_ANSWER_DEFAULT_DAYS = 3
+
+
+async def _awaiting_cutoff(db: Any, account_id: str) -> datetime:
+    """The instant before which an AWAITING thread has no answer for too
+    long: ``replyzero._business_days_cutoff(n)``, the one rule of the
+    follow-up job (``followups.py``). ``n`` is the mailbox's own
+    ``follow_up_awaiting_days`` when it is more than 0, and else
+    :data:`NO_ANSWER_DEFAULT_DAYS`. The read names the bound tenant."""
+    from gateway.routes.email.automation.replyzero import (
+        _business_days_cutoff,
+    )
+
+    row = (await db.execute(text(
+        "SELECT follow_up_awaiting_days FROM email_assistant_settings "
+        f"WHERE account_id = :aid AND organization_id = {_bound_org()}"
+    ), {"aid": account_id})).fetchone()
+    days = float(getattr(row, "follow_up_awaiting_days", 0) or 0) if row else 0.0
+    return _business_days_cutoff(days if days > 0 else NO_ANSWER_DEFAULT_DAYS)
+
+
+async def awaiting_threads(
+    user: UserContext, account_id: str, limit: int, *,
+    after: datetime, before: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """The live AWAITING threads of ONE mailbox the member owns, whose last
+    message is older than ``before`` and newer than ``after``, the longest
+    wait first, at most ``limit`` (WS-58 MD-3d, ``my_day_feed.md`` §5.9 item
+    12, the ``no_answer`` kind of My Day).
+
+    ``before`` None is the mailbox's own cutoff (:func:`_awaiting_cutoff`),
+    read in the same session. The owner check runs first and names the bound
+    tenant, so a mailbox of another member, or of another organization, is
+    404 before any read. Each statement names the bound tenant, as defence
+    in depth beside RLS (R5). It raises on any error: the
+    caller must tell a failed read from an empty one. It writes nothing.
+    Not a route: the shell calls it after its own ``feature:email`` check."""
+    async with _tenant_session() as db:
+        await _assert_account_owner(
+            db, account_id, user.email or "anonymous", this_tenant=True)
+        if before is None:
+            before = await _awaiting_cutoff(db, account_id)
+        return await _digest_thread_list(
+            db, account_id, "AWAITING", limit, with_time=True,
+            before=before, after=after, this_tenant=True)
+
+
 async def _digest_backlog_aging(
     db: Any, account_id: str, limit: int = 5, *, prioritized: bool = False,
 ) -> list[dict[str, Any]]:
@@ -308,44 +379,14 @@ async def _digest_commitments(
 
     Each row carries ``message_id`` — the latest message of the linked thread —
     so the dashboard can open the email the commitment came from (context on
-    what was promised, not just the captured title)."""
-    from gateway.routes.tasks.item_source import item_source
+    what was promised, not just the captured title).
 
+    The reads are :func:`_commitments_core`, which raises. This wrapper keeps
+    the digest best-effort (WS-58 MD-3d), and its output does not change."""
     try:
-        owner = (await db.execute(text(
-            "SELECT user_id FROM email_accounts WHERE id = :aid"
-        ), {"aid": account_id})).fetchone()
-        uid = str(getattr(owner, "user_id", "") or "") if owner else ""
-        if not uid:
-            return []
-        items = await item_source().items_by_origin(
-            db, uid, "account_id", str(account_id))
-        at = datetime.now(UTC)
-        until = at + timedelta(days=horizon_days)
-        picked: list[tuple[Any, datetime | None]] = []
-        for it in items:
-            due = _as_utc(getattr(it, "due_at", None))
-            if (due is not None and due <= until) or (
-                    include_undated and due is None):
-                picked.append((it, due))
-        # Soonest first, undated last: the order the SQL gave with NULLS LAST.
-        picked.sort(key=lambda p: (p[1] is None, p[1] or at))
-        picked = picked[:limit]
-        threads = sorted({
-            str(_origin_of(it).get("thread_id"))
-            for it, _due in picked if _origin_of(it).get("thread_id")
-        })
-        latest: dict[str, str] = {}
-        if threads:
-            rows = (await db.execute(text(
-                """SELECT DISTINCT ON (em.thread_id)
-                          em.thread_id, em.id AS message_id
-                   FROM email_messages em
-                   WHERE em.account_id = :aid
-                     AND em.thread_id = ANY(:tids)
-                   ORDER BY em.thread_id, em.received_at DESC NULLS LAST"""
-            ), {"aid": account_id, "tids": threads})).fetchall()
-            latest = {str(r.thread_id): str(r.message_id) for r in rows}
+        at, picked, latest = await _commitments_core(
+            db, account_id, horizon_days=horizon_days, limit=limit,
+            include_undated=include_undated)
     except Exception as exc:  # noqa: BLE001
         # Best-effort must leave the SESSION usable, not just return []: a
         # failed query aborts the transaction, and without a rollback every
@@ -368,6 +409,130 @@ async def _digest_commitments(
             "task_id": str(it.id),
             "thread_id": thread_id,
             "message_id": latest.get(str(thread_id)) if thread_id else None,
+        })
+    return out
+
+
+async def _commitments_core(
+    db: Any, account_id: str, *, horizon_days: int, limit: int,
+    include_undated: bool = False, commitment: bool = False,
+    this_tenant: bool = False, now: datetime | None = None,
+    owner: str | None = None,
+) -> tuple[datetime, list[tuple[Any, datetime | None]], dict[str, str]]:
+    """The reads of :func:`_digest_commitments`, with no ``try``: the instant
+    of the horizon, the picked ``(task, due)`` pairs (soonest first, undated
+    last, at most ``limit``), and the latest message of each linked thread.
+    It RAISES on any error (WS-58 MD-3d).
+
+    ``commitment`` keeps only a promise, a task with ``origin.commitment =
+    true`` (``capture_email.py``, ``item_lens.items_by_origin``). The digest
+    passes no flag, so its call of the seam stays the same: the digest reads
+    every task captured from the mailbox. ``this_tenant`` names the bound
+    tenant in the latest-message statement, as the seam's own read
+    already does (``MY_TASKS_FROM``). ``now`` is the caller's clock, and
+    None reads the wall clock, as the digest always did. ``owner`` is the
+    mailbox owner that the caller's own owner check proved, so the core
+    reads no owner row again. None reads it, as the digest always did."""
+    from gateway.routes.tasks.item_source import item_source
+
+    uid = owner
+    if uid is None:
+        row = (await db.execute(text(
+            "SELECT user_id FROM email_accounts WHERE id = :aid"
+        ), {"aid": account_id})).fetchone()
+        uid = str(getattr(row, "user_id", "") or "") if row else ""
+    at = now if now is not None else datetime.now(UTC)
+    if not uid:
+        return at, [], {}
+    # Only a promise read passes the flag, so the digest's call keeps its
+    # exact arguments.
+    flags = {"commitment": True} if commitment else {}
+    items = await item_source().items_by_origin(
+        db, uid, "account_id", str(account_id), **flags)
+    until = at + timedelta(days=horizon_days)
+    picked: list[tuple[Any, datetime | None]] = []
+    for it in items:
+        due = _as_utc(getattr(it, "due_at", None))
+        if (due is not None and due <= until) or (
+                include_undated and due is None):
+            picked.append((it, due))
+    # Soonest first, undated last: the order the SQL gave with NULLS LAST.
+    picked.sort(key=lambda p: (p[1] is None, p[1] or at))
+    picked = picked[:limit]
+    threads = sorted({
+        str(_origin_of(it).get("thread_id"))
+        for it, _due in picked if _origin_of(it).get("thread_id")
+    })
+    latest: dict[str, str] = {}
+    if threads:
+        rows = (await db.execute(text(_latest_message_sql(this_tenant)), {
+            "aid": account_id, "tids": threads})).fetchall()
+        latest = {str(r.thread_id): str(r.message_id) for r in rows}
+    return at, picked, latest
+
+
+#: The left pad of the statement below, as the digest always sent it.
+_SQL_PAD = " " * 19
+
+
+def _latest_message_sql(this_tenant: bool = False) -> str:
+    """The latest message of each linked thread. ⚠️ With ``this_tenant`` off,
+    the text is the digest's own, byte for byte, from before MD-3d moved it
+    out of ``_digest_commitments`` (fence: ``test_email_digest.py``). On, one
+    more line names the bound tenant."""
+    tenant = (f"{_SQL_PAD}  AND em.organization_id = {_bound_org()}\n"
+              if this_tenant else "")
+    return ("SELECT DISTINCT ON (em.thread_id)\n"
+            f"{_SQL_PAD}       em.thread_id, em.id AS message_id\n"
+            f"{_SQL_PAD}FROM email_messages em\n"
+            f"{_SQL_PAD}WHERE em.account_id = :aid\n"
+            f"{_SQL_PAD}  AND em.thread_id = ANY(:tids)\n"
+            f"{tenant}"
+            f"{_SQL_PAD}ORDER BY em.thread_id, em.received_at DESC NULLS LAST")
+
+
+async def promise_tasks(
+    user: UserContext, account_id: str, *, horizon_days: int, limit: int,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """The open PROMISES of ONE mailbox the member owns, due within
+    ``horizon_days`` or already past, soonest first, at most ``limit``
+    (WS-58 MD-3d, ``my_day_feed.md`` §5.9 items 10.1 and 12, the
+    ``promise_due`` kind of My Day).
+
+    A promise is a commitment task (``commitment=True``), never every task
+    captured from the mailbox. A promise with no due date is left out. The
+    task comes through the one task seam, so it is in the member's lens. The
+    owner check runs first and names the bound tenant, so a mailbox of
+    another member is 404 before any read. It RAISES on any error, unlike
+    the digest's best-effort read. Not a route: the shell calls it after its
+    own ``feature:email`` and ``feature:projects`` checks."""
+    from acb_common.priority import task_cell
+
+    async with _tenant_session() as db:
+        await _assert_account_owner(
+            db, account_id, user.email or "anonymous", this_tenant=True)
+        at, picked, latest = await _commitments_core(
+            db, account_id, horizon_days=horizon_days, limit=limit,
+            commitment=True, this_tenant=True, now=now,
+            owner=user.email or "anonymous")
+    out: list[dict[str, Any]] = []
+    for it, due in picked:
+        if due is None:
+            continue  # the core leaves out an undated promise already
+        thread_id = _origin_of(it).get("thread_id") or None
+        out.append({
+            "task_id": str(it.id),
+            "title": it.title or "(untitled)",
+            "due_at": due.isoformat(),
+            "overdue": due < at,
+            "thread_id": thread_id,
+            "message_id": latest.get(str(thread_id)) if thread_id else None,
+            # The D78 level, which the feed's old-path weight reads.
+            "priority": task_cell({
+                "importance": getattr(it, "importance", None),
+                "leveraged": getattr(it, "leveraged", False),
+                "due_at": due}),
         })
     return out
 

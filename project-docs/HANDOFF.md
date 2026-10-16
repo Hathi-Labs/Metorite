@@ -49,6 +49,34 @@ nothing; the thing nobody wrote down costs a session.
 ## The shape of an entry
 
 ```
+### H-335 · Finish the staging box: DNS, two OAuth clients, one sudo run · [OWNER]
+- **Check:** `curl -s https://api.dev.metorite.com/version` answers a `sha` equal
+  to `git rev-parse origin/staging`. If it does, delete this entry.
+- **Why:** WS-38 phase 4. The code that makes the dev box the staging box is on
+  `main` (`specs/staging_and_daily_release.md` §5.11). Four steps need the owner,
+  because they are outside accounts and root on the dev box.
+- **Do this (owner), in order:**
+  1. DNS: add `A` records `dev` and `api.dev`, to `187.127.179.143`.
+  2. Make one Google OAuth client and one Microsoft Entra app for staging.
+     The redirect URIs are `https://dev.metorite.com/api/auth/callback/google`
+     and `https://dev.metorite.com/api/auth/callback/microsoft-entra-id`.
+  3. On the Customer Console, make the `Metorite Staging` organization with a
+     small credit cap, and copy its `cc_live_` key.
+  4. On the dev box, write those five values to `/root/staging.secrets` as
+     `NAME=VALUE` lines. The names are in the header of
+     `deploy/hostinger/bootstrap_staging.sh`. Then run:
+     `sudo bash /home/dev/Metorite/deploy/hostinger/bootstrap_staging.sh --secrets /root/staging.secrets`
+- **Then (agent):** add the key line that the bootstrap prints to
+  `/home/acb/.ssh/authorized_keys` on the production box. Add
+  `Match User acb` / `AllowStreamLocalForwarding no` to its sshd_config, run
+  `sshd -t`, then reload ssh. Set
+  `STAGING_EXPORT_SLUGS=default,fracktalworks,hathi-labs-llp,smoke-chat` in the
+  production `.env`. Wait for one nightly backup, or run it, and then
+  `sudo systemctl start acb-staging-refresh.service` on the dev box. Report each
+  production act in the same message (CLAUDE.md §3a rule 2).
+- **Authority:** `specs/staging_and_daily_release.md` §5.10 and §5.11
+- **Added:** 2026-10-16 · WS-38 staging session
+
 ### H-283 · Prove the first `credit_draw` row on production · [AGENT]
 - **Check:** on the box, query the Console database:
   `SELECT count(*), max(created_at) FROM credit_draw;`. A count above zero
@@ -5372,11 +5400,12 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `git grep -n -A2 "WHERE user_id = :uid" -- apps/services/gateway/gateway/routes/tasks`.
   A statement that names no `organization_id` means this entry stays.
 - **Why.** Migration 239 keys `user_settings` on `(organization_id, user_id)`.
-  Production connects as the owner role, which reads past RLS. So a read by
-  `user_id` alone can return the row of another org, for a member who belongs
-  to two orgs. The data is the same person's own, so the impact is low. MD-3c
-  fixed `stored_zone`, `tasks.settings._load` and the work-schedule seed. These
-  reads still name no tenant:
+  The gateway connects as `acb_app`, which does not bypass RLS, and FORCE RLS
+  is on (measured on the box, 2026-10-16). So RLS keeps another org's row
+  out, and the org predicate is defence in depth (R5). A read by `user_id`
+  alone returns another org's row only for a role that bypasses RLS. MD-3c
+  fixed `stored_zone`, `tasks.settings._load` and the work-schedule seed.
+  These reads still name no tenant:
   1. `routes/tasks/settings.py` `task_models` (about :134).
   2. `routes/tasks/settings.py` `task_toggles` (about :156).
   3. `routes/tasks/calendar.py` (about :571, :608 and :1171).
@@ -5724,6 +5753,29 @@ line — never reclaim a number by deleting the other entry.
   Add an R8 test with two currencies in one lane.
 - **Authority:** `specs/crm_app.md` (the reports routes), `specs/projects_ai_chat.md` §14.10.9
 - **Added:** 2026-10-16 · WS-27bm §14.10.9 B3 review
+### H-334 · The email owner check names no tenant by default · [AGENT]
+- **Check:** `git grep -n "this_tenant: bool = False" -- apps/services/gateway/gateway/routes/email/core.py`.
+  A hit means this entry stays.
+- **Why.** The gateway connects as `acb_app`. That role is not a superuser,
+  has no BYPASSRLS and does not own the tables, and FORCE RLS is on (measured
+  on the box, 2026-10-16). So RLS keeps another org's rows out, and a missing
+  org predicate is defence in depth (R5), not a live leak. It leaks only if
+  a path reads with a role that bypasses RLS. The gap is wide. The default of
+  `email/core.py` `_assert_account_owner` (about :870) is
+  `this_tenant=False`, and about 62 callers use it, some of them writes. An
+  example is `create_rule` (`automation/rules.py` :637). Only MD-3d's two
+  wrappers pass `this_tenant=True`.
+- **Do this:**
+  1. Read each caller of `_assert_account_owner`. Then make `this_tenant`
+     default to True, and pass False only where a reason is written.
+  2. Name the tenant in the list reads: `transport/accounts.py`
+     `feed_mailboxes` (about :361) and `list_accounts` (about :302), and
+     `automation/identity.py` `resolve_self_addresses` (about :395).
+  3. Add one R8 case as a role that bypasses RLS, with one mailbox in two
+     orgs, modelled on
+     `test_feed_mail_kinds_r8.py::TestTheTenantUnderTheOwnerRole`.
+- **Authority:** R5 · `specs/my_day_feed.md` §16 MD-3d (what the build found)
+- **Added:** 2026-10-15 · MD-3d build · rewritten 2026-10-16, MD-3d review
 
 # DONE — deleted, not archived
 

@@ -162,12 +162,15 @@ class _FakeDB:
         sql = " ".join(str(stmt).split())
         p = params or {}
         if sql.startswith("SELECT organization_id, provider, credentials_encrypted"):
+            # EM-G11f1b: the ownership read is ``teardown.MAILBOX_PLAN_SQL``.
             self.ledger.events.append(("read", self.ledger.open))
             row = self.rows.get(p["id"])
             owned = row is not None and row["user_id"] == p["uid"]
             return _Result(SimpleNamespace(
                 organization_id=row["org"], provider=row["provider"],
-                credentials_encrypted=row["creds"]) if owned else None)
+                credentials_encrypted=row["creds"], user_id=row["user_id"],
+                email_address=row.get("email", "box@em-t4f.test"),
+                webhook_subscription_id=row["sub"]) if owned else None)
         if sql.startswith("SELECT n.auto_archive_filter_id"):
             # EM-G11f1: the Gmail filter ids, in the block of the ownership read.
             self.ledger.events.append(("filter_read", self.ledger.open))
@@ -312,6 +315,9 @@ def wired(monkeypatch):
         db = _FakeDB(ledger, rows, delete_fails, delete_gate, shared)
         monkeypatch.setattr(accounts, "_tenant_session", _watched_session(ledger, db))
         monkeypatch.setattr(accounts, "_log", _RecordingLog(ledger))
+        # EM-G11f1b: the stop and the Graph call live in ``teardown.py`` now,
+        # so its log lines land in the same ledger.
+        monkeypatch.setattr(teardown, "_log", _RecordingLog(ledger))
 
         if fake_scheduler:
             async def _remove(account_id: str) -> None:
@@ -342,7 +348,6 @@ def wired(monkeypatch):
             ledger.events.append(("build", ledger.open, name, creds))
             return provider
 
-        monkeypatch.setattr(accounts, "_instantiate_provider", _build)
         monkeypatch.setattr(teardown, "_instantiate_provider", _build)
         _stub_teardown_network(monkeypatch, lambda token: ledger.events.append(
             ("revoke", ledger.open)))
@@ -472,7 +477,8 @@ class TestTheGraphSubscriptionIsDeleted:
         assert build[1] == 0 and build[2] == "microsoft"
         assert ledger.index("graph_delete") > ledger.index("delete"), (
             "the Graph call must read the subscription id after the loop stopped")
-        assert ledger.logs[-1][:2] == ("info", "email.disconnect.subscription_deleted")
+        assert ("info", "email.disconnect.subscription_deleted") in [
+            log[:2] for log in ledger.logs]
 
     @pytest.mark.parametrize("status,level,event", [
         (204, "info", "email.disconnect.subscription_deleted"),
@@ -526,7 +532,7 @@ class TestTheGraphSubscriptionIsDeleted:
     async def test_a_failed_graph_call_still_gives_204(
         self, wired, monkeypatch, graph, decrypt_raises, error,
     ):
-        monkeypatch.setattr(accounts, "SUBSCRIPTION_DELETE_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(teardown, "SUBSCRIPTION_DELETE_TIMEOUT_S", 0.05)
         rows = {"acc-1": _row()}
         ledger = wired(rows, graph=graph, decrypt_raises=decrypt_raises)
         started = time.monotonic()
@@ -547,7 +553,7 @@ class TestTheGraphSubscriptionIsDeleted:
         assert TOKEN not in repr(ledger.logs)
 
     def test_the_bound_is_five_seconds(self):
-        assert accounts.SUBSCRIPTION_DELETE_TIMEOUT_S == 5.0
+        assert teardown.SUBSCRIPTION_DELETE_TIMEOUT_S == 5.0
 
 
 # ── hermetic: d. no Graph call without a subscription ────────────────────────
@@ -794,7 +800,7 @@ def r8_doubles(monkeypatch):
     monkeypatch.setattr(sched, "remove_account_sync", _remove)
     monkeypatch.setattr(key_store_mod, "get_key_store", lambda: SimpleNamespace(
         decrypt=lambda blob: json.dumps({"access_token": TOKEN})))
-    monkeypatch.setattr(accounts, "_instantiate_provider",
+    monkeypatch.setattr(teardown, "_instantiate_provider",
                         lambda name, creds: _Graph())
     seen["revoke"] = []
     _stub_teardown_network(monkeypatch, seen["revoke"].append)
@@ -1100,7 +1106,7 @@ class TestTheDisconnectUnderForceRLS:
             await asyncio.sleep(3600)
 
         monkeypatch.setattr(sched, "_account_sync_loop", _sleeper)
-        monkeypatch.setattr(accounts, "_instantiate_provider", lambda *_a: pytest.fail(
+        monkeypatch.setattr(teardown, "_instantiate_provider", lambda *_a: pytest.fail(
             "a refused disconnect reached Graph"))
         owner = f"member-{uuid.uuid4().hex[:8]}@em-t4f.test"
         acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner,

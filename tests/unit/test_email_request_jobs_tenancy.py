@@ -101,6 +101,9 @@ _EMAIL = (Path(__file__).resolve().parents[2]
 ALLOWED_UNBOUND: dict[tuple[str, str], int] = {
     ("scheduler_hooks.py", "mailbox_owner"): 1,
     ("memory_purge.py", "_organization_ids"): 1,
+    # WS-17 EM-G11f1c: the one session of the RLS-EXEMPT
+    # `email_detached_purges`, whose tenant no longer exists.
+    ("memory_purge.py", "_detached_session"): 1,
 }
 
 #: The ten jobs of EM-T4a-0, keyed by file. They held twelve sites:
