@@ -62,8 +62,12 @@ digest.
 `MY_DAY_PROVIDERS` gates the source `crm`, and that list is empty in
 production. So the answer is the same as before, byte for byte.
 
-The rest of this file is not built. The open AGENT-SAFE tickets are MD-3f,
-MD-4, MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
+**MD-3f is BUILT, 2026-10-15** (people and chat, no migration).
+`MY_DAY_PROVIDERS` gates the sources `people` and `chat`, and the list is
+empty in production. So the answer is the same as before, byte for byte.
+
+The rest of this file is not built. The open AGENT-SAFE tickets are MD-4,
+MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
 Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
@@ -550,9 +554,9 @@ nothing (`navigation_shell.md` §4.5, "No second arithmetic").
 | Kind | Signal | Why line | Acts | AI | Phase |
 |---|---|---|---|---|---|
 | `approval` | Today's provider, org admin only | Template from the action name | Open Approvals | None | MD-1 |
-| `colleague_out` | A person I have a block with today is absent | Template | Open the day | None | MD-3, **only for a member who passes `can_read_hr_fields`** (`routes/tasks/core.py:75`). The provider calls the People app's own gated read. A plain member gets no row, and a negative test proves it |
+| `colleague_out` | A person I have a block with today is absent | Template | Open the day | None | MD-3, **only for a member who passes `can_read_hr_fields`** (`routes/tasks/core.py:75`). The provider calls the People app's own gated read. A plain member gets no row, and a negative test proves it. BUILT in MD-3f, source `people` (§5.9 item 14) |
 | `agent_done` | A chat run that I started finished while I was away | Template from the run | Open chat | None | MD-3. It reads WS-51's run state |
-| `agent_asks` | A run waits for my answer (`chat_pending_ask`) | Template | Open chat | None | MD-3. Feed only, until a §7.2 amendment |
+| `agent_asks` | A run waits for my answer (`chat_pending_ask`) | Template | Open chat | None | MD-3. Feed only, until a §7.2 amendment. BUILT in MD-3f, source `chat` (§5.9 item 14) |
 | `whatsapp_waiting` | A WhatsApp thread waits for me | Template | Open thread | None | MD-9 |
 
 ### 5.7 The cards about the day itself
@@ -3561,6 +3565,95 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/shell/f
 node .claude/hooks/ste-lint.mjs project-docs/specs/my_day_feed.md
 ```
 
+**BUILT, 2026-10-15.** No migration, and no flag changed. `MY_DAY_PROVIDERS`
+gates the two sources, so each runs only when the list names it. These are
+the parts:
+
+- `feed.py`: the providers `_people` and `_chat`, and their two `register`
+  calls. `people` needs `admin:members:read`, so a member without the grant
+  gets `absent`, and the provider never runs.
+- `people/absences.py`: `away_on`, one statement that names the bound
+  tenant beside RLS. It raises 403 without the HR grant, and it opens no
+  session for no address. The admin absence `POST` and `DELETE` call
+  `bump_org` after the commit.
+- `orchestrator/pending_ask.py`: `_record` and `settle` call `bump_member`
+  for the member that the question asks. Each bump does nothing with
+  `MY_DAY_CACHE` off. It never raises, and it stops after 0.5 seconds
+  (`MY_DAY_BUMP_TIMEOUT_S`). So a bump never breaks an ask or an absence
+  write.
+- `feed_rank.py` and `feed.ts` do not change. MD-3c added the `BASE`, the
+  group, the template and the label of both kinds.
+
+**What the build found, for the slices after it.**
+
+- §5.9 item 4 gives `agent_asks` the newest `asked_at` of the thread. The
+  source of item 14, `_my_waiting_asks`, kept only the oldest row of each
+  thread. Fix round 1 adds four summary fields of the waiting rows to that
+  entry: `request_ids`, `newest_asked_at`, `newest_agent_name` and
+  `latest_expires_at`. The entry stays the oldest row, so `kind` keeps its
+  meaning for `list_active_sessions`. The card takes the newest time, so a
+  new question brings back a dismissed card.
+- The template table of item 11 names only `waiting_since` for
+  `agent_asks`. The card also carries `request_ids`, all the waiting ids of
+  the thread, sorted. Item 4 adds that name to `STABLE_FACTS`.
+- Two more writes end a question, and each bumps My Day (fix round 1). The
+  late answer to a parked question (`POST /agent/respond-input`) bumps the
+  member that it asked. The delete of a chat closes its questions, so it
+  bumps the org while `CHAT_DURABLE_ASKS` is on.
+- `cache.bump_member_safe` joins `cache.bump_org_safe`, so each bump of
+  MD-3f goes through `cache.py`. Each waits 0.5 seconds at most and never
+  raises.
+- `pending_ask.waiting_asks` names the org beside RLS (fix round 1).
+  Production connects as `acb_app`, which FORCE RLS holds, so each org
+  predicate of MD-3f is defence in depth (R5), not a fix of a leak.
+- `rooms._load_room` reads `chat_session` with no org predicate. The fix
+  is not cheap: a fresh replay of the ladder gives `chat_session` no
+  `organization_id` until the generated phases run. So it stays open, and
+  RLS holds it in production.
+- The chat provider checks the room of 15 threads at most, one session
+  each (§5.9 item 7). So `capped` says that some threads were not checked,
+  also when the first 15 fail `can_send`.
+- The anchors moved. `my_calendar` is at `personal.py:2344`, after the
+  reads of MD-3c. The admin absence routes are at `absences.py:224` and
+  `:237`.
+- The people provider checks the absence kind again after `away_on`. So a
+  change of that read can only narrow the card.
+
+**Mutations, run by hand on 2026-10-15.** Each one failed a fence:
+
+1. The HR permission of `people` removed.
+2. A `partial` absence counted, in the SQL of `away_on` and then in the
+   provider.
+3. My own absence counted.
+4. `can_send` ignored.
+5. The bump of a question raises into the write.
+6. The org predicate removed from `away_on` (R8, a session that bypasses
+   RLS).
+7. The check of `actor_email` removed from the chat provider.
+8. The bump of the admin absence `POST` removed.
+9. `away_on` reads `CURRENT_DATE`, not the day that it gets.
+10. The bump of `settle` removed.
+11. The time bound of the absence bump removed.
+12. The HR check of `away_on` removed.
+13. `CHAT_DURABLE_ASKS` ignored.
+
+**Mutations of fix round 1, run by hand on 2026-10-16.** Each one failed
+a fence:
+
+1. The card takes the oldest `asked_at` again.
+2. The bump of the late answer removed.
+3. `bump_member_safe` lets an error out.
+4. The org predicate removed from `waiting_asks` (R8, a session that
+   bypasses RLS).
+5. The bump of the chat delete removed.
+6. `request_ids` keeps one id.
+7. `bump_member_safe` has no time bound.
+
+**The measure** (§5.9 item 7). Each provider ran 40 times on the R8 seed,
+on a local Postgres. `people` gave p50 50 ms and p95 81 ms. `chat` gave p50
+153 ms and p95 271 ms, with a new connection for each session. Measure
+again on the box before the flip.
+
 Each slice adds its pytest and vitest lines to §18 in the same PR.
 
 **The flip of a source.** To list a source id in `MY_DAY_PROVIDERS` is an
@@ -4040,6 +4133,9 @@ uv run ruff check apps/services/gateway/gateway/routes/shell  # MD-3d
 npx vitest run src/lib/shell/feed.test.ts src/lib/shell/feedApps.test.ts  # MD-3d
 uv run pytest tests/unit/test_feed_crm_kinds.py tests/unit/test_feed_crm_kinds_r8.py tests/unit/test_crm_access.py tests/unit/test_crm_access_r8.py tests/unit/test_crm_aggregate.py tests/unit/test_crm_aggregate_r8.py tests/unit/test_shell_feed.py tests/unit/test_feed_rank.py tests/unit/test_my_day_cache.py tests/unit/test_no_new_clock_flakes.py -q  # MD-3e
 uv run ruff check apps/services/gateway/gateway/routes/shell apps/services/gateway/gateway/routes/crm  # MD-3e
+uv run pytest tests/unit/test_feed_people_chat_kinds.py tests/unit/test_feed_people_chat_kinds_r8.py tests/unit/test_people_absences.py tests/unit/test_pending_ask_flow.py tests/unit/test_pending_ask_store.py tests/unit/test_shell_feed.py tests/unit/test_feed_rank.py tests/unit/test_my_day_cache.py tests/unit/test_no_new_clock_flakes.py -q  # MD-3f
+uv run ruff check apps/services/gateway/gateway/routes/shell apps/services/gateway/gateway/routes/people/absences.py apps/services/orchestrator/orchestrator/pending_ask.py  # MD-3f
+npx vitest run src/lib/shell/feed.test.ts src/lib/shell/feedApps.test.ts  # MD-3f
 uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py -q
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_db_engine_seam.py -q
 uv run pytest tests/unit/test_shell_feed.py tests/unit/test_shell_needs.py tests/unit/test_my_day_cache.py -q -rs  # MD-3a

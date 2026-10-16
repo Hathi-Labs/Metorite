@@ -1033,7 +1033,25 @@ async def delete_session(
     found = await asyncio.to_thread(_delete_session, session_id, email, organization_id=org)
     if not found:
         raise HTTPException(status_code=404, detail="Session not found")
+    await _bump_my_day_after_delete(org)
     await purge_thread_files(session_id, org, best_effort=True)
+
+
+async def _bump_my_day_after_delete(org: str | None) -> None:
+    """The delete closed the chat's waiting questions (``_delete_session``),
+    so their ``agent_asks`` cards must leave My Day at once (WS-58 MD-3f fix
+    round 1, ``my_day_feed.md`` §5.9 item 14). A question in a room may ask
+    any member of it, so the ORG version moves. The org is the session's.
+    Only while ``CHAT_DURABLE_ASKS`` is on, because only then did the delete
+    close a question. ``cache.bump_org_safe`` waits 0.5 seconds at most and
+    never raises, so the delete stands."""
+    from orchestrator import pending_ask
+
+    if not pending_ask.durable_asks_enabled():
+        return
+    from gateway.routes.shell import cache as feed_cache
+
+    await feed_cache.bump_org_safe(org)
 
 
 @router.get("/sessions/{session_id}/messages", summary="Fetch messages for a session")
@@ -1221,6 +1239,13 @@ async def _my_waiting_asks(org: str, me: str) -> dict[str, dict] | None:
     so another org's rows never reach this list. A database error answers
     ``None``, so the caller can mark its list partial (WS-51 S5): a parked
     question that drops out of the list is not an answered one.
+
+    Each thread's entry is its OLDEST waiting row, so ``kind`` keeps its
+    meaning for ``list_active_sessions``. WS-58 MD-3f (fix round 1,
+    ``my_day_feed.md`` §5.9 item 4) adds a summary of every waiting row of
+    the thread: ``request_ids`` (sorted), ``newest_asked_at``,
+    ``newest_agent_name`` and ``latest_expires_at``. So a new question in a
+    thread that already waits moves the My Day card.
     """
     from orchestrator import pending_ask  # noqa: PLC0415
 
@@ -1235,8 +1260,39 @@ async def _my_waiting_asks(org: str, me: str) -> dict[str, dict] | None:
         return None
     out: dict[str, dict] = {}
     for row in rows:
-        out.setdefault(str(row["thread_id"]), row)
+        entry = out.setdefault(str(row["thread_id"]), {
+            **row, "request_ids": [], "newest_asked_at": None,
+            "newest_agent_name": None, "latest_expires_at": None,
+        })
+        entry["request_ids"] = sorted({*entry["request_ids"], str(row.get("request_id") or "")})
+        if _later(row.get("asked_at"), entry["newest_asked_at"]):
+            entry["newest_asked_at"] = row.get("asked_at")
+            entry["newest_agent_name"] = row.get("agent_name")
+        if _later(row.get("expires_at"), entry["latest_expires_at"]):
+            entry["latest_expires_at"] = row.get("expires_at")
     return out
+
+
+def _later(value: Any, than: Any) -> bool:
+    """Whether the ISO time ``value`` is later than ``than``. None is never
+    later, and anything is later than None."""
+    from datetime import datetime
+
+    def _at(v: Any) -> datetime | None:
+        try:
+            return datetime.fromisoformat(str(v)) if v else None
+        except ValueError:
+            return None
+
+    a, b = _at(value), _at(than)
+    if a is None:
+        return False
+    if b is None:
+        return True
+    try:
+        return a > b
+    except TypeError:  # a naive and an aware time: compare as text
+        return str(value) > str(than)
 
 
 @router.get(
