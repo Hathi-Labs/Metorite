@@ -584,8 +584,28 @@ async def test_a_door_that_is_down_stops_the_step_after_one_request(nv) -> None:
         _note(nv, a, company, minutes=i)
     nv.door.down = True
     got = await _step(nv, a, now=DAY)
-    assert got.reason == "no_vectors" and got.requests == 1 and got.failed == 64
+    assert got.reason == "no_vectors" and got.requests == 1 and got.failed == 0
     assert len(nv.door.calls) == 1
+
+
+async def test_an_outage_parks_no_note(nv) -> None:
+    """Fix round of 2026-10-17. A door that is down for more runs than
+    MAX_FAILURES writes no failure row. So when it comes back, every note
+    embeds at once, and none waits PARK_DAYS."""
+    from gateway.crm_sync.note_labels import MAX_FAILURES
+
+    a = nv.org_a
+    _connect(nv, a)
+    company = _company(nv, a)
+    for i in range(100):
+        _note(nv, a, company, minutes=i)
+    nv.door.down = True
+    for _ in range(MAX_FAILURES + 1):
+        assert (await _step(nv, a, now=DAY)).reason == "no_vectors"
+    assert _rows(nv, a) == {}
+    nv.door.down = False
+    got = await _step(nv, a, now=DAY)
+    assert got.reason == "done" and got.embedded == 100 and got.failed == 0
 
 
 # ── 6. The org list and the payer ────────────────────────────────────────────

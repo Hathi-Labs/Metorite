@@ -3639,8 +3639,12 @@ tool. `CRM_NOTE_SEARCH_ORGS` ships empty, so nothing runs for any org.
 The build made four choices that the list above does not name.
 
 - A request with no usable vector stops the step with the reason
-  `no_vectors`, because the door is down. Each note of that request still
-  counts one failure (item 11).
+  `no_vectors`, because the door is down. Fix round (2026-10-17): such a
+  request of two or more notes writes NO failure row. Before, a one-day
+  outage parked about 1,700 notes for 7 days. A request of one note still
+  counts its failure, because it cannot tell an outage from a bad note. So
+  a bad note alone in the queue parks, and does not spend a request in each
+  run. Fence: `test_an_outage_parks_no_note`.
 - A failure row clears the old vector, as a CRM-Q26 failure clears the old
   label. So a row never pairs a new md5 with the vector of an older text.
 - The tool puts each snippet in the frame of `acb_skills/untrusted.py`,

@@ -39,9 +39,11 @@ zero vector. A ``None`` counts one failure on the row, and a failure clears
 the old vector, so a row never pairs a new md5 with the vector of an older
 text. After :data:`MAX_FAILURES` (3) the note waits :data:`PARK_DAYS` (7)
 days or until its text changes. The step also refuses a vector of the wrong
-size or a zero vector itself, so it never stores one. A request with no
-usable vector at all stops the step: the door is down, and the next run
-tries again.
+size or a zero vector itself, so it never stores one. A request of two or
+more notes with no usable vector at all stops the step and writes NO
+failure: the door is down, and the next run tries again. So an outage never
+parks a batch of notes. A request of one note counts its failure, because
+it cannot tell an outage from a bad note, and a bad note alone must park.
 
 **No tenant text out.** A row holds a key, an md5, a vector and numbers. A
 log line holds the org id, counts, the reason and the time.
@@ -360,13 +362,19 @@ async def _embed(org: str, should_stop: Callable[[], bool], utc_date: str) -> Em
         with job_member_scope(member, app=MODULE_SLUG, agent=FEATURE):
             raw = await embed_door.embed([note_text(n) for n in chunk], org=org)
         vectors = [usable(v) for v in (list(raw) + [None] * len(chunk))[:len(chunk)]]
+        if len(chunk) > 1 and not any(v is not None for v in vectors):
+            # The door gave nothing usable: it is down. Write NO failure, or
+            # a one-day outage parks every note of the day for PARK_DAYS
+            # (fix round of 2026-10-17). The next run tries again.
+            # ⚠️ A request of ONE note cannot tell an outage from a bad
+            # note, so its failure counts. Without that, one bad note alone
+            # in the queue spends a request in each run until the daily cap
+            # stops every other note of the org.
+            reason = "no_vectors"
+            break
         done, lost = await _write(org, chunk, vectors)
         embedded += done
         failed += lost
-        if not any(v is not None for v in vectors):
-            # The door gave nothing usable: it is down. The next run tries again.
-            reason = "no_vectors"
-            break
     return Embedded(reason, notes=len(notes), embedded=embedded, failed=failed,
                     requests=requests)
 
