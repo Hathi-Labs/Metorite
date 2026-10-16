@@ -26,7 +26,7 @@ const RAILS: Record<string, string> = {
   "app/email/components/AccountSidebar.tsx": "the folders and the automation entries",
   "app/whatsapp/page.tsx": "the triage streams and the labels",
   "app/crm/components/CrmRail.tsx": "the views, from Pipeline to Reports, and Pipeline settings",
-  "app/knowledge/components/KnowledgeRail.tsx": "Spaces, each space, and the page tree of the open space",
+  "app/knowledge/components/KnowledgeRail.tsx": "Search, Spaces, each space, and the page tree of the open space",
 };
 
 const strip = (text: string) =>
