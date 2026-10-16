@@ -1,4 +1,4 @@
-"""R8 — the fill rank, against a real Postgres (WS-53 CRM-Q17a-1).
+"""R8 — the fill rank, against a real Postgres (WS-53 CRM-Q17a-1, CRM-Q17a-1b).
 
 Spec: ``project-docs/specs/crm_platform.md`` §18.9.3 and the CRM-Q17a-1
 done-when list of §18.9.6. Migration 274 adds ``crm_field_fill``. The sync
@@ -23,6 +23,10 @@ What this proves, one test for each done-when item:
 
 It also measures the one statement on 30,000 module rows with 236 fields,
 the shape of DEWiN's Invoices.
+
+CRM-Q17a-1b adds the "still empty" check of a stale core entity, at the end.
+Its six cases are the item 9 list of the spec. It also measures the check on
+30,000 contacts.
 """
 
 # ruff: noqa: F811 - the fixtures come in by import and are used as arguments
@@ -691,7 +695,11 @@ def _write_rules(p: Any, org: str, state: dict[str, Any]) -> None:
 
 
 def _clear_pending(p: Any, org: str) -> None:
-    _write_state(p, org, {**(_state(p, org) or {}), "pending": []})
+    """Only the run counts can make an entity stale after this. CRM-Q17a-1b:
+    it also removes the "still empty" checks, because a check serves its keys
+    while the numbers are stale. The tests of the check are below."""
+    state = _state(p, org) or {}
+    _write_state(p, org, {**state, "pending": [], "still_empty": {}})
 
 
 async def _layout_empty(org: str, slug: str) -> list[str] | None:
@@ -842,3 +850,312 @@ async def test_the_stamp_and_the_bound_take_the_database_clock(fz, monkeypatch) 
     assert (await _run(p.org_a)).status == "ok"
     assert "module:Products" in _state(p, p.org_a)["pending"]
     assert _fill(p, p.org_a, "module:Products")["Vendor_Name"] == (1, 2, 1)
+
+
+# ── CRM-Q17a-1b: the "still empty" check of a stale entity ───────────────────
+#
+# Spec: crm_platform.md §18.9.6, CRM-Q17a-1b. Item 9 names six cases. The
+# tests below prove them, and the fences of items 5 to 8.
+
+
+def _checks(p: Any, org: str) -> dict[str, Any]:
+    return (_state(p, org) or {}).get("still_empty") or {}
+
+
+async def _company_changes_inside_the_bound(p: Any, a: Any) -> None:
+    """Run 1 computes the company. Run 2, inside 24 hours, adds a company with
+    an industry, so the company waits in ``pending`` and the check runs."""
+    _seed_fill(a)
+    await _connect_all(p, p.org_a, a)
+    assert (await _run(p.org_a)).status == "ok"
+    assert "industry" in await _layout_empty(p.org_a, "organizations")
+    a.add("Accounts", "a2", 30, Account_Name="A-Company-2", Industry="Retail")
+    second = await _run(p.org_a)
+    assert (second.status, second.error) == ("ok", None)
+    assert second.counts["organizations"]["upserted"] == 1
+    assert "company" in _state(p, p.org_a)["pending"]
+    # The stored numbers are the old ones: industry is empty there.
+    assert _fill(p, p.org_a, "company")["industry"] == (0, 1, 0)
+
+
+def _spy_checks(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, list[str]]]:
+    """Record each call of ``fill.check``: the org, the entity and the keys."""
+    from gateway.crm_sync import fill
+
+    calls: list[tuple[str, str, list[str]]] = []
+    real = fill.check
+
+    async def spy(db: Any, org: str, entity: str, keys: list[str], mapping: Any) -> Any:
+        calls.append((org, entity, list(keys)))
+        return await real(db, org, entity, keys, mapping)
+
+    monkeypatch.setattr(fill, "check", spy)
+    return calls
+
+
+async def test_a_stale_entity_serves_the_keys_that_stayed_empty(fz) -> None:
+    """Item 9, case 1. Items 3 and 4: the entry, its time, and the route."""
+    p, a, _b = fz
+    await _company_changes_inside_the_bound(p, a)
+
+    entry = _checks(p, p.org_a)["company"]
+    assert {"phone", "website", "email"} <= set(entry["keys"])
+    start = _q(p, "SELECT max(started_at) FROM crm_sync_runs WHERE "
+                  "organization_id = CAST(:o AS uuid)", o=p.org_a)[0][0]
+    assert datetime.fromisoformat(entry["at"]) > start  # the database clock
+
+    empty, header = await _empty_and_header(p.org_a)
+    assert {"phone", "website", "email"} <= set(empty)
+    assert not set(empty) & {"name", "last_activity_at"}
+    assert "Phone" not in header and "Website" not in header
+
+
+async def test_a_key_that_a_run_filled_before_the_check_is_not_served(fz) -> None:
+    """Item 9, case 2. The stored numbers still give industry as empty."""
+    p, a, _b = fz
+    await _company_changes_inside_the_bound(p, a)
+    assert "industry" not in _checks(p, p.org_a)["company"]["keys"]
+    empty, header = await _empty_and_header(p.org_a)
+    assert "industry" not in empty and "Industry" in header
+    assert "phone" in empty
+
+
+async def test_a_backfilling_rule_of_the_entity_serves_no_empty_columns(fz) -> None:
+    """Item 9, case 3. The saved marks equal the rule marks, so only the
+    ``backfilling`` test can give ``[]``."""
+    p, a, _b = fz
+    await _company_changes_inside_the_bound(p, a)
+    rule = {"id": "r-bf", "entity": "company", "field": "Region", "column": "industry"}
+
+    def rules(backfilling: bool) -> None:
+        _write_rules(p, p.org_a, {"applied": [{**rule, "backfilling": backfilling}],
+                                  "reread": []})
+        _write_state(p, p.org_a, {**_state(p, p.org_a),
+                                  "rules": [["r-bf", "company", "Region", "industry",
+                                             backfilling]]})
+
+    rules(True)
+    assert await _layout_empty(p.org_a, "organizations") == []
+    rules(False)
+    assert "phone" in await _layout_empty(p.org_a, "organizations")
+
+
+async def test_a_run_after_the_check_that_changes_a_row_serves_no_empty_columns(
+    fz, monkeypatch,
+) -> None:
+    """Item 9, case 4. The run fails after its pages, so its fill step makes
+    no new check. The next good run checks again."""
+    from gateway.crm_sync import engine
+
+    p, a, _b = fz
+    await _company_changes_inside_the_bound(p, a)
+    assert "phone" in await _layout_empty(p.org_a, "organizations")
+
+    a.add("Accounts", "a3", 40, Account_Name="A-Company-3", Phone="555 0100")
+
+    async def boom(ctx: Any) -> None:
+        raise RuntimeError("after the pages")
+
+    with monkeypatch.context() as m:
+        m.setattr(engine, "_module_records", boom)
+        failed = await _run(p.org_a)
+    assert failed.status == "failed"
+    assert "phone" in _checks(p, p.org_a)["company"]["keys"]  # the old entry
+    empty, header = await _empty_and_header(p.org_a)
+    assert empty == [] and "Phone" in header
+
+    assert (await _run(p.org_a)).status == "ok"
+    empty = await _layout_empty(p.org_a, "organizations")
+    assert "phone" not in empty and "website" in empty
+
+
+async def test_a_failed_check_writes_no_entry_and_serves_no_empty_columns(
+    fz, monkeypatch, capsys,
+) -> None:
+    """Item 9, case 5, and the LOCAL timeout of item 6. The slow statement
+    would give each key as empty if it ran to its end."""
+    from gateway.crm_sync import fill
+
+    p, a, _b = fz
+    await _company_changes_inside_the_bound(p, a)
+    assert "phone" in _checks(p, p.org_a)["company"]["keys"]
+
+    def slow(entity: str, mapping: Any) -> str:
+        return ("SELECT k AS key, false AS filled FROM unnest(CAST(:keys AS text[])) k,"
+                " pg_sleep(2) WHERE CAST(:org AS uuid) IS NOT NULL")
+
+    monkeypatch.setattr(fill, "check_statement", slow)
+    monkeypatch.setattr(fill, "CHECK_TIMEOUT_MS", 100)
+    capsys.readouterr()
+    a.add("Accounts", "a3", 40, Account_Name="A-Company-3")
+    assert (await _run(p.org_a)).status == "ok"
+    assert "crm.sync.fill_check_failed" in capsys.readouterr().out
+    assert "company" not in _checks(p, p.org_a)
+    empty, header = await _empty_and_header(p.org_a)
+    assert empty == [] and "Phone" in header
+
+
+async def test_an_org_outside_the_list_gets_no_check(fz, monkeypatch) -> None:
+    """Item 9, case 6."""
+    p, _a, b = fz
+    calls = _spy_checks(monkeypatch)
+    _seed_fill(b)
+    await _connect_all(p, p.org_b, b)
+    assert (await _run(p.org_b)).status == "ok"
+    b.add("Accounts", "a2", 30, Account_Name="B-Company-2", Industry="Retail")
+    assert (await _run(p.org_b)).status == "ok"
+    assert calls == []
+    assert _state(p, p.org_b) is None
+    assert await _layout_empty(p.org_b, "organizations") is None
+
+
+async def test_a_key_the_stored_numbers_give_as_filled_is_never_checked_or_served(
+    fz, monkeypatch,
+) -> None:
+    """Item 5. The check reads only the stored empty keys. A key that the
+    stored numbers give as filled leaves the served list, even when an entry
+    names it."""
+    from gateway.routes.crm.fill_rank import NEVER_EMPTY, standard_keys
+
+    p, a, _b = fz
+    calls = _spy_checks(monkeypatch)
+    await _company_changes_inside_the_bound(p, a)
+    stored = _fill(p, p.org_a, "company")
+    empty_in_numbers = {
+        k for k in standard_keys("organizations")
+        if k not in NEVER_EMPTY and stored[k][1] > 0 and stored[k][0] == 0
+    }
+    assert [(e, set(k)) for _o, e, k in calls] == [("company", empty_in_numbers)]
+
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE crm_field_fill SET filled = 1 WHERE organization_id = "
+                       "CAST(:o AS uuid) AND entity = 'company' AND key = 'phone'"),
+                  {"o": p.org_a})
+    assert "phone" in _checks(p, p.org_a)["company"]["keys"]
+    empty = await _layout_empty(p.org_a, "organizations")
+    assert "phone" not in empty and "website" in empty
+
+
+async def test_one_check_for_each_changed_core_entity_and_none_for_a_module(
+    fz, monkeypatch,
+) -> None:
+    """Items 6 and 8. A run with no change makes no statement, and its entry
+    stays. A generic module gets no check."""
+    from gateway.crm_sync import fill
+
+    p, a, _b = fz
+    calls = _spy_checks(monkeypatch)
+    _seed_fill(a)
+    await _connect_all(p, p.org_a, a)
+    assert (await _run(p.org_a)).status == "ok"
+    assert calls == []  # nothing is stale after the first computation
+
+    a.add("Accounts", "a2", 30, Account_Name="A-Company-2", Industry="Retail")
+    p2 = next(r for r in a.data["Products"] if r["id"] == "p2")
+    p2.update(Vendor_Name={"id": "v2", "name": "Vendor Two"},
+              Modified_Time="2026-01-01T00:40:00+00:00")
+    _age_module_reads(p, p.org_a)
+    assert (await _run(p.org_a)).status == "ok"
+    assert {"company", "module:Products"} <= set(_state(p, p.org_a)["pending"])
+    assert [e for _o, e, _k in calls] == ["company"]
+    assert set(_checks(p, p.org_a)) == {"company"}
+    assert len(calls) <= len(fill.CORE_ORDER)
+
+    before = _checks(p, p.org_a)["company"]
+    assert (await _run(p.org_a)).status == "ok"
+    assert len(calls) == 1  # no run changed the company since its check
+    assert _checks(p, p.org_a)["company"] == before
+    assert "phone" in await _layout_empty(p.org_a, "organizations")
+
+
+async def test_a_computed_entity_drops_its_check(fz) -> None:
+    """New numbers make the check old: past the bound, the next run computes
+    the company, and its entry leaves."""
+    p, a, _b = fz
+    await _company_changes_inside_the_bound(p, a)
+    assert "company" in _checks(p, p.org_a)
+    _age_fill(p, p.org_a)
+    assert (await _run(p.org_a)).status == "ok"
+    assert "company" not in _checks(p, p.org_a)
+    assert _fill(p, p.org_a, "company")["industry"] == (1, 2, 1)
+    empty = await _layout_empty(p.org_a, "organizations")
+    assert "industry" not in empty and "phone" in empty
+
+
+async def test_a_changed_rule_drops_the_check_of_its_entity(fz, monkeypatch) -> None:
+    """A rule writes rows that no run count shows. The fill step that takes
+    the new marks drops the entry of the entity in the same write. The fill
+    step stops at once here, so no new check can replace the entry."""
+    from gateway.crm_sync import fill
+
+    p, a, _b = fz
+    await _company_changes_inside_the_bound(p, a)
+    assert "company" in _checks(p, p.org_a)
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_field_rules (organization_id, ext_source, entity, "
+            "field_api_name, field_type, profile_version, target_column, status, "
+            "proposed_by) VALUES (CAST(:o AS uuid), 'zoho', 'company', 'Region', "
+            "'text', 1, 'phone', 'approved', 'admin')"), {"o": p.org_a})
+
+    stop = [False]
+    real = fill.refresh
+
+    async def stopping(ctx: Any, *, every: Any) -> None:
+        stop[0] = True  # a shutdown that comes during the fill step
+        await real(ctx, every=every)
+
+    monkeypatch.setattr(fill, "refresh", stopping)
+    assert (await _run(p.org_a, should_stop=lambda: stop[0])).status == "ok"
+    state = _state(p, p.org_a)
+    assert [m[1] for m in state["rules"]] == ["company"]
+    assert "company" not in state["still_empty"]
+    assert await _layout_empty(p.org_a, "organizations") == []
+
+
+# ── The cost bound of the check: 30,000 contacts (item 7) ───────────────────
+
+#: The rows and the custom fields of the cost test. 236 custom fields of
+#: unique values is the widest shape that DEWiN shows (§18.9.2).
+CHECK_ROWS = 30_000
+CHECK_CUSTOM = 236
+#: The 10 keys of the check: the 9 contact keys that can be empty, and
+#: ``last_activity_at``, so the statement reads 10 keys as the spec says.
+CHECK_KEYS = ["title", "email", "phone", "owner_email", "last_name", "mobile",
+              "company_id", "linkedin_url", "description", "last_activity_at"]
+#: The bound that the build measured, with room for a slow CI box. The
+#: "Built as" note of CRM-Q17a-1b records the measured time.
+CHECK_BOUND_S = 4.0
+
+
+async def test_the_check_on_30000_contacts_meets_its_bound(fz, capsys) -> None:
+    from acb_common.db import tenant_session
+    from gateway.crm_sources.zoho import mapping
+    from gateway.crm_sync import fill
+
+    p, _a, _b = fz
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_contacts (organization_id, first_name, custom) "
+            "SELECT CAST(:o AS uuid), 'Contact ' || g, "
+            "(SELECT jsonb_object_agg('C_' || f, 'u' || g || '-' || f) "
+            " FROM generate_series(1, :fields) f) "
+            "FROM generate_series(1, :rows) g"),
+            {"o": p.org_a, "rows": CHECK_ROWS, "fields": CHECK_CUSTOM})
+        c.execute(text("ANALYZE crm_contacts"))
+    try:
+        started = time.monotonic()
+        async with tenant_session(p.org_a) as db:
+            still, at = await fill.check(db, p.org_a, "contact", CHECK_KEYS, mapping)
+        elapsed = time.monotonic() - started
+        with capsys.disabled():
+            print(f"\n[CRM-Q17a-1b cost] {CHECK_ROWS} contacts x {CHECK_CUSTOM} custom "
+                  f"fields, {len(CHECK_KEYS)} empty keys: {elapsed:.2f} s")
+        assert still == sorted(CHECK_KEYS)
+        assert at is not None
+        assert elapsed < CHECK_BOUND_S, f"{elapsed:.2f} s is past the bound"
+        assert CHECK_BOUND_S < fill.CHECK_TIMEOUT_MS / 1000
+    finally:
+        with p.admin_engine.begin() as c:
+            c.execute(text("DELETE FROM crm_contacts WHERE organization_id = "
+                           "CAST(:o AS uuid)"), {"o": p.org_a})
