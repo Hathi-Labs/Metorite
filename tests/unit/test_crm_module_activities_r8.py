@@ -166,19 +166,26 @@ def _check(p: Any) -> tuple[int, str, bool]:
 # ── 1 and 2. The migration on a real database ────────────────────────────────
 
 
+def _module_fks(rt) -> list:
+    return _q(rt, "SELECT confrelid::regclass::text, confdeltype FROM pg_constraint "
+                  "WHERE conrelid = to_regclass('public.crm_activities') AND contype = 'f' "
+                  "AND conkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid = "
+                  "to_regclass('public.crm_activities') AND attname = 'module_record_id')]"
+                  "::smallint[]")
+
+
+def _module_indexes(rt) -> list:
+    return _q(rt, "SELECT indexdef FROM pg_indexes WHERE tablename = 'crm_activities' "
+                  "AND indexdef LIKE '%module_record_id%'")
+
+
 def test_the_column_and_the_partial_index_exist(rt) -> None:
     col = _q(rt, "SELECT data_type, is_nullable, column_default FROM "
                  "information_schema.columns WHERE table_name = 'crm_activities' "
                  "AND column_name = 'module_record_id'")
     assert col == [("uuid", "YES", None)]
-    fk = _q(rt, "SELECT confrelid::regclass::text, confdeltype FROM pg_constraint "
-                "WHERE conrelid = to_regclass('public.crm_activities') AND contype = 'f' "
-                "AND conkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid = "
-                "to_regclass('public.crm_activities') AND attname = 'module_record_id')]"
-                "::smallint[]")
-    assert fk == [("crm_module_records", "c")], "a foreign key that cascades"
-    index = _q(rt, "SELECT indexdef FROM pg_indexes WHERE tablename = 'crm_activities' "
-                   "AND indexdef LIKE '%module_record_id%'")
+    assert _module_fks(rt) == [("crm_module_records", "c")], "a foreign key that cascades"
+    index = _module_indexes(rt)
     assert len(index) == 1
     assert "WHERE (module_record_id IS NOT NULL)" in index[0][0]
 
@@ -221,6 +228,9 @@ def test_a_replay_changes_nothing_and_an_old_check_is_widened_once(rt) -> None:
     with rt.admin_engine.begin() as c:
         _exec_file(c, path)
     assert _check(rt) == widened, "the second run changes nothing"
+    # Review: a replay must not add a second foreign key or a second index.
+    assert _module_fks(rt) == [("crm_module_records", "c")]
+    assert len(_module_indexes(rt)) == 1
 
 
 # ── 3. The sync links an activity to a module record ─────────────────────────

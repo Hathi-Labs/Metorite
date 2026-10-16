@@ -5621,7 +5621,9 @@ line — never reclaim a number by deleting the other entry.
   will likely do the same when they sync.
 - **Do this:** build CRM-Q23a, then CRM-Q23b and CRM-Q23c (§18.10). Keep
   DEWiN's Activities held until they ship. Notes are hit too: the import
-  linked 1 of 3,848.
+  linked 1 of 3,848. The notes already read come back only through the
+  one-time full read of CRM-Q23b item 5. DEWiN's 1,145 tasks have no parent,
+  and they stay out (owner, 2026-10-16).
 - **Authority:** `crm_platform.md` §18.10
 - **Added:** 2026-10-16 · WS-53, DEWiN import
 

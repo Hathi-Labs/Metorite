@@ -2365,6 +2365,16 @@ linked 1. DEWiN's notes total 18,674, and other activities add more. They
 would be lost the same way, so the `activities` hold stays until CRM-Q23
 ships.
 
+**Probe of 2026-10-16 (2 credits).** One page of DEWiN's Zoho Notes showed
+`$se_module` set to `Operator_Associates` on all 200 rows. So a note names
+its custom module by its API name, as CRM-Q23a assumes. One page of Tasks
+showed no `What_Id`, no `Who_Id` and no `$se_module` on all 200 rows. All
+200 had one owner and the status "Not Started".
+
+**Owner decision (2026-10-16, in chat).** A Zoho task with no parent record
+and no person stays out of Metorite. Metorite never writes to the customer's
+Zoho to clean them up. CRM-Q24 shows their count.
+
 **Counts.** Zoho counted 4,947 Payment Made records, and the list returned
 3,003. A probe on 2026-10-16 found the cause. The list of v2 and of v8 both
 end at the same newest record, and no record waits for approval. Products
@@ -2438,6 +2448,12 @@ their column. The mirror stamps `zoho_id`, so the push skips the row.
    module pass. It respects a CRM-Q16 hold, and it never queues while the
    first import of the activity entity is not done.
 4. An R8 test proves the case of a new record and a new task in one run.
+5. The sync queues one full read of note, call and meeting, through the
+   existing re-read list. It does so one time for each org with mirrored
+   module records.
+   The records that a run read before CRM-Q23a sit behind the cursor, so
+   only this read brings them back. It runs before an admin releases a
+   CRM-Q16 hold on `activities`, and it respects that hold.
 
 **CRM-Q23c · The timeline on a module record.** Done when:
 
@@ -2465,6 +2481,9 @@ their column. The mirror stamps `zoho_id`, so the push skips the row.
 3. A read of more than 2,000 records inside one second, with no
    `next_page_token`, raises a named error. It never ends the walk as done.
    A unit test fences it.
+4. Sync health shows the activities that have no parent: "1,145 Zoho tasks
+   belong to no record. Metorite leaves them out." It reads the `(none)`
+   count of `activity_drops`.
 
 ---
 
