@@ -5664,7 +5664,7 @@ line — never reclaim a number by deleting the other entry.
   `test_feed_handled.py::TestTheCap::test_fifteen_for_each_source FAILED`.
   A hit in a run whose diff touches no My Day file means this is open.
 - **Why.** On 2026-10-16 the test failed with `assert 0 == 15` in the unit job
-  of PR #1074, which changed no Python file (run 38842018493, attempt 1). The
+  of PR #1074, which changed no Python file (run 38842018493, first try). The
   rerun passed. Alone, the suite passes 52 of 52 three times in a row. The
   test's clock is fixed (`NOW` in `test_shell_needs.py`), so an earlier test
   in the same process most likely leaves a patched read, a cache or a clock
