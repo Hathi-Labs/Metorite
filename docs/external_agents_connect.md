@@ -72,6 +72,11 @@ Each change shows in the task history, with the agent as `mcp:<host>`. A status 
 
 **A comment can start a workflow.** Each comment, also one that the agent writes, sends the event `pm.task.comment_added`. If your organization has a published workflow that starts on that event, the workflow runs. That workflow can call an integration or a web address, as it does for your own comment.
 
+The agent can also do these two things:
+
+- **Start work with a command.** In Claude Code, run `/mcp__metorite__work_on_task` with a task number, or with no number. "Work on a task from Claude Code" above tells how.
+- **Ask to archive a task, and you approve it in Metorite.** The tool `request_task_archive` puts the request on the task, and the bell tells you. Only you can approve or decline it. An approve does not archive the subtasks.
+
 ## Ask an agent in Metorite
 
 **"Ask an agent" is live in each organization since 2026-10-15.** You can give work to your agent from the task itself:
@@ -99,7 +104,6 @@ Six tools work with these runs:
 
 - It cannot cancel a task, and it cannot make a task in a done or cancelled status. A move to done does not close the subtasks.
 - It cannot assign a task to another person, move a task to another project, or delete a task. It can claim a task for you only.
-- It cannot archive a task by itself. With `request_task_archive` it asks you on the task in Metorite. Only you can approve or decline, and an approve does not archive the subtasks.
 - It cannot see what you cannot see. If an admin removes your access to a project, the agent loses it on the next call.
 - It cannot act after you revoke it.
 
