@@ -304,3 +304,20 @@ def test_addendum_drops_disabled_family_section() -> None:
     assert "### Memory & knowledge graph" not in without_memory
     # Core-floor sections stay whatever is disabled.
     assert "### Web access" in without_memory
+
+
+def test_the_run_tools_leave_out_a_disabled_family(monkeypatch, _injection_env) -> None:
+    """projects_ai_chat.md §14.10 (review of #1064): ``_inject_agent_tools``
+    returns the run's tools after the toggles. The executor binds them as
+    ``run_tools``, and ``write_artifact.run_holds_tool`` reads them, so a tool
+    that calls make_report in-process keeps the admin's intersection."""
+    monkeypatch.setattr(
+        ti, "_load_disabled_skill_families", lambda name: frozenset({"documents"}),
+    )
+    held = ti._inject_agent_tools([_FakeMafAgent()], tool_scope=["make_report"],
+                                  agent_name="fake-maf", agent_config=_PERSONAL)
+    assert "make_report" not in held and "write_artifact" in held
+    monkeypatch.setattr(ti, "_load_disabled_skill_families", lambda name: frozenset())
+    held = ti._inject_agent_tools([_FakeMafAgent()], tool_scope=["make_report"],
+                                  agent_name="fake-maf", agent_config=_PERSONAL)
+    assert "make_report" in held

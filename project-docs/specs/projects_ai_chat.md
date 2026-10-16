@@ -2311,10 +2311,12 @@ field changes between the spec and the file.
   folder refuses the write. The file that the link names does not change.
   `write_artifact` resolved its path with plain path calls, so the tool no
   longer writes through it.
-- When the report card draws, its two files register the workspace and get
-  no file card (`write_artifact._notify` with `announce=False`). The tool
-  tells the model to describe the card in one or two lines, and to paste no
-  link.
+- When the report card draws, its two files send `artifact_created` with
+  `"quiet": true` (`write_artifact._notify` with `announce=False`). The
+  message draws no file card for a quiet file (`lib/artifactCards.ts`,
+  `fileCardsOf`). The Files tree still lists it at once (`mergeFileEntry`),
+  and it never opens the side panel by itself. The tool tells the model to
+  describe the card in one or two lines, and to paste no link.
 - When the report card does not draw, the PDF gets its file card. The tool
   tells the model to name the PDF in words and to paste no link, as slice A
   (#1063) does for every file. The result keeps `download_url`.
@@ -2336,6 +2338,21 @@ field changes between the spec and the file.
   own reads, and calls `make_report` itself. The model copies no number, so
   it cannot drop or change one. Without the flag, the tool says how to ask
   for the report, and it gives no spec to copy.
+- **Access is an intersection (re-review of #1064).** `_inject_agent_tools`
+  returns the tools that the run holds after every narrowing, and the
+  executor binds them as `run_tools` at the three run boundaries.
+  `write_artifact.run_holds_tool` is the ONE question "does this run hold
+  tool X". It fails closed when no run, or no `run_tools`, is bound. When
+  the run does not hold `make_report`, `status_report` writes no file and
+  draws no card, and it says "Reports are turned off for this assistant.
+  Here is the summary in text."
+- `status_report` is annotated `read_only=False, idempotent=False`, because
+  it can write two files. So an edited turn does not run it again unseen
+  (`chat_supersede.is_side_effect_tool`). Its manifest class stays A,
+  because it reaches only read routes.
+  `test_projects_chat_coverage.CHAT_FILE_WRITERS` names it.
+- On WhatsApp the success line of `status_report` says that the member gets
+  the report as a PDF.
 - A task title or a name goes only into a table cell of that spec. Both
   renderers draw a cell as text, and the markdown-lite check reads the text
   fields only. So a title with a URL or a tag cannot refuse the report.

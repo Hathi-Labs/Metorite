@@ -10,6 +10,7 @@ import MarkdownMessage, { MarkdownBody } from "@/components/MarkdownMessage";
 import MessageActionBar from "@/components/MessageActionBar";
 import GenerativeUIPanel from "@/components/GenerativeUIPanel";
 import ArtifactCard, { type ArtifactMeta } from "@/components/ArtifactCard";
+import { fileCardsOf } from "@/lib/artifactCards";
 import { ArtifactOpenContext, type ArtifactOpeners } from "@/components/ArtifactLink";
 import EmailToolCards, { emailEvidence } from "@/components/email/EmailToolCards";
 import TaskToolCards, { taskEvidence } from "@/components/tasks/TaskToolCards";
@@ -261,29 +262,10 @@ function MessageBubble({
   const dismissed = useDismissedToolCards();
 
   // ── Extract artifact events from custom events ──────────────────────────
-  // Dedup by path (last write wins) so an artifact_created followed by an
-  // artifact_updated for the SAME file renders as one card, not two.
-  const artifactEvents: ArtifactMeta[] = (() => {
-    const byPath = new Map<string, ArtifactMeta>();
-    for (const e of message.customEvents ?? []) {
-      if (
-        (e.name === "artifact_created" || e.name === "artifact_updated") &&
-        e.value &&
-        typeof e.value === "object"
-      ) {
-        const v = e.value as Record<string, unknown>;
-        const path = String(v.path ?? "");
-        byPath.set(path, {
-          path,
-          name: path.split("/").pop() ?? path,
-          size: typeof v.size === "number" ? v.size : undefined,
-          mimeType: typeof v.mime_type === "string" ? v.mime_type : undefined,
-          sha256: typeof v.sha256 === "string" ? v.sha256 : undefined,
-        } satisfies ArtifactMeta);
-      }
-    }
-    return [...byPath.values()];
-  })();
+  // One card per path (last write wins), and none for a QUIET file: a file
+  // that another card shows, such as the files behind a report card
+  // (`lib/artifactCards.ts`, §14.10).
+  const artifactEvents: ArtifactMeta[] = fileCardsOf(message.customEvents);
 
   // ── Generative-UI events → inline declarative component trees ───────────
   // Agents push `generative_ui` CUSTOM events carrying a safe component tree

@@ -1191,8 +1191,10 @@ def report_chat(monkeypatch, tmp_path):
     monkeypatch.setattr(wa, "mirror_to_blob_store", _quiet)
     specs = drawn(monkeypatch)
     with wa.artifact_context_scope():
+        # The run holds make_report, as the executor binds it (§14.10).
         wa.bind_artifact_context(workspace_root=str(tmp_path), session_id="s1",
-                                 agent_name="projects-assistant")
+                                 agent_name="projects-assistant",
+                                 run_tools=frozenset({"make_report", "emit_generative_ui"}))
         yield tmp_path, specs
 
 
@@ -1219,6 +1221,58 @@ async def test_status_report_makes_the_report_by_code(monkeypatch, report_chat) 
         assert table["visual"]["rows"] == [["Ops", "blocked", 3, 1]]
         load = next(s for s in data["sections"] if s.get("heading") == "Load")
         assert load["visual"]["rows"] == [["a@x.io", 4, 1]]
+
+
+@pytest.mark.parametrize("run_tools", [
+    frozenset({"emit_generative_ui", "write_artifact"}),  # documents turned off
+    None,  # a run that bound no tools: fail closed
+])
+async def test_status_report_refuses_when_the_run_does_not_hold_make_report(
+    monkeypatch, report_chat, run_tools,
+) -> None:
+    """Review P1 of #1064: access is an intersection. An admin who turned the
+    documents family off for projects-assistant gets no file and no card from
+    status_report(make_report=true), only the text and one clear line."""
+    import importlib
+
+    from skill_projects.views import REPORTS_OFF
+
+    wa = importlib.import_module("acb_skills.write_artifact")
+    root, specs = report_chat
+    wa.derive_artifact_context(run_tools=run_tools)
+    fake_gateway(monkeypatch, _detail_responder)
+    text = await skill_projects.status_report(UUID, make_report=True)
+    assert text.endswith(REPORTS_OFF) and "| Ops | blocked | 3 | 1 |" in text
+    assert specs == []
+    assert not (root / "outputs").exists() or not any((root / "outputs").rglob("*"))
+
+
+async def test_on_whatsapp_status_report_says_the_member_gets_a_pdf(
+    monkeypatch, report_chat,
+) -> None:
+    """The success line names the delivery of the channel: a PDF on WhatsApp."""
+    from acb_skills import whatsapp_ui as wui
+
+    async def _document(layout: dict) -> bytes:
+        return b"%PDF-1.7"
+
+    fake_gateway(monkeypatch, _detail_responder)
+    with wui.whatsapp_run("orchestrator", document=_document) as run:
+        text = await skill_projects.status_report(UUID, make_report=True)
+    assert "as a PDF" in text and "report card" not in text
+    assert [m.kind for m in run.outbox] == ["document"]
+
+
+def test_status_report_says_it_has_a_side_effect() -> None:
+    """Review P2 of #1064: with make_report=true it writes two files, so an
+    edited turn must not run it again unseen."""
+    from acb_skills.tool_annotations import TOOL_ANNOTATIONS
+    from gateway.chat_supersede import is_side_effect_tool
+
+    hints = TOOL_ANNOTATIONS["status_report"]
+    assert hints["read_only"] is False and hints["idempotent"] is False
+    assert hints["destructive"] is False and hints["open_world"] is False
+    assert is_side_effect_tool("status_report") is True
 
 
 async def test_status_report_hands_the_model_no_spec_to_copy(monkeypatch) -> None:

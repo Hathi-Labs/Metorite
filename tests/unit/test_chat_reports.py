@@ -585,3 +585,50 @@ def test_the_docstring_sends_the_model_to_the_guide_and_stays_short() -> None:
     desc = " ".join(tool_json_schema(reports.make_report)["function"]["description"].split())
     assert "make_report({})" in desc and "Never write a report as a .md file" in desc
     assert len(desc) < 1000, len(desc)
+
+
+# ── report-access and report-quiet (re-review of #1064) ─────────────────────
+
+
+def test_run_holds_tool_reads_the_bound_run_tools_and_fails_closed() -> None:
+    """The ONE answer to "does this run hold tool X" (§14.10)."""
+    with wa.artifact_context_scope():
+        wa.bind_artifact_context(workspace_root="/w")
+        assert wa.run_holds_tool("make_report") is False  # no run_tools: closed
+        wa.derive_artifact_context(run_tools=frozenset({"make_report"}))
+        assert wa.run_holds_tool("make_report") is True
+        assert wa.run_holds_tool("make_document") is False
+    assert wa.run_holds_tool("make_report") is False  # no run at all
+
+
+def test_every_run_binds_the_tools_that_the_injection_left() -> None:
+    """The executor binds the return of ``_inject_agent_tools`` as
+    ``run_tools`` at the three run boundaries: the stream run, the batch run
+    and the sub-agent."""
+    src = (Path(__file__).resolve().parents[2] / "apps" / "services" / "orchestrator"
+           / "orchestrator" / "executor.py").read_text(encoding="utf-8")
+    assert src.count(" _run_tools = _inject_agent_tools(") == 2
+    assert src.count("_sub_run_tools = _inject_agent_tools(") == 1
+    assert src.count("run_tools=_run_tools,") == 2
+    assert src.count("run_tools=_sub_run_tools,") == 1
+
+
+@pytest.mark.parametrize(("announce", "quiet"), [(True, False), (False, True)])
+async def test_a_quiet_file_still_reaches_the_files_tree(
+    monkeypatch: pytest.MonkeyPatch, announce: bool, quiet: bool,
+) -> None:
+    """Re-review P2: ``announce=False`` sends ``artifact_created`` with
+    ``"quiet": true``. The chat draws no file card for it, and its Files tree
+    still lists the file (``lib/artifactCards.ts``)."""
+    import orchestrator.executor as ex
+
+    queue: asyncio.Queue = asyncio.Queue()
+    monkeypatch.setattr(ex, "resolve_run_queue", lambda _sid: queue)
+    await wa._notify(session_id=None, workspace_root="/w",
+                     artifact={"path": PDF, "size": 3, "sha256": "x",
+                               "mime_type": "application/pdf"},
+                     gateway_url="http://127.0.0.1:9", gateway_token="t",
+                     announce=announce)
+    event = queue.get_nowait()
+    assert event["name"] == "artifact_created" and event["value"]["path"] == PDF
+    assert event["value"].get("quiet", False) is quiet
