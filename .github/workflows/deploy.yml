@@ -125,10 +125,14 @@ jobs:
 
   # ── Publish the ref the VPS polls (WS-25) ──────────────────────────────
   # `scripts/vps_pull.sh` on the box applies `origin/release`, never `main`,
-  # so CI gating survives the inversion to pull-based delivery: a commit whose
-  # tests failed never becomes something the box will install.
+  # so the box installs only a commit that reached `main`. pr-check tested it
+  # as a PR before the merge.
   #
-  # Gated on lint (pr-check tested the code before the merge) and
+  # ⚠️ `github.ref == 'refs/heads/main'`, because the tests no longer gate
+  # here. Without it, `gh workflow run deploy.yml --ref <branch>` would publish
+  # a branch that never passed pr-check.
+  #
+  # Gated on lint and
   # DELIBERATELY NOT on the deploy job. That looks wrong
   # until you remember what this is for: when GitHub cannot reach the VPS, the
   # deploy job FAILS. Gating the ref on deploy success would withhold it exactly
@@ -143,7 +147,7 @@ jobs:
     name: "Publish release ref"
     runs-on: ubuntu-latest
     needs: [lint]
-    if: ${{ always() && needs.lint.result == 'success' }}
+    if: ${{ always() && needs.lint.result == 'success' && github.ref == 'refs/heads/main' }}
     permissions:
       contents: write
     steps:
@@ -218,7 +222,8 @@ jobs:
     # `always()` keeps the old hotfix lesson: a dependent guarded by plain
     # success() is skipped when an ancestor is skipped, and the deploy then
     # silently does nothing. `test` is no longer an ancestor (see its note).
-    if: ${{ always() && needs.lint.result == 'success' }}
+    # `main` only, for the reason `publish-release` gives.
+    if: ${{ always() && needs.lint.result == 'success' && github.ref == 'refs/heads/main' }}
     env:
       # Runner-reachable public URLs used to VERIFY the deploy by outcome
       # (see the deploy step's rationale).

@@ -108,6 +108,8 @@ def test_the_required_check_name_is_the_aggregator() -> None:
     assert jobs["unit-tests"]["needs"] == "test"
     run = "\n".join(s.get("run", "") for s in jobs["unit-tests"]["steps"])
     assert "scripts/ci_unit_guard.py check" in run
+    for reason in guard.DISARMED:
+        assert f'--disarmed "{reason}"' in run
 
 
 def test_every_shard_runs_and_writes_a_report() -> None:
@@ -124,3 +126,22 @@ def test_the_timings_file_exists() -> None:
     """Without it pytest-split divides by test COUNT, and one 7-minute file
     lands in a shard beside a normal share."""
     assert (_ROOT / ".test_durations").is_file()
+
+
+_MODULE_SKIP = """
+import pytest
+
+pytest.skip("CUSTOMER_CONSOLE_DATABASE_URL unset — R8", allow_module_level=True)
+
+
+def test_never_runs():
+    pass
+"""
+
+
+def test_a_module_skipped_at_collection_is_disarmed_and_did_not_run(tmp_path: Path) -> None:
+    """pytest writes it as "collection skipped", with the reason in the text."""
+    junit = _report(tmp_path, _MODULE_SKIP, "test_gated.py")
+    problems = guard.check(junit, ["test_gated.py"], [])
+    assert any(p.startswith("R8 gate disarmed: test_gated.py") for p in problems)
+    assert "no shard ran test_gated.py" in problems

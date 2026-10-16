@@ -79,26 +79,12 @@ describe("the browser gate CI runs", () => {
     expect(jobs().e2e).toMatch(/^ {4}if: github\.event_name != 'push'$/m);
   });
 
-  it("lets only the slow suites skip a push", () => {
-    // 🔴 The push trigger exists so a CONFLICTED PR still runs the R1
-    // migration-prefix guard. The two slow suites (the unit shards and this
-    // one) skip their push copy, because a conflicted PR cannot merge. A
-    // job-level `if:` on any other job could switch a fence off on the one
-    // run that watches a conflicted PR.
-    expect(LF).toMatch(/^ {2}push:$/m);
-    const all = jobs();
-    const slow = new Set(["e2e", "test", "unit-tests"]);
-    for (const name of slow) expect(Object.keys(all)).toContain(name);
-    for (const [name, body] of Object.entries(all)) {
-      if (slow.has(name)) continue;
-      expect(body, `job "${name}" has a job-level if:`).not.toMatch(/^ {4}if:/m);
-    }
-  });
-
-  it("runs the migration-prefix guard in lint, which runs on push", () => {
-    // The guard left the unit job when the unit job stopped running on push.
-    expect(jobs().lint).toContain("pytest tests/unit/test_migration_prefixes.py");
-    expect(jobs().lint).not.toMatch(/^ {4}if:/m);
+  it("has no push trigger, so no push run can twin a required check", () => {
+    // 🔴 A push run created a SKIPPED "Unit tests" on the PR's head SHA, and
+    // GitHub counts a skipped check as passed (measured on #1077). The push
+    // copy of the R1 guard lives in push-check.yml.
+    // Python fence: tests/unit/test_pr_check_triggers.py.
+    expect(LF).not.toMatch(/^ {2}push:$/m);
   });
 
   it("has a cap above the measured run", () => {

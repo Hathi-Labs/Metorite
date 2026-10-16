@@ -28,57 +28,15 @@ on:
     # The cost is stated rather than hidden: a docs-only PR now runs the full
     # ~5 minute suite. That is the price of the checks meaning something at the
     # merge button, and it is cheaper than one un-mergeable PR.
-  # ── Why `push` as well, when `pull_request` already covers the PR ──────────
+  # ── NO `push` trigger, on purpose (2026-10-16) ──────────────────────────
   #
-  # `pull_request` checks out `refs/pull/N/merge`, and GitHub does NOT compute
-  # that ref while a PR is CONFLICTED. So a conflicted PR runs no jobs at all —
-  # measured on #439, which sat `dirty` and reported `check_runs: 0`. GitHub
-  # renders "no checks" identically to "nothing failing", which is the same
-  # misreading the `pull_request` comment above already records once.
-  #
-  # That matters most for the R1 migration-prefix guard: the window in which a
-  # cross-branch number collision is most likely is exactly the window in which
-  # nothing was watching, and the collision then surfaces only while somebody
-  # hand-resolves the conflict — i.e. while editing the very tree that hides it.
-  # `test_migration_prefixes.py` DOES catch two migrations at one number (proven
-  # by re-introducing a duplicate); it was simply never run.
-  #
-  # A `push` build has no merge ref to compute, so it runs whatever the branch
-  # actually contains, conflicted or not. ⚠️ The cost is stated rather than
-  # hidden: a branch with an open PR now builds twice per push. That is the
-  # price of the window being closed, and it is cheaper than one silent
-  # migration collision (three in two weeks — see work_plan.md §2 WS-27).
-  #
-  # ⚠️ THE TWO SLOW SUITES SKIP THEIR PUSH COPY: the unit shards (`test` and
-  # `unit-tests`) and the browser suite (`e2e`), by `if:`. A conflicted PR
-  # cannot merge, so their push copy fenced nothing and doubled the runner
-  # load. The R1 migration-prefix guard moved into `lint`, which runs on push.
-  # Fence: workbench/control_plane/src/lib/e2eGate.test.ts.
-  push:
-    # Ignore ONLY the refs that are already covered elsewhere or are machine-
-    # written. Everything else — every feature branch, named or not — runs, which
-    # is the point of an ignore-list over an allow-list.
-    #
-    #   main     — covered by deploy.yml; running here would be a third copy of
-    #              the same jobs on every merge.
-    #   release  — a PUBLISHED ref, not a development one: deploy.yml's
-    #              `publish-release` job fast-forwards it to a SHA that has
-    #              already been checked on `main` (`git push origin
-    #              ${GITHUB_SHA}:refs/heads/release`). Re-checking the same tree
-    #              under a second name buys nothing and doubles every deploy.
-    #   staging  — the same shape, one rung down; T-7 adds the ref and the
-    #              `staging-promote` fast-forward. Listed BEFORE it exists so the
-    #              ref cannot arrive and quietly start duplicating every promote.
-    #
-    # ⚠️ Adding a name here removes a fence from that ref. Only add one that is
-    # provably checked upstream of the push — that is the whole criterion.
-    branches-ignore:
-      - main
-      - release
-      - staging
-    paths-ignore:
-      - "**.md"
-      - "project-docs/**"
+  # A push run created a SKIPPED twin of the required check "Unit tests" on
+  # the same head SHA. GitHub counts a skipped check as passed, so a PR with
+  # a failed shard read as mergeable for about 7 minutes (measured on #1077).
+  # The push trigger existed for one gap: a CONFLICTED PR gets no
+  # pull_request run, and that is when two branches take one migration number
+  # (R1). `push-check.yml` closes that gap on push, under a job name that no
+  # required check uses. Fence: tests/unit/test_pr_check_triggers.py.
 
 permissions:
   contents: read
@@ -133,13 +91,6 @@ jobs:
       # than trusted. R7 — the rule names its fence.
       - name: session-handoff queue injection (blocking)
         run: node .claude/hooks/session-handoff.test.mjs
-
-      # R1. The push trigger exists for this guard: a CONFLICTED PR gets no
-      # pull_request run, and that is when two branches take one migration
-      # number. It lives here, not in the unit shards, because the shards skip
-      # push. Fence: e2eGate.test.ts ("the migration-prefix guard runs on push").
-      - name: Migration prefix guard (R1, blocking)
-        run: uv run python -m pytest tests/unit/test_migration_prefixes.py -q
 
       # Non-blocking report: the FULL ruff check (all configured rules incl. the
       # ~1.3k-finding style backlog + C901 complexity hotspots). This is the
@@ -197,8 +148,6 @@ jobs:
   test:
     name: "Unit tests (shard ${{ matrix.shard }}/6)"
     runs-on: ubuntu-latest
-    # Skips its push copy. See the note at the top of the push trigger.
-    if: github.event_name != 'push'
     # `fail-fast: false`: each shard stops at its own first failure (`-x`),
     # and one run then reports the first failure of EVERY shard. Fail-fast
     # cancelled the other five and hid their failures until the next round.
@@ -363,7 +312,7 @@ jobs:
     needs: test
     # `always()`, so a failed shard turns THIS check red instead of skipping
     # it. A skipped required check counts as satisfied.
-    if: always() && github.event_name != 'push'
+    if: always()
     steps:
       - name: Every shard passed
         run: |
@@ -381,6 +330,8 @@ jobs:
       - name: The R8 suites ran, and no fence skipped
         run: |
           python3 scripts/ci_unit_guard.py check --junit junit \
+            --disarmed "CUSTOMER_CONSOLE_DATABASE_URL unset" \
+            --disarmed "TENANT_LADDER_DATABASE_URL unset" \
             --never-skip \
               tests/unit/test_console_dependency_boundary.py \
               tests/unit/test_signin_resolve_route.py \
@@ -707,24 +658,15 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3]
-    # ── Why this job runs on `pull_request` only, and not on `push` ──────────
+    # ── A push copy of this job must never come back ─────────────────────────
     #
-    # The `push` trigger exists for ONE gap: a CONFLICTED PR gets no
-    # `pull_request` run (see the trigger comment at the top). A conflicted PR
-    # cannot merge either, so a browser run on its push adds no fence at the
-    # merge button. The R1 migration-prefix guard runs in `lint`, which runs
-    # on every push. So this job skips the push copy.
-    #
-    # The push copy also stopped merges. Measured 2026-10-15 over 70 runs:
-    # the cap cancelled 8 of 36 push copies. A cancelled copy shows as `fail`
-    # in `gh pr checks`, even when the PR's own `pull_request` run is green.
-    #
-    # ⚠️ A SKIP BY `if:` COUNTS AS SATISFIED, and that is the whole reason this
-    # is safe. Do not move it to the trigger: a workflow that never starts
-    # wedges the merge (the `pull_request` comment above records why).
+    # This workflow has no `push` trigger (see the note at the top). The `if:`
+    # stays as a second guard: a push trigger added later still skips this
+    # job. Measured 2026-10-15: the cap cancelled 8 of 36 push copies, and a
+    # cancelled copy shows as `fail` in `gh pr checks` beside a green PR run.
     #
     # ⚠️ `!= 'push'`, NOT `== 'pull_request'`. A trigger added later still
-    # runs the suite, and only the copy that duplicates a PR run goes away.
+    # runs the suite.
     #
     # Fence: `workbench/control_plane/src/lib/e2eGate.test.ts`.
     if: github.event_name != 'push'

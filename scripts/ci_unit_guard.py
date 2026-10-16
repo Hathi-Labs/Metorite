@@ -25,15 +25,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 # The reason must START with the variable. A test elsewhere skips with
 # "AGENT_WRITES_REDIS_URL or TENANT_LADDER_DATABASE_URL unset" when CI has no
-# Redis, and that skip is expected.
-DISARMED = re.compile(r"(CUSTOMER_CONSOLE|TENANT_LADDER)_DATABASE_URL unset")
+# Redis, and that skip is expected. The workflow passes these with --disarmed.
+DISARMED = ("CUSTOMER_CONSOLE_DATABASE_URL unset", "TENANT_LADDER_DATABASE_URL unset")
 
 
 def _cases(junit_dir: Path) -> list[ET.Element]:
@@ -54,21 +53,46 @@ def _file(case: ET.Element) -> str:
 
 
 def _skip_reason(case: ET.Element) -> str | None:
+    """The skip reason, or None when the case did not skip.
+
+    A module that skips at collection (`allow_module_level=True`) is written
+    with message "collection skipped" and the real reason in the element text.
+    """
     skipped = case.find("skipped")
-    return None if skipped is None else skipped.get("message", "")
+    if skipped is None:
+        return None
+    message = skipped.get("message", "")
+    if message == "collection skipped":
+        return " ".join((skipped.text or "").split()) or message
+    return message
 
 
-def check(junit_dir: Path, must_run: list[str], never_skip: list[str]) -> list[str]:
+def _collection_skipped(case: ET.Element) -> bool:
+    skipped = case.find("skipped")
+    return skipped is not None and skipped.get("message") == "collection skipped"
+
+
+def check(
+    junit_dir: Path,
+    must_run: list[str],
+    never_skip: list[str],
+    disarmed: tuple[str, ...] | list[str] = DISARMED,
+) -> list[str]:
     cases = _cases(junit_dir)
     problems: list[str] = []
     ran: set[str] = set()
     for case in cases:
         path = _file(case)
-        ran.add(path)
+        # A module skipped whole at collection ran nothing.
+        if not _collection_skipped(case):
+            ran.add(path)
         reason = _skip_reason(case)
         if reason is None:
             continue
-        if DISARMED.match(reason):
+        # The collection text carries a "Skipped:" prefix, so search it.
+        if reason.startswith(tuple(disarmed)) or (
+            _collection_skipped(case) and any(f"Skipped: {d}" in reason for d in disarmed)
+        ):
             problems.append(f"R8 gate disarmed: {path}::{case.get('name')} skipped: {reason}")
         if path in never_skip:
             problems.append(f"a no-database fence skipped: {path}::{case.get('name')}: {reason}")
@@ -98,6 +122,11 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--junit", type=Path, required=True)
     c.add_argument("--must-run", nargs="*", default=[])
     c.add_argument("--never-skip", nargs="*", default=[])
+    c.add_argument(
+        "--disarmed",
+        action="append",
+        help="a skip reason that means an R8 gate is disarmed (repeatable)",
+    )
     d = sub.add_parser("durations")
     d.add_argument("--junit", type=Path, required=True)
     d.add_argument("--out", type=Path, required=True)
@@ -109,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wrote {len(data)} timings to {args.out}")
         return 0
 
-    problems = check(args.junit, args.must_run, args.never_skip)
+    problems = check(args.junit, args.must_run, args.never_skip, args.disarmed or DISARMED)
     for p in problems:
         print(f"::error::{p}")
     return 1 if problems else 0
