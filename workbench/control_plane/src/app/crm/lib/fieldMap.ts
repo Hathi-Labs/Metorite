@@ -546,8 +546,14 @@ export function stateTone(v: PlanSummary, draft: PlanSummary | null): BadgeTone 
   return "neutral";
 }
 
-/** One row of the history: when, and who. */
+/** The maker of a draft that the mapping pipeline wrote (`SUGGEST_ACTOR`). */
+export const SUGGESTION_ACTOR = "suggestion";
+
+/** One row of the history: when, and who. A suggestion names Metorite, not an actor word. */
 export function historyLine(v: PlanSummary): string {
+  if (v.state === "draft" && v.created_by === SUGGESTION_ACTOR) {
+    return `Suggested by Metorite ${dateTime(v.created_at)}`;
+  }
   if (v.state === "draft") return `Drafted ${dateTime(v.created_at)} by ${v.created_by}`;
   return `Approved ${dateTime(v.approved_at ?? v.created_at)} by ${approverName(v.approved_by)}`;
 }

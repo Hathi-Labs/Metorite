@@ -468,6 +468,15 @@ describe("the history (item 6)", () => {
     expect(stateLabel(D3, null)).toBe("Draft, not used");
   });
 
+  it("names a draft of the pipeline in plain words, never by its actor word", () => {
+    // Batch M review P2: the history said "by suggestion".
+    const suggested = { ...D3, created_by: "suggestion" };
+    expect(historyLine(suggested)).toBe(`Suggested by Metorite ${dateTime(D3.created_at)}`);
+    const html = drawPanel(view({ list: { approved: 2, versions: [suggested, V2, V1] } }));
+    expect(html).toContain("Suggested by Metorite");
+    expect(html).not.toMatch(/by suggestion/);
+  });
+
   it("opens the rules of one version, read only", () => {
     const opened: Array<number | null> = [];
     const tree = PlanPanel({ view: view(), handlers: { ...noHandlers, onOpen: (v) => opened.push(v) } });
