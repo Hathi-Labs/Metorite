@@ -39,6 +39,7 @@ from gateway.routes.crm.core import (
     DEALS,
     LEADS,
     ORGANIZATIONS,
+    TABLE_BY_ACTIVITY_TARGET,
     ActivityModel,
     Entity,
     _tenant_session,
@@ -196,10 +197,36 @@ async def _timeline(
         return TimelineResponse(entries=entries[:limit])
 
 
+#: The column of ``crm_activities`` that names a generic module record
+#: (CRM-Q23a, migration 275). ``routes/crm/modules.py`` reads a module
+#: record's timeline through it.
+MODULE_ACTIVITY_COLUMN = "module_record_id"
+
+#: The parent columns that :func:`activity_entries_by` may name: the four of
+#: the entity registry and the module one. A column is a literal of this set,
+#: never caller text.
+ACTIVITY_PARENT_COLUMNS: frozenset[str] = frozenset(
+    {*TABLE_BY_ACTIVITY_TARGET, MODULE_ACTIVITY_COLUMN},
+)
+
+
 async def _activity_entries(
     db: Any, entity: Entity, record_id: str, origin: str, limit: int,
     *, strict: bool = False,
 ) -> list[TimelineEntry]:
+    return await activity_entries_by(
+        db, entity.activity_column, record_id, origin, limit, strict=strict,
+    )
+
+
+async def activity_entries_by(
+    db: Any, column: str, record_id: str, origin: str, limit: int,
+    *, strict: bool = False,
+) -> list[TimelineEntry]:
+    """The activities whose parent ``column`` is *record_id*, as timeline
+    entries. ``column`` is one of :data:`ACTIVITY_PARENT_COLUMNS`."""
+    if column not in ACTIVITY_PARENT_COLUMNS:
+        raise ValueError(f"not an activity parent column: {column!r}")
     # Paged mode orders by the instant the entry SHOWS (`occurred_at`, else
     # `created_at`) and the id, the order `merge_page` merges by. The unpaged
     # read keeps its `created_at` order.
@@ -208,7 +235,7 @@ async def _activity_entries(
     rows = (await db.execute(
         text(
             "SELECT * FROM crm_activities "
-            f"WHERE {entity.activity_column} = CAST(:record_id AS uuid) "
+            f"WHERE {column} = CAST(:record_id AS uuid) "
             f"ORDER BY {order} LIMIT :limit"
         ),
         {"record_id": record_id, "limit": limit},
@@ -630,10 +657,13 @@ async def delete_activity(
 
 
 __all__ = [
+    "ACTIVITY_PARENT_COLUMNS",
     "ACTIVITY_TYPES",
     "LOGGABLE_TYPES",
+    "MODULE_ACTIVITY_COLUMN",
     "ActivityIn",
     "ActivityPatch",
     "TimelineEntry",
     "TimelineResponse",
+    "activity_entries_by",
 ]
