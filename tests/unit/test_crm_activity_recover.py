@@ -59,7 +59,7 @@ def test_the_cap_keeps_the_old_entries_and_marks_an_overflow(monkeypatch) -> Non
     out, overflow = recover.merge(
         kept, {"n2", "n3"}, {"n2": ("M", "p2"), "n3": ("M", "p3")}, now=T,
     )
-    assert overflow
+    assert overflow == {"M"}, "the module of the drop that did not fit"
     assert set(out) == {"n1", "n2"}, "a re-add fits, a new id past the cap does not"
     out, overflow = recover.merge(kept, {"n2"}, {"n2": ("M", "p2")}, now=T)
     assert not overflow, "a re-add of a kept id never overflows"
@@ -166,11 +166,13 @@ def test_the_recover_keys_ride_on_activity_cursors_only() -> None:
         recover.KEY: {"n1": ["M", "p", T]}, recover.OVERFLOW_KEY: True}, None, None)})
     assert engine._recover_state(ctx, "note") == {
         recover.KEY: {"n1": ["M", "p", T]}, recover.OVERFLOW_KEY: True,
-        recover.TRIES_KEY: {}, recover.PAUSE_KEY: None,
+        recover.OVERFLOW_MODULES_KEY: [], recover.TRIES_KEY: {}, recover.PAUSE_KEY: None,
     }
     for entity in ("company", "deal", "module:Install_Base"):
         assert engine._recover_state(ctx, entity) == {}
-    assert {recover.KEY, recover.OVERFLOW_KEY, recover.TRIES_KEY, recover.PAUSE_KEY}         <= engine._KEPT_WHEN_UNAVAILABLE
+    kept_keys = {recover.KEY, recover.OVERFLOW_KEY, recover.OVERFLOW_MODULES_KEY,
+                 recover.TRIES_KEY, recover.PAUSE_KEY}
+    assert kept_keys <= engine._KEPT_WHEN_UNAVAILABLE
 
 
 def _ready_ctx(**over: CursorRow | None) -> engine._Ctx:
@@ -245,7 +247,8 @@ def test_the_recoverable_query_binds_the_org() -> None:
 
 
 def test_tries_and_the_pause_read_back() -> None:
-    assert recover.tries_of({recover.TRIES_KEY: {"a": 2, "b": True, "c": 0, "d": "x"}})         == {"a": 2}
+    stored = {recover.TRIES_KEY: {"a": 2, "b": True, "c": 0, "d": "x"}}
+    assert recover.tries_of(stored) == {"a": 2}
     assert recover.tries_of(None) == {}
     assert recover.paused(_iso(-timedelta(hours=23)), NOW)
     assert not recover.paused(_iso(-timedelta(hours=24)), NOW)
@@ -270,3 +273,33 @@ def test_a_recovery_read_takes_back_the_drop_of_this_run() -> None:
     assert ctx.counts[engine.ACTIVITY_DROPS_KEY] == {"Install_Base": 1, "(none)": 1}
     engine._net_run_drops(ctx, "note", {"n1", "n2"})  # n1 is taken back once only
     assert ctx.counts[engine.ACTIVITY_DROPS_KEY] == {"(none)": 1}
+
+
+# ── Fix round 2 (review of fix round 1, P1) ──────────────────────────────────
+
+
+@pytest.mark.parametrize("why", ["unavailable", "held"])
+def test_an_overflow_on_an_expired_list_still_checks_the_overflowed_module(why: str) -> None:
+    """The list can expire in the run that OVERFLOW_EVERY lapses. An empty list
+    names no module, so the modules of the overflowed drops hold the guard."""
+    if why == "unavailable":
+        module = CursorRow("zoho:module:Install_Base", None,
+                           {"unavailable": True, "reason": "hidden"},
+                           NOW - timedelta(days=30), None)
+        ctx = _ready_ctx(module=module)
+    else:
+        ctx = _ready_ctx()  # it imported before its hold
+        ctx.held = frozenset({"module:Install_Base"})
+    ctx.recover["note"] = {}  # every entry expired in this run
+    ctx.recover_overflow_modules["note"] = {"Install_Base"}
+    assert not engine._overflow_ready(ctx, "note", MIRRORED)
+    ctx.recover_overflow_modules["note"] = set()
+    assert engine._overflow_ready(ctx, "note", MIRRORED), "nothing left to check"
+
+
+def test_the_overflowed_modules_ride_in_the_state() -> None:
+    state = {recover.OVERFLOW_MODULES_KEY: ["A", "", 3, "B"]}
+    assert recover.overflow_modules_of(state) == {"A", "B"}
+    assert recover.overflow_modules_of(None) == set()
+    ctx = _ctx({"zoho:note": CursorRow("zoho:note", None, state, None, None)})
+    assert engine._recover_state(ctx, "note")[recover.OVERFLOW_MODULES_KEY] == ["A", "B"]

@@ -583,3 +583,41 @@ async def test_an_id_that_a_read_cannot_send_leaves_without_a_call(mz) -> None:
     assert a.ids_reads == [("Notes", ["n1"])], "the bad id holds back no call"
     assert _linked(p, p.org_a)["n1"] is not None
     assert _kept(p, p.org_a) == {}
+
+
+# ── Fix round 2 (review of fix round 1, P1) ──────────────────────────────────
+
+
+@pytest.mark.parametrize("why", ["hidden", "held"])
+async def test_an_expired_list_never_lets_an_overflow_read_through(
+    mz, monkeypatch, why: str,
+) -> None:
+    """The reviewer's case. The kept list expires in the same run that the 7
+    days of the last overflow read lapse. The list names no module then, so
+    only the modules of the overflowed drops can hold the guard."""
+    from gateway.crm_sync import recover
+
+    monkeypatch.setattr(recover, "CAP", 2)
+    p, a, _b = mz
+    _seed(a)
+    for i in range(3):
+        _note(a, f"n{i}", 30 + i, "i9")
+    await _connect_all(p, p.org_a, a)
+    assert (await _run(p.org_a)).status == "ok"
+    assert "note" in _rereads(p, p.org_a), "the first overflow queues, as before"
+
+    _age_overflow(p, p.org_a, "note", days=8)
+    for ext_id in _kept(p, p.org_a):
+        _set_first_seen(p, p.org_a, ext_id, days_ago=8)  # the re-add keeps it
+    if why == "hidden":
+        a.faults["Install_Base"] = (400, {"code": "INVALID_MODULE", "status": "error"})
+        _age_module_reads(p, p.org_a)
+    else:
+        _hold(p, p.org_a, "module:Install_Base")  # it imported in run 1
+    result = await _run(p.org_a)
+    assert (result.status, result.error) == ("ok", None)
+    state = _state(p, p.org_a) or {}
+    assert state["recover"] == {}, "every entry expired in this run"
+    assert state["recover_overflow"] is True
+    assert state["recover_overflow_modules"] == ["Install_Base"]
+    assert "note" not in _rereads(p, p.org_a), "no full read every 7 days for ever"

@@ -50,7 +50,6 @@ def is_plain_id(ext_id: str) -> bool:
     return ext_id.isascii() and ext_id.isalnum()
 
 
-
 # ── Credentials ─────────────────────────────────────────────────────────────
 
 

@@ -31,6 +31,10 @@ from typing import Any
 KEY = "recover"
 #: The cursor-state key that says a new id did not fit under :data:`CAP`.
 OVERFLOW_KEY = "recover_overflow"
+#: The cursor-state key of the modules of the drops that did not fit. The
+#: overflow guard reads them, because the list itself can expire before the
+#: guard runs, and an empty list names no module to check.
+OVERFLOW_MODULES_KEY = "recover_overflow_modules"
 #: The cursor-state key of the reads by id that each kept id has had and that
 #: did not take it off the list. The engine drops an id at ``RETRY_LIMIT``.
 TRIES_KEY = "recover_tries"
@@ -81,21 +85,22 @@ def merge(
     landed: Iterable[str],
     dropped: Mapping[str, tuple[str, str]],
     now: str,
-) -> tuple[dict[str, Entry], bool]:
+) -> tuple[dict[str, Entry], set[str]]:
     """The list after one page of an activity entity.
 
     ``landed`` holds every id the page read with no error. ``dropped`` maps
     the ids that this list keeps to ``(module, parent_ext_id)``. ``now`` is
     the ``first_seen`` of a new entry, as ISO text. Returns the new list and
-    True when a new id did not fit under :data:`CAP`.
+    the modules of the new ids that did not fit under :data:`CAP`. An empty
+    set means no overflow.
     """
     gone = set(landed) - set(dropped)
     out = {k: list(v) for k, v in kept.items() if k not in gone}
-    overflow = False
+    overflow: set[str] = set()
     for ext_id, (module, parent) in dropped.items():
         old = out.get(ext_id)
         if old is None and len(out) >= CAP:
-            overflow = True
+            overflow.add(module)
             continue
         out[ext_id] = [module, parent, old[2] if old is not None else now]
     return out, overflow
@@ -130,6 +135,15 @@ def modules_named(kept: Mapping[str, Entry]) -> set[str]:
     return {e[0] for e in kept.values()}
 
 
+def overflow_modules_of(state: Mapping[str, Any] | None) -> set[str]:
+    """The modules of the drops that overflowed. A value of a wrong shape is
+    dropped."""
+    raw = (state or {}).get(OVERFLOW_MODULES_KEY)
+    if not isinstance(raw, list | tuple):
+        return set()
+    return {str(m) for m in raw if isinstance(m, str) and m}
+
+
 def tries_of(state: Mapping[str, Any] | None) -> dict[str, int]:
     """The tries of each kept id. A value of a wrong shape is dropped."""
     raw = (state or {}).get(TRIES_KEY)
@@ -160,6 +174,7 @@ __all__ = [
     "MAX_AGE",
     "OVERFLOW_EVERY",
     "OVERFLOW_KEY",
+    "OVERFLOW_MODULES_KEY",
     "PAUSE_KEY",
     "READ_PAUSE",
     "TRIES_KEY",
@@ -168,6 +183,7 @@ __all__ = [
     "merge",
     "modules_named",
     "overflow_due",
+    "overflow_modules_of",
     "parents",
     "paused",
     "recoverable",

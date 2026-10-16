@@ -707,6 +707,9 @@ class _Ctx:
         #: its cursor on first use, and the entities whose list overflowed.
         self.recover: dict[str, dict[str, list[str]]] = {}
         self.recover_overflow: dict[str, bool] = {}
+        #: The modules of the drops that overflowed, for each entity. The
+        #: overflow guard checks them (review of fix round 1, P1).
+        self.recover_overflow_modules: dict[str, set[str]] = {}
         #: The reads by id of each kept id that left it on the list, and the
         #: time of the last refused read by ids, for each activity entity.
         self.recover_tries: dict[str, dict[str, int]] = {}
@@ -1273,6 +1276,7 @@ def _kept(ctx: _Ctx, entity: str) -> dict[str, list[str]]:
         state = _row(ctx, changed_module(entity)).state
         ctx.recover[entity] = recovery.entries_of(state)
         ctx.recover_overflow[entity] = bool((state or {}).get(recovery.OVERFLOW_KEY))
+        ctx.recover_overflow_modules[entity] = recovery.overflow_modules_of(state)
         ctx.recover_tries[entity] = recovery.tries_of(state)
         pause = (state or {}).get(recovery.PAUSE_KEY)
         ctx.recover_paused[entity] = pause if isinstance(pause, str) else None
@@ -1289,6 +1293,7 @@ def _recover_state(ctx: _Ctx, entity: str) -> dict[str, Any]:
     return {
         recovery.KEY: kept,
         recovery.OVERFLOW_KEY: bool(ctx.recover_overflow.get(entity)),
+        recovery.OVERFLOW_MODULES_KEY: sorted(ctx.recover_overflow_modules.get(entity) or ()),
         recovery.TRIES_KEY: {k: v for k, v in tries.items() if k in kept},
         recovery.PAUSE_KEY: ctx.recover_paused.get(entity),
     }
@@ -1311,6 +1316,9 @@ def _keep_dropped(
         if not ctx.recover_overflow.get(entity):
             _log.warning("crm.sync.recover_overflow entity=%s cap=%s", entity, recovery.CAP)
         ctx.recover_overflow[entity] = True
+        ctx.recover_overflow_modules[entity] = (
+            ctx.recover_overflow_modules.get(entity, set()) | overflow
+        )
 
 
 async def _write_record(  # noqa: C901 - one record, one linear mapping to columns
@@ -1956,7 +1964,7 @@ def _count_unavailable(ctx: _Ctx, entity: str, reason: str = "scope") -> None:
 #: the kept activities of CRM-Q23b.
 _KEPT_WHEN_UNAVAILABLE = frozenset({
     "failed", "retry_from", "converted_both", recovery.KEY, recovery.OVERFLOW_KEY,
-    recovery.TRIES_KEY, recovery.PAUSE_KEY,
+    recovery.OVERFLOW_MODULES_KEY, recovery.TRIES_KEY, recovery.PAUSE_KEY,
 })
 
 
@@ -3299,21 +3307,29 @@ def _overflow_ready(ctx: _Ctx, entity: str, mirrored: frozenset[str]) -> bool:
     """True when an overflow of ``entity`` may queue its full read now.
 
     The first import of the entity is done, each mirrored module that its
-    list names has had its first import and is not unavailable (CRM-Q15), the
+    list names, and each module of a drop that overflowed, has had its first
+    import, is not unavailable (CRM-Q15) and is not held (CRM-Q16). The
     marker row exists, and the last
     overflow read of the entity was queued more than ``recovery.OVERFLOW_EVERY``
     ago. A full read before that would drop the same activities again.
     """
     if _row(ctx, changed_module(entity)).initial_done_at is None:
         return False
-    for module in recovery.modules_named(ctx.recover.get(entity) or {}) & mirrored:
-        target = _row(ctx, changed_module(ctx.mapping.module_entity(module)))
+    # The modules of the list AND of the drops that overflowed. The list can
+    # expire in the run that OVERFLOW_EVERY lapses, and an empty list names no
+    # module, so the overflowed modules must hold the guard on their own.
+    named = recovery.modules_named(ctx.recover.get(entity) or {})
+    named |= ctx.recover_overflow_modules.get(entity) or set()
+    for module in named & mirrored:
+        module_entity = ctx.mapping.module_entity(module)
+        target = _row(ctx, changed_module(module_entity))
         if target.initial_done_at is None:
             return False
-        if (target.state or {}).get("unavailable"):
-            # ``_mark_unavailable`` stamps ``initial_done_at`` too. A module that
-            # the account refuses gains no record, so a full read now would
-            # drop the same activities again, every 7 days, for ever.
+        if (target.state or {}).get("unavailable") or count_key(module_entity) in ctx.held:
+            # ``_mark_unavailable`` stamps ``initial_done_at`` too, and a held
+            # module may have imported before its hold. Neither gains a
+            # record, so a full read now would drop the same activities again,
+            # every 7 days, for ever.
             return False
     marker = ctx.cursors.get(ACTIVITY_BACKFILL_ROW)
     if marker is None:
@@ -3334,6 +3350,7 @@ async def _queue_overflow(ctx: _Ctx, entity: str) -> None:
         marker.initial_done_at or ctx.started, marker.last_reconciled_at,
     )
     ctx.recover_overflow[entity] = False
+    ctx.recover_overflow_modules[entity] = set()
     async with ctx.page() as db:
         await _add_rereads(ctx, db, {entity})
         await _save_cursor(ctx, db, saved, "ok")
