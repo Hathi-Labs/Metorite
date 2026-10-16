@@ -329,6 +329,14 @@ def test_6_a_free_column_goes_back_to_null_when_the_draft_drops_its_rule() -> No
     assert values["lost_note"] is None and missed == ()
 
 
+def test_6_a_free_column_is_null_before_the_draft_also_with_no_live_rule() -> None:
+    """A rejected rule leaves its value until the next run undoes it. The
+    fixed map never writes a free column, so the preview starts from NULL."""
+    values = {"lost_note": "Left by a rejected rule"}
+    preview_record("lead", values, {}, live={}, draft={"lost_note": "Why"})
+    assert values["lost_note"] is None
+
+
 def test_6_the_value_of_the_fixed_map_wins_over_a_draft_rule() -> None:
     """``industry`` has no live rule, so the stored value is the fixed map's."""
     values = {"industry": "Standard"}
