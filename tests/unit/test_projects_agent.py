@@ -1236,7 +1236,7 @@ async def test_status_report_refuses_when_the_run_does_not_hold_make_report(
     review P2: the member keeps the dashboard card of a plain status report."""
     import importlib
 
-    from skill_projects.views import REPORTS_OFF
+    from acb_skills.reports import REPORTS_OFF
 
     wa = importlib.import_module("acb_skills.write_artifact")
     root, specs = report_chat

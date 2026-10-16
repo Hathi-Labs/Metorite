@@ -28,7 +28,10 @@ result goes into the path under the name ``slug``, ``record``, ``mod`` or
 **An answer is text, 50 rows at most.** When more rows exist, it ends with
 "More: call again with page=N". Every tool reads only, so each one carries
 ``read_only=True`` and ``open_world=False`` in
-``tool_annotations.TOOL_ANNOTATIONS``.
+``tool_annotations.TOOL_ANNOTATIONS``. The one exception is ``crm_report``:
+with ``make_report=true`` it makes a kept report from the route's data
+(``projects_ai_chat.md`` §14.10.9), so it writes two files and carries
+``read_only=False`` and ``idempotent=False``. It still sends only GET.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ import functools
 import os
 import re
 from collections.abc import Awaitable, Callable
+from datetime import date
 from typing import Any
 from uuid import UUID
 
@@ -582,11 +586,212 @@ async def crm_list_owners(page: int = 1) -> str:
     return "\n".join(lines)
 
 
+# ── crm_report as a kept report (projects_ai_chat.md §14.10.9) ─────────────
+#
+# Code builds the spec from the route's own data, so every number is the
+# route's and the model copies none. A stage name, a lost reason or an owner
+# goes into a table cell or a chart label, never into a text field, because
+# make_report's markdown-lite check reads the text fields only.
+
+#: The title word of each report kind.
+_REPORT_TITLES: dict[str, str] = {
+    "pipeline": "Pipeline", "funnel": "Funnel", "win-loss": "Win and loss",
+    "owners": "Owners",
+}
+#: A bar chart holds 12 bars, and a table visual 20 rows.
+REPORT_CHART_BARS = 12
+REPORT_TABLE_ROWS = 20
+
+
+def _rupees(value: Any) -> int:
+    """An amount in whole rupees, as the text answer prints it."""
+    return round(float(value or 0))
+
+
+def _cut_note(shown: int, total: int, noun: str) -> str:
+    return f"The {noun} shows the first {shown} of {total}." if total > shown else ""
+
+
+def _stage_bars(stages: list[dict[str, Any]], key: str, title: str,
+                unit: str = "") -> tuple[dict[str, Any], str]:
+    """A bar chart of one figure for each stage, and its cut note."""
+    shown = stages[:REPORT_CHART_BARS]
+    chart: dict[str, Any] = {
+        "kind": "chart", "type": "bar", "title": title,
+        "labels": [str(s["status"]["name"]) for s in shown],
+        "values": [_rupees(s[key]) if unit else s[key] for s in shown],
+    }
+    if unit:
+        chart["unit"] = unit
+    return chart, _cut_note(len(shown), len(stages), "chart")
+
+
+def _chart_section(heading: str, chart: dict[str, Any], note: str) -> dict[str, Any]:
+    section: dict[str, Any] = {"heading": heading, "visual": chart}
+    if note:
+        section["text"] = note
+    return section
+
+
+def _table_section(heading: str, title: str, columns: list[str],
+                   rows: list[list[Any]], text: str = "") -> dict[str, Any]:
+    """A section with one table of at most 20 rows, and its cut note."""
+    shown = rows[:REPORT_TABLE_ROWS]
+    words = " ".join(t for t in (text, _cut_note(len(shown), len(rows), "table")) if t)
+    section: dict[str, Any] = {"heading": heading}
+    if words:
+        section["text"] = words
+    if shown:
+        section["visual"] = {"kind": "table", "title": title, "columns": columns,
+                             "rows": shown}
+    elif not words:
+        section["text"] = "The report has no rows."
+    return section
+
+
+def _pipeline_spec(data: dict[str, Any]) -> dict[str, Any]:
+    stages = [s for s in data.get("stages") or [] if isinstance(s, dict)]
+    count, amount, weighted = data["count"], data["amount"], data["weighted"]
+    sections: list[dict[str, Any]] = []
+    if stages:
+        sections.append(_chart_section(
+            "Value by stage", *_stage_bars(stages, "amount", "Value by stage (INR)", "INR")))
+    sections.append(_table_section(
+        "Stages", "Each open stage", ["Stage", "Deals", "Value (INR)", "Weighted (INR)"],
+        [[str(s["status"]["name"]), s["count"], _rupees(s["amount"]), _rupees(s["weighted"])]
+         for s in stages]))
+    return {
+        "summary": (f"**{count} open deals** worth INR {_rupees(amount):,}, weighted "
+                    f"INR {_rupees(weighted):,}, in {len(stages)} stages."),
+        "kpis": [
+            {"label": "Open deals", "value": count},
+            {"label": "Pipeline value", "value": _rupees(amount), "unit": "INR"},
+            {"label": "Weighted forecast", "value": _rupees(weighted), "unit": "INR"},
+            {"label": "Open stages", "value": len(stages)},
+        ],
+        "sections": sections,
+    }
+
+
+def _funnel_spec(data: dict[str, Any]) -> dict[str, Any]:
+    stages = [s for s in data.get("stages") or [] if isinstance(s, dict)]
+    unmatched = [u for u in data.get("unmatched") or [] if isinstance(u, dict)]
+    sections: list[dict[str, Any]] = []
+    if stages:
+        sections.append(_chart_section(
+            "Deals that entered each stage",
+            *_stage_bars(stages, "entered", "Deals that entered each stage")))
+    sections.append(_table_section(
+        "Conversion by stage", "Conversion and dwell by stage",
+        ["Stage", "Entered", "Advanced", "Conversion %", "Median dwell (days)", "Samples"],
+        [[str(s["status"]["name"]), s["entered"], s["advanced"], s["conversion_forward"],
+          "unknown" if s["median_dwell_days"] is None else s["median_dwell_days"],
+          s["dwell_samples"]] for s in stages],
+        "A median dwell is over the samples in its row."))
+    kpis = [
+        {"label": "Deals", "value": data["deals"]},
+        {"label": "Stages", "value": len(stages)},
+        {"label": "Stage moves read", "value": data["transitions"]},
+    ]
+    if unmatched:
+        kpis.append({"label": "Unknown stage names", "value": len(unmatched)})
+        sections.append(_table_section(
+            "Stage names that match no stage", "Names in the stage log",
+            ["Name in the log", "Deals", "Mentions"],
+            [[str(u["name"]), u["deals"], u["mentions"]] for u in unmatched],
+            "These names are in the stage log, and no current stage has them."))
+    return {
+        "summary": (f"The funnel covers **{data['deals']} deals** and "
+                    f"{data['transitions']} stage moves, in {len(stages)} stages."),
+        "kpis": kpis,
+        "sections": sections,
+    }
+
+
+def _win_loss_spec(data: dict[str, Any]) -> dict[str, Any]:
+    won, lost = data["won"], data["lost"]
+    kpis: list[dict[str, Any]] = [
+        {"label": "Won", "value": won},
+        {"label": "Lost", "value": lost},
+        {"label": "Win rate", "value": data["win_rate"], "unit": "%"},
+        {"label": "Won value", "value": _rupees(data["won_amount"]), "unit": "INR"},
+        {"label": "Lost value", "value": _rupees(data["lost_amount"]), "unit": "INR"},
+    ]
+    if data.get("average_cycle_days") is not None:
+        kpis.append({"label": "Average cycle", "value": data["average_cycle_days"],
+                     "unit": "days"})
+    kpis.append({"label": "Closed with no date", "value": data["closed_without_date"]})
+    closed: dict[str, Any] = {"heading": "Won and lost"}
+    if won + lost > 0:
+        closed["visual"] = {"kind": "chart", "type": "donut", "title": "Deals won and lost",
+                            "labels": ["Won", "Lost"], "values": [won, lost],
+                            "tones": ["green", "red"]}
+    else:
+        closed["text"] = "No deal closed in this window."
+    reasons = [r for r in data.get("lost_reasons") or [] if isinstance(r, dict)]
+    sections = [closed]
+    if reasons:
+        sections.append(_table_section(
+            "Lost reasons", "Lost deals by reason", ["Reason", "Deals", "Value (INR)"],
+            [[str(r["label"]), r["deals"], _rupees(r["amount"])] for r in reasons]))
+    return {
+        "period": f"The last {data['window_days']} days, since {data['since']}",
+        "summary": (f"**{won} won** and {lost} lost since {data['since']}. "
+                    f"The win rate is {data['win_rate']}%."),
+        "kpis": kpis,
+        "sections": sections,
+    }
+
+
+def _owners_spec(data: dict[str, Any]) -> dict[str, Any]:
+    owners = [o for o in data.get("owners") or [] if isinstance(o, dict)]
+    omitted = int(data.get("omitted") or 0)
+    window = data["window_days"]
+    kpis: list[dict[str, Any]] = [{"label": "Owners in the report", "value": len(owners)}]
+    if omitted:
+        kpis.append({"label": "Owners not in the report", "value": omitted})
+    kpis.append({"label": "Won window", "value": window, "unit": "days"})
+    text = f"Won amounts cover the last {window} days."
+    if omitted:
+        text += f" {omitted} more owners are not in the report."
+    return {
+        "summary": f"**{len(owners)} owners**, ranked by their deals in play. {text}",
+        "kpis": kpis,
+        "sections": [_table_section(
+            "Owners", "Each owner", ["Owner", "Open deals", "Weighted (INR)", "Won (INR)"],
+            [[str(o.get("owner_email") or "Unassigned"), o["open_deals"],
+              _rupees(o["weighted"]), _rupees(o["won_amount"])] for o in owners],
+            text)],
+    }
+
+
+_REPORT_SPECS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+    "pipeline": _pipeline_spec, "funnel": _funnel_spec, "win-loss": _win_loss_spec,
+    "owners": _owners_spec,
+}
+
+
+def _crm_report_spec(report: str, data: dict[str, Any],
+                     today: date | None = None) -> dict[str, Any]:
+    """The ``make_report`` spec of one CRM report, built by code from the data
+    of ``GET /crm/reports/{report}``."""
+    day = (today or date.today()).strftime("%d %b %Y")
+    return {"title": f"CRM report · {_REPORT_TITLES[report]}",
+            **_REPORT_SPECS[report](data),
+            "date": day, "sources": [f"CRM {report}, {day}"]}
+
+
+# read_only=False, idempotent=False in TOOL_ANNOTATIONS (§14.10.9): with
+# make_report=true it writes two files and draws a card, so an edited turn
+# must not run it again unseen. It still sends only GET.
 @_read_tool
-async def crm_report(kind: str, page: int = 1) -> str:
+async def crm_report(kind: str, page: int = 1, make_report: bool = False) -> str:
     """A CRM report: kind 'pipeline' (forecast by open stage), 'funnel'
     (entered, conversion and median dwell by stage), 'win-loss' (the last 90
-    days) or 'owners' (each owner's open deals, weighted and won)."""
+    days) or 'owners' (each owner's open deals, weighted and won). For a
+    report the member keeps, pass make_report=true, only when you hold
+    make_report: code then makes the report card and its PDF from the same
+    numbers, with no number from you."""
     report = _report_kind(kind)
     data = await _get(f"/crm/reports/{report}") or {}
     if report == "pipeline":
@@ -628,7 +833,12 @@ async def crm_report(kind: str, page: int = 1) -> str:
     if report == "owners" and int(data.get("omitted") or 0):
         # The route keeps the biggest owners and counts the rest.
         tail.append(f"{int(data['omitted'])} more owners are not in the report.")
-    return f"CRM report {report}:\n" + "\n".join([*shown.items, *tail])
+    from acb_skills.reports import by_code
+
+    outcome = await by_code(lambda: _crm_report_spec(report, data), make_report,
+                            tool="crm_report",
+                            say="Say in one or two lines what the report shows.")
+    return f"CRM report {report}:\n" + "\n".join([*shown.items, *tail, *outcome.lines])
 
 
 @_read_tool
