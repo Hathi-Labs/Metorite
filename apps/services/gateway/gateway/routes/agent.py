@@ -3187,6 +3187,7 @@ async def _late_answer_from_row(
         moved = await asyncio.to_thread(
             pending_ask.move_ask, org, req.request_id,
             to="answered", from_states=pending_ask.WAITING, answer=req.answer,
+            late=True,
         )
     except Exception:  # noqa: BLE001
         _log.warning("agent.pending_ask_answer_failed", exc_info=True)

@@ -382,7 +382,8 @@ def _grant() -> str:
 
 
 def _approved(w, org: str, tid: str, grant: str, *, actor: str = _ALICE,
-              answer: str = "APPROVE", kind: str = "confirmation") -> str:
+              answer: str = "APPROVE", kind: str = "confirmation",
+              late: bool = True) -> str:
     """A confirmation that parked and got its answer after the run ended."""
     rid = uuid.uuid4().hex
     assert pending_ask.insert_ask(org, {
@@ -393,6 +394,7 @@ def _approved(w, org: str, tid: str, grant: str, *, actor: str = _ALICE,
     pending_ask.move_ask(org, rid, to="parked", from_states=("open",))
     pending_ask.move_ask(
         org, rid, to="answered", from_states=pending_ask.WAITING, answer=answer,
+        late=late,
     )
     return rid
 
@@ -407,6 +409,17 @@ def test_a_grant_is_taken_once_and_the_row_closes(as_app):
 
     assert first == "APPROVE" and second is None
     assert tuple(_admin_row(w, w.org_a, rid)) == ("closed", "APPROVE")
+
+
+def test_an_in_time_approve_is_not_a_grant(as_app):
+    """The run took this answer, so its row is ``answered`` with no late mark.
+    Without the mark the same call would run a second time with no card."""
+    w = as_app
+    g = _grant()
+    rid = _approved(w, w.org_a, w.t_alice, g, late=False)
+
+    assert pending_ask.consume_grant(w.org_a, w.t_alice, _ALICE, g) is None
+    assert tuple(_admin_row(w, w.org_a, rid)) == ("answered", "APPROVE")
 
 
 def test_a_grant_keeps_the_ticked_rows_of_the_answer(as_app):

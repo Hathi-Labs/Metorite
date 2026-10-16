@@ -71,7 +71,8 @@ def late_on(monkeypatch, flag_on):
 
 
 def _call(r, tid: str, *, actor: str = _ALICE, title: str = _TITLE,
-          detail: str = _DETAIL, context: str = _BODY, **kw: Any):
+          detail: str = _DETAIL, context: str = _BODY, grant_extra: str = "args",
+          **kw: Any):
     """One ``request_confirmation`` in a run on *tid*, as the run's actor.
 
     Returns ``(out, cards)``: ``out["result"]`` when the call returned,
@@ -86,7 +87,8 @@ def _call(r, tid: str, *, actor: str = _ALICE, title: str = _TITLE,
     async def _the_run() -> None:
         executor._stream_relay_thread_id.set(tid)
         _bind(_ORG_A)
-        out["result"] = await request_confirmation(title, detail, context, **kw)
+        out["result"] = await request_confirmation(
+            title, detail, context, grant_extra=grant_extra, **kw)
 
     async def go() -> None:
         run = asyncio.create_task(_the_run())
@@ -163,6 +165,42 @@ def test_a_call_with_other_arguments_asks_again(
 
     assert out.get("parked") and "result" not in out
     assert len(cards) == 2
+
+
+def test_a_call_with_no_digest_of_its_own_is_never_a_grant(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """The card text is clipped, so a caller that passes no ``grant_extra``
+    gets no grant, and no ``grant`` rides on its event."""
+    tid = "t-noextra"
+    out, cards = _call(liveness, tid, grant_extra="")
+    assert out.get("parked") and "grant" not in cards[0]["value"]
+    res = _late_answer(monkeypatch, tid, cards[0]["value"]["request_id"])
+    assert res.status_code == 409
+
+    out, cards = _call(liveness, tid, grant_extra="")
+
+    assert out.get("parked") and "result" not in out
+    assert len(cards) == 2
+
+
+def test_an_approve_that_a_live_run_took_is_not_a_grant(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """The row of an in-time answer is ``answered`` too, but it has no late
+    mark. A second call of the same card must ask again."""
+    tid = "t-intime"
+    _out, cards = _call(liveness, tid)
+    (key, row), = [(k, v) for k, v in ask_db.rows.items()]
+    # What ``settle`` does when the live run takes the answer: no ``late``.
+    ask_db.move_ask(key[0], key[1], to="answered",
+                    from_states=pending_ask.WAITING, answer="APPROVE")
+    assert "late" not in ask_db.rows[key]["payload"]
+
+    out, cards2 = _call(liveness, tid)
+
+    assert out.get("parked") and "result" not in out
+    assert len(cards2) == 2
 
 
 def test_a_call_with_other_card_words_asks_again(
@@ -327,6 +365,22 @@ def test_a_rows_card_gives_back_the_ticked_rows(
 
     assert out.get("result") == frozenset({"b"})
     assert len(cards) == 1
+
+
+def test_a_rows_card_with_other_row_words_asks_again(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """Row ids are positions. The words of each row are the write."""
+    tid = "t-rowwords"
+    _park_then_answer(
+        liveness, monkeypatch, tid, answer='APPROVE {"rows": ["a", "b"]}', rows=_ROWS,
+    )
+    other = [dict(_ROWS[0], label="Task A, due tomorrow, to Bob"), _ROWS[1]]
+
+    out, cards = _call(liveness, tid, rows=other)
+
+    assert out.get("parked") and "result" not in out
+    assert len(cards) == 2
 
 
 def test_the_grant_digest_is_the_call_and_nothing_else():

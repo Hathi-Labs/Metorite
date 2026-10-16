@@ -230,8 +230,14 @@ def move_ask(
     to: str,
     from_states: tuple[str, ...],
     answer: str | None = None,
+    late: bool = False,
 ) -> dict[str, Any] | None:
     """Move one row to *to*, only from *from_states*. Returns the row, or None.
+
+    *late* (with ``to="answered"``) marks an answer that no run took: the late
+    answer of ``POST /agent/respond-input``. The mark joins the SAME update, as
+    ``payload.late``. Only a marked row can be a grant (:func:`consume_grant`),
+    so an Approve that a live run took can never run its call a second time.
 
     One statement, so two answers that race move the row once. The second
     gets ``None`` and resends nothing. An expired row never moves.
@@ -241,7 +247,8 @@ def move_ask(
 
     stamp = {
         "parked": "parked_at = now()",
-        "answered": "answered_at = now(), answer = :answer",
+        "answered": "answered_at = now(), answer = :answer"
+        + (", payload = payload || '{\"late\": true}'::jsonb" if late else ""),
         "closed": "answered_at = COALESCE(answered_at, now())",
     }.get(to)
     if stamp is None:
@@ -286,7 +293,8 @@ def consume_grant(
     """Take the late approval of one call, once. Returns its answer, or None.
 
     A row is a grant when ALL of these hold: it is a confirmation, a member
-    answered it ``APPROVE`` after its run ended (state ``answered``), the
+    answered it ``APPROVE`` after its run ended (state ``answered`` and
+    ``payload.late``, which only the late route writes), the
     member who answered is the member who asked, it belongs to this thread
     and carries this fingerprint, and it was answered inside the grant window.
     One statement moves it to ``closed``, so two runs that race take it once.
@@ -311,7 +319,8 @@ def consume_grant(
                 "    AND thread_id = :tid AND actor_email = :actor "
                 "    AND kind = 'confirmation' AND state = 'answered' "
                 "    AND payload->>'grant' = :grant "
-                "    AND answer ~* '^approve(\s|$)' "
+                "    AND payload->>'late' = 'true' "
+                r"    AND answer ~* '^approve(\s|$)' "
                 "    AND answered_at > now() - make_interval(mins => :mins) "
                 "    AND expires_at > now() "
                 "  ORDER BY answered_at DESC LIMIT 1 FOR UPDATE SKIP LOCKED) "

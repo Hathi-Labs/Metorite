@@ -665,7 +665,8 @@ async def request_confirmation(
             was.
         grant_extra: text that joins the card's words in the call's
             fingerprint (``pending_ask.grant_digest``). The MCP gate passes a
-            digest of the raw arguments. Used only with ``CHAT_LATE_APPROVAL``.
+            digest of the raw arguments. With ``CHAT_LATE_APPROVAL`` a call
+            with no ``grant_extra`` is never a grant, and its card asks again.
 
     **A late approval is taken once** (``CHAT_LATE_APPROVAL``, default OFF).
     A card that parked (``CHAT_DURABLE_ASKS``) and got its Approve after the
@@ -711,14 +712,20 @@ async def request_confirmation(
     try:
         from orchestrator import pending_ask as _pending_ask  # noqa: PLC0415
 
-        if _pending_ask.late_approval_enabled():
+        # A grant needs the caller's own digest of the call. The card text is
+        # clipped, so it alone could match a call that differs out of sight.
+        if grant_extra and _pending_ask.late_approval_enabled():
             from orchestrator.executor import resolve_relay_thread_id  # noqa: PLC0415
 
             _grant_thread = resolve_relay_thread_id()
             if _grant_thread:
+                _row_words = tuple(sorted(
+                    "\x1e".join((r["id"], str(r.get("label") or ""),
+                                 str(r.get("hint") or "")))
+                    for r in _rows or []
+                ))
                 _grant = _pending_ask.grant_digest(
-                    _title, _detail, _context, tuple(sorted(_offered)),
-                    str(grant_extra or ""),
+                    _title, _detail, _context, _row_words, str(grant_extra),
                 )
     except Exception:  # noqa: BLE001
         _grant = ""
