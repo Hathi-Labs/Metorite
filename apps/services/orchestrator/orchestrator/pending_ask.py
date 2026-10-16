@@ -290,6 +290,10 @@ def consume_grant(
     member who answered is the member who asked, it belongs to this thread
     and carries this fingerprint, and it was answered inside the grant window.
     One statement moves it to ``closed``, so two runs that race take it once.
+    ⚠️ The OUTER ``state = 'answered'`` is load-bearing: when a second run waits
+    on the first one's row lock, Postgres re-checks the outer conditions on the
+    new row version, and never re-runs the subquery. Without it, both runs
+    took the one grant (measured on the R8 race test).
     """
     from acb_graph import tenant_session  # type: ignore[import-untyped, unused-ignore]
     from sqlalchemy import text
@@ -300,7 +304,8 @@ def consume_grant(
         r = s.execute(
             text(
                 "UPDATE chat_pending_ask SET state = 'closed' "
-                "WHERE (organization_id, request_id) = ("
+                "WHERE state = 'answered' "
+                "  AND (organization_id, request_id) = ("
                 "  SELECT organization_id, request_id FROM chat_pending_ask "
                 "  WHERE organization_id = CAST(:org AS uuid) "
                 "    AND thread_id = :tid AND actor_email = :actor "
