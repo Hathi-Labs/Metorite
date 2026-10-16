@@ -115,6 +115,9 @@ _RECORD_TABLES: tuple[str, ...] = (
 #: Child first. Nothing references them with 0 records, but a status that a
 #: record names is ``ON DELETE RESTRICT``, so the order is the safe one.
 _RESET_DELETES: tuple[str, ...] = (
+    # CRM-Q26: the labels of the notes. With 0 records none can exist, and the
+    # list names every table of the start over.
+    "crm_note_labels",
     # CRM-Q6a: the reset deletes the module cursors below, so a generic record
     # that lands after the count must not stay without its cursor.
     "crm_module_records",

@@ -2540,6 +2540,9 @@ RECORD_COUNT_TABLES: tuple[tuple[str, str], ...] = (
 #: stage with ``ON DELETE RESTRICT``, so the records go before the stages.
 #: ``tests/unit/test_crm_reset_r8.py`` holds its own copy of this list.
 RESET_TABLES: tuple[str, ...] = (
+    # CRM-Q26: the labels of the notes below. The cascade from
+    # ``crm_activities`` takes them too, and naming them keeps the list whole.
+    "crm_note_labels",
     "crm_activities", "crm_deal_contacts", "crm_deals", "crm_leads",
     "crm_contacts", "crm_companies", "crm_module_records",
     "crm_status_changes", "crm_field_defs", "crm_pipeline_stages",

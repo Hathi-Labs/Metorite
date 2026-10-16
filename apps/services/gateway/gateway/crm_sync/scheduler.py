@@ -24,6 +24,14 @@ security, so the read does not go blind. It is a tenant-discovery site in
 **The first import.** A successful callback calls :func:`start_first_import`.
 It starts a run in the background when this loop is running, and does nothing
 when it is not. A failure to start is logged. The loop picks the org up.
+
+**The note labels** (WS-53 CRM-Q26, ``crm_platform.md`` §18.11.2). After a
+run ends, :func:`start_labels` starts ``note_labels.label_after_run`` as a
+background task: after ``engine.run_org`` in :func:`_run_one`, and after the
+run of :func:`spawn`. Both return after ``runs.finish`` released the run lock,
+so the step runs outside it. With the ``crm.note_labels`` mode ``off`` it
+starts no task. One step runs at a time for each org (``_labeling``), so two
+runs that end close together never ask twice about one note.
 """
 
 from __future__ import annotations
@@ -37,7 +45,7 @@ from acb_common.db import get_db, tenant_session
 from sqlalchemy import text
 
 from gateway.connections import store
-from gateway.crm_sync import engine, profiles, runs
+from gateway.crm_sync import engine, note_labels, profiles, runs
 from gateway.crm_sync.engine import NotConnected
 from gateway.crm_sync.runs import SyncRunning
 from gateway.routes.crm import access as crm_access
@@ -56,6 +64,9 @@ _stopping = asyncio.Event()
 #: Runs started by a request. Kept so the task is not collected, and so a stop
 #: can wait for it.
 _background: set[asyncio.Task[Any]] = set()
+#: The orgs whose label step runs now (CRM-Q26). The gateway is one process,
+#: so an in-process set is the whole state.
+_labeling: set[str] = set()
 
 
 async def _organization_ids() -> list[str]:
@@ -117,6 +128,8 @@ async def _run_one(org: str, gate: asyncio.Semaphore) -> int:
         except Exception as exc:
             _log.warning("crm.sync.tick_failed class=%s", type(exc).__name__)
             return 0
+        # `run_org` returns after `runs.finish` released the lock (CRM-Q26).
+        start_labels(org)
         return 1
 
 
@@ -180,14 +193,52 @@ def loop_running() -> bool:
     return _task is not None and not _task.done()
 
 
-def spawn(handle: engine.RunHandle) -> asyncio.Task[Any]:
-    """Run a locked handle in the background. The request does not wait."""
-    task = asyncio.get_running_loop().create_task(
-        engine.execute(handle, should_stop=_stopping.is_set), name="crm-mirror-run",
-    )
+def _track(task: asyncio.Task[Any]) -> asyncio.Task[Any]:
     _background.add(task)
     task.add_done_callback(_background.discard)
     return task
+
+
+def start_labels(org: str) -> asyncio.Task[Any] | None:
+    """Start the label step of ``org`` in the background (CRM-Q26). Never raises.
+
+    It starts nothing when the loop stops, when the ``crm.note_labels`` mode
+    of the org is ``off``, or when a step of the org runs already.
+    """
+    try:
+        if _stopping.is_set() or org in _labeling or not note_labels.enabled_for(org):
+            return None
+        _labeling.add(org)
+        task = asyncio.get_running_loop().create_task(
+            note_labels.label_after_run(org, should_stop=_stopping.is_set),
+            name="crm-note-labels",
+        )
+        # A done-callback, not a `finally` in the coroutine: a task that is
+        # cancelled before its first step never runs that `finally`, and the
+        # org would stay in `_labeling` for the life of the process.
+        task.add_done_callback(lambda _t: _labeling.discard(org))
+        return _track(task)
+    except Exception as exc:  # a label step never breaks a sync run
+        _labeling.discard(org)
+        _log.warning("crm.note_labels.not_started class=%s", type(exc).__name__)
+        return None
+
+
+async def _execute_then_label(handle: engine.RunHandle) -> engine.RunResult:
+    """Run the handle, then start the label step. The run's result is the
+    task's result, as before CRM-Q26."""
+    result = await engine.execute(handle, should_stop=_stopping.is_set)
+    start_labels(handle.org)
+    return result
+
+
+def spawn(handle: engine.RunHandle) -> asyncio.Task[Any]:
+    """Run a locked handle in the background. The request does not wait.
+
+    After the run, the label step of the org starts (CRM-Q26)."""
+    return _track(asyncio.get_running_loop().create_task(
+        _execute_then_label(handle), name="crm-mirror-run",
+    ))
 
 
 async def start_first_import(org: str) -> bool:
@@ -219,5 +270,6 @@ __all__ = [
     "spawn",
     "start_crm_mirror_sync",
     "start_first_import",
+    "start_labels",
     "stop_crm_mirror_sync",
 ]
