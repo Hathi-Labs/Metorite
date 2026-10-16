@@ -332,3 +332,112 @@ async def test_the_scan_starts_at_the_later_of_the_stamp_and_the_checked_mark() 
         "at": {"company": stamp.isoformat()}, "pending": [], "rules": [],
     }, rules_state={})
     assert db.params[-1]["since"] == stamp
+
+
+# ── CRM-Q17a-1b: the "still empty" check ─────────────────────────────────────
+
+
+def test_the_check_statement_reads_a_null_column_as_json_null() -> None:
+    """Item 2. ``to_jsonb(t)`` of the whole row gives a NULL column as the
+    JSON ``null``, which ``FILLED_SQL`` counts as empty. ``to_jsonb(column)``
+    gives SQL NULL, and ``ELSE true`` would count it as filled."""
+    import re
+
+    from gateway.crm_sources.zoho import mapping
+
+    sql = fill.check_statement("contact", mapping)
+    assert "jsonb_each(to_jsonb(t)) e" in sql
+    assert re.findall(r"to_jsonb\(([^)]*)\)", sql) == ["t"]
+    assert f"bool_or({fill.FILLED_SQL})" in sql
+    assert "e.key = ANY(CAST(:keys AS text[]))" in sql
+    assert "FROM crm_contacts WHERE organization_id = CAST(:org AS uuid)" in sql
+    assert "GROUP BY e.key" in sql
+    # It reads. It writes nothing.
+    assert "INSERT" not in sql.upper() and "UPDATE" not in sql.upper()
+
+
+def test_the_check_runs_under_its_own_local_timeout() -> None:
+    """Item 6: 5 s, LOCAL to the transaction of the check."""
+    assert fill.CHECK_TIMEOUT_MS == 5_000
+    assert fill._TIMEOUT_SQL.endswith(", true)")
+    assert fill.CORE_ORDER == ("company", "contact", "lead", "deal")
+
+
+def _check_state(**extra) -> dict:
+    state = {
+        "at": {"company": "2026-10-16T10:00:00+00:00"},
+        "pending": ["company"],
+        "rules": [],
+        "still_empty": {"company": {
+            "keys": ["phone", "website"], "at": "2026-10-16T12:00:00+00:00",
+        }},
+    }
+    state.update(extra)
+    return state
+
+
+def test_checked_keys_serves_a_check_only_when_no_doubt_is_left() -> None:
+    """Item 4, the three tests that need no database."""
+    from datetime import UTC, datetime
+
+    got = fill_rank.checked_keys("company", _check_state(), {})
+    assert got == (["phone", "website"], datetime(2026, 10, 16, 12, tzinfo=UTC))
+    # No stamp.
+    assert fill_rank.checked_keys("company", _check_state(at={}), {}) is None
+    # A field rule of the entity changed since the last fill step.
+    rule = {"id": "r1", "entity": "company", "field": "Region", "column": "phone"}
+    assert fill_rank.checked_keys("company", _check_state(), {"applied": [rule]}) is None
+    # The rule marks are saved, so the rule did not change, and it serves.
+    saved = _check_state(rules=[["r1", "company", "Region", "phone", False]])
+    assert fill_rank.checked_keys("company", saved, {"applied": [rule]}) is not None
+    # A rule of the entity is backfilling.
+    busy = _check_state(rules=[["r1", "company", "Region", "phone", True]])
+    assert fill_rank.checked_keys(
+        "company", busy, {"applied": [{**rule, "backfilling": True}]},
+    ) is None
+    # The check has no time, or no entry.
+    no_time = _check_state(still_empty={"company": {"keys": ["phone"]}})
+    assert fill_rank.checked_keys("company", no_time, {}) is None
+    assert fill_rank.checked_keys("company", _check_state(still_empty={}), {}) is None
+
+
+def test_a_malformed_check_entry_is_left_out() -> None:
+    entries = fill_rank.still_empty_of({"still_empty": {
+        "company": {"keys": ["phone"], "at": "not a time"},
+        "contact": {"keys": "phone", "at": "2026-10-16T12:00:00+00:00"},
+        "lead": {"keys": [1], "at": "2026-10-16T12:00:00+00:00"},
+        "deal": ["phone"],
+    }})
+    assert entries == {}
+    assert fill_rank.still_empty_of({"still_empty": ["company"]}) == {}
+    assert fill_rank.still_empty_of(None) == {}
+
+
+def test_a_served_key_must_be_empty_in_the_stored_numbers() -> None:
+    """Item 5. The check can only take a key away. A key that the stored
+    numbers give as filled, or a key outside the standard keys, never shows."""
+    fills = {
+        "company_id": Fill(0, 2, 0), "next_step": Fill(0, 2, 0),
+        "amount": Fill(2, 2, 2), "name": Fill(0, 2, 0),
+    }
+    served = fill_rank.still_empty_set(
+        "deals", fills, ["company_id", "amount", "name", "custom.Region", "probability"],
+    )
+    # A joined column shows in both words, as empty_set gives it.
+    assert served == ["company_id", "organization_name"]
+    assert fill_rank.still_empty_set("deals", fills, []) == []
+
+
+def test_empty_columns_reaches_each_test_of_the_check() -> None:
+    """R7 fence of item 4: ``empty_columns`` asks the stale rule, then the
+    three tests with no database, then the run counts after the check, and
+    serves through ``still_empty_set``."""
+    tree = ast.parse((_CRM / "fill_rank.py").read_text(encoding="utf-8"))
+    fn = next(n for n in tree.body
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "empty_columns")
+    called = {getattr(c.func, "id", None) for c in ast.walk(fn) if isinstance(c, ast.Call)}
+    assert {"stale_entities", "checked_keys", "changed_since", "still_empty_set"} <= called
+    fn = next(n for n in tree.body
+              if isinstance(n, ast.FunctionDef) and n.name == "checked_keys")
+    called = {getattr(c.func, "id", None) for c in ast.walk(fn) if isinstance(c, ast.Call)}
+    assert {"rule_entities", "backfilling_entities", "still_empty_of"} <= called

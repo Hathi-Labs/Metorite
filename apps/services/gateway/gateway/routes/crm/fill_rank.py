@@ -41,8 +41,22 @@ or when a sync run that STARTED after its stamp counted an ``upserted``, a
 ``deleted`` or a ``relinked`` row of it. A run that found no change moves the
 ``checked`` mark of the entity to its own start, and the scan starts there. ``progress`` writes those counts in the transaction of
 each page, so a run that raised after a page still counts, and so does a run
-of a time when the flag was off. While the numbers are stale,
-``empty_columns`` is ``[]``: no column is known to be empty.
+of a time when the flag was off.
+
+**Still empty** (CRM-Q17a-1b). While the numbers of a core entity are stale,
+``empty_columns`` serves the keys of the last "still empty" check of the sync
+(``crm_sync/fill.py``), the key :data:`STILL_EMPTY` of the fill row. It serves
+them only when four things are true (:func:`checked_keys` and
+:func:`changed_since`):
+
+* the entity has a stamp, and none of its field rules changed;
+* the check has a time;
+* no run that started after that time changed or re-linked a row of it;
+* no field rule of the entity has ``backfilling`` true.
+
+Else ``empty_columns`` is ``[]``: no column is known to be empty. A served key
+must also be empty in the stored numbers, so a key that they show as filled is
+never served.
 
 **Ship dark.** Each read first asks ``flags.fill_rank_allowed``. An org
 outside ``CRM_FILL_RANK_ORGS`` gets ``None`` from each function here, and the
@@ -84,6 +98,9 @@ PROVIDER = "zoho"
 FILL_ROW = f"{PROVIDER}:fill_rank"
 #: The cursor row of the field rules (``engine.FIELD_RULES_ROW``).
 RULES_ROW = f"{PROVIDER}:field_rules"
+#: The key of the "still empty" checks in the fill row (CRM-Q17a-1b):
+#: ``{entity: {"keys": [...], "at": <database time of the statement>}}``.
+STILL_EMPTY = "still_empty"
 _MODULE_PREFIX = "module:"
 
 #: A list column that is a join → the real column it shows, per entity slug.
@@ -266,14 +283,21 @@ def stamps(state: dict[str, Any] | None, key: str = "at") -> dict[str, datetime]
     gives the start of the last run that found the entity not stale."""
     out: dict[str, datetime] = {}
     for entity, value in ((state or {}).get(key) or {}).items():
-        if not isinstance(value, str):
-            continue
-        try:
-            parsed = datetime.fromisoformat(value)
-        except ValueError:
-            continue
-        out[str(entity)] = parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+        parsed = _parse_time(value)
+        if parsed is not None:
+            out[str(entity)] = parsed
     return out
+
+
+def _parse_time(value: Any) -> datetime | None:
+    """An ISO time of the fill row, or ``None``. A naive time is UTC."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 async def read_cursors(db: Any, org: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -312,16 +336,88 @@ async def stale_entities(
     # new. The checked mark is the start of a run that found no change, so the
     # scan of an entity that never changes stays short.
     since = {e: max(at[e], checked.get(e, at[e])) for e in rest}
+    return stale | await changed_since(db, org, since)
+
+
+async def changed_since(db: Any, org: str, since: dict[str, datetime]) -> set[str]:
+    """The entities of *since* that a sync run changed or re-linked, in a run
+    that STARTED after the time of the entity. One statement for all of them
+    (``_CHANGED_SQL``)."""
+    if not since:
+        return set()
     rows = (await db.execute(text(_CHANGED_SQL), {
         "org": str(org), "since": min(since.values()),
-        "keys": sorted({count_key(e) for e in rest}),
+        "keys": sorted({count_key(e) for e in since}),
     })).fetchall()
     changed = {str(r.key): r.changed_at for r in rows}
-    for entity in rest:
+    out: set[str] = set()
+    for entity, after in since.items():
         when = changed.get(count_key(entity))
-        if when is not None and when > since[entity]:
-            stale.add(entity)
-    return stale
+        if when is not None and when > after:
+            out.add(entity)
+    return out
+
+
+# ── Still empty (CRM-Q17a-1b) ────────────────────────────────────────────────
+
+
+def backfilling_entities(rules_state: dict[str, Any] | None) -> set[str]:
+    """The entities of each applied field rule with ``backfilling`` true. A
+    backfill can take more than one run, and no run count records its rows."""
+    from gateway.crm_sync import field_rules
+
+    return {r.entity for r in field_rules.applied_of(rules_state) if r.backfilling}
+
+
+def still_empty_of(state: dict[str, Any] | None) -> dict[str, tuple[list[str], datetime]]:
+    """The "still empty" checks in the state of the fill row: the keys that
+    stayed empty and the time of the check, for each entity. A malformed
+    entry is left out, so its entity serves ``[]``."""
+    out: dict[str, tuple[list[str], datetime]] = {}
+    found = (state or {}).get(STILL_EMPTY)
+    for entity, entry in (found if isinstance(found, dict) else {}).items():
+        if not isinstance(entry, dict):
+            continue
+        keys, at = entry.get("keys"), _parse_time(entry.get("at"))
+        if at is None or not isinstance(keys, list):
+            continue
+        if not all(isinstance(k, str) for k in keys):
+            continue
+        out[str(entity)] = (list(keys), at)
+    return out
+
+
+def checked_keys(
+    entity: str, state: dict[str, Any] | None, rules_state: dict[str, Any] | None,
+) -> tuple[list[str], datetime] | None:
+    """The check of a stale *entity* that may serve, or ``None``.
+
+    The three tests that need no database: the entity has a stamp and none of
+    its field rules changed (the rule test of :func:`stale_entities`), the
+    check has a time, and no rule of the entity has ``backfilling`` true. The
+    caller then asks :func:`changed_since` with the time of the check.
+    """
+    if entity not in stamps(state):
+        return None
+    if entity in rule_entities(saved_marks(state), rule_marks(rules_state)):
+        return None
+    if entity in backfilling_entities(rules_state):
+        return None
+    return still_empty_of(state).get(entity)
+
+
+def still_empty_set(slug: str, fills: dict[str, Fill], keys: Iterable[str]) -> list[str]:
+    """The served keys of a check: each checked key that :func:`empty_set`
+    also gives from the stored numbers, in the words of :func:`empty_set`. So
+    a key that the stored numbers show as filled is never served."""
+    checked = set(keys)
+    stored = empty_set(slug, fills)
+    real = {k for k in stored if k in checked and k in standard_keys(slug)}
+    served = set(real)
+    for alias, column in LIST_ALIASES.get(slug, {}).items():
+        if column in real:
+            served.add(alias)
+    return sorted(served)
 
 
 def empty_set(slug: str, fills: dict[str, Fill]) -> list[str]:
@@ -347,7 +443,9 @@ async def empty_columns(
     db: Any, org: str | None, slug: str, fills: dict[str, Fill] | None = None,
 ) -> list[str] | None:
     """``empty_columns`` of *slug* for *org*: ``None`` when the flag shuts
-    *org* out, ``[]`` while the numbers are stale, else :func:`empty_set`.
+    *org* out, else :func:`empty_set`. While the numbers are stale, the keys
+    of the last "still empty" check (:func:`still_empty_set`) when it may
+    serve (module docstring), else ``[]``.
 
     ``GET /crm/fields/{entity}?layout=1`` serves it and the CSV export reads
     it. Both call this function. *fills* saves a read when the caller holds
@@ -358,9 +456,16 @@ async def empty_columns(
     entity = FIELD_ENTITY_BY_SLUG[slug]
     if fills is None:
         fills = await read_fill(db, str(org), entity)
-    if await stale_entities(db, str(org), [entity]):
+    state, rules_state = await read_cursors(db, str(org))
+    if not await stale_entities(db, str(org), [entity], state=state, rules_state=rules_state):
+        return empty_set(slug, fills)
+    check = checked_keys(entity, state, rules_state)
+    if check is None:
         return []
-    return empty_set(slug, fills)
+    keys, at = check
+    if await changed_since(db, str(org), {entity: at}):
+        return []
+    return still_empty_set(slug, fills, keys)
 
 
 # ── The source labels ────────────────────────────────────────────────────────
@@ -427,9 +532,13 @@ __all__ = [
     "NAME_KEYS",
     "NEVER_EMPTY",
     "RULES_ROW",
+    "STILL_EMPTY",
     "EntityLabel",
     "Fill",
     "annotate",
+    "backfilling_entities",
+    "changed_since",
+    "checked_keys",
     "count_key",
     "empty_columns",
     "empty_set",
@@ -446,4 +555,6 @@ __all__ = [
     "stale_entities",
     "stamps",
     "standard_keys",
+    "still_empty_of",
+    "still_empty_set",
 ]
