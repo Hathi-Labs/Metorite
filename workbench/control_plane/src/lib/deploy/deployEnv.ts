@@ -2,9 +2,12 @@
  * Which deployment this workbench is: production or staging (WS-38 S-7,
  * `project-docs/specs/staging_and_daily_release.md` §3).
  *
- * The box's `.env` holds `DEPLOY_ENV`, and the staging bootstrap writes the
- * same line into this app's `.env.local`. Read on the SERVER, at render time.
- * It is not a `NEXT_PUBLIC_` name, because nothing in the browser needs it.
+ * The box's root `.env` holds `DEPLOY_ENV`, and `scripts/vps_apply.sh` copies
+ * it into this app's `.env.local` before each build. Read on the server: a
+ * STATIC page takes the value at `next build`, a dynamic page at request time.
+ * So a change needs a rebuild, and a restart alone leaves the two kinds of
+ * page disagreeing. It is not a `NEXT_PUBLIC_` name, because nothing in the
+ * browser needs it.
  *
  * Anything that is not exactly `staging` is production. A production box has
  * no such line, and it must render exactly as it did before.
