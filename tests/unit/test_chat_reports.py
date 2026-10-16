@@ -604,12 +604,18 @@ def test_run_holds_tool_reads_the_bound_run_tools_and_fails_closed() -> None:
 def test_every_run_binds_the_tools_that_the_injection_left() -> None:
     """The executor binds the return of ``_inject_agent_tools`` as
     ``run_tools`` at the three run boundaries: the stream run, the batch run
-    and the sub-agent."""
+    and the sub-agent. The batch run takes it from the one batch assembly,
+    which the self-anneal retry calls too
+    (``tests/unit/test_anneal_retry_scope.py`` fences the retry)."""
     src = (Path(__file__).resolve().parents[2] / "apps" / "services" / "orchestrator"
            / "orchestrator" / "executor.py").read_text(encoding="utf-8")
-    assert src.count(" _run_tools = _inject_agent_tools(") == 2
+    assert src.count(" _run_tools = _inject_agent_tools(") == 1  # the stream run
+    assert src.count("    run_tools = _inject_agent_tools(") == 1  # the batch assembly
+    assert src.count(" _run_tools = await _assemble_batch_agents(") == 1  # the batch run
     assert src.count("_sub_run_tools = _inject_agent_tools(") == 1
-    assert src.count("run_tools=_run_tools,") == 2
+    # The stream run and the batch run bind it, and the batch run keeps it
+    # for the retry (``_BatchRunInputs``).
+    assert src.count("                run_tools=_run_tools,") == 2
     assert src.count("run_tools=_sub_run_tools,") == 1
 
 

@@ -5300,19 +5300,27 @@ line — never reclaim a number by deleting the other entry.
   as-built block · PR-G8 fix round 1
 - **Added:** 2026-10-14 · PR-G8 (`gmail-purge-durable`), fix round 2
 
-### H-308 · Purge the email chat turns that Graphiti stores, or stop storing mail there · [AGENT]
-- **Check:** `git grep -n "add_episode" -- apps/services/gateway/gateway/routes/email`.
-  A hit in `automation/chat.py` means the write still exists, and this entry stays.
-- **Why.** `routes/email/automation/chat.py` (about line 332) writes each email
-  chat turn to Graphiti with `add_episode`. Its `group_id` is the member key,
-  not a mailbox key. So no mailbox purge reaches it, and a disconnect leaves
-  mail text in the graph. Google Limited Use and the deletion promise of
-  §12.3.13.9 both need that text to go.
-- **Do this:** choose one of the two paths, and write the choice in §12.3.13.9.
-  1. Key the episode on the mailbox, and add a Graphiti purge to the teardown.
-  2. Stop storing mail content in Graphiti from the email chat.
-- **Authority:** `specs/email_app_master_plan.md` §12.3.13.9 · PR-G8 review
+### H-308 · Stop the copies of mail in the chat memory stores (EM-G11f3) · [AGENT]
+- **Check:** run the two commands. The entry stays while either one fails.
+  1. `git grep -n "add_episode" -- apps/services/gateway/gateway/routes/email`
+     must give no hit. A hit means that the email chat route still writes to Graphiti.
+  2. `git grep -c "run_holds_mail" -- apps/services/gateway/gateway/routes/agent.py apps/services/gateway/gateway/main.py`
+     must give a count for each of the two files. A file with no count still writes
+     a turn that holds mail to Mem0 or to Graphiti, under the member key.
+- **Why.** Nine writers copy mail text into stores under the member, the
+  agent or the organization (§12.3.13.9.1, W1 to W9). The writers are in
+  `routes/agent.py`, in `main.py`, in the email chat route, in the memory
+  tools and in the run trace. No mailbox purge reaches these stores. So a
+  disconnect leaves mail text there. Google Limited Use and the deletion
+  promise of §12.3.13.9 both need that text to go. Mem0 and Graphiti are off
+  on production (2026-10-16), so most of these writers are latent today.
+- **Do this:** build PR-G8b as §12.3.13.9.1 specifies. The section chose
+  path 2: Metorite stores no mail content there. Run the spec-auditor first.
+  The PR merges before WS-7 turns on Mem0 or Graphiti.
+- **Authority:** `specs/email_app_master_plan.md` §12.3.13.9.1 · PR-G8 review
 - **Added:** 2026-10-14 · PR-G8 (`gmail-purge-durable`), fix round 2
+- **Widened:** 2026-10-16 · the Check now reads `routes/agent.py` and
+  `main.py` too, after a spec-auditor finding
 
 ### H-309 · Create the WS-59 tasks in the Metorite project "Proactive Intelligence" · [AGENT]
 - **Check:** in a session with the Metorite MCP, run `search_tasks` with the
