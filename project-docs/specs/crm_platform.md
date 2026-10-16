@@ -2074,6 +2074,11 @@ ticket of this section is specified, not built. Verified against code at
 CRM-Q18-3, with migration 280. A fixed column opens only for an org on
 `CRM_FILL_RANK_ORGS`, so it is dark until that flip.
 
+**Status (2026-10-16, CRM-Q19).** The branch `crm-q19-executor` builds
+CRM-Q19 on `crm-batch-m`, with no migration and no flag. It is not merged.
+`CRM_MIRROR` keeps the route of the preview dark, as it keeps the plan
+routes dark.
+
 **Design record.** The owner's design page is "Source Mapping Studio" v4.
 Its link is https://claude.ai/artifact/QcBY3s2ATxo3Kb9QCpR3Zr. This section
 is the build contract, and it wins where the two differ.
@@ -2262,7 +2267,7 @@ with 16 questions, to learn whether the vendor bills the state once.
 | CRM-Q17b | Getting around: rail, first screen, filters, Columns, phone, Sync health. No AI | AGENT-SAFE | M | CRM-Q17a |
 | CRM-Q18 | One plan: a table of versions, and the live rule set | AGENT-SAFE | M | — |
 | CRM-Q18-1b | Two deadlocks of the plan lock, found on a real database | AGENT-SAFE | S | CRM-Q18-1 |
-| CRM-Q19 | The executor and the 200-record preview | AGENT-SAFE | M | CRM-Q18 |
+| CRM-Q19 🔨 built 2026-10-16, not merged | The executor and the 200-record preview | AGENT-SAFE | M | CRM-Q18 |
 | CRM-Q20 | The pipeline, the suggestion, the panel, Undo, and Settings → Suggestions | AGENT-SAFE | M + M | CRM-Q19 |
 | CRM-Q21 | Promote a module into a core entity | AGENT-SAFE | L | CRM-Q20 |
 | CRM-Q22 | Zoho changes as suggestions, then a CSV source, then HubSpot | AGENT-SAFE. The HubSpot app is OWNER-GATE | M + M | CRM-Q20 |
@@ -2873,6 +2878,59 @@ and the new tests `test_crm_executor.py` and `test_crm_map_preview_r8.py`.
 Gate: AGENT-SAFE. Size: M. Waits for: CRM-Q18-1b and CRM-Q18-3. CRM-Q18-3
 also edits `mapping.apply_field_rules` and `crm_sync/field_rules.py`. Verify
 with the CRM-Q18 command and the two new suites, with no test skipped.
+
+**Built as (2026-10-16).** Branch `crm-q19-executor`, on `crm-batch-m`. No
+migration and no flag.
+
+- `crm_sync/executor.py` holds `copy` and `cast`. Each one returns an
+  `Outcome`: the column value and an `unmapped` mark. Both call
+  `mapping.coerce_target_value`.
+- `copy` fills a `TEXT` column only, and it raises for any other type.
+  `cast` turns the value into the type of the column, inside its limits.
+- A `field` rule names no transform. `transform_of` gives `copy` for a
+  `TEXT` column and `cast` for each other type.
+- A value is `unmapped` when the source holds data and the transform gives
+  NULL. The test of data follows `fill.FILLED_SQL`, so a blank, `[]`, `{}`
+  and `false` are never `unmapped`.
+- `executor.apply_rules` holds the one rule "only where the fixed map gives
+  NULL". `mapping.apply_field_rules` calls it, and `map_record` keeps the
+  columns that did not map in `Mapped.unmapped`.
+- `field_rules.backfill_batch` runs `executor.run` on each value. It now
+  returns a `Batch`, which also counts the values that did not map.
+- The source fence reads each file of the gateway. Only the executor, and
+  `mapping.coerce_target_value` itself, may name the coercion.
+- Each run counts `unmapped` for each entity, from `map_record` and from
+  each backfill batch. Sync health passes the count through `last_run`, and
+  the card shows it in a "Not mapped" column.
+- `POST /crm/mapping/preview` takes `{"version": n}`. A version that is not a
+  draft is a 409 `not_draft`, and an unknown version is a 404.
+- The route reads the entities of the draft and of the live rules. For each
+  one, it reads up to `PREVIEW_ROWS` (200) mirrored rows, the lowest ids,
+  with the join of the list route.
+- `executor.preview_record` first sets each rule column back to the value of
+  the fixed map. A free column, and a fixed column that a live rule fills,
+  start at NULL. Then the draft applies through `apply_rules`.
+- The rows go through `row_to_dict` and the three attach steps of the list
+  route. Each entity carries `unmapped`: a count for each target column of
+  the draft, and no value.
+- The route runs `SET TRANSACTION READ ONLY` first, and it takes no plan
+  lock. So it builds no version and follows no live set.
+- Fences: 25 unit tests in `test_crm_executor.py`, 10 R8 tests in
+  `test_crm_map_preview_r8.py`, and 2 tests in `crmQ9.test.ts`. 20
+  mutations, one for each key rule, each made a fence fail.
+
+Not in this slice:
+
+- A live rule on a fixed column that an empty fill opened (CRM-Q18-3) can
+  share the column with a later value from Zoho. The stored row cannot tell
+  the two apart, so the preview shows the value of the draft there.
+- The preview does not compute `lead_name` again. The backfill does not
+  compute it either, so the board shows the same name after an approve.
+- No screen calls the preview yet. CRM-Q20-2 draws it on the panel.
+- `value_map`, `normalize`, `coalesce`, `link` and `owner` are CRM-Q20-1
+  (item 3). Each one joins `executor.TRANSFORMS` under its word.
+- The executor imports the Zoho mapping module. A second source (CRM-Q22)
+  moves `RuleTarget` and the coercion to a module that names no source.
 
 **CRM-Q20 · The pipeline and the suggestion.** Done when:
 
