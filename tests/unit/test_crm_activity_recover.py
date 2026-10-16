@@ -250,7 +250,7 @@ def test_tries_and_the_pause_read_back() -> None:
     assert recover.paused(_iso(-timedelta(hours=23)), NOW)
     assert not recover.paused(_iso(-timedelta(hours=24)), NOW)
     assert not recover.paused(None, NOW) and not recover.paused("x", NOW)
-    assert recover.READ_PAUSE == timedelta(hours=24)
+    assert timedelta(hours=24) == recover.READ_PAUSE
 
 
 def test_a_kept_id_leaves_at_the_retry_limit() -> None:
