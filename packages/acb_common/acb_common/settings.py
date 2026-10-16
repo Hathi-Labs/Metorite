@@ -282,6 +282,17 @@ class Settings(BaseSettings):
     # `gateway.routes.crm.flags`. 🔴 A flip on a box is gate
     # `enforcement-flip`. Fence: tests/unit/test_crm_fill_rank_r8.py.
     crm_fill_rank_orgs: str = ""
+    # `crm_note_search_orgs` (WS-53 CRM-Q27, 2026-10-16) lists the
+    # organization ids that get search of CRM note text by meaning
+    # (`crm_platform.md` §18.11.2), in the grammar of `crm_orgs`. Default
+    # empty means NO organization (fail closed). An org outside the list gets
+    # no embed step after a sync run, and `GET /crm/notes/search` answers it
+    # `degraded` with no embed call. The one reader is
+    # `gateway.routes.crm.flags`. 🔴 OWNER-GATE on a box: each embed request
+    # costs vendor money that no credit row pays (`work_plan.md` §6). The
+    # grant `enforcement-flip` does not cover it. Fence:
+    # tests/unit/test_crm_note_vectors.py.
+    crm_note_search_orgs: str = ""
 
     # ── The My Day loop (WS-58 MD-5b, 2026-10-14) ───────────────────────────
     #

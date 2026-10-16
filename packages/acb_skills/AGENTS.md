@@ -336,7 +336,7 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    digest. When the unit's dirs are absent, both callers refuse. Neither
    falls back to the venv. Fence: tests/unit/test_agent_deps_target.py
    (BH-F6).
-5l. crm_tools.py -- the 12 CRM read tools (WS-53 CRM-C7, spec
+5l. crm_tools.py -- the 13 CRM read tools (WS-53 CRM-C7, spec
    `project-docs/specs/crm_platform.md` §20.10). It is the ONE copy:
    `crm-assistant` imports them, and the injection chain offers them as the
    `crm` skill family. Each tool reads a `/crm` route as the run's member,
@@ -359,6 +359,10 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    `weighted`. `crm_report(make_report=true)` builds a kept report by
    code from the route data (`projects_ai_chat.md` §14.10.9). So it carries
    `read_only=False` and `idempotent=False`, and it still sends only GET.
+   `crm_search_notes` (CRM-Q27) reads `GET /crm/notes/search` and gives
+   note ids and snippets. Each snippet sits in the frame of `untrusted.py`.
+   Its last line says that a number comes from `crm_aggregate`. A
+   `degraded` answer gives `SEARCH_OFF`, which names `crm_list_records`.
    Fences: `tests/unit/test_crm_agent.py`, `tests/unit/test_skills_registry.py`
    and `tests/unit/test_reports_by_code.py`.
 5m. untrusted.py -- the ONE frame for text that a stranger wrote (WS-17

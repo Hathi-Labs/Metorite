@@ -3157,8 +3157,10 @@ added to it, and
 ### 18.11 Insights on the mirrored data (CRM-Q25 to CRM-Q28, 2026-10-16)
 
 **Status (2026-10-16).** CRM-Q25: merged (#1104), no migration. CRM-Q26:
-merged (#1100, migration 278), dark. CRM-Q25b, CRM-Q27 and CRM-Q28:
-specified, not built. Verified against code at `origin/main` `634cf54ee`.
+merged (#1100, migration 278), dark. CRM-Q27: built on the branch
+`crm-q27-note-search` (migration 279), dark, not merged. CRM-Q25b and
+CRM-Q28: specified, not built. Verified against code at `origin/main`
+`634cf54ee`.
 
 **Owner direction (2026-10-16, in chat).** Use the decide, balanced and
 powerful tiers to run inference on the CRM data and produce insights. Build
@@ -3538,6 +3540,42 @@ CRM-Q26 (merged, #1100) and CRM-Q25. CRM-Q25 also edits `crm_tools.py`,
 §18.11.3, with `tests/unit/test_tool_schema_diet.py`,
 `tests/unit/test_tenant_coverage.py` and
 `tests/unit/test_kb_visibility_one_seam.py` added.
+
+**Built as (2026-10-16, branch `crm-q27-note-search`, not merged).**
+Migration 279 adds `crm_note_vectors`. `crm_sync/note_vectors.py` holds the
+step, and `scheduler.start_vectors` starts it. The step waits for the label
+step of the run, and it runs alone when the label mode is `off`.
+`routes/crm/note_search.py` holds the route, and `crm_search_notes` is the
+tool. `CRM_NOTE_SEARCH_ORGS` ships empty, so nothing runs for any org.
+
+The build made four choices that the list above does not name.
+
+- A request with no usable vector stops the step with the reason
+  `no_vectors`, because the door is down. Each note of that request still
+  counts one failure (item 11).
+- A failure row clears the old vector, as a CRM-Q26 failure clears the old
+  label. So a row never pairs a new md5 with the vector of an older text.
+- The tool puts each snippet in the frame of `acb_skills/untrusted.py`,
+  because a person wrote the note.
+- A `limit` outside 1 to 20 gives 422, and so does a blank `q`. The query
+  goes to the embed door only and never to SQL, so the route needs no NUL
+  guard.
+
+A later slice can add a usage row at the call of the door in
+`note_vectors._embed`. That call already runs in `job_member_scope` with the
+payer of item 10. This build adds no usage row, because the billing
+question above is open.
+
+**The cost check.** This session had no web access, so the build did not
+read the vendor's price page again. The numbers below use the list price of
+record, USD 0.02 for each million tokens. The first pass of DEWiN's 18,674
+notes is at most 18,674 × 500 = 9.34 million tokens, so at most USD 0.19.
+At 5,120 notes a day, it takes 4 days (3.6 rounded up). One search costs
+one vector of the query, under 100 tokens. The log line `knowledge.embed`
+of each call gives the real estimate.
+
+R8: `tests/unit/test_crm_note_vectors_r8.py`, with the start over in
+`tests/unit/test_crm_reset_r8.py`. Hermetic: `tests/unit/test_crm_note_vectors.py`.
 
 **CRM-Q28 · A weekly digest on the powerful tier.**
 

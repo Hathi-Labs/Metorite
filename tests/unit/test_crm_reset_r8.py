@@ -80,6 +80,8 @@ EMPTIED = (
     "crm_convert_mappings",
     # CRM-Q26: the labels of the old account's notes.
     "crm_note_labels",
+    # CRM-Q27: the vectors of the old account's notes.
+    "crm_note_vectors",
     # CRM-Q17a-1: the fill rank counts the records of the old setup.
     "crm_field_fill",
     # CRM-Q18-1: the versions of the plan name the old field rules.
@@ -269,6 +271,12 @@ def _seed(p: Any, org: str, *, tag: str, deals: int, status: str = "disconnected
             "INSERT INTO crm_note_labels (organization_id, activity_id, kind, "
             "mode, body_md5) VALUES (CAST(:o AS uuid), :a, 'payment', 'shadow', "
             "'h')"), {**o, "a": note})
+        # CRM-Q27: the vector of that note. The start over takes it.
+        c.execute(text(
+            "INSERT INTO crm_note_vectors (organization_id, activity_id, "
+            "body_md5, embedding, embedded_at) VALUES (CAST(:o AS uuid), :a, 'h', "
+            "CAST(:v AS vector), now())"),
+            {**o, "a": note, "v": "[" + ",".join(["0.5"] * 1536) + "]"})
         c.execute(text(
             "INSERT INTO crm_module_records (organization_id, module, ext_source, "
             "ext_id, name, fields) VALUES (CAST(:o AS uuid), 'Products', 'zoho', "

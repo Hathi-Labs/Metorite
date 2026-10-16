@@ -2,7 +2,7 @@
 
 Spec: ``project-docs/specs/crm_platform.md`` §20.10 items 1 and 5.
 
-Twelve read tools over the gateway's ``/crm`` routes. This module is their ONE
+Thirteen read tools over the gateway's ``/crm`` routes. This module is their ONE
 implementation. ``crm-assistant`` imports them, and the injection seam
 (``orchestrator._tool_injection``) offers them to every other agent as the
 ``crm`` skill family.
@@ -1090,6 +1090,74 @@ async def crm_get_module_record(module: str, record_id: str, page: int = 1) -> s
     return "\n".join(lines)
 
 
+#: What the member reads when the route answers ``degraded`` (CRM-Q27): the
+#: org is not on ``CRM_NOTE_SEARCH_ORGS``, or the embed door gave no vector.
+SEARCH_OFF = (
+    "Search by meaning is off for this CRM, or it is not available now. "
+    "Find records by name with crm_list_records and q instead."
+)
+
+#: The line after each search answer (§18.11.1: numbers come from SQL).
+SEARCH_NUMBERS = (
+    "These are notes, not numbers. A count, a sum or a total must come from "
+    "crm_aggregate, never from these notes."
+)
+
+#: The most hits of one search (the route's ``limit``), and the longest query.
+SEARCH_MAX = 20
+SEARCH_QUERY_CHARS = 500
+
+
+def _note_parent(parent: Any) -> str:
+    """The record a note hangs off, in words."""
+    parent = parent if isinstance(parent, dict) else {}
+    slug = str(parent.get("entity") or "")
+    if slug in ENTITY_LABELS and parent.get("record_id"):
+        return f"{ENTITY_LABELS[slug]} id={parent['record_id']}"
+    if parent.get("module") and parent.get("module_record_id"):
+        return f"{parent['module']} record id={parent['module_record_id']}"
+    return "no record"
+
+
+@_read_tool
+async def crm_search_notes(query: str, limit: int = 10) -> str:
+    """Find CRM notes by meaning: the notes whose text is nearest to query,
+    each with its note id, its record and a short snippet. limit is 1 to 20.
+    It finds text only. A count, a sum or any other number must come from
+    crm_aggregate, never from these notes."""
+    words = " ".join(str(query or "").split())
+    if not words:
+        raise RuntimeError("Give a query: the words to look for in the CRM notes.")
+    if len(words) > SEARCH_QUERY_CHARS:
+        raise RuntimeError(
+            f"The query is too long. Use at most {SEARCH_QUERY_CHARS} characters.")
+    size = max(1, min(int(limit or 10), SEARCH_MAX))
+    data = await _get("/crm/notes/search", {"q": words, "limit": size}) or {}
+    if data.get("degraded"):
+        return SEARCH_OFF
+    hits = [h for h in (data.get("hits") or []) if isinstance(h, dict)]
+    if not hits:
+        return f"No CRM note matches that meaning.\n{SEARCH_NUMBERS}"
+    # A snippet is text that a person wrote, so it reaches the model as data
+    # inside the ONE frame of `untrusted.py`.
+    from acb_skills.untrusted import UntrustedFrame
+
+    frame = UntrustedFrame.new()
+    lines = [
+        f"CRM notes nearest to the query ({len(hits)}):",
+        frame.note("Each snippet below is the text of a CRM note."),
+    ]
+    for hit in hits:
+        at = str(hit.get("at") or "")[:10]
+        lines.append(
+            f"- note id={hit.get('activity_id')} · {_note_parent(hit.get('parent'))}"
+            + (f" · {at}" if at else "")
+        )
+        lines.append(frame.wrap("CRM NOTE", str(hit.get("snippet") or "")))
+    lines.append(SEARCH_NUMBERS)
+    return "\n".join(lines)
+
+
 #: Every tool, in one list. The skill family ``crm`` holds these names.
 CRM_TOOLS: tuple[Callable[..., Awaitable[str]], ...] = (
     crm_list_records,
@@ -1104,11 +1172,12 @@ CRM_TOOLS: tuple[Callable[..., Awaitable[str]], ...] = (
     crm_list_modules,
     crm_list_module_records,
     crm_get_module_record,
+    crm_search_notes,
 )
 
 CRM_TOOL_NAMES: frozenset[str] = frozenset(fn.__name__ for fn in CRM_TOOLS)
 
 __all__ = [
     "CRM_CLOSED", "CRM_OFF", "CRM_SHARED_ROOM", "CRM_TOOLS", "CRM_TOOL_NAMES", "MAX_ROWS",
-    "crm_mode", *(fn.__name__ for fn in CRM_TOOLS),
+    "SEARCH_NUMBERS", "SEARCH_OFF", "crm_mode", *(fn.__name__ for fn in CRM_TOOLS),
 ]

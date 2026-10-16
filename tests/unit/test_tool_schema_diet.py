@@ -101,6 +101,10 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     # projects_ai_chat.md §14.10.9 (B3): make_report makes a kept report by code.
     'crm_report': {'params': {'kind': 'string', 'make_report': 'boolean', 'page': 'integer'},
                    'required': ['kind']},
+    # WS-53 CRM-Q27 (crm_platform.md §18.11.2, done-when 15 and 16): search of
+    # note text by meaning. A new tool, so no call breaks.
+    'crm_search_notes': {'params': {'limit': 'integer', 'query': 'string'},
+                         'required': ['query']},
     'crm_stage_dwell': {'params': {'days': 'integer', 'page': 'integer'}, 'required': []},
     # WS-31 CP-13d (D75). One question per call. The schema has NO member
     # field on purpose: the member never comes from a tool argument.

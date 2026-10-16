@@ -2543,6 +2543,8 @@ RESET_TABLES: tuple[str, ...] = (
     # CRM-Q26: the labels of the notes below. The cascade from
     # ``crm_activities`` takes them too, and naming them keeps the list whole.
     "crm_note_labels",
+    # CRM-Q27: the vectors of the notes below, on the same terms.
+    "crm_note_vectors",
     "crm_activities", "crm_deal_contacts", "crm_deals", "crm_leads",
     "crm_contacts", "crm_companies", "crm_module_records",
     "crm_status_changes", "crm_field_defs", "crm_pipeline_stages",
