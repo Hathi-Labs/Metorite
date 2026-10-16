@@ -335,3 +335,28 @@ def test_a_rule_never_pushes_probability_past_100(value: Any, expected: Any) -> 
     deal: dict[str, Any] = {"probability": None}
     apply_field_rules("deal", {"Score": value}, deal, {"probability": "Score"})
     assert deal["probability"] == expected
+
+
+# ── CRM-Q18-1 fix round: a deadlock with the sync is a 409, not a 500 ────────
+
+
+class _PgError(Exception):
+    def __init__(self, sqlstate: str) -> None:
+        super().__init__(sqlstate)
+        self.sqlstate = sqlstate
+
+
+@pytest.mark.parametrize(("sqlstate", "code"), [
+    ("40P01", "plan_busy"), ("40001", "plan_busy"), ("23505", "rule_taken"),
+])
+def test_a_deadlock_or_a_unique_violation_is_a_409(sqlstate: str, code: str) -> None:
+    from gateway.routes.crm import field_rules
+    from sqlalchemy.exc import DBAPIError
+
+    conflict = field_rules._db_conflict(DBAPIError("SELECT 1", {}, _PgError(sqlstate)))
+    assert conflict is not None
+    assert (conflict.status_code, conflict.detail["code"]) == (409, code)
+    if code == "plan_busy":
+        assert conflict.headers == {"Retry-After": "1"}
+    other = DBAPIError("SELECT 1", {}, _PgError("42P01"))
+    assert field_rules._db_conflict(other) is None, "any other error stays a 500"

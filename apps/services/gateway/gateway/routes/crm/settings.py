@@ -133,6 +133,8 @@ _RESET_DELETES: tuple[str, ...] = (
     "crm_field_sections",
     # CRM-C6a: the lead-conversion mapping names the fields that go below.
     "crm_convert_mappings",
+    # CRM-Q18-1: the versions of the plan name the field rules above.
+    "crm_mapping_plans",
 )
 
 _HAS_RECORDS = {

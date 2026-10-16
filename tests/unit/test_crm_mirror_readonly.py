@@ -91,6 +91,10 @@ _EXEMPT = {
     # and it works in Mirror mode only. The sync applies a rule through the
     # field-rule door, which the raw-write fence below allows by name.
     "field_rules.py",
+    # CRM-Q18-1: the versions of the Field map. It writes `crm_mapping_plans`
+    # and `crm_field_rules` and no record table, and it works in Mirror mode
+    # only. The sync applies a rule through the field-rule door.
+    "mapping_plans.py",
 }
 
 
