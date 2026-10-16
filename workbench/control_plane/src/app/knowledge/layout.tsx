@@ -7,11 +7,11 @@
  * The layout owns three things for every Knowledge route:
  *
  *   1. The app bar, with the name as the app's one `<h1>` (AGENTS.md rule
- *      11). The rail toggle, the space on screen as the subtitle, and New
- *      page. Search and the view switch join with KB-3.
- *   2. The rail of `RailRow`s: Spaces, each space, and the open space's page
- *      tree (`components/KnowledgeRail.tsx`). On a phone it opens in the
- *      shell's drawer from the title, as the CRM's views do.
+ *      11). The rail toggle, the space on screen as the subtitle, New page,
+ *      and the Search tool (KB-3b). The view switch is not built yet.
+ *   2. The rail of `RailRow`s: Search, Spaces, each space, and the open
+ *      space's page tree (`components/KnowledgeRail.tsx`). On a phone it
+ *      opens in the shell's drawer from the title, as the CRM's views do.
  *   3. The first-open phase, decided by the FIRST `GET /knowledge/spaces` and
  *      by nothing else (`lib/phase.ts`). A 404 is the off state, and a 403
  *      is "no feature". A 404 on one page is never "off".
@@ -46,7 +46,7 @@ import KnowledgeRail from "./components/KnowledgeRail";
 import NewPageDialog from "./components/NewPageDialog";
 import { KNOWLEDGE_CACHE, SPACES_KEY, listSpaces } from "./lib/api";
 import type { Space } from "./lib/types";
-import { KNOWLEDGE_HOME, pageHref, pageIdOf } from "./lib/links";
+import { KNOWLEDGE_HOME, KNOWLEDGE_SEARCH, pageHref, pageIdOf } from "./lib/links";
 import {
   KNOWLEDGE_OFF_TITLE,
   LOAD_FAILED_BODY,
@@ -60,6 +60,7 @@ import {
   spacesRefusal,
   type SpacesRead,
 } from "./lib/phase";
+import { SEARCH_INPUT_ID } from "./lib/search";
 
 /** The spaces read. A 404 or a 403 is a state the page explains, not an error. */
 async function readSpaces(): Promise<SpacesRead> {
@@ -169,6 +170,7 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
 
   const pageId = pageIdOf(pathname);
   const atHomePath = pathname === KNOWLEDGE_HOME;
+  const atSearch = pathname === KNOWLEDGE_SEARCH;
   const spaceParam = atHomePath ? searchParams.get("space") : null;
   const selectedSpaceId = pageId ? (focus?.pageId === pageId ? focus.spaceId : null) : spaceParam;
   const selectedSpace = spaces.find((s) => s.id === selectedSpaceId) ?? null;
@@ -189,6 +191,19 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
     else act();
   }, []);
 
+  // Go to an address through the leave guard. On the Search view, the rail's
+  // Search row and the bar's Search tool focus the box and keep the words.
+  const go = useCallback(
+    (href: string) => {
+      if (href === KNOWLEDGE_SEARCH && atSearch) {
+        document.getElementById(SEARCH_INPUT_ID)?.focus();
+        return;
+      }
+      requestLeave(() => router.push(href));
+    },
+    [atSearch, requestLeave, router],
+  );
+
   const context = useMemo(
     () => ({ spaces, setPageFocus, openNewPage, setLeaveGuard, leaveGuarded, requestLeave }),
     [spaces, setPageFocus, openNewPage, setLeaveGuard, leaveGuarded, requestLeave],
@@ -199,6 +214,7 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
     selectedSpaceId,
     selectedPageId: pageId,
     atHome: atHomePath && !spaceParam,
+    atSearch,
   };
 
   const title = isMobile ? (
@@ -211,7 +227,7 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
               {...railProps}
               onNavigate={(href) => {
                 closeDrawer();
-                requestLeave(() => router.push(href));
+                go(href);
               }}
             />
           </nav>,
@@ -244,6 +260,18 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
               {isMobile ? null : "New page"}
             </Button>
           }
+          tools={
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="Search"
+              aria-label="Search Knowledge"
+              title="Search Knowledge"
+              onClick={() => go(KNOWLEDGE_SEARCH)}
+            >
+              {isMobile ? null : "Search"}
+            </Button>
+          }
         />
         <div className="flex min-h-0 flex-1 overflow-hidden">
           {!isMobile && rail.open ? (
@@ -251,7 +279,7 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
               aria-label="Knowledge spaces"
               className={`w-60 shrink-0 overflow-y-auto border-r border-border bg-card p-2 ${railClass(rail.settled)}`}
             >
-              <KnowledgeRail {...railProps} onNavigate={(href) => requestLeave(() => router.push(href))} />
+              <KnowledgeRail {...railProps} onNavigate={go} />
             </nav>
           ) : null}
           <main className="flex min-w-0 flex-1 flex-col overflow-hidden">{children}</main>

@@ -16,6 +16,7 @@ import type {
   PageRevertBody,
   PageSummary,
   PageWritten,
+  SearchAnswer,
   Space,
 } from "./types";
 
@@ -114,6 +115,20 @@ export function revertPage(id: string, version: number): Promise<PageWritten> {
     method: "POST",
     body: JSON.stringify(revertBody(version)),
   });
+}
+
+/** The hits of one search. The view asks for the most the gateway gives. */
+export const SEARCH_K = 20;
+
+/**
+ * Search the published pages the member can see (KB-3b).
+ *
+ * It sends `q` and `k` only. `hybrid` stays at the gateway's default, and the
+ * view adds no space filter yet. `signal` reaches `fetch`, because `call`
+ * spreads `init`, so a newer keystroke cancels this request.
+ */
+export function searchKnowledge(q: string, opts: { signal?: AbortSignal } = {}): Promise<SearchAnswer> {
+  return call<SearchAnswer>(`/search?q=${encodeURIComponent(q)}&k=${SEARCH_K}`, { signal: opts.signal });
 }
 
 // ── The read-cache keys (`src/lib/dataCache.ts`) ────────────────────────────

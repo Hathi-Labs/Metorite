@@ -352,7 +352,11 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    block does not list them. `crm_mode()` is not a tool: the orchestrator
    reads it to drop the record writes in Mirror mode. `crm_list_fields`
    never offers a row with `is_system`, and it marks a retired field
-   (WS-53 CRM-C4a). `crm_report(make_report=true)` builds a kept report by
+   (WS-53 CRM-C4a). `crm_aggregate` and `crm_list_fields` also take a
+   module as `module:<api_name>` (CRM-Q25). `_entity_slug` takes one only
+   with `allow_module=True`, so no record tool builds a module path.
+   `crm_aggregate` shows INR only for a `currency` field, `sum_amount` and
+   `weighted`. `crm_report(make_report=true)` builds a kept report by
    code from the route data (`projects_ai_chat.md` §14.10.9). So it carries
    `read_only=False` and `idempotent=False`, and it still sends only GET.
    Fences: `tests/unit/test_crm_agent.py`, `tests/unit/test_skills_registry.py`
@@ -380,6 +384,21 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    reaches the orchestrator through `core_tools` in `orchestrator/agents.py`
    only, behind `COMPANY_SEARCH_ENABLED`, and it is in no skill family.
    Fence: `tests/unit/test_company_search_tool.py`.
+5n-1. knowledge_tools.py + knowledge_manifest.py -- the two Knowledge reads
+   of the assistant, `read_page` and `list_spaces` (WS-61 KB-4a, spec
+   `project-docs/specs/knowledge_base.md` §8.1). They read `/knowledge` as
+   the run's member, the pattern of `company_search_tools.py`, and they take
+   no SQL. `read_page` checks the id as a UUID before it builds a path. It
+   cuts the body to one heading path on the client, and it caps the answer
+   at 16,000 characters. `knowledge_manifest.py` lists every Knowledge route
+   with its class, and the client refuses a route that the manifest does not
+   give to the tool. A new Knowledge route needs a row. `index_block` builds
+   the index block of §6.5 for the executor, and it holds no page text. The
+   tools reach the orchestrator through `core_tools` only, behind
+   `COMPANY_SEARCH_ENABLED`, and they are in no skill family. Fences:
+   `tests/unit/test_knowledge_tools.py`,
+   `tests/unit/test_knowledge_chat_coverage.py` and
+   `tests/unit/test_knowledge_index_block.py`.
 5n. reports.py -- `make_report`, the ONE report tool of the chat
    (`project-docs/specs/projects_ai_chat.md` §14.10). It checks one spec with
    the checks of `documents.py`, and it keeps no copy of them. It writes

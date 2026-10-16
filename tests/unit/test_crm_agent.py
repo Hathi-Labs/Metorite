@@ -1030,6 +1030,137 @@ async def test_the_aggregate_sends_the_filters_of_the_list(monkeypatch) -> None:
     assert "_status" not in params
 
 
+# ── The typed aggregate (WS-53 CRM-Q25, crm_platform.md §18.11) ─────────────
+
+
+async def test_the_aggregate_takes_a_module_and_the_field_arguments(monkeypatch) -> None:
+    """Done-when 7: the entity can be a module, and the new arguments reach
+    the route. A module field filter becomes ``field.<key>``."""
+    calls = _fake_gateway(monkeypatch, _responder)
+    await _T.crm_aggregate(
+        "Module:Products", measure="sum", field="Unit_Price",
+        group_field="Sales_Start", bucket="month",
+        field_filters={"Category": "HW", "Sales_Start.from": "2026-01-01"},
+    )
+    params = calls[-1]["params"]
+    assert calls[-1]["path"] == "/crm/aggregate"
+    assert params["entity"] == "module:Products"
+    assert (params["measure"], params["field"]) == ("sum", "Unit_Price")
+    assert (params["group_field"], params["bucket"]) == ("Sales_Start", "month")
+    assert params["field.Category"] == "HW"
+    assert params["field.Sales_Start.from"] == "2026-01-01"
+    assert "group_by" not in params
+
+
+@pytest.mark.parametrize("bad", ["module:../admin", "module:", "module:1abc"])
+async def test_a_bad_module_entity_never_reaches_the_gateway(bad, monkeypatch) -> None:
+    calls = _fake_gateway(monkeypatch, _responder)
+    with pytest.raises(RuntimeError, match="Invalid module name"):
+        await _T.crm_aggregate(bad, "owner")
+    with pytest.raises(RuntimeError, match="Invalid module name"):
+        await _T.crm_list_fields(bad)
+    assert calls == []
+
+
+async def test_only_the_aggregate_and_the_field_list_take_a_module(monkeypatch) -> None:
+    """A record tool builds ``/crm/{slug}``, so a module entity stays refused."""
+    calls = _fake_gateway(monkeypatch, _responder)
+    with pytest.raises(RuntimeError, match="Unknown CRM record type"):
+        await _T.crm_list_records("module:Products")
+    assert calls == []
+
+
+def _aggregate_answer(measure: str, field_type: str | None, values: list) -> Any:
+    def _answer(_call: dict) -> Any:
+        return {
+            "entity": "deals", "measure": measure, "field_type": field_type,
+            "groups": [{"key": str(i), "label": f"G{i}", "value": v}
+                       for i, v in enumerate(values)],
+            "total": sum(v for v in values if v is not None), "other": 0,
+            "omitted": 0,
+        }
+    return _answer
+
+
+@pytest.mark.parametrize(("measure", "field", "field_type", "inr"), [
+    ("count", None, None, False),
+    ("sum_amount", None, None, True),
+    ("weighted", None, None, True),
+    ("sum", "units", "number", False),
+    ("avg", "score", "percent", False),
+    ("sum", "price", "currency", True),
+    ("max", "price", "currency", True),
+])
+async def test_inr_only_for_a_currency_field_and_the_deal_money(
+    measure, field, field_type, inr, monkeypatch,
+) -> None:
+    """CRM-Q25 done-when 7: INR marks rupees only. A count or a plain number is no money."""
+    _fake_gateway(monkeypatch, _aggregate_answer(measure, field_type, [1500.5, 20]))
+    out = await _T.crm_aggregate("deals", "owner", measure=measure, field=field)
+    assert ("INR" in out) is inr, out
+
+
+async def test_a_group_with_no_value_and_the_other_line(monkeypatch) -> None:
+    def _answer(_call: dict) -> Any:
+        return {
+            "entity": "module:Products", "measure": "avg", "field_type": "number",
+            "groups": [{"key": "a", "label": "A", "value": 2.5},
+                       {"key": None, "label": "(none)", "value": None}],
+            "total": 2.5, "other": 1.25, "omitted": 7,
+        }
+
+    _fake_gateway(monkeypatch, _answer)
+    out = await _T.crm_aggregate("module:Products", group_field="Category",
+                                 measure="avg", field="Qty")
+    assert out.splitlines()[0] == "Products, avg of Qty by Category:"
+    assert "- A: 2.5" in out and "- (none): no value" in out
+    assert "Average over all records: 2.5." in out
+    assert "Other (7 smaller groups): 1.25." in out
+
+
+async def test_the_field_list_reads_a_module_and_names_each_use(monkeypatch) -> None:
+    """Done-when 7: the model learns the legal keys and types of a module."""
+    defs = [
+        {"key": "Unit_Price", "label": "Unit Price", "type": "currency"},
+        {"key": "Category", "label": "Category", "type": "select",
+         "options": [{"label": "Hardware", "value": "HW"}]},
+        {"key": "Sales_Start", "label": "Sales Start", "type": "date"},
+        {"key": "Description", "label": "Description", "type": "text"},
+    ]
+    calls = _fake_gateway(monkeypatch, lambda _c: defs)
+    out = await _T.crm_list_fields("module:Products")
+    assert calls[-1]["path"] == "/crm/fields/module:Products"
+    assert "Products fields (4):" in out
+    assert "(key Unit_Price, currency) [measure: sum, avg, min, max]" in out
+    assert "(key Category, select) [group by value]: Hardware" in out
+    assert "(key Sales_Start, date) [group by month, quarter or year]" in out
+    assert "(key Description, text)" in out and "Description, text) [" not in out
+
+
+async def test_the_module_records_name_the_fields_the_aggregate_takes(monkeypatch) -> None:
+    def _answer(_call: dict) -> Any:
+        return {
+            "rows": [{"id": _ID, "name": "Widget"}], "total": 1,
+            "field_defs": [
+                {"key": "Unit_Price", "type": "currency"},
+                {"key": "Description", "type": "text"},
+                {"key": "Sales_Start", "type": "date"},
+            ],
+        }
+
+    _fake_gateway(monkeypatch, _answer)
+    out = await _T.crm_list_module_records("Products")
+    assert ("Fields for crm_aggregate on module:Products: Unit_Price (currency), "
+            "Sales_Start (date).") in out
+    _fake_gateway(monkeypatch, lambda _c: [
+        {"label": "Products", "api_name": "Products", "count": 3},
+    ])
+    modules = await _T.crm_list_modules()
+    assert modules.endswith(
+        "To total a module, call crm_aggregate with entity 'module:<api_name>'.",
+    )
+
+
 def _refusing(status: int, detail: Any) -> type[FakeClient]:
     class _Refusing(FakeClient):
         async def request(self, method: str, url: str, **kwargs: Any):

@@ -361,6 +361,51 @@ async def test_manage_reads_published_pages_only_and_no_me_space(ns, app_engine)
     assert await _titles(ns, writer) == {"Eng published", "Eng draft", "My note"}
 
 
+async def test_the_published_count_feeds_the_index_block(ns, app_engine) -> None:  # noqa: F811
+    """WS-61 KB-4a (§6.5). ``published_count`` counts the published pages the
+    member can read, and a draft never. The assistant's index block reads it,
+    so a member who reads only drafts gets no block. ``GET /knowledge/pages/{id}``
+    names the space, for ``read_page``."""
+    from acb_skills.knowledge_tools import INDEX_HEADER, format_index
+
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    writer_email = _address("writer")
+    writer = _principal(writer_email, ns.org_a)
+    reader = _principal(_address("reader"), ns.org_a)
+    space = await _space(ns, admin, "Policies", [
+        {"subject": "org", "level": "read"},
+        {"subject": writer_email, "level": "write"},
+    ])
+    await _ok(ns, writer, "POST", "/knowledge/pages",
+              {"space_id": space, "title": "Refund draft", "body_md": "SECRET DRAFT"},
+              status=201)
+
+    # One draft: the writer counts it as a page, and nobody counts it as published.
+    by_writer = {s["name"]: s for s in (await _ok(
+        ns, writer, "GET", "/knowledge/spaces"))["spaces"]}
+    assert by_writer["Policies"]["page_count"] == 1
+    assert by_writer["Policies"]["published_count"] == 0
+    assert format_index(await _ok(ns, writer, "GET", "/knowledge/spaces")) == ""
+    assert format_index(await _ok(ns, reader, "GET", "/knowledge/spaces")) == ""
+
+    published = await _published(ns, writer, space, "Refund policy")
+    by_reader = {s["name"]: s for s in (await _ok(
+        ns, reader, "GET", "/knowledge/spaces"))["spaces"]}
+    assert by_reader["Policies"]["page_count"] == 1
+    assert by_reader["Policies"]["published_count"] == 1
+    block = format_index(await _ok(ns, reader, "GET", "/knowledge/spaces"))
+    assert block.splitlines() == [INDEX_HEADER, "- Policies (1 page)"]
+    assert "SECRET" not in block and "Refund" not in block
+
+    # Another org's member reads nothing here, so no block.
+    stranger = _principal(_address("stranger"), ns.org_b)
+    assert format_index(await _ok(ns, stranger, "GET", "/knowledge/spaces")) == ""
+
+    page = await _ok(ns, reader, "GET", f"/knowledge/pages/{published}")
+    assert page["space_name"] == "Policies"
+
+
 async def test_a_member_cannot_make_a_space(ns, app_engine) -> None:  # noqa: F811
     _assert_non_priv(app_engine)
     member = _principal(_address("m"), ns.org_a)
@@ -397,6 +442,27 @@ async def test_a_draft_is_its_author_and_named_reviewers_only(ns, app_engine) ->
     # Published, the org reads it.
     await _ok(ns, author, "POST", f"/knowledge/pages/{draft['id']}/publish")
     assert await _status(ns, _principal(bystander_email, ns.org_a), draft["id"]) == 200
+
+
+async def test_a_reviewer_with_no_grant_gets_no_space_name(ns, app_engine) -> None:  # noqa: F811
+    """Review of KB-4a, P2. A named reviewer reads a draft in a space that
+    grants them nothing. The page answers, and the space's name does not."""
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    author_email, reviewer_email = _address("author"), _address("reviewer")
+    space = await _space(ns, admin, "Board papers", [
+        {"subject": author_email, "level": "write"},
+    ])
+    author = _principal(author_email, ns.org_a)
+    draft = await _ok(ns, author, "POST", "/knowledge/pages", {
+        "space_id": space, "title": "Q3 draft", "reviewers": [reviewer_email],
+    }, status=201)
+    seen = await _ok(ns, _principal(reviewer_email, ns.org_a), "GET",
+                     f"/knowledge/pages/{draft['id']}")
+    assert seen["level"] is None
+    assert seen["space_name"] is None
+    own = await _ok(ns, author, "GET", f"/knowledge/pages/{draft['id']}")
+    assert own["space_name"] == "Board papers"
 
 
 async def test_a_me_space_has_no_reviewers_and_no_grants(ns, app_engine) -> None:  # noqa: F811

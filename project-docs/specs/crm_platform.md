@@ -41,6 +41,8 @@
 >
 > **Built later:** CRM-Q7b, the proposer of field rules (2026-10-14). It adds no migration. See §18.7.
 >
+> **Built later:** CRM-Q25, the typed aggregate over every module and field, and its AI tool (2026-10-16). It adds no migration. See §18.11.
+>
 > **Built later:** CRM-Q26, labels on CRM notes on the decide tier, dark
 > (2026-10-16, migration 278). See §18.11.
 >
@@ -453,7 +455,7 @@ names the slice that measures it.
 | 3 | `If-Modified-Since` and `sort_by` | The header returns "recently modified records", so it filters on the modified time. The docs show ISO 8601 with seconds and an offset, `2019-07-25T15:26:49+05:30`, on v2 and v8. So the step is one second. The adapter sends RFC 1123, and a live v2 call honoured it on 2026-08-06 with a 304 (`crm_app.md` §7.1). A 304 means "not modified since the time in the header". **`sort_by`:** v2 takes any field API name. v3 and v8 take only `id`, `Created_Time` and `Modified_Time`, and the default is `id`. **v3 and v8 make `fields` mandatory** for a list read, with 50 field API names at most | [v2 records](https://www.zoho.com/crm/developer/docs/api/v2/get-records.html) · [v8 records](https://www.zoho.com/crm/developer/docs/api/v8/get-records.html) · [status codes](https://www.zoho.com/crm/developer/docs/api/v8/status-codes.html) |
 | 4 | The deleted list | `GET /crm/{version}/{module}/deleted`, the same path on v2 and v8. `type` is `all` (default), `recycle` or `permanent`. It pages by `page` and `per_page` (200 at most). The docs name no `page_token` and no sort. **Not confirmed:** the order of the rows. A row holds `id`, `display_name`, `type`, `deleted_by`, `created_by` and `deleted_time`. **Zoho keeps a recycle-bin row for 60 days and a permanent delete for 120 days.** One call costs 2 credits | [v8 deleted](https://www.zoho.com/crm/developer/docs/api/v8/get-deleted-records.html) · [v2 deleted](https://www.zoho.com/crm/developer/docs/api/v2/get-deleted-records.html) · [limits](https://www.zoho.com/crm/developer/docs/api/v8/api-limits.html) |
 | 5 | Bulk Read | `POST /crm/bulk/{version}/read`. Scopes `ZohoCRM.bulk.READ` and the READ scope of the module. One job exports 200,000 rows at most. The next batch comes through `page`, or `page_token` from `next_page_token`. A page token lives 24 hours at most. The file stays for one day. It reads every module except Notes, Attachments and Emails. A query takes 25 criteria at most. The answer is not immediate: a callback or a poll says when the file is ready. To start a job costs 50 credits. **Not confirmed:** a limit on jobs at one time, and the cost of the status and download calls | [bulk limits](https://www.zoho.com/crm/developer/docs/api/v8/bulk-read/limitations.html) · [create job](https://www.zoho.com/crm/developer/docs/api/v8/bulk-read/create-job.html) · [limits](https://www.zoho.com/crm/developer/docs/api/v8/api-limits.html) |
-| 6 | Credits and concurrency | **Credits per edition, rolling 24 hours:** Free 5,000. Standard 50,000 + 250 per licence, up to 100,000. Professional 50,000 + 500 per licence, up to 3,000,000. Enterprise 50,000 + 1,000 per licence, up to 5,000,000. Ultimate 50,000 + 2,000 per licence, with no cap. **Cost:** a page of records 1, or 3 with `cvid`. The deleted list 2. Users, field and module metadata 1. A COQL query 1 to 3. A Bulk Read job 50. **Not confirmed:** whether a refused call (429) costs a credit. **Concurrency for one org and app:** Free 5, Standard 10, Professional 15, Enterprise 20, Ultimate 25. **A sub-limit of 10** covers a record read with `cvid` or `sort_by`, COQL and some writes. Past it Zoho answers `TOO_MANY_REQUESTS`. HTTP 429 means that the org spent its daily credits, or that a call passed the concurrency limit. **`X-API-CREDITS-REMAINING`** comes in the response only when half or more of the daily credits are spent | [v8 limits](https://www.zoho.com/crm/developer/docs/api/v8/api-limits.html) · [v2 limits](https://www.zoho.com/crm/developer/docs/api/v2/api-limits.html) · [status codes](https://www.zoho.com/crm/developer/docs/api/v8/status-codes.html) |
+| 6 | Credits and concurrency | **Credits per edition, rolling 24 hours:** Free 5,000. Standard 50,000 + 250 per licence, up to 100,000. Professional 50,000 + 500 per licence, up to 3,000,000. Enterprise 50,000 + 1,000 per licence, up to 5,000,000. Ultimate 50,000 + 2,000 per licence, with no cap. **A suite plan** counts as the CRM edition it holds. Zoho One Enterprise (`paid_type` `zohooneenterprise`) counts as Enterprise, through `BUNDLE_EDITIONS` in the Zoho mapping (2026-10-16, found on DEWiN). Any other suite plan keeps the 500-credit floor. **Cost:** a page of records 1, or 3 with `cvid`. The deleted list 2. Users, field and module metadata 1. A COQL query 1 to 3. A Bulk Read job 50. **Not confirmed:** whether a refused call (429) costs a credit. **Concurrency for one org and app:** Free 5, Standard 10, Professional 15, Enterprise 20, Ultimate 25. **A sub-limit of 10** covers a record read with `cvid` or `sort_by`, COQL and some writes. Past it Zoho answers `TOO_MANY_REQUESTS`. HTTP 429 means that the org spent its daily credits, or that a call passed the concurrency limit. **`X-API-CREDITS-REMAINING`** comes in the response only when half or more of the daily credits are spent | [v8 limits](https://www.zoho.com/crm/developer/docs/api/v8/api-limits.html) · [v2 limits](https://www.zoho.com/crm/developer/docs/api/v2/api-limits.html) · [status codes](https://www.zoho.com/crm/developer/docs/api/v8/status-codes.html) |
 | 7 | The token endpoint | `POST {accounts-server}/oauth/v2/token`. An error comes as `{"error":"<code>"}`. **Measured:** a client id that does not exist gets HTTP 200 with `{"error":"invalid_client"}`, for the code grant and for the refresh grant. The codes are `invalid_client` (also a wrong secret for that data centre), `invalid_client_secret`, `invalid_redirect_uri` and `invalid_code`. `invalid_code` covers a code that expired or was used, and a revoked refresh token. Zoho does not document `invalid_grant`. **The throttle:** `{"error_description":"You have made too many requests continuously. Please try again after some time.","error":"Access Denied"}`, and Kaizen #43 says the status stays 200. **Limits:** 10 token requests in 10 minutes. 10 live access tokens for each refresh token, and the 11th removes the oldest. 20 live refresh tokens for each user and client, and the 21st removes the oldest. An access token lives 3600 seconds. A refresh token lives until someone revokes it. A code lives 2 minutes and works once | [token](https://www.zoho.com/accounts/protocol/oauth/web-apps/access-token.html) · [CRM tokens](https://www.zoho.com/crm/developer/docs/api/v8/access-refresh.html) · [refresh](https://www.zoho.com/crm/developer/docs/api/v8/refresh.html) · [token limits](https://www.zoho.com/accounts/protocol/oauth/token-limits.html) · [Kaizen #43](https://help.zoho.com/portal/en/community/topic/kaizen-43-tokens-and-limitations) |
 | 8 | The deep link to a record | **Not confirmed by a Zoho page.** A community post gives `https://crm.zoho.<tld>/crm/<org>/tab/<Tab>/<record id>`, with `Potentials` as the tab of Deals. `<org>` is most likely `domain_name` from `GET /crm/{version}/org`, which looks like `org808232144` and needs `ZohoCRM.org.READ`. **Measured:** the web host answers at `crm.zoho.com`, `.eu`, `.in`, `.com.au`, `.jp`, `.sa`, `.uk` and at `crm.zohocloud.ca`. `crm.zoho.ca` does not resolve. So the web host is the accounts host with `accounts.` changed to `crm.`. CRM-Z6 measures the full link on Fracktal's tenant | [record link post](https://help.zoho.com/portal/en/community/topic/sending-a-link-to-a-record-in-an-email-template) · [org](https://www.zoho.com/crm/developer/docs/api/v8/get-org-data.html) |
 | 9 | The data centres | `location` → accounts server → API host: `us` `accounts.zoho.com` `www.zohoapis.com`. `eu` `accounts.zoho.eu` `www.zohoapis.eu`. `in` `accounts.zoho.in` `www.zohoapis.in`. `au` `accounts.zoho.com.au` `www.zohoapis.com.au`. `jp` `accounts.zoho.jp` `www.zohoapis.jp`. `ca` `accounts.zohocloud.ca` `www.zohoapis.ca`. `sa` `accounts.zoho.sa` `www.zohoapis.sa`. `uk` `accounts.zoho.uk` `www.zohoapis.uk`. The token response gives the API host. **Measured:** `www.zohoapis.ca`, `.sa` and `.uk` answer. **CN is not on the multi-DC list.** The CRM page says a CN consent starts at `accounts.zoho.com.cn`, so one client on `accounts.zoho.com` cannot reach it. **Measured:** the live `oauth/serverinfo` also names `ae`, `sg` and `inec`, which no doc names. **By default each data centre gets its own client secret.** An option in the console gives one secret to all | [multi-DC](https://www.zoho.com/accounts/protocol/oauth/multi-dc.html) · [multi-DC (developer)](https://www.zoho.com/developer/oauth/multi-dc-support.html) · [CRM multi-DC](https://www.zoho.com/crm/developer/docs/api/v8/multi-dc.html) · [serverinfo](https://accounts.zoho.com/oauth/serverinfo) |
@@ -3154,10 +3156,9 @@ added to it, and
 
 ### 18.11 Insights on the mirrored data (CRM-Q25 to CRM-Q28, 2026-10-16)
 
-**Status (2026-10-16).** CRM-Q25: built, merging 2026-10-16 from the branch
-`crm-insights`. CRM-Q26: merged (#1100, migration 278), dark. CRM-Q25b,
-CRM-Q27 and CRM-Q28: specified, not built. Verified against code at
-`origin/main` `c4bef9ec0`.
+**Status (2026-10-16).** CRM-Q25: merged (#1104), no migration. CRM-Q26:
+merged (#1100, migration 278), dark. CRM-Q25b, CRM-Q27 and CRM-Q28:
+specified, not built. Verified against code at `origin/main` `634cf54ee`.
 
 **Owner direction (2026-10-16, in chat).** Use the decide, balanced and
 powerful tiers to run inference on the CRM data and produce insights. Build
@@ -3188,6 +3189,7 @@ each value. Embeddings help the model find text. They never make a number.
 | CRM-Q27 | Search of note text by meaning | AGENT-SAFE | M | CRM-Q26 |
 | CRM-Q28 | A weekly digest on the powerful tier | AGENT-SAFE | M | CRM-Q25 |
 | CRM-Q25b | One time zone for each month bucket of the aggregate | AGENT-SAFE | S | CRM-Q25 |
+| CRM-Q25c | A NUL byte in a list query answers 422 | AGENT-SAFE | S | — |
 
 CRM-Q25b, CRM-Q27 and CRM-Q28 have their done-when lists after CRM-Q26
 (2026-10-16). To build each ticket is AGENT-SAFE. For CRM-Q26, a mode other than
@@ -3202,29 +3204,69 @@ that comes from a model. A per-member record scope (§18.5, CRM-Q12).
 
 1. `GET /crm/aggregate` also takes a generic module (`module:<ApiName>`) as
    the entity. A module that the profile does not mirror gives 404.
-2. The measure can be `count`, or `sum`, `avg`, `min` or `max` of one field.
-   A field measure takes only a field of type number, decimal, currency or
+2. The measure keeps `count`, `sum_amount` and `weighted`. It can also be
+   `sum`, `avg`, `min` or `max` of one field, given as `field=<key>`. A
+   field measure takes only a field of type number, decimal, currency or
    percent.
-3. `group_by` can also name one field. A picklist, a boolean, a lookup and
-   the owner group by value. A date or a datetime groups by `month`,
-   `quarter` or `year`, given as `bucket`. Any other type gives 422.
-4. A filter can name a field with one value, or a date field with a range.
-   The core entities keep the list filters they have today.
-5. Each field name is checked against the field definitions of the org, or
-   of the module. A name never reaches the SQL text unchecked. Each value is
-   bound. A test sends names that try to inject SQL, and each one gives 422.
-6. An answer holds at most 50 groups, largest first, and one `other` total.
-   The statement runs under a LOCAL `statement_timeout` of 10 s.
-7. The AI tool `crm_aggregate` takes the new arguments.
-   `crm_list_fields` and the module record tools tell the model the legal
-   names and types.
+3. `group_by` keeps its fixed keys. A new `group_field=<key>` groups by one
+   field, and `bucket=month|quarter|year` sets the bucket of a date. A call
+   gives `group_by` or `group_field`, not both. A picklist (the stored type
+   `select`), a boolean and a lookup group by value. On a module,
+   `group_by=owner` groups by the owner email. A date or a datetime needs a
+   `bucket`. The types `multiselect`, `text` and `formula`, and each other
+   type, give 422.
+4. A filter on a module can name a field with one value
+   (`field.<key>=<value>`), or a date field with a range (`field.<key>.from`
+   and `field.<key>.to`). The core entities keep the list filters they have
+   today, and they get no new filter.
+5. The route checks each field name against the field definitions of the
+   org, or of the module. On a core entity, the field measure and the field group
+   read only a custom key that is not a system field and is not retired. A
+   name never reaches the SQL text unchecked. Each value is bound. A test
+   sends names that try to inject SQL, and each one gives 422. The field SQL
+   lives in its own module, `routes/crm/field_sql.py`. `aggregate.py` holds
+   no field SQL, and it builds the core filters through `records.list_query`
+   only. A fence in `test_crm_aggregate.py` checks both.
+6. An answer holds the 50 largest groups at most. `other` holds the measure
+   over the rest, and `omitted` holds their count. The order of the answer
+   stays as today. The status groups come in board order, the month and date
+   buckets in time order, and each other group comes largest first. The
+   statement runs under a LOCAL `statement_timeout` of 10 s.
+7. The AI tool `crm_aggregate` takes the new arguments, and its entity can
+   be `module:<ApiName>`. It shows INR only for a `currency` field and for
+   `sum_amount` and `weighted`. `crm_list_fields` and the module record
+   tools tell the model the legal names and types. The pinned contract in
+   `test_tool_schema_diet.py` changes with the tool.
 8. R8 tests cover a sum and a group on a module, a date bucket and a
-   filter. They also cover tenant isolation, and the time on 30,000 module
-   rows.
+   filter. They also cover tenant isolation. A sum and a bucket group over
+   30,000 seeded module rows each give 200, with no skip, inside the 10 s
+   timeout. The test also asserts a tighter bound that the build measures.
+   The note "Built as" below records that bound.
 
-Files: `routes/crm/aggregate.py`, `routes/crm/modules.py`,
-`routes/crm/fields.py`, the CRM tools module (`crm_tools.py`) and
-`tests/unit/`.
+Files: `routes/crm/aggregate.py`, `routes/crm/field_sql.py`,
+`routes/crm/modules.py`, `routes/crm/fields.py`, the CRM tools module
+(`crm_tools.py`), `tests/unit/test_crm_aggregate.py`,
+`tests/unit/test_tool_schema_diet.py` and `tests/unit/`.
+
+**Built as (2026-10-16).** `routes/crm/field_sql.py` holds the field SQL.
+`aggregate.py` reads it, and `GET /crm/fields/module:<ApiName>` lists the
+fields of a module. A statement past the timeout gives 503
+`aggregate_timeout`. For `avg`, `min` and `max`, `other` holds that measure
+over the folded groups. R8: `tests/unit/test_crm_aggregate_fields_r8.py`.
+On the scratch database, one request on a warm engine took 0.10 to 0.18 s
+over 30,000 rows, and the test asserts 1 s.
+
+The fix round (2026-10-16) closed four inputs that gave 500. An empty
+`group_by`, `group_field`, `field` or `bucket` now counts as absent. A NUL
+character in a query name or value gives 422. A number filter takes at most
+60 digits and an exponent of at most 100, or it gives 422. A field value
+that is no real date, for example `2026-02-30`, counts as NULL. That check
+runs on each Postgres version, because `pg_input_is_valid` needs version 16.
+
+**Known difference, not fixed.** On a module, `created_month` and
+`updated_month` take the month of the time in UTC. A Zoho time in IST just
+after midnight on the first day of a month falls in the month before. The
+date buckets of a field use the date that Zoho wrote, so they do not move.
 
 **CRM-Q26 · Labels on notes, in shadow.** Done when:
 
@@ -3360,8 +3402,24 @@ Files: `routes/crm/aggregate.py`, `routes/crm/field_sql.py`,
 `packages/acb_skills/acb_skills/crm_tools.py`,
 `tests/unit/test_crm_aggregate.py` and
 `tests/unit/test_crm_aggregate_fields_r8.py`. Gate: AGENT-SAFE. Size: S.
-Waits for: CRM-Q25, on the branch `crm-insights`, not merged on 2026-10-16.
+Waits for: CRM-Q25, merged as #1104.
 Verify with the commands of §18.11.3.
+
+**CRM-Q25c · A NUL byte in a list query answers 422 (2026-10-16).** The
+verifier of the CRM-Q25 fix round found this on `origin/main`.
+`GET /crm/deals?q=%00` raises `CharacterNotInRepertoireError` from asyncpg,
+and the route answers 500. CRM-Q25 refuses a NUL in the aggregate only.
+Done when:
+
+1. Each CRM route that takes a query string answers 422 when a name or a
+   value holds a NUL byte. The list, the search, the export and the module
+   record routes are in scope. One guard does this, beside the aggregate's
+   `_refuse_nul`. It is not a second copy.
+2. A test sends `q=%00` and a NUL in a filter value to each route, and gets
+   422. A mutation that removes the guard turns the test red.
+
+Files: `routes/crm/records.py`, `routes/crm/aggregate.py` and
+`tests/unit/`. Gate: AGENT-SAFE. Size: S. Waits for: nothing.
 
 **CRM-Q27 · Search of note text by meaning.**
 
@@ -3655,6 +3713,7 @@ beside the usual diff review, not in its place. The tables name the risk.
 | 0 | CRM-Q25 | Nothing. It merges first, from `crm-insights` | Its own reviews are done |
 | 1 | CRM-Q24 | Nothing | The sync engine: the drop tally, the recovered count and `ZohoTieTooWide` |
 | 1 | CRM-Q25b | CRM-Q25 | None |
+| 1 | CRM-Q25c | Nothing | None |
 | 1 | CRM-Q26 on | The owner | Credits. An owner act, not a build |
 | 2 | CRM-Q27 | CRM-Q26 (merged) and CRM-Q25 | Tenancy: the new table, RLS, and a search that never crosses orgs. Money: vendor spend with no credit row. The sync engine: the step after each run |
 | 3 | CRM-Q28 | CRM-Q25, CRM-Q25b and CRM-Q27 | Credits: the spend of the top tier. Tenancy: numbers for the whole org, read only behind `require_crm_access`. The number check of item 9 |

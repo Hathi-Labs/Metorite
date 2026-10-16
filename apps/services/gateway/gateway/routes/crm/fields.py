@@ -248,6 +248,34 @@ async def read_layout(db: Any, slug: str) -> FieldLayout:
     )
 
 
+async def custom_defs(db: Any, slug: str) -> list[FieldDef]:
+    """The custom fields of one core entity, by position. A system overlay is
+    not one, and a retired field is marked. ``GET /crm/fields/{entity}`` and
+    the typed aggregate (``field_sql.core_scope``, CRM-Q25) both read it."""
+    rows = (await db.execute(
+        text(_FIELDS_SQL), {"entity": ENTITY_BY_SLUG[slug]},
+    )).fetchall()
+    return [field_wire(r) for r in rows]
+
+
+#: The entity word of a generic module: ``module:<ApiName>`` (CRM-Q25).
+MODULE_PREFIX = "module:"
+
+
+async def module_field_defs(module: str) -> list[FieldDef]:
+    """The field definitions of a mirrored module, or 404 ``unknown_module``.
+
+    The module check of ``modules.py`` runs first, so a name outside the
+    mirrored set never reaches a statement. The import is local because
+    ``modules.py`` imports :class:`FieldDef` from here.
+    """
+    from gateway.routes.crm import modules
+
+    async with _tenant_session() as db:
+        modules._require_module(await modules.mirrored_modules(db), module)
+        return list(await modules._field_defs(db, module))
+
+
 @router.get("/fields/{entity}", response_model=list[FieldDef] | FieldLayout)
 async def list_fields(
     entity: str,
@@ -256,8 +284,15 @@ async def list_fields(
 ) -> list[FieldDef] | FieldLayout:
     """The custom fields of one entity, ordered by position.
 
-    With ``?layout=1``, the whole layout of :func:`read_layout`.
+    With ``?layout=1``, the whole layout of :func:`read_layout`. The entity
+    ``module:<ApiName>`` names a mirrored module (CRM-Q25). It has no layout.
     """
+    if entity.startswith(MODULE_PREFIX):
+        if layout:
+            raise HTTPException(
+                status_code=422, detail="A module has no layout. Drop '?layout'.",
+            )
+        return await module_field_defs(entity[len(MODULE_PREFIX):])
     stored = checked_slug(entity)
     async with _tenant_session() as db:
         # CRM-Q17a-1: one read of the fill rows, and none outside the list.
@@ -271,5 +306,6 @@ async def list_fields(
                     db, user.organization_id, entity, fills,
                 )
             return found.model_copy(update=update)
-        rows = (await db.execute(text(_FIELDS_SQL), {"entity": stored})).fetchall()
-    return annotate([field_wire(r) for r in rows], fills)
+        # CRM-Q25: the same read as the typed aggregate (`custom_defs`).
+        defs = await custom_defs(db, entity)
+    return annotate(defs, fills)

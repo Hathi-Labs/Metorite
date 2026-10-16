@@ -1092,6 +1092,14 @@ def generic_modules(profile: Mapping[str, Any] | None) -> list[dict[str, Any]]:
 #: The editions that Zoho names in ``license_details.paid_type``.
 EDITIONS: tuple[str, ...] = ("free", "standard", "professional", "enterprise", "ultimate")
 
+#: A suite plan that holds a CRM edition, as ``paid_type`` names it. Zoho One
+#: Enterprise holds CRM Enterprise. DEWiN reported this on 2026-10-16, and the
+#: unknown name kept its budget at the 500-credit floor. Add a plan here only
+#: when its CRM edition is known.
+BUNDLE_EDITIONS: Mapping[str, str] = {
+    "zohooneenterprise": "enterprise",
+}
+
 #: Credits per 24 hours, by edition: ``(base, per licence, cap)``. ``cap`` is
 #: ``None`` for no cap. Source: ``crm_platform.md`` §5.2 row 6.
 EDITION_CREDITS: Mapping[str, tuple[int, int, int | None]] = {
@@ -1119,8 +1127,9 @@ def edition_of(org: Mapping[str, Any] | None) -> str | None:
     """The edition from a ``GET org`` row, or ``None`` when it is not known.
 
     ``license_details.paid_type`` names the edition of a paid org. An org that is
-    not paid and has no trial is on Free. A trial or an edition this list does
-    not know (CRM Plus, for example) is ``None``, so the budget keeps its floor.
+    not paid and has no trial is on Free. A suite plan in ``BUNDLE_EDITIONS``
+    reads as its CRM edition. A trial or an edition this list does not know
+    (CRM Plus, for example) is ``None``, so the budget keeps its floor.
     """
     if not isinstance(org, Mapping):
         return None
@@ -1128,6 +1137,7 @@ def edition_of(org: Mapping[str, Any] | None) -> str | None:
     if not isinstance(details, Mapping):
         return None
     paid_type = (text_value(details.get("paid_type")) or "").lower()
+    paid_type = BUNDLE_EDITIONS.get(paid_type, paid_type)
     if details.get("paid") is True and paid_type in EDITIONS:
         return paid_type
     if details.get("paid") is False and not text_value(details.get("trial_type")):
