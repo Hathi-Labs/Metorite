@@ -2802,6 +2802,11 @@ days, not 19. A failing batch counts `failures` on its rows, and
 names the cause of a failure. The step checks the member with
 `my_day_loop.departed`, and a failed read spends nothing.
 
+Round 2 (2026-10-16). A note that failed before goes out in a request of
+its own, so only a poison note parks and its batch-mates land. A failure
+row clears every label column and the request id, so it never pairs a new
+md5 with the label of an older text.
+
 #### 18.11.3 Verification
 
 - `bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"`
