@@ -3696,6 +3696,16 @@ The build made four choices that the list above does not name.
   counts its failure, because it cannot tell an outage from a bad note. So
   a bad note alone in the queue parks, and does not spend a request in each
   run. Fence: `test_an_outage_parks_no_note`.
+- Fix round 2 (2026-10-17): a note with no text never goes out. The vendor
+  refuses an empty input for the whole request. So one note of whitespace
+  in a chunk gave no vector for the chunk, and the outage rule stopped the
+  step on the same chunk in each run, for ever. The SQL now leaves out a
+  note of ASCII whitespace only, as `note_text` strips it. The step marks
+  any other note whose `note_text` is empty with a row that has
+  `embedded_at` and no vector. An empty note is no error, so the mark
+  counts no failure. The note waits again only when its text changes, and
+  the search never finds it. Fence:
+  `test_a_note_with_no_text_never_blocks_a_chunk`.
 - A failure row clears the old vector, as a CRM-Q26 failure clears the old
   label. So a row never pairs a new md5 with the vector of an older text.
 - The tool puts each snippet in the frame of `acb_skills/untrusted.py`,
