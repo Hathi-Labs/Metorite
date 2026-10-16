@@ -3456,6 +3456,17 @@ Not changed: the filter of one value, `field.<key>=<date>`, on a `datetime`
 field still reads the first 10 characters of the value. Item 4 names the
 range only.
 
+Fix round (2026-10-17). The rule is now one rule everywhere: a day that a
+member picks in the CRM is a day in the CRM zone. Before, the core
+`updated_month` read the CRM zone, but `updated_from` and `updated_to` read
+UTC. So "the deals updated in October, by month" gave a November group for
+DEWiN, and October came out short. `core.extra_filters` now starts and ends
+each `created_*` and `updated_*` day at midnight in the CRM zone, through
+`field_sql.day_start` and the bound `agf_zone`. The list, the pipeline, the
+export and the aggregate all use that one function, so a list and a total
+agree. `close_*` reads a `date` column and does not change. R8:
+`test_an_updated_range_and_its_months_read_one_clock`.
+
 **CRM-Q25c · A NUL byte in a list query answers 422 (2026-10-16).** The
 verifier of the CRM-Q25 fix round found this on `origin/main`.
 `GET /crm/deals?q=%00` raises `CharacterNotInRepertoireError` from asyncpg,

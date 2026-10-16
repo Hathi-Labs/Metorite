@@ -784,6 +784,49 @@ async def test_the_core_updated_month_takes_the_zone(zoned, app_engine) -> None:
         assert [(g["key"], g["value"]) for g in close["groups"]] == [("2026-11", 1)]
 
 
+def _zoned_deals(p: Any) -> None:
+    """Two mirrored deals in each org. ``zd-nov`` changed at 00:30 IST on
+    1 November, and ``zd-oct`` at 01:30 IST on 1 October. In UTC both
+    times fall on the last day of the month before."""
+    with p.admin_engine.begin() as c:
+        for org in (p.org_a, p.org_b):
+            c.execute(text(
+                "INSERT INTO crm_deal_statuses (organization_id, name, position, "
+                "type) VALUES (CAST(:o AS uuid), 'Q25b open', 1, 'open')"), {"o": org})
+            for ext_id, at in (("zd-nov", _INSTANT_UTC),
+                               ("zd-oct", "2026-09-30T20:00:00Z")):
+                c.execute(text(
+                    "INSERT INTO crm_deals (organization_id, name, status_id, "
+                    "ext_source, ext_id, ext_modified_at) "
+                    "SELECT CAST(:o AS uuid), :e, id, 'zoho', :e, "
+                    "CAST(:t AS timestamptz) FROM crm_deal_statuses "
+                    "WHERE organization_id = CAST(:o AS uuid) AND name = 'Q25b open'"),
+                    {"o": org, "e": ext_id, "t": at})
+
+
+_OCTOBER = {"updated_from": "2026-10-01", "updated_to": "2026-10-31"}
+
+
+async def test_an_updated_range_and_its_months_read_one_clock(zoned, app_engine) -> None:
+    """CRM-Q25b fix round, item 1. "The deals updated in October, by month"
+    gives October only, for an org in Asia/Kolkata. Before the fix the
+    filter read UTC and the month read IST, so the answer held a November
+    group and October came out short. Org B has no zone, so UTC holds."""
+    _set_zone(zoned, zoned.org_a, "Asia/Kolkata")
+    _zoned_deals(zoned)
+    for org, month, zone in ((zoned.org_a, "2026-10", "Asia/Kolkata"),
+                             (zoned.org_b, "2026-10", "UTC")):
+        body = await _agg(zoned, org, entity="deals", group_by="updated_month", **_OCTOBER)
+        assert ([(g["key"], g["value"]) for g in body["groups"]], body["zone"]) == (
+            [(month, 1)], zone), org
+    # The list route takes the same rule, so the list and the total agree.
+    for org, names in ((zoned.org_a, ["zd-oct"]), (zoned.org_b, ["zd-nov"])):
+        res = await _call(zoned, _admin(org), "GET",
+                          "/crm/deals?" + urlencode(_OCTOBER))
+        assert res.status_code == 200, res.text
+        assert sorted(r["name"] for r in res.json()["rows"]) == names, org
+
+
 async def test_a_native_crm_counts_in_utc(zoned, app_engine) -> None:
     """A Native CRM has no Zoho org, so a stale profile names no zone. The
     route refuses a move from Mirror to Native, so the seed sets the mode."""

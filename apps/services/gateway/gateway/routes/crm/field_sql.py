@@ -101,7 +101,9 @@ _DATETIME_TEXT = (
 #: The CRM zone when no profile names a real one (CRM-Q25b).
 DEFAULT_ZONE = "UTC"
 
-#: The bound name of the CRM zone. Every month of one answer reads it.
+#: The bound name of the CRM zone. Every month of one answer reads it, and
+#: so does each date range of ``core.extra_filters``. It is the one name of
+#: the zone in a statement, so a list filter and a bucket bind one value.
 ZONE_PARAM = "agf_zone"
 
 #: The bounds of a number in a filter. ``1e1000000`` is finite, and Postgres
@@ -109,7 +111,8 @@ ZONE_PARAM = "agf_zone"
 MAX_DIGITS = 60
 MAX_EXPONENT = 100
 
-#: The parameter names of this module. A list filter never uses the prefix.
+#: The parameter names of this module. A list filter uses no name with the
+#: prefix, except :data:`ZONE_PARAM`, which holds the same zone.
 _MEASURE_KEY = "agf_m"
 _GROUP_KEY = "agf_g"
 _MODULE = "agf_module"
@@ -318,6 +321,18 @@ def zoned(instant_sql: str) -> str:
     return f"({instant_sql} AT TIME ZONE CAST(:{ZONE_PARAM} AS text))"
 
 
+def day_start(day_sql: str) -> str:
+    """The first instant of the day *day_sql* on the clock of the CRM zone,
+    as a ``timestamptz``. The zone is the bound :data:`ZONE_PARAM`.
+
+    ``core.extra_filters`` compares a ``timestamptz`` column with it, so a
+    day that a member picks in the CRM is a day in the CRM zone, as each
+    month bucket is (CRM-Q25b fix round). The column stays bare, so an
+    index on it still serves.
+    """
+    return f"(CAST({day_sql} AS timestamp) AT TIME ZONE CAST(:{ZONE_PARAM} AS text))"
+
+
 def _calendar_day(column: str, ref: FieldRef, p: str) -> str:
     """The calendar day of a date or a datetime field. A ``date`` keeps the
     day that Zoho wrote, because a date has no time. A ``datetime`` takes
@@ -496,6 +511,6 @@ __all__ = [
     "BUCKETS", "DATE_TYPES", "DEFAULT_ZONE", "FIELD_MEASURES", "FIELD_PREFIX",
     "MEASURE_TYPES", "VALUE_GROUP_TYPES", "ZONE_PARAM", "FieldRef", "FieldScope",
     "GroupSql", "MeasureSql", "WhereSql", "check_group", "check_measure",
-    "core_scope", "crm_zone", "field_pairs", "group_sql", "measure_sql",
+    "core_scope", "crm_zone", "day_start", "field_pairs", "group_sql", "measure_sql",
     "module_scope", "module_where", "zoned",
 ]
