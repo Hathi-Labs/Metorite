@@ -673,16 +673,21 @@ def test_the_specialist_path_marks_the_session(monkeypatch, streaming: bool) -> 
 
 @pytest.mark.parametrize("mode", ["enforce", "approve_all"])
 def test_a_mail_run_with_no_scope_holds_no_store_write(monkeypatch, no_db, mode: str) -> None:
-    """With no ``tool_scope`` the injection takes the whole chain, so only the
-    LAST-WORD drop takes the store writes out. With
+    """With no ``tool_scope``, and a scope that matches no injectable tool,
+    the injection falls back to the WHOLE chain (``_all_tools``). Then only
+    the LAST-WORD drop takes the store writes out. With
     ``AGENT_PERMISSION_MODE=approve_all`` the tool gate does not run at all,
     so that drop is the only guard."""
     monkeypatch.setenv("AGENT_PERMISSION_MODE", mode)
     cfg = json.loads((REPO / "apps/agents/agent-email-assistant/config.json")
                      .read_text(encoding="utf-8"))
     cfg.pop("tool_scope", None)
+    cfg["floor_opt_out"] = []
+    # The registered surface names no injectable tool, so the resolved scope
+    # matches nothing and the injection takes the no-match fallback.
+    monkeypatch.setattr(ti, "_registered_platform_surface", lambda: {"no_such_tool"})
     held = _injected(MAIL_AGENT, cfg)
     assert held, "the injection ran"
     assert not (held & egress.STORE_WRITES), sorted(held & egress.STORE_WRITES)
-    # The control: with no scope, another agent holds every store write.
-    assert egress.STORE_WRITES <= _injected(OTHER_AGENT, {})
+    # The control: the same fallback gives another agent every store write.
+    assert egress.STORE_WRITES <= _injected(OTHER_AGENT, {"floor_opt_out": []})
