@@ -503,7 +503,16 @@ async def get_pipeline(
     ``?card_sort=next_activity`` orders each lane soonest first, then the
     cards with none. The sort changes the order of ``rows`` and nothing else:
     the lane aggregates do not read it.
+
+    **A NUL is a 422** (CRM-Q25c fix round). ``owner``, ``source`` and
+    ``custom.<key>`` reach SQL as bound text, and Postgres text holds no NUL.
+    The one guard, ``records.refuse_nul``, runs before any SQL. It is
+    imported here, because ``records`` imports this module.
     """
+    from gateway.routes.crm.records import refuse_nul
+
+    if request is not None:
+        refuse_nul(request.query_params.multi_items())
     async with _tenant_session() as db:
         params: dict[str, Any] = {}
         where = _LANE_SQL

@@ -99,6 +99,11 @@ It builds its filters with ``records.list_query``, the one list builder.
 /crm/conversion-mapping``, the lead-conversion mapping of a Native CRM (table
 ``crm_convert_mappings``). Admin only, behind ``CRM_FIELD_STUDIO_ORGS``, and
 409 in Mirror mode. ``pipeline.convert_lead`` applies the map.
+
+``note_search.py`` is WS-53 CRM-Q27 — ``GET /crm/notes/search``, the notes
+nearest to a query by meaning (table ``crm_note_vectors``). Read only. An org
+outside ``CRM_NOTE_SEARCH_ORGS`` gets ``degraded`` with no embed call. Its
+``notes/`` segment is a literal, and no other route uses it.
 """
 
 from gateway.routes.crm import activities as _activities  # noqa: F401
@@ -114,6 +119,7 @@ from gateway.routes.crm import fields as _fields  # noqa: F401
 from gateway.routes.crm import import_zoho as _import_zoho  # noqa: F401
 from gateway.routes.crm import mapping_plans as _mapping_plans  # noqa: F401
 from gateway.routes.crm import modules as _modules  # noqa: F401
+from gateway.routes.crm import note_search as _note_search  # noqa: F401
 from gateway.routes.crm import pipeline as _pipeline  # noqa: F401
 from gateway.routes.crm import pipelines as _pipelines  # noqa: F401
 from gateway.routes.crm import records as _records  # noqa: F401

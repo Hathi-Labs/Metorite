@@ -46,6 +46,12 @@ the measure over the rest, and ``omitted`` counts them. The order stays: the
 status groups in board order, the month and date buckets in time order, and
 each other group largest first.
 
+**One zone for each month** (CRM-Q25b). ``created_month``, ``updated_month``
+and a ``datetime`` bucket take the month on the clock of the CRM zone,
+``field_sql.crm_zone``: the zone of the Zoho org, or UTC. The zone is a bound
+value, and the answer names it in ``zone``. ``close_month`` and a ``date``
+field keep their day, because a date has no time.
+
 **Weighted ₹ reuses ``core.WEIGHTED_SQL``.** That expression binds the lane's
 own probability as ``:stage_probability``, so the weighted measure runs one
 grouped statement for each open or ongoing deal lane and adds the results.
@@ -88,16 +94,19 @@ from gateway.routes.crm.field_sql import (
     DATE_TYPES,
     FIELD_MEASURES,
     FIELD_PREFIX,
+    ZONE_PARAM,
     FieldRef,
     FieldScope,
     check_group,
     check_measure,
     core_scope,
+    crm_zone,
     field_pairs,
     group_sql,
     measure_sql,
     module_scope,
     module_where,
+    zoned,
 )
 from gateway.routes.crm.modules import _require_module, mirrored_modules
 from gateway.routes.crm.records import ListParams, list_query
@@ -126,12 +135,14 @@ GROUPS: dict[str, str] = {
     "owner": "lower(owner_email)",
     "pipeline": "pipeline_id",
     "source": "source",
-    "created_month": "to_char(date_trunc('month', created_at), 'YYYY-MM')",
+    # CRM-Q25b: a month on the clock of the CRM zone, the bound ZONE_PARAM.
+    "created_month": f"to_char(date_trunc('month', {zoned('created_at')}), 'YYYY-MM')",
     # The provider's modified time when the row has one, as the Q8 filter.
     "updated_month": (
-        "to_char(date_trunc('month', coalesce(ext_modified_at, updated_at)), "
-        "'YYYY-MM')"
+        "to_char(date_trunc('month', "
+        f"{zoned('coalesce(ext_modified_at, updated_at)')}), 'YYYY-MM')"
     ),
+    # A date has no time, so the close month takes no zone.
     "close_month": (
         "to_char(date_trunc('month', expected_close_date), 'YYYY-MM')"
     ),
@@ -142,10 +153,12 @@ GROUPS: dict[str, str] = {
 #: The owner is the member email of the Zoho owner, NULL for a non-member.
 MODULE_GROUPS: dict[str, str] = {
     "owner": "lower(owner_email)",
-    "created_month": "to_char(date_trunc('month', ext_created_at), 'YYYY-MM')",
+    "created_month": (
+        f"to_char(date_trunc('month', {zoned('ext_created_at')}), 'YYYY-MM')"
+    ),
     "updated_month": (
-        "to_char(date_trunc('month', coalesce(ext_modified_at, updated_at)), "
-        "'YYYY-MM')"
+        "to_char(date_trunc('month', "
+        f"{zoned('coalesce(ext_modified_at, updated_at)')}), 'YYYY-MM')"
     ),
 }
 
@@ -213,6 +226,9 @@ class AggregateResponse(BaseModel):
     #: The field of a ``sum``, ``avg``, ``min`` or ``max``, and its type.
     field: str | None = None
     field_type: str | None = None
+    #: The stored type of ``group_field``, so a caller can tell a ``datetime``
+    #: bucket, which reads the zone, from a ``date`` bucket, which does not.
+    group_field_type: str | None = None
     bucket: str | None = None
     groups: list[AggregateGroup]
     #: The measure over every group, the omitted ones too.
@@ -221,6 +237,14 @@ class AggregateResponse(BaseModel):
     other: float | None = 0
     #: The count of groups past :data:`MAX_GROUPS`.
     omitted: int = 0
+    #: The CRM zone of every month and datetime bucket (CRM-Q25b): the zone
+    #: of the Zoho org, or UTC.
+    zone: str = "UTC"
+    #: The count of field values that a ``sum``, ``avg``, ``min`` or ``max``
+    #: read (CRM-Q25c item 3). 0 means the field is empty in every row, and
+    #: then ``total`` and each group value are None. None for ``count``,
+    #: ``sum_amount`` and ``weighted``, which read no field.
+    values: int | None = None
 
 
 class StageDwell(BaseModel):
@@ -310,14 +334,6 @@ def _check(
     if group_by == "status" and not found.status_table:
         raise _refuse(f"{entity} have no status pipeline. Group by another key.")
     return found, None
-
-
-def _refuse_nul(request: Request) -> None:
-    """A 422 for a NUL character in any query name or value. Postgres text
-    holds no NUL, so the driver would refuse it later as a 500."""
-    for name, value in request.query_params.multi_items():
-        if "\x00" in name or "\x00" in value:
-            raise _refuse("A query name or value holds a NUL character.")
 
 
 def _check_filters(module: str | None, request: Request) -> list[tuple[str, str]]:
@@ -443,6 +459,7 @@ class _Read:
     order: dict[str, int]
     measured: FieldRef | None
     grouped: FieldRef | None
+    zone: str
 
 
 def _is_timeout(exc: DBAPIError) -> bool:
@@ -461,10 +478,13 @@ async def _read(
     """Every statement of one aggregate, in the caller's tenant session."""
     await db.execute(text(_TIMEOUT_SQL), {"ms": str(STATEMENT_TIMEOUT_MS)})
     scope: FieldScope | None = None
+    zone = ""
     if module is not None:
         _require_module(await mirrored_modules(db), module)
         scope = await module_scope(db, module)
-        where = module_where(scope, module, pairs)
+        # CRM-Q25b: one zone for each bucket and each range of the answer.
+        zone = await crm_zone(db, current_tenant())
+        where = module_where(scope, module, pairs, zone=zone)
         table, where_sql, bound = MODULE_TABLE, where.sql, dict(where.params)
     else:
         assert found is not None
@@ -479,15 +499,18 @@ async def _read(
         table, where_sql, bound = found.table, query.where, dict(query.params)
         if field or group_field:
             scope = await core_scope(db, found.slug)
+        zone = await crm_zone(db, current_tenant())
     measured = check_measure(scope, field) if field and scope else None
     grouped = check_group(scope, group_field, bucket) if group_field and scope else None
     if grouped is not None and scope is not None:
-        group = group_sql(scope, grouped, bucket)
+        group = group_sql(scope, grouped, bucket, zone=zone)
         key_sql, label_sql = group.key, group.label
         bound.update(group.params)
     else:
         key_sql = (MODULE_GROUPS if module is not None else GROUPS)[group_by or ""]
         label_sql = "NULL"
+    # The fixed month groups read the zone too. A bound value, never text.
+    bound[ZONE_PARAM] = zone
     if measure == "weighted":
         values = await _weighted(db, key_sql, label_sql, where_sql, bound)
     else:
@@ -515,7 +538,7 @@ async def _read(
     order = (
         await _status_order(db, found) if found and group_by == "status" else {}
     )
-    return _Read(values, labels, order, measured, grouped)
+    return _Read(values, labels, order, measured, grouped, zone)
 
 
 @router.get("/aggregate", response_model=AggregateResponse)
@@ -530,8 +553,10 @@ async def aggregate(
     params: ListParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> AggregateResponse:
-    """One measure of one entity or module, by one group, over the filters."""
-    _refuse_nul(request)
+    """One measure of one entity or module, by one group, over the filters.
+
+    The NUL guard of CRM-Q25c runs in ``ListParams``, which this route takes,
+    before this body runs. A second call here would be a copy."""
     # An empty optional value is an absent one, the same for each of the four
     # (CRM-Q25 fix round). `group_field=` alone is then "no group", a 422.
     group_by, field = group_by or None, field or None
@@ -552,6 +577,13 @@ async def aggregate(
     measured, grouped = read.measured, read.grouped
     bucketed = grouped is not None and grouped.type in DATE_TYPES
     options = grouped.options if grouped is not None else {}
+    # CRM-Q25c item 3: the count of field values that the measure read. With
+    # none, the field is empty, so no group and no total holds a number. A
+    # sum of nothing is NULL in SQL, and an answer of 0 would say "zero".
+    values = sum(acc.n for acc in read.values.values()) if measured else None
+    if values == 0:
+        for acc in read.values.values():
+            acc.value = None
     groups = [
         (
             AggregateGroup(
@@ -579,11 +611,20 @@ async def aggregate(
         measure=measure, group_by=group_by, group_field=group_field,
         field=measured.key if measured is not None else None,
         field_type=measured.type if measured is not None else None,
+        group_field_type=grouped.type if grouped is not None else None,
         bucket=bucket if bucketed else None,
         groups=shown,
-        total=_rounded(_combine(measure, [acc for _g, acc in groups])),
-        other=_rounded(_combine(measure, [acc for _g, acc in rest])) if rest else 0,
+        total=(
+            None if values == 0
+            else _rounded(_combine(measure, [acc for _g, acc in groups]))
+        ),
+        other=(
+            (None if values == 0 else _rounded(_combine(measure, [acc for _g, acc in rest])))
+            if rest else 0
+        ),
         omitted=len(rest),
+        zone=read.zone,
+        values=values,
     )
 
 

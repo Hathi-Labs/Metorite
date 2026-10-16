@@ -20,6 +20,34 @@ export type HealthEntity = {
   ours: number | null;
   /** The count keys of the last run: seen, upserted, deleted, skipped, unavailable... */
   last_run: Record<string, number>;
+  /**
+   * CRM-Q24: Zoho's count minus ours at the end of the last full read, when
+   * above 0. The connected Zoho user cannot see those records. An older
+   * gateway sends no key, so read it through `shortBy`.
+   */
+  short_by?: number | null;
+};
+
+/**
+ * CRM-Q24: the activities that the mirror does not hold. Numbers only. An
+ * older gateway sends no block, so read it through `activitiesOf`.
+ */
+export type HealthActivities = {
+  /** Activities with no parent record, by activity entity (`note`, `task`...). */
+  parentless: Record<string, number>;
+  /** Activities of the last full reads, by the Zoho API name of their parent module. */
+  dropped: Record<string, number>;
+  /** Kept activities that wait for their parent record, by activity entity. */
+  waiting: Record<string, number>;
+  /** Kept activities that linked in the last 7 days, by the Zoho API name of the module. */
+  recovered_7d: Record<string, number>;
+  /**
+   * The drops of a module that the mirror reads, which no `waiting` entry holds,
+   * by the Zoho API name of the module. Each drop on a core module (Deals,
+   * Accounts, Contacts, Leads), and the drops past a full wait list. An older
+   * gateway sends no key.
+   */
+  unkept: Record<string, number>;
 };
 
 export type HealthModule = {
@@ -50,6 +78,8 @@ export type SyncHealth = {
    * gateway sends no map, so read it through `holdsOf`, never directly.
    */
   holds?: Record<string, SyncHold>;
+  /** CRM-Q24: the activities that the mirror does not hold. */
+  activities?: HealthActivities;
 };
 
 /**
@@ -321,6 +351,172 @@ export function largeUnheld(health: SyncHealth | null | undefined, entity: Healt
 /** The suggestion for a large row that is not held. */
 export function largeSentence(label: string, count: number): string {
   return `${label} has ${recordCount(count)} records. Hold it, and sync it on its own when Metorite is quiet`;
+}
+
+// ── A short read and the activities left out (CRM-Q24, spec section 18.10) ──
+
+/** A count from the answer, as a whole number above 0, else `null`. */
+function positive(n: unknown): number | null {
+  return typeof n === "number" && Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+}
+
+/** The records of a row that the connected Zoho user cannot read. `null` when none. */
+export function shortBy(entity: HealthEntity): number | null {
+  return positive(entity.short_by);
+}
+
+/** The rows of a short read, in the order of the table. */
+export function shortReads(health: SyncHealth | null | undefined): HealthEntity[] {
+  return (health?.entities ?? []).filter((entity) => shortBy(entity) !== null);
+}
+
+/**
+ * The line of a short read (CRM-Q24 item 2): "Zoho counts 4,947. The connected
+ * Zoho user can read 3,003. Connect with a Zoho admin to read all of them."
+ * Zoho's count is the one of the row, else ours plus the gap.
+ */
+export function shortReadSentence(entity: HealthEntity): string | null {
+  const gap = shortBy(entity);
+  if (gap === null) return null;
+  const zoho = positive(entity.zoho_count) ?? (positive(entity.ours) ?? 0) + gap;
+  const readable = Math.max(zoho - gap, 0);
+  return (
+    `Zoho counts ${recordCount(zoho)}. The connected Zoho user can read ${recordCount(readable)}. ` +
+    "Connect with a Zoho admin to read all of them."
+  );
+}
+
+/**
+ * The most records that Zoho serves by offset inside one second
+ * (`zoho/client.py` `OFFSET_LIMIT`). A wider tie stops the read.
+ */
+export const TIE_OFFSET_LIMIT = 2000;
+
+/**
+ * The rows whose last run met a tie that is too wide (CRM-Q24 fix round). The
+ * gateway counts `tie_too_wide` on the row, and the sync of that entity is
+ * paused until Zoho changes those records. The `failed` count alone does not
+ * say so.
+ */
+export function tieStalls(health: SyncHealth | null | undefined): HealthEntity[] {
+  return (health?.entities ?? []).filter((entity) => positive(entity.last_run?.tie_too_wide) !== null);
+}
+
+/** The line of a paused sync: what Zoho did, and when the sync goes on. */
+export function tieStallSentence(label: string): string {
+  return (
+    `Zoho changed more than ${recordCount(TIE_OFFSET_LIMIT)} ${label} records in the same second. ` +
+    `Sync of ${label} is paused until those records change.`
+  );
+}
+
+const NO_ACTIVITIES: HealthActivities = { parentless: {}, dropped: {}, waiting: {}, recovered_7d: {}, unkept: {} };
+
+/** The activities block. An older answer has none, and that shows no line. */
+export function activitiesOf(health: SyncHealth | null | undefined): HealthActivities {
+  const block = health?.activities;
+  if (!block || typeof block !== "object") return NO_ACTIVITIES;
+  const map = (value: unknown): Record<string, number> =>
+    value && typeof value === "object" ? (value as Record<string, number>) : {};
+  return {
+    parentless: map(block.parentless),
+    dropped: map(block.dropped),
+    waiting: map(block.waiting),
+    recovered_7d: map(block.recovered_7d),
+    unkept: map(block.unkept),
+  };
+}
+
+const ACTIVITY_NOUNS: Record<string, [string, string]> = {
+  note: ["note", "notes"],
+  call: ["call", "calls"],
+  meeting: ["meeting", "meetings"],
+  task: ["task", "tasks"],
+};
+
+/** "1 Zoho task", "1,145 Zoho tasks". An unknown entity reads as activities. */
+function zohoActivities(n: number, entity?: string): string {
+  const [one, many] = (entity && ACTIVITY_NOUNS[entity]) || ["activity", "activities"];
+  return `${recordCount(n)} Zoho ${n === 1 ? one : many}`;
+}
+
+/** The Zoho label of a module, from its API name. */
+function moduleLabel(apiName: string, modules: readonly HealthModule[]): string {
+  return entityLabel(`${MODULE_PREFIX}${apiName}`, modules);
+}
+
+/** A module that the mirror reads: a core module or a mirrored generic module. */
+function isSynced(apiName: string, modules: readonly HealthModule[]): boolean {
+  return modules.some((m) => m.api_name === apiName && m.mirrored);
+}
+
+export type ActivityLine = {
+  /** A stable key for the list, `<kind>:<entity or module>`. */
+  key: string;
+  kind: "parentless" | "dropped" | "waiting" | "recovered";
+  text: string;
+};
+
+/**
+ * The lines of the activities that the mirror does not hold (CRM-Q24 item 11):
+ * one line for each number above 0. A drop on a module that the mirror reads
+ * is not a "module that Metorite does not sync". A kept drop shows as
+ * `waiting`. A drop that no `waiting` entry holds (`unkept`: each drop on a
+ * core module, and the overflow of a full wait list) shows as `dropped`, with
+ * words that say its record is not in Metorite yet.
+ */
+export function activityLines(health: SyncHealth | null | undefined): ActivityLine[] {
+  const block = activitiesOf(health);
+  const modules = health?.modules ?? [];
+  const lines: ActivityLine[] = [];
+  const each = (map: Record<string, number>, add: (name: string, n: number) => void) => {
+    for (const name of Object.keys(map).sort()) {
+      const n = positive(map[name]);
+      if (n !== null) add(name, n);
+    }
+  };
+  each(block.parentless, (entity, n) => {
+    const [verb, them] = n === 1 ? ["belongs", "it"] : ["belong", "them"];
+    lines.push({
+      key: `parentless:${entity}`,
+      kind: "parentless",
+      text: `${zohoActivities(n, entity)} ${verb} to no record. Metorite leaves ${them} out.`,
+    });
+  });
+  each(block.dropped, (module, n) => {
+    // The gateway knows a module that it syncs, so an `unkept` count wins.
+    if (isSynced(module, modules) || positive(block.unkept[module]) !== null) return;
+    const verb = n === 1 ? "belongs" : "belong";
+    lines.push({
+      key: `dropped:${module}`,
+      kind: "dropped",
+      text: `${zohoActivities(n)} ${verb} to ${moduleLabel(module, modules)}, a module that Metorite does not sync.`,
+    });
+  });
+  each(block.unkept, (module, n) => {
+    const verb = n === 1 ? "links" : "link";
+    lines.push({
+      key: `unkept:${module}`,
+      kind: "dropped",
+      text: `${zohoActivities(n)} ${verb} to ${moduleLabel(module, modules)} records that are not in Metorite yet.`,
+    });
+  });
+  each(block.waiting, (entity, n) => {
+    const [verb, their, them] = n === 1 ? ["waits", "its", "it"] : ["wait", "their", "them"];
+    lines.push({
+      key: `waiting:${entity}`,
+      kind: "waiting",
+      text: `${zohoActivities(n, entity)} ${verb} for ${their} record. Metorite links ${them} when it reads that record.`,
+    });
+  });
+  each(block.recovered_7d, (module, n) => {
+    lines.push({
+      key: `recovered:${module}`,
+      kind: "recovered",
+      text: `${zohoActivities(n)} on ${moduleLabel(module, modules)} came back in the last 7 days.`,
+    });
+  });
+  return lines;
 }
 
 /** The toast of a hold write that failed, from the status and code of `PUT /crm/sync/modules/{key}`. */

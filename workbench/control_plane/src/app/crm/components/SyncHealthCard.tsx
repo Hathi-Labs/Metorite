@@ -19,6 +19,7 @@ import * as api from "../lib/api";
 import { CrmError } from "../lib/api";
 import { syncFailureMessage } from "../lib/connect";
 import {
+  activityLines,
   agoLabel,
   creditsPercent,
   difference,
@@ -37,14 +38,27 @@ import {
   recordCount,
   recordsOf,
   runLine,
+  shortReadSentence,
+  shortReads,
   statusLines,
+  tieStallSentence,
+  tieStalls,
   unavailableSentence,
+  type ActivityLine,
   type SyncHealth,
 } from "../lib/syncHealth";
 import { invalidateCrmMode, useSyncHealth } from "../lib/useCrmMode";
 import { Card } from "./SettingsCards";
 
 const NOTE = "The Zoho count against ours, skipped records and the last error.";
+
+/** CRM-Q24: the badge of each kind of activity line. */
+const ACTIVITY_BADGES: Record<ActivityLine["kind"], { tone: "warning" | "neutral" | "success"; label: string }> = {
+  parentless: { tone: "neutral", label: "No record" },
+  dropped: { tone: "warning", label: "Not synced" },
+  waiting: { tone: "neutral", label: "Waiting" },
+  recovered: { tone: "success", label: "Back" },
+};
 
 const th = "px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-wide text-muted-foreground";
 const td = "px-2 py-1.5 text-xs text-foreground tabular-nums";
@@ -76,6 +90,9 @@ export function SyncHealthCardView({
   const label = (key: string) => entityLabel(key, health.modules);
   const held = heldKeys(health);
   const large = health.entities.filter((entity) => largeUnheld(health, entity));
+  const short = shortReads(health);
+  const stalled = tieStalls(health);
+  const activities = activityLines(health);
   return (
     <Card title="Sync health" note={NOTE}>
       <div className="divide-y divide-border/60">
@@ -166,6 +183,39 @@ export function SyncHealthCardView({
                   <Badge tone="warning">Unavailable</Badge>
                   <span className="font-medium text-foreground">{entityLabel(entity.key)}</span>
                   <span className="text-muted-foreground">{unavailableSentence(entity)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {short.length > 0 && (
+            <ul className="space-y-1 px-2 pt-2" aria-label="Short reads">
+              {short.map((entity) => (
+                <li key={entity.key} className="flex flex-wrap items-center gap-2 text-xs">
+                  <Badge tone="warning">Short read</Badge>
+                  <span className="font-medium text-foreground">{label(entity.key)}</span>
+                  <span className="min-w-0 flex-1 text-muted-foreground">{shortReadSentence(entity)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {stalled.length > 0 && (
+            <ul className="space-y-1 px-2 pt-2" aria-label="Paused syncs">
+              {stalled.map((entity) => (
+                <li key={entity.key} className="flex flex-wrap items-center gap-2 text-xs">
+                  <Badge tone="warning">Paused</Badge>
+                  <span className="min-w-0 flex-1 text-muted-foreground">
+                    {tieStallSentence(label(entity.key))}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {activities.length > 0 && (
+            <ul className="space-y-1 px-2 pt-2" aria-label="Activities left out">
+              {activities.map((line) => (
+                <li key={line.key} className="flex flex-wrap items-center gap-2 text-xs">
+                  <Badge tone={ACTIVITY_BADGES[line.kind].tone}>{ACTIVITY_BADGES[line.kind].label}</Badge>
+                  <span className="min-w-0 flex-1 text-muted-foreground">{line.text}</span>
                 </li>
               ))}
             </ul>

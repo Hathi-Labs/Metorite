@@ -1217,20 +1217,32 @@ async def extra_filters(
     custom key that ``crm_field_defs`` does not list for this entity, is a 422
     before the list query runs. Every value is a bound parameter. The custom
     key is bound too (``custom ->> :ck``), so no caller text enters the SQL.
+
+    **A day is a day in the CRM zone** (CRM-Q25b fix round). A ``created_*``
+    or ``updated_*`` range starts and ends at midnight on the clock of
+    ``field_sql.crm_zone``, the zone that each month bucket reads. So "the
+    deals updated in October, by month" holds no November group. The zone
+    is the bound ``field_sql.ZONE_PARAM``, never text. ``close_*`` reads a
+    ``date`` column, which has no time, so no zone moves it. The list, the
+    pipeline, the export and the aggregate all take this one rule.
     """
+    from gateway.routes.crm.field_sql import ZONE_PARAM, crm_zone, day_start
+
     clauses: list[str] = []
     bound: dict[str, Any] = {}
     ranges = (
-        ("created_from", given.created_from, "created_at >= CAST(:created_from AS date)"),
+        ("created_from", given.created_from,
+         f"created_at >= {day_start('CAST(:created_from AS date)')}"),
         ("created_to", given.created_to,
-         "created_at < CAST(:created_to AS date) + 1"),
+         f"created_at < {day_start('CAST(:created_to AS date) + 1')}"),
         # ⚠️ The provider's modified time, when the row has one. A mirrored
         # row's own `updated_at` is the import time, so ranging on it would
         # show the day of the last sync and not the day of the change.
         ("updated_from", given.updated_from,
-         "coalesce(ext_modified_at, updated_at) >= CAST(:updated_from AS date)"),
+         f"coalesce(ext_modified_at, updated_at) >= {day_start('CAST(:updated_from AS date)')}"),
         ("updated_to", given.updated_to,
-         "coalesce(ext_modified_at, updated_at) < CAST(:updated_to AS date) + 1"),
+         "coalesce(ext_modified_at, updated_at) < "
+         f"{day_start('CAST(:updated_to AS date) + 1')}"),
         ("close_from", given.close_from,
          "expected_close_date >= CAST(:close_from AS date)"),
         ("close_to", given.close_to, "expected_close_date <= CAST(:close_to AS date)"),
@@ -1240,6 +1252,8 @@ async def extra_filters(
         parsed = parse_iso_date(name, raw)
         if parsed is None:
             continue
+        if not name.startswith("close_") and ZONE_PARAM not in bound:
+            bound[ZONE_PARAM] = await crm_zone(db, current_tenant())
         if name.startswith("created_"):
             # ⚠️ In Mirror mode `created_at` is the import time:
             # `upsert_from_source` refuses to write it. A range on it would
@@ -2543,6 +2557,8 @@ RESET_TABLES: tuple[str, ...] = (
     # CRM-Q26: the labels of the notes below. The cascade from
     # ``crm_activities`` takes them too, and naming them keeps the list whole.
     "crm_note_labels",
+    # CRM-Q27: the vectors of the notes below, on the same terms.
+    "crm_note_vectors",
     "crm_activities", "crm_deal_contacts", "crm_deals", "crm_leads",
     "crm_contacts", "crm_companies", "crm_module_records",
     "crm_status_changes", "crm_field_defs", "crm_pipeline_stages",
