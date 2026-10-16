@@ -137,7 +137,8 @@ def test_a_tool_has_one_class() -> None:
 #: unseen (``chat_supersede.is_side_effect_tool``). ``status_report`` makes
 #: the report card and its PDF with make_report=true (``projects_ai_chat.md``
 #: §14.10, review of #1064).
-CHAT_FILE_WRITERS = frozenset({"status_report"})
+#: ``render_report`` joined on the same terms (§14.10.9, slice B3).
+CHAT_FILE_WRITERS = frozenset({"status_report", "render_report"})
 
 
 def test_built_read_tools_are_annotated_read_only() -> None:

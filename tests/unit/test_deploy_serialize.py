@@ -137,7 +137,7 @@ class TestTheSecondPathDoesNotRebuild:
         lines = _executable_lines(_APPLY)
         fetch = _first(lines, "git fetch origin main")
         skip = _first(lines, 'deploy_already_applied "$DEPLOY_TARGET_SHA"')
-        reset = _first(lines, "git reset --hard origin/main")
+        reset = _first(lines, 'git reset --hard "$DEPLOY_TARGET_SHA"')
         assert fetch < skip < reset
 
     def test_a_skip_still_prints_the_final_line(self) -> None:
@@ -301,7 +301,8 @@ class TestReapplyTheSameSha:
             " && '1' || '0' }}" in wf
         )
         assert (
-            '"DEPLOY_FORCE=${DEPLOY_FORCE:-0} DEPLOY_REINSTALL=${DEPLOY_REINSTALL:-0} bash -s"'
+            '"DEPLOY_REF=${GITHUB_SHA} DEPLOY_FORCE=${DEPLOY_FORCE:-0} '
+            'DEPLOY_REINSTALL=${DEPLOY_REINSTALL:-0} bash -s"'
             " < /tmp/deploy_remote.sh" in wf
         )
         assert "      force:\n" in wf, "the workflow_dispatch input is missing"

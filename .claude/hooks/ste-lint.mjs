@@ -38,7 +38,7 @@
  * Add --warnings to show heuristic findings, --json for machine output.
  */
 
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -141,14 +141,36 @@ const NOT_OURS = [
   /(^|\/)(CHANGELOG|LICENSE|NOTICE)(\.md)?$/i,
 ]
 
-const relOf = (file) => path.relative(ROOT, path.resolve(ROOT, file)).replace(/\\/g, '/')
-const ours = (file) => !NOT_OURS.some((re) => re.test(relOf(file)))
+// The checkout a file belongs to: the nearest folder that holds `.git` (a
+// folder in a clone, a file in a worktree). Measured 2026-10-16, two defects
+// came from resolving every path against ROOT, the session's checkout:
+//   * a worktree file (C:\wt-x\...) became `../../wt-x/...`, so the
+//     `^`-anchored NOT_OURS entries never matched, and vendored skills in a
+//     worktree were linted as if we wrote them;
+//   * a file in no repo at all was linted as a repo doc. Agent memory lives
+//     under ~/.claude/projects/, so `.claude/` made it STRICT, and each error
+//     forced a rewrite of a note no reader of the repo ever sees.
+// A Git Bash path (/c/wt-x/...) names drive C:, not a folder `c` on ROOT's drive.
+const absOf = (file) =>
+  path.resolve(ROOT, process.platform === 'win32' ? file.replace(/^\/([a-z])\//i, '$1:/') : file)
+
+function repoOf(file) {
+  let dir = path.dirname(absOf(file))
+  for (;;) {
+    if (existsSync(path.join(dir, '.git'))) return dir
+    const up = path.dirname(dir)
+    if (up === dir) return null
+    dir = up
+  }
+}
+const relOf = (file) =>
+  path.relative(repoOf(file) ?? ROOT, absOf(file)).replace(/\\/g, '/')
+const ours = (file) => repoOf(file) !== null && !NOT_OURS.some((re) => re.test(relOf(file)))
 
 function tierFor(file, text = '') {
   const marker = text.match(/<!--\s*ste-tier:\s*(strict|informed)\s*-->/i)
   if (marker) return marker[1].toLowerCase()
-  const rel = path.relative(ROOT, path.resolve(ROOT, file)).replace(/\\/g, '/')
-  return STRICT_PATH.some((re) => re.test(rel)) ? 'strict' : 'informed'
+  return STRICT_PATH.some((re) => re.test(relOf(file))) ? 'strict' : 'informed'
 }
 
 // -------------------------------------------------------------- stripping ----

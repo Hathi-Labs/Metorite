@@ -135,7 +135,10 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "crm_list_pipelines":    {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     "crm_deal_contacts":     {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     "crm_list_owners":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
-    "crm_report":            {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # projects_ai_chat.md §14.10.9: with make_report=true it writes two files
+    # and draws a card, so an edited turn must not run it again unseen. It
+    # still sends only GET to the CRM.
+    "crm_report":            {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
     "crm_aggregate":         {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     "crm_stage_dwell":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     "crm_list_modules":      {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},

@@ -179,16 +179,22 @@ jobs:
           [ "$FAILED" -eq 0 ]
 
   delivery:
-    name: "The deployed commit must match main"
+    name: "The deployed commit must match release"
     runs-on: ubuntu-latest
+    # `gh run list` reads when `release` last moved (see below).
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: Compare the serving SHA against origin/main
+      - name: Compare the serving SHA against origin/release
         env:
           BASE: https://api.metorite.com
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_HOLD: ${{ vars.RELEASE_HOLD }}
         run: |
           # ⚠️ EVERY OTHER JOB HERE ASKS "DOES THE MACHINERY ANSWER?".
           # None of them asks "DID DELIVERY LAND?". Those are different
@@ -206,46 +212,93 @@ jobs:
           # deploy job gates on it. NOTHING watched it between deploys, so a
           # box that silently stopped converging looked identical to one that
           # had nothing to do.
-          want="$(git rev-parse HEAD)"
+          # ⚠️ WS-38, 2026-10-16: production serves `release`, NOT `main`.
+          # `release` moves once a day (deploy.yml, the schedule), so `main`
+          # runs up to a day ahead BY DESIGN. This job compared with main until
+          # then, and under the daily clock it would have failed every day at
+          # three hours past the first merge. It now asks two questions:
+          #   1. Does the box serve `release`?  (delivery landed)
+          #   2. Did `release` move in the last 30 hours, when main had a
+          #      commit for it?  (the daily release ran)
+          # Fence: tests/unit/test_daily_release.py.
+          git fetch -q origin release main
+          want="$(git rev-parse origin/release)"
           got="$(curl -s -m 25 "${BASE}/version" 2>/dev/null \
                  | python3 -c 'import json,sys; print(json.load(sys.stdin).get("sha",""))' \
                  2>/dev/null || true)"
+          now="$(date +%s)"
+          rc=0
 
+          # ── 2. The daily release ran ──────────────────────────────────
+          # The OLDEST commit on main that release does not hold. A squash
+          # merge's committer date is its merge time. Past 30 hours, one
+          # scheduled release (24 h apart) plus its worst case has passed.
+          # ⚠️ `tail`, never `head`: GitHub runs this under `bash -eo pipefail`.
+          # `head -1` closes the pipe while `git log` still writes, git dies of
+          # SIGPIPE (141), and the step ends red with no message. Measured
+          # 8 runs in 10 at 40 commits ahead. `tail` reads the whole stream.
+          # git log lists newest first, so the LAST line is the oldest.
+          oldest="$(git log --format=%ct origin/release..origin/main | tail -n 1)"
+          if [ -n "$oldest" ]; then
+            lag=$(( (now - oldest) / 3600 ))
+            pending="$(git rev-list --count origin/release..origin/main)"
+            if [ "$lag" -ge 30 ] && [ "$RELEASE_HOLD" != "1" ]; then
+              echo "::error::release is ${pending} commit(s) behind main, and the oldest has waited ${lag}h. The daily release did not run."
+              echo "         Check: gh run list --workflow deploy.yml --event schedule"
+              rc=1
+            else
+              echo "release is ${pending} commit(s) behind main, oldest ${lag}h${RELEASE_HOLD:+ (RELEASE_HOLD=$RELEASE_HOLD)}. Normal under the daily clock."
+            fi
+          fi
+
+          # ── 1. The box serves release ─────────────────────────────────
           if [ -z "$got" ]; then
             # Unreadable is NOT a delivery failure. The `probe` job owns
             # reachability, and two alarms for one outage teach people to
             # mute both.
             echo "::warning::/version did not answer — delivery unconfirmed, see the probe job"
-            exit 0
+            exit "$rc"
           fi
 
           if [ "$got" = "$want" ]; then
-            echo "OK      serving ${got:0:8}, which is origin/main"
-            exit 0
+            echo "OK      serving ${got:0:8}, which is origin/release"
+            exit "$rc"
           fi
 
-          # A deploy in flight is normal, and this job runs hourly. So only
-          # call it a failure once the gap has outlived any plausible deploy.
-          # The deploy job's own worst case is ~105 minutes.
-          if git merge-base --is-ancestor "$got" HEAD 2>/dev/null; then
-            behind="$(git rev-list --count "$got..HEAD")"
-            age="$(git log -1 --format=%ct HEAD)"
-            now="$(date +%s)"
-            hours=$(( (now - age) / 3600 ))
-            echo "serving ${got:0:8}, main is ${want:0:8} (${behind} commit(s) ahead, head is ${hours}h old)"
+          # A deploy in flight is normal. Only call it a failure once the gap
+          # has outlived any plausible deploy (the deploy job's own worst case
+          # is ~117 minutes). The clock starts when `release` MOVED, which is
+          # the newest deploy run of that sha. Without one, fall back to the
+          # commit's own date, which can only make the alarm come sooner.
+          if git merge-base --is-ancestor "$got" "$want" 2>/dev/null; then
+            behind="$(git rev-list --count "$got..$want")"
+            moved="$(gh run list --workflow deploy.yml --limit 60 --json headSha,createdAt,event \
+                     | python3 -c '
+          import datetime, json, sys
+          want = sys.argv[1]
+          runs = [r for r in json.load(sys.stdin)
+                  if r["headSha"] == want and r["event"] in ("schedule", "workflow_dispatch")]
+          if runs:
+              t = max(r["createdAt"] for r in runs).replace("Z", "+00:00")
+              print(int(datetime.datetime.fromisoformat(t).timestamp()))
+          ' "$want" 2>/dev/null || true)"
+            [ -n "$moved" ] || moved="$(git log -1 --format=%ct "$want")"
+            hours=$(( (now - moved) / 3600 ))
+            echo "serving ${got:0:8}, release is ${want:0:8} (${behind} commit(s) ahead, moved ${hours}h ago)"
             if [ "$hours" -ge 3 ]; then
-              echo "::error::main has been ${behind} commit(s) ahead for ${hours}h — delivery is NOT landing"
+              echo "::error::release has been ${behind} commit(s) ahead of the box for ${hours}h — delivery is NOT landing"
               echo "         Check: ssh metorite 'systemctl show acb-pull.service -p Result'"
               echo "         A green stack proves nothing here (H-100)."
               exit 1
             fi
             echo "::notice::gap is ${hours}h — inside the deploy window, not failing yet"
-            exit 0
+            exit "$rc"
           fi
 
-          # The box serves a commit that is not an ancestor of main. A force
-          # push, a rollback, or a box pinned to another branch. Never normal.
-          echo "::error::serving ${got:0:8}, which is NOT an ancestor of main"
+          # The box serves a commit that is not an ancestor of release. A
+          # force push, a hand deploy of main, or a box pinned to another
+          # branch. Never normal.
+          echo "::error::serving ${got:0:8}, which is NOT an ancestor of release"
           exit 1
 
   # H-204: the box runs deploy/smoke_chat.sh itself, from acb-smoke-chat.timer,

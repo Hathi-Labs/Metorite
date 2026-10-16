@@ -352,8 +352,11 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    block does not list them. `crm_mode()` is not a tool: the orchestrator
    reads it to drop the record writes in Mirror mode. `crm_list_fields`
    never offers a row with `is_system`, and it marks a retired field
-   (WS-53 CRM-C4a). Fences:
-   `tests/unit/test_crm_agent.py` and `tests/unit/test_skills_registry.py`.
+   (WS-53 CRM-C4a). `crm_report(make_report=true)` builds a kept report by
+   code from the route data (`projects_ai_chat.md` §14.10.9). So it carries
+   `read_only=False` and `idempotent=False`, and it still sends only GET.
+   Fences: `tests/unit/test_crm_agent.py`, `tests/unit/test_skills_registry.py`
+   and `tests/unit/test_reports_by_code.py`.
 5m. untrusted.py -- the ONE frame for text that a stranger wrote (WS-17
    EM-G11d, UMCC, spec `email_app_master_plan.md` §12.3.13.8). Make one
    `UntrustedFrame` for each model call. `wrap(label, text)` puts the text
@@ -386,8 +389,11 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    `_chat_dir_guard`, so a planted link is never followed (H-236). In a
    WhatsApp run it queues the PDF through `whatsapp_ui.queue_document`, with
    no file and no card. The `documents`
-   family holds it, so it is not a floor tool. Fence:
-   `tests/unit/test_chat_reports.py`.
+   family holds it, so it is not a floor tool. `by_code` is the ONE gate of
+   a report that a tool builds from its own reads (§14.10.9). It asks
+   `write_artifact.run_holds_tool`, and `status_report`, `render_report` and
+   `crm_report` call it. Do not write a second gate. Fences:
+   `tests/unit/test_chat_reports.py` and `tests/unit/test_reports_by_code.py`.
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox.
    The sandbox (SandboxedHtml.tsx) fails SILENTLY: a CDN fetch is CSP-blocked, a
    typo'd `cc-` class renders unstyled, a `cc-bar` without `--v` draws empty. The
