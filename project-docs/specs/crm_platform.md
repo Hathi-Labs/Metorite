@@ -1239,7 +1239,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q20** | The mapping pipeline on the decide tier, the suggestion in an empty slot, the panel and Undo. Replaces the CRM-Q7b proposer. §18.9 | P1 |
 | **CRM-Q21** | Promote a module into a core entity. §18.9 | P1 |
 | **CRM-Q22** | Source changes as suggestions, then a CSV source, then HubSpot. §18.9 | P2 |
-| **CRM-Q23** | Link a Zoho activity to a custom-module record, and show it there. §18.10 | P0 |
+| **CRM-Q23** | Link a Zoho activity to a custom-module record, and show it there, in three slices (Q23a, Q23b, Q23c). §18.10 | P0 |
 | **CRM-Q24** | A short read shows on the Sync health card. §18.10 | P1 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
@@ -2360,8 +2360,9 @@ it `unlinked` and does not store it. The CHECK `crm_activities_target_required`
 (`144_crm.sql`) enforces the same rule.
 
 DEWiN's import read 1,145 tasks and linked none. It read 3,848 notes and
-linked 1. The 18,674 held activities will be lost the same way, so they stay
-held until CRM-Q23 ships.
+linked 1. DEWiN's notes total 18,674, and other activities add more. They
+would be lost the same way, so the `activities` hold stays until CRM-Q23
+ships.
 
 **Counts.** Zoho counted 4,947 Payment Made records, and the list returned
 3,003. A probe on 2026-10-16 found the cause. The list of v2 and of v8 both
@@ -2374,43 +2375,72 @@ that the user cannot see.
 
 | Ticket | Slice | Gate | Size | Waits for |
 |---|---|---|---|---|
-| CRM-Q23 | Link an activity to a module record, and show it on that record | AGENT-SAFE | M | — |
+| CRM-Q23a | Link an activity to a module record, and serve it. Backend | AGENT-SAFE | M | — |
+| CRM-Q23b | Recover an activity dropped before its module record landed | AGENT-SAFE | M | CRM-Q23a |
+| CRM-Q23c | The timeline on a module record page. Frontend | AGENT-SAFE | S | CRM-Q23a |
 | CRM-Q24 | A short read shows on the Sync health card | AGENT-SAFE | S | — |
 
-**CRM-Q23 · Activities on a module record.** Done when:
+**Not in scope of CRM-Q23.** A composer or any write on a module record. A
+push of a module activity to Zoho. A next-activity chip on a module card. The
+release of DEWiN's `activities` hold, which stays an admin act. Native mode.
 
-1. A migration (next free number at build time) adds
-   `crm_activities.module_record_id`, a nullable reference to
-   `crm_module_records (id)` with `ON DELETE CASCADE`, and a partial index.
-   It is expand-only (R6).
-2. The same migration widens `crm_activities_target_required` to accept
-   `module_record_id`. It replaces the CHECK with `NOT VALID`, then validates
-   it. A second run changes nothing.
-3. `_activity_links` links an activity to the module record when `$se_module`
-   is a mirrored generic module. A module that is not mirrored stays
-   unlinked.
-4. When the first import of a generic module completes, the sync reads note,
-   call, meeting and task in full once. The existing re-read set
-   (`_queue_dependents`) does it, so one run reads each entity once.
-5. Each run counts the dropped activities by `$se_module`, as numbers only,
-   in the run counts.
-6. `GET /crm/modules/{module}/records/{record_id}/timeline` serves the
+**CRM-Q23a · Activities on a module record, backend.** The spec audit of
+2026-10-16 narrowed it. Done when:
+
+1. A migration takes the next free number at build time (275 on
+   2026-10-16). It adds `crm_activities.module_record_id`, shown below, and a
+   partial index where it is not null. It is expand-only (R6).
+   `module_record_id UUID NULL REFERENCES crm_module_records (id) ON DELETE CASCADE`
+2. One `DO` block drops `crm_activities_target_required`, adds it again with
+   `module_record_id` as `NOT VALID`, and validates it. The block runs only
+   when `pg_get_constraintdef` lacks `module_record_id`. A second run changes
+   nothing.
+3. `_activity_links` adds a module candidate when `$se_module` is not one of
+   the four core modules. The engine resolves it in `crm_module_records` by
+   module and `ext_id`, in the tenant session. A module that is not mirrored,
+   or a record not read yet, stays unlinked. A custom `$se_module` never falls
+   back to the core candidates. A module parent gets no `_BUMP_SQL`.
+4. Each run counts the dropped activities by `$se_module`, as numbers only,
+   under the counts key `activity_drops`. Sync health does not show it as an
+   entity row. A test proves that `GET /crm/sync/health` still serves.
+5. `GET /crm/modules/{module}/records/{record_id}/timeline` serves the
    activities of a module record. It is read only. An unknown module or
-   record gives 404. It keeps tenant isolation.
-7. Each reader that assumes a core parent still works: the activity edit and
-   delete routes, the next-activity statement and the export.
-8. `ModuleRecordSheet.tsx` shows that timeline, read only.
+   record gives 404. It keeps tenant isolation. `ActivityModel` gains
+   `module_record_id`.
+6. Each reader that assumes a core parent still works, and a test covers
+   each. The readers are the activity edit and delete routes, the
+   next-activity statements, the export and `sync_zoho.push_activities`.
 
-R8 tests: the migration runs twice, the CHECK accepts a module-only row and
-refuses a row with no target, the cascade works, and RLS stops a read across
-orgs. A task and a note on a mirrored module link. A child read before its
-parent links after the re-read. The route serves the activity, gives 404 and
-keeps tenants apart.
+**CRM-Q23b · Recover a dropped activity.** Done when:
 
-Files: `infra/postgres/`, `crm_sources/zoho/mapping.py`,
-`crm_sync/engine.py`, `routes/crm/core.py`, `routes/crm/activities.py`,
-`routes/crm/modules.py`, `routes/crm/export.py` and the frontend files
-`lib/modules.ts`, `ModuleRecordSheet.tsx` and `Timeline.tsx`.
+1. Take an activity whose `$se_module` is a mirrored module, but whose
+   record is not in yet. The sync keeps its Zoho id in the cursor state of
+   its entity. The list holds at most 5,000 ids for each entity.
+2. After the module pass, the sync reads the kept ids of each entity, 100
+   ids in each call. Check the `ids=` parameter against Zoho at build time. A
+   linked activity leaves the list. An id that stays unlinked for 7 days
+   leaves it too.
+3. A list that overflows marks its entity for one full read after the next
+   module pass. It respects a CRM-Q16 hold, and it never queues while the
+   first import of the activity entity is not done.
+4. An R8 test proves the case of a new record and a new task in one run.
+
+**CRM-Q23c · The timeline on a module record.** Done when:
+
+1. `ModuleRecordSheet.tsx` shows the timeline of CRM-Q23a, read only.
+2. `Timeline.tsx` gets a read-only mode with no composer. `lib/api.ts` and
+   `lib/modules.ts` get the fetch.
+3. The `visual-review` skill checks the record page in light mode, compact
+   density and 375 px.
+
+**Verify CRM-Q23 with:**
+
+- `bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"`
+- `uv run pytest tests/unit/test_crm_migration.py tests/unit/test_crm_sync_engine.py tests/unit/test_crm_sync_engine_r8.py tests/unit/test_crm_sync_holds_r8.py tests/unit/test_crm_hidden_module_r8.py tests/unit/test_crm_module_records_r8.py tests/unit/test_crm_modules_routes_r8.py tests/unit/test_crm_next_activity_r8.py tests/unit/test_crm_export.py tests/unit/test_crm_reset_r8.py tests/unit/test_tenant_coverage.py -q`,
+  with the new R8 suite. Confirm that no test is skipped.
+- `uv run ruff check` on each changed file.
+- For CRM-Q23c: `npx tsc --noEmit && npx vitest run src/app/crm` in
+  `workbench/control_plane`.
 
 **CRM-Q24 · A short read shows.** Done when:
 

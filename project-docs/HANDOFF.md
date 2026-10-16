@@ -5619,9 +5619,10 @@ line — never reclaim a number by deleting the other entry.
   (`What_Id`) is a custom-module record finds no core parent, so the sync
   skips it. The member never sees those tasks. The 18,674 held activities
   will likely do the same when they sync.
-- **Do this:** build CRM-Q23 (§18.10). Keep DEWiN's Activities held until it
-  ships. Notes are hit too: the import linked 1 of 3,848.
-- **Authority:** `crm_platform.md` §18.7 and §18.9.2
+- **Do this:** build CRM-Q23a, then CRM-Q23b and CRM-Q23c (§18.10). Keep
+  DEWiN's Activities held until they ship. Notes are hit too: the import
+  linked 1 of 3,848.
+- **Authority:** `crm_platform.md` §18.10
 - **Added:** 2026-10-16 · WS-53, DEWiN import
 
 
