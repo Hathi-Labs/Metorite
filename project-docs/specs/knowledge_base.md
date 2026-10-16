@@ -886,7 +886,7 @@ every member. A preview pane carries its nav entry and no job.
 The rule is three nouns and one editor. The rail grows to five entries,
 each with the ticket that builds it: Spaces (KB-2a), Search (KB-3), Files
 (KB-2c), Sources (KB-7a) and Review (KB-5). An entry is absent until then,
-never a stub. The first screen is the Company space.
+never a stub. The first screen is the space cards. A card opens its space, and the rail shows its page tree.
 
 | Rail entry | What it shows |
 |---|---|

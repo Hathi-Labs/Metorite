@@ -18,14 +18,24 @@
  * HTML sink (`htmlSinks.test.ts`). Each heading of the body moves one level
  * down first (`lib/markdown.ts`), so the app bar keeps the one `<h1>`.
  *
+ * ⚠️ An edit is never lost in silence (fix round 1). The edit takes a
+ * SNAPSHOT when it begins, and the save diffs against it, never against the
+ * live page that the cache refreshes. The save reads the page again first.
+ * A newer version stops it with "Someone saved a newer version", and the
+ * member saves anyway or reloads (`lib/draft.ts`). While the draft is dirty,
+ * a `beforeunload` warns, every way out in the app asks through the leave
+ * guard of the layout, and the draft waits in session storage. So the view
+ * that the shell remounts at 767px gets it back.
+ *
  * A 404 on this page means "not found". It never means "off": the layout
  * decides "off" from the spaces read alone (`lib/phase.ts`).
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
+import { useAccess } from "@/components/AccessProvider";
 import { EmptyState } from "@/components/EmptyState";
 import { MarkdownBody } from "@/components/MarkdownMessage";
 import Tabs from "@/components/Tabs";
@@ -37,6 +47,7 @@ import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
 import { invalidate } from "@/lib/dataCache";
 import { useAssistantFacts } from "@/lib/shell/assistant";
+import { chatScope } from "@/lib/sessions";
 import { relativeTime } from "@/lib/taskCard";
 import { useCachedResource } from "@/lib/useCachedResource";
 
@@ -51,7 +62,18 @@ import {
 } from "../lib/api";
 import { knowledgeAssistantFacts } from "../lib/assistantFacts";
 import { demoteHeadings } from "../lib/markdown";
-import { dayLabel, patchBody, reasonLabel, stateLabel, stateTone, STATE_LABELS } from "../lib/labels";
+import {
+  clearDraft,
+  draftPatch,
+  isDirty,
+  isStale,
+  readDraft,
+  snapshotOf,
+  writeDraft,
+  type Draft,
+  type EditSnapshot,
+} from "../lib/draft";
+import { dayLabel, publishBody, reasonLabel, stateLabel, stateTone, STATE_LABELS } from "../lib/labels";
 import { KNOWLEDGE_HOME, pageHref, spaceHref } from "../lib/links";
 import { PAGE_NOT_FOUND_BODY, PAGE_NOT_FOUND_TITLE, pageRefusal, type PageRead } from "../lib/phase";
 import type { PageDetail, PageVersion } from "../lib/types";
@@ -73,8 +95,19 @@ const EDIT_TABS = [
   { id: "preview", label: "Preview", icon: "Eye" },
 ];
 
+/** The session store, or `null` on the server and in a blocked browser. */
+function sessionStore(): Storage | null {
+  try {
+    return typeof window === "undefined" ? null : window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
 export default function PageView({ pageId }: { pageId: string }) {
-  const { spaces, setPageFocus, openNewPage } = useKnowledge();
+  const { spaces, setPageFocus, openNewPage, setLeaveGuard, leaveGuarded, requestLeave } = useKnowledge();
+  const { access, loading: accessLoading } = useAccess();
+  const scope = accessLoading ? null : chatScope(access.email, access.organization?.id);
   const router = useRouter();
   const searchParams = useSearchParams();
   const toast = useToast();
@@ -95,7 +128,9 @@ export default function PageView({ pageId }: { pageId: string }) {
 
   const [editing, setEditing] = useState(false);
   const [tab, setTab] = useState("write");
-  const [draft, setDraft] = useState({ title: "", body_md: "" });
+  const [draft, setDraft] = useState<Draft>({ title: "", body_md: "" });
+  const [snapshot, setSnapshot] = useState<EditSnapshot | null>(null);
+  const [stale, setStale] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [confirmPublish, setConfirmPublish] = useState(false);
@@ -104,12 +139,63 @@ export default function PageView({ pageId }: { pageId: string }) {
 
   const writable = Boolean(page?.can_write) && page?.state !== "archived";
 
-  function startEdit(from: PageDetail) {
-    setDraft({ title: from.title, body_md: from.body_md });
+  function startEdit(from: PageDetail, restored?: { snapshot: EditSnapshot; draft: Draft }) {
+    setSnapshot(restored?.snapshot ?? snapshotOf(from));
+    setDraft(restored?.draft ?? { title: from.title, body_md: from.body_md });
     setTab("write");
     setSaveError(null);
+    setStale(false);
     setEditing(true);
   }
+
+  /** Close the editor and drop the draft, the stored copy too. */
+  function endEdit() {
+    const store = sessionStore();
+    if (store && scope) clearDraft(store, scope, pageId);
+    setEditing(false);
+    setSnapshot(null);
+    setStale(false);
+    setSaveError(null);
+  }
+
+  const dirty = editing && snapshot !== null && isDirty(snapshot, draft);
+
+  // A draft that waits in session storage comes back once, after the page
+  // and the member are known. That covers the remount at 767px and Back.
+  const [restoredFor, setRestoredFor] = useState<string | null>(null);
+  if (page && scope && !editing && restoredFor !== page.id) {
+    setRestoredFor(page.id);
+    const store = sessionStore();
+    const stored = store ? readDraft(store, scope, page.id) : null;
+    if (stored && page.can_write && page.state !== "archived") startEdit(page, stored);
+  }
+
+  // The stored copy follows the draft: kept while dirty, gone when clean.
+  useEffect(() => {
+    const store = sessionStore();
+    if (!store || !scope || !editing || !snapshot) return;
+    if (isDirty(snapshot, draft)) writeDraft(store, scope, snapshot, draft);
+    else clearDraft(store, scope, snapshot.pageId);
+  }, [scope, editing, snapshot, draft]);
+
+  // The leave guard of the layout, and the browser's own warning.
+  const endEditRef = useRef(endEdit);
+  useEffect(() => {
+    endEditRef.current = endEdit;
+  });
+  useEffect(() => {
+    if (!dirty) return;
+    setLeaveGuard({ onDiscard: () => endEditRef.current() });
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => {
+      setLeaveGuard(null);
+      window.removeEventListener("beforeunload", warn);
+    };
+  }, [dirty, setLeaveGuard]);
 
   // `?edit=1` opens the editor once, after a new page is made. Set during
   // render, the adjust-state-on-a-prop-change pattern. The address then
@@ -155,18 +241,26 @@ export default function PageView({ pageId }: { pageId: string }) {
   /** After each act, re-read what is on screen, whatever the answer was. */
   const reread = () => invalidate(KNOWLEDGE_CACHE);
 
-  async function save() {
-    if (!page) return;
-    const patch = patchBody(page, draft);
+  async function save(anyway = false) {
+    if (!page || !snapshot) return;
+    const patch = draftPatch(snapshot, draft);
     if (!patch) {
-      setEditing(false);
+      endEdit();
       return;
     }
     setSaving(true);
     setSaveError(null);
     try {
+      if (!anyway) {
+        // Read the page again: the cache does not hear another member save.
+        const fresh = await getPage(page.id).catch(() => page);
+        if (isStale(snapshot, fresh)) {
+          setStale(true);
+          return;
+        }
+      }
       await updatePage(page.id, patch);
-      setEditing(false);
+      endEdit();
       toast.show({ key: "kb-save", variant: "success", title: "Changes saved" });
     } catch (err) {
       const reason = err instanceof KnowledgeError ? err.message : String(err);
@@ -210,14 +304,22 @@ export default function PageView({ pageId }: { pageId: string }) {
   }
 
   const last = page.versions[0] ?? null;
-  const patch = editing ? patchBody(page, draft) : null;
+  const patch = editing && snapshot ? draftPatch(snapshot, draft) : null;
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-5 sm:px-6 xl:flex-row xl:items-start">
         <article className="min-w-0 flex-1" aria-label={page.title}>
           {space ? (
-            <Link href={spaceHref(space.id)} className="cc-link text-xs text-muted-foreground hover:text-foreground">
+            <Link
+              href={spaceHref(space.id)}
+              onClick={(e) => {
+                if (!leaveGuarded()) return;
+                e.preventDefault();
+                requestLeave(() => router.push(spaceHref(space.id)));
+              }}
+              className="cc-link text-xs text-muted-foreground hover:text-foreground"
+            >
               {space.name}
             </Link>
           ) : null}
@@ -255,6 +357,31 @@ export default function PageView({ pageId }: { pageId: string }) {
                   )}
                 </div>
               )}
+              {stale ? (
+                <div
+                  role="alert"
+                  className="flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-foreground"
+                >
+                  <span className="min-w-0 flex-1">
+                    Someone saved a newer version of this page while you edited it. Save anyway
+                    to write your changes over it, or reload to read it first.
+                  </span>
+                  <Button size="sm" variant="secondary" disabled={saving} onClick={() => void save(true)}>
+                    Save anyway
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={saving}
+                    onClick={() => {
+                      endEdit();
+                      reread();
+                    }}
+                  >
+                    Reload
+                  </Button>
+                </div>
+              ) : null}
               {saveError ? (
                 <p role="alert" className="text-xs text-destructive">
                   {saveError}
@@ -264,7 +391,7 @@ export default function PageView({ pageId }: { pageId: string }) {
                 <Button size="sm" loading={saving} disabled={saving || !patch || !draft.title.trim()} onClick={() => void save()}>
                   Save changes
                 </Button>
-                <Button variant="secondary" size="sm" disabled={saving} onClick={() => setEditing(false)}>
+                <Button variant="secondary" size="sm" disabled={saving} onClick={() => requestLeave(endEdit)}>
                   Cancel
                 </Button>
                 {!draft.title.trim() ? (
@@ -342,7 +469,7 @@ export default function PageView({ pageId }: { pageId: string }) {
           </dl>
           <section>
             <h3 className="mb-1 text-xs font-medium text-foreground">Versions</h3>
-            <VersionList versions={page.versions} canRevert={writable} onRevert={setReverting} />
+            <VersionList versions={page.versions} canRevert={writable && !editing} onRevert={setReverting} />
           </section>
         </aside>
       </div>
@@ -351,7 +478,7 @@ export default function PageView({ pageId }: { pageId: string }) {
         open={confirmPublish}
         title="Publish this page?"
         subject={page.title}
-        body={`Every reader of ${space?.name ?? "this space"} can then read it, and search will find it. The review date is set to 180 days from today.`}
+        body={publishBody(space)}
         confirmLabel="Publish page"
         confirmVariant="primary"
         icon="Send"

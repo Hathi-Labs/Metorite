@@ -363,7 +363,7 @@ test.describe("an edit is never lost in silence", () => {
     await rail.getByRole("button", { name: "Holidays" }).click();
     const ask = page.getByRole("dialog", { name: "Discard your changes?" });
     await expect(ask).toBeVisible();
-    await ask.getByRole("button", { name: "Keep editing" }).click();
+    await ask.locator("[data-cancel]").filter({ hasText: "Keep editing" }).click();
     await expect(body).toHaveValue("Typed text");
     await expect(page).toHaveURL(/\/knowledge\/pages\/kp-a$/);
 
@@ -387,7 +387,7 @@ test.describe("an edit is never lost in silence", () => {
     ]) {
       await open();
       await expect(ask).toBeVisible();
-      await ask.getByRole("button", { name: "Keep editing" }).click();
+      await ask.locator("[data-cancel]").filter({ hasText: "Keep editing" }).click();
       await expect(ask).toHaveCount(0);
       await expect(body).toHaveValue("Typed text");
     }

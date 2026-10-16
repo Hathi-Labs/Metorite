@@ -7,10 +7,13 @@
 //     `KNOWLEDGE_ORGS` keeps it dark, and the gateway answers 404 so that a
 //     dark feature does not announce itself (`routes/knowledge/flags.py`).
 //   * 403 — the member has no `feature:knowledge`.
+//   * 401 — the session ended. The member signs in again.
 //
 // ⚠️ A 404 on ONE page never means "off". A page the member cannot see, or a
 // page in another organization, answers 404 too (`core.not_found`). So the
 // page view reads `pageRefusal`, which has no "off" in it.
+
+import { signInUrl } from "@/lib/orgLink";
 
 import { KnowledgeError } from "./api";
 import type { Space } from "./types";
@@ -19,10 +22,11 @@ import type { Space } from "./types";
 export type SpacesRead =
   | { kind: "spaces"; spaces: Space[] }
   | { kind: "off" }
-  | { kind: "no-feature" };
+  | { kind: "no-feature" }
+  | { kind: "signed-out" };
 
 /** The phase of the whole app. */
-export type KnowledgePhase = "loading" | "ready" | "off" | "no-feature" | "error";
+export type KnowledgePhase = "loading" | "ready" | "off" | "no-feature" | "signed-out" | "error";
 
 /** The words of the off state. */
 export const KNOWLEDGE_OFF_TITLE = "Knowledge is not turned on for your organization yet.";
@@ -30,6 +34,21 @@ export const KNOWLEDGE_OFF_TITLE = "Knowledge is not turned on for your organiza
 /** The words for a member with no `feature:knowledge`. */
 export const NO_FEATURE_TITLE = "You do not have access to Knowledge";
 export const NO_FEATURE_BODY = "Ask an admin for the Knowledge permission.";
+
+/**
+ * The words for a session that ended. The BFF answers 401 when nobody is
+ * signed in (`requireIdentity`). It is not a server that did not answer.
+ */
+export const SIGNED_OUT_TITLE = "Your session ended.";
+export const SIGNED_OUT_BODY = "Sign in again to open Knowledge.";
+
+/**
+ * The sign-in page, with the way back to this page. The one builder is
+ * `signInUrl` in `lib/orgLink.ts`, which refuses an address off this site.
+ */
+export function signInAgainHref(here: string): string {
+  return signInUrl(here, false);
+}
 
 /** The words when the spaces read failed for another reason. */
 export const LOAD_FAILED_TITLE = "Knowledge did not load.";
@@ -43,6 +62,7 @@ export function spacesRefusal(err: unknown): SpacesRead | null {
   if (!(err instanceof KnowledgeError)) return null;
   if (err.status === 404) return { kind: "off" };
   if (err.status === 403) return { kind: "no-feature" };
+  if (err.status === 401) return { kind: "signed-out" };
   return null;
 }
 
@@ -55,6 +75,7 @@ export function spacesPhase(read: {
   if (read.data) {
     if (read.data.kind === "off") return "off";
     if (read.data.kind === "no-feature") return "no-feature";
+    if (read.data.kind === "signed-out") return "signed-out";
     return "ready";
   }
   if (read.error) return "error";

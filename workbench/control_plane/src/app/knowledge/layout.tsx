@@ -21,7 +21,7 @@
  * land with KB-12, not before.
  */
 
-import { Suspense, useCallback, useMemo, useState, type ReactNode } from "react";
+import { Suspense, useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { AppTopBar } from "@/components/AppTopBar";
@@ -29,13 +29,19 @@ import { useMobileDrawer } from "@/components/AppShell";
 import { EmptyState } from "@/components/EmptyState";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
+import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { invalidate } from "@/lib/dataCache";
 import { railClass, useRailFold } from "@/lib/railFold";
 import { useCachedResource } from "@/lib/useCachedResource";
 
-import { KnowledgeContext, type NewPageAsk, type PageFocus } from "./components/KnowledgeContext";
+import {
+  KnowledgeContext,
+  type LeaveGuard,
+  type NewPageAsk,
+  type PageFocus,
+} from "./components/KnowledgeContext";
 import KnowledgeRail from "./components/KnowledgeRail";
 import NewPageDialog from "./components/NewPageDialog";
 import { KNOWLEDGE_CACHE, SPACES_KEY, listSpaces } from "./lib/api";
@@ -47,6 +53,9 @@ import {
   LOAD_FAILED_TITLE,
   NO_FEATURE_BODY,
   NO_FEATURE_TITLE,
+  SIGNED_OUT_BODY,
+  SIGNED_OUT_TITLE,
+  signInAgainHref,
   spacesPhase,
   spacesRefusal,
   type SpacesRead,
@@ -113,6 +122,25 @@ function KnowledgeShell({ children }: { children: ReactNode }) {
       </Frame>
     );
   }
+  if (phase === "signed-out") {
+    // A 401 from the BFF: nobody is signed in any more. A full navigation,
+    // because the sign-in page is outside this app (fix round 1, P3-d).
+    return (
+      <Frame>
+        <EmptyState
+          icon="LogIn"
+          message={SIGNED_OUT_TITLE}
+          hint={SIGNED_OUT_BODY}
+          action={{
+            label: "Sign in again",
+            icon: "LogIn",
+            onClick: () =>
+              window.location.assign(signInAgainHref(window.location.pathname + window.location.search)),
+          }}
+        />
+      </Frame>
+    );
+  }
   if (phase === "error" || read.data?.kind !== "spaces") {
     return (
       <Frame>
@@ -147,9 +175,23 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
 
   const setPageFocus = useCallback((next: PageFocus | null) => setFocus(next), []);
   const openNewPage = useCallback((next?: NewPageAsk) => setAsk(next ?? {}), []);
+
+  // The one leave guard (fix round 1, P1). A dirty page registers it, and
+  // every way out of the page asks through `requestLeave` first.
+  const guard = useRef<LeaveGuard | null>(null);
+  const [leaving, setLeaving] = useState<{ act: () => void } | null>(null);
+  const setLeaveGuard = useCallback((next: LeaveGuard | null) => {
+    guard.current = next;
+  }, []);
+  const leaveGuarded = useCallback(() => guard.current !== null, []);
+  const requestLeave = useCallback((act: () => void) => {
+    if (guard.current) setLeaving({ act });
+    else act();
+  }, []);
+
   const context = useMemo(
-    () => ({ spaces, setPageFocus, openNewPage }),
-    [spaces, setPageFocus, openNewPage],
+    () => ({ spaces, setPageFocus, openNewPage, setLeaveGuard, leaveGuarded, requestLeave }),
+    [spaces, setPageFocus, openNewPage, setLeaveGuard, leaveGuarded, requestLeave],
   );
 
   const railProps = {
@@ -169,7 +211,7 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
               {...railProps}
               onNavigate={(href) => {
                 closeDrawer();
-                router.push(href);
+                requestLeave(() => router.push(href));
               }}
             />
           </nav>,
@@ -197,7 +239,7 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
               size="sm"
               icon="Plus"
               aria-label="New page"
-              onClick={() => openNewPage({ spaceId: selectedSpaceId })}
+              onClick={() => requestLeave(() => openNewPage({ spaceId: selectedSpaceId }))}
             >
               {isMobile ? null : "New page"}
             </Button>
@@ -209,12 +251,30 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
               aria-label="Knowledge spaces"
               className={`w-60 shrink-0 overflow-y-auto border-r border-border bg-card p-2 ${railClass(rail.settled)}`}
             >
-              <KnowledgeRail {...railProps} onNavigate={(href) => router.push(href)} />
+              <KnowledgeRail {...railProps} onNavigate={(href) => requestLeave(() => router.push(href))} />
             </nav>
           ) : null}
           <main className="flex min-w-0 flex-1 flex-col overflow-hidden">{children}</main>
         </div>
       </div>
+      <ConfirmDialog
+        open={leaving !== null}
+        title="Discard your changes?"
+        body="Your changes to this page are not saved. If you leave now, they are lost."
+        confirmLabel="Discard"
+        cancelLabel="Keep editing"
+        confirmVariant="destructive"
+        defaultFocus="cancel"
+        icon="TriangleAlert"
+        onCancel={() => setLeaving(null)}
+        onConfirm={() => {
+          const held = leaving;
+          setLeaving(null);
+          guard.current?.onDiscard();
+          guard.current = null;
+          held?.act();
+        }}
+      />
       <NewPageDialog
         ask={ask}
         spaces={spaces}

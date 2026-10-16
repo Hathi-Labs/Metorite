@@ -143,3 +143,16 @@ export function patchBody(
   if (draft.body_md !== saved.body_md) out.body_md = draft.body_md;
   return Object.keys(out).length ? out : null;
 }
+
+/**
+ * The body of the publish confirm. In a `me` space a published page stays
+ * the member's own (`core.visible_pages_clause` gives no reader a `me`
+ * space), so the words must not promise readers (review of KB-2a, P3-b).
+ */
+export function publishBody(space: Pick<Space, "kind" | "name"> | null): string {
+  const review = "The review date is set to 180 days from today.";
+  if (space?.kind === "me") {
+    return `Only you can read pages in ${space.name}, also after you publish. ${review}`;
+  }
+  return `Every reader of ${space?.name ?? "this space"} can then read it, and search will find it. ${review}`;
+}
