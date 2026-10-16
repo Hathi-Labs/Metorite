@@ -212,6 +212,9 @@ async def purge_tenant_organization(
         "kept": [
             "user_identity",
             "auth_email_otp_token",
+            "email_detached_purges (one row for each Mem0 purge of a mailbox "
+            "that the org owes; it keeps an owner address until the purge "
+            "closes, then a mailbox id only)",
             "un-threaded tables (chat/wa/meetings/gtd/apps/workflows "
             "— no tenancy column yet; the MT-1j remainder)",
         ],
