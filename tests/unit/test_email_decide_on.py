@@ -173,7 +173,7 @@ async def test_on_is_accepted_for_each_email_feature(monkeypatch, tenant, featur
     assert _records(caps, "decide.mode_refused") == []
     # WS-53 CRM-Q26: `crm.note_labels` has no old path, so `on` is legal for
     # it too. Every email feature, and nothing else of the email set.
-    assert df.ON_FEATURES == frozenset(df.FEATURES) | frozenset(df.CRM_FEATURES)
+    assert frozenset(df.FEATURES) | frozenset(df.CRM_FEATURES) == df.ON_FEATURES
 
 
 async def test_the_orchestrator_value_turns_all_four_on(monkeypatch, tenant) -> None:
