@@ -507,6 +507,20 @@ class Settings(BaseSettings):
     my_day_decide_orgs: str = ""
     my_day_decide_org_daily_calls: int = 0
 
+    # ── The CRM's `decide` org list (WS-53 CRM-Q26) ─────────────────────────
+    #
+    # `crm_decide_orgs` lists the organization ids that may run a `crm.*`
+    # feature (today `crm.note_labels`) in a mode other than `off`, in the
+    # grammar of `decide_feature_orgs`. For a `crm.` feature, `mode_for` reads
+    # it and NOT `decide_feature_orgs`, so a mode change never starts every
+    # CRM org at once (`crm_platform.md` §18.11.2 item 2). Default empty: no
+    # organization. The one reader is `gateway/decide_features.py`.
+    #
+    # 🔴 OWNER-GATE on a box: a value in the list starts real Router calls,
+    # billed to the org (`work_plan.md` §6). Fence:
+    # tests/unit/test_crm_note_labels.py.
+    crm_decide_orgs: str = ""
+
     # ── AI tier routing (WS-45, D90) ────────────────────────────────────────
     #
     # The agents that the platform's tier policy covers. A comma list of agent
