@@ -594,6 +594,18 @@ def _door_violations(source: str, fn_name: str) -> list[str]:
         stop = {k.arg: k.value for k in call.keywords}.get("stop_loops")
         if not (isinstance(stop, ast.Constant) and stop.value is True):
             problems.append(f"{fn_name}: the purge does not stop the sync loops")
+        # Fix round 1: the record of the purge and the Console mirror go
+        # BEFORE the teardown wait, which a stop of the process can cut.
+        records = [c.lineno for c in _called(fn, "_mirror_removal_to_console")]
+        records += [c.lineno for c in ast.walk(fn) if isinstance(c, ast.Call)
+                    and isinstance(c.func, ast.Attribute)
+                    and isinstance(c.func.value, ast.Name) and c.func.value.id == "_log"
+                    and c.args and isinstance(c.args[0], ast.Constant)
+                    and "purged" in str(c.args[0].value)]
+        if not records:
+            problems.append(f"{fn_name}: the door logs no purge")
+        elif call.lineno < max(records):
+            problems.append(f"{fn_name}: finish_teardowns runs before the log or the mirror")
     return problems
 
 
@@ -844,13 +856,15 @@ class _DoorDB:
 
 
 @pytest.fixture()
-def door(monkeypatch):
+def door(monkeypatch):  # noqa: C901
     """The REAL operator door and the REAL shared body, over ``_DoorDB``.
     The provider, Google, the scheduler and Redis are recorders."""
     from acb_auth import offboard
 
-    def _setup(mailboxes: list[dict[str, Any]], *, owners: int = 1,
-               slow_stop: float = 0.0):
+    def _setup(  # noqa: C901
+            mailboxes: list[dict[str, Any]], *, owners: int = 1,
+               slow_stop: float = 0.0, slow_revoke: float = 0.0,
+               google: int = 200):
         events: list[tuple[Any, ...]] = []
         state = {"open": 0}
         db = _DoorDB(events, mailboxes, owners)
@@ -888,6 +902,10 @@ def door(monkeypatch):
             try:
                 if slow_stop:
                     await asyncio.sleep(slow_stop)
+            except asyncio.CancelledError:
+                # As the real ``remove_account_sync`` does: it swallows the
+                # cancel of its wait for the loop task (scheduler.py).
+                events.append(("stop_cancel_swallowed", account_id))
             finally:
                 running["now"] -= 1
 
@@ -904,8 +922,16 @@ def door(monkeypatch):
             return _Provider()
 
         async def _revoke(token: str) -> int:
+            if slow_revoke:
+                await asyncio.sleep(slow_revoke)
             events.append(("revoke", state["open"]))
-            return 200
+            return google
+
+        class _DoorLog:
+            def info(self, event: str, **kw: Any) -> None:
+                events.append(("door_log", event))
+
+            warning = error = info
 
         log = _Log()
         monkeypatch.setenv("GATEWAY_OPERATOR_TOKEN", "op-token")
@@ -914,6 +940,7 @@ def door(monkeypatch):
         monkeypatch.setattr(operator_door, "find_member", _find)
         monkeypatch.setattr(operator_door, "purge_identity_shadow", _noop)
         monkeypatch.setattr(operator_door, "invalidate_for", lambda *_a: None)
+        monkeypatch.setattr(operator_door, "_log", _DoorLog())
         monkeypatch.setattr(admin_members, "record_admin_change", lambda *a, **k: None)
         monkeypatch.setattr(sched, "remove_account_sync", _stop)
         monkeypatch.setattr(sched, "get_scheduler_status", lambda: {"accounts": []})
@@ -947,7 +974,8 @@ async def test_the_member_purge_tears_down_after_the_commit(door):
     out = await d.purge()
     kinds = _kinds(d.events)
     commit = kinds.index("commit")
-    assert out["mailboxes"] == {"planned": 2, "finished": 2, "continuing": 0}
+    assert out["mailboxes"] == {"planned": 2, "finished": 2, "failed": 0,
+                                "continuing": 0}
     # The plans and the purge rows, then the deletes, all in the transaction.
     sqls = [e[2] for e in d.events if e[0] == "sql"]
     plan_at = next(i for i, q in enumerate(sqls) if q.startswith("SELECT id, organization_id"))
@@ -1025,24 +1053,95 @@ async def test_the_door_waits_a_bounded_time(door, monkeypatch):
     assert waited < 0.45, f"the door waited {waited:.2f}s past its bound"
     counts = out["mailboxes"]
     assert counts["planned"] == 10 and counts["continuing"] > 0
-    assert counts["finished"] + counts["continuing"] == 10
+    assert counts["finished"] + counts["failed"] + counts["continuing"] == 10
     assert ("warning", "email.teardown.continuing",
             {"org": DOOR_ORG, "mailboxes": counts["continuing"],
-             "finished": counts["finished"]}) in d.log.lines
+             "finished": counts["finished"], "failed": 0}) in d.log.lines
+    assert teardown.live_teardown_count() == 1, "the drain does not see the held task"
     await asyncio.wait_for(asyncio.gather(*teardown._TEARDOWNS), timeout=10)
+    assert teardown.live_teardown_count() == 0
     assert len([e for e in d.events if e[0] == "stop"]) == 10
     assert d.running["max"] <= teardown.TEARDOWN_CONCURRENCY
     assert ("info", "email.teardown.finished",
-            {"org": DOOR_ORG, "mailboxes": 10}) in d.log.lines
+            {"org": DOOR_ORG, "mailboxes": 10, "finished": 10,
+             "failed": 0}) in d.log.lines
 
 
-async def test_one_slow_mailbox_is_bounded(door, monkeypatch):
+async def test_one_slow_leg_is_bounded(door, monkeypatch):
+    """A leg past ``MAILBOX_TEARDOWN_BOUND_S`` counts as failed, never as
+    finished."""
     monkeypatch.setattr(teardown, "MAILBOX_TEARDOWN_BOUND_S", 0.05)
-    d = door([_mailbox(1, "imap")], slow_stop=5)
+    d = door([_mailbox(1, "gmail")], slow_revoke=5)
     out = await d.purge()
-    assert out["mailboxes"] == {"planned": 1, "finished": 1, "continuing": 0}
+    assert out["mailboxes"] == {"planned": 1, "finished": 0, "failed": 1,
+                                "continuing": 0}
     assert ("warning", "email.teardown.mailbox_failed",
             {"account_id": _mailbox(1)["id"], "error": "TimeoutError"}) in d.log.lines
+
+
+async def test_a_slow_stop_keeps_the_time_of_the_revoke(door, monkeypatch):
+    """Fix round 1, item 3. The stop has its own bound, before the bound of
+    the legs. The fake stop swallows the cancel of its wait, as the real
+    ``remove_account_sync`` does. A stop that takes most of the leg bound
+    must not cancel the revoke after it."""
+    monkeypatch.setattr(teardown, "STOP_SYNC_BOUND_S", 1.0)
+    monkeypatch.setattr(teardown, "MAILBOX_TEARDOWN_BOUND_S", 0.4)
+    d = door([_mailbox(1, "gmail")], slow_stop=0.3, slow_revoke=0.2)
+    out = await d.purge()
+    assert ("revoke", 0) in d.events, "the slow stop used the time of the revoke"
+    assert out["mailboxes"] == {"planned": 1, "finished": 1, "failed": 0,
+                                "continuing": 0}
+
+
+async def test_a_stop_past_its_bound_still_lets_the_legs_run(door, monkeypatch):
+    """The real stop swallows the cancel, so its bound raises nothing. The
+    teardown asks the bound, logs the line, and runs the legs."""
+    monkeypatch.setattr(teardown, "STOP_SYNC_BOUND_S", 0.05)
+    d = door([_mailbox(1, "gmail")], slow_stop=5)
+    started = time.monotonic()
+    out = await d.purge()
+    assert time.monotonic() - started < 2, "the stop bound did not hold"
+    assert ("stop_cancel_swallowed", _mailbox(1)["id"]) in d.events
+    assert ("warning", "email.teardown.stop_timed_out",
+            {"account_id": _mailbox(1)["id"]}) in d.log.lines
+    assert ("revoke", 0) in d.events
+    assert out["mailboxes"]["finished"] == 1
+
+
+async def test_a_failed_leg_counts_as_failed(door):
+    """Fix round 1, item 5. ``finished`` means success."""
+    d = door([_mailbox(1, "gmail"), _mailbox(2, "imap")], google=400)
+    out = await d.purge()
+    assert out["mailboxes"] == {"planned": 2, "finished": 1, "failed": 1,
+                                "continuing": 0}
+
+
+async def test_the_door_logs_before_it_waits(door):
+    """Fix round 1, item 1. The purge record goes BEFORE the teardown wait,
+    so a stop of the process in the wait cannot lose it."""
+    d = door([_mailbox(1, "imap")])
+    await d.purge()
+    kinds = [e[1] if e[0] == "door_log" else e[0] for e in d.events]
+    assert kinds.index("operator_member_purged") < kinds.index("stop"), (
+        "the door waited for the teardown before it logged the purge")
+
+
+async def test_a_cancelled_teardown_names_what_it_did_not_finish(door, monkeypatch):
+    """Fix round 1, item 2. A stop of the process cancels the held task. The
+    line names each mailbox that did not finish, and no ledger keeps a
+    token."""
+    monkeypatch.setattr(teardown, "TEARDOWN_WAIT_S", 0.05)
+    d = door([_mailbox(1, "imap"), _mailbox(2, "gmail")], slow_revoke=5)
+    out = await d.purge()
+    assert out["mailboxes"]["continuing"] >= 1
+    [held] = list(teardown._TEARDOWNS)
+    held.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await held
+    [line] = [ln for ln in d.log.lines if ln[1] == "email.teardown.cancelled"]
+    assert line[0] == "warning"
+    assert line[2]["unfinished"] == [_mailbox(2)["id"]]
+    _no_secret(d.log.lines)
 
 
 def test_the_teardown_bounds():
@@ -1050,4 +1149,5 @@ def test_the_teardown_bounds():
     assert teardown.TEARDOWN_CONCURRENCY == 4
     assert teardown.MAILBOX_TEARDOWN_BOUND_S == 30.0
     assert teardown.TEARDOWN_WAIT_S == 60.0
+    assert teardown.STOP_SYNC_BOUND_S == 15.0
     assert teardown.SUBSCRIPTION_DELETE_TIMEOUT_S == 5.0

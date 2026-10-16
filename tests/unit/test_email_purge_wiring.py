@@ -278,7 +278,8 @@ class TestTheMemberPurgeTearsDownEachMailbox:
                 assert _rows_of(p.admin_engine, children, acc) == {}
                 assert recorder.gone(acc)
             assert out["deleted"]["email_accounts"] == 2
-            assert out["mailboxes"] == {"planned": 2, "finished": 2, "continuing": 0}
+            assert out["mailboxes"] == {"planned": 2, "finished": 2, "failed": 0,
+                                        "continuing": 0}
             # Each leg after the commit, with the rule ids read under RLS.
             stops = sorted(e for e in recorder.events if e[0] == "stop")
             assert stops == sorted([("stop", gmail, True), ("stop", outlook, True)]), (

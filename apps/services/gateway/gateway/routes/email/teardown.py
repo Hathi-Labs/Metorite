@@ -45,8 +45,10 @@ The rules of this module:
   Microsoft has no revoke for one delegated grant, so the grant stays.
 * A scope of more than ``TEARDOWN_MAX_MAILBOXES`` mailboxes answers 409 before
   any delete. ``TEARDOWN_CONCURRENCY`` mailboxes run at once, each with the
-  bound ``MAILBOX_TEARDOWN_BOUND_S``. A door waits ``TEARDOWN_WAIT_S`` at
-  most, and the rest continue in a task that ``_TEARDOWNS`` holds.
+  bound ``MAILBOX_TEARDOWN_BOUND_S`` on its legs. The stop of a purge has its
+  own bound ``STOP_SYNC_BOUND_S``, before the legs. A door waits
+  ``TEARDOWN_WAIT_S`` at most, and the rest continue in a task that
+  ``_TEARDOWNS`` holds. ``/internal/drain`` counts that task.
 
 Fences: ``tests/unit/test_email_mailbox_teardown.py``,
 ``tests/unit/test_email_purge_wiring.py`` (R8) and the R8 case in
@@ -57,7 +59,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 from uuid import UUID
 
@@ -98,6 +100,12 @@ MAILBOX_TEARDOWN_BOUND_S = 30.0
 #: A door waits this long at most. The mailboxes that remain continue in a
 #: task that ``_TEARDOWNS`` holds.
 TEARDOWN_WAIT_S = 60.0
+
+#: The bound on the stop of one sync loop in a purge. It runs BEFORE the bound
+#: of the legs and outside it, so a slow stop cannot use the time of the
+#: revoke. ``remove_account_sync`` swallows the cancel of its wait, so at this
+#: bound the stop returns and the legs go on (fix round 1, review P2).
+STOP_SYNC_BOUND_S = 15.0
 
 #: The page size of one Redis ``DELETE``.
 _CACHE_DELETE_BATCH = 200
@@ -217,10 +225,17 @@ class MemberScope:
 
 
 class TeardownCounts(BaseModel):
-    """What a door tells its caller about the mailboxes of a purge."""
+    """What a door tells its caller about the mailboxes of a purge.
+
+    ``finished`` counts the mailboxes whose legs all succeeded. ``failed``
+    counts the ones with a leg that failed or a bound that passed. Each
+    failure has its own log line. ``continuing`` counts the ones that still
+    run in the held task when the door answers.
+    """
 
     planned: int = 0
     finished: int = 0
+    failed: int = 0
     continuing: int = 0
 
 
@@ -330,12 +345,21 @@ async def read_filter_ids(db: Any, account_id: str, owner: str) -> list[str]:
 
 #: The teardowns that still run. The set holds a strong reference to each task
 #: until it ends, so a door that stops waiting does not lose the rest.
+#: ``/internal/drain`` counts it (:func:`live_teardown_count`), so a deploy
+#: waits for a teardown before it stops the process.
 _TEARDOWNS: set[asyncio.Task[None]] = set()
+
+
+def live_teardown_count() -> int:
+    """The held teardown tasks of this process that still run."""
+    return sum(1 for task in _TEARDOWNS if not task.done())
 
 
 @dataclass
 class _Progress:
     finished: int = 0
+    failed: int = 0
+    done: set[str] = field(default_factory=set)
 
 
 async def finish_teardowns(
@@ -355,8 +379,10 @@ async def finish_teardowns(
     ``bump_owners`` bumps the My Day of each owner after the legs. A purged
     member does not exist any more, so a purge passes false.
 
-    It never raises. A door waits ``TEARDOWN_WAIT_S`` at most. The answer
-    counts the mailboxes that finished and the ones that continue.
+    It never raises. A door waits ``TEARDOWN_WAIT_S`` at most. A purge door
+    calls it LAST, after its own log line and its Console mirror, so a stop
+    during the wait loses neither (fix round 1). The answer counts the
+    mailboxes that finished, the ones that failed and the ones that continue.
     """
     plans = list(plans)
     if not plans:
@@ -371,13 +397,13 @@ async def finish_teardowns(
     # ``asyncio.wait`` cancels nothing: at the bound, and when the request is
     # cancelled, the task goes on.
     await asyncio.wait({task}, timeout=TEARDOWN_WAIT_S)
-    finished = progress.finished
-    continuing = len(plans) - finished
+    finished, failed = progress.finished, progress.failed
+    continuing = len(plans) - finished - failed
     if continuing:
         _log.warning("email.teardown.continuing", org=org,
-                     mailboxes=continuing, finished=finished)
+                     mailboxes=continuing, finished=finished, failed=failed)
     return TeardownCounts(planned=len(plans), finished=finished,
-                          continuing=continuing)
+                          failed=failed, continuing=continuing)
 
 
 async def _run_teardowns(
@@ -393,18 +419,34 @@ async def _run_teardowns(
 
     async def _one(plan: TeardownPlan) -> None:
         async with gate:
+            ok = False
             try:
+                if stop_loops:
+                    await _bounded_stop(plan.account_id)
                 async with asyncio.timeout(MAILBOX_TEARDOWN_BOUND_S):
-                    await _teardown_one(plan, open_session=open_session,
-                                        stop_loop=stop_loops)
+                    ok = await _teardown_one(plan, open_session=open_session)
             except Exception as exc:
                 _log.warning("email.teardown.mailbox_failed",
                              account_id=plan.account_id,
                              error=type(exc).__name__)
-            finally:
+            # A cancel skips this, so the mailbox stays unfinished.
+            progress.done.add(plan.account_id)
+            if ok:
                 progress.finished += 1
+            else:
+                progress.failed += 1
 
-    await asyncio.gather(*(_one(plan) for plan in plans))
+    try:
+        await asyncio.gather(*(_one(plan) for plan in plans))
+    except asyncio.CancelledError:
+        # A stop of the process. The credentials went with the rows, so
+        # nothing can run these legs again. The line names each mailbox, so
+        # the owner can remove the grant or the filters by hand. No ledger
+        # keeps a token after the delete (fix round 1).
+        _log.warning("email.teardown.cancelled", org=org,
+                     unfinished=sorted(plan.account_id for plan in plans
+                                       if plan.account_id not in progress.done))
+        raise
     if bump_owners:
         # Each owner once, with the id of its first mailbox for the log.
         owners: dict[tuple[str | None, str], str] = {}
@@ -412,20 +454,38 @@ async def _run_teardowns(
             owners.setdefault((plan.org or org, plan.owner), plan.account_id)
         for (owner_org, owner), account_id in owners.items():
             await _bump_my_day(owner_org, owner, account_id)
-    _log.info("email.teardown.finished", org=org, mailboxes=len(plans))
+    _log.info("email.teardown.finished", org=org, mailboxes=len(plans),
+              finished=progress.finished, failed=progress.failed)
+
+
+async def _bounded_stop(account_id: str) -> None:
+    """Stop one sync loop, with its own bound ``STOP_SYNC_BOUND_S``."""
+    expired = False
+    try:
+        async with asyncio.timeout(STOP_SYNC_BOUND_S) as bound:
+            await stop_sync(account_id)
+        # ``remove_account_sync`` swallows the cancel of its wait, so the
+        # bound can pass with no ``TimeoutError``. Ask the bound itself.
+        expired = bound.expired()
+    except TimeoutError:
+        expired = True
+    if expired:
+        _log.warning("email.teardown.stop_timed_out", account_id=account_id)
 
 
 async def _teardown_one(
-    plan: TeardownPlan, *, open_session: Callable[[], Any], stop_loop: bool,
-) -> None:
-    """The legs of one mailbox, in order. Each leg logs and never raises."""
-    if stop_loop:
-        await stop_sync(plan.account_id)
+    plan: TeardownPlan, *, open_session: Callable[[], Any],
+) -> bool:
+    """The legs of one mailbox, in order. Each leg logs and never raises.
+    True when each leg succeeded."""
     # The filters go first, while the grant is still valid.
-    await remove_metorite_filters(plan)
-    await revoke_grant(plan, open_session)
-    await drop_graph_subscription(plan)
-    await drop_mailbox_cache(plan.org, plan.account_id)
+    results = [
+        await remove_metorite_filters(plan),
+        await revoke_grant(plan, open_session),
+        await drop_graph_subscription(plan),
+        await drop_mailbox_cache(plan.org, plan.account_id),
+    ]
+    return all(results)
 
 
 # ── the stop of the sync loop ────────────────────────────────────────────────
@@ -457,7 +517,7 @@ async def stop_sync(account_id: str) -> bool:
 # ── the filters that Metorite made ───────────────────────────────────────────
 
 
-async def remove_metorite_filters(plan: TeardownPlan) -> None:
+async def remove_metorite_filters(plan: TeardownPlan) -> bool:
     """Delete each filter that Metorite made for the mailbox, best effort.
 
     A Gmail row deletes its Gmail filters (gap D2). An Outlook row deletes
@@ -466,14 +526,15 @@ async def remove_metorite_filters(plan: TeardownPlan) -> None:
     ``_instantiate_provider``, and ``delete_filter`` refreshes an expired
     access token. A failure of one filter logs its error class, and the next
     filter still goes. The whole step has a bound of
-    ``FILTER_REMOVAL_TIMEOUT_S``. It never raises.
+    ``FILTER_REMOVAL_TIMEOUT_S``. It never raises. It answers False when a
+    filter or the step failed.
 
     It runs only after the delete commits, with the ids that the plan kept,
     and before the revoke ends the grant. It holds no session open, because
     each delete is a network call.
     """
     if plan.provider not in FILTER_PROVIDERS or not plan.filter_ids:
-        return
+        return True
     account_id = plan.account_id
     removed = failed = 0
     try:
@@ -496,9 +557,10 @@ async def remove_metorite_filters(plan: TeardownPlan) -> None:
         # that does not build.
         _log.warning("email.disconnect.filters_failed", account_id=account_id,
                      error=type(exc).__name__, removed=removed, failed=failed)
-        return
+        return False
     _log.info("email.disconnect.filters_removed", account_id=account_id,
               removed=removed, failed=failed)
+    return failed == 0
 
 
 def _status_of(exc: BaseException) -> int | None:
@@ -530,8 +592,8 @@ def _grant_token(creds: Any) -> str | None:
     token. Google revokes the refresh token of an access token too."""
     if not isinstance(creds, dict):
         return None
-    for field in ("refresh_token", "access_token"):
-        value = creds.get(field)
+    for name in ("refresh_token", "access_token"):
+        value = creds.get(name)
         if isinstance(value, str) and value.strip():
             return value
     return None
@@ -591,7 +653,7 @@ async def grant_shared_elsewhere(
     return GRANT_OWNER_BLIND
 
 
-async def revoke_grant(plan: TeardownPlan, open_session: Callable[[], Any]) -> None:
+async def revoke_grant(plan: TeardownPlan, open_session: Callable[[], Any]) -> bool:
     """Revoke the OAuth grant of a deleted Gmail mailbox, best effort (gap D1).
 
     Only a ``gmail`` plan gets a call. Microsoft has no revoke for one
@@ -608,10 +670,11 @@ async def revoke_grant(plan: TeardownPlan, open_session: Callable[[], Any]) -> N
 
     Google answers 200 when the grant ends. Any other outcome logs
     ``email.revoke_failed`` with the provider and a fixed reason. The call
-    has a bound of ``REVOKE_TIMEOUT_S``. It never raises.
+    has a bound of ``REVOKE_TIMEOUT_S``. It never raises. It answers False
+    for a fault: a failed revoke, or a skip that is not ``shared_grant``.
     """
     if plan.provider != "gmail":
-        return
+        return True
     account_id = plan.account_id
     verdict = await grant_shared_elsewhere(
         open_session, plan.email_address, account_id)
@@ -619,14 +682,15 @@ async def revoke_grant(plan: TeardownPlan, open_session: Callable[[], Any]) -> N
         emit = _log.info if verdict == GRANT_SHARED else _log.warning
         emit("email.revoke_skipped", account_id=account_id, provider="gmail",
              reason=verdict)
-        return
+        return verdict == GRANT_SHARED
     reason = await _revoke_reason(plan.credentials_encrypted)
     if reason is None:
         _log.info("email.disconnect.grant_revoked", account_id=account_id,
                   provider="gmail")
-        return
+        return True
     _log.warning("email.revoke_failed", account_id=account_id,
                  provider="gmail", reason=reason)
+    return False
 
 
 async def _revoke_reason(creds_blob: Any) -> str | None:
@@ -653,7 +717,7 @@ async def _revoke_reason(creds_blob: Any) -> str | None:
 # ── the Graph subscription ───────────────────────────────────────────────────
 
 
-async def drop_graph_subscription(plan: TeardownPlan) -> None:
+async def drop_graph_subscription(plan: TeardownPlan) -> bool:
     """Remove the Graph push subscription of a deleted mailbox, best effort.
 
     Only a ``microsoft`` plan with a subscription id gets a call. The provider
@@ -674,7 +738,7 @@ async def drop_graph_subscription(plan: TeardownPlan) -> None:
     sub_id = plan.subscription_id
     account_id = plan.account_id
     if plan.provider != "microsoft" or not sub_id:
-        return
+        return True
     try:
         async with asyncio.timeout(SUBSCRIPTION_DELETE_TIMEOUT_S):
             creds, _store = _decrypt_credentials(plan.credentials_encrypted)
@@ -688,14 +752,15 @@ async def drop_graph_subscription(plan: TeardownPlan) -> None:
             error=type(exc).__name__,
             status=getattr(response, "status_code", None),
         )
-        return
+        return False
     if graph_status in _SUBSCRIPTION_GONE:
         _log.info("email.disconnect.subscription_deleted",
                   account_id=account_id, sub=str(sub_id)[:12],
                   status=graph_status)
-        return
+        return True
     _log.warning("email.disconnect.subscription_delete_failed",
                  account_id=account_id, error=None, status=graph_status)
+    return False
 
 
 # ── the Redis keys of the mailbox, and the My Day bump ──────────────────────
@@ -759,21 +824,22 @@ async def _drop_namespace(client: Any, namespace: str, mailbox: str) -> int:
     return dropped
 
 
-async def drop_mailbox_cache(org: str | None, account_id: str) -> None:
+async def drop_mailbox_cache(org: str | None, account_id: str) -> bool:
     """Delete the Redis keys of a deleted mailbox.
 
     ``org`` comes from the row that the plan read, never from request input
     (R5). The keys use the mailbox id in its canonical UUID form, as the
     writers do. The deletes have a bound of ``CACHE_DROP_TIMEOUT_S``. A
-    failure logs the error class only. It never raises.
+    failure logs the error class only. It never raises. It answers False
+    when the deletes failed.
     """
     if not org:
-        return
+        return True
     try:
         mailbox = str(UUID(str(account_id).strip()))
     except (TypeError, ValueError, AttributeError):
-        return
-    await _drop_keys(org, mailbox)
+        return True
+    return await _drop_keys(org, mailbox)
 
 
 async def _bump_my_day(org: str | None, owner: str, account_id: str) -> None:
@@ -798,7 +864,7 @@ def _canonical(account_id: str) -> str:
         return str(account_id)[:64]
 
 
-async def _drop_keys(org: str, mailbox: str) -> None:
+async def _drop_keys(org: str, mailbox: str) -> bool:
     from acb_common.tenant_redis import organization_scope
 
     dropped = 0
@@ -811,6 +877,7 @@ async def _drop_keys(org: str, mailbox: str) -> None:
     except Exception as exc:
         _log.warning("email.disconnect.cache_drop_failed", account_id=mailbox,
                      error=type(exc).__name__, dropped=dropped)
-        return
+        return False
     _log.info("email.disconnect.cache_dropped", account_id=mailbox,
               keys=dropped)
+    return True

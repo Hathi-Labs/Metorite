@@ -230,12 +230,13 @@ async def remove_organization_member(
     addr = (member["email"] or "").strip().lower()
     await purge_identity_shadow(email=addr, org_id=org_id)
     invalidate_for(member["email"])
+    _log.warning("operator_member_purged", slug=slug, email=member["email"],
+                 deleted=deleted, kept=kept)
     # EM-G11f1b (email_app_master_plan.md §12.3.13.9.2): the same teardown as
-    # the admin door, after the session block exits.
+    # the admin door, after the session block exits. It goes LAST, after the
+    # log line, so a stop of the process in its wait loses no record.
     mailboxes = await finish_teardowns(
         org_id, plans, open_session=partial(_tenant_session, org_id),
         stop_loops=True, bump_owners=False)
-    _log.warning("operator_member_purged", slug=slug, email=member["email"],
-                 deleted=deleted, kept=kept)
     return PurgeResult(email=member["email"], deleted=deleted,
                        kept=kept, mailboxes=mailboxes).model_dump()

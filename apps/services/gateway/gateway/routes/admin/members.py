@@ -865,13 +865,6 @@ async def purge_member(
     await purge_identity_shadow(email=addr, org_id=org_id)
 
     invalidate_for(member["email"])
-    # EM-G11f1b: the mailboxes went with the commit, so tear each one down
-    # now, with the session block closed. Stop each sync loop, remove the
-    # filters, revoke the grant, drop the Graph subscription and the Redis
-    # keys. A bounded wait. The rest continues in a task.
-    mailboxes = await finish_teardowns(
-        org_id, plans, open_session=partial(_tenant_session, org_id),
-        stop_loops=True, bump_owners=False)
     _log.info("member_purged", email=member["email"], by=admin.email,
               deleted=deleted, kept=kept)
     # The registry has no hard delete. A purged person is a `removed`
@@ -880,6 +873,14 @@ async def purge_member(
     await _mirror_removal_to_console(
         actor_email=admin.email or "", member_email=member["email"],
     )
+    # EM-G11f1b: the mailboxes went with the commit, so tear each one down
+    # now, with the session block closed. Stop each sync loop, remove the
+    # filters, revoke the grant, drop the Graph subscription and the Redis
+    # keys. It goes LAST (fix round 1): its wait can last 60 s, and a stop of
+    # the process in that wait must not lose the log line or the mirror.
+    mailboxes = await finish_teardowns(
+        org_id, plans, open_session=partial(_tenant_session, org_id),
+        stop_loops=True, bump_owners=False)
     return PurgeResult(email=member["email"], deleted=deleted, kept=kept,
                        mailboxes=mailboxes)
 
@@ -941,6 +942,13 @@ async def purge_member_rows(
             text(rows.count_sql), _purge_params(rows, uid=uid, email=addr)
         )
         kept[rows.key] = int(result.scalar() or 0)
+
+    # EM-G11f1b, fix round 1. A mailbox that the member connected after the
+    # plan read goes with the delete, and it has no plan, so nothing revokes
+    # its grant. The line says so. It names counts and no address.
+    if deleted.get("email_accounts", 0) > len(plans):
+        _log.warning("email.teardown.unplanned_mailbox",
+                     planned=len(plans), deleted=deleted["email_accounts"])
 
     for rows in _PURGE_DELETES:
         await db.execute(
