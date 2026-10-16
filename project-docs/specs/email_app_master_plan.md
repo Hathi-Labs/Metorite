@@ -13880,7 +13880,7 @@ connect is the precedent (`src/app/whatsapp/connect/page.tsx:340`), and
 | PR-G6 | **EM-G11e** — UMCC: the detector, dark | 4 | 🟢 AGENT-SAFE build. 🔴 OWNER-GATE for the vendor and the API (Q-GM-9). 🔴 `enforcement-flip` for `EMAIL_INJECTION_SCAN` | M, about 450 | §12.3.13.8 |
 | PR-G7 | **EM-G11f1** — one mailbox teardown, with the revoke and the filters. ✅ Merged NARROWED #1006 (2026-10-14) | 6 | 🟢 AGENT-SAFE · security review · R8 | M, about 550 | §12.3.13.9 |
 | PR-G8 | **EM-G11f2** — a durable purge, and a fence on each child. ✅ Merged NARROWED #1020 (2026-10-14), migration 264 | 6 | 🟢 AGENT-SAFE · R8 · one migration | M, about 500 | §12.3.13.9 |
-| PR-G7b | **EM-G11f1b** — the teardown in the member purge, and the Outlook rules. 📝 Specified (2026-10-16) | 6 | 🟢 AGENT-SAFE · security review · R8 · live for Outlook | M, about 550 | §12.3.13.9.2 |
+| PR-G7b | **EM-G11f1b** — the teardown in the member purge, and the Outlook rules. 🔨 Built, not merged (2026-10-16, branch `gmail-member-purge`) | 6 | 🟢 AGENT-SAFE · security review · R8 · live for Outlook | M, about 550 | §12.3.13.9.2 |
 | PR-G7c | **EM-G11f1c** — the teardown in the org purge, and a purge record that outlives the org. 📝 Specified (2026-10-16) | 6 | 🟢 AGENT-SAFE · R8 · one migration · security review | M, about 450 | §12.3.13.9.2 |
 | PR-G8b | **EM-G11f3** — no copy of mail in a chat memory store, and no email chat route with no client. 📝 Specified (2026-10-16) | 6 | 🟢 AGENT-SAFE · security review. `deploy-write` for one line of `deploy.sh` (granted). 🔴 Merges before the WS-7 memory flips | M, about 400 added and 650 deleted | §12.3.13.9.1 |
 | PR-G9 | **EM-G11g1** — envelope encryption in the key store, dark | 5 | 🟢 AGENT-SAFE build · security review. 🔴 OWNER-GATE for KMS billing (Q-GM-8). 🔴 `enforcement-flip` for `KEY_STORE_ENVELOPE` | M, about 550 | §12.3.13.10 |
@@ -15266,9 +15266,11 @@ agent and the trace of a live store. `deploy-write` for the line of `deploy.sh`,
 
 ###### 12.3.13.9.2 EM-G11f1b and EM-G11f1c — the teardown in the member purge and the org purge (PR-G7b, PR-G7c)
 
-**Status.** 📝 Specified (2026-10-16). Verified against code on 2026-10-16, at `origin/main`
-`0a14f7552`. Not audited and not built. This section closes the open points of the f1 and f2
-blocks: the two purges, the Outlook rules and `test_three_paths_call_one_teardown`.
+**Status.** 🔨 PR-G7b built, not merged (2026-10-16, branch `gmail-member-purge`, audit
+GO-NARROWED at `260c14705`). Items 1 to 5 are built, with acceptance 1 to 7 and 10. Acceptance 1
+covers two paths, because the org purge is PR-G7c. Item 11 waits for a live Outlook check. 📝 PR-G7c
+is specified and not built. This section closes the open points of the f1 and f2 blocks: the two
+purges, the Outlook rules and `test_three_paths_call_one_teardown`.
 
 **Paths.** `GW` is as in §12.3.13.2.
 
