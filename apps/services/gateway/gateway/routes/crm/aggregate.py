@@ -100,7 +100,7 @@ from gateway.routes.crm.field_sql import (
     module_where,
 )
 from gateway.routes.crm.modules import _require_module, mirrored_modules
-from gateway.routes.crm.records import ListParams, list_query
+from gateway.routes.crm.records import ListParams, list_query, refuse_nul
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
@@ -310,14 +310,6 @@ def _check(
     if group_by == "status" and not found.status_table:
         raise _refuse(f"{entity} have no status pipeline. Group by another key.")
     return found, None
-
-
-def _refuse_nul(request: Request) -> None:
-    """A 422 for a NUL character in any query name or value. Postgres text
-    holds no NUL, so the driver would refuse it later as a 500."""
-    for name, value in request.query_params.multi_items():
-        if "\x00" in name or "\x00" in value:
-            raise _refuse("A query name or value holds a NUL character.")
 
 
 def _check_filters(module: str | None, request: Request) -> list[tuple[str, str]]:
@@ -531,7 +523,8 @@ async def aggregate(
     user: UserContext = Depends(get_current_user),
 ) -> AggregateResponse:
     """One measure of one entity or module, by one group, over the filters."""
-    _refuse_nul(request)
+    # The one NUL guard of the CRM routes (CRM-Q25c), never a copy of it.
+    refuse_nul(request.query_params.multi_items())
     # An empty optional value is an absent one, the same for each of the four
     # (CRM-Q25 fix round). `group_field=` alone is then "no group", a 422.
     group_by, field = group_by or None, field or None
