@@ -1262,9 +1262,10 @@ def test_redis_down_does_not_hold_a_delegated_send(
 ) -> None:
     """A Redis blip is an UNKNOWN state, not a mark. projects-assistant
     delegates a send to the email assistant. The sub-run binds no
-    ``no_egress``, so it keeps ``send_email``. The send asks the member's
-    card, because the read failed closed for an egress tool, and after the
-    approval it runs. The delegation itself asks no card."""
+    ``no_egress``, so it keeps ``send_email``, and the send reaches the host.
+    The delegation itself asks no card. Since WS-17 EM-G11f3 round 2 the
+    email assistant's OWN run reads no mark, so the send asks no untrusted
+    card: its own EM-G11c1 card governs it."""
     _register_every_annotation()
     mark_store.down = True
     titles = _open_card_channel(monkeypatch)
@@ -1282,9 +1283,80 @@ def test_redis_down_does_not_hold_a_delegated_send(
     assert "send_email" in _offered(email.bodies[0]), "the blip bound no_egress"
     send = _results(email.bodies[1])[-1]
     assert "off in this run" not in send and "did not run" not in send, send
-    assert any("send_email" in t for t in titles), (titles, send, sent)
+    assert not any("reaches outside Metorite" in t for t in titles), titles
     assert not any("call_agent" in t for t in titles), titles
     assert sent, "the send never reached the host"
+
+
+# -- WS-17 EM-G11f3 round 2 (P1): the delegated mail agent asks ONE card -------
+#
+# The executor marks the calling session BEFORE the email assistant's sub-run
+# starts (fix round 1, P0). Its own writes must not read that mark: each asks
+# its own EM-G11c1 card, as in a direct pane run. What the CALLER does after
+# the hand-off stays held. Spec: email_app_master_plan.md 12.3.13.9.1.
+
+_UNTRUSTED_CARD = "reaches outside Metorite"
+
+
+def _delegated_archive() -> tuple[_Model, _Model]:
+    pa = _Model([
+        _call("call_agent", {"agent_name": EMAIL, "message": "Archive m1"}),
+        _say("done"),
+    ])
+    email = _Model([
+        _call("manage_inbox", {"action": "archive", "message_ids": ["m1"]}),
+        _say("archived"),
+    ])
+    return pa, email
+
+
+def test_a_delegated_mail_write_asks_one_card_its_own(
+    sandbox, monkeypatch,  # noqa: F811
+) -> None:
+    """(a) Turn 1 of a chat: the parent delegates, and the email assistant's
+    ``manage_inbox`` asks exactly ONE card, the tool's own. No untrusted card."""
+    _register_every_annotation()
+    titles = _open_card_channel(monkeypatch)
+    pa, email = _delegated_archive()
+    _harness(monkeypatch, sandbox, {PA: pa, EMAIL: email})
+    _run_top(PA, ORG_B, cards=True)
+    assert email.bodies, "the delegation never ran"
+    assert len(titles) == 1, titles
+    assert _UNTRUSTED_CARD not in titles[0], titles
+
+
+def test_a_delegated_mail_write_with_no_card_channel_answers_as_on_main(
+    sandbox, monkeypatch,  # noqa: F811
+) -> None:
+    """(b) A run with no card channel (WhatsApp, a batch run): the email
+    assistant's write gives its own EM-G11c1 answer, as on main, and never
+    the untrusted refusal."""
+    _register_every_annotation()
+    pa, email = _delegated_archive()
+    _harness(monkeypatch, sandbox, {PA: pa, EMAIL: email})
+    _run_top(PA, ORG_B, cards=False)
+    assert email.bodies, "the delegation never ran"
+    answer = _results(email.bodies[1])[-1]
+    assert answer.startswith("Nothing changed. This needs your approval on a card"), answer
+    assert "read an answer of an agent" not in answer, answer
+
+
+def test_the_callers_own_egress_after_the_hand_off_still_asks_the_card(
+    sandbox, monkeypatch,  # noqa: F811
+) -> None:
+    """(c) The hand-off marks the session. The parent's own ``fetch_page``
+    after it still asks the untrusted card."""
+    _register_every_annotation()
+    titles = _open_card_channel(monkeypatch)
+    pa = _Model([
+        _call("call_agent", {"agent_name": EMAIL, "message": "Summarise my mail"}),
+        _call("fetch_page", {"url": _EVIL}, call_id="call_2"),
+        _say("done"),
+    ])
+    email = _Model([_say("You have one mail.")])
+    _harness(monkeypatch, sandbox, {PA: pa, EMAIL: email})
+    _run_top(PA, ORG_B, cards=True)
+    assert any("fetch_page" in t and _UNTRUSTED_CARD in t for t in titles), titles
 
 
 def test_a_known_mark_still_holds_the_delegated_send(
