@@ -2286,11 +2286,13 @@ spec audit of 2026-10-16 narrowed it.
   list column shows in both words, for example `company_id` and
   `organization_name`.
 - Stale numbers give `empty_columns: []`. The numbers of an entity are stale
-  when it has no stamp, when it is pending, when one of its field rules
-  changed, or when a run that started after its stamp changed one of its
-  rows. The run counts show that, also for a run that failed, and also for a
-  run while the flag was off. So an entity that changes in most runs often
-  serves `[]`.
+  in four cases. It has no stamp. It is pending. One of its field rules
+  changed. A run that started after its stamp changed or re-linked one of
+  its rows. The run counts show that last case. They also show a run that
+  failed, and a run while the flag was off.
+- A run that finds no change moves the `checked` mark of the entity to its
+  own start, and the next scan starts there. So an entity that changes in
+  most runs often serves `[]`.
 - The CSV export drops a key of `empty_columns` only when each row of the
   file has an empty cell for it.
 - `GET /crm/mode` carries `labels`, by API slug, in Mirror mode for a listed

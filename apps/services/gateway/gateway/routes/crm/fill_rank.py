@@ -37,8 +37,9 @@ record, or when the key has no row yet.
 **Stale numbers** (:func:`stale_entities`). The numbers of an entity are
 stale when it has no stamp in the cursor row ``zoho:fill_rank``, when it is
 ``pending`` there, when a field rule of it changed since the last fill step,
-or when a sync run that STARTED after its stamp counted an ``upserted`` or a
-``deleted`` row of it. ``progress`` writes those counts in the transaction of
+or when a sync run that STARTED after its stamp counted an ``upserted``, a
+``deleted`` or a ``relinked`` row of it. A run that found no change moves the
+``checked`` mark of the entity to its own start, and the scan starts there. ``progress`` writes those counts in the transaction of
 each page, so a run that raised after a page still counts, and so does a run
 of a time when the flag was off. While the numbers are stale,
 ``empty_columns`` is ``[]``: no column is known to be empty.
@@ -122,7 +123,8 @@ _CHANGED_SQL = (
     "WHERE r.organization_id = CAST(:org AS uuid) AND r.started_at > :since "
     "AND k.key = ANY(CAST(:keys AS text[])) AND jsonb_typeof(k.value) = 'object' "
     "AND COALESCE((k.value ->> 'upserted')::int, 0) "
-    "  + COALESCE((k.value ->> 'deleted')::int, 0) > 0 "
+    "  + COALESCE((k.value ->> 'deleted')::int, 0) "
+    "  + COALESCE((k.value ->> 'relinked')::int, 0) > 0 "
     "GROUP BY k.key"
 )
 
@@ -259,10 +261,11 @@ def rule_entities(old: set[tuple[Any, ...]], new: set[tuple[Any, ...]]) -> set[s
     return {str(mark[1]) for mark in old ^ new}
 
 
-def stamps(state: dict[str, Any] | None) -> dict[str, datetime]:
-    """The stamp of each entity in the state of the fill row."""
+def stamps(state: dict[str, Any] | None, key: str = "at") -> dict[str, datetime]:
+    """The stamp of each entity in the state of the fill row. *key* ``checked``
+    gives the start of the last run that found the entity not stale."""
     out: dict[str, datetime] = {}
-    for entity, value in ((state or {}).get("at") or {}).items():
+    for entity, value in ((state or {}).get(key) or {}).items():
         if not isinstance(value, str):
             continue
         try:
@@ -298,20 +301,25 @@ async def stale_entities(
         state = read_state if state is None else state
         rules_state = read_rules if rules_state is None else rules_state
     at = stamps(state)
+    checked = stamps(state, "checked")
     pending = {str(e) for e in state.get("pending") or ()}
     stale = {e for e in wanted if e not in at or e in pending}
     stale |= rule_entities(saved_marks(state), rule_marks(rules_state)) & set(wanted)
     rest = [e for e in wanted if e not in stale]
     if not rest:
         return stale
+    # A run that STARTED after the later of the stamp and the checked mark is
+    # new. The checked mark is the start of a run that found no change, so the
+    # scan of an entity that never changes stays short.
+    since = {e: max(at[e], checked.get(e, at[e])) for e in rest}
     rows = (await db.execute(text(_CHANGED_SQL), {
-        "org": str(org), "since": min(at[e] for e in rest),
+        "org": str(org), "since": min(since.values()),
         "keys": sorted({count_key(e) for e in rest}),
     })).fetchall()
     changed = {str(r.key): r.changed_at for r in rows}
     for entity in rest:
         when = changed.get(count_key(entity))
-        if when is not None and when > at[entity]:
+        if when is not None and when > since[entity]:
             stale.add(entity)
     return stale
 

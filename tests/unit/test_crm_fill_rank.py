@@ -289,3 +289,46 @@ def test_the_cost_constants() -> None:
     assert fill.LARGE_ROWS == LARGE_MODULE_RECORDS == 5_000
     assert fill.DISTINCT_SAMPLE == 2_000
     assert "WHEN 'boolean' THEN value = 'true'::jsonb" in fill.FILLED_SQL
+
+
+def test_a_relink_count_names_its_entity() -> None:
+    """Review P2: a re-link changes rows, so it is a change of its entity."""
+    ctx = SimpleNamespace(counts={
+        "deals": {"upserted": 0, "deleted": 0, "relinked": 2},
+        "leads": {"upserted": 0, "deleted": 0, "relinked": 0},
+    })
+    assert fill.changed_entities(ctx) == {"deal"}
+    assert "'relinked'" in fill_rank._CHANGED_SQL
+
+
+class _Recorder:
+    """A session that records the params of each statement and finds no run."""
+
+    def __init__(self) -> None:
+        self.params: list[dict] = []
+
+    async def execute(self, _sql, params=None):
+        self.params.append(dict(params or {}))
+        return SimpleNamespace(fetchall=lambda: [])
+
+
+@pytest.mark.asyncio
+async def test_the_scan_starts_at_the_later_of_the_stamp_and_the_checked_mark() -> None:
+    """Review P2: an entity that never changes keeps a short scan."""
+    from datetime import UTC, datetime
+
+    stamp = datetime(2026, 10, 1, tzinfo=UTC)
+    checked = datetime(2026, 10, 16, tzinfo=UTC)
+    db = _Recorder()
+    stale = await fill_rank.stale_entities(db, ORG, ["company"], state={
+        "at": {"company": stamp.isoformat()},
+        "checked": {"company": checked.isoformat()},
+        "pending": [], "rules": [],
+    }, rules_state={})
+    assert stale == set()
+    assert db.params[-1]["since"] == checked
+    # With no checked mark, the scan starts at the stamp.
+    await fill_rank.stale_entities(db, ORG, ["company"], state={
+        "at": {"company": stamp.isoformat()}, "pending": [], "rules": [],
+    }, rules_state={})
+    assert db.params[-1]["since"] == stamp

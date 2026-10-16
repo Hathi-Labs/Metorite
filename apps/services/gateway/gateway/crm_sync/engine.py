@@ -561,6 +561,9 @@ def _blank_counts() -> dict[str, dict[str, int]]:
         slug: {
             "seen": 0, "upserted": 0, "deleted": 0, "unlinked": 0, "failed": 0,
             "refused": 0,
+            # CRM-Q17a-1: rows that a re-link changed (``_relink_leads``,
+            # ``_relink_deals``). The stale rule of the fill rank reads it.
+            "relinked": 0,
         }
         for slug in SLUG_ORDER
     } | {key: dict.fromkeys(STEP_COUNTS, 0) for key in STEP_KEYS}
@@ -2172,7 +2175,7 @@ _RELINK_DEFAULT = _UNLINKED + (
 )
 
 
-async def _relink_deals(db: Any) -> None:
+async def _relink_deals(db: Any) -> int:
     """Give a mirrored deal with no pipeline the pipeline its stored Zoho
     ``Pipeline`` value names (CRM-Q2 review). A deal read before the pipelines
     existed keeps that value in ``custom``. By id first, then by name in
@@ -2184,15 +2187,28 @@ async def _relink_deals(db: Any) -> None:
     # leave ``zoho_dirty`` and ``updated_at`` alone on purpose, because a re-link
     # is not a native edit and must not push the deal back to Zoho. The partial
     # index of migration 247 (``crm_deals_unlinked_idx``) serves them.
+    #
+    # It returns the deals that it changed. The caller counts them under
+    # ``relinked``, so the fill rank sees the change (CRM-Q17a-1).
+    changed = 0
     rows = (await db.execute(text(_PIPELINE_INDEX_SQL), {"src": EXT_SOURCE})).fetchall()
     for row in rows:
-        await db.execute(text(_RELINK_BY_EXT), {"p": str(row.id), "src": EXT_SOURCE, "ext": str(row.ext_id)})
+        changed += _rowcount(await db.execute(text(_RELINK_BY_EXT), {
+            "p": str(row.id), "src": EXT_SOURCE, "ext": str(row.ext_id)}))
     for row in rows:
-        await db.execute(text(_RELINK_BY_NAME), {
-            "p": str(row.id), "src": EXT_SOURCE, "name": str(row.name).strip().lower()})
+        changed += _rowcount(await db.execute(text(_RELINK_BY_NAME), {
+            "p": str(row.id), "src": EXT_SOURCE, "name": str(row.name).strip().lower()}))
     default = next((r for r in rows if r.is_default), rows[0] if rows else None)
     if default is not None:
-        await db.execute(text(_RELINK_DEFAULT), {"p": str(default.id), "src": EXT_SOURCE})
+        changed += _rowcount(await db.execute(
+            text(_RELINK_DEFAULT), {"p": str(default.id), "src": EXT_SOURCE}))
+    return changed
+
+
+def _rowcount(result: Any) -> int:
+    """The rows that one UPDATE changed. 0 when the driver does not say."""
+    count = getattr(result, "rowcount", None)
+    return count if isinstance(count, int) and count > 0 else 0
 
 
 _RELINK_LEAD_SQL = (
@@ -2221,10 +2237,13 @@ async def _relink_leads(ctx: _Ctx) -> None:
     native edit and must not push the lead back to Zoho.
     """
     async with ctx.page() as db:
+        changed = 0
         for kind, column in _CONVERSION_COLUMNS.items():
-            await db.execute(text(_RELINK_LEAD_SQL.format(
+            changed += _rowcount(await db.execute(text(_RELINK_LEAD_SQL.format(
                 column=column, table=_CONVERSION_TABLES[kind], key=CONVERTED_KEY, kind=kind,
-            )), {"src": EXT_SOURCE})
+            )), {"src": EXT_SOURCE}))
+        # CRM-Q17a-1: the page writes this count with the change itself.
+        ctx.counts[SLUGS["lead"]]["relinked"] += changed
         row = (await db.execute(
             text(_UNRESOLVED_LEAD_SQL.format(key=CONVERTED_KEY)), {"src": EXT_SOURCE},
         )).first()
@@ -2433,7 +2452,8 @@ async def _mirror_pipelines(
     gone = [ext_id for ext_id in known if ext_id not in set(seen)]
     if gone:
         await delete_from_source(db, "crm_pipelines", EXT_SOURCE, gone)
-    await _relink_deals(db)
+    # CRM-Q17a-1: counted in the page of the change (the caller's).
+    ctx.counts[SLUGS["deal"]]["relinked"] += await _relink_deals(db)
     ctx.pipelines = None
 
 

@@ -78,6 +78,13 @@ _MODULE_PREFIX = "module:"
 #: (``test_crm_fill_rank_r8.py`` prints the time).
 TIMEOUT_MS = 30_000
 _TIMEOUT_SQL = "SELECT set_config('statement_timeout', :ms, true)"
+#: The database clock, and the start of this run in the same clock. Every
+#: stamp and mark compares with ``crm_sync_runs.started_at``, so all of them
+#: come from the database, never from the app (review P2).
+_CLOCK_SQL = (
+    "SELECT now() AS now, (SELECT started_at FROM crm_sync_runs "
+    "WHERE id = CAST(:run AS uuid)) AS started"
+)
 #: ``distinct`` reads at most this many records: the ones with the lowest ids.
 DISTINCT_SAMPLE = 2_000
 #: An entity above this many records is large, the threshold of a large
@@ -272,7 +279,7 @@ def changed_entities(ctx: Any) -> set[str]:
     for key, values in (ctx.counts or {}).items():
         if not isinstance(values, dict):
             continue
-        if not (values.get("upserted") or values.get("deleted")):
+        if not (values.get("upserted") or values.get("deleted") or values.get("relinked")):
             continue
         if key.startswith(_MODULE_PREFIX):
             out.add(key)
@@ -306,12 +313,19 @@ class _State:
             str(k): str(v) for k, v in (state.get("at") or {}).items() if isinstance(v, str)
         }
         self.pending: set[str] = {str(e) for e in state.get("pending") or ()}
+        self.checked: dict[str, str] = {
+            str(k): str(v) for k, v in (state.get("checked") or {}).items()
+            if isinstance(v, str)
+        }
         self.rules = sorted(list(m) for m in fill_rank.saved_marks(state))
         self.raw = state
         self.first_at = (saved.initial_done_at if saved is not None else None) or _now()
 
     def as_dict(self) -> dict[str, Any]:
-        return {"at": dict(self.at), "pending": sorted(self.pending), "rules": self.rules}
+        return {
+            "at": dict(self.at), "pending": sorted(self.pending), "rules": self.rules,
+            "checked": dict(self.checked),
+        }
 
     def row(self) -> CursorRow:
         return CursorRow(FILL_ROW, None, self.as_dict(), self.first_at, None)
@@ -324,6 +338,30 @@ async def _save(ctx: Any, st: _State) -> bool:
         async with ctx.page() as db:
             await runs.write_cursor(db, ctx.org, st.row(), "ok")
     except SQLAlchemyError as exc:
+        _log.warning("crm.sync.fill_state_failed class=%s", type(exc).__name__)
+        return False
+    ctx.cursors[FILL_ROW] = st.row()
+    return True
+
+
+async def _stamp(ctx: Any, st: _State, entity: str) -> bool:
+    """Commit the attempt on *entity* in a short page: the stamp from the
+    database clock (``now()`` of this page), and the entity in ``pending``.
+    False, and a log line, on a database error."""
+    before = (st.at.get(entity), entity in st.pending)
+    try:
+        async with ctx.page() as db:
+            now = (await db.execute(text("SELECT now()"))).scalar()
+            st.at[entity] = now.isoformat()
+            st.pending.add(entity)
+            await runs.write_cursor(db, ctx.org, st.row(), "ok")
+    except SQLAlchemyError as exc:
+        if before[0] is None:
+            st.at.pop(entity, None)
+        else:
+            st.at[entity] = before[0]
+        if not before[1]:
+            st.pending.discard(entity)
         _log.warning("crm.sync.fill_state_failed class=%s", type(exc).__name__)
         return False
     ctx.cursors[FILL_ROW] = st.row()
@@ -343,10 +381,18 @@ async def _size(ctx: Any, entity: str) -> int | None:
         return None
 
 
-async def _due(ctx: Any, st: _State, candidates: list[str]) -> set[str] | None:
+async def _due(
+    ctx: Any, st: _State, candidates: list[str],
+) -> tuple[set[str], datetime] | None:
     """The stale candidates (``fill_rank.stale_entities``) and the entities of
-    this run's counts. It moves the changed field rules into ``pending`` and
-    takes their new marks. None on a database error."""
+    this run's counts, and the time of the database. None on a database error.
+
+    It moves the changed field rules into ``pending`` and takes their new
+    marks. Each candidate with a stamp that is not due takes the start of THIS
+    run as its ``checked`` mark (review P2). The fill step is the last step of
+    a run, so the counts of this run are final here. A later run starts after
+    this one, so the stale rule stays sound and its scan stays short.
+    """
     rules_row = ctx.cursors.get(_RULES_ROW)
     rules_state = (rules_row.state if rules_row is not None else None) or {}
     try:
@@ -354,13 +400,19 @@ async def _due(ctx: Any, st: _State, candidates: list[str]) -> set[str] | None:
             due = await fill_rank.stale_entities(
                 db, ctx.org, candidates, state=st.raw, rules_state=rules_state,
             )
+            clock = (await db.execute(text(_CLOCK_SQL), {"run": ctx.handle.run_id})).first()
     except SQLAlchemyError as exc:
         _log.warning("crm.sync.fill_state_failed class=%s", type(exc).__name__)
         return None
     marks = fill_rank.rule_marks(rules_state)
     st.pending |= fill_rank.rule_entities(fill_rank.saved_marks(st.raw), marks)
     st.rules = sorted(list(m) for m in marks)
-    return due | changed_entities(ctx)
+    due |= changed_entities(ctx)
+    if clock is not None and clock.started is not None:
+        for entity in candidates:
+            if entity in st.at and entity not in due and entity not in st.pending:
+                st.checked[entity] = clock.started.isoformat()
+    return due, (clock.now if clock is not None else _now())
 
 
 async def refresh(ctx: Any, *, every: timedelta) -> None:
@@ -373,9 +425,10 @@ async def refresh(ctx: Any, *, every: timedelta) -> None:
         return
     st = _State(ctx)
     candidates = _candidates(ctx, st.pending)
-    due = await _due(ctx, st, candidates)
-    if due is None:
+    found = await _due(ctx, st, candidates)
+    if found is None:
         return
+    due, db_now = found
     stamps = fill_rank.stamps(st.raw)
     large_done = False
 
@@ -386,7 +439,7 @@ async def refresh(ctx: Any, *, every: timedelta) -> None:
             continue  # not due, or no full read yet (the numbers would be partial)
         stamp = stamps.get(entity)
         first_now = not _done(ctx.handle.cursors, entity)
-        if stamp is not None and not first_now and _now() - stamp < every:
+        if stamp is not None and not first_now and db_now - stamp < every:
             st.pending.add(entity)  # inside the bound: it waits
             continue
         size = await _size(ctx, entity)
@@ -398,9 +451,7 @@ async def refresh(ctx: Any, *, every: timedelta) -> None:
                 continue
             large_done = True
         # 1. The attempt, committed first. The page writes the heartbeat too.
-        st.at[entity] = _now().isoformat()
-        st.pending.add(entity)
-        if not await _save(ctx, st):
+        if not await _stamp(ctx, st, entity):
             continue
         started = time.monotonic()
         # 2. The statement, with no lock on crm_settings.

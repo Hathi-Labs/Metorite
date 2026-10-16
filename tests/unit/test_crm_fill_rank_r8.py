@@ -82,9 +82,10 @@ def fz(mz, monkeypatch):
     yield p, a, b
     with p.admin_engine.begin() as c:
         for org in (p.org_a, p.org_b):
-            c.execute(text(
-                "DELETE FROM crm_field_fill WHERE organization_id = CAST(:o AS uuid)"),
-                {"o": org})
+            for table in ("crm_field_fill", "crm_field_rules"):
+                c.execute(text(
+                    f"DELETE FROM {table} WHERE organization_id = CAST(:o AS uuid)"),
+                    {"o": org})
 
 
 def _fill(p: Any, org: str, entity: str) -> dict[str, tuple[int, int, int]]:
@@ -121,11 +122,14 @@ def _age_fill(p: Any, org: str, hours: int = 25) -> None:
     move back by *hours*, so their order stays as it was."""
     state = _state(p, org) or {}
     shift = timedelta(hours=hours)
-    aged = {
-        e: (datetime.fromisoformat(v) - shift).isoformat()
-        for e, v in (state.get("at") or {}).items()
-    }
-    _write_state(p, org, {**state, "at": aged})
+
+    def aged(key: str) -> dict[str, str]:
+        return {
+            e: (datetime.fromisoformat(v) - shift).isoformat()
+            for e, v in (state.get(key) or {}).items()
+        }
+
+    _write_state(p, org, {**state, "at": aged("at"), "checked": aged("checked")})
     with p.admin_engine.begin() as c:
         c.execute(text(
             "UPDATE crm_sync_runs SET started_at = started_at - make_interval(hours => :h) "
@@ -670,3 +674,161 @@ async def test_the_export_keeps_a_column_that_a_row_fills(fz) -> None:
     empty, header = await _empty_and_header(p.org_a)
     assert "industry" in empty
     assert "Industry" in header and "Phone" not in header
+
+
+# ── Fix round 3: field rules, relinks, the checked mark, the clock ───────────
+
+
+def _write_rules(p: Any, org: str, state: dict[str, Any]) -> None:
+    """The cursor row of the field rules, as the sync would leave it."""
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_sync_cursors (organization_id, module, cursor_state, "
+            "last_status, initial_done_at) VALUES (CAST(:o AS uuid), 'zoho:field_rules', "
+            "CAST(:s AS jsonb), 'ok', now()) ON CONFLICT (organization_id, module) "
+            "DO UPDATE SET cursor_state = EXCLUDED.cursor_state"),
+            {"o": org, "s": json.dumps(state)})
+
+
+def _clear_pending(p: Any, org: str) -> None:
+    _write_state(p, org, {**(_state(p, org) or {}), "pending": []})
+
+
+async def _layout_empty(org: str, slug: str) -> list[str] | None:
+    return (await _get(org, f"/crm/fields/{slug}?layout=1")).json()["empty_columns"]
+
+
+async def test_a_field_rule_applied_after_the_fill_step_serves_no_empty_columns(fz) -> None:
+    """Verifier R7: the rule branch of ``fill_rank.stale_entities``."""
+    p, a, _b = fz
+    _seed_fill(a)
+    await _connect_all(p, p.org_a, a)
+    assert (await _run(p.org_a)).status == "ok"
+    assert "industry" in await _layout_empty(p.org_a, "organizations")
+
+    _write_rules(p, p.org_a, {"applied": [
+        {"id": "r-q17", "entity": "company", "field": "Region", "column": "industry"},
+    ], "reread": []})
+    assert await _layout_empty(p.org_a, "organizations") == []
+    # Another entity keeps its numbers.
+    assert _state(p, p.org_a)["pending"] == []
+
+
+async def test_the_next_run_puts_the_entity_of_a_changed_rule_in_pending(
+    fz, monkeypatch,
+) -> None:
+    """Verifier R7: the rule branch of ``fill._due``. The fill step stops at
+    once here, so only that branch can keep the change: the new rule marks
+    replace the old ones in the same write."""
+    from gateway.crm_sync import fill
+
+    p, a, _b = fz
+    _seed_fill(a)
+    await _connect_all(p, p.org_a, a)
+    assert (await _run(p.org_a)).status == "ok"
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_field_rules (organization_id, ext_source, entity, "
+            "field_api_name, field_type, profile_version, target_column, status, "
+            "proposed_by) VALUES (CAST(:o AS uuid), 'zoho', 'company', 'Region', "
+            "'text', 1, 'industry', 'approved', 'admin')"), {"o": p.org_a})
+
+    stop = [False]
+    real = fill.refresh
+
+    async def stopping(ctx: Any, *, every: Any) -> None:
+        stop[0] = True  # a shutdown that comes during the fill step
+        await real(ctx, every=every)
+
+    monkeypatch.setattr(fill, "refresh", stopping)
+    assert (await _run(p.org_a, should_stop=lambda: stop[0])).status == "ok"
+    state = _state(p, p.org_a)
+    assert "company" in state["pending"]
+    assert [m[1] for m in state["rules"]] == ["company"]
+    assert await _layout_empty(p.org_a, "organizations") == []
+
+
+async def test_a_lead_relink_counts_and_makes_the_leads_stale(fz) -> None:
+    """Review P2: ``_relink_leads`` changes ``converted_*``. The run counts it
+    under ``relinked``, and the stale rule reads that count."""
+    p, a, _b = fz
+    _seed_fill(a)
+    a.add("Leads", "l1", 5, Last_Name="Lead", Company="Acme")
+    await _connect_all(p, p.org_a, a)
+    assert (await _run(p.org_a)).status == "ok"
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_leads SET custom = COALESCE(custom, '{}'::jsonb) || "
+            "'{\"_converted\": {\"company\": \"a1\"}}'::jsonb "
+            "WHERE organization_id = CAST(:o AS uuid)"), {"o": p.org_a})
+
+    second = await _run(p.org_a)
+    assert second.status == "ok"
+    assert second.counts["leads"]["relinked"] == 1
+    assert second.counts["leads"]["upserted"] == 0
+    # The run count alone makes the leads stale: no pending entry here.
+    _clear_pending(p, p.org_a)
+    assert await _layout_empty(p.org_a, "leads") == []
+
+
+async def test_a_deal_relink_counts_and_makes_the_deals_stale(fz) -> None:
+    """Review P2: ``_relink_deals`` sets ``pipeline_id`` in the discovery
+    step. The run counts it under ``relinked``."""
+    p, a, _b = fz
+    _seed_fill(a)
+    a.add("Deals", "d1", 20, Deal_Name="A-Deal", Stage="Qualify")
+    await _connect_all(p, p.org_a, a)
+    assert (await _run(p.org_a)).status == "ok"
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE crm_deals SET pipeline_id = NULL WHERE "
+                       "organization_id = CAST(:o AS uuid)"), {"o": p.org_a})
+        c.execute(text(
+            "UPDATE crm_source_profiles SET fetched_at = now() - interval '48 hours' "
+            "WHERE organization_id = CAST(:o AS uuid)"), {"o": p.org_a})
+
+    second = await _run(p.org_a)
+    assert second.status == "ok"
+    assert second.counts["deals"]["relinked"] == 1
+    _clear_pending(p, p.org_a)
+    assert await _layout_empty(p.org_a, "deals") == []
+
+
+async def test_a_run_with_no_change_moves_the_checked_mark_to_its_start(fz) -> None:
+    """Review P2: the scan of an entity that never changes starts at the last
+    run that found no change, and a later change is still seen."""
+    p, a, _b = fz
+    _seed_fill(a)
+    await _connect_all(p, p.org_a, a)
+    assert (await _run(p.org_a)).status == "ok"
+    assert (await _run(p.org_a)).status == "ok"
+
+    def newest_start() -> datetime:
+        return _q(p, "SELECT max(started_at) FROM crm_sync_runs WHERE "
+                     "organization_id = CAST(:o AS uuid)", o=p.org_a)[0][0]
+
+    state = _state(p, p.org_a)
+    assert datetime.fromisoformat(state["checked"]["company"]) == newest_start()
+    assert datetime.fromisoformat(state["checked"]["company"]) > datetime.fromisoformat(
+        state["at"]["company"])
+
+    # A change after the mark is still stale.
+    a.add("Accounts", "a2", 30, Account_Name="A-Company-2", Industry="Retail")
+    assert (await _run(p.org_a)).status == "ok"
+    _clear_pending(p, p.org_a)
+    assert await _layout_empty(p.org_a, "organizations") == []
+
+
+async def test_the_stamp_comes_from_the_database_clock(fz, monkeypatch) -> None:
+    """Review P2: a stamp compares with ``crm_sync_runs.started_at``, so it
+    takes that clock. An app clock 25 years behind changes nothing."""
+    from gateway.crm_sync import fill
+
+    p, a, _b = fz
+    _seed_fill(a)
+    await _connect_all(p, p.org_a, a)
+    monkeypatch.setattr(fill, "_now", lambda: datetime(2001, 1, 1, tzinfo=UTC))
+    assert (await _run(p.org_a)).status == "ok"
+    start = _q(p, "SELECT max(started_at) FROM crm_sync_runs WHERE "
+                  "organization_id = CAST(:o AS uuid)", o=p.org_a)[0][0]
+    stamps = {datetime.fromisoformat(v) for v in _state(p, p.org_a)["at"].values()}
+    assert stamps and all(s >= start for s in stamps)
