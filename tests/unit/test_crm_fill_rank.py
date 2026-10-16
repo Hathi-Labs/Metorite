@@ -139,6 +139,18 @@ def test_the_name_column_and_last_activity_never_show() -> None:
         assert empty, slug
 
 
+def test_an_owner_column_with_no_member_owner_is_never_empty() -> None:
+    """Batch M review P1. No Zoho owner of the org is a member, so
+    ``owner_email`` is NULL on each row and its fill is 0. Each row still
+    holds ``custom._owner_name``, and the Owner column shows it as
+    "Name (Zoho only)". So the list must keep the column."""
+    for slug in COLUMNS:
+        if "owner_email" not in standard_keys(slug):
+            continue
+        fills = {"owner_email": Fill(0, 805, 0), "custom._owner_name": Fill(805, 805, 12)}
+        assert "owner_email" not in empty_set(slug, fills), slug
+
+
 def test_annotate_leaves_each_definition_alone_when_the_flag_is_off() -> None:
     from gateway.routes.crm.fields import FieldDef
 

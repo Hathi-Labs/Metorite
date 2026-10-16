@@ -116,7 +116,10 @@ NAME_KEYS: frozenset[str] = frozenset({"name", "lead_name", "first_name"})
 
 #: The keys that never show in ``empty_columns``: the name column and the
 #: time of the last activity, which the list shows in each case.
-NEVER_EMPTY: frozenset[str] = NAME_KEYS | {"last_activity_at"}
+#: ``owner_email`` is NULL on each record whose Zoho owner is not a member.
+#: The Owner column then shows ``custom._owner_name`` with "Zoho only"
+#: (CRM-Q17a-2 item 4), so the column is not empty (Batch M review P1).
+NEVER_EMPTY: frozenset[str] = NAME_KEYS | {"last_activity_at", "owner_email"}
 
 #: The entity word → the API slug, which is also its key in the run counts.
 _SLUG_BY_ENTITY: dict[str, str] = {v: k for k, v in FIELD_ENTITY_BY_SLUG.items()}
