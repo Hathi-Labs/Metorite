@@ -25,7 +25,8 @@ from gateway.routes.knowledge import flags as kb_flags
 ORG = "11111111-1111-1111-1111-111111111111"
 OTHER = "22222222-2222-2222-2222-222222222222"
 
-#: Each route of KB-1, with a body that passes validation where one is needed.
+#: Each route of KB-1 and KB-3, with a body that passes validation where one
+#: is needed.
 CALLS: list[tuple[str, str, dict[str, Any] | None]] = [
     ("GET", "/knowledge/spaces", None),
     ("POST", "/knowledge/spaces", {"name": "Ops"}),
@@ -40,6 +41,7 @@ CALLS: list[tuple[str, str, dict[str, Any] | None]] = [
     ("POST", f"/knowledge/pages/{OTHER}/archive", None),
     ("POST", f"/knowledge/pages/{OTHER}/restore", None),
     ("POST", f"/knowledge/pages/{OTHER}/revert", {"version": 1}),
+    ("GET", "/knowledge/search?q=refund+window", None),
 ]
 
 
@@ -77,13 +79,15 @@ def test_the_settings_default_is_off_and_empty() -> None:
     fields = Settings.model_fields
     assert fields["knowledge_enabled"].default is False
     assert fields["knowledge_orgs"].default == ""
+    assert fields["knowledge_embed"].default == ""
 
 
-def test_the_router_carries_all_thirteen_routes() -> None:
+def test_the_router_carries_all_fourteen_routes() -> None:
     found = {
         (sorted(r.methods)[0], r.path) for r in kb_package.router.routes
     }
-    assert found == {(m, p.replace(OTHER, "{page_id}" if "/pages/" in p else "{space_id}"))
+    assert found == {(m, p.split("?")[0].replace(
+        OTHER, "{page_id}" if "/pages/" in p else "{space_id}"))
                      for m, p, _ in CALLS}
 
 
@@ -127,7 +131,38 @@ def test_the_switch_runs_before_the_feature_gate() -> None:
     assert deps[0].dependency is kb_flags.require_knowledge_enabled
 
 
-@pytest.mark.parametrize("name", ["KNOWLEDGE_ENABLED", "KNOWLEDGE_ORGS"])
+@pytest.mark.parametrize("name", ["KNOWLEDGE_ENABLED", "KNOWLEDGE_ORGS", "KNOWLEDGE_EMBED"])
 def test_both_names_are_platform_env(name: str) -> None:
     """A tenant cannot set the switch through an Integrations write."""
     assert is_platform_env(name)
+
+
+# ── KB-3: KNOWLEDGE_EMBED ───────────────────────────────────────────────────
+
+def _embed(monkeypatch: pytest.MonkeyPatch, orgs: str) -> None:
+    monkeypatch.setattr(get_settings(), "knowledge_embed", orgs, raising=False)
+
+
+def test_embed_is_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    _switch(monkeypatch, True, "*")
+    _embed(monkeypatch, "")
+    assert not kb_flags.knowledge_embed_allowed(ORG)
+
+
+def test_embed_reads_the_org_list_and_the_star(monkeypatch: pytest.MonkeyPatch) -> None:
+    _switch(monkeypatch, True, "*")
+    _embed(monkeypatch, f" {ORG.upper()} ")
+    assert kb_flags.knowledge_embed_allowed(ORG)
+    assert not kb_flags.knowledge_embed_allowed(OTHER)
+    _embed(monkeypatch, "*")
+    assert kb_flags.knowledge_embed_allowed(OTHER)
+    assert not kb_flags.knowledge_embed_allowed(None)
+
+
+def test_embed_needs_knowledge_on_for_the_org(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No embed spend for an org that Knowledge does not serve."""
+    _embed(monkeypatch, "*")
+    _switch(monkeypatch, False, "*")
+    assert not kb_flags.knowledge_embed_allowed(ORG)
+    _switch(monkeypatch, True, OTHER)
+    assert not kb_flags.knowledge_embed_allowed(ORG)
