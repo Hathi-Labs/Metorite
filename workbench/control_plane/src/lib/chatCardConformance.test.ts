@@ -270,6 +270,8 @@ describe("a template with its own head draws it as the card's one header", () =>
     formCard: "FormCard",
     barChart: "ChartCard",
     chart: "ChartCard",
+    // A report the agent makes (2026-10-16): its body is ReportView.
+    report: "ReportTemplate",
   };
 
   it("names every chat template", () => {

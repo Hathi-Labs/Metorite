@@ -1353,6 +1353,7 @@ function ChatPageInner() {
       {/* File viewer modal (shared) */}
       {viewerEntry && (
         <ArtifactViewerModal
+          origin="workspace"
           sessionId={activeSessionId}
           entry={viewerEntry}
           onClose={() => setViewerEntry(null)}

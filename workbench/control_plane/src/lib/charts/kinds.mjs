@@ -97,9 +97,10 @@ function date(v, what) {
 
 /**
  * @typedef {{ mode?: "dark" | "light", scale?: number, footer?: boolean,
- *   font?: string, interactive?: boolean, animate?: boolean }} Opts
+ *   font?: string, interactive?: boolean, animate?: boolean, maxHeight?: number }} Opts
  * `font` is the page's own font list (the web chat, where next/font renames
  * Geist). `interactive` adds the tooltip a live chart shows on hover.
+ * `maxHeight` is a card's height cap, in pixels (see {@link chartOption}).
  */
 
 const DAY = 86400000;
@@ -117,6 +118,15 @@ export function fmt(v) {
   return out.replace("-", "\u2212"); // one minus sign, the typographic one
 }
 
+/**
+ * True when a donut's values are SHARES: its unit is a percent sign. Its
+ * total is then about 100 by its nature, so the hole draws no total.
+ * @param {string | undefined} unit
+ */
+export function isShare(unit) {
+  return String(unit ?? "").trim() === "%";
+}
+
 /** Rich-text braces and bars in a label would pick a style, not print. */
 const plain = (s) => String(s).replace(/[{}|]/g, " ");
 
@@ -131,7 +141,11 @@ function ctx(spec, opts) {
   // A chart with no title (the chat's barChart template may omit it) starts
   // its grid near the top instead of under an empty heading.
   const top = spec.title ? (hasSub ? 190 : 150) : 56;
-  return { t, u, unit, label, axisText, top, k };
+  // The drawing's width in units. It is 1080 when the scale follows the
+  // width. The web chat caps the scale (`LiveChart`), so a wide chart is a
+  // wider drawing, not a bigger picture.
+  const wu = (opts.width ?? 1080) / k;
+  return { t, u, unit, label, axisText, top, k, wu };
 }
 
 function base(spec, opts, c) {
@@ -145,9 +159,9 @@ function base(spec, opts, c) {
       left: c.u(56), top: c.u(48), itemGap: c.u(14),
       // A long title ends in "…" before the brand mark, never off the edge.
       textStyle: { fontFamily: c.t.font, fontSize: c.u(40), fontWeight: 600, color: c.t.fg,
-        width: c.u(1080 - 112 - (opts.footer === false ? 0 : 150)), overflow: "truncate" },
+        width: c.u(c.wu - 112 - (opts.footer === false ? 0 : 150)), overflow: "truncate" },
       subtextStyle: { fontFamily: c.t.font, fontSize: c.u(25), color: c.t.muted,
-        width: c.u(1080 - 112 - (opts.footer === false ? 0 : 150)), overflow: "truncate" },
+        width: c.u(c.wu - 112 - (opts.footer === false ? 0 : 150)), overflow: "truncate" },
     },
     grid: { left: c.u(56), right: c.u(56), top: c.u(c.top), bottom: c.u(72), containLabel: true },
     // The brand mark sits top right, clear of a legend at the foot.
@@ -214,7 +228,8 @@ const BUILD = {
     }));
     if (ss.length > 1) { o.legend = legend(c); o.grid.bottom = c.u(110); }
     if (long) o.grid.right = c.u(110);
-    return { o, h: long ? Math.max(c.top + 410, c.top + 70 + ls.length * 64 + (ss.length > 1 ? 50 : 0)) : c.top + BODY };
+    // A long bar is a row per label, a fixed step apart: it grows by its rows.
+    return { o, h: long ? Math.max(c.top + 410, c.top + 70 + ls.length * 64 + (ss.length > 1 ? 50 : 0)) : c.top + BODY, grows: long };
   },
 
   line(spec, opts, c) {
@@ -263,19 +278,26 @@ const BUILD = {
     if (total <= 0) fail("a donut needs a total above zero");
     const tn = tones(c, spec, ls.length);
     const o = base(spec, opts, c);
-    const W = 1080 * c.k, H = (c.top + BODY) * c.k;
+    // H is the height DRAWN: under a card's cap the pie is that box's, and the
+    // total must sit over its hole, not where an uncapped pie would be.
+    const W = c.wu * c.k, H = Math.min((c.top + BODY) * c.k, opts.maxHeight ?? Infinity);
     o.series = [{
       type: "pie", radius: ["50%", "72%"], center: ["31%", "58%"], padAngle: 2.5,
       itemStyle: { borderRadius: c.u(10) }, label: { show: false },
       data: ls.map((name, i) => ({ name: plain(name), value: vs[i], itemStyle: tn?.[i] ? { color: tn[i] } : undefined })),
     }];
-    const center = text(spec.center ?? "total", "center", 16, false);
-    o.graphic.push(
-      { type: "text", x: W * 0.31, y: H * 0.58 - c.u(46),
-        style: { text: fmt(total), align: "center", fill: c.t.fg, fontWeight: 600, fontSize: c.u(64), fontFamily: c.t.font } },
-      { type: "text", x: W * 0.31, y: H * 0.58 + c.u(26),
-        style: { text: center, align: "center", fill: c.t.muted, fontSize: c.u(26), fontFamily: c.t.font } },
-    );
+    // A split in percent sums to about 100 by its nature, so "100 total" in
+    // the hole says nothing. A share has no centre. Any other donut shows
+    // its real total, with its unit (visual review of the report, 2026-10-16).
+    if (!isShare(c.unit)) {
+      const center = text(spec.center ?? "total", "center", 16, false);
+      o.graphic.push(
+        { type: "text", x: W * 0.31, y: H * 0.58 - c.u(46),
+          style: { text: c.label(total), align: "center", fill: c.t.fg, fontWeight: 600, fontSize: c.u(64), fontFamily: c.t.font } },
+        { type: "text", x: W * 0.31, y: H * 0.58 + c.u(26),
+          style: { text: center, align: "center", fill: c.t.muted, fontSize: c.u(26), fontFamily: c.t.font } },
+      );
+    }
     o.legend = {
       orient: "vertical", right: c.u(64), top: "middle", icon: "circle", itemWidth: c.u(20), itemHeight: c.u(20), itemGap: c.u(30),
       textStyle: { color: c.t.fg, fontFamily: c.t.font, fontSize: c.u(27), rich: {
@@ -495,7 +517,7 @@ const BUILD = {
     const max = Math.max(1, ...days.map((d) => d[1]));
     const o = base(spec, opts, c);
     const weeks = Math.ceil((Date.parse(sorted[sorted.length - 1]) - Date.parse(sorted[0])) / DAY / 7) + 2;
-    const cell = Math.max(10, Math.min(56, (1080 - 110 - 56) / weeks));
+    const cell = Math.max(10, Math.min(56, (c.wu - 110 - 56) / weeks));
     const gap = Math.max(2, cell * 0.12);
     o.calendar = { range: [sorted[0], sorted[sorted.length - 1]], top: c.u(c.top + 10), left: c.u(110),
       cellSize: [c.u(cell), c.u(cell)],
@@ -588,10 +610,24 @@ function quartiles(xs) {
 }
 
 /**
+ * The kinds that grow by their rows. Each places a mark (a caption, a bar of
+ * a fixed height, a cell) a fixed step below the last, so a smaller box would
+ * move the marks off their rows. Under a cap such a chart keeps its height,
+ * and its box scrolls (`LiveChart`). Every other kind lays its plot out in
+ * the box, and draws at the capped height. A long bar grows too: its builder
+ * says so (`grows`).
+ */
+export const GROWS_BY_ROWS = new Set(["progress", "heatmap", "funnel", "calendar", "gantt"]);
+
+/**
  * A spec as a full ECharts option, and the drawing's size.
+ *
+ * `fits` is true when the chart lays out at any height: then a `maxHeight`
+ * caps it, and every graphic is placed from the height drawn. False for a
+ * chart that grows by its rows: it keeps its height, whatever the cap.
  * @param {any} spec  the AI's short spec, with a `type`
  * @param {Opts & { width?: number, animate?: boolean }} [opts]
- * @returns {{ option: any, width: number, height: number }}
+ * @returns {{ option: any, width: number, height: number, fits: boolean }}
  */
 export function chartOption(spec, opts = {}) {
   if (!spec || typeof spec !== "object" || Array.isArray(spec)) fail("a chart is an object with a \"type\"");
@@ -602,7 +638,11 @@ export function chartOption(spec, opts = {}) {
   const width = opts.width ?? 1080;
   const scale = opts.scale ?? width / 1080;
   const c = ctx(spec, { ...opts, scale });
-  const { o, h } = build(spec, { ...opts, scale }, c);
+  const built = build(spec, { ...opts, scale }, c);
+  const { o, h } = built;
   if (opts.interactive) o.tooltip = tooltip(kind, c);
-  return { option: o, width, height: Math.round(h * scale) };
+  const fits = !(GROWS_BY_ROWS.has(kind) || built.grows);
+  const natural = Math.round(h * scale);
+  const height = fits && opts.maxHeight ? Math.min(natural, opts.maxHeight) : natural;
+  return { option: o, width, height, fits };
 }

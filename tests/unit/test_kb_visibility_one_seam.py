@@ -7,11 +7,15 @@ provider, the My Day provider and the ``/mcp`` tools all call it. A second
 copy of the predicate is a defect (``navigation_shell.md`` §5.2 rule 7).
 
 What this fence does. It parses each Python module under
-``gateway/routes/knowledge/`` and ``gateway/kb*/``. It finds each string
-literal that reads ``kb_pages`` (``FROM kb_pages`` or ``JOIN kb_pages``). Each
-such literal must be an f-string that puts in the result of a
+``gateway/routes/knowledge/`` and ``gateway/kb*/``, and so ``gateway/kb_index/``
+too. It finds each string literal that reads ``kb_pages`` (``FROM kb_pages``
+or ``JOIN kb_pages``) or the index ``kb_chunks`` (KB-3, §6.3). Each such
+literal must be an f-string that puts in the result of a
 ``visible_pages_clause(...)`` call made in the same function. A plain string,
-a module-level constant, or an f-string with no clause in it fails.
+a module-level constant, or an f-string with no clause in it fails. A chunk
+read can only meet the clause by a join to ``kb_pages``, so a search never
+answers a chunk of a page the member cannot see. ``DELETE FROM kb_chunks`` is
+a write of the indexer, and it is not a read.
 
 The check is per statement, not per function. A function that calls the
 clause for one query and reads ``kb_pages`` raw in a second query fails.
@@ -19,8 +23,10 @@ clause for one query and reads ``kb_pages`` raw in a second query fails.
 Integrity reads. Two reads look at pages the caller may not see, because a
 rule of the tree needs them: the children of a page (a move to another space
 refuses a page with children) and the ancestors of a page (a move refuses a
-cycle). Neither returns a page to the caller. Each is listed in
-``_INTEGRITY_READS`` with its reason, and the list fails when it goes stale.
+cycle). A third reads the chunks that wait for a vector, for the embed job,
+which has no member. None returns a page or a chunk to a caller. Each is
+listed in ``_INTEGRITY_READS`` with its reason, and the list fails when it
+goes stale.
 """
 from __future__ import annotations
 
@@ -34,6 +40,18 @@ _GATEWAY = _ROOT / "apps" / "services" / "gateway" / "gateway"
 #: A statement that reads the pages table. ``kb_page_versions`` and
 #: ``kb_page_files`` do not match, because the word ends at ``kb_pages``.
 _READS_PAGES = re.compile(r"\b(?:FROM|JOIN)\s+kb_pages\b", re.IGNORECASE)
+
+#: A statement that reads the index (KB-3).
+_READS_CHUNKS = re.compile(r"\b(?:FROM|JOIN)\s+kb_chunks\b", re.IGNORECASE)
+
+#: The indexer's delete. It names ``FROM kb_chunks`` and reads nothing.
+_DELETES_CHUNKS = re.compile(r"\bDELETE\s+FROM\s+kb_chunks\b", re.IGNORECASE)
+
+
+def _reads_kb(sql: str) -> bool:
+    """True when *sql* reads a page or a chunk."""
+    return bool(_READS_PAGES.search(sql)
+                or _READS_CHUNKS.search(_DELETES_CHUNKS.sub("", sql)))
 
 #: The one predicate.
 _CLAUSE = "visible_pages_clause"
@@ -49,6 +67,12 @@ _INTEGRITY_READS: dict[tuple[str, str], str] = {
         "A move refuses a parent that is the page or one of its descendants. "
         "The walk passes through pages the caller may not see. It returns ids "
         "for a membership test and never a row."
+    ),
+    ("index.py", "select_pending"): (
+        "The embed job of KB-3 reads the chunks of one page, already loaded "
+        "and written by the route, that have no vector. It runs after the "
+        "commit with no member, and it hands the text to the embed door "
+        "only, never to a person."
     ),
 }
 
@@ -139,7 +163,7 @@ def _page_reads(source: str) -> list[tuple[str, int, bool]]:
             continue
         if not isinstance(node, (ast.Constant, ast.JoinedStr)):
             continue
-        if not _READS_PAGES.search(_text_of(node)):
+        if not _reads_kb(_text_of(node)):
             continue
         func = owner.get(id(node))
         name = getattr(func, "name", "<module>")
@@ -234,4 +258,49 @@ def test_the_fence_flags_a_clause_from_another_function() -> None:
 
 def test_the_fence_ignores_the_versions_table() -> None:
     src = "SQL = 'SELECT version FROM kb_page_versions WHERE page_id = :p'\n"
+    assert _page_reads(src) == []
+
+
+# ── KB-3: the index is read through the same clause ─────────────────────────
+
+def test_the_index_modules_are_in_the_sweep() -> None:
+    """Not vacuous: ``gateway/kb_index/`` is scanned, and its reads are found."""
+    names = {p.relative_to(_GATEWAY).parts[0] for p in _knowledge_modules()}
+    assert "kb_index" in names
+    chunk_reads = [
+        k for k in _all_reads()
+        if k[0] in {"query.py", "index.py"}
+    ]
+    assert len(chunk_reads) >= 3, chunk_reads
+
+
+def test_the_fence_flags_a_raw_chunk_read() -> None:
+    src = (
+        "async def search(db, user, q):\n"
+        "    return await db.execute(text('SELECT raw FROM kb_chunks WHERE tsv @@ :q'))\n"
+    )
+    assert _page_reads(src) == [("search", 2, False)]
+
+
+def test_the_fence_flags_a_chunk_read_that_joins_pages_without_the_clause() -> None:
+    src = (
+        "async def search(db, user, q):\n"
+        "    vis, params = visible_pages_clause(user, 'p')\n"
+        "    return 'SELECT c.raw FROM kb_chunks c JOIN kb_pages p ON p.id = c.source_id'\n"
+    )
+    assert _page_reads(src) == [("search", 3, False)]
+
+
+def test_a_chunk_read_through_the_clause_passes() -> None:
+    src = (
+        "async def search(db, user, q):\n"
+        "    vis, params = visible_pages_clause(user, 'p')\n"
+        "    return f'SELECT c.raw FROM kb_chunks c JOIN kb_pages p ON p.id = c.source_id "
+        "WHERE {vis}'\n"
+    )
+    assert _page_reads(src) == [("search", 3, True)]
+
+
+def test_the_indexer_delete_is_not_a_read() -> None:
+    src = "SQL = 'DELETE FROM kb_chunks WHERE source_id = CAST(:p AS uuid)'\n"
     assert _page_reads(src) == []

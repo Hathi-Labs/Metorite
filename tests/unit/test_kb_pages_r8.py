@@ -168,7 +168,8 @@ def ns(promoted, monkeypatch):  # noqa: F811 — a fixture
     promoted.made = made
     yield promoted
     with promoted.admin_engine.begin() as c:
-        for table in ("kb_links", "kb_page_versions"):
+        # KB-3: a publish writes chunks, and no foreign key removes them.
+        for table in ("kb_chunks", "kb_links", "kb_page_versions"):
             c.execute(text(f"DELETE FROM {table}"))
         c.execute(text("UPDATE kb_pages SET parent_id = NULL"))
         for table in ("kb_pages", "kb_space_grants", "kb_spaces"):

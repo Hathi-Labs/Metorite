@@ -204,10 +204,11 @@ ${askedFile ?? ""}`;
         </>
       )}
       {viewer && chat ? (
-        <ArtifactViewerModal sessionId={chat.id} entry={viewer} onClose={() => setViewer(null)} />
+        <ArtifactViewerModal sessionId={chat.id} origin="workspace" entry={viewer} onClose={() => setViewer(null)} />
       ) : linked ? (
         <ArtifactViewerModal
           key={linkKey}
+          origin="workspace"
           sessionId={linked.sessionId}
           entry={linkedFileEntry(linked)}
           onClose={closeLinked}
@@ -805,6 +806,7 @@ function AgentWorkspaces() {
 
       {viewerEntry && (
         <ArtifactViewerModal
+          origin="workspace"
           sessionId="artifacts" entry={viewerEntry}
           downloadUrl={viewerUrl} saveUrl={viewerUrl}
           onClose={() => setViewerEntry(null)}

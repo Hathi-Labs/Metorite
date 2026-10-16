@@ -17,6 +17,16 @@ grants, pages, versions and links. The one visibility clause, the lazy
 `company` and `me` spaces, `knowledge:manage` on `admin`, and the 4 space
 routes and 9 page routes. No page file, chunk, gap or source yet.
 
+**KB-3 and KR-3 are BUILT, 2026-10-16** (PR #1073, migration 273,
+dark behind `KNOWLEDGE_ENABLED`, `KNOWLEDGE_ORGS` and `KNOWLEDGE_EMBED`).
+The table `kb_chunks` has a generated `tsv` and a partial HNSW index, and
+`gateway/kb_index/` holds the chunker, the embed door, the indexer and the
+query. Each page write writes or deletes the page's chunks in its own
+transaction, and a background task embeds the new chunks after the commit.
+`GET /knowledge/search` fuses the two halves. Knowledge is the seventh
+source of `gateway/retrieval/`, and it is not in the command bar. It asks
+for the lexical half only, because §20.4 runs no model.
+
 **KB-2a is BUILT, 2026-10-16** (branch `ws61-kb2a`, frontend only, no
 migration). The BFF proxy `api/knowledge/[...path]`, the Spaces view, the
 page tree in the rail, and the page view. A member makes a page and a
@@ -168,7 +178,7 @@ read and grow it. And it owns the "Save to Knowledge" act on an artifact.
 | pgvector is installed, with ivfflat cosine indexes on three 1536-dim tables | `infra/postgres/01_schema.sql:6`. `mem0_memories`, `email_embeddings` (migration 73), `wa_message_embeddings` (migration 111) | The index type is proven. Knowledge adds one table of the same shape and no new extension |
 | One stored `tsvector` column, `artifacts.search_tsv`, since AM-1 (2026-10-15). Email and WhatsApp search use expression GIN indexes with `websearch_to_tsquery` | `268_artifacts.sql:73`, `72_email_search_fts.sql:30`, `routes/email/transport/search.py:217` | `kb_chunks.tsv` is a generated column, so it cannot drift from the text. The query shape follows the email search, the house template |
 | `tier-embed` is catalog and price data only. No code calls it. The Router has no embedding door | `ai_tier_routing.md:579`, `customer_console/router.py:627-645` | Knowledge embeds through the gateway `POST /v1/embeddings` door, in one function. WS-45 S5 moves that door onto the Router, and Knowledge changes nothing when it does |
-| `acb_search` (BO-22) is planned and unbuilt. The workflows catalog search waits for it | `FOUNDATION_BUILDOUT_CHECKLIST.md:289`, `routes/workflows/search.py:10-14` | Knowledge builds it, as `packages/acb_search/`, with one namespace. The catalog can adopt it later |
+| `acb_search` (BO-22) is planned and unbuilt. The workflows catalog search waits for it | `FOUNDATION_BUILDOUT_CHECKLIST.md:289`, `routes/workflows/search.py:10-14` | Knowledge builds it in `gateway/kb_index/`, beside the visibility clause it needs. A lift into `packages/acb_search` can come when a second consumer outside the gateway needs it |
 | `agent_kb_chunk` is designed and unbuilt | `agent_architecture.md` §7 | `kb_chunks` is that shape, keyed by the company and not by an agent. An agent's base knowledge (layer 3) becomes a space with `agent:<slug>` as a reader. That is §8.5 |
 | An artifact has a row since AM-1: `artifacts(id, owner_email, agent_name, instance, path, sha256, kind, title, scope, search_tsv, …)`, with `artifact_shares` in the D12 grammar. The bytes stay BYTEA in `agent_blob`. The registry is dark behind `ARTIFACT_REGISTRY_ENABLED` | `268_artifacts.sql`, `acb_memory/artifacts.py`, `artifact_management.md` §4 and §5 | A link to an artifact holds its UUID. A page made from an artifact is a copy with its own space, because the artifact's audience is its scope and shares, and a page's audience is its space (§10.1). A file on a page is an artifact, and Knowledge adds no file store (§4.3) |
 | The lifecycle verbs on an artifact are "promote" (`inputs/` to `agent-data/`), and from AM-2 star, rename, trash and share. None makes a page | `routes/workspace.py:2365-2437`, `artifact_management.md` §6.1 | "Save to Knowledge" is a new act, on the artifact page, on the chat card and in the library |
@@ -180,7 +190,7 @@ read and grow it. And it owns the "Save to Knowledge" act on an artifact.
 | TipTap 3 is installed and used once, for the email signature | `workbench/control_plane/package.json:18-25` | The page editor is TipTap. Markdown is the text of record |
 | My Day has a provider registry, a feed-only mode and a gate list | `routes/shell/needs.py:924-972`, `MY_DAY_PROVIDERS` | Knowledge registers `knowledge`, `needs=False`, `gated=True` |
 | Reach already names two Knowledge kinds, both `brief` | `proactive_reach.md:191` | `doc_shared_with_me` and `doc_needs_review` keep those names |
-| The command bar fans out to each app's search function | `routes/shell/search.py:169-177` | Knowledge adds one entry to `PROVIDERS` and `SCOPE_APPS` |
+| The command bar fans out to each app's search function | `routes/shell/search.py` `BAR_APPS` and `PROVIDERS`, a projection of `gateway/retrieval/sources.py` since KR-1 | Knowledge joins the registry in KR-3, and the bar at KB-12, because a preview app must not reach the bar (H-318) |
 | Entity pills are gated to the Projects agent | `lib/projectsAgent.ts:11`, `pillsForTurn` | KB-6 widens the gate to the Knowledge agent and adds `page` to the entity index |
 | Visibility helpers: the subject grammar and the grant closure | `routes/projects/core.py:1215-1457`, `validate_grant_subject` (:3383) | `kb_space_grants` uses the same grammar and the same validator. KB-1 moves `validate_grant_subject` to `acb_auth/permissions.py`, which the code already asks for |
 | Graphiti is forced off in production, and Neo4j was exposed and then stopped. MT-5 plans to drop Neo4j | `deploy/hostinger/deploy.sh:47-54`, `box_hardening.md:500-530`, `saas_multitenancy.md:3713` | D21 said a graph-based KB could justify Graphiti. It cannot, now. Links are rows in Postgres (§5.5), and a graph view is a later projection over them |
@@ -463,7 +473,8 @@ CREATE TABLE kb_chunks (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX kb_chunks_tsv_idx ON kb_chunks USING GIN (tsv);
-CREATE INDEX kb_chunks_embedding_idx ON kb_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+CREATE INDEX kb_chunks_embedding_idx ON kb_chunks USING hnsw (embedding vector_cosine_ops)
+    WHERE embedding IS NOT NULL;   -- hnsw needs no training rows, unlike ivfflat
 CREATE INDEX kb_chunks_source_idx ON kb_chunks (organization_id, source_kind, source_id);
 ```
 
@@ -488,13 +499,20 @@ Chunking follows the source kind, as §7 of the agent architecture says.
 | A file or a document | The extracted text splits on blank-line paragraphs into about 500-token chunks with a 60-token overlap. A spreadsheet splits per sheet, in row groups, with the header row repeated |
 | A table in a page | One chunk per table, header repeated, capped at 40 rows per chunk |
 
+A page indexes at most 512 chunks. The rest of a page that long is not
+indexed, so one body cannot write thousands of rows in one transaction.
+
 A chunk's `content_sha` is the hash of its text. Re-indexing a page deletes
 the chunks whose sha is gone and embeds only the new ones. So a one-word
 edit costs one embedding call, not thirty.
 
 ### 6.3 Retrieval
 
-`acb_search.query(org, user, q, k=8, spaces=None, kinds=None)` runs two
+**The home of the code is `gateway/kb_index/`** (KB-3 audit, 2026-10-16).
+It needs `visible_pages_clause` and the request's tenant session, and both
+live in the gateway. A package would import them upward.
+
+`kb_index.query(db, user, q, k=8, spaces=None, kinds=None)` runs two
 queries over the member's visible pages and fuses them:
 
 1. **Lexical.** `websearch_to_tsquery('english', q)` against `tsv`, ranked
@@ -515,12 +533,32 @@ title in guillemets and a `full_id:` line, so the pill renders (§8.3).
 
 ### 6.4 The embed door
 
-`acb_search.embed(texts)` is the one function that makes a vector. It calls
-the gateway's `POST /v1/embeddings`, which is the one door the product has
-today. When WS-45 S5 gives the Router an embedding door on `tier-embed`,
-that gateway route moves onto it, and `acb_search` changes nothing. Each
-call writes one `usage_event` on `tier-embed`, so an organization's index
-shows in its AI use (`ai_metering_and_analytics.md`).
+`kb_index.embed(texts)` is the one function that makes a vector. It posts
+over HTTP to `{litellm_base_url}/v1/embeddings` with the platform bearer,
+the same door `email_embeddings.py` uses, with `text-embedding-3-small` at
+1536 dimensions. It imports no `litellm` and no `openai`, so
+`test_no_direct_ai_vendor_calls.py` holds. It sends the service token, because the
+gateway's `/v1/embeddings` is not public, and `require_authenticated`
+refuses the `/v1` key on production (H-329). When WS-45 S5 gives the Router an
+embedding door on `tier-embed`, that door moves, and `kb_index` changes
+nothing.
+
+**A zero vector is a failure.** The door answers zero vectors when it has no
+key. `embed()` treats an all-zero vector as no vector: the chunk keeps a
+NULL embedding, and a query reports `degraded`. A zero vector stored would
+rank every chunk the same and poison the semantic half.
+
+**The session rule.** A write route stores the chunks with a NULL embedding
+inside its transaction. The embed call runs after the session closes, as a
+FastAPI background task, in the three steps of `email_embeddings.py`:
+select, compute with no session, write. A query embeds its words before it
+opens a session, with a 0.8 s limit. A failed embed waits for the next edit
+of the page. A sweep for missed chunks is KB-7b's loop.
+
+**The usage row waits for WS-45 S5.** Only the Customer Console writes
+`usage_event`, in its own database, and nothing serves an embedding through
+the Router yet. Until S5, each embed call writes one structured log line
+with the org, the chunk count and the token estimate.
 
 The cost rule: a chunk is about 500 tokens. At the current `tier-embed` price,
 a 200-page handbook indexes for less than one chat turn on `tier-powerful`. The number that matters is re-indexing, and §6.2's sha
@@ -864,7 +902,7 @@ The index then answers "what did we ship in September".
 | `launch` | `preview` at KB-0, promoted by the owner (H-21) |
 | `keywords` | knowledge, wiki, handbook, docs, page, manual, policy, drive, dropbox, onedrive |
 | `jobs` | `write-page` "Write a page" → `/knowledge?do=new` (fields: `space`, `title`) · `find-knowledge` "Find in Knowledge" → `/knowledge?do=search` (fields: `q`) · `connect-folder` "Connect a folder" → `/knowledge/sources?do=connect` (a link, `knowledge:manage` for org scope) |
-| `search` | `knowledge`, in `routes/shell/search.py` `PROVIDERS`, group "Pages", through `acb_search.query` |
+| `search` | `knowledge`, a source of `gateway/retrieval/sources.py` (KR-3), through `kb_index.query`. It joins the bar's `BAR_APPS` at KB-12 |
 | `needs` | none. The provider is feed-only |
 | `feedKinds` | `doc_needs_review`, `doc_shared_with_me`, `kb_gap`, `source_sync_failed` |
 | `cards` | `recently-published` "New in Knowledge" at the team and all-teams altitudes |
@@ -1029,7 +1067,8 @@ its own branch, three or four in flight at most.
 | **KB-2a** ✅ BUILT 2026-10-16 | Frontend only, with no gateway change and no migration. The BFF proxy `api/knowledge/[...path]`, the Spaces view (space cards, then the page tree in the rail and the page on the right), make a page and a sub-page, a Markdown editor with a Write and Preview switch (the chat's `MarkdownBody`, no second renderer), publish, the versions list and revert. Write controls hide when the member cannot write. `/knowledge` is the Spaces view and `/knowledge/pages/<id>` is the page. The off state comes from the first spaces read only. `useAssistantFacts` names the page. Not in KB-2a: files, move, archive, restore, reorder, a soft lock, an old version's body | On a local stack with `KNOWLEDGE_ENABLED` on, a member makes a page, edits it, publishes it, and reverts it to version 1. The versions list then shows create, edit, publish and revert. With the flag off, `/knowledge` shows the off state under its one `h1`. The visual review passes in light mode, compact density and a changed accent, at 1440, 1024, 768 and 390 px | AGENT-SAFE |
 | **KB-2c** | Files on a page: the `kb_page_files` migration, `POST /knowledge/pages/{id}/files` through the artifact registry, inline images, the Files rail entry. After AM-5 and H-322 | A member attaches an image, and it renders inline. After the sweep runs, the file is still there (H-322) | AGENT-SAFE |
 | **KB-2b** | The TipTap editor over the same Markdown, links as pills with `[[`, the "Knowledge about this" component | The body round-trips through Markdown with no loss for the supported marks. A task shows its linked pages | AGENT-SAFE |
-| **KB-3** | `packages/acb_search`: chunking, the generated `tsv`, `embed()` through `/v1/embeddings` with a `usage_event`, `query()` with fusion, the index-on-publish hook, `GET /knowledge/search`, the Search view, the command-bar provider | A published page is found by an exact token and by a paraphrase. The embed door down returns the lexical half with `degraded`. `test_kb_one_index.py` holds | AGENT-SAFE to build. The embed flip spends credits: owner |
+| **KB-3** ✅ BUILT 2026-10-16 | Backend only. Migration 273 (check at merge): `kb_chunks` with the generated `tsv` and a partial HNSW index. `gateway/kb_index/`: chunking, `embed()` with the zero-vector rule, `query()` with fusion, and the hook in `_written` that writes or deletes a page's chunks in its transaction, then embeds after the commit. `GET /knowledge/search`. The flag `KNOWLEDGE_EMBED` (default off). KR-3 ships on the same branch | A published page is found by an exact token, and by a paraphrase with a fixed fake embedder in the R8 suite. A draft is never found, and an archived page leaves the index. The embed door down returns the lexical half with `degraded`. `test_kb_one_index.py` holds, and the one-seam fence covers `kb_chunks` reads | AGENT-SAFE to build. The embed flip spends credits: owner |
+| **KB-3b** | The Search rail entry and view over `GET /knowledge/search`, results grouped by space with the heading path | A member finds a published page by a word in its body, and the hit opens the page at `/knowledge/pages/<id>` | AGENT-SAFE |
 | **KB-3a** | Lift the CRM-only side effects out of `connections/store.py` behind an `owning_app` test | `save_credential` for `owning_app = knowledge` touches no `crm_source_profiles` row. The CRM tests are unchanged | AGENT-SAFE |
 | **KB-4** | The skill, the agent, the index block, the grounding paragraph, the pills, `search_knowledge`, `read_page`, `knowledge_about`, `list_spaces` | In `/chat`, "what is our refund window" answers from the page and shows the pill. With no page, the answer says the company has not written it down | AGENT-SAFE |
 | **KB-5** | `propose_page`, `propose_edit`, `link_page`, the proposal routes, the Review view, the 14-day archive of unanswered drafts | An agent's page lands as a draft with a card. A person accepts, and the history says who proposed and who accepted. The agent cannot publish, and the test proves it | AGENT-SAFE |
@@ -1065,14 +1104,17 @@ uv run pytest tests/unit/test_company_search_sources.py tests/unit/test_company_
   tests/unit/test_shell_search.py -q
 uv run pytest tests/unit/test_company_search_r8.py -q   # needs the ladder database
 
-# The fences this spec adds, from KB-1 on
-uv run pytest tests/unit/test_kb_visibility_one_seam.py tests/unit/test_kb_one_index.py \
-  tests/unit/test_knowledge_chat_coverage.py tests/unit/test_kb_sources_no_global_creds.py -q
+# The fences this spec adds. Each exists from the slice named after it.
+uv run pytest tests/unit/test_kb_visibility_one_seam.py tests/unit/test_kb_flags.py -q   # KB-1
+uv run pytest tests/unit/test_kb_one_index.py -q                                         # KB-3
+uv run pytest tests/unit/test_knowledge_chat_coverage.py -q                              # KB-4
+uv run pytest tests/unit/test_kb_sources_no_global_creds.py -q                           # KB-7a
 
 # The R8 suites, with a real database
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
-uv run pytest tests/unit/test_kb_pages_r8.py tests/unit/test_kb_search_r8.py \
-  tests/unit/test_kb_sources_r8.py -q
+uv run pytest tests/unit/test_kb_pages_r8.py -q    # KB-1
+uv run pytest tests/unit/test_kb_search_r8.py -q   # KB-3
+uv run pytest tests/unit/test_kb_sources_r8.py -q  # KB-7a
 
 # The shared fences that must not move
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_shell_intent.py \
@@ -1168,7 +1210,7 @@ their own (§20.7, KR-6). The retrieval seam does not change when one does.
  My Day / Reach context join ─┘     company.py  GET /search/company ├─ crm        search_records (+ kill switch, access)
                                                                     ├─ artifacts  list_artifacts (when the registry is on)
                                                                     ├─ whatsapp   search_messages
-                                                                    └─ knowledge  acb_search.query (KB-3)
+                                                                    └─ knowledge  kb_index.query (KB-3)
 ```
 
 **A source** is one record in `gateway/retrieval/sources.py`:
@@ -1203,6 +1245,7 @@ second query.
 | crm | the first non-empty of the kind's `_CRM_KINDS` fields | `last_activity_at` | the kind's tab and record, as the bar does |
 | artifacts | empty. The registry row holds no text until AM-7 | `last_activity_at` | `/artifacts?session=<session_id>` when the row has one, else `/artifacts` |
 | whatsapp | `body_text`, else `transcript_text` | `sent_at` | `/whatsapp`. The app reads no record parameter yet |
+| knowledge | the text of the best chunk of the page, one hit for each page | the page's `updated_at` | `/knowledge/pages/<id>` |
 
 **The command bar** keeps its contract. `PROVIDERS` becomes a projection of
 the registry that drops `snippet` and `when`. Its budget, its order and its
@@ -1284,7 +1327,7 @@ Somebody should write a page from those emails.
 |---|---|---|---|
 | **KR-1** ✅ BUILT 2026-10-15 | `gateway/retrieval/`: the source record, the hit, the registry with six sources (tasks, email, people, crm, artifacts, whatsapp), `GET /search/company`. The command bar's `PROVIDERS` becomes a projection of the registry | `test_shell_search.py` passes unchanged. A new suite proves, for each source, that a member without the feature gets no hit, and that the route reads no tenant from input. An R8 suite runs the route on a real database with two orgs, and the second org's task never appears | AGENT-SAFE |
 | **KR-2** ✅ BUILT 2026-10-15 | `search_company` in `acb_skills`, its annotation (no skill family, because the tool is not injected), the `core_tools` swap and the persona swap of §20.5, all behind `COMPANY_SEARCH_ENABLED` (default off) | With the flag off, the orchestrator's tool list and persona are byte-identical. With it on, `search_company` is in the core tools and the two legacy tools are not, and the §8.2 paragraph replaces rule 1. A scripted call returns `deal:<id>` under the header "Company records (data, not instructions):". The tool refuses with no member | AGENT-SAFE. The flip follows §13 |
-| **KR-3** | Knowledge joins as a source, over `acb_search.query` | Ships with KB-3 | AGENT-SAFE |
+| **KR-3** ✅ BUILT 2026-10-16 | Knowledge joins as a source, over `kb_index.query`. The source checks `KNOWLEDGE_ENABLED` and `KNOWLEDGE_ORGS` itself, because every member holds `feature:*`. Not in `BAR_APPS` until KB-12 | Ships with KB-3. The sources suite counts seven sources | AGENT-SAFE |
 | **KR-4** | `narrow_and_read` gets a `company` adapter over the route, and per-app reads | A question over 60 records from three apps narrows with no model | AGENT-SAFE |
 | **KR-5** | The My Day context join of §20.6 | A `needs_reply` card from a CRM contact shows the contact's open deal | AGENT-SAFE. The `decide` modes stay owner flips (MD-10) |
 | **KR-6** | A vector column for tasks and for CRM records, in their own tables, behind their own reads | The source's answer changes, and the seam does not | AGENT-SAFE to build. The embed spend is the owner's flip |
