@@ -17,9 +17,7 @@ from email_ingestion.storage import storage_limit_bytes
 from fastapi import Depends, HTTPException, status
 from gateway.routes.email.core import (
     _account_scope,
-    _decrypt_credentials,
     _default_label,
-    _instantiate_provider,
     _log,
     _tenant_session,
     router,
@@ -38,17 +36,13 @@ from gateway.routes.email.memory_purge import (
     schedule_mailbox_memory_purge,
 )
 from gateway.routes.email.teardown import (
-    drop_mailbox_cache,
-    read_filter_ids,
-    remove_metorite_filters,
-    revoke_grant,
+    MailboxScope,
+    finish_teardowns,
+    read_teardown_plans,
+    stop_sync,
 )
 from pydantic import BaseModel, Field, StrictBool, StrictInt
 from sqlalchemy import text
-
-#: The bound on the best-effort Graph call of a disconnect (EM-T4f). A slow or
-#: failed call must never hold back the 204 of the route.
-SUBSCRIPTION_DELETE_TIMEOUT_S = 5.0
 
 #: The bound on the row locks that the DELETE of a disconnect waits for
 #: (EM-T4f). A sync outside the loop holds a KEY SHARE lock on the account row
@@ -65,10 +59,6 @@ _LOCK_NOT_AVAILABLE = "55P03"
 DISCONNECT_BUSY_DETAIL = (
     "A sync is still writing mail for this mailbox. Try again in a moment."
 )
-
-#: Graph statuses that mean the subscription is gone: 204 deleted it now, and
-#: 404 says it was gone before.
-_SUBSCRIPTION_GONE = frozenset({204, 404})
 
 
 class EmailAccountModel(BaseModel):
@@ -678,39 +668,31 @@ async def delete_account(
     process stops first, the sweeper of ``memory_purge.py`` finishes it. The
     fence is ``tests/unit/test_email_mailbox_purge_durable.py``.
 
-    EM-G11f1 (``email_app_master_plan.md`` §12.3.13.9) adds the legs of
-    ``routes/email/teardown.py``. The ownership read of a Gmail row also reads
-    the filter ids that Metorite made, because the cascade deletes them. Each
-    leg runs only after the ``DELETE`` commits, so a 404, a 409 or a failed
-    ``DELETE`` changes nothing at Google, and no await sits between the stop
+    EM-G11f1 and EM-G11f1b (``email_app_master_plan.md`` §12.3.13.9 and
+    §12.3.13.9.2) put the disconnect on the two calls of
+    ``routes/email/teardown.py``. ``read_teardown_plans`` IS the ownership
+    read: it reads the plan of the mailbox, with the filter ids that Metorite
+    made, because the cascade deletes them. ``finish_teardowns`` runs only
+    after the ``DELETE`` commits, so a 404, a 409 or a failed ``DELETE``
+    changes nothing at Google or at Microsoft. No await sits between the stop
     and the ``try`` that starts the loop again. After the commit, the filters
-    go at Gmail, and then the Google grant is revoked, unless another
-    Metorite mailbox uses the same Gmail account. Last, the Redis keys of the
-    mailbox go. No leg blocks the 204. The fence is
-    ``tests/unit/test_email_mailbox_teardown.py``.
+    go at Gmail or at Outlook, the Google grant is revoked unless another
+    Metorite mailbox uses the same Gmail account, the Graph subscription goes,
+    and last the Redis keys of the mailbox go. No leg blocks the 204. The
+    fence is ``tests/unit/test_email_mailbox_teardown.py``.
     """
     owner = user.email or "anonymous"
 
-    # ── 1. the ownership read, and the Gmail filter ids ─────────────────────
+    # ── 1. the ownership read: the plan of the mailbox, with its filter ids ─
     async with _tenant_session() as db:
-        found = (await db.execute(
-            text(
-                """SELECT organization_id, provider, credentials_encrypted
-                   FROM email_accounts
-                   WHERE id = :id AND user_id = :uid"""
-            ),
-            {"id": account_id, "uid": owner},
-        )).fetchone()
-        if found is None:
-            raise HTTPException(status_code=404, detail="Account not found")
-        # The cascade of step 3 deletes these ids, so read them first. The
-        # filters themselves go only after the DELETE commits (step 4a).
-        filter_ids = (await read_filter_ids(db, account_id, owner)
-                      if found.provider == "gmail" else [])
-    org = str(found.organization_id) if found.organization_id else None
+        plans = await read_teardown_plans(db, MailboxScope(account_id, owner))
+    if not plans:
+        raise HTTPException(status_code=404, detail="Account not found")
+    [plan] = plans
+    org = plan.org
 
     # ── 2. stop the sync loop, with no session open ─────────────────────────
-    had_loop = await _stop_sync(account_id)
+    had_loop = await stop_sync(account_id)
 
     # ── 3. the delete and the default re-election, with a lock bound ────────
     try:
@@ -771,40 +753,14 @@ async def delete_account(
     # The task closes the purge row of step 3 with the same session seam.
     schedule_mailbox_memory_purge(owner, account_id, open_session=_tenant_session)
 
-    # ── 4a. the Gmail filters, then the Google grant (EM-G11f1) ────────────
+    # ── 5. the teardown, after the commit (EM-G11f1, EM-G11f1b) ─────────────
     # After the purge task starts, so a cancel of these awaits cannot skip it.
-    # The filters go first, while the grant is still valid. The ids came from
-    # step 1, because the cascade of step 3 deleted them.
-    await remove_metorite_filters(
-        account_id, deleted.provider, deleted.credentials_encrypted, filter_ids)
-    await revoke_grant(account_id, deleted, _tenant_session)
-
-    # ── 5. the Graph subscription, best effort, with no session open ────────
-    await _drop_graph_subscription(account_id, deleted)
-
-    # ── 6. the Redis keys of the mailbox and the owner's My Day (EM-G11f1) ──
-    await drop_mailbox_cache(org, owner, account_id)
-
-
-async def _stop_sync(account_id: str) -> bool:
-    """Stop the sync loop of a mailbox. True when a loop ran before the stop.
-
-    The answer tells a failed disconnect whether to start the loop again. A
-    mailbox with sync off, or a box with ``EMAIL_SYNC_ENABLED`` off, has no
-    loop, and a failed disconnect must not start one.
-    """
-    try:
-        from email_ingestion.scheduler import (
-            get_scheduler_status,
-            remove_account_sync,
-        )
-        had_loop = account_id in get_scheduler_status()["accounts"]
-        await remove_account_sync(account_id)
-    except Exception as exc:
-        _log.warning("email.disconnect.stop_sync_failed",
-                     account_id=account_id, error=type(exc).__name__)
-        return False
-    return had_loop
+    # The RETURNING row wins over the plan: it was read after the loop
+    # stopped, and the loop can rotate the credentials or the subscription
+    # until then. The loop is already stopped, and the owner still exists.
+    await finish_teardowns(
+        org, [plan.with_deleted_row(deleted)], open_session=_tenant_session,
+        stop_loops=False, bump_owners=True)
 
 
 #: Restarts of a sync loop that a failed disconnect started. The set holds a
@@ -859,51 +815,6 @@ def _is_lock_timeout(err: BaseException) -> bool:
             return True
         seen = getattr(seen, "orig", None) or seen.__cause__
     return False
-
-
-async def _drop_graph_subscription(account_id: str, row: Any) -> None:
-    """Remove the Graph push subscription of a deleted mailbox, best effort.
-
-    Only a ``microsoft`` row with a ``webhook_subscription_id`` gets a call.
-    The provider comes from ``_instantiate_provider``, the gateway adapter over
-    ``build_provider``, as ``_ensure_subscription`` builds it. The whole call
-    has a bound of ``SUBSCRIPTION_DELETE_TIMEOUT_S``.
-
-    ``delete_subscription`` returns the HTTP status of Graph. 204 and 404 mean
-    the subscription is gone, and log ``email.disconnect.subscription_deleted``.
-    Any other status, an error or a timeout logs
-    ``email.disconnect.subscription_delete_failed``, and the route still
-    answers 204. The log holds the status or the error class, never a token
-    or an error text. A refreshed token needs no write, because the row is
-    gone.
-
-    The provider has no close method, so the httpx client of this call stays
-    open until the process collects it. §10.4.6 records that follow-up.
-    """
-    sub_id = row.webhook_subscription_id
-    if row.provider != "microsoft" or not sub_id:
-        return
-    try:
-        async with asyncio.timeout(SUBSCRIPTION_DELETE_TIMEOUT_S):
-            creds, _store = _decrypt_credentials(row.credentials_encrypted)
-            provider = _instantiate_provider(row.provider, creds)
-            graph_status = await provider.delete_subscription(str(sub_id))
-    except Exception as exc:
-        response = getattr(exc, "response", None)
-        _log.warning(
-            "email.disconnect.subscription_delete_failed",
-            account_id=account_id,
-            error=type(exc).__name__,
-            status=getattr(response, "status_code", None),
-        )
-        return
-    if graph_status in _SUBSCRIPTION_GONE:
-        _log.info("email.disconnect.subscription_deleted",
-                  account_id=account_id, sub=str(sub_id)[:12],
-                  status=graph_status)
-        return
-    _log.warning("email.disconnect.subscription_delete_failed",
-                 account_id=account_id, error=None, status=graph_status)
 
 
 @router.patch("/accounts/{account_id}", response_model=EmailAccountModel)

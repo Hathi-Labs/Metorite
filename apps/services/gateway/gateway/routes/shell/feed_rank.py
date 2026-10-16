@@ -13,7 +13,8 @@ The order is a score. Code owns time, and ``decide`` owns judgment::
   model never does date arithmetic.
 * ``weight`` is the OLD PATH until MD-6a: the task's D78 level, from the one
   server matrix (``acb_common.priority``), as a level from 0 to 4, times 6.
-  A signal with no task level weighs 0.
+  A signal with no task level weighs 0. A card with ``promise_due`` on it
+  adds 10 (MD-3d, §5.9 item 8).
 * ``affinity`` is 0 until MD-9 builds it.
 * ``fatigue`` is -8 for each visit of the day with no act, to -24 at most
   (MD-2a). Only the state knows the visits, so the state join subtracts it
@@ -36,6 +37,7 @@ MD-6a, and rule 4 (the order holds while the member reads) is the client's
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -94,6 +96,8 @@ FATIGUE_MAX = 24
 
 #: The weight of one level (§7: "the level from 0 to 4, times 6").
 WEIGHT_STEP = 6
+#: The old path adds this for a promise on the card (§7, §5.9 item 8, MD-3d).
+PROMISE_WEIGHT = 10
 #: The D78 level of each cell, mapped onto 0 to 4 by its rank:
 #: ``round((7 - rank) * 4 / 6)``. Rank 1 (Critical) is 4, and rank 7 (Low
 #: Priority) is 0. Written out so the table reads at a glance.
@@ -132,12 +136,17 @@ def urgency(kind: str, facts: dict[str, Any], urgent_at: Any, now: datetime) -> 
     return points
 
 
-def weight(facts: dict[str, Any]) -> int:
-    """The old path of ``my_day.weight``: the task's D78 level, times 6."""
+def weight(facts: dict[str, Any], kinds: Iterable[str] = ()) -> int:
+    """The old path of ``my_day.weight``: the task's D78 level, times 6, and
+    10 more when ``promise_due`` is one of ``kinds``, the main kind of the
+    card or a folded one (§7, §5.9 item 8, MD-3d).
+
+    ``kinds`` is empty by default, so a caller that asks only for the level
+    (``feed_decide.old_level``) gets the level. A card with no promise gets
+    the weight it had before MD-3d."""
     cell = facts.get("priority")
-    if cell not in CELL_META:
-        return 0
-    return LEVEL_BY_CELL[cell] * WEIGHT_STEP
+    level = LEVEL_BY_CELL[cell] * WEIGHT_STEP if cell in CELL_META else 0
+    return level + (PROMISE_WEIGHT if "promise_due" in kinds else 0)
 
 
 def affinity(_facts: dict[str, Any]) -> int:
@@ -150,10 +159,12 @@ def fatigue(visits: int) -> int:
     return min(FATIGUE_MAX, FATIGUE_PER_VISIT * max(0, int(visits)))
 
 
-def score(kind: str, facts: dict[str, Any], urgent_at: Any, now: datetime) -> int:
+def score(kind: str, facts: dict[str, Any], urgent_at: Any, now: datetime,
+          kinds: Iterable[str] = ()) -> int:
     """The score with no state: base + urgency + weight + affinity. The
-    state join subtracts ``fatigue`` (``state.join``)."""
-    return (base(kind) + urgency(kind, facts, urgent_at, now) + weight(facts)
+    state join subtracts ``fatigue`` (``state.join``). ``kinds`` are every
+    kind on the card, for the promise term of ``weight``."""
+    return (base(kind) + urgency(kind, facts, urgent_at, now) + weight(facts, kinds)
             + affinity(facts))
 
 
