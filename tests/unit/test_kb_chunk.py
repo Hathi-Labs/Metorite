@@ -256,6 +256,29 @@ def test_embed_sends_64_texts_at_most(monkeypatch: pytest.MonkeyPatch) -> None:
     assert all(v is not None for v in out) and len(out) == len(texts)
 
 
+def test_an_empty_text_is_none_and_never_sent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The door answers 422 for an empty text, and one 422 made all 64 texts
+    of its batch None. CRM note search stalled on exactly that."""
+
+    def _vectors_or_422(texts: list[str]) -> dict[str, Any]:
+        if any(not t.strip() for t in texts):
+            raise AssertionError("an empty text reached the door")
+        return _vectors(texts)
+
+    console = _Console(_vectors_or_422).install(monkeypatch)
+    out = _as_member(lambda: embed_mod.embed(["good", "", "  ", None, "also good"], org=ORG))
+    sent = [json.loads(r.content)["input"] for r in console.requests]
+    assert sent == [["good", "also good"]]
+    assert [v is not None for v in out] == [True, False, False, False, True]
+    assert len(out[0] or []) == 1536 and len(out[4] or []) == 1536
+
+
+def test_only_empty_texts_send_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    console = _Console(_vectors).install(monkeypatch)
+    assert _as_member(lambda: embed_mod.embed(["", " \n "], org=ORG)) == [None, None]
+    assert console.requests == []
+
+
 def test_a_zero_vector_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
     _Console(lambda texts: _vectors(texts, 0.0)).install(monkeypatch)
     assert _as_member(lambda: embed_mod.embed(["a"], org=ORG)) == [None]

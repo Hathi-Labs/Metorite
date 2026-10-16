@@ -133,18 +133,28 @@ async def embed(
     ``None`` means no vector: the Router refused, it is down, it timed out,
     or it answered a zero vector. One log line for each call, with the org,
     the count and the token estimate. The Router writes the usage row.
+
+    🔴 **An empty text is ``None``, and it is never SENT.** The door answers
+    422 for an empty text, and one 422 makes every text of its request
+    ``None``. So a text that is empty after ``strip()`` keeps its position as
+    ``None``, and only the other texts go out, in batches of :data:`BATCH`.
     """
     if not texts:
         return []
     clipped = [str(t or "")[:MAX_TEXT_CHARS] for t in texts]
-    out: list[list[float] | None] = []
-    for start in range(0, len(clipped), BATCH):
-        batch = clipped[start:start + BATCH]
+    out: list[list[float] | None] = [None] * len(clipped)
+    # The positions that carry text. Only these are sent.
+    sendable = [i for i, t in enumerate(clipped) if t.strip()]
+    for start in range(0, len(sendable), BATCH):
+        positions = sendable[start:start + BATCH]
+        batch = [clipped[i] for i in positions]
         try:
-            out.extend(await _post(batch, timeout))
+            vectors = await _post(batch, timeout)
         except Exception as exc:  # `_post` never raises; this is the backstop
             _log.warning("knowledge.embed_failed", error=type(exc).__name__)
-            out.extend([None] * len(batch))
+            continue
+        for i, vec in zip(positions, vectors, strict=False):
+            out[i] = vec
     _log.info(
         "knowledge.embed",
         organization_id=org,
