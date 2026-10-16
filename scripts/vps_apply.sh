@@ -68,6 +68,38 @@ fi
 APP_DIR="${APP_DIR:-/opt/acb/app}"
 cd "$APP_DIR"
 
+# ── WHICH DEPLOYMENT THIS BOX IS (WS-38 S-4) ────────────────────────────────
+# One setting, DEPLOY_ENV in the box's own .env, says production or staging.
+# Absent means production, so the production box needs no edit. Any other
+# value stops here: a typo must not quietly deploy a box as the wrong thing.
+# vps_pull.sh reads it the same way. Fence: tests/unit/test_deploy_env.py.
+#   production  release ref `release`, ./caddy/Caddyfile, every timer
+#   staging     release ref `staging`, ./caddy/Caddyfile.staging, two timers
+# ⚠️ `|| true` is load-bearing: vps_pull.sh runs under `set -euo pipefail`, and
+# a grep that finds no line (the production box today) exits 1 and would kill
+# the script at this line.
+DEPLOY_ENV="$( { grep -E '^DEPLOY_ENV=' "$APP_DIR/.env" 2>/dev/null || true; } | tail -1 | cut -d= -f2- | tr -d "\"' \r")"
+# Fail closed on the two shapes that would otherwise read as production on a
+# staging box: an .env that exists and cannot be read, and a DEPLOY_ENV line in
+# any other form (`export DEPLOY_ENV=…`, `DEPLOY_ENV = …`, a leading space).
+# awk, not a grep pipe: under pipefail an early `grep -q` exit is a SIGPIPE.
+if [ -e "$APP_DIR/.env" ] && [ ! -r "$APP_DIR/.env" ]; then
+  echo "!! $APP_DIR/.env exists and cannot be read, so DEPLOY_ENV is unknown. This round did NOTHING."
+  exit 1
+fi
+if awk '/^[[:space:]]*(export[[:space:]]+)?DEPLOY_ENV[[:space:]]*=/ && !/^DEPLOY_ENV=/ { bad = 1 } END { exit !bad }' "$APP_DIR/.env" 2>/dev/null; then
+  echo "!! $APP_DIR/.env names DEPLOY_ENV in a form other than DEPLOY_ENV=<value>. This round did NOTHING."
+  exit 1
+fi
+DEPLOY_ENV="${DEPLOY_ENV:-production}"
+case "$DEPLOY_ENV" in
+  production) ;;
+  staging) RELEASE_REF="${RELEASE_REF:-staging}" ;;
+  *)
+    echo "!! DEPLOY_ENV=$DEPLOY_ENV in $APP_DIR/.env is not production or staging. This round did NOTHING."
+    exit 1 ;;
+esac
+
 # ── ONE DEPLOY AT A TIME ON THIS BOX (H-89, H-164) ──────────────────────────
 #
 # 🔴 **TWO DELIVERY PATHS SHARE ONE CHECKOUT, AND NOTHING MADE THEM TAKE
@@ -409,6 +441,7 @@ if [ "${DEPLOY_TETHER:-1}" = "1" ]; then
 fi
 
 echo "==> Taking the deploy lock ($DEPLOY_LOCK)"
+echo "    deployment: $DEPLOY_ENV (WS-38 S-4)"
 if [ "${DEPLOY_LOCK_HELD:-0}" = "1" ]; then
   # vps_pull.sh holds it on fd 8, or the first copy of this script held it on
   # fd 8 before its re-exec. The fd stays open through `exec`, so the lock
@@ -683,11 +716,18 @@ echo "==> Ensuring public-URL env vars"
 # company's. Directory pinning is a per-deployment decision: set those keys by
 # hand in .env for a single-tenant silo; leave them unset for the multi-directory
 # default (`organizations`, see workbench auth.ts and email transport oauth.py).
+# WS-38 S-4: the default hosts follow DEPLOY_ENV, and match the Caddyfile
+# that this apply installs. A staging box must never default to production's.
+if [ "$DEPLOY_ENV" = "staging" ]; then
+  _gw_default="https://api.dev.metorite.com"; _wb_default="https://dev.metorite.com"
+else
+  _gw_default="https://api.metorite.com";     _wb_default="https://app.metorite.com"
+fi
 for _var in GATEWAY_PUBLIC_URL WORKBENCH_PUBLIC_URL; do
   if ! grep -qE "^${_var}=" "$ENV_FILE" 2>/dev/null; then
     case "$_var" in
-      GATEWAY_PUBLIC_URL)              echo "GATEWAY_PUBLIC_URL=https://api.metorite.com" >> "$ENV_FILE" ;;
-      WORKBENCH_PUBLIC_URL)            echo "WORKBENCH_PUBLIC_URL=https://app.metorite.com" >> "$ENV_FILE" ;;
+      GATEWAY_PUBLIC_URL)              echo "GATEWAY_PUBLIC_URL=$_gw_default" >> "$ENV_FILE" ;;
+      WORKBENCH_PUBLIC_URL)            echo "WORKBENCH_PUBLIC_URL=$_wb_default" >> "$ENV_FILE" ;;
     esac
     echo "    + added $_var to .env"
   fi
@@ -1604,6 +1644,9 @@ echo "==> Installing the Caddy config (H-60)"
 # and that would have taken three hostnames down. It now matches the box.
 CADDY_LIVE=/etc/caddy/Caddyfile
 CADDY_REPO="$APP_DIR/deploy/hostinger/caddy/Caddyfile"
+# WS-38 S-4: a staging box installs its own two-host file, never production's.
+[ "$DEPLOY_ENV" = "staging" ] && CADDY_REPO="$APP_DIR/deploy/hostinger/caddy/Caddyfile.staging"
+echo "    caddy config: ${CADDY_REPO#"$APP_DIR"/} ($DEPLOY_ENV)"
 CADDY_BAK=""
 CADDY_CHANGED=0
 echo "    caddy state: $(systemctl is-active caddy 2>&1 || true)"
@@ -2277,11 +2320,36 @@ fi
 # it, and `backup_db.sh` EXITS 1 in local mode when no Postgres answers. The
 # false green needs `PG_MODE=docker`, which now needs the EnvironmentFile to be
 # missing. `test_the_backup_service_must_load_its_credentials` is that fence.
+# ── WS-38 S-4: the staging box's timers, and ONLY the staging box's ────────
+# H-132's rule stands for production, and its loop below is unchanged: every
+# timer the repo ships arrives scheduled, with no carve-out. A staging box is a
+# different deployment, so it gets its own branch. It runs two timers. The
+# backup timer would dump a database that the nightly rebuild replaces, and
+# the chat smoke check talks to the production organization. It DISABLES every
+# other timer and logs each one, so a box that once ran as production stops
+# them. This branch cannot run on production: DEPLOY_ENV=staging also installs
+# the staging Caddyfile, so a production box set to staging would stop serving
+# its own hosts at once, loudly. Fence: tests/unit/test_deploy_env.py.
+staging_timers="acb-pull.timer acb-health-watchdog.timer"
+if [ "$DEPLOY_ENV" = "staging" ]; then
+  for st_timer in "$APP_DIR"/deploy/hostinger/*.timer; do
+    [ -e "$st_timer" ] || continue
+    st_name="$(basename "$st_timer")"
+    if printf ' %s ' "$staging_timers" | grep -q " $st_name "; then
+      sudo systemctl enable --now "$st_name" >/dev/null 2>&1 \
+        || echo "    !! could not enable $st_name — check: systemctl status $st_name"
+    else
+      sudo systemctl disable --now "$st_name" >/dev/null 2>&1 || true
+      echo "    staging: $st_name disabled"
+    fi
+  done
+else
 for timer in "$APP_DIR"/deploy/hostinger/*.timer; do
   [ -e "$timer" ] || continue
   sudo systemctl enable --now "$(basename "$timer")" >/dev/null 2>&1 \
     || echo "    !! could not enable $(basename "$timer") — check: systemctl status $(basename "$timer")"
 done
+fi
 systemctl list-timers --no-pager 'acb-*' 2>/dev/null | head -5 || true
 
 echo "==> WS-49 BH-7: one restart for a unit whose drop-in changed"
