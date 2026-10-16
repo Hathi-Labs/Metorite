@@ -92,6 +92,94 @@ def test_the_links_of_each_entity() -> None:
     assert [k.candidates[0][0] for k in call.links] == ["contact_id", "deal_id"]
 
 
+#: Zoho v2's shape of an activity whose parent is a custom module (CRM-Q23a).
+#: ⚠️ No captured Zoho payload proves that ``$se_module`` names a custom module
+#: by its API name. This fixture follows the v2 shape of a core parent
+#: (``What_Id: {id, name}``, ``$se_module: "<ApiName>"``). The production count
+#: ``activity_drops`` confirms it or refutes it.
+CUSTOM_PARENT = {"id": "x1", "name": "Pump 7"}
+
+
+@pytest.mark.parametrize("entity", ["task", "call", "meeting"])
+def test_a_custom_se_module_gives_one_module_candidate_and_no_core_fallback(
+    entity: str,
+) -> None:
+    mapped = mapping.map_record(
+        entity, {"id": "1", "Who_Id": {"id": "w1"}, "What_Id": CUSTOM_PARENT,
+                 "$se_module": "Install_Base"}, modified_at=None, owners={})
+    assert [(k.ext_id, k.candidates) for k in mapped.links] == [
+        ("w1", (("contact_id", "contact"), ("lead_id", "lead"))),
+        ("x1", (("module_record_id", "module:Install_Base"),)),
+    ]
+    assert mapped.parent_module == "Install_Base"
+
+
+def test_a_note_on_a_custom_module_gives_one_module_candidate() -> None:
+    note = mapping.map_record(
+        "note", {"id": "1", "Parent_Id": CUSTOM_PARENT, "$se_module": "Install_Base"},
+        modified_at=None, owners={})
+    assert [(k.ext_id, k.candidates) for k in note.links] == [
+        ("x1", (("module_record_id", "module:Install_Base"),))]
+
+
+@pytest.mark.parametrize(("se_module", "column"), [
+    ("Accounts", "company_id"), ("Contacts", "contact_id"),
+    ("Leads", "lead_id"), ("Deals", "deal_id"),
+])
+def test_a_core_se_module_keeps_its_one_core_candidate(se_module: str, column: str) -> None:
+    task = mapping.map_record(
+        "task", {"id": "1", "What_Id": {"id": "p"}, "$se_module": se_module},
+        modified_at=None, owners={})
+    assert [k.candidates[0][0] for k in task.links] == [column]
+    assert len(task.links[0].candidates) == 1
+    assert task.parent_module == se_module
+
+
+def test_no_se_module_keeps_the_old_core_fallback() -> None:
+    task = mapping.map_record(
+        "task", {"id": "1", "What_Id": {"id": "p"}}, modified_at=None, owners={})
+    assert task.links[0].candidates == (("deal_id", "deal"), ("company_id", "company"))
+    note = mapping.map_record(
+        "note", {"id": "1", "Parent_Id": {"id": "p"}}, modified_at=None, owners={})
+    assert {c for c, _k in note.links[0].candidates} == {
+        "lead_id", "deal_id", "contact_id", "company_id"}
+    assert task.parent_module is None and note.parent_module is None
+    deal = mapping.map_record("deal", {"id": "1"}, modified_at=None, owners={})
+    assert deal.parent_module is None
+
+
+def test_the_activity_targets_hold_the_module_column_and_the_bump_does_not() -> None:
+    """A module parent counts as a target, and gets no ``last_activity_at``
+    bump, because ``crm_module_records`` has no such column."""
+    assert "module_record_id" in engine._ACTIVITY_TARGETS
+    source = (_PACKAGE / "engine.py").read_text(encoding="utf-8")
+    bump = source.split('("lead_id", "crm_leads"), ("deal_id", "crm_deals"),', 1)[1]
+    bump = bump.split("):", 1)[0]
+    assert "module_record_id" not in bump and "crm_module_records" not in bump
+
+
+def test_a_resumed_import_keeps_the_activity_drops() -> None:
+    merged = engine._merge_counts({
+        engine.ACTIVITY_DROPS_KEY: {"Install_Base": 3, "(none)": 1, "bad": "x"},
+        "deals": {"seen": 2},
+    })
+    assert merged[engine.ACTIVITY_DROPS_KEY] == {"Install_Base": 3, "(none)": 1}
+    assert merged["deals"]["seen"] == 2
+
+
+def test_activity_drops_is_no_entity_of_sync_health() -> None:
+    from gateway.routes.crm import sync
+
+    assert engine.ACTIVITY_DROPS_KEY in sync.NOT_ENTITY_KEYS
+    counts = {"deals": {"seen": 1, "failed": 2},
+              engine.ACTIVITY_DROPS_KEY: {"failed": 7, "Install_Base": 4}}
+    keys = sync._entity_keys(counts, {})
+    assert engine.ACTIVITY_DROPS_KEY not in keys
+    assert keys[:5] == list(sync.COUNT_KEYS)
+    # A module that Zoho happens to name `failed` is a drop, not a failure.
+    assert sync._failed(counts) == 2
+
+
 def test_a_field_def_is_made_only_for_a_custom_field() -> None:
     custom = mapping.map_field_def("deal", {
         "api_name": "Region", "field_label": "Region", "data_type": "picklist",
