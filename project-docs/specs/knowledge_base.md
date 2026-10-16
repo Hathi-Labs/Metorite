@@ -263,8 +263,9 @@ fires when it passes (§9).
 A file on a page is an artifact. The upload goes through the artifact seam
 of `artifact_management.md` §4.5. That is one call to the registry's one
 writer (`register_in_session` in `acb_memory/artifacts.py` on 2026-10-16)
-with `via = 'app'`. It writes the blob and the row in one transaction. The
-join `kb_page_files` carries the page, the artifact id, the position and the
+with `via = 'app'`. It writes the blob and the row in one transaction.
+
+The join `kb_page_files` carries the page, the artifact id, the position and the
 caption. An image renders inline, from the artifact's own file route, with
 the MIME safelist and the `nosniff` header. Any other file renders as a card
 with a download.
