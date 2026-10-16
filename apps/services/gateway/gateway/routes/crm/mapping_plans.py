@@ -8,6 +8,8 @@ Spec: ``project-docs/specs/crm_platform.md`` §18.9.6, "CRM-Q18 · One plan".
     POST /crm/mapping/plans                      a draft from a list of changes
     POST /crm/mapping/plans/{version}/approve    approve a draft
     POST /crm/mapping/plans/{version}/restore    approve a copy of an old version
+    POST /crm/mapping/preview                    a draft on sampled records, in
+                                                 memory (CRM-Q19)
 
 **Two tables, two jobs.** ``crm_mapping_plans`` (migration 277) holds the
 versions: ``draft``, ``approved`` and ``superseded``, one ``approved`` at most
@@ -75,21 +77,29 @@ import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
 from fastapi import Depends, HTTPException
 from gateway.routes.crm.core import (
+    ENTITIES,
     FIELD_RULE_LOCK_ORDER,
     FIELD_RULE_LOCK_SQL,
     _tenant_session,
     actor,
+    attach_ext_urls,
+    attach_next_activity,
     field_rule_key,
+    from_jsonb,
+    project_joined,
     router,
+    row_to_dict,
 )
 from gateway.routes.crm.field_rules import (
     _GUARDS,
+    _SLUG_BY_ENTITY,
     PROVIDER,
     _check_legal,
     _db_conflict,
@@ -101,6 +111,7 @@ from gateway.routes.crm.field_rules import (
     _require_mirror,
     _taken,
 )
+from gateway.routes.crm.field_studio import attach_lookup_names
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
@@ -776,11 +787,133 @@ async def restore_mapping_plan(
     return _wire(row)
 
 
+# ── The preview (CRM-Q19) ───────────────────────────────────────────────────
+
+#: The records of each entity that the preview reads: the lowest ids.
+PREVIEW_ROWS = 200
+#: The order of the entities in a preview: the order of the rule targets.
+_PREVIEW_ORDER: tuple[str, ...] = ("company", "contact", "lead", "deal")
+
+#: The mirrored rows of one core table, the lowest ids first. The table is a
+#: constant of ``core.ENTITIES``, never caller text. FORCE RLS keeps the read
+#: in the bound org.
+_PREVIEW_SQL = (
+    "SELECT * FROM {table} WHERE ext_source = :src ORDER BY id LIMIT :limit"
+)
+
+#: The preview writes nothing. The database refuses a write in this
+#: transaction, so a later edit that adds one fails at once.
+_READ_ONLY_SQL = "SET TRANSACTION READ ONLY"
+
+
+class MappingPreviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: The version of a draft.
+    version: int
+
+
+class PreviewEntityModel(BaseModel):
+    #: The entity word of the rules (``company``, ``contact``, ``lead``,
+    #: ``deal``).
+    entity: str
+    #: The slug of its list route (``organizations``, ``contacts``...).
+    slug: str
+    #: Up to :data:`PREVIEW_ROWS` records, the lowest ids, in the shape of the
+    #: list route of the entity, with the draft applied.
+    rows: list[dict]
+    #: For each target column of a draft rule of the entity, the count of
+    #: filled values that did not map. A count only, never a value.
+    unmapped: dict[str, int]
+
+
+class MappingPreviewModel(BaseModel):
+    version: int
+    entities: list[PreviewEntityModel]
+
+
+def _rules_by_entity(fields: Iterable[PlanRule]) -> dict[str, dict[str, str]]:
+    """``{entity: {target_column: field_api_name}}``, the shape of the
+    executor."""
+    out: dict[str, dict[str, str]] = {}
+    for rule in fields:
+        out.setdefault(rule.entity, {})[rule.target_column] = rule.field_api_name
+    return out
+
+
+async def _preview_entity(
+    db: Any, word: str, live: Mapping[str, str], draft: Mapping[str, str],
+) -> PreviewEntityModel:
+    """Read the sample of one entity and apply the draft to it, in memory."""
+    # Imported here: ``gateway.crm_sync`` imports ``routes.crm.core``.
+    from gateway.crm_sync import executor
+
+    slug = _SLUG_BY_ENTITY[word]
+    entity = ENTITIES[slug]
+    inner = _PREVIEW_SQL.format(table=entity.table)
+    rows = (await db.execute(
+        text(project_joined(entity, inner, "base.id")),
+        {"src": PROVIDER, "limit": PREVIEW_ROWS},
+    )).fetchall()
+    unmapped = dict.fromkeys(draft, 0)
+    wired: list[dict[str, Any]] = []
+    for row in rows:
+        values = dict(row._mapping)
+        custom = from_jsonb(values.get("custom")) or {}
+        for column in executor.preview_record(word, values, custom, live, draft):
+            unmapped[column] += 1
+        wired.append(row_to_dict(SimpleNamespace(**values), entity.model))
+    # The same steps as the list route (``records._list``). Each one reads.
+    await attach_ext_urls(db, entity.table, wired)
+    await attach_next_activity(db, entity, wired)
+    await attach_lookup_names(db, entity.slug, wired)
+    return PreviewEntityModel(entity=word, slug=slug, rows=wired, unmapped=unmapped)
+
+
+@router.post(
+    "/mapping/preview", response_model=MappingPreviewModel, dependencies=_GUARDS,
+)
+async def preview_mapping_plan(
+    payload: MappingPreviewIn, user: UserContext = Depends(get_current_user),
+) -> MappingPreviewModel:
+    """What a draft would put into real records, before an admin approves it.
+
+    It reads up to :data:`PREVIEW_ROWS` mirrored records of each entity that
+    the draft or the live rules name, the lowest ids, in the tenant session.
+    It applies the draft in memory through the executor, the path that the
+    sync runs, and returns the rows in the shape of the list route. It counts
+    each value that a rule could not map, by entity and target column.
+
+    It writes nothing. The transaction is READ ONLY, and it takes no plan
+    lock, so it builds no version and follows no live set. A version that is
+    not a draft is a 409 ``not_draft``. The org comes from the server.
+    """
+    org = _organization(user)
+    async with _tenant_session() as db:
+        await db.execute(text(_READ_ONLY_SQL))
+        await _require_mirror(db, org)
+        draft = await _version(db, payload.version)
+        if draft.state != "draft":
+            raise HTTPException(status_code=409, detail={
+                "code": "not_draft", "message": "Only a draft has a preview.",
+            })
+        fields, _others = split_rules(draft.rules)
+        drafted = _rules_by_entity(fields)
+        live = _rules_by_entity(await _live_approved(db))
+        entities = [
+            await _preview_entity(db, word, live.get(word, {}), drafted.get(word, {}))
+            for word in _PREVIEW_ORDER if word in drafted or word in live
+        ]
+    return MappingPreviewModel(version=int(draft.version), entities=entities)
+
+
 __all__ = [
     "KIND_FIELD",
+    "PREVIEW_ROWS",
     "PlanRule",
     "change_rule",
     "commit",
     "lock_plan",
+    "preview_mapping_plan",
     "split_rules",
 ]

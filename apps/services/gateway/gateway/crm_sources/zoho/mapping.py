@@ -118,6 +118,10 @@ class Mapped:
     #: engine counts a dropped activity under it (CRM-Q23a). ``None`` for any
     #: other entity, and for an activity that names no module.
     parent_module: str | None = None
+    #: CRM-Q19: the columns where an approved rule found a filled value that
+    #: did not map (``executor.apply_rules``). The engine counts them under
+    #: ``unmapped``. It holds column names only, never a value.
+    unmapped: tuple[str, ...] = ()
 
 
 # ── Small coercions ─────────────────────────────────────────────────────────
@@ -496,8 +500,9 @@ def map_record(
             if contact:
                 deal_contact = Link(contact, (("contact_id", "contact"),))
 
+    unmapped: list[str] = []
     if rules:
-        apply_field_rules(entity, fields, values, rules)
+        apply_field_rules(entity, fields, values, rules, unmapped=unmapped)
     values["custom"] = custom_fields(entity, fields)
     values["ext_modified_at"] = instant(fields.get("Modified_Time")) or modified_at
     if entity not in _ACTIVITY_TYPES:
@@ -517,6 +522,7 @@ def map_record(
         pipeline=pipeline,
         derived=derived,
         parent_module=parent,
+        unmapped=tuple(unmapped),
     )
 
 
@@ -667,18 +673,25 @@ def apply_field_rules(
     fields: Mapping[str, Any],
     values: dict[str, Any],
     rules: Mapping[str, str],
+    *,
+    unmapped: list[str] | None = None,
 ) -> dict[str, Any]:
     """Fill each rule's column from its field, only where the fixed map gave
     NULL. ``rules`` is ``{target_column: field_api_name}``. A column that is
     not a legal target is skipped. *values* changes in place.
 
     CRM-Q18-3: this holds for a rule that an empty column opened too. A value
-    of the standard field from Zoho still wins on that column."""
-    for column, field_api_name in rules.items():
-        target = rule_target(entity, column)
-        if target is None or values.get(column) is not None:
-            continue
-        values[column] = coerce_target_value(target, fields.get(field_api_name))
+    of the standard field from Zoho still wins on that column.
+
+    CRM-Q19: the executor (``crm_sync/executor.py``) applies each rule. It is
+    the one path of a rule value, and the preview of a draft runs it too.
+    *unmapped* gets the columns whose filled value did not map."""
+    # Imported here: the executor imports this module at load time.
+    from gateway.crm_sync import executor
+
+    missed = executor.apply_rules(entity, fields, values, rules)
+    if unmapped is not None:
+        unmapped.extend(missed)
     return values
 
 

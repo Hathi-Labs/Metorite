@@ -10,8 +10,9 @@ provider call:
 * **The backfill.** A rule that the sync has not applied yet copies
   ``custom -> field_api_name`` into its column, only on the mirrored rows
   where the column is NULL, in batches of :data:`BATCH`. Each value goes
-  through the coercion of the mapping module. A value that does not coerce
-  stays NULL.
+  through the executor (``crm_sync/executor.py``, CRM-Q19), the one path of
+  a rule value. A value that does not coerce stays NULL, and the run counts
+  it under ``unmapped``.
 * **The undo.** A rule that the sync applied and that is no longer approved
   (rejected or stale) is undone. A free column goes back to NULL on the
   mirrored rows. A fixed column asks for one full read of its entity, which
@@ -28,11 +29,12 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from types import ModuleType
-from typing import Any
+from typing import Any, NamedTuple
 
 from acb_common import get_logger
 from sqlalchemy import text
 
+from gateway.crm_sync import executor
 from gateway.routes.crm.core import (
     FIELD_RULE_BATCH,
     FIELD_RULE_LOCK_SQL,
@@ -134,21 +136,40 @@ _BACKFILL_SQL = (
 )
 
 
+class Batch(NamedTuple):
+    """The result of one :func:`backfill_batch`."""
+
+    #: The last row id that the batch read, for the keyset. ``None`` when the
+    #: batch read no row.
+    after: str | None
+    #: The rows that the batch read.
+    seen: int
+    #: The rows that the batch wrote.
+    written: int
+    #: The rows whose filled value did not map (CRM-Q19). The run counts them
+    #: under ``unmapped`` of the entity.
+    unmapped: int = 0
+
+
 async def backfill_batch(
     db: Any, mapping: ModuleType, rule: Rule, ext_source: str, after: str | None,
     *, organization_id: str,
-) -> tuple[str | None, int, int]:
+) -> Batch:
     """Copy one batch of ``custom -> field`` into the rule's column.
 
     The rows are the mirrored rows where the column is NULL and ``custom``
-    holds the field, after the row id *after*. Returns ``(last id, rows read,
-    rows written)``. A batch shorter than :data:`BATCH` is the last one. A row
-    whose value does not coerce is read and skipped, and the keyset moves past
-    it, so it is never read again in this backfill.
+    holds the field, after the row id *after*. A batch shorter than
+    :data:`BATCH` is the last one. A row whose value does not coerce is read
+    and skipped, and the keyset moves past it, so it is never read again in
+    this backfill.
+
+    CRM-Q19: each value goes through ``executor.run``, the one path of a rule
+    value. The SQL reads only rows where the column is NULL, which is the
+    "only where the fixed map gave NULL" test of ``executor.apply_rules``.
     """
     target = mapping.rule_target(rule.entity, rule.target_column)
     if target is None:
-        return None, 0, 0
+        return Batch(None, 0, 0)
     table = mapping.ENTITY_TABLES[rule.entity]
     # The table and the column are a legal target of the mapping module (the
     # door checks them again). The field name is a bound parameter.
@@ -157,15 +178,17 @@ async def backfill_batch(
         {"field": rule.field_api_name, "src": ext_source, "after": after},
     )).fetchall()
     if not rows:
-        return None, 0, 0
-    pairs = [
-        (str(r.id), mapping.coerce_target_value(target, r.value))
-        for r in rows
-    ]
+        return Batch(None, 0, 0)
+    outcomes = [(str(r.id), executor.run(target, r.value)) for r in rows]
     written = await apply_field_rule_from_source(
-        db, table, target.column, ext_source, pairs, organization_id=organization_id,
+        db, table, target.column, ext_source,
+        [(row_id, outcome.value) for row_id, outcome in outcomes],
+        organization_id=organization_id,
     )
-    return str(rows[-1].id), len(rows), written
+    return Batch(
+        str(rows[-1].id), len(rows), written,
+        sum(1 for _row_id, outcome in outcomes if outcome.unmapped),
+    )
 
 
 async def clear_batch(
@@ -233,6 +256,7 @@ async def mark_stale(
 
 __all__ = [
     "BATCH",
+    "Batch",
     "Rule",
     "applied_of",
     "approved_rules",
