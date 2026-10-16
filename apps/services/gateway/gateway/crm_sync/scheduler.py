@@ -32,6 +32,12 @@ run of :func:`spawn`. Both return after ``runs.finish`` released the run lock,
 so the step runs outside it. With the ``crm.note_labels`` mode ``off`` it
 starts no task. One step runs at a time for each org (``_labeling``), so two
 runs that end close together never ask twice about one note.
+
+**The mapping pipeline** (WS-53 CRM-Q20-1, ``crm_platform.md`` §18.9.6). At
+the same two points, :func:`start_mapping` starts
+``map_pipeline.map_after_run`` as a background task, outside the run lock.
+It starts no task while all three ``crm.map_*`` modes are ``off`` for the
+org. One run of it goes at a time for each org (``_mapping``).
 """
 
 from __future__ import annotations
@@ -45,7 +51,7 @@ from acb_common.db import get_db, tenant_session
 from sqlalchemy import text
 
 from gateway.connections import store
-from gateway.crm_sync import engine, note_labels, profiles, runs
+from gateway.crm_sync import engine, map_pipeline, note_labels, profiles, runs
 from gateway.crm_sync.engine import NotConnected
 from gateway.crm_sync.runs import SyncRunning
 from gateway.routes.crm import access as crm_access
@@ -67,6 +73,8 @@ _background: set[asyncio.Task[Any]] = set()
 #: The orgs whose label step runs now (CRM-Q26). The gateway is one process,
 #: so an in-process set is the whole state.
 _labeling: set[str] = set()
+#: The orgs whose mapping pipeline runs now (CRM-Q20-1).
+_mapping: set[str] = set()
 
 
 async def _organization_ids() -> list[str]:
@@ -130,6 +138,7 @@ async def _run_one(org: str, gate: asyncio.Semaphore) -> int:
             return 0
         # `run_org` returns after `runs.finish` released the lock (CRM-Q26).
         start_labels(org)
+        start_mapping(org)
         return 1
 
 
@@ -224,11 +233,36 @@ def start_labels(org: str) -> asyncio.Task[Any] | None:
         return None
 
 
+def start_mapping(org: str) -> asyncio.Task[Any] | None:
+    """Start the mapping pipeline of ``org`` in the background (CRM-Q20-1).
+    Never raises.
+
+    It starts nothing when the loop stops, when each ``crm.map_*`` mode of the
+    org is ``off``, or when a run of it goes for the org already.
+    """
+    try:
+        if _stopping.is_set() or org in _mapping or not map_pipeline.enabled_for(org):
+            return None
+        _mapping.add(org)
+        task = asyncio.get_running_loop().create_task(
+            map_pipeline.map_after_run(org, should_stop=_stopping.is_set),
+            name="crm-map-pipeline",
+        )
+        # A done-callback, as `start_labels` does, so a cancelled task frees the org.
+        task.add_done_callback(lambda _t: _mapping.discard(org))
+        return _track(task)
+    except Exception as exc:  # the pipeline never breaks a sync run
+        _mapping.discard(org)
+        _log.warning("crm.map_pipeline.not_started class=%s", type(exc).__name__)
+        return None
+
+
 async def _execute_then_label(handle: engine.RunHandle) -> engine.RunResult:
-    """Run the handle, then start the label step. The run's result is the
-    task's result, as before CRM-Q26."""
+    """Run the handle, then start the label step and the mapping pipeline.
+    The run's result is the task's result, as before CRM-Q26."""
     result = await engine.execute(handle, should_stop=_stopping.is_set)
     start_labels(handle.org)
+    start_mapping(handle.org)
     return result
 
 
@@ -271,5 +305,6 @@ __all__ = [
     "start_crm_mirror_sync",
     "start_first_import",
     "start_labels",
+    "start_mapping",
     "stop_crm_mirror_sync",
 ]

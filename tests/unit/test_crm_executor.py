@@ -11,8 +11,11 @@ What this pins, by item of the narrowed contract:
 2. the value of a rule has one path: ``mapping.apply_field_rules`` and
    ``field_rules.backfill_batch`` call the executor, and a source fence finds
    no other call of the coercion in the gateway;
-3. the executor holds only ``copy`` and ``cast``. The five other transforms
-   are CRM-Q20-1;
+3. the executor holds ``copy`` and ``cast``, and CRM-Q20-1 adds
+   ``value_map``, ``normalize``, ``coalesce``, ``link`` and ``owner``: seven
+   words in ``TRANSFORMS``, each a pure function with its own unit test, and
+   the kinds ``target`` and ``stage`` call them (``run_target`` and
+   ``run_stage``);
 6. the preview of one stored record (``executor.preview_record``) gives the
    value of the fixed map back, applies the draft, and names the columns
    that did not map, never a value;
@@ -34,16 +37,35 @@ from gateway.crm_sources.zoho.mapping import map_record, rule_target
 from gateway.crm_sync import executor
 from gateway.crm_sync.executor import (
     CAST,
+    COALESCE,
     COPY,
+    LINK,
+    NAME,
+    NORMALIZE,
+    OWNER,
+    STAGE,
     TRANSFORMS,
+    VALUE_MAP,
     Outcome,
+    ValueMap,
     apply_rules,
     blank,
     cast,
+    coalesce,
     copy,
+    link,
+    normalize,
+    owner,
     preview_record,
     run,
+    run_stage,
+    run_target,
+    slot_target,
+    slot_targets,
+    stage_problem,
+    target_problem,
     transform_of,
+    value_map,
 )
 
 REPO = Path(__file__).resolve().parents[2]
@@ -153,6 +175,8 @@ def test_2_a_field_rule_runs_copy_for_text_and_cast_for_each_other_type() -> Non
     assert run(_target("lead", "no_of_employees"), "7") == Outcome(7)
     assert run(_target("contact", "title"), "CTO") == Outcome("CTO")
     with pytest.raises(ValueError, match="Unknown transform"):
+        run(_target("contact", "title"), "CTO", "guess")
+    with pytest.raises(ValueError, match="needs its spec"):
         run(_target("contact", "title"), "CTO", "value_map")
 
 
@@ -308,15 +332,148 @@ def test_2_the_sync_and_the_backfill_call_the_executor() -> None:
     assert "executor.run" in _calls_in(FIELD_RULES, "backfill_batch")
 
 
-# ── 3. Only copy and cast ────────────────────────────────────────────────────
+# ── 3. The seven transforms ──────────────────────────────────────────────────
 
 
-def test_3_the_executor_holds_only_copy_and_cast() -> None:
-    """``value_map``, ``normalize``, ``coalesce``, ``link`` and ``owner`` are
-    CRM-Q20-1. It adds each one to ``TRANSFORMS``."""
-    assert dict(TRANSFORMS) == {COPY: copy, CAST: cast}
+def test_3_the_executor_holds_the_seven_transforms() -> None:
+    """CRM-Q19 built ``copy`` and ``cast``. CRM-Q20-1 adds ``value_map``,
+    ``normalize``, ``coalesce``, ``link`` and ``owner``, each under its
+    word, and the map stays read only."""
+    assert dict(TRANSFORMS) == {
+        COPY: copy, CAST: cast, VALUE_MAP: value_map, NORMALIZE: normalize,
+        COALESCE: coalesce, LINK: link, OWNER: owner,
+    }
     with pytest.raises(TypeError):
-        TRANSFORMS["value_map"] = copy  # type: ignore[index]
+        TRANSFORMS["guess"] = copy  # type: ignore[index]
+
+
+def test_3_value_map_gives_the_stage_word_and_counts_a_value_with_no_entry() -> None:
+    spec = ValueMap({"Won": "won", "Lost": "lost", "Open": "open"})
+    assert value_map(STAGE, " Won ", spec=spec) == Outcome("won")
+    assert value_map(STAGE, "Open", spec=spec) == Outcome("open")
+    assert value_map(STAGE, "On Hold", spec=spec) == Outcome(None, unmapped=True)
+    assert value_map(STAGE, "", spec=spec) == Outcome(None, unmapped=False)
+    assert value_map(STAGE, None, spec=spec) == Outcome(None, unmapped=False)
+    # An entry that is not a stage word gives no stage.
+    assert value_map(STAGE, "Won", spec=ValueMap({"Won": "victory"})) == (
+        Outcome(None, unmapped=True))
+
+
+def test_3_normalize_cleans_an_email_and_a_phone() -> None:
+    email = _target("contact", "email")
+    assert normalize(email, "  Ann@Example.COM ") == Outcome("ann@example.com")
+    assert normalize(email, "not an email") == Outcome(None, unmapped=True)
+    assert normalize(email, "") == Outcome(None, unmapped=False)
+    phone = _target("contact", "phone")
+    assert normalize(phone, "+91 98765-43210") == Outcome("+919876543210")
+    assert normalize(phone, "(020) 2567 8901") == Outcome("02025678901")
+    assert normalize(phone, "12") == Outcome(None, unmapped=True)
+    assert normalize(phone, "call me") == Outcome(None, unmapped=True)
+    assert normalize(_target("lead", "mobile"), "98765 43210") == Outcome("9876543210")
+    with pytest.raises(ValueError, match="normalize"):
+        normalize(_target("contact", "title"), "x")
+
+
+def test_3_coalesce_takes_the_first_value_that_maps() -> None:
+    title = _target("contact", "title")
+    assert coalesce(title, ("", None, " CTO ", "CEO")) == Outcome("CTO")
+    count = _target("lead", "no_of_employees")
+    assert coalesce(count, ("lots", "40")) == Outcome(40)
+    assert coalesce(count, ("lots", "many")) == Outcome(None, unmapped=True)
+    assert coalesce(count, ("", None)) == Outcome(None, unmapped=False)
+    assert coalesce(title, "single") == Outcome("single")
+
+
+def test_3_link_takes_the_id_of_the_parent() -> None:
+    target = _target("deal", "next_step")
+    assert link(target, {"id": "4100", "name": "Acme"}) == Outcome("4100")
+    assert link(target, "4101") == Outcome("4101")
+    assert link(target, {"name": "no id"}) == Outcome(None, unmapped=True)
+    assert link(target, None) == Outcome(None, unmapped=False)
+    with pytest.raises(ValueError, match="TEXT"):
+        link(_target("deal", "probability"), {"id": "1"})
+
+
+def test_3_owner_takes_the_email_of_the_owner() -> None:
+    target = _target("deal", "next_step")
+    assert owner(target, {"id": "1", "name": "Ann", "email": "Ann@X.co"}) == Outcome("ann@x.co")
+    assert owner(target, "bob@x.co") == Outcome("bob@x.co")
+    assert owner(target, {"id": "1", "name": "Ann"}) == Outcome(None, unmapped=True)
+    with pytest.raises(ValueError, match="TEXT"):
+        owner(_target("deal", "probability"), "a@b.co")
+
+
+def test_3_the_targets_of_a_slot_are_rule_2() -> None:
+    """Rule 2 of the kinds: a column of ``FIELD_RULE_TARGETS`` for the entity
+    of the slot, or ``name``."""
+    assert slot_target("deal", "name") is NAME
+    assert slot_target("deal", "probability") == _target("deal", "probability")
+    assert slot_target("deal", "amount") is None
+    assert slot_target("invoice", "name") is None
+    assert slot_targets("contact")[0] == "name"
+    assert set(slot_targets("contact")[1:]) == set(mapping.FIELD_RULE_TARGETS["contact"])
+
+
+def test_3_target_and_stage_problems() -> None:
+    assert target_problem("deal", "next_step", ["Next"], "copy") is None
+    assert target_problem("deal", "amount", ["V"], "cast") == "unknown_target"
+    assert target_problem("deal", "next_step", ["Next"], "value_map") == "unknown_transform"
+    assert target_problem("deal", "next_step", "Next", "copy") == "bad_fields"
+    assert target_problem("deal", "next_step", ["A", "A"], "coalesce") == "bad_fields"
+    assert target_problem("deal", "next_step", ["A", "B"], "copy") == "bad_fields"
+    assert target_problem("deal", "next_step", ["A", "B"], "coalesce") is None
+    assert target_problem("deal", "probability", ["P"], "copy") == "type_mismatch"
+    assert target_problem("deal", "next_step", ["N"], "normalize") == "type_mismatch"
+    assert target_problem("contact", "email", ["E"], "normalize") is None
+    assert stage_problem("Status", {"Won": "won"}) is None
+    assert stage_problem("Status", {"Won": "victory"}) == "bad_values"
+    assert stage_problem("", {}) == "bad_field"
+
+
+def test_3_the_kinds_call_the_transforms() -> None:
+    fields = {"Next": " Call Ann ", "Mail": "ANN@X.CO", "A": "", "B": "Fallback",
+              "Status": "Won"}
+    item = {"target": "next_step", "fields": ["Next"], "transform": "copy"}
+    assert run_target("deal", item, fields) == Outcome("Call Ann")
+    item = {"target": "email", "fields": ["Mail"], "transform": "normalize"}
+    assert run_target("contact", item, fields) == Outcome("ann@x.co")
+    item = {"target": "title", "fields": ["A", "B"], "transform": "coalesce"}
+    assert run_target("contact", item, fields) == Outcome("Fallback")
+    with pytest.raises(ValueError, match="not legal"):
+        run_target("deal", {"target": "amount", "fields": ["V"], "transform": "cast"}, fields)
+    stage = {"field_api_name": "Status", "values": {"Won": "won"}}
+    assert run_stage(stage, fields) == Outcome("won")
+    assert run_stage(stage, {"Status": "Lost"}) == Outcome(None, unmapped=True)
+    with pytest.raises(ValueError, match="not legal"):
+        run_stage({"field_api_name": "Status", "values": {"Won": "x"}}, fields)
+
+
+def test_3_only_the_kinds_call_the_five_transforms() -> None:
+    """No file of the gateway but the executor names one of the five
+    transforms of CRM-Q20-1, by import or as ``executor.<word>``. The kinds
+    reach them through ``run``, ``run_target`` and ``run_stage``."""
+    words = {"value_map", "normalize", "coalesce", "link", "owner"}
+
+    def named(tree: ast.AST) -> list[str]:
+        out = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").endswith(
+                    "crm_sync.executor"):
+                out += [a.name for a in node.names if a.name in words]
+            if (isinstance(node, ast.Attribute) and node.attr in words
+                    and isinstance(node.value, ast.Name) and node.value.id == "executor"):
+                out.append(node.attr)
+        return out
+
+    planted = ast.parse("from gateway.crm_sync.executor import owner\nexecutor.link(t, v)\n")
+    assert named(planted) == ["owner", "link"], "the scan is not blind"
+    offenders = []
+    for path in sorted(GATEWAY.rglob("*.py")):
+        if path == EXECUTOR:
+            continue
+        found = named(ast.parse(path.read_text(encoding="utf-8")))
+        offenders += [f"{path.name}:{w}" for w in found]
+    assert offenders == []
 
 
 # ── 6. The preview of one stored record ──────────────────────────────────────

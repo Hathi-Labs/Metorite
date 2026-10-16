@@ -121,8 +121,17 @@ _log = get_logger("crm.mapping_plans")
 #: The kind of a rule that maps a provider field to one of our columns. CRM-Q20
 #: adds other kinds to the snapshot only, and this module keeps them as they are.
 KIND_FIELD = "field"
+#: The three kinds of CRM-Q20-1 (§18.9.6, "The three new kinds of rule"). A
+#: ``role`` names the module that plays an empty core slot. A ``target`` and a
+#: ``stage`` are legal only beside a ``role`` of the same slot and module
+#: (rule 1). :func:`check_kinds` holds the three rules.
+KIND_ROLE = "role"
+KIND_TARGET = "target"
+KIND_STAGE = "stage"
 #: The actor of a version that records a change the sync made.
 SYSTEM_ACTOR = "system"
+#: The actor of a draft that the mapping pipeline writes (CRM-Q20-1).
+SUGGEST_ACTOR = "suggestion"
 #: The changes of one draft.
 MAX_CHANGES = 200
 
@@ -334,6 +343,115 @@ def _check_unique(fields: Sequence[PlanRule]) -> None:
         raise _taken()
 
 
+# ── The kinds of CRM-Q20-1 ──────────────────────────────────────────────────
+
+
+def _kind_error(code: str, message: str, item: Mapping[str, Any]) -> HTTPException:
+    """A 422 that names the kind, the slot and the module of an item."""
+    return HTTPException(status_code=422, detail={
+        "code": code, "message": message, "kind": item.get("kind"),
+        "slot": item.get("slot"), "module": item.get("module"),
+    })
+
+
+def kind_key(item: Mapping[str, Any]) -> tuple[Any, ...] | None:
+    """The identity of an item of a CRM-Q20-1 kind, or ``None`` for another
+    kind. One ``role`` for each slot, one ``target`` for each slot, module
+    and target, and one ``stage`` for each slot and module."""
+    kind = item.get("kind")
+    if kind == KIND_ROLE:
+        return (KIND_ROLE, item.get("slot"))
+    if kind == KIND_TARGET:
+        return (KIND_TARGET, item.get("slot"), item.get("module"), item.get("target"))
+    if kind == KIND_STAGE:
+        return (KIND_STAGE, item.get("slot"), item.get("module"))
+    return None
+
+
+def _roles(others: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """The ``role`` items of a snapshot: slot to module. 422 for a role that
+    names no known slot or no module."""
+    # Imported here: ``gateway.crm_sync`` imports ``routes.crm.core``.
+    from gateway.crm_sync import executor
+
+    roles: dict[str, str] = {}
+    for item in others:
+        if item.get("kind") != KIND_ROLE:
+            continue
+        slot, module = item.get("slot"), item.get("module")
+        if slot not in executor.SLOTS or not isinstance(module, str) or not module:
+            raise _kind_error("bad_role", "A role names a core slot and a module.", item)
+        roles[slot] = module
+    return roles
+
+
+def check_kinds(others: Sequence[Mapping[str, Any]]) -> None:
+    """The three rules of the kinds of CRM-Q20-1, on the items of one
+    snapshot. A 422 names the item.
+
+    1. A ``target`` or a ``stage`` item is legal only beside a ``role`` item
+       of the same slot and module, in the same snapshot (``role_missing``).
+    2. A ``target`` names a legal target of its slot and a legal transform
+       (``bad_target``, ``executor.target_problem``).
+    3. Each value of a ``stage`` maps to ``won``, ``lost`` or ``open``
+       (``bad_stage``, ``executor.stage_problem``).
+
+    Two items with one identity (:func:`kind_key`) are a 422 ``duplicate``.
+    An item of another kind is not checked here.
+    """
+    from gateway.crm_sync import executor
+
+    roles = _roles(others)
+    seen: set[tuple[Any, ...]] = set()
+    for item in others:
+        key = kind_key(item)
+        if key is None:
+            continue
+        if key in seen:
+            raise _kind_error("duplicate", "Two items of the plan say the same thing.", item)
+        seen.add(key)
+        kind = item.get("kind")
+        if kind == KIND_ROLE:
+            continue
+        if roles.get(item.get("slot")) != item.get("module"):
+            raise _kind_error(
+                "role_missing",
+                "This item needs the module to play its slot in the same plan.", item)
+        if kind == KIND_TARGET:
+            problem = executor.target_problem(
+                item.get("slot"), item.get("target"), item.get("fields"), item.get("transform"))
+            if problem is not None:
+                raise _kind_error("bad_target", f"The target is not legal ({problem}).", item)
+        else:
+            problem = executor.stage_problem(item.get("field_api_name"), item.get("values"))
+            if problem is not None:
+                raise _kind_error("bad_stage", f"The stage map is not legal ({problem}).", item)
+
+
+def merge_kinds(
+    others: Sequence[Mapping[str, Any]], items: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """*others* with *items* put in. An item replaces the item of its
+    identity (:func:`kind_key`). A ``role`` that moves a slot to another
+    module drops the ``target`` and ``stage`` items of the old module, so
+    the result keeps rule 1. An item of another kind stays as it is."""
+    merged = [dict(o) for o in others]
+    for item in items:
+        key = kind_key(item)
+        if key is None:
+            continue
+        if item.get("kind") == KIND_ROLE:
+            old = next((o for o in merged if kind_key(o) == key), None)
+            if old is not None and old.get("module") != item.get("module"):
+                merged = [o for o in merged if not (
+                    o.get("kind") in (KIND_TARGET, KIND_STAGE)
+                    and o.get("slot") == item.get("slot")
+                    and o.get("module") == old.get("module"))]
+        merged = [o for o in merged if kind_key(o) != key]
+        merged.append(dict(item))
+    return merged
+
+
 # ── The lock, version 1 and the live set ────────────────────────────────────
 
 
@@ -487,7 +605,12 @@ async def commit(
     Without it, a new version is added. A rule that the live set holds as it
     is stays as it is. Each other rule is checked again. Returns the approved
     version row.
+
+    CRM-Q20-1: the items of the kinds ``role``, ``target`` and ``stage`` pass
+    :func:`check_kinds` first, so a draft approve, a restore and a per-rule
+    change all keep the three rules of the kinds.
     """
+    check_kinds(others)
     # The rule rows are locked first, so the profile and the checks read the
     # state that the writes below act on.
     rows = {
@@ -543,6 +666,55 @@ async def change_rule(
         db, org=org, fields=list(current.values()), others=others, by=by,
         based_on=int(approved.version),
     )
+
+
+#: The newest draft of the pipeline that is built on a version.
+_LAST_SUGGESTION_SQL = (
+    "SELECT version, rules FROM crm_mapping_plans WHERE state = 'draft' "
+    "AND created_by = :by AND based_on = :base ORDER BY version DESC LIMIT 1"
+)
+
+
+def _canonical(items: Sequence[Mapping[str, Any]]) -> list[str]:
+    return sorted(json.dumps(dict(i), sort_keys=True) for i in items)
+
+
+async def write_draft(
+    db: Any, *, items: Sequence[Mapping[str, Any]], by: str = SUGGEST_ACTOR,
+) -> Any | None:
+    """A draft of the mapping pipeline (CRM-Q20-1 item 3), in the caller's
+    tenant session, under :func:`lock_plan`.
+
+    The draft is the approved version with *items* put in
+    (:func:`merge_kinds`). It passes :func:`check_kinds`, so an admin can
+    approve it. It writes no row of ``crm_field_rules``, exactly as
+    ``POST /crm/mapping/plans`` does not. Returns the new draft row, or
+    ``None`` when the draft would change nothing: the items are in the
+    approved version already, or the newest draft of *by* on the approved
+    version holds the same items.
+    """
+    # Version 1 of an org with no plan is the work of the system, not of the
+    # pipeline, so the lock names the system.
+    approved = await lock_plan(db, SYSTEM_ACTOR)
+    fields, others = split_rules(approved.rules)
+    merged = merge_kinds(others, items)
+    check_kinds(merged)
+    if _canonical(merged) == _canonical(others):
+        return None
+    last = (await db.execute(text(_LAST_SUGGESTION_SQL), {
+        "by": by, "base": int(approved.version),
+    })).first()
+    if last is not None:
+        _fields, last_others = split_rules(
+            last.rules if isinstance(last.rules, list) else json.loads(last.rules or "[]"))
+        if _canonical(last_others) == _canonical(merged):
+            return None
+    row = (await db.execute(text(_INSERT_DRAFT_SQL), {
+        "v": await _next_version(db), "rules": _dump(fields, merged),
+        "by": by, "based_on": int(approved.version),
+    })).first()
+    _log.info("crm.mapping_plan_suggested version=%s items=%s", row.version, len(merged))
+    return row
 
 
 # ── The wire ────────────────────────────────────────────────────────────────
@@ -909,11 +1081,19 @@ async def preview_mapping_plan(
 
 __all__ = [
     "KIND_FIELD",
+    "KIND_ROLE",
+    "KIND_STAGE",
+    "KIND_TARGET",
     "PREVIEW_ROWS",
+    "SUGGEST_ACTOR",
     "PlanRule",
     "change_rule",
+    "check_kinds",
     "commit",
+    "kind_key",
     "lock_plan",
+    "merge_kinds",
     "preview_mapping_plan",
     "split_rules",
+    "write_draft",
 ]

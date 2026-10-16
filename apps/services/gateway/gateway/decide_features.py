@@ -82,6 +82,10 @@ CRM's one feature, and copies no helper:
 - A ``crm.`` call starts the shared cool-down on a 402 only, as My Day does.
   The labels have no old path, so the step calls :func:`ask` in ``shadow``
   and in ``on`` (``gateway/crm_sync/note_labels.py``).
+- WS-53 CRM-Q20-1 (§18.9.6) adds ``crm.map_role``, ``crm.map_target`` and
+  ``crm.map_stage`` to the same three tuples. The mapping pipeline
+  (``gateway/crm_sync/map_pipeline.py``) calls :func:`mode_for` for each
+  feature first, because :func:`ask` does not check the mode.
 
 Fences: ``tests/unit/test_email_decide_shadow.py``,
 ``tests/unit/test_email_decide_questions.py`` and
@@ -174,6 +178,10 @@ ON_FEATURES: frozenset[str] = frozenset({
     "email.insights_screen",
     # WS-53 CRM-Q26: the note labels have no old path, so `on` is legal.
     "crm.note_labels",
+    # WS-53 CRM-Q20-1: the mapping pipeline has no old path either.
+    "crm.map_role",
+    "crm.map_target",
+    "crm.map_stage",
 })
 
 #: WS-58 MD-6a-1: the eight My Day features (``my_day_feed.md`` §10.3), in
@@ -202,7 +210,16 @@ MY_DAY_PREFIX = "my_day."
 #: They are not in :data:`FEATURES`, which is the email set: two email suites
 #: pin it, and the email start-up check :func:`configured_on` reads it. Each
 #: is ``off`` by default.
-CRM_FEATURES: tuple[str, ...] = ("crm.note_labels",)
+#:
+#: WS-53 CRM-Q20-1 (§18.9.6) adds the three features of the mapping
+#: pipeline (``gateway/crm_sync/map_pipeline.py``): ``crm.map_role``,
+#: ``crm.map_target`` and ``crm.map_stage``.
+CRM_FEATURES: tuple[str, ...] = (
+    "crm.note_labels",
+    "crm.map_role",
+    "crm.map_target",
+    "crm.map_stage",
+)
 
 #: A feature with this prefix takes its organization list from
 #: ``crm_decide_orgs`` (``crm_platform.md`` §18.11.2 item 2).

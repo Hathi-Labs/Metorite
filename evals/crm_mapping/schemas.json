@@ -1,0 +1,136 @@
+{
+  "_about": "WS-53 CRM-Q20-1. Synthetic CRM schemas for the mapping pipeline. An agent invented each module, field and value. 'dewin' has the shape of DEWiN after its import (2026-10-15, counts only): 17 generic modules, Accounts and Deals turned off, and Commercials, Quotes and Sales Orders with 0 records. Each field is [key, label, type, generator, fill] and an optional list of picklist options. 'pad' adds filler fields with a low fill, so a module has its real field count.",
+  "schemas": [
+    {
+      "id": "dewin",
+      "tags": ["dewin_shape", "two_empty_slots", "no_sure_deal", "reask"],
+      "slots": {"company": true, "contact": false, "lead": false, "deal": true},
+      "modules": [
+        {"api_name": "Operator_Associates", "label": "Operator Associates", "singular": "Operator Associate",
+         "records": 1240, "display_field": "Name",
+         "fields": [
+           ["Name", "Operator Name", "text", "company", 1.0],
+           ["Email", "Email", "email", "email", 0.92],
+           ["Phone", "Phone", "phone", "phone", 0.85],
+           ["Mobile_No", "Mobile No", "phone", "phone", 0.6],
+           ["Website", "Website", "url", "url", 0.3],
+           ["LinkedIn", "LinkedIn Profile", "url", "linkedin", 0.05],
+           ["Industry_Type", "Industry Type", "select", "select", 0.7, ["Water", "Power", "Mining"]],
+           ["Remarks", "Remarks", "textarea", "text", 0.4],
+           ["No_of_Staff", "No of Staff", "number", "number", 0.2],
+           ["Annual_Turnover", "Annual Turnover", "currency", "currency", 0.15],
+           ["Contact_Person", "Contact Person", "text", "name", 0.8],
+           ["City", "City", "text", "city", 0.9],
+           ["GSTIN", "GSTIN", "text", "code", 0.75],
+           ["Owner", "Associate Owner", "lookup", "owner", 1.0]
+         ],
+         "pad": [113, 0.08]},
+        {"api_name": "Invoices", "label": "Invoices", "singular": "Invoice", "records": 31924,
+         "display_field": "Subject",
+         "fields": [["Subject", "Invoice Number", "text", "code", 1.0], ["Grand_Total", "Grand Total", "currency", "currency", 1.0],
+                    ["Invoice_Date", "Invoice Date", "date", "date", 1.0], ["Status", "Status", "select", "select", 1.0, ["Paid", "Due", "Overdue"]]],
+         "pad": [232, 0.3]},
+        {"api_name": "Payment_Received", "label": "Payment Received", "singular": "Payment Received", "records": 8681,
+         "display_field": "Reference", "fields": [["Reference", "Reference", "text", "code", 1.0], ["Amount", "Amount", "currency", "currency", 1.0]],
+         "pad": [40, 0.4]},
+        {"api_name": "Payment_Made", "label": "Payment Made", "singular": "Payment Made", "records": 3003,
+         "display_field": "Reference", "fields": [["Reference", "Reference", "text", "code", 1.0], ["Amount", "Amount", "currency", "currency", 1.0]],
+         "pad": [30, 0.4]},
+        {"api_name": "Commercials", "label": "Commercials", "singular": "Commercial", "records": 0,
+         "display_field": "Name", "fields": [["Name", "Commercial Name", "text", "text", 0.0], ["Value", "Value", "currency", "currency", 0.0]],
+         "pad": [20, 0.0]},
+        {"api_name": "Quotes", "label": "Quotes", "singular": "Quote", "records": 0, "display_field": "Subject",
+         "fields": [["Subject", "Subject", "text", "text", 0.0]], "pad": [30, 0.0]},
+        {"api_name": "Sales_Orders", "label": "Sales Orders", "singular": "Sales Order", "records": 0, "display_field": "Subject",
+         "fields": [["Subject", "Subject", "text", "text", 0.0]], "pad": [30, 0.0]},
+        {"api_name": "Products", "label": "Products", "singular": "Product", "records": 412, "display_field": "Product_Name",
+         "fields": [["Product_Name", "Product Name", "text", "code", 1.0]], "pad": [25, 0.5]},
+        {"api_name": "Vendors", "label": "Vendors", "singular": "Vendor", "records": 96, "display_field": "Vendor_Name",
+         "fields": [["Vendor_Name", "Vendor Name", "text", "company", 1.0], ["Email", "Email", "email", "email", 0.7]], "pad": [20, 0.4]},
+        {"api_name": "Site_Visits", "label": "Site Visits", "singular": "Site Visit", "records": 2210, "display_field": "Name",
+         "fields": [["Name", "Visit", "text", "code", 1.0]], "pad": [35, 0.5]},
+        {"api_name": "Service_Tickets", "label": "Service Tickets", "singular": "Service Ticket", "records": 1530, "display_field": "Name",
+         "fields": [["Name", "Ticket", "text", "code", 1.0]], "pad": [40, 0.5]},
+        {"api_name": "AMC_Contracts", "label": "AMC Contracts", "singular": "AMC Contract", "records": 340, "display_field": "Name",
+         "fields": [["Name", "Contract", "text", "code", 1.0]], "pad": [30, 0.5]},
+        {"api_name": "Installations", "label": "Installations", "singular": "Installation", "records": 870, "display_field": "Name",
+         "fields": [["Name", "Installation", "text", "code", 1.0]], "pad": [25, 0.5]},
+        {"api_name": "Spare_Parts", "label": "Spare Parts", "singular": "Spare Part", "records": 1120, "display_field": "Name",
+         "fields": [["Name", "Part", "text", "code", 1.0]], "pad": [15, 0.5]},
+        {"api_name": "Price_Books", "label": "Price Books", "singular": "Price Book", "records": 12, "display_field": "Price_Book_Name",
+         "fields": [["Price_Book_Name", "Price Book Name", "text", "code", 1.0]], "pad": [10, 0.5]},
+        {"api_name": "Campaigns", "label": "Campaigns", "singular": "Campaign", "records": 44, "display_field": "Campaign_Name",
+         "fields": [["Campaign_Name", "Campaign Name", "text", "code", 1.0]], "pad": [20, 0.5]},
+        {"api_name": "Tender_Register", "label": "Tender Register", "singular": "Tender", "records": 260, "display_field": "Name",
+         "fields": [["Name", "Tender", "text", "code", 1.0]], "pad": [30, 0.5]}
+      ],
+      "core": {
+        "contact": {"filled": {"description": "Description", "mobile": "Mobile"},
+                    "custom": [["Designation", "Designation", "text", "text", 0.5], ["Alt_Mobile", "Alt Mobile", "phone", "phone", 0.3]]},
+        "lead": {"filled": {"email": "Email", "phone": "Phone", "organization_name": "Company", "lead_source": "Lead_Source"},
+                 "custom": [["Enquiry_Email", "Enquiry Email", "email", "email", 0.4], ["Enquiry_From", "Enquiry From", "select", "select", 0.6, ["Web", "Expo", "Call"]]]}
+      },
+      "expected": {
+        "roles": {"company": "Operator_Associates", "deal": null},
+        "targets": {
+          "company.Operator_Associates": {"name": "Name", "email": "Email", "phone": "Phone", "website": "Website",
+                                          "linkedin_url": "LinkedIn", "industry": "Industry_Type", "description": "Remarks",
+                                          "no_of_employees": "No_of_Staff", "annual_revenue": "Annual_Turnover"}
+        },
+        "stages": {}
+      }
+    },
+    {
+      "id": "opportunities",
+      "tags": ["code_role", "stage_by_code_and_decide"],
+      "slots": {"company": false, "contact": false, "lead": false, "deal": true},
+      "modules": [
+        {"api_name": "Opportunities", "label": "Opportunities", "singular": "Opportunity", "records": 520, "display_field": "Opportunity_Name",
+         "fields": [
+           ["Opportunity_Name", "Opportunity Name", "text", "code", 1.0],
+           ["Next_Step", "Next Step", "text", "text", 0.5],
+           ["Expected_Close", "Expected Close", "date", "date", 0.8],
+           ["Win_Chance", "Win Chance", "percent", "percent", 0.6],
+           ["Stage", "Stage", "select", "select", 1.0, ["Closed Won", "Closed Lost", "Negotiation", "Proposal Sent", "Qualification"]]
+         ],
+         "pad": [10, 0.2]},
+        {"api_name": "Invoices", "label": "Invoices", "singular": "Invoice", "records": 900, "display_field": "Subject",
+         "fields": [["Subject", "Invoice Number", "text", "code", 1.0]], "pad": [10, 0.5]}
+      ],
+      "core": {},
+      "expected": {
+        "roles": {"deal": "Opportunities"},
+        "targets": {"deal.Opportunities": {"name": "Opportunity_Name", "next_step": "Next_Step", "expected_close_date": "Expected_Close",
+                                            "probability": "Win_Chance"}},
+        "stages": {"deal.Opportunities": {"field": "Stage", "values": {"Closed Won": "won", "Closed Lost": "lost", "Negotiation": "open",
+                                                                      "Proposal Sent": "open", "Qualification": "open"}}}
+      }
+    },
+    {
+      "id": "commercials",
+      "tags": ["decide_role", "stage_field_by_code", "commercials_as_deals"],
+      "slots": {"company": false, "contact": false, "lead": false, "deal": true},
+      "modules": [
+        {"api_name": "Commercials", "label": "Commercials", "singular": "Commercial", "records": 300, "display_field": "Commercial_Name",
+         "fields": [
+           ["Commercial_Name", "Commercial Name", "text", "code", 1.0],
+           ["Value", "Value", "currency", "currency", 0.95],
+           ["Closing_Date", "Closing Date", "date", "date", 0.7],
+           ["Probability", "Probability", "percent", "percent", 0.5],
+           ["Status", "Status", "select", "select", 1.0, ["Won", "Lost", "Open", "On Hold"]],
+           ["Why_Lost", "Why Lost", "textarea", "text", 0.2]
+         ],
+         "pad": [15, 0.3]},
+        {"api_name": "Site_Visits", "label": "Site Visits", "singular": "Site Visit", "records": 400, "display_field": "Name",
+         "fields": [["Name", "Visit", "text", "code", 1.0]], "pad": [10, 0.5]}
+      ],
+      "core": {},
+      "expected": {
+        "roles": {"deal": "Commercials"},
+        "targets": {"deal.Commercials": {"name": "Commercial_Name", "expected_close_date": "Closing_Date", "probability": "Probability",
+                                          "lost_note": "Why_Lost"}},
+        "stages": {"deal.Commercials": {"field": "Status", "values": {"Won": "won", "Lost": "lost", "Open": "open", "On Hold": "open"}}}
+      }
+    }
+  ]
+}
