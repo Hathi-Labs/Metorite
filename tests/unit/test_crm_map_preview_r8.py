@@ -157,6 +157,23 @@ async def test_4_the_preview_reads_the_lowest_ids_up_to_the_bound(fr, monkeypatc
     assert row["id"] == lowest
 
 
+async def test_4_the_preview_reads_only_the_mirrored_rows(fr) -> None:
+    """A rule applies only to a mirrored row, so a native row of the org is
+    not in the sample."""
+    p, a, _b = fr
+    await _imported(p, p.org_a, a)
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_leads (organization_id, lead_name, status_id, custom) "
+            "SELECT organization_id, 'Native lead', status_id, "
+            "'{\"Why_Lost\": \"Native\"}'::jsonb FROM crm_leads "
+            "WHERE organization_id = CAST(:o AS uuid) LIMIT 1"), {"o": p.org_a})
+    version = await _drafted(p.org_a, _put("Why_Lost", "lost_note"))
+    rows = _entity((await _preview(p.org_a, version)).json(), "lead")["rows"]
+    assert {r["ext_id"] for r in rows} == {"l1", "l2"}
+    assert "Native lead" not in {r["lead_name"] for r in rows}
+
+
 async def test_4_a_draft_that_drops_a_live_rule_shows_its_free_column_empty(fr) -> None:
     p, a, _b = fr
     await _imported(p, p.org_a, a)
