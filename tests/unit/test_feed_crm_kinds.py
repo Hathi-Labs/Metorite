@@ -844,7 +844,6 @@ class TestTheCacheKeyFollowsTheKillSwitch:
 
 
 class TestAFoldKeepsADismissedDealDismissed:
-    @pytest.mark.xfail(strict=True, reason="needs MD-3d's fold rule")
     def test_a_dismissed_close_passed_card_stays_dismissed_when_quiet_folds_in(self):
         tz = ZoneInfo("UTC")
         now = datetime(2026, 10, 12, 12, 0, tzinfo=tz)
