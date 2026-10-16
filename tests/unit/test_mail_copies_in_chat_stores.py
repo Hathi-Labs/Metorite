@@ -17,8 +17,13 @@ R7 fences named here, each a test below:
   ``gateway/main.py`` asks the same predicate, and the fallback and
   ``POST /pull`` write nothing;
 * ``test_an_unknown_mark_writes_no_memory`` (3): Redis down, and a member run,
-  writes no memory. A run end that passed no member would read the fault as
-  clear, so the route passes the member;
+  writes no memory. Since fix round 1 (F3) a fault reads as mail with no
+  member too, and ``test_a_sweep_fold_with_no_actor_fails_closed`` holds it;
+* ``test_the_specialist_path_marks_the_session`` (fix round 1, P0): the
+  orchestrator's real ``email_assistant`` specialist tool marks the session
+  before the sub-run works, and a later ``fetch_page`` asks the card;
+* ``test_a_mail_run_with_no_scope_holds_no_store_write`` (fix round 1, F2):
+  the last-word drop, in the no-match fallback and under ``approve_all``;
 * ``test_a_mail_run_holds_no_store_write`` (5): the email assistant holds no
   ``STORE_WRITES`` tool, and in a marked session ``save_memory`` gives
   ``MAIL_STORE_WRITE_REFUSED``, calls no writer and asks no card;
