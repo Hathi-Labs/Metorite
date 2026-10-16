@@ -269,7 +269,8 @@ async def test_a_note_a_task_and_a_call_on_a_module_record_link_to_it(mz) -> Non
 async def test_drops_count_by_module_and_a_custom_module_never_falls_back(mz) -> None:
     """Done when 4, and the no-fallback rule of done when 3. The activity pass
     runs before the module pass, so on the first import a note on a module
-    record finds no row yet and is dropped (CRM-Q23b recovers it)."""
+    record finds no row yet and is dropped. The pass counts that drop. Since
+    CRM-Q23b the recovery step of the same run reads n1 again and links it."""
     p, a, _b = mz
     _seed(a)  # an Account a1, and the Install_Base record i1
     a.add("Notes", "n1", 30, Note_Title="Early", Parent_Id=NOTE_PARENT,
@@ -289,7 +290,8 @@ async def test_drops_count_by_module_and_a_custom_module_never_falls_back(mz) ->
         "Install_Base": 2, "Ghost_Module": 1, "(none)": 1,
     }
     rows = _activities(p, p.org_a)
-    assert set(rows) == {"n4"}
+    assert set(rows) == {"n1", "n4"}, "n2 never falls back to the Account a1"
+    assert rows["n1"][1] is not None, "CRM-Q23b recovered n1 in the same run"
     assert rows["n4"][5] is not None, "a core se_module still links"
     stored = _q(p, "SELECT counts -> 'activity_drops' FROM crm_sync_runs WHERE "
                    "organization_id = CAST(:o AS uuid) ORDER BY started_at DESC LIMIT 1",

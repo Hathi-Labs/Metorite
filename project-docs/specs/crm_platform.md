@@ -2467,6 +2467,18 @@ Files: `crm_sources/base.py`, `crm_sources/zoho/client.py`,
 `test_crm_activity_recover.py`, `test_crm_activity_recover_r8.py` and
 `test_crm_sources_zoho.py`. No migration: the cursor state is `jsonb`.
 
+**Built as (2026-10-16).** The kept list is the key `recover` of the activity
+cursor, and `recover_overflow` marks an overflow. `crm_sync/recover.py` holds
+the list rules. `engine._recover_activities` runs right after
+`_module_records`. `zoho:activity_backfill` holds `queued_at` and
+`overflow_at`.
+
+The one full read runs before the activity passes, so on a new org it is the
+first import and costs no second read. When an answer by ids lacks an id, the
+sync asks for it one more time, and then the id leaves the list. The probe of
+2026-10-16 proved the `ids=` read on 3 ids. The cap of 100 comes from Zoho's
+documents, and no probe tested it.
+
 **CRM-Q23c · The timeline on a module record.** Done when:
 
 1. `ModuleRecordSheet.tsx` shows the timeline of CRM-Q23a, read only.

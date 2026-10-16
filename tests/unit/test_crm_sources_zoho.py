@@ -1093,3 +1093,61 @@ def test_no_repr_holds_a_secret() -> None:
     for text in texts:
         for secret in PLANTED:
             assert secret not in text
+
+
+# ── 12. Records by id (CRM-Q23b) ─────────────────────────────────────────────
+
+
+async def test_a_read_by_ids_sends_one_call_and_keeps_only_the_asked_records(
+    leaks: list[str],
+) -> None:
+    """The shape a probe on a live tenant measured on 2026-10-16: the read
+    lists the module with ``ids=a,b,c``, and each row carries ``$se_module``."""
+    answer = ok({"data": [
+        {"id": "11", "Note_Title": "x", "$se_module": "Operator_Associates",
+         "Modified_Time": "2026-10-01T10:00:00+05:30"},
+        {"id": "12", "$se_module": "Operator_Associates"},
+        {"id": "99", "$se_module": "Leads"},  # not asked: never returned
+    ]})
+    fake = Fake([answer])
+    source = fake.source()
+    records = await source.list_by_ids("note", ["11", "12", "13"])
+    assert [r.ext_id for r in records] == ["11", "12"]
+    assert records[0].fields["$se_module"] == "Operator_Associates"
+    assert records[0].modified_at is not None
+    request = fake.requests[0]
+    assert request.url.path == "/crm/v2/Notes"
+    assert request.url.params["ids"] == "11,12,13"
+    assert "If-Modified-Since" not in request.headers
+    assert source.credits_used == 1
+
+
+async def test_a_read_by_ids_reads_a_generic_module_and_an_empty_answer() -> None:
+    fake = Fake([ok(status=204)])
+    assert await fake.source().list_by_ids("call", ["1"]) == ()
+    assert fake.requests[0].url.path == "/crm/v2/Calls"
+    assert await Fake([]).source().list_by_ids("note", []) == ()
+
+
+async def test_a_read_by_ids_refuses_more_than_the_cap_and_an_odd_id() -> None:
+    from gateway.crm_sources.base import IDS_PER_CALL
+
+    fake = Fake([])
+    with pytest.raises(ValueError):
+        await fake.source().list_by_ids("note", [str(i) for i in range(IDS_PER_CALL + 1)])
+    with pytest.raises(SourceError):
+        await fake.source().list_by_ids("note", ["1", "2&ids=3"])
+    assert fake.requests == [], "nothing leaves"
+
+
+async def test_a_read_by_ids_names_a_scope_and_a_module_refusal() -> None:
+    fake = Fake([ok({"code": "OAUTH_SCOPE_MISMATCH", "message": "invalid scope"}, status=401)])
+    with pytest.raises(ZohoScopeError) as caught:
+        await fake.source().list_by_ids("note", ["1"])
+    assert caught.value.scope == "ZohoCRM.modules.notes.READ"
+    fake = Fake([ok({"code": "INVALID_MODULE", "message": "x"}, status=400)])
+    with pytest.raises(ZohoModuleUnavailable):
+        await fake.source().list_by_ids("note", ["1"])
+    fake = Fake([ok({"code": "INTERNAL_ERROR"}, status=500)] * 5)
+    with pytest.raises(SourceError):
+        await fake.source().list_by_ids("note", ["1"])
