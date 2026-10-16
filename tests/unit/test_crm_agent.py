@@ -394,7 +394,9 @@ def test_every_tool_declares_its_risk_and_the_write_half_declares_it_destructive
     for fn in _M._TOOLS:
         hints = annotations.TOOL_ANNOTATIONS.get(fn.__name__)
         assert hints is not None, f"{fn.__name__} declares no risk annotation"
-        if fn.__name__ in writers:
+        if fn.__name__ in CRM_FILE_WRITERS:
+            _assert_a_file_writer(hints, fn.__name__)
+        elif fn.__name__ in writers:
             assert hints["destructive"] is True, f"{fn.__name__} is not destructive"
             assert hints["read_only"] is False
             seen.add(fn.__name__)
@@ -402,6 +404,19 @@ def test_every_tool_declares_its_risk_and_the_write_half_declares_it_destructive
             assert hints["read_only"] is True, f"{fn.__name__} is not read_only"
             assert hints["destructive"] is False
     assert seen == writers, f"a write tool is unannotated: {writers - seen}"
+
+
+#: The CRM reads that can also write files: ``crm_report`` makes a kept report
+#: with make_report=true (``projects_ai_chat.md`` §14.10.9). It still sends
+#: only GET to the CRM, so it destroys nothing and reaches nothing outside.
+#: ``read_only=False`` and ``idempotent=False`` stop an edited turn from
+#: running it again unseen (``chat_supersede.is_side_effect_tool``).
+CRM_FILE_WRITERS = frozenset({"crm_report"})
+
+
+def _assert_a_file_writer(hints: dict, name: str) -> None:
+    assert hints["read_only"] is False and hints["idempotent"] is False, name
+    assert hints["destructive"] is False and hints["open_world"] is False, name
 
 
 # ── 4. The routes each tool actually hits ────────────────────────────────────
@@ -945,7 +960,10 @@ def test_every_shared_tool_is_an_annotated_read() -> None:
     annotations = pytest.importorskip("acb_skills.tool_annotations")
     for fn in _T.CRM_TOOLS:
         hints = annotations.TOOL_ANNOTATIONS[fn.__name__]
-        assert hints["read_only"] is True and hints["destructive"] is False
+        if fn.__name__ in CRM_FILE_WRITERS:
+            _assert_a_file_writer(hints, fn.__name__)
+        else:
+            assert hints["read_only"] is True and hints["destructive"] is False
         assert hints["open_world"] is False
         assert fn.__tool_risk__ is hints
         assert inspect.iscoroutinefunction(fn) and (fn.__doc__ or "").strip()

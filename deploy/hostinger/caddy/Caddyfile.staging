@@ -1,0 +1,76 @@
+# The STAGING box's Caddy config (WS-38 S-4,
+# project-docs/specs/staging_and_daily_release.md §5.4). `scripts/vps_apply.sh`
+# installs THIS file, not ./Caddyfile, on a box whose .env says
+# DEPLOY_ENV=staging. The production file stays the default.
+#
+# ⚠️ Two hosts and no more: the staging gateway and the staging workbench. No
+# marketing apex, no operator console, no MCP edge. A staging box that claimed
+# a production name would ask Let's Encrypt for that name's certificate and
+# could answer for it.
+#
+# ⚠️ The api block MUST strip the same identity headers as production's. This
+# host faces the internet, and its data is shaped like production's. Fence:
+# tests/unit/test_deploy_env.py compares the two blocks line by line.
+#
+# Everything else about each block, the H-60 hold and the updating page,
+# mirrors ./Caddyfile. Read the comments there.
+{
+	# Set an email for ACME registration (Let's Encrypt expiry alerts go here).
+	email ops@fracktal.in
+	admin off
+}
+
+# --- Staging gateway API (FastAPI) ---
+api.dev.metorite.com {
+	@internal path /internal/*
+	respond @internal 404
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8080 {
+		header_up X-Real-IP {remote_host}
+		# WS-55 EA-10b (external_agent_access.md §15.3, gate (a)). A request
+		# from the internet must not name a member or an agent connection.
+		# Every internal caller reaches the gateway on loopback, not here.
+		# The MCP edge signs its calls and sends them on loopback too.
+		header_up -X-User-Email
+		header_up -X-User-Role
+		header_up -X-Actor-Via
+		header_up -X-Agent-Connection
+		header_up -X-Agent-Timestamp
+		header_up -X-Agent-Signature
+		lb_try_duration 30s
+		lb_try_interval 250ms
+	}
+}
+
+# --- Staging workbench ---
+dev.metorite.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:3001 {
+		lb_try_duration 30s
+		lb_try_interval 250ms
+	}
+
+	# ── When the workbench cannot answer (navigation_shell.md §7.3) ─────────
+	# The hold above covers a restart of a few seconds. If the workbench has
+	# still not answered when the 30 s hold runs out, a member sees our page,
+	# "Metorite is updating", and not Caddy's bare 502. The page checks
+	# /api/health every 3 s and reloads by itself.
+	#
+	# ⚠️ `handle_errors` runs on a CADDY error only: a dial that failed for the
+	# whole hold. A 502, 503 or 504 that the workbench itself RETURNS is an
+	# answer, and it passes to the browser as it is. The app's own update
+	# notice (`lib/shell/UpdateNotice.tsx`) handles those.
+	#
+	# The page is served from the checkout, so a deploy updates it and the
+	# apply installs nothing. It keeps 503 (and Retry-After), so a client and a
+	# crawler both read "come back", never "this is the page".
+	handle_errors 502 503 504 {
+		root * /opt/acb/app/deploy/hostinger/caddy/updating
+		rewrite * /index.html
+		header Cache-Control "no-store"
+		header Retry-After "10"
+		file_server {
+			status 503
+		}
+	}
+}

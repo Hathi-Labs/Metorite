@@ -28,54 +28,22 @@ on:
     # The cost is stated rather than hidden: a docs-only PR now runs the full
     # ~5 minute suite. That is the price of the checks meaning something at the
     # merge button, and it is cheaper than one un-mergeable PR.
-  # ── Why `push` as well, when `pull_request` already covers the PR ──────────
+  # ── NO `push` trigger, on purpose (2026-10-16) ──────────────────────────
   #
-  # `pull_request` checks out `refs/pull/N/merge`, and GitHub does NOT compute
-  # that ref while a PR is CONFLICTED. So a conflicted PR runs no jobs at all —
-  # measured on #439, which sat `dirty` and reported `check_runs: 0`. GitHub
-  # renders "no checks" identically to "nothing failing", which is the same
-  # misreading the `pull_request` comment above already records once.
-  #
-  # That matters most for the R1 migration-prefix guard: the window in which a
-  # cross-branch number collision is most likely is exactly the window in which
-  # nothing was watching, and the collision then surfaces only while somebody
-  # hand-resolves the conflict — i.e. while editing the very tree that hides it.
-  # `test_migration_prefixes.py` DOES catch two migrations at one number (proven
-  # by re-introducing a duplicate); it was simply never run.
-  #
-  # A `push` build has no merge ref to compute, so it runs whatever the branch
-  # actually contains, conflicted or not. ⚠️ The cost is stated rather than
-  # hidden: a branch with an open PR now builds twice per push. That is the
-  # price of the window being closed, and it is cheaper than one silent
-  # migration collision (three in two weeks — see work_plan.md §2 WS-27).
-  #
-  # ⚠️ ONE JOB IS THE EXCEPTION: the browser suite skips its push copy, by
-  # `if:` on the `e2e` job, which says why. Every other job runs on push.
-  push:
-    # Ignore ONLY the refs that are already covered elsewhere or are machine-
-    # written. Everything else — every feature branch, named or not — runs, which
-    # is the point of an ignore-list over an allow-list.
-    #
-    #   main     — covered by deploy.yml; running here would be a third copy of
-    #              the same jobs on every merge.
-    #   release  — a PUBLISHED ref, not a development one: deploy.yml's
-    #              `publish-release` job fast-forwards it to a SHA that has
-    #              already been checked on `main` (`git push origin
-    #              ${GITHUB_SHA}:refs/heads/release`). Re-checking the same tree
-    #              under a second name buys nothing and doubles every deploy.
-    #   staging  — the same shape, one rung down; T-7 adds the ref and the
-    #              `staging-promote` fast-forward. Listed BEFORE it exists so the
-    #              ref cannot arrive and quietly start duplicating every promote.
-    #
-    # ⚠️ Adding a name here removes a fence from that ref. Only add one that is
-    # provably checked upstream of the push — that is the whole criterion.
-    branches-ignore:
-      - main
-      - release
-      - staging
-    paths-ignore:
-      - "**.md"
-      - "project-docs/**"
+  # A push run created a SKIPPED twin of the required check "Unit tests" on
+  # the same head SHA. GitHub counts a skipped check as passed, so a PR with
+  # a failed shard read as mergeable for about 7 minutes (measured on #1077).
+  # The push trigger existed for one gap: a CONFLICTED PR gets no
+  # pull_request run, and that is when two branches take one migration number
+  # (R1). `push-check.yml` closes that gap on push, under a job name that no
+  # required check uses. Fence: tests/unit/test_pr_check_triggers.py.
+
+# A new push to a PR cancels the run for its older commit. That run's result
+# no longer gates anything, and on the Free plan's 20-job cap its 17 jobs
+# held runners that the newer run then waited for (measured 2026-10-16).
+concurrency:
+  group: pr-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -168,10 +136,32 @@ jobs:
         continue-on-error: true
         run: uv run python scripts/codebase_health.py --diff --top 10
 
+  # ── The unit suite, in parallel shards ───────────────────────────────────
+  #
+  # One serial run took 52-56 minutes (measured 2026-10-16, 27,800 tests).
+  # pytest-split cuts it into contiguous chunks of equal measured time, from
+  # `.test_durations`. `duration_based_chunks` keeps collection order, so
+  # tests that share a module stay together. Each shard gets its own two
+  # Postgres containers, so R8 suites never share a database.
+  #
+  # The required check "Unit tests" is the `unit-tests` job below. It fails
+  # when any shard fails, and it reads every shard's report for the R8 guard.
+  #
+  # No `needs: lint`: lint takes a minute, and the shards are the long pole.
+  #
+  # Refresh the timings when the split drifts (one shard much longer than the
+  # rest): download the `test-durations` artifact of a green run and commit it
+  # as `.test_durations`.
   test:
-    name: "Unit tests"
+    name: "Unit tests (shard ${{ matrix.shard }}/6)"
     runs-on: ubuntu-latest
-    needs: lint
+    # `fail-fast: false`: each shard stops at its own first failure (`-x`),
+    # and one run then reports the first failure of EVERY shard. Fail-fast
+    # cancelled the other five and hid their failures until the next round.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
     # WS-31 CP-3. The Customer Console's suites are R8-gated: they skip themselves
     # unless CUSTOMER_CONSOLE_DATABASE_URL points at a real Postgres, because
     # hermetic fakes agree with whatever SQL they are handed. Independent
@@ -286,194 +276,138 @@ jobs:
               print("extensions available:", sorted(names))
           PY
 
-      - name: Run unit tests
-        run: uv run python -m pytest tests/unit/ -x -v
-
-      # A guard against the R8 gate quietly disarming again: if the platform
-      # suites report themselves as skipped, fail the job.
-      #
-      # ⚠️ This list is HAND-MAINTAINED and nothing discovers it. A new R8-gated
-      # Customer Console suite that is not named here still runs in the step
-      # above — and still SKIPS silently there when the database variable is
-      # missing, which is the exact failure this step exists to catch. Add the
-      # file in the same commit that creates it (CP-2b clause 10 did, and CP-9
-      # clause 11 did — `test_customer_console_payments.py`, the seventh
-      # Console suite, whose own
-      # `test_this_suite_is_named_in_the_ci_skip_guard` reads this file and
-      # fails if the entry is ever removed; that is the closest a hand-list
-      # gets to defending itself).
-      #
-      # ⚠️ WS-31 CP-2h slice 1 (2026-08-24) adds the TENTH Console suite,
-      # `test_customer_console_seat_overview.py` — the D-SEAT-4 deployment-key
-      # seat READ (`POST /registry/seats/overview`), added IN THE PR THAT
-      # CREATED IT and carrying the same self-defending pair of tests (it reads
-      # this file AND `customer_console.md` §7). It proves the read is byte-
-      # identical to `GET /me/seats` + `GET /me/members` (the ONE seat
-      # vocabulary), that org A's actor can never read org B, the `seat_admin`
-      # capability and role gates, and that a `deleted` org is refused while a
-      # `suspended` one can still see what it holds.
-      #
-      # ⚠️ H-152's billing half (2026-09-28) adds
-      # `test_customer_console_billing_reads.py` — the `billing_read` doors
-      # (`POST /registry/billing/*`, `/registry/usage/*`) that serve the
-      # customer billing pages under the per-box deployment key. It reads this
-      # file AND `customer_console.md` §7, like its siblings.
-      # `test_customer_console_billing_checkout.py` joins it for the checkout
-      # (`POST /registry/billing/orders*`, the `billing_purchase` doors).
-      #
-      # ⚠️ WS-31 CP-2f (2026-08-24) adds the NINTH Console suite,
-      # `test_customer_console_member_write.py` — the member-add door and
-      # D50.3's `invited -> active` promotion — added IN THE PR THAT CREATED IT
-      # and carrying the same self-defending pair of tests (it reads this file
-      # AND `customer_console.md` §7). `test_invite_console_mirror.py` joins
-      # beside it and takes NO database, like `test_seat_admin_proxy_route.py`:
-      # it is named here so a DB gate leaking into it later disarms loudly.
-      #
-      # ⚠️ WS-31 CP-10 slice 2 (2026-08-27) adds the ELEVENTH Console suite,
-      # `test_customer_console_tasks.py` — the task allowlist, two-step
-      # resolution and the per-unit rate card. Added IN THE PR THAT CREATED
-      # IT and carrying the same self-defending test (it reads this file).
-      # 🔴 It fences the pricing hole that was LIVE: `rate_call` was
-      # tokens-only, so `tier-stt` — in the production seed — could not be
-      # priced, and neither could `speak` or `image`.
-      #
-      # ⚠️ AND SO IS THE GREP LIST BELOW. Until CP-2b there was ONE grep, hard
-      # -coded to the Console suites' skip string — so a suite gated on a
-      # DIFFERENT variable could be added to the file list above, skip every
-      # test, and leave this step green. That is the CP-3 failure class
-      # reintroduced one layer up. Every gate variable named in the file list
-      # needs its own line here.
-      - name: Assert the R8-gated platform suites actually ran
+      # `-o junit_family=xunit1` puts the FILE on each test case, which the
+      # guard in `unit-tests` reads. The report also carries the timings that
+      # refresh `.test_durations`.
+      - name: Run unit tests (this shard)
         run: |
-          uv run python -m pytest tests/unit/test_customer_console_sql.py \
-            tests/unit/test_customer_console_key_auth.py tests/unit/test_customer_console_api.py \
-            tests/unit/test_customer_console_router.py tests/unit/test_customer_console_lifecycle.py \
-            tests/unit/test_customer_console_resolve.py \
-            tests/unit/test_customer_console_payments.py \
-            tests/unit/test_customer_console_operator_list.py \
-            tests/unit/test_customer_console_member_write.py \
-            tests/unit/test_customer_console_seat_overview.py \
-            tests/unit/test_customer_console_billing_reads.py \
-            tests/unit/test_customer_console_billing_checkout.py \
-            tests/unit/test_customer_console_tasks.py \
-            tests/unit/test_customer_console_catalog.py \
-            tests/unit/test_customer_console_decide.py \
-            tests/unit/test_operator_identity.py \
-            tests/unit/test_operator_session.py \
-            tests/unit/test_operator_roles.py \
-            tests/unit/test_operator_admin.py \
-            tests/unit/test_operator_elevation.py \
-            tests/unit/test_operator_activity.py \
-            tests/unit/test_provider_keys.py \
-            tests/unit/test_operator_signin.py \
-            tests/unit/test_deployment_resolve_cache.py \
-            tests/unit/test_console_dependency_boundary.py \
-            tests/unit/test_signin_resolve_route.py \
-            tests/unit/test_seat_admin_proxy_route.py \
-            tests/unit/test_billing_proxy_route.py \
-            tests/unit/test_invite_console_mirror.py \
-            tests/unit/test_signup_provision_route.py \
-            tests/unit/test_signup_reconciler.py \
-            tests/unit/test_console_bootstrap.py \
-            tests/unit/test_billing_purchase_capability.py \
-            tests/unit/test_app_user_upserts.py \
-            tests/unit/test_org_provisioning.py \
-            tests/unit/test_org_provisioning_tenancy.py \
-            tests/unit/test_owner_bootstrap.py \
-            tests/unit/test_credential_tenant_threading.py \
-            tests/unit/test_h3_rls_promotion_rehearsal.py \
-            tests/unit/test_action_broker_tenancy_r8.py \
-            tests/unit/test_org_settings_tenancy_r8.py \
-            tests/unit/test_user_settings_per_org_r8.py \
-            tests/unit/test_auth_me_shell_r8.py \
-            tests/unit/test_h6_identity_shadow.py \
-            tests/unit/test_h6_rbac_rekey.py \
-            tests/unit/test_email_otp_token.py \
-            tests/unit/test_invited_member_promotion.py \
-            tests/unit/test_org_purge_console.py \
-            tests/unit/test_org_purge_tenant.py \
-            tests/unit/test_operator_door.py \
-            tests/unit/test_shell_needs_r8.py \
-            tests/unit/test_my_day_loop_r8.py \
-            tests/unit/test_chat_session_archive_r8.py \
-            tests/unit/test_projects_search_description_r8.py \
-            -q -rs 2>&1 | tee /tmp/platform.txt
-          if grep -q "CUSTOMER_CONSOLE_DATABASE_URL unset" /tmp/platform.txt; then
-            echo "::error::Customer Console suites skipped — R8 gate is disarmed."
-            exit 1
-          fi
-          # CP-2b's tenant-side suite answers to its OWN variable and would
-          # skip with a wholly different message. WS-30 SC-4a's
-          # `billing:purchase` seed fence is the second suite on that variable
-          # and reuses this line by using the same skip string; WS-29 MT-1j
-          # slice 6's `test_app_user_upserts.py` is the third, for the same
-          # reason and with the same string — the two `app_user` upserts were
-          # shipped naming an index migration 162 had dropped, and only a real
-          # ladder can see that.
-          #
-          # MT-1j slices 1+2+3 add the fourth and fifth, same string again:
-          # `test_org_provisioning.py` (the per-org role seed, the explicit
-          # owner path and the organization+placement act) and
-          # `test_owner_bootstrap.py`, RE-GATED onto this variable by slice 2.
-          # ⚠️ That second one is the whole reason slice 6's defect reached
-          # main: it gated on `DATABASE_URL`, which no job here sets, so five
-          # tests of the ownership bootstrap skipped in every run ever made
-          # while the statement under them raised 42P10 on every call. A fence
-          # that never executes is not a fence.
-          #
-          # MT-1j slice 5 (ratchet round 1) adds the sixth, same string again:
-          # `test_credential_tenant_threading.py`. Its structural half (the
-          # untenanted-call ratchet) takes no database and always runs; its
-          # two-org half proves that org A's provider key and tier overrides
-          # resolve to A and B's to B against the schema the ladder produces,
-          # which no fake can answer for — a `count(*)` sub-select and a
-          # composite ON CONFLICT arbiter are exactly slice 6's class of bug.
-          #
-          # WS-29 H3 adds the seventh, same string again:
-          # `test_h3_rls_promotion_rehearsal.py`. It builds a DEDICATED database
-          # (never the shared ladder DB), applies the four `generated/` phases by
-          # hand and connects as a non-privileged role to prove two-org RLS
-          # isolation + WITH-CHECK write refusal + the sign-in brick — none of
-          # which a fake can answer for. A skip here would mean the H3 gate is
-          # disarmed, which is exactly the state this whole step exists to catch.
-          #
-          # WS-29 H6 slice 1 adds the eighth, same string again:
-          # `test_h6_identity_shadow.py`. It proves against the real ladder that
-          # the identity-shadow dual-write lets one email hold membership in TWO
-          # orgs (create-only, never a move) and that the catch-up backfill
-          # (migration 182) reconciles and is idempotent — a two-org membership
-          # and a composite ON CONFLICT arbiter are exactly slice 6's class of
-          # bug, invisible to a fake.
-          #
-          # WS-29 H6 slice 4 (D48) adds the ninth, same string again:
-          # `test_h6_rbac_rekey.py`. It proves against the real ladder that
-          # migration 184 backfills every RBAC row's `user_identity_id` through
-          # the lower(email) bridge (NULL only where no identity), is idempotent,
-          # and that the dual-write on `set_roles` / the owner bootstrap populates
-          # both columns to the same identity — a lower(email) join and an
-          # IS DISTINCT FROM guard are exactly the class a fake cannot answer for.
-          if grep -q "TENANT_LADDER_DATABASE_URL unset" /tmp/platform.txt; then
-            echo "::error::A tenant-ladder suite skipped — the tenant R8 gate is disarmed."
-            exit 1
-          fi
-          # The structural fences take NO database and must never report a
-          # skip at all. One that did would mean somebody folded a DB gate into
-          # them, which is how §6(i)(4)'s separation quietly dies.
-          #
-          # test_signin_resolve_route.py joins them for the same reason: it is
-          # the ONLY test of the route's own refusal (finding F5's fence), it
-          # opens no session on purpose, and a DB gate leaking into it would
-          # disarm a P0 fence silently. WS-30 SC-2a's
-          # test_seat_admin_proxy_route.py joins for the same reason again: it
-          # is the transport's R7 fence (the seat WRITE carries the deployment
-          # key + the session actor, no org on the wire) and drives a
-          # MockTransport Console — no database, and it must never skip.
-          # test_billing_proxy_route.py (H-152) joins for the same reason: it
-          # is the billing transport's R7 fence and takes no database.
-          if grep -qE "SKIPPED.*(test_console_dependency_boundary|test_signin_resolve_route|test_seat_admin_proxy_route|test_billing_proxy_route)" /tmp/platform.txt; then
-            echo "::error::A no-database fence skipped — the dependency-boundary, signin-route and seat-proxy fences must always run."
-            exit 1
-          fi
+          uv run python -m pytest tests/unit/ -x -v -rs \
+            --splits 6 --group ${{ matrix.shard }} \
+            --splitting-algorithm duration_based_chunks \
+            -o junit_family=xunit1 --junitxml=junit/shard-${{ matrix.shard }}.xml
+
+      - name: Keep this shard's report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-shard-${{ matrix.shard }}
+          path: junit/
+          retention-days: 7
+
+  # ── "Unit tests": the required check, and the R8 guard ───────────────────
+  #
+  # Branch protection requires a check named exactly "Unit tests", so the
+  # shards report under other names and this job carries the name.
+  #
+  # The R8 guard used to RUN about 40 files a second time, only to grep their
+  # skip reasons (2 minutes). The shard reports already hold every skip
+  # reason, so `scripts/ci_unit_guard.py` reads them. It fails when:
+  #   * ANY test, listed or not, skipped because CUSTOMER_CONSOLE_DATABASE_URL
+  #     or TENANT_LADDER_DATABASE_URL was unset (the R8 gate is disarmed),
+  #   * a `--must-run` file below has no test in any report, or
+  #   * a `--never-skip` file skipped a test (a database gate leaked into a
+  #     fence that needs none).
+  #
+  # ⚠️ The `--must-run` list is HAND-MAINTAINED. Add an R8 suite in the commit
+  # that creates it. Each suite's own `test_this_suite_is_named_in_the_ci_skip
+  # _guard` reads this file and fails if its entry goes.
+  #
+  # Fence: tests/unit/test_ci_unit_guard.py.
+  unit-tests:
+    name: "Unit tests"
+    runs-on: ubuntu-latest
+    needs: test
+    # `always()`, so a failed shard turns THIS check red instead of skipping
+    # it. A skipped required check counts as satisfied.
+    if: always()
+    steps:
+      - name: Every shard passed
+        run: |
+          echo "shards: ${{ needs.test.result }}"
+          [ "${{ needs.test.result }}" = "success" ] || exit 1
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: junit-shard-*
+          path: junit
+          merge-multiple: true
+
+      - name: The R8 suites ran, and no fence skipped
+        run: |
+          python3 scripts/ci_unit_guard.py check --junit junit \
+            --disarmed "CUSTOMER_CONSOLE_DATABASE_URL unset" \
+            --disarmed "TENANT_LADDER_DATABASE_URL unset" \
+            --never-skip \
+              tests/unit/test_console_dependency_boundary.py \
+              tests/unit/test_signin_resolve_route.py \
+              tests/unit/test_seat_admin_proxy_route.py \
+              tests/unit/test_billing_proxy_route.py \
+            --must-run \
+              tests/unit/test_customer_console_sql.py \
+              tests/unit/test_customer_console_key_auth.py \
+              tests/unit/test_customer_console_api.py \
+              tests/unit/test_customer_console_router.py \
+              tests/unit/test_customer_console_lifecycle.py \
+              tests/unit/test_customer_console_resolve.py \
+              tests/unit/test_customer_console_payments.py \
+              tests/unit/test_customer_console_operator_list.py \
+              tests/unit/test_customer_console_member_write.py \
+              tests/unit/test_customer_console_seat_overview.py \
+              tests/unit/test_customer_console_billing_reads.py \
+              tests/unit/test_customer_console_billing_checkout.py \
+              tests/unit/test_customer_console_tasks.py \
+              tests/unit/test_customer_console_catalog.py \
+              tests/unit/test_customer_console_decide.py \
+              tests/unit/test_operator_identity.py \
+              tests/unit/test_operator_session.py \
+              tests/unit/test_operator_roles.py \
+              tests/unit/test_operator_admin.py \
+              tests/unit/test_operator_elevation.py \
+              tests/unit/test_operator_activity.py \
+              tests/unit/test_provider_keys.py \
+              tests/unit/test_operator_signin.py \
+              tests/unit/test_deployment_resolve_cache.py \
+              tests/unit/test_console_dependency_boundary.py \
+              tests/unit/test_signin_resolve_route.py \
+              tests/unit/test_seat_admin_proxy_route.py \
+              tests/unit/test_billing_proxy_route.py \
+              tests/unit/test_invite_console_mirror.py \
+              tests/unit/test_signup_provision_route.py \
+              tests/unit/test_signup_reconciler.py \
+              tests/unit/test_console_bootstrap.py \
+              tests/unit/test_billing_purchase_capability.py \
+              tests/unit/test_app_user_upserts.py \
+              tests/unit/test_org_provisioning.py \
+              tests/unit/test_org_provisioning_tenancy.py \
+              tests/unit/test_owner_bootstrap.py \
+              tests/unit/test_credential_tenant_threading.py \
+              tests/unit/test_h3_rls_promotion_rehearsal.py \
+              tests/unit/test_action_broker_tenancy_r8.py \
+              tests/unit/test_org_settings_tenancy_r8.py \
+              tests/unit/test_user_settings_per_org_r8.py \
+              tests/unit/test_auth_me_shell_r8.py \
+              tests/unit/test_h6_identity_shadow.py \
+              tests/unit/test_h6_rbac_rekey.py \
+              tests/unit/test_email_otp_token.py \
+              tests/unit/test_invited_member_promotion.py \
+              tests/unit/test_org_purge_console.py \
+              tests/unit/test_org_purge_tenant.py \
+              tests/unit/test_operator_door.py \
+              tests/unit/test_shell_needs_r8.py \
+              tests/unit/test_my_day_loop_r8.py \
+              tests/unit/test_chat_session_archive_r8.py \
+              tests/unit/test_projects_search_description_r8.py
+
+      - name: Write the measured timings
+        run: python3 scripts/ci_unit_guard.py durations --junit junit --out test_durations.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-durations
+          path: test_durations.json
+          retention-days: 14
 
   # BO-23. The backup and restore scripts shipped on 2026-08-03 and had never
   # been executed anywhere — they reached Postgres only through
@@ -720,26 +654,26 @@ jobs:
   # through `page.route` and the rest are pure UI. That is why this job is a
   # browser and a dev server, and nothing else.
   e2e:
-    name: "Browser suite (e2e)"
+    name: "Browser suite (e2e) ${{ matrix.shard }}/3"
     runs-on: ubuntu-latest
-    # ── Why this job runs on `pull_request` only, and not on `push` ──────────
+    # ── Three shards, each with its own dev server ──────────────────────────
     #
-    # The `push` trigger exists for ONE gap: a CONFLICTED PR gets no
-    # `pull_request` run (see the trigger comment at the top). A conflicted PR
-    # cannot merge either, so a browser run on its push adds no fence at the
-    # merge button. The R1 migration-prefix guard is a unit test, and the
-    # `test` job still runs it on every push. So this job skips the push copy.
+    # One worker took 17-19 minutes for 374 tests (measured 2026-10-16), and
+    # it was the long pole once the unit suite was split. `workers: 1` stays:
+    # each shard is one process on its own runner, as before.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    # ── A push copy of this job must never come back ─────────────────────────
     #
-    # The push copy also stopped merges. Measured 2026-10-15 over 70 runs:
-    # the cap cancelled 8 of 36 push copies. A cancelled copy shows as `fail`
-    # in `gh pr checks`, even when the PR's own `pull_request` run is green.
-    #
-    # ⚠️ A SKIP BY `if:` COUNTS AS SATISFIED, and that is the whole reason this
-    # is safe. Do not move it to the trigger: a workflow that never starts
-    # wedges the merge (the `pull_request` comment above records why).
+    # This workflow has no `push` trigger (see the note at the top). The `if:`
+    # stays as a second guard: a push trigger added later still skips this
+    # job. Measured 2026-10-15: the cap cancelled 8 of 36 push copies, and a
+    # cancelled copy shows as `fail` in `gh pr checks` beside a green PR run.
     #
     # ⚠️ `!= 'push'`, NOT `== 'pull_request'`. A trigger added later still
-    # runs the suite, and only the copy that duplicates a PR run goes away.
+    # runs the suite.
     #
     # Fence: `workbench/control_plane/src/lib/e2eGate.test.ts`.
     if: github.event_name != 'push'
@@ -784,7 +718,7 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Browser suite
-        run: npx playwright test --project=ci
+        run: npx playwright test --project=ci --shard=${{ matrix.shard }}/3
 
       # ⚠️ Without this a red run is a wall of text and no screenshot, and an
       # undiagnosable gate is one somebody deletes. The report carries the
@@ -793,7 +727,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.shard }}
           path: |
             workbench/control_plane/playwright-report/
             workbench/control_plane/test-results/
@@ -811,12 +745,15 @@ jobs:
       - uses: actions/checkout@v5
       - name: caddy validate + caddy fmt (caddy:2.11.4)
         run: |
+          # WS-38 S-4: the staging box installs Caddyfile.staging. Check both.
           docker run --rm -v "$PWD/deploy/hostinger/caddy:/cfg:ro" caddy:2.11.4 sh -ec '
-            caddy validate --config /cfg/Caddyfile --adapter caddyfile
-            caddy fmt --diff /cfg/Caddyfile > /tmp/fmt.diff || true
-            if grep -qE "^[-+]" /tmp/fmt.diff; then
-              echo "Caddyfile is not formatted. Run: caddy fmt --overwrite"; cat /tmp/fmt.diff; exit 1
-            fi'
+            for f in Caddyfile Caddyfile.staging; do
+              caddy validate --config /cfg/$f --adapter caddyfile
+              caddy fmt --diff /cfg/$f > /tmp/fmt.diff || true
+              if grep -qE "^[-+]" /tmp/fmt.diff; then
+                echo "$f is not formatted. Run: caddy fmt --overwrite"; cat /tmp/fmt.diff; exit 1
+              fi
+            done'
 
   secret-scan:
     name: "Secret scan"

@@ -26,10 +26,14 @@ keys, the same text limits, the same section rule and the same visual
 builders. This module adds only what a report has and a document does not:
 the summary, the KPI tiles, the period and the sources.
 
-A mapper (slice B3) that builds a spec by code calls :func:`make_report`
-with it, and the numbers then come from code, never from the model.
+A tool that builds a spec by code from its own reads calls :func:`by_code`
+(slice B3, ``projects_ai_chat.md`` §14.10.9). It is the ONE gate of such a
+report: the run must hold ``make_report`` itself, and the numbers then come
+from code, never from the model. ``status_report``, ``render_report`` and
+``crm_report`` use it.
 
-Fence: ``tests/unit/test_chat_reports.py``.
+Fences: ``tests/unit/test_chat_reports.py`` and
+``tests/unit/test_reports_by_code.py``.
 """
 
 from __future__ import annotations
@@ -39,6 +43,8 @@ import importlib
 import json
 import math
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
@@ -445,14 +451,85 @@ async def _make_on_the_web(report: dict[str, Any], layout: dict[str, Any],
                     "holds, and paste no link."}
 
 
+# ── A report that code builds (B3, §14.10.9) ────────────────────────────────
+
+#: The line of a report that code builds, when the run does not hold
+#: ``make_report``: an admin turned the documents family off, or the run bound
+#: no tools. The tool then gives its normal answer.
+REPORTS_OFF = "Reports are turned off for this assistant. Here is the summary in text."
+
+
+def report_offer(tool: str) -> str:
+    """The line that tells the model how to ask *tool* for a kept report."""
+    return (f"For a report the member can keep, call {tool} again with "
+            "make_report=true. Never save a report as a .md file.")
+
+
+@dataclass(frozen=True)
+class ByCode:
+    """What :func:`by_code` did, and the lines the tool adds to its text.
+
+    ``state`` is one of:
+
+    * ``made``: the report is made. The tool returns its text with ``lines``
+      and draws no card of its own.
+    * ``off``: the member asked, and the run does not hold ``make_report``.
+    * ``failed``: the spec or the files failed. ``lines`` says why.
+    * ``offer``: the member did not ask, and the run holds ``make_report``.
+    * ``none``: the member did not ask, and the run does not hold it.
+
+    In every state but ``made`` the tool gives its normal answer and card.
+    """
+
+    state: str
+    lines: tuple[str, ...] = ()
+
+
+async def by_code(spec: Callable[[], dict[str, Any]], wanted: bool, *, tool: str,
+                  say: str) -> ByCode:
+    """The ONE gate of a report that a tool builds by code from its reads.
+
+    *spec* builds the spec. It runs only when the member asked and the run
+    holds ``make_report``. *say* is what the model says after the report is
+    made. Access is an intersection: ``write_artifact.run_holds_tool`` fails
+    closed, so a run with no ``run_tools`` makes no file and draws no card.
+    """
+    wa = importlib.import_module("acb_skills.write_artifact")
+    holds = wa.run_holds_tool("make_report")
+    if not wanted:
+        return ByCode("offer", (report_offer(tool),)) if holds else ByCode("none")
+    if not holds:
+        return ByCode("off", (REPORTS_OFF,))
+    try:
+        built = spec()
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        return ByCode("failed", (
+            "make_report failed: the report could not be built from this data "
+            f"({type(exc).__name__}). Answer from the text above.",))
+    made = await make_report(built)
+    if not made.get("ok"):
+        return ByCode("failed", (
+            f"make_report failed: {made.get('error')}. Answer from the text above.",))
+    from acb_skills.whatsapp_ui import current_run
+
+    shown = ("The member gets this report as a PDF after your text."
+             if current_run() is not None else "The report card shows this report.")
+    return ByCode("made", (f"make_report: {json.dumps(made, ensure_ascii=False)}",
+                           f"{shown} {say}"))
+
+
 __all__ = [
+    "REPORTS_OFF",
     "REPORT_GUIDE",
     "REPORT_KIND",
     "REPORT_SUFFIX",
     "REPORT_TEMPLATE",
     "REPORT_VERSION",
+    "ByCode",
+    "by_code",
     "check_report",
     "layout_of",
     "make_report",
+    "report_offer",
     "slug_of",
 ]
