@@ -422,8 +422,22 @@ class TestTheDrainRoute:
         assert r.status_code == 200
         assert r.json() == {
             "runs": 3, "chat": 2, "projects": 1,
-            "after_response": 0, "waiting_on_a_person": 0,
+            "after_response": 0, "email_teardowns": 0,
+            "waiting_on_a_person": 0,
         }
+
+    def test_it_counts_a_held_mailbox_teardown(
+        self, client, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # WS-17 EM-G11f1b, fix round 1. A purge door stops its wait at 60 s,
+        # and the rest of the teardown runs on in `_TEARDOWNS`. The
+        # credentials went with the rows, so a stop must wait for it.
+        from gateway.routes.email import teardown
+
+        monkeypatch.setattr(teardown, "_TEARDOWNS", {_Task(False), _Task(True)})
+        body = client.get("/internal/drain", headers=AUTH).json()
+        assert body["email_teardowns"] == 1
+        assert body["runs"] == 1
 
     def test_a_run_waiting_on_a_person_is_not_waited_for(
         self, client, monkeypatch: pytest.MonkeyPatch,

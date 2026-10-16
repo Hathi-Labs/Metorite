@@ -36,6 +36,11 @@ under FORCE row level security. The org of a write is the run's own,
 server-side org: the tenant bound for the run (``acb_common.db``), else the
 run's record in this process (``run_liveness``). Never an event field.
 
+**My Day** (WS-58 MD-3f). The insert of a row and its settle each bump the
+My Day version of the member it asks (``_bump_my_day``), so the feed card
+``agent_asks`` changes at once. The bump does nothing with ``MY_DAY_CACHE``
+off. It never raises and it is bounded in time, so it never breaks an ask.
+
 Fences (R7): ``tests/unit/test_pending_ask_store.py`` (R8: the SQL and the
 row level security, as the NOBYPASSRLS app role) and
 ``tests/unit/test_pending_ask_flow.py`` (the flow).
@@ -295,8 +300,11 @@ def waiting_asks(
 
     if not thread_id and not actor_email:
         return []
-    where = ["state = ANY(:waiting)", "expires_at > now()"]
-    params: dict[str, Any] = {"waiting": list(WAITING)}
+    # The org predicate stands beside RLS, as in `move_ask`: defence in depth
+    # for a session that RLS does not hold (WS-58 MD-3f fix round 1, R5).
+    where = ["organization_id = CAST(:org AS uuid)", "state = ANY(:waiting)",
+             "expires_at > now()"]
+    params: dict[str, Any] = {"org": organization_id, "waiting": list(WAITING)}
     if thread_id:
         where.append("thread_id = :tid")
         params["tid"] = thread_id
@@ -387,7 +395,28 @@ async def _record(thread_id: str, ask: CardAsk) -> str | None:
         return None
     _log.info("pending_ask.recorded", request_id=ask.request_id[:12],
               thread_id=thread_id[:12], kind=ask.kind)
+    await _bump_my_day(org, actor)
     return org
+
+
+async def _bump_my_day(org: str | None, actor: str | None) -> None:
+    """Move the My Day version of the member a question asks, after its row
+    changed (WS-58 MD-3f, ``my_day_feed.md`` §5.9 item 14). So the card
+    ``agent_asks`` comes and goes at once, not at the 600-second bound.
+
+    The org and the member are the run's own, server-side, never an event
+    field. ``cache.bump_member_safe`` is the one seam: it does nothing with
+    ``MY_DAY_CACHE`` off, it waits 0.5 seconds at most, and it never raises,
+    so a bump never breaks an ask. The import is local, as the other gateway
+    imports here are. A failed import only logs."""
+    if not org or not actor:
+        return
+    try:
+        from gateway.routes.shell import cache as feed_cache
+    except Exception as exc:  # no gateway in this process: no feed to bump
+        _log.warning("pending_ask.my_day_bump_failed", error=type(exc).__name__)
+        return
+    await feed_cache.bump_member_safe(org, actor)
 
 
 def note_event(thread_id: str, event: Any) -> None:
@@ -442,11 +471,15 @@ async def settle(request_id: str, *, answer: str | None) -> None:
         return
     to = "answered" if answer is not None else "closed"
     try:
-        await asyncio.to_thread(
+        row = await asyncio.to_thread(
             move_ask, org, request_id, to=to, from_states=("open",), answer=answer,
         )
     except Exception:
         _log.warning("pending_ask.settle_failed", request_id=request_id[:12], exc_info=True)
+        return
+    if row:
+        # The question no longer waits, so it leaves My Day at once.
+        await _bump_my_day(org, str(row.get("actor_email") or ""))
 
 
 async def end_of_run(thread_id: str) -> None:
