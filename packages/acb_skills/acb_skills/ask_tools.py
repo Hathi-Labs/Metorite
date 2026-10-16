@@ -633,6 +633,7 @@ async def request_confirmation(
     non_interactive_default: str = "deny",
     rows: list[dict] | None = None,
     fenced: bool | None = None,
+    grant_extra: str = "",
 ) -> bool | frozenset[str]:
     """Emit a HITL confirmation card and BLOCK until the user approves/rejects.
 
@@ -662,6 +663,16 @@ async def request_confirmation(
             flag the client draws the text exactly as sent, so an email body
             that holds a real « » keeps it. ``None`` leaves the event as it
             was.
+        grant_extra: text that joins the card's words in the call's
+            fingerprint (``pending_ask.grant_digest``). The MCP gate passes a
+            digest of the raw arguments. Used only with ``CHAT_LATE_APPROVAL``.
+
+    **A late approval is taken once** (``CHAT_LATE_APPROVAL``, default OFF).
+    A card that parked (``CHAT_DURABLE_ASKS``) and got its Approve after the
+    run ended leaves a row that this call can take. When a new run makes the
+    SAME call (the same card words and ``grant_extra``), the call finds that
+    row, takes it in one statement and returns the approval with no new card.
+    The row must be this member's, in this thread, in the grant window.
 
     Returns:
         With no ``rows``: ``True`` if the user approved, ``False`` if they
@@ -693,6 +704,24 @@ async def request_confirmation(
         # A deny, never an approve: a channel with no card is no consent.
         return frozenset() if _rows is not None else False
     _offered = frozenset(r["id"] for r in _rows or [])
+    # A late approval of this very call (CHAT_LATE_APPROVAL). Any fault leaves
+    # the grant empty, and the card is asked as before.
+    _grant = ""
+    _grant_thread: str | None = None
+    try:
+        from orchestrator import pending_ask as _pending_ask  # noqa: PLC0415
+
+        if _pending_ask.late_approval_enabled():
+            from orchestrator.executor import resolve_relay_thread_id  # noqa: PLC0415
+
+            _grant_thread = resolve_relay_thread_id()
+            if _grant_thread:
+                _grant = _pending_ask.grant_digest(
+                    _title, _detail, _context, tuple(sorted(_offered)),
+                    str(grant_extra or ""),
+                )
+    except Exception:  # noqa: BLE001
+        _grant = ""
 
     def _event(request_id: str) -> dict:
         value = {
@@ -701,6 +730,8 @@ async def request_confirmation(
             "context": _context,
             "request_id": request_id,
         }
+        if _grant:
+            value["grant"] = _grant
         if _rows is not None:
             value["rows"] = _rows
         if fenced is not None:
@@ -714,6 +745,14 @@ async def request_confirmation(
             return ("APPROVE" if said.upper() == "APPROVE" else "REJECT"), None
         ticked = ticked_rows(said, _offered)
         return ("APPROVE" if ticked else "REJECT"), ticked
+
+    if _grant:
+        _late = await _pending_ask.take_late_approval(_grant_thread, _grant)
+        if _late is not None:
+            _taken, _ticked_late = _verdict({"answer": _late})
+            if _rows is not None:
+                return _ticked_late or frozenset()
+            return _taken == "APPROVE"
 
     async def _block_on(_fut, _rid, _pending, _publish) -> bool | frozenset[str]:
         """Park on the answer, then say on the stream that the card is closed.

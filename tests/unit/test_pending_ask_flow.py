@@ -96,6 +96,20 @@ class _AskDb:
             row["answer"] = answer or ""
         return dict(row)
 
+    def consume_grant(self, org, tid, actor, grant):
+        """The fake of ``pending_ask.consume_grant``: one use, same conditions."""
+        import re
+
+        for (o, _rid), row in self.rows.items():
+            if (o == org and row["thread_id"] == tid
+                    and row["actor_email"] == actor.strip().lower()
+                    and row["kind"] == "confirmation" and row["state"] == "answered"
+                    and (row.get("payload") or {}).get("grant") == grant
+                    and re.match(r"(?i)^approve(\s|$)", row["answer"] or "")):
+                row["state"] = "closed"
+                return row["answer"]
+        return None
+
     def read_ask(self, org, rid):
         row = self.rows.get((org, rid))
         return dict(row) if row and row["state"] in pending_ask.WAITING else None
@@ -116,7 +130,7 @@ class _AskDb:
 @pytest.fixture
 def ask_db(monkeypatch):
     db = _AskDb()
-    for name in ("insert_ask", "move_ask", "read_ask", "waiting_asks"):
+    for name in ("insert_ask", "move_ask", "read_ask", "waiting_asks", "consume_grant"):
         monkeypatch.setattr(pending_ask, name, getattr(db, name))
     pending_ask._reset_for_tests()
     executor._pending_user_input.clear()
