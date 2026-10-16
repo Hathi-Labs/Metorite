@@ -83,10 +83,11 @@ from gateway.routes.crm.core import (
     reset_crm_from_admin,
     router,
 )
+from gateway.routes.crm.fill_rank import EntityLabel, source_labels
 from gateway.routes.crm.flags import crm_mirror_allowed
 from gateway.routes.crm.seed import seed_native_pipeline
 from gateway.routes.projects.core import validate_grant_subject
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
@@ -126,6 +127,8 @@ _RESET_DELETES: tuple[str, ...] = (
     "crm_sync_cursors", "crm_sync_runs",
     # CRM-Q7a: the field rules name the fields of the old Zoho account.
     "crm_field_rules",
+    # CRM-Q17a-1: the fill rank names the fields of the old setup.
+    "crm_field_fill",
     # CRM-C4a: the sections of the field studio. The fields go below.
     "crm_field_sections",
     # CRM-C6a: the lead-conversion mapping names the fields that go below.
@@ -299,9 +302,18 @@ async def get_crm_settings(
 
 
 class CrmModeModel(BaseModel):
-    """The mode alone. It holds nothing else, so any member may read it."""
+    """The mode, and the source's names of the core entities. It holds no
+    access rule, so any member may read it."""
 
     mode: str | None = None
+    #: CRM-Q17a-1 (§18.9.1, D95.2 as amended 2026-10-15): in Mirror mode, the
+    #: source's plural and singular label of each core entity, by API slug
+    #: (``contacts`` → "Existing Sites"). Left OUT of the body in Native mode,
+    #: with no source profile, or outside ``CRM_FILL_RANK_ORGS``, so such an
+    #: org reads ``{"mode": …}`` as before (``test_crm_aggregate_r8.py``).
+    labels: dict[str, EntityLabel] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
 
 
 @router.get("/mode", response_model=CrmModeModel)
@@ -312,12 +324,16 @@ async def get_crm_mode(
 
     ``GET /crm/settings`` stays admin only, because it names the access
     groups. An agent run reads this route as the member, to drop the record
-    write tools in Mirror mode. No row reads as mode NULL.
+    write tools in Mirror mode. No row reads as mode NULL. It is also the one
+    route of the source labels (CRM-Q17a-1 item 6).
     """
     org = _organization(user)
     async with _tenant_session() as db:
         row = await read_settings(db, org)
-    return CrmModeModel(mode=getattr(row, "mode", None) if row is not None else None)
+        labels = await source_labels(db, org)
+    return CrmModeModel(
+        mode=getattr(row, "mode", None) if row is not None else None, labels=labels,
+    )
 
 
 @router.patch(

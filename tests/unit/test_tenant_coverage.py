@@ -73,12 +73,55 @@ def test_every_table_is_scoped_or_exempt_with_a_reason() -> None:
 def test_exemptions_are_deliberate_and_few() -> None:
     """A growing exemption list is how tenant isolation quietly stops meaning
     anything. This is a tripwire, not a hard limit — raise it *in a PR that
-    explains why*, never to make a build green."""
+    explains why*, never to make a build green.
+
+    Raised 15 → 16 by WS-17 EM-G11f1c (migration 276). The org purge writes
+    ``email_detached_purges`` in the transaction that deletes the tenant, so
+    each row outlives its tenant and no session can bind it. The test below
+    pins that entry and its reason."""
     gen = _generator()
-    assert len(gen.EXEMPT) <= 15, (
+    assert len(gen.EXEMPT) <= 16, (
         f"{len(gen.EXEMPT)} exempt tables. Each one is a table with no tenant "
         "isolation. Justify the growth explicitly."
     )
+
+
+def test_the_detached_purge_table_is_exempt_with_its_reason() -> None:
+    """WS-17 EM-G11f1c (``email_app_master_plan.md`` §12.3.13.9.2). The org
+    purge deletes the tenant in the transaction that writes each row of
+    ``email_detached_purges``. So the table is RLS-EXEMPT, with the reason
+    that its tenant no longer exists, and it carries no ``organization_id``
+    for the generated phases to scope. The migration revokes PUBLIC and the
+    Supabase roles, because a table with no policy is open to any role with
+    a grant."""
+    gen = _generator()
+    assert "email_detached_purges" in gen.discover_tables()
+    reason = gen.EXEMPT.get("email_detached_purges", "")
+    assert "tenant no longer exists" in reason
+    assert "email_detached_purges" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "email_detached_purges" not in policies
+    [migration] = [
+        p for p in (_REPO / "infra" / "postgres").glob("[0-9]*_*.sql")
+        if "CREATE TABLE IF NOT EXISTS email_detached_purges"
+        in p.read_text(encoding="utf-8")
+    ]
+    body = migration.read_text(encoding="utf-8")
+    create = body.split("CREATE TABLE IF NOT EXISTS email_detached_purges", 1)[1]
+    assert "organization_id" not in create.split(");", 1)[0]
+    assert "REVOKE ALL ON TABLE email_detached_purges FROM PUBLIC;" in body
+    assert "ARRAY['anon', 'authenticated', 'service_role']" in body
+    # Fix round 1 (security review): the app role has NO grant on the table.
+    # Three SECURITY DEFINER functions are the only way in.
+    assert "REVOKE ALL ON TABLE email_detached_purges FROM acb_app;" in body
+    assert "ON TABLE email_detached_purges TO" not in body, "a role got the table"
+    for fn in ("record_detached_purges(uuid)", "claim_detached_purge(double precision)"):
+        assert f"REVOKE ALL ON FUNCTION public.{fn} FROM PUBLIC;" in body
+        assert f"GRANT EXECUTE ON FUNCTION public.{fn} TO acb_app;" in body
+    assert len(re.findall(
+        r"SECURITY DEFINER\s+SET search_path = pg_catalog, pg_temp", body)) == 3
 
 
 def test_the_pending_ask_table_is_tenant_scoped() -> None:
@@ -230,6 +273,20 @@ def test_the_reach_tables_are_tenant_scoped(table: str) -> None:
         encoding="utf-8",
     )
     assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
+def test_the_fill_rank_table_is_tenant_scoped() -> None:
+    """WS-53 CRM-Q17a-1 (``crm_platform.md`` §18.9.3 item 3). ``crm_field_fill``
+    holds how full each field of one organization's CRM is. It must never be
+    exempt, and the committed policy phase must carry it (R5)."""
+    gen = _generator()
+    assert "crm_field_fill" in gen.discover_tables()
+    assert "crm_field_fill" not in gen.EXEMPT
+    assert "crm_field_fill" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE crm_field_fill FORCE  ROW LEVEL SECURITY" in policies
 
 
 @pytest.mark.parametrize(

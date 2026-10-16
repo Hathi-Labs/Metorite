@@ -49,6 +49,34 @@ nothing; the thing nobody wrote down costs a session.
 ## The shape of an entry
 
 ```
+### H-335 · Finish the staging box: DNS, two OAuth clients, one sudo run · [OWNER]
+- **Check:** `curl -s https://api.dev.metorite.com/version` answers a `sha` equal
+  to `git rev-parse origin/staging`. If it does, delete this entry.
+- **Why:** WS-38 phase 4. The code that makes the dev box the staging box is on
+  `main` (`specs/staging_and_daily_release.md` §5.11). Four steps need the owner,
+  because they are outside accounts and root on the dev box.
+- **Do this (owner), in order:**
+  1. DNS: add `A` records `dev` and `api.dev`, to `187.127.179.143`.
+  2. Make one Google OAuth client and one Microsoft Entra app for staging.
+     The redirect URIs are `https://dev.metorite.com/api/auth/callback/google`
+     and `https://dev.metorite.com/api/auth/callback/microsoft-entra-id`.
+  3. On the Customer Console, make the `Metorite Staging` organization with a
+     small credit cap, and copy its `cc_live_` key.
+  4. On the dev box, write those five values to `/root/staging.secrets` as
+     `NAME=VALUE` lines. The names are in the header of
+     `deploy/hostinger/bootstrap_staging.sh`. Then run:
+     `sudo bash /home/dev/Metorite/deploy/hostinger/bootstrap_staging.sh --secrets /root/staging.secrets`
+- **Then (agent):** add the key line that the bootstrap prints to
+  `/home/acb/.ssh/authorized_keys` on the production box. Add
+  `Match User acb` / `AllowStreamLocalForwarding no` to its sshd_config, run
+  `sshd -t`, then reload ssh. Set
+  `STAGING_EXPORT_SLUGS=default,fracktalworks,hathi-labs-llp,smoke-chat` in the
+  production `.env`. Wait for one nightly backup, or run it, and then
+  `sudo systemctl start acb-staging-refresh.service` on the dev box. Report each
+  production act in the same message (CLAUDE.md §3a rule 2).
+- **Authority:** `specs/staging_and_daily_release.md` §5.10 and §5.11
+- **Added:** 2026-10-16 · WS-38 staging session
+
 ### H-283 · Prove the first `credit_draw` row on production · [AGENT]
 - **Check:** on the box, query the Console database:
   `SELECT count(*), max(created_at) FROM credit_draw;`. A count above zero
@@ -5727,7 +5755,7 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** R5 · `specs/my_day_feed.md` §16 MD-3d (what the build found)
 - **Added:** 2026-10-15 · MD-3d build · rewritten 2026-10-16, MD-3d review
 
-### H-335 · W10: the chat's unmount save can copy mail into Mem0, so WS-7 keeps Mem0 off · [AGENT]
+### H-336 · W10: the chat's unmount save can copy mail into Mem0, so WS-7 keeps Mem0 off · [AGENT]
 - **Check:** run the two commands. Either one closes this entry.
   1. `git grep -c "run_holds_mail" -- apps/services/gateway/gateway/routes/memory.py`
      gives a count: the save route asks the mail predicate.

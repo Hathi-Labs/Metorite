@@ -2544,6 +2544,8 @@ RESET_TABLES: tuple[str, ...] = (
     "crm_field_sections",
     # CRM-C6a: the lead-conversion mapping names the fields above.
     "crm_convert_mappings",
+    # CRM-Q17a-1: the fill rank counts the records and fields above.
+    "crm_field_fill",
 )
 
 #: What the start over keeps: the access rule and the mode row, the saved

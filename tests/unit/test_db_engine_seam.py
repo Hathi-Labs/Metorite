@@ -742,6 +742,16 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "It lists the RLS-EXEMPT `organization` table, so it does not go "
         "blind. Every purge-row read and write after it binds one "
         "organization with `tenant_session`",
+    ("apps/services/gateway/gateway/routes/email/memory_purge.py",
+     "_detached_session"):
+        "WS-17 EM-G11f1c: the one session of the RLS-EXEMPT "
+        "`email_detached_purges` (migration 276). The org purge writes each "
+        "row in the transaction that deletes the tenant, so no session can "
+        "bind that tenant. The app role has no grant on the table. The "
+        "sweeper runs only the statements of `_DETACHED_STORE` here, and "
+        "each one calls a SECURITY DEFINER function of migration 276. "
+        "`test_email_mailbox_purge_durable.py` pins the one caller and "
+        "each statement",
 }
 
 

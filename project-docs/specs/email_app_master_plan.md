@@ -13885,8 +13885,8 @@ connect is the precedent (`src/app/whatsapp/connect/page.tsx:340`), and
 | PR-G6 | **EM-G11e** — UMCC: the detector, dark | 4 | 🟢 AGENT-SAFE build. 🔴 OWNER-GATE for the vendor and the API (Q-GM-9). 🔴 `enforcement-flip` for `EMAIL_INJECTION_SCAN` | M, about 450 | §12.3.13.8 |
 | PR-G7 | **EM-G11f1** — one mailbox teardown, with the revoke and the filters. ✅ Merged NARROWED #1006 (2026-10-14) | 6 | 🟢 AGENT-SAFE · security review · R8 | M, about 550 | §12.3.13.9 |
 | PR-G8 | **EM-G11f2** — a durable purge, and a fence on each child. ✅ Merged NARROWED #1020 (2026-10-14), migration 264 | 6 | 🟢 AGENT-SAFE · R8 · one migration | M, about 500 | §12.3.13.9 |
-| PR-G7b | **EM-G11f1b** — the teardown in the member purge, and the Outlook rules. 🔨 Built, not merged (2026-10-16, branch `gmail-member-purge`) | 6 | 🟢 AGENT-SAFE · security review · R8 · live for Outlook | M, about 550 | §12.3.13.9.2 |
-| PR-G7c | **EM-G11f1c** — the teardown in the org purge, and a purge record that outlives the org. 📝 Specified (2026-10-16) | 6 | 🟢 AGENT-SAFE · R8 · one migration · security review | M, about 450 | §12.3.13.9.2 |
+| PR-G7b | **EM-G11f1b** — the teardown in the member purge, and the Outlook rules. ✅ Merged #1089 (2026-10-16) | 6 | 🟢 AGENT-SAFE · security review · R8 · live for Outlook | M, about 550 | §12.3.13.9.2 |
+| PR-G7c | **EM-G11f1c** — the teardown in the org purge, and a purge record that outlives the org. 🔨 Built, not merged (2026-10-16, branch `gmail-org-purge`, migration 276) | 6 | 🟢 AGENT-SAFE · R8 · one migration · security review | M, about 450 | §12.3.13.9.2 |
 | PR-G8b | **EM-G11f3** — no copy of mail in a chat memory store, and no email chat route with no client. 🔨 Built, not merged (2026-10-16, branch `gmail-chat-copies`) | 6 | 🟢 AGENT-SAFE · security review. `deploy-write` for one line of `deploy.sh` (granted). 🔴 Merges before the WS-7 memory flips | M, about 400 added and 650 deleted | §12.3.13.9.1 |
 | PR-G9 | **EM-G11g1** — envelope encryption in the key store, dark | 5 | 🟢 AGENT-SAFE build · security review. 🔴 OWNER-GATE for KMS billing (Q-GM-8). 🔴 `enforcement-flip` for `KEY_STORE_ENVELOPE` | M, about 550 | §12.3.13.10 |
 | PR-G10 | **EM-G11g2** — the rewrap job and the rotation | 5 | 🟢 AGENT-SAFE · R8. 🔴 `deploy` to run the job on production | M, about 450 | §12.3.13.10 |
@@ -15086,7 +15086,7 @@ returned GO-NARROWED at `260c14705`: items 1 to 8 are the scope, and item 9 is a
 check after the merge. Its four blockers B1 to B4 are in the text below. Verified against code
 on 2026-10-16, at `origin/main` `0a14f7552`. A spec-auditor found that no section covered these
 copies. H-308 cited §12.3.13.9, and §12.3.13.9 did not cover them. This section is the one owner
-of the work (`work_plan.md` §1, point 6). H-308 linked here. PR-G8b deleted it, because its Check passes, and H-335 holds W10.
+of the work (`work_plan.md` §1, point 6). H-308 linked here. PR-G8b deleted it, because its Check passes, and H-336 holds W10.
 
 **Paths.** `GW` is as in §12.3.13.2. `GWP` is `apps/services/gateway/gateway/`, and `CP` is
 `workbench/control_plane/src/`.
@@ -15346,7 +15346,7 @@ agent and the trace of a live store. `deploy-write` for the line of `deploy.sh`,
   drop is the only guard.
 - **W10 stays open, and it blocks the Mem0 flip.** The unmount save of `AgentChat` reaches
   `POST /memory/{scope}/add` with no session that the server bound, so the route cannot read the
-  mark. HANDOFF H-335 holds it, and WS-7 must not turn Mem0 on while H-335 is open.
+  mark. HANDOFF H-336 holds it, and WS-7 must not turn Mem0 on while H-336 is open.
 - `chat_fold.persist_final_assistant_message` takes `holds_mail`. With `None` it asks the
   predicate under the run's tenant, so the restart sweep (`chat_recovery.py`) drops the trace
   body of a mail run too.
@@ -15361,10 +15361,12 @@ agent and the trace of a live store. `deploy-write` for the line of `deploy.sh`,
 
 ###### 12.3.13.9.2 EM-G11f1b and EM-G11f1c — the teardown in the member purge and the org purge (PR-G7b, PR-G7c)
 
-**Status.** 🔨 PR-G7b built, not merged (2026-10-16, branch `gmail-member-purge`, audit
-GO-NARROWED at `260c14705`). Items 1 to 5 are built, with acceptance 1 to 7 and 10. Acceptance 1
-covers two paths, because the org purge is PR-G7c. Item 11 waits for a live Outlook check. 📝 PR-G7c
-is specified and not built. This section closes the open points of the f1 and f2 blocks: the two
+**Status.** ✅ PR-G7b merged (#1089, 2026-10-16). Items 1 to 5 are built, with acceptance 1 to 7
+and 10. Item 11 waits for a live Outlook check. 🔨 PR-G7c built, not merged (2026-10-16, branch
+`gmail-org-purge`, audit GO-NARROWED). Its items 1 to 5 are built, with acceptance 1, 4 and 5 for
+the org door, and acceptance 8 and 9 on R8. Migration 276 holds the detached table. The security
+review gave APPROVE with three P2 findings, and fix round 1 closes all three, with the org row lock
+(as-built block below). Item 12 waits for the owner. This section closes the open points of the f1 and f2 blocks: the two
 purges, the Outlook rules and `test_three_paths_call_one_teardown`.
 
 **Paths.** `GW` is as in §12.3.13.2.
@@ -15483,10 +15485,36 @@ The rules of the composition:
   The callback writes one row for each mailbox, in the transaction of the org delete. Each tick of
   the sweeper sweeps the table once, after the organizations, with the same claim, lease and
   back-off.
+- **The open purge rows of the org move too** (decided at build, 2026-10-16). The cascade also
+  deletes each OPEN `email_mailbox_purges` row of the org: a disconnect or a member purge whose
+  Mem0 passes did not finish. The callback copies each one into the detached table, with its
+  passes and its tries, in the same transaction. Without that copy, an org purge loses each
+  purge that the org still owes, and with Mem0 off that is every one.
 - **Why the detached table has no RLS.** The tenant of each row no longer exists, so no session can
   bind it. The table goes into `gen_tenant_migration.EXEMPT` with that reason (R5 (a)). It holds an
-  address and a mailbox id, and no mail. Its grants follow migration 263: no PUBLIC, no Supabase
-  role, and `acb_app` only.
+  address and a mailbox id, and no mail. No PUBLIC grant, no Supabase role, and no `acb_app` grant
+  on the table (as built, fix round 1).
+- **As built, fix round 1 (security review, 2026-10-16).** The sweeper deletes the Mem0 key that a
+  row names, with no tenant bound. So a row must never name a live mailbox, and the database holds
+  that rule, not the app code:
+  1. No app role has a grant on the table. Three SECURITY DEFINER functions of migration 276 are
+     the only way in, each with a fixed `search_path` and EXECUTE to `acb_app` only.
+  2. `record_detached_purges(org)` reads rows only from `email_accounts` and the open
+     `email_mailbox_purges` of that org. It refuses an org that the transaction does not bind. The
+     purge binds the org before its callback, so the owner of the function reads the same rows
+     under FORCE RLS. An owner that bypasses RLS still reads one org, because each statement
+     names it.
+  3. A deferred trigger fails the COMMIT while the org of a new row exists. So a row commits only
+     with the delete of its org, and each mailbox of that org goes in the same cascade.
+  4. `claim_detached_purge` and `settle_detached_purge` change only the state of a row. A row that
+     closes (`done` or `refused`) gets an empty `owner_email`. The purge receipt lists the table
+     in `kept`.
+  5. `_detached_session` stays the ONE unbound session, with `run_tick` as its one caller. Each of
+     its statements calls one of those functions and names no table.
+     `TestTheUnboundSessionIsPinned` fences both.
+  6. The callback locks the org row first (`SELECT ... FOR UPDATE`). A mailbox connect waits on
+     its foreign key and then fails, so no mailbox joins the org between the plan read and the
+     cascade.
 - ⚠️ This is a second purge table, and it is not a second way. The same sweeper, the same pass and
   the same SQL shape serve both tables. Only the store differs, because the tenant is gone.
 

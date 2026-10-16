@@ -335,6 +335,174 @@ class TestTheLeaseCoversOnePass:
         assert ledger.taken[:2] == ["org-a", "org-b"], "the orgs did not take turns"
 
 
+class TestTheDetachedRowsTakeATurn:
+    """Rule 9 (EM-G11f1c, §12.3.13.9.2). The detached table is one more lane
+    of the same sweep, after the organizations of each round."""
+
+    async def test_the_detached_lane_comes_after_the_orgs(self, monkeypatch):
+        ledger = _ClaimLedger({"org-a": [_due_row(), _due_row()]})
+        detached = [_due_row()]
+
+        def _open_detached() -> Any:
+            class _DB:
+                async def execute(self, stmt: Any, params: dict[str, Any]) -> Any:
+                    sql = " ".join(str(stmt).split())
+                    assert "email_mailbox_purges" not in sql, (
+                        "the detached lane touched a tenant table")
+                    if "public.claim_detached_purge(" in sql:
+                        assert "org" not in params
+                        ledger.events.append("claim")
+                        row = detached.pop(0) if detached else None
+                        if row is not None:
+                            ledger.taken.append("detached")
+                        return SimpleNamespace(fetchone=lambda: row)
+                    assert sql.startswith("SELECT public.settle_detached_purge(")
+                    ledger.events.append("record")
+                    return SimpleNamespace(fetchone=lambda: None)
+
+            @contextlib.asynccontextmanager
+            async def _cm():
+                yield _DB()
+
+            return _cm()
+
+        async def _pass(_scope: str, _shown: str, _phase: str) -> int:
+            return 0
+
+        monkeypatch.setattr(memory_purge, "mem0_on", _mem0_on)
+        monkeypatch.setattr(memory_purge, "_one_pass", _pass)
+        await memory_purge.sweep_mailbox_purges(
+            ["org-a"], open_session=ledger.session, open_detached=_open_detached)
+        assert ledger.taken == ["org-a", "detached", "org-a"]
+
+    async def test_the_tick_sweeps_the_detached_rows(self, monkeypatch):
+        seen: dict[str, Any] = {}
+
+        async def _orgs() -> list[str]:
+            return ["org-a"]
+
+        async def _sweep(org_ids: Any, **kw: Any) -> int:
+            seen.update(kw, orgs=list(org_ids))
+            return 0
+
+        monkeypatch.setattr(memory_purge, "mem0_on", _mem0_on)
+        monkeypatch.setattr(memory_purge, "_organization_ids", _orgs)
+        monkeypatch.setattr(memory_purge, "sweep_mailbox_purges", _sweep)
+        await memory_purge.run_tick()
+        assert seen["orgs"] == ["org-a"]
+        assert seen.get("open_detached") is memory_purge._detached_session, (
+            "the tick does not sweep the detached rows")
+
+
+_MEMORY_PURGE = _REPO / "apps/services/gateway/gateway/routes/email/memory_purge.py"
+
+#: The only functions that a statement of the detached store may call. Each is
+#: a SECURITY DEFINER function of migration 276.
+_DETACHED_FUNCTIONS = ("public.claim_detached_purge(", "public.settle_detached_purge(")
+
+
+def _detached_session_violations(source: str) -> list[str]:
+    """Fix round 1, item 2. The ONE unbound session of the sweeper is pinned:
+    one reference outside its own body, in ``run_tick``, as ``open_detached``.
+    Its body runs no statement. The lane that it opens uses the detached
+    store only."""
+    tree = ast.parse(source)
+    problems = []
+    refs: list[str] = []
+
+    def visit(node: ast.AST, owner: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            name = owner
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                name = child.name
+            if isinstance(child, ast.Name) and child.id == "_detached_session" \
+                    and owner != "_detached_session":
+                refs.append(owner)
+            visit(child, name)
+
+    visit(tree, "<module>")
+    if refs != ["run_tick"]:
+        problems.append(f"_detached_session is referenced from {refs}, not once from run_tick")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "run_tick":
+            kws = [k for c in ast.walk(node) if isinstance(c, ast.Call)
+                   for k in c.keywords
+                   if isinstance(k.value, ast.Name) and k.value.id == "_detached_session"]
+            if [k.arg for k in kws] != ["open_detached"]:
+                problems.append("run_tick passes _detached_session other than as open_detached")
+        if (isinstance(node, ast.AsyncFunctionDef) and node.name == "_detached_session"
+                and any(isinstance(c, ast.Attribute) and c.attr == "execute"
+                        for c in ast.walk(node))):
+            problems.append("_detached_session runs a statement itself")
+        if isinstance(node, ast.FunctionDef) and node.name == "_detached_lane":
+            if not any(isinstance(c, ast.Name) and c.id == "_DETACHED_STORE"
+                       for c in ast.walk(node)):
+                problems.append("the detached lane does not use the detached store")
+            if any(isinstance(c, ast.Name) and c.id == "_TENANT_STORE"
+                   for c in ast.walk(node)):
+                problems.append("the detached lane uses the tenant store")
+    return problems
+
+
+def _detached_statement_violations(statements: dict[str, str]) -> list[str]:
+    """Each statement of the detached store calls one migration-276 function
+    and names no table: no FROM a table, no write, no other function."""
+    problems = []
+    for name, sql in statements.items():
+        flat = " ".join(sql.split())
+        calls = [fn for fn in _DETACHED_FUNCTIONS if fn in flat]
+        if len(calls) != 1 or not flat.startswith("SELECT "):
+            problems.append(f"{name} does not call exactly one detached function")
+        rest = flat
+        for fn in _DETACHED_FUNCTIONS:
+            rest = rest.replace(fn, "")
+        if re.search(r"\b(email_\w+|organization|INSERT|UPDATE|DELETE|JOIN)\b", rest):
+            problems.append(f"{name} names a table or a write")
+        if flat.count(" FROM ") > (1 if "claim" in name else 0):
+            problems.append(f"{name} reads from a table")
+    return problems
+
+
+class TestTheUnboundSessionIsPinned:
+    """Fix round 1, item 2 (security review). ``_detached_session`` is the
+    one unbound session of the sweeper. It must stay one call site, and every
+    statement it runs must call a SECURITY DEFINER function of migration 276
+    and name no table."""
+
+    def test_one_caller_and_function_calls_only(self):
+        assert _detached_session_violations(
+            _MEMORY_PURGE.read_text(encoding="utf-8")) == []
+        store = memory_purge._DETACHED_STORE
+        assert _detached_statement_violations({
+            "claim": store.claim_sql, "pass_done": store.pass_done_sql,
+            "pass_failed": store.pass_failed_sql, "refused": store.refused_sql,
+        }) == []
+
+    def test_the_check_can_fail(self):
+        source = _MEMORY_PURGE.read_text(encoding="utf-8")
+        tick = "    return await sweep_mailbox_purges(await _organization_ids(),\n"
+        assert tick in source
+        second = source.replace(
+            "async def _organization_ids() -> list[str]:\n",
+            "async def _organization_ids() -> list[str]:\n    _ = _detached_session\n")
+        assert "not once from run_tick" in _detached_session_violations(second)[0]
+        wrong_store = source.replace(
+            "    return _Lane(DETACHED_LANE, _DETACHED_STORE, open_detached,",
+            "    return _Lane(DETACHED_LANE, _TENANT_STORE, open_detached,")
+        assert "the detached lane uses the tenant store" in (
+            _detached_session_violations(wrong_store))
+        assert _detached_statement_violations({
+            "claim": "SELECT owner_email FROM email_detached_purges",
+            "refused": "UPDATE email_detached_purges SET state = 'refused'",
+            "pass_done": "SELECT public.settle_detached_purge(:id) FROM organization",
+        }) == ["claim does not call exactly one detached function",
+               "claim names a table or a write",
+               "refused does not call exactly one detached function",
+               "refused names a table or a write",
+               "pass_done names a table or a write",
+               "pass_done reads from a table"]
+
+
 class TestOneMem0BuildAtATime:
 
     async def test_two_callers_at_once_build_one_client(self, monkeypatch):
@@ -1012,16 +1180,21 @@ class TestEachChildIsEmptyAfterADisconnect:
         assert _edge_violations(edges) == [
             "tmp_child.account_id -> email_accounts is ON DELETE n, not CASCADE"]
 
-    @pytest.mark.parametrize("how", ["disconnect", "member_purge"])
+    @pytest.mark.parametrize("how", ["disconnect", "member_purge", "org_purge"])
     async def test_each_child_is_empty_after_a_disconnect(
         self, promoted, app_engine, r8_doubles, monkeypatch, how,  # noqa: F811
     ):
         """EM-G11f1b (§12.3.13.9.2) adds the member purge as a second delete
-        of a mailbox. PR-G7c adds the org purge."""
+        of a mailbox. PR-G7c adds the org purge, on an org of its own, and its
+        purge row is a detached row that outlives the org."""
         from tests.unit.test_email_purge_wiring import (
             OP_TOKEN,
+            detached_rows,
+            drop_org,
             member_purge,
+            org_purge,
             seed_member,
+            seed_org,
             wipe,
         )
 
@@ -1029,11 +1202,14 @@ class TestEachChildIsEmptyAfterADisconnect:
         p = promoted
         owner = f"member-{uuid.uuid4().hex[:8]}@em-g11f2.test"
         keeper = f"keeper-{uuid.uuid4().hex[:8]}@em-g11f2.test"
+        org, slug = p.org_b, None
         if how == "member_purge":
             seed_member(p.admin_engine, p.org_b, keeper, owner=True)
             seed_member(p.admin_engine, p.org_b, owner)
-            monkeypatch.setenv("GATEWAY_OPERATOR_TOKEN", OP_TOKEN)
-        acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner)
+        if how == "org_purge":
+            org, slug = seed_org(p.admin_engine, uuid.uuid4().hex[:8])
+        monkeypatch.setenv("GATEWAY_OPERATOR_TOKEN", OP_TOKEN)
+        acc = _seed_account(p.admin_engine, org=org, owner=owner)
         with p.admin_engine.begin() as c:
             msg = str(c.execute(text(
                 "INSERT INTO email_messages (account_id, provider_message_id, "
@@ -1043,10 +1219,10 @@ class TestEachChildIsEmptyAfterADisconnect:
                 {"a": acc, "pm": f"pm-{uuid.uuid4().hex[:12]}",
                  "f": json.dumps({"email": "s@sender.test"}),
                  "t": json.dumps([{"email": "to@em-g11f2.test"}]),
-                 "o": p.org_b}).scalar_one())
+                 "o": org}).scalar_one())
             children = list(c.execute(text(_CHILDREN_SQL)).fetchall())
         ids = {"email_accounts": acc, "email_messages": msg}
-        seeder = _Seeder(p.admin_engine, p.org_b, ids)
+        seeder = _Seeder(p.admin_engine, org, ids)
         seeded = {table: seeder.fill(table)
                   for table in sorted({r.child for r in children} - {"email_messages"})}
         seeded["email_messages"] = {"id": msg}
@@ -1076,13 +1252,21 @@ class TestEachChildIsEmptyAfterADisconnect:
                 assert before[(table, "<own key>")] == 1, f"the key of {table} finds no row"
             if how == "disconnect":
                 await _disconnect_with_no_task(p, monkeypatch, owner, acc)
-            else:
+            elif how == "member_purge":
                 await member_purge(p, owner)
+            else:
+                await org_purge(p, slug)
             after = _counts()
             left = {k: n for k, n in after.items() if n}
             assert left == {}, f"a child kept rows of the mailbox: {left}"
-            assert _purge_row(p.admin_engine, acc) is not None, (
-                "the cascade deleted the purge row")
+            if how == "org_purge":
+                assert [str(r.account_id) for r in detached_rows(p.admin_engine, org)] == [
+                    acc], "the org purge left no detached purge row"
+            else:
+                assert _purge_row(p.admin_engine, acc) is not None, (
+                    "the cascade deleted the purge row")
         finally:
             _wipe(p.admin_engine, owner, acc)
             wipe(p.admin_engine, keeper, owner)
+            if how == "org_purge":
+                drop_org(p.admin_engine, org)
