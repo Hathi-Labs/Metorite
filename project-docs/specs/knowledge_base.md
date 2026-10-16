@@ -38,7 +38,9 @@ behind `COMPANY_SEARCH_ENABLED`, `KNOWLEDGE_ENABLED` and `KNOWLEDGE_ORGS`).
 `acb_skills/knowledge_tools.py` holds `read_page` and `list_spaces`, and the
 orchestrator holds them beside `search_company`. `acb_skills/knowledge_manifest.py`
 lists the 14 Knowledge routes with their class. The client refuses a route
-that the manifest does not give to the tool. The executor builds the index
+that the manifest does not give to the tool.
+
+The executor builds the index
 block of §6.5 for the orchestrator from `GET /knowledge/spaces`, which now
 returns `published_count`. Both the stream path and the batch path of
 WhatsApp read it, and a shared room gets no block. `GET /knowledge/pages/{id}`
@@ -600,7 +602,8 @@ A shared room gets no block, because the block lists the spaces of one member.
 **Where it is built (KB-4a audit, 2026-10-16).** The orchestrator's executor
 builds it in `_context_preamble_parts`, on the server, for the orchestrator
 only. It is not built in the browser, because the WhatsApp channel runs the
-same assistant with no browser. It sits after the Organisation and integrations lines.
+same assistant with no browser. It follows the Organisation and
+integrations lines.
 
 That part of the prompt comes after the cache break, so the block is paid on
 each turn. The 300-token cap and the rule "no pages, no block" keep that cost
