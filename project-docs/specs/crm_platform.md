@@ -29,11 +29,13 @@
 >
 > **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12). CRM-Q8, filters and saved views (2026-10-12, migration 250). The Deals board stages fix (2026-10-12, §18.5). CRM-Q10, a reconnect never freezes the mirror (2026-10-13, §18, a production hotfix). CRM-Q15, a Zoho module that the account turned off no longer stops the sync (2026-10-15, §18, a production hotfix). CRM-Q16, hold a module and sync one module on its own (2026-10-15, §18.8, migration 269). CRM-Q17a-1, the backend of the fill rank (2026-10-16, §18.9.3, migration 274). It is dark behind `CRM_FILL_RANK_ORGS`. CRM-Q23b, a dropped activity comes back once its module record is in (2026-10-16, §18.10, no migration).
 >
-> **Specified, not built:** CRM-Q17a to CRM-Q22, a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9). CRM-Q18-3 is not built.
+> **Specified, not built:** CRM-Q17a to CRM-Q22, a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9).
 >
 > **Built later:** CRM-Q18-1, the backend of one plan (2026-10-16, §18.9.6, migration 277). The versions of the Field map live in `crm_mapping_plans`, and `crm_field_rules` stays the live set.
 >
 > **Built later:** CRM-Q18-2, the Field map screen of the plan (2026-10-16, §18.9.6, no migration). A pick by hand goes into a draft, and one press approves it.
+>
+> **Built later:** CRM-Q18-3, a column that is empty opens (2026-10-16, §18.9.6, migration 280, not merged). A fixed column with a fill of 0 takes a field rule, and the rule keeps the mark `opened_empty`. It is dark behind `CRM_FILL_RANK_ORGS`.
 >
 > **Built later:** CRM-Q5, the data the mirror loses (2026-10-12). Migration 249 adds `crm_deal_contacts.ext_source`.
 >
@@ -2070,6 +2072,10 @@ against code at `origin/main` `c4bef9ec0`.
 CRM-Q18-2, with no migration. The card shows the plan only where
 CRM-Q18-1 serves it, so it is dark behind `CRM_MIRROR` too.
 
+**Status (2026-10-16, CRM-Q18-3).** The branch `crm-q18-3-fill` builds
+CRM-Q18-3, with migration 280. A fixed column opens only for an org on
+`CRM_FILL_RANK_ORGS`, so it is dark until that flip.
+
 **Design record.** The owner's design page is "Source Mapping Studio" v4.
 Its link is https://claude.ai/artifact/QcBY3s2ATxo3Kb9QCpR3Zr. This section
 is the build contract, and it wins where the two differ.
@@ -2746,6 +2752,33 @@ edits `routes/crm/core.py`.
 
 Verify CRM-Q18 with `uv run pytest tests/unit/test_crm_field_rules.py tests/unit/test_crm_field_rules_r8.py tests/unit/test_crm_field_map_ai.py tests/unit/test_crm_upsert_from_source_fence.py tests/unit/test_crm_map_plan*.py -q`
 on the R8 database, with no test skipped.
+
+**Built as (2026-10-16).** Branch `crm-q18-3-fill`, migration 280. No flag of
+its own: a fixed column opens only for an org on `CRM_FILL_RANK_ORGS`.
+
+- Migration 280 adds `crm_field_rules.opened_empty BOOLEAN NULL`, with no
+  default. NULL means false. It is expand-only and changes no row.
+- `mapping.rule_problem` and `mapping.legal_columns` take the empty keys as
+  the argument `empty`. A fixed column in `empty` opens, also when the layouts
+  are not read yet. The test of the type still applies. `mapping.opened_by_empty`
+  is true only when `empty` opens a column that the layouts keep closed.
+  `mapping.rule_stale_reason` takes `opened`.
+- `field_rules._empty` reads `fill_rank.empty_columns` in the tenant session
+  of the route. The GET, the POST, the approve of the PATCH, the proposer
+  and `mapping_plans.commit` call it. `_check_legal` returns the mark.
+- An item that carries the mark keeps it, also when the layouts open its
+  column later. The test of the type and "the field is gone" still apply.
+- `mapping_plans._put_rule` is the one rule of a put. On the same column the
+  item keeps its mark. A new column clears it, and `_checked` then runs the
+  empty test again. The draft route uses it too.
+- A reject leaves the mark on the rejected row. A later approve of that row
+  runs the empty test again, because the rule left the snapshot.
+- Fences: 9 unit tests in `test_crm_field_rules.py` and 7 R8 tests in
+  `test_crm_field_rules_r8.py`. 17 mutations, one for each key rule,
+  each made a fence fail.
+
+Not in this slice: the Field map card shows no sign that an empty fill
+opened a column. `FieldMapTarget` has no field for it.
 
 **CRM-Q19 · Executor.** Done when:
 
