@@ -490,6 +490,9 @@ Chunking follows the source kind, as §7 of the agent architecture says.
 | A file or a document | The extracted text splits on blank-line paragraphs into about 500-token chunks with a 60-token overlap. A spreadsheet splits per sheet, in row groups, with the header row repeated |
 | A table in a page | One chunk per table, header repeated, capped at 40 rows per chunk |
 
+A page indexes at most 512 chunks. The rest of a page that long is not
+indexed, so one body cannot write thousands of rows in one transaction.
+
 A chunk's `content_sha` is the hash of its text. Re-indexing a page deletes
 the chunks whose sha is gone and embeds only the new ones. So a one-word
 edit costs one embedding call, not thirty.
@@ -526,7 +529,7 @@ over HTTP to `{litellm_base_url}/v1/embeddings` with the platform bearer,
 the same door `email_embeddings.py` uses, with `text-embedding-3-small` at
 1536 dimensions. It imports no `litellm` and no `openai`, so
 `test_no_direct_ai_vendor_calls.py` holds. It sends the service token, because the
-gateway's `/v1/embeddings` authenticates with `get_current_user`, which
+gateway's `/v1/embeddings` is not public, and `require_authenticated`
 refuses the `/v1` key on production (H-329). When WS-45 S5 gives the Router an
 embedding door on `tier-embed`, that door moves, and `kb_index` changes
 nothing.

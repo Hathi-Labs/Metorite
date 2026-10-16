@@ -5631,9 +5631,9 @@ line — never reclaim a number by deleting the other entry.
   A hit in the request headers means this is open.
 - **Why.** `email_embeddings.py:80-112` posts to `{litellm_base_url}/v1/embeddings`
   with `Settings.llm_api_key`. On production `litellm_base_url` is the gateway
-  itself, and its `/v1/embeddings` route authenticates with
-  `get_current_user`. That accepts only the service token once
-  `GATEWAY_INTERNAL_TOKEN` is set (measured 2026-10-16). So every email
+  itself, and its `/v1/embeddings` route is not public. So the app-wide
+  `require_authenticated` refuses the `/v1` key once `GATEWAY_INTERNAL_TOKEN`
+  is set (measured 2026-10-16). So every email
   embedding would fail, and `email_embeddings` holds 0 rows. It stays hidden
   while `EMAIL_SEMANTIC_SEARCH_ENABLED` is off. WS-61 KB-3 met the same
   defect and sends the service token from `gateway/kb_index/embed.py`.
@@ -5643,6 +5643,21 @@ line — never reclaim a number by deleting the other entry.
   before the email flag turns on.
 - **Authority:** `specs/knowledge_base.md` §6.4, `specs/email_app_master_plan.md`
 - **Added:** 2026-10-16 · WS-61 KB-3
+
+### H-330 · Two quick edits of a page embed the same chunks twice · [AGENT]
+- **Check:** `rg -n "FOR UPDATE SKIP LOCKED|shas" apps/services/gateway/gateway/kb_index/index.py`.
+  No hit in `select_pending` or `embed_pending` means this is open.
+- **Why.** Each page write schedules one `embed_pending` job. Two saves inside
+  one embed round trip schedule two jobs, and both select the same chunks
+  with a NULL embedding. The `content_sha` guard in `write_vectors` keeps the
+  data right, so only the spend doubles. It matters once `KNOWLEDGE_EMBED`
+  names an org.
+- **Do this:** pass the new shas from `reindex_page` to the job and embed
+  only those, or claim the rows in `select_pending` with a short
+  `FOR UPDATE SKIP LOCKED`. Add an R8 test with two concurrent jobs that
+  counts the door calls.
+- **Authority:** `specs/knowledge_base.md` §6.2 and §6.4
+- **Added:** 2026-10-16 · WS-61 KB-3 review
 
 # DONE — deleted, not archived
 

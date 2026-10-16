@@ -175,3 +175,35 @@ def test_the_door_check_sees_each_shape() -> None:
         "    await aembedding(model='m', input=['x'])\n"
     )
     assert len(vendor_findings(src, "x.py")) == 5
+
+
+def test_the_embeddings_door_does_not_block_the_event_loop() -> None:
+    """KB-3 review, 2026-10-16. The gateway calls its own ``/v1/embeddings``
+    on each Knowledge search and publish. The OpenAI client is synchronous,
+    so the route must hand the call to a worker thread. A direct call would
+    stall the event loop for every tenant for one OpenAI round trip."""
+    import ast
+    from pathlib import Path
+
+    main = Path(__file__).resolve().parents[2] / "apps/services/gateway/gateway/main.py"
+    tree = ast.parse(main.read_text(encoding="utf-8"))
+    route = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "embeddings"
+    )
+    direct = [
+        n for n in ast.walk(route)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "create"
+        and isinstance(n.func.value, ast.Attribute)
+        and n.func.value.attr == "embeddings"
+    ]
+    assert not direct, "call client.embeddings.create through asyncio.to_thread"
+    threaded = [
+        n for n in ast.walk(route)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "to_thread"
+    ]
+    assert threaded, "the embeddings route must run the OpenAI call in a thread"

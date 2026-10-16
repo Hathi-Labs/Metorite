@@ -189,8 +189,8 @@ def test_the_door_is_the_gateway_with_the_service_token(monkeypatch: pytest.Monk
     req = door.requests[0]
     assert req["url"] == get_settings().litellm_base_url.rstrip("/") + "/v1/embeddings"
     assert req["json"] == {"model": "text-embedding-3-small", "input": ["a", "b"]}
-    # The gateway's /v1/embeddings authenticates with get_current_user, which
-    # refuses the /v1 key when GATEWAY_INTERNAL_TOKEN is set (production).
+    # The gateway's /v1/embeddings is not public. require_authenticated refuses
+    # the /v1 key when GATEWAY_INTERNAL_TOKEN is set (production).
     assert req["headers"] == {"Authorization": f"Bearer {get_settings().gateway_internal_token}"}
     assert get_settings().llm_api_key not in req["headers"]["Authorization"] or (
         get_settings().llm_api_key == get_settings().gateway_internal_token)
@@ -345,3 +345,11 @@ def test_at_most_two_chunks_for_each_page() -> None:
 def test_k_caps_the_answer() -> None:
     lexical = [_row(i, f"p{i}") for i in range(1, 20)]
     assert len(query_mod.fuse(lexical, [], k=3, today=TODAY)) == 3
+
+
+def test_a_page_indexes_at_most_max_chunks() -> None:
+    """KB-3 review: many tiny headed sections cannot write thousands of rows."""
+    from gateway.kb_index.chunk import MAX_CHUNKS, chunk_page
+
+    body = "\n".join(f"# Part {i}\nline {i}" for i in range(MAX_CHUNKS * 3))
+    assert len(chunk_page("Long", body)) == MAX_CHUNKS

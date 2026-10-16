@@ -73,9 +73,10 @@ def _vector(value: Any) -> list[float] | None:
 def _headers() -> dict[str, str]:
     """The service token, because the gateway calls its own route.
 
-    ``POST /v1/embeddings`` authenticates with ``get_current_user``, which
-    accepts the service identity token and refuses the ``/v1`` key once
-    ``GATEWAY_INTERNAL_TOKEN`` is set (measured on production, 2026-10-16).
+    ``POST /v1/embeddings`` is not a public route, so the app-wide
+    ``require_authenticated`` refuses a caller that ``get_current_user`` did
+    not resolve. That resolves the service identity token, and not the ``/v1``
+    key once ``GATEWAY_INTERNAL_TOKEN`` is set (production, 2026-10-16).
     This module is platform code that takes no model output, so it may hold
     the service token, as ``crm_tools.py`` does. With no token set, the call
     fails, and every vector is ``None``, which the caller reads as degraded.

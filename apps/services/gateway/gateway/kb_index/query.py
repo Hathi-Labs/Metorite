@@ -213,6 +213,11 @@ async def query(
 
     semantic: list[Any] = []
     if vector is not None:
+        # RLS and the visibility clause filter AFTER the HNSW scan, which
+        # returns about ef_search rows. An iterative scan keeps reading until
+        # the LIMIT is met, so a small org keeps its recall (pgvector 0.8,
+        # production has 0.8.2). SET LOCAL ends with the transaction.
+        await db.execute(text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
         semantic = list((await db.execute(
             text(f"SELECT {_COLUMNS}, "
                  "(c.embedding <=> CAST(:vec AS vector)) AS distance "

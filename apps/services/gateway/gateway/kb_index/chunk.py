@@ -37,6 +37,11 @@ CHARS_PER_TOKEN = 4
 #: The most body rows of a table in one chunk (§6.2).
 MAX_TABLE_ROWS = 40
 
+#: The most chunks one page indexes. A body of many tiny headed sections
+#: would otherwise write thousands of rows in one transaction, and a title
+#: edit would re-embed all of them. The rest of the page is not indexed.
+MAX_CHUNKS = 512
+
 #: Between two levels of a heading path.
 PATH_SEP = " > "
 
@@ -252,4 +257,4 @@ def chunk_page(
             add(section.path, part, {})
     if not out:
         add([(title or "").strip()] if (title or "").strip() else [], "", {})
-    return out
+    return out[:MAX_CHUNKS]
