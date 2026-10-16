@@ -80,6 +80,7 @@ from gateway.routes.crm.field_sql import (
     DATE_TYPES,
     FIELD_MEASURES,
     FIELD_PREFIX,
+    FieldRef,
     FieldScope,
     check_group,
     check_measure,
@@ -417,8 +418,88 @@ def _rounded(value: float | None) -> float | None:
     return None if value is None else round(value, 2)
 
 
-def _is_time_group(group_by: str | None, bucketed: bool) -> bool:
-    return bucketed or group_by in MONTH_GROUPS
+@dataclass
+class _Read:
+    """What the statements of one aggregate gave."""
+
+    values: dict[str | None, _Acc]
+    labels: dict[str, str]
+    order: dict[str, int]
+    measured: FieldRef | None
+    grouped: FieldRef | None
+
+
+def _is_timeout(exc: DBAPIError) -> bool:
+    """True when the LOCAL ``statement_timeout`` cancelled the statement."""
+    orig = getattr(exc, "orig", None)
+    code = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    return code == _QUERY_CANCELED or "statement timeout" in str(exc)
+
+
+async def _read(
+    db: Any, found: Entity | None, module: str | None, *,
+    measure: str, group_by: str | None, field: str | None,
+    group_field: str | None, bucket: str | None,
+    pairs: list[tuple[str, str]], params: ListParams, user: UserContext,
+) -> _Read:
+    """Every statement of one aggregate, in the caller's tenant session."""
+    await db.execute(text(_TIMEOUT_SQL), {"ms": str(STATEMENT_TIMEOUT_MS)})
+    scope: FieldScope | None = None
+    if module is not None:
+        _require_module(await mirrored_modules(db), module)
+        scope = await module_scope(db, module)
+        where = module_where(scope, module, pairs)
+        table, where_sql, bound = MODULE_TABLE, where.sql, dict(where.params)
+    else:
+        assert found is not None
+        if group_by == "created_month" and await is_mirror_mode(db, current_tenant()):
+            # The created date of a mirrored row is the import time (Q8).
+            raise HTTPException(status_code=422, detail={
+                "code": "created_range_mirror",
+                "message": "The created date of a synced record is not kept. "
+                           "Group by the updated month instead.",
+            })
+        query = await list_query(db, found, params, user)
+        table, where_sql, bound = found.table, query.where, dict(query.params)
+        if field or group_field:
+            scope = await core_scope(db, found.slug)
+    measured = check_measure(scope, field) if field and scope else None
+    grouped = check_group(scope, group_field, bucket) if group_field and scope else None
+    if grouped is not None and scope is not None:
+        group = group_sql(scope, grouped, bucket)
+        key_sql, label_sql = group.key, group.label
+        bound.update(group.params)
+    else:
+        key_sql = (MODULE_GROUPS if module is not None else GROUPS)[group_by or ""]
+        label_sql = "NULL"
+    if measure == "weighted":
+        values = await _weighted(db, key_sql, label_sql, where_sql, bound)
+    else:
+        value_sql, sum_sql, count_sql = MEASURES.get(measure, ""), "0", "0"
+        if measured is not None and scope is not None:
+            sql = measure_sql(scope, measured, measure)
+            value_sql, sum_sql, count_sql = sql.value, sql.sum, sql.count
+            bound.update(sql.params)
+        rows = (await db.execute(
+            text(
+                f"SELECT {key_sql} AS key, {label_sql} AS label, "
+                f"{value_sql} AS value, {sum_sql} AS s, {count_sql} AS n "
+                f"FROM {table}{where_sql} GROUP BY 1"
+            ),
+            bound,
+        )).fetchall()
+        values = {
+            _key(r.key): _Acc(
+                value=None if r.value is None else float(r.value),
+                s=float(r.s or 0), n=int(r.n or 0), name=r.label,
+            )
+            for r in rows
+        }
+    labels = await _labels(db, found, group_by) if found and group_by else {}
+    order = (
+        await _status_order(db, found) if found and group_by == "status" else {}
+    )
+    return _Read(values, labels, order, measured, grouped)
 
 
 @router.get("/aggregate", response_model=AggregateResponse)
@@ -436,109 +517,48 @@ async def aggregate(
     """One measure of one entity or module, by one group, over the filters."""
     found, module = _check(entity, measure, group_by, group_field, field, bucket)
     pairs = _check_filters(module, request)
-    scope: FieldScope | None = None
-    async with _tenant_session() as db:
-        await db.execute(text(_TIMEOUT_SQL), {"ms": str(STATEMENT_TIMEOUT_MS)})
-        if module is not None:
-            _require_module(await mirrored_modules(db), module)
-            scope = await module_scope(db, module)
-            where = module_where(scope, module, pairs)
-            table, where_sql, bound = MODULE_TABLE, where.sql, dict(where.params)
-        else:
-            assert found is not None
-            if group_by == "created_month" and await is_mirror_mode(
-                db, current_tenant(),
-            ):
-                # The created date of a mirrored row is the import time (Q8).
-                raise HTTPException(status_code=422, detail={
-                    "code": "created_range_mirror",
-                    "message": "The created date of a synced record is not kept. "
-                               "Group by the updated month instead.",
-                })
-            query = await list_query(db, found, params, user)
-            table, where_sql, bound = found.table, query.where, dict(query.params)
-            if field or group_field:
-                scope = await core_scope(db, found.slug)
-        measured = check_measure(scope, field) if field and scope else None
-        grouped = (
-            check_group(scope, group_field, bucket) if group_field and scope else None
-        )
-        if grouped is not None and scope is not None:
-            group = group_sql(scope, grouped, bucket)
-            key_sql, label_sql = group.key, group.label
-            bound.update(group.params)
-        else:
-            key_sql = (MODULE_GROUPS if module is not None else GROUPS)[group_by or ""]
-            label_sql = "NULL"
-        try:
-            if measure == "weighted":
-                values = await _weighted(db, key_sql, label_sql, where_sql, bound)
-            else:
-                value_sql, sum_sql, count_sql = MEASURES.get(measure, ""), "0", "0"
-                if measured is not None and scope is not None:
-                    m = measure_sql(scope, measured, measure)
-                    value_sql, sum_sql, count_sql = m.value, m.sum, m.count
-                    bound.update(m.params)
-                rows = (await db.execute(
-                    text(
-                        f"SELECT {key_sql} AS key, {label_sql} AS label, "
-                        f"{value_sql} AS value, {sum_sql} AS s, {count_sql} AS n "
-                        f"FROM {table}{where_sql} GROUP BY 1"
-                    ),
-                    bound,
-                )).fetchall()
-                values = {
-                    _key(r.key): _Acc(
-                        value=None if r.value is None else float(r.value),
-                        s=float(r.s or 0), n=int(r.n or 0), name=r.label,
-                    )
-                    for r in rows
-                }
-        except DBAPIError as exc:
-            orig = getattr(exc, "orig", None)
-            code = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
-            if code == _QUERY_CANCELED or "statement timeout" in str(exc):
-                raise HTTPException(status_code=503, detail=TIMEOUT_DETAIL) from None
-            raise
-        labels = (
-            await _labels(db, found, group_by) if found is not None and group_by
-            else {}
-        )
-        order = (
-            await _status_order(db, found)
-            if found is not None and group_by == "status" else {}
-        )
+    try:
+        async with _tenant_session() as db:
+            read = await _read(
+                db, found, module, measure=measure, group_by=group_by,
+                field=field, group_field=group_field, bucket=bucket,
+                pairs=pairs, params=params, user=user,
+            )
+    except DBAPIError as exc:
+        if _is_timeout(exc):
+            raise HTTPException(status_code=503, detail=TIMEOUT_DETAIL) from None
+        raise
+    measured, grouped = read.measured, read.grouped
+    bucketed = grouped is not None and grouped.type in DATE_TYPES
     options = grouped.options if grouped is not None else {}
     groups = [
         (
             AggregateGroup(
                 key=key,
                 label=(
-                    labels.get(key or "") or acc.name or options.get(key or "")
+                    read.labels.get(key or "") or acc.name or options.get(key or "")
                     or key or "(none)"
                 ),
                 value=_rounded(acc.value),
             ),
             acc,
         )
-        for key, acc in values.items()
+        for key, acc in read.values.items()
     ]
     # The 50 largest groups stay. The rest fold into `other`.
     groups.sort(key=lambda g: (g[0].value is None, -(g[0].value or 0.0), g[0].label))
     kept, rest = groups[:MAX_GROUPS], groups[MAX_GROUPS:]
     shown = [g for g, _acc in kept]
     if group_by == "status":
-        shown.sort(key=lambda g: (order.get(g.key or "", 1 << 30), g.label))
-    elif _is_time_group(
-        group_by, grouped is not None and grouped.type in DATE_TYPES,
-    ):
+        shown.sort(key=lambda g: (read.order.get(g.key or "", 1 << 30), g.label))
+    elif bucketed or group_by in MONTH_GROUPS:
         shown.sort(key=lambda g: (g.key is None, g.key or ""))
     return AggregateResponse(
         entity=found.slug if found is not None else f"{MODULE_PREFIX}{module}",
         measure=measure, group_by=group_by, group_field=group_field,
         field=measured.key if measured is not None else None,
         field_type=measured.type if measured is not None else None,
-        bucket=bucket if grouped is not None and grouped.type in DATE_TYPES else None,
+        bucket=bucket if bucketed else None,
         groups=shown,
         total=_rounded(_combine(measure, [acc for _g, acc in groups])),
         other=_rounded(_combine(measure, [acc for _g, acc in rest])) if rest else 0,
