@@ -981,8 +981,9 @@ async def crm_aggregate(
             "The total counts them. Narrow the filter to see them."
         )
     zone = data.get("zone")
-    if zone and (bucket or group_by in _ZONED_GROUPS):
+    if zone and (group_by in _ZONED_GROUPS or data.get("group_field_type") == "datetime"):
         # CRM-Q25b: the route took each month on the clock of the CRM zone.
+        # A `date` bucket takes no zone, so the line would be false there.
         lines.append(f"Months count in the CRM time zone, {zone}.")
     return "\n".join(lines)
 

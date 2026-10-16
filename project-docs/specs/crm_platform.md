@@ -3495,6 +3495,12 @@ fail. `crm_zone` now also asks `pg_timezone_names`, and a name that Postgres
 does not know gives UTC. The process keeps each answer in a cache. R8:
 `test_a_zone_that_only_python_knows_gives_utc`.
 
+The tool said "Months count in the CRM time zone" for a `date` bucket too,
+and a date takes no zone. The answer now carries `group_field_type`, and the
+tool says the line only for `created_month`, `updated_month` and a
+`datetime` bucket. Fences: `test_the_tool_names_the_zone_only_for_a_datetime_bucket`
+and `test_the_answer_names_the_type_of_the_group_field`.
+
 **CRM-Q25c · A NUL byte in a list query answers 422 (2026-10-16).** The
 verifier of the CRM-Q25 fix round found this on `origin/main`.
 `GET /crm/deals?q=%00` raises `CharacterNotInRepertoireError` from asyncpg,

@@ -13,6 +13,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 _CRM = (
     Path(__file__).resolve().parents[2]
     / "apps" / "services" / "gateway" / "gateway" / "routes" / "crm"
@@ -270,6 +272,28 @@ async def test_the_tool_names_the_zone_of_a_month(monkeypatch) -> None:
     assert "Months count in the CRM time zone, Asia/Kolkata." in month.splitlines()
     owner = await tools.crm_aggregate("module:Products", group_by="owner")
     assert "time zone" not in owner
+
+
+@pytest.mark.parametrize(("field_type", "named"), [("datetime", True), ("date", False)])
+async def test_the_tool_names_the_zone_only_for_a_datetime_bucket(
+    monkeypatch, field_type: str, named: bool,
+) -> None:
+    """CRM-Q25b fix round, item 8. A ``date`` takes no zone, so the line
+    would be false for a ``date`` bucket. The answer names the type of the
+    group field, and the tool reads it."""
+    import acb_skills.crm_tools as tools
+
+    async def _get(path: str, params: dict | None = None) -> dict:
+        return {
+            "entity": "module:Products", "measure": "count", "zone": "Asia/Kolkata",
+            "group_field": "Day", "group_field_type": field_type, "bucket": "month",
+            "groups": [{"key": "2026-11", "label": "2026-11", "value": 1}],
+            "total": 1, "other": 0, "omitted": 0,
+        }
+
+    monkeypatch.setattr(tools, "_get", _get)
+    out = await tools.crm_aggregate("module:Products", group_field="Day", bucket="month")
+    assert ("Months count in the CRM time zone, Asia/Kolkata." in out.splitlines()) is named
 
 
 async def test_the_tool_says_an_empty_field_has_no_values(monkeypatch) -> None:

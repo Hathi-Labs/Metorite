@@ -768,6 +768,17 @@ async def test_a_datetime_range_agrees_with_the_bucket(zoned, app_engine) -> Non
     assert await total(zoned.org_b, to="2026-10-31") == 1
 
 
+async def test_the_answer_names_the_type_of_the_group_field(zoned, app_engine) -> None:
+    """CRM-Q25b fix round, item 8: the tool names the zone for a datetime
+    bucket only, so the answer says which type it grouped."""
+    for key, kind in (("Created_Time", "datetime"), ("Sales_Start", "date")):
+        body = await _agg(zoned, zoned.org_a, entity="module:Products",
+                          group_field=key, bucket="month")
+        assert body["group_field_type"] == kind
+    plain = await _agg(zoned, zoned.org_a, entity="module:Products", group_by="owner")
+    assert plain["group_field_type"] is None
+
+
 async def test_a_date_field_keeps_the_day_that_zoho_wrote(zoned, app_engine) -> None:
     """Done-when 3 and 7: a date has no time, so no zone moves it."""
     _set_zone(zoned, zoned.org_a, "America/Los_Angeles")

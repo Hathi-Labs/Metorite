@@ -226,6 +226,9 @@ class AggregateResponse(BaseModel):
     #: The field of a ``sum``, ``avg``, ``min`` or ``max``, and its type.
     field: str | None = None
     field_type: str | None = None
+    #: The stored type of ``group_field``, so a caller can tell a ``datetime``
+    #: bucket, which reads the zone, from a ``date`` bucket, which does not.
+    group_field_type: str | None = None
     bucket: str | None = None
     groups: list[AggregateGroup]
     #: The measure over every group, the omitted ones too.
@@ -608,6 +611,7 @@ async def aggregate(
         measure=measure, group_by=group_by, group_field=group_field,
         field=measured.key if measured is not None else None,
         field_type=measured.type if measured is not None else None,
+        group_field_type=grouped.type if grouped is not None else None,
         bucket=bucket if bucketed else None,
         groups=shown,
         total=(
