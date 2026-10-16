@@ -40,7 +40,7 @@ Fence: ``tests/unit/test_feed_crm_kinds_r8.py``.
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta
+from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -354,8 +354,9 @@ _SECONDS_PER_DAY = 86_400.0
 # Two reads of the deals that I own, for `deal_quiet` and `deal_close_passed`
 # (`my_day_feed.md` §5.9 item 13). The caller gives the session, so the feed's
 # three CRM reads share one. ⚠️ Each statement names the bound tenant AND the
-# member, because production connects as the role that owns the tables, and
-# RLS does not hold that role. "I own" is `lower(owner_email)`, which reads
+# member. RLS holds the gateway role (`acb_app`), so the predicate is defence
+# in depth, and an R8 fence proves it on a role that RLS does not hold. "I
+# own" is `lower(owner_email)`, which reads
 # through `idx_crm_deals_owner_email`. Never `stage_dwell`: that read covers
 # the whole organization.
 
@@ -435,8 +436,8 @@ async def my_day_rows(user: UserContext, *, now: datetime, limit: int) -> dict[s
     follow-ups, my quiet deals and my deals past their close date.
 
     ``now`` is the feed's one clock. The zone comes from
-    ``personal.stored_zone``, so "today" and "the start of tomorrow" are the
-    member's own. The caller has applied the kill switch and the access rule
+    ``personal.stored_zone``, so "today" is the member's own, and the
+    follow-ups follow the one CRM day rule (``activities._MY_DUE_SQL``). The caller has applied the kill switch and the access rule
     before it calls this. Each read takes ``limit`` rows at most.
     """
     from gateway.routes.crm import activities
@@ -446,11 +447,11 @@ async def my_day_rows(user: UserContext, *, now: datetime, limit: int) -> dict[s
         zone = zone_name(await stored_zone(db, user.email))
         tz = ZoneInfo(zone)
         today = now.astimezone(tz).date()
-        tomorrow0 = datetime.combine(today + timedelta(days=1), time.min, tzinfo=tz)
         return {
             "zone": zone,
             "today": today,
-            "due": await activities.my_due_activities(db, user, before=tomorrow0, limit=limit),
+            "due": await activities.my_due_activities(db, user, today=today, tz=tz,
+                                                      limit=limit),
             "quiet": await my_overdue_deals(db, user, limit=limit),
             "passed": await my_close_passed_deals(db, user, today=today, limit=limit),
         }

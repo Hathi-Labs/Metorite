@@ -33,7 +33,7 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -136,6 +136,10 @@ class CrmDb:
         if member_rows is None:
             raise AssertionError(f"an unknown statement: {sql[:80]}")
         rows = member_rows.get(binds["member"], [])
+        if sql == crm_activities._MY_DUE_SQL:
+            # The two columns of the day rule. A row with no `all_day` is a
+            # call. The provider's own order does not read `fresh`.
+            rows = [{"all_day": False, "fresh": True, **r} for r in rows]
         return _Result([SimpleNamespace(**r) for r in rows][: binds["limit"]])
 
     def session(self, name: str):
@@ -481,8 +485,14 @@ class TestTheBinds:
         binds = {sql: b for sql, b in crm.executed}
         tz = _tz(crm.f)
         today = _today(crm)
-        assert binds[crm_activities._MY_DUE_SQL]["before"] == datetime.combine(
-            today + timedelta(days=1), time.min, tzinfo=tz)
+        due = binds[crm_activities._MY_DUE_SQL]
+        tomorrow = today + timedelta(days=1)
+        # A call: my local midnight. A task: the UTC midnight of the same date.
+        assert due["before"] == datetime.combine(tomorrow, time.min, tzinfo=tz)
+        assert due["before_day"] == datetime.combine(tomorrow, time.min, tzinfo=UTC)
+        assert due["today_start"] == datetime.combine(today, time.min, tzinfo=tz)
+        assert due["today_day"] == datetime.combine(today, time.min, tzinfo=UTC)
+        assert due["upper"] == max(due["before"], due["before_day"])
         assert binds[crm_aggregate._MY_CLOSE_PASSED_SQL]["today"] == today
 
     def test_a_read_with_no_tenant_reads_nothing(self):
@@ -493,8 +503,8 @@ class TestTheBinds:
                 raise AssertionError("no statement without a tenant")
 
         async def _go():
-            return [await crm_activities.my_due_activities(_NoDb(), user, before=None,
-                                                           limit=5),
+            return [await crm_activities.my_due_activities(
+                        _NoDb(), user, today=date(2026, 10, 12), tz=ZoneInfo("UTC"), limit=5),
                     await crm_aggregate.my_overdue_deals(_NoDb(), user, limit=5),
                     await crm_aggregate.my_close_passed_deals(_NoDb(), user, today=None,
                                                               limit=5)]
@@ -694,3 +704,164 @@ class TestTheElapsedTime:
         fields = _answered(caplog, "crm")
         assert fields["outcome"] == "absent"
         assert int(fields["elapsed_ms"]) >= 0
+
+
+# ── P1-1: the one CRM day rule (crm_platform.md §19.7) ──────────────────────
+
+
+def _task(record_id: str, day: date, subject: str | None = "call back") -> dict[str, Any]:
+    """A task, as the CRM stores it: a DATE at 00:00 UTC."""
+    return {"record_kind": "contact", "record_id": record_id, "label": "Dana Rao",
+            "due_at": datetime.combine(day, time.min, tzinfo=UTC), "subject": subject,
+            "all_day": True}
+
+
+class TestTheDayRuleOfATask:
+    @pytest.mark.parametrize("zone", ["Asia/Kolkata", "America/New_York"])
+    def test_a_task_of_my_today_is_due_today_with_no_clock(self, crm, zone):
+        crm.f.zone = zone
+        tz = ZoneInfo(zone)
+        today = crm.f.now.astimezone(tz).date()
+        crm.due[ME] = [_task("c-task", today)]
+        found = _bound(lambda: feed._crm(member(*CRM_MEMBER)))
+        [signal] = found.signals()
+        # The task's date at 00:00 in MY zone, never 00:00 UTC.
+        assert signal.facts["due_at"] == datetime.combine(today, time.min, tzinfo=tz).isoformat()
+        assert signal.facts["all_day"] is True
+        assert signal.urgent_at is None, "a midnight is not a time"
+        [c] = feed.build_cards(found.signals(), crm.f.now, tz, today)
+        assert c["why"] == "Call back is due today."
+        assert c["group"] == "needs_you"
+
+    def test_a_task_of_yesterday_reads_yesterday(self, crm):
+        crm.f.zone = "Asia/Kolkata"
+        tz = ZoneInfo(crm.f.zone)
+        today = crm.f.now.astimezone(tz).date()
+        crm.due[ME] = [_task("c-old", today - timedelta(days=1), subject=None)]
+        found = _bound(lambda: feed._crm(member(*CRM_MEMBER)))
+        [c] = feed.build_cards(found.signals(), crm.f.now, tz, today)
+        assert c["why"] == "A follow-up is due yesterday."
+
+    def test_a_call_keeps_its_time(self, crm):
+        due = crm.f.now + timedelta(hours=1)
+        crm.due[ME] = [{"record_kind": "contact", "record_id": "c-call", "label": "D",
+                        "due_at": due, "subject": "call", "all_day": False}]
+        found = _bound(lambda: feed._crm(member(*CRM_MEMBER)))
+        [signal] = found.signals()
+        assert signal.facts["due_at"] == signal.urgent_at == due.isoformat()
+        assert "all_day" not in signal.facts
+
+    @pytest.mark.parametrize(("zone", "today"), [
+        ("Asia/Kolkata", date(2026, 10, 13)),
+        ("America/New_York", date(2026, 10, 12)),
+    ])
+    def test_the_bounds_put_a_task_on_its_utc_date(self, zone, today):
+        """A task of my local tomorrow sits at the UTC midnight of that date,
+        which is not before before_day. In New York that midnight comes before
+        my local midnight, so a compare of instants showed tomorrow's task."""
+        b = crm_activities.due_bounds(today, ZoneInfo(zone))
+        tomorrow_task = datetime.combine(today + timedelta(days=1), time.min, tzinfo=UTC)
+        today_task = datetime.combine(today, time.min, tzinfo=UTC)
+        assert not tomorrow_task < b["before_day"]
+        assert today_task < b["before_day"] and today_task >= b["today_day"]
+        if zone == "America/New_York":
+            assert tomorrow_task < b["before"], "the instant rule would show it today"
+
+    def test_the_read_binds_the_task_rule_in_sql(self):
+        sql = crm_activities._MY_DUE_SQL
+        assert "CASE WHEN a.type = 'task' THEN CAST(:before_day AS timestamptz)" in sql
+        assert "(a.type = 'task') AS all_day" in sql
+
+
+# ── P2-1: a follow-up of today survives the cap ─────────────────────────────
+
+
+class TestTodayFirst:
+    def test_twenty_old_tasks_do_not_hide_a_call_due_in_an_hour(self, crm):
+        today = _today(crm)
+        fresh = {"record_kind": "contact", "record_id": "c-now", "label": "Now",
+                 "due_at": crm.f.now + timedelta(hours=1), "subject": "call",
+                 "all_day": False, "fresh": True}
+        old = [_task(f"c-old-{n:02d}", today - timedelta(days=30 - n)) for n in range(20)]
+        # The read gives the fresh rows first (the ORDER BY of the SQL).
+        crm.due[ME] = [fresh, *old]
+        found = _bound(lambda: feed._crm(member(*CRM_MEMBER)))
+        ids = [s.signal_id for s in found.signals()]
+        assert found.capped is True
+        assert len(ids) == shell.PER_APP
+        assert ids[0] == "crm:contact:c-now"
+
+    def test_the_read_orders_the_fresh_rows_first(self):
+        assert "ORDER BY fresh DESC, due_at" in crm_activities._MY_DUE_SQL
+
+
+# ── P2-2: the days of a quiet deal ──────────────────────────────────────────
+
+
+class TestTheDaysOfAQuietDeal:
+    def test_the_first_day_past_the_limit_reads_one_more_day(self, crm):
+        now = crm.f.now
+        crm.quiet[ME] = [{"id": "d-q", "name": "Q", "stage": "Proposal",
+                          "status_changed_at": now - timedelta(days=10, minutes=1),
+                          "limit_days": 10}]
+        found = _bound(lambda: feed._crm(member(*CRM_MEMBER)))
+        [c] = feed.build_cards(found.signals(), now, _tz(crm.f), _today(crm))
+        assert c["why"] == "In Proposal for 11 days. The stage limit is 10 days."
+
+    def test_whole_days_stay_whole(self, crm):
+        now = crm.f.now
+        crm.quiet[ME] = [{"id": "d-q", "name": "Q", "stage": "Proposal",
+                          "status_changed_at": now - timedelta(days=12), "limit_days": 10}]
+        found = _bound(lambda: feed._crm(member(*CRM_MEMBER)))
+        assert found.signals()[0].facts["stage_days"] == 12
+
+
+# ── P2-3: the cache key follows the CRM kill switch ─────────────────────────
+
+
+class TestTheCacheKeyFollowsTheKillSwitch:
+    def _hash(self, monkeypatch, *, listed: str, orgs: str) -> str:
+        from gateway.routes.shell import cache
+
+        _list(monkeypatch, listed)
+        crm_switch_on(monkeypatch, orgs)
+        return cache.features_hash(member(*CRM_MEMBER))
+
+    def test_a_delisted_org_gets_a_new_key_while_crm_is_listed(self, monkeypatch):
+        on = self._hash(monkeypatch, listed="crm", orgs="*")
+        off = self._hash(monkeypatch, listed="crm", orgs="another-org")
+        assert on != off
+
+    def test_with_crm_not_listed_the_switch_changes_no_key(self, monkeypatch):
+        on = self._hash(monkeypatch, listed="tasks_followups", orgs="*")
+        off = self._hash(monkeypatch, listed="tasks_followups", orgs="another-org")
+        assert on == off
+        empty_on = self._hash(monkeypatch, listed="", orgs="*")
+        assert empty_on == self._hash(monkeypatch, listed="", orgs="another-org")
+
+
+# ── P1-2: a folded deal_quiet keeps a dismissed card dismissed ──────────────
+
+
+class TestAFoldKeepsADismissedDealDismissed:
+    @pytest.mark.xfail(strict=True, reason="needs MD-3d's fold rule")
+    def test_a_dismissed_close_passed_card_stays_dismissed_when_quiet_folds_in(self):
+        tz = ZoneInfo("UTC")
+        now = datetime(2026, 10, 12, 12, 0, tzinfo=tz)
+        today = now.date()
+        day = state.Day(tz)
+        late = feed._close_passed_signal(
+            {"id": "d-x", "name": "X", "stage": "Proposal",
+             "expected_close_date": today - timedelta(days=2)}, tz)
+        quiet = feed._quiet_deal_signal(
+            {"id": "d-x", "name": "X", "stage": "Proposal",
+             "status_changed_at": now - timedelta(days=12), "limit_days": 10}, now)
+        cards = feed.build_cards([late], now, tz, today)
+        fp = state.join(cards, {}, state.Context(now, day))[0]["state_fp"]
+        row = {"kind": "deal_close_passed", "state": "dismissed",
+               "dismiss_reason": "dismiss", "fingerprint": fp, "visits": 0,
+               "visits_day": None, "last_seen_at": None, "snoozed_until": None,
+               "snooze_on_change": False}
+        both = feed.build_cards([late, quiet], now, tz, today)
+        assert both[0]["folded"] == ["deal_quiet"]
+        assert not state.join(both, {"crm:deal:d-x": row}, state.Context(now, day))

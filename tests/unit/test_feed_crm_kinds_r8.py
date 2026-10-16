@@ -14,9 +14,11 @@ predicate shows them in org B.
 
 * **As the app role, with RLS forced** (``_as_member``): each kind gives its
   card and no other row does.
-* **As the owner role, which RLS does not hold** (``_as_owner``): the
-  production role. The owner session must see both orgs, or the check
-  proves nothing. Then only the SQL's own org predicate keeps org A out.
+* **As the owner role, which RLS does not hold** (``_as_owner``). The
+  production role ``acb_app`` IS held by RLS (measured on the box,
+  2026-10-16), so this is defence in depth. The owner session must see both
+  orgs, or the check proves nothing. Then only the SQL's own org predicate
+  keeps org A out.
 
 The rows just outside a rule: a follow-up of another member, a completed
 one, a ``status_change`` and a ``system`` row, one due after my local
@@ -31,7 +33,8 @@ from __future__ import annotations
 
 import contextlib
 import uuid
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -65,8 +68,17 @@ pytestmark = _DB_GATE
 TAG = uuid.uuid4().hex[:8]
 ME = f"crm-me-{TAG}@md3e.test"
 COLL = f"crm-coll-{TAG}@md3e.test"
+#: Two members far from UTC, for the one CRM day rule (crm_platform.md §19.7).
+IST = f"crm-ist-{TAG}@md3e.test"
+NYC = f"crm-ny-{TAG}@md3e.test"
+#: A member with 20 stale open tasks and one of today.
+HEAVY = f"crm-heavy-{TAG}@md3e.test"
+KOLKATA = ZoneInfo("Asia/Kolkata")
+NEW_YORK = ZoneInfo("America/New_York")
 #: The member's zone is UTC, so the local today is the UTC date of NOW.
 TODAY = NOW.astimezone(UTC).date()
+TODAY_IST = NOW.astimezone(KOLKATA).date()
+TODAY_NY = NOW.astimezone(NEW_YORK).date()
 TOMORROW0 = datetime.combine(TODAY + timedelta(days=1), time.min, tzinfo=UTC)
 CRM_KINDS = ("crm_followup_due", "deal_quiet", "deal_close_passed")
 
@@ -116,6 +128,10 @@ def seeded(promoted):  # noqa: F811
             c.execute(text(
                 "INSERT INTO user_settings (user_id, timezone, organization_id) VALUES "
                 "(:e, 'UTC', CAST(:o AS uuid))"), {"e": ME, "o": org})
+        for email, zone in ((IST, "Asia/Kolkata"), (NYC, "America/New_York"), (HEAVY, "UTC")):
+            c.execute(text(
+                "INSERT INTO user_settings (user_id, timezone, organization_id) VALUES "
+                "(:e, :z, CAST(:o AS uuid))"), {"e": email, "z": zone, "o": p.org_b})
 
         def stage(org: str, name: str) -> str:
             return str(c.execute(text(
@@ -149,7 +165,7 @@ def seeded(promoted):  # noqa: F811
                 "INSERT INTO crm_companies (organization_id, name) VALUES "
                 "(CAST(:o AS uuid), :n) RETURNING id"), {"o": org, "n": name}).scalar_one())
 
-        def activity(org: str, *, due, by: str = ME, kind: str = "task", subject=None,
+        def activity(org: str, *, due, by: str = ME, kind: str = "call", subject=None,
                      done=None, **target: str) -> None:
             c.execute(text(
                 "INSERT INTO crm_activities (organization_id, type, subject, due_at, "
@@ -193,6 +209,7 @@ def seeded(promoted):  # noqa: F811
         activity(b, due=TOMORROW0, contact=ids["c_tomorrow"])
         ids["c_agent"] = contact(b, "Agent", "Wrote")
         activity(b, due=NOW - timedelta(hours=1), by="agent:crm", contact=ids["c_agent"])
+        _seed_tasks(ids, b, contact, activity)
         # ── deal_quiet ─────────────────────────────────────────────────────
         ids["d_quiet"] = deal(b, "Quiet deal", "Proposal", in_stage_days=12)
         ids["d_quiet_9"] = deal(b, "Inside the limit", "Proposal", in_stage_days=9)
@@ -221,6 +238,30 @@ def seeded(promoted):  # noqa: F811
             for table in (*_TABLES, "user_settings"):
                 c.execute(text(f"DELETE FROM {table} WHERE organization_id = CAST(:o AS uuid)"),
                           {"o": org})
+
+
+def _task_day(day: date) -> datetime:
+    """A task's due_at, as the CRM stores it: a DATE at 00:00 UTC."""
+    return datetime.combine(day, time.min, tzinfo=UTC)
+
+
+def _seed_tasks(ids: dict[str, str], org: str, contact, activity) -> None:
+    """The day rule of a task (P1-1), and the cap that keeps today (P2-1)."""
+    for key, email, today in (("ist", IST, TODAY_IST), ("ny", NYC, TODAY_NY)):
+        ids[f"c_{key}_today"] = contact(org, "Today", key)
+        activity(org, due=_task_day(today), by=email, kind="task", subject="check in",
+                 contact=ids[f"c_{key}_today"])
+        ids[f"c_{key}_tomorrow"] = contact(org, "Tomorrow", key)
+        activity(org, due=_task_day(today + timedelta(days=1)), by=email, kind="task",
+                 contact=ids[f"c_{key}_tomorrow"])
+    # 20 stale open tasks must not hide the task of today.
+    for n in range(20):
+        ids[f"c_heavy_{n:02d}"] = contact(org, "Stale", f"{n:02d}")
+        activity(org, due=_task_day(TODAY - timedelta(days=30 - n)), by=HEAVY, kind="task",
+                 contact=ids[f"c_heavy_{n:02d}"])
+    ids["c_heavy_today"] = contact(org, "Fresh", "Today")
+    activity(org, due=_task_day(TODAY), by=HEAVY, kind="task", subject="today",
+             contact=ids["c_heavy_today"])
 
 
 def _list(monkeypatch, value: str) -> None:
@@ -270,7 +311,8 @@ async def _reads(user: UserContext) -> dict[str, list[dict]]:
 
     async with tenant_session() as db:
         return {
-            "due": await my_due_activities(db, user, before=TOMORROW0, limit=50),
+            "due": await my_due_activities(db, user, today=TODAY, tz=ZoneInfo("UTC"),
+                                           limit=50),
             "quiet": await my_overdue_deals(db, user, limit=50),
             "passed": await my_close_passed_deals(db, user, today=TODAY, limit=50),
         }
@@ -407,6 +449,52 @@ class TestTheKindsOnARealDatabase:
         assert not _crm_cards(dark)
 
 
+class TestTheDayRuleOfATask:
+    """P1-1: a task's due_at is a DATE at 00:00 UTC (crm_platform.md §19.7).
+    Its UTC date meets the member's local date, in India and in New York."""
+
+    @pytest.mark.parametrize(("email", "zone", "key"), [
+        (IST, KOLKATA, "ist"), (NYC, NEW_YORK, "ny")])
+    async def test_a_task_of_my_today_shows_and_one_of_tomorrow_does_not(
+        self, promoted, seeded, monkeypatch, email, zone, key,  # noqa: F811
+    ):
+        today = NOW.astimezone(zone).date()
+        answer = await _feed(promoted, monkeypatch, _member(email, promoted.org_b))
+        assert answer["sources"]["crm"] == "ok"
+        cards = _crm_cards(answer)
+        assert set(cards) == {f"crm:contact:{seeded[f'c_{key}_today']}"}
+        c = cards[f"crm:contact:{seeded[f'c_{key}_today']}"]
+        assert c["why"] == "Check in is due today."
+        assert c["facts"]["due_at"] == datetime.combine(today, time.min,
+                                                        tzinfo=zone).isoformat()
+        assert c["urgent_at"] is None
+        assert c["group"] == "needs_you"
+
+
+class TestTodayFirst:
+    """P2-1: the LIMIT keeps the follow-ups of today, then the older ones."""
+
+    async def test_twenty_stale_tasks_do_not_hide_the_task_of_today(
+        self, promoted, seeded, monkeypatch,  # noqa: F811
+    ):
+        answer = await _feed(promoted, monkeypatch, _member(HEAVY, promoted.org_b))
+        cards = _crm_cards(answer)
+        assert f"crm:contact:{seeded['c_heavy_today']}" in cards
+        assert "crm" in answer["capped"]
+        assert len(cards) == shell.PER_APP
+
+    async def test_the_read_gives_the_fresh_row_first(self, promoted, seeded):  # noqa: F811
+        from gateway.routes.crm.activities import my_due_activities
+
+        user = _member(HEAVY, promoted.org_b)
+        async with _as_member(promoted, promoted.org_b), tenant_session() as db:
+            rows = await my_due_activities(db, user, today=TODAY, tz=ZoneInfo("UTC"),
+                                           limit=16)
+        assert rows[0]["record_id"] == seeded["c_heavy_today"]
+        assert (rows[0]["fresh"], rows[0]["all_day"]) == (True, True)
+        assert len(rows) == 16 and not any(r["fresh"] for r in rows[1:])
+
+
 class TestTwoOrganizations:
     """Done-when 9: each read returns the rows of one tenant only."""
 
@@ -420,8 +508,8 @@ class TestTwoOrganizations:
     async def test_the_org_predicate_holds_on_a_session_that_bypasses_rls(
         self, promoted, seeded, monkeypatch,  # noqa: F811
     ):
-        """Production connects as the owner role, so RLS does not hold it. Only
-        the org predicate of each statement keeps org A out."""
+        """Defence in depth: on a role that RLS does not hold, only the org
+        predicate of each statement keeps org A out."""
         p = promoted
         async with _as_owner(p, p.org_b):
             async with tenant_session() as db:

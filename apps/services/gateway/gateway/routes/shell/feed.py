@@ -703,27 +703,47 @@ def _crm_signal(kind: str, record: str, record_id: str, label: Any, *, facts: di
     )
 
 
-def _followup_signal(row: dict[str, Any]) -> Signal:
-    """``crm_followup_due``: the earliest open follow-up on one record. Its
-    ``urgent_at`` is its ``due_at`` (§5.9 item 13)."""
+def _followup_signal(row: dict[str, Any], tz: ZoneInfo) -> Signal:
+    """``crm_followup_due``: the earliest open follow-up on one record
+    (§5.9 item 13), by the one CRM day rule (``crm_platform.md`` §19.7).
+
+    A task (``all_day``) holds a DATE at 00:00 UTC. Its ``due_at`` here is
+    00:00 of that date in my zone, as ``deal_close_passed`` does, and it has
+    no ``urgent_at``: a midnight is not a time, so it never lifts a card to
+    Now. A call or a meeting keeps its real time, and its ``urgent_at`` is
+    its ``due_at``."""
     from gateway.retrieval.sources import CRM_KINDS as RECORD_KINDS
 
     record = str(row["record_kind"])
     noun = RECORD_KINDS[_CRM_RECORDS[record]][0].lower()
-    due = _iso(row.get("due_at"))
+    at = _instant(row.get("due_at"))
+    all_day = bool(row.get("all_day"))
+    if all_day and at is not None:
+        due = _iso(datetime.combine(at.astimezone(ZoneInfo("UTC")).date(), time.min,
+                                         tzinfo=tz))
+        urgent = None
+    else:
+        due = urgent = _iso(at)
+    facts: dict[str, Any] = {"due_at": due, "subject": row.get("subject")}
+    if all_day:
+        facts["all_day"] = True
     return _crm_signal("crm_followup_due", record, str(row["record_id"]), row.get("label"),
-                       facts={"due_at": due, "subject": row.get("subject")},
-                       act=("open-record", f"Open {noun}"), at=due, urgent_at=due)
+                       facts=facts, act=("open-record", f"Open {noun}"), at=due,
+                       urgent_at=urgent)
 
 
-def _quiet_deal_signal(row: dict[str, Any], today: date, tz: ZoneInfo) -> Signal:
+def _quiet_deal_signal(row: dict[str, Any], now: datetime) -> Signal:
     """``deal_quiet``: an open deal of mine past the limit of its stage. The
-    state fact is ``waiting_since``, the stage clock (§5.9 item 4)."""
-    since = _iso(row.get("status_changed_at"))
+    state fact is ``waiting_since``, the stage clock (§5.9 item 4).
+    ``stage_days`` rounds the time in the stage UP, the rule of the SQL: a
+    deal fires once it is MORE than ``limit`` days in the stage, so on its
+    first day it reads ``limit + 1``, never ``limit``."""
+    since = _instant(row.get("status_changed_at"))
+    days = 0 if since is None else max(0, math.ceil((now - since).total_seconds() / 86400))
     return _crm_signal(
         "deal_quiet", "deal", str(row["id"]), row.get("name"),
-        facts={"stage": row.get("stage"), "stage_days": _local_days(since, today, tz),
-               "stage_limit": row.get("limit_days"), "waiting_since": since},
+        facts={"stage": row.get("stage"), "stage_days": days,
+               "stage_limit": row.get("limit_days"), "waiting_since": _iso(since)},
         act=("log-call", "Log a call"), at=since)
 
 
@@ -736,6 +756,17 @@ def _close_passed_signal(row: dict[str, Any], tz: ZoneInfo) -> Signal:
     due = _iso(datetime.combine(day, time.min, tzinfo=tz))
     return _crm_signal("deal_close_passed", "deal", str(row["id"]), row.get("name"),
                        facts={"due_at": due}, act=("move-date", "Move the date"), at=due)
+
+
+def _crm_order(signal: Signal, today: date, tz: ZoneInfo) -> tuple[int, int, float, str]:
+    """By ``BASE``, then a follow-up due from my local today on before an
+    older one, then by age (§5.9 item 13). So the cap of 15 never cuts a
+    follow-up of today for a stale one, as the read's LIMIT does not."""
+    at = _instant(signal.at)
+    day0 = datetime.combine(today, time.min, tzinfo=tz)
+    stale = signal.kind == "crm_followup_due" and (at is None or at < day0)
+    return (-feed_rank.base(signal.kind), int(stale),
+            at.timestamp() if at is not None else float("inf"), signal.signal_id)
 
 
 async def _crm_gate(user: UserContext) -> None:
@@ -766,10 +797,10 @@ async def _crm(user: UserContext) -> Found:
     tz = ZoneInfo(zone)
     due, quiet, passed = rows["due"], rows["quiet"], rows["passed"]
 
-    signals: list[Signal] = [_followup_signal(r) for r in due]
-    signals += [_quiet_deal_signal(r, today, tz) for r in quiet]
+    signals: list[Signal] = [_followup_signal(r, tz) for r in due]
+    signals += [_quiet_deal_signal(r, now) for r in quiet]
     signals += [_close_passed_signal(r, tz) for r in passed]
-    signals.sort(key=_followup_order)
+    signals.sort(key=lambda s: _crm_order(s, today, tz))
     full = any(len(part) >= size for part in (due, quiet, passed))
     return Found([], 0, capped=full or len(signals) > PER_APP,
                  signals=lambda: signals[:PER_APP], zone=zone)
@@ -900,6 +931,19 @@ def _absent_line(facts: dict[str, Any], today: date) -> str:
     return f"Due {_day_words(day, today)}. You are away that day."
 
 
+def _followup_line(facts: dict[str, Any], tz: ZoneInfo, today: date) -> str:
+    """The why line of ``crm_followup_due`` (§5.9 item 13). A task holds a
+    date and no time (``crm_platform.md`` §19.7), so it names no clock."""
+    due = facts.get("due_at")
+    when = _when(due, tz, today)
+    if not facts.get("all_day"):
+        when = f"{when} at {_clock(due, tz)}"
+    subject = str(facts.get("subject") or "").strip()
+    if subject:
+        return f"{subject[:1].upper()}{subject[1:]} is due {when}."
+    return f"A follow-up is due {when}."
+
+
 def _colleague_line(facts: dict[str, Any]) -> str:
     names = [str(n) for n in facts.get("out") or [] if n]
     task = facts.get("task") or "a task"
@@ -938,12 +982,7 @@ def _md3_why(kind: str, facts: dict[str, Any], tz: ZoneInfo,
                              f"{facts.get('who') or 'They'} "
                              f"{'has' if facts.get('who') else 'have'} not answered.")
     if kind == "crm_followup_due":
-        due = facts.get("due_at")
-        when = f"{_when(due, tz, today)} at {_clock(due, tz)}"
-        subject = str(facts.get("subject") or "").strip()
-        if subject:
-            return "followup_due", f"{subject[:1].upper()}{subject[1:]} is due {when}."
-        return "followup_due", f"A follow-up is due {when}."
+        return "followup_due", _followup_line(facts, tz, today)
     if kind == "deal_quiet":
         return "in_stage", (f"In {facts.get('stage') or 'this stage'} for "
                             f"{_days(facts.get('stage_days'))}. The stage limit is "
