@@ -27,7 +27,7 @@
 > CRM-Q1 and CRM-Q2, discovery, the source profile and the deal pipelines
 > (2026-10-12, migration 247). The other slices are not built yet.
 >
-> **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12). CRM-Q8, filters and saved views (2026-10-12, migration 250). The Deals board stages fix (2026-10-12, §18.5). CRM-Q10, a reconnect never freezes the mirror (2026-10-13, §18, a production hotfix). CRM-Q15, a Zoho module that the account turned off no longer stops the sync (2026-10-15, §18, a production hotfix). CRM-Q16, hold a module and sync one module on its own (2026-10-15, §18.8, migration 269).
+> **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12). CRM-Q8, filters and saved views (2026-10-12, migration 250). The Deals board stages fix (2026-10-12, §18.5). CRM-Q10, a reconnect never freezes the mirror (2026-10-13, §18, a production hotfix). CRM-Q15, a Zoho module that the account turned off no longer stops the sync (2026-10-15, §18, a production hotfix). CRM-Q16, hold a module and sync one module on its own (2026-10-15, §18.8, migration 269). CRM-Q23b, a dropped activity comes back once its module record is in (2026-10-16, §18.10, no migration).
 >
 > **Specified, not built:** CRM-Q17a to CRM-Q22, a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9).
 >
@@ -2347,8 +2347,9 @@ density, a changed accent and 375 px.
 
 ### 18.10 Activities on a module record, and a short read that shows (CRM-Q23, CRM-Q24, 2026-10-16)
 
-**Status (2026-10-16).** CRM-Q23a: built, on the branch `crm-q23`. CRM-Q23b,
-CRM-Q23c and CRM-Q24: specified, not built. Verified against code at
+**Status (2026-10-16).** CRM-Q23a: built, on the branch `crm-q23`. CRM-Q23b:
+built, on the branch `crm-q23b`, with no migration. CRM-Q23c and CRM-Q24:
+specified, not built. Verified against code at
 `origin/main` `0a14f7552`. Found on DEWiN's import (H-326, H-327).
 
 #### 18.10.1 What the import found
