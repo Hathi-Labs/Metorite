@@ -17,7 +17,7 @@ sys.path.insert(0, str(_ROOT / "scripts"))
 
 import ci_unit_guard as guard  # noqa: E402
 
-_SUITE = '''
+_SUITE = """
 import pytest
 
 def test_runs():
@@ -35,7 +35,7 @@ class TestGroup:
     @pytest.mark.parametrize("n", [1, 2])
     def test_param(self, n):
         pass
-'''
+"""
 
 
 def _report(tmp_path: Path, body: str = _SUITE, name: str = "test_sample.py") -> Path:
@@ -44,9 +44,21 @@ def _report(tmp_path: Path, body: str = _SUITE, name: str = "test_sample.py") ->
     out = tmp_path / "junit"
     out.mkdir(exist_ok=True)
     subprocess.run(
-        [sys.executable, "-m", "pytest", name, "-q", "-p", "no:cacheprovider",
-         "-o", "junit_family=xunit1", f"--junitxml={out / 'shard-1.xml'}"],
-        cwd=tmp_path, check=False, capture_output=True,
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            name,
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "-o",
+            "junit_family=xunit1",
+            f"--junitxml={out / 'shard-1.xml'}",
+        ],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
     )
     return out
 

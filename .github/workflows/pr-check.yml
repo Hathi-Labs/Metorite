@@ -199,8 +199,11 @@ jobs:
     runs-on: ubuntu-latest
     # Skips its push copy. See the note at the top of the push trigger.
     if: github.event_name != 'push'
+    # `fail-fast: false`: each shard stops at its own first failure (`-x`),
+    # and one run then reports the first failure of EVERY shard. Fail-fast
+    # cancelled the other five and hid their failures until the next round.
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         shard: [1, 2, 3, 4, 5, 6]
     # WS-31 CP-3. The Customer Console's suites are R8-gated: they skip themselves
