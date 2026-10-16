@@ -92,8 +92,9 @@ and streams chat responses as AG-UI events.
    - `_assemble_batch_agents` is the one batch assembly, and the first try and each retry call it.
    - So a retry reads the same `tool_scope`, own scope, toggles, D85, floor opt-out, Mirror filter, WhatsApp withholding and H-236 answer.
    - `_BatchRunInputs` keeps the `repo_name`, `local_path` and held tool names of the first try. The retry loads the same agent.
-   - `_narrow_to_held` then removes each tool outside the held set. The retry filters its integrations by the acting member, as contract 1 says.
-   - The first try binds `run_tools` once, from the assembly. The retry binds again only the part of it that the retry holds, so `run_holds_tool` never widens.
+   - `_narrow_to_held` then removes each tool outside the held set.
+   - The retry does not resolve the member's authority again. It gets only the credential names of the first try (`_BatchRunInputs.integrations`). When the first try resolved none, the retry gets none and a closed memory gate.
+   - The first try binds `run_tools` once, from the assembly. The retry always binds its own part of that set, and an empty set when the first try bound none. So a delegated child never answers `run_holds_tool` from its parent's set.
    - Do not build or inject agents for a retry anywhere else. Fence: `tests/unit/test_anneal_retry_scope.py`.
 
 ## Work Guidance

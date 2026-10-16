@@ -106,6 +106,66 @@ def _names(agents: list[Any]) -> frozenset[str]:
     )
 
 
+class _Fakes:
+    """The stubs of one run. Each reads and writes the run's *state*."""
+
+    def __init__(self, state: dict[str, Any], clone: Any) -> None:
+        self.state = state
+        self.clone = clone
+
+    def build(self) -> list[Any]:
+        self.state["builds"] += 1
+        if self.state["fail"] == "build" and self.state["builds"] == 1:
+            raise RuntimeError("connection timed out")
+        return [_NativeAgent()]
+
+    @contextmanager
+    def load(self, name: str, **kw: Any):
+        self.state["loads"].append(kw)
+        cfg = json.loads(json.dumps(self.state["config"]))
+        yield types.SimpleNamespace(
+            agent_dir=self.clone, agent_name=name, config=cfg, build_agents=self.build,
+        )
+
+    def integrations(self, m, o, _s, *, is_authorized=None):
+        self.state["integration_calls"] += 1
+        if self.state["fail"] == "integrations" and self.state["integration_calls"] == 1:
+            raise RuntimeError("connection reset by peer")
+        names = list(m) + list(o)
+        ok = {n: {"token": "x"} for n in names if is_authorized is None or is_authorized(n)}
+        return ok, {n: "refused" for n in names if n not in ok}
+
+    async def authorizer(self, _payload, _thread=None):
+        self.state["authorizer_calls"] += 1
+        return _next(self.state["authorizers"])
+
+    def disabled(self, _name):
+        return _next(self.state["disabled"])
+
+    async def run_maf(self, agents, **kw):
+        from acb_skills.memory_tools import _memory_permission
+        from acb_skills.write_artifact import artifact_context, run_holds_tool
+
+        state = self.state
+        state["attempts"].append(_names(agents))
+        # What ``run_holds_tool`` answers on this attempt (§14.10).
+        state["bound"].append(artifact_context().get("run_tools"))
+        state["holds"].append(
+            frozenset(fn.__name__ for fn in _PLATFORM if run_holds_tool(fn.__name__)),
+        )
+        state["make_report"].append(run_holds_tool("make_report"))
+        state["creds"].append(sorted(kw.get("integrations") or {}))
+        state["memory"].append(_memory_permission.get())
+        if state["fail"] == "run" and len(state["attempts"]) == 1:
+            raise RuntimeError("connection reset by peer")
+        return {"answer": "ok"}
+
+
+def _next(seq: list[Any]) -> Any:
+    """One answer per call. The last one repeats."""
+    return seq.pop(0) if len(seq) > 1 else seq[0]
+
+
 @pytest.fixture
 def run(tmp_path, monkeypatch):
     """One batch run of a shared agent whose first model call fails."""
@@ -141,55 +201,7 @@ def run(tmp_path, monkeypatch):
         # One answer per authority lookup. The last one repeats.
         "authorizers": [_authorizer_fn],
     }
-
-    def _build():
-        state["builds"] += 1
-        if state["fail"] == "build" and state["builds"] == 1:
-            raise RuntimeError("connection timed out")
-        return [_NativeAgent()]
-
-    @contextmanager
-    def _load(name, **kw):
-        state["loads"].append(kw)
-        cfg = json.loads(json.dumps(state["config"]))
-        yield types.SimpleNamespace(
-            agent_dir=clone, agent_name=name, config=cfg, build_agents=_build,
-        )
-
-    def _integrations(m, o, _s, *, is_authorized=None):
-        state["integration_calls"] += 1
-        if state["fail"] == "integrations" and state["integration_calls"] == 1:
-            raise RuntimeError("connection reset by peer")
-        names = list(m) + list(o)
-        ok = {n: {"token": "x"} for n in names if is_authorized is None or is_authorized(n)}
-        return ok, {n: "refused" for n in names if n not in ok}
-
-    async def _authorizer(_payload, _thread=None):
-        state["authorizer_calls"] += 1
-        seq = state["authorizers"]
-        return seq.pop(0) if len(seq) > 1 else seq[0]
-
-    def _disabled(_name):
-        # One answer per read. The last one repeats.
-        seq = state["disabled"]
-        return seq.pop(0) if len(seq) > 1 else seq[0]
-
-    async def _run_maf(agents, **kw):
-        from acb_skills.memory_tools import _memory_permission
-        from acb_skills.write_artifact import artifact_context, run_holds_tool
-
-        state["attempts"].append(_names(agents))
-        # What ``run_holds_tool`` answers on this attempt (§14.10).
-        state["bound"].append(artifact_context().get("run_tools"))
-        state["holds"].append(
-            frozenset(fn.__name__ for fn in _PLATFORM if run_holds_tool(fn.__name__)),
-        )
-        state["make_report"].append(run_holds_tool("make_report"))
-        state["creds"].append(sorted(kw.get("integrations") or {}))
-        state["memory"].append(_memory_permission.get())
-        if state["fail"] == "run" and len(state["attempts"]) == 1:
-            raise RuntimeError("connection reset by peer")
-        return {"answer": "ok"}
+    fakes = _Fakes(state, clone)
 
     async def _quiet(*_a, **_k):
         return ""
@@ -203,21 +215,22 @@ def run(tmp_path, monkeypatch):
     async def _fast_sleep(*_a, **_k):
         return None
 
-    monkeypatch.setattr(executor, "load_agent", _load)
-    monkeypatch.setattr(loader, "load_agent", _load)
-    monkeypatch.setattr(executor, "build_integrations", _integrations)
-    monkeypatch.setattr(integ, "build_integrations", _integrations)
-    monkeypatch.setattr(executor, "_integration_authorizer", _authorizer)
-    monkeypatch.setattr(executor, "_run_with_maf_agent", _run_maf)
+    monkeypatch.setattr(executor, "load_agent", fakes.load)
+    monkeypatch.setattr(loader, "load_agent", fakes.load)
+    monkeypatch.setattr(executor, "build_integrations", fakes.integrations)
+    monkeypatch.setattr(integ, "build_integrations", fakes.integrations)
+    monkeypatch.setattr(executor, "_integration_authorizer", fakes.authorizer)
+    monkeypatch.setattr(executor, "_run_with_maf_agent", fakes.run_maf)
     monkeypatch.setattr(executor, "_install_push_guard", _quiet)
     monkeypatch.setattr(executor, "_get_current_head", _quiet)
     monkeypatch.setattr(executor, "_detect_agent_commits", _detect)
     monkeypatch.setattr(acb_memory, "rehydrate_workspace", _rehydrate)
     monkeypatch.setattr(asyncio, "sleep", _fast_sleep)
     monkeypatch.setattr(ti, "_collect_injectable_platform_tools", lambda *_a, **_k: _PLATFORM)
-    monkeypatch.setattr(ti, "_load_disabled_skill_families", _disabled)
+    monkeypatch.setattr(ti, "_load_disabled_skill_families", fakes.disabled)
     monkeypatch.setattr(app_tools, "load_app_action_tools", lambda *_a, **_k: [])
     monkeypatch.setattr(workflow_tools, "load_workflow_tools", lambda *_a, **_k: [])
+
     def _go(parent_run_tools: frozenset[str] | None = None) -> dict[str, Any]:
         from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
 
