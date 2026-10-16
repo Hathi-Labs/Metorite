@@ -1,7 +1,8 @@
-"""EM-G11f1b — the mailbox teardown in the member purge, on a real database.
+"""EM-G11f1b and f1c — the mailbox teardown in the member purge and the org
+purge, on a real database.
 
-Spec: ``project-docs/specs/email_app_master_plan.md`` §12.3.13.9.2 (PR-G7b),
-acceptance 6, 7 and 10. Acceptance 8 and 9 are the org purge, PR-G7c.
+Spec: ``project-docs/specs/email_app_master_plan.md`` §12.3.13.9.2 (PR-G7b,
+PR-G7c), acceptance 6 to 10.
 
 R7 fence named here: ``email-purge-wiring``.
 
@@ -20,6 +21,19 @@ reaches a network.
   the same org keeps its rows and its filters.
 * ``test_a_purge_that_rolls_back_leaves_no_purge_row`` (acceptance 7).
 * ``test_a_sync_after_the_commit_writes_no_child_row`` (acceptance 10).
+* ``test_the_org_purge_writes_a_detached_row_for_each_mailbox``
+  (acceptance 8, PR-G7c): the REAL org door
+  (``DELETE /internal/operator/organizations/{slug}``) on a third org. One
+  detached row for each mailbox, and the open purge row of the org carried
+  there. ``email_mailbox_purges`` holds no row of the dead org after it. The
+  neighbour org keeps each mailbox, each filter and each purge row.
+* ``test_an_org_purge_that_rolls_back_leaves_no_detached_row``: the
+  detached rows commit with the org delete or not at all.
+* ``test_the_sweeper_closes_a_detached_row`` (acceptance 9): with Mem0 on
+  (the ``mem0`` fixture of f2), ``memory_purge.run_tick`` closes a detached
+  row after two good passes, and deletes no key that the row does not name.
+* ``test_the_detached_table_is_exempt_and_closed_to_public``: migration 276
+  as applied: no RLS, no foreign key, and no grant to PUBLIC.
 
 Run (real Postgres)::
 
@@ -43,13 +57,14 @@ from acb_common.db import bind_tenant, release_tenant, tenant_session
 from email_ingestion.persist import upsert_message
 from email_ingestion.providers.base import EmailAddress, EmailMessage
 from gateway.routes import operator as operator_door
-from gateway.routes.email import teardown
+from gateway.routes.email import memory_purge, teardown
 from sqlalchemy import text
 
 from tests.unit._tenant_ladder import tenant_engine_scope
 
-# ``promoted`` and ``app_engine`` are fixtures, used by name, so the import is
-# load-bearing even though it reads as unused.
+# ``mem0``, ``promoted`` and ``app_engine`` are fixtures, used by name, so the
+# import is load-bearing even though it reads as unused.
+from tests.unit.test_email_disconnect_memory_purge import mem0  # noqa: F401
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
     app_engine,
@@ -376,3 +391,227 @@ class TestTheMemberPurgeTearsDownEachMailbox:
                 "a sync after the commit wrote a child row")
         finally:
             wipe(p.admin_engine, keeper, gone)
+
+
+# ── the org purge, PR-G7c (acceptance 8 and 9) ──────────────────────────────
+
+
+def seed_org(admin, tag: str) -> tuple[str, str]:
+    """A third organization, so a purge never deletes a fixture org."""
+    slug = f"g7c-{tag}"
+    with admin.begin() as c:
+        org = str(c.execute(text(
+            "INSERT INTO organization (slug, display_name) VALUES (:s, :s) "
+            "RETURNING id"), {"s": slug}).scalar_one())
+    return org, slug
+
+
+def seed_purge_row(admin, org: str, owner: str, account_id: str) -> None:
+    """An open ``email_mailbox_purges`` row: a disconnect whose Mem0 passes
+    have not run. The mailbox row is gone already."""
+    with admin.begin() as c:
+        c.execute(text(
+            "INSERT INTO email_mailbox_purges (organization_id, owner_email, "
+            "account_id, next_try_at) VALUES (CAST(:o AS uuid), :u, "
+            "CAST(:a AS uuid), now())"), {"o": org, "u": owner, "a": account_id})
+
+
+def drop_org(admin, org: str) -> None:
+    with admin.begin() as c:
+        c.execute(text("DELETE FROM organization WHERE id = CAST(:o AS uuid)"),
+                  {"o": org})
+        c.execute(text("DELETE FROM email_detached_purges "
+                       "WHERE purged_org_id = CAST(:o AS uuid)"), {"o": org})
+
+
+def detached_rows(admin, org: str) -> list[Any]:
+    return _admin_read(
+        admin,
+        "SELECT purged_org_id, owner_email, account_id, state, passes, tries, "
+        "next_try_at <= now() AS due, done_at FROM email_detached_purges "
+        "WHERE purged_org_id = CAST(:o AS uuid) ORDER BY account_id", o=org)
+
+
+def make_detached_due(admin, org: str) -> None:
+    with admin.begin() as c:
+        c.execute(text("UPDATE email_detached_purges SET next_try_at = now() - "
+                       "interval '1 second' WHERE purged_org_id = CAST(:o AS uuid)"),
+                  {"o": org})
+
+
+async def org_purge(p, slug: str) -> dict[str, Any]:
+    """The REAL org door, as the app role."""
+    app_dsn = p.app_url.render_as_string(hide_password=False)
+    async with tenant_engine_scope(app_dsn):
+        return await operator_door.purge_organization(
+            slug, confirm=slug, x_operator_token=OP_TOKEN)
+
+
+class TestTheOrgPurgeTearsDownEachMailbox:
+
+    async def test_the_org_purge_writes_a_detached_row_for_each_mailbox(
+        self, promoted, app_engine, recorder,  # noqa: F811
+    ):
+        """Acceptance 8."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        _grant_check_to_app_role(p.admin_engine)
+        tag = uuid.uuid4().hex[:8]
+        gone = f"gone-{tag}@em-g11f1c.test"
+        stay = f"stay-{tag}@em-g11f1c.test"
+        org, slug = seed_org(p.admin_engine, tag)
+        gmail = seed_mailbox(p.admin_engine, org, gone, provider="gmail",
+                             filters=("flt-c1", "flt-c2"))
+        outlook = seed_mailbox(p.admin_engine, org, gone, provider="microsoft",
+                               filters=("rule-c1",), sub="sub-g7c")
+        # A mailbox of the org that a member disconnected earlier. Its row is
+        # gone, and its Mem0 purge is still open.
+        earlier = str(uuid.uuid4())
+        seed_purge_row(p.admin_engine, org, gone, earlier)
+        # The neighbour org: a mailbox with a filter, and an open purge row.
+        kept = seed_mailbox(p.admin_engine, p.org_b, stay, provider="gmail",
+                            filters=("flt-stay",))
+        kept_purge = str(uuid.uuid4())
+        seed_purge_row(p.admin_engine, p.org_b, stay, kept_purge)
+        children = _children(p.admin_engine)
+        try:
+            assert _rows_of(p.admin_engine, children, gmail), "the seed put no child row"
+            out = await org_purge(p, slug)
+            assert out["deleted"]["organization"] == 1
+            assert "before_delete" not in out, "the plans reached the receipt"
+            assert out["mailboxes"] == {"planned": 2, "finished": 2, "failed": 0,
+                                        "continuing": 0}
+            # One detached row for each mailbox, and the carried open row.
+            rows = detached_rows(p.admin_engine, org)
+            assert sorted(str(r.account_id) for r in rows) == sorted(
+                [gmail, outlook, earlier]), "a detached row is missing or extra"
+            assert {str(r.purged_org_id) for r in rows} == {org}
+            assert {r.owner_email for r in rows} == {gone}
+            assert all(r.state == "open" and r.due and r.passes == 0 for r in rows)
+            # None for the neighbour org.
+            assert detached_rows(p.admin_engine, p.org_b) == []
+            # The cascade took each purge row of the dead org, and the org.
+            assert _admin_read(p.admin_engine, "SELECT 1 FROM email_mailbox_purges "
+                               "WHERE organization_id = CAST(:o AS uuid)", o=org) == []
+            assert _admin_read(p.admin_engine, "SELECT 1 FROM organization "
+                               "WHERE id = CAST(:o AS uuid)", o=org) == []
+            for acc in (gmail, outlook):
+                assert recorder.gone(acc)
+                assert _rows_of(p.admin_engine, children, acc) == {}
+            # Each leg after the commit.
+            stops = sorted(e for e in recorder.events if e[0] == "stop")
+            assert stops == sorted([("stop", gmail, True), ("stop", outlook, True)]), (
+                "a loop stopped before the commit, or did not stop")
+            filters = sorted((e[1], e[2]) for e in recorder.events
+                             if e[0] == "filter_delete")
+            assert filters == [("gmail", "flt-c1"), ("gmail", "flt-c2"),
+                               ("microsoft", "rule-c1")]
+            assert ("graph_delete", "sub-g7c") in recorder.events
+            assert [e for e in recorder.events if e[0] == "revoke"] == [
+                ("revoke", TOKEN)], "the Gmail grant was not revoked once"
+            # The neighbour keeps its mailbox, its filter and its purge row.
+            assert not recorder.gone(kept)
+            assert _rows_of(p.admin_engine, children, kept).get("email_newsletters") == 1
+            assert _admin_read(p.admin_engine, "SELECT 1 FROM email_mailbox_purges "
+                               "WHERE account_id = CAST(:a AS uuid) AND "
+                               "organization_id = CAST(:o AS uuid)",
+                               a=kept_purge, o=p.org_b) != []
+            assert "flt-stay" not in [e[2] for e in recorder.events
+                                      if e[0] == "filter_delete"]
+        finally:
+            drop_org(p.admin_engine, org)
+            wipe(p.admin_engine, stay)
+
+    async def test_an_org_purge_that_rolls_back_leaves_no_detached_row(
+        self, promoted, app_engine, recorder,  # noqa: F811
+    ):
+        """A trigger refuses the delete of the org row, the LAST statement of
+        the purge. The detached rows were written before it, in the same
+        transaction, so they roll back with it, and no leg runs."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        tag = uuid.uuid4().hex[:8]
+        gone = f"gone-{tag}@em-g11f1c.test"
+        org, slug = seed_org(p.admin_engine, tag)
+        acc = seed_mailbox(p.admin_engine, org, gone, provider="gmail",
+                           filters=("flt-r1",))
+        with p.admin_engine.begin() as c:
+            c.execute(text(
+                "CREATE OR REPLACE FUNCTION g7c_refuse_org_purge() RETURNS trigger "
+                "LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'org purge refused'; "
+                "END $$"))
+            c.execute(text(
+                "CREATE TRIGGER g7c_refuse_org_purge BEFORE DELETE ON organization "
+                "FOR EACH ROW EXECUTE FUNCTION g7c_refuse_org_purge()"))
+        try:
+            with pytest.raises(Exception, match="org purge refused"):
+                await org_purge(p, slug)
+            assert detached_rows(p.admin_engine, org) == [], (
+                "a detached row outlived the rollback of its purge")
+            assert not recorder.gone(acc), "the mailbox went without its purge"
+            assert recorder.events == [], "a rolled-back purge reached a provider"
+        finally:
+            with p.admin_engine.begin() as c:
+                c.execute(text("DROP TRIGGER IF EXISTS g7c_refuse_org_purge "
+                               "ON organization"))
+                c.execute(text("DROP FUNCTION IF EXISTS g7c_refuse_org_purge()"))
+            drop_org(p.admin_engine, org)
+
+    async def test_the_sweeper_closes_a_detached_row(
+        self, promoted, app_engine, recorder, mem0,  # noqa: F811
+    ):
+        """Acceptance 9. After the org is gone, ``run_tick`` (the tick of the
+        loop) reads the detached row with no tenant bound, and closes it after
+        two good passes. It deletes only the key that the row names."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        tag = uuid.uuid4().hex[:8]
+        gone = f"gone-{tag}@em-g11f1c.test"
+        org, slug = seed_org(p.admin_engine, tag)
+        acc = seed_mailbox(p.admin_engine, org, gone, provider="imap")
+        scope = f"{gone}#acct:{acc}"
+        other = f"{gone}#acct:{uuid.uuid4()}"
+        m = mem0({scope: 30, gone: 2, other: 3})
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        try:
+            await org_purge(p, slug)
+            [row] = detached_rows(p.admin_engine, org)
+            assert (row.state, row.passes, row.due) == ("open", 0, True)
+            async with tenant_engine_scope(app_dsn):
+                await memory_purge.run_tick()
+            [row] = detached_rows(p.admin_engine, org)
+            assert (row.state, row.passes, row.tries) == ("open", 1, 1), (
+                "the tick did not take the detached row")
+            assert m.fake.left(scope) == 0
+            m.fake.seed(scope, "late")
+            make_detached_due(p.admin_engine, org)
+            async with tenant_engine_scope(app_dsn):
+                await memory_purge.run_tick()
+            [row] = detached_rows(p.admin_engine, org)
+            assert (row.state, row.passes) == ("done", 2) and row.done_at is not None
+            assert m.fake.left(scope) == 0
+            assert m.fake.left(gone) == 2, "the sweep took the bare member key"
+            assert m.fake.left(other) == 3, "the sweep took a key the row does not name"
+            # A closed row is never taken again.
+            make_detached_due(p.admin_engine, org)
+            reads = len([r for r in m.fake.reads if r[0] == scope])
+            async with tenant_engine_scope(app_dsn):
+                await memory_purge.run_tick()
+            assert len([r for r in m.fake.reads if r[0] == scope]) == reads
+        finally:
+            drop_org(p.admin_engine, org)
+
+    def test_the_detached_table_is_exempt_and_closed_to_public(self, promoted):  # noqa: F811
+        """Migration 276 as applied: no RLS, no foreign key, and no privilege
+        for PUBLIC."""
+        p = promoted
+        [(rls, force)] = _admin_read(
+            p.admin_engine, "SELECT relrowsecurity, relforcerowsecurity FROM pg_class "
+            "WHERE oid = 'email_detached_purges'::regclass")
+        assert (rls, force) == (False, False)
+        assert _admin_read(p.admin_engine, "SELECT 1 FROM pg_constraint WHERE "
+                           "conrelid = 'email_detached_purges'::regclass "
+                           "AND contype = 'f'") == []
+        assert _admin_read(p.admin_engine, "SELECT 1 FROM pg_class c, "
+                           "aclexplode(c.relacl) a WHERE c.oid = "
+                           "'email_detached_purges'::regclass AND a.grantee = 0") == []
