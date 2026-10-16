@@ -26,6 +26,13 @@ gateway reads them.
   §18.9.3). The grammar is the one of ``CRM_ORGS``. An empty list allows no
   organization: the sync does no fill work, and the routes serve no fill
   numbers and no labels. :func:`fill_rank_allowed` is the one check.
+* ``CRM_NOTE_SEARCH_ORGS`` — the organization ids that get search of note
+  text by meaning (WS-53 CRM-Q27, ``crm_platform.md`` §18.11.2). The grammar
+  is the one of ``CRM_ORGS``. An empty list allows no organization: the sync
+  starts no embed step, and ``GET /crm/notes/search`` answers ``degraded``
+  with no embed call. :func:`note_search_allowed` is the one check. 🔴 A name
+  in the list is OWNER-GATE, because each embed request costs vendor money
+  that no credit row pays. The grant ``enforcement-flip`` does not cover it.
 
 :func:`require_crm_enabled` is the router dependency in ``core.py``. It runs
 BEFORE ``require_feature_router("crm")``, so an organization outside the list
@@ -149,6 +156,25 @@ def fill_rank_allowed(organization_id: str | None) -> bool:
         return False
     org = str(organization_id).strip().lower()
     orgs = crm_fill_rank_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+def crm_note_search_orgs() -> frozenset[str]:
+    """The organization ids that get search by meaning. Empty means none."""
+    return _parse_orgs(str(get_settings().crm_note_search_orgs or ""))
+
+
+def note_search_allowed(organization_id: str | None) -> bool:
+    """True when the embed step and the search by meaning may serve this org.
+
+    It needs the CRM switch with the CRM list (:func:`crm_org_allowed`) AND a
+    place on ``CRM_NOTE_SEARCH_ORGS``, or ``*`` there (CRM-Q27). It reads the
+    settings and nothing else, so a dark box sends no SQL and no embed call.
+    """
+    if not crm_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = crm_note_search_orgs()
     return ALL_ORGS in orgs or org in orgs
 
 

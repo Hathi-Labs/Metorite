@@ -262,6 +262,8 @@ _INVOCATIONS: dict[str, Any] = {
     "crm_list_modules": lambda: _T.crm_list_modules(),
     "crm_list_module_records": lambda: _T.crm_list_module_records("Products"),
     "crm_get_module_record": lambda: _T.crm_get_module_record("Products", _ID),
+    # CRM-Q27: the search of notes by meaning.
+    "crm_search_notes": lambda: _T.crm_search_notes("pump leaks at the site"),
 }
 
 
@@ -933,6 +935,7 @@ _SHARED_ROUTES: dict[str, str] = {
     "crm_list_modules": "/crm/modules",
     "crm_list_module_records": "/crm/modules/Products/records",
     "crm_get_module_record": f"/crm/modules/Products/records/{_ID}",
+    "crm_search_notes": "/crm/notes/search",
 }
 
 
