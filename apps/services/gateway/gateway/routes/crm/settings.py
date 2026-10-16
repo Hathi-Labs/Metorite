@@ -388,6 +388,14 @@ async def patch_crm_settings(
         if resetting:
             await _reset_setup(db, org)
         result = _wire(row)
+    # After the commit: the access rule and the mode change what My Day may
+    # show, so the org's feed version moves (WS-58 MD-3e, `my_day_feed.md`
+    # §5.8 item 2). Nothing with MY_DAY_CACHE off. `bump_org_safe` waits a
+    # short time at most and never raises, so Redis never fails or holds a
+    # write that already committed (the MD-3c rule for another app's write).
+    from gateway.routes.shell import cache as feed_cache
+
+    await feed_cache.bump_org_safe(org)
     if resetting:
         # Drop the credential too: revoke best-effort, delete the blob. A
         # `connected` row never gets here (409 above).

@@ -44,6 +44,12 @@ from sqlalchemy import text
 #: The five keys of ``counts`` and ``estimate``. Mirrors ``engine.SLUG_ORDER``.
 COUNT_KEYS: tuple[str, ...] = ("organizations", "contacts", "leads", "deals", "activities")
 
+#: The keys of ``counts`` that are not an entity, so no Sync health row and
+#: no ``failed`` sum reads them. ``activity_drops`` counts the activities that
+#: the sync did not store, by parent module (CRM-Q23a). Mirrors
+#: ``engine.ACTIVITY_DROPS_KEY``, and a test pins the two.
+NOT_ENTITY_KEYS: frozenset[str] = frozenset({"activity_drops"})
+
 
 class SyncStatusModel(BaseModel):
     """The state of the mirror sync of the caller's organization."""
@@ -195,7 +201,8 @@ def _seen(counts: dict) -> dict[str, int]:
 def _failed(counts: dict) -> int:
     """The records of the last run that failed to write."""
     return sum(
-        int(v.get("failed") or 0) for v in counts.values() if isinstance(v, dict)
+        int(v.get("failed") or 0) for k, v in counts.items()
+        if isinstance(v, dict) and k not in NOT_ENTITY_KEYS
     )
 
 
@@ -310,8 +317,9 @@ def _last_run_counts(value: Any) -> dict[str, int]:
 
 
 def _entity_keys(counts: dict, estimate: dict) -> list[str]:
-    """The five keys in order, then any other key of the counts or the estimate."""
-    extra = sorted((set(counts) | set(estimate)) - set(COUNT_KEYS))
+    """The five keys in order, then any other key of the counts or the estimate.
+    A key of :data:`NOT_ENTITY_KEYS` is no entity, so it gets no row."""
+    extra = sorted((set(counts) | set(estimate)) - set(COUNT_KEYS) - NOT_ENTITY_KEYS)
     return [*COUNT_KEYS, *extra]
 
 

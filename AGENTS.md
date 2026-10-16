@@ -231,7 +231,7 @@ Check with `uv tree` / `uv pip list`. Key runtime pins: `agent-framework-*`
 - Commit review cadence -- after every batch of ~5 commits (or any major feature/fix
   wave) on main, run a review pass over the changed files: check comments for accuracy
   and staleness, cross-references in docs, logic/type-hint correctness, and check
-  that the deploy run's `Unit tests (main, not a gate)` job is green. When a review is complete, mark it:
+  that the deploy run's `Unit tests (a signal on a push, a gate on a release)` job is green. When a review is complete, mark it:
   `git tag review/YYYY-MM-DD && git push --tags`
   Check whether a review is currently due:
   `git log $(git describe --tags --match "review/*" --abbrev=0 2>/dev/null || echo "")..HEAD --oneline`

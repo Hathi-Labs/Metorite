@@ -30,6 +30,15 @@ FORENSICS=$LOG_DIR/net-forensics.log
 mkdir -p "$LOG_DIR"
 
 # Gateway hostname as served by Caddy — see deploy/hostinger/caddy/Caddyfile.
+# WS-38 S-4: read it from the Caddyfile THIS box serves, so a staging box
+# (Caddyfile.staging, api.dev.metorite.com) probes its own host. A probe of a
+# host the box does not serve fails every run, and this script would then
+# restart Caddy every run. The first `api.` site wins. Without the file, the
+# production name stays the default.
+watchdog_vhost() {
+  awk '/^api\.[A-Za-z0-9.-]+ *\{/ { print $1; exit }' "${1:-/etc/caddy/Caddyfile}" 2>/dev/null
+}
+CADDY_VHOST="${CADDY_VHOST:-$(watchdog_vhost "${WATCHDOG_CADDYFILE:-/etc/caddy/Caddyfile}")}"
 CADDY_VHOST="${CADDY_VHOST:-api.metorite.com}"
 
 ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }

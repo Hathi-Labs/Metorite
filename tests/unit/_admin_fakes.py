@@ -19,6 +19,7 @@ import re
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any, ClassVar
+
 from tests.unit._sql_match import hits
 
 ORG = "00000000-0000-0000-0000-00000000000a"
@@ -70,6 +71,17 @@ class _Scalars:
 
     def all(self) -> list[Any]:
         return [next(iter(r.values())) for r in self._rows]
+
+
+class _PlanRows:
+    """``fetchall`` with attribute access, the way ``teardown.py`` reads the
+    teardown plans (EM-G11f1b)."""
+
+    def __init__(self, rows: list[dict[str, Any]]):
+        self._rows = rows
+
+    def fetchall(self) -> list[Any]:
+        return [SimpleNamespace(**r) for r in self._rows]
 
 
 class _Rows:
@@ -199,6 +211,9 @@ class _FakeDB:
         #: modelled above and the purge branch reads and writes those, so a
         #: test sees one world rather than two.
         self.rows: dict[str, list[dict[str, Any]]] = {}
+        #: EM-G11f1b. Each ``email_mailbox_purges`` row a purge wrote, as the
+        #: address it was keyed by, in the order of the statements.
+        self.purge_rows: list[str] = []
         #: ``organization`` — id → row. Seeded with the single tenant the
         #: pre-retrofit files assume; ``test_admin_tenancy.py`` adds a second.
         self.organizations: dict[str, dict[str, Any]] = {
@@ -681,6 +696,33 @@ class _FakeDB:
         # user_role) and **before** the `FROM access_request` reader, which
         # matches on a substring and would answer a `SELECT count(*) FROM
         # access_request` with a request ROW.
+        # EM-G11f1b: the teardown plans of a member purge, read before the
+        # deletes. The clause is ``teardown.MEMBER_MAILBOXES_WHERE``, read
+        # from the statement like the purge branch below. A seeded row with
+        # no provider is IMAP, so it holds no filters and no grant, and with
+        # no organization it reaches no Redis.
+        if s.startswith("SELECT id, organization_id, provider, credentials_encrypted"):
+            assert "lower(user_id) = :email" in s, s
+            want = str(p["email"]).lower()
+            found = [r for r in self.rows.get("email_accounts", [])
+                     if str(r.get("user_id", "")).lower() == want]
+            return _PlanRows([{
+                "id": r.get("id", f"acc-{i}"),
+                "organization_id": r.get("organization_id"),
+                "provider": r.get("provider", "imap"),
+                "credentials_encrypted": r.get("credentials_encrypted", "blob"),
+                "user_id": r["user_id"],
+                "email_address": r.get("email_address"),
+                "webhook_subscription_id": None,
+            } for i, r in enumerate(found)][: int(p["limit"])])
+        if s.startswith("INSERT INTO email_mailbox_purges"):
+            assert "lower(user_id) = :email" in s, s
+            want = str(p["email"]).lower()
+            mine = [r for r in self.rows.get("email_accounts", [])
+                    if str(r.get("user_id", "")).lower() == want]
+            self.purge_rows.extend(str(r["user_id"]) for r in mine)
+            return _Rows([], rowcount=len(mine))
+
         stmt = _PERSON_STMT.match(s)
         if stmt:
             table = stmt.group(2)

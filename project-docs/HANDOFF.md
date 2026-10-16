@@ -5372,11 +5372,12 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `git grep -n -A2 "WHERE user_id = :uid" -- apps/services/gateway/gateway/routes/tasks`.
   A statement that names no `organization_id` means this entry stays.
 - **Why.** Migration 239 keys `user_settings` on `(organization_id, user_id)`.
-  Production connects as the owner role, which reads past RLS. So a read by
-  `user_id` alone can return the row of another org, for a member who belongs
-  to two orgs. The data is the same person's own, so the impact is low. MD-3c
-  fixed `stored_zone`, `tasks.settings._load` and the work-schedule seed. These
-  reads still name no tenant:
+  The gateway connects as `acb_app`, which does not bypass RLS, and FORCE RLS
+  is on (measured on the box, 2026-10-16). So RLS keeps another org's row
+  out, and the org predicate is defence in depth (R5). A read by `user_id`
+  alone returns another org's row only for a role that bypasses RLS. MD-3c
+  fixed `stored_zone`, `tasks.settings._load` and the work-schedule seed.
+  These reads still name no tenant:
   1. `routes/tasks/settings.py` `task_models` (about :134).
   2. `routes/tasks/settings.py` `task_toggles` (about :156).
   3. `routes/tasks/calendar.py` (about :571, :608 and :1171).
@@ -5613,13 +5614,12 @@ line — never reclaim a number by deleting the other entry.
   3,003 rows against an estimate of 4,947, this entry is open.
 - **Why.** The run of 2026-10-15 20:24 marked Payment_Made done with 3,003 of
   4,947 records. Products kept 9 of 13, and Operator_Associates 871 of 873.
-  Outstanding (3,623) matched. The cause is not known. Zoho's count call may
-  count records that the list call does not return. Or the walk may skip
-  records. All 3,003 kept rows were modified in one hour of 2025-06-06.
-- **Do this:** read one page of Payment_Made with and without the
-  `If-Modified-Since` header, and compare with the count call. Find the
-  missing ids. Then fix the walk, or show the difference on the Sync health
-  card as "not visible to the connected user".
+  Outstanding (3,623) matched. **Cause found 2026-10-16** (§18.10.1). The
+  connected Zoho user cannot see the other records, and Zoho's count ignores
+  that. A probe ruled out approval and a v2 or v8 difference.
+- **Do this:** build CRM-Q24, so the Sync health card shows the short read.
+  The owner asks DEWiN to reconnect with a Zoho admin user. That may also
+  open their fields, layouts and pipelines to discovery.
 - **Authority:** `crm_platform.md` §18.7 (the generic store) and §18.9.2
 - **Added:** 2026-10-16 · WS-53, DEWiN import
 
@@ -5630,9 +5630,12 @@ line — never reclaim a number by deleting the other entry.
   (`What_Id`) is a custom-module record finds no core parent, so the sync
   skips it. The member never sees those tasks. The 18,674 held activities
   will likely do the same when they sync.
-- **Do this:** link an activity to a `crm_module_records` row when its parent
-  is a mirrored module. Show it on the record page of that module.
-- **Authority:** `crm_platform.md` §18.7 and §18.9.2
+- **Do this:** build CRM-Q23a, then CRM-Q23b and CRM-Q23c (§18.10). Keep
+  DEWiN's Activities held until they ship. Notes are hit too: the import
+  linked 1 of 3,848. The notes already read come back only through the
+  one-time full read of CRM-Q23b item 5. DEWiN's 1,145 tasks have no parent,
+  and they stay out (owner, 2026-10-16).
+- **Authority:** `crm_platform.md` §18.10
 - **Added:** 2026-10-16 · WS-53, DEWiN import
 
 
@@ -5722,6 +5725,29 @@ line — never reclaim a number by deleting the other entry.
   Add an R8 test with two currencies in one lane.
 - **Authority:** `specs/crm_app.md` (the reports routes), `specs/projects_ai_chat.md` §14.10.9
 - **Added:** 2026-10-16 · WS-27bm §14.10.9 B3 review
+### H-334 · The email owner check names no tenant by default · [AGENT]
+- **Check:** `git grep -n "this_tenant: bool = False" -- apps/services/gateway/gateway/routes/email/core.py`.
+  A hit means this entry stays.
+- **Why.** The gateway connects as `acb_app`. That role is not a superuser,
+  has no BYPASSRLS and does not own the tables, and FORCE RLS is on (measured
+  on the box, 2026-10-16). So RLS keeps another org's rows out, and a missing
+  org predicate is defence in depth (R5), not a live leak. It leaks only if
+  a path reads with a role that bypasses RLS. The gap is wide. The default of
+  `email/core.py` `_assert_account_owner` (about :870) is
+  `this_tenant=False`, and about 62 callers use it, some of them writes. An
+  example is `create_rule` (`automation/rules.py` :637). Only MD-3d's two
+  wrappers pass `this_tenant=True`.
+- **Do this:**
+  1. Read each caller of `_assert_account_owner`. Then make `this_tenant`
+     default to True, and pass False only where a reason is written.
+  2. Name the tenant in the list reads: `transport/accounts.py`
+     `feed_mailboxes` (about :361) and `list_accounts` (about :302), and
+     `automation/identity.py` `resolve_self_addresses` (about :395).
+  3. Add one R8 case as a role that bypasses RLS, with one mailbox in two
+     orgs, modelled on
+     `test_feed_mail_kinds_r8.py::TestTheTenantUnderTheOwnerRole`.
+- **Authority:** R5 · `specs/my_day_feed.md` §16 MD-3d (what the build found)
+- **Added:** 2026-10-15 · MD-3d build · rewritten 2026-10-16, MD-3d review
 
 # DONE — deleted, not archived
 

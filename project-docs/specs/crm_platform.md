@@ -1239,6 +1239,8 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q20** | The mapping pipeline on the decide tier, the suggestion in an empty slot, the panel and Undo. Replaces the CRM-Q7b proposer. §18.9 | P1 |
 | **CRM-Q21** | Promote a module into a core entity. §18.9 | P1 |
 | **CRM-Q22** | Source changes as suggestions, then a CSV source, then HubSpot. §18.9 | P2 |
+| **CRM-Q23** | Link a Zoho activity to a custom-module record, and show it there, in three slices (Q23a, Q23b, Q23c). §18.10 | P0 |
+| **CRM-Q24** | A short read shows on the Sync health card. §18.10 | P1 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
 
@@ -2418,6 +2420,146 @@ density, a changed accent and 375 px.
 - Frontend: `npx tsc --noEmit && npx vitest run src/app/crm` in
   `workbench/control_plane`.
 - Screens: the `visual-review` skill on each changed surface.
+
+### 18.10 Activities on a module record, and a short read that shows (CRM-Q23, CRM-Q24, 2026-10-16)
+
+**Status (2026-10-16).** CRM-Q23a: built, on the branch `crm-q23`. CRM-Q23b,
+CRM-Q23c and CRM-Q24: specified, not built. Verified against code at
+`origin/main` `0a14f7552`. Found on DEWiN's import (H-326, H-327).
+
+#### 18.10.1 What the import found
+
+**Activities.** `mapping._activity_links` links a task, a note, a call or a
+meeting through `Who_Id` and `What_Id`. A `What_Id` resolves only through
+`_MODULE_ENTITY`, which holds Accounts, Contacts, Leads and Deals. An activity
+whose parent is any other module finds no target. `_write_record` then counts
+it `unlinked` and does not store it. The CHECK `crm_activities_target_required`
+(`144_crm.sql`) enforces the same rule.
+
+DEWiN's import read 1,145 tasks and linked none. It read 3,848 notes and
+linked 1. DEWiN's notes total 18,674, and other activities add more. They
+would be lost the same way, so the `activities` hold stays until CRM-Q23
+ships.
+
+**Probe of 2026-10-16 (2 credits).** One page of DEWiN's Zoho Notes showed
+`$se_module` set to `Operator_Associates` on all 200 rows. So a note names
+its custom module by its API name, as CRM-Q23a assumes. One page of Tasks
+showed no `What_Id`, no `Who_Id` and no `$se_module` on all 200 rows. All
+200 had one owner and the status "Not Started".
+
+**Owner decision (2026-10-16, in chat).** A Zoho task with no parent record
+and no person stays out of Metorite. Metorite never writes to the customer's
+Zoho to clean them up. CRM-Q24 shows their count.
+
+**Counts.** Zoho counted 4,947 Payment Made records, and the list returned
+3,003. A probe on 2026-10-16 found the cause. The list of v2 and of v8 both
+end at the same newest record, and no record waits for approval. Products
+gives 9 records to the list and 13 to the count. So the connected Zoho user
+cannot see the rest, and Zoho's count ignores that. No code can read a record
+that the user cannot see.
+
+#### 18.10.2 Tickets
+
+| Ticket | Slice | Gate | Size | Waits for |
+|---|---|---|---|---|
+| CRM-Q23a | Link an activity to a module record, and serve it. Backend | AGENT-SAFE | M | — |
+| CRM-Q23b | Recover an activity dropped before its module record landed | AGENT-SAFE | M | CRM-Q23a |
+| CRM-Q23c | The timeline on a module record page. Frontend | AGENT-SAFE | S | CRM-Q23a |
+| CRM-Q24 | A short read shows on the Sync health card | AGENT-SAFE | S | — |
+
+**Not in scope of CRM-Q23.** A composer or any write on a module record. A
+push of a module activity to Zoho. A next-activity chip on a module card. The
+release of DEWiN's `activities` hold, which stays an admin act. Native mode.
+
+**CRM-Q23a · Activities on a module record, backend.** The spec audit of
+2026-10-16 narrowed it. Done when:
+
+1. A migration takes the next free number at build time (275 on
+   2026-10-16). It adds `crm_activities.module_record_id`, shown below, and a
+   partial index where it is not null. It is expand-only (R6).
+   `module_record_id UUID NULL REFERENCES crm_module_records (id) ON DELETE CASCADE`
+2. One `DO` block drops `crm_activities_target_required`, adds it again with
+   `module_record_id` as `NOT VALID`, and validates it. The block runs only
+   when `pg_get_constraintdef` lacks `module_record_id`. A second run changes
+   nothing.
+3. `_activity_links` adds a module candidate when `$se_module` is not one of
+   the four core modules. The engine resolves it in `crm_module_records` by
+   module and `ext_id`, in the tenant session. A module that is not mirrored,
+   or a record not read yet, stays unlinked. A custom `$se_module` never falls
+   back to the core candidates. A module parent gets no `_BUMP_SQL`.
+4. Each run counts the dropped activities by `$se_module`, as numbers only,
+   under the counts key `activity_drops`. Sync health does not show it as an
+   entity row. A test proves that `GET /crm/sync/health` still serves.
+5. `GET /crm/modules/{module}/records/{record_id}/timeline` serves the
+   activities of a module record. It is read only. An unknown module or
+   record gives 404. It keeps tenant isolation. `ActivityModel` gains
+   `module_record_id`.
+6. Each reader that assumes a core parent still works, and a test covers
+   each. The readers are the activity edit and delete routes, the
+   next-activity statements, the export and `sync_zoho.push_activities`.
+
+**Built as (2026-10-16).** Migration 275 holds the column, the index and the
+CHECK. `mapping._activity_links` gives the candidate `module_record_id` with
+the entity `module:<ApiName>`, and `Mapped.parent_module` keeps the name.
+`engine._local_id` resolves it only for a module that the profile mirrors.
+The drop key is `(none)` when an activity names no module. `activity_drops`
+is in `NOT_ENTITY_KEYS` of `routes/crm/sync.py`, so the `failed` sum skips it
+too. The route reuses `activities.activity_entries_by` and `merge_page`. The
+readers of done-when 6 needed no change. A module-only row never matches
+their column. The mirror stamps `zoho_id`, so the push skips the row.
+`schema.generated.sql` stays stale on purpose. Fences:
+`test_crm_module_activities_r8.py`, `test_crm_migration.py` and
+`test_crm_sync_engine.py`.
+
+**CRM-Q23b · Recover a dropped activity.** Done when:
+
+1. Take an activity whose `$se_module` is a mirrored module, but whose
+   record is not in yet. The sync keeps its Zoho id in the cursor state of
+   its entity. The list holds at most 5,000 ids for each entity.
+2. After the module pass, the sync reads the kept ids of each entity, 100
+   ids in each call. Check the `ids=` parameter against Zoho at build time. A
+   linked activity leaves the list. An id that stays unlinked for 7 days
+   leaves it too.
+3. A list that overflows marks its entity for one full read after the next
+   module pass. It respects a CRM-Q16 hold, and it never queues while the
+   first import of the activity entity is not done.
+4. An R8 test proves the case of a new record and a new task in one run.
+5. The sync queues one full read of note, call and meeting, through the
+   existing re-read list. It does so one time for each org with mirrored
+   module records.
+   The records that a run read before CRM-Q23a sit behind the cursor, so
+   only this read brings them back. It runs before an admin releases a
+   CRM-Q16 hold on `activities`, and it respects that hold.
+
+**CRM-Q23c · The timeline on a module record.** Done when:
+
+1. `ModuleRecordSheet.tsx` shows the timeline of CRM-Q23a, read only.
+2. `Timeline.tsx` gets a read-only mode with no composer. `lib/api.ts` and
+   `lib/modules.ts` get the fetch.
+3. The `visual-review` skill checks the record page in light mode, compact
+   density and 375 px.
+
+**Verify CRM-Q23 with:**
+
+- `bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"`
+- `uv run pytest tests/unit/test_crm_migration.py tests/unit/test_crm_sync_engine.py tests/unit/test_crm_sync_engine_r8.py tests/unit/test_crm_sync_holds_r8.py tests/unit/test_crm_hidden_module_r8.py tests/unit/test_crm_module_records_r8.py tests/unit/test_crm_modules_routes_r8.py tests/unit/test_crm_next_activity_r8.py tests/unit/test_crm_export.py tests/unit/test_crm_reset_r8.py tests/unit/test_tenant_coverage.py -q`,
+  with the new R8 suite. Confirm that no test is skipped.
+- `uv run ruff check` on each changed file.
+- For CRM-Q23c: `npx tsc --noEmit && npx vitest run src/app/crm` in
+  `workbench/control_plane`.
+
+**CRM-Q24 · A short read shows.** Done when:
+
+1. When a full read of a module ends with fewer records than Zoho's count, the
+   cursor records `short_by`.
+2. The Sync health card shows it: "Zoho counts 4,947. The connected Zoho user
+   can read 3,003. Connect with a Zoho admin to read all of them."
+3. A read of more than 2,000 records inside one second, with no
+   `next_page_token`, raises a named error. It never ends the walk as done.
+   A unit test fences it.
+4. Sync health shows the activities that have no parent: "1,145 Zoho tasks
+   belong to no record. Metorite leaves them out." It reads the `(none)`
+   count of `activity_drops`.
 
 ---
 

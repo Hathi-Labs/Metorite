@@ -380,6 +380,9 @@ class ActivityModel(MirrorFields):
     deal_id: str | None = None
     contact_id: str | None = None
     company_id: str | None = None
+    #: CRM-Q23a: the generic module record of a mirrored activity whose parent
+    #: is a custom module (``crm_module_records``). Only the sync sets it.
+    module_record_id: str | None = None
     created_by: str | None = None
     meta: dict | None = None
     zoho_id: str | None = None

@@ -1012,12 +1012,27 @@ class TestEachChildIsEmptyAfterADisconnect:
         assert _edge_violations(edges) == [
             "tmp_child.account_id -> email_accounts is ON DELETE n, not CASCADE"]
 
+    @pytest.mark.parametrize("how", ["disconnect", "member_purge"])
     async def test_each_child_is_empty_after_a_disconnect(
-        self, promoted, app_engine, r8_doubles, monkeypatch,  # noqa: F811
+        self, promoted, app_engine, r8_doubles, monkeypatch, how,  # noqa: F811
     ):
+        """EM-G11f1b (§12.3.13.9.2) adds the member purge as a second delete
+        of a mailbox. PR-G7c adds the org purge."""
+        from tests.unit.test_email_purge_wiring import (
+            OP_TOKEN,
+            member_purge,
+            seed_member,
+            wipe,
+        )
+
         _assert_non_priv(app_engine)
         p = promoted
         owner = f"member-{uuid.uuid4().hex[:8]}@em-g11f2.test"
+        keeper = f"keeper-{uuid.uuid4().hex[:8]}@em-g11f2.test"
+        if how == "member_purge":
+            seed_member(p.admin_engine, p.org_b, keeper, owner=True)
+            seed_member(p.admin_engine, p.org_b, owner)
+            monkeypatch.setenv("GATEWAY_OPERATOR_TOKEN", OP_TOKEN)
         acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner)
         with p.admin_engine.begin() as c:
             msg = str(c.execute(text(
@@ -1059,7 +1074,10 @@ class TestEachChildIsEmptyAfterADisconnect:
                            if t == table and col != "<own key>"), (
                     f"the seed put no row of the mailbox in {table}")
                 assert before[(table, "<own key>")] == 1, f"the key of {table} finds no row"
-            await _disconnect_with_no_task(p, monkeypatch, owner, acc)
+            if how == "disconnect":
+                await _disconnect_with_no_task(p, monkeypatch, owner, acc)
+            else:
+                await member_purge(p, owner)
             after = _counts()
             left = {k: n for k, n in after.items() if n}
             assert left == {}, f"a child kept rows of the mailbox: {left}"
@@ -1067,3 +1085,4 @@ class TestEachChildIsEmptyAfterADisconnect:
                 "the cascade deleted the purge row")
         finally:
             _wipe(p.admin_engine, owner, acc)
+            wipe(p.admin_engine, keeper, owner)

@@ -5,6 +5,7 @@ Spec: ``project-docs/specs/crm_platform.md`` §18.7 "CRM-Q6b: the views".
     GET  /crm/modules                          the mirrored generic modules
     GET  /crm/modules/{module}/records         one page of a module's records
     GET  /crm/modules/{module}/records/{id}    one record, its fields and links
+    GET  /crm/modules/{module}/records/{id}/timeline   its activities (CRM-Q23a)
 
 CRM-Q6a mirrors each Zoho module that has no table of its own into
 ``crm_module_records`` (Products, Quotes, each custom module). These routes
@@ -49,6 +50,13 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query
+from gateway.routes.crm.activities import (
+    MAX_TIMELINE_OFFSET,
+    MODULE_ACTIVITY_COLUMN,
+    TimelineResponse,
+    activity_entries_by,
+    merge_page,
+)
 from gateway.routes.crm.core import (
     ENTITIES,
     MAX_PAGE_SIZE,
@@ -173,6 +181,13 @@ _COUNTS_SQL = (
 
 _ONE_SQL = (
     f"SELECT {_COLUMNS} FROM crm_module_records "
+    "WHERE id = CAST(:id AS uuid) AND module = :module"
+)
+
+#: The record exists in this module (CRM-Q23a). Row level security keeps the
+#: read in the tenant.
+_EXISTS_SQL = (
+    "SELECT id FROM crm_module_records "
     "WHERE id = CAST(:id AS uuid) AND module = :module"
 )
 
@@ -432,3 +447,45 @@ async def get_module_record(
     return ModuleRecordPage(
         module=_summary(row), record=record, field_defs=defs, links=links,
     )
+
+
+@router.get(
+    "/modules/{module}/records/{record_id}/timeline", response_model=TimelineResponse,
+)
+async def get_module_record_timeline(
+    module: str,
+    record_id: str,
+    limit: int = Query(100, ge=1, le=500),
+    user: UserContext = Depends(get_current_user),
+    offset: int | None = Query(None, ge=0, le=MAX_TIMELINE_OFFSET),
+) -> TimelineResponse:
+    """The activities of one record of a mirrored module, newest first
+    (WS-53 CRM-Q23a, ``crm_platform.md`` §18.10). Read only.
+
+    The module check comes first, so an unknown module is a 404 before any
+    read of a record. An unknown record is a 404 too. The one source is
+    ``crm_activities.module_record_id``: a module record has no status log,
+    and the email join needs an address that a generic record does not have.
+    With ``offset`` the read is a page of the same total order as every
+    other timeline (``activities.merge_page``).
+    """
+    if not isinstance(offset, int) or isinstance(offset, bool):
+        offset = None  # a direct call passes FastAPI's `Query` object
+    strict = offset is not None
+    want = (offset or 0) + limit + 1 if strict else limit
+    async with _tenant_session() as db:
+        _require_module(await mirrored_modules(db), module)
+        wanted = checked_uuid(record_id, "id")
+        found = (await db.execute(
+            text(_EXISTS_SQL), {"id": wanted, "module": module},
+        )).first()
+        if found is None:
+            raise HTTPException(status_code=404, detail="Record not found")
+        entries = await activity_entries_by(
+            db, MODULE_ACTIVITY_COLUMN, wanted, "own", want, strict=strict,
+        )
+    if strict:
+        page, more = merge_page(entries, offset or 0, limit)
+        return TimelineResponse(entries=page, has_more=more)
+    entries.sort(key=lambda e: (e.at or ""), reverse=True)
+    return TimelineResponse(entries=entries[:limit])
