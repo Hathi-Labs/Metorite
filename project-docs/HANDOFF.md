@@ -5321,6 +5321,9 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-14 · PR-G8 (`gmail-purge-durable`), fix round 2
 - **Widened:** 2026-10-16 · the Check now reads `routes/agent.py` and
   `main.py` too, after a spec-auditor finding
+- **Status:** 2026-10-16 · built on branch `gmail-chat-copies`, not merged.
+  W10 (`POST /memory/{scope}/add`, which the chat posts to on unmount) is
+  not covered. §12.3.13.9.1 names it
 
 ### H-309 · Create the WS-59 tasks in the Metorite project "Proactive Intelligence" · [AGENT]
 - **Check:** in a session with the Metorite MCP, run `search_tasks` with the
