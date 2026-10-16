@@ -58,6 +58,7 @@ import {
   editedMarker, isSuperseded, settleEditAnswer, EDIT_RUN_BUSY, EDIT_UNSENT, type EditOutcome,
 } from "@/lib/chatEdit";
 import { cardAnswerFrom, cardAnswerMarker, CARD_ANSWER_EVENT, type CardAnswer } from "@/lib/cardAnswer";
+import { isQuietArtifact } from "@/lib/artifactCards";
 
 // Re-export types for backward compatibility with AgentChat.tsx imports.
 export type { ChatMessage, ToolEvent };
@@ -139,6 +140,9 @@ export interface ArtifactEntry {
   sha256?: string;
   size?: number;
   mimeType?: string;
+  /** The server marked the file quiet: another card shows it, so the file
+   *  tree lists it and nothing opens or draws a card (`lib/artifactCards.ts`). */
+  quiet?: boolean;
 }
 
 interface UseAgentChatOptions {
@@ -690,6 +694,7 @@ export function useAgentChat({
                     sha256: data?.sha256 ? String(data.sha256) : undefined,
                     size: data?.size != null ? Number(data.size) : undefined,
                     mimeType: data?.mime_type ? String(data.mime_type) : undefined,
+                    quiet: isQuietArtifact(data),
                   });
                 }
                 // HITL control events (ask_questions / ask_user / confirm) are
@@ -1154,6 +1159,7 @@ export function useAgentChat({
                     sha256: data?.sha256 ? String(data.sha256) : undefined,
                     size: data?.size != null ? Number(data.size) : undefined,
                     mimeType: data?.mime_type ? String(data.mime_type) : undefined,
+                    quiet: isQuietArtifact(data),
                   });
                 }
                 if (!HITL_CONTROL_EVENTS.has(evtName)) {

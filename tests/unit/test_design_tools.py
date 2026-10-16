@@ -118,8 +118,19 @@ def test_each_section_returns_only_its_own_block():
 def test_section_aliases_and_case_insensitivity():
     for alias in ("charts", "CHARTS", "dataviz", "data-viz", "chart"):
         assert "cc-donut" in asyncio.run(dt.load_design_system(alias))
-    for alias in ("blocks", "report", "kit"):
+    for alias in ("blocks", "kit"):
         assert "cc-eyebrow" in asyncio.run(dt.load_design_system(alias))
+
+
+def test_report_is_the_field_guide_of_make_report():
+    """projects_ai_chat.md §14.10: "report" names the make_report guide, in
+    any case, and no longer the cc-report HTML kit ("blocks" serves that)."""
+    from acb_skills.reports import REPORT_GUIDE
+
+    for alias in ("report", "REPORT", "reports"):
+        out = asyncio.run(dt.load_design_system(alias))
+        assert out == REPORT_GUIDE
+        assert "cc-eyebrow" not in out
 
 
 def test_all_still_returns_the_complete_document():
@@ -154,3 +165,8 @@ def test_marker_drift_falls_back_to_the_full_document(monkeypatch):
     monkeypatch.setitem(dt._CHUNKS, "charts", ("NO SUCH MARKER", None))
     out = asyncio.run(dt.load_design_system("charts"))
     assert "Visual theme & atmosphere" in out  # i.e. the whole document
+
+def test_the_docstring_no_longer_sends_a_report_to_html_or_markdown():
+    """Review of #1064: a report is make_report, so the docstring names a page."""
+    doc = " ".join((dt.load_design_system.__doc__ or "").split())
+    assert "Markdown **report**" not in doc and "full-page HTML **page**" in doc

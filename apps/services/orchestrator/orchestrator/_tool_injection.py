@@ -1579,6 +1579,14 @@ def _collect_injectable_platform_tools(agent_name: str | None = None) -> list[An
     except ImportError:
         pass
 
+    # A report: one file the chat draws as a card, and its PDF, from one spec
+    # (projects_ai_chat.md §14.10). The same family and the same PDF seam.
+    try:
+        from acb_skills.reports import make_report
+        _all_tools = [*_all_tools, make_report]
+    except ImportError:
+        pass
+
     # Chat attachments (H-229) — the text of a file the member attached in
     # THIS chat, by pure parsing: no subprocess, no code. It is no shell
     # tool, so D85 does not withhold it (`_withheld_shell_tools`).
@@ -1743,8 +1751,15 @@ def _inject_agent_tools(
     tool_scope: list[str] | None = None, agent_name: str | None = None,
     agent_config: dict[str, Any] | None = None,
     no_egress: bool = False,
-) -> None:
+) -> frozenset[str]:
     """Inject cross-agent delegation tools into every loaded agent.
+
+    Returns the names of the platform tools this run holds after every
+    narrowing (scope, skill toggles, D85, H-236, the floor opt-out and
+    WhatsApp). The executor binds them as ``run_tools`` in the artifact
+    context, and ``write_artifact.run_holds_tool`` reads them, so a tool that
+    reaches another tool in-process asks the same answer (§14.10 of
+    ``projects_ai_chat.md``). Empty when nothing was injected.
 
     ``agent_config`` is the agent's parsed ``config.json``. Its ``sharing``
     block decides the D85 interim block (:func:`_withheld_shell_tools`): a
@@ -1802,7 +1817,7 @@ def _inject_agent_tools(
     if not _all_tools:
         if no_egress:  # H-236 holds even when nothing else is injected
             _apply_no_egress(agents, agent_name)
-        return  # acb_skills not installed in this env — skip silently
+        return frozenset()  # acb_skills not installed in this env — skip silently
 
     # ── Tool scoping: a guaranteed core floor + optional per-agent scope ───
     # A config.json ``tool_scope`` narrows the injected set to only what the
@@ -1940,6 +1955,9 @@ def _inject_agent_tools(
         "approve_all"
     ):
         _extra_tools = [_gate_injected_tool(fn) for fn in _extra_tools]
+    # The run's tools after every narrowing above. ``functools.wraps`` keeps
+    # each name through the gate.
+    _run_tool_names = frozenset(getattr(fn, "__name__", "") for fn in _extra_tools)
 
     # Whether emit_generative_ui actually landed in this agent's toolset — the
     # gate above wraps the callables but functools.wraps preserves __name__.
@@ -2261,6 +2279,7 @@ def _inject_agent_tools(
     # a native MAF agent gets the call-time refusal, as a per-run view.
     if no_egress:
         _apply_no_egress(agents, agent_name, injected=_egress)
+    return _run_tool_names
 
 
 def _apply_no_egress(

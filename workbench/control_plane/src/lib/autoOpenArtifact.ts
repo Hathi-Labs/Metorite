@@ -57,11 +57,17 @@ export function shouldAutoOpen(path: string, isMobile: boolean, panelFits = true
  */
 export function autoOpenArtifact(
   path: string,
-  ctx: { sessionId: string | null | undefined; isMobile: boolean; panelFits?: boolean },
+  ctx: {
+    sessionId: string | null | undefined;
+    isMobile: boolean;
+    panelFits?: boolean;
+    /** A quiet file (`lib/artifactCards.ts`): another card shows it. */
+    quiet?: boolean;
+  },
   deps: AutoOpenDeps = DEFAULT_DEPS,
 ): boolean {
-  const { sessionId, isMobile, panelFits = true } = ctx;
-  if (!sessionId || !shouldAutoOpen(path, isMobile, panelFits)) return false;
+  const { sessionId, isMobile, panelFits = true, quiet = false } = ctx;
+  if (quiet || !sessionId || !shouldAutoOpen(path, isMobile, panelFits)) return false;
   const name = path.split("/").pop() ?? path;
   deps.openDoc({ path, name, sessionId, live: true });
   deps.schedule(() => deps.setDocLive(sessionId, path, false), LIVE_BADGE_MS);
@@ -76,8 +82,8 @@ export function autoOpenArtifact(
 export function artifactHandler(
   ctx: { sessionId: string | null | undefined; isMobile: boolean; panelFits: boolean },
   deps: AutoOpenDeps = DEFAULT_DEPS,
-): (entry: { path: string }) => boolean {
-  return (entry) => autoOpenArtifact(entry.path, ctx, deps);
+): (entry: { path: string; quiet?: boolean }) => boolean {
+  return (entry) => autoOpenArtifact(entry.path, { ...ctx, quiet: entry.quiet }, deps);
 }
 
 /**
