@@ -15228,6 +15228,7 @@ no memory writer.
 | `tests/unit/test_email_injection_eval.py` | (B2) `SPEC_PATHS` (`:29-30`) holds five paths, and the test asserts that `chat_context` is gone |
 | `tests/unit/test_untrusted_frame.py` | (B2) Also drop `chat_context` from the list of `test_each_mail_path_frames_its_text` (`:383-386`) |
 | `CP/app/api/email/[...path]/postTimeout.test.ts` | Found at build time: the size check of `AI_SLOW_POST_PATHS` (`:64`) reads 12, not 14 |
+| `tests/unit/test_floor_opt_out.py` | Found at build time: `EMAIL_KEEPS` (`:63-67`) drops `save_memory` and `save_note`, and the test asserts that the email assistant holds no `STORE_WRITES` tool |
 
 **The fences of D-EM-4 and D-EM-61.** The deleted cases fenced the owner check and the fixed tier
 of the removed route. The path of the pane keeps its own fences: `CP/app/email/lib/noTierChoice.test.ts`,
