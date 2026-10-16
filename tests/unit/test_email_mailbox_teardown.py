@@ -1047,10 +1047,9 @@ async def test_the_door_waits_a_bounded_time(door, monkeypatch):
     four at a time, and logs the end line."""
     monkeypatch.setattr(teardown, "TEARDOWN_WAIT_S", 0.2)
     d = door([_mailbox(i, "imap") for i in range(1, 11)], slow_stop=0.5)
-    started = time.monotonic()
-    out = await d.purge()
-    waited = time.monotonic() - started
-    assert waited < 0.45, f"the door waited {waited:.2f}s past its bound"
+    # An order, not a wall-clock budget (test_no_new_clock_flakes): the door
+    # answers while the held task still runs its stops.
+    out = await asyncio.wait_for(d.purge(), timeout=30)
     counts = out["mailboxes"]
     assert counts["planned"] == 10 and counts["continuing"] > 0
     assert counts["finished"] + counts["failed"] + counts["continuing"] == 10
@@ -1098,9 +1097,8 @@ async def test_a_stop_past_its_bound_still_lets_the_legs_run(door, monkeypatch):
     teardown asks the bound, logs the line, and runs the legs."""
     monkeypatch.setattr(teardown, "STOP_SYNC_BOUND_S", 0.05)
     d = door([_mailbox(1, "gmail")], slow_stop=5)
-    started = time.monotonic()
-    out = await d.purge()
-    assert time.monotonic() - started < 2, "the stop bound did not hold"
+    # A 30 s hang guard. The event below proves the bound cut the stop.
+    out = await asyncio.wait_for(d.purge(), timeout=30)
     assert ("stop_cancel_swallowed", _mailbox(1)["id"]) in d.events
     assert ("warning", "email.teardown.stop_timed_out",
             {"account_id": _mailbox(1)["id"]}) in d.log.lines
