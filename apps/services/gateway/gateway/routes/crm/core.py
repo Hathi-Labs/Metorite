@@ -2416,6 +2416,20 @@ async def delete_module_records_from_source(
 #: The rows that one call of the field-rule door writes at most.
 FIELD_RULE_BATCH = 500
 
+#: CRM-Q18-1: the order in which a writer locks the rule rows of a provider.
+#: ``(entity, field_api_name)`` is unique for each tenant and provider.
+FIELD_RULE_LOCK_ORDER = "entity, field_api_name"
+#: Every rule row of a provider, locked in that ONE order. The plan approve
+#: (``routes/crm/mapping_plans.py``) and the sync's ``mark_stale``
+#: (``crm_sync/field_rules.py``) both lock through it before they write a rule
+#: row, so neither waits on the other in a cycle (a 40P01 deadlock). Fence:
+#: ``tests/unit/test_crm_map_plan_r8.py`` (the lock-order tests).
+FIELD_RULE_LOCK_SQL = (
+    "SELECT id, entity, field_api_name, field_type, profile_version, "
+    "target_column, status FROM crm_field_rules WHERE ext_source = :src "
+    f"ORDER BY {FIELD_RULE_LOCK_ORDER} FOR UPDATE"
+)
+
 #: The four entities that a field rule can name.
 MIRROR_RULE_ENTITIES: frozenset[str] = frozenset({"lead", "contact", "company", "deal"})
 
@@ -2546,6 +2560,8 @@ RESET_TABLES: tuple[str, ...] = (
     "crm_convert_mappings",
     # CRM-Q17a-1: the fill rank counts the records and fields above.
     "crm_field_fill",
+    # CRM-Q18-1: the versions of the plan name the field rules above.
+    "crm_mapping_plans",
 )
 
 #: What the start over keeps: the access rule and the mode row, the saved

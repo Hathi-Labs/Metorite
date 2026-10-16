@@ -18,6 +18,12 @@ Approve and reject set ``status``. The next sync run applies the decision
 (``gateway/crm_sync/field_rules.py``): it backfills an approved rule, and it
 undoes a rejected one.
 
+**One plan (CRM-Q18-1).** ``POST``, an approve, and a reject of an approved
+rule change the approved set. Each one takes the plan lock and goes through
+``mapping_plans.commit``, so each one also writes a new approved version of
+``crm_mapping_plans``. A reject of a rule that is not approved writes no
+version. The proposer writes ``proposed`` rows only, and no version.
+
 **What is legal.** The rules of ``mapping.rule_problem``: the target is one of
 ``FIELD_RULE_TARGETS``, the field's type agrees with the column, and a fixed
 column opens only when its standard field is off every layout of the latest
@@ -118,19 +124,16 @@ _TAKEN_SQL = (
     "AND entity = :entity AND status = 'approved' "
     "AND (target_column = :column OR field_api_name = :field)"
 )
-_UPSERT_SQL = (
-    "INSERT INTO crm_field_rules (ext_source, entity, field_api_name, field_type, "
-    "profile_version, target_column, status, proposed_by, confidence, reason, "
-    "decided_by, decided_at) VALUES (:src, :entity, :field, :type, :version, "
-    ":column, 'approved', 'admin', NULL, NULL, :by, now()) "
-    "ON CONFLICT (organization_id, ext_source, entity, field_api_name) DO UPDATE SET "
-    "field_type = EXCLUDED.field_type, profile_version = EXCLUDED.profile_version, "
-    "target_column = EXCLUDED.target_column, status = 'approved', "
-    "proposed_by = 'admin', confidence = NULL, reason = NULL, "
-    "decided_by = EXCLUDED.decided_by, decided_at = now(), updated_at = now() "
-    # An approved rule is never replaced here: reject it first.
-    "WHERE crm_field_rules.status <> 'approved' "
-    f"RETURNING {_COLUMNS}"
+_FIELD_RULE_SQL = (
+    f"SELECT {_COLUMNS} FROM crm_field_rules WHERE ext_source = :src "
+    "AND entity = :entity AND field_api_name = :field"
+)
+#: CRM-Q18-1: the row that a PATCH read and checked, locked, or no row when a
+#: new proposal (or the sync) changed it after the read.
+_HOLD_SQL = (
+    "SELECT id FROM crm_field_rules WHERE id = CAST(:id AS uuid) "
+    "AND status = :old_status "
+    "AND target_column IS NOT DISTINCT FROM CAST(:old_column AS text) FOR UPDATE"
 )
 _DECIDE_SQL = (
     "UPDATE crm_field_rules SET status = :status, decided_by = :by, "
@@ -333,14 +336,48 @@ def _taken() -> HTTPException:
     })
 
 
-def _unique_violation(exc: DBAPIError) -> bool:
+def _changed() -> HTTPException:
+    return HTTPException(status_code=409, detail={
+        "code": "rule_changed",
+        "message": "This proposal changed. Reload to see it.",
+    })
+
+
+def _sqlstates(exc: BaseException) -> set[str]:
+    codes: set[str] = set()
     seen: BaseException | None = exc
     while seen is not None:
         code = getattr(seen, "sqlstate", None) or getattr(seen, "pgcode", None)
-        if code == "23505":
-            return True
+        if isinstance(code, str):
+            codes.add(code)
         seen = getattr(seen, "orig", None) or seen.__cause__
-    return False
+    return codes
+
+
+def _unique_violation(exc: DBAPIError) -> bool:
+    return "23505" in _sqlstates(exc)
+
+
+#: A deadlock (40P01) or a serialization failure (40001). Postgres rolled the
+#: transaction back, so the same request can simply run again.
+_RETRY_STATES = frozenset({"40P01", "40001"})
+
+
+def _db_conflict(exc: DBAPIError) -> HTTPException | None:
+    """The 409 for a database error that a client can act on, or ``None``.
+
+    A unique violation is ``rule_taken``. A deadlock with the sync is
+    ``plan_busy``: nothing was written, and a retry is safe (CRM-Q18-1).
+    """
+    codes = _sqlstates(exc)
+    if "23505" in codes:
+        return _taken()
+    if codes & _RETRY_STATES:
+        return HTTPException(status_code=409, headers={"Retry-After": "1"}, detail={
+            "code": "plan_busy",
+            "message": "The sync changed the field map at the same time. Try again.",
+        })
+    return None
 
 
 def _targets(entity: str, profile: Any) -> list[FieldMapTarget]:
@@ -412,27 +449,33 @@ async def create_field_rule(
 ) -> FieldRuleModel:
     """An admin picks a target by hand. The rule is approved at once, with
     ``proposed_by = 'admin'``. The next sync run applies it."""
+    from gateway.routes.crm import mapping_plans
+
     org = _organization(user)
     word = _entity(payload.entity)
     field = payload.field_api_name.strip()
     column = payload.target_column.strip()
+    by = actor(user).lower()
     try:
         async with _tenant_session() as db:
             await _require_mirror(db, org)
+            # CRM-Q18-1: the plan lock first, then the checks, then the one
+            # approve of the plan, which writes a new approved version.
+            approved = await mapping_plans.lock_plan(db, by)
             version, profile = await _profile(db, org)
             field_type = await _field_type(db, word, field, profile)
             _check_legal(word, field_type, column, profile)
             await _check_free(db, word, column, field, None)
-            row = (await db.execute(text(_UPSERT_SQL), {
-                "src": PROVIDER, "entity": word, "field": field, "type": field_type,
-                "version": int(version or 0), "column": column,
-                "by": actor(user).lower(),
+            await mapping_plans.change_rule(db, approved, org=org, by=by, put=(
+                mapping_plans.PlanRule(word, field, field_type, column, int(version or 0))
+            ))
+            row = (await db.execute(text(_FIELD_RULE_SQL), {
+                "src": PROVIDER, "entity": word, "field": field,
             })).first()
-            if row is None:  # the field has an approved rule already
-                raise _taken()
     except DBAPIError as exc:
-        if _unique_violation(exc):
-            raise _taken() from exc
+        conflict = _db_conflict(exc)
+        if conflict is not None:
+            raise conflict from exc
         raise
     return _wire(row)
 
@@ -448,16 +491,24 @@ async def decide_field_rule(
     An approve checks the rule again against the fields and the profile of
     today, and it takes their type and version. A reject is always legal.
     """
+    from gateway.routes.crm import mapping_plans
+
     org = _organization(user)
     wanted = checked_uuid(rule_id, "rule_id")
+    by = actor(user).lower()
     try:
         async with _tenant_session() as db:
             await _require_mirror(db, org)
+            # CRM-Q18-1: the plan lock first. An approve, and a reject of an
+            # approved rule, change the approved set, so each one goes through
+            # the one approve of the plan and writes a new approved version.
+            approved = await mapping_plans.lock_plan(db, by)
             current = (await db.execute(text(_RULE_SQL), {"id": wanted})).first()
             if current is None:
                 raise HTTPException(status_code=404, detail="Field rule not found.")
             version, profile = await _profile(db, org)
             field_type = str(current.field_type)
+            stamp = int(version if version is not None else current.profile_version)
             if payload.status == "approved":
                 if current.status == "approved":
                     return _wire(current)
@@ -468,20 +519,41 @@ async def decide_field_rule(
                 await _check_free(
                     db, current.entity, current.target_column, current.field_api_name, wanted,
                 )
-            row = (await db.execute(text(_DECIDE_SQL), {
-                "status": payload.status, "by": actor(user).lower(), "id": wanted,
-                "type": field_type,
-                "version": int(version if version is not None else current.profile_version),
-                "old_status": current.status, "old_column": current.target_column,
-            })).first()
-            if row is None:
-                raise HTTPException(status_code=409, detail={
-                    "code": "rule_changed",
-                    "message": "This proposal changed. Reload to see it.",
-                })
+            if payload.status == "approved" or current.status == "approved":
+                # Every rule row first, in the one order that the sync uses,
+                # and only then the one row: a single-row lock before the
+                # ordered lock could wait on mark_stale in a cycle.
+                await mapping_plans.lock_rules(db)
+                # The row must still be the one the route read and checked. A
+                # new proposal can change its target between the read and here.
+                held = (await db.execute(text(_HOLD_SQL), {
+                    "id": wanted, "old_status": current.status,
+                    "old_column": current.target_column,
+                })).first()
+                if held is None:
+                    raise _changed()
+                key = (str(current.entity), str(current.field_api_name))
+                await mapping_plans.change_rule(
+                    db, approved, org=org, by=by,
+                    put=mapping_plans.PlanRule(
+                        key[0], key[1], field_type, str(current.target_column), stamp,
+                    ) if payload.status == "approved" else None,
+                    remove=key if payload.status == "rejected" else None,
+                )
+                row = (await db.execute(text(_RULE_SQL), {"id": wanted})).first()
+            else:
+                # A reject of a rule that is not approved changes no version.
+                row = (await db.execute(text(_DECIDE_SQL), {
+                    "status": payload.status, "by": by, "id": wanted,
+                    "type": field_type, "version": stamp,
+                    "old_status": current.status, "old_column": current.target_column,
+                })).first()
+                if row is None:
+                    raise _changed()
     except DBAPIError as exc:
-        if _unique_violation(exc):
-            raise _taken() from exc
+        conflict = _db_conflict(exc)
+        if conflict is not None:
+            raise conflict from exc
         raise
     return _wire(row)
 
@@ -877,7 +949,8 @@ async def suggest_field_rules(
     written: list[Any] = []
     async with _tenant_session() as db:
         await _require_mirror(db, org)
-        for proposal in kept:
+        # In the lock order of the rule rows (one entity, so by field).
+        for proposal in sorted(kept, key=lambda k: k.field_api_name):
             row = (await db.execute(text(_PROPOSE_SQL), {
                 "src": PROVIDER, "entity": word, "field": proposal.field_api_name,
                 "type": proposal.field_type, "version": stamp,

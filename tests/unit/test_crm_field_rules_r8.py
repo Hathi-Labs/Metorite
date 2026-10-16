@@ -157,6 +157,8 @@ def fr(ns, monkeypatch):
     with ns.admin_engine.begin() as c:
         for org in (ns.org_a, ns.org_b):
             for table in (
+                # CRM-Q18-1: a POST or a PATCH also writes a plan version.
+                "crm_mapping_plans",
                 "crm_field_rules", "crm_pipeline_stages", "crm_pipelines",
                 "crm_source_profiles",
             ):
