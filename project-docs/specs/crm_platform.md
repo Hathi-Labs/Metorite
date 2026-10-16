@@ -2059,9 +2059,10 @@ checkbox. H-321 is a generic module held past the 60 days of the deleted list.
 ### 18.9 A custom CRM that reads well, and a mapping that the admin only approves (CRM-Q17 to CRM-Q22, 2026-10-16)
 
 **Status (2026-10-16).** CRM-Q17a-1 (#1093, migration 274) and CRM-Q18-1
-(#1094, migration 277) are merged, and both are dark. Each other ticket of
-this section is specified, not built. Verified against code at `origin/main`
-`c4bef9ec0`.
+(#1094, migration 277) are merged, and both are dark. CRM-Q17a-1b is built
+on the branch `crm-q17a-1b-still-empty`, with no migration, and it is not
+merged. Each other ticket of this section is specified, not built. Verified
+against code at `origin/main` `c4bef9ec0`.
 
 **Design record.** The owner's design page is "Source Mapping Studio" v4.
 Its link is https://claude.ai/artifact/QcBY3s2ATxo3Kb9QCpR3Zr. This section
@@ -2247,7 +2248,7 @@ with 16 questions, to learn whether the vendor bills the state once.
 | Ticket | Slice | Gate | Size | Waits for |
 |---|---|---|---|---|
 | CRM-Q17a | Lists and records by fill rank, in two slices (Q17a-1, Q17a-2). No AI | AGENT-SAFE | M | — |
-| CRM-Q17a-1b | A "still empty" check of a stale entity, in each run. No AI | AGENT-SAFE | S | CRM-Q17a-1 |
+| CRM-Q17a-1b 🔨 built 2026-10-16, not merged | A "still empty" check of a stale entity, in each run. No AI | AGENT-SAFE | S | CRM-Q17a-1 |
 | CRM-Q17b | Getting around: rail, first screen, filters, Columns, phone, Sync health. No AI | AGENT-SAFE | M | CRM-Q17a |
 | CRM-Q18 | One plan: a table of versions, and the live rule set | AGENT-SAFE | M | — |
 | CRM-Q18-1b | Two deadlocks of the plan lock, found on a real database | AGENT-SAFE | S | CRM-Q18-1 |
@@ -2387,6 +2388,40 @@ Files: `crm_sync/fill.py`, `routes/crm/fill_rank.py`,
 `tests/unit/test_crm_fill_rank.py` and `tests/unit/test_crm_fill_rank_r8.py`.
 Gate: AGENT-SAFE. Size: S. Waits for: CRM-Q17a-1 (merged, #1093). Build it
 before CRM-Q17a-2, or with it. Verify with the backend command of §18.9.7.
+
+**Built as (2026-10-16).** No migration and no flag of its own.
+
+- `fill.check_statement` holds the one statement, and `fill.check` runs it.
+  A key stays empty only when the statement gives it `filled` false. A key
+  with no row is not served, because the entity then holds no record.
+- The fill row holds `still_empty`, as `{entity: {"keys": [...], "at":
+  ...}}`. The time `at` is `now()` of the transaction of the check.
+- `fill_rank.empty_columns` reads the two cursor rows once. For a stale
+  entity it asks `checked_keys`, which holds the stamp, the rule test and
+  the backfill test. Then it asks `changed_since`, which runs `_CHANGED_SQL`
+  from the time of the check.
+- `still_empty_set` serves a key only when `empty_set` also gives it from
+  the stored numbers. So the check can take a key away, and it can never
+  add one.
+- The sync keeps an entry only for a stale core entity whose first import
+  is done and whose stored numbers give an empty key. It also drops the
+  entry after a failed read or statement, a changed field rule, or new
+  numbers. `_due` drops the entry of a changed rule before the new rule
+  marks reach any write.
+- The sync skips the statement when the entity has an entry and no run
+  changed the entity after its time.
+- Cost. On 30,000 contacts with 236 custom fields of unique values and 10
+  empty keys, the statement took 0.53 s to 0.91 s in five runs on a
+  developer machine. That is below 1 s, so the check has no limit on the
+  size of the entity. The R8 test asserts 4 s, below the 5 s timeout.
+- A contact has 9 standard keys that can be empty. The cost test also reads
+  `last_activity_at`, so it reads 10 keys.
+- The check cannot see a write that no run count records, for example a
+  direct SQL update. CRM-Q17a-1 has the same limit, and the CSV export
+  still keeps a column that a row fills.
+- Fences: 6 unit tests in `test_crm_fill_rank.py` and 11 R8 tests in
+  `test_crm_fill_rank_r8.py`. Eleven mutations, one for each key rule, each
+  made a fence fail.
 
 **CRM-Q17a-2 · The screens.** It waits for CRM-Q17a-1. Done when:
 
