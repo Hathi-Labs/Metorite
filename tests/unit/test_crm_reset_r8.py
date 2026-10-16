@@ -78,6 +78,8 @@ EMPTIED = (
     "crm_field_sections",
     # CRM-C6a: the conversion mapping names the fields of the old setup.
     "crm_convert_mappings",
+    # CRM-Q26: the labels of the old account's notes.
+    "crm_note_labels",
 )
 #: What the start over keeps. The same set as ``core.RESET_KEEPS``.
 KEPT = ("crm_settings", "crm_views", "crm_sync_runs", "crm_auto_lead_cursors")
@@ -253,11 +255,16 @@ def _seed(p: Any, org: str, *, tag: str, deals: int, status: str = "disconnected
         c.execute(text(
             "INSERT INTO crm_deal_contacts (organization_id, deal_id, contact_id) "
             "VALUES (CAST(:o AS uuid), :d, :c)"), {**o, "d": first, "c": contact})
-        c.execute(text(
+        note = c.execute(text(
             "INSERT INTO crm_activities (organization_id, type, subject, deal_id, "
             "created_by, ext_source, ext_id) VALUES (CAST(:o AS uuid), 'note', "
-            ":s, :d, 'sync', 'zoho', :e)"),
-            {**o, "s": f"{tag} note", "d": first, "e": f"{tag}-note"})
+            ":s, :d, 'sync', 'zoho', :e) RETURNING id"),
+            {**o, "s": f"{tag} note", "d": first, "e": f"{tag}-note"}).scalar()
+        # CRM-Q26: the label of that note. The start over takes it.
+        c.execute(text(
+            "INSERT INTO crm_note_labels (organization_id, activity_id, kind, "
+            "mode, body_md5) VALUES (CAST(:o AS uuid), :a, 'payment', 'shadow', "
+            "'h')"), {**o, "a": note})
         c.execute(text(
             "INSERT INTO crm_module_records (organization_id, module, ext_source, "
             "ext_id, name, fields) VALUES (CAST(:o AS uuid), 'Products', 'zoho', "
