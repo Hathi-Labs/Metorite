@@ -368,7 +368,7 @@ class TestTheExclusionCannotGoStale:
             "crm_deals", "crm_field_defs", "crm_field_rules", "crm_field_sections",
             "crm_lead_statuses",
             "crm_leads",
-            "crm_lost_reasons", "crm_module_records", "crm_pipeline_stages",
+            "crm_lost_reasons", "crm_module_records", "crm_note_labels", "crm_pipeline_stages",
             "crm_pipelines",
             "crm_settings", "crm_source_profiles", "crm_status_changes",
             "crm_sync_cursors", "crm_sync_runs", "crm_views", "crm_zoho_tombstones",
