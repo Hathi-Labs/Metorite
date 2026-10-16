@@ -90,7 +90,7 @@ import re
 from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 from acb_common import get_logger
@@ -426,6 +426,12 @@ class Stop(Exception):
 #: The stops after which the request went out, so it is billed and counts.
 SENT_STOPS = frozenset({"no_answer"})
 
+#: A key whose billed request failed this many times in a row parks
+#: (Batch M review P2, as CRM-Q26 parks a note). It asks nothing until
+#: :data:`PARK_DAYS` pass, or until its schema hash changes.
+PARK_AFTER = 3
+PARK_DAYS = 7
+
 
 # ── The cache (item 10) ──────────────────────────────────────────────────────
 
@@ -442,24 +448,54 @@ class Cache:
 
     schema: dict[str, str] = field(default_factory=dict)
     items: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    #: The failed billed requests of each key, in a row: ``count``, the
+    #: ``schema`` hash they asked on, and the time ``at`` of the last one.
+    failures: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @classmethod
     def of(cls, state: Mapping[str, Any] | None) -> Cache:
         state = state or {}
         schema = state.get("schema") if isinstance(state.get("schema"), Mapping) else {}
         items = state.get("items") if isinstance(state.get("items"), Mapping) else {}
+        failures = state.get("failures") if isinstance(state.get("failures"), Mapping) else {}
         return cls(
             {str(k): str(v) for k, v in schema.items()},
             {str(k): [dict(i) for i in v if isinstance(i, Mapping)]
              for k, v in items.items() if isinstance(v, list)},
+            {str(k): dict(v) for k, v in failures.items() if isinstance(v, Mapping)},
         )
 
     def hit(self, key: str, digest: str) -> bool:
         return self.schema.get(key) == digest
 
+    def parked(self, key: str, digest: str, now: datetime) -> bool:
+        """True while *key* is parked: :data:`PARK_AFTER` failed billed
+        requests in a row on this schema hash, the last one less than
+        :data:`PARK_DAYS` ago."""
+        entry = self.failures.get(key)
+        if not entry or entry.get("schema") != digest:
+            return False
+        count = entry.get("count")
+        if not isinstance(count, int) or count < PARK_AFTER:
+            return False
+        try:
+            at = datetime.fromisoformat(str(entry.get("at")))
+        except ValueError:
+            return False
+        return now - at < timedelta(days=PARK_DAYS)
+
+    def failed(self, key: str, digest: str, now: datetime) -> None:
+        """Count one more failed billed request of *key*. A new schema hash
+        starts the count again."""
+        entry = self.failures.get(key) or {}
+        same = entry.get("schema") == digest and isinstance(entry.get("count"), int)
+        self.failures[key] = {"count": (entry["count"] + 1) if same else 1,
+                              "schema": digest, "at": now.isoformat()}
+
     def state(self) -> dict[str, Any]:
         return {"schema": dict(sorted(self.schema.items())),
-                "items": dict(sorted(self.items.items()))}
+                "items": dict(sorted(self.items.items())),
+                "failures": dict(sorted(self.failures.items()))}
 
 
 def approved_roles(approved: Sequence[Mapping[str, Any]]) -> dict[str, str]:
@@ -692,6 +728,10 @@ class Result:
     cached: int = 0
     shadow: dict[str, list[int]] = field(default_factory=dict)
     done: dict[str, tuple[str, list[dict[str, Any]]]] = field(default_factory=dict)
+    #: The key and the schema hash of a billed request that failed, if any.
+    failed: tuple[str, str] | None = None
+    #: The keys that were parked, so asked nothing.
+    parked: int = 0
 
     def agree(self, feature: str, asked: int, agreed: int) -> None:
         row = self.shadow.setdefault(feature, [0, 0])
@@ -704,7 +744,7 @@ class Result:
             "questions": self.questions, "requests": self.requests,
             "tokens_estimated": self.tokens, "request_ids": list(self.request_ids),
             "empty_slots": self.empty_slots, "sure_candidates": self.sure_candidates,
-            "unsure": self.unsure, "cached": self.cached,
+            "unsure": self.unsure, "cached": self.cached, "parked": self.parked,
             "roles": kinds.get("role", 0), "targets": kinds.get("target", 0),
             "stages": kinds.get("stage", 0),
         }
@@ -718,13 +758,24 @@ class Pipeline:
     callables: *source* reads samples, and *asker* sends the requests."""
 
     def __init__(self, inputs: Inputs, modes: Mapping[str, str], cache: Cache,
-                 source: Source, asker: Asker) -> None:
+                 source: Source, asker: Asker, *, now: datetime | None = None) -> None:
         self.inputs = inputs
         self.modes = dict(modes)
         self.cache = cache
         self.source = source
         self.asker = asker
+        self.now = now or datetime.now(UTC)
         self.result = Result()
+        #: The key and the schema hash that the next request asks for.
+        self.asking: tuple[str, str] | None = None
+
+    def _parked(self, key: str, digest: str) -> bool:
+        """Set the key that asks next, and say whether it is parked."""
+        self.asking = (key, digest)
+        if self.cache.parked(key, digest, self.now):
+            self.result.parked += 1
+            return True
+        return False
 
     def mode(self, feature: str) -> str:
         return self.modes.get(feature, "off")
@@ -758,6 +809,9 @@ class Pipeline:
         except Stop as stop:
             if stop.reason in SENT_STOPS:
                 self._count(cost, requests, questions)
+                # Billed and failed: the key counts a failure, so a key that
+                # keeps failing parks and stops spending (PARK_AFTER).
+                self.result.failed = self.asking
             raise
         self._count(cost, requests, questions)
         rid = getattr(decision, "request_id", None)
@@ -798,6 +852,8 @@ class Pipeline:
         if self.cache.hit(key, digest):
             self.result.cached += 1
             items = self.cache.items.get(key, [])
+        elif self._parked(key, digest):
+            return known
         else:
             items = [self._role_item(s, m) for s, m in by_code.items()]
             asked = [s for s in open_slots if s not in by_code]
@@ -881,6 +937,8 @@ class Pipeline:
             self.result.cached += 1
             self.result.items.extend(self.cache.items.get(key, []))
             return
+        if self._parked(key, digest):
+            return
         detail = await self.source.module_detail(module, slot)
         work = _ModuleWork(self, slot, detail)
         items = await work.run()
@@ -901,6 +959,8 @@ class Pipeline:
             digest = core_hash(slot, self.modes)
             if self.cache.hit(key, digest):
                 self.result.cached += 1
+                continue
+            if self._parked(key, digest):
                 continue
             await _ShadowWork(self, await self.source.slot_detail(slot)).run()
             self.result.done[key] = (digest, [])
@@ -1584,7 +1644,7 @@ async def map_after_run(
     """
     token = bind_tenant(org)
     try:
-        return await _map(org, should_stop, _utc_date(now))
+        return await _map(org, should_stop, _utc_date(now), now)
     except Exception as exc:  # the run never breaks the sync loop
         _log.warning("crm.map_pipeline.failed", organization_id=org,
                      error_type=type(exc).__name__)
@@ -1593,7 +1653,8 @@ async def map_after_run(
         release_tenant(token)
 
 
-async def _map(org: str, should_stop: Callable[[], bool], utc_date: str) -> Mapped:
+async def _map(org: str, should_stop: Callable[[], bool], utc_date: str,
+               now: datetime | None = None) -> Mapped:
     from gateway.crm_sync import note_labels
 
     modes = modes_now()
@@ -1609,9 +1670,9 @@ async def _map(org: str, should_stop: Callable[[], bool], utc_date: str) -> Mapp
         return Mapped("no_profile")
     inputs, cache = loaded
     pipeline = Pipeline(inputs, modes, cache, DbSource(org),
-                        _Payer(org, member, utc_date, should_stop))
+                        _Payer(org, member, utc_date, should_stop), now=now)
     result = await pipeline.run()
-    draft = await _write(org, inputs, modes, cache, result)
+    draft = await _write(org, inputs, modes, cache, result, now)
     for feature, (asked, agreed) in sorted(result.shadow.items()):
         _log.info("crm.map_pipeline.shadow", organization_id=org, decide_feature=feature,
                   asked=asked, agreed=agreed)
@@ -1622,7 +1683,7 @@ async def _map(org: str, should_stop: Callable[[], bool], utc_date: str) -> Mapp
 
 
 async def _write(org: str, inputs: Inputs, modes: Mapping[str, str], cache: Cache,
-                 result: Result) -> int | None:
+                 result: Result, now: datetime | None = None) -> int | None:
     """The draft (``on`` items only), then the cursor row, each in its own
     tenant transaction. A key that did not finish keeps its old hash, so the
     next run asks it again."""
@@ -1635,10 +1696,13 @@ async def _write(org: str, inputs: Inputs, modes: Mapping[str, str], cache: Cach
         async with tenant_session(org) as db:
             row = await mapping_plans.write_draft(db, items=result.items)
             draft = int(row.version) if row is not None else None
-    if result.done:
+    if result.done or result.failed:
         for key, (digest, items) in result.done.items():
             cache.schema[key] = digest
             cache.items[key] = items
+            cache.failures.pop(key, None)
+        if result.failed is not None:
+            cache.failed(*result.failed, now or datetime.now(UTC))
         async with tenant_session(org) as db:
             await runs.write_cursor(db, org, CursorRow(CURSOR_ROW, None, cache.state(), None, None),
                                     "ok")

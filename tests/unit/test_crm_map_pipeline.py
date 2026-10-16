@@ -495,6 +495,61 @@ class TestTheCaps:
         assert "from gateway.kb_index.chunk import estimate_tokens" in source
 
 
+class TestAKeyThatKeepsFailing:
+    """Batch M review P2. A billed request that fails counts a failure on
+    its key in the cursor row. After ``PARK_AFTER`` (3) in a row the key
+    asks nothing for ``PARK_DAYS`` (7), or until its schema hash changes."""
+
+    async def test_three_failed_requests_park_the_key(self, monkeypatch):
+        from datetime import UTC, datetime, timedelta
+
+        assert (mp.PARK_AFTER, mp.PARK_DAYS) == (3, 7)
+        _modes(monkeypatch)
+        fake = _fake(monkeypatch, raises=acb_llm.DecideUnavailable("server_error", status=503))
+        cache = mp.Cache()
+        box = Box(monkeypatch, cache=cache)
+        start = datetime(2026, 10, 17, 9, tzinfo=UTC)
+        for n in range(1, 4):
+            got = await mp.map_after_run(ORG, now=start + timedelta(hours=n))
+            assert got.reason == "no_answer" and len(fake.calls) == n
+        (key,) = cache.failures
+        assert key == mp.SLOTS_KEY and cache.failures[key]["count"] == 3
+        assert box.cursors[-1].state["failures"][key]["count"] == 3
+
+        # Parked: no request goes out, and nothing is billed.
+        got = await mp.map_after_run(ORG, now=start + timedelta(days=2))
+        assert len(fake.calls) == 3 and got.requests == 0
+
+        # A changed schema hash asks again.
+        cache.failures[key]["schema"] = "an-older-hash"
+        await mp.map_after_run(ORG, now=start + timedelta(days=2))
+        assert len(fake.calls) == 4
+        assert cache.failures[key]["count"] == 1, "a new hash starts the count again"
+
+    async def test_the_park_ends_after_seven_days(self, monkeypatch):
+        from datetime import UTC, datetime, timedelta
+
+        _modes(monkeypatch)
+        fake = _fake(monkeypatch, raises=acb_llm.DecideUnavailable("server_error", status=503))
+        cache = mp.Cache()
+        Box(monkeypatch, cache=cache)
+        start = datetime(2026, 10, 17, 9, tzinfo=UTC)
+        for _n in range(3):
+            await mp.map_after_run(ORG, now=start)
+        await mp.map_after_run(ORG, now=start + timedelta(days=6, hours=23))
+        assert len(fake.calls) == 3
+        await mp.map_after_run(ORG, now=start + timedelta(days=7, minutes=1))
+        assert len(fake.calls) == 4
+
+    async def test_a_key_that_finishes_clears_its_failures(self, monkeypatch):
+        _modes(monkeypatch)
+        _fake(monkeypatch)
+        cache = mp.Cache(failures={mp.SLOTS_KEY: {"count": 2, "schema": "x", "at": "2026-10-17"}})
+        Box(monkeypatch, cache=cache)
+        got = await mp.map_after_run(ORG)
+        assert got.reason == "done" and mp.SLOTS_KEY not in cache.failures
+
+
 # ── Item 7: each mode of each feature ───────────────────────────────────────
 
 
