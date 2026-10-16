@@ -15387,9 +15387,9 @@ The rules of the composition:
 
 **The Outlook rules: the teardown removes them.** Metorite made each rule, its id is in
 `email_newsletters`, and the cascade deletes the id. After a disconnect nothing can find the rule,
-and it archives the mail of the member with no end. So the plan reads the filter ids of an
-`outlook` row too, and `remove_metorite_filters` calls `OutlookProvider.delete_filter` for each
-one. The Outlook grant stays, because Microsoft has no revoke for one delegated grant (f1). This
+and it archives the mail of the member with no end. So the plan reads the filter ids of a
+`microsoft` row too, which is the stored value of an Outlook row (`factory.py:22-23`). Then
+`remove_metorite_filters` calls `OutlookProvider.delete_filter` for each one. The Outlook grant stays, because Microsoft has no revoke for one delegated grant (f1). This
 changes live Outlook behaviour, so it has an Outlook acceptance item. An IMAP row has no filters.
 
 **Scope.**
@@ -15426,7 +15426,7 @@ Mem0 or of a Graphiti group, because §12.3.13.9.1 stops those writes. No change
 1. Each of the three paths calls `read_teardown_plans` before its delete, and `finish_teardowns`
    after its commit. No other code calls a leg of `teardown.py`.
 2. A member purge that `assert_owner_survives` refuses calls no provider and stops no loop.
-3. An Outlook plan with two filter ids calls `delete_filter` twice and calls no revoke.
+3. A plan of a `microsoft` row (Outlook) with two filter ids calls `delete_filter` twice and calls no revoke.
 4. A scope of 1001 mailboxes answers 409 and deletes nothing.
 5. With 10 mailboxes and a slow leg, the door answers after at most 60 s of teardown, and the
    receipt counts the mailboxes that continue.
