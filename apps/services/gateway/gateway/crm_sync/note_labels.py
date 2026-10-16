@@ -25,22 +25,32 @@ no member read and no facade call.
 The step reads the newest first, by ``COALESCE(ext_modified_at,
 created_at)``.
 
-**What it costs.** At most :data:`STEP_LIMIT` (200) notes in one step, and
-at most :data:`DAILY_LIMIT` (1,000) notes for each org in 24 hours, counted
-on ``labeled_at``. One request holds up to :data:`NOTES_PER_REQUEST` (5)
-notes and 3 questions for each, so 15 questions, under the Console's 16.
-The backlog of a large org is labeled through those two caps, a step at a
-time.
+**What it costs.** At most :data:`STEP_LIMIT` (200) notes in one step. Each
+org has a cap of REQUESTS for each UTC day, counted in Redis BEFORE each
+request is sent, as My Day counts its calls (``feed_decide.reserve``). So a
+request that times out or fails still counts, because it is billed. The cap
+is :data:`DAILY_NOTES` (1,000) notes over :data:`NOTES_PER_REQUEST`, or
+:data:`BACKLOG_DAILY_NOTES` (5,000) while more than
+:data:`BACKLOG_THRESHOLD` (1,000) notes wait. One request holds up to 5
+notes and 3 questions for each, so 15 questions, under the Console's 16. A
+Redis failure asks nothing: spend fails closed.
 
 **Who pays.** The ``connected_by`` of the org's Zoho connection, a stored
 fact, goes as a proven member, as email names the mailbox owner. A
 deployment-key box refuses a call that names no member, so with no member
-the step skips and logs the count of waiting notes.
+the step skips and logs the count of waiting notes. 🔴 The member must
+still be an ACTIVE member of THIS org (``my_day_loop.departed``), or the
+Console would bill the org that the member belongs to now. When not, the
+step skips, logs a count, and spends nothing.
 
 **When it stops.** On the first request that gets no decision: a 402 starts
 the shared cool-down (a ``crm.`` call starts it on a 402 only, so a 403
-never pauses email), and every other failure would likely repeat. The next
-sync run tries again. It also stops when the scheduler stops.
+never pauses email). A failure that the batch can cause (an invalid
+request, an answer that cannot be read, a timeout) counts one failure for
+each of its notes. A failed note goes to the back of the queue, and after
+:data:`MAX_FAILURES` (3) it waits :data:`PARK_DAYS` (7) days or until its
+text changes. So one bad note cannot block the queue. The next sync run
+tries again. It also stops when the scheduler stops.
 
 **No tenant text out.** The state carries the clipped subject and body of
 each note (``decide_features.clip_fact``, the body to 2,000 characters). A
@@ -62,6 +72,7 @@ import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from acb_common import get_logger
@@ -81,8 +92,28 @@ MODULE_SLUG = "crm"
 #: The notes of one step (§18.11.2 item 6).
 STEP_LIMIT = 200
 
-#: The notes of one org in 24 hours, counted on ``labeled_at``.
-DAILY_LIMIT = 1000
+#: The notes of one org in one UTC day, normally (§18.11.2 item 6). The cap
+#: counts REQUESTS, :data:`DAILY_NOTES` over :data:`NOTES_PER_REQUEST`, so a
+#: request that fails still counts (it is billed).
+DAILY_NOTES = 1000
+
+#: The notes of one org in one UTC day while more than
+#: :data:`BACKLOG_THRESHOLD` notes wait (owner decision, 2026-10-16). DEWiN's
+#: 18,674 notes then take about 4 to 5 days, not 19. At the threshold or
+#: below, the normal cap clears the rest within one day.
+BACKLOG_DAILY_NOTES = 5000
+BACKLOG_THRESHOLD = 1000
+
+#: A batch with no decision for a cause of its own counts one failure for
+#: each of its notes. A note that failed this often waits :data:`PARK_DAYS`
+#: days, or until its text changes, so one bad note never blocks the queue.
+MAX_FAILURES = 3
+PARK_DAYS = 7
+
+#: The Redis namespace of the request counter, and its life (26 hours, as My
+#: Day's counters).
+NAMESPACE = "crm_note_labels"
+REQUESTS_TTL_S = 26 * 3600
 
 #: The notes of one request, and the questions of each note.
 NOTES_PER_REQUEST = 5
@@ -277,34 +308,49 @@ def reader(refs: Sequence[tuple[str, Note]]) -> Callable[[Any], tuple[list[dict[
 #: anti-join, so a note that did not change is never asked again.
 _MD5 = "md5(coalesce(a.subject, '') || coalesce(a.body, ''))"
 
-_PENDING_SQL = (
-    f"SELECT a.id::text AS id, a.subject, a.body, {_MD5} AS body_md5 "
+#: A note waits when it has no row, when its text changed, or when it failed
+#: fewer than :data:`MAX_FAILURES` times. A note that failed that often waits
+#: again after :data:`PARK_DAYS` days, or as soon as its text changes.
+_WAITING = (
     "FROM crm_activities a "
     "LEFT JOIN crm_note_labels l ON l.activity_id = a.id "
     "WHERE a.organization_id = CAST(:o AS uuid) AND a.type = 'note' "
     "AND (coalesce(a.subject, '') <> '' OR coalesce(a.body, '') <> '') "
-    f"AND (l.activity_id IS NULL OR l.body_md5 <> {_MD5}) "
-    "ORDER BY COALESCE(a.ext_modified_at, a.created_at) DESC, a.id "
+    f"AND (l.activity_id IS NULL OR l.body_md5 <> {_MD5} "
+    "OR (l.labeled_at IS NULL AND (l.failures < :max_failures "
+    "OR l.failed_at < now() - make_interval(days => :park_days)))) "
+)
+
+#: The failures of a note whose text did not change. A failed note goes to
+#: the back of the queue, so it never blocks the notes behind it.
+_FAILURES_NOW = (
+    f"CASE WHEN l.activity_id IS NOT NULL AND l.body_md5 = {_MD5} "
+    "AND l.labeled_at IS NULL THEN l.failures ELSE 0 END"
+)
+
+_PENDING_SQL = (
+    f"SELECT a.id::text AS id, a.subject, a.body, {_MD5} AS body_md5 "
+    + _WAITING
+    + f"ORDER BY {_FAILURES_NOW}, COALESCE(a.ext_modified_at, a.created_at) DESC, a.id "
     "LIMIT :n"
 )
 
-_LABELED_TODAY_SQL = (
-    "SELECT count(*) FROM crm_note_labels "
-    "WHERE organization_id = CAST(:o AS uuid) "
-    "AND labeled_at > now() - interval '24 hours'"
-)
+#: The waiting notes, counted up to ``:n`` only, so a large backlog costs no
+#: full count.
+_BACKLOG_SQL = "SELECT count(*) FROM (SELECT 1 " + _WAITING + "LIMIT :n) AS waiting"
 
 #: One row for each note. ``INSERT … SELECT`` from the activity, so a note
-#: deleted since the read writes nothing and meets no foreign key.
+#: deleted since the read writes nothing and meets no foreign key. A label
+#: clears the failures.
 _UPSERT_SQL = (
     "INSERT INTO crm_note_labels (organization_id, activity_id, kind, "
     "kind_confidence, kind_probabilities, needs_action, urgency, "
     "urgency_confidence, urgency_probabilities, body_md5, mode, labeled_at, "
-    "request_id) "
+    "request_id, failures, failed_at) "
     "SELECT a.organization_id, a.id, :kind, :kind_confidence, "
     "CAST(:kind_probabilities AS jsonb), :needs_action, :urgency, "
     ":urgency_confidence, CAST(:urgency_probabilities AS jsonb), :body_md5, "
-    ":mode, now(), :request_id "
+    ":mode, now(), :request_id, 0, NULL "
     "FROM crm_activities a "
     "WHERE a.id = CAST(:activity_id AS uuid) AND a.organization_id = CAST(:o AS uuid) "
     "ON CONFLICT (activity_id) DO UPDATE SET kind = EXCLUDED.kind, "
@@ -314,7 +360,24 @@ _UPSERT_SQL = (
     "urgency_confidence = EXCLUDED.urgency_confidence, "
     "urgency_probabilities = EXCLUDED.urgency_probabilities, "
     "body_md5 = EXCLUDED.body_md5, mode = EXCLUDED.mode, "
-    "labeled_at = EXCLUDED.labeled_at, request_id = EXCLUDED.request_id"
+    "labeled_at = EXCLUDED.labeled_at, request_id = EXCLUDED.request_id, "
+    "failures = 0, failed_at = NULL"
+)
+
+#: One failure of a batch, for each of its notes. The count starts again at
+#: 1 when the text changed. A failure keeps no label of an older text.
+_FAILED_SQL = (
+    "INSERT INTO crm_note_labels (organization_id, activity_id, body_md5, mode, "
+    "labeled_at, failures, failed_at) "
+    "SELECT a.organization_id, a.id, :body_md5, :mode, NULL, 1, now() "
+    "FROM crm_activities a "
+    "WHERE a.id = CAST(:activity_id AS uuid) AND a.organization_id = CAST(:o AS uuid) "
+    "ON CONFLICT (activity_id) DO UPDATE SET "
+    "failures = CASE WHEN crm_note_labels.body_md5 = EXCLUDED.body_md5 "
+    "AND crm_note_labels.labeled_at IS NULL "
+    "THEN crm_note_labels.failures + 1 ELSE 1 END, "
+    "labeled_at = NULL, failed_at = now(), body_md5 = EXCLUDED.body_md5, "
+    "mode = EXCLUDED.mode"
 )
 
 
@@ -329,10 +392,46 @@ async def _member(db: Any, org: str) -> str | None:
     return member if "@" in member else None
 
 
+async def _member_left(org: str, member: str) -> str | None:
+    """Why ``member`` cannot pay for ``org``, or None when they can.
+
+    🔴 Money. The Console bills the org that it resolves from the member, so
+    a member who left this org would bill another one. This is the one
+    departed rule of the gateway (``my_day_loop.departed``): no org, another
+    org (two orgs resolve to none), or a status that is not ``active`` in
+    this org. A failed read answers ``"unverified"``, because a read that
+    failed does not prove the member, and the step then spends nothing.
+    """
+    from gateway import my_day_loop
+
+    try:
+        return await my_day_loop.departed(org, member)
+    except Exception:  # a failed read proves nothing, so spend nothing
+        return "unverified"
+
+
 async def _pending(db: Any, org: str, limit: int) -> list[Note]:
-    rows = (await db.execute(text(_PENDING_SQL), {"o": org, "n": limit})).all()
+    rows = (await db.execute(text(_PENDING_SQL), {
+        "o": org, "n": limit, "max_failures": MAX_FAILURES, "park_days": PARK_DAYS,
+    })).all()
     return [Note(id=str(r.id), subject=r.subject, body=r.body, body_md5=str(r.body_md5))
             for r in rows]
+
+
+async def _backlog(db: Any, org: str) -> int:
+    """The waiting notes, up to :data:`BACKLOG_THRESHOLD` + 1."""
+    return int((await db.execute(text(_BACKLOG_SQL), {
+        "o": org, "n": BACKLOG_THRESHOLD + 1, "max_failures": MAX_FAILURES,
+        "park_days": PARK_DAYS,
+    })).scalar() or 0)
+
+
+def daily_requests(backlog: int) -> int:
+    """The org's request cap for one day: the note allowance over
+    :data:`NOTES_PER_REQUEST`. A backlog above :data:`BACKLOG_THRESHOLD`
+    takes :data:`BACKLOG_DAILY_NOTES`, and otherwise :data:`DAILY_NOTES`."""
+    notes = BACKLOG_DAILY_NOTES if backlog > BACKLOG_THRESHOLD else DAILY_NOTES
+    return notes // NOTES_PER_REQUEST
 
 
 async def _write(org: str, rows: Sequence[Mapping[str, Any]], step_mode: str) -> int:
@@ -355,6 +454,69 @@ async def _write(org: str, rows: Sequence[Mapping[str, Any]], step_mode: str) ->
     return written
 
 
+async def _record_failure(org: str, notes: Sequence[Note], step_mode: str) -> None:
+    """Count one failure for each note of a batch, in one transaction."""
+    async with tenant_session(org) as db:
+        for note in notes:
+            await db.execute(text(_FAILED_SQL), {
+                "o": org, "activity_id": note.id, "body_md5": note.body_md5,
+                "mode": step_mode})
+
+
+def batch_failed(reason: str | None) -> bool:
+    """Whether a request with no decision failed for a cause that its own
+    notes can hold. An outage, a refusal, the switch or the cool-down is not
+    the batch's fault, and costs the notes nothing."""
+    if not reason:
+        return False
+    return reason in ("request_invalid", "timeout") or reason.startswith(
+        ("unreadable", "build_failed"))
+
+
+# ── The request counter (Redis, as My Day's ``feed_decide.reserve``) ────────
+
+
+def _utc_date(now: datetime | None = None) -> str:
+    return (now or datetime.now(UTC)).astimezone(UTC).date().isoformat()
+
+
+def _requests_key(utc_date: str) -> Any:
+    from acb_common.tenant_redis import key
+
+    return key(NAMESPACE, "requests", utc_date)
+
+
+def _redis() -> Any:
+    from acb_common.tenant_redis import get_tenant_redis
+
+    return get_tenant_redis()
+
+
+async def requests_used(org: str, utc_date: str) -> int:
+    """The requests that the org sent on ``utc_date``."""
+    from acb_common.tenant_redis import organization_scope
+
+    with organization_scope(org):
+        return int(await _redis().get(_requests_key(utc_date)) or 0)
+
+
+async def reserve_request(org: str, utc_date: str, cap: int) -> bool:
+    """Count one request against the org's ``cap`` for ``utc_date``, BEFORE
+    it is sent. A request that times out or fails is billed too, so it
+    counts. Answers False, and gives the count back, at the cap."""
+    from acb_common.tenant_redis import organization_scope
+
+    with organization_scope(org):
+        redis = _redis()
+        k = _requests_key(utc_date)
+        used = int(await redis.incr(k, 1))
+        await redis.expire(k, REQUESTS_TTL_S)
+        if used > cap:
+            await redis.decrby(k, 1)
+            return False
+    return True
+
+
 # ── The step ────────────────────────────────────────────────────────────────
 
 
@@ -371,15 +533,17 @@ class Labeled:
 
 async def label_after_run(
     org: str, *, should_stop: Callable[[], bool] = lambda: False,
+    now: datetime | None = None,
 ) -> Labeled:
     """One labeling step for ``org``, after a sync run. Never raises.
 
     The scheduler calls it outside the run lock, in a background task. The
-    org comes from the scheduler, never from a request.
+    org comes from the scheduler, never from a request. ``now`` is for a
+    test: it picks the UTC date of the request counter.
     """
     token = bind_tenant(org)
     try:
-        result = await _label(org, should_stop)
+        result = await _label(org, should_stop, _utc_date(now))
     except Exception as exc:  # the step never breaks the sync loop
         _log.warning("crm.note_labels.failed", organization_id=org,
                      error_type=type(exc).__name__)
@@ -389,32 +553,45 @@ async def label_after_run(
     return result
 
 
-async def _label(org: str, should_stop: Callable[[], bool]) -> Labeled:
+def _line(org: str, step_mode: str, reason: str, **counts: Any) -> None:
+    _log.info("crm.note_labels.step", organization_id=org, mode=step_mode,
+              reason=reason, **counts)
+
+
+async def _label(org: str, should_stop: Callable[[], bool], utc_date: str) -> Labeled:
     from acb_common._log import job_member_scope
 
     step_mode = df.mode_for(FEATURE)
     if step_mode not in ("shadow", "on"):
         return Labeled("off")
     if df.cooling():
-        _log.info("crm.note_labels.step", organization_id=org, mode=step_mode,
-                  reason="cooldown", notes=0, labeled=0, requests=0)
+        _line(org, step_mode, "cooldown", notes=0, labeled=0, requests=0)
         return Labeled("cooldown")
 
+    # A Redis failure raises here, and the step asks nothing (spend fails closed).
+    used = await requests_used(org, utc_date)
     async with tenant_session(org) as db:
-        used = int((await db.execute(text(_LABELED_TODAY_SQL), {"o": org})).scalar() or 0)
-        room = min(STEP_LIMIT, DAILY_LIMIT - used)
+        backlog = await _backlog(db, org)
+        cap = daily_requests(backlog)
+        room = cap - used
         if room <= 0:
-            _log.info("crm.note_labels.step", organization_id=org, mode=step_mode,
-                      reason="daily_cap", notes=0, labeled=0, requests=0, daily_used=used)
+            _line(org, step_mode, "daily_cap", notes=0, labeled=0, requests=0,
+                  requests_today=used, request_cap=cap)
             return Labeled("daily_cap")
         member = await _member(db, org)
-        notes = await _pending(db, org, room)
+        notes = await _pending(db, org, min(STEP_LIMIT, room * NOTES_PER_REQUEST))
     if not notes:
         return Labeled("none")
     if member is None:
         _log.info("crm.note_labels.skipped", organization_id=org, mode=step_mode,
                   reason="no_member", notes=len(notes))
         return Labeled("no_member", notes=len(notes))
+    left = await _member_left(org, member)
+    if left is not None:
+        # 🔴 Money: this member would bill another org, or none. Spend nothing.
+        _log.info("crm.note_labels.skipped", organization_id=org, mode=step_mode,
+                  reason="member_left", member_reason=left, notes=len(notes))
+        return Labeled("member_left", notes=len(notes))
 
     labeled = 0
     requests = 0
@@ -424,6 +601,9 @@ async def _label(org: str, should_stop: Callable[[], bool]) -> Labeled:
         if should_stop():
             reason = "stopped"
             break
+        if not await reserve_request(org, utc_date, cap):
+            reason = "daily_cap"
+            break
         requests += 1
         with job_member_scope(member, app=MODULE_SLUG):
             rows = await df.ask(
@@ -431,35 +611,48 @@ async def _label(org: str, should_stop: Callable[[], bool]) -> Labeled:
                 member=member, ids={"decide_notes": len(refs)}, module_slug=MODULE_SLUG,
             )
         if rows is None:
-            # A 402 started the cool-down, or the request failed in a way the
-            # next one would repeat. Stop, and let the next run try again.
-            reason = "cooldown" if df.cooling() else "no_answer"
+            why = df.last_no_answer()
+            if batch_failed(why):
+                # The batch may hold a bad note. Count the failure, so the
+                # batch goes to the back and parks after MAX_FAILURES.
+                await _record_failure(org, [n for _r, n in refs], step_mode)
+                reason = "batch_failed"
+            else:
+                # A 402 started the cool-down, or the box cannot ask now.
+                reason = "cooldown" if df.cooling() else "no_answer"
             break
         labeled += await _write(org, rows, step_mode)
         if rows and rows[0]["request_id"]:
             request_ids.append(rows[0]["request_id"])
-    _log.info("crm.note_labels.step", organization_id=org, mode=step_mode,
-              reason=reason, notes=len(notes), labeled=labeled, requests=requests,
-              request_ids=request_ids, daily_used=used + labeled)
+    _line(org, step_mode, reason, notes=len(notes), labeled=labeled, requests=requests,
+          request_ids=request_ids, requests_today=used + requests, request_cap=cap,
+          backlog=backlog)
     return Labeled(reason, notes=len(notes), labeled=labeled, requests=requests,
                    request_ids=tuple(request_ids))
 
 
 __all__ = [
+    "BACKLOG_DAILY_NOTES",
+    "BACKLOG_THRESHOLD",
     "BODY_CLIP",
-    "DAILY_LIMIT",
+    "DAILY_NOTES",
     "FEATURE",
     "KIND_OPTIONS",
+    "MAX_FAILURES",
     "MODULE_SLUG",
     "NOTES_PER_REQUEST",
     "STEP_LIMIT",
     "URGENCY_LEVELS",
     "Labeled",
     "Note",
+    "batch_failed",
+    "daily_requests",
     "enabled_for",
     "label_after_run",
     "mode",
     "pack",
     "read_note",
     "reader",
+    "requests_used",
+    "reserve_request",
 ]

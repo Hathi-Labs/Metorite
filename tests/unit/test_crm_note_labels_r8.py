@@ -50,6 +50,9 @@ pytestmark = _DB_GATE
 
 _MIGRATIONS = Path(__file__).resolve().parents[2] / "infra" / "postgres"
 OWNER = "admin@crm-q26-r8.test"
+#: The connecting admin of org B. `app_user` is unique on the address, so
+#: each org needs its own.
+OWNER_B = "admin-b@crm-q26-r8.test"
 SECRET_B = "SECRET-B-the-other-org-note"
 
 #: Child tables first, so each DELETE meets no foreign key.
@@ -106,10 +109,23 @@ def lb(promoted, monkeypatch):
                         raising=False)
     monkeypatch.setattr(settings, "crm_decide_orgs", f"{promoted.org_a},{promoted.org_b}",
                         raising=False)
+    # The member check resolves through the RLS-exempt identity tables, as
+    # production does with the cutover on (my_day_loop.departed).
+    monkeypatch.setenv("IDENTITY_CUTOVER", "1")
     df._cooldown_until.clear()
     fake = FakeDecide()
     monkeypatch.setattr(acb_llm, "decide", fake)
     promoted.fake = fake
+    from acb_common import tenant_redis
+    from acb_common.tenant_redis import TenantRedis
+
+    from tests.unit.test_feed_decide import FakeRedis
+
+    redis = FakeRedis()
+    monkeypatch.setattr(tenant_redis, "get_tenant_redis", lambda **_: TenantRedis(redis))
+    promoted.redis = redis
+    _member_of(promoted, OWNER, promoted.org_a)
+    _member_of(promoted, OWNER_B, promoted.org_b)
     yield promoted
     df._cooldown_until.clear()
     with promoted.admin_engine.begin() as c:
@@ -118,6 +134,10 @@ def lb(promoted, monkeypatch):
                 c.execute(text(
                     f"DELETE FROM {table} WHERE organization_id = CAST(:o AS uuid)"),
                     {"o": org})
+        c.execute(text("DELETE FROM org_membership m USING user_identity ui "
+                       "WHERE m.user_id = ui.id AND ui.email LIKE '%@crm-q26-r8.test'"))
+        c.execute(text("DELETE FROM user_identity WHERE email LIKE '%@crm-q26-r8.test'"))
+        c.execute(text("DELETE FROM app_user WHERE email LIKE '%@crm-q26-r8.test'"))
 
 
 # ── Seeds, as the superuser ──────────────────────────────────────────────────
@@ -128,7 +148,45 @@ def _q(p: Any, sql: str, **params: Any) -> list[Any]:
         return list(c.execute(text(sql), params).all())
 
 
-def _connect(p: Any, org: str, member: str | None = OWNER) -> None:
+def _member_of(p: Any, email: str, org: str, *, status: str = "active",
+               app_user: bool = True) -> None:
+    """A member of ``org``: the ``app_user`` row and the identity membership."""
+    with p.admin_engine.begin() as c:
+        if app_user:
+            c.execute(text(
+                "INSERT INTO app_user (email, display_name, role, status, organization_id) "
+                "VALUES (:e, :e, 'employee', :s, CAST(:o AS uuid)) "
+                "ON CONFLICT DO NOTHING"), {"e": email, "s": status, "o": org})
+        uid = c.execute(text(
+            "INSERT INTO user_identity (email, display_name) VALUES (:e, :e) "
+            "ON CONFLICT (lower(email)) DO UPDATE SET updated_at = now() "
+            "RETURNING id::text"), {"e": email}).scalar()
+        c.execute(text(
+            "INSERT INTO org_membership (organization_id, user_id, status, joined_at) "
+            "VALUES (CAST(:o AS uuid), CAST(:u AS uuid), :s, now()) "
+            "ON CONFLICT (organization_id, user_id) DO UPDATE SET status = EXCLUDED.status"),
+            {"o": org, "u": uid, "s": status})
+
+
+def _set_status(p: Any, email: str, org: str, status: str) -> None:
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE app_user SET status = :s WHERE lower(email) = lower(:e)"),
+                  {"s": status, "e": email})
+        c.execute(text(
+            "UPDATE org_membership m SET status = :s FROM user_identity ui "
+            "WHERE m.user_id = ui.id AND lower(ui.email) = lower(:e) "
+            "AND m.organization_id = CAST(:o AS uuid)"), {"s": status, "e": email, "o": org})
+
+
+def _requests_today(p: Any, org: str, day: str) -> int:
+    from gateway.crm_sync import note_labels
+
+    return int(p.redis.store.get(f"cc:{org}:{note_labels.NAMESPACE}:requests:{day}", "0"))
+
+
+def _connect(p: Any, org: str, member: str | None = None) -> None:
+    if member is None:
+        member = OWNER if org == p.org_a else OWNER_B
     with p.admin_engine.begin() as c:
         c.execute(text(
             "INSERT INTO integration_connections (organization_id, provider, "
@@ -163,11 +221,11 @@ def _labels(p: Any, org: str) -> dict[str, Any]:
     return {r[0]: r for r in rows}
 
 
-async def _step(p: Any, org: str) -> Any:
+async def _step(p: Any, org: str, now: datetime | None = None) -> Any:
     from gateway.crm_sync import note_labels
 
     async with tenant_engine_scope(p.app_url.render_as_string(hide_password=False)):
-        return await note_labels.label_after_run(org)
+        return await note_labels.label_after_run(org, now=now)
 
 
 def _migration() -> Path:
@@ -186,7 +244,7 @@ def test_the_columns_the_key_and_the_cascade(lb) -> None:
     assert set(cols) == {
         "organization_id", "activity_id", "kind", "kind_confidence", "kind_probabilities",
         "needs_action", "urgency", "urgency_confidence", "urgency_probabilities",
-        "body_md5", "mode", "labeled_at", "request_id"}
+        "body_md5", "mode", "labeled_at", "request_id", "failures", "failed_at"}
     assert cols["organization_id"] == cols["activity_id"] == cols["body_md5"] == "NO"
     pk = _q(lb, "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = "
                 "to_regclass('public.crm_note_labels') AND contype = 'p'")
@@ -385,22 +443,129 @@ async def test_a_step_takes_at_most_200_notes_newest_first(lb) -> None:
     assert [r[0] for r in unlabeled] == [f"N{g}" for g in range(1, 31)]
 
 
-async def test_the_daily_cap_counts_labeled_at_over_24_hours(lb, monkeypatch) -> None:
+DAY = datetime(2026, 10, 16, 1, 0, tzinfo=UTC)
+
+
+async def test_the_daily_cap_counts_requests_over_the_whole_utc_day(lb, monkeypatch) -> None:
+    """Fix round items 2 and 5: the cap counts REQUESTS, in Redis, for one
+    UTC day. A request four hours old still counts, and the next day starts
+    again."""
     from gateway.crm_sync import note_labels
 
-    monkeypatch.setattr(note_labels, "DAILY_LIMIT", 4)
+    monkeypatch.setattr(note_labels, "DAILY_NOTES", 10)  # 2 requests a day
     a = lb.org_a
     _connect(lb, a)
     company = _company(lb, a)
-    for i in range(9):
+    for i in range(18):
         _note(lb, a, company, minutes=i)
-    assert (await _step(lb, a)).labeled == 4
-    capped = await _step(lb, a)
-    assert capped.reason == "daily_cap"
+    assert (await _step(lb, a, now=DAY)).labeled == 10
+    assert _requests_today(lb, a, "2026-10-16") == 2
+    later = await _step(lb, a, now=DAY + timedelta(hours=4))
+    assert later.reason == "daily_cap" and len(lb.fake.calls) == 2
+    nxt = await _step(lb, a, now=DAY + timedelta(days=1))
+    assert nxt.labeled == 8 and _requests_today(lb, a, "2026-10-17") == 2
+
+
+async def test_a_failed_request_counts_against_the_cap(lb, monkeypatch) -> None:
+    import acb_llm
+    from gateway.crm_sync import note_labels
+
+    monkeypatch.setattr(note_labels, "DAILY_NOTES", 10)  # 2 requests a day
+
+    async def _invalid(state, questions, **kw):
+        raise acb_llm.DecideRequestInvalid(400, {"reason": "too_long"})
+
+    monkeypatch.setattr(acb_llm, "decide", _invalid)
+    a = lb.org_a
+    _connect(lb, a)
+    company = _company(lb, a)
+    for i in range(12):
+        _note(lb, a, company, minutes=i)
+    for _ in range(2):
+        assert (await _step(lb, a, now=DAY)).reason == "batch_failed"
+    assert _requests_today(lb, a, "2026-10-16") == 2
+    assert (await _step(lb, a, now=DAY)).reason == "daily_cap"
+
+
+async def test_a_backlog_lifts_the_daily_allowance(lb, monkeypatch) -> None:
+    from gateway.crm_sync import note_labels
+
+    monkeypatch.setattr(note_labels, "DAILY_NOTES", 10)
+    monkeypatch.setattr(note_labels, "BACKLOG_DAILY_NOTES", 30)
+    monkeypatch.setattr(note_labels, "BACKLOG_THRESHOLD", 20)
+    a = lb.org_a
+    _connect(lb, a)
+    company = _company(lb, a)
+    for i in range(25):
+        _note(lb, a, company, minutes=i)
+    # 25 notes wait, more than 20: the backlog allowance, 30 notes.
+    assert (await _step(lb, a, now=DAY)).labeled == 25
+    assert _requests_today(lb, a, "2026-10-16") == 5
+    for i in range(25, 40):
+        _note(lb, a, company, minutes=i)
+    # 15 wait, not more than 20: the normal 10 notes, and 5 are spent.
+    got = await _step(lb, a, now=DAY)
+    assert got.reason == "daily_cap" and got.labeled == 0
+
+
+async def test_a_failing_batch_goes_to_the_back_and_parks(lb, monkeypatch) -> None:
+    """Fix round item 2: one bad note cannot block the queue."""
+    import acb_llm
+
+    real = lb.fake
+
+    async def _picky(state, questions, **kw):
+        if any(n["body"] == "BAD" for n in state["notes"]):
+            raise acb_llm.DecideRequestInvalid(400, {"reason": "bad"})
+        return await real(state, questions, **kw)
+
+    monkeypatch.setattr(acb_llm, "decide", _picky)
+    a = lb.org_a
+    _connect(lb, a)
+    company = _company(lb, a)
+    bad = _note(lb, a, company, body="BAD", minutes=100)
+    good = [_note(lb, a, company, body=f"good {i}", minutes=i) for i in range(6)]
+
+    first = await _step(lb, a, now=DAY)
+    assert first.reason == "batch_failed" and first.labeled == 0
+    rows = _q(lb, "SELECT activity_id::text, failures, labeled_at FROM crm_note_labels "
+                  "WHERE organization_id = CAST(:o AS uuid)", o=a)
+    assert {r[0]: (r[1], r[2]) for r in rows}[bad] == (1, None)
+    # The failed batch is at the back now, so the others are labeled.
+    for _ in range(4):
+        await _step(lb, a, now=DAY)
+    labeled = {k for k, v in _labels(lb, a).items() if v[11] is not None}
+    assert set(good) <= labeled and bad not in labeled
+    failures = _q(lb, "SELECT failures FROM crm_note_labels WHERE activity_id = "
+                      "CAST(:i AS uuid)", i=bad)[0][0]
+    assert failures == 3
+    # Parked: the next step asks nothing about it.
+    assert (await _step(lb, a, now=DAY)).reason == "none"
+    # A change of its text brings it back, and the count starts again.
     with lb.admin_engine.begin() as c:
-        c.execute(text("UPDATE crm_note_labels SET labeled_at = now() - interval '25 hours' "
-                       "WHERE organization_id = CAST(:o AS uuid)"), {"o": a})
-    assert (await _step(lb, a)).labeled == 4
+        c.execute(text("UPDATE crm_activities SET body = 'fixed' WHERE id = CAST(:i AS uuid)"),
+                  {"i": bad})
+    assert (await _step(lb, a, now=DAY)).labeled == 1
+    row = _q(lb, "SELECT failures, labeled_at IS NOT NULL FROM crm_note_labels WHERE "
+                 "activity_id = CAST(:i AS uuid)", i=bad)[0]
+    assert tuple(row) == (0, True)
+
+
+async def test_a_parked_note_waits_seven_days(lb, monkeypatch) -> None:
+    a = lb.org_a
+    _connect(lb, a)
+    act = _note(lb, a, _company(lb, a), body="x")
+    md5 = _q(lb, "SELECT md5(coalesce(subject, '') || coalesce(body, '')) FROM "
+                 "crm_activities WHERE id = CAST(:i AS uuid)", i=act)[0][0]
+    with lb.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_note_labels (organization_id, activity_id, body_md5, mode, "
+            "failures, failed_at) VALUES (CAST(:o AS uuid), CAST(:a AS uuid), :m, "
+            "'shadow', 3, now() - interval '6 days')"), {"o": a, "a": act, "m": md5})
+    assert (await _step(lb, a, now=DAY)).reason == "none"
+    with lb.admin_engine.begin() as c:
+        c.execute(text("UPDATE crm_note_labels SET failed_at = now() - interval '8 days'"))
+    assert (await _step(lb, a, now=DAY)).labeled == 1
 
 
 # ── 5. Off ───────────────────────────────────────────────────────────────────
@@ -431,11 +596,58 @@ async def test_an_org_outside_the_crm_list_is_off(lb, monkeypatch) -> None:
 
 async def test_no_connection_member_skips(lb) -> None:
     a = lb.org_a
-    _connect(lb, a, member=None)
+    _connect(lb, a, member="no-address")
     _note(lb, a, _company(lb, a))
     got = await _step(lb, a)
     assert got.reason == "no_member" and got.notes == 1
     assert lb.fake.calls == [] and _labels(lb, a) == {}
+
+
+# ── 5b. The member must still belong to THIS org (money) ─────────────────────
+
+
+async def test_a_member_who_left_with_no_other_org_spends_nothing(lb) -> None:
+    a = lb.org_a
+    _connect(lb, a)
+    _note(lb, a, _company(lb, a))
+    _set_status(lb, OWNER, a, "removed")
+    got = await _step(lb, a, now=DAY)
+    assert got.reason == "member_left" and lb.fake.calls == []
+    assert _labels(lb, a) == {} and _requests_today(lb, a, "2026-10-16") == 0
+
+
+async def test_a_member_in_two_orgs_spends_nothing(lb) -> None:
+    a, b = lb.org_a, lb.org_b
+    _connect(lb, a)
+    _note(lb, a, _company(lb, a))
+    _member_of(lb, OWNER, b, app_user=False)  # an active membership in B too
+    got = await _step(lb, a, now=DAY)
+    assert got.reason == "member_left" and lb.fake.calls == []
+    assert _requests_today(lb, a, "2026-10-16") == 0
+
+
+async def test_a_member_who_moved_to_another_org_spends_nothing(lb) -> None:
+    a, b = lb.org_a, lb.org_b
+    _connect(lb, a)
+    _note(lb, a, _company(lb, a))
+    _set_status(lb, OWNER, a, "removed")
+    _member_of(lb, OWNER, b, app_user=False)  # B is the one org it resolves to
+    got = await _step(lb, a, now=DAY)
+    assert got.reason == "member_left" and lb.fake.calls == []
+    assert _requests_today(lb, b, "2026-10-16") == 0
+
+
+async def test_a_removed_member_with_a_stale_membership_spends_nothing(lb) -> None:
+    """``org_membership`` can stay ``active`` after a removal. The bound
+    ``app_user`` status still refuses."""
+    a = lb.org_a
+    _connect(lb, a)
+    _note(lb, a, _company(lb, a))
+    with lb.admin_engine.begin() as c:
+        c.execute(text("UPDATE app_user SET status = 'removed' WHERE lower(email) = :e"),
+                  {"e": OWNER})
+    got = await _step(lb, a, now=DAY)
+    assert got.reason == "member_left" and lb.fake.calls == []
 
 
 # ── 6. Tenant isolation ──────────────────────────────────────────────────────

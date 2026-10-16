@@ -209,14 +209,15 @@ def start_labels(org: str) -> asyncio.Task[Any] | None:
         if _stopping.is_set() or org in _labeling or not note_labels.enabled_for(org):
             return None
         _labeling.add(org)
-
-        async def _step() -> note_labels.Labeled:
-            try:
-                return await note_labels.label_after_run(org, should_stop=_stopping.is_set)
-            finally:
-                _labeling.discard(org)
-
-        return _track(asyncio.get_running_loop().create_task(_step(), name="crm-note-labels"))
+        task = asyncio.get_running_loop().create_task(
+            note_labels.label_after_run(org, should_stop=_stopping.is_set),
+            name="crm-note-labels",
+        )
+        # A done-callback, not a `finally` in the coroutine: a task that is
+        # cancelled before its first step never runs that `finally`, and the
+        # org would stay in `_labeling` for the life of the process.
+        task.add_done_callback(lambda _t: _labeling.discard(org))
+        return _track(task)
     except Exception as exc:  # a label step never breaks a sync run
         _labeling.discard(org)
         _log.warning("crm.note_labels.not_started class=%s", type(exc).__name__)

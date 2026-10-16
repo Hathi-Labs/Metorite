@@ -94,6 +94,7 @@ import functools
 import math
 import time
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any
@@ -131,6 +132,7 @@ __all__ = [
     "configured_on",
     "cooling",
     "instructions",
+    "last_no_answer",
     "mode_for",
     "score_level",
     "shadow",
@@ -654,6 +656,19 @@ def _requests_of(built: Any) -> list[Request]:
     return [(state, questions) for state, questions in many if questions]
 
 
+#: The reason of the last call in this task that got no decision, or None.
+#: WS-53 CRM-Q26: the note-label step reads it after :func:`ask` returns
+#: None, to tell a failure of its own batch from an outage. It changes no
+#: answer and no log line, so every other caller is as before.
+_LAST_NO_ANSWER: ContextVar[str | None] = ContextVar("decide_last_no_answer", default=None)
+
+
+def last_no_answer() -> str | None:
+    """Why the last :func:`ask` of this task got no decision, or None after
+    a decision. A reason code only, never tenant text."""
+    return _LAST_NO_ANSWER.get()
+
+
 def _no_answer(
     ids: Mapping[str, Any], *, on: bool, shadow_event: str, reason: str,
     level: str = "info", **extra: Any,
@@ -665,6 +680,7 @@ def _no_answer(
     stays undecided (D-EM-8), and every cause logs ``decide.unavailable``
     with its reason (§10.4.8 EM-T5b-2 item 5).
     """
+    _LAST_NO_ANSWER.set(reason)
     if on:
         _log.warning("decide.unavailable", **ids, decide_reason=reason, **extra)
     elif shadow_event == "decide.fallback":
@@ -898,6 +914,7 @@ async def ask[R](
     ``decide.decided``. Never raises.
     """
     ids = _log_ids(feature, account_id, message_id, ids)
+    _LAST_NO_ANSWER.set(None)
     if _cooling(current_tenant()):
         # A 402 or 403 came back within REFUSAL_COOLDOWN_S. No Router call.
         _no_answer(ids, on=True, shadow_event="", reason="cooldown")

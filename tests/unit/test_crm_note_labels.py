@@ -81,39 +81,49 @@ class FakeDecide:
                                 request_id=f"req-{len(self.calls)}")
 
 
-class FakeDb:
-    """The one count query of the step. Records each statement."""
-
-    def __init__(self, used: int) -> None:
-        self.used = used
-        self.sql: list[str] = []
-
-    async def execute(self, statement, params=None):
-        self.sql.append(str(statement))
-        return SimpleNamespace(scalar=lambda: self.used)
-
-
 class Box:
-    """The DB half of the step, faked: the sessions, the member, the notes
-    and the writes."""
+    """The DB half of the step, faked: the sessions, the member, the notes,
+    the backlog and the writes. The request counter is a real
+    ``reserve_request`` over a fake Redis. ``used`` presets the requests of
+    today, and ``left`` is what the departed check answers."""
 
     def __init__(self, monkeypatch, *, notes: int = 7, member: str | None = OWNER,
-                 used: int = 0) -> None:
+                 used: int = 0, backlog: int | None = None, left: str | None = None,
+                 today: str | None = None) -> None:
+        from acb_common import tenant_redis
+        from acb_common.tenant_redis import TenantRedis
+
+        from tests.unit.test_feed_decide import FakeRedis
+
         self.sessions = 0
-        self.db = FakeDb(used)
         self.limits: list[int] = []
         self.written: list[tuple[list[dict[str, Any]], str]] = []
+        self.failed: list[list[str]] = []
+        self.left_asked: list[str] = []
+        self.redis = FakeRedis()
+        monkeypatch.setattr(tenant_redis, "get_tenant_redis", lambda **_: TenantRedis(self.redis))
+        self.today = today or nl._utc_date()
+        if used:
+            self.redis.store[self.key(self.today)] = str(used)
         self.notes = [nl.Note(id=f"00000000-0000-4000-8000-{i:012d}",
                               subject=f"{SECRET_SUBJECT}-{i}", body=SECRET_BODY,
                               body_md5=f"md5-{i}") for i in range(notes)]
+        waiting = len(self.notes) if backlog is None else backlog
 
         @contextlib.asynccontextmanager
         async def _session(org=None):
             self.sessions += 1
-            yield self.db
+            yield SimpleNamespace()
 
         async def _member(db, org):
             return member
+
+        async def _member_left(org, who):
+            self.left_asked.append(who)
+            return left
+
+        async def _backlog(db, org):
+            return min(waiting, nl.BACKLOG_THRESHOLD + 1)
 
         async def _pending(db, org, limit):
             self.limits.append(limit)
@@ -123,10 +133,23 @@ class Box:
             self.written.append(([dict(r) for r in rows], step_mode))
             return len(rows)
 
+        async def _record_failure(org, notes, step_mode):
+            self.failed.append([n.id for n in notes])
+
         monkeypatch.setattr(nl, "tenant_session", _session)
         monkeypatch.setattr(nl, "_member", _member)
+        monkeypatch.setattr(nl, "_member_left", _member_left)
+        monkeypatch.setattr(nl, "_backlog", _backlog)
         monkeypatch.setattr(nl, "_pending", _pending)
         monkeypatch.setattr(nl, "_write", _write)
+        monkeypatch.setattr(nl, "_record_failure", _record_failure)
+
+    @staticmethod
+    def key(utc_date: str, org: str = ORG) -> str:
+        return f"cc:{org}:{nl.NAMESPACE}:requests:{utc_date}"
+
+    def used(self, utc_date: str | None = None) -> int:
+        return int(self.redis.store.get(self.key(utc_date or self.today), "0"))
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -451,16 +474,118 @@ class TestTheStep:
         assert box.limits == [nl.STEP_LIMIT] == [200]
         assert got.notes == 200 and len(fake.calls) == 40
 
-    async def test_the_daily_cap_narrows_the_step_and_then_stops_it(self, monkeypatch):
+    async def test_the_daily_cap_counts_requests_narrows_the_step_and_stops_it(
+            self, monkeypatch):
         _modes(monkeypatch)
-        box = Box(monkeypatch, notes=230, used=nl.DAILY_LIMIT - 30)
-        _fake(monkeypatch)
-        assert (await nl.label_after_run(ORG)).notes == 30
-        assert box.limits == [30]
-        full = Box(monkeypatch, notes=230, used=nl.DAILY_LIMIT)
+        cap = nl.daily_requests(0)
+        box = Box(monkeypatch, notes=230, used=cap - 6, backlog=10)
+        fake = _fake(monkeypatch)
+        got = await nl.label_after_run(ORG)
+        assert box.limits == [30] and len(fake.calls) == 6
+        assert got.reason == "done" and box.used() == cap
+        full = Box(monkeypatch, notes=230, used=cap, backlog=10)
         fake = _fake(monkeypatch)
         assert (await nl.label_after_run(ORG)).reason == "daily_cap"
         assert full.limits == [] and fake.calls == []
+
+    def test_the_caps_are_notes_over_five_with_a_backlog_allowance(self):
+        assert (nl.DAILY_NOTES, nl.BACKLOG_DAILY_NOTES, nl.BACKLOG_THRESHOLD) == (
+            1000, 5000, 1000)
+        assert nl.daily_requests(0) == nl.daily_requests(nl.BACKLOG_THRESHOLD) == 200
+        assert nl.daily_requests(nl.BACKLOG_THRESHOLD + 1) == 1000
+
+    async def test_a_backlog_lifts_the_cap(self, monkeypatch):
+        _modes(monkeypatch)
+        box = Box(monkeypatch, notes=230, used=nl.daily_requests(0),
+                  backlog=nl.BACKLOG_THRESHOLD + 1)
+        fake = _fake(monkeypatch)
+        got = await nl.label_after_run(ORG)
+        assert got.reason == "done" and len(fake.calls) == 40
+        assert box.used() == nl.daily_requests(0) + 40
+
+    @pytest.mark.parametrize("raises", [
+        acb_llm.DecideRequestInvalid(400, {"reason": "too_long"}),
+        acb_llm.DecideUnavailable("unreadable answer: x", status=200),
+    ])
+    async def test_a_failed_request_is_counted_and_its_batch_fails(self, monkeypatch, raises):
+        _modes(monkeypatch)
+        box = Box(monkeypatch, notes=12)
+        fake = _fake(monkeypatch, raises=raises)
+        got = await nl.label_after_run(ORG)
+        assert got.reason == "batch_failed" and len(fake.calls) == 1
+        assert box.used() == 1, "a billed request with no row still counts"
+        assert box.failed == [[n.id for n in box.notes[:5]]] and box.written == []
+
+    async def test_a_timeout_is_counted_and_its_batch_fails(self, monkeypatch):
+        _modes(monkeypatch)
+        monkeypatch.setattr(df, "ON_BOUND_S", 0.05)
+        box = Box(monkeypatch, notes=3)
+
+        async def _slow(state, questions, **kw):
+            await asyncio.sleep(1)
+
+        monkeypatch.setattr(acb_llm, "decide", _slow)
+        got = await nl.label_after_run(ORG)
+        assert got.reason == "batch_failed" and box.used() == 1
+        assert box.failed == [[n.id for n in box.notes]]
+
+    async def test_an_outage_counts_the_request_and_fails_no_note(self, monkeypatch):
+        _modes(monkeypatch)
+        box = Box(monkeypatch, notes=12)
+        _fake(monkeypatch, raises=acb_llm.DecideUnavailable("HTTP 503", status=503))
+        got = await nl.label_after_run(ORG)
+        assert got.reason == "no_answer" and box.used() == 1 and box.failed == []
+
+    def test_only_a_cause_of_the_batch_fails_it(self):
+        for reason in ("request_invalid", "timeout", "unreadable:KeyError",
+                       "unreadable answer: x", "build_failed:TypeError"):
+            assert nl.batch_failed(reason), reason
+        for reason in (None, "", "cooldown", "disabled", "HTTP 503", "tier_unknown",
+                       "insufficient_credits", "forbidden", "budget"):
+            assert not nl.batch_failed(reason), reason
+
+    async def test_a_request_hours_old_still_counts_and_the_next_day_starts_again(
+            self, monkeypatch):
+        """Verifier F1: the window holds a whole UTC day, not an hour."""
+        from datetime import UTC, datetime
+
+        _modes(monkeypatch)
+        cap = nl.daily_requests(0)
+        early = datetime(2026, 10, 16, 1, 0, tzinfo=UTC)
+        box = Box(monkeypatch, notes=5, backlog=10, today="2026-10-16")
+        _fake(monkeypatch)
+        monkeypatch.setattr(nl, "daily_requests", lambda _b: 1)
+        assert (await nl.label_after_run(ORG, now=early)).requests == 1
+        later = datetime(2026, 10, 16, 5, 0, tzinfo=UTC)
+        assert (await nl.label_after_run(ORG, now=later)).reason == "daily_cap"
+        evening = datetime(2026, 10, 16, 23, 59, tzinfo=UTC)
+        assert (await nl.label_after_run(ORG, now=evening)).reason == "daily_cap"
+        nxt = datetime(2026, 10, 17, 0, 1, tzinfo=UTC)
+        assert (await nl.label_after_run(ORG, now=nxt)).requests == 1
+        assert box.redis.ttl[box.key("2026-10-16")] == nl.REQUESTS_TTL_S >= 24 * 3600
+        assert cap == 200
+
+    async def test_a_redis_failure_asks_nothing(self, monkeypatch):
+        _modes(monkeypatch)
+        box = Box(monkeypatch, notes=5)
+        box.redis.fail = ConnectionError("down")
+        fake = _fake(monkeypatch)
+        assert (await nl.label_after_run(ORG)).reason == "failed"
+        assert fake.calls == []
+
+    @pytest.mark.parametrize("left", ["no_org", "other_org", "status", "unverified"])
+    async def test_a_member_who_left_the_org_spends_nothing(self, monkeypatch, left):
+        _modes(monkeypatch)
+        box = Box(monkeypatch, notes=4, left=left)
+        fake = _fake(monkeypatch)
+        with structlog.testing.capture_logs() as caps:
+            got = await nl.label_after_run(ORG)
+        assert got.reason == "member_left" and fake.calls == [] and box.used() == 0
+        (line,) = _events(caps, "crm.note_labels.skipped")
+        assert line["member_reason"] == left and line["notes"] == 4
+        assert OWNER not in repr(caps)
+        assert box.left_asked == [OWNER]
+
 
     async def test_no_member_skips_and_logs_a_count(self, monkeypatch):
         _modes(monkeypatch)
@@ -552,6 +677,63 @@ class TestTheStep:
         assert current_tenant() is None
 
 
+class TestTheMemberCheck:
+    """🔴 Money. ``_member_left`` is ``my_day_loop.departed``, the one rule:
+    the member must resolve to THIS org and be ``active`` in it."""
+
+    def _identity(self, monkeypatch, home, status="active", fail=False):
+        import acb_auth.access as access
+        from gateway import my_day_loop
+
+        async def _resolve(email):
+            if fail:
+                raise RuntimeError("pool timeout")
+            return ("uid", home) if home else (None, None)
+
+        async def _status(org, member):
+            return status
+
+        monkeypatch.setattr(access, "resolve_identity", _resolve)
+        monkeypatch.setattr(access, "identity_read_failed", lambda: False)
+        monkeypatch.setattr(my_day_loop, "_member_status", _status)
+
+    async def test_left_with_no_other_org(self, monkeypatch):
+        self._identity(monkeypatch, None, status="removed")
+        assert await nl._member_left(ORG, OWNER) == "no_org"
+
+    async def test_in_two_orgs_resolves_to_none(self, monkeypatch):
+        # resolve_identity answers (None, None) for two active memberships,
+        # and never picks one (its P2a contract).
+        self._identity(monkeypatch, None)
+        assert await nl._member_left(ORG, OWNER) == "no_org"
+
+    async def test_moved_to_one_other_org(self, monkeypatch):
+        self._identity(monkeypatch, OTHER)
+        assert await nl._member_left(ORG, OWNER) == "other_org"
+
+    async def test_removed_in_this_org(self, monkeypatch):
+        self._identity(monkeypatch, ORG, status="removed")
+        assert await nl._member_left(ORG, OWNER) == "status"
+
+    async def test_a_failed_read_spends_nothing(self, monkeypatch):
+        self._identity(monkeypatch, ORG, fail=True)
+        assert await nl._member_left(ORG, OWNER) == "unverified"
+
+    async def test_an_active_member_of_this_org_pays(self, monkeypatch):
+        self._identity(monkeypatch, ORG)
+        assert await nl._member_left(ORG, OWNER) is None
+
+
+class TestLastNoAnswer:
+    async def test_it_names_the_reason_and_clears_on_a_decision(self, tenant, monkeypatch):
+        _fake(monkeypatch, raises=acb_llm.DecideRequestInvalid(400, {"reason": "x"}))
+        assert await _ask(nl.FEATURE) is None
+        assert df.last_no_answer() == "request_invalid"
+        _fake(monkeypatch)
+        assert await _ask(nl.FEATURE) is not None
+        assert df.last_no_answer() is None
+
+
 # ── Item 5: the scheduler ───────────────────────────────────────────────────
 
 
@@ -617,6 +799,44 @@ class TestTheScheduler:
             assert scheduler.start_labels(ORG) is None
         finally:
             scheduler._stopping.clear()
+
+    async def test_a_task_cancelled_before_its_first_step_frees_the_org(self, monkeypatch):
+        """Fix round item 4: the done-callback, not a ``finally``, frees it."""
+        _modes(monkeypatch)
+        scheduler._stopping.clear()
+        task = scheduler.start_labels(ORG)
+        assert task is not None and ORG in scheduler._labeling
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+        assert ORG not in scheduler._labeling
+        assert scheduler.start_labels(ORG) is not None
+
+    async def test_a_gate_that_raises_starts_nothing_and_the_run_still_counts(
+            self, monkeypatch):
+        """Verifier F2: the ``except`` of ``start_labels``."""
+        _modes(monkeypatch)
+
+        def _boom(org):
+            raise RuntimeError("settings")
+
+        async def _run_org(org, *, should_stop):
+            return None
+
+        async def _execute(handle, *, should_stop):
+            return "RESULT"
+
+        monkeypatch.setattr(nl, "enabled_for", _boom)
+        monkeypatch.setattr(scheduler.engine, "run_org", _run_org)
+        monkeypatch.setattr(scheduler.engine, "execute", _execute)
+        scheduler._stopping.clear()
+        with structlog.testing.capture_logs() as caps:
+            assert scheduler.start_labels(ORG) is None
+            assert await scheduler._run_one(ORG, asyncio.Semaphore(1)) == 1
+            assert await scheduler.spawn(SimpleNamespace(org=ORG)) == "RESULT"
+        assert ORG not in scheduler._labeling
+        assert len([c for c in caps if "crm.note_labels.not_started" in str(c.get("event"))]) == 3
 
     async def test_spawn_returns_the_run_result_and_then_labels(self, monkeypatch):
         _modes(monkeypatch)

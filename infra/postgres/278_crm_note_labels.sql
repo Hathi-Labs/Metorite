@@ -6,13 +6,16 @@
 --       `on`. Each note gets one row: the kind, the probability that it needs
 --       action, the urgency, the confidence and the probabilities of each,
 --       the md5 of the text that was labeled, the time and the request id.
+--       A batch that failed for a cause of its own writes a row with no
+--       label and `failures` + 1, so the note goes to the back of the queue
+--       and parks after 3 failures. `labeled_at` is NULL until a label lands.
 --       The table holds NO tenant text: option keys, levels, numbers and ids
 --       only. Only gateway/crm_sync/note_labels.py writes it, and no route
 --       reads it yet.
 -- Why:  WS-53 CRM-Q26, spec project-docs/specs/crm_platform.md §18.11.2.
 --       `body_md5` is how the step finds a changed note, because
---       `crm_activities` has no `updated_at`. `labeled_at` is how it counts
---       the daily cap of each org.
+--       `crm_activities` has no `updated_at`. The daily cap counts requests
+--       in Redis, not rows here.
 -- Depends on: 130_org_access_control.sql (organization), 144_crm.sql
 --       (crm_activities).
 --
@@ -53,8 +56,10 @@ CREATE TABLE IF NOT EXISTS crm_note_labels (
     urgency_probabilities  JSONB NULL,
     body_md5               TEXT NOT NULL,
     mode                   TEXT NOT NULL,
-    labeled_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    labeled_at             TIMESTAMPTZ NULL,
     request_id             TEXT NULL,
+    failures               SMALLINT NOT NULL DEFAULT 0,
+    failed_at              TIMESTAMPTZ NULL,
     PRIMARY KEY (activity_id),
     CONSTRAINT crm_note_labels_kind_known CHECK (
         kind IS NULL OR kind IN ('payment', 'site_issue', 'commercial',
@@ -63,12 +68,9 @@ CREATE TABLE IF NOT EXISTS crm_note_labels (
         urgency IS NULL OR urgency IN ('low', 'medium', 'high')),
     CONSTRAINT crm_note_labels_needs_action_range CHECK (
         needs_action IS NULL OR (needs_action >= 0 AND needs_action <= 1)),
-    CONSTRAINT crm_note_labels_mode_known CHECK (mode IN ('shadow', 'on'))
+    CONSTRAINT crm_note_labels_mode_known CHECK (mode IN ('shadow', 'on')),
+    CONSTRAINT crm_note_labels_failures_range CHECK (failures >= 0)
 );
-
--- The daily cap counts the rows of one org labeled in the last 24 hours.
-CREATE INDEX IF NOT EXISTS crm_note_labels_org_labeled_idx
-    ON crm_note_labels (organization_id, labeled_at);
 
 DO $rls$
 BEGIN
