@@ -976,8 +976,12 @@ def _permission_gate(
         # argument nor a caller fact writes it. An async caller passes what
         # Redis said (``session_is_marked``, which fails closed). The sync
         # reader adds what this process saw (round 3).
+        # WS-17 EM-G11f3 round 2: a run of the mail agent itself ignores the
+        # mark. Its own tools ask their own cards (EM-G11c1), as in a direct
+        # pane run, and the untrusted card would be a second card.
         request["after_untrusted_answer"] = (
-            bool(after_untrusted_answer) or read_untrusted_answer())
+            bool(after_untrusted_answer) or read_untrusted_answer()
+        ) and not _run_reads_mail_itself()
         ok, code, _ = decide(request)
         mode = os.environ.get(
             "AGENT_PERMISSION_MODE", "enforce"
@@ -1049,7 +1053,13 @@ def _gate_injected_tool(fn: Any) -> Any:
             if tool_name in STORE_WRITES and await _run_holds_mail_here():
                 _log.info("permission.mail_store_write_refused", tool=tool_name)
                 return MAIL_STORE_WRITE_REFUSED.format(tool=tool_name)
-            state = await session_mark_state() if _is_egress(fn) else MARK_CLEAR
+            # WS-17 EM-G11f3 round 2: the mail agent's own run reads no mark
+            # (:func:`_run_reads_mail_itself`). The executor marks the calling
+            # session BEFORE the sub-run starts, so without this its own
+            # writes would ask the untrusted card as well as their own card.
+            state = (await session_mark_state()
+                     if _is_egress(fn) and not _run_reads_mail_itself()
+                     else MARK_CLEAR)
             marked = state == MARK_MARKED or (
                 state != MARK_CLEAR and not is_delegation_tool(fn))
             allowed, reason = _gate(kwargs, marked)
@@ -1074,6 +1084,24 @@ def _gate_injected_tool(fn: Any) -> Any:
             return UNTRUSTED_ANSWER_REFUSED.format(tool=tool_name)
         return _with_steer(fn(*args, **kwargs))
     return _register_platform_wrapper(fn, _sgated)
+
+
+def _run_reads_mail_itself() -> bool:
+    """True when the run on this frame IS an agent of
+    :data:`UNTRUSTED_INPUT_AGENTS` (WS-17 EM-G11f3, round 2).
+
+    The agent name comes from the run's bound artifact context, never from a
+    request field or a tool argument. Such a run ignores the session's
+    untrusted-answer mark: the mark holds what the CALLER does after the
+    answer, and each write of the mail agent asks its own card. A fault reads
+    False, so the mark applies and the gate fails closed."""
+    try:
+        from acb_skills.write_artifact import artifact_context
+
+        name = str((artifact_context() or {}).get("agent_name") or "")
+    except Exception:
+        return False
+    return name in UNTRUSTED_INPUT_AGENTS
 
 
 async def _run_holds_mail_here() -> bool:
@@ -1107,7 +1135,8 @@ def _after_untrusted_answer(reason: str, marked: bool = False) -> bool:
     except ImportError:  # pragma: no cover
         return True
     return reason == UNTRUSTED_ANSWER_CONFIRM or (
-        reason == "gate_error" and (marked or read_untrusted_answer()))
+        reason == "gate_error" and (marked or read_untrusted_answer())
+        and not _run_reads_mail_itself())
 
 
 def _untrusted_answer_card_refusal() -> str | None:
