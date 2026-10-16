@@ -618,6 +618,123 @@ def _run_org_display_name() -> str:
     return name
 
 
+# ── WS-61 KB-4a: the Knowledge index block (knowledge_base.md §6.5) ─────────
+
+#: The one agent whose per-turn context carries the block.
+_KB_INDEX_AGENT = "orchestrator"
+#: The block by ``(org, member)``, with the time it was read. Process-local,
+#: like ``_ORG_NAME_CACHE``. A new page shows within the TTL.
+_KB_INDEX_CACHE: dict[tuple[str, str], tuple[float, str]] = {}
+_KB_INDEX_TTL_SECONDS = 300.0
+#: After a failed read, the next turn asks again after this many seconds.
+_KB_INDEX_RETRY_SECONDS = 30.0
+_KB_INDEX_CACHE_MAX = 1024
+#: The longest wait for the read. A slow gateway costs the block, never the turn.
+_KB_INDEX_TIMEOUT_SECONDS = 3.0
+
+
+def _knowledge_org_allowed(org: str) -> bool:
+    """``KNOWLEDGE_ENABLED`` and ``KNOWLEDGE_ORGS`` for *org*, through their ONE
+    reader (``gateway.routes.knowledge.flags``). Fails closed."""
+    try:
+        from gateway.routes.knowledge.flags import knowledge_org_allowed
+    except ImportError:
+        return False
+    try:
+        return knowledge_org_allowed(org) is True
+    except Exception:
+        return False
+
+
+def _kb_index_key(agent_name: str) -> tuple[str, str] | None:
+    """The cache key of the block for this run, or ``None`` for no block.
+
+    No block unless the agent is the orchestrator, ``COMPANY_SEARCH_ENABLED``
+    is on, and the run's org is on ``KNOWLEDGE_ENABLED`` and
+    ``KNOWLEDGE_ORGS``. The org is :func:`_current_run_org` and the member is
+    :func:`_verified_run_member`, both from the run boundary and never from
+    the payload or the model (R5).
+
+    The member must also be the identity the tools act as, the run's memory
+    id. In a shared room the chat route binds the member who typed as the
+    verified member, and the memory id is ``room:<thread>``. That member's
+    spaces must not reach the room, so a room gets no block (review of
+    KB-4a, P1-a).
+    """
+    if agent_name != _KB_INDEX_AGENT:
+        return None
+    try:
+        from acb_skills.company_search_tools import company_search_enabled
+    except ImportError:
+        return None
+    if not company_search_enabled():
+        return None
+    org = _current_run_org()
+    member = _verified_run_member()
+    if not org or not member:
+        return None
+    try:
+        from acb_skills.memory_tools import _get_memory_user_id
+
+        acting = str(_get_memory_user_id() or "").strip().lower()
+    except Exception:
+        return None
+    if acting != member:
+        return None
+    if not _knowledge_org_allowed(org):
+        return None
+    return (str(org).strip().lower(), member)
+
+
+async def _prime_knowledge_index(agent_name: str) -> None:
+    """Read the block of this run's member into the cache. Never raises.
+
+    ``run_agent_stream`` and the batch path (``_run_agent_inner``, which the
+    WhatsApp channel uses) each await it once, before the agent loads, so the
+    sync :func:`_context_preamble_parts` only reads the cache. The read is
+    ``GET /knowledge/spaces`` as the member (``knowledge_tools.index_block``),
+    at most once each ``_KB_INDEX_TTL_SECONDS`` for each org and member. A
+    failed read keeps the last block, or none, and asks again after
+    ``_KB_INDEX_RETRY_SECONDS``.
+    """
+    key = _kb_index_key(agent_name)
+    if key is None:
+        return
+    import time
+
+    now = time.monotonic()
+    hit = _KB_INDEX_CACHE.get(key)
+    if hit and now - hit[0] < _KB_INDEX_TTL_SECONDS:
+        return
+    try:
+        from acb_skills.knowledge_tools import index_block
+
+        block = await asyncio.wait_for(index_block(key[1]), timeout=_KB_INDEX_TIMEOUT_SECONDS)
+        stamp = now
+    except Exception as exc:
+        _log.warning("executor.knowledge_index_failed", error=type(exc).__name__)
+        block = hit[1] if hit else ""
+        stamp = now - _KB_INDEX_TTL_SECONDS + _KB_INDEX_RETRY_SECONDS
+    _KB_INDEX_CACHE.pop(key, None)
+    _KB_INDEX_CACHE[key] = (stamp, block)
+    while len(_KB_INDEX_CACHE) > _KB_INDEX_CACHE_MAX:
+        _KB_INDEX_CACHE.pop(next(iter(_KB_INDEX_CACHE)))
+
+
+def _knowledge_index_block(agent_name: str) -> str:
+    """The cached block of this run's org and member, or ``""``.
+
+    It reads no database and no gateway, so a turn pays nothing here. The
+    flags are checked again on each call, so a flag turned off drops the
+    block at once.
+    """
+    key = _kb_index_key(agent_name)
+    if key is None:
+        return ""
+    hit = _KB_INDEX_CACHE.get(key)
+    return hit[1] if hit else ""
+
+
 def _resolve_sub_agent_org() -> str | None:
     """The tenant a delegated sub-run must act in: its PARENT run's org.
 
@@ -3204,6 +3321,9 @@ async def _run_agent_inner(
         # §15.4: refused as absent unless a first-party admin runs it. An
         # AgentLoadError, so no self-anneal and no self-mutation follow.
         await _assert_may_run_agent(agent_name)
+        # WS-61 KB-4a: the orchestrator's Knowledge index block, as the
+        # stream path reads it. The WhatsApp channel runs this path.
+        await _prime_knowledge_index(agent_name)
         with load_agent(
             agent_name,
             run_id=run_id,
@@ -4127,6 +4247,9 @@ async def run_agent_stream(
         # §15.4: refused as absent unless a first-party admin runs it. The
         # RUN_ERROR then reads like an agent that cannot load.
         await _assert_may_run_agent(agent_name)
+        # WS-61 KB-4a: read the orchestrator's Knowledge index block here,
+        # because the per-turn context is built by sync code.
+        await _prime_knowledge_index(agent_name)
         with load_agent(
             agent_name,
             run_id=run_id,
@@ -6723,7 +6846,7 @@ def _compose_maf_run(
 
         from orchestrator._native_run_context import RunContextProvider
 
-        context_text = _run_context_text(event_payload, integrations).strip()
+        context_text = _run_context_text(event_payload, integrations, agent_name).strip()
         _model = _active_run_model.get() or ""
         # The context block goes in as the system context so the window fit
         # counts it. It then leaves the list and travels by the provider.
@@ -6792,7 +6915,7 @@ def _compose_session_run(
 
         from orchestrator._native_run_context import RunContextProvider
 
-        context_text = _run_context_text(event_payload, integrations).strip()
+        context_text = _run_context_text(event_payload, integrations, agent_name).strip()
         model = _active_run_model.get() or ""
         loader = event_payload.get("_history_loader")
         assembled = assemble_run_context(
@@ -6934,7 +7057,7 @@ async def _begin_native_session(
             event_payload.get("message") or event_payload.get("user_query") or ""
         )
         reserve = count_message_tokens([
-            {"role": "system", "content": _run_context_text(event_payload, integrations)},
+            {"role": "system", "content": _run_context_text(event_payload, integrations, agent_name)},
             {"role": "user", "content": current},
         ], model)
         return await native_session_store.begin_turn(
@@ -7377,12 +7500,14 @@ def _render_history_block(
 def _context_preamble_parts(
     event_payload: dict[str, Any],
     integrations: dict[str, Any],
+    agent_name: str = "",
 ) -> list[str]:
     """The per-turn context blocks, in the order the string prompt carries them.
 
     The run's organisation by name (:func:`_run_org_display_name`), the
-    connected and missing integrations, then ``memory_context``, then
-    ``system_context`` (which carries the persona). :func:`_build_event_message`
+    connected and missing integrations, the Knowledge index block of the
+    orchestrator (:func:`_knowledge_index_block`, WS-61 KB-4a), then
+    ``memory_context``, then ``system_context`` (which carries the persona). :func:`_build_event_message`
     puts the history and the current turn after them. The structured path of
     WS-43t1 sends the same blocks through its per-run context provider
     (:func:`_run_context_text`). One builder, so the two paths cannot drift.
@@ -7408,6 +7533,12 @@ def _context_preamble_parts(
             "When they do, output: <<<SETUP:service_name:ENV_VAR_NAME=value>>>"
         )
 
+    # WS-61 KB-4a (knowledge_base.md §6.5): what the company has written
+    # down, for the orchestrator only. Spaces and counts, never page text.
+    knowledge_index = _knowledge_index_block(agent_name)
+    if knowledge_index:
+        parts.append(knowledge_index)
+
     # Memory context (pre-enriched by the route handler from Mem0) —
     # inject as a system-level preamble so Tier 2 agents also benefit.
     memory_ctx = event_payload.get("memory_context") or ""
@@ -7426,6 +7557,7 @@ def _context_preamble_parts(
 def _run_context_text(
     event_payload: dict[str, Any],
     integrations: dict[str, Any],
+    agent_name: str = "",
 ) -> str:
     """The context block of a structured native run (WS-43t1, §15.9.5).
 
@@ -7433,7 +7565,7 @@ def _run_context_text(
     reaches the model through the per-run context provider, never as a
     message, so it never enters a stored session.
     """
-    return "\n".join(_context_preamble_parts(event_payload, integrations))
+    return "\n".join(_context_preamble_parts(event_payload, integrations, agent_name))
 
 
 def _build_event_message(
@@ -7451,7 +7583,7 @@ def _build_event_message(
     it is prepended as conversation context so the agent has full continuity
     regardless of which model/runtime processed previous turns.
     """
-    parts: list[str] = _context_preamble_parts(event_payload, integrations)
+    parts: list[str] = _context_preamble_parts(event_payload, integrations, agent_name)
 
     # Conversation history — prepend prior turns so model switching mid-chat
     # preserves full context even when switching between CLI / BYOK / MAF paths.

@@ -130,8 +130,9 @@ class TestFlagOn:
     def test_search_company_replaces_the_two_legacy_retrievers(self, flag, monkeypatch):
         flag(True)
         tools = _build(monkeypatch).kwargs["tools"]
+        # KB-4a: the two Knowledge reads join on the same path.
         assert [getattr(t, "__name__", "") for t in tools] == [
-            "search_company", *MAIN_TOOLS[2:]]
+            "search_company", "read_page", "list_spaces", *MAIN_TOOLS[2:]]
         assert cst.search_company in tools
 
     def test_rule_1_becomes_the_grounding_paragraph(self, flag, monkeypatch):
