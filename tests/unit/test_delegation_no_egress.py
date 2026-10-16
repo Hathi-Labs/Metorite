@@ -1291,9 +1291,17 @@ def test_redis_down_does_not_hold_a_delegated_send(
 # -- WS-17 EM-G11f3 round 2 (P1): the delegated mail agent asks ONE card -------
 #
 # The executor marks the calling session BEFORE the email assistant's sub-run
-# starts (fix round 1, P0). Its own writes must not read that mark: each asks
-# its own EM-G11c1 card, as in a direct pane run. What the CALLER does after
-# the hand-off stays held. Spec: email_app_master_plan.md 12.3.13.9.1.
+# starts (fix round 1, P0). The mail agent's own writes must not read a mark:
+# each asks its own EM-G11c1 card, as in a direct pane run. What the CALLER
+# does after the hand-off stays held. Spec: email_app_master_plan.md
+# 12.3.13.9.1.
+#
+# Measured 2026-10-16: the native MAF email assistant runs through the batch
+# fallback of the streaming sub-run, which binds a session of its own. So on a
+# healthy store it reads no mark of the caller. With Redis DOWN its own
+# session reads UNKNOWN, and before round 2 that gave the untrusted card as
+# well as the tool's own card, or a refusal with no card channel. Each case
+# runs both ways, and the "down" case is the one the mutation turns red.
 
 _UNTRUSTED_CARD = "reaches outside Metorite"
 
@@ -1310,12 +1318,14 @@ def _delegated_archive() -> tuple[_Model, _Model]:
     return pa, email
 
 
+@pytest.mark.parametrize("redis", ["up", "down"])
 def test_a_delegated_mail_write_asks_one_card_its_own(
-    sandbox, monkeypatch,  # noqa: F811
+    sandbox, monkeypatch, mark_store, redis: str,  # noqa: F811
 ) -> None:
     """(a) Turn 1 of a chat: the parent delegates, and the email assistant's
     ``manage_inbox`` asks exactly ONE card, the tool's own. No untrusted card."""
     _register_every_annotation()
+    mark_store.down = redis == "down"
     titles = _open_card_channel(monkeypatch)
     pa, email = _delegated_archive()
     _harness(monkeypatch, sandbox, {PA: pa, EMAIL: email})
@@ -1325,13 +1335,15 @@ def test_a_delegated_mail_write_asks_one_card_its_own(
     assert _UNTRUSTED_CARD not in titles[0], titles
 
 
+@pytest.mark.parametrize("redis", ["up", "down"])
 def test_a_delegated_mail_write_with_no_card_channel_answers_as_on_main(
-    sandbox, monkeypatch,  # noqa: F811
+    sandbox, monkeypatch, mark_store, redis: str,  # noqa: F811
 ) -> None:
     """(b) A run with no card channel (WhatsApp, a batch run): the email
-    assistant's write gives its own EM-G11c1 answer, as on main, and never
-    the untrusted refusal."""
+    assistant's write gives its own EM-G11c1 answer, and never the untrusted
+    refusal."""
     _register_every_annotation()
+    mark_store.down = redis == "down"
     pa, email = _delegated_archive()
     _harness(monkeypatch, sandbox, {PA: pa, EMAIL: email})
     _run_top(PA, ORG_B, cards=False)
@@ -1341,12 +1353,14 @@ def test_a_delegated_mail_write_with_no_card_channel_answers_as_on_main(
     assert "read an answer of an agent" not in answer, answer
 
 
+@pytest.mark.parametrize("redis", ["up", "down"])
 def test_the_callers_own_egress_after_the_hand_off_still_asks_the_card(
-    sandbox, monkeypatch,  # noqa: F811
+    sandbox, monkeypatch, mark_store, redis: str,  # noqa: F811
 ) -> None:
     """(c) The hand-off marks the session. The parent's own ``fetch_page``
     after it still asks the untrusted card."""
     _register_every_annotation()
+    mark_store.down = redis == "down"
     titles = _open_card_channel(monkeypatch)
     pa = _Model([
         _call("call_agent", {"agent_name": EMAIL, "message": "Summarise my mail"}),
