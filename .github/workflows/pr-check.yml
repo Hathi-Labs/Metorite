@@ -398,7 +398,9 @@ jobs:
               tests/unit/test_shell_needs_r8.py \
               tests/unit/test_my_day_loop_r8.py \
               tests/unit/test_chat_session_archive_r8.py \
-              tests/unit/test_projects_search_description_r8.py
+              tests/unit/test_projects_search_description_r8.py \
+              tests/unit/test_staging_minimise_r8.py \
+              tests/unit/test_staging_export.py
 
       - name: Write the measured timings
         run: python3 scripts/ci_unit_guard.py durations --junit junit --out test_durations.json

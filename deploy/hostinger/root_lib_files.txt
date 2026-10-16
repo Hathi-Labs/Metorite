@@ -16,3 +16,5 @@ infra/docker-compose.yml infra/docker-compose.yml
 infra/postgres/00_create_databases.sql infra/postgres/00_create_databases.sql
 infra/postgres/01_schema.sql infra/postgres/01_schema.sql
 apps/services/meeting_bot apps/services/meeting_bot
+scripts/staging_export.sh staging_export.sh
+infra/staging/minimise.sql staging_minimise.sql

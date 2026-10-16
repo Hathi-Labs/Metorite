@@ -107,6 +107,8 @@ def test_the_response_shape_and_order(fields_db: _FieldsDB) -> None:
         "section_id": None, "required": False, "help_text": None,
         "default_value": None, "lookup_target": None, "is_system": False,
         "retired": False,
+        # CRM-Q17a-1: the fill rank, null for an org outside CRM_FILL_RANK_ORGS.
+        "fill": None, "distinct": None,
     }
     assert body[1]["visible"] is False and body[1]["source"] == "native"
     assert body[1]["options"] is None and body[1]["api_name"] is None

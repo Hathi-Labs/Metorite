@@ -300,3 +300,34 @@ def test_the_engine_calls_no_zoho_client_directly() -> None:
 def test_the_engine_is_the_caller_of_both_mirror_writes() -> None:
     names = _names(_PACKAGE / "engine.py")
     assert {"upsert_from_source", "delete_from_source"} <= names
+
+
+# ── CRM-Q17a-1: a re-link is a change the fill rank must see ─────────────────
+
+
+def test_each_slug_counts_its_relinks() -> None:
+    from gateway.crm_sync import engine
+
+    blank = engine._blank_counts()
+    assert all(blank[slug]["relinked"] == 0 for slug in engine.SLUG_ORDER)
+
+
+@pytest.mark.asyncio
+async def test_relink_deals_returns_the_rows_it_changed() -> None:
+    """``_mirror_pipelines`` adds this number to ``deals.relinked``."""
+    from types import SimpleNamespace
+
+    from gateway.crm_sync import engine
+
+    pipeline = SimpleNamespace(id="p1", ext_id="e1", name="Sales", is_default=True)
+    counts = iter([2, 0, 1])
+
+    class _DB:
+        async def execute(self, sql, params=None):
+            if "UPDATE" in str(sql):
+                return SimpleNamespace(rowcount=next(counts))
+            return SimpleNamespace(fetchall=lambda: [pipeline])
+
+    assert await engine._relink_deals(_DB()) == 3
+    assert engine._rowcount(SimpleNamespace(rowcount=-1)) == 0
+    assert engine._rowcount(SimpleNamespace()) == 0
