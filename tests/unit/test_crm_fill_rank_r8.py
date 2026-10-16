@@ -818,17 +818,27 @@ async def test_a_run_with_no_change_moves_the_checked_mark_to_its_start(fz) -> N
     assert await _layout_empty(p.org_a, "organizations") == []
 
 
-async def test_the_stamp_comes_from_the_database_clock(fz, monkeypatch) -> None:
+async def test_the_stamp_and_the_bound_take_the_database_clock(fz, monkeypatch) -> None:
     """Review P2: a stamp compares with ``crm_sync_runs.started_at``, so it
-    takes that clock. An app clock 25 years behind changes nothing."""
+    takes that clock, and so does the 24-hour bound. An app clock 74 years
+    ahead changes nothing."""
     from gateway.crm_sync import fill
 
     p, a, _b = fz
     _seed_fill(a)
     await _connect_all(p, p.org_a, a)
-    monkeypatch.setattr(fill, "_now", lambda: datetime(2001, 1, 1, tzinfo=UTC))
+    monkeypatch.setattr(fill, "_now", lambda: datetime(2100, 1, 1, tzinfo=UTC))
     assert (await _run(p.org_a)).status == "ok"
     start = _q(p, "SELECT max(started_at) FROM crm_sync_runs WHERE "
                   "organization_id = CAST(:o AS uuid)", o=p.org_a)[0][0]
     stamps = {datetime.fromisoformat(v) for v in _state(p, p.org_a)["at"].values()}
-    assert stamps and all(s >= start for s in stamps)
+    assert stamps and all(start <= s < start + timedelta(hours=1) for s in stamps)
+
+    # A change inside the bound waits by the database clock.
+    p2 = next(r for r in a.data["Products"] if r["id"] == "p2")
+    p2.update(Vendor_Name={"id": "v2", "name": "Vendor Two"},
+              Modified_Time="2026-01-01T00:40:00+00:00")
+    _age_module_reads(p, p.org_a)
+    assert (await _run(p.org_a)).status == "ok"
+    assert "module:Products" in _state(p, p.org_a)["pending"]
+    assert _fill(p, p.org_a, "module:Products")["Vendor_Name"] == (1, 2, 1)
