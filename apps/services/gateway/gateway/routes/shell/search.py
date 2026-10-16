@@ -62,8 +62,10 @@ def _item(kind: str, title: str, hint: str, href: str) -> dict[str, str]:
     return {"kind": kind, "title": (title or "").strip() or "(untitled)", "hint": hint, "href": href}
 
 
-#: The apps of the bar, in the bar's order. Artifacts and WhatsApp are sources
-#: of the registry, and they are not in the bar (``knowledge_base.md`` §20.3).
+#: The apps of the bar, in the bar's order. Artifacts, WhatsApp and Knowledge
+#: are sources of the registry, and they are not in the bar
+#: (``knowledge_base.md`` §20.3). Knowledge joins the bar with KB-12, not
+#: before (§20.7 KR-3).
 BAR_APPS: tuple[str, ...] = ("tasks", "email", "people", "crm")
 
 

@@ -52,6 +52,7 @@ WHEN_WORDS: dict[str, str] = {
     "crm": "updated",
     "artifacts": "updated",
     "whatsapp": "sent",
+    "knowledge": "updated",
 }
 
 _SPACE = re.compile(r"\s+")
@@ -200,17 +201,17 @@ def format_answer(body: Any) -> str:
 async def search_company(query: str, apps: str | None = None) -> str:
     """Find the company's records that match the words, in every app the member holds.
 
-    It searches tasks, email, people, the CRM, artifacts and WhatsApp at once,
-    and returns short passages. Each record has a full_id (for example
-    deal:<id>) to cite and an in-app link. Open a whole record only when the
-    passage is not enough.
+    It searches tasks, email, people, the CRM, artifacts, WhatsApp and
+    Knowledge at once, and returns short passages. Each record has a full_id
+    (for example deal:<id>) to cite and an in-app link. Open a whole record
+    only when the passage is not enough.
 
     Args:
         query: The words to find, 2 to 300 characters: a customer, a person,
             a number or a subject.
         apps: Optional. A comma list of the apps to ask first, for example
-            "crm,email". The keys are tasks, email, people, crm, artifacts
-            and whatsapp.
+            "crm,email". The keys are tasks, email, people, crm, artifacts,
+            whatsapp and knowledge.
     """
     words = " ".join(str(query or "").split())
     if not 2 <= len(words) <= 300:
