@@ -39,8 +39,9 @@
 -- 275, and no open pull request held a migration. 274 is a gap that main
 -- skipped, and production applied 275 already, so 274 would run out of
 -- order. Check it again at merge.
--- Pinned by tests/unit/test_email_purge_wiring.py, which finds this file by
--- CONTENT, never by number (R1).
+-- Pinned by tests/unit/test_tenant_coverage.py, which finds this file by
+-- CONTENT, never by number (R1), and by the R8 cases of
+-- tests/unit/test_email_purge_wiring.py.
 -- ============================================================================
 
 BEGIN;
