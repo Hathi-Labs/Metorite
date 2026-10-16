@@ -79,18 +79,12 @@ describe("the browser gate CI runs", () => {
     expect(jobs().e2e).toMatch(/^ {4}if: github\.event_name != 'push'$/m);
   });
 
-  it("is the ONLY job that skips a push", () => {
-    // 🔴 The push trigger exists so a CONFLICTED PR still runs the R1
-    // migration-prefix guard, which is a unit test in the `test` job. A
-    // job-level `if:` anywhere else could switch that guard off on the one
-    // run that watches a conflicted PR.
-    expect(LF).toMatch(/^ {2}push:$/m);
-    const all = jobs();
-    expect(Object.keys(all)).toContain("test");
-    for (const [name, body] of Object.entries(all)) {
-      if (name === "e2e") continue;
-      expect(body, `job "${name}" has a job-level if:`).not.toMatch(/^ {4}if:/m);
-    }
+  it("has no push trigger, so no push run can twin a required check", () => {
+    // 🔴 A push run created a SKIPPED "Unit tests" on the PR's head SHA, and
+    // GitHub counts a skipped check as passed (measured on #1077). The push
+    // copy of the R1 guard lives in push-check.yml.
+    // Python fence: tests/unit/test_pr_check_triggers.py.
+    expect(LF).not.toMatch(/^ {2}push:$/m);
   });
 
   it("has a cap above the measured run", () => {

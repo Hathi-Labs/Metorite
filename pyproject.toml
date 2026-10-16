@@ -68,6 +68,7 @@ dev = [
     # image lock, and tests/unit/test_data_engine.py fails when they differ.
     # No module under apps/ or packages/ imports it, except that engine.
     "duckdb==1.5.6",
+    "pytest-split>=0.11.0",
 ]
 
 [tool.uv.workspace]
