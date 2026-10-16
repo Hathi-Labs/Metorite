@@ -363,6 +363,10 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    note ids and snippets. Each snippet sits in the frame of `untrusted.py`.
    Its last line says that a number comes from `crm_aggregate`. A
    `degraded` answer gives `SEARCH_OFF`, which names `crm_list_records`.
+   `addendum.py` names it in a section of its own, gated on that one
+   tool, because the orchestrator holds 12 of the 13 CRM tools.
+   `crm_aggregate` says the zone line only for a zoned month group or a
+   `datetime` bucket (`group_field_type`).
    Fences: `tests/unit/test_crm_agent.py`, `tests/unit/test_skills_registry.py`
    and `tests/unit/test_reports_by_code.py`.
 5m. untrusted.py -- the ONE frame for text that a stranger wrote (WS-17
