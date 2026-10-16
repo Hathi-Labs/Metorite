@@ -1,8 +1,9 @@
-"""CRM · aggregate — totals and stage dwell for an agent (WS-53 CRM-C7).
+"""CRM · aggregate — totals and stage dwell for an agent (WS-53 CRM-C7, CRM-Q25).
 
-Spec: ``project-docs/specs/crm_platform.md`` §20.10 item 2.
+Spec: ``project-docs/specs/crm_platform.md`` §20.10 item 2, and §18.11
+CRM-Q25 (the typed aggregate).
 
-    GET /crm/aggregate               count, ₹ or weighted ₹, by one group
+    GET /crm/aggregate               one measure, by one group
     GET /crm/aggregate/stage-dwell   days in each deal stage, and the deals
                                      that sit past their limit
 
@@ -11,15 +12,39 @@ routes sit on the shared ``core.router``, so the kill switch, ``feature:crm``
 and the access rule apply. The tenant comes from the session that the router
 binds, never from the request (R5).
 
-**One filter builder.** ``GET /crm/aggregate`` takes the filters of the list
-routes, through the same ``records.ListParams`` and ``records.list_query``.
-So an aggregate counts exactly the rows that the list with the same filters
-shows. Do not copy a filter here. Fence:
-``tests/unit/test_crm_aggregate.py::test_the_aggregate_reuses_the_list_filter_builder``.
+**The entity.** A core entity (``leads``, ``deals`` …), or a mirrored generic
+module as ``module:<ApiName>`` (CRM-Q25). A module that the profile does not
+mirror is a 404 (``modules._require_module``), before any read of a record.
 
-**Fixed SQL.** ``measure`` and ``group_by`` are keys of the two allowlists
-below. Any other value is a 422. Every identifier in a statement comes from
-a literal of this module, and every caller value is a bound parameter.
+**The measure.** ``count``, ``sum_amount`` and ``weighted`` (deals), or
+``sum``, ``avg``, ``min`` and ``max`` of one number field, given as
+``field=<key>``.
+
+**The group.** ``group_by`` names a fixed key of :data:`GROUPS`, or of
+:data:`MODULE_GROUPS` for a module. ``group_field=<key>`` groups by one field
+instead, with ``bucket`` for a date. A call gives one of the two.
+
+**One filter builder.** A core entity takes the filters of the list routes,
+through the same ``records.ListParams`` and ``records.list_query``. So an
+aggregate counts exactly the rows that the list with the same filters shows.
+Do not copy a filter here. Fence:
+``tests/unit/test_crm_aggregate.py::test_the_aggregate_reuses_the_list_filter_builder``.
+A module takes only the field filters ``field.<key>=<value>`` and
+``field.<key>.from`` / ``.to``.
+
+**The field SQL lives in ``field_sql.py``.** Each field name is checked
+against the field definitions there, and every key and value is bound. This
+module holds no jsonb operator. Fence:
+``tests/unit/test_crm_aggregate.py::test_the_aggregate_holds_no_field_sql``.
+
+**Fixed SQL.** Every identifier in a statement comes from a literal of this
+module or of ``field_sql``, and every caller value is a bound parameter. The
+statement runs under a LOCAL ``statement_timeout`` of 10 s.
+
+**At most 50 groups.** The answer keeps the 50 largest groups. ``other`` holds
+the measure over the rest, and ``omitted`` counts them. The order stays: the
+status groups in board order, the month and date buckets in time order, and
+each other group largest first.
 
 **Weighted ₹ reuses ``core.WEIGHTED_SQL``.** That expression binds the lane's
 own probability as ``:stage_probability``, so the weighted measure runs one
@@ -34,10 +59,11 @@ result with a ``reason``, and never a number that looks measured.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, HTTPException, Query
+from fastapi import Depends, HTTPException, Query, Request
 from gateway.routes.crm.core import (
     CLOSING_TYPES,
     ENTITIES,
@@ -50,12 +76,29 @@ from gateway.routes.crm.core import (
     is_mirror_mode,
     router,
 )
+from gateway.routes.crm.field_sql import (
+    DATE_TYPES,
+    FIELD_MEASURES,
+    FIELD_PREFIX,
+    FieldScope,
+    check_group,
+    check_measure,
+    core_scope,
+    field_pairs,
+    group_sql,
+    measure_sql,
+    module_scope,
+    module_where,
+)
+from gateway.routes.crm.modules import _require_module, mirrored_modules
 from gateway.routes.crm.records import ListParams, list_query
 from pydantic import BaseModel
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 #: ``measure`` → the SQL aggregate. ``weighted`` is not here: it reuses
-#: ``core.WEIGHTED_SQL`` lane by lane (see the module doc).
+#: ``core.WEIGHTED_SQL`` lane by lane (see the module doc). The field measures
+#: are ``field_sql.FIELD_MEASURES``.
 MEASURES: dict[str, str] = {
     "count": "count(*)",
     "sum_amount": "COALESCE(SUM(amount), 0)",
@@ -64,6 +107,9 @@ MEASURES: dict[str, str] = {
 
 #: The measures that read ``amount``, which only a deal has.
 DEAL_MEASURES = frozenset({"sum_amount", "weighted"})
+
+#: The measures whose groups add up to the total.
+SUMMING_MEASURES = frozenset({"count", "sum_amount", "weighted", "sum"})
 
 #: ``group_by`` → the SQL key. Each value is a literal of this module.
 GROUPS: dict[str, str] = {
@@ -82,14 +128,55 @@ GROUPS: dict[str, str] = {
     ),
 }
 
+#: ``group_by`` on a generic module (CRM-Q25). A module record keeps Zoho's
+#: created time in ``ext_created_at``, so its created month is a real one.
+#: The owner is the member email of the Zoho owner, NULL for a non-member.
+MODULE_GROUPS: dict[str, str] = {
+    "owner": "lower(owner_email)",
+    "created_month": "to_char(date_trunc('month', ext_created_at), 'YYYY-MM')",
+    "updated_month": (
+        "to_char(date_trunc('month', coalesce(ext_modified_at, updated_at)), "
+        "'YYYY-MM')"
+    ),
+}
+
+#: The table of every generic module record.
+MODULE_TABLE = "crm_module_records"
+
+#: The entity word of a generic module: ``module:<ApiName>``.
+MODULE_PREFIX = "module:"
+
+#: The query parameters a module aggregate takes, beside ``field.<key>``. A
+#: list filter on a module is a 422, never ignored.
+MODULE_PARAMS = frozenset({
+    "entity", "measure", "group_by", "group_field", "field", "bucket",
+    "page", "page_size", "sort", "dir",
+})
+
 #: The groups that only a deal has.
 DEAL_GROUPS = frozenset({"pipeline", "close_month"})
 
 #: The month groups sort by month. Every other group sorts by value.
 MONTH_GROUPS = frozenset({"created_month", "updated_month", "close_month"})
 
-#: The most groups one answer holds. More are counted in ``omitted``.
-MAX_GROUPS = 200
+#: The most groups one answer holds. The rest fold into ``other``.
+MAX_GROUPS = 50
+
+#: The limit of each statement of the aggregate, in milliseconds (CRM-Q25).
+STATEMENT_TIMEOUT_MS = 10_000
+
+#: ``SET LOCAL``: it ends with the read's transaction. ``set_config`` takes a
+#: bind, and ``SET`` does not (``shell/feed_measure.py``).
+_TIMEOUT_SQL = "SELECT set_config('statement_timeout', :ms, true)"
+
+#: The SQLSTATE of a statement that the timeout cancelled.
+_QUERY_CANCELED = "57014"
+
+#: What a member reads when the statement runs past the timeout.
+TIMEOUT_DETAIL = {
+    "code": "aggregate_timeout",
+    "message": "The total took longer than 10 seconds. Narrow the filter.",
+}
 
 #: What a Mirror org gets from the dwell route.
 MIRROR_DWELL_REASON = (
@@ -99,21 +186,31 @@ MIRROR_DWELL_REASON = (
 
 
 class AggregateGroup(BaseModel):
-    #: The raw key: a status id, an email, a month (YYYY-MM) or a source.
+    #: The raw key: a status id, an email, a month (YYYY-MM), a quarter
+    #: (YYYY-Qn), a year, a field value or a lookup id.
     key: str | None
-    #: What a person calls it: the stage or pipeline name, else the key.
+    #: What a person calls it: the stage, pipeline, option or lookup name.
     label: str
-    value: float
+    #: None when no record of the group holds a value (``avg``, ``min``, ``max``).
+    value: float | None
 
 
 class AggregateResponse(BaseModel):
     entity: str
     measure: str
-    group_by: str
+    #: The fixed key, or None when the answer groups by ``group_field``.
+    group_by: str | None = None
+    group_field: str | None = None
+    #: The field of a ``sum``, ``avg``, ``min`` or ``max``, and its type.
+    field: str | None = None
+    field_type: str | None = None
+    bucket: str | None = None
     groups: list[AggregateGroup]
-    #: The sum of every group, the omitted ones too.
-    total: float
-    #: Groups past :data:`MAX_GROUPS`, counted and not returned.
+    #: The measure over every group, the omitted ones too.
+    total: float | None
+    #: The measure over the groups past :data:`MAX_GROUPS`.
+    other: float | None = 0
+    #: The count of groups past :data:`MAX_GROUPS`.
     omitted: int = 0
 
 
@@ -148,40 +245,84 @@ class StageDwellResponse(BaseModel):
     reason: str | None = None
 
 
-def _check(entity: str, measure: str, group_by: str) -> Entity:
-    """The entity, or a 422 for an unknown or unfit value."""
-    found = ENTITIES.get(entity)
-    if found is None:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Unknown entity '{entity}'. One of: {sorted(ENTITIES)}.",
+def _refuse(detail: str) -> HTTPException:
+    return HTTPException(status_code=422, detail=detail)
+
+
+def _check(
+    entity: str, measure: str, group_by: str | None, group_field: str | None,
+    field: str | None, bucket: str | None,
+) -> tuple[Entity | None, str | None]:
+    """The core entity or the module name, or a 422 for an unknown or unfit
+    value. A field name is checked later, against the field definitions."""
+    module: str | None = None
+    found: Entity | None = None
+    if entity.startswith(MODULE_PREFIX):
+        module = entity[len(MODULE_PREFIX):]
+        if not module:
+            raise _refuse("Name the module: 'module:<ApiName>'.")
+    else:
+        found = ENTITIES.get(entity)
+        if found is None:
+            raise _refuse(
+                f"Unknown entity '{entity}'. One of: {sorted(ENTITIES)}, "
+                "or 'module:<ApiName>'.",
+            )
+    if measure not in MEASURES and measure not in FIELD_MEASURES:
+        raise _refuse(
+            f"Unknown measure '{measure}'. One of: "
+            f"{[*MEASURES, *FIELD_MEASURES]}.",
         )
-    if measure not in MEASURES:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Unknown measure '{measure}'. One of: {list(MEASURES)}.",
+    if measure in FIELD_MEASURES and not field:
+        raise _refuse(f"'{measure}' needs a number field, given as field=<key>.")
+    if field and measure not in FIELD_MEASURES:
+        raise _refuse(
+            f"'field' goes with {list(FIELD_MEASURES)}, not with '{measure}'.",
         )
-    if group_by not in GROUPS:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Unknown group_by '{group_by}'. One of: {list(GROUPS)}.",
-        )
+    if (group_by is None) == (group_field is None):
+        raise _refuse("Give group_by or group_field, and only one of them.")
+    if bucket is not None and group_field is None:
+        raise _refuse("'bucket' goes with group_field.")
+    allowed = MODULE_GROUPS if module is not None else GROUPS
+    if group_by is not None and group_by not in allowed:
+        raise _refuse(f"Unknown group_by '{group_by}'. One of: {list(allowed)}.")
+    if module is not None:
+        if measure in DEAL_MEASURES:
+            raise _refuse(f"'{measure}' needs deals. A module has no amount.")
+        return None, module
+    assert found is not None
     if found.table != "crm_deals" and (
         measure in DEAL_MEASURES or group_by in DEAL_GROUPS
     ):
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"'{measure}' by '{group_by}' needs deals. "
-                f"{entity} have no amount, pipeline or close date."
-            ),
+        raise _refuse(
+            f"'{measure}' by '{group_by}' needs deals. "
+            f"{entity} have no amount, pipeline or close date.",
         )
     if group_by == "status" and not found.status_table:
-        raise HTTPException(
-            status_code=422,
-            detail=f"{entity} have no status pipeline. Group by another key.",
+        raise _refuse(f"{entity} have no status pipeline. Group by another key.")
+    return found, None
+
+
+def _check_filters(module: str | None, request: Request) -> list[tuple[str, str]]:
+    """The ``field.<key>`` filters. A core entity takes none, and a module
+    takes nothing else. The names are checked against the fields later."""
+    pairs = field_pairs(request.query_params)
+    if module is None:
+        if pairs:
+            raise _refuse(
+                "A field.<key> filter takes a module entity. A core entity "
+                "takes the list filters.",
+            )
+        return pairs
+    other = sorted({
+        k for k in request.query_params
+        if k not in MODULE_PARAMS and not k.startswith(FIELD_PREFIX)
+    })
+    if other:
+        raise _refuse(
+            f"A module aggregate takes field.<key> filters only, not {other}.",
         )
-    return found
+    return pairs
 
 
 def _and(where: str, clause: str) -> str:
@@ -213,21 +354,36 @@ async def _status_order(db: Any, entity: Entity) -> dict[str, int]:
     return {str(r.id): int(r.position or 0) for r in rows}
 
 
+@dataclass
+class _Acc:
+    """One group as the statement gave it: the value, the field's sum and
+    count of values (for an ``avg`` total), and a name."""
+
+    value: float | None
+    s: float = 0.0
+    n: int = 0
+    name: str | None = None
+
+
+def _key(value: Any) -> str | None:
+    return None if value is None else str(value)
+
+
 async def _weighted(
-    db: Any, key_sql: str, where: str, params: dict[str, Any],
-) -> dict[str | None, float]:
+    db: Any, key_sql: str, label_sql: str, where: str, params: dict[str, Any],
+) -> dict[str | None, _Acc]:
     """Weighted ₹ for each key, one statement per open or ongoing lane."""
     lanes = (await db.execute(
         text("SELECT id, type, probability FROM crm_deal_statuses"), {},
     )).fetchall()
-    out: dict[str | None, float] = {}
+    out: dict[str | None, _Acc] = {}
     for lane in lanes:
         if getattr(lane, "type", "open") not in WEIGHTED_TYPES:
             continue
         rows = (await db.execute(
             text(
-                f"SELECT {key_sql} AS key, {WEIGHTED_SQL} FROM crm_deals"
-                f"{_and(where, 'status_id = CAST(:agg_lane AS uuid)')} "
+                f"SELECT {key_sql} AS key, {label_sql} AS label, {WEIGHTED_SQL} "
+                f"FROM crm_deals{_and(where, 'status_id = CAST(:agg_lane AS uuid)')} "
                 "GROUP BY 1"
             ),
             {
@@ -237,70 +393,156 @@ async def _weighted(
             },
         )).fetchall()
         for row in rows:
-            key = None if row.key is None else str(row.key)
-            out[key] = out.get(key, 0.0) + float(row.weighted or 0)
+            acc = out.setdefault(_key(row.key), _Acc(value=0.0))
+            acc.value = (acc.value or 0.0) + float(row.weighted or 0)
+            acc.name = acc.name or getattr(row, "label", None)
     return out
+
+
+def _combine(measure: str, accs: list[_Acc]) -> float | None:
+    """The measure over *accs*: a sum, the mean of every value, or the least
+    or greatest group value."""
+    if measure in SUMMING_MEASURES:
+        return sum(a.value or 0.0 for a in accs)
+    if measure == "avg":
+        n = sum(a.n for a in accs)
+        return sum(a.s for a in accs) / n if n else None
+    values = [a.value for a in accs if a.value is not None]
+    if not values:
+        return None
+    return min(values) if measure == "min" else max(values)
+
+
+def _rounded(value: float | None) -> float | None:
+    return None if value is None else round(value, 2)
+
+
+def _is_time_group(group_by: str | None, bucketed: bool) -> bool:
+    return bucketed or group_by in MONTH_GROUPS
 
 
 @router.get("/aggregate", response_model=AggregateResponse)
 async def aggregate(
+    request: Request,
     entity: str,
-    group_by: str,
+    group_by: str | None = None,
     measure: str = "count",
+    field: str | None = None,
+    group_field: str | None = None,
+    bucket: str | None = None,
     params: ListParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> AggregateResponse:
-    """One measure of one entity, by one group, over the list's filters."""
-    found = _check(entity, measure, group_by)
-    key_sql = GROUPS[group_by]
+    """One measure of one entity or module, by one group, over the filters."""
+    found, module = _check(entity, measure, group_by, group_field, field, bucket)
+    pairs = _check_filters(module, request)
+    scope: FieldScope | None = None
     async with _tenant_session() as db:
-        if group_by == "created_month" and await is_mirror_mode(
-            db, current_tenant(),
-        ):
-            # The created date of a mirrored row is the import time (Q8).
-            raise HTTPException(status_code=422, detail={
-                "code": "created_range_mirror",
-                "message": "The created date of a synced record is not kept. "
-                           "Group by the updated month instead.",
-            })
-        query = await list_query(db, found, params, user)
-        if measure == "weighted":
-            values = await _weighted(db, key_sql, query.where, query.params)
+        await db.execute(text(_TIMEOUT_SQL), {"ms": str(STATEMENT_TIMEOUT_MS)})
+        if module is not None:
+            _require_module(await mirrored_modules(db), module)
+            scope = await module_scope(db, module)
+            where = module_where(scope, module, pairs)
+            table, where_sql, bound = MODULE_TABLE, where.sql, dict(where.params)
         else:
-            rows = (await db.execute(
-                text(
-                    f"SELECT {key_sql} AS key, {MEASURES[measure]} AS value "
-                    f"FROM {found.table}{query.where} GROUP BY 1"
-                ),
-                query.params,
-            )).fetchall()
-            values = {
-                (None if r.key is None else str(r.key)): float(r.value or 0)
-                for r in rows
-            }
-        labels = await _labels(db, found, group_by)
+            assert found is not None
+            if group_by == "created_month" and await is_mirror_mode(
+                db, current_tenant(),
+            ):
+                # The created date of a mirrored row is the import time (Q8).
+                raise HTTPException(status_code=422, detail={
+                    "code": "created_range_mirror",
+                    "message": "The created date of a synced record is not kept. "
+                               "Group by the updated month instead.",
+                })
+            query = await list_query(db, found, params, user)
+            table, where_sql, bound = found.table, query.where, dict(query.params)
+            if field or group_field:
+                scope = await core_scope(db, found.slug)
+        measured = check_measure(scope, field) if field and scope else None
+        grouped = (
+            check_group(scope, group_field, bucket) if group_field and scope else None
+        )
+        if grouped is not None and scope is not None:
+            group = group_sql(scope, grouped, bucket)
+            key_sql, label_sql = group.key, group.label
+            bound.update(group.params)
+        else:
+            key_sql = (MODULE_GROUPS if module is not None else GROUPS)[group_by or ""]
+            label_sql = "NULL"
+        try:
+            if measure == "weighted":
+                values = await _weighted(db, key_sql, label_sql, where_sql, bound)
+            else:
+                value_sql, sum_sql, count_sql = MEASURES.get(measure, ""), "0", "0"
+                if measured is not None and scope is not None:
+                    m = measure_sql(scope, measured, measure)
+                    value_sql, sum_sql, count_sql = m.value, m.sum, m.count
+                    bound.update(m.params)
+                rows = (await db.execute(
+                    text(
+                        f"SELECT {key_sql} AS key, {label_sql} AS label, "
+                        f"{value_sql} AS value, {sum_sql} AS s, {count_sql} AS n "
+                        f"FROM {table}{where_sql} GROUP BY 1"
+                    ),
+                    bound,
+                )).fetchall()
+                values = {
+                    _key(r.key): _Acc(
+                        value=None if r.value is None else float(r.value),
+                        s=float(r.s or 0), n=int(r.n or 0), name=r.label,
+                    )
+                    for r in rows
+                }
+        except DBAPIError as exc:
+            orig = getattr(exc, "orig", None)
+            code = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+            if code == _QUERY_CANCELED or "statement timeout" in str(exc):
+                raise HTTPException(status_code=503, detail=TIMEOUT_DETAIL) from None
+            raise
+        labels = (
+            await _labels(db, found, group_by) if found is not None and group_by
+            else {}
+        )
         order = (
-            await _status_order(db, found) if group_by == "status" else {}
+            await _status_order(db, found)
+            if found is not None and group_by == "status" else {}
         )
+    options = grouped.options if grouped is not None else {}
     groups = [
-        AggregateGroup(
-            key=key,
-            label=labels.get(key or "", key or "(none)"),
-            value=round(value, 2),
+        (
+            AggregateGroup(
+                key=key,
+                label=(
+                    labels.get(key or "") or acc.name or options.get(key or "")
+                    or key or "(none)"
+                ),
+                value=_rounded(acc.value),
+            ),
+            acc,
         )
-        for key, value in values.items()
+        for key, acc in values.items()
     ]
-    if group_by in MONTH_GROUPS:
-        groups.sort(key=lambda g: (g.key is None, g.key or ""))
-    elif group_by == "status":
-        groups.sort(key=lambda g: (order.get(g.key or "", 1 << 30), g.label))
-    else:
-        groups.sort(key=lambda g: (-g.value, g.label))
+    # The 50 largest groups stay. The rest fold into `other`.
+    groups.sort(key=lambda g: (g[0].value is None, -(g[0].value or 0.0), g[0].label))
+    kept, rest = groups[:MAX_GROUPS], groups[MAX_GROUPS:]
+    shown = [g for g, _acc in kept]
+    if group_by == "status":
+        shown.sort(key=lambda g: (order.get(g.key or "", 1 << 30), g.label))
+    elif _is_time_group(
+        group_by, grouped is not None and grouped.type in DATE_TYPES,
+    ):
+        shown.sort(key=lambda g: (g.key is None, g.key or ""))
     return AggregateResponse(
-        entity=found.slug, measure=measure, group_by=group_by,
-        groups=groups[:MAX_GROUPS],
-        total=round(sum(values.values()), 2),
-        omitted=max(0, len(groups) - MAX_GROUPS),
+        entity=found.slug if found is not None else f"{MODULE_PREFIX}{module}",
+        measure=measure, group_by=group_by, group_field=group_field,
+        field=measured.key if measured is not None else None,
+        field_type=measured.type if measured is not None else None,
+        bucket=bucket if grouped is not None and grouped.type in DATE_TYPES else None,
+        groups=shown,
+        total=_rounded(_combine(measure, [acc for _g, acc in groups])),
+        other=_rounded(_combine(measure, [acc for _g, acc in rest])) if rest else 0,
+        omitted=len(rest),
     )
 
 

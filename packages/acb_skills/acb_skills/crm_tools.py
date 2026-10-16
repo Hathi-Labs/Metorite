@@ -98,6 +98,17 @@ REPORT_KINDS: tuple[str, ...] = ("pipeline", "funnel", "win-loss", "owners")
 #: The gateway's own module-name rule (``core._MODULE_NAME``).
 _MODULE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,99}$")
 
+#: The entity word of a mirrored module in the aggregate and the field list.
+MODULE_PREFIX = "module:"
+
+#: What the typed aggregate (CRM-Q25) can do with a field of each type.
+_FIELD_USES: dict[str, str] = {
+    **dict.fromkeys(("number", "decimal", "currency", "percent"),
+                    "measure: sum, avg, min, max"),
+    **dict.fromkeys(("select", "boolean", "lookup"), "group by value"),
+    **dict.fromkeys(("date", "datetime"), "group by month, quarter or year"),
+}
+
 
 class _Refused(Exception):
     """The gateway said the CRM is off, or not open to this member."""
@@ -227,14 +238,26 @@ def _read_tool(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str
 
 # ── Validators: every path segment goes through one ─────────────────────────
 
-def _entity_slug(entity: str) -> str:
-    key = (entity or "").strip().lower()
+def _entity_slug(entity: str, *, allow_module: bool = False) -> str:
+    """The route slug of a record type. With *allow_module*, also a mirrored
+    module as ``module:<api_name>`` (CRM-Q25), its name checked by
+    :func:`_module_name`. Only the aggregate and the field list take one."""
+    raw = (entity or "").strip()
+    if allow_module and raw.lower().startswith(MODULE_PREFIX):
+        return MODULE_PREFIX + _module_name(raw[len(MODULE_PREFIX):])
+    key = raw.lower()
     slug = _ENTITY_ALIASES.get(key, key)
     if slug not in ENTITY_LABELS:
-        raise RuntimeError(
-            f"Unknown CRM record type {entity!r}. One of: {', '.join(ENTITY_LABELS)}."
-        )
+        legal = ", ".join(ENTITY_LABELS)
+        if allow_module:
+            legal += ", or 'module:<api_name>' from crm_list_modules"
+        raise RuntimeError(f"Unknown CRM record type {entity!r}. One of: {legal}.")
     return slug
+
+
+def _entity_label(slug: str) -> str:
+    """What an answer calls the entity: "Deal", or the module's API name."""
+    return ENTITY_LABELS.get(slug) or slug[len(MODULE_PREFIX):]
 
 
 def _record_uuid(record_id: str) -> str:
@@ -476,10 +499,13 @@ async def crm_get_record(entity: str, record_id: str) -> str:
 
 @_read_tool
 async def crm_list_fields(entity: str, page: int = 1) -> str:
-    """The fields of one record type: each label, its key (for the custom
-    filter of crm_list_records), its type and its picklist options. A retired
+    """The fields of one record type, or of a module as 'module:<api_name>':
+    each label, its key, its type, what crm_aggregate can do with it, and its
+    picklist options. The key goes in the custom filter of crm_list_records,
+    and in field, group_field and field_filters of crm_aggregate. A retired
     field is marked: records keep its values, and no filter takes its key."""
-    slug = _entity_slug(entity)
+    slug = _entity_slug(entity, allow_module=True)
+    label = _entity_label(slug)
     # WS-53 CRM-C4a: a row with `is_system` overlays a fixed column, so it is
     # never offered as a custom key (crm_platform.md §20.7 item 11). The
     # primary filter is the route's: `GET /crm/fields/{entity}` reads
@@ -489,19 +515,23 @@ async def crm_list_fields(entity: str, page: int = 1) -> str:
         if isinstance(d, dict) and not d.get("is_system")
     ]
     if not defs:
-        return f"{ENTITY_LABELS[slug]}s have no custom fields."
+        if slug.startswith(MODULE_PREFIX):
+            return f"{label} has no field definitions yet."
+        return f"{label}s have no custom fields."
     shown = _page_of(defs, page, "fields")
     if not shown.items:
         return shown.line
-    lines = [f"{ENTITY_LABELS[slug]} fields ({len(defs)}):"]
+    lines = [f"{label} fields ({len(defs)}):"]
     for d in shown.items:
         options = [
             str(o.get("label")) for o in d.get("options") or []
             if isinstance(o, dict) and o.get("label") and not o.get("retired")
         ]
+        use = _FIELD_USES.get(str(d.get("type")))
         lines.append(
             f"- {d.get('label')} (key {d.get('key')}, {d.get('type')})"
             + (" - retired" if d.get("retired") else "")
+            + (f" [{use}]" if use and not d.get("retired") else "")
             # Every option: a filter needs the exact label, and the old cut
             # at 20 hid the rest with no notice.
             + (f": {', '.join(options)}" if options else "")
@@ -851,11 +881,30 @@ async def crm_report(kind: str, page: int = 1, make_report: bool = False) -> str
     return f"CRM report {report}:\n" + "\n".join([*shown.items, *tail, *outcome.lines])
 
 
+#: The measures whose numbers are rupees whatever the field.
+_MONEY_MEASURES = frozenset({"sum_amount", "weighted"})
+
+#: What the answer calls the measure over every group.
+_OVERALL: dict[str, str] = {
+    "avg": "Average over all records", "min": "Least over all records",
+    "max": "Greatest over all records",
+}
+
+
+def _number(value: float) -> str:
+    """A number with at most two decimals, and no trailing zero."""
+    text = f"{value:,.2f}"
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
 @_read_tool
 async def crm_aggregate(
     entity: str,
-    group_by: str,
+    group_by: str | None = None,
     measure: str = "count",
+    field: str | None = None,
+    group_field: str | None = None,
+    bucket: str | None = None,
     q: str | None = None,
     status: str | None = None,
     owner: str | None = None,
@@ -867,15 +916,23 @@ async def crm_aggregate(
     close_from: str | None = None,
     close_to: str | None = None,
     custom: dict[str, str] | None = None,
+    field_filters: dict[str, str] | None = None,
     page: int = 1,
 ) -> str:
-    """Count or sum CRM records by one group. measure is 'count',
-    'sum_amount' (deals) or 'weighted' (deals: amount times the effective
-    probability, open and ongoing stages only). group_by is 'status',
-    'owner', 'pipeline', 'source', 'created_month', 'updated_month' or
-    'close_month'. Takes the filters of crm_list_records. The server
-    computes every number; report them as given."""
-    slug = _entity_slug(entity)
+    """Count, sum or average CRM records by one group. The server computes
+    every number: report them as given. entity is 'leads', 'deals',
+    'contacts', 'organizations' or 'module:<api_name>' (crm_list_modules).
+    measure is 'count', 'sum_amount' or 'weighted' (deals: amount times the
+    effective probability, open and ongoing stages only), or 'sum', 'avg',
+    'min' or 'max' of the number field named by field. Give group_by or
+    group_field. group_by is 'status', 'owner', 'pipeline', 'source',
+    'created_month', 'updated_month' or 'close_month' (a module: 'owner',
+    'created_month', 'updated_month'). group_field is a picklist, boolean,
+    lookup or date field; a date needs bucket 'month', 'quarter' or 'year'.
+    Field keys and what each can do come from crm_list_fields. A core entity
+    takes the filters of crm_list_records. A module takes field_filters:
+    {key: value}, or {'key.from': date, 'key.to': date} for a date field."""
+    slug = _entity_slug(entity, allow_module=True)
     params = _filters(
         q=q, status=status, owner=owner, pipeline_id=pipeline_id,
         created_from=created_from, created_to=created_to,
@@ -883,24 +940,39 @@ async def crm_aggregate(
         close_from=close_from, close_to=close_to, custom=custom,
     )
     params["status_id"] = await _resolve_status(slug, params)
-    params.update(entity=slug, group_by=group_by, measure=measure)
+    for key, value in (field_filters or {}).items():
+        params[f"field.{key}"] = value
+    params.update(
+        entity=slug, group_by=group_by, measure=measure, field=field,
+        group_field=group_field, bucket=bucket,
+    )
     data = await _get("/crm/aggregate", params) or {}
     groups = data.get("groups") or []
-    money = measure != "count"
+    money = measure in _MONEY_MEASURES or data.get("field_type") == "currency"
 
-    def fmt(value: float) -> str:
-        return f"INR {value:,.0f}" if money else f"{value:,.0f}"
+    def fmt(value: Any) -> str:
+        if value is None:
+            return "no value"
+        if money:
+            return f"INR {float(value):,.0f}"
+        return f"{float(value):,.0f}" if measure == "count" else _number(float(value))
 
+    what = f"{measure} of {field}" if field else measure
+    by = group_by or f"{group_field}" + (f" ({bucket})" if bucket else "")
     shown = _page_of(groups, page, "groups")
-    lines = [f"{ENTITY_LABELS[slug]}s, {measure} by {group_by}:"]
-    lines.extend(f"- {g['label']}: {fmt(float(g['value']))}" for g in shown.items)
-    lines.append(f"Total: {fmt(float(data.get('total') or 0))}.")
+    plural = f"{ENTITY_LABELS[slug]}s" if slug in ENTITY_LABELS else _entity_label(slug)
+    lines = [f"{plural}, {what} by {by}:"]
+    lines.extend(f"- {g['label']}: {fmt(g.get('value'))}" for g in shown.items)
+    lines.append(f"{_OVERALL.get(measure, 'Total')}: {fmt(data.get('total'))}.")
     if shown.line:
         lines.append(shown.line)
-    if int(data.get("omitted") or 0):
-        # Past the route's MAX_GROUPS. Only a narrower filter reaches them.
-        lines.append(f"({int(data['omitted'])} smaller groups are past the route's "
-                     "limit. The total counts them. Narrow the filter to see them.)")
+    omitted = int(data.get("omitted") or 0)
+    if omitted:
+        # Past the route's 50 largest groups. The total counts them.
+        lines.append(
+            f"Other ({omitted} smaller groups): {fmt(data.get('other'))}. "
+            "The total counts them. Narrow the filter to see them."
+        )
     return "\n".join(lines)
 
 
@@ -940,7 +1012,8 @@ async def crm_stage_dwell(days: int | None = None, page: int = 1) -> str:
 @_read_tool
 async def crm_list_modules(page: int = 1) -> str:
     """The other Zoho modules this CRM mirrors (Products, Quotes, custom
-    modules), with a record count. A Native CRM has none."""
+    modules), with a record count. A Native CRM has none. crm_aggregate and
+    crm_list_fields take a module as entity 'module:<api_name>'."""
     modules = await _get("/crm/modules")
     if not modules:
         return "This CRM mirrors no other module."
@@ -950,7 +1023,9 @@ async def crm_list_modules(page: int = 1) -> str:
     return "Modules:\n" + "\n".join(
         f"- {m.get('label')} (api_name {m.get('api_name')}): {m.get('count', 0)} records"
         for m in shown.items
-    ) + (f"\n{shown.line}" if shown.line else "")
+    ) + (f"\n{shown.line}" if shown.line else "") + (
+        "\nTo total a module, call crm_aggregate with entity 'module:<api_name>'."
+    )
 
 
 @_read_tool
@@ -958,7 +1033,8 @@ async def crm_list_module_records(
     module: str, q: str | None = None, page: int = 1, page_size: int = 25,
 ) -> str:
     """The records of one mirrored module (an api_name from crm_list_modules),
-    with their ids. q matches the record name."""
+    with their ids, and the key and type of each field that crm_aggregate can
+    measure or group. q matches the record name."""
     mod = _module_name(module)
     size, number = _page_size(page_size), _page(page)
     data = await _get(f"/crm/modules/{mod}/records", {
@@ -975,13 +1051,30 @@ async def crm_list_module_records(
         + f" (id={r.get('id')})"
         for r in rows
     )
+    lines.append(_aggregate_fields(mod, data.get("field_defs") or []))
     return "\n".join(lines) + _more(total, number, size)
+
+
+def _aggregate_fields(mod: str, defs: list[Any]) -> str:
+    """One line: the key and type of each field crm_aggregate takes (CRM-Q25)."""
+    usable = [
+        f"{d.get('key')} ({d.get('type')})" for d in defs
+        if isinstance(d, dict) and str(d.get("type")) in _FIELD_USES
+    ]
+    if not usable:
+        return f"crm_aggregate on module:{mod} can count and group by owner or month."
+    more = f", and {len(usable) - MAX_ROWS} more" if len(usable) > MAX_ROWS else ""
+    return (
+        f"Fields for crm_aggregate on module:{mod}: {', '.join(usable[:MAX_ROWS])}"
+        f"{more}. crm_list_fields says what each can do."
+    )
 
 
 @_read_tool
 async def crm_get_module_record(module: str, record_id: str, page: int = 1) -> str:
     """One record of a mirrored module (a module from crm_list_modules and an
-    id from crm_list_module_records), each field under its label."""
+    id from crm_list_module_records), each field under its label. The field
+    keys and types are in crm_list_fields('module:<api_name>')."""
     mod = _module_name(module)
     record = _record_uuid(record_id)
     data = await _get(f"/crm/modules/{mod}/records/{record}") or {}
