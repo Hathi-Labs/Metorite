@@ -180,6 +180,97 @@ def test_activity_drops_is_no_entity_of_sync_health() -> None:
     assert sync._failed(counts) == 2
 
 
+# ── CRM-Q24: the short read, the drops of a full read, the recovered ──────────
+
+
+def test_activity_recovered_is_no_entity_of_sync_health() -> None:
+    """CRM-Q24 item 9: the key joins ``NOT_ENTITY_KEYS``, pinned to the engine."""
+    from gateway.routes.crm import sync
+
+    assert engine.ACTIVITY_RECOVERED_KEY == "activity_recovered"
+    assert engine.ACTIVITY_RECOVERED_KEY in sync.NOT_ENTITY_KEYS
+    counts = {"deals": {"seen": 1, "failed": 2},
+              engine.ACTIVITY_RECOVERED_KEY: {"failed": 5, "Install_Base": 3}}
+    assert engine.ACTIVITY_RECOVERED_KEY not in sync._entity_keys(counts, {})
+    assert sync._failed(counts) == 2
+
+
+def test_a_resumed_import_does_not_carry_the_recovered_count() -> None:
+    """Each run row keeps its own recoveries, and Sync health sums the rows of
+    7 days. A count carried into the next row would be summed twice."""
+    merged = engine._merge_counts({engine.ACTIVITY_RECOVERED_KEY: {"Install_Base": 3}})
+    assert engine.ACTIVITY_RECOVERED_KEY not in merged
+
+
+def test_the_tie_code_of_the_engine_is_the_code_of_the_zoho_error() -> None:
+    """CRM-Q24 item 7: the engine names no Zoho class, so the code pins the two."""
+    from gateway.crm_sources.zoho.client import ZohoTieTooWide
+
+    assert ZohoTieTooWide.code == engine.TIE_TOO_WIDE_CODE
+    assert engine._tie_too_wide(ZohoTieTooWide(2_000))
+    assert not engine._tie_too_wide(SourceError("Zoho answered HTTP 500"))
+    assert engine.error_code(ZohoTieTooWide(2_000)) == "tie_too_wide"
+
+
+def test_a_recovered_activity_counts_once_by_its_module() -> None:
+    """CRM-Q24 item 9: an id that left the list linked. An id that stays (it
+    dropped again or failed) and an id that was never kept count nothing."""
+    from types import SimpleNamespace
+
+    ctx = SimpleNamespace(counts={})
+    before = {"n1": ["Install_Base", "i1", "t"], "n2": ["Install_Base", "i1", "t"],
+              "n3": ["Payments", "p1", "t"]}
+    after = {"n2": ["Install_Base", "i1", "t"]}
+    engine._count_recovered(ctx, before, after, {"n1", "n2", "n3", "x9"})
+    assert ctx.counts == {engine.ACTIVITY_RECOVERED_KEY: {"Install_Base": 1, "Payments": 1}}
+
+
+def test_the_drops_of_a_page_add_to_the_drops_of_the_read() -> None:
+    total = {"Install_Base": 2}
+    engine._add_page_drops(
+        total, {"Install_Base": 4, "(none)": 1},
+        {"Install_Base": 5, "(none)": 3, "Payments": 2, "bad": "x"},
+    )
+    assert total == {"Install_Base": 3, "(none)": 2, "Payments": 2}
+
+
+def test_the_drop_maps_keep_the_activity_entities_and_whole_numbers() -> None:
+    state = {"drops": {"task": {"(none)": 1145, "bad": True}, "note": {"Payments": 7},
+                       "deal": {"x": 1}},
+             "at": {"task": "2026-10-16T00:00:00+00:00"}}
+    assert engine.activity_drop_maps(state) == {
+        "task": {"(none)": 1145}, "note": {"Payments": 7}}
+    assert engine.activity_drop_maps(None) == {}
+    assert engine.activity_drop_maps({"drops": "x"}) == {}
+
+
+def test_a_kept_short_by_is_a_whole_number_above_zero() -> None:
+    assert engine._kept_short_by({"short_by": 1944}) == {"short_by": 1944}
+    for bad in (0, -3, True, "12", None):
+        assert engine._kept_short_by({"short_by": bad}) == {}
+    assert engine._kept_short_by(None) == {}
+
+
+def test_sync_health_reads_short_by_only_from_an_entity_cursor() -> None:
+    """The cursors of the field rules, the module counts and the activities
+    carry no row of their own, and a deleted list carries none."""
+    from gateway.routes.crm import sync
+
+    def row(module: str, state: dict) -> CursorRow:
+        return CursorRow(module, None, state, None, None)
+
+    cursors = {
+        "zoho:company": row("zoho:company", {"short_by": 3}),
+        "zoho:module:Payments_Made": row("zoho:module:Payments_Made", {"short_by": 1944}),
+        "zoho:note": row("zoho:note", {"short_by": 9}),
+        "zoho:deal:deleted": row("zoho:deal:deleted", {"short_by": 9}),
+        "zoho:field_rules": row("zoho:field_rules", {"short_by": 9}),
+        "zoho:lead": row("zoho:lead", {"short_by": 0}),
+    }
+    assert sync._short_by_keys(cursors, engine) == {
+        "organizations": 3, "module:Payments_Made": 1944}
+
+
 def test_a_field_def_is_made_only_for_a_custom_field() -> None:
     custom = mapping.map_field_def("deal", {
         "api_name": "Region", "field_label": "Region", "data_type": "picklist",

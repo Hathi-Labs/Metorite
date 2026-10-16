@@ -1247,7 +1247,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q21** | Promote a module into a core entity. §18.9 | P1 |
 | **CRM-Q22** | Source changes as suggestions, then a CSV source, then HubSpot. §18.9 | P2 |
 | **CRM-Q23** | Link a Zoho activity to a custom-module record, and show it there, in three slices (Q23a, Q23b, Q23c). §18.10 | P0 |
-| **CRM-Q24** | A short read shows on the Sync health card. §18.10 | P1 |
+| **CRM-Q24** | 🔨 built 2026-10-16, not merged. A short read shows on the Sync health card. §18.10 | P1 |
 | **CRM-Q25** | The typed aggregate over every module and field, and its AI tool. §18.11 | P0 |
 | **CRM-Q26** | Labels on notes, on the decide tier, in shadow. §18.11 | P1 |
 | **CRM-Q27** | Search of note text by meaning. §18.11 | P2 |
@@ -2912,9 +2912,10 @@ owner flips.
 ### 18.10 Activities on a module record, and a short read that shows (CRM-Q23, CRM-Q24, 2026-10-16)
 
 **Status (2026-10-16).** CRM-Q23a (#1086, migration 275) and CRM-Q23b
-(#1098, no migration) are merged. CRM-Q23c and CRM-Q24: specified, not
-built. Verified against code at `origin/main` `c4bef9ec0`. Found on DEWiN's
-import (H-326, H-327).
+(#1098, no migration) are merged. The branch `crm-q24-sync-health` holds
+CRM-Q24, with no migration, and nobody has merged it yet. CRM-Q23c:
+specified, not built. Verified against code at `origin/main` `c4bef9ec0`.
+Found on DEWiN's import (H-326, H-327).
 
 #### 18.10.1 What the import found
 
@@ -3153,6 +3154,37 @@ CRM-Q23a and CRM-Q23b merged on 2026-10-16. Verify with the CRM-Q23
 command, with `test_crm_sources_zoho.py` and `test_crm_sync_health_r8.py`
 added to it, and
 `npx tsc --noEmit && npx vitest run src/app/crm` in `workbench/control_plane`.
+
+**Built as (2026-10-16).** No migration. `short_by` is in the cursor state
+of each core entity and each generic module. A full read is a first import,
+a walk, a re-read of a module, a re-read for a field rule or the lead
+backfill. The last page of a full read writes `short_by`, and every other
+page keeps the old value. A full read with no provider count in its run
+keeps the old value too. So the value stays after a re-read for a field
+rule in an incremental run.
+
+A read over several runs keeps the mark `full_read` in its cursor. An
+activity read also keeps its drops so far under `read_drops`. The row
+`zoho:activity_drops` holds `drops` and `at` for each activity entity.
+
+`ZohoTieTooWide` has the code `tie_too_wide`. `engine.TIE_TOO_WIDE_CODE`
+names the same code, and a test pins the two, so the engine names no Zoho
+class. The client raises the error when the next page of a tie starts at
+`OFFSET_LIMIT` (2,000) or later and Zoho sent no page token. The engine
+counts `failed` on the entity and keeps the cursor. The next run reads the
+same tie again, so the tie costs about 10 credits in each run until a fix
+exists.
+
+The recovery step counts a kept id that leaves the list after a read by
+ids. A resumed import does not carry `activity_recovered`, because the
+health read adds the count of each run row. `recovered_7d` also skips the
+runs before the last start over.
+
+The card shows a `dropped` line only for a module that the profile does not
+mirror. A drop on a mirrored module shows under `waiting`. So the words "a
+module that Metorite does not sync" stay true. Fences:
+`test_crm_sources_zoho.py`, `test_crm_sync_engine.py`,
+`test_crm_sync_health_r8.py` and `crmQ24.test.ts`.
 
 ### 18.11 Insights on the mirrored data (CRM-Q25 to CRM-Q28, 2026-10-16)
 

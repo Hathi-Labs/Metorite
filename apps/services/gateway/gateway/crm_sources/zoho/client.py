@@ -59,6 +59,11 @@ RECORDS_API_VERSION = "v2"
 #: Zoho's largest page.
 PER_PAGE = 200
 
+#: The most records that Zoho serves to an offset read with no
+#: ``page_token`` (CRM-Q24). A tie at one second that is wider than this
+#: raises :class:`ZohoTieTooWide`, because a read past it ends early.
+OFFSET_LIMIT = 2_000
+
 #: Five tries in all, so four waits: 1, 2, 4 and 8 seconds.
 MAX_TRIES = 5
 MAX_BACKOFF_SECONDS = 60.0
@@ -197,6 +202,26 @@ class ZohoApiVersionError(SourceError):
         self.version = version
         self.path = path
         self.detail = detail
+
+
+class ZohoTieTooWide(SourceError):
+    """More than :data:`OFFSET_LIMIT` records share one ``Modified_Time``
+    second, and Zoho sent no ``next_page_token`` (CRM-Q24).
+
+    The keyset cannot pass such a tie, so the read pages by offset inside it.
+    Zoho serves no offset past :data:`OFFSET_LIMIT`, so the next page would
+    end the read as if it were whole. This error stops the read first. The
+    engine counts it as ``failed`` on the entity, and keeps the cursor.
+    """
+
+    code = "tie_too_wide"
+
+    def __init__(self, read: int) -> None:
+        super().__init__(
+            f"More than {OFFSET_LIMIT} Zoho records share one second, "
+            f"and Zoho sent no page token ({read} read)"
+        )
+        self.read = read
 
 
 #: A failure that must stop a discovery. Any other :class:`SourceError` costs
@@ -362,6 +387,10 @@ def _keyset_next(
     rows all sit at or before ``since`` on a resume, which is a tie at one
     second wider than a page. Then the cursor pages by offset inside the
     same query, and adds the new ids to ``seen_ids``.
+
+    Zoho serves no offset past :data:`OFFSET_LIMIT` without a page token. So
+    when the next page of a tie would start past that limit and Zoho sent no
+    token, it raises :class:`ZohoTieTooWide` (CRM-Q24).
     """
     more, token = _more(body, count)
     if not more:
@@ -375,6 +404,8 @@ def _keyset_next(
     at_last = tuple(r.ext_id for r, k in zip(records, keys, strict=True) if k == last)
     resuming = cursor.since is not None and bool(cursor.seen_ids)
     if resuming and cursor.since is not None and last <= cursor.since:
+        if token is None and cursor.page * PER_PAGE >= OFFSET_LIMIT:
+            raise ZohoTieTooWide(cursor.page * PER_PAGE)
         seen = tuple(dict.fromkeys(cursor.seen_ids + at_last))
         return replace(cursor, page=cursor.page + 1, page_token=token, seen_ids=seen)
     return SourceCursor(since=last, page=1, page_token=None, seen_ids=at_last)
@@ -1162,6 +1193,7 @@ __all__ = [
     "MAX_TRIES",
     "META_DOMAIN_NAME",
     "MODULES_SCOPE",
+    "OFFSET_LIMIT",
     "ORG_SCOPE",
     "PER_PAGE",
     "PIPELINE_SCOPE",
@@ -1172,4 +1204,5 @@ __all__ = [
     "ZohoModuleUnavailable",
     "ZohoScopeError",
     "ZohoSource",
+    "ZohoTieTooWide",
 ]

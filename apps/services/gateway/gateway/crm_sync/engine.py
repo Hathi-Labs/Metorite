@@ -212,6 +212,28 @@ MODULE_TABLE = "crm_module_records"
 #: entity last queued a full read (``overflow_at``).
 ACTIVITY_BACKFILL_ROW = f"{PROVIDER}:activity_backfill"
 
+#: The cursor row of CRM-Q24. For each activity entity, its state keeps the
+#: ``activity_drops`` of the last FULL read of that entity, by parent module,
+#: under ``drops``, and the end of that read under ``at``. Each run counts
+#: only what it drops, so an incremental run after the import counts about
+#: 0. This row keeps the numbers that Sync health shows.
+ACTIVITY_DROPS_ROW = f"{PROVIDER}:activity_drops"
+
+#: CRM-Q24: the cursor-state key of a short read. A full read of a core
+#: entity or a module writes Zoho's count minus the mirrored rows here, when
+#: that is above 0. The activity entities get none (``ACTIVITY_DROPS_ROW``
+#: explains their gap).
+SHORT_BY_KEY = "short_by"
+#: CRM-Q24: the cursor-state keys of a full read that runs over several
+#: runs. ``full_read`` marks the read, and ``read_drops`` keeps the drops of
+#: an activity entity that the read counted so far, by parent module.
+FULL_READ_KEY = "full_read"
+READ_DROPS_KEY = "read_drops"
+#: CRM-Q24: the ``SourceError.code`` of a tie at one second that is wider
+#: than the provider serves by offset (``ZohoTieTooWide``). A test pins the
+#: two. The engine counts it as ``failed`` and keeps the cursor.
+TIE_TOO_WIDE_CODE = "tie_too_wide"
+
 #: The cursor row of the field rules (CRM-Q7a). Its state holds the rules the
 #: sync applied, and the entities that wait for a full read because a rule on
 #: a fixed column was rejected or went stale.
@@ -851,6 +873,11 @@ _ACTIVITY_TARGETS = (
 ACTIVITY_DROPS_KEY = "activity_drops"
 #: The drop key of an activity that names no parent module.
 NO_PARENT_MODULE = "(none)"
+#: The counts key of the kept activities that the recovery step linked, by
+#: the provider's name of the parent module (CRM-Q24). Numbers only. It is
+#: not an entity either (``routes/crm/sync.py`` ``NOT_ENTITY_KEYS``), and a
+#: test pins the two. Sync health sums it over the runs of the last 7 days.
+ACTIVITY_RECOVERED_KEY = "activity_recovered"
 
 _LOCAL_ID_SQL = (
     "SELECT id FROM {table} WHERE organization_id = CAST(:org AS uuid) "
@@ -1568,6 +1595,125 @@ async def _retry_page(
     return _merge_failed(failed, landed, bad)
 
 
+# ── A short read and the drops of a full read (CRM-Q24) ─────────────────────
+
+#: The mirrored rows of a core entity. ``{table}`` comes from the mapping,
+#: never from input.
+_OURS_SQL = (
+    "SELECT count(*) FROM {table} WHERE organization_id = CAST(:org AS uuid) "
+    "AND ext_source = :src"
+)
+#: The mirrored rows of one generic module. The name is a bound parameter.
+_MODULE_OURS_SQL = (
+    "SELECT count(*) FROM crm_module_records WHERE organization_id = CAST(:org AS uuid) "
+    "AND ext_source = :src AND module = :module"
+)
+
+
+def _tie_too_wide(exc: BaseException) -> bool:
+    """True for a tie at one second that the provider cannot page (CRM-Q24)."""
+    return isinstance(exc, SourceError) and exc.code == TIE_TOO_WIDE_CODE
+
+
+def _whole(value: Any) -> int | None:
+    """A count from JSON as an int. A bool or any other value is None."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _kept_short_by(state: dict[str, Any] | None) -> dict[str, int]:
+    """The ``short_by`` of a cursor state, kept as it is. A read that is not
+    full, or a full read with no provider count, keeps it this way."""
+    value = _whole((state or {}).get(SHORT_BY_KEY))
+    return {SHORT_BY_KEY: value} if value is not None and value > 0 else {}
+
+
+def _provider_count(ctx: _Ctx, entity: str, known: Any) -> int | None:
+    """The provider count that this run read for ``entity`` (CRM-Q24 item 5).
+
+    A generic module takes the count of :func:`_module_estimate`. A core
+    entity takes the count of its walk (:func:`_safe_count`), else the
+    estimate of the run (:func:`_estimate`). None when the run read none.
+    """
+    if _module(entity):
+        counts = (_row(ctx, MODULE_COUNTS_ROW).state or {}).get("counts") or {}
+        return _whole(counts.get(entity))
+    if _whole(known) is not None:
+        return _whole(known)
+    return _whole((ctx.key_counts or ctx.estimate or {}).get(count_key(entity)))
+
+
+async def _short_by(
+    ctx: _Ctx, db: Any, entity: str, known: Any, saved: dict[str, Any],
+) -> dict[str, int]:
+    """The ``short_by`` key of the page that ends a full read (CRM-Q24).
+
+    It is the provider count minus the mirrored rows of the entity, when that
+    is above 0. Some records are hidden from the user who connected, and no
+    code can read them. An activity entity gets none. With no provider count
+    in this run, the key stays as the cursor had it.
+    """
+    if entity in ACTIVITY_TYPES:
+        return {}
+    zoho = _provider_count(ctx, entity, known)
+    if zoho is None:
+        return _kept_short_by(saved)
+    api_name = _module(entity)
+    if api_name is not None:
+        ours = (await db.execute(text(_MODULE_OURS_SQL), {
+            "org": ctx.org, "src": EXT_SOURCE, "module": api_name,
+        })).scalar()
+    else:
+        ours = (await db.execute(text(_OURS_SQL.format(table=_table(entity))), {
+            "org": ctx.org, "src": EXT_SOURCE,
+        })).scalar()
+    gap = zoho - int(ours or 0)
+    return {SHORT_BY_KEY: gap} if gap > 0 else {}
+
+
+def _drops_of(value: Any) -> dict[str, int]:
+    """A map of drop counts by module from JSON. A bad value is dropped."""
+    if not isinstance(value, dict):
+        return {}
+    return {str(k): n for k, v in value.items() if (n := _whole(v)) is not None and n > 0}
+
+
+def _add_page_drops(total: dict[str, int], before: dict[str, Any], after: dict[str, Any]) -> None:
+    """Add the drops of one page to the drops of a full read. The page's drops
+    are the growth of ``activity_drops`` while the page wrote its records."""
+    for name, value in _drops_of(after).items():
+        grew = value - (_whole(before.get(name)) or 0)
+        if grew > 0:
+            total[name] = total.get(name, 0) + grew
+
+
+async def _save_read_drops(ctx: _Ctx, db: Any, entity: str, drops: dict[str, int]) -> None:
+    """Keep the drops of the full read of ``entity`` that ends in this page
+    (CRM-Q24 item 8), in its transaction. The other entities stay."""
+    old = _row(ctx, ACTIVITY_DROPS_ROW)
+    state = dict(old.state or {})
+    saved = CursorRow(
+        ACTIVITY_DROPS_ROW, old.last_pulled_at,
+        {
+            "drops": {**activity_drop_maps(state), entity: dict(drops)},
+            "at": {**(state.get("at") or {}), entity: _iso(_now())},
+        },
+        old.initial_done_at or ctx.started, old.last_reconciled_at,
+    )
+    await _save_cursor(ctx, db, saved, "ok")
+    ctx.cursors[ACTIVITY_DROPS_ROW] = saved
+
+
+def activity_drop_maps(state: dict[str, Any] | None) -> dict[str, dict[str, int]]:
+    """The ``drops`` of the :data:`ACTIVITY_DROPS_ROW` state, by activity
+    entity. A bad value is dropped. Sync health reads it too."""
+    raw = (state or {}).get("drops")
+    if not isinstance(raw, dict):
+        return {}
+    return {str(e): _drops_of(v) for e, v in raw.items() if e in ACTIVITY_TYPES}
+
+
 async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one resumable loop
     """Read the records changed since the cursor, one page at a time.
 
@@ -1696,6 +1842,17 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     progress_marks: dict[str, Any] = {**marks, "rule_reread": True} if rule_reread else marks
     if recovering:
         progress_marks = {**progress_marks, "recovering": True}
+    # CRM-Q24: a full read lists every record, not the changes since a cursor.
+    # Its last page writes ``short_by``, and for an activity entity the drops
+    # of the whole read. A read over several runs carries its mark.
+    full = (
+        stamping or rereading or rule_reread or backfill
+        or (resumed and bool(saved.get(FULL_READ_KEY)))
+    )
+    if full:
+        progress_marks = {**progress_marks, FULL_READ_KEY: True}
+    tally_drops = full and entity in ACTIVITY_TYPES
+    read_drops = _drops_of(saved.get(READ_DROPS_KEY)) if (resumed and tally_drops) else {}
     table = MODULE_TABLE if generic else _table(entity)
     try:
         while True:
@@ -1707,6 +1864,13 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
             try:
                 page = await ctx.call(lambda s, c=cursor: s.list_changed(entity, c))
             except (SourceScopeError, SourceError) as exc:
+                if _tie_too_wide(exc):
+                    # CRM-Q24: a tie wider than the provider pages by offset.
+                    # The read must not end as done, so the cursor stays as
+                    # the last page saved it, and no ``initial_done_at`` moves.
+                    ctx.bump(entity, "failed")
+                    _log.warning("crm.sync.tie_too_wide entity=%s", entity)
+                    return
                 # An optional module that cannot be read for ANY reason that is
                 # not a dead token, a spent budget or a throttle is skipped. So
                 # is any module that the account refuses (CRM-Q15).
@@ -1728,7 +1892,12 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
             walk_count += len(page.records)
             last_page = page.next_cursor is None
             async with ctx.page() as db:
+                drops_before = dict(ctx.counts.get(ACTIVITY_DROPS_KEY) or {})
                 landed, bad = await _apply_records(ctx, db, entity, page.records)
+                if tally_drops:
+                    _add_page_drops(
+                        read_drops, drops_before, ctx.counts.get(ACTIVITY_DROPS_KEY) or {},
+                    )
                 failed_map = _merge_failed(failed_map, landed, bad)
                 if entity == "deal" and landed:
                     await _queue_roles(ctx, db, landed)
@@ -1750,6 +1919,10 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                         **progress_marks,
                         **extra,
                         **_recover_state(ctx, entity),
+                        # CRM-Q24: the short read of the last full read stays
+                        # until the next one ends, and the drops so far ride.
+                        **_kept_short_by(saved),
+                        **({READ_DROPS_KEY: dict(read_drops)} if tally_drops else {}),
                     )
                     row = CursorRow(
                         module, row.last_pulled_at, state, row.initial_done_at,
@@ -1769,6 +1942,14 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                     elif stamping:
                         next_prev = walk_start
                     mark = None if final_hidden else _later(row.last_pulled_at, newest)
+                    # CRM-Q24 item 5: the short read, after the walk's deletes.
+                    short = (
+                        await _short_by(ctx, db, entity, known, saved)
+                        if full else _kept_short_by(saved)
+                    )
+                    if tally_drops:
+                        # CRM-Q24 item 8: the drops of this whole full read.
+                        await _save_read_drops(ctx, db, entity, read_drops)
                     row = CursorRow(
                         module,
                         mark,
@@ -1784,6 +1965,7 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                             **({"checked_at": _iso(ctx.started)} if generic else {}),
                             # The kept activities of CRM-Q23b. Activities only.
                             **_recover_state(ctx, entity),
+                            **short,
                         },
                         row.initial_done_at or complete_at,
                         # A generic first import that ran over several runs is
@@ -3264,7 +3446,9 @@ async def _read_kept(ctx: _Ctx, entity: str, ids: list[str]) -> bool:
         async with ctx.page() as db:
             # Inside the page: a failed page takes the counts back too.
             _net_run_drops(ctx, entity, got)
+            kept_before = dict(ctx.recover[entity])
             await _apply_records(ctx, db, entity, records)
+            _count_recovered(ctx, kept_before, ctx.recover[entity], got)
             _spend_tries(ctx, entity, got, gone)
             await _save_recover(ctx, db, entity)
     return True
@@ -3282,6 +3466,28 @@ def _net_run_drops(ctx: _Ctx, entity: str, got: set[str]) -> None:
         drops[name] = int(drops[name]) - 1
         if drops[name] <= 0:
             del drops[name]
+
+
+def _count_recovered(
+    ctx: _Ctx,
+    before: dict[str, list[str]],
+    after: dict[str, list[str]],
+    got: set[str],
+) -> None:
+    """Count each kept activity that a read by ids linked (CRM-Q24 item 9).
+
+    A read takes an id off the list when it stores the record, and keeps it
+    when the record fails or drops again (``_keep_dropped``). So an id of
+    ``got`` that was on the list before the write, and is not after it, is
+    linked now. It counts under ``activity_recovered``, by the parent module
+    of its entry. A number only, never an id.
+    """
+    for ext_id in got:
+        entry = before.get(ext_id)
+        if entry is None or ext_id in after:
+            continue
+        recovered = ctx.counts.setdefault(ACTIVITY_RECOVERED_KEY, {})
+        recovered[entry[0]] = int(recovered.get(entry[0]) or 0) + 1
 
 
 def _spend_tries(ctx: _Ctx, entity: str, got: set[str], gone: set[str]) -> None:
