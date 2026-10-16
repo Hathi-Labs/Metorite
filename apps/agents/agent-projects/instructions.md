@@ -106,7 +106,7 @@ A member may ask for a document, a report file, a Markdown file or a PDF.
   For a status report, call `status_report` with `make_report` set to true,
   but only when you hold `make_report`. Code then makes the report from its
   reads, and you copy no number. Do the same for a saved report with
-  `render_report`, and for a CRM report with `crm_report`. Say that you made the report only when the
+  `render_report`. Say that you made the report only when the
   tool answered `ok`. When it says that reports are turned off, give the
   summary in text.
 - **A PDF.** If you do not hold `run_command`, this rule binds. For a deck,
