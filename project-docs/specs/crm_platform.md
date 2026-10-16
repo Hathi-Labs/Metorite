@@ -2480,6 +2480,23 @@ sync asks for it one more time, and then the id leaves the list. The probe of
 2026-10-16 proved the `ids=` read on 3 ids. The cap of 100 comes from Zoho's
 documents, and no probe tested it.
 
+Fix round 1 (review of 2026-10-16) stops three loops that spent credits:
+
+- An overflow queues no full read while a module that its list names is
+  unavailable. `_mark_unavailable` stamps `initial_done_at` too.
+- A refused read by ids pauses that entity for 24 hours
+  (`recover_paused_at`). A plain HTTP 401 or an untrusted host fails the run.
+- A kept id that a read returns, and that stays on the list, spends one try
+  (`recover_tries`). It leaves the list at `RETRY_LIMIT` tries.
+
+A recovery read takes the drop of the same run back out of
+`activity_drops`, so the count shows only what the run lost. The step takes
+an id that a read by ids cannot send off the list before the call. A source
+test fences the `organization_id` predicate of the recovery query. A kept
+entry on an unavailable module is still read when its parent row is here.
+That read goes to the activity module, not to the refused module, and the
+activity then links and leaves.
+
 **CRM-Q23c · The timeline on a module record.** Done when:
 
 1. `ModuleRecordSheet.tsx` shows the timeline of CRM-Q23a, read only.
