@@ -39,6 +39,9 @@
 >
 > **Built later:** CRM-Q7b, the proposer of field rules (2026-10-14). It adds no migration. See §18.7.
 >
+> **Built later:** CRM-Q26, labels on CRM notes on the decide tier, dark
+> (2026-10-16, migration 277). See §18.11.
+>
 > **Built from §19:** CRM-X4, the record page v2 (2026-10-12, §19.8).
 >
 > **Built from §20:** CRM-C2, one board (2026-10-13, §20.5). CRM-C3, stages
@@ -2490,8 +2493,9 @@ their column. The mirror stamps `zoho_id`, so the push skips the row.
    count of `activity_drops`.
 ### 18.11 Insights on the mirrored data (CRM-Q25 to CRM-Q28, 2026-10-16)
 
-**Status (2026-10-16).** Specified, not built. Verified against code at
-`origin/main` `02223e3e2`.
+**Status (2026-10-16).** CRM-Q26: built on the branch `crm-q26`, dark.
+CRM-Q27 and CRM-Q28: specified, not built. CRM-Q25: not built on this
+branch. Verified against code at `origin/main` `02223e3e2`.
 
 **Owner direction (2026-10-16, in chat).** Use the decide, balanced and
 powerful tiers to run inference on the CRM data and produce insights. Build
