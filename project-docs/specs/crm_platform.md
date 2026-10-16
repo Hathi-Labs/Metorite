@@ -37,6 +37,8 @@
 >
 > **Built later:** CRM-Q18-3, a column that is empty opens (2026-10-16, §18.9.6, migration 280, not merged). A fixed column with a fill of 0 takes a field rule, and the rule keeps the mark `opened_empty`. It is dark behind `CRM_FILL_RANK_ORGS`.
 >
+> **Built later:** CRM-Q20-1, the mapping pipeline on the decide tier (2026-10-16, §18.9.6, no migration, not merged). It writes a draft with the kinds `role`, `target` and `stage`, and never a live rule. It is dark: `CRM_DECIDE_ORGS` is empty and the three `crm.map_*` modes are `off`.
+>
 > **Built later:** CRM-Q5, the data the mirror loses (2026-10-12). Migration 249 adds `crm_deal_contacts.ext_source`.
 >
 > **Built later:** CRM-Q6a, the generic record store (2026-10-12, migration 251). See §18.7.
@@ -2079,6 +2081,11 @@ CRM-Q19 on `crm-batch-m`, with no migration and no flag. It is not merged.
 `CRM_MIRROR` keeps the route of the preview dark, as it keeps the plan
 routes dark.
 
+**Status (2026-10-16, CRM-Q20-1).** The branch `crm-q20-1-ai-mapping` builds
+CRM-Q20-1 on the Batch M branch, with no migration. It is not merged. It is
+dark: no org is in `CRM_DECIDE_ORGS`, and each `crm.map_*` mode is `off`.
+Both are owner flips. CRM-Q20-2 and CRM-Q20-3 are not built.
+
 **Design record.** The owner's design page is "Source Mapping Studio" v4.
 Its link is https://claude.ai/artifact/QcBY3s2ATxo3Kb9QCpR3Zr. This section
 is the build contract, and it wins where the two differ.
@@ -2268,7 +2275,7 @@ with 16 questions, to learn whether the vendor bills the state once.
 | CRM-Q18 | One plan: a table of versions, and the live rule set | AGENT-SAFE | M | — |
 | CRM-Q18-1b | Two deadlocks of the plan lock, found on a real database | AGENT-SAFE | S | CRM-Q18-1 |
 | CRM-Q19 🔨 built 2026-10-16, not merged | The executor and the 200-record preview | AGENT-SAFE | M | CRM-Q18 |
-| CRM-Q20 | The pipeline, the suggestion, the panel, Undo, and Settings → Suggestions | AGENT-SAFE | M + M | CRM-Q19 |
+| CRM-Q20 (CRM-Q20-1 🔨 built 2026-10-16, not merged) | The pipeline, the suggestion, the panel, Undo, and Settings → Suggestions | AGENT-SAFE | M + M | CRM-Q19 |
 | CRM-Q21 | Promote a module into a core entity | AGENT-SAFE | L | CRM-Q20 |
 | CRM-Q22 | Zoho changes as suggestions, then a CSV source, then HubSpot | AGENT-SAFE. The HubSpot app is OWNER-GATE | M + M | CRM-Q20 |
 
@@ -3083,6 +3090,91 @@ Files: `gateway/decide_features.py`, a new `crm_sync/map_pipeline.py`,
 `crm_sync/executor.py`, `crm_sync/scheduler.py`,
 `routes/crm/mapping_plans.py`, a new `evals/crm_mapping/` and
 `tests/unit/`. Gate: AGENT-SAFE to build. Size: M. Waits for: CRM-Q19.
+
+**Built as (2026-10-16).** Branch `crm-q20-1-ai-mapping`, on the Batch M
+branch. No migration. Dark until the owner flips `CRM_DECIDE_ORGS` and a
+`crm.map_*` mode.
+
+- `crm.map_role`, `crm.map_target` and `crm.map_stage` join `CRM_FEATURES`,
+  `REGISTERED` and `ON_FEATURES`, and not the email `FEATURES`. Each starts
+  `off`.
+- `crm_sync/map_pipeline.py` holds the six steps. `modes_now` calls
+  `mode_for` for each feature. A feature that is `off` builds no question.
+- `Pipeline` is pure but for two callables: a `Source` that reads the
+  samples on demand, and an asker. The eval drives the same class with a
+  scripted asker.
+- One `decide_features.ask` goes out for each entity, with `module_slug="crm"`
+  and the `connected_by` member as a proven member. The payer check is the
+  one of CRM-Q26 (`note_labels._member` and `_member_left`), and it runs
+  before the first request only. A run with nothing to ask checks no payer.
+- Step 3 answers at 0 tokens: a module named like the slot, a display field,
+  one field of 90% email, phone or URL shape, an exact name, and the stage
+  names Won and Lost. A module with 0 records is never a candidate. A field
+  with 0% fill is never offered.
+- A first question offers at most 40 candidates (`MAX_CANDIDATES`), the most
+  filled first. A re-ask offers the top 4 options of the first answer and
+  `none` (`REASK_OPTIONS`). Its state holds only those candidates, with 5
+  masked samples each. A person's email, phone or name goes as its class.
+- An answer is sure at 0.75 or more, with its top two 0.15 apart or more.
+  An answer that stays unsure makes no item. One module that two answers
+  name plays neither slot.
+- The caps are constants: `TOKEN_CAP` 20,000 estimated input tokens for
+  each run (`kb_index.chunk.estimate_tokens`), `RUN_REQUESTS` 12, and
+  `DAILY_REQUESTS` 40 for each org and UTC day in Redis, counted before each
+  request goes out. Past a cap the run stops and keeps a draft of each key
+  it finished.
+- The cursor row `zoho:map_pipeline` keeps `schema` (a hash of each key:
+  `slots`, `module:<ApiName>` and `core:<slot>`) and `items` (the items
+  that each key found). The hash holds the mode of each feature, so a
+  change of mode asks once more. A key that did not finish keeps its old
+  hash. An approve changes no hash, so it costs no new question.
+- `executor.py` gains `value_map`, `normalize`, `coalesce`, `link` and
+  `owner`. `run_target` and `run_stage` run the items of the kinds, and no
+  other code names the five. `slot_target`, `target_problem` and
+  `stage_problem` hold rules 2 and 3.
+- `mapping_plans.check_kinds` holds rules 1 to 3 and a duplicate check.
+  `commit` calls it first, so a draft approve, a restore and a per-rule
+  change each give 422 `role_missing`, `bad_target` or `bad_stage`.
+  "Beside an approved `role`" reads as: the role is in the snapshot that
+  the commit approves.
+- `mapping_plans.write_draft` merges the items into the approved version
+  (`merge_kinds`), checks them, and writes one draft by `suggestion`. It
+  writes nothing when the items change nothing, or when the newest draft of
+  the pipeline on the approved version holds the same items.
+- A `target` item carries `unmapped`, the count of sampled values that the
+  executor could not map (step 6). A `stage` item carries `unsorted`, the
+  count of distinct stage values in the records with no entry (item 9).
+- An approved target or stage of a module asks nothing again. A new stage
+  value is CRM-Q22.
+- `scheduler.start_mapping` starts the run after `engine.run_org` and after
+  the run of `spawn`, outside the run lock, one at a time for each org.
+- Fences: 65 hermetic tests in `test_crm_map_pipeline.py`, 9 R8 tests in
+  `test_crm_map_pipeline_r8.py`, and 10 new tests in `test_crm_executor.py`.
+  27 mutations, one for each key rule, each made a fence fail.
+
+**The cost for DEWiN (estimated, `evals/crm_mapping --scripted`).** The eval
+has DEWiN's shape: 17 generic modules, Accounts and Deals turned off, and
+Commercials, Quotes and Sales Orders with 0 records. In `on`, the first
+setup asks 7 questions in 3 requests, about 2,700 estimated input tokens:
+1 role request with 2 questions, 1 target request with 4, and 1 re-ask. In
+`shadow`, it asks 6 target questions in 2 requests, about 900 tokens. A
+second run on the same schema asks nothing. The measured count needs the
+post-flip probe and a join of the request ids to `usage_event`.
+
+Not in this slice:
+
+- Rule 2 names no `amount`, no owner and no parent link. So the pipeline
+  writes no `link`, `owner` or `amount` item, and step 3 gives no "one
+  currency field fills `amount`". It writes no `coalesce` item either: no
+  step picks two fields. The executor runs each of them for an item that
+  names it. **Open (owner):** may rule 2 add `amount` for the Deals slot,
+  the owner and the parent link?
+- The pipeline draft is the open draft of the Field map card
+  (`lib/fieldMap.ts` `openDraft`), so a pick by hand joins it. CRM-Q20-2
+  decides how the panel and the card share it.
+- An undo that approves a version with no role leaves the cached items of
+  the run. The next run with the same schema writes the same draft again.
+  CRM-Q20-2 decides how Settings → Suggestions dismisses a suggestion.
 
 **CRM-Q20-2 · The suggestion, the panel, the overlay and Undo.** Done when
 items 5 to 9 above are true, and the read path of an approved overlay works
