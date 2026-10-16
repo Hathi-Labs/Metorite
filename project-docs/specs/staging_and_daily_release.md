@@ -1,6 +1,11 @@
 # Staging and the daily release — a second deployment that takes every merge
 
-**Status:** 🟠 **PROPOSED, 2026-10-15. Revised 2026-10-16:** staging goes on the dev box (§5). 🔨 **Phase 1 (the daily clock) BUILT 2026-10-16** on the owner's go-ahead. §5.7 records it. Phases 2 to 5 are not built. · **Owner:** vjvarada ·
+**Status:** 🟠 **PROPOSED, 2026-10-15. Revised 2026-10-16:** staging goes on the dev box (§5).
+
+**Built:** 🔨 phase 1, the daily clock (§5.7), and 🔨 phase 2 slice S-4, `DEPLOY_ENV` (§5.8).
+Both on 2026-10-16, on the owner's go-ahead. S-3, S-7 and phases 3 to 5 are not built.
+
+**Owner:** vjvarada ·
 **Board row:** WS-38 (this is the concrete answer to its **D-D**, and a proposed
 amendment to its **D-E**) · **Parent spec:** `specs/development_and_delivery_framework.md`
 
@@ -234,7 +239,7 @@ path change. The agent sessions keep running as `dev` in `~/Metorite`.
 
 | Part on the dev box | How |
 |---|---|
-| Checkout | `/opt/acb/app`, owned by `acb`. The `acb-pull` timer runs `vps_pull.sh` with `RELEASE_REF=staging` every 2 minutes |
+| Checkout | `/opt/acb/app`, owned by `acb`. The `acb-pull` timer runs `vps_pull.sh` every 5 minutes, the production interval. `DEPLOY_ENV=staging` selects the `staging` ref |
 | Services | the same units as production, less the Console, the operator console, the WhatsApp bridge, the meeting bot and the production timers (§5.4) |
 | Ports | the production ports: gateway `8080`, workbench `3001`, agent edge `8091`. ⚠️ An agent's local dev server must then use other ports. The local recipe already puts the gateway on `8010`. Move its workbench from `3001` to `3101` |
 | Database | a Postgres 16 container on `127.0.0.1:5432`, rebuilt every night (T-9). The scratch containers stay on 5433 and 5434 |
@@ -371,6 +376,25 @@ shows as a failed `deploy` run, and GitHub mails the owner.
 
 ---
 
+### 5.8 Phase 2 slice S-4 as built, 2026-10-16
+
+One setting, `DEPLOY_ENV`, in the box's own `.env`, makes the box production or
+staging. Absent means production, so the production box needs no edit. Any other
+value stops the round before the lock. Fence: `tests/unit/test_deploy_env.py`.
+
+| On a staging box | Where |
+|---|---|
+| The pull and the apply default to the `staging` ref | the same block in `vps_pull.sh` and `vps_apply.sh`. It survives `set -euo pipefail` when the line is absent |
+| `Caddyfile.staging` is installed. It serves `api.dev.metorite.com` and `dev.metorite.com` only, and its two blocks equal production's line for line | `vps_apply.sh`, the Caddy step. CI validates both files |
+| `GATEWAY_PUBLIC_URL` and `WORKBENCH_PUBLIC_URL` default to the staging hosts | the public-URL step |
+| Two timers run: `acb-pull` and `acb-health-watchdog`. Each other timer is disabled and logged | a staging branch beside H-132's loop. The production loop is unchanged |
+| The watchdog probes the `api.` host of the Caddyfile its box serves | `health-watchdog.sh` |
+
+**What stays in `.env`, and needs no code.** The bootstrap (S-5) writes
+`WHATSAPP_BRIDGE_ENABLED=0` and `MEETING_BOT_ENABLED=0`. The Customer Console and
+the operator console run only when their units are enabled, and the bootstrap
+enables neither. The Console ladder is then skipped (§5.4).
+
 ## 6. The build tickets
 
 These extend WS-38. T-7, T-8 and T-9 are the parent spec's tickets. The `S-` rows
@@ -381,7 +405,7 @@ are new. The phase column maps each row to §5.6.
 | **T-7** | 1 | **The `staging` ref.** `publish-release` becomes `publish-staging` and fast-forwards `staging` on each green `main` | as the parent spec §8 T-7 | 🟢 |
 | **T-8** | 1 | **`release-promote.yml`.** A `schedule:` trigger at 21:30 UTC plus `workflow_dispatch` with a SHA and a reason. It fast-forwards `release` and runs the production deploy job, which moves here from `deploy.yml`. In phase 1 it promotes the tip of `staging`. In phase 5 it applies §4.2 | `release` moves only by this workflow. A SHA that is not on `staging` is refused. A held day (§4.3) moves nothing. The ntfy report names the SHA and the `/version` it read back | 🟢 build · 🔴 enable the schedule |
 | **S-3** | 2 | **Host names from configuration.** 23 files outside the tests name `app.metorite.com` or `api.metorite.com`. They include `vps_apply.sh`, `health-watchdog.sh`, `inviteEmail.ts` and the WhatsApp views. Read each name from `GATEWAY_PUBLIC_URL` and `WORKBENCH_PUBLIC_URL`, which already exist | `rg -l "app\.metorite\.com\|api\.metorite\.com"` outside tests and docs returns only the production Caddyfile and the defaults block | 🟢 |
-| **S-4** | 2 | **`DEPLOY_ENV` in the apply script** (§5.4), with `Caddyfile.staging` | `caddy validate` passes on both files. A test in `test_deploy_serialize.py` proves that `staging` installs neither the production Caddyfile nor the backup timer | 🟢 |
+| **S-4** | 2 | **`DEPLOY_ENV` in the apply script** (§5.4), with `Caddyfile.staging` | `caddy validate` passes on both files. `test_deploy_env.py` proves that `staging` installs neither the production Caddyfile nor the backup timer | 🟢 |
 | **S-7** | 2 | **The staging band.** `NEXT_PUBLIC_DEPLOY_ENV=staging` draws a fixed band on every page | Visible on staging in light mode and at compact density. Absent on production | 🟢 |
 | **S-6** | 3 | **The staging Router key.** The `Metorite Staging` organization on the Console, with a credit cap. Its `cc_live_` key goes on the dev box only | A chat turn on staging writes a usage row against `Metorite Staging` and no other organization | 🔴 owner (a write to the live Console) |
 | **S-5** | 4 | **`bootstrap_staging.sh`** (§5.2, §5.3, §5.5) | `https://api.dev.metorite.com/health` answers. `/version` serves the `staging` SHA. `sudo -u dev cat /opt/acb/app/.env` is refused | 🟢 write · 🔴 owner runs it with `sudo` |
