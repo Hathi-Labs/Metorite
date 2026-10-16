@@ -70,7 +70,7 @@ class TestTheReexecIsWired:
 
     def test_the_reexec_follows_the_reset_and_precedes_the_first_step(self) -> None:
         lines = _executable_lines(_APPLY)
-        reset = _first(lines, "git reset --hard origin/main")
+        reset = _first(lines, 'git reset --hard "$DEPLOY_TARGET_SHA"')
         reexec = _first(lines, "exec env VPS_APPLY_REEXECED=1")
         step = _first(lines, _FIRST_STEP)
         assert reset < reexec < step
@@ -93,7 +93,7 @@ class TestTheReexecIsWired:
         for needle in (
             "git fetch origin main",
             'deploy_already_applied "$DEPLOY_TARGET_SHA"',
-            "git reset --hard origin/main",
+            'git reset --hard "$DEPLOY_TARGET_SHA"',
             "exec env VPS_APPLY_REEXECED=1",
         ):
             assert _first(lines, needle) > other, f"{needle} must sit in the first copy's branch"
@@ -154,6 +154,9 @@ def _commit(seed: pathlib.Path, script: str) -> str:
     _git("add", "-A", cwd=seed)
     _git("commit", "-q", "-m", "x", cwd=seed)
     _git("push", "-q", "origin", "HEAD:main", cwd=seed)
+    # CI publishes `release` after the gates pass. The apply deploys that ref
+    # when no DEPLOY_REF names a commit (WS-38).
+    _git("push", "-q", "origin", "HEAD:release", cwd=seed)
     return _git("rev-parse", "HEAD", cwd=seed)
 
 

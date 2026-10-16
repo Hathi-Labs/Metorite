@@ -3080,6 +3080,8 @@ line — never reclaim a number by deleting the other entry.
   📌 **Worth knowing before deciding:** staging is a *nightly re-derivation* of
   production, not a maintained copy (D55.5), so it can be smaller than production and can
   be torn down and rebuilt. It is a cost that scales with nothing.
+  🆕 **2026-10-15:** read `specs/staging_and_daily_release.md` §5 and §7 first. It
+  recommends the dev box `srv1747539` for staging and a daily release at 21:30 UTC.
 - **Authority:** `work_plan.md` D55.9 · §2 WS-38 ·
   `specs/development_and_delivery_framework.md` §9 D-D · §3.5
 - **Added:** 2026-08-26 · delivery + model-management decision session
