@@ -12,10 +12,19 @@
  */
 import { lintText } from './ste-lint.mjs'
 import { spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
 const LINT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'ste-lint.mjs')
+
+// Two folders for the path cases: one in no repo, and one shaped like a
+// `git worktree` (a `.git` FILE at its root). Neither is under this checkout.
+const OUTSIDE = mkdtempSync(path.join(tmpdir(), 'ste-outside-'))
+const WORKTREE = mkdtempSync(path.join(tmpdir(), 'ste-worktree-'))
+writeFileSync(path.join(WORKTREE, '.git'), 'gitdir: /nowhere\n')
+mkdirSync(path.join(WORKTREE, 'docs'), { recursive: true })
 
 const CASES = [
   // --- the word list -------------------------------------------------------
@@ -187,6 +196,16 @@ const HOOK_CASES = [
   // the next commit that touches one fails on somebody else's prose.
   ['an adopted upstream skill is not ours', { tool_name: 'Write', tool_input: { file_path: '.claude/skills/frontend-design/SKILL.md', content: 'Utilize it.' } }, 0],
   ['a skill we wrote is still ours', { tool_name: 'Write', tool_input: { file_path: '.claude/skills/ste/SKILL.md', content: 'Utilize it.' } }, 2],
+  // A path is judged against ITS OWN checkout (2026-10-16). OUTSIDE has no
+  // `.git` above it, like agent memory. WORKTREE holds a `.git` FILE, as a
+  // `git worktree` does, and sits outside the session's checkout.
+  ['a file in no repo is not ours', { tool_name: 'Write', tool_input: { file_path: path.join(OUTSIDE, '.claude', 'memory', 'x.md'), content: 'Utilize it.' } }, 0],
+  ['a vendored skill in a worktree is not ours', { tool_name: 'Write', tool_input: { file_path: path.join(WORKTREE, 'skills', 'upstream', 'x', 'SKILL.md'), content: 'Utilize it.' } }, 0],
+  ['a doc in a worktree is still strict', { tool_name: 'Write', tool_input: { file_path: path.join(WORKTREE, 'docs', 'x.md'), content: 'However, it is open.' } }, 2],
+  // On Windows, a Git Bash path names a drive. Elsewhere `/c/...` is a real path.
+  ...(process.platform === 'win32'
+    ? [['a Git Bash path is still ours', { tool_name: 'Write', tool_input: { file_path: '/' + WORKTREE[0].toLowerCase() + WORKTREE.slice(2).replace(/\\/g, '/') + '/docs/x.md', content: 'However, it is open.' } }, 2]]
+    : []),
 ]
 
 for (const [name, payload, expected] of HOOK_CASES) {
@@ -199,4 +218,6 @@ for (const [name, payload, expected] of HOOK_CASES) {
 
 const total = CASES.length + HOOK_CASES.length
 console.log(failed === 0 ? `\nall ${total} cases passed` : `\n${failed} of ${total} FAILED`)
+rmSync(OUTSIDE, { recursive: true, force: true })
+rmSync(WORKTREE, { recursive: true, force: true })
 process.exit(failed === 0 ? 0 : 1)

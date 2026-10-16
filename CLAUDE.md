@@ -279,15 +279,17 @@ delivery makes that failure more likely, not less.
 
 > **audit** the spec is dispatchable → **implement** one narrowed slice →
 > **verify** independently against the acceptance criteria → **review** the diff
-> adversarially → **open a PR** → **merge it, and watch it deploy**.
+> adversarially (by risk tier) → **open a PR** → **merge it, and watch it deploy**.
 >
 > ⚠️ **The last step changed on 2026-09-01, and only until 2026-09-30.** It read
 > "stop before merge". That was the single largest brake on delivery, because
 > merging to `main` IS the deploy — `.github/workflows/deploy.yml` reaches the
 > box by itself. Stopping at the PR stopped the release.
 >
-> **Merging is not skipping the loop.** Audit, verify and review still run, and
-> the verifier is still not the implementer. What you drop is the wait. After
+> **Merging is not skipping the loop.** Audit and verify always run, and
+> the verifier is still not the implementer. Review depth follows the risk
+> tier in `next-ticket.md` step 1b (owner decision, 2026-10-16). A LOW slice
+> skips the reviewer. What you drop is the wait. After
 > the merge, **watch the run to green and report the serving SHA** — an
 > unwatched merge is worse than an unmerged PR. On 2026-10-01 this reverts to
 > "stop before merge".
