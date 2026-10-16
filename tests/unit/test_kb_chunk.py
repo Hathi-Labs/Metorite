@@ -181,7 +181,7 @@ def _vectors(texts: list[str], value: float = 0.5) -> dict[str, Any]:
     return {"data": [{"index": i, "embedding": [value] * 1536} for i in range(len(texts))]}
 
 
-def test_the_door_is_the_gateway_with_the_llm_key(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_door_is_the_gateway_with_the_service_token(monkeypatch: pytest.MonkeyPatch) -> None:
     door = _Door(_vectors)
     door.install(monkeypatch)
     out = asyncio.run(embed_mod.embed(["a", "b"], org=ORG))
@@ -189,7 +189,11 @@ def test_the_door_is_the_gateway_with_the_llm_key(monkeypatch: pytest.MonkeyPatc
     req = door.requests[0]
     assert req["url"] == get_settings().litellm_base_url.rstrip("/") + "/v1/embeddings"
     assert req["json"] == {"model": "text-embedding-3-small", "input": ["a", "b"]}
-    assert req["headers"] == {"Authorization": f"Bearer {get_settings().llm_api_key}"}
+    # The gateway's /v1/embeddings authenticates with get_current_user, which
+    # refuses the /v1 key when GATEWAY_INTERNAL_TOKEN is set (production).
+    assert req["headers"] == {"Authorization": f"Bearer {get_settings().gateway_internal_token}"}
+    assert get_settings().llm_api_key not in req["headers"]["Authorization"] or (
+        get_settings().llm_api_key == get_settings().gateway_internal_token)
 
 
 def test_a_zero_vector_is_none(monkeypatch: pytest.MonkeyPatch) -> None:

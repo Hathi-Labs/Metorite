@@ -525,7 +525,9 @@ title in guillemets and a `full_id:` line, so the pill renders (§8.3).
 over HTTP to `{litellm_base_url}/v1/embeddings` with the platform bearer,
 the same door `email_embeddings.py` uses, with `text-embedding-3-small` at
 1536 dimensions. It imports no `litellm` and no `openai`, so
-`test_no_direct_ai_vendor_calls.py` holds. When WS-45 S5 gives the Router an
+`test_no_direct_ai_vendor_calls.py` holds. It sends the service token, because the
+gateway's `/v1/embeddings` authenticates with `get_current_user`, which
+refuses the `/v1` key on production (H-329). When WS-45 S5 gives the Router an
 embedding door on `tier-embed`, that door moves, and `kb_index` changes
 nothing.
 

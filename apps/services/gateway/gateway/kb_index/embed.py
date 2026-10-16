@@ -2,7 +2,7 @@
 
 :func:`embed` is the ONE function that makes a vector for the index. It
 posts over HTTP to ``{litellm_base_url}/v1/embeddings`` with the platform
-bearer (``Settings.llm_api_key``), with ``text-embedding-3-small`` at 1536
+bearer (``Settings.gateway_internal_token``, see ``_headers``), with ``text-embedding-3-small`` at 1536
 dimensions. It imports no ``litellm`` and no ``openai``, so
 ``tests/unit/test_no_direct_ai_vendor_calls.py`` holds. When WS-45 S5 gives
 the Router an embedding door on ``tier-embed``, that door moves here, and the
@@ -70,6 +70,19 @@ def _vector(value: Any) -> list[float] | None:
     return vec
 
 
+def _headers() -> dict[str, str]:
+    """The service token, because the gateway calls its own route.
+
+    ``POST /v1/embeddings`` authenticates with ``get_current_user``, which
+    accepts the service identity token and refuses the ``/v1`` key once
+    ``GATEWAY_INTERNAL_TOKEN`` is set (measured on production, 2026-10-16).
+    This module is platform code that takes no model output, so it may hold
+    the service token, as ``crm_tools.py`` does. With no token set, the call
+    fails, and every vector is ``None``, which the caller reads as degraded.
+    """
+    return {"Authorization": f"Bearer {get_settings().gateway_internal_token}"}
+
+
 async def _post(texts: list[str], timeout: float) -> list[list[float] | None]:
     """One request for *texts*. Each failure is ``None`` for every text."""
     nothing: list[list[float] | None] = [None] * len(texts)
@@ -78,7 +91,7 @@ async def _post(texts: list[str], timeout: float) -> list[list[float] | None]:
             response = await client.post(
                 _url(),
                 json={"model": EMBED_MODEL, "input": texts},
-                headers={"Authorization": f"Bearer {get_settings().llm_api_key}"},
+                headers=_headers(),
             )
         response.raise_for_status()
         data = response.json().get("data") or []
