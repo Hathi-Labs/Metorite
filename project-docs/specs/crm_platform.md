@@ -2661,6 +2661,10 @@ list names no module, so the guard let the full read through. Now
 beside `recover_overflow`. The guard checks those modules too. A held module
 now holds the guard, as an unavailable module does.
 
+Fix round 3 (review of fix round 2): the guard also waits while a module
+that it checks is mid-read. A module that comes back can stop at
+`MODULES_RESERVE` before all its records are in.
+
 **CRM-Q23c · The timeline on a module record.** Done when:
 
 1. `ModuleRecordSheet.tsx` shows the timeline of CRM-Q23a, read only.
