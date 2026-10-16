@@ -366,7 +366,7 @@ class TestTheMemberPurgeTearsDownEachMailbox:
                         provider_message_id=f"pm-late-{tag}", thread_id=None,
                         folder="INBOX", subject="late",
                         from_address=EmailAddress("s", "s@sender.test"))
-                    with pytest.raises(Exception, match="foreign key|violates"):
+                    with pytest.raises(Exception, match=r"foreign key|violates"):
                         async with tenant_session(p.org_b) as db:
                             await upsert_message(db, acc, late)
             finally:
