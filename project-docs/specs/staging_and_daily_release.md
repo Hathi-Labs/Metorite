@@ -1,15 +1,14 @@
 # Staging and the daily release — a second deployment that takes every merge
 
-**Status:** 🟠 **PROPOSED, 2026-10-15.** Nothing here is built. · **Owner:** vjvarada ·
+**Status:** 🟠 **PROPOSED, 2026-10-15. Revised 2026-10-16:** staging goes on the dev box (§5). Nothing here is built. · **Owner:** vjvarada ·
 **Board row:** WS-38 (this is the concrete answer to its **D-D**, and a proposed
 amendment to its **D-E**) · **Parent spec:** `specs/development_and_delivery_framework.md`
 
-> **The answer.** Put a second deployment, `dev.metorite.com`, on a second small VPS.
-> Every merge to `main` deploys there, as every merge deploys to production today.
-> Production moves **once a day**, at a fixed time, to the newest commit that staging
-> has run and passed. Both deployments use the **same sign-in providers** (the one
-> Google app and the one Microsoft app) and the **same AI Router** (the Customer
-> Console). They never share a database, a session secret or a seat.
+> **The answer.** Put a second deployment, `dev.metorite.com`, on the dev box that
+> already runs the agent sessions (`srv1747539`), and buy nothing. Every merge to
+> `main` deploys there. Production moves **once a day**, at a fixed time, to the newest
+> commit that staging has run and passed. Both deployments use the **same sign-in
+> providers** (Google and Microsoft) and the **same AI Router** (the Customer Console). They never share a database, a session secret or a seat.
 
 **What this document owns.** The topology, the shared-versus-separate table, the
 promotion clock and the build tickets. **What it does not own.** The branching model,
@@ -51,7 +50,7 @@ The owner records the end of Phase 0. An agent does not.
                      │                     │           │                    │
                      │      daily, 21:30 UTC (03:00 IST)                    │
                      │                     ▼           │                    ▼
-                     │                release ref      │        staging VPS (new, small)
+                     │                release ref      │        dev box srv1747539     
                      └─────────────────────┼───────────┘        dev.metorite.com
                                            │                    api.dev.metorite.com
                                            ▼                    own Postgres, own Redis
@@ -87,10 +86,10 @@ two things the owner asked to share.
 |---|---|---|
 | **Code** | Same repository, different ref | staging runs `staging`, production runs `release` |
 | **Edge router (DNS and Caddy)** | Same DNS zone, separate Caddy | Two explicit `A` records, `dev` and `api.dev`, point at the staging VPS. ⚠️ The zone has a `*.metorite.com` wildcard that sends every unknown name to the production box today. An explicit record wins over the wildcard. Each box runs its own Caddy with its own hostnames |
-| **Sign-in providers** | ✅ **Shared** | The same Google OAuth client and the same Microsoft Entra app. Add one redirect URI to each: `https://dev.metorite.com/api/auth/callback/google` and `…/microsoft-entra-id` |
+| **Sign-in providers** | ✅ **Shared** | The same Google Cloud project and the same Microsoft Entra tenant, so a member sees the same sign-in. Staging gets its **own OAuth client** in each, with the redirect URI `https://dev.metorite.com/api/auth/callback/google` or `…/microsoft-entra-id`. §5.5 gives the reason |
 | **Session secret (`AUTH_SECRET`)** | ❌ **Separate** | A staging cookie must never open a production session. The cookies are host-only, so they do not cross `dev.` and `app.` in the browser either |
 | **Membership (who may sign in)** | ❌ **Separate rows, same people** | The nightly rebuild copies production's `app_user` and membership rows. The anonymiser keeps the real email for the staff allowlist (§3) and scrambles every other address. So staff sign in to staging with their own Google account, and a customer cannot |
-| **AI Router (Customer Console)** | ✅ **Shared** | Staging calls the same Router URL with its **own** `cc_live_` org key, for an internal organization named `Metorite Staging`. That organization has a credit cap. Spend on staging is metered, and it never bills a customer |
+| **AI Router (Customer Console)** | ✅ **Shared** | Staging reaches the same Router through a private tunnel (§5.3), with its **own** `cc_live_` org key, for an internal organization named `Metorite Staging`. That organization has a credit cap. Spend on staging is metered, and it never bills a customer |
 | **Console sign-in resolve and seats** | ❌ **Off on staging** | `CUSTOMER_CONSOLE_RESOLVE_ENABLED` stays unset, and staging holds no `CUSTOMER_CONSOLE_DEPLOYMENT_KEY`. A staging sign-in must not allocate a seat on the production Console. This is a named parity exception |
 | **Console schema** | ❌ **Production clock only** | Staging never runs `apply_customer_console_migrations.sh`. One Console serves both deployments, so its ladder moves with `release` and with nothing else |
 | **Tenant database** | ❌ **Never shared** | A forward-only ladder (R6) on a shared database means staging writes production's schema 32 times a day. That is today's problem with one more step |
@@ -204,54 +203,155 @@ flips, on any day, independent of the clock.
 
 ---
 
-## 5. Where staging runs, and what it costs
+## 5. Where staging runs — the two boxes we already pay for
 
-This is **D-D**, which has waited since 2026-08-26 (`HANDOFF.md` H-38).
+**Revised 2026-10-16. Recommendation: put staging on the dev box, `srv1747539`,
+and buy nothing.** The owner pays for two KVM 2 boxes. The production box serves
+customers, and the dev box runs the Claude Code sessions. Staging joins the dev box,
+and the production box loses work rather than gains it.
 
-| Option | Monthly cost | For | Against |
+### 5.1 The two boxes, measured 2026-10-16
+
+| | Production — `srv1914284`, `187.127.172.200` | Dev — `srv1747539`, `187.127.179.143` |
+|---|---|---|
+| Plan | KVM 2: 2 vCPU, 8 GB RAM, no swap | KVM 2: 2 vCPU, 8 GB RAM, 8 GB swap |
+| Disk | 96 GB, 17 GB used | 96 GB, 47 GB used |
+| Runs today | gateway (about 600 MB), workbench, Console, operator console, agent edge, Redis, meeting bot | Claude Code sessions, two scratch Postgres containers on 5433 and 5434 |
+| Tenant and Console databases | **on Supabase**, not on the box. The local `acb-postgres` container carries no gateway connection | none |
+| Restarts | **36 gateway starts in the 24 hours to 05:58 UTC** | not applicable |
+| Builds | every deploy runs `next build` on the production CPUs. One deploy of one commit took 3 min 32 s (04:07:23 to 04:10:55 UTC) | many builds and test runs a day, by agents |
+| Root access for an agent | `ssh metorite` with passwordless `sudo` | **no passwordless `sudo`** for the `dev` user |
+
+### 5.2 What each box does after the change
+
+**Production box: customers only.** It keeps every unit it has. Its `acb-pull`
+timer keeps polling `release`. The only change is that `release` moves once a day,
+so the box restarts once a day and builds once a day. Nothing new is installed on it.
+
+**Dev box: agents plus staging.** Staging runs as a second system user, `acb`, in
+`/opt/acb/app`, the same path and user as production. The scripts then need no
+path change. The agent sessions keep running as `dev` in `~/Metorite`.
+
+| Part on the dev box | How |
+|---|---|
+| Checkout | `/opt/acb/app`, owned by `acb`. The `acb-pull` timer runs `vps_pull.sh` with `RELEASE_REF=staging` every 2 minutes |
+| Services | the same units as production, less the Console, the operator console, the WhatsApp bridge, the meeting bot and the production timers (§5.4) |
+| Ports | the production ports: gateway `8080`, workbench `3001`, agent edge `8091`. ⚠️ An agent's local dev server must then use other ports. The local recipe already puts the gateway on `8010`. Move its workbench from `3001` to `3101` |
+| Database | a Postgres 16 container on `127.0.0.1:5432`, rebuilt every night (T-9). The scratch containers stay on 5433 and 5434 |
+| Redis | a container on `127.0.0.1:6379` |
+| Web proxy | Caddy on ports 80 and 443. Both are free on the dev box today |
+| Limits | every staging unit sits in one systemd slice, `acb-staging.slice`, with `MemoryMax=3G` and `CPUWeight=50`. A runaway staging build then cannot take the memory the agent sessions need, and the reverse holds too |
+| Delivery | **pull only.** GitHub never opens SSH to the dev box. The box polls `staging`, so it needs no new GitHub secret and no inbound port |
+
+**Why staging must not go on the production box.** The production box has the same
+2 vCPU as the dev box and no swap. A staging stack there would run `next build`
+about 32 times a day on the CPUs that serve customers. That is today's problem in a
+new place. The table in the earlier draft named this as option A and rejected it.
+
+### 5.3 How staging reaches the shared AI Router
+
+The production Console listens on `127.0.0.1:8090` only, and the production firewall
+opens ports 22, 80 and 443 only. So staging cannot reach the Router today. That is
+correct, and it must stay correct for the internet.
+
+**Recommendation: an SSH tunnel, not a new public host name.**
+
+1. Make a new key pair on the dev box, owned by `acb`. It is not the `dev` user's
+   key.
+2. On the production box, add its public half to `~acb/.ssh/authorized_keys` with
+   these options: `restrict,port-forwarding,permitopen="127.0.0.1:8090",command="/bin/false"`.
+   That key can open one port and do nothing else.
+3. On the dev box, a unit `acb-console-tunnel.service` holds
+   `ssh -N -L 127.0.0.1:18090:127.0.0.1:8090 acb@187.127.172.200`, with
+   `Restart=always`.
+4. Staging sets `CUSTOMER_CONSOLE_URL=http://127.0.0.1:18090` and its own `cc_live_`
+   key (S-6).
+
+**What this costs.** If the tunnel drops, a staging chat turn fails until the unit
+reconnects. Staging is where that failure belongs. The production Console gets no
+new listener and no new public name.
+
+### 5.4 What the apply script must learn first
+
+⚠️ **Do not run `vps_apply.sh` on the dev box as it is today.** It installs
+`deploy/hostinger/caddy/Caddyfile`, which claims `app.metorite.com` and
+`api.metorite.com`. It also enables every `*.timer` in `deploy/hostinger/`, which
+includes the production backup timer and the 6-hourly chat smoke check. It seeds
+`GATEWAY_PUBLIC_URL=https://api.metorite.com` when the `.env` has none.
+
+So the apply script needs one setting, `DEPLOY_ENV`, read from the box's `.env`,
+with two values:
+
+| `DEPLOY_ENV` | Caddyfile | Timers | Units |
 |---|---|---|---|
-| **A. Same box, second set of units** | about ₹0 | No new account. The DNS stays simple | ⚠️ **It does not fix the problem.** Every staging build runs `next build` on the production CPU about 32 times a day. The box build race (`.next.staging`) is already a recorded hazard on one deployment |
-| **B. A second Hostinger VPS, KVM 2** (2 vCPU, 8 GB) **(recommended)** | about $15 (about ₹1,300) | Builds and restarts on staging never touch the production box. The same `bootstrap.sh` sets it up. One more box gives a second place to prove a box change | A second box to patch and monitor. `vps-health.yml` must learn a second host |
-| **C. Option B, with a second Supabase project for the staging database** | B plus about $10 | The database matches production's pooler (Supavisor), which the 2026-10-07 incident showed matters | One more external account. Supabase limits free projects for each organization |
+| `production` (the default) | `caddy/Caddyfile` | all, as today | all, as today |
+| `staging` | `caddy/Caddyfile.staging`: `dev.metorite.com` and `api.dev.metorite.com` only | `acb-pull` and `acb-health-watchdog` only | gateway, workbench, agent edge, `acb-console-tunnel` |
 
-**Recommendation: B now, and C later if a pooler defect slips past staging.** The
-staging database is a Postgres 16 container on the staging VPS. It is rebuilt every
-night, so it holds nothing worth keeping. The restore path already exists: `#707`
-restores the nightly dump into a local container for `--verify-restore`. Staging
-reuses that path and keeps the result.
+The default is `production`, so the production box needs no edit. ✅ One part is
+already safe: the Console ladder is skipped on a box that holds no Console DSN and
+does not enable `acb-customer-console`. Measured in `vps_apply.sh`, the block after
+`CC_ENV=`.
 
-**What B does not match:** the Supabase pooler and its pool limits. Record that gap
-in the parent spec's §3.4 table as a named difference. Then "it passed on staging"
-keeps a defined meaning.
+### 5.5 The security line between agents and staging
+
+The agents on the dev box are the main risk to staging, and staging is a risk to
+production through the dev box. Four rules hold the line:
+
+1. **Staging secrets belong to `acb`, mode 0600.** The `dev` user has no
+   passwordless `sudo`, so an agent cannot read them.
+2. **Use a separate OAuth client for staging**, in the same Google Cloud project and
+   the same Microsoft Entra tenant. Members see the same "Sign in with Google". A
+   leak of the staging client secret then does not expose the production client.
+   This changes the earlier draft, which shared one client.
+3. **The `acb` user on the dev box holds one key to the production box.** It is
+   the tunnel key of §5.3, and it can open one port only.
+4. ⚠️ **The `dev` user's own `ssh metorite` key reaches production with `sudo`.**
+   That is true today and this design does not change it. Record it as a finding.
+   Staging does not make it worse, because staging runs as another user.
+
+### 5.6 The rollout, in order
+
+Each phase stands alone. Production gets more stable after phase 1, before any
+staging exists.
+
+| Phase | What | Who | Production effect |
+|---|---|---|---|
+| **1. The daily clock** | `deploy.yml` stops deploying on each push and publishes `staging` only. A new `release-promote.yml` moves `release` at 21:30 UTC and deploys production. A person can run it by hand for a hotfix | an agent builds the PR. The owner approves S-A and S-B | **36 restarts a day becomes 1** |
+| **2. Make the scripts environment-aware** | `DEPLOY_ENV` in `vps_apply.sh`, `Caddyfile.staging`, the host names from configuration (S-3), the staging band (S-7) | an agent | none. The default is `production` |
+| **3. Prepare the outside accounts** | DNS: `A` records `dev` and `api.dev` to `187.127.179.143`. Google and Entra: one new OAuth client each, with the `dev.metorite.com` redirect URI. The Console: the `Metorite Staging` organization and its key (S-6) | **the owner**, about 30 minutes | none |
+| **4. Bootstrap staging on the dev box** | one root script, `deploy/hostinger/bootstrap_staging.sh`, that an agent writes. It makes the `acb` user, the checkout, the containers, the slice, the tunnel unit and Caddy. The owner drops the staging secrets through `scripts/secrets.sh` | an agent writes it. **The owner runs it once with `sudo`** | none |
+| **5. Staging gates the clock** | the nightly anonymised rebuild (T-9), the smoke checks (S-8), and the §4.2 conditions in `release-promote.yml` | an agent builds. The owner approves the allowlist (S-C) | each release is now one that staging ran first |
+
+**Phase 1 alone is the quick win.** Without phases 2 to 5, it removes 35 restarts a
+day and adds no safety, because each daily batch reaches production untried. With
+phase 5, the batch has run on production-shaped data for at least 4 hours first.
 
 ---
 
 ## 6. The build tickets
 
 These extend WS-38. T-7, T-8 and T-9 are the parent spec's tickets. The `S-` rows
-are new. The order matters, because each row needs the row above it.
+are new. The phase column maps each row to §5.6.
 
-| # | Ticket | Done when | Gate |
-|---|---|---|---|
-| **S-1** | **GitHub Environments.** Create `staging` and `production`. Move `HOSTINGER_HOST`, `HOSTINGER_USER`, `HOSTINGER_SSH_KEY` and the public URLs into each | `gh api repos/Hathi-Labs/Metorite/environments` lists both, and each holds its own host secret | 🔴 owner (repository settings and a new SSH key) |
-| **S-2** | **One deploy job, two targets.** Turn the `deploy` job into a reusable workflow that takes an environment name. A push to `main` calls it with `staging`. Remove the hardcoded `GATEWAY_URL` and `WORKBENCH_URL` from `deploy.yml` | A merge deploys to staging and production does not move. The production box's `/version` still serves the earlier SHA | 🟢 build · 🔴 first run |
-| **T-7** | **The `staging` ref.** `publish-release` becomes `publish-staging` and fast-forwards `staging` | as the parent spec §8 T-7 | 🟢 |
-| **T-8** | **`release-promote.yml`.** A `schedule:` trigger at 21:30 UTC plus `workflow_dispatch` with a SHA. It applies §4.2, §4.3 and §4.4, fast-forwards `release`, and calls the S-2 job with `production` | `release` moves only by this workflow. A SHA that is not on `staging` is refused. A held day moves nothing | 🟢 build · 🔴 enable the schedule |
-| **S-3** | **Host names from configuration.** 23 files outside the tests name `app.metorite.com` or `api.metorite.com` directly. They include `vps_apply.sh`, `health-watchdog.sh`, `inviteEmail.ts` and the WhatsApp views. Read each name from one setting, `PUBLIC_APP_URL` and `PUBLIC_API_URL` | `rg -l "app\.metorite\.com\|api\.metorite\.com"` outside tests and docs returns only the production `.env` template and the production Caddyfile | 🟢 |
-| **S-4** | **A Caddyfile for each environment.** `deploy/hostinger/caddy/Caddyfile.staging` holds `dev.metorite.com` and `api.dev.metorite.com`, and no marketing or operator vhost. `vps_apply.sh` installs the file that matches `DEPLOY_ENV` | `caddy validate` passes on both files. `test_deploy_serialize.py` covers both | 🟢 |
-| **S-5** | **Bootstrap the staging VPS** with `bootstrap.sh`, `RELEASE_REF=staging`, its own `.env`, its own `AUTH_SECRET` and the outbound integrations off | `https://dev.metorite.com/api/health` answers, and `/version` serves the `staging` SHA | 🔴 owner (buys the box, DNS records, OAuth redirect URIs) |
-| **T-9** | **The nightly rebuild**, with the §3 staff allowlist in the anonymiser | as the parent spec §8 T-9. A staff member signs in to staging with their own Google account. A scrambled member cannot | 🟢 build · 🔴 run |
-| **S-6** | **The staging Router key.** Create the `Metorite Staging` organization on the Console, with a credit cap, and put its `cc_live_` key on the staging box only | A chat turn on staging writes a usage row against `Metorite Staging` and no other organization | 🔴 owner (a write to the live Console) |
-| **S-7** | **The staging band.** `NEXT_PUBLIC_DEPLOY_ENV=staging` draws a fixed band on every page | Visible on staging in light mode and at compact density. Absent on production | 🟢 |
-| **S-8** | **Smoke checks and report.** The four §4.2 checks run after each staging deploy. The promotion posts its result to ntfy | A failed check blocks that SHA from promotion, and the owner gets the push | 🟢 |
-| **S-9** | **The contract-after-expand fence** (§4.5) | A test PR whose contract names an expand that is not on `release` turns CI red | 🟢 |
+| # | Phase | Ticket | Done when | Gate |
+|---|---|---|---|---|
+| **T-7** | 1 | **The `staging` ref.** `publish-release` becomes `publish-staging` and fast-forwards `staging` on each green `main` | as the parent spec §8 T-7 | 🟢 |
+| **T-8** | 1 | **`release-promote.yml`.** A `schedule:` trigger at 21:30 UTC plus `workflow_dispatch` with a SHA and a reason. It fast-forwards `release` and runs the production deploy job, which moves here from `deploy.yml`. In phase 1 it promotes the tip of `staging`. In phase 5 it applies §4.2 | `release` moves only by this workflow. A SHA that is not on `staging` is refused. A held day (§4.3) moves nothing. The ntfy report names the SHA and the `/version` it read back | 🟢 build · 🔴 enable the schedule |
+| **S-3** | 2 | **Host names from configuration.** 23 files outside the tests name `app.metorite.com` or `api.metorite.com`. They include `vps_apply.sh`, `health-watchdog.sh`, `inviteEmail.ts` and the WhatsApp views. Read each name from `GATEWAY_PUBLIC_URL` and `WORKBENCH_PUBLIC_URL`, which already exist | `rg -l "app\.metorite\.com\|api\.metorite\.com"` outside tests and docs returns only the production Caddyfile and the defaults block | 🟢 |
+| **S-4** | 2 | **`DEPLOY_ENV` in the apply script** (§5.4), with `Caddyfile.staging` | `caddy validate` passes on both files. A test in `test_deploy_serialize.py` proves that `staging` installs neither the production Caddyfile nor the backup timer | 🟢 |
+| **S-7** | 2 | **The staging band.** `NEXT_PUBLIC_DEPLOY_ENV=staging` draws a fixed band on every page | Visible on staging in light mode and at compact density. Absent on production | 🟢 |
+| **S-6** | 3 | **The staging Router key.** The `Metorite Staging` organization on the Console, with a credit cap. Its `cc_live_` key goes on the dev box only | A chat turn on staging writes a usage row against `Metorite Staging` and no other organization | 🔴 owner (a write to the live Console) |
+| **S-5** | 4 | **`bootstrap_staging.sh`** (§5.2, §5.3, §5.5) | `https://api.dev.metorite.com/health` answers. `/version` serves the `staging` SHA. `sudo -u dev cat /opt/acb/app/.env` is refused | 🟢 write · 🔴 owner runs it with `sudo` |
+| **T-9** | 5 | **The nightly rebuild**, with the §3 staff allowlist in the anonymiser. The anonymised dump moves from the production box to the dev box over a second forced-command key | as the parent spec §8 T-9. A staff member signs in to staging. A scrambled member cannot | 🟢 build · 🔴 run |
+| **S-8** | 5 | **Smoke checks.** The four §4.2 checks run after each staging deploy | A failed check blocks that SHA from promotion | 🟢 |
+| **S-9** | 5 | **The contract-after-expand fence** (§4.5) | A test PR whose contract names an expand that is not on `release` turns CI red | 🟢 |
 
-**What to do first if the owner wants relief this week, before the staging box
-exists.** Change `publish-release` and the `deploy` job to run on a `schedule:` once a
-day, and not on every push. Production then moves once a day with no staging at all.
-It is a two-line change and it removes the 32 daily restarts at once. It removes no
-risk, because each release is then a larger batch that nothing rehearsed. Treat it as
-a bridge to S-2 and T-8, not as the result.
+**One more use of the dev box, outside this spec.** The off-box backup has never run,
+because the S3 keys are missing (WS-49). The dev box is a second machine at the same
+provider, so it is a weak off-box target: one Hostinger account failure takes both.
+It is still better than none. If the owner wants it, encrypt each dump with `age` to a
+public key whose private half the owner holds. The dev box then holds ciphertext only,
+and no agent on it can read customer data.
 
 ---
 
@@ -261,7 +361,7 @@ a bridge to S-2 and T-8, not as the result.
 |---|---|---|---|
 | **S-A** | **Amend D-E** from "on demand, soak floor one working day" to "daily at a fixed time, soak floor 4 hours, manual dispatch for a hotfix" | Yes | D-E is recorded. An agent does not reopen a decision (CLAUDE.md §5) |
 | **S-B** | **The release hour** | 21:30 UTC (03:00 IST), unwatched, with the ntfy report | It sets when a customer meets a change, which is a business call |
-| **D-D** | **Where staging runs** | §5 option B, a KVM 2, about $15 a month | Money and an external account |
+| **D-D** | **Where staging runs** | The dev box, `srv1747539` (§5). No new cost | It places customer-shaped data on the box where agents run |
 | **S-C** | **The staging allowlist** | Hathi Labs and Fracktal | It decides who can see production-shaped data |
 | **S-D** | **Record the end of Phase 0** (parent spec §3.5) | Yes, trigger (a) in spirit: the cost of a deploy now falls on a customer | The owner records a phase change |
 | **S-E** | **May an agent run the hotfix dispatch?** | Yes during the dev-phase window, with the written reason. Owner-only after it | It moves production outside the clock |
@@ -276,7 +376,8 @@ a bridge to S-2 and T-8, not as the result.
 - **A staging box that nobody opens soaks nothing.** The four smoke checks are the
   floor. The real soak is staff using `dev.metorite.com` during the day, which is
   why §3 lets Fracktal in.
-- **The pooler gap of option B** (§5). Name it in the parity table.
+- **The pooler gap.** Staging uses a plain Postgres container and production uses the Supabase pooler. Name it in the parent spec's §3.4 table.
+- **Agents and staging share 2 vCPU.** A heavy agent job slows staging down. The slice of §5.2 caps the damage. A slow staging hurts no customer.
 - **The Console plane still has one environment.** Staging shares the production
   Console by design. A Console change still needs the lifecycle rehearsal of the
   parent spec §6.3 before it ships.
