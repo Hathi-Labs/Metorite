@@ -2621,7 +2621,9 @@ cannot find out later that a 0 fill opened it.
    0 then, so `_check_legal` would give a 422. So each `field` item of a
    snapshot carries `opened_empty`, through `PlanRule.as_json` and
    `_rule_of`. `_checked` skips the empty test for an item that carries it
-   as true.
+   as true. A `change_rule` put with a new `target_column` clears
+   `opened_empty`, on the item and on the row, so the empty test runs again
+   for the new column.
 8. `mapping.apply_field_rules` applies a rule only where the fixed map gives
    NULL. A unit test proves that a value of the standard field from Zoho
    still wins on an opened column.
@@ -2755,30 +2757,43 @@ Rules of the kinds:
 2. `target` names a column of `FIELD_RULE_TARGETS` for the entity of the
    slot, or `name`. `transform` is one word of the table.
 3. A `stage` value maps to `won`, `lost` or `open`. A value with no entry
-   gets no stage, and the run counts it as `unmapped` (CRM-Q19 item 7).
+   gets no stage. CRM-Q20-1 item 9 counts those values, and CRM-Q20-3 shows
+   them in a lane of their own.
 
-**The read path of an approved overlay.** No record moves. For example,
+**The read path of an approved overlay (option A of the re-audit,
+2026-10-16).** No record moves, and no core reader changes. For example,
 Commercials plays Deals.
 
-1. A new module `routes/crm/overlay.py` reads the approved `role` of a slot
-   from the approved version of the plan.
-2. With an approved `role`, the list route of the slot
-   (`routes/crm/records.py`) and the board (`GET /crm/pipeline`,
-   `routes/crm/pipeline.py`) read the module's rows of `crm_module_records`.
-   They do not read the core table.
-3. `overlay.py` maps each row to the row shape of the core entity, through
-   the `target` items and the executor. The board puts each row in the lane
-   of its `stage` item.
-4. One read takes at most `OVERLAY_ROWS` (5,000) records of the module, the
-   newest first by `ext_modified_at`. It filters, sorts and pages them in
-   memory. Above that bound, the list says that the module is too large to
-   play the slot, and points to Promote (CRM-Q21).
-5. An overlaid row is read only. It opens `ModuleRecordSheet.tsx`, because
-   its id is a module record id. The core table of the slot does not change.
-6. `GET /crm/aggregate` on the slot still reads the core table. The chat
-   agent reads the module as `module:<ApiName>` (CRM-Q25).
-7. Undo approves a version with no `role` item for the slot. The next read
-   shows the core table again.
+1. `GET /crm/mode` (`routes/crm/settings.py`) gains `overlays`, by slot: the
+   API name of the module of each approved `role`. Each member can read it.
+   With no approved `role`, the body has no `overlays` key.
+2. With an approved `role`, the rail row of the slot (`CrmRail.tsx`) opens
+   the `module` tab with `?module=<ApiName>`. It keeps the label of the
+   slot, for example "Deals".
+3. That tab is the list of the module as it is today: `ModuleList.tsx` and
+   the shared `RecordList`, through `GET /crm/modules/{module}/records`
+   (`list_module_records`, `routes/crm/modules.py`). A row opens
+   `ModuleRecordSheet.tsx`.
+4. There is no projection into the row shape of the core entity, no
+   overlaid board, no row bound and no filter in memory.
+5. Each core reader stays as it is: `records.list_query`, the export,
+   `GET /crm/aggregate`, the search of Cmd-K, the feed kinds, the
+   next-activity chips, the related lists and the agent tools. They read the
+   core table of the slot.
+6. Undo approves a version with no `role` item for the slot. The rail row
+   then opens the core list again.
+
+**CRM-Q20-3 · The overlaid board and the projection (stub, not
+dispatchable).** A later slice. It waits for CRM-Q20-2 and for CRM-Q25,
+because the projection builds its SQL over `fields` with
+`routes/crm/field_sql.py`. Its spec must cover these points before a
+dispatch.
+
+1. Each core reader of item 5 above: does it read the overlay, and how.
+2. The lanes of an overlaid board: one for each `stage` value of the
+   module's statuses, in Zoho's order, then `won` and `lost`.
+3. A stage value with no entry goes to a visible lane, "Unsorted", and is
+   never hidden.
 
 **Which mode gates the run.** Each kind has its own feature. The CRM-Q20-1
 run starts when at least one of the three is `shadow` or `on`, for an org in
@@ -2788,8 +2803,10 @@ run starts when at least one of the three is `shadow` or `on`, for an org in
 - In `shadow`, a feature asks only questions whose answer the org already
   holds (§18.9.5). It logs the agreement count and writes no draft.
   `crm.map_target` asks which field fills a standard column that is filled.
-  `crm.map_role` asks which module fills a core slot that holds records.
   `crm.map_stage` asks about the core statuses that Zoho marks won or lost.
+- `crm.map_role` has no `shadow` questions. In `shadow` it is a smoke check
+  only: it runs steps 1 to 3 of §18.9.4, logs the count of empty slots and
+  sure candidates, and makes no `ask` call.
 - In `on`, a feature writes its items into the one draft of the run. A draft
   never holds an item of a feature in `shadow`.
 
@@ -2800,6 +2817,10 @@ true, and:
 
 1. A new module `crm_sync/map_pipeline.py` holds the six steps. It calls
    `decide_features.ask()` once for each entity, with `module_slug="crm"`.
+   `ask()` does not check the mode. So the pipeline calls
+   `decide_features.mode_for` for each of the three features first, and
+   skips each question of a feature that is `off`. A test proves that an org
+   outside `CRM_DECIDE_ORGS` makes 0 `ask` calls.
 2. The payer is the `connected_by` member of the Zoho connection. That
    member must be an active member of this org (`my_day_loop.departed`), as
    CRM-Q26 item 7 says. Else the run skips, logs a count and spends nothing.
@@ -2814,9 +2835,18 @@ true, and:
 6. `crm_sync/executor.py` gains `value_map`, `normalize`, `coalesce`,
    `link` and `owner`, each a pure function with a unit test. They come
    from CRM-Q19. The three kinds above call them, and no other code does.
-7. The pipeline writes the three kinds as the table above shows, and the
-   rules of the kinds hold. A test with a scripted fake of `decide` proves
-   each mode of each feature.
+7. The pipeline writes the three kinds as the table above shows. A test
+   with a scripted fake of `decide` proves each mode of each feature.
+8. `mapping_plans.commit` enforces rule 1 of the kinds. It gives a 422 for a
+   `target` or a `stage` item with no approved `role` item of the same slot
+   and module. A test proves it, also for a restore.
+9. The run counts the stage values with no entry, from the distinct values
+   of the module's stage field in `crm_module_records`. It stores the count
+   with the draft. The panel of CRM-Q20-2 shows it.
+10. The cursor row `zoho:map_pipeline` (`crm_sync_cursors`, no migration)
+    keeps the hash of the schema of each module, under `schema`. A run in
+    `shadow` writes it too. A test proves that a second run on the same
+    schema makes 0 `ask` calls.
 
 **Post-flip check (OWNER-GATE), not part of the build.** After the owner
 flips one org, the probe of §18.9.4 runs once on that org: 1 question
@@ -2830,15 +2860,17 @@ Files: `gateway/decide_features.py`, a new `crm_sync/map_pipeline.py`,
 
 **CRM-Q20-2 · The suggestion, the panel, the overlay and Undo.** Done when
 items 5 to 9 above are true, and the read path of an approved overlay works
-as written above. Settings → Suggestions is one entry of
-`lib/settingsSections.ts`, the one list of CRM-C1.
+as written above (option A). Settings → Suggestions is one entry of
+`lib/settingsSections.ts`, the one list of CRM-C1. A test proves that each
+core reader of item 5 of the read path gives the same answer with and
+without an approved `role`.
 
 Files: `routes/crm/field_rules.py` (item 9 removes
-`POST /crm/field-rules/suggest`), a new `routes/crm/overlay.py`,
-`routes/crm/records.py`, `routes/crm/pipeline.py`, `lib/fieldMap.ts`,
-`lib/api.ts`, `lib/settingsSections.ts`, `FieldMapCard.tsx`, the empty state
-of `RecordList.tsx`, the Suggestions card in `SettingsCards.tsx`, and their
-tests. Gate: AGENT-SAFE. Size: M. Waits for: CRM-Q20-1.
+`POST /crm/field-rules/suggest`), `routes/crm/settings.py` (`overlays` on
+`GET /crm/mode`), `lib/fieldMap.ts`, `lib/api.ts`, `lib/modeContext.ts`,
+`lib/settingsSections.ts`, `CrmRail.tsx`, `FieldMapCard.tsx`, the empty
+state of `RecordList.tsx`, the Suggestions card in `SettingsCards.tsx`, and
+their tests. Gate: AGENT-SAFE. Size: M. Waits for: CRM-Q20-1.
 
 **Open (owner).** §18.9.6 says that a flip to `shadow` or `on` is the gate
 `enforcement-flip`. §18.11.2 made the same flip an owner flip for
@@ -3589,7 +3621,8 @@ beside the usual diff review, not in its place. The tables name the risk.
 | 2 | CRM-Q18-3 | CRM-Q18-1b and CRM-Q17a-1b | The sync engine: what a rule writes into a fixed column |
 | 3 | CRM-Q19 | CRM-Q18-1b and CRM-Q18-3 | The sync engine: the one path of a rule value. Tenancy: the preview route |
 | 4 | CRM-Q20-1 | CRM-Q19 | Credits: the decide calls, the token cap and the payer |
-| 5 | CRM-Q20-2 | CRM-Q20-1 | Tenancy: the overlay read of module records |
+| 5 | CRM-Q20-2 | CRM-Q20-1 | Tenancy: `overlays` on `GET /crm/mode` names only the modules of the bound org. The overlay itself only changes where a rail row points |
+| Later | CRM-Q20-3 | CRM-Q20-2 and CRM-Q25 | A stub, not dispatchable. Not in this batch |
 
 **Why this order.**
 
@@ -3613,7 +3646,7 @@ beside the usual diff review, not in its place. The tables name the risk.
 | CRM-Q18-2 | No. One sentence, and no done-when list | Items 1 to 10, Files, gate and size |
 | CRM-Q18-3 | No. Item 2 needs a mark on the rule that the code cannot find later | Items 3 to 9, the gate, the size and the migration |
 | CRM-Q19 | No. No Files line and no verification. Item 2 can read as an L, and item 4 names no count | The narrowed items 1 to 8, Files and verification |
-| CRM-Q20 | No. The wrong feature tuple after CRM-Q26, no kinds of rule, M + M with no split, and no Files line | The three kinds, the overlay read path, the modes, the split into CRM-Q20-1 and CRM-Q20-2, Files, and one open question |
+| CRM-Q20 | No. The wrong feature tuple after CRM-Q26, no kinds of rule, M + M with no split, and no Files line | The three kinds, the overlay read path (option A), the modes, the gate by `mode_for`, the schema hash, the split into CRM-Q20-1, CRM-Q20-2 and the stub CRM-Q20-3, Files, and one open question |
 
 #### 18.12.2 Batch I, the insights
 
@@ -3665,6 +3698,8 @@ and runs the verification of both slices again.
 | `mapping.apply_field_rules` and `crm_sync/field_rules.py` | CRM-Q18-3, CRM-Q19 |
 | `core.RESET_TABLES` and `settings._RESET_DELETES` | CRM-Q18-1b reorders them. CRM-Q27 and CRM-Q28 each add a table |
 | `crm_sync/scheduler.py` | CRM-Q20-1, CRM-Q27, CRM-Q28 |
+| `routes/crm/settings.py` | CRM-Q18-1b (the reset tuple), CRM-Q20-2 (`GET /crm/mode`), CRM-Q27 and CRM-Q28 (the reset tuple) |
+| `routes/crm/mapping_plans.py` | CRM-Q18-1b, CRM-Q18-3, CRM-Q19, CRM-Q20-1 |
 | `acb_common/settings.py`, `routes/crm/flags.py`, the generated phases and `work_plan.md` §6 | CRM-Q27, CRM-Q28 |
 | `crm_tools.py`, `addendum.py` and `test_tool_schema_diet.py` | CRM-Q25, CRM-Q25b (`crm_tools.py` only), CRM-Q27 |
 
