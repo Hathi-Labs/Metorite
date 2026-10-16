@@ -621,3 +621,25 @@ async def test_an_expired_list_never_lets_an_overflow_read_through(
     assert state["recover_overflow"] is True
     assert state["recover_overflow_modules"] == ["Install_Base"]
     assert "note" not in _rereads(p, p.org_a), "no full read every 7 days for ever"
+
+    # The module comes back with the parent. The set still names it, so the
+    # guard opens now: it queues the read and clears the mark and the set.
+    if why == "hidden":
+        del a.faults["Install_Base"]
+    else:
+        _hold(p, p.org_a, "module:Install_Base", held=False)
+    a.add("Install_Base", "i9", 400, Name="A-Back", Account={"id": "a1", "name": "x"})
+    _age_module_reads(p, p.org_a)
+    back = await _run(p.org_a)
+    assert (back.status, back.error) == ("ok", None)
+    assert ("Install_Base", "i9") in _records(p, p.org_a)
+    state = _state(p, p.org_a) or {}
+    assert "note" in _rereads(p, p.org_a), "the guard opens for a module that is back"
+    assert state["recover_overflow"] is False
+    assert state["recover_overflow_modules"] == []
+
+    assert (await _run(p.org_a)).status == "ok"
+    record = _records(p, p.org_a)["Install_Base", "i9"][10]
+    linked = _linked(p, p.org_a)
+    assert {linked[f"n{i}"] for i in range(3)} == {str(record)}, "the full read links them"
+    assert "note" not in _rereads(p, p.org_a)

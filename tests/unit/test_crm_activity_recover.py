@@ -303,3 +303,19 @@ def test_the_overflowed_modules_ride_in_the_state() -> None:
     assert recover.overflow_modules_of(None) == set()
     ctx = _ctx({"zoho:note": CursorRow("zoho:note", None, state, None, None)})
     assert engine._recover_state(ctx, "note")[recover.OVERFLOW_MODULES_KEY] == ["A", "B"]
+
+
+# ── Fix round 3 (review of fix round 2, P2) ──────────────────────────────────
+
+
+def test_an_overflow_waits_while_a_returning_module_is_mid_read() -> None:
+    """A module that was hidden has ``initial_done_at`` from
+    ``_mark_unavailable``. When it comes back, its first real read can stop at
+    ``MODULES_RESERVE`` with ``in_progress`` and no ``unavailable``."""
+    mid = CursorRow("zoho:module:Install_Base", None,
+                    {"in_progress": True, "page": 2}, NOW - timedelta(days=30), None)
+    ctx = _ready_ctx(module=mid)
+    assert not engine._overflow_ready(ctx, "note", MIRRORED)
+    ctx.recover["note"] = {}
+    ctx.recover_overflow_modules["note"] = {"Install_Base"}
+    assert not engine._overflow_ready(ctx, "note", MIRRORED), "and on an expired list"

@@ -3308,7 +3308,8 @@ def _overflow_ready(ctx: _Ctx, entity: str, mirrored: frozenset[str]) -> bool:
 
     The first import of the entity is done, each mirrored module that its
     list names, and each module of a drop that overflowed, has had its first
-    import, is not unavailable (CRM-Q15) and is not held (CRM-Q16). The
+    import, is not mid-read, is not unavailable (CRM-Q15) and is not held
+    (CRM-Q16). The
     marker row exists, and the last
     overflow read of the entity was queued more than ``recovery.OVERFLOW_EVERY``
     ago. A full read before that would drop the same activities again.
@@ -3330,6 +3331,11 @@ def _overflow_ready(ctx: _Ctx, entity: str, mirrored: frozenset[str]) -> bool:
             # module may have imported before its hold. Neither gains a
             # record, so a full read now would drop the same activities again,
             # every 7 days, for ever.
+            return False
+        if (target.state or {}).get("in_progress"):
+            # A module that came back may stop mid-read at MODULES_RESERVE. Its
+            # records are not all in yet, so a full read now drops the same
+            # activities again and holds the overflow for 7 more days.
             return False
     marker = ctx.cursors.get(ACTIVITY_BACKFILL_ROW)
     if marker is None:
