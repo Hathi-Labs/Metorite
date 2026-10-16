@@ -28,7 +28,8 @@
 #   cd /opt/acb/app && APP_DIR=/opt/acb/app bash scripts/vps_apply.sh
 #
 # ⚠️ but NOT from a checkout you are about to have rewritten. Step 0 below is
-# `git reset --hard origin/main` — it replaces THIS FILE while bash is still
+# `git reset --hard` to the target commit — DEPLOY_REF, else origin/release
+# (WS-38; it was origin/main until 2026-10-16) — it replaces THIS FILE while bash is still
 # reading it, and bash reads a script incrementally by byte offset. Measured,
 # all three outcomes, none of which raise an alarm you would notice:
 #   • git replaces by RENAME, so the open fd keeps the old inode: every step
@@ -37,7 +38,7 @@
 #     remaining steps silently do not happen at all. Exit 0.
 #   • an in-place rewrite that merely SHIFTS bytes: bash resumes mid-token
 #     (`--quiet` → `iet: command not found`). Exit 127.
-# Copy it out first — `git show origin/main:scripts/vps_apply.sh > /tmp/a.sh`
+# Copy it out first — `git show origin/release:scripts/vps_apply.sh > /tmp/a.sh`
 # — and run THAT. This is what vps_pull.sh does, and why.
 #
 # ⚠️ A copy taken out first is still the WRONG copy when a merge lands during
@@ -450,7 +451,7 @@ if [ "${VPS_APPLY_REEXECED:-0}" != "1" ]; then
   tether_to_session
 fi
 
-echo "==> Pulling latest from origin/main"
+echo "==> Pulling latest refs, then the one commit to deploy"
 if [ "${VPS_APPLY_REEXECED:-0}" = "1" ]; then
   # The first copy did the fetch, the skip check and the reset, and then ran
   # this copy. Do not fetch again: a newer origin/main is the next deploy's job.
@@ -501,7 +502,54 @@ else
   # git reset --hard would otherwise wipe agents registered via the UI.
   cp apps/services/gateway/agents.json /tmp/acb-agents.json.bak 2>/dev/null || true
   git fetch origin main
-  DEPLOY_TARGET_SHA="$(git rev-parse origin/main)"
+  # ── WHICH COMMIT THIS APPLY DEPLOYS (WS-38, staging_and_daily_release.md) ──
+  # This line read `git rev-parse origin/main` until 2026-10-16. Both callers
+  # meant something else. vps_pull.sh passed DEPLOY_REF=<the release sha> and
+  # this script ignored it. deploy.yml meant "the commit CI just tested" and
+  # got whatever merged a second later. While `release` moved on every merge,
+  # the two were nearly the same. Under the daily release they are not: an
+  # apply of origin/main ships the day's untested merges to customers.
+  #
+  # So the target is ONE NAMED COMMIT, and never the tip of a moving branch:
+  #   • DEPLOY_REF, when a caller names one. deploy.yml sends its GITHUB_SHA,
+  #     and vps_pull.sh sends origin/$RELEASE_REF as a sha.
+  #   • origin/$RELEASE_REF otherwise (default `release`). That covers a hand
+  #     run during an incident: it re-applies what production should serve.
+  # The commit must be on main. A sha that is not cannot have passed CI.
+  # Fence: tests/unit/test_deploy_target_ref.py.
+  RELEASE_REF="${RELEASE_REF:-release}"
+  git fetch origin "$RELEASE_REF" 2>/dev/null \
+    || echo "    !! cannot fetch origin/$RELEASE_REF (it is only needed when DEPLOY_REF is unset)"
+  if [ -n "${DEPLOY_REF:-}" ]; then
+    DEPLOY_TARGET_FROM="DEPLOY_REF"
+    DEPLOY_TARGET_SHA="$(git rev-parse --verify --quiet "${DEPLOY_REF}^{commit}" || true)"
+  else
+    DEPLOY_TARGET_FROM="origin/$RELEASE_REF"
+    DEPLOY_TARGET_SHA="$(git rev-parse --verify --quiet "origin/${RELEASE_REF}^{commit}" || true)"
+  fi
+  if [ -z "$DEPLOY_TARGET_SHA" ]; then
+    echo "    !! cannot resolve the commit to deploy from $DEPLOY_TARGET_FROM (${DEPLOY_REF:-unset})."
+    echo "       This round did NOTHING: no reset, no migration, no build, no restart."
+    exit 1
+  fi
+  if ! git merge-base --is-ancestor "$DEPLOY_TARGET_SHA" origin/main; then
+    echo "    !! ${DEPLOY_TARGET_SHA:0:12} (from $DEPLOY_TARGET_FROM) is not on origin/main."
+    echo "       Refusing to deploy a commit that CI never gated. This round did NOTHING."
+    exit 1
+  fi
+  # Never move the box BACK past `release`. deploy.yml checks this before it
+  # opens ssh (the "Skip a commit that release has already passed" step).
+  # This is the same rule where a hand run or a stale caller meets it. A
+  # forced apply does not bypass it: a CI rerun sends DEPLOY_FORCE=1, and a
+  # rerun of an old run is the case this exists for. Roll forward (R6).
+  DEPLOY_RELEASE_SHA="$(git rev-parse --verify --quiet "origin/${RELEASE_REF}^{commit}" || true)"
+  if [ -n "$DEPLOY_RELEASE_SHA" ] && [ "$DEPLOY_TARGET_SHA" != "$DEPLOY_RELEASE_SHA" ] \
+     && git merge-base --is-ancestor "$DEPLOY_TARGET_SHA" "$DEPLOY_RELEASE_SHA"; then
+    echo "    !! ${DEPLOY_TARGET_SHA:0:12} (from $DEPLOY_TARGET_FROM) is older than origin/$RELEASE_REF ${DEPLOY_RELEASE_SHA:0:12}."
+    echo "       Refusing to roll production back. This round did NOTHING."
+    exit 1
+  fi
+  echo "    target ${DEPLOY_TARGET_SHA:0:12}, from $DEPLOY_TARGET_FROM"
 
   # 🟢 **THE SECOND PATH NO LONGER REBUILDS WHAT THE FIRST JUST SHIPPED.**
   # Measured 2026-09-26: a CI build at 06:34, and root's pull rebuilt the SAME
@@ -515,7 +563,7 @@ else
     echo "==> Deployment complete"
     exit 0
   fi
-  git reset --hard origin/main
+  git reset --hard "$DEPLOY_TARGET_SHA"
   if [ -s /tmp/acb-agents.json.bak ]; then
     cp /tmp/acb-agents.json.bak apps/services/gateway/agents.json
     echo "    restored runtime agents.json ($(wc -l < apps/services/gateway/agents.json) lines)"

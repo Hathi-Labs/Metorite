@@ -1,6 +1,6 @@
 # Staging and the daily release — a second deployment that takes every merge
 
-**Status:** 🟠 **PROPOSED, 2026-10-15. Revised 2026-10-16:** staging goes on the dev box (§5). Nothing here is built. · **Owner:** vjvarada ·
+**Status:** 🟠 **PROPOSED, 2026-10-15. Revised 2026-10-16:** staging goes on the dev box (§5). 🔨 **Phase 1 (the daily clock) BUILT 2026-10-16** on the owner's go-ahead. §5.7 records it. Phases 2 to 5 are not built. · **Owner:** vjvarada ·
 **Board row:** WS-38 (this is the concrete answer to its **D-D**, and a proposed
 amendment to its **D-E**) · **Parent spec:** `specs/development_and_delivery_framework.md`
 
@@ -325,6 +325,49 @@ staging exists.
 **Phase 1 alone is the quick win.** Without phases 2 to 5, it removes 35 restarts a
 day and adds no safety, because each daily batch reaches production untried. With
 phase 5, the batch has run on production-shaped data for at least 4 hours first.
+
+
+### 5.7 Phase 1 as built, 2026-10-16
+
+The owner said "go ahead with the development" on 2026-10-16. Phase 1 uses the
+21:30 UTC hour of §4.1. It is one line to change, in the `schedule:` block of
+`deploy.yml`.
+
+| Part | What it does | Fence |
+|---|---|---|
+| `deploy.yml`, a push | lint, then the unit tests as a signal, then `publish-staging`. No deploy | `tests/unit/test_daily_release.py` |
+| `deploy.yml`, the schedule | lint, then the unit tests as a **gate**, then `publish-release`, then the deploy of that exact commit | same |
+| `deploy.yml`, a dispatch | as the schedule, plus a `reason` input. `skip_tests` is the one way past the tests | same |
+| `RELEASE_HOLD=1` | a repository variable. The schedule moves nothing, and a `Release held` job says so. A dispatch still runs | same |
+| `vps_apply.sh` | deploys `DEPLOY_REF` when a caller names it, else `origin/release`. It refuses a commit that is not on `main` | `tests/unit/test_deploy_target_ref.py` |
+| `vps-health.yml`, `delivery` | compares the box with `release`. It fails when `main` holds a commit that has waited 30 hours for a release | `test_daily_release.py` |
+
+⚠️ **A defect that this phase found and fixed.** `vps_apply.sh` deployed
+`origin/main` on both paths. `vps_pull.sh` passed `DEPLOY_REF=<release sha>`, and
+the apply never read it. While `release` moved on every merge, the two were seconds
+apart. Under a daily clock, the 5-minute pull timer would have shipped the untried
+tip of `main` at the next tick after any release. A mutation that puts
+`origin/main` back turns `test_deploy_target_ref.py` red.
+
+**The cutover, once.** Until `release` holds this change, the box's pull timer
+runs the OLD apply from `release`, and that copy ships the tip of `main`. So:
+
+1. Merge only when no `deploy` run is in flight (`gh run list --workflow deploy.yml --status in_progress`).
+2. At once, run `gh workflow run deploy.yml --ref main -f reason="WS-38 cutover"`.
+3. Confirm that `GET /version` serves the merge commit, and that `release` points at it.
+
+After step 3, `release` holds the new apply and the window is closed.
+
+⚠️ **Do not rerun a `deploy` run that started before this change.** It uses the old
+workflow and the old apply, so it resets the box to the tip of `main`.
+
+**A rerun cannot roll production back.** A rerun of an old release run keeps its
+old SHA and sends `DEPLOY_FORCE=1`. The deploy job skips a commit that `release` has
+passed, and `vps_apply.sh` refuses one, forced or not.
+
+**What phase 1 does not do.** No box polls `staging` yet. The ntfy report of §4.1
+needs a topic secret in GitHub, which the owner holds. Until then a failed release
+shows as a failed `deploy` run, and GitHub mails the owner.
 
 ---
 

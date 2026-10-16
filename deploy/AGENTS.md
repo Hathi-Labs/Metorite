@@ -42,5 +42,5 @@ Hostinger VPS deployment scripts, Caddy reverse proxy config, and CI/CD pipeline
 - Next.js workbench is rebuilt (`npm ci && npm run build`) and restarted on every deploy
 - Caddy handles SSL termination and routing
 - The `reverse_proxy` of `api.metorite.com` strips `X-User-Email`, `X-User-Role`, `X-Actor-Via` and the three `X-Agent-*` headers (WS-55 EA-10b). Every internal caller reaches the gateway on loopback. A change to these lines is gate (a), fenced by `tests/unit/test_caddy_auth_gate.py`
-- CI/CD deploys on push to main; PRs run lint + test only
+- CI/CD deploys to production ONCE A DAY, at 21:30 UTC, and on a manual run of `deploy.yml`. A push to main moves the `staging` ref only (WS-38, `project-docs/specs/staging_and_daily_release.md`). PRs run lint and tests only
 - SSH key for CI/CD must be a dedicated key (not a developer personal key)

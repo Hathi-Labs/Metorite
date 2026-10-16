@@ -79,16 +79,20 @@ second implementer to route around a block.
 - Commit, push the branch, open a PR with `gh`. The PR body: WS id, the slice
   built, acceptance evidence, verification output, reviewer findings, and what
   was deferred.
-- **⚠️ DEV PHASE, until 2026-09-30 — merge it and watch it ship.** Wait for
-  `pr-check` to go green. Merge with `gh pr merge --squash`. Then watch the
-  `deploy` run, and report the SHA that `GET /version` serves.
-  **Do not report done until you have seen that SHA.** Merging to `main` is the
-  deploy, so an unwatched merge is an unverified release.
-- Watch the job `Unit tests (main, not a gate)` in that same `deploy` run
-  to its end. The deploy does not wait for it, so two PRs that pass alone
-  and fail together can reach production. If the job is red, fix forward
-  or revert at once, and say so in the report. (No merge queue. Owner
-  decision, 2026-10-16.)
+- **⚠️ DEV PHASE — merge it and watch it.** Wait for `pr-check` to go green.
+  Merge with `gh pr merge --squash`. Then watch the `deploy` run to green.
+- **⚠️ A merge does NOT deploy to production (WS-38, since 2026-10-16).** The
+  push run moves the `staging` ref only. Production moves at 21:30 UTC (03:00
+  IST) each day. Report the merge as "reaches production at the next daily
+  release". A fix that cannot wait is a manual run:
+  `gh workflow run deploy.yml --ref main -f reason="<why>"`. Watch that run, and
+  report the SHA that `GET /version` serves. Do not call a hotfix done before
+  you see that SHA.
+- Watch the job `Unit tests (a signal on a push, a gate on a release)` in that
+  same `deploy` run to its end. On a push it does not gate, so two PRs that
+  pass alone and fail together can land on `main`. A red `main` also blocks
+  that night's release. If the job is red, fix forward or revert at once, and
+  say so in the report. (No merge queue. Owner decision, 2026-10-16.)
 - Deploy auto-applies migrations and you cannot undo a bad one (R6). Before a
   migration reaches production, confirm the pre-migration backup completed.
 - On 2026-10-01 this step reverts to: **stop there, merging is the owner's**.

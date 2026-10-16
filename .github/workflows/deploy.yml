@@ -1,8 +1,16 @@
 # Metorite — CI/CD pipeline for Hostinger VPS deployment.
 #
-# Trigger: push to main (after PR merge) or manual dispatch.
-# Flow:    lint → test → SSH to VPS → git pull → docker compose up →
-#          uv sync → restart gateway → rebuild workbench → reload Caddy.
+# Trigger: push to main, the DAILY RELEASE schedule, or manual dispatch.
+# Flow on a push:     lint → test (a signal) → publish `staging`. NO deploy.
+# Flow on a release:  lint → test (a GATE) → publish `release` → SSH to VPS →
+#                     apply that exact commit → verify by the serving SHA.
+#
+# ⚠️ WS-38 (project-docs/specs/staging_and_daily_release.md), 2026-10-16.
+# Until then every merge deployed to production: 36 gateway starts in one
+# day, each one ending every live agent run. Production now moves ONCE A DAY,
+# at 21:30 UTC (03:00 IST), and a hotfix is a manual dispatch of this file.
+# `staging` takes every merge. No box polls it yet (spec §5.6, phase 4).
+# Fence: tests/unit/test_daily_release.py.
 #
 # Required GitHub Secrets (set in repo Settings → Secrets and variables → Actions):
 #   HOSTINGER_HOST       — VPS IP or hostname (e.g. 123.45.67.89)
@@ -46,8 +54,23 @@ on:
     #      run was ever queued for it — "no failed run" read as "nothing to do"
     #      rather than "never attempted".
     # Converging the box on main matters more than saving four minutes.
+    # ⚠️ WS-38: "the box" above now means the STAGING box. A push publishes
+    # `staging` and deploys nothing. Production converges on `release`.
+  # ── THE DAILY RELEASE (WS-38, spec §4.1) ────────────────────────────────
+  # 21:30 UTC is 03:00 IST, the hour our members use least. One restart a
+  # day lands there. GitHub can start a scheduled run late by some minutes.
+  # Set the repository variable RELEASE_HOLD=1 to skip a day (spec §4.3).
+  schedule:
+    - cron: "30 21 * * *"
+  # A hotfix, or a release outside the clock: run this workflow on `main`.
+  # It ships the tip of main, as the schedule does. There is no second lane
+  # and no cherry-pick (D55.4). RELEASE_HOLD does not stop a dispatch.
   workflow_dispatch:
     inputs:
+      reason:
+        description: "Why this release runs outside the daily clock (shown in the run summary)"
+        type: string
+        default: ""
       skip_tests:
         description: "Skip test suite (use only for emergency hotfixes)"
         type: boolean
@@ -101,8 +124,11 @@ jobs:
   #
   # ⚠️ A merge queue would gate that case before the merge. It needs a
   # branch-protection change, which is the owner's.
+  #
+  # ⚠️ WS-38, 2026-10-16: on the DAILY RELEASE and on a dispatch this job is a
+  # gate again. `publish-release` needs it green. See the note on that job.
   test:
-    name: "Unit tests (main, not a gate)"
+    name: "Unit tests (a signal on a push, a gate on a release)"
     runs-on: ubuntu-latest
     needs: lint
     if: ${{ !inputs.skip_tests }}
@@ -123,7 +149,48 @@ jobs:
       - name: Run unit tests
         run: uv run python -m pytest tests/unit/ -x -v
 
-  # ── Publish the ref the VPS polls (WS-25) ──────────────────────────────
+  # ── Publish the ref the STAGING box will poll (WS-38) ─────────────────
+  # Every green merge fast-forwards `staging`. A push only: a scheduled run
+  # carries a sha that a later merge may already have passed, and its push
+  # would then be a non-fast-forward. Nothing polls `staging` until the
+  # staging box exists (spec §5.6 phase 4), and that is harmless.
+  publish-staging:
+    name: "Publish staging ref"
+    runs-on: ubuntu-latest
+    needs: [lint]
+    if: ${{ always() && needs.lint.result == 'success' && github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+    permissions:
+      contents: write
+    steps:
+      # fetch-depth: 0 for the reason publish-release gives.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Fast-forward staging to this commit
+        run: |
+          set -euo pipefail
+          echo "publishing ${GITHUB_SHA} to refs/heads/staging"
+          git push origin "${GITHUB_SHA}:refs/heads/staging"
+
+  # ── A held day says so (WS-38, spec §4.3) ──────────────────────────────
+  release-hold:
+    name: "Release held"
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'schedule' && vars.RELEASE_HOLD == '1' }}
+    steps:
+      - name: Report the hold
+        run: |
+          echo "::warning title=Release held::RELEASE_HOLD=1. Production stays on its current release. Clear the variable to resume."
+          echo "Release HELD by RELEASE_HOLD=1. Production did not move." >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Publish the ref the PRODUCTION box polls (WS-25) ──────────────────
+  # ⚠️ WS-38: this runs on the daily schedule and on a manual dispatch, never
+  # on a push. On those runs the unit tests GATE it again. On a push they are
+  # a signal (see the `test` job), because the deploy waited 19 minutes for
+  # them on every merge. Once a day, at 03:00 IST, 19 minutes costs nothing,
+  # and this is the last check before customers. A dispatch with
+  # `skip_tests` is the one way past it, for an emergency.
   # `scripts/vps_pull.sh` on the box applies `origin/release`, never `main`,
   # so the box installs only a commit that reached `main`. pr-check tested it
   # as a PR before the merge.
@@ -146,8 +213,15 @@ jobs:
   publish-release:
     name: "Publish release ref"
     runs-on: ubuntu-latest
-    needs: [lint]
-    if: ${{ always() && needs.lint.result == 'success' && github.ref == 'refs/heads/main' }}
+    needs: [lint, test]
+    if: >-
+      ${{ always()
+      && github.ref == 'refs/heads/main'
+      && github.event_name != 'push'
+      && !(github.event_name == 'schedule' && vars.RELEASE_HOLD == '1')
+      && needs.lint.result == 'success'
+      && (needs.test.result == 'success'
+          || (github.event_name == 'workflow_dispatch' && inputs.skip_tests && needs.test.result == 'skipped')) }}
     permissions:
       contents: write
     steps:
@@ -166,6 +240,13 @@ jobs:
           set -euo pipefail
           echo "publishing ${GITHUB_SHA} to refs/heads/release"
           git push origin "${GITHUB_SHA}:refs/heads/release"
+          {
+            echo "### Release ${GITHUB_SHA:0:12}"
+            echo "- trigger: ${{ github.event_name }}"
+            if [ -n "${REASON}" ]; then echo "- reason: ${REASON}"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          REASON: ${{ inputs.reason }}
 
   # ── Gate 3: Build & Deploy to Hostinger ────────────────────────────────
   deploy:
@@ -218,12 +299,18 @@ jobs:
     # blocking every later deploy. Failing at 120 is recoverable; a wedged slot
     # for six hours is not.
     timeout-minutes: 120
-    needs: [lint]
+    # ⚠️ WS-38: the deploy now WAITS for `release` to move. It used to run
+    # beside publish-release. If the deploy shipped a sha that `release` then
+    # failed to reach, the box's own pull timer would read `release` five
+    # minutes later and apply the OLDER commit: a rollback that nobody chose.
+    needs: [lint, publish-release]
     # `always()` keeps the old hotfix lesson: a dependent guarded by plain
     # success() is skipped when an ancestor is skipped, and the deploy then
     # silently does nothing. `test` is no longer an ancestor (see its note).
     # `main` only, for the reason `publish-release` gives.
-    if: ${{ always() && needs.lint.result == 'success' && github.ref == 'refs/heads/main' }}
+    # WS-38: publish-release carries every condition (main, not a push, not
+    # held, the gates). A deploy runs exactly when `release` moved.
+    if: ${{ always() && needs.publish-release.result == 'success' }}
     env:
       # Runner-reachable public URLs used to VERIFY the deploy by outcome
       # (see the deploy step's rationale).
@@ -256,8 +343,31 @@ jobs:
         with:
           fetch-depth: 0
 
+      # ── NEVER DEPLOY A COMMIT OLDER THAN `release` (WS-38) ─────────────
+      # A rerun of an OLD release run keeps its GITHUB_SHA, skips the
+      # publish-release that already passed, and sends DEPLOY_FORCE=1. Its
+      # deploy would then reset the box BACK from a newer release, and the
+      # pull timer would move it forward again five minutes later: two
+      # restarts and a rollback nobody chose. Before WS-38 the apply always
+      # took the tip of main, so a rerun could not go back. It can now, so
+      # this step stops it. A rollback in this repo is a roll-forward (R6).
+      - name: Skip a commit that release has already passed
+        id: stale
+        run: |
+          set -euo pipefail
+          git fetch -q origin release
+          rel="$(git rev-parse origin/release)"
+          if [ "$rel" != "$GITHUB_SHA" ] && git merge-base --is-ancestor "$GITHUB_SHA" "$rel"; then
+            echo "::notice title=Deploy skipped::${GITHUB_SHA:0:12} is older than release ${rel:0:12}. Deploying it would roll production back."
+            echo "Deploy SKIPPED: ${GITHUB_SHA:0:12} is older than release ${rel:0:12}." >> "$GITHUB_STEP_SUMMARY"
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Deploy + verify (up to 3 rounds)
         id: deploy
+        if: ${{ steps.stale.outputs.stale != 'true' }}
         shell: bash
         env:
           SSH_HOST: ${{ secrets.HOSTINGER_HOST }}
@@ -327,7 +437,7 @@ jobs:
             # the host-key pin (H-200), ConnectTimeout, the ServerAlive
             # keepalive and BatchMode.
             timeout -k 30 1800 ssh "${CI_SSH_OPTS[@]}" \
-              "$SSH_USER@$SSH_HOST" "DEPLOY_FORCE=${DEPLOY_FORCE:-0} DEPLOY_REINSTALL=${DEPLOY_REINSTALL:-0} bash -s" < /tmp/deploy_remote.sh
+              "$SSH_USER@$SSH_HOST" "DEPLOY_REF=${GITHUB_SHA} DEPLOY_FORCE=${DEPLOY_FORCE:-0} DEPLOY_REINSTALL=${DEPLOY_REINSTALL:-0} bash -s" < /tmp/deploy_remote.sh
           }
 
           # The apply script's own last line. `vps_apply.sh` prints it and
@@ -444,9 +554,11 @@ jobs:
             #
             # ⚠️ (3) was exact equality until 2026-09-16, and that turned
             # every pair of quick merges into a guaranteed-red run. The
-            # remote script resets the box to `origin/main`, so it lands
+            # remote script reset the box to `origin/main`, so it landed
             # main's tip AT THAT MOMENT, never the commit whose run called
-            # it. Merge A then B: A's run deploys, the box ends on B, and
+            # it. (WS-38, 2026-10-16: it now deploys DEPLOY_REF exactly, so
+            # "contains it" is rarer. It still covers a later release that
+            # the pull timer applied while this run verified.) Merge A then B: A's run deploys, the box ends on B, and
             # A's verify then waits 24 polls for a commit that will never
             # serve. It burns all three rounds, roughly 105 minutes, and
             # `cancel-in-progress: false` holds B's run behind it for the
