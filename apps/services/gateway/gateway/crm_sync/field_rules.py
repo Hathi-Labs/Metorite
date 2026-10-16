@@ -194,7 +194,9 @@ async def mark_stale(
     The profile holds the type of each field that goes to ``custom``
     (``custom_field_types``) and the fields on the layouts (``layout_fields``).
     An entity that the profile does not know keeps the status of its rules.
-    The three cases are in ``mapping.rule_stale_reason``. Returns the ids that
+    The three cases are in ``mapping.rule_stale_reason``. A rule with
+    ``opened_empty`` (CRM-Q18-3) never goes stale for its standard field on
+    a layout. Returns the ids that
     went stale. The log gets the id and the reason, never a field value.
 
     It first locks every rule row of the provider through
@@ -204,16 +206,22 @@ async def mark_stale(
     """
     rows = (await db.execute(text(FIELD_RULE_LOCK_SQL), {"src": ext_source})).fetchall()
     approved = [
-        Rule(str(r.id), str(r.entity), str(r.field_api_name), str(r.target_column))
+        (
+            Rule(str(r.id), str(r.entity), str(r.field_api_name), str(r.target_column)),
+            r.opened_empty is True,
+        )
         for r in rows
         if r.status == "approved" and r.target_column is not None
     ]
     stale: list[str] = []
-    for rule in approved:
+    for rule, opened in approved:
+        # CRM-Q18-3: an empty column opened the rule, so its standard field on
+        # a layout does not make it stale. The other two reasons still apply.
         reason = mapping.rule_stale_reason(
             rule.entity, rule.field_api_name, rule.target_column,
             mapping.entity_field_types(profile, rule.entity),
             mapping.entity_layout_fields(profile, rule.entity),
+            opened=opened,
         )
         if reason is None:
             continue
