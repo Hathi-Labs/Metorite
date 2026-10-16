@@ -46,6 +46,13 @@
 > **Built later:** CRM-Q26, labels on CRM notes on the decide tier, dark
 > (2026-10-16, migration 278). See §18.11.
 >
+> **Built later, not merged:** Batch I, on the branch `crm-batch-i`
+> (2026-10-16, a fix round on 2026-10-17). CRM-Q24, a short read and the
+> lost activities on Sync health (§18.10, no migration). CRM-Q25b, one
+> time zone for each month and each date range (§18.11, no migration).
+> CRM-Q25c, a NUL byte answers 422 (§18.11, no migration). CRM-Q27, the
+> search of note text by meaning, dark (§18.11, migration 279).
+>
 > **Built from §19:** CRM-X4, the record page v2 (2026-10-12, §19.8).
 >
 > **Built from §20:** CRM-C2, one board (2026-10-13, §20.5). CRM-C3, stages
@@ -1247,10 +1254,10 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q21** | Promote a module into a core entity. §18.9 | P1 |
 | **CRM-Q22** | Source changes as suggestions, then a CSV source, then HubSpot. §18.9 | P2 |
 | **CRM-Q23** | Link a Zoho activity to a custom-module record, and show it there, in three slices (Q23a, Q23b, Q23c). §18.10 | P0 |
-| **CRM-Q24** | 🔨 built 2026-10-16, not merged. A short read shows on the Sync health card. §18.10 | P1 |
+| **CRM-Q24** | 🔨 built 2026-10-16 on `crm-batch-i`, not merged. A short read shows on the Sync health card. §18.10 | P1 |
 | **CRM-Q25** | The typed aggregate over every module and field, and its AI tool. §18.11 | P0 |
 | **CRM-Q26** | Labels on notes, on the decide tier, in shadow. §18.11 | P1 |
-| **CRM-Q27** | Search of note text by meaning. §18.11 | P2 |
+| **CRM-Q27** | 🔨 built 2026-10-16 on `crm-batch-i`, not merged, dark. Search of note text by meaning. §18.11 | P2 |
 | **CRM-Q28** | A weekly digest on the powerful tier. §18.11 | P2 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
@@ -2912,7 +2919,7 @@ owner flips.
 ### 18.10 Activities on a module record, and a short read that shows (CRM-Q23, CRM-Q24, 2026-10-16)
 
 **Status (2026-10-16).** CRM-Q23a (#1086, migration 275) and CRM-Q23b
-(#1098, no migration) are merged. The branch `crm-q24-sync-health` holds
+(#1098, no migration) are merged. The batch branch `crm-batch-i` holds
 CRM-Q24, with no migration, and nobody has merged it yet. CRM-Q23c:
 specified, not built. Verified against code at `origin/main` `c4bef9ec0`.
 Found on DEWiN's import (H-326, H-327).
@@ -3210,10 +3217,10 @@ one run. R8: `test_a_drop_on_a_core_module_is_unkept` and
 
 ### 18.11 Insights on the mirrored data (CRM-Q25 to CRM-Q28, 2026-10-16)
 
-**Status (2026-10-16).** CRM-Q25: merged (#1104), no migration. CRM-Q26:
+**Status (2026-10-17).** CRM-Q25: merged (#1104), no migration. CRM-Q26:
 merged (#1100, migration 278), dark. CRM-Q25b, CRM-Q25c and CRM-Q27
 (migration 279, dark): built on 2026-10-16 in the batch branch
-`crm-batch-i`, not merged. CRM-Q28: specified, not built. Verified against
+`crm-batch-i`, with a fix round on 2026-10-17, not merged. CRM-Q28: specified, not built. Verified against
 code at `origin/main` `634cf54ee`.
 
 **Owner direction (2026-10-16, in chat).** Use the decide, balanced and
@@ -3668,7 +3675,7 @@ CRM-Q26 (merged, #1100) and CRM-Q25. CRM-Q25 also edits `crm_tools.py`,
 `tests/unit/test_tenant_coverage.py` and
 `tests/unit/test_kb_visibility_one_seam.py` added.
 
-**Built as (2026-10-16, branch `crm-q27-note-search`, not merged).**
+**Built as (2026-10-16, batch branch `crm-batch-i`, not merged).**
 Migration 279 adds `crm_note_vectors`. `crm_sync/note_vectors.py` holds the
 step, and `scheduler.start_vectors` starts it. The step waits for the label
 step of the run, and it runs alone when the label mode is `off`. Fix round
@@ -3834,9 +3841,13 @@ in the Console database. The result goes into this section.
 
 ### 18.12 Batches for 2026-10-17
 
-**Status (2026-10-16).** Specified, not built. Verified against code at
-`origin/main` `c4bef9ec0`. The spec audit of 2026-10-16 gave GO-NARROWED for
-both batches, and this section carries its narrowings.
+**Status (2026-10-17).** Batch I: CRM-Q25 merged (#1104). CRM-Q24,
+CRM-Q25b, CRM-Q25c and CRM-Q27 are built on the batch branch
+`crm-batch-i`, with a fix round on 2026-10-17, and are not merged.
+CRM-Q28 is not built. The owner flip of CRM-Q26 is not done. Batch M:
+specified, not built. Verified against code at `origin/main`
+`c4bef9ec0`. The spec audit of 2026-10-16 gave GO-NARROWED for both
+batches, and this section carries its narrowings.
 
 Two batches run on 2026-10-17. Inside a batch, a slice starts when each slice
 that it waits for has merged. Slices of one order number can run at the same
