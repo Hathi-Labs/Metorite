@@ -415,12 +415,12 @@ async def test_a_core_entity_measures_and_groups_a_custom_field(ns, app_engine) 
     # The list filters still bind the core aggregate.
     owned = await _agg(ns, a, entity="deals", group_field="tier", **{"custom.tier": "g"})
     assert _values(owned) == {"Gold": 1}
-    # A retired field and a system overlay are no custom keys (ruling B).
+    # A retired field and a system overlay are no custom keys (CRM-Q25 done-when 5).
     assert await _status(ns, a, entity="deals", measure="sum", field="old_units",
                          group_by="status") == 422
     assert await _status(ns, a, entity="deals", measure="sum", field="amount",
                          group_by="status") == 422
-    # A core entity takes no field filter (ruling B).
+    # A core entity takes no field filter (CRM-Q25 done-when 4).
     assert await _status(ns, a, entity="deals", group_by="status",
                          **{"field.units": "3"}) == 422
 
@@ -491,6 +491,83 @@ async def test_a_name_that_tries_to_inject_sql_is_a_422(mods, app_engine, name: 
     assert count["total"] == 4
 
 
+# ── 5b. The fix round: inputs that once answered 500 ──────────────────────────
+
+
+async def test_an_empty_value_is_an_absent_one(mods, app_engine) -> None:
+    """An empty group_by, group_field, field or bucket counts as absent, for
+    each of the four. It once raised KeyError('') as a 500."""
+    a = mods.org_a
+    for entity in ("module:Products", "deals"):
+        # No group at all is a 422, never a 500.
+        assert await _status(mods, a, entity=entity, group_field="") == 422
+        assert await _status(mods, a, entity=entity, group_by="", group_field="") == 422
+        # A sum with an empty field names no field: a 422.
+        assert await _status(mods, a, entity=entity, measure="sum", field="",
+                             group_by="owner") == 422
+    body = await _agg(mods, a, entity="module:Products", group_by="owner",
+                      group_field="", field="", bucket="")
+    assert body["total"] == 4 and body["group_field"] is None
+
+
+async def test_a_value_that_is_no_real_date_is_null(mods, app_engine) -> None:
+    """One bad date must not break the read of every row. Each value that is
+    no calendar date groups as "(none)" and passes no range."""
+    a = mods.org_a
+    with mods.admin_engine.begin() as c:
+        for ext_id, value in (("bad1", "2026-02-30"), ("bad2", "2026-02-29"),
+                              ("bad3", "0000-01-01"), ("bad4", "2026-04-31"),
+                              ("leap", "2024-02-29T08:00:00+05:30")):
+            _record(c, a, "Products", ext_id, None,
+                    {"Sales_Start": value, "Updated_On": value})
+    month = await _agg(mods, a, entity="module:Products", group_field="Sales_Start",
+                       bucket="month")
+    assert [(g["key"], g["value"]) for g in month["groups"]] == [
+        ("2024-02", 1), ("2026-01", 1), ("2026-02", 1), ("2026-04", 1), (None, 5),
+    ]
+    stamp = await _agg(mods, a, entity="module:Products", group_field="Updated_On",
+                       bucket="year")
+    assert _values(stamp) == {"2024": 1, "2026": 1, "(none)": 7}
+    ranged = await _agg(mods, a, entity="module:Products", group_by="owner", **{
+        "field.Sales_Start.from": "2024-01-01", "field.Sales_Start.to": "2026-02-28",
+    })
+    # p1 (2026-01-15), p2 (2026-02-20) and the leap day. No bad date passes.
+    assert ranged["total"] == 3
+
+
+@pytest.mark.parametrize("value", [
+    "1e1000000", "-1E+999", "1e-1000000", "1" * 61, "0." + "1" * 61,
+])
+async def test_a_number_past_the_bounds_is_a_422(mods, app_engine, value: str) -> None:
+    """``1e1000000`` is finite, and Postgres still refuses it, once as a 500."""
+    res = await _call(mods, _admin(mods.org_a), "GET", _path(
+        entity="module:Products", group_by="owner", **{"field.Qty": value}))
+    assert res.status_code == 422, res.text
+
+
+async def test_a_number_inside_the_bounds_answers(mods, app_engine) -> None:
+    body = await _agg(mods, mods.org_a, entity="module:Products", group_by="owner",
+                      **{"field.Qty": "5.0e0"})
+    assert _values(body) == {"a@q25.test": 1}
+    body = await _agg(mods, mods.org_a, entity="module:Products", group_by="owner",
+                      **{"field.Qty": "1e99"})
+    assert body["total"] == 0
+
+
+@pytest.mark.parametrize("query", [
+    {"entity": "module:Products", "group_by": "owner", "field.Category": "HW\x00"},
+    {"entity": "module:Products", "group_by": "owner", "field.Cat\x00egory": "HW"},
+    {"entity": "module:Products", "group_field": "Cate\x00gory"},
+    {"entity": "module:Products", "group_by": "owner", "measure": "sum",
+     "field": "Unit_Price\x00"},
+    {"entity": "deals", "group_by": "status", "custom.tier": "g\x00"},
+    {"entity": "deals", "group_by": "status", "q": "\x00"},
+])
+async def test_a_nul_in_a_name_or_a_value_is_a_422(mods, app_engine, query: dict) -> None:
+    res = await _call(mods, _admin(mods.org_a), "GET", _path(**query))
+    assert res.status_code == 422, (query, res.text)
+
+
 # ── 6. The 50 largest groups ─────────────────────────────────────────────────
 
 
@@ -516,7 +593,7 @@ async def test_the_cap_keeps_time_order_for_a_bucket(mods, app_engine) -> None:
     """60 months, and the ten LATEST hold two records each. The ten and the
     40 earliest single months stay, in time order. Ten single months fold.
     A cap in time order would keep the 50 earliest months instead, and fold
-    the ten biggest groups (ruling C)."""
+    the ten biggest groups (CRM-Q25 done-when 6)."""
     a = mods.org_a
     with mods.admin_engine.begin() as c:
         c.execute(text("DELETE FROM crm_module_records WHERE organization_id = "

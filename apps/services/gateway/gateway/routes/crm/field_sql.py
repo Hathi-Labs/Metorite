@@ -75,10 +75,18 @@ MODULE_COLUMN = "fields"
 _COLUMNS = (CORE_COLUMN, MODULE_COLUMN)
 
 #: A number that arrives as a string. Bound into no statement: it is a literal.
-_NUMBER_TEXT = r"'^\s*-?[0-9]+(\.[0-9]+)?\s*$'"
+#: The digits are bounded, so no string can overflow ``numeric``.
+_NUMBER_TEXT = r"'^\s*-?[0-9]{1,30}(\.[0-9]{1,30})?\s*$'"
 
-#: A value that starts with a calendar date. A datetime starts with one too.
-_DATE_TEXT = r"'^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])'"
+#: A value that starts with the shape of a calendar date. A datetime starts
+#: with one too. The year starts at 1000, so ``make_date`` takes every year
+#: that passes. The day is checked against its month in :func:`_date`.
+_DATE_TEXT = r"'^[1-9][0-9]{3}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])'"
+
+#: The bounds of a number in a filter. ``1e1000000`` is finite, and Postgres
+#: still refuses it, so a larger number is a 422 before any statement.
+MAX_DIGITS = 60
+MAX_EXPONENT = 100
 
 #: The parameter names of this module. A list filter never uses the prefix.
 _MEASURE_KEY = "agf_m"
@@ -248,10 +256,26 @@ def _number(column: str, p: str) -> str:
 
 
 def _date(column: str, p: str) -> str:
-    """The calendar date at the start of the field value, or NULL."""
+    """The calendar date at the start of the field value, or NULL.
+
+    A value that is no real date (``2026-02-30``) is NULL, never an error,
+    so one bad row cannot break the read of every row. The check runs on
+    every Postgres version: ``pg_input_is_valid`` needs 16. Nested CASEs keep
+    the order, because Postgres may evaluate the arms of an AND in any order.
+    The inner CASE compares the day with the last day of its month.
+    """
+    v = f"({column} ->> :{p})"
+    year = f"CAST(substr({v}, 1, 4) AS int)"
+    month = f"CAST(substr({v}, 6, 2) AS int)"
+    day = f"CAST(substr({v}, 9, 2) AS int)"
+    last = (
+        f"CAST(extract(day FROM make_date({year}, {month}, 1) "
+        "+ interval '1 month' - interval '1 day') AS int)"
+    )
     return (
-        f"(CASE WHEN {column} ->> :{p} ~ " + _DATE_TEXT + " "
-        f"THEN CAST(left({column} ->> :{p}, 10) AS date) END)"
+        f"(CASE WHEN {v} ~ " + _DATE_TEXT + " "
+        f"THEN (CASE WHEN {day} <= {last} "
+        f"THEN make_date({year}, {month}, {day}) END) END)"
     )
 
 
@@ -342,8 +366,13 @@ def _filter(column: str, ref: FieldRef, end: str | None, k: str, v: str,
             number = Decimal(value.strip())
         except InvalidOperation:
             raise _refuse(f"'field.{ref.key}' must be a number.") from None
-        if not number.is_finite():
-            raise _refuse(f"'field.{ref.key}' must be a number.")
+        if (not number.is_finite()
+                or len(number.as_tuple().digits) > MAX_DIGITS
+                or abs(number.adjusted()) > MAX_EXPONENT):
+            raise _refuse(
+                f"'field.{ref.key}' must be a number of at most {MAX_DIGITS} "
+                f"digits, below 10^{MAX_EXPONENT}.",
+            )
         return f"{_number(column, k)} = CAST(:{v} AS numeric)", str(number)
     if ref.type == "boolean":
         word = value.strip().lower()

@@ -1094,7 +1094,7 @@ def _aggregate_answer(measure: str, field_type: str | None, values: list) -> Any
 async def test_inr_only_for_a_currency_field_and_the_deal_money(
     measure, field, field_type, inr, monkeypatch,
 ) -> None:
-    """Ruling G: INR marks rupees only. A count or a plain number is no money."""
+    """CRM-Q25 done-when 7: INR marks rupees only. A count or a plain number is no money."""
     _fake_gateway(monkeypatch, _aggregate_answer(measure, field_type, [1500.5, 20]))
     out = await _T.crm_aggregate("deals", "owner", measure=measure, field=field)
     assert ("INR" in out) is inr, out

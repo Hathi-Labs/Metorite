@@ -58,7 +58,7 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     # crm_deal_contacts, crm_get_module_record, crm_list_fields,
     # crm_list_modules and crm_report. Each cut its list at 50 with no way
     # to read the rest. A new optional argument, so no call breaks.
-    # WS-53 CRM-Q25 (crm_platform.md §18.11, ruling G): the typed aggregate.
+    # WS-53 CRM-Q25 (crm_platform.md §18.11, done-when 7): the typed aggregate.
     # `field` names the field of a sum/avg/min/max, `group_field` and
     # `bucket` group by one field, and `field_filters` filters a module.
     # `group_by` is no longer required, because a call gives group_by OR

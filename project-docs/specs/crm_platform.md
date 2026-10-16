@@ -39,6 +39,8 @@
 >
 > **Built later:** CRM-Q7b, the proposer of field rules (2026-10-14). It adds no migration. See §18.7.
 >
+> **Built later:** CRM-Q25, the typed aggregate over every module and field, and its AI tool (2026-10-16). It adds no migration. See §18.11.
+>
 > **Built from §19:** CRM-X4, the record page v2 (2026-10-12, §19.8).
 >
 > **Built from §20:** CRM-C2, one board (2026-10-13, §20.5). CRM-C3, stages
@@ -2490,7 +2492,8 @@ their column. The mirror stamps `zoho_id`, so the push skips the row.
    count of `activity_drops`.
 ### 18.11 Insights on the mirrored data (CRM-Q25 to CRM-Q28, 2026-10-16)
 
-**Status (2026-10-16).** Specified, not built. Verified against code at
+**Status (2026-10-16).** CRM-Q25: built, on the branch `crm-insights`.
+CRM-Q26 to CRM-Q28: specified, not built. Verified against code at
 `origin/main` `02223e3e2`.
 
 **Owner direction (2026-10-16, in chat).** Use the decide, balanced and
@@ -2584,6 +2587,18 @@ fields of a module. A statement past the timeout gives 503
 over the folded groups. R8: `tests/unit/test_crm_aggregate_fields_r8.py`.
 On the scratch database, one request on a warm engine took 0.10 to 0.18 s
 over 30,000 rows, and the test asserts 1 s.
+
+The fix round (2026-10-16) closed four inputs that gave 500. An empty
+`group_by`, `group_field`, `field` or `bucket` now counts as absent. A NUL
+character in a query name or value gives 422. A number filter takes at most
+60 digits and an exponent of at most 100, or it gives 422. A field value
+that is no real date, for example `2026-02-30`, counts as NULL. That check
+runs on each Postgres version, because `pg_input_is_valid` needs version 16.
+
+**Known difference, not fixed.** On a module, `created_month` and
+`updated_month` take the month of the time in UTC. A Zoho time in IST just
+after midnight on the first day of a month falls in the month before. The
+date buckets of a field use the date that Zoho wrote, so they do not move.
 
 **CRM-Q26 · Labels on notes, in shadow.** Done when:
 

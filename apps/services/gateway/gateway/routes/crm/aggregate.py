@@ -312,6 +312,14 @@ def _check(
     return found, None
 
 
+def _refuse_nul(request: Request) -> None:
+    """A 422 for a NUL character in any query name or value. Postgres text
+    holds no NUL, so the driver would refuse it later as a 500."""
+    for name, value in request.query_params.multi_items():
+        if "\x00" in name or "\x00" in value:
+            raise _refuse("A query name or value holds a NUL character.")
+
+
 def _check_filters(module: str | None, request: Request) -> list[tuple[str, str]]:
     """The ``field.<key>`` filters. A core entity takes none, and a module
     takes nothing else. The names are checked against the fields later."""
@@ -523,6 +531,11 @@ async def aggregate(
     user: UserContext = Depends(get_current_user),
 ) -> AggregateResponse:
     """One measure of one entity or module, by one group, over the filters."""
+    _refuse_nul(request)
+    # An empty optional value is an absent one, the same for each of the four
+    # (CRM-Q25 fix round). `group_field=` alone is then "no group", a 422.
+    group_by, field = group_by or None, field or None
+    group_field, bucket = group_field or None, bucket or None
     found, module = _check(entity, measure, group_by, group_field, field, bucket)
     pairs = _check_filters(module, request)
     try:
