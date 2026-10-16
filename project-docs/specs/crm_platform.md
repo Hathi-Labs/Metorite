@@ -2347,7 +2347,8 @@ density, a changed accent and 375 px.
 
 ### 18.10 Activities on a module record, and a short read that shows (CRM-Q23, CRM-Q24, 2026-10-16)
 
-**Status (2026-10-16).** Specified, not built. Verified against code at
+**Status (2026-10-16).** CRM-Q23a: built, on the branch `crm-q23`. CRM-Q23b,
+CRM-Q23c and CRM-Q24: specified, not built. Verified against code at
 `origin/main` `0a14f7552`. Found on DEWiN's import (H-326, H-327).
 
 #### 18.10.1 What the import found
@@ -2410,6 +2411,19 @@ release of DEWiN's `activities` hold, which stays an admin act. Native mode.
 6. Each reader that assumes a core parent still works, and a test covers
    each. The readers are the activity edit and delete routes, the
    next-activity statements, the export and `sync_zoho.push_activities`.
+
+**Built as (2026-10-16).** Migration 275 holds the column, the index and the
+CHECK. `mapping._activity_links` gives the candidate `module_record_id` with
+the entity `module:<ApiName>`, and `Mapped.parent_module` keeps the name.
+`engine._local_id` resolves it only for a module that the profile mirrors.
+The drop key is `(none)` when an activity names no module. `activity_drops`
+is in `NOT_ENTITY_KEYS` of `routes/crm/sync.py`, so the `failed` sum skips it
+too. The route reuses `activities.activity_entries_by` and `merge_page`. The
+readers of done-when 6 needed no change. A module-only row never matches
+their column. The mirror stamps `zoho_id`, so the push skips the row.
+`schema.generated.sql` stays stale on purpose. Fences:
+`test_crm_module_activities_r8.py`, `test_crm_migration.py` and
+`test_crm_sync_engine.py`.
 
 **CRM-Q23b · Recover a dropped activity.** Done when:
 
