@@ -1066,3 +1066,99 @@ def test_the_deal_only_field_set_matches_the_schema(
         f"{sorted(expected)}, but admin.DEAL_ONLY_FIELDS says "
         f"{sorted(DEAL_ONLY_FIELDS)}"
     )
+
+
+# ── CRM-Q23a: an activity on a module record (crm_platform.md §18.10) ────────
+
+
+def _module_activity_migration() -> Path:
+    """The migration that adds ``crm_activities.module_record_id``, found by
+    CONTENT and never by number (R1)."""
+    found = [
+        path for path in sorted(MIGRATIONS.glob("*.sql"))
+        if path.name != "schema.generated.sql"
+        and re.search(
+            r"ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+module_record_id",
+            path.read_text(encoding="utf-8"),
+        )
+    ]
+    assert len(found) == 1, [p.name for p in found]
+    return found[0]
+
+
+@pytest.fixture(scope="module")
+def module_activity_bare() -> str:
+    text = _module_activity_migration().read_text(encoding="utf-8")
+    return "\n".join(re.sub(r"--.*$", "", line) for line in text.splitlines())
+
+
+def test_the_module_activity_migration_takes_a_free_number_and_says_why() -> None:
+    path = _module_activity_migration()
+    numbers = [
+        int(p.name.split("_", 1)[0]) for p in MIGRATIONS.glob("*.sql")
+        if p.name.split("_", 1)[0].isdigit()
+    ]
+    mine = int(path.name.split("_", 1)[0])
+    assert numbers.count(mine) == 1, f"two migrations share number {mine}"
+    header = path.read_text(encoding="utf-8").split("\nSET ", 1)[0]
+    for required in ("What:", "Why:", "Depends on:"):
+        assert required in header, required
+
+
+def test_the_module_record_column_is_nullable_and_cascades(module_activity_bare: str) -> None:
+    """Done when 1: the column, nullable, with a foreign key that cascades."""
+    statement = re.search(
+        r"ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+module_record_id[^;]*;", module_activity_bare,
+    )
+    assert statement is not None
+    added = " ".join(statement.group(0).split())
+    assert "UUID NULL" in added
+    assert "REFERENCES crm_module_records (id) ON DELETE CASCADE" in added
+    assert "DEFAULT" not in added.upper() and "NOT NULL" not in added.upper()
+
+
+def test_the_module_record_index_is_partial_and_guarded(module_activity_bare: str) -> None:
+    index = re.search(r"CREATE\s+INDEX\s+(IF\s+NOT\s+EXISTS)?[^;]*;", module_activity_bare)
+    assert index is not None and index.group(1), "CREATE INDEX needs IF NOT EXISTS"
+    assert re.search(r"WHERE\s+module_record_id\s+IS\s+NOT\s+NULL", index.group(0))
+
+
+def test_the_check_widens_in_one_guarded_block(module_activity_bare: str) -> None:
+    """Done when 2: one DO block drops the CHECK, adds it NOT VALID and
+    validates it, and it runs only while the definition lacks the column."""
+    blocks = re.findall(r"DO\s+\$(\w*)\$(.*?)\$\1\$", module_activity_bare, re.S)
+    touching = [body for _tag, body in blocks if "crm_activities_target_required" in body]
+    assert len(touching) == 1, "exactly one DO block changes the CHECK"
+    block = touching[0]
+    guard = block.index("IF ")
+    assert "pg_get_constraintdef" in block[:guard]
+    assert re.search(r"position\('module_record_id'\s+IN\s+current_def\)\s*=\s*0",
+                     block[guard:])
+    steps = [
+        block.index("DROP CONSTRAINT IF EXISTS crm_activities_target_required"),
+        block.index("ADD CONSTRAINT crm_activities_target_required"),
+        block.index("NOT VALID"),
+        block.index("VALIDATE CONSTRAINT crm_activities_target_required"),
+    ]
+    assert steps == sorted(steps), "drop, then add NOT VALID, then validate"
+    check = block.split("ADD CONSTRAINT crm_activities_target_required", 1)[1]
+    check = check.split("NOT VALID", 1)[0]
+    for column in ("lead_id", "deal_id", "contact_id", "company_id", "module_record_id"):
+        assert f"{column} IS NOT NULL" in check, column
+    assert check.count(" OR ") == 4
+    # Outside the block the file touches no constraint, so there is no
+    # moment without the CHECK.
+    outside = re.sub(r"DO\s+\$(\w*)\$.*?\$\1\$", "", module_activity_bare, flags=re.S)
+    assert "crm_activities_target_required" not in outside
+
+
+def test_the_module_activity_migration_is_one_transaction_and_expand_only(
+    module_activity_bare: str,
+) -> None:
+    """R6, and no window without a CHECK: the file opens its own
+    transaction, because ``apply_migrations.sh`` has no wrapper."""
+    upper = module_activity_bare.upper()
+    assert upper.count("BEGIN;") == 1 and upper.count("COMMIT;") == 1
+    for forbidden in ("DROP TABLE", "DROP COLUMN", "TRUNCATE", "DELETE FROM",
+                      "SET NOT NULL", "RENAME", "UPDATE CRM_ACTIVITIES"):
+        assert forbidden not in upper, forbidden

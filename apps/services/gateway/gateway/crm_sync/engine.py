@@ -569,6 +569,13 @@ def _blank_counts() -> dict[str, dict[str, int]]:
 def _merge_counts(saved: dict[str, Any]) -> dict[str, dict[str, int]]:
     counts = _blank_counts()
     for slug, values in (saved or {}).items():
+        if slug == ACTIVITY_DROPS_KEY and isinstance(values, dict):
+            # CRM-Q23a: a resumed import keeps the drops it counted before.
+            counts[slug] = {
+                str(k): int(v) for k, v in values.items()
+                if isinstance(v, int) and not isinstance(v, bool)
+            }
+            continue
         if _module(slug) and isinstance(values, dict):
             counts[slug] = dict.fromkeys(MODULE_COUNTS, 0)
         if slug in counts and isinstance(values, dict):
@@ -804,11 +811,31 @@ class _Ctx:
 
 # ── Writing one record ──────────────────────────────────────────────────────
 
-_ACTIVITY_TARGETS = ("lead_id", "deal_id", "contact_id", "company_id")
+#: The columns of ``crm_activities`` that name a parent. ``module_record_id``
+#: names a generic module record (CRM-Q23a, migration 275). It gets no
+#: ``_BUMP_SQL``, because ``crm_module_records`` has no ``last_activity_at``.
+_ACTIVITY_TARGETS = (
+    "lead_id", "deal_id", "contact_id", "company_id", "module_record_id",
+)
+
+#: The counts key of the activities that the sync did not store, by the
+#: provider's name of the parent module (CRM-Q23a). Numbers only, never an id.
+#: It is not an entity, so Sync health shows no row for it
+#: (``routes/crm/sync.py`` ``NOT_ENTITY_KEYS``).
+ACTIVITY_DROPS_KEY = "activity_drops"
+#: The drop key of an activity that names no parent module.
+NO_PARENT_MODULE = "(none)"
 
 _LOCAL_ID_SQL = (
     "SELECT id FROM {table} WHERE organization_id = CAST(:org AS uuid) "
     "AND ext_source = :src AND ext_id = :ext"
+)
+
+#: A generic module record by its module and provider id (CRM-Q23a). The
+#: module name is a bound parameter, never SQL text.
+_MODULE_LOCAL_ID_SQL = (
+    "SELECT id FROM crm_module_records WHERE organization_id = CAST(:org AS uuid) "
+    "AND ext_source = :src AND module = :module AND ext_id = :ext"
 )
 
 _DEAL_CONTACT_SQL = (
@@ -835,15 +862,38 @@ _BUMP_SQL = (
 )
 
 
+def _mirrored_modules(ctx: _Ctx) -> frozenset[str]:
+    """The API names of the generic modules that the profile mirrors. The same
+    rule as ``routes/crm/modules.mirrored_modules``: ``generic`` and
+    ``mirrored`` true."""
+    profile = ctx.profile.profile if ctx.profile is not None else None
+    return frozenset(
+        str(row["api_name"]) for row in ctx.mapping.generic_modules(profile)
+        if row.get("mirrored") and row.get("api_name")
+    )
+
+
 async def _local_id(
     ctx: _Ctx, db: Any, entity: str, ext_id: str, cache: dict[tuple[str, str], str | None],
 ) -> str | None:
     key = (entity, ext_id)
     if key not in cache:
-        row = (await db.execute(
-            text(_LOCAL_ID_SQL.format(table=_table(entity))),
-            {"org": ctx.org, "src": EXT_SOURCE, "ext": ext_id},
-        )).first()
+        api_name = _module(entity)
+        if api_name is not None:
+            # CRM-Q23a: a generic module record, in the tenant session of the
+            # page. A module that the profile does not mirror, or a record
+            # that the module pass has not read yet, gives None.
+            row = None
+            if api_name in _mirrored_modules(ctx):
+                row = (await db.execute(
+                    text(_MODULE_LOCAL_ID_SQL),
+                    {"org": ctx.org, "src": EXT_SOURCE, "module": api_name, "ext": ext_id},
+                )).first()
+        else:
+            row = (await db.execute(
+                text(_LOCAL_ID_SQL.format(table=_table(entity))),
+                {"org": ctx.org, "src": EXT_SOURCE, "ext": ext_id},
+            )).first()
         cache[key] = str(row.id) if row is not None else None
     return cache[key]
 
@@ -1158,6 +1208,15 @@ class _Caches:
     statuses: dict[tuple[str, str], str] = field(default_factory=dict)
 
 
+def _count_drop(ctx: _Ctx, parent_module: str | None) -> None:
+    """Count one activity that the sync did not store, under the provider's
+    name of its parent module (CRM-Q23a). A number only, never an id. The
+    page's snapshot holds the key too, so a failed page takes it back."""
+    drops = ctx.counts.setdefault(ACTIVITY_DROPS_KEY, {})
+    name = parent_module or NO_PARENT_MODULE
+    drops[name] = int(drops.get(name) or 0) + 1
+
+
 async def _write_record(  # noqa: C901 - one record, one linear mapping to columns
     ctx: _Ctx, db: Any, entity: str, record: SourceRecord, caches: _Caches,
 ) -> bool:
@@ -1202,6 +1261,7 @@ async def _write_record(  # noqa: C901 - one record, one linear mapping to colum
             ctx.bump(entity, "unlinked", max(unlinked, 1))
             if entity == "task":
                 ctx.step("tasks", "skipped")
+            _count_drop(ctx, mapped.parent_module)
             return False
 
     if entity in ("lead", "deal"):
