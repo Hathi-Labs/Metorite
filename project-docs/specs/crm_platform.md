@@ -2058,8 +2058,10 @@ checkbox. H-321 is a generic module held past the 60 days of the deleted list.
 
 ### 18.9 A custom CRM that reads well, and a mapping that the admin only approves (CRM-Q17 to CRM-Q22, 2026-10-16)
 
-**Status (2026-10-16).** Specified, not built. Verified against code at
-`origin/main` `00fd30230`, after CRM-Q16 merged (#1053).
+**Status (2026-10-16).** CRM-Q17a-1 (#1093, migration 274) and CRM-Q18-1
+(#1094, migration 277) are merged, and both are dark. Each other ticket of
+this section is specified, not built. Verified against code at `origin/main`
+`c4bef9ec0`.
 
 **Design record.** The owner's design page is "Source Mapping Studio" v4.
 Its link is https://claude.ai/artifact/QcBY3s2ATxo3Kb9QCpR3Zr. This section
@@ -2245,8 +2247,10 @@ with 16 questions, to learn whether the vendor bills the state once.
 | Ticket | Slice | Gate | Size | Waits for |
 |---|---|---|---|---|
 | CRM-Q17a | Lists and records by fill rank, in two slices (Q17a-1, Q17a-2). No AI | AGENT-SAFE | M | — |
+| CRM-Q17a-1b | A "still empty" check of a stale entity, in each run. No AI | AGENT-SAFE | S | CRM-Q17a-1 |
 | CRM-Q17b | Getting around: rail, first screen, filters, Columns, phone, Sync health. No AI | AGENT-SAFE | M | CRM-Q17a |
 | CRM-Q18 | One plan: a table of versions, and the live rule set | AGENT-SAFE | M | — |
+| CRM-Q18-1b | Two deadlocks of the plan lock, found on a real database | AGENT-SAFE | S | CRM-Q18-1 |
 | CRM-Q19 | The executor and the 200-record preview | AGENT-SAFE | M | CRM-Q18 |
 | CRM-Q20 | The pipeline, the suggestion, the panel, Undo, and Settings → Suggestions | AGENT-SAFE | M + M | CRM-Q19 |
 | CRM-Q21 | Promote a module into a core entity | AGENT-SAFE | L | CRM-Q20 |
@@ -2316,6 +2320,73 @@ spec audit of 2026-10-16 narrowed it.
   It commits the stamp first, then reads with no lock on `crm_settings`,
   then writes the numbers in a short page. An entity that fails waits 24
   hours, and the run goes on.
+
+**CRM-Q17a-1b · A "still empty" check of a stale entity (2026-10-16).** The
+diff review of CRM-Q17a-1 found the gap.
+
+**The gap.** `fill_rank.empty_columns` serves `[]` while the numbers of an
+entity are stale. An entity that changes in most runs waits in `pending` for
+the 24-hour bound, and `pending` is stale. So such an entity serves `[]` for
+most of the day, and CRM-Q17a-2 item 1 hides almost nothing.
+
+**The choice: in each run, not at read time.** §18.9.3 item 5 says that no
+request computes the numbers. A check at read time breaks that rule, and it
+scans a core table on each open of a list. So the sync makes the check, as
+the last part of `fill.refresh`.
+
+Done when:
+
+1. At the end of `fill.refresh`, the sync checks each core entity that is
+   still stale. It checks an entity only when its stored numbers give at
+   least one key of `fill_rank.empty_set`, and its first import is done.
+2. One statement for each such entity reads only those keys, in one scan of
+   the core table. It takes `(key, value)` pairs from
+   `jsonb_each(to_jsonb(t))` with a filter on the keys, as `fill._core_pairs`
+   does. So a NULL column gives the JSON `null`, which `fill.FILLED_SQL`
+   counts as empty. It then computes `bool_or` of `FILLED_SQL` by key. The
+   keys come from `fill_rank.standard_keys`, never from a request.
+   ⚠️ Do not use `to_jsonb(column)` alone. For a NULL it gives SQL NULL,
+   `FILLED_SQL` then falls to `ELSE true`, and no column is ever empty.
+3. The fill row (`zoho:fill_rank`) keeps the result under a new key
+   `still_empty`. For each entity, it holds the keys that stayed empty and
+   the database time of the statement. No migration: the cursor state is
+   `jsonb`.
+4. `fill_rank.empty_columns` serves the `still_empty` keys of a stale entity
+   when four conditions are true. Else it serves `[]`, as today.
+   - The entity has a stamp, and none of its field rules changed. That is
+     the rule test of `stale_entities`.
+   - The check has a time.
+   - No sync run that started after that time counted an `upserted`, a
+     `deleted` or a `relinked` row of the entity (`_CHANGED_SQL`).
+   - No rule of the entity has `backfilling` true in the cursor row
+     `zoho:field_rules` (`crm_sync/field_rules.applied_of`). A backfill can
+     take more than one run, and no run count records the rows it writes.
+5. The check never hides a filled column. A key that the stored numbers show
+   as filled is never checked, and never served as empty. A key that the
+   check finds filled leaves `still_empty`. A failed statement writes no
+   entry for its entity, so that entity serves `[]`.
+6. **Cost bound.** At most one statement for each core entity in a run, so 4
+   at most. The sync skips the statement when no run changed the entity
+   since its last check. The statement runs under a LOCAL
+   `statement_timeout` of 5 s.
+7. An R8 test measures the statement on 30,000 rows of `crm_contacts` with 10
+   empty keys. It asserts a bound that the build measures. If the time is
+   above 1 s, the builder limits the check to an entity of at most
+   `fill.LARGE_ROWS` records, and records the time here.
+8. A generic module gets no check. `empty_columns` serves the standard keys
+   of a core entity only.
+9. R8 tests in `test_crm_fill_rank_r8.py` prove six cases.
+   - A stale entity whose empty key stays empty serves that key.
+   - A key that a run filled before the check is not served.
+   - A rule with `backfilling` true makes the entity serve `[]`.
+   - A run that starts after the check and changes a row gives `[]` again.
+   - A failed statement gives `[]`.
+   - An org outside `CRM_FILL_RANK_ORGS` gets no check.
+
+Files: `crm_sync/fill.py`, `routes/crm/fill_rank.py`,
+`tests/unit/test_crm_fill_rank.py` and `tests/unit/test_crm_fill_rank_r8.py`.
+Gate: AGENT-SAFE. Size: S. Waits for: CRM-Q17a-1 (merged, #1093). Build it
+before CRM-Q17a-2, or with it. Verify with the backend command of §18.9.7.
 
 **CRM-Q17a-2 · The screens.** It waits for CRM-Q17a-1. Done when:
 
@@ -2430,9 +2501,93 @@ the rule rows through `core.FIELD_RULE_LOCK_SQL`, in one order. A PATCH takes
 that lock before it holds one row. `commit` locks the rows before it reads the
 profile. A deadlock is a 409 `plan_busy`, and a retry is safe.
 
+**CRM-Q18-1b · Two deadlocks of the plan lock (2026-10-16).** The
+re-verifier of CRM-Q18-1 made both happen on a real database. Each one is a
+40P01 that no route maps, so the member gets a 500.
+
+**(a) Two orders of one key.** `core.FIELD_RULE_LOCK_SQL` sorts by
+`entity, field_api_name` in the collation of the database. The proposer
+(`suggest_field_rules`, `routes/crm/field_rules.py` near line 951) writes in
+the order of Python `sorted(..., key=field_api_name)`. That is code-point
+order. The two orders differ: `Linked_Account` and `LinkedIn_URL` change
+places. So the proposer and an approve, or `mark_stale`, can wait in a cycle.
+
+**(b) The start over deletes in the reverse order.** An approve locks the
+plan rows first (`mapping_plans._LOCK_SQL`), then the rule rows.
+`core.RESET_TABLES` deletes `crm_field_rules` before `crm_mapping_plans`.
+`settings._RESET_DELETES` does the same.
+
+Done when:
+
+1. `core.FIELD_RULE_LOCK_ORDER` sorts each of its two columns with
+   `COLLATE "C"`. Python sorts a `str` by code point, and `"C"` sorts UTF-8
+   text in the same order. So the database and the code agree on each
+   collation.
+2. One helper in `routes/crm/core.py` gives the Python sort key of a rule,
+   `(entity, field_api_name)`. Each writer of more than one rule row in one
+   transaction uses it. Today that is the proposer, and the inserts of
+   `mapping_plans._write_live_set`.
+3. The proposer calls `mapping_plans.lock_rules(db)` first in its tenant
+   session, before its first write. The PATCH does the same today
+   (`field_rules.py` near line 526).
+4. The proposer maps a 40P01 or a 40001 to the 409 `plan_busy` through
+   `_db_conflict`, as the POST and the PATCH do.
+5. `core.RESET_TABLES` and `settings._RESET_DELETES` delete
+   `crm_mapping_plans` before `crm_field_rules`. A unit test asserts that
+   order in both tuples.
+6. R8 tests in `test_crm_map_plan_r8.py` show each deadlock red on the code
+   of today, and then green. The test of (a) first asserts that the database
+   sorts `Linked_Account` and `LinkedIn_URL` apart from Python, so it cannot
+   pass by luck. The test of (b) runs a start over beside an approve.
+7. No migration. The collation is in the query, not on the column.
+
+The proposer stays until CRM-Q20 item 9 removes it. Items 1 and 2 still bind
+each later writer of rule rows.
+
+Files: `routes/crm/core.py`, `routes/crm/field_rules.py`,
+`routes/crm/mapping_plans.py`, `routes/crm/settings.py`,
+`tests/unit/test_crm_map_plan_r8.py` and `tests/unit/test_crm_reset_r8.py`.
+Gate: AGENT-SAFE. Size: S. Waits for: CRM-Q18-1 (merged, #1094). Verify with
+the CRM-Q18 command below, with `tests/unit/test_crm_reset_r8.py` added to
+it.
+
 **CRM-Q18-2 · The Field map screen.** It waits for CRM-Q18-1. The Field map
 card shows the approved version and a draft. It approves a draft with one
 action, and it goes back to the version before.
+
+Done when (added 2026-10-16):
+
+1. `lib/api.ts` gets one call for each route of CRM-Q18-1: the list, one
+   version, a draft, the approve and the restore. `lib/fieldMap.ts` holds
+   their types.
+2. The card (`FieldMapCard.tsx`) names the approved version, who approved it
+   and when. It reads `GET /crm/mapping/plans`, which holds no snapshot.
+3. A change on the card makes a draft through `POST /crm/mapping/plans`. It
+   changes no live rule. The card marks the draft as not applied, and shows
+   its changes against the approved version.
+4. One button approves the draft. A 409 `plan_moved` says that the map
+   changed, reads the plan again, and drops the old draft. A 409
+   `plan_busy` tries once more, then asks the admin to try again.
+5. "Go back" approves the content of the version before, through
+   `POST /crm/mapping/plans/{version}/restore`. It asks the admin to
+   confirm, and it names the date of that version.
+6. A history lists the versions with `rule_count`, state and time. A version
+   opens its rules (`GET /crm/mapping/plans/{version}`), read only.
+7. The approve and the reject of one rule stay as today. The server writes
+   a new version for each one (CRM-Q18-1 item 6).
+8. No engine word shows: no "snapshot", no "superseded" and no version
+   number such as "v1". A member who is not an admin, and a Native CRM, see
+   no card.
+9. `vitest` tests cover items 3 to 6 and item 8, with the API faked. The
+   test of item 8 finds no engine word, and no card for a member who is not
+   an admin or for a Native CRM.
+10. The `visual-review` skill checks the card in light mode, compact density,
+    a changed accent and 375 px.
+
+Files: `components/FieldMapCard.tsx`, `lib/fieldMap.ts`, `lib/api.ts` and a
+new test file under `components/`. Gate: AGENT-SAFE. Size: S. Waits for:
+CRM-Q18-1 (merged). Build it after CRM-Q18-1b, so a 409 `plan_busy` is the
+answer that the card meets.
 
 **CRM-Q18-3 · A column that is empty opens.** It waits for migration 274
 (CRM-Q17a-1). Done when:
@@ -2444,10 +2599,55 @@ action, and it goes back to the version before.
    is on a layout. The value of the fixed map still wins where Zoho fills
    it.
 
-Files: `infra/postgres/`, `routes/crm/field_rules.py`, a new
-`routes/crm/mapping_plans.py`, `crm_sync/field_rules.py`,
+Items added after the code check of 2026-10-16. Item 2 needs a mark on the
+rule. Once the rule fills its column, the fill is no longer 0, so the code
+cannot find out later that a 0 fill opened it.
+
+3. "Fill is 0" means that the key is in `fill_rank.empty_columns` of the
+   entity, the one gateway function. Stale numbers give `[]`, so a stale
+   entity opens no fixed column. With CRM-Q17a-1b, a key that is still empty
+   counts. A fixed column with no fill row stays closed.
+4. The open rule has one home for the target list, the proposer and the
+   approve: `_targets` and `_check_legal` in `routes/crm/field_rules.py`,
+   and `mapping.rule_problem`. The empty columns go in as an argument, so
+   the functions of `mapping.py` stay pure.
+5. A migration (next free number at build time) adds
+   `crm_field_rules.opened_empty BOOLEAN NULL`. It is expand-only (R6). An
+   approve that opens a column by item 1 sets it on the row of that rule.
+6. `core.FIELD_RULE_LOCK_SQL` reads `opened_empty`. `mark_stale`
+   (`crm_sync/field_rules.py`) passes it to `mapping.rule_stale_reason`,
+   which then never gives `RULE_STANDARD_FIELD_USED` for that rule. The
+   other two reasons still apply.
+7. A restore, a draft approve or a park of an opened rule goes through
+   `mapping_plans.commit` and `_checked`. The fill of its column is no longer
+   0 then, so `_check_legal` would give a 422. So each `field` item of a
+   snapshot carries `opened_empty`, through `PlanRule.as_json` and
+   `_rule_of`. `_checked` skips the empty test for an item that carries it
+   as true. A `change_rule` put with a new `target_column` clears
+   `opened_empty`, on the item and on the row, so the empty test runs again
+   for the new column.
+8. `mapping.apply_field_rules` applies a rule only where the fixed map gives
+   NULL. A unit test proves that a value of the standard field from Zoho
+   still wins on an opened column.
+9. R8 tests in `tests/unit/test_crm_field_rules_r8.py` prove five cases. A
+   fixed column that is empty opens. A stale entity opens none. An opened
+   rule does not go stale for its layout. A restore of an opened rule gives
+   no 422. An org outside `CRM_FILL_RANK_ORGS` opens none.
+
+Files of CRM-Q18-3: a migration in `infra/postgres/`, `routes/crm/core.py`,
+`routes/crm/field_rules.py`, `routes/crm/mapping_plans.py`,
+`crm_sync/field_rules.py`, `crm_sources/zoho/mapping.py` and
+`tests/unit/test_crm_field_rules_r8.py`.
+
+Gate of CRM-Q18-3: AGENT-SAFE. Size: S. Waits for: CRM-Q17a-1 (merged) and
+CRM-Q18-1b, because both edit `core.FIELD_RULE_LOCK_SQL`. CRM-Q17a-1b makes
+it useful for an entity that is stale most of the day.
+
+Files: `infra/postgres/`, `routes/crm/field_rules.py`,
+`routes/crm/mapping_plans.py` (CRM-Q18-1 made it), `crm_sync/field_rules.py`,
 `crm_sources/zoho/mapping.py` (CRM-Q18-3 only), and
-`FieldMapCard.tsx` (CRM-Q18-2 only).
+`FieldMapCard.tsx` (CRM-Q18-2 only). CRM-Q18-3 also adds a migration and
+edits `routes/crm/core.py`.
 
 Verify CRM-Q18 with `uv run pytest tests/unit/test_crm_field_rules.py tests/unit/test_crm_field_rules_r8.py tests/unit/test_crm_field_map_ai.py tests/unit/test_crm_upsert_from_source_fence.py tests/unit/test_crm_map_plan*.py -q`
 on the R8 database, with no test skipped.
@@ -2462,6 +2662,51 @@ on the R8 database, with no test skipped.
    in memory. It returns the records as the board would draw them, and the
    count of values that did not map. It writes nothing.
 4. A value that no rule maps is counted on the Sync health card.
+
+**CRM-Q19, the missing items (2026-10-16).** The list above is not
+dispatchable as it stands, for four reasons.
+
+- It has no Files line and no verification command.
+- Item 2 can mean that the fixed map (`mapping.map_record`) moves into the
+  executor. That is an L, and nothing asks for it.
+- A snapshot holds only the kind `field` until CRM-Q20 (CRM-Q18 design). So
+  five of the seven transforms have no rule that calls them.
+- Item 4 names no count key.
+
+The narrowed contract replaces items 1 to 4 above. Done when:
+
+1. A new module `crm_sync/executor.py` holds `copy` and `cast` as pure
+   functions, each with a unit test. They call
+   `mapping.coerce_target_value`, so no second rule of coercion exists.
+2. Item 2 means the value of a RULE. The fixed map stays in
+   `mapping.map_record`. `mapping.apply_field_rules` and
+   `field_rules.backfill_batch` call the executor for a `field` rule. A
+   source fence test proves that no other code coerces a rule value.
+3. `value_map`, `normalize`, `coalesce`, `link` and `owner` move to
+   CRM-Q20-1, which adds the kinds of rule that call them. CRM-Q19 does not
+   build them.
+4. `POST /crm/mapping/preview` takes the version of a draft. It reads up to
+   200 records of each entity of the draft, the lowest ids, in the tenant
+   session. It applies the draft in memory and returns the rows in the shape
+   of the list route of the entity.
+5. The preview writes nothing. An R8 test proves that no row of any table
+   changes.
+6. The preview counts each value that a rule could not cast, by entity and
+   target column. It names no value.
+7. Each run counts the same values under the count name `unmapped` of the
+   entity. Sync health passes it through `last_run`, so
+   `GET /crm/sync/health` keeps its shape. The card shows it on the entity
+   row.
+8. The route has the guards of `routes/crm/mapping_plans.py`: an admin, in
+   Mirror mode.
+
+Files: a new `crm_sync/executor.py`, `crm_sources/zoho/mapping.py`,
+`crm_sync/field_rules.py`, `crm_sync/engine.py`,
+`routes/crm/mapping_plans.py`, `routes/crm/sync.py`, `SyncHealthCard.tsx`,
+and the new tests `test_crm_executor.py` and `test_crm_map_preview_r8.py`.
+Gate: AGENT-SAFE. Size: M. Waits for: CRM-Q18-1b and CRM-Q18-3. CRM-Q18-3
+also edits `mapping.apply_field_rules` and `crm_sync/field_rules.py`. Verify
+with the CRM-Q18 command and the two new suites, with no test skipped.
 
 **CRM-Q20 · The pipeline and the suggestion.** Done when:
 
@@ -2482,6 +2727,159 @@ on the R8 database, with no test skipped.
    Undo is exact, because no record moved.
 8. No confidence number and no engine word shows on a screen.
 9. The CRM-Q7b route and its proposer are removed.
+
+**CRM-Q20, the missing items (2026-10-16).** The list above is not
+dispatchable as it stands, for three reasons.
+
+- §18.9.5 says that the three `crm.map_*` features join `FEATURES`.
+  CRM-Q26 found that `FEATURES` is the email set, which two email suites pin,
+  and it made `CRM_FEATURES`. So the three features join `CRM_FEATURES`,
+  `REGISTERED` and `ON_FEATURES`, and `CRM_DECIDE_ORGS` gates them (CRM-Q26
+  items 1 and 2).
+- Its size is M + M with no split.
+- It has no Files line.
+
+**The three new kinds of rule (2026-10-16).** CRM-Q18 says that CRM-Q20 adds
+kinds to the snapshot. These are the kinds. Each one names a generic module
+(`module`, its API name) and an empty core slot (`slot`, one of `company`,
+`contact`, `lead` and `deal`). `mapping_plans.split_rules` keeps an item of
+another kind in `others` as it is. So the code of CRM-Q18-1 stores them with
+no change.
+
+| Kind | Feature | The snapshot item | Transform in `crm_sync/executor.py` |
+|---|---|---|---|
+| `role` | `crm.map_role` | `{"kind": "role", "slot": "deal", "module": "Commercials", "profile_version": 12}` | None. It names the module that plays the slot |
+| `target` | `crm.map_target` | `{"kind": "target", "slot": "deal", "module": "Commercials", "target": "amount", "fields": ["Value"], "transform": "cast"}` | One of `copy`, `cast`, `normalize` (email, phone), `coalesce` (two or more `fields`), `link` (a lookup to a parent) and `owner` (the owner email) |
+| `stage` | `crm.map_stage` | `{"kind": "stage", "slot": "deal", "module": "Commercials", "field_api_name": "Status", "values": {"Won": "won", "Lost": "lost", "Open": "open"}}` | `value_map` |
+
+Rules of the kinds:
+
+1. A `target` or a `stage` item is legal only beside an approved `role` item
+   of the same slot and module.
+2. `target` names a column of `FIELD_RULE_TARGETS` for the entity of the
+   slot, or `name`. `transform` is one word of the table.
+3. A `stage` value maps to `won`, `lost` or `open`. A value with no entry
+   gets no stage. CRM-Q20-1 item 9 counts those values, and CRM-Q20-3 shows
+   them in a lane of their own.
+
+**The read path of an approved overlay (option A of the re-audit,
+2026-10-16).** No record moves, and no core reader changes. For example,
+Commercials plays Deals.
+
+1. `GET /crm/mode` (`routes/crm/settings.py`) gains `overlays`, by slot: the
+   API name of the module of each approved `role`. Each member can read it.
+   With no approved `role`, the body has no `overlays` key.
+2. With an approved `role`, the rail row of the slot (`CrmRail.tsx`) opens
+   the `module` tab with `?module=<ApiName>`. It keeps the label of the
+   slot, for example "Deals".
+3. That tab is the list of the module as it is today: `ModuleList.tsx` and
+   the shared `RecordList`, through `GET /crm/modules/{module}/records`
+   (`list_module_records`, `routes/crm/modules.py`). A row opens
+   `ModuleRecordSheet.tsx`.
+4. There is no projection into the row shape of the core entity, no
+   overlaid board, no row bound and no filter in memory.
+5. Each core reader stays as it is: `records.list_query`, the export,
+   `GET /crm/aggregate`, the search of Cmd-K, the feed kinds, the
+   next-activity chips, the related lists and the agent tools. They read the
+   core table of the slot.
+6. Undo approves a version with no `role` item for the slot. The rail row
+   then opens the core list again.
+
+**CRM-Q20-3 · The overlaid board and the projection (stub, not
+dispatchable).** A later slice. It waits for CRM-Q20-2 and for CRM-Q25,
+because the projection builds its SQL over `fields` with
+`routes/crm/field_sql.py`. Its spec must cover these points before a
+dispatch.
+
+1. Each core reader of item 5 above: does it read the overlay, and how.
+2. The lanes of an overlaid board: one for each `stage` value of the
+   module's statuses, in Zoho's order, then `won` and `lost`.
+3. A stage value with no entry goes to a visible lane, "Unsorted", and is
+   never hidden.
+
+**Which mode gates the run.** Each kind has its own feature. The CRM-Q20-1
+run starts when at least one of the three is `shadow` or `on`, for an org in
+`CRM_DECIDE_ORGS`. It asks only the questions of a feature that is not
+`off`.
+
+- In `shadow`, a feature asks only questions whose answer the org already
+  holds (§18.9.5). It logs the agreement count and writes no draft.
+  `crm.map_target` asks which field fills a standard column that is filled.
+  `crm.map_stage` asks about the core statuses that Zoho marks won or lost.
+- `crm.map_role` has no `shadow` questions. In `shadow` it is a smoke check
+  only: it runs steps 1 to 3 of §18.9.4, logs the count of empty slots and
+  sure candidates, and makes no `ask` call.
+- In `on`, a feature writes its items into the one draft of the run. A draft
+  never holds an item of a feature in `shadow`.
+
+It ships in two slices.
+
+**CRM-Q20-1 · The pipeline, backend.** Done when items 1 to 4 above are
+true, and:
+
+1. A new module `crm_sync/map_pipeline.py` holds the six steps. It calls
+   `decide_features.ask()` once for each entity, with `module_slug="crm"`.
+   `ask()` does not check the mode. So the pipeline calls
+   `decide_features.mode_for` for each of the three features first, and
+   skips each question of a feature that is `off`. A test proves that an org
+   outside `CRM_DECIDE_ORGS` makes 0 `ask` calls.
+2. The payer is the `connected_by` member of the Zoho connection. That
+   member must be an active member of this org (`my_day_loop.departed`), as
+   CRM-Q26 item 7 says. Else the run skips, logs a count and spends nothing.
+3. The run writes a draft through `routes/crm/mapping_plans.py`, never a
+   live rule. The draft holds the new kinds of rule, beside `field`.
+4. The run starts after a sync run, outside the run lock, as
+   `scheduler.start_labels` does. It runs only for an org whose mode is
+   `shadow` or `on`.
+5. The token cap of item 2 above is a constant, and the estimate of each
+   state (`kb_index.chunk.estimate_tokens`) counts against it. The decide
+   client returns no `usage`.
+6. `crm_sync/executor.py` gains `value_map`, `normalize`, `coalesce`,
+   `link` and `owner`, each a pure function with a unit test. They come
+   from CRM-Q19. The three kinds above call them, and no other code does.
+7. The pipeline writes the three kinds as the table above shows. A test
+   with a scripted fake of `decide` proves each mode of each feature.
+8. `mapping_plans.commit` enforces rule 1 of the kinds. It gives a 422 for a
+   `target` or a `stage` item with no approved `role` item of the same slot
+   and module. A test proves it, also for a restore.
+9. The run counts the stage values with no entry, from the distinct values
+   of the module's stage field in `crm_module_records`. It stores the count
+   with the draft. The panel of CRM-Q20-2 shows it.
+10. The cursor row `zoho:map_pipeline` (`crm_sync_cursors`, no migration)
+    keeps the hash of the schema of each module, under `schema`. A run in
+    `shadow` writes it too. A test proves that a second run on the same
+    schema makes 0 `ask` calls.
+
+**Post-flip check (OWNER-GATE), not part of the build.** After the owner
+flips one org, the probe of §18.9.4 runs once on that org: 1 question
+against 16 questions on one state. Its result goes into this section. The
+probe spends the org's credits, so an agent prepares it and stops.
+
+Files: `gateway/decide_features.py`, a new `crm_sync/map_pipeline.py`,
+`crm_sync/executor.py`, `crm_sync/scheduler.py`,
+`routes/crm/mapping_plans.py`, a new `evals/crm_mapping/` and
+`tests/unit/`. Gate: AGENT-SAFE to build. Size: M. Waits for: CRM-Q19.
+
+**CRM-Q20-2 · The suggestion, the panel, the overlay and Undo.** Done when
+items 5 to 9 above are true, and the read path of an approved overlay works
+as written above (option A). Settings → Suggestions is one entry of
+`lib/settingsSections.ts`, the one list of CRM-C1. A test proves that each
+core reader of item 5 of the read path gives the same answer with and
+without an approved `role`.
+
+Files: `routes/crm/field_rules.py` (item 9 removes
+`POST /crm/field-rules/suggest`), `routes/crm/settings.py` (`overlays` on
+`GET /crm/mode`), `lib/fieldMap.ts`, `lib/api.ts`, `lib/modeContext.ts`,
+`lib/settingsSections.ts`, `CrmRail.tsx`, `FieldMapCard.tsx`, the empty
+state of `RecordList.tsx`, the Suggestions card in `SettingsCards.tsx`, and
+their tests. Gate: AGENT-SAFE. Size: M. Waits for: CRM-Q20-1.
+
+**Open (owner).** §18.9.6 says that a flip to `shadow` or `on` is the gate
+`enforcement-flip`. §18.11.2 made the same flip an owner flip for
+`crm.note_labels`, because each request spends the org's credits. The
+`crm.map_*` features spend credits too. Until the owner answers, read the
+stricter rule: a name in `CRM_DECIDE_ORGS` and a mode other than `off` are
+owner flips.
 
 **CRM-Q21 · Promote.** Done when:
 
@@ -2513,10 +2911,10 @@ on the R8 database, with no test skipped.
 
 ### 18.10 Activities on a module record, and a short read that shows (CRM-Q23, CRM-Q24, 2026-10-16)
 
-**Status (2026-10-16).** CRM-Q23a: built, on the branch `crm-q23`. CRM-Q23b:
-built, on the branch `crm-q23b`, with no migration. CRM-Q23c and CRM-Q24:
-specified, not built. Verified against code at
-`origin/main` `0a14f7552`. Found on DEWiN's import (H-326, H-327).
+**Status (2026-10-16).** CRM-Q23a (#1086, migration 275) and CRM-Q23b
+(#1098, no migration) are merged. CRM-Q23c and CRM-Q24: specified, not
+built. Verified against code at `origin/main` `c4bef9ec0`. Found on DEWiN's
+import (H-326, H-327).
 
 #### 18.10.1 What the import found
 
@@ -2556,7 +2954,7 @@ that the user cannot see.
 | CRM-Q23a | Link an activity to a module record, and serve it. Backend | AGENT-SAFE | M | — |
 | CRM-Q23b | Recover an activity dropped before its module record landed | AGENT-SAFE | M | CRM-Q23a |
 | CRM-Q23c | The timeline on a module record page. Frontend | AGENT-SAFE | S | CRM-Q23a |
-| CRM-Q24 | A short read shows on the Sync health card | AGENT-SAFE | S | — |
+| CRM-Q24 | A short read shows on the Sync health card, with the lost and recovered activities | AGENT-SAFE | M (S until 2026-10-16) | — |
 
 **Not in scope of CRM-Q23.** A composer or any write on a module record. A
 push of a module activity to Zoho. A next-activity chip on a module card. The
@@ -2703,11 +3101,64 @@ that it checks is mid-read. A module that comes back can stop at
 4. Sync health shows the activities that have no parent: "1,145 Zoho tasks
    belong to no record. Metorite leaves them out." It reads the `(none)`
    count of `activity_drops`.
+
+**CRM-Q24, made concrete (2026-10-16).** Items 1 to 4 stay. The code check
+found three gaps. Each run counts only what THAT run dropped, so an
+incremental run after the import counts about 0. No count of the recovered
+activities exists. Item 1 names no rule for "fewer". Done when also:
+
+5. `short_by` is a key of the cursor state of each entity and each module,
+   with no migration. The sync writes it in the page that ends a full read
+   of that entity: Zoho's count minus the mirrored rows of the entity, when
+   above 0. Zoho's count is the count that the run read for the entity:
+   `_estimate` or `_safe_count` for a core entity, and `_module_estimate`
+   for a module. The activity entities get no `short_by`, because
+   items 8 to 10 explain their gap.
+6. `HealthEntityModel` gains `short_by: int | None`. The line of item 2 shows
+   for each row with `short_by`, with the numbers and the label of that row.
+7. Item 3 is a named error `ZohoTieTooWide`, a `SourceError` in
+   `crm_sources/zoho/client.py`. It applies when the offset read inside one
+   second passes 2,000 records and Zoho sends no `next_page_token`. The
+   engine counts it as `failed` on the entity, and does not set
+   `initial_done_at`.
+8. A new cursor row `zoho:activity_drops` keeps, for each activity entity,
+   the `activity_drops` of its last full read, by module. The sync writes it
+   in the page that ends that full read. So the numbers stay after the next
+   incremental run.
+9. `engine._recover_activities` counts each kept activity that it links,
+   under a new count key `activity_recovered`, by module. The key joins
+   `NOT_ENTITY_KEYS`, and a test pins it to a new constant
+   `engine.ACTIVITY_RECOVERED_KEY`,
+   as a test pins `activity_drops` today.
+10. `GET /crm/sync/health` gains one block `activities`, numbers only.
+    - `parentless`: the `(none)` count of item 8, by activity entity.
+    - `dropped`: the other counts of item 8, by module.
+    - `waiting`: the length of the `recover` list of each activity cursor.
+    - `recovered_7d`: the sum of `activity_recovered` over the runs that
+      started in the last 7 days.
+11. The card shows one line for each number above 0, with the label of the
+    module. Item 4 is the line of `parentless`. The lines of `waiting`,
+    `recovered_7d` and `dropped` say that the notes wait for their record,
+    came back, or belong to a module that Metorite does not sync.
+12. Tests. A unit test is the fence of item 7. R8 tests in
+    `test_crm_sync_health_r8.py` cover items 5, 8, 9 and 10, and show that a
+    health read of an org with no cursor rows still serves. `vitest` covers
+    the lines of the card.
+
+Files: `crm_sources/zoho/client.py`, `crm_sync/engine.py`,
+`routes/crm/sync.py`, `lib/syncHealth.ts`, `components/SyncHealthCard.tsx`,
+and the tests `test_crm_sources_zoho.py`, `test_crm_sync_engine.py` and
+`test_crm_sync_health_r8.py`. Gate: AGENT-SAFE. Size: M. Waits for: nothing.
+CRM-Q23a and CRM-Q23b merged on 2026-10-16. Verify with the CRM-Q23
+command, with `test_crm_sources_zoho.py` and `test_crm_sync_health_r8.py`
+added to it, and
+`npx tsc --noEmit && npx vitest run src/app/crm` in `workbench/control_plane`.
+
 ### 18.11 Insights on the mirrored data (CRM-Q25 to CRM-Q28, 2026-10-16)
 
-**Status (2026-10-16).** CRM-Q25: built, on the branch `crm-insights`.
-CRM-Q26: built on the branch `crm-q26`, dark. CRM-Q27 and CRM-Q28:
-specified, not built. Verified against code at `origin/main` `02223e3e2`.
+**Status (2026-10-16).** CRM-Q25: merged (#1104), no migration. CRM-Q26:
+merged (#1100, migration 278), dark. CRM-Q25b, CRM-Q27 and CRM-Q28:
+specified, not built. Verified against code at `origin/main` `634cf54ee`.
 
 **Owner direction (2026-10-16, in chat).** Use the decide, balanced and
 powerful tiers to run inference on the CRM data and produce insights. Build
@@ -2737,9 +3188,11 @@ each value. Embeddings help the model find text. They never make a number.
 | CRM-Q26 | Labels on notes, on the decide tier, in shadow | AGENT-SAFE | M | CRM-Q23a |
 | CRM-Q27 | Search of note text by meaning | AGENT-SAFE | M | CRM-Q26 |
 | CRM-Q28 | A weekly digest on the powerful tier | AGENT-SAFE | M | CRM-Q25 |
+| CRM-Q25b | One time zone for each month bucket of the aggregate | AGENT-SAFE | S | CRM-Q25 |
+| CRM-Q25c | A NUL byte in a list query answers 422 | AGENT-SAFE | S | — |
 
-CRM-Q27 and CRM-Q28 get their done-when lists in a later edit of this
-section. To build each ticket is AGENT-SAFE. For CRM-Q26, a mode other than
+CRM-Q25b, CRM-Q27 and CRM-Q28 have their done-when lists after CRM-Q26
+(2026-10-16). To build each ticket is AGENT-SAFE. For CRM-Q26, a mode other than
 `off` for `crm.note_labels` is an owner flip, because each request spends the
 org's credits (CLAUDE.md §3a rule 3). So is a name in `CRM_DECIDE_ORGS`. The
 grant `enforcement-flip` does not cover them. `work_plan.md` §6 registers both.
@@ -2902,6 +3355,291 @@ its own, so only a poison note parks and its batch-mates land. A failure
 row clears every label column and the request id, so it never pairs a new
 md5 with the label of an older text.
 
+**CRM-Q25b · One time zone for each month bucket (2026-10-16).** CRM-Q25
+records a known difference. On a module, `created_month` and `updated_month`
+run `date_trunc` on a `timestamptz`, so they take the month in the zone of
+the session, UTC. A `datetime` field with `bucket=month` reads the first 10
+characters of Zoho's text. That is the date on the clock of Zoho's offset,
++05:30 for DEWiN. So a record made at 00:30 IST on 1 November falls in
+October by the first rule and in November by the second.
+
+**The zone (code check of 2026-10-16).** Metorite keeps no time zone for an
+org. `org_settings` has no such key, and `user_settings.timezone` is one
+member's zone. The Zoho source profile keeps the zone of the Zoho org at
+`profile -> 'org' ->> 'time_zone'` (`mapping._org_summary`), for example
+`Asia/Kolkata`.
+
+So the CRM zone is that value in the newest profile. A Native
+CRM, a profile with no zone, and a name that is not an IANA zone use UTC.
+`routes/projects/personal.zone_name` is the one rule of a zone name, and
+`aggregate.my_day_rows` already imports it.
+
+Done when:
+
+1. One function, `crm_zone(db, org)`, gives the CRM zone. It lives in
+   `routes/crm/field_sql.py`, and each bucket of one answer uses it.
+2. `created_month` and `updated_month` of `MODULE_GROUPS`, and the core
+   `updated_month`, take the month of `<column> AT TIME ZONE :zone`. The
+   zone is a bound value, never SQL text. The core `created_month` stays
+   refused in Mirror mode, as today.
+3. A `datetime` field bucket reads the whole value as a time with its
+   offset, then takes its date `AT TIME ZONE :zone`. A value that is not a
+   real time is NULL, as a bad date is today. A `date` field keeps the date
+   that Zoho wrote, because a date has no time.
+4. A date range filter on a `datetime` field (`field.<key>.from` and
+   `field.<key>.to`) uses the rule of item 3. So a filter and a bucket agree.
+5. The answer carries `zone`. The tool `crm_aggregate` names it in one line,
+   so the chat agent can say which zone it counted in.
+6. R8 tests in `test_crm_aggregate_fields_r8.py` prove three cases.
+   - A record at `2026-10-31T19:00:00Z` falls in `2026-11` by
+     `created_month`, and by `group_field=Created_Time&bucket=month`, for a
+     profile that names `Asia/Kolkata`.
+   - The same record falls in `2026-10` for an org with no zone.
+   - A zone in the profile that is not a real zone gives UTC, not an error.
+7. `close_month` and each `date` column do not change.
+
+Files: `routes/crm/aggregate.py`, `routes/crm/field_sql.py`,
+`packages/acb_skills/acb_skills/crm_tools.py`,
+`tests/unit/test_crm_aggregate.py` and
+`tests/unit/test_crm_aggregate_fields_r8.py`. Gate: AGENT-SAFE. Size: S.
+Waits for: CRM-Q25, merged as #1104.
+Verify with the commands of §18.11.3.
+
+**CRM-Q25c · A NUL byte in a list query answers 422 (2026-10-16).** The
+verifier of the CRM-Q25 fix round found this on `origin/main`.
+`GET /crm/deals?q=%00` raises `CharacterNotInRepertoireError` from asyncpg,
+and the route answers 500. CRM-Q25 refuses a NUL in the aggregate only.
+Done when:
+
+1. Each CRM route that takes a query string answers 422 when a name or a
+   value holds a NUL byte. The list, the search, the export and the module
+   record routes are in scope. One guard does this, beside the aggregate's
+   `_refuse_nul`. It is not a second copy.
+2. A test sends `q=%00` and a NUL in a filter value to each route, and gets
+   422. A mutation that removes the guard turns the test red.
+
+Files: `routes/crm/records.py`, `routes/crm/aggregate.py` and
+`tests/unit/`. Gate: AGENT-SAFE. Size: S. Waits for: nothing.
+
+**CRM-Q27 · Search of note text by meaning.**
+
+**The facts (code check of 2026-10-16).**
+
+- `gateway/kb_index/embed.py` holds
+  `embed(texts, *, org=None, timeout=20.0)`. It returns one vector or
+  `None` for each text, in order.
+- It posts to the gateway's own `/v1/embeddings` with the model
+  `text-embedding-3-small`, at 1,536 dimensions. One request holds 64 texts
+  at most, and it clips each text to 8,000 characters.
+- It writes no `usage_event` row, so no org pays credits for it
+  (`knowledge_base.md` §6.4). Each call writes one log line with the org,
+  the count and a token estimate (`chunk.estimate_tokens`, 4 characters for
+  each token).
+- The vectors of Knowledge live in `kb_chunks` (migration 273), with
+  `pgvector` and a partial HNSW index. Its `source_kind` takes only `page`,
+  `file` and `document`, and each read must join `kb_pages`
+  (`test_kb_visibility_one_seam.py`). So CRM notes need a table of their
+  own.
+
+Done when:
+
+1. A migration (next free number at build time) adds the tenant table
+   `crm_note_vectors`, in the shape of migration 273. It has FORCE RLS and an
+   inline foreign key to the org. It is expand-only, and it passes
+   `test_tenant_coverage.py`.
+2. Its `activity_id` is unique, and it references `crm_activities (id)` with
+   ON DELETE CASCADE. A row holds `body_md5`, `embedding VECTOR(1536) NULL`,
+   `embedded_at`, `failures` and `failed_at`. A partial HNSW index covers
+   `embedding IS NOT NULL`.
+3. The start over deletes the table (`core.RESET_TABLES` and
+   `settings._RESET_DELETES`). The generated phases carry it.
+4. A new setting `crm_note_search_orgs` (`CRM_NOTE_SEARCH_ORGS`) names the
+   orgs, in the grammar of `crm_orgs`. It is empty by default, and
+   `routes/crm/flags.py` reads it.
+5. A name in `CRM_NOTE_SEARCH_ORGS` is an owner flip. Each request costs
+   vendor money that no credit row pays (CLAUDE.md §3a rule 3). The PR adds
+   the entry to `work_plan.md` §6, as CRM-Q26 did.
+6. After a sync run, a background step embeds the new and changed notes of a
+   listed org. The scheduler starts it after the CRM-Q26 step of the org,
+   or by itself when that mode is `off`. One step at a time runs for each
+   org, outside the run lock.
+7. The step binds `tenant_session(org)` for each read and each write. No
+   session stays open across an embed call.
+8. The rule of CRM-Q26 says which notes are new or changed. A note with no
+   row is new. A note whose md5 of subject and body differs from `body_md5`
+   has changed. The text is the
+   subject and the body, clipped to 2,000 characters (`BODY_CLIP`).
+9. The step takes the newest notes first, 640 at most (10 requests of 64).
+   The cap counts requests in Redis for each org and UTC day, before each
+   request goes out, as CRM-Q26 does. The cap is 80 requests, so 5,120
+   notes, in one day. A Redis failure embeds nothing.
+10. The payer check is the one of CRM-Q26 item 7: the `connected_by` member
+    of the Zoho connection, still an active member of this org
+    (`my_day_loop.departed`). With no such member, the step skips and logs a
+    count. The embed door bills nobody today, but the Router will (WS-45
+    S5), and then this check names the payer.
+11. A `None` vector counts one failure on the row. After 3 failures, the
+    note waits 7 days or until its text changes (`MAX_FAILURES` and
+    `PARK_DAYS` of CRM-Q26). The step never stores a zero vector.
+12. `GET /crm/notes/search?q=&limit=` first checks the org against
+    `CRM_NOTE_SEARCH_ORGS`. An org outside the list gets `degraded: true`,
+    no hits and no embed call. For a listed org, the route makes the vector
+    of the query with no session open, and stops at 0.8 s
+    (`QUERY_EMBED_TIMEOUT_S` of `kb_index/query.py`). It then reads the nearest notes by cosine distance
+    in a tenant session. `limit` is 20 at most.
+13. Each hit holds the activity id, its parent, the time of the note and a
+    snippet of 200 characters at most. The parent is the entity and the
+    record id, or the module and the module record id. A hit holds no vector
+    and no distance. With no vector, the answer is `degraded: true` with no
+    hits.
+14. The route has the guards of the timeline routes: the CRM switch,
+    `feature:crm` and `require_crm_access`. The org comes from the session
+    (R5).
+15. A new AI tool `crm_search_notes(query, limit=10)` in `crm_tools.py` calls
+    the route as the member. It returns note ids and snippets. It tells the
+    model that a number must come from `crm_aggregate` (§18.11.1). When the
+    answer is `degraded`, the tool says that search by meaning is off or not
+    available, and suggests `crm_list_records`.
+16. The tool joins `skill_families.py`, `tool_annotations.py` (read only)
+    and `addendum.py`. The pinned contract of `test_tool_schema_diet.py`
+    changes with it.
+17. Each step and each search logs counts, the org and the time only, never
+    note text and never a query.
+18. R8 tests cover the table and its RLS, and a step with a fake embed door.
+    They cover the cap of 640, the daily cap, a changed note and a failed
+    vector. They cover an org outside the list, tenant isolation of a search
+    and the start over.
+
+**The cost for DEWiN's 18,674 notes.** The clip limits a note to 2,000
+characters, about 500 tokens. So the first pass costs at most about 9.3
+million tokens. At the vendor's list price for `text-embedding-3-small`,
+USD 0.02 for each million tokens, that is at most about USD 0.19.
+
+The builder checks the price at build time. The real notes are shorter, and the
+log line of each call gives the estimate. The daily cap makes the first pass
+take about 4 days. One search costs one vector of the query, under 100
+tokens.
+
+**Open (owner).** D100 item 3 says that the customer pays for AI in credits.
+The embed door writes no usage row, so Metorite pays for these vectors, as
+it does for Knowledge. Bill CRM vectors in credits now, or wait for WS-45 S5
+as Knowledge does? Until the owner answers, the flip of item 5 stays with
+the owner.
+
+Files: the migration and `infra/postgres/generated/`,
+`acb_common/settings.py`, `routes/crm/flags.py`, a new
+`crm_sync/note_vectors.py` and `crm_sync/scheduler.py`. Also a new
+`routes/crm/note_search.py` and its router entry, `routes/crm/core.py`,
+`routes/crm/settings.py`, `crm_tools.py`, `skill_families.py`,
+`tool_annotations.py`, `addendum.py` and `tests/unit/`. Gate: AGENT-SAFE to
+build. A name in `CRM_NOTE_SEARCH_ORGS` is OWNER-GATE. Size: M. Waits for:
+CRM-Q26 (merged, #1100) and CRM-Q25. CRM-Q25 also edits `crm_tools.py`,
+`addendum.py` and `test_tool_schema_diet.py`. Verify with the commands of
+§18.11.3, with `tests/unit/test_tool_schema_diet.py`,
+`tests/unit/test_tenant_coverage.py` and
+`tests/unit/test_kb_visibility_one_seam.py` added.
+
+**CRM-Q28 · A weekly digest on the powerful tier.**
+
+**The facts (code check of 2026-10-16).**
+
+- `tier-powerful` is a tier of the Router (`infra/litellm/config.yaml`).
+  The gateway calls it through `acb_llm.context.acompletion_with_fallback`.
+- A background job names its payer with `acb_common` `job_member_scope`
+  (H-152). The member must come from our tables.
+- The My Day feed has a gated `crm` provider (`routes/shell/feed.py`).
+  Code templates write its why lines, and no model text reaches a card
+  (`my_day_feed.md` §4.2).
+- The bell of `routes/projects/notifications.py` serves Projects tasks only.
+- The gateway has no platform mail sender. The sign-in mail lives in the
+  browser tier. The inbox digest (`routes/email/digest.py`) sends from the
+  member's own mailbox.
+- CRM-Q25 gives numbers through a route and an AI tool, and has no entry
+  for a job that has no request.
+
+Done when:
+
+1. A migration (next free number at build time) adds the tenant table
+   `crm_digests`, with FORCE RLS. A row holds `week_start`, the numbers as
+   `jsonb`, the text, `request_id`, `tries` and `created_at`. `week_start`
+   is a date in the CRM zone of CRM-Q25b.
+2. A unique index on `(organization_id, week_start)` allows one digest for
+   each week. The start over deletes the table.
+3. A new setting `crm_digest_orgs` (`CRM_DIGEST_ORGS`) names the orgs. It is
+   empty by default. A name in it is an owner flip, because each digest
+   spends the org's credits (CLAUDE.md §3a rule 3). The PR adds the entry to
+   `work_plan.md` §6.
+4. The scheduler starts the digest step of a listed org after a sync run.
+   It starts only when the week has no digest yet. The time must also be
+   after Monday 06:00 in the CRM zone. The step runs outside the run lock, as the CRM-Q26 step does.
+5. The numbers come from a fixed tuple `DIGEST_QUERIES` of 8 CRM-Q25 calls
+   at most, written in code. The model never chooses a query. Each call goes
+   through one function that the route also calls, with the org bound.
+6. A query that fails or passes its timeout leaves its numbers out, and the
+   digest says which part is missing.
+7. With `crm.note_labels` `on` for the org, the numbers also count the
+   notes of the week. They count them by kind and by "needs action". In `shadow`
+   they hold no label (CRM-Q26 item 9).
+8. One request goes to `tier-powerful`. The prompt holds the numbers as
+   JSON, and the rule to use only these numbers and add none. It holds no
+   record name, no note text and no email address. `max_tokens` is 800.
+9. One formatter writes each number for the prompt and for the check. The
+   code finds each number of the text in the input. A text with a number
+   that is not in the input is not stored, and the try counts.
+10. The payer is the `connected_by` member, checked with
+    `my_day_loop.departed`, and bound with
+    `job_member_scope(member, app="crm", agent="crm.digest")`. With no such
+    member, the step skips and logs a count.
+11. **Cost bound.** One request for each org and week, and 3 tries at most
+    in a week (`tries`). The input is 8,000 characters at most, about 2,000
+    tokens, and the output is 800 tokens at most. So an org spends 3
+    requests at most, about 8,400 tokens, in one week.
+12. A test with a fake model asserts the bound of item 11. The credits of a
+    real run are a post-flip check, below, not part of the build.
+13. **Delivery, in the app.** `GET /crm/digests?limit=4` serves the newest
+    digests, with the guards of the CRM read routes (`require_crm_access`).
+    The Reports page (`Reports.tsx`) shows the newest one, with its week, its
+    numbers as a table, and a line that says AI wrote the text from them.
+14. **Delivery, in My Day.** The gated `crm` provider gains the kind
+    `digest_ready`, for one day after a digest is stored. A code template
+    writes its why line, and its act opens Reports. It shows no model text.
+15. **Delivery by email is not in this ticket.** It sends mail to a real
+    person, so it is OWNER-GATE. The gateway has no platform sender, so the
+    owner chooses one first. CRM-Q28b holds it, dark behind
+    `CRM_DIGEST_EMAIL_ORGS`, empty by default, an owner flip.
+16. Each step logs counts, the org, the week and the request id, never the
+    text.
+17. R8 tests cover the table, its RLS, one digest each week, the Monday
+    rule in the CRM zone, the cap of 3 tries and the start over. Unit tests
+    with a fake model cover the number check, a prompt with no name and no
+    note text, and a payer who left. `vitest` covers the Reports card.
+
+**The queries.** Build with this list. The owner can change it in the PR.
+
+- The open deals by stage.
+- The amount by close month, for the next 3 months.
+- The new records of each module.
+- The deals won and lost.
+- The overdue activities.
+
+Files: the migration and `infra/postgres/generated/`,
+`acb_common/settings.py`, `routes/crm/flags.py`, a new `crm_sync/digest.py`,
+`crm_sync/scheduler.py`, `routes/crm/aggregate.py`, a new
+`routes/crm/digests.py`, `routes/crm/core.py`, `routes/crm/settings.py`,
+`routes/shell/feed.py`, `routes/shell/feed_rank.py`, `Reports.tsx`,
+`lib/reports.ts`, `lib/api.ts` and the tests. Gate: AGENT-SAFE to build. A
+name in `CRM_DIGEST_ORGS` is OWNER-GATE. Size: M, and item 14 can split off
+as an S. Waits for: CRM-Q25 and CRM-Q25b, and it runs after CRM-Q27. CRM-Q27
+also edits `acb_common/settings.py`, `routes/crm/flags.py`,
+`crm_sync/scheduler.py`, the two start-over tuples, the generated phases and
+`work_plan.md` §6. Item 7 also waits for the owner's flip of
+`crm.note_labels` to `on`.
+
+**Post-flip check (OWNER-GATE), not part of the build.** After the owner
+names one org in `CRM_DIGEST_ORGS`, the first digest of that org runs. Its
+credits come from `usage_event`, because the rate card of production lives
+in the Console database. The result goes into this section.
+
 #### 18.11.3 Verification
 
 - `bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"`
@@ -2911,6 +3649,123 @@ md5 with the label of an older text.
   The email and My Day features must behave as before.
 - `uv run python -m evals.crm_note_labels.run --scripted`
 - `uv run python scripts/affected_tests.py --run`
+- CRM-Q27 and CRM-Q28 add their new suites to the pytest line above, with no
+  test skipped. CRM-Q28 also runs
+  `npx tsc --noEmit && npx vitest run src/app/crm` in `workbench/control_plane`.
+
+### 18.12 Batches for 2026-10-17
+
+**Status (2026-10-16).** Specified, not built. Verified against code at
+`origin/main` `c4bef9ec0`. The spec audit of 2026-10-16 gave GO-NARROWED for
+both batches, and this section carries its narrowings.
+
+Two batches run on 2026-10-17. Inside a batch, a slice starts when each slice
+that it waits for has merged. Slices of one order number can run at the same
+time. Each slice takes its migration number at build time and checks it
+again at merge (R1). CRM-Q18-3, CRM-Q27 and CRM-Q28 each need one.
+
+**A narrow reviewer.** A slice that touches money, credits, tenancy or the
+sync engine gets a reviewer of its own for that one risk. That reviewer runs
+beside the usual diff review, not in its place. The tables name the risk.
+
+#### 18.12.1 Batch M, the mapping
+
+| Order | Ticket | Waits for | Narrow reviewer |
+|---|---|---|---|
+| 1 | CRM-Q18-1b | CRM-Q18-1 (merged) | Locks and tenancy: the plan lock, the start over |
+| 1 | CRM-Q17a-1b | CRM-Q17a-1 (merged) | The sync engine: the fill step, its cost, and "never hide a filled column" |
+| 2 | CRM-Q17a-2 | CRM-Q17a-1. Best after CRM-Q17a-1b | The sync engine: it edits `crm_sync/engine.py` and `routes/crm/export.py` |
+| 2 | CRM-Q18-2 | CRM-Q18-1b | None. The `visual-review` skill |
+| 2 | CRM-Q18-3 | CRM-Q18-1b and CRM-Q17a-1b | The sync engine: what a rule writes into a fixed column |
+| 3 | CRM-Q19 | CRM-Q18-1b and CRM-Q18-3 | The sync engine: the one path of a rule value. Tenancy: the preview route |
+| 4 | CRM-Q20-1 | CRM-Q19 | Credits: the decide calls, the token cap and the payer |
+| 5 | CRM-Q20-2 | CRM-Q20-1 | Tenancy: `overlays` on `GET /crm/mode` names only the modules of the bound org. The overlay itself only changes where a rail row points |
+| Later | CRM-Q20-3 | CRM-Q20-2 and CRM-Q25 | A stub, not dispatchable. Not in this batch |
+
+**Why this order.**
+
+- CRM-Q18-1b and CRM-Q18-3 both edit `core.FIELD_RULE_LOCK_SQL`. CRM-Q18-1b
+  goes first, because it is the smaller change and a fix.
+- CRM-Q18-3 reads `empty_columns`, and CRM-Q17a-1b changes what that gives
+  for a stale entity.
+- CRM-Q18-3 and CRM-Q19 both edit `mapping.apply_field_rules` and
+  `crm_sync/field_rules.py`, so CRM-Q19 goes after CRM-Q18-3.
+- CRM-Q20 is the largest piece. If the day ends first, CRM-Q20 moves to the
+  next batch, and nothing else waits for it.
+- No slice of batch M flips a flag. A flip of `CRM_FILL_RANK_ORGS` is
+  `enforcement-flip`. A flip of a `crm.map_*` mode waits for the open
+  question of CRM-Q20.
+
+**Which slices were dispatchable (check of 2026-10-16).**
+
+| Ticket | Dispatchable before this edit? | What this edit added |
+|---|---|---|
+| CRM-Q17a-2 | Yes | Nothing. The column limit of item 2 is `MAX_COLUMNS` (5, `lib/fields.ts`). Item 1 hides little until CRM-Q17a-1b ships |
+| CRM-Q18-2 | No. One sentence, and no done-when list | Items 1 to 10, Files, gate and size |
+| CRM-Q18-3 | No. Item 2 needs a mark on the rule that the code cannot find later | Items 3 to 9, the gate, the size and the migration |
+| CRM-Q19 | No. No Files line and no verification. Item 2 can read as an L, and item 4 names no count | The narrowed items 1 to 8, Files and verification |
+| CRM-Q20 | No. The wrong feature tuple after CRM-Q26, no kinds of rule, M + M with no split, and no Files line | The three kinds, the overlay read path (option A), the modes, the gate by `mode_for`, the schema hash, the split into CRM-Q20-1, CRM-Q20-2 and the stub CRM-Q20-3, Files, and one open question |
+
+#### 18.12.2 Batch I, the insights
+
+| Order | Ticket | Waits for | Narrow reviewer |
+|---|---|---|---|
+| 0 | CRM-Q25 | Nothing. It merges first, from `crm-insights` | Its own reviews are done |
+| 1 | CRM-Q24 | Nothing | The sync engine: the drop tally, the recovered count and `ZohoTieTooWide` |
+| 1 | CRM-Q25b | CRM-Q25 | None |
+| 1 | CRM-Q25c | Nothing | None |
+| 1 | CRM-Q26 on | The owner | Credits. An owner act, not a build |
+| 2 | CRM-Q27 | CRM-Q26 (merged) and CRM-Q25 | Tenancy: the new table, RLS, and a search that never crosses orgs. Money: vendor spend with no credit row. The sync engine: the step after each run |
+| 3 | CRM-Q28 | CRM-Q25, CRM-Q25b and CRM-Q27 | Credits: the spend of the top tier. Tenancy: numbers for the whole org, read only behind `require_crm_access`. The number check of item 9 |
+
+**CRM-Q26 on.** This is an owner act. An agent prepares it and stops.
+
+1. The owner puts the org id in `CRM_DECIDE_ORGS`.
+2. The owner adds `crm.note_labels=shadow` or `crm.note_labels=on` to
+   `DECIDE_FEATURE_MODES`. That setting holds the mode for each org in the
+   list.
+3. The check: the next sync run of the org logs a `crm.note_labels` line
+   with counts, and `crm_note_labels` gains rows.
+
+`shadow` and `on` store the same rows, and no route reads them in either
+mode (CRM-Q26 item 9). So `on` changes one thing only: CRM-Q28 item 7 reads
+the labels in `on` and not in `shadow`. The `enforcement-flip` grant does not
+cover this flip (§18.11.2).
+
+**Why this order.**
+
+- CRM-Q25b and CRM-Q28 need the code of CRM-Q25, and CRM-Q28 needs the CRM
+  zone of CRM-Q25b.
+- CRM-Q27 needs only the code of CRM-Q26, which is on `main`. The CRM-Q26
+  step does NOT run while its mode is `off`, because `scheduler.start_labels`
+  then starts nothing. So CRM-Q27 item 6 starts its own step when the label
+  mode is `off`, and CRM-Q27 does not wait for the flip.
+- CRM-Q27 waits for CRM-Q25, and CRM-Q28 runs after CRM-Q27, because of the
+  files they share (below).
+
+#### 18.12.3 The files that two slices share
+
+A slice that merges second takes the first one's change of a shared file,
+and runs the verification of both slices again.
+
+| File | Slices |
+|---|---|
+| `crm_sync/engine.py` | CRM-Q17a-2, CRM-Q19, CRM-Q24 |
+| `routes/crm/sync.py` and `SyncHealthCard.tsx` | CRM-Q19, CRM-Q24 |
+| `routes/crm/fields.py` | CRM-Q17a-2, CRM-Q25 |
+| `core.FIELD_RULE_LOCK_SQL` in `routes/crm/core.py` | CRM-Q18-1b, CRM-Q18-3 |
+| `mapping.apply_field_rules` and `crm_sync/field_rules.py` | CRM-Q18-3, CRM-Q19 |
+| `core.RESET_TABLES` and `settings._RESET_DELETES` | CRM-Q18-1b reorders them. CRM-Q27 and CRM-Q28 each add a table |
+| `crm_sync/scheduler.py` | CRM-Q20-1, CRM-Q27, CRM-Q28 |
+| `routes/crm/settings.py` | CRM-Q18-1b (the reset tuple), CRM-Q20-2 (`GET /crm/mode`), CRM-Q27 and CRM-Q28 (the reset tuple) |
+| `routes/crm/mapping_plans.py` | CRM-Q18-1b, CRM-Q18-3, CRM-Q19, CRM-Q20-1 |
+| `acb_common/settings.py`, `routes/crm/flags.py`, the generated phases and `work_plan.md` §6 | CRM-Q27, CRM-Q28 |
+| `crm_tools.py`, `addendum.py` and `test_tool_schema_diet.py` | CRM-Q25, CRM-Q25b (`crm_tools.py` only), CRM-Q27 |
+
+**The flips that this batch leaves to the owner.** A name in
+`CRM_DECIDE_ORGS`, the mode of `crm.note_labels`, a name in
+`CRM_NOTE_SEARCH_ORGS`, a name in `CRM_DIGEST_ORGS` and, later, a name in
+`CRM_DIGEST_EMAIL_ORGS`. Each one spends money or reaches a person.
 
 ---
 
