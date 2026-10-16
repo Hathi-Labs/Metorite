@@ -57,6 +57,10 @@ Five rules, each because the obvious implementation is wrong:
    layout, under its label. A row with ``is_system`` is not a custom field,
    and a retired or hidden field is left out. A picklist value exports as its
    option label. The Zoho custom fields of a Mirror org export the same way.
+   **An empty standard column is left out** (WS-53 CRM-Q17a-1,
+   ``crm_platform.md`` §18.9.3): for an org on ``CRM_FILL_RANK_ORGS``, each
+   key of ``fill_rank.empty_columns`` leaves the file. The layout serves the
+   same set through the same function. :data:`COLUMNS` itself never changes.
 
 5. **This endpoint writes NOTHING.** Not a nicety — the Zoho sync loop is
    RUNNING (spec header, corrected 2026-08-11) and ``core.mark_dirty_on_*``
@@ -126,6 +130,7 @@ from gateway.routes.crm.core import (
     router,
     row_to_dict,
 )
+from gateway.routes.crm.fill_rank import empty_columns
 from gateway.routes.crm.records import list_query
 from sqlalchemy import text
 
@@ -400,8 +405,12 @@ async def _export(
             raise _too_many(entity, len(rows), at_least=True)
         exported = [row_to_dict(r, entity.model) for r in rows]
         extra = await custom_columns(db, entity)
+        # CRM-Q17a-1: None outside CRM_FILL_RANK_ORGS, so the file keeps each column.
+        empty = set(await empty_columns(
+            db, getattr(user, "organization_id", None), entity.slug,
+        ) or ())
 
-    columns = COLUMNS[entity.slug]
+    columns = tuple(c for c in COLUMNS[entity.slug] if c[0] not in empty)
     return Response(
         content=csv_document(
             [header for _, header in columns] + [c.label for c in extra],

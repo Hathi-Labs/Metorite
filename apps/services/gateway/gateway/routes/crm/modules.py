@@ -31,6 +31,12 @@ allowlist, through ``core.list_contract``.
 * A mirrored generic target links to the generic record page of that record.
 * Any other target, or a record that is not here yet, stays plain text.
 
+**The fill rank** (CRM-Q17a-1, §18.9.3). For an org on
+``CRM_FILL_RANK_ORGS``, each field definition of the list and the record
+route carries ``fill`` and ``distinct`` from ``crm_field_fill``, with one
+read in the route's session. For any other org both are ``null``. The list
+shape of ``GET /crm/modules`` does not change.
+
 **Who may read.** Every route is on the CRM router, so the kill switch, the
 ``feature:crm`` gate and the CRM access rule hold. The tenant comes from the
 session that the router binds, never from the request. Each read runs in one
@@ -58,6 +64,7 @@ from gateway.routes.crm.core import (
     wire,
 )
 from gateway.routes.crm.fields import FieldDef
+from gateway.routes.crm.fill_rank import annotate, fills_for
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -265,12 +272,18 @@ def _field_def(row: Any) -> ModuleFieldDef:
     )
 
 
-async def _field_defs(db: Any, module: str) -> list[ModuleFieldDef]:
-    """The field definitions of a module (``module:<ApiName>``), by position."""
-    rows = (await db.execute(
-        text(_DEFS_SQL), {"entity": _mapping().module_entity(module)},
-    )).fetchall()
-    return [_field_def(r) for r in rows]
+async def _field_defs(
+    db: Any, module: str, org: str | None = None,
+) -> list[ModuleFieldDef]:
+    """The field definitions of a module (``module:<ApiName>``), by position.
+
+    With *org* on ``CRM_FILL_RANK_ORGS``, each carries ``fill`` and
+    ``distinct`` (CRM-Q17a-1).
+    """
+    entity = _mapping().module_entity(module)
+    rows = (await db.execute(text(_DEFS_SQL), {"entity": entity})).fetchall()
+    defs = [_field_def(r) for r in rows]
+    return annotate(defs, await fills_for(db, org, entity), module=True)
 
 
 def _lookup_ids(
@@ -389,7 +402,7 @@ async def list_module_records(
             ),
             {**query.params, "limit": query.limit, "offset": query.offset},
         )).fetchall()
-        defs = await _field_defs(db, module)
+        defs = await _field_defs(db, module, user.organization_id)
     return ModuleListResponse(
         rows=[_record(r).model_dump() for r in rows], total=int(total),
         field_defs=defs,
@@ -414,7 +427,7 @@ async def get_module_record(
         if found is None:
             raise HTTPException(status_code=404, detail="Record not found")
         record = _record(found)
-        defs = await _field_defs(db, module)
+        defs = await _field_defs(db, module, user.organization_id)
         links = await resolve_links(db, record, defs, mirrored)
     return ModuleRecordPage(
         module=_summary(row), record=record, field_defs=defs, links=links,

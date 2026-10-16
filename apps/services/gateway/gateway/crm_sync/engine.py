@@ -93,7 +93,7 @@ from gateway.crm_sources.base import (
     UntrustedHost,
 )
 from gateway.crm_sources.registry import mapping_for, source_class
-from gateway.crm_sync import field_rules, holds, profiles, runs
+from gateway.crm_sync import field_rules, fill, holds, profiles, runs
 from gateway.crm_sync.runs import CursorRow, RunLost, SyncRunning
 from gateway.routes.crm import access as crm_access
 from gateway.routes.crm import flags
@@ -2662,6 +2662,9 @@ async def _execute(ctx: _Ctx) -> None:
     await _relink_leads(ctx)
     await _deal_roles(ctx)
     await _module_records(ctx)
+    # CRM-Q17a-1 (§18.9.3): the fill rank, after the module step, at most once
+    # in 24 hours for each entity. Nothing runs outside CRM_FILL_RANK_ORGS.
+    await fill.refresh(ctx, every=DISCOVERY_EVERY)
 
 
 # ── The field rules (CRM-Q7a) ───────────────────────────────────────────────

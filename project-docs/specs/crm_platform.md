@@ -27,7 +27,7 @@
 > CRM-Q1 and CRM-Q2, discovery, the source profile and the deal pipelines
 > (2026-10-12, migration 247). The other slices are not built yet.
 >
-> **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12). CRM-Q8, filters and saved views (2026-10-12, migration 250). The Deals board stages fix (2026-10-12, §18.5). CRM-Q10, a reconnect never freezes the mirror (2026-10-13, §18, a production hotfix). CRM-Q15, a Zoho module that the account turned off no longer stops the sync (2026-10-15, §18, a production hotfix). CRM-Q16, hold a module and sync one module on its own (2026-10-15, §18.8, migration 269).
+> **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12). CRM-Q8, filters and saved views (2026-10-12, migration 250). The Deals board stages fix (2026-10-12, §18.5). CRM-Q10, a reconnect never freezes the mirror (2026-10-13, §18, a production hotfix). CRM-Q15, a Zoho module that the account turned off no longer stops the sync (2026-10-15, §18, a production hotfix). CRM-Q16, hold a module and sync one module on its own (2026-10-15, §18.8, migration 269). CRM-Q17a-1, the backend of the fill rank (2026-10-16, §18.9.3, migration 274). It is dark behind `CRM_FILL_RANK_ORGS`.
 >
 > **Specified, not built:** CRM-Q17a to CRM-Q22, a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9).
 >
@@ -2262,6 +2262,28 @@ spec audit of 2026-10-16 narrowed it.
 6. In Mirror mode, one route serves the source's plural and singular labels
    of the four core entities. In Native mode it serves none.
 7. An org outside `CRM_FILL_RANK_ORGS` gets none of items 2 to 6.
+
+**Built as** (2026-10-16, migration 274):
+
+- `crm_field_fill` holds one row for each `(organization_id, entity, key)`.
+  A custom field of a core entity has the key `custom.<key>`.
+- `crm_sync/fill.py` writes the numbers after the module step. The cursor
+  row `zoho:fill_rank` keeps the time of each entity, and the changes that
+  wait for the 24-hour bound. A field rule that a run applies or undoes also
+  changes its entity.
+- A value counts as filled unless it is NULL, empty, blank, `[]`, `{}` or
+  `false`. A Zoho checkbox sends `false` when nobody ticks it. The number 0
+  counts as filled.
+- `fill` is the share `filled / total`, from 0 to 1. `distinct` is the count
+  of different filled values. Both are `null` outside the list.
+- The layout carries `empty_columns`. The plain read is a bare list, so it
+  carries `fill` and `distinct` on each row, and no `empty_columns`. A joined
+  list column shows in both words, for example `company_id` and
+  `organization_name`.
+- `GET /crm/mode` carries `labels`, by API slug.
+- One statement on 30,000 module rows with 236 fields took 11.7 s in the R8
+  suite. Each statement runs under a 120 s `statement_timeout`. An entity
+  that fails waits 24 hours, and the run goes on.
 
 **CRM-Q17a-2 · The screens.** It waits for CRM-Q17a-1. Done when:
 
