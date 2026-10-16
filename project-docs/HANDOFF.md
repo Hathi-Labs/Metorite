@@ -55,18 +55,11 @@ nothing; the thing nobody wrote down costs a session.
 - **Why:** WS-38 phase 4. The code that makes the dev box the staging box is on
   `main` (`specs/staging_and_daily_release.md` §5.11). Four steps need the owner,
   because they are outside accounts and root on the dev box.
-- **Do this (owner), in order:**
-  1. DNS: add `A` records `dev` and `api.dev`, to `187.127.179.143`.
-  2. Make one Google OAuth client and one Microsoft Entra app for staging.
-     The redirect URIs are `https://dev.metorite.com/api/auth/callback/google`
-     and `https://dev.metorite.com/api/auth/callback/microsoft-entra-id`.
-  3. On the Customer Console, make the `Metorite Staging` organization with a
-     small credit cap, and copy its `cc_live_` key.
-  4. On the dev box, write those five values to `/root/staging.secrets` as
-     `NAME=VALUE` lines. The names are in the header of
-     `deploy/hostinger/bootstrap_staging.sh`. Then run:
-     `sudo bash /home/dev/Metorite/deploy/hostinger/bootstrap_staging.sh --secrets /root/staging.secrets`
-- **Then (agent):** add the key line that the bootstrap prints to
+- **Do this (owner):** follow `project-docs/STAGING_SETUP_RUNBOOK.md` parts A
+  to E. A browser session on the owner's PC can run them. They are the DNS
+  records, a Google client, a Microsoft app, a second Router key on
+  `hathi-labs-llp`, and the setup run in the hPanel browser terminal.
+- **Then (agent):** part F of the runbook. Add the key line that the bootstrap prints to
   `/home/acb/.ssh/authorized_keys` on the production box. Add
   `Match User acb` / `AllowStreamLocalForwarding no` to its sshd_config, run
   `sshd -t`, then reload ssh. Set

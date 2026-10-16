@@ -93,8 +93,8 @@ two things the owner asked to share.
 | **Edge router (DNS and Caddy)** | Same DNS zone, separate Caddy | Two explicit `A` records, `dev` and `api.dev`, point at the staging VPS. ⚠️ The zone has a `*.metorite.com` wildcard that sends every unknown name to the production box today. An explicit record wins over the wildcard. Each box runs its own Caddy with its own hostnames |
 | **Sign-in providers** | ✅ **Shared** | The same Google Cloud project and the same Microsoft Entra tenant, so a member sees the same sign-in. Staging gets its **own OAuth client** in each, with the redirect URI `https://dev.metorite.com/api/auth/callback/google` or `…/microsoft-entra-id`. §5.5 gives the reason |
 | **Session secret (`AUTH_SECRET`)** | ❌ **Separate** | A staging cookie must never open a production session. The cookies are host-only, so they do not cross `dev.` and `app.` in the browser either |
-| **Membership (who may sign in)** | ❌ **Separate rows, same people** | The nightly rebuild copies production's `app_user` and membership rows. The anonymiser keeps the real email for the staff allowlist (§3) and scrambles every other address. So staff sign in to staging with their own Google account, and a customer cannot |
-| **AI Router (Customer Console)** | ✅ **Shared** | Staging reaches the same Router through a private tunnel (§5.3), with its **own** `cc_live_` org key, for an internal organization named `Metorite Staging`. That organization has a credit cap. Spend on staging is metered, and it never bills a customer |
+| **Membership (who may sign in)** | ❌ **Separate rows, same people** | The nightly rebuild copies the `app_user` and membership rows of the kept organizations only (§5.11). Every other organization leaves no row. So staff sign in to staging with their own Google account, and a customer cannot |
+| **AI Router (Customer Console)** | ✅ **Shared** | Staging reaches the same Router through a private tunnel (§5.3), with its **own** `cc_live_` key. The runbook mints it on our own organization `hathi-labs-llp` (S-6). Spend on staging is metered, and it never bills a customer |
 | **Console sign-in resolve and seats** | ❌ **Off on staging** | `CUSTOMER_CONSOLE_RESOLVE_ENABLED` stays unset, and staging holds no `CUSTOMER_CONSOLE_DEPLOYMENT_KEY`. A staging sign-in must not allocate a seat on the production Console. This is a named parity exception |
 | **Console schema** | ❌ **Production clock only** | Staging never runs `apply_customer_console_migrations.sh`. One Console serves both deployments, so its ladder moves with `release` and with nothing else |
 | **Tenant database** | ❌ **Never shared** | A forward-only ladder (R6) on a shared database means staging writes production's schema 32 times a day. That is today's problem with one more step |
@@ -323,7 +323,7 @@ staging exists.
 |---|---|---|---|
 | **1. The daily clock** | `deploy.yml` stops deploying on each push and publishes `staging` only. A new `release-promote.yml` moves `release` at 21:30 UTC and deploys production. A person can run it by hand for a hotfix | an agent builds the PR. The owner approves S-A and S-B | **36 restarts a day becomes 1** |
 | **2. Make the scripts environment-aware** | `DEPLOY_ENV` in `vps_apply.sh`, `Caddyfile.staging`, the host names from configuration (S-3), the staging band (S-7) | an agent | none. The default is `production` |
-| **3. Prepare the outside accounts** | DNS: `A` records `dev` and `api.dev` to `187.127.179.143`. Google and Entra: one new OAuth client each, with the `dev.metorite.com` redirect URI. The Console: the `Metorite Staging` organization and its key (S-6) | **the owner**, about 30 minutes | none |
+| **3. Prepare the outside accounts** | DNS: `A` records `dev` and `api.dev` to `187.127.179.143`. Google and Entra: one new OAuth client each, with the `dev.metorite.com` redirect URI. The Console: a staging key on `hathi-labs-llp` (S-6). The steps are `STAGING_SETUP_RUNBOOK.md` | **the owner**, about 30 minutes | none |
 | **4. Bootstrap staging on the dev box** | one root script, `deploy/hostinger/bootstrap_staging.sh`, that an agent writes. It makes the `acb` user, the checkout, the containers, the slice, the tunnel unit and Caddy. The owner drops the staging secrets through `scripts/secrets.sh` | an agent writes it. **The owner runs it once with `sudo`** | none |
 | **5. Staging gates the clock** | the nightly anonymised rebuild (T-9), the smoke checks (S-8), and the §4.2 conditions in `release-promote.yml` | an agent builds. The owner approves the allowlist (S-C) | each release is now one that staging ran first |
 
@@ -456,6 +456,10 @@ its script does every one, and refuses to finish when one is missing.
 ### 5.11 The staging box and its nightly copy, as built 2026-10-16
 
 **Built, and not yet run.** The owner runs the bootstrap once (HANDOFF H-335).
+The steps, for a person or a browser session, are `STAGING_SETUP_RUNBOOK.md`.
+Its part D gives staging a second Router key on `hathi-labs-llp`, not a new
+`Metorite Staging` customer: the form for a new customer also grants seats and
+a trial.
 Each part below has its fence.
 
 | Part | Where | What it does | Fence |
@@ -496,7 +500,7 @@ are new. The phase column maps each row to §5.6.
 | **S-3** | 2 | **Host names from configuration.** ✅ **Closed 2026-10-16 with no code** (§5.9). Re-measured: no hard-coded host reaches a person from staging. The settings that S-5 must write are in §5.10 | §5.9 records each site and its reason | ✅ no code |
 | **S-4** | 2 | **`DEPLOY_ENV` in the apply script** (§5.4), with `Caddyfile.staging` | `caddy validate` passes on both files. `test_deploy_env.py` proves that `staging` installs neither the production Caddyfile nor the backup timer | 🟢 |
 | **S-7** | 2 | **The staging band.** ✅ **Built 2026-10-16** (§5.9). `DEPLOY_ENV=staging` in the root `.env`, which `vps_apply.sh` copies into the workbench `.env.local` before the build, draws a 4px `bg-warning` stripe and the `[Staging]` tab title | Visible on staging in light mode and at compact density. Absent on production. Fences: `deployEnv.test.ts` and `test_deploy_env.py` | ✅ built |
-| **S-6** | 3 | **The staging Router key.** The `Metorite Staging` organization on the Console, with a credit cap. Its `cc_live_` key goes on the dev box only | A chat turn on staging writes a usage row against `Metorite Staging` and no other organization | 🔴 owner (a write to the live Console) |
+| **S-6** | 3 | **The staging Router key.** A second `cc_live_` key on `hathi-labs-llp`, labelled `staging box (dev.metorite.com)` (runbook part D). Its key goes on the dev box only. ⚠️ Staging spend then lands in Hathi Labs' ledger with no cap of its own. A separate `Metorite Staging` customer would give one, and costs a seat grant and a trial. The owner decides which | A chat turn on staging writes a usage row against `hathi-labs-llp`, under the staging key's label, and against no customer | 🔴 owner (an admin operator mints the key) |
 | **S-5** | 4 | **`bootstrap_staging.sh`** (§5.2, §5.3, §5.5, and the duty list in §5.10) | `https://api.dev.metorite.com/health` answers. `/version` serves the `staging` SHA. `sudo -u dev cat /opt/acb/app/.env` is refused | 🟢 write · 🔴 owner runs it with `sudo` |
 | **T-9** | 5 | **The nightly rebuild**, with the §3 staff allowlist in the anonymiser. The anonymised dump moves from the production box to the dev box over a second forced-command key | as the parent spec §8 T-9. A staff member signs in to staging. A scrambled member cannot | 🟢 build · 🔴 run |
 | **S-8** | 5 | **Smoke checks.** The four §4.2 checks run after each staging deploy | A failed check blocks that SHA from promotion | 🟢 |

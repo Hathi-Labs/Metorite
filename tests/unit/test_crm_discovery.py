@@ -261,6 +261,27 @@ def test_daily_credits_by_edition(edition: str | None, licences: int | None,
     assert zm.daily_credits(edition, licences) == daily
 
 
+@pytest.mark.parametrize(
+    ("details", "edition"),
+    [
+        ({"paid": True, "paid_type": "enterprise"}, "enterprise"),
+        # DEWiN, 2026-10-16: Zoho One Enterprise holds CRM Enterprise.
+        ({"paid": True, "paid_type": "zohooneenterprise"}, "enterprise"),
+        ({"paid": True, "paid_type": "ZohoOneEnterprise"}, "enterprise"),
+        # A suite plan that the list does not name keeps the floor.
+        ({"paid": True, "paid_type": "crmplus"}, None),
+        ({"paid": False, "trial_type": None}, "free"),
+    ],
+)
+def test_the_edition_of_a_paid_type(details: dict[str, Any], edition: str | None) -> None:
+    assert zm.edition_of({"license_details": details}) == edition
+
+
+def test_zoho_one_enterprise_with_two_licences_gets_the_enterprise_budget() -> None:
+    org = {"license_details": {"paid": True, "paid_type": "zohooneenterprise"}}
+    assert engine.daily_budget(_with(zm.edition_of(org), 2)) == 5_200
+
+
 def _with(edition: str | None, licences: int | None = None) -> dict[str, Any]:
     return {"org": {"edition": edition, "licences": licences}}
 
