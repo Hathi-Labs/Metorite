@@ -166,7 +166,36 @@ async function mockKnowledge(page: Page, opts: MockOpts) {
     }
     return route.fulfill(json(404, { detail: "Not found" }));
   });
-  return { writes, pages };
+  /** Another member saves a new body meanwhile: one more version on the server. */
+  const bump = (id: string, body: string) => {
+    const p = pages.get(id) as KbPage;
+    p.body_md = body;
+    version(p, "edit");
+  };
+  return { writes, pages, bump };
+}
+
+/** Two published pages in Company, so the rail has a row to click away to. */
+function twoPages(): KbPage[] {
+  const v = (title: string, body: string): Version[] => [
+    { version: 1, title, body_md: "", reason: "create" },
+    { version: 2, title, body_md: body, reason: "edit" },
+  ];
+  return [
+    { id: "kp-a", space_id: SPACE_ID, parent_id: null, title: "Refund policy", body_md: "Thirty days.",
+      state: "published", versions: v("Refund policy", "Thirty days.") },
+    { id: "kp-b", space_id: SPACE_ID, parent_id: null, title: "Holidays", body_md: "Ten days.",
+      state: "published", versions: v("Holidays", "Ten days.") },
+  ];
+}
+
+/** Open page A in the editor and type into its body. */
+async function startTyping(page: Page) {
+  await page.goto("/knowledge/pages/kp-a");
+  await page.getByRole("button", { name: "Edit", exact: true }).click({ timeout: 30_000 });
+  const body = page.getByRole("textbox", { name: "Page body in Markdown" });
+  await body.fill("Typed text");
+  return body;
 }
 
 async function setup(page: Page, features?: string[]) {
@@ -321,5 +350,105 @@ test.describe("Knowledge spaces and pages", () => {
     await mockKnowledge(page, { level: "write", spacesStatus: 403 });
     await page.goto("/knowledge");
     await expect(page.getByText("You do not have access to Knowledge")).toBeVisible({ timeout: 30_000 });
+  });
+});
+
+test.describe("an edit is never lost in silence", () => {
+  test("a rail row asks first, and Keep editing keeps the text", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setup(page);
+    const kb = await mockKnowledge(page, { level: "write", pages: twoPages() });
+    const body = await startTyping(page);
+    const rail = page.getByRole("navigation", { name: "Knowledge spaces" });
+    await rail.getByRole("button", { name: "Holidays" }).click();
+    const ask = page.getByRole("dialog", { name: "Discard your changes?" });
+    await expect(ask).toBeVisible();
+    await ask.getByRole("button", { name: "Keep editing" }).click();
+    await expect(body).toHaveValue("Typed text");
+    await expect(page).toHaveURL(/\/knowledge\/pages\/kp-a$/);
+
+    // Discard leaves, and writes nothing.
+    await rail.getByRole("button", { name: "Holidays" }).click();
+    await page.getByRole("dialog", { name: "Discard your changes?" }).getByRole("button", { name: "Discard" }).click();
+    await expect(page.getByRole("heading", { level: 2, name: "Holidays" })).toBeVisible();
+    expect(kb.writes).toEqual([]);
+  });
+
+  test("the space link, New page and Cancel ask too", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setup(page);
+    await mockKnowledge(page, { level: "write", pages: twoPages() });
+    const body = await startTyping(page);
+    const ask = page.getByRole("dialog", { name: "Discard your changes?" });
+    for (const open of [
+      () => page.locator("article").getByRole("link", { name: "Company" }).click(),
+      () => page.getByRole("button", { name: "New page" }).first().click(),
+      () => page.getByRole("button", { name: "Cancel", exact: true }).click(),
+    ]) {
+      await open();
+      await expect(ask).toBeVisible();
+      await ask.getByRole("button", { name: "Keep editing" }).click();
+      await expect(ask).toHaveCount(0);
+      await expect(body).toHaveValue("Typed text");
+    }
+  });
+
+  test("closing the tab warns while the draft is dirty", async ({ page }) => {
+    await setup(page);
+    await mockKnowledge(page, { level: "write", pages: twoPages() });
+    await startTyping(page);
+    const dialog = page.waitForEvent("dialog");
+    await page.close({ runBeforeUnload: true });
+    const d = await dialog;
+    expect(d.type()).toBe("beforeunload");
+    await d.dismiss();
+  });
+
+  test("the draft comes back after the switch to the phone frame", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setup(page);
+    await mockKnowledge(page, { level: "write", pages: twoPages() });
+    await startTyping(page);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.getByRole("textbox", { name: "Page body in Markdown" })).toHaveValue("Typed text", { timeout: 15_000 });
+  });
+
+  test("no Revert while the editor is open", async ({ page }) => {
+    await setup(page);
+    await mockKnowledge(page, { level: "write", pages: twoPages() });
+    await page.goto("/knowledge/pages/kp-a");
+    await expect(page.getByRole("button", { name: "Revert to version 1" })).toBeVisible({ timeout: 30_000 });
+    await page.getByRole("button", { name: "Edit", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Revert to version 1" })).toHaveCount(0);
+  });
+});
+
+test.describe("a save never overwrites a newer version in silence", () => {
+  test("it stops, and Save anyway sends only what the member changed", async ({ page }) => {
+    await setup(page);
+    const kb = await mockKnowledge(page, { level: "write", pages: twoPages() });
+    await startTyping(page);
+    kb.bump("kp-a", "Their body");
+    await page.getByRole("button", { name: "Save changes" }).click();
+    const notice = page.getByRole("alert").filter({ hasText: "Someone saved a newer version" });
+    await expect(notice).toBeVisible();
+    expect(kb.writes).toEqual([]);
+    await notice.getByRole("button", { name: "Save anyway" }).click();
+    await expect(page.getByRole("heading", { level: 2, name: "Refund policy" })).toBeVisible();
+    expect(kb.writes.map((w) => `${w.method} ${w.path}`)).toEqual(["PATCH pages/kp-a"]);
+    expect(kb.writes[0].body).toEqual({ body_md: "Typed text" });
+  });
+
+  test("Reload drops the draft and shows the newer body", async ({ page }) => {
+    await setup(page);
+    const kb = await mockKnowledge(page, { level: "write", pages: twoPages() });
+    await startTyping(page);
+    kb.bump("kp-a", "Their body");
+    await page.getByRole("button", { name: "Save changes" }).click();
+    const notice = page.getByRole("alert").filter({ hasText: "Someone saved a newer version" });
+    await notice.getByRole("button", { name: "Reload" }).click();
+    await expect(page.locator(".cc-prose")).toContainText("Their body");
+    await expect(page.getByRole("textbox", { name: "Page body in Markdown" })).toHaveCount(0);
+    expect(kb.writes).toEqual([]);
   });
 });

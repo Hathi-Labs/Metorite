@@ -14,6 +14,7 @@ import {
   defaultSpaceChoice,
   pageCount,
   patchBody,
+  publishBody,
   reasonLabel,
   spaceIcon,
   stateLabel,
@@ -154,5 +155,17 @@ describe("the small words", () => {
     expect(spaceIcon({ icon: "Rocket", kind: "team" })).toBe("Rocket");
     expect(spaceIcon({ icon: "", kind: "company" })).toBe("Building2");
     expect(spaceIcon({ icon: "", kind: "me" })).toBe("Lock");
+  });
+});
+
+describe("the publish confirm", () => {
+  it("tells a member of a shared space that its readers will see the page", () => {
+    expect(publishBody({ kind: "company", name: "Company" })).toContain("Every reader of Company");
+  });
+
+  it("never tells the owner of a me space that others will read it", () => {
+    const words = publishBody({ kind: "me", name: "My notes" });
+    expect(words).not.toContain("Every reader");
+    expect(words).toContain("Only you");
   });
 });

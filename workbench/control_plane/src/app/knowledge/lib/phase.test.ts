@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest";
 
 import { KnowledgeError } from "./api";
-import { pageRefusal, spacesPhase, spacesRefusal } from "./phase";
+import { pageRefusal, signInAgainHref, spacesPhase, spacesRefusal } from "./phase";
 
 describe("the spaces read", () => {
   it("reads a 404 as the off state", () => {
@@ -18,9 +18,18 @@ describe("the spaces read", () => {
     expect(spacesRefusal(new KnowledgeError("Missing permission", 403))).toEqual({ kind: "no-feature" });
   });
 
+  it("reads a 401 as a session that ended, not as a server that did not answer", () => {
+    expect(spacesRefusal(new KnowledgeError("Unauthorized", 401))).toEqual({ kind: "signed-out" });
+    expect(spacesPhase({ data: { kind: "signed-out" }, loading: false, error: null })).toBe("signed-out");
+  });
+
+  it("sends a member who signs in again back to the page they were on", () => {
+    expect(signInAgainHref("/knowledge/pages/p1")).toBe("/signin?callbackUrl=%2Fknowledge%2Fpages%2Fp1");
+    expect(signInAgainHref("//evil.example")).toBe("/signin");
+  });
+
   it("leaves any other failure to the caller, as an error", () => {
     expect(spacesRefusal(new KnowledgeError("Bad gateway", 502))).toBeNull();
-    expect(spacesRefusal(new KnowledgeError("Unauthorized", 401))).toBeNull();
     expect(spacesRefusal(new Error("network"))).toBeNull();
   });
 });

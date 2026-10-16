@@ -24,6 +24,18 @@ describe("demoteHeadings", () => {
     expect(demoteHeadings(md)).toBe("```\n# a comment\nTitle\n===\n```\n## Real");
   });
 
+  it("moves a heading inside a quote or a list item down too", () => {
+    expect(demoteHeadings("> # Quoted")).toBe("> ## Quoted");
+    expect(demoteHeadings("- # Listed")).toBe("- ## Listed");
+    expect(demoteHeadings("1. # Num")).toBe("1. ## Num");
+    expect(demoteHeadings("> - # Deep")).toBe("> - ## Deep");
+    expect(demoteHeadings("> Quoted title\n> ===")).toBe("> Quoted title\n> ---");
+  });
+
+  it("leaves a list item or a quote that holds no heading", () => {
+    expect(demoteHeadings("- item\n> quote\n2. step")).toBe("- item\n> quote\n2. step");
+  });
+
   it("leaves no line that the renderer draws as an h1", () => {
     const out = demoteHeadings("# One\nTwo\n===\n  # Three");
     expect(out).not.toMatch(/^\s{0,3}#(?!#)/m);
