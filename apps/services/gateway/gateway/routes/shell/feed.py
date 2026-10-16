@@ -72,6 +72,11 @@ and ``tests/unit/test_shell_feed_r8.py``.
 app, so the client's carry keeps a failed source's own cards (§5.9 item 1).
 This file holds the why templates of all eleven MD-3 kinds. Fence:
 ``tests/unit/test_feed_task_kinds.py`` and ``test_feed_task_kinds_r8.py``.
+
+**People and chat** (MD-3f, §5.9 item 14) come from two gated sources, each
+its own app. ``people`` gives ``colleague_out`` and needs the HR grant.
+``chat`` gives ``agent_asks``, with no question text. Fence:
+``tests/unit/test_feed_people_chat_kinds.py`` and its ``_r8`` twin.
 """
 
 from __future__ import annotations
@@ -83,9 +88,11 @@ import hashlib
 import json
 import logging
 import math
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Any
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from acb_auth import UserContext, get_current_user
@@ -810,6 +817,142 @@ async def _crm(user: UserContext) -> Found:
 # MY_DAY_PROVIDERS lists it (§5.8 item 1). The source id is the app id, so
 # the carry needs no `source` field, and it has no Handled read.
 register(Provider("crm", ("crm",), _crm, CRM_KINDS, needs=False, gated=True))
+# ── People and chat (§5.9 item 14, MD-3f, feed only, gated) ─────────────────
+#
+# `people` gives `colleague_out`: a co-assignee of a task with a block today
+# is away all day today. It calls three reads, one after another, and each
+# opens its own tenant session (R5b): `get_user_settings`, `my_calendar` and
+# `absences.away_on`. So it opens 3 sessions at most (§5.9 item 7).
+#
+# `chat` gives `agent_asks`: a question of a run that waits for the member,
+# in a room where the member can still send. It reads the chat app's own
+# list of the member's questions (one session), then the room of each thread
+# (one session each), one after another, 15 threads at most.
+
+#: The kinds of the two sources (§5.9 item 14).
+PEOPLE_KINDS = frozenset({"colleague_out"})
+CHAT_KINDS = frozenset({"agent_asks"})
+#: The threads whose room the chat provider checks, at most (§5.9 item 7).
+CHAT_THREADS = 15
+#: The prefix of an agent assignee (``projects/agent_dispatch.AGENT_PREFIX``).
+#: An agent is never "away", so it never gives `colleague_out`.
+AGENT_ASSIGNEE = "agent:"
+
+
+async def _people(user: UserContext) -> Found:
+    from gateway.routes.people.absences import away_on
+    from gateway.routes.projects.personal import my_calendar, zone_name
+    from gateway.routes.tasks.settings import get_user_settings
+
+    now = needs._now()  # the feed's one clock (needs._now)
+    settings = await get_user_settings(user=user)
+    zone = zone_name(getattr(settings, "timezone", None))
+    tz = ZoneInfo(zone)
+    today = now.astimezone(tz).date()
+    day0 = datetime.combine(today, time.min, tzinfo=tz)
+    tomorrow0 = datetime.combine(today + timedelta(days=1), time.min, tzinfo=tz)
+    # My open blocks of today, each with its assignees (`attach_assignees`).
+    day = await my_calendar(start=day0.isoformat(), end=tomorrow0.isoformat(), user=user)
+    me = str(user.email or "").strip().lower()
+    # Each co-assignee once, with the first task, by the start of its block.
+    shared: dict[str, str] = {}
+    for row in sorted(getattr(day, "rows", None) or [],
+                      key=lambda r: str(r.get("scheduled_start") or "")):
+        for who in row.get("assignees") or []:
+            email = str(who or "").strip().lower()
+            if not email or email == me or email.startswith(AGENT_ASSIGNEE):
+                continue
+            shared.setdefault(email, task_entity(str(row["id"]), row.get("title"))["label"])
+    away = await away_on(user, list(shared), today) if shared else {}
+    # `away_on` gives full absences only. The kind is checked again, so a
+    # change of that read can only narrow the card (§5.9 item 14).
+    out = [(email, away[email]) for email in shared
+           if (away.get(email) or {}).get("kind") in FULL_ABSENCES]
+    signals: list[Signal] = []
+    if out:
+        names = [str(info.get("name") or "").strip() or needs._who(email)
+                 for email, info in out]
+        title = (f"{names[0]} is away today" if len(names) == 1
+                 else f"{len(names)} colleagues are away today")
+        signals.append(Signal(
+            # The day's id, so the card folds into a Calendar card of today
+            # (§4.5), and a dismiss holds for this day only (§5.9 item 4).
+            signal_id=f"calendar:{today.isoformat()}", app="people", kind="colleague_out",
+            entity={"type": "day", "id": today.isoformat(), "label": "Today"},
+            title=title,
+            # The facts its template reads (§5.9 item 11), and no state fact.
+            facts={"out": names, "task": shared[out[0][0]]},
+            href=day_href(today),
+            acts=(link("open-day", "Open the day", day_href(today)),),
+            expires_at=_iso(tomorrow0),
+        ))
+    return Found([], 0, capped=False, signals=lambda: signals, zone=zone)
+
+
+def _chat_href(thread_id: str) -> str:
+    """The chat app's link that opens one thread (§5.9 rule 10.3)."""
+    return f"/chat?do=open-chat&fill.session={quote(thread_id, safe='')}"
+
+
+async def _chat(user: UserContext) -> Found:
+    from gateway.routes.agent import _resolve_room
+    from gateway.routes.chat import _my_waiting_asks
+    from orchestrator import pending_ask
+
+    if not pending_ask.durable_asks_enabled():
+        # CHAT_DURABLE_ASKS (WS-51) is off: no question is durable, so the
+        # source holds nothing to say. A refusal, not a failure.
+        raise needs.SourceAbsent("CHAT_DURABLE_ASKS is off")
+    org = str(getattr(user, "organization_id", None) or "").strip()
+    email = str(user.email or "").strip()
+    if not org or not email:
+        raise needs.SourceAbsent("no tenant or no member")
+    me = email.lower()
+    asks = await _my_waiting_asks(org, me)
+    if asks is None:
+        # A database error. An empty answer would hide each question (WS-51
+        # S5), so the source fails and the carry keeps its cards.
+        raise RuntimeError("the waiting questions could not be read")
+    threads = [(tid, row) for tid, row in asks.items()
+               if re.fullmatch(state.SIGNAL_ID_PATTERN, f"chat:{tid}")
+               and str(row.get("actor_email") or "").strip().lower() == me]
+    signals: list[Signal] = []
+    # The room check costs one session for each thread, so the provider
+    # checks CHAT_THREADS threads at most (§5.9 item 7). `capped` then says
+    # that some threads were not checked, so they may hold more cards.
+    for tid, row in threads[:CHAT_THREADS]:
+        # The rule of `list_pending_asks`: only while the member may send.
+        room = await asyncio.to_thread(_resolve_room, tid, email, org)
+        if room is None or not getattr(room, "can_send", False):
+            continue
+        agent = (str(row.get("newest_agent_name") or row.get("agent_name") or "").strip()
+                 or "An agent")
+        # The NEWEST question of the thread (§5.9 item 4). So a new question
+        # changes the state fingerprint, and a dismissed card comes back.
+        asked = _iso(row.get("newest_asked_at") or row.get("asked_at"))
+        ids = row.get("request_ids") or [str(row.get("request_id") or "")]
+        href = _chat_href(tid)
+        signals.append(Signal(
+            signal_id=f"chat:{tid}", app="chat", kind="agent_asks",
+            entity={"type": "chat", "id": tid, "label": agent},
+            # ⚠️ No question text: a model wrote it (§4.1, §5.9 item 14).
+            title=f"{agent} asked you a question",
+            facts={"waiting_since": asked, "request_ids": sorted(str(i) for i in ids)},
+            href=href, acts=(link("open-chat", "Open chat", href),),
+            at=asked,
+            expires_at=_iso(row.get("latest_expires_at") or row.get("expires_at")),
+        ))
+    return Found([], 0, capped=len(threads) > CHAT_THREADS,
+                 signals=lambda: signals[:PER_APP])
+
+
+# The gates (§5.9 item 14). Each is gated, so it runs only while
+# MY_DAY_PROVIDERS lists it (§5.8 item 1). Each source id is its app id, so
+# the carry needs no `source` field. `people` needs the HR grant: a member
+# without it gets the source `absent`, and the provider never runs.
+register(Provider("people", ("people", "tasks", "projects"), _people, PEOPLE_KINDS,
+                  needs=False, gated=True, permission="admin:members:read"))
+register(Provider("chat", ("chat",), _chat, CHAT_KINDS, needs=False, gated=True))
 
 
 # ── The templates (§4.2): code writes every why line ────────────────────────
