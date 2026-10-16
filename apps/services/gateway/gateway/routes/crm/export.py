@@ -134,7 +134,7 @@ from gateway.routes.crm.core import (
     row_to_dict,
 )
 from gateway.routes.crm.fill_rank import empty_columns
-from gateway.routes.crm.records import list_query
+from gateway.routes.crm.records import list_query, refuse_nul
 from sqlalchemy import text
 
 #: The most rows one export may contain.
@@ -235,6 +235,9 @@ class ExportParams:
         close_to: str | None = None,
         request: Request = None,  # type: ignore[assignment]
     ) -> None:
+        # CRM-Q25c: the one NUL guard of the list, before any SQL.
+        if request is not None:
+            refuse_nul(request.query_params.multi_items())
         self.q = q
         self.sort = sort
         self.direction = direction

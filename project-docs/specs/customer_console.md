@@ -12,6 +12,11 @@ are dark behind `DECIDE_ENABLED`.
 CP-13h, Jev through the AI/ML API reseller, is BUILT on branch `cp13-aimlapi`
 (2026-09-24). CP-13e to CP-13g are SPEC ONLY. **§6A.14** is the contract.
 
+🆕 **CP-EMB, the embedding door, is BUILT on branch `console-embed-door`
+(2026-10-17).** `POST /v1/embeddings` serves `tier-embed` on the AI/ML API
+account, and `kb_index` moves onto it. Migration 037 seeds the binding.
+**§6A.16** is the contract.
+
 🆕 **§4.3a is BUILT on branch `ai-call-attribution` (2026-10-10).** A
 background model call names its feature on the usage report, as
 `email.rule_match`. It has no flag, because it changes metadata only.
@@ -10659,6 +10664,133 @@ logs `router.dsml_chunk_unreadable` and sends a minimal copy of the chunk.
 - Five linear fences count the characters that the stream gives its regexes,
   and they read no clock. Two of them hold a closing tag open with 200 KB of
   whitespace.
+
+### 6A.16 CP-EMB · the embedding door — BUILT (2026-10-17)
+
+**Status:** BUILT 2026-10-17 on branch `console-embed-door`. Anchors
+verified against the code on 2026-10-17. Board row `WS-31`. Owner directive
+of 2026-10-16.
+
+**Built as.**
+
+- The route is `main.py::embeddings`, with `EmbeddingRequest` and
+  `EMBED_TASK`. It takes at most 128 texts, each 1 to 32,000 characters.
+  `dimensions` and `encoding_format` are a 422.
+- `router.litellm_target` holds the rewrite, and `router.embedding_vectors`
+  reads the answer. An answer it cannot read is a 502 after the row.
+- The migration is `037_embed_door.sql`. It seeds the binding with
+  `effective_from = now()` at the first deploy.
+- The client is `console_resolve.embeddings_on_console`, the eleventh
+  caller that `test_console_dependency_boundary.py` admits.
+- `kb_index/embed.py` sends the member that the run context holds. A
+  deployment-key box with no proven member sends nothing, and the caller
+  reads `None`.
+
+**The problem, in one line.** Production makes no vectors.
+`gateway/kb_index/embed.py` posts to the gateway's own `/v1/embeddings`.
+That route calls OpenAI with `OPENAI_API_KEY`, and production has no such key.
+So Knowledge search (WS-61) and CRM note search (CRM-Q27) both fail to embed.
+
+**The owner's call (2026-10-16).** Embeddings go through the AI/ML API
+account that Jev already uses (CP-13h, credential provider `aimlapi`). AI/ML
+API serves `text-embedding-3-small` at 1,536 dimensions, at an
+OpenAI-shaped `POST https://api.aimlapi.com/v1/embeddings`. This call is the
+commercial choice §6A.10c clause 4 keeps for the owner, so this ticket may
+seed the binding.
+
+**Scope.** Five items, and nothing else.
+
+1. **The door.** `aembedding` joins `router.SERVING_INVOCATIONS`. A new route,
+   `POST /v1/embeddings`, takes a TIER in `model` and resolves the `embed`
+   task. It uses `_serving_prelude`, so the auth, the org, the member rules
+   and the three walls are those of the image, speak and decide doors. It
+   reads the stored provider credential, and never an environment key. It
+   answers OpenAI-shaped vectors, and the answer names the tier and never the
+   model (D32.7).
+2. **The vendor host.** litellm knows no `aimlapi` provider for embeddings.
+   So the door sends `aimlapi/<model>` to litellm as `openai/<model>`, with
+   the host `https://api.aimlapi.com/v1`. `router.litellm_target` holds that
+   one rewrite, and the door is its only caller.
+3. **The meter.** Each served call writes one `usage_event` row with the
+   tokens the vendor reported, through `_record_completion`. The
+   `(tier-embed, embed)` card is `absorbed` (D19.2, G-4), so the call draws
+   no credit.
+4. **The seed.** The next free migration on the Console ladder seeds three
+   rows: the `tier-embed` binding to `aimlapi/text-embedding-3-small`, its
+   `model_capability` row with `aembedding`, and the `absorbed` tier card.
+   Each INSERT is guarded, so a replay changes nothing and never revives a
+   row the operator removed. Production gets the rows on deploy.
+5. **The client.** `kb_index/embed.py` posts to the Router door through the
+   one Console client, `acb_auth.console_resolve`. The function stays
+   `embed(texts, *, org, timeout)`, with 64-text batches and 1,536
+   dimensions. The member comes from the run context, as `acb_llm.routed`
+   reads it. No session stays open across the call.
+
+**Non-goals.**
+
+- The other embedding writers (`email_embeddings.py`, `wa_embeddings.py`,
+  `capability.py`, mem0) stay on the gateway's own `/v1/embeddings`. WS-45 S5
+  item 2 moves them, one at a time.
+- `infra/litellm/config.yaml` keeps its `text-embedding-3-small` route. This
+  ticket marks it unused by `kb_index` and deletes nothing.
+- No change to the balance wall. See the owner question below.
+- No chat or other task on an `aimlapi/` model through litellm.
+
+**Done when.** Each item names its fence (R7).
+
+| # | Done when | Fence |
+|---|---|---|
+| 1 | `aembedding` is in `SERVING_INVOCATIONS`, and the set stays inside `KNOWN_INVOCATIONS` | `test_customer_console_embed.py::test_aembedding_is_a_serving_verb` and `test_customer_console_tasks.py::test_the_operator_vocabulary_is_wider_than_the_serving_one` |
+| 2 | A served call answers one vector for each input, in order, and names the tier | `test_customer_console_embed.py::TestTheDoorServes` |
+| 3 | A bare model id, or an unbound tier, is a 400 with one `tier_unknown` refusal row | `test_customer_console_embed.py::TestTheDoorRefuses` |
+| 4 | The vendor call carries the stored `aimlapi` secret, `openai/<model>` and the AI/ML API host, and never an environment key | `test_customer_console_embed.py::test_the_vendor_call_uses_the_stored_credential` |
+| 5 | A served call writes one row with its tokens, `unit` `tokens` and 0 credits, and draws no ledger line | `test_customer_console_embed.py::TestTheMeterRecordsAndDrawsNothing` |
+| 6 | The ladder seeds the binding, the capability and the `absorbed` card, and a replay adds nothing | `test_customer_console_embed.py::TestTheSeed` |
+| 7 | A deployment-key call names its tenant through a proven member, as every door does | `test_customer_console_embed.py::test_the_deployment_key_serves_a_proven_member` |
+| 8 | `embed()` posts to the Console door with the run's member, in batches of 64 | `test_kb_chunk.py::test_embed_posts_to_the_console_door` and `::test_embed_sends_64_texts_at_most` |
+| 9 | A refusal, an outage, a timeout or an unwired box gives `[None] * len(texts)`, and never raises | `test_kb_chunk.py::test_every_failure_is_none_and_never_raises` |
+| 10 | The names the callers import stay: `BATCH`, `EMBED_DIMS`, `vector_literal`, `QUERY_EMBED_TIMEOUT_S` and the signature of `embed` | `test_kb_chunk.py::test_the_names_the_callers_import_stay` |
+| 11 | The route joins `METERING_EXEMPTION` with two edges | `test_customer_console_payments.py` |
+
+**Files.**
+
+- `apps/services/customer_console/customer_console/router.py`
+- `apps/services/customer_console/customer_console/main.py`
+- `infra/customer_console/<next free number>_embed_door.sql`
+- `packages/acb_auth/acb_auth/console_resolve.py`
+- `apps/services/gateway/gateway/kb_index/embed.py`
+- `infra/litellm/config.yaml` (one comment line)
+- Tests: `test_customer_console_embed.py` (new), `test_customer_console_tasks.py`,
+  `test_customer_console_decide.py`, `test_customer_console_payments.py`,
+  `test_customer_console_tier_pricing.py`, `test_kb_chunk.py`,
+  `test_kb_one_index.py`
+
+**Verify.** The Console suites are R8, so start a database first.
+
+```bash
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_customer_console_embed.py \
+  tests/unit/test_customer_console_tasks.py \
+  tests/unit/test_customer_console_tier_pricing.py \
+  tests/unit/test_customer_console_payments.py \
+  tests/unit/test_customer_console_resolve.py \
+  tests/unit/test_kb_chunk.py tests/unit/test_kb_one_index.py \
+  tests/unit/test_kb_search_r8.py \
+  tests/unit/test_console_dependency_boundary.py -q
+```
+
+**Gate.** 🟢 AGENT-SAFE to build. The owner made the commercial call on
+2026-10-16. The `aimlapi` key is already on the Console (CP-13h). The deploy
+and the first live call follow the dev-phase window (root `CLAUDE.md` §3a).
+
+**Size.** Small. One route, one migration of three INSERTs, one client
+function, and one changed post in the gateway.
+
+**Owner question, open.** With `CUSTOMER_CONSOLE_SPEND_GATE` on, an org at
+zero credits gets a 402 on this door too, and its index degrades. The door
+draws nothing, so the owner may want it outside the balance wall. Decide
+before the gate flips (`work_plan.md` A2).
 
 ## 6B. CP-11 in detail — credits, keys, and the hop that makes them real
 

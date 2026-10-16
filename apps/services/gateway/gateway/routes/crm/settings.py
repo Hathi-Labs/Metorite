@@ -120,6 +120,8 @@ _RESET_DELETES: tuple[str, ...] = (
     # CRM-Q26: the labels of the notes. With 0 records none can exist, and the
     # list names every table of the start over.
     "crm_note_labels",
+    # CRM-Q27: the vectors of the notes, on the same terms.
+    "crm_note_vectors",
     # CRM-Q6a: the reset deletes the module cursors below, so a generic record
     # that lands after the count must not stay without its cursor.
     "crm_module_records",

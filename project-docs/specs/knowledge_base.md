@@ -554,15 +554,17 @@ title in guillemets and a `full_id:` line, so the pill renders (§8.3).
 
 ### 6.4 The embed door
 
-`kb_index.embed(texts)` is the one function that makes a vector. It posts
-over HTTP to `{litellm_base_url}/v1/embeddings` with the platform bearer,
-the same door `email_embeddings.py` uses, with `text-embedding-3-small` at
-1536 dimensions. It imports no `litellm` and no `openai`, so
-`test_no_direct_ai_vendor_calls.py` holds. It sends the service token, because the
-gateway's `/v1/embeddings` is not public, and `require_authenticated`
-refuses the `/v1` key on production (H-329). When WS-45 S5 gives the Router an
-embedding door on `tier-embed`, that door moves, and `kb_index` changes
-nothing.
+`kb_index.embed(texts)` is the one function that makes a vector. It imports
+no `litellm` and no `openai`, so `test_no_direct_ai_vendor_calls.py` holds.
+
+**Since 2026-10-17 it asks the Router (CP-EMB, `customer_console.md`
+§6A.16).** It posts `{"model": "tier-embed", "input": [...]}` to the
+Console's `POST /v1/embeddings` through `console_resolve`, the one Console
+client. The Router serves `text-embedding-3-small` at 1536 dimensions on the
+AI/ML API account. The member comes from the run context, so a background job
+must run inside `job_member_scope`. Before this, it posted to the gateway's
+own `/v1/embeddings`, which needs an OpenAI key that production does not
+hold.
 
 **A zero vector is a failure.** The door answers zero vectors when it has no
 key. `embed()` treats an all-zero vector as no vector: the chunk keeps a
@@ -576,9 +578,9 @@ select, compute with no session, write. A query embeds its words before it
 opens a session, with a 0.8 s limit. A failed embed waits for the next edit
 of the page. A sweep for missed chunks is KB-7b's loop.
 
-**The usage row waits for WS-45 S5.** Only the Customer Console writes
-`usage_event`, in its own database, and nothing serves an embedding through
-the Router yet. Until S5, each embed call writes one structured log line
+**The usage row.** The Router writes one `usage_event` row for each request,
+with the tokens. The `(tier-embed, embed)` card is `absorbed` (D19.2), so the
+row draws no credit. Each embed call also writes one structured log line
 with the org, the chunk count and the token estimate.
 
 The cost rule: a chunk is about 500 tokens. At the current `tier-embed` price,

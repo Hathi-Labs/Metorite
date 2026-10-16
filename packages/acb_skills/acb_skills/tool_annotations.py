@@ -144,6 +144,10 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "crm_list_modules":      {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     "crm_list_module_records": {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     "crm_get_module_record": {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-53 CRM-Q27: search of note text by meaning. It reads
+    # `GET /crm/notes/search` as the member. The query goes to the platform's
+    # own embed door, as for `search_company`.
+    "crm_search_notes":      {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     # WS-61 KR-2: company retrieval (`company_search_tools.py`). It reads
     # `GET /search/company` as the member, and nothing leaves the platform.
     "search_company":        {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
@@ -190,6 +194,8 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     "crm_list_modules",
     "crm_list_module_records",
     "crm_get_module_record",
+    # WS-53 CRM-Q27: the search of notes reads only, on the same terms.
+    "crm_search_notes",
     # WS-61 KR-2: company retrieval only reads, and only the orchestrator
     # holds it, behind COMPANY_SEARCH_ENABLED. So every risk block stays
     # byte-identical.

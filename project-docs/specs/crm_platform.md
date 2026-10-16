@@ -52,6 +52,13 @@
 > **Built later:** CRM-Q26, labels on CRM notes on the decide tier, dark
 > (2026-10-16, migration 278). See §18.11.
 >
+> **Built later, not merged:** Batch I, on the branch `crm-batch-i`
+> (2026-10-16, a fix round on 2026-10-17). CRM-Q24, a short read and the
+> lost activities on Sync health (§18.10, no migration). CRM-Q25b, one
+> time zone for each month and each date range (§18.11, no migration).
+> CRM-Q25c, a NUL byte answers 422 (§18.11, no migration). CRM-Q27, the
+> search of note text by meaning, dark (§18.11, migration 279).
+>
 > **Built from §19:** CRM-X4, the record page v2 (2026-10-12, §19.8).
 >
 > **Built from §20:** CRM-C2, one board (2026-10-13, §20.5). CRM-C3, stages
@@ -1253,10 +1260,10 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q21** | Promote a module into a core entity. §18.9 | P1 |
 | **CRM-Q22** | Source changes as suggestions, then a CSV source, then HubSpot. §18.9 | P2 |
 | **CRM-Q23** | Link a Zoho activity to a custom-module record, and show it there, in three slices (Q23a, Q23b, Q23c). §18.10 | P0 |
-| **CRM-Q24** | A short read shows on the Sync health card. §18.10 | P1 |
+| **CRM-Q24** | 🔨 built 2026-10-16 on `crm-batch-i`, not merged. A short read shows on the Sync health card. §18.10 | P1 |
 | **CRM-Q25** | The typed aggregate over every module and field, and its AI tool. §18.11 | P0 |
 | **CRM-Q26** | Labels on notes, on the decide tier, in shadow. §18.11 | P1 |
-| **CRM-Q27** | Search of note text by meaning. §18.11 | P2 |
+| **CRM-Q27** | 🔨 built 2026-10-16 on `crm-batch-i`, not merged, dark. Search of note text by meaning. §18.11 | P2 |
 | **CRM-Q28** | A weekly digest on the powerful tier. §18.11 | P2 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
@@ -3228,9 +3235,10 @@ owner flips.
 ### 18.10 Activities on a module record, and a short read that shows (CRM-Q23, CRM-Q24, 2026-10-16)
 
 **Status (2026-10-16).** CRM-Q23a (#1086, migration 275) and CRM-Q23b
-(#1098, no migration) are merged. CRM-Q23c and CRM-Q24: specified, not
-built. Verified against code at `origin/main` `c4bef9ec0`. Found on DEWiN's
-import (H-326, H-327).
+(#1098, no migration) are merged. The batch branch `crm-batch-i` holds
+CRM-Q24, with no migration, and nobody has merged it yet. CRM-Q23c:
+specified, not built. Verified against code at `origin/main` `c4bef9ec0`.
+Found on DEWiN's import (H-326, H-327).
 
 #### 18.10.1 What the import found
 
@@ -3470,11 +3478,66 @@ command, with `test_crm_sources_zoho.py` and `test_crm_sync_health_r8.py`
 added to it, and
 `npx tsc --noEmit && npx vitest run src/app/crm` in `workbench/control_plane`.
 
+**Built as (2026-10-16).** No migration. `short_by` is in the cursor state
+of each core entity and each generic module. A full read is a first import,
+a walk, a re-read of a module, a re-read for a field rule or the lead
+backfill. The last page of a full read writes `short_by`, and every other
+page keeps the old value. A full read with no provider count in its run
+keeps the old value too. So the value stays after a re-read for a field
+rule in an incremental run.
+
+A read over several runs keeps the mark `full_read` in its cursor. An
+activity read also keeps its drops so far under `read_drops`. The row
+`zoho:activity_drops` holds `drops` and `at` for each activity entity.
+
+`ZohoTieTooWide` has the code `tie_too_wide`. `engine.TIE_TOO_WIDE_CODE`
+names the same code, and a test pins the two, so the engine names no Zoho
+class. The client raises the error when the next page of a tie starts at
+`OFFSET_LIMIT` (2,000) or later and Zoho sent no page token. The engine
+counts `failed` on the entity and keeps the cursor. The next run reads the
+same tie again, so the tie costs about 10 credits in each run until a fix
+exists.
+
+The tie also STALLS the entity. No record after the tie syncs until Zoho
+changes those records, because each run stops at the same page. Fix round
+(2026-10-17): the engine sets `tie_too_wide` to 1 in the counts of the
+entity (`_Ctx.flag`), and Sync health passes it through in `last_run`. The
+card shows "Zoho changed more than 2,000 Deals records in the same second.
+Sync of Deals is paused until those records change." Fences:
+`test_item_7_a_tie_too_wide_counts_failed_and_never_ends_the_import` and
+`crmQ24.test.ts`.
+
+The recovery step counts a kept id that leaves the list after a read by
+ids. A resumed import does not carry `activity_recovered`, because the
+health read adds the count of each run row. `recovered_7d` also skips the
+runs before the last start over.
+
+The card shows a `dropped` line with the words "a module that Metorite does
+not sync" only for a module that the sync does not read. Fences:
+`test_crm_sources_zoho.py`, `test_crm_sync_engine.py`,
+`test_crm_sync_health_r8.py` and `crmQ24.test.ts`.
+
+Fix round (2026-10-17). The first build said that each drop on a synced
+module shows under `waiting`. That was false. `engine._note_dropped` keeps
+only a drop on a mirrored generic module, so a drop on Deals, Accounts,
+Contacts or Leads never reached `waiting`, and the card showed it nowhere.
+The overflow of a full wait list (`recover.CAP`, 5,000) showed nowhere too.
+The `activities` block now carries `unkept`, by module: each drop on a core
+module, and for a mirrored module with the overflow mark, its drops less its
+kept entries. The card shows a `dropped` line for each, for example "2 Zoho
+activities link to Deals records that are not in Metorite yet." The run
+that queues the overflow read clears the mark, and the read sets it again
+while the list is still full. So the overflow line can leave the card for
+one run. R8: `test_a_drop_on_a_core_module_is_unkept` and
+`test_the_overflow_of_a_full_wait_list_is_unkept`.
+
 ### 18.11 Insights on the mirrored data (CRM-Q25 to CRM-Q28, 2026-10-16)
 
-**Status (2026-10-16).** CRM-Q25: merged (#1104), no migration. CRM-Q26:
-merged (#1100, migration 278), dark. CRM-Q25b, CRM-Q27 and CRM-Q28:
-specified, not built. Verified against code at `origin/main` `634cf54ee`.
+**Status (2026-10-17).** CRM-Q25: merged (#1104), no migration. CRM-Q26:
+merged (#1100, migration 278), dark. CRM-Q25b, CRM-Q25c and CRM-Q27
+(migration 279, dark): built on 2026-10-16 in the batch branch
+`crm-batch-i`, with a fix round on 2026-10-17, not merged. CRM-Q28: specified, not built. Verified against
+code at `origin/main` `634cf54ee`.
 
 **Owner direction (2026-10-16, in chat).** Use the decide, balanced and
 powerful tiers to run inference on the CRM data and produce insights. Build
@@ -3579,7 +3642,7 @@ character in a query name or value gives 422. A number filter takes at most
 that is no real date, for example `2026-02-30`, counts as NULL. That check
 runs on each Postgres version, because `pg_input_is_valid` needs version 16.
 
-**Known difference, not fixed.** On a module, `created_month` and
+**Known difference, fixed by CRM-Q25b (2026-10-16).** On a module, `created_month` and
 `updated_month` take the month of the time in UTC. A Zoho time in IST just
 after midnight on the first day of a month falls in the month before. The
 date buckets of a field use the date that Zoho wrote, so they do not move.
@@ -3721,6 +3784,46 @@ Files: `routes/crm/aggregate.py`, `routes/crm/field_sql.py`,
 Waits for: CRM-Q25, merged as #1104.
 Verify with the commands of §18.11.3.
 
+**Built as (2026-10-16).** No migration. `field_sql.crm_zone` reads the zone
+of the newest profile through `personal.zone_name`, and a Native CRM gets
+UTC. `field_sql.zoned` gives the time of a `timestamptz` on the clock of the
+zone. The zone is the bound value `agf_zone`. The month groups of a module
+and of a core entity use it.
+
+A `datetime` value must be a full datetime with an offset, or it counts as
+NULL. So a value with no offset, or a date alone, now counts as NULL. Before
+this slice it gave a month. The range filter of a `datetime` field uses the
+same day as the bucket. The tool adds the line "Months count in the CRM time
+zone, <zone>." when the answer counts months. R8: six new tests in
+`test_crm_aggregate_fields_r8.py`.
+
+Not changed: the filter of one value, `field.<key>=<date>`, on a `datetime`
+field still reads the first 10 characters of the value. Item 4 names the
+range only.
+
+Fix round (2026-10-17). The rule is now one rule everywhere: a day that a
+member picks in the CRM is a day in the CRM zone. Before, the core
+`updated_month` read the CRM zone, but `updated_from` and `updated_to` read
+UTC. So "the deals updated in October, by month" gave a November group for
+DEWiN, and October came out short. `core.extra_filters` now starts and ends
+each `created_*` and `updated_*` day at midnight in the CRM zone, through
+`field_sql.day_start` and the bound `agf_zone`. The list, the pipeline, the
+export and the aggregate all use that one function, so a list and a total
+agree. `close_*` reads a `date` column and does not change. R8:
+`test_an_updated_range_and_its_months_read_one_clock`.
+
+The same round closed a 500. Python's zone database and the one of
+Postgres can differ, so a name that only Python knew made `AT TIME ZONE`
+fail. `crm_zone` now also asks `pg_timezone_names`, and a name that Postgres
+does not know gives UTC. The process keeps each answer in a cache. R8:
+`test_a_zone_that_only_python_knows_gives_utc`.
+
+The tool said "Months count in the CRM time zone" for a `date` bucket too,
+and a date takes no zone. The answer now carries `group_field_type`, and the
+tool says the line only for `created_month`, `updated_month` and a
+`datetime` bucket. Fences: `test_the_tool_names_the_zone_only_for_a_datetime_bucket`
+and `test_the_answer_names_the_type_of_the_group_field`.
+
 **CRM-Q25c · A NUL byte in a list query answers 422 (2026-10-16).** The
 verifier of the CRM-Q25 fix round found this on `origin/main`.
 `GET /crm/deals?q=%00` raises `CharacterNotInRepertoireError` from asyncpg,
@@ -3733,9 +3836,42 @@ Done when:
    `_refuse_nul`. It is not a second copy.
 2. A test sends `q=%00` and a NUL in a filter value to each route, and gets
    422. A mutation that removes the guard turns the test red.
+3. Added 2026-10-16, after a production check on DEWiN at 20:20 UTC. A
+   `sum`, `avg`, `min` or `max` of a field that holds no value in any row
+   gives `total` null and each group value null, not 0. The answer carries
+   `values`, the count of values that the measure read. A `count` stays a
+   number. `crm_aggregate` says "no values recorded for <field>" when
+   `values` is 0. An R8 test on a field that every row leaves empty, and one
+   mutation, prove it.
 
 Files: `routes/crm/records.py`, `routes/crm/aggregate.py` and
 `tests/unit/`. Gate: AGENT-SAFE. Size: S. Waits for: nothing.
+
+**Built as (2026-10-16).** No migration. `records.refuse_nul` is the one
+guard, and the `_refuse_nul` of `aggregate.py` moved there. `ListParams`
+calls it, so the four lists and the aggregate get it. `export.ExportParams`,
+the module list and `search_records` call it too. So the slice also changes
+`export.py` and `modules.py`, with one call in each. Those routes read their
+query string there.
+
+Fix round (2026-10-17). `GET /crm/pipeline` takes `owner`, `source` and
+`custom.<key>`, and it had no guard. `pipeline.get_pipeline` now calls
+`refuse_nul` before any SQL. The aggregate called the guard a second time,
+and `ListParams` already calls it, so that call is gone.
+
+`search_records` is no route. Its 422 makes the command bar leave the CRM
+group out, as a database error did before. The fence is
+`tests/unit/test_crm_nul_guard_r8.py`. Its first half reads the source, so
+it never skips. Verify with `uv run pytest tests/unit/test_crm_nul_guard_r8.py -q`,
+with no test skipped.
+
+Item 3 lives in `aggregate.py`. The route adds the count of values of each
+group. When the sum is 0, it sets each group value, `total` and `other` to
+null. A group with no value beside groups with values still gives 0 for
+`sum`, as CRM-Q25 item 2 says. `values` is null for `count`, `sum_amount`
+and `weighted`, because they read no field. The fence is
+`test_a_field_that_every_row_leaves_empty_has_no_total` in
+`test_crm_aggregate_fields_r8.py`.
 
 **CRM-Q27 · Search of note text by meaning.**
 
@@ -3855,6 +3991,66 @@ CRM-Q26 (merged, #1100) and CRM-Q25. CRM-Q25 also edits `crm_tools.py`,
 `tests/unit/test_tenant_coverage.py` and
 `tests/unit/test_kb_visibility_one_seam.py` added.
 
+**Built as (2026-10-16, batch branch `crm-batch-i`, not merged).**
+Migration 279 adds `crm_note_vectors`. `crm_sync/note_vectors.py` holds the
+step, and `scheduler.start_vectors` starts it. The step waits for the label
+step of the run, and it runs alone when the label mode is `off`. Fix round
+(2026-10-17): it also waits for a label step that an earlier run started and
+that still runs. `start_labels` answers None for that run, and the vector
+step started at once beside it. `scheduler._label_tasks` now holds the
+running label task of each org. Fence:
+`test_the_step_waits_for_a_label_step_of_an_earlier_run`.
+`routes/crm/note_search.py` holds the route, and `crm_search_notes` is the
+tool. `CRM_NOTE_SEARCH_ORGS` ships empty, so nothing runs for any org.
+
+The build made four choices that the list above does not name.
+
+- A request with no usable vector stops the step with the reason
+  `no_vectors`, because the door is down. Fix round (2026-10-17): such a
+  request of two or more notes writes NO failure row. Before, a one-day
+  outage parked about 1,700 notes for 7 days. A request of one note still
+  counts its failure, because it cannot tell an outage from a bad note. So
+  a bad note alone in the queue parks, and does not spend a request in each
+  run. Fence: `test_an_outage_parks_no_note`.
+- Fix round 2 (2026-10-17): a note with no text never goes out. The vendor
+  refuses an empty input for the whole request. So one note of whitespace
+  in a chunk gave no vector for the chunk, and the outage rule stopped the
+  step on the same chunk in each run, for ever. The SQL now leaves out a
+  note of ASCII whitespace only, as `note_text` strips it. The step marks
+  any other note whose `note_text` is empty with a row that has
+  `embedded_at` and no vector. An empty note is no error, so the mark
+  counts no failure. The note waits again only when its text changes, and
+  the search never finds it. Fence:
+  `test_a_note_with_no_text_never_blocks_a_chunk`.
+- A failure row clears the old vector, as a CRM-Q26 failure clears the old
+  label. So a row never pairs a new md5 with the vector of an older text.
+- The tool puts each snippet in the frame of `acb_skills/untrusted.py`,
+  because a person wrote the note.
+- Fix round (2026-10-17): the addendum names `crm_search_notes` in a
+  section of its own, gated on that one tool. The `crm` family section
+  renders for an agent that holds any CRM tool, and the orchestrator holds
+  12 of 13. Fence: `test_the_orchestrator_is_not_told_about_the_note_search`
+  in `test_crm_agent.py`, which renders the orchestrator's real scope.
+- A `limit` outside 1 to 20 gives 422, and so does a blank `q`. The query
+  goes to the embed door only and never to SQL, so the route needs no NUL
+  guard.
+
+A later slice can add a usage row at the call of the door in
+`note_vectors._embed`. That call already runs in `job_member_scope` with the
+payer of item 10. This build adds no usage row, because the billing
+question above is open.
+
+**The cost check.** This session had no web access, so the build did not
+read the vendor's price page again. The numbers below use the list price of
+record, USD 0.02 for each million tokens. The first pass of DEWiN's 18,674
+notes is at most 18,674 × 500 = 9.34 million tokens, so at most USD 0.19.
+At 5,120 notes a day, it takes 4 days (3.6 rounded up). One search costs
+one vector of the query, under 100 tokens. The log line `knowledge.embed`
+of each call gives the real estimate.
+
+R8: `tests/unit/test_crm_note_vectors_r8.py`, with the start over in
+`tests/unit/test_crm_reset_r8.py`. Hermetic: `tests/unit/test_crm_note_vectors.py`.
+
 **CRM-Q28 · A weekly digest on the powerful tier.**
 
 **The facts (code check of 2026-10-16).**
@@ -3971,9 +4167,13 @@ in the Console database. The result goes into this section.
 
 ### 18.12 Batches for 2026-10-17
 
-**Status (2026-10-16).** Specified, not built. Verified against code at
-`origin/main` `c4bef9ec0`. The spec audit of 2026-10-16 gave GO-NARROWED for
-both batches, and this section carries its narrowings.
+**Status (2026-10-17).** Batch I: CRM-Q25 merged (#1104). CRM-Q24,
+CRM-Q25b, CRM-Q25c and CRM-Q27 are built on the batch branch
+`crm-batch-i`, with a fix round on 2026-10-17, and are not merged.
+CRM-Q28 is not built. The owner flip of CRM-Q26 is not done. Batch M:
+specified, not built. Verified against code at `origin/main`
+`c4bef9ec0`. The spec audit of 2026-10-16 gave GO-NARROWED for both
+batches, and this section carries its narrowings.
 
 Two batches run on 2026-10-17. Inside a batch, a slice starts when each slice
 that it waits for has merged. Slices of one order number can run at the same

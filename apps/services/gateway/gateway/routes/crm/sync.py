@@ -46,9 +46,11 @@ COUNT_KEYS: tuple[str, ...] = ("organizations", "contacts", "leads", "deals", "a
 
 #: The keys of ``counts`` that are not an entity, so no Sync health row and
 #: no ``failed`` sum reads them. ``activity_drops`` counts the activities that
-#: the sync did not store, by parent module (CRM-Q23a). Mirrors
-#: ``engine.ACTIVITY_DROPS_KEY``, and a test pins the two.
-NOT_ENTITY_KEYS: frozenset[str] = frozenset({"activity_drops"})
+#: the sync did not store, by parent module (CRM-Q23a). ``activity_recovered``
+#: counts the kept activities that the recovery step linked, by parent module
+#: (CRM-Q24). They mirror ``engine.ACTIVITY_DROPS_KEY`` and
+#: ``engine.ACTIVITY_RECOVERED_KEY``, and a test pins each pair.
+NOT_ENTITY_KEYS: frozenset[str] = frozenset({"activity_drops", "activity_recovered"})
 
 
 class SyncStatusModel(BaseModel):
@@ -88,6 +90,34 @@ class HealthEntityModel(BaseModel):
     #: ``unmapped``: the values that a field rule found filled and could not
     #: map. A count only, so the shape of this route does not change.
     last_run: dict[str, int] = {}
+    #: CRM-Q24: Zoho's count minus our rows at the end of the last full read,
+    #: when above 0. The connected Zoho user cannot see those records. Null
+    #: when the read was whole, and for the activities.
+    short_by: int | None = None
+
+
+class HealthActivitiesModel(BaseModel):
+    """The activities that the mirror does not hold, and why (CRM-Q24).
+    Numbers only, never an id. A number that is 0 is left out."""
+
+    #: The activities that name no parent record, by activity entity
+    #: (``note``, ``task`` …), from the last full read of each.
+    parentless: dict[str, int] = {}
+    #: The activities of the last full reads whose parent module the sync
+    #: did not hold, by the Zoho API name of that module.
+    dropped: dict[str, int] = {}
+    #: The kept activities that wait for their parent record, by entity.
+    waiting: dict[str, int] = {}
+    #: The kept activities that linked in the runs of the last 7 days, by
+    #: the Zoho API name of the parent module.
+    recovered_7d: dict[str, int] = {}
+    #: The drops of a module that the sync reads, which no ``waiting`` entry
+    #: holds, by the Zoho API name of the module (CRM-Q24 fix round). The
+    #: sync keeps no drop of a core module (Deals, Accounts, Contacts,
+    #: Leads), so each one counts. A mirrored generic module counts only the
+    #: drops past a full wait list (``recover.CAP``). Without this number,
+    #: those drops show nowhere on the card.
+    unkept: dict[str, int] = {}
 
 
 class HealthModuleModel(BaseModel):
@@ -121,6 +151,8 @@ class SyncHealthModel(BaseModel):
     credits: HealthCreditsModel
     #: CRM-Q16: the hold entries of the org, by count key.
     holds: dict[str, HoldModel] = {}
+    #: CRM-Q24: the activities that the mirror does not hold.
+    activities: HealthActivitiesModel = HealthActivitiesModel()
 
 
 class StartedModel(BaseModel):
@@ -296,6 +328,125 @@ _MODULE_OURS_SQL = (
 )
 
 
+#: CRM-Q24: the ``activity_recovered`` counts of the runs that started in the
+#: last 7 days, and after the last start over, summed by module. The key is
+#: a bound parameter. A value that is not a whole number is skipped.
+_RECOVERED_7D_SQL = (
+    "SELECT e.key AS module, sum(CAST(e.value AS bigint)) AS n "
+    "FROM crm_sync_runs r CROSS JOIN LATERAL jsonb_each_text("
+    "CASE WHEN jsonb_typeof(r.counts -> CAST(:key AS text)) = 'object' "
+    "THEN r.counts -> CAST(:key AS text) ELSE '{}'::jsonb END) AS e "
+    "WHERE r.organization_id = CAST(:org AS uuid) "
+    "AND r.started_at > now() - interval '7 days' "
+    "AND r.started_at > COALESCE((SELECT reset_at FROM crm_settings "
+    "WHERE organization_id = CAST(:org AS uuid)), '-infinity'::timestamptz) "
+    "AND e.value ~ '^[0-9]{1,12}$' "
+    "GROUP BY e.key"
+)
+
+#: The cursor modules of the entities, ``zoho:<entity>``. A deleted list
+#: ends with this, and has no ``short_by``.
+_DELETED_SUFFIX = ":deleted"
+
+
+def _short_by_keys(cursors: dict[str, Any], engine: Any) -> dict[str, int]:
+    """``short_by`` of each count key, from the cursor of its entity (CRM-Q24).
+
+    Only a core entity that is not an activity and a generic module carry it.
+    Every other cursor row (the field rules, the module counts …) is skipped.
+    """
+    prefix = f"{engine.PROVIDER}:"
+    out: dict[str, int] = {}
+    for module, row in cursors.items():
+        if not module.startswith(prefix) or module.endswith(_DELETED_SUFFIX):
+            continue
+        entity = module[len(prefix):]
+        if entity in engine.ACTIVITY_TYPES:
+            continue
+        if entity in engine.SLUGS:
+            key = engine.SLUGS[entity]
+        elif entity.startswith(MODULE_KEY_PREFIX):
+            key = entity
+        else:
+            continue
+        value = _int((row.state or {}).get(engine.SHORT_BY_KEY))
+        if value is not None and value > 0:
+            out[key] = value
+    return out
+
+
+def _unkept(
+    dropped: dict[str, int], cursors: dict[str, Any], profile: Any, engine: Any,
+) -> dict[str, int]:
+    """The drops of a synced module that no kept entry holds (CRM-Q24 fix
+    round). See :attr:`HealthActivitiesModel.unkept`.
+
+    A core module is never kept (``engine._note_dropped``), so its whole
+    count is unkept. A mirrored generic module is unkept only when a kept
+    list overflowed for it, and then by the drops that the list does not
+    hold. A module that the sync does not read is not here: the card says
+    so through ``dropped``.
+    """
+    from gateway.crm_sources import registry
+    from gateway.crm_sync import recover
+
+    mapping = registry.mapping_for(engine.PROVIDER)
+    generic = {
+        str(m["api_name"]) for m in mapping.generic_modules(profile)
+        if m.get("mirrored") and m.get("api_name")
+    }
+    kept_by_module: dict[str, int] = {}
+    overflow: set[str] = set()
+    for entity in recover.ACTIVITY_ENTITIES:
+        row = cursors.get(engine.changed_module(entity))
+        state = row.state if row is not None else None
+        for entry in recover.entries_of(state).values():
+            kept_by_module[entry[0]] = kept_by_module.get(entry[0], 0) + 1
+        if (state or {}).get(recover.OVERFLOW_KEY):
+            overflow |= recover.overflow_modules_of(state)
+    out: dict[str, int] = {}
+    for module, n in dropped.items():
+        if module in generic:
+            left = n - kept_by_module.get(module, 0) if module in overflow else 0
+        elif module in mapping.MIRRORED_MODULES:
+            left = n
+        else:
+            left = 0
+        if left > 0:
+            out[module] = left
+    return out
+
+
+def _activities(
+    cursors: dict[str, Any], recovered: dict[str, int], engine: Any, profile: Any = None,
+) -> HealthActivitiesModel:
+    """The ``activities`` block of Sync health (CRM-Q24 item 10). Numbers only."""
+    from gateway.crm_sync import recover
+
+    drops_row = cursors.get(engine.ACTIVITY_DROPS_ROW)
+    parentless: dict[str, int] = {}
+    dropped: dict[str, int] = {}
+    for entity, by_module in engine.activity_drop_maps(
+        drops_row.state if drops_row is not None else None,
+    ).items():
+        for module, n in by_module.items():
+            if module == engine.NO_PARENT_MODULE:
+                parentless[entity] = parentless.get(entity, 0) + n
+            else:
+                dropped[module] = dropped.get(module, 0) + n
+    waiting: dict[str, int] = {}
+    for entity in recover.ACTIVITY_ENTITIES:
+        row = cursors.get(engine.changed_module(entity))
+        n = len(recover.entries_of(row.state if row is not None else None))
+        if n:
+            waiting[entity] = n
+    return HealthActivitiesModel(
+        parentless=parentless, dropped=dropped, waiting=waiting,
+        recovered_7d={k: v for k, v in recovered.items() if v > 0},
+        unkept=_unkept(dropped, cursors, profile, engine),
+    )
+
+
 def _run_model(row: Any) -> HealthRunModel:
     return HealthRunModel(
         kind=row.kind, status=row.status, started_at=row.started_at,
@@ -365,9 +516,19 @@ async def get_sync_health(
         body = profile.profile if profile is not None else None
         budget = engine.daily_budget(body)
         resumes = await runs.resumes_at(db, org, budget) if used >= budget else None
+        # CRM-Q24: the cursors hold the short reads, the drops of the last
+        # full reads and the kept activities. The runs hold the recoveries.
+        cursors = await runs.read_cursors(db, org, f"{engine.PROVIDER}:")
+        recovered = {
+            str(r.module): int(r.n or 0)
+            for r in (await db.execute(text(_RECOVERED_7D_SQL), {
+                "org": org, "key": engine.ACTIVITY_RECOVERED_KEY,
+            })).fetchall()
+        }
     counts = latest.counts if latest is not None else {}
     estimate = (latest.estimate if latest is not None else None) or {}
     module_ours = {k: v for k, v in ours.items() if k.startswith(MODULE_KEY_PREFIX)}
+    short = _short_by_keys(cursors, engine)
     entities = [
         HealthEntityModel(
             key=key,
@@ -375,8 +536,9 @@ async def get_sync_health(
             # A module with no row here has 0, not "no local table".
             ours=ours.get(key, 0 if key.startswith(MODULE_KEY_PREFIX) else None),
             last_run=_last_run_counts(counts.get(key)),
+            short_by=short.get(key),
         )
-        for key in _entity_keys(counts, {**module_ours, **estimate})
+        for key in _entity_keys(counts, {**module_ours, **short, **estimate})
     ]
     modules = [
         HealthModuleModel(
@@ -403,6 +565,7 @@ async def get_sync_health(
         running=live,
         credits=HealthCreditsModel(budget_24h=budget, used_24h=used, resumes_at=resumes),
         holds=_holds_out(hold_entries),
+        activities=_activities(cursors, recovered, engine, body),
     )
 
 

@@ -1899,12 +1899,14 @@ class TestTheProviderCallDispatchesOnTheCapabilityVerb:
         """Guessing `acompletion` is how audio reaches a chat endpoint. The
         capability table can legally name a verb no route serves yet.
 
-        ⚠️ `aembedding`, because §6A.10c clause 9 gave `aspeech` a door and
-        the Router may call it now. `aembedding` still has none, so it is
-        what an operator may WRITE and the Router may not CALL.
+        ⚠️ `atext_completion`, a real litellm verb that NO door serves.
+        This test named `aembedding` until CP-EMB (§6A.16, 2026-10-17) gave
+        it a door. The rule is unchanged: a verb outside the serving set
+        raises, and it never reaches litellm as an unchecked attribute.
         """
+        assert "atext_completion" not in router_mod.SERVING_INVOCATIONS
         with pytest.raises(router_mod.UnservableInvocation):
-            asyncio.run(router_mod._litellm_call(invocation="aembedding"))
+            asyncio.run(router_mod._litellm_call(invocation="atext_completion"))
 
     def test_the_named_verb_is_the_one_called(self, monkeypatch):
         import litellm
@@ -1941,16 +1943,16 @@ class TestTheProviderCallDispatchesOnTheCapabilityVerb:
         is what an operator may WRITE, and this slice added nothing to it.
 
         🔴 **§6A.10c clause 9's fence, row 10.** The two media verbs joined
-        the SERVING set, and the STRICT subset holds: `aembedding` has no
-        door, so the two sets must never become one.
+        the SERVING set. 📌 **CP-EMB (§6A.16, 2026-10-17) gave `aembedding`
+        its door**, so the gap closed and the two sets are equal today. The
+        rule that stays: the Router never serves a verb the operator cannot
+        write, so a new serving verb must join `KNOWN_INVOCATIONS` first.
         """
-        assert router_mod.SERVING_INVOCATIONS < catalog.KNOWN_INVOCATIONS
+        assert router_mod.SERVING_INVOCATIONS <= catalog.KNOWN_INVOCATIONS
         assert "atranscription" in router_mod.SERVING_INVOCATIONS
         assert "aimage_generation" in router_mod.SERVING_INVOCATIONS
         assert "aspeech" in router_mod.SERVING_INVOCATIONS
-        # The gap is what makes the two sets two. `catalog.check_invocation`
-        # accepts this verb and `_litellm_call` refuses it.
-        assert "aembedding" not in router_mod.SERVING_INVOCATIONS
+        assert "aembedding" in router_mod.SERVING_INVOCATIONS
 
 
 class TestTheEndpointHasNoTenantCaller:

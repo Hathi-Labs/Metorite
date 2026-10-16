@@ -630,6 +630,247 @@ async def test_no_row_of_org_b_reaches_org_a(mods, app_engine) -> None:
     assert [f["key"] for f in fields_a.json()][:2] == ["Unit_Price", "Qty"]
 
 
+# ── 7a. An empty field has no total (CRM-Q25c item 3) ────────────────────────
+
+
+async def test_a_field_that_every_row_leaves_empty_has_no_total(mods, app_engine) -> None:
+    """Found on DEWiN (2026-10-16): a sum over a field with no value gave a
+    total of 0, and the assistant told a member "the total is 0". With no
+    value, ``total`` and each group value are None, and ``values`` is 0. A
+    count stays a number."""
+    a = mods.org_a
+    with mods.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_field_defs (organization_id, entity, key, label, type, "
+            "source, provider_api_name, position) VALUES (CAST(:o AS uuid), "
+            "'module:Products', 'Discount', 'Discount', 'currency', 'zoho', "
+            "'Discount', 99)"), {"o": a})
+    for measure in ("sum", "avg", "min", "max"):
+        for group in ({"group_by": "owner"}, {"group_field": "Category"}):
+            body = await _agg(mods, a, entity="module:Products", measure=measure,
+                              field="Discount", **group)
+            assert (body["total"], body["values"]) == (None, 0), (measure, group)
+            assert {g["value"] for g in body["groups"]} == {None}, (measure, body)
+    # A field with values still sums them, and says how many it read.
+    full = await _agg(mods, a, entity="module:Products", measure="sum",
+                      field="Unit_Price", group_by="owner")
+    assert (full["total"], full["values"]) == (350.5, 2)
+    count = await _agg(mods, a, entity="module:Products", group_by="owner")
+    assert count["total"] == 4 and count["values"] is None
+
+
+# ── 7b. One zone for each month bucket (CRM-Q25b) ────────────────────────────
+
+#: One record made at 00:30 IST on 1 November 2026. Its UTC month is
+#: October. Zoho writes its datetime fields on the clock of the Zoho org.
+_INSTANT_UTC = "2026-10-31T19:00:00Z"
+_INSTANT_ZOHO = "2026-11-01T00:30:00+05:30"
+
+
+def _set_zone(p: Any, org: str, zone: str | None) -> None:
+    """Put ``org.time_zone`` in the profile, as ``mapping._org_summary`` does."""
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_source_profiles SET profile = profile || "
+            "jsonb_build_object('org', jsonb_build_object('time_zone', "
+            "CAST(:z AS text))) WHERE organization_id = CAST(:o AS uuid)"),
+            {"o": org, "z": zone})
+
+
+@pytest.fixture
+def zoned(ns):
+    """Org A and org B each mirror Products, with one record at the same
+    instant. The test names the zone of each profile."""
+    for org in (ns.org_a, ns.org_b):
+        _mirror_org(ns, org, [_module("Products")])
+        _defs(ns, org, "module:Products", [
+            ("Created_Time", "datetime", None, False, False),
+            ("Sales_Start", "date", None, False, False),
+        ])
+        with ns.admin_engine.begin() as c:
+            _record(c, org, "Products", "z1", "a@q25.test", {
+                "Created_Time": _INSTANT_ZOHO, "Sales_Start": "2026-11-01",
+            }, created=_INSTANT_UTC)
+    return ns
+
+
+async def _months(p: Any, org: str, **query: Any) -> tuple[list[Any], str]:
+    body = await _agg(p, org, entity="module:Products", **query)
+    return [(g["key"], g["value"]) for g in body["groups"]], body["zone"]
+
+
+async def test_the_crm_zone_moves_the_record_into_november(zoned, app_engine) -> None:
+    """Done-when 6, case 1: for a profile that names Asia/Kolkata, the
+    record falls in 2026-11 by created_month and by its datetime field."""
+    _set_zone(zoned, zoned.org_a, "Asia/Kolkata")
+    created = await _months(zoned, zoned.org_a, group_by="created_month")
+    assert created == ([("2026-11", 1)], "Asia/Kolkata")
+    field = await _months(zoned, zoned.org_a, group_field="Created_Time", bucket="month")
+    assert field == ([("2026-11", 1)], "Asia/Kolkata")
+    updated = await _months(zoned, zoned.org_a, group_by="updated_month")
+    assert updated[1] == "Asia/Kolkata"
+
+
+async def test_an_org_with_no_zone_counts_in_utc(zoned, app_engine) -> None:
+    """Done-when 6, case 2: the same record falls in 2026-10 for an org
+    with no zone, by both rules. Before CRM-Q25b the field said 2026-11."""
+    created = await _months(zoned, zoned.org_b, group_by="created_month")
+    assert created == ([("2026-10", 1)], "UTC")
+    field = await _months(zoned, zoned.org_b, group_field="Created_Time", bucket="month")
+    assert field == ([("2026-10", 1)], "UTC")
+
+
+@pytest.mark.parametrize("zone", ["Mars/Olympus", "America", "", "UTC'; DROP TABLE x; --"])
+async def test_a_zone_that_is_not_real_gives_utc(zoned, app_engine, zone: str) -> None:
+    """Done-when 6, case 3: a zone that is not a real one gives UTC, not an
+    error. A directory of the zone database is no zone."""
+    _set_zone(zoned, zoned.org_a, zone)
+    field = await _months(zoned, zoned.org_a, group_field="Created_Time", bucket="month")
+    assert field == ([("2026-10", 1)], "UTC")
+
+
+async def test_a_zone_that_only_python_knows_gives_utc(zoned, app_engine, monkeypatch) -> None:
+    """CRM-Q25b fix round, item 7. Python's zone database and the one of
+    Postgres can differ: a box can know ``localtime`` in one and not in the
+    other. Such a name made ``AT TIME ZONE`` fail, and the route answered
+    500. The Python check is made to pass here, so only the Postgres check
+    stands between the name and the statement."""
+    from gateway.routes.crm import field_sql
+    from gateway.routes.projects import personal
+
+    name = "Metorite/Not_A_Zone"
+    monkeypatch.setattr(personal, "zone_name", lambda tz: str(tz or "UTC"))
+    monkeypatch.setattr(field_sql, "_PG_ZONES", {})
+    _set_zone(zoned, zoned.org_a, name)
+    for query in ({"group_by": "created_month"},
+                  {"group_field": "Created_Time", "bucket": "month"}):
+        assert await _months(zoned, zoned.org_a, **query) == ([("2026-10", 1)], "UTC")
+    assert field_sql._PG_ZONES.get(name) is False
+    # A real zone still passes the Postgres check.
+    _set_zone(zoned, zoned.org_a, "Asia/Kolkata")
+    assert (await _months(zoned, zoned.org_a, group_by="created_month"))[1] == "Asia/Kolkata"
+
+
+async def test_a_datetime_range_agrees_with_the_bucket(zoned, app_engine) -> None:
+    """Done-when 4: a range on a datetime field takes its day in the CRM
+    zone, so the record that the bucket puts in November passes a November
+    range, and fails an October one. With no zone, the reverse."""
+    _set_zone(zoned, zoned.org_a, "Asia/Kolkata")
+
+    async def total(org: str, **ends: str) -> float:
+        query = {f"field.Created_Time.{k}": v for k, v in ends.items()}
+        return (await _agg(zoned, org, entity="module:Products", group_by="owner",
+                           **query))["total"]
+
+    assert await total(zoned.org_a, **{"from": "2026-11-01"}) == 1
+    assert await total(zoned.org_a, to="2026-10-31") == 0
+    assert await total(zoned.org_b, **{"from": "2026-11-01"}) == 0
+    assert await total(zoned.org_b, to="2026-10-31") == 1
+
+
+async def test_the_answer_names_the_type_of_the_group_field(zoned, app_engine) -> None:
+    """CRM-Q25b fix round, item 8: the tool names the zone for a datetime
+    bucket only, so the answer says which type it grouped."""
+    for key, kind in (("Created_Time", "datetime"), ("Sales_Start", "date")):
+        body = await _agg(zoned, zoned.org_a, entity="module:Products",
+                          group_field=key, bucket="month")
+        assert body["group_field_type"] == kind
+    plain = await _agg(zoned, zoned.org_a, entity="module:Products", group_by="owner")
+    assert plain["group_field_type"] is None
+
+
+async def test_a_date_field_keeps_the_day_that_zoho_wrote(zoned, app_engine) -> None:
+    """Done-when 3 and 7: a date has no time, so no zone moves it."""
+    _set_zone(zoned, zoned.org_a, "America/Los_Angeles")
+    for org in (zoned.org_a, zoned.org_b):
+        day = await _months(zoned, org, group_field="Sales_Start", bucket="month")
+        assert day[0] == [("2026-11", 1)], (org, day)
+        ranged = await _agg(zoned, org, entity="module:Products", group_by="owner",
+                            **{"field.Sales_Start.from": "2026-11-01"})
+        assert ranged["total"] == 1
+
+
+async def test_the_core_updated_month_takes_the_zone(zoned, app_engine) -> None:
+    """Done-when 2 and 7: a mirrored deal changed at 00:30 IST on 1 November
+    falls in 2026-11 by updated_month for an org in Asia/Kolkata, and in
+    2026-10 for an org with no zone. Its close month is a date, and no zone
+    moves it."""
+    _set_zone(zoned, zoned.org_a, "Asia/Kolkata")
+    with zoned.admin_engine.begin() as c:
+        for org in (zoned.org_a, zoned.org_b):
+            c.execute(text(
+                "INSERT INTO crm_deal_statuses (organization_id, name, position, "
+                "type) VALUES (CAST(:o AS uuid), 'Q25b open', 1, 'open')"), {"o": org})
+            c.execute(text(
+                "INSERT INTO crm_deals (organization_id, name, status_id, "
+                "ext_source, ext_id, ext_modified_at, expected_close_date) "
+                "SELECT CAST(:o AS uuid), 'Z deal', id, 'zoho', 'zd1', "
+                "CAST(:t AS timestamptz), DATE '2026-11-01' FROM crm_deal_statuses "
+                "WHERE organization_id = CAST(:o AS uuid) AND name = 'Q25b open'"),
+                {"o": org, "t": _INSTANT_UTC})
+    for org, month, zone in ((zoned.org_a, "2026-11", "Asia/Kolkata"),
+                             (zoned.org_b, "2026-10", "UTC")):
+        body = await _agg(zoned, org, entity="deals", group_by="updated_month")
+        assert ([(g["key"], g["value"]) for g in body["groups"]], body["zone"]) == (
+            [(month, 1)], zone)
+        close = await _agg(zoned, org, entity="deals", group_by="close_month")
+        assert [(g["key"], g["value"]) for g in close["groups"]] == [("2026-11", 1)]
+
+
+def _zoned_deals(p: Any) -> None:
+    """Two mirrored deals in each org. ``zd-nov`` changed at 00:30 IST on
+    1 November, and ``zd-oct`` at 01:30 IST on 1 October. In UTC both
+    times fall on the last day of the month before."""
+    with p.admin_engine.begin() as c:
+        for org in (p.org_a, p.org_b):
+            c.execute(text(
+                "INSERT INTO crm_deal_statuses (organization_id, name, position, "
+                "type) VALUES (CAST(:o AS uuid), 'Q25b open', 1, 'open')"), {"o": org})
+            for ext_id, at in (("zd-nov", _INSTANT_UTC),
+                               ("zd-oct", "2026-09-30T20:00:00Z")):
+                c.execute(text(
+                    "INSERT INTO crm_deals (organization_id, name, status_id, "
+                    "ext_source, ext_id, ext_modified_at) "
+                    "SELECT CAST(:o AS uuid), :e, id, 'zoho', :e, "
+                    "CAST(:t AS timestamptz) FROM crm_deal_statuses "
+                    "WHERE organization_id = CAST(:o AS uuid) AND name = 'Q25b open'"),
+                    {"o": org, "e": ext_id, "t": at})
+
+
+_OCTOBER = {"updated_from": "2026-10-01", "updated_to": "2026-10-31"}
+
+
+async def test_an_updated_range_and_its_months_read_one_clock(zoned, app_engine) -> None:
+    """CRM-Q25b fix round, item 1. "The deals updated in October, by month"
+    gives October only, for an org in Asia/Kolkata. Before the fix the
+    filter read UTC and the month read IST, so the answer held a November
+    group and October came out short. Org B has no zone, so UTC holds."""
+    _set_zone(zoned, zoned.org_a, "Asia/Kolkata")
+    _zoned_deals(zoned)
+    for org, month, zone in ((zoned.org_a, "2026-10", "Asia/Kolkata"),
+                             (zoned.org_b, "2026-10", "UTC")):
+        body = await _agg(zoned, org, entity="deals", group_by="updated_month", **_OCTOBER)
+        assert ([(g["key"], g["value"]) for g in body["groups"]], body["zone"]) == (
+            [(month, 1)], zone), org
+    # The list route takes the same rule, so the list and the total agree.
+    for org, names in ((zoned.org_a, ["zd-oct"]), (zoned.org_b, ["zd-nov"])):
+        res = await _call(zoned, _admin(org), "GET",
+                          "/crm/deals?" + urlencode(_OCTOBER))
+        assert res.status_code == 200, res.text
+        assert sorted(r["name"] for r in res.json()["rows"]) == names, org
+
+
+async def test_a_native_crm_counts_in_utc(zoned, app_engine) -> None:
+    """A Native CRM has no Zoho org, so a stale profile names no zone. The
+    route refuses a move from Mirror to Native, so the seed sets the mode."""
+    _set_zone(zoned, zoned.org_a, "Asia/Kolkata")
+    with zoned.admin_engine.begin() as c:
+        c.execute(text("UPDATE crm_settings SET mode = 'native' "
+                       "WHERE organization_id = CAST(:o AS uuid)"), {"o": zoned.org_a})
+    body = await _agg(zoned, zoned.org_a, entity="deals", group_by="updated_month")
+    assert body["zone"] == "UTC"
+
+
 # ── 8. 30,000 module rows ────────────────────────────────────────────────────
 
 _BULK = 30_000

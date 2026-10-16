@@ -27,6 +27,7 @@ functions below, so there is exactly one implementation of each rule.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -90,6 +91,24 @@ from gateway.routes.crm.pipeline import (
 from pydantic import BaseModel
 from sqlalchemy import text
 
+#: What a caller reads when a query name or value holds a NUL (CRM-Q25c).
+NUL_DETAIL = "A query name or value holds a NUL character."
+
+
+def refuse_nul(pairs: Iterable[tuple[str, str]]) -> None:
+    """A 422 for a NUL character in a query name or value (WS-53 CRM-Q25c).
+
+    Postgres text holds no NUL, so asyncpg refuses one later, and the route
+    answers 500. This is the ONE guard. Each CRM read that takes a query
+    string calls it before any SQL: :class:`ListParams` (the four lists and
+    the aggregate), ``export.ExportParams``, ``pipeline.get_pipeline``, the
+    module list and :func:`search_records`. Do not write a second copy.
+    Fence: ``tests/unit/test_crm_nul_guard_r8.py``.
+    """
+    for name, value in pairs:
+        if "\x00" in name or "\x00" in value:
+            raise HTTPException(status_code=422, detail=NUL_DETAIL)
+
 
 class ListParams:
     """The list contract's query parameters — declared once, bound four times.
@@ -123,6 +142,9 @@ class ListParams:
         close_to: str | None = None,
         request: Request = None,  # type: ignore[assignment]
     ) -> None:
+        # CRM-Q25c: each name and value, before any of them reaches SQL.
+        if request is not None:
+            refuse_nul(request.query_params.multi_items())
         self.q = q
         self.sort = sort
         self.direction = direction
@@ -597,6 +619,7 @@ async def search_records(
     ``Query`` object itself. It also reads no next activity and no count
     (``rows_only``), because the bar has 1.5 seconds for every app.
     """
+    refuse_nul([("q", q or "")])
     words = (q or "").strip()
     if not words:
         return []

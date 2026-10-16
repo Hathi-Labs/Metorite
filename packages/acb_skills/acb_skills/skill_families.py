@@ -172,14 +172,16 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "label": "CRM",
         "summary": (
             "Read the CRM as the member: records, fields, pipelines, deal "
-            "contacts, owners, reports, totals by group and stage dwell."
+            "contacts, owners, reports, totals by group, stage dwell and "
+            "notes by meaning."
         ),
         "description": (
             "Read-only CRM tools over the /crm routes, called as the acting "
             "member: list and open records with field labels, the fields, "
             "pipelines, deal contacts and owners, the four reports, "
-            "server-side totals by group, stage dwell, and the mirrored Zoho "
-            "modules. A member without CRM access gets a refusal."
+            "server-side totals by group, stage dwell, the mirrored Zoho "
+            "modules, and a search of note text by meaning. A member without "
+            "CRM access gets a refusal."
         ),
         "tools": (
             "crm_aggregate",
@@ -193,6 +195,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "crm_list_pipelines",
             "crm_list_records",
             "crm_report",
+            "crm_search_notes",
             "crm_stage_dwell",
         ),
         "core": False,

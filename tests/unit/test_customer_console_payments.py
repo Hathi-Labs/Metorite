@@ -164,18 +164,27 @@ FULFIL_ALLOW_LIST: frozenset[tuple[str, str]] = frozenset({
 #: it takes no `place_hold` edge. The argument holds word for word: the
 #: amount comes from the input tokens the vendor reported and a tier card the
 #: customer cannot reach.
+#:
+#: ⚠️ **`embeddings` joined it on 2026-10-17** (CP-EMB, `customer_console.md`
+#: §6A.16). It is the Router's sixth serving door, and it meters through the
+#: same `_record_completion`, so it takes the same TWO edges as `decide`. Its
+#: card is `absorbed` (D19.2), so the draw is zero today. The edge still
+#: exists, because the amount comes from a tier card the customer cannot
+#: reach, and the owner may price it.
 METERING_EXEMPTION: frozenset[tuple[str, str]] = frozenset({
     ("chat_completions", "store.add_credit"),
     ("audio_transcriptions", "store.add_credit"),
     ("images_generations", "store.add_credit"),
     ("audio_speech", "store.add_credit"),
     ("decide", "store.add_credit"),
+    ("embeddings", "store.add_credit"),
     ("chat_completions", "store.place_hold"),
     ("chat_completions", "store.release_hold"),
     ("audio_transcriptions", "store.release_hold"),
     ("images_generations", "store.release_hold"),
     ("audio_speech", "store.release_hold"),
     ("decide", "store.release_hold"),
+    ("embeddings", "store.release_hold"),
 })
 
 #: What the walk may cross. Five entries, two arguments, two fences.
@@ -977,19 +986,21 @@ class TestNoOrgKeyRouteWritesAnEntitlement:
             ("images_generations", "store.add_credit"),
             ("audio_speech", "store.add_credit"),
             ("decide", "store.add_credit"),
+            ("embeddings", "store.add_credit"),
             ("chat_completions", "store.place_hold"),
             ("chat_completions", "store.release_hold"),
             ("audio_transcriptions", "store.release_hold"),
             ("images_generations", "store.release_hold"),
             ("audio_speech", "store.release_hold"),
             ("decide", "store.release_hold"),
+            ("embeddings", "store.release_hold"),
         }) == METERING_EXEMPTION
-        assert len(METERING_EXEMPTION) == 11
+        assert len(METERING_EXEMPTION) == 13
         # 🔴 Every entry is still a ROUTER SERVING ROUTE. That is the
         # property the count alone cannot state, and the one that matters.
         assert {route for route, _ in METERING_EXEMPTION} == {
             "chat_completions", "audio_transcriptions",
-            "images_generations", "audio_speech", "decide",
+            "images_generations", "audio_speech", "decide", "embeddings",
         }
 
     def test_the_metering_exemption_is_still_needed_and_still_that_shape(self):
@@ -1027,6 +1038,9 @@ class TestNoOrgKeyRouteWritesAnEntitlement:
         assert "images_generations" in _org_key_routes()
         assert "main._record_completion" in edges["main.audio_speech"]
         assert "audio_speech" in _org_key_routes()
+        # CP-EMB's embedding door, carrying the same proof again.
+        assert "main._record_completion" in edges["main.embeddings"]
+        assert "embeddings" in _org_key_routes()
 
     def test_the_fence_actually_walks_into_the_store(self):
         """Guards the fence itself: a walk that stops at depth 1 proves nothing.
