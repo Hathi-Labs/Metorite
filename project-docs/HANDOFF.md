@@ -5304,8 +5304,10 @@ line — never reclaim a number by deleting the other entry.
 
 ### H-308 · Stop the copies of mail in the chat memory stores (EM-G11f3) · [AGENT]
 - **Check:** run the two commands. The entry stays while either one fails.
-  1. `git grep -n "add_episode" -- apps/services/gateway/gateway/routes/email`
-     must give no hit. A hit means that the email chat route still writes to Graphiti.
+  1. `git grep -nE "add_episode\(" -- apps/services/gateway/gateway/routes/email`
+     must give no hit. A hit means that an email route still writes to Graphiti.
+     The pattern needs the bracket, because a comment in `drafting.py` names
+     the function.
   2. `git grep -c "run_holds_mail" -- apps/services/gateway/gateway/routes/agent.py apps/services/gateway/gateway/main.py`
      must give a count for each of the two files. A file with no count still writes
      a turn that holds mail to Mem0 or to Graphiti, under the member key.
@@ -5325,7 +5327,7 @@ line — never reclaim a number by deleting the other entry.
   `main.py` too, after a spec-auditor finding
 - **Status:** 2026-10-16 · built on branch `gmail-chat-copies`, not merged.
   W10 (`POST /memory/{scope}/add`, which the chat posts to on unmount) is
-  not covered. §12.3.13.9.1 names it
+  not covered. H-334 holds it.
 
 ### H-309 · Create the WS-59 tasks in the Metorite project "Proactive Intelligence" · [AGENT]
 - **Check:** in a session with the Metorite MCP, run `search_tasks` with the
@@ -5725,6 +5727,27 @@ line — never reclaim a number by deleting the other entry.
   Add an R8 test with two currencies in one lane.
 - **Authority:** `specs/crm_app.md` (the reports routes), `specs/projects_ai_chat.md` §14.10.9
 - **Added:** 2026-10-16 · WS-27bm §14.10.9 B3 review
+
+### H-334 · W10: the chat's unmount save can copy mail into Mem0, so WS-7 keeps Mem0 off · [AGENT]
+- **Check:** `git grep -c "run_holds_mail" -- apps/services/gateway/gateway/routes/memory.py`.
+  No count means that this is open. ⚠️ While it is open, WS-7 must not turn
+  Mem0 on for any organization.
+- **Why.** `AgentChat` posts the turns of the default agent to
+  `/api/chat/memories` when its panel closes (`lib/chatMemorySave.ts`). The
+  BFF route calls the gateway's `POST /memory/{scope}/add`, and that route
+  calls the Mem0 client with the text of its caller (`routes/memory.py`).
+  An orchestrator turn that delegated to the email assistant can quote a
+  mail. No mailbox purge reaches the member key. PR-G8b (EM-G11f3) closed
+  W1 to W8 and left this writer, because the route has no session that the
+  server bound, so it cannot read the mail mark. It is latent while Mem0 is
+  off on production.
+- **Do this:** give the save a session that the server binds, and refuse the
+  write when `acb_skills.egress.run_holds_mail` holds for it. Or remove the
+  unmount save, because the gateway already extracts each turn at the run
+  end. Never take the session from the request body. Add a test to
+  `tests/unit/test_mail_copies_in_chat_stores.py`.
+- **Authority:** `specs/email_app_master_plan.md` §12.3.13.9.1 (W10) · PR-G8b review, fix round 1
+- **Added:** 2026-10-16 · PR-G8b (`gmail-chat-copies`), fix round 1
 
 # DONE — deleted, not archived
 
