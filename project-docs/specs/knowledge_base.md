@@ -9,9 +9,17 @@ Verified against the code on 2026-10-15.
 feature `knowledge`, the capability `knowledge:manage`, the pane at
 `preview`, the route gate, and the page scaffold with `AppTopBar`. The pane
 is hidden from the nav, and `/knowledge` renders by URL for a member with
-the feature. Nothing else is built. **§20 (D105, 2026-10-15)** adds company
+the feature.
+
+**KB-1 is BUILT, 2026-10-15** (branch `ws61-kb1`, migration 272, dark
+behind `KNOWLEDGE_ENABLED` and `KNOWLEDGE_ORGS`). Five tables: spaces,
+grants, pages, versions and links. The one visibility clause, the lazy
+`company` and `me` spaces, `knowledge:manage` on `admin`, and the 4 space
+routes and 9 page routes. No page file, chunk, gap or source yet.
+
+**§20 (D105, 2026-10-15)** adds company
 retrieval across every app. **KR-1 and KR-2 are BUILT, 2026-10-15**
-(branch `ws61-kr1`, no migration). `gateway/retrieval/` holds the registry
+(PR #1069, no migration). `gateway/retrieval/` holds the registry
 of six sources and `GET /search/company`. The command bar reads the same
 registry. `search_company` is dark behind `COMPANY_SEARCH_ENABLED`.
 
@@ -235,11 +243,18 @@ to Markdown on every save. A page an agent writes is Markdown already. A page th
 and a `source_ref` to the document. The editor opens it read-only.
 
 **Each save is a version.** `kb_page_versions` is append-only and holds the
-full body, the author, and the reason (`edit`, `publish`, `agent_proposal`,
-`accept`, `revert`, `import`). The page view shows "Edited by Ravi, 2 days
-ago" and a history list. A revert is a new version.
+full body, the author, and the reason (`create`, `edit`, `publish`,
+`move`, `archive`, `restore`, `revert`, `agent_proposal`, `accept`,
+`import`). The page view shows "Edited by Ravi, 2 days ago" and a history
+list. A revert is a new version.
 
-**A page has a review date.** The default is 180 days after the last
+**A move to another space starts a new history.** The move sets
+`kb_pages.history_from` to its own version. A reader of the new space, and a
+revert, reach only the versions from that move on. So a draft written in
+`me` and then shared does not carry its private past. The author keeps the
+full history while the page is in their own `me` space.
+
+**A page has a review date.** Publish sets it to 180 days after the
 publish. A writer can set it per page. The My Day kind `doc_needs_review`
 fires when it passes (§9).
 
@@ -289,8 +304,10 @@ Every Knowledge table carries `organization_id` with FORCE RLS, bound at the
 `get_db()` seam (R5). Inside the tenant, one rule decides what a member sees:
 
 > A member sees a page when the page is `published` and the member holds a
-> `read` grant on its space. The author sees their own page in every state.
-> A named reviewer sees the draft.
+> `read` grant on its space. The author sees their own draft, also after it
+> is archived. A named reviewer sees the draft. The member sees every page
+> of their own `me` space. A manager of a space sees its archived pages,
+> except an archived draft of another author.
 
 One function holds it, `kb.core.visible_pages_clause(user)`. Every read calls
 it: the app, the chat tools, the search provider, the My Day provider and the
@@ -357,7 +374,8 @@ card. C is a hard-to-undo write with one card per act. X is not on chat.
 | `PATCH /knowledge/pages/{id}` | B | Edit the body or the title. One version |
 | `POST /knowledge/pages/{id}/publish` | B | Publish. Index in the same transaction |
 | `POST /knowledge/pages/{id}/move` | B | Change the space or the parent. Re-index when the space changes |
-| `POST /knowledge/pages/{id}/archive` | C | Archive. Leave the index |
+| `POST /knowledge/pages/{id}/archive` | C | Archive. Leave the index. A manager of the space still sees the page |
+| `POST /knowledge/pages/{id}/restore` | C | Return an archived page to the state it had before the archive, with a `restore` version. A restored published page gets a review date 180 days on. A manager of the space only |
 | `POST /knowledge/pages/{id}/revert` | B | A new version with an old body |
 | `POST /knowledge/pages/{id}/files` | B | Attach a file through `register_artifact` (§4.3) |
 | `GET /knowledge/files/{id}/{name}` | X | Serve one file. The MIME safelist and `nosniff` |
@@ -885,7 +903,7 @@ compact density, a changed accent, and four widths.
 |---|---|---|
 | `kb_spaces` | id, organization_id, slug, name, purpose, icon, kind (`company`, `team`, `me`, `agent`), owner_email, archived_at, created_at | grants in `kb_space_grants` |
 | `kb_space_grants` | §5.1 | — |
-| `kb_pages` | id, organization_id, space_id, parent_id, position, title, body_md, state, author_email, reviewers TEXT[], review_at, source_ref (document id or null), origin JSONB, published_at, archived_at, updated_at, created_at | inherits the space, plus the author and the reviewers of a draft |
+| `kb_pages` | id, organization_id, space_id, parent_id, position, title, body_md, state, author_email, reviewers TEXT[], review_at, history_from (§4.2), archived_from_state, source_ref (document id or null), origin JSONB, published_at, archived_at, updated_at, created_at | inherits the space, plus the author and the reviewers of a draft |
 | `kb_page_versions` | id, organization_id, page_id, version, body_md, title, author_email, reason, `via`, created_at | as the page |
 | `kb_page_files` | organization_id, page_id, artifact_id (→ `artifacts`), position, caption, created_by, created_at | as the page |
 | `kb_links` | §5.5 | as the page |
@@ -996,7 +1014,7 @@ its own branch, three or four in flight at most.
 | Ticket | What | Done when | Gate |
 |---|---|---|---|
 | **KB-0** ✅ BUILT 2026-10-15 | The feature (`FEATURES` and a `feature_catalog` row, in the shape of `144_crm.sql:558`), the capability `knowledge:manage` in `CAPABILITIES` (the owner holds it through `*`, and the admin seed is KB-1), the pane at `preview` with no job, `HREF_FEATURES` in `access.ts`, the page scaffold with `AppTopBar`, `PREVIEW_BAR_HOME`, the e2e `PAGES` and features mock, and the Preview row of `launch_surface.md` §2. No flag: a preview route renders by URL, and the nav entry stays hidden | `feature:knowledge` and `knowledge:manage` exist, and `test_org_access_control.py` proves both. `/knowledge` renders "Knowledge" as the one `h1`, by URL. `nav.test.ts`, `navAccessAgreement.test.ts` and `appBar.test.ts` pass. `seams.test.ts` gains no debt | AGENT-SAFE |
-| **KB-1** | Migration 272 (check at merge): `kb_spaces`, `kb_space_grants`, `kb_pages`, `kb_page_versions` and `kb_links`, in the tenancy shape of `268_artifacts.sql`, with the generated-phase lines for them. `kb_page_files` waits for KB-2a, `kb_chunks` for KB-3, `kb_gaps` for KB-4, and the source tables for KB-7. `kb_page_files.artifact_id` carries no foreign key, because the artifact sweep deletes registry rows. The seed of `knowledge:manage` onto `admin` in every org, and in `provision_org_roles`, in the shape of 207 §2. A pure `normalize_grant_subject` in `acb_auth/permissions.py`, which `core.validate_grant_subject` wraps as the 422. `visible_pages_clause`, over the member's email, `org` and the groups of `_MY_GROUPS_SQL`, with no copy of the project grant SQL. The `company` space made lazily with an `org` read grant, the `me` space on the member's first write, and `team-*` only by `POST /knowledge/spaces`, each race-free by a partial unique index. The 4 space routes and the 8 page routes of §5.3, behind `require_feature_router("knowledge")`, `KNOWLEDGE_ENABLED` and `KNOWLEDGE_ORGS` (404 when off). The chat manifest and its coverage test move to KB-4, with the skill | R8 against a real database. Two orgs, two spaces, one grant each: the other org and the other space see nothing. `test_kb_visibility_one_seam.py` is red-first, then green. After the ladder, `admin` holds `knowledge:manage`, and `manager` and `member` do not. A new org holds it too. Two concurrent first writes make one `me` space | AGENT-SAFE |
+| **KB-1** ✅ BUILT 2026-10-15 | Migration 272 (check at merge): `kb_spaces`, `kb_space_grants`, `kb_pages`, `kb_page_versions` and `kb_links`, in the tenancy shape of `268_artifacts.sql`, with the generated-phase lines for them. `kb_page_files` waits for KB-2a, `kb_chunks` for KB-3, `kb_gaps` for KB-4, and the source tables for KB-7. `kb_page_files.artifact_id` carries no foreign key, because the artifact sweep deletes registry rows. The seed of `knowledge:manage` onto `admin` in every org, and in `provision_org_roles`, in the shape of 207 §2. A pure `normalize_grant_subject` in `acb_auth/permissions.py`, which `core.validate_grant_subject` wraps as the 422. `visible_pages_clause`, over the member's email, `org` and the groups of `_MY_GROUPS_SQL`, with no copy of the project grant SQL. The `company` space made lazily with an `org` read grant, the `me` space on the member's first write, and `team-*` only by `POST /knowledge/spaces`, each race-free by a partial unique index. The 4 space routes and 9 page routes, the 8 of §5.3 and `restore`, behind `require_feature_router("knowledge")`, `KNOWLEDGE_ENABLED` and `KNOWLEDGE_ORGS` (404 when off). The chat manifest and its coverage test move to KB-4, with the skill | R8 against a real database. Two orgs, two spaces, one grant each: the other org and the other space see nothing. `test_kb_visibility_one_seam.py` is red-first, then green. After the ladder, `admin` holds `knowledge:manage`, and `manager` and `member` do not. A new org holds it too. Two concurrent first writes make one `me` space | AGENT-SAFE |
 | **KB-2a** | The Spaces view, the page tree, a Markdown editor with preview, publish, versions, files on a page through `register_artifact` (§4.3) | A member writes, publishes, attaches an image, reverts. The visual review passes in four contexts | AGENT-SAFE |
 | **KB-2b** | The TipTap editor over the same Markdown, links as pills with `[[`, the "Knowledge about this" component | The body round-trips through Markdown with no loss for the supported marks. A task shows its linked pages | AGENT-SAFE |
 | **KB-3** | `packages/acb_search`: chunking, the generated `tsv`, `embed()` through `/v1/embeddings` with a `usage_event`, `query()` with fusion, the index-on-publish hook, `GET /knowledge/search`, the Search view, the command-bar provider | A published page is found by an exact token and by a paraphrase. The embed door down returns the lexical half with `degraded`. `test_kb_one_index.py` holds | AGENT-SAFE to build. The embed flip spends credits: owner |
@@ -1304,5 +1322,5 @@ shapes were weighed against them.
 **Two notes from the KR review, 2026-10-15.** The R8 suite asserts tenant
 isolation for tasks and people, and the other four sources rest on their
 apps' own R8 suites. With the flag on, the persona's citation rule also
-moves from `[entity:uuid]` to the `full_id` line, because the legacy
-citation names tables that hold no rows.
+moves from `[entity:uuid]` to the `full_id` line. The legacy citation
+names tables that hold no rows.

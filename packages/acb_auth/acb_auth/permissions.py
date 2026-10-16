@@ -6,7 +6,7 @@ permission, and how grants + per-user overrides combine into a yes/no. The
 DB-backed side lives in :mod:`acb_auth.access`; the request-time side in
 :mod:`acb_auth.deps`.
 
-Spec: ``project-docs/specs/org_access_control.md`` §3.3–§3.4.
+Spec: ``project-docs/specs/org_access_control.md`` §3.3-§3.4.
 
 Grammar
 -------
@@ -54,8 +54,8 @@ other.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from typing import Iterable
+from collections.abc import Iterable
+from dataclasses import dataclass
 
 # ── Vocabulary ──────────────────────────────────────────────────────────────
 
@@ -168,8 +168,8 @@ CAPABILITIES: tuple[str, ...] = (
     # The Knowledge app's admin verb: make and remove spaces, change their
     # grants, archive, and connect an org-wide source. Writing a page needs a
     # space grant, not this. Argued in specs/knowledge_base.md §5.2. The owner
-    # holds it through `*`. Its seed onto `admin` is KB-1, through
-    # provision_org_roles, and no migration grants it yet.
+    # holds it through `*`. KB-1's migration (`kb_spaces` and its seed) grants
+    # it to `admin` in every organization and in provision_org_roles.
     "knowledge:manage",
 )
 
@@ -252,6 +252,49 @@ def validate_permission(raw: str) -> str:
         if not _SEGMENT_RE.match(seg):
             raise InvalidPermission(f"'{raw}': invalid segment '{seg}'")
     return p
+
+
+# ── Grant subjects ──────────────────────────────────────────────────────────
+
+#: An email subject: one ``@``, no whitespace, text on each side. The CHECK on
+#: ``kb_space_grants.subject`` (migration 272) refuses the same shapes, so a
+#: value this lets through cannot fail there as a 500.
+_EMAIL_SUBJECT = re.compile(r"[^@\s]+@[^@\s]+")
+
+def normalize_grant_subject(subject: str) -> str:
+    """The one grant subject grammar (D12), normalised, or ``ValueError``.
+
+    ``org`` | ``group:<slug>`` | an email address. It is the grammar of
+    ``tenancy_and_visibility.md`` §3.2, which rooms, Projects and the CRM
+    access rule already use. A second grammar would give two answers to "who
+    can see this".
+
+    The value is stored folded (R10), because every read compares folded.
+    This function is pure. ``gateway.routes.projects.core.validate_grant_subject``
+    wraps it as the HTTP 422, and Knowledge (``knowledge_base.md`` §5.1) calls
+    the same wrapper. Fence: ``tests/unit/test_grant_subject_grammar.py``.
+    """
+    value = (subject or "").strip()
+    if not value:
+        raise ValueError("A grant subject is required.")
+    if value == "org":
+        return value
+    if value.startswith("group:"):
+        slug = value[len("group:"):].strip()
+        if not slug:
+            raise ValueError("A group subject must name a group.")
+        return f"group:{slug.lower()}"
+    if "@" in value:
+        if not _EMAIL_SUBJECT.fullmatch(value):
+            raise ValueError(
+                f"'{subject}' is not an email address. An email subject has one "
+                "'@', no space, and text on each side."
+            )
+        return value.lower()
+    raise ValueError(
+        f"Unknown grant subject '{subject}'. "
+        "One of: 'org', 'group:<slug>', or an email address."
+    )
 
 
 # ── Matching ────────────────────────────────────────────────────────────────
@@ -383,7 +426,7 @@ class EffectiveAccess:
         """The feature slugs this principal may reach, in catalog order."""
         return tuple(f for f in FEATURES if self.can_use_feature(f))
 
-    def intersect(self, other: "EffectiveAccess") -> "EffectiveAccess":
+    def intersect(self, other: EffectiveAccess) -> EffectiveAccess:
         """Narrow this access by ``other`` — used for agent runs.
 
         An agent acts on behalf of a member and must never exceed them, so

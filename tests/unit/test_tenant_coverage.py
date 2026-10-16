@@ -232,6 +232,24 @@ def test_the_reach_tables_are_tenant_scoped(table: str) -> None:
     assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
 
 
+@pytest.mark.parametrize(
+    "table",
+    ["kb_spaces", "kb_space_grants", "kb_pages", "kb_page_versions", "kb_links"],
+)
+def test_the_knowledge_tables_are_tenant_scoped(table: str) -> None:
+    """WS-61 KB-1 (``knowledge_base.md`` §12 and §14). The spaces, grants,
+    pages, versions and links hold what one organization wrote down. None may
+    be exempt, and the committed policy phase must carry each (R5)."""
+    gen = _generator()
+    assert table in gen.discover_tables()
+    assert table not in gen.EXEMPT
+    assert table not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
 def test_generated_policies_carry_all_four_load_bearing_clauses() -> None:
     """FORCE, WITH CHECK and the missing-ok flag each have an incident behind
     them (saas_multitenancy_implementation.md §1.1). Drop any one and the

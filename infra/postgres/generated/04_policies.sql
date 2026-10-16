@@ -6,7 +6,7 @@
 --
 -- ENABLE + FORCE ROW LEVEL SECURITY + the policy. Instant — no scan. ⚠️ AND IT IS A CLIFF: the moment this applies, any connection that has not bound app.tenant_id reads ZERO ROWS. That is the fail-closed property working (§0.1). MT-1c must be deployed AND VERIFIED first, or the product goes dark.
 --
--- Tables in this phase: 168
+-- Tables in this phase: 173
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -1227,5 +1227,40 @@ ALTER TABLE reach_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reach_requests FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS reach_requests_tenant_isolation ON reach_requests;
 CREATE POLICY reach_requests_tenant_isolation ON reach_requests
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE kb_links ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kb_links FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS kb_links_tenant_isolation ON kb_links;
+CREATE POLICY kb_links_tenant_isolation ON kb_links
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE kb_page_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kb_page_versions FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS kb_page_versions_tenant_isolation ON kb_page_versions;
+CREATE POLICY kb_page_versions_tenant_isolation ON kb_page_versions
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE kb_pages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kb_pages FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS kb_pages_tenant_isolation ON kb_pages;
+CREATE POLICY kb_pages_tenant_isolation ON kb_pages
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE kb_space_grants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kb_space_grants FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS kb_space_grants_tenant_isolation ON kb_space_grants;
+CREATE POLICY kb_space_grants_tenant_isolation ON kb_space_grants
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE kb_spaces ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kb_spaces FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS kb_spaces_tenant_isolation ON kb_spaces;
+CREATE POLICY kb_spaces_tenant_isolation ON kb_spaces
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
