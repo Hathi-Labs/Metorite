@@ -1239,6 +1239,10 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q20** | The mapping pipeline on the decide tier, the suggestion in an empty slot, the panel and Undo. Replaces the CRM-Q7b proposer. §18.9 | P1 |
 | **CRM-Q21** | Promote a module into a core entity. §18.9 | P1 |
 | **CRM-Q22** | Source changes as suggestions, then a CSV source, then HubSpot. §18.9 | P2 |
+| **CRM-Q25** | The typed aggregate over every module and field, and its AI tool. §18.11 | P0 |
+| **CRM-Q26** | Labels on notes, on the decide tier, in shadow. §18.11 | P1 |
+| **CRM-Q27** | Search of note text by meaning. §18.11 | P2 |
+| **CRM-Q28** | A weekly digest on the powerful tier. §18.11 | P2 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
 
@@ -2342,6 +2346,111 @@ density, a changed accent and 375 px.
 - Frontend: `npx tsc --noEmit && npx vitest run src/app/crm` in
   `workbench/control_plane`.
 - Screens: the `visual-review` skill on each changed surface.
+
+### 18.11 Insights on the mirrored data (CRM-Q25 to CRM-Q28, 2026-10-16)
+
+**Status (2026-10-16).** Specified, not built. Verified against code at
+`origin/main` `02223e3e2`.
+
+**Owner direction (2026-10-16, in chat).** Use the decide, balanced and
+powerful tiers to run inference on the CRM data and produce insights. Build
+as much as possible the same day.
+
+#### 18.11.1 The rule: numbers come from SQL
+
+A model never adds up records, and it never writes SQL. A number that a
+member reads comes from one typed aggregate route. The model chooses a
+module, a measure, a field to group by and filters, by name. The route
+checks each name against the field definitions of the org, and it binds
+each value. Embeddings help the model find text. They never make a number.
+
+| Need | Mechanism | Tier |
+|---|---|---|
+| Totals, trends, aging and top lists | CRM-Q25, the typed aggregate over every module and field | No model in the query. The chat agent calls it |
+| Labels on note text | CRM-Q26, decide questions when a note arrives | Decide |
+| Search of note text by meaning | CRM-Q27, embeddings through `kb_index.embed` | Embedding model |
+| A weekly digest | CRM-Q28, a scheduled run over CRM-Q25 numbers | Powerful |
+| Questions in chat | The CRM agent with its tools (CRM-C7) | Balanced |
+
+#### 18.11.2 Tickets
+
+| Ticket | Slice | Gate | Size | Waits for |
+|---|---|---|---|---|
+| CRM-Q25 | The typed aggregate over every module and field, and its AI tool | AGENT-SAFE | M | — |
+| CRM-Q26 | Labels on notes, on the decide tier, in shadow | AGENT-SAFE | M | CRM-Q23a |
+| CRM-Q27 | Search of note text by meaning | AGENT-SAFE | M | CRM-Q26 |
+| CRM-Q28 | A weekly digest on the powerful tier | AGENT-SAFE | M | CRM-Q25 |
+
+CRM-Q27 and CRM-Q28 get their done-when lists in a later edit of this
+section. A flag flip to `shadow` or `on` for an org is gate
+`enforcement-flip`.
+
+**Not in scope.** A write to the source. A model that writes SQL. A number
+that comes from a model. A per-member record scope (§18.5, CRM-Q12).
+
+**CRM-Q25 · The typed aggregate.** Done when:
+
+1. `GET /crm/aggregate` also takes a generic module (`module:<ApiName>`) as
+   the entity. A module that the profile does not mirror gives 404.
+2. The measure can be `count`, or `sum`, `avg`, `min` or `max` of one field.
+   A field measure takes only a field of type number, decimal, currency or
+   percent.
+3. `group_by` can also name one field. A picklist, a boolean, a lookup and
+   the owner group by value. A date or a datetime groups by `month`,
+   `quarter` or `year`, given as `bucket`. Any other type gives 422.
+4. A filter can name a field with one value, or a date field with a range.
+   The core entities keep the list filters they have today.
+5. Each field name is checked against the field definitions of the org, or
+   of the module. A name never reaches the SQL text unchecked. Each value is
+   bound. A test sends names that try to inject SQL, and each one gives 422.
+6. An answer holds at most 50 groups, largest first, and one `other` total.
+   The statement runs under a LOCAL `statement_timeout` of 10 s.
+7. The AI tool `crm_aggregate` takes the new arguments.
+   `crm_list_fields` and the module record tools tell the model the legal
+   names and types.
+8. R8 tests cover a sum and a group on a module, a date bucket and a
+   filter. They also cover tenant isolation, and the time on 30,000 module
+   rows.
+
+Files: `routes/crm/aggregate.py`, `routes/crm/modules.py`,
+`routes/crm/fields.py`, the CRM tools module (`crm_tools.py`) and
+`tests/unit/`.
+
+**CRM-Q26 · Labels on notes, in shadow.** Done when:
+
+1. The decide registry (`gateway/decide_features.py`) gains the feature
+   `crm.note_labels`. It joins `FEATURES`, `REGISTERED` and `ON_FEATURES`,
+   and it starts `off` for every org.
+2. A migration (next free number at build time) adds the tenant table
+   `crm_note_labels`, with FORCE RLS. It holds the activity, the kind, the
+   need for action, the urgency, the confidence of each, and the time.
+3. After a sync run, a background step labels the new or changed notes. It
+   does so only for an org whose feature is `shadow` or `on`. It runs outside the run lock. It takes
+   at most 200 notes in one step.
+4. One decide request holds up to 5 notes, and 3 questions for each note.
+   The first question is a choice of kind: payment, site issue, commercial,
+   follow-up, internal or other. The second is a boolean, "needs action".
+   The third is a score of urgency with 3 levels. The state cuts each note body to 2,000
+   characters. A question names its note by path.
+5. In `shadow`, the labels are stored and shown nowhere. In `on`, the
+   timeline and CRM-Q25 can read them.
+6. Each step logs counts and request ids only, never note text. A 402
+   starts the cool-down of the registry, and the step stops.
+7. `evals/crm_note_labels/` holds synthetic notes with expected labels, and
+   it passes in `--scripted` mode.
+8. R8 tests cover the table and its RLS, and a step that labels notes
+   through a fake decide. They also cover the 200 cap, the feature `off`
+   path, and tenant isolation.
+
+#### 18.11.3 Verification
+
+- `bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"`
+- `uv run pytest tests/unit/test_crm_aggregate*.py tests/unit/test_crm_note_labels*.py tests/unit/test_crm_mirror_run_tools.py -q`,
+  with no test skipped.
+- `uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_feed_decide.py -q`.
+  The email and My Day features must behave as before.
+- `uv run python -m evals.crm_note_labels --scripted`
+- `uv run python scripts/affected_tests.py --run`
 
 ---
 
