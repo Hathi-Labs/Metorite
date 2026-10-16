@@ -1008,16 +1008,19 @@ async def status_report(project_id: str = "", make_report: bool = False) -> str:
         load_rows=load_rows, load_note=load_note, forecast=forecast,
     )
     text_lines = [legend(), *md]
-    if make_report:
-        # §14.10 (owner, 2026-10-16): code makes the report from these reads.
-        # The model copies no number, so it can drop or change none. Access is
-        # an intersection: the run must hold make_report itself, so an admin
-        # who turned the documents family off gets no file and no card.
-        from acb_skills.write_artifact import run_holds_tool
+    # Access is an intersection (§14.10): the run must hold make_report itself,
+    # so an admin who turned the documents family off gets no report file and
+    # no report card, and the tool never offers one.
+    from acb_skills.write_artifact import run_holds_tool
 
-        if not run_holds_tool("make_report"):
-            text_lines.append(REPORTS_OFF)
-            return "\n".join(text_lines)
+    holds_report = run_holds_tool("make_report")
+    if make_report and not holds_report:
+        # Final review P2: the member still gets the plain status report and
+        # its dashboard card below.
+        text_lines.append(REPORTS_OFF)
+    elif make_report:
+        # §14.10 (owner, 2026-10-16): code makes the report from these reads.
+        # The model copies no number, so it can drop or change none.
         from acb_skills.reports import make_report as _make_report
         from acb_skills.whatsapp_ui import current_run
 
@@ -1049,12 +1052,14 @@ async def status_report(project_id: str = "", make_report: bool = False) -> str:
             },
         )
     )
-    if not make_report:
+    if not make_report and holds_report:
         text_lines.append(
             "For a report the member can keep, call status_report again with "
             "make_report=true. Never save a report as a .md file. Then offer to "
             "comment on each at-risk task (one class B batch)."
         )
+    elif not holds_report:
+        text_lines.append("Offer to comment on each at-risk task (one class B batch).")
     return "\n".join(text_lines)
 
 

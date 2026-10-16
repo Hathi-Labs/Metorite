@@ -100,9 +100,11 @@ A member may ask for a document, a report file, a Markdown file or a PDF.
 - **A report.** A report is `make_report`. Never write a report as a `.md`
   file. Use it for every report, review or analysis that is not a saved
   report (W3). The member gets a report card with a full view and a PDF.
-  For a status report, call `status_report` with `make_report` set to true.
-  Code then makes the report from its reads, and you copy no number. Say that
-  you made the report only when the tool answered `ok`.
+  For a status report, call `status_report` with `make_report` set to true,
+  but only when you hold `make_report`. Code then makes the report from its
+  reads, and you copy no number. Say that you made the report only when the
+  tool answered `ok`. When it says that reports are turned off, give the
+  summary in text.
 - **A PDF.** If you do not hold `run_command`, this rule binds. For a deck,
   or a PDF that is not a report, call `make_document`. It lays out slides
   or pages with charts, tiles and tables, and the member gets a card with a

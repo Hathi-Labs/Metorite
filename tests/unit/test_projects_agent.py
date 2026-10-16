@@ -1231,8 +1231,9 @@ async def test_status_report_refuses_when_the_run_does_not_hold_make_report(
     monkeypatch, report_chat, run_tools,
 ) -> None:
     """Review P1 of #1064: access is an intersection. An admin who turned the
-    documents family off for projects-assistant gets no file and no card from
-    status_report(make_report=true), only the text and one clear line."""
+    documents family off for projects-assistant gets no file and no report
+    card from status_report(make_report=true), and one clear line. Final
+    review P2: the member keeps the dashboard card of a plain status report."""
     import importlib
 
     from skill_projects.views import REPORTS_OFF
@@ -1242,8 +1243,10 @@ async def test_status_report_refuses_when_the_run_does_not_hold_make_report(
     wa.derive_artifact_context(run_tools=run_tools)
     fake_gateway(monkeypatch, _detail_responder)
     text = await skill_projects.status_report(UUID, make_report=True)
-    assert text.endswith(REPORTS_OFF) and "| Ops | blocked | 3 | 1 |" in text
-    assert specs == []
+    assert REPORTS_OFF in text and "| Ops | blocked | 3 | 1 |" in text
+    assert "make_report=true" not in text
+    (card,) = specs
+    assert card["props"]["name"] == "statDashboard"
     assert not (root / "outputs").exists() or not any((root / "outputs").rglob("*"))
 
 
@@ -1275,14 +1278,32 @@ def test_status_report_says_it_has_a_side_effect() -> None:
     assert is_side_effect_tool("status_report") is True
 
 
-async def test_status_report_hands_the_model_no_spec_to_copy(monkeypatch) -> None:
+async def test_status_report_hands_the_model_no_spec_to_copy(
+    monkeypatch, report_chat,
+) -> None:
     """Review P1: a spec in the text is a spec the model can change. Without
     make_report=true the tool says how to ask for the report, and gives none."""
-    drawn(monkeypatch)
     fake_gateway(monkeypatch, _detail_responder)
     text = await skill_projects.status_report(UUID)
     assert "REPORT_SPEC" not in text and "Markdown artifact with write_artifact" not in text
     assert "make_report=true" in text and "Never save a report as a .md file" in text
+
+
+async def test_status_report_offers_make_report_only_to_a_run_that_holds_it(
+    monkeypatch, report_chat,
+) -> None:
+    """Final review P2: a run without make_report (documents off) is never
+    told to pass make_report=true, as the addendum gates REPORT_RULE."""
+    import importlib
+
+    wa = importlib.import_module("acb_skills.write_artifact")
+    _root, specs = report_chat
+    wa.derive_artifact_context(run_tools=frozenset({"emit_generative_ui"}))
+    fake_gateway(monkeypatch, _detail_responder)
+    text = await skill_projects.status_report(UUID)
+    assert "make_report" not in text
+    (card,) = specs
+    assert card["props"]["name"] == "statDashboard"
 
 
 async def test_status_report_puts_member_text_in_cells_so_no_check_refuses_it(
