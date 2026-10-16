@@ -684,3 +684,67 @@ class TestNoRouteReadsTheLabels:
             source = path.read_text(encoding="utf-8")
             assert "crm_sync import note_labels" not in source, path
             assert "crm_sync.note_labels" not in source, path
+
+
+# ── Item 11: the eval ───────────────────────────────────────────────────────
+
+
+class TestTheEval:
+    """``evals/crm_note_labels`` passes in ``--scripted`` mode, and each bar
+    fails on a run that breaks it (R7)."""
+
+    def _load(self):
+        from evals.crm_note_labels import checkers
+        from evals.crm_note_labels import run as eval_run
+        from evals.crm_note_labels.dataset import load_answers, load_notes
+
+        return checkers, eval_run, load_notes(), load_answers()
+
+    def test_the_scripted_run_passes_every_bar(self, capsys):
+        from evals.crm_note_labels import run as eval_run
+
+        assert eval_run.main(["--scripted"]) == eval_run.EXIT_PASS
+        assert '"passed": true' in capsys.readouterr().out
+
+    def test_without_scripted_the_run_cannot_start(self):
+        from evals.crm_note_labels import run as eval_run
+
+        assert eval_run.main([]) == eval_run.EXIT_NO_GO
+
+    def test_the_set_covers_each_kind_and_each_level(self):
+        _c, _r, notes, answers = self._load()
+        assert {n.expected.kind for n in notes} == set(nl.KIND_OPTIONS)
+        assert {n.expected.urgency for n in notes} == set(nl.URGENCY_LEVELS)
+        assert {n.expected.action for n in notes} == {True, False}
+        assert set(answers) == {n.id for n in notes}
+        assert any(len(n.body) > nl.BODY_CLIP for n in notes), "a long note to cut"
+
+    @pytest.mark.parametrize("part,value,bar", [
+        ("kind", {"choice": "other"}, "kind"),
+        ("action", {"probability": 0.1}, "action"),
+        ("urgency", {"score": 0, "level": "low"}, "urgency"),
+    ])
+    def test_a_wrong_answer_fails_its_bar(self, part, value, bar):
+        import copy
+
+        checkers, eval_run, notes, answers = self._load()
+        changed = copy.deepcopy(answers)
+        changed["pay-overdue"][part] = value
+        produced, problems = eval_run.run_scripted(notes, changed)
+        result = checkers.score(notes, produced, scripted=True, shape_problems=problems)
+        assert result.bars()[bar] is False and not result.passed()
+
+    def test_a_row_with_vendor_text_fails_no_text(self):
+        checkers, eval_run, notes, answers = self._load()
+        produced, _problems = eval_run.run_scripted(notes, answers)
+        produced["pay-overdue"] = {**produced["pay-overdue"], "kind_probabilities": {
+            "payment": 0.5, "Kestrel Chemicals": 0.5}}
+        assert checkers.score(notes, produced, scripted=True).bars()["no_text"] is False
+
+    def test_a_request_past_the_limits_fails_shape(self, monkeypatch):
+        checkers, eval_run, notes, answers = self._load()
+        monkeypatch.setattr(nl, "NOTES_PER_REQUEST", 6)
+        produced, problems = eval_run.run_scripted(notes, answers)
+        assert problems
+        assert checkers.score(notes, produced, scripted=True,
+                              shape_problems=problems).bars()["shape"] is False
