@@ -81,6 +81,7 @@ from gateway.routes.crm.core import (
     _tenant_session,
     actor,
     checked_uuid,
+    field_rule_key,
     router,
 )
 from gateway.routes.crm.flags import require_crm_mirror
@@ -946,19 +947,34 @@ async def suggest_field_rules(
         word, items, {c.key: c.type for c in candidates},
         {t.column for t in targets}, layout,
     )
+    from gateway.routes.crm import mapping_plans
+
     written: list[Any] = []
-    async with _tenant_session() as db:
-        await _require_mirror(db, org)
-        # In the lock order of the rule rows (one entity, so by field).
-        for proposal in sorted(kept, key=lambda k: k.field_api_name):
-            row = (await db.execute(text(_PROPOSE_SQL), {
-                "src": PROVIDER, "entity": word, "field": proposal.field_api_name,
-                "type": proposal.field_type, "version": stamp,
-                "column": proposal.target_column, "confidence": proposal.confidence,
-                "reason": proposal.reason,
-            })).first()
-            if row is not None:  # an admin decided the field during the call
-                written.append(row)
+    try:
+        async with _tenant_session() as db:
+            await _require_mirror(db, org)
+            # CRM-Q18-1b: every rule row first, in the one lock order, before
+            # the first write, as the PATCH does. Then the writes go in the
+            # same order, by the one key of ``core.field_rule_key``.
+            await mapping_plans.lock_rules(db)
+            for proposal in sorted(
+                kept, key=lambda k: field_rule_key(word, k.field_api_name),
+            ):
+                row = (await db.execute(text(_PROPOSE_SQL), {
+                    "src": PROVIDER, "entity": word, "field": proposal.field_api_name,
+                    "type": proposal.field_type, "version": stamp,
+                    "column": proposal.target_column, "confidence": proposal.confidence,
+                    "reason": proposal.reason,
+                })).first()
+                if row is not None:  # an admin decided the field during the call
+                    written.append(row)
+    except DBAPIError as exc:
+        # A deadlock or a serialization failure is a 409 ``plan_busy``. The
+        # transaction rolled back, so the press wrote nothing.
+        conflict = _db_conflict(exc)
+        if conflict is not None:
+            raise conflict from exc
+        raise
     return FieldSuggestModel(
         entity=word, profile_version=version, asked=True,
         dropped=dropped + len(kept) - len(written), unread=unread,

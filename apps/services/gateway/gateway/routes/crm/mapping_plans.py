@@ -45,6 +45,9 @@ the provider through ``core.FIELD_RULE_LOCK_SQL`` (by entity, then field),
 and only then reads the profile or locks one row. The sync's ``mark_stale``
 locks through the same statement, so the two never wait in a cycle. A
 deadlock that still occurs is a 409 ``plan_busy``, and a retry is safe.
+CRM-Q18-1b: the statement sorts with ``COLLATE "C"``, and a writer of more
+than one rule row writes in the order of ``core.field_rule_key``. Those two
+orders are the same. The proposer of ``field_rules.py`` locks first too.
 
 **The first read builds version 1** from the approved rules of the org, under
 the unique index on ``(organization_id, version)``, so two first reads write
@@ -73,6 +76,7 @@ from gateway.routes.crm.core import (
     FIELD_RULE_LOCK_SQL,
     _tenant_session,
     actor,
+    field_rule_key,
     router,
 )
 from gateway.routes.crm.field_rules import (
@@ -387,8 +391,10 @@ async def _write_live_set(
             await db.execute(text(_LEAVE_SQL), {"id": str(row.id), "by": by})
         elif rule.target_column != row.target_column:
             await db.execute(text(_PARK_SQL), {"id": str(row.id)})
-    # 2. A rule enters on the row of its field, or on a new row.
-    for rule in fields:
+    # 2. A rule enters on the row of its field, or on a new row. The writes go
+    #    in the one key order of the lock (CRM-Q18-1b), so two writers that
+    #    insert new rows never wait on each other in a cycle.
+    for rule in sorted(fields, key=lambda r: field_rule_key(r.entity, r.field_api_name)):
         row = rows.get(rule.key)
         params = {
             "column": rule.target_column, "type": rule.field_type,

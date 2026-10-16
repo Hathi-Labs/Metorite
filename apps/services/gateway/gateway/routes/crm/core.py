@@ -2418,17 +2418,35 @@ FIELD_RULE_BATCH = 500
 
 #: CRM-Q18-1: the order in which a writer locks the rule rows of a provider.
 #: ``(entity, field_api_name)`` is unique for each tenant and provider.
-FIELD_RULE_LOCK_ORDER = "entity, field_api_name"
+#:
+#: ⚠️ CRM-Q18-1b: each column sorts with ``COLLATE "C"``. The collation of the
+#: database (``en_US.utf8`` on our images) skips the ``_``, so it puts
+#: ``Linked_Account`` before ``LinkedIn_URL``. Python sorts a ``str`` by code
+#: point, and puts them the other way. ``"C"`` sorts UTF-8 text by byte, and
+#: that is the code-point order. So a writer that sorts in Python with
+#: :func:`field_rule_key` and this lock agree on one order.
+FIELD_RULE_LOCK_ORDER = 'entity COLLATE "C", field_api_name COLLATE "C"'
 #: Every rule row of a provider, locked in that ONE order. The plan approve
-#: (``routes/crm/mapping_plans.py``) and the sync's ``mark_stale``
-#: (``crm_sync/field_rules.py``) both lock through it before they write a rule
-#: row, so neither waits on the other in a cycle (a 40P01 deadlock). Fence:
+#: (``routes/crm/mapping_plans.py``), the sync's ``mark_stale``
+#: (``crm_sync/field_rules.py``) and the proposer of CRM-Q7b
+#: (``routes/crm/field_rules.py``) all lock through it before they write a
+#: rule row, so none waits on another in a cycle (a 40P01 deadlock). Fence:
 #: ``tests/unit/test_crm_map_plan_r8.py`` (the lock-order tests).
 FIELD_RULE_LOCK_SQL = (
     "SELECT id, entity, field_api_name, field_type, profile_version, "
     "target_column, status FROM crm_field_rules WHERE ext_source = :src "
     f"ORDER BY {FIELD_RULE_LOCK_ORDER} FOR UPDATE"
 )
+
+
+def field_rule_key(entity: str, field_api_name: str) -> tuple[str, str]:
+    """The Python sort key of one rule row: ``(entity, field_api_name)``.
+
+    CRM-Q18-1b. Each writer of more than one rule row in one transaction
+    writes in the order of this key, which is the order of
+    :data:`FIELD_RULE_LOCK_SQL`. Fence: ``tests/unit/test_crm_map_plan_r8.py``.
+    """
+    return (str(entity), str(field_api_name))
 
 #: The four entities that a field rule can name.
 MIRROR_RULE_ENTITIES: frozenset[str] = frozenset({"lead", "contact", "company", "deal"})
@@ -2539,6 +2557,11 @@ RECORD_COUNT_TABLES: tuple[tuple[str, str], ...] = (
 #: Every table that the start over empties, child first. A record names a
 #: stage with ``ON DELETE RESTRICT``, so the records go before the stages.
 #: ``tests/unit/test_crm_reset_r8.py`` holds its own copy of this list.
+#:
+#: ⚠️ CRM-Q18-1b: ``crm_mapping_plans`` goes BEFORE ``crm_field_rules``. A
+#: plan approve locks the plan rows first and the rule rows second
+#: (``mapping_plans.lock_plan``, then ``lock_rules``). A start over that
+#: deletes the rules first waits on the approve in a cycle (40P01).
 RESET_TABLES: tuple[str, ...] = (
     # CRM-Q26: the labels of the notes below. The cascade from
     # ``crm_activities`` takes them too, and naming them keeps the list whole.
@@ -2553,6 +2576,9 @@ RESET_TABLES: tuple[str, ...] = (
     "crm_sync_cursors", "crm_source_profiles",
     # The push queue of the old two-way sync names records that are gone.
     "crm_zoho_tombstones",
+    # CRM-Q18-1: the versions of the plan name the field rules below. They go
+    # first, in the lock order of the plan approve (CRM-Q18-1b).
+    "crm_mapping_plans",
     # CRM-Q7a: a field rule names a field of the old account. It must not
     # apply to the next one.
     "crm_field_rules",
@@ -2563,8 +2589,6 @@ RESET_TABLES: tuple[str, ...] = (
     "crm_convert_mappings",
     # CRM-Q17a-1: the fill rank counts the records and fields above.
     "crm_field_fill",
-    # CRM-Q18-1: the versions of the plan name the field rules above.
-    "crm_mapping_plans",
 )
 
 #: What the start over keeps: the access rule and the mode row, the saved

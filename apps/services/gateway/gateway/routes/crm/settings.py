@@ -114,6 +114,8 @@ _RECORD_TABLES: tuple[str, ...] = (
 
 #: Child first. Nothing references them with 0 records, but a status that a
 #: record names is ``ON DELETE RESTRICT``, so the order is the safe one.
+#: ⚠️ CRM-Q18-1b: ``crm_mapping_plans`` goes BEFORE ``crm_field_rules``, in
+#: the lock order of the plan approve, as in ``core.RESET_TABLES``.
 _RESET_DELETES: tuple[str, ...] = (
     # CRM-Q26: the labels of the notes. With 0 records none can exist, and the
     # list names every table of the start over.
@@ -128,6 +130,9 @@ _RESET_DELETES: tuple[str, ...] = (
     # Zoho sync state. A cursor with ``initial_done_at`` set would make a later
     # reconnect skip the first import (engine.py reads it), so it goes too.
     "crm_sync_cursors", "crm_sync_runs",
+    # CRM-Q18-1: the versions of the plan name the field rules below. They go
+    # first, in the lock order of the plan approve (CRM-Q18-1b).
+    "crm_mapping_plans",
     # CRM-Q7a: the field rules name the fields of the old Zoho account.
     "crm_field_rules",
     # CRM-Q17a-1: the fill rank names the fields of the old setup.
@@ -136,8 +141,6 @@ _RESET_DELETES: tuple[str, ...] = (
     "crm_field_sections",
     # CRM-C6a: the lead-conversion mapping names the fields that go below.
     "crm_convert_mappings",
-    # CRM-Q18-1: the versions of the plan name the field rules above.
-    "crm_mapping_plans",
 )
 
 _HAS_RECORDS = {

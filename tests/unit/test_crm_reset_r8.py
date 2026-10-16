@@ -395,6 +395,19 @@ def test_every_crm_table_is_emptied_or_kept_by_the_start_over(x0) -> None:
     assert set(KEPT) == set(RESET_KEEPS)
 
 
+def test_both_start_overs_delete_the_plans_before_the_rules() -> None:
+    """CRM-Q18-1b item 5. A plan approve locks the plan rows first and the
+    rule rows second. Each start over deletes in that order too, or it waits
+    on an approve in a cycle (40P01). ``test_crm_map_plan_r8.py`` makes that
+    deadlock on a real database."""
+    from gateway.routes.crm.core import RESET_TABLES
+    from gateway.routes.crm.settings import _RESET_DELETES
+
+    for name, tables in (("RESET_TABLES", RESET_TABLES), ("_RESET_DELETES", _RESET_DELETES)):
+        assert tables.index("crm_mapping_plans") < tables.index("crm_field_rules"), (
+            f"{name} deletes the rules before the plans")
+
+
 # ── Done when 1: the reset ───────────────────────────────────────────────────
 
 

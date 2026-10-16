@@ -2551,6 +2551,17 @@ Gate: AGENT-SAFE. Size: S. Waits for: CRM-Q18-1 (merged, #1094). Verify with
 the CRM-Q18 command below, with `tests/unit/test_crm_reset_r8.py` added to
 it.
 
+Built as (2026-10-16): `core.FIELD_RULE_LOCK_ORDER` is
+`entity COLLATE "C", field_api_name COLLATE "C"`. The helper is
+`core.field_rule_key(entity, field_api_name)`. The proposer and step 2 of
+`mapping_plans._write_live_set` sort by it. The proposer calls
+`mapping_plans.lock_rules` first in its write session, and `_db_conflict` maps
+its 40P01 or 40001. In both start-over lists, `crm_mapping_plans` now comes
+before `crm_field_rules`. The two deadlock tests of `test_crm_map_plan_r8.py`
+were red on the code before the fix. A second session takes the lock of the
+approve while the proposer or a start over is in its transaction. The order
+test of both lists is in `test_crm_reset_r8.py`. No migration.
+
 **CRM-Q18-2 · The Field map screen.** It waits for CRM-Q18-1. The Field map
 card shows the approved version and a draft. It approves a draft with one
 action, and it goes back to the version before.
