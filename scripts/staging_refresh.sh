@@ -82,6 +82,10 @@ lock="$(dirname "$app_dir")/acb-deploy.lock"
 [ -e "$lock" ] || install -m 0644 -o acb -g acb /dev/null "$lock"
 exec 9<"$lock"
 flock -w 1800 9 || fail "another deploy held the lock for 30 minutes. Nothing was changed."
+# The watchdog restarts a stopped gateway every 10 minutes, and it does not
+# take the lock. It stays off until the deploy below has restarted everything.
+systemctl stop acb-health-watchdog.timer 2>/dev/null || true
+trap 'systemctl start acb-health-watchdog.timer 2>/dev/null || true' EXIT
 systemctl stop acb-gateway acb-workbench acb-agent-edge 2>/dev/null || true
 dpsql -d template1 -c "DROP DATABASE IF EXISTS postgres WITH (FORCE)" < /dev/null
 dpsql -d template1 -c "CREATE DATABASE postgres" < /dev/null
@@ -128,7 +132,7 @@ echo "$sum" > "$state"
 # self-serve sign-up. Staging keeps the value that bootstrap_staging.sh wrote.
 # Matched ANYWHERE in the name, not only at its start: PROJECT_REPORT_EMAIL_ENABLED
 # mails real people, and an anchored `^EMAIL_` missed it.
-held='(WHATSAPP|MEETING_BOT|EMAIL|REACH_|INVITE|CUSTOMER_CONSOLE|SELF_SERVE|SIGNUP|GMAIL|MSFT|SYNC|SEND|OUTBOUND|NOTIFY|PUSH|DIGEST|WEBHOOK|SMS)'
+held='(WHATSAPP|MEETING_BOT|EMAIL|REACH_|INVITE|CUSTOMER_CONSOLE|SELF_SERVE|SIGNUP|GMAIL|MSFT|SYNC|SEND|OUTBOUND|NOTIFY|PUSH|DIGEST|WEBHOOK|SMS|SCHEDULER)'
 # The export's own name rule, checked again here: a line that names anything
 # else (DEPLOY_ENV, a URL, a key) is never applied.
 switch='^(NEXT_PUBLIC_[A-Z0-9_]+|[A-Z0-9_]+_ENABLED|[A-Z0-9_]+_LENS|IDENTITY_CUTOVER|ACB_GRAPH_TENANT_BIND)$'

@@ -113,6 +113,8 @@ BEGIN
   -- The legacy plaintext MCP auth (gateway/connections/mcp.py clears it only
   -- when a server moves to the encrypted registry, one org at a time).
   UPDATE public.mcp_servers             SET headers = '{}'::jsonb, env_vars = '{}'::jsonb;
+  -- Names of env vars, not values. Blanked so that step 6 never stops the export on them.
+  UPDATE public.custom_api_definitions  SET env_vars = '{}'::jsonb;
 
   -- 6. Nothing credential-shaped is left. Counters (`*_tokens`, `token_cost`)
   --    are numbers, so the text and binary types alone are checked, by type

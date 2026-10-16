@@ -8,5 +8,11 @@
 # limits -L only. Without `permitlisten`, a holder of this key could bind a
 # free loopback port on the production box, and hold 8080 or 8090 while that
 # unit restarts. `permitlisten="127.0.0.1:1"` is the one port it may listen on,
-# and acb cannot bind a port below 1024. So -R binds nothing.
+# and acb cannot bind a port below 1024. So -R binds no TCP port.
+#
+# ⚠️ It does NOT stop a Unix-socket -R (streamlocal): OpenSSH has no per-key
+# rule for that. The production sshd_config closes it for acb, and sshd -t
+# checks the file before the reload:
+#   Match User acb
+#       AllowStreamLocalForwarding no
 restrict,port-forwarding,permitopen="127.0.0.1:8090",permitlisten="127.0.0.1:1",command="/usr/bin/rrsync -ro /var/lib/acb-staging-export/current" KEY acb-staging-link

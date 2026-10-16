@@ -105,7 +105,8 @@ def test_the_bootstrap_turns_every_outbound_switch_off() -> None:
     for name in ("WHATSAPP_BRIDGE_ENABLED", "MEETING_BOT_ENABLED", "EMAIL_BACKGROUND_SYNC_ENABLED",
                  "EMAIL_SYNC_ENABLED", "MEMBER_INVITE_EMAIL_ENABLED", "REACH_ENABLED",
                  "WHATSAPP_ASSISTANT_ENABLED", "EMAIL_OTP_ENABLED",
-                 "CUSTOMER_CONSOLE_RESOLVE_ENABLED", "SELF_SERVE_SIGNUP_ENABLED"):
+                 "CUSTOMER_CONSOLE_RESOLVE_ENABLED", "SELF_SERVE_SIGNUP_ENABLED",
+                 "WORKFLOW_SCHEDULER_ENABLED"):
         assert name in offs, name
 
 

@@ -215,7 +215,7 @@ set_kv "$env" CUSTOMER_CONSOLE_URL "http://127.0.0.1:18090"
 # Every switch that reaches a person or a third party: OFF (§5.10 item 3).
 for off in WHATSAPP_BRIDGE_ENABLED=0 MEETING_BOT_ENABLED=0 EMAIL_BACKGROUND_SYNC_ENABLED=false \
            EMAIL_SYNC_ENABLED=false MEMBER_INVITE_EMAIL_ENABLED=false REACH_ENABLED=false \
-           WHATSAPP_ASSISTANT_ENABLED=false; do
+           WHATSAPP_ASSISTANT_ENABLED=false WORKFLOW_SCHEDULER_ENABLED=false; do
   set_kv "$env" "${off%%=*}" "${off#*=}"
 done
 [ -n "${secret[CUSTOMER_CONSOLE_ORG_KEY]:-}" ] && set_kv "$env" CUSTOMER_CONSOLE_ORG_KEY "${secret[CUSTOMER_CONSOLE_ORG_KEY]}"

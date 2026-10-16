@@ -67,7 +67,9 @@ nothing; the thing nobody wrote down costs a session.
      `deploy/hostinger/bootstrap_staging.sh`. Then run:
      `sudo bash /home/dev/Metorite/deploy/hostinger/bootstrap_staging.sh --secrets /root/staging.secrets`
 - **Then (agent):** add the key line that the bootstrap prints to
-  `/home/acb/.ssh/authorized_keys` on the production box. Set
+  `/home/acb/.ssh/authorized_keys` on the production box. Add
+  `Match User acb` / `AllowStreamLocalForwarding no` to its sshd_config, run
+  `sshd -t`, then reload ssh. Set
   `STAGING_EXPORT_SLUGS=default,fracktalworks,hathi-labs-llp,smoke-chat` in the
   production `.env`. Wait for one nightly backup, or run it, and then
   `sudo systemctl start acb-staging-refresh.service` on the dev box. Report each
