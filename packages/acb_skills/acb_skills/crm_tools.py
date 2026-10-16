@@ -615,7 +615,8 @@ def _cut_note(shown: int, total: int, noun: str) -> str:
 def _stage_bars(stages: list[dict[str, Any]], key: str, title: str,
                 unit: str = "") -> tuple[dict[str, Any], str]:
     """A bar chart of one figure for each stage, and its cut note."""
-    shown = stages[:REPORT_CHART_BARS]
+    shown = paged(stages, 0, REPORT_CHART_BARS, default=REPORT_CHART_BARS,
+                  maximum=REPORT_CHART_BARS).items
     chart: dict[str, Any] = {
         "kind": "chart", "type": "bar", "title": title,
         "labels": [str(s["status"]["name"]) for s in shown],
@@ -636,7 +637,8 @@ def _chart_section(heading: str, chart: dict[str, Any], note: str) -> dict[str, 
 def _table_section(heading: str, title: str, columns: list[str],
                    rows: list[list[Any]], text: str = "") -> dict[str, Any]:
     """A section with one table of at most 20 rows, and its cut note."""
-    shown = rows[:REPORT_TABLE_ROWS]
+    shown = paged(rows, 0, REPORT_TABLE_ROWS, default=REPORT_TABLE_ROWS,
+                  maximum=REPORT_TABLE_ROWS).items
     words = " ".join(t for t in (text, _cut_note(len(shown), len(rows), "table")) if t)
     section: dict[str, Any] = {"heading": heading}
     if words:

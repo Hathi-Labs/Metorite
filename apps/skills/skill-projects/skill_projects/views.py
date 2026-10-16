@@ -665,7 +665,8 @@ def _report_chart(name: str, section: dict[str, Any]) -> tuple[dict[str, Any] | 
         points.append((label, value))
     if kind == "line" and len(points) < 2:
         kind = "bar"
-    shown = points[: REPORT_CHART_POINTS if kind == "line" else REPORT_CHART_BARS]
+    most = REPORT_CHART_POINTS if kind == "line" else REPORT_CHART_BARS
+    shown = paged(points, 0, most, default=most, maximum=most).items
     note = (f"The chart shows the first {len(shown)} of {len(points)} rows."
             if len(points) > len(shown) else "")
     return {"kind": "chart", "type": kind, "title": title,
@@ -700,7 +701,7 @@ def _report_table(
             rows.append(cells)
     if not rows:
         return None, notes
-    shown = rows[:REPORT_ROWS]
+    shown = paged(rows, 0, REPORT_ROWS, default=REPORT_ROWS, maximum=REPORT_ROWS).items
     if len(rows) > len(shown):
         notes.insert(0, f"The table shows {len(shown)} of {len(rows)} rows. "
                         "The Reports app shows them all.")
@@ -770,13 +771,14 @@ def _report_spec(payload: dict[str, Any]) -> dict[str, Any]:
         sections = [{"heading": "No data", "text": "This report has no section for this period."}]
     spec: dict[str, Any] = {
         "title": (_plain(report.get("name")) or "Report")[:120],
-        "period": period[:80],
+        "period": period,
         "summary": f"This report covers {period}. The Reports app computed each number.",
         "sections": sections,
         "sources": [f"Projects Reports, {period}"],
     }
     if kpis:
-        spec["kpis"] = kpis[:REPORT_KPIS]
+        spec["kpis"] = paged(kpis, 0, REPORT_KPIS, default=REPORT_KPIS,
+                             maximum=REPORT_KPIS).items
     return spec
 
 

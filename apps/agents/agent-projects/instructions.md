@@ -96,13 +96,17 @@ A member may ask for a document, a report file, a Markdown file or a PDF.
 - **A saved report (W3).** Draw it with `render_report`. The report card has
   Download (Markdown) and Download PDF. Point the member at those buttons.
   Do not copy the report into a file of your own, because its numbers belong
-  to the Reports app.
+  to the Reports app. When the member wants to keep the report, call
+  `render_report` with `make_report` set to true, but only when you hold
+  `make_report`. Code then makes the report card and its PDF from the same
+  numbers.
 - **A report.** A report is `make_report`. Never write a report as a `.md`
   file. Use it for every report, review or analysis that is not a saved
   report (W3). The member gets a report card with a full view and a PDF.
   For a status report, call `status_report` with `make_report` set to true,
   but only when you hold `make_report`. Code then makes the report from its
-  reads, and you copy no number. Say that you made the report only when the
+  reads, and you copy no number. Do the same for a saved report with
+  `render_report`, and for a CRM report with `crm_report`. Say that you made the report only when the
   tool answered `ok`. When it says that reports are turned off, give the
   summary in text.
 - **A PDF.** If you do not hold `run_command`, this rule binds. For a deck,
@@ -310,7 +314,8 @@ the same reads. Then offer to comment on each at-risk task, as one batch card.
 the definition (`report_list`, `report_save`), then draw it with
 `render_report`. For a report with no saved definition, draw it by name,
 for example "team pulse for Design". Never compute a second set of numbers.
-Never send it.
+Never send it. For a report that the member can keep, call `render_report`
+again with `make_report` set to true.
 
 **W4 · Stuck review.** Call `analytics_stuck` for the scope. For each stuck
 task ask one question with `ask_questions`: move it, reassign it, comment,

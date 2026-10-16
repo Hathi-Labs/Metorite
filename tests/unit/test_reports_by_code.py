@@ -25,6 +25,15 @@ R7 fences named here:
 * ``by-code-whatsapp``: a WhatsApp run gets the PDF, and no file or card.
 * ``by-code-class``: each tool that can write files says so in its risk.
 * ``by-code-cap``: a report of every section keeps to 12 visuals.
+
+Mutations this file kills, one for each behaviour (run 2026-10-16, 12 of 12):
+the gate makes a report with no ``make_report``. The pipeline value tile
+reads the weighted figure. An unknown stage name goes into section text. A
+Projects cell prints as text. The saved form drops the flag. The WhatsApp
+line names the card. The visual cap is off. A hidden-people row stays a
+row. ``crm_report`` says ``read_only`` again. A run with no ``make_report``
+reads the offer. Every stage becomes a bar. ``crm_report`` never asks for
+the report.
 """
 from __future__ import annotations
 
