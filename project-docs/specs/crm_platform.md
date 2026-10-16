@@ -27,9 +27,11 @@
 > CRM-Q1 and CRM-Q2, discovery, the source profile and the deal pipelines
 > (2026-10-12, migration 247). The other slices are not built yet.
 >
-> **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12). CRM-Q8, filters and saved views (2026-10-12, migration 250). The Deals board stages fix (2026-10-12, §18.5). CRM-Q10, a reconnect never freezes the mirror (2026-10-13, §18, a production hotfix). CRM-Q15, a Zoho module that the account turned off no longer stops the sync (2026-10-15, §18, a production hotfix). CRM-Q16, hold a module and sync one module on its own (2026-10-15, §18.8, migration 269).
+> **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12). CRM-Q8, filters and saved views (2026-10-12, migration 250). The Deals board stages fix (2026-10-12, §18.5). CRM-Q10, a reconnect never freezes the mirror (2026-10-13, §18, a production hotfix). CRM-Q15, a Zoho module that the account turned off no longer stops the sync (2026-10-15, §18, a production hotfix). CRM-Q16, hold a module and sync one module on its own (2026-10-15, §18.8, migration 269). CRM-Q17a-1, the backend of the fill rank (2026-10-16, §18.9.3, migration 274). It is dark behind `CRM_FILL_RANK_ORGS`.
 >
-> **Specified, not built:** CRM-Q17a to CRM-Q22, a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9).
+> **Specified, not built:** CRM-Q17a to CRM-Q22, a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9). CRM-Q18-2 and CRM-Q18-3 are not built.
+>
+> **Built later:** CRM-Q18-1, the backend of one plan (2026-10-16, §18.9.6, migration 277). The versions of the Field map live in `crm_mapping_plans`, and `crm_field_rules` stays the live set.
 >
 > **Built later:** CRM-Q5, the data the mirror loses (2026-10-12). Migration 249 adds `crm_deal_contacts.ext_source`.
 >
@@ -309,7 +311,7 @@ it blocks the tenant column (CR-2).
 |---|---|
 | table `crm_organizations` | `crm_companies` |
 | column `organization_id` on `crm_contacts`, `crm_deals`, `crm_activities` | `company_id` |
-| UI label "Organizations" | "Companies" |
+| UI label "Organizations" | "Companies". *In Mirror mode, the source's own label (amended 2026-10-15, §18.9.1)* |
 | tenant column | `organization_id` on every `crm_*` table, `REFERENCES organization(id)` |
 
 "Company" is the word HubSpot uses. Zoho and Salesforce say "Account", but
@@ -1135,7 +1137,7 @@ working note.
 | Fracktal's Zoho edition | Professional | Products and Quotes exist to mirror. Pipelines stay P0, because the mirror must not assume one edition |
 | Does Fracktal rely on Zoho sharing rules? | No. Everyone sees all | Per-owner visibility in the mirror stays P1 |
 | Deal currencies | INR only | Currency conversion in totals moves to P1 |
-| "Accounts" or "Companies" in Mirror mode | "Companies" everywhere | No label alias. D95.2 holds |
+| "Accounts" or "Companies" in Mirror mode | "Companies" everywhere | No label alias. D95.2 holds. *Amended 2026-10-15: Mirror mode shows the source's own labels (§18.9.1). Native keeps "Companies"* |
 
 ### 18.3 The adaptive mirror
 
@@ -1237,7 +1239,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q16** | ✅ built 2026-10-15. Hold a module, and sync one module on its own. The first import holds a module above 5,000 records and suggests a sync of it on its own. §18.8 | P0 |
 | **CRM-Q17a** | Lists and records by fill rank: default columns, empty columns hidden, owner names, Overview and Fields, Zoho labels in Mirror mode. No AI. §18.9 | P0 |
 | **CRM-Q17b** | Getting around: the rail group, the first screen, filters, the Columns picker, phone cards, and "Needs you" in Sync health. No AI. §18.9 | P0 |
-| **CRM-Q18** | One plan: a kind, a version and an approval state on the field rules. §18.9 | P1 |
+| **CRM-Q18** | One plan: the versions of the Field map in `crm_mapping_plans`, and `crm_field_rules` stays the live set. CRM-Q18-1 is built. §18.9 | P1 |
 | **CRM-Q19** | The executor and the 200-record preview. §18.9 | P1 |
 | **CRM-Q20** | The mapping pipeline on the decide tier, the suggestion in an empty slot, the panel and Undo. Replaces the CRM-Q7b proposer. §18.9 | P1 |
 | **CRM-Q21** | Promote a module into a core entity. §18.9 | P1 |
@@ -2145,17 +2147,29 @@ screen ("value_map", "plan v1", "0.68").
 
 The fill rank is the one input of CRM-Q17. It needs no AI.
 
-1. After a run changes an entity or a module, the sync computes two numbers
-   for each field. They are the share of records with a value, and the
-   distinct count.
-   One SQL statement per entity does it. A field that the run did not touch
-   keeps its last numbers.
-2. The standard columns of the four core entities get the same numbers.
-3. Only the sync writes them, in the tenant session of the run (R5).
-4. `GET /crm/fields/{entity}` and `GET /crm/modules` serve them. No request
-   computes them.
-5. A Native CRM gets them too, so a Native list with empty columns gets the
-   same help.
+1. After a run changes an entity or a module, the sync computes `filled`,
+   `total` and `distinct_count` for each key. One SQL
+   statement per entity does it. A key of an entity that did not change keeps
+   its last numbers.
+2. The keys are the real columns behind the list columns. They also include
+   each standard field of the four core entities, each `custom` key, and each
+   key of a module's `fields`.
+3. Only the sync writes them, in its own tenant session after the module step
+   (R5). They live in one new tenant table with FORCE RLS. Not on
+   `crm_field_defs`, because a standard column has no row there. Not on the
+   source profile, because the profile is versioned and hashed.
+4. **Cost bound.** The sync computes an entity again at most once in 24
+   hours. An entity whose first import finished in the same run is the
+   exception. An R8 test measures the
+   statement on 30,000 module rows.
+5. `GET /crm/fields/{entity}` and the module list and record routes serve
+   them, on each field definition. No request computes them.
+6. **Ship dark.** The list `CRM_FILL_RANK_ORGS` names the orgs that get the
+   fill rank and the source labels. It ships empty, and `*` means every org.
+   An org outside the list gets no fill work and sees the CRM as before. A
+   flip is gate `enforcement-flip`.
+7. A Native CRM is not in this slice. It never runs a sync, so it needs its
+   own writer. A later ticket adds one.
 
 #### 18.9.4 The engine of the mapping: a fixed pipeline
 
@@ -2228,9 +2242,9 @@ with 16 questions, to learn whether the vendor bills the state once.
 
 | Ticket | Slice | Gate | Size | Waits for |
 |---|---|---|---|---|
-| CRM-Q17a | Lists and records by fill rank. No AI | AGENT-SAFE | M | — |
+| CRM-Q17a | Lists and records by fill rank, in two slices (Q17a-1, Q17a-2). No AI | AGENT-SAFE | M | — |
 | CRM-Q17b | Getting around: rail, first screen, filters, Columns, phone, Sync health. No AI | AGENT-SAFE | M | CRM-Q17a |
-| CRM-Q18 | One plan: a kind, a version and an approval state | AGENT-SAFE | M | — |
+| CRM-Q18 | One plan: a table of versions, and the live rule set | AGENT-SAFE | M | — |
 | CRM-Q19 | The executor and the 200-record preview | AGENT-SAFE | M | CRM-Q18 |
 | CRM-Q20 | The pipeline, the suggestion, the panel, Undo, and Settings → Suggestions | AGENT-SAFE | M + M | CRM-Q19 |
 | CRM-Q21 | Promote a module into a core entity | AGENT-SAFE | L | CRM-Q20 |
@@ -2238,29 +2252,95 @@ with 16 questions, to learn whether the vendor bills the state once.
 
 A flag flip to `shadow` or `on` for an org is gate `enforcement-flip`.
 
-**CRM-Q17a · Lists and records by fill rank.** Done when:
+**CRM-Q17a · Lists and records by fill rank.** It ships in two slices. The
+spec audit of 2026-10-16 narrowed it.
 
-1. The sync writes the fill rank of §18.9.3, and the two routes serve it.
-2. The list hides a standard column with no value on any record of the
-   org. The CSV export of that list hides it too.
-3. With no saved choice, the list shows the custom fields with the highest
-   fill, up to the column limit. A saved view or a member's choice wins.
-4. A list cell does not wrap. Long text ends in an ellipsis, and the full
+**CRM-Q17a-1 · The backend.** Done when:
+
+1. A migration (next free number at build time) adds the tenant table of the
+   fill numbers, with FORCE RLS. It is expand-only and passes
+   `test_tenant_coverage.py`.
+2. The sync writes the numbers of §18.9.3 for each org in
+   `CRM_FILL_RANK_ORGS`, under its cost bound. An R8 test proves each case.
+3. `GET /crm/fields/{entity}` (also with `?layout=1`) and the module list and
+   record routes serve `fill` and `distinct` on each definition.
+4. `GET /crm/fields/{entity}` serves `empty_columns`: the standard keys of
+   the entity with `total > 0` and `filled = 0`. The name column and
+   `last_activity_at` never show in it. One gateway function gives the set.
+5. The CSV export leaves out each key of `empty_columns`, through the same
+   function. `test_crm_export.py` stays green, and its static parity test
+   does not change.
+6. In Mirror mode, one route serves the source's plural and singular labels
+   of the four core entities. In Native mode it serves none.
+7. An org outside `CRM_FILL_RANK_ORGS` gets none of items 2 to 6.
+
+**Built as** (2026-10-16, migration 274):
+
+- `crm_field_fill` holds one row for each `(organization_id, entity, key)`.
+  A custom field of a core entity has the key `custom.<key>`.
+- `crm_sync/fill.py` writes the numbers after the module step. The cursor
+  row `zoho:fill_rank` keeps the time of each entity, and the changes that
+  wait for the 24-hour bound. A field rule that a run applies or undoes also
+  changes its entity.
+- A value counts as filled unless it is NULL, empty, blank, `[]`, `{}` or
+  `false`. A Zoho checkbox sends `false` when nobody ticks it. The number 0
+  counts as filled.
+- `fill` is the share `filled / total`, from 0 to 1. Both numbers are `null`
+  outside the list.
+- `distinct` counts the different filled values in a sample of 2,000
+  records, the ones with the lowest ids. It is exact up to 2,000 records.
+  Above that it is a lower bound, and it never passes 2,000.
+- The layout carries `empty_columns`. The plain read is a bare list, so it
+  carries `fill` and `distinct` on each row, and no `empty_columns`. A joined
+  list column shows in both words, for example `company_id` and
+  `organization_name`.
+- Stale numbers give `empty_columns: []`. The numbers of an entity are stale
+  in four cases. It has no stamp. It is pending. One of its field rules
+  changed. A run that started after its stamp changed or re-linked one of
+  its rows. The run counts show that last case. They also show a run that
+  failed, and a run while the flag was off.
+- A run that finds no change moves the `checked` mark of the entity to its
+  own start, and the next scan starts there. So an entity that changes in
+  most runs often serves `[]`.
+- The CSV export drops a key of `empty_columns` only when each row of the
+  file has an empty cell for it.
+- `GET /crm/mode` carries `labels`, by API slug, in Mirror mode for a listed
+  org. In every other case the body has no `labels` key. The route reads only
+  `profile -> 'modules'`.
+- Cost: `filled` groups by key only. On 30,000 module rows with 236 fields of
+  unique values, the statement took 5.4 s in the R8 suite (35.5 s in the
+  first build). Each statement runs under a 30 s `statement_timeout`.
+- A run computes at most one entity above 5,000 records, and the others wait.
+  It commits the stamp first, then reads with no lock on `crm_settings`,
+  then writes the numbers in a short page. An entity that fails waits 24
+  hours, and the run goes on.
+
+**CRM-Q17a-2 · The screens.** It waits for CRM-Q17a-1. Done when:
+
+1. The list hides each key of `empty_columns`.
+2. With no saved choice, the list shows the custom fields with the highest
+   fill, up to the column limit. A saved view or a member's choice wins. The
+   code tells "nothing saved" from "saved empty".
+3. A list cell does not wrap. Long text ends in an ellipsis, and the full
    text is in its title.
-5. A record whose owner is not a member shows `custom._owner_name`, with
+4. A record whose owner is not a member shows `custom._owner_name`, with
    "Zoho only". The key `_owner_name` leaves the Fields tab.
-6. Overview shows the filled fields first, by fill rank. The Fields tab keeps
-   the Zoho sections and has a filter box. It folds the empty fields behind
-   "Show n empty fields".
-7. Zoho system keys (such as `Layout`, `Record_Image`, `Tag`) leave the
-   record page.
-8. In Mirror mode a core entity shows the source's plural label, for
-   example Contacts as "Existing Sites". The rail, the list and the record
-   show it. A Native CRM shows "Companies" as before.
+5. Overview shows the filled fields first, by fill rank. The Fields tab keeps
+   the sections it draws today and has a filter box. It folds the empty
+   fields behind "Show n empty fields".
+6. The record page leaves out the Zoho system keys `Layout`, `Record_Image`
+   and `Tag`. One named constant holds the list.
+7. In Mirror mode a core entity shows the source's plural label. For
+   example, Contacts shows as "Existing Sites". The rail, the list heading
+   and the record show it. A Native CRM shows "Companies" as before.
 
-Files: `crm_sync/engine.py` (or a module beside it), `routes/crm/fields.py`,
-`routes/crm/modules.py`, `src/app/crm/lib/columns.ts`, `lib/fields.ts`,
-`RecordList.tsx`, `FieldsPanel.tsx` and `ModuleRecordSheet.tsx`.
+Backend files: `crm_sync/engine.py` (or a module beside it),
+`routes/crm/fields.py`, `routes/crm/modules.py`, `routes/crm/export.py`,
+`routes/crm/core.py` and `tests/unit/test_crm_export.py`.
+
+Frontend files, under `src/app/crm/`: `lib/columns.ts`, `lib/fields.ts`,
+`lib/views.ts`, `RecordList.tsx`, `FieldsPanel.tsx`, `RecordSheet.tsx`,
+`ModuleRecordSheet.tsx` and `CrmRail.tsx`.
 
 **CRM-Q17b · Getting around.** Done when:
 
@@ -2282,16 +2362,93 @@ Files: `crm_sync/engine.py` (or a module beside it), `routes/crm/fields.py`,
 Each item is checked with the `visual-review` skill in light mode, compact
 density, a changed accent and 375 px.
 
-**CRM-Q18 · One plan.** Done when:
+**CRM-Q18 · One plan.** The spec audit of 2026-10-16 found that rows of
+versions do not fit the unique indexes of `crm_field_rules` under R6. So the
+versions live in a new table, and `crm_field_rules` stays the live set. It
+ships in three slices.
 
-1. A migration (next free number at build time) adds `kind`, `plan_version`
-   and an approval state to `crm_field_rules`. It is expand-only (R6).
-2. Each existing row reads as `kind = 'field'` in the approved version.
-3. The sync reads the approved version only. A draft changes nothing.
-4. An admin can approve a version, and go back to the one before.
-5. A fixed column also opens to a rule when its standard field is on a
-   layout and 0% filled. Today it opens only when the field is off every
-   layout (`crm_sources/zoho/mapping.py`).
+**Design (2026-10-16).**
+
+- A new tenant table `crm_mapping_plans` holds the versions of the plan of
+  each org. Each row has a version number, a state, a JSON snapshot of the
+  rules, and who made and approved it, and when.
+- The states are `draft`, `approved` and `superseded`. One version at most
+  is `approved` for each org.
+- `crm_field_rules` stays the live set, and its two indexes do not change.
+  A draft never writes a row with `status = 'approved'`.
+- An approve writes the snapshot into `crm_field_rules` in one transaction.
+  A rule that exists keeps its row and its id. A rule that leaves the plan
+  gets `status = 'rejected'`, so the sync undoes it through the path it has
+  today.
+- "Go back" rolls forward. It approves a new version N+1 with the content of
+  version N-1.
+- In this ticket each rule of a snapshot has the kind `field`. CRM-Q20 adds
+  the other kinds of §18.9.3 to the snapshot only.
+- The first read of the plan of an org builds version 1 from its approved
+  rules. The migration writes no data.
+- The rows with the status `proposed`, `rejected` or `stale` stay as they
+  are. They are not in a snapshot.
+- The approve and reject of one rule (`PATCH /crm/field-rules/{id}`) stay.
+  Each one also writes a new approved version, so the history stays whole.
+  The CRM-Q7b proposer still writes `proposed` rows.
+
+**CRM-Q18-1 · The backend.** Done when:
+
+1. A migration (276 on 2026-10-16, next free at build time) adds
+   `crm_mapping_plans`, with FORCE RLS. It is expand-only, and it passes
+   `test_tenant_coverage.py`. A partial unique index allows one `approved`
+   version for each org.
+2. `GET /crm/mapping/plans` lists the versions. The first call for an org
+   builds version 1 from its approved rules.
+3. `POST /crm/mapping/plans` makes a draft from the approved version and a
+   list of changes. A draft changes no row of `crm_field_rules`.
+4. `POST /crm/mapping/plans/{version}/approve` approves a draft, in one
+   transaction, as the design says.
+5. `POST /crm/mapping/plans/{version}/restore` approves a new version with
+   the content of an older one.
+6. A per-rule PATCH writes a new approved version.
+7. Each route is for an admin in Mirror mode. The org comes from the server.
+8. R8 tests prove each item. They prove that a draft changes nothing in the
+   sync. They prove that a restore undoes a rule through the existing path.
+   They
+   prove that the ids of kept rules do not change, and that orgs stay apart.
+
+Built as (2026-10-16): migration 277 adds `crm_mapping_plans`.
+`routes/crm/mapping_plans.py` holds the four routes, and its `commit` is the
+one approve. `POST /crm/field-rules` and the PATCH call it too. A reject of a
+rule that is not approved writes no version. A draft approves only while it
+is built on the approved version, else 409 `plan_moved`. When the sync makes a
+rule stale, the next plan read or change writes a new approved version by
+`system`. Fence: `tests/unit/test_crm_map_plan_r8.py`.
+
+Fix round (2026-10-16): `GET /crm/mapping/plans` lists the versions with
+`rule_count` and no snapshot. `GET /crm/mapping/plans/{version}` returns one
+snapshot, and CRM-Q18-2 reads it. The approve and the sync's `mark_stale` lock
+the rule rows through `core.FIELD_RULE_LOCK_SQL`, in one order. A PATCH takes
+that lock before it holds one row. `commit` locks the rows before it reads the
+profile. A deadlock is a 409 `plan_busy`, and a retry is safe.
+
+**CRM-Q18-2 · The Field map screen.** It waits for CRM-Q18-1. The Field map
+card shows the approved version and a draft. It approves a draft with one
+action, and it goes back to the version before.
+
+**CRM-Q18-3 · A column that is empty opens.** It waits for migration 274
+(CRM-Q17a-1). Done when:
+
+1. At approve time, a fixed column also opens to a rule when its fill is 0.
+   The fill comes from `crm_field_fill`, with `total` above 0. No fill row keeps
+   the column closed.
+2. A rule that this opened never goes stale only because its standard field
+   is on a layout. The value of the fixed map still wins where Zoho fills
+   it.
+
+Files: `infra/postgres/`, `routes/crm/field_rules.py`, a new
+`routes/crm/mapping_plans.py`, `crm_sync/field_rules.py`,
+`crm_sources/zoho/mapping.py` (CRM-Q18-3 only), and
+`FieldMapCard.tsx` (CRM-Q18-2 only).
+
+Verify CRM-Q18 with `uv run pytest tests/unit/test_crm_field_rules.py tests/unit/test_crm_field_rules_r8.py tests/unit/test_crm_field_map_ai.py tests/unit/test_crm_upsert_from_source_fence.py tests/unit/test_crm_map_plan*.py -q`
+on the R8 database, with no test skipped.
 
 **CRM-Q19 · Executor.** Done when:
 

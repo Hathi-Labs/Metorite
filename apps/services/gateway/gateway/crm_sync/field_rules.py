@@ -33,7 +33,11 @@ from typing import Any
 from acb_common import get_logger
 from sqlalchemy import text
 
-from gateway.routes.crm.core import FIELD_RULE_BATCH, apply_field_rule_from_source
+from gateway.routes.crm.core import (
+    FIELD_RULE_BATCH,
+    FIELD_RULE_LOCK_SQL,
+    apply_field_rule_from_source,
+)
 
 _log = get_logger("crm.sync.field_rules")
 
@@ -192,9 +196,20 @@ async def mark_stale(
     An entity that the profile does not know keeps the status of its rules.
     The three cases are in ``mapping.rule_stale_reason``. Returns the ids that
     went stale. The log gets the id and the reason, never a field value.
+
+    It first locks every rule row of the provider through
+    ``core.FIELD_RULE_LOCK_SQL``, in the one order that the plan approve
+    uses too (CRM-Q18-1). So the sync and an approve never wait on each other
+    in a cycle.
     """
+    rows = (await db.execute(text(FIELD_RULE_LOCK_SQL), {"src": ext_source})).fetchall()
+    approved = [
+        Rule(str(r.id), str(r.entity), str(r.field_api_name), str(r.target_column))
+        for r in rows
+        if r.status == "approved" and r.target_column is not None
+    ]
     stale: list[str] = []
-    for rule in await approved_rules(db, ext_source):
+    for rule in approved:
         reason = mapping.rule_stale_reason(
             rule.entity, rule.field_api_name, rule.target_column,
             mapping.entity_field_types(profile, rule.entity),

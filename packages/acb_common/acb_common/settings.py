@@ -273,6 +273,15 @@ class Settings(BaseSettings):
     # `gateway.routes.crm.flags`. 🔴 A flip on a box is gate
     # `enforcement-flip`. Fence: tests/unit/test_crm_field_studio_r8.py.
     crm_field_studio_orgs: str = ""
+    # `crm_fill_rank_orgs` (WS-53 CRM-Q17a-1, 2026-10-16) lists the
+    # organization ids that get the fill rank and the source labels of the
+    # mirror (`crm_platform.md` §18.9.3), in the grammar of `crm_orgs`.
+    # Default empty means NO organization (fail closed). An org outside the
+    # list gets no fill work in the sync, and the CRM routes serve it no
+    # `fill`, `distinct`, `empty_columns` or `labels`. The one reader is
+    # `gateway.routes.crm.flags`. 🔴 A flip on a box is gate
+    # `enforcement-flip`. Fence: tests/unit/test_crm_fill_rank_r8.py.
+    crm_fill_rank_orgs: str = ""
 
     # ── The My Day loop (WS-58 MD-5b, 2026-10-14) ───────────────────────────
     #
