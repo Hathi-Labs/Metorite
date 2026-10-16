@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import dataclasses
 import functools
 import json
 import os
@@ -97,8 +98,10 @@ from orchestrator._tool_injection import (
     _log_agent_tools_resolved,
     _build_registry_block,
     _gate_injected_tool,
+    _held_tool_names,
     _host_shell_refused,
     _inject_agent_tools,
+    _narrow_to_held,
     _close_mcp_tools,
     _inject_mcp_servers,
     NoEgressRefused,
@@ -2848,6 +2851,57 @@ def _unbind_run_identity(binding: Any) -> None:
         pass
 
 
+@dataclasses.dataclass(frozen=True)
+class _BatchRunInputs:
+    """What the first attempt of a batch run used, captured once for the retry.
+
+    The self-anneal (:func:`_self_anneal`) loads the agent again with
+    *repo_name* and *local_path*, so it loads the same agent and the same
+    ``config.json``. *held* is the tool names the first attempt held after
+    every narrowing, or ``None`` when it failed before its injection. A retry
+    narrows to *held*, so it can never hold more than the first attempt.
+    """
+
+    repo_name: str | None = None
+    local_path: str | None = None
+    held: frozenset[str] | None = None
+
+
+async def _assemble_batch_agents(
+    loaded: Any, *, agent_name: str, no_egress: bool,
+    held: frozenset[str] | None = None,
+) -> tuple[list[Any], Any]:
+    """Build and arm the agents of a batch run. Returns ``(agents, md_spec)``.
+
+    The first attempt and each self-anneal retry call this one function, so a
+    retry reads the same ``tool_scope``, ``own_tool_scope``, skill toggles,
+    D85 withholding, floor opt-out, Mirror filter, WhatsApp withholding and
+    H-236 answer. *held* is the first attempt's tool names
+    (:class:`_BatchRunInputs`). A retry passes it, and the agents then lose
+    each tool outside it. Access is an intersection, never a union.
+    """
+    agents = loaded.build_agents()
+    # Honour .github/agents/<name>.agent.md (instructions override).
+    md_spec = _apply_agent_md_overrides(agents, loaded.agent_dir, agent_name)
+    _apply_own_tool_scope(
+        agents, loaded.config.get("own_tool_scope") or None,
+    )
+    # CRM-C7: no CRM record write in Mirror mode, read as the member.
+    await _drop_mirror_record_writes(agents, no_egress=no_egress)
+    own_tools = _count_agent_tools(agents)  # WS-8o
+    _inject_agent_tools(
+        agents,
+        tool_scope=loaded.config.get("tool_scope") or None,
+        agent_name=agent_name,
+        agent_config=loaded.config,  # D85: the sharing block
+        no_egress=no_egress,  # H-236: from the run's own binding
+    )  # inject call_agent / call_agent_background
+    if held is not None:
+        _narrow_to_held(agents, held, agent_name)
+    _log_agent_tools_resolved(agent_name, agents, own_tools)
+    return agents, md_spec
+
+
 async def run_agent(
     agent_name: str,
     event_payload: dict[str, Any],
@@ -3067,6 +3121,9 @@ async def _run_agent_inner(
     # load below. The self-anneal retry takes it too (review P3).
     _batch_tier = None
     _is_copilot_agent = False
+    # What the first attempt used. The self-anneal retry rebuilds from it, so
+    # a retry can only narrow the tools of this run.
+    _anneal_inputs = _BatchRunInputs()
     try:
         _effective_agent_dir: str | None = None
         # The dir the git helpers, the self-anneal and the self-mutation use.
@@ -3094,6 +3151,9 @@ async def _run_agent_inner(
                 _registry_local_path = _registry_entry.get("local_path")
         except ImportError:
             pass
+        _anneal_inputs = _BatchRunInputs(
+            repo_name=_registry_repo_name, local_path=_registry_local_path,
+        )
 
         # §15.4: refused as absent unless a first-party admin runs it. An
         # AgentLoadError, so no self-anneal and no self-mutation follow.
@@ -3187,29 +3247,19 @@ async def _run_agent_inner(
                     unavailable=list(integration_warnings.keys()),
                 )
 
-            agents = loaded.build_agents()
+            # The one batch assembly. The self-anneal retry calls it too.
+            agents, _batch_md_spec = await _assemble_batch_agents(
+                loaded, agent_name=agent_name,
+                no_egress=_no_egress,  # H-236: from the parent's binding
+            )
+            # The retry narrows to what this attempt holds (never a union).
+            _anneal_inputs = dataclasses.replace(
+                _anneal_inputs, held=_held_tool_names(agents),
+            )
             # WS-43n: the label OR the object, as the stream path decides. A
             # repo agent that declares no runtime is labelled "maf" (§15.5).
             if not _is_copilot_agent and any(is_copilot_agent(a) for a in agents):
                 _is_copilot_agent = True
-            # Honour .github/agents/<name>.agent.md (instructions override).
-            _batch_md_spec = _apply_agent_md_overrides(
-                agents, loaded.agent_dir, agent_name,
-            )
-            _apply_own_tool_scope(
-                agents, loaded.config.get("own_tool_scope") or None,
-            )
-            # CRM-C7: no CRM record write in Mirror mode, read as the member.
-            await _drop_mirror_record_writes(agents, no_egress=_no_egress)
-            _own_tools = _count_agent_tools(agents)  # WS-8o
-            _inject_agent_tools(
-                agents,
-                tool_scope=loaded.config.get("tool_scope") or None,
-                agent_name=agent_name,
-                agent_config=loaded.config,  # D85: the sharing block
-                no_egress=_no_egress,  # H-236: from the parent's binding
-            )  # inject call_agent / call_agent_background
-            _log_agent_tools_resolved(agent_name, agents, _own_tools)
 
             # Set write_artifact context + ensure visible workspace dirs exist.
             # H-201 (§21.16): the context is THIS run's own ContextVar value.
@@ -3513,6 +3563,8 @@ async def _run_agent_inner(
             error=exc,
             # H-236: every retry injects with THIS run's answer.
             no_egress=_no_egress,
+            # The same agent, and no tool the first attempt did not hold.
+            inputs=_anneal_inputs,
             # WS-45 S4: a retry of a covered native run keeps its policy.
             tier_policy=None if _is_copilot_agent else _batch_tier,
         )
@@ -6083,12 +6135,18 @@ async def _self_anneal(
     agent_dir: str | None,
     error: Exception,
     no_egress: bool,
+    inputs: _BatchRunInputs | None = None,
     tier_policy: Any = None,
 ) -> dict[str, Any] | None:
     """Self-annealing loop.
 
     *no_egress* is the H-236 answer of the run that failed. Every retry
     injects with it, so a retry can never hold more tools than the run did.
+
+    *inputs* is what the first attempt used (:class:`_BatchRunInputs`). Each
+    retry loads the same agent and assembles it through
+    :func:`_assemble_batch_agents`, the function of the first attempt. It
+    then holds no tool that the first attempt did not hold.
 
     *tier_policy* is the failed run's ``RunTierPolicy`` (WS-45 S4), or None.
     Each retry runs with it, counted from its first request again.
@@ -6105,6 +6163,42 @@ async def _self_anneal(
         agent=agent_name, run_id=run_id,
         error_class=error_class, error=str(error)[:200],
     )
+    inputs = inputs or _BatchRunInputs()
+
+    async def _retry_once() -> dict[str, Any]:
+        """Load, assemble and run the agent once, as the first attempt did."""
+        from acb_skills.integrations import build_integrations as _bi
+        from acb_skills.loader import load_agent as _load
+        settings = get_settings()
+        with _load(
+            agent_name, run_id=run_id,
+            repo_name=inputs.repo_name, local_path=inputs.local_path,
+        ) as loaded:
+            # The acting member's filter, as on the first attempt (org access
+            # control): a retry never hands the run a credential it refused.
+            integrations, integration_warnings = _bi(
+                loaded.config.get("integrations", []),
+                loaded.config.get("optional_integrations", []),
+                settings,
+                is_authorized=await _integration_authorizer(event_payload, thread_id),
+            )
+            agents, _md_spec = await _assemble_batch_agents(
+                loaded, agent_name=agent_name,
+                no_egress=no_egress,  # H-236
+                held=inputs.held,
+            )
+            return await _run_with_maf_agent(
+                agents,
+                agent_name=agent_name,
+                run_id=run_id,
+                thread_id=thread_id,
+                event_payload={
+                    **event_payload,
+                    "integration_warnings": integration_warnings,
+                },
+                integrations=integrations,
+                tier_policy=_retry_policy(tier_policy),
+            )
 
     # ── In-process fixes ──────────────────────────────────────────────────
     if error_class == "encoding":
@@ -6114,38 +6208,7 @@ async def _self_anneal(
             for attempt in range(_MAX_ANNEAL_ATTEMPTS):
                 await asyncio.sleep(0.5 * (attempt + 1))
                 try:
-                    from acb_skills.integrations import \
-                        build_integrations as _bi
-                    from acb_skills.loader import \
-                        load_agent as _load
-                    settings = get_settings()
-                    with _load(agent_name, run_id=run_id) as loaded:
-                        integrations, integration_warnings = _bi(
-                            loaded.config.get("integrations", []),
-                            loaded.config.get("optional_integrations", []),
-                            settings,
-                        )
-                        agents = loaded.build_agents()
-                        _apply_agent_md_overrides(
-                            agents, loaded.agent_dir, agent_name,
-                        )
-                        _inject_agent_tools(
-                            agents, agent_name=agent_name,
-                            agent_config=loaded.config,  # D85
-                            no_egress=no_egress,  # H-236
-                        )
-                        result = await _run_with_maf_agent(
-                            agents,
-                            agent_name=agent_name,
-                            run_id=run_id,
-                            thread_id=thread_id,
-                            event_payload={
-                                **event_payload,
-                                "integration_warnings": integration_warnings,
-                            },
-                            integrations=integrations,
-                            tier_policy=_retry_policy(tier_policy),
-                        )
+                    result = await _retry_once()
                     _log.info("self_anneal.retry_success",
                               agent=agent_name, attempt=attempt + 1)
                     return result
@@ -6162,38 +6225,7 @@ async def _self_anneal(
                       agent=agent_name, attempt=attempt + 1, wait=wait)
             await asyncio.sleep(wait)
             try:
-                settings = get_settings()
-                from acb_skills.integrations import \
-                    build_integrations as _bi
-                from acb_skills.loader import \
-                    load_agent as _load
-                with _load(agent_name, run_id=run_id) as loaded:
-                    integrations, integration_warnings = _bi(
-                        loaded.config.get("integrations", []),
-                        loaded.config.get("optional_integrations", []),
-                        settings,
-                    )
-                    agents = loaded.build_agents()
-                    _apply_agent_md_overrides(
-                        agents, loaded.agent_dir, agent_name,
-                    )
-                    _inject_agent_tools(
-                        agents, agent_name=agent_name,
-                        agent_config=loaded.config,  # D85
-                        no_egress=no_egress,  # H-236
-                    )
-                    result = await _run_with_maf_agent(
-                        agents,
-                        agent_name=agent_name,
-                        run_id=run_id,
-                        thread_id=thread_id,
-                        event_payload={
-                            **event_payload,
-                            "integration_warnings": integration_warnings,
-                        },
-                        integrations=integrations,
-                        tier_policy=_retry_policy(tier_policy),
-                    )
+                result = await _retry_once()
                 _log.info("self_anneal.retry_success",
                           agent=agent_name, attempt=attempt + 1)
                 return result

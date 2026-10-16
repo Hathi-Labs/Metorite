@@ -5540,8 +5540,9 @@ findings.
 - **The `own` count comes before H-236.** Each site counts `own` before `_inject_agent_tools`. The
   H-236 step in that call can take egress tools out of the own pool. So `own` means "own after
   scope, before H-236". Read the log with that label.
-- **The self-anneal sites skip the own scope.** The two `_inject_agent_tools` calls near
-  `executor.py:5683` and `:5731` do not call `_apply_own_tool_scope`.
+- ✅ **FIXED 2026-10-16. The self-anneal sites skipped the own scope.** The two retries also
+  skipped `tool_scope`. They now call `_assemble_batch_agents`, the assembly of the first try,
+  and narrow to the tools that the first try held. Fence: `tests/unit/test_anneal_retry_scope.py`.
 - **The pool list has three copies.** `_own_tool_pools`, `_inspectable` and
   `_withhold_egress_from_agent` each list the tool pools. `_own_tool_pools` does not read the
   Copilot `_default_options`.
