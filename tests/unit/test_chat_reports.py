@@ -171,7 +171,7 @@ async def test_the_cards_own_validator_refuses_before_any_file(
         seen.append(data)
         return CARD_REFUSAL
 
-    monkeypatch.setattr(wa, "genui_report_refusal", _refuse, raising=False)
+    monkeypatch.setattr(wa, "genui_report_refusal", _refuse)
     out = await _run(reports.make_report(SPEC))
     assert out == {"ok": False, "error": CARD_REFUSAL}
     assert _files(chat["root"]) == {} and chat["cards"] == []
@@ -185,8 +185,6 @@ async def test_every_report_the_tool_makes_is_a_card_the_validator_accepts(
 ) -> None:
     """The largest report make_report accepts: 8 kpis, 12 sources, 11 full
     tables and the tiles. The card's validator must accept its data."""
-    if not hasattr(wa, "genui_report_refusal"):
-        pytest.skip("genui_report_refusal arrives with B2 (PR #1065)")
     full_table = {**TABLE, "columns": list("ABCDEF"), "rows": [list("abcdef")] * 20}
     spec = {**SPEC,
             "kpis": [{"label": f"K{i}", "value": i} for i in range(8)],
@@ -195,7 +193,9 @@ async def test_every_report_the_tool_makes_is_a_card_the_validator_accepts(
     out = await _run(reports.make_report(spec))
     assert out["ok"] is True, out
     (card,) = chat["cards"]
-    assert wa.genui_report_refusal(card["props"]["data"]) is None
+    from acb_skills.write_artifact import genui_report_refusal
+
+    assert genui_report_refusal(card["props"]["data"]) is None
 
 
 async def test_an_empty_spec_returns_the_field_guide_and_makes_nothing(

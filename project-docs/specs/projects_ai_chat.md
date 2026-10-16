@@ -2204,9 +2204,10 @@ slice, the agent wrote a `.md` file. Its link showed the member the raw text.
 
 **Status: B1 BUILT 2026-10-16.** B1 is the tool, the file, the PDF, the
 guidance and this section. B2 builds the card and the full view: the
-`report` template and the `.report.json` viewer. Until B2 merges, the chat
-cannot draw the card, so `make_report` returns a link to the PDF. B3 adds
-mappers that build a spec by code from `report_render` and `crm_report`.
+`report` template and the `.report.json` viewer. B2 merged on 2026-10-16
+(#1065). When a chat cannot draw the card, `make_report` returns the PDF.
+B3 adds mappers that build a spec by code from `report_render` and
+`crm_report`.
 
 #### 14.10.1 The answer
 
@@ -2378,8 +2379,8 @@ field changes between the spec and the file.
   `GENUI_TEMPLATES` and the `.report.json` viewer.
 - It builds no mapper from `report_render` or `crm_report`. B3 owns them,
   and they call `make_report` with a ready spec.
-- The chat also shows an `artifact_created` card for each of the two files,
-  beside the report card. B2 decides if the card of the report hides them.
+- It adds no second card for the two files. Their `artifact_created`
+  events are quiet (§14.10.5).
 
 ---
 

@@ -391,12 +391,11 @@ def card_refusal(data: dict[str, Any]) -> str | None:
     (B2, PR #1065), and ``emit_generative_ui`` calls it too. So the tool and
     the card refuse the same data, and this module holds no copy of its caps.
     Where a cap of the PDF is tighter (12 sources, a summary of 2000), the
-    tool's own check refuses first. Until #1065 merges the function does not
-    exist, and this returns None.
+    tool's own check refuses first. It reads the function through the module,
+    so a test can record what the card would get.
     """
     wa = importlib.import_module("acb_skills.write_artifact")
-    refuse = getattr(wa, "genui_report_refusal", None)
-    return refuse(data) if callable(refuse) else None
+    return wa.genui_report_refusal(data)
 
 
 async def _make_on_the_web(report: dict[str, Any], layout: dict[str, Any],
