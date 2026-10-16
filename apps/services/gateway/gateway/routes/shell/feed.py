@@ -914,25 +914,33 @@ async def _chat(user: UserContext) -> Found:
         # S5), so the source fails and the carry keeps its cards.
         raise RuntimeError("the waiting questions could not be read")
     threads = [(tid, row) for tid, row in asks.items()
-               if re.match(state.SIGNAL_ID_PATTERN, f"chat:{tid}")
+               if re.fullmatch(state.SIGNAL_ID_PATTERN, f"chat:{tid}")
                and str(row.get("actor_email") or "").strip().lower() == me]
     signals: list[Signal] = []
+    # The room check costs one session for each thread, so the provider
+    # checks CHAT_THREADS threads at most (§5.9 item 7). `capped` then says
+    # that some threads were not checked, so they may hold more cards.
     for tid, row in threads[:CHAT_THREADS]:
         # The rule of `list_pending_asks`: only while the member may send.
         room = await asyncio.to_thread(_resolve_room, tid, email, org)
         if room is None or not getattr(room, "can_send", False):
             continue
-        agent = str(row.get("agent_name") or "").strip() or "An agent"
-        asked = _iso(row.get("asked_at"))
+        agent = (str(row.get("newest_agent_name") or row.get("agent_name") or "").strip()
+                 or "An agent")
+        # The NEWEST question of the thread (§5.9 item 4). So a new question
+        # changes the state fingerprint, and a dismissed card comes back.
+        asked = _iso(row.get("newest_asked_at") or row.get("asked_at"))
+        ids = row.get("request_ids") or [str(row.get("request_id") or "")]
         href = _chat_href(tid)
         signals.append(Signal(
             signal_id=f"chat:{tid}", app="chat", kind="agent_asks",
             entity={"type": "chat", "id": tid, "label": agent},
             # ⚠️ No question text: a model wrote it (§4.1, §5.9 item 14).
             title=f"{agent} asked you a question",
-            facts={"waiting_since": asked, "request_ids": [str(row.get("request_id") or "")]},
+            facts={"waiting_since": asked, "request_ids": sorted(str(i) for i in ids)},
             href=href, acts=(link("open-chat", "Open chat", href),),
-            at=asked, expires_at=_iso(row.get("expires_at")),
+            at=asked,
+            expires_at=_iso(row.get("latest_expires_at") or row.get("expires_at")),
         ))
     return Found([], 0, capped=len(threads) > CHAT_THREADS,
                  signals=lambda: signals[:PER_APP])

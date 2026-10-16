@@ -3193,6 +3193,12 @@ async def _late_answer_from_row(
         return None, True
     if moved is None:
         return None, True
+    # The question no longer waits, so its My Day card leaves at once (WS-58
+    # MD-3f fix round 1, §5.9 item 14). `bump_member_safe` waits 0.5 seconds
+    # at most and never raises, so the answer stands.
+    from gateway.routes.shell import cache as feed_cache
+
+    await feed_cache.bump_member_safe(org, str(moved.get("actor_email") or me))
     _log.info(
         "agent.pending_ask_answered_late",
         request_id=req.request_id[:12], thread_id=req.thread_id[:12],

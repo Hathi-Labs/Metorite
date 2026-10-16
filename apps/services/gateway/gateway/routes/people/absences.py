@@ -23,12 +23,10 @@ every capacity figure that reads it quietly wrong.
 
 from __future__ import annotations
 
-import asyncio
 from datetime import date
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from acb_common import get_logger
 from fastapi import Depends, HTTPException
 from gateway.routes.people.core import (
     _tenant_session,
@@ -40,8 +38,6 @@ from gateway.routes.people.core import (
 from gateway.routes.people.fields import authorize_write
 from pydantic import BaseModel
 from sqlalchemy import text
-
-_log = get_logger("gateway.people.absences")
 
 #: The three words, mirrored from migration 174's CHECK. ONE tuple, the same
 #: shape `PEOPLE_STATUSES` takes for 148's — a fourth kind accepted here and
@@ -246,36 +242,27 @@ async def remove_absence(
     return {"deleted": absence_id}
 
 
-#: Seconds that the My Day bump of an absence write may take, at most. The
-#: cache bounds its own Redis call, and this bounds the whole bump, so a slow
-#: bump cannot hold the answer of a write that already committed.
-MY_DAY_BUMP_TIMEOUT_S = 0.5
-
-
 async def _bump_my_day(user: Any) -> None:
     """Move the org's My Day version after an admin absence write commits
     (WS-58 MD-3f, ``my_day_feed.md`` §5.9 item 14). The ``colleague_out``
     card of each member who shares a task with the person changes, so the
     ORG version moves. The org is the session's, never a request value.
 
-    It does nothing with ``MY_DAY_CACHE`` off (``cache.bump_org``). It never
-    raises, and it is bounded in time, because the write already committed.
-    The import is local, as ``selfservice._bump_my_day`` does it."""
-    try:
-        from gateway.routes.shell import cache as feed_cache
+    ``cache.bump_org_safe`` is the one seam: it does nothing with
+    ``MY_DAY_CACHE`` off, it waits 0.5 seconds at most, and it never raises,
+    because the write already committed. The import is local, as
+    ``selfservice._bump_my_day`` does it."""
+    from gateway.routes.shell import cache as feed_cache
 
-        await asyncio.wait_for(
-            feed_cache.bump_org(getattr(user, "organization_id", None)),
-            MY_DAY_BUMP_TIMEOUT_S)
-    except Exception as exc:  # a bump never fails the write that made it
-        _log.warning("people.absences.my_day_bump_failed", error=type(exc).__name__)
+    await feed_cache.bump_org_safe(getattr(user, "organization_id", None))
 
 
 #: Who of these addresses is away all day on ``:day``: an active People row
 #: with an ``away`` or ``holiday`` absence that covers the day. A ``partial``
 #: absence does not count. ⚠️ Both tables name the bound tenant in the SQL,
-#: beside RLS, because the production role owns the tables and RLS does not
-#: hold it. ``NULLIF(..., '')`` fails closed: an unbound session matches no row.
+#: beside RLS. Production connects as ``acb_app``, which FORCE RLS holds, so
+#: the predicate is defence in depth (R5): it holds on any session that RLS
+#: does not. ``NULLIF(..., '')`` fails closed: an unbound session matches no row.
 _AWAY_ON_SQL = (
     "SELECT DISTINCT ON (lower(p.email)) lower(p.email) AS email, p.name, a.kind "
     "  FROM people p "

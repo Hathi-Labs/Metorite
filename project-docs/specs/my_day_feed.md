@@ -3587,16 +3587,32 @@ the parts:
 **What the build found, for the slices after it.**
 
 - §5.9 item 4 gives `agent_asks` the newest `asked_at` of the thread. The
-  source of item 14, `_my_waiting_asks`, keeps one row for each thread,
-  and that row is the oldest. The build uses that row, so `waiting_since`
-  is the time of the oldest question that still waits. A run waits on one
-  card at a time, so the two agree for a live run.
+  source of item 14, `_my_waiting_asks`, kept only the oldest row of each
+  thread. Fix round 1 adds a summary of every waiting row of the thread to
+  that entry: `request_ids`, `newest_asked_at`, `newest_agent_name` and
+  `latest_expires_at`. The entry stays the oldest row, so `kind` keeps its
+  meaning for `list_active_sessions`. The card takes the newest time, so a
+  new question brings back a dismissed card.
 - The template table of item 11 names only `waiting_since` for
-  `agent_asks`. The card also carries `request_ids`, the name that item 4
-  adds to `STABLE_FACTS` for this kind.
-- A late answer to a parked question moves its row in the gateway
-  (`POST /agent/respond-input`), not in `settle`. That path bumps nothing,
-  so the card waits for the edge, or 600 seconds at most.
+  `agent_asks`. The card also carries `request_ids`, all the waiting ids of
+  the thread, sorted. Item 4 adds that name to `STABLE_FACTS`.
+- Two more writes end a question, and each bumps My Day (fix round 1). The
+  late answer to a parked question (`POST /agent/respond-input`) bumps the
+  member that it asked. The delete of a chat closes its questions, so it
+  bumps the org while `CHAT_DURABLE_ASKS` is on.
+- `cache.bump_member_safe` joins `cache.bump_org_safe`, so each bump of
+  MD-3f goes through `cache.py`. Each waits 0.5 seconds at most and never
+  raises.
+- `pending_ask.waiting_asks` names the org beside RLS (fix round 1).
+  Production connects as `acb_app`, which FORCE RLS holds, so each org
+  predicate of MD-3f is defence in depth (R5), not a fix of a leak.
+- `rooms._load_room` reads `chat_session` with no org predicate. The fix
+  is not cheap: a fresh replay of the ladder gives `chat_session` no
+  `organization_id` until the generated phases run. So it stays open, and
+  RLS holds it in production.
+- The chat provider checks the room of 15 threads at most, one session
+  each (§5.9 item 7). So `capped` says that some threads were not checked,
+  also when the first 15 fail `can_send`.
 - The anchors moved. `my_calendar` is at `personal.py:2344`, after the
   reads of MD-3c. The admin absence routes are at `absences.py:224` and
   `:237`.
@@ -3611,7 +3627,8 @@ the parts:
 3. My own absence counted.
 4. `can_send` ignored.
 5. The bump of a question raises into the write.
-6. The org predicate removed from `away_on` (R8, the owner role).
+6. The org predicate removed from `away_on` (R8, a session that bypasses
+   RLS).
 7. The check of `actor_email` removed from the chat provider.
 8. The bump of the admin absence `POST` removed.
 9. `away_on` reads `CURRENT_DATE`, not the day that it gets.

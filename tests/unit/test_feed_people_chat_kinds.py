@@ -296,6 +296,49 @@ class TestEachKindGivesItsCard:
         assert c["entity"] == {"type": "chat", "id": "t-ask",
                                "label": "projects-assistant"}
 
+    def test_two_questions_in_one_thread_key_on_the_newest(self, fakes, asks, monkeypatch):  # noqa: F811
+        """§5.9 item 4: the card takes the NEWEST question of the thread, and
+        every waiting id. The entry of the chat app stays the oldest row."""
+        _list(monkeypatch, "chat")
+        q1 = asks.add("t-two", minutes_ago=90, agent="first-agent")
+        q2 = asks.add("t-two", minutes_ago=10, agent="second-agent")
+        c = card(run_feed(hr(*EVERY)), "chat:t-two")
+        assert c["facts"] == {
+            "waiting_since": (fakes.now - timedelta(minutes=10)).isoformat(),
+            "request_ids": sorted([q1, q2])}
+        assert c["title"] == "second-agent asked you a question"
+        assert asks.rooms == ["t-two"]  # one card, one room check
+
+    def test_a_new_question_brings_back_a_dismissed_card(self, fakes, asks, monkeypatch):  # noqa: F811
+        """The member dismisses the card after Q1. A later run asks Q2 in the
+        same thread, so the state fingerprint moves and the card comes back."""
+        _list(monkeypatch, "chat")
+        asks.add("t-back", minutes_ago=90)
+        first = card(run_feed(hr(*EVERY)), "chat:t-back")
+        fakes.state_rows.setdefault(ME, {})["chat:t-back"] = {
+            "kind": "agent_asks", "state": "dismissed", "dismiss_reason": "dismiss",
+            "fingerprint": first["state_fp"], "visits": 1, "visits_day": None,
+            "first_seen_at": None, "last_seen_at": None, "acted_at": None,
+            "not_useful_at": None, "snoozed_until": None, "snooze_on_change": False}
+        # The dismiss holds while only Q1 waits.
+        assert "chat:t-back" not in _signal_ids(run_feed(hr(*EVERY)))
+        asks.add("t-back", minutes_ago=5)
+        again = card(run_feed(hr(*EVERY)), "chat:t-back")
+        assert again["state_fp"] != first["state_fp"]
+
+    def test_the_active_sessions_entry_keeps_the_oldest_kind(self, fakes, asks):  # noqa: F811
+        """The other reader of ``_my_waiting_asks`` reads ``kind``, from the
+        oldest row, as before the fix round."""
+        from gateway.routes.chat import _my_waiting_asks
+
+        asks.add("t-k", minutes_ago=60)
+        asks.add("t-k", minutes_ago=5)
+        asks.rows[0]["kind"] = "confirmation"
+        got = asyncio.run(_my_waiting_asks(ORG, ME))
+        assert got["t-k"]["kind"] == "confirmation"
+        assert got["t-k"]["request_id"] == asks.rows[0]["request_id"]
+        assert got["t-k"]["newest_asked_at"] == asks.rows[1]["asked_at"]
+
     def test_a_thread_id_is_quoted_in_the_link(self, fakes, asks, monkeypatch):  # noqa: F811
         _list(monkeypatch, "chat")
         asks.add("t/a&b")
@@ -645,7 +688,7 @@ class TestTheAdminAbsenceWritesBumpTheOrg:
             await asyncio.sleep(30)
 
         monkeypatch.setattr(cache, "bump_org", _hang)
-        monkeypatch.setattr(absences, "MY_DAY_BUMP_TIMEOUT_S", 0.01)
+        monkeypatch.setattr(cache, "BUMP_SAFE_WAIT_S", 0.01)
         out = asyncio.run(asyncio.wait_for(
             absences.add_absence("p-1", self._body(), user=hr("people")), 20))
         assert out == {"id": "a-1"}
@@ -788,7 +831,7 @@ class TestTheQuestionWritesBumpTheMember:
             await asyncio.sleep(30)
 
         monkeypatch.setattr(cache, "bump_member", _hang)
-        monkeypatch.setattr(pending_ask, "MY_DAY_BUMP_TIMEOUT_S", 0.01)
+        monkeypatch.setattr(cache, "BUMP_SAFE_WAIT_S", 0.01)
         out = asyncio.run(asyncio.wait_for(pending_ask._record("t-1", self._ask()), 20))
         assert out == ORG
 
@@ -799,3 +842,143 @@ class TestTheQuestionWritesBumpTheMember:
         monkeypatch.setattr(pending_ask, "insert_ask", _fails)
         assert asyncio.run(pending_ask._record("t-1", self._ask())) is None
         assert store.bumps == []
+
+
+# ── fix round 1: the late answer and the delete end a question too ──────────
+
+
+class TestTheLateAnswerBumpsTheMember:
+    @pytest.fixture()
+    def late(self, cache_on, monkeypatch):
+        from acb_common import get_settings
+        from gateway import chat_recovery
+        from gateway.routes.shell import cache
+
+        monkeypatch.setattr(get_settings(), "chat_durable_asks", True)
+        s = _Store()
+        s.bumps = []
+        rid = uuid.uuid4().hex
+        s.rows[rid] = {"request_id": rid, "thread_id": "t-late", "actor_email": ME,
+                       "state": "parked"}
+
+        def _read(org, request_id):
+            row = s.rows.get(request_id)
+            return dict(row) if row and row["state"] in pending_ask.WAITING else None
+
+        async def _resend(thread_id, row, answer):
+            return "RESEND"
+
+        async def _incr(org, op, event):
+            s.bumps.append(org)
+
+        monkeypatch.setattr(pending_ask, "read_ask", _read)
+        monkeypatch.setattr(pending_ask, "move_ask", s.move_ask)
+        monkeypatch.setattr(chat_recovery, "card_answer_from_ask", _resend)
+        monkeypatch.setattr(cache, "_bump", _incr)
+        s.rid = rid
+        return s
+
+    def _answer(self, rid: str):
+        from gateway.routes import agent as agent_routes
+
+        req = agent_routes.UserInputResponseRequest(request_id=rid, answer="Yes",
+                                                    thread_id="t-late")
+        return asyncio.run(asyncio.wait_for(
+            agent_routes._late_answer_from_row(req, plain("chat")), 20))
+
+    def test_a_late_answer_bumps_the_member_it_asked(self, late, monkeypatch):
+        got = TestTheQuestionWritesBumpTheMember()._member_bumps(monkeypatch)
+        assert self._answer(late.rid) == ("RESEND", True)
+        assert late.rows[late.rid]["state"] == "answered"
+        assert got == [(ORG, ME)] and late.bumps == [ORG]
+
+    def test_an_answer_that_found_no_waiting_row_bumps_nothing(self, late, monkeypatch):
+        got = TestTheQuestionWritesBumpTheMember()._member_bumps(monkeypatch)
+        late.rows[late.rid]["state"] = "answered"
+        assert self._answer(late.rid) == (None, False)
+        assert got == []
+
+    def test_a_bump_that_raises_never_breaks_the_answer(self, late, monkeypatch):
+        from gateway.routes.shell import cache
+
+        async def _boom(org, email):
+            raise RuntimeError("bump down")
+
+        monkeypatch.setattr(cache, "bump_member", _boom)
+        assert self._answer(late.rid) == ("RESEND", True)
+        assert late.rows[late.rid]["state"] == "answered"
+
+    def test_a_bump_that_hangs_is_cut_off(self, late, monkeypatch):
+        from gateway.routes.shell import cache
+
+        async def _hang(org, email):
+            await asyncio.sleep(30)
+
+        monkeypatch.setattr(cache, "bump_member", _hang)
+        monkeypatch.setattr(cache, "BUMP_SAFE_WAIT_S", 0.01)
+        assert self._answer(late.rid) == ("RESEND", True)
+
+
+class TestTheChatDeleteBumpsTheOrg:
+    @pytest.fixture()
+    def deleting(self, cache_on, monkeypatch):
+        from acb_common import get_settings
+        from gateway.routes import chat as chat_routes
+        from gateway.routes import workspace
+        from gateway.routes.shell import cache
+
+        monkeypatch.setattr(get_settings(), "chat_durable_asks", True)
+        got: list[str] = []
+
+        async def _set(org, _msg):
+            got.append(org)
+
+        async def _purge(*_a, **_k):
+            return None
+
+        monkeypatch.setattr(cache, "_set_org_version", _set)
+        monkeypatch.setattr(workspace, "purge_thread_files", _purge)
+        monkeypatch.setattr(chat_routes, "_may_delete_session", lambda *_a, **_k: True)
+        monkeypatch.setattr(chat_routes, "_delete_session", lambda *_a, **_k: True)
+        return got
+
+    def _delete(self):
+        from gateway.routes import chat as chat_routes
+
+        return asyncio.run(asyncio.wait_for(
+            chat_routes.delete_session("t-gone", user=plain("chat")), 20))
+
+    def test_a_delete_bumps_the_org(self, deleting):
+        assert self._delete() is None
+        assert deleting == [ORG]
+
+    def test_with_durable_asks_off_a_delete_bumps_nothing(self, deleting, monkeypatch):
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "chat_durable_asks", False)
+        self._delete()
+        assert deleting == []
+
+    def test_a_delete_that_found_no_chat_bumps_nothing(self, deleting, monkeypatch):
+        from gateway.routes import chat as chat_routes
+
+        monkeypatch.setattr(chat_routes, "_delete_session", lambda *_a, **_k: False)
+        with pytest.raises(HTTPException):
+            self._delete()
+        assert deleting == []
+
+    def test_a_bump_that_raises_or_hangs_never_breaks_the_delete(self, deleting, monkeypatch):
+        from gateway.routes.shell import cache
+
+        async def _boom(org):
+            raise RuntimeError("bump down")
+
+        monkeypatch.setattr(cache, "bump_org", _boom)
+        assert self._delete() is None
+
+        async def _hang(org):
+            await asyncio.sleep(30)
+
+        monkeypatch.setattr(cache, "bump_org", _hang)
+        monkeypatch.setattr(cache, "BUMP_SAFE_WAIT_S", 0.01)
+        assert self._delete() is None

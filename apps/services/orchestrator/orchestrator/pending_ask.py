@@ -300,8 +300,11 @@ def waiting_asks(
 
     if not thread_id and not actor_email:
         return []
-    where = ["state = ANY(:waiting)", "expires_at > now()"]
-    params: dict[str, Any] = {"waiting": list(WAITING)}
+    # The org predicate stands beside RLS, as in `move_ask`: defence in depth
+    # for a session that RLS does not hold (WS-58 MD-3f fix round 1, R5).
+    where = ["organization_id = CAST(:org AS uuid)", "state = ANY(:waiting)",
+             "expires_at > now()"]
+    params: dict[str, Any] = {"org": organization_id, "waiting": list(WAITING)}
     if thread_id:
         where.append("thread_id = :tid")
         params["tid"] = thread_id
@@ -396,29 +399,24 @@ async def _record(thread_id: str, ask: CardAsk) -> str | None:
     return org
 
 
-#: Seconds that the My Day bump of a question may take, at most. The cache
-#: bounds its own Redis call, and this bounds the whole bump, so a slow bump
-#: cannot hold the run that waits on the card.
-MY_DAY_BUMP_TIMEOUT_S = 0.5
-
-
 async def _bump_my_day(org: str | None, actor: str | None) -> None:
     """Move the My Day version of the member a question asks, after its row
     changed (WS-58 MD-3f, ``my_day_feed.md`` §5.9 item 14). So the card
     ``agent_asks`` comes and goes at once, not at the 600-second bound.
 
     The org and the member are the run's own, server-side, never an event
-    field. It does nothing with ``MY_DAY_CACHE`` off (``cache.bump_member``).
-    It never raises, and it is bounded in time: a bump must never break an
-    ask. The import is local, as the other gateway imports here are."""
+    field. ``cache.bump_member_safe`` is the one seam: it does nothing with
+    ``MY_DAY_CACHE`` off, it waits 0.5 seconds at most, and it never raises,
+    so a bump never breaks an ask. The import is local, as the other gateway
+    imports here are. A failed import only logs."""
     if not org or not actor:
         return
     try:
         from gateway.routes.shell import cache as feed_cache
-
-        await asyncio.wait_for(feed_cache.bump_member(org, actor), MY_DAY_BUMP_TIMEOUT_S)
-    except Exception as exc:  # a bump never fails the write that made it
+    except Exception as exc:  # no gateway in this process: no feed to bump
         _log.warning("pending_ask.my_day_bump_failed", error=type(exc).__name__)
+        return
+    await feed_cache.bump_member_safe(org, actor)
 
 
 def note_event(thread_id: str, event: Any) -> None:

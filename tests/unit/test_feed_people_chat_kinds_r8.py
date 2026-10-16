@@ -16,8 +16,9 @@ The members of org B:
   TWIN and an agent. ME is away today too.
 * **TWIN** has a People row in BOTH orgs, with the same address. Only the
   row of org A is away today. So a read that loses its org predicate names
-  TWIN in org B. The owner-role check proves that the SQL itself holds it,
-  because the production role is not held by RLS.
+  TWIN in org B. A check on a session that bypasses RLS (the superuser)
+  proves that the SQL itself holds it. Production connects as ``acb_app``,
+  which FORCE RLS holds, so the predicate is defence in depth (R5).
 * **OTHER** owns a private chat with a question for ME, so ME cannot send
   there. OTHER is also the one asked in a chat of ME.
 
@@ -312,7 +313,9 @@ class TestAwayOn:
     async def test_the_org_predicate_holds_on_a_session_that_bypasses_rls(
         self, as_app, seeded,
     ):
-        """Production connects as the owner role, which RLS does not hold."""
+        """Only the SQL's own org predicate can filter on this session. It is
+        defence in depth (R5): production connects as ``acb_app``, which FORCE
+        RLS holds."""
         from gateway.routes.people.absences import away_on
 
         async with _as_owner(as_app, as_app.org_b):
@@ -346,6 +349,46 @@ def _counting(name: str, real, opened: list[str]):
         async with real(*args, **kwargs) as db:
             yield db
     return _session
+
+
+class TestTheChatOrgPredicate:
+    """``pending_ask.waiting_asks`` names the org beside RLS (fix round 1).
+    The ``acb_graph`` reads run as the SUPERUSER here, which RLS does not
+    hold. So only the SQL's own org predicate keeps org A's question ``r_a``
+    out of org B. It is defence in depth (R5): production connects as
+    ``acb_app``, which FORCE RLS holds.
+
+    ⚠️ ``rooms._load_room`` reads ``chat_session`` with no org predicate, so
+    on this session the room check of ``t_a`` passes. The store's predicate
+    is the only thing that holds here."""
+
+    @pytest.fixture()
+    def as_owner_graph(self, promoted, monkeypatch):  # noqa: F811
+        from acb_common import get_settings
+
+        eng = create_engine(promoted.admin_engine.url, poolclass=NullPool, future=True)
+        factory = sessionmaker(bind=eng, expire_on_commit=False, future=True)
+        monkeypatch.setattr(graph_db, "_session_factory", lambda: factory)
+        monkeypatch.setattr(get_settings(), "chat_durable_asks", True)
+        try:
+            yield promoted
+        finally:
+            eng.dispose()
+
+    async def test_another_orgs_question_never_reaches_the_card(
+        self, as_owner_graph, seeded, monkeypatch,
+    ):
+        p = as_owner_graph
+        with acb_graph.tenant_session(p.org_b) as s:
+            seen = s.execute(text(
+                "SELECT count(*) FROM chat_pending_ask WHERE request_id = :r"),
+                {"r": seeded["r_a"]}).scalar_one()
+        assert seen == 1, "the owner session must see org A's row, or this proves nothing"
+        async with _as_owner(p, p.org_b):
+            found = await feed._chat(_user(ME, p.org_b))
+        ids = [s.signal_id for s in found.signals()]
+        assert f"chat:{seeded['t_a']}" not in ids
+        assert ids == [f"chat:{seeded['t_mine']}"]
 
 
 class TestTheSessions:
