@@ -13885,7 +13885,7 @@ connect is the precedent (`src/app/whatsapp/connect/page.tsx:340`), and
 | PR-G6 | **EM-G11e** — UMCC: the detector, dark | 4 | 🟢 AGENT-SAFE build. 🔴 OWNER-GATE for the vendor and the API (Q-GM-9). 🔴 `enforcement-flip` for `EMAIL_INJECTION_SCAN` | M, about 450 | §12.3.13.8 |
 | PR-G7 | **EM-G11f1** — one mailbox teardown, with the revoke and the filters. ✅ Merged NARROWED #1006 (2026-10-14) | 6 | 🟢 AGENT-SAFE · security review · R8 | M, about 550 | §12.3.13.9 |
 | PR-G8 | **EM-G11f2** — a durable purge, and a fence on each child. ✅ Merged NARROWED #1020 (2026-10-14), migration 264 | 6 | 🟢 AGENT-SAFE · R8 · one migration | M, about 500 | §12.3.13.9 |
-| PR-G7b | **EM-G11f1b** — the teardown in the member purge, and the Outlook rules. 📝 Specified (2026-10-16) | 6 | 🟢 AGENT-SAFE · security review · R8 · live for Outlook | M, about 550 | §12.3.13.9.2 |
+| PR-G7b | **EM-G11f1b** — the teardown in the member purge, and the Outlook rules. 🔨 Built, not merged (2026-10-16, branch `gmail-member-purge`) | 6 | 🟢 AGENT-SAFE · security review · R8 · live for Outlook | M, about 550 | §12.3.13.9.2 |
 | PR-G7c | **EM-G11f1c** — the teardown in the org purge, and a purge record that outlives the org. 📝 Specified (2026-10-16) | 6 | 🟢 AGENT-SAFE · R8 · one migration · security review | M, about 450 | §12.3.13.9.2 |
 | PR-G8b | **EM-G11f3** — no copy of mail in a chat memory store, and no email chat route with no client. 🔨 Built, not merged (2026-10-16, branch `gmail-chat-copies`) | 6 | 🟢 AGENT-SAFE · security review. `deploy-write` for one line of `deploy.sh` (granted). 🔴 Merges before the WS-7 memory flips | M, about 400 added and 650 deleted | §12.3.13.9.1 |
 | PR-G9 | **EM-G11g1** — envelope encryption in the key store, dark | 5 | 🟢 AGENT-SAFE build · security review. 🔴 OWNER-GATE for KMS billing (Q-GM-8). 🔴 `enforcement-flip` for `KEY_STORE_ENVELOPE` | M, about 550 | §12.3.13.10 |
@@ -15338,7 +15338,7 @@ agent and the trace of a live store. `deploy-write` for the line of `deploy.sh`,
   drop is the only guard.
 - **W10 stays open, and it blocks the Mem0 flip.** The unmount save of `AgentChat` reaches
   `POST /memory/{scope}/add` with no session that the server bound, so the route cannot read the
-  mark. HANDOFF H-334 holds it, and WS-7 must not turn Mem0 on while H-334 is open.
+  mark. HANDOFF H-335 holds it, and WS-7 must not turn Mem0 on while H-335 is open.
 - `chat_fold.persist_final_assistant_message` takes `holds_mail`. With `None` it asks the
   predicate under the run's tenant, so the restart sweep (`chat_recovery.py`) drops the trace
   body of a mail run too.
@@ -15353,9 +15353,11 @@ agent and the trace of a live store. `deploy-write` for the line of `deploy.sh`,
 
 ###### 12.3.13.9.2 EM-G11f1b and EM-G11f1c — the teardown in the member purge and the org purge (PR-G7b, PR-G7c)
 
-**Status.** 📝 Specified (2026-10-16). Verified against code on 2026-10-16, at `origin/main`
-`0a14f7552`. Not audited and not built. This section closes the open points of the f1 and f2
-blocks: the two purges, the Outlook rules and `test_three_paths_call_one_teardown`.
+**Status.** 🔨 PR-G7b built, not merged (2026-10-16, branch `gmail-member-purge`, audit
+GO-NARROWED at `260c14705`). Items 1 to 5 are built, with acceptance 1 to 7 and 10. Acceptance 1
+covers two paths, because the org purge is PR-G7c. Item 11 waits for a live Outlook check. 📝 PR-G7c
+is specified and not built. This section closes the open points of the f1 and f2 blocks: the two
+purges, the Outlook rules and `test_three_paths_call_one_teardown`.
 
 **Paths.** `GW` is as in §12.3.13.2.
 
@@ -15444,10 +15446,18 @@ The rules of the composition:
 - `finish_teardowns` runs at most `TEARDOWN_CONCURRENCY = 4` mailboxes at once. Each mailbox has a
   bound of `MAILBOX_TEARDOWN_BOUND_S = 30` seconds for all of its legs. The bound of each f1 leg
   stays: 10 s for the filters, 5 s for the revoke, 5 s for the Graph call and 5 s for Redis.
+- The stop of the sync loop runs before that bound and outside it, with its own bound,
+  `STOP_SYNC_BOUND_S = 15` seconds (fix round 1). `remove_account_sync` swallows the cancel of its
+  wait, so a slow stop inside the leg bound took the time of the revoke.
+- A door logs the purge, and the admin door mirrors it to the Console, BEFORE it calls
+  `finish_teardowns`. A stop of the process in the wait then loses no record (fix round 1).
+- `/internal/drain` counts the held task, so a deploy waits for it. A cancel of the task logs
+  `email.teardown.cancelled` with the id of each mailbox that did not finish. No ledger keeps a
+  token after the delete.
 - A door waits `TEARDOWN_WAIT_S = 60` seconds at most. The mailboxes that remain continue in a task
   that the module holds, as `_PURGES` does. The door logs `email.teardown.continuing` with the
   count, and its receipt says how many finished.
-- So the worst case is 1000 mailboxes at 4 at a time and 30 s each: about 2 hours, in the
+- So the worst case is 1000 mailboxes at 4 at a time and 45 s each: about 3 hours, in the
   background. A restart in that time loses the revokes and the filter removals that remain. The
   credentials went with the rows, so nothing can do them again. The start line
   `email.teardown.started` names the count, so a lost teardown shows as a start line with no end
@@ -15474,9 +15484,9 @@ The rules of the composition:
 
 **The Outlook rules: the teardown removes them.** Metorite made each rule, its id is in
 `email_newsletters`, and the cascade deletes the id. After a disconnect nothing can find the rule,
-and it archives the mail of the member with no end. So the plan reads the filter ids of an
-`outlook` row too, and `remove_metorite_filters` calls `OutlookProvider.delete_filter` for each
-one. The Outlook grant stays, because Microsoft has no revoke for one delegated grant (f1). This
+and it archives the mail of the member with no end. So the plan reads the filter ids of a
+`microsoft` row too, which is the stored value of an Outlook row (`factory.py:22-23`). Then
+`remove_metorite_filters` calls `OutlookProvider.delete_filter` for each one. The Outlook grant stays, because Microsoft has no revoke for one delegated grant (f1). This
 changes live Outlook behaviour, so it has an Outlook acceptance item. An IMAP row has no filters.
 
 **Scope.**
@@ -15488,8 +15498,9 @@ PR-G7b (EM-G11f1b): the member purge and the Outlook rules, with no migration.
 2. Wire the member purge: the plans and the purge rows in `purge_member_rows`, and
    `finish_teardowns` in each of the two doors.
 3. The Outlook rules, in each path.
-4. `PurgeResult` gets one additive field, `mailboxes`, with the counts `planned`, `finished` and
-   `continuing`. The Members page can read it or ignore it.
+4. `PurgeResult` gets one additive field, `mailboxes`, with the counts `planned`, `finished`,
+   `failed` and `continuing`. `finished` means that each leg succeeded. The Members page can read
+   it or ignore it.
 5. The cap and its 409.
 
 PR-G7c (EM-G11f1c): the org purge, with one migration.
@@ -15513,7 +15524,7 @@ Mem0 or of a Graphiti group, because §12.3.13.9.1 stops those writes. No change
 1. Each of the three paths calls `read_teardown_plans` before its delete, and `finish_teardowns`
    after its commit. No other code calls a leg of `teardown.py`.
 2. A member purge that `assert_owner_survives` refuses calls no provider and stops no loop.
-3. An Outlook plan with two filter ids calls `delete_filter` twice and calls no revoke.
+3. A plan of a `microsoft` row (Outlook) with two filter ids calls `delete_filter` twice and calls no revoke.
 4. A scope of 1001 mailboxes answers 409 and deletes nothing.
 5. With 10 mailboxes and a slow leg, the door answers after at most 60 s of teardown, and the
    receipt counts the mailboxes that continue.

@@ -18,6 +18,8 @@ const geistMono = Geist_Mono({
 });
 
 import AppShell from "@/components/AppShell";
+import StagingBand from "@/components/StagingBand";
+import { deployTitle } from "@/lib/deploy/deployEnv";
 import Providers from "@/components/Providers";
 import { UndoProvider } from "@/components/UndoProvider";
 import { ToastProvider } from "@/components/ui/Toast";
@@ -25,7 +27,8 @@ import UpdateNotice from "@/lib/shell/UpdateNotice";
 import { themeBootScript } from "@/lib/theme/boot";
 
 export const metadata: Metadata = {
-  title: "Metorite",
+  // WS-38 S-7: "[Staging] Metorite" on the staging box, unchanged elsewhere.
+  title: deployTitle("Metorite"),
   applicationName: "Metorite",
   description: "Metorite, the AI company operating system.",
   // The tab and home-screen icons are files beside this one (`favicon.ico`,
@@ -71,6 +74,8 @@ export default function RootLayout({
             cannot live inside a page. Fenced by `conformance.test.ts` rule 8:
             without the provider every `useToast()` call site degrades to a
             silent no-op and no other test in the tree would go red. */}
+        {/* WS-38 S-7: renders nothing on production. */}
+        <StagingBand />
         <ToastProvider>
           {/* "Metorite is updating", instead of a 502 (navigation_shell.md
               §7.3, owner directive 2026-10-05). Inside the toast provider,

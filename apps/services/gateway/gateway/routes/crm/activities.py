@@ -28,8 +28,9 @@ compete with.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query
@@ -39,6 +40,7 @@ from gateway.routes.crm.core import (
     DEALS,
     LEADS,
     ORGANIZATIONS,
+    TABLE_BY_ACTIVITY_TARGET,
     ActivityModel,
     Entity,
     _tenant_session,
@@ -196,10 +198,36 @@ async def _timeline(
         return TimelineResponse(entries=entries[:limit])
 
 
+#: The column of ``crm_activities`` that names a generic module record
+#: (CRM-Q23a, migration 275). ``routes/crm/modules.py`` reads a module
+#: record's timeline through it.
+MODULE_ACTIVITY_COLUMN = "module_record_id"
+
+#: The parent columns that :func:`activity_entries_by` may name: the four of
+#: the entity registry and the module one. A column is a literal of this set,
+#: never caller text.
+ACTIVITY_PARENT_COLUMNS: frozenset[str] = frozenset(
+    {*TABLE_BY_ACTIVITY_TARGET, MODULE_ACTIVITY_COLUMN},
+)
+
+
 async def _activity_entries(
     db: Any, entity: Entity, record_id: str, origin: str, limit: int,
     *, strict: bool = False,
 ) -> list[TimelineEntry]:
+    return await activity_entries_by(
+        db, entity.activity_column, record_id, origin, limit, strict=strict,
+    )
+
+
+async def activity_entries_by(
+    db: Any, column: str, record_id: str, origin: str, limit: int,
+    *, strict: bool = False,
+) -> list[TimelineEntry]:
+    """The activities whose parent ``column`` is *record_id*, as timeline
+    entries. ``column`` is one of :data:`ACTIVITY_PARENT_COLUMNS`."""
+    if column not in ACTIVITY_PARENT_COLUMNS:
+        raise ValueError(f"not an activity parent column: {column!r}")
     # Paged mode orders by the instant the entry SHOWS (`occurred_at`, else
     # `created_at`) and the id, the order `merge_page` merges by. The unpaged
     # read keeps its `created_at` order.
@@ -208,7 +236,7 @@ async def _activity_entries(
     rows = (await db.execute(
         text(
             "SELECT * FROM crm_activities "
-            f"WHERE {entity.activity_column} = CAST(:record_id AS uuid) "
+            f"WHERE {column} = CAST(:record_id AS uuid) "
             f"ORDER BY {order} LIMIT :limit"
         ),
         {"record_id": record_id, "limit": limit},
@@ -629,11 +657,131 @@ async def delete_activity(
         return {"deleted": activity_id}
 
 
+# ── My due follow-ups, for the My Day feed (WS-58 MD-3e) ────────────────────
+
+#: The types that no member writes as a follow-up. The pipeline writes
+#: ``status_change`` and the platform writes ``system``.
+NOT_FOLLOWUP_TYPES: tuple[str, ...] = ("status_change", "system")
+
+#: My open activities that are due by the end of my local today, one row for
+#: each record, with the earliest due time of that record (``my_day_feed.md``
+#: §5.9 item 13). An activity on more than one record takes the first of
+#: deal, lead, contact and organization.
+#:
+#: **The one CRM day rule** (``crm_platform.md`` §19.7, ``format.ts``
+#: ``dueDay``, ``core.attach_next_activity``). A task's ``due_at`` holds a
+#: DATE at 00:00 UTC, because the Zoho sync and the composer both write it so.
+#: So a task compares its UTC date with my local date (``:before_day``, the
+#: UTC midnight of my local tomorrow). A call or a meeting compares its real
+#: instant with my local midnight (``:before``). ``all_day`` says which.
+#:
+#: **Today first.** ``fresh`` is true for a row due from my local today on,
+#: by the same rule. The LIMIT keeps the fresh rows first and fills with the
+#: older ones, so a mirror with many stale open tasks cannot hide a follow-up
+#: that is due in an hour.
+#:
+#: ⚠️ Each statement names the tenant AND the member. RLS holds the gateway
+#: role, so this is defence in depth. The inner filter reads through
+#: ``idx_crm_activities_due_at`` (``144_crm.sql``), a partial index on the
+#: open rows, by ``:upper``, the later of the two bounds.
+_MY_DUE_SQL = (
+    "SELECT record_kind, record_id, label, due_at, subject, all_day, fresh FROM ("
+    " SELECT DISTINCT ON (record_kind, record_id)"
+    "  record_kind, record_id, label, due_at, subject, all_day, fresh, activity_id"
+    "  FROM ("
+    "  SELECT"
+    "   CASE WHEN a.deal_id IS NOT NULL THEN 'deal'"
+    "        WHEN a.lead_id IS NOT NULL THEN 'lead'"
+    "        WHEN a.contact_id IS NOT NULL THEN 'contact'"
+    "        ELSE 'organization' END AS record_kind,"
+    "   COALESCE(a.deal_id, a.lead_id, a.contact_id, a.company_id) AS record_id,"
+    "   CASE WHEN a.deal_id IS NOT NULL THEN d.name"
+    "        WHEN a.lead_id IS NOT NULL THEN l.lead_name"
+    "        WHEN a.contact_id IS NOT NULL THEN"
+    "             concat_ws(' ', c.first_name, c.last_name)"
+    "        ELSE co.name END AS label,"
+    "   a.due_at, a.subject, a.id AS activity_id,"
+    "   (a.type = 'task') AS all_day,"
+    "   CASE WHEN a.type = 'task' THEN a.due_at >= CAST(:today_day AS timestamptz)"
+    "        ELSE a.due_at >= CAST(:today_start AS timestamptz) END AS fresh"
+    "  FROM crm_activities a"
+    "  LEFT JOIN crm_deals d ON d.id = a.deal_id"
+    "   AND d.organization_id = a.organization_id"
+    "  LEFT JOIN crm_leads l ON l.id = a.lead_id"
+    "   AND l.organization_id = a.organization_id"
+    "  LEFT JOIN crm_contacts c ON c.id = a.contact_id"
+    "   AND c.organization_id = a.organization_id"
+    "  LEFT JOIN crm_companies co ON co.id = a.company_id"
+    "   AND co.organization_id = a.organization_id"
+    "  WHERE a.organization_id = CAST(:org AS uuid)"
+    "   AND lower(a.created_by) = :member"
+    "   AND a.completed_at IS NULL"
+    "   AND a.due_at < CAST(:upper AS timestamptz)"
+    "   AND a.due_at < CASE WHEN a.type = 'task' THEN CAST(:before_day AS timestamptz)"
+    "                       ELSE CAST(:before AS timestamptz) END"
+    "   AND a.type <> ALL(CAST(:skip AS text[]))"
+    " ) mine"
+    " ORDER BY record_kind, record_id, due_at, activity_id"
+    ") firsts ORDER BY fresh DESC, due_at, record_kind, record_id LIMIT :limit"
+)
+
+
+def due_bounds(today: date, tz: ZoneInfo) -> dict[str, datetime]:
+    """The four bounds of the one CRM day rule for my local ``today``: my
+    local midnight of today and of tomorrow, and the UTC midnight of the
+    same two dates, which is where a task's date sits."""
+    tomorrow = today + timedelta(days=1)
+    before = datetime.combine(tomorrow, time.min, tzinfo=tz)
+    before_day = datetime.combine(tomorrow, time.min, tzinfo=UTC)
+    return {
+        "today_start": datetime.combine(today, time.min, tzinfo=tz),
+        "before": before,
+        "today_day": datetime.combine(today, time.min, tzinfo=UTC),
+        "before_day": before_day,
+        "upper": max(before, before_day),
+    }
+
+
+async def my_due_activities(
+    db: Any, user: UserContext, *, today: date, tz: ZoneInfo, limit: int,
+) -> list[dict[str, Any]]:
+    """My open follow-ups that are due by the end of my local ``today``, one
+    for each record (WS-58 MD-3e, ``my_day_feed.md`` §5.9 item 13). The rows
+    due from today on come first, then the older ones, the earliest first in
+    each part. See ``_MY_DUE_SQL`` for the one CRM day rule.
+
+    "My" is ``lower(created_by)``, and the Zoho sync writes the mapped
+    member there, so a mirrored follow-up counts too. The caller gives the
+    session, so the feed's three CRM reads share one. The tenant is the
+    bound one (``current_tenant``), never a request value. Each row is
+    ``{record_kind, record_id, label, due_at, subject, all_day, fresh}``, and
+    ``record_kind`` is ``deal``, ``lead``, ``contact`` or ``organization``.
+    """
+    org = current_tenant()
+    member = (getattr(user, "email", None) or "").strip().lower()
+    if not org or not member:
+        return []
+    rows = (await db.execute(text(_MY_DUE_SQL), {
+        "org": str(org), "member": member, **due_bounds(today, tz),
+        "skip": list(NOT_FOLLOWUP_TYPES), "limit": max(1, int(limit)),
+    })).fetchall()
+    return [{
+        "record_kind": str(r.record_kind), "record_id": str(r.record_id),
+        "label": r.label, "due_at": r.due_at, "subject": r.subject,
+        "all_day": bool(r.all_day), "fresh": bool(r.fresh),
+    } for r in rows]
+
+
 __all__ = [
+    "ACTIVITY_PARENT_COLUMNS",
     "ACTIVITY_TYPES",
     "LOGGABLE_TYPES",
+    "MODULE_ACTIVITY_COLUMN",
+    "NOT_FOLLOWUP_TYPES",
     "ActivityIn",
     "ActivityPatch",
     "TimelineEntry",
     "TimelineResponse",
+    "activity_entries_by",
+    "my_due_activities",
 ]

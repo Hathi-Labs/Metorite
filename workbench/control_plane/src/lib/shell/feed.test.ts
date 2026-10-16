@@ -1235,6 +1235,28 @@ describe("9. the life of a card (MD-2b)", () => {
     expect(carryCards(ok, answerOf([], other)).cards.map((c) => c.signal_id)).toEqual(["tasks:due"]);
   });
 
+  it("(d1d) carries a failed email_followups by the card's source, never a card of the email source (MD-3d)", () => {
+    // Both sources give cards of the `email` app (§5.9 items 1 and 12).
+    const reply = card("email:a1:th-r", "needs_you", { app: "email", kind: "needs_reply" });
+    const wait = card("email:a1:th-w", "needs_you", { app: "email", kind: "no_answer", source: "email_followups" });
+    const promise = card("tasks:p1", "needs_you", { app: "email", kind: "promise_due", source: "email_followups" });
+    const ok = noteOk(
+      new Map(),
+      answerOf([reply, wait, promise], { email: "ok", email_followups: "ok" } as FeedAnswer["sources"]),
+      0,
+    );
+    expect(ok.get("email")?.cards.map((c) => c.signal_id)).toEqual(["email:a1:th-r"]);
+    expect(ok.get("email_followups")?.cards.map((c) => c.signal_id)).toEqual(["email:a1:th-w", "tasks:p1"]);
+    // email_followups fails, and email answers with no card: only its own two carry.
+    const failed = { email: "ok", email_followups: "failed" } as FeedAnswer["sources"];
+    const next = carryCards(ok, { ...answerOf([], failed), fetchedAt: CARRY_MS });
+    expect(next.cards.map((c) => c.signal_id).sort()).toEqual(["email:a1:th-w", "tasks:p1"]);
+    expect(carryCards(ok, { ...answerOf([], failed), fetchedAt: CARRY_MS + 1 }).cards).toEqual([]);
+    // email fails while email_followups answers: only the needs-reply card carries.
+    const other = { email: "failed", email_followups: "ok" } as FeedAnswer["sources"];
+    expect(carryCards(ok, answerOf([], other)).cards.map((c) => c.signal_id)).toEqual(["email:a1:th-r"]);
+  });
+
   it("(d1b) reads the card's source, and an answer with none reads as its app", () => {
     const body = {
       cards: [

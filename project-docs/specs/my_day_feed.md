@@ -53,8 +53,17 @@ So the answer is the same as before, byte for byte. MD-3c also adds the
 shared rows of all eleven MD-3 kinds, so MD-3d to MD-3f add only their
 providers and reads.
 
-The rest of this file is not built. The open AGENT-SAFE tickets are MD-3d
-to MD-3f, MD-4, MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
+**MD-3d is BUILT, 2026-10-15** (the mail kinds, no migration). The source
+`email_followups` is gated, and `MY_DAY_PROVIDERS` is empty in production.
+So the answer is the same as before, byte for byte, and so is the email
+digest.
+
+**MD-3e is BUILT, 2026-10-15** (the CRM kinds, no migration).
+`MY_DAY_PROVIDERS` gates the source `crm`, and that list is empty in
+production. So the answer is the same as before, byte for byte.
+
+The rest of this file is not built. The open AGENT-SAFE tickets are MD-3f,
+MD-4, MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
 Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
@@ -509,8 +518,8 @@ catalogue in the PR that promotes Notes (H-21). Its link is
 |---|---|---|---|---|---|---|
 | `needs_reply` | Today's provider | Template: "Asked yesterday at 4:12 PM." | The last message, 3 lines | Open thread, Snooze | None | MD-1 |
 | `reply_drafted` | `needs_reply` and a draft in `email_ai_drafts` (card B) | Template, plus the promise when the email app holds one for the thread | The full draft and its attachments. For a thread of 6 messages or more, the gist above it | "Review and send" (B), "Edit draft" | The draft is the email app's. The gist is a text composition (MD-6c) | MD-4 |
-| `promise_due` | A promise I made in sent mail falls due (card B's "You said you would send it by Friday") | Template from the promise | — | Done (A), Open | **None in My Day.** The email app's own detector found the promise and filed it as a task (`capture_email.py:1007`, `:1176`). The provider reads the open ones through `_digest_commitments` (`digest.py:293`) | MD-3 |
-| `no_answer` | A mail I sent has waited 3 working days for the other side | Template | — | "Follow up" (opens a draft), Snooze | None. It reads the email app's AWAITING threads (`digest.py`, the read above `:293`) | MD-3 |
+| `promise_due` | A promise I made in sent mail falls due (card B's "You said you would send it by Friday") | Template from the promise | — | Done (A), Open thread | **None in My Day.** The email app's own detector found the promise and filed it as a task (`capture_email.py:1007`, `:1176`). The provider reads the open ones through `digest.promise_tasks`, which reads only a commitment task (§5.9 rule 10.1) | MD-3d, built |
+| `no_answer` | A mail I sent has waited longer than the mailbox's follow-up wait, 3 business days by default, and less than 30 days | Template | — | "Follow up" (opens the thread), Snooze | None. It reads the email app's AWAITING threads through `digest.awaiting_threads` | MD-3d, built |
 
 **The gist of a long thread is not a card.** It is part of the body of the
 thread's one card (§4.5).
@@ -531,9 +540,9 @@ nothing (`navigation_shell.md` §4.5, "No second arithmetic").
 
 | Kind | Signal | Why line | Acts | AI | Phase |
 |---|---|---|---|---|---|
-| `crm_followup_due` | An activity I own has `due_at` today or earlier | Template | Open deal | None | MD-3. It needs a new "my due activities" read in `routes/crm/activities.py`. Feed only, until a §7.2 amendment |
-| `deal_quiet` | A deal I own passed its stage's `max_dwell_days` | Template: "No activity for 12 days in Proposal." | "Log a call" (opens the CRM form), Snooze | None | MD-3 |
-| `deal_close_passed` | A deal I own passed its close date and is open | Template | "Move the date" (opens the CRM form) | None | MD-3 |
+| `crm_followup_due` | An activity I own has `due_at` today or earlier | Template | Open deal | None | MD-3e, BUILT. §5.9 item 13 holds the rule. Feed only, until a §7.2 amendment |
+| `deal_quiet` | A deal I own passed its stage's `max_dwell_days` | Template: "No activity for 12 days in Proposal." | "Log a call" (opens the CRM form), Snooze | None | MD-3e, BUILT. §5.9 item 13 holds the rule and the text |
+| `deal_close_passed` | A deal I own passed its close date and is open | Template | "Move the date" (opens the CRM form) | None | MD-3e, BUILT. §5.9 item 13 holds the rule |
 | `lead_replied` | A lead I own replied by mail | Template | Open thread | None | MD-9 |
 
 ### 5.6 People, approvals, agents and WhatsApp
@@ -765,6 +774,13 @@ These rows join the table of §4.3 and `feed_rank.group`.
 below. A fold must not change the state fingerprint (§6.8 item 1), so each
 task kind keeps to `due_at`.
 
+**The rule in code** (MD-3d fix round 1, 2026-10-16). A folded signal of a
+feed-only kind adds no state fact to its card (`feed._states_entity_facts`).
+The main signal keeps its own state facts, and a folded signal still adds
+its other facts. A folded needs kind keeps its state facts, because a new
+note is a change of the task. The fence covers every kind of `BASE`
+(`test_feed_fold_fingerprint.py`).
+
 | Kind | Its state facts |
 |---|---|
 | The task kinds and `promise_due` | `due_at` only, the due time of the task |
@@ -955,7 +971,7 @@ slice gives these facts and no others:
 | `absent_on_due` | `absence_day`, the local date |
 | `promise_due` | `due_at` |
 | `no_answer` | `waiting_since`, `who` |
-| `crm_followup_due` | `due_at`, `subject` |
+| `crm_followup_due` | `due_at`, `subject`, and `all_day` for a task |
 | `deal_quiet` | `stage`, `stage_days`, `stage_limit` |
 | `deal_close_passed` | `due_at` |
 | `colleague_out` | `out`, a list of names, and `task`, a title |
@@ -1009,7 +1025,7 @@ The weight: MD-3d adds 10 when `promise_due` is on the card (item 8).
 
 | Kind | It fires when | `why_key` and text | Act |
 |---|---|---|---|
-| `crm_followup_due` | An activity has `completed_at IS NULL`. Its type is not `status_change` or `system`. `lower(created_by)` is the member, and `due_at` is before the start of the tomorrow of the member | `followup_due`: "{Subject} is due {when} at {clock}." With no subject: "A follow-up is due {when} at {clock}." | "Open {noun}" |
+| `crm_followup_due` | An activity has `completed_at IS NULL`. Its type is not `status_change` or `system`. `lower(created_by)` is the member. It is due before the tomorrow of the member, by the one CRM day rule below | `followup_due`: "{Subject} is due {when} at {clock}." With no subject: "A follow-up is due {when} at {clock}." A task has no clock: "{Subject} is due {when}." and "A follow-up is due {when}." | "Open {noun}" |
 | `deal_quiet` | An open deal that I own passed the `max_dwell_days` of its own stage. A stage with no limit never fires. No override applies | `in_stage`: "In {stage} for {n} days. The stage limit is {limit} days." | "Log a call", a link to the record |
 | `deal_close_passed` | An open deal that I own has `expected_close_date` before the local today of the member | `close_passed`: "The close date was {when}, and the deal is still open." | "Move the date", a link to the record |
 
@@ -1019,16 +1035,27 @@ The weight: MD-3d adds 10 when `promise_due` is on the card (item 8).
   first of deal, lead, contact and organization.
 - `signal_id` is `crm:<deal|lead|contact|organization>:<id>`. The link is
   `crm_href` (rule 10.4).
-- The `urgent_at` of `crm_followup_due` is its `due_at`. The zone comes from
-  `personal.stored_zone`.
+- **The one CRM day rule** (`crm_platform.md` §19.7, fix round 1). A task
+  holds a DATE at 00:00 UTC, because the Zoho sync and the composer both
+  write it so. So the read compares the UTC date of a task with the local
+  date of the member. A call or a meeting keeps its real time, and the read
+  compares it with the local midnight of the member.
+- A task card has `all_day`, and its `due_at` is 00:00 of its date in the
+  zone of the member, as `deal_close_passed` does. It has no `urgent_at`,
+  so a midnight never lifts it to Now. For a call or a meeting, `urgent_at`
+  is its `due_at`. The zone comes from `personal.stored_zone`.
+- The read keeps the follow-ups due from the local today first, and then
+  the older ones. So many stale open tasks cannot cut a follow-up of today.
+- `stage_days` of `deal_quiet` rounds the time in the stage up, the rule of
+  the SQL. So on its first day past a limit of 10, the text says 11 days.
 - In Mirror mode (`is_mirror_mode`, `crm/core.py:1818`), `deal_quiet` is
   empty and the source still reads `ok`. A follow-up still shows, because the
   sync writes the mapped member into `created_by` (`crm_sync/engine.py:1097`).
 
 The sources:
 
-- `crm/activities.py::my_due_activities(user, limit)`, new. It reads through
-  `idx_crm_activities_due_at` (`144_crm.sql:452`).
+- `crm/activities.py::my_due_activities(db, user, today, tz, limit)`, new.
+  It reads through `idx_crm_activities_due_at` (`144_crm.sql:452`).
 - `crm/aggregate.py::my_overdue_deals(user, limit)`, new. It uses
   `_OVERDUE_FROM` (`aggregate.py:323`) with an owner clause, on
   `idx_crm_deals_owner_email`.
@@ -3218,8 +3245,9 @@ each one is fixed:
   `elapsed_ms=` in its text. A feed-only provider logs its answer at INFO,
   and a needs provider at DEBUG, because the bell polls the needs view.
 - **Three reads of `user_settings` named no tenant.** Since migration 239 a
-  member has one row for each organization, and the owner role of
-  production bypasses RLS. `personal.stored_zone` and `tasks.settings._load`
+  member has one row for each organization. RLS holds the gateway role
+  `acb_app` (measured on the box, 2026-10-16), so the predicate is defence
+  in depth. `personal.stored_zone` and `tasks.settings._load`
   now name the bound tenant (the GUC predicate of `prefs.py`). The day start
   read is gone: `personal.member_day` calls `_load`.
 - **The day start uses the one rule.** A member with the Calendar pane
@@ -3287,6 +3315,63 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/shell/f
 node .claude/hooks/ste-lint.mjs project-docs/specs/my_day_feed.md
 ```
 
+**BUILT, 2026-10-15.** No migration, and no flag changed. The source
+`email_followups` is gated, so it runs only when `MY_DAY_PROVIDERS` lists
+it. These are the parts:
+
+- `feed.py`: the provider `_email_followups` and its two signals. It skips a
+  separate mailbox, and a mailbox that answers 404. Each mailbox gets one
+  `MAILBOX_TIMEOUT_S` for its two reads.
+- `feed_rank.py`: `weight(facts, kinds)` adds `PROMISE_WEIGHT`, 10, when
+  `promise_due` is on the card. `feed_decide.old_level` passes no kinds, so
+  its level stays 0 to 4.
+- `digest.py`: `awaiting_threads`, `promise_tasks`, the bounds of
+  `_digest_thread_list` and the core `_commitments_core`. With no bound, the
+  digest sends the same statements, byte for byte.
+- `email/core.py`: `_assert_account_owner` takes `this_tenant`, off by
+  default. The two wrappers set it.
+- `feed.test.ts`: case (d1d), the carry of a failed `email_followups`.
+
+**What the build found, for the slices after it.**
+
+- The cutoff needs the mailbox's `follow_up_awaiting_days`, and the spec
+  gave no session for that read. `awaiting_threads` reads it in its own
+  session, when the caller gives no `before`.
+- `feed_mailboxes` names no tenant. RLS holds for `acb_app`, the role of
+  production, so this is defence in depth (R5). Read past RLS, the list would
+  hold the member's mailbox of another organization too. The wrappers refuse
+  it with a 404, and the provider skips it. HANDOFF H-334 holds the rest.
+
+**Fix round 1, 2026-10-16.** The review found that a fold moved the state
+fingerprint. A `promise_due` folded under a notification card added
+`due_at`, so a dismissed card came back when the promise came or went.
+`build_cards` now keeps the state facts of a folded feed-only kind out of the
+card (§5.9 item 4). A folded needs kind keeps them, so a new note still
+brings a task back (§6.8 item 1). The fence is
+`tests/unit/test_feed_fold_fingerprint.py`, for every kind of `BASE`.
+
+The same round reuses the owner check's row in `_commitments_core`, and builds
+the tenant line of the latest-message statement explicitly.
+
+**Mutations, run by hand on 2026-10-15.** Each one failed a fence:
+
+1. `commitment=True` dropped from the promise read.
+2. The owner check dropped from `awaiting_threads`.
+3. The error of the promise read swallowed in the provider.
+4. The 30-day bound dropped from the SQL.
+5. The digest default changed (`this_tenant` on by default).
+6. The promise weight set to 0.
+7. The tenant predicate dropped from the owner check.
+8. A 404 mailbox counted as a failure.
+9. The default wait set to 2 days.
+10. The promise read run without `feature:projects`.
+11. The text of the latest-message statement changed.
+
+**The measure.** The provider ran 40 times on the R8 seed, with two
+mailboxes, against a local Docker Postgres. The p50 was 136 ms, and the p95
+was 165 ms. The rule of §5.9 item 7 still needs the measure on the
+production box.
+
 ### MD-3e · The CRM kinds — AGENT-SAFE, after MD-3b
 
 `crm_followup_due`, `deal_quiet` and `deal_close_passed`, from the source
@@ -3340,6 +3425,84 @@ uv run ruff check apps/services/gateway/gateway/routes/shell apps/services/gatew
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/shell/feed.test.ts src/lib/shell/feedApps.test.ts
 node .claude/hooks/ste-lint.mjs project-docs/specs/my_day_feed.md
 ```
+
+**BUILT, 2026-10-15.** No migration, and no flag changed.
+`MY_DAY_PROVIDERS` gates the source `crm`, so it runs only when the list
+names it. These are the parts:
+
+- `feed.py`: the provider `_crm`, its gate `_crm_gate` and its three
+  signals. This file opens no session.
+- `crm/aggregate.py`: `my_overdue_deals`, `my_close_passed_deals` and
+  `my_day_rows`. `my_day_rows` opens the one session of the source. It
+  reads the zone, and then it runs the three reads.
+- `crm/activities.py`: `my_due_activities`. It gives one row for each
+  record, with the earliest open due time.
+- `retrieval/sources.py`: `crm_href`, the one link to a CRM record. The
+  search sources call it too. It moved there with the search refactor on main.
+- `crm/settings.py`: `PATCH /crm/settings` calls `bump_org_safe` after
+  the commit, the MD-3c rule for a write route of another app.
+- `shell/cache.py`: while `crm` is listed, `features_hash` holds the CRM
+  kill switch of the org. So an org that leaves `CRM_ORGS` gets no stored
+  CRM card.
+- `feed.ts` did not change. MD-3c added the three labels.
+
+**What the build found, for the slices after it.**
+
+- The three reads take the session from their caller, so they can share
+  one session. §5.9 item 13 named `(user, limit)`. `my_day_rows` opens the
+  session, because `test_shell_feed.py` refuses a session in `feed.py`.
+- `_OVERDUE_FROM` reads the clock of the database (`now()`), not
+  `needs._now()`. So the edge of `deal_quiet` follows the database time.
+  The cache waits 600 seconds at most for it (§5.8 item 2).
+- Each act of the three kinds links to the record. So `_merge_acts` keeps
+  only the act of the main kind on a folded card. MD-8 makes these acts
+  taps.
+- Rule 4 of the state join can move a call to Now. It does so when the
+  due time, minus 2 hours, came after the start of the member's day. A task
+  has no `urgent_at`, so the rule never moves it.
+- RLS holds the gateway role `acb_app` in production (measured on the box,
+  2026-10-16). So each org predicate of the three reads is defence in
+  depth. The R8 suite still proves each one on a role that RLS does not
+  hold.
+- `stage_dwell` (`aggregate.py`) runs its reads with no org predicate. RLS
+  holds it in production, so this is defence in depth only. MD-3e does not
+  change it.
+- A folded `deal_quiet` adds `waiting_since` to a `deal_close_passed` card.
+  That moves the state fingerprint, so a dismissed card comes back. MD-3d
+  fixes the fold for each kind. Until then, `test_feed_crm_kinds.py` holds
+  the case as a strict `xfail`, and the rebase on MD-3d removes the mark.
+- `test_shell_feed.py` counts `needs._now()` in `feed.py`, and it lists the
+  registry in order. Each MD-3 provider changes both, so MD-3f must change
+  them again.
+
+**The measure on the R8 seed** (§5.9 item 7). The provider ran 40 times on
+a local database. The p50 was 37 ms and the p95 was 49 ms for the app role.
+The p50 was 45 ms and the p95 was 56 ms for the owner role. A box measures
+again before the flip.
+
+**Mutations, run by hand on 2026-10-15.** Each one failed a fence:
+
+1. The owner clause dropped from the two deal reads.
+2. The access rule runs after the reads.
+3. Mirror mode raises `SourceAbsent`, and does not give an empty `ok`.
+4. The follow-up read does not leave out `status_change`.
+5. The `bump_org` of `PATCH /crm/settings` dropped.
+6. The org clause dropped from the two deal reads (the owner role).
+7. The org clause dropped from the follow-up read (the owner role).
+8. The member clause dropped from the follow-up read.
+9. The close read lets a won or a lost deal through.
+10. A 403 of the access rule raises, and does not give `absent`.
+11. The search bar writes the CRM link itself, not through `crm_href`.
+12. A record takes its latest follow-up, not its earliest.
+
+**Fix round 1, 2026-10-16.** Each of these mutations failed a fence:
+
+1. The read compares a task with the local midnight, as a time.
+2. The card gives a task its UTC time and a clock.
+3. The LIMIT keeps the oldest rows first again.
+4. `stage_days` rounds down, so the first day reads the limit.
+5. The CRM kill switch leaves the cache key.
+6. The provider cuts a follow-up of today for an older one.
 
 ### MD-3f · People and chat — AGENT-SAFE, after MD-3b
 
@@ -3872,6 +4035,11 @@ npx vitest run src/lib/shell/feedApps.test.ts  # MD-3b
 uv run pytest tests/unit/test_feed_task_kinds.py tests/unit/test_feed_task_kinds_r8.py tests/unit/test_shell_feed.py tests/unit/test_shell_feed_r8.py tests/unit/test_feed_rank.py tests/unit/test_my_day_cache.py tests/unit/test_shell_needs_r8.py tests/unit/test_projects_relations.py tests/unit/test_people_absences.py tests/unit/test_my_day_prefs.py tests/unit/test_my_day_state.py tests/unit/test_feed_decide.py tests/unit/test_no_new_clock_flakes.py -q  # MD-3c
 uv run ruff check apps/services/gateway/gateway/routes/shell apps/services/gateway/gateway/routes/projects/personal.py apps/services/gateway/gateway/routes/people/selfservice.py  # MD-3c
 npx vitest run src/lib/shell/feed.test.ts src/lib/shell/feedApps.test.ts  # MD-3c
+uv run pytest tests/unit/test_feed_mail_kinds.py tests/unit/test_feed_mail_kinds_r8.py tests/unit/test_email_digest.py tests/unit/test_shell_feed.py tests/unit/test_shell_needs.py tests/unit/test_shell_needs_r8.py tests/unit/test_feed_rank.py tests/unit/test_my_day_cache.py tests/unit/test_email_follow_up_scan.py tests/unit/test_email_reply_zero.py -q  # MD-3d
+uv run ruff check apps/services/gateway/gateway/routes/shell  # MD-3d
+npx vitest run src/lib/shell/feed.test.ts src/lib/shell/feedApps.test.ts  # MD-3d
+uv run pytest tests/unit/test_feed_crm_kinds.py tests/unit/test_feed_crm_kinds_r8.py tests/unit/test_crm_access.py tests/unit/test_crm_access_r8.py tests/unit/test_crm_aggregate.py tests/unit/test_crm_aggregate_r8.py tests/unit/test_shell_feed.py tests/unit/test_feed_rank.py tests/unit/test_my_day_cache.py tests/unit/test_no_new_clock_flakes.py -q  # MD-3e
+uv run ruff check apps/services/gateway/gateway/routes/shell apps/services/gateway/gateway/routes/crm  # MD-3e
 uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py -q
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_db_engine_seam.py -q
 uv run pytest tests/unit/test_shell_feed.py tests/unit/test_shell_needs.py tests/unit/test_my_day_cache.py -q -rs  # MD-3a

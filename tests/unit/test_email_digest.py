@@ -476,3 +476,107 @@ def test_brief_sections_render_in_both_bodies() -> None:
         [], [], backlog, commitments)
     assert "Commitments due" in html and "overdue" in html
     assert "Contract review" in html
+
+
+# ── WS-58 MD-3d: the digest did not change (my_day_feed.md §5.9 item 12) ─────
+#
+# MD-3d gave `_digest_thread_list` its optional bounds and moved the body of
+# `_digest_commitments` into a core that raises. The live digest must send
+# the same statements and give the same output. The base code is kept word
+# for word in `_digest_before_md3d.py`. The R8 half is
+# `test_feed_mail_kinds_r8.py::TestTheDigestOnARealDatabase`.
+
+
+def _recording_db(captured: list[tuple[str, dict]]):
+    """One fake for every read of `_generate_digest`, recording each
+    statement and its parameters as the database would get them."""
+    now = datetime.now(UTC)
+
+    async def execute(stmt, params=None):
+        sql = str(stmt)
+        captured.append((sql, dict(params or {})))
+        r = MagicMock()
+        if _is_owner_read(sql):
+            r.fetchone.return_value = SimpleNamespace(user_id="me@fracktal.in")
+        elif _is_member_read(sql):
+            r.fetchall.return_value = [SimpleNamespace(
+                id="acc-1", address="me@fracktal.in", label=None)]
+        elif "COUNT(*) AS inbox" in sql:
+            r.fetchone.return_value = SimpleNamespace(inbox=8, unread=3, attachments=2)
+        elif "SELECT COUNT(*) FROM email_thread_status" in sql:
+            r.scalar.return_value = 2
+        elif "FROM email_thread_status ts" in sql:
+            r.fetchall.return_value = [
+                _thread_row(thread_id="t1", last_message_id="m1", last_at=now,
+                            from_email="me@fracktal.in", to_email="dana@x.com"),
+                _thread_row(thread_id="t2", last_message_id=None, last_at=None)]
+        elif "DISTINCT ON (em.thread_id)" in sql:
+            r.fetchall.return_value = [SimpleNamespace(thread_id="t9", message_id="m9")]
+        else:
+            r.fetchall.return_value = []
+            r.fetchone.return_value = None
+            r.scalar.return_value = 0
+        return r
+
+    db = AsyncMock()
+    db.execute.side_effect = execute
+    return db
+
+
+class TestTheDigestDidNotChange:
+    """Done-when 8 of MD-3d: with no bound, the digest does not change."""
+
+    @staticmethod
+    async def _run(monkeypatch, *, old: bool) -> tuple[list, list]:
+        from tests.unit import _digest_before_md3d as before
+
+        now = datetime.now(UTC)
+        _seam(monkeypatch, [
+            _task("task-1", "Send quote", due=now - timedelta(days=2), thread="t9"),
+            _task("task-2", "Far away", due=now + timedelta(days=30)),
+            _task("task-3", "Call back"),
+            _task("task-4", "Ship it", due=now + timedelta(days=1)),
+        ])
+        if old:
+            monkeypatch.setattr(m.digest, "_digest_thread_list",
+                                before.old_digest_thread_list)
+            monkeypatch.setattr(m.digest, "_digest_commitments",
+                                before.old_digest_commitments)
+        captured: list[tuple[str, dict]] = []
+        outputs = []
+        for days, full in ((1, False), (7, False), (1, True)):
+            outputs.append(await m.digest._generate_digest(
+                _recording_db(captured), "acc-1", days, ["Cold Emails"], full=full))
+        monkeypatch.undo()
+        return captured, outputs
+
+    async def test_each_statement_and_parameter_is_the_old_one(self, monkeypatch) -> None:
+        old_sql, _ = await self._run(monkeypatch, old=True)
+        new_sql, _ = await self._run(monkeypatch, old=False)
+        assert len(new_sql) == len(old_sql) > 20
+        for (sql_new, p_new), (sql_old, p_old) in zip(new_sql, old_sql, strict=True):
+            assert sql_new == sql_old
+            assert p_new == p_old
+
+    async def test_the_output_is_the_old_one(self, monkeypatch) -> None:
+        _, old_out = await self._run(monkeypatch, old=True)
+        _, new_out = await self._run(monkeypatch, old=False)
+        assert new_out == old_out
+        # Non-vacuity: each list the change touched holds rows.
+        assert all(out["backlog"] and out["awaiting"] for out in new_out)
+        assert [c["task_id"] for c in new_out[0]["commitments"]] == ["task-1", "task-4"]
+        assert new_out[2]["commitments"][-1]["task_id"] == "task-3"  # undated, full
+
+    async def test_a_failed_read_still_gives_an_empty_list(self) -> None:
+        """The wrapper keeps the digest best-effort, and its session usable."""
+        db = AsyncMock()
+        db.execute.side_effect = RuntimeError("relation pm_tasks does not exist")
+        assert await m.digest._digest_commitments(db, "acc-1") == []
+        db.rollback.assert_awaited_once()
+
+    async def test_the_digest_still_reads_every_captured_task(self, monkeypatch) -> None:
+        """The digest passes no `commitment` flag (§5.9 rule 10.1 is the
+        feed's rule, never the digest's)."""
+        src = _seam(monkeypatch, [])
+        await m.digest._digest_commitments(_commitments_db(), "acc-1")
+        assert src.calls == [("me@fracktal.in", "account_id", "acc-1", {})]
