@@ -41,8 +41,7 @@ pytest.importorskip("skill_projects", reason="skill-projects not installed")
 pymupdf = pytest.importorskip("pymupdf")
 
 import skill_projects  # noqa: E402
-from acb_skills import crm_tools  # noqa: E402
-from acb_skills import reports  # noqa: E402
+from acb_skills import crm_tools, reports  # noqa: E402
 from acb_skills import whatsapp_ui as wui  # noqa: E402
 from skill_projects import views  # noqa: E402
 
