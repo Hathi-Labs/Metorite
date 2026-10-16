@@ -267,7 +267,7 @@ and a stale row after a 409 reads as success.
   below it (`genUiFlow`). Fence: `e2e/genui-option-picker.spec.ts`
 - The chat pane of the Email app draws each card because it renders the
   shared `AgentChat`, which runs on `/agent/run/stream` (`shows_cards=True`).
-  Do not give the pane a chat of its own. Do not call `/email/ai/chat` from a
-  client, because that route shows no card (WS-17 EM-G11c1b). Fences:
+  Do not give the pane a chat of its own. The email chat route of the gateway
+  showed no card, and WS-17 EM-G11f3 deleted it. Do not add it again. Fences:
   `src/app/email/components/emailPaneCards.test.ts` and
   `e2e/email-pane-confirm-card.spec.ts`
