@@ -159,7 +159,8 @@ function MessageBubble({
   // Whether a document may open in the side panel here (`lib/sidePanelFit.ts`).
   const panelFits = useSidePanelFits();
   // A link to a file in the reply opens these viewers, as the file card does
-  // (owner report, 2026-10-16, `components/ArtifactLink.tsx`).
+  // (owner report, 2026-10-16, `components/ArtifactLink.tsx`). The report
+  // card opens its report through the same openers (`ReportTemplate`).
   const artifactOpeners = useMemo<ArtifactOpeners>(() => ({
     sessionId,
     openModal: onFileOpen,

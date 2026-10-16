@@ -5,6 +5,8 @@
  *
  * Rendering matrix:
  *   .md                 → react-markdown + remark-gfm
+ *   .report.json        → ReportView (the one report renderer); a file that
+ *                         does not parse as a report shows as JSON source
  *   .py .ts .js .sh … → shiki syntax highlighter
  *   .pdf                → react-pdf (pdfjs-dist)
  *   .docx               → mammoth.js (converted to HTML)
@@ -29,12 +31,15 @@ import {
   canDownloadPdf,
   classifyArtifact,
   extOf,
+  type FileOrigin,
   isArchive,
   isRenderable,
   pdfNameFor,
   workspaceFileUrl,
 } from "@/lib/artifactKind";
 import type { FileEntry } from "./ArtifactSidebar";
+import { ReportView } from "@/components/genUITemplates";
+import { type Report, parseReportFile, siblingFileUrl } from "@/lib/report";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -54,6 +59,13 @@ interface ArtifactViewerModalProps {
    *  aren't workspace-editable (e.g. inbound email attachments), which only
    *  have a download URL — there is nothing to PUT/DELETE. */
   readOnly?: boolean;
+  /**
+   * Where the file comes from, as the host says: "workspace" for a session
+   * workspace or the artifacts registry. Only then may a report draw as a
+   * report. Absent means "other", and `readOnly` forces it, so an email
+   * attachment never draws as a Metorite report (re-review of #1065).
+   */
+  origin?: FileOrigin;
 }
 
 type ViewerState =
@@ -61,6 +73,8 @@ type ViewerState =
   | { status: "error"; message: string }
   | { status: "text"; content: string; lang?: string }
   | { status: "markdown"; content: string }
+  /** A report file that parsed. `content` is its source, for "Code". */
+  | { status: "report"; report: Report; content: string }
   /** A runnable artifact: HTML for the sandbox, or React source to compile. */
   | { status: "rendered"; content: string; kind: "html" | "react" }
   | { status: "image"; url: string }
@@ -298,7 +312,8 @@ function PdfViewer({ url }: { url: string }) {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelete, downloadUrl: externalDownloadUrl, saveUrl: externalSaveUrl, deleteUrl: externalDeleteUrl, readOnly = false }: ArtifactViewerModalProps) {
+export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelete, downloadUrl: externalDownloadUrl, saveUrl: externalSaveUrl, deleteUrl: externalDeleteUrl, readOnly = false, origin = "other" }: ArtifactViewerModalProps) {
+  const fileOrigin: FileOrigin = origin === "workspace" && !readOnly ? "workspace" : "other";
   const [state, setState] = useState<ViewerState>({ status: "loading" });
   const [editing, setEditing] = useState(false);
   const [editContent, setEditContent] = useState("");
@@ -307,11 +322,11 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
   const blobUrlRef = useRef<string | null>(null);
 
   // Determine if this file type supports inline editing.
-  const kind = classifyArtifact(entry.name, entry.path, entry.mime_type);
+  const kind = classifyArtifact(entry.name, entry.path, entry.mime_type, fileOrigin);
   const editable =
     !readOnly &&
     (kind === "markdown" || kind === "html" || kind === "react" ||
-     kind === "code" || kind === "text");
+     kind === "code" || kind === "text" || kind === "report");
   const isMarkdown = kind === "markdown";
   /** Kinds that have a RENDERED view distinct from their source. */
   const renderable = isRenderable(kind);
@@ -330,7 +345,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
     let cancelled = false;
     const fileUrl = externalDownloadUrl
       ?? `/api/agent/workspace/${sessionId}/file?path=${encodeURIComponent(entry.path)}`;
-    const kind = classifyArtifact(entry.name, entry.path, entry.mime_type);
+    const kind = classifyArtifact(entry.name, entry.path, entry.mime_type, fileOrigin);
 
     // Revoke any previous blob URL
     if (blobUrlRef.current) {
@@ -391,6 +406,11 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
         if (!cancelled) {
           if (kind === "markdown") {
             setState({ status: "markdown", content: text });
+          } else if (kind === "report") {
+            // A report that does not parse opens as its JSON source: the
+            // raw file, never a blank sheet.
+            const report = parseReportFile(text, entry.path);
+            setState(report ? { status: "report", report, content: text } : { status: "text", content: text, lang: "json" });
           } else if (kind === "html" || kind === "react") {
             setState({ status: "rendered", content: text, kind });
           } else if (kind === "code") {
@@ -437,6 +457,14 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
     !externalDownloadUrl && canDownloadPdf(kind)
       ? workspaceFileUrl(sessionId, entry.path, { pdf: true })
       : null;
+  // A report's PDF sits beside it. The /artifacts browser reads files through
+  // a route of its own, so the PDF goes through that route too.
+  const reportPdfUrl = (report: Report): string | null => {
+    if (!report.pdf) return null;
+    return externalDownloadUrl
+      ? siblingFileUrl(externalDownloadUrl, report.pdf)
+      : workspaceFileUrl(sessionId, report.pdf, { download: true });
+  };
   const deletable =
     !readOnly && !externalDownloadUrl && (
       entry.path.startsWith("inputs/") ||
@@ -460,7 +488,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
 
   const handleStartEdit = () => {
     // Grab raw content from current state.
-    if (state.status === "markdown" || state.status === "text") {
+    if (state.status === "markdown" || state.status === "text" || state.status === "report") {
       setEditContent(state.content);
     }
     setEditing(true);
@@ -491,9 +519,13 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
         throw new Error(`HTTP ${res.status}: ${err}`);
       }
       // Refresh state with new content.
-      const kind = classifyArtifact(entry.name, entry.path, entry.mime_type);
+      const kind = classifyArtifact(entry.name, entry.path, entry.mime_type, fileOrigin);
       if (kind === "markdown") {
         setState({ status: "markdown", content: editContent });
+      } else if (kind === "report") {
+        // A saved report draws again. If the edit broke it, the JSON shows.
+        const report = parseReportFile(editContent, entry.path);
+        setState(report ? { status: "report", report, content: editContent } : { status: "text", content: editContent, lang: "json" });
       } else if (kind === "html" || kind === "react") {
         setState({ status: "rendered", content: editContent, kind });
       } else if (kind === "code") {
@@ -563,7 +595,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
               </>
             ) : (
               <>
-                {renderable && (
+                {(renderable || state.status === "report") && (
                   <button
                     onClick={() => setShowSource((v) => !v)}
                     className="rounded px-2 py-1 text-xs text-muted-foreground bg-secondary hover:bg-secondary hover:text-foreground transition-colors"
@@ -720,6 +752,14 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
               code={state.content}
               lang={state.kind === "html" ? "html" : "tsx"}
             />
+          )}
+
+          {state.status === "report" && !showSource && (
+            <ReportView report={state.report} pdfUrl={reportPdfUrl(state.report)} />
+          )}
+
+          {state.status === "report" && showSource && (
+            <CodeBlock code={state.content} lang="json" />
           )}
 
           {state.status === "markdown" && (

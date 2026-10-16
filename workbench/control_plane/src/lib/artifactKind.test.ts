@@ -7,11 +7,16 @@ import {
   MARKDOWN_EXTS,
   canDownloadPdf,
   classifyArtifact,
+  hasRenderedView,
   isArtifactPath,
   isRenderable,
+  opensRendered,
   pdfNameFor,
   workspaceFileUrl,
 } from "./artifactKind";
+
+/** A source file, read relative to this test. */
+const readSrc = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 
 describe("classifyArtifact", () => {
   // The mobile bug this module exists to prevent: ArtifactViewerModal is the
@@ -51,6 +56,71 @@ describe("classifyArtifact", () => {
     expect(classifyArtifact("b.bin", "outputs/b.bin")).toBe("binary");
   });
 
+  it("a report file is a report, tested before the code list that holds json", () => {
+    expect(classifyArtifact("q3.report.json", "outputs/q3.report.json", "", "workspace")).toBe("report");
+    expect(classifyArtifact("Q3.REPORT.JSON", "outputs/Q3.REPORT.JSON", "", "workspace")).toBe("report");
+    expect(classifyArtifact("q3.json", "outputs/q3.json", "", "workspace")).toBe("code");
+    expect(classifyArtifact("report.json", "outputs/report.json", "", "workspace")).toBe("code");
+  });
+
+  it("a report is a report only as a workspace output, never an email attachment (review of #1065)", () => {
+    // An email attachment's path is its bare file name, which the sender chose.
+    expect(classifyArtifact("Q3.report.json", "Q3.report.json")).toBe("code");
+    // A file the member uploaded.
+    expect(classifyArtifact("q3.report.json", "inputs/q3.report.json", "", "workspace")).toBe("code");
+    expect(classifyArtifact("q3.report.json", "agent-data/q3.report.json", "", "workspace")).toBe("code");
+    expect(classifyArtifact("q3.report.json", "outputs/q3.report.json", "", "workspace")).toBe("report");
+    expect(classifyArtifact("q3.report.json", "/outputs/sub/q3.report.json", "", "workspace")).toBe("report");
+  });
+
+  it("the CONTEXT decides a report, never the name (re-review of #1065)", () => {
+    // A sender may name an attachment `outputs/x.report.json`: the providers
+    // keep the raw file name. Its body may even claim kind metorite.report.
+    // With no workspace origin, it stays code, whatever its name or path.
+    expect(classifyArtifact("outputs/x.report.json", "outputs/x.report.json")).toBe("code");
+    expect(classifyArtifact("outputs/x.report.json", "outputs/x.report.json", "application/json", "other")).toBe("code");
+    expect(classifyArtifact("x.report.json", "outputs/x.report.json", "", "workspace")).toBe("report");
+  });
+
+  it("an email attachment opens the viewer with no workspace origin, and read-only forces it off", () => {
+    const list = readSrc("../app/email/components/AttachmentList.tsx");
+    const at = list.indexOf("<ArtifactViewerModal");
+    const modal = list.slice(at, list.indexOf("/>", at));
+    expect(modal).toContain("readOnly");
+    expect(modal).not.toContain("origin=");
+    const viewer = readSrc("../components/ArtifactViewerModal.tsx");
+    expect(viewer).toContain('const fileOrigin: FileOrigin = origin === "workspace" && !readOnly ? "workspace" : "other";');
+    expect(viewer.split("classifyArtifact(entry.name, entry.path, entry.mime_type, fileOrigin)")).toHaveLength(4);
+    expect(viewer).not.toContain("classifyArtifact(entry.name, entry.path, entry.mime_type)");
+  });
+
+  it("each workspace host says so, and only those", () => {
+    for (const host of ["../app/chat/page.tsx", "../components/AgentChat.tsx", "../lib/shell/AssistantDock.tsx"]) {
+      const src = readSrc(host);
+      const at = src.indexOf("<ArtifactViewerModal");
+      expect(src.slice(at, src.indexOf("/>", at)), host).toContain('origin="workspace"');
+    }
+    // /artifacts: the chat files, the deep-linked file (#1063) and the registry.
+    const artifacts = readSrc("../app/artifacts/page.tsx");
+    expect(artifacts.split('origin="workspace"')).toHaveLength(4);
+    expect(artifacts.split("<ArtifactViewerModal")).toHaveLength(4);
+    // Auto-open, the file card and a file link read #1063's one rule.
+    expect(readSrc("./autoOpenArtifact.ts")).toContain("return hasRenderedView(name, path);");
+    for (const caller of ["../components/DocumentPane.tsx", "../components/ArtifactCard.tsx"]) {
+      const calls = readSrc(caller).split("classifyArtifact(").slice(1).map((c) => c.slice(0, c.indexOf(")")));
+      expect(calls.length, caller).toBeGreaterThan(0);
+      for (const call of calls) expect(call, caller).toContain('"workspace"');
+    }
+    const kindSrc = readSrc("./artifactKind.ts");
+    const rule = kindSrc.slice(kindSrc.indexOf("export function hasRenderedView("), kindSrc.indexOf("export type ArtifactSurface"));
+    expect(rule).toContain('opensRendered(classifyArtifact(name, path, "", "workspace"))');
+  });
+
+  it("a report opens rendered, through #1063's one rule", () => {
+    expect(hasRenderedView("q3.report.json", "outputs/q3.report.json")).toBe(true);
+    expect(hasRenderedView("q3.report.json", "inputs/q3.report.json")).toBe(false);
+  });
+
   it("is case-insensitive about extensions", () => {
     expect(classifyArtifact("R.HTML", "outputs/R.HTML")).toBe("html");
     expect(classifyArtifact("D.JSX", "outputs/D.JSX")).toBe("react");
@@ -72,9 +142,19 @@ describe("isRenderable", () => {
   it("is true for exactly the kinds with a rendered view", () => {
     expect(isRenderable("html")).toBe(true);
     expect(isRenderable("react")).toBe(true);
-    for (const k of ["markdown", "code", "image", "pdf", "docx", "text", "binary"] as const) {
+    for (const k of ["markdown", "report", "code", "image", "pdf", "docx", "text", "binary"] as const) {
       expect(isRenderable(k)).toBe(false);
     }
+  });
+});
+
+// A report is not "renderable": that word means HTML or React for the
+// sandbox, and the edit preview would hand a report's JSON to it. It opens
+// rendered all the same, through `ReportView`.
+describe("opensRendered", () => {
+  it("is true for a document, an artifact and a report", () => {
+    for (const k of ["markdown", "html", "react", "report"] as const) expect(opensRendered(k), k).toBe(true);
+    for (const k of ["code", "image", "pdf", "docx", "text", "binary"] as const) expect(opensRendered(k), k).toBe(false);
   });
 });
 
@@ -85,7 +165,7 @@ describe("canDownloadPdf", () => {
   it("is true for Markdown and HTML only", () => {
     expect(canDownloadPdf("markdown")).toBe(true);
     expect(canDownloadPdf("html")).toBe(true);
-    for (const k of ["react", "code", "image", "pdf", "docx", "text", "binary"] as const) {
+    for (const k of ["react", "report", "code", "image", "pdf", "docx", "text", "binary"] as const) {
       expect(canDownloadPdf(k)).toBe(false);
     }
   });

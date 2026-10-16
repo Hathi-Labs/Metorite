@@ -60,6 +60,11 @@ const DATA: Record<string, Record<string, unknown>> = {
   formCard: { title: LINKED, fields: [{ name: "n", label: "Name" }] },
   barChart: { title: LINKED, bars: [{ label: "Ops", value: 2 }] },
   chart: { type: "bar", title: LINKED, labels: ["Ops"], values: [2] },
+  report: {
+    kind: "metorite.report", path: "outputs/q3.report.json", pdf: "outputs/q3.pdf", title: "Q3 review",
+    period: "Jul to Sep", kpis: [{ label: "Revenue", value: "4.2L" }],
+    sections: [{ heading: "Pipeline", visual: { kind: "chart", type: "bar", labels: ["A"], values: [1] } }],
+  },
 };
 
 /** An older long card in a transcript: its toggle shows. */

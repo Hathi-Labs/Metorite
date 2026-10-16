@@ -16,6 +16,7 @@
 
 export type ArtifactKind =
   | "markdown"
+  | "report"
   | "html"
   | "react"
   | "code"
@@ -51,6 +52,32 @@ const DOCX_MIME =
 export const MARKDOWN_EXTS: readonly string[] = ["md", "markdown", "mdx"];
 export const HTML_EXTS: readonly string[] = ["html", "htm"];
 
+/**
+ * A report the agent made (`make_report`, owner directive 2026-10-16). It is
+ * JSON, so the code list below would take it. It is tested first, by its
+ * whole ending, and every viewer draws it with `ReportView`.
+ *
+ * ⚠️ Only a WORKSPACE output is a report: the host says `origin`
+ * "workspace", and the path is under `outputs/` (`isArtifactPath`). The
+ * name decides nothing on its own. A sender may name an email attachment
+ * `outputs/q3.report.json`, because the mail providers keep the raw file
+ * name, so an attachment with that name and a metorite.report body stays
+ * "code" (re-review of #1065). An upload under `inputs/` stays "code" too.
+ * A file under `outputs/` that is not a Metorite report (a Lighthouse
+ * `site.report.json`) fails `parseReportFile`, and the viewers show it as
+ * JSON, which a member can still edit.
+ */
+export const REPORT_SUFFIX = ".report.json";
+
+/**
+ * Where a file comes from, as its HOST says, never as its name says. A
+ * "workspace" file is an agent's session workspace or the artifacts
+ * registry. Anything else ("other") is outside data: an email attachment, a
+ * read-only file behind an external URL. The default is "other", so a host
+ * that forgets to say draws no report (re-review of #1065).
+ */
+export type FileOrigin = "workspace" | "other";
+
 export function extOf(name: string): string {
   return (name.split(".").pop() ?? "").toLowerCase();
 }
@@ -76,8 +103,10 @@ export function classifyArtifact(
   name: string,
   path: string,
   mimeType = "",
+  origin: FileOrigin = "other",
 ): ArtifactKind {
   const ext = extOf(name);
+  if (origin === "workspace" && name.toLowerCase().endsWith(REPORT_SUFFIX) && isArtifactPath(path)) return "report";
   if (MARKDOWN_EXTS.includes(ext)) return "markdown";
   if (HTML_EXTS.includes(ext)) return "html";
   if ((ext === "jsx" || ext === "tsx") && isArtifactPath(path)) return "react";
@@ -105,6 +134,15 @@ export function isArchive(name: string, mimeType = ""): boolean {
 /** Kinds with a rendered view distinct from their source. */
 export function isRenderable(kind: ArtifactKind): boolean {
   return kind === "html" || kind === "react";
+}
+
+/**
+ * Kinds that open RENDERED by a click and by themselves: a document, a
+ * full-page artifact and a report. Anything else stays a file card. The file
+ * card, the auto-open rule and the chat's report card all ask this.
+ */
+export function opensRendered(kind: ArtifactKind): boolean {
+  return kind === "markdown" || kind === "report" || isRenderable(kind);
 }
 
 /**
@@ -239,13 +277,14 @@ export function rendersAsPage(path: string, req: FileRequestFacts): boolean {
 }
 
 /**
- * True when a file has a rendered view worth opening: Markdown, HTML, or a
- * React artifact. Moved here from `ArtifactCard` on 2026-10-16, so the card
- * and a link in the chat text read one rule.
+ * True when a file has a rendered view worth opening: Markdown, HTML, a
+ * React artifact or a Metorite report. Moved here from `ArtifactCard` on
+ * 2026-10-16, so the card, a link in the chat text and auto-open read one
+ * rule. Each of them names a chat's workspace file, so the origin is
+ * "workspace": a report draws as a report only there.
  */
 export function hasRenderedView(name: string, path: string): boolean {
-  const kind = classifyArtifact(name, path);
-  return kind === "markdown" || isRenderable(kind);
+  return opensRendered(classifyArtifact(name, path, "", "workspace"));
 }
 
 /** Where a chat opens a file: the side panel or the full viewer. */
