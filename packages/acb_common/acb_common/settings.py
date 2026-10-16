@@ -326,6 +326,14 @@ class Settings(BaseSettings):
     # `enforcement-flip`. Fence: tests/unit/test_kb_flags.py.
     knowledge_enabled: bool = False
     knowledge_orgs: str = ""
+    # WS-61 KB-3 (knowledge_base.md §6.4 and §13). The organizations whose
+    # Knowledge chunks get a vector, in the grammar of `knowledge_orgs`. `*`
+    # is each organization. Empty, the default, means no organization: the
+    # index stays lexical, a search answers `degraded`, and the embed door is
+    # never called. The one reader is `gateway.routes.knowledge.flags`. A flip
+    # spends `tier-embed` credits, so a flip for an org is the owner's.
+    # Fence: tests/unit/test_kb_flags.py.
+    knowledge_embed: str = ""
 
     reach_enabled: bool = False
     reach_orgs: str = ""

@@ -16,14 +16,20 @@ each case is written so a wrong build fails it:
   the member it passes on is the session's own object.
 * **One source at a time**, and a failing source is named in ``skipped``.
 * **The command bar keeps its contract.** Four keys in its order, and an item
-  of exactly four keys.
+  of exactly four keys. Knowledge is a source and not in the bar until KB-12.
+* **Knowledge applies its kill switch** (KR-3). Every member holds
+  ``feature:*``, so the feature alone opens nothing. ``KNOWLEDGE_ENABLED`` and
+  ``KNOWLEDGE_ORGS`` must allow the org, and the source calls the route with
+  ``hybrid=False``, so no model runs.
 
 Mutations this file catches (R7):
 
 * the feature check leaves ``Source.find``, or a source names the wrong
   feature -> ``TestTheFeatureGate``;
 * the route takes an org or a member from the query -> ``TestTheRouteTakesNoTenant``;
-* a source module imports a session opener -> ``TestNoDataPathOfItsOwn``.
+* a source module imports a session opener -> ``TestNoDataPathOfItsOwn``;
+* knowledge joins ``BAR_APPS`` -> ``TestTheRegistry``;
+* the knowledge source drops its kill switch -> ``TestTheKnowledgeSwitch``.
 """
 
 from __future__ import annotations
@@ -43,6 +49,7 @@ from fastapi.testclient import TestClient
 from gateway.retrieval import company, sources
 from gateway.routes.artifacts import list_artifacts as _real_list_artifacts
 from gateway.routes.email.transport.search import search_messages as _real_email_search
+from gateway.routes.knowledge.search import search_knowledge as _real_kb_search
 from gateway.routes.whatsapp.transport.messages import search_messages as _real_wa_search
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -59,6 +66,7 @@ FEATURES = {
     "crm": "crm",
     "artifacts": "artifacts",
     "whatsapp": "whatsapp",
+    "knowledge": "knowledge",
 }
 
 #: The REAL route signatures, read at import time, before any fixture swaps them.
@@ -66,6 +74,7 @@ REAL_PARAMS = {
     "email": frozenset(inspect.signature(_real_email_search).parameters),
     "artifacts": frozenset(inspect.signature(_real_list_artifacts).parameters),
     "whatsapp": frozenset(inspect.signature(_real_wa_search).parameters),
+    "knowledge": frozenset(inspect.signature(_real_kb_search).parameters),
 }
 
 
@@ -82,7 +91,7 @@ ALL = tuple(FEATURES.values())
 
 
 class Apps:
-    """Stand-ins for the six app functions. They record who called and when."""
+    """Stand-ins for the seven app functions. They record who called and when."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, object, dict]] = []
@@ -161,12 +170,30 @@ class Apps:
              "chat_name": None, "body_text": "", "transcript_text": "voice words"},
         ]
 
+    async def knowledge(self, **kw):
+        await self._enter("knowledge", kw["user"], kw)
+        return {"query": kw["q"], "degraded": True, "hits": [
+            {"page_id": "k-1", "space_id": "s-1", "space_name": "Company",
+             "title": "Returns policy", "heading_path": "Returns policy > Refund window",
+             "text": "Refunds within 30 days.", "score": 0.03,
+             "updated_at": "2026-10-05T00:00:00+00:00", "href": "/knowledge/pages/k-1"},
+            # A second chunk of the same page: the source keeps the first.
+            {"page_id": "k-1", "space_id": "s-1", "space_name": "Company",
+             "title": "Returns policy", "heading_path": "Returns policy > Exceptions",
+             "text": "second chunk", "score": 0.02,
+             "updated_at": "2026-10-05T00:00:00+00:00", "href": "/knowledge/pages/k-1"},
+            {"page_id": "k-2", "space_id": "s-2", "space_name": "Ops",
+             "title": "", "heading_path": None, "text": "y" * 900, "score": 0.01,
+             "updated_at": None, "href": "/knowledge/pages/k-2"},
+        ]}
+
 
 @pytest.fixture()
 def apps(monkeypatch) -> Apps:
     import acb_memory.artifacts as registry
     import gateway.routes.artifacts as artifacts_route
     import gateway.routes.email.transport.search as email_search
+    import gateway.routes.knowledge.search as kb_search
     import gateway.routes.people.directory as directory
     import gateway.routes.projects.search as projects_search
     import gateway.routes.whatsapp.transport.messages as wa_messages
@@ -182,9 +209,12 @@ def apps(monkeypatch) -> Apps:
     monkeypatch.setattr(artifacts_route, "list_artifacts", f.artifacts)
     monkeypatch.setattr(registry, "enabled", lambda: True)
     monkeypatch.setattr(wa_messages, "search_messages", f.whatsapp)
+    monkeypatch.setattr(kb_search, "search_knowledge", f.knowledge)
     settings = get_settings()
     monkeypatch.setattr(settings, "crm_enabled", True, raising=False)
     monkeypatch.setattr(settings, "crm_orgs", ORG, raising=False)
+    monkeypatch.setattr(settings, "knowledge_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "knowledge_orgs", ORG, raising=False)
     return f
 
 
@@ -199,7 +229,7 @@ def run(user: UserContext, q: str = "acme", apps: str | None = None, k: int = 5)
 # ── The registry ────────────────────────────────────────────────────────────
 
 class TestTheRegistry:
-    def test_six_sources_each_with_its_routers_feature(self):
+    def test_seven_sources_each_with_its_routers_feature(self):
         assert {k: s.feature for k, s in sources.REGISTRY.items()} == FEATURES
         assert list(sources.REGISTRY) == list(FEATURES)
         for key, source in sources.REGISTRY.items():
@@ -222,8 +252,17 @@ class TestTheRegistry:
         for group in answer["groups"]:
             for item in group["items"]:
                 assert set(item) == {"kind", "title", "hint", "href"}
-        # Artifacts and WhatsApp are sources, and the bar never asks them.
-        assert "artifacts" not in apps.called() and "whatsapp" not in apps.called()
+        # Artifacts, WhatsApp and Knowledge are sources, and the bar never asks them.
+        for key in ("artifacts", "whatsapp", "knowledge"):
+            assert key not in apps.called()
+
+    def test_knowledge_is_not_in_the_bar_until_kb12(self):
+        """KR-3: Knowledge is a source of the seam, and not a group of the bar."""
+        from gateway.routes.shell import search as shell
+
+        assert "knowledge" in sources.REGISTRY
+        assert "knowledge" not in shell.BAR_APPS
+        assert "knowledge" not in shell.PROVIDERS
 
 
 # ── The feature gate ────────────────────────────────────────────────────────
@@ -277,6 +316,37 @@ class TestTheFeatureGate:
         monkeypatch.setattr(registry, "enabled", lambda: False)
         assert find("artifacts", member("artifacts")) == []
         assert apps.calls == []
+
+
+class TestTheKnowledgeSwitch:
+    """KR-3. Every member holds ``feature:*``, so the switch is the gate."""
+
+    def test_with_knowledge_off_no_hit_and_no_call(self, apps, monkeypatch):
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "knowledge_enabled", False, raising=False)
+        assert find("knowledge", member("knowledge")) == []
+        assert apps.calls == []
+
+    def test_an_org_off_the_knowledge_list_gets_no_hit(self, apps):
+        assert find("knowledge", member("knowledge", org=OTHER_ORG)) == []
+        assert apps.calls == []
+
+    def test_no_org_gets_no_hit_also_with_star(self, apps, monkeypatch):
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "knowledge_orgs", "*", raising=False)
+        assert find("knowledge", member("knowledge", org=None)) == []
+        assert apps.calls == []
+
+    def test_the_source_runs_no_model(self, apps):
+        find("knowledge", member("knowledge"))
+        kw = next(kw for n, _, kw in apps.calls if n == "knowledge")
+        assert kw["hybrid"] is False
+
+    def test_one_hit_for_each_page(self, apps):
+        hits = find("knowledge", member("knowledge"))
+        assert [h.id for h in hits] == ["k-1", "k-2"]
 
 
 # ── No data path of its own ─────────────────────────────────────────────────
@@ -354,10 +424,11 @@ class TestTheAnswer:
 
     def test_the_hits_interleave_by_rank(self, apps):
         order = [(h["app"], h["id"]) for h in run(member(*ALL))["hits"]]
-        firsts = order[:6]
+        firsts = order[:7]
         assert [a for a, _ in firsts] == list(FEATURES)
-        assert [i for _, i in firsts] == ["t-1", "m-1", "p-1", "d-1", "a-1", "w-1"]
-        assert [a for a, _ in order[6:]] == ["tasks", "email", "crm", "artifacts", "whatsapp"]
+        assert [i for _, i in firsts] == ["t-1", "m-1", "p-1", "d-1", "a-1", "w-1", "k-1"]
+        assert [a for a, _ in order[7:]] == [
+            "tasks", "email", "crm", "artifacts", "whatsapp", "knowledge"]
 
     def test_a_named_app_goes_first(self, apps):
         hits = run(member(*ALL), apps="crm, email")["hits"]
@@ -379,7 +450,7 @@ class TestTheAnswer:
 
     def test_k_caps_each_app(self, apps):
         hits = run(member(*ALL), k=1)["hits"]
-        assert len(hits) == 6
+        assert len(hits) == 7
         assert [kw.get("limit") for n, _, kw in apps.calls if n == "tasks"] == [1]
 
     def test_the_sources_never_overlap(self, apps):
@@ -404,7 +475,7 @@ class TestTheAnswer:
         monkeypatch.setattr(company, "TOTAL_BUDGET_S", 0.08)
         apps.delay = 0.04
         answer = run(member(*ALL))
-        assert len(apps.calls) < 6
+        assert len(apps.calls) < 7
         assert answer["skipped"], "a source past the budget is named"
 
     def test_each_source_reads_its_own_row(self, apps):
@@ -435,6 +506,13 @@ class TestTheAnswer:
         # WhatsApp: the body, else the transcript. The app takes no record yet.
         assert hits["w-1"]["snippet"] == "price is 42L" and hits["w-1"]["href"] == "/whatsapp"
         assert hits["w-2"]["snippet"] == "voice words"
+        # Knowledge: the chunk text, the page's update, the page link.
+        assert hits["k-1"] == {
+            "app": "knowledge", "kind": "page", "id": "k-1", "title": "Returns policy",
+            "hint": "Knowledge · Company", "snippet": "Refunds within 30 days.",
+            "when": "2026-10-05T00:00:00+00:00", "href": "/knowledge/pages/k-1"}
+        assert hits["k-2"]["title"] == "(untitled)" and hits["k-2"]["when"] is None
+        assert len(hits["k-2"]["snippet"]) == sources.SNIPPET_CHARS
 
 
 class TestEveryRouteParameterIsNamed:
@@ -442,7 +520,8 @@ class TestEveryRouteParameterIsNamed:
     `Query` object itself, so each source names every one."""
 
     @pytest.mark.parametrize(("key", "name"), [
-        ("email", "email"), ("artifacts", "artifacts"), ("whatsapp", "whatsapp")])
+        ("email", "email"), ("artifacts", "artifacts"), ("whatsapp", "whatsapp"),
+        ("knowledge", "knowledge")])
     def test_every_parameter_is_named(self, apps, key, name):
         find(key, member(FEATURES[key]))
         passed = set(next(kw for n, _, kw in apps.calls if n == name))

@@ -156,7 +156,7 @@ _COMPANY_SEARCH_SWAPS: tuple[tuple[str, str], ...] = (
         "- retrieve_entity_context: search projects, tasks, deals, people\n"
         "- retrieve_sales_context: Zoho pipeline, customer health, deal stages\n",
         "- search_company: find the company's records in every app the member holds:\n"
-        "  tasks, email, people, the CRM, artifacts and WhatsApp\n",
+        "  tasks, email, people, the CRM, artifacts, WhatsApp and Knowledge\n",
     ),
     (
         "1. For data questions: call retrieve_entity_context or retrieve_sales_context FIRST.\n",

@@ -2,13 +2,16 @@
 
 Spec: ``project-docs/specs/knowledge_base.md`` §13.
 
-This module is the ONE reader of the two settings below. Nothing else in the
+This module is the ONE reader of the three settings below. Nothing else in the
 gateway reads them.
 
 * ``KNOWLEDGE_ENABLED`` — the kill switch, default OFF.
 * ``KNOWLEDGE_ORGS`` — the organization ids that may reach ``/knowledge``,
   with a comma between ids. ``*`` allows each organization with a bound
   tenant. An empty list allows no organization.
+* ``KNOWLEDGE_EMBED`` (KB-3) — the organization ids whose chunks get a
+  vector, in the same grammar. Empty, the default, means no organization:
+  the index stays lexical and the embed door is never called.
 
 :func:`require_knowledge_enabled` is the first router dependency in
 ``core.py``. It runs BEFORE ``require_feature_router("knowledge")``, so an
@@ -66,6 +69,24 @@ def knowledge_org_allowed(organization_id: str | None) -> bool:
     if not org:
         return False
     orgs = knowledge_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+def knowledge_embed_orgs() -> frozenset[str]:
+    """The organization ids whose chunks get a vector. Empty means none."""
+    return _parse_orgs(str(get_settings().knowledge_embed or ""))
+
+
+def knowledge_embed_allowed(organization_id: str | None) -> bool:
+    """True when Knowledge serves the organization AND it is on ``KNOWLEDGE_EMBED``.
+
+    False means no call to the embed door: the write keeps a NULL vector,
+    and a search answers the lexical half with ``degraded``.
+    """
+    if not knowledge_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = knowledge_embed_orgs()
     return ALL_ORGS in orgs or org in orgs
 
 

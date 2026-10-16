@@ -2023,7 +2023,15 @@ async def embeddings(
         from openai import OpenAI
         client = OpenAI(api_key=oai_key)
         inputs = req.input if isinstance(req.input, list) else [req.input]
-        resp = client.embeddings.create(model=req.model, input=inputs)
+        # The client is synchronous. A worker thread keeps one embed from
+        # stalling the event loop for every tenant, because the gateway also
+        # calls this route over loopback on each Knowledge search and publish
+        # (WS-61 KB-3 review, 2026-10-16).
+        import asyncio as _asyncio
+
+        resp = await _asyncio.to_thread(
+            client.embeddings.create, model=req.model, input=inputs,
+        )
         return resp.model_dump()
     # No embedding provider configured → return a zero vector so Mem0's add()
     # can still complete, but WARN loudly: semantic search is silently degraded
