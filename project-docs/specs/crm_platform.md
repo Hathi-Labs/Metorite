@@ -2273,16 +2273,78 @@ Files: `crm_sync/engine.py` (or a module beside it), `routes/crm/fields.py`,
 Each item is checked with the `visual-review` skill in light mode, compact
 density, a changed accent and 375 px.
 
-**CRM-Q18 · One plan.** Done when:
+**CRM-Q18 · One plan.** The spec audit of 2026-10-16 found that rows of
+versions do not fit the unique indexes of `crm_field_rules` under R6. So the
+versions live in a new table, and `crm_field_rules` stays the live set. It
+ships in three slices.
 
-1. A migration (next free number at build time) adds `kind`, `plan_version`
-   and an approval state to `crm_field_rules`. It is expand-only (R6).
-2. Each existing row reads as `kind = 'field'` in the approved version.
-3. The sync reads the approved version only. A draft changes nothing.
-4. An admin can approve a version, and go back to the one before.
-5. A fixed column also opens to a rule when its standard field is on a
-   layout and 0% filled. Today it opens only when the field is off every
-   layout (`crm_sources/zoho/mapping.py`).
+**Design (2026-10-16).**
+
+- A new tenant table `crm_mapping_plans` holds the versions of the plan of
+  each org. Each row has a version number, a state, a JSON snapshot of the
+  rules, and who made and approved it, and when.
+- The states are `draft`, `approved` and `superseded`. One version at most
+  is `approved` for each org.
+- `crm_field_rules` stays the live set, and its two indexes do not change.
+  A draft never writes a row with `status = 'approved'`.
+- An approve writes the snapshot into `crm_field_rules` in one transaction.
+  A rule that exists keeps its row and its id. A rule that leaves the plan
+  gets `status = 'rejected'`, so the sync undoes it through the path it has
+  today.
+- "Go back" rolls forward. It approves a new version N+1 with the content of
+  version N-1.
+- In this ticket each rule of a snapshot has the kind `field`. CRM-Q20 adds
+  the other kinds of §18.9.3 to the snapshot only.
+- The first read of the plan of an org builds version 1 from its approved
+  rules. The migration writes no data.
+- The rows with the status `proposed`, `rejected` or `stale` stay as they
+  are. They are not in a snapshot.
+- The approve and reject of one rule (`PATCH /crm/field-rules/{id}`) stay.
+  Each one also writes a new approved version, so the history stays whole.
+  The CRM-Q7b proposer still writes `proposed` rows.
+
+**CRM-Q18-1 · The backend.** Done when:
+
+1. A migration (276 on 2026-10-16, next free at build time) adds
+   `crm_mapping_plans`, with FORCE RLS. It is expand-only, and it passes
+   `test_tenant_coverage.py`. A partial unique index allows one `approved`
+   version for each org.
+2. `GET /crm/mapping/plans` lists the versions. The first call for an org
+   builds version 1 from its approved rules.
+3. `POST /crm/mapping/plans` makes a draft from the approved version and a
+   list of changes. A draft changes no row of `crm_field_rules`.
+4. `POST /crm/mapping/plans/{version}/approve` approves a draft, in one
+   transaction, as the design says.
+5. `POST /crm/mapping/plans/{version}/restore` approves a new version with
+   the content of an older one.
+6. A per-rule PATCH writes a new approved version.
+7. Each route is for an admin in Mirror mode. The org comes from the server.
+8. R8 tests prove each item. They prove that a draft changes nothing in the
+   sync. They prove that a restore undoes a rule through the existing path.
+   They
+   prove that the ids of kept rules do not change, and that orgs stay apart.
+
+**CRM-Q18-2 · The Field map screen.** It waits for CRM-Q18-1. The Field map
+card shows the approved version and a draft. It approves a draft with one
+action, and it goes back to the version before.
+
+**CRM-Q18-3 · A column that is empty opens.** It waits for migration 274
+(CRM-Q17a-1). Done when:
+
+1. At approve time, a fixed column also opens to a rule when its fill is 0.
+   The fill comes from `crm_field_fill`, with `total` above 0. No fill row keeps
+   the column closed.
+2. A rule that this opened never goes stale only because its standard field
+   is on a layout. The value of the fixed map still wins where Zoho fills
+   it.
+
+Files: `infra/postgres/`, `routes/crm/field_rules.py`, a new
+`routes/crm/mapping_plans.py`, `crm_sync/field_rules.py`,
+`crm_sources/zoho/mapping.py` (CRM-Q18-3 only), and
+`FieldMapCard.tsx` (CRM-Q18-2 only).
+
+Verify CRM-Q18 with `uv run pytest tests/unit/test_crm_field_rules.py tests/unit/test_crm_field_rules_r8.py tests/unit/test_crm_field_map_ai.py tests/unit/test_crm_upsert_from_source_fence.py tests/unit/test_crm_map_plan*.py -q`
+on the R8 database, with no test skipped.
 
 **CRM-Q19 · Executor.** Done when:
 
