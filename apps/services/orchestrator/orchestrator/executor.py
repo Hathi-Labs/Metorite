@@ -1281,7 +1281,7 @@ async def _run_sub_agent_streaming(
             # CRM-C7: no CRM record write in Mirror mode, read as the member.
             await _drop_mirror_record_writes(agents, no_egress=_sub_no_egress)
             _sub_own_tools = _count_agent_tools(agents)  # WS-8o
-            _inject_agent_tools(
+            _sub_run_tools = _inject_agent_tools(
                 agents,
                 is_sub_agent=True,
                 tool_scope=_sub_tool_scope,
@@ -1373,6 +1373,8 @@ async def _run_sub_agent_streaming(
                 # The chat that asked. The batch run of a MAF sub-agent
                 # passes it on (``delegation_target``).
                 deliver_to=_deliver_to,
+                # The SUB-agent's own tools (``run_holds_tool``, §14.10).
+                run_tools=_sub_run_tools,
             )
 
             # Skills-as-an-index bodies (QM-2). A sub-agent gets the COMPACT
@@ -3202,7 +3204,7 @@ async def _run_agent_inner(
             # CRM-C7: no CRM record write in Mirror mode, read as the member.
             await _drop_mirror_record_writes(agents, no_egress=_no_egress)
             _own_tools = _count_agent_tools(agents)  # WS-8o
-            _inject_agent_tools(
+            _run_tools = _inject_agent_tools(
                 agents,
                 tool_scope=loaded.config.get("tool_scope") or None,
                 agent_name=agent_name,
@@ -3259,6 +3261,9 @@ async def _run_agent_inner(
                 # WS-45 S4: the System-1 threshold of a covered run follows
                 # the effort. Absent for every other agent, as before.
                 **({"think_mode": _batch_effort} if _batch_covered else {}),
+                # The run's platform tools after every narrowing, for
+                # ``write_artifact.run_holds_tool`` (§14.10).
+                run_tools=_run_tools,
             )
             try:
                 _ws_root = Path(_effective_agent_dir)
@@ -4058,7 +4063,7 @@ async def run_agent_stream(
                 agents, no_egress=_stream_no_egress,
             )
             _own_tools = _count_agent_tools(agents)  # WS-8o
-            _inject_agent_tools(
+            _run_tools = _inject_agent_tools(
                 agents,
                 # .agent.md's VS Code tools widen (never narrow) the scope, so a
                 # declared capability like `codebase` resolves to a real tool.
@@ -4173,6 +4178,9 @@ async def run_agent_stream(
                 # WS-45 S1: the effort mode, so the System-1 `decide` reads
                 # its threshold from the run binding (ai_tier_routing.md §5).
                 think_mode=think_mode or "auto",
+                # The run's platform tools after every narrowing, for
+                # ``write_artifact.run_holds_tool`` (§14.10).
+                run_tools=_run_tools,
             )
             try:
                 # Ensure the three visible workspace directories exist so the

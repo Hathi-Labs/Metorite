@@ -892,7 +892,17 @@ def _status_report_spec(
     }
 
 
-@_annotate(read_only=True, idempotent=True, open_world=False)
+#: The line of a status report when the run does not hold ``make_report``:
+#: an admin turned the documents family off, or the run bound no tools.
+REPORTS_OFF = "Reports are turned off for this assistant. Here is the summary in text."
+
+
+# read_only=False, idempotent=False (review of #1064): with make_report=true
+# it writes two files and draws a card, so an edited turn must not run it
+# again unseen (``chat_supersede.is_side_effect_tool``). Its manifest class
+# stays A: the class names the Projects routes a tool reaches, and it reaches
+# only reads. ``test_projects_chat_coverage.CHAT_FILE_WRITERS`` names it.
+@_annotate(read_only=False, idempotent=False, open_world=False)
 async def status_report(project_id: str = "", make_report: bool = False) -> str:
     """W2: a status report for a node or the portfolio. Every child project
     gets one flag from the server's reads: blocked (a task with an open
@@ -1000,15 +1010,26 @@ async def status_report(project_id: str = "", make_report: bool = False) -> str:
     text_lines = [legend(), *md]
     if make_report:
         # §14.10 (owner, 2026-10-16): code makes the report from these reads.
-        # The model copies no number, so it can drop or change none.
+        # The model copies no number, so it can drop or change none. Access is
+        # an intersection: the run must hold make_report itself, so an admin
+        # who turned the documents family off gets no file and no card.
+        from acb_skills.write_artifact import run_holds_tool
+
+        if not run_holds_tool("make_report"):
+            text_lines.append(REPORTS_OFF)
+            return "\n".join(text_lines)
         from acb_skills.reports import make_report as _make_report
+        from acb_skills.whatsapp_ui import current_run
 
         made = await _make_report(spec)
         if made.get("ok"):
             text_lines.append(f"make_report: {json.dumps(made, ensure_ascii=False)}")
+            shown = ("The member gets this report as a PDF after your text."
+                     if current_run() is not None
+                     else "The report card shows this report.")
             text_lines.append(
-                "The report card shows this report. Say the flags in one or two "
-                "lines. Then offer to comment on each at-risk task (one class B batch)."
+                f"{shown} Say the flags in one or two lines. Then offer to comment "
+                "on each at-risk task (one class B batch)."
             )
             return "\n".join(text_lines)
         text_lines.append(

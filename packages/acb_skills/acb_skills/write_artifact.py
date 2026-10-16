@@ -76,6 +76,21 @@ def artifact_context() -> Mapping[str, Any]:
     return _NO_RUN if ctx is None else ctx
 
 
+def run_holds_tool(name: str) -> bool:
+    """True when the run on this frame holds the platform tool *name*.
+
+    The ONE answer for a tool that reaches another tool in-process, for
+    example ``status_report(make_report=true)``. The executor binds
+    ``run_tools``, the names that ``_tool_injection._inject_agent_tools``
+    left after the scope, the admin's skill toggles, D85, H-236, the floor
+    opt-out and WhatsApp. So access stays an intersection. It FAILS CLOSED: a
+    frame with no run, or a run that bound no ``run_tools``, holds nothing
+    (``projects_ai_chat.md`` §14.10).
+    """
+    tools = artifact_context().get("run_tools")
+    return isinstance(tools, (frozenset, set, tuple, list)) and name in tools
+
+
 def bind_artifact_context(**values: Any) -> None:
     """Set a NEW artifact context for the run on this frame.
 
@@ -1232,14 +1247,12 @@ async def _notify(
     task, or a slow store, the card goes out with ``artifact_id`` ``None`` and
     opens through the session and the path as before.
 
-    ``announce=False`` registers the workspace and emits no card. A report
-    file has its own ``report`` card (``reports.make_report``), so its files
-    get no second card (``projects_ai_chat.md`` §14.10). Code passes it, never
-    a tool argument.
+    ``announce=False`` sends the same event with ``"quiet": true``. The chat
+    then draws no FILE CARD for it, and its Files tree still lists the file
+    (``lib/artifactCards.ts``). A report file has its own ``report`` card
+    (``reports.make_report``), so its files get no second card
+    (``projects_ai_chat.md`` §14.10). Code passes it, never a tool argument.
     """
-    if not announce:
-        await _register_workspace(session_id, workspace_root, gateway_url, gateway_token)
-        return
     artifact_id = None
     if mirror_task is not None and _registry_on():
         try:
@@ -1265,6 +1278,8 @@ async def _notify(
                 "mime_type": artifact.get("mime_type"),
                 "artifact_id": artifact.get("artifact_id"),
             }
+            if not announce:
+                _artifact_data["quiet"] = True
             await queue.put({
                 "type": "CUSTOM",
                 "name": "artifact_created",
@@ -1302,32 +1317,12 @@ async def _notify(
                     "sha256": artifact.get("sha256"),
                     "size": artifact.get("size"),
                     "artifact_id": artifact.get("artifact_id"),
+                    **({} if announce else {"quiet": True}),
                 },
                 headers=headers,
             )
     except Exception:
         pass  # Non-fatal — the sidebar can always refresh manually
-
-
-async def _register_workspace(
-    session_id: str | None, workspace_root: str, gateway_url: str, gateway_token: str,
-) -> None:
-    """The registration half of :func:`_notify`, with no card: the session
-    learns its working dir, so its file routes serve the file. Non-fatal."""
-    if not session_id:
-        return
-    try:
-        import httpx
-
-        async with httpx.AsyncClient(timeout=5) as client:
-            await client.patch(
-                f"{gateway_url}/agent/workspace/{session_id}",
-                json={"workspace_path": workspace_root},
-                headers={"Authorization": f"Bearer {gateway_token}",
-                         "Content-Type": "application/json"},
-            )
-    except Exception:
-        pass
 
 
 # ── Generative UI ───────────────────────────────────────────────────────────

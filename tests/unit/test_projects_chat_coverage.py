@@ -131,6 +131,15 @@ def test_a_tool_has_one_class() -> None:
     assert not mixed, f"a tool with two classes has two ceremonies: {mixed}"
 
 
+#: Class A tools that write a file of the chat, never a Projects row. The
+#: class names the routes a tool reaches, and these reach only reads. The
+#: annotation names the side effect, so an edited turn does not run one again
+#: unseen (``chat_supersede.is_side_effect_tool``). ``status_report`` makes
+#: the report card and its PDF with make_report=true (``projects_ai_chat.md``
+#: §14.10, review of #1064).
+CHAT_FILE_WRITERS = frozenset({"status_report"})
+
+
 def test_built_read_tools_are_annotated_read_only() -> None:
     from acb_skills.tool_annotations import TOOL_ANNOTATIONS
 
@@ -139,7 +148,10 @@ def test_built_read_tools_are_annotated_read_only() -> None:
         assert cls is not None, f"{name} has no class in the manifest"
         hints = TOOL_ANNOTATIONS.get(name)
         assert hints is not None, f"{name} carries no risk annotation"
-        if cls == "A":
+        if cls == "A" and name in CHAT_FILE_WRITERS:
+            assert hints["read_only"] is False and hints["idempotent"] is False, name
+            assert hints["destructive"] is False and hints["open_world"] is False, name
+        elif cls == "A":
             assert hints["read_only"] is True, f"{name} is class A and not read_only"
             assert hints["destructive"] is False
         elif cls == "C":
