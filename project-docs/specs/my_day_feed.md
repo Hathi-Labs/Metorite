@@ -3588,8 +3588,8 @@ the parts:
 
 - §5.9 item 4 gives `agent_asks` the newest `asked_at` of the thread. The
   source of item 14, `_my_waiting_asks`, kept only the oldest row of each
-  thread. Fix round 1 adds a summary of every waiting row of the thread to
-  that entry: `request_ids`, `newest_asked_at`, `newest_agent_name` and
+  thread. Fix round 1 adds four summary fields of the waiting rows to that
+  entry: `request_ids`, `newest_asked_at`, `newest_agent_name` and
   `latest_expires_at`. The entry stays the oldest row, so `kind` keeps its
   meaning for `list_active_sessions`. The card takes the newest time, so a
   new question brings back a dismissed card.
@@ -3636,6 +3636,18 @@ the parts:
 11. The time bound of the absence bump removed.
 12. The HR check of `away_on` removed.
 13. `CHAT_DURABLE_ASKS` ignored.
+
+**Mutations of fix round 1, run by hand on 2026-10-16.** Each one failed
+a fence:
+
+1. The card takes the oldest `asked_at` again.
+2. The bump of the late answer removed.
+3. `bump_member_safe` lets an error out.
+4. The org predicate removed from `waiting_asks` (R8, a session that
+   bypasses RLS).
+5. The bump of the chat delete removed.
+6. `request_ids` keeps one id.
+7. `bump_member_safe` has no time bound.
 
 **The measure** (§5.9 item 7). Each provider ran 40 times on the R8 seed,
 on a local Postgres. `people` gave p50 50 ms and p95 81 ms. `chat` gave p50
