@@ -5302,33 +5302,6 @@ line — never reclaim a number by deleting the other entry.
   as-built block · PR-G8 fix round 1
 - **Added:** 2026-10-14 · PR-G8 (`gmail-purge-durable`), fix round 2
 
-### H-308 · Stop the copies of mail in the chat memory stores (EM-G11f3) · [AGENT]
-- **Check:** run the two commands. The entry stays while either one fails.
-  1. `git grep -nE "add_episode\(" -- apps/services/gateway/gateway/routes/email`
-     must give no hit. A hit means that an email route still writes to Graphiti.
-     The pattern needs the bracket, because a comment in `drafting.py` names
-     the function.
-  2. `git grep -c "run_holds_mail" -- apps/services/gateway/gateway/routes/agent.py apps/services/gateway/gateway/main.py`
-     must give a count for each of the two files. A file with no count still writes
-     a turn that holds mail to Mem0 or to Graphiti, under the member key.
-- **Why.** Nine writers copy mail text into stores under the member, the
-  agent or the organization (§12.3.13.9.1, W1 to W9). The writers are in
-  `routes/agent.py`, in `main.py`, in the email chat route, in the memory
-  tools and in the run trace. No mailbox purge reaches these stores. So a
-  disconnect leaves mail text there. Google Limited Use and the deletion
-  promise of §12.3.13.9 both need that text to go. Mem0 and Graphiti are off
-  on production (2026-10-16), so most of these writers are latent today.
-- **Do this:** build PR-G8b as §12.3.13.9.1 specifies. The section chose
-  path 2: Metorite stores no mail content there. Run the spec-auditor first.
-  The PR merges before WS-7 turns on Mem0 or Graphiti.
-- **Authority:** `specs/email_app_master_plan.md` §12.3.13.9.1 · PR-G8 review
-- **Added:** 2026-10-14 · PR-G8 (`gmail-purge-durable`), fix round 2
-- **Widened:** 2026-10-16 · the Check now reads `routes/agent.py` and
-  `main.py` too, after a spec-auditor finding
-- **Status:** 2026-10-16 · built on branch `gmail-chat-copies`, not merged.
-  W10 (`POST /memory/{scope}/add`, which the chat posts to on unmount) is
-  not covered. H-335 holds it.
-
 ### H-309 · Create the WS-59 tasks in the Metorite project "Proactive Intelligence" · [AGENT]
 - **Check:** in a session with the Metorite MCP, run `search_tasks` with the
   query `RE-1`. A hit in the project "Proactive Intelligence" means the tasks
@@ -5755,9 +5728,13 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-15 · MD-3d build · rewritten 2026-10-16, MD-3d review
 
 ### H-335 · W10: the chat's unmount save can copy mail into Mem0, so WS-7 keeps Mem0 off · [AGENT]
-- **Check:** `git grep -c "run_holds_mail" -- apps/services/gateway/gateway/routes/memory.py`.
-  No count means that this is open. ⚠️ While it is open, WS-7 must not turn
-  Mem0 on for any organization.
+- **Check:** run the two commands. Either one closes this entry.
+  1. `git grep -c "run_holds_mail" -- apps/services/gateway/gateway/routes/memory.py`
+     gives a count: the save route asks the mail predicate.
+  2. `git grep -n "saveConversationOnUnmount" -- workbench/control_plane/src ":!*.test.ts" ":!*.test.tsx"`
+     gives no hit: the unmount save is gone.
+  While both fail, this is open. ⚠️ While it is open, WS-7 must not turn
+  Mem0 on for any organization. The WS-7 row of `work_plan.md` names it.
 - **Why.** `AgentChat` posts the turns of the default agent to
   `/api/chat/memories` when its panel closes (`lib/chatMemorySave.ts`). The
   BFF route calls the gateway's `POST /memory/{scope}/add`, and that route

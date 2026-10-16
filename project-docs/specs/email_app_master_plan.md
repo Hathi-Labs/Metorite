@@ -15086,7 +15086,7 @@ returned GO-NARROWED at `260c14705`: items 1 to 8 are the scope, and item 9 is a
 check after the merge. Its four blockers B1 to B4 are in the text below. Verified against code
 on 2026-10-16, at `origin/main` `0a14f7552`. A spec-auditor found that no section covered these
 copies. H-308 cited §12.3.13.9, and §12.3.13.9 did not cover them. This section is the one owner
-of the work (`work_plan.md` §1, point 6). H-308 links here.
+of the work (`work_plan.md` §1, point 6). H-308 linked here. PR-G8b deleted it, because its Check passes, and H-335 holds W10.
 
 **Paths.** `GW` is as in §12.3.13.2. `GWP` is `apps/services/gateway/gateway/`, and `CP` is
 `workbench/control_plane/src/`.
@@ -15329,6 +15329,14 @@ agent and the trace of a live store. `deploy-write` for the line of `deploy.sh`,
   text in its history with no mark. The run end of the email-assistant turn holds mail by name.
   Marking its own session would make each egress tool of the pane ask a card, so this PR does
   not do it.
+- **Round 2, P1.** A run of an agent of `UNTRUSTED_INPUT_AGENTS` ignores the untrusted-answer
+  mark at the tool gate (`_tool_injection._run_reads_mail_itself`, the agent name from the bound
+  context). Its own writes ask their own EM-G11c1 card, as in a direct pane run. Measured: the
+  native MAF email assistant runs through the batch fallback, which binds a session of its own,
+  so on a healthy store it read no mark of the caller. With Redis down its own session read
+  UNKNOWN, which gave a second card, or a refusal with no card channel. The caller's own egress
+  after the hand-off still asks the card. Fences: the three `delegated_mail_write` and
+  `callers_own_egress` cases in `test_delegation_no_egress.py`, each with Redis up and down.
 - **Fix round 1, F3.** `run_holds_mail` reads a Redis fault as unknown for EVERY run, with or
   without a member (`session_mark_state(fail_closed=True)`). The restart sweep can fold a run
   with an empty actor, and that fold read a fault as clear. Fence:
