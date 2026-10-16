@@ -2533,29 +2533,49 @@ that comes from a model. A per-member record scope (§18.5, CRM-Q12).
 
 1. `GET /crm/aggregate` also takes a generic module (`module:<ApiName>`) as
    the entity. A module that the profile does not mirror gives 404.
-2. The measure can be `count`, or `sum`, `avg`, `min` or `max` of one field.
-   A field measure takes only a field of type number, decimal, currency or
+2. The measure keeps `count`, `sum_amount` and `weighted`. It can also be
+   `sum`, `avg`, `min` or `max` of one field, given as `field=<key>`. A
+   field measure takes only a field of type number, decimal, currency or
    percent.
-3. `group_by` can also name one field. A picklist, a boolean, a lookup and
-   the owner group by value. A date or a datetime groups by `month`,
-   `quarter` or `year`, given as `bucket`. Any other type gives 422.
-4. A filter can name a field with one value, or a date field with a range.
-   The core entities keep the list filters they have today.
-5. Each field name is checked against the field definitions of the org, or
-   of the module. A name never reaches the SQL text unchecked. Each value is
-   bound. A test sends names that try to inject SQL, and each one gives 422.
-6. An answer holds at most 50 groups, largest first, and one `other` total.
-   The statement runs under a LOCAL `statement_timeout` of 10 s.
-7. The AI tool `crm_aggregate` takes the new arguments.
-   `crm_list_fields` and the module record tools tell the model the legal
-   names and types.
+3. `group_by` keeps its fixed keys. A new `group_field=<key>` groups by one
+   field, and `bucket=month|quarter|year` sets the bucket of a date. A call
+   gives `group_by` or `group_field`, not both. A picklist (the stored type
+   `select`), a boolean and a lookup group by value. On a module,
+   `group_by=owner` groups by the owner email. A date or a datetime needs a
+   `bucket`. The types `multiselect`, `text` and `formula`, and each other
+   type, give 422.
+4. A filter on a module can name a field with one value
+   (`field.<key>=<value>`), or a date field with a range (`field.<key>.from`
+   and `field.<key>.to`). The core entities keep the list filters they have
+   today, and they get no new filter.
+5. The route checks each field name against the field definitions of the
+   org, or of the module. On a core entity, the field measure and the field group
+   read only a custom key that is not a system field and is not retired. A
+   name never reaches the SQL text unchecked. Each value is bound. A test
+   sends names that try to inject SQL, and each one gives 422. The field SQL
+   lives in its own module, `routes/crm/field_sql.py`. `aggregate.py` holds
+   no field SQL, and it builds the core filters through `records.list_query`
+   only. A fence in `test_crm_aggregate.py` checks both.
+6. An answer holds the 50 largest groups at most. `other` holds the measure
+   over the rest, and `omitted` holds their count. The order of the answer
+   stays as today. The status groups come in board order, the month and date
+   buckets in time order, and each other group comes largest first. The
+   statement runs under a LOCAL `statement_timeout` of 10 s.
+7. The AI tool `crm_aggregate` takes the new arguments, and its entity can
+   be `module:<ApiName>`. It shows INR only for a `currency` field and for
+   `sum_amount` and `weighted`. `crm_list_fields` and the module record
+   tools tell the model the legal names and types. The pinned contract in
+   `test_tool_schema_diet.py` changes with the tool.
 8. R8 tests cover a sum and a group on a module, a date bucket and a
-   filter. They also cover tenant isolation, and the time on 30,000 module
-   rows.
+   filter. They also cover tenant isolation. A sum and a bucket group over
+   30,000 seeded module rows each give 200, with no skip, inside the 10 s
+   timeout. The test also asserts a tighter bound that the build measures.
+   The note "Built as" below records that bound.
 
-Files: `routes/crm/aggregate.py`, `routes/crm/modules.py`,
-`routes/crm/fields.py`, the CRM tools module (`crm_tools.py`) and
-`tests/unit/`.
+Files: `routes/crm/aggregate.py`, `routes/crm/field_sql.py`,
+`routes/crm/modules.py`, `routes/crm/fields.py`, the CRM tools module
+(`crm_tools.py`), `tests/unit/test_crm_aggregate.py`,
+`tests/unit/test_tool_schema_diet.py` and `tests/unit/`.
 
 **CRM-Q26 · Labels on notes, in shadow.** Done when:
 
