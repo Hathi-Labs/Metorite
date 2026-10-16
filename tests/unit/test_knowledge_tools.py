@@ -275,9 +275,16 @@ class TestTheAnswer:
 
     def test_no_match_lists_the_headings_and_no_body(self):
         out = kt.format_page(_page(), section="Warranty")
-        assert "No section matches 'Warranty'" in out
-        assert "Refund policy > Refunds > Window" in out
-        assert "30 days" not in out
+        assert "No section matches 'Warranty'. The headings:" in out
+        assert "- Refund policy > Refunds > Window" in out.splitlines()
+        assert "- Shipping" not in out and "- Refund policy > Shipping" in out.splitlines()
+        assert "30 days" not in out and kt.PAGE_HEADER not in out
+
+    def test_a_page_with_many_headings_lists_them_all_within_the_cap(self):
+        body = "\n\n".join(f"## Heading {i:03d}" for i in range(200))
+        out = kt.format_page(_page(body_md=body), section="Warranty")
+        assert "- Heading 199" in out.splitlines(), "no heading is out of reach"
+        assert len(out) <= kt.MAX_CHARS
 
     def test_the_cap_cuts_and_says_so(self):
         long_body = "word " * 10_000

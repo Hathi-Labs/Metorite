@@ -290,9 +290,10 @@ def format_page(page: dict[str, Any], section: str | None = None) -> str:
     if section and section.strip():
         part, paths = section_of(body, section)
         if part is None:
-            known = "; ".join(paths[:40]) or "(this page has no headings)"
-            head.append(f"No section matches {_line(section)!r}. The headings: {known}")
-            return "\n".join(head)
+            # Every heading, so no section is out of reach. `_cap` holds the size.
+            head.append(f"No section matches {_line(section)!r}. The headings:")
+            known = "\n".join(f"- {path}" for path in paths)
+            return _cap("\n".join(head), known or "(this page has no headings)")
         head.append(f"Section: {_line(section)}")
         body = part
     head.append(PAGE_HEADER)
@@ -332,8 +333,11 @@ def format_spaces(body: Any) -> str:
         noun = "page" if count == 1 else "pages"
         name = _line(space.get("name")) or "(unnamed)"
         kind = _line(space.get("kind")) or "space"
-        purpose = _line(space.get("purpose"))[:_PURPOSE_MAX]
-        lines.append(f"- {name} ({kind}, {count} {noun})" + (f": {purpose}" if purpose else ""))
+        purpose = _line(space.get("purpose"))
+        lines.append(
+            f"- {name} ({kind}, {count} {noun})"
+            + (f": {purpose[:_PURPOSE_MAX]}" if purpose else "")
+        )
     if len(lines) == 1:
         lines.append("(no spaces)")
     return "\n".join(lines)
@@ -368,8 +372,10 @@ def format_index(body: Any) -> str:
             continue
         noun = "page" if count == 1 else "pages"
         name = _line(space.get("name")) or "(unnamed)"
-        purpose = _line(space.get("purpose"))[:_PURPOSE_MAX]
-        rows.append(f"- {name} ({count} {noun})" + (f": {purpose}" if purpose else ""))
+        purpose = _line(space.get("purpose"))
+        rows.append(
+            f"- {name} ({count} {noun})" + (f": {purpose[:_PURPOSE_MAX]}" if purpose else "")
+        )
     if not rows:
         return ""
     more = "- More spaces: list_spaces names them all."
