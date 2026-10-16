@@ -81,7 +81,7 @@ async def embed_query(organization_id: str | None, q: str) -> list[float] | None
             embed_door.embed([words], org=organization_id, timeout=QUERY_EMBED_TIMEOUT_S),
             timeout=QUERY_EMBED_TIMEOUT_S,
         )
-    except Exception as exc:  # noqa: BLE001 — a timeout is an answer: degraded
+    except Exception as exc:  # a timeout is an answer: degraded
         _log.warning("knowledge.query_embed_failed", error=type(exc).__name__)
         return None
     return vectors[0] if vectors else None

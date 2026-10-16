@@ -48,6 +48,11 @@ MAX_TEXT_CHARS = 8000
 TIMEOUT_S = 20.0
 
 
+def _client(timeout: float) -> httpx.AsyncClient:
+    """The HTTP client of one request. The suites replace this one function."""
+    return httpx.AsyncClient(timeout=timeout)
+
+
 def _url() -> str:
     return get_settings().litellm_base_url.rstrip("/") + "/v1/embeddings"
 
@@ -69,7 +74,7 @@ async def _post(texts: list[str], timeout: float) -> list[list[float] | None]:
     """One request for *texts*. Each failure is ``None`` for every text."""
     nothing: list[list[float] | None] = [None] * len(texts)
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with _client(timeout) as client:
             response = await client.post(
                 _url(),
                 json={"model": EMBED_MODEL, "input": texts},
@@ -77,7 +82,7 @@ async def _post(texts: list[str], timeout: float) -> list[list[float] | None]:
             )
         response.raise_for_status()
         data = response.json().get("data") or []
-    except Exception as exc:  # noqa: BLE001 — the door down is an answer
+    except Exception as exc:  # the door down is an answer
         _log.warning("knowledge.embed_failed", error=type(exc).__name__)
         return nothing
     if len(data) != len(texts):

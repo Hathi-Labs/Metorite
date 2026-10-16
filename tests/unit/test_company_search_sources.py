@@ -193,11 +193,11 @@ def apps(monkeypatch) -> Apps:
     import acb_memory.artifacts as registry
     import gateway.routes.artifacts as artifacts_route
     import gateway.routes.email.transport.search as email_search
+    import gateway.routes.knowledge.search as kb_search
     import gateway.routes.people.directory as directory
     import gateway.routes.projects.search as projects_search
     import gateway.routes.whatsapp.transport.messages as wa_messages
     from acb_common import get_settings
-    import gateway.routes.knowledge.search as kb_search
     from gateway.routes.crm import access, records
 
     f = Apps()

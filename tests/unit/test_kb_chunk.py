@@ -169,7 +169,7 @@ class _Door:
                 answer = door.answer(json["input"]) if callable(door.answer) else door.answer
                 return httpx.Response(200, json=answer, request=httpx.Request("POST", url))
 
-        monkeypatch.setattr(embed_mod.httpx, "AsyncClient", _Client)
+        monkeypatch.setattr(embed_mod, "_client", _Client)
 
 
 def _vectors(texts: list[str], value: float = 0.5) -> dict[str, Any]:
@@ -228,8 +228,11 @@ def test_one_log_line_per_call_and_no_usage_row(monkeypatch: pytest.MonkeyPatch)
     kw = lines[0][1]
     assert kw["organization_id"] == ORG and kw["chunks"] == len(texts)
     assert kw["token_estimate"] == 100 * len(texts)
-    source = (embed_mod.__file__ and open(embed_mod.__file__, encoding="utf-8").read()) or ""
-    assert "usage_event" not in source.split('"""', 2)[-1]
+    from pathlib import Path
+
+    source = Path(embed_mod.__file__).read_text(encoding="utf-8")
+    code = source.split('"""', 2)[-1]  # the module docstring names the rule
+    assert "usage_event" not in code
 
 
 # ── The flag: no call when off ──────────────────────────────────────────────

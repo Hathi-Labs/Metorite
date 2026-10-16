@@ -175,7 +175,7 @@ async def embed_pending(organization_id: str, page_id: str) -> int:
         if not rows:
             return 0
         return await write_vectors(organization_id, rows)
-    except Exception as exc:  # noqa: BLE001 — a background job must not raise
+    except Exception as exc:  # a background job must not raise
         _log.warning("knowledge.embed_pending_failed", organization_id=organization_id,
                      error=type(exc).__name__)
         return 0
