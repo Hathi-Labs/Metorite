@@ -37,10 +37,17 @@ _CHUNKS: dict[str, tuple[str, str | None]] = {
 }
 
 _ALIASES = {
-    "components": "blocks", "report": "blocks", "kit": "blocks",
+    "components": "blocks", "kit": "blocks",
     "dataviz": "charts", "data-viz": "charts", "chart": "charts",
     "graphs": "charts", "jsx": "react", "tsx": "react",
+    "reports": "report",
 }
+
+#: ``load_design_system("report")`` is the field guide of ``make_report``
+#: (``projects_ai_chat.md`` §14.10). Until 2026-10-16 the name read the
+#: ``cc-report`` HTML kit, which "blocks" still serves. A report is now a
+#: ``make_report`` call, never a hand-made HTML or Markdown file.
+_REPORT = "report"
 
 _INDEX = (
     "\n---\n\n"
@@ -104,7 +111,7 @@ def _core() -> str:
 async def load_design_system(section: str = "") -> str:
     """Load the Metorite design system (palette, type, motion, block kits).
 
-    Call this BEFORE you write a full-page HTML or Markdown **report**, or any
+    Call this BEFORE you write a full-page HTML **page**, or any
     bespoke **custom HTML/CSS** for an ``emit_generative_ui`` ``html`` node, so
     the result matches the Metorite look. You do NOT need it for named
     ``emit_generative_ui`` templates — those are already on-brand — nor for a
@@ -126,6 +133,13 @@ async def load_design_system(section: str = "") -> str:
     Returns:
         The requested guidance as Markdown.
     """
+    key = (section or "").strip().lower()
+    key = _ALIASES.get(key, key)
+    if key == _REPORT:
+        from acb_skills.reports import REPORT_GUIDE
+
+        return REPORT_GUIDE
+
     doc = _design_doc()
     if not doc:
         return (
@@ -133,10 +147,6 @@ async def load_design_system(section: str = "") -> str:
             "variables named in the platform tools guidance and keep it clean and "
             "on-brand."
         )
-
-    key = (section or "").strip().lower()
-    key = _ALIASES.get(key, key)
-
     if not key:
         return _core() or doc
     if key == "all":

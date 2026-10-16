@@ -5,6 +5,11 @@
  */
 
 import type { ChatSession } from "@/lib/sessions";
+import {
+  workspaceFileOfHref,
+  workspaceFileUrl,
+  type WorkspaceFileRef,
+} from "@/lib/artifactKind";
 
 export type ArtifactsTab = "chats" | "agents";
 
@@ -29,4 +34,19 @@ export function chatToShow(
     .slice()
     .sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0))[0];
   return newest?.id ?? null;
+}
+
+/**
+ * The file a link asks the viewer to open: `?session=<id>&file=<path>`
+ * (owner report, 2026-10-16). The proxy route sends a direct open of a
+ * Markdown file here, and a chat link to a file carries this address. Null
+ * without both values, or for a session id that the one link parser
+ * (`workspaceFileOfHref`) refuses. The gateway still decides who may read it.
+ */
+export function linkedFile(
+  session: string | null | undefined,
+  file: string | null | undefined,
+): WorkspaceFileRef | null {
+  if (!session || !file) return null;
+  return workspaceFileOfHref(workspaceFileUrl(session, file), "https://in-app.invalid");
 }

@@ -148,6 +148,7 @@ answer rather than a diff:
 | Personal Center | Dashboard | `/dashboard` | Company-view-only today; the personal view is WS-15 |
 | Personal Center | Notes | `/notes` | WS-19 incomplete |
 | Personal Center | Memories | `/memory` | WS-9 — operator-grade surface, not customer-grade |
+| Apps | Knowledge | `/knowledge` | 🆕 Added 2026-10-15 by WS-61 KB-0. The page is a scaffold and has no content yet. `feature:knowledge` gates it, and that feature reaches every role except guest (migration 207). The owner promotes it at KB-12 (`knowledge_base.md` §17) |
 | Apps | Centers (six panes) | `/centers/<slug>` | **Withdrawn by D49**, not merely incomplete (§5) |
 | AI Studio | Workflows | `/workflows` | WS-11 incomplete |
 | AI Studio | App Workshop | `/build/apps` | Incomplete |

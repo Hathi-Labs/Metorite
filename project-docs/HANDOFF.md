@@ -5434,6 +5434,24 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/proactive_reach.md` §8.1 and §8.1a
 - **Added:** 2026-10-15 · WS-59 RE-2a
 
+### H-323 · A DSML stream shows a first tag that a delta cut before its `>` · [AGENT]
+- **Check:** in `tests/unit/test_router_dsml_tool_calls.py`, compare
+  `_events(TASK_TOOLS, deltas)` with `_events(TASK_TOOLS, [whole])` for the
+  three cases in `specs/customer_console.md` §6A.15, "The known gap". A
+  difference in any case means this is open.
+- **Why.** `_TAG_HEAD_RE` refuses a `/` or a `'` before the `>`. When a delta
+  ends there, `_not_a_tag` releases the region as text. A whole feed never
+  takes that path. In all three cases, the stream shows raw markup to the
+  member. In case C, the stream runs no call, but a whole feed runs the call.
+  No case runs MORE calls, so the gap fails closed. The independent review of
+  PR #1047 found it.
+- **Do this:** let `_TAG_HEAD_RE` accept what `_FIRST_TAG_RE` accepts before
+  the `>`. Or test the head with `_FIRST_TAG_RE` when the `>` arrives. Add the
+  three cases to `_REPLIES`, so that the every-cut test fences them. Keep the
+  linear fences.
+- **Authority:** `specs/customer_console.md` §6A.15 (contract items 1 and 4)
+- **Added:** 2026-10-15 · PR #1047
+
 ### H-316 · The member writers of assignee rows take the row and the key in different orders · [AGENT]
 - **Check:** `git grep -n -e "ids = dedupe_ids(payload.task_ids)" -e "await _move_satellites(db, str(source.id), task_id)" -- apps/services/gateway/gateway/routes/projects/bulk.py apps/services/gateway/gateway/routes/projects/merge.py`. The first anchor is the unsorted selection of the bulk edit. The second is the merge, which moves the assignee keys before `update_row` of the target. Two hits mean this entry stays. With fewer hits, read the changed code, and delete this entry when the orders agree.
 - **Why.** The reviewer and the verifier of WS-55 EA-6b found these orders already disagree on main. A PUT of the assignees writes the key and then bumps the row. A move with assignees writes the row and the destination counter, then the key. A merge moves the assignee and watcher keys, then writes the target row. A bulk edit locks rows in request order. So a PUT against a move that assigns the same member, a merge against a PUT on the watcher keys, and two bulk edits with the same ids in another order can each deadlock. A merge against a PUT of the same member also fails with a unique violation of `pm_task_assignees_pkey` (10 times in 10).
@@ -5483,11 +5501,163 @@ line — never reclaim a number by deleting the other entry.
   `project:<uuid>`. CLAUDE.md §4 names one subject-grammar validator as a
   seam. `knowledge_base.md` §5.1 (WS-61 KB-1) must use the shared one, so
   the spelling has to be decided before KB-1 and AM-3 both write grants.
-- **Do this:** pick one spelling, put the validator in
-  `acb_auth/permissions.py`, and make Projects, Artifacts and Knowledge call
-  it. A migration that widens the artifacts CHECK is expand-only (R6).
+- **Do this:** KB-1 settled the spelling on 2026-10-15: the bare email of
+  Projects, with the validator moved to `acb_auth/permissions.py`
+  (`knowledge_base.md` §5.1). AM-3 calls that validator, or records why
+  Artifacts keeps `user:`. A migration that widens the artifacts CHECK is
+  expand-only (R6).
 - **Authority:** CLAUDE.md §4 (respect the seams), `tenancy_and_visibility.md` §3
 - **Added:** 2026-10-15 · WS-61 KB-0 audit
+
+### H-328 · The workflow run lifecycle outside the agent tools names no tenant (H4 slice 6c) · [AGENT]
+- **Check:** `git grep -n "await _get_db()" -- apps/services/gateway/gateway/routes/workflows/`.
+  Each hit is an unbound read or write on a FORCE RLS table. This entry is
+  open until the only hits left are tenant-discovery reads.
+- **Why.** PR #1052 binds the F13 agent path: the list, the run, the run
+  rows, an approval resume and the status read. The rest of the lifecycle
+  still opens `get_db()` with no tenant. In production FORCE RLS gives that
+  read zero rows, and that write fails.
+- **The unbound sites, as of 2026-10-15:**
+  - `service.py` `_get_module_code`. A module node reads `workflow_modules` and fails.
+  - `service.py` `_pm_task_updater`. A Projects node writes `pm_tasks` unbound.
+  - `service.py` `_run_session` with no org. It serves the manual Run, the schedule, the webhook and the event runs.
+  - `service.py` `record_skipped_run`, `reconcile_orphaned_runs` and `evaluate_automation_health`.
+  - `service.py` `_workflow_billing_member`. It is a tenant-discovery read (H-152), so it stays unbound.
+  - `scheduler.py` `_scan_once` and `scan_due_waits`. Because of this, an agent cannot start a workflow with a long wait yet.
+  - `triggers.py` (the event dispatch) and `hooks.py` (the webhook route).
+  - `runs.py` calls `start_run` with no org (the manual Run button).
+- **Do this:** take the org from a stored fact, never from the ambient
+  context: the workflow row for a trigger, the run row for the sweeps. Then
+  pass it to `start_run` and `resume_run`. Enumerate the RLS-exempt
+  `organization` table for the scans, as `crm_sync/scheduler.py` does. Then
+  remove the long-wait refusal in `run_published_workflow`
+  (`_long_wait_nodes`), and lower `H2_BASELINE_ELSEWHERE`.
+- **Authority:** `specs/workflows_app.md` F13 · `routes/workflows/service.py`
+  header note · R5
+- **Added:** 2026-10-15 · PR #1052 review round 1
+
+### H-320 · An unticked checkbox has no visible edge · [AGENT]
+- **Check:** `rg -n "border-border" workbench/control_plane/src/components/ui/Checkbox.tsx`.
+  A hit in the `BASE` string means the defect is open.
+- **Why.** The visual review of CRM-Q16 (2026-10-15) measured the unticked box
+  of the shared `Checkbox` primitive. Its edge is about 1.2:1 against the
+  background, in dark mode and in light mode. WCAG 1.4.11 asks 3:1 for the edge of a control.
+  The Sync health card is the first screen where the one unticked box carries
+  the meaning (a held module), so it showed there first. Every checkbox in the
+  product has the same edge.
+- **Do this:** give the unticked box a stronger border in the primitive.
+  `border-muted-foreground/60` or an input-border token from `globals.css`
+  will do. Then run the conformance suite and look at one checkbox in
+  both colour modes. Do not fix it in the card.
+- **Authority:** `workbench/control_plane/DESIGN_SYSTEM.md` (one look, one primitive)
+- **Added:** 2026-10-15 · WS-53 CRM-Q16
+
+### H-321 · A generic module held for a long time keeps its deleted rows · [AGENT]
+- **Check:** `rg -n "def _module_reread" apps/services/gateway/gateway/crm_sync/engine.py`.
+  If that function still runs a full re-read only for a module that hides
+  `Modified_Time`, this entry is open.
+- **Why.** A generic module (`module:<ApiName>`, CRM-Q6a) is never walked. Its
+  deletes come from the deleted list only, and Zoho keeps that list for 60
+  days. A module that CRM-Q16 holds for longer than that, and is then
+  released, keeps every row that Zoho deleted in the gap. The core entities
+  get a full compare after such a gap (`plan()`). Generic modules do not.
+- **Do this:** when a release follows a gap longer than `GAP_RECONCILE`,
+  re-read the module in full, with a stamp. Then drop the rows that the
+  re-read did not see. Or show the gap on the Sync health card, and offer a
+  start over of that one module.
+- **Authority:** `crm_platform.md` §18.7 (the generic store) and §18.8
+- **Added:** 2026-10-15 · WS-53 CRM-Q16 review
+
+
+### H-322 · An artifact on a Knowledge page must count as kept · [AGENT]
+- **Check:** `rg -n "kb_page_files" apps/services/gateway packages/acb_memory infra/postgres`.
+  No hit in the artifact sweep's `keep` rule means this is open.
+- **Why.** WS-61 KB-2a makes a page file an artifact, joined through
+  `kb_page_files` with no foreign key. The artifact sweep
+  (`artifact_management.md` §7.4) deletes a registry row that is not kept.
+  A file on a published page would then vanish from the page with no record.
+- **Do this:** in the WS-60 `keep` rule (§7.1), count an artifact as kept
+  while a `kb_page_files` row names it. Add a test beside the sweep's own.
+  It must land before KB-2a turns on for any org.
+- **Authority:** `specs/artifact_management.md` §7.1, `specs/knowledge_base.md` §4.3
+- **Added:** 2026-10-15 · WS-61 KB-1 audit
+
+### H-325 · Three calls on the CRM mapping design · [OWNER]
+- **Check:** read `crm_platform.md` §18.9.1, "Open, with a recommendation".
+  If it still lists three open calls, this entry is open.
+- **Why.** The v4 design (§18.9) needs three owner answers before CRM-Q20
+  ships its rules. The design page "Source Mapping Studio" v4 shows each one.
+- **Do this:** answer each call in chat.
+  1. May a choice that changes only the view apply with no approval?
+     Recommended: yes, with Undo.
+  2. May Metorite ask for the Zoho scope that reads list views? Each
+     connected org must reconnect once. Recommended: new connections only.
+  3. May one org's approved choices help another org? Recommended: no.
+- **Authority:** `crm_platform.md` §18.9.1
+- **Added:** 2026-10-16 · WS-53 §18.9 spec
+
+
+### H-326 · A Zoho module count is higher than the records the sync keeps · [AGENT]
+- **Check:** on prod, compare `crm_sync_runs.estimate` with the rows in
+  `crm_module_records` for DEWiN (`f01d029f-…`). If Payment_Made still holds
+  3,003 rows against an estimate of 4,947, this entry is open.
+- **Why.** The run of 2026-10-15 20:24 marked Payment_Made done with 3,003 of
+  4,947 records. Products kept 9 of 13, and Operator_Associates 871 of 873.
+  Outstanding (3,623) matched. The cause is not known. Zoho's count call may
+  count records that the list call does not return. Or the walk may skip
+  records. All 3,003 kept rows were modified in one hour of 2025-06-06.
+- **Do this:** read one page of Payment_Made with and without the
+  `If-Modified-Since` header, and compare with the count call. Find the
+  missing ids. Then fix the walk, or show the difference on the Sync health
+  card as "not visible to the connected user".
+- **Authority:** `crm_platform.md` §18.7 (the generic store) and §18.9.2
+- **Added:** 2026-10-16 · WS-53, DEWiN import
+
+### H-327 · A Zoho task on a custom-module record is skipped · [AGENT]
+- **Check:** on prod, read the counts of DEWiN's last run. If `tasks` shows
+  `unlinked` equal to `seen` (1,145 on 2026-10-15), this entry is open.
+- **Why.** DEWiN keeps its work in custom modules. A Zoho task whose parent
+  (`What_Id`) is a custom-module record finds no core parent, so the sync
+  skips it. The member never sees those tasks. The 18,674 held activities
+  will likely do the same when they sync.
+- **Do this:** link an activity to a `crm_module_records` row when its parent
+  is a mirrored module. Show it on the record page of that module.
+- **Authority:** `crm_platform.md` §18.7 and §18.9.2
+- **Added:** 2026-10-16 · WS-53, DEWiN import
+
+
+### H-329 · The email embedder sends a key that the gateway refuses · [AGENT]
+- **Check:** `rg -n "llm_api_key" apps/services/email_ingestion/email_ingestion/email_embeddings.py`.
+  A hit in the request headers means this is open.
+- **Why.** `email_embeddings.py:80-112` posts to `{litellm_base_url}/v1/embeddings`
+  with `Settings.llm_api_key`. On production `litellm_base_url` is the gateway
+  itself, and its `/v1/embeddings` route is not public. So the app-wide
+  `require_authenticated` refuses the `/v1` key once `GATEWAY_INTERNAL_TOKEN`
+  is set (measured 2026-10-16). So every email
+  embedding would fail, and `email_embeddings` holds 0 rows. It stays hidden
+  while `EMAIL_SEMANTIC_SEARCH_ENABLED` is off. WS-61 KB-3 met the same
+  defect and sends the service token from `gateway/kb_index/embed.py`.
+- **Do this:** pick one fix for both callers. Either the route takes
+  `require_llm_api_auth`, as the other `/v1` doors do, or each platform
+  caller sends the service token. Prove it with one embedding on the box
+  before the email flag turns on.
+- **Authority:** `specs/knowledge_base.md` §6.4, `specs/email_app_master_plan.md`
+- **Added:** 2026-10-16 · WS-61 KB-3
+
+### H-330 · Two quick edits of a page embed the same chunks twice · [AGENT]
+- **Check:** `rg -n "FOR UPDATE SKIP LOCKED|shas" apps/services/gateway/gateway/kb_index/index.py`.
+  No hit in `select_pending` or `embed_pending` means this is open.
+- **Why.** Each page write schedules one `embed_pending` job. Two saves inside
+  one embed round trip schedule two jobs, and both select the same chunks
+  with a NULL embedding. The `content_sha` guard in `write_vectors` keeps the
+  data right, so only the spend doubles. It matters once `KNOWLEDGE_EMBED`
+  names an org.
+- **Do this:** pass the new shas from `reindex_page` to the job and embed
+  only those, or claim the rows in `select_pending` with a short
+  `FOR UPDATE SKIP LOCKED`. Add an R8 test with two concurrent jobs that
+  counts the door calls.
+- **Authority:** `specs/knowledge_base.md` §6.2 and §6.4
+- **Added:** 2026-10-16 · WS-61 KB-3 review
 
 # DONE — deleted, not archived
 

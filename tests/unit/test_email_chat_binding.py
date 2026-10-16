@@ -451,7 +451,9 @@ async def test_a_thread_is_read_in_the_mailbox_of_the_mail(gw: Gateway) -> None:
     out = await agents.read_thread(email_id="m1")
     [params] = [p for path, p in gw.gets if path == "/email/messages"]
     assert params["thread_id"] == "t1" and params["account_id"] == BOX_A
-    assert out.startswith("Thread: Quote — 2 message(s)")
+    # EM-G11d: a sender writes the subject, so it sits in the frame.
+    assert out.startswith("Thread: 2 message(s)")
+    assert "Subject: Quote" in out
     assert "Not this one" not in out
 
 
@@ -471,7 +473,7 @@ async def test_a_thread_id_in_two_mailboxes_is_not_merged(gw: Gateway) -> None:
 
 async def test_a_thread_id_in_one_mailbox_is_read(gw: Gateway) -> None:
     out = await agents.read_thread(thread_id="t3")
-    assert out.startswith("Thread: Lunch — 1 message(s)")
+    assert out.startswith("Thread: 1 message(s)") and "Subject: Lunch" in out
 
 
 def test_read_thread_takes_no_account_id() -> None:
@@ -484,7 +486,7 @@ async def test_an_account_id_from_the_model_never_wins_a_thread_read(
     out = await _as_the_model(agents.read_thread, email_id="m1", account_id=BOX_B)
     [params] = [p for path, p in gw.gets if path == "/email/messages"]
     assert params["account_id"] == BOX_A
-    assert out.startswith("Thread: Quote — 2 message(s)")
+    assert out.startswith("Thread: 2 message(s)") and "Subject: Quote" in out
 
 
 # ── email-chat-label-address ─────────────────────────────────────────────────

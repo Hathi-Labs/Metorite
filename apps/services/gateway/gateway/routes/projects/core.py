@@ -45,6 +45,7 @@ from uuid import UUID
 
 from acb_auth import AgentScope, UserContext, require_feature_router
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN
+from acb_auth.permissions import normalize_grant_subject
 from acb_common import get_logger
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
@@ -3413,39 +3414,21 @@ async def emit(event_type: str, payload: dict[str, Any]) -> None:
 
 
 def validate_grant_subject(subject: str) -> str:
-    """The grant subject vocabulary, and nothing else.
+    """The grant subject vocabulary, and nothing else, as an HTTP 422.
 
     ``org`` | ``group:<slug>`` | an email address — exactly what
     ``tenancy_and_visibility.md`` §3.2 already shipped for rooms, and §3.2 is
     binding: a second vocabulary would mean two answers to "who can see this".
 
-    Lives here for WS-27a. WS-14 C1's done-when 5 names
-    ``packages/acb_auth/acb_auth/permissions.py`` as the shared home for the
-    same validator; whichever ticket lands second should lift this rather than
-    keep a copy — two validators is how the two vocabularies begin.
+    The grammar lives in ``acb_auth.permissions.normalize_grant_subject``
+    (pure, no FastAPI), moved there by WS-61 KB-1 as WS-14 C1's done-when 5
+    asked. This wrapper only turns its ``ValueError`` into the 422 that
+    Projects, the CRM access rule and Knowledge answer with.
     """
-    value = (subject or "").strip()
-    if not value:
-        raise HTTPException(status_code=422, detail="A grant subject is required.")
-    if value == "org":
-        return value
-    if value.startswith("group:"):
-        slug = value[len("group:"):].strip()
-        if not slug:
-            raise HTTPException(
-                status_code=422, detail="A group subject must name a group.",
-            )
-        return f"group:{slug.lower()}"
-    if "@" in value:
-        # R10 — stored folded, because every read compares folded.
-        return value.lower()
-    raise HTTPException(
-        status_code=422,
-        detail=(
-            f"Unknown grant subject '{subject}'. "
-            "One of: 'org', 'group:<slug>', or an email address."
-        ),
-    )
+    try:
+        return normalize_grant_subject(subject)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
 
 
 def validate_choice(value: str | None, allowed: tuple[str, ...], what: str) -> None:

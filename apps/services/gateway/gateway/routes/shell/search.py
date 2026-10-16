@@ -3,7 +3,10 @@
 Spec: ``project-docs/specs/navigation_shell.md`` §6.2, §6.3 and ticket NS-4a.
 
 One route, one provider per app that has a search today. Each provider calls
-its app's OWN search function on this request's member. So:
+its app's OWN search function on this request's member. ``PROVIDERS`` is a
+projection of the company retrieval registry (``gateway/retrieval/sources.py``,
+WS-61 KR-1): the source does the call, and the bar keeps only the four keys of
+an item. So:
 
 * **No new data path.** No provider writes SQL, opens a connection or builds a
   visibility predicate. The task search, the email search, the directory and
@@ -16,7 +19,7 @@ its app's OWN search function on this request's member. So:
   and a member without the app gets no group at all. Fence:
   ``tests/unit/test_shell_search.py``, one negative case per provider. The
   CRM router has two more gates, the kill switch and the access rule, and
-  ``_crm`` applies both (WS-53 CRM-X2).
+  the CRM source applies both (WS-53 CRM-X2).
 * **One app at a time.** The providers run one after another, never at once,
   because the pool budget is small (7 + 2 async sessions, Supavisor cap 15).
   Each has a time limit. A provider that fails, refuses or runs out of time is
@@ -33,10 +36,10 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
-from urllib.parse import quote
 
 from acb_auth import UserContext, get_current_user
 from fastapi import APIRouter, Depends, HTTPException
+from gateway.retrieval.sources import REGISTRY
 
 logger = logging.getLogger(__name__)
 
@@ -59,118 +62,31 @@ def _item(kind: str, title: str, hint: str, href: str) -> dict[str, str]:
     return {"kind": kind, "title": (title or "").strip() or "(untitled)", "hint": hint, "href": href}
 
 
-async def _tasks(user: UserContext, q: str) -> list[dict[str, str]]:
-    from gateway.routes.projects.search import search_tasks
-
-    answer = await search_tasks(
-        q=q, limit=PER_APP, exclude_relatives_of=None, include_triage=False, user=user,
-    )
-    return [
-        _item(
-            "task",
-            r.get("title") or "",
-            f"Task · {r.get('project_name') or 'Projects'}",
-            f"/projects?task={quote(str(r['id']))}",
-        )
-        for r in (answer.get("rows") or [])[:PER_APP]
-    ]
+#: The apps of the bar, in the bar's order. Artifacts, WhatsApp and Knowledge
+#: are sources of the registry, and they are not in the bar
+#: (``knowledge_base.md`` §20.3). Knowledge joins the bar with KB-12, not
+#: before (§20.7 KR-3).
+BAR_APPS: tuple[str, ...] = ("tasks", "email", "people", "crm")
 
 
-async def _email(user: UserContext, q: str) -> list[dict[str, str]]:
-    from gateway.routes.email.transport.search import search_messages
+def _projected(key: str) -> Callable[[UserContext, str], Awaitable[list[dict[str, str]]]]:
+    """The bar's provider for one source: its hits, as the bar's four keys.
 
-    # ⚠️ Every parameter, by name. The route declares them with `Query(...)`
-    # defaults, and a direct call that left one out would pass the `Query`
-    # object itself. `test_shell_search.py` fails if the route gains one.
-    answer = await search_messages(
-        q=q, account_id=None, folder="all", label=None, labels=None,
-        uncategorized=False, from_addr=None, to_addr=None,
-        received_after=None, received_before=None, is_read=None,
-        is_starred=None, has_attachments=None, sender_category=None,
-        importance=None, hybrid=False, light=True, page=1, page_size=PER_APP,
-        user=user,
-    )
-    out = []
-    for m in (answer.get("emails") or [])[:PER_APP]:
-        row = m if isinstance(m, dict) else m.model_dump()
-        sender = row.get("from_address") or {}
-        who = sender.get("name") or sender.get("email") or "someone"
-        out.append(_item(
-            "email", row.get("subject") or "(no subject)", f"Email · from {who}",
-            f"/email?email={quote(str(row['id']))}",
-        ))
-    return out
-
-
-async def _people(user: UserContext, q: str) -> list[dict[str, str]]:
-    from gateway.routes.people.directory import list_directory
-
-    answer = await list_directory(
-        user=user, q=q, department=None, team=None, status=None, skill=None,
-        has_capacity=False,
-    )
-    out = []
-    for p in (answer.rows or [])[:PER_APP]:
-        what = p.get("title") or p.get("role") or p.get("department") or "Colleague"
-        out.append(_item(
-            "person", p.get("preferred_name") or p.get("name") or "",
-            f"Person · {what}", f"/people/{quote(str(p['id']))}",
-        ))
-    return out
-
-
-#: Each CRM kind → (its word in the hint, the fields that may follow it, the
-#: list tab, the parameter that opens its record sheet). ``crm_platform.md``
-#: §19.6.
-_CRM_KINDS: dict[str, tuple[str, tuple[str, ...], str, str]] = {
-    "lead": ("Lead", ("organization_name", "email"), "leads", "lead"),
-    "deal": ("Deal", ("organization_name",), "deals", "deal"),
-    "contact": ("Contact", ("email",), "contacts", "contact"),
-    "company": ("Company", ("industry",), "organizations", "organization"),
-}
-
-
-def _crm_title(kind: str, row: dict[str, Any]) -> str:
-    if kind == "lead":
-        return row.get("lead_name") or ""
-    if kind == "contact":
-        return " ".join(str(p) for p in (row.get("first_name"), row.get("last_name")) if p)
-    return row.get("name") or ""
-
-
-async def _crm(user: UserContext, q: str) -> list[dict[str, str]]:
-    """The CRM's records (WS-53 CRM-X2, ``crm_platform.md`` §19.6).
-
-    The CRM router has two gates more than its feature, and the loop has
-    tested the feature already. So this provider applies the other two, in
-    the order of the router: the kill switch, then the access rule. A closed
-    kill switch gives no group and no error, as its 404 tells nothing on the
-    router. The access rule's 403 is an ``HTTPException``, and the loop
-    leaves the group out. ``search_records`` runs only after both, and it
-    writes the SQL, not this provider.
+    ``PER_APP`` is read at call time, so a test that changes it changes the
+    call. The source checks its feature again, which costs nothing.
     """
-    from gateway.routes.crm import access, flags, records
 
-    if not flags.crm_org_allowed(user.organization_id):
-        return []
-    await access.require_crm_access(user)
-    out = []
-    for kind, row in await records.search_records(user, q, PER_APP):
-        noun, fields, tab, param = _CRM_KINDS[kind]
-        extra = next((str(row[f]).strip() for f in fields if str(row.get(f) or "").strip()), "")
-        out.append(_item(
-            kind, _crm_title(kind, row), f"{noun} · {extra}" if extra else noun,
-            f"/crm?tab={tab}&{param}={quote(str(row['id']))}",
-        ))
-    return out
+    async def provider(user: UserContext, q: str) -> list[dict[str, str]]:
+        hits = await REGISTRY[key].find(user, q, PER_APP)
+        return [_item(h.kind, h.title, h.hint, h.href) for h in hits]
+
+    provider.__name__ = f"_{key}"
+    return provider
 
 
 #: app key → (the feature its router demands, the group's name, the provider).
 PROVIDERS: dict[str, tuple[str, str, Callable[[UserContext, str], Awaitable[list[dict[str, str]]]]]] = {
-    "tasks": ("projects", "Tasks", _tasks),
-    "email": ("email", "Email", _email),
-    "people": ("people", "People", _people),
-    "crm": ("crm", "CRM", _crm),
+    key: (REGISTRY[key].feature, REGISTRY[key].label, _projected(key)) for key in BAR_APPS
 }
 
 #: The pane each scope token names (`?scope=` from the bar's "in Email").

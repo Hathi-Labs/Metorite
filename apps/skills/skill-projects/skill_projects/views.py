@@ -30,6 +30,8 @@ import json
 import re
 from typing import Any
 
+from acb_common.paging import paged
+
 from skill_projects.client import GatewayRefusal, data, get, post, uuid_of
 from skill_projects.priority import change_view, level_label
 from skill_projects.reads import (
@@ -773,13 +775,141 @@ def _flag(child: dict[str, Any], blocked_ids: set[str], overdue_ids: set[str]) -
     return "on track"
 
 
-@_annotate(read_only=True, idempotent=True, open_world=False)
-async def status_report(project_id: str = "") -> str:
+#: The most rows of the project table in a status report. A table visual
+#: holds 20 rows (``whatsapp_render.MAX_ROWS``).
+REPORT_TABLE_ROWS = 20
+#: The most blocked tasks a status report lists, in a table of 20 rows.
+REPORT_BLOCKED_ROWS = 20
+
+
+def _status_report_spec(
+    scope_name: str,
+    summary: dict[str, Any],
+    stuck: dict[str, Any],
+    flags: list[tuple[dict[str, Any], str]],
+    counts: dict[str, int],
+    *,
+    load_rows: list[list[Any]],
+    load_note: str,
+    forecast: str,
+) -> dict[str, Any]:
+    """The W2 status report as a ``make_report`` spec (``projects_ai_chat.md``
+    §14.10). Code builds it from the reads of :func:`status_report`, so every
+    number in it is the analytics routes' number, never the model's.
+
+    Member text (a task title, a name) goes only into TABLE cells. Both
+    renderers draw a cell as text, and make_report's markdown-lite check reads
+    model prose, so a title such as "Fix <Button>" or a URL never trips it.
+    The text fields hold code's own words and numbers."""
+    blocked_rows = stuck.get("blocked") or []
+    kpis = [
+        {"label": "Open tasks", "value": summary.get("tasks") or 0},
+        {"label": "Overdue tasks", "value": summary.get("overdue") or 0},
+        {"label": "Blocked by open work", "value": stuck.get("blocked_total") or 0},
+        {"label": "Blocked projects", "value": counts["blocked"]},
+        {"label": "At risk projects", "value": counts["at risk"]},
+        {"label": "On track projects", "value": counts["on track"]},
+    ]
+    sections: list[dict[str, Any]] = []
+    health = {
+        "heading": "Project health",
+        "text": (
+            f"{counts['blocked']} blocked, {counts['at risk']} at risk and "
+            f"{counts['on track']} on track. A project is blocked when a task in it "
+            "has an open blocking link, and at risk when it has overdue work."
+        ),
+    }
+    shown = [(f.capitalize(), counts[f], tone)
+             for f, tone in zip(FLAG_ORDER, ("red", "amber", "green"), strict=True)
+             if counts[f]]
+    if shown:
+        health["visual"] = {
+            "kind": "chart", "type": "donut", "title": "Projects by flag",
+            "labels": [s[0] for s in shown], "values": [s[1] for s in shown],
+            "tones": [s[2] for s in shown],
+        }
+    sections.append(health)
+    if flags:
+        ordered = sorted(flags, key=lambda cf: FLAG_ORDER.index(cf[1]))
+        page = paged(ordered, 0, REPORT_TABLE_ROWS, default=REPORT_TABLE_ROWS)
+        table = {
+            "heading": "Projects",
+            "visual": {
+                "kind": "table", "title": "Each project and its flag",
+                "columns": ["Project", "Flag", "Open", "Overdue"],
+                "rows": [
+                    [_plain(c.get("name")), flag, c.get("tasks") or 0, c.get("overdue") or 0]
+                    for c, flag in page.items
+                ],
+            },
+        }
+        if page.total > len(page.items):
+            table["text"] = (
+                f"The table shows {len(page.items)} of {page.total} projects, "
+                "the blocked and at-risk ones first."
+            )
+        sections.append(table)
+    if blocked_rows:
+        page = paged(blocked_rows, 0, REPORT_BLOCKED_ROWS, default=REPORT_BLOCKED_ROWS)
+        blocked: dict[str, Any] = {
+            "heading": "Blocked work",
+            "visual": {
+                "kind": "table", "title": "Tasks blocked by open work",
+                "columns": ["Task", "Title", "Due"],
+                "rows": [
+                    [f"#{r.get('task_number')}", _plain(r.get("title")), _day(r.get("due_at"))]
+                    for r in page.items
+                ],
+            },
+        }
+        total = stuck.get("blocked_total") or page.total
+        if total > len(page.items):
+            blocked["text"] = f"The first {len(page.items)} of {total} blocked tasks."
+        sections.append(blocked)
+    if load_rows:
+        sections.append({
+            "heading": "Load",
+            "text": load_note,
+            "visual": {
+                "kind": "table", "title": "Open work by person",
+                "columns": ["Person", "Open", "Overdue"], "rows": load_rows,
+            },
+        })
+    if forecast:
+        sections.append({"heading": "Forecast", "text": forecast})
+    return {
+        "title": f"Status report · {scope_name[:100]}",
+        "summary": (
+            f"**{counts['blocked']} blocked**, {counts['at risk']} at risk and "
+            f"{counts['on track']} on track. {summary.get('overdue') or 0} of "
+            f"{summary.get('tasks') or 0} open tasks are overdue."
+        ),
+        "kpis": kpis,
+        "sections": sections,
+        "sources": [
+            "Projects analytics: the summary, stuck, load and outlook reads",
+        ],
+    }
+
+
+#: The line of a status report when the run does not hold ``make_report``:
+#: an admin turned the documents family off, or the run bound no tools.
+REPORTS_OFF = "Reports are turned off for this assistant. Here is the summary in text."
+
+
+# read_only=False, idempotent=False (review of #1064): with make_report=true
+# it writes two files and draws a card, so an edited turn must not run it
+# again unseen (``chat_supersede.is_side_effect_tool``). Its manifest class
+# stays A: the class names the Projects routes a tool reaches, and it reaches
+# only reads. ``test_projects_chat_coverage.CHAT_FILE_WRITERS`` names it.
+@_annotate(read_only=False, idempotent=False, open_world=False)
+async def status_report(project_id: str = "", make_report: bool = False) -> str:
     """W2: a status report for a node or the portfolio. Every child project
     gets one flag from the server's reads: blocked (a task with an open
     blocking link), at risk (overdue work, or named by the stuck read), on
-    track. Draws a dashboard card and returns the report as Markdown, which
-    you then save with write_artifact so the member can open it. The
+    track. Returns the report as Markdown and draws a dashboard card. For a
+    report the member keeps, pass make_report=true: code then makes the
+    report card and its PDF from these reads, with no number from you. The
     numbers are the analytics routes'; nothing here counts a list."""
     params: dict[str, Any] = {"include_subtree": True}
     scope_name = "the portfolio"
@@ -839,35 +969,75 @@ async def status_report(project_id: str = "") -> str:
                 f"- #{r.get('task_number')} {_plain(r.get('title'))} (due {_day(r.get('due_at'))})"
             )
     hidden = hidden_people_line(load, "view")
+    load_rows: list[list[Any]] = []
+    load_note = ""
     if hidden:
         # WS-27bn R5a. The load rows are only the people this reader may
         # report on. "Most" over those rows is false, so list them and say
         # how many people the view hides.
         shown = [p for p in people if int(p.get("open_tasks") or 0)][:10]
-        md += ["", "## Load", ""]
-        md += [
-            f"- {_plain(p.get('assignee') or 'unassigned')}: "
-            f"{p.get('open_tasks')} open, {p.get('overdue', 0)} overdue."
+        load_rows = [
+            [_plain(p.get("assignee") or "unassigned"), p.get("open_tasks"), p.get("overdue", 0)]
             for p in shown
         ]
-        md.append(f"{hidden}.")
+        load_note = f"{hidden}."
+        md += ["", "## Load", ""]
+        md += [f"- {a}: {o} open, {d} overdue." for a, o, d in load_rows]
+        md.append(load_note)
     elif top and int(top.get("open_tasks") or 0):
+        load_rows = [[_plain(top.get("assignee") or "unassigned"),
+                      top.get("open_tasks"), top.get("overdue", 0)]]
+        load_note = "The person with the most open work."
         md += [
             "",
             "## Load",
             "",
-            f"Most open work: {_plain(top.get('assignee') or 'unassigned')} with "
-            f"{top.get('open_tasks')} open, {top.get('overdue', 0)} overdue.",
+            f"Most open work: {load_rows[0][0]} with "
+            f"{load_rows[0][1]} open, {load_rows[0][2]} overdue.",
         ]
     plan = outlook.get("plan") or {}
+    forecast = ""
     if plan.get("planned_finish"):
-        md += [
-            "",
-            "## Forecast",
-            "",
+        forecast = (
             f"Planned finish {_day(plan.get('planned_finish'))} over {plan.get('dated', 0)} dated "
-            f"of {plan.get('tasks', 0)} tasks; slip {plan.get('slip_days', 0)} days.",
-        ]
+            f"of {plan.get('tasks', 0)} tasks; slip {plan.get('slip_days', 0)} days."
+        )
+        md += ["", "## Forecast", "", forecast]
+    spec = _status_report_spec(
+        scope_name, summary, stuck, flags, counts,
+        load_rows=load_rows, load_note=load_note, forecast=forecast,
+    )
+    text_lines = [legend(), *md]
+    # Access is an intersection (§14.10): the run must hold make_report itself,
+    # so an admin who turned the documents family off gets no report file and
+    # no report card, and the tool never offers one.
+    from acb_skills.write_artifact import run_holds_tool
+
+    holds_report = run_holds_tool("make_report")
+    if make_report and not holds_report:
+        # Final review P2: the member still gets the plain status report and
+        # its dashboard card below.
+        text_lines.append(REPORTS_OFF)
+    elif make_report:
+        # §14.10 (owner, 2026-10-16): code makes the report from these reads.
+        # The model copies no number, so it can drop or change none.
+        from acb_skills.reports import make_report as _make_report
+        from acb_skills.whatsapp_ui import current_run
+
+        made = await _make_report(spec)
+        if made.get("ok"):
+            text_lines.append(f"make_report: {json.dumps(made, ensure_ascii=False)}")
+            shown = ("The member gets this report as a PDF after your text."
+                     if current_run() is not None
+                     else "The report card shows this report.")
+            text_lines.append(
+                f"{shown} Say the flags in one or two lines. Then offer to comment "
+                "on each at-risk task (one class B batch)."
+            )
+            return "\n".join(text_lines)
+        text_lines.append(
+            f"make_report failed: {made.get('error')}. Answer from the text above."
+        )
     await _emit(
         _template(
             "statDashboard",
@@ -882,11 +1052,14 @@ async def status_report(project_id: str = "") -> str:
             },
         )
     )
-    text_lines = [legend(), *md]
-    text_lines.append(
-        "Save this as a Markdown artifact with write_artifact, then offer to comment on "
-        "each at-risk task (one class B batch)."
-    )
+    if not make_report and holds_report:
+        text_lines.append(
+            "For a report the member can keep, call status_report again with "
+            "make_report=true. Never save a report as a .md file. Then offer to "
+            "comment on each at-risk task (one class B batch)."
+        )
+    elif not holds_report:
+        text_lines.append("Offer to comment on each at-risk task (one class B batch).")
     return "\n".join(text_lines)
 
 

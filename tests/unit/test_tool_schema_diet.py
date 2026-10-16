@@ -130,6 +130,10 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     # H-315 (2026-10-15): a deck or a report as a PDF, from one spec object.
     # No member, org or path argument: the run binds them (R5).
     'make_document': {'params': {'spec': 'object'}, 'required': ['spec']},
+    # projects_ai_chat.md §14.10 (2026-10-16): a report as a chat card and a
+    # PDF, from one spec object. The same shape as make_document. A family
+    # tool, so the core floor and its total do not move.
+    'make_report': {'params': {'spec': 'object'}, 'required': ['spec']},
     # MT-0c-1 (D16): query_history no longer takes SQL. The contract change is
     # deliberate — a model-composed `query` string was a raw-SQL tool, which
     # saas_multitenancy.md §0.9.3 makes a condition on the pooled decision. All
@@ -221,9 +225,12 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
     "run_diagnostics": 240,
     "run_script": 270,
     "save_note": 290,
-    "share_artifact": 230,
+    # 2026-10-16 (owner report: a pasted link opened raw Markdown). Both
+    # tools now say "name the file, and paste no link". share_artifact
+    # measured 196 (was 201) and write_artifact 533 (was 575).
+    "share_artifact": 210,
     "web_search": 280,
-    "write_artifact": 600,
+    "write_artifact": 550,
 }
 
 #: The whole floor. Nudging one tool up must be paid for elsewhere.

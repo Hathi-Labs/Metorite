@@ -10,7 +10,9 @@ The tool:
 4. Emits an AG-UI ``CUSTOM`` event ``artifact_created`` / ``artifact_updated``
    so the Control Plane sidebar updates in real time.
 5. PATCHes the gateway to register the workspace root on the session.
-6. Returns a ``download_url`` the agent SHOULD embed in its text response.
+6. Returns a ``download_url``. The chat already shows a card for the file,
+   so the agent names the file in words and pastes no link (owner report,
+   2026-10-16: a pasted link opened the raw Markdown).
 
 In a shared agent's tenant dir (store key ``o:<org>``), every member of the
 organization opens the same dir. So a document of one chat goes to that
@@ -21,7 +23,7 @@ serve it only to a session of that thread (H-227, D12).
 Usage by agents:
     result = await write_artifact("summary.md", "# Sales Summary\\n...")
     # File lands in outputs/summary.md (auto-prefixed)
-    # Agent outputs: [📄 Download summary.md]({download_url})
+    # The chat shows its card. The agent says: "The summary is in summary.md."
 """
 from __future__ import annotations
 
@@ -72,6 +74,21 @@ def artifact_context() -> Mapping[str, Any]:
     """
     ctx = _RUN_ARTIFACT_CONTEXT.get()
     return _NO_RUN if ctx is None else ctx
+
+
+def run_holds_tool(name: str) -> bool:
+    """True when the run on this frame holds the platform tool *name*.
+
+    The ONE answer for a tool that reaches another tool in-process, for
+    example ``status_report(make_report=true)``. The executor binds
+    ``run_tools``, the names that ``_tool_injection._inject_agent_tools``
+    left after the scope, the admin's skill toggles, D85, H-236, the floor
+    opt-out and WhatsApp. So access stays an intersection. It FAILS CLOSED: a
+    frame with no run, or a run that bound no ``run_tools``, holds nothing
+    (``projects_ai_chat.md`` §14.10).
+    """
+    tools = artifact_context().get("run_tools")
+    return isinstance(tools, (frozenset, set, tuple, list)) and name in tools
 
 
 def bind_artifact_context(**values: Any) -> None:
@@ -691,11 +708,12 @@ async def _deliver(
     }
 
 
-#: Told to a delegated run, so it hands the link on and does not look for
-#: the file in its own working dir.
+#: Told to a delegated run, so it does not look for the file in its own
+#: working dir. The calling chat already shows the file's card, so the run
+#: names the file and passes on no link (owner report, 2026-10-16).
 _DELIVERED_NOTE = (
     "This file is in the chat that called you, not in your own workspace. "
-    "Give that chat the download_url."
+    "That chat shows its card. Name the file, and paste no link."
 )
 
 
@@ -759,8 +777,8 @@ async def write_artifact(
     In a chat of a shared agent, ``outputs/`` and ``inputs/`` are that chat's
     own folders, so the returned ``path`` shows where the file went.
 
-    After calling this, **embed the returned ``download_url`` in your text
-    response** so the operator can click to download.
+    The chat shows a card that opens and downloads the file. Name the file in
+    your reply, and do not paste ``download_url``.
 
     Args:
         path:     Relative file path, e.g. ``"summary.md"`` or
@@ -780,10 +798,8 @@ async def write_artifact(
     Returns:
         ``{"path": str, "size": int, "sha256": str, "download_url": str}``
 
-        ``path``/``download_url`` reflect the file *actually* written (which may
-        be a uniquified name if a file already existed and ``overwrite`` is off).
-        *download_url* is a relative URL suitable for a clickable markdown
-        link, e.g. ``/api/agent/workspace/{session}/file?path=outputs/x.md``.
+        ``path`` is the file *actually* written (which may be a uniquified
+        name if a file already existed and ``overwrite`` is off).
     """
     import asyncio
 
@@ -1053,8 +1069,8 @@ async def share_artifact(path: str) -> dict:
     """Show a file you ALREADY created as a download and preview card in the chat.
 
     Use it for a file you made with your own tools (shell, editor, a script)
-    instead of ``write_artifact``. Do not re-create or re-read the file. Never
-    build a URL: the returned ``download_url`` is the link.
+    instead of ``write_artifact``. Do not re-create or re-read the file. Name
+    it in your reply, and paste no link.
 
     Args:
         path: A file or a directory (every file inside it) in your workspace,
@@ -1221,6 +1237,7 @@ async def _notify(
     gateway_url: str,
     gateway_token: str,
     mirror_task: Any = None,
+    announce: bool = True,
 ) -> None:
     """Background task: push CUSTOM SSE event into the active run queue AND
     register workspace on the gateway.  Non-fatal — all errors are swallowed.
@@ -1229,6 +1246,12 @@ async def _notify(
     it, briefly, so the card carries the registry id (WS-60 AM-1). With no
     task, or a slow store, the card goes out with ``artifact_id`` ``None`` and
     opens through the session and the path as before.
+
+    ``announce=False`` sends the same event with ``"quiet": true``. The chat
+    then draws no FILE CARD for it, and its Files tree still lists the file
+    (``lib/artifactCards.ts``). A report file has its own ``report`` card
+    (``reports.make_report``), so its files get no second card
+    (``projects_ai_chat.md`` §14.10). Code passes it, never a tool argument.
     """
     artifact_id = None
     if mirror_task is not None and _registry_on():
@@ -1255,6 +1278,8 @@ async def _notify(
                 "mime_type": artifact.get("mime_type"),
                 "artifact_id": artifact.get("artifact_id"),
             }
+            if not announce:
+                _artifact_data["quiet"] = True
             await queue.put({
                 "type": "CUSTOM",
                 "name": "artifact_created",
@@ -1292,6 +1317,7 @@ async def _notify(
                     "sha256": artifact.get("sha256"),
                     "size": artifact.get("size"),
                     "artifact_id": artifact.get("artifact_id"),
+                    **({} if announce else {"quiet": True}),
                 },
                 headers=headers,
             )
@@ -1318,7 +1344,7 @@ GENUI_TEMPLATES: frozenset[str] = frozenset({
     "weatherCard", "statDashboard", "barChart", "sparkTrend", "comparison",
     "progressTracker", "recipeCard", "flightStatus", "trainStatus", "formCard",
     "optionPicker", "timeline", "taskBoard", "dataGrid", "reportCard",
-    "planCard", "chart",
+    "planCard", "chart", "report",
 })
 
 #: The renderer drops a node deeper than this (``Node``'s depth guard).
@@ -1362,6 +1388,10 @@ def genui_refusal(spec: dict) -> str | None:
                     f"{where}: the renderer has no {name!r} template. Use one "
                     f"of: {', '.join(sorted(GENUI_TEMPLATES))}."
                 )
+            if name == "report" and isinstance(props, dict) and props.get("data") is not None:
+                found = genui_report_refusal(props["data"], f"{where}.props.data")
+                if found:
+                    return found
         kids = node.get("children")
         if isinstance(kids, list):
             for i, kid in enumerate(kids):
@@ -1373,6 +1403,128 @@ def genui_refusal(spec: dict) -> str | None:
     if not isinstance(root, dict):
         return "ui: the root must be a JSON object (a component node)."
     return walk(root, "ui", 0)
+
+
+#: The caps of a ``report`` card. Where ``make_document`` has a cap, this is
+#: it (``documents.py``). ``REPORT_LIMITS`` in ``lib/report.ts`` draws at most
+#: the same. Fence: ``test_genui_report_refusal.py``.
+GENUI_REPORT_MAX_KPIS = 8
+GENUI_REPORT_MAX_SOURCES = 30
+GENUI_REPORT_MAX_TABLE_COLUMNS = 6
+GENUI_REPORT_MAX_TABLE_ROWS = 20
+#: The whole report as JSON, in characters. A card is not a document store.
+GENUI_REPORT_MAX_CHARS = 200_000
+
+
+def _report_too_long(obj: dict, at: str, caps: tuple[tuple[str, int], ...]) -> str | None:
+    """The first text field of *obj* over its cap, as a refusal."""
+    for key, most in caps:
+        value = obj.get(key)
+        if isinstance(value, str) and len(value) > most:
+            return f'{at}: "{key}" is longer than {most} characters. Shorten it.'
+    return None
+
+
+def _report_over(value: object, most: int) -> bool:
+    """True for a list over *most*, or for a value that is not a list."""
+    return value is not None and (not isinstance(value, list) or len(value) > most)
+
+
+def _report_section_refusal(section: object, at: str) -> str | None:
+    """Why one section of a report is refused, or ``None``."""
+    from acb_skills import documents as doc
+
+    if not isinstance(section, dict):
+        return f"{at}: a section is an object."
+    found = _report_too_long(section, at, (("heading", doc.TITLE_MAX), ("text", doc.TEXT_MAX * 2)))
+    if found:
+        return found
+    if _report_over(section.get("bullets"), doc.MAX_BULLETS * 2):
+        return f'{at}: "bullets" is a list of at most {doc.MAX_BULLETS * 2} lines.'
+    visual = section.get("visual")
+    if visual is None:
+        return None
+    kind = visual.get("kind") if isinstance(visual, dict) else None
+    if kind not in doc.VISUAL_KINDS:
+        return f'{at}.visual: "kind" must be one of: {", ".join(doc.VISUAL_KINDS)}.'
+    return _report_visual_refusal(visual, kind, at)
+
+
+def _report_visual_refusal(visual: dict, kind: str, at: str) -> str | None:
+    """Why one visual is over a cap that the view draws to, or ``None``.
+
+    The caps are the WhatsApp cards' (``whatsapp_cards.py``), which the PDF
+    path already enforces, and ``REPORT_LIMITS`` in ``lib/report.ts`` holds
+    the same numbers. A cap the view has and this does not refuse is a cut
+    the member never hears about (review of #1065).
+    """
+    from acb_skills import whatsapp_cards as cards
+
+    lists = {
+        "table": (("columns", GENUI_REPORT_MAX_TABLE_COLUMNS, "columns"), ("rows", GENUI_REPORT_MAX_TABLE_ROWS, "rows")),
+        "stats": (("tiles", cards.MAX_TILES, "tiles"),),
+        "board": (("columns", cards.MAX_BOARD_COLUMNS, "columns"),),
+        "timeline": (("events", cards.MAX_EVENTS, "events"),),
+        "agenda": (("items", cards.MAX_AGENDA_ITEMS, "items"),),
+    }
+    for key, most, words in lists.get(kind, ()):
+        if _report_over(visual.get(key), most):
+            return f"{at}.visual: a {kind} visual has at most {most} {words}."
+    if kind == "board":
+        for i, column in enumerate(visual.get("columns") or []):
+            if isinstance(column, dict) and _report_over(column.get("cards"), cards.MAX_CARDS):
+                return f"{at}.visual.columns[{i}]: a board column has at most {cards.MAX_CARDS} cards."
+    if kind == "table":
+        for i, row in enumerate(visual.get("rows") or []):
+            cells = row.get("cells") if isinstance(row, dict) else row
+            if isinstance(cells, list) and len(cells) > GENUI_REPORT_MAX_TABLE_COLUMNS:
+                return f"{at}.visual.rows[{i}]: a row has at most {GENUI_REPORT_MAX_TABLE_COLUMNS} cells."
+    return None
+
+
+def genui_report_refusal(data: object, where: str = "data") -> str | None:
+    """Why a ``report`` card is too big or the wrong shape, or ``None``.
+
+    The renderer draws any report it is given, and it caps each list. This
+    refuses what is over a cap, so the model learns the cap instead of a
+    silent cut. ``make_report`` can call it on the same data.
+    """
+    import json
+
+    from acb_skills import documents as doc
+
+    if not isinstance(data, dict):
+        return f"{where}: a report is a JSON object."
+    try:
+        size = len(json.dumps(data, ensure_ascii=False))
+    except (TypeError, ValueError):
+        return f"{where}: a report holds text and numbers only."
+    if size > GENUI_REPORT_MAX_CHARS:
+        return (f"{where}: the report is {size} characters, and the most is "
+                f"{GENUI_REPORT_MAX_CHARS}. Shorten it.")
+    title = data.get("title")
+    if not isinstance(title, str) or not title.strip():
+        return f'{where}: a report needs a "title".'
+    found = _report_too_long(data, where, (
+        ("title", doc.TITLE_MAX), ("subtitle", doc.SUBTITLE_MAX), ("for", doc.SUBTITLE_MAX),
+        ("date", 40), ("period", doc.SUBTITLE_MAX), ("summary", doc.TEXT_MAX * 2),
+    ))
+    if found:
+        return found
+    if _report_over(data.get("kpis"), GENUI_REPORT_MAX_KPIS):
+        return f'{where}: "kpis" is a list of at most {GENUI_REPORT_MAX_KPIS} tiles.'
+    if _report_over(data.get("sources"), GENUI_REPORT_MAX_SOURCES):
+        return f'{where}: "sources" is a list of at most {GENUI_REPORT_MAX_SOURCES} lines.'
+    sections = data.get("sections")
+    if not isinstance(sections, list) or not 1 <= len(sections) <= doc.MAX_SECTIONS:
+        return f'{where}: "sections" is a list of 1 to {doc.MAX_SECTIONS} sections.'
+    for i, section in enumerate(sections):
+        found = _report_section_refusal(section, f"{where}.sections[{i}]")
+        if found:
+            return found
+    if sum(1 for s in sections if s.get("visual") is not None) > doc.MAX_VISUALS:
+        return f"{where}: a report holds at most {doc.MAX_VISUALS} visuals."
+    return None
 
 
 #: The data shape of each template, the copy that the model reads. Each value
@@ -1400,6 +1552,7 @@ GENUI_TEMPLATE_SHAPES: Mapping[str, str] = MappingProxyType({
     "reportCard": "{ title, period?, reportId?, stats?:[{label,value,unit?,icon?}], tables?:[{ title, columns:[string], rows:[{cells:[string|number]}] }] }",
     "planCard": "{ title?, description?, submitLabel?, project:{ name, parent?, description? }, tasks:[{ key, title, owner, effort_mins, start?, due, after?:[key], important?:bool, leveraged?:bool, impact?, urgency?, effort?, priority?, fit?, hours?, marks?:[string], warnings?:[string] }], capacity?, warnings?:[string], risks?:[string] }",
     "chart": "{ type('bar'|'line'|'area'|'donut'|'progress'|'scatter'|'heatmap'|'radar'|'box'|'waterfall'|'funnel'|'calendar'|'gantt'), title?, subtitle?, unit?, labels?:[string], values?:[number], series?:[{name,values}], stacked?:bool, tones?:[status], totals?:[number], center?, groups?:[{name,points|values}], x_name?, y_name?, x?, y?, axes?, max?, steps?:[{label,value}|{label,total:true}], days?:[[date,n]], rows?:[{label,start,end,progress,status}], today? }",
+    "report": "{ kind?('metorite.report'), path?, pdf?, title, subtitle?, for?, date?, period?, summary?(bold, italic, lists), kpis?:[{label,value,unit?,delta?,good?('up'|'down')}](8), sections:[{ heading?, text?, bullets?:[string], visual?:{ kind('chart'|'stats'|'table'|'board'|'timeline'|'gantt'|'agenda'), title?, ... } }](1-30), sources?:[string] }",
 })
 
 #: The templates that collect the member's input. Each one pairs with
@@ -1604,7 +1757,7 @@ async def emit_generative_ui(ui: str) -> dict:
        You give the data, and the design is fixed. Names: weatherCard,
        statDashboard, barChart, sparkTrend, comparison, progressTracker,
        recipeCard, flightStatus, trainStatus, formCard, optionPicker,
-       timeline, taskBoard, dataGrid, reportCard, planCard, chart. To get
+       timeline, taskBoard, dataGrid, reportCard, planCard, chart, report. To get
        the data shape of a template, call with its name and no ``data``. Nothing is
        drawn. An empty or unknown name returns the shape of each template.
 

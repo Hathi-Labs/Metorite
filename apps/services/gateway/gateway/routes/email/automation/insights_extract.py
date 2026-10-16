@@ -17,7 +17,7 @@ written.
   The prompt frames that text, and the checks read the same text, so the two
   cannot drift.
 * :func:`build_prompt` lists the closed types of §13.4, and puts the source
-  between two marker lines that hold a random token.
+  in one block of the frame of ``acb_skills.untrusted`` (WS-17 EM-G11d).
 * :func:`check_answer` runs the checks of §13.5 item 5, and sets the
   confidence of §13.5 item 7. It returns checked ``Fact`` rows and a count of
   the drops for each check, for the log line of §13.5 item 10.
@@ -33,7 +33,6 @@ Fences: ``tests/unit/test_email_insights_extract.py``, and the eval set
 from __future__ import annotations
 
 import re
-import secrets
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date
@@ -41,6 +40,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, NamedTuple
 
 from acb_skills.attachment_text import SUPPORTED_SUFFIXES
+from acb_skills.untrusted import UntrustedFrame, neutralise, neutralised_pattern
 from gateway.routes.email.automation.insights_store import (
     CAPS,
     DIRECTIONS,
@@ -181,11 +181,13 @@ def build_prompt(
 ) -> list[dict[str, str]]:
     """The messages of one extraction call.
 
-    The source sits between two marker lines that hold ``token``, a new
-    random value for each call. The framed text loses each copy of the token
-    first, so a mail that holds a closing marker cannot end the block early.
-    The checks read ``source.text``, never the framed copy."""
-    token = token or secrets.token_hex(8)
+    The source sits in one block of the ONE frame of
+    ``acb_skills.untrusted`` (WS-17 EM-G11d), whose token is ``token`` or a
+    new random value for each call. The frame removes each copy of the token
+    and each marker shape from the text first, so a mail that holds a
+    closing marker cannot end the block early. The checks read
+    ``source.text``, never the framed copy."""
+    frame = UntrustedFrame.new(token)
     lines = [
         f"- {name}: {_TYPE_NOTES.get(name, '')} Keys: "
         f"{', '.join(k for k in _PROMPT_KEYS if k in fields)}."
@@ -193,8 +195,7 @@ def build_prompt(
     ]
     system = _RULES.format(domains=" and ".join(domains), max_facts=MAX_FACTS,
                            types="\n".join(lines))
-    data = source.text.replace(token, "")
-    user = f"<<<SOURCE {token}>>>\n{data}\n<<<END SOURCE {token}>>>"
+    user = frame.wrap("SOURCE", source.text)
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
@@ -614,6 +615,7 @@ def _count_field_drops(item: dict[str, Any], fields: frozenset[str], drops: Coun
 
 def _check_fact(
     item: Any, source: Source, folded: str, domains: tuple[str, ...], drops: Counter[str],
+    framed: str = "",
 ) -> Fact | None:
     if not isinstance(item, dict):
         drops["bad_fact"] += 1
@@ -629,7 +631,17 @@ def _check_fact(
     if quote is None:
         drops["bad_quote"] += 1
         return None
+    # EM-G11d: the model read the framed copy, so a quote that spans an
+    # escaped "#" line or a tag holds the neutralised form. When the folded
+    # framed copy holds it (*framed*), the fact keeps the matching span of the
+    # SOURCE, never the neutralised form, so a quote is always a span of the
+    # source (D-EM-41, round 2).
     hits = _occurrences(folded, quote)
+    if not hits and framed and _occurrences(framed, quote):
+        span = neutralised_pattern(quote).search(folded)
+        if span is not None:
+            quote = span.group(0)
+            hits = _occurrences(folded, quote)
     if not hits:
         drops["quote_not_in_source"] += 1
         return None
@@ -672,8 +684,12 @@ def check_answer(
     if len(raw) > MAX_FACTS:
         result.drops["over_cap"] += len(raw) - MAX_FACTS
     folded = fold(source.text)
+    # The text that the model read: the frame neutralises the source
+    # (``acb_skills.untrusted``), with no token to remove here.
+    framed = fold(neutralise(source.text, ""))
     for item in raw[:MAX_FACTS]:
-        fact = _check_fact(item, source, folded, domains, result.drops)
+        fact = _check_fact(item, source, folded, domains, result.drops,
+                           framed if framed != folded else "")
         if fact is not None:
             result.facts.append(fact)
     return result

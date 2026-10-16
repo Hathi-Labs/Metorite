@@ -17,7 +17,7 @@ import { TYPE } from "@/lib/typeScale";
 import { ChartSpecError, chartOption } from "@/lib/charts/kinds.mjs";
 
 type Spec = Record<string, unknown>;
-type Built = { option: unknown; height: number } | { error: string };
+type Built = { option: unknown; height: number; fits: boolean } | { error: string };
 
 /** The font the page uses: next/font names Geist with its own family. */
 function pageFont(): string | undefined {
@@ -43,13 +43,54 @@ export function withHues(spec: Spec): Spec {
   return out;
 }
 
-export function buildChart(spec: Spec, width: number, mode: "dark" | "light", font?: string): Built {
+/**
+ * The most the web chat scales the chart language's 1080-unit drawing. The
+ * engine sizes its type for a 1080-pixel image, so a scale that follows a
+ * 768-pixel chat column drew axis labels near 17 px and a 28 px title,
+ * twice the text beside them (report visual review, 2026-10-16). Past
+ * 1080 x WEB_MAX_SCALE pixels the drawing grows WIDER, at the same type
+ * size: axis labels near 11 px, a legend near 12 px. A narrower box still
+ * scales down, as before.
+ */
+export const WEB_MAX_SCALE = 0.45;
+
+/** The scale of a chart drawn `width` pixels wide in the web chat. */
+export function webScale(width: number): number {
+  return Math.min(width / 1080, WEB_MAX_SCALE);
+}
+
+/**
+ * `maxHeight` caps a chart inside a card. The ENGINE applies it
+ * (`chartOption`): a chart that lays out in its box draws at the capped
+ * height, with every graphic placed from it. A chart that grows by its rows
+ * (`fits: false`) keeps its height, and its box scrolls. Nothing is cut, and
+ * no caption leaves its row.
+ */
+export function buildChart(spec: Spec, width: number, mode: "dark" | "light", font?: string, maxHeight?: number): Built {
   try {
-    const { option, height } = chartOption(withHues(spec), { width, mode, font, footer: false, animate: true, interactive: true });
-    return { option, height };
+    const { option, height, fits } = chartOption(withHues(spec), {
+      width, scale: webScale(width), mode, font, footer: false, animate: true, interactive: true, maxHeight,
+    });
+    return { option, height, fits };
   } catch (err) {
     return { error: err instanceof ChartSpecError ? err.message : "This chart could not be drawn." };
   }
+}
+
+/**
+ * The keyboard half of a chart box that scrolls (re-review of #1065). Safari
+ * puts no scrolling box in the Tab order by itself, and a macOS or iOS
+ * scrollbar hides until it scrolls. So a box that scrolls takes the
+ * MarkdownBody table's pattern: a Tab stop, a region, and a label that says
+ * it scrolls. Null for a box that does not scroll: no idle Tab stop.
+ */
+export function chartScrollProps(
+  fits: boolean | null,
+  maxHeight: number | undefined,
+  title: string,
+): { tabIndex: 0; role: "region"; "aria-label": string } | null {
+  if (!maxHeight || fits !== false) return null;
+  return { tabIndex: 0, role: "region", "aria-label": `${title.trim() || "Chart"}. Scroll for more rows.` };
 }
 
 /**
@@ -57,7 +98,13 @@ export function buildChart(spec: Spec, width: number, mode: "dark" | "light", fo
  * the card's header (`ChartCard` in `genUITemplates.tsx`), and a second
  * border there drew a card in a card.
  */
-export default function LiveChart({ spec, bare = false }: { spec: Spec; bare?: boolean }) {
+export default function LiveChart({ spec, bare = false, maxHeight, label }: {
+  spec: Spec;
+  bare?: boolean;
+  maxHeight?: number;
+  /** The chart's name for a screen reader, when its spec has no title. */
+  label?: string;
+}) {
   const box = useRef<HTMLDivElement>(null);
   const mode = useMode();
   const [width, setWidth] = useState(0);
@@ -75,8 +122,8 @@ export default function LiveChart({ spec, bare = false }: { spec: Spec; bare?: b
   // identity redrew the chart from zero on every token (WAC-10g review).
   const specKey = JSON.stringify(spec);
   const built = useMemo(
-    () => (width > 0 ? buildChart(JSON.parse(specKey) as Spec, width, mode, pageFont()) : null),
-    [specKey, width, mode],
+    () => (width > 0 ? buildChart(JSON.parse(specKey) as Spec, width, mode, pageFont(), maxHeight) : null),
+    [specKey, width, mode, maxHeight],
   );
 
   useEffect(() => {
@@ -96,13 +143,21 @@ export default function LiveChart({ spec, bare = false }: { spec: Spec; bare?: b
     };
   }, [built, width]);
 
+  // Under a card's cap a chart that grows by its rows keeps its height, so
+  // the box scrolls it. A chart that fits is no taller than the cap anyway.
+  const scroll = maxHeight ? { maxHeight, overflowY: "auto" as const } : {};
+  const fits = built && !("error" in built) ? built.fits : null;
+  const scrollProps = chartScrollProps(fits, maxHeight, typeof spec.title === "string" && spec.title ? spec.title : (label ?? ""));
   return (
+    <>
     <div
       ref={box}
+      data-chart-max-height={maxHeight}
+      {...(scrollProps ?? {})}
       style={
         bare
-          ? { width: "100%", overflow: "hidden" }
-          : { width: "100%", borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden", background: "var(--card)" }
+          ? { width: "100%", overflow: "hidden", ...scroll }
+          : { width: "100%", borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden", background: "var(--card)", ...scroll }
       }
     >
       {built && "error" in built ? (
@@ -110,8 +165,15 @@ export default function LiveChart({ spec, bare = false }: { spec: Spec; bare?: b
           {built.error}
         </div>
       ) : (
-        <div style={{ width: "100%", height: built ? built.height : 220 }} />
+        <div style={{ width: "100%", height: built ? built.height : Math.min(220, maxHeight ?? 220) }} />
       )}
     </div>
+    {/* A hidden scrollbar says nothing, so the words say it. */}
+    {scrollProps && (
+      <p data-chart-scroll-hint="" aria-hidden style={{ marginTop: 4, fontSize: TYPE.caption, color: "var(--muted-foreground)" }}>
+        Scroll the chart for more rows.
+      </p>
+    )}
+    </>
   );
 }

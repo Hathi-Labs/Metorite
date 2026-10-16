@@ -35,6 +35,7 @@ import ArtifactViewerModal from "@/components/ArtifactViewerModal";
 import SidePanelEditor from "@/components/SidePanelEditor";
 import { openDoc } from "@/lib/sidePanelStore";
 import { autoOpenArtifact, syncPanelToSession } from "@/lib/autoOpenArtifact";
+import { mergeFileEntry } from "@/lib/shell/chatHistory";
 import FileUploadButton from "@/components/FileUploadButton";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useMobileDrawer } from "@/components/AppShell";
@@ -1309,22 +1310,13 @@ function ChatPageInner() {
                   setAskInput(undefined);
                 }}
                 onArtifact={(entry: ArtifactEntry) => {
-                  const name = entry.path.split("/").pop() ?? entry.path;
-                  setArtifactUpdates((prev) => {
-                    // Merge by path (artifact_created -> artifact_updated for the
-                    // same file is one entry, not two) and keep a prior size /
-                    // mime when a later event omits them, so the file tree doesn't
-                    // regress to 0 B / a generic icon.
-                    const prior = prev.find((f) => f.path === entry.path);
-                    const fe: FileEntry = {
-                      path: entry.path,
-                      name,
-                      size: entry.size ?? prior?.size ?? 0,
-                      modified_at: new Date().toISOString(),
-                      mime_type: entry.mimeType ?? prior?.mime_type ?? "",
-                    };
-                    return [...prev.filter((f) => f.path !== entry.path), fe];
-                  });
+                  // Merge by path (artifact_created -> artifact_updated for the
+                  // same file is one entry, not two) and keep a prior size /
+                  // mime. The ONE merge rule (`mergeFileEntry`). A QUIET file
+                  // (a report's PDF and file, §14.10) is listed too.
+                  setArtifactUpdates((prev) =>
+                    mergeFileEntry(prev, entry, new Date().toISOString()),
+                  );
 
                   // Auto-open documents the agent writes so the user watches
                   // them build in real time. ONE rule, shared with the
@@ -1332,6 +1324,7 @@ function ChatPageInner() {
                   autoOpenArtifact(entry.path, {
                     sessionId: activeSession?.id,
                     isMobile,
+                    quiet: entry.quiet,
                   });
                 }}
               />
@@ -1353,6 +1346,7 @@ function ChatPageInner() {
       {/* File viewer modal (shared) */}
       {viewerEntry && (
         <ArtifactViewerModal
+          origin="workspace"
           sessionId={activeSessionId}
           entry={viewerEntry}
           onClose={() => setViewerEntry(null)}

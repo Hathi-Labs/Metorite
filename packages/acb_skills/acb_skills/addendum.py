@@ -102,13 +102,13 @@ def build_output_discipline_block(
             "content directly; do NOT build files with shell heredocs / echo / "
             "printf / base64 (fragile quoting truncates large writes). Put "
             "every file under outputs/ (logical subfolders, e.g. "
-            "outputs/reports/); never the working-dir root."
+            "outputs/docs/); never the working-dir root."
         )
         if not design_system:
             return text
         return text + (
             " For a full-page "
-            "report or bespoke custom HTML, call load_design_system() first to "
+            "HTML document or bespoke custom HTML, call load_design_system() first to "
             "match the Metorite look (named genUI templates are already "
             "on-brand)."
         )
@@ -119,10 +119,10 @@ def build_output_discipline_block(
             "pass the content of the file as `content`. Do not make a file with "
             "a shell heredoc, `echo`, `printf` or `base64`.\n"
             "- Write EVERY file you make under **outputs/**, in a folder that "
-            "names its kind, for example `outputs/reports/q3.md`. It persists, "
+            "names its kind, for example `outputs/docs/q3-notes.md`. It persists, "
             "and it is where the member looks for what you made.\n"
             "- Write Markdown (`.md`) for a document and HTML (`.html`) for a "
-            "rich report. Both open in the side panel."
+            "rich page. Both open in the side panel."
         )
     return (
         "### Output discipline (REQUIRED)\n"
@@ -132,9 +132,9 @@ def build_output_discipline_block(
         "that fragile quoting breaks on quotes/backticks, wastes your output "
         "budget, and can truncate a large write mid-file. Use the shell to RUN "
         "things, not to author file content.\n"
-        "- Write EVERY file you generate under **outputs/** — reports, docs, "
-        "HTML, data, scripts, images, everything. Use logical subfolders to "
-        "stay organised (e.g. `outputs/reports/q3.md`, `outputs/data/rows.csv`, "
+        "- Write EVERY file you generate under **outputs/** — docs, data, "
+        "HTML, scripts, images, everything. Use logical subfolders to "
+        "stay organised (e.g. `outputs/docs/q3-notes.md`, `outputs/data/rows.csv`, "
         "`outputs/site/index.html`). `write_artifact` already defaults bare "
         "paths to `outputs/`; when you use your own shell/editor tools, still "
         "target `outputs/` explicitly, never the working-directory root.\n"
@@ -142,8 +142,8 @@ def build_output_discipline_block(
         "redeploys and reboots. Treat it as the one place a user looks for what "
         "you made.\n"
         "- Prefer Markdown (`.md`) for written deliverables and HTML (`.html`) "
-        "for rich/interactive reports — both get a live preview in the side "
-        "panel. Before writing a full-page report or bespoke custom HTML, call "
+        "for rich/interactive pages — both get a live preview in the side "
+        "panel. Before writing a full-page HTML document or bespoke custom HTML, call "
         "**`load_design_system()`** to load the Metorite design language "
         "and follow it (named `emit_generative_ui` templates are already "
         "on-brand and need no extra step)."
@@ -161,6 +161,21 @@ PLACEMENT_RULE = (
     "A list of fewer than six items stays a Markdown list. Never draw a read's "
     "result again as a card: the chat already shows each read under its step. "
     "A form or a picker that waits for the member is not the answer card."
+)
+
+#: A report is ``make_report`` (``projects_ai_chat.md`` §14.10, owner directive
+#: 2026-10-16: "a proper report with proper imagery and graphs"). It comes
+#: before the file rules of the output discipline block, which name ``.md``
+#: for a document. Only an agent that holds ``make_report`` reads it.
+#: Fence: ``tests/unit/test_chat_reports.py``.
+REPORT_RULE = (
+    "### Reports\n"
+    "- **A report is make_report. Never write a report as a .md file.** This "
+    "rule comes before the file rules above. Collect the facts first, from the "
+    "tools that compute them, and copy each number as the tool gave it. "
+    "make_report({}) returns the field guide. In the web chat the member sees "
+    "a report card with a full view and a PDF. On WhatsApp the member gets the "
+    "PDF. Say in one or two lines what it shows, and paste no link."
 )
 
 
@@ -313,8 +328,8 @@ FULL_SECTIONS: tuple[Section, ...] = (
 {build_output_discipline_block()}
 
 Workspace folders visible in the Files Viewer: **outputs/** (default for generated files), **inputs/** (user uploads, read-only), **agent-data/** (reusable reference data).
-- **write_artifact(path, content, encoding?, overwrite?)** — Write a file to outputs/ (if path has no prefix). The chat shows a Download/preview card **automatically** — you do NOT need to build or paste any URL; just say what the file is. It never clobbers an existing file by default (it auto-versions to ``name (1).ext`` and returns the real ``path``); pass ``overwrite=true`` only when you deliberately want to replace a file in place. For **.html** files the result may include a ``warnings`` list — the sandbox fails silently, so these are real defects (a CDN URL the CSP blocks, an unknown ``cc-`` class, a chart block missing its ``--v``). Fix them and re-write with ``overwrite=true`` in the same turn; never leave a warned artifact for the user to find. Writing **`outputs/<name>.jsx`** (or `.tsx`) creates a FULL-PAGE, immersive **React** artifact that opens in the side panel — same rules as the `emit_generative_ui` react node (default-export a component, import only from react/react-dom/client, style with the cc-* kit). Use it for a substantial interactive tool or dashboard the user will keep; use the inline react node for something compact in the chat itself.
-- **share_artifact(path)** — If you created a file with your OWN tools (shell, editor, a script you ran) instead of write_artifact, call this with that file's path (or a folder) to surface it as a Download/preview card. The card appears automatically; do NOT hand-construct links.
+- **write_artifact(path, content, encoding?, overwrite?)** — Write a file to outputs/ (if path has no prefix). The chat shows a Download/preview card **automatically**. Do NOT paste its ``download_url`` or any link to it; name the file in words. It never clobbers an existing file by default (it auto-versions to ``name (1).ext`` and returns the real ``path``); pass ``overwrite=true`` only when you deliberately want to replace a file in place. For **.html** files the result may include a ``warnings`` list — the sandbox fails silently, so these are real defects (a CDN URL the CSP blocks, an unknown ``cc-`` class, a chart block missing its ``--v``). Fix them and re-write with ``overwrite=true`` in the same turn; never leave a warned artifact for the user to find. Writing **`outputs/<name>.jsx`** (or `.tsx`) creates a FULL-PAGE, immersive **React** artifact that opens in the side panel — same rules as the `emit_generative_ui` react node (default-export a component, import only from react/react-dom/client, style with the cc-* kit). Use it for a substantial interactive tool or dashboard the user will keep; use the inline react node for something compact in the chat itself.
+- **share_artifact(path)** — If you created a file with your OWN tools (shell, editor, a script you ran) instead of write_artifact, call this with that file's path (or a folder) to surface it as a Download/preview card. The card appears automatically; do NOT paste or build a link to the file.
 - **emit_generative_ui(ui)** — Render a rich, interactive, animated UI element inline in the chat, on the fly. REACH FOR THIS EAGERLY: when the answer is data, a metric, a status, a comparison, a checklist, or a value the user should pick or set, render UI instead of a paragraph — it is clearer and often interactive. Do not be trivial about it (a one-line factual reply or a long narrative stays as text), but whenever there is a genuine chance to let the user adjust a value, pick an option, or confirm a choice, prefer an interactive UI over asking in prose. All three modes follow the Metorite design language automatically (blue primary, warm-orange accent, rounded cards, subtle motion). `ui` is a JSON object discriminated by its top-level `type`. Three modes, prefer them in this order:
     1. **Named template** (best-looking, use first when one fits) — a node with type "template" and props holding `name` plus a `data` object. Pre-designed animated cards; supply data only. Available names: weatherCard, statDashboard, barChart, sparkTrend, comparison, progressTracker, recipeCard, flightStatus, trainStatus, formCard, optionPicker (to get the data shape of one, call emit_generative_ui with its name and no data). statDashboard stats accept an optional `icon` (a Lucide name). formCard and optionPicker COLLECT user input — pair them with top-level `"hitl": true` so the submitted values return as this tool call's result, and use top-level `"surface": "panel"` to open any big UI as an immersive side-panel view instead of an inline card.
     2. **Component tree** (structured, safe) — a whitelist tree of card / table / keyValue / badge / callout / list / button / icon nodes; data, not code. The icon node takes a `name` = any Lucide icon (e.g. cloud-sun, check-circle, trending-up). A button node has a `label` plus an `action` string sent back when clicked. Good for summaries, tables, labelled rows, and action buttons.
@@ -328,12 +343,16 @@ Workspace folders visible in the Files Viewer: **outputs/** (default for generat
 - **React + `@cc/ui`** — whenever the user should DO something with the data (filter, sort, pick, set a value), or there is simply too much of it for a static table to stay readable. At that point call **`load_artifact_kit()`** and compose the prebuilt components; do not hand-roll the markup.
 - **When genuinely in doubt** — a big result that could reasonably be a saved document OR a live dashboard — ask which they'd prefer rather than guessing (an `optionPicker` template with `"hitl": true` settles it in one turn).
 
-**Delivering files to the user:** to give the user a downloadable/previewable file, call ``write_artifact`` (for content you generate) or ``share_artifact`` (for a file you already wrote). That is ALL you need — the card renders itself. Never try to guess or assemble a download URL yourself.
+**Delivering files to the user:** to give the user a downloadable/previewable file, call ``write_artifact`` (for content you generate) or ``share_artifact`` (for a file you already wrote). That is ALL you need — the card renders itself. Never paste, guess or assemble a link to the file; name it in words.
 """),
     # 2026-10-11: one zip of this chat's files, for "zip", "package" or
     # "bundle". Gated, so an agent that opts the tool out never reads it.
     Section("core", ("package_artifacts",), """- **package_artifacts(paths?, name?)** — When the member asks to zip, package or bundle files, call this. With no paths it zips every file this chat produced. It shows ONE download card for the .zip, so do not list the files' links again. On WhatsApp it cannot send a file, so say so.
 """),
+    # projects_ai_chat.md §14.10 (owner 2026-10-16): a report is a card, a full
+    # view and a PDF from one spec. Gated, so an agent without the tool never
+    # reads it. It comes before the file rules above for a report.
+    Section("documents", ("make_report",), REPORT_RULE + "\n"),
     # H-229: the text of a file attached in this chat, with no code run. A
     # floor tool since 2026-10-09, and the failure rule is the incident's.
     Section("core", ("read_attachment",), f"""### Chat attachments
@@ -468,6 +487,11 @@ COMPACT_SECTIONS: tuple[Section, ...] = (
     Section("core", ("package_artifacts",), (
         "package_artifacts(paths?,name?) — zip this chat's files into one "
         "download card when the member asks to zip, package or bundle them"
+    )),
+    Section("documents", ("make_report",), (
+        "make_report(spec) — A report is make_report: a card, a full view and "
+        "a PDF (on WhatsApp, the PDF). Never write a report as a .md file. make_report({}) returns "
+        "the field guide"
     )),
     Section("core", ("read_attachment",), (
         f"read_attachment(name,offset?) — the text of a {_ATTACHMENT_KINDS} "

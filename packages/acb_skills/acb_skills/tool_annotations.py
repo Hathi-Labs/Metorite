@@ -45,6 +45,9 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # H-315: lays out a PDF in the gateway's own child and writes it to the
     # chat's outputs. No network, no egress.
     "make_document":         {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # projects_ai_chat.md §14.10: the same PDF seam, a report file in the
+    # chat's outputs and one card. No network, no egress.
+    "make_report":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
     # H-229: the text of a file attached in this chat. Pure parsing, no code.
     "read_attachment":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     # Memory
@@ -138,6 +141,9 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "crm_list_modules":      {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     "crm_list_module_records": {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     "crm_get_module_record": {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-61 KR-2: company retrieval (`company_search_tools.py`). It reads
+    # `GET /search/company` as the member, and nothing leaves the platform.
+    "search_company":        {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     # WS-47 WAC-10a: queues an element for the member's own WhatsApp chat.
     # `bot_run` sends it to the member who asked, so it reaches no third party.
     "whatsapp_ui":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
@@ -177,6 +183,10 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     "crm_list_modules",
     "crm_list_module_records",
     "crm_get_module_record",
+    # WS-61 KR-2: company retrieval only reads, and only the orchestrator
+    # holds it, behind COMPANY_SEARCH_ENABLED. So every risk block stays
+    # byte-identical.
+    "search_company",
 })
 
 #: Every name that :func:`annotate` registered: an agent's OWN tool. They

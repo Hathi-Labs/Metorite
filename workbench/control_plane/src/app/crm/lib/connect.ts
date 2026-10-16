@@ -249,6 +249,8 @@ export function startFailureMessage(status: number, code: string | undefined): s
 export function syncFailureMessage(status: number, code: string | undefined): string {
   if (code === "sync_running") return "A sync is already running.";
   if (code === "not_connected") return "Zoho CRM is not connected. Connect it first.";
+  // CRM-Q16: a one-module run (`only`) names a key that Zoho does not have.
+  if (code === "unknown_module") return "Zoho has no such module, so it cannot sync.";
   if (status === 403) return "Only an admin can start a sync.";
   return "The sync did not start. Try again.";
 }

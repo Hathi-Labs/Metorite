@@ -188,21 +188,46 @@ def test_resume_handler_registered_and_calls_service(monkeypatch) -> None:
         broker_handlers.register_handlers()
         assert "workflow.resume_run" in _HANDLERS
 
-        calls: list[str] = []
+        calls: list[tuple[str, str | None]] = []
 
-        async def fake_resume(run_id: str, *, resumed_by: str = "") -> dict:
-            calls.append(run_id)
+        async def fake_resume(
+            run_id: str, *, resumed_by: str = "", organization_id: str | None = None,
+        ) -> dict:
+            calls.append((run_id, organization_id))
             return {"ok": True, "run_id": run_id}
 
         monkeypatch.setattr(service, "resume_run", fake_resume)
 
         class _Proposal:
-            payload: ClassVar[dict] = {"run_id": "run-123"}
+            payload: ClassVar[dict] = {"run_id": "run-123", "organization_id": "spoofed"}
 
-        result = asyncio.run(_HANDLERS["workflow.resume_run"](_Proposal()))
-        assert result["ok"] is True and calls == ["run-123"]
+        from acb_common.db import bind_tenant, release_tenant
+
+        token = bind_tenant("org-approver")
+        try:
+            result = asyncio.run(_HANDLERS["workflow.resume_run"](_Proposal()))
+        finally:
+            release_tenant(token)
+        # The approver's bound org, never a payload field (R11).
+        assert result["ok"] is True and calls == [("run-123", "org-approver")]
     finally:
         clear_action_handlers()
+
+
+def test_resume_handler_with_no_bound_org_refuses(monkeypatch) -> None:
+    calls: list[str] = []
+
+    async def fake_resume(run_id: str, **_kw) -> dict:
+        calls.append(run_id)
+        return {"ok": True}
+
+    monkeypatch.setattr(service, "resume_run", fake_resume)
+
+    class _Proposal:
+        payload: ClassVar[dict] = {"run_id": "run-123"}
+
+    result = asyncio.run(broker_handlers._resume_run_handler(_Proposal()))
+    assert result["ok"] is False and calls == []
 
 
 def test_resume_handler_without_run_id_fails_closed() -> None:

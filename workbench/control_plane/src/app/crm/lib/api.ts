@@ -18,7 +18,7 @@ import { asFieldLayout, type FieldLayout } from "./fieldLayout";
 import type { FieldMap, FieldRule, FieldSuggestion } from "./fieldMap";
 import type { CrmOwner } from "./filterBar";
 import type { SavedView, SavedViewBody } from "./savedViews";
-import type { SyncHealth } from "./syncHealth";
+import type { SyncHealth, SyncHold } from "./syncHealth";
 import type { RecordCounts, ResetThen } from "./setup";
 import type { ResetResult } from "./startOver";
 import type {
@@ -513,8 +513,28 @@ export function disconnectCrm(): Promise<ConnectionInfo> {
   return call<ConnectionInfo>("/connection/disconnect", { method: "POST" });
 }
 
-export function syncZohoNow(): Promise<{ started: boolean }> {
-  return call<{ started: boolean }>("/sync/zoho", { method: "POST" });
+/**
+ * Start a sync. With `only` (CRM-Q16), the run reads that one count key on
+ * its own, also when it is held. Without it, the call sends no body, as before.
+ */
+export function syncZohoNow(opts: { only?: string } = {}): Promise<{ started: boolean }> {
+  const init: RequestInit = { method: "POST" };
+  if (opts.only) init.body = JSON.stringify({ only: opts.only });
+  return call<{ started: boolean }>("/sync/zoho", init);
+}
+
+/**
+ * Admin only (CRM-Q16). `sync: false` holds a count key and `sync: true`
+ * releases it. The key can be `module:<ApiName>`, so it is encoded.
+ */
+export function setModuleSync(
+  key: string,
+  sync: boolean
+): Promise<{ holds: Record<string, SyncHold> }> {
+  return call<{ holds: Record<string, SyncHold> }>(
+    `/sync/modules/${encodeURIComponent(key)}`,
+    { method: "PUT", body: JSON.stringify({ sync }) }
+  );
 }
 
 // ── Timeline ──────────────────────────────────────────────────────────────

@@ -94,8 +94,14 @@ _BLOCK_RE = re.compile(
     rf"<{TAG_CORE}(?P<kind>{_BLOCK_NAMES})\s*>(?P<body>.*?)</{TAG_CORE}(?P=kind)\s*>",
     re.S,
 )
-_CLOSE_RE = re.compile(rf"</{TAG_CORE}{_BLOCK_NAMES}\s*>")
-_INVOKE_CLOSE_RE = re.compile(rf"</{TAG_CORE}invoke\s*>")
+#: A closing tag, or one that has its name and waits for its ``>`` at the end
+#: of the text. The ``\s*`` before the ``>`` has no bound, as in
+#: :data:`_BLOCK_RE`. So a waiting tag can grow without a limit, and the
+#: stream keeps it in :attr:`_Region.waiting` and reads its whitespace once.
+_CLOSE_RE = re.compile(rf"</{TAG_CORE}{_BLOCK_NAMES}\s*(?:>|\Z)")
+_INVOKE_CLOSE_RE = re.compile(rf"</{TAG_CORE}invoke\s*(?:>|\Z)")
+#: The whitespace that continues a waiting closing tag.
+_SPACE_RUN_RE = re.compile(r"\s*")
 #: The first tag of a region: a block or an invoke opens one, anything else
 #: (a stray closing tag, a lone parameter) is one tag long.
 _FIRST_TAG_RE = re.compile(rf"<(?P<slash>/?){TAG_CORE}(?P<name>[A-Za-z_]+)[^<>]*>")
@@ -112,8 +118,10 @@ MAX_FIRST_TAG = 96
 #: more than :data:`MAX_FIRST_TAG`, so a tag that closes too late is seen.
 _HEAD = MAX_FIRST_TAG + 1
 #: The search for a closing tag starts this far before each new delta, so it
-#: finds a closing tag that began in an earlier delta.
-_CLOSE_LOOKBACK = 32
+#: finds a closing tag whose NAME a delta boundary cut. It is the longest
+#: closing tag up to the end of its name. The whitespace after the name has no
+#: bound, so no lookback can hold it: :attr:`_Region.waiting` does that job.
+_CLOSE_LOOKBACK = len(f"</{TAG_CORE}function_calls")
 #: The start of a tag that has not reached its ``>`` yet.
 _TAG_HEAD_RE = re.compile(
     rf'</?{TAG_CORE}[A-Za-z_]+(?:\s+[A-Za-z_][\w-]*(?:\s*=\s*(?:"[^"]*"?)?)?)*\s*'
@@ -431,9 +439,16 @@ class _Region:
     strings beside it: the head that decides the first tag, and the tail in
     which a closing tag may have begun. A delta costs its own length plus a
     bounded constant. The text is joined once, when the region ends.
+
+    🔴 **A delta boundary inside a long closing tag lost the call.** A
+    closing tag may hold any amount of whitespace before its ``>``. With
+    more than about ten characters of it, the tag began before the lookback,
+    so the stream never found it and ran nothing. A whole feed ran the call.
+    Now :attr:`waiting` keeps a closing tag that has its name, and the next
+    delta goes on from the end of the text. No text is read twice.
     """
 
-    __slots__ = ("first", "head", "length", "parts", "tail")
+    __slots__ = ("first", "head", "length", "parts", "tail", "waiting")
 
     def __init__(self) -> None:
         self.parts: list[str] = []
@@ -444,6 +459,9 @@ class _Region:
         self.tail = ""
         #: The first tag, once it closed in time. More text cannot change it.
         self.first: re.Match[str] | None = None
+        #: The text ends inside a closing tag that has its name, and only
+        #: whitespace follows the name. The next delta may hold its ``>``.
+        self.waiting = False
 
     def add(self, data: str) -> tuple[int, str]:
         """Take one delta. Returns ``start`` and the region text from ``start`` on.
@@ -534,6 +552,8 @@ class DsmlStream:
                 continue
             region = st.region
             start, recent = region.add(data)
+            # Where this delta begins inside ``recent``.
+            fresh = len(recent) - len(data)
             data = ""
             # A first tag that closed in time stays a tag, so test only before.
             if region.first is None and _not_a_tag(region.head, region.length):
@@ -546,7 +566,7 @@ class DsmlStream:
                 self._show(st, data[:cut], out)
                 data = data[cut:]
                 continue
-            end = self._region_end(region, start, recent)
+            end = self._region_end(region, start, recent, fresh)
             if end is None:
                 break
             whole = region.text()
@@ -583,15 +603,16 @@ class DsmlStream:
         return data[mark.start() :]
 
     @staticmethod
-    def _region_end(region: _Region, start: int, recent: str) -> int | None:
+    def _region_end(region: _Region, start: int, recent: str, fresh: int) -> int | None:
         """Where the region that starts at a marker ends, or None.
 
         A block tag waits for its closing block tag, and an invoke tag for its
         closing invoke tag. Any other tag is a region of its own, so a stray
         tag can never swallow the rest of the answer.
 
-        ``recent`` is the region text from ``start`` on. The search reads it
-        and never the whole region, which is what keeps a stream linear.
+        ``recent`` is the region text from ``start`` on, and the new delta
+        begins at ``fresh`` in it. The search reads ``recent`` and never the
+        whole region, which is what keeps a stream linear.
         """
         first = region.first or _FIRST_TAG_RE.match(region.head)
         if first is None:
@@ -606,10 +627,28 @@ class DsmlStream:
             closer = _INVOKE_CLOSE_RE
         else:
             return first.end()
-        # The closer has no anchor and no lookbehind, so a search of
-        # ``recent`` finds what a search of the region from ``start`` finds.
+        if region.waiting:
+            # The text before this delta ends in a closing tag's name and its
+            # whitespace. Read on from the delta, so no whitespace is read twice.
+            gap = _SPACE_RUN_RE.match(recent, fresh).end()
+            if gap == len(recent):
+                return None
+            region.waiting = False
+            if recent[gap] == ">":
+                return start + gap + 1
+            # No closer after all. A tag starts only at a ``<``, and the tag
+            # holds one ``<``, so the search below sees all that is left.
+        # The closer has no lookbehind, and its one anchor ``\Z`` is the end
+        # of the region, so a search of ``recent`` finds what a search of the
+        # region from ``start`` finds.
         close = closer.search(recent, max(start, first.end()) - start)
-        return start + close.end() if close is not None else None
+        if close is None:
+            return None
+        if close.group().endswith(">"):
+            return start + close.end()
+        # The text ends in a closing tag that has its name. Its ``>`` may come.
+        region.waiting = True
+        return None
 
     def finish(self, index: int) -> tuple[str, list[dict[str, Any]]]:
         """End one choice. Returns the last text and the calls that may run."""

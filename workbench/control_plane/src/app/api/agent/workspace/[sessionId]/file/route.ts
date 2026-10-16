@@ -2,10 +2,17 @@
  * GET /api/agent/workspace/[sessionId]/file?path=<rel_path>
  * Proxy raw file bytes from the gateway workspace API.
  * The Content-Type and Content-Disposition headers from the gateway are passed through.
+ *
+ * One exception (owner report, 2026-10-16). A member who opens the address of
+ * a Markdown file in a tab gets a 303 to its rendered view in the Artifacts
+ * app, never the raw text. `rendersAsPage` in `lib/artifactKind.ts` decides.
+ * A viewer's fetch, an image and a Download button (`&download=1`) still get
+ * the raw bytes. An HTML file keeps its old answer (HANDOFF H-238).
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 import { refuseUnsafePath } from "@/lib/gatewayPath";
+import { artifactViewUrl, rendersAsPage } from "@/lib/artifactKind";
 
 export const dynamic = "force-dynamic";
 
@@ -24,11 +31,27 @@ export async function GET(
       return NextResponse.json({ error: "Missing ?path= query parameter" }, { status: 400 });
     }
 
-    const upstream = new URL(`${GATEWAY_URL}/agent/workspace/${sessionId}/file`);
-    upstream.searchParams.set("path", filePath);
     // WS-27bm S8: `format=pdf` asks the gateway to convert a Markdown or HTML
     // file. The gateway owns the check, and answers any other value with 422.
     const format = req.nextUrl.searchParams.get("format");
+    const page = rendersAsPage(filePath, {
+      dest: req.headers.get("sec-fetch-dest"),
+      accept: req.headers.get("accept"),
+      download: req.nextUrl.searchParams.has("download"),
+      format,
+    });
+    if (page) {
+      // A relative Location: the app may sit behind a proxy, so the origin
+      // this server sees is not the one the member typed. The view fetches
+      // the file through this route again, so every check still runs.
+      return new NextResponse(null, {
+        status: 303,
+        headers: { Location: artifactViewUrl(sessionId, filePath), "Cache-Control": "no-store" },
+      });
+    }
+
+    const upstream = new URL(`${GATEWAY_URL}/agent/workspace/${sessionId}/file`);
+    upstream.searchParams.set("path", filePath);
     if (format) upstream.searchParams.set("format", format);
 
     const res = await gatewayFetch(upstream.toString(), {
@@ -48,6 +71,9 @@ export async function GET(
 
     const headers: Record<string, string> = {
       "Content-Type": contentType,
+      // The same address answers a tab with the rendered view, so a cache
+      // must not give a tab these raw bytes (`rendersAsPage`).
+      Vary: "Sec-Fetch-Dest, Accept",
     };
     if (contentDisposition) headers["Content-Disposition"] = contentDisposition;
     if (contentLength) headers["Content-Length"] = contentLength;

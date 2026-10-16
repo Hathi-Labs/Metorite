@@ -11,6 +11,7 @@ import type { RuleAction, RuleActionType, RuleConditions } from "../../../lib/ty
 export const ACTION_TYPES: RuleActionType[] = [
   "ARCHIVE", "LABEL", "MARK_READ", "STAR", "MARK_SPAM", "TRASH",
   "MOVE_FOLDER", "REPLY", "FORWARD", "DRAFT_EMAIL", "CALL_WEBHOOK",
+  "NOTIFY_ME",
 ];
 
 /**
@@ -30,6 +31,10 @@ export const ACTION_META: Record<RuleActionType, { label: string; description: s
   FORWARD: { label: "Forward", description: "Create a forward draft to someone — never auto-sent." },
   DRAFT_EMAIL: { label: "Draft reply", description: "Let the AI write a reply draft for your review — never auto-sent." },
   CALL_WEBHOOK: { label: "Call webhook", description: "POST the email to a URL you specify." },
+  NOTIFY_ME: {
+    label: "Tell me on WhatsApp",
+    description: "Send you a WhatsApp message about the email. Only you get it.",
+  },
 };
 
 /**
@@ -49,6 +54,7 @@ export const ACTION_ICON: Record<RuleActionType, string> = {
   FORWARD: "Forward",
   DRAFT_EMAIL: "PenLine",
   CALL_WEBHOOK: "Webhook",
+  NOTIFY_ME: "MessageCircle",
 };
 
 export function ActionIcon({ type, size = 11 }: { type: string; size?: number }) {
@@ -89,6 +95,7 @@ export const ACTION_COLOR: Record<RuleActionType, string> = {
   FORWARD: "bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/20",
   DRAFT_EMAIL: "bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20",
   CALL_WEBHOOK: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20",
+  NOTIFY_ME: "bg-cat-4/10 text-cat-4 border-cat-4/20",
 };
 
 export function actionColor(type: string): string {
@@ -124,6 +131,9 @@ export function actionText(a: RuleAction): string {
   if (a.type === "FORWARD" && a.to_address) return `Forward to ${a.to_address}`;
   if (a.type === "REPLY" && a.to_address) return `Reply to ${a.to_address}`;
   if (a.type === "CALL_WEBHOOK" && a.url) return "Call webhook";
+  if (a.type === "NOTIFY_ME") {
+    return a.label === "urgent" ? "Tell me on WhatsApp (urgent)" : "Tell me on WhatsApp";
+  }
   if ((a.type === "DRAFT_EMAIL" || a.type === "REPLY") && a.content) {
     const snip = a.content.replace(/\s+/g, " ").trim().slice(0, 40);
     return `${actionLabel(a.type)}: "${snip}${a.content.length > 40 ? "…" : ""}"`;
@@ -188,6 +198,7 @@ export function statusMeta(status?: string): { label: string; cls: string } | nu
  */
 export function exampleActionType(text: string): RuleActionType {
   const t = text.toLowerCase();
+  if (/\bwhatsapp\b/.test(t)) return "NOTIFY_ME";
   if (/\bforward(s|ed|ing)?\b/.test(t)) return "FORWARD";
   if (/\b(draft|repl(y|ies)|respond)\b/.test(t)) return "DRAFT_EMAIL";
   if (/\bspam\b/.test(t)) return "MARK_SPAM";

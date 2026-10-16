@@ -20,13 +20,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { archiveNotice, fetchArchive, saveBlob } from "@/lib/archiveDownload";
 import {
+  artifactOpenSurface,
   canDownloadPdf,
   classifyArtifact,
+  hasRenderedView,
   isArchive,
-  isRenderable,
   pdfNameFor,
   workspaceFileUrl,
 } from "@/lib/artifactKind";
+import { baseName, companionPdfPath } from "@/lib/report";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -54,16 +56,30 @@ interface ArtifactCardProps {
   onOpenInSidePanel?: (entry: import("./ArtifactSidebar").FileEntry) => void;
 }
 
-/** Documents get a first-class "Open in side panel" action (editable + live). */
 /**
- * Which artifacts have a rendered view worth opening. Derived from the shared
- * classifier rather than its own extension list, so a React artifact
- * (outputs/*.jsx) gets the same treatment as HTML — it previously got no Open
- * button at all, because the hard-coded list here only knew about md/html.
+ * Documents get a first-class "Open in side panel" action (editable + live).
+ * Which artifacts have a rendered view is `hasRenderedView` in
+ * `lib/artifactKind.ts`, the shared classifier. A link to a file in the reply
+ * reads the same rule (owner report, 2026-10-16).
  */
-function hasRenderedView(name: string, path: string): boolean {
-  const kind = classifyArtifact(name, path);
-  return kind === "markdown" || isRenderable(kind);
+
+/**
+ * The PDF a card offers, and its name. A Markdown or HTML document converts
+ * on the gateway. A report (`.report.json`) has its own PDF beside it, which
+ * `make_report` wrote, so the card downloads that file as it is.
+ */
+export function cardPdf(
+  sessionId: string,
+  artifact: Pick<ArtifactMeta, "name" | "path" | "mimeType">,
+): { url: string; name: string } | null {
+  const kind = classifyArtifact(artifact.name, artifact.path, artifact.mimeType, "workspace");
+  if (kind === "report") {
+    const pdf = companionPdfPath(artifact.path);
+    return pdf ? { url: workspaceFileUrl(sessionId, pdf, { download: true }), name: baseName(pdf) } : null;
+  }
+  return canDownloadPdf(kind)
+    ? { url: workspaceFileUrl(sessionId, artifact.path, { pdf: true }), name: pdfNameFor(artifact.name) }
+    : null;
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -107,6 +123,7 @@ function fileIcon(artifact: ArtifactMeta): React.ReactNode {
   const kind = (name: string, icon: string) => (
     <Icon name={icon} size={15} className={`shrink-0 ${categoricalAccent(name).text}`} />
   );
+  if (classifyArtifact(artifact.name, artifact.path, mime, "workspace") === "report") return kind("report", "FileChartColumn");
   if (IMAGE_EXTS.has(ext) || mime.startsWith("image/")) return kind("image", "FileImage");
   if (CODE_EXTS.has(ext)) return kind("code", "FileCode");
   if (["md", "txt", "log", "rst", "csv"].includes(ext) || mime.startsWith("text/")) return kind("text", "FileText");
@@ -126,11 +143,13 @@ export default function ArtifactCard({
   onOpenInSidePanel,
 }: ArtifactCardProps) {
   const fileUrl = workspaceFileUrl(sessionId, artifact.path);
+  // The Download button names `download`, so the proxy sends the raw bytes
+  // and never the rendered page (`rendersAsPage`, 2026-10-16).
+  const downloadUrl = workspaceFileUrl(sessionId, artifact.path, { download: true });
   // WS-27bm S8: a Markdown or HTML document also downloads as a PDF, which the
-  // gateway lays out from the same file (`gateway/pdf_render.py`).
-  const pdfUrl = canDownloadPdf(classifyArtifact(artifact.name, artifact.path, artifact.mimeType))
-    ? workspaceFileUrl(sessionId, artifact.path, { pdf: true })
-    : null;
+  // gateway lays out from the same file (`gateway/pdf_render.py`). A report
+  // downloads the PDF that was written beside it.
+  const pdf = cardPdf(sessionId, artifact);
   const image = isImage(artifact);
   const { isMobile } = useViewMode();
   const isDoc = hasRenderedView(artifact.name, artifact.path);
@@ -172,7 +191,11 @@ export default function ArtifactCard({
    * surface — the user should never have to know which.
    */
   const openRendered = () => {
-    if (!isMobile && onOpenInSidePanel) handleOpenPanel();
+    const surface = artifactOpenSurface(artifact.name, artifact.path, {
+      isMobile,
+      panel: Boolean(onOpenInSidePanel),
+    });
+    if (surface === "panel") handleOpenPanel();
     else handleOpen();
   };
 
@@ -296,7 +319,7 @@ export default function ArtifactCard({
           </Button>
         )}
         <a
-          href={fileUrl}
+          href={downloadUrl}
           download={artifact.name}
           onClick={archive ? downloadArchive : (e) => e.stopPropagation()}
           className="rounded-lg p-1.5 text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
@@ -305,10 +328,10 @@ export default function ArtifactCard({
         >
           <Icon name="Download" size={14} />
         </a>
-        {pdfUrl && (
+        {pdf && (
           <a
-            href={pdfUrl}
-            download={pdfNameFor(artifact.name)}
+            href={pdf.url}
+            download={pdf.name}
             onClick={(e) => e.stopPropagation()}
             className="flex items-center gap-1 rounded-lg p-1.5 text-[10px] font-medium text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
             title="Download PDF"

@@ -146,6 +146,56 @@ A decision:
   Next: Ravi sends the counter today.
 """
 
+# WS-61 KR-2 (knowledge_base.md §20.5 and §8.2). With COMPANY_SEARCH_ENABLED
+# on, three parts of the persona change, each by an exact swap: the two
+# legacy retrieval tools leave the tool list, rule 1 becomes the grounding
+# paragraph, and rule 5 cites a full_id. With the flag off the persona IS
+# `_PULL_INSTRUCTIONS`, byte for byte. Fence: tests/unit/test_company_search_tool.py.
+_COMPANY_SEARCH_SWAPS: tuple[tuple[str, str], ...] = (
+    (
+        "- retrieve_entity_context: search projects, tasks, deals, people\n"
+        "- retrieve_sales_context: Zoho pipeline, customer health, deal stages\n",
+        "- search_company: find the company's records in every app the member holds:\n"
+        "  tasks, email, people, the CRM, artifacts, WhatsApp and Knowledge\n",
+    ),
+    (
+        "1. For data questions: call retrieve_entity_context or retrieve_sales_context FIRST.\n",
+        "1. When the member asks about the company, its work, its customers, its\n"
+        "   mail or its policies, call search_company first. Answer from what it\n"
+        "   returns, and cite each item you used. When it returns nothing, say\n"
+        "   that the company's records hold nothing on it.\n",
+    ),
+    (
+        "5. Every factual claim from retrieval must cite [entity:uuid] tokens exactly as returned.\n",
+        "5. Cite each record you used by the full_id that search_company gives, for\n"
+        "   example deal:<id>, exactly as returned.\n",
+    ),
+)
+
+
+def _orchestrator_instructions(company_search: bool) -> str:
+    """The persona. Off, ``_PULL_INSTRUCTIONS`` itself. On, the three swaps."""
+    if not company_search:
+        return _PULL_INSTRUCTIONS
+    text = _PULL_INSTRUCTIONS
+    for old, new in _COMPANY_SEARCH_SWAPS:
+        if text.count(old) != 1:
+            # A persona edit moved a line the swap names. Fail loud at build,
+            # never ship a half-swapped persona.
+            raise RuntimeError(f"orchestrator persona has no single {old[:40]!r}")
+        text = text.replace(old, new, 1)
+    return text
+
+
+def _company_search_enabled() -> bool:
+    """The one reader, in ``acb_skills``. Off when the package is absent."""
+    try:
+        from acb_skills.company_search_tools import company_search_enabled
+    except ImportError:  # pragma: no cover — acb_skills ships with the platform
+        return False
+    return company_search_enabled()
+
+
 # ---------------------------------------------------------------------------
 # Retrieval tools (sync Postgres calls wrapped in asyncio.to_thread)
 # ---------------------------------------------------------------------------
@@ -452,6 +502,9 @@ def _load_specialist_agents_as_tools() -> list[Any]:
 
             _specialist_fn.__name__ = _tool_name
             _specialist_fn.__doc__ = _description
+            # WS-17 EM-G11d: a delegation, so a Redis fault on the egress
+            # mark asks no card for it (acb_skills.egress.is_delegation_tool).
+            _specialist_fn.__delegates_to__ = name  # type: ignore[attr-defined]
             # H-236: open_world, as call_agent says. A specialist acts beyond
             # this run's view, so a run that a covered run delegates to does
             # not hold these. It keeps call_agent and delegate_to_agent, and
@@ -547,8 +600,11 @@ def build_orchestrator_agent(
             )
         )
 
+    # WS-61 KR-2: read once, so the persona and the tool list agree.
+    company_search = _company_search_enabled()
+
     # Build the instructions; append memory context when present.
-    instructions = _PULL_INSTRUCTIONS
+    instructions = _orchestrator_instructions(company_search)
 
     # Memory tools — active read/write to Mem0 + Graphiti knowledge graph.
     # Gives the orchestrator the same memory capabilities that injected
@@ -568,14 +624,22 @@ def build_orchestrator_agent(
     except ImportError:
         _memory_tools = []
 
-    # Core tools always present
+    # Core tools always present. WS-61 KR-2: with COMPANY_SEARCH_ENABLED on,
+    # `search_company` takes the place of the two legacy retrievers. This is
+    # the ONE path of the tool: not config.json tool_scope, not the floor.
+    if company_search:
+        from acb_skills.company_search_tools import search_company
+
+        retrieval_tools: list[Any] = [search_company]
+    else:
+        retrieval_tools = [retrieve_entity_context, retrieve_sales_context]
     core_tools: list[Any] = [
-        retrieve_entity_context,
-        retrieve_sales_context,
+        *retrieval_tools,
         search_timeline,
         spawn_copilot_agent,
         delegate_to_agent,
-    ] + _memory_tools
+        *_memory_tools,
+    ]
 
     # Dynamic specialist tools — each registered agent becomes a callable FunctionTool.
     # The LLM routes to the right one from the description alone.

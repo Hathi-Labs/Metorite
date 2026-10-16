@@ -339,3 +339,20 @@ export function parseChips(value: string): string[] {
 export function formatChips(value: unknown): string {
   return Array.isArray(value) ? value.join(", ") : "";
 }
+
+/**
+ * The text a chip input shows: what the member typed, while it still parses
+ * to the stored value, and the stored value re-drawn once something else
+ * (a save, a discard) has changed it.
+ *
+ * Drawing `formatChips(parseChips(text))` on every keystroke is the bug this
+ * replaces. It dropped a comma the moment it was typed, and a trailing space
+ * with it, so a second language or a two-word interest could only be pasted.
+ */
+export function chipsText(typed: string, value: unknown): string {
+  const stored = Array.isArray(value) ? value.map(String) : [];
+  const parsed = parseChips(typed);
+  const same =
+    parsed.length === stored.length && parsed.every((v, i) => v === stored[i]);
+  return same ? typed : formatChips(stored);
+}
