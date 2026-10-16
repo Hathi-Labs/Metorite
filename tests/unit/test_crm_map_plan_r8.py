@@ -24,6 +24,9 @@ item of CRM-Q18-1:
    the org comes from the server;
 8. orgs stay apart.
 
+The last section proves CRM-Q18-1b, the two deadlocks of the plan lock. Each
+of its two deadlock tests was red on the code before the fix.
+
 ``tests/unit/test_crm_field_rules_r8.py`` holds the fixture and the fake Zoho.
 """
 
@@ -31,7 +34,10 @@ item of CRM-Q18-1:
 from __future__ import annotations
 
 import asyncio
+import json
 import re
+import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -639,9 +645,10 @@ def _recorded() -> Iterator[list[str]]:
         event.remove(engine, "before_cursor_execute", _record)
 
 
-#: The ordered lock of every rule row (``core.FIELD_RULE_LOCK_SQL``).
+#: The ordered lock of every rule row (``core.FIELD_RULE_LOCK_SQL``). Since
+#: CRM-Q18-1b each column sorts with ``COLLATE "C"``, the order of Python.
 LOCK_ALL = "FROM crm_field_rules WHERE ext_source = "
-LOCK_TAIL = "ORDER BY entity, field_api_name FOR UPDATE"
+LOCK_TAIL = 'ORDER BY entity COLLATE "C", field_api_name COLLATE "C" FOR UPDATE'
 
 
 def _first(seen: list[str], *parts: str) -> int:
@@ -727,3 +734,358 @@ async def test_fix_an_approve_locks_the_rule_rows_before_it_reads_the_profile(fr
     lock = _first(seen, LOCK_ALL, LOCK_TAIL)
     profile = _first(seen, "FROM crm_source_profiles")
     assert lock < profile, "commit read the profile before it locked the rule rows"
+
+
+# ── CRM-Q18-1b: two deadlocks of the plan lock ──────────────────────────────
+
+SUGGEST = "/crm/field-rules/suggest"
+
+#: Two field names that the database and Python sort in opposite orders. The
+#: collation of the database (``en_US.utf8``) skips the ``_``. Python sorts by
+#: code point, and ``I`` (0x49) comes before ``_`` (0x5F).
+PY_FIRST = "LinkedIn_URL"
+DB_FIRST = "Linked_Account"
+#: The column of each one. Both columns are free on Leads.
+TWO_TARGETS = {PY_FIRST: "website", DB_FIRST: "description"}
+
+
+def _is_propose(statement: str) -> bool:
+    return statement.startswith("INSERT INTO crm_field_rules") and "'proposed', 'ai'" in statement
+
+
+def _field_of(parameters: Any) -> str:
+    """The field of one rule-row insert. The driver gets the values by
+    position, and both inserts name ``:src, :entity, :field`` first."""
+    if isinstance(parameters, dict):
+        return str(parameters["field"])
+    return str(parameters[2])
+
+
+@contextmanager
+def _hooked(on_statement: Any) -> Iterator[None]:
+    """Call *on_statement(statement, parameters)* before each statement that
+    the shared engine sends, with the white space of the statement folded."""
+    from acb_common import db as shared
+    from sqlalchemy import event
+
+    engine = shared.get_engine().sync_engine
+
+    def _hook(_conn: Any, _cur: Any, statement: str, parameters: Any, *_rest: Any) -> None:
+        on_statement(" ".join(statement.split()), parameters)
+
+    event.listen(engine, "before_cursor_execute", _hook)
+    try:
+        yield
+    finally:
+        event.remove(engine, "before_cursor_execute", _hook)
+
+
+def _assert_sorts_apart(p: Any, org: str) -> None:
+    """The guard of each test of (a). The collation of the column sorts the two
+    names apart from Python, so the test cannot pass by luck."""
+    in_db = [r[0] for r in _q(
+        p, "SELECT field_api_name FROM crm_field_rules WHERE organization_id = "
+           "CAST(:o AS uuid) AND field_api_name IN (:x, :y) ORDER BY field_api_name",
+        o=org, x=PY_FIRST, y=DB_FIRST)]
+    assert in_db == [DB_FIRST, PY_FIRST], f"the database sorts as Python does: {in_db}"
+    assert sorted(in_db) == [PY_FIRST, DB_FIRST]
+
+
+async def _two_open_proposals(p: Any, a: Any, monkeypatch: Any) -> None:
+    """Org A in Mirror mode, with two Leads fields of the two names. Each has
+    an old proposal of the assistant, so the press asks the model again and its
+    upsert locks a row that is there. The fake model names DB_FIRST first."""
+    from gateway.routes.crm import field_rules
+
+    a.fields["Leads"] += [
+        {"api_name": PY_FIRST, "field_label": "LinkedIn", "data_type": "text"},
+        {"api_name": DB_FIRST, "field_label": "Linked account", "data_type": "text"},
+    ]
+    await _imported(p, p.org_a, a)
+    with p.admin_engine.begin() as c:
+        for field, column in TWO_TARGETS.items():
+            c.execute(text(
+                "INSERT INTO crm_field_rules (organization_id, ext_source, entity, "
+                "field_api_name, field_type, profile_version, target_column, status, "
+                "proposed_by) VALUES (CAST(:o AS uuid), 'zoho', 'lead', :f, 'text', "
+                "0, :c, 'proposed', 'ai')"), {"o": p.org_a, "f": field, "c": column})
+
+    async def no_cooldown(_org: str, _entity: str) -> None:
+        return None
+
+    async def model(_user: Any, _messages: Any) -> str:
+        return json.dumps([
+            {"field_api_name": f, "target_column": TWO_TARGETS[f], "confidence": 0.9,
+             "reason": "The same fact."}
+            for f in (DB_FIRST, PY_FIRST)
+        ])
+
+    monkeypatch.setattr(field_rules, "_start_cooldown", no_cooldown)
+    monkeypatch.setattr(field_rules, "_ask_model", model)
+
+
+class _Session(threading.Thread):
+    """A second session of *org*, in a thread of its own. It runs *steps* in
+    one transaction and commits. It keeps the error that stopped it."""
+
+    def __init__(self, engine: Any, org: str, steps: list[tuple[str, dict[str, Any]]]) -> None:
+        super().__init__(daemon=True)
+        self.engine = engine
+        self.org = org
+        self.steps = steps
+        self.pid: int | None = None
+        self.error: BaseException | None = None
+        self.ready = threading.Event()
+
+    def run(self) -> None:
+        try:
+            with self.engine.connect() as c, c.begin():
+                self.pid = int(c.execute(text("SELECT pg_backend_pid()")).scalar())
+                c.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                          {"o": self.org})
+                self.ready.set()
+                for sql, params in self.steps:
+                    c.execute(text(sql), params)
+        except BaseException as exc:  # the test reads it
+            self.error = exc
+        finally:
+            self.ready.set()
+
+
+def _waits_on_a_lock(p: Any, session: _Session, timeout: float = 15.0) -> bool:
+    """True when the backend of *session* waits on a lock, False when the
+    session ended first."""
+    assert session.ready.wait(timeout), "the second session did not start"
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if not session.is_alive():
+            return False
+        rows = _q(p, "SELECT wait_event_type FROM pg_stat_activity WHERE pid = :pid",
+                  pid=session.pid)
+        if rows and rows[0][0] == "Lock":
+            return True
+        time.sleep(0.05)
+    raise AssertionError("the second session neither waited nor ended")
+
+
+async def test_q18_1b_1_the_lock_order_is_the_order_of_python(fr, app_engine) -> None:
+    """Item 1. ``core.FIELD_RULE_LOCK_SQL`` gives the rule rows in the order of
+    ``core.field_rule_key``, also where the collation of the column does not."""
+    from gateway.routes.crm import core
+
+    p, _a, _b = fr
+    _assert_non_priv(app_engine)
+    names = [("lead", PY_FIRST), ("lead", DB_FIRST), ("contact", "a_b"),
+             ("contact", "aB"), ("company", "Z_1"), ("company", "Za")]
+    with p.admin_engine.begin() as c:
+        for entity, field in names:
+            c.execute(text(
+                "INSERT INTO crm_field_rules (organization_id, ext_source, entity, "
+                "field_api_name, field_type, profile_version, target_column, status, "
+                "proposed_by) VALUES (CAST(:o AS uuid), 'zoho', :e, :f, 'text', 1, "
+                "NULL, 'proposed', 'ai')"), {"o": p.org_a, "e": entity, "f": field})
+    _assert_sorts_apart(p, p.org_a)
+    with app_engine.connect() as c, c.begin():
+        c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": p.org_a})
+        locked = [(r.entity, r.field_api_name) for r in c.execute(
+            text(core.FIELD_RULE_LOCK_SQL), {"src": "zoho"}).fetchall()]
+    assert locked == sorted(names, key=lambda k: core.field_rule_key(*k))
+    assert core.field_rule_key("lead", PY_FIRST) < core.field_rule_key("lead", DB_FIRST)
+
+
+async def test_q18_1b_2_3_the_proposer_locks_first_and_writes_in_key_order(
+    fr, monkeypatch,
+) -> None:
+    """Items 2 and 3. The proposer takes the ordered lock of every rule row
+    before its first write. Then it writes in the order of
+    ``core.field_rule_key``, though the model named the fields the other way."""
+    from gateway.routes.crm import core
+
+    p, a, _b = fr
+    await _two_open_proposals(p, a, monkeypatch)
+    seen: list[tuple[str, Any]] = []
+    with _hooked(lambda s, params: seen.append((s, params))):
+        got = await _req(_admin_of(p.org_a), "POST", SUGGEST, {"entity": "leads"})
+    assert got.status_code == 200, got.text
+    assert {r["field_api_name"] for r in got.json()["proposals"]} == set(TWO_TARGETS)
+    writes = [i for i, (s, _params) in enumerate(seen) if _is_propose(s)]
+    fields = [_field_of(seen[i][1]) for i in writes]
+    assert fields == [f for _e, f in sorted(
+        (("lead", f) for f in TWO_TARGETS), key=lambda k: core.field_rule_key(*k))]
+    assert fields == [PY_FIRST, DB_FIRST]
+    locks = [i for i, (s, _params) in enumerate(seen) if LOCK_ALL in s and s.endswith(LOCK_TAIL)]
+    assert any(i < writes[0] for i in locks), "the proposer wrote before the ordered lock"
+
+
+async def test_q18_1b_2_an_approve_inserts_new_rule_rows_in_key_order(fr) -> None:
+    """Item 2. ``mapping_plans._write_live_set`` inserts the new rows of an
+    approve in the order of ``core.field_rule_key``, whatever order it gets."""
+    from gateway.routes.crm import core, mapping_plans
+
+    p, _a, _b = fr
+    given = [
+        mapping_plans.PlanRule("lead", f, "text", TWO_TARGETS[f], 1)
+        for f in (DB_FIRST, PY_FIRST)
+    ]
+    seen: list[tuple[str, Any]] = []
+    with _hooked(lambda s, params: seen.append((s, params))):
+        async with core._tenant_session(p.org_a) as db:
+            await mapping_plans._write_live_set(db, given, {}, ADMIN)
+    inserted = [_field_of(params) for s, params in seen
+                if s.startswith("INSERT INTO crm_field_rules")]
+    assert inserted == [PY_FIRST, DB_FIRST]
+
+
+@pytest.mark.parametrize("state", ["40P01", "40001"])
+async def test_q18_1b_4_a_deadlock_in_the_proposer_is_409_plan_busy(
+    fr, monkeypatch, state,
+) -> None:
+    """Item 4. A deadlock or a serialization failure in the write of the press
+    is a 409 ``plan_busy``, and the press wrote nothing."""
+    from gateway.routes.crm import mapping_plans
+
+    p, a, _b = fr
+    await _two_open_proposals(p, a, monkeypatch)
+
+    class _Orig(Exception):
+        sqlstate = state
+
+    async def busy(_db: Any) -> Any:
+        raise DBAPIError("SELECT", {}, _Orig())
+
+    monkeypatch.setattr(mapping_plans, "lock_rules", busy)
+    before = _rules(p, p.org_a)
+    got = await _req(_admin_of(p.org_a), "POST", SUGGEST, {"entity": "leads"})
+    assert got.status_code == 409, got.text
+    assert got.json()["detail"]["code"] == "plan_busy"
+    assert got.headers.get("retry-after") == "1"
+    assert _rules(p, p.org_a) == before
+
+
+async def test_q18_1b_a_the_proposer_and_the_ordered_lock_never_deadlock(
+    fr, app_engine, monkeypatch,
+) -> None:
+    """Item 6, deadlock (a), made on purpose. The press has written its first
+    row. Then a second session runs ``core.FIELD_RULE_LOCK_SQL``, the lock of
+    the approve and of ``mark_stale``, and waits. Then the press writes its
+    second row.
+
+    Before CRM-Q18-1b the press wrote ``LinkedIn_URL`` first and the lock took
+    ``Linked_Account`` first. Each one held the row that the other wanted, and
+    Postgres stopped the lock with 40P01. Now the press holds every rule row
+    before its first write, and both sort as Python does."""
+    from gateway.routes.crm import core
+
+    p, a, _b = fr
+    _assert_non_priv(app_engine)
+    await _two_open_proposals(p, a, monkeypatch)
+    _assert_sorts_apart(p, p.org_a)
+    approve = _Session(app_engine, p.org_a, [(core.FIELD_RULE_LOCK_SQL, {"src": "zoho"})])
+    writes: list[str] = []
+    waited: list[bool] = []
+
+    def on_statement(statement: str, parameters: Any) -> None:
+        if not _is_propose(statement):
+            return
+        writes.append(_field_of(parameters))
+        if len(writes) == 2:
+            approve.start()
+            waited.append(_waits_on_a_lock(p, approve))
+
+    failure: BaseException | None = None
+    got: Any = None
+    with _hooked(on_statement):
+        try:
+            got = await _req(_admin_of(p.org_a), "POST", SUGGEST, {"entity": "leads"})
+        except DBAPIError as exc:
+            failure = exc
+    approve.join(30)
+    assert not approve.is_alive(), "the second session never ended"
+    assert len(writes) == 2 and waited == [True], (writes, waited)
+    assert approve.error is None, f"the ordered lock deadlocked: {approve.error!r}"
+    assert failure is None, f"the press deadlocked: {failure!r}"
+    assert got.status_code == 200, got.text
+
+
+def _plan_and_rule(p: Any, org: str) -> None:
+    """A Mirror org with no record, one approved rule and its plan version."""
+    o = {"o": org}
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_settings (organization_id, mode, access) VALUES "
+            "(CAST(:o AS uuid), 'mirror', 'everyone') ON CONFLICT (organization_id) "
+            "DO UPDATE SET mode = 'mirror'"), o)
+        c.execute(text(
+            "INSERT INTO crm_field_rules (organization_id, ext_source, entity, "
+            "field_api_name, field_type, profile_version, target_column, status, "
+            "proposed_by) VALUES (CAST(:o AS uuid), 'zoho', 'lead', 'Sector', "
+            "'select', 1, 'industry', 'approved', 'admin')"), o)
+        c.execute(text(
+            "INSERT INTO crm_mapping_plans (organization_id, version, state, rules, "
+            "created_by) VALUES (CAST(:o AS uuid), 1, 'approved', '[]'::jsonb, "
+            "'admin@crm-sync.test')"), o)
+
+
+#: The two start overs: ``POST /crm/reset`` deletes ``core.RESET_TABLES``, and
+#: a change of the setup to "not chosen" deletes ``settings._RESET_DELETES``.
+START_OVERS = {
+    "reset": ("POST", "/crm/reset", {"confirm": "DELETE", "then": "none"}),
+    "setup": ("PATCH", "/crm/settings", {"mode": None}),
+}
+
+
+@pytest.mark.parametrize("start_over", sorted(START_OVERS))
+async def test_q18_1b_b_a_start_over_beside_an_approve_never_deadlocks(
+    fr, app_engine, start_over,
+) -> None:
+    """Item 6, deadlock (b), made on purpose. An approve holds the plan rows
+    (``mapping_plans._LOCK_SQL``). A start over runs and waits on them. Then
+    the approve locks the rule rows (``core.FIELD_RULE_LOCK_SQL``).
+
+    Before CRM-Q18-1b the start over had deleted the rule rows already, so
+    each one held the rows that the other wanted (40P01). Now it deletes the
+    plan rows first, so it holds no rule row while it waits."""
+    from gateway.routes.crm import core, mapping_plans
+
+    p, _a, _b = fr
+    _assert_non_priv(app_engine)
+    _plan_and_rule(p, p.org_a)
+    method, path, body = START_OVERS[start_over]
+    approve = app_engine.connect()
+    tx = approve.begin()
+    approve.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": p.org_a})
+    approve.execute(text(mapping_plans._LOCK_SQL))
+
+    async def run() -> Any:
+        return await _req(_admin_of(p.org_a), method, path, body)
+
+    task = asyncio.create_task(run())
+    waited = False
+    for _ in range(150):  # up to 15 s
+        await asyncio.sleep(0.1)
+        if task.done():
+            break
+        if _q(p, "SELECT 1 FROM pg_stat_activity WHERE datname = current_database() "
+                 "AND wait_event_type = 'Lock' "
+                 "AND query LIKE 'DELETE FROM crm_mapping_plans%'"):
+            waited = True
+            break
+    error: BaseException | None = None
+    try:
+        approve.execute(text(core.FIELD_RULE_LOCK_SQL), {"src": "zoho"})
+        tx.commit()
+    except DBAPIError as exc:
+        error = exc
+        tx.rollback()
+    finally:
+        approve.close()
+    try:
+        got: Any = await task
+    except DBAPIError as exc:
+        got = exc
+    assert waited, "the start over did not wait on the plan rows"
+    assert error is None, f"the approve deadlocked: {error!r}"
+    assert not isinstance(got, BaseException), f"the start over deadlocked: {got!r}"
+    assert got.status_code == 200, got.text
+    assert _count(p, "crm_mapping_plans", p.org_a) == 0
+    assert _count(p, "crm_field_rules", p.org_a) == 0
