@@ -30,6 +30,10 @@
  *   estimate again, so a capped run offers the next run. A range wider than
  *   the cap of one run says so before the dialog opens. `readSortState` and
  *   `sortEstimateView` decide.
+ * - "Run my rules on new mail" is the member's Auto-run choice (WS-17
+ *   EM-G11c2, G2). It shows the STORED value, and moving it saves `auto_run`
+ *   and nothing else, so the settings row holds the member's choice. A new
+ *   Gmail mailbox reads OFF.
  * - "Draft replies for me" shows only with an enabled reply rule, because a
  *   draft is an action on that rule. It shows the STORED value, read when the
  *   step is ready, and stays disabled until the read returns or when it fails
@@ -74,10 +78,13 @@ import {
   installRecommendedRules,
   installedLine,
   processPastFrom,
+  readAutoRunSwitch,
   readDraftSwitch,
   readSortState,
   rulesStepPhase,
+  setAutoRun,
   setDraftReplies,
+  settingsSaver,
   sortEstimateView,
   sortPollDelay,
   type DraftSwitch,
@@ -116,7 +123,11 @@ export interface RulesStepViewProps {
   /** True when an enabled reply rule exists, so drafting can act. */
   replyRule: boolean;
   draft: DraftSwitch;
-  draftBusy: boolean;
+  /** A save of either switch runs. Both switches wait (EM-G11c2 fix round 1). */
+  settingsBusy: boolean;
+  /** The stored Auto-run choice (WS-17 EM-G11c2, G2). Absent: no switch. */
+  autoRun?: DraftSwitch;
+  onAutoRunChange?: (on: boolean) => void;
   /** The start of the import range, or null when nothing was imported. */
   pastFrom: string | null;
   /** The count before the sort (EM-S10). Read only with `pastFrom`. */
@@ -145,7 +156,16 @@ export interface RulesStepViewProps {
 export function RulesStepView(p: RulesStepViewProps) {
   const ready = p.phase === "ready";
   const locked = p.busy !== null;
-  const readyBody = [installedLine(p.installed), p.pastFrom ? COPY.readyBody : COPY.readyBodyNoImport]
+  // G2: with Auto-run OFF the rules sort no new mail, so the body says so.
+  const autoRunOff = p.autoRun?.state === "ready" && !p.autoRun.on;
+  // The title says "on" only while the switch reads ON. With no switch (an
+  // older caller) it says "on", as before.
+  const autoRunOn = p.autoRun === undefined || (p.autoRun.state === "ready" && p.autoRun.on);
+  const readyTitle = autoRunOn ? COPY.readyTitle : COPY.readyTitleAutoRunOff;
+  const readyBody = [
+    installedLine(p.installed),
+    autoRunOff ? COPY.autoRunOffBody : p.pastFrom ? COPY.readyBody : COPY.readyBodyNoImport,
+  ]
     .filter(Boolean)
     .join(" ");
   const draftOn = p.draft.state === "ready" && p.draft.on;
@@ -161,7 +181,7 @@ export function RulesStepView(p: RulesStepViewProps) {
       </span>
       <div className="min-w-0 flex-1">
         <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs font-medium text-foreground">
-          <span>{ready ? COPY.readyTitle : COPY.title}</span>
+          <span>{ready ? readyTitle : COPY.title}</span>
           {p.mailbox ? (
             <>
               <span className="font-normal text-muted-foreground">for</span>
@@ -224,11 +244,21 @@ export function RulesStepView(p: RulesStepViewProps) {
                   {sort.action}
                 </Button>
               )}
+              {p.autoRun && (
+                <label className="flex items-center gap-2 text-xs text-foreground">
+                  <Toggle
+                    enabled={p.autoRun.state === "ready" && p.autoRun.on}
+                    disabled={p.autoRun.state !== "ready" || p.settingsBusy || locked}
+                    onChange={(on) => p.onAutoRunChange?.(on)}
+                  />
+                  {COPY.autoRunLabel}
+                </label>
+              )}
               {p.replyRule && (
                 <label className="flex items-center gap-2 text-xs text-foreground">
                   <Toggle
                     enabled={draftOn}
-                    disabled={p.draft.state !== "ready" || p.draftBusy || locked}
+                    disabled={p.draft.state !== "ready" || p.settingsBusy || locked}
                     onChange={p.onDraftChange}
                   />
                   {COPY.draftLabel}
@@ -257,6 +287,9 @@ export function RulesStepView(p: RulesStepViewProps) {
                   </Button>
                 )}
               </div>
+            )}
+            {p.autoRun?.state === "failed" && (
+              <p className="mt-1 text-[11px] text-muted-foreground">{COPY.autoRunReadFailed}</p>
             )}
             <p className="mt-1 text-[11px] text-muted-foreground">
               {!p.replyRule
@@ -330,7 +363,12 @@ export function OnboardingRulesStep({
   const [error, setError] = useState<string | null>(null);
   // The stored value, read once the step is ready. Disabled until then.
   const [draft, setDraft] = useState<DraftSwitch>({ state: "loading" });
-  const [draftBusy, setDraftBusy] = useState(false);
+  // G2 (EM-G11c2): the stored Auto-run choice, read once the step is ready.
+  const [autoRun, setAutoRunState] = useState<DraftSwitch>({ state: "loading" });
+  // One save at a time for both switches (fix round 1). Each save is a GET
+  // and a PUT of the whole body, so two at once could undo each other.
+  const [saver] = useState(() => settingsSaver());
+  const [settingsBusy, setSettingsBusy] = useState(false);
   const [finished, setFinished] = useState(false);
   const [sort, setSort] = useState<SortEstimate>({ state: "loading" });
   // A new value reads the count again ("Count again").
@@ -380,6 +418,17 @@ export function OnboardingRulesStep({
     if (phase !== "ready") return;
     let live = true;
     void readDraftSwitch(RULES_API, account.id).then((d) => live && setDraft(d));
+    return () => {
+      live = false;
+    };
+  }, [phase, account.id]);
+
+  // The Auto-run switch shows what is stored, on every mount, as the
+  // drafting switch does. A new Gmail mailbox reads OFF (G2).
+  useEffect(() => {
+    if (phase !== "ready") return;
+    let live = true;
+    void readAutoRunSwitch(RULES_API, account.id).then((a) => live && setAutoRunState(a));
     return () => {
       live = false;
     };
@@ -440,17 +489,34 @@ export function OnboardingRulesStep({
     setBusy(null);
   };
 
-  const changeDraft = async (on: boolean) => {
-    setDraftBusy(true);
+  // Both switches save through `saver`, which refuses a second save while
+  // one runs. `settingsBusy` disables both switches meanwhile.
+  const saveSetting = async (save: () => Promise<void>) => {
+    if (saver.busy()) return;
+    setSettingsBusy(true);
     setError(null);
     try {
-      await setDraftReplies(RULES_API, account.id, on);
-      setDraft({ state: "ready", on });
+      await saver.run(save);
     } catch {
       setError(COPY.failed);
     } finally {
-      setDraftBusy(false);
+      setSettingsBusy(false);
     }
+  };
+
+  const changeDraft = async (on: boolean) => {
+    await saveSetting(async () => {
+      await setDraftReplies(RULES_API, account.id, on);
+      setDraft({ state: "ready", on });
+    });
+  };
+
+  // The one write of Auto-run in this step: the member's own move (G2).
+  const changeAutoRun = async (on: boolean) => {
+    await saveSetting(async () => {
+      await setAutoRun(RULES_API, account.id, on);
+      setAutoRunState({ state: "ready", on });
+    });
   };
 
   if (finished) return null;
@@ -464,7 +530,9 @@ export function OnboardingRulesStep({
       error={error}
       replyRule={hasEnabledReplyRule(rules)}
       draft={draft}
-      draftBusy={draftBusy}
+      settingsBusy={settingsBusy}
+      autoRun={autoRun}
+      onAutoRunChange={(on) => void changeAutoRun(on)}
       pastFrom={pastFrom}
       sort={sort}
       onRetrySort={() => setSortTry((n) => n + 1)}

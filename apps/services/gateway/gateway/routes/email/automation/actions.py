@@ -26,8 +26,8 @@ from gateway.routes.email.automation.drafting import (
     _fetch_sender_reply_examples,
     _fetch_thread_context,
     _is_no_draft,
+    _record_rule_draft,
     _resolve_existing_thread_draft,
-    _store_ai_draft,
     _upsert_local_draft,
 )
 from gateway.routes.email.automation.identity import (
@@ -677,10 +677,14 @@ async def _apply_rule_actions(
                 # _tenant_session — a mid-block commit would end that
                 # transaction and drop the tenant GUC for everything after it
                 # (H2; found by the adversarial review, not the suites).
-                if not tmpl and account_id:
-                    await _store_ai_draft(
+                # WS-17 EM-G11c2 fix round 1 (G7): a TEMPLATE draft records
+                # its text too, under its own key, so the cleanup after a send
+                # trashes it, as on main. The key keeps it out of the
+                # edit-learning, which reads the bare thread id only.
+                if account_id:
+                    await _record_rule_draft(
                         db, account_id, email.get("thread_id") or "", body,
-                        commit=False)
+                        template=bool(tmpl))
             elif t == "FORWARD" and a.get("to_address"):
                 note = await _render_template(
                     (a.get("content") or "").strip(), email)

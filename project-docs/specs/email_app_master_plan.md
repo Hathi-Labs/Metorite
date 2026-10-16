@@ -13587,11 +13587,12 @@ cd ../.. && uv run pytest tests/unit/test_email_oauth_authorize_wiring.py -v
 builds it. ✅ **PR-G2 (EM-G11b) is merged** (#1001, 2026-10-14). ✅ **PR-G7 (EM-G11f1) is
 merged NARROWED** (#1006, 2026-10-14). §12.3.13.9 records what f1 covers. ✅ **PR-G3 (EM-G11c1)
 is merged** (#1019, 2026-10-14), and §12.3.13.6 records what it covers. The owner answered
-Q-GM-14 on 2026-10-14. 🔨 **PR-G3b (EM-G11c1b) is built, not merged** (2026-10-15, branch
-`gmail-g3b`, §12.3.13.6b): the browser proves the pane shows cards, and the PR closes two gaps. 🔨 **PR-G8 (EM-G11f2) is
-built NARROWED, not merged** (2026-10-14, branch `gmail-purge-durable`, migration 264).
+Q-GM-14 on 2026-10-14. ✅ **PR-G3b (EM-G11c1b) is merged** (#1030, 2026-10-15, §12.3.13.6b): the
+browser proves the pane shows cards, and the PR closes two gaps. ✅ **PR-G8 (EM-G11f2) is merged
+NARROWED** (#1020, 2026-10-14, migration 264). 🔨 **PR-G4 (EM-G11c2) is built NARROWED, not
+merged** (2026-10-15, branch `gmail-bg-writes`, §12.3.13.7).
 
-🔨 **PR-G5 (EM-G11d) is built NARROWED, not merged** (2026-10-15, branch `gmail-umcc`).
+✅ **PR-G5 (EM-G11d) is merged NARROWED** (#1060, 2026-10-16).
 §12.3.13.8 records what it covers. The other PRs are not built.
 
 **Why.** The owner wants Google to verify the Gmail app, so that every member can connect Gmail.
@@ -13866,12 +13867,12 @@ connect is the precedent (`src/app/whatsapp/connect/page.tsx:340`), and
 | PR-G1 | **EM-G11a** — the disclosure step and the Google button | 1, 8 | 🟢 AGENT-SAFE · security review · visual review. 🔴 The owner approves the disclosure text (Q-GM-7) | M, about 550 | §12.3.13.4 |
 | PR-G2 | **EM-G11b** — one set of Gmail scopes. ✅ Merged #1001 (2026-10-14) | 2 | 🟢 AGENT-SAFE | M, about 350 | §12.3.13.5 |
 | PR-G3 | **EM-G11c1** — a card for each chat write. ✅ Merged #1019 (2026-10-14) | 3 | 🟢 AGENT-SAFE · security review | M, about 550 | §12.3.13.6 |
-| PR-G3b | **EM-G11c1b** — cards in the email chat pane (Q-GM-14, owner answer 2026-10-14). 🔨 Built, not merged (2026-10-15, branch `gmail-g3b`). A browser spec proves the pane shows cards. In the pane and the Chat app, a saved draft card starts saved. On the D99 path a delegated `draft_reply` shows no draft card (§12.3.13.6b). The interim text names no chat | 3 | 🟢 AGENT-SAFE · one review round · visual review | S, about 150 | §12.3.13.6b |
-| PR-G4 | **EM-G11c2** — no background write without a member choice | 3 | 🟢 AGENT-SAFE · R8 · live for Outlook | M, about 500 | §12.3.13.7 |
-| PR-G5 | **EM-G11d** — UMCC: one frame, fewer tools, an eval set. 🔨 Built NARROWED 2026-10-15, branch `gmail-umcc`, not merged | 4 | 🟢 AGENT-SAFE · security review | L, about 600 | §12.3.13.8 |
+| PR-G3b | **EM-G11c1b** — cards in the email chat pane (Q-GM-14, owner answer 2026-10-14). ✅ Merged #1030 (2026-10-15). A browser spec proves the pane shows cards. In the pane and the Chat app, a saved draft card starts saved. On the D99 path a delegated `draft_reply` shows no draft card (§12.3.13.6b). The interim text names no chat | 3 | 🟢 AGENT-SAFE · one review round · visual review | S, about 150 | §12.3.13.6b |
+| PR-G4 | **EM-G11c2** — no background write without a member choice. 🔨 Built NARROWED, not merged (2026-10-15, branch `gmail-bg-writes`) | 3 | 🟢 AGENT-SAFE · R8 · live for Outlook | M, about 500 | §12.3.13.7 |
+| PR-G5 | **EM-G11d** — UMCC: one frame, fewer tools, an eval set. ✅ Merged NARROWED #1060 (2026-10-16) | 4 | 🟢 AGENT-SAFE · security review | L, about 600 | §12.3.13.8 |
 | PR-G6 | **EM-G11e** — UMCC: the detector, dark | 4 | 🟢 AGENT-SAFE build. 🔴 OWNER-GATE for the vendor and the API (Q-GM-9). 🔴 `enforcement-flip` for `EMAIL_INJECTION_SCAN` | M, about 450 | §12.3.13.8 |
 | PR-G7 | **EM-G11f1** — one mailbox teardown, with the revoke and the filters. ✅ Merged NARROWED #1006 (2026-10-14) | 6 | 🟢 AGENT-SAFE · security review · R8 | M, about 550 | §12.3.13.9 |
-| PR-G8 | **EM-G11f2** — a durable purge, and a fence on each child. 🔨 Built NARROWED 2026-10-14, branch `gmail-purge-durable`, migration 264, not merged | 6 | 🟢 AGENT-SAFE · R8 · one migration | M, about 500 | §12.3.13.9 |
+| PR-G8 | **EM-G11f2** — a durable purge, and a fence on each child. ✅ Merged NARROWED #1020 (2026-10-14), migration 264 | 6 | 🟢 AGENT-SAFE · R8 · one migration | M, about 500 | §12.3.13.9 |
 | PR-G9 | **EM-G11g1** — envelope encryption in the key store, dark | 5 | 🟢 AGENT-SAFE build · security review. 🔴 OWNER-GATE for KMS billing (Q-GM-8). 🔴 `enforcement-flip` for `KEY_STORE_ENVELOPE` | M, about 550 | §12.3.13.10 |
 | PR-G10 | **EM-G11g2** — the rewrap job and the rotation | 5 | 🟢 AGENT-SAFE · R8. 🔴 `deploy` to run the job on production | M, about 450 | §12.3.13.10 |
 | — | **EM-G11r** — the reviewer path, the video, the publish order and the scope text | 7, 9, 10, 11 | 🔴 OWNER-GATE (Google account, money, third party). Parts are agent acts, named in each step | Runbook | §12.3.13.11 to §12.3.13.14 |
@@ -14552,6 +14553,11 @@ card as after a manual save? This PR keeps it as after a manual save.
 3. **G3 and G4, Reply Zero and the cleanup sweep.** Both obey `auto_run`. With `auto_run` OFF, they
    write no label and move no mail. They can still compute a status for the UI. This applies to both
    providers, because a member who turned Auto-run off expects no write.
+   - **A missing row (audit 2026-10-15).** G2, G3 and G4 read `auto_run` through one helper. A
+     missing row reads OFF for Gmail and ON for Outlook.
+   - **The manual dispatch is out of scope (audit 2026-10-15).** `POST /notes/actions/{id}/dispatch`
+     does not change in this PR. A member who clicks dispatch makes the choice. G1 changes the
+     background path only, `auto_dispatch`.
 4. **G5, `automated=false`.** The runner applies a rule with `automated=false` as a dry run. It
    writes a PENDING row to the History, and the member approves it there (`runner.py:558`). This is
    the "propose for approval" that `create_rule` promises.
@@ -14592,6 +14598,43 @@ uv run pytest tests/unit/test_email_background_writes.py tests/unit/test_email_d
 ```
 
 Run one R8 suite at a time on the shared scratch database, or use a private ladder database.
+
+**What the build covers (2026-10-15, branch `gmail-bg-writes`).** The audit narrowed G1 to the
+background path. Each line names the code of record.
+
+- **G2.** `rules.auto_run_on` is the one reader of `auto_run`. The sync-cycle rule run, the Reply
+  Zero backfill, the sync-cycle sweep and `GET /email/assistant/settings` call it. The GET must give
+  the same answer, because the settings screen and the agent tool PUT its body back.
+- **G2, the row.** The rules step of the connect flow wrote the row only through the drafting switch.
+  It now shows "Run my rules on new mail" with the stored value, and a move saves `auto_run` only.
+  One save runs at a time for the two switches (`settingsSaver`), and one flag disables both.
+- **G2, every first row (fix round 1).** The column default of `auto_run` is false. So each INSERT
+  into `email_assistant_settings` names `auto_run` and stores what `auto_run_on` reads. That covers
+  the writing-style save and the PUT. The PUT model has `auto_run: bool | None`, and None keeps the
+  effective choice. A fence in `test_email_background_writes.py` scans each INSERT for the column.
+- **G3.** `_mark_thread_replied` takes `labels`. The backfill passes the Auto-run choice, and the
+  send routes keep True. With Auto-run OFF the backfill builds no provider and reconciles no label.
+  A reclassify that the member starts passes `obey_auto_run=False`, because the click is the
+  member's choice, as for a manual dispatch and a member sweep (fix round 1).
+- **G4.** `sweep_uncategorized` takes `obey_auto_run`, and only the sync cycle passes True. A sweep
+  that a member starts does not change.
+- **G5.** `rules.proposes_only` gates `_apply_and_log_match`, the one choke point. A manual rule logs
+  a PENDING row with `automated` false. The label of a manual conversation rule waits for the
+  approval too (`replyzero.conversation_match_proposes`). Process past emails and the rerun of one message go
+  through the same choke point.
+- **G7.** `_cleanup_thread_drafts` trashes a draft only when Metorite wrote it AND the provider's
+  live body still equals that text (`get_message_body`, fix round 1). Outlook keeps the stored text
+  when a synced body comes from HTML, so the mirror alone is not enough. A template DRAFT_EMAIL
+  records its text under `template:<thread_id>` (`drafting._record_rule_draft`), so the cleanup
+  trashes it as on main. The edit-learning reads the bare thread id only. Both send routes add the
+  cleanup before `_learn_from_sent`, because that task deletes the AI record.
+- **Item 6.** `AUTO_RUN_AI_LINE` in `lib/assistantSettings.ts` holds the line, and the Settings tab
+  draws it under Auto-run. `AUTO_RUN_DESCRIPTION` says that OFF also stops the Reply Zero labels
+  and the sorting sweep (fix round 1).
+
+**Open after the build.** The History has no Approve button. `approveExecution` in `lib/api.ts`
+has no caller, so a member approves a proposal through the email agent tool only. Q-GM-12 stays
+open, and the Outlook live check runs after the merge.
 
 ##### 12.3.13.8 EM-G11d and EM-G11e — the Untrusted Mail Content Control (UMCC) (PR-G5, PR-G6)
 
@@ -14674,7 +14717,7 @@ uv run pytest tests/unit/test_injection_scan.py -v -rs
 
 The eval module name follows the pattern of `evals/email_insights/`. Read it again at dispatch.
 
-**EM-G11d as built (2026-10-15).** 🔨 Built NARROWED, not merged, on branch `gmail-umcc`. The
+**EM-G11d as built (2026-10-15).** ✅ Merged NARROWED as #1060 (2026-10-16). The
 audit of 2026-10-14 returned GO-NARROWED. Its narrowing replaces scope items 1, 4 and 5 above.
 
 - **One helper.** `acb_skills/untrusted.py` holds `UntrustedFrame` and `frame_untrusted`. One

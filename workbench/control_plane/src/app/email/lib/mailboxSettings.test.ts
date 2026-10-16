@@ -326,7 +326,7 @@ function stepView(over: Partial<RulesStepViewProps>): string {
     error: null,
     replyRule: true,
     draft: { state: "ready", on: false },
-    draftBusy: false,
+    settingsBusy: false,
     pastFrom: "2026-07-05",
     sort: { state: "ready", estimate: { in_range: 40, eligible: 40, will_process: 40, capped: false, limit: 1000 } },
     onRecommended: noop,

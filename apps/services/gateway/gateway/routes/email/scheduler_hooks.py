@@ -88,12 +88,15 @@ def as_mailbox_owner(fn: Any) -> Any:
 async def auto_run_rules_for_account(account_id: str) -> None:
     """Auto-run Assistant rules on newly-synced mail (opt-in per account).
 
-    The global switch (``email_assistant_settings.auto_run``) defaults ON: a
-    missing settings row is treated as enabled so a fresh account auto-runs once
-    it has rules; only an explicit OFF stops it. Moved here from
+    The switch is ``email_assistant_settings.auto_run``, read through the
+    ONE helper ``rules.auto_run_on`` (WS-17 EM-G11c2, §12.3.13.7). A stored
+    OFF stops the run. A missing row stops it for Gmail, so a new Gmail
+    mailbox runs no rule action until the member chooses Auto-run. A missing
+    row keeps Outlook ON, as before. Moved here from
     ``email_ingestion.scheduler`` as part of the layering inversion — it is
     gateway-domain logic (it needs the gateway DB helper + the rules worker).
     """
+    from gateway.routes.email.automation.rules import auto_run_on
     from gateway.routes.email.automation.runner import _run_rules_job
     from sqlalchemy import text
 
@@ -101,17 +104,7 @@ async def auto_run_rules_for_account(account_id: str) -> None:
     # webhook and the request jobs run bound too. With no tenant bound this
     # raises TenantUnbound, and `process_new_mail` logs it.
     async with _tenant_session() as db:
-        settings = (
-            await db.execute(
-                text(
-                    "SELECT auto_run FROM email_assistant_settings "
-                    "WHERE account_id = :aid"
-                ),
-                {"aid": account_id},
-            )
-        ).fetchone()
-        # Global switch: explicit OFF stops auto-run; missing row → ON.
-        if settings is not None and not settings.auto_run:
+        if not await auto_run_on(db, account_id):
             return
         has_rule = (
             await db.execute(
@@ -173,8 +166,12 @@ async def process_new_mail(account_id: str) -> None:
         # at the top was re-read forever and nothing behind it was ever reached
         # — production logged "scanned: 100, applied: 0, no_evidence: 100" every
         # five minutes with 575 older messages waiting behind the wall.
+        #
+        # EM-G11c2 (§12.3.13.7, G4): the sweep of a sync cycle obeys the
+        # member's Auto-run choice. With Auto-run OFF it writes no label.
         await sweep_uncategorized(account_id, 5000, dry_run=False,
-                                  owner="scheduler", max_apply=100)
+                                  owner="scheduler", max_apply=100,
+                                  obey_auto_run=True)
     except Exception as exc:  # noqa: BLE001
         _log.warning("sync.cleanup_sweep_failed", account_id=account_id,
                      error=str(exc)[:200])

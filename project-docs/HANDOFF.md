@@ -5659,6 +5659,24 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/knowledge_base.md` §6.2 and §6.4
 - **Added:** 2026-10-16 · WS-61 KB-3 review
 
+### H-331 · `test_fifteen_for_each_source` fails in the full unit run, and passes alone · [AGENT]
+- **Check:** in a CI log of the whole `tests/unit` run, search for
+  `test_feed_handled.py::TestTheCap::test_fifteen_for_each_source FAILED`.
+  A hit in a run whose diff touches no My Day file means this is open.
+- **Why.** On 2026-10-16 the test failed with `assert 0 == 15` in the unit job
+  of PR #1074, which changed no Python file (run 38842018493, first try). The
+  rerun passed. Alone, the suite passes 52 of 52 three times in a row. The
+  test's clock is fixed (`NOW` in `test_shell_needs.py`), so an earlier test
+  in the same process most likely leaves a patched read, a cache or a clock
+  that `handled_run` then sees. A flaky required check costs every PR an
+  hour.
+- **Do this:** run `uv run pytest tests/unit -k "feed or my_day or shell" -p
+  no:randomly` in file order until it fails, then bisect the files before
+  it. Fix the leak with a fixture that restores what it patches, not with a
+  retry.
+- **Authority:** `specs/my_day_feed.md` (WS-58), `CLAUDE.md` §3 rule 8
+- **Added:** 2026-10-16 · WS-61 KB-2a CI
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

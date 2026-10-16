@@ -14,11 +14,16 @@
     "Neither side may restate these values in its own source (tests/fixtures/README.md rule 2).",
     "",
     "WS-17 EM-T14a, D-EM-39 (§13.2 and §13.9.1): Insights is OFF for a new mailbox. Only the",
-    "gateway test reads `insights_enabled`, because no UI draws it yet."
+    "gateway test reads `insights_enabled`, because no UI draws it yet.",
+    "",
+    "WS-17 EM-G11c2 (§12.3.13.7, G2): Auto-run is OFF for a NEW Gmail mailbox with no settings row,",
+    "because rules.auto_run_on reads a missing Gmail row as OFF. The gateway test runs the GET as a",
+    "Gmail mailbox. An Outlook mailbox with no row reads ON, and that test covers it beside this fixture."
   ],
   "get_without_settings_row": {
     "draft_replies": false,
     "follow_up_auto_draft": false,
-    "insights_enabled": false
+    "insights_enabled": false,
+    "auto_run": false
   }
 }

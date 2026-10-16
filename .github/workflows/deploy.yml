@@ -91,9 +91,18 @@ jobs:
         continue-on-error: true
         run: uv run mypy apps packages --ignore-missing-imports || echo "mypy found issues"
 
-  # ── Gate 2: Unit Tests ─────────────────────────────────────────────────
+  # ── Unit tests on main: a SIGNAL, no longer a gate ─────────────────────
+  #
+  # Changed 2026-10-16. This job re-ran the suite pr-check had just passed,
+  # and the deploy waited 19 minutes for it on every merge. It no longer
+  # gates `publish-release` or `deploy`. It still runs, beside the deploy, so
+  # two PRs that pass alone and fail together still turn `main` red. The
+  # answer to a red `main` is to fix forward or revert, at once.
+  #
+  # ⚠️ A merge queue would gate that case before the merge. It needs a
+  # branch-protection change, which is the owner's.
   test:
-    name: "Unit tests"
+    name: "Unit tests (main, not a gate)"
     runs-on: ubuntu-latest
     needs: lint
     if: ${{ !inputs.skip_tests }}
@@ -116,10 +125,15 @@ jobs:
 
   # ── Publish the ref the VPS polls (WS-25) ──────────────────────────────
   # `scripts/vps_pull.sh` on the box applies `origin/release`, never `main`,
-  # so CI gating survives the inversion to pull-based delivery: a commit whose
-  # tests failed never becomes something the box will install.
+  # so the box installs only a commit that reached `main`. pr-check tested it
+  # as a PR before the merge.
   #
-  # Gated on lint+test and DELIBERATELY NOT on the deploy job. That looks wrong
+  # ⚠️ `github.ref == 'refs/heads/main'`, because the tests no longer gate
+  # here. Without it, `gh workflow run deploy.yml --ref <branch>` would publish
+  # a branch that never passed pr-check.
+  #
+  # Gated on lint and
+  # DELIBERATELY NOT on the deploy job. That looks wrong
   # until you remember what this is for: when GitHub cannot reach the VPS, the
   # deploy job FAILS. Gating the ref on deploy success would withhold it exactly
   # when the box's own pull is the only delivery path left — which is the
@@ -132,11 +146,8 @@ jobs:
   publish-release:
     name: "Publish release ref"
     runs-on: ubuntu-latest
-    needs: [lint, test]
-    if: >-
-      ${{ always()
-      && needs.lint.result == 'success'
-      && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
+    needs: [lint]
+    if: ${{ always() && needs.lint.result == 'success' && github.ref == 'refs/heads/main' }}
     permissions:
       contents: write
     steps:
@@ -207,15 +218,12 @@ jobs:
     # blocking every later deploy. Failing at 120 is recoverable; a wedged slot
     # for six hours is not.
     timeout-minutes: 120
-    needs: [lint, test]
-    # NOT `if: success()`. With skip_tests=true the `test` job is SKIPPED, and a
-    # dependent guarded by success() is skipped along with it — so the emergency
-    # hotfix path silently deployed nothing, exactly when it was needed most.
-    # Treat a skipped test job as acceptable; a FAILED one still blocks.
-    if: >-
-      ${{ always()
-      && needs.lint.result == 'success'
-      && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
+    needs: [lint]
+    # `always()` keeps the old hotfix lesson: a dependent guarded by plain
+    # success() is skipped when an ancestor is skipped, and the deploy then
+    # silently does nothing. `test` is no longer an ancestor (see its note).
+    # `main` only, for the reason `publish-release` gives.
+    if: ${{ always() && needs.lint.result == 'success' && github.ref == 'refs/heads/main' }}
     env:
       # Runner-reachable public URLs used to VERIFY the deploy by outcome
       # (see the deploy step's rationale).

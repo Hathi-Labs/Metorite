@@ -121,11 +121,25 @@ def _settings_row(**over) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
-def _db(*, settings=None, drafts: bool = False, sent: list[str] | None = None):
+def _db(*, settings=None, drafts: bool = False, sent: list[str] | None = None,
+        provider: str = "gmail"):
     """``settings`` is the stored row (None means no row). ``drafts`` is what
-    the reply-rule read answers. ``sent`` is the body text of sent mail."""
+    the reply-rule read answers. ``sent`` is the body text of sent mail.
+    ``provider`` is the mailbox's provider. A NEW mailbox here is a Gmail one.
+
+    WS-17 EM-G11c2 fix round 1: the join of ``rules.auto_run_on`` has its own
+    arm, ahead of the ``email_accounts`` arm that also matches it. Before, it
+    got the account row, with no provider and no ``settings_row``, so the
+    helper read ON whatever was stored."""
     def _exec(sql, params=None):
         s = str(sql)
+        if hits(s, "LEFT JOIN email_assistant_settings"):
+            one = SimpleNamespace(
+                provider=provider,
+                auto_run=getattr(settings, "auto_run", None),
+                settings_row=None if settings is None else "acc-1")
+            return MagicMock(fetchone=MagicMock(return_value=one),
+                             fetchall=MagicMock(return_value=[one]))
         if hits(s, "FROM email_rules"):
             one, many = SimpleNamespace(drafts=drafts), []
         elif hits(s, "INSERT INTO email_assistant_settings"):
@@ -213,6 +227,8 @@ async def test_the_get_for_a_new_mailbox_answers_the_shared_fixture() -> None:
     assert _FIXTURE["follow_up_auto_draft"] is False
     # Insights is OFF for a new mailbox (D-EM-39, EM-T14a).
     assert _FIXTURE["insights_enabled"] is False
+    # Auto-run is OFF for a new GMAIL mailbox (WS-17 EM-G11c2, G2).
+    assert _FIXTURE["auto_run"] is False
     model = AssistantSettingsModel(account_id="a")
     assert body["draft_replies"] is model.draft_replies
     assert body["follow_up_auto_draft"] is model.follow_up_auto_draft
@@ -297,7 +313,29 @@ def test_the_style_insert_names_draft_replies() -> None:
     """The column default still binds every other INSERT that omits the column.
     This one names it, so the default never decides a legacy mailbox."""
     src = inspect.getsource(assistant_mod.generate_writing_style)
-    assert "(account_id, writing_style, draft_replies, updated_at)" in src
+    assert "(account_id, writing_style, draft_replies, auto_run, updated_at)" in src
+
+
+@pytest.mark.parametrize(("provider", "settings", "expected"), [
+    ("gmail", None, False),
+    ("microsoft", None, True),
+    ("microsoft", _settings_row(auto_run=False), False),
+    ("gmail", _settings_row(auto_run=True), True),
+])
+async def test_the_get_answers_the_effective_auto_run(provider, settings, expected) -> None:
+    """WS-17 EM-G11c2 fix round 1: the GET answers ``rules.auto_run_on``.
+    A stored value wins. With no row, Gmail reads OFF and Outlook reads ON."""
+    body = await _get(_db(settings=settings, provider=provider))
+    assert body["auto_run"] is expected
+
+
+@pytest.mark.parametrize(("provider", "expected"), [("gmail", False), ("microsoft", True)])
+async def test_a_new_row_from_the_style_keeps_the_effective_auto_run(provider, expected) -> None:
+    db = _db(sent=["Thanks, will do."], provider=provider)
+    await _generate(db)
+    (sql, params), = _executed(db, "INSERT INTO email_assistant_settings")
+    assert params["auto"] is expected
+    assert "auto_run" not in sql.split("DO UPDATE SET", 1)[1]
 
 
 # ── the agent path ──────────────────────────────────────────────────────────
@@ -341,6 +379,8 @@ async def test_the_agent_saving_another_field_keeps_drafting_off(monkeypatch) ->
     assert sent[0]["signature"] == "— Me"
     assert sent[0]["draft_replies"] is False
     assert AssistantSettingsModel.model_validate(sent[0]).draft_replies is False
+    # EM-G11c2: and saving the signature leaves Auto-run OFF on a new Gmail box.
+    assert sent[0]["auto_run"] is False
 
 
 # ── the stored choice that the preset seed reads ────────────────────────────
