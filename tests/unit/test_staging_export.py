@@ -168,3 +168,18 @@ def test_a_malformed_slug_list_stops_before_any_work(tmp_path: pathlib.Path, slu
     res = _run(tmp_path, "postgresql://unused", slugs)
     assert res.returncode == 2
     assert not (tmp_path / "out").exists()
+
+
+def test_a_symlinked_export_folder_refuses(tmp_path: pathlib.Path) -> None:
+    """Root writes there. A link would point root's chmod and mv somewhere else."""
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "out").symlink_to(tmp_path / "elsewhere")
+    res = _run(tmp_path, "postgresql://unused", "h3rls-a")
+    assert res.returncode == 2
+    assert "symlink" in res.stderr
+    assert list((tmp_path / "elsewhere").iterdir()) == []
+
+
+def test_the_export_is_capped_in_time() -> None:
+    body = _BACKUP.read_text(encoding="utf-8")
+    assert 'timeout -k 30 600 bash "$(dirname "${BASH_SOURCE[0]}")/staging_export.sh"' in body

@@ -3,4 +3,10 @@
 # /home/acb/.ssh/staging_link on the staging box. The key can forward one port,
 # the Console, and can read the staging export folder, and nothing else: no
 # shell, no pty, no agent, no X11, no other port.
-restrict,port-forwarding,permitopen="127.0.0.1:8090",command="/usr/bin/rrsync -ro /var/lib/acb/staging-export/current" KEY acb-staging-link
+#
+# ⚠️ `port-forwarding` turns on REMOTE forwarding (-R) too, and `permitopen`
+# limits -L only. Without `permitlisten`, a holder of this key could bind a
+# free loopback port on the production box, and hold 8080 or 8090 while that
+# unit restarts. `permitlisten="127.0.0.1:1"` is the one port it may listen on,
+# and acb cannot bind a port below 1024. So -R binds nothing.
+restrict,port-forwarding,permitopen="127.0.0.1:8090",permitlisten="127.0.0.1:1",command="/usr/bin/rrsync -ro /var/lib/acb-staging-export/current" KEY acb-staging-link

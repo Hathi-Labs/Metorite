@@ -951,10 +951,12 @@ if [ "$VERIFY_RESTORE" = "1" ]; then
     # ── WS-38 T-9: the staging export, from THIS container ────────────────
     # The restored copy is reduced to the allowlisted organizations and dumped
     # for the staging box (scripts/staging_export.sh). It runs only when
-    # STAGING_EXPORT_SLUGS is set in root.env. ⚠️ It can NEVER fail the backup:
-    # the `if` swallows its exit, and a staging problem is a warning here.
+    # STAGING_EXPORT_SLUGS is set in root.env. ⚠️ It must not fail the backup:
+    # the `if` swallows its exit, and a staging problem is a warning here. It
+    # shares the unit's 1800 s budget, so `timeout` caps it at 600 s. A whole
+    # backup took about 3 minutes in October 2026.
     if [ -n "${STAGING_EXPORT_SLUGS:-}" ]; then
-      if bash "$(dirname "${BASH_SOURCE[0]}")/staging_export.sh" "$verify_ctr" verify; then
+      if timeout -k 30 600 bash "$(dirname "${BASH_SOURCE[0]}")/staging_export.sh" "$verify_ctr" verify; then
         :
       else
         warn "the staging export FAILED (exit $?). The backup is unaffected."

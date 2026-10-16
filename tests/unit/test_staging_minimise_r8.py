@@ -159,3 +159,13 @@ def test_the_named_credentials_are_blanked(clone) -> None:
     with clone.connect() as c:
         for table in ("agent_token", "provider_keys", "agent_client", "auth_email_otp_token"):
             assert c.execute(text(f"SELECT count(*) FROM public.{table}")).scalar_one() == 0, table
+
+
+def test_a_varchar_credential_refuses(clone) -> None:
+    """format_type prints `character varying(255)`, so a type-name match missed it."""
+    with clone.begin() as c:
+        c.execute(text("CREATE TABLE public.zz_v (organization_id uuid, foo_secret varchar(255))"))
+        c.execute(text("INSERT INTO public.zz_v VALUES (:o, 's3cr3t')"), {"o": clone.org_a})
+    res = _run(clone, "h3rls-a")
+    assert res.returncode != 0
+    assert "zz_v.foo_secret" in res.stderr

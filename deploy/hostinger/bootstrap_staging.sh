@@ -202,6 +202,9 @@ set_kv "$env" PGHOST 127.0.0.1
 set_kv "$env" PGPORT 5435
 set_kv "$env" PGPASSWORD "$db_pw"
 set_kv "$env" PGSSLMODE disable
+# The database is rebuilt each night, so a pre-migration dump protects nothing.
+# It would also fail: this box's pg_dump is 16, and the server is 17.
+set_kv "$env" SKIP_PRE_MIGRATION_BACKUP 1
 set_kv "$env" DATABASE_URL "postgresql+psycopg://acb_app:$app_pw@127.0.0.1:5435/postgres"
 set_kv "$env" REDIS_URL "redis://localhost:6379/0"
 set_kv "$env" CUSTOMER_CONSOLE_URL "http://127.0.0.1:18090"
@@ -250,7 +253,7 @@ done
 docker exec acb-staging-db pg_isready -q -U postgres || fail "acb-staging-db did not start"
 note "acb-staging-db is up on 127.0.0.1:5435"
 
-line="restrict,port-forwarding,permitopen=\"127.0.0.1:8090\",command=\"/usr/bin/rrsync -ro /var/lib/acb/staging-export/current\" $(cut -d' ' -f1,2 /home/acb/.ssh/staging_link.pub) acb-staging-link"
+line="restrict,port-forwarding,permitopen=\"127.0.0.1:8090\",permitlisten=\"127.0.0.1:1\",command=\"/usr/bin/rrsync -ro /var/lib/acb-staging-export/current\" $(cut -d' ' -f1,2 /home/acb/.ssh/staging_link.pub) acb-staging-link"
 if sudo -u acb rsync --list-only \
      -e "ssh -i /home/acb/.ssh/staging_link -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/home/acb/.ssh/known_hosts_prod" \
      "acb@$prod_ip:./" >/dev/null 2>&1; then

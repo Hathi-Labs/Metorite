@@ -121,7 +121,8 @@ def test_the_switch_merge(tmp_path: pathlib.Path) -> None:
     (imp / "flags.env").write_text(
         "root:TASKS_LENS=on\nroot:EMAIL_SYNC_ENABLED=true\nroot:REACH_ENABLED=true\n"
         "root:BAD NAME=1\nroot:ODD_ENABLED=a b\nworkbench:NEXT_PUBLIC_SHELL_BAR=1\n"
-        "workbench:MEMBER_INVITE_EMAIL_ENABLED=true\n", encoding="utf-8")
+        "workbench:MEMBER_INVITE_EMAIL_ENABLED=true\nroot:PROJECT_REPORT_EMAIL_ENABLED=true\n"
+        "root:DEPLOY_ENV=production\nroot:SOME_URL_ENABLED=x\n", encoding="utf-8")
     env = tmp_path / ".env"
     env.write_text("TASKS_LENS=off\nEMAIL_SYNC_ENABLED=false\nA=1\n", encoding="utf-8")
     env.chmod(0o600)
@@ -129,7 +130,8 @@ def test_the_switch_merge(tmp_path: pathlib.Path) -> None:
     wb.write_text("MEMBER_INVITE_EMAIL_ENABLED=false\n", encoding="utf-8")
     body = _REFRESH.read_text(encoding="utf-8")
     held = re.search(r"^held='[^']+'$", body, re.M).group(0)
-    prog = "\n".join(["set -euo pipefail", f"import_dir={imp}", held, _fn(_REFRESH, "apply_flags"),
+    switch = re.search(r"^switch='[^']+'$", body, re.M).group(0)
+    prog = "\n".join(["set -euo pipefail", f"import_dir={imp}", held, switch, _fn(_REFRESH, "apply_flags"),
                       f"apply_flags root {env}", f"apply_flags workbench {wb}"])
     res = subprocess.run(["bash", "-c", prog], capture_output=True, text=True, timeout=30)
     assert res.returncode == 0, res.stderr
@@ -189,7 +191,10 @@ def test_the_production_key_line_is_one_port_and_one_read_only_folder() -> None:
     opts = line[0].rsplit(" KEY ", 1)[0]
     assert opts.startswith("restrict,")
     assert 'permitopen="127.0.0.1:8090"' in opts
-    assert 'command="/usr/bin/rrsync -ro /var/lib/acb/staging-export/current"' in opts
+    assert 'command="/usr/bin/rrsync -ro /var/lib/acb-staging-export/current"' in opts
+    # `port-forwarding` re-enables -R too. The one listen spec is a port below
+    # 1024, which acb cannot bind, so the key can listen on nothing.
+    assert 'permitlisten="127.0.0.1:1"' in opts
     boot = _BOOT.read_text(encoding="utf-8").replace('\\"', '"')
     assert opts in boot, "the bootstrap prints a different line from the one recorded here"
 
@@ -210,3 +215,23 @@ def test_the_scripts_are_executable_bash() -> None:
     for p in (_BOOT, _REFRESH, _ROOT / "scripts/staging_export.sh"):
         assert p.read_text(encoding="utf-8").startswith("#!/usr/bin/env bash\n"), p
         assert subprocess.run(["bash", "-n", str(p)]).returncode == 0, p
+
+
+def test_the_refresh_holds_the_deploy_lock_while_the_database_is_away() -> None:
+    body = _code(_REFRESH)
+    take = body.index("flock -w 1800 9")
+    assert take < body.index("systemctl stop") < body.index("DROP DATABASE")
+    assert body.index("pg_restore") < body.index("flock -u 9") < body.index("vps_pull.sh")
+
+
+def test_the_refresh_proves_the_serving_commit() -> None:
+    body = _code(_REFRESH)
+    assert "another deploy holds the lock" in body, "a skipped deploy must not read as done"
+    assert 'curl -s -m 10 http://127.0.0.1:8080/version' in body
+    assert body.rindex('[ "$got" = "$want" ] || fail') > body.index("vps_pull.sh")
+
+
+def test_staging_skips_the_pre_migration_dump() -> None:
+    """The box's pg_dump is 16 and the server is 17, so the dump would fail
+    and stop every staging migration. The database is rebuilt nightly."""
+    assert 'set_kv "$env" SKIP_PRE_MIGRATION_BACKUP 1' in _BOOT.read_text(encoding="utf-8")

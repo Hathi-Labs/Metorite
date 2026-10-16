@@ -103,14 +103,15 @@ BEGIN
   TRUNCATE public.agent_client, public.auth_email_otp_token;
   DELETE FROM public.agent_token;
   DELETE FROM public.provider_keys;
-  UPDATE public.email_accounts          SET credentials_encrypted = '';
+  UPDATE public.email_accounts          SET credentials_encrypted = '', webhook_client_state = NULL;
   UPDATE public.integration_connections SET credentials_encrypted = NULL;
   UPDATE public.task_accounts           SET credentials_encrypted = '', last_delta_token = NULL;
   UPDATE public.wa_accounts             SET credentials_encrypted = '', webhook_verify_token = NULL;
   UPDATE public.workflows               SET hook_token = NULL;
 
   -- 6. Nothing credential-shaped is left. Counters (`*_tokens`, `token_cost`)
-  --    are numbers, so the text and binary types alone are checked.
+  --    are numbers, so the text and binary types alone are checked, by type
+  --    OID: format_type would print `character varying(255)` and miss it.
   FOR t IN
     SELECT c.relname, a.attname
       FROM pg_attribute a
@@ -118,8 +119,9 @@ BEGIN
       JOIN pg_namespace ns ON ns.oid = c.relnamespace
      WHERE ns.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition
        AND a.attnum > 0 AND NOT a.attisdropped
-       AND format_type(a.atttypid, a.atttypmod) IN ('text', 'bytea', 'jsonb', 'json', 'character varying')
-       AND a.attname ~* '(secret|password|passwd|credential|private_key|api_?key|access_key|cookie|encrypted|cipher|refresh_token|verify_token|hook_token|token_hash|^token$)'
+       AND a.atttypid IN ('text'::regtype, 'bytea'::regtype, 'jsonb'::regtype,
+                          'json'::regtype, 'varchar'::regtype, 'bpchar'::regtype)
+       AND a.attname ~* '(secret|password|passwd|credential|private_key|api_?key|access_key|cookie|encrypted|cipher|refresh_token|verify_token|hook_token|token_hash|client_state|^token$)'
   LOOP
     EXECUTE format('SELECT count(*) FROM public.%I WHERE %I IS NOT NULL AND %I::text <> %L',
                    t.relname, t.attname, t.attname, '') INTO n;

@@ -2,7 +2,8 @@
 # The Console listens on 127.0.0.1:8090 of the production box only, and that
 # box's firewall opens 22, 80 and 443 only. This tunnel carries one port. Its
 # key is restricted on the production side to that port and to a read-only
-# rsync of the staging export (deploy/hostinger/staging/authorized_keys.line).
+# rsync of the staging export, and it can listen on no port there
+# (deploy/hostinger/staging/authorized_keys.line).
 # Staging then sets CUSTOMER_CONSOLE_URL=http://127.0.0.1:18090.
 [Unit]
 Description=Metorite STAGING tunnel to the production Customer Console

@@ -15,7 +15,8 @@
 # organizations named in STAGING_EXPORT_SLUGS, with every credential blanked.
 # The full copy dies with the container (parent spec §3.4, clause 1).
 #
-# OUTPUT: <out-dir>/current (default /var/lib/acb/staging-export),
+# OUTPUT: <out-dir>/current (default /var/lib/acb-staging-export, a ROOT-owned
+# parent: root never writes inside a folder that acb owns, BH-6),
 # group acb, mode 0640:
 #   staging.dump     pg_dump -Fc of public, no owner and no ACL
 #   roles.txt        role names that the dump's policies may name
@@ -36,7 +37,7 @@ set -euo pipefail
 
 ctr="${1:?usage: staging_export.sh <verify-container> <verify-database> [out-dir] [app-dir] [group]}"
 db="${2:?usage: staging_export.sh <verify-container> <verify-database> [out-dir] [app-dir] [group]}"
-out="${3:-/var/lib/acb/staging-export}"
+out="${3:-/var/lib/acb-staging-export}"
 app_dir="${4:-/opt/acb/app}"
 group="${5:-acb}"
 slugs="${STAGING_EXPORT_SLUGS:-}"
@@ -60,7 +61,8 @@ fi
 
 vpsql() { docker exec -i "$ctr" psql -X -q -v ON_ERROR_STOP=1 -U postgres -d "$db" "$@"; }
 
-install -d -m 0750 -g "$group" "$out"
+[ -L "$out" ] && { echo "staging export: $out is a symlink. Refusing." >&2; exit 2; }
+install -d -m 0750 -g "$group" "$out"   # root runs this, so root owns it
 next="$out/.next.$$"
 rm -rf "$next"
 install -d -m 0750 -g "$group" "$next"

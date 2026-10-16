@@ -75,6 +75,13 @@ fi
 # ── 4. Rebuild ──────────────────────────────────────────────────────────────
 say "Rebuilding the staging database (export ${age_h}h old)"
 dpsql() { docker exec -i "$ctr" psql -X -q -v ON_ERROR_STOP=1 -U postgres "$@"; }
+# The deploy lock, for as long as services are stopped and the database is
+# away. acb-pull.timer runs every 5 minutes on this box, and an apply in flight
+# would migrate a database that this then drops. Wait for it, up to 30 minutes.
+lock="$(dirname "$app_dir")/acb-deploy.lock"
+[ -e "$lock" ] || install -m 0644 -o acb -g acb /dev/null "$lock"
+exec 9<"$lock"
+flock -w 1800 9 || fail "another deploy held the lock for 30 minutes. Nothing was changed."
 systemctl stop acb-gateway acb-workbench acb-agent-edge 2>/dev/null || true
 dpsql -d template1 -c "DROP DATABASE IF EXISTS postgres WITH (FORCE)" < /dev/null
 dpsql -d template1 -c "CREATE DATABASE postgres" < /dev/null
@@ -119,7 +126,12 @@ echo "$sum" > "$state"
 # A switch that reaches a person or a third party never comes across: mail,
 # WhatsApp, the meeting bot, invites, Reach, sign-in through the Console, and
 # self-serve sign-up. Staging keeps the value that bootstrap_staging.sh wrote.
-held='^(WHATSAPP_|MEETING_BOT_|EMAIL_|REACH_|MEMBER_INVITE_|CUSTOMER_CONSOLE_|SELF_SERVE_|GMAIL_|MSFT_)|(SYNC|SEND|OUTBOUND|NOTIFY|PUSH)'
+# Matched ANYWHERE in the name, not only at its start: PROJECT_REPORT_EMAIL_ENABLED
+# mails real people, and an anchored `^EMAIL_` missed it.
+held='(WHATSAPP|MEETING_BOT|EMAIL|REACH_|INVITE|CUSTOMER_CONSOLE|SELF_SERVE|SIGNUP|GMAIL|MSFT|SYNC|SEND|OUTBOUND|NOTIFY|PUSH|DIGEST|WEBHOOK|SMS)'
+# The export's own name rule, checked again here: a line that names anything
+# else (DEPLOY_ENV, a URL, a key) is never applied.
+switch='^(NEXT_PUBLIC_[A-Z0-9_]+|[A-Z0-9_]+_ENABLED|[A-Z0-9_]+_LENS|IDENTITY_CUTOVER|ACB_GRAPH_TENANT_BIND)$'
 apply_flags() {
   local scope="$1" file="$2" line name
   [ -f "$file" ] || return 0
@@ -128,6 +140,8 @@ apply_flags() {
     line="${line#"$scope":}"
     name="${line%%=*}"
     [[ "$line" =~ ^[A-Z0-9_]+=[A-Za-z0-9_.:-]{0,64}$ ]] || continue
+    [[ "$name" =~ $switch ]] || continue
+    [[ "$name" =~ (KEY|SECRET|TOKEN|PASSWORD|PASSWD|DSN|URL|PASS) ]] && continue
     [[ "$name" =~ $held ]] && continue
     ( umask 077; { grep -v "^$name=" "$file" || true; } > "$file.tmp" )
     echo "$line" >> "$file.tmp"
@@ -138,6 +152,30 @@ apply_flags root "$app_dir/.env"
 apply_flags workbench "$app_dir/workbench/control_plane/.env.local"
 
 # ── 7. The normal deploy path ───────────────────────────────────────────────
+# Release the lock, then deploy. vps_pull.sh takes the lock itself, and exits 0
+# with "nothing to do" when the timer holds it, so retry until it ran.
+flock -u 9
+exec 9<&-
 say "Applying the staging ref (pending migrations, build, restart)"
-sudo -u acb env MODE=force bash "$app_dir/scripts/vps_pull.sh"
-say "Staging rebuilt from the production copy"
+ran=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  out="$(sudo -u acb env MODE=force bash "$app_dir/scripts/vps_pull.sh" 2>&1)" || {
+    printf '%s\n' "$out" | tail -30 >&2
+    fail "the staging deploy failed. The database is rebuilt, and the services may be down."
+  }
+  printf '%s\n' "$out" | tail -5
+  if printf '%s\n' "$out" | grep -q "another deploy holds the lock"; then sleep 60; continue; fi
+  ran=1
+  break
+done
+[ "$ran" = "1" ] || fail "the deploy lock stayed busy for 10 minutes. Run this again."
+
+# Proof by the serving commit, never by an exit code (CLAUDE.md §3 rule 8).
+want="$(sudo -u acb git -C "$app_dir" rev-parse HEAD)"
+for _ in $(seq 1 30); do
+  got="$(curl -s -m 10 http://127.0.0.1:8080/version 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("sha",""))' 2>/dev/null || true)"
+  [ "$got" = "$want" ] && break
+  sleep 10
+done
+[ "$got" = "$want" ] || fail "the gateway serves '${got:-nothing}', not ${want:0:12}"
+say "Staging rebuilt from the production copy, serving ${want:0:12}"
