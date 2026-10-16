@@ -116,3 +116,28 @@ export interface PagePatchBody {
 export interface PageRevertBody {
   version: number;
 }
+
+/**
+ * One hit of `GET /knowledge/search` (WS-61 KB-3, `kb_index/query.py`
+ * `_hit`): one chunk of a published page the member can see. `heading_path`
+ * joins the headings with " > ", and `text` holds at most 400 characters.
+ */
+export interface SearchHit {
+  page_id: string;
+  space_id: string;
+  space_name: string;
+  title: string;
+  heading_path: string;
+  text: string;
+  score: number;
+  updated_at: string | null;
+  href: string;
+}
+
+/** `GET /knowledge/search`. `query` is the words the gateway searched. */
+export interface SearchAnswer {
+  query: string;
+  hits: SearchHit[];
+  /** True when only the lexical half ran. The view shows nothing for it. */
+  degraded: boolean;
+}
