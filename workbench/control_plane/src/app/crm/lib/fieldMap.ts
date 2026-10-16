@@ -381,27 +381,113 @@ export function planDiff(approved: MappingPlan | null, draft: MappingPlan | null
 }
 
 /**
- * The changes of the next draft: the changes of the open draft, with *next*
- * in place of a change of the same field. A put of the column in use is no
- * change. An empty list means that there is nothing to draft.
+ * The changes of the next draft. The gateway builds a new draft on the open
+ * draft (Batch M review P1), so the draft keeps each earlier pick and each
+ * suggestion, and the card sends only *next*. A change that the open draft
+ * (or, with no draft, the map in use) already holds is no change, and an
+ * empty list means that there is nothing to draft.
  */
 export function nextDraftChanges(
   approved: MappingPlan | null,
   draft: MappingPlan | null,
   next: PlanChange,
 ): PlanChange[] {
-  const changes: PlanChange[] = planDiff(approved, draft).map((row) =>
-    row.kind === "remove"
-      ? { op: "remove", entity: row.entity, field_api_name: row.field }
-      : { op: "put", entity: row.entity, field_api_name: row.field, target_column: row.column },
-  );
-  const kept = changes.filter(
-    (c) => !(c.entity === next.entity && c.field_api_name === next.field_api_name),
-  );
-  const current = fieldRules(approved).get(ruleKey(next.entity, next.field_api_name));
+  const base = draft ?? approved;
+  const current = fieldRules(base).get(ruleKey(next.entity, next.field_api_name));
   const noChange =
     next.op === "put" ? current?.column === next.target_column : current === undefined;
-  return noChange ? kept : [...kept, next];
+  return noChange ? [] : [next];
+}
+
+// ── The items of a suggestion in a draft (Batch M review P1) ──────────────
+
+/**
+ * One item of a draft that is not a `field` rule: a module plays a core slot
+ * (`role`), a field of it fills a column (`target`), or its values are a stage
+ * (`stage`). The card draws each one, so an approve never applies an item
+ * that the admin cannot see.
+ */
+export type KindDiffRow = { kind: "add" | "remove"; item: PlanItem };
+
+/** The identity of an item of a kind: one role for each slot, and so on. */
+function kindKey(item: PlanItem): string | null {
+  switch (item.kind) {
+    case "role":
+      return `role\u0000${String(item.slot)}`;
+    case "target":
+      return `target\u0000${String(item.slot)}\u0000${String(item.module)}\u0000${String(item.target)}`;
+    case "stage":
+      return `stage\u0000${String(item.slot)}\u0000${String(item.module)}`;
+    default:
+      return null;
+  }
+}
+
+/** The items of the kinds in a version, by identity, in a stable form. */
+function kindItems(plan: MappingPlan | null): Map<string, PlanItem> {
+  const out = new Map<string, PlanItem>();
+  for (const item of plan?.rules ?? []) {
+    const key = kindKey(item);
+    if (key) out.set(key, item);
+  }
+  return out;
+}
+
+/** The text that tells two items of one identity apart. Counts do not count. */
+function itemText(item: PlanItem): string {
+  const { unmapped: _u, unsorted: _s, profile_version: _p, ...rest } = item;
+  return JSON.stringify(rest, Object.keys(rest).sort());
+}
+
+const KIND_ORDER = ["role", "target", "stage"];
+
+/** The items of the kinds that a draft adds or takes away, roles first. */
+export function kindDiff(approved: MappingPlan | null, draft: MappingPlan | null): KindDiffRow[] {
+  if (!draft) return [];
+  const before = kindItems(approved);
+  const after = kindItems(draft);
+  const rows: KindDiffRow[] = [];
+  for (const [key, item] of after) {
+    const old = before.get(key);
+    if (!old || itemText(old) !== itemText(item)) rows.push({ kind: "add", item });
+  }
+  for (const [key, item] of before) {
+    if (!after.has(key)) rows.push({ kind: "remove", item });
+  }
+  return rows.sort(
+    (a, b) =>
+      KIND_ORDER.indexOf(String(a.item.kind)) - KIND_ORDER.indexOf(String(b.item.kind)) ||
+      String(a.item.slot).localeCompare(String(b.item.slot)),
+  );
+}
+
+/** A Zoho module or field as a person reads it: `Operator_Associates` is "Operator Associates". */
+function sourceName(value: unknown): string {
+  return typeof value === "string" && value ? humanizeKey(value) : "—";
+}
+
+/** The fields of a target item, in order: "Phone or Mobile". */
+function fieldNames(value: unknown): string {
+  const names = Array.isArray(value) ? value.map(sourceName) : [];
+  return names.length > 0 ? names.join(" or ") : "—";
+}
+
+/** One item of a kind, as a person reads it. No engine word. */
+export function kindLine(row: KindDiffRow): string {
+  const { item } = row;
+  const slot = entityLabel(String(item.slot ?? ""));
+  let what: string;
+  switch (item.kind) {
+    case "role":
+      what = `${sourceName(item.module)} shows as ${slot}`;
+      break;
+    case "target":
+      what = `${slot} · ${columnLabel(typeof item.target === "string" ? item.target : null)} comes from ${fieldNames(item.fields)}`;
+      break;
+    default:
+      what = `${slot} · Stage comes from ${sourceName(item.field_api_name)}`;
+  }
+  return row.kind === "add" ? `Add: ${what}` : `Remove: ${what}`;
 }
 
 function entityLabel(entity: string): string {

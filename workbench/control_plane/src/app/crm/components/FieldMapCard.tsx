@@ -69,6 +69,8 @@ import {
   goBack,
   goBackBody,
   historyLine,
+  kindDiff,
+  kindLine,
   openDraft,
   pickOptions,
   planDiff,
@@ -181,6 +183,9 @@ export function PlanPanel({ view, handlers }: { view: PlanView; handlers: PlanHa
   const draft = openDraft(list);
   const previous = previousVersion(list);
   const changes = planDiff(view.approved, view.draft);
+  // Batch M review P1: the items of a suggestion draw too, so the one press
+  // never applies an item that the admin cannot see.
+  const kinds = kindDiff(view.approved, view.draft);
   const writing = view.busy !== null;
   return (
     <div aria-label={PLAN_TITLE} className="space-y-3 border-b border-border px-4 py-3">
@@ -223,12 +228,17 @@ export function PlanPanel({ view, handlers }: { view: PlanView; handlers: PlanHa
           </div>
           {view.draft === null ? (
             <Skeleton className="h-3 w-48" />
-          ) : changes.length === 0 ? (
+          ) : changes.length === 0 && kinds.length === 0 ? (
             <p className="text-[11px] text-muted-foreground">
               This draft changes nothing against the map in use.
             </p>
           ) : (
             <ul className="space-y-0.5">
+              {kinds.map((row) => (
+                <li key={`kind:${kindLine(row)}`} className="text-xs text-foreground">
+                  {kindLine(row)}
+                </li>
+              ))}
               {changes.map((row) => (
                 <li key={`${row.entity}:${row.field}`} className="text-xs text-foreground">
                   {diffLine(row)}

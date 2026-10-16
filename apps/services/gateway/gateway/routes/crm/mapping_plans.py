@@ -668,15 +668,33 @@ async def change_rule(
     )
 
 
-#: The newest draft of the pipeline that is built on a version.
-_LAST_SUGGESTION_SQL = (
-    "SELECT version, rules FROM crm_mapping_plans WHERE state = 'draft' "
-    "AND created_by = :by AND based_on = :base ORDER BY version DESC LIMIT 1"
+#: The open draft: the newest draft that is built on a version.
+_OPEN_DRAFT_SQL = (
+    f"SELECT {_PLAN_COLUMNS} FROM crm_mapping_plans WHERE state = 'draft' "
+    "AND based_on = :base ORDER BY version DESC LIMIT 1"
 )
 
 
 def _canonical(items: Sequence[Mapping[str, Any]]) -> list[str]:
     return sorted(json.dumps(dict(i), sort_keys=True) for i in items)
+
+
+def _rules_of(row: Any) -> Any:
+    return row.rules if isinstance(row.rules, list) else json.loads(row.rules or "[]")
+
+
+async def open_draft(db: Any, approved: Any) -> Any | None:
+    """The open draft: the newest draft whose base is *approved*, the row of
+    the version in use. ``lib/fieldMap.ts`` ``openDraft`` reads the same.
+
+    Each new draft builds on it, so a pick by hand joins a suggestion of the
+    pipeline, and a suggestion keeps the picks by hand (Batch M review P1,
+    §18.9.6 "a pick by hand joins it"). Without it, each draft built on the
+    version in use, and the newer draft dropped the items of the older one.
+    """
+    return (await db.execute(text(_OPEN_DRAFT_SQL), {
+        "base": int(approved.version),
+    })).first()
 
 
 async def write_draft(
@@ -685,30 +703,24 @@ async def write_draft(
     """A draft of the mapping pipeline (CRM-Q20-1 item 3), in the caller's
     tenant session, under :func:`lock_plan`.
 
-    The draft is the approved version with *items* put in
-    (:func:`merge_kinds`). It passes :func:`check_kinds`, so an admin can
-    approve it. It writes no row of ``crm_field_rules``, exactly as
-    ``POST /crm/mapping/plans`` does not. Returns the new draft row, or
-    ``None`` when the draft would change nothing: the items are in the
-    approved version already, or the newest draft of *by* on the approved
-    version holds the same items.
+    The draft is the open draft (:func:`open_draft`), or the approved
+    version when no draft is open, with *items* put in (:func:`merge_kinds`).
+    So it keeps each pick by hand of the open draft. It passes
+    :func:`check_kinds`, so an admin can approve it. It writes no row of
+    ``crm_field_rules``, exactly as ``POST /crm/mapping/plans`` does not.
+    Returns the new draft row, or ``None`` when the draft would change
+    nothing: the open draft, or with none the approved version, holds the
+    items already.
     """
     # Version 1 of an org with no plan is the work of the system, not of the
     # pipeline, so the lock names the system.
     approved = await lock_plan(db, SYSTEM_ACTOR)
-    fields, others = split_rules(approved.rules)
+    base = await open_draft(db, approved) or approved
+    fields, others = split_rules(_rules_of(base))
     merged = merge_kinds(others, items)
     check_kinds(merged)
     if _canonical(merged) == _canonical(others):
         return None
-    last = (await db.execute(text(_LAST_SUGGESTION_SQL), {
-        "by": by, "base": int(approved.version),
-    })).first()
-    if last is not None:
-        _fields, last_others = split_rules(
-            last.rules if isinstance(last.rules, list) else json.loads(last.rules or "[]"))
-        if _canonical(last_others) == _canonical(merged):
-            return None
     row = (await db.execute(text(_INSERT_DRAFT_SQL), {
         "v": await _next_version(db), "rules": _dump(fields, merged),
         "by": by, "based_on": int(approved.version),
@@ -843,7 +855,9 @@ async def get_mapping_plan(
 async def create_mapping_plan_draft(
     payload: PlanDraftIn, user: UserContext = Depends(get_current_user),
 ) -> MappingPlanModel:
-    """A draft: the approved version with the changes. It writes no row of
+    """A draft: the open draft with the changes, or the approved version
+    with them when no draft is open (:func:`open_draft`). So a pick by hand
+    keeps the items of a suggestion. It writes no row of
     ``crm_field_rules``. Each ``put`` has the checks of a new field rule."""
     org = _organization(user)
     by = actor(user).lower()
@@ -851,7 +865,8 @@ async def create_mapping_plan_draft(
         await _require_mirror(db, org)
         approved = await lock_plan(db, by)
         version, profile = await _profile(db, org)
-        fields, others = split_rules(approved.rules)
+        base = await open_draft(db, approved) or approved
+        fields, others = split_rules(_rules_of(base))
         current = {r.key: r for r in fields}
         empties: dict[str, frozenset[str]] = {}
         for change in payload.changes:
@@ -860,7 +875,7 @@ async def create_mapping_plan_draft(
                 if key not in current:
                     raise HTTPException(status_code=422, detail={
                         "code": "not_in_plan",
-                        "message": "That field has no rule in the approved plan.",
+                        "message": "That field has no rule in the draft.",
                         "entity": key[0], "field_api_name": key[1],
                     })
                 del current[key]
@@ -1093,6 +1108,7 @@ __all__ = [
     "kind_key",
     "lock_plan",
     "merge_kinds",
+    "open_draft",
     "preview_mapping_plan",
     "split_rules",
     "write_draft",

@@ -437,3 +437,55 @@ async def test_the_cursor_row_and_the_draft_are_the_orgs_own(mp_env) -> None:
 
     assert counts_as(p.org_a) == (1, 1)
     assert counts_as(p.org_b) == (0, 0)
+
+
+# ── Batch M review P1: one open draft holds both kinds of change ─────────────
+
+
+def _put(field: str, column: str) -> dict[str, Any]:
+    return {"op": "put", "entity": "leads", "field_api_name": field, "target_column": column}
+
+
+def _field_items(items: list[dict[str, Any]]) -> set[tuple[str, str]]:
+    return {(i["field_api_name"], i["target_column"])
+            for i in items if i.get("kind", "field") == "field"}
+
+
+def _kind_items(items: list[dict[str, Any]]) -> list[str]:
+    return sorted(i["kind"] for i in items if i.get("kind", "field") != "field")
+
+
+async def test_a_suggestion_keeps_the_picks_by_hand_of_the_open_draft(mp_env) -> None:
+    """A pick by hand (draft H), then the pipeline writes its draft S. S
+    builds on H, so the pick stays in the draft that the card shows."""
+    p, a, _b = mp_env
+    await _imported(p, p.org_a, a)
+    approved = (await _plans(p.org_a))["approved"]
+    hand = await _req(_admin_of(p.org_a), "POST", PLANS,
+                      {"changes": [_put("Why_Lost", "lost_note")]})
+    assert hand.status_code == 201, hand.text
+    row = await _write_draft(p.org_a, [ROLE, TARGET])
+    assert row is not None
+    version, state, by, based_on, items = _versions(p, p.org_a)[-1]
+    assert (state, by, based_on) == ("draft", "suggestion", approved)
+    assert ("Why_Lost", "lost_note") in _field_items(items), "the pick stays"
+    assert _kind_items(items) == ["role", "target"]
+    assert await _write_draft(p.org_a, [ROLE, TARGET]) is None, "the open draft holds them"
+
+
+async def test_a_pick_by_hand_joins_the_suggestion(mp_env) -> None:
+    """The pipeline writes S, then the admin picks a field by hand. The new
+    draft keeps the items of S, so an approve applies what the card shows."""
+    p, a, _b = mp_env
+    await _imported(p, p.org_a, a)
+    approved = (await _plans(p.org_a))["approved"]
+    assert await _write_draft(p.org_a, [ROLE, TARGET, STAGE]) is not None
+    hand = await _req(_admin_of(p.org_a), "POST", PLANS,
+                      {"changes": [_put("Why_Lost", "lost_note")]})
+    assert hand.status_code == 201, hand.text
+    body = hand.json()
+    assert body["based_on"] == approved
+    assert ("Why_Lost", "lost_note") in _field_items(body["rules"])
+    assert _kind_items(body["rules"]) == ["role", "stage", "target"], "S stays in the draft"
+    # The pipeline does not write the items again: the open draft holds them.
+    assert await _write_draft(p.org_a, [ROLE, TARGET, STAGE]) is None

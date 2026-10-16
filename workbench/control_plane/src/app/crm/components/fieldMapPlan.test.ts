@@ -33,6 +33,8 @@ import {
   previousVersion,
   runPlanWrite,
   stateLabel,
+  kindDiff,
+  kindLine,
   type MappingPlan,
   type PlanCalls,
   type PlanChange,
@@ -268,30 +270,56 @@ describe("the map in use (item 2)", () => {
 // ── Item 3: a change makes a draft, and changes no live rule ─────────────────
 
 describe("a change on the card makes a draft (item 3)", () => {
-  it("posts a draft with the changes of the open draft and the new one, and nothing else", async () => {
+  it("posts only the new change, because the gateway builds on the open draft", async () => {
+    // Batch M review P1: the gateway builds a new draft on the open draft, so
+    // the draft keeps each earlier pick and each suggestion. A "remove" of a
+    // change that the draft already holds would be a 422 there.
     const { calls, log } = fakeCalls();
     const change: PlanChange = { op: "put", entity: "contact", field_api_name: "Fax", target_column: "lost_note" };
     expect(await addToDraft(calls, APPROVED, DRAFT, change)).toBe("drafted");
     const posted = JSON.parse(log[0].slice("draft ".length)) as PlanChange[];
-    expect(posted).toEqual([
-      { op: "put", entity: "lead", field_api_name: "Sector", target_column: "lost_note" },
-      { op: "remove", entity: "contact", field_api_name: "Desk_Phone" },
-      { op: "put", entity: "deal", field_api_name: "Region", target_column: "next_step" },
-      change,
-    ]);
+    expect(posted).toEqual([change]);
     // No approve, no restore: a draft changes no live rule.
     expect(log).toEqual([log[0], "reread"]);
   });
 
-  it("replaces the change of the same field, and sends nothing for the column in use", async () => {
+  it("sends nothing for the column that the draft, or the map in use, already holds", async () => {
+    const inDraft: PlanChange = { op: "put", entity: "lead", field_api_name: "Sector", target_column: "lost_note" };
+    expect(nextDraftChanges(APPROVED, DRAFT, inDraft)).toEqual([]);
     const back: PlanChange = { op: "put", entity: "lead", field_api_name: "Sector", target_column: "industry" };
-    expect(nextDraftChanges(APPROVED, DRAFT, back).map((c) => c.field_api_name)).toEqual([
-      "Desk_Phone",
-      "Region",
-    ]);
+    expect(nextDraftChanges(APPROVED, DRAFT, back)).toEqual([back]);
     const { calls, log } = fakeCalls();
     expect(await addToDraft(calls, APPROVED, null, back)).toBe("unchanged");
     expect(log).toEqual([]);
+  });
+
+  it("draws each item of a suggestion in the draft, so an approve applies nothing unseen", () => {
+    // Batch M review P1: a draft of the pipeline holds no field change. The
+    // card said "This draft changes nothing" beside "Approve draft".
+    const role = { kind: "role", slot: "deal", module: "Commercials", profile_version: 4 };
+    const target = {
+      kind: "target", slot: "deal", module: "Commercials", target: "name",
+      fields: ["Commercial_Name"], transform: "copy", unmapped: 0,
+    };
+    const stage = {
+      kind: "stage", slot: "deal", module: "Commercials", field_api_name: "Status",
+      values: { Won: "won" }, unsorted: 2,
+    };
+    const suggested = plan(D3, [...APPROVED.rules, stage, target, role]);
+    const rows = kindDiff(APPROVED, suggested);
+    expect(rows.map(kindLine)).toEqual([
+      "Add: Commercials shows as Deals",
+      "Add: Deals · Name comes from Commercial Name",
+      "Add: Deals · Stage comes from Status",
+    ]);
+    const html = drawPanel(view({ draft: suggested }));
+    for (const row of rows) expect(html).toContain(kindLine(row));
+    expect(html).not.toContain("This draft changes nothing");
+    // A role that leaves the map shows too.
+    const back = kindDiff(plan(V2, [role]), plan(D3, []));
+    expect(back.map(kindLine)).toEqual(["Remove: Commercials shows as Deals"]);
+    // The same item with a new count is no change.
+    expect(kindDiff(plan(V2, [{ ...target, unmapped: 3 }]), plan(D3, [target]))).toEqual([]);
   });
 
   it("does not map by hand through the live rule route any more", () => {
