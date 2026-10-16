@@ -23,7 +23,10 @@ fresh context that can only see the repo.
 ## The cycle
 
 **1 — Select.**
-Read `project-docs/work_plan.md` §2 only. If the user named a WS, use it.
+Do not read `work_plan.md` §2 whole. It is about 117,000 tokens. Run
+`uv run python scripts/board.py --open` for a one-line index of the open rows.
+Run `uv run python scripts/board.py --row WS-n` to read one candidate row.
+If the user named a WS, use it.
 Otherwise choose the highest-leverage 🟢 row whose notes do not read as
 owner-gated end to end, preferring rows that unblock others (the board's own
 dependency notes tell you which). Say which you picked and why, in one line.

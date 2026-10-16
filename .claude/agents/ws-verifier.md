@@ -20,11 +20,16 @@ implementer's report as a set of *claims to be checked*, not as findings.
 2. **Re-run the verification commands from the spec** — the ones the spec-auditor
    quoted, not the ones the implementer chose. Quote real output. If the spec's
    commands and the implementer's differ, that discrepancy is itself a finding.
-3. **Run the repo-wide gates**: `uv run pytest` and `uv run ruff check .`.
-   Deploy is gated on `tests/unit/` passing — a red unit test silently blocks
-   deploy, so a red suite is a hard fail regardless of whether this change caused
-   it. Distinguish "this change broke it" from "already red on main" by checking
-   main if needed, and say which.
+3. **Run the tests this diff can affect, not the whole suite.**
+   `uv run python scripts/affected_tests.py --run` picks them from the diff
+   against `origin/main`. It also prints the `vitest related` command for
+   frontend files. Run that command too. Then run `uv run ruff check .`.
+   Do not run all of `tests/unit/`. It takes about 50 minutes on one process.
+   pr-check runs all of it on the PR in parallel shards, in about 10 minutes.
+   If the script prints `FULL`, it runs the whole suite. Let it.
+   A red test is a FAIL, whether or not this change caused it. To tell
+   "this change broke it" from "already red on main", run that test on `main`.
+   Say which it is.
 4. **Test each acceptance criterion yourself.** For each quoted done-when, state
    how you confirmed it. "The implementer says so" is not confirmation. If a
    criterion cannot be checked by any command you can run, that is a finding:
@@ -42,9 +47,9 @@ implementer's report as a set of *claims to be checked*, not as findings.
    - The shell (R9, D89): if `workbench/control_plane` changed, run
      `npx vitest run src/lib/shell/`. Report a FAIL if the diff adds a key
      or raises a number in `SEAM_DEBT`. A move inside one app is not a FAIL.
-6. **Frontend changes**: pr-check is Python-only, so TypeScript never gets CI.
-   If `workbench/control_plane` changed, build or typecheck it locally and report
-   the result — nothing downstream will catch it for you.
+6. **Frontend changes**: pr-check typechecks both Next apps and runs their
+   vitest and browser suites. Locally, run `npx tsc --noEmit` and the
+   `vitest related` command from step 3. Report the result.
 7. **A surface change gets a look.** If the diff changes what a page draws,
    use the rig in `.claude/skills/visual-review/SKILL.md`. Capture light mode,
    compact density, a changed accent and 390 px. Do the skill's capture,
