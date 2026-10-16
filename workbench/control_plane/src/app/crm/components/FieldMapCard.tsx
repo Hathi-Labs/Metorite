@@ -260,16 +260,18 @@ export function PlanPanel({ view, handlers }: { view: PlanView; handlers: PlanHa
             const open = view.opened === v.version;
             return (
               <li key={v.version} className="space-y-1.5 py-2">
-                <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                <div className="flex items-start gap-2 text-[11px]">
                   <Badge tone={stateTone(v, draft)} size="xs">
                     {stateLabel(v, draft)}
                   </Badge>
-                  <span className="text-muted-foreground">{historyLine(v)}</span>
-                  <span className="text-muted-foreground">· {ruleCountLabel(v.rule_count)}</span>
+                  {/* One text run, so a narrow card wraps it as a sentence. */}
+                  <span className="min-w-0 flex-1 break-words text-muted-foreground">
+                    {historyLine(v)} · {ruleCountLabel(v.rule_count)}
+                  </span>
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="ml-auto"
+                    className="shrink-0"
                     aria-expanded={open}
                     onClick={() => handlers.onOpen(open ? null : v.version)}
                   >
