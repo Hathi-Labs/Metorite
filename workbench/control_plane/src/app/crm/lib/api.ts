@@ -15,7 +15,14 @@ import { queryString, type ListQuery } from "./filters";
 import type { ConnectionInfo, CrmSettings, SyncStatus } from "./connect";
 import type { FieldDef } from "./fields";
 import { asFieldLayout, type FieldLayout } from "./fieldLayout";
-import type { FieldMap, FieldRule, FieldSuggestion } from "./fieldMap";
+import type {
+  FieldMap,
+  FieldRule,
+  FieldSuggestion,
+  MappingPlan,
+  PlanChange,
+  PlanList,
+} from "./fieldMap";
 import type { CrmOwner } from "./filterBar";
 import type { SavedView, SavedViewBody } from "./savedViews";
 import type { SyncHealth, SyncHold } from "./syncHealth";
@@ -656,6 +663,45 @@ export function suggestFieldRules(entity: EntitySlug): Promise<FieldSuggestion> 
   return call<FieldSuggestion>("/field-rules/suggest", {
     method: "POST",
     body: JSON.stringify({ entity }),
+  });
+}
+
+// ── The plan of the Field map (WS-53 CRM-Q18-2) ───────────────────────────
+//
+// Admin only, Mirror mode only. The routes are CRM-Q18-1's. A 409 keeps its
+// code: `plan_moved` (the map changed after the draft) and `plan_busy` (a
+// clash with the sync, and a retry is safe). `lib/fieldMap.ts` holds the types
+// and `runPlanWrite`, which acts on both codes.
+
+/** The versions, newest first, with the count of their rules and no rules. */
+export function listMappingPlans(): Promise<PlanList> {
+  return call<PlanList>("/mapping/plans");
+}
+
+/** One version with its rules. It reads only. */
+export function getMappingPlan(version: number): Promise<MappingPlan> {
+  return call<MappingPlan>(`/mapping/plans/${encodeURIComponent(String(version))}`);
+}
+
+/** A draft: the version in use with the changes. It changes no live rule. */
+export function draftMappingPlan(changes: PlanChange[]): Promise<MappingPlan> {
+  return call<MappingPlan>("/mapping/plans", {
+    method: "POST",
+    body: JSON.stringify({ changes }),
+  });
+}
+
+/** Approve a draft. The next sync applies it. */
+export function approveMappingPlan(version: number): Promise<MappingPlan> {
+  return call<MappingPlan>(`/mapping/plans/${encodeURIComponent(String(version))}/approve`, {
+    method: "POST",
+  });
+}
+
+/** Approve a new version with the content of an earlier one ("Go back"). */
+export function restoreMappingPlan(version: number): Promise<MappingPlan> {
+  return call<MappingPlan>(`/mapping/plans/${encodeURIComponent(String(version))}/restore`, {
+    method: "POST",
   });
 }
 
