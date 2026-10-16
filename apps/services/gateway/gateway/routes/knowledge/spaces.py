@@ -74,6 +74,10 @@ async def list_spaces(
 ) -> dict[str, Any]:
     """The spaces the caller can open, each with its count of visible pages.
 
+    ``page_count`` counts each page the caller sees that is not archived, a
+    draft too. ``published_count`` counts only the published ones, which the
+    assistant's index block reads (WS-61 KB-4a, §6.5).
+
     The first call in an organization makes the ``company`` space, with an
     ``org`` read grant (§4.1).
     """
@@ -85,7 +89,9 @@ async def list_spaces(
             text(
                 f"SELECT {core.SPACE_COLUMNS}, "
                 f"(SELECT count(*) FROM kb_pages p WHERE p.space_id = s.id "
-                f"AND p.state <> 'archived' AND {vis}) AS page_count "
+                f"AND p.state <> 'archived' AND {vis}) AS page_count, "
+                f"(SELECT count(*) FROM kb_pages p WHERE p.space_id = s.id "
+                f"AND p.state = 'published' AND {vis}) AS published_count "
                 f"FROM kb_spaces s WHERE s.archived_at IS NULL AND {spaces} "
                 "ORDER BY CASE s.kind WHEN 'company' THEN 0 WHEN 'team' THEN 1 "
                 "WHEN 'agent' THEN 2 ELSE 3 END, lower(s.name)"
@@ -98,6 +104,7 @@ async def list_spaces(
         level = core.level_on(user, row, by_grant.get(str(row.id))) or "read"
         item = core.space_dict(row, level)
         item["page_count"] = int(row.page_count or 0)
+        item["published_count"] = int(row.published_count or 0)
         out.append(item)
     return {"spaces": out}
 

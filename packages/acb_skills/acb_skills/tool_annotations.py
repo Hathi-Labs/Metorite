@@ -147,6 +147,10 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # WS-61 KR-2: company retrieval (`company_search_tools.py`). It reads
     # `GET /search/company` as the member, and nothing leaves the platform.
     "search_company":        {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-61 KB-4a: the two Knowledge reads (`knowledge_tools.py`). Each reads
+    # a `/knowledge` route as the member, and nothing leaves the platform.
+    "read_page":             {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "list_spaces":           {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     # WS-47 WAC-10a: queues an element for the member's own WhatsApp chat.
     # `bot_run` sends it to the member who asked, so it reaches no third party.
     "whatsapp_ui":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
@@ -190,6 +194,9 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     # holds it, behind COMPANY_SEARCH_ENABLED. So every risk block stays
     # byte-identical.
     "search_company",
+    # WS-61 KB-4a: the two Knowledge reads, on the same terms.
+    "read_page",
+    "list_spaces",
 })
 
 #: Every name that :func:`annotate` registered: an agent's OWN tool. They
