@@ -353,7 +353,7 @@ async def test_search_crm_relays_a_404_as_a_refusal(
 
 @pytest.mark.parametrize("name", [
     "CRM_ENABLED", "CRM_ORGS", "crm_orgs", "CRM_MIRROR", "CRM_MIRROR_ORGS",
-    "CRM_FIELD_STUDIO_ORGS",
+    "CRM_FIELD_STUDIO_ORGS", "CRM_FILL_RANK_ORGS",
 ])
 def test_both_names_are_platform_env(name: str) -> None:
     assert is_platform_env(name) is True
@@ -370,6 +370,8 @@ _SWITCHES = frozenset({
     "crm_enabled", "crm_orgs", "crm_mirror", "crm_mirror_orgs",
     # WS-53 CRM-C4a: the field studio list.
     "crm_field_studio_orgs",
+    # WS-53 CRM-Q17a-1: the fill rank list.
+    "crm_fill_rank_orgs",
 })
 
 

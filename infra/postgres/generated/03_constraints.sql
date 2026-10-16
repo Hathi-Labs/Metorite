@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 174
+-- Tables in this phase: 175
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -2150,3 +2150,15 @@ ALTER TABLE kb_chunks ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE kb_chunks ADD CONSTRAINT kb_chunks_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS kb_chunks_org_idx ON kb_chunks (organization_id);
+
+-- crm_field_fill
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM crm_field_fill WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: crm_field_fill still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE crm_field_fill ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE crm_field_fill ADD CONSTRAINT crm_field_fill_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS crm_field_fill_org_idx ON crm_field_fill (organization_id);
