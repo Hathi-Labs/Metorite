@@ -304,6 +304,10 @@ async def test_item_8_the_drops_of_the_last_full_read_stay_after_an_incremental_
     assert state["drops"]["task"] == {"(none)": 2}
     assert state["drops"]["note"] == {"Payments": 1, "Install_Base": 1}
     assert set(state["at"]) >= {"task", "note"}
+    # Zoho counts 2 notes and we hold none, and still no short read: the
+    # drops explain the gap of an activity entity (item 5).
+    for module in ("zoho:note", "zoho:task"):
+        assert "short_by" not in (_cursor(p, p.org_a, module)[0] or {}), module
 
     second = await _run(p.org_a)
     assert second.kind == "incremental" and second.status == "ok"
