@@ -410,15 +410,19 @@ same call, takes the grant, and runs with no new card. The agent needs no wait
 loop, because the card row and the new run's own message carry the context.
 
 1. **The fingerprint.** `pending_ask.grant_digest` hashes the card's title,
-   detail and body, the ids of its rows, and `grant_extra`. The MCP gate sets
-   `grant_extra` to a digest of the RAW arguments. So a call that differs only
-   in a value the card hides is a different call. The card event carries the
-   fingerprint as `grant`, and the row keeps it in its payload.
+   detail and body, the id, label and hint of each row, and `grant_extra`.
+   The MCP gate sets `grant_extra` to a digest of the RAW arguments. So a call
+   that differs only in a value the card hides is a different call. The card
+   event carries the fingerprint as `grant`, and the row keeps it in its
+   payload. A call with no `grant_extra` gets no grant, because the card text
+   is clipped. Today only the MCP gate passes one. Other callers ask again.
 2. **Taking the grant.** `request_confirmation` calls
    `pending_ask.take_late_approval` before it asks a card. The org and the
    member come from the run, server side. One SQL statement
    (`consume_grant`) moves the row from `answered` to `closed`. The row must
-   be a `confirmation` of the same thread and of the member who was asked.
+   carry `payload.late`, which only the late route writes. So an Approve that
+   a live run took is never a grant. The row must be a `confirmation` of the
+   same thread and of the member who was asked.
    Its answer must start with `APPROVE`, and it must fall inside the window. Another
    member, another thread, another call, a Reject and a late grant each ask
    a new card.
@@ -435,9 +439,18 @@ loop, because the card row and the new run's own message carry the context.
 There is no migration, because `closed` is the used state of the existing row.
 
 **Fences.** `tests/unit/test_late_approval.py` holds the flow.
-`tests/unit/test_pending_ask_store.py` holds the SQL under R8, with a race test
-of four runs that take one grant. The race test found a real defect. The outer
-`UPDATE` had no `state = 'answered'`, so two runs both took the grant.
+`tests/unit/test_pending_ask_store.py` holds the SQL under R8. It has a race
+test of four runs that take one grant.
+
+**Four defects the tests now hold.**
+
+- The race test found that the outer `UPDATE` had no `state = 'answered'`.
+  Two runs both took the one grant.
+- The review found that an in-time Approve also leaves a row `answered`. It
+  now needs `payload.late`.
+- The review found that row labels were not in the digest. They are now.
+- The review found that a caller with no digest of its own got a grant from
+  clipped card text. It now gets none.
 
 ### S3 — the top-right activity control
 
