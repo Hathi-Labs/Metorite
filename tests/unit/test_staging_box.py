@@ -84,6 +84,41 @@ def test_the_refresh_checks_staging_before_it_drops_anything() -> None:
         assert guard < body.index(act), act
 
 
+def test_the_refresh_keeps_a_hyphenated_extension() -> None:
+    """Production names `uuid-ossp|public`. A check without the hyphen skipped it
+    in silence, so every `DEFAULT public.uuid_generate_v4()` table failed on the
+    first live refresh (2026-10-16)."""
+    body = _code(_REFRESH)
+    check = re.search(r'\[\[ "\$ext" =~ \^\[([^\]]+)\]\+\$', body)
+    assert check, "the extension name check is gone"
+    assert re.fullmatch(f"[{check.group(1)}]+", "uuid-ossp")
+    assert not re.fullmatch(f"[{check.group(1)}]+", 'x"; DROP')
+
+
+def test_the_refresh_drops_only_the_public_schema_entry() -> None:
+    """`pg_dump --schema=public` writes `CREATE SCHEMA public`, which the new
+    database already has. That one TOC entry must go, and nothing beside it."""
+    body = _code(_REFRESH)
+    filt = re.search(r'grep -vE "([^"]+)" > /tmp/staging\.list', body)
+    assert filt, "the restore no longer filters its list"
+    assert "-L /tmp/staging.list" in body
+    toc = ["9; 2615 2200 SCHEMA - public pg_database_owner",
+           "10; 0 0 COMMENT - SCHEMA public pg_database_owner",
+           "250; 1259 16500 TABLE public pm_tasks postgres",
+           "251; 1259 16501 TABLE public public_links postgres"]
+    kept = [line for line in toc if not re.search(filt.group(1), line)]
+    assert kept == toc[1:]
+
+
+def test_the_staging_env_names_the_gateway_port() -> None:
+    """The deploy's health probe reads GATEWAY_PORT (default 8000), and the unit
+    listens on 8080. Without the name, the first live apply failed its probe
+    (2026-10-16 20:40 UTC)."""
+    unit = (_ROOT / "deploy/hostinger/acb-gateway.service").read_text(encoding="utf-8")
+    port = re.search(r"--port (\d+)", unit).group(1)
+    assert f'set_kv "$env" GATEWAY_PORT {port}' in _code(_BOOT)
+
+
 def test_the_refresh_never_touches_production() -> None:
     body = _code(_REFRESH)
     assert "rrsync" not in body, "the read-only limit belongs to the production side's key line"
