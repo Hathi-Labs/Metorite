@@ -15360,10 +15360,18 @@ The rules of the composition:
 - `finish_teardowns` runs at most `TEARDOWN_CONCURRENCY = 4` mailboxes at once. Each mailbox has a
   bound of `MAILBOX_TEARDOWN_BOUND_S = 30` seconds for all of its legs. The bound of each f1 leg
   stays: 10 s for the filters, 5 s for the revoke, 5 s for the Graph call and 5 s for Redis.
+- The stop of the sync loop runs before that bound and outside it, with its own bound,
+  `STOP_SYNC_BOUND_S = 15` seconds (fix round 1). `remove_account_sync` swallows the cancel of its
+  wait, so a slow stop inside the leg bound took the time of the revoke.
+- A door logs the purge, and the admin door mirrors it to the Console, BEFORE it calls
+  `finish_teardowns`. A stop of the process in the wait then loses no record (fix round 1).
+- `/internal/drain` counts the held task, so a deploy waits for it. A cancel of the task logs
+  `email.teardown.cancelled` with the id of each mailbox that did not finish. No ledger keeps a
+  token after the delete.
 - A door waits `TEARDOWN_WAIT_S = 60` seconds at most. The mailboxes that remain continue in a task
   that the module holds, as `_PURGES` does. The door logs `email.teardown.continuing` with the
   count, and its receipt says how many finished.
-- So the worst case is 1000 mailboxes at 4 at a time and 30 s each: about 2 hours, in the
+- So the worst case is 1000 mailboxes at 4 at a time and 45 s each: about 3 hours, in the
   background. A restart in that time loses the revokes and the filter removals that remain. The
   credentials went with the rows, so nothing can do them again. The start line
   `email.teardown.started` names the count, so a lost teardown shows as a start line with no end
@@ -15404,8 +15412,9 @@ PR-G7b (EM-G11f1b): the member purge and the Outlook rules, with no migration.
 2. Wire the member purge: the plans and the purge rows in `purge_member_rows`, and
    `finish_teardowns` in each of the two doors.
 3. The Outlook rules, in each path.
-4. `PurgeResult` gets one additive field, `mailboxes`, with the counts `planned`, `finished` and
-   `continuing`. The Members page can read it or ignore it.
+4. `PurgeResult` gets one additive field, `mailboxes`, with the counts `planned`, `finished`,
+   `failed` and `continuing`. `finished` means that each leg succeeded. The Members page can read
+   it or ignore it.
 5. The cap and its 409.
 
 PR-G7c (EM-G11f1c): the org purge, with one migration.
