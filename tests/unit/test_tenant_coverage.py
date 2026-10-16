@@ -234,12 +234,14 @@ def test_the_reach_tables_are_tenant_scoped(table: str) -> None:
 
 @pytest.mark.parametrize(
     "table",
-    ["kb_spaces", "kb_space_grants", "kb_pages", "kb_page_versions", "kb_links"],
+    ["kb_spaces", "kb_space_grants", "kb_pages", "kb_page_versions", "kb_links",
+     "kb_chunks"],
 )
 def test_the_knowledge_tables_are_tenant_scoped(table: str) -> None:
-    """WS-61 KB-1 (``knowledge_base.md`` §12 and §14). The spaces, grants,
-    pages, versions and links hold what one organization wrote down. None may
-    be exempt, and the committed policy phase must carry each (R5)."""
+    """WS-61 KB-1 and KB-3 (``knowledge_base.md`` §6.1, §12 and §14). The
+    spaces, grants, pages, versions, links and the chunks of the index hold
+    what one organization wrote down. None may be exempt, and the committed
+    policy phase must carry each (R5)."""
     gen = _generator()
     assert table in gen.discover_tables()
     assert table not in gen.EXEMPT

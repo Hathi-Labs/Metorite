@@ -18,7 +18,13 @@ on the page's space at the time of the call, and authorship is no bypass.
 space on (``core.history_floor``). A page the caller cannot
 see, or a page in another organization, answers 404 and never 403. Each write
 appends one ``kb_page_versions`` row with the reason and the channel (§5.4).
-Publish and archive touch no index in KB-1: the index is KB-3.
+
+Each write also ends in the index (KB-3, §6.4). ``_written`` calls
+``kb_index.index.reindex_page`` in the write's transaction: a published page
+gets its chunks with a NULL vector, and a page in any other state loses its
+chunks. Then the route schedules ``embed_pending`` as a background task,
+which runs after the session closes, and only when ``KNOWLEDGE_EMBED`` names
+the org.
 """
 
 from __future__ import annotations
@@ -27,8 +33,9 @@ from datetime import datetime
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, HTTPException, Query
-from gateway.routes.knowledge import core
+from fastapi import BackgroundTasks, Depends, HTTPException, Query
+from gateway.kb_index import index as kb_index
+from gateway.routes.knowledge import core, flags
 from gateway.routes.knowledge.core import router
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -100,10 +107,22 @@ async def _update(
 
 async def _written(
     db: Any, user: UserContext, row: Any, reason: str,
+    background: BackgroundTasks | None = None,
 ) -> dict[str, Any]:
+    """The end of each page write: one version, the index, the embed job.
+
+    The chunks are written or deleted in this transaction. The embed job is
+    scheduled only for a published page of an org on ``KNOWLEDGE_EMBED``, and
+    it runs after the session closes.
+    """
     version = await core.append_version(
         db, user, row, title=row.title, body_md=row.body_md, reason=reason,
     )
+    org = core.org_of(user)
+    await kb_index.reindex_page(db, row, organization_id=org)
+    if (background is not None and row.state == "published"
+            and flags.knowledge_embed_allowed(org)):
+        background.add_task(kb_index.embed_pending, org, str(row.id))
     out = core.page_dict(row)
     out["version"] = version
     return out
@@ -241,6 +260,7 @@ async def create_page(
 async def update_page(
     page_id: str,
     body: PagePatch,
+    background: BackgroundTasks,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Edit the title, the body, the reviewers or the review date. One version."""
@@ -280,12 +300,13 @@ async def update_page(
         if not sets:
             raise HTTPException(status_code=422, detail="Nothing to change.")
         row = await _update(db, user, str(page.id), ", ".join(sets), params)
-        return await _written(db, user, row, "edit")
+        return await _written(db, user, row, "edit", background)
 
 
 @router.post("/pages/{page_id}/publish")
 async def publish_page(
     page_id: str,
+    background: BackgroundTasks,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Publish a draft. A writer of the space, at the time of the call, publishes."""
@@ -305,7 +326,7 @@ async def publish_page(
             f"review_at = now() + interval '{core.REVIEW_DAYS} days'",
             {},
         )
-        return await _written(db, user, row, "publish")
+        return await _written(db, user, row, "publish", background)
 
 
 async def _move_target(
@@ -362,6 +383,7 @@ async def _move_parent(
 async def move_page(
     page_id: str,
     body: PageMove,
+    background: BackgroundTasks,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Change the space or the parent of a page.
@@ -400,7 +422,7 @@ async def move_page(
             db, user, str(page.id), sets,
             {"sid": str(target.id), "parent": new_parent},
         )
-        out = await _written(db, user, row, "move")
+        out = await _written(db, user, row, "move", background)
         if moved_space:
             # The history written in the old space stays there (history_floor).
             await db.execute(
@@ -416,6 +438,7 @@ async def move_page(
 @router.post("/pages/{page_id}/archive")
 async def archive_page(
     page_id: str,
+    background: BackgroundTasks,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Archive a page. A manager of the space archives (§4.2)."""
@@ -433,12 +456,13 @@ async def archive_page(
             # The right side reads the row as it was, so the prior state is kept.
             "state = 'archived', archived_at = now(), archived_from_state = state", {},
         )
-        return await _written(db, user, row, "archive")
+        return await _written(db, user, row, "archive", background)
 
 
 @router.post("/pages/{page_id}/restore")
 async def restore_page(
     page_id: str,
+    background: BackgroundTasks,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Return an archived page to the state it had before the archive.
@@ -465,13 +489,14 @@ async def restore_page(
             "archived_from_state = NULL",
             {},
         )
-        return await _written(db, user, row, "restore")
+        return await _written(db, user, row, "restore", background)
 
 
 @router.post("/pages/{page_id}/revert")
 async def revert_page(
     page_id: str,
     body: PageRevert,
+    background: BackgroundTasks,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Write an old version's title and body as a new version."""
@@ -500,4 +525,4 @@ async def revert_page(
             db, user, str(page.id), "title = :title, body_md = :body",
             {"title": old.title, "body": old.body_md},
         )
-        return await _written(db, user, row, "revert")
+        return await _written(db, user, row, "revert", background)

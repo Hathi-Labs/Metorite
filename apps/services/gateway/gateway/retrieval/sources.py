@@ -12,8 +12,10 @@ and then calls the app's OWN search function with this request's member. So:
   not inside the search function. Called from here, the function would skip
   that gate. So ``Source.find`` checks ``feature:<app>`` first, and a member
   without the app gets no hit and no call. The CRM source also applies the
-  CRM router's kill switch and access rule, and the artifacts source asks
-  whether the registry is on.
+  CRM router's kill switch and access rule, the artifacts source asks
+  whether the registry is on, and the knowledge source applies the Knowledge
+  router's kill switch (``KNOWLEDGE_ENABLED`` and ``KNOWLEDGE_ORGS``), because
+  every member holds ``feature:*``.
 * **Each app function is imported when the source runs**, never at import
   time. The suites replace a function on its module, and a name bound here
   at import would keep the real one.
@@ -298,6 +300,41 @@ async def _whatsapp(user: UserContext, q: str, k: int) -> list[Hit]:
     return out
 
 
+# ── knowledge ───────────────────────────────────────────────────────────────
+
+async def _knowledge(user: UserContext, q: str, k: int) -> list[Hit]:
+    """The published Knowledge pages the member can see (WS-61 KR-3, §20.3).
+
+    The Knowledge router answers 404 unless ``KNOWLEDGE_ENABLED`` is on and
+    the org is on ``KNOWLEDGE_ORGS``. Called from here, the route function
+    skips its router, so this source applies the same switch first. A closed
+    switch gives no hit and no call. ``hybrid`` stays off for the reason of
+    the email source: the route would embed the query, and §20.4 says no
+    model runs. One hit for each page, its best chunk.
+    """
+    from gateway.routes.knowledge import flags
+    from gateway.routes.knowledge.search import search_knowledge
+
+    if not flags.knowledge_org_allowed(user.organization_id):
+        return []
+    # ⚠️ Every parameter, by name: the route declares `Query(...)` defaults.
+    answer = await search_knowledge(q=q, space=None, k=k, hybrid=False, user=user)
+    out: list[Hit] = []
+    seen: set[str] = set()
+    for row in answer.get("hits") or []:
+        page_id = str(row["page_id"])
+        if page_id in seen:
+            continue
+        seen.add(page_id)
+        out.append(Hit(
+            app="knowledge", kind="page", id=page_id, title=_title(row.get("title")),
+            hint=f"Knowledge · {row.get('space_name') or 'Knowledge'}",
+            href=f"/knowledge/pages/{quote(page_id)}",
+            snippet=_clip(row.get("text")), when=_when(row.get("updated_at")),
+        ))
+    return out[:k]
+
+
 #: Every source, in the order the command bar and the route ask them.
 REGISTRY: dict[str, Source] = {
     s.key: s
@@ -308,5 +345,6 @@ REGISTRY: dict[str, Source] = {
         Source("crm", "crm", "CRM", _crm),
         Source("artifacts", "artifacts", "Artifacts", _artifacts),
         Source("whatsapp", "whatsapp", "WhatsApp", _whatsapp),
+        Source("knowledge", "knowledge", "Knowledge", _knowledge),
     )
 }
