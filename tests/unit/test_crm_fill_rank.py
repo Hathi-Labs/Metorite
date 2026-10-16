@@ -215,7 +215,10 @@ def test_the_mode_body_leaves_out_labels_when_there_are_none() -> None:
 
 def test_labels_read_only_the_module_list_of_the_profile() -> None:
     assert "profile -> 'modules'" in fill_rank._MODULES_SQL
-    assert "SELECT profile," not in fill_rank._MODULES_SQL
+    # The select list is the module list alone, never the whole profile row.
+    assert fill_rank._MODULES_SQL.startswith(
+        "SELECT profile -> 'modules' AS modules FROM crm_source_profiles ",
+    )
     labels = fill_rank.labels_of([
         {"api_name": "Contacts", "label": "Existing Sites", "singular_label": "Existing Site"},
         {"api_name": "Products", "label": "Products"},
