@@ -49,7 +49,7 @@ from __future__ import annotations
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, HTTPException, Query
+from fastapi import Depends, HTTPException, Query, Request
 from gateway.routes.crm.activities import (
     MAX_TIMELINE_OFFSET,
     MODULE_ACTIVITY_COLUMN,
@@ -73,6 +73,7 @@ from gateway.routes.crm.core import (
 )
 from gateway.routes.crm.fields import FieldDef
 from gateway.routes.crm.fill_rank import annotate, fills_for
+from gateway.routes.crm.records import refuse_nul
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -395,11 +396,14 @@ async def list_module_records(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=MAX_PAGE_SIZE),
     user: UserContext = Depends(get_current_user),
+    request: Request = None,  # type: ignore[assignment]
 ) -> ModuleListResponse:
     """One page of a mirrored module's records. 404 for a module that the
     profile does not mirror. ``q`` matches ``name``, and ``sort`` is one of
-    :data:`MODULE_RECORDS` ``sorts``.
+    :data:`MODULE_RECORDS` ``sorts``. A NUL in the query is a 422 (CRM-Q25c).
     """
+    if request is not None:
+        refuse_nul(request.query_params.multi_items())
     async with _tenant_session() as db:
         _require_module(await mirrored_modules(db), module)
         query = list_contract(

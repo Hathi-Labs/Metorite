@@ -891,6 +891,10 @@ _OVERALL: dict[str, str] = {
 }
 
 
+#: The fixed groups of the aggregate that take a month in the CRM zone.
+_ZONED_GROUPS = ("created_month", "updated_month")
+
+
 def _number(value: float) -> str:
     """A number with at most two decimals, and no trailing zero."""
     text = f"{value:,.2f}"
@@ -961,6 +965,9 @@ async def crm_aggregate(
     by = group_by or f"{group_field}" + (f" ({bucket})" if bucket else "")
     shown = _page_of(groups, page, "groups")
     plural = f"{ENTITY_LABELS[slug]}s" if slug in ENTITY_LABELS else _entity_label(slug)
+    if field and data.get("values") == 0:
+        # CRM-Q25c item 3: an empty field has no total, and 0 would be false.
+        return f"{plural}, {what} by {by}: no values recorded for {field}."
     lines = [f"{plural}, {what} by {by}:"]
     lines.extend(f"- {g['label']}: {fmt(g.get('value'))}" for g in shown.items)
     lines.append(f"{_OVERALL.get(measure, 'Total')}: {fmt(data.get('total'))}.")
@@ -973,6 +980,10 @@ async def crm_aggregate(
             f"Other ({omitted} smaller groups): {fmt(data.get('other'))}. "
             "The total counts them. Narrow the filter to see them."
         )
+    zone = data.get("zone")
+    if zone and (bucket or group_by in _ZONED_GROUPS):
+        # CRM-Q25b: the route took each month on the clock of the CRM zone.
+        lines.append(f"Months count in the CRM time zone, {zone}.")
     return "\n".join(lines)
 
 
