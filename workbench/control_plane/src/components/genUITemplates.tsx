@@ -26,10 +26,31 @@
  * colors — see theme-css-vars memory) so it reads correctly in light and dark.
  */
 
-import { createElement, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createElement, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import GenUIFallback from "@/components/GenUIFallback";
 import LiveChart from "@/components/LiveChart";
+import { MarkdownBody } from "@/components/MarkdownMessage";
+import { saveBlob } from "@/lib/export";
+import { ArtifactOpenContext, type ArtifactOpeners, openFileLink } from "@/components/ArtifactLink";
+import { useViewMode } from "@/components/ViewModeProvider";
+import { workspaceFileUrl } from "@/lib/artifactKind";
+import {
+  type Report,
+  type ReportVisual,
+  REPORT_LIMITS,
+  baseName,
+  bareChartSpec,
+  firstVisualSection,
+  kpiGridClass,
+  liteMarkdown,
+  mapVisual,
+  moreNote,
+  sectionLabels,
+  plainSummary,
+  reportFrom,
+  reportMeta,
+} from "@/lib/report";
 import { resolveIcon } from "@/lib/icons";
 import { hasMoreToTheRight } from "@/lib/scrollCue";
 import {
@@ -52,7 +73,7 @@ import RecommendedBadge, { RECOMMENDED_RING } from "@/components/RecommendedBadg
 import { pickedFromAnswer } from "@/lib/askAnswers";
 import { Checkbox } from "@/components/ui/Checkbox";
 import GenUiText from "@/components/GenUiText";
-import { plainTitle } from "@/lib/fencedText";
+import { clipWords, plainTitle } from "@/lib/fencedText";
 import { templateTitle } from "@/lib/chatPlacement";
 import { fieldSpec, formatCardDate } from "@/lib/cardFields";
 import {
@@ -199,6 +220,12 @@ export const TEMPLATE_CATALOG: TemplateSpec[] = [
     summary: "A live chart in Metorite's chart language (13 kinds), with a tooltip and a legend. The WhatsApp bot sends the same spec as an image.",
     data: "{ type('bar'|'line'|'area'|'donut'|'progress'|'scatter'|'heatmap'|'radar'|'box'|'waterfall'|'funnel'|'calendar'|'gantt'), title?, subtitle?, unit?, labels?:[string], values?:[number], series?:[{name,values}], stacked?:bool, tones?:[status], totals?:[number], center?, groups?:[{name,points|values}], x_name?, y_name?, x?, y?, axes?, max?, steps?:[{label,value}|{label,total:true}], days?:[[date,n]], rows?:[{label,start,end,progress,status}], today? }",
   },
+  // ── A report the agent makes (owner directive, 2026-10-16) ───────────────
+  {
+    name: "report",
+    summary: "A report make_report wrote: KPI tiles, a summary, sections with their charts and tables, the sources and a PDF. Opens in full in the side panel.",
+    data: "{ kind?('metorite.report'), path?, pdf?, title, subtitle?, for?, date?, period?, summary?(bold, italic, lists), kpis?:[{label,value,unit?,delta?,good?('up'|'down')}](8), sections:[{ heading?, text?, bullets?:[string], visual?:{ kind('chart'|'stats'|'table'|'board'|'timeline'|'gantt'|'agenda'), title?, ... } }](1-30), sources?:[string] }",
+  },
 ];
 
 // ── Shared bits ──────────────────────────────────────────────────────────────
@@ -252,12 +279,19 @@ export function barColor(tone: unknown): string {
   return TONE_COLOR[str(tone, "neutral")] ?? TONE_COLOR.neutral;
 }
 
-function DeltaArrow({ delta }: { delta: number }): React.ReactElement | null {
+/**
+ * A change, with its arrow. A rise is green unless `good` says "down": for a
+ * cost or a count of defects, a fall is the good news. `label` draws the
+ * change as the data wrote it ("12%"), where the bare number would drop its
+ * unit.
+ */
+function DeltaArrow({ delta, good, label }: { delta: number; good?: unknown; label?: string }): React.ReactElement | null {
   if (!delta) return <span style={{ color: "var(--muted-foreground)" }}>—</span>;
   const up = delta > 0;
+  const fine = up === (str(good).toLowerCase() !== "down");
   return (
-    <span style={{ color: up ? "var(--success)" : "var(--destructive)", fontVariantNumeric: "tabular-nums" }}>
-      <Icon name={up ? "ArrowUp" : "ArrowDown"} size={11} className="inline align-[-1px]" /> {Math.abs(delta)}
+    <span style={{ color: fine ? "var(--success)" : "var(--destructive)", fontVariantNumeric: "tabular-nums" }}>
+      <Icon name={up ? "ArrowUp" : "ArrowDown"} size={11} className="inline align-[-1px]" /> {label || Math.abs(delta)}
     </span>
   );
 }
@@ -412,34 +446,71 @@ const INLINE_ICON: React.CSSProperties = { display: "flex", alignItems: "center"
  * period carries one of the two. Exported for its test.
  */
 export function shownDelta(stat: Data): number | null {
-  if (stat.delta == null) return null;
-  const delta = num(stat.delta);
+  if (stat.delta == null || (typeof stat.delta === "string" && stat.delta.trim() === "")) return null;
+  // A report writes its change as text: "-3%", a minus sign, or a down
+  // triangle. The sign of that text is the sign of the change. The marks
+  // are escapes, so the glyph fence of the chat cards reads no glyph here.
+  const delta = typeof stat.delta === "string"
+    ? num(stat.delta.trim().replace(/^[\u2212\u25BC]\s*/, "-").replace(/^[\u25B2+]\s*/, ""))
+    : num(stat.delta);
   const labelled = str(stat.deltaLabel).trim() !== "" || str(stat.period).trim() !== "";
   if (!labelled && delta !== 0 && Math.abs(delta) === Math.abs(num(stat.value, NaN))) return null;
   return delta;
 }
 
-function StatTile({ s }: { s: Data }) {
+/**
+ * The words of a text change without its sign, or "" for a plain number:
+ * "+12%" draws as "12%" after its arrow. Exported for its test.
+ */
+export function deltaWords(stat: Data): string {
+  if (typeof stat.delta !== "string") return "";
+  const t = stat.delta.trim();
+  if (/^[+-]?\d+(?:\.\d+)?$/.test(t)) return "";
+  return t.replace(/^[+\-\u2212\u25B2\u25BC\s]+/, "");
+}
+
+/**
+ * A tile's value as a number to count up to, or null to draw it as text.
+ * Only a plain number counts: "42%", "4.2L" and "1,234" keep their words,
+ * which the count-up once cut to "42", "4" and "1". Exported for its test.
+ */
+export function tileNumber(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const t = str(value).trim();
+  return /^-?\d+(?:\.\d+)?$/.test(t) ? Number(t) : null;
+}
+
+/**
+ * One stat tile. `dense` is the report card's form: it sits two or four to a
+ * row in a chat column, so it takes no least width, a smaller value and a
+ * label cut to one line.
+ */
+function StatTile({ s, dense = false }: { s: Data; dense?: boolean }) {
   const delta = shownDelta(s);
-  const value = num(s.value);
-  const animated = useCountUp(value);
-  const isNumeric = typeof s.value === "number" || /^-?\d/.test(str(s.value));
+  const target = tileNumber(s.value);
+  const animated = useCountUp(target ?? 0);
+  const decimals = target === null ? 0 : (String(target).split(".")[1]?.length ?? 0);
   return (
-    <div style={{
-      flex: 1, minWidth: 110, padding: 12, borderRadius: 12,
+    <div data-stat-tile={dense ? "dense" : ""} style={{
+      flex: 1, minWidth: dense ? 0 : 110, padding: dense ? "6px 8px" : 12, borderRadius: dense ? 8 : 12,
       border: "1px solid var(--border)", background: "var(--card)",
       animation: "ccFadeUp .4s ease both",
     }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: TYPE.caption, color: "var(--muted-foreground)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: TYPE.caption, color: "var(--muted-foreground)", minWidth: 0 }}>
         <TIcon name={s.icon} size={13} />
-        <span>{str(s.label)}</span>
+        <span style={dense ? { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } : undefined}
+          title={dense ? str(s.label) : undefined}>{str(s.label)}</span>
       </div>
-      <div style={{ fontSize: TYPE["2xl"], fontWeight: 600, color: "var(--foreground)", fontVariantNumeric: "tabular-nums" }}>
-        {isNumeric ? Math.round(animated).toLocaleString() : str(s.value)}
-        {s.unit != null && <span style={{ fontSize: TYPE.sm, color: "var(--muted-foreground)" }}> {str(s.unit)}</span>}
+      {/* A value never cuts: a number cut to "4..." is a wrong number. */}
+      <div style={{ fontSize: dense ? TYPE.base : TYPE["2xl"], fontWeight: 600, color: "var(--foreground)", fontVariantNumeric: "tabular-nums",
+        ...(dense ? { overflowWrap: "anywhere" as const } : {}) }}>
+        {target !== null
+          ? animated.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
+          : str(s.value)}
+        {s.unit != null && str(s.unit) !== "" && <span style={{ fontSize: TYPE.sm, color: "var(--muted-foreground)" }}> {str(s.unit)}</span>}
       </div>
       {delta != null && (
-        <div style={{ fontSize: TYPE.caption, marginTop: 2 }}><DeltaArrow delta={delta} /></div>
+        <div style={{ fontSize: TYPE.caption, marginTop: 2 }}><DeltaArrow delta={delta} good={s.good} label={deltaWords(s)} /></div>
       )}
     </div>
   );
@@ -1109,6 +1180,8 @@ export const OWN_HEAD_TEMPLATES: ReadonlySet<string> = new Set([
   // The follow-up of #945: every other template that drew a title of its own.
   "weatherCard", "statDashboard", "sparkTrend", "comparison", "progressTracker",
   "recipeCard", "flightStatus", "trainStatus", "formCard", "barChart", "chart",
+  // A report the agent makes (2026-10-16).
+  "report",
 ]);
 
 /**
@@ -1118,7 +1191,7 @@ export const OWN_HEAD_TEMPLATES: ReadonlySet<string> = new Set([
  * the row the template always drew. With no title, a chat card still gets
  * the toggle while it folds, and draws nothing while it is open.
  */
-function TemplateHead({ icon, title, href = null, rich = false, aside, end, foldOnly = false, gap = 8 }: {
+function TemplateHead({ icon, title, href = null, rich = false, aside, end, actions, foldOnly = false, gap = 8 }: {
   icon: string;
   /** The title's words, or null for a template with no title. */
   title: string | null;
@@ -1131,6 +1204,10 @@ function TemplateHead({ icon, title, href = null, rich = false, aside, end, fold
   /** A mark at the row's end, such as a status badge. It draws BESIDE the
    *  toggle, never inside it, and it is never a control. */
   end?: React.ReactNode;
+  /** The card's own controls, such as "Open" and "PDF". They draw BESIDE the
+   *  toggle, never inside it, as the Email cards' `CardHead` draws them. The
+   *  title gives way first: it cuts to one line, with its words as a tip. */
+  actions?: React.ReactNode;
   /** Draw only inside a chat card. A template whose own body names it (the
    *  weather card's place) draws no title row anywhere else. */
   foldOnly?: boolean;
@@ -1155,6 +1232,7 @@ function TemplateHead({ icon, title, href = null, rich = false, aside, end, fold
           />
         </div>
         {end != null && <div data-template-end="" className="flex shrink-0 items-center">{end}</div>}
+        {actions != null && <div data-template-actions="" className="flex shrink-0 items-center gap-1">{actions}</div>}
         {href && (
           <a href={href} data-template-open="" aria-label={`Open ${title === null ? "it" : plainTitle(title)}`}
             title="Open" className="cc-control flex shrink-0 rounded p-1 text-muted-foreground hover:text-foreground">
@@ -1170,14 +1248,16 @@ function TemplateHead({ icon, title, href = null, rich = false, aside, end, fold
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: gap }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
         <TIcon name={icon} size={15} color="var(--primary)" />
-        <span style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)" }}>
+        <span title={actions != null ? plainTitle(title) : undefined} style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)",
+          ...(actions != null ? { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const } : {}) }}>
           <TitleLink href={href}>{words}</TitleLink>
         </span>
       </div>
-      {(aside != null || end != null) && (
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      {(aside != null || end != null || actions != null) && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
           {aside != null && <span style={MUTED}>{aside}</span>}
           {end}
+          {actions != null && <div data-template-actions="" className="flex items-center gap-1">{actions}</div>}
         </div>
       )}
     </div>
@@ -1203,6 +1283,14 @@ function TitleLink({ href, children }: { href: string | null; children: React.Re
     : <>{children}</>;
 }
 
+/** The dot of a report's milestone, by its state (`make_document`'s states). */
+const MILESTONE_TONE: Record<string, string> = {
+  done: "var(--success)",
+  current: "var(--info)",
+  late: "var(--destructive)",
+  blocked: "var(--warning)",
+};
+
 function Timeline({ data }: { data: Data }) {
   const rows = arr(data.rows).map((r) => (r ?? {}) as Data);
   const tone = (type: string): string =>
@@ -1212,7 +1300,9 @@ function Timeline({ data }: { data: Data }) {
     type === "comment" ? "var(--cat-1)"
       : type === "field_change" ? "var(--cat-3)"
         : type === "merge" || type === "attachment" ? "var(--cat-5)"
-          : "var(--border)";
+          // A report's milestone carries a STATE, and a state is a status:
+          // its hue is information, so a semantic tone (AGENTS.md rule 7).
+          : MILESTONE_TONE[type] ?? "var(--border)";
   return (
     <div style={CARD_BOX}>
       <TemplateHead icon="history" title={str(data.title, "Timeline")} href={taskHref(data.taskId)}
@@ -1240,7 +1330,10 @@ function Timeline({ data }: { data: Data }) {
                 </span>
               </div>
               {r.body != null && str(r.body) !== "" && (
-                <div style={{ ...CELL, whiteSpace: "pre-wrap", marginTop: 2 }}><GenUiText text={str(r.body)} /></div>
+                <div style={{ ...CELL, whiteSpace: "pre-wrap", marginTop: 2 }}>
+                  {/* A report's detail is plain text: no Markdown, so no link and no image. */}
+                  {data.plain === true ? str(r.body) : <GenUiText text={str(r.body)} />}
+                </div>
               )}
               {r.field != null && (
                 <div style={{ ...CELL, marginTop: 2 }}>
@@ -1285,6 +1378,8 @@ function TaskChip({ t }: { t: Data }) {
         {t.number != null && <span style={{ ...MUTED, marginRight: 4 }}>#{str(t.number)}</span>}
         <span style={{ textDecoration: t.done ? "line-through" : "none" }}>{str(t.title)}</span>
       </div>
+      {/* A report's board card: one muted line under the title. */}
+      {str(t.meta) !== "" && <div style={{ ...MUTED, marginTop: 2, overflowWrap: "anywhere" }}>{str(t.meta)}</div>}
       {(chip || people.length > 0 || due) && (
         <div style={{ ...MUTED, display: "flex", gap: 4, marginTop: 4, flexWrap: "wrap", alignItems: "center" }}>
           {chip && <PriorityChip chip={priorityChip(level)} />}
@@ -1324,13 +1419,17 @@ function TaskBoard({ data }: { data: Data }) {
       <div ref={stripRef} style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 4 }}>
         {columns.map((c, i) => {
           const tasks = arr(c.tasks).map((t) => (t ?? {}) as Data);
+          // A column may say its true count (`total`), as a report's does.
+          // The header shows it, and the cards it does not draw are named.
+          const total = Math.max(tasks.length, num(c.total, tasks.length));
           return (
             <div key={str(c.id) || i} style={{ minWidth: 180, flex: "0 0 180px" }}>
               <div style={{ ...MUTED, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4,
                 marginBottom: 6, display: "flex", justifyContent: "space-between" }}>
-                <span>{str(c.name)}</span><span>{tasks.length}</span>
+                <span>{str(c.name)}</span><span>{total}</span>
               </div>
               {tasks.map((t, k) => <TaskChip key={str(t.id) || k} t={t} />)}
+              {total > tasks.length && <div data-board-more="" style={MUTED}>+{total - tasks.length} more</div>}
             </div>
           );
         })}
@@ -1739,6 +1838,369 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   );
 }
 
+// ── A report the agent makes (owner directive, 2026-10-16) ──────────────────
+//
+// `make_report` writes a report as data and its PDF beside it. ONE component
+// draws the data: `ReportView`. The chat card draws its short form, and the
+// side panel, the file viewer and `/artifacts` draw it whole. Every visual
+// draws through the template that already draws its kind, so a report adds
+// no second chart, table or board. `lib/report.ts` reads the data and maps
+// each visual. A field it cannot read draws nothing, never a blank view.
+
+/** The note in place of a visual that no template draws. */
+export const REPORT_VISUAL_MISSING = "This visual cannot show here.";
+
+/** The tallest chart in a report card. The full view keeps the chart's own height. */
+export const REPORT_CARD_CHART_MAX = 240;
+
+/**
+ * The note of what a cut left out, such as "+5 more rows". Every cut draws
+ * one: a read says what it left out (owner rule, review of #1065).
+ */
+function MoreNote({ notes }: { notes: string[] }) {
+  const words = notes.filter(Boolean);
+  if (!words.length) return null;
+  return (
+    <p data-report-more="" className="text-muted-foreground" style={{ fontSize: TYPE.caption }}>
+      {words.join(" · ")}
+    </p>
+  );
+}
+
+/** One visual, by the template that draws its kind, or the note. */
+function ReportVisualBlock({ visual, minWidth, heading = "", card = false }: {
+  visual: ReportVisual;
+  minWidth?: string;
+  /** The section's heading. A chart title that only repeats it draws once. */
+  heading?: string;
+  card?: boolean;
+}) {
+  const mapped = mapVisual(visual);
+  if (!mapped) {
+    return (
+      <p role="note" data-report-visual-missing="" className="flex items-center gap-1.5 text-muted-foreground"
+        style={{ fontSize: TYPE.caption }}>
+        <Icon name="ImageOff" size={12} /> {REPORT_VISUAL_MISSING}
+      </p>
+    );
+  }
+  const drawn = (() => {
+    switch (mapped.template) {
+      case "chart": {
+        // The chart's title draws as the report's own words, at the report's
+        // size, never inside the picture: there it drew larger than the
+        // heading above it. A title that repeats the heading draws once.
+        const title = visual.title.trim();
+        const caption = card ? title || heading.trim() : title !== heading.trim() ? title : "";
+        return (
+          <>
+            {caption && <div data-report-chart-title="" className="mb-1 truncate text-xs font-medium text-foreground" title={caption}>{caption}</div>}
+            <LiveChart spec={bareChartSpec(mapped.data)} label={title || heading}
+              maxHeight={card ? REPORT_CARD_CHART_MAX : undefined} />
+          </>
+        );
+      }
+      case "statDashboard":
+        return <StatDashboard data={mapped.data} />;
+      case "dataGrid":
+        return <DataGrid data={mapped.data} />;
+      case "taskBoard":
+        return <TaskBoard data={mapped.data} />;
+      case "timeline":
+        return <Timeline data={mapped.data} />;
+    }
+  })();
+  // In a narrow chat column a chart drew as a thumbnail. With a least
+  // width it keeps a readable size, and the column scrolls it sideways.
+  if (minWidth) {
+    return (
+      <div data-report-visual={visual.kind} data-template={mapped.template} className="min-w-0">
+        <div className="min-w-0 overflow-x-auto">
+          <div style={{ minWidth }}>{drawn}</div>
+        </div>
+        <MoreNote notes={mapped.more} />
+      </div>
+    );
+  }
+  return (
+    <div data-report-visual={visual.kind} data-template={mapped.template} className="min-w-0">
+      {drawn}
+      <MoreNote notes={mapped.more} />
+    </div>
+  );
+}
+
+/** A refusal this button words itself, as against a network fault's words. */
+class PdfMissing extends Error {}
+
+/**
+ * "Download PDF": the companion file, through the one save seam
+ * (`lib/export.ts`). It fetches first, so a PDF that is not there says so in
+ * words instead of a failed browser download. A hook, so the chat card puts
+ * the button in its header row and the words of a failure in its body.
+ */
+function usePdfDownload(url: string | null, name: string) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function run() {
+    if (!url) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) throw new PdfMissing(res.status === 404
+        ? "The PDF is not there yet. Try again in a moment."
+        : "The PDF could not be downloaded. Try again.");
+      saveBlob(await res.blob(), name);
+    } catch (e) {
+      setError(e instanceof PdfMissing ? e.message : "The PDF could not be downloaded. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return { busy, error, run };
+}
+
+/** The words of a failed PDF download. */
+function PdfError({ error }: { error: string | null }) {
+  if (!error) return null;
+  return <p role="alert" className="w-full text-destructive" style={{ fontSize: TYPE.caption }}>{error}</p>;
+}
+
+/** A small control in a dense card row: the Email cards' size (#945). */
+const DENSE_ACT = "gap-0.5 px-1.5 py-0.5 text-[10px]";
+
+/**
+ * The chat card's two acts, in its header row. Each is an icon and a short
+ * word. Where the card is narrow, the word gives way and the icon stays,
+ * named for a screen reader.
+ */
+function ReportCardActions({ onOpen, pdf, pdfName }: {
+  onOpen: (() => void) | null;
+  pdf: ReturnType<typeof usePdfDownload> | null;
+  pdfName: string;
+}) {
+  if (!onOpen && !pdf) return null;
+  return (
+    <>
+      {onOpen && (
+        <Button variant="secondary" size="none" className={DENSE_ACT} onClick={onOpen}
+          aria-label="Open report" title="Open the report in full">
+          <Icon name="PanelRight" size={10} /><span className="hidden @[17rem]:inline">Open</span>
+        </Button>
+      )}
+      {pdf && (
+        // Below 12rem the title needs the room. The PDF is then in the side
+        // panel, which is what makes a chat column that narrow.
+        <Button variant="secondary" size="none" className={DENSE_ACT} onClick={pdf.run} loading={pdf.busy}
+          layout="hidden items-center justify-center @[12rem]:inline-flex"
+          aria-label="Download PDF" title={`Download ${pdfName}`}>
+          {!pdf.busy && <Icon name="FileDown" size={10} />}<span className="hidden @[17rem]:inline">PDF</span>
+        </Button>
+      )}
+    </>
+  );
+}
+
+/** Markdown-lite through the one chat renderer, with no raw HTML. */
+function ReportText({ text }: { text: string }) {
+  return (
+    <div data-report-text="" className="min-w-0 leading-relaxed text-foreground" style={{ overflowWrap: "anywhere" }}>
+      <MarkdownBody content={liteMarkdown(text)} fences textOnly />
+    </div>
+  );
+}
+
+function ReportSectionBlock({ section }: { section: Report["sections"][number] }) {
+  return (
+    <section data-report-section="" className="flex min-w-0 flex-col gap-2">
+      {section.heading && <h3 className="text-sm font-semibold text-foreground">{section.heading}</h3>}
+      {section.text && <ReportText text={section.text} />}
+      {section.bullets.length > 0 && (
+        <ul className="ml-5 list-outside list-disc space-y-1 text-foreground marker:text-muted-foreground">
+          {section.bullets.map((b, i) => (
+            <li key={i} style={{ overflowWrap: "anywhere" }}><MarkdownBody content={b} inline fences textOnly /></li>
+          ))}
+        </ul>
+      )}
+      <MoreNote notes={[moreNote(section.moreBullets, "bullet", "bullets")]} />
+      {section.visual && <ReportVisualBlock visual={section.visual} heading={section.heading} />}
+    </section>
+  );
+}
+
+export interface ReportViewProps {
+  report: Report;
+  /** The companion PDF's address. Null or absent: no download. */
+  pdfUrl?: string | null;
+  /** `full` draws the whole report. `card` draws the chat card's short form,
+   *  under the card's own header, which carries the title. */
+  variant?: "full" | "card";
+}
+
+/**
+ * THE report renderer. The chat card, the side panel, the file viewer and
+ * `/artifacts` all draw a report through it, so the four cannot disagree.
+ */
+export function ReportView({ report, pdfUrl = null, variant = "full" }: ReportViewProps) {
+  const card = variant === "card";
+  // The card's header carries the title alone: in a narrow chat column an
+  // aside there took the title's room. So the period is in the meta line.
+  const meta = reportMeta(report, { period: true });
+  const pdfName = report.pdf ? baseName(report.pdf) : "report.pdf";
+  const pdf = usePdfDownload(pdfUrl, pdfName);
+  // The full form's one act. The card's acts sit in its header row
+  // (`ReportTemplate`), so the card form draws none here.
+  const actions = !card && pdfUrl && (
+    <div data-report-actions="" className="flex flex-wrap items-center gap-1.5">
+      <Button variant="secondary" size="sm" icon="FileDown" loading={pdf.busy} onClick={pdf.run} title={`Download ${pdfName}`}>
+        Download PDF
+      </Button>
+      <PdfError error={pdf.error} />
+    </div>
+  );
+  // The KPI tiles are the stat template's tiles, in a grid by their count:
+  // two or four to a row, never one alone at the end of a row.
+  const tiles = report.kpis.length > 0 && (
+    <div data-report-kpis="" className="@container min-w-0">
+      <div className={kpiGridClass(report.kpis.length)}>
+        {report.kpis.map((k, i) => <StatTile key={i} s={k as unknown as Data} dense={card} />)}
+      </div>
+      <MoreNote notes={[moreNote(report.more.kpis, "KPI", "KPIs")]} />
+      <style>{`@keyframes ccFadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}`}</style>
+    </div>
+  );
+  const moreSections = <MoreNote notes={[moreNote(report.more.sections, "section", "sections")]} />;
+
+  if (card) {
+    const leadSection = firstVisualSection(report);
+    const lead = leadSection?.visual ?? null;
+    const summary = clipWords(plainSummary(report.summary), REPORT_LIMITS.cardSummary);
+    // Every section, by its heading or its place: never only the headed ones.
+    const heads = sectionLabels(report);
+    return (
+      <div data-report-view="card" className="flex min-w-0 flex-col gap-2 text-xs">
+        {(report.subtitle || meta.length > 0) && (
+          <div className="min-w-0 text-muted-foreground">
+            {report.subtitle && <div className="truncate text-foreground" title={report.subtitle}>{report.subtitle}</div>}
+            {meta.length > 0 && <div className="truncate" title={meta.join(" · ")}>{meta.join(" · ")}</div>}
+          </div>
+        )}
+        {tiles}
+        {summary && (
+          <p data-report-summary="" className="line-clamp-3 text-foreground" title={summary} style={{ overflowWrap: "anywhere" }}>
+            {summary}
+          </p>
+        )}
+        {lead && <ReportVisualBlock visual={lead} minWidth="18rem" heading={leadSection?.heading ?? ""} card />}
+        {heads.length > 0 && (
+          <div data-report-contents="">
+            <div className="mb-1 font-medium text-muted-foreground">In this report</div>
+            <ol className="flex flex-col gap-0.5">
+              {heads.map((h, i) => (
+                <li key={i} className="flex min-w-0 gap-2">
+                  <span className="shrink-0 tabular-nums text-muted-foreground">{i + 1}</span>
+                  <span className="min-w-0 truncate text-foreground" title={h}>{h}</span>
+                </li>
+              ))}
+            </ol>
+            {moreSections}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <article data-report-view="full" className="mx-auto flex w-full min-w-0 max-w-4xl flex-col gap-5 text-sm">
+      <header className="flex flex-wrap items-start justify-between gap-3 border-b border-border pb-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <Icon name="FileChartColumn" size={18} className="shrink-0 text-primary" />
+            <h2 className="min-w-0 text-base font-semibold text-foreground" style={{ overflowWrap: "anywhere" }}>
+              {report.title}
+            </h2>
+          </div>
+          {report.subtitle && <p className="mt-1 text-muted-foreground">{report.subtitle}</p>}
+          {meta.length > 0 && <p className="mt-1 text-xs text-muted-foreground">{meta.join(" · ")}</p>}
+        </div>
+        {actions}
+      </header>
+      {tiles}
+      {report.summary && (
+        <section data-report-summary="" className="rounded-lg border border-border bg-muted/30 p-3">
+          <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Summary</h3>
+          <ReportText text={report.summary} />
+        </section>
+      )}
+      {report.sections.map((s, i) => <ReportSectionBlock key={i} section={s} />)}
+      {moreSections}
+      {report.sources.length > 0 && (
+        <footer data-report-sources="" className="border-t border-border pt-3 text-xs text-muted-foreground">
+          <h3 className="mb-1 font-semibold">Sources</h3>
+          <ul className="flex flex-col gap-0.5">
+            {report.sources.map((s, i) => <li key={i} style={{ overflowWrap: "anywhere" }}>{s}</li>)}
+          </ul>
+          <MoreNote notes={[moreNote(report.more.sources, "source", "sources")]} />
+        </footer>
+      )}
+    </article>
+  );
+}
+
+/**
+ * The `report` template: the chat card of a report. Its title row is the
+ * card's one header, and its body is `ReportView`'s short form. "Open
+ * report" and the PDF come from the chat that hosts the card
+ * (`ArtifactOpenContext`), because the card holds a path and no session.
+ */
+/**
+ * The two acts of a report card: open the report by ITS path, and the
+ * address of its PDF. Null for an act this chat cannot do. It opens through
+ * the seam a file link in the reply uses (`openFileLink`), so the card and
+ * the link open a file in the same place (`artifactOpenSurface`). Exported
+ * for its test.
+ */
+export function reportCardActions(
+  report: { path: string | null; pdf: string | null },
+  openers: ArtifactOpeners | null,
+  isMobile: boolean,
+): { open: (() => void) | null; pdfUrl: string | null } {
+  const path = report.path;
+  const canOpen = Boolean(openers && path && (openers.openPanel || openers.openModal));
+  return {
+    open: canOpen && openers && path
+      ? () => {
+          // The file is this chat's, so a viewer always takes it. The page
+          // navigation is the seam's last resort, and never runs here.
+          openFileLink({ sessionId: openers.sessionId, path, name: baseName(path) }, openers, isMobile,
+            (href) => window.location.assign(href));
+        }
+      : null,
+    pdfUrl: openers && report.pdf ? workspaceFileUrl(openers.sessionId, report.pdf, { download: true }) : null,
+  };
+}
+
+function ReportTemplate({ data }: { data: Data }) {
+  const report = reportFrom(data);
+  const { isMobile } = useViewMode();
+  const { open, pdfUrl } = reportCardActions(report, useContext(ArtifactOpenContext), isMobile);
+  const pdfName = report.pdf ? baseName(report.pdf) : "report.pdf";
+  const pdf = usePdfDownload(pdfUrl, pdfName);
+  // The card is its own size container: its acts drop their words, and its
+  // tiles set their row, by the card's width and not the window's.
+  return (
+    <div data-report-card="" className="@container min-w-0" style={CARD_BOX}>
+      <TemplateHead icon="file-chart-column" gap={10} title={report.title}
+        actions={open || pdfUrl ? <ReportCardActions onOpen={open} pdf={pdfUrl ? pdf : null} pdfName={pdfName} /> : undefined} />
+      <TemplateBody>
+        <PdfError error={pdf.error} />
+        <ReportView report={report} variant="card" />
+      </TemplateBody>
+    </div>
+  );
+}
+
 /**
  * A chart template. In a chat card its title is the card's one header, so
  * the chart draws no title of its own: it drew it in the picture, under the
@@ -1793,6 +2255,7 @@ export const TEMPLATE_REGISTRY: Record<string, TemplateRenderer> = {
   reportCard: (data) => <ReportCard data={data} />,
   planCard: (data, ctx) => <PlanCard data={data} ctx={ctx} />,
   chart: (data) => <ChartCard spec={data} />,
+  report: (data) => <ReportTemplate data={data} />,
 };
 
 /** Render a template node, or an inert fallback if the name is unknown. */

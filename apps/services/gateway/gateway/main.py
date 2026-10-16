@@ -1490,6 +1490,15 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-61 — the Knowledge app (spec: project-docs/specs/knowledge_base.md).
+    # Spaces and pages, dark behind KNOWLEDGE_ENABLED and KNOWLEDGE_ORGS.
+    from gateway.routes.knowledge import router as _knowledge_router
+
+    app.include_router(_knowledge_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-27 — native project management (spec:
     # project-docs/specs/project_management_app.md). Departments, projects,
     # subprojects, tasks and subtasks, grant-scoped into every Center.
@@ -1529,6 +1538,17 @@ try:
     from gateway.routes.shell import router as _shell_router
 
     app.include_router(_shell_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-61 KR-1 — company retrieval, `GET /search/company`
+    # (knowledge_base.md §20.4). It asks each source of
+    # `gateway.retrieval.sources.REGISTRY`, and each source checks its own
+    # app's feature, as the command bar does. No router-level feature gate.
+    from gateway.retrieval.company import router as _company_search_router
+
+    app.include_router(_company_search_router)
 except Exception:  # pragma: no cover
     pass
 
@@ -2003,7 +2023,15 @@ async def embeddings(
         from openai import OpenAI
         client = OpenAI(api_key=oai_key)
         inputs = req.input if isinstance(req.input, list) else [req.input]
-        resp = client.embeddings.create(model=req.model, input=inputs)
+        # The client is synchronous. A worker thread keeps one embed from
+        # stalling the event loop for every tenant, because the gateway also
+        # calls this route over loopback on each Knowledge search and publish
+        # (WS-61 KB-3 review, 2026-10-16).
+        import asyncio as _asyncio
+
+        resp = await _asyncio.to_thread(
+            client.embeddings.create, model=req.model, input=inputs,
+        )
         return resp.model_dump()
     # No embedding provider configured → return a zero vector so Mem0's add()
     # can still complete, but WARN loudly: semantic search is silently degraded

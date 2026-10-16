@@ -215,11 +215,33 @@ def test_the_my_day_judgments_table_is_tenant_scoped() -> None:
     assert "ALTER TABLE my_day_judgments FORCE  ROW LEVEL SECURITY" in policies
 
 
-@pytest.mark.parametrize("table", ["reach_outbox", "reach_signal_log"])
+@pytest.mark.parametrize("table", ["reach_outbox", "reach_signal_log", "reach_requests"])
 def test_the_reach_tables_are_tenant_scoped(table: str) -> None:
     """WS-59 RE-1a (``proactive_reach.md`` §7). The outbox holds the text
-    Reach sent a member, and the log holds which cards it looked at. Neither
-    may be exempt, and the committed policy phase must carry both (R5)."""
+    Reach sent a member, and the log holds which cards it looked at. RE-5
+    (§11.2) adds the requests of "Tell me on WhatsApp", which hold tenant
+    text too. None may be exempt, and the committed policy phase must carry
+    each (R5)."""
+    gen = _generator()
+    assert table in gen.discover_tables()
+    assert table not in gen.EXEMPT
+    assert table not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
+@pytest.mark.parametrize(
+    "table",
+    ["kb_spaces", "kb_space_grants", "kb_pages", "kb_page_versions", "kb_links",
+     "kb_chunks"],
+)
+def test_the_knowledge_tables_are_tenant_scoped(table: str) -> None:
+    """WS-61 KB-1 and KB-3 (``knowledge_base.md`` §6.1, §12 and §14). The
+    spaces, grants, pages, versions, links and the chunks of the index hold
+    what one organization wrote down. None may be exempt, and the committed
+    policy phase must carry each (R5)."""
     gen = _generator()
     assert table in gen.discover_tables()
     assert table not in gen.EXEMPT

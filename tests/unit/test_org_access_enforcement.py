@@ -168,9 +168,10 @@ GATED_ROUTERS: dict[str, set[str]] = {
     # both routes serve the signed-in member, and the webhook stays on the
     # `/whatsapp` router.
     "gateway.routes.whatsapp_channel": set(),
-    # WS-59 RE-1a — Reach (`/reach/preview`, `/reach/brief`). Gated on
-    # `feature:chat`, because Reach speaks through the WhatsApp channel. No
-    # exemptions: both routes serve the signed-in member only.
+    # WS-59 RE-1a — Reach (`/reach/preview`, `/reach/brief`), and RE-5
+    # `/reach/tell-me`. Gated on `feature:chat`, because Reach speaks through
+    # the WhatsApp channel. No exemptions: each route serves the signed-in
+    # member only.
     "gateway.reach.routes": set(),
     "gateway.routes.actions": set(),
     "gateway.routes.integrations": set(),
@@ -345,6 +346,18 @@ DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
             "zone column of `user_settings`, of the bound org, and it takes no org "
             "and no member from the request "
             "(`test_feed_measure_r8.py::TestTheTenancyBoundary`)."
+        ),
+    },
+    "gateway.retrieval.company": {
+        "/search/company": (
+            "WS-61 KR-1. The route asks each source of "
+            "`gateway.retrieval.sources.REGISTRY`, and `Source.find` checks "
+            "`user.has_permission('feature:<app>')` before it calls the app's own "
+            "search. A member without the app gets no hit and no call "
+            "(`test_company_search_sources.py::TestTheFeatureGate`). The CRM "
+            "source also applies the kill switch and the access rule. The route "
+            "takes no member and no org from the request "
+            "(`test_company_search_sources.py::TestTheRouteTakesNoTenant`)."
         ),
     },
 }

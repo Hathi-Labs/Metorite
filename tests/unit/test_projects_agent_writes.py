@@ -2024,7 +2024,11 @@ async def test_every_manifest_tool_is_now_built() -> None:
     # WS-55 EA-6b: the claim route serves an outside agent over MCP. The chat
     # assigns through `assign` and moves through `update_task`.
     ea_6b = {"claim_task"}
-    assert set(m.PLANNED) <= {"my_areas"} | ea_12e | ea_6b, m.PLANNED
+    # WS-55 EA-6g (EA3-40): an outside agent asks to archive over MCP, and
+    # only the run's member approves on the task. The chat archives through
+    # `archive_task`, so neither tool has a chat build yet.
+    ea_6g = {"request_task_archive", "approve_task_archive"}
+    assert set(m.PLANNED) <= {"my_areas"} | ea_12e | ea_6b | ea_6g, m.PLANNED
 
 
 async def test_a_capture_with_no_project_lands_in_the_personal_project(monkeypatch) -> None:
@@ -2155,7 +2159,14 @@ async def test_create_task_without_a_parent_keeps_the_default_on_the_card(
 def test_the_cards_know_every_guarded_tool() -> None:
     """A class C receipt wears the warning tone (`ProjectToolCards.tsx`
     `GUARDED_TOOLS`). The set is a literal in TypeScript, so a guarded tool
-    added here without a line there would paint green. Hold the two equal."""
+    added here without a line there would paint green. Hold the two equal.
+
+    The rule is "every class C tool the chat can CALL has a guarded card".
+    A tool in ``PLANNED`` is not built, so the chat cannot call it, and it
+    needs no card yet. WS-55 EA-6g added one: ``approve_task_archive`` is the
+    member's approval of an agent's archive request, member-only and never a
+    chat tool (EA3-40). When a planned class C tool is built it leaves
+    ``PLANNED``, and this test asks for its card again."""
     import re
 
     from tests.unit._projects_agent_fakes import REPO_ROOT
@@ -2166,7 +2177,10 @@ def test_the_cards_know_every_guarded_tool() -> None:
     block = re.search(r"GUARDED_TOOLS[^=]*=\s*new Set\(\[(.*?)\]\)", src, re.S)
     assert block, "GUARDED_TOOLS literal not found in ProjectToolCards.tsx"
     in_cards = set(re.findall(r'"([a-z_]+)"', block.group(1)))
-    assert in_cards == m.tools_by_class("C")
+    callable_c = m.tools_by_class("C") - set(m.PLANNED)
+    assert in_cards == callable_c
+    # The narrowing hides only planned tools, never a built one.
+    assert not in_cards & set(m.PLANNED)
 
 
 # ── F2: the defer card says what the defer does ─────────────────────────────

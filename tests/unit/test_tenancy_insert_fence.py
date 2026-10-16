@@ -223,6 +223,10 @@ _GRANDFATHERED: dict[tuple[str, str], tuple[int, str]] = {
     # no-column arm counted here runs only on a ladder with no tenancy layer;
     # the tenancy arm names `organization_id` and binds each tenant.
     ("221_chat_session_creator_owner_backfill.sql", "chat_session_participant"): (1, "GUARDED"),
+    # WS-61 KB-1 seeds `knowledge:manage` onto `admin` in every organization,
+    # in the two-arm shape of 207. The no-column half is the one counted; the
+    # other names `organization_id` from the ROLE being granted.
+    ("272_knowledge_pages.sql", "org_role_permission"): (1, "GUARDED"),
 }
 
 

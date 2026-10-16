@@ -758,6 +758,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
 
       {viewerEntry ? (
         <ArtifactViewerModal
+          origin="workspace"
           sessionId={chat.activeId}
           entry={viewerEntry}
           onClose={() => setViewerEntry(null)}

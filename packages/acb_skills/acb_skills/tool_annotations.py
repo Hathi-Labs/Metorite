@@ -138,6 +138,9 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "crm_list_modules":      {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     "crm_list_module_records": {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     "crm_get_module_record": {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-61 KR-2: company retrieval (`company_search_tools.py`). It reads
+    # `GET /search/company` as the member, and nothing leaves the platform.
+    "search_company":        {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     # WS-47 WAC-10a: queues an element for the member's own WhatsApp chat.
     # `bot_run` sends it to the member who asked, so it reaches no third party.
     "whatsapp_ui":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
@@ -177,6 +180,10 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     "crm_list_modules",
     "crm_list_module_records",
     "crm_get_module_record",
+    # WS-61 KR-2: company retrieval only reads, and only the orchestrator
+    # holds it, behind COMPANY_SEARCH_ENABLED. So every risk block stays
+    # byte-identical.
+    "search_company",
 })
 
 #: Every name that :func:`annotate` registered: an agent's OWN tool. They

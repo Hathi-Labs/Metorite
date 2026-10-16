@@ -8,7 +8,8 @@
  *  • Syntax-highlighted code blocks (token colours, `lib/codeTheme.ts`)
  *  • Terminal blocks with macOS-style chrome (red/yellow/green dots)
  *  • One-click copy button on every code block
- *  • Links: an in-app path opens in this tab, any other URL in a new tab
+ *  • Links: an in-app path opens in this tab, any other URL in a new tab, and
+ *    a workspace file in the app's own viewer (`ArtifactLink.tsx`)
  *  • Images: a remote URL loads only on a member's click (`MarkdownImage`)
  *  • Entity pills (opt-in, WS-27bm S9): «names» from the tools as pills
  *  • Collapsible tool-call accordion blocks (mirrors VS Code's "Used tool: …")
@@ -19,6 +20,8 @@ import { useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import type { Options as MarkdownOptions } from "react-markdown";
+import remarkTextOnly from "@/lib/remarkTextOnly";
 import ChatEntityPill from "@/components/ChatEntityPill";
 import ChatTaskRef from "@/components/ChatTaskRef";
 import { FencedName } from "@/components/FencedText";
@@ -29,6 +32,8 @@ import { stripDsmlMarkup } from "@/lib/dsmlMarkup";
 import rehypeStreamCaret from "@/lib/streamCaret";
 import { isInAppPath } from "@/components/ui/EntityPill";
 import { announceInAppLink, externalHost } from "@/lib/inAppLink";
+import { workspaceFileOfHref } from "@/lib/artifactKind";
+import ArtifactFileLink from "@/components/ArtifactLink";
 import { buildEntityIndex, projectIdOfHref, type EntityIndex } from "@/lib/entityIndex";
 import ProjectLinkPill from "@/components/ProjectLinkPill";
 import type { TaskRefResolver } from "@/lib/taskRefs";
@@ -289,6 +294,10 @@ function nodeText(node: ReactNode): string {
 }
 
 function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
+  // A link to a workspace file opens the app's viewer, never the raw file in
+  // a new tab (owner report, 2026-10-16, `components/ArtifactLink.tsx`).
+  const file = workspaceFileOfHref(href);
+  if (file) return <ArtifactFileLink file={file} className={LINK_CLASS}>{children}</ArtifactFileLink>;
   if (href && isInAppPath(href)) return <InAppLink href={href}>{children}</InAppLink>;
   if (href?.toLowerCase().startsWith("mailto:")) {
     return <a href={href} className={LINK_CLASS}>{children}</a>;
@@ -374,6 +383,7 @@ export function MarkdownBody({
   plainEmails = false,
   taskRefResolver,
   projectPills = false,
+  textOnly = false,
 }: {
   content: string;
   onChoice?: (choice: string) => void;
@@ -395,6 +405,9 @@ export function MarkdownBody({
   /** Draw a link to a project as the project pill. Off everywhere but the
    *  task card. */
   projectPills?: boolean;
+  /** No image and no link: each link draws as its words, on the parsed tree
+   *  (`lib/remarkTextOnly.ts`). A report's text sets it. */
+  textOnly?: boolean;
 }) {
   // DeepSeek's DSML tool-call text never shows (owner report, 2026-10-11).
   // The Router turns it into real tool calls. This catches a message stored
@@ -408,15 +421,16 @@ export function MarkdownBody({
   const live = !caret;
   return (
     <ReactMarkdown
-      remarkPlugins={
-        entityPills
+      remarkPlugins={[
+        ...(entityPills
           ? [remarkGfm, [remarkEntityPills, { taskRefs: refs }]]
           : fences
             ? [remarkGfm, [remarkEntityPills, { emails: false, taskRefs: refs }]]
             : refsOnly
               ? [remarkGfm, [remarkEntityPills, { names: false, emails: false, taskRefs: true }]]
-              : [remarkGfm]
-      }
+              : [remarkGfm]) as NonNullable<MarkdownOptions["remarkPlugins"]>,
+        ...(textOnly ? [remarkTextOnly] : []),
+      ]}
       rehypePlugins={caret ? [rehypeStreamCaret] : []}
       urlTransform={markdownUrlTransform}
       allowedElements={inline ? INLINE_ELEMENTS : undefined}

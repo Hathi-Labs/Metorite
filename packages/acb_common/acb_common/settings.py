@@ -311,6 +311,30 @@ class Settings(BaseSettings):
     # §11 AM-1. Fence: tests/unit/test_artifact_registry.py.
     artifact_registry_enabled: bool = False
 
+    # ── The Knowledge app (WS-61 KB-1, 2026-10-15) ──────────────────────────
+    #
+    # `/knowledge` serves an organization only when both settings allow it.
+    # `knowledge_enabled` is the kill switch, default OFF. `knowledge_orgs`
+    # lists the organization ids that may reach `/knowledge`, with a comma
+    # between ids, in the grammar of `crm_orgs`. `*` allows each organization
+    # with a bound tenant. An empty list allows no organization. Off, each
+    # route answers 404, never 403.
+    # The one reader of both is `gateway.routes.knowledge.flags`. It takes the
+    # organization from the server-side `UserContext`, never from request
+    # input. `env_guard` refuses each `KNOWLEDGE_*` name on each Integrations
+    # write. A flip for an org is the owner's (knowledge_base.md §13), gate
+    # `enforcement-flip`. Fence: tests/unit/test_kb_flags.py.
+    knowledge_enabled: bool = False
+    knowledge_orgs: str = ""
+    # WS-61 KB-3 (knowledge_base.md §6.4 and §13). The organizations whose
+    # Knowledge chunks get a vector, in the grammar of `knowledge_orgs`. `*`
+    # is each organization. Empty, the default, means no organization: the
+    # index stays lexical, a search answers `degraded`, and the embed door is
+    # never called. The one reader is `gateway.routes.knowledge.flags`. A flip
+    # spends `tier-embed` credits, so a flip for an org is the owner's.
+    # Fence: tests/unit/test_kb_flags.py.
+    knowledge_embed: str = ""
+
     reach_enabled: bool = False
     reach_orgs: str = ""
     reach_members: str = ""
@@ -438,6 +462,17 @@ class Settings(BaseSettings):
     # not state. Registry: work_plan.md §6.1 WS-31 (i). Spec:
     # customer_console.md §6A.14 CP-13c. Fence: tests/unit/test_acb_llm_decide.py.
     decide_enabled: bool = False
+
+    # ── Company retrieval for the assistant (WS-61 KR-2, D105) ──────────────
+    #
+    # ON gives the orchestrator `search_company` in its core tools, takes out
+    # `retrieve_entity_context` and `retrieve_sales_context`, and swaps rule 1
+    # of its persona for the grounding paragraph of knowledge_base.md §8.2.
+    # OFF leaves the tool list and the persona byte-identical. The one reader is
+    # `acb_skills.company_search_tools.company_search_enabled`. The flip is the
+    # agent's under the dev-phase `enforcement-flip` grant (knowledge_base.md
+    # §13). Fence: tests/unit/test_company_search_tool.py.
+    company_search_enabled: bool = False
 
     # ── The per-feature `decide` modes (WS-17 EM-T5, CP-13e) ────────────────
     #

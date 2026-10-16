@@ -87,6 +87,12 @@ interface ElicitationCardProps {
    * agent run panel of a task (EA-12c) names the outside agent.
    */
   hint?: string;
+  /**
+   * The short title of an open card, in place of "Question". The agent run
+   * panel names an archive request this way (WS-55 EA-6g). An answered card
+   * still reads "Answered".
+   */
+  title?: string;
 }
 
 export default function ElicitationCard({
@@ -96,6 +102,7 @@ export default function ElicitationCard({
   answered,
   id,
   hint = SUBMIT_HINT,
+  title: openTitle,
 }: ElicitationCardProps) {
   const [answers, setAnswers] = useState<ElicitationAnswers>({});
   const [freeformTexts, setFreeformTexts] = useState<Record<string, string>>({});
@@ -128,7 +135,7 @@ export default function ElicitationCard({
 
   if (questions.length === 0) return null;
   const many = questions.length > 1;
-  const title = isAnswered ? ANSWERED_TITLE : questionsTitle(questions.length);
+  const title = isAnswered ? ANSWERED_TITLE : (openTitle ?? questionsTitle(questions.length));
 
   return (
     <RollupCard

@@ -12,6 +12,8 @@
  * draws). A chat is chosen by `?session=<id>`, so the assistant's Files button
  * and a shared link open it here. The files come from `/api/agent/workspace/
  * {session}`, the one route that applies the tenant, room and thread rules.
+ * `&file=<path>` also opens that file in the viewer: the rendered view of a
+ * file link in a chat reply (owner report, 2026-10-16).
  *
  * **Agent workspaces**: the explorer this page was before 2026-10-13, for the
  * files of each personal agent.
@@ -37,7 +39,8 @@ import {
   setSessionArchived,
   type ChatSession,
 } from "@/lib/sessions";
-import { artifactsTab, chatToShow, type ArtifactsTab } from "./lib/chatFiles";
+import { linkedFileEntry } from "@/components/ArtifactLink";
+import { artifactsTab, chatToShow, linkedFile, type ArtifactsTab } from "./lib/chatFiles";
 
 // ─── Page ─────────────────────────────────────────────────────────────────
 
@@ -53,6 +56,7 @@ function ArtifactsInner() {
   const params = useSearchParams();
   const [tab, setTab] = useState<ArtifactsTab>(() => artifactsTab(params.get("tab")));
   const asked = params.get("session");
+  const askedFile = params.get("file");
 
   const tabs = (
     <div role="tablist" aria-label="What to show" className="flex items-center gap-1">
@@ -81,7 +85,7 @@ function ArtifactsInner() {
     <div className="flex h-full flex-col">
       <AppTopBar title="Artifacts" subtitle="The files your chats made" actions={tabs} />
       <div className="min-h-0 flex-1">
-        {tab === "chats" ? <ChatFiles asked={asked} /> : <AgentWorkspaces />}
+        {tab === "chats" ? <ChatFiles asked={asked} askedFile={askedFile} /> : <AgentWorkspaces />}
       </div>
     </div>
   );
@@ -94,7 +98,7 @@ function ArtifactsInner() {
  * the link asked for, else the newest chat (`chatToShow`). A phone shows the
  * list, then the files of the chat the member taps, with a way back.
  */
-function ChatFiles({ asked }: { asked: string | null }) {
+function ChatFiles({ asked, askedFile }: { asked: string | null; askedFile: string | null }) {
   const scope = useChatScope();
   const { isMobile } = useViewMode();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -102,6 +106,19 @@ function ChatFiles({ asked }: { asked: string | null }) {
   const [phoneDetail, setPhoneDetail] = useState(Boolean(asked));
   const [viewer, setViewer] = useState<FileEntry | null>(null);
   const refresh = useCallback(() => setSessions(getSessions()), []);
+  // `?file=` opens one file in the viewer at once (owner report, 2026-10-16).
+  // It reads the session of the link, not the chat that the list shows, so a
+  // file of a shared chat opens too. The gateway decides who may read it.
+  const linkKey = `${asked ?? ""}
+${askedFile ?? ""}`;
+  const [closedLink, setClosedLink] = useState<string | null>(null);
+  const linked = closedLink === linkKey ? null : linkedFile(asked, askedFile);
+  const closeLinked = () => {
+    setClosedLink(linkKey);
+    if (asked) {
+      window.history.replaceState(null, "", `/artifacts?session=${encodeURIComponent(asked)}`);
+    }
+  };
 
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
@@ -187,7 +204,15 @@ function ChatFiles({ asked }: { asked: string | null }) {
         </>
       )}
       {viewer && chat ? (
-        <ArtifactViewerModal sessionId={chat.id} entry={viewer} onClose={() => setViewer(null)} />
+        <ArtifactViewerModal sessionId={chat.id} origin="workspace" entry={viewer} onClose={() => setViewer(null)} />
+      ) : linked ? (
+        <ArtifactViewerModal
+          key={linkKey}
+          origin="workspace"
+          sessionId={linked.sessionId}
+          entry={linkedFileEntry(linked)}
+          onClose={closeLinked}
+        />
       ) : null}
     </div>
   );
@@ -781,6 +806,7 @@ function AgentWorkspaces() {
 
       {viewerEntry && (
         <ArtifactViewerModal
+          origin="workspace"
           sessionId="artifacts" entry={viewerEntry}
           downloadUrl={viewerUrl} saveUrl={viewerUrl}
           onClose={() => setViewerEntry(null)}

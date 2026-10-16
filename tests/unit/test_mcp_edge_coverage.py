@@ -12,7 +12,9 @@ adds rules 3 and 4, which read the edge's tool records
 (``agent_edge/tools.py``). EA-6a widens each rule for a listed write pair.
 EA-6d adds the task create pair, one non-idempotent write (``create_task``)
 and one edge input (its ``idempotency_key``). EA-6c adds the comment pair and
-the sixth edge input, the ``idempotency_key`` of ``add_comment``.
+the sixth edge input, the ``idempotency_key`` of ``add_comment``. EA-6g adds
+the archive request pair, and it holds that the archive and its approval
+stay OFF the edge (EA3-40).
 
 1. Each pair in ``MCP_ROUTES`` is a route the gateway serves. Its method is
    ``GET``, or ``PATCH`` or ``POST`` for a pair of ``MCP_WRITE_ROUTES``, which
@@ -82,7 +84,8 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
     """A new write pair needs a spec amendment (§9.2, EA3-31). EA-6a listed
     the PATCH and the references POST. EA-6d adds the task create. EA-12a
     adds the three POST pairs of the agent runs (§12.1, EA12-9). EA-6c adds
-    the comment POST (EA3-35). EA-6b adds the claim (§9.2, EA3-34)."""
+    the comment POST (EA3-35). EA-6b adds the claim (§9.2, EA3-34). EA-6g
+    adds the archive request (§9.5, EA3-40)."""
     expected = {
         ("PATCH", "/projects/tasks/{task_id}"),
         ("POST", "/projects/tasks/{task_id}/refs"),
@@ -92,8 +95,36 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         ("POST", "/projects/tasks/{task_id}/agent-runs"),
         ("POST", "/projects/agent-runs/{run_id}/activities"),
         ("POST", "/projects/agent-runs/{run_id}/finish"),
+        ("POST", "/projects/tasks/{task_id}/archive-request"),
     }
     assert expected == set(MCP_WRITE_ROUTES)
+
+
+#: The two routes that archive (EA-6g, EA3-40). Only the member archives, so
+#: neither is a pair of the edge, and branch 0 refuses a signed request to
+#: either with 401.
+ARCHIVE_ROUTES = (
+    ("POST", "/projects/tasks/{task_id}/archive"),
+    ("POST", "/projects/agent-runs/{run_id}/archive-approval"),
+)
+
+
+def test_the_archive_and_its_approval_stay_off_the_edge():
+    """EA-6g (§9.5, EA3-40 rules 2 and 6). Mutation: put the approval pair
+    in ``MCP_WRITE_ROUTES``, and this test and rule 2 fail."""
+    served = _gateway_routes()
+    classes = {(r.method, r.path): r.cls for r in m.MANIFEST}
+    for pair in ARCHIVE_ROUTES:
+        assert pair in served, pair
+        assert pair not in MCP_ROUTES, pair
+        assert classes[pair] == "C", pair
+    request = ("POST", "/projects/tasks/{task_id}/archive-request")
+    assert request in MCP_WRITE_ROUTES and classes[request] == "B"
+    from agent_edge.tools import TOOLS
+
+    reached = {(t.method, r) for t in TOOLS.values()
+               for r in (t.route, *t.routes, *t.prior_writes)}
+    assert not reached & set(ARCHIVE_ROUTES), reached & set(ARCHIVE_ROUTES)
 
 
 def test_rule_1_each_pair_is_a_route_the_gateway_serves():

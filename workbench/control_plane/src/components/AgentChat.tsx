@@ -2591,7 +2591,7 @@ export default function AgentChat({
 
       {/* Artifact viewer modal */}
       {viewerEntry && (
-        <ArtifactViewerModal sessionId={sessionId} entry={viewerEntry}
+        <ArtifactViewerModal origin="workspace" sessionId={sessionId} entry={viewerEntry}
           onClose={() => setViewerEntry(null)} onDelete={() => setViewerEntry(null)} />
       )}
     </div>

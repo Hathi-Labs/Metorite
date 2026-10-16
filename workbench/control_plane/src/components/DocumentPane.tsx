@@ -9,6 +9,8 @@
  *   .html/.htm  → SandboxedHtml (rendered, interactive) ⇄ textarea (edit) w/ live preview
  *   .jsx/.tsx   → SandboxedReact — a full-page React artifact — but ONLY under
  *                 outputs/; elsewhere they stay source code (see isArtifactPath)
+ *   .report.json → ReportView, the one report renderer. A file that does not
+ *                 parse as a report shows as text, so it still opens
  *   code exts   → syntax-highlighted text (edit = plain textarea)
  *   images      → <img>
  *   other       → download prompt
@@ -30,6 +32,8 @@ import { markdownUrlTransform, rehypeGateRemoteMedia } from "@/lib/markdownMedia
 import SandboxedHtml from "@/components/SandboxedHtml";
 import SandboxedReact from "@/components/SandboxedReact";
 import { iconsUsedIn } from "@/lib/iconSvg";
+import { ReportView } from "@/components/genUITemplates";
+import { parseReportFile } from "@/lib/report";
 import {
   canDownloadPdf,
   classifyArtifact,
@@ -51,12 +55,16 @@ interface DocumentPaneProps {
 }
 
 export default function DocumentPane({ sessionId, path, name, live }: DocumentPaneProps) {
-  const raw = classifyArtifact(name, path);
+  // The side panel opens a session's workspace files only.
+  const raw = classifyArtifact(name, path, "", "workspace");
   // Collapse what this pane cannot render into one "download it" state.
   const kind: ArtifactKind | "binary" = UNDISPLAYABLE.has(raw) ? "binary" : raw;
   const editable =
-    kind === "markdown" || isRenderable(kind) || kind === "code" || kind === "text";
+    kind === "markdown" || isRenderable(kind) || kind === "code" || kind === "text" || kind === "report";
   const previewable = kind === "markdown" || isRenderable(kind);
+  // A report has a drawn view, and its source is JSON: Edit shows the JSON,
+  // with no live preview (the preview pane draws Markdown, HTML or React).
+  const hasView = previewable || kind === "report";
 
 
   const fileUrl = workspaceFileUrl(sessionId, path);
@@ -74,6 +82,12 @@ export default function DocumentPane({ sessionId, path, name, live }: DocumentPa
   // Full-page artifacts have no props.icons to declare with, so the icons
   // come from what the source actually references (see iconsUsedIn).
   const icons = useMemo(() => iconsUsedIn(content), [content]);
+  // A report is data. It draws only when the file parses as one, so a file
+  // the agent is still writing shows as text until it is whole.
+  const report = useMemo(
+    () => (kind === "report" ? parseReportFile(content, path) : null),
+    [kind, content, path],
+  );
   const draftIcons = useMemo(() => iconsUsedIn(draft), [draft]);
 
   const loadText = useCallback(
@@ -157,7 +171,7 @@ export default function DocumentPane({ sessionId, path, name, live }: DocumentPa
       lastLoadedRef.current = draft;
       setContent(draft);
       setDirty(false);
-      if (previewable) setMode("preview");
+      if (hasView) setMode("preview");
     } catch (e) {
       alert(`Failed to save: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -177,7 +191,7 @@ export default function DocumentPane({ sessionId, path, name, live }: DocumentPa
       )}
       {dirty && <span className="text-[10px] text-accent">● unsaved</span>}
       <div className="ml-auto flex items-center gap-1">
-        {previewable && mode === "edit" && (
+        {hasView && mode === "edit" && (
           <Button variant="ghost" size="none" radius="keep" layout="flex items-center" onClick={() => setMode("preview")} title="Rendered preview" className="gap-1 rounded px-2 py-1 text-[11px]">
             <Icon name="Eye" size={12} /> Preview
           </Button>
@@ -203,7 +217,8 @@ export default function DocumentPane({ sessionId, path, name, live }: DocumentPa
           </>
         )}
         <a
-          href={fileUrl}
+          // `download` keeps the raw bytes, never the rendered page (2026-10-16).
+          href={workspaceFileUrl(sessionId, path, { download: true })}
           download={name}
           className="flex items-center gap-1 rounded px-2 py-1 text-[11px] text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
           title={`Download ${name}`}
@@ -283,6 +298,21 @@ export default function DocumentPane({ sessionId, path, name, live }: DocumentPa
             )}
           </div>
         )}
+      </div>
+    );
+  } else if (kind === "report") {
+    body = report ? (
+      <div className="flex-1 overflow-auto p-4">
+        <ReportView report={report} pdfUrl={report.pdf ? workspaceFileUrl(sessionId, report.pdf, { download: true }) : null} />
+      </div>
+    ) : (
+      <div className="flex-1 overflow-auto">
+        <p role="note" className="border-b border-border/60 bg-card/40 px-3 py-1.5 text-[11px] text-muted-foreground">
+          {live ? "The report is still being written. It shows here when it is whole." : "This file is not a report Metorite can draw. It shows as text."}
+        </p>
+        <pre className="whitespace-pre-wrap break-words p-3 font-mono text-[13px] leading-relaxed text-foreground">
+          {content}
+        </pre>
       </div>
     );
   } else if (kind === "markdown") {

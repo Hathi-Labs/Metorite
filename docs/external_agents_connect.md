@@ -25,6 +25,16 @@ The **AI agents** view of the Integrations app shows this address, with a copy b
 4. Read the page. Its headline names the verified host of the agent. The name that the agent gives itself shows second, as "It calls itself".
 5. Make your choices on the page (see below), then select **Approve**.
 
+## Work on a task from Claude Code
+
+When the connection can change tasks, Claude Code shows the command `/mcp__metorite__work_on_task`.
+
+- Run `/mcp__metorite__work_on_task 42` with the task number or the task id. The agent reads the task, claims it, does the work, and links the branch and the pull request.
+- When the pull request opens, the agent moves the task to an "in progress" status whose name says review. It moves the task to done only after the merge.
+- **Ask an agent** in Metorite gives work to the agent. To continue that work, run the command with no number.
+
+The description of the task is the brief of the agent. Metorite limits what the connection can reach. It cannot limit the tools of the agent on your computer, such as the shell and `git push`. Your Claude Code permission settings control those tools.
+
 ## The choices on the consent page
 
 - **The scopes.** Clear a box to give less. You cannot add a scope that the agent did not ask for.
@@ -45,7 +55,7 @@ Seven tools read:
 | `get_task_timeline` | The history of one task |
 | `search_tasks` | A search of the tasks you see, at most 50 hits |
 
-Five tools make or change a task:
+Six tools make or change a task:
 
 | Tool | What it does |
 |---|---|
@@ -62,10 +72,38 @@ Each change shows in the task history, with the agent as `mcp:<host>`. A status 
 
 **A comment can start a workflow.** Each comment, also one that the agent writes, sends the event `pm.task.comment_added`. If your organization has a published workflow that starts on that event, the workflow runs. That workflow can call an integration or a web address, as it does for your own comment.
 
+The agent can also do these two things:
+
+- **Start work with a command.** In Claude Code, run `/mcp__metorite__work_on_task` with a task number, or with no number. "Work on a task from Claude Code" above tells how.
+- **Ask to archive a task, and you approve it in Metorite.** The tool `request_task_archive` puts the request on the task, and the bell tells you. Only you can approve or decline it. An approve does not archive the subtasks.
+
+## Ask an agent in Metorite
+
+**"Ask an agent" is live in each organization since 2026-10-15.** You can give work to your agent from the task itself:
+
+1. Open the task in Projects, then select **Ask an agent**.
+2. Choose one of your connected agents. Only an agent that may make changes shows in the list.
+3. Write what the agent must do, then send it. The task shows "Queued for" and the name of the agent.
+
+Your agent finds the work when it next starts a session, because it looks for queued runs first. It does not start by itself.
+
+While the agent works, it can ask you a question on the task. The task then shows "Waiting for" and your name, and the bell tells you. Answer on the task. The agent reads your answer, also in a later session. You can stop the agent from the same place.
+
+Six tools work with these runs:
+
+| Tool | What it does |
+|---|---|
+| `start_agent_run` | It starts a run on a task, so the task shows that the agent works on it |
+| `post_agent_activity` | It posts a progress line, a result or a question in the run |
+| `ask_on_task` | It asks you a question on a task, with choices or free text |
+| `get_agent_run` | It reads a run and your answers |
+| `list_agent_runs` | It lists your runs, such as the runs that wait for the agent |
+| `finish_agent_run` | It ends a run |
+
 ## What the agent cannot do
 
 - It cannot cancel a task, and it cannot make a task in a done or cancelled status. A move to done does not close the subtasks.
-- It cannot assign a task to another person, move a task to another project, or archive or delete a task. It can claim a task for you only.
+- It cannot assign a task to another person, move a task to another project, or delete a task. It can claim a task for you only.
 - It cannot see what you cannot see. If an admin removes your access to a project, the agent loses it on the next call.
 - It cannot act after you revoke it.
 

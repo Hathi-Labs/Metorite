@@ -126,6 +126,8 @@ Control Plane (Next.js browser UI) and local development tools.
 - control_plane/src/components/ArtifactCard.tsx -- Inline file cards (images, MD, PDF, etc.)
 - control_plane/src/components/ArtifactSidebar.tsx -- Collapsible workspace file tree (supports fullWidth drawer mode on mobile)
 - control_plane/src/components/ArtifactViewerModal.tsx -- Full-fidelity file viewer modal
+- control_plane/src/components/ArtifactLink.tsx -- A workspace file link in a chat reply. A click opens the panel or the viewer, as the card does (2026-10-16)
+- control_plane/src/components/genUITemplates.tsx `ReportView` -- THE report renderer (owner directive, 2026-10-16). `make_report` writes `outputs/<slug>.report.json` and its PDF beside it. ReportView draws that data in four places: the chat card (template `report`), the side panel (`DocumentPane`), the file viewer (`ArtifactViewerModal`) and `/artifacts`. Each visual draws through the template of its kind, so a report adds no second chart, table or board. `lib/report.ts` reads the data and maps the visuals. A field it cannot read draws nothing, and an unknown visual kind draws a short note. `classifyArtifact` names a `.report.json` file `report`, and `opensRendered` opens it by itself. A file that does not parse shows as text. The report card opens its file through `ArtifactOpenContext` and `openFileLink` (`components/ArtifactLink.tsx`), the seam a file link in the reply uses, and `MessageBubble` provides it. Fences: `src/lib/report.test.ts`, `src/components/reportView.test.ts` and `tests/unit/test_genui_report_refusal.py`
 
 ## Conventions
 - Next.js App Router pattern
@@ -211,6 +213,7 @@ Control Plane (Next.js browser UI) and local development tools.
 - Inline images: MarkdownMessage resolves relative paths through the workspace proxy
 - File cards: ArtifactCard renders inline in the chat thread for artifact_created events
 - Modal viewer: ArtifactViewerModal handles .md, .py, .pdf, .png, .csv, and more
+- Report: a `.report.json` file draws with `ReportView` in every viewer. Its PDF is the file beside it, never a conversion
 - Workspace file tree: ArtifactSidebar shows all files in the agent workspace
 
 ## Verification

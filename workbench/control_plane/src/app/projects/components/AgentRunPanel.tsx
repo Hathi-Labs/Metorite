@@ -28,6 +28,15 @@
  * open run on the task, the panel offers "Ask an agent". It opens
  * `AskAgentDialog`, and the run that the dialog starts shows here as
  * "Queued for <client>".
+ *
+ * **An archive request (EA-6g, EA3-40).** The agent asks to archive the task.
+ * Only the run's member answers: the same question card, with the server's
+ * two options and no free text, writes through the approval route. Every
+ * other member reads the question and "Waiting for <name>", with no button.
+ * The reply box stays away while the request waits, because the server
+ * refuses a reply. A request past its expiry reads as expired, and it is no
+ * dead end (fix round 1): the member may Decline it, and the reply box comes
+ * back for everyone, because the server takes a reply then.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -42,17 +51,27 @@ import type { ElicitationAnswers } from "@/lib/elicitationAnswer";
 
 import { ProjectsApiError, type TaskRow, agentRunsApi } from "../lib/api";
 import {
+  ARCHIVE_CARD_TITLE,
+  ARCHIVE_EXPIRED_HINT,
+  ARCHIVE_EXPIRED_TEXT,
+  ARCHIVE_HINT,
   type AgentActivity,
-  type AgentPromptBody,
   type AgentRun,
   type AgentStartResult,
   type AgentState,
   answerPayload,
   answerTo,
   answeredLine,
+  archiveApprovalPayload,
+  archiveCardQuestion,
+  archiveDecisionOf,
+  archiveExpired,
+  archiveRequestOf,
+  archiveWaitingText,
   cardQuestion,
   clientName,
   isOpenRun,
+  isRunMember,
   lastSeq,
   latestElicitation,
   mergeActivities,
@@ -260,6 +279,8 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   }
 
   const client = clientName(run.client_via);
+  // The closures below cannot see the narrowing of `run` above.
+  const shownRunId = run.id;
   const host = httpsHost(run.external_link);
   const ephemeral = newestEphemeral(activities);
   const elicitation = latestElicitation(activities, run);
@@ -268,16 +289,26 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     (answerTo(activities, elicitation) ??
       (sent && sent.in_reply_to === elicitation.id ? sent : null));
   const cardOpen = Boolean(elicitation && !answer && run.status === "awaiting");
+  // EA-6g: a typed archive request. Only the run's member may answer it.
+  const archiveRequest = cardOpen ? archiveRequestOf(elicitation) : null;
+  const archiveMine = isRunMember(run, me);
+  // An expired request is stale: the server takes a reply, and a decline.
+  const archiveStale = archiveRequest !== null && archiveExpired(archiveRequest);
   const canStop = STOPPABLE.has(run.status);
-  const canReply = REPLYABLE.has(run.status) && !cardOpen;
+  const canReply = REPLYABLE.has(run.status) && (!cardOpen || archiveStale);
 
-  async function write(body: AgentPromptBody, guess: AgentState, failure: string) {
+  /** One member write: `send` posts it. The panel guesses the state first. */
+  async function write(
+    send: () => Promise<unknown>,
+    guess: AgentState,
+    failure: string,
+  ) {
     if (!run) return false;
     setBusy(true);
     setError(null);
     setOptimistic(guess);
     try {
-      await agentRunsApi.post(run.id, body);
+      await send();
       onActivity?.();
       void refresh(run.id).catch(() => undefined);
       return true;
@@ -298,7 +329,11 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   async function submitAnswer(answers: ElicitationAnswers) {
     if (!elicitation) return;
     const body = answerPayload(elicitation, answers);
-    const ok = await write(body, "answered", "Could not send the answer.");
+    const ok = await write(
+      () => agentRunsApi.post(shownRunId, body),
+      "answered",
+      "Could not send the answer.",
+    );
     if (ok) {
       setSent({
         id: `local:${body.idempotency_key}`,
@@ -311,15 +346,55 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     }
   }
 
+  /** EA-6g: the run's member approves or declines the archive request. */
+  async function submitArchive(answers: ElicitationAnswers) {
+    if (!elicitation) return;
+    const decision = archiveDecisionOf(elicitation, answers);
+    if (decision) await sendDecision(decision);
+  }
+
+  async function sendDecision(decision: "approve" | "decline") {
+    if (!elicitation) return;
+    const body = archiveApprovalPayload(decision);
+    let archivedAt: string | null | undefined;
+    const ok = await write(
+      async () => {
+        const result = await agentRunsApi.archiveApproval(shownRunId, body);
+        archivedAt = result.task?.archived_at;
+      },
+      "answered",
+      "Could not send the decision.",
+    );
+    if (!ok) return;
+    setSent({
+      id: `local:${body.idempotency_key}`,
+      seq: Number.MAX_SAFE_INTEGER,
+      type: "prompt",
+      content: { selected: [decision], archived: decision === "approve" },
+      actor: me || null,
+      in_reply_to: elicitation.id,
+    });
+    // The task is on the shelf now. The host learns it from the row.
+    if (archivedAt) onTaskChanged?.({ ...task, archived_at: archivedAt });
+  }
+
   async function sendReply() {
     const text = reply.trim();
     if (!text) return;
-    const ok = await write(replyPayload(text), "answered", "Could not send the reply.");
+    const ok = await write(
+      () => agentRunsApi.post(shownRunId, replyPayload(text)),
+      "answered",
+      "Could not send the reply.",
+    );
     if (ok) setReply("");
   }
 
   async function stop() {
-    const ok = await write(stopPayload(), "stopping", "Could not stop the agent.");
+    const ok = await write(
+      () => agentRunsApi.post(shownRunId, stopPayload()),
+      "stopping",
+      "Could not stop the agent.",
+    );
     if (ok) setConfirmStop(false);
   }
 
@@ -390,7 +465,7 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
         </div>
       ) : null}
 
-      {cardOpen && elicitation ? (
+      {cardOpen && elicitation && !archiveRequest ? (
         <ElicitationCard
           id={`agent-run:${elicitation.id}`}
           questions={[cardQuestion(elicitation)]}
@@ -398,6 +473,59 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
           disabled={busy}
           hint={AGENT_SUBMIT_HINT}
         />
+      ) : null}
+
+      {archiveRequest && elicitation ? (
+        archiveStale ? (
+          <div data-archive-request="expired" className="space-y-1.5 text-xs">
+            <p className="flex items-start gap-1.5 text-muted-foreground">
+              <Icon name="Clock" size={12} className="mt-0.5 shrink-0" aria-hidden />
+              <span className="min-w-0 break-words">{ARCHIVE_EXPIRED_TEXT}</span>
+            </p>
+            {archiveMine ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon="X"
+                  disabled={busy}
+                  data-archive-decline=""
+                  onClick={() => void sendDecision("decline")}
+                >
+                  Decline
+                </Button>
+                <span className="text-[10px] text-muted-foreground">{ARCHIVE_EXPIRED_HINT}</span>
+              </div>
+            ) : null}
+          </div>
+        ) : archiveMine ? (
+          <div data-archive-request="mine">
+            <ElicitationCard
+              id={`agent-run:${elicitation.id}`}
+              questions={[archiveCardQuestion(elicitation)]}
+              onSubmit={(answers) => void submitArchive(answers)}
+              disabled={busy}
+              hint={ARCHIVE_HINT}
+              title={ARCHIVE_CARD_TITLE}
+            />
+          </div>
+        ) : (
+          // Every other member reads the request and who must answer it.
+          <div
+            data-archive-request="waiting"
+            className="space-y-1 rounded-md border border-border p-2 text-xs"
+          >
+            <p className="flex items-start gap-1.5 text-foreground">
+              <Icon name="Archive" size={12} className="mt-0.5 shrink-0" aria-hidden />
+              <span className="min-w-0 whitespace-pre-wrap break-words">
+                {elicitation.content.body?.trim() || `${client} asks to archive this task.`}
+              </span>
+            </p>
+            <p className="text-muted-foreground" data-archive-waiting="">
+              {archiveWaitingText(run, personLabels)}
+            </p>
+          </div>
+        )
       ) : null}
 
       {elicitation && answer ? (
