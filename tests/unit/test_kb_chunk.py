@@ -67,6 +67,11 @@ def test_a_body_that_opens_with_the_title_adds_no_level() -> None:
     assert [c.heading_path for c in chunks] == ["Returns", "Returns > Window"]
 
 
+def test_a_closing_hash_run_is_dropped_and_a_word_hash_is_kept() -> None:
+    chunks = chunk_page("T", "## Use C# ##\n\nBody.")
+    assert chunks[0].heading_path == "T > Use C#"
+
+
 def test_a_heading_in_a_code_fence_is_text() -> None:
     body = "Before.\n\n```\n# not a heading\n\nstill code\n```\n\nAfter."
     chunks = chunk_page("T", body)
