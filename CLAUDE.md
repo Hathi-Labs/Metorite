@@ -286,8 +286,10 @@ delivery makes that failure more likely, not less.
 > merging to `main` IS the deploy — `.github/workflows/deploy.yml` reaches the
 > box by itself. Stopping at the PR stopped the release.
 >
-> **Merging is not skipping the loop.** Audit, verify and review still run, and
-> the verifier is still not the implementer. What you drop is the wait. After
+> **Merging is not skipping the loop.** Audit and verify always run, and
+> the verifier is still not the implementer. Review depth follows the risk
+> tier in `next-ticket.md` step 1b (owner decision, 2026-10-16). A LOW slice
+> skips the reviewer. What you drop is the wait. After
 > the merge, **watch the run to green and report the serving SHA** — an
 > unwatched merge is worse than an unmerged PR. On 2026-10-01 this reverts to
 > "stop before merge".
