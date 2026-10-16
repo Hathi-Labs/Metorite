@@ -513,8 +513,10 @@ async def test_the_cap_keeps_the_fifty_largest_and_folds_the_rest(mods, app_engi
 
 
 async def test_the_cap_keeps_time_order_for_a_bucket(mods, app_engine) -> None:
-    """60 months, ten of them with two records: the ten and the 40 earliest
-    single months stay, in time order. The ten latest single months fold."""
+    """60 months, and the ten LATEST hold two records each. The ten and the
+    40 earliest single months stay, in time order. Ten single months fold.
+    A cap in time order would keep the 50 earliest months instead, and fold
+    the ten biggest groups (ruling C)."""
     a = mods.org_a
     with mods.admin_engine.begin() as c:
         c.execute(text("DELETE FROM crm_module_records WHERE organization_id = "
@@ -522,14 +524,13 @@ async def test_the_cap_keeps_time_order_for_a_bucket(mods, app_engine) -> None:
         months = [f"{2020 + m // 12}-{m % 12 + 1:02d}" for m in range(60)]
         for i, month in enumerate(months):
             _record(c, a, "Products", f"m{i}", None, {"Sales_Start": f"{month}-03"})
-        for i, month in enumerate(months[5:15]):
+        for i, month in enumerate(months[50:]):
             _record(c, a, "Products", f"d{i}", None, {"Sales_Start": f"{month}-09"})
     body = await _agg(mods, a, entity="module:Products", group_field="Sales_Start",
                       bucket="month")
     keys = _keys(body)
     assert len(keys) == 50 and keys == sorted(keys)
-    assert set(months[5:15]) <= set(keys)
-    assert keys[-1] == months[49]
+    assert keys == months[:40] + months[50:]
     assert (body["omitted"], body["other"], body["total"]) == (10, 10.0, 70.0)
 
 
