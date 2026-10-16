@@ -40,7 +40,9 @@ orchestrator holds them beside `search_company`. `acb_skills/knowledge_manifest.
 lists the 14 Knowledge routes with their class. The client refuses a route
 that the manifest does not give to the tool. The executor builds the index
 block of §6.5 for the orchestrator from `GET /knowledge/spaces`, which now
-returns `published_count`. `GET /knowledge/pages/{id}` now returns `space_name`.
+returns `published_count`. Both the stream path and the batch path of
+WhatsApp read it, and a shared room gets no block. `GET /knowledge/pages/{id}`
+now returns `space_name` when the caller can open the space.
 
 **§20 (D105, 2026-10-15)** adds company
 retrieval across every app. **KR-1 and KR-2 are BUILT, 2026-10-15**
