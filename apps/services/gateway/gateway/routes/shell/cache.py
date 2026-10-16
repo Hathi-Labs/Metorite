@@ -136,7 +136,8 @@ def features_hash(user: Any) -> str:
     it, through ``needs.listed_sources``. A change of the list takes effect
     at the gateway restart that it needs, and no stored answer from before
     the restart is served after it. With no such permission and an empty
-    list, the hash is the hash of before MD-3b."""
+    list, the hash is the hash of before MD-3b. While ``crm`` is listed, the
+    CRM kill switch of the member's org joins it too (MD-3e)."""
     from acb_auth.permissions import FEATURES
     from gateway.routes.shell import needs
     from gateway.routes.shell.intent import ADMIN_PERMISSION
@@ -149,6 +150,14 @@ def features_hash(user: Any) -> str:
     listed = needs.listed_sources()
     if listed:
         held.append("providers=" + "|".join(sorted(listed)))
+    if "crm" in listed:
+        # MD-3e: the CRM kill switch gates the `crm` source per org. A stored
+        # answer must not outlive the org's place on the list. The part is
+        # there only while `crm` is listed, so no other hash changes.
+        from gateway.routes.crm.flags import crm_org_allowed
+
+        allowed = crm_org_allowed(getattr(user, "organization_id", None))
+        held.append(f"crm_org={int(allowed)}")
     return hashlib.sha256(",".join(held).encode("utf-8")).hexdigest()[:16]
 
 

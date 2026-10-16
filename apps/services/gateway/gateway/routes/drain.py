@@ -31,6 +31,9 @@ What it counts:
 - the work a request does AFTER its response, such as the Starlette
   ``BackgroundTasks`` that close an email thread after a send. The bounded
   drain would cut it after 5 s. :class:`AfterResponseCounter` counts it.
+- the mailbox teardowns that a purge door stopped waiting for
+  (``routes.email.teardown._TEARDOWNS``, WS-17 EM-G11f1b). The credentials
+  went with the rows, so a teardown that a stop cuts cannot run again.
 
 An open stream is never counted. It ends only when its client goes, and the
 holds in front of the gateway reconnect it.
@@ -104,6 +107,12 @@ def _projects_runs() -> int:
     return live_run_count()
 
 
+def _teardown_runs() -> int:
+    from gateway.routes.email.teardown import live_teardown_count
+
+    return live_teardown_count()
+
+
 @router.get("/drain", dependencies=[Depends(require_internal_auth)])
 async def drain() -> dict[str, int]:
     """The work a stop would end now. ``runs`` is the sum the stop step reads.
@@ -112,11 +121,13 @@ async def drain() -> dict[str, int]:
     """
     chat, waiting = _chat_runs()
     projects = _projects_runs()
+    teardowns = _teardown_runs()
     after = _after_response[0]
     return {
-        "runs": chat + projects + after,
+        "runs": chat + projects + after + teardowns,
         "chat": chat,
         "projects": projects,
         "after_response": after,
+        "email_teardowns": teardowns,
         "waiting_on_a_person": waiting,
     }

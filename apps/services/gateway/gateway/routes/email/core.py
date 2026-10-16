@@ -858,12 +858,30 @@ def folder_scope(
     return "LOWER(em.folder) = LOWER(:folder)"
 
 
-async def _assert_account_owner(db: Any, account_id: str, user_email: str) -> None:
-    """Raise 404 if the account isn't owned by the user."""
-    res = await db.execute(
-        text("SELECT 1 FROM email_accounts WHERE id = :id AND user_id = :uid"),
-        {"id": account_id, "uid": user_email},
-    )
+def _bound_org() -> str:
+    """The SQL of the session's bound tenant, the one GUC predicate of the
+    gateway (``tasks.settings._BOUND_ORG``). Imported at the call, so this
+    module takes no import of the tasks package at load."""
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    return _BOUND_ORG
+
+
+async def _assert_account_owner(
+    db: Any, account_id: str, user_email: str, *, this_tenant: bool = False,
+) -> None:
+    """Raise 404 if the account isn't owned by the user.
+
+    ``this_tenant`` also names the session's bound tenant in the SQL (WS-58
+    MD-3d). A member may own one mailbox in each of two organizations. RLS
+    keeps the other one out for production's role ``acb_app``, so the
+    predicate is defence in depth (R5): it holds also for a role that
+    bypasses RLS. Off by default, so the statement of every other caller does
+    not change (HANDOFF H-334)."""
+    sql = "SELECT 1 FROM email_accounts WHERE id = :id AND user_id = :uid"
+    if this_tenant:
+        sql += f" AND organization_id = {_bound_org()}"
+    res = await db.execute(text(sql), {"id": account_id, "uid": user_email})
     if not res.fetchone():
         raise HTTPException(status_code=404, detail="Account not found")
 

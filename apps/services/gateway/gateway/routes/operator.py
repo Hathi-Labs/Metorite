@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import os
 import secrets
+from functools import partial
 from typing import Annotated, Any
 
 from acb_auth.access import mirror_membership_status, purge_identity_shadow
@@ -69,6 +70,7 @@ from gateway.routes.admin.members import (
     purge_member_rows,
     remove_member_rows,
 )
+from gateway.routes.email.teardown import finish_teardowns
 
 _log = get_logger("gateway.routes.operator")
 
@@ -176,8 +178,10 @@ async def remove_organization_member(
     **After the commit.** ``remove`` mirrors the status into the identity
     shadow, drops the cached access and writes one audit entry.
     ``purge`` deletes the shadow row and drops the cached access. Its audit
-    entry is written before the commit, inside the shared body. Neither mode
-    calls the Customer Console, as the module docstring explains.
+    entry is written before the commit, inside the shared body. Then it tears
+    down each mailbox of the member through ``finish_teardowns`` (EM-G11f1b),
+    and the answer carries the ``mailboxes`` counts. Neither mode calls the
+    Customer Console, as the module docstring explains.
     """
     _require_operator_token(x_operator_token)
     if confirm != email:
@@ -206,7 +210,7 @@ async def remove_organization_member(
         if mode == "remove":
             tree_projects = await remove_member_rows(db, org_id, member)
         else:
-            deleted, kept = await purge_member_rows(
+            deleted, kept, plans = await purge_member_rows(
                 db, org_id, member, actor_email=_OPERATOR_ACTOR,
             )
 
@@ -228,5 +232,11 @@ async def remove_organization_member(
     invalidate_for(member["email"])
     _log.warning("operator_member_purged", slug=slug, email=member["email"],
                  deleted=deleted, kept=kept)
+    # EM-G11f1b (email_app_master_plan.md §12.3.13.9.2): the same teardown as
+    # the admin door, after the session block exits. It goes LAST, after the
+    # log line, so a stop of the process in its wait loses no record.
+    mailboxes = await finish_teardowns(
+        org_id, plans, open_session=partial(_tenant_session, org_id),
+        stop_loops=True, bump_owners=False)
     return PurgeResult(email=member["email"], deleted=deleted,
-                       kept=kept).model_dump()
+                       kept=kept, mailboxes=mailboxes).model_dump()

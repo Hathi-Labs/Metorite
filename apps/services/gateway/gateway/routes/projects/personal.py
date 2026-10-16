@@ -1538,9 +1538,10 @@ async def stored_zone(db: Any, email: str) -> str | None:
     :func:`member_today` and ``GET /projects/my/today`` share.
 
     ⚠️ It reads the row of the BOUND tenant (WS-58 MD-3c fix round 1). A
-    member has one row for each organization since migration 239, and the
-    owner role of production bypasses RLS. So the predicate names the
-    session's tenant, as ``tasks.settings._load`` does. Each caller reads
+    member has one row for each organization since migration 239. RLS
+    holds the gateway role ``acb_app`` in production (measured 2026-10-16),
+    and the predicate is defence in depth: it names the session's tenant, as
+    ``tasks.settings._load`` does. Each caller reads
     inside a tenant session, and an unbound session reads no row (UTC)."""
     from gateway.routes.tasks.settings import _BOUND_ORG
 
