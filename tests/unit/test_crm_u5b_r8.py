@@ -86,7 +86,7 @@ def _clean(ns):  # noqa: F811
     yield
     with ns.admin_engine.begin() as c:
         for table in ("crm_leads", "crm_module_records", "crm_field_rules",
-                      "integration_connections"):
+                      "crm_mapping_plans", "integration_connections"):
             c.execute(text(
                 f"DELETE FROM {table} WHERE organization_id = CAST(:o AS uuid)"),
                 {"o": ns.org_a})
@@ -233,10 +233,10 @@ def _clean_sync(ns):  # noqa: F811
                       {"o": ns.org_a})
 
 
-def _field_rules(ns: Any) -> int:  # noqa: F811
+def _field_rules(ns: Any, table: str = "crm_field_rules") -> int:  # noqa: F811
     with ns.admin_engine.connect() as c:
         return int(c.execute(text(
-            "SELECT count(*) FROM crm_field_rules "
+            f"SELECT count(*) FROM {table} "
             "WHERE organization_id = CAST(:o AS uuid)"), {"o": ns.org_a}).scalar())
 
 
@@ -250,9 +250,16 @@ async def test_reset_deletes_the_field_rules(ns, app_engine) -> None:  # noqa: F
             "field_api_name, field_type, profile_version, target_column, status, "
             "proposed_by) VALUES (CAST(:o AS uuid), 'zoho', 'lead', 'Sector', "
             "'select', 1, 'industry', 'approved', 'admin')"), {"o": ns.org_a})
+        # CRM-Q18-1: a version of the plan names the same rule.
+        c.execute(text(
+            "INSERT INTO crm_mapping_plans (organization_id, version, state, "
+            "rules, created_by) VALUES (CAST(:o AS uuid), 1, 'approved', "
+            "'[]'::jsonb, 'admin')"), {"o": ns.org_a})
     assert _field_rules(ns) == 1
+    assert _field_rules(ns, "crm_mapping_plans") == 1
     assert (await _reset(ns)).status_code == 200
     assert _field_rules(ns) == 0
+    assert _field_rules(ns, "crm_mapping_plans") == 0
 
 
 async def test_reset_clears_the_zoho_sync_state(ns, app_engine) -> None:  # noqa: F811
