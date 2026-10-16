@@ -2590,11 +2590,23 @@ Files: `routes/crm/aggregate.py`, `routes/crm/modules.py`,
 6. A note is new when it has no label row. It has changed when the md5 of its
    subject and body differs from `body_md5`. The step takes the newest first
    (`COALESCE(ext_modified_at, created_at)`). It takes at most 200 notes in one
-   step, and at most 1,000 notes for each org in one day.
+   step. Each org has a cap of requests for each UTC day, counted before each
+   request goes out, so a billed request that fails still counts. The cap is
+   1,000 notes over 5 notes a request (`DAILY_NOTES`). While more than 1,000
+   notes wait (`BACKLOG_THRESHOLD`), the cap is 5,000 notes
+   (`BACKLOG_DAILY_NOTES`, owner decision of 2026-10-16).
+6a. A batch that fails for a cause of its own counts one failure for each of
+   its notes. Such a cause is an invalid request, an answer that the step
+   cannot read, or a timeout. A failed note goes to the back of the queue.
+   After 3 failures it waits 7 days, or until its text changes, so one bad
+   note cannot block the queue.
 7. In `shadow` and in `on`, the step calls `decide_features.ask()`, because
    no old path exists. It names `module_slug="crm"`. It names the
    `connected_by` of the Zoho connection as a proven member, as email names
-   the mailbox owner. With no member, the step skips and logs a count.
+   the mailbox owner. With no member, the step skips and logs a count. The
+   member must still be an active member of this org
+   (`my_day_loop.departed`). When not, the step skips, logs a count, and
+   spends nothing, because the Console bills the org of the member.
 8. One decide request holds up to 5 notes, and 3 questions for each note.
    The first question is a choice of kind: payment, site issue, commercial,
    follow-up, internal or other. The second is a boolean, "needs action". The
@@ -2623,6 +2635,15 @@ the table. `gateway/crm_sync/note_labels.py` holds the step, and
 `scheduler.start_labels` starts it. The mode ships `off`, and
 `CRM_DECIDE_ORGS` ships empty. A source fence and an R8 read of a company
 timeline prove item 9. The model sweep of the eval is not built.
+
+Fix round (2026-10-16). The cap counts requests in Redis, as My Day counts
+its calls, under the key of the UTC day, with a life of 26 hours. The
+constants are `DAILY_NOTES` 1,000, `BACKLOG_DAILY_NOTES` 5,000 and
+`BACKLOG_THRESHOLD` 1,000. With them DEWiN's 18,674 notes take about 4 to 5
+days, not 19. A failing batch counts `failures` on its rows, and
+`MAX_FAILURES` 3 and `PARK_DAYS` 7 park it. `decide_features.last_no_answer`
+names the cause of a failure. The step checks the member with
+`my_day_loop.departed`, and a failed read spends nothing.
 
 #### 18.11.3 Verification
 
