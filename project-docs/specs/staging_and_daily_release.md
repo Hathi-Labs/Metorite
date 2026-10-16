@@ -2,8 +2,8 @@
 
 **Status:** 🟠 **PROPOSED, 2026-10-15. Revised 2026-10-16:** staging goes on the dev box (§5).
 
-**Built:** 🔨 phase 1, the daily clock (§5.7), and 🔨 phase 2 slice S-4, `DEPLOY_ENV` (§5.8).
-Both on 2026-10-16, on the owner's go-ahead. S-7, the staging band, is built (§5.9). S-3 needs no code (§5.9). Phases 3 to 5 are not built.
+**Built:** 🔨 phase 1, the daily clock (§5.7), 🔨 phase 2 (§5.8 and §5.9), and 🔨 the code of phases 4 and 5 (§5.11).
+All on 2026-10-16, on the owner's go-ahead. Phase 3 and the first run of phase 4 are the owner's (HANDOFF H-335). Nothing of phases 4 and 5 has run yet.
 
 **Owner:** vjvarada ·
 **Board row:** WS-38 (this is the concrete answer to its **D-D**, and a proposed
@@ -452,6 +452,37 @@ its script does every one, and refuses to finish when one is missing.
    the numbered migrations. A ladder-only database has no tenant isolation, and
    R5 forbids that on staging. The gateway connects as a non-owner role, as
    `acb_app` does on production.
+
+### 5.11 The staging box and its nightly copy, as built 2026-10-16
+
+**Built, and not yet run.** The owner runs the bootstrap once (HANDOFF H-335).
+Each part below has its fence.
+
+| Part | Where | What it does | Fence |
+|---|---|---|---|
+| The reduction | `infra/staging/minimise.sql` | On a restore of production, keeps the organizations in `keep_slugs`, deletes every row of every other one, keeps an identity only for a kept member, and blanks each credential. It refuses on an unknown slug, on an unclassified table, and on a credential left behind | `test_staging_minimise_r8.py` |
+| The export | `scripts/staging_export.sh`, called by `backup_db.sh --verify-restore` | Runs the reduction in the nightly verify container on the production box, then dumps it with the roles, the extensions, production's feature switches and checksums. Off while `STAGING_EXPORT_SLUGS` is unset. Its failure never fails the backup | `test_staging_export.py` |
+| The rebuild | `scripts/staging_refresh.sh`, `acb-staging-refresh.timer` at 03:30 UTC | Pulls the export, checks it, rebuilds the Postgres 17 database, gives the gateway the non-owner `acb_app` role, copies the switches with every outbound one held off, and deploys the `staging` ref | `test_staging_box.py` |
+| The box | `deploy/hostinger/bootstrap_staging.sh` | Firewall first, the packages, the `acb` user, Node 20.20.2 private to `acb`, the checkout, the env files with fresh secrets, the database, and the first rebuild | `test_staging_box.py` |
+| The units | `deploy/hostinger/staging/` | The database, the Console tunnel, the rebuild, and a slice that caps the staging services at 3 GB. Production never reads this folder | `test_deploy_env.py`, `test_staging_box.py` |
+
+**What leaves the production box.** Only the kept organizations, measured
+2026-10-16 as `default`, `fracktalworks` and `hathi-labs-llp` (Fracktal Works
+and Hathi Labs), plus the internal `smoke-chat`. The four customer
+organizations (Prad Automotive, DEWiN, and both Axiom Aerials entries) leave no
+row. In production, 185 of the 191 public tables carry `organization_id`. The
+reduction names a rule for each of the other six.
+
+**One key, two uses.** The staging box holds one key to the production box. Its
+line in `authorized_keys` (`deploy/hostinger/staging/authorized_keys.line`)
+lets it forward the Console port and read the export folder. It gives no shell.
+
+**Known gaps.**
+
+- The `dev` user is in the `docker` group, so an agent on the dev box can read
+  the staging database. The reduction is what bounds that, and it is why only
+  our own organizations travel.
+- The pooler gap of §5 stays: staging uses plain Postgres 17, not Supavisor.
 
 ## 6. The build tickets
 

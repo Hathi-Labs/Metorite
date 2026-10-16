@@ -247,24 +247,37 @@ def test_production_runs_h132_s_loop_and_only_staging_skips_it(tmp_path: pathlib
     shipped = sorted(p.name for p in (_ROOT / "deploy/hostinger").glob("*.timer"))
     stub = tmp_path / "bin"
     stub.mkdir()
-    (stub / "sudo").write_text('#!/bin/sh\necho "$*" >> "$SUDO_LOG"\n', encoding="utf-8")
+    # `cmp` answers "differs", so the install path runs and is recorded.
+    (stub / "sudo").write_text(
+        '#!/bin/sh\necho "$*" >> "$SUDO_LOG"\n[ "$1" = cmp ] && exit 1\nexit 0\n', encoding="utf-8")
     (stub / "sudo").chmod(0o755)
     for env in ("production", "staging"):
         log = tmp_path / f"{env}.log"
         res = subprocess.run(
-            ["bash", "-c", f"APP_DIR={_ROOT}\nDEPLOY_ENV={env}\n" + block],
+            ["bash", "-c", f"APP_DIR={_ROOT}\nDEPLOY_ENV={env}\ninstall_dropins() {{ :; }}\n"
+             "restart_stale_dropin_units() { :; }\n" + block],
             capture_output=True, text=True, timeout=30,
             env={"PATH": f"{stub}:/usr/bin:/bin", "SUDO_LOG": str(log)},
         )
         assert res.returncode == 0, res.stderr
         calls = log.read_text().splitlines()
-        enabled = sorted(c.split()[-1] for c in calls if c.startswith("systemctl enable --now"))
-        disabled = sorted(c.split()[-1] for c in calls if c.startswith("systemctl disable --now"))
+        def units(verb: str, calls: list[str] = calls) -> list[str]:
+            return sorted(u for c in calls if c.startswith(f"systemctl {verb} --now")
+                          for u in c.split()[3:])
+        enabled, disabled = units("enable"), units("disable")
         if env == "production":
             assert enabled == shipped and disabled == []
+            assert not [c for c in calls if "deploy/hostinger/staging" in c], \
+                "production touched a staging-only unit"
         else:
-            assert enabled == ["acb-health-watchdog.timer", "acb-pull.timer"]
-            assert disabled == sorted(set(shipped) - set(enabled))
+            assert enabled == ["acb-console-tunnel.service", "acb-health-watchdog.timer",
+                               "acb-pull.timer", "acb-staging-db.service",
+                               "acb-staging-refresh.timer"]
+            assert disabled == sorted(set(shipped) - {"acb-health-watchdog.timer", "acb-pull.timer"})
+            installed = sorted(c.split()[-1].rsplit("/", 1)[-1] for c in calls
+                               if c.startswith("install -m 0644") and "/staging/" in c)
+            assert installed == sorted(p.name for p in (_ROOT / "deploy/hostinger/staging").iterdir()
+                                       if p.suffix in (".service", ".timer", ".slice"))
 
 
 def test_staging_seeds_staging_hosts() -> None:
