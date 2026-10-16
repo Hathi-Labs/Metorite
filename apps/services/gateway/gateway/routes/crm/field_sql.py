@@ -41,6 +41,7 @@ from typing import Any
 from fastapi import HTTPException
 from gateway.routes.crm.fields import custom_defs
 from gateway.routes.crm.modules import _field_defs
+from sqlalchemy import text
 
 #: The query-string prefix of a module field filter: ``field.<key>=<value>``,
 #: and ``field.<key>.from`` / ``field.<key>.to`` for a date range.
@@ -360,7 +361,32 @@ async def crm_zone(db: Any, org: Any) -> str:
         return DEFAULT_ZONE
     latest = await profiles.latest(db, str(org))
     summary = latest.profile.get("org") if latest is not None else None
-    return zone_name(summary.get("time_zone") if isinstance(summary, dict) else None)
+    zone = zone_name(summary.get("time_zone") if isinstance(summary, dict) else None)
+    # Python's zone database and the one of Postgres can differ. A name that
+    # only Python knows made `AT TIME ZONE` fail, and the route answered 500.
+    return zone if await _postgres_knows(db, zone) else DEFAULT_ZONE
+
+
+#: Each zone name that this process has asked Postgres about, and the
+#: answer. The names come from ``personal.zone_name``, so only real IANA
+#: names reach it, and the map stays at a few hundred entries at most. It
+#: holds no tenant data.
+_PG_ZONES: dict[str, bool] = {}
+
+_PG_ZONE_SQL = "SELECT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = :zone)"
+
+
+async def _postgres_knows(db: Any, zone: str) -> bool:
+    """True when Postgres takes *zone* in ``AT TIME ZONE`` (CRM-Q25b fix
+    round). The answer is cached, because ``pg_timezone_names`` reads the
+    zone files of the server on each call."""
+    if zone == DEFAULT_ZONE:
+        return True
+    known = _PG_ZONES.get(zone)
+    if known is None:
+        known = bool((await db.execute(text(_PG_ZONE_SQL), {"zone": zone})).scalar())
+        _PG_ZONES[zone] = known
+    return known
 
 
 def _lookup_id(column: str, p: str) -> str:

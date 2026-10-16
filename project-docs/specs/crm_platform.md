@@ -3489,6 +3489,12 @@ export and the aggregate all use that one function, so a list and a total
 agree. `close_*` reads a `date` column and does not change. R8:
 `test_an_updated_range_and_its_months_read_one_clock`.
 
+The same round closed a 500. Python's zone database and the one of
+Postgres can differ, so a name that only Python knew made `AT TIME ZONE`
+fail. `crm_zone` now also asks `pg_timezone_names`, and a name that Postgres
+does not know gives UTC. The process keeps each answer in a cache. R8:
+`test_a_zone_that_only_python_knows_gives_utc`.
+
 **CRM-Q25c · A NUL byte in a list query answers 422 (2026-10-16).** The
 verifier of the CRM-Q25 fix round found this on `origin/main`.
 `GET /crm/deals?q=%00` raises `CharacterNotInRepertoireError` from asyncpg,

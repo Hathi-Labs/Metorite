@@ -729,6 +729,28 @@ async def test_a_zone_that_is_not_real_gives_utc(zoned, app_engine, zone: str) -
     assert field == ([("2026-10", 1)], "UTC")
 
 
+async def test_a_zone_that_only_python_knows_gives_utc(zoned, app_engine, monkeypatch) -> None:
+    """CRM-Q25b fix round, item 7. Python's zone database and the one of
+    Postgres can differ: a box can know ``localtime`` in one and not in the
+    other. Such a name made ``AT TIME ZONE`` fail, and the route answered
+    500. The Python check is made to pass here, so only the Postgres check
+    stands between the name and the statement."""
+    from gateway.routes.crm import field_sql
+    from gateway.routes.projects import personal
+
+    name = "Metorite/Not_A_Zone"
+    monkeypatch.setattr(personal, "zone_name", lambda tz: str(tz or "UTC"))
+    monkeypatch.setattr(field_sql, "_PG_ZONES", {})
+    _set_zone(zoned, zoned.org_a, name)
+    for query in ({"group_by": "created_month"},
+                  {"group_field": "Created_Time", "bucket": "month"}):
+        assert await _months(zoned, zoned.org_a, **query) == ([("2026-10", 1)], "UTC")
+    assert field_sql._PG_ZONES.get(name) is False
+    # A real zone still passes the Postgres check.
+    _set_zone(zoned, zoned.org_a, "Asia/Kolkata")
+    assert (await _months(zoned, zoned.org_a, group_by="created_month"))[1] == "Asia/Kolkata"
+
+
 async def test_a_datetime_range_agrees_with_the_bucket(zoned, app_engine) -> None:
     """Done-when 4: a range on a datetime field takes its day in the CRM
     zone, so the record that the bucket puts in November passes a November
