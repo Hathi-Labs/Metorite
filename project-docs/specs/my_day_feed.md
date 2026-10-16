@@ -971,7 +971,7 @@ slice gives these facts and no others:
 | `absent_on_due` | `absence_day`, the local date |
 | `promise_due` | `due_at` |
 | `no_answer` | `waiting_since`, `who` |
-| `crm_followup_due` | `due_at`, `subject` |
+| `crm_followup_due` | `due_at`, `subject`, and `all_day` for a task |
 | `deal_quiet` | `stage`, `stage_days`, `stage_limit` |
 | `deal_close_passed` | `due_at` |
 | `colleague_out` | `out`, a list of names, and `task`, a title |
@@ -1025,7 +1025,7 @@ The weight: MD-3d adds 10 when `promise_due` is on the card (item 8).
 
 | Kind | It fires when | `why_key` and text | Act |
 |---|---|---|---|
-| `crm_followup_due` | An activity has `completed_at IS NULL`. Its type is not `status_change` or `system`. `lower(created_by)` is the member, and `due_at` is before the start of the tomorrow of the member | `followup_due`: "{Subject} is due {when} at {clock}." With no subject: "A follow-up is due {when} at {clock}." | "Open {noun}" |
+| `crm_followup_due` | An activity has `completed_at IS NULL`. Its type is not `status_change` or `system`. `lower(created_by)` is the member. It is due before the tomorrow of the member, by the one CRM day rule below | `followup_due`: "{Subject} is due {when} at {clock}." With no subject: "A follow-up is due {when} at {clock}." A task has no clock: "{Subject} is due {when}." and "A follow-up is due {when}." | "Open {noun}" |
 | `deal_quiet` | An open deal that I own passed the `max_dwell_days` of its own stage. A stage with no limit never fires. No override applies | `in_stage`: "In {stage} for {n} days. The stage limit is {limit} days." | "Log a call", a link to the record |
 | `deal_close_passed` | An open deal that I own has `expected_close_date` before the local today of the member | `close_passed`: "The close date was {when}, and the deal is still open." | "Move the date", a link to the record |
 
@@ -1035,16 +1035,27 @@ The weight: MD-3d adds 10 when `promise_due` is on the card (item 8).
   first of deal, lead, contact and organization.
 - `signal_id` is `crm:<deal|lead|contact|organization>:<id>`. The link is
   `crm_href` (rule 10.4).
-- The `urgent_at` of `crm_followup_due` is its `due_at`. The zone comes from
-  `personal.stored_zone`.
+- **The one CRM day rule** (`crm_platform.md` §19.7, fix round 1). A task
+  holds a DATE at 00:00 UTC, because the Zoho sync and the composer both
+  write it so. So the read compares the UTC date of a task with the local
+  date of the member. A call or a meeting keeps its real time, and the read
+  compares it with the local midnight of the member.
+- A task card has `all_day`, and its `due_at` is 00:00 of its date in the
+  zone of the member, as `deal_close_passed` does. It has no `urgent_at`,
+  so a midnight never lifts it to Now. For a call or a meeting, `urgent_at`
+  is its `due_at`. The zone comes from `personal.stored_zone`.
+- The read keeps the follow-ups due from the local today first, and then
+  the older ones. So many stale open tasks cannot cut a follow-up of today.
+- `stage_days` of `deal_quiet` rounds the time in the stage up, the rule of
+  the SQL. So on its first day past a limit of 10, the text says 11 days.
 - In Mirror mode (`is_mirror_mode`, `crm/core.py:1818`), `deal_quiet` is
   empty and the source still reads `ok`. A follow-up still shows, because the
   sync writes the mapped member into `created_by` (`crm_sync/engine.py:1097`).
 
 The sources:
 
-- `crm/activities.py::my_due_activities(user, limit)`, new. It reads through
-  `idx_crm_activities_due_at` (`144_crm.sql:452`).
+- `crm/activities.py::my_due_activities(db, user, today, tz, limit)`, new.
+  It reads through `idx_crm_activities_due_at` (`144_crm.sql:452`).
 - `crm/aggregate.py::my_overdue_deals(user, limit)`, new. It uses
   `_OVERDUE_FROM` (`aggregate.py:323`) with an owner clause, on
   `idx_crm_deals_owner_email`.
@@ -3234,8 +3245,9 @@ each one is fixed:
   `elapsed_ms=` in its text. A feed-only provider logs its answer at INFO,
   and a needs provider at DEBUG, because the bell polls the needs view.
 - **Three reads of `user_settings` named no tenant.** Since migration 239 a
-  member has one row for each organization, and the owner role of
-  production bypasses RLS. `personal.stored_zone` and `tasks.settings._load`
+  member has one row for each organization. RLS holds the gateway role
+  `acb_app` (measured on the box, 2026-10-16), so the predicate is defence
+  in depth. `personal.stored_zone` and `tasks.settings._load`
   now name the bound tenant (the GUC predicate of `prefs.py`). The day start
   read is gone: `personal.member_day` calls `_load`.
 - **The day start uses the one rule.** A member with the Calendar pane
@@ -3427,8 +3439,11 @@ names it. These are the parts:
   record, with the earliest open due time.
 - `retrieval/sources.py`: `crm_href`, the one link to a CRM record. The
   search sources call it too. It moved there with the search refactor on main.
-- `crm/settings.py`: `PATCH /crm/settings` calls `bump_org` after the
-  commit.
+- `crm/settings.py`: `PATCH /crm/settings` calls `bump_org_safe` after
+  the commit, the MD-3c rule for a write route of another app.
+- `shell/cache.py`: while `crm` is listed, `features_hash` holds the CRM
+  kill switch of the org. So an org that leaves `CRM_ORGS` gets no stored
+  CRM card.
 - `feed.ts` did not change. MD-3c added the three labels.
 
 **What the build found, for the slices after it.**
@@ -3436,18 +3451,26 @@ names it. These are the parts:
 - The three reads take the session from their caller, so they can share
   one session. §5.9 item 13 named `(user, limit)`. `my_day_rows` opens the
   session, because `test_shell_feed.py` refuses a session in `feed.py`.
-- `personal.stored_zone` does not name the tenant. Under the owner role,
-  it can give a member of two organizations the zone of the other row. So
-  the rule "each statement names the tenant" does not hold for that one
-  statement. A later slice must fix `stored_zone` itself.
 - `_OVERDUE_FROM` reads the clock of the database (`now()`), not
   `needs._now()`. So the edge of `deal_quiet` follows the database time.
   The cache waits 600 seconds at most for it (§5.8 item 2).
 - Each act of the three kinds links to the record. So `_merge_acts` keeps
   only the act of the main kind on a folded card. MD-8 makes these acts
   taps.
-- Rule 4 of the state join can move a follow-up to Now. It does so when
-  the due time, minus 2 hours, came after the start of the member's day.
+- Rule 4 of the state join can move a call to Now. It does so when the
+  due time, minus 2 hours, came after the start of the member's day. A task
+  has no `urgent_at`, so the rule never moves it.
+- RLS holds the gateway role `acb_app` in production (measured on the box,
+  2026-10-16). So each org predicate of the three reads is defence in
+  depth. The R8 suite still proves each one on a role that RLS does not
+  hold.
+- `stage_dwell` (`aggregate.py`) runs its reads with no org predicate. RLS
+  holds it in production, so this is defence in depth only. MD-3e does not
+  change it.
+- A folded `deal_quiet` adds `waiting_since` to a `deal_close_passed` card.
+  That moves the state fingerprint, so a dismissed card comes back. MD-3d
+  fixes the fold for each kind. Until then, `test_feed_crm_kinds.py` holds
+  the case as a strict `xfail`, and the rebase on MD-3d removes the mark.
 - `test_shell_feed.py` counts `needs._now()` in `feed.py`, and it lists the
   registry in order. Each MD-3 provider changes both, so MD-3f must change
   them again.
@@ -3471,6 +3494,15 @@ again before the flip.
 10. A 403 of the access rule raises, and does not give `absent`.
 11. The search bar writes the CRM link itself, not through `crm_href`.
 12. A record takes its latest follow-up, not its earliest.
+
+**Fix round 1, 2026-10-16.** Each of these mutations failed a fence:
+
+1. The read compares a task with the local midnight, as a time.
+2. The card gives a task its UTC time and a clock.
+3. The LIMIT keeps the oldest rows first again.
+4. `stage_days` rounds down, so the first day reads the limit.
+5. The CRM kill switch leaves the cache key.
+6. The provider cuts a follow-up of today for an older one.
 
 ### MD-3f · People and chat — AGENT-SAFE, after MD-3b
 
