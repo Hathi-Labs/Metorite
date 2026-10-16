@@ -349,15 +349,14 @@ class TestTheDetachedRowsTakeATurn:
                     sql = " ".join(str(stmt).split())
                     assert "email_mailbox_purges" not in sql, (
                         "the detached lane touched a tenant table")
-                    if sql.startswith("UPDATE email_detached_purges p SET tries"):
-                        assert "organization_id" not in sql and "org" not in params
-                        assert "LIMIT 1" in sql, "a claim takes more than one row"
+                    if "public.claim_detached_purge(" in sql:
+                        assert "org" not in params
                         ledger.events.append("claim")
                         row = detached.pop(0) if detached else None
                         if row is not None:
                             ledger.taken.append("detached")
                         return SimpleNamespace(fetchone=lambda: row)
-                    assert sql.startswith("UPDATE email_detached_purges")
+                    assert sql.startswith("SELECT public.settle_detached_purge(")
                     ledger.events.append("record")
                     return SimpleNamespace(fetchone=lambda: None)
 
@@ -393,6 +392,115 @@ class TestTheDetachedRowsTakeATurn:
         assert seen["orgs"] == ["org-a"]
         assert seen.get("open_detached") is memory_purge._detached_session, (
             "the tick does not sweep the detached rows")
+
+
+_MEMORY_PURGE = _REPO / "apps/services/gateway/gateway/routes/email/memory_purge.py"
+
+#: The only functions that a statement of the detached store may call. Each is
+#: a SECURITY DEFINER function of migration 276.
+_DETACHED_FUNCTIONS = ("public.claim_detached_purge(", "public.settle_detached_purge(")
+
+
+def _detached_session_violations(source: str) -> list[str]:
+    """Fix round 1, item 2. The ONE unbound session of the sweeper is pinned:
+    one reference outside its own body, in ``run_tick``, as ``open_detached``.
+    Its body runs no statement. The lane that it opens uses the detached
+    store only."""
+    tree = ast.parse(source)
+    problems = []
+    refs: list[str] = []
+
+    def visit(node: ast.AST, owner: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            name = owner
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                name = child.name
+            if isinstance(child, ast.Name) and child.id == "_detached_session" \
+                    and owner != "_detached_session":
+                refs.append(owner)
+            visit(child, name)
+
+    visit(tree, "<module>")
+    if refs != ["run_tick"]:
+        problems.append(f"_detached_session is referenced from {refs}, not once from run_tick")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "run_tick":
+            kws = [k for c in ast.walk(node) if isinstance(c, ast.Call)
+                   for k in c.keywords
+                   if isinstance(k.value, ast.Name) and k.value.id == "_detached_session"]
+            if [k.arg for k in kws] != ["open_detached"]:
+                problems.append("run_tick passes _detached_session other than as open_detached")
+        if (isinstance(node, ast.AsyncFunctionDef) and node.name == "_detached_session"
+                and any(isinstance(c, ast.Attribute) and c.attr == "execute"
+                        for c in ast.walk(node))):
+            problems.append("_detached_session runs a statement itself")
+        if isinstance(node, ast.FunctionDef) and node.name == "_detached_lane":
+            if not any(isinstance(c, ast.Name) and c.id == "_DETACHED_STORE"
+                       for c in ast.walk(node)):
+                problems.append("the detached lane does not use the detached store")
+            if any(isinstance(c, ast.Name) and c.id == "_TENANT_STORE"
+                   for c in ast.walk(node)):
+                problems.append("the detached lane uses the tenant store")
+    return problems
+
+
+def _detached_statement_violations(statements: dict[str, str]) -> list[str]:
+    """Each statement of the detached store calls one migration-276 function
+    and names no table: no FROM a table, no write, no other function."""
+    problems = []
+    for name, sql in statements.items():
+        flat = " ".join(sql.split())
+        calls = [fn for fn in _DETACHED_FUNCTIONS if fn in flat]
+        if len(calls) != 1 or not flat.startswith("SELECT "):
+            problems.append(f"{name} does not call exactly one detached function")
+        rest = flat
+        for fn in _DETACHED_FUNCTIONS:
+            rest = rest.replace(fn, "")
+        if re.search(r"\b(email_\w+|organization|INSERT|UPDATE|DELETE|JOIN)\b", rest):
+            problems.append(f"{name} names a table or a write")
+        if flat.count(" FROM ") > (1 if "claim" in name else 0):
+            problems.append(f"{name} reads from a table")
+    return problems
+
+
+class TestTheUnboundSessionIsPinned:
+    """Fix round 1, item 2 (security review). ``_detached_session`` is the
+    one unbound session of the sweeper. It must stay one call site, and every
+    statement it runs must call a SECURITY DEFINER function of migration 276
+    and name no table."""
+
+    def test_one_caller_and_function_calls_only(self):
+        assert _detached_session_violations(
+            _MEMORY_PURGE.read_text(encoding="utf-8")) == []
+        store = memory_purge._DETACHED_STORE
+        assert _detached_statement_violations({
+            "claim": store.claim_sql, "pass_done": store.pass_done_sql,
+            "pass_failed": store.pass_failed_sql, "refused": store.refused_sql,
+        }) == []
+
+    def test_the_check_can_fail(self):
+        source = _MEMORY_PURGE.read_text(encoding="utf-8")
+        tick = "    return await sweep_mailbox_purges(await _organization_ids(),\n"
+        assert tick in source
+        second = source.replace(
+            "async def _organization_ids() -> list[str]:\n",
+            "async def _organization_ids() -> list[str]:\n    _ = _detached_session\n")
+        assert "not once from run_tick" in _detached_session_violations(second)[0]
+        wrong_store = source.replace(
+            "    return _Lane(DETACHED_LANE, _DETACHED_STORE, open_detached,",
+            "    return _Lane(DETACHED_LANE, _TENANT_STORE, open_detached,")
+        assert "the detached lane uses the tenant store" in (
+            _detached_session_violations(wrong_store))
+        assert _detached_statement_violations({
+            "claim": "SELECT owner_email FROM email_detached_purges",
+            "refused": "UPDATE email_detached_purges SET state = 'refused'",
+            "pass_done": "SELECT public.settle_detached_purge(:id) FROM organization",
+        }) == ["claim does not call exactly one detached function",
+               "claim names a table or a write",
+               "refused does not call exactly one detached function",
+               "refused names a table or a write",
+               "pass_done names a table or a write",
+               "pass_done reads from a table"]
 
 
 class TestOneMem0BuildAtATime:
