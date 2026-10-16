@@ -2,7 +2,9 @@
 
 Spec: ``project-docs/specs/crm_platform.md`` §18.9.6, "CRM-Q18 · One plan".
 
-    GET  /crm/mapping/plans                      the versions, newest first
+    GET  /crm/mapping/plans                      the versions, newest first,
+                                                 each with no snapshot
+    GET  /crm/mapping/plans/{version}            one version and its snapshot
     POST /crm/mapping/plans                      a draft from a list of changes
     POST /crm/mapping/plans/{version}/approve    approve a draft
     POST /crm/mapping/plans/{version}/restore    approve a copy of an old version
@@ -60,18 +62,24 @@ from typing import Any, Literal
 from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
 from fastapi import Depends, HTTPException
-from gateway.routes.crm.core import _tenant_session, actor, router
+from gateway.routes.crm.core import (
+    FIELD_RULE_LOCK_ORDER,
+    FIELD_RULE_LOCK_SQL,
+    _tenant_session,
+    actor,
+    router,
+)
 from gateway.routes.crm.field_rules import (
     _GUARDS,
     PROVIDER,
     _check_legal,
+    _db_conflict,
     _entity,
     _field_type,
     _organization,
     _profile,
     _require_mirror,
     _taken,
-    _unique_violation,
 )
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
@@ -90,7 +98,13 @@ MAX_CHANGES = 200
 _PLAN_COLUMNS = (
     "version, state, rules, created_by, created_at, approved_by, approved_at, based_on"
 )
-_LIST_SQL = f"SELECT {_PLAN_COLUMNS} FROM crm_mapping_plans ORDER BY version DESC"
+#: The list carries no snapshot, only its count. One snapshot is
+#: ``GET /crm/mapping/plans/{version}``.
+_LIST_SQL = (
+    "SELECT version, state, jsonb_array_length(rules) AS rule_count, created_by, "
+    "created_at, approved_by, approved_at, based_on FROM crm_mapping_plans "
+    "ORDER BY version DESC"
+)
 _ANY_SQL = "SELECT 1 FROM crm_mapping_plans LIMIT 1"
 #: The lock of the plan of the bound org: every row of it. Each writer takes
 #: it first, so two writers of one org run one after the other.
@@ -128,12 +142,13 @@ _APPROVE_DRAFT_SQL = (
 _LIVE_COLUMNS = (
     "id, entity, field_api_name, field_type, profile_version, target_column, status"
 )
-#: Every rule row of the provider, in any status. The approve locks them.
+#: Every rule row of the provider, in any status.
 _LIVE_SQL = (
     f"SELECT {_LIVE_COLUMNS} FROM crm_field_rules WHERE ext_source = :src "
-    "ORDER BY entity, field_api_name"
+    f"ORDER BY {FIELD_RULE_LOCK_ORDER}"
 )
-_LIVE_LOCK_SQL = _LIVE_SQL + " FOR UPDATE"
+#: The same rows, locked in the one order that ``mark_stale`` uses too.
+_LIVE_LOCK_SQL = FIELD_RULE_LOCK_SQL
 
 _LEAVE_SQL = (
     "UPDATE crm_field_rules SET status = 'rejected', decided_by = :by, "
@@ -252,6 +267,13 @@ def _rule_from_row(row: Any) -> PlanRule:
 async def _live_rows(db: Any, *, lock: bool = False) -> list[Any]:
     sql = _LIVE_LOCK_SQL if lock else _LIVE_SQL
     return list((await db.execute(text(sql), {"src": PROVIDER})).fetchall())
+
+
+async def lock_rules(db: Any) -> list[Any]:
+    """Lock every rule row of the provider, in the one order. A writer calls
+    it BEFORE it locks any single rule row, so it never waits on the sync's
+    ``mark_stale`` in a cycle."""
+    return await _live_rows(db, lock=True)
 
 
 async def _live_approved(db: Any) -> list[PlanRule]:
@@ -394,11 +416,13 @@ async def commit(
     is stays as it is. Each other rule is checked again. Returns the approved
     version row.
     """
-    version, profile = await _profile(db, org)
+    # The rule rows are locked first, so the profile and the checks read the
+    # state that the writes below act on.
     rows = {
         (str(r.entity), str(r.field_api_name)): r
-        for r in await _live_rows(db, lock=True)
+        for r in await lock_rules(db)
     }
+    version, profile = await _profile(db, org)
     final: list[PlanRule] = []
     for rule in fields:
         row = rows.get(rule.key)
@@ -461,11 +485,24 @@ class MappingPlanModel(BaseModel):
     based_on: int | None = None
 
 
+class MappingPlanSummaryModel(BaseModel):
+    """One version in the list: no snapshot, only the count of its items."""
+
+    version: int
+    state: Literal["draft", "approved", "superseded"]
+    rule_count: int
+    created_by: str
+    created_at: datetime | None = None
+    approved_by: str | None = None
+    approved_at: datetime | None = None
+    based_on: int | None = None
+
+
 class MappingPlansModel(BaseModel):
     #: The approved version.
     approved: int | None = None
-    #: The versions, newest first.
-    versions: list[MappingPlanModel]
+    #: The versions, newest first, with no snapshot.
+    versions: list[MappingPlanSummaryModel]
 
 
 class PlanChangeIn(BaseModel):
@@ -522,11 +559,32 @@ async def list_mapping_plans(user: UserContext = Depends(get_current_user)) -> M
         if approved is None or _identity(fields) != _identity(await _live_approved(db)):
             await lock_plan(db, by)
         rows = (await db.execute(text(_LIST_SQL))).fetchall()
-    versions = [_wire(r) for r in rows]
+    versions = [
+        MappingPlanSummaryModel(
+            version=int(r.version), state=r.state, rule_count=int(r.rule_count or 0),
+            created_by=r.created_by, created_at=r.created_at,
+            approved_by=r.approved_by, approved_at=r.approved_at, based_on=r.based_on,
+        )
+        for r in rows
+    ]
     return MappingPlansModel(
         approved=next((v.version for v in versions if v.state == "approved"), None),
         versions=versions,
     )
+
+
+@router.get(
+    "/mapping/plans/{version}", response_model=MappingPlanModel, dependencies=_GUARDS,
+)
+async def get_mapping_plan(
+    version: int, user: UserContext = Depends(get_current_user),
+) -> MappingPlanModel:
+    """One version with its snapshot. It reads only."""
+    org = _organization(user)
+    async with _tenant_session() as db:
+        await _require_mirror(db, org)
+        row = await _version(db, version)
+    return _wire(row)
 
 
 @router.post(
@@ -607,8 +665,9 @@ async def approve_mapping_plan(
                 based_on=draft.based_on, draft=int(draft.version),
             )
     except DBAPIError as exc:
-        if _unique_violation(exc):
-            raise _taken() from exc
+        conflict = _db_conflict(exc)
+        if conflict is not None:
+            raise conflict from exc
         raise
     return _wire(row)
 
@@ -640,8 +699,9 @@ async def restore_mapping_plan(
                 based_on=int(old.version),
             )
     except DBAPIError as exc:
-        if _unique_violation(exc):
-            raise _taken() from exc
+        conflict = _db_conflict(exc)
+        if conflict is not None:
+            raise conflict from exc
         raise
     return _wire(row)
 

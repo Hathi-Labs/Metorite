@@ -343,14 +343,41 @@ def _changed() -> HTTPException:
     })
 
 
-def _unique_violation(exc: DBAPIError) -> bool:
+def _sqlstates(exc: BaseException) -> set[str]:
+    codes: set[str] = set()
     seen: BaseException | None = exc
     while seen is not None:
         code = getattr(seen, "sqlstate", None) or getattr(seen, "pgcode", None)
-        if code == "23505":
-            return True
+        if isinstance(code, str):
+            codes.add(code)
         seen = getattr(seen, "orig", None) or seen.__cause__
-    return False
+    return codes
+
+
+def _unique_violation(exc: DBAPIError) -> bool:
+    return "23505" in _sqlstates(exc)
+
+
+#: A deadlock (40P01) or a serialization failure (40001). Postgres rolled the
+#: transaction back, so the same request can simply run again.
+_RETRY_STATES = frozenset({"40P01", "40001"})
+
+
+def _db_conflict(exc: DBAPIError) -> HTTPException | None:
+    """The 409 for a database error that a client can act on, or ``None``.
+
+    A unique violation is ``rule_taken``. A deadlock with the sync is
+    ``plan_busy``: nothing was written, and a retry is safe (CRM-Q18-1).
+    """
+    codes = _sqlstates(exc)
+    if "23505" in codes:
+        return _taken()
+    if codes & _RETRY_STATES:
+        return HTTPException(status_code=409, headers={"Retry-After": "1"}, detail={
+            "code": "plan_busy",
+            "message": "The sync changed the field map at the same time. Try again.",
+        })
+    return None
 
 
 def _targets(entity: str, profile: Any) -> list[FieldMapTarget]:
@@ -446,8 +473,9 @@ async def create_field_rule(
                 "src": PROVIDER, "entity": word, "field": field,
             })).first()
     except DBAPIError as exc:
-        if _unique_violation(exc):
-            raise _taken() from exc
+        conflict = _db_conflict(exc)
+        if conflict is not None:
+            raise conflict from exc
         raise
     return _wire(row)
 
@@ -492,6 +520,10 @@ async def decide_field_rule(
                     db, current.entity, current.target_column, current.field_api_name, wanted,
                 )
             if payload.status == "approved" or current.status == "approved":
+                # Every rule row first, in the one order that the sync uses,
+                # and only then the one row: a single-row lock before the
+                # ordered lock could wait on mark_stale in a cycle.
+                await mapping_plans.lock_rules(db)
                 # The row must still be the one the route read and checked. A
                 # new proposal can change its target between the read and here.
                 held = (await db.execute(text(_HOLD_SQL), {
@@ -519,8 +551,9 @@ async def decide_field_rule(
                 if row is None:
                     raise _changed()
     except DBAPIError as exc:
-        if _unique_violation(exc):
-            raise _taken() from exc
+        conflict = _db_conflict(exc)
+        if conflict is not None:
+            raise conflict from exc
         raise
     return _wire(row)
 
@@ -916,7 +949,8 @@ async def suggest_field_rules(
     written: list[Any] = []
     async with _tenant_session() as db:
         await _require_mirror(db, org)
-        for proposal in kept:
+        # In the lock order of the rule rows (one entity, so by field).
+        for proposal in sorted(kept, key=lambda k: k.field_api_name):
             row = (await db.execute(text(_PROPOSE_SQL), {
                 "src": PROVIDER, "entity": word, "field": proposal.field_api_name,
                 "type": proposal.field_type, "version": stamp,
