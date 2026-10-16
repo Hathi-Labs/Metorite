@@ -514,6 +514,30 @@ def test_6_a_fixed_column_that_a_live_rule_fills_takes_the_draft_value() -> None
     assert values["industry"] == "Space"
 
 
+def test_6_a_zoho_value_in_a_live_rule_column_stays_when_the_draft_drops_the_rule() -> None:
+    """Batch M review P2. An empty fill opened ``industry`` to a live rule,
+    and Zoho filled the standard field later. The stored value is not the
+    rule's value, so it is the fixed map's, and the sync keeps it."""
+    values = {"industry": "From Zoho"}
+    preview_record("lead", values, {"Sector": "Robotics"},
+                   live={"industry": "Sector"}, draft={})
+    assert values["industry"] == "From Zoho"
+
+
+def test_6_a_zoho_value_in_a_live_rule_column_wins_over_a_draft_rule() -> None:
+    values = {"industry": "From Zoho"}
+    preview_record("lead", values, {"Sector": "Robotics", "Other": "Space"},
+                   live={"industry": "Sector"}, draft={"industry": "Other"})
+    assert values["industry"] == "From Zoho"
+
+
+def test_6_the_value_of_a_live_rule_goes_back_to_null_when_the_draft_drops_it() -> None:
+    values = {"industry": "Robotics"}
+    preview_record("lead", values, {"Sector": "Robotics"},
+                   live={"industry": "Sector"}, draft={})
+    assert values["industry"] is None
+
+
 def test_6_the_preview_names_the_columns_that_did_not_map_never_a_value() -> None:
     values: dict[str, Any] = {"no_of_employees": None, "lost_note": None}
     missed = preview_record("lead", values, {"Head": "lots", "Why": "Price"}, live={},

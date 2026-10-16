@@ -453,17 +453,32 @@ def preview_record(
     Then :func:`apply_rules` applies *draft*, so the preview runs the one
     path of a rule value. Returns the columns whose value was ``unmapped``.
 
-    Limit: a live rule on a fixed column that an empty fill opened (CRM-Q18-3)
-    can share the column with a value that Zoho sent later. The stored row
-    cannot tell the two apart, so the preview shows the draft value there.
+    A fixed column that a live rule fills can also hold a value that Zoho
+    sent later, for a rule that an empty fill opened (CRM-Q18-3). The sync
+    keeps that value, because the fixed map wins. So the column goes back to
+    NULL only while its stored value is the value that the live rule gives
+    from *custom*. A stored value that differs is the value of the fixed map,
+    and it stays (Batch M review, P2).
     """
     for column in (*live, *draft):
         target = mapping.rule_target(entity, column)
         if target is None:
             continue
-        if target.standard_field is None or column in live:
+        free = target.standard_field is None
+        if free or (column in live and _is_rule_value(
+                target, values.get(column), custom, live[column])):
             values[column] = None
     return apply_rules(entity, custom, values, draft)
+
+
+def _is_rule_value(
+    target: RuleTarget, stored: Any, custom: Mapping[str, Any], field_api_name: str,
+) -> bool:
+    """True when *stored* is the value that a live rule gives from *custom*,
+    or NULL. Then the live rule wrote it, and not the fixed map."""
+    if stored is None:
+        return True
+    return run(target, custom.get(field_api_name)).value == stored
 
 
 __all__ = [
