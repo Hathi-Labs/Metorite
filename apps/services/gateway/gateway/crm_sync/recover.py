@@ -31,6 +31,14 @@ from typing import Any
 KEY = "recover"
 #: The cursor-state key that says a new id did not fit under :data:`CAP`.
 OVERFLOW_KEY = "recover_overflow"
+#: The cursor-state key of the reads by id that each kept id has had and that
+#: did not take it off the list. The engine drops an id at ``RETRY_LIMIT``.
+TRIES_KEY = "recover_tries"
+#: The cursor-state key of the time of the last refused read by ids. No read
+#: by ids of the entity is sent for :data:`READ_PAUSE` after it.
+PAUSE_KEY = "recover_paused_at"
+#: How long a refused read by ids pauses the reads of its entity.
+READ_PAUSE = timedelta(hours=24)
 #: The most entries that one activity entity keeps.
 CAP = 5_000
 #: An entry older than this leaves the list.
@@ -122,6 +130,23 @@ def modules_named(kept: Mapping[str, Entry]) -> set[str]:
     return {e[0] for e in kept.values()}
 
 
+def tries_of(state: Mapping[str, Any] | None) -> dict[str, int]:
+    """The tries of each kept id. A value of a wrong shape is dropped."""
+    raw = (state or {}).get(TRIES_KEY)
+    if not isinstance(raw, Mapping):
+        return {}
+    return {
+        str(k): int(v) for k, v in raw.items()
+        if isinstance(v, int) and not isinstance(v, bool) and v > 0
+    }
+
+
+def paused(last: str | None, now: datetime) -> bool:
+    """True while a refused read by ids still pauses the reads of an entity."""
+    stamp = _parse(last)
+    return stamp is not None and now - stamp < READ_PAUSE
+
+
 def overflow_due(last: str | None, now: datetime) -> bool:
     """True when an overflow of this entity may queue a full read now."""
     stamp = _parse(last)
@@ -135,11 +160,16 @@ __all__ = [
     "MAX_AGE",
     "OVERFLOW_EVERY",
     "OVERFLOW_KEY",
+    "PAUSE_KEY",
+    "READ_PAUSE",
+    "TRIES_KEY",
     "entries_of",
     "expire",
     "merge",
     "modules_named",
     "overflow_due",
     "parents",
+    "paused",
     "recoverable",
+    "tries_of",
 ]

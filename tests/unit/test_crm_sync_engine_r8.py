@@ -86,6 +86,8 @@ class ZohoTenant:
         #: such a read leaves out.
         self.ids_reads: list[tuple[str, list[str]]] = []
         self.ids_missing: set[str] = set()
+        #: A fault on the reads by ids only: ``(status, body)``.
+        self.ids_fault: tuple[int, dict[str, Any]] | None = None
 
     def add(self, module: str, ident: str, minute: int, **fields: Any) -> None:
         self.data.setdefault(module, [])
@@ -133,6 +135,8 @@ class ZohoTenant:
             module = records.group(1)
             wanted = request.url.params["ids"].split(",")
             self.ids_reads.append((module, wanted))
+            if self.ids_fault is not None:
+                return httpx.Response(self.ids_fault[0], json=self.ids_fault[1])
             found = [r for r in self.data.get(module, [])
                      if r["id"] in wanted and r["id"] not in self.ids_missing]
             if not found:

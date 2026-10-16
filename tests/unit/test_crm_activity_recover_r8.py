@@ -394,7 +394,8 @@ async def test_a_new_module_record_and_a_new_note_link_in_one_run(mz) -> None:
     _age_module_reads(p, p.org_a)
     result = await _run(p.org_a)
     assert (result.status, result.error) == ("ok", None)
-    assert result.counts["activity_drops"] == {"Install_Base": 1}, "the pass dropped it"
+    # The pass dropped n5, and the recovery read took that drop back.
+    assert result.counts.get("activity_drops") == {}, "the run lost nothing"
     record = _records(p, p.org_a)["Install_Base", "i5"][10]
     assert _linked(p, p.org_a)["n5"] == str(record), "the recovery step linked it"
     assert a.ids_reads == [("Notes", ["n5"])]
@@ -459,3 +460,118 @@ async def test_a_hold_on_activities_keeps_the_backfill_entry_until_release(mz) -
     assert not (_rereads(p, p.org_a) & ACTIVITIES)
     record = _records(p, p.org_a)["Install_Base", "i1"][10]
     assert _linked(p, p.org_a)["n1"] == str(record)
+
+
+# ── Fix round 1 (review of 2026-10-16) ───────────────────────────────────────
+
+
+async def _kept_on_i2(p: Any, a: Any, *ids: str) -> None:
+    """Run 1 keeps each note on i2, which is in no Zoho module yet. Then i2
+    arrives, and the module reads are aged so the next run reads it."""
+    _seed(a)
+    for i, ident in enumerate(ids):
+        _note(a, ident, 30 + i, "i2")
+    await _connect_all(p, p.org_a, a)
+    assert (await _run(p.org_a)).status == "ok"
+    assert set(_kept(p, p.org_a)) == set(ids)
+    a.add("Install_Base", "i2", 300, Name="A-Late", Account={"id": "a1", "name": "x"})
+    _age_module_reads(p, p.org_a)
+
+
+def _age_pause(p: Any, org: str, hours: int) -> None:
+    when = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_sync_cursors SET cursor_state = jsonb_set(cursor_state, "
+            "'{recover_paused_at}', to_jsonb(CAST(:t AS text))) "
+            "WHERE organization_id = CAST(:o AS uuid) AND module = 'zoho:note'"),
+            {"t": when, "o": org})
+
+
+async def test_a_hidden_module_never_queues_an_overflow_read(mz, monkeypatch) -> None:
+    """Review P2: ``_mark_unavailable`` stamps ``initial_done_at``, so a module
+    that the account refuses looked imported, and an overflow queued a full
+    read of the notes every 7 days for ever."""
+    from gateway.crm_sync import recover
+
+    monkeypatch.setattr(recover, "CAP", 2)
+    p, a, _b = mz
+    _seed(a)
+    for i in range(3):
+        _note(a, f"n{i}", 30 + i, "i9")
+    await _connect_all(p, p.org_a, a)
+    assert (await _run(p.org_a)).status == "ok"
+    assert "note" in _rereads(p, p.org_a), "the first overflow queues, as before"
+
+    _age_overflow(p, p.org_a, "note", days=8)
+    a.faults["Install_Base"] = (400, {"code": "INVALID_MODULE", "status": "error"})
+    _age_module_reads(p, p.org_a)
+    result = await _run(p.org_a)
+    assert (result.status, result.error) == ("ok", None)
+    assert (_state(p, p.org_a, "zoho:module:Install_Base") or {})["unavailable"] is True
+    assert (_state(p, p.org_a) or {})["recover_overflow"] is True, "the read overflowed"
+    assert "note" not in _rereads(p, p.org_a), "a refused module queues no full read"
+
+
+async def test_a_refused_read_by_ids_pauses_the_entity_for_24_hours(mz) -> None:
+    p, a, _b = mz
+    await _kept_on_i2(p, a, "n1")
+    a.ids_fault = (400, {"code": "INVALID_DATA", "status": "error"})
+    refused = await _run(p.org_a)
+    assert (refused.status, refused.error) == ("ok", None)
+    assert len(a.ids_reads) == 1
+    assert (_state(p, p.org_a) or {})["recover_paused_at"], "the pause is stored"
+    assert set(_kept(p, p.org_a)) == {"n1"}
+
+    assert (await _run(p.org_a)).status == "ok"
+    assert len(a.ids_reads) == 1, "a paused entity pays for no call"
+
+    a.ids_fault = None
+    _age_pause(p, p.org_a, hours=25)
+    assert (await _run(p.org_a)).status == "ok"
+    assert len(a.ids_reads) == 2
+    assert _linked(p, p.org_a)["n1"] is not None
+    assert (_state(p, p.org_a) or {})["recover_paused_at"] is None
+
+
+async def test_a_plain_401_on_a_read_by_ids_fails_the_run(mz) -> None:
+    p, a, _b = mz
+    await _kept_on_i2(p, a, "n1")
+    a.ids_fault = (401, {"code": "INVALID_TOKEN", "status": "error"})
+    result = await _run(p.org_a)
+    assert result.status == "failed", "never ok: the token went stale mid-run"
+    assert result.error == "source_error"
+
+
+async def test_a_kept_id_that_never_writes_leaves_at_the_retry_limit(mz, monkeypatch) -> None:
+    from gateway.crm_sync import engine
+
+    monkeypatch.setattr(engine, "RETRY_LIMIT", 2)
+    p, a, _b = mz
+    await _kept_on_i2(p, a, "n1", "n2")
+    real = engine._write_record
+
+    async def n1_fails(ctx, db, entity, record, caches):
+        if record.ext_id == "n1":
+            raise RuntimeError("boom")
+        return await real(ctx, db, entity, record, caches)
+
+    monkeypatch.setattr(engine, "_write_record", n1_fails)
+    assert (await _run(p.org_a)).status == "ok"
+    assert set(_kept(p, p.org_a)) == {"n1"}, "n2 linked, n1 stays"
+    assert (_state(p, p.org_a) or {})["recover_tries"] == {"n1": 1}
+    assert (await _run(p.org_a)).status == "ok"
+    assert _kept(p, p.org_a) == {}, "the second failed try takes n1 off the list"
+    assert [ids for _m, ids in a.ids_reads] == [["n1", "n2"], ["n1"]]
+    assert (await _run(p.org_a)).status == "ok"
+    assert len(a.ids_reads) == 2, "and it is never read again"
+
+
+async def test_an_id_that_a_read_cannot_send_leaves_without_a_call(mz) -> None:
+    p, a, _b = mz
+    await _kept_on_i2(p, a, "n1", "bad-1")
+    result = await _run(p.org_a)
+    assert (result.status, result.error) == ("ok", None)
+    assert a.ids_reads == [("Notes", ["n1"])], "the bad id holds back no call"
+    assert _linked(p, p.org_a)["n1"] is not None
+    assert _kept(p, p.org_a) == {}

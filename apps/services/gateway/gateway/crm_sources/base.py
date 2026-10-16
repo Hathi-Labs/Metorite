@@ -44,6 +44,13 @@ CANONICAL_ENTITIES: tuple[str, ...] = (
 IDS_PER_CALL = 100
 
 
+def is_plain_id(ext_id: str) -> bool:
+    """True for an id that a read by ids may send: ASCII letters and digits
+    only. A provider id goes into a query string, so nothing else passes."""
+    return ext_id.isascii() and ext_id.isalnum()
+
+
+
 # ── Credentials ─────────────────────────────────────────────────────────────
 
 
@@ -298,4 +305,5 @@ __all__ = [
     "SourceRecord",
     "SourceScopeError",
     "UntrustedHost",
+    "is_plain_id",
 ]

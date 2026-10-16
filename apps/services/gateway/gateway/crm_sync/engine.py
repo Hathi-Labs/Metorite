@@ -92,6 +92,7 @@ from gateway.crm_sources.base import (
     SourceRecord,
     SourceScopeError,
     UntrustedHost,
+    is_plain_id,
 )
 from gateway.crm_sources.registry import mapping_for, source_class
 from gateway.crm_sync import field_rules, holds, profiles, runs
@@ -703,6 +704,14 @@ class _Ctx:
         #: its cursor on first use, and the entities whose list overflowed.
         self.recover: dict[str, dict[str, list[str]]] = {}
         self.recover_overflow: dict[str, bool] = {}
+        #: The reads by id of each kept id that left it on the list, and the
+        #: time of the last refused read by ids, for each activity entity.
+        self.recover_tries: dict[str, dict[str, int]] = {}
+        self.recover_paused: dict[str, str | None] = {}
+        #: ``(entity, ext_id)`` -> the drop key, for each activity that THIS run
+        #: dropped and kept. A recovery read of one of them takes its drop
+        #: back, so ``activity_drops`` counts what the run lost.
+        self.run_drops: dict[tuple[str, str], str] = {}
 
     # ── Provider calls ──────────────────────────────────────────────────────
 
@@ -1261,6 +1270,9 @@ def _kept(ctx: _Ctx, entity: str) -> dict[str, list[str]]:
         state = _row(ctx, changed_module(entity)).state
         ctx.recover[entity] = recovery.entries_of(state)
         ctx.recover_overflow[entity] = bool((state or {}).get(recovery.OVERFLOW_KEY))
+        ctx.recover_tries[entity] = recovery.tries_of(state)
+        pause = (state or {}).get(recovery.PAUSE_KEY)
+        ctx.recover_paused[entity] = pause if isinstance(pause, str) else None
     return ctx.recover[entity]
 
 
@@ -1270,9 +1282,12 @@ def _recover_state(ctx: _Ctx, entity: str) -> dict[str, Any]:
     if entity not in ACTIVITY_TYPES:
         return {}
     kept = _kept(ctx, entity)
+    tries = ctx.recover_tries.get(entity) or {}
     return {
         recovery.KEY: kept,
         recovery.OVERFLOW_KEY: bool(ctx.recover_overflow.get(entity)),
+        recovery.TRIES_KEY: {k: v for k, v in tries.items() if k in kept},
+        recovery.PAUSE_KEY: ctx.recover_paused.get(entity),
     }
 
 
@@ -1286,6 +1301,9 @@ def _keep_dropped(
         _kept(ctx, entity), landed, dropped, _iso(ctx.started) or "",
     )
     ctx.recover[entity] = kept
+    for ext_id, (module, _parent) in dropped.items():
+        if ext_id in kept:
+            ctx.run_drops.setdefault((entity, ext_id), module)
     if overflow:
         if not ctx.recover_overflow.get(entity):
             _log.warning("crm.sync.recover_overflow entity=%s cap=%s", entity, recovery.CAP)
@@ -1935,6 +1953,7 @@ def _count_unavailable(ctx: _Ctx, entity: str, reason: str = "scope") -> None:
 #: the kept activities of CRM-Q23b.
 _KEPT_WHEN_UNAVAILABLE = frozenset({
     "failed", "retry_from", "converted_both", recovery.KEY, recovery.OVERFLOW_KEY,
+    recovery.TRIES_KEY, recovery.PAUSE_KEY,
 })
 
 
@@ -3130,7 +3149,10 @@ async def _recover_activities(ctx: _Ctx) -> None:
     aged: list[str] = []
     for entity in entities:
         kept = _kept(ctx, entity)
-        fresh = recovery.expire(kept, ctx.started)
+        # An id that a read by ids cannot send never recovers, so it leaves
+        # now, and it does not hold back the other ids of its call.
+        fresh = {k: v for k, v in recovery.expire(kept, ctx.started).items()
+                 if is_plain_id(k)}
         if len(fresh) != len(kept):
             ctx.recover[entity] = fresh
             aged.append(entity)
@@ -3152,6 +3174,8 @@ async def _recover_activities(ctx: _Ctx) -> None:
     reading = True
     for entity in entities:
         ids = recovery.recoverable(ctx.recover[entity], present)
+        if recovery.paused(ctx.recover_paused.get(entity), ctx.started):
+            continue  # a refused read waits for READ_PAUSE, and costs nothing
         if reading and ids:
             reading = await _read_kept(ctx, entity, ids)
     for entity in entities:
@@ -3166,7 +3190,15 @@ async def _read_kept(ctx: _Ctx, entity: str, ids: list[str]) -> bool:
     An id that the answer lacks is asked once more in a later call, so a
     short answer loses nothing. An id that the second call lacks too is gone
     in the provider, and it leaves the list. A failure that is not fatal keeps
-    the list for the next run.
+    the list for the next run, and pauses the reads by ids of the entity for
+    ``recovery.READ_PAUSE``. A plain HTTP 401 and an untrusted host fail the
+    run, as they do in the changed pass (:func:`_skip_module`).
+
+    A kept id that a read returns and that stays on the list (it fails to
+    write, or it drops again) spends one try. At :data:`RETRY_LIMIT` tries it
+    leaves the list, as a failed record leaves the retry list of a pass. A
+    read of an activity that this run dropped takes that drop back out of
+    ``activity_drops``: the record is stored now, or the drop counts again.
     """
     queue = list(ids)
     asked: set[str] = set()
@@ -3180,11 +3212,17 @@ async def _read_kept(ctx: _Ctx, entity: str, ids: list[str]) -> bool:
         except (NotConnected, Stopped, ModeChanged):
             raise
         except SourceError as exc:
-            if _fatal(exc):
+            if _fatal(exc) or isinstance(exc, UntrustedHost) or (
+                not isinstance(exc, SourceScopeError) and "HTTP 401" in str(exc)
+            ):
                 raise
             _log.warning("crm.sync.recover_unreadable entity=%s error=%s",
                          entity, error_code(exc))
+            ctx.recover_paused[entity] = _iso(ctx.started)
+            async with ctx.page() as db:
+                await _save_recover(ctx, db, entity)
             return True
+        ctx.recover_paused[entity] = None
         got = {r.ext_id for r in records}
         missing = [i for i in chunk if i not in got]
         gone = {i for i in missing if i in asked}
@@ -3193,28 +3231,66 @@ async def _read_kept(ctx: _Ctx, entity: str, ids: list[str]) -> bool:
         if records and ctx.owners is None:
             await ctx.load_owners()
         async with ctx.page() as db:
+            # Inside the page: a failed page takes the counts back too.
+            _net_run_drops(ctx, entity, got)
             await _apply_records(ctx, db, entity, records)
-            if gone:
-                ctx.recover[entity] = {
-                    k: v for k, v in ctx.recover[entity].items() if k not in gone
-                }
+            _spend_tries(ctx, entity, got, gone)
             await _save_recover(ctx, db, entity)
     return True
+
+
+def _net_run_drops(ctx: _Ctx, entity: str, got: set[str]) -> None:
+    """Take back the drop of each activity in ``got`` that this run dropped
+    and kept. A read that stores it leaves the drop out, and a read that
+    drops it again counts it again, so the run counts each loss once."""
+    drops = ctx.counts.get(ACTIVITY_DROPS_KEY)
+    for ext_id in got:
+        name = ctx.run_drops.pop((entity, ext_id), None)
+        if name is None or not isinstance(drops, dict) or not drops.get(name):
+            continue
+        drops[name] = int(drops[name]) - 1
+        if drops[name] <= 0:
+            del drops[name]
+
+
+def _spend_tries(ctx: _Ctx, entity: str, got: set[str], gone: set[str]) -> None:
+    """Count one try for each id that a read returned and that is still on
+    the list. An id at :data:`RETRY_LIMIT` tries leaves the list, and so does
+    each id in ``gone``. The log gets the id only."""
+    kept = dict(ctx.recover[entity])
+    tries = dict(ctx.recover_tries.get(entity) or {})
+    for ext_id in gone:
+        kept.pop(ext_id, None)
+    for ext_id in got:
+        if ext_id not in kept:
+            continue
+        tries[ext_id] = tries.get(ext_id, 0) + 1
+        if tries[ext_id] >= RETRY_LIMIT:
+            _log.warning("crm.sync.recover_expired entity=%s ext_id=%s", entity, ext_id)
+            kept.pop(ext_id)
+    ctx.recover[entity] = kept
+    ctx.recover_tries[entity] = {k: v for k, v in tries.items() if k in kept}
 
 
 def _overflow_ready(ctx: _Ctx, entity: str, mirrored: frozenset[str]) -> bool:
     """True when an overflow of ``entity`` may queue its full read now.
 
     The first import of the entity is done, each mirrored module that its
-    list names has had its first import, the marker row exists, and the last
+    list names has had its first import and is not unavailable (CRM-Q15), the
+    marker row exists, and the last
     overflow read of the entity was queued more than ``recovery.OVERFLOW_EVERY``
     ago. A full read before that would drop the same activities again.
     """
     if _row(ctx, changed_module(entity)).initial_done_at is None:
         return False
     for module in recovery.modules_named(ctx.recover.get(entity) or {}) & mirrored:
-        target = changed_module(ctx.mapping.module_entity(module))
-        if _row(ctx, target).initial_done_at is None:
+        target = _row(ctx, changed_module(ctx.mapping.module_entity(module)))
+        if target.initial_done_at is None:
+            return False
+        if (target.state or {}).get("unavailable"):
+            # ``_mark_unavailable`` stamps ``initial_done_at`` too. A module that
+            # the account refuses gains no record, so a full read now would
+            # drop the same activities again, every 7 days, for ever.
             return False
     marker = ctx.cursors.get(ACTIVITY_BACKFILL_ROW)
     if marker is None:

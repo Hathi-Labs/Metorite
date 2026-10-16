@@ -166,10 +166,11 @@ def test_the_recover_keys_ride_on_activity_cursors_only() -> None:
         recover.KEY: {"n1": ["M", "p", T]}, recover.OVERFLOW_KEY: True}, None, None)})
     assert engine._recover_state(ctx, "note") == {
         recover.KEY: {"n1": ["M", "p", T]}, recover.OVERFLOW_KEY: True,
+        recover.TRIES_KEY: {}, recover.PAUSE_KEY: None,
     }
     for entity in ("company", "deal", "module:Install_Base"):
         assert engine._recover_state(ctx, entity) == {}
-    assert {recover.KEY, recover.OVERFLOW_KEY} <= engine._KEPT_WHEN_UNAVAILABLE
+    assert {recover.KEY, recover.OVERFLOW_KEY, recover.TRIES_KEY, recover.PAUSE_KEY}         <= engine._KEPT_WHEN_UNAVAILABLE
 
 
 def _ready_ctx(**over: CursorRow | None) -> engine._Ctx:
@@ -220,3 +221,52 @@ def test_a_second_overflow_inside_7_days_is_not_ready() -> None:
         "queued_at": T, "overflow_at": {"note": _iso(-timedelta(days=8))}}, NOW, None)
     assert engine._overflow_ready(_ready_ctx(marker=old), "note", MIRRORED)
     assert not engine._overflow_ready(_ready_ctx(marker=None), "note", MIRRORED)
+
+
+# ── Fix round 1 (review of 2026-10-16) ───────────────────────────────────────
+
+
+def test_an_overflow_waits_while_a_module_it_names_is_unavailable() -> None:
+    """``_mark_unavailable`` stamps ``initial_done_at``. A module that the
+    account refuses must still hold the overflow, or a full read of the notes
+    runs every 7 days for ever with no gain."""
+    hidden = CursorRow("zoho:module:Install_Base", None,
+                       {"unavailable": True, "reason": "hidden"}, NOW - timedelta(days=30), None)
+    assert not engine._overflow_ready(_ready_ctx(module=hidden), "note", MIRRORED)
+
+
+def test_the_recoverable_query_binds_the_org() -> None:
+    """R7 fence of the ``organization_id`` predicate. RLS holds the tenant
+    too, and this keeps the query safe on a session with RLS off."""
+    import inspect
+
+    assert "organization_id = CAST(:org AS uuid)" in engine._RECOVERABLE_SQL
+    assert '"org": ctx.org' in inspect.getsource(engine._recover_activities)
+
+
+def test_tries_and_the_pause_read_back() -> None:
+    assert recover.tries_of({recover.TRIES_KEY: {"a": 2, "b": True, "c": 0, "d": "x"}})         == {"a": 2}
+    assert recover.tries_of(None) == {}
+    assert recover.paused(_iso(-timedelta(hours=23)), NOW)
+    assert not recover.paused(_iso(-timedelta(hours=24)), NOW)
+    assert not recover.paused(None, NOW) and not recover.paused("x", NOW)
+    assert recover.READ_PAUSE == timedelta(hours=24)
+
+
+def test_a_kept_id_leaves_at_the_retry_limit() -> None:
+    ctx = _ctx()
+    ctx.recover["note"] = {"n1": ["M", "p", T], "n2": ["M", "p", T], "n3": ["M", "p", T]}
+    ctx.recover_tries["note"] = {"n1": engine.RETRY_LIMIT - 1}
+    engine._spend_tries(ctx, "note", got={"n1", "n2", "gone-already"}, gone={"n3"})
+    assert set(ctx.recover["note"]) == {"n2"}, "n1 at the limit, n3 gone in Zoho"
+    assert ctx.recover_tries["note"] == {"n2": 1}
+
+
+def test_a_recovery_read_takes_back_the_drop_of_this_run() -> None:
+    ctx = _ctx()
+    ctx.counts[engine.ACTIVITY_DROPS_KEY] = {"Install_Base": 2, "(none)": 1}
+    ctx.run_drops = {("note", "n1"): "Install_Base", ("note", "n2"): "Install_Base"}
+    engine._net_run_drops(ctx, "note", {"n1", "n9"})  # n9 dropped in an earlier run
+    assert ctx.counts[engine.ACTIVITY_DROPS_KEY] == {"Install_Base": 1, "(none)": 1}
+    engine._net_run_drops(ctx, "note", {"n1", "n2"})  # n1 is taken back once only
+    assert ctx.counts[engine.ACTIVITY_DROPS_KEY] == {"(none)": 1}

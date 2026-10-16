@@ -286,9 +286,12 @@ async def test_drops_count_by_module_and_a_custom_module_never_falls_back(mz) ->
     await _connect_all(p, p.org_a, a)
     result = await _run(p.org_a)
     assert (result.status, result.error) == ("ok", None)
+    # The pass dropped n1 and n2. The recovery step read n1 again by id, and
+    # the read took its drop back. So the run counts what it lost: n2 only.
     assert result.counts["activity_drops"] == {
-        "Install_Base": 2, "Ghost_Module": 1, "(none)": 1,
+        "Install_Base": 1, "Ghost_Module": 1, "(none)": 1,
     }
+    assert a.ids_reads == [("Notes", ["n1"])], "the pass dropped n1, and it came back"
     rows = _activities(p, p.org_a)
     assert set(rows) == {"n1", "n4"}, "n2 never falls back to the Account a1"
     assert rows["n1"][1] is not None, "CRM-Q23b recovered n1 in the same run"
@@ -296,7 +299,7 @@ async def test_drops_count_by_module_and_a_custom_module_never_falls_back(mz) ->
     stored = _q(p, "SELECT counts -> 'activity_drops' FROM crm_sync_runs WHERE "
                    "organization_id = CAST(:o AS uuid) ORDER BY started_at DESC LIMIT 1",
                 o=p.org_a)
-    assert stored[0][0] == {"Install_Base": 2, "Ghost_Module": 1, "(none)": 1}
+    assert stored[0][0] == {"Install_Base": 1, "Ghost_Module": 1, "(none)": 1}
     assert all(isinstance(v, int) for v in stored[0][0].values()), "numbers only"
 
     health = await _req(_admin_of(p.org_a), "GET", "/crm/sync/health")

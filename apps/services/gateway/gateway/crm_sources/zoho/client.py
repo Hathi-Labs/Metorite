@@ -45,6 +45,7 @@ from gateway.crm_sources.base import (
     SourceRecord,
     SourceScopeError,
     UntrustedHost,
+    is_plain_id,
 )
 from gateway.crm_sources.zoho import auth, links
 
@@ -979,7 +980,7 @@ class ZohoSource:
             return ()
         if len(ids) > IDS_PER_CALL:
             raise ValueError(f"A read by ids takes at most {IDS_PER_CALL} ids")
-        if not all(i.isascii() and i.isalnum() for i in ids):
+        if not all(is_plain_id(i) for i in ids):
             raise SourceError("An id is not a plain id")
         module = _module(entity)
         path = f"/crm/{RECORDS_API_VERSION}/{module}"
