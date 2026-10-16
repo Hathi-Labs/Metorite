@@ -2059,9 +2059,10 @@ checkbox. H-321 is a generic module held past the 60 days of the deleted list.
 ### 18.9 A custom CRM that reads well, and a mapping that the admin only approves (CRM-Q17 to CRM-Q22, 2026-10-16)
 
 **Status (2026-10-16).** CRM-Q17a-1 (#1093, migration 274) and CRM-Q18-1
-(#1094, migration 277) are merged, and both are dark. Each other ticket of
-this section is specified, not built. Verified against code at `origin/main`
-`c4bef9ec0`.
+(#1094, migration 277) are merged, and both are dark. CRM-Q17a-2 is built on
+the branch `crm-q17a-2-fill-ui`, not merged, and dark behind the same flag.
+Each other ticket of this section is specified, not built. Verified against
+code at `origin/main` `c4bef9ec0`.
 
 **Design record.** The owner's design page is "Source Mapping Studio" v4.
 Its link is https://claude.ai/artifact/QcBY3s2ATxo3Kb9QCpR3Zr. This section
@@ -2414,6 +2415,46 @@ Backend files: `crm_sync/engine.py` (or a module beside it),
 Frontend files, under `src/app/crm/`: `lib/columns.ts`, `lib/fields.ts`,
 `lib/views.ts`, `RecordList.tsx`, `FieldsPanel.tsx`, `RecordSheet.tsx`,
 `ModuleRecordSheet.tsx` and `CrmRail.tsx`.
+
+**Built as** (2026-10-16, branch `crm-q17a-2-fill-ui`, no migration):
+
+- No gateway file changed. CRM-Q17a-1 already serves each number and label
+  that the screens read, so the backend files above needed no edit.
+- **The one switch.** Each surface that reads the fill rank draws as before
+  when no field definition carries a `fill` number (`fillRankOn`). The
+  gateway sends the numbers only for an org on `CRM_FILL_RANK_ORGS`, so the
+  flag stays the one switch. A Native CRM gets no numbers.
+- Item 1: `shownColumns` in `lib/columns.ts` leaves out each key of the
+  layout's `empty_columns`. The first column always shows.
+- Item 2: `defaultColumns` takes the pickable fields with the highest fill,
+  up to `MAX_COLUMNS` (5). A tie goes to more different values, then to the
+  position. A fill of 0, a hidden field and a key of `ZOHO_SYSTEM_KEYS` are
+  never a default. `readColumns` gives `null` for nothing saved and `[]` for
+  saved empty. A saved view keeps `null` and `[]` apart too. A view saved
+  with nothing chosen goes on following the fill rank.
+- Item 2 changes the meaning of an old view whose `columns` is `null`. It
+  showed no custom column, and now it shows the defaults, while the fill rank
+  is on.
+- Item 3: a list cell does not wrap. It ends in an ellipsis at `max-w-xs`,
+  and its title holds the full text. Chips in a cell stay on one line. This
+  item has no switch.
+- Item 4: `zohoOwnerName` reads `custom._owner_name` only when the record has
+  no `owner_email`. The list, the summary header, Overview and the layout's
+  Fields tab show "Name (Zoho only)". This item has no switch.
+- Item 5: Overview ranks the filled fixed fields with the custom fields that
+  the record fills, at most `OVERVIEW_FIELDS` (8) of them, by fill. The empty
+  fixed fields follow. The visual review found a Mirror contact whose
+  Overview showed one name and six dashes, so the filled custom fields joined
+  the rank. The Fields tab, the layout's Fields tab and the module record
+  page share `FoldedFields`. That part holds the filter box and "Show n empty
+  fields".
+- Item 6: `ZOHO_SYSTEM_KEYS` in `lib/fields.ts` is the one list, and
+  `hiddenOnRecordPage` reads it. The rows of each record page leave the keys
+  out. This item has no switch.
+- Item 7: `useSourceLabels` reads `GET /crm/mode` in Mirror mode only. The
+  rail, the list heading, the phone title and the record noun read it.
+- Fence: `src/app/crm/components/crmQ17a2.test.ts`, with 15 mutations, each
+  red. The golden file `c4b-flag-off/list.html` changed for item 3 only.
 
 **CRM-Q17b · Getting around.** Done when:
 
