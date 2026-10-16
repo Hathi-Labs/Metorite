@@ -931,29 +931,6 @@ async def test_the_voice_sample_takes_no_permit_and_counts_nothing(monkeypatch, 
     _assert_unbound(member_box)
 
 
-async def test_a_model_call_from_the_chat_takes_no_permit_and_counts_nothing(
-    monkeypatch,
-    member_box,
-) -> None:
-    """The chat is exempt (item 15). Even a tool of the chat that calls the
-    email model seam in this process runs outside the automation scope."""
-    import orchestrator.executor as executor
-    from gateway.routes.email.automation import chat
-
-    async def fake_stream(name, payload, **kw):
-        await _ask_model()
-        yield 'data: {"type": "TEXT_MESSAGE_CONTENT", "delta": "hi"}'
-
-    monkeypatch.setattr(executor, "run_agent_stream", fake_stream)
-    monkeypatch.setattr(chat, "_build_chat_context", AsyncMock(return_value=(None, [])))
-    resp = await chat.ai_chat(
-        chat.AIChatRequest(messages=[{"role": "user", "content": "hello"}]), _member(), MagicMock()
-    )
-    body = [chunk async for chunk in resp.body_iterator]
-    assert any('"content"' in str(c) for c in body)
-    _assert_unbound(member_box)
-
-
 # ── Items 5 and 6: who opens the scope ──────────────────────────────────────
 
 
@@ -980,7 +957,6 @@ MEMBER_DRIVEN: dict[str, tuple[str, ...]] = {
     f"{_AUTOMATION}/voice_profile.py": ("sample_voice_profile",),
     f"{_AUTOMATION}/assistant.py": ("_llm_writing_style", "generate_writing_style"),
     f"{_AUTOMATION}/rules.py": ("_llm_generate_rules",),
-    f"{_AUTOMATION}/chat.py": ("ai_chat",),
 }
 
 
@@ -1384,8 +1360,6 @@ def test_the_facade_takes_its_permit_in_ask_all_only() -> None:
 
 def test_the_exempt_calls_are_named_and_outside_the_callee_list() -> None:
     assert not set(EXEMPT) & MODEL_CALLEES
-    chat_src = (REPO / f"{_AUTOMATION}/chat.py").read_text(encoding="utf-8")
-    assert "run_agent_stream(" in chat_src and "llm_slot" not in chat_src
 
 
 # The companion tests: the fence fails on each shape it exists to catch.

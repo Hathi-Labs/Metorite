@@ -108,7 +108,6 @@ def test_one_framer_in_the_tree() -> None:
     "apps/agents/agent-email-assistant/agents.py",
     "apps/services/gateway/gateway/routes/email/automation/drafting.py",
     "apps/services/gateway/gateway/routes/email/automation/engine.py",
-    "apps/services/gateway/gateway/routes/email/automation/chat.py",
     "apps/services/gateway/gateway/routes/email/automation/insights_extract.py",
 ])
 def test_each_framing_module_uses_the_helper(rel: str) -> None:
@@ -379,11 +378,10 @@ def test_a_label_is_capital_letters() -> None:
             frame.open_line(bad)
 
 
-# -- the six paths ------------------------------------------------------------
+# -- the five paths (WS-17 EM-G11f3 deleted the sixth, chat_context) -----------
 
 @pytest.mark.parametrize("path", [
     "read_email", "read_thread", "drafter", "consult_plan", "classifier_one",
-    "chat_context",
 ])
 @pytest.mark.parametrize("mail_id", ["inj-03", "inj-04", "inj-11"])
 def test_each_mail_path_frames_its_text(path: str, mail_id: str) -> None:

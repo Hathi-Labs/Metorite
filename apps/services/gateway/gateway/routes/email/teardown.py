@@ -1,7 +1,7 @@
-"""The teardown of a mailbox: one teardown, three paths (WS-17 EM-G11f1, f1b).
+"""The teardown of a mailbox: one teardown, three paths (WS-17 EM-G11f1, f1b, f1c).
 
 Spec: ``project-docs/specs/email_app_master_plan.md`` §12.3.13.9 and
-§12.3.13.9.2 (PR-G7, PR-G7b).
+§12.3.13.9.2 (PR-G7, PR-G7b, PR-G7c).
 
 The module has two calls, and each path that deletes a mailbox calls both:
 
@@ -25,7 +25,13 @@ The paths:
   ``_PURGE_DELETES``. Both doors (the admin route and the operator door) call
   :func:`finish_teardowns` after their session block exits. The member purge
   has no lock bound, so the loop stops after the commit.
-* The org purge is PR-G7c (§12.3.13.9.2). It adds a third scope.
+* The org purge (``routes/operator.py::purge_organization``, PR-G7c) passes
+  a callback to ``acb_auth.offboard.purge_tenant_organization``. The purge
+  runs the callback in its tenant session, before its first delete. The
+  callback reads the plans of each mailbox of the org (:class:`OrgScope`)
+  and writes one ``email_detached_purges`` row for each. The door calls
+  :func:`finish_teardowns` after the purge returns. The owners are gone, so
+  no My Day is bumped.
 
 The rules of this module:
 
@@ -171,6 +177,36 @@ MEMBER_FILTER_IDS_SQL = f"""SELECT n.account_id, n.auto_archive_filter_id AS fid
                                AND n.auto_archive_filter_id IS NOT NULL
                              ORDER BY n.created_at, n.id"""
 
+#: The mailboxes of one organization: the org purge (EM-G11f1c). The clause
+#: names the org itself, so a role that bypasses RLS still reads one tenant.
+#: The detached purge rows of ``memory_purge.py`` use it too, so the plans and
+#: the purge rows name one set of rows. ``DELETE FROM organization`` deletes
+#: that set by its cascade.
+ORG_MAILBOXES_WHERE = "organization_id = CAST(:org AS uuid)"
+
+#: The plans of each mailbox of one organization. ``FOR UPDATE`` and
+#: ``LIMIT`` as in ``MEMBER_PLANS_SQL``.
+ORG_PLANS_SQL = f"""SELECT id, organization_id, provider, credentials_encrypted,
+                           user_id, email_address, webhook_subscription_id
+                      FROM email_accounts
+                     WHERE {ORG_MAILBOXES_WHERE}
+                     ORDER BY created_at, id
+                     LIMIT :limit
+                     FOR UPDATE"""
+
+#: The count of the mailboxes of one organization, for the detail of the 409.
+ORG_MAILBOX_COUNT_SQL = (
+    f"SELECT count(*) FROM email_accounts WHERE {ORG_MAILBOXES_WHERE}")
+
+#: The filter ids of each mailbox of one organization.
+ORG_FILTER_IDS_SQL = f"""SELECT n.account_id, n.auto_archive_filter_id AS fid
+                           FROM email_newsletters n
+                          WHERE n.account_id IN (
+                                SELECT id FROM email_accounts
+                                 WHERE {ORG_MAILBOXES_WHERE})
+                            AND n.auto_archive_filter_id IS NOT NULL
+                          ORDER BY n.created_at, n.id"""
+
 
 # ── the plan ─────────────────────────────────────────────────────────────────
 
@@ -224,6 +260,15 @@ class MemberScope:
     email: str
 
 
+@dataclass(frozen=True)
+class OrgScope:
+    """Each mailbox of one organization: the org purge (EM-G11f1c). ``org``
+    is the id that the purge found by its slug on the server, never request
+    input (R11)."""
+
+    org: str
+
+
 class TeardownCounts(BaseModel):
     """What a door tells its caller about the mailboxes of a purge.
 
@@ -267,7 +312,7 @@ def _unique_ids(values: Sequence[Any]) -> list[str]:
 
 
 async def read_teardown_plans(
-    db: Any, scope: MailboxScope | MemberScope,
+    db: Any, scope: MailboxScope | MemberScope | OrgScope,
 ) -> list[TeardownPlan]:
     """The plans of the mailboxes of ``scope``. Run it INSIDE the transaction
     of the caller and BEFORE the delete of the caller.
@@ -276,14 +321,22 @@ async def read_teardown_plans(
     call, and it waits for no task. An empty list means that no mailbox
     matched: the disconnect answers 404 for that.
 
-    A member scope of more than ``TEARDOWN_MAX_MAILBOXES`` mailboxes raises a
-    409 with the count. The caller has deleted nothing yet, so its
-    transaction rolls back whole.
+    A member scope or an org scope of more than ``TEARDOWN_MAX_MAILBOXES``
+    mailboxes raises a 409 with the count. The caller has deleted nothing
+    yet, so its transaction rolls back whole.
     """
     if isinstance(scope, MailboxScope):
         return await _mailbox_plan(db, scope)
     if isinstance(scope, MemberScope):
-        return await _member_plans(db, scope)
+        return await _many_plans(
+            db, {"email": scope.email}, plans_sql=MEMBER_PLANS_SQL,
+            count_sql=MEMBER_MAILBOX_COUNT_SQL, filters_sql=MEMBER_FILTER_IDS_SQL,
+            whose="This member")
+    if isinstance(scope, OrgScope):
+        return await _many_plans(
+            db, {"org": scope.org}, plans_sql=ORG_PLANS_SQL,
+            count_sql=ORG_MAILBOX_COUNT_SQL, filters_sql=ORG_FILTER_IDS_SQL,
+            whose="This organization")
     raise TypeError(f"unknown teardown scope {type(scope).__name__}")
 
 
@@ -298,25 +351,27 @@ async def _mailbox_plan(db: Any, scope: MailboxScope) -> list[TeardownPlan]:
     return [_plan_of(row, scope.account_id, filter_ids)]
 
 
-async def _member_plans(db: Any, scope: MemberScope) -> list[TeardownPlan]:
-    params = {"email": scope.email}
+async def _many_plans(
+    db: Any, params: dict[str, Any], *, plans_sql: str, count_sql: str,
+    filters_sql: str, whose: str,
+) -> list[TeardownPlan]:
+    """The plans of a purge: each mailbox of one member or one organization.
+    The three statements share one clause, so they name one set of rows."""
     rows = (await db.execute(
-        text(MEMBER_PLANS_SQL), {**params, "limit": TEARDOWN_MAX_MAILBOXES + 1},
+        text(plans_sql), {**params, "limit": TEARDOWN_MAX_MAILBOXES + 1},
     )).fetchall()
     if len(rows) > TEARDOWN_MAX_MAILBOXES:
-        count = int((await db.execute(
-            text(MEMBER_MAILBOX_COUNT_SQL), params)).scalar() or 0)
+        count = int((await db.execute(text(count_sql), params)).scalar() or 0)
         _log.warning("email.teardown.over_cap", mailboxes=count,
                      cap=TEARDOWN_MAX_MAILBOXES)
         raise HTTPException(status_code=409, detail=(
-            f"This member has {count} mailboxes. A purge tears down "
+            f"{whose} has {count} mailboxes. A purge tears down "
             f"{TEARDOWN_MAX_MAILBOXES} at most, so nothing was deleted."))
     if not rows:
         return []
     by_mailbox: dict[str, list[Any]] = {}
     if any(row.provider in FILTER_PROVIDERS for row in rows):
-        for hit in (await db.execute(
-                text(MEMBER_FILTER_IDS_SQL), params)).fetchall():
+        for hit in (await db.execute(text(filters_sql), params)).fetchall():
             by_mailbox.setdefault(str(hit.account_id), []).append(hit.fid)
     plans = []
     for row in rows:

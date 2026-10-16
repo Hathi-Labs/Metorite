@@ -653,11 +653,111 @@ def _disconnect_violations(source: str) -> list[str]:
     return problems
 
 
-def _three_paths(accounts_src: str, members_src: str, operator_src: str) -> list[str]:
+_OFFBOARD = _REPO / "packages" / "acb_auth" / "acb_auth" / "offboard.py"
+
+#: The calls that open a session or a transaction of their own.
+_SESSION_OPENERS = ("_tenant_session", "tenant_session", "get_db", "_get_db",
+                    "_detached_session", "get_session_factory", "begin")
+
+
+def _callback_violations(operator_src: str, name: str) -> list[str]:
+    """The callback of the org purge: the org lock FIRST, then the plans and
+    the detached purge rows, in the session of the purge, with no session and
+    no teardown of its own. The record call is the one SECURITY DEFINER
+    function of migration 276, which also carries the open purge rows."""
+    fn = _function(operator_src, name)
+    reads = _called(fn, "read_teardown_plans")
+    executes = sorted(_called(fn, "execute"), key=lambda c: c.lineno)
+    rows_at = [n.lineno for n in ast.walk(fn)
+               if isinstance(n, ast.Name) and n.id == "RECORD_DETACHED_PURGES_SQL"]
+    problems = []
+    if not reads:
+        problems.append("the org purge callback reads no teardown plans")
+    if not rows_at:
+        problems.append("the org purge callback writes no detached purge rows")
+    first = executes[0] if executes else None
+    lock_first = first is not None and any(
+        isinstance(n, ast.Name) and n.id == "ORG_LOCK_SQL" for n in ast.walk(first))
+    if not lock_first or (reads and first.lineno > reads[0].lineno):
+        problems.append("the org purge callback does not lock the org row first")
+    if any(_called(fn, opener) for opener in _SESSION_OPENERS) or any(
+            isinstance(n, ast.AsyncWith) for n in ast.walk(fn)):
+        problems.append("the org purge callback opens a session of its own")
+    if _called(fn, "finish_teardowns"):
+        problems.append("the org purge callback tears down itself")
+    return problems
+
+
+def _offboard_violations(offboard_src: str) -> list[str]:
+    """``purge_tenant_organization`` runs ``before_delete`` in its tenant
+    session, before its first delete."""
+    fn = _function(offboard_src, "purge_tenant_organization")
+    blocks = sorted(
+        (sub.lineno, sub.end_lineno or sub.lineno) for sub in ast.walk(fn)
+        if isinstance(sub, ast.AsyncWith) and any(
+            _called(item.context_expr, "tenant_session") for item in sub.items))
+    calls = _called(fn, "before_delete")
+    deletes = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Name)
+               and n.id in ("_CRM_DELETES", "_DELETE_ORG_SQL")]
+    if not calls:
+        return ["the org purge never runs before_delete"]
+    if not deletes:
+        return ["the org purge deletes nothing"]
+    problems = []
+    if not _inside(calls[0].lineno, blocks):
+        problems.append("before_delete runs outside the session of the org purge")
+    if calls[0].lineno > min(deletes):
+        problems.append("before_delete runs after a delete of the org purge")
+    return problems
+
+
+def _org_door_violations(operator_src: str, offboard_src: str) -> list[str]:
+    """The org purge (PR-G7c): the door passes its callback to the purge, and
+    tears down after the purge returns, with the plans, a stop and a log."""
+    fn = _function(operator_src, "purge_organization")
+    purges = _called(fn, "purge_tenant_organization")
+    finishes = _called(fn, "finish_teardowns")
+    if not purges:
+        return ["purge_organization calls no purge_tenant_organization"]
+    if not finishes:
+        return ["purge_organization calls no finish_teardowns"]
+    problems = []
+    callback = {k.arg: k.value for k in purges[0].keywords}.get("before_delete")
+    if not isinstance(callback, ast.Name):
+        problems.append("purge_organization passes no before_delete callback")
+    else:
+        problems += _callback_violations(operator_src, callback.id)
+    if any(isinstance(n, ast.AsyncWith) for n in ast.walk(fn)):
+        problems.append("purge_organization opens a session block of its own")
+    records = [c.lineno for c in ast.walk(fn) if isinstance(c, ast.Call)
+               and isinstance(c.func, ast.Attribute)
+               and isinstance(c.func.value, ast.Name) and c.func.value.id == "_log"
+               and c.args and isinstance(c.args[0], ast.Constant)
+               and "purged" in str(c.args[0].value)]
+    for call in finishes:
+        if call.lineno < purges[0].end_lineno:
+            problems.append("purge_organization: finish_teardowns runs before the commit")
+        if not (len(call.args) >= 2 and isinstance(call.args[1], ast.Name)
+                and call.args[1].id == "plans"):
+            problems.append("purge_organization: finish_teardowns does not get the plans")
+        stop = {k.arg: k.value for k in call.keywords}.get("stop_loops")
+        if not (isinstance(stop, ast.Constant) and stop.value is True):
+            problems.append("purge_organization: the purge does not stop the sync loops")
+        if not records:
+            problems.append("purge_organization: the door logs no purge")
+        elif call.lineno < max(records):
+            problems.append("purge_organization: finish_teardowns runs before the log")
+    return problems + _offboard_violations(offboard_src)
+
+
+def _three_paths(accounts_src: str, members_src: str, operator_src: str,
+                 offboard_src: str | None = None) -> list[str]:
+    offboard_src = _read(_OFFBOARD) if offboard_src is None else offboard_src
     return (_disconnect_violations(accounts_src)
             + _body_violations(members_src)
             + _door_violations(members_src, "purge_member")
-            + _door_violations(operator_src, "remove_organization_member"))
+            + _door_violations(operator_src, "remove_organization_member")
+            + _org_door_violations(operator_src, offboard_src))
 
 
 def _read(path: Path) -> str:
@@ -665,8 +765,58 @@ def _read(path: Path) -> str:
 
 
 def test_three_paths_call_one_teardown():
-    """R7 fence ``email-teardown-paths``. PR-G7c adds the org purge."""
+    """R7 fence ``email-teardown-paths``: the disconnect, the member purge
+    with its two doors, and the org purge with its callback (PR-G7c)."""
     assert _three_paths(_read(_ACCOUNTS), _read(_MEMBERS), _read(_OPERATOR)) == []
+
+
+def test_the_org_path_check_can_fail():
+    """Each mutation of the org purge turns the fence red."""
+    accounts_src, members_src = _read(_ACCOUNTS), _read(_MEMBERS)
+    operator_src, offboard_src = _read(_OPERATOR), _read(_OFFBOARD)
+
+    def problems(op: str = operator_src, off: str = offboard_src) -> list[str]:
+        return _three_paths(accounts_src, members_src, op, off)
+
+    # The org purge skips the teardown. Only the org door changes: the member
+    # door holds the same call.
+    head, sep, tail = operator_src.partition("async def purge_organization(")
+    door_src, sep2, rest = tail.partition('@router.delete("/organizations/{slug}/members/')
+    assert sep and sep2 and "await finish_teardowns(" in door_src
+    skipped = head + sep + door_src.replace(
+        "await finish_teardowns(", "await _no_teardown(") + sep2 + rest
+    assert "purge_organization calls no finish_teardowns" in problems(skipped)
+    # The door passes no callback.
+    passed = "slug=slug, before_delete=plan_org_teardown)"
+    assert passed in operator_src
+    assert "purge_organization passes no before_delete callback" in problems(
+        operator_src.replace(passed, "slug=slug)"))
+    # The callback writes its rows in a session of its own.
+    write = "    recorded = int((await db.execute(\n"
+    assert write in operator_src
+    own = operator_src.replace(write, (
+        "    async with _tenant_session(org_id) as own:\n"
+        "        await own.execute(text(RECORD_DETACHED_PURGES_SQL), {})\n" + write))
+    assert "the org purge callback opens a session of its own" in problems(own)
+    # The callback forgets to lock the org row (fix round 1, item 4).
+    lock = "    await db.execute(text(ORG_LOCK_SQL), {\"org\": org_id})\n"
+    assert lock in operator_src
+    assert ("the org purge callback does not lock the org row first"
+            in problems(operator_src.replace(lock, "")))
+    # The purge runs the callback after its deletes.
+    run = ("        if before_delete is not None:\n"
+           "            answer = await before_delete(session, org_id)\n")
+    after = "        deleted[\"organization\"] = result.rowcount or 0\n"
+    assert run in offboard_src and after in offboard_src
+    late = offboard_src.replace(run, "").replace(after, after + run)
+    assert "before_delete runs after a delete of the org purge" in problems(off=late)
+    # The purge runs the callback in a session of its own, outside its block.
+    outside = offboard_src.replace(run, "").replace(
+        "    async with tenant_session(org_id) as session:\n",
+        "    if before_delete is not None:\n"
+        "        answer = await before_delete(None, org_id)\n"
+        "    async with tenant_session(org_id) as session:\n")
+    assert "before_delete runs outside the session of the org purge" in problems(off=outside)
 
 
 def test_the_path_check_can_fail():
@@ -712,7 +862,7 @@ _LEGS = ("remove_metorite_filters", "revoke_grant", "drop_mailbox_cache",
 
 #: The two calls and the stop, and the only modules that may call each.
 _ALLOWED = {
-    "read_teardown_plans": {"accounts.py", "members.py"},
+    "read_teardown_plans": {"accounts.py", "members.py", "operator.py"},
     "finish_teardowns": {"accounts.py", "members.py", "operator.py"},
     # The disconnect stops its loop before its DELETE (EM-T4f).
     "stop_sync": {"accounts.py"},
@@ -759,8 +909,9 @@ _KNOWN_MAILBOX_DELETES = {
     ("apps/services/gateway/gateway/routes/admin/members.py",
      "_PersonRows(email_accounts)"): "the member purge, _PURGE_DELETES",
     ("packages/acb_auth/acb_auth/offboard.py", "DELETE FROM organization"):
-        "the org purge. It cascades each mailbox of the org. PR-G7c wires the "
-        "teardown into it (§12.3.13.9.2). Until then it tears down nothing",
+        "the org purge. It cascades each mailbox of the org. Its callback "
+        "(operator.py::plan_org_teardown) reads the plans and writes the "
+        "detached purge rows, and the door tears down after it (PR-G7c)",
     ("scripts/demo_seed/seed_demo.py", "DELETE FROM email_accounts"):
         "a demo seed on a dev box, which removes its own seeded mailbox",
 }
@@ -805,9 +956,11 @@ GONE = "Gone@Purge.Test"
 
 
 class _DoorResult:
-    def __init__(self, rows: list[Any] | None = None, scalar: Any = None) -> None:
+    def __init__(self, rows: list[Any] | None = None, scalar: Any = None,
+                 rowcount: int = 0) -> None:
         self._rows = rows or []
         self._scalar = scalar
+        self.rowcount = rowcount
 
     def fetchall(self) -> list[Any]:
         return self._rows
@@ -850,6 +1003,10 @@ class _DoorDB:
         if sql.startswith("SELECT public.email_gmail_grant_shared"):
             self.events.append(("grant_check",))
             return _DoorResult(scalar=False)
+        if sql.startswith("SELECT public.record_detached_purges("):
+            return _DoorResult(scalar=len(self.mailboxes))
+        if sql.startswith("DELETE FROM organization"):
+            return _DoorResult(rowcount=1)
         if sql.startswith("SELECT count(*)"):
             return _DoorResult(scalar=0)
         return _DoorResult()
@@ -936,6 +1093,8 @@ def door(monkeypatch):  # noqa: C901
         log = _Log()
         monkeypatch.setenv("GATEWAY_OPERATOR_TOKEN", "op-token")
         monkeypatch.setattr(offboard, "organization_id_for_slug", _org_for)
+        monkeypatch.setattr(offboard, "tenant_session", _session)
+        monkeypatch.setattr(offboard, "_log", _DoorLog())
         monkeypatch.setattr(operator_door, "_tenant_session", _session)
         monkeypatch.setattr(operator_door, "find_member", _find)
         monkeypatch.setattr(operator_door, "purge_identity_shadow", _noop)
@@ -955,7 +1114,12 @@ def door(monkeypatch):  # noqa: C901
             return await operator_door.remove_organization_member(
                 "acme", GONE, confirm=GONE, mode="purge", x_operator_token="op-token")
 
-        return SimpleNamespace(events=events, log=log, purge=_purge, running=running)
+        async def _purge_org() -> Any:
+            return await operator_door.purge_organization(
+                "acme", confirm="acme", x_operator_token="op-token")
+
+        return SimpleNamespace(events=events, log=log, purge=_purge,
+                               purge_org=_purge_org, running=running)
 
     return _setup
 
@@ -1149,3 +1313,104 @@ def test_the_teardown_bounds():
     assert teardown.TEARDOWN_WAIT_S == 60.0
     assert teardown.STOP_SYNC_BOUND_S == 15.0
     assert teardown.SUBSCRIPTION_DELETE_TIMEOUT_S == 5.0
+
+
+# ── the org purge, with a recording database (EM-G11f1c, PR-G7c) ────────────
+
+
+async def test_the_org_purge_tears_down_after_the_commit(door):
+    """The org door. The callback reads the plans and writes the detached
+    purge rows inside the purge, before its first delete. Each leg runs after
+    the commit, with no block open. The plans never reach the receipt."""
+    d = door([_mailbox(1, "gmail", filters=("flt-1",)),
+              _mailbox(2, "microsoft", filters=("rule-1",), sub="sub-2")])
+    out = await d.purge_org()
+    kinds = _kinds(d.events)
+    commit = kinds.index("commit")
+    assert out["deleted"]["organization"] == 1
+    assert out["mailboxes"] == {"planned": 2, "finished": 2, "failed": 0,
+                                "continuing": 0}
+    assert "before_delete" not in out, "the plans reached the receipt"
+    assert "blob-door" not in json.dumps(out, default=str)
+    sqls = [e[2] for e in d.events if e[0] == "sql"]
+    lock_at = next(i for i, q in enumerate(sqls)
+                   if q.startswith("SELECT 1 FROM organization"))
+    plan_at = next(i for i, q in enumerate(sqls)
+                   if q.startswith("SELECT id, organization_id"))
+    rows_at = next(i for i, q in enumerate(sqls)
+                   if q.startswith("SELECT public.record_detached_purges"))
+    first_delete = next(i for i, q in enumerate(sqls) if q.startswith("DELETE FROM"))
+    org_delete = next(i for i, q in enumerate(sqls)
+                      if q.startswith("DELETE FROM organization"))
+    assert lock_at == 0, "the callback did not lock the org row first"
+    assert lock_at < plan_at < rows_at < first_delete <= org_delete
+    # Fix round 1, item 3: the receipt names the table that outlives the org.
+    assert any(k.startswith("email_detached_purges") for k in out["kept"])
+    for kind in ("stop", "filter_delete", "graph_delete", "revoke", "grant_check"):
+        assert kind in kinds, f"no {kind}"
+        assert kinds.index(kind) > commit, f"{kind} ran before the commit"
+    assert all(e[1] == 0 for e in d.events
+               if e[0] in ("stop", "filter_delete", "graph_delete", "revoke"))
+    assert sorted(e[2] for e in d.events if e[0] == "filter_delete") == [
+        "flt-1", "rule-1"]
+    assert [e for e in d.events if e[0] == "revoke"] == [("revoke", 0)]
+    door_logs = [e[1] for e in d.events if e[0] == "door_log"]
+    assert kinds.index("stop") > kinds.index("door_log"), (
+        "the door waited for the teardown before it logged the purge")
+    assert "operator_org_purged" in door_logs
+    _no_secret(d.log.lines)
+
+
+async def test_the_org_mailbox_cap(door):
+    """Acceptance 4 for the org purge. 1001 mailboxes answer 409 with the
+    count, not a 502. The purge deletes nothing and writes no row."""
+    d = door([_mailbox(i, "imap") for i in range(1, 1002)])
+    with pytest.raises(HTTPException) as err:
+        await d.purge_org()
+    assert err.value.status_code == 409
+    assert "1001" in err.value.detail and "organization" in err.value.detail
+    sqls = [e[2] for e in d.events if e[0] == "sql"]
+    assert not [q for q in sqls if q.startswith(
+        ("DELETE", "INSERT", "SELECT public.record_detached_purges"))], (
+        "an org purge over the cap deleted or wrote")
+    assert "rollback" in _kinds(d.events) and "stop" not in _kinds(d.events)
+
+
+async def test_an_org_with_no_mailbox_answers_zero_counts(door):
+    d = door([])
+    out = await d.purge_org()
+    assert out["mailboxes"] == {"planned": 0, "finished": 0, "failed": 0,
+                                "continuing": 0}
+    assert "stop" not in _kinds(d.events)
+
+
+async def test_the_org_door_waits_a_bounded_time(door, monkeypatch):
+    """Acceptance 5 for the org purge: the same bounds as the member door."""
+    monkeypatch.setattr(teardown, "TEARDOWN_WAIT_S", 0.2)
+    d = door([_mailbox(i, "imap") for i in range(1, 11)], slow_stop=0.5)
+    out = await asyncio.wait_for(d.purge_org(), timeout=30)
+    counts = out["mailboxes"]
+    assert counts["planned"] == 10 and counts["continuing"] > 0
+    assert teardown.live_teardown_count() == 1, "the drain does not see the held task"
+    await asyncio.wait_for(asyncio.gather(*teardown._TEARDOWNS), timeout=10)
+    assert len([e for e in d.events if e[0] == "stop"]) == 10
+    assert d.running["max"] <= teardown.TEARDOWN_CONCURRENCY
+
+
+def test_the_three_org_clauses_name_one_set_of_mailboxes():
+    """The plans, the detached rows and the cascade name one org. The rows
+    come from the SECURITY DEFINER function of migration 276, which reads the
+    mailboxes of ``p_org`` only."""
+    from gateway.routes.email.memory_purge import RECORD_DETACHED_PURGES_SQL
+
+    assert teardown.ORG_MAILBOXES_WHERE in teardown.ORG_PLANS_SQL
+    assert teardown.ORG_MAILBOXES_WHERE in teardown.ORG_FILTER_IDS_SQL
+    assert RECORD_DETACHED_PURGES_SQL == (
+        "SELECT public.record_detached_purges(CAST(:org AS uuid))")
+    [migration] = [p for p in (_REPO / "infra" / "postgres").glob("[0-9]*_*.sql")
+                   if "FUNCTION public.record_detached_purges" in p.read_text(
+                       encoding="utf-8")]
+    body = migration.read_text(encoding="utf-8")
+    assert "WHERE a.organization_id = p_org" in body
+    assert "AND p.organization_id = p_org" in body
+    assert "FOR UPDATE" in teardown.ORG_PLANS_SQL

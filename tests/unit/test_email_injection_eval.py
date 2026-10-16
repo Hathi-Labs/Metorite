@@ -25,9 +25,12 @@ from evals.email_injection import run as eval_run
 from evals.email_injection.mails import MAILS, by_id
 from evals.email_injection.paths import PATHS, Capture
 
-#: The six paths of section 12.3.13.2, item 4, by the name of the eval.
+#: The five paths of section 12.3.13.2, item 4, by the name of the eval.
+#: The sixth, ``chat_context``, went with the email chat route (WS-17
+#: EM-G11f3, section 12.3.13.9.1). Its live successor reads mail through
+#: ``read_email`` and ``read_thread``.
 SPEC_PATHS = {"read_email", "read_thread", "drafter", "consult_plan",
-              "classifier_one", "chat_context"}
+              "classifier_one"}
 
 
 def test_the_eval_passes_over_every_mail_and_every_path() -> None:
@@ -35,8 +38,9 @@ def test_the_eval_passes_over_every_mail_and_every_path() -> None:
     assert failures == [], [f.__dict__ for f in failures[:10]]
 
 
-def test_the_eval_covers_the_six_paths_and_the_listed_attacks() -> None:
+def test_the_eval_covers_the_five_paths_and_the_listed_attacks() -> None:
     assert set(PATHS) >= SPEC_PATHS, sorted(SPEC_PATHS - set(PATHS))
+    assert "chat_context" not in PATHS, "the email chat route is gone"
     assert "consult_run" in PATHS
     assert 12 <= len(MAILS) <= 40, len(MAILS)
     attacks = " | ".join(m.attack for m in MAILS)

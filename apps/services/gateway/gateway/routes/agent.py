@@ -2439,19 +2439,42 @@ async def _extract_run_memory(
     *,
     agent_name: str,
     thread_id: str,
+    member: str = "",
+    holds_mail: bool | None = None,
 ) -> bool:
-    """Extract one finished turn into Mem0. Returns True when it extracted.
+    """Extract one finished turn into Mem0, and record its Graphiti episode.
+    Returns True when it extracted into Mem0.
 
     Best-effort: it never raises, so it never kills the relay.
+
+    WS-17 EM-G11f3 (section 12.3.13.9.1, item 2): a run that holds mail
+    writes to neither store. *holds_mail* is the answer of
+    ``acb_skills.egress.run_holds_mail`` that the route took at the run end.
+    With ``None`` this function asks the predicate itself, with the session
+    and the *member* of the run. An error reads as mail. The Graphiti episode
+    of the member's message went at the run START, before the mark was
+    known. It goes here now, after the same check.
 
     H-236: a covered run's conversation holds member data from a sandboxed
     turn, and memory is a store that later runs read. So the extraction is
     skipped for a run that bound ``no_egress``. The run decided that at its
     own start and recorded it by run id (``executor.run_was_no_egress``).
     Nothing in the request reaches that answer, and an error skips the
-    extraction too. Fence: ``tests/unit/test_delegation_no_egress.py``.
+    extraction too. Fences: ``tests/unit/test_delegation_no_egress.py`` and
+    ``tests/unit/test_mail_copies_in_chat_stores.py``.
     """
     if not (extract_user and folded):
+        return False
+    if holds_mail is None:
+        try:
+            from acb_skills.egress import run_holds_mail
+            holds_mail = await run_holds_mail(
+                agent_name, {"session_id": thread_id, "member": member})
+        except Exception:  # fail closed: the run holds mail
+            holds_mail = True
+    if holds_mail:
+        _log.info("agent.run_end_memory_extraction_skipped_mail",
+                  thread_id=thread_id[:12])
         return False
     try:
         from orchestrator.executor import run_was_no_egress
@@ -2462,19 +2485,30 @@ async def _extract_run_memory(
         _log.info("agent.run_end_memory_extraction_skipped_no_egress",
                   thread_id=thread_id[:12])
         return False
+    extracted = False
     try:
         from acb_memory import add_memories_background
         from gateway.chat_fold import build_extraction_conversation
 
         conv = build_extraction_conversation(history, message, folded)
-        if not conv:
-            return False
-        await add_memories_background(extract_user, conv, agent_id=agent_name)
-        return True
+        if conv:
+            await add_memories_background(extract_user, conv, agent_id=agent_name)
+            extracted = True
     except Exception:  # extraction must never kill the relay
         _log.warning("agent.run_end_memory_extraction_failed",
                      thread_id=thread_id[:12])
-        return False
+    if member and message:
+        try:
+            from acb_memory import add_episode
+            await add_episode(
+                name=f"agent:{agent_name}:{member[:20]}",
+                content=message[:500],
+                source_description=f"agent_{agent_name}",
+                group_id=member,
+            )
+        except Exception:  # an episode must never kill the relay
+            _log.warning("agent.run_end_episode_failed", thread_id=thread_id[:12])
+    return extracted
 
 
 @router.post("/run/stream", summary="Stream a named agent run as AG-UI SSE events")
@@ -2860,23 +2894,9 @@ async def run_agent_stream_endpoint(
     # so a background task here would save an incomplete conversation and
     # produce poor-quality memory facts.
     #
-    # Graphiti knowledge-graph ingestion is still done here because it
-    # operates on entity mentions in the user's query — it doesn't need
-    # the assistant's response.
-    try:
-        from acb_memory import add_episode  # noqa: PLC0415
-
-        user_msg = req.payload.get("message") or ""
-        if user_msg and user_id != "anonymous":
-            background_tasks.add_task(
-                add_episode,
-                name=f"agent:{agent_name}:{user_id[:20]}",
-                content=user_msg[:500],
-                source_description=f"agent_{agent_name}",
-                group_id=user_id,
-            )
-    except ImportError:
-        pass
+    # The Graphiti episode of the member's message is written at the run END
+    # (``_extract_run_memory``), never here. At the start the session's mail
+    # mark is not known yet (WS-17 EM-G11f3, section 12.3.13.9.1 item 2).
 
     _log.info("agent.stream_run_start", agent=agent_name, run_id=run_id, actor=user.email)
 
@@ -2946,12 +2966,22 @@ async def run_agent_stream_endpoint(
     ]
 
     async def _persist_on_complete() -> None:
+        # WS-17 EM-G11f3: ONE answer of the mail predicate for the run end,
+        # asked before the fold. The trace and both memory writes read it.
+        # The member is in the context, so a Redis fault reads as mail.
+        try:
+            from acb_skills.egress import run_holds_mail  # noqa: PLC0415
+            _holds_mail = await run_holds_mail(
+                agent_name, {"session_id": thread_id, "member": _mem_user})
+        except Exception:  # noqa: BLE001 — fail closed: the run holds mail
+            _holds_mail = True
         folded = await persist_final_assistant_message(
             thread_id, _persist_message_id,
             user_id=_mem_user, agent_name=agent_name,
             run_id=run_id, model=req.model,
             # S15 (§21): the fold binds the run's tenant.
             organization_id=_room_org,
+            holds_mail=_holds_mail,
         )
         if _superseded_ids:
             # A cancelled run on another worker can fold its row after the
@@ -2974,6 +3004,7 @@ async def run_agent_stream_endpoint(
         await _extract_run_memory(
             run_id, _extract_user, _mem_history, _mem_message, folded,
             agent_name=agent_name, thread_id=thread_id,
+            member=_mem_user, holds_mail=_holds_mail,
         )
 
     _actor = (getattr(user, "email", "") or "").strip()

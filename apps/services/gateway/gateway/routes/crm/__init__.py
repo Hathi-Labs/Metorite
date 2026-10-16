@@ -54,6 +54,11 @@ Its paths start with the literal ``modules/`` segment, so no route shadows it.
 ``CRM_MIRROR``, and Mirror mode only. It writes ``crm_field_rules`` and never a
 CRM record. The sync applies an approved rule.
 
+``mapping_plans.py`` is WS-53 CRM-Q18-1 — ``GET`` and ``POST
+/crm/mapping/plans`` and the approve and restore of a version (table
+``crm_mapping_plans``). It has the guards of the Field map. Its ``commit`` is
+the one approve, and ``field_rules.py`` calls it too.
+
 ``reports.py`` is WS-26g — the four read-only ``/crm/reports/*`` blocks
 (forecast by stage, funnel, win/loss, owner leaderboard) over
 ``crm_status_changes`` and ``crm_deals``. It writes nothing and adds no
@@ -107,6 +112,7 @@ from gateway.routes.crm import field_rules as _field_rules  # noqa: F401
 from gateway.routes.crm import field_studio as _field_studio  # noqa: F401
 from gateway.routes.crm import fields as _fields  # noqa: F401
 from gateway.routes.crm import import_zoho as _import_zoho  # noqa: F401
+from gateway.routes.crm import mapping_plans as _mapping_plans  # noqa: F401
 from gateway.routes.crm import modules as _modules  # noqa: F401
 from gateway.routes.crm import pipeline as _pipeline  # noqa: F401
 from gateway.routes.crm import pipelines as _pipelines  # noqa: F401

@@ -23,6 +23,15 @@ order. A system field with no stored row takes its label and its place from
 ``SYSTEM_FIELDS``. The forms, the Fields tab, the Columns control, the filter
 bar and the CSV export read this order.
 
+**The fill rank** (CRM-Q17a-1, §18.9.3). For an org on
+``CRM_FILL_RANK_ORGS``, each definition carries ``fill`` and ``distinct``
+from ``crm_field_fill``, which only the sync writes. The layout also carries
+``empty_columns``, from ``fill_rank.empty_columns``, the one function that
+the CSV export reads too. The plain read is a bare list, so it carries the
+numbers on each row and no ``empty_columns``. While the numbers are stale
+(``fill_rank.stale_entities``), ``empty_columns`` is ``[]``. For any other
+org each of these is ``null``. No request computes them.
+
 Read only. Any member that the CRM access rule admits may read it. The
 organization comes from the server and the session binds it, so the route
 never takes a tenant from the request (R5). The writes live in
@@ -44,6 +53,7 @@ from gateway.routes.crm.core import (
     from_jsonb,
     router,
 )
+from gateway.routes.crm.fill_rank import annotate, empty_columns, fills_for
 from gateway.routes.crm.flags import field_studio_allowed
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -101,6 +111,11 @@ class FieldDef(BaseModel):
     is_system: bool = False
     #: True after ``DELETE /crm/fields/{entity}/{key}``. A record keeps its value.
     retired: bool = False
+    #: CRM-Q17a-1: the share of records that fill the field, from 0 to 1.
+    #: ``None`` outside ``CRM_FILL_RANK_ORGS``, with no record, or no numbers yet.
+    fill: float | None = None
+    #: CRM-Q17a-1: the count of different filled values. ``None`` as ``fill``.
+    distinct: int | None = None
 
 
 class FieldSection(BaseModel):
@@ -121,6 +136,10 @@ class FieldLayout(BaseModel):
     #: True only when the caller may write fields: the flag allows the org,
     #: the caller holds ``admin:access:manage``, and the mode is Native.
     studio_admin: bool = False
+    #: CRM-Q17a-1: the standard keys that no record fills
+    #: (``fill_rank.empty_columns``). ``None`` outside ``CRM_FILL_RANK_ORGS``,
+    #: and ``[]`` while the numbers are stale.
+    empty_columns: list[str] | None = None
 
 
 def _source(value: str | None) -> Literal["zoho", "native"]:
@@ -274,9 +293,19 @@ async def list_fields(
                 status_code=422, detail="A module has no layout. Drop '?layout'.",
             )
         return await module_field_defs(entity[len(MODULE_PREFIX):])
-    checked_slug(entity)
+    stored = checked_slug(entity)
     async with _tenant_session() as db:
+        # CRM-Q17a-1: one read of the fill rows, and none outside the list.
+        fills = await fills_for(db, user.organization_id, stored)
         if layout:
             found = await read_layout(db, entity)
-            return found.model_copy(update=await studio_flags(db, user))
-        return await custom_defs(db, entity)
+            update: dict[str, Any] = await studio_flags(db, user)
+            if fills is not None:
+                update["fields"] = annotate(found.fields, fills)
+                update["empty_columns"] = await empty_columns(
+                    db, user.organization_id, entity, fills,
+                )
+            return found.model_copy(update=update)
+        # CRM-Q25: the same read as the typed aggregate (`custom_defs`).
+        defs = await custom_defs(db, entity)
+    return annotate(defs, fills)

@@ -29,8 +29,6 @@ export const DEFAULT_POST_TIMEOUT_MS = 30_000;
 export const AI_SLOW_POST_PATHS: ReadonlySet<string> = new Set([
   "compose-assist",
   "draft-reply",
-  "ai/chat",
-  "ai/quick-action",
   "rules/generate",
   "rules/test",
   "rules/test/recent",

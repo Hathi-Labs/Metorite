@@ -21,6 +21,11 @@ gateway reads them.
   studio of a Native CRM (WS-53 CRM-C4a). The grammar is the one of
   ``CRM_ORGS``. An empty list allows no organization, so each studio route
   answers 404. :func:`require_field_studio` is their dependency.
+* ``CRM_FILL_RANK_ORGS`` — the organization ids that get the fill rank and
+  the source labels of the mirror (WS-53 CRM-Q17a-1, ``crm_platform.md``
+  §18.9.3). The grammar is the one of ``CRM_ORGS``. An empty list allows no
+  organization: the sync does no fill work, and the routes serve no fill
+  numbers and no labels. :func:`fill_rank_allowed` is the one check.
 
 :func:`require_crm_enabled` is the router dependency in ``core.py``. It runs
 BEFORE ``require_feature_router("crm")``, so an organization outside the list
@@ -126,6 +131,24 @@ def field_studio_allowed(organization_id: str | None) -> bool:
         return False
     org = str(organization_id).strip().lower()
     orgs = crm_field_studio_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+def crm_fill_rank_orgs() -> frozenset[str]:
+    """The organization ids that get the fill rank. Empty means none."""
+    return _parse_orgs(str(get_settings().crm_fill_rank_orgs or ""))
+
+
+def fill_rank_allowed(organization_id: str | None) -> bool:
+    """True when the fill rank and the source labels may serve this org.
+
+    It needs the CRM switch with the CRM list (:func:`crm_org_allowed`) AND a
+    place on ``CRM_FILL_RANK_ORGS``, or ``*`` there (CRM-Q17a-1).
+    """
+    if not crm_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = crm_fill_rank_orgs()
     return ALL_ORGS in orgs or org in orgs
 
 

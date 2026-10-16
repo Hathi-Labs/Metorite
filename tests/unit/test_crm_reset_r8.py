@@ -78,6 +78,10 @@ EMPTIED = (
     "crm_field_sections",
     # CRM-C6a: the conversion mapping names the fields of the old setup.
     "crm_convert_mappings",
+    # CRM-Q17a-1: the fill rank counts the records of the old setup.
+    "crm_field_fill",
+    # CRM-Q18-1: the versions of the plan name the old field rules.
+    "crm_mapping_plans",
 )
 #: What the start over keeps. The same set as ``core.RESET_KEEPS``.
 KEPT = ("crm_settings", "crm_views", "crm_sync_runs", "crm_auto_lead_cursors")
@@ -286,6 +290,10 @@ def _seed(p: Any, org: str, *, tag: str, deals: int, status: str = "disconnected
             "INSERT INTO crm_convert_mappings (organization_id, source_key, "
             "target_entity, skip) VALUES (CAST(:o AS uuid), 'studio', 'deal', "
             "true)"), o)
+        # CRM-Q17a-1: a fill row. The start over takes it.
+        c.execute(text(
+            "INSERT INTO crm_field_fill (organization_id, entity, key, filled, "
+            "total) VALUES (CAST(:o AS uuid), 'deal', 'name', 1, 1)"), o)
         c.execute(text(
             "INSERT INTO crm_sync_cursors (organization_id, module, "
             "initial_done_at) VALUES (CAST(:o AS uuid), 'zoho:deal', now())"), o)
@@ -316,6 +324,11 @@ def _seed(p: Any, org: str, *, tag: str, deals: int, status: str = "disconnected
             "field_api_name, field_type, profile_version, target_column, status, "
             "proposed_by) VALUES (CAST(:o AS uuid), 'zoho', 'lead', 'Sector', "
             "'select', 1, 'industry', 'approved', 'admin')"), o)
+        # CRM-Q18-1: a version of the plan. The start over takes it.
+        c.execute(text(
+            "INSERT INTO crm_mapping_plans (organization_id, version, state, "
+            "rules, created_by) VALUES (CAST(:o AS uuid), 1, 'approved', "
+            "'[]'::jsonb, 'admin@crm-t5-r8.test')"), o)
         box = c.execute(text(
             "INSERT INTO email_accounts (user_id, provider, email_address, "
             "credentials_encrypted, sync_enabled, organization_id) VALUES "

@@ -1,26 +1,21 @@
-"""EM-T2c — the chat context and the task-close hop read only an OWNED mailbox (R8).
+"""EM-T2c — the task-close hop writes only an OWNED mailbox (R8).
 
 Spec: ``project-docs/specs/email_app_master_plan.md`` §10.4.5, subsection
-EM-T2c, items 1, 2 and 8. D-EM-4: a mailbox is private to the member who
-connects it.
+EM-T2c, item 8. D-EM-4: a mailbox is private to the member who connects it.
 
 The static fence (``test_email_owner_scope_fence.py``) reads one function at a
-time and does not follow data. This file covers the two leaks that it cannot
-see, against the real phase-4 catalog of ``test_h3_rls_promotion_rehearsal``,
-as the non-privileged role ``acb_app_h3rls``. Both members are in ONE
+time and does not follow data. This file covers the leak that it cannot see,
+against the real phase-4 catalog of ``test_h3_rls_promotion_rehearsal``, as
+the non-privileged role ``acb_app_h3rls``. Both members are in ONE
 organization, so row level security does not hide the mailbox. Only the owner
 check does.
 
-R7 fences named here:
+WS-17 EM-G11f3 (§12.3.13.9.1) deleted the email chat route and its two cases.
+The chat pane keeps its own fences: ``src/app/email/lib/noTierChoice.test.ts``,
+``src/app/email/lib/chatScope.test.ts`` and ``test_email_no_tier_choice.py``.
 
-* ``email-chat-context-owned-only``: member B sends the ``account_id`` of the
-  mailbox of member A to ``POST /email/ai/chat``, with zero mailboxes and with
-  two of her own. The context holds no count, no category and no address of
-  that mailbox, the agent payload does not carry its id, and the chat model is
-  not read from its settings.
-* ``email-chat-no-stored-tier`` (D-EM-61): member A names her own mailbox,
-  which stores a chat model. The route still sends the chat tier that our
-  code chooses, ``tier-powerful``.
+R7 fence named here:
+
 * ``email-task-close-owned-only``: member B closes a task whose origin is a
   mailbox of member A. The thread status of that mailbox does not change, and
   no label reconciliation runs. Member A closing the same task marks it DONE.
@@ -34,7 +29,6 @@ from __future__ import annotations
 
 import json
 import uuid
-from contextlib import contextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -42,11 +36,7 @@ import pytest
 
 pytest.importorskip("sqlalchemy")
 
-from acb_auth.roles import UserContext, UserRole
 from acb_common import db as common_db
-from acb_common.db import bind_tenant, release_tenant
-from fastapi import BackgroundTasks
-from gateway.routes.email.automation import chat as chat_mod
 from gateway.routes.tasks import email_link
 from sqlalchemy import text
 
@@ -65,15 +55,6 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
 #: only come from the seeded mailbox of member A.
 SECRET_CATEGORY = "Zeppelinletter"
 SECRET_MODEL = "tier-secret-of-a"
-
-
-@contextmanager
-def _bound(org: str):
-    token = bind_tenant(org)
-    try:
-        yield
-    finally:
-        release_tenant(token)
 
 
 def _assert_non_priv(app_eng) -> None:
@@ -145,148 +126,6 @@ def _thread_status(admin, account_id: str, thread: str) -> str | None:
             "SELECT status FROM email_thread_status "
             "WHERE account_id = CAST(:a AS uuid) AND thread_id = :t"),
             {"a": account_id, "t": thread}).scalar()
-
-
-def _assert_nothing_of_a(context: str, *, mailbox_a: str) -> None:
-    assert "Inbox snapshot" not in context, (
-        "the context carries an inbox snapshot of a mailbox the member does "
-        "not own"
-    )
-    assert SECRET_CATEGORY not in context, (
-        "the context carries a sender category of another member's mailbox"
-    )
-    assert mailbox_a not in context, (
-        "the context names the address of another member's mailbox"
-    )
-
-
-@_DB_GATE
-class TestTheChatContextReadsOnlyAnOwnedMailbox:
-
-    @pytest.mark.parametrize("own_boxes", [0, 2])
-    async def test_a_foreign_account_id_reads_nothing_of_that_mailbox(
-        self, promoted, app_engine, own_boxes,  # noqa: F811
-    ):
-        _assert_non_priv(app_engine)
-        p = promoted
-        member_a = f"a-{uuid.uuid4().hex[:8]}@em-t2c.test"
-        member_b = f"b-{uuid.uuid4().hex[:8]}@em-t2c.test"
-        acc_a, mailbox_a, _ = _seed_mailbox_of_a(
-            p.admin_engine, org=p.org_b, owner=member_a)
-        own = [_seed_account(p.admin_engine, org=p.org_b, owner=member_b)[0]
-               for _ in range(own_boxes)]
-        app_dsn = p.app_url.render_as_string(hide_password=False)
-        try:
-            async with tenant_engine_scope(app_dsn):
-                with _bound(p.org_b):
-                    resolved, parts = await chat_mod._build_chat_context(
-                        member_b, acc_a, None, True)
-            assert resolved != acc_a, (
-                "the chat context resolved to a mailbox the member does not own"
-            )
-            assert resolved is None, (
-                "with zero or two mailboxes there is no single owned mailbox"
-            )
-            _assert_nothing_of_a("\n".join(parts), mailbox_a=mailbox_a)
-        finally:
-            _purge(p.admin_engine, [acc_a, *own])
-
-    async def test_the_owner_still_gets_her_snapshot(
-        self, promoted, app_engine,  # noqa: F811
-    ):
-        """The positive control: the fence is the owner check, not a broken
-        query. Member A, naming her own mailbox, gets its snapshot."""
-        _assert_non_priv(app_engine)
-        p = promoted
-        member_a = f"a-{uuid.uuid4().hex[:8]}@em-t2c.test"
-        acc_a, mailbox_a, _ = _seed_mailbox_of_a(
-            p.admin_engine, org=p.org_b, owner=member_a)
-        app_dsn = p.app_url.render_as_string(hide_password=False)
-        try:
-            async with tenant_engine_scope(app_dsn):
-                with _bound(p.org_b):
-                    resolved, parts = await chat_mod._build_chat_context(
-                        member_a, acc_a, None, True)
-            context = "\n".join(parts)
-            assert resolved == acc_a
-            assert "Inbox: 3 messages, 3 unread" in context
-            assert "Needs reply (Reply Zero): 1" in context
-            assert f"{SECRET_CATEGORY}: 1" in context
-            assert mailbox_a in context
-        finally:
-            _purge(p.admin_engine, [acc_a])
-
-    @staticmethod
-    async def _chat(p, monkeypatch, member: str, account_id: str) -> dict:
-        """Run ``ai_chat`` as ``member`` on the real database. The agent
-        stream is a spy, so the result is what the route hands the executor."""
-        seen: dict = {}
-
-        def _fake_stream(agent, payload, **kw):
-            seen["payload"] = payload
-            seen["model"] = kw.get("model")
-
-            async def _gen():
-                if False:  # pragma: no cover - an empty stream
-                    yield ""
-            return _gen()
-
-        import orchestrator.executor as executor_mod
-
-        monkeypatch.setattr(executor_mod, "run_agent_stream", _fake_stream)
-        monkeypatch.delenv("AI_TIER_ROUTING", raising=False)
-        user = UserContext(email=member, role=UserRole.EMPLOYEE,
-                           organization_id=p.org_b)
-        req = chat_mod.AIChatRequest(
-            messages=[{"role": "user", "content": "what is in my inbox?"}],
-            account_id=account_id)
-        app_dsn = p.app_url.render_as_string(hide_password=False)
-        async with tenant_engine_scope(app_dsn):
-            with _bound(p.org_b):
-                await chat_mod.ai_chat(req, user, BackgroundTasks())
-        return seen
-
-    async def test_ai_chat_sends_no_foreign_id_and_reads_no_foreign_model(
-        self, promoted, app_engine, monkeypatch,  # noqa: F811
-    ):
-        """Item 2: the payload carries the RESOLVED id only, and the model is
-        not the one stored for the mailbox of member A."""
-        _assert_non_priv(app_engine)
-        p = promoted
-        member_a = f"a-{uuid.uuid4().hex[:8]}@em-t2c.test"
-        member_b = f"b-{uuid.uuid4().hex[:8]}@em-t2c.test"
-        acc_a, mailbox_a, _ = _seed_mailbox_of_a(
-            p.admin_engine, org=p.org_b, owner=member_a)
-        try:
-            seen = await self._chat(p, monkeypatch, member_b, acc_a)
-            payload = seen["payload"]
-            assert payload["account_id"] != acc_a, (
-                "the agent payload carries the id of another member's mailbox"
-            )
-            _assert_nothing_of_a(payload["memory_context"], mailbox_a=mailbox_a)
-            assert seen["model"] != SECRET_MODEL
-            assert seen["model"] == "tier-powerful"
-        finally:
-            _purge(p.admin_engine, [acc_a])
-
-    async def test_the_owner_gets_the_fixed_tier_not_her_stored_one(
-        self, promoted, app_engine, monkeypatch,  # noqa: F811
-    ):
-        """D-EM-61: a stored ``chat_model`` no longer changes the tier, even
-        for the member who owns the mailbox. The positive control of the
-        test above: here the route does resolve to the mailbox."""
-        _assert_non_priv(app_engine)
-        p = promoted
-        member_a = f"a-{uuid.uuid4().hex[:8]}@em-t2c.test"
-        acc_a, _mailbox_a, _ = _seed_mailbox_of_a(
-            p.admin_engine, org=p.org_b, owner=member_a)
-        try:
-            seen = await self._chat(p, monkeypatch, member_a, acc_a)
-            assert seen["payload"]["account_id"] == acc_a
-            assert seen["model"] == "tier-powerful", (
-                "the chat ran on the chat model stored for the mailbox")
-        finally:
-            _purge(p.admin_engine, [acc_a])
 
 
 @_DB_GATE

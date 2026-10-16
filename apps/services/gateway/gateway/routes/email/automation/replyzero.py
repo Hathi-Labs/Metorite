@@ -1,5 +1,5 @@
 """Automation · Reply Zero — needs-reply classification, the reply-zero views,
-follow-up reminders, and the inbox AI chat/quick-action endpoints."""
+and follow-up reminders."""
 
 from __future__ import annotations
 
