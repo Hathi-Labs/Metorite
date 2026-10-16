@@ -231,7 +231,9 @@ FULL_READ_KEY = "full_read"
 READ_DROPS_KEY = "read_drops"
 #: CRM-Q24: the ``SourceError.code`` of a tie at one second that is wider
 #: than the provider serves by offset (``ZohoTieTooWide``). A test pins the
-#: two. The engine counts it as ``failed`` and keeps the cursor.
+#: two. The engine counts it as ``failed`` and keeps the cursor. It also sets
+#: this key to 1 in the counts of the entity, so Sync health can say that
+#: the sync of that entity is paused until those records change.
 TIE_TOO_WIDE_CODE = "tie_too_wide"
 
 #: The cursor row of the field rules (CRM-Q7a). Its state holds the rules the
@@ -820,6 +822,16 @@ class _Ctx:
         self.counts[SLUGS[entity]][name] += amount
         if entity == "task":
             self.step("tasks", name, amount)
+
+    def flag(self, entity: str, name: str) -> None:
+        """Set the count ``name`` of ``entity`` to 1 for this run, also when
+        the entity does not keep that name (CRM-Q24 fix round). Sync health
+        passes the key through in ``last_run``. The tie of
+        :data:`TIE_TOO_WIDE_CODE` is the one caller."""
+        if _module(entity):
+            self.counts.setdefault(entity, dict.fromkeys(MODULE_COUNTS, 0))[name] = 1
+            return
+        self.counts[SLUGS[entity]][name] = 1
 
     def module_step(self, entity: str, name: str, amount: int = 1) -> None:
         """Count under ``module:<ApiName>`` (CRM-Q6a). A name that a module does
@@ -1869,6 +1881,7 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                     # The read must not end as done, so the cursor stays as
                     # the last page saved it, and no ``initial_done_at`` moves.
                     ctx.bump(entity, "failed")
+                    ctx.flag(entity, TIE_TOO_WIDE_CODE)
                     _log.warning("crm.sync.tie_too_wide entity=%s", entity)
                     return
                 # An optional module that cannot be read for ANY reason that is

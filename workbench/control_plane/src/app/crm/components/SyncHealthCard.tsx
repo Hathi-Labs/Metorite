@@ -41,6 +41,8 @@ import {
   shortReadSentence,
   shortReads,
   statusLines,
+  tieStallSentence,
+  tieStalls,
   unavailableSentence,
   type ActivityLine,
   type SyncHealth,
@@ -89,6 +91,7 @@ export function SyncHealthCardView({
   const held = heldKeys(health);
   const large = health.entities.filter((entity) => largeUnheld(health, entity));
   const short = shortReads(health);
+  const stalled = tieStalls(health);
   const activities = activityLines(health);
   return (
     <Card title="Sync health" note={NOTE}>
@@ -191,6 +194,18 @@ export function SyncHealthCardView({
                   <Badge tone="warning">Short read</Badge>
                   <span className="font-medium text-foreground">{label(entity.key)}</span>
                   <span className="min-w-0 flex-1 text-muted-foreground">{shortReadSentence(entity)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {stalled.length > 0 && (
+            <ul className="space-y-1 px-2 pt-2" aria-label="Paused syncs">
+              {stalled.map((entity) => (
+                <li key={entity.key} className="flex flex-wrap items-center gap-2 text-xs">
+                  <Badge tone="warning">Paused</Badge>
+                  <span className="min-w-0 flex-1 text-muted-foreground">
+                    {tieStallSentence(label(entity.key))}
+                  </span>
                 </li>
               ))}
             </ul>

@@ -3175,6 +3175,15 @@ counts `failed` on the entity and keeps the cursor. The next run reads the
 same tie again, so the tie costs about 10 credits in each run until a fix
 exists.
 
+The tie also STALLS the entity. No record after the tie syncs until Zoho
+changes those records, because each run stops at the same page. Fix round
+(2026-10-17): the engine sets `tie_too_wide` to 1 in the counts of the
+entity (`_Ctx.flag`), and Sync health passes it through in `last_run`. The
+card shows "Zoho changed more than 2,000 Deals records in the same second.
+Sync of Deals is paused until those records change." Fences:
+`test_item_7_a_tie_too_wide_counts_failed_and_never_ends_the_import` and
+`crmQ24.test.ts`.
+
 The recovery step counts a kept id that leaves the list after a read by
 ids. A resumed import does not carry `activity_recovered`, because the
 health read adds the count of each run row. `recovered_7d` also skips the

@@ -11,6 +11,8 @@ import {
   shortBy,
   shortReadSentence,
   shortReads,
+  tieStallSentence,
+  tieStalls,
   type HealthEntity,
   type SyncHealth,
 } from "../lib/syncHealth";
@@ -150,5 +152,31 @@ describe("the activities left out (items 4 and 11)", () => {
     });
     expect(activityLines(health())).toEqual([]);
     expect(draw(health())).not.toContain("Activities left out");
+  });
+});
+
+describe("a tie that is too wide (fix round)", () => {
+  const tied = (key: string): HealthEntity => ({
+    key,
+    zoho_count: 9000,
+    ours: 4000,
+    last_run: { seen: 2000, failed: 1, tie_too_wide: 1 },
+  });
+
+  it("names the stall, not only a failed count", () => {
+    expect(tieStallSentence("Deals")).toBe(
+      "Zoho changed more than 2,000 Deals records in the same second. " +
+        "Sync of Deals is paused until those records change.",
+    );
+    const h = health({ entities: [row("deals", 10, 10), tied("module:Payment_Made")] });
+    expect(tieStalls(h).map((e) => e.key)).toEqual(["module:Payment_Made"]);
+    const html = draw(h);
+    expect(html).toContain("Paused");
+    expect(html).toContain("Zoho changed more than 2,000 Payments Made records in the same second.");
+  });
+
+  it("shows no line for a row with a failure of another kind", () => {
+    expect(tieStalls(health())).toEqual([]);
+    expect(draw(health())).not.toContain("Paused syncs");
   });
 });

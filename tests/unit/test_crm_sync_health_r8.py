@@ -448,6 +448,12 @@ async def test_item_7_a_tie_too_wide_counts_failed_and_never_ends_the_import(
     result = await _run(p.org_a)
     assert (result.status, result.error) == ("ok", None), "the other modules read on"
     assert result.counts["organizations"]["failed"] == 1
+    # Fix round: the run names the stall, and Sync health passes it through,
+    # so the card can say that the sync of Accounts is paused.
+    assert result.counts["organizations"]["tie_too_wide"] == 1
+    row = _row_of(await _health(p.org_a), "organizations")
+    assert row["last_run"]["tie_too_wide"] == 1
+    assert "tie_too_wide" not in _row_of(await _health(p.org_a), "contacts")["last_run"]
     state, done_at = _cursor(p, p.org_a, "zoho:company")
     assert done_at is None, "initial_done_at must not move"
     assert state is not None and state["in_progress"] is True

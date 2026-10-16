@@ -386,6 +386,30 @@ export function shortReadSentence(entity: HealthEntity): string | null {
   );
 }
 
+/**
+ * The most records that Zoho serves by offset inside one second
+ * (`zoho/client.py` `OFFSET_LIMIT`). A wider tie stops the read.
+ */
+export const TIE_OFFSET_LIMIT = 2000;
+
+/**
+ * The rows whose last run met a tie that is too wide (CRM-Q24 fix round). The
+ * gateway counts `tie_too_wide` on the row, and the sync of that entity is
+ * paused until Zoho changes those records. The `failed` count alone does not
+ * say so.
+ */
+export function tieStalls(health: SyncHealth | null | undefined): HealthEntity[] {
+  return (health?.entities ?? []).filter((entity) => positive(entity.last_run?.tie_too_wide) !== null);
+}
+
+/** The line of a paused sync: what Zoho did, and when the sync goes on. */
+export function tieStallSentence(label: string): string {
+  return (
+    `Zoho changed more than ${recordCount(TIE_OFFSET_LIMIT)} ${label} records in the same second. ` +
+    `Sync of ${label} is paused until those records change.`
+  );
+}
+
 const NO_ACTIVITIES: HealthActivities = { parentless: {}, dropped: {}, waiting: {}, recovered_7d: {}, unkept: {} };
 
 /** The activities block. An older answer has none, and that shows no line. */
