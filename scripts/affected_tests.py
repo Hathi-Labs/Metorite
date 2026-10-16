@@ -4,21 +4,25 @@
     uv run python scripts/affected_tests.py --run      # run them with pytest
     uv run python scripts/affected_tests.py --base origin/main --run
 
-This is NOT the merge gate. pr-check runs the WHOLE suite on every PR, in
-parallel shards, in about ten minutes. This script exists so that an agent,
-or a person, does not run all 27,000 tests locally to check a 3-file change.
+This is NOT the merge gate. pr-check runs the WHOLE suite on every PR. This
+script exists so that an agent, or a person, does not run all 27,000 tests
+locally to check a 3-file change.
 
 A test file is picked when it:
 
 1. changed itself,
 2. names a changed file by its path (many tests read docs, workflows, SQL),
-3. imports a changed module, by dotted name or by ``from pkg import mod``, or
+3. imports a changed module (``import a.b``, ``from a import b``, an alias,
+   or a dotted string such as ``patch("a.b.fn")``), or
 4. imports a module that imports a changed module (one level, see HUB_LIMIT).
+
+Imports are read with ``ast``, not a regex: a regex lost 38% of the real
+import pairs to multi-line imports and ``as`` aliases (measured 2026-10-16).
 
 A change to a file that every test depends on (``pyproject.toml``, a
 ``conftest.py``, ``uv.lock``) prints FULL, and ``--run`` then runs the whole
 suite. Frontend files are not Python's business: the script prints the
-``vitest related`` command, which does the same job for TypeScript.
+``vitest related`` command for each Next app, which does the same job there.
 
 Fence: tests/unit/test_affected_tests.py.
 """
@@ -26,9 +30,11 @@ Fence: tests/unit/test_affected_tests.py.
 from __future__ import annotations
 
 import argparse
+import ast
 import re
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,7 +43,9 @@ FULL_SUITE = {"pyproject.toml", "uv.lock", "tests/conftest.py", "tests/unit/conf
 # A module that more test files than this import (gateway.main, for one) is a
 # hub. Expanding through it would pick most of the suite for any route change.
 HUB_LIMIT = 40
-FRONTEND = ("workbench/control_plane/", "workbench/operator_console/")
+FRONTEND_APPS = ("workbench/control_plane/", "workbench/operator_console/")
+# CLAUDE.md section 6: this suite hangs on a local run. CI runs it.
+LOCAL_HANG = "tests/unit/test_memory_integration.py"
 
 
 def changed_files(base: str, root: Path = ROOT) -> list[str]:
@@ -64,26 +72,58 @@ def module_name(path: str, root: Path = ROOT) -> str | None:
     return ".".join(parts) if parts else None
 
 
-_IMPORT = re.compile(r"^\s*import\s+([\w.]+(?:\s*,\s*[\w.]+)*)", re.M)
-_FROM = re.compile(r"^\s*from\s+([\w.]+)\s+import\s+\(?([\w\s,]+)", re.M)
 # `patch("gateway.routes.crm.fn")`, `import_module("x.y")` and the like.
 _DOTTED_STRING = re.compile(r"""["']([A-Za-z_]\w*(?:\.\w+)+)["']""")
+# Only for a file `ast` cannot parse. Statement by statement, so one import
+# never swallows the next line.
+_FALLBACK = re.compile(r"^\s*(?:from\s+([\w.]+)\s+import\s+([\w, ]+)|import\s+([\w., ]+))", re.M)
 
 
-def imports(body: str) -> set[str]:
+def _resolve(node: ast.ImportFrom, module: str | None, is_package: bool) -> str | None:
+    if not node.level:
+        return node.module
+    if not module:
+        return None
+    base = module.split(".")
+    if not is_package:
+        base = base[:-1]
+    base = base[: len(base) - (node.level - 1)] if node.level > 1 else base
+    if not base:
+        return node.module
+    return ".".join(base + ([node.module] if node.module else []))
+
+
+def imports(body: str, module: str | None = None, is_package: bool = False) -> set[str]:
     """Every dotted name a file imports or names, with all its prefixes.
 
     Importing ``a.b.c`` runs ``a/__init__.py`` and ``a/b/__init__.py`` too, so
-    a change to either affects the importer. Hence the prefixes.
+    a change to either affects the importer. Hence the prefixes. ``module``
+    lets a relative import (``from . import x``) resolve.
     """
-    names: set[str] = set()
-    for m in _IMPORT.finditer(body):
-        names |= {n.strip() for n in m.group(1).split(",")}
-    for m in _FROM.finditer(body):
-        mod = m.group(1)
-        names.add(mod)
-        names |= {f"{mod}.{n.strip()}" for n in m.group(2).split(",") if n.strip()}
-    names |= set(_DOTTED_STRING.findall(body))
+    names: set[str] = set(_DOTTED_STRING.findall(body))
+    try:
+        # Silence SyntaxWarnings (invalid escapes) from files we only index.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            tree = ast.parse(body)
+    except (SyntaxError, ValueError):
+        for m in _FALLBACK.finditer(body):
+            if m.group(1):
+                names.add(m.group(1))
+                names |= {
+                    f"{m.group(1)}.{n.split()[0]}" for n in m.group(2).split(",") if n.strip()
+                }
+            else:
+                names |= {n.split()[0] for n in m.group(3).split(",") if n.strip()}
+    else:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names |= {a.name for a in node.names}
+            elif isinstance(node, ast.ImportFrom):
+                mod = _resolve(node, module, is_package)
+                if mod:
+                    names.add(mod)
+                    names |= {f"{mod}.{a.name}" for a in node.names if a.name != "*"}
     out: set[str] = set()
     for n in names:
         parts = n.split(".")
@@ -114,7 +154,7 @@ def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str],
         root,
     )
     full = sorted(c for c in changed if c in FULL_SUITE)
-    frontend = [c for c in changed if c.startswith(FRONTEND)]
+    frontend = [c for c in changed if c.startswith(FRONTEND_APPS)]
     picked: set[str] = {c for c in changed if c in tests}
 
     # dotted name -> the test files / source modules that import it
@@ -126,11 +166,11 @@ def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str],
     for s, body in sources.items():
         mod = module_name(s, root)
         if mod:
-            for n in imports(body):
+            for n in imports(body, mod, s.endswith("__init__.py")):
                 src_users.setdefault(n, set()).add(mod)
 
     for path in changed:
-        if path.startswith(FRONTEND) and not path.endswith(".md"):
+        if path.startswith(FRONTEND_APPS) and not path.endswith(".md"):
             continue
         needles = [path]
         name = Path(path).name
@@ -154,6 +194,19 @@ def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str],
     return sorted(picked), full, frontend
 
 
+def frontend_commands(frontend: list[str]) -> list[str]:
+    """One `vitest related` command per Next app, with that app's files."""
+    out = []
+    for app in FRONTEND_APPS:
+        rel = [f[len(app) :] for f in frontend if f.startswith(app)]
+        if rel:
+            out.append(
+                f"cd {app.rstrip('/')} && npx tsc --noEmit && npx vitest related --run "
+                + " ".join(rel)
+            )
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--base", default="origin/main")
@@ -167,20 +220,14 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{len(changed)} changed files -> {len(picked)} test files")
     for t in picked:
         print(f"  {t}")
-    if frontend:
-        rel = " ".join(
-            f.split("/", 2)[2] for f in frontend if f.startswith("workbench/control_plane/")
-        )
-        print(
-            "frontend: cd workbench/control_plane && npx tsc --noEmit && npx vitest related --run "
-            + rel
-        )
+    for cmd in frontend_commands(frontend):
+        print(f"frontend: {cmd}")
     if full:
         print(f"FULL: {', '.join(full)} changed, so every test can be affected")
 
     if not args.run:
         return 0
-    target = [str(TESTS)] if full else picked
+    target = [str(TESTS), f"--ignore={LOCAL_HANG}"] if full else picked
     if not target:
         print("nothing to run")
         return 0

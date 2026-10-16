@@ -26,6 +26,11 @@ ROOT = Path(__file__).resolve().parents[1]
 PLAN = ROOT / "project-docs" / "work_plan.md"
 _ROW = re.compile(r"^\|\s*\**(WS-[\w.-]+)\**\s*\|")
 _DONE = ("✅", "DONE", "Done", "done", "RETIRED", "retired", "WITHDRAWN")
+# A done row can still carry open work: WS-39 reads "✅ ... 🟢 slice 5 next".
+# Any of these anywhere in the state keeps the row open.
+_STILL_OPEN = ("🟢", "🟡", "🔴", "◐", "🔲", "⏸", "⏳", "next", "NOT built", "not started")
+# Some state cells are 20 KB of history. `--row` caps the state too.
+_STATE_CAP = 1500
 
 
 def _plain(cell: str) -> str:
@@ -66,6 +71,8 @@ def rows(text: str) -> list[dict[str, str]]:
 
 def is_open(row: dict[str, str]) -> bool:
     state = _plain(row["state"])
+    if any(mark in state for mark in _STILL_OPEN):
+        return True
     return not any(state.startswith(d) for d in _DONE)
 
 
@@ -82,7 +89,7 @@ def index_line(row: dict[str, str]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--open", action="store_true", help="hide rows whose state reads done")
+    ap.add_argument("--open", action="store_true", help="hide rows that are done with no open work")
     ap.add_argument("--row", help="print one row in full, notes capped")
     ap.add_argument("--chars", type=int, default=4000, help="cap for the notes cell")
     args = ap.parse_args(argv)
@@ -97,7 +104,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         r = hit[0]
         notes = _plain(r["notes"])
-        print(f"{r['id']} · {_plain(r['title'])}\nstate: {_plain(r['state'])}")
+        state = _plain(r["state"])
+        print(f"{r['id']} · {_plain(r['title'])}\nstate: {_cut(state, _STATE_CAP)}")
         print(f"spec: {_plain(r['spec'])}\nnotes ({len(notes)} chars):\n{_cut(notes, args.chars)}")
         if len(notes) > args.chars:
             print(f"[cut at {args.chars}. Read the row in work_plan.md for the rest.]")

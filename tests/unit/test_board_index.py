@@ -53,3 +53,17 @@ def test_the_real_board_parses_and_is_much_shorter() -> None:
     assert len(rows) > 30
     index = "\n".join(board.index_line(r) for r in rows)
     assert len(index) * 10 < len(board.section_two(text))
+
+
+def test_a_done_row_with_open_work_stays_open() -> None:
+    """WS-39 read "✅ ... 🟢 slice 5 next" and --open hid it (verifier, 2026-10-16)."""
+    row = {
+        "id": "WS-39",
+        "title": "",
+        "state": "✅ S1-S4 BUILT · 🟢 slice 5 next",
+        "spec": "",
+        "notes": "",
+    }
+    assert board.is_open(row)
+    row["state"] = "✅ absorbed"
+    assert not board.is_open(row)

@@ -24,7 +24,7 @@ fresh context that can only see the repo.
 
 **1 — Select.**
 Do not read `work_plan.md` §2 whole. It is about 117,000 tokens. Run
-`uv run python scripts/board.py --open` for a one-line index of the open rows.
+`uv run python scripts/board.py` for a one-line index of every row.
 Run `uv run python scripts/board.py --row WS-n` to read one candidate row.
 If the user named a WS, use it.
 Otherwise choose the highest-leverage 🟢 row whose notes do not read as

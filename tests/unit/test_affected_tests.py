@@ -75,3 +75,53 @@ def test_frontend_files_go_to_vitest(tmp_path: Path) -> None:
 def test_a_migration_change_runs_the_prefix_guard(tmp_path: Path) -> None:
     picked, _, _ = sel.select(["infra/postgres/300_new.sql"], _repo(tmp_path))
     assert "tests/unit/test_migration_prefixes.py" in picked
+
+
+# ── The import forms a regex parser lost (verifier, 2026-10-16) ────────────
+
+
+def test_consecutive_from_lines_are_all_read() -> None:
+    names = sel.imports("from a import b\nfrom a.c import d\n\nfrom agent_edge import tools\n")
+    assert {"a.b", "a.c.d", "agent_edge.tools"} <= names
+
+
+def test_an_alias_is_dropped() -> None:
+    names = sel.imports("from agent_edge import metadata as edge_metadata\nimport x.y as z\n")
+    assert "agent_edge.metadata" in names
+    assert "x.y" in names
+    assert not any(" as " in n for n in names)
+
+
+def test_a_parenthesised_import_over_lines_is_read() -> None:
+    names = sel.imports("from pkg import (\n    leaf,\n    user as u,\n)\n")
+    assert {"pkg.leaf", "pkg.user"} <= names
+
+
+def test_a_relative_import_resolves_against_its_module() -> None:
+    assert "pkg.leaf" in sel.imports("from . import leaf\n", "pkg.user")
+    assert "pkg.leaf" in sel.imports("from .leaf import X\n", "pkg.user")
+    assert "pkg.leaf" in sel.imports("from .leaf import X\n", "pkg", is_package=True)
+    assert "a.leaf" in sel.imports("from ..leaf import X\n", "a.b.c")
+
+
+def test_a_file_that_does_not_parse_still_gives_its_imports() -> None:
+    names = sel.imports("from a import b as c\nfrom d import e\ndef broken(:\n")
+    assert {"a.b", "d.e"} <= names
+
+
+def test_a_relative_importer_counts_as_one_level_up(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    _write(root, "packages/pkg/pkg/rel.py", "from . import leaf\n")
+    _write(root, "tests/unit/test_rel.py", "from pkg import rel\n")
+    picked, _, _ = sel.select(["packages/pkg/pkg/leaf.py"], root)
+    assert "tests/unit/test_rel.py" in picked
+
+
+def test_each_next_app_gets_its_own_vitest_command() -> None:
+    cmds = sel.frontend_commands(
+        ["workbench/control_plane/src/a.ts", "workbench/operator_console/src/app/page.tsx"]
+    )
+    assert cmds == [
+        "cd workbench/control_plane && npx tsc --noEmit && npx vitest related --run src/a.ts",
+        "cd workbench/operator_console && npx tsc --noEmit && npx vitest related --run src/app/page.tsx",
+    ]

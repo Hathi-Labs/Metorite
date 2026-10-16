@@ -22,10 +22,11 @@ implementer's report as a set of *claims to be checked*, not as findings.
    commands and the implementer's differ, that discrepancy is itself a finding.
 3. **Run the tests this diff can affect, not the whole suite.**
    `uv run python scripts/affected_tests.py --run` picks them from the diff
-   against `origin/main`. It also prints the `vitest related` command for
-   frontend files. Run that command too. Then run `uv run ruff check .`.
+   against `origin/main`. It also prints one `vitest related` command for
+   each Next app that changed. Run those commands too. Then run
+   `uv run ruff check .`.
    Do not run all of `tests/unit/`. It takes about 50 minutes on one process.
-   pr-check runs all of it on the PR in parallel shards, in about 10 minutes.
+   pr-check runs all of it on every PR.
    If the script prints `FULL`, it runs the whole suite. Let it.
    A red test is a FAIL, whether or not this change caused it. To tell
    "this change broke it" from "already red on main", run that test on `main`.
@@ -48,8 +49,8 @@ implementer's report as a set of *claims to be checked*, not as findings.
      `npx vitest run src/lib/shell/`. Report a FAIL if the diff adds a key
      or raises a number in `SEAM_DEBT`. A move inside one app is not a FAIL.
 6. **Frontend changes**: pr-check typechecks both Next apps and runs their
-   vitest and browser suites. Locally, run `npx tsc --noEmit` and the
-   `vitest related` command from step 3. Report the result.
+   vitest suites. It runs the browser suite for `workbench/control_plane`
+   only. Locally, run the commands from step 3. Report the result.
 7. **A surface change gets a look.** If the diff changes what a page draws,
    use the rig in `.claude/skills/visual-review/SKILL.md`. Capture light mode,
    compact density, a changed accent and 390 px. Do the skill's capture,
