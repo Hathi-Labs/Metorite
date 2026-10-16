@@ -209,7 +209,7 @@ if [ "$env_guard" = "1" ]; then
   offbox_clean_env_reexec "$script_dir/backup_db.sh" \
     PG_MODE PGHOST PGPORT PGUSER PGPASSWORD PGDATABASE PGSSLMODE PGCONNECT_TIMEOUT \
     CUSTOMER_CONSOLE_DATABASE_URL KEEP_DAILY BACKUP_VERIFY_IMAGE BACKUP_VERIFY_MEMORY \
-    BACKUP_FILE_DIRS BACKUP_MEETING_BOT_VOLUME -- "$@"
+    BACKUP_FILE_DIRS BACKUP_MEETING_BOT_VOLUME STAGING_EXPORT_SLUGS -- "$@"
   # libpq: GSSAPI is not used, so it is off. No client certificate is used.
   export PGGSSENCMODE=disable PGSSLCERTMODE=disable
   APP_DIR="$layout_root/opt/acb/app"
@@ -948,6 +948,18 @@ if [ "$VERIFY_RESTORE" = "1" ]; then
       exit 1
     fi
     echo "    restore verified"
+    # ── WS-38 T-9: the staging export, from THIS container ────────────────
+    # The restored copy is reduced to the allowlisted organizations and dumped
+    # for the staging box (scripts/staging_export.sh). It runs only when
+    # STAGING_EXPORT_SLUGS is set in root.env. ⚠️ It can NEVER fail the backup:
+    # the `if` swallows its exit, and a staging problem is a warning here.
+    if [ -n "${STAGING_EXPORT_SLUGS:-}" ]; then
+      if bash "$(dirname "${BASH_SOURCE[0]}")/staging_export.sh" "$verify_ctr" verify; then
+        :
+      else
+        warn "the staging export FAILED (exit $?). The backup is unaffected."
+      fi
+    fi
     # Disarm the trap FIRST, so a failed removal is counted once, here.
     trap - EXIT INT TERM HUP
     # A failed removal writes the marker. The verify itself passed.
