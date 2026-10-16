@@ -1192,6 +1192,17 @@ if _HAS_MAF:
                 _mem_last_user = last_user_msg
 
                 async def _persist_cb() -> None:  # type: ignore[misc]
+                    # WS-17 EM-G11f3 (W3): ONE answer of the mail predicate,
+                    # asked before the fold, with the run's session and member.
+                    # run_detached bound the run's tenant. A fault reads as mail.
+                    try:
+                        from acb_skills.egress import run_holds_mail
+                        _holds_mail = await run_holds_mail(
+                            "orchestrator",
+                            {"session_id": _thread_id, "member": user_id},
+                        )
+                    except Exception:  # fail closed: the run holds mail
+                        _holds_mail = True
                     folded = await persist_final_assistant_message(
                         _thread_id, assistant_message_id,
                         user_id=user_id, agent_name="orchestrator",
@@ -1199,6 +1210,7 @@ if _HAS_MAF:
                         model=(_resolved_model or model),
                         # S15 (§21): the fold binds the server-side tenant.
                         organization_id=_organization_id,
+                        holds_mail=_holds_mail,
                     )
                     # Memory extraction at the SAME run boundary (P1-9): fires on
                     # finish/error/cancel/reconnect via run_detached's finally,
@@ -1206,7 +1218,14 @@ if _HAS_MAF:
                     # to Mem0 — and it now includes the FOLDED ANSWER (the old
                     # background_tasks path saw only the input messages and never
                     # the assistant turn). route.ts no longer extracts for this
-                    # orchestrator path. Best-effort.
+                    # orchestrator path. Best-effort. A run that holds mail
+                    # writes to neither store (section 12.3.13.9.1, item 3).
+                    if _holds_mail:
+                        _log.info(
+                            "copilot_chat.run_end_memory_extraction_skipped_mail",
+                            thread_id=_thread_id[:12],
+                        )
+                        return
                     if not (user_id and _mem_conv_in):
                         return
                     try:
@@ -1328,33 +1347,9 @@ if _HAS_MAF:
                     async for line in event_generator():
                         yield line
 
-            # Fallback memory extraction ONLY for the degraded no-thread_id /
-            # no-message-id case (no run boundary to hook): fires on the
-            # response lifecycle and sees only the input messages. The normal
-            # path extracts at the run boundary inside _persist_cb above (P1-9),
-            # with the folded answer included — so skip here to avoid double
-            # extraction when that callback is wired.
-            if _persist_cb is None:
-                try:
-                    from acb_memory import (
-                        add_episode,
-                        add_memories_background,
-                    )
-                    if last_user_msg and messages:
-                        conv = [
-                            {"role": m.get("role", "user"), "content": m.get("content", "")}
-                            for m in messages if m.get("content")
-                        ]
-                        background_tasks.add_task(add_memories_background, user_id, conv)
-                        # Also populate the bi-temporal knowledge graph (Graphiti)
-                        background_tasks.add_task(add_episode,
-                            name=f"chat:{user_id[:20]}",
-                            content=last_user_msg[:500],
-                            source_description="copilot_chat",
-                            group_id=user_id,
-                        )
-                except ImportError:
-                    pass
+            # The degraded case with no thread_id or no message id has no run
+            # boundary and no session, so it cannot read a mail mark. It writes
+            # no memory (WS-17 EM-G11f3, section 12.3.13.9.1 item 3, W4).
 
             return StreamingResponse(
                 relayed_generator() if _thread_id else event_generator(),
@@ -2218,7 +2213,6 @@ class PullResponse(BaseModel):
 @app.post("/pull", response_model=PullResponse, tags=["pull"])
 async def pull(req: PullRequest, _user: UserContext = Depends(get_current_user)) -> PullResponse:
     """Phase-0 pull Q&A: routes through the MAF orchestrator agent."""
-    import asyncio
     import uuid
 
     from acb_llm.guardrails import CITATION_RE  # local import to avoid cold-start cost
@@ -2243,25 +2237,8 @@ async def pull(req: PullRequest, _user: UserContext = Depends(get_current_user))
             answer=f"[agent error] {type(exc).__name__}: {exc}", citations=[], trace_id=trace_id
         )
     citations = sorted({m.group(0) for m in CITATION_RE.finditer(text)})
-    # Background: extract facts from this exchange into Mem0
-    try:
-        from acb_memory import (
-            add_episode,
-            add_memories_background,
-        )
-        messages = [
-            {"role": "user", "content": req.query},
-            {"role": "assistant", "content": text},
-        ]
-        asyncio.create_task(add_memories_background(user_id, messages))
-        asyncio.create_task(add_episode(
-            name=f"pull:{trace_id[:8]}",
-            content=f"Q: {req.query}\nA: {text[:500]}",
-            source_description="pull_endpoint",
-            group_id=user_id,
-        ))
-    except ImportError:
-        pass
+    # No memory write: a pull has no session, so it cannot read a mail mark,
+    # and its answer can quote mail (WS-17 EM-G11f3, section 12.3.13.9.1, W5).
     return PullResponse(answer=text, citations=citations, trace_id=trace_id)
 
 
