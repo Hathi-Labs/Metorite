@@ -533,6 +533,138 @@ register(Provider("tasks_followups", ("projects",), _tasks_followups, TASK_FOLLO
                   needs=False, gated=True, app="tasks"))
 
 
+# ── The mail kinds (§5.9 item 12, MD-3d, feed only, gated) ──────────────────
+#
+# The source `email_followups`: `promise_due`, an open promise that I made by
+# mail and that falls due, and `no_answer`, a mail I sent that waits too long
+# for an answer. The reads are the email app's own, two owner-checked
+# wrappers in `routes/email/digest.py`: `promise_tasks` and
+# `awaiting_threads`. Each opens one tenant session and raises on an error.
+# So the provider opens 1 session for the mailboxes, plus 2 for each mailbox
+# (§5.9 item 7). A failed mailbox costs only its own rows, as in the needs
+# provider `_email`.
+
+#: The kinds of the source (§5.9 item 12).
+MAIL_FOLLOWUP_KINDS = frozenset({"promise_due", "no_answer"})
+#: A promise is due within this many days, or past due: the horizon of the
+#: emailed digest (``digest._generate_digest``).
+PROMISE_HORIZON_DAYS = 3
+
+
+def _promise_signal(row: dict[str, Any], account_id: str) -> Signal:
+    """``promise_due``, from one row of ``digest.promise_tasks``. It keys on
+    the task, so it folds into the task's one card (§4.5). ⚠️ The mail id is
+    in the link of "Open thread" only, never in ``message_id``, which is a
+    state fact (§5.9 item 4)."""
+    task_id = str(row["task_id"])
+    entity = task_entity(task_id, row.get("title"))
+    due = _iso(row.get("due_at"))
+    acts = [needs.tap("done", "Done", "done", task_id)]
+    if row.get("message_id"):
+        acts.append(link("open-thread", "Open thread",
+                         needs._email_href(str(row["message_id"]), account_id)))
+    return Signal(
+        signal_id=f"tasks:{task_id}", app="email", kind="promise_due",
+        entity=entity, title=entity["label"],
+        facts={"due_at": due, "priority": row.get("priority")},
+        href=task_href(task_id), acts=tuple(acts), at=due, urgent_at=due,
+    )
+
+
+def _no_answer_signal(thread: dict[str, Any], account_id: str) -> Signal | None:
+    """``no_answer``, from one row of ``digest.awaiting_threads``. It keys on
+    the thread, as a needs-reply row does. A thread with no last message has
+    nothing to open, so it gives no signal."""
+    message_id = thread.get("message_id")
+    if not message_id:
+        return None
+    subject = str(thread.get("subject") or "").strip() or "(no subject)"
+    href = needs._email_href(str(message_id), account_id)
+    sent = _iso(thread.get("last_message_at"))
+    return Signal(
+        signal_id=f"email:{account_id}:{thread['thread_id']}", app="email",
+        kind="no_answer",
+        entity={"type": "thread", "id": str(thread["thread_id"]), "label": subject},
+        title=subject,
+        facts={"who": str(thread.get("who") or "").strip() or None,
+               "waiting_since": sent, "account": account_id,
+               "message_id": str(message_id)},
+        href=href, acts=(link("follow-up", "Follow up", href),), at=sent,
+    )
+
+
+async def _email_followups(user: UserContext) -> Found:
+    from gateway.routes.email import digest
+    from gateway.routes.email.automation.followups import _FOLLOW_UP_MAX_AGE_DAYS
+    from gateway.routes.email.transport.accounts import feed_mailboxes
+
+    now = needs._now()  # the feed's one clock (needs._now)
+    size = PER_APP + 1  # one row more than the cap, so the cap is known
+    # A thread older than the follow-up job's ceiling is left alone, as the
+    # job leaves it (`followups._FOLLOW_UP_MAX_AGE_DAYS`).
+    after = now - timedelta(days=_FOLLOW_UP_MAX_AGE_DAYS)
+    # A promise is a task, so only a member with the lens gets one (§5.9 item
+    # 12). Without it, the provider makes no promise read at all.
+    promises = user.has_permission("feature:projects")
+
+    async def _mailbox(account_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        threads = await digest.awaiting_threads(user, account_id, size, after=after)
+        rows: list[dict[str, Any]] = []
+        if promises:
+            rows = await digest.promise_tasks(
+                user, account_id, horizon_days=PROMISE_HORIZON_DAYS, limit=size, now=now)
+        return threads, rows
+
+    signals: list[Signal] = []
+    asked = failed = 0
+    full = False
+    for mailbox in await feed_mailboxes(user):
+        if not needs._in_all_inboxes(mailbox):
+            continue  # D-EM-30: a separate mailbox stays out of the feed
+        account_id = str(mailbox["id"])
+        try:
+            # One bound for the mailbox, both reads in it (§5.9 item 12).
+            threads, rows = await asyncio.wait_for(_mailbox(account_id),
+                                                   needs.MAILBOX_TIMEOUT_S)
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                # The owner check names the bound tenant. Read past RLS, the
+                # mailbox list could hold the member's mailbox of another
+                # organization, and it is not this feed's to read.
+                continue
+            asked += 1
+            failed += 1
+            logger.warning("shell.feed mailbox failed provider=email_followups error=%s",
+                           type(exc).__name__)
+            continue
+        except Exception as exc:
+            # This mailbox only. The type only: a database error's text can
+            # hold the member's address.
+            asked += 1
+            failed += 1
+            logger.warning("shell.feed mailbox failed provider=email_followups error=%s",
+                           type(exc).__name__)
+            continue
+        asked += 1
+        full = full or len(threads) >= size or len(rows) >= size
+        signals += [s for s in (_no_answer_signal(t, account_id) for t in threads) if s]
+        signals += [_promise_signal(r, account_id) for r in rows if r.get("due_at")]
+    if asked and failed == asked:
+        # Every mailbox failed: the source failed, never an empty `ok`.
+        raise RuntimeError("every mailbox failed")
+    signals.sort(key=_followup_order)
+    return Found([], 0, capped=full or failed > 0 or len(signals) > PER_APP,
+                 signals=lambda: signals[:PER_APP])
+
+
+# The gate (§5.9 item 12): the mail reads need `feature:email`, and the
+# provider asks for `feature:projects` before a promise read. Gated, so it
+# runs only while MY_DAY_PROVIDERS lists it (§5.8 item 1). Its cards are the
+# `email` app's, and no Handled read: a closed thread is the needs source's.
+register(Provider("email_followups", ("email",), _email_followups, MAIL_FOLLOWUP_KINDS,
+                  needs=False, gated=True, app="email"))
+
+
 # ── The templates (§4.2): code writes every why line ────────────────────────
 
 
@@ -779,6 +911,24 @@ def _merge_acts(signals: list[Signal]) -> list[dict[str, Any]]:
     return acts
 
 
+def _states_entity_facts(kind: str) -> bool:
+    """Whether a FOLDED signal of ``kind`` may add a state fact
+    (``state.STATE_FACTS``) to its card (§5.9 item 4, MD-3d fix round 1).
+
+    Only a needs kind may (``needs.KIND_ORDER``). Its facts are the
+    entity's own: a task's unread notes, a thread's last message. So a new
+    note on a dismissed overdue task still brings it back (§6.8 item 1).
+
+    A feed-only kind (the Calendar kinds and every MD-3 kind) may not. Its
+    signal comes and goes with a window, a horizon or a failed source, so a
+    state fact of it would move the fingerprint with no change to the
+    entity, and a dismissed card would come back. Its own facts still drive
+    its own why clause, group and urgency, and as a MAIN kind it keeps them
+    all. Fence: ``test_feed_mail_kinds.py::TestAFoldNeverMovesTheStateFingerprint``.
+    """
+    return kind in needs.KIND_ORDER
+
+
 def build_cards(signals: list[Signal], now: datetime, tz: ZoneInfo,
                 today: date) -> list[dict[str, Any]]:
     """One card for each entity (§4.5), in the shape of §14.1a, unordered."""
@@ -795,6 +945,8 @@ def build_cards(signals: list[Signal], now: datetime, tz: ZoneInfo,
         facts = copy.deepcopy(ordered[0].facts)
         for signal in ordered[1:]:
             for name, value in signal.facts.items():
+                if name in state.STATE_FACTS and not _states_entity_facts(signal.kind):
+                    continue  # a fold must not move the state fingerprint
                 facts.setdefault(name, copy.deepcopy(value))
         parts[key] = (ordered, facts)
 
@@ -838,7 +990,10 @@ def build_cards(signals: list[Signal], now: datetime, tz: ZoneInfo,
             "group": feed_rank.most_urgent(
                 [feed_rank.group(main.kind, facts, now, today)]
                 + [feed_rank.group(s.kind, s.facts, now, today) for s in rest]),
-            "score": max(feed_rank.score(main.kind, facts, s.urgent_at, now) for s in ordered),
+            # Every kind on the card, for the promise term of the weight
+            # (MD-3d, §5.9 item 8). A card with no promise keeps its score.
+            "score": max(feed_rank.score(main.kind, facts, s.urgent_at, now,
+                                         [k.kind for k in ordered]) for s in ordered),
             "entity": dict(main.entity),
             "title": main.title,
             "why": " ".join(clauses),
