@@ -53,8 +53,11 @@ DECLARE
   --   user_identity         filtered to the members of the kept organizations
   --   agent_client          emptied: OAuth client registrations of outside agents
   --   auth_email_otp_token  emptied: one-time sign-in codes
+  --   email_detached_purges emptied: purge records of deleted organizations,
+  --                         with the email address of each mailbox owner
   global_ok text[] := ARRAY['organization', 'schema_migrations', 'feature_catalog',
-                            'user_identity', 'agent_client', 'auth_email_otp_token'];
+                            'user_identity', 'agent_client', 'auth_email_otp_token',
+                            'email_detached_purges'];
 BEGIN
   IF slugs IS NULL OR cardinality(slugs) = 0 OR slugs = ARRAY[''] THEN
     RAISE EXCEPTION 'keep_slugs is empty: refusing to export';
@@ -102,7 +105,7 @@ BEGIN
      AND NOT EXISTS (SELECT 1 FROM public.app_user u WHERE lower(u.email) = lower(ui.email));
 
   -- 5. Credentials, in the kept organizations too.
-  TRUNCATE public.agent_client, public.auth_email_otp_token;
+  TRUNCATE public.agent_client, public.auth_email_otp_token, public.email_detached_purges;
   DELETE FROM public.agent_token;
   DELETE FROM public.provider_keys;
   UPDATE public.email_accounts          SET credentials_encrypted = '', webhook_client_state = NULL;
