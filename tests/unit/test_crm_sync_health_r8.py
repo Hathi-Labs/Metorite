@@ -65,7 +65,8 @@ async def test_the_health_route_has_the_contract_shape(q) -> None:
         "last_run", "last_success_at", "next_run_at", "entities", "modules",
         "history", "credits", "running", "holds",  # holds: CRM-Q16
         "activities"}  # activities: CRM-Q24
-    assert set(body["activities"]) == {"parentless", "dropped", "waiting", "recovered_7d"}
+    assert set(body["activities"]) == {
+        "parentless", "dropped", "waiting", "recovered_7d", "unkept"}
     assert set(body["last_run"]) == {
         "kind", "status", "started_at", "finished_at", "error", "credits_used"}
     assert body["last_run"]["status"] == "ok" and body["last_run"]["error"] is None
@@ -183,7 +184,9 @@ async def test_a_stale_running_row_is_not_live(q) -> None:
 # The fake Zoho of the CRM-Q6a suite (``mz``): two orgs, two generic modules
 # (Products and Install_Base), and pages of 2 records.
 
-BLANK_ACTIVITIES = {"parentless": {}, "dropped": {}, "waiting": {}, "recovered_7d": {}}
+BLANK_ACTIVITIES = {
+    "parentless": {}, "dropped": {}, "waiting": {}, "recovered_7d": {}, "unkept": {},
+}
 
 
 def _count_says(z: Any, module: str, count: int | None) -> None:
@@ -318,6 +321,8 @@ async def test_item_8_the_drops_of_the_last_full_read_stay_after_an_incremental_
         "dropped": {"Payments": 1, "Install_Base": 1},
         "waiting": {"note": 1},
         "recovered_7d": {},
+        # Payments is not synced, and the one Install_Base drop waits.
+        "unkept": {},
     }
 
 
@@ -389,6 +394,42 @@ async def test_item_10_an_org_with_no_cursor_rows_serves_and_sees_no_other_org(m
     other = await _health(p.org_b)
     assert other["activities"] == BLANK_ACTIVITIES
     assert all(e["short_by"] is None for e in other["entities"])
+
+
+async def test_a_drop_on_a_core_module_is_unkept(mz) -> None:
+    """Fix round of 2026-10-17. The sync never keeps a drop on a core module
+    (``engine._note_dropped``), so no ``waiting`` entry holds it. Before the
+    fix the card hid it, because Deals is a module that the mirror reads."""
+    p, a, _b = mz
+    _seed(a)
+    _note_on(a, "n1", 32, "Deals", "d-missing")
+    await _connect_all(p, p.org_a, a)
+    assert (await _run(p.org_a)).status == "ok"
+    block = (await _health(p.org_a))["activities"]
+    assert block["dropped"] == {"Deals": 1}
+    assert block["waiting"] == {}
+    assert block["unkept"] == {"Deals": 1}
+
+
+async def test_the_overflow_of_a_full_wait_list_is_unkept(mz, monkeypatch) -> None:
+    """Fix round of 2026-10-17. Past ``recover.CAP`` a drop on a mirrored
+    module is not kept. Those drops are unkept, and the kept ones wait."""
+    from gateway.crm_sync import recover
+
+    monkeypatch.setattr(recover, "CAP", 1)
+    p, a, _b = mz
+    _seed(a)
+    for i in range(3):
+        _note_on(a, f"n{i}", 32 + i, "Install_Base", f"i-missing-{i}")
+    await _connect_all(p, p.org_a, a)
+    assert (await _run(p.org_a)).status == "ok"
+    # The run that queues the overflow read clears the mark, and the read in
+    # the next run sets it again while the list is still full.
+    assert (await _run(p.org_a)).status == "ok"
+    block = (await _health(p.org_a))["activities"]
+    assert block["dropped"] == {"Install_Base": 3}
+    assert block["waiting"] == {"note": 1}
+    assert block["unkept"] == {"Install_Base": 2}
 
 
 async def test_item_7_a_tie_too_wide_counts_failed_and_never_ends_the_import(

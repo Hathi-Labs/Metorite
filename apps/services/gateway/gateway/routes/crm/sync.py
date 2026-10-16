@@ -109,6 +109,13 @@ class HealthActivitiesModel(BaseModel):
     #: The kept activities that linked in the runs of the last 7 days, by
     #: the Zoho API name of the parent module.
     recovered_7d: dict[str, int] = {}
+    #: The drops of a module that the sync reads, which no ``waiting`` entry
+    #: holds, by the Zoho API name of the module (CRM-Q24 fix round). The
+    #: sync keeps no drop of a core module (Deals, Accounts, Contacts,
+    #: Leads), so each one counts. A mirrored generic module counts only the
+    #: drops past a full wait list (``recover.CAP``). Without this number,
+    #: those drops show nowhere on the card.
+    unkept: dict[str, int] = {}
 
 
 class HealthModuleModel(BaseModel):
@@ -366,8 +373,50 @@ def _short_by_keys(cursors: dict[str, Any], engine: Any) -> dict[str, int]:
     return out
 
 
+def _unkept(
+    dropped: dict[str, int], cursors: dict[str, Any], profile: Any, engine: Any,
+) -> dict[str, int]:
+    """The drops of a synced module that no kept entry holds (CRM-Q24 fix
+    round). See :attr:`HealthActivitiesModel.unkept`.
+
+    A core module is never kept (``engine._note_dropped``), so its whole
+    count is unkept. A mirrored generic module is unkept only when a kept
+    list overflowed for it, and then by the drops that the list does not
+    hold. A module that the sync does not read is not here: the card says
+    so through ``dropped``.
+    """
+    from gateway.crm_sources import registry
+    from gateway.crm_sync import recover
+
+    mapping = registry.mapping_for(engine.PROVIDER)
+    generic = {
+        str(m["api_name"]) for m in mapping.generic_modules(profile)
+        if m.get("mirrored") and m.get("api_name")
+    }
+    kept_by_module: dict[str, int] = {}
+    overflow: set[str] = set()
+    for entity in recover.ACTIVITY_ENTITIES:
+        row = cursors.get(engine.changed_module(entity))
+        state = row.state if row is not None else None
+        for entry in recover.entries_of(state).values():
+            kept_by_module[entry[0]] = kept_by_module.get(entry[0], 0) + 1
+        if (state or {}).get(recover.OVERFLOW_KEY):
+            overflow |= recover.overflow_modules_of(state)
+    out: dict[str, int] = {}
+    for module, n in dropped.items():
+        if module in generic:
+            left = n - kept_by_module.get(module, 0) if module in overflow else 0
+        elif module in mapping.MIRRORED_MODULES:
+            left = n
+        else:
+            left = 0
+        if left > 0:
+            out[module] = left
+    return out
+
+
 def _activities(
-    cursors: dict[str, Any], recovered: dict[str, int], engine: Any,
+    cursors: dict[str, Any], recovered: dict[str, int], engine: Any, profile: Any = None,
 ) -> HealthActivitiesModel:
     """The ``activities`` block of Sync health (CRM-Q24 item 10). Numbers only."""
     from gateway.crm_sync import recover
@@ -392,6 +441,7 @@ def _activities(
     return HealthActivitiesModel(
         parentless=parentless, dropped=dropped, waiting=waiting,
         recovered_7d={k: v for k, v in recovered.items() if v > 0},
+        unkept=_unkept(dropped, cursors, profile, engine),
     )
 
 
@@ -513,7 +563,7 @@ async def get_sync_health(
         running=live,
         credits=HealthCreditsModel(budget_24h=budget, used_24h=used, resumes_at=resumes),
         holds=_holds_out(hold_entries),
-        activities=_activities(cursors, recovered, engine),
+        activities=_activities(cursors, recovered, engine, body),
     )
 
 

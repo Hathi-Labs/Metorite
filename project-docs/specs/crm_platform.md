@@ -3180,11 +3180,24 @@ ids. A resumed import does not carry `activity_recovered`, because the
 health read adds the count of each run row. `recovered_7d` also skips the
 runs before the last start over.
 
-The card shows a `dropped` line only for a module that the profile does not
-mirror. A drop on a mirrored module shows under `waiting`. So the words "a
-module that Metorite does not sync" stay true. Fences:
+The card shows a `dropped` line with the words "a module that Metorite does
+not sync" only for a module that the sync does not read. Fences:
 `test_crm_sources_zoho.py`, `test_crm_sync_engine.py`,
 `test_crm_sync_health_r8.py` and `crmQ24.test.ts`.
+
+Fix round (2026-10-17). The first build said that each drop on a synced
+module shows under `waiting`. That was false. `engine._note_dropped` keeps
+only a drop on a mirrored generic module, so a drop on Deals, Accounts,
+Contacts or Leads never reached `waiting`, and the card showed it nowhere.
+The overflow of a full wait list (`recover.CAP`, 5,000) showed nowhere too.
+The `activities` block now carries `unkept`, by module: each drop on a core
+module, and for a mirrored module with the overflow mark, its drops less its
+kept entries. The card shows a `dropped` line for each, for example "2 Zoho
+activities link to Deals records that are not in Metorite yet." The run
+that queues the overflow read clears the mark, and the read sets it again
+while the list is still full. So the overflow line can leave the card for
+one run. R8: `test_a_drop_on_a_core_module_is_unkept` and
+`test_the_overflow_of_a_full_wait_list_is_unkept`.
 
 ### 18.11 Insights on the mirrored data (CRM-Q25 to CRM-Q28, 2026-10-16)
 

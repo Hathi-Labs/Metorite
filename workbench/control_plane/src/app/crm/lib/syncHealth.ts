@@ -41,6 +41,13 @@ export type HealthActivities = {
   waiting: Record<string, number>;
   /** Kept activities that linked in the last 7 days, by the Zoho API name of the module. */
   recovered_7d: Record<string, number>;
+  /**
+   * The drops of a module that the mirror reads, which no `waiting` entry holds,
+   * by the Zoho API name of the module. Each drop on a core module (Deals,
+   * Accounts, Contacts, Leads), and the drops past a full wait list. An older
+   * gateway sends no key.
+   */
+  unkept: Record<string, number>;
 };
 
 export type HealthModule = {
@@ -379,7 +386,7 @@ export function shortReadSentence(entity: HealthEntity): string | null {
   );
 }
 
-const NO_ACTIVITIES: HealthActivities = { parentless: {}, dropped: {}, waiting: {}, recovered_7d: {} };
+const NO_ACTIVITIES: HealthActivities = { parentless: {}, dropped: {}, waiting: {}, recovered_7d: {}, unkept: {} };
 
 /** The activities block. An older answer has none, and that shows no line. */
 export function activitiesOf(health: SyncHealth | null | undefined): HealthActivities {
@@ -392,6 +399,7 @@ export function activitiesOf(health: SyncHealth | null | undefined): HealthActiv
     dropped: map(block.dropped),
     waiting: map(block.waiting),
     recovered_7d: map(block.recovered_7d),
+    unkept: map(block.unkept),
   };
 }
 
@@ -428,8 +436,10 @@ export type ActivityLine = {
 /**
  * The lines of the activities that the mirror does not hold (CRM-Q24 item 11):
  * one line for each number above 0. A drop on a module that the mirror reads
- * is not a "module that Metorite does not sync", so it shows as `waiting`
- * while it waits, and not as `dropped`.
+ * is not a "module that Metorite does not sync". A kept drop shows as
+ * `waiting`. A drop that no `waiting` entry holds (`unkept`: each drop on a
+ * core module, and the overflow of a full wait list) shows as `dropped`, with
+ * words that say its record is not in Metorite yet.
  */
 export function activityLines(health: SyncHealth | null | undefined): ActivityLine[] {
   const block = activitiesOf(health);
@@ -450,12 +460,21 @@ export function activityLines(health: SyncHealth | null | undefined): ActivityLi
     });
   });
   each(block.dropped, (module, n) => {
-    if (isSynced(module, modules)) return;
+    // The gateway knows a module that it syncs, so an `unkept` count wins.
+    if (isSynced(module, modules) || positive(block.unkept[module]) !== null) return;
     const verb = n === 1 ? "belongs" : "belong";
     lines.push({
       key: `dropped:${module}`,
       kind: "dropped",
       text: `${zohoActivities(n)} ${verb} to ${moduleLabel(module, modules)}, a module that Metorite does not sync.`,
+    });
+  });
+  each(block.unkept, (module, n) => {
+    const verb = n === 1 ? "links" : "link";
+    lines.push({
+      key: `unkept:${module}`,
+      kind: "dropped",
+      text: `${zohoActivities(n)} ${verb} to ${moduleLabel(module, modules)} records that are not in Metorite yet.`,
     });
   });
   each(block.waiting, (entity, n) => {

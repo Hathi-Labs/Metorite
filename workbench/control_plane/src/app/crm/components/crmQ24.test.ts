@@ -79,6 +79,8 @@ describe("the activities left out (items 4 and 11)", () => {
     dropped: { Vendors_X: 12, Install_Base: 3, Deals: 2 },
     waiting: { note: 3, call: 1 },
     recovered_7d: { Install_Base: 40 },
+    // The gateway counts each drop on a core module, which it never keeps.
+    unkept: { Deals: 2 },
   };
 
   it("says the line of item 4 for the tasks with no parent", () => {
@@ -90,11 +92,34 @@ describe("the activities left out (items 4 and 11)", () => {
     });
   });
 
-  it("names a module that Metorite does not sync, and never a module that it syncs", () => {
+  it("names a module that Metorite does not sync, and the drops that no wait list holds", () => {
     const dropped = activityLines(health({ activities })).filter((l) => l.kind === "dropped");
     expect(dropped.map((l) => l.text)).toEqual([
       "12 Zoho activities belong to Vendor Visits, a module that Metorite does not sync.",
+      "2 Zoho activities link to Deals records that are not in Metorite yet.",
     ]);
+  });
+
+  it("shows a drop on a core module, which the sync never keeps (fix round)", () => {
+    const lines = activityLines(health({ activities: { ...activities, unkept: { Deals: 1 } } }));
+    expect(lines.filter((l) => l.kind === "dropped").map((l) => l.text)).toContain(
+      "1 Zoho activity links to Deals records that are not in Metorite yet.",
+    );
+    expect(draw(health({ activities }))).toContain("Deals records that are not in Metorite yet");
+  });
+
+  it("shows the overflow of a full wait list on a mirrored module", () => {
+    const lines = activityLines(health({ activities: { ...activities, unkept: { Install_Base: 7 } } }));
+    expect(lines.map((l) => l.key)).toContain("unkept:Install_Base");
+    expect(lines.find((l) => l.key === "unkept:Install_Base")?.text).toBe(
+      "7 Zoho activities link to Install Base records that are not in Metorite yet.",
+    );
+  });
+
+  it("never names a synced module as one that Metorite does not sync", () => {
+    const texts = activityLines(health({ activities })).map((l) => l.text).join(" ");
+    expect(texts).not.toContain("Deals, a module that Metorite does not sync");
+    expect(texts).not.toContain("Install Base, a module that Metorite does not sync");
   });
 
   it("says that the notes wait for their record, and that some came back", () => {
@@ -116,7 +141,13 @@ describe("the activities left out (items 4 and 11)", () => {
   });
 
   it("reads an older answer with no block as no line", () => {
-    expect(activitiesOf(health())).toEqual({ parentless: {}, dropped: {}, waiting: {}, recovered_7d: {} });
+    expect(activitiesOf(health())).toEqual({
+      parentless: {},
+      dropped: {},
+      waiting: {},
+      recovered_7d: {},
+      unkept: {},
+    });
     expect(activityLines(health())).toEqual([]);
     expect(draw(health())).not.toContain("Activities left out");
   });
