@@ -2614,6 +2614,12 @@ Files: `gateway/decide_features.py`, `acb_common/settings.py`, a new
 `routes/crm/core.py`, `routes/crm/settings.py`, the migration and
 `infra/postgres/generated/`, `evals/crm_note_labels/` and `tests/unit/`.
 
+**Built as (2026-10-16, branch `crm-q26`, not merged).** Migration 277 adds
+the table. `gateway/crm_sync/note_labels.py` holds the step, and
+`scheduler.start_labels` starts it. The mode ships `off`, and
+`CRM_DECIDE_ORGS` ships empty. A source fence and an R8 read of a company
+timeline prove item 9. The model sweep of the eval is not built.
+
 #### 18.11.3 Verification
 
 - `bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"`
