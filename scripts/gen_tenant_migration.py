@@ -96,6 +96,17 @@ EXEMPT: dict[str, str] = {
     # Metadata Document or a dynamic registration). One client serves every
     # organization, and the row holds no tenant data at all.
     "agent_client":            "global cache of public client metadata; no tenant data",
+    # WS-17 EM-G11f1c (email_app_master_plan.md §12.3.13.9.2, migration 276).
+    # The org purge writes one row for each mailbox of the org, in the
+    # transaction of DELETE FROM organization. Each row outlives its tenant, so
+    # no session can bind that tenant, and a policy keyed on app.tenant_id
+    # could never match the sweeper's read. The row holds an owner address and
+    # a mailbox id, and no mail. The sweeper acts only on the Mem0 key that
+    # those two values name. The file revokes every table privilege from
+    # PUBLIC, the Supabase roles and acb_app. Three SECURITY DEFINER functions
+    # are the only way in, and a deferred trigger lets a row commit only with
+    # the delete of its org (security review, fix round 1).
+    "email_detached_purges":   "the Mem0 purges of a purged org; the tenant no longer exists, so no session can bind it",
     # ── Catalogs: identical for every tenant, no customer data ─────────────
     "feature_catalog":         "a catalog of product surfaces, not tenant data",
     "schema_migrations":       "migration bookkeeping",
