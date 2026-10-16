@@ -181,6 +181,9 @@ _CAPABILITY_GATED_ROUTES: dict[str, str] = {
     # 2026-09-23, CP-13a — the fifth serving door (§6A.14). It takes
     # `ServingCaller`, so a `{resolve}` key meets the same 403.
     "/v1/decide": "serve",
+    # 2026-10-17, CP-EMB — the sixth serving door (§6A.16). It takes
+    # `ServingCaller` too, so a `{resolve}` key meets the same 403.
+    "/v1/embeddings": "serve",
     # 2026-09-28, H-152's billing half — the customer billing READS under the
     # deployment key, on the SIXTH capability. A `{resolve}` key is a valid
     # credential that may not read a bill, so it meets 403 here and never 401.

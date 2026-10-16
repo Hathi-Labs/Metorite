@@ -131,31 +131,36 @@ def _embed_on(monkeypatch: pytest.MonkeyPatch, embedder: Any = None) -> Embedder
 
 def _door(monkeypatch: pytest.MonkeyPatch, *, error: BaseException | None = None,
           zero: bool = False) -> list[Any]:
-    """Replace the HTTP client of the REAL ``embed()``: down, or zero vectors."""
-    from gateway.kb_index import embed as embed_mod
+    """Replace the HTTP transport of the REAL ``embed()``: down, or zero vectors.
+
+    Since CP-EMB (``customer_console.md`` §6A.16) the real ``embed()`` asks
+    the Console Router through ``console_resolve.embeddings_on_console``. So
+    the box is wired on an org key, and only the transport answers here.
+    """
+    import json as json_mod
+
+    from acb_auth import console_resolve
+    from acb_common import get_settings
 
     seen: list[Any] = []
 
-    class _Client:
-        def __init__(self, *a: Any, **kw: Any) -> None:
-            pass
+    def _handle(request: httpx.Request) -> httpx.Response:
+        body = json_mod.loads(request.content)
+        seen.append(body)
+        if error is not None:
+            raise error
+        data = [{"index": i, "embedding": [0.0] * DIMS if zero else fake_vector(t)}
+                for i, t in enumerate(body["input"])]
+        return httpx.Response(200, json={"data": data})
 
-        async def __aenter__(self) -> _Client:
-            return self
-
-        async def __aexit__(self, *a: Any) -> None:
-            return None
-
-        async def post(self, url: str, json: Any, headers: Any) -> httpx.Response:
-            seen.append(json)
-            if error is not None:
-                raise error
-            data = [{"index": i, "embedding": [0.0] * DIMS if zero else fake_vector(t)}
-                    for i, t in enumerate(json["input"])]
-            return httpx.Response(200, json={"data": data},
-                                  request=httpx.Request("POST", url))
-
-    monkeypatch.setattr(embed_mod, "_client", _Client)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "customer_console_url", "https://console.test",
+                        raising=False)
+    monkeypatch.setattr(settings, "customer_console_org_key", "cc_live_kb_test",
+                        raising=False)
+    monkeypatch.setattr(
+        console_resolve, "_new_http_client",
+        lambda timeout=None: httpx.AsyncClient(transport=httpx.MockTransport(_handle)))
     return seen
 
 

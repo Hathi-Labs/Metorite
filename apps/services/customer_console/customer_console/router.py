@@ -60,9 +60,11 @@ __all__ = [
     "call_provider",
     "decrypt_secret",
     "duration_seconds",
+    "embedding_vectors",
     "encrypt_secret",
     "frame_of",
     "image_count",
+    "litellm_target",
     "provider_credential",
     "reads_images",
     "relay_stream",
@@ -623,9 +625,11 @@ ProviderCall = Callable[..., Awaitable[Any]]
 #: raise here rather than reach litellm as an attribute nobody checked.
 #:
 #: 🔴 **``aimage_generation`` and ``aspeech`` joined on 2026-08-31** (§6A.10c
-#: clause 9). Each one has a door now, so the Router may call it. The set
-#: stays a STRICT subset of ``KNOWN_INVOCATIONS``: ``aembedding`` has no
-#: serving route, and an operator may still declare it.
+#: clause 9). Each one has a door now, so the Router may call it.
+#:
+#: 🔴 **``aembedding`` joined on 2026-10-17** (§6A.16, CP-EMB).
+#: ``POST /v1/embeddings`` serves it on ``tier-embed``. The set now equals
+#: ``KNOWN_INVOCATIONS``, and it must never hold a verb that set does not.
 #:
 #: 🔴 **``native_typesafe`` joined on 2026-09-23** (§6A.14 clause 5, CP-13a).
 #: It is the first NATIVE value. ``POST /v1/decide`` serves it, and
@@ -637,6 +641,7 @@ SERVING_INVOCATIONS = frozenset(
         "atranscription",
         "aimage_generation",
         "aspeech",
+        "aembedding",
         "native_typesafe",
         # CP-13h (2026-09-24): Jev through the AI/ML API reseller. The same
         # door and the same wire class, with a second instance.
@@ -722,6 +727,76 @@ def set_provider_call(fn: ProviderCall) -> None:
 
 async def call_provider(**kwargs: Any) -> Any:
     return await _PROVIDER_CALL[0](**kwargs)
+
+
+# ── CP-EMB: a vendor litellm reaches through its OpenAI client (§6A.16) ─────
+
+#: The litellm prefix of an OpenAI-shaped vendor host.
+_OPENAI_PREFIX = "openai"
+
+
+def litellm_target(model: str, api_base: str | None) -> tuple[str, str | None]:
+    """The model id and the host litellm needs for one of OUR model ids.
+
+    🔴 **ONE rewrite, for ONE vendor, and the embedding door is its only
+    caller** (§6A.16 item 2). Our id ``aimlapi/text-embedding-3-small``
+    names the credential with its prefix, because the Router splits on the
+    first slash. litellm knows no ``aimlapi`` provider for embeddings. AI/ML
+    API speaks the OpenAI shape, so litellm reaches it as
+    ``openai/text-embedding-3-small`` at the AI/ML API host.
+
+    ⚠️ **The host comes from ``handlers``, and nowhere else.** The decide
+    handler already holds it. ``api_base`` on a credential row names the
+    vendor HOST, as the decide handler reads it, so this adds ``/v1``.
+
+    Every other model passes through unchanged, and so does its host.
+    """
+    from customer_console.handlers import AIMLAPI_API_BASE, AIMLAPI_PROVIDER
+
+    prefix, _, rest = model.partition("/")
+    if prefix != AIMLAPI_PROVIDER or not rest:
+        return model, api_base
+    host = (api_base or AIMLAPI_API_BASE).rstrip("/")
+    if not host.endswith("/v1"):
+        host = f"{host}/v1"
+    return f"{_OPENAI_PREFIX}/{rest}", host
+
+
+def embedding_vectors(response: Any, count: int) -> list[list[float]] | None:
+    """The vectors of an embedding answer, in input order. Never raises.
+
+    ``None`` means we cannot read the answer: no list, a count that is not
+    ``count``, or an item with no list of numbers. Two shapes reach us.
+    litellm answers an ``EmbeddingResponse`` whose ``data`` holds dicts, and
+    the stub seam in the tests answers a plain dict.
+    """
+
+    def _get(obj: Any, key: str) -> Any:
+        if isinstance(obj, dict):
+            return obj.get(key)
+        return getattr(obj, key, None)
+
+    try:
+        data = _get(response, "data")
+        if isinstance(data, (str, bytes)) or not isinstance(data, Sequence):
+            return None
+        if len(data) != count:
+            return None
+        items: list[tuple[int, list[float]]] = []
+        for position, item in enumerate(data):
+            vector = _get(item, "embedding")
+            if isinstance(vector, (str, bytes)) or not isinstance(vector, Sequence):
+                return None
+            index = _get(item, "index")
+            items.append(
+                (index if isinstance(index, int) else position, [float(x) for x in vector])
+            )
+        items.sort(key=lambda pair: pair[0])
+        if [i for i, _ in items] != list(range(count)):
+            return None
+        return [vec for _, vec in items]
+    except Exception:
+        return None
 
 
 # ── Usage extraction ────────────────────────────────────────────────────────
