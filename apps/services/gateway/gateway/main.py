@@ -1490,6 +1490,15 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-61 — the Knowledge app (spec: project-docs/specs/knowledge_base.md).
+    # Spaces and pages, dark behind KNOWLEDGE_ENABLED and KNOWLEDGE_ORGS.
+    from gateway.routes.knowledge import router as _knowledge_router
+
+    app.include_router(_knowledge_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-27 — native project management (spec:
     # project-docs/specs/project_management_app.md). Departments, projects,
     # subprojects, tasks and subtasks, grant-scoped into every Center.
