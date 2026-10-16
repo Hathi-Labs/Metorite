@@ -5,8 +5,8 @@ The files here belong to the staging deployment on the dev box (WS-38,
 
 **Production never reads this folder.** `scripts/vps_apply.sh` installs the
 units of `deploy/hostinger/*.service` and `*.timer` on every box, and H-132 says
-that each timer there arrives scheduled. A unit that must not run on production
-is therefore not shipped there. It is shipped here, and only the staging branch
+that each timer there arrives scheduled. So a unit that must not run on production
+is not shipped there. It is shipped here, and only the staging branch
 of `vps_apply.sh` reads this folder. Fence: `tests/unit/test_staging_box.py`.
 
 | Unit | What it does |

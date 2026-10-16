@@ -33,7 +33,7 @@
 # ════════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
-app_dir=/opt/acb/app
+app_dir="${STAGING_APP_DIR:-/opt/acb/app}"   # a test points this at a scratch tree
 import_dir=/var/lib/acb/staging-import
 state=/var/lib/acb/staging-refresh.sha
 ctr=acb-staging-db
@@ -45,9 +45,10 @@ fail() { printf '!! %s\n' "$*" >&2; exit 1; }
 val()  { { grep -E "^$1=" "$2" 2>/dev/null || true; } | tail -1 | cut -d= -f2-; }
 
 # ── 1. Staging only ─────────────────────────────────────────────────────────
-[ "$(id -u)" = "0" ] || fail "run as root"
+# The staging check comes FIRST, before anything else, the root check included.
 [ "$(val DEPLOY_ENV "$app_dir/.env")" = "staging" ] \
   || fail "$app_dir/.env does not say DEPLOY_ENV=staging. This drops a database: refusing."
+[ "$(id -u)" = "0" ] || fail "run as root"
 prod_host="$(val STAGING_PROD_HOST /etc/acb/staging.env)"
 app_pw="$(val STAGING_APP_DB_PW /etc/acb/staging.env)"
 [ -n "$prod_host" ] && [ -n "$app_pw" ] || fail "/etc/acb/staging.env is missing a value"
@@ -57,7 +58,7 @@ app_pw="$(val STAGING_APP_DB_PW /etc/acb/staging.env)"
 say "Pulling the export from $prod_host"
 install -d -m 0750 -o acb -g acb "$import_dir"
 sudo -u acb rsync -a --delete \
-  -e "ssh -i /home/acb/.ssh/staging_link -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$app_dir/deploy/hostinger/known_hosts" \
+  -e "ssh -i /home/acb/.ssh/staging_link -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/home/acb/.ssh/known_hosts_prod" \
   "acb@$prod_host:./" "$import_dir/" \
   || fail "the pull failed. Is the staging link key in the production box's authorized_keys?"
 

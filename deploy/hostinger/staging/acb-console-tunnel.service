@@ -15,7 +15,7 @@ Type=simple
 User=acb
 ExecStart=/usr/bin/ssh -N -i /home/acb/.ssh/staging_link \
   -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
-  -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/opt/acb/app/deploy/hostinger/known_hosts \
+  -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/home/acb/.ssh/known_hosts_prod \
   -L 127.0.0.1:18090:127.0.0.1:8090 acb@187.127.172.200
 Restart=always
 RestartSec=30
