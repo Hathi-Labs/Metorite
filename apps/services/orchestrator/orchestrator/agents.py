@@ -149,14 +149,17 @@ A decision:
 # WS-61 KR-2 (knowledge_base.md §20.5 and §8.2). With COMPANY_SEARCH_ENABLED
 # on, three parts of the persona change, each by an exact swap: the two
 # legacy retrieval tools leave the tool list, rule 1 becomes the grounding
-# paragraph, and rule 5 cites a full_id. With the flag off the persona IS
+# paragraph, and rule 5 cites a full_id. KB-4a adds one line to the first
+# swap, for the two Knowledge reads. With the flag off the persona IS
 # `_PULL_INSTRUCTIONS`, byte for byte. Fence: tests/unit/test_company_search_tool.py.
 _COMPANY_SEARCH_SWAPS: tuple[tuple[str, str], ...] = (
     (
         "- retrieve_entity_context: search projects, tasks, deals, people\n"
         "- retrieve_sales_context: Zoho pipeline, customer health, deal stages\n",
         "- search_company: find the company's records in every app the member holds:\n"
-        "  tasks, email, people, the CRM, artifacts, WhatsApp and Knowledge\n",
+        "  tasks, email, people, the CRM, artifacts, WhatsApp and Knowledge\n"
+        "- read_page, list_spaces: read a Knowledge page when a passage is not enough,\n"
+        "  and list the spaces when the member asks what the company has written down\n",
     ),
     (
         "1. For data questions: call retrieve_entity_context or retrieve_sales_context FIRST.\n",
@@ -627,10 +630,12 @@ def build_orchestrator_agent(
     # Core tools always present. WS-61 KR-2: with COMPANY_SEARCH_ENABLED on,
     # `search_company` takes the place of the two legacy retrievers. This is
     # the ONE path of the tool: not config.json tool_scope, not the floor.
+    # KB-4a: the two Knowledge reads join it on the same path, and only then.
     if company_search:
         from acb_skills.company_search_tools import search_company
+        from acb_skills.knowledge_tools import list_spaces, read_page
 
-        retrieval_tools: list[Any] = [search_company]
+        retrieval_tools: list[Any] = [search_company, read_page, list_spaces]
     else:
         retrieval_tools = [retrieve_entity_context, retrieve_sales_context]
     core_tools: list[Any] = [

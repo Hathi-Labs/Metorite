@@ -194,6 +194,8 @@ async def get_page(
         space = await _space_of(db, user, page)
         level = await core.space_level(db, user, space) if space is not None else None
         out = core.page_dict(page)
+        # WS-61 KB-4a: the assistant's read_page names the space.
+        out["space_name"] = space.name if space is not None else None
         out["level"] = level
         out["can_write"] = core.can_write_page(level)
         out["versions"] = await core.read_versions(
