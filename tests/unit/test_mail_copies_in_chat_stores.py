@@ -614,7 +614,16 @@ def test_the_specialist_path_marks_the_session(monkeypatch, streaming: bool) -> 
     async def _refuse(_name: str) -> None:
         raise _SubRunStopped("the sub-run stops before any work")
 
+    async def _no_recovery(*_a: Any, **_k: Any) -> None:
+        return None
+
+    import orchestrator.mutation as mutation
+
     monkeypatch.setattr(executor, "_assert_may_run_agent", _refuse)
+    # The batch path tries to recover a failed run with a model call and a
+    # self-mutation. Neither may leave this hermetic test.
+    monkeypatch.setattr(executor, "_self_anneal", _no_recovery)
+    monkeypatch.setattr(mutation, "attempt_self_mutation", _no_recovery)
     cards: list[str] = []
 
     async def _card(tool_name: str, _kwargs: dict[str, Any]) -> bool:
