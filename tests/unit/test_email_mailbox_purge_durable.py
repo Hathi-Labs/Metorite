@@ -1012,16 +1012,21 @@ class TestEachChildIsEmptyAfterADisconnect:
         assert _edge_violations(edges) == [
             "tmp_child.account_id -> email_accounts is ON DELETE n, not CASCADE"]
 
-    @pytest.mark.parametrize("how", ["disconnect", "member_purge"])
+    @pytest.mark.parametrize("how", ["disconnect", "member_purge", "org_purge"])
     async def test_each_child_is_empty_after_a_disconnect(
         self, promoted, app_engine, r8_doubles, monkeypatch, how,  # noqa: F811
     ):
         """EM-G11f1b (§12.3.13.9.2) adds the member purge as a second delete
-        of a mailbox. PR-G7c adds the org purge."""
+        of a mailbox. PR-G7c adds the org purge, on an org of its own, and its
+        purge row is a detached row that outlives the org."""
         from tests.unit.test_email_purge_wiring import (
             OP_TOKEN,
+            detached_rows,
+            drop_org,
             member_purge,
+            org_purge,
             seed_member,
+            seed_org,
             wipe,
         )
 
@@ -1029,11 +1034,14 @@ class TestEachChildIsEmptyAfterADisconnect:
         p = promoted
         owner = f"member-{uuid.uuid4().hex[:8]}@em-g11f2.test"
         keeper = f"keeper-{uuid.uuid4().hex[:8]}@em-g11f2.test"
+        org, slug = p.org_b, None
         if how == "member_purge":
             seed_member(p.admin_engine, p.org_b, keeper, owner=True)
             seed_member(p.admin_engine, p.org_b, owner)
-            monkeypatch.setenv("GATEWAY_OPERATOR_TOKEN", OP_TOKEN)
-        acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner)
+        if how == "org_purge":
+            org, slug = seed_org(p.admin_engine, uuid.uuid4().hex[:8])
+        monkeypatch.setenv("GATEWAY_OPERATOR_TOKEN", OP_TOKEN)
+        acc = _seed_account(p.admin_engine, org=org, owner=owner)
         with p.admin_engine.begin() as c:
             msg = str(c.execute(text(
                 "INSERT INTO email_messages (account_id, provider_message_id, "
@@ -1043,10 +1051,10 @@ class TestEachChildIsEmptyAfterADisconnect:
                 {"a": acc, "pm": f"pm-{uuid.uuid4().hex[:12]}",
                  "f": json.dumps({"email": "s@sender.test"}),
                  "t": json.dumps([{"email": "to@em-g11f2.test"}]),
-                 "o": p.org_b}).scalar_one())
+                 "o": org}).scalar_one())
             children = list(c.execute(text(_CHILDREN_SQL)).fetchall())
         ids = {"email_accounts": acc, "email_messages": msg}
-        seeder = _Seeder(p.admin_engine, p.org_b, ids)
+        seeder = _Seeder(p.admin_engine, org, ids)
         seeded = {table: seeder.fill(table)
                   for table in sorted({r.child for r in children} - {"email_messages"})}
         seeded["email_messages"] = {"id": msg}
@@ -1076,13 +1084,21 @@ class TestEachChildIsEmptyAfterADisconnect:
                 assert before[(table, "<own key>")] == 1, f"the key of {table} finds no row"
             if how == "disconnect":
                 await _disconnect_with_no_task(p, monkeypatch, owner, acc)
-            else:
+            elif how == "member_purge":
                 await member_purge(p, owner)
+            else:
+                await org_purge(p, slug)
             after = _counts()
             left = {k: n for k, n in after.items() if n}
             assert left == {}, f"a child kept rows of the mailbox: {left}"
-            assert _purge_row(p.admin_engine, acc) is not None, (
-                "the cascade deleted the purge row")
+            if how == "org_purge":
+                assert [str(r.account_id) for r in detached_rows(p.admin_engine, org)] == [
+                    acc], "the org purge left no detached purge row"
+            else:
+                assert _purge_row(p.admin_engine, acc) is not None, (
+                    "the cascade deleted the purge row")
         finally:
             _wipe(p.admin_engine, owner, acc)
             wipe(p.admin_engine, keeper, owner)
+            if how == "org_purge":
+                drop_org(p.admin_engine, org)
