@@ -667,3 +667,22 @@ def test_the_specialist_path_marks_the_session(monkeypatch, streaming: bool) -> 
     assert clean is False, "only the calling session is marked"
     assert cards == ["fetch_page"], "a fetch in a marked session asks the card"
     assert fetched == [] and "did not run" in answer
+
+
+# ── fix round 1, F2: the last-word drop, with no scope and with approve_all ─
+
+@pytest.mark.parametrize("mode", ["enforce", "approve_all"])
+def test_a_mail_run_with_no_scope_holds_no_store_write(monkeypatch, no_db, mode: str) -> None:
+    """With no ``tool_scope`` the injection takes the whole chain, so only the
+    LAST-WORD drop takes the store writes out. With
+    ``AGENT_PERMISSION_MODE=approve_all`` the tool gate does not run at all,
+    so that drop is the only guard."""
+    monkeypatch.setenv("AGENT_PERMISSION_MODE", mode)
+    cfg = json.loads((REPO / "apps/agents/agent-email-assistant/config.json")
+                     .read_text(encoding="utf-8"))
+    cfg.pop("tool_scope", None)
+    held = _injected(MAIL_AGENT, cfg)
+    assert held, "the injection ran"
+    assert not (held & egress.STORE_WRITES), sorted(held & egress.STORE_WRITES)
+    # The control: with no scope, another agent holds every store write.
+    assert egress.STORE_WRITES <= _injected(OTHER_AGENT, {})
