@@ -312,6 +312,30 @@ async def test_the_crm_pdf_holds_the_route_numbers(
     assert "Value by stage (INR)" in pdf and "Qualified <b>" in pdf
 
 
+async def test_a_long_pipeline_keeps_to_the_caps_and_says_so(
+    chat: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """by-code-cap. 25 stages: the chart shows 12 bars and the table 20 rows,
+    each with a line that says so, and make_report accepts the report."""
+    stages = [{"status": {"name": f"Stage {i}"}, "count": i, "amount": 1000.0 * i,
+               "weighted": 500.0 * i} for i in range(1, 26)]
+
+    async def _get(path: str, params: dict[str, Any] | None = None) -> Any:
+        return {"stages": stages, "count": 325, "amount": 325000.0, "weighted": 162500.0}
+
+    monkeypatch.setattr(crm_tools, "_get", _get)
+    text = await _run(crm_tools.crm_report("pipeline", make_report=True))
+    assert "make_report failed" not in text, text
+    _, body = _report(chat)
+    chart = _section(body, "Value by stage")
+    assert len(chart["visual"]["values"]) == 12
+    assert chart["text"] == "The chart shows the first 12 of 25."
+    table = _section(body, "Stages")
+    assert len(table["visual"]["rows"]) == 20
+    assert table["text"] == "The table shows the first 20 of 25."
+    assert _kpis(body)["Open stages"] == 25
+
+
 def test_no_crm_text_field_holds_member_text() -> None:
     """by-code-cells. A stage, a reason or an owner never reaches a field
     that the markdown-lite check reads, so check_report accepts every spec."""
