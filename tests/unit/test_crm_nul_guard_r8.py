@@ -7,7 +7,8 @@ and 2.
 asyncpg, and the route answered 500. Postgres text holds no NUL. One guard,
 ``records.refuse_nul``, now refuses a NUL in a query name or value before
 any SQL runs, on each CRM read that takes a query string: the four lists,
-the export, the aggregate, the module list and ``search_records``.
+the export, the aggregate, the board (``GET /crm/pipeline``, fix round of
+2026-10-17), the module list and ``search_records``.
 
 Two halves.
 
@@ -57,7 +58,7 @@ _GUARDED = (
     ("records.py", "ListParams", "__init__"),
     ("records.py", None, "search_records"),
     ("export.py", "ExportParams", "__init__"),
-    ("aggregate.py", None, "aggregate"),
+    ("pipeline.py", None, "get_pipeline"),
     ("modules.py", None, "list_module_records"),
 )
 
@@ -87,6 +88,20 @@ def _calls(node: ast.AST) -> set[str]:
 def test_each_read_with_a_query_string_calls_the_guard(file, owner, name) -> None:
     tree = ast.parse((_CRM / file).read_text(encoding="utf-8"))
     assert "refuse_nul" in _calls(_function(tree, owner, name)), (file, owner, name)
+
+
+def test_the_aggregate_takes_the_guard_from_its_list_params() -> None:
+    """Fix round of 2026-10-17. The aggregate takes ``ListParams``, which
+    calls the guard. So the route calls it no second time."""
+    import typing
+
+    from gateway.routes.crm.aggregate import aggregate
+    from gateway.routes.crm.records import ListParams
+
+    tree = ast.parse((_CRM / "aggregate.py").read_text(encoding="utf-8"))
+    assert "refuse_nul" not in _calls(_function(tree, None, "aggregate"))
+    # `Depends()` with no argument takes the class of the annotation.
+    assert typing.get_type_hints(aggregate)["params"] is ListParams
 
 
 def test_the_guard_has_one_implementation() -> None:
@@ -190,3 +205,14 @@ async def test_a_nul_in_a_list_filter_value_is_a_422(mirrored, app_engine, path)
     p = mirrored
     for name in ("owner", "source", "status_id", "created_from", "custom.tier"):
         assert await _status(p, path, {name: "a\x00b"}) == 422, name
+
+
+@_DB_GATE
+async def test_a_nul_on_the_board_is_a_422(mirrored, app_engine) -> None:
+    """Fix round of 2026-10-17. ``GET /crm/pipeline`` takes ``owner``,
+    ``source`` and ``custom.<key>``, and bound each one to SQL with no guard."""
+    p = mirrored
+    assert await _status(p, "/crm/pipeline", {"owner": "a@x.test"}) == 200
+    for name in ("owner", "source", "custom.tier", "updated_from"):
+        assert await _status(p, "/crm/pipeline", {name: "a\x00b"}) == 422, name
+    assert await _status(p, "/crm/pipeline", {"q\x00x": "1"}) == 422

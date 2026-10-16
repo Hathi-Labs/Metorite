@@ -109,7 +109,7 @@ from gateway.routes.crm.field_sql import (
     zoned,
 )
 from gateway.routes.crm.modules import _require_module, mirrored_modules
-from gateway.routes.crm.records import ListParams, list_query, refuse_nul
+from gateway.routes.crm.records import ListParams, list_query
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
@@ -550,9 +550,10 @@ async def aggregate(
     params: ListParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> AggregateResponse:
-    """One measure of one entity or module, by one group, over the filters."""
-    # The one NUL guard of the CRM routes (CRM-Q25c), never a copy of it.
-    refuse_nul(request.query_params.multi_items())
+    """One measure of one entity or module, by one group, over the filters.
+
+    The NUL guard of CRM-Q25c runs in ``ListParams``, which this route takes,
+    before this body runs. A second call here would be a copy."""
     # An empty optional value is an absent one, the same for each of the four
     # (CRM-Q25 fix round). `group_field=` alone is then "no group", a 422.
     group_by, field = group_by or None, field or None

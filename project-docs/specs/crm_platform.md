@@ -3519,6 +3519,11 @@ the module list and `search_records` call it too. So the slice also changes
 `export.py` and `modules.py`, with one call in each. Those routes read their
 query string there.
 
+Fix round (2026-10-17). `GET /crm/pipeline` takes `owner`, `source` and
+`custom.<key>`, and it had no guard. `pipeline.get_pipeline` now calls
+`refuse_nul` before any SQL. The aggregate called the guard a second time,
+and `ListParams` already calls it, so that call is gone.
+
 `search_records` is no route. Its 422 makes the command bar leave the CRM
 group out, as a database error did before. The fence is
 `tests/unit/test_crm_nul_guard_r8.py`. Its first half reads the source, so

@@ -101,7 +101,7 @@ def refuse_nul(pairs: Iterable[tuple[str, str]]) -> None:
     Postgres text holds no NUL, so asyncpg refuses one later, and the route
     answers 500. This is the ONE guard. Each CRM read that takes a query
     string calls it before any SQL: :class:`ListParams` (the four lists and
-    the aggregate), ``export.ExportParams``, ``aggregate.aggregate``, the
+    the aggregate), ``export.ExportParams``, ``pipeline.get_pipeline``, the
     module list and :func:`search_records`. Do not write a second copy.
     Fence: ``tests/unit/test_crm_nul_guard_r8.py``.
     """
