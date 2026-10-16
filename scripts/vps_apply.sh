@@ -766,6 +766,36 @@ else
   fi
 fi
 
+echo "==> Reconciling the workbench's DEPLOY_ENV (.env.local <- .env, WS-38 S-7)"
+# The workbench reads DEPLOY_ENV from ITS OWN env file, for the staging band and
+# the "[Staging]" tab title. The root .env stays the one source: this copies the
+# value across, before the build below, because a static page takes it at
+# `next build` (a restart alone does not repaint it). On production it REMOVES
+# any DEPLOY_ENV line from .env.local, so a stray copy can never draw the band
+# on the production site. Fence: tests/unit/test_deploy_env.py.
+if [ ! -f "$WB_ENV" ]; then
+  echo "    ! $WB_ENV missing — skipping (the token step above names the cause)"
+elif [ "$DEPLOY_ENV" = "staging" ]; then
+  # Exactly one line, and it says staging. A second DEPLOY_ENV line of any
+  # value is rewritten away, so the last-line-wins rule cannot hide the band.
+  if [ "$(grep -c '^DEPLOY_ENV=' "$WB_ENV" || true)" != "1" ] || ! grep -qx 'DEPLOY_ENV=staging' "$WB_ENV"; then
+    # umask 077, and a write IN PLACE: .env.local holds secrets, and an `mv`
+    # would give the file the temp file's mode.
+    ( umask 077; grep -v '^DEPLOY_ENV=' "$WB_ENV" > "$WB_ENV.tmp" || true )
+    echo 'DEPLOY_ENV=staging' >> "$WB_ENV.tmp"
+    cat "$WB_ENV.tmp" > "$WB_ENV"; rm -f "$WB_ENV.tmp"
+    echo "    + DEPLOY_ENV=staging written to .env.local"
+  else
+    echo "    already DEPLOY_ENV=staging"
+  fi
+elif grep -q '^DEPLOY_ENV=' "$WB_ENV"; then
+  ( umask 077; grep -v '^DEPLOY_ENV=' "$WB_ENV" > "$WB_ENV.tmp" || true )
+  cat "$WB_ENV.tmp" > "$WB_ENV"; rm -f "$WB_ENV.tmp"
+  echo "    - removed a DEPLOY_ENV line from .env.local (this box is production)"
+else
+  echo "    production: no DEPLOY_ENV in .env.local, as it should be"
+fi
+
 # ── WS-49 BH-6: the root units run only root-owned files ────────────────────
 # 🔴 acb-backup, acb-health-watchdog and acb.service run as root. They ran
 # scripts and read the compose project from this checkout, which acb owns, and

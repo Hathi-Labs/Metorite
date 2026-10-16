@@ -3,7 +3,7 @@
 **Status:** 🟠 **PROPOSED, 2026-10-15. Revised 2026-10-16:** staging goes on the dev box (§5).
 
 **Built:** 🔨 phase 1, the daily clock (§5.7), and 🔨 phase 2 slice S-4, `DEPLOY_ENV` (§5.8).
-Both on 2026-10-16, on the owner's go-ahead. S-3, S-7 and phases 3 to 5 are not built.
+Both on 2026-10-16, on the owner's go-ahead. S-7, the staging band, is built (§5.9). S-3 needs no code (§5.9). Phases 3 to 5 are not built.
 
 **Owner:** vjvarada ·
 **Board row:** WS-38 (this is the concrete answer to its **D-D**, and a proposed
@@ -125,10 +125,10 @@ earlier.
 customer data until the identifiers are gone (parent spec §3.4, clause 1). A
 scrambled email also locks that member out of staging, which is the correct result.
 
-**What shows that you are on staging.** Staging serves a fixed band at the top of
-every page that reads "Staging". The band comes from one environment variable,
-`NEXT_PUBLIC_DEPLOY_ENV=staging`. Without it, a person can act on staging and think
-the act reached production.
+**What shows that you are on staging.** Staging draws a 4px warning stripe across
+the top of every page, and its tab title reads `[Staging] Metorite`. Both come from
+`DEPLOY_ENV=staging` in the box's root `.env` (§5.9). Without them, a person can act
+on staging and think the act reached production.
 
 ---
 
@@ -395,6 +395,64 @@ value stops the round before the lock. Fence: `tests/unit/test_deploy_env.py`.
 the operator console run only when their units are enabled, and the bootstrap
 enables neither. The Console ladder is then skipped (§5.4).
 
+### 5.9 S-3 and S-7, 2026-10-16
+
+**S-3 needs no code.** A re-measure found seven places in code that name a
+production host. Five of them no setting moves, and two are settings already.
+None of them reaches a person from staging:
+
+- The WhatsApp link host (`whatsapp_ui.py` `LINK_HOST`, `views.py` `APP_URL`,
+  and the `bot_run.py` prompt) is a security allowlist against a phishing link.
+  WhatsApp is off on staging. A setting there would widen the allowlist for no
+  gain.
+- `INVITE_SIGNIN_FALLBACK_ORIGIN` applies when the WORKBENCH has no
+  `WORKBENCH_PUBLIC_URL` in its own `.env.local`. The S-4 default writes that key
+  to the root `.env` only, so S-5 must write it to `.env.local` too (§5.10). No
+  invite mail goes out from staging in any case: it needs
+  `MEMBER_INVITE_EMAIL_ENABLED=true` and a Resend key.
+- `inviteSeat.ts` shows an admin the words "sign in at app.metorite.com". It is
+  on screen only, and it sends nothing.
+- `agent_authorize_url` and `SMOKE_BASE_URL` are settings already. S-5 writes
+  the staging values (§5.10).
+
+**S-7 is built.** `src/components/StagingBand.tsx` draws a 4px `bg-warning`
+stripe across the top of every page when `DEPLOY_ENV=staging`. The tab title
+reads `[Staging] Metorite`. Both read the setting on the server, and production
+renders nothing new.
+
+The stripe is an overlay that takes no space and no clicks, because the shell
+fills 100dvh. Fence:
+`src/lib/deploy/deployEnv.test.ts`. A visual review on 2026-10-16 captured it in
+eight contexts on two pages, and it found no P0 and no P1.
+
+### 5.10 What the S-5 bootstrap must do, collected
+
+Each line below is a finding of the S-4 and S-7 reviews. S-5 is done only when
+its script does every one, and refuses to finish when one is missing.
+
+1. **Turn on the firewall first.** Allow 22, 80 and 443, and deny the rest. The
+   gateway listens on `0.0.0.0:8080`. Without the firewall, a request reaches it
+   directly, past the header strip of `Caddyfile.staging`.
+2. **Write `DEPLOY_ENV=staging`** in `/opt/acb/app/.env`, in that exact form.
+3. **Write the outbound switches off:** `WHATSAPP_BRIDGE_ENABLED=0` and
+   `MEETING_BOT_ENABLED=0`. Without them, the apply seeds 1.
+4. **Write the staging hosts** to both env files: `WORKBENCH_PUBLIC_URL` in
+   `.env.local` too, `AGENT_AUTHORIZE_URL=https://dev.metorite.com/connect/authorize`
+   and `SMOKE_BASE_URL=https://dev.metorite.com`.
+5. **Hold no production secret.** No production `ACB_MASTER_KEY`, `AUTH_SECRET`,
+   Resend key, SMTP password, WhatsApp token or mail OAuth secret. Without the
+   production `ACB_MASTER_KEY`, the restored provider keys stay ciphertext, and
+   that is the intent.
+6. **Keep port 3001 for staging.** The local recipe runs `next dev -p 3001`. On
+   the dev box, an agent's dev server on 3001 during a staging restart would be
+   served at `dev.metorite.com`. Refuse to start when another user holds 3001,
+   and record the rule for the agents on that box.
+7. **Build the database from a restore of production (T-9), never from the
+   ladder alone.** The production RLS policies came from the H3 cutover, outside
+   the numbered migrations. A ladder-only database has no tenant isolation, and
+   R5 forbids that on staging. The gateway connects as a non-owner role, as
+   `acb_app` does on production.
+
 ## 6. The build tickets
 
 These extend WS-38. T-7, T-8 and T-9 are the parent spec's tickets. The `S-` rows
@@ -404,11 +462,11 @@ are new. The phase column maps each row to §5.6.
 |---|---|---|---|---|
 | **T-7** | 1 | **The `staging` ref.** `publish-release` becomes `publish-staging` and fast-forwards `staging` on each green `main` | as the parent spec §8 T-7 | 🟢 |
 | **T-8** | 1 | **`release-promote.yml`.** A `schedule:` trigger at 21:30 UTC plus `workflow_dispatch` with a SHA and a reason. It fast-forwards `release` and runs the production deploy job, which moves here from `deploy.yml`. In phase 1 it promotes the tip of `staging`. In phase 5 it applies §4.2 | `release` moves only by this workflow. A SHA that is not on `staging` is refused. A held day (§4.3) moves nothing. The ntfy report names the SHA and the `/version` it read back | 🟢 build · 🔴 enable the schedule |
-| **S-3** | 2 | **Host names from configuration.** 23 files outside the tests name `app.metorite.com` or `api.metorite.com`. They include `vps_apply.sh`, `health-watchdog.sh`, `inviteEmail.ts` and the WhatsApp views. Read each name from `GATEWAY_PUBLIC_URL` and `WORKBENCH_PUBLIC_URL`, which already exist | `rg -l "app\.metorite\.com\|api\.metorite\.com"` outside tests and docs returns only the production Caddyfile and the defaults block | 🟢 |
+| **S-3** | 2 | **Host names from configuration.** ✅ **Closed 2026-10-16 with no code** (§5.9). Re-measured: no hard-coded host reaches a person from staging. The settings that S-5 must write are in §5.10 | §5.9 records each site and its reason | ✅ no code |
 | **S-4** | 2 | **`DEPLOY_ENV` in the apply script** (§5.4), with `Caddyfile.staging` | `caddy validate` passes on both files. `test_deploy_env.py` proves that `staging` installs neither the production Caddyfile nor the backup timer | 🟢 |
-| **S-7** | 2 | **The staging band.** `NEXT_PUBLIC_DEPLOY_ENV=staging` draws a fixed band on every page | Visible on staging in light mode and at compact density. Absent on production | 🟢 |
+| **S-7** | 2 | **The staging band.** ✅ **Built 2026-10-16** (§5.9). `DEPLOY_ENV=staging` in the root `.env`, which `vps_apply.sh` copies into the workbench `.env.local` before the build, draws a 4px `bg-warning` stripe and the `[Staging]` tab title | Visible on staging in light mode and at compact density. Absent on production. Fences: `deployEnv.test.ts` and `test_deploy_env.py` | ✅ built |
 | **S-6** | 3 | **The staging Router key.** The `Metorite Staging` organization on the Console, with a credit cap. Its `cc_live_` key goes on the dev box only | A chat turn on staging writes a usage row against `Metorite Staging` and no other organization | 🔴 owner (a write to the live Console) |
-| **S-5** | 4 | **`bootstrap_staging.sh`** (§5.2, §5.3, §5.5) | `https://api.dev.metorite.com/health` answers. `/version` serves the `staging` SHA. `sudo -u dev cat /opt/acb/app/.env` is refused | 🟢 write · 🔴 owner runs it with `sudo` |
+| **S-5** | 4 | **`bootstrap_staging.sh`** (§5.2, §5.3, §5.5, and the duty list in §5.10) | `https://api.dev.metorite.com/health` answers. `/version` serves the `staging` SHA. `sudo -u dev cat /opt/acb/app/.env` is refused | 🟢 write · 🔴 owner runs it with `sudo` |
 | **T-9** | 5 | **The nightly rebuild**, with the §3 staff allowlist in the anonymiser. The anonymised dump moves from the production box to the dev box over a second forced-command key | as the parent spec §8 T-9. A staff member signs in to staging. A scrambled member cannot | 🟢 build · 🔴 run |
 | **S-8** | 5 | **Smoke checks.** The four §4.2 checks run after each staging deploy | A failed check blocks that SHA from promotion | 🟢 |
 | **S-9** | 5 | **The contract-after-expand fence** (§4.5) | A test PR whose contract names an expand that is not on `release` turns CI red | 🟢 |
