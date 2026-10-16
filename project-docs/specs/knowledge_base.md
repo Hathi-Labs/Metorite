@@ -11,13 +11,13 @@ feature `knowledge`, the capability `knowledge:manage`, the pane at
 is hidden from the nav, and `/knowledge` renders by URL for a member with
 the feature.
 
-**KB-1 is BUILT, 2026-10-15** (branch `ws61-kb1`, migration 272, dark
+**KB-1 is BUILT, 2026-10-15** (PR #1071, migration 272, dark
 behind `KNOWLEDGE_ENABLED` and `KNOWLEDGE_ORGS`). Five tables: spaces,
 grants, pages, versions and links. The one visibility clause, the lazy
 `company` and `me` spaces, `knowledge:manage` on `admin`, and the 4 space
 routes and 9 page routes. No page file, chunk, gap or source yet.
 
-**KB-3 and KR-3 are BUILT, 2026-10-16** (branch `ws61-kb3`, migration 273,
+**KB-3 and KR-3 are BUILT, 2026-10-16** (PR #1073, migration 273,
 dark behind `KNOWLEDGE_ENABLED`, `KNOWLEDGE_ORGS` and `KNOWLEDGE_EMBED`).
 The table `kb_chunks` has a generated `tsv` and a partial HNSW index, and
 `gateway/kb_index/` holds the chunker, the embed door, the indexer and the
@@ -26,6 +26,12 @@ transaction, and a background task embeds the new chunks after the commit.
 `GET /knowledge/search` fuses the two halves. Knowledge is the seventh
 source of `gateway/retrieval/`, and it is not in the command bar. It asks
 for the lexical half only, because §20.4 runs no model.
+
+**KB-2a is BUILT, 2026-10-16** (branch `ws61-kb2a`, frontend only, no
+migration). The BFF proxy `api/knowledge/[...path]`, the Spaces view, the
+page tree in the rail, and the page view. A member makes a page and a
+sub-page, edits the Markdown with a Write and Preview switch, publishes, and
+reverts to an older version. The first spaces read decides the off state.
 
 **§20 (D105, 2026-10-15)** adds company
 retrieval across every app. **KR-1 and KR-2 are BUILT, 2026-10-15**
@@ -49,7 +55,7 @@ read and grow it. And it owns the "Save to Knowledge" act on an artifact.
 - **The artifacts.** `artifact_management.md` (WS-60, AM-1 built 2026-10-15)
   owns the `artifacts` registry, its scope and shares, and the library.
   `agent_file_and_memory_framework.md` owns the bytes in `agent_blob`. A file
-  on a page is an artifact, registered through `register_artifact`, and
+  on a page is an artifact, registered by the registry's one writer, and
   Knowledge keeps only the join. "Save to Knowledge" copies an artifact's
   text into a page, with the artifact id as provenance (§10.1).
 - **The judge and the delivery.** `my_day_feed.md` (WS-58) owns the cards
@@ -271,9 +277,11 @@ fires when it passes (§9).
 ### 4.3 A file on a page
 
 A file on a page is an artifact. The upload goes through the artifact seam
-of `artifact_management.md` §4.5. That is one call to `register_artifact`
-with `via = 'app'`, which writes the blob and the row in one transaction. The
-join `kb_page_files` carries the page, the artifact id, the position and the
+of `artifact_management.md` §4.5. That is one call to the registry's one
+writer (`register_in_session` in `acb_memory/artifacts.py` on 2026-10-16)
+with `via = 'app'`. It writes the blob and the row in one transaction.
+
+The join `kb_page_files` carries the page, the artifact id, the position and the
 caption. An image renders inline, from the artifact's own file route, with
 the MIME safelist and the `nosniff` header. Any other file renders as a card
 with a download.
@@ -281,9 +289,10 @@ with a download.
 So a page file shows in the Artifacts library too, with "On a page" as its
 provenance, and Knowledge adds no second file store.
 
-This makes KB-2a depend on AM-1, which is built and dark. KB-2a reads the
-registry behind the same flag, and the Knowledge flags stay off until
-`ARTIFACT_REGISTRY_ENABLED` is on for the org.
+This makes KB-2c depend on AM-1, which is built and dark, and on H-322 in
+the artifact sweep (AM-5). KB-2c reads the registry behind the same flag,
+and page files stay off until `ARTIFACT_REGISTRY_ENABLED` is on for the
+org.
 
 The text of a file is indexed under its page. `attachment_text.extract_text`
 reads it once at upload, and the chunks carry `source_kind = 'file'`.
@@ -387,7 +396,7 @@ card. C is a hard-to-undo write with one card per act. X is not on chat.
 | `POST /knowledge/pages/{id}/archive` | C | Archive. Leave the index. A manager of the space still sees the page |
 | `POST /knowledge/pages/{id}/restore` | C | Return an archived page to the state it had before the archive, with a `restore` version. A restored published page gets a review date 180 days on. A manager of the space only |
 | `POST /knowledge/pages/{id}/revert` | B | A new version with an old body |
-| `POST /knowledge/pages/{id}/files` | B | Attach a file through `register_artifact` (§4.3) |
+| `POST /knowledge/pages/{id}/files` | B | Attach a file through the artifact registry's one writer (§4.3). KB-2c |
 | `GET /knowledge/files/{id}/{name}` | X | Serve one file. The MIME safelist and `nosniff` |
 | `POST /knowledge/pages/{id}/links` | B | Add a typed link |
 | `GET /knowledge/about?entity=task:<id>` | A | Every page that links to this entity (§10.2) |
@@ -912,8 +921,10 @@ every member. A preview pane carries its nav entry and no job.
 
 ### 11.1 The surface — what a member sees
 
-The rule is three nouns and one editor. The rail has five entries, and the
-first screen is the Company space.
+The rule is three nouns and one editor. The rail grows to five entries,
+each with the ticket that builds it: Spaces (KB-2a), Search (KB-3), Files
+(KB-2c), Sources (KB-7a) and Review (KB-5). An entry is absent until then,
+never a stub. The first screen is the space cards. A card opens its space, and the rail shows its page tree.
 
 | Rail entry | What it shows |
 |---|---|
@@ -1053,7 +1064,8 @@ its own branch, three or four in flight at most.
 |---|---|---|---|
 | **KB-0** ✅ BUILT 2026-10-15 | The feature (`FEATURES` and a `feature_catalog` row, in the shape of `144_crm.sql:558`), the capability `knowledge:manage` in `CAPABILITIES` (the owner holds it through `*`, and the admin seed is KB-1), the pane at `preview` with no job, `HREF_FEATURES` in `access.ts`, the page scaffold with `AppTopBar`, `PREVIEW_BAR_HOME`, the e2e `PAGES` and features mock, and the Preview row of `launch_surface.md` §2. No flag: a preview route renders by URL, and the nav entry stays hidden | `feature:knowledge` and `knowledge:manage` exist, and `test_org_access_control.py` proves both. `/knowledge` renders "Knowledge" as the one `h1`, by URL. `nav.test.ts`, `navAccessAgreement.test.ts` and `appBar.test.ts` pass. `seams.test.ts` gains no debt | AGENT-SAFE |
 | **KB-1** ✅ BUILT 2026-10-15 | Migration 272 (check at merge): `kb_spaces`, `kb_space_grants`, `kb_pages`, `kb_page_versions` and `kb_links`, in the tenancy shape of `268_artifacts.sql`, with the generated-phase lines for them. `kb_page_files` waits for KB-2a, `kb_chunks` for KB-3, `kb_gaps` for KB-4, and the source tables for KB-7. `kb_page_files.artifact_id` carries no foreign key, because the artifact sweep deletes registry rows. The seed of `knowledge:manage` onto `admin` in every org, and in `provision_org_roles`, in the shape of 207 §2. A pure `normalize_grant_subject` in `acb_auth/permissions.py`, which `core.validate_grant_subject` wraps as the 422. `visible_pages_clause`, over the member's email, `org` and the groups of `_MY_GROUPS_SQL`, with no copy of the project grant SQL. The `company` space made lazily with an `org` read grant, the `me` space on the member's first write, and `team-*` only by `POST /knowledge/spaces`, each race-free by a partial unique index. The 4 space routes and 9 page routes, the 8 of §5.3 and `restore`, behind `require_feature_router("knowledge")`, `KNOWLEDGE_ENABLED` and `KNOWLEDGE_ORGS` (404 when off). The chat manifest and its coverage test move to KB-4, with the skill | R8 against a real database. Two orgs, two spaces, one grant each: the other org and the other space see nothing. `test_kb_visibility_one_seam.py` is red-first, then green. After the ladder, `admin` holds `knowledge:manage`, and `manager` and `member` do not. A new org holds it too. Two concurrent first writes make one `me` space | AGENT-SAFE |
-| **KB-2a** | The Spaces view, the page tree, a Markdown editor with preview, publish, versions, files on a page through `register_artifact` (§4.3) | A member writes, publishes, attaches an image, reverts. The visual review passes in four contexts | AGENT-SAFE |
+| **KB-2a** ✅ BUILT 2026-10-16 | Frontend only, with no gateway change and no migration. The BFF proxy `api/knowledge/[...path]`, the Spaces view (space cards, then the page tree in the rail and the page on the right), make a page and a sub-page, a Markdown editor with a Write and Preview switch (the chat's `MarkdownBody`, no second renderer), publish, the versions list and revert. Write controls hide when the member cannot write. `/knowledge` is the Spaces view and `/knowledge/pages/<id>` is the page. The off state comes from the first spaces read only. `useAssistantFacts` names the page. Not in KB-2a: files, move, archive, restore, reorder, a soft lock, an old version's body | On a local stack with `KNOWLEDGE_ENABLED` on, a member makes a page, edits it, publishes it, and reverts it to version 1. The versions list then shows create, edit, publish and revert. With the flag off, `/knowledge` shows the off state under its one `h1`. The visual review passes in light mode, compact density and a changed accent, at 1440, 1024, 768 and 390 px | AGENT-SAFE |
+| **KB-2c** | Files on a page: the `kb_page_files` migration, `POST /knowledge/pages/{id}/files` through the artifact registry, inline images, the Files rail entry. After AM-5 and H-322 | A member attaches an image, and it renders inline. After the sweep runs, the file is still there (H-322) | AGENT-SAFE |
 | **KB-2b** | The TipTap editor over the same Markdown, links as pills with `[[`, the "Knowledge about this" component | The body round-trips through Markdown with no loss for the supported marks. A task shows its linked pages | AGENT-SAFE |
 | **KB-3** ✅ BUILT 2026-10-16 | Backend only. Migration 273 (check at merge): `kb_chunks` with the generated `tsv` and a partial HNSW index. `gateway/kb_index/`: chunking, `embed()` with the zero-vector rule, `query()` with fusion, and the hook in `_written` that writes or deletes a page's chunks in its transaction, then embeds after the commit. `GET /knowledge/search`. The flag `KNOWLEDGE_EMBED` (default off). KR-3 ships on the same branch | A published page is found by an exact token, and by a paraphrase with a fixed fake embedder in the R8 suite. A draft is never found, and an archived page leaves the index. The embed door down returns the lexical half with `degraded`. `test_kb_one_index.py` holds, and the one-seam fence covers `kb_chunks` reads | AGENT-SAFE to build. The embed flip spends credits: owner |
 | **KB-3b** | The Search rail entry and view over `GET /knowledge/search`, results grouped by space with the heading path | A member finds a published page by a word in its body, and the hit opens the page at `/knowledge/pages/<id>` | AGENT-SAFE |

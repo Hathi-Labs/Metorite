@@ -76,6 +76,17 @@ const CRM: Record<string, unknown> = {
   "lost-reasons": [],
 };
 
+/** The Knowledge reads: the Company space and one published page in it. */
+const KB_SPACE = {
+  id: "ks1", slug: "company", name: "Company", purpose: "How we do things.", icon: "",
+  kind: "company", owner_email: null, archived_at: null, created_at: null, level: "manage", page_count: 1,
+};
+const KB_PAGE = {
+  id: "kp1", space_id: "ks1", parent_id: null, position: 0, title: "Refund policy", state: "published",
+  author_email: "admin@example.com", reviewers: [], review_at: null, source_ref: null, published_at: null,
+  archived_at: null, history_from: null, archived_from_state: null, updated_at: null, created_at: null,
+};
+
 /** Three tasks that put every Calendar tool up: due soon, done today, and replan. */
 function calendarRows() {
   const at = (h: number, m = 0) => {
@@ -127,6 +138,10 @@ async function setup(page: Page, opts: { chatName?: string; memberName?: string 
       "admin/roles": [],
       "admin/groups": [],
       "admin/features": [],
+      // Knowledge (WS-61 KB-2a): one space with one page, so the bar draws
+      // over the real Spaces view and its rail.
+      "knowledge/spaces": { spaces: [KB_SPACE] },
+      "knowledge/pages": { pages: [KB_PAGE] },
       agents: [],
     },
     { arrayPaths: /^(notes|chat|agent|apps|agents)\b/ },

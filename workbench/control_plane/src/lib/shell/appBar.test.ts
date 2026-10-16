@@ -137,8 +137,9 @@ const APP_BAR_HOME: Record<string, string> = {
  * When a pane goes live, its row moves to `APP_BAR_HOME`.
  */
 const PREVIEW_BAR_HOME: Record<string, string> = {
-  // WS-61 KB-0 (`knowledge_base.md` §11). It moves to `APP_BAR_HOME` at KB-12.
-  "/knowledge": "app/knowledge/page.tsx",
+  // WS-61 KB-0 (`knowledge_base.md` §11). Since KB-2a the layout draws the
+  // bar over every Knowledge route. It moves to `APP_BAR_HOME` at KB-12.
+  "/knowledge": "app/knowledge/layout.tsx",
 };
 
 /** My Day at `/`, behind `NEXT_PUBLIC_MY_DAY`. Not a nav pane, so apart. */
