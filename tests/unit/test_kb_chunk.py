@@ -5,8 +5,10 @@ Spec: ``project-docs/specs/knowledge_base.md`` §6.2, §6.3 and §6.4.
 * ``chunk_page``: headings give the path, a long section splits on
   paragraphs and repeats the path, a table is its own chunk with the header
   at most 40 rows, and the sha moves only with the text.
-* ``embed``: a zero vector, a short vector, an error and a timeout are each
-  ``None``. One log line for each call. No ``usage_event``.
+* ``embed``: it posts to the Console Router's ``/v1/embeddings`` on
+  ``tier-embed`` with the run's member (CP-EMB). A zero vector, a short
+  vector, a refusal, an error and a timeout are each ``None``, and it never
+  raises. One log line for each call.
 * ``fuse``: reciprocal rank fusion with k = 60, the age decay, and at most two
   chunks for each page.
 * ``embed_query`` and ``embed_pending`` never call the door with
@@ -17,6 +19,7 @@ The SQL is proved against a real database in ``test_kb_search_r8.py``.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import date, timedelta
 from typing import Any
 
@@ -144,83 +147,227 @@ def test_two_parts_with_one_sha_are_one_chunk() -> None:
     assert len(chunk_page("T", body)) == 1
 
 
-# ── The embed door ──────────────────────────────────────────────────────────
+# ── The embed door (CP-EMB, customer_console.md §6A.16) ─────────────────────
+#
+# 🔴 **The fake is the HTTP transport, and the client is the real one.**
+# `console_resolve.embeddings_on_console` runs as it does in production, and
+# only `_new_http_client` answers from here. So a test proves the path, the
+# credential and the member headers, and no test reaches AI/ML API.
 
-class _Door:
-    """A stand-in for the gateway's /v1/embeddings over httpx."""
+CONSOLE_URL = "https://console.metorite.test"
+DEPLOYMENT_KEY = "cc_depl_kbtest_secretsecretsecret"
+MEMBER = "owner@acme.test"
 
-    def __init__(self, answer: Any = None, error: BaseException | None = None) -> None:
+
+class _Console:
+    """A stand-in for the Console Router, behind the real client."""
+
+    def __init__(self, answer: Any = None, error: BaseException | None = None,
+                 status: int = 200) -> None:
         self.answer = answer
         self.error = error
-        self.requests: list[dict[str, Any]] = []
+        self.status = status
+        self.requests: list[httpx.Request] = []
+        self.timeouts: list[Any] = []
 
-    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        door = self
+    def _handle(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if self.error is not None:
+            raise self.error
+        body = json.loads(request.content)
+        answer = self.answer(body["input"]) if callable(self.answer) else self.answer
+        return httpx.Response(self.status, json=answer if answer is not None else {})
 
-        class _Client:
-            def __init__(self, *a: Any, **kw: Any) -> None:
-                pass
+    def client(self, timeout: Any = None) -> httpx.AsyncClient:
+        self.timeouts.append(timeout)
+        return httpx.AsyncClient(transport=httpx.MockTransport(self._handle))
 
-            async def __aenter__(self) -> _Client:
-                return self
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> _Console:
+        from acb_auth import console_resolve
 
-            async def __aexit__(self, *a: Any) -> None:
-                return None
+        monkeypatch.setenv("CUSTOMER_CONSOLE_URL", CONSOLE_URL)
+        monkeypatch.setenv("CUSTOMER_CONSOLE_ORG_KEY", "")
+        monkeypatch.setenv("CUSTOMER_CONSOLE_DEPLOYMENT_KEY", DEPLOYMENT_KEY)
+        monkeypatch.setenv("CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY", "true")
+        get_settings.cache_clear()
+        monkeypatch.setattr(console_resolve, "_new_http_client", self.client)
+        return self
 
-            async def post(self, url: str, json: Any, headers: Any) -> httpx.Response:
-                door.requests.append({"url": url, "json": json, "headers": headers})
-                if door.error is not None:
-                    raise door.error
-                answer = door.answer(json["input"]) if callable(door.answer) else door.answer
-                return httpx.Response(200, json=answer, request=httpx.Request("POST", url))
 
-        monkeypatch.setattr(embed_mod, "_client", _Client)
+@pytest.fixture(autouse=True)
+def _fresh_settings():
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 def _vectors(texts: list[str], value: float = 0.5) -> dict[str, Any]:
     return {"data": [{"index": i, "embedding": [value] * 1536} for i in range(len(texts))]}
 
 
-def test_the_door_is_the_gateway_with_the_service_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    door = _Door(_vectors)
-    door.install(monkeypatch)
-    out = asyncio.run(embed_mod.embed(["a", "b"], org=ORG))
+def _as_member(coro_fn: Any) -> Any:
+    """Run *coro_fn* inside a job bound to a PROVEN member, as CRM-Q27 does."""
+    from acb_common._log import job_member_scope
+
+    async def _run() -> Any:
+        with job_member_scope(MEMBER, app="crm"):
+            return await coro_fn()
+
+    return asyncio.run(_run())
+
+
+def test_embed_posts_to_the_console_door(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Item 8. The door is the Router's, on the box key, with the run's member."""
+    console = _Console(_vectors).install(monkeypatch)
+    out = _as_member(lambda: embed_mod.embed(["a", "b"], org=ORG))
     assert [len(v or []) for v in out] == [1536, 1536]
-    req = door.requests[0]
-    assert req["url"] == get_settings().litellm_base_url.rstrip("/") + "/v1/embeddings"
-    assert req["json"] == {"model": "text-embedding-3-small", "input": ["a", "b"]}
-    # The gateway's /v1/embeddings is not public. require_authenticated refuses
-    # the /v1 key when GATEWAY_INTERNAL_TOKEN is set (production).
-    assert req["headers"] == {"Authorization": f"Bearer {get_settings().gateway_internal_token}"}
-    assert get_settings().llm_api_key not in req["headers"]["Authorization"] or (
-        get_settings().llm_api_key == get_settings().gateway_internal_token)
+    req = console.requests[0]
+    assert str(req.url) == CONSOLE_URL + "/v1/embeddings"
+    assert json.loads(req.content) == {"model": "tier-embed", "input": ["a", "b"]}
+    assert req.headers["Authorization"] == f"Bearer {DEPLOYMENT_KEY}"
+    assert req.headers["X-CC-Member"] == MEMBER
+    assert req.headers["X-CC-Member-Proven"] == "1"
+    assert req.headers["X-CC-Module"] == "crm"
+    # The caller's own bound, never a second one.
+    assert console.timeouts == [embed_mod.TIMEOUT_S]
+
+
+def test_a_run_with_no_app_reports_knowledge(monkeypatch: pytest.MonkeyPatch) -> None:
+    from acb_common._log import bind_run_context, run_context_scope
+
+    console = _Console(_vectors).install(monkeypatch)
+
+    async def _run() -> Any:
+        with run_context_scope():
+            bind_run_context(user=MEMBER, member_verified=True)
+            return await embed_mod.embed(["a"], org=ORG, timeout=0.8)
+
+    asyncio.run(_run())
+    assert console.requests[0].headers["X-CC-Module"] == "knowledge"
+    assert console.timeouts == [0.8]
+
+
+def test_embed_sends_64_texts_at_most(monkeypatch: pytest.MonkeyPatch) -> None:
+    console = _Console(_vectors).install(monkeypatch)
+    texts = [f"t{i}" for i in range(embed_mod.BATCH * 2 + 1)]
+    out = _as_member(lambda: embed_mod.embed(texts, org=ORG))
+    sizes = [len(json.loads(r.content)["input"]) for r in console.requests]
+    assert sizes == [64, 64, 1]
+    assert all(v is not None for v in out) and len(out) == len(texts)
+
+
+def test_an_empty_text_is_none_and_never_sent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The door answers 422 for an empty text, and one 422 made all 64 texts
+    of its batch None. CRM note search stalled on exactly that."""
+
+    def _vectors_or_422(texts: list[str]) -> dict[str, Any]:
+        if any(not t.strip() for t in texts):
+            raise AssertionError("an empty text reached the door")
+        return _vectors(texts)
+
+    console = _Console(_vectors_or_422).install(monkeypatch)
+    out = _as_member(lambda: embed_mod.embed(["good", "", "  ", None, "also good"], org=ORG))
+    sent = [json.loads(r.content)["input"] for r in console.requests]
+    assert sent == [["good", "also good"]]
+    assert [v is not None for v in out] == [True, False, False, False, True]
+    assert len(out[0] or []) == 1536 and len(out[4] or []) == 1536
+
+
+def test_only_empty_texts_send_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    console = _Console(_vectors).install(monkeypatch)
+    assert _as_member(lambda: embed_mod.embed(["", " \n "], org=ORG)) == [None, None]
+    assert console.requests == []
 
 
 def test_a_zero_vector_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    _Door(lambda texts: _vectors(texts, 0.0)).install(monkeypatch)
-    assert asyncio.run(embed_mod.embed(["a"], org=ORG)) == [None]
+    _Console(lambda texts: _vectors(texts, 0.0)).install(monkeypatch)
+    assert _as_member(lambda: embed_mod.embed(["a"], org=ORG)) == [None]
 
 
 def test_a_short_vector_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    _Door({"data": [{"index": 0, "embedding": [0.1, 0.2]}]}).install(monkeypatch)
-    assert asyncio.run(embed_mod.embed(["a"], org=ORG)) == [None]
-
-
-@pytest.mark.parametrize("error", [httpx.ConnectError("down"), httpx.ReadTimeout("slow")])
-def test_an_error_or_a_timeout_is_none_for_each_text(
-    monkeypatch: pytest.MonkeyPatch, error: BaseException,
-) -> None:
-    _Door(error=error).install(monkeypatch)
-    assert asyncio.run(embed_mod.embed(["a", "b"], org=ORG)) == [None, None]
+    _Console({"data": [{"index": 0, "embedding": [0.1, 0.2]}]}).install(monkeypatch)
+    assert _as_member(lambda: embed_mod.embed(["a"], org=ORG)) == [None]
 
 
 def test_a_count_mismatch_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    _Door(lambda texts: _vectors(texts[:1])).install(monkeypatch)
-    assert asyncio.run(embed_mod.embed(["a", "b"], org=ORG)) == [None, None]
+    _Console(lambda texts: _vectors(texts[:1])).install(monkeypatch)
+    assert _as_member(lambda: embed_mod.embed(["a", "b"], org=ORG)) == [None, None]
 
 
-def test_one_log_line_per_call_and_no_usage_row(monkeypatch: pytest.MonkeyPatch) -> None:
-    _Door(_vectors).install(monkeypatch)
+@pytest.mark.parametrize(
+    ("status", "error"),
+    [
+        (400, None),  # tier_unknown: nobody bound tier-embed
+        (402, None),  # the balance wall
+        (403, None),  # the run ceiling
+        (422, None),  # an empty text
+        (502, None),  # the vendor failed
+        (503, None),  # no key for any step
+        (200, httpx.ConnectError("down")),
+        (200, httpx.ReadTimeout("slow")),
+        (200, RuntimeError("anything at all")),
+    ],
+)
+def test_every_failure_is_none_and_never_raises(
+    monkeypatch: pytest.MonkeyPatch, status: int, error: BaseException | None,
+) -> None:
+    """Item 9. The callers' contract: the door never raises."""
+    _Console({"detail": "no"}, error=error, status=status).install(monkeypatch)
+    assert _as_member(lambda: embed_mod.embed(["a", "b"], org=ORG)) == [None, None]
+
+
+def test_an_unwired_box_is_none_and_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CUSTOMER_CONSOLE_URL", "")
+    get_settings.cache_clear()
+    assert asyncio.run(embed_mod.embed(["a"], org=ORG)) == [None]
+
+
+def test_a_box_with_no_member_is_none_and_sends_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deployment-key box needs a PROVEN member. With none, the client
+    refuses locally, no request goes out, and the answer is degraded."""
+    console = _Console(_vectors).install(monkeypatch)
+    assert asyncio.run(embed_mod.embed(["a"], org=ORG)) == [None]
+    assert console.requests == []
+
+
+def test_a_broken_client_is_none_and_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    from acb_auth import console_resolve
+
+    async def _boom(*a: Any, **kw: Any) -> Any:
+        raise ValueError("the client broke")
+
+    _Console(_vectors).install(monkeypatch)
+    monkeypatch.setattr(console_resolve, "embeddings_on_console", _boom)
+    assert _as_member(lambda: embed_mod.embed(["a", "b"], org=ORG)) == [None, None]
+
+
+def test_the_names_the_callers_import_stay() -> None:
+    """Item 10. CRM-Q27 and the Knowledge search import these at load time.
+
+    A renamed constant stops the CRM sync loop from loading, and a new
+    vector size makes every stored vector stale.
+    """
+    import inspect
+
+    from gateway.kb_index import index as index_mod_
+    from gateway.kb_index import query as query_mod_
+
+    assert embed_mod.BATCH == 64
+    assert embed_mod.EMBED_DIMS == 1536
+    assert callable(index_mod_.vector_literal)
+    assert isinstance(query_mod_.QUERY_EMBED_TIMEOUT_S, float)
+    sig = inspect.signature(embed_mod.embed)
+    assert list(sig.parameters) == ["texts", "org", "timeout"]
+    assert sig.parameters["org"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert sig.parameters["timeout"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert sig.parameters["timeout"].default == embed_mod.TIMEOUT_S
+    assert inspect.iscoroutinefunction(embed_mod.embed)
+
+
+def test_one_log_line_per_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    _Console(_vectors).install(monkeypatch)
     lines: list[tuple[str, dict[str, Any]]] = []
 
     class _Log:
@@ -232,16 +379,12 @@ def test_one_log_line_per_call_and_no_usage_row(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr(embed_mod, "_log", _Log())
     texts = ["x" * 400] * (embed_mod.BATCH + 3)  # two requests, one call
-    asyncio.run(embed_mod.embed(texts, org=ORG))
+    _as_member(lambda: embed_mod.embed(texts, org=ORG))
     assert [e for e, _ in lines] == ["knowledge.embed"]
     kw = lines[0][1]
     assert kw["organization_id"] == ORG and kw["chunks"] == len(texts)
     assert kw["token_estimate"] == 100 * len(texts)
-    from pathlib import Path
-
-    source = Path(embed_mod.__file__).read_text(encoding="utf-8")
-    code = source.split('"""', 2)[-1]  # the module docstring names the rule
-    assert "usage_event" not in code
+    assert kw["embedded"] == len(texts) and kw["tier"] == "tier-embed"
 
 
 # ── The flag: no call when off ──────────────────────────────────────────────

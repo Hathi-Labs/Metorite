@@ -224,8 +224,10 @@ class TestNativeTypesafeIsInBothSets:
 
     def test_the_router_may_call_it(self):
         assert "native_typesafe" in router_mod.SERVING_INVOCATIONS
-        # The strict subset stands: `aembedding` still has no door.
-        assert router_mod.SERVING_INVOCATIONS < catalog.KNOWN_INVOCATIONS
+        # CP-EMB (2026-10-17) gave `aembedding` its door, so the two sets are
+        # now equal. The rule that stays: the Router never serves a verb the
+        # operator cannot write.
+        assert router_mod.SERVING_INVOCATIONS <= catalog.KNOWN_INVOCATIONS
 
     def test_every_native_serving_verb_has_a_handler(self):
         """A serving name with no handler would 502 on its first call."""

@@ -9149,6 +9149,192 @@ def audio_speech(req: SpeechRequest, caller: ServingCaller) -> Response:
     return Response(content=audio, media_type=media_type)
 
 
+# ── CP-EMB: the embedding door (§6A.16) ────────────────────────────────────
+#
+# 🔴 **The owner's call, 2026-10-16.** Production had no working vector,
+# because the gateway's own `/v1/embeddings` needs an OpenAI key the box does
+# not hold. So `tier-embed` serves on the AI/ML API account Jev already uses,
+# and the ladder seeds the binding, the capability and the `absorbed` card.
+
+#: The ONE task the embedding door serves (§6A.16 item 1).
+EMBED_TASK = "embed"
+
+#: How many texts one request may carry. *Agent default*. The one tenant
+#: caller sends 64 at most (`kb_index.embed.BATCH`). The ceiling bounds what
+#: one request costs us, because the door draws no credit (D19.2).
+_MAX_EMBED_INPUTS = 128
+
+#: The longest text, in characters. *Agent default*, anchored on the vendor:
+#: `text-embedding-3-small` reads 8,191 tokens, about 32,000 characters.
+_MAX_EMBED_CHARACTERS = 32_000
+
+
+class EmbeddingRequest(BaseModel):
+    """One embedding request, addressed to a TIER. OpenAI-shaped.
+
+    ⚠️ ``extra="forbid"``, as every door's body is. There is no
+    ``dimensions`` field and no ``encoding_format`` field. The index holds
+    1,536 floats a row, and a caller-picked size would break it.
+    """
+
+    #: 🔴 A TIER ALIAS, never a model id. `016_tier_task.sql` maps
+    #: `tier-embed` to the `embed` task.
+    model: str = Field(min_length=1)
+    #: One text, or a list of them. Each one is at least one character,
+    #: because an empty text buys a vendor refusal for the whole batch.
+    input: str | list[str]
+    #: The caller's own correlation id, trusted for nothing.
+    client_ref: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("input")
+    @classmethod
+    def _bounded(cls, value: str | list[str]) -> str | list[str]:
+        texts = [value] if isinstance(value, str) else value
+        if not texts:
+            raise ValueError("input holds no text")
+        if len(texts) > _MAX_EMBED_INPUTS:
+            raise ValueError(f"input holds more than {_MAX_EMBED_INPUTS} texts")
+        for one in texts:
+            if not one:
+                raise ValueError("an input text is empty")
+            if len(one) > _MAX_EMBED_CHARACTERS:
+                raise ValueError(
+                    f"an input text is longer than {_MAX_EMBED_CHARACTERS} characters"
+                )
+        return value
+
+
+@app.post("/v1/embeddings")
+def embeddings(req: EmbeddingRequest, caller: ServingCaller) -> dict[str, Any]:
+    """Embed texts, gate the call, and meter its TOKENS. It draws no credit.
+
+    The same shape as the image, speak and decide doors. The organization
+    comes from the credential, the model comes from the tier binding, the
+    three walls stand in ``_serving_prelude``, and ``_record_completion``
+    writes the one row.
+
+    🔴 **The credential is the STORED one** (§6A.16 item 1). The prelude
+    reads ``provider_credential`` by the model's prefix. Nothing here reads
+    an environment key.
+
+    🔴 **The meter counts TOKENS, and the card says ``absorbed``** (item 3,
+    D19.2). So the row records the vendor's prompt count and bills zero by
+    decision. A vendor that reports no tokens trips
+    ``router.usage_unreadable``, which bills zero too and says so.
+
+    ⚠️ **An answer we cannot read is a 502, AFTER the row.** The vendor has
+    already charged us for it. The caller reads the same 502 a broken vendor
+    gets, and treats it as "no vector".
+
+    Declared ``def`` for the reason the module docstring gives.
+    """
+    org_id = caller.organization_id
+    texts = [req.input] if isinstance(req.input, str) else list(req.input)
+    attempts, credentials, invocations = _serving_prelude(
+        tier=req.model,
+        task=EMBED_TASK,
+        org_id=org_id,
+        caller=caller,
+        client_ref=req.client_ref,
+    )
+
+    def _kwargs_for(step: ResolvedTier) -> dict[str, Any]:
+        """Build the outgoing call for one step of the chain. ALLOWLIST.
+
+        🔴 ``router.litellm_target`` turns ``aimlapi/<model>`` into
+        ``openai/<model>`` at the AI/ML API host (item 2). The usage row
+        still names OUR model id, because the walk reports ``step``.
+        """
+        cred = credentials[step.model.split("/", 1)[0]]
+        assert cred is not None  # the attempts filter removed keyless steps
+        model, api_base = router_mod.litellm_target(step.model, cred.api_base)
+        out: dict[str, Any] = {
+            "model": model,
+            "input": texts,
+            "api_key": cred.secret,
+            # D60 step two: the verb `model_capability` named for this pair.
+            "invocation": invocations[step.model],
+            "num_retries": 1,
+            "timeout": 60,
+        }
+        if api_base:
+            out["api_base"] = api_base
+        return out
+
+    def _byok_served(step: ResolvedTier) -> bool:
+        cred = credentials[step.model.split("/", 1)[0]]
+        return bool(cred and cred.byok)
+
+    def _note_failover(frm: ResolvedTier, to: ResolvedTier, status: int | None) -> None:
+        _log.warning(
+            "router.failover",
+            extra={
+                "fo_from": frm.model,
+                "fo_to": to.model,
+                "fo_status": status,
+                "fo_tier": frm.tier,
+                "fo_task": EMBED_TASK,
+            },
+        )
+
+    started_at = datetime.now(UTC)
+    try:
+        response, resolved = asyncio.run(
+            router_mod.call_chain(
+                attempts, _kwargs_for, _note_failover, *_chain_watch(credentials)
+            )
+        )
+    except HTTPException:
+        raise
+    except router_mod.UpstreamFailed as failed:
+        # ONE mapping, shared with every serving route.
+        raise _upstream_refusal(failed) from failed
+
+    request_id = _new_request_id()
+    usage = usage_from_response(response)
+
+    # Metering is best-effort and NEVER fails the call.
+    _record_completion(
+        usage,
+        org_id=org_id,
+        caller=caller,
+        resolved=resolved,
+        client_ref=req.client_ref,
+        byok=_byok_served(resolved),
+        started_at=started_at,
+        request_id=request_id,
+    )
+
+    vectors = router_mod.embedding_vectors(response, len(texts))
+    if vectors is None:
+        _log.error(
+            "router.embedding_unreadable",
+            extra={
+                "router_model": resolved.model,
+                "router_org": org_id,
+                "router_request": request_id,
+            },
+        )
+        raise HTTPException(status_code=502, detail="upstream provider error")
+
+    # 🔴 The answer names the TIER, never the model (D32.7).
+    return {
+        "object": "list",
+        "data": [
+            {"object": "embedding", "index": i, "embedding": vec}
+            for i, vec in enumerate(vectors)
+        ],
+        "model": resolved.tier,
+        "usage": {
+            "prompt_tokens": usage.prompt_tokens,
+            "total_tokens": usage.prompt_tokens,
+        },
+        "request_id": request_id,
+    }
+
+
 # ── CP-13a: the decide door (§6A.14, D75) ──────────────────────────────────
 #
 # 🔴 **The first door no litellm verb can serve.** TypeSafe's Jev answers a
