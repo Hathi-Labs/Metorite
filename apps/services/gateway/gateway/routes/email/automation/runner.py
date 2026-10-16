@@ -54,6 +54,7 @@ from gateway.routes.email.automation.learning import (
 from gateway.routes.email.automation.rules import (
     NEW_MAIL_FLOOR_SQL,
     _upsert_rule_pattern,
+    proposes_only,
 )
 from gateway.routes.email.automation.senders import _maybe_block_cold
 from gateway.routes.email.core import (
@@ -1283,7 +1284,13 @@ async def _apply_and_log_match(
         return
     action_errors: list[dict[str, str]] = []
     pmid = r.provider_message_id
-    if apply:
+    # 🔴 WS-17 EM-G11c2 (§12.3.13.7, G5): a rule with `automated=false`
+    # proposes and never applies on its own. It logs a PENDING row, with
+    # `automated` false, and the member approves it in the History
+    # (`approve_execution`). Guarded HERE, the one choke point of every
+    # apply path. Fence: tests/unit/test_email_background_writes.py.
+    proposal = apply and proposes_only(rule)
+    if apply and not proposal:
         # Outlook RE-KEYS a message when it moves: /move returns a new id and
         # the old one 404s. `r` was fetched once, BEFORE the per-match loop, so
         # with multi_rule_execution on (it is, on the live account) the second
@@ -1365,16 +1372,18 @@ async def _apply_and_log_match(
                              account_id=account_id, error=str(e)[:160])
     else:
         actions_taken = [a["type"] for a in rule["actions"]]
-        status = "PENDING"  # dry-run preview only
+        # A dry-run preview, or the proposal of a manual rule (G5).
+        status = "PENDING"
     await db.execute(text(
         """INSERT INTO email_executed_rules
              (account_id, rule_id, rule_name, message_id, provider_message_id,
               thread_id, subject, from_address, status, automated, actions_taken,
               reason, match_source, action_errors)
            VALUES (:aid, :rid, :rname, :mid, :pmid, :tid, :subj, :frm,
-                   :status, true, :acts, :reason, :msrc,
+                   :status, :automated, :acts, :reason, :msrc,
                    CAST(:aerr AS JSONB))"""
     ), {"aid": account_id, "rid": rule["id"], "rname": rule["name"],
+        "automated": not proposal,
         # The id we actually CALLED, not the one the row was read with — when
         # they differ, the row was re-keyed mid-run and the log should say so.
         "mid": str(r.id), "pmid": pmid, "tid": r.thread_id,
@@ -1486,6 +1495,7 @@ async def _project_thread_status_for_backfill(
     """
     from gateway.routes.email.automation.replyzero import (  # noqa: PLC0415
         _reconcile_thread_labels,
+        conversation_match_proposes,
         project_reply_status_from_matches,
     )
     tids = list(latest_by_thread)
@@ -1511,7 +1521,8 @@ async def _project_thread_status_for_backfill(
             async with _tenant_session() as db:
                 keep_label = await project_reply_status_from_matches(
                     db, account_id, row, matches)
-                if keep_label:
+                # EM-G11c2 (G5): a manual conversation rule proposes.
+                if keep_label and not conversation_match_proposes(matches):
                     await _reconcile_thread_labels(
                         db, provider, account_id, tid, keep_label)
         except Exception as exc:  # noqa: BLE001 — one thread must not abort the rest
@@ -1968,6 +1979,7 @@ async def _run_rules_job(
                         try:
                             from gateway.routes.email.automation.replyzero import (  # noqa: PLC0415
                                 _reconcile_thread_labels,
+                                conversation_match_proposes,
                                 project_reply_status_from_matches,
                             )
                             async with _savepoint(db):
@@ -1977,7 +1989,11 @@ async def _run_rules_job(
                                 # label, clearing any stale Reply / Awaiting /
                                 # FYI / Follow-up left on earlier messages
                                 # (inbox-zero mutually-exclusive labels).
-                                if keep_label and provider is not None:
+                                # EM-G11c2 (G5): a manual conversation rule
+                                # proposes, so its label waits too.
+                                if keep_label and provider is not None \
+                                        and not conversation_match_proposes(
+                                            matches):
                                     await _reconcile_thread_labels(
                                         db, provider, account_id, r.thread_id,
                                         keep_label)

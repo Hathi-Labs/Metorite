@@ -35,13 +35,16 @@ import {
   isReplyRule,
   onboardingStage,
   processPastFrom,
+  readAutoRunSwitch,
   readDraftSwitch,
   PROCESS_PAST_MAX_SPAN_DAYS,
   SORT_POLL_MS,
   readSortEstimate,
   readSortState,
   rulesStepPhase,
+  setAutoRun,
   setDraftReplies,
+  settingsSaver,
   sortEstimateView,
   sortPollDelay,
   sortSpanDays,
@@ -293,6 +296,43 @@ describe("the drafting switch (item 10, D-EM-6)", () => {
   });
 });
 
+describe("the Auto-run switch (WS-17 EM-G11c2, G2)", () => {
+  it("turning it on saves auto_run: true and changes no other field", async () => {
+    const { api, calls } = fakeApi({ ...SETTINGS, auto_run: false });
+    await setAutoRun(api, "acc-1", true);
+    expect(calls.map((c) => c[0])).toEqual(["getAssistantSettings", "saveAssistantSettings"]);
+    expect(calls[1][1]).toEqual({ ...SETTINGS, auto_run: true });
+  });
+
+  it("draws the stored value, and only a stored true reads ON", async () => {
+    for (const stored of [true, false]) {
+      const { api, calls } = fakeApi({ ...SETTINGS, auto_run: stored });
+      expect(await readAutoRunSwitch(api, "acc-1")).toEqual({ state: "ready", on: stored });
+      expect(calls.map((c) => c[0])).toEqual(["getAssistantSettings"]);
+    }
+    const { api } = fakeApi({ ...SETTINGS, auto_run: undefined } as unknown as AssistantSettings);
+    expect(await readAutoRunSwitch(api, "acc-1")).toEqual({ state: "ready", on: false });
+  });
+
+  it("a failed read is 'failed', never a guess", async () => {
+    const { api } = fakeApi(SETTINGS);
+    api.getAssistantSettings = async () => {
+      throw new Error("503");
+    };
+    expect(await readAutoRunSwitch(api, "acc-1")).toEqual({ state: "failed" });
+  });
+
+  it("the step reads it once ready, and writes it only when the switch moves", () => {
+    const src = codeOnly(read("components/OnboardingRulesStep.tsx"));
+    expect(src).toMatch(
+      /readAutoRunSwitch\(RULES_API, account\.id\)\.then\(\(a\) => live && setAutoRunState\(a\)\);[\s\S]*?\}, \[phase, account\.id\]\);/,
+    );
+    expect(src.match(/setAutoRun\(/g)).toHaveLength(1);
+    expect(src).toMatch(/const changeAutoRun = async \(on: boolean\) => \{[\s\S]*?await setAutoRun\(RULES_API, account\.id, on\);/);
+    expect(src).toContain("onAutoRunChange={(on) => void changeAutoRun(on)}");
+  });
+});
+
 describe("Done (item 11)", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -338,7 +378,7 @@ function view(over: Partial<RulesStepViewProps>): string {
     error: null,
     replyRule: true,
     draft: { state: "ready", on: false },
-    draftBusy: false,
+    settingsBusy: false,
     pastFrom: "2026-07-05",
     sort: { state: "ready", estimate: ESTIMATE },
     onRecommended: noop,
@@ -360,6 +400,92 @@ function buttons(markup: string): Array<{ text: string; attrs: string }> {
     text: m[2].replace(/<[^>]*>/g, "").trim(),
   }));
 }
+
+describe("one save at a time for both switches (EM-G11c2 fix round 1)", () => {
+  it("refuses a second save while the first runs, then takes the next", async () => {
+    const saver = settingsSaver();
+    let release: () => void = () => {};
+    const calls: string[] = [];
+    const first = saver.run(
+      () => new Promise<void>((done) => {
+        calls.push("first");
+        release = done;
+      }),
+    );
+    expect(saver.busy()).toBe(true);
+    expect(await saver.run(async () => void calls.push("second"))).toBe(false);
+    release();
+    expect(await first).toBe(true);
+    expect(saver.busy()).toBe(false);
+    expect(await saver.run(async () => void calls.push("third"))).toBe(true);
+    expect(calls).toEqual(["first", "third"]);
+  });
+
+  it("a failed save frees the guard and passes the failure up", async () => {
+    const saver = settingsSaver();
+    await expect(saver.run(async () => {
+      throw new Error("503");
+    })).rejects.toThrow("503");
+    expect(saver.busy()).toBe(false);
+  });
+
+  it("one busy flag disables both switches", () => {
+    const out = view({ phase: "ready", settingsBusy: true, autoRun: { state: "ready", on: false } });
+    const sw = buttons(out).filter((b) => b.attrs.includes('role="switch"'));
+    expect(sw).toHaveLength(2);
+    for (const s of sw) expect(s.attrs).toMatch(/disabled=""/);
+    const idle = view({ phase: "ready", settingsBusy: false, autoRun: { state: "ready", on: false } });
+    for (const s of buttons(idle).filter((b) => b.attrs.includes('role="switch"'))) {
+      expect(s.attrs).not.toMatch(/disabled=""/);
+    }
+  });
+
+  it("both handlers save through the one guard", () => {
+    const src = codeOnly(read("components/OnboardingRulesStep.tsx"));
+    expect(src).toContain("const [saver] = useState(() => settingsSaver());");
+    expect(src.match(/await saveSetting\(/g)).toHaveLength(2);
+    expect(src).not.toMatch(/draftBusy|autoRunBusy/);
+  });
+});
+
+describe("the Auto-run switch draws (G2)", () => {
+  it("OFF: the title says the rules are ready, not on", () => {
+    const out = view({ phase: "ready", autoRun: { state: "ready", on: false } });
+    expect(out).toContain(">Your AI rules are ready<");
+    expect(out).not.toContain(">Your AI rules are on<");
+    expect(out).toContain(RULES_STEP_COPY.autoRunOffBody.replace(/"/g, "&quot;"));
+  });
+
+  it("ON: the title says the rules are on", () => {
+    const out = view({ phase: "ready", autoRun: { state: "ready", on: true } });
+    expect(out).toContain(">Your AI rules are on<");
+    expect(out).not.toContain(">Your AI rules are ready<");
+  });
+
+  it("while the value loads, or after a failed read, the title claims no ON", () => {
+    for (const autoRun of [{ state: "loading" }, { state: "failed" }] as const) {
+      expect(view({ phase: "ready", autoRun })).toContain(">Your AI rules are ready<");
+    }
+  });
+
+  it("OFF: the switch reads OFF, and the body says the rules sort no new mail", () => {
+    const out = view({ phase: "ready", autoRun: { state: "ready", on: false } });
+    expect(out).toMatch(/<label[^>]*>[\s\S]*role="switch"[^>]*aria-checked="false"[\s\S]*Run my rules on new mail<\/label>/);
+    expect(out).toContain(RULES_STEP_COPY.autoRunOffBody.replace(/"/g, "&quot;"));
+    expect(out).not.toContain(RULES_STEP_COPY.readyBody);
+  });
+
+  it("ON: the switch reads ON, and the body of main stands", () => {
+    const out = view({ phase: "ready", autoRun: { state: "ready", on: true } });
+    expect(out).toMatch(/role="switch"[^>]*aria-checked="true"[\s\S]*Run my rules on new mail/);
+    expect(out).toContain(RULES_STEP_COPY.readyBody);
+  });
+
+  it("a failed read keeps the switch disabled and says so", () => {
+    const out = view({ phase: "ready", autoRun: { state: "failed" } });
+    expect(out).toContain(RULES_STEP_COPY.autoRunReadFailed);
+  });
+});
 
 describe("the rules step draws (items 8 to 11)", () => {
   it("choose: the title, the sort line and the three actions", () => {

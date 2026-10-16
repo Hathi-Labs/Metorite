@@ -200,6 +200,11 @@ async def send_email(
                     _learn_from_sent,
                     _mark_thread_replied,
                 )
+                # Trash the AI draft left in the thread (EM-G11c2, G7).
+                # FIRST: `_learn_from_sent` deletes the `email_ai_drafts`
+                # row that tells a Metorite draft from the member's own.
+                background.add_task(
+                    _cleanup_thread_drafts, req.account_id, reply_thread_id)
                 background.add_task(
                     _learn_from_sent, req.account_id, reply_thread_id,
                     req.body_text)
@@ -209,9 +214,6 @@ async def send_email(
                 background.add_task(
                     _mark_thread_replied, req.account_id, reply_thread_id,
                     req.body_text, req.subject)
-                # Trash leftover drafts in the thread (AI draft / auto-save).
-                background.add_task(
-                    _cleanup_thread_drafts, req.account_id, reply_thread_id)
             except Exception:
                 pass
 

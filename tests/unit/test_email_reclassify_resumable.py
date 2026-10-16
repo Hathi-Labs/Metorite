@@ -43,7 +43,7 @@ async def test_drain_classifies_until_no_threads_need_a_status() -> None:
     async def fake_count(_db, _aid):
         return next(counts)
 
-    async def fake_classify(aid):
+    async def fake_classify(aid, **_kw):
         passes.append(aid)
 
     with _mock_db_ctx(), \
@@ -68,7 +68,7 @@ async def test_drain_stops_when_a_pass_makes_no_progress() -> None:
     async def fake_count(_db, _aid):
         return next(counts)
 
-    async def fake_classify(aid):
+    async def fake_classify(aid, **_kw):
         passes.append(aid)
 
     with _mock_db_ctx(), \

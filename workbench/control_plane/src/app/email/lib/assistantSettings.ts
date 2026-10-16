@@ -23,6 +23,24 @@ import type { AssistantSettings } from "./types";
  */
 export const EMAIL_CHAT_TIER = "tier-powerful";
 
+/**
+ * The line under the Auto-run switch (WS-17 EM-G11c2,
+ * `email_app_master_plan.md` §12.3.13.7 item 6). Product copy, word for word
+ * from the spec. `assistantSettings.test.ts` pins the words and scans
+ * `SettingsTab.tsx` for the use.
+ */
+export const AUTO_RUN_AI_LINE =
+  "An AI model reads each new message to choose the rule that matches. Each action is one that you set.";
+
+/**
+ * What the Auto-run switch controls (WS-17 EM-G11c2 fix round 1, P1). OFF
+ * stops more than the rules: the background Reply Zero labels and the sorting
+ * sweep obey it too (§12.3.13.7, G3 and G4). A member's own action still runs.
+ */
+export const AUTO_RUN_DESCRIPTION =
+  "Runs your enabled rules on new inbox mail as it arrives, and keeps the Reply Zero labels and the sorting sweep up to date. " +
+  "Turn it off to stop all three on new mail. Your rules still apply when you run them yourself or process past emails.";
+
 /** True only when the server stored `draft_replies: true` for the mailbox. */
 export function autoDraftRepliesOn(
   settings: Partial<Pick<AssistantSettings, "draft_replies">> | null | undefined,

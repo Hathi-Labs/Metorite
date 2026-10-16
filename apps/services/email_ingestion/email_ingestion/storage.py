@@ -195,13 +195,31 @@ _DELETE_EMPTY_THREAD_STATUS = text(
 #: thread can never show again. A draft of another thread stays, because a
 #: reply from this mailbox to mail of another mailbox names the thread of
 #: that mailbox (review round 1).
+#:
+#: WS-17 EM-G11c2 round 2: a TEMPLATE draft records its text under
+#: ``template:<thread_id>``. Its record goes with its thread too, so the
+#: delete also names each ``template:`` key, and the NOT EXISTS strips the
+#: prefix before it looks for the thread's mail.
+#:
+#: The prefix of a template draft record. It MIRRORS
+#: ``gateway.routes.email.automation.drafting.TEMPLATE_DRAFT_PREFIX``, because
+#: ingestion cannot import the gateway. ``test_email_background_writes.py``
+#: fails when the two differ.
+TEMPLATE_DRAFT_PREFIX = "template:"
+
 _DELETE_ORPHAN_AI_DRAFTS = text(
     """DELETE FROM email_ai_drafts d
         WHERE d.account_id = :aid
-          AND d.thread_id = ANY(CAST(:tids AS text[]))
+          AND (d.thread_id = ANY(CAST(:tids AS text[]))
+               OR d.thread_id = ANY(CAST(:tmpl AS text[])))
           AND NOT EXISTS (SELECT 1 FROM email_messages em
                            WHERE em.account_id = d.account_id
-                             AND em.thread_id = d.thread_id)"""
+                             AND em.thread_id = CASE
+                               WHEN left(d.thread_id, char_length(CAST(:prefix AS text)))
+                                    = CAST(:prefix AS text)
+                               THEN substr(d.thread_id,
+                                           char_length(CAST(:prefix AS text)) + 1)
+                               ELSE d.thread_id END)"""
 )
 
 #: A Resync then imports no mail older than ``before`` (EM-T6c item 12).
@@ -346,7 +364,10 @@ async def delete_orphan_ai_drafts(
     if not tids:
         return 0
     return _rowcount(await db.execute(
-        _DELETE_ORPHAN_AI_DRAFTS, {"aid": account_id, "tids": tids}))
+        _DELETE_ORPHAN_AI_DRAFTS,
+        {"aid": account_id, "tids": tids,
+         "tmpl": [TEMPLATE_DRAFT_PREFIX + t for t in tids],
+         "prefix": TEMPLATE_DRAFT_PREFIX}))
 
 
 async def advance_import_since(db: Any, account_id: str, before: datetime) -> None:

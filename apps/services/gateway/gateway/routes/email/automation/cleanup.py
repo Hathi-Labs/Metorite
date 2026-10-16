@@ -493,11 +493,50 @@ def _taught_otherwise(
     return False
 
 
+async def _sweep_provider(
+    db: Any, account_id: str, owner: str, summary: dict[str, Any], *,
+    obey_auto_run: bool,
+) -> tuple[Any, Any] | None:
+    """The last step of phase 0 of a sweep that writes: the provider and its
+    key store, or None when the sweep must stop.
+
+    WS-17 EM-G11c2 (§12.3.13.7, G4): with ``obey_auto_run`` it first reads
+    the Auto-run choice through the one helper ``rules.auto_run_on``. With
+    Auto-run OFF it builds no provider, marks the summary
+    ``skipped: "auto_run_off"`` and returns None. A missing mailbox marks
+    ``error`` and returns None, as before.
+    """
+    if obey_auto_run:
+        from gateway.routes.email.automation.rules import auto_run_on
+
+        if not await auto_run_on(db, account_id):
+            summary["skipped"] = "auto_run_off"
+            _log.info("email.cleanup_sweep_skipped", account_id=account_id,
+                      owner=owner, reason="auto_run_off")
+            return None
+    try:
+        provider, store, _owner = await _provider_for_account_any(
+            db, account_id)
+    except HTTPException:
+        summary["error"] = "account not found"
+        return None
+    return provider, store
+
+
 async def sweep_uncategorized(
     account_id: str, limit: int, *, dry_run: bool, owner: str = "",
     max_apply: int | None = None, job_token: int | None = None,
+    obey_auto_run: bool = False,
 ) -> dict[str, Any]:
     """Project existing categorization onto uncategorized mail.
+
+    🔴 ``obey_auto_run`` (WS-17 EM-G11c2, §12.3.13.7, G4). The sweep of each
+    sync cycle passes True. Phase 0 then reads the Auto-run choice through the
+    one helper ``rules.auto_run_on`` (``_sweep_provider``). With Auto-run OFF
+    the sweep stops before it builds a provider: it writes no label and moves no mail, on each
+    provider. The summary says ``skipped: "auto_run_off"``. A sweep that a
+    member starts passes False, because the click is the member's choice.
+    Fence: ``tests/unit/test_email_background_writes.py``.
 
     Pages through the mailbox until it runs out of uncategorized mail or hits
     ``limit`` messages scanned. It does NOT stop after one page: a cleaner that
@@ -566,13 +605,14 @@ async def sweep_uncategorized(
                 # explicit auth/persist choreography — the auth-failure verdict
                 # goes into ``summary`` and the rotated-cred persist
                 # deliberately happens only on the success tail (see the end of
-                # this function).
-                try:
-                    provider, store, _owner = await _provider_for_account_any(
-                        db, account_id)
-                except HTTPException:
-                    summary["error"] = "account not found"
+                # this function). EM-G11c2 (G4): it also stops a sync-cycle
+                # sweep while Auto-run is OFF.
+                loaded = await _sweep_provider(
+                    db, account_id, owner, summary,
+                    obey_auto_run=obey_auto_run)
+                if loaded is None:
                     return summary
+                provider, store = loaded
 
         # The block above ended before the network round-trip. A session left
         # `idle in transaction` across a provider call holds ACCESS SHARE on

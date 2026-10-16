@@ -258,11 +258,20 @@ async def _default_email_account(db, owner_email: str) -> str | None:
     return str(row.id) if row else None
 
 
-async def _dispatch_email(action, meeting, owner_email: str, actor: str) -> str:
+async def _dispatch_email(
+    action, meeting, owner_email: str, actor: str, *, background: bool = False,
+) -> str:
     """Send (recipient known) or draft (recipient unknown) the committed email.
 
     Returns the dispatch ref: ``sent:<provider msg id>`` or
     ``draft:<provider draft id>``.
+
+    🔴 WS-17 EM-G11c2 (``email_app_master_plan.md`` §12.3.13.7, G1): a
+    ``background`` dispatch (``auto_dispatch``) through a GMAIL mailbox makes
+    a draft and never sends. The member sends the draft. The manual route
+    passes ``background=False``, because the click is the member's choice.
+    The Outlook and IMAP paths do not change (Q-GM-12 stays open). Fence:
+    ``tests/unit/test_email_background_writes.py``.
 
     ``provider_session(db, owner_email, …)`` loads the account scoped to
     ``owner_email``, so this function will happily authenticate as whoever it
@@ -281,6 +290,7 @@ async def _dispatch_email(action, meeting, owner_email: str, actor: str) -> str:
     if refusal:
         raise DispatchError(refusal)
 
+    from gateway.routes.email.automation.rules import _account_provider
     from gateway.routes.email.core import _get_db as _email_db
     from gateway.routes.email.core import provider_session
     from gateway.routes.email.signature import build_signed_bodies
@@ -290,6 +300,9 @@ async def _dispatch_email(action, meeting, owner_email: str, actor: str) -> str:
         account_id = await _default_email_account(db, owner_email)
         if not account_id:
             raise DispatchError("No email account connected for this user.")
+        # G1: no background send from a Gmail mailbox, only a draft.
+        draft_only = background and (
+            await _account_provider(db, account_id) == "gmail")
 
         excerpts = await _segment_texts(db, action.segment_ids)
         recipient = resolve_recipient(
@@ -311,7 +324,7 @@ async def _dispatch_email(action, meeting, owner_email: str, actor: str) -> str:
             ).fetchone()
             signature = (sig_row.signature if sig_row else "") or ""
 
-            if recipient and draft:
+            if recipient and draft and not draft_only:
                 body_text, body_html = build_signed_bodies(
                     signature, draft["body"], None
                 )
@@ -323,9 +336,10 @@ async def _dispatch_email(action, meeting, owner_email: str, actor: str) -> str:
                 )
                 ref = f"sent:{msg_id}"
             else:
-                # No safe recipient (or the drafter failed): leave a provider
-                # draft in the mailbox for the user to finish. Subject/body
-                # fall back to the commitment itself.
+                # No safe recipient (or the drafter failed), or a background
+                # dispatch from Gmail (G1): leave a provider draft in the
+                # mailbox for the user to finish and send. Subject/body fall
+                # back to the commitment itself.
                 subject = (draft or {}).get(
                     "subject", f"Follow-up: {action.description[:120]}"
                 )
@@ -476,8 +490,13 @@ async def _audit(actor: str, action_id: str, meeting_id: str, kind: str,
             await db.commit()
 
 
-async def _dispatch(action, meeting, actor: str) -> tuple[str | None, str | None]:
-    """Route one action item by kind. Returns (dispatch_ref, error)."""
+async def _dispatch(
+    action, meeting, actor: str, *, background: bool = False,
+) -> tuple[str | None, str | None]:
+    """Route one action item by kind. Returns (dispatch_ref, error).
+
+    ``background`` is True for ``auto_dispatch`` only. A Gmail email item
+    then becomes a draft (WS-17 EM-G11c2, G1)."""
     owner = meeting.owner_email or actor or "anonymous"
     kind = action.kind if action.kind in KINDS else "task"
     ref: str | None = None
@@ -510,7 +529,8 @@ async def _dispatch(action, meeting, actor: str) -> tuple[str | None, str | None
             await _mark(str(action.id), ref=task_id, task_id=None, error=None)
             ref = task_id
         elif kind == "email":
-            ref = await _dispatch_email(action, meeting, owner, actor)
+            ref = await _dispatch_email(
+                action, meeting, owner, actor, background=background)
             await _mark(str(action.id), ref=ref, task_id=None, error=None)
         else:
             ref = await _dispatch_document(action, meeting, owner)
@@ -585,7 +605,9 @@ async def auto_dispatch(meeting_id: str, triggered_by: str) -> dict:
         if not allowed.get(kind, False):
             skipped += 1
             continue
-        ref, error = await _dispatch(action, meeting, triggered_by)
+        # G1 (EM-G11c2): nobody clicked, so a Gmail email item drafts only.
+        ref, error = await _dispatch(
+            action, meeting, triggered_by, background=True)
         if error is None and ref is not None:
             done += 1
         else:

@@ -209,9 +209,11 @@ class AssistantSettingsModel(BaseModel):
     about: str | None = None
     signature: str | None = None
     # Global "Run rules automatically on new mail" switch (inbox-zero style).
-    # Defaults ON; the scheduler treats a missing settings row as ON, so a fresh
-    # account auto-runs once it has rules. An explicit OFF stops auto-run.
-    auto_run: bool = True
+    # WS-17 EM-G11c2 fix round 1: None means "the body does not say". The PUT
+    # then stores what `rules.auto_run_on` reads now (OFF for a Gmail mailbox
+    # with no row, ON for Outlook, a stored value as it is). A model default of
+    # True stored ON for a member who chose nothing.
+    auto_run: bool | None = None
     cold_email_blocker: str = "OFF"  # OFF | LABEL | ARCHIVE
     # No member chooses a model or a tier (D-EM-7 for the rules, D-EM-61 for
     # the rest). EMAIL_TASK_TIERS holds the tier of each task. These three
@@ -315,6 +317,11 @@ async def get_assistant_settings(
                 reply_rule_drafts,
             )
             draft_replies = await reply_rule_drafts(db, account_id)
+        # WS-17 EM-G11c2: the ONE auto_run reader, so a missing Gmail row
+        # reads OFF here too. A PUT of this body then stores no ON that the
+        # member did not choose.
+        from gateway.routes.email.automation.rules import auto_run_on
+        auto_run = await auto_run_on(db, account_id)
         return {
             "account_id": account_id,
             "about": row.about if row else "",
@@ -324,7 +331,7 @@ async def get_assistant_settings(
             # idempotent re-signing recognises it (a client-side re-derivation
             # could differ by whitespace and get double-signed).
             "signature_text": signature_text((row.signature if row else "") or ""),
-            "auto_run": bool(row.auto_run) if row else True,
+            "auto_run": auto_run,
             "cold_email_blocker": (row.cold_email_blocker if row else "OFF") or "OFF",
             "digest_frequency": (row.digest_frequency if row else "OFF") or "OFF",
             "personal_instructions": (
@@ -415,6 +422,11 @@ async def put_assistant_settings(
         org_domains = list(dict.fromkeys(
             nd for d in (req.org_domains or [])
             if isinstance(d, str) and (nd := normalize_domain(d))))
+        # EM-G11c2 fix round 1: a body with no auto_run keeps the effective
+        # choice, read before the upsert. The one reader decides.
+        from gateway.routes.email.automation.rules import auto_run_on
+        auto_run = (req.auto_run if req.auto_run is not None
+                    else await auto_run_on(db, req.account_id))
         saved = (await db.execute(text(
             """INSERT INTO email_assistant_settings
                  (account_id, about, signature, auto_run, cold_email_blocker,
@@ -457,7 +469,7 @@ async def put_assistant_settings(
                  updated_at = now()
                RETURNING learned_writing_style"""
         ), {"aid": req.account_id, "about": req.about, "sig": req.signature,
-            "auto": req.auto_run, "cold": req.cold_email_blocker or "OFF",
+            "auto": auto_run, "cold": req.cold_email_blocker or "OFF",
             "digest": req.digest_frequency or "OFF",
             "pi": req.personal_instructions, "ws": req.writing_style,
             "dr": req.draft_replies, "fu": awaiting,
@@ -500,7 +512,7 @@ async def put_assistant_settings(
             "about": req.about or "",
             "signature": req.signature or "",
             "signature_text": signature_text(req.signature or ""),
-            "auto_run": req.auto_run,
+            "auto_run": auto_run,
             "cold_email_blocker": req.cold_email_blocker or "OFF",
             "digest_frequency": req.digest_frequency or "OFF",
             "personal_instructions": req.personal_instructions or "",
@@ -690,17 +702,23 @@ async def generate_writing_style(
         # mailbox from before D-EM-6 drafts through its Needs Reply rule, and a
         # stored false would show the switch OFF while the engine drafts. The
         # DO UPDATE does not name draft_replies, so a stored choice stays.
+        # WS-17 EM-G11c2 fix round 1 (P1): the same rule for auto_run. The
+        # column default is false, so a first row that omits it turned OFF
+        # the rules, the Reply Zero labels and the sweep of an Outlook mailbox
+        # with one click. The new row stores what `auto_run_on` reads now.
         from gateway.routes.email.automation.rules import (
+            auto_run_on,
             reply_rule_drafts,
         )
         await db.execute(text(
             """INSERT INTO email_assistant_settings
-                 (account_id, writing_style, draft_replies, updated_at)
-               VALUES (:aid, :ws, :dr, now())
+                 (account_id, writing_style, draft_replies, auto_run, updated_at)
+               VALUES (:aid, :ws, :dr, :auto, now())
                ON CONFLICT (account_id) DO UPDATE SET
                  writing_style = EXCLUDED.writing_style, updated_at = now()"""
         ), {"aid": account_id, "ws": style,
-            "dr": await reply_rule_drafts(db, account_id)})
+            "dr": await reply_rule_drafts(db, account_id),
+            "auto": await auto_run_on(db, account_id)})
         # Index the derived style into Mem0 — keyed PER ACCOUNT so a user's other
         # mailboxes don't inherit this inbox's writing voice (see
         # email_memory_scope). The drafter reads it back under the same scope.
