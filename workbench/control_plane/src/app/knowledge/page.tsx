@@ -1,25 +1,32 @@
+"use client";
+
 /**
- * /knowledge — the Knowledge app (WS-61, `knowledge_base.md`).
+ * /knowledge — the Spaces view (WS-61 KB-2a, `knowledge_base.md` §11.1).
  *
- * KB-0 is the scaffold: the app bar with the name as the one `<h1>`, and a
- * calm empty body. The pane is `preview`, so the route renders by URL and
- * the nav entry stays hidden. `feature:knowledge` gates it (`lib/access.ts`).
+ * With no `?space=`, the spaces the member can open, as cards. With
+ * `?space=<id>`, that space's landing: its name, its purpose and its top
+ * pages. The page tree of the space is in the rail, and a page opens at
+ * `/knowledge/pages/<id>`.
  *
- * It mounts no ⌘K listener, no palette, no bell and no assistant rail. The
- * shell owns those (`AGENTS.md` rule 10). It calls no API and reads no flag.
- * KB-2a brings the Spaces view, and §11.1 of the spec holds the surface.
+ * The layout draws the app bar and the rail, and decides the first-open
+ * phase. This page only draws when Knowledge is on for the member.
  */
 
-import { AppTopBar } from "@/components/AppTopBar";
-import { EmptyState } from "@/components/EmptyState";
+import { Suspense } from "react";
+import { useSearchParams } from "next/navigation";
+
+import SpaceCards from "./components/SpaceCards";
+import SpaceLanding from "./components/SpaceLanding";
 
 export default function KnowledgePage() {
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <AppTopBar title="Knowledge" />
-      <div className="flex min-h-0 flex-1 flex-col overflow-auto">
-        <EmptyState icon="BookOpen" message="Pages, spaces and connected folders arrive here." />
-      </div>
-    </div>
+    <Suspense fallback={null}>
+      <SpacesView />
+    </Suspense>
   );
+}
+
+function SpacesView() {
+  const space = useSearchParams().get("space");
+  return space ? <SpaceLanding key={space} spaceId={space} /> : <SpaceCards />;
 }
