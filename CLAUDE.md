@@ -385,6 +385,11 @@ Rules that make it work:
   memory and calendar suites deselected.
 - `uv run pytest …` is the runner. Frontend: `npx tsc --noEmit && npx vitest run`
   in `workbench/control_plane`.
+- **Do not run all of `tests/unit/` locally.** It takes about 50 minutes.
+  Run `uv run python scripts/affected_tests.py --run`, which picks the tests
+  your diff can affect and prints the `vitest related` command for frontend
+  files. pr-check runs every test on each PR, in 6 shards, in about 11
+  minutes (2026-10-16).
 - **R8 needs a database, and without one 843 tests SKIP while the run reads
   green.** Measured 2026-08-30. Run `bash scripts/dev_db.sh` first, then
   `eval "$(bash scripts/dev_db.sh --export)"`. `engineering_practice.md` §1.1

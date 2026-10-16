@@ -94,3 +94,10 @@ def test_the_secret_scan_range_survives_a_push_event() -> None:
     body = _WORKFLOW.read_text(encoding="utf-8")
     assert 'if [ "${{ github.event_name }}" = "pull_request" ]' in body
     assert "git merge-base origin/main HEAD" in body
+
+
+def test_a_new_push_cancels_the_older_run_of_the_same_pr() -> None:
+    """On a 20-job runner cap, a superseded run holds runners the newer run needs."""
+    concurrency = _doc(_WORKFLOW)["concurrency"]
+    assert concurrency["cancel-in-progress"] is True
+    assert "github.event.pull_request.number" in concurrency["group"]
