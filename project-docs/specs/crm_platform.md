@@ -2274,16 +2274,33 @@ spec audit of 2026-10-16 narrowed it.
 - A value counts as filled unless it is NULL, empty, blank, `[]`, `{}` or
   `false`. A Zoho checkbox sends `false` when nobody ticks it. The number 0
   counts as filled.
-- `fill` is the share `filled / total`, from 0 to 1. `distinct` is the count
-  of different filled values. Both are `null` outside the list.
+- `fill` is the share `filled / total`, from 0 to 1. Both numbers are `null`
+  outside the list.
+- `distinct` counts the different filled values in a sample of 2,000
+  records, the ones with the lowest ids. It is exact up to 2,000 records.
+  Above that it is a lower bound, and it never passes 2,000.
 - The layout carries `empty_columns`. The plain read is a bare list, so it
   carries `fill` and `distinct` on each row, and no `empty_columns`. A joined
   list column shows in both words, for example `company_id` and
   `organization_name`.
-- `GET /crm/mode` carries `labels`, by API slug.
-- One statement on 30,000 module rows with 236 fields took 11.7 s in the R8
-  suite. Each statement runs under a 120 s `statement_timeout`. An entity
-  that fails waits 24 hours, and the run goes on.
+- Stale numbers give `empty_columns: []`. The numbers of an entity are stale
+  when it has no stamp, when it is pending, when one of its field rules
+  changed, or when a run that started after its stamp changed one of its
+  rows. The run counts show that, also for a run that failed, and also for a
+  run while the flag was off. So an entity that changes in most runs often
+  serves `[]`.
+- The CSV export drops a key of `empty_columns` only when each row of the
+  file has an empty cell for it.
+- `GET /crm/mode` carries `labels`, by API slug, in Mirror mode for a listed
+  org. In every other case the body has no `labels` key. The route reads only
+  `profile -> 'modules'`.
+- Cost: `filled` groups by key only. On 30,000 module rows with 236 fields of
+  unique values, the statement took 5.4 s in the R8 suite (35.5 s in the
+  first build). Each statement runs under a 30 s `statement_timeout`.
+- A run computes at most one entity above 5,000 records, and the others wait.
+  It commits the stamp first, then reads with no lock on `crm_settings`,
+  then writes the numbers in a short page. An entity that fails waits 24
+  hours, and the run goes on.
 
 **CRM-Q17a-2 · The screens.** It waits for CRM-Q17a-1. Done when:
 

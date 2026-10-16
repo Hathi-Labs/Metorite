@@ -28,8 +28,9 @@ bar and the CSV export read this order.
 from ``crm_field_fill``, which only the sync writes. The layout also carries
 ``empty_columns``, from ``fill_rank.empty_columns``, the one function that
 the CSV export reads too. The plain read is a bare list, so it carries the
-numbers on each row and no ``empty_columns``. For any other org each of these
-is ``null``. No request computes them.
+numbers on each row and no ``empty_columns``. While the numbers are stale
+(``fill_rank.stale_entities``), ``empty_columns`` is ``[]``. For any other
+org each of these is ``null``. No request computes them.
 
 Read only. Any member that the CRM access rule admits may read it. The
 organization comes from the server and the session binds it, so the route
@@ -52,7 +53,7 @@ from gateway.routes.crm.core import (
     from_jsonb,
     router,
 )
-from gateway.routes.crm.fill_rank import annotate, empty_set, fills_for
+from gateway.routes.crm.fill_rank import annotate, empty_columns, fills_for
 from gateway.routes.crm.flags import field_studio_allowed
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -136,7 +137,8 @@ class FieldLayout(BaseModel):
     #: the caller holds ``admin:access:manage``, and the mode is Native.
     studio_admin: bool = False
     #: CRM-Q17a-1: the standard keys that no record fills
-    #: (``fill_rank.empty_set``). ``None`` outside ``CRM_FILL_RANK_ORGS``.
+    #: (``fill_rank.empty_columns``). ``None`` outside ``CRM_FILL_RANK_ORGS``,
+    #: and ``[]`` while the numbers are stale.
     empty_columns: list[str] | None = None
 
 
@@ -265,7 +267,9 @@ async def list_fields(
             update: dict[str, Any] = await studio_flags(db, user)
             if fills is not None:
                 update["fields"] = annotate(found.fields, fills)
-                update["empty_columns"] = empty_set(entity, fills)
+                update["empty_columns"] = await empty_columns(
+                    db, user.organization_id, entity, fills,
+                )
             return found.model_copy(update=update)
         rows = (await db.execute(text(_FIELDS_SQL), {"entity": stored})).fetchall()
     return annotate([field_wire(r) for r in rows], fills)

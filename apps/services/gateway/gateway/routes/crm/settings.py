@@ -87,7 +87,7 @@ from gateway.routes.crm.fill_rank import EntityLabel, source_labels
 from gateway.routes.crm.flags import crm_mirror_allowed
 from gateway.routes.crm.seed import seed_native_pipeline
 from gateway.routes.projects.core import validate_grant_subject
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
@@ -308,9 +308,12 @@ class CrmModeModel(BaseModel):
     mode: str | None = None
     #: CRM-Q17a-1 (§18.9.1, D95.2 as amended 2026-10-15): in Mirror mode, the
     #: source's plural and singular label of each core entity, by API slug
-    #: (``contacts`` → "Existing Sites"). ``None`` in Native mode, with no
-    #: source profile, or outside ``CRM_FILL_RANK_ORGS``.
-    labels: dict[str, EntityLabel] | None = None
+    #: (``contacts`` → "Existing Sites"). Left OUT of the body in Native mode,
+    #: with no source profile, or outside ``CRM_FILL_RANK_ORGS``, so such an
+    #: org reads ``{"mode": …}`` as before (``test_crm_aggregate_r8.py``).
+    labels: dict[str, EntityLabel] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
 
 
 @router.get("/mode", response_model=CrmModeModel)

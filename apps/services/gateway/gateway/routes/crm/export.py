@@ -59,8 +59,11 @@ Five rules, each because the obvious implementation is wrong:
    option label. The Zoho custom fields of a Mirror org export the same way.
    **An empty standard column is left out** (WS-53 CRM-Q17a-1,
    ``crm_platform.md`` §18.9.3): for an org on ``CRM_FILL_RANK_ORGS``, each
-   key of ``fill_rank.empty_columns`` leaves the file. The layout serves the
-   same set through the same function. :data:`COLUMNS` itself never changes.
+   key of ``fill_rank.empty_columns`` leaves the file, but only when each
+   exported row renders an empty cell for it (``csv_cell``). Numbers that
+   went stale between two runs must never drop a value from a file. The
+   layout serves the same set through the same function. :data:`COLUMNS`
+   itself never changes.
 
 5. **This endpoint writes NOTHING.** Not a nicety — the Zoho sync loop is
    RUNNING (spec header, corrected 2026-08-11) and ``core.mark_dirty_on_*``
@@ -112,7 +115,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user, require_permission
 from fastapi import Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
-from gateway.csv_export import csv_document, csv_lines
+from gateway.csv_export import csv_cell, csv_document, csv_lines
 from gateway.routes.crm.access import ADMIN_PERMISSION
 from gateway.routes.crm.core import (
     CONTACTS,
@@ -279,6 +282,12 @@ def _cell(entity: Entity, key: str, row: dict[str, Any]) -> Any:
     return row.get(key)
 
 
+def _blank_in_each(entity: Entity, key: str, rows: list[dict[str, Any]]) -> bool:
+    """True when each row renders an empty cell for *key*, through the same
+    ``_cell`` and ``csv_cell`` as the file (CRM-Q17a-1)."""
+    return all(csv_cell(_cell(entity, key, row)).strip() == "" for row in rows)
+
+
 #: The custom fields of one entity, in the order of the layout. The filters
 #: are the rule of §20.7 item 11 for the export, and review round 1 adds the
 #: hidden fields to what it leaves out.
@@ -410,7 +419,10 @@ async def _export(
             db, getattr(user, "organization_id", None), entity.slug,
         ) or ())
 
-    columns = tuple(c for c in COLUMNS[entity.slug] if c[0] not in empty)
+    columns = tuple(
+        c for c in COLUMNS[entity.slug]
+        if c[0] not in empty or not _blank_in_each(entity, c[0], exported)
+    )
     return Response(
         content=csv_document(
             [header for _, header in columns] + [c.label for c in extra],

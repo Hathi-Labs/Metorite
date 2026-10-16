@@ -21,7 +21,6 @@ from types import SimpleNamespace
 
 import pytest
 from gateway.crm_sync import fill
-from gateway.crm_sync.runs import CursorRow
 from gateway.routes.crm import fill_rank, flags
 from gateway.routes.crm.core import SYSTEM_FIELDS
 from gateway.routes.crm.export import COLUMNS
@@ -165,16 +164,17 @@ def _calls(path: Path) -> set[str]:
 
 
 def test_the_layout_and_the_export_reach_the_one_rule() -> None:
-    """R7 fence. The layout calls ``empty_set``, the export calls
-    ``empty_columns``, and ``empty_columns`` returns ``empty_set``. No other
-    file of the package names the rule."""
-    assert "empty_set" in _calls(_CRM / "fields.py")
+    """R7 fence. The layout and the export both call ``empty_columns``, which
+    checks the staleness rule and then returns ``empty_set``. No other file
+    of the package names the rule."""
+    assert "empty_columns" in _calls(_CRM / "fields.py")
     assert "empty_columns" in _calls(_CRM / "export.py")
+    assert "empty_set" not in _calls(_CRM / "fields.py")
     tree = ast.parse((_CRM / "fill_rank.py").read_text(encoding="utf-8"))
     fn = next(n for n in tree.body
               if isinstance(n, ast.AsyncFunctionDef) and n.name == "empty_columns")
-    assert any(isinstance(c, ast.Call) and getattr(c.func, "id", None) == "empty_set"
-               for c in ast.walk(fn))
+    called = {getattr(c.func, "id", None) for c in ast.walk(fn) if isinstance(c, ast.Call)}
+    assert {"empty_set", "stale_entities"} <= called
     for path in sorted(_CRM.glob("*.py")):
         if path.name == "fill_rank.py":
             continue
@@ -185,23 +185,51 @@ def test_the_layout_and_the_export_reach_the_one_rule() -> None:
 def test_the_export_keeps_its_static_columns() -> None:
     """``COLUMNS`` never changes. The export filters it per request."""
     body = (_CRM / "export.py").read_text(encoding="utf-8")
-    assert "if c[0] not in empty" in body
+    assert "if c[0] not in empty or not _blank_in_each(" in body
+
+
+def test_the_export_drops_a_key_only_when_each_rendered_cell_is_empty() -> None:
+    """Stale numbers must never drop a value from a file (review P1)."""
+    from gateway.routes.crm.core import ORGANIZATIONS
+    from gateway.routes.crm.export import _blank_in_each
+
+    assert _blank_in_each(ORGANIZATIONS, "industry", [{"industry": None}, {"industry": "  "}])
+    assert not _blank_in_each(ORGANIZATIONS, "industry", [{"industry": None}, {"industry": "x"}])
+    assert not _blank_in_each(ORGANIZATIONS, "phone", [{"phone": 0}])
+    assert _blank_in_each(ORGANIZATIONS, "industry", [])
+
+
+# ── The labels on GET /crm/mode ──────────────────────────────────────────────
+
+
+def test_the_mode_body_leaves_out_labels_when_there_are_none() -> None:
+    """An org outside the list reads the body of before (``test_crm_aggregate_r8.py``)."""
+    from gateway.routes.crm.settings import CrmModeModel
+
+    assert CrmModeModel(mode=None).model_dump(mode="json") == {"mode": None}
+    assert CrmModeModel(mode="native").model_dump(mode="json") == {"mode": "native"}
+    assert CrmModeModel(mode="mirror", labels={}).model_dump(mode="json") == {
+        "mode": "mirror", "labels": {},
+    }
+
+
+def test_labels_read_only_the_module_list_of_the_profile() -> None:
+    assert "profile -> 'modules'" in fill_rank._MODULES_SQL
+    assert "SELECT profile," not in fill_rank._MODULES_SQL
+    labels = fill_rank.labels_of([
+        {"api_name": "Contacts", "label": "Existing Sites", "singular_label": "Existing Site"},
+        {"api_name": "Products", "label": "Products"},
+        {"api_name": "Deals", "label": "  "},
+    ])
+    assert set(labels) == {"contacts"}
+    assert labels["contacts"].singular_label == "Existing Site"
 
 
 # ── Which entity changed ─────────────────────────────────────────────────────
 
 
-def _ctx(counts: dict, start: dict | None = None, end: dict | None = None) -> SimpleNamespace:
-    rules = "zoho:field_rules"
-    start_rows = {rules: CursorRow(rules, None, start, None, None)} if start else {}
-    end_rows = {rules: CursorRow(rules, None, end, None, None)} if end else {}
-    return SimpleNamespace(
-        counts=counts, cursors=end_rows, handle=SimpleNamespace(cursors=start_rows),
-    )
-
-
 def test_counts_name_the_changed_entities() -> None:
-    ctx = _ctx({
+    ctx = SimpleNamespace(counts={
         "organizations": {"upserted": 1, "deleted": 0},
         "contacts": {"upserted": 0, "deleted": 2},
         "leads": {"upserted": 0, "deleted": 0},
@@ -209,6 +237,8 @@ def test_counts_name_the_changed_entities() -> None:
         "module:Products": {"upserted": 3},
         "module:Quotes": {"seen": 4},
         "tasks": {"upserted": 1},
+        # CRM-Q23 (another branch) adds this key. It names no entity here.
+        "activity_drops": {"upserted": 5, "deleted": 5},
     })
     assert fill.changed_entities(ctx) == {"company", "contact", "module:Products"}
 
@@ -216,17 +246,19 @@ def test_counts_name_the_changed_entities() -> None:
 def test_a_backfilled_or_undone_rule_names_its_entity() -> None:
     rule = {"id": "r1", "entity": "lead", "field": "Email_2", "column": "email"}
     other = {"id": "r2", "entity": "deal", "field": "X", "column": "next_step"}
-    # Backfilled in this run: absent at the start, applied at the end.
-    assert fill.changed_entities(_ctx({}, None, {"applied": [rule]})) == {"lead"}
-    # Undone in this run.
-    assert fill.changed_entities(_ctx({}, {"applied": [rule]}, {"applied": []})) == {"lead"}
-    # A backfill that finished in this run.
-    marked = {**rule, "backfilling": True}
-    assert fill.changed_entities(
-        _ctx({}, {"applied": [marked, other]}, {"applied": [rule, other]}),
-    ) == {"lead"}
-    # No change.
-    assert fill.changed_entities(_ctx({}, {"applied": [other]}, {"applied": [other]})) == set()
+
+    def changed(saved: list[dict], now: list[dict]) -> set[str]:
+        stored = {"rules": [list(m) for m in fill_rank.rule_marks({"applied": saved})]}
+        return fill_rank.rule_entities(
+            fill_rank.saved_marks(stored), fill_rank.rule_marks({"applied": now}),
+        )
+
+    assert changed([], [rule]) == {"lead"}  # backfilled
+    assert changed([rule], []) == {"lead"}  # undone
+    assert changed([{**rule, "backfilling": True}, other], [rule, other]) == {"lead"}
+    assert changed([other], [other]) == set()
+    # No marks saved yet: each applied rule names its entity once.
+    assert fill_rank.rule_entities(set(), fill_rank.rule_marks({"applied": [other]})) == {"deal"}
 
 
 def test_the_statement_names_only_mapped_tables_and_bound_values() -> None:
@@ -235,8 +267,22 @@ def test_the_statement_names_only_mapped_tables_and_bound_values() -> None:
     sql, params = fill.statement("module:Invoices", mapping)
     assert "Invoices" not in sql and params["module"] == "Invoices"
     assert params["std"] == [] and params["prefix"] == ""
+    assert params["sample"] == fill.DISTINCT_SAMPLE
     sql, params = fill.statement("company", mapping)
-    assert "FROM crm_companies t" in sql
+    assert "FROM crm_companies WHERE" in sql
     assert params["prefix"] == "custom." and "name" in params["std"]
-    assert "'false'::jsonb" in fill.FILLED_SQL
-    assert sql.count("crm_field_fill") == 2  # one upsert, one delete
+    # The read writes nothing. The write is its own statement.
+    assert "crm_field_fill" not in sql and "INSERT" not in sql.upper()
+    assert fill._WRITE_SQL.count("crm_field_fill") == 2  # one upsert, one delete
+    # filled groups by key only. distinct reads the sample alone.
+    assert "count(DISTINCT" in sql and "LIMIT :sample" in sql
+    assert "GROUP BY key, value" not in sql
+
+
+def test_the_cost_constants() -> None:
+    from gateway.crm_sync.holds import LARGE_MODULE_RECORDS
+
+    assert fill.TIMEOUT_MS == 30_000
+    assert fill.LARGE_ROWS == LARGE_MODULE_RECORDS == 5_000
+    assert fill.DISTINCT_SAMPLE == 2_000
+    assert "WHEN 'boolean' THEN value = 'true'::jsonb" in fill.FILLED_SQL
