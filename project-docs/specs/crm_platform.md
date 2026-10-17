@@ -2592,6 +2592,24 @@ density, a changed accent and 375 px.
 - Fence: `components/crmQ17b.test.ts`. The golden files `list.html` and
   `filters.html` of `c4b-flag-off` come from this tree.
 
+Fix round 1 (review of 2026-10-17):
+
+- P1. The landing happens once for each mount of the page (`landingPlan`).
+  A bare `/crm` is also the address of the Deals board. So before the fix, a
+  click on Deals sent the member back to the landing row, and a new read of
+  the mode could do the same. Fences: the `landingPlan` cases in
+  `crmQ17b.test.ts` and `e2e/crm-landing-once.spec.ts`.
+- P2. `unavailableAction` gives "Check again" only to a key that Zoho
+  turned off and that a run of one key accepts (`isHoldable`). A missing
+  scope gets "Connect again", which opens Setup and sync. A turned-off step
+  key, such as `deal_contacts`, gets no button.
+- At phone width, `PhoneSort` sorts the cards with a `SelectButton` and one
+  direction button.
+- The second row of the filter bar also opens when a hidden filter comes
+  in after the bar mounted (`moreOpenAfter`).
+- `records` of Leads counts an open lead only (`core.OPEN_LEAD_SQL`),
+  because the default list hides a converted lead.
+
 **CRM-Q18 · One plan.** The spec audit of 2026-10-16 found that rows of
 versions do not fit the unique indexes of `crm_field_rules` under R6. So the
 versions live in a new table, and `crm_field_rules` stays the live set. It
