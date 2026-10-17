@@ -9,7 +9,7 @@
 ## 1. The answer in one screen
 
 1. **Metorite owns one GitHub App for each environment.** The owner registers it once, with a script and one click (§15). Staging and production each get one App, because an App has one webhook URL.
-2. **An admin connects in three clicks.** Connect GitHub, pick the repositories on GitHub, and land back in Metorite. No token, no client id, no BYOK.
+2. **An admin connects in a few clicks.** Connect GitHub, pick the repositories on GitHub, land back in Metorite, and confirm. No token, no client id, no BYOK.
 3. **GitHub pushes the facts.** A webhook carries the pull request state and the CI state. A slow poll repairs a missed delivery.
 4. **A pull request links itself.** The task URL in the description, or the task id in the branch name, adds the reference.
 5. **A merge can close the task.** Metorite moves the task to Done only when an agent worked it, by a rule that a test holds (§12).
@@ -55,7 +55,7 @@
 
 | Fact | Where |
 |---|---|
-| The org's GitHub token is one row of `integration_connections`: `PROVIDER = "github"`, `OWNING_APP = "integrations"`, org scope | `apps/services/gateway/gateway/connections/github.py:37-38`. The readers are `token_or_none` (:164) and `token_for_org` (:173). `save_device_token` (:93) and `disconnect` (:200) write |
+| The org's GitHub token is one row of `integration_connections`: `PROVIDER = "github"`, `OWNING_APP = "integrations"`, org scope | `apps/services/gateway/gateway/connections/github.py:37` and `:39`. The readers are `token_or_none` (:164) and `token_for_org` (:173). `save_device_token` (:93) and `disconnect` (:200) write |
 | The device flow and the account card | `routes/integrations.py`: `POST /integrations/github/device/start` (:2465), `POST …/device/poll` (:2508), `GET …/github/account` (:2663), `DELETE /integrations/github` (:2699), `POST …/github/connect-cli` (:2726, answers 410) |
 | The device flow uses the customer's own OAuth App | `_github_org_store` (:2441) reads the org row `github:client_id` (:2457), and falls back to the deployment `github_client_id` (:2461) |
 | BYOK blocks the device poll | `_refuse_provider_key_without_byok(["GITHUB_TOKEN"])` at :2528 and :2743. The gate is at :643. `GITHUB_TOKEN` is in `_PROVIDER_ENV_MAP` because it once routed the Copilot models |
@@ -166,7 +166,13 @@ github_reconcile_loop (every 10 minutes) ── installation token ──► api
 | `app` | Empty. The App holds no customer secret | An installation token from §6.2 for `provider_meta.installation_id` |
 | `token` | The pasted token, as today | The stored token, as today |
 
-Every caller of `token_or_none` and `token_for_org` keeps its code. `refs.py` and the agent config fetch read through it. The `app` row also holds `installation_id`, `account_login`, `account_type`, `repository_selection`, `app_slug` and `connected_by` in `provider_meta`. None of them is a secret.
+Most callers keep their code. `refs.py` reads through `token_or_none` and needs no change. Three callers change in GH-3, because an installation token is not a user token:
+
+- `_test_github` (`routes/integrations.py:1617`) calls `GET /user`, which GitHub refuses for an installation token. In `app` mode it calls `GET /installation/repositories?per_page=1` instead.
+- `_github_connected` (`routes/integrations.py:1610`) would make a token on each status read. In `app` mode it reads the row's `status` and makes no token.
+- `_org_github_token` (`routes/agent.py:1381`) fetches an agent `config.json` from a repository. That read needs Contents (read), and §13.2 asks for none. In `app` mode it returns an empty token, so a public repository still works and a private one does not. An org that needs a private agent repository keeps the Advanced token (§7.6). §20 Q4 asks the owner whether to add Contents (read).
+
+The `app` row also holds `installation_id`, `account_login`, `account_type`, `repository_selection`, `app_slug` and `connected_by` in `provider_meta`. None of them is a secret.
 
 ## 7. The connect flow
 
@@ -190,17 +196,23 @@ The gateway does these checks in this order. Each refusal redirects to `/integra
 
 1. **The session.** The caller holds `integrations:manage` in the org of the session. Else `forbidden`.
 2. **The pending connect.** `GETDEL key("github", "connect", <member>)` returns a nonce. Else `expired`. So the callback must follow a connect that this member started in this org within 10 minutes. It trusts nothing in the query string.
-3. **The state, when present.** A state that is present must verify with purpose `github_install`, the same org and the same member. Else `bad_state`. U1 decides whether a state arrives. If GH-3 measures that it always arrives, GH-3 makes it required, and a fence holds that.
+3. **The state, when present.** A state that is present must verify with purpose `github_install`, the same org and the same member. Else `bad_state`. GH-8 measures U1 on staging and records it. A later change may make the state required.
 4. **A request.** `setup_action=request` shows "Your GitHub organization owner must approve the install. Press Connect again after they approve." Nothing is written.
 5. **The code.** The gateway exchanges `code` at `https://github.com/login/oauth/access_token` with the App client id and secret. It holds the user token for this request only, and never writes it.
 6. **The installation belongs to the user.** `GET /user/installations` with the user token, through every page, must list `installation_id` (§4.2 fact 5). Else `not_yours`. This is the check that the docs require, because a query string can name any installation.
-7. **The installation facts.** `GET /app/installations/{id}` with the App JWT gives the account, the type, `repository_selection` and `suspended_at`. A suspended installation gives `suspended`.
-8. **One installation, one org.** The write of §7.4 fails on the unique index of §9.3 when another org holds the installation. Then `other_org`, with the text "This GitHub account is connected to another Metorite organization."
-9. **The write.** §7.4. Then redirect to `/integrations?view=connections&github=connected`.
+7. **The user administers the account.** `GET /user/installations` also lists an installation where the user can only read one repository. So the gateway checks the account of the installation:
+   - For an account of type `User`, `account.id` must equal the id from `GET /user`.
+   - For an `Organization`, `GET /user/memberships/orgs/{account.login}` must give `role` `admin`. That read needs the organization permission Members (read) (§13.2).
+
+   Else `not_admin`. So a collaborator with read access cannot take a company's installation.
+8. **The installation facts.** `GET /app/installations/{id}` with the App JWT gives the account, the type, `repository_selection` and `suspended_at`. A suspended installation gives `suspended`.
+9. **The callback writes nothing.** It stores `{installation_id, account_login}` in the pending key for 10 more minutes, and redirects to `/integrations?view=connections&github=confirm`. The page asks "Connect <account_login> to <org>?".
+10. **The confirm.** `POST /integrations/github/app/confirm` reads and deletes the pending key, and runs §7.4. The BFF refuses a `Sec-Fetch-Site` that is not `same-origin`. So a forged callback URL that a member opens cannot bind an installation without a click of that member.
+11. **One installation, one org.** The write of §7.4 fails on the unique index of §9.3 when another org holds the installation. Then `other_org`, with the text "This GitHub account is connected to another Metorite organization." Else the page reads `connected`.
 
 ### 7.4 The row
 
-One upsert of the org's `github` row through `connections/store.py`, under `connections/github.lock(db, org)`. It sets `status = 'connected'`, `provider_meta` of §6.3 with `auth = "app"`, and `credentials_encrypted` to NULL. If the store cannot write a row with no blob, GH-3 adds that write to `store.py`, so the AST fence of the store still holds. **A token row becomes an App row.** The confirm dialog in the console says so before the admin leaves for GitHub: "This replaces the token that is connected now."
+The confirm POST of §7.3 step 10 makes one upsert of the org's `github` row through `connections/store.py`, under `connections/github.lock(db, org)`. It sets `status = 'connected'`, `provider_meta` of §6.3 with `auth = "app"`, and `credentials_encrypted` to NULL. If the store cannot write a row with no blob, GH-3 adds that write to `store.py`, so the AST fence of the store still holds. **A token row becomes an App row.** The confirm dialog in the console says so before the admin leaves for GitHub: "This replaces the token that is connected now."
 
 One `acb_audit` row records `github.app.connected`, with the org, the member, the installation id and the account login.
 
@@ -240,7 +252,7 @@ A webhook for a disconnected installation finds no org (§8.3), so it is dropped
 3. **The headers.** `X-GitHub-Event` must be in the handled set of §8.4, or the route answers 202 and logs `github.webhook.ignored`. `X-GitHub-Delivery` must be a GUID, else 400.
 4. **The installation.** The route parses the JSON and reads `installation.id`. It calls the function of §9.3. No org gives 202 and `github.webhook.unknown_installation`, and nothing is written. An `installation` `created` event for a new installation lands here too, before the callback maps it. That is expected.
 5. **The tenant.** The route binds the org with `bind_tenant` and opens `tenant_session(org)`. Every write after this point is bound (R5).
-6. **The delivery key.** `SET key("github", "delivery", <guid>) 1 NX EX 259200` through the tenant Redis wrapper. 259,200 seconds is 3 days, the redelivery window (§4.2 fact 9). A key that exists gives 200 `{"duplicate": true}`. A Redis outage logs `github.webhook.dedupe_unavailable` and goes on, because every handler is idempotent (§8.6).
+6. **The delivery key.** `SET key("github", "delivery", <guid>) 1 NX EX 259200` through the tenant Redis wrapper. 259,200 seconds is 3 days, the redelivery window (§4.2 fact 9). A key that exists gives 200 `{"duplicate": true}`. If the handler fails, the route deletes the key and answers 500, so a redelivery runs again. A Redis outage logs `github.webhook.dedupe_unavailable` and goes on, because every handler is idempotent (§8.6).
 7. **The handler.** It runs inside the 10-second answer budget, with a budget of 5 seconds for its own database work. A GitHub API read never runs before the answer. It goes to a background task (§8.5).
 8. **The answer.** 200 `{"ok": true}`.
 
@@ -339,7 +351,7 @@ On `pull_request` `opened`, `reopened`, `edited`, `synchronize` and `ready_for_r
 
 **The form.** `mt-` and the first 8 hex characters of the task UUID, lower case. A branch reads `feat/mt-1a2b3c4d-login-fix`.
 
-**Why not `#N` or `PRJ-N`.** `task_number` is unique only inside a root project (`146_projects.sql:233`). `pm_projects.task_prefix` has no unique constraint. So `#12` and `RND-12` can each name two tasks in one org. EA3-39 item 2 refuses those shapes for the same reason.
+**Why not `#N` or `PRJ-N`.** `task_number` is unique only inside a root project (`146_projects.sql:233`). `pm_projects.task_prefix` has no unique constraint. So `#12` and `RND-12` can each name two tasks in one org. EA3-39 item 2 refuses `PRJ-N` for the same reason.
 
 **Why 8 hex.** The UUID is unique in the product, and the prefix needs no new column or index. 8 hex characters are 32 bits. In an org of 100,000 tasks, a given prefix matches a second task with a chance of about 1 in 43,000. The rule below turns that collision into no link, never a wrong link.
 
@@ -349,6 +361,7 @@ On `pull_request` `opened`, `reopened`, `edited`, `synchronize` and `ready_for_r
 
 - **The org is the installation's org.** The read runs in the bound tenant. A task of another org never matches.
 - **Live tasks only.** An archived task, or a task that does not exist, links nothing.
+- **No personal tasks.** A task in a personal project (D52) links nothing, because it is private to one member.
 - **No outsider links.** A pull request links only when its head repository is its base repository, or its `author_association` is `OWNER`, `MEMBER` or `COLLABORATOR`. So a pull request from a fork of a public repository cannot write a reference into a task.
 - **At most 5 tasks for each pull request.** More candidates link the first 5 and log `github.autolink.capped`.
 - **One insert.** Each link calls `refs.insert_ref` with `kind = 'pull_request'`, `provider = 'github'`, `via = 'github'` and `created_by = 'system:github'`. It writes the `link` activity that the route writes.
@@ -359,6 +372,7 @@ On `pull_request` `opened`, `reopened`, `edited`, `synchronize` and `ready_for_r
 
 `gateway/github_reconcile_loop.py`, started from the lifespan in the shape of `my_day_loop.py`. The flag `github_app_enabled` gates the start inside the start function, as `main.py:40-50` says a loop must.
 
+- **The org list.** The loop copies `my_day_loop._organization_ids` (`my_day_loop.py:207`), an unbound read of the RLS-exempt `organization` table. GH-5 registers the new site in `tests/unit/test_db_engine_seam.py`, as `my_day_loop.py` is (R5b).
 - **The tick is 10 minutes.** For each org with a connected `app` row, `SET key("github", "reconcile", <tick>) NX EX 900` picks one process.
 - **What it reads.** Two sets of references:
   - an open or draft pull request whose `fetched_at` is older than 30 minutes.
@@ -373,16 +387,16 @@ On `pull_request` `opened`, `reopened`, `edited`, `synchronize` and `ready_for_r
 
 ### 12.1 The trigger
 
-A `pull_request` `closed` event with `merged` true, or a poll read that finds `merged`. `github_merge.on_merged(db, org, ref, merged_at, merged_by)` runs in the bound tenant, in the webhook's transaction.
+A `pull_request` `closed` event, merged or not, or a poll read that finds `merged` or `closed`. A close without a merge can still finish a task whose other pull request merged earlier (§12.3 step 4). `github_merge.on_merged(db, org, ref, merged_at, merged_by)` runs in the bound tenant, in the webhook's transaction.
 
 ### 12.2 The agent-worked rule
 
 A task is **agent-worked** at time `T` when either of these rows exists, with `created_at < T`:
 
 1. **A run.** A `pm_agent_runs` row with `task_id` = the task, in any status.
-2. **A claim through MCP.** A `pm_activities` row with `task_id` = the task, `type = 'assignment'`, and `meta->>'via'` that matches `^mcp:`. `claim_task` writes that row (`tasks.py:1484`), and `record_activity` stamps the `via`.
+2. **An act through MCP.** Any `pm_activities` row with `task_id` = the task and `meta->>'via'` that matches `^mcp:`. A claim writes an `assignment` row (`tasks.py:1484`), and `record_activity` stamps the `via`. A claim of a task that is already assigned and started writes no row. So the rule also counts the agent's comment, status move and link on the task.
 
-`agent_worked.AGENT_WORKED_SQL` is the one copy of this predicate. `agent_worked.reason(db, task_id, T)` returns `"agent_run"` with the run id, `"mcp_claim"` with the activity id, or None. The timeline row names the reason (§12.4), so a person can audit each move.
+`agent_worked.AGENT_WORKED_SQL` is the one copy of this predicate. `agent_worked.reason(db, task_id, T)` returns `"agent_run"` with the run id, `"mcp_act"` with the activity id, or None. The timeline row names the reason (§12.4), so a person can audit each move.
 
 ### 12.3 The steps
 
@@ -391,21 +405,21 @@ For each task with a `pull_request` reference to the merged pull request:
 1. **Skip a closed or held task.** Skip when the task is archived, or its status category is `completed`, `cancelled` or `triage`.
 2. **Skip a task that people run.** Skip when `agent_worked.reason` is None.
 3. **Skip a task that a person took back.** Look at the newest `status_change` row of the task. Skip when all three are true:
-   - it has no `meta.via`.
+   - its `meta.via` is absent, or does not start with `mcp:` and is not `github`. A move through the in-product chat carries `chat:projects-assistant` (`skill_projects/client.py:52`), and it is a person's move.
    - its `created_by` does not start with `system:`.
    - it is newer than the newest agent row of §12.2.
 
    A person who moved the task after the agent keeps the decision.
-4. **Wait for the other pull requests.** Skip when another `pull_request` reference of the task has `state` `open` or `draft`. The last merge or close of the set runs the rule again.
+4. **Wait for the other pull requests.** Skip when a `pull_request` reference of the task has `state` `open` or `draft`. Skip when no reference of the task has `state` `merged`. The last merge or close of the set runs the rule again.
 5. **Find the done lane.** `load_default_status(db, status_owner_id(db, task.project_id), COMPLETED_CATEGORY)`, the lane rule of `complete_for_member`. A set with no done lane skips the task and logs `github.merge.no_done_lane`.
-6. **Move.** `apply_status_transition(db, task, lane.id, created_by="system:github", automation=True, meta_extra=…)`. The recurrence successor comes from that helper. The subtasks stay open, as EA3-32 says.
+6. **Move.** Set the `ACTOR_VIA` context value (`core.py:81`) to `github`, then call `apply_status_transition(db, task, lane.id, created_by="system:github", automation=True)`. The recurrence successor comes from that helper. Then write one `system` activity row with the reason (§12.4). The subtasks stay open, as EA3-32 says.
 7. **After the commit.** Emit `pm.task.updated` and `pm.task.status_changed`, as `claim_task` does. A blocked task that waits on this one sees the change through the events that a member's move sends.
 
 An open agent run on the task stays open. The agent finishes it. Nothing moves a task to `cancelled`.
 
 ### 12.4 The timeline row
 
-`apply_status_transition` gains one keyword, `meta_extra: dict | None = None`, merged into the `status_change` meta. A caller that does not pass it writes the same row as today. The merge rule passes:
+`apply_status_transition` does not change. Its `status_change` row gets `meta.via = github` from the context value and `meta.automation = true`. The merge rule then writes one `system` row through `record_activity`, with this meta:
 
 ```json
 {"via": "github", "automation": true,
@@ -413,7 +427,7 @@ An open agent run on the task stays open. The agent finishes it. Nothing moves a
  "reason": "agent_run", "agent_run_id": "<uuid>"}
 ```
 
-`reason` is `mcp_claim` with `activity_id` for the other branch of §12.2. EA-13b draws the row as "GitHub moved this to Done after owner/repo#12 merged".
+`reason` is `mcp_act` with `activity_id` for the other branch of §12.2. EA-13b draws the row as "GitHub moved this to Done after owner/repo#12 merged".
 
 ## 13. Security and tenancy
 
@@ -425,9 +439,9 @@ An open agent run on the task stays open. The agent finishes it. Nothing moves a
 | A replayed webhook | The delivery key of §8.2 step 6, and idempotent handlers (§8.6) | GH-4 W5, W6 |
 | A large body | The stream cap of 5 MiB, before the HMAC | GH-4 W3 |
 | A webhook for another org's installation | The org comes from the installation id through the definer function, never from the body. An unknown installation writes nothing | GH-4 W4, W7 |
-| A spoofed `installation_id` at the callback | The pending connect, the user-token check of `GET /user/installations`, and the unique index | GH-3 C2 to C5 |
+| A spoofed `installation_id` at the callback | The pending connect, the user-token check of `GET /user/installations`, the admin check, and the unique index | GH-3 C2 to C5, C11 |
 | One installation in two orgs | The partial unique index of §9.3 | GH-2 M3 |
-| A login request forgery at the callback | The pending connect for this member, and the state when present | GH-3 C2, C3 |
+| A login request forgery at the callback | The pending connect for this member, the state when present, and the same-origin confirm | GH-3 C2, C3, C12 |
 | A fork links itself to a task | The `author_association` rule of §10.3 | GH-4 L5 |
 | A leaked private key | The key lives in a root-owned file on the box, read by the gateway user only. It never enters a customer row, a log or an answer | GH-1 A4 |
 | A leaked installation token | Memory only, one hour, never logged | GH-1 A3 |
@@ -441,9 +455,10 @@ An open agent run on the task stays open. The agent finishes it. Nothing moves a
 | Pull requests | read | `pull_request` events and `GET …/pulls/{n}` |
 | Checks | read | `check_suite` and `check_run` events and `GET …/check-runs` |
 | Commit statuses | read | `status` events and `GET …/status` |
+| Members (organization) | read | `GET /user/memberships/orgs/{org}` for the admin check of §7.3 step 7. Only a user token uses it |
 | Contents | none | Not needed. `GET …/pulls/{n}` works with Pull requests (read) (§4.2 fact 12) |
 
-No permission is `write`. The App subscribes to `pull_request`, `check_suite`, `check_run` and `status`. The two installation events need no subscription.
+No permission is `write`. GitHub lists `GET /user/memberships/orgs/{org}` under Members (read), for user tokens only (<https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps>). The App subscribes to `pull_request`, `check_suite`, `check_run` and `status`. The two installation events need no subscription.
 
 ### 13.3 R5, item by item
 
@@ -471,7 +486,9 @@ An App has one webhook URL (§4.2 fact 14). Staging (`dev.metorite.com`) and pro
 | Box | `srv1747539` (`metorite-dev`) | `srv1914284` (`metorite`) |
 | Secret file | `github-app-staging.env` and `github-app-staging.pem` | `github-app.env` and `github-app.pem` |
 
-The code reads the same settings in both places. Only the values differ. `app_public_url` names the origin, so §10.1 accepts only its own environment's task URLs.
+The code reads the same settings in both places, and only the values differ.
+
+Each box holds eight: `GITHUB_APP_ENABLED`, `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_WEBHOOK_SECRET`, `GITHUB_APP_PRIVATE_KEY_PATH` and `APP_PUBLIC_URL`. `APP_PUBLIC_URL` is `https://app.metorite.com` in production and `https://dev.metorite.com` on staging. `acb-gateway` and `acb-agent-edge` both read it (EA-13f). It names the origin, so §10.1 accepts only its own environment's task URLs. The hard-coded `APP_URL` of `routes/whatsapp_channel/views.py:43` stays out of scope.
 
 ## 15. The owner runbook: register the two Apps (GH-0)
 
@@ -511,22 +528,22 @@ Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. Every slice ships da
 
 | # | Slice | Files | Done when | Gate |
 |---|---|---|---|---|
-| GH-0 | **Register the two Apps, and push their secrets.** The owner runs §15 steps 1 to 4. The agent runs step 5. Needs GH-1 merged | None in the repo | Both Apps exist with the permissions of §13.2. Both boxes hold the six settings. An unsigned POST to each `/webhooks/github` answers 401 with the flag on, or 404 with it off | 🔴 OWNER-GATE: a registration at a third party under the owner's GitHub identity. The push is AGENT-SAFE under the grants `secrets` and `env-write` |
-| GH-1 | **The App auth core and the registration script.** §6.1, §6.2, §15. The settings `github_app_enabled`, `github_app_slug`, `github_app_client_id`, `github_app_client_secret`, `github_app_webhook_secret` and `app_public_url`, beside the two that exist. Two manifest entries in `deploy/secrets/manifest.json` | `connections/github_app.py`, `packages/acb_common/acb_common/settings.py`, `scripts/github_app_manifest.py`, `deploy/secrets/manifest.json`, `tests/unit/test_github_app_auth.py` | **A1** the JWT decodes with the public key, with `iat` 60 seconds back, `exp` at most 600 seconds ahead and `iss` the client id. **A2** a second call within the window makes no second token request, and a call 5 minutes before `expires_at` makes one. Two concurrent misses make one request. **A3** a sentinel token appears in no log line and no answer. **A4** a missing key file raises `GitHubAppNotConfigured`, and the message holds no path content. **A5** the script builds the manifest of §13.2 and §14 for each `--env`, refuses a wrong `state`, and refuses to overwrite a file. Each item red first under a named mutation | AGENT-SAFE. The manifest edit needs the grant `deploy-write` |
+| GH-0 | **Register the two Apps, and push their secrets.** The owner runs §15 steps 1 to 4. The agent runs step 5. Needs GH-1 merged | None in the repo | Both Apps exist with the permissions of §13.2. Both boxes hold the eight settings of §14, with the flag off. An unsigned POST to each `/webhooks/github` answers 401 with the flag on, or 404 with it off | 🔴 OWNER-GATE: a registration at a third party under the owner's GitHub identity. The push is AGENT-SAFE under the grants `secrets` and `env-write` |
+| GH-1 | **The App auth core and the registration script.** §6.1, §6.2, §15. The settings `github_app_enabled` (default false), `github_app_slug`, `github_app_client_id`, `github_app_client_secret`, `github_app_webhook_secret` and `app_public_url` (default `https://app.metorite.com`), beside the two that exist. Two manifest entries in `deploy/secrets/manifest.json` | `connections/github_app.py`, `packages/acb_common/acb_common/settings.py`, `scripts/github_app_manifest.py`, `deploy/secrets/manifest.json`, `tests/unit/test_github_app_auth.py` | **A1** the JWT decodes with the public key, with `iat` 60 seconds back, `exp` at most 600 seconds ahead and `iss` the client id. **A2** a second call within the window makes no second token request, and a call 5 minutes before `expires_at` makes one. Two concurrent misses make one request. **A3** a sentinel token appears in no log line and no answer. **A4** a missing key file raises `GitHubAppNotConfigured`, and the message holds no path content. **A5** the script builds the manifest of §13.2 and §14 for each `--env`, refuses a wrong `state`, and refuses to overwrite a file. Each item red first under a named mutation | AGENT-SAFE. The manifest edit needs the grant `deploy-write` |
 | GH-2 | **The migration.** §9.1 to §9.3 | `infra/postgres/<next>_github_app.sql`, `tests/unit/test_github_migration_r8.py` | R8 on a real database, as `acb_app`, on the promoted catalog. **M1** the seven columns exist and are nullable. **M2** `via = 'github'` inserts, and `via = 'gitlab'` fails. **M3** a second live `github` row with the same installation id in another org fails, and a `disconnected` one passes. **M4** `github_installation_org` returns the org with no tenant bound, returns no row for an unknown or disconnected id, and `anon` cannot execute it. **M5** the migration runs twice with no error. **M6** a pre-check with a planted duplicate refuses with the count | AGENT-SAFE |
-| GH-3 | **The connect flow and the one reader.** §6.3, §7.1 to §7.5. The GitHub card's Connect GitHub button and the confirm dialog | `routes/github/connect.py`, `connections/github.py`, the BFF routes `app/api/integrations/github/app/start/route.ts` and `app/api/integrations/github/callback/route.ts` (in the shape of `api/integrations/mcp/oauth/callback/route.ts`), a new `components/GitHubAppConnect.tsx`, `tests/unit/test_github_connect_r8.py` | R8 with GitHub mocked at the HTTP layer. **C1** start answers the install URL with a state, and writes the pending key. **C2** a callback with no pending key gives `expired`, and writes nothing. **C3** a state of another member or org gives `bad_state`. **C4** an installation that `GET /user/installations` does not list gives `not_yours`. **C5** an installation held by org B gives `other_org` for org A. **C6** `setup_action=request` writes nothing. **C7** a good callback writes one `app` row with no blob and one audit row, and the user token appears nowhere. **C8** `token_or_none` returns an installation token for an `app` row and the stored token for a `token` row. **C9** a member without `integrations:manage` gets 403 at start and at the callback. **C10** U1 and U2 are measured on staging and recorded in §4.2. Visual review of the card in light mode, at compact density and under a changed accent | AGENT-SAFE |
-| GH-4 | **The webhook receiver and the auto-link.** §8.1 to §8.4, §8.6, §10 | `routes/github/webhook.py`, `routes/projects/github_autolink.py`, `gateway/main.py` (the router and `PUBLIC_ROUTES`), `tests/fixtures/github_autolink_cases.json`, `tests/unit/test_github_webhook_r8.py`, `tests/unit/test_github_autolink.py` | **W1** a wrong signature gets 401 and writes nothing. **W2** a compare with `==` fails a source fence that requires `hmac.compare_digest`. **W3** a 6 MiB body gets 413 with no HMAC call. **W4** an unknown installation gets 202 and writes nothing. **W5** a second delivery with one GUID writes nothing. **W6** an older `pull_request` event after a newer one writes nothing. **W7** an event for org A's installation never writes a row of org B (R8, two orgs). **W8** the flag off gives 404. **L1** to **L6**: the cases file links a description URL, a full UUID branch and an `mt-` branch. It refuses a staging URL in production, an archived task, a prefix with two matches, a fork from an outsider, and the sixth candidate. `/webhooks/github` is in `PUBLIC_ROUTES`, and `test_default_deny_auth.py` stays green | AGENT-SAFE. Full review loop: it adds a public route |
-| GH-5 | **The checks read and the reconcile poll.** §8.5, §11, and the checks fields in the refs route | `gateway/github_sync.py`, `gateway/github_reconcile_loop.py`, `routes/projects/refs.py`, `gateway/main.py` (the lifespan), `tests/unit/test_github_checks.py`, `tests/unit/test_github_reconcile_r8.py` | **K1** the fold of §8.5 passes a table of at least 15 cases. **K2** a read for an old head writes nothing. **K3** no database session is open during a GitHub call (the fence of EA12-4, R11). **K4** a poll tick runs in one process only, reads at most 50 references, and stops on a rate-limit answer. **K5** a poll that finds `merged` calls `on_merged` once. **K6** `GET /refs` returns `checks_state`, `checks_summary`, `head_ref` and `merged_at`. **K7** U3 is measured on staging with a GitHub Actions run and recorded in §4.2 | AGENT-SAFE |
-| GH-6 | **Merge-to-Done.** §12, and `meta_extra` on `apply_status_transition` | `routes/projects/github_merge.py`, `routes/projects/agent_worked.py`, `routes/projects/core.py` (one keyword), `tests/unit/test_github_merge_r8.py` | R8, each item red first under a named mutation. **D1** an agent-run task in review moves to the done lane of its own project, with `completed_at`. **D2** an MCP-claimed task with no run moves too. **D3** a task with no run and no MCP claim does not move. **D4** a person's later status move keeps the task. **D5** an open second pull request keeps the task, and its merge then moves it. **D6** a cancelled, done, triage or archived task does not move. **D7** a recurring task makes exactly one successor. **D8** the timeline row holds `created_by = system:github`, `meta.via = github` and the reason. **D9** a second delivery moves nothing. **D10** open subtasks stay open. **D11** a run of `apply_status_transition` with no `meta_extra` writes the same row as before (a golden test) | AGENT-SAFE. Full review loop: a machine writes a member's task |
+| GH-3 | **The connect flow and the one reader.** §6.3, §7.1 to §7.5. The GitHub card's Connect GitHub button and the confirm dialog | `routes/github/connect.py`, `connections/github.py`, `routes/integrations.py` (`_test_github` and `_github_connected` only), `routes/agent.py` (`_org_github_token` only), the BFF routes `app/api/integrations/github/app/start/route.ts`, `app/api/integrations/github/app/confirm/route.ts` and `app/api/integrations/github/callback/route.ts` (in the shape of `api/integrations/mcp/oauth/callback/route.ts`), a new `components/GitHubAppConnect.tsx`, `tests/unit/test_github_connect_r8.py` | R8 with GitHub mocked at the HTTP layer. **C1** start answers the install URL with a state, and writes the pending key. **C2** a callback with no pending key gives `expired`, and writes nothing. **C3** a state of another member or org gives `bad_state`. **C4** an installation that `GET /user/installations` does not list gives `not_yours`. **C5** an installation held by org B gives `other_org` for org A. **C6** `setup_action=request` writes nothing. **C7** a good callback writes nothing, and the confirm POST writes one `app` row with no blob and one audit row. The user token appears nowhere. **C8** `token_or_none` returns an installation token for an `app` row and the stored token for a `token` row. **C9** a member without `integrations:manage` gets 403 at start and at the callback. **C11** a user who only reads a repository of the organization gets `not_admin`, and so does a `User` account of another id. **C12** a cross-site confirm POST gets 403, and a confirm with no pending key writes nothing. **C13** in `app` mode, `_test_github` calls `GET /installation/repositories`, `_github_connected` makes no token, and `_org_github_token` returns an empty token. Visual review of the card in light mode, at compact density and under a changed accent | AGENT-SAFE |
+| GH-4 | **The webhook receiver and the auto-link.** §8.1 to §8.4, §8.6, §10 | `routes/github/webhook.py`, `routes/projects/github_autolink.py`, `gateway/main.py` (the router and `PUBLIC_ROUTES`), `tests/fixtures/github_autolink_cases.json`, `tests/unit/test_github_webhook_r8.py`, `tests/unit/test_github_autolink.py` | **W1** a wrong signature gets 401 and writes nothing. **W2** a compare with `==` fails a source fence that requires `hmac.compare_digest`. **W3** a 6 MiB body gets 413 with no HMAC call. **W4** an unknown installation gets 202 and writes nothing. **W5** a second delivery with one GUID writes nothing. **W6** an older `pull_request` event after a newer one writes nothing. **W7** an event for org A's installation never writes a row of org B (R8, two orgs). **W8** the flag off gives 404. **W9** a handler that raises answers 500 and deletes the delivery key, and a redelivery of the same GUID then runs. **L1** to **L6**: the cases file links a description URL, a full UUID branch and an `mt-` branch. It refuses a staging URL in production, an archived task, a prefix with two matches, a fork from an outsider, and the sixth candidate. `/webhooks/github` is in `PUBLIC_ROUTES`, and `test_default_deny_auth.py` stays green | AGENT-SAFE. Full review loop: it adds a public route |
+| GH-5 | **The checks read and the reconcile poll.** §8.5, §11, and the checks fields in the refs route | `gateway/github_sync.py`, `gateway/github_reconcile_loop.py`, `routes/projects/refs.py`, `gateway/main.py` (the lifespan), `tests/unit/test_db_engine_seam.py`, `tests/unit/test_github_checks.py`, `tests/unit/test_github_reconcile_r8.py` | **K1** the fold of §8.5 passes a table of at least 15 cases. **K2** a read for an old head writes nothing. **K3** no database session is open during a GitHub call (the fence of EA12-4, R11). **K4** a poll tick runs in one process only, reads at most 50 references, and stops on a rate-limit answer. **K5** a poll that finds `merged` calls `on_merged` once. **K6** `GET /refs` returns `checks_state`, `checks_summary`, `head_ref` and `merged_at`. **K7** the org list site is registered in `test_db_engine_seam.py` | AGENT-SAFE |
+| GH-6 | **Merge-to-Done.** §12. No change to `core.py` | `routes/projects/github_merge.py`, `routes/projects/agent_worked.py`, `tests/unit/test_github_merge_r8.py` | R8, each item red first under a named mutation. **D1** an agent-run task in review moves to the done lane of its own project, with `completed_at`. **D2** a task with no run moves when an MCP act exists: a claim, or only a comment through MCP. **D3** a task with no run and no MCP claim does not move. **D4** a person's later status move keeps the task. **D5** an open second pull request keeps the task, and its merge then moves it. **D5b** when the first pull request merged and the second closes without a merge, the close moves the task. A task whose only pull request closes without a merge does not move. **D6** a cancelled, done, triage or archived task does not move. **D7** a recurring task makes exactly one successor. **D8** the `status_change` row holds `created_by = system:github` and `meta.via = github`, and one `system` row holds the reason. **D9** a second delivery moves nothing. **D10** open subtasks stay open. **D11** `core.py` has no diff. **D12** a person's later move through the chat (`chat:projects-assistant`) keeps the task | AGENT-SAFE. Full review loop: a machine writes a member's task |
 | GH-7 | **The Advanced token, and the device flow retires.** §7.6 | `routes/github/connect.py`, `routes/integrations.py`, `connections/github.py`, `components/GitHubDeviceConnect.tsx` (deleted), its four importers, the BFF routes `api/integrations/github/device/` and `connect-cli/` (deleted), a new BFF route `api/integrations/github/token/route.ts`, `components/GitHubAccountBadge.tsx`, `app/integrations/components/ApiKeysView.tsx`, `tests/unit/test_github_per_org_r8.py` | **T1** `PUT /integrations/github/token` stores a token that `GET /user` accepts, with BYOK off. **T2** a token that GitHub refuses gets 422. **T3** configure and `PUT /keys` with `GITHUB_TOKEN` get 422. **T4** device start and poll get 410. **T5** no source file reads `github:client_id` (a fence). **T6** `tsc` and vitest pass with `GitHubDeviceConnect` gone. Visual review of the card | AGENT-SAFE. It changes behaviour for an org that uses the device flow today: its token row keeps working |
-| GH-8 | **Go live.** Staging first, then production at the daily release | `.env` on each box | On staging: install the staging App on a test repository, open a pull request with a task URL, see the reference, the checks and a merge-to-Done on an agent task. Record the delivery ids. Then the same on production for Fracktal | The flag flip is AGENT-SAFE under the grant `enforcement-flip`, with the box and the flag named in the same message. 🔴 OWNER-GATE: the install on Fracktal's GitHub organization, because it acts as the owner at a third party |
+| GH-8 | **Go live.** Staging first, then production at the daily release | `.env` on each box | On staging: install the staging App on a test repository, open a pull request with a task URL, see the reference, the checks and a merge-to-Done on an agent task. Record the delivery ids. Measure U1, U2 and U3 with a GitHub Actions run, and record them in §4.2. Then the same on production for Fracktal | The flag flip is AGENT-SAFE under the grant `enforcement-flip`, with the box and the flag named in the same message. 🔴 OWNER-GATE: the install on Fracktal's GitHub organization, because it acts as the owner at a third party |
 
 **Order.**
 
 - GH-1 and GH-2 run in parallel. GH-0 follows GH-1.
 - GH-3 follows GH-1 and GH-2. GH-7 follows GH-3.
-- GH-4 follows GH-2, and its tests use the fixtures of GH-3.
-- GH-5 and GH-6 follow GH-4, and they can run in parallel.
+- GH-4 follows GH-2 and GH-3, because its tests use the fixtures of GH-3.
+- GH-6 follows GH-4. GH-5 follows GH-6, because K5 calls `on_merged`.
 - GH-8 comes last.
 
 ## 17. Verification commands
@@ -552,10 +569,10 @@ Two batches build in parallel. Each owns its files, so neither edits a file of t
 
 | Batch A owns | |
 |---|---|
-| Gateway | `connections/github.py`, `connections/github_app.py`, `routes/github/` (new), `github_sync.py`, `github_reconcile_loop.py`, `routes/integrations.py`, `routes/projects/refs.py`, `routes/projects/github_autolink.py`, `routes/projects/github_merge.py`, `routes/projects/agent_worked.py`, `routes/projects/core.py` (the `meta_extra` keyword only), `main.py` |
+| Gateway | `connections/github.py`, `connections/github_app.py`, `routes/github/` (new), `github_sync.py`, `github_reconcile_loop.py`, `routes/integrations.py`, `routes/projects/refs.py`, `routes/projects/github_autolink.py`, `routes/projects/github_merge.py`, `routes/projects/agent_worked.py`, `routes/agent.py` (`_org_github_token` only), `main.py`. Batch A does not edit `routes/projects/core.py` |
 | Shared | `packages/acb_common/acb_common/settings.py`, `infra/postgres/<next>_github_app.sql`, `deploy/secrets/manifest.json`, `scripts/github_app_manifest.py` |
 | UI | `app/integrations/`, `components/GitHubAppConnect.tsx`, `components/GitHubDeviceConnect.tsx`, `components/GitHubAccountBadge.tsx`, `app/agents/page.tsx`, `AddAgentWizard.tsx`, `IntegrationSetup.tsx`, the BFF route `app/api/integrations/github/` |
-| Tests | `test_github_*.py`, `tests/fixtures/github_autolink_cases.json`, `test_github_per_org_r8.py` |
+| Tests | `test_github_*.py`, `tests/fixtures/github_autolink_cases.json`, `test_github_per_org_r8.py`, `test_db_engine_seam.py` |
 
 **Batch B, EA-13 (`external_agent_access.md` §12.2): EA-13a to EA-13f.** Batch B owns every file of EA-13 and none of the list above. §12.2 of that spec names them. Three EA-13 slices read Batch A's work, so they start after a Batch A merge:
 
@@ -572,7 +589,7 @@ The orchestrator took these when it wrote the spec. None is a product or pricing
 | # | Decision |
 |---|---|
 | GH-E1 | **One `github` row for each org, in two modes.** `provider_meta.auth` is `app` or `token`. An App connect replaces a token row. So every caller of `token_or_none` keeps its code |
-| GH-E2 | **Ask for OAuth during the install,** and check the installation with `GET /user/installations`. The docs require that check (§4.2 fact 5), and it costs the admin one more click on GitHub |
+| GH-E2 | **Ask for OAuth during the install,** and check the installation with `GET /user/installations`. The docs require that check (§4.2 fact 5). The gateway also checks that the user administers the account, and the admin confirms in Metorite before the write. Together they cost two more clicks |
 | GH-E3 | **The pending connect in Redis binds the callback,** because the docs do not promise that `state` comes back (U1) |
 | GH-E4 | **The webhook path is `/webhooks/github`,** beside `/webhooks/gmail` and `/webhooks/zoho` in `PUBLIC_ROUTES` |
 | GH-E5 | **The org lookup is a `SECURITY DEFINER` function** in the shape of migration 230, not a new exempt table. `gen_tenant_migration.EXEMPT` is full |
@@ -588,6 +605,7 @@ The orchestrator took these when it wrote the spec. None is a product or pricing
 |---|---|---|
 | Q1 | A company with two GitHub organizations needs two installations. Should one Metorite org hold more than one? | One installation for each org in v1 (§2) |
 | Q2 | Should the production App be public, so any customer can install it, or private until a customer asks? | Public (§14). A private App installs only on the owner's account |
+| Q4 | Should the App ask for Contents (read), so an org on the App can keep a private agent repository (§6.3)? | No. Least privilege. Such an org keeps the Advanced token |
 | Q3 | Which GitHub organization owns the two Apps? The owner of an App can change its settings and its key | The Hathi Labs organization on GitHub, because Metorite is its product. The script takes it as `--owner` |
 
 ## 21. Shell manifest (R9)
@@ -597,3 +615,4 @@ R9 does not apply. This spec adds no app. The Integrations app's manifest is in 
 ## 22. Change log
 
 - 2026-10-18 — Written from the owner decisions G-1 to G-5. The code anchors were read at `1625cca13`, and the GitHub facts on docs.github.com the same day.
+- 2026-10-18 — The spec audit gave GO-NARROWED for both specs, and this round closes its 14 points. The callback checks that the user administers the account, and the admin confirms before the write. The delivery key goes on a handler error. A close without a merge can finish a task, and any MCP act counts as agent work. A chat move is a person's move. Three token callers change in `app` mode. The merge rule leaves `core.py` alone. GH-0 names eight settings. The order and two anchors are corrected.
