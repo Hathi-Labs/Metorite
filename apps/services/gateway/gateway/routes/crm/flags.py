@@ -33,6 +33,13 @@ gateway reads them.
   with no embed call. :func:`note_search_allowed` is the one check. 🔴 A name
   in the list is OWNER-GATE, because each embed request costs vendor money
   that no credit row pays. The grant ``enforcement-flip`` does not cover it.
+* ``CRM_CATALOGUE_ORGS`` — the organization ids that get the CRM catalogue
+  for the AI (WS-53 CRM-Q31-1, ``crm_platform.md`` §18.13.4). The grammar is
+  the one of ``CRM_ORGS``. An empty list allows no organization:
+  ``GET /crm/catalogue`` answers 404 ``catalogue_off`` in each mode, and
+  ``crm_list_modules`` answers as before. :func:`catalogue_allowed` is the one
+  check. A name in the list spends nothing, so its flip is gate
+  ``enforcement-flip``.
 
 :func:`require_crm_enabled` is the router dependency in ``core.py``. It runs
 BEFORE ``require_feature_router("crm")``, so an organization outside the list
@@ -175,6 +182,25 @@ def note_search_allowed(organization_id: str | None) -> bool:
         return False
     org = str(organization_id).strip().lower()
     orgs = crm_note_search_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+def crm_catalogue_orgs() -> frozenset[str]:
+    """The organization ids that get the catalogue. Empty means none."""
+    return _parse_orgs(str(get_settings().crm_catalogue_orgs or ""))
+
+
+def catalogue_allowed(organization_id: str | None) -> bool:
+    """True when the catalogue may serve this org, in any mode.
+
+    It needs the CRM switch with the CRM list (:func:`crm_org_allowed`) AND a
+    place on ``CRM_CATALOGUE_ORGS``, or ``*`` there (CRM-Q31-1). It reads the
+    settings and nothing else.
+    """
+    if not crm_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = crm_catalogue_orgs()
     return ALL_ORGS in orgs or org in orgs
 
 

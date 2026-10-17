@@ -108,11 +108,17 @@ It builds its filters with ``records.list_query``, the one list builder.
 nearest to a query by meaning (table ``crm_note_vectors``). Read only. An org
 outside ``CRM_NOTE_SEARCH_ORGS`` gets ``degraded`` with no embed call. Its
 ``notes/`` segment is a literal, and no other route uses it.
+
+``catalogue.py`` is WS-53 CRM-Q31-1 — ``GET /crm/catalogue``, what each core
+entity and each mirrored module is for, with its key fields and links. Read
+only. The code rules live in ``crm_sync/catalogue.py``. An org outside
+``CRM_CATALOGUE_ORGS`` gets 404 ``catalogue_off`` in each mode.
 """
 
 from gateway.routes.crm import activities as _activities  # noqa: F401
 from gateway.routes.crm import admin as _admin  # noqa: F401
 from gateway.routes.crm import aggregate as _aggregate  # noqa: F401
+from gateway.routes.crm import catalogue as _catalogue  # noqa: F401
 from gateway.routes.crm import connection as _connection  # noqa: F401
 from gateway.routes.crm import convert_mapping as _convert_mapping  # noqa: F401
 from gateway.routes.crm import deal_contacts as _deal_contacts  # noqa: F401

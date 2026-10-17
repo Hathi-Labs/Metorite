@@ -753,6 +753,19 @@ def roles_of(items: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     return out
 
 
+async def approved_others(db: Any, org: str) -> list[dict[str, Any]]:
+    """The items of the approved version of the bound org that are not
+    ``field`` rules: ``role``, ``target``, ``stage`` and ``catalogue``. Empty
+    with no approved version. It reads with the org in the predicate and
+    through RLS. ``approved_overlays`` and the catalogue (CRM-Q31-1) read
+    the plan through it."""
+    row = (await db.execute(text(_APPROVED_OF_SQL), {"org": org})).first()
+    if row is None:
+        return []
+    _fields, others = split_rules(_rules_of(row))
+    return others
+
+
 async def approved_overlays(db: Any, org: str) -> dict[str, str]:
     """CRM-Q20-2 (§18.9.6, the read path of option A): the module of each
     approved ``role``, by slot, in the caller's tenant session.
@@ -763,11 +776,7 @@ async def approved_overlays(db: Any, org: str) -> dict[str, str]:
     """
     from gateway.routes.crm.modules import mirrored_modules
 
-    row = (await db.execute(text(_APPROVED_OF_SQL), {"org": org})).first()
-    if row is None:
-        return {}
-    _fields, others = split_rules(_rules_of(row))
-    roles = roles_of(others)
+    roles = roles_of(await approved_others(db, org))
     if not roles:
         return {}
     mirrored = await mirrored_modules(db)

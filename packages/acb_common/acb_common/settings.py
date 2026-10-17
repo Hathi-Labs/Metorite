@@ -293,6 +293,16 @@ class Settings(BaseSettings):
     # grant `enforcement-flip` does not cover it. Fence:
     # tests/unit/test_crm_note_vectors.py.
     crm_note_search_orgs: str = ""
+    # `crm_catalogue_orgs` (WS-53 CRM-Q31-1, 2026-10-17) lists the
+    # organization ids that get the CRM catalogue for the AI
+    # (`crm_platform.md` §18.13.4), in the grammar of `crm_orgs`. Default
+    # empty means NO organization (fail closed). An org outside the list gets
+    # 404 `catalogue_off` from `GET /crm/catalogue` in each mode, no key word
+    # in the aggregate, and the old answer of `crm_list_modules`. The one
+    # reader is `gateway.routes.crm.flags`. A name in the list spends
+    # nothing, so a flip on a box is gate `enforcement-flip`. Fence:
+    # tests/unit/test_crm_catalogue.py.
+    crm_catalogue_orgs: str = ""
 
     # ── The My Day loop (WS-58 MD-5b, 2026-10-14) ───────────────────────────
     #

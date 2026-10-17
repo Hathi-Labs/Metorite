@@ -973,7 +973,14 @@ crm_tools = pytest.importorskip("acb_skills.crm_tools")
 
 def test_crm_list_modules_pages_past_fifty(monkeypatch) -> None:
     mods = [{"label": f"M{k}", "api_name": f"m{k}", "count": 1} for k in range(1, 61)]
-    _gw(monkeypatch, crm_tools, lambda p, q: mods)
+
+    def answer(path, _params):
+        # CRM-Q31-1: the catalogue is off, so the tool lists /crm/modules.
+        if path == "/crm/catalogue":
+            raise crm_tools._GatewayError("off", "catalogue_off")
+        return mods
+
+    _gw(monkeypatch, crm_tools, answer)
     first = asyncio.run(crm_tools.crm_list_modules())
     assert "Showing 1-50 of 60. Call again with page=2 for the rest." in first
     last = asyncio.run(crm_tools.crm_list_modules(page=2))

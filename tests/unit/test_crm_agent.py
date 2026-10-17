@@ -932,7 +932,9 @@ _SHARED_ROUTES: dict[str, str] = {
     "crm_report": "/crm/reports/pipeline",
     "crm_aggregate": "/crm/aggregate",
     "crm_stage_dwell": "/crm/aggregate/stage-dwell",
-    "crm_list_modules": "/crm/modules",
+    # CRM-Q31-1: the catalogue first. ``/crm/modules`` answers only when the
+    # catalogue is off (``test_crm_catalogue.py``).
+    "crm_list_modules": "/crm/catalogue",
     "crm_list_module_records": "/crm/modules/Products/records",
     "crm_get_module_record": f"/crm/modules/Products/records/{_ID}",
     "crm_search_notes": "/crm/notes/search",
@@ -1155,9 +1157,18 @@ async def test_the_module_records_name_the_fields_the_aggregate_takes(monkeypatc
     out = await _T.crm_list_module_records("Products")
     assert ("Fields for crm_aggregate on module:Products: Unit_Price (currency), "
             "Sales_Start (date).") in out
-    _fake_gateway(monkeypatch, lambda _c: [
+    class _CatalogueOff(FakeClient):
+        """CRM-Q31-1: the org is outside ``CRM_CATALOGUE_ORGS``."""
+
+        async def request(self, method: str, url: str, **kwargs: Any):
+            if url.endswith("/crm/catalogue"):
+                self._calls.append({"method": method, "url": url})
+                return FakeResponse({"detail": {"code": "catalogue_off"}}, 404)
+            return await super().request(method, url, **kwargs)
+
+    fake_gateway(_T, monkeypatch, lambda _c: [
         {"label": "Products", "api_name": "Products", "count": 3},
-    ])
+    ], client_class=_CatalogueOff)
     modules = await _T.crm_list_modules()
     assert modules.endswith(
         "To total a module, call crm_aggregate with entity 'module:<api_name>'.",

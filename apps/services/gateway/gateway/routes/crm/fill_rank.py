@@ -129,6 +129,13 @@ _FILL_SQL = (
     "WHERE organization_id = CAST(:org AS uuid) AND entity = :entity"
 )
 
+#: The fill rows of many entities in one statement (CRM-Q31-1, the catalogue).
+_FILLS_SQL = (
+    "SELECT entity, key, filled, total, distinct_count FROM crm_field_fill "
+    "WHERE organization_id = CAST(:org AS uuid) "
+    "AND entity = ANY(CAST(:entities AS text[]))"
+)
+
 _CURSORS_SQL = (
     "SELECT module, cursor_state FROM crm_sync_cursors "
     "WHERE organization_id = CAST(:org AS uuid) AND module = ANY(CAST(:rows AS text[]))"
@@ -231,6 +238,27 @@ async def fills_for(db: Any, org: str | None, entity: str) -> dict[str, Fill] | 
     if not org or not fill_rank_allowed(org):
         return None
     return await read_fill(db, str(org), entity)
+
+
+async def fills_of(
+    db: Any, org: str | None, entities: Sequence[str],
+) -> dict[str, dict[str, Fill]] | None:
+    """The fill rows of each of *entities*, by entity, in ONE statement, or
+    ``None`` when the flag shuts *org* out (CRM-Q31-1, the catalogue). An
+    entity with no row is absent from the answer."""
+    if not org or not fill_rank_allowed(org):
+        return None
+    if not entities:
+        return {}
+    rows = (await db.execute(
+        text(_FILLS_SQL), {"org": str(org), "entities": list(entities)},
+    )).fetchall()
+    out: dict[str, dict[str, Fill]] = {}
+    for r in rows:
+        out.setdefault(str(r.entity), {})[str(r.key)] = Fill(
+            int(r.filled or 0), int(r.total or 0), int(r.distinct_count or 0),
+        )
+    return out
 
 
 def annotate[M: BaseModel](
@@ -547,6 +575,7 @@ __all__ = [
     "empty_set",
     "fill_key",
     "fills_for",
+    "fills_of",
     "labels_of",
     "list_columns",
     "read_cursors",

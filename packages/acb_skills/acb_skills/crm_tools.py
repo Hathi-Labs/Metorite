@@ -114,6 +114,15 @@ class _Refused(Exception):
     """The gateway said the CRM is off, or not open to this member."""
 
 
+class _GatewayError(RuntimeError):
+    """A failed read. ``code`` is the ``detail.code`` of the answer, when the
+    gateway gave one (``catalogue_off``)."""
+
+    def __init__(self, message: str, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 # ── Transport ───────────────────────────────────────────────────────────────
 
 def _gateway_url() -> str:
@@ -163,6 +172,17 @@ def _headers() -> dict[str, str]:
     }
 
 
+def _detail_code(resp: Any) -> str | None:
+    """The ``detail.code`` of an answer, or ``None``."""
+    try:
+        body = resp.json()
+    except Exception:
+        return None
+    detail = body.get("detail") if isinstance(body, dict) else None
+    code = detail.get("code") if isinstance(detail, dict) else None
+    return str(code) if code else None
+
+
 def _detail(resp: Any) -> str:
     try:
         body = resp.json()
@@ -193,8 +213,9 @@ async def _get(path: str, params: dict[str, Any] | None = None) -> Any:
         # The kill switch answers the bare "Not Found". A missing record
         # names itself ("Deal not found"), so it falls through below.
         raise _Refused(CRM_OFF)
-    raise RuntimeError(
-        f"CRM GET {path} failed ({status})" + (f": {detail}" if detail else "")
+    raise _GatewayError(
+        f"CRM GET {path} failed ({status})" + (f": {detail}" if detail else ""),
+        _detail_code(resp),
     )
 
 
@@ -1021,11 +1042,128 @@ async def crm_stage_dwell(days: int | None = None, page: int = 1) -> str:
     return "\n".join(lines) + _more(total, number, MAX_ROWS)
 
 
+#: The ``detail.code`` of ``GET /crm/catalogue`` for an org outside
+#: ``CRM_CATALOGUE_ORGS`` (CRM-Q31-1). The tool then answers as before.
+CATALOGUE_OFF = "catalogue_off"
+
+#: What a line calls each key part of an entry.
+_PART_WORDS: dict[str, str] = {
+    "amount": "Amount", "date": "Date", "status": "Status", "parent": "Customer",
+}
+
+#: The money block: each money purpose, and what its records hold.
+_MONEY_WORDS: tuple[tuple[str, str], ...] = (
+    ("invoice", "billed in"),
+    ("payment_in", "received in"),
+    ("payment_out", "paid out in"),
+    ("receivable", "owed in"),
+    ("deal", "open sales in"),
+    ("contract", "contracts in"),
+)
+
+#: The last line of a catalogue answer.
+CATALOGUE_TOTAL_HINT = (
+    "For a total, call crm_aggregate with entity 'module:<api_name>', measure "
+    "'sum' and the amount field as field."
+)
+
+
+def _records_word(count: int) -> str:
+    if count <= 0:
+        return "no records"
+    return f"{count:,} record" + ("" if count == 1 else "s")
+
+
+def _names(labels: list[str]) -> str:
+    """``A``, ``A and B`` or ``A, B and C``."""
+    if len(labels) < 2:
+        return "".join(labels)
+    return f"{', '.join(labels[:-1])} and {labels[-1]}"
+
+
+def _entry_line(entry: dict[str, Any]) -> str:
+    """One line of the catalogue (§18.13.4): the label, the entity or module
+    word, the purpose and the record count, then the key fields by label and
+    key, then the links."""
+    word = (f"entity {entry.get('entity')}" if entry.get("kind") == "entity"
+            else str(entry.get("entity")))
+    head = [str(entry["purpose"])] if entry.get("purpose") else []
+    head.append(_records_word(int(entry.get("records") or 0)))
+    parts = [f"- {entry.get('label')} ({word}): {', '.join(head)}."]
+    fields = entry.get("fields") or {}
+    waiting = set(entry.get("open") or ())
+    parent = fields.get("parent") if isinstance(fields.get("parent"), dict) else None
+    for part, name in _PART_WORDS.items():
+        if part in fields:
+            found = fields[part]
+            if not isinstance(found, dict):
+                parts.append(f"{name}: no single field.")
+                continue
+            target = f" -> {found['target']}" if part == "parent" and found.get("target") else ""
+            parts.append(f"{name} {found.get('label')} ({found.get('key')}{target}).")
+        elif part in waiting:
+            parts.append(f"{name}: not known.")
+    links = [
+        link for link in entry.get("links") or []
+        if isinstance(link, dict) and not (parent and link.get("key") == parent.get("key"))
+    ]
+    if links:
+        parts.append("Links: " + ", ".join(
+            f"{link.get('key')} -> {link.get('target')}" for link in links) + ".")
+    return " ".join(parts)
+
+
+def _money_block(entries: list[dict[str, Any]]) -> str | None:
+    """Where the money is, from the purposes, by code. Only an entry that
+    holds records counts. ``None`` when no entry holds money."""
+    clauses = []
+    for purpose, words in _MONEY_WORDS:
+        labels = [str(e.get("label")) for e in entries
+                  if e.get("purpose") == purpose and int(e.get("records") or 0) > 0]
+        if labels:
+            clauses.append(f"{words} {_names(labels)}.")
+    if not clauses:
+        return None
+    rest = " ".join(c[0].upper() + c[1:] for c in clauses[1:])
+    return "Money: " + clauses[0] + (f" {rest}" if rest else "")
+
+
+def _catalogue_answer(body: Any, page: int | None) -> str:
+    entries = [e for e in (body.get("entries") if isinstance(body, dict) else None) or []
+               if isinstance(e, dict)]
+    shown = _page_of(entries, page, "entries")
+    if not shown.items:
+        return shown.line or "The CRM catalogue is empty."
+    lines = ["CRM catalogue (what each entity and module is for):"]
+    lines.extend(_entry_line(e) for e in shown.items)
+    if shown.line:
+        lines.append(shown.line)
+    money = _money_block(entries)
+    if money:
+        lines.append(money)
+    lines.append(CATALOGUE_TOTAL_HINT)
+    return "\n".join(lines)
+
+
 @_read_tool
 async def crm_list_modules(page: int = 1) -> str:
     """The other Zoho modules this CRM mirrors (Products, Quotes, custom
     modules), with a record count. A Native CRM has none. crm_aggregate and
-    crm_list_fields take a module as entity 'module:<api_name>'."""
+    crm_list_fields take a module as entity 'module:<api_name>'. When the
+    catalogue is on, it also says what each entity and module is for, its
+    key fields, and where the money is."""
+    try:
+        body = await _get("/crm/catalogue")
+    except _GatewayError as exc:
+        if exc.code != CATALOGUE_OFF:
+            raise
+        return await _modules_answer(page)
+    return _catalogue_answer(body, page)
+
+
+async def _modules_answer(page: int | None) -> str:
+    """The answer of ``crm_list_modules`` with the catalogue off: the
+    answer of each org before CRM-Q31-1, byte for byte."""
     modules = await _get("/crm/modules")
     if not modules:
         return "This CRM mirrors no other module."

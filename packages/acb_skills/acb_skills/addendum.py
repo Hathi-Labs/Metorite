@@ -399,6 +399,7 @@ Workflow: need a new capability → ``code_task``; repeat a known job → ``run_
 - **crm_list_records / crm_get_record / crm_list_fields / crm_list_pipelines / crm_deal_contacts / crm_list_owners** — Read the company CRM as the member you act for. A record shows each custom field under its label.
 - **crm_aggregate(entity, group_by? | group_field?, measure?, field?, bucket?)** and **crm_report(kind)** — The server computes every count, sum, average and weighted forecast, also over a module as entity ``module:<api_name>``; report the numbers as given and never add them up yourself. **crm_stage_dwell(days?)** gives the days in each deal stage and the deals past their limit.
 - **crm_list_modules / crm_list_module_records / crm_get_module_record** — The other mirrored Zoho modules.
+Before a total over a module, call crm_list_modules. Name the module and the fields that each number comes from.
 A tool that answers that the CRM is off, or not open to the member, is the answer: say so and stop.
 """),
     # CRM-Q27 fix round: a section of its own, gated on the one tool. The
