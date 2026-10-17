@@ -22,12 +22,22 @@ script refuses to use a folder inside a checkout.
 | `backup-gpg-public.asc` | `backup-gpg-public` | The PUBLIC key of the backup |
 | `backup-offbox.env` | `backup-offbox` | The seven `BACKUP_S3_*` and `BACKUP_GPG_*` keys |
 | `app.env` | `app-env` | Keys for the app env file. The list is empty now |
+| `github-app-staging.pem` | `github-app-staging-key` | The private key of the staging GitHub App. Push it to the staging box only |
+| `github-app-staging.env` | `github-app-staging` | The eight settings of the staging GitHub App. Push it to the staging box only |
+| `github-app.pem` | `github-app-key` | The private key of the production GitHub App |
+| `github-app.env` | `github-app` | The eight settings of the production GitHub App |
 | `backup-gpg-PRIVATE.asc` | local only | The private backup key. It never goes to the box |
 | `backup-gpg-passphrase.txt` | local only | The passphrase of the private key |
 | `push.log` | none | One line for each push: time, name, host, hash prefix, result |
 
 Write each env line as `KEY=value`, with no quotes and no spaces. A `#` line
 is a comment. A file that a Windows editor saves with CRLF reads the same.
+
+⚠️ **Push the four GitHub App entries by name.** `scripts/github_app_manifest.py`
+writes their files (`github_integration.md` §15). The two env entries write
+the same app env file, so `push --all` with both files in the folder pushes
+both Apps to one box. Push the key entry first, then the env entry. Set
+`METORITE_SSH_HOST=metorite-dev` for the two staging entries.
 
 ## 2. The commands
 

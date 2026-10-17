@@ -361,11 +361,17 @@ def test_the_manifest_reader_agrees_with_json() -> None:
     assert got == _flatten(_manifest())
 
 
-def test_the_manifest_ships_the_three_entries() -> None:
+def test_the_manifest_ships_the_entries() -> None:
     m = _manifest()
     # The order is the order of push --all: the public key goes before the key
     # file, so the post-push check of backup-offbox finds both on the box.
-    assert [e["name"] for e in m["entries"]] == ["backup-gpg-public", "backup-offbox", "app-env"]
+    # WS-54 GH-1 (2026-10-18) added the four entries of the two GitHub Apps.
+    # Each key file goes before its env file, so the gateway restart finds the
+    # key. `test_github_app_auth.py` holds their shape.
+    assert [e["name"] for e in m["entries"]] == [
+        "backup-gpg-public", "backup-offbox", "app-env",
+        "github-app-staging-key", "github-app-staging", "github-app-key", "github-app",
+    ]
 
     off = _entry(m, "backup-offbox")
     seven = {
@@ -1177,6 +1183,12 @@ def test_status_reports_each_state_and_never_prints_a_value() -> None:
         "backup-gpg-public": "missing-local",
         "backup-offbox": "local-only",  # the template holds the prefilled values
         "app-env": "remote-only",
+        # WS-54 GH-1: the box env file holds none of the App keys, and no
+        # local file holds a value, so each App entry is missing on both sides.
+        "github-app-staging-key": "missing-local",
+        "github-app-staging": "missing-local",
+        "github-app-key": "missing-local",
+        "github-app": "missing-local",
     }
     assert _states(parts[1]) == {"backup-offbox": "local-only"}
     assert _states(parts[2]) == {"backup-offbox": "in-sync"}
