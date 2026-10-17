@@ -15,7 +15,10 @@ import {
   afterOptions,
   blankRow,
   isMarked,
+  isUnassigned,
   markLine,
+  ownerSummary,
+  planFacts,
   planIncomplete,
   planRowsFrom,
   planSubmit,
@@ -94,11 +97,12 @@ describe("a marked row", () => {
 });
 
 describe("planIncomplete", () => {
-  it("wants the four fields and a start on or before the due date", () => {
+  it("wants the three fields and a start on or before the due date", () => {
     const rows = planRowsFrom(TASKS);
     expect(planIncomplete(" ", rows)).not.toBe("");
     expect(planIncomplete("Frame", [])).not.toBe("");
-    expect(planIncomplete("Frame", [{ ...rows[0], owner: "" }])).not.toBe("");
+    expect(planIncomplete("Frame", [{ ...rows[0], title: " " }])).not.toBe("");
+    expect(planIncomplete("Frame", [{ ...rows[0], due: "" }])).not.toBe("");
     expect(planIncomplete("Frame", [{ ...rows[0], effort_mins: 0 }])).not.toBe("");
     expect(planIncomplete("Frame", [{ ...rows[1], start: "2026-10-13" }])).toBe(
       "A task starts after its due date.",
@@ -213,5 +217,54 @@ describe("the priority flags ride the card and come back (D78, H-173)", () => {
     const out = planSubmit({}, "Frame", planRowsFrom(TASKS));
     expect(out.tasks[0]).toMatchObject({ important: null, leveraged: null });
     expect("importance" in out.tasks[0]).toBe(false);
+  });
+});
+
+// ── §26: a row with no owner is an unassigned task (owner, 2026-10-17) ──────
+
+describe("an unassigned row", () => {
+  const rows = planRowsFrom(TASKS);
+  const nobody = { ...rows[1], owner: "  " };
+
+  it("never blocks the submit", () => {
+    // Mutation: require the owner in planIncomplete again -> this fails.
+    expect(planIncomplete("Frame", [{ ...rows[0], owner: "" }, nobody])).toBe("");
+  });
+
+  it("shows no fit, no hours and no mark, even a stale one", () => {
+    // t2 carried a fit, hours and two marks for the owner the member cleared.
+    expect(isUnassigned(nobody)).toBe(true);
+    expect(isMarked(nobody)).toBe(false);
+    expect(planFacts(nobody, [rows[0], nobody])).toEqual(["After: Order the steel"]);
+    expect(planFacts(rows[1], rows)).toEqual([
+      "After: Order the steel",
+      "Fit: no skill match",
+      "Hours: short 4 h by 2026-10-12",
+    ]);
+  });
+
+  it("is sent back with an empty owner", () => {
+    const out = planSubmit({}, "Frame", [rows[0], nobody]);
+    expect(out.tasks[1].owner).toBe("");
+  });
+});
+
+describe("ownerSummary", () => {
+  const rows = planRowsFrom(TASKS);
+  const none = (r: (typeof rows)[number]) => ({ ...r, owner: "" });
+
+  it("says nothing when every task has an owner", () => {
+    expect(ownerSummary(rows)).toBe("");
+  });
+
+  it("counts the unassigned tasks apart", () => {
+    expect(ownerSummary([rows[0], none(rows[1])])).toBe("1 of 2 tasks is unassigned.");
+    expect(ownerSummary([rows[0], none(rows[1]), none(rows[0])])).toBe("2 of 3 tasks are unassigned.");
+  });
+
+  it("handles a plan with no owner at all, and an empty plan", () => {
+    expect(ownerSummary(rows.map(none))).toBe("All 2 tasks are unassigned.");
+    expect(ownerSummary([none(rows[0])])).toBe("The task is unassigned.");
+    expect(ownerSummary([])).toBe("");
   });
 });

@@ -257,3 +257,41 @@ describe("a recommended option says so (owner report, 2026-10-09)", () => {
     expect(html).toContain("This card cannot send an answer here.");
   });
 });
+
+// ── §26 — the plan card with unassigned rows (owner, 2026-10-17) ────────────
+
+describe("the plan card with unassigned rows", () => {
+  const plan = (tasks: unknown[]) =>
+    renderToStaticMarkup(
+      createElement(() => TEMPLATE_REGISTRY.planCard({ project: { name: "Frame" }, tasks, capacity: "c" })),
+    );
+  const row = (key: string, owner: string) => ({
+    key, title: `Task ${key}`, owner, effort_mins: 30, due: "2026-10-01",
+    fit: "welding", hours: "fits", marks: ["no skill match"],
+  });
+
+  it("draws every row, with an Unassigned owner field the member can fill", () => {
+    const html = plan([row("t1", ""), row("t2", ""), row("t3", "")]);
+    expect(html.match(/placeholder="Unassigned"/g) ?? []).toHaveLength(3);
+    expect(html.match(/data-plan-unassigned=""/g) ?? []).toHaveLength(3);
+    expect(html).not.toContain("Fit:");
+    expect(html).not.toContain("Hours:");
+    expect(html).not.toContain("no skill match");
+    expect(html).toContain("All 3 tasks are unassigned.");
+    // Mutation: require the owner again -> the submit line names the owner.
+    expect(html).not.toContain("an owner");
+  });
+
+  it("keeps the fit of an owned row beside an unassigned one", () => {
+    const html = plan([row("t1", "a@x.io"), row("t2", "")]);
+    expect(html.match(/Fit: welding/g) ?? []).toHaveLength(1);
+    expect(html.match(/data-plan-unassigned=""/g) ?? []).toHaveLength(1);
+    expect(html).toContain("1 of 2 tasks is unassigned.");
+  });
+
+  it("says nothing about owners when every row has one", () => {
+    const html = plan([row("t1", "a@x.io")]);
+    expect(html).not.toContain("data-plan-owners");
+    expect(html).not.toContain("data-plan-unassigned");
+  });
+});

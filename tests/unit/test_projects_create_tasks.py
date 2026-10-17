@@ -1019,3 +1019,38 @@ async def test_eleven_rows_with_some_unticked_keep_the_card_order(monkeypatch) -
     titles = [f"Task {n:02d}" for n in range(1, 12)]
     await skill_projects.create_tasks(UUID, json.dumps([{"title": t} for t in titles]))
     assert [p["json"]["title"] for p in _posts(calls)] == ["Task 01", "Task 02", "Task 10", "Task 11"]
+
+
+# ── One approval for many tasks: the server still decides each row ─────────
+#
+# Owner, 2026-10-17: "create the card ability to take approval for all the
+# tasks at the same time". The one card is consent for the batch. It is not
+# a permission. The route decides each row, as it decides one create_task.
+
+
+async def test_one_approval_never_lends_a_permission_to_a_row(monkeypatch) -> None:
+    """The route refuses one row with 403. The other rows land, and the
+    receipt names the refused row. Mutation: read a gateway refusal as an
+    unknown result in ``_uncertain`` -> the row reads "may have been
+    created", and this test fails."""
+
+    base = _gateway()
+
+    def forbid(call: dict) -> Any:
+        if (call["method"], call["path"]) == ("POST", "/projects/tasks") and (
+            call["json"]["title"] == "Print the badges"
+        ):
+            return FakeResponse({"detail": "You cannot add tasks here."}, 403)
+        return base(call)
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, forbid)
+    out = await skill_projects.create_tasks(UUID, THREE)
+
+    assert len(asked) == 1, "one card for the batch"
+    assert [p["json"]["title"] for p in _posts(calls)] == [
+        "Book the caterer", "Print the badges", "Test the projector",
+    ]
+    assert out.startswith("Created 2 of 3 tasks in «Ops». 1 was not created.\n"), out
+    assert "failed: row 2 «Print the badges» refused (403): «You cannot add tasks here.»" in out
+    assert out.count("full_id:") == 2
