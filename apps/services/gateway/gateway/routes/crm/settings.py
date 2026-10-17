@@ -324,6 +324,14 @@ class CrmModeModel(BaseModel):
     labels: dict[str, EntityLabel] | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )
+    #: CRM-Q20-2 (§18.9.6, option A): by core slot (``company``, ``contact``,
+    #: ``lead``, ``deal``), the API name of the generic module of each
+    #: approved ``role``. The rail row of the slot opens that module's list.
+    #: Each member may read it. Only a module that the bound org mirrors is
+    #: named. With no approved role, the body has no ``overlays`` key.
+    overlays: dict[str, str] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
 
 
 @router.get("/mode", response_model=CrmModeModel)
@@ -335,15 +343,18 @@ async def get_crm_mode(
     ``GET /crm/settings`` stays admin only, because it names the access
     groups. An agent run reads this route as the member, to drop the record
     write tools in Mirror mode. No row reads as mode NULL. It is also the one
-    route of the source labels (CRM-Q17a-1 item 6).
+    route of the source labels (CRM-Q17a-1 item 6), and of the overlays of
+    the approved roles (CRM-Q20-2), which only a Mirror CRM can hold.
     """
+    from gateway.routes.crm.mapping_plans import approved_overlays
+
     org = _organization(user)
     async with _tenant_session() as db:
         row = await read_settings(db, org)
+        mode = getattr(row, "mode", None) if row is not None else None
         labels = await source_labels(db, org)
-    return CrmModeModel(
-        mode=getattr(row, "mode", None) if row is not None else None, labels=labels,
-    )
+        overlays = await approved_overlays(db, org) if mode == "mirror" else {}
+    return CrmModeModel(mode=mode, labels=labels, overlays=overlays or None)
 
 
 @router.patch(

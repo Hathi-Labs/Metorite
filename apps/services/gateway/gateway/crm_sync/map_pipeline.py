@@ -397,6 +397,9 @@ class Inputs:
     modules: tuple[ModuleShape, ...]
     slots: tuple[SlotShape, ...]
     approved: tuple[Mapping[str, Any], ...] = ()
+    #: CRM-Q20-2: the roles that an admin dismissed or undid, by slot, as
+    #: ``(module, schema hash)``. The row :data:`DISMISSED_ROW` holds them.
+    dismissed: Mapping[str, tuple[str, str | None]] = field(default_factory=dict)
 
     def module(self, api_name: str) -> ModuleShape | None:
         return next((m for m in self.modules if m.api_name == api_name), None)
@@ -496,6 +499,59 @@ class Cache:
         return {"schema": dict(sorted(self.schema.items())),
                 "items": dict(sorted(self.items.items())),
                 "failures": dict(sorted(self.failures.items()))}
+
+
+# ── A dismissed role (CRM-Q20-2) ─────────────────────────────────────────────
+
+#: The cursor row of the roles that an admin dismissed or undid. It is a row
+#: of its own, so the run, which writes :data:`CURSOR_ROW` whole, never
+#: drops an entry that an admin wrote while it ran. No migration.
+DISMISSED_ROW = "zoho:map_dismissed"
+
+def slots_digest(state: Mapping[str, Any] | None) -> str | None:
+    """The schema hash of the roles in the state of :data:`CURSOR_ROW`, or
+    ``None`` before the first run in ``shadow`` or ``on``."""
+    schema = (state or {}).get("schema")
+    digest = schema.get(SLOTS_KEY) if isinstance(schema, Mapping) else None
+    return str(digest) if digest else None
+
+
+def dismissed_of(state: Mapping[str, Any] | None) -> dict[str, tuple[str, str | None]]:
+    """The dismissed roles in the state of :data:`DISMISSED_ROW`: slot to
+    ``(module, schema hash)``. An entry that does not parse is left out."""
+    raw = (state or {}).get("dismissed")
+    out: dict[str, tuple[str, str | None]] = {}
+    for slot, entry in (raw.items() if isinstance(raw, Mapping) else ()):
+        if not isinstance(entry, Mapping) or not isinstance(entry.get("module"), str):
+            continue
+        schema = entry.get("schema")
+        out[str(slot)] = (entry["module"], str(schema) if schema else None)
+    return out
+
+
+def is_dismissed(
+    dismissed: Mapping[str, tuple[str, str | None]], slot: Any, module: Any,
+    digest: str | None,
+) -> bool:
+    """True when the admin dismissed or undid *module* for *slot* on the
+    schema *digest*. A changed schema offers the role again. A dismissal
+    with no hash never matches, so it offers the role again too."""
+    entry = dismissed.get(slot) if isinstance(slot, str) else None
+    return (entry is not None and entry[0] == module
+            and entry[1] is not None and entry[1] == digest)
+
+
+async def dismiss(db: Any, org: str, slot: str, module: str) -> str | None:
+    """Record that the admin does not want *module* for *slot*, in the
+    caller's tenant session. It keeps the schema hash of the roles of today,
+    so the role comes back only after the schema changes. Returns that hash."""
+    from gateway.crm_sync import runs
+
+    cursors = await runs.read_cursors(db, org, CURSOR_ROW)
+    digest = slots_digest(getattr(cursors.get(CURSOR_ROW), "state", None))
+    await runs.merge_cursor_entry(db, org, DISMISSED_ROW, "dismissed", slot,
+                                  {"module": module, "schema": digest})
+    return digest
 
 
 def approved_roles(approved: Sequence[Mapping[str, Any]]) -> dict[str, str]:
@@ -862,6 +918,11 @@ class Pipeline:
                 found = await self._ask_roles(asked, rest)
                 items += [self._role_item(s, m) for s, m in found.items()]
             self.result.done[key] = (digest, items)
+        # CRM-Q20-2: a role that the admin dismissed or undid on this schema
+        # is not offered again, and its slot asks no target or stage. The
+        # cache keeps the role, so a dismissal costs no new question.
+        items = [i for i in items if not is_dismissed(
+            self.inputs.dismissed, i.get("slot"), i.get("module"), digest)]
         self.result.items.extend(items)
         return {**known, **{i["slot"]: i["module"] for i in items}}
 
@@ -1351,7 +1412,7 @@ async def _approved_items(db: Any) -> tuple[Mapping[str, Any], ...]:
                  if isinstance(i, Mapping) and i.get("kind") in ("role", "target", "stage"))
 
 
-async def _slot_empty(db: Any, slot: str, cursors: Mapping[str, Any]) -> bool:
+async def slot_empty(db: Any, slot: str, cursors: Mapping[str, Any]) -> bool:
     """A slot is empty when Zoho turned its module off, or when it holds no
     mirrored record (step 2)."""
     row = cursors.get(f"zoho:{slot}")
@@ -1405,7 +1466,7 @@ async def load(db: Any, org: str, modes: Mapping[str, str]) -> tuple[Inputs, Cac
     ) for m in rows)
     slots = []
     for slot in executor.SLOTS:
-        empty = await _slot_empty(db, slot, cursors)
+        empty = await slot_empty(db, slot, cursors)
         shape = SlotShape(slot=slot, empty=empty)
         if shadow and not empty:
             shape = replace(
@@ -1415,7 +1476,8 @@ async def load(db: Any, org: str, modes: Mapping[str, str]) -> tuple[Inputs, Cac
                           and modes.get(FEATURE_STAGE) == "shadow" else {}))
         slots.append(shape)
     approved = await _approved_items(db)
-    return Inputs(int(latest.version), modules, tuple(slots), approved), cache
+    dismissed = dismissed_of(getattr(cursors.get(DISMISSED_ROW), "state", None))
+    return Inputs(int(latest.version), modules, tuple(slots), approved, dismissed), cache
 
 
 def standard_fields(slot: str) -> list[FieldShape]:
@@ -1712,6 +1774,7 @@ async def _write(org: str, inputs: Inputs, modes: Mapping[str, str], cache: Cach
 __all__ = [
     "CURSOR_ROW",
     "DAILY_REQUESTS",
+    "DISMISSED_ROW",
     "FEATURES",
     "FEATURE_ROLE",
     "FEATURE_STAGE",
@@ -1734,8 +1797,11 @@ __all__ = [
     "code_target",
     "detail_module",
     "detail_slot",
+    "dismiss",
+    "dismissed_of",
     "enabled_for",
     "estimate",
+    "is_dismissed",
     "load",
     "map_after_run",
     "masked",
@@ -1743,6 +1809,8 @@ __all__ = [
     "pattern_of",
     "reserve_requests",
     "shape_values",
+    "slot_empty",
+    "slots_digest",
     "standard_fields",
     "sure_choice",
 ]

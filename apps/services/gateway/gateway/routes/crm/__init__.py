@@ -59,6 +59,10 @@ CRM record. The sync applies an approved rule.
 ``crm_mapping_plans``). It has the guards of the Field map. Its ``commit`` is
 the one approve, and ``field_rules.py`` calls it too.
 
+``suggestions.py`` is WS-53 CRM-Q20-2 — ``GET /crm/mapping/suggestions`` and
+the approve, the Undo and the dismiss of one slot. It has the guards of the
+Field map, and it approves through ``mapping_plans.commit``.
+
 ``reports.py`` is WS-26g — the four read-only ``/crm/reports/*`` blocks
 (forecast by stage, funnel, win/loss, owner leaderboard) over
 ``crm_status_changes`` and ``crm_deals``. It writes nothing and adds no
@@ -126,6 +130,7 @@ from gateway.routes.crm import records as _records  # noqa: F401
 from gateway.routes.crm import reports as _reports  # noqa: F401
 from gateway.routes.crm import settings as _settings  # noqa: F401
 from gateway.routes.crm import stage_metadata as _stage_metadata  # noqa: F401
+from gateway.routes.crm import suggestions as _suggestions  # noqa: F401
 from gateway.routes.crm import sync as _sync  # noqa: F401
 from gateway.routes.crm import sync_zoho as _sync_zoho  # noqa: F401
 from gateway.routes.crm import views as _views  # noqa: F401

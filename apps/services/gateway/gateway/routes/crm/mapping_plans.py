@@ -697,6 +697,83 @@ async def open_draft(db: Any, approved: Any) -> Any | None:
     })).first()
 
 
+async def carry_draft(
+    db: Any, draft: Any, approved: Any, *, drop_slot: str | None = None,
+) -> Any | None:
+    """CRM-Q20-2: move the open draft *draft* onto the new approved version
+    *approved*, in the caller's transaction, under :func:`lock_plan`.
+
+    A suggestion approve or an Undo approves the items of one slot only, so
+    the open draft is then built on an older version, and the card drops it.
+    This writes a new draft on *approved* with the field rules of *draft*
+    and its items of the kinds, so each pick by hand and each other
+    suggestion stays. *drop_slot* leaves out the items of a slot that the
+    admin undid, so an Undo does not come back through the draft. Returns
+    the new draft, or ``None`` when it would change nothing, or when its
+    items no longer pass :func:`check_kinds`.
+    """
+    fields, others = split_rules(_rules_of(draft))
+    live_fields, live_others = split_rules(_rules_of(approved))
+    kinds = [o for o in others if kind_key(o) is not None
+             and not (drop_slot is not None and o.get("slot") == drop_slot)]
+    merged = merge_kinds(live_others, kinds)
+    if (_identity(fields) == _identity(live_fields)
+            and _canonical(merged) == _canonical(live_others)):
+        return None
+    try:
+        check_kinds(merged)
+    except HTTPException:
+        return None
+    return (await db.execute(text(_INSERT_DRAFT_SQL), {
+        "v": await _next_version(db), "rules": _dump(fields, merged),
+        "by": draft.created_by, "based_on": int(approved.version),
+    })).first()
+
+
+#: The approved version of the bound org. The org is also in the predicate,
+#: so the read names the org of the caller twice: here and through RLS.
+_APPROVED_OF_SQL = (
+    "SELECT rules FROM crm_mapping_plans WHERE organization_id = CAST(:org AS uuid) "
+    "AND state = 'approved'"
+)
+
+
+def roles_of(items: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """The ``role`` items of *items*: slot to module. An item with no known
+    slot or no module is left out."""
+    # Imported here: ``gateway.crm_sync`` imports ``routes.crm.core``.
+    from gateway.crm_sync import executor
+
+    out: dict[str, str] = {}
+    for item in items:
+        slot, module = item.get("slot"), item.get("module")
+        if (item.get("kind") == KIND_ROLE and slot in executor.SLOTS
+                and isinstance(module, str) and module):
+            out[str(slot)] = module
+    return out
+
+
+async def approved_overlays(db: Any, org: str) -> dict[str, str]:
+    """CRM-Q20-2 (§18.9.6, the read path of option A): the module of each
+    approved ``role``, by slot, in the caller's tenant session.
+
+    It names only a module that the bound org mirrors now
+    (``modules.mirrored_modules``), so a rail row never points at a list
+    that answers 404. Empty in Native mode and with no approved role.
+    """
+    from gateway.routes.crm.modules import mirrored_modules
+
+    row = (await db.execute(text(_APPROVED_OF_SQL), {"org": org})).first()
+    if row is None:
+        return {}
+    _fields, others = split_rules(_rules_of(row))
+    roles = roles_of(others)
+    if not roles:
+        return {}
+    mirrored = await mirrored_modules(db)
+    return {slot: module for slot, module in roles.items() if module in mirrored}
+
+
 async def write_draft(
     db: Any, *, items: Sequence[Mapping[str, Any]], by: str = SUGGEST_ACTOR,
 ) -> Any | None:
@@ -981,6 +1058,16 @@ PREVIEW_ROWS = 200
 #: The order of the entities in a preview: the order of the rule targets.
 _PREVIEW_ORDER: tuple[str, ...] = ("company", "contact", "lead", "deal")
 
+#: CRM-Q20-2: the records of one generic module, the lowest ids, and their
+#: count. The module name is a bound parameter that passed the mirrored set.
+_OVERLAY_ROWS_SQL = (
+    "SELECT id, fields FROM crm_module_records WHERE module = :m "
+    "AND ext_source = :src ORDER BY id LIMIT :limit"
+)
+_OVERLAY_COUNT_SQL = (
+    "SELECT count(*) FROM crm_module_records WHERE module = :m AND ext_source = :src"
+)
+
 #: The mirrored rows of one core table, the lowest ids first. The table is a
 #: constant of ``core.ENTITIES``, never caller text. FORCE RLS keeps the read
 #: in the bound org.
@@ -998,6 +1085,10 @@ class MappingPreviewIn(BaseModel):
 
     #: The version of a draft.
     version: int
+    #: CRM-Q20-2: the core slot of a ``role`` item of the draft. With it, the
+    #: preview shows the records of the module that would play the slot, and
+    #: no core entity.
+    slot: Literal["company", "contact", "lead", "deal"] | None = None
 
 
 class PreviewEntityModel(BaseModel):
@@ -1014,9 +1105,44 @@ class PreviewEntityModel(BaseModel):
     unmapped: dict[str, int]
 
 
+class OverlayRowModel(BaseModel):
+    """One record of the module, as the slot would read it."""
+
+    id: str
+    #: The value of each target column, and ``stage`` (``won``, ``lost``,
+    #: ``open`` or ``null``), from the items of the draft.
+    values: dict[str, Any]
+
+
+class OverlayPreviewModel(BaseModel):
+    """CRM-Q20-2: the records of the module that a ``role`` item of a draft
+    names, through the ``target`` and ``stage`` items of the same slot and
+    module. It reads only."""
+
+    slot: str
+    module: str
+    #: The target columns of the items, in the order of the slot, then
+    #: ``stage`` when the draft has a stage item.
+    columns: list[str]
+    #: Up to :data:`PREVIEW_ROWS` records of the module, the lowest ids.
+    rows: list[OverlayRowModel]
+    #: Every mirrored record of the module.
+    total: int
+    #: For each target column, the count of filled values in the rows that
+    #: did not map. A count only, never a value.
+    unmapped: dict[str, int]
+    #: The rows whose stage value has no entry in the stage item.
+    unsorted: int
+
+
 class MappingPreviewModel(BaseModel):
     version: int
     entities: list[PreviewEntityModel]
+    #: CRM-Q20-2: with ``slot`` in the request, the records of its module.
+    #: Left out of the body otherwise, so the body of CRM-Q19 stays as it is.
+    overlay: OverlayPreviewModel | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
 
 
 def _rules_by_entity(fields: Iterable[PlanRule]) -> dict[str, dict[str, str]]:
@@ -1057,6 +1183,66 @@ async def _preview_entity(
     return PreviewEntityModel(entity=word, slug=slug, rows=wired, unmapped=unmapped)
 
 
+def _no_overlay(code: str, message: str) -> HTTPException:
+    return HTTPException(status_code=404, detail={"code": code, "message": message})
+
+
+async def _preview_overlay(
+    db: Any, others: Sequence[Mapping[str, Any]], slot: str,
+) -> OverlayPreviewModel:
+    """CRM-Q20-2: the records of the module that the ``role`` of *slot*
+    names, through the ``target`` and ``stage`` items of the same slot and
+    module, in memory. It reads only."""
+    from gateway.crm_sync import executor
+    from gateway.routes.crm.modules import mirrored_modules
+
+    module = roles_of(others).get(slot)
+    if module is None:
+        raise _no_overlay("no_role", "This draft names no module for that slot.")
+    if module not in await mirrored_modules(db):
+        raise _no_overlay("unknown_module", "This module is not mirrored.")
+    order = executor.slot_targets(slot)
+    targets = sorted(
+        (o for o in others if o.get("kind") == KIND_TARGET and o.get("slot") == slot
+         and o.get("module") == module and o.get("target") in order),
+        key=lambda o: order.index(o["target"]),
+    )
+    stage = next((o for o in others if o.get("kind") == KIND_STAGE
+                  and o.get("slot") == slot and o.get("module") == module), None)
+    columns = [str(t["target"]) for t in targets] + (["stage"] if stage else [])
+    params = {"m": module, "src": PROVIDER}
+    rows = (await db.execute(text(_OVERLAY_ROWS_SQL),
+                             {**params, "limit": PREVIEW_ROWS})).fetchall()
+    total = int((await db.execute(text(_OVERLAY_COUNT_SQL), params)).scalar() or 0)
+    unmapped = {str(t["target"]): 0 for t in targets}
+    unsorted = 0
+    wired: list[OverlayRowModel] = []
+    for row in rows:
+        fields = from_jsonb(row.fields) or {}
+        values: dict[str, Any] = {}
+        for item in targets:
+            try:
+                outcome = executor.run_target(slot, item, fields)
+            except ValueError:  # an item that is not legal maps nothing
+                values[item["target"]] = None
+                continue
+            values[item["target"]] = outcome.value
+            unmapped[item["target"]] += int(outcome.unmapped)
+        if stage is not None:
+            try:
+                outcome = executor.run_stage(stage, fields)
+            except ValueError:
+                values["stage"] = None
+            else:
+                values["stage"] = outcome.value
+                unsorted += int(outcome.unmapped)
+        wired.append(OverlayRowModel(id=str(row.id), values=values))
+    return OverlayPreviewModel(
+        slot=slot, module=module, columns=columns, rows=wired, total=total,
+        unmapped=unmapped, unsorted=unsorted,
+    )
+
+
 @router.post(
     "/mapping/preview", response_model=MappingPreviewModel, dependencies=_GUARDS,
 )
@@ -1084,7 +1270,13 @@ async def preview_mapping_plan(
             raise HTTPException(status_code=409, detail={
                 "code": "not_draft", "message": "Only a draft has a preview.",
             })
-        fields, _others = split_rules(draft.rules)
+        fields, others = split_rules(_rules_of(draft))
+        if payload.slot is not None:
+            # CRM-Q20-2: the records of the module of one role, and no core
+            # entity.
+            overlay = await _preview_overlay(db, others, payload.slot)
+            return MappingPreviewModel(version=int(draft.version), entities=[],
+                                       overlay=overlay)
         drafted = _rules_by_entity(fields)
         live = _rules_by_entity(await _live_approved(db))
         entities = [
@@ -1102,6 +1294,8 @@ __all__ = [
     "PREVIEW_ROWS",
     "SUGGEST_ACTOR",
     "PlanRule",
+    "approved_overlays",
+    "carry_draft",
     "change_rule",
     "check_kinds",
     "commit",
@@ -1110,6 +1304,7 @@ __all__ = [
     "merge_kinds",
     "open_draft",
     "preview_mapping_plan",
+    "roles_of",
     "split_rules",
     "write_draft",
 ]

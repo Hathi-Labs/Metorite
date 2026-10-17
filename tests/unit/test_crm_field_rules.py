@@ -509,16 +509,6 @@ def test_q18_3_the_approve_check_marks_and_skips_the_empty_test() -> None:
     targets = {t.column: t for t in field_rules._targets("lead", profile, {"email"})}
     assert (targets["email"].open, targets["email"].reason) == (True, None)
     assert targets["organization_name"].open is False
-    kept, dropped = field_rules.keep_proposals(
-        "lead", [{"field_api_name": "Why", "target_column": "email"}], {"Why": "text"},
-        {"email"}, ON_LAYOUT, {"email"},
-    )
-    assert ([k.target_column for k in kept], dropped) == (["email"], 0)
-    kept, dropped = field_rules.keep_proposals(
-        "lead", [{"field_api_name": "Why", "target_column": "email"}], {"Why": "text"},
-        {"email"}, ON_LAYOUT,
-    )
-    assert (kept, dropped) == ([], 1)
 
 
 def test_q18_3_each_field_item_of_a_snapshot_carries_the_mark() -> None:

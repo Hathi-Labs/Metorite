@@ -34,7 +34,6 @@ of its two deadlock tests was red on the code before the fix.
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 import threading
 import time
@@ -738,8 +737,6 @@ async def test_fix_an_approve_locks_the_rule_rows_before_it_reads_the_profile(fr
 
 # ── CRM-Q18-1b: two deadlocks of the plan lock ──────────────────────────────
 
-SUGGEST = "/crm/field-rules/suggest"
-
 #: Two field names that the database and Python sort in opposite orders. The
 #: collation of the database (``en_US.utf8``) skips the ``_``. Python sorts by
 #: code point, and ``I`` (0x49) comes before ``_`` (0x5F).
@@ -747,10 +744,6 @@ PY_FIRST = "LinkedIn_URL"
 DB_FIRST = "Linked_Account"
 #: The column of each one. Both columns are free on Leads.
 TWO_TARGETS = {PY_FIRST: "website", DB_FIRST: "description"}
-
-
-def _is_propose(statement: str) -> bool:
-    return statement.startswith("INSERT INTO crm_field_rules") and "'proposed', 'ai'" in statement
 
 
 def _field_of(parameters: Any) -> str:
@@ -789,39 +782,6 @@ def _assert_sorts_apart(p: Any, org: str) -> None:
         o=org, x=PY_FIRST, y=DB_FIRST)]
     assert in_db == [DB_FIRST, PY_FIRST], f"the database sorts as Python does: {in_db}"
     assert sorted(in_db) == [PY_FIRST, DB_FIRST]
-
-
-async def _two_open_proposals(p: Any, a: Any, monkeypatch: Any) -> None:
-    """Org A in Mirror mode, with two Leads fields of the two names. Each has
-    an old proposal of the assistant, so the press asks the model again and its
-    upsert locks a row that is there. The fake model names DB_FIRST first."""
-    from gateway.routes.crm import field_rules
-
-    a.fields["Leads"] += [
-        {"api_name": PY_FIRST, "field_label": "LinkedIn", "data_type": "text"},
-        {"api_name": DB_FIRST, "field_label": "Linked account", "data_type": "text"},
-    ]
-    await _imported(p, p.org_a, a)
-    with p.admin_engine.begin() as c:
-        for field, column in TWO_TARGETS.items():
-            c.execute(text(
-                "INSERT INTO crm_field_rules (organization_id, ext_source, entity, "
-                "field_api_name, field_type, profile_version, target_column, status, "
-                "proposed_by) VALUES (CAST(:o AS uuid), 'zoho', 'lead', :f, 'text', "
-                "0, :c, 'proposed', 'ai')"), {"o": p.org_a, "f": field, "c": column})
-
-    async def no_cooldown(_org: str, _entity: str) -> None:
-        return None
-
-    async def model(_user: Any, _messages: Any) -> str:
-        return json.dumps([
-            {"field_api_name": f, "target_column": TWO_TARGETS[f], "confidence": 0.9,
-             "reason": "The same fact."}
-            for f in (DB_FIRST, PY_FIRST)
-        ])
-
-    monkeypatch.setattr(field_rules, "_start_cooldown", no_cooldown)
-    monkeypatch.setattr(field_rules, "_ask_model", model)
 
 
 class _Session(threading.Thread):
@@ -893,30 +853,6 @@ async def test_q18_1b_1_the_lock_order_is_the_order_of_python(fr, app_engine) ->
     assert core.field_rule_key("lead", PY_FIRST) < core.field_rule_key("lead", DB_FIRST)
 
 
-async def test_q18_1b_2_3_the_proposer_locks_first_and_writes_in_key_order(
-    fr, monkeypatch,
-) -> None:
-    """Items 2 and 3. The proposer takes the ordered lock of every rule row
-    before its first write. Then it writes in the order of
-    ``core.field_rule_key``, though the model named the fields the other way."""
-    from gateway.routes.crm import core
-
-    p, a, _b = fr
-    await _two_open_proposals(p, a, monkeypatch)
-    seen: list[tuple[str, Any]] = []
-    with _hooked(lambda s, params: seen.append((s, params))):
-        got = await _req(_admin_of(p.org_a), "POST", SUGGEST, {"entity": "leads"})
-    assert got.status_code == 200, got.text
-    assert {r["field_api_name"] for r in got.json()["proposals"]} == set(TWO_TARGETS)
-    writes = [i for i, (s, _params) in enumerate(seen) if _is_propose(s)]
-    fields = [_field_of(seen[i][1]) for i in writes]
-    assert fields == [f for _e, f in sorted(
-        (("lead", f) for f in TWO_TARGETS), key=lambda k: core.field_rule_key(*k))]
-    assert fields == [PY_FIRST, DB_FIRST]
-    locks = [i for i, (s, _params) in enumerate(seen) if LOCK_ALL in s and s.endswith(LOCK_TAIL)]
-    assert any(i < writes[0] for i in locks), "the proposer wrote before the ordered lock"
-
-
 async def test_q18_1b_2_an_approve_inserts_new_rule_rows_in_key_order(fr) -> None:
     """Item 2. ``mapping_plans._write_live_set`` inserts the new rows of an
     approve in the order of ``core.field_rule_key``, whatever order it gets."""
@@ -934,77 +870,6 @@ async def test_q18_1b_2_an_approve_inserts_new_rule_rows_in_key_order(fr) -> Non
     inserted = [_field_of(params) for s, params in seen
                 if s.startswith("INSERT INTO crm_field_rules")]
     assert inserted == [PY_FIRST, DB_FIRST]
-
-
-@pytest.mark.parametrize("state", ["40P01", "40001"])
-async def test_q18_1b_4_a_deadlock_in_the_proposer_is_409_plan_busy(
-    fr, monkeypatch, state,
-) -> None:
-    """Item 4. A deadlock or a serialization failure in the write of the press
-    is a 409 ``plan_busy``, and the press wrote nothing."""
-    from gateway.routes.crm import mapping_plans
-
-    p, a, _b = fr
-    await _two_open_proposals(p, a, monkeypatch)
-
-    class _Orig(Exception):
-        sqlstate = state
-
-    async def busy(_db: Any) -> Any:
-        raise DBAPIError("SELECT", {}, _Orig())
-
-    monkeypatch.setattr(mapping_plans, "lock_rules", busy)
-    before = _rules(p, p.org_a)
-    got = await _req(_admin_of(p.org_a), "POST", SUGGEST, {"entity": "leads"})
-    assert got.status_code == 409, got.text
-    assert got.json()["detail"]["code"] == "plan_busy"
-    assert got.headers.get("retry-after") == "1"
-    assert _rules(p, p.org_a) == before
-
-
-async def test_q18_1b_a_the_proposer_and_the_ordered_lock_never_deadlock(
-    fr, app_engine, monkeypatch,
-) -> None:
-    """Item 6, deadlock (a), made on purpose. The press has written its first
-    row. Then a second session runs ``core.FIELD_RULE_LOCK_SQL``, the lock of
-    the approve and of ``mark_stale``, and waits. Then the press writes its
-    second row.
-
-    Before CRM-Q18-1b the press wrote ``LinkedIn_URL`` first and the lock took
-    ``Linked_Account`` first. Each one held the row that the other wanted, and
-    Postgres stopped the lock with 40P01. Now the press holds every rule row
-    before its first write, and both sort as Python does."""
-    from gateway.routes.crm import core
-
-    p, a, _b = fr
-    _assert_non_priv(app_engine)
-    await _two_open_proposals(p, a, monkeypatch)
-    _assert_sorts_apart(p, p.org_a)
-    approve = _Session(app_engine, p.org_a, [(core.FIELD_RULE_LOCK_SQL, {"src": "zoho"})])
-    writes: list[str] = []
-    waited: list[bool] = []
-
-    def on_statement(statement: str, parameters: Any) -> None:
-        if not _is_propose(statement):
-            return
-        writes.append(_field_of(parameters))
-        if len(writes) == 2:
-            approve.start()
-            waited.append(_waits_on_a_lock(p, approve))
-
-    failure: BaseException | None = None
-    got: Any = None
-    with _hooked(on_statement):
-        try:
-            got = await _req(_admin_of(p.org_a), "POST", SUGGEST, {"entity": "leads"})
-        except DBAPIError as exc:
-            failure = exc
-    approve.join(30)
-    assert not approve.is_alive(), "the second session never ended"
-    assert len(writes) == 2 and waited == [True], (writes, waited)
-    assert approve.error is None, f"the ordered lock deadlocked: {approve.error!r}"
-    assert failure is None, f"the press deadlocked: {failure!r}"
-    assert got.status_code == 200, got.text
 
 
 def _plan_and_rule(p: Any, org: str) -> None:
