@@ -4294,12 +4294,23 @@ The build made these choices, which the list above does not name.
   table keeps one module that names it.
 - The My Day card reads the digest only for an org on `CRM_DIGEST_ORGS`, in
   the same session as the other CRM reads (`aggregate.my_day_rows`). Its
-  reach class is `none`, so it never leaves My Day.
+  reach class is `none`, so it never leaves My Day. Its link comes from
+  `sources.crm_reports_href`, beside the one builder of a CRM link. The new
+  kind raises `prefs.MAX_KINDS` from 20 to 21 (`my_day_feed.md` §5.9 item
+  10.6).
+- A member reads the text, so the system prompt ends with
+  `voice_prompt("summary")`, and `test_drafting_voice.py` lists the call.
+- Mutations, each run and restored with `git checkout`, and each killed:
+  the check passes any figure, the step stores with no check, the try
+  statement has no cap, an empty field reads 0, the labels count in
+  `shadow`, no payer check, no Monday rule, the route serves a failed try,
+  the flag allows each org, one week runs twice, the input is not cut, and
+  the route skips `compute`.
 
 **The cost (estimate, not measured on a real model).** A typical digest
-of 6 stages, 3 months and the labels is about 3,040 characters of input,
-about 760 tokens. With a text of about 250 tokens, one week costs about
-1,000 tokens on `tier-powerful`. The bound is 3 requests of at most 2,000
+of 6 stages, 3 months and the labels is about 4,580 characters of input,
+about 1,150 tokens, with the house voice. With a text of about 250 tokens,
+one week costs about 1,400 tokens on `tier-powerful`. The bound is 3 requests of at most 2,000
 tokens in and 800 out, so 8,400 tokens for each org and week. The post-flip
 check above reads the real credits.
 

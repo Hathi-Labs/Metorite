@@ -915,7 +915,8 @@ it turns `decide` on.
    its stricter gate. The owner decided this on 2026-10-15.
 6. **The cap of the preferences is full.** After MD-3 the registry holds 20
    kinds, and `prefs.MAX_KINDS` is 20 (`prefs.py:61`). MD-4 adds more kinds,
-   so MD-4 raises the cap.
+   so MD-4 raises the cap. WS-53 CRM-Q28 added `digest_ready` on 2026-10-17
+   and raised the cap to 21.
 
 #### 11. MD-3c, the task kinds
 

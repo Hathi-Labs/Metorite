@@ -694,8 +694,6 @@ register(Provider("email_followups", ("email",), _email_followups, MAIL_FOLLOWUP
 #: The kinds of the source (§5.9 item 13).
 CRM_KINDS = frozenset({"crm_followup_due", "deal_quiet", "deal_close_passed",
                        "digest_ready"})
-#: The link of the ``digest_ready`` act: the Reports tab of the CRM.
-DIGEST_HREF = "/crm?tab=reports"
 #: The record word of a signal id → the kind of ``sources.CRM_KINDS``.
 _CRM_RECORDS = {"deal": "deal", "lead": "lead", "contact": "contact",
                 "organization": "company"}
@@ -775,7 +773,10 @@ def _close_passed_signal(row: dict[str, Any], tz: ZoneInfo) -> Signal:
 def _digest_signal(row: dict[str, Any]) -> Signal:
     """``digest_ready``: the weekly digest of the org is ready (CRM-Q28 item
     14). The facts are the week and the time it was stored, never the text.
-    Its one act opens Reports."""
+    Its one act opens Reports, through the one builder of a CRM link."""
+    from gateway.retrieval.sources import crm_reports_href
+
+    href = crm_reports_href()
     week = row["week_start"]
     if not isinstance(week, date):
         week = date.fromisoformat(str(week))
@@ -784,7 +785,7 @@ def _digest_signal(row: dict[str, Any]) -> Signal:
         signal_id=f"crm:digest:{week.isoformat()}", app="crm", kind="digest_ready",
         entity={"type": "digest", "id": week.isoformat(), "label": title}, title=title,
         facts={"week_start": week.isoformat(), "stored_at": _iso(row.get("stored_at"))},
-        href=DIGEST_HREF, acts=(link("open-reports", "Open Reports", DIGEST_HREF),),
+        href=href, acts=(link("open-reports", "Open Reports", href),),
         at=_iso(row.get("stored_at")),
     )
 
