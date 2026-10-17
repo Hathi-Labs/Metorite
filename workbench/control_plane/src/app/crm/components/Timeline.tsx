@@ -27,6 +27,11 @@
  * (`taskDueChips`, drawn by `TaskMeta`), and the shared field primitives in
  * the composer. `TimelineItem` is one row, and the Overview tab draws the next
  * open activities with it.
+ *
+ * WS-53 CRM-Q23c (`crm_platform.md` section 18.10) adds `readOnly`, for the
+ * record page of a generic Zoho module. It draws no composer, and a task
+ * shows its state with no control, because no route writes an activity on a
+ * module record.
  */
 
 import FilterPills from "@/components/FilterPills";
@@ -60,14 +65,18 @@ const COMPOSERS: { id: Composable; label: string; icon: string }[] = [
   { id: "meeting", label: "Meeting", icon: "Users" },
 ];
 
+/** The empty line of a read-only stream (CRM-Q23c). */
+export const READ_ONLY_EMPTY = "No notes, tasks, calls or meetings on this record yet.";
+
 export default function Timeline({
   entries,
-  onLog,
+  onLog = () => undefined,
   onToggleTask,
-  saving,
+  saving = false,
   parentMirrored = false,
   now,
   callRequest = 0,
+  readOnly = false,
 }: {
   /**
    * The `log-call` job of the command bar (CRM-X2). A number other than 0
@@ -79,14 +88,21 @@ export default function Timeline({
   /** Today, for the due dates. A test passes a fixed one. */
   now?: Date;
   entries: TimelineEntry[];
-  onLog: (body: {
+  /** Not called in `readOnly` mode, which draws no composer. */
+  onLog?: (body: {
     type: Composable;
     subject?: string;
     body?: string;
     due_at?: string;
   }) => void;
-  onToggleTask: (activityId: string, completed: boolean) => void;
-  saving: boolean;
+  /** Without it, a task shows its state with no control (`readOnly`). */
+  onToggleTask?: (activityId: string, completed: boolean) => void;
+  saving?: boolean;
+  /**
+   * CRM-Q23c: the stream of a module record. No composer, and no task
+   * control. The filter of the stream stays, because it changes no data.
+   */
+  readOnly?: boolean;
 }) {
   const [kind, setKind] = useState<Composable>(callRequest ? "call" : "note");
   // A new ask while the Timeline is already open. React's rule for state that
@@ -129,57 +145,59 @@ export default function Timeline({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="shrink-0 border-b border-border p-3">
-        <div className="mb-2 flex items-center gap-1">
-          {COMPOSERS.map(({ id, label, icon }) => (
-            <button
-              key={id}
-              onClick={() => setKind(id)}
-              className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs tech-transition ${
-                kind === id
-                  ? "bg-primary text-primary-foreground font-medium"
-                  : "text-muted-foreground hover:bg-secondary hover:text-foreground"
-              }`}
+      {readOnly ? null : (
+        <div className="shrink-0 border-b border-border p-3">
+          <div className="mb-2 flex items-center gap-1">
+            {COMPOSERS.map(({ id, label, icon }) => (
+              <button
+                key={id}
+                onClick={() => setKind(id)}
+                className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs tech-transition ${
+                  kind === id
+                    ? "bg-primary text-primary-foreground font-medium"
+                    : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+                }`}
+              >
+                <Icon name={icon} className="w-3 h-3" />
+                {label}
+              </button>
+            ))}
+          </div>
+          {/* The shared primitives, never raw fields (design rule 3, CRM-X4). */}
+          <Textarea
+            ref={composer}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            rows={2}
+            aria-label={kind === "task" ? "The task" : "What happened"}
+            placeholder={
+              kind === "task" ? "What needs doing?" : "What happened?"
+            }
+          />
+          <div className="mt-2 flex items-center gap-2">
+            {kind === "task" && (
+              <Input
+                type="date"
+                inputSize="sm"
+                aria-label="Due date"
+                value={due}
+                onChange={(e) => setDue(e.target.value)}
+                className="w-40"
+              />
+            )}
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={submit}
+              loading={saving}
+              disabled={!draft.trim()}
+              className="ml-auto"
             >
-              <Icon name={icon} className="w-3 h-3" />
-              {label}
-            </button>
-          ))}
+              Log
+            </Button>
+          </div>
         </div>
-        {/* The shared primitives, never raw fields (design rule 3, CRM-X4). */}
-        <Textarea
-          ref={composer}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          rows={2}
-          aria-label={kind === "task" ? "The task" : "What happened"}
-          placeholder={
-            kind === "task" ? "What needs doing?" : "What happened?"
-          }
-        />
-        <div className="mt-2 flex items-center gap-2">
-          {kind === "task" && (
-            <Input
-              type="date"
-              inputSize="sm"
-              aria-label="Due date"
-              value={due}
-              onChange={(e) => setDue(e.target.value)}
-              className="w-40"
-            />
-          )}
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={submit}
-            loading={saving}
-            disabled={!draft.trim()}
-            className="ml-auto"
-          >
-            Log
-          </Button>
-        </div>
-      </div>
+      )}
 
       {/* The filter of the stream (CRM-X4 item 3). Each kind shows its count. */}
       <FilterPills
@@ -196,7 +214,9 @@ export default function Timeline({
         {shown.length === 0 && (
           <p className="py-8 text-center text-xs text-muted-foreground">
             {entries.length === 0
-              ? "Nothing logged yet."
+              ? readOnly
+                ? READ_ONLY_EMPTY
+                : "Nothing logged yet."
               : `No ${filterLabel.toLowerCase()} on this record.`}
           </p>
         )}
@@ -205,7 +225,7 @@ export default function Timeline({
             <li key={timelineKey(entry, index)}>
               <TimelineItem
                 entry={entry}
-                onToggleTask={onToggleTask}
+                onToggleTask={readOnly ? undefined : onToggleTask}
                 parentMirrored={parentMirrored}
                 now={now}
               />
@@ -234,7 +254,8 @@ export function TimelineItem({
 }: {
   parentMirrored: boolean;
   entry: TimelineEntry;
-  onToggleTask: (activityId: string, completed: boolean) => void;
+  /** Without it, a task shows its state with no control (CRM-Q23c). */
+  onToggleTask?: (activityId: string, completed: boolean) => void;
   now?: Date;
 }) {
   switch (timelineBranch(entry)) {
@@ -366,7 +387,7 @@ function ActivityEntry({
 }: {
   parentMirrored: boolean;
   entry: TimelineEntry;
-  onToggleTask: (activityId: string, completed: boolean) => void;
+  onToggleTask?: (activityId: string, completed: boolean) => void;
   now?: Date;
 }) {
   const activity = entry.activity!;
@@ -376,7 +397,15 @@ function ActivityEntry({
 
   return (
     <div className="flex items-start gap-2">
-      {isTask ? (
+      {isTask && !onToggleTask ? (
+        // Read only (CRM-Q23c): the state, with no control.
+        <Icon
+          name={done ? "CheckCircle2" : "Circle"}
+          role="img"
+          aria-label={done ? "The task is done" : "The task is open"}
+          className={`mt-0.5 w-3.5 h-3.5 shrink-0 ${done ? "text-success" : "text-muted-foreground"}`}
+        />
+      ) : isTask && onToggleTask ? (
         <button
           onClick={() => onToggleTask(activity.id, !done)}
           className="mt-0.5 shrink-0 text-muted-foreground hover:text-foreground tech-transition"

@@ -498,7 +498,10 @@ describe("the filter bar offers the custom filters of Scope item 5 (done-when 7)
   });
 
   it("draws a control for each new type", () => {
-    const html = drawBar(layout());
+    // CRM-Q17b item 5: the filters past the 3 fullest picklists sit behind
+    // "Filters". A source in force opens them, so each control draws here.
+    const html = drawBar(layout(), { ...DEFAULT_VIEW, source: "email" });
+    expect(html).toContain("Filters (1)");
     for (const word of ["Tier", "Colours", "Signed", 'aria-label="Seats equals"', 'aria-label="Rate equals"',
       'aria-label="Budget equals"', 'aria-label="Starts on"']) {
       expect(html).toContain(word);

@@ -586,8 +586,31 @@ export function fillRankOn(defs: readonly FieldDef[] | null | undefined): boolea
 }
 
 /** The fill of a definition, or -1 for none. Sorts a field with no number last. */
-function fillOf(def: FieldDef | undefined): number {
+export function fillOf(def: FieldDef | undefined): number {
   return typeof def?.fill === "number" ? def.fill : -1;
+}
+
+/**
+ * The search of the Columns picker (CRM-Q17b item 6): a field matches when
+ * its label or its key holds the words, with no regard to case. Empty words
+ * match each field.
+ */
+export function fieldMatches(def: FieldDef, query: string): boolean {
+  const words = query.trim().toLowerCase();
+  if (!words) return true;
+  return def.label.toLowerCase().includes(words) || def.key.toLowerCase().includes(words);
+}
+
+/**
+ * "94% filled" beside a field of the Columns picker (CRM-Q17b item 6). A
+ * field with no number gives `null`, and the picker draws no figure. A fill
+ * above 0 never reads as "0%".
+ */
+export function fillLabel(def: FieldDef): string | null {
+  if (typeof def.fill !== "number" || !Number.isFinite(def.fill)) return null;
+  const share = Math.min(Math.max(def.fill, 0), 1);
+  const percent = share > 0 && share < 0.01 ? 1 : Math.round(share * 100);
+  return `${percent}% filled`;
 }
 
 /**

@@ -191,10 +191,36 @@ describe("the filter bar choices", () => {
         onReset: noop,
       }),
     );
-    for (const word of ["Owner", "Source", "Region", "Created from", "Closing to", "Save view"]) {
+    // CRM-Q17b item 5: Owner and the fullest picklists at rest. Source and
+    // the date ranges sit behind "Filters".
+    for (const word of ["Owner", "Region", "Filters", "Save view"]) {
       expect(html).toContain(word);
     }
+    expect(html).not.toContain("Created from");
     expect(html).not.toContain("Share with everyone");
+  });
+
+  it("opens the filters behind the button when one of them is in force", () => {
+    const html = renderToStaticMarkup(
+      createElement(FilterBar, {
+        entity: "deals",
+        view: { ...DEFAULT_VIEW, source: "email" },
+        onChange: noop,
+        owners: [],
+        fieldDefs: [region],
+        activeView: null,
+        dirty: false,
+        canEdit: false,
+        isAdmin: false,
+        saving: false,
+        onSave: async () => undefined,
+        onUpdate: async () => undefined,
+        onReset: noop,
+      }),
+    );
+    for (const word of ["Source", "Created from", "Closing to", "Filters (1)", 'aria-expanded="true"']) {
+      expect(html).toContain(word);
+    }
   });
 
   it("offers Update view and Reset when the screen left the saved view", () => {
