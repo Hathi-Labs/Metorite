@@ -1269,7 +1269,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q26** | Labels on notes, on the decide tier, in shadow. §18.11 | P1 |
 | **CRM-Q27** | 🔨 built 2026-10-16 on `crm-batch-i`, merged (#1111), dark. Search of note text by meaning. §18.11 | P2 |
 | **CRM-Q28** | A weekly digest on the powerful tier. §18.11 | P2 |
-| **CRM-Q30** | A founder question set for CRM insights: an eval of the assistant over CRM data. §18.11 | P1 |
+| **CRM-Q30** | 🔨 built 2026-10-17 on `crm-founder-evals`, not merged. A founder question set for CRM insights: an eval of the assistant over CRM data. §18.11 | P1 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
 
@@ -3627,7 +3627,8 @@ merged (#1100, migration 278), dark. CRM-Q25b, CRM-Q25c and CRM-Q27
 (migration 279, dark): built on 2026-10-16 in the batch branch
 `crm-batch-i`, with a fix round on 2026-10-17, and merged as #1111
 (`d72f92184`). CRM-Q28: specified, not built. Verified against code at
-`origin/main` `634cf54ee`.
+`origin/main` `634cf54ee`. CRM-Q30: built on 2026-10-17 in the branch
+`crm-founder-evals`, not merged, with no migration.
 
 **Owner direction (2026-10-16, in chat).** Use the decide, balanced and
 powerful tiers to run inference on the CRM data and produce insights. Build
@@ -4318,6 +4319,54 @@ Verify with:
 - `uv run pytest tests/unit/test_crm_founder_questions.py -q`
 - `uv run pytest tests/unit/test_crm_founder_questions_r8.py tests/unit/test_crm_aggregate*.py tests/unit/test_crm_agent.py -q`,
   on a private database, with no test skipped.
+
+**Built as (2026-10-17, branch `crm-founder-evals`, not merged).** No
+migration and no flag. `evals/crm_founder_questions/` holds the set.
+
+- `dataset.py` makes about 800 rows from the seed `20261017`. "Today" is 15
+  October 2026 (`AS_OF`), and no invoice falls due on that day. So "due
+  before today" and "due on or before today" give the same rows.
+- `questions.py` holds 31 questions in 13 categories. Q30 is the note
+  search, and Q31 is the short read.
+- A fact names the route answer that gives it, for example the total of
+  call 0 or the label of the first group. The scripted run and the R8 test
+  both read that selector.
+- `scripted_answers.json` holds the tool calls, and an answer with
+  placeholders. The runner fills each placeholder from the fact, in a form
+  such as `INR 12,34,567`, lakh or crore.
+- `recorded_routes.json` holds the answers of the real routes on the seeded
+  dataset. The R8 test writes it with `CRM_FOUNDER_RECORD=1`, and each other
+  run of the test holds the file to the routes.
+- `seed.py` opens no connection. The R8 test runs it on its fixture, and
+  `--seed` runs it in `tenant_session(org)` on a database of this machine
+  only.
+- `--live` drives `orchestrator` through the routing harness, with the real
+  specialists and the real CRM mode. Nobody has run it yet.
+
+The build made four choices that the list above does not name.
+
+- The checkers score the GET request of each tool, not the tool name. The
+  request is what the route answers, and one call can take many forms.
+- A ranked list must name its entries in rank order. A list with the right
+  names in the wrong order fails `names`.
+- A written number counts only when it is not coarser than 0.5 percent of
+  the fact. So "₹1.2 crore" fails for 1,23,45,678, and "₹1.23 crore"
+  passes.
+- The note search answer of `--scripted` is synthetic, because the search
+  needs the embed door.
+
+**The result.** Each of the 30 questions with a route agrees with the real
+route on the private database. No fact and no route disagree. The scripted
+run passes 31 of 31 questions on each bar. The unit test holds 40 tests,
+and 10 of them are mutations that each fail one bar.
+
+**Findings for later work.**
+
+- No tool reads `short_by` of CRM-Q24. The assistant can flag the gap of
+  Q31 only from general care. A later slice can give the tool the line of
+  the Sync health card.
+- CRM-Q29 is not on `origin/main`. `numbers.py` is the local number check,
+  and the eval moves to the shared function when CRM-Q29 merges.
 
 #### 18.11.3 Verification
 

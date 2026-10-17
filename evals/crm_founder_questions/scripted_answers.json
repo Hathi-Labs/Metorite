@@ -1,0 +1,139 @@
+{
+  "_about": "WS-53 CRM-Q30. The tool calls and the answer that --scripted replays for each question. An agent wrote them by hand, in the shape of a good answer. No number is written here: a placeholder {format:fact} takes the fact that questions.py computes. The formats are inr (INR 12,34,567), inrp (with paise), lakh, crore and n (a whole number). The tools run for real, on the route answers of recorded_routes.json.",
+  "answers": {
+    "Q01": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Invoices", "measure": "sum", "field": "Grand_Total", "group_by": "owner", "field_filters": {"Invoice_Date.from": "2025-04-01", "Invoice_Date.to": "2026-03-31"}}}],
+      "answer": "We invoiced {crore:total} in FY 2025-26 (1 April 2025 to 31 March 2026), which is {inr:total}."
+    },
+    "Q02": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Invoices", "measure": "sum", "field": "Grand_Total", "group_field": "Invoice_Date", "bucket": "month", "field_filters": {"Invoice_Date.from": "2026-04-01", "Invoice_Date.to": "2026-09-30"}}}],
+      "answer": "Invoiced by month: April {lakh:month.2026-04}, May {lakh:month.2026-05}, June {lakh:month.2026-06}, July {lakh:month.2026-07}, August {lakh:month.2026-08}, September {lakh:month.2026-09}."
+    },
+    "Q03": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Invoices", "measure": "sum", "field": "Grand_Total", "group_field": "Invoice_Date", "bucket": "quarter", "field_filters": {"Invoice_Date.from": "2026-01-01", "Invoice_Date.to": "2026-12-31"}}}],
+      "answer": "Calendar quarters of 2026: Q1 {inr:quarter.2026-Q1}, Q2 {inr:quarter.2026-Q2}, Q3 {inr:quarter.2026-Q3}, and Q4 so far {inr:quarter.2026-Q4}. Q4 covers only the days up to now."
+    },
+    "Q04": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Payment_Received", "measure": "sum", "field": "Amount", "group_field": "Received_On", "bucket": "month", "field_filters": {"Received_On.from": "2026-06-01", "Received_On.to": "2026-08-31"}}}],
+      "answer": "Money received: June {inrp:month.2026-06}, July {inrp:month.2026-07}, August {inrp:month.2026-08}. The months count in the CRM time zone, Asia/Kolkata."
+    },
+    "Q05": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Invoices", "measure": "count", "group_by": "created_month"}}],
+      "answer": "Invoice records created in Zoho: July {n:created.2026-07}, August {n:created.2026-08}, September {n:created.2026-09}. Months count in Asia/Kolkata time."
+    },
+    "Q06": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Payment_Made", "measure": "sum", "field": "Amount", "group_by": "owner", "field_filters": {"Paid_On.from": "2025-04-01", "Paid_On.to": "2026-03-31"}}}],
+      "answer": "We paid operator associates {lakh:total} in FY 2025-26 ({inr:total})."
+    },
+    "Q07": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Invoices", "measure": "avg", "field": "Grand_Total", "group_by": "owner", "field_filters": {"Invoice_Date.from": "2026-01-01", "Invoice_Date.to": "2026-12-31"}}}],
+      "answer": "The average invoice in 2026 is {inrp:avg}."
+    },
+    "Q08": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Payment_Received", "measure": "max", "field": "Amount", "group_by": "owner"}}],
+      "answer": "The largest single payment we received is {inrp:max}."
+    },
+    "Q09": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Invoices", "measure": "count", "group_by": "owner", "field_filters": {"Invoice_Date.from": "2026-09-01", "Invoice_Date.to": "2026-09-30"}}}],
+      "answer": "We raised {n:count} invoices in September 2026."
+    },
+    "Q10": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Payment_Received", "measure": "sum", "field": "Amount", "group_field": "Mode", "field_filters": {"Received_On.from": "2025-04-01", "Received_On.to": "2026-03-31"}}}],
+      "answer": "Receipts in FY 2025-26 by mode: Cheque {inr:mode.Cheque}, NEFT {inr:mode.NEFT}, RTGS {inr:mode.RTGS}, UPI {inr:mode.UPI}."
+    },
+    "Q11": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Invoices", "measure": "sum", "field": "Grand_Total", "group_field": "Client"}}],
+      "answer": "Top 5 clients by invoiced amount: 1. {name:top.1.name}, {inr:top.1.value}. 2. {name:top.2.name}, {inr:top.2.value}. 3. {name:top.3.name}, {inr:top.3.value}. 4. {name:top.4.name}, {inr:top.4.value}. 5. {name:top.5.name}, {inr:top.5.value}."
+    },
+    "Q12": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Payment_Made", "measure": "sum", "field": "Amount", "group_field": "Operator", "field_filters": {"Paid_On.from": "2026-01-01"}}}],
+      "answer": "In 2026 we paid {name:top.1.name} {inrp:top.1.value}, {name:top.2.name} {inrp:top.2.value} and {name:top.3.name} {inrp:top.3.value}."
+    },
+    "Q13": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Invoices", "measure": "sum", "field": "Balance_Due", "group_field": "Client"}}],
+      "answer": "The 5 clients who owe the most: {name:top.1.name} {lakh:top.1.value}, {name:top.2.name} {lakh:top.2.value}, {name:top.3.name} {lakh:top.3.value}, {name:top.4.name} {lakh:top.4.value}, {name:top.5.name} {lakh:top.5.value}."
+    },
+    "Q14": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Invoices", "measure": "sum", "field": "Balance_Due", "group_field": "Status", "field_filters": {"Due_Date.to": "2026-10-14"}}}],
+      "answer": "As of 15 October 2026, {crore:overdue} is overdue ({inr:overdue}), on invoices whose due date has passed."
+    },
+    "Q15": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Invoices", "measure": "count", "group_field": "Status"}}],
+      "answer": "{n:unpaid} invoices have no payment at all."
+    },
+    "Q16": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Invoices", "measure": "count", "group_field": "Status", "field_filters": {"Due_Date.to": "2026-10-14"}}}],
+      "answer": "Overdue invoices: {n:status.Unpaid} unpaid and {n:status.Partially Paid} partially paid."
+    },
+    "Q17": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Invoices", "measure": "sum", "field": "Balance_Due", "group_by": "owner"}}],
+      "answer": "The outstanding balance across all invoices is {crore:outstanding}, or {inr:outstanding}."
+    },
+    "Q18": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Invoices", "measure": "sum", "field": "Balance_Due", "group_field": "Status"}}],
+      "answer": "Partially paid invoices still owe {inrp:owed}."
+    },
+    "Q19": {
+      "calls": [
+        {"tool": "crm_aggregate", "args": {"entity": "module:Invoices", "measure": "sum", "field": "Grand_Total", "group_field": "Client"}},
+        {"tool": "crm_aggregate", "args": {"entity": "module:Payment_Received", "measure": "sum", "field": "Amount", "group_field": "Client"}},
+        {"tool": "crm_aggregate", "args": {"entity": "module:Invoices", "measure": "sum", "field": "Balance_Due", "group_field": "Client"}}
+      ],
+      "answer": "Top 5 clients, invoiced / paid / outstanding: {name:client.1.name}: {inr:client.1.invoiced} / {inr:client.1.paid} / {inr:client.1.outstanding}. {name:client.2.name}: {inr:client.2.invoiced} / {inr:client.2.paid} / {inr:client.2.outstanding}. {name:client.3.name}: {inr:client.3.invoiced} / {inr:client.3.paid} / {inr:client.3.outstanding}. {name:client.4.name}: {inr:client.4.invoiced} / {inr:client.4.paid} / {inr:client.4.outstanding}. {name:client.5.name}: {inr:client.5.invoiced} / {inr:client.5.paid} / {inr:client.5.outstanding}."
+    },
+    "Q20": {
+      "calls": [
+        {"tool": "crm_aggregate", "args": {"entity": "module:Invoices", "measure": "sum", "field": "Grand_Total", "group_by": "owner", "field_filters": {"Invoice_Date.from": "2026-04-01", "Invoice_Date.to": "2026-06-30"}}},
+        {"tool": "crm_aggregate", "args": {"entity": "module:Payment_Received", "measure": "sum", "field": "Amount", "group_by": "owner", "field_filters": {"Received_On.from": "2026-04-01", "Received_On.to": "2026-06-30"}}}
+      ],
+      "answer": "April to June 2026: we invoiced {lakh:invoiced} and received {lakh:received}."
+    },
+    "Q21": {
+      "calls": [
+        {"tool": "crm_aggregate", "args": {"entity": "module:Payment_Received", "measure": "sum", "field": "Amount", "group_by": "owner", "field_filters": {"Received_On.from": "2026-07-01", "Received_On.to": "2026-09-30"}}},
+        {"tool": "crm_aggregate", "args": {"entity": "module:Payment_Made", "measure": "sum", "field": "Amount", "group_by": "owner", "field_filters": {"Paid_On.from": "2026-07-01", "Paid_On.to": "2026-09-30"}}}
+      ],
+      "answer": "July to September 2026: received {inr:received}, paid out {inr:paid_out}, so the net cash flow is {inr:net}."
+    },
+    "Q22": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Company", "measure": "sum", "field": "Annual_Revenue", "group_by": "owner"}}],
+      "answer": "I cannot give a total: no values are recorded for Annual Revenue on any company in the CRM."
+    },
+    "Q23": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Commercials", "measure": "sum", "field": "Quote_Value", "group_by": "owner"}}],
+      "answer": "The Commercials module holds no records yet, so no quote value is recorded."
+    },
+    "Q24": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Invoices", "measure": "sum", "field": "Discount", "group_by": "owner", "field_filters": {"Invoice_Date.from": "2026-01-01"}}}],
+      "answer": "Invoices raised in 2026 carry {inrp:discount} of discount. Most invoices record no discount."
+    },
+    "Q25": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "contacts", "measure": "count", "group_field": "Site_State"}}],
+      "answer": "Existing sites by state: Gujarat {n:state.Gujarat}, Karnataka {n:state.Karnataka}, Maharashtra {n:state.Maharashtra}, Tamil Nadu {n:state.Tamil Nadu}, Telangana {n:state.Telangana}."
+    },
+    "Q26": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "contacts", "measure": "sum", "field": "Plant_Capacity_MLD", "group_by": "owner", "custom": {"Site_State": "Maharashtra"}}}],
+      "answer": "Our existing sites in Maharashtra have a total plant capacity of {n:capacity} MLD."
+    },
+    "Q27": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Clients", "measure": "count", "group_field": "Key_Account"}}],
+      "answer": "{n:key_accounts} of our clients are key accounts."
+    },
+    "Q28": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Clients", "measure": "count", "group_field": "Segment"}}],
+      "answer": "Clients by segment: Industrial {n:segment.Industrial}, Municipal {n:segment.Municipal}, Utility {n:segment.Utility}."
+    },
+    "Q29": {
+      "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Invoices", "measure": "min", "field": "Grand_Total", "group_by": "owner", "field_filters": {"Invoice_Date.from": "2025-04-01", "Invoice_Date.to": "2026-03-31"}}}],
+      "answer": "The smallest invoice of FY 2025-26 is {inrp:min}."
+    },
+    "Q30": {
+      "calls": [{"tool": "crm_search_notes", "args": {"query": "pump failure", "limit": 10}}],
+      "answer": "Notes about a pump failure hang off these clients: {name:client.1}, {name:client.2}, {name:client.3} and {name:client.4}."
+    },
+    "Q31": {
+      "calls": [{"tool": "crm_list_modules", "args": {}}],
+      "answer": "The CRM mirrors {n:mirrored} Payment Made records. That is the count the connected Zoho user can read, and Zoho may hold more. Sync health shows the gap."
+    }
+  }
+}
