@@ -580,9 +580,10 @@ def _plan_rows(raw: Any, *, dropped: frozenset[str] = frozenset()) -> list[dict[
     """The plan's task rows, validated, or the refusal string.
 
     W1 rule: a task that lacks a title, an effort or a date is not proposed.
-    A task with no owner is proposed as an unassigned task (§26). §13.6 rule 7 refuses, before any card and with zero writes, a
-    start date after the due date, an ``after`` key that names no row, a row
-    that blocks itself, and a ``blocks`` cycle. ``dropped`` holds the keys of
+    A task with no owner is proposed as an unassigned task (§26). §13.6 rule
+    7 refuses, before any card and with zero writes, a start date after the
+    due date, an ``after`` key that names no row, a row that blocks itself,
+    and a ``blocks`` cycle. ``dropped`` holds the keys of
     rows the member removed on the card: their links drop with them.
     """
     if isinstance(raw, str):
