@@ -86,7 +86,9 @@ class HealthEntityModel(BaseModel):
     zoho_count: int | None = None
     ours: int | None = None
     #: The count keys the last run wrote, passed through (``seen``, ``failed``,
-    #: ``unavailable`` and any key that a later slice adds).
+    #: ``unavailable`` and any key that a later slice adds). CRM-Q19 adds
+    #: ``unmapped``: the values that a field rule found filled and could not
+    #: map. A count only, so the shape of this route does not change.
     last_run: dict[str, int] = {}
     #: CRM-Q24: Zoho's count minus our rows at the end of the last full read,
     #: when above 0. The connected Zoho user cannot see those records. Null

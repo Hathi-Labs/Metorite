@@ -596,6 +596,10 @@ def _blank_counts() -> dict[str, dict[str, int]]:
             # CRM-Q17a-1: rows that a re-link changed (``_relink_leads``,
             # ``_relink_deals``). The stale rule of the fill rank reads it.
             "relinked": 0,
+            # CRM-Q19: the values that an approved field rule found filled and
+            # could not map (``executor``). A count only, never a value. Sync
+            # health passes it through ``last_run``.
+            "unmapped": 0,
         }
         for slug in SLUG_ORDER
     } | {key: dict.fromkeys(STEP_COUNTS, 0) for key in STEP_KEYS}
@@ -1458,6 +1462,9 @@ async def _write_record(  # noqa: C901 - one record, one linear mapping to colum
                     )
     if unlinked:
         ctx.bump(entity, "unlinked", unlinked)
+    if mapped.unmapped:
+        # CRM-Q19: a rule value that did not map, counted once the record is in.
+        ctx.bump(entity, "unmapped", len(mapped.unmapped))
     return True
 
 
@@ -3129,11 +3136,15 @@ async def _field_rules(ctx: _Ctx) -> None:
         first = True
         while True:
             async with ctx.page() as db:
-                after, seen, written = await field_rules.backfill_batch(
+                batch = await field_rules.backfill_batch(
                     db, ctx.mapping, rule, EXT_SOURCE, after, organization_id=ctx.org,
                 )
-                filled += written
-                finished = seen < field_rules.BATCH
+                after = batch.after
+                filled += batch.written
+                if batch.unmapped:
+                    # CRM-Q19: counted in the page, so a failed page drops it.
+                    ctx.bump(rule.entity, "unmapped", batch.unmapped)
+                finished = batch.seen < field_rules.BATCH
                 if first or finished:
                     saved = _rules_row(
                         ctx, [*applied, rule if finished else marked], reread,

@@ -44,6 +44,7 @@ import {
   tieStallSentence,
   tieStalls,
   unavailableSentence,
+  unmappedCount,
   type ActivityLine,
   type SyncHealth,
 } from "../lib/syncHealth";
@@ -132,6 +133,8 @@ export function SyncHealthCardView({
                   <th className={th}>Skipped</th>
                   <th className={th}>Unlinked</th>
                   <th className={th}>Failed</th>
+                  {/* CRM-Q19: values that a Field map rule could not put into its column. */}
+                  <th className={th}>Not mapped</th>
                 </tr>
               </thead>
               <tbody>
@@ -168,6 +171,7 @@ export function SyncHealthCardView({
                       <td className={td}>{entity.last_run.skipped ?? 0}</td>
                       <td className={td}>{entity.last_run.unlinked ?? 0}</td>
                       <td className={td}>{entity.last_run.failed ?? 0}</td>
+                      <td className={td}>{unmappedCount(entity)}</td>
                     </tr>
                   );
                 })}

@@ -42,6 +42,25 @@ A database error, a timeout too, is logged by class. The entity keeps its
 stamp and stays ``pending``, so it waits for the bound. A fill step never
 fails the run. Each step is its own tenant session (R5).
 
+**Still empty** (CRM-Q17a-1b, §18.9.6). An entity that changes in most runs
+waits in ``pending`` for most of the day, and stale numbers serve no empty
+column. So, last, the step checks each core entity that is still stale, when
+its stored numbers give an empty key and its first import is done:
+
+* ONE statement for each entity (:func:`check_statement`) reads only the
+  stored empty keys, in one scan, and computes ``bool_or`` of
+  :data:`FILLED_SQL` by key. A NULL column gives the JSON ``null`` through
+  ``jsonb_each(to_jsonb(t))``, so it counts as empty.
+* The keys that stayed empty and the database time of the statement go to
+  the fill row, under ``fill_rank.STILL_EMPTY``. ``fill_rank.empty_columns``
+  serves them while the numbers are stale, when no later run changed the
+  entity.
+* At most 4 statements in a run, each under a LOCAL ``statement_timeout`` of
+  :data:`CHECK_TIMEOUT_MS`. The step skips an entity that no run changed
+  since its last check.
+* A failed statement writes no entry, and a changed field rule or a new
+  computation drops the entry. So any doubt serves ``[]``.
+
 **Ship dark.** Nothing here runs for an org outside ``CRM_FILL_RANK_ORGS``
 (``flags.fill_rank_allowed``).
 """
@@ -199,6 +218,45 @@ _WRITE_SQL = (
 )
 
 
+#: The longest one "still empty" check may run (CRM-Q17a-1b item 6).
+CHECK_TIMEOUT_MS = 5_000
+
+
+def check_statement(entity: str, mapping: Any) -> str:
+    """The ONE "still empty" statement of a core entity (CRM-Q17a-1b item 2).
+
+    ``(key, value)`` pairs come from ``jsonb_each(to_jsonb(t))`` with a
+    filter on the bound keys, as :func:`_core_pairs` takes them. Do not use
+    ``to_jsonb(column)``: for a NULL it gives SQL NULL, :data:`FILLED_SQL`
+    falls to ``ELSE true``, and no column is ever empty.
+    """
+    rows = _CORE_ROWS.format(table=mapping.ENTITY_TABLES[entity])
+    return (
+        f"SELECT e.key, bool_or({FILLED_SQL}) AS filled"
+        f" FROM ({rows}) t, jsonb_each(to_jsonb(t)) e"
+        " WHERE e.key = ANY(CAST(:keys AS text[]))"
+        " GROUP BY e.key"
+    )
+
+
+async def check(
+    db: Any, org: str, entity: str, keys: list[str], mapping: Any,
+) -> tuple[list[str], datetime]:
+    """Run the "still empty" statement of one core entity, under the LOCAL
+    timeout. Returns the keys of *keys* that stayed empty, and the database
+    time of the statement. The caller owns the session.
+
+    A key stays empty only when the statement gives it ``filled`` false. A
+    key with no row (no record) is not served as empty.
+    """
+    await db.execute(text(_TIMEOUT_SQL), {"ms": str(CHECK_TIMEOUT_MS)})
+    at = (await db.execute(text("SELECT now()"))).scalar()
+    rows = (await db.execute(text(check_statement(entity, mapping)), {
+        "org": str(org), "keys": list(keys),
+    })).fetchall()
+    return sorted(str(r.key) for r in rows if r.filled is False), at
+
+
 def _rows(entity: str, mapping: Any) -> tuple[str, dict[str, Any], Callable[[str], str]]:
     """The rows of *entity*, their params, and the pairs builder."""
     module = mapping.module_of(entity)
@@ -318,6 +376,11 @@ class _State:
             if isinstance(v, str)
         }
         self.rules = sorted(list(m) for m in fill_rank.saved_marks(state))
+        #: CRM-Q17a-1b: the "still empty" check of each entity.
+        self.still_empty: dict[str, dict[str, Any]] = {
+            entity: {"keys": keys, "at": at.isoformat()}
+            for entity, (keys, at) in fill_rank.still_empty_of(state).items()
+        }
         self.raw = state
         self.first_at = (saved.initial_done_at if saved is not None else None) or _now()
 
@@ -325,6 +388,7 @@ class _State:
         return {
             "at": dict(self.at), "pending": sorted(self.pending), "rules": self.rules,
             "checked": dict(self.checked),
+            fill_rank.STILL_EMPTY: {e: dict(v) for e, v in self.still_empty.items()},
         }
 
     def row(self) -> CursorRow:
@@ -405,14 +469,82 @@ async def _due(
         _log.warning("crm.sync.fill_state_failed class=%s", type(exc).__name__)
         return None
     marks = fill_rank.rule_marks(rules_state)
-    st.pending |= fill_rank.rule_entities(fill_rank.saved_marks(st.raw), marks)
+    ruled = fill_rank.rule_entities(fill_rank.saved_marks(st.raw), marks)
+    st.pending |= ruled
     st.rules = sorted(list(m) for m in marks)
+    # CRM-Q17a-1b: a changed rule wrote rows that no run count shows. The
+    # check of its entity goes BEFORE the new marks reach any write.
+    for entity in ruled:
+        st.still_empty.pop(entity, None)
     due |= changed_entities(ctx)
     if clock is not None and clock.started is not None:
         for entity in candidates:
             if entity in st.at and entity not in due and entity not in st.pending:
                 st.checked[entity] = clock.started.isoformat()
     return due, (clock.now if clock is not None else _now())
+
+
+def _empty_keys(entity: str, fills: dict[str, fill_rank.Fill]) -> list[str]:
+    """The real columns that the stored numbers of a core entity give as
+    empty (``fill_rank.empty_set``, without the words of a joined column)."""
+    slug = _SLUG_BY_ENTITY[entity]
+    real = set(fill_rank.standard_keys(slug))
+    return [k for k in fill_rank.empty_set(slug, fills) if k in real]
+
+
+async def _check_still_empty(ctx: Any, st: _State, stale: set[str]) -> None:
+    """The "still empty" check of each core entity in *stale* (CRM-Q17a-1b).
+
+    It changes ``st.still_empty`` only, and the caller saves the fill row.
+    An entity that is not stale, or whose first import is not done, keeps no
+    entry. An entity that no run changed since its last check keeps its
+    entry, with no statement. A failed read or statement leaves no entry.
+    """
+    wanted = [e for e in CORE_ORDER if e in stale and _done(ctx.cursors, e)]
+    for entity in list(st.still_empty):
+        if entity not in wanted:
+            st.still_empty.pop(entity)
+    if not wanted:
+        return
+    entries = fill_rank.still_empty_of({fill_rank.STILL_EMPTY: st.still_empty})
+    try:
+        async with tenant_session(ctx.org) as db:
+            keys = {
+                e: _empty_keys(e, await fill_rank.read_fill(db, ctx.org, e)) for e in wanted
+            }
+            changed = await fill_rank.changed_since(db, ctx.org, {
+                e: entries[e][1] for e in wanted if e in entries
+            })
+    except SQLAlchemyError as exc:
+        for entity in wanted:
+            st.still_empty.pop(entity, None)
+        _log.warning("crm.sync.fill_check_failed entity=* class=%s", type(exc).__name__)
+        return
+    changed |= changed_entities(ctx)
+    todo: list[str] = []
+    for entity in wanted:
+        if not keys[entity]:
+            st.still_empty.pop(entity, None)  # no empty key: nothing to check
+        elif entity not in entries or entity in changed:
+            st.still_empty.pop(entity, None)  # no entry, or an old one
+            todo.append(entity)
+    for entity in todo:
+        if ctx.should_stop():
+            break
+        started = time.monotonic()
+        try:
+            async with tenant_session(ctx.org) as db:
+                still, at = await check(db, ctx.org, entity, keys[entity], ctx.mapping)
+        except SQLAlchemyError as exc:
+            _log.warning(
+                "crm.sync.fill_check_failed entity=%s class=%s", entity, type(exc).__name__,
+            )
+            continue
+        st.still_empty[entity] = {"keys": still, "at": at.isoformat()}
+        _log.info(
+            "crm.sync.fill_check entity=%s keys=%s empty=%s ms=%s", entity,
+            len(keys[entity]), len(still), int((time.monotonic() - started) * 1000),
+        )
 
 
 async def refresh(ctx: Any, *, every: timedelta) -> None:
@@ -431,6 +563,7 @@ async def refresh(ctx: Any, *, every: timedelta) -> None:
     due, db_now = found
     stamps = fill_rank.stamps(st.raw)
     large_done = False
+    computed: set[str] = set()
 
     for entity in candidates:
         if ctx.should_stop():
@@ -461,8 +594,10 @@ async def refresh(ctx: Any, *, every: timedelta) -> None:
         except SQLAlchemyError as exc:
             _log.warning("crm.sync.fill_failed entity=%s class=%s", entity, type(exc).__name__)
             continue
-        # 3. The numbers, in a page that reads the mode FOR SHARE.
+        # 3. The numbers, in a page that reads the mode FOR SHARE. New numbers
+        # make the "still empty" check of the entity old.
         st.pending.discard(entity)
+        st.still_empty.pop(entity, None)
         try:
             async with ctx.page() as db:
                 written, gone = await write(db, ctx.org, entity, numbers)
@@ -472,10 +607,15 @@ async def refresh(ctx: Any, *, every: timedelta) -> None:
             _log.warning("crm.sync.fill_failed entity=%s class=%s", entity, type(exc).__name__)
             continue
         ctx.cursors[FILL_ROW] = st.row()
+        computed.add(entity)
         _log.info(
             "crm.sync.fill entity=%s keys=%s gone=%s rows=%s ms=%s",
             entity, written, gone, size, int((time.monotonic() - started) * 1000),
         )
+    # CRM-Q17a-1b: last, the "still empty" check of each core entity that is
+    # still stale.
+    stale = {e for e in CORE_ORDER if (e in due or e in st.pending) and e not in computed}
+    await _check_still_empty(ctx, st, stale)
     stored = ctx.cursors.get(FILL_ROW)
     if stored is None or stored.state != st.as_dict():
         # The waiting entities and the rule marks, for the next run.
@@ -483,12 +623,15 @@ async def refresh(ctx: Any, *, every: timedelta) -> None:
 
 
 __all__ = [
+    "CHECK_TIMEOUT_MS",
     "DISTINCT_SAMPLE",
     "FILLED_SQL",
     "FILL_ROW",
     "LARGE_ROWS",
     "TIMEOUT_MS",
     "changed_entities",
+    "check",
+    "check_statement",
     "compute",
     "read",
     "refresh",

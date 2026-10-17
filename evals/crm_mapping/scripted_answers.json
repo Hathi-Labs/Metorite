@@ -1,0 +1,41 @@
+{
+  "_about": "WS-53 CRM-Q20-1. The answers that --scripted replays, for each schema and each mode. Nobody recorded them from a model: an agent wrote them by hand. 'pick' names the answer by its name in the state (the module or field name, a stage word, or none). 'p' is the probability of the pick in the first round, and 'p2' in a re-ask. A stage value is keyed 's:<value>'. A question with no entry gets a sure 'none'. Some entries carry a quirk that a vendor answer can carry: a probability under 0.75 (a re-ask), and a pick that stays unsure after the re-ask (no suggestion).",
+  "answers": {
+    "dewin": {
+      "on": {
+        "role.company": {"pick": "Operator Associates", "p": 0.82},
+        "role.deal": {"pick": "none", "p": 0.91},
+        "t.industry": {"pick": "Industry Type", "p": 0.88},
+        "t.description": {"pick": "Remarks", "p": 0.62, "p2": 0.84},
+        "t.no_of_employees": {"pick": "No of Staff", "p": 0.9},
+        "t.annual_revenue": {"pick": "Annual Turnover", "p": 0.86}
+      },
+      "shadow": {
+        "t.description": {"pick": "Description", "p": 0.9},
+        "t.mobile": {"pick": "Mobile", "p": 0.84},
+        "t.email": {"pick": "Email", "p": 0.95},
+        "t.phone": {"pick": "Phone", "p": 0.93},
+        "t.organization_name": {"pick": "Company", "p": 0.88},
+        "t.lead_source": {"pick": "Enquiry From", "p": 0.55}
+      }
+    },
+    "opportunities": {
+      "on": {
+        "t.expected_close_date": {"pick": "Expected Close", "p": 0.9},
+        "t.probability": {"pick": "Win Chance", "p": 0.81},
+        "s:Negotiation": {"pick": "open", "p": 0.9},
+        "s:Proposal Sent": {"pick": "open", "p": 0.88},
+        "s:Qualification": {"pick": "open", "p": 0.66, "p2": 0.8}
+      }
+    },
+    "commercials": {
+      "on": {
+        "role.deal": {"pick": "Commercials", "p": 0.8},
+        "t.expected_close_date": {"pick": "Closing Date", "p": 0.87},
+        "t.lost_note": {"pick": "Why Lost", "p": 0.79},
+        "s:Open": {"pick": "open", "p": 0.92},
+        "s:On Hold": {"pick": "open", "p": 0.84}
+      }
+    }
+  }
+}

@@ -114,6 +114,8 @@ _RECORD_TABLES: tuple[str, ...] = (
 
 #: Child first. Nothing references them with 0 records, but a status that a
 #: record names is ``ON DELETE RESTRICT``, so the order is the safe one.
+#: ⚠️ CRM-Q18-1b: ``crm_mapping_plans`` goes BEFORE ``crm_field_rules``, in
+#: the lock order of the plan approve, as in ``core.RESET_TABLES``.
 _RESET_DELETES: tuple[str, ...] = (
     # CRM-Q26: the labels of the notes. With 0 records none can exist, and the
     # list names every table of the start over.
@@ -130,6 +132,9 @@ _RESET_DELETES: tuple[str, ...] = (
     # Zoho sync state. A cursor with ``initial_done_at`` set would make a later
     # reconnect skip the first import (engine.py reads it), so it goes too.
     "crm_sync_cursors", "crm_sync_runs",
+    # CRM-Q18-1: the versions of the plan name the field rules below. They go
+    # first, in the lock order of the plan approve (CRM-Q18-1b).
+    "crm_mapping_plans",
     # CRM-Q7a: the field rules name the fields of the old Zoho account.
     "crm_field_rules",
     # CRM-Q17a-1: the fill rank names the fields of the old setup.
@@ -138,8 +143,6 @@ _RESET_DELETES: tuple[str, ...] = (
     "crm_field_sections",
     # CRM-C6a: the lead-conversion mapping names the fields that go below.
     "crm_convert_mappings",
-    # CRM-Q18-1: the versions of the plan name the field rules above.
-    "crm_mapping_plans",
 )
 
 _HAS_RECORDS = {
@@ -321,6 +324,14 @@ class CrmModeModel(BaseModel):
     labels: dict[str, EntityLabel] | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )
+    #: CRM-Q20-2 (§18.9.6, option A): by core slot (``company``, ``contact``,
+    #: ``lead``, ``deal``), the API name of the generic module of each
+    #: approved ``role``. The rail row of the slot opens that module's list.
+    #: Each member may read it. Only a module that the bound org mirrors is
+    #: named. With no approved role, the body has no ``overlays`` key.
+    overlays: dict[str, str] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
 
 
 @router.get("/mode", response_model=CrmModeModel)
@@ -332,15 +343,18 @@ async def get_crm_mode(
     ``GET /crm/settings`` stays admin only, because it names the access
     groups. An agent run reads this route as the member, to drop the record
     write tools in Mirror mode. No row reads as mode NULL. It is also the one
-    route of the source labels (CRM-Q17a-1 item 6).
+    route of the source labels (CRM-Q17a-1 item 6), and of the overlays of
+    the approved roles (CRM-Q20-2), which only a Mirror CRM can hold.
     """
+    from gateway.routes.crm.mapping_plans import approved_overlays
+
     org = _organization(user)
     async with _tenant_session() as db:
         row = await read_settings(db, org)
+        mode = getattr(row, "mode", None) if row is not None else None
         labels = await source_labels(db, org)
-    return CrmModeModel(
-        mode=getattr(row, "mode", None) if row is not None else None, labels=labels,
-    )
+        overlays = await approved_overlays(db, org) if mode == "mirror" else {}
+    return CrmModeModel(mode=mode, labels=labels, overlays=overlays or None)
 
 
 @router.patch(

@@ -17,6 +17,11 @@
  *
  * Read only, in every mode. The sync is the only writer of a generic record.
  * `?mrec=<Module>:<id>` opens it, and `?rtab=` holds the tab.
+ *
+ * The fill rank (WS-53 CRM-Q17a-2 items 5 and 6). While the field
+ * definitions carry fill numbers, Overview draws the filled fields first, by
+ * fill, and the Fields tab has the filter box and the fold of the known
+ * record's Fields tab (`FoldedFields`). The Zoho system keys never show.
  */
 
 import Button from "@/components/ui/Button";
@@ -24,6 +29,7 @@ import { useCachedResource } from "@/lib/useCachedResource";
 import * as api from "../lib/api";
 import { CrmError } from "../lib/api";
 import { zohoLink } from "../lib/connect";
+import { fillRankOn, filledFirst } from "../lib/fields";
 import {
   MODULE_NOT_FOUND,
   OVERVIEW_FIELDS,
@@ -42,6 +48,7 @@ import {
   type ModuleTab,
 } from "../lib/modules";
 import FieldValue from "./FieldValue";
+import { FoldedFields } from "./FieldsPanel";
 import { RecordFacts, RecordModal, RecordTabBar } from "./RecordShell";
 
 export default function ModuleRecordSheet({
@@ -117,6 +124,12 @@ export function ModuleRecordBody({
 }) {
   const shown = shownModuleTab(page, tab);
   const rows = moduleFieldRows(page);
+  const ranked = fillRankOn(page.field_defs);
+  // CRM-Q17a-2 item 5: Overview draws the filled fields first, by fill.
+  const defs = new Map(page.field_defs.map((d) => [d.key, d]));
+  const overview = ranked
+    ? filledFirst(rows, (row) => row.value.kind !== "empty", (row) => defs.get(row.key))
+    : rows;
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-3">
@@ -129,11 +142,21 @@ export function ModuleRecordBody({
         {shown === "related" ? (
           <FieldList rows={moduleRelated(page)} empty="No linked records." onOpenLink={onOpenLink} />
         ) : shown === "fields" ? (
-          <FieldList rows={rows} empty="No fields on this record." onOpenLink={onOpenLink} />
+          ranked ? (
+            <FoldedFields
+              rows={rows}
+              emptyText="No fields on this record."
+              renderRows={(shownRows) => (
+                <FieldList rows={shownRows} empty="No fields on this record." onOpenLink={onOpenLink} />
+              )}
+            />
+          ) : (
+            <FieldList rows={rows} empty="No fields on this record." onOpenLink={onOpenLink} />
+          )
         ) : (
           <>
             <FieldList
-              rows={rows.slice(0, OVERVIEW_FIELDS)}
+              rows={overview.slice(0, OVERVIEW_FIELDS)}
               empty="No fields on this record."
               onOpenLink={onOpenLink}
             />

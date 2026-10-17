@@ -389,6 +389,34 @@ async def write_cursor(db: Any, org: str, row: CursorRow, status: str) -> None:
     })
 
 
+#: One entry merged into one object of a cursor row's state: the row
+#: upserts, and only the entry *key* of the object *bucket* changes. Two
+#: writers of two entries at the same time keep both (the row lock of the
+#: upsert orders them).
+_MERGE_ENTRY_SQL = (
+    "INSERT INTO crm_sync_cursors (organization_id, module, last_run_at, "
+    "last_status, cursor_state) VALUES (CAST(:org AS uuid), :module, now(), 'ok', "
+    "jsonb_build_object(CAST(:bucket AS text), jsonb_build_object(CAST(:key AS text), "
+    "CAST(:entry AS jsonb)))) "
+    "ON CONFLICT (organization_id, module) DO UPDATE SET last_run_at = now(), "
+    "cursor_state = COALESCE(crm_sync_cursors.cursor_state, '{}'::jsonb) || "
+    "jsonb_build_object(CAST(:bucket AS text), COALESCE(crm_sync_cursors.cursor_state -> "
+    "CAST(:bucket AS text), '{}'::jsonb) || jsonb_build_object(CAST(:key AS text), "
+    "CAST(:entry AS jsonb)))"
+)
+
+
+async def merge_cursor_entry(
+    db: Any, org: str, module: str, bucket: str, key: str, entry: dict[str, Any],
+) -> None:
+    """Set ``state[bucket][key] = entry`` in the cursor row *module*, and keep
+    each other entry. CRM-Q20-2 records a dismissed suggestion with it."""
+    await db.execute(text(_MERGE_ENTRY_SQL), {
+        "org": org, "module": module, "bucket": bucket, "key": key,
+        "entry": json.dumps(entry),
+    })
+
+
 __all__ = [
     "KIND_IMPORT",
     "KIND_INCREMENTAL",
@@ -409,6 +437,7 @@ __all__ = [
     "last_success_at",
     "latest",
     "member_emails",
+    "merge_cursor_entry",
     "progress",
     "read_cursors",
     "recent",

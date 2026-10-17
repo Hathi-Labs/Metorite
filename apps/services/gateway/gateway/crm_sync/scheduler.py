@@ -33,6 +33,12 @@ so the step runs outside it. With the ``crm.note_labels`` mode ``off`` it
 starts no task. One step runs at a time for each org (``_labeling``), so two
 runs that end close together never ask twice about one note.
 
+**The mapping pipeline** (WS-53 CRM-Q20-1, ``crm_platform.md`` §18.9.6). At
+the same two points, :func:`start_mapping` starts
+``map_pipeline.map_after_run`` as a background task, outside the run lock.
+It starts no task while all three ``crm.map_*`` modes are ``off`` for the
+org. One run of it goes at a time for each org (``_mapping``).
+
 **The note vectors** (WS-53 CRM-Q27, ``crm_platform.md`` §18.11.2). After the
 same two points, :func:`start_vectors` starts ``note_vectors.embed_after_run``
 as a background task, outside the run lock. It waits for the label step of
@@ -54,7 +60,7 @@ from acb_common.db import get_db, tenant_session
 from sqlalchemy import text
 
 from gateway.connections import store
-from gateway.crm_sync import engine, note_labels, note_vectors, profiles, runs
+from gateway.crm_sync import engine, map_pipeline, note_labels, note_vectors, profiles, runs
 from gateway.crm_sync.engine import NotConnected
 from gateway.crm_sync.runs import SyncRunning
 from gateway.routes.crm import access as crm_access
@@ -76,6 +82,8 @@ _background: set[asyncio.Task[Any]] = set()
 #: The orgs whose label step runs now (CRM-Q26). The gateway is one process,
 #: so an in-process set is the whole state.
 _labeling: set[str] = set()
+#: The orgs whose mapping pipeline runs now (CRM-Q20-1).
+_mapping: set[str] = set()
 #: The running label task of each org in ``_labeling``, so the vector step
 #: waits for a label step that an earlier run started (CRM-Q27 fix round).
 _label_tasks: dict[str, asyncio.Task[Any]] = {}
@@ -144,6 +152,7 @@ async def _run_one(org: str, gate: asyncio.Semaphore) -> int:
             return 0
         # `run_org` returns after `runs.finish` released the lock (CRM-Q26).
         start_vectors(org, after=start_labels(org))
+        start_mapping(org)
         return 1
 
 
@@ -247,6 +256,29 @@ def start_labels(org: str) -> asyncio.Task[Any] | None:
         return None
 
 
+def start_mapping(org: str) -> asyncio.Task[Any] | None:
+    """Start the mapping pipeline of ``org`` in the background (CRM-Q20-1).
+    Never raises.
+
+    It starts nothing when the loop stops, when each ``crm.map_*`` mode of the
+    org is ``off``, or when a run of it goes for the org already.
+    """
+    try:
+        if _stopping.is_set() or org in _mapping or not map_pipeline.enabled_for(org):
+            return None
+        _mapping.add(org)
+        task = asyncio.get_running_loop().create_task(
+            map_pipeline.map_after_run(org, should_stop=_stopping.is_set),
+            name="crm-map-pipeline",
+        )
+        # A done-callback, as `start_labels` does, so a cancelled task frees the org.
+        task.add_done_callback(lambda _t: _mapping.discard(org))
+        return _track(task)
+    except Exception as exc:  # the pipeline never breaks a sync run
+        _mapping.discard(org)
+        _log.warning("crm.map_pipeline.not_started class=%s", type(exc).__name__)
+
+
 async def _vectors_after(org: str, after: asyncio.Task[Any] | None) -> Any:
     """Wait for the label step ``after`` of the run, then embed (CRM-Q27).
 
@@ -289,18 +321,19 @@ def start_vectors(org: str, *, after: asyncio.Task[Any] | None = None) -> asynci
 
 
 async def _execute_then_label(handle: engine.RunHandle) -> engine.RunResult:
-    """Run the handle, then start the label step and the vector step. The
-    run's result is the task's result, as before CRM-Q26."""
+    """Run the handle, then start the label step, the vector step and the
+    mapping pipeline. The run's result is the task's result, as before CRM-Q26."""
     result = await engine.execute(handle, should_stop=_stopping.is_set)
     start_vectors(handle.org, after=start_labels(handle.org))
+    start_mapping(handle.org)
     return result
 
 
 def spawn(handle: engine.RunHandle) -> asyncio.Task[Any]:
     """Run a locked handle in the background. The request does not wait.
 
-    After the run, the label step (CRM-Q26) and the vector step (CRM-Q27) of
-    the org start."""
+    After the run, the label step (CRM-Q26), the vector step (CRM-Q27) and
+    the mapping pipeline (CRM-Q20-1, ``start_mapping``) of the org start."""
     return _track(asyncio.get_running_loop().create_task(
         _execute_then_label(handle), name="crm-mirror-run",
     ))
@@ -336,6 +369,7 @@ __all__ = [
     "start_crm_mirror_sync",
     "start_first_import",
     "start_labels",
+    "start_mapping",
     "start_vectors",
     "stop_crm_mirror_sync",
 ]

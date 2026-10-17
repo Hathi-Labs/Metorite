@@ -6,7 +6,6 @@ and the Field map".
     GET    /crm/field-rules?entity=      the fields, the rules and the targets
     POST   /crm/field-rules              an admin picks a target by hand
     PATCH  /crm/field-rules/{rule_id}    approve or reject
-    POST   /crm/field-rules/suggest      the assistant proposes rules (CRM-Q7b)
 
 ⚠️ **Dark twice, and admin only.** Each route needs the CRM kill switch (at
 the router), ``CRM_MIRROR`` (``flags.require_crm_mirror``, else 404) and
@@ -22,12 +21,22 @@ undoes a rejected one.
 rule change the approved set. Each one takes the plan lock and goes through
 ``mapping_plans.commit``, so each one also writes a new approved version of
 ``crm_mapping_plans``. A reject of a rule that is not approved writes no
-version. The proposer writes ``proposed`` rows only, and no version.
+version. The CRM-Q7b proposer is gone (CRM-Q20-2 item 9). A ``proposed``
+row that it wrote earlier still takes an approve or a reject.
 
 **What is legal.** The rules of ``mapping.rule_problem``: the target is one of
 ``FIELD_RULE_TARGETS``, the field's type agrees with the column, and a fixed
-column opens only when its standard field is off every layout of the latest
-source profile. Any other rule is a 422 that names the reason. The field must
+column opens when its standard field is off every layout of the latest
+source profile. Any other rule is a 422 that names the reason.
+
+**An empty column opens (CRM-Q18-3).** A fixed column also opens when it is in
+``fill_rank.empty_columns`` of the entity (:func:`_empty`), the one gateway
+function. An org outside ``CRM_FILL_RANK_ORGS`` and stale numbers give no
+key, so they open no fixed column. The approve marks such a rule
+``opened_empty``, and the sync then never makes it stale for its standard
+field on a layout. The value of the fixed map still wins where Zoho fills
+it. ``_targets``, :func:`_check_legal` and ``mapping.rule_problem`` are the
+one home of this rule, for the target list and the approve. The field must
 be a field that goes to ``custom`` today (a ``crm_field_defs`` row of the
 entity). Only one approved rule may fill a column, and only one rule exists for
 each field. A second approved rule for a column is a 409.
@@ -39,40 +48,21 @@ each field. A second approved rule for a column is a 409.
 **No tenant in the request.** The session binds the organization of the
 caller (R5, R11). The acting admin comes from ``UserContext`` only.
 
-**The proposer (CRM-Q7b, §18.7 "CRM-Q7b: the proposer").** Only an admin's
-press calls the model, one entity for each call, and never in the background.
-The input is metadata only: :func:`build_field_map_prompt` takes the
-``crm_field_defs`` rows and the target list as its only arguments, so it
-cannot see a record value. The call is ``acompletion_with_fallback`` on
-``tier-fast`` with ``feature="crm.field_map"``, inside a run context that
-binds the admin, while the auth dependency keeps the organization bound. The
-Router meters it (H-171). The answer becomes ``proposed`` rows only. The
-server drops an item whose field was not in the input, whose target is not
-legal now, or whose types disagree. A second press for the same profile
-version returns the open proposals and calls no model. The fields go in
-batches of 40, one call for each, and each answer is read on its own. One
-press for each organization and entity in 60 seconds reaches the model,
-through a ``SET NX`` key in tenant Redis, and a second one gets 429. An
-approve or a reject changes a rule only while its status and target are
-the ones the route read, else 409. Fence:
-``tests/unit/test_crm_field_map_ai.py``.
+**No model call (CRM-Q20-2 item 9).** The CRM-Q7b proposer and its route
+``POST /crm/field-rules/suggest`` are removed. The mapping pipeline of
+CRM-Q20-1 (``crm_sync/map_pipeline.py``) makes each suggestion now, on the
+decide tier, as a draft of the plan. Fence: ``tests/unit/test_crm_field_map_ai.py``.
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
-import math
-import re
-from collections.abc import Collection, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Collection
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user, require_permission
 from acb_common import get_logger
-from acb_common.tenant_redis import OUTAGE_ERRORS, get_tenant_redis, key, organization_scope
 from fastapi import Depends, HTTPException, Query
 from gateway.crm_sources.registry import mapping_for
 from gateway.routes.crm.access import ADMIN_PERMISSION, read_settings
@@ -98,6 +88,8 @@ _ENTITY_WORDS: dict[str, str] = {
     **FIELD_ENTITY_BY_SLUG,
     **{word: word for word in FIELD_ENTITY_BY_SLUG.values()},
 }
+#: The stored entity word → its API slug, the word of ``fill_rank``.
+_SLUG_BY_ENTITY: dict[str, str] = {v: k for k, v in FIELD_ENTITY_BY_SLUG.items()}
 
 _GUARDS = [Depends(require_crm_mirror), require_permission(ADMIN_PERMISSION)]
 
@@ -193,7 +185,8 @@ class FieldMapField(BaseModel):
 
 class FieldMapTarget(BaseModel):
     """One legal column. ``open`` is False for a fixed column whose standard
-    field is still on a layout, or whose layouts are not read yet."""
+    field is still on a layout, or whose layouts are not read yet. An empty
+    fixed column is open in both cases (CRM-Q18-3)."""
 
     column: str
     column_type: str
@@ -306,15 +299,49 @@ def _field_kind(field: Any, known: dict[str, str] | None) -> str | None:
     return known.get(field.key)
 
 
-def _check_legal(entity: str, field_type: str, column: str, profile: Any) -> None:
+async def _empty(db: Any, org: str, entity: str) -> frozenset[str]:
+    """CRM-Q18-3: the keys of *entity* whose fill is 0 now.
+
+    It reads ``fill_rank.empty_columns``, the one gateway function, in the
+    caller's tenant session. An org outside ``CRM_FILL_RANK_ORGS`` gets
+    ``None`` there, and stale numbers give ``[]``. Both give the empty set
+    here, so they open no fixed column.
+    """
+    from gateway.routes.crm import fill_rank
+
+    return frozenset(await fill_rank.empty_columns(db, org, _SLUG_BY_ENTITY[entity]) or ())
+
+
+def _check_legal(
+    entity: str,
+    field_type: str,
+    column: str,
+    profile: Any,
+    empty: Collection[str] = (),
+    *,
+    opened: bool = False,
+) -> bool:
+    """422 when the rule is not legal (``mapping.rule_problem``).
+
+    *empty* holds the empty keys of the entity (:func:`_empty`). Returns True
+    when the rule holds a fixed column only because that column is empty, so
+    the approve marks it ``opened_empty`` (CRM-Q18-3). *opened* is the mark of
+    a snapshot item that an empty column opened before: the empty test is
+    skipped for it, because the rule filled the column since then. Such an
+    item keeps its mark.
+    """
     mapping = mapping_for(PROVIDER)
-    problem = mapping.rule_problem(
-        entity, field_type, column, mapping.entity_layout_fields(profile, entity),
-    )
+    layout = mapping.entity_layout_fields(profile, entity)
+    if opened:
+        empty = {*empty, column}
+    problem = mapping.rule_problem(entity, field_type, column, layout, empty)
     if problem is not None:
         raise HTTPException(status_code=422, detail={
             "code": problem, "message": _PROBLEMS.get(problem, "That rule is not legal."),
         })
+    target = mapping.rule_target(entity, column)
+    fixed = target is not None and target.standard_field is not None
+    return (opened and fixed) or mapping.opened_by_empty(entity, column, layout, empty)
 
 
 async def _check_free(db: Any, entity: str, column: str, field: str, rule_id: str | None) -> None:
@@ -380,13 +407,17 @@ def _db_conflict(exc: DBAPIError) -> HTTPException | None:
     return None
 
 
-def _targets(entity: str, profile: Any) -> list[FieldMapTarget]:
+def _targets(
+    entity: str, profile: Any, empty: Collection[str] = (),
+) -> list[FieldMapTarget]:
+    """The legal columns of *entity*. A fixed column is open when its standard
+    field is off every layout, or when it is in *empty* (CRM-Q18-3)."""
     mapping = mapping_for(PROVIDER)
     layout = mapping.entity_layout_fields(profile, entity)
     out: list[FieldMapTarget] = []
     for target in mapping.FIELD_RULE_TARGETS[entity].values():
         reason = None
-        if target.standard_field is not None:
+        if target.standard_field is not None and target.column not in empty:
             if layout is None:
                 reason = "layout_unknown"
             elif target.standard_field in layout:
@@ -416,6 +447,7 @@ async def get_field_rules(
         rules = (await db.execute(
             text(_RULES_SQL), {"entity": word, "src": PROVIDER},
         )).fetchall()
+        empty = await _empty(db, org, word)
     mapping = mapping_for(PROVIDER)
     layout = mapping.entity_layout_fields(profile, word)
     known = mapping.entity_field_types(profile, word)
@@ -423,7 +455,7 @@ async def get_field_rules(
     def legal(field: Any) -> list[str]:
         kind = _field_kind(field, known)
         # A field that the latest profile no longer lists fills nothing.
-        return [] if kind is None else mapping.legal_columns(word, kind, layout)
+        return [] if kind is None else mapping.legal_columns(word, kind, layout, empty)
 
     return FieldMapModel(
         entity=word,
@@ -437,7 +469,7 @@ async def get_field_rules(
             for f in fields
         ],
         rules=[_wire(r) for r in rules],
-        targets=_targets(word, profile),
+        targets=_targets(word, profile, empty),
     )
 
 
@@ -464,10 +496,14 @@ async def create_field_rule(
             approved = await mapping_plans.lock_plan(db, by)
             version, profile = await _profile(db, org)
             field_type = await _field_type(db, word, field, profile)
-            _check_legal(word, field_type, column, profile)
+            opened = _check_legal(
+                word, field_type, column, profile, await _empty(db, org, word),
+            )
             await _check_free(db, word, column, field, None)
             await mapping_plans.change_rule(db, approved, org=org, by=by, put=(
-                mapping_plans.PlanRule(word, field, field_type, column, int(version or 0))
+                mapping_plans.PlanRule(
+                    word, field, field_type, column, int(version or 0), opened_empty=opened,
+                )
             ))
             row = (await db.execute(text(_FIELD_RULE_SQL), {
                 "src": PROVIDER, "entity": word, "field": field,
@@ -509,13 +545,17 @@ async def decide_field_rule(
             version, profile = await _profile(db, org)
             field_type = str(current.field_type)
             stamp = int(version if version is not None else current.profile_version)
+            opened = False
             if payload.status == "approved":
                 if current.status == "approved":
                     return _wire(current)
                 field_type = await _field_type(
                     db, current.entity, current.field_api_name, profile,
                 )
-                _check_legal(current.entity, field_type, current.target_column, profile)
+                opened = _check_legal(
+                    current.entity, field_type, current.target_column, profile,
+                    await _empty(db, org, current.entity),
+                )
                 await _check_free(
                     db, current.entity, current.target_column, current.field_api_name, wanted,
                 )
@@ -537,6 +577,7 @@ async def decide_field_rule(
                     db, approved, org=org, by=by,
                     put=mapping_plans.PlanRule(
                         key[0], key[1], field_type, str(current.target_column), stamp,
+                        opened_empty=opened,
                     ) if payload.status == "approved" else None,
                     remove=key if payload.status == "rejected" else None,
                 )
@@ -556,411 +597,3 @@ async def decide_field_rule(
             raise conflict from exc
         raise
     return _wire(row)
-
-
-# ── The proposer (CRM-Q7b) ──────────────────────────────────────────────────
-
-#: The name of the proposer's model call. The Router meters the call under it
-#: (§18.7, §20.9, ``customer_console.md`` §4.3a).
-SUGGEST_FEATURE = "crm.field_map"
-#: The tier of the call. Not ``tier-decide``, because its residency is open (D75).
-SUGGEST_MODEL = "tier-fast"
-#: The bound on one model call, in seconds. Past it the press gives a 502.
-#: It stays under the 30 s limit of the ``/api/crm`` proxy, so the admin sees
-#: the gateway's message and not a cut connection.
-SUGGEST_TIMEOUT_S = 25.0
-#: The output bound of one call. The model lists only the fields that fit.
-SUGGEST_MAX_TOKENS = 4000
-#: The fields of one call. An answer of 40 items stays well inside
-#: :data:`SUGGEST_MAX_TOKENS`, so a long entity is never cut short. The
-#: batches of one press run at the same time.
-SUGGEST_BATCH_FIELDS = 40
-#: One press for each organization and entity in this many seconds.
-SUGGEST_COOLDOWN_S = 60
-#: The tenant Redis namespace of that bound.
-COOLDOWN_NAMESPACE = "crm-field-map"
-#: The picklist option labels of one field in the input, and the length of each.
-MAX_PROMPT_OPTIONS = 20
-MAX_OPTION_CHARS = 60
-#: The ``reason`` CHECK of migration 253.
-MAX_REASON_CHARS = 140
-
-_SUGGEST_SYSTEM = (
-    "You map the custom fields of a CRM to the columns of another CRM. "
-    "The input is JSON. Each item of 'fields' is one custom field, with its API "
-    "name, label, type, picklist option labels and 'may_fill', the columns that "
-    "its type can fill. Each item of 'targets' is one column, with its type. "
-    "Propose a column for a field only when the field clearly holds the same "
-    "fact as the column, and only a column in its 'may_fill' list. Leave out "
-    "each field that fits no column. Answer with JSON only: a list of objects "
-    "with the keys field_api_name, target_column, confidence (a number from 0 "
-    "to 1) and reason (one short sentence, at most 140 characters)."
-)
-
-_FENCE_RE = re.compile(r"^```[a-zA-Z]*\s*|\s*```$")
-
-_PROPOSE_SQL = (
-    "INSERT INTO crm_field_rules (ext_source, entity, field_api_name, field_type, "
-    "profile_version, target_column, status, proposed_by, confidence, reason) "
-    "VALUES (:src, :entity, :field, :type, :version, :column, 'proposed', 'ai', "
-    ":confidence, :reason) "
-    "ON CONFLICT (organization_id, ext_source, entity, field_api_name) DO UPDATE SET "
-    "field_type = EXCLUDED.field_type, profile_version = EXCLUDED.profile_version, "
-    "target_column = EXCLUDED.target_column, confidence = EXCLUDED.confidence, "
-    "reason = EXCLUDED.reason, decided_by = NULL, decided_at = NULL, "
-    "updated_at = now() "
-    # Only an older proposal of the assistant is replaced. A rule that an
-    # admin decided, and a stale rule, keep their row.
-    "WHERE crm_field_rules.status = 'proposed' AND crm_field_rules.proposed_by = 'ai' "
-    f"RETURNING {_COLUMNS}"
-)
-
-
-class FieldSuggestIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    entity: str
-
-
-class FieldSuggestModel(BaseModel):
-    """The answer of one press. ``asked`` is False when the press called no
-    model: the proposals of this profile version were already there, or no
-    field could take a column. ``dropped`` counts the items of the answer that
-    the server refused."""
-
-    entity: str
-    profile_version: int | None = None
-    asked: bool
-    dropped: int = 0
-    #: The fields of the batches whose call failed or whose answer was bad.
-    unread: int = 0
-    proposals: list[FieldRuleModel]
-
-
-@dataclass(frozen=True)
-class Proposal:
-    """One item of the model's answer that the server kept."""
-
-    field_api_name: str
-    field_type: str
-    target_column: str
-    confidence: float | None
-    reason: str | None
-
-
-def _option_labels(options: Any) -> list[str]:
-    """Up to :data:`MAX_PROMPT_OPTIONS` option labels, each cut to
-    :data:`MAX_OPTION_CHARS`. The label of a picklist value is metadata."""
-    labels: list[str] = []
-    for option in options if isinstance(options, list) else []:
-        if isinstance(option, Mapping):
-            label = option.get("label") or option.get("value")
-        else:
-            label = option
-        if label is None or str(label).strip() == "":
-            continue
-        labels.append(str(label).strip()[:MAX_OPTION_CHARS])
-        if len(labels) == MAX_PROMPT_OPTIONS:
-            break
-    return labels
-
-
-def build_field_map_prompt(
-    fields: Iterable[Any], targets: Iterable[Any],
-) -> list[dict[str, str]]:
-    """The messages of one proposer call (§18.7 "What it reads").
-
-    ``fields`` are ``crm_field_defs`` rows (``key``, ``label``, ``type`` and
-    ``options``). ``targets`` are the open ``mapping.RuleTarget`` columns.
-    🔴 These are the only arguments, so the input holds metadata only and
-    never a record value. Fence: ``test_crm_field_map_ai.py``.
-    """
-    mapping = mapping_for(PROVIDER)
-
-    columns = list(targets)
-    payload = {
-        "fields": [
-            {
-                "api_name": str(f.key),
-                "label": str(f.label),
-                "type": str(f.type),
-                "options": _option_labels(f.options),
-                "may_fill": [
-                    t.column for t in columns if mapping.types_agree(str(f.type), t.column_type)
-                ],
-            }
-            for f in fields
-        ],
-        "targets": [{"column": t.column, "type": t.column_type} for t in columns],
-    }
-    return [
-        {"role": "system", "content": _SUGGEST_SYSTEM},
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-    ]
-
-
-def parse_proposals(content: str) -> list[dict[str, Any]] | None:
-    """The items of the model's answer, or ``None`` when the answer is not a
-    JSON list. An object that holds one list (``{"mappings": [...]}``) counts
-    as that list. An item that is not an object is left out."""
-    body = _FENCE_RE.sub("", (content or "").strip())
-    try:
-        data = json.loads(body)
-    except ValueError:
-        return None
-    if isinstance(data, dict):
-        lists = [v for v in data.values() if isinstance(v, list)]
-        data = lists[0] if len(lists) == 1 else None
-    if not isinstance(data, list):
-        return None
-    return [item for item in data if isinstance(item, dict)]
-
-
-def _confidence(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, int | float | str):
-        return None
-    try:
-        number = float(value)
-    except ValueError:
-        return None
-    if math.isnan(number):
-        return None
-    return min(max(number, 0.0), 1.0)
-
-
-def _reason(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    words = " ".join(value.split())
-    return words[:MAX_REASON_CHARS] or None
-
-
-def keep_proposals(
-    entity: str,
-    items: Sequence[Mapping[str, Any]],
-    field_types: Mapping[str, str],
-    open_columns: Collection[str],
-    layout: Collection[str] | None,
-) -> tuple[list[Proposal], int]:
-    """The items that the server keeps, and the count it drops (§18.7 "What it
-    writes").
-
-    It drops an item when its field was not in the input (``field_types``),
-    when its target is not one of ``open_columns`` or is not legal by
-    ``mapping.rule_problem``, or when the types disagree. It keeps the first
-    item for each field. Each kept item becomes a ``proposed`` row, never an
-    ``approved`` one, whatever the item says.
-    """
-    mapping = mapping_for(PROVIDER)
-
-    kept: list[Proposal] = []
-    seen: set[str] = set()
-    for item in items:
-        field = item.get("field_api_name")
-        column = item.get("target_column")
-        if not isinstance(field, str) or not isinstance(column, str):
-            continue
-        field_type = field_types.get(field)
-        if field_type is None or field in seen or column not in open_columns:
-            continue
-        if mapping.rule_problem(entity, field_type, column, layout) is not None:
-            continue
-        seen.add(field)
-        kept.append(Proposal(
-            field_api_name=field, field_type=field_type, target_column=column,
-            confidence=_confidence(item.get("confidence")),
-            reason=_reason(item.get("reason")),
-        ))
-    return kept, len(items) - len(kept)
-
-
-@dataclass(frozen=True)
-class _PromptField:
-    """A ``crm_field_defs`` row as the prompt reads it, with the type of the
-    latest profile."""
-
-    key: str
-    label: str
-    type: str
-    options: Any
-
-
-def _suggest_failed(code: str, message: str) -> HTTPException:
-    return HTTPException(status_code=502, detail={"code": code, "message": message})
-
-
-async def _start_cooldown(org: str, entity: str) -> None:
-    """Allow one press for each organization and entity in each
-    :data:`SUGGEST_COOLDOWN_S`, or raise 429.
-
-    ``SET NX`` with a TTL in tenant Redis, through the prefix wrapper (R5). The
-    key goes in before the model call, so a press that fails still counts.
-    ``llm_slot`` gives no bound here, because a member's press opens no
-    mailbox scope. A Redis outage is a 503: the bound fails closed, because
-    it guards money.
-    """
-    try:
-        with organization_scope(org):
-            started = await get_tenant_redis().set(
-                key(COOLDOWN_NAMESPACE, entity), "1", nx=True, ex=SUGGEST_COOLDOWN_S,
-            )
-    except OUTAGE_ERRORS as exc:
-        _log.warning("crm.field_map_cooldown_unavailable", error=type(exc).__name__)
-        raise HTTPException(status_code=503, headers={"Retry-After": "30"}, detail={
-            "code": "suggest_unavailable",
-            "message": "The assistant is not available now. Try again later.",
-        }) from exc
-    if not started:
-        raise HTTPException(
-            status_code=429, headers={"Retry-After": str(SUGGEST_COOLDOWN_S)},
-            detail={"code": "suggest_cooldown", "message": "Wait a minute before you ask again."},
-        )
-
-
-async def _ask_model(user: UserContext, messages: list[dict[str, str]]) -> str:
-    """One metered model call, and the text of its answer.
-
-    The run context binds the admin for the H-171 meter, and the auth
-    dependency keeps the organization bound (``current_tenant``). Any failure
-    is a 502 with a short message, and the log holds the error class only.
-    """
-    from acb_common._log import bind_run_context, run_context_scope
-    from acb_llm.context import acompletion_with_fallback
-    from email_ingestion.llm_cap import llm_slot
-
-    with run_context_scope():
-        # The member is the session's own, so it is verified.
-        bind_run_context(user=user.email, source="crm", app="crm", member_verified=True)
-        try:
-            async with llm_slot(), asyncio.timeout(SUGGEST_TIMEOUT_S):
-                resp, _used = await acompletion_with_fallback(
-                    model=SUGGEST_MODEL,
-                    messages=messages,
-                    temperature=0,
-                    max_tokens=SUGGEST_MAX_TOKENS,
-                    feature=SUGGEST_FEATURE,
-                )
-            return str(resp.choices[0].message.content or "")
-        except Exception as exc:  # any failure is the same 502
-            _log.warning("crm.field_map_suggest_failed", error=type(exc).__name__)
-            raise _suggest_failed(
-                "suggest_failed",
-                "The assistant could not suggest mappings now. Try again later.",
-            ) from exc
-
-
-@router.post(
-    "/field-rules/suggest", response_model=FieldSuggestModel, dependencies=_GUARDS,
-)
-async def suggest_field_rules(
-    payload: FieldSuggestIn, user: UserContext = Depends(get_current_user),
-) -> FieldSuggestModel:
-    """The assistant proposes a column for the fields of one entity.
-
-    The rows are ``proposed`` with ``proposed_by = 'ai'``. An admin approves or
-    rejects each one. When proposals of the current profile version exist, the
-    press returns them and calls no model. No session stays open across the
-    model call.
-    """
-    org = _organization(user)
-    word = _entity(payload.entity)
-    async with _tenant_session() as db:
-        await _require_mirror(db, org)
-        version, profile = await _profile(db, org)
-        fields = (await db.execute(
-            text(_FIELD_SQL), {"entity": word, "src": PROVIDER},
-        )).fetchall()
-        rules = (await db.execute(
-            text(_RULES_SQL), {"entity": word, "src": PROVIDER},
-        )).fetchall()
-    stamp = int(version or 0)
-    # Only an open proposal counts. An approve or a reject stamps its row with
-    # the version of today, and a decided row must not stop a new field.
-    earlier = [
-        r for r in rules
-        if r.status == "proposed" and r.proposed_by == "ai" and int(r.profile_version) == stamp
-    ]
-    if earlier:
-        return FieldSuggestModel(
-            entity=word, profile_version=version, asked=False,
-            proposals=[_wire(r) for r in earlier],
-        )
-
-    mapping = mapping_for(PROVIDER)
-    layout = mapping.entity_layout_fields(profile, word)
-    known = mapping.entity_field_types(profile, word)
-    taken = {r.target_column for r in rules if r.status == "approved"}
-    targets = [
-        mapping.FIELD_RULE_TARGETS[word][t.column]
-        for t in _targets(word, profile) if t.open and t.column not in taken
-    ]
-    # A field that an admin decided, or whose rule is stale, gets no proposal.
-    decided = {
-        r.field_api_name for r in rules
-        if not (r.status == "proposed" and r.proposed_by == "ai")
-    }
-    candidates: list[Any] = []
-    for f in fields:
-        kind = _field_kind(f, known)
-        if kind is None or f.key in decided:
-            continue
-        if any(mapping.types_agree(kind, t.column_type) for t in targets):
-            candidates.append(_PromptField(f.key, f.label, kind, f.options))
-    if not candidates:
-        return FieldSuggestModel(entity=word, profile_version=version, asked=False, proposals=[])
-
-    batches = [
-        candidates[i:i + SUGGEST_BATCH_FIELDS]
-        for i in range(0, len(candidates), SUGGEST_BATCH_FIELDS)
-    ]
-    # One press is one start of the cool-down, whatever the count of batches.
-    await _start_cooldown(org, word)
-    answers = await asyncio.gather(
-        *(_ask_model(user, build_field_map_prompt(batch, targets)) for batch in batches),
-        return_exceptions=True,
-    )
-    items: list[dict[str, Any]] = []
-    read = 0
-    unread = 0
-    failure: HTTPException | None = None
-    for batch, answer in zip(batches, answers, strict=True):
-        if isinstance(answer, HTTPException):
-            failure = failure or answer
-            unread += len(batch)
-            continue
-        if isinstance(answer, BaseException):
-            raise answer
-        parsed = parse_proposals(answer)
-        if parsed is None:
-            _log.warning("crm.field_map_suggest_bad_answer", entity=word)
-            unread += len(batch)
-            continue
-        read += 1
-        items.extend(parsed)
-    if read == 0:
-        raise failure or _suggest_failed(
-            "suggest_bad_answer",
-            "The assistant gave an answer that could not be read. Try again.",
-        )
-    kept, dropped = keep_proposals(
-        word, items, {c.key: c.type for c in candidates},
-        {t.column for t in targets}, layout,
-    )
-    written: list[Any] = []
-    async with _tenant_session() as db:
-        await _require_mirror(db, org)
-        # In the lock order of the rule rows (one entity, so by field).
-        for proposal in sorted(kept, key=lambda k: k.field_api_name):
-            row = (await db.execute(text(_PROPOSE_SQL), {
-                "src": PROVIDER, "entity": word, "field": proposal.field_api_name,
-                "type": proposal.field_type, "version": stamp,
-                "column": proposal.target_column, "confidence": proposal.confidence,
-                "reason": proposal.reason,
-            })).first()
-            if row is not None:  # an admin decided the field during the call
-                written.append(row)
-    return FieldSuggestModel(
-        entity=word, profile_version=version, asked=True,
-        dropped=dropped + len(kept) - len(written), unread=unread,
-        proposals=[_wire(r) for r in written],
-    )

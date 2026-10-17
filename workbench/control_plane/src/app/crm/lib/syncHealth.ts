@@ -248,6 +248,16 @@ export function differenceLabel(diff: number): string {
   return diff > 0 ? `+${diff}` : `-${Math.abs(diff)}`;
 }
 
+/**
+ * CRM-Q19: the values of the last run that a Field map rule found filled and
+ * could not put into its column. The gateway sends a count under `unmapped`,
+ * never a value. An older gateway sends none, and that is 0.
+ */
+export function unmappedCount(entity: HealthEntity): number {
+  const n = entity.last_run.unmapped;
+  return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 /** A module that the last run could not read: no Zoho scope, or turned off in Zoho. */
 export function isUnavailable(entity: HealthEntity): boolean {
   return (entity.last_run.unavailable ?? 0) > 0;

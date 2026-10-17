@@ -42,7 +42,8 @@ export interface SettingsSection {
  * The sections, in rail order (§20.4 item 2).
  *
  * `field-mapping` shows in Mirror mode, and in Native mode for a studio
- * admin only (CRM-C6a, section 20.9).
+ * admin only (CRM-C6a, section 20.9). `suggestions` (CRM-Q20-2) shows to an
+ * admin in Mirror mode only.
  */
 export const SETTINGS_SECTIONS = [
   { id: "setup", label: "Setup and sync", icon: "Plug", audience: "admin", modes: ["native", "mirror"] },
@@ -59,6 +60,8 @@ export const SETTINGS_SECTIONS = [
     modes: ["native", "mirror"],
     studioIn: ["native"],
   },
+  // CRM-Q20-2: the suggestions of the mapping, and Undo of each one in use.
+  { id: "suggestions", label: "Suggestions", icon: "Sparkles", audience: "admin", modes: ["mirror"] },
   { id: "sync-health", label: "Sync health", icon: "Activity", audience: "admin", modes: ["mirror"] },
 ] as const satisfies readonly SettingsSection[];
 

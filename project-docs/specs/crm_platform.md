@@ -29,9 +29,19 @@
 >
 > **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12). CRM-Q8, filters and saved views (2026-10-12, migration 250). The Deals board stages fix (2026-10-12, §18.5). CRM-Q10, a reconnect never freezes the mirror (2026-10-13, §18, a production hotfix). CRM-Q15, a Zoho module that the account turned off no longer stops the sync (2026-10-15, §18, a production hotfix). CRM-Q16, hold a module and sync one module on its own (2026-10-15, §18.8, migration 269). CRM-Q17a-1, the backend of the fill rank (2026-10-16, §18.9.3, migration 274). It is dark behind `CRM_FILL_RANK_ORGS`. CRM-Q23b, a dropped activity comes back once its module record is in (2026-10-16, §18.10, no migration).
 >
-> **Specified, not built:** CRM-Q17a to CRM-Q22, a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9). CRM-Q18-2 and CRM-Q18-3 are not built.
+> **Specified, not built:** CRM-Q17b, CRM-Q20-3, CRM-Q21 and CRM-Q22, of a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9). Batch M builds the rest of CRM-Q17a to CRM-Q20 on the branch `crm-batch-m`, not merged (§18.12.1).
+>
+> **Built later, not merged (Batch M, `crm-batch-m`):** CRM-Q17a-1b, a "still empty" check of a stale entity (2026-10-16, §18.9.6, no migration). CRM-Q17a-2, the screens of the fill rank (2026-10-16, no migration). CRM-Q18-1b, two deadlocks of the plan lock (2026-10-16, no migration). CRM-Q19, the executor and the 200-record preview (2026-10-16, no migration).
 >
 > **Built later:** CRM-Q18-1, the backend of one plan (2026-10-16, §18.9.6, migration 277). The versions of the Field map live in `crm_mapping_plans`, and `crm_field_rules` stays the live set.
+>
+> **Built later:** CRM-Q18-2, the Field map screen of the plan (2026-10-16, §18.9.6, no migration, not merged). A pick by hand goes into a draft, and one press approves it.
+>
+> **Built later:** CRM-Q18-3, a column that is empty opens (2026-10-16, §18.9.6, migration 280, not merged). A fixed column with a fill of 0 takes a field rule, and the rule keeps the mark `opened_empty`. It is dark behind `CRM_FILL_RANK_ORGS`.
+>
+> **Built later:** CRM-Q20-1, the mapping pipeline on the decide tier (2026-10-16, §18.9.6, no migration, not merged). It writes a draft with the kinds `role`, `target` and `stage`, and never a live rule. It is dark: `CRM_DECIDE_ORGS` is empty and the three `crm.map_*` modes are `off`.
+>
+> **Built later:** CRM-Q20-2, the suggestion, the panel, the overlay and Undo (2026-10-17, §18.9.6, no migration, not merged). An approved `role` makes the rail row of its list open the module's own list. No record moves. The CRM-Q7b proposer is removed.
 >
 > **Built later:** CRM-Q5, the data the mirror loses (2026-10-12). Migration 249 adds `crm_deal_contacts.ext_source`.
 >
@@ -46,8 +56,8 @@
 > **Built later:** CRM-Q26, labels on CRM notes on the decide tier, dark
 > (2026-10-16, migration 278). See §18.11.
 >
-> **Built later, not merged:** Batch I, on the branch `crm-batch-i`
-> (2026-10-16, a fix round on 2026-10-17). CRM-Q24, a short read and the
+> **Built later, merged (#1111, `d72f92184`):** Batch I, from the branch
+> `crm-batch-i` (2026-10-16, a fix round on 2026-10-17). CRM-Q24, a short read and the
 > lost activities on Sync health (§18.10, no migration). CRM-Q25b, one
 > time zone for each month and each date range (§18.11, no migration).
 > CRM-Q25c, a NUL byte answers 422 (§18.11, no migration). CRM-Q27, the
@@ -1248,16 +1258,16 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q16** | ✅ built 2026-10-15. Hold a module, and sync one module on its own. The first import holds a module above 5,000 records and suggests a sync of it on its own. §18.8 | P0 |
 | **CRM-Q17a** | Lists and records by fill rank: default columns, empty columns hidden, owner names, Overview and Fields, Zoho labels in Mirror mode. No AI. §18.9 | P0 |
 | **CRM-Q17b** | Getting around: the rail group, the first screen, filters, the Columns picker, phone cards, and "Needs you" in Sync health. No AI. §18.9 | P0 |
-| **CRM-Q18** | One plan: the versions of the Field map in `crm_mapping_plans`, and `crm_field_rules` stays the live set. CRM-Q18-1 is built. §18.9 | P1 |
+| **CRM-Q18** | One plan: the versions of the Field map in `crm_mapping_plans`, and `crm_field_rules` stays the live set. CRM-Q18-1 and CRM-Q18-2 are built. §18.9 | P1 |
 | **CRM-Q19** | The executor and the 200-record preview. §18.9 | P1 |
 | **CRM-Q20** | The mapping pipeline on the decide tier, the suggestion in an empty slot, the panel and Undo. Replaces the CRM-Q7b proposer. §18.9 | P1 |
 | **CRM-Q21** | Promote a module into a core entity. §18.9 | P1 |
 | **CRM-Q22** | Source changes as suggestions, then a CSV source, then HubSpot. §18.9 | P2 |
 | **CRM-Q23** | Link a Zoho activity to a custom-module record, and show it there, in three slices (Q23a, Q23b, Q23c). §18.10 | P0 |
-| **CRM-Q24** | 🔨 built 2026-10-16 on `crm-batch-i`, not merged. A short read shows on the Sync health card. §18.10 | P1 |
+| **CRM-Q24** | 🔨 built 2026-10-16 on `crm-batch-i`, merged (#1111). A short read shows on the Sync health card. §18.10 | P1 |
 | **CRM-Q25** | The typed aggregate over every module and field, and its AI tool. §18.11 | P0 |
 | **CRM-Q26** | Labels on notes, on the decide tier, in shadow. §18.11 | P1 |
-| **CRM-Q27** | 🔨 built 2026-10-16 on `crm-batch-i`, not merged, dark. Search of note text by meaning. §18.11 | P2 |
+| **CRM-Q27** | 🔨 built 2026-10-16 on `crm-batch-i`, merged (#1111), dark. Search of note text by meaning. §18.11 | P2 |
 | **CRM-Q28** | A weekly digest on the powerful tier. §18.11 | P2 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
@@ -2066,9 +2076,33 @@ checkbox. H-321 is a generic module held past the 60 days of the deleted list.
 ### 18.9 A custom CRM that reads well, and a mapping that the admin only approves (CRM-Q17 to CRM-Q22, 2026-10-16)
 
 **Status (2026-10-16).** CRM-Q17a-1 (#1093, migration 274) and CRM-Q18-1
-(#1094, migration 277) are merged, and both are dark. Each other ticket of
-this section is specified, not built. Verified against code at `origin/main`
-`c4bef9ec0`.
+(#1094, migration 277) are merged, and both are dark. CRM-Q17a-1b,
+CRM-Q17a-2, CRM-Q18-1b and CRM-Q18-2 are built in the batch branch
+`crm-batch-m`, with no migration, and they are not merged. CRM-Q17a-2 and
+CRM-Q18-2 are dark behind the same flags as their backends. CRM-Q18-3,
+CRM-Q19, CRM-Q20-1 and CRM-Q20-2 have their own status lines below, and
+none of them is merged. CRM-Q17b, CRM-Q20-3, CRM-Q21 and CRM-Q22 are
+specified, not built. The batch branch `crm-batch-m` holds `origin/main`
+with Batch I (#1111) under it.
+
+**Status (2026-10-16, CRM-Q18-3).** The branch `crm-q18-3-fill` builds
+CRM-Q18-3, with migration 280. A fixed column opens only for an org on
+`CRM_FILL_RANK_ORGS`, so it is dark until that flip.
+
+**Status (2026-10-16, CRM-Q19).** The branch `crm-q19-executor` builds
+CRM-Q19 on `crm-batch-m`, with no migration and no flag. It is not merged.
+`CRM_MIRROR` keeps the route of the preview dark, as it keeps the plan
+routes dark.
+
+**Status (2026-10-16, CRM-Q20-1).** The branch `crm-q20-1-ai-mapping` builds
+CRM-Q20-1 on the Batch M branch, with no migration. It is not merged. It is
+dark: no org is in `CRM_DECIDE_ORGS`, and each `crm.map_*` mode is `off`.
+Both are owner flips. CRM-Q20-3 is not built.
+
+**Status (2026-10-17, CRM-Q20-2).** The branch `crm-q20-2-suggestions`
+builds CRM-Q20-2 on the Batch M branch, with no migration and no flag of its
+own. It is not merged. A suggestion shows only after the pipeline of
+CRM-Q20-1 writes one, so the owner flips of CRM-Q20-1 keep it dark.
 
 **Design record.** The owner's design page is "Source Mapping Studio" v4.
 Its link is https://claude.ai/artifact/QcBY3s2ATxo3Kb9QCpR3Zr. This section
@@ -2253,13 +2287,13 @@ with 16 questions, to learn whether the vendor bills the state once.
 
 | Ticket | Slice | Gate | Size | Waits for |
 |---|---|---|---|---|
-| CRM-Q17a | Lists and records by fill rank, in two slices (Q17a-1, Q17a-2). No AI | AGENT-SAFE | M | — |
-| CRM-Q17a-1b | A "still empty" check of a stale entity, in each run. No AI | AGENT-SAFE | S | CRM-Q17a-1 |
+| CRM-Q17a (Q17a-1 merged, #1093. Q17a-2 🔨 built 2026-10-16, not merged) | Lists and records by fill rank, in two slices (Q17a-1, Q17a-2). No AI | AGENT-SAFE | M | — |
+| CRM-Q17a-1b 🔨 built 2026-10-16, not merged | A "still empty" check of a stale entity, in each run. No AI | AGENT-SAFE | S | CRM-Q17a-1 |
 | CRM-Q17b | Getting around: rail, first screen, filters, Columns, phone, Sync health. No AI | AGENT-SAFE | M | CRM-Q17a |
-| CRM-Q18 | One plan: a table of versions, and the live rule set | AGENT-SAFE | M | — |
-| CRM-Q18-1b | Two deadlocks of the plan lock, found on a real database | AGENT-SAFE | S | CRM-Q18-1 |
-| CRM-Q19 | The executor and the 200-record preview | AGENT-SAFE | M | CRM-Q18 |
-| CRM-Q20 | The pipeline, the suggestion, the panel, Undo, and Settings → Suggestions | AGENT-SAFE | M + M | CRM-Q19 |
+| CRM-Q18 (Q18-1 merged, #1094. Q18-2 and Q18-3 🔨 built 2026-10-16, not merged) | One plan: a table of versions, and the live rule set | AGENT-SAFE | M | — |
+| CRM-Q18-1b 🔨 built 2026-10-16, not merged | Two deadlocks of the plan lock, found on a real database | AGENT-SAFE | S | CRM-Q18-1 |
+| CRM-Q19 🔨 built 2026-10-16, not merged | The executor and the 200-record preview | AGENT-SAFE | M | CRM-Q18 |
+| CRM-Q20 (CRM-Q20-1 🔨 built 2026-10-16, CRM-Q20-2 🔨 built 2026-10-17, neither merged) | The pipeline, the suggestion, the panel, Undo, and Settings → Suggestions | AGENT-SAFE | M + M | CRM-Q19 |
 | CRM-Q21 | Promote a module into a core entity | AGENT-SAFE | L | CRM-Q20 |
 | CRM-Q22 | Zoho changes as suggestions, then a CSV source, then HubSpot | AGENT-SAFE. The HubSpot app is OWNER-GATE | M + M | CRM-Q20 |
 
@@ -2395,6 +2429,40 @@ Files: `crm_sync/fill.py`, `routes/crm/fill_rank.py`,
 Gate: AGENT-SAFE. Size: S. Waits for: CRM-Q17a-1 (merged, #1093). Build it
 before CRM-Q17a-2, or with it. Verify with the backend command of §18.9.7.
 
+**Built as (2026-10-16).** No migration and no flag of its own.
+
+- `fill.check_statement` holds the one statement, and `fill.check` runs it.
+  A key stays empty only when the statement gives it `filled` false. A key
+  with no row is not served, because the entity then holds no record.
+- The fill row holds `still_empty`, as `{entity: {"keys": [...], "at":
+  ...}}`. The time `at` is `now()` of the transaction of the check.
+- `fill_rank.empty_columns` reads the two cursor rows once. For a stale
+  entity it asks `checked_keys`, which holds the stamp, the rule test and
+  the backfill test. Then it asks `changed_since`, which runs `_CHANGED_SQL`
+  from the time of the check.
+- `still_empty_set` serves a key only when `empty_set` also gives it from
+  the stored numbers. So the check can take a key away, and it can never
+  add one.
+- The sync keeps an entry only for a stale core entity whose first import
+  is done and whose stored numbers give an empty key. It also drops the
+  entry after a failed read or statement, a changed field rule, or new
+  numbers. `_due` drops the entry of a changed rule before the new rule
+  marks reach any write.
+- The sync skips the statement when the entity has an entry and no run
+  changed the entity after its time.
+- Cost. On 30,000 contacts with 236 custom fields of unique values and 10
+  empty keys, the statement took 0.53 s to 0.91 s in five runs on a
+  developer machine. That is below 1 s, so the check has no limit on the
+  size of the entity. The R8 test asserts 4 s, below the 5 s timeout.
+- A contact has 9 standard keys that can be empty. The cost test also reads
+  `last_activity_at`, so it reads 10 keys.
+- The check cannot see a write that no run count records, for example a
+  direct SQL update. CRM-Q17a-1 has the same limit, and the CSV export
+  still keeps a column that a row fills.
+- Fences: 6 unit tests in `test_crm_fill_rank.py` and 11 R8 tests in
+  `test_crm_fill_rank_r8.py`. Eleven mutations, one for each key rule, each
+  made a fence fail.
+
 **CRM-Q17a-2 · The screens.** It waits for CRM-Q17a-1. Done when:
 
 1. The list hides each key of `empty_columns`.
@@ -2421,6 +2489,46 @@ Backend files: `crm_sync/engine.py` (or a module beside it),
 Frontend files, under `src/app/crm/`: `lib/columns.ts`, `lib/fields.ts`,
 `lib/views.ts`, `RecordList.tsx`, `FieldsPanel.tsx`, `RecordSheet.tsx`,
 `ModuleRecordSheet.tsx` and `CrmRail.tsx`.
+
+**Built as** (2026-10-16, branch `crm-q17a-2-fill-ui`, no migration):
+
+- No gateway file changed. CRM-Q17a-1 already serves each number and label
+  that the screens read, so the backend files above needed no edit.
+- **The one switch.** Each surface that reads the fill rank draws as before
+  when no field definition carries a `fill` number (`fillRankOn`). The
+  gateway sends the numbers only for an org on `CRM_FILL_RANK_ORGS`, so the
+  flag stays the one switch. A Native CRM gets no numbers.
+- Item 1: `shownColumns` in `lib/columns.ts` leaves out each key of the
+  layout's `empty_columns`. The first column always shows.
+- Item 2: `defaultColumns` takes the pickable fields with the highest fill,
+  up to `MAX_COLUMNS` (5). A tie goes to more different values, then to the
+  position. A fill of 0, a hidden field and a key of `ZOHO_SYSTEM_KEYS` are
+  never a default. `readColumns` gives `null` for nothing saved and `[]` for
+  saved empty. A saved view keeps `null` and `[]` apart too. A view saved
+  with nothing chosen goes on following the fill rank.
+- Item 2 changes the meaning of an old view whose `columns` is `null`. It
+  showed no custom column, and now it shows the defaults, while the fill rank
+  is on.
+- Item 3: a list cell does not wrap. It ends in an ellipsis at `max-w-xs`,
+  and its title holds the full text. Chips in a cell stay on one line. This
+  item has no switch.
+- Item 4: `zohoOwnerName` reads `custom._owner_name` only when the record has
+  no `owner_email`. The list, the summary header, Overview and the layout's
+  Fields tab show "Name (Zoho only)". This item has no switch.
+- Item 5: Overview ranks the filled fixed fields with the custom fields that
+  the record fills, at most `OVERVIEW_FIELDS` (8) of them, by fill. The empty
+  fixed fields follow. The visual review found a Mirror contact whose
+  Overview showed one name and six dashes, so the filled custom fields joined
+  the rank. The Fields tab, the layout's Fields tab and the module record
+  page share `FoldedFields`. That part holds the filter box and "Show n empty
+  fields".
+- Item 6: `ZOHO_SYSTEM_KEYS` in `lib/fields.ts` is the one list, and
+  `hiddenOnRecordPage` reads it. The rows of each record page leave the keys
+  out. This item has no switch.
+- Item 7: `useSourceLabels` reads `GET /crm/mode` in Mirror mode only. The
+  rail, the list heading, the phone title and the record noun read it.
+- Fence: `src/app/crm/components/crmQ17a2.test.ts`, with 15 mutations, each
+  red. The golden file `c4b-flag-off/list.html` changed for item 3 only.
 
 **CRM-Q17b · Getting around.** Done when:
 
@@ -2558,6 +2666,17 @@ Gate: AGENT-SAFE. Size: S. Waits for: CRM-Q18-1 (merged, #1094). Verify with
 the CRM-Q18 command below, with `tests/unit/test_crm_reset_r8.py` added to
 it.
 
+Built as (2026-10-16): `core.FIELD_RULE_LOCK_ORDER` is
+`entity COLLATE "C", field_api_name COLLATE "C"`. The helper is
+`core.field_rule_key(entity, field_api_name)`. The proposer and step 2 of
+`mapping_plans._write_live_set` sort by it. The proposer calls
+`mapping_plans.lock_rules` first in its write session, and `_db_conflict` maps
+its 40P01 or 40001. In both start-over lists, `crm_mapping_plans` now comes
+before `crm_field_rules`. The two deadlock tests of `test_crm_map_plan_r8.py`
+were red on the code before the fix. A second session takes the lock of the
+approve while the proposer or a start over is in its transaction. The order
+test of both lists is in `test_crm_reset_r8.py`. No migration.
+
 **CRM-Q18-2 · The Field map screen.** It waits for CRM-Q18-1. The Field map
 card shows the approved version and a draft. It approves a draft with one
 action, and it goes back to the version before.
@@ -2595,6 +2714,49 @@ Files: `components/FieldMapCard.tsx`, `lib/fieldMap.ts`, `lib/api.ts` and a
 new test file under `components/`. Gate: AGENT-SAFE. Size: S. Waits for:
 CRM-Q18-1 (merged). Build it after CRM-Q18-1b, so a 409 `plan_busy` is the
 answer that the card meets.
+
+**Built as (2026-10-16).** No migration and no flag. The card reads only the
+routes of CRM-Q18-1, and those routes stay behind `CRM_MIRROR`.
+
+- `lib/fieldMap.ts` holds the types and the rules. `openDraft` is the newest
+  draft whose base is the version in use. The card drops a draft on an older
+  base, because the gateway refuses its approve.
+- A pick by hand ("Map") calls `addToDraft`. It posts the changes of the open
+  draft and the new change, so one draft holds each pick. A pick of the column
+  in use sends no request. `POST /crm/field-rules` has no caller on the card
+  now.
+- The card finds the changes of a draft from the rules of two versions:
+  the version in use and the draft. So a reload shows the same draft.
+- `runPlanWrite` runs an approve or a restore. A 409 `plan_busy` waits 1 s and
+  runs it again one time. A second `plan_busy` and a `plan_moved` keep their
+  sentence on the card. `approveDraft` and `goBack` read the plan again after
+  each result.
+- "Go back" restores the newest version in the state `superseded`, by the time
+  of its approve. `ConfirmDialog` asks first and names that date.
+- The history lists each version. The card draws `approved` as "In use",
+  `superseded` as "Earlier", the open draft as "Draft, not applied", and an
+  older draft as "Draft, not used". "Show rules" reads one version.
+- A version that the sync approved names "the sync, after a change in Zoho".
+- The approve and the reject of one rule stay on `PATCH /crm/field-rules`.
+  Each write drops every key of the card, so the history reads again.
+- Fence: `components/fieldMapPlan.test.ts`, 41 tests. 12 mutations, one for
+  each key rule, each turned it red.
+- The `visual-review` rig captured the card with stubbed data. It covered
+  dark and light mode, compact and comfortable density, a violet accent, and
+  1920, 1440, 1280, 390 and 375 px, and also the Go back question. One defect
+  showed at 375 px: the rule count of a history row stood alone on a line. The
+  row is now one text run.
+
+Not in this slice:
+
+- The admin cannot discard a draft. No route deletes a draft. A later pick of the
+  same field replaces its change, but a new field stays in the draft until an
+  approve.
+- A per-rule approve or reject while a draft is open moves the version in
+  use. The card then drops the draft with no sentence.
+- The card still shows the confidence of a proposal ("62% sure").
+  §18.9.2 asks for no confidence number on screen. CRM-Q7a's fence holds the
+  label, so CRM-Q20 removes it with the proposer.
 
 **CRM-Q18-3 · A column that is empty opens.** It waits for migration 274
 (CRM-Q17a-1). Done when:
@@ -2659,6 +2821,33 @@ edits `routes/crm/core.py`.
 Verify CRM-Q18 with `uv run pytest tests/unit/test_crm_field_rules.py tests/unit/test_crm_field_rules_r8.py tests/unit/test_crm_field_map_ai.py tests/unit/test_crm_upsert_from_source_fence.py tests/unit/test_crm_map_plan*.py -q`
 on the R8 database, with no test skipped.
 
+**Built as (2026-10-16).** Branch `crm-q18-3-fill`, migration 280. No flag of
+its own: a fixed column opens only for an org on `CRM_FILL_RANK_ORGS`.
+
+- Migration 280 adds `crm_field_rules.opened_empty BOOLEAN NULL`, with no
+  default. NULL means false. It is expand-only and changes no row.
+- `mapping.rule_problem` and `mapping.legal_columns` take the empty keys as
+  the argument `empty`. A fixed column in `empty` opens, also when the layouts
+  are not read yet. The test of the type still applies. `mapping.opened_by_empty`
+  is true only when `empty` opens a column that the layouts keep closed.
+  `mapping.rule_stale_reason` takes `opened`.
+- `field_rules._empty` reads `fill_rank.empty_columns` in the tenant session
+  of the route. The GET, the POST, the approve of the PATCH, the proposer
+  and `mapping_plans.commit` call it. `_check_legal` returns the mark.
+- An item that carries the mark keeps it, also when the layouts open its
+  column later. The test of the type and "the field is gone" still apply.
+- `mapping_plans._put_rule` is the one rule of a put. On the same column the
+  item keeps its mark. A new column clears it, and `_checked` then runs the
+  empty test again. The draft route uses it too.
+- A reject leaves the mark on the rejected row. A later approve of that row
+  runs the empty test again, because the rule left the snapshot.
+- Fences: 9 unit tests in `test_crm_field_rules.py` and 7 R8 tests in
+  `test_crm_field_rules_r8.py`. 17 mutations, one for each key rule,
+  each made a fence fail.
+
+Not in this slice: the Field map card shows no sign that an empty fill
+opened a column. `FieldMapTarget` has no field for it.
+
 **CRM-Q19 · Executor.** Done when:
 
 1. Each transform (`copy`, `cast`, `value_map`, `normalize`, `coalesce`,
@@ -2714,6 +2903,59 @@ and the new tests `test_crm_executor.py` and `test_crm_map_preview_r8.py`.
 Gate: AGENT-SAFE. Size: M. Waits for: CRM-Q18-1b and CRM-Q18-3. CRM-Q18-3
 also edits `mapping.apply_field_rules` and `crm_sync/field_rules.py`. Verify
 with the CRM-Q18 command and the two new suites, with no test skipped.
+
+**Built as (2026-10-16).** Branch `crm-q19-executor`, on `crm-batch-m`. No
+migration and no flag.
+
+- `crm_sync/executor.py` holds `copy` and `cast`. Each one returns an
+  `Outcome`: the column value and an `unmapped` mark. Both call
+  `mapping.coerce_target_value`.
+- `copy` fills a `TEXT` column only, and it raises for any other type.
+  `cast` turns the value into the type of the column, inside its limits.
+- A `field` rule names no transform. `transform_of` gives `copy` for a
+  `TEXT` column and `cast` for each other type.
+- A value is `unmapped` when the source holds data and the transform gives
+  NULL. The test of data follows `fill.FILLED_SQL`, so a blank, `[]`, `{}`
+  and `false` are never `unmapped`.
+- `executor.apply_rules` holds the one rule "only where the fixed map gives
+  NULL". `mapping.apply_field_rules` calls it, and `map_record` keeps the
+  columns that did not map in `Mapped.unmapped`.
+- `field_rules.backfill_batch` runs `executor.run` on each value. It now
+  returns a `Batch`, which also counts the values that did not map.
+- The source fence reads each file of the gateway. Only the executor, and
+  `mapping.coerce_target_value` itself, may name the coercion.
+- Each run counts `unmapped` for each entity, from `map_record` and from
+  each backfill batch. Sync health passes the count through `last_run`, and
+  the card shows it in a "Not mapped" column.
+- `POST /crm/mapping/preview` takes `{"version": n}`. A version that is not a
+  draft is a 409 `not_draft`, and an unknown version is a 404.
+- The route reads the entities of the draft and of the live rules. For each
+  one, it reads up to `PREVIEW_ROWS` (200) mirrored rows, the lowest ids,
+  with the join of the list route.
+- `executor.preview_record` first sets each rule column back to the value of
+  the fixed map. A free column, and a fixed column that a live rule fills,
+  start at NULL. Then the draft applies through `apply_rules`.
+- The rows go through `row_to_dict` and the three attach steps of the list
+  route. Each entity carries `unmapped`: a count for each target column of
+  the draft, and no value.
+- The route runs `SET TRANSACTION READ ONLY` first, and it takes no plan
+  lock. So it builds no version and follows no live set.
+- Fences: 25 unit tests in `test_crm_executor.py`, 10 R8 tests in
+  `test_crm_map_preview_r8.py`, and 2 tests in `crmQ9.test.ts`. 20
+  mutations, one for each key rule, each made a fence fail.
+
+Not in this slice:
+
+- A live rule on a fixed column that an empty fill opened (CRM-Q18-3) can
+  share the column with a later value from Zoho. The stored row cannot tell
+  the two apart, so the preview shows the value of the draft there.
+- The preview does not compute `lead_name` again. The backfill does not
+  compute it either, so the board shows the same name after an approve.
+- No screen calls the preview yet. CRM-Q20-2 draws it on the panel.
+- `value_map`, `normalize`, `coalesce`, `link` and `owner` are CRM-Q20-1
+  (item 3). Each one joins `executor.TRANSFORMS` under its word.
+- The executor imports the Zoho mapping module. A second source (CRM-Q22)
+  moves `RuleTarget` and the coercion to a module that names no source.
 
 **CRM-Q20 · The pipeline and the suggestion.** Done when:
 
@@ -2867,6 +3109,95 @@ Files: `gateway/decide_features.py`, a new `crm_sync/map_pipeline.py`,
 `routes/crm/mapping_plans.py`, a new `evals/crm_mapping/` and
 `tests/unit/`. Gate: AGENT-SAFE to build. Size: M. Waits for: CRM-Q19.
 
+**Built as (2026-10-16).** Branch `crm-q20-1-ai-mapping`, on the Batch M
+branch. No migration. Dark until the owner flips `CRM_DECIDE_ORGS` and a
+`crm.map_*` mode.
+
+- `crm.map_role`, `crm.map_target` and `crm.map_stage` join `CRM_FEATURES`,
+  `REGISTERED` and `ON_FEATURES`, and not the email `FEATURES`. Each starts
+  `off`.
+- `crm_sync/map_pipeline.py` holds the six steps. `modes_now` calls
+  `mode_for` for each feature. A feature that is `off` builds no question.
+- `Pipeline` is pure but for two callables: a `Source` that reads the
+  samples on demand, and an asker. The eval drives the same class with a
+  scripted asker.
+- One `decide_features.ask` goes out for each entity, with `module_slug="crm"`
+  and the `connected_by` member as a proven member. The payer check is the
+  one of CRM-Q26 (`note_labels._member` and `_member_left`), and it runs
+  before the first request only. A run with nothing to ask checks no payer.
+- Step 3 answers at 0 tokens: a module named like the slot, a display field,
+  one field of 90% email, phone or URL shape, an exact name, and the stage
+  names Won and Lost. A module with 0 records is never a candidate. A field
+  with 0% fill is never offered.
+- A first question offers at most 40 candidates (`MAX_CANDIDATES`), the most
+  filled first. A re-ask offers the top 4 options of the first answer and
+  `none` (`REASK_OPTIONS`). Its state holds only those candidates, with 5
+  masked samples each. A person's email, phone or name goes as its class.
+- An answer is sure at 0.75 or more, with its top two 0.15 apart or more.
+  An answer that stays unsure makes no item. One module that two answers
+  name plays neither slot.
+- The caps are constants: `TOKEN_CAP` 20,000 estimated input tokens for
+  each run (`kb_index.chunk.estimate_tokens`), `RUN_REQUESTS` 12, and
+  `DAILY_REQUESTS` 40 for each org and UTC day in Redis, counted before each
+  request goes out. Past a cap the run stops and keeps a draft of each key
+  it finished.
+- The cursor row `zoho:map_pipeline` keeps `schema` (a hash of each key:
+  `slots`, `module:<ApiName>` and `core:<slot>`) and `items` (the items
+  that each key found). The hash holds the mode of each feature, so a
+  change of mode asks once more. A key that did not finish keeps its old
+  hash. An approve changes no hash, so it costs no new question.
+- `executor.py` gains `value_map`, `normalize`, `coalesce`, `link` and
+  `owner`. `run_target` and `run_stage` run the items of the kinds, and no
+  other code names the five. `slot_target`, `target_problem` and
+  `stage_problem` hold rules 2 and 3.
+- `mapping_plans.check_kinds` holds rules 1 to 3 and a duplicate check.
+  `commit` calls it first, so a draft approve, a restore and a per-rule
+  change each give 422 `role_missing`, `bad_target` or `bad_stage`.
+  "Beside an approved `role`" reads as: the role is in the snapshot that
+  the commit approves.
+- `mapping_plans.write_draft` merges the items into the approved version
+  (`merge_kinds`), checks them, and writes one draft by `suggestion`. It
+  writes nothing when the items change nothing, or when the newest draft of
+  the pipeline on the approved version holds the same items.
+- A `target` item carries `unmapped`, the count of sampled values that the
+  executor could not map (step 6). A `stage` item carries `unsorted`, the
+  count of distinct stage values in the records with no entry (item 9).
+- An approved target or stage of a module asks nothing again. A new stage
+  value is CRM-Q22.
+- `scheduler.start_mapping` starts the run after `engine.run_org` and after
+  the run of `spawn`, outside the run lock, one at a time for each org.
+- Fences: 65 hermetic tests in `test_crm_map_pipeline.py`, 9 R8 tests in
+  `test_crm_map_pipeline_r8.py`, and 9 new tests in `test_crm_executor.py`.
+  27 mutations, one for each key rule, each made a fence fail.
+
+**The cost for DEWiN (estimated, `evals/crm_mapping --scripted`).** The eval
+has DEWiN's shape: 17 generic modules, Accounts and Deals turned off, and
+Commercials, Quotes and Sales Orders with 0 records. In `on`, the first
+setup asks 7 questions in 3 requests, about 2,700 estimated input tokens:
+1 role request with 2 questions, 1 target request with 4, and 1 re-ask. In
+`shadow`, it asks 6 target questions in 2 requests, about 900 tokens. A
+second run on the same schema asks nothing. The measured count needs the
+post-flip probe and a join of the request ids to `usage_event`.
+
+Not in this slice:
+
+- Rule 2 names no `amount`, no owner and no parent link. So the pipeline
+  writes no `link`, `owner` or `amount` item, and step 3 gives no "one
+  currency field fills `amount`". It writes no `coalesce` item either: no
+  step picks two fields. The executor runs each of them for an item that
+  names it. **Open (owner):** may rule 2 add `amount` for the Deals slot,
+  the owner and the parent link?
+- The pipeline draft is the open draft of the Field map card
+  (`lib/fieldMap.ts` `openDraft`). Since the CRM-Q20-2 fix round, each new
+  draft builds on the open draft (`mapping_plans.open_draft`), the one of
+  the pipeline and the one of a pick by hand. So a pick by hand joins the
+  suggestion, and a suggestion keeps the picks by hand. The card draws the
+  `role`, `target` and `stage` items of a draft.
+- An undo that approves a version with no role leaves the cached items of
+  the run. CRM-Q20-2 records each Undo and each dismiss in the cursor row
+  `zoho:map_dismissed`, so the next run with the same schema does not offer
+  the module again.
+
 **CRM-Q20-2 · The suggestion, the panel, the overlay and Undo.** Done when
 items 5 to 9 above are true, and the read path of an approved overlay works
 as written above (option A). Settings → Suggestions is one entry of
@@ -2880,6 +3211,79 @@ Files: `routes/crm/field_rules.py` (item 9 removes
 `lib/settingsSections.ts`, `CrmRail.tsx`, `FieldMapCard.tsx`, the empty
 state of `RecordList.tsx`, the Suggestions card in `SettingsCards.tsx`, and
 their tests. Gate: AGENT-SAFE. Size: M. Waits for: CRM-Q20-1.
+
+**Built as (2026-10-17).** Branch `crm-q20-2-suggestions`, on the Batch M
+branch. No migration and no flag of its own.
+
+- **The suggestion.** `routes/crm/suggestions.py` serves
+  `GET /crm/mapping/suggestions`, for an admin in Mirror mode. A suggestion
+  is a `role` of the open draft for a list with no approved role. Its
+  module must be mirrored, its list must hold no mirrored record
+  (`map_pipeline.slot_empty`), and the admin must not have dismissed it on
+  the schema of today.
+- **One slot at a time.** `POST /crm/mapping/suggestions/{slot}/approve`
+  takes the items of one slot and module from the draft, and approves them
+  through `mapping_plans.commit`. Undo (`.../undo`) approves the version in
+  use with no item of the slot. Each one then moves the open draft onto the
+  new version (`mapping_plans.carry_draft`), so a pick by hand stays.
+- **Dismiss.** `.../dismiss` and Undo record the slot, the module and the
+  schema hash of the roles in the cursor row `zoho:map_dismissed`. It is a
+  row of its own, because the run writes `zoho:map_pipeline` whole and
+  would drop an entry that an admin wrote while it ran. The run then offers
+  the module again only after the schema changes. A dismiss that leaves the
+  draft with nothing in it deletes that draft.
+- **The preview.** `POST /crm/mapping/preview` takes `slot`. It then reads
+  up to `PREVIEW_ROWS` records of the module, the lowest ids, through
+  `executor.run_target` and `executor.run_stage`. It runs in the same READ
+  ONLY transaction, and the body of CRM-Q19 has no `overlay` key.
+- **The overlay (option A).** `GET /crm/mode` serves `overlays` by slot.
+  `mapping_plans.approved_overlays` reads the approved version with the org
+  in the predicate and through RLS. It names only a module that the bound
+  org mirrors (`modules.mirrored_modules`). The rail row of the list keeps
+  its label and opens `?tab=module&module=<ApiName>`. The module's own row
+  leaves the group. No core reader changed.
+- **The screens.** An admin's empty list shows "Preview Commercials as
+  Deals" (`SlotSuggestion`). A member's empty list says that Zoho sent no
+  records, when no filter is on. The panel shows three facts, real records,
+  at most three checks and "What changes", with one action. A use shows
+  Undo in its toast. Settings → Suggestions is one entry of
+  `lib/settingsSections.ts`, with Undo for each list in use.
+- **Item 9.** `POST /crm/field-rules/suggest` and the proposer are gone. A
+  `proposed` row from before still takes an approve, and its line shows no
+  confidence number.
+- **Fixes of the Batch M reviews, in the same branch.** (1) Each new draft,
+  by hand or by the pipeline, builds on the open draft, and the Field map
+  card draws the `role`, `target` and `stage` items of a draft. (2)
+  `owner_email` joins `fill_rank.NEVER_EMPTY`, so the Owner column stays
+  when no Zoho owner is a member. (3) A key whose billed request fails 3
+  times in a row parks for 7 days or until its schema hash changes. (4) The
+  history names a draft of the pipeline "Suggested by Metorite". (5) The
+  preview keeps a Zoho value in a column that a live rule fills.
+- **Round 2 of the review (2026-10-17).** (1) A write of a suggestion
+  needs the open draft itself, not only its base. An older draft on the same
+  base gives 409 `plan_moved`, because its carry dropped the picks of the
+  newer draft. The Field map card reads the suggestions again after each
+  write, and the panel says in plain words that the map changed. (2) So a
+  dismiss of an older draft records nothing. (3) `write_draft` reads the
+  dismissals again under the plan lock, with the schema hash of the run, so
+  a dismiss during a run does not come back. (4) A NUMERIC rule value
+  compares as a `Decimal` (`executor.same_value`). (5) A draft built on an
+  open draft of the admin keeps the admin as its author.
+- Fences: 12 tests in `test_crm_map_suggest_r8.py` (11 of them R8), 3 in
+  `test_crm_field_map_ai.py`, 2 more in `test_crm_map_pipeline_r8.py`, 3 in
+  `test_crm_map_pipeline.py`, 3 in `test_crm_executor.py`, 1 in
+  `test_crm_fill_rank.py`, 20 in `components/crmQ20.test.ts`, and 4 new or changed in
+  `components/fieldMapPlan.test.ts`. One mutation for each key rule made a
+  fence fail.
+
+Not in this slice:
+
+- A per-rule approve or reject on the Field map card still moves the
+  version in use without carrying the open draft (CRM-Q18-2, "Not in this
+  slice").
+- The first screen of `/crm` still opens the Deals board, also when a
+  module plays Deals.
+- Settings → Suggestions has no list of dismissed suggestions.
 
 **Open (owner).** §18.9.6 says that a flip to `shadow` or `on` is the gate
 `enforcement-flip`. §18.11.2 made the same flip an owner flip for
@@ -3220,8 +3624,9 @@ one run. R8: `test_a_drop_on_a_core_module_is_unkept` and
 **Status (2026-10-17).** CRM-Q25: merged (#1104), no migration. CRM-Q26:
 merged (#1100, migration 278), dark. CRM-Q25b, CRM-Q25c and CRM-Q27
 (migration 279, dark): built on 2026-10-16 in the batch branch
-`crm-batch-i`, with a fix round on 2026-10-17, not merged. CRM-Q28: specified, not built. Verified against
-code at `origin/main` `634cf54ee`.
+`crm-batch-i`, with a fix round on 2026-10-17, and merged as #1111
+(`d72f92184`). CRM-Q28: specified, not built. Verified against code at
+`origin/main` `634cf54ee`.
 
 **Owner direction (2026-10-16, in chat).** Use the decide, balanced and
 powerful tiers to run inference on the CRM data and produce insights. Build
@@ -3675,7 +4080,7 @@ CRM-Q26 (merged, #1100) and CRM-Q25. CRM-Q25 also edits `crm_tools.py`,
 `tests/unit/test_tenant_coverage.py` and
 `tests/unit/test_kb_visibility_one_seam.py` added.
 
-**Built as (2026-10-16, batch branch `crm-batch-i`, not merged).**
+**Built as (2026-10-16, batch branch `crm-batch-i`, merged as #1111).**
 Migration 279 adds `crm_note_vectors`. `crm_sync/note_vectors.py` holds the
 step, and `scheduler.start_vectors` starts it. The step waits for the label
 step of the run, and it runs alone when the label mode is `off`. Fix round
@@ -3852,12 +4257,14 @@ in the Console database. The result goes into this section.
 ### 18.12 Batches for 2026-10-17
 
 **Status (2026-10-17).** Batch I: CRM-Q25 merged (#1104). CRM-Q24,
-CRM-Q25b, CRM-Q25c and CRM-Q27 are built on the batch branch
-`crm-batch-i`, with a fix round on 2026-10-17, and are not merged.
-CRM-Q28 is not built. The owner flip of CRM-Q26 is not done. Batch M:
-specified, not built. Verified against code at `origin/main`
-`c4bef9ec0`. The spec audit of 2026-10-16 gave GO-NARROWED for both
-batches, and this section carries its narrowings.
+CRM-Q25b, CRM-Q25c and CRM-Q27 were built on the batch branch
+`crm-batch-i`, with a fix round on 2026-10-17, and merged as #1111
+(`d72f92184`). CRM-Q28 is not built. The owner flip of CRM-Q26 is not
+done. Batch M: CRM-Q17a-1b, CRM-Q17a-2, CRM-Q18-1b, CRM-Q18-2, CRM-Q18-3,
+CRM-Q19 and CRM-Q20-1 are built on the batch branch `crm-batch-m`, and
+CRM-Q20-2 on `crm-q20-2-suggestions` from it. None is merged. CRM-Q20-3 is
+a stub. The spec audit of 2026-10-16 gave GO-NARROWED for both batches, and
+this section carries its narrowings.
 
 Two batches run on 2026-10-17. Inside a batch, a slice starts when each slice
 that it waits for has merged. Slices of one order number can run at the same

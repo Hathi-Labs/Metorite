@@ -10,7 +10,6 @@ import {
   STALE_SENTENCE,
   actionsFor,
   columnLabel,
-  confidenceLabel,
   pickOptions,
   ruleFor,
   ruleLine,
@@ -119,11 +118,12 @@ describe("the words of the card", () => {
     ]);
   });
 
-  it("says how sure the assistant was, and why", () => {
-    expect(confidenceLabel(0.62)).toBe("62% sure");
-    expect(confidenceLabel(null)).toBeNull();
+  it("says who proposed a rule, and why, with no confidence number (CRM-Q20-2)", () => {
+    // Section 18.9.2: no confidence number reaches the screen. The rule
+    // still holds `confidence: 0.62`, and the line leaves it out.
+    expect(leadMap().rules[1].confidence).toBe(0.62);
     expect(ruleLine(leadMap().rules[1])).toBe(
-      "Proposed by the assistant · 62% sure · The labels name an industry.",
+      "Proposed by the assistant · The labels name an industry.",
     );
     expect(ruleLine(rule())).toBe("Picked by an admin");
   });
@@ -163,7 +163,8 @@ describe("the Field map card", () => {
     expect(html).toContain("Industry");
     expect(html).toContain("Approved");
     expect(html).toContain("Proposed");
-    expect(html).toContain("62% sure");
+    // CRM-Q20-2: no confidence number, in any form.
+    expect(html).not.toMatch(/\d+\s*%|\bsure\b|0\.62/);
   });
 
   it("explains a stale rule", () => {

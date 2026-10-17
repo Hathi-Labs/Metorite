@@ -28,6 +28,7 @@ import {
   moduleState,
   recordsOf,
   statusLines,
+  unmappedCount,
   type HealthEntity,
   type SyncHealth,
   type SyncHold,
@@ -517,5 +518,25 @@ describe("the hold requests (CRM-Q16)", () => {
     expect(holdFailureMessage(409, "no_settings")).toContain("Set up the CRM");
     expect(holdFailureMessage(403, undefined)).toContain("admin");
     expect(syncFailureMessage(422, "unknown_module")).toContain("no such module");
+  });
+});
+
+describe("values that did not map (CRM-Q19, spec section 18.9.6 item 7)", () => {
+  it("shows the count of each entity row under Not mapped", () => {
+    const html = draw(
+      healthy({ entities: [entity("leads", 40, 40, { unmapped: 3 }), entity("deals", 10, 10)] }),
+    );
+    expect(html).toContain("Not mapped");
+    // The last cell of each row is the count.
+    const lastCell = (label: string) =>
+      html.match(new RegExp(`<tr aria-label="${label}">.*?<td[^>]*>([^<]*)</td></tr>`))?.[1];
+    expect(lastCell("Leads")).toBe("3");
+    expect(lastCell("Deals")).toBe("0");
+  });
+
+  it("reads 0 from an older gateway, and never a value", () => {
+    expect(unmappedCount(entity("leads", 1, 1))).toBe(0);
+    expect(unmappedCount(entity("leads", 1, 1, { unmapped: 2 }))).toBe(2);
+    expect(unmappedCount(entity("leads", 1, 1, { unmapped: -1 }))).toBe(0);
   });
 });

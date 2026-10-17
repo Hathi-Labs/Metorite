@@ -118,6 +118,10 @@ class Mapped:
     #: engine counts a dropped activity under it (CRM-Q23a). ``None`` for any
     #: other entity, and for an activity that names no module.
     parent_module: str | None = None
+    #: CRM-Q19: the columns where an approved rule found a filled value that
+    #: did not map (``executor.apply_rules``). The engine counts them under
+    #: ``unmapped``. It holds column names only, never a value.
+    unmapped: tuple[str, ...] = ()
 
 
 # ── Small coercions ─────────────────────────────────────────────────────────
@@ -496,8 +500,9 @@ def map_record(
             if contact:
                 deal_contact = Link(contact, (("contact_id", "contact"),))
 
+    unmapped: list[str] = []
     if rules:
-        apply_field_rules(entity, fields, values, rules)
+        apply_field_rules(entity, fields, values, rules, unmapped=unmapped)
     values["custom"] = custom_fields(entity, fields)
     values["ext_modified_at"] = instant(fields.get("Modified_Time")) or modified_at
     if entity not in _ACTIVITY_TYPES:
@@ -517,6 +522,7 @@ def map_record(
         pipeline=pipeline,
         derived=derived,
         parent_module=parent,
+        unmapped=tuple(unmapped),
     )
 
 
@@ -667,16 +673,38 @@ def apply_field_rules(
     fields: Mapping[str, Any],
     values: dict[str, Any],
     rules: Mapping[str, str],
+    *,
+    unmapped: list[str] | None = None,
 ) -> dict[str, Any]:
     """Fill each rule's column from its field, only where the fixed map gave
     NULL. ``rules`` is ``{target_column: field_api_name}``. A column that is
-    not a legal target is skipped. *values* changes in place."""
-    for column, field_api_name in rules.items():
-        target = rule_target(entity, column)
-        if target is None or values.get(column) is not None:
-            continue
-        values[column] = coerce_target_value(target, fields.get(field_api_name))
+    not a legal target is skipped. *values* changes in place.
+
+    CRM-Q18-3: this holds for a rule that an empty column opened too. A value
+    of the standard field from Zoho still wins on that column.
+
+    CRM-Q19: the executor (``crm_sync/executor.py``) applies each rule. It is
+    the one path of a rule value, and the preview of a draft runs it too.
+    *unmapped* gets the columns whose filled value did not map."""
+    # Imported here: the executor imports this module at load time.
+    from gateway.crm_sync import executor
+
+    missed = executor.apply_rules(entity, fields, values, rules)
+    if unmapped is not None:
+        unmapped.extend(missed)
     return values
+
+
+def _layout_problem(target: RuleTarget, layout: Collection[str] | None) -> str | None:
+    """Why the layouts keep a fixed column closed, or ``None``. A free column
+    needs no layout."""
+    if target.standard_field is None:
+        return None
+    if layout is None:
+        return RULE_LAYOUT_UNKNOWN
+    if target.standard_field in layout:
+        return RULE_STANDARD_FIELD_USED
+    return None
 
 
 def rule_problem(
@@ -684,37 +712,57 @@ def rule_problem(
     field_type: str | None,
     column: str | None,
     layout: Collection[str] | None,
+    empty: Collection[str] = (),
 ) -> str | None:
     """Why a rule from a field of ``field_type`` to ``column`` is not legal, or
     ``None`` when it is (§18.7 "The legal targets").
 
     ``layout`` holds the field API names on the active layouts of the entity
     (:func:`entity_layout_fields`), or ``None`` when no layout was read. A
-    fixed column opens only when its standard field is off every layout, so an
+    fixed column opens when its standard field is off every layout, so an
     unknown layout keeps it closed.
+
+    CRM-Q18-3: a fixed column ALSO opens when it is in ``empty``, the
+    ``fill_rank.empty_columns`` of the entity. The caller reads that set, so
+    this function stays pure. The type test still applies.
     """
     target = rule_target(entity, column)
     if target is None:
         return RULE_UNKNOWN_TARGET
     if not types_agree(field_type, target.column_type):
         return RULE_TYPE_MISMATCH
-    if target.standard_field is not None:
-        if layout is None:
-            return RULE_LAYOUT_UNKNOWN
-        if target.standard_field in layout:
-            return RULE_STANDARD_FIELD_USED
-    return None
+    if target.column in empty:
+        return None
+    return _layout_problem(target, layout)
+
+
+def opened_by_empty(
+    entity: str, column: str | None, layout: Collection[str] | None,
+    empty: Collection[str],
+) -> bool:
+    """True when ``column`` opens ONLY because it is in ``empty`` (CRM-Q18-3).
+
+    That is a fixed column in ``empty`` that the layouts keep closed. The
+    approve marks such a rule ``opened_empty``, so a later fill or layout
+    does not make it stale.
+    """
+    target = rule_target(entity, column)
+    return (
+        target is not None and target.column in empty
+        and _layout_problem(target, layout) is not None
+    )
 
 
 def legal_columns(
     entity: str, field_type: str | None, layout: Collection[str] | None,
+    empty: Collection[str] = (),
 ) -> list[str]:
     """The columns that a field of ``field_type`` may fill now, in the order of
     :data:`FIELD_RULE_TARGETS`. One rule for the Field map and the proposer
     of CRM-Q7b: each column passes :func:`rule_problem`."""
     return [
         column for column in FIELD_RULE_TARGETS.get(entity) or {}
-        if rule_problem(entity, field_type, column, layout) is None
+        if rule_problem(entity, field_type, column, layout, empty) is None
     ]
 
 
@@ -724,6 +772,8 @@ def rule_stale_reason(
     column: str | None,
     field_types: Mapping[str, str] | None,
     layout: Collection[str] | None,
+    *,
+    opened: bool = False,
 ) -> str | None:
     """Why an approved rule goes ``stale`` after a discovery, or ``None``.
 
@@ -731,6 +781,11 @@ def rule_stale_reason(
     discovery read it (:func:`discovered_field_types`), or ``None`` when the
     discovery could not read the fields. ``layout`` is the same for the
     layouts. A section that was not read never makes a rule stale.
+
+    ``opened`` is the ``opened_empty`` mark of the rule (CRM-Q18-3). An empty
+    column opened it, so its standard field on a layout never makes it stale.
+    The value of the fixed map still wins where Zoho fills it
+    (:func:`apply_field_rules`). The other two reasons still apply.
     """
     target = rule_target(entity, column)
     if target is None:
@@ -741,7 +796,7 @@ def rule_stale_reason(
         if not types_agree(field_types[field_api_name], target.column_type):
             return RULE_TYPE_MISMATCH
     if (
-        target.standard_field is not None and layout is not None
+        not opened and target.standard_field is not None and layout is not None
         and target.standard_field in layout
     ):
         return RULE_STANDARD_FIELD_USED
@@ -1504,6 +1559,7 @@ __all__ = [
     "module_of",
     "module_read_scope",
     "module_record_link",
+    "opened_by_empty",
     "org_identity",
     "pipeline_ref",
     "pipeline_rows",

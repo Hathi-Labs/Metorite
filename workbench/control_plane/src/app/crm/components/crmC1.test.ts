@@ -104,6 +104,7 @@ describe("the sections a caller sees", () => {
       "lost-reasons",
       "fields",
       "field-mapping",
+      "suggestions",
       "sync-health",
     ]);
     // Native with no studio: the Field mapping section is hidden (CRM-C6a).

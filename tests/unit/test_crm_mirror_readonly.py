@@ -95,6 +95,12 @@ _EXEMPT = {
     # and `crm_field_rules` and no record table, and it works in Mirror mode
     # only. The sync applies a rule through the field-rule door.
     "mapping_plans.py",
+    # CRM-Q20-2: the suggestions of the mapping. An approve, an Undo and a
+    # dismiss write `crm_mapping_plans` through `mapping_plans.commit` and the
+    # cursor row `zoho:map_dismissed`, and no record table. They work in
+    # Mirror mode only. `test_every_raw_write_to_a_guarded_table_is_guarded`
+    # does not read this list, so a raw write to a record table there fails.
+    "suggestions.py",
 }
 
 

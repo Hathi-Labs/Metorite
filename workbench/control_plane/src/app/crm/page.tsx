@@ -68,7 +68,9 @@ import ModuleList from "./components/ModuleList";
 import ModuleRecordSheet from "./components/ModuleRecordSheet";
 import { moduleLabel, type ModuleLink } from "./lib/modules";
 import { openModuleRecord, selectModule } from "./lib/urlState";
-import { useModules } from "./lib/useCrmMode";
+import { useModules, useOverlays, useSourceLabels } from "./lib/useCrmMode";
+import { SlotSuggestionArea, useSuggestions } from "./components/Suggestions";
+import { memberEmptyLine, suggestionFor } from "./lib/suggestions";
 import * as api from "./lib/api";
 import { CrmError } from "./lib/api";
 import {
@@ -104,6 +106,7 @@ import {
   canEditView,
   captureView,
   deleteCopy,
+  isFiltered,
   resolveBareLink,
   viewDiverges,
   type SavedView,
@@ -194,6 +197,14 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   const store = useCrmStore();
   // The mirrored generic Zoho modules, for the rail (CRM-Q6b). Native: none.
   const { modules } = useModules(ctx.mode === "mirror");
+  // CRM-Q17a-2 item 7: in Mirror mode, the source's names of the core
+  // entities. A Native CRM, or an org off the list, keeps the CRM's names.
+  const labels = useSourceLabels(ctx.mode === "mirror");
+  // CRM-Q20-2 (option A): the Zoho module that each core list opens, for
+  // each member. With none, each list opens its own records.
+  const overlays = useOverlays(ctx.mode === "mirror");
+  // CRM-Q20-2 item 5: the suggestion of an empty list, for an admin only.
+  const { list: suggestionList } = useSuggestions(ctx.isAdmin && ctx.mode === "mirror");
   /** The Refresh button of a module list reads page 1 again. */
   const [moduleReload, setModuleReload] = useState(0);
   const { isMobile } = useViewMode();
@@ -412,11 +423,16 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
 
   const barDefs = filterDefs;
 
-  /** The custom columns in effect: the view's own, or this browser's. */
+  /**
+   * The custom columns in effect: the view's own, or this browser's. `null`
+   * is "nothing saved", and the list then shows the columns of the fill rank.
+   * `[]` is "saved empty" (CRM-Q17a-2 item 2). A new view keeps the choice,
+   * not the defaults on screen, so it goes on following the fill rank.
+   */
   const draftOfView = draftColumns?.viewId === view.viewId ? draftColumns?.keys : undefined;
-  const viewColumns = draftOfView ?? activeSaved?.columns ?? [];
-  const currentColumns = (): string[] =>
-    activeSaved ? viewColumns : filterEntity ? readColumns(filterEntity) : [];
+  const viewColumns: string[] | null = draftOfView ?? activeSaved?.columns ?? null;
+  const currentColumns = (): string[] | null =>
+    activeSaved ? viewColumns : filterEntity ? readColumns(filterEntity) : null;
   const dirty = activeSaved
     ? viewDiverges(activeSaved, captureView(view, viewColumns, view.pipelineId))
     : false;
@@ -508,6 +524,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   const chips = listEntity
     ? chipsFor(listEntity, statusesFor(listEntity), view)
     : [];
+  /** CRM-Q20-2: the suggestion of the core list on screen, list or board. */
+  const slotSuggestion = isEntity(view.tab) ? suggestionFor(suggestionList, view.tab) : null;
 
   const totals = boardTotals(store.lanes);
   const leadCount = store.leadLanes.reduce((n, lane) => n + lane.count, 0);
@@ -648,7 +666,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               : // A list view names itself. With the rail folded, the four
               // lists share one layout, and this line is all that tells
               // Deals from Contacts.
-              viewLabel(view.tab);
+              viewLabel(view.tab, labels);
   const mode = modeLine({ mode: ctx.mode, connection: ctx.connection, sync: ctx.sync });
   // CRM-X0: the mode part links an admin to the setup hub.
   const subtitle = mode ? (
@@ -725,7 +743,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           ]}
           mode={view.layout}
           onPick={(next) => go(selectLayout(view, next))}
-          label={`${viewLabel(view.tab)} layout`}
+          label={`${viewLabel(view.tab, labels)} layout`}
         />
       )}
       {dealBoard && (
@@ -833,6 +851,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                       saved={railSaved}
                       modules={railModules}
                       settings={railSettings}
+                      labels={labels}
+                      overlays={overlays}
                     />
                   </nav>
                 )
@@ -840,7 +860,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               className="inline-flex max-w-full items-center gap-1 align-middle tech-transition hover:opacity-80"
             >
               <span className="truncate">
-                {view.tab === "module" ? moduleLabel(modules, view.module) : viewLabel(view.tab)}
+                {view.tab === "module" ? moduleLabel(modules, view.module) : viewLabel(view.tab, labels)}
               </span>
               <Icon name="ChevronDown" size={14} className="shrink-0 text-muted-foreground" />
             </button>
@@ -868,6 +888,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               saved={railSaved}
               modules={railModules}
               settings={railSettings}
+              labels={labels}
+              overlays={overlays}
             />
           </nav>
         ) : null}
@@ -953,7 +975,15 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               Reload button, and the rail stays. The key clears it when the
               member picks another view (CRM-Q3, spec section 18.6). */}
           <CrmBoundary key={boundaryKey(withShownSection(view, sectionCtx), pipelineId)}>
-          {boardOn ? (
+          {slotSuggestion ? (
+            // CRM-Q20-2 item 5: the list is empty, and Metorite knows where
+            // its records are. The admin previews them first.
+            <SlotSuggestionArea
+              suggestion={slotSuggestion}
+              listLabel={viewLabel(view.tab, labels)}
+              labelOf={(slug) => viewLabel(slug, labels)}
+            />
+          ) : boardOn ? (
             <KanbanBoard
               entity={view.tab === "leads" ? "leads" : "deals"}
               lanes={view.tab === "leads" ? store.leadLanes : dealLanes}
@@ -1045,6 +1075,12 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                 onLoadMore={() => void store.loadMore()}
                 loadingMore={store.loadingMore}
                 hasMore={store.hasMore}
+                // CRM-Q20-2 item 5: an empty Mirror list says why, with no filter on.
+                emptyNote={
+                  ctx.mode === "mirror" && !isFiltered(view)
+                    ? memberEmptyLine(viewLabel(listEntity, labels))
+                    : undefined
+                }
                 sort={view.sort}
                 direction={view.dir}
                 onSort={(key) => go(applySort(view, key))}
@@ -1075,6 +1111,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
       {view.record && (
         <RecordSheet
           entity={view.record.entity}
+          labels={labels}
           record={store.record}
           statuses={statusesFor(view.record.entity)}
           timeline={store.timeline}

@@ -12,6 +12,10 @@
  * Zoho module (Products, Quotes, each custom module), under the known views
  * and in the profile order (`railEntries`). With no module there is no row.
  *
+ * Since WS-53 CRM-Q20-2 a core list that a Zoho module plays keeps its row
+ * and label, and the row opens the module's list (`?tab=module&module=`).
+ * The module's own row leaves the group (`railEntries`).
+ *
  * Since WS-53 CRM-C1 the settings row opens its sections as child rows while
  * the settings tab is on screen (`SettingsSectionRows`, crm_platform.md
  * §20.4). Each child is a `RailRow` at depth 1, as a saved view is. While a
@@ -33,7 +37,12 @@ import type { SettingsSection, SettingsSectionId } from "../lib/settingsSections
 import type { EntitySlug } from "../lib/types";
 import type { CrmModule } from "../lib/modules";
 import type { CrmView } from "../lib/urlState";
-import { CRM_SETTINGS_VIEW, railEntries, type CrmRailView } from "../lib/views";
+import {
+  CRM_SETTINGS_VIEW,
+  railEntries,
+  type CrmRailView,
+  type SourceLabels,
+} from "../lib/views";
 
 export type RailViewActions = {
   views: Record<EntitySlug, SavedView[]>;
@@ -96,6 +105,8 @@ export default function CrmRail({
   saved,
   modules,
   settings,
+  labels = null,
+  overlays = null,
 }: {
   tab: CrmView["tab"];
   onSelect: (tab: CrmView["tab"]) => void;
@@ -103,6 +114,16 @@ export default function CrmRail({
   modules?: RailModules;
   /** The settings sections. They show while the settings tab is on screen. */
   settings?: RailSettings;
+  /**
+   * The source's names of the core entities (CRM-Q17a-2 item 7). In Mirror
+   * mode Contacts can read "Existing Sites". `null` keeps the CRM's names.
+   */
+  labels?: SourceLabels | null;
+  /**
+   * CRM-Q20-2 (option A): the Zoho module that each core list opens, from
+   * `GET /crm/mode`. The row keeps its label and opens the module's list.
+   */
+  overlays?: Partial<Record<EntitySlug, string>> | null;
 }) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -175,7 +196,7 @@ export default function CrmRail({
     );
   };
 
-  const row = (view: CrmRailView) => {
+  const row = (view: CrmRailView, module?: string) => {
     const nested =
       saved && view.id in saved.views ? railViews(saved.views[view.id as EntitySlug]) : [];
     // A saved view in effect takes the highlight from its entity row.
@@ -183,7 +204,11 @@ export default function CrmRail({
     // So does an open settings section (CRM-C1).
     const sections = view.id === "settings" && tab === "settings" ? settings : undefined;
     const sectionOpen = Boolean(sections?.sections.some((s) => s.id === sections.active));
-    const selected = tab === view.id && !viewInEffect && !sectionOpen;
+    // CRM-Q20-2: a list that a module plays opens the module, and its row
+    // is the one that holds the highlight while that module is on screen.
+    const selected = module
+      ? tab === "module" && modules?.active === module
+      : tab === view.id && !viewInEffect && !sectionOpen;
     return (
       <div key={view.id} className="flex flex-col gap-0.5">
         <RailRow
@@ -191,7 +216,7 @@ export default function CrmRail({
           selected={selected}
           icon={<Icon name={view.icon} className="h-4 w-4 shrink-0" />}
           buttonProps={{ "aria-current": selected ? "page" : undefined }}
-          onSelect={() => onSelect(view.id)}
+          onSelect={() => (module ? modules?.onSelect(module) : onSelect(view.id))}
         />
         {saved ? nested.map((v) => viewRow(v, saved)) : null}
         {sections ? <SettingsSectionRows {...sections} /> : null}
@@ -201,8 +226,8 @@ export default function CrmRail({
 
   return (
     <div className="flex flex-col gap-0.5">
-      {railEntries(modules?.modules).map((entry) => {
-        if (entry.kind === "view") return row(entry.view);
+      {railEntries(modules?.modules, labels, overlays).map((entry) => {
+        if (entry.kind === "view") return row(entry.view, entry.module);
         const selected = tab === "module" && modules?.active === entry.row.module;
         return (
           <RailRow
