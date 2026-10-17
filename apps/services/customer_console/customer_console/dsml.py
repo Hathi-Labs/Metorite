@@ -1,5 +1,5 @@
 # The docstrings quote the vendor's markup, and its bar IS the fullwidth one.
-# ruff: noqa: RUF002
+# ruff: noqa: RUF002, RUF003
 """Turn DeepSeek's DSML tool-call text into real tool calls.
 
 Spec: ``customer_console.md`` §6A (the Router owns the vendor seam).
@@ -47,9 +47,39 @@ call runs only when all five of these hold:
 **Markup outside a fence never reaches the member.** Each block that does not
 run logs ``router.dsml_dropped`` with a ``dsml_reason``.
 
-**Ordinary text costs nothing.** A chunk that the filter does not change is
+**Ordinary text costs nothing.** Text that holds neither ``DSML`` nor
+``tool▁`` never reaches a regex. A chunk that the filter does not change is
 yielded as the same object or the same bytes. The stream holds back only a
-tail that could still grow into ``<｜DSML｜``, at most eight characters.
+tail that could still grow into a marker, at most :data:`_MAX_MARK`
+characters.
+
+## The marker is tolerant
+
+🔴 **A second chat showed raw markup with TWO bars on each side.** Owner
+report, 2026-10-17. An answer about outstanding payments showed
+``<｜｜DSML｜｜tool_calls> <｜｜DSML｜｜invoke name="crm_aggregate"> ...``. The
+parser knew only the one-bar form, so the markup passed through as text and
+the two calls never ran. Nobody could read the exact code points, so the
+marker now takes the forms a model can drift to:
+
+- one to three bars on each side of ``DSML``, from :data:`BARS` (U+FF5C,
+  ``|``, U+2502, U+2223 and U+FFE8), mixed freely;
+- up to two spaces or tabs after the ``<`` or ``</``, and around each bar.
+
+A space between the last bar and the tag name is NOT allowed, so
+``<｜DSML｜ is odd`` stays text. ``DSML`` stays case-sensitive. One grammar
+(:data:`_OPEN`, :data:`_CLOSE`, :data:`_FOREIGN`) gives the marker regex, the
+holdback regex and the longest marker, so the three cannot drift apart.
+
+## DeepSeek's other native format never runs
+
+DeepSeek V3 and R1 can write ``<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>
+function<｜tool▁sep｜>NAME`` with a JSON fence, then ``<｜tool▁call▁end｜>
+<｜tool▁calls▁end｜>`` (▁ is U+2581). The Router serves models that write
+DSML, so this is a second line. A region of that format outside a code fence
+is removed from the shown text and NEVER runs (``foreign_format``). A fenced
+one is a quote and stays visible, as DSML does. The stream and the buffered
+path read it with the same machine.
 """
 from __future__ import annotations
 
@@ -79,11 +109,116 @@ _log = logging.getLogger("platform.router")
 #: The fullwidth vertical bar DeepSeek uses as its DSML delimiter.
 BAR = chr(0xFF5C)
 
-#: The part every DSML tag shares. A message that holds it holds markup.
+#: The canonical part every DSML tag shares: one fullwidth bar on each side.
+#: The parser reads more forms than this one (:data:`CORE`).
 TAG_CORE = f"{BAR}DSML{BAR}"
 
-#: Every opening DSML tag starts with this.
+#: The canonical opening marker. The parser reads more forms (:data:`_OPEN`).
 OPEN_MARKER = f"<{TAG_CORE}"
+
+#: Every bar a delimiter may use: U+FF5C (fullwidth), ``|`` (ASCII), U+2502
+#: (box drawing), U+2223 (divides) and U+FFE8 (halfwidth). Owner report,
+#: 2026-10-17: the exact code point could not be read, so all five count.
+BARS = "\uff5c|\u2502\u2223\uffe8"
+
+
+# ── The marker grammar ──────────────────────────────────────────────────────
+#
+# A node is ("cls", regex class, min, max), ("seq", [nodes]) or ("opt", node).
+# One grammar gives three things: the regex of a whole marker (_full), the
+# regex of every text that may still grow into one (_prefix), and the
+# longest marker (_max_len). So the holdback cannot drift from the parser.
+
+_Node = tuple[Any, ...]
+
+
+def _cls(pattern: str, lo: int = 1, hi: int = 1) -> _Node:
+    return ("cls", pattern, lo, hi)
+
+
+def _seq(*nodes: _Node) -> _Node:
+    return ("seq", list(nodes))
+
+
+def _opt(node: _Node) -> _Node:
+    return ("opt", node)
+
+
+def _lit(text: str) -> _Node:
+    return _seq(*(_cls(re.escape(ch)) for ch in text))
+
+
+def _full(node: _Node) -> str:
+    """The regex of the whole node."""
+    if node[0] == "cls":
+        _, pattern, lo, hi = node
+        return pattern if (lo, hi) == (1, 1) else f"{pattern}{{{lo},{hi}}}"
+    if node[0] == "opt":
+        return f"(?:{_full(node[1])})?"
+    return "".join(_full(n) for n in node[1])
+
+
+def _prefix(node: _Node) -> str:
+    """The regex of every prefix of the node, the empty one and the whole included.
+
+    The prefixes of ``x`` then ``rest`` are the prefixes of ``x``, plus a
+    whole ``x`` followed by a prefix of ``rest``.
+    """
+    if node[0] == "cls":
+        return f"{node[1]}{{0,{node[3]}}}"
+    if node[0] == "opt":
+        return _prefix(node[1])
+    out = ""
+    for part in reversed(node[1]):
+        out = f"(?:{_prefix(part)}|{_full(part)}{out})" if out else _prefix(part)
+    return out
+
+
+def _max_len(node: _Node) -> int:
+    if node[0] == "cls":
+        return int(node[3])
+    if node[0] == "opt":
+        return _max_len(node[1])
+    return sum(_max_len(n) for n in node[1])
+
+
+def _min_len(node: _Node) -> int:
+    if node[0] == "cls":
+        return int(node[2])
+    if node[0] == "opt":
+        return 0
+    return sum(_min_len(n) for n in node[1])
+
+
+_SPACE = _cls(r"[ \t]", 0, 2)
+_ONE_BAR = _cls(f"[{BARS}]")
+#: Before ``DSML``: spaces, then one to three bars, each with spaces after it.
+_LEFT = _seq(
+    _SPACE, _ONE_BAR, _SPACE,
+    _opt(_seq(_ONE_BAR, _SPACE)), _opt(_seq(_ONE_BAR, _SPACE)),
+)
+#: After ``DSML``: one to three bars, each with spaces before it. The tag
+#: name follows the last bar at once, so ``<｜DSML｜ is odd`` stays text.
+_RIGHT = _seq(
+    _SPACE, _ONE_BAR,
+    _opt(_seq(_SPACE, _ONE_BAR)), _opt(_seq(_SPACE, _ONE_BAR)),
+)
+_OPEN = _seq(_lit("<"), _LEFT, _lit("DSML"), _RIGHT)
+_CLOSE = _seq(_lit("</"), _LEFT, _lit("DSML"), _RIGHT)
+#: DeepSeek V3's token format, as in ``<｜tool▁calls▁begin｜>``. It never runs.
+_FOREIGN = _seq(_lit("<"), _LEFT, _lit("tool\u2581"))
+
+#: The tolerant part every DSML tag shares, as a regex.
+CORE = f"{_full(_LEFT)}DSML{_full(_RIGHT)}"
+_L = _full(_LEFT)
+_R = _full(_RIGHT)
+
+#: The longest marker of any kind. The stream never holds back more.
+_MAX_MARK = max(_max_len(_OPEN), _max_len(_CLOSE), _max_len(_FOREIGN))
+#: The shortest marker of each kind: the canonical one-bar form.
+_MIN_MARK = {
+    "open": _min_len(_OPEN), "close": _min_len(_CLOSE), "foreign": _min_len(_FOREIGN),
+}
 
 #: The names a block tag may carry. The owner's report showed ``calls``, the
 #: DeepSeek chat template writes ``function_calls``, and ``tool_calls`` is the
@@ -91,47 +226,74 @@ OPEN_MARKER = f"<{TAG_CORE}"
 _BLOCK_NAMES = r"(?:function_calls|tool_calls|calls)"
 
 _BLOCK_RE = re.compile(
-    rf"<{TAG_CORE}(?P<kind>{_BLOCK_NAMES})\s*>(?P<body>.*?)</{TAG_CORE}(?P=kind)\s*>",
+    rf"<{CORE}(?P<kind>{_BLOCK_NAMES})\s*>(?P<body>.*?)</{CORE}(?P=kind)\s*>",
     re.S,
 )
 #: A closing tag, or one that has its name and waits for its ``>`` at the end
 #: of the text. The ``\s*`` before the ``>`` has no bound, as in
 #: :data:`_BLOCK_RE`. So a waiting tag can grow without a limit, and the
 #: stream keeps it in :attr:`_Region.waiting` and reads its whitespace once.
-_CLOSE_RE = re.compile(rf"</{TAG_CORE}{_BLOCK_NAMES}\s*(?:>|\Z)")
-_INVOKE_CLOSE_RE = re.compile(rf"</{TAG_CORE}invoke\s*(?:>|\Z)")
+_CLOSE_RE = re.compile(rf"</{CORE}{_BLOCK_NAMES}\s*(?:>|\Z)")
+_INVOKE_CLOSE_RE = re.compile(rf"</{CORE}invoke\s*(?:>|\Z)")
+#: The token after the region a foreign first token opens. It has no
+#: unbounded part, so the lookback always holds it.
+_FOREIGN_CLOSERS = {
+    "calls\u2581begin": re.compile(rf"<{_L}tool\u2581calls\u2581end{_R}[ \t]{{0,2}}>"),
+    "call\u2581begin": re.compile(rf"<{_L}tool\u2581call\u2581end{_R}[ \t]{{0,2}}>"),
+}
+_FOREIGN_CLOSER_MAX = _max_len(
+    _seq(_lit("<"), _LEFT, _lit("tool\u2581calls\u2581end"), _RIGHT, _SPACE, _lit(">"))
+)
 #: The whitespace that continues a waiting closing tag.
 _SPACE_RUN_RE = re.compile(r"\s*")
 #: The first tag of a region: a block or an invoke opens one, anything else
-#: (a stray closing tag, a lone parameter) is one tag long.
-_FIRST_TAG_RE = re.compile(rf"<(?P<slash>/?){TAG_CORE}(?P<name>[A-Za-z_]+)[^<>]*>")
-#: Where a region may start: an opening tag, or a stray closing one.
-_MARK_RE = re.compile(rf"</?{TAG_CORE}")
-_MARKERS = (OPEN_MARKER, f"</{TAG_CORE}")
+#: (a stray closing tag, a lone parameter) is one tag long. ``fname`` is set
+#: when the first tag is a foreign token.
+_FIRST_TAG_RE = re.compile(
+    rf"<(?P<slash>/?){CORE}(?P<name>[A-Za-z_]+)[^<>]*>"
+    rf"|<{_L}tool\u2581(?P<fname>[a-z\u2581]+){_R}[ \t]{{0,2}}>"
+)
+#: Where a region may start: an opening tag, a stray closing one, or a
+#: foreign token. ``lastgroup`` names the kind.
+_MARK_RE = re.compile(
+    rf"(?P<close>{_full(_CLOSE)})|(?P<open>{_full(_OPEN)})|(?P<foreign>{_full(_FOREIGN)})"
+)
+#: Text that may still grow into a marker, or a marker that may still grow.
+_MARK_PREFIX_RE = re.compile(
+    f"(?:{_prefix(_OPEN)}|{_prefix(_CLOSE)}|{_prefix(_FOREIGN)})"
+)
 #: A real tag name starts with one of these. A marker followed by anything
 #: else is plain text, not markup.
 _TAG_START_RE = re.compile(r"[A-Za-z_]")
 #: A region whose first tag has not closed within this many characters is
-#: released as text. A real first tag is far shorter.
+#: released as text. A real first tag is far shorter. The limit is for the
+#: canonical one-bar marker. A longer marker adds its extra characters
+#: (:attr:`_Region.budget`), so a variant gets the same room for its name.
 MAX_FIRST_TAG = 96
+#: The most characters a marker can add to the canonical one.
+_MAX_EXTRA = max(_max_len(_OPEN) - _MIN_MARK["open"], _max_len(_CLOSE) - _MIN_MARK["close"])
 #: The characters at the start of a region that decide its first tag. One
-#: more than :data:`MAX_FIRST_TAG`, so a tag that closes too late is seen.
-_HEAD = MAX_FIRST_TAG + 1
+#: more than the largest budget, so a tag that closes too late is seen.
+_HEAD = MAX_FIRST_TAG + _MAX_EXTRA + 1
 #: The search for a closing tag starts this far before each new delta, so it
 #: finds a closing tag whose NAME a delta boundary cut. It is the longest
-#: closing tag up to the end of its name. The whitespace after the name has no
-#: bound, so no lookback can hold it: :attr:`_Region.waiting` does that job.
-_CLOSE_LOOKBACK = len(f"</{TAG_CORE}function_calls")
+#: DSML closing tag up to the end of its name, or a whole foreign closer less
+#: its last character, whichever is longer. The whitespace after a DSML name
+#: has no bound, so no lookback can hold it: :attr:`_Region.waiting` does that.
+_CLOSE_LOOKBACK = max(
+    _max_len(_CLOSE) + len("function_calls"), _FOREIGN_CLOSER_MAX - 1
+)
 #: The start of a tag that has not reached its ``>`` yet.
 _TAG_HEAD_RE = re.compile(
-    rf'</?{TAG_CORE}[A-Za-z_]+(?:\s+[A-Za-z_][\w-]*(?:\s*=\s*(?:"[^"]*"?)?)?)*\s*'
+    rf'</?{CORE}[A-Za-z_]+(?:\s+[A-Za-z_][\w-]*(?:\s*=\s*(?:"[^"]*"?)?)?)*\s*'
+    rf"|<{_L}tool\u2581[a-z\u2581]*{_prefix(_seq(_RIGHT, _SPACE, _lit('>')))}"
 )
 _INVOKE_RE = re.compile(
-    rf"<{TAG_CORE}invoke(?P<attrs>[^>]*)>(?P<body>.*?)</{TAG_CORE}invoke\s*>",
+    rf"<{CORE}invoke(?P<attrs>[^>]*)>(?P<body>.*?)</{CORE}invoke\s*>",
     re.S,
 )
 _PARAM_RE = re.compile(
-    rf"<{TAG_CORE}parameter(?P<attrs>[^>]*)>(?P<value>.*?)</{TAG_CORE}parameter\s*>",
+    rf"<{CORE}parameter(?P<attrs>[^>]*)>(?P<value>.*?)</{CORE}parameter\s*>",
     re.S,
 )
 _ATTR_RE = re.compile(r'([A-Za-z_][\w-]*)\s*=\s*"([^"]*)"')
@@ -139,10 +301,26 @@ _ATTR_RE = re.compile(r'([A-Za-z_][\w-]*)\s*=\s*"([^"]*)"')
 #: indent counts, so a fence inside a list item is found. That fails closed:
 #: more text reads as a quote, and a quote never runs.
 _FENCE_LINE_RE = re.compile(r"[ \t]*(`{3,}|~{3,})(.*)")
-#: The marker in an input message, also when an encoder wrote the bar as the
-#: six characters backslash, u, f, f, 5, c (once or twice escaped). Matched
-#: against lowercased text.
-_TAINT_RE = re.compile(rf"(?:{BAR}|\\+uff5c)dsml(?:{BAR}|\\+uff5c)")
+#: One bar in an input message, also when an encoder wrote it as six
+#: characters such as backslash, u, f, f, 5, c (once or twice escaped).
+_TAINT_BAR = rf"(?:[{BARS}]|\\+u(?:ff5c|007c|2502|2223|ffe8))"
+#: A space or a tab in an input message, also an escaped tab.
+_TAINT_SPACE = r"(?:[ \t]|\\+t){0,2}"
+#: The marker in an input message, in any form :data:`CORE` reads, escaped or
+#: not. It is looser than the parser on purpose: more taint runs nothing more,
+#: and that fails closed. Matched against lowercased text.
+_TAINT_RE = re.compile(
+    rf"(?:{_TAINT_SPACE}{_TAINT_BAR}){{1,3}}{_TAINT_SPACE}dsml{_TAINT_SPACE}{_TAINT_BAR}"
+)
+
+
+def _may_hold_markup(text: str) -> bool:
+    """The cheap gate before any regex: True when the text may hold a marker.
+
+    Every DSML marker holds ``DSML``, and every foreign one holds ``tool▁``.
+    Ordinary text fails both substring tests and costs nothing more.
+    """
+    return "DSML" in text or "tool\u2581" in text
 
 
 class _Malformed(ValueError):
@@ -330,6 +508,10 @@ def _call_from_invoke(inv: re.Match[str], declared: frozenset[str]) -> dict[str,
 def _calls_from_region(raw: str, policy: DsmlPolicy) -> list[dict[str, Any]]:
     """The calls one closed region asks for, after the request's rules."""
     first = _FIRST_TAG_RE.match(raw)
+    if first is not None and first.group("fname") is not None:
+        # 🔴 DeepSeek V3's token format. It is hidden, and it never runs.
+        _drop("foreign_format", dsml_detail=first.group("fname")[:40])
+        return []
     if first is None or first.group("slash") or first.group("name") not in (
         "invoke", "calls", "function_calls", "tool_calls"
     ):
@@ -363,12 +545,12 @@ def _calls_from_region(raw: str, policy: DsmlPolicy) -> list[dict[str, Any]]:
 # ── The state machine ───────────────────────────────────────────────────────
 
 
-def _not_a_tag(head: str, length: int) -> bool:
+def _not_a_tag(head: str, length: int, budget: int = MAX_FIRST_TAG) -> bool:
     """True when the text after a marker can no longer become a DSML tag.
 
-    A first tag that closes within :data:`MAX_FIRST_TAG` characters is a tag.
-    Text that has no ``>`` yet is still a candidate only while it reads like
-    the head of one: a name, then ``attr="value"`` pairs.
+    A first tag that closes within ``budget`` characters is a tag. Text that
+    has no ``>`` yet is still a candidate only while it reads like the head
+    of one: a name, then ``attr="value"`` pairs.
 
     ``head`` is the first :data:`_HEAD` characters of a region of ``length``
     characters. The first ``<`` or ``>`` after the tag name ends the first
@@ -376,19 +558,25 @@ def _not_a_tag(head: str, length: int) -> bool:
     """
     first = _FIRST_TAG_RE.match(head)
     if first is not None:
-        return first.end() > MAX_FIRST_TAG
-    return length > MAX_FIRST_TAG or _TAG_HEAD_RE.fullmatch(head) is None
+        return first.end() > budget
+    return length > budget or _TAG_HEAD_RE.fullmatch(head) is None
 
 
 def _tail_that_may_grow(text: str) -> int:
-    """How many trailing characters could still become a DSML marker."""
-    best = 0
-    for marker in _MARKERS:
-        for k in range(min(len(marker), len(text)), best, -1):
-            if text.endswith(marker[:k]):
-                best = k
-                break
-    return best
+    """How many trailing characters could still become a marker.
+
+    The answer is the longest suffix that :data:`_MARK_PREFIX_RE` accepts.
+    Such a suffix starts with ``<`` and is at most :data:`_MAX_MARK` long, so
+    only the last :data:`_MAX_MARK` characters are read. Text with no ``<``
+    near its end costs one ``find``.
+    """
+    window = text[-_MAX_MARK:]
+    at = window.find("<")
+    while at != -1:
+        if _MARK_PREFIX_RE.fullmatch(window, at):
+            return len(window) - at
+        at = window.find("<", at + 1)
+    return 0
 
 
 @dataclass
@@ -448,9 +636,12 @@ class _Region:
     delta goes on from the end of the text. No text is read twice.
     """
 
-    __slots__ = ("first", "head", "length", "parts", "tail", "waiting")
+    __slots__ = ("budget", "first", "head", "length", "parts", "tail", "waiting")
 
-    def __init__(self) -> None:
+    def __init__(self, extra: int = 0) -> None:
+        #: How long the first tag may be: :data:`MAX_FIRST_TAG`, plus the
+        #: characters this region's marker has beyond the canonical one.
+        self.budget = MAX_FIRST_TAG + extra
         self.parts: list[str] = []
         self.length = 0
         #: The first :data:`_HEAD` characters.
@@ -556,7 +747,7 @@ class DsmlStream:
             fresh = len(recent) - len(data)
             data = ""
             # A first tag that closed in time stays a tag, so test only before.
-            if region.first is None and _not_a_tag(region.head, region.length):
+            if region.first is None and _not_a_tag(region.head, region.length, region.budget):
                 # No tag formed: the marker was text after all. Show the
                 # marker and scan the rest again, so a later real block in
                 # the same text is still found.
@@ -577,17 +768,21 @@ class DsmlStream:
 
     def _outside(self, st: _Choice, data: str, out: list[str]) -> str:
         """Scan text outside any region. Returns what is left to scan."""
-        mark = _MARK_RE.search(data)
+        mark = _MARK_RE.search(data) if _may_hold_markup(data) else None
         if mark is None:
             keep = _tail_that_may_grow(data)
             self._show(st, data[: len(data) - keep], out)
             st.held = data[len(data) - keep :]
             return ""
         self._show(st, data[: mark.start()], out)
-        after = data[mark.end() :]
-        if not after:
-            st.held = data[mark.start() :]
+        rest = data[mark.start() :]
+        if len(rest) <= _MAX_MARK and _MARK_PREFIX_RE.fullmatch(rest):
+            # The text ends in this marker, or in one that may still grow: a
+            # bar or a space may come next. Hold it, so that each feed reads
+            # the same marker that a whole feed reads.
+            st.held = rest
             return ""
+        after = data[mark.end() :]
         if st.fence.inside or not _TAG_START_RE.match(after):
             # A quote inside a fence, or a marker with no tag name: text.
             if st.fence.inside and _TAG_START_RE.match(after) and (
@@ -598,9 +793,10 @@ class DsmlStream:
                 _drop("fenced")
             self._show(st, mark.group(0), out)
             return after
-        st.region = _Region()
+        kind = mark.lastgroup or "open"
+        st.region = _Region(extra=len(mark.group(0)) - _MIN_MARK[kind])
         st.saw_markup = True
-        return data[mark.start() :]
+        return rest
 
     @staticmethod
     def _region_end(region: _Region, start: int, recent: str, fresh: int) -> int | None:
@@ -621,6 +817,14 @@ class DsmlStream:
         if first.group("slash"):
             return first.end()
         name = first.group("name")
+        if name is None:
+            # A foreign token. ``calls▁begin`` and ``call▁begin`` wait for
+            # their end token, and any other token is a region of its own.
+            foreign = _FOREIGN_CLOSERS.get(first.group("fname"))
+            if foreign is None:
+                return first.end()
+            close = foreign.search(recent, max(start, first.end()) - start)
+            return None if close is None else start + close.end()
         if re.fullmatch(_BLOCK_NAMES, name):
             closer = _CLOSE_RE
         elif name == "invoke":
@@ -658,7 +862,11 @@ class DsmlStream:
             held, st.held = st.held, ""
             self._show(st, held, out)
         if st.region is not None:
-            _drop("unterminated_block", dsml_chars=st.region.length)
+            first = st.region.first
+            if first is not None and first.group("fname") is not None:
+                _drop("foreign_format", dsml_detail="unterminated", dsml_chars=st.region.length)
+            else:
+                _drop("unterminated_block", dsml_chars=st.region.length)
             st.region = None
         calls, st.pending = st.pending, []
         if self._policy.single_call:
@@ -709,7 +917,7 @@ def extract_tool_calls(
     the streamed path cannot disagree. ``native`` is the number of calls the
     vendor already made in this turn.
     """
-    if not isinstance(text, str) or TAG_CORE not in text:
+    if not isinstance(text, str) or not _may_hold_markup(text):
         return ParsedText(content=text)
     machine = DsmlStream(policy)
     machine.note_native(0, [{"index": i} for i in range(native)])
@@ -727,7 +935,7 @@ def _field(obj: Any, name: str) -> Any:
 def _has_marker(response: Any) -> bool:
     for choice in _field(response, "choices") or []:
         content = _field(_field(choice, "message"), "content")
-        if isinstance(content, str) and TAG_CORE in content:
+        if isinstance(content, str) and _may_hold_markup(content):
             return True
     return False
 

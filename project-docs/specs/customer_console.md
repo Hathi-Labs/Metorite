@@ -24,6 +24,8 @@ background model call names its feature on the usage report, as
 🆕 **§6A.15 DSML is BUILT and live, with no flag (2026-10-15).** The Router
 turns DeepSeek's text tool calls into real tool calls. #851 added it, #1027
 made the stream linear, and #1047 found a long closing tag that a delta cut.
+On 2026-10-17 the marker became tolerant of other bars and spaces, and
+DeepSeek V3's token format became a region that never runs.
 
 🆕 **Member removal by an operator or an admin: BUILT on branch
 `member-remove` (2026-10-15, owner request).** The backend, the operator
@@ -10590,13 +10592,41 @@ fullwidth bar U+FF5C, as in `<｜DSML｜invoke name="update_task">`.
 turns it into real tool calls. It reads the buffered path and the streamed
 path. The Router owns this, because every chat completion crosses it.
 
+**The marker is tolerant (owner report, 2026-10-17).** A chat about
+outstanding payments showed `<｜｜DSML｜｜tool_calls>` to the member. That
+marker has TWO bars on each side. The parser knew only the one-bar form, so
+the text passed through and the two `crm_aggregate` calls never ran. Nobody
+could read the exact code points, so the parser now reads these forms:
+
+- One to three bars on each side of `DSML`, in any mix. A bar is U+FF5C,
+  `|`, U+2502, U+2223 or U+FFE8.
+- Up to two spaces or tabs after the `<` or `</`, and around each bar.
+- No space between the last bar and the tag name. `<｜DSML｜ is odd` stays
+  text.
+- `DSML` is case-sensitive.
+
+One grammar in `dsml.py` gives the marker regex, the holdback regex and the
+longest marker (26 characters). The input taint check reads the same forms,
+also when an encoder escaped the bar or a tab. A first tag gets
+`MAX_FIRST_TAG` characters, plus the characters its marker adds to the
+one-bar form.
+
+**DeepSeek V3's token format never runs.** DeepSeek V3 and R1 can write
+`<｜tool▁calls▁begin｜> … <｜tool▁calls▁end｜>`, where ▁ is U+2581. The Router
+removes such a region from the shown text and logs `foreign_format`. The
+region never runs, even when the request offered the tool. A fenced region is
+a quote and stays visible. The stream and the buffered path use the same
+machine for it. The renderer (`dsmlMarkup.ts`) hides the same forms in a
+stored message.
+
 **The parser's contract.**
 
 1. **A stream never runs a call that a whole feed does not run.** A stream
    runs the same calls, shows the same text and logs the same drop lines as a
    whole feed. The three `_TAG_HEAD_RE` cases below are the known exceptions.
 2. **The stream is linear in the reply length.** Each delta reads its own text
-   once. It reads at most 22 characters again for each delta.
+   once. It reads at most 40 characters again for each delta. That is the
+   longest closing tag up to the end of its name, with the longest marker.
 3. **A closing tag may hold any amount of whitespace before its `>`.** The
    closer regexes read `\s*` with no cap, as the block regex does. The stream
    keeps a closing tag that has its name and waits for its `>`
@@ -10639,6 +10669,7 @@ Each block that does not run logs `router.dsml_dropped` with one `dsml_reason`.
 | `stray_tag`, `malformed_block`, `malformed_invoke`, `block_without_invoke` | The markup does not parse |
 | `block_holds_text_outside_invokes` | The block holds text between its invokes. The invokes still run |
 | `parallel_disabled` | `parallel_tool_calls=false` keeps only the first call |
+| `foreign_format` | A DeepSeek V3 token region. The Router removes it, and it never runs |
 
 Two more log lines mark a failure that keeps the text. The buffered path logs
 `router.dsml_normalise_failed` and returns the response as it came. The stream
@@ -10652,8 +10683,19 @@ logs `router.dsml_chunk_unreadable` and sends a minimal copy of the chunk.
 - **#1047** found a closing tag with a long run of whitespace that a delta
   cut. Before it, the stream logged `unterminated_block` and ran nothing,
   where a whole feed ran the call.
+- **This PR** made the marker tolerant and added `foreign_format`
+  (2026-10-17).
 
-**The fences.** All of them are in `tests/unit/test_router_dsml_tool_calls.py`.
+**The fences.** The Router's fences are in
+`tests/unit/test_router_dsml_tool_calls.py`.
+
+- `TestTheOwnersDoubleBarText` holds the owner's text of 2026-10-17. It runs
+  the two calls on the buffered path, in one-character deltas and in byte
+  frames.
+- `TestTheHoldback` checks that `_MARK_PREFIX_RE` takes exactly the prefixes
+  of a marker, and pins `_MAX_MARK` and `_CLOSE_LOOKBACK`.
+- `TestDeepSeekV3TokensNeverRun` holds the V3 format.
+- `dsmlMarkup.test.ts` holds the renderer to the same forms.
 
 - `TestTheChunkingNeverChangesTheAnswer` feeds real-shaped replies whole, at
   every cut, one character at a time, and in random chunks.
