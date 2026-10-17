@@ -775,6 +775,34 @@ def overlay_weighted(
     )
 
 
+# ── The values of a stage field (CRM-Q32-1, §18.14.3) ───────────────────────
+
+#: The distinct values of one field of a mirrored module, each with its
+#: count of records, the most first. The org, the module and the key are
+#: bound, so no name reaches the SQL text.
+_VALUE_COUNTS_SQL = (
+    f"SELECT {MODULE_COLUMN} ->> :{_GROUP_KEY} AS v, count(*) AS n "
+    "FROM crm_module_records WHERE organization_id = CAST(:agf_org AS uuid) "
+    f"AND module = :{_MODULE} AND ext_source = 'zoho' "
+    f"AND coalesce({MODULE_COLUMN} ->> :{_GROUP_KEY}, '') <> '' "
+    "GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT :agf_limit"
+)
+
+
+async def value_counts(
+    db: Any, org: str, module: str, key: str, limit: int,
+) -> list[tuple[str, int]]:
+    """The distinct values of the field *key* of *module*, each with its
+    count of records, the most first, at most *limit* (CRM-Q32-1, the
+    ``stage_value`` read). ONE grouped statement, in the caller's tenant
+    session, with the org in the predicate and RLS under it."""
+    rows = (await db.execute(text(_VALUE_COUNTS_SQL), {
+        "agf_org": str(org), _MODULE: module, _GROUP_KEY: key,
+        "agf_limit": max(1, int(limit)),
+    })).fetchall()
+    return [(str(r.v), int(r.n)) for r in rows if r.v is not None]
+
+
 __all__ = [
     "AMOUNT_WORD",
     "BUCKETS",
@@ -814,5 +842,6 @@ __all__ = [
     "overlay_weighted",
     "overlay_where",
     "used_keys",
+    "value_counts",
     "zoned",
 ]

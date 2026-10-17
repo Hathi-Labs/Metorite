@@ -125,11 +125,25 @@ class CatalogueEntry(BaseModel):
     #: CRM-Q31-2 item 7: a core entity only. The label of each module whose
     #: purpose fits the entity and that holds records.
     alike: list[str] = Field(default_factory=list)
+    #: CRM-Q32 (§18.14.5): the ids of the open questions of this entry, only
+    #: while ``CRM_QUESTIONS_ORGS`` serves the org. ``None`` outside it. A
+    #: member learns that a question is open, and never its samples.
+    questions: list[str] | None = None
+
+
+class RevenueModel(BaseModel):
+    """The meaning of revenue, from the ``@org`` item (§18.14.4). ``None``
+    and ``None`` with no answer: a reader then uses billed, the default."""
+
+    value: str | None = None
+    by: str | None = None
 
 
 class CatalogueResponse(BaseModel):
     mode: str
     entries: list[CatalogueEntry]
+    #: CRM-Q32 (§18.14.5): the meaning of revenue.
+    revenue: RevenueModel = Field(default_factory=RevenueModel)
 
 
 def _off() -> HTTPException:
@@ -143,7 +157,7 @@ def _key_field(f: Any) -> KeyField:
     return KeyField(key=f.key, label=f.label, type=f.type, target=f.target)
 
 
-def _wire(entry: Any) -> CatalogueEntry:
+def _wire(entry: Any, questions: list[str] | None = None) -> CatalogueEntry:
     return CatalogueEntry(
         entity=entry.entity, module=entry.module, kind=entry.kind,
         label=entry.label, records=entry.records, purpose=entry.purpose,
@@ -156,6 +170,7 @@ def _wire(entry: Any) -> CatalogueEntry:
         owner=KeyField(key=OWNER[0], label=OWNER[1], type=OWNER[2]),
         links=[_key_field(f) for f in entry.links],
         open=list(entry.open), stale=list(entry.stale), alike=list(entry.alike),
+        questions=questions,
     )
 
 
@@ -332,6 +347,9 @@ async def get_catalogue(
     404 ``catalogue_off`` for an org outside ``CRM_CATALOGUE_ORGS``, in each
     mode. The body holds no record value and no owner email.
     """
+    from gateway.crm_sync import catalogue as cat
+    from gateway.routes.crm.flags import questions_allowed
+    from gateway.routes.crm.questions import module_question_ids
     from gateway.routes.crm.settings import _organization
 
     org = _organization(user)
@@ -339,10 +357,19 @@ async def get_catalogue(
         raise _off()
     async with _tenant_session() as db:
         mode, sources, roles, others = await _load(db, org)
+        # CRM-Q32 (§18.14.5): the open question ids of each entry, only while
+        # the org is on CRM_QUESTIONS_ORGS, and only in Mirror mode.
+        on = mode == "mirror" and questions_allowed(org)
+        ids = (await module_question_ids(db, org, (mode, sources, roles, others))
+               if on else {})
+    value, by = cat.revenue_of(cat.stored_items(others))
     return CatalogueResponse(
-        mode=mode, entries=[_wire(e) for e in _build(sources, roles, others)],
+        mode=mode,
+        entries=[_wire(e, list(ids.get(e.module, ())) if on else None)
+                 for e in _build(sources, roles, others)],
+        revenue=RevenueModel(value=value, by=by),
     )
 
 
 __all__ = ["CATALOGUE_OFF", "CatalogueEntry", "CatalogueResponse", "KeyField",
-           "core_sources", "entry_of", "get_catalogue"]
+           "RevenueModel", "core_sources", "entry_of", "get_catalogue"]
