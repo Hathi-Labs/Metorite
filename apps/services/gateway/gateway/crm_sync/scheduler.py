@@ -332,8 +332,8 @@ async def _execute_then_label(handle: engine.RunHandle) -> engine.RunResult:
 def spawn(handle: engine.RunHandle) -> asyncio.Task[Any]:
     """Run a locked handle in the background. The request does not wait.
 
-    After the run, the label step (CRM-Q26) and the vector step (CRM-Q27) of
-    the org start."""
+    After the run, the label step (CRM-Q26), the vector step (CRM-Q27) and
+    the mapping pipeline (CRM-Q20-1, ``start_mapping``) of the org start."""
     return _track(asyncio.get_running_loop().create_task(
         _execute_then_label(handle), name="crm-mirror-run",
     ))
