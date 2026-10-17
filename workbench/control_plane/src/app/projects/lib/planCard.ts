@@ -142,16 +142,21 @@ export function planFacts(row: PlanRow, rows: PlanRow[]): string[] {
 
 /**
  * The line that counts the owners of the plan, or "" when every task has
- * one. The unassigned tasks are a count of their own. Nothing here divides,
- * so a plan with no owner at all is safe (§26).
+ * one. The unassigned tasks are a count of their own, and the line follows
+ * the member's edits. The skill's capacity line on the plan card leaves the
+ * count to this line, so the card says it once. Nothing here divides, so a
+ * plan with no owner at all is safe (§26).
  */
 export function ownerSummary(rows: PlanRow[]): string {
   const nobody = rows.filter(isUnassigned).length;
   if (nobody === 0) return "";
   if (nobody === rows.length) {
-    return nobody === 1 ? "The task is unassigned." : `All ${nobody} tasks are unassigned.`;
+    return nobody === 1
+      ? "The task is unassigned, so it shows no fit or hours."
+      : `All ${nobody} tasks are unassigned, so no row shows a fit or hours.`;
   }
-  return `${nobody} of ${rows.length} tasks ${nobody === 1 ? "is" : "are"} unassigned.`;
+  const said = nobody === 1 ? "is unassigned, so it shows" : "are unassigned, so they show";
+  return `${nobody} of ${rows.length} tasks ${said} no fit or hours.`;
 }
 
 /** The one line a marked row shows under its cells. */

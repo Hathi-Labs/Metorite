@@ -277,7 +277,7 @@ describe("the plan card with unassigned rows", () => {
     expect(html).not.toContain("Fit:");
     expect(html).not.toContain("Hours:");
     expect(html).not.toContain("no skill match");
-    expect(html).toContain("All 3 tasks are unassigned.");
+    expect(html).toContain("All 3 tasks are unassigned, so no row shows a fit or hours.");
     // Mutation: require the owner again -> the submit line names the owner.
     expect(html).not.toContain("an owner");
   });
@@ -286,7 +286,7 @@ describe("the plan card with unassigned rows", () => {
     const html = plan([row("t1", "a@x.io"), row("t2", "")]);
     expect(html.match(/Fit: welding/g) ?? []).toHaveLength(1);
     expect(html.match(/data-plan-unassigned=""/g) ?? []).toHaveLength(1);
-    expect(html).toContain("1 of 2 tasks is unassigned.");
+    expect(html).toContain("1 of 2 tasks is unassigned, so it shows no fit or hours.");
   });
 
   it("says nothing about owners when every row has one", () => {

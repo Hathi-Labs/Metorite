@@ -6173,10 +6173,11 @@ instructions. Several new statuses still have no batch tool (§24.5).
    to measure. The preview answers `unassigned: true` for the row and adds
    its effort to no walk. The card hides the old fit of an owner that the
    member clears.
-3. **The plan counts unassigned rows apart.** The capacity line, the line on
-   the card and the detail of the confirmation card each give the count.
-   The partial receipt counts only the rows that have an owner. A plan with
-   no owner says "0 of 0 owners assigned". No figure divides by the owners.
+3. **The plan counts unassigned rows apart.** The plan card gives the count
+   once, in a line that follows the edits of the member. The capacity line
+   and the detail of the confirmation card give it too. The partial receipt
+   counts only the rows that have an owner. A plan with no owner says "0 of
+   0 owners assigned". No figure divides by the owners.
 4. **The write.** An unassigned row gets no assignee write. The order of
    §13.6 rule 8 does not change.
 5. **The agent does not ask.** W1 says that the owner is optional. It

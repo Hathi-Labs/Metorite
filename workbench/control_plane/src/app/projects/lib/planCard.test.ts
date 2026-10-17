@@ -258,13 +258,13 @@ describe("ownerSummary", () => {
   });
 
   it("counts the unassigned tasks apart", () => {
-    expect(ownerSummary([rows[0], none(rows[1])])).toBe("1 of 2 tasks is unassigned.");
-    expect(ownerSummary([rows[0], none(rows[1]), none(rows[0])])).toBe("2 of 3 tasks are unassigned.");
+    expect(ownerSummary([rows[0], none(rows[1])])).toBe("1 of 2 tasks is unassigned, so it shows no fit or hours.");
+    expect(ownerSummary([rows[0], none(rows[1]), none(rows[0])])).toBe("2 of 3 tasks are unassigned, so they show no fit or hours.");
   });
 
   it("handles a plan with no owner at all, and an empty plan", () => {
-    expect(ownerSummary(rows.map(none))).toBe("All 2 tasks are unassigned.");
-    expect(ownerSummary([none(rows[0])])).toBe("The task is unassigned.");
+    expect(ownerSummary(rows.map(none))).toBe("All 2 tasks are unassigned, so no row shows a fit or hours.");
+    expect(ownerSummary([none(rows[0])])).toBe("The task is unassigned, so it shows no fit or hours.");
     expect(ownerSummary([])).toBe("");
   });
 });

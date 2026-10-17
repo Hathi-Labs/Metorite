@@ -713,8 +713,7 @@ def _capacity(
         for r in rows if r["owner"] in unresolved
     }
     if answer is None:
-        line = "Capacity could not be checked, so no row carries a fit or hours."
-        return by_key, [], _with_unassigned(line, rows)
+        return by_key, [], "Capacity could not be checked, so no row carries a fit or hours."
     warnings = [
         f"{data(titles.get(w.get('blocked'), '?'))} starts on {w.get('blocked_starts')}, but "
         f"{data(titles.get(w.get('blocker'), '?'))}, which blocks it, runs until "
@@ -723,8 +722,7 @@ def _capacity(
     ]
     if not answer.get("hr_visible"):
         # §13.6 rule 4: no fit, no hours, no mark, and one line.
-        line = str(answer.get("hr_note") or "An admin can see capacity.")
-        return by_key, warnings, _with_unassigned(line, rows)
+        return by_key, warnings, str(answer.get("hr_note") or "An admin can see capacity.")
     for got in answer.get("rows") or []:
         key = str(got.get("key") or "")
         if key not in titles or key in nobody:
@@ -744,11 +742,13 @@ def _capacity(
         }
     window = answer.get("window") or {}
     line = f"Hours cover {window.get('starts_on')} to {window.get('ends_on')}, across all your visible work."
-    return by_key, warnings, _with_unassigned(line, rows)
+    return by_key, warnings, line
 
 
 def _with_unassigned(line: str, rows: list[dict[str, Any]]) -> str:
-    """The capacity line, with the unassigned rows counted apart (§26).
+    """The confirm card's capacity line, with the unassigned rows counted
+    apart (§26). The plan card counts them itself, live, as the member edits
+    the owners (``planCard.ts`` ``ownerSummary``), so it gets the bare line.
 
     When no row has an owner, nothing is measured, so the line says only
     that. The count is a count: no figure here divides by the owners.
@@ -1018,7 +1018,7 @@ async def propose_plan(
             "not in the directory": ", ".join(strangers),
         },
     )
-    card["capacity"] = capacity_line
+    card["capacity"] = _with_unassigned(capacity_line, final)
     if checks or warnings:
         card["note"] = WARNS_NOT_BLOCKS
     if not _fits_on_card(card):

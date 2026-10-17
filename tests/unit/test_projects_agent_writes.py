@@ -2794,14 +2794,28 @@ async def test_a_plan_with_no_owner_creates_every_task_unassigned(monkeypatch) -
     drawn = form_stub(monkeypatch, _plan_submit(rows))
     asked = approve(monkeypatch)
     seen: list[dict] = []
-    calls = fake_gateway(monkeypatch, _plan_gateway(seen=seen))
+    base = _plan_gateway(seen=seen)
+
+    def made_with_nobody(call: dict) -> Any:
+        # The create route assigns nobody (`tasks.create_task` adds the
+        # creator as a watcher only). The shared TASK fake carries an
+        # assignee, so this answer drops it.
+        got = base(call)
+        if call["method"] == "POST" and call["path"] == "/projects/tasks":
+            return {**got, "assignees": []}
+        return got
+
+    calls = fake_gateway(monkeypatch, made_with_nobody)
     out = await skill_projects.propose_plan("Frame", _json.dumps(rows))
 
     card = drawn[0]["props"]["data"]
     assert [r["owner"] for r in card["tasks"]] == ["", "", ""]
     for row in card["tasks"]:
         assert not {"fit", "hours", "marks", "warnings"} & set(row), row
-    assert card["capacity"].startswith("No task has an owner")
+    # The plan card counts the owners itself (planCard.ts), so its capacity
+    # line is the server's. The confirm card's line says nobody is measured.
+    assert "no owner" not in card["capacity"]
+    assert "capacity: «No task has an owner" in asked[0]["context"]
     # The preview reads the rows with an empty owner. No owner is resolved.
     assert all(r["owner"] == "" for r in seen[0]["rows"])
     assert not any(c["path"] == "/projects/assignees" for c in calls)
@@ -2815,6 +2829,7 @@ async def test_a_plan_with_no_owner_creates_every_task_unassigned(monkeypatch) -
     assert not any(c["method"] == "PUT" for c in writes(calls))
     assert sum(c["path"].endswith("/links") for c in writes(calls)) == 2
     assert out.count("full_id:") == 3 and "stopped:" not in out
+    assert out.count("· unassigned") == 3, out
 
 
 async def test_a_plan_with_some_owners_assigns_only_those(monkeypatch) -> None:
@@ -2830,9 +2845,8 @@ async def test_a_plan_with_some_owners_assigns_only_those(monkeypatch) -> None:
     card = {r["key"]: r for r in drawn[0]["props"]["data"]["tasks"]}
     assert card["t1"]["fit"] == "welding" and card["t3"]["fit"] == "welding"
     assert not {"fit", "hours", "marks"} & set(card["t2"]), card["t2"]
-    capacity = drawn[0]["props"]["data"]["capacity"]
-    assert capacity.startswith("Hours cover")
-    assert capacity.endswith("1 of 3 tasks has no owner, so it carries no fit or hours.")
+    assert drawn[0]["props"]["data"]["capacity"].startswith("Hours cover")
+    assert "1 of 3 tasks has no owner, so it carries no fit or hours.»" in asked[0]["context"]
 
     assert "1 unassigned" in asked[0]["detail"]
     assert "«Weld the frame» · unassigned ·" in asked[0]["context"]
@@ -2850,6 +2864,7 @@ async def test_a_plan_where_every_task_has_an_owner_is_as_before(monkeypatch) ->
     calls = fake_gateway(monkeypatch, _plan_gateway())
     await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
     assert "no owner" not in drawn[0]["props"]["data"]["capacity"]
+    assert "no owner" not in asked[0]["context"]
     assert "unassigned" not in asked[0]["detail"] + asked[0]["context"]
     assert sum(c["method"] == "PUT" for c in writes(calls)) == 3
 
