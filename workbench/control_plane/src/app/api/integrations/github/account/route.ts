@@ -33,6 +33,18 @@ export interface GitHubAccountInfo {
   gh_cli_login: string | null;
   gh_cli_scopes: string[];
   gh_cli_has_copilot: boolean;
+  // WS-54 GH-3: the two modes of the one GitHub row, and the App's reach.
+  // `src/lib/githubConnect.ts` (`GitHubAccount`) reads these.
+  connected?: boolean;
+  status?: string;
+  login?: string | null;
+  auth?: "app" | "token" | null;
+  account_type?: string | null;
+  repository_selection?: string | null;
+  installation_url?: string | null;
+  connected_by?: string | null;
+  organization_name?: string | null;
+  app_available?: boolean;
 }
 
 export async function GET(_req: NextRequest): Promise<NextResponse> {

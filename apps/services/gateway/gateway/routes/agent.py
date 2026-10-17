@@ -1384,12 +1384,17 @@ async def _org_github_token() -> str:
     WS-54 IN-7. A request for a customer reads the org connection only. It
     never reads the deployment ``GITHUB_TOKEN``, which is the operator's. With
     no connection the fetch goes out with no token, so it reads a public repo.
+
+    WS-54 GH-3 (§6.3): an ``app`` row gives ``""``. The fetch needs Contents
+    (read), and the App asks for none, so a public repo still works and a
+    private one does not. An org with a private agent repo keeps the Advanced
+    token.
     """
     org = current_tenant()
     if not org:
         return ""
     try:
-        return await github_connection.token_or_none(str(org)) or ""
+        return await github_connection.stored_token_or_none(str(org)) or ""
     except Exception as exc:
         _log.warning("agent.github_token_unreadable", error=type(exc).__name__)
         return ""

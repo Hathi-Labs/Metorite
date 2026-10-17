@@ -1412,6 +1412,17 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-54 GH-3 — the connect flow of the Metorite GitHub App
+    # (github_integration.md §7). Dark: with GITHUB_APP_ENABLED off, each of
+    # its routes answers 404. The callback runs behind the member session
+    # through the BFF, so it is NOT in PUBLIC_ROUTES.
+    from gateway.routes.github.connect import router as _github_connect_router
+
+    app.include_router(_github_connect_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-55 EA-4b — every agent connection of the org, for an admin of the
     # Integrations app (external_agent_access.md §5.4). Gated on
     # feature:integrations AND integrations:manage at the router. With

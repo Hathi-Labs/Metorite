@@ -14,6 +14,7 @@
 
 import React, { useCallback, useEffect, useState } from "react";
 import type { GitHubAccountInfo } from "@/app/api/integrations/github/account/route";
+import GitHubAppConnect from "@/components/GitHubAppConnect";
 import GitHubDeviceConnect from "@/components/GitHubDeviceConnect";
 import type { IntegrationStatus } from "@/app/api/integrations/status/route";
 
@@ -135,6 +136,8 @@ export default function GitHubAccountBadge({
 
   return (
     <div className="space-y-3">
+      {/* WS-54 GH-3: the Metorite GitHub App. */}
+      <GitHubAppConnect onChange={onRefresh} />
       {/* ----------------------------------------------------------------- */}
       {/* Connected account card (shown when GITHUB_TOKEN is set)           */}
       {/* ----------------------------------------------------------------- */}

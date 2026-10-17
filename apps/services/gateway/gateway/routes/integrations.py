@@ -1607,19 +1607,55 @@ async def delete_custom_api(
 
 
 async def _github_connected() -> bool:
-    """True when the bound organization holds a live GitHub connection."""
+    """True when the bound organization holds a live GitHub connection.
+
+    WS-54 GH-3: an ``app`` row answers from its ``status`` and makes no
+    installation token, because a status read must not spend a GitHub call.
+    """
     try:
         org = current_tenant()
-        return bool(org and await github_connection.token_or_none(str(org)))
+        if not org:
+            return False
+        row = await github_connection.connection(str(org))
+        if github_connection.is_app_row(row):
+            return github_connection.installation_of(row) is not None
+        return bool(await github_connection.token_or_none(str(org)))
     except Exception as exc:
         _log.warning("github.status_unreadable", error=type(exc).__name__)
         return False
+
+
+async def _test_github_app(row: Any, user: UserContext) -> dict[str, Any]:
+    """Test an ``app`` row (GH-3). GitHub refuses ``GET /user`` for an
+    installation token, so the test lists one repository of the installation."""
+    from gateway.connections import github_app
+
+    installation = github_connection.installation_of(row)
+    if installation is None:
+        return {"ok": False, "detail": github_connection.NOT_CONNECTED}
+    try:
+        answer = await github_app.installation_call(
+            installation, "GET", "/installation/repositories?per_page=1",
+        )
+    except github_app.GitHubAppNotConfigured:
+        return {"ok": False, "detail": "The GitHub App is not configured on this server."}
+    except github_app.GitHubCallFailed as exc:
+        return {"ok": False, "detail": f"GitHub did not answer ({exc.code})."}
+    _log.info("integrations.test", service="github", mode="app",
+              ok=answer.status == 200, actor=user.email)
+    if answer.status == 200:
+        login = row.provider_meta.get("account_login") or "?"
+        return {"ok": True, "detail": f"The Metorite GitHub App is installed on '{login}'."}
+    return {"ok": False, "detail": f"GitHub answered status {answer.status}."}
 
 
 async def _test_github(user: UserContext) -> dict[str, Any]:
     """Test the GitHub token of the caller's organization. Never the operator's."""
     org = _github_org()
     try:
+        row = await github_connection.connection(org)
+        if github_connection.is_app_row(row):
+            return await _test_github_app(row, user)
         token = await github_connection.token_or_none(org)
     except Exception as exc:
         _log.warning("github.test_unreadable", error=type(exc).__name__)
@@ -2680,10 +2716,18 @@ async def github_account(
             the same facts under the names that the account badge reads
         gh_cli_*               — always empty. The CLI import is retired.
     """
+    from gateway.connections import github_app
+
     summary = await github_connection.account_summary(_github_org())
     scopes: list[str] = summary["scopes"]
+    try:
+        # WS-54 GH-3: the card offers Connect GitHub only when the App can run.
+        app_available = github_app.app_enabled() and bool(github_app.slug())
+    except github_app.GitHubAppNotConfigured:
+        app_available = False
     return {
         **summary,
+        "app_available": app_available,
         "token_configured": summary["connected"],
         "token_login": summary["login"],
         "token_scopes": scopes,
@@ -2709,7 +2753,26 @@ async def github_disconnect(
     revoked at GitHub. The answer says so (``revoked_at_github: false``), and
     the member can revoke the app at https://github.com/settings/applications.
     """
-    removed = await github_connection.disconnect(_github_org())
+    org = _github_org()
+    before = await github_connection.connection(org)
+    if github_connection.is_app_row(before):
+        # WS-54 GH-3 (§7.5, GH-E10): the row goes, and Metorite does NOT
+        # uninstall the App at GitHub. The answer gives the admin the link.
+        summary = await github_connection.account_summary(org)
+        removed = await github_connection.disconnect(org)
+        _log.info("github.disconnected", actor=user.email, removed=removed, mode="app")
+        return {
+            "disconnected": True,
+            "removed": removed,
+            "revoked_at_github": False,
+            "installation_url": summary.get("installation_url"),
+            "note": (
+                "Metorite no longer reads this GitHub account. The Metorite App "
+                "stays installed at GitHub. To remove it, open the installation "
+                "page and uninstall it there."
+            ),
+        }
+    removed = await github_connection.disconnect(org)
     _log.info("github.disconnected", actor=user.email, removed=removed)
     return {
         "disconnected": True,

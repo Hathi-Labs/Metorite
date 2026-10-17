@@ -149,3 +149,205 @@ def scalar(p: Any, sql: str, **params: Any) -> Any:
 def rows(p: Any, sql: str, **params: Any) -> list[Any]:
     with p.admin_engine.connect() as c:
         return list(c.execute(text(sql), params).all())
+
+
+# ── Redis: a real private server when one is named, else a fake ─────────────
+#
+# ``GITHUB_R8_REDIS_URL`` names a PRIVATE Redis (never a shared one: the suite
+# runs FLUSHDB). Without it, a fake redis-py client sits under the REAL
+# ``TenantRedis`` wrapper, as the My Day R8 suites do, so the key discipline is
+# the real one either way. CI has no Redis, so CI takes the fake.
+
+REDIS_URL_ENV = "GITHUB_R8_REDIS_URL"
+
+
+class FakeRedis:
+    """The redis-py commands that the GitHub routes use, on a dict."""
+
+    def __init__(self) -> None:
+        self.data: dict[str, str] = {}
+        self.ttl_of: dict[str, int] = {}
+
+    async def set(self, key: str, value: Any, nx: bool = False, ex: int | None = None,
+                  **_: Any) -> bool | None:
+        if nx and key in self.data:
+            return None
+        self.data[key] = str(value)
+        if ex is not None:
+            self.ttl_of[key] = int(ex)
+        return True
+
+    async def get(self, key: str) -> str | None:
+        return self.data.get(key)
+
+    async def getdel(self, key: str) -> str | None:
+        self.ttl_of.pop(key, None)
+        return self.data.pop(key, None)
+
+    async def delete(self, *keys: str) -> int:
+        gone = 0
+        for key in keys:
+            if self.data.pop(key, None) is not None:
+                gone += 1
+            self.ttl_of.pop(key, None)
+        return gone
+
+    async def exists(self, *keys: str) -> int:
+        return sum(1 for k in keys if k in self.data)
+
+    async def ttl(self, key: str) -> int:
+        return self.ttl_of.get(key, -2 if key not in self.data else -1)
+
+
+class RedisView:
+    """What a test reads back: every key and value, real or fake."""
+
+    def __init__(self, fake: FakeRedis | None, url: str | None) -> None:
+        self.fake = fake
+        self.url = url
+
+    def items(self) -> dict[str, str]:
+        if self.fake is not None:
+            return dict(self.fake.data)
+        import redis
+
+        client = redis.Redis.from_url(self.url or "", decode_responses=True)
+        try:
+            return {k: str(client.get(k)) for k in client.keys("*")
+                    if client.type(k) == "string"}
+        finally:
+            client.close()
+
+    def ttl(self, key: str) -> int:
+        if self.fake is not None:
+            return self.fake.ttl_of.get(key, -2)
+        import redis
+
+        client = redis.Redis.from_url(self.url or "", decode_responses=True)
+        try:
+            return int(client.ttl(key))
+        finally:
+            client.close()
+
+    @property
+    def real(self) -> bool:
+        return self.fake is None
+
+
+def use_redis(monkeypatch: Any) -> RedisView:
+    """Point the tenant Redis wrapper at the private server, or at a fake."""
+    import os
+
+    from acb_common import get_settings, tenant_redis
+    from acb_common.tenant_redis import TenantRedis
+
+    url = os.environ.get(REDIS_URL_ENV, "").strip()
+    if url:
+        import redis
+
+        client = redis.Redis.from_url(url)
+        try:
+            client.flushdb()
+        finally:
+            client.close()
+        monkeypatch.setattr(get_settings(), "redis_url", url, raising=False)
+        tenant_redis.reset_pool_for_tests()
+        monkeypatch.setattr(tenant_redis, "_POOL", None)
+        return RedisView(None, url)
+    fake = FakeRedis()
+    monkeypatch.setattr(tenant_redis, "get_tenant_redis", lambda **_: TenantRedis(fake))
+    return RedisView(fake, None)
+
+
+# ── A fake GitHub on httpx.MockTransport ────────────────────────────────────
+
+
+def make_private_key(tmp_path: Path) -> Path:
+    """An RSA key that the suite makes. No real key is ever read."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    path = tmp_path / "gh-r8.pem"
+    path.write_bytes(key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption(),
+    ))
+    return path
+
+
+def configure_app(monkeypatch: Any, key_path: Path, *, enabled: bool = True) -> Any:
+    """The App settings of a test box. The flag is ON unless *enabled* is False."""
+    from acb_common import get_settings
+    from gateway.connections import github_app
+
+    settings = get_settings()
+    for name, value in {
+        "github_app_enabled": enabled,
+        "github_app_id": "4242",
+        "github_app_slug": "metorite-test",
+        "github_app_client_id": "Iv23.r8-client",
+        "github_app_client_secret": "r8-client-secret-never-sent-out",
+        "github_app_webhook_secret": "r8-webhook-secret",
+        "github_app_private_key_path": str(key_path),
+        "app_public_url": "https://app.metorite.com",
+    }.items():
+        monkeypatch.setattr(settings, name, value, raising=False)
+    github_app.reset_for_tests()
+    return settings
+
+
+def patch_github(monkeypatch: Any, handler: Any, real_client: Any) -> None:
+    """Every ``httpx.AsyncClient`` that the GitHub modules make talks to *handler*."""
+    import httpx
+
+    def _client(*args: Any, **kwargs: Any) -> Any:
+        kwargs.pop("transport", None)
+        return real_client(*args, transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _client)
+
+
+def user(email: str, org: str, *, manage: bool = True) -> Any:
+    from acb_auth import UserContext, UserRole, build_access
+
+    perms = ["feature:integrations"] + (["integrations:manage"] if manage else [])
+    return UserContext(
+        email=email, role=UserRole.EMPLOYEE, access=build_access(perms), organization_id=org,
+    )
+
+
+async def call(
+    p: Any, who: Any, routers: list[Any], method: str, path: str, *,
+    real_client: Any, body: Any = None, params: dict | None = None,
+    headers: dict | None = None, content: bytes | None = None,
+) -> Any:
+    """One request through real routers, as *who*. The override binds the
+    tenant from the user, as the real auth dependency does. The tenant never
+    comes from the request."""
+    import httpx
+    from acb_auth import get_current_user
+    from acb_common.db import bind_tenant, clear_tenant, release_tenant
+    from fastapi import FastAPI
+
+    from tests.unit._tenant_ladder import tenant_engine_scope
+
+    async def _caller() -> Any:
+        bind_tenant(who.organization_id)
+        return who
+
+    app = FastAPI()
+    for router in routers:
+        app.include_router(router)
+    app.dependency_overrides[get_current_user] = _caller
+    scope = clear_tenant()
+    try:
+        async with tenant_engine_scope(app_dsn(p)), real_client(
+            transport=httpx.ASGITransport(app=app), base_url="http://gateway.test",
+        ) as client:
+            return await client.request(
+                method, path, json=body, params=params, headers=headers,
+                content=content, follow_redirects=False,
+            )
+    finally:
+        release_tenant(scope)
