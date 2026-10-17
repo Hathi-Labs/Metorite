@@ -171,6 +171,10 @@ CATALOGUE_REQUESTS = 12
 
 #: The stops of a catalogue cap. They end the catalogue step only.
 CATALOGUE_STOPS = frozenset({"catalogue_token_cap", "catalogue_run_cap"})
+
+#: The stops that a re-ask of the catalogue catches. The day counter is one,
+#: so a billed first round is kept when the counter runs out at its re-ask.
+REASK_STOPS = CATALOGUE_STOPS | {"daily_cap"}
 #: The stops of a mapping cap. The catalogue step still runs after them.
 MAPPING_CAP_STOPS = frozenset({"token_cap", "run_cap"})
 
@@ -1580,13 +1584,16 @@ class _CatalogueAsk:
 
     async def _again(self, feature: str, state: dict[str, Any],
                      questions: Mapping[str, Any]) -> Any | None:
-        """A re-ask, or ``None`` when a catalogue cap stops it. The sure
-        answers of the first round stay, so a billed round is never lost
-        (fix round, P1). Any other stop goes up."""
+        """A re-ask, or ``None`` when a catalogue cap or the day counter
+        stops it. The sure answers of the first round stay, so a billed round
+        is never lost (fix round, P1). A ``daily_cap`` here closes the unsure
+        answers as null, and the next ask of the run raises it again at the
+        reserve, with no spend, so the run still stops (re-review, P2). Any
+        other stop goes up."""
         try:
             return await self.p.ask(feature, state, questions)
         except Stop as stop:
-            if stop.reason not in CATALOGUE_STOPS:
+            if stop.reason not in REASK_STOPS:
                 raise
             self.p.result.catalogue_reason = stop.reason
             return None

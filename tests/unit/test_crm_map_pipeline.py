@@ -1304,6 +1304,29 @@ class TestTheCatalogueFixRound:
         assert items == {"Widget_0": "asset", "Widget_1": None}
         assert {f"{mp.CATALOGUE_PURPOSES_KEY}Widget_{i}" for i in (0, 1)} <= set(result.done)
 
+    async def test_a_day_cap_at_the_re_ask_keeps_the_first_round(self, monkeypatch):
+        """Re-review P2: the day counter runs out between round one and its
+        re-ask. The sure answer stays, the unsure one closes as null, and each
+        asked key is finished, so the next day buys nothing again."""
+        monkeypatch.setattr(mp._CatalogueAsk, "purpose_batch", lambda self, entries: list(entries))
+        answers = {"p:Widget 0": {"pick": "asset", "p": 0.95},
+                   "p:Widget 1": {"pick": "other", "p": 0.5}}
+        inner = eval_run.ScriptedAsker(answers)
+        calls = []
+
+        async def day_cap_on_second(feature, requests):
+            calls.append(feature)
+            if len(calls) >= 2:
+                raise mp.Stop("daily_cap")
+            return await inner(feature, requests)
+
+        result = await mp.Pipeline(_widgets(2), _CAT_ONLY, mp.Cache(), _WidgetSource(),
+                                   day_cap_on_second).run()
+        assert len(calls) == 2
+        items = {i["module"]: i["purpose"] for i in result.catalogue_items}
+        assert items == {"Widget_0": "asset", "Widget_1": None}
+        assert {f"{mp.CATALOGUE_PURPOSES_KEY}Widget_{i}" for i in (0, 1)} <= set(result.done)
+
     async def test_the_key_parts_run_when_the_purposes_stop_on_a_cap(self, monkeypatch):
         """P1 (c): a catalogue cap of the purpose step still lets the key
         parts of a money module go out."""
