@@ -279,6 +279,23 @@ describe("item 4: an entity with no records says why", () => {
     expect(html).not.toContain("No deals match this view.");
   });
 
+  it("says why on a Mirror board with no stage, and keeps the stage hint in Native", () => {
+    const board = (readOnly: boolean) =>
+      renderToStaticMarkup(
+        createElement(KanbanBoard, {
+          lanes: [],
+          loading: false,
+          readOnly,
+          onMove: noop,
+          onOpen: noop,
+          emptyNote: "Deals is turned off in your Zoho.",
+        }),
+      );
+    expect(board(true)).toContain("Deals is turned off in your Zoho.");
+    expect(board(true)).not.toContain("No deal stages are configured yet.");
+    expect(board(false)).toContain("No deal stages are configured yet.");
+  });
+
   it("gives the list and the board the one rule", () => {
     const page = read("../page.tsx");
     expect(page).toContain("emptyNote={emptyLineOf(listEntity)}");

@@ -139,13 +139,14 @@ export default function FilterBar({
 
   /** One custom filter: a picklist, a checkbox, a number or a day. */
   function customFilter({ def, kind }: CustomFilter) {
+    // w-36, so Owner, three picklists and "Filters" fit one row at 1440.
     const chosen = view.custom[def.key] ?? [];
     if (kind === "boolean") {
       return (
         <SelectButton
           key={def.key}
           label={def.label}
-          widthClass="w-40"
+          widthClass="w-36"
           className={chosen.length > 0 ? OFF_DEFAULT : ""}
           value={chosen[0] ?? ANY}
           defaultValue={ANY}
@@ -171,7 +172,7 @@ export default function FilterBar({
       <SelectButton
         key={def.key}
         label={def.label}
-        widthClass="w-40"
+        widthClass="w-36"
         className={chosen.length > 0 ? OFF_DEFAULT : ""}
         value={chosen[0] ?? ANY}
         defaultValue={ANY}

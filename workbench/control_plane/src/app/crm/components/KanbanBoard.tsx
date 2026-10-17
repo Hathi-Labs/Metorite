@@ -105,6 +105,16 @@ export default function KanbanBoard({
   }
 
   if (!loading && lanes.length === 0) {
+    // CRM-Q17b item 4: a Mirror board with no stage and no record says why,
+    // for example "Deals is turned off in your Zoho." A Native board keeps
+    // the hint, because there a stage is the next step.
+    if (readOnly && emptyNote) {
+      return (
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
+          <p className="text-sm text-muted-foreground">{emptyNote}</p>
+        </div>
+      );
+    }
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
         <p className="text-sm text-muted-foreground">

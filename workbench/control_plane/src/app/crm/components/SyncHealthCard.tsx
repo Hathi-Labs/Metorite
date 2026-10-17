@@ -153,7 +153,11 @@ export function SyncHealthCardView({
                     <Badge tone={badge.tone}>{badge.label}</Badge>
                     {item.name && <span className="font-medium text-foreground">{item.name}</span>}
                     {item.text && (
-                      <span className="min-w-0 flex-1 text-muted-foreground">{item.text}</span>
+                      // A whole line of its own on a phone, so the words never
+                      // squeeze between the badge and the button.
+                      <span className="min-w-0 basis-full text-muted-foreground sm:flex-1 sm:basis-auto">
+                        {item.text}
+                      </span>
                     )}
                     <Button
                       variant="secondary"
@@ -180,7 +184,9 @@ export function SyncHealthCardView({
                   <li key={entity.key} className="flex flex-wrap items-center gap-2 text-xs">
                     <Badge tone="warning">Short read</Badge>
                     <span className="font-medium text-foreground">{label(entity.key)}</span>
-                    <span className="min-w-0 flex-1 text-muted-foreground">{shortReadSentence(entity)}</span>
+                    <span className="min-w-0 basis-full text-muted-foreground sm:flex-1 sm:basis-auto">
+                      {shortReadSentence(entity)}
+                    </span>
                   </li>
                 ))}
               </ul>
