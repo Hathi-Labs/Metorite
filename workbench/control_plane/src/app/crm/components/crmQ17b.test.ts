@@ -23,7 +23,7 @@ import { describe, expect, it } from "vitest";
 
 import type { FieldDef } from "../lib/fields";
 import { fieldMatches, fillLabel } from "../lib/fields";
-import { SHOWN_FILTERS, hiddenActiveCount, moreFiltersLabel, splitFilters } from "../lib/filterBar";
+import { SHOWN_FILTERS, hiddenActiveCount, moreFiltersLabel, moreOpenAfter, splitFilters } from "../lib/filterBar";
 import type { CrmModule } from "../lib/modules";
 import type { OverlayPreview, Suggestion } from "../lib/suggestions";
 import {
@@ -51,7 +51,15 @@ import {
 import CrmRail from "./CrmRail";
 import FilterBar from "./FilterBar";
 import KanbanBoard from "./KanbanBoard";
-import { CARD_DETAILS, CHOSEN_HEADING, ColumnChoices, FULL_TIP, RecordCards } from "./RecordList";
+import {
+  CARD_DETAILS,
+  CHOSEN_HEADING,
+  ColumnChoices,
+  DEFAULT_ORDER,
+  FULL_TIP,
+  PhoneSort,
+  RecordCards,
+} from "./RecordList";
 import { SuggestionPanelBody } from "./Suggestions";
 import { SyncHealthCardView } from "./SyncHealthCard";
 
@@ -581,7 +589,7 @@ describe("item 7: at phone width each list row is a two-line card", () => {
 
   it("draws the cards on a phone, and the table elsewhere", () => {
     const list = read("./RecordList.tsx");
-    expect(list).toMatch(/isMobile \? \(\s*<RecordCards/);
+    expect(list).toMatch(/isMobile \? \(\s*<>\s*<PhoneSort[\s\S]*?<RecordCards/);
   });
 });
 
@@ -751,5 +759,57 @@ describe("fix round 1, P2: the action of a module that the last run could not re
     const card = read("./SyncHealthCard.tsx");
     expect(card).toMatch(/onReconnect = \(\) => pushView\(viewHref\(selectSection\(DEFAULT_VIEW, "setup"\)\)\)/);
     expect(card).toMatch(/else if \(item\.action === "reconnect"\) onReconnect\(\);/);
+  });
+});
+
+// ── Fix round 1, items 3 and 4 ──────────────────────────────────────────────
+
+describe("fix round 1, item 3: a phone member can sort the cards", () => {
+  const columns = [
+    { key: "first_name", label: "Name", sort: "first_name" },
+    { key: "email", label: "Email", sort: "email" },
+    { key: "title", label: "Title" },
+  ];
+
+  it("offers each sortable column and the default order, through the shared parts", () => {
+    const html = renderToStaticMarkup(
+      createElement(PhoneSort, {
+        columns,
+        sortable: new Set(["first_name", "email"]),
+        sort: "email",
+        direction: "asc",
+        onSort: noop,
+      }),
+    );
+    expect(html).toContain('aria-label="Sort"');
+    expect(html).toContain("Email");
+    expect(html).toContain('aria-label="Sort descending"');
+    expect(html).not.toContain(">Title<");
+  });
+
+  it("draws nothing with no sortable column", () => {
+    const html = renderToStaticMarkup(
+      createElement(PhoneSort, { columns, sortable: new Set<string>(), sort: null, direction: "desc", onSort: noop }),
+    );
+    expect(html).toBe("");
+  });
+
+  it("draws the sort above the cards on a phone", () => {
+    expect(read("./RecordList.tsx")).toMatch(/isMobile \? \(\s*<>\s*<PhoneSort/);
+    expect(DEFAULT_ORDER).toBe("Default order");
+  });
+});
+
+describe("fix round 1, item 4: a hidden filter that arrives later opens the second row", () => {
+  it("opens the row when the count leaves 0, and keeps the member's choice else", () => {
+    expect(moreOpenAfter(false, 0, 1)).toBe(true);
+    expect(moreOpenAfter(false, 1, 2)).toBe(false);
+    expect(moreOpenAfter(true, 1, 0)).toBe(true);
+    expect(moreOpenAfter(false, 0, 0)).toBe(false);
+  });
+
+  it("follows the count during the render", () => {
+    const bar = read("./FilterBar.tsx");
+    expect(bar).toMatch(/setMoreOpen\(moreOpenAfter\(moreOpen, seenActive, hiddenActive\)\)/);
   });
 });

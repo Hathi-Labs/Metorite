@@ -39,6 +39,7 @@ import {
   dateFilters,
   hiddenActiveCount,
   moreFiltersLabel,
+  moreOpenAfter,
   numberFilterValue,
   optionsOf,
   ownerOptions,
@@ -135,6 +136,13 @@ export default function FilterBar({
   const hiddenActive = hiddenActiveCount(view, more);
   // Open at first when a filter behind the button is in force.
   const [moreOpen, setMoreOpen] = useState(hiddenActive > 0);
+  // And again when a saved view or a link brings one later (fix round 1,
+  // item 4). State that follows a prop: compared during the render.
+  const [seenActive, setSeenActive] = useState(hiddenActive);
+  if (seenActive !== hiddenActive) {
+    setSeenActive(hiddenActive);
+    setMoreOpen(moreOpenAfter(moreOpen, seenActive, hiddenActive));
+  }
   const moreId = useId();
 
   /** One custom filter: a picklist, a checkbox, a number or a day. */

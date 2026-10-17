@@ -286,6 +286,17 @@ export function hiddenActiveCount(view: CrmView, more: readonly CustomFilter[]):
   );
 }
 
+/**
+ * Whether the second row is open after the count of hidden filters in force
+ * moved from `before` to `now` (fix round 1, item 4). A saved view or a link
+ * can bring a hidden filter after the bar mounted, and the member must see
+ * it, so the row opens when the count leaves 0. Every other move keeps the
+ * choice of the member.
+ */
+export function moreOpenAfter(open: boolean, before: number, now: number): boolean {
+  return before === 0 && now > 0 ? true : open;
+}
+
 /** The label of the button: "Filters", or "Filters (2)" with two in force. */
 export function moreFiltersLabel(active: number): string {
   return active > 0 ? `Filters (${active})` : "Filters";

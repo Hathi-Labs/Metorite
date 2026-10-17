@@ -35,6 +35,7 @@ import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
+import SelectButton from "@/components/ui/SelectButton";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { relativeTime } from "@/lib/taskCard";
 import { useId, useState } from "react";
@@ -256,13 +257,22 @@ export default function RecordList({
       )}
       <div className="flex-1 overflow-auto">
         {isMobile ? (
-          <RecordCards
-            rows={rows}
-            columns={columns}
-            extra={extra}
-            ctx={{ statuses, mode }}
-            onOpen={onOpen}
-          />
+          <>
+            <PhoneSort
+              columns={columns}
+              sortable={sortable}
+              sort={sort}
+              direction={direction}
+              onSort={onSort}
+            />
+            <RecordCards
+              rows={rows}
+              columns={columns}
+              extra={extra}
+              ctx={{ statuses, mode }}
+              onOpen={onOpen}
+            />
+          </>
         ) : (
           <table className="w-full border-collapse text-xs">
             <thead className="sticky top-0 bg-background">
@@ -375,6 +385,56 @@ export default function RecordList({
       <footer className="shrink-0 border-t border-border px-4 py-2 text-[10px] text-muted-foreground">
         {loading ? "Loading…" : `${rows.length} of ${total}`}
       </footer>
+    </div>
+  );
+}
+
+/** The choice of no sort key: the order of the gateway. */
+export const DEFAULT_ORDER = "Default order";
+
+/**
+ * The sort of the list at phone width (fix round 1, item 3). The cards have
+ * no header to click, so a `SelectButton` names the column, and one button
+ * turns the direction. Both call `onSort`, as a header click does: a new
+ * column starts descending, and the same column turns.
+ */
+export function PhoneSort({
+  columns,
+  sortable,
+  sort,
+  direction,
+  onSort,
+}: {
+  columns: ReadonlyArray<{ key: string; label: string; sort?: string }>;
+  sortable: ReadonlySet<string>;
+  sort: string | null;
+  direction: "asc" | "desc";
+  onSort: (key: string) => void;
+}) {
+  const options = columns
+    .filter((c): c is typeof c & { sort: string } => Boolean(c.sort && sortable.has(c.sort)))
+    .map((c) => ({ value: c.sort, label: c.label }));
+  if (options.length === 0) return null;
+  return (
+    <div className="flex items-center gap-2 border-b border-border px-4 py-2" role="group" aria-label="Sort">
+      <SelectButton
+        label="Sort by"
+        widthClass="w-44"
+        value={sort ?? ""}
+        defaultValue=""
+        onChange={(next) => {
+          if (next && next !== sort) onSort(next);
+        }}
+        options={[{ value: "", label: DEFAULT_ORDER }, ...options]}
+      />
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        icon={direction === "asc" ? "ArrowUp" : "ArrowDown"}
+        disabled={!sort}
+        aria-label={direction === "asc" ? "Sort descending" : "Sort ascending"}
+        onClick={() => sort && onSort(sort)}
+      />
     </div>
   );
 }
