@@ -303,9 +303,14 @@ _ATTR_RE = re.compile(r'([A-Za-z_][\w-]*)\s*=\s*"([^"]*)"')
 _FENCE_LINE_RE = re.compile(r"[ \t]*(`{3,}|~{3,})(.*)")
 #: One bar in an input message, also when an encoder wrote it as six
 #: characters such as backslash, u, f, f, 5, c (once or twice escaped).
-_TAINT_BAR = rf"(?:[{BARS}]|\\+u(?:ff5c|007c|2502|2223|ffe8))"
+#: The escaped forms come from :data:`BARS`, so a new bar is tainted too.
+#: The backslash run has a bound: an unbounded run made the search quadratic
+#: on a long run of backslashes (review of #1125).
+_TAINT_BAR = (
+    rf"(?:[{BARS}]|\\{{1,8}}u(?:{'|'.join(f'{ord(c):04x}' for c in BARS)}))"
+)
 #: A space or a tab in an input message, also an escaped tab.
-_TAINT_SPACE = r"(?:[ \t]|\\+t){0,2}"
+_TAINT_SPACE = r"(?:[ \t]|\\{1,8}t){0,2}"
 #: The marker in an input message, in any form :data:`CORE` reads, escaped or
 #: not. It is looser than the parser on purpose: more taint runs nothing more,
 #: and that fails closed. Matched against lowercased text.

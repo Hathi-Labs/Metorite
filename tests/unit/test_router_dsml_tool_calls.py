@@ -25,6 +25,7 @@ import logging
 import os
 import random
 import re
+import time
 import uuid
 from typing import Any
 
@@ -1581,6 +1582,28 @@ def _all_markers() -> set[str]:
             out.add("<" + left + "DSML" + right)
             out.add("</" + left + "DSML" + right)
     return out
+
+
+class TestTheTaintFollowsTheGrammar:
+    """Review of #1125: the taint check must cover every bar the parser reads,
+    raw and escaped, and must stay linear on a long run of backslashes."""
+
+    def test_every_bar_and_marker_shape_is_tainted_raw_and_escaped(self):
+        shapes = sorted(m for m in _all_markers() if "DSML" in m)[::11]
+        for bar in dsml_mod.BARS:
+            for shape in shapes:
+                marker = shape.replace(BAR, bar) + 'invoke name="t1">'
+                once = json.dumps(marker)
+                for form in (marker, once, json.dumps(once)):
+                    assert input_is_tainted([{"role": "tool", "content": form}]), (
+                        repr(bar), repr(form),
+                    )
+
+    def test_a_long_run_of_backslashes_stays_fast(self):
+        text = "dsml " + "\\" * 40_000
+        started = time.perf_counter()
+        assert not input_is_tainted([{"role": "user", "content": text}])
+        assert time.perf_counter() - started < 0.5
 
 
 class TestTheHoldback:
