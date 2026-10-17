@@ -31,10 +31,10 @@
                     ["Invoice_Date", "Invoice Date", "date", "date", 1.0], ["Status", "Status", "select", "select", 1.0, ["Paid", "Due", "Overdue"]]],
          "pad": [232, 0.3]},
         {"api_name": "Payment_Received", "label": "Payment Received", "singular": "Payment Received", "records": 8681,
-         "display_field": "Reference", "fields": [["Reference", "Reference", "text", "code", 1.0], ["Amount", "Amount", "currency", "currency", 1.0]],
+         "display_field": "Reference", "fields": [["Reference", "Reference", "text", "code", 1.0], ["IP_Amount", "IP Amount", "currency", "currency", 0.55], ["Rent_Amount", "Rent Amount", "currency", "currency", 0.5], ["EB_Amount", "EB Amount", "currency", "currency", 0.52], ["Paid_On", "Paid On", "date", "date", 1.0]],
          "pad": [40, 0.4]},
         {"api_name": "Payment_Made", "label": "Payment Made", "singular": "Payment Made", "records": 3003,
-         "display_field": "Reference", "fields": [["Reference", "Reference", "text", "code", 1.0], ["Amount", "Amount", "currency", "currency", 1.0]],
+         "display_field": "Reference", "fields": [["Reference", "Reference", "text", "code", 1.0], ["Paid_Value", "Paid Value", "currency", "currency", 0.9], ["Tds", "TDS", "currency", "currency", 0.7]],
          "pad": [30, 0.4]},
         {"api_name": "Commercials", "label": "Commercials", "singular": "Commercial", "records": 0,
          "display_field": "Name", "fields": [["Name", "Commercial Name", "text", "text", 0.0], ["Value", "Value", "currency", "currency", 0.0]],
@@ -77,7 +77,17 @@
                                           "linkedin_url": "LinkedIn", "industry": "Industry_Type", "description": "Remarks",
                                           "no_of_employees": "No_of_Staff", "annual_revenue": "Annual_Turnover"}
         },
-        "stages": {}
+        "stages": {},
+        "catalogue": {
+          "Invoices": {"purpose": "invoice", "amount": "Grand_Total", "date": "Invoice_Date", "status": "Status"},
+          "Payment_Received": {"purpose": "payment_in", "amount": null, "date": "Paid_On"},
+          "Payment_Made": {"purpose": "payment_out", "amount": "Paid_Value"},
+          "Operator_Associates": {"purpose": "customer_company"},
+          "Products": {"purpose": "product"},
+          "Site_Visits": {"purpose": "activity"},
+          "AMC_Contracts": {"purpose": "contract"},
+          "Tender_Register": {"purpose": "deal"}
+        }
       }
     },
     {

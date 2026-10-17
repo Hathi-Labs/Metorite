@@ -275,6 +275,21 @@ async def _load(
     return "mirror", sources, roles, others
 
 
+async def core_sources(db: Any, org: str) -> list[Any]:
+    """The four core entities of a Mirror CRM as catalogue sources: their
+    record counts and their source labels, in the caller's tenant session.
+    The mapping pipeline reads them for its catalogue step (CRM-Q31-3), so
+    the step and this route start from the same sources."""
+    from gateway.crm_sync import profiles
+    from gateway.routes.crm.fill_rank import labels_of
+
+    row = (await db.execute(text(_CORE_COUNTS_SQL), {"org": org})).first()
+    counts = {slug: int(getattr(row, slug, 0) or 0) for slug in CORE_ORDER} if row else {}
+    latest = await profiles.latest(db, org)
+    profile = latest.profile if latest is not None else {}
+    return _core_sources(counts, labels_of(profile.get("modules")))
+
+
 def _build(sources: Sequence[Any], roles: Mapping[str, str],
            others: Sequence[Mapping[str, Any]]) -> list[Any]:
     from gateway.crm_sync import catalogue as cat
@@ -324,4 +339,4 @@ async def get_catalogue(
 
 
 __all__ = ["CATALOGUE_OFF", "CatalogueEntry", "CatalogueResponse", "KeyField",
-           "entry_of", "get_catalogue"]
+           "core_sources", "entry_of", "get_catalogue"]

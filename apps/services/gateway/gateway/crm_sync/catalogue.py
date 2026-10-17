@@ -375,6 +375,108 @@ def code_parts(src: Source, purposes: Mapping[str, str | None]) -> dict[str, Fie
     }
 
 
+# ── The decide tier (CRM-Q31-3) ──────────────────────────────────────────────
+
+#: What each purpose means: the criteria of a purpose question, in the order
+#: of :data:`PURPOSES` (§18.13.4, the fixed list).
+PURPOSE_MEANINGS: Mapping[str, str] = {
+    "customer_company": "A company that buys from the org.",
+    "customer_site": "A site, a branch or a place of a customer.",
+    "person": "A person at a company.",
+    "lead": "A possible customer who is not qualified yet.",
+    "deal": "A sale in progress: a deal, an opportunity, a quote or an offer.",
+    "contract": "An agreement, an order or a subscription that runs for a time.",
+    "invoice": "A bill that the org sends to a customer.",
+    "payment_in": "Money that a customer paid to the org.",
+    "receivable": "Money that a customer still owes to the org.",
+    "payment_out": "Money that the org paid or must pay: a payment, an expense or a vendor bill.",
+    "product": "A thing or a service that the org sells.",
+    "asset": "Equipment or property that the org owns or runs.",
+    "vendor": "A company that sells to the org.",
+    "partner": "A company or a person that works with the org and is not a customer.",
+    "activity": "A task, a call, a meeting or a visit.",
+    "reference": "A list that other modules point to, such as the regions of the org.",
+    "other": "None of these.",
+}
+
+#: What each key part means, for the state of a key-field question.
+PART_MEANINGS: Mapping[str, str] = {
+    "amount": "the main money field of a record",
+    "date": "the main business date of a record",
+    "status": "the field that holds the status or the stage of a record",
+    "parent": "the lookup to the customer of a record",
+}
+
+#: The shadow answer key of the key fields (§18.13.4): the standard fields of
+#: a standard module. Only a part whose field is filled 50% or more is asked.
+SHADOW_KEYS: Mapping[str, Mapping[str, str]] = {
+    "Invoices": {"amount": "Grand_Total", "date": "Invoice_Date", "status": "Status",
+                 "parent": "Account_Name"},
+    "Quotes": {"amount": "Grand_Total", "status": "Quote_Stage", "parent": "Account_Name"},
+    "Sales_Orders": {"amount": "Grand_Total", "status": "Status", "parent": "Account_Name"},
+    "Purchase_Orders": {"amount": "Grand_Total", "date": "PO_Date", "status": "Status",
+                        "parent": "Vendor_Name"},
+}
+
+
+def is_catalogue(item: Any) -> bool:
+    """True for an item of the kind ``catalogue``."""
+    return isinstance(item, Mapping) and item.get("kind") == KIND_CATALOGUE
+
+
+def without_catalogue(items: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """*items* less each ``catalogue`` item. A draft never holds one
+    (§18.13.4, rule 2 of "Why the plan")."""
+    return [dict(i) for i in items if not is_catalogue(i)]
+
+
+def item_problem(item: Mapping[str, Any]) -> str | None:
+    """Rule 4 of the kinds for one ``catalogue`` item, or ``None`` when it
+    is legal. ``purpose`` is a word of :data:`PURPOSES` or ``null``. Each key
+    part is a field API name or ``null``. ``by`` names ``code``, ``ai`` or
+    ``admin`` for each part."""
+    module = item.get("module")
+    if not isinstance(module, str) or not module:
+        return "module"
+    if "purpose" in item and item["purpose"] is not None and item["purpose"] not in PURPOSES:
+        return "purpose"
+    for part in KEY_PARTS:
+        value = item.get(part)
+        if part in item and value is not None and (not isinstance(value, str) or not value):
+            return part
+    by = item.get("by", {})
+    if not isinstance(by, Mapping):
+        return "by"
+    for part, word in by.items():
+        if part not in ("purpose", *KEY_PARTS) or word not in BY_WORDS:
+            return "by"
+    return None
+
+
+def merge_item(old: Mapping[str, Any] | None, new: Mapping[str, Any]) -> dict[str, Any]:
+    """*new* put over *old*, the item of the same module, part by part. A
+    part of *old* with ``by: admin`` stays, unless *new* is the admin's too:
+    the pipeline never replaces the choice of an admin (§18.13.4)."""
+    if old is None:
+        return {**dict(new), "by": dict(new.get("by") or {})}
+    out = dict(old)
+    by = dict(old.get("by") or {}) if isinstance(old.get("by"), Mapping) else {}
+    new_by = new.get("by") if isinstance(new.get("by"), Mapping) else {}
+    for part in ("purpose", *KEY_PARTS):
+        if part not in new:
+            continue
+        word = new_by.get(part, "ai")
+        if by.get(part) == "admin" and word != "admin":
+            continue
+        out[part] = new[part]
+        by[part] = word
+    for key in ("profile_version",):
+        if key in new:
+            out[key] = new[key]
+    out["by"] = by
+    return out
+
+
 # ── A stored catalogue item ──────────────────────────────────────────────────
 
 
@@ -511,10 +613,42 @@ def build(
 
 
 __all__ = [
-    "AMOUNT_NAMES", "BY_WORDS", "CORE_FITS", "CORE_KEY_COLUMNS", "CORE_PURPOSES",
-    "KEY_PARTS", "KIND_CATALOGUE", "MONEY_PURPOSES", "PART_TYPES", "PURPOSES",
-    "PURPOSE_WORDS", "SLOT_PURPOSES", "STANDARD_PURPOSES", "SYSTEM_TIMES", "Entry",
-    "Field", "Source", "build", "code_amount", "code_date", "code_parent",
-    "code_parts", "code_purpose", "code_status", "entry_of", "problem",
-    "purposes_of", "role_purposes", "singulars", "stored_items", "word_purpose",
+    "AMOUNT_NAMES",
+    "BY_WORDS",
+    "CORE_FITS",
+    "CORE_KEY_COLUMNS",
+    "CORE_PURPOSES",
+    "KEY_PARTS",
+    "KIND_CATALOGUE",
+    "MONEY_PURPOSES",
+    "PART_MEANINGS",
+    "PART_TYPES",
+    "PURPOSES",
+    "PURPOSE_MEANINGS",
+    "PURPOSE_WORDS",
+    "SHADOW_KEYS",
+    "SLOT_PURPOSES",
+    "STANDARD_PURPOSES",
+    "SYSTEM_TIMES",
+    "Entry",
+    "Field",
+    "Source",
+    "build",
+    "code_amount",
+    "code_date",
+    "code_parent",
+    "code_parts",
+    "code_purpose",
+    "code_status",
+    "entry_of",
+    "is_catalogue",
+    "item_problem",
+    "merge_item",
+    "problem",
+    "purposes_of",
+    "role_purposes",
+    "singulars",
+    "stored_items",
+    "without_catalogue",
+    "word_purpose",
 ]

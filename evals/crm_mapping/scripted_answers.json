@@ -17,6 +17,16 @@
         "t.phone": {"pick": "Phone", "p": 0.93},
         "t.organization_name": {"pick": "Company", "p": 0.88},
         "t.lead_source": {"pick": "Enquiry From", "p": 0.55}
+      },
+      "catalogue": {
+        "p:Site Visits": {"pick": "activity", "p": 0.9},
+        "p:Service Tickets": {"pick": "activity", "p": 0.88},
+        "p:AMC Contracts": {"pick": "contract", "p": 0.62, "p2": 0.86},
+        "p:Installations": {"pick": "asset", "p": 0.85},
+        "p:Spare Parts": {"pick": "product", "p": 0.9},
+        "p:Tender Register": {"pick": "deal", "p": 0.8},
+        "k:Payment Received.amount": {"pick": "none", "p": 0.9},
+        "k:Payment Made.amount": {"pick": "Paid Value", "p": 0.87}
       }
     },
     "opportunities": {

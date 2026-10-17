@@ -478,3 +478,46 @@ def test_the_addendum_tells_the_model_to_read_the_catalogue_first() -> None:
     )
     assert ("Before a total over a module, call crm_list_modules. Name the module "
             "and the fields that each number comes from.") in text
+
+
+# ── 6. The kind `catalogue` in the plan (CRM-Q31-3) ─────────────────────────
+
+
+def test_rule_4_of_the_kinds_checks_a_catalogue_item_and_needs_no_role() -> None:
+    """Item 9: kind_key and check_kinds know the kind together. A catalogue
+    item never falls into the role_missing check."""
+    from fastapi import HTTPException
+    from gateway.routes.crm import mapping_plans as mpl
+
+    good = {"kind": "catalogue", "module": "Fee_Receipts", "purpose": "payment_in",
+            "amount": None, "date": "Paid_On", "by": {"amount": "ai", "date": "code"}}
+    assert mpl.kind_key(good) == ("catalogue", "Fee_Receipts")
+    mpl.check_kinds([good])
+    for bad, code in (
+        ({**good, "purpose": "galaxy"}, "bad_catalogue"),
+        ({**good, "amount": 7}, "bad_catalogue"),
+        ({**good, "by": {"amount": "robot"}}, "bad_catalogue"),
+        ({**good, "module": ""}, "bad_catalogue"),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            mpl.check_kinds([bad])
+        assert exc.value.detail["code"] == code
+    with pytest.raises(HTTPException) as exc:
+        mpl.check_kinds([good, {**good, "purpose": "invoice"}])
+    assert exc.value.detail["code"] == "duplicate"
+    merged = mpl.merge_kinds([good], [{**good, "purpose": "invoice"}])
+    assert [i["purpose"] for i in merged] == ["invoice"]
+
+
+def test_a_merge_keeps_each_part_of_the_admin() -> None:
+    """Item 14: the pipeline never replaces a part with by: admin."""
+    old = {"kind": "catalogue", "module": "Dues", "amount": "Due_Value", "purpose": "receivable",
+           "by": {"amount": "admin", "purpose": "ai"}}
+    new = {"kind": "catalogue", "module": "Dues", "amount": "Late_Fee", "purpose": "invoice",
+           "date": "Due_On", "by": {"amount": "ai", "purpose": "ai", "date": "ai"}}
+    got = cat.merge_item(old, new)
+    assert (got["amount"], got["by"]["amount"]) == ("Due_Value", "admin")
+    assert (got["purpose"], got["date"]) == ("invoice", "Due_On")
+    admin = cat.merge_item(old, {**new, "by": {"amount": "admin"}})
+    assert admin["amount"] == "Late_Fee"
+    assert cat.without_catalogue([old, {"kind": "role"}]) == [{"kind": "role"}]

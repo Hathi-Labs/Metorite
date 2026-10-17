@@ -86,6 +86,8 @@ CRM's one feature, and copies no helper:
   ``crm.map_stage`` to the same three tuples. The mapping pipeline
   (``gateway/crm_sync/map_pipeline.py``) calls :func:`mode_for` for each
   feature first, because :func:`ask` does not check the mode.
+- WS-53 CRM-Q31-3 (§18.13.4) adds ``crm.map_catalogue`` to the same three
+  tuples. It starts ``off``, and a mode other than ``off`` is an owner flip.
 
 Fences: ``tests/unit/test_email_decide_shadow.py``,
 ``tests/unit/test_email_decide_questions.py`` and
@@ -182,6 +184,8 @@ ON_FEATURES: frozenset[str] = frozenset({
     "crm.map_role",
     "crm.map_target",
     "crm.map_stage",
+    # WS-53 CRM-Q31-3: the catalogue step of the mapping pipeline.
+    "crm.map_catalogue",
 })
 
 #: WS-58 MD-6a-1: the eight My Day features (``my_day_feed.md`` §10.3), in
@@ -213,12 +217,14 @@ MY_DAY_PREFIX = "my_day."
 #:
 #: WS-53 CRM-Q20-1 (§18.9.6) adds the three features of the mapping
 #: pipeline (``gateway/crm_sync/map_pipeline.py``): ``crm.map_role``,
-#: ``crm.map_target`` and ``crm.map_stage``.
+#: ``crm.map_target`` and ``crm.map_stage``. WS-53 CRM-Q31-3 (§18.13.4) adds
+#: ``crm.map_catalogue``, the catalogue step of the same pipeline.
 CRM_FEATURES: tuple[str, ...] = (
     "crm.note_labels",
     "crm.map_role",
     "crm.map_target",
     "crm.map_stage",
+    "crm.map_catalogue",
 )
 
 #: A feature with this prefix takes its organization list from

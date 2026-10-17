@@ -5007,6 +5007,10 @@ and runs the verification of both slices again.
 `origin/main` `4a0a41c24`, with Batch M (#1112) merged. Verified against
 DEWiN's production data on 2026-10-17, read only and counts only (§18.13.2).
 
+**Built (2026-10-17).** CRM-Q31-1, CRM-Q31-2 and CRM-Q31-3 are built on
+`crm-batch-ai`, not merged, dark. `CRM_CATALOGUE_ORGS` ships empty, and
+`crm.map_catalogue` starts `off`. CRM-Q20-3a, CRM-Q31-4 and CRM-Q20-3b wait.
+
 **Migrations.** No slice needs one. A slice that finds a need takes the next
 free number at build time, and checks it again at merge (R1). Batch I2 takes
 281.
