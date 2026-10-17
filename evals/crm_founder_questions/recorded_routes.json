@@ -1,0 +1,1678 @@
+{
+ "_about": "WS-53 CRM-Q30. The answers of the real routes on the seeded dataset, recorded by tests/unit/test_crm_founder_questions_r8.py with CRM_FOUNDER_RECORD=1. --scripted replays them. Do not edit by hand.",
+ "routes": {
+  "/crm/aggregate?bucket=month&entity=module%3AInvoices&field=Grand_Total&field.Invoice_Date.from=2026-04-01&field.Invoice_Date.to=2026-09-30&group_field=Invoice_Date&measure=sum": {
+   "entity": "module:Invoices",
+   "measure": "sum",
+   "group_by": null,
+   "group_field": "Invoice_Date",
+   "field": "Grand_Total",
+   "field_type": "currency",
+   "group_field_type": "date",
+   "bucket": "month",
+   "groups": [
+    {
+     "key": "2026-04",
+     "label": "2026-04",
+     "value": 9259063.14
+    },
+    {
+     "key": "2026-05",
+     "label": "2026-05",
+     "value": 7860143.89
+    },
+    {
+     "key": "2026-06",
+     "label": "2026-06",
+     "value": 7889689.78
+    },
+    {
+     "key": "2026-07",
+     "label": "2026-07",
+     "value": 7193287.37
+    },
+    {
+     "key": "2026-08",
+     "label": "2026-08",
+     "value": 7677821.54
+    },
+    {
+     "key": "2026-09",
+     "label": "2026-09",
+     "value": 4978925.57
+    }
+   ],
+   "total": 44858931.29,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 98
+  },
+  "/crm/aggregate?bucket=month&entity=module%3APayment_Received&field=Amount&field.Received_On.from=2026-06-01&field.Received_On.to=2026-08-31&group_field=Received_On&measure=sum": {
+   "entity": "module:Payment_Received",
+   "measure": "sum",
+   "group_by": null,
+   "group_field": "Received_On",
+   "field": "Amount",
+   "field_type": "currency",
+   "group_field_type": "datetime",
+   "bucket": "month",
+   "groups": [
+    {
+     "key": "2026-06",
+     "label": "2026-06",
+     "value": 4556236.68
+    },
+    {
+     "key": "2026-07",
+     "label": "2026-07",
+     "value": 4747221.37
+    },
+    {
+     "key": "2026-08",
+     "label": "2026-08",
+     "value": 4500612.12
+    }
+   ],
+   "total": 13804070.17,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 44
+  },
+  "/crm/aggregate?bucket=quarter&entity=module%3AInvoices&field=Grand_Total&field.Invoice_Date.from=2026-01-01&field.Invoice_Date.to=2026-12-31&group_field=Invoice_Date&measure=sum": {
+   "entity": "module:Invoices",
+   "measure": "sum",
+   "group_by": null,
+   "group_field": "Invoice_Date",
+   "field": "Grand_Total",
+   "field_type": "currency",
+   "group_field_type": "date",
+   "bucket": "quarter",
+   "groups": [
+    {
+     "key": "2026-Q1",
+     "label": "2026-Q1",
+     "value": 12094290.18
+    },
+    {
+     "key": "2026-Q2",
+     "label": "2026-Q2",
+     "value": 25008896.81
+    },
+    {
+     "key": "2026-Q3",
+     "label": "2026-Q3",
+     "value": 19850034.48
+    },
+    {
+     "key": "2026-Q4",
+     "label": "2026-Q4",
+     "value": 1631961.59
+    }
+   ],
+   "total": 58585183.06,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 132
+  },
+  "/crm/aggregate?custom.Site_State=Maharashtra&entity=contacts&field=Plant_Capacity_MLD&group_by=owner&measure=sum": {
+   "entity": "contacts",
+   "measure": "sum",
+   "group_by": "owner",
+   "group_field": null,
+   "field": "Plant_Capacity_MLD",
+   "field_type": "number",
+   "group_field_type": null,
+   "bucket": null,
+   "groups": [
+    {
+     "key": "ravi@founder-evals.test",
+     "label": "ravi@founder-evals.test",
+     "value": 500.0
+    },
+    {
+     "key": "asha@founder-evals.test",
+     "label": "asha@founder-evals.test",
+     "value": 169.0
+    },
+    {
+     "key": "meera@founder-evals.test",
+     "label": "meera@founder-evals.test",
+     "value": 46.0
+    }
+   ],
+   "total": 715.0,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 9
+  },
+  "/crm/aggregate?entity=contacts&group_field=Site_State&measure=count": {
+   "entity": "contacts",
+   "measure": "count",
+   "group_by": null,
+   "group_field": "Site_State",
+   "field": null,
+   "field_type": null,
+   "group_field_type": "select",
+   "bucket": null,
+   "groups": [
+    {
+     "key": "Karnataka",
+     "label": "Karnataka",
+     "value": 19.0
+    },
+    {
+     "key": "Tamil Nadu",
+     "label": "Tamil Nadu",
+     "value": 13.0
+    },
+    {
+     "key": "Maharashtra",
+     "label": "Maharashtra",
+     "value": 11.0
+    },
+    {
+     "key": "Telangana",
+     "label": "Telangana",
+     "value": 9.0
+    },
+    {
+     "key": "Gujarat",
+     "label": "Gujarat",
+     "value": 8.0
+    }
+   ],
+   "total": 60.0,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": null
+  },
+  "/crm/aggregate?entity=module%3AClients&group_field=Key_Account&measure=count": {
+   "entity": "module:Clients",
+   "measure": "count",
+   "group_by": null,
+   "group_field": "Key_Account",
+   "field": null,
+   "field_type": null,
+   "group_field_type": "boolean",
+   "bucket": null,
+   "groups": [
+    {
+     "key": "false",
+     "label": "false",
+     "value": 26.0
+    },
+    {
+     "key": "true",
+     "label": "true",
+     "value": 14.0
+    }
+   ],
+   "total": 40.0,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": null
+  },
+  "/crm/aggregate?entity=module%3AClients&group_field=Segment&measure=count": {
+   "entity": "module:Clients",
+   "measure": "count",
+   "group_by": null,
+   "group_field": "Segment",
+   "field": null,
+   "field_type": null,
+   "group_field_type": "select",
+   "bucket": null,
+   "groups": [
+    {
+     "key": "Municipal",
+     "label": "Municipal",
+     "value": 17.0
+    },
+    {
+     "key": "Industrial",
+     "label": "Industrial",
+     "value": 13.0
+    },
+    {
+     "key": "Utility",
+     "label": "Utility",
+     "value": 10.0
+    }
+   ],
+   "total": 40.0,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": null
+  },
+  "/crm/aggregate?entity=module%3ACommercials&field=Quote_Value&group_by=owner&measure=sum": {
+   "entity": "module:Commercials",
+   "measure": "sum",
+   "group_by": "owner",
+   "group_field": null,
+   "field": "Quote_Value",
+   "field_type": "currency",
+   "group_field_type": null,
+   "bucket": null,
+   "groups": [],
+   "total": null,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 0
+  },
+  "/crm/aggregate?entity=module%3ACompany&field=Annual_Revenue&group_by=owner&measure=sum": {
+   "entity": "module:Company",
+   "measure": "sum",
+   "group_by": "owner",
+   "group_field": null,
+   "field": "Annual_Revenue",
+   "field_type": "currency",
+   "group_field_type": null,
+   "bucket": null,
+   "groups": [
+    {
+     "key": "asha@founder-evals.test",
+     "label": "asha@founder-evals.test",
+     "value": null
+    },
+    {
+     "key": "meera@founder-evals.test",
+     "label": "meera@founder-evals.test",
+     "value": null
+    },
+    {
+     "key": "ravi@founder-evals.test",
+     "label": "ravi@founder-evals.test",
+     "value": null
+    }
+   ],
+   "total": null,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 0
+  },
+  "/crm/aggregate?entity=module%3AInvoices&field.Due_Date.to=2026-10-14&group_field=Status&measure=count": {
+   "entity": "module:Invoices",
+   "measure": "count",
+   "group_by": null,
+   "group_field": "Status",
+   "field": null,
+   "field_type": null,
+   "group_field_type": "select",
+   "bucket": null,
+   "groups": [
+    {
+     "key": "Paid",
+     "label": "Paid",
+     "value": 147.0
+    },
+    {
+     "key": "Partially Paid",
+     "label": "Partially Paid",
+     "value": 47.0
+    },
+    {
+     "key": "Unpaid",
+     "label": "Unpaid",
+     "value": 45.0
+    }
+   ],
+   "total": 239.0,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": null
+  },
+  "/crm/aggregate?entity=module%3AInvoices&field.Invoice_Date.from=2026-09-01&field.Invoice_Date.to=2026-09-30&group_by=owner&measure=count": {
+   "entity": "module:Invoices",
+   "measure": "count",
+   "group_by": "owner",
+   "group_field": null,
+   "field": null,
+   "field_type": null,
+   "group_field_type": null,
+   "bucket": null,
+   "groups": [
+    {
+     "key": "meera@founder-evals.test",
+     "label": "meera@founder-evals.test",
+     "value": 10.0
+    },
+    {
+     "key": "asha@founder-evals.test",
+     "label": "asha@founder-evals.test",
+     "value": 3.0
+    },
+    {
+     "key": "ravi@founder-evals.test",
+     "label": "ravi@founder-evals.test",
+     "value": 1.0
+    }
+   ],
+   "total": 14.0,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": null
+  },
+  "/crm/aggregate?entity=module%3AInvoices&field=Balance_Due&field.Due_Date.to=2026-10-14&group_field=Status&measure=sum": {
+   "entity": "module:Invoices",
+   "measure": "sum",
+   "group_by": null,
+   "group_field": "Status",
+   "field": "Balance_Due",
+   "field_type": "currency",
+   "group_field_type": "select",
+   "bucket": null,
+   "groups": [
+    {
+     "key": "Unpaid",
+     "label": "Unpaid",
+     "value": 21733892.75
+    },
+    {
+     "key": "Partially Paid",
+     "label": "Partially Paid",
+     "value": 11923203.98
+    },
+    {
+     "key": "Paid",
+     "label": "Paid",
+     "value": 0.0
+    }
+   ],
+   "total": 33657096.73,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 239
+  },
+  "/crm/aggregate?entity=module%3AInvoices&field=Balance_Due&group_by=owner&measure=sum": {
+   "entity": "module:Invoices",
+   "measure": "sum",
+   "group_by": "owner",
+   "group_field": null,
+   "field": "Balance_Due",
+   "field_type": "currency",
+   "group_field_type": null,
+   "bucket": null,
+   "groups": [
+    {
+     "key": "ravi@founder-evals.test",
+     "label": "ravi@founder-evals.test",
+     "value": 14521122.97
+    },
+    {
+     "key": "meera@founder-evals.test",
+     "label": "meera@founder-evals.test",
+     "value": 13156707.46
+    },
+    {
+     "key": "asha@founder-evals.test",
+     "label": "asha@founder-evals.test",
+     "value": 9259991.11
+    }
+   ],
+   "total": 36937821.54,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 260
+  },
+  "/crm/aggregate?entity=module%3AInvoices&field=Balance_Due&group_field=Client&measure=sum": {
+   "entity": "module:Invoices",
+   "measure": "sum",
+   "group_by": null,
+   "group_field": "Client",
+   "field": "Balance_Due",
+   "field_type": "currency",
+   "group_field_type": "lookup",
+   "bucket": null,
+   "groups": [
+    {
+     "key": "4872000000000031",
+     "label": "Sabari East Water Board",
+     "value": 3317324.11
+    },
+    {
+     "key": "4872000000000002",
+     "label": "Narmada North Steel",
+     "value": 2959109.36
+    },
+    {
+     "key": "4872000000000016",
+     "label": "Tapti South Water Board",
+     "value": 2603808.25
+    },
+    {
+     "key": "4872000000000027",
+     "label": "Kaveri East Steel",
+     "value": 2577442.1
+    },
+    {
+     "key": "4872000000000024",
+     "label": "Sharavati South Textiles",
+     "value": 2512830.91
+    },
+    {
+     "key": "4872000000000039",
+     "label": "Kaveri West Textiles",
+     "value": 2094668.55
+    },
+    {
+     "key": "4872000000000021",
+     "label": "Tunga South Water Board",
+     "value": 1938173.57
+    },
+    {
+     "key": "4872000000000036",
+     "label": "Sharavati East Water Board",
+     "value": 1754259.28
+    },
+    {
+     "key": "4872000000000011",
+     "label": "Indravati North Water Board",
+     "value": 1743845.12
+    },
+    {
+     "key": "4872000000000026",
+     "label": "Narmada East Water Board",
+     "value": 1546044.19
+    },
+    {
+     "key": "4872000000000034",
+     "label": "Bhima East Textiles",
+     "value": 1377712.82
+    },
+    {
+     "key": "4872000000000012",
+     "label": "Sharavati North Steel",
+     "value": 1352337.5
+    },
+    {
+     "key": "4872000000000028",
+     "label": "Tapti East Power",
+     "value": 1311919.08
+    },
+    {
+     "key": "4872000000000023",
+     "label": "Indravati South Power",
+     "value": 1163108.14
+    },
+    {
+     "key": "4872000000000019",
+     "label": "Sabari South Textiles",
+     "value": 1104226.28
+    },
+    {
+     "key": "4872000000000005",
+     "label": "Krishna North Pharma",
+     "value": 1062011.61
+    },
+    {
+     "key": "4872000000000018",
+     "label": "Mahanadi South Power",
+     "value": 1021916.1
+    },
+    {
+     "key": "4872000000000030",
+     "label": "Mahanadi East Pharma",
+     "value": 1011035.15
+    },
+    {
+     "key": "4872000000000020",
+     "label": "Pennar South Pharma",
+     "value": 793041.24
+    },
+    {
+     "key": "4872000000000013",
+     "label": "Godavari South Power",
+     "value": 785076.18
+    },
+    {
+     "key": "4872000000000015",
+     "label": "Kaveri South Pharma",
+     "value": 767684.14
+    },
+    {
+     "key": "4872000000000010",
+     "label": "Bhima North Pharma",
+     "value": 741655.88
+    },
+    {
+     "key": "4872000000000008",
+     "label": "Pennar North Power",
+     "value": 675495.09
+    },
+    {
+     "key": "4872000000000003",
+     "label": "Kaveri North Power",
+     "value": 170490.39
+    },
+    {
+     "key": "4872000000000004",
+     "label": "Tapti North Textiles",
+     "value": 162033.14
+    },
+    {
+     "key": "4872000000000001",
+     "label": "Godavari North Water Board",
+     "value": 139070.79
+    },
+    {
+     "key": "4872000000000017",
+     "label": "Krishna South Steel",
+     "value": 124509.86
+    },
+    {
+     "key": "4872000000000037",
+     "label": "Godavari West Steel",
+     "value": 67798.0
+    },
+    {
+     "key": "4872000000000009",
+     "label": "Tunga North Textiles",
+     "value": 59194.71
+    },
+    {
+     "key": "4872000000000022",
+     "label": "Bhima South Steel",
+     "value": 0.0
+    },
+    {
+     "key": "4872000000000029",
+     "label": "Krishna East Textiles",
+     "value": 0.0
+    },
+    {
+     "key": "4872000000000014",
+     "label": "Narmada South Textiles",
+     "value": 0.0
+    },
+    {
+     "key": "4872000000000038",
+     "label": "Narmada West Power",
+     "value": 0.0
+    },
+    {
+     "key": "4872000000000040",
+     "label": "Tapti West Pharma",
+     "value": 0.0
+    },
+    {
+     "key": "4872000000000033",
+     "label": "Tunga East Power",
+     "value": 0.0
+    }
+   ],
+   "total": 36937821.54,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 260
+  },
+  "/crm/aggregate?entity=module%3AInvoices&field=Balance_Due&group_field=Status&measure=sum": {
+   "entity": "module:Invoices",
+   "measure": "sum",
+   "group_by": null,
+   "group_field": "Status",
+   "field": "Balance_Due",
+   "field_type": "currency",
+   "group_field_type": "select",
+   "bucket": null,
+   "groups": [
+    {
+     "key": "Unpaid",
+     "label": "Unpaid",
+     "value": 24148109.36
+    },
+    {
+     "key": "Partially Paid",
+     "label": "Partially Paid",
+     "value": 12789712.18
+    },
+    {
+     "key": "Paid",
+     "label": "Paid",
+     "value": 0.0
+    }
+   ],
+   "total": 36937821.54,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 260
+  },
+  "/crm/aggregate?entity=module%3AInvoices&field=Discount&field.Invoice_Date.from=2026-01-01&group_by=owner&measure=sum": {
+   "entity": "module:Invoices",
+   "measure": "sum",
+   "group_by": "owner",
+   "group_field": null,
+   "field": "Discount",
+   "field_type": "currency",
+   "group_field_type": null,
+   "bucket": null,
+   "groups": [
+    {
+     "key": "ravi@founder-evals.test",
+     "label": "ravi@founder-evals.test",
+     "value": 360881.03
+    },
+    {
+     "key": "meera@founder-evals.test",
+     "label": "meera@founder-evals.test",
+     "value": 202912.49
+    },
+    {
+     "key": "asha@founder-evals.test",
+     "label": "asha@founder-evals.test",
+     "value": 175214.45
+    }
+   ],
+   "total": 739007.97,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 35
+  },
+  "/crm/aggregate?entity=module%3AInvoices&field=Grand_Total&field.Invoice_Date.from=2025-04-01&field.Invoice_Date.to=2026-03-31&group_by=owner&measure=min": {
+   "entity": "module:Invoices",
+   "measure": "min",
+   "group_by": "owner",
+   "group_field": null,
+   "field": "Grand_Total",
+   "field_type": "currency",
+   "group_field_type": null,
+   "bucket": null,
+   "groups": [
+    {
+     "key": "meera@founder-evals.test",
+     "label": "meera@founder-evals.test",
+     "value": 50535.39
+    },
+    {
+     "key": "ravi@founder-evals.test",
+     "label": "ravi@founder-evals.test",
+     "value": 45975.51
+    },
+    {
+     "key": "asha@founder-evals.test",
+     "label": "asha@founder-evals.test",
+     "value": 26810.4
+    }
+   ],
+   "total": 26810.4,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 158
+  },
+  "/crm/aggregate?entity=module%3AInvoices&field=Grand_Total&field.Invoice_Date.from=2025-04-01&field.Invoice_Date.to=2026-03-31&group_by=owner&measure=sum": {
+   "entity": "module:Invoices",
+   "measure": "sum",
+   "group_by": "owner",
+   "group_field": null,
+   "field": "Grand_Total",
+   "field_type": "currency",
+   "group_field_type": null,
+   "bucket": null,
+   "groups": [
+    {
+     "key": "ravi@founder-evals.test",
+     "label": "ravi@founder-evals.test",
+     "value": 24247266.32
+    },
+    {
+     "key": "asha@founder-evals.test",
+     "label": "asha@founder-evals.test",
+     "value": 23475205.83
+    },
+    {
+     "key": "meera@founder-evals.test",
+     "label": "meera@founder-evals.test",
+     "value": 22899129.33
+    }
+   ],
+   "total": 70621601.48,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 158
+  },
+  "/crm/aggregate?entity=module%3AInvoices&field=Grand_Total&field.Invoice_Date.from=2026-01-01&field.Invoice_Date.to=2026-12-31&group_by=owner&measure=avg": {
+   "entity": "module:Invoices",
+   "measure": "avg",
+   "group_by": "owner",
+   "group_field": null,
+   "field": "Grand_Total",
+   "field_type": "currency",
+   "group_field_type": null,
+   "bucket": null,
+   "groups": [
+    {
+     "key": "ravi@founder-evals.test",
+     "label": "ravi@founder-evals.test",
+     "value": 465448.85
+    },
+    {
+     "key": "asha@founder-evals.test",
+     "label": "asha@founder-evals.test",
+     "value": 464766.89
+    },
+    {
+     "key": "meera@founder-evals.test",
+     "label": "meera@founder-evals.test",
+     "value": 412138.98
+    }
+   ],
+   "total": 443827.14,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 132
+  },
+  "/crm/aggregate?entity=module%3AInvoices&field=Grand_Total&field.Invoice_Date.from=2026-04-01&field.Invoice_Date.to=2026-06-30&group_by=owner&measure=sum": {
+   "entity": "module:Invoices",
+   "measure": "sum",
+   "group_by": "owner",
+   "group_field": null,
+   "field": "Grand_Total",
+   "field_type": "currency",
+   "group_field_type": null,
+   "bucket": null,
+   "groups": [
+    {
+     "key": "asha@founder-evals.test",
+     "label": "asha@founder-evals.test",
+     "value": 10877895.16
+    },
+    {
+     "key": "ravi@founder-evals.test",
+     "label": "ravi@founder-evals.test",
+     "value": 7964784.44
+    },
+    {
+     "key": "meera@founder-evals.test",
+     "label": "meera@founder-evals.test",
+     "value": 6166217.21
+    }
+   ],
+   "total": 25008896.81,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 50
+  },
+  "/crm/aggregate?entity=module%3AInvoices&field=Grand_Total&group_field=Client&measure=sum": {
+   "entity": "module:Invoices",
+   "measure": "sum",
+   "group_by": null,
+   "group_field": "Client",
+   "field": "Grand_Total",
+   "field_type": "currency",
+   "group_field_type": "lookup",
+   "bucket": null,
+   "groups": [
+    {
+     "key": "4872000000000024",
+     "label": "Sharavati South Textiles",
+     "value": 12332926.12
+    },
+    {
+     "key": "4872000000000031",
+     "label": "Sabari East Water Board",
+     "value": 10345117.21
+    },
+    {
+     "key": "4872000000000016",
+     "label": "Tapti South Water Board",
+     "value": 9771077.6
+    },
+    {
+     "key": "4872000000000027",
+     "label": "Kaveri East Steel",
+     "value": 8436772.15
+    },
+    {
+     "key": "4872000000000028",
+     "label": "Tapti East Power",
+     "value": 6013189.42
+    },
+    {
+     "key": "4872000000000039",
+     "label": "Kaveri West Textiles",
+     "value": 5997564.57
+    },
+    {
+     "key": "4872000000000034",
+     "label": "Bhima East Textiles",
+     "value": 5879195.82
+    },
+    {
+     "key": "4872000000000002",
+     "label": "Narmada North Steel",
+     "value": 5678833.62
+    },
+    {
+     "key": "4872000000000012",
+     "label": "Sharavati North Steel",
+     "value": 5170677.97
+    },
+    {
+     "key": "4872000000000021",
+     "label": "Tunga South Water Board",
+     "value": 4897915.18
+    },
+    {
+     "key": "4872000000000005",
+     "label": "Krishna North Pharma",
+     "value": 3776070.8
+    },
+    {
+     "key": "4872000000000008",
+     "label": "Pennar North Power",
+     "value": 3714791.8
+    },
+    {
+     "key": "4872000000000015",
+     "label": "Kaveri South Pharma",
+     "value": 3160059.87
+    },
+    {
+     "key": "4872000000000026",
+     "label": "Narmada East Water Board",
+     "value": 3109068.88
+    },
+    {
+     "key": "4872000000000003",
+     "label": "Kaveri North Power",
+     "value": 2988488.58
+    },
+    {
+     "key": "4872000000000036",
+     "label": "Sharavati East Water Board",
+     "value": 2707157.16
+    },
+    {
+     "key": "4872000000000014",
+     "label": "Narmada South Textiles",
+     "value": 2315302.24
+    },
+    {
+     "key": "4872000000000030",
+     "label": "Mahanadi East Pharma",
+     "value": 2184158.94
+    },
+    {
+     "key": "4872000000000013",
+     "label": "Godavari South Power",
+     "value": 1986612.04
+    },
+    {
+     "key": "4872000000000023",
+     "label": "Indravati South Power",
+     "value": 1955311.07
+    },
+    {
+     "key": "4872000000000019",
+     "label": "Sabari South Textiles",
+     "value": 1890930.44
+    },
+    {
+     "key": "4872000000000011",
+     "label": "Indravati North Water Board",
+     "value": 1743845.12
+    },
+    {
+     "key": "4872000000000020",
+     "label": "Pennar South Pharma",
+     "value": 1607155.88
+    },
+    {
+     "key": "4872000000000018",
+     "label": "Mahanadi South Power",
+     "value": 1284363.81
+    },
+    {
+     "key": "4872000000000022",
+     "label": "Bhima South Steel",
+     "value": 1222866.15
+    },
+    {
+     "key": "4872000000000010",
+     "label": "Bhima North Pharma",
+     "value": 1220595.28
+    },
+    {
+     "key": "4872000000000017",
+     "label": "Krishna South Steel",
+     "value": 1041973.99
+    },
+    {
+     "key": "4872000000000040",
+     "label": "Tapti West Pharma",
+     "value": 966333.35
+    },
+    {
+     "key": "4872000000000009",
+     "label": "Tunga North Textiles",
+     "value": 862589.38
+    },
+    {
+     "key": "4872000000000004",
+     "label": "Tapti North Textiles",
+     "value": 711387.44
+    },
+    {
+     "key": "4872000000000038",
+     "label": "Narmada West Power",
+     "value": 651073.29
+    },
+    {
+     "key": "4872000000000033",
+     "label": "Tunga East Power",
+     "value": 634511.63
+    },
+    {
+     "key": "4872000000000001",
+     "label": "Godavari North Water Board",
+     "value": 471712.04
+    },
+    {
+     "key": "4872000000000029",
+     "label": "Krishna East Textiles",
+     "value": 213370.51
+    },
+    {
+     "key": "4872000000000037",
+     "label": "Godavari West Steel",
+     "value": 169495.01
+    }
+   ],
+   "total": 117112494.36,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 260
+  },
+  "/crm/aggregate?entity=module%3AInvoices&group_by=created_month&measure=count": {
+   "entity": "module:Invoices",
+   "measure": "count",
+   "group_by": "created_month",
+   "group_field": null,
+   "field": null,
+   "field_type": null,
+   "group_field_type": null,
+   "bucket": null,
+   "groups": [
+    {
+     "key": "2025-04",
+     "label": "2025-04",
+     "value": 11.0
+    },
+    {
+     "key": "2025-05",
+     "label": "2025-05",
+     "value": 16.0
+    },
+    {
+     "key": "2025-06",
+     "label": "2025-06",
+     "value": 14.0
+    },
+    {
+     "key": "2025-07",
+     "label": "2025-07",
+     "value": 6.0
+    },
+    {
+     "key": "2025-08",
+     "label": "2025-08",
+     "value": 19.0
+    },
+    {
+     "key": "2025-09",
+     "label": "2025-09",
+     "value": 15.0
+    },
+    {
+     "key": "2025-10",
+     "label": "2025-10",
+     "value": 13.0
+    },
+    {
+     "key": "2025-11",
+     "label": "2025-11",
+     "value": 16.0
+    },
+    {
+     "key": "2025-12",
+     "label": "2025-12",
+     "value": 18.0
+    },
+    {
+     "key": "2026-01",
+     "label": "2026-01",
+     "value": 8.0
+    },
+    {
+     "key": "2026-02",
+     "label": "2026-02",
+     "value": 7.0
+    },
+    {
+     "key": "2026-03",
+     "label": "2026-03",
+     "value": 15.0
+    },
+    {
+     "key": "2026-04",
+     "label": "2026-04",
+     "value": 17.0
+    },
+    {
+     "key": "2026-05",
+     "label": "2026-05",
+     "value": 17.0
+    },
+    {
+     "key": "2026-06",
+     "label": "2026-06",
+     "value": 16.0
+    },
+    {
+     "key": "2026-07",
+     "label": "2026-07",
+     "value": 15.0
+    },
+    {
+     "key": "2026-08",
+     "label": "2026-08",
+     "value": 19.0
+    },
+    {
+     "key": "2026-09",
+     "label": "2026-09",
+     "value": 14.0
+    },
+    {
+     "key": "2026-10",
+     "label": "2026-10",
+     "value": 4.0
+    }
+   ],
+   "total": 260.0,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": null
+  },
+  "/crm/aggregate?entity=module%3AInvoices&group_field=Status&measure=count": {
+   "entity": "module:Invoices",
+   "measure": "count",
+   "group_by": null,
+   "group_field": "Status",
+   "field": null,
+   "field_type": null,
+   "group_field_type": "select",
+   "bucket": null,
+   "groups": [
+    {
+     "key": "Paid",
+     "label": "Paid",
+     "value": 155.0
+    },
+    {
+     "key": "Unpaid",
+     "label": "Unpaid",
+     "value": 54.0
+    },
+    {
+     "key": "Partially Paid",
+     "label": "Partially Paid",
+     "value": 51.0
+    }
+   ],
+   "total": 260.0,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": null
+  },
+  "/crm/aggregate?entity=module%3APayment_Made&field=Amount&field.Paid_On.from=2025-04-01&field.Paid_On.to=2026-03-31&group_by=owner&measure=sum": {
+   "entity": "module:Payment_Made",
+   "measure": "sum",
+   "group_by": "owner",
+   "group_field": null,
+   "field": "Amount",
+   "field_type": "currency",
+   "group_field_type": null,
+   "bucket": null,
+   "groups": [
+    {
+     "key": "ravi@founder-evals.test",
+     "label": "ravi@founder-evals.test",
+     "value": 2416843.04
+    },
+    {
+     "key": "asha@founder-evals.test",
+     "label": "asha@founder-evals.test",
+     "value": 1553711.31
+    },
+    {
+     "key": "meera@founder-evals.test",
+     "label": "meera@founder-evals.test",
+     "value": 1118119.11
+    }
+   ],
+   "total": 5088673.46,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 48
+  },
+  "/crm/aggregate?entity=module%3APayment_Made&field=Amount&field.Paid_On.from=2026-01-01&group_field=Operator&measure=sum": {
+   "entity": "module:Payment_Made",
+   "measure": "sum",
+   "group_by": null,
+   "group_field": "Operator",
+   "field": "Amount",
+   "field_type": "currency",
+   "group_field_type": "lookup",
+   "bucket": null,
+   "groups": [
+    {
+     "key": "4873000000000011",
+     "label": "Asha Nair Services",
+     "value": 975689.44
+    },
+    {
+     "key": "4873000000000010",
+     "label": "Dev Menon Services",
+     "value": 972688.66
+    },
+    {
+     "key": "4873000000000007",
+     "label": "Vikram Shah Services",
+     "value": 708108.3
+    },
+    {
+     "key": "4873000000000015",
+     "label": "Nisha Shah Services",
+     "value": 569004.08
+    },
+    {
+     "key": "4873000000000009",
+     "label": "Tara Rao Services",
+     "value": 500696.62
+    },
+    {
+     "key": "4873000000000001",
+     "label": "Asha Rao Services",
+     "value": 491338.8
+    },
+    {
+     "key": "4873000000000004",
+     "label": "Arjun Iyer Services",
+     "value": 385184.76
+    },
+    {
+     "key": "4873000000000014",
+     "label": "Arjun Gupta Services",
+     "value": 380212.05
+    },
+    {
+     "key": "4873000000000008",
+     "label": "Leela Patel Services",
+     "value": 325596.88
+    },
+    {
+     "key": "4873000000000012",
+     "label": "Ravi Iyer Services",
+     "value": 308560.12
+    },
+    {
+     "key": "4873000000000003",
+     "label": "Meera Nair Services",
+     "value": 224152.71
+    },
+    {
+     "key": "4873000000000002",
+     "label": "Ravi Menon Services",
+     "value": 177213.1
+    },
+    {
+     "key": "4873000000000005",
+     "label": "Nisha Das Services",
+     "value": 118712.41
+    },
+    {
+     "key": "4873000000000013",
+     "label": "Meera Das Services",
+     "value": 106042.33
+    },
+    {
+     "key": "4873000000000006",
+     "label": "Kiran Gupta Services",
+     "value": 24375.48
+    }
+   ],
+   "total": 6267575.74,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 55
+  },
+  "/crm/aggregate?entity=module%3APayment_Made&field=Amount&field.Paid_On.from=2026-07-01&field.Paid_On.to=2026-09-30&group_by=owner&measure=sum": {
+   "entity": "module:Payment_Made",
+   "measure": "sum",
+   "group_by": "owner",
+   "group_field": null,
+   "field": "Amount",
+   "field_type": "currency",
+   "group_field_type": null,
+   "bucket": null,
+   "groups": [
+    {
+     "key": "asha@founder-evals.test",
+     "label": "asha@founder-evals.test",
+     "value": 890829.72
+    },
+    {
+     "key": "meera@founder-evals.test",
+     "label": "meera@founder-evals.test",
+     "value": 778458.75
+    },
+    {
+     "key": "ravi@founder-evals.test",
+     "label": "ravi@founder-evals.test",
+     "value": 747231.74
+    }
+   ],
+   "total": 2416520.21,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 20
+  },
+  "/crm/aggregate?entity=module%3APayment_Received&field=Amount&field.Received_On.from=2025-04-01&field.Received_On.to=2026-03-31&group_field=Mode&measure=sum": {
+   "entity": "module:Payment_Received",
+   "measure": "sum",
+   "group_by": null,
+   "group_field": "Mode",
+   "field": "Amount",
+   "field_type": "currency",
+   "group_field_type": "select",
+   "bucket": null,
+   "groups": [
+    {
+     "key": "Cheque",
+     "label": "Cheque",
+     "value": 14015177.95
+    },
+    {
+     "key": "RTGS",
+     "label": "RTGS",
+     "value": 12328525.82
+    },
+    {
+     "key": "UPI",
+     "label": "UPI",
+     "value": 11392669.35
+    },
+    {
+     "key": "NEFT",
+     "label": "NEFT",
+     "value": 10279897.91
+    }
+   ],
+   "total": 48016271.03,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 159
+  },
+  "/crm/aggregate?entity=module%3APayment_Received&field=Amount&field.Received_On.from=2026-04-01&field.Received_On.to=2026-06-30&group_by=owner&measure=sum": {
+   "entity": "module:Payment_Received",
+   "measure": "sum",
+   "group_by": "owner",
+   "group_field": null,
+   "field": "Amount",
+   "field_type": "currency",
+   "group_field_type": null,
+   "bucket": null,
+   "groups": [
+    {
+     "key": "asha@founder-evals.test",
+     "label": "asha@founder-evals.test",
+     "value": 6873163.25
+    },
+    {
+     "key": "ravi@founder-evals.test",
+     "label": "ravi@founder-evals.test",
+     "value": 4402290.05
+    },
+    {
+     "key": "meera@founder-evals.test",
+     "label": "meera@founder-evals.test",
+     "value": 3342038.7
+    }
+   ],
+   "total": 14617492.0,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 40
+  },
+  "/crm/aggregate?entity=module%3APayment_Received&field=Amount&field.Received_On.from=2026-07-01&field.Received_On.to=2026-09-30&group_by=owner&measure=sum": {
+   "entity": "module:Payment_Received",
+   "measure": "sum",
+   "group_by": "owner",
+   "group_field": null,
+   "field": "Amount",
+   "field_type": "currency",
+   "group_field_type": null,
+   "bucket": null,
+   "groups": [
+    {
+     "key": "asha@founder-evals.test",
+     "label": "asha@founder-evals.test",
+     "value": 5094210.18
+    },
+    {
+     "key": "meera@founder-evals.test",
+     "label": "meera@founder-evals.test",
+     "value": 4471815.83
+    },
+    {
+     "key": "ravi@founder-evals.test",
+     "label": "ravi@founder-evals.test",
+     "value": 3328101.99
+    }
+   ],
+   "total": 12894128.0,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 45
+  },
+  "/crm/aggregate?entity=module%3APayment_Received&field=Amount&group_by=owner&measure=max": {
+   "entity": "module:Payment_Received",
+   "measure": "max",
+   "group_by": "owner",
+   "group_field": null,
+   "field": "Amount",
+   "field_type": "currency",
+   "group_field_type": null,
+   "bucket": null,
+   "groups": [
+    {
+     "key": "ravi@founder-evals.test",
+     "label": "ravi@founder-evals.test",
+     "value": 887445.51
+    },
+    {
+     "key": "meera@founder-evals.test",
+     "label": "meera@founder-evals.test",
+     "value": 880797.44
+    },
+    {
+     "key": "asha@founder-evals.test",
+     "label": "asha@founder-evals.test",
+     "value": 851602.71
+    }
+   ],
+   "total": 887445.51,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 262
+  },
+  "/crm/aggregate?entity=module%3APayment_Received&field=Amount&group_field=Client&measure=sum": {
+   "entity": "module:Payment_Received",
+   "measure": "sum",
+   "group_by": null,
+   "group_field": "Client",
+   "field": "Amount",
+   "field_type": "currency",
+   "group_field_type": "lookup",
+   "bucket": null,
+   "groups": [
+    {
+     "key": "4872000000000024",
+     "label": "Sharavati South Textiles",
+     "value": 9820095.21
+    },
+    {
+     "key": "4872000000000016",
+     "label": "Tapti South Water Board",
+     "value": 7167269.35
+    },
+    {
+     "key": "4872000000000031",
+     "label": "Sabari East Water Board",
+     "value": 7027793.1
+    },
+    {
+     "key": "4872000000000027",
+     "label": "Kaveri East Steel",
+     "value": 5859330.05
+    },
+    {
+     "key": "4872000000000028",
+     "label": "Tapti East Power",
+     "value": 4701270.34
+    },
+    {
+     "key": "4872000000000034",
+     "label": "Bhima East Textiles",
+     "value": 4501483.0
+    },
+    {
+     "key": "4872000000000039",
+     "label": "Kaveri West Textiles",
+     "value": 3902896.02
+    },
+    {
+     "key": "4872000000000012",
+     "label": "Sharavati North Steel",
+     "value": 3818340.47
+    },
+    {
+     "key": "4872000000000008",
+     "label": "Pennar North Power",
+     "value": 3039296.71
+    },
+    {
+     "key": "4872000000000021",
+     "label": "Tunga South Water Board",
+     "value": 2959741.61
+    },
+    {
+     "key": "4872000000000003",
+     "label": "Kaveri North Power",
+     "value": 2817998.19
+    },
+    {
+     "key": "4872000000000002",
+     "label": "Narmada North Steel",
+     "value": 2719724.26
+    },
+    {
+     "key": "4872000000000005",
+     "label": "Krishna North Pharma",
+     "value": 2714059.19
+    },
+    {
+     "key": "4872000000000015",
+     "label": "Kaveri South Pharma",
+     "value": 2392375.73
+    },
+    {
+     "key": "4872000000000014",
+     "label": "Narmada South Textiles",
+     "value": 2315302.24
+    },
+    {
+     "key": "4872000000000026",
+     "label": "Narmada East Water Board",
+     "value": 1563024.69
+    },
+    {
+     "key": "4872000000000022",
+     "label": "Bhima South Steel",
+     "value": 1222866.15
+    },
+    {
+     "key": "4872000000000013",
+     "label": "Godavari South Power",
+     "value": 1201535.86
+    },
+    {
+     "key": "4872000000000030",
+     "label": "Mahanadi East Pharma",
+     "value": 1173123.79
+    },
+    {
+     "key": "4872000000000040",
+     "label": "Tapti West Pharma",
+     "value": 966333.35
+    },
+    {
+     "key": "4872000000000036",
+     "label": "Sharavati East Water Board",
+     "value": 952897.88
+    },
+    {
+     "key": "4872000000000017",
+     "label": "Krishna South Steel",
+     "value": 917464.13
+    },
+    {
+     "key": "4872000000000020",
+     "label": "Pennar South Pharma",
+     "value": 814114.64
+    },
+    {
+     "key": "4872000000000009",
+     "label": "Tunga North Textiles",
+     "value": 803394.67
+    },
+    {
+     "key": "4872000000000023",
+     "label": "Indravati South Power",
+     "value": 792202.93
+    },
+    {
+     "key": "4872000000000019",
+     "label": "Sabari South Textiles",
+     "value": 786704.16
+    },
+    {
+     "key": "4872000000000038",
+     "label": "Narmada West Power",
+     "value": 651073.29
+    },
+    {
+     "key": "4872000000000033",
+     "label": "Tunga East Power",
+     "value": 634511.63
+    },
+    {
+     "key": "4872000000000004",
+     "label": "Tapti North Textiles",
+     "value": 549354.3
+    },
+    {
+     "key": "4872000000000010",
+     "label": "Bhima North Pharma",
+     "value": 478939.4
+    },
+    {
+     "key": "4872000000000001",
+     "label": "Godavari North Water Board",
+     "value": 332641.25
+    },
+    {
+     "key": "4872000000000018",
+     "label": "Mahanadi South Power",
+     "value": 262447.71
+    },
+    {
+     "key": "4872000000000029",
+     "label": "Krishna East Textiles",
+     "value": 213370.51
+    },
+    {
+     "key": "4872000000000037",
+     "label": "Godavari West Steel",
+     "value": 101697.01
+    }
+   ],
+   "total": 80174672.82,
+   "other": 0.0,
+   "omitted": 0,
+   "zone": "Asia/Kolkata",
+   "values": 262
+  },
+  "/crm/modules": [
+   {
+    "api_name": "Invoices",
+    "label": "Invoices",
+    "singular_label": "Invoice",
+    "count": 260
+   },
+   {
+    "api_name": "Clients",
+    "label": "Clients",
+    "singular_label": "Client",
+    "count": 40
+   },
+   {
+    "api_name": "Commercials",
+    "label": "Commercials",
+    "singular_label": "Commercial",
+    "count": 0
+   },
+   {
+    "api_name": "Company",
+    "label": "Company",
+    "singular_label": "Company",
+    "count": 12
+   },
+   {
+    "api_name": "Operator_Associates",
+    "label": "Operator Associates",
+    "singular_label": "Operator Associate",
+    "count": 15
+   },
+   {
+    "api_name": "Payment_Made",
+    "label": "Payment Made",
+    "singular_label": "Payment Made",
+    "count": 90
+   },
+   {
+    "api_name": "Payment_Received",
+    "label": "Payment Received",
+    "singular_label": "Payment Received",
+    "count": 262
+   }
+  ],
+  "/crm/sync/short-reads": [
+   {
+    "key": "module:Payment_Made",
+    "zoho_count": 148,
+    "readable": 90,
+    "short_by": 58
+   }
+  ]
+ }
+}

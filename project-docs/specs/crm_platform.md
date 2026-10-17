@@ -1274,6 +1274,8 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q27** | 🔨 built 2026-10-16 on `crm-batch-i`, merged (#1111), dark. Search of note text by meaning. §18.11 | P2 |
 | **CRM-Q28** | 🔨 built 2026-10-17 on `crm-q28-digest`, not merged, dark. A weekly digest on the powerful tier. §18.11 | P2 |
 | **CRM-Q29** | 🔨 built 2026-10-17 on `crm-answer-check`, not merged, dark. The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
+| **CRM-Q30** | 🔨 built 2026-10-17 on `crm-founder-evals`, not merged. A founder question set for CRM insights: an eval of the assistant over CRM data. §18.11 | P1 |
+| **CRM-Q30b** | 🔨 built 2026-10-17 on `crm-founder-evals`, not merged. The read tools say when Zoho holds more records than the connected Zoho user can read. §18.11 | P1 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
 
@@ -3630,11 +3632,11 @@ one run. R8: `test_a_drop_on_a_core_module_is_unkept` and
 merged (#1100, migration 278), dark. CRM-Q25b, CRM-Q25c and CRM-Q27
 (migration 279, dark): built on 2026-10-16 in the batch branch
 `crm-batch-i`, with a fix round on 2026-10-17, and merged as #1111
-(`d72f92184`). CRM-Q28 (migration 281, dark): built on 2026-10-17 on the
-branch `crm-q28-digest`, not merged. Verified against code at
-`origin/main` `a8ef53c93`. CRM-Q29: built 2026-10-17 on the branch
-`crm-answer-check`, not merged, dark (`CRM_ANSWER_CHECK` is `off`), no
-migration. CRM-Q28 uses its one number check.
+(`d72f92184`). CRM-Q28 (migration 281, dark), CRM-Q29 (dark,
+`CRM_ANSWER_CHECK` is `off`, no migration), CRM-Q30 and CRM-Q30b (no
+migration): built on 2026-10-17 in the batch branch `crm-batch-i2`, not
+merged. CRM-Q28 uses the one number check of CRM-Q29. Verified against
+code at `origin/main` `a8ef53c93`.
 
 **Owner direction (2026-10-16, in chat).** Use the decide, balanced and
 powerful tiers to run inference on the CRM data and produce insights. Build
@@ -3667,6 +3669,8 @@ each value. Embeddings help the model find text. They never make a number.
 | CRM-Q25b | One time zone for each month bucket of the aggregate | AGENT-SAFE | S | CRM-Q25 |
 | CRM-Q25c | A NUL byte in a list query answers 422 | AGENT-SAFE | S | — |
 | CRM-Q29 | The CRM assistant never misquotes a number | AGENT-SAFE | M | CRM-Q25 |
+| CRM-Q30 | A founder question set for CRM insights | AGENT-SAFE | M | CRM-Q25, CRM-Q27 |
+| CRM-Q30b | The read tools say when Zoho holds more than the connected user can read | AGENT-SAFE | S | CRM-Q24, CRM-Q30 |
 
 CRM-Q25b, CRM-Q27 and CRM-Q28 have their done-when lists after CRM-Q26
 (2026-10-16). To build each ticket is AGENT-SAFE. For CRM-Q26, a mode other than
@@ -4455,6 +4459,214 @@ and `uv run python scripts/affected_tests.py --base origin/main`.
   agent gets no check. When a parent agent quotes the answer of a delegated
   `crm-assistant`, the parent's own run checks nothing, because it read no
   CRM tool itself. The delegated run checks its own answer.
+**CRM-Q30 · A founder question set for CRM insights (2026-10-17).**
+
+**Owner direction (2026-10-17, in chat).** Founders will ask the AI chat for
+insights over their CRM. We must prove that the assistant picks the right
+tools and arguments. It must also combine modules correctly and answer with
+the right numbers. The set must catch a regression.
+
+**The facts (code check of 2026-10-17, `origin/main` `a8ef53c93`).**
+
+- `evals/crm_note_labels/` and `evals/crm_mapping/` are the pattern. Each has
+  synthetic data, checkers, a `--scripted` mode and a row in
+  `evals/README.md`.
+- `crm_aggregate` (CRM-Q25) needs `group_by` or `group_field`. So a plain
+  total is the `total` of a grouped answer.
+- A module filter takes one value or a date range only. No filter takes "not
+  equal" or a number range.
+- The route sorts a value group largest first, and it keeps 50 groups.
+- No tool reads the short read of CRM-Q24. Only the Sync health card shows
+  it.
+- CRM-Q29, a shared function that checks the numbers of an answer, is not on
+  `origin/main`.
+
+Done when:
+
+1. `evals/crm_founder_questions/` holds a synthetic dataset in the shape of
+   DEWiN. A seeded script makes it, so each run gives the same rows. No row
+   comes from a real customer.
+2. The dataset has the custom modules Invoices, Payment_Received,
+   Payment_Made, Clients, Company and Operator_Associates, with lookups
+   between them. Commercials has fields and no record.
+3. The dataset has a currency field in INR, `date` fields, and `datetime`
+   fields with the offset of Asia/Kolkata. It also has picklists, a boolean,
+   a field that every row leaves empty, and fields that some rows leave
+   empty.
+4. The core Contacts carry the label "Existing Sites" in the profile, with
+   custom fields. Notes hang off module records. The profile names the zone
+   Asia/Kolkata.
+5. About 30 founder questions each have a category, the expected tool calls,
+   and the expected facts. Plain Python computes each fact from the dataset.
+   Nobody writes the numbers by hand.
+6. The categories are: totals, trends by month and quarter in the CRM zone,
+   top-N, overdue or unpaid, cross-module, an empty field, two aggregate
+   calls, the relabel of Contacts, a note search and a short read. The note
+   search question uses `crm_search_notes` (CRM-Q27), and the set marks it
+   as such. The short read question expects the answer to flag that the
+   connected Zoho user cannot see each record.
+7. `--scripted` replays recorded tool calls and answers. It runs the real
+   tool functions of `crm_tools.py` on recorded route answers. It needs no
+   model and no network, and CI runs it.
+8. `--live` asks the real assistant on a local stack, with a seeded
+   database. CI does not run it. A person runs it.
+9. The checkers score the tool choice and its arguments, and the numbers in
+   the answer, against the expected facts. They also score a required flag
+   and a forbidden number. A local number check does this until CRM-Q29
+   merges. Then the eval moves to the shared function.
+10. A unit test runs the scripted set. Mutations prove that a wrong tool, a
+    wrong argument, a wrong number and a missing flag each fail a bar.
+11. An R8 test loads the dataset into a private database. It sends each
+    expected call through the real routes, and it asserts that each answer
+    agrees with the Python fact. It skips no question except the note
+    search, which needs the embed door.
+12. `evals/README.md` gains a row.
+
+Files: a new `evals/crm_founder_questions/`, `evals/README.md`,
+`tests/unit/test_crm_founder_questions.py`,
+`tests/unit/test_crm_founder_questions_r8.py` and this section. Gate:
+AGENT-SAFE. Size: M. Waits for: CRM-Q25, CRM-Q25b, CRM-Q25c and CRM-Q27,
+all merged (#1104, #1111). No migration and no flag.
+
+Verify with:
+
+- `uv run python -m evals.crm_founder_questions --scripted`
+- `uv run pytest tests/unit/test_crm_founder_questions.py -q`
+- `uv run pytest tests/unit/test_crm_founder_questions_r8.py tests/unit/test_crm_aggregate*.py tests/unit/test_crm_agent.py -q`,
+  on a private database, with no test skipped.
+
+**Built as (2026-10-17, branch `crm-founder-evals`, not merged).** No
+migration and no flag. `evals/crm_founder_questions/` holds the set.
+
+- `dataset.py` makes about 800 rows from the seed `20261017`. "Today" is 15
+  October 2026 (`AS_OF`), and no invoice falls due on that day. So "due
+  before today" and "due on or before today" give the same rows.
+- `questions.py` holds 31 questions in 13 categories. Q30 is the note
+  search, and Q31 is the short read.
+- A fact names the route answer that gives it, for example the total of
+  call 0 or the label of the first group. The scripted run and the R8 test
+  both read that selector.
+- `scripted_answers.json` holds the tool calls, and an answer with
+  placeholders. The runner fills each placeholder from the fact, in a form
+  such as `INR 12,34,567`, lakh or crore.
+- `recorded_routes.json` holds the answers of the real routes on the seeded
+  dataset. The R8 test writes it with `CRM_FOUNDER_RECORD=1`, and each other
+  run of the test holds the file to the routes.
+- `seed.py` opens no connection. The R8 test runs it on its fixture, and
+  `--seed` runs it in `tenant_session(org)` on a database of this machine
+  only.
+- `--live` drives `orchestrator` through the routing harness, with the real
+  specialists and the real CRM mode. Nobody has run it yet.
+
+The build made four choices that the list above does not name.
+
+- The checkers score the GET request of each tool, not the tool name. The
+  request is what the route answers, and one call can take many forms.
+- A ranked list must name its entries in rank order. A list with the right
+  names in the wrong order fails `names`.
+- A written number counts only when it is not coarser than 0.5 percent of
+  the fact. So "₹1.2 crore" fails for 1,23,45,678, and "₹1.23 crore"
+  passes.
+- The note search answer of `--scripted` is synthetic, because the search
+  needs the embed door.
+
+**The result.** Each of the 30 questions with a route agrees with the real
+route on the private database. No fact and no route disagree. The scripted
+run passes 31 of 31 questions on each bar. The unit test holds 40 tests,
+and 10 of them are mutations that each fail one bar.
+
+**Findings for later work.**
+
+- No tool reads `short_by` of CRM-Q24. The assistant can flag the gap of
+  Q31 only from general care. CRM-Q30b, below, gives the tools that line.
+- CRM-Q29 is not on `origin/main`. `numbers.py` is the local number check,
+  and the eval moves to the shared function when CRM-Q29 merges.
+
+**CRM-Q30b · The read tools say when Zoho holds more (2026-10-17).**
+
+**Why.** CRM-Q30 found that no CRM tool reads `short_by` of CRM-Q24. Only
+the Sync health card shows it, and only an admin reads that card. So the
+assistant can give a total that is short, and not say so.
+
+**The facts (code check of 2026-10-17).**
+
+- `routes/crm/sync.py` `_short_by_keys` reads `short_by` from the cursor of
+  each core entity and each module. `GET /crm/sync/health` uses it.
+- That route needs an admin and Mirror mode. A tool runs as the member, so
+  it cannot read the route.
+- The card (`syncHealth.ts` `shortReadSentence`) takes Zoho's count from the
+  row, or our count plus the gap. The readable count is Zoho's count minus
+  the gap.
+
+Done when:
+
+1. One function in `routes/crm/sync.py`, `short_reads(db, org)`, gives each
+   key with a short read: Zoho's count, the readable count and the gap. It
+   reads the cursors through `_short_by_keys`, and it uses the rule of the
+   card for the two counts.
+2. `GET /crm/sync/short-reads` serves that list to each member that the CRM
+   access rule admits. It holds counts only. A Native org gets an empty
+   list. The tenant comes from the session.
+3. One helper in `crm_tools.py` reads the route once in each tool call, and
+   it gives one line for each matching key, for example: "Note: Zoho holds
+   4,947 Payment_Made records, and the connected Zoho user can read 3,003.
+   Totals may be short. An admin can widen that user's access in Zoho."
+4. `crm_aggregate`, `crm_list_records`, `crm_list_module_records` and
+   `crm_list_modules` add the line. A tool that reads one record does not,
+   because it gives no total.
+5. A failed read of the route adds no line, and the tool answers as before.
+6. The docstrings of the tools do not change, so the pinned contract of
+   `test_tool_schema_diet.py` does not change.
+7. Q31 of `evals/crm_founder_questions/` expects the line in the tool output,
+   and the two counts of the line in the answer. A mutation that removes the
+   line fails Q31.
+8. An R8 test covers the route: the counts, a member who is not an admin, a
+   Native org and tenant isolation. A unit test covers the line of each tool
+   and the failed read, with a mutation.
+
+Files: `routes/crm/sync.py`, `packages/acb_skills/acb_skills/crm_tools.py`,
+`evals/crm_founder_questions/`, `tests/unit/test_crm_short_read_note.py`,
+`tests/unit/test_crm_short_reads_r8.py` and this section. Gate: AGENT-SAFE.
+Size: S. Waits for: CRM-Q24 and CRM-Q30. No migration and no flag.
+
+Verify with:
+
+- `uv run pytest tests/unit/test_crm_short_read_note.py tests/unit/test_crm_founder_questions.py tests/unit/test_crm_agent.py tests/unit/test_tool_schema_diet.py -q`
+- `uv run pytest tests/unit/test_crm_short_reads_r8.py tests/unit/test_crm_founder_questions_r8.py tests/unit/test_crm_sync_health_r8.py tests/unit/test_crm_aggregate*.py -q`,
+  on a private database, with no test skipped.
+- `uv run python -m evals.crm_founder_questions --scripted`
+
+**Built as (2026-10-17, branch `crm-founder-evals`, not merged).** No
+migration and no flag.
+
+- `sync.short_reads(db, org)` reads the cursors through `_short_by_keys`.
+  With no gap it runs one statement and stops. With a gap it reads the last
+  run, and it counts our rows only for a key that the run did not count.
+- `GET /crm/sync/short-reads` sits on the shared CRM router, behind
+  `require_crm_mirror`, as each other sync route is. A Native org gets an
+  empty list.
+- `crm_tools._short_note` is the one helper, and `_short_line` writes the
+  one sentence. `crm_list_modules` adds a line for each module with a gap.
+  The other three tools add the line of their own entity or module only.
+- The helper catches each failure of its read, a refusal included, so a
+  failed read changes no answer.
+- Two tests of `test_crm_agent.py` read the last call as the aggregate. They
+  now assert the two calls in order: the aggregate, then one short read.
+- The seed of the eval writes the cursor of `Payment_Made` with a gap of
+  58. Q31 now needs the line in the tool output and both counts in the
+  answer, and it forbids no number. The checkers gain the bar `tool_text`.
+  The agreement leaves the short-read call out of the call index, and a
+  fact reads it as `("short", key, field)`.
+
+**The result.** The unit test of the tools holds 11 tests. A mutation that
+drops `+ note` from the end of `crm_aggregate` fails
+`test_a_module_tool_adds_the_line[crm_aggregate]`. The R8 test holds
+4 tests. The scripted run passes 31 of 31 questions on each of the seven
+bars. The mutation that takes the line out of the tools fails Q31 only.
+
+**Not changed.** The Sync health card keeps its own copy of the rule of
+the two counts (`syncHealth.ts`). A later slice can make the card read
+`zoho_count` and `readable` from this route.
 
 #### 18.11.3 Verification
 
