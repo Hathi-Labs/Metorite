@@ -49,6 +49,17 @@ LIVE_BAR = 0.80
 #: beside its own route, so the agreement counts the calls without it.
 SHORT_READS = "/crm/sync/short-reads"
 
+#: The key of a recorded refusal: a route that answered with a coded
+#: error (``detail.code``), for example 404 ``catalogue_off`` of
+#: ``GET /crm/catalogue`` (CRM-Q31-1). The tool reads it as the error it is.
+REFUSED = "_refused"
+
+
+def refused(data: Any) -> dict[str, Any] | None:
+    """The refusal that *data* records, or ``None``."""
+    found = data.get(REFUSED) if isinstance(data, dict) else None
+    return found if isinstance(found, dict) else None
+
 BARS: tuple[str, ...] = (
     "tools", "tool_text", "tool_figures", "numbers", "names", "flags", "forbid",
     "answer_check", "agree",
@@ -271,7 +282,8 @@ def check_agree(q: Question, calls: list[RouteCall]) -> list[str]:
     """Each fact with a ``src`` against the route answer of its call. The
     index counts the calls of the tools' own routes. ``("short", ...)`` reads
     the answer of the short reads."""
-    answers = [c.data for c in calls if c.path != SHORT_READS]
+    # A refused call (the catalogue off) is no answer of a tool's own route.
+    answers = [c.data for c in calls if c.path != SHORT_READS and not refused(c.data)]
     short = [c.data for c in calls if c.path == SHORT_READS]
     out = []
     for f in q.facts:

@@ -37,6 +37,9 @@ EXIT_PASS, EXIT_FAIL, EXIT_NO_GO = 0, 1, 2
 ON = {mp.FEATURE_ROLE: "on", mp.FEATURE_TARGET: "on", mp.FEATURE_STAGE: "on"}
 SHADOW = {mp.FEATURE_ROLE: "shadow", mp.FEATURE_TARGET: "shadow", mp.FEATURE_STAGE: "shadow"}
 
+#: CRM-Q31-3: the modes of the catalogue run of a schema that expects one.
+CATALOGUE = {**ON, mp.FEATURE_CATALOGUE: "on"}
+
 #: The shadow agreement that the scripted answers of ``dewin`` give: the
 #: target questions asked, and the ones that agree with the answer key.
 DEWIN_SHADOW = {mp.FEATURE_TARGET: [6, 5]}
@@ -84,6 +87,12 @@ class ScriptedAsker:
     def _key(self, qid: str, state: dict[str, Any]) -> str:
         if qid.startswith("s.v"):
             return f"s:{state['values'][qid[2:]]}"
+        # CRM-Q31-3: a purpose by the name of its module, and a key part by
+        # the name of its module and the part.
+        if qid.startswith("p."):
+            return f"p:{state['modules'][qid[2:]]['name']}"
+        if qid.startswith("k."):
+            return f"k:{state['module']['name']}.{qid[2:]}"
         return qid
 
     def _one(self, qid: str, question: Any, state: dict[str, Any], reask: bool) -> Any:
@@ -151,7 +160,31 @@ async def score_schema(schema: EvalSchema, answers: dict[str, Any]) -> checkers.
         score.cache_problems.append(f"calls={len(second.calls)}")
     if sorted(map(json.dumps, again.items)) != sorted(map(json.dumps, result.items)):
         score.cache_problems.append("items_differ")
+    if expected.get("catalogue"):
+        await score_catalogue(schema, answers, score)
     return score
+
+
+async def score_catalogue(schema: EvalSchema, answers: dict[str, Any],
+                          score: checkers.Score) -> None:
+    """CRM-Q31-3: the run with the catalogue step in ``on``, its bar, its
+    shape, its caps, and a second run on its cache."""
+    scripted = {**answers.get("on", {}), **answers.get("catalogue", {})}
+    result, asker = await run_one(schema, scripted, CATALOGUE)
+    score.misses += checkers.check_catalogue(schema.expected["catalogue"],
+                                             result.catalogue_entries)
+    problems, leaks = checkers.check_shape(asker.calls)
+    score.shape_problems += problems + checkers.first_round_samples(asker.calls)
+    score.value_leaks += leaks
+    if (result.catalogue_tokens > mp.CATALOGUE_TOKENS
+            or result.catalogue_requests > mp.CATALOGUE_REQUESTS):
+        score.cost_problems.append(f"catalogue tokens={result.catalogue_tokens} "
+                                   f"requests={result.catalogue_requests}")
+    if result.reason != "done" or result.catalogue_reason is not None:
+        score.cost_problems.append(f"catalogue reason={result.reason}/{result.catalogue_reason}")
+    _again, second = await run_one(schema, scripted, CATALOGUE, _cache_of(result))
+    if second.calls:
+        score.cache_problems.append(f"catalogue calls={len(second.calls)}")
 
 
 async def shadow_report(schema: EvalSchema, answers: dict[str, Any]) -> dict[str, Any]:

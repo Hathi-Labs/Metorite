@@ -80,6 +80,13 @@ def _route(p: Any, org: str) -> Any:
     async def answer(path: str, params: dict[str, str]) -> Any:
         query = f"{path}?{urlencode(params)}" if params else path
         res = await _call(p, _admin(org), "GET", query)
+        detail = res.json().get("detail") if res.status_code == 404 else None
+        if isinstance(detail, dict) and detail.get("code"):
+            # A coded refusal, as 404 catalogue_off (CRM-Q31-1). The tool
+            # reads it as an error, and the record keeps it.
+            from evals.crm_founder_questions.checkers import REFUSED
+
+            return {REFUSED: {"status": 404, "code": detail["code"]}}
         assert res.status_code == 200, (query, res.status_code, res.text[:500])
         return res.json()
     return answer

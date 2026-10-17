@@ -230,9 +230,15 @@ async def mirrored_modules(db: Any) -> dict[str, dict[str, Any]]:
     latest = await profiles.latest(db, str(org))
     if latest is None:
         return {}
+    return mirrored_of(latest.profile)
+
+
+def mirrored_of(profile: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """The mirrored generic modules of one source profile, by API name, in
+    the profile order. The one filter of :func:`mirrored_modules`."""
     return {
         str(row["api_name"]): row
-        for row in _mapping().generic_modules(latest.profile)
+        for row in _mapping().generic_modules(profile)
         if row.get("mirrored") and row.get("api_name")
     }
 

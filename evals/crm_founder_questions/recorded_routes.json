@@ -8,6 +8,9 @@
    "group_field": "Invoice_Date",
    "field": "Grand_Total",
    "field_type": "currency",
+   "field_label": "Grand Total",
+   "group_field_label": "Invoice Date",
+   "keys": {},
    "group_field_type": "date",
    "bucket": "month",
    "groups": [
@@ -55,6 +58,9 @@
    "group_field": "Received_On",
    "field": "Amount",
    "field_type": "currency",
+   "field_label": "Amount",
+   "group_field_label": "Received On",
+   "keys": {},
    "group_field_type": "datetime",
    "bucket": "month",
    "groups": [
@@ -87,6 +93,9 @@
    "group_field": "Invoice_Date",
    "field": "Grand_Total",
    "field_type": "currency",
+   "field_label": "Grand Total",
+   "group_field_label": "Invoice Date",
+   "keys": {},
    "group_field_type": "date",
    "bucket": "quarter",
    "groups": [
@@ -124,6 +133,9 @@
    "group_field": null,
    "field": "Plant_Capacity_MLD",
    "field_type": "number",
+   "field_label": "Plant Capacity (MLD)",
+   "group_field_label": null,
+   "keys": {},
    "group_field_type": null,
    "bucket": null,
    "groups": [
@@ -156,6 +168,9 @@
    "group_field": "Site_State",
    "field": null,
    "field_type": null,
+   "field_label": null,
+   "group_field_label": "Site State",
+   "keys": {},
    "group_field_type": "select",
    "bucket": null,
    "groups": [
@@ -198,6 +213,9 @@
    "group_field": "Key_Account",
    "field": null,
    "field_type": null,
+   "field_label": null,
+   "group_field_label": "Key Account",
+   "keys": {},
    "group_field_type": "boolean",
    "bucket": null,
    "groups": [
@@ -225,6 +243,9 @@
    "group_field": "Segment",
    "field": null,
    "field_type": null,
+   "field_label": null,
+   "group_field_label": "Segment",
+   "keys": {},
    "group_field_type": "select",
    "bucket": null,
    "groups": [
@@ -257,6 +278,9 @@
    "group_field": null,
    "field": "Quote_Value",
    "field_type": "currency",
+   "field_label": "Quote Value",
+   "group_field_label": null,
+   "keys": {},
    "group_field_type": null,
    "bucket": null,
    "groups": [],
@@ -273,6 +297,9 @@
    "group_field": null,
    "field": "Annual_Revenue",
    "field_type": "currency",
+   "field_label": "Annual Revenue",
+   "group_field_label": null,
+   "keys": {},
    "group_field_type": null,
    "bucket": null,
    "groups": [
@@ -305,6 +332,9 @@
    "group_field": "Status",
    "field": null,
    "field_type": null,
+   "field_label": null,
+   "group_field_label": "Status",
+   "keys": {},
    "group_field_type": "select",
    "bucket": null,
    "groups": [
@@ -337,6 +367,9 @@
    "group_field": null,
    "field": null,
    "field_type": null,
+   "field_label": null,
+   "group_field_label": null,
+   "keys": {},
    "group_field_type": null,
    "bucket": null,
    "groups": [
@@ -369,6 +402,9 @@
    "group_field": "Status",
    "field": "Balance_Due",
    "field_type": "currency",
+   "field_label": "Balance Due",
+   "group_field_label": "Status",
+   "keys": {},
    "group_field_type": "select",
    "bucket": null,
    "groups": [
@@ -401,6 +437,9 @@
    "group_field": null,
    "field": "Balance_Due",
    "field_type": "currency",
+   "field_label": "Balance Due",
+   "group_field_label": null,
+   "keys": {},
    "group_field_type": null,
    "bucket": null,
    "groups": [
@@ -433,6 +472,9 @@
    "group_field": "Client",
    "field": "Balance_Due",
    "field_type": "currency",
+   "field_label": "Balance Due",
+   "group_field_label": "Client",
+   "keys": {},
    "group_field_type": "lookup",
    "bucket": null,
    "groups": [
@@ -625,6 +667,9 @@
    "group_field": "Status",
    "field": "Balance_Due",
    "field_type": "currency",
+   "field_label": "Balance Due",
+   "group_field_label": "Status",
+   "keys": {},
    "group_field_type": "select",
    "bucket": null,
    "groups": [
@@ -657,6 +702,9 @@
    "group_field": null,
    "field": "Discount",
    "field_type": "currency",
+   "field_label": "Discount",
+   "group_field_label": null,
+   "keys": {},
    "group_field_type": null,
    "bucket": null,
    "groups": [
@@ -689,6 +737,9 @@
    "group_field": null,
    "field": "Grand_Total",
    "field_type": "currency",
+   "field_label": "Grand Total",
+   "group_field_label": null,
+   "keys": {},
    "group_field_type": null,
    "bucket": null,
    "groups": [
@@ -721,6 +772,9 @@
    "group_field": null,
    "field": "Grand_Total",
    "field_type": "currency",
+   "field_label": "Grand Total",
+   "group_field_label": null,
+   "keys": {},
    "group_field_type": null,
    "bucket": null,
    "groups": [
@@ -753,6 +807,9 @@
    "group_field": null,
    "field": "Grand_Total",
    "field_type": "currency",
+   "field_label": "Grand Total",
+   "group_field_label": null,
+   "keys": {},
    "group_field_type": null,
    "bucket": null,
    "groups": [
@@ -785,6 +842,9 @@
    "group_field": null,
    "field": "Grand_Total",
    "field_type": "currency",
+   "field_label": "Grand Total",
+   "group_field_label": null,
+   "keys": {},
    "group_field_type": null,
    "bucket": null,
    "groups": [
@@ -817,6 +877,9 @@
    "group_field": "Client",
    "field": "Grand_Total",
    "field_type": "currency",
+   "field_label": "Grand Total",
+   "group_field_label": "Client",
+   "keys": {},
    "group_field_type": "lookup",
    "bucket": null,
    "groups": [
@@ -1009,6 +1072,9 @@
    "group_field": null,
    "field": null,
    "field_type": null,
+   "field_label": null,
+   "group_field_label": null,
+   "keys": {},
    "group_field_type": null,
    "bucket": null,
    "groups": [
@@ -1121,6 +1187,9 @@
    "group_field": "Status",
    "field": null,
    "field_type": null,
+   "field_label": null,
+   "group_field_label": "Status",
+   "keys": {},
    "group_field_type": "select",
    "bucket": null,
    "groups": [
@@ -1153,6 +1222,9 @@
    "group_field": null,
    "field": "Amount",
    "field_type": "currency",
+   "field_label": "Amount",
+   "group_field_label": null,
+   "keys": {},
    "group_field_type": null,
    "bucket": null,
    "groups": [
@@ -1185,6 +1257,9 @@
    "group_field": "Operator",
    "field": "Amount",
    "field_type": "currency",
+   "field_label": "Amount",
+   "group_field_label": "Operator",
+   "keys": {},
    "group_field_type": "lookup",
    "bucket": null,
    "groups": [
@@ -1277,6 +1352,9 @@
    "group_field": null,
    "field": "Amount",
    "field_type": "currency",
+   "field_label": "Amount",
+   "group_field_label": null,
+   "keys": {},
    "group_field_type": null,
    "bucket": null,
    "groups": [
@@ -1309,6 +1387,9 @@
    "group_field": "Mode",
    "field": "Amount",
    "field_type": "currency",
+   "field_label": "Amount",
+   "group_field_label": "Mode",
+   "keys": {},
    "group_field_type": "select",
    "bucket": null,
    "groups": [
@@ -1346,6 +1427,9 @@
    "group_field": null,
    "field": "Amount",
    "field_type": "currency",
+   "field_label": "Amount",
+   "group_field_label": null,
+   "keys": {},
    "group_field_type": null,
    "bucket": null,
    "groups": [
@@ -1378,6 +1462,9 @@
    "group_field": null,
    "field": "Amount",
    "field_type": "currency",
+   "field_label": "Amount",
+   "group_field_label": null,
+   "keys": {},
    "group_field_type": null,
    "bucket": null,
    "groups": [
@@ -1410,6 +1497,9 @@
    "group_field": null,
    "field": "Amount",
    "field_type": "currency",
+   "field_label": "Amount",
+   "group_field_label": null,
+   "keys": {},
    "group_field_type": null,
    "bucket": null,
    "groups": [
@@ -1442,6 +1532,9 @@
    "group_field": "Client",
    "field": "Amount",
    "field_type": "currency",
+   "field_label": "Amount",
+   "group_field_label": "Client",
+   "keys": {},
    "group_field_type": "lookup",
    "bucket": null,
    "groups": [
@@ -1621,6 +1714,12 @@
    "omitted": 0,
    "zone": "Asia/Kolkata",
    "values": 262
+  },
+  "/crm/catalogue": {
+   "_refused": {
+    "status": 404,
+    "code": "catalogue_off"
+   }
   },
   "/crm/modules": [
    {

@@ -831,3 +831,27 @@ class TestTheTableNames:
     def test_only_the_step_writes_it(self):
         source = ROUTE.read_text(encoding="utf-8")
         assert not re.search(r"\b(INSERT|UPDATE|DELETE)\b", source)
+
+
+
+# ── CRM-Q20-3a fix round, item 4: a part of an overlaid slot ────────────────
+
+
+def test_a_typed_part_of_an_overlay_reads_the_lane_type() -> None:
+    """With an approved deal role, a status group is a lane: its key is a
+    stage value, not a status id. The part reads the lane type, and the
+    Unsorted lane is a stated gap, never a row of a stage."""
+    from gateway.routes.crm.aggregate import AggregateGroup, AggregateResponse
+
+    answer = AggregateResponse(
+        entity="deals", measure="count", group_by="status", total=7,
+        overlay={"slot": "deal", "module": "Commercials"},
+        groups=[AggregateGroup(key="Proposal", label="Proposal", value=1, type="open"),
+                AggregateGroup(key="Won", label="Won", value=1, type="won"),
+                AggregateGroup(key=None, label="Unsorted", value=3, type="unsorted")])
+    query = next(q for q in dg.DIGEST_QUERIES if q.key == "open_deals_by_stage")
+    part = dg._part(query, answer, {})
+    assert part["rows"] == [{"label": "Proposal", "value": "1"}]
+    assert (part["unsorted"], part["from_module"]) == ("3", "Commercials")
+    closed = next(q for q in dg.DIGEST_QUERIES if q.key == "won_lost")
+    assert dg._part(closed, answer, {})["rows"] == [{"label": "Won", "value": "1"}]

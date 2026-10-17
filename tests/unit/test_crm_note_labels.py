@@ -209,8 +209,9 @@ def _events(caps, name: str) -> list[dict[str, Any]]:
 class TestTheRegistry:
     def test_the_feature_is_in_the_registry_and_not_in_the_email_set(self):
         # CRM-Q20-1 adds the three features of the mapping pipeline.
+        # CRM-Q31-3 adds the catalogue step of the same pipeline.
         assert df.CRM_FEATURES == ("crm.note_labels", "crm.map_role", "crm.map_target",
-                                   "crm.map_stage")
+                                   "crm.map_stage", "crm.map_catalogue")
         assert nl.FEATURE in df.REGISTERED
         assert nl.FEATURE in df.ON_FEATURES
         assert nl.FEATURE not in df.FEATURES

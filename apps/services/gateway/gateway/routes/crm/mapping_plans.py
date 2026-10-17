@@ -51,6 +51,17 @@ read, :func:`lock_plan` compares the approved snapshot with the approved rows.
 When they differ, it writes a new approved version of the live set, by
 ``system``.
 
+**The catalogue (CRM-Q31-3, ``crm_platform.md`` §18.13.4).** A snapshot can
+also hold ``catalogue`` items, one for each module: what the module is for
+and its key fields. They apply with no approval, through
+:func:`apply_catalogue`, so two rules hold. 1. The catalogue rides the
+version in use: :func:`commit` puts in the ``catalogue`` items of the
+approved version in use, and drops those of the snapshot that it gets, unless
+:func:`apply_catalogue` passes ``catalogue``. 2. A draft holds no catalogue
+item: :func:`write_draft`, :func:`carry_draft` and ``POST
+/crm/mapping/plans`` strip them, on both sides of each compare. The
+``rule_count`` of the list leaves them out.
+
 **One lock order.** A writer takes the plan lock, then every rule row of
 the provider through ``core.FIELD_RULE_LOCK_SQL`` (by entity, then field),
 and only then reads the profile or locks one row. The sync's ``mark_stale``
@@ -83,6 +94,13 @@ from typing import Any, Literal
 from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
 from fastapi import Depends, HTTPException
+from gateway.crm_sync.catalogue import (
+    KIND_CATALOGUE,
+    is_catalogue,
+    item_problem,
+    merge_item,
+    without_catalogue,
+)
 from gateway.routes.crm.core import (
     ENTITIES,
     FIELD_RULE_LOCK_ORDER,
@@ -140,8 +158,11 @@ _PLAN_COLUMNS = (
 )
 #: The list carries no snapshot, only its count. One snapshot is
 #: ``GET /crm/mapping/plans/{version}``.
+#: CRM-Q31-3: ``rule_count`` leaves out the ``catalogue`` items, so the Field
+#: map card counts what the admin approves.
 _LIST_SQL = (
-    "SELECT version, state, jsonb_array_length(rules) AS rule_count, created_by, "
+    "SELECT version, state, (SELECT count(*) FROM jsonb_array_elements(rules) AS e "
+    "WHERE coalesce(e ->> 'kind', 'field') <> 'catalogue') AS rule_count, created_by, "
     "created_at, approved_by, approved_at, based_on FROM crm_mapping_plans "
     "ORDER BY version DESC"
 )
@@ -357,8 +378,12 @@ def _kind_error(code: str, message: str, item: Mapping[str, Any]) -> HTTPExcepti
 def kind_key(item: Mapping[str, Any]) -> tuple[Any, ...] | None:
     """The identity of an item of a CRM-Q20-1 kind, or ``None`` for another
     kind. One ``role`` for each slot, one ``target`` for each slot, module
-    and target, and one ``stage`` for each slot and module."""
+    and target, and one ``stage`` for each slot and module. CRM-Q31-3:
+    one ``catalogue`` item for each module, which :func:`check_kinds` checks
+    by its own rule 4."""
     kind = item.get("kind")
+    if kind == KIND_CATALOGUE:
+        return (KIND_CATALOGUE, item.get("module"))
     if kind == KIND_ROLE:
         return (KIND_ROLE, item.get("slot"))
     if kind == KIND_TARGET:
@@ -396,6 +421,11 @@ def check_kinds(others: Sequence[Mapping[str, Any]]) -> None:
     3. Each value of a ``stage`` maps to ``won``, ``lost`` or ``open``
        (``bad_stage``, ``executor.stage_problem``).
 
+    4. A ``catalogue`` item names a module, a purpose of
+       ``catalogue.PURPOSES`` or ``null``, a field or ``null`` for each key
+       part, and ``code``, ``ai`` or ``admin`` for each part in ``by``
+       (``bad_catalogue``, CRM-Q31-3). It needs no ``role``.
+
     Two items with one identity (:func:`kind_key`) are a 422 ``duplicate``.
     An item of another kind is not checked here.
     """
@@ -412,6 +442,12 @@ def check_kinds(others: Sequence[Mapping[str, Any]]) -> None:
         seen.add(key)
         kind = item.get("kind")
         if kind == KIND_ROLE:
+            continue
+        if kind == KIND_CATALOGUE:
+            problem = item_problem(item)
+            if problem is not None:
+                raise _kind_error(
+                    "bad_catalogue", f"The catalogue item is not legal ({problem}).", item)
             continue
         if roles.get(item.get("slot")) != item.get("module"):
             raise _kind_error(
@@ -598,6 +634,7 @@ async def commit(
     by: str,
     based_on: int | None,
     draft: int | None = None,
+    catalogue: Sequence[Mapping[str, Any]] | None = None,
 ) -> Any:
     """Approve a snapshot, in the caller's transaction, under :func:`lock_plan`.
 
@@ -609,7 +646,20 @@ async def commit(
     CRM-Q20-1: the items of the kinds ``role``, ``target`` and ``stage`` pass
     :func:`check_kinds` first, so a draft approve, a restore and a per-rule
     change all keep the three rules of the kinds.
+
+    CRM-Q31-3: the catalogue rides the version in use. With *catalogue*
+    ``None``, the ``catalogue`` items of *others* drop out, and those of the
+    approved version in use go in. So a draft approve, a restore and a change
+    of one rule never bring back an old catalogue. Only
+    :func:`apply_catalogue` passes *catalogue*.
     """
+    if catalogue is None:
+        in_use = await _approved(db)
+        catalogue = (
+            [o for o in split_rules(_rules_of(in_use))[1] if is_catalogue(o)]
+            if in_use is not None else []
+        )
+    others = [*without_catalogue(others), *(dict(c) for c in catalogue)]
     check_kinds(others)
     # The rule rows are locked first, so the profile and the checks read the
     # state that the writes below act on.
@@ -714,6 +764,8 @@ async def carry_draft(
     """
     fields, others = split_rules(_rules_of(draft))
     live_fields, live_others = split_rules(_rules_of(approved))
+    # CRM-Q31-3: a draft holds no catalogue item, on either side of the compare.
+    others, live_others = without_catalogue(others), without_catalogue(live_others)
     kinds = [o for o in others if kind_key(o) is not None
              and not (drop_slot is not None and o.get("slot") == drop_slot)]
     merged = merge_kinds(live_others, kinds)
@@ -753,6 +805,19 @@ def roles_of(items: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     return out
 
 
+async def approved_others(db: Any, org: str) -> list[dict[str, Any]]:
+    """The items of the approved version of the bound org that are not
+    ``field`` rules: ``role``, ``target``, ``stage`` and ``catalogue``. Empty
+    with no approved version. It reads with the org in the predicate and
+    through RLS. ``approved_overlays`` and the catalogue (CRM-Q31-1) read
+    the plan through it."""
+    row = (await db.execute(text(_APPROVED_OF_SQL), {"org": org})).first()
+    if row is None:
+        return []
+    _fields, others = split_rules(_rules_of(row))
+    return others
+
+
 async def approved_overlays(db: Any, org: str) -> dict[str, str]:
     """CRM-Q20-2 (§18.9.6, the read path of option A): the module of each
     approved ``role``, by slot, in the caller's tenant session.
@@ -763,11 +828,7 @@ async def approved_overlays(db: Any, org: str) -> dict[str, str]:
     """
     from gateway.routes.crm.modules import mirrored_modules
 
-    row = (await db.execute(text(_APPROVED_OF_SQL), {"org": org})).first()
-    if row is None:
-        return {}
-    _fields, others = split_rules(_rules_of(row))
-    roles = roles_of(others)
+    roles = roles_of(await approved_others(db, org))
     if not roles:
         return {}
     mirrored = await mirrored_modules(db)
@@ -831,10 +892,12 @@ async def write_draft(
     # Version 1 of an org with no plan is the work of the system, not of the
     # pipeline, so the lock names the system.
     approved = await lock_plan(db, SYSTEM_ACTOR)
-    items = await _not_dismissed(db, org, items, digest)
+    # CRM-Q31-3: a draft holds no catalogue item, on either side of the compare.
+    items = without_catalogue(await _not_dismissed(db, org, items, digest))
     draft = await open_draft(db, approved)
     base = draft or approved
     fields, others = split_rules(_rules_of(base))
+    others = without_catalogue(others)
     merged = merge_kinds(others, items)
     check_kinds(merged)
     if _canonical(merged) == _canonical(others):
@@ -848,6 +911,43 @@ async def write_draft(
     })).first()
     _log.info("crm.mapping_plan_suggested version=%s items=%s", row.version, len(merged))
     return row
+
+
+async def apply_catalogue(
+    db: Any, items: Sequence[Mapping[str, Any]], *, by: str, org: str,
+) -> Any | None:
+    """Apply ``catalogue`` items with no approval (CRM-Q31-3, §18.13.4), in
+    the caller's tenant session.
+
+    It takes the plan lock (:func:`lock_plan`) and merges *items* into the
+    catalogue of the version in use, part by part. A part of the admin stays
+    (``catalogue.merge_item``). It calls :func:`commit` with the field rules
+    of the version in use, so no row of ``crm_field_rules`` changes. Then it
+    moves the open draft onto the new version (:func:`carry_draft`), so a
+    pick by hand stays. With no open draft it writes no draft. Returns the
+    new approved version, or ``None`` when the catalogue would not change.
+    """
+    approved = await lock_plan(db, by)
+    fields, others = split_rules(_rules_of(approved))
+    current = {str(o.get("module")): o for o in others if is_catalogue(o)}
+    merged = dict(current)
+    for item in items:
+        if not is_catalogue(item) or not isinstance(item.get("module"), str):
+            continue
+        module = str(item["module"])
+        merged[module] = merge_item(merged.get(module), item)
+    catalogue = [merged[m] for m in sorted(merged)]
+    if _canonical(catalogue) == _canonical([current[m] for m in sorted(current)]):
+        return None
+    draft = await open_draft(db, approved)
+    plan = await commit(
+        db, org=org, fields=fields, others=others, by=by,
+        based_on=int(approved.version), catalogue=catalogue,
+    )
+    if draft is not None:
+        await carry_draft(db, draft, plan)
+    _log.info("crm.mapping_plan_catalogue version=%s modules=%s", plan.version, len(catalogue))
+    return plan
 
 
 # ── The wire ────────────────────────────────────────────────────────────────
@@ -988,6 +1088,8 @@ async def create_mapping_plan_draft(
         version, profile = await _profile(db, org)
         base = await open_draft(db, approved) or approved
         fields, others = split_rules(_rules_of(base))
+        # CRM-Q31-3: a draft holds no catalogue item.
+        others = without_catalogue(others)
         current = {r.key: r for r in fields}
         empties: dict[str, frozenset[str]] = {}
         for change in payload.changes:

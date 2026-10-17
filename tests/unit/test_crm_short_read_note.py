@@ -31,6 +31,8 @@ def _routes(short: Any = SHORT) -> dict[str, Any]:
         "/crm/aggregate": {"groups": [{"key": "a", "label": "a", "value": 3}], "total": 3,
                            "zone": "UTC"},
         "/crm/modules": [{"api_name": "Payment_Made", "label": "Payment Made", "count": 3003}],
+        # CRM-Q31-1: the catalogue is off, so crm_list_modules lists /crm/modules.
+        "/crm/catalogue": T._GatewayError("off", "catalogue_off", status=404),
         "/crm/modules/Payment_Made/records": {
             "rows": [{"id": _ID, "name": "PM-1"}], "total": 1, "field_defs": []},
         "/crm/contacts": {"rows": [{"id": _ID, "first_name": "Asha"}], "total": 1},

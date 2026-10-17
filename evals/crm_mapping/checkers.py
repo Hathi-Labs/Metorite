@@ -17,6 +17,10 @@ schema. Seven bars:
 * ``cost``: the run keeps under the token cap and the request cap.
 * ``cache``: a second run on the same schema makes no ``decide`` call, and
   gives the same items.
+* ``catalogue`` (CRM-Q31-3): the purpose and the key fields of each module
+  that the schema expects. A wrong answer fails the bar, a wrong amount too.
+  A part that the run left empty is not a failure, because none beats a
+  wrong answer.
 
 A scripted run replays answers that an agent wrote, so each bar must hold.
 """
@@ -29,6 +33,9 @@ from gateway.crm_sync import map_pipeline as mp
 
 #: The options that a question may name and that are no object of its state.
 _FREE_OPTIONS = frozenset({"none", "won", "lost", "open"})
+#: CRM-Q31-3: a purpose question names the purposes, which are no object of
+#: its state either.
+_FREE_OPTIONS = _FREE_OPTIONS | frozenset(mp.cat.PURPOSES)
 
 
 @dataclass
@@ -54,6 +61,7 @@ class Score:
             "no_value": not self.value_leaks,
             "cost": not self.cost_problems,
             "cache": not self.cache_problems,
+            "catalogue": not [m for m in self.misses if m.startswith("catalogue")],
         }
 
     def passed(self) -> bool:
@@ -101,6 +109,27 @@ def check_stages(expected: dict[str, Any], items: list[dict[str, Any]]) -> list[
     for key in sorted(set(expected) | set(got)):
         if expected.get(key) != got.get(key):
             misses.append(f"stage:{key}:{got.get(key)}!={expected.get(key)}")
+    return misses
+
+
+def check_catalogue(expected: dict[str, Any], entries: list[Any]) -> list[str]:
+    """Each expected part of each module against the final catalogue. An
+    expected ``null`` must stay empty. A part that the run left empty is no
+    miss."""
+    got = {e.module: e for e in entries}
+    misses = []
+    for module, parts in sorted(expected.items()):
+        entry = got.get(module)
+        for part, want in sorted(parts.items()):
+            if entry is None:
+                have = None
+            elif part == "purpose":
+                have = entry.purpose
+            else:
+                found = entry.fields.get(part)
+                have = found.key if found is not None else None
+            if have is not None and have != want:
+                misses.append(f"catalogue:{module}:{part}:{have}!={want}")
     return misses
 
 
