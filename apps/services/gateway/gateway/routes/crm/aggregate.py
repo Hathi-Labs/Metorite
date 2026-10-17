@@ -18,7 +18,11 @@ mirror is a 404 (``modules._require_module``), before any read of a record.
 
 **The measure.** ``count``, ``sum_amount`` and ``weighted`` (deals), or
 ``sum``, ``avg``, ``min`` and ``max`` of one number field, given as
-``field=<key>``.
+``field=<key>``. On a module, ``sum_amount`` is the sum of the amount that
+the catalogue names, and ``weighted`` is a 422 (CRM-Q31-2). A module also
+takes the key words of ``field_sql`` as a field name. This module holds no
+read of the catalogue and no alias rule: both live in ``field_sql.py`` and
+``catalogue.py``.
 
 **The group.** ``group_by`` names a fixed key of :data:`GROUPS`, or of
 :data:`MODULE_GROUPS` for a module. ``group_field=<key>`` groups by one field
@@ -104,8 +108,10 @@ from gateway.routes.crm.field_sql import (
     field_pairs,
     group_sql,
     measure_sql,
+    module_measure,
     module_scope,
     module_where,
+    used_keys,
     zoned,
 )
 from gateway.routes.crm.modules import _require_module, mirrored_modules
@@ -226,6 +232,11 @@ class AggregateResponse(BaseModel):
     #: The field of a ``sum``, ``avg``, ``min`` or ``max``, and its type.
     field: str | None = None
     field_type: str | None = None
+    #: The label of that field, and of the group field (CRM-Q31-2 item 5).
+    field_label: str | None = None
+    group_field_label: str | None = None
+    #: Each key word that the call used, with the real key that it read.
+    keys: dict[str, str] = {}
     #: The stored type of ``group_field``, so a caller can tell a ``datetime``
     #: bucket, which reads the zone, from a ``date`` bucket, which does not.
     group_field_type: str | None = None
@@ -320,8 +331,8 @@ def _check(
     if group_by is not None and group_by not in allowed:
         raise _refuse(f"Unknown group_by '{group_by}'. One of: {list(allowed)}.")
     if module is not None:
-        if measure in DEAL_MEASURES:
-            raise _refuse(f"'{measure}' needs deals. A module has no amount.")
+        if measure == "weighted":
+            raise _refuse("'weighted' needs deals. A module has no probability.")
         return None, module
     assert found is not None
     if found.table != "crm_deals" and (
@@ -460,6 +471,7 @@ class _Read:
     measured: FieldRef | None
     grouped: FieldRef | None
     zone: str
+    keys: dict[str, str]
 
 
 def _is_timeout(exc: DBAPIError) -> bool:
@@ -479,9 +491,11 @@ async def _read(
     await db.execute(text(_TIMEOUT_SQL), {"ms": str(STATEMENT_TIMEOUT_MS)})
     scope: FieldScope | None = None
     zone = ""
+    field_measure = measure
     if module is not None:
         _require_module(await mirrored_modules(db), module)
         scope = await module_scope(db, module)
+        field_measure, field = module_measure(measure, field)
         # CRM-Q25b: one zone for each bucket and each range of the answer.
         zone = await crm_zone(db, current_tenant())
         where = module_where(scope, module, pairs, zone=zone)
@@ -516,7 +530,7 @@ async def _read(
     else:
         value_sql, sum_sql, count_sql = MEASURES.get(measure, ""), "0", "0"
         if measured is not None and scope is not None:
-            sql = measure_sql(scope, measured, measure)
+            sql = measure_sql(scope, measured, field_measure)
             value_sql, sum_sql, count_sql = sql.value, sql.sum, sql.count
             bound.update(sql.params)
         rows = (await db.execute(
@@ -538,7 +552,11 @@ async def _read(
     order = (
         await _status_order(db, found) if found and group_by == "status" else {}
     )
-    return _Read(values, labels, order, measured, grouped, zone)
+    keys = (
+        used_keys(scope, [field, group_field, *(name for name, _value in pairs)])
+        if module is not None and scope is not None else {}
+    )
+    return _Read(values, labels, order, measured, grouped, zone, keys)
 
 
 @router.get("/aggregate", response_model=AggregateResponse)
@@ -611,6 +629,9 @@ async def aggregate(
         measure=measure, group_by=group_by, group_field=group_field,
         field=measured.key if measured is not None else None,
         field_type=measured.type if measured is not None else None,
+        field_label=measured.label if measured is not None else None,
+        group_field_label=grouped.label if grouped is not None else None,
+        keys=read.keys,
         group_field_type=grouped.type if grouped is not None else None,
         bucket=bucket if bucketed else None,
         groups=shown,

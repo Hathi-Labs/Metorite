@@ -956,7 +956,10 @@ async def crm_aggregate(
     lookup or date field; a date needs bucket 'month', 'quarter' or 'year'.
     Field keys and what each can do come from crm_list_fields. A core entity
     takes the filters of crm_list_records. A module takes field_filters:
-    {key: value}, or {'key.from': date, 'key.to': date} for a date field."""
+    {key: value}, or {'key.from': date, 'key.to': date} for a date field.
+    On a module, 'sum_amount' sums its amount, and field, group_field and
+    field_filters also take the key words '@amount', '@date', '@status' and
+    '@parent' (crm_list_modules names the key fields)."""
     slug = _entity_slug(entity, allow_module=True)
     params = _filters(
         q=q, status=status, owner=owner, pipeline_id=pipeline_id,
@@ -973,7 +976,9 @@ async def crm_aggregate(
     )
     data = await _get("/crm/aggregate", params) or {}
     groups = data.get("groups") or []
-    money = measure in _MONEY_MEASURES or data.get("field_type") == "currency"
+    module = slug.startswith(MODULE_PREFIX)
+    # On a module the amount is a field, so only a currency field is rupees.
+    money = (measure in _MONEY_MEASURES and not module) or data.get("field_type") == "currency"
 
     def fmt(value: Any) -> str:
         if value is None:
@@ -982,13 +987,22 @@ async def crm_aggregate(
             return f"INR {float(value):,.0f}"
         return f"{float(value):,.0f}" if measure == "count" else _number(float(value))
 
-    what = f"{measure} of {field}" if field else measure
-    by = group_by or f"{group_field}" + (f" ({bucket})" if bucket else "")
+    # CRM-Q31-2 item 6: the line names the label of the real field, and
+    # "the amount" when the field came from the key word or sum_amount.
+    keys = data.get("keys") or {}
+    name = data.get("field_label") or field or data.get("field")
+    if field or data.get("field"):
+        word = "sum" if measure == "sum_amount" else measure
+        what = f"{word} of {name}" + (" (the amount)" if "@amount" in keys else "")
+    else:
+        what = measure
+    grouped = data.get("group_field_label") or group_field
+    by = group_by or f"{grouped}" + (f" ({bucket})" if bucket else "")
     shown = _page_of(groups, page, "groups")
     plural = f"{ENTITY_LABELS[slug]}s" if slug in ENTITY_LABELS else _entity_label(slug)
-    if field and data.get("values") == 0:
+    if (field or data.get("field")) and data.get("values") == 0:
         # CRM-Q25c item 3: an empty field has no total, and 0 would be false.
-        return f"{plural}, {what} by {by}: no values recorded for {field}."
+        return f"{plural}, {what} by {by}: no values recorded for {name}."
     lines = [f"{plural}, {what} by {by}:"]
     lines.extend(f"- {g['label']}: {fmt(g.get('value'))}" for g in shown.items)
     lines.append(f"{_OVERALL.get(measure, 'Total')}: {fmt(data.get('total'))}.")
@@ -1006,7 +1020,43 @@ async def crm_aggregate(
         # CRM-Q25b: the route took each month on the clock of the CRM zone.
         # A `date` bucket takes no zone, so the line would be false there.
         lines.append(f"Months count in the CRM time zone, {zone}.")
+    if slug in ENTITY_LABELS and data.get("total") == 0:
+        empty = await _empty_core_line(slug)
+        if empty:
+            lines.append(empty)
     return "\n".join(lines)
+
+
+#: CRM-Q31-2 item 7: what the modules that fit an empty core entity hold.
+_CORE_HOLDS: dict[str, str] = {
+    "deals": "sales", "organizations": "customers", "contacts": "contacts",
+    "leads": "leads",
+}
+
+
+async def _empty_core_line(slug: str) -> str | None:
+    """The empty core line (section 18.13.4): the core entity holds no
+    records, and the catalogue names the modules with a fitting purpose.
+    ``None`` when the catalogue is off, the entity holds records, or no
+    module fits. Only a Mirror CRM has a module, so a Native CRM never gets
+    the line."""
+    try:
+        body = await _get("/crm/catalogue")
+    except _GatewayError:
+        # The line is a hint. The total above is the answer, so a failed
+        # read of the catalogue never fails the tool.
+        return None
+    entry = next((e for e in (body.get("entries") if isinstance(body, dict) else None) or []
+                  if isinstance(e, dict) and e.get("kind") == "entity"
+                  and e.get("entity") == slug), None)
+    if entry is None or int(entry.get("records") or 0) > 0:
+        return None
+    alike = [str(label) for label in entry.get("alike") or []]
+    if not alike:
+        return None
+    verb = "holds" if len(alike) == 1 else "hold"
+    return (f"{entry.get('label')} holds no records. {_names(alike)} {verb} "
+            f"{_CORE_HOLDS.get(slug, 'records')}.")
 
 
 @_read_tool
@@ -1063,8 +1113,8 @@ _MONEY_WORDS: tuple[tuple[str, str], ...] = (
 
 #: The last line of a catalogue answer.
 CATALOGUE_TOTAL_HINT = (
-    "For a total, call crm_aggregate with entity 'module:<api_name>', measure "
-    "'sum' and the amount field as field."
+    "For a total, call crm_aggregate on the module with measure 'sum_amount', "
+    "and group_field '@date' with a bucket."
 )
 
 

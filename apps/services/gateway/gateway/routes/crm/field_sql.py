@@ -25,6 +25,16 @@ literal of this module, and a bucket picks its unit and format from
 ``boolean`` and ``lookup`` by value, and ``date`` and ``datetime`` by a bucket.
 Any other type is a 422.
 
+**The key words of a module** (CRM-Q31-2, ``crm_platform.md`` §18.13.4). A
+module scope also takes ``@amount``, ``@date``, ``@status`` and ``@parent``.
+Each is an alias of the real field that the catalogue names for the module
+(``routes/crm/catalogue.entry_of``), and only when its type fits. A Zoho API
+name cannot start with ``@``, so a key word never hides a real field. The
+SQL binds the real key, so a key word never reaches the SQL text. A key word
+with no key field is a 422 ``no_key_field``. On a module, ``sum_amount`` is
+the ``sum`` of ``@amount`` (:func:`module_measure`). This module and the
+catalogue hold every alias rule, and ``aggregate.py`` holds none.
+
 **One zone for each month** (CRM-Q25b). :func:`crm_zone` gives the CRM zone,
 the zone of the Zoho org, or UTC. A ``datetime`` field and the fixed month
 groups of ``aggregate.py`` take their month on that clock, through
@@ -112,6 +122,17 @@ ZONE_PARAM = "agf_zone"
 MAX_DIGITS = 60
 MAX_EXPONENT = 100
 
+#: CRM-Q31-2: each key word of a module scope → its key part of the
+#: catalogue (``crm_sync.catalogue.KEY_PARTS``).
+KEY_WORDS: dict[str, str] = {
+    "@amount": "amount", "@date": "date", "@status": "status", "@parent": "parent",
+}
+AMOUNT_WORD = "@amount"
+
+#: CRM-Q31-2 item 4: a measure of a module that reads a key word, and the
+#: field measure that it is.
+MODULE_MEASURES: dict[str, tuple[str, str]] = {"sum_amount": ("sum", AMOUNT_WORD)}
+
 #: The parameter names of this module. A list filter uses no name with the
 #: prefix, except :data:`ZONE_PARAM`, which holds the same zone.
 _MEASURE_KEY = "agf_m"
@@ -146,6 +167,12 @@ class FieldScope:
     def ref(self, key: str | None) -> FieldRef:
         """The field named *key*, or a 422 that names the legal keys."""
         found = self.fields.get(key or "")
+        if found is None and (key or "") in KEY_WORDS:
+            raise HTTPException(status_code=422, detail={
+                "code": "no_key_field",
+                "message": f"{self.owner} has no key field for {key}. "
+                           "crm_list_modules names the key fields of each module.",
+            })
         if found is None:
             raise HTTPException(status_code=422, detail={
                 "code": "unknown_field",
@@ -214,13 +241,60 @@ async def core_scope(db: Any, slug: str) -> FieldScope:
 
 
 async def module_scope(db: Any, module: str) -> FieldScope:
-    """The fields of a mirrored module. The caller has checked the module
-    against the mirrored set of the profile (``modules._require_module``)."""
+    """The fields of a mirrored module, and its key words (CRM-Q31-2). The
+    caller has checked the module against the mirrored set of the profile
+    (``modules._require_module``).
+
+    The catalogue entry comes from ``catalogue.entry_of``, the ONE reader of
+    one entry, for the bound tenant. Outside ``CRM_CATALOGUE_ORGS`` it gives
+    no entry, and the scope has no key word.
+    """
+    from gateway.routes.crm.catalogue import entry_of
+    from gateway.routes.crm.core import current_tenant
+
     defs = await _field_defs(db, module)
-    return FieldScope(
-        column=MODULE_COLUMN, owner=f"module:{module}",
-        fields={d.key: _ref(d) for d in defs},
-    )
+    fields = {d.key: _ref(d) for d in defs}
+    fields.update(key_words(fields, await entry_of(db, current_tenant(), module)))
+    return FieldScope(column=MODULE_COLUMN, owner=f"module:{module}", fields=fields)
+
+
+def key_words(fields: dict[str, FieldRef], entry: Any) -> dict[str, FieldRef]:
+    """Each key word of *entry* (a ``crm_sync.catalogue.Entry``, or ``None``)
+    → the real field it names. A key word joins only when its field is in
+    *fields* and its type fits the part (``catalogue.PART_TYPES``): a measure
+    type for ``@amount``, a date type for ``@date``, a select for
+    ``@status`` and a lookup for ``@parent``."""
+    from gateway.crm_sync.catalogue import PART_TYPES
+
+    parts = getattr(entry, "fields", None) or {}
+    out: dict[str, FieldRef] = {}
+    for word, part in KEY_WORDS.items():
+        named = parts.get(part)
+        ref = fields.get(named.key) if named is not None else None
+        if ref is not None and ref.type in PART_TYPES[part]:
+            out[word] = ref
+    return out
+
+
+def module_measure(measure: str, field: str | None) -> tuple[str, str | None]:
+    """The field measure and the field of a module aggregate (CRM-Q31-2
+    item 4). ``sum_amount`` is the ``sum`` of ``@amount``. Each other measure
+    stays as the call gives it."""
+    return MODULE_MEASURES.get(measure, (measure, field))
+
+
+def used_keys(scope: FieldScope, names: list[str | None]) -> dict[str, str]:
+    """Each key word that *names* use, with the real key it read (CRM-Q31-2
+    item 5). A filter name may end in ``.from`` or ``.to``."""
+    out: dict[str, str] = {}
+    for name in names:
+        word = name or ""
+        for end in RANGE_ENDS:
+            if word.endswith(end) and word[: -len(end)] in KEY_WORDS:
+                word = word[: -len(end)]
+        if word in KEY_WORDS and word in scope.fields:
+            out[word] = scope.fields[word].key
+    return out
 
 
 def _refuse(message: str) -> HTTPException:
@@ -460,8 +534,10 @@ def _split(scope: FieldScope, name: str) -> tuple[FieldRef, str | None]:
     """The field and the range end of one filter name."""
     if name not in scope.fields:
         for end in RANGE_ENDS:
-            if name.endswith(end) and name[: -len(end)] in scope.fields:
-                return scope.fields[name[: -len(end)]], end
+            base = name[: -len(end)]
+            if name.endswith(end) and (base in scope.fields or base in KEY_WORDS):
+                # A key word with no key field is the 422 `no_key_field`.
+                return scope.ref(base), end
     return scope.ref(name), None
 
 
@@ -534,9 +610,11 @@ def module_where(
 
 
 __all__ = [
-    "BUCKETS", "DATE_TYPES", "DEFAULT_ZONE", "FIELD_MEASURES", "FIELD_PREFIX",
-    "MEASURE_TYPES", "VALUE_GROUP_TYPES", "ZONE_PARAM", "FieldRef", "FieldScope",
-    "GroupSql", "MeasureSql", "WhereSql", "check_group", "check_measure",
-    "core_scope", "crm_zone", "day_start", "field_pairs", "group_sql", "measure_sql",
-    "module_scope", "module_where", "zoned",
+    "AMOUNT_WORD", "BUCKETS", "DATE_TYPES", "DEFAULT_ZONE", "FIELD_MEASURES",
+    "FIELD_PREFIX", "KEY_WORDS", "MEASURE_TYPES", "MODULE_MEASURES",
+    "VALUE_GROUP_TYPES", "ZONE_PARAM", "FieldRef", "FieldScope", "GroupSql",
+    "MeasureSql", "WhereSql", "check_group", "check_measure", "core_scope",
+    "crm_zone", "day_start", "field_pairs", "group_sql", "key_words",
+    "measure_sql", "module_measure", "module_scope", "module_where", "used_keys",
+    "zoned",
 ]

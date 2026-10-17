@@ -69,6 +69,13 @@ def _member(org: str) -> Any:
 
 async def _call(p: Any, org: str, path: str = "/crm/catalogue") -> Any:
     """One request through the real router. The tenant comes from the user."""
+    return (await _calls(p, org, [path]))[0][0]
+
+
+async def _calls(p: Any, org: str, paths: list[str]) -> list[tuple[Any, float]]:
+    """Each request through ONE app, engine and client, with its own time.
+    So a time past the first is the route's own: the session, the
+    statements and the answer, and no engine setup."""
     import httpx
     from acb_auth import get_current_user
     from acb_common.db import bind_tenant, clear_tenant, release_tenant
@@ -92,7 +99,12 @@ async def _call(p: Any, org: str, path: str = "/crm/catalogue") -> Any:
                 transport=httpx.ASGITransport(app=app), base_url="http://crm.test",
             ) as client,
         ):
-            return await client.get(path)
+            out = []
+            for path in paths:
+                started = time.perf_counter()
+                res = await client.get(path)
+                out.append((res, time.perf_counter() - started))
+            return out
     finally:
         release_tenant(scope)
 
@@ -415,10 +427,9 @@ async def test_twenty_five_modules_and_1300_fields_answer_under_one_second(
             "SELECT count(*) FROM crm_field_defs WHERE organization_id = "
             "CAST(:o AS uuid)"), {"o": a}).scalar()
     assert count == 1300
-    await _call(p, a)  # warm the engine and the imports
-    started = time.perf_counter()
-    res = await _call(p, a)
-    took = time.perf_counter() - started
+    # The first call warms the engine and the imports. The second is timed.
+    _warm, (res, took) = await _calls(p, a, ["/crm/catalogue", "/crm/catalogue"])
+    print(f"CRM-Q31-1 25 modules, 1,300 fields: {took:.3f} s")
     assert res.status_code == 200, res.text
     assert len(res.json()["entries"]) == 29
     assert took < BOUND_S, f"the catalogue took {took:.3f} s"

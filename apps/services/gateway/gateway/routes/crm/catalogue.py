@@ -122,6 +122,9 @@ class CatalogueEntry(BaseModel):
     links: list[KeyField] = Field(default_factory=list)
     open: list[str] = Field(default_factory=list)
     stale: list[str] = Field(default_factory=list)
+    #: CRM-Q31-2 item 7: a core entity only. The label of each module whose
+    #: purpose fits the entity and that holds records.
+    alike: list[str] = Field(default_factory=list)
 
 
 class CatalogueResponse(BaseModel):
@@ -152,7 +155,7 @@ def _wire(entry: Any) -> CatalogueEntry:
         name=_key_field(entry.name) if entry.name is not None else None,
         owner=KeyField(key=OWNER[0], label=OWNER[1], type=OWNER[2]),
         links=[_key_field(f) for f in entry.links],
-        open=list(entry.open), stale=list(entry.stale),
+        open=list(entry.open), stale=list(entry.stale), alike=list(entry.alike),
     )
 
 

@@ -136,6 +136,17 @@ PARENT_PURPOSES: tuple[frozenset[str], ...] = (
     frozenset({"customer_site", "person"}),
 )
 
+#: CRM-Q31-2 item 7: the purposes that hold the records of each core entity,
+#: by its API slug. A Mirror org whose core entity holds no record learns
+#: which module holds them.
+CORE_FITS: Mapping[str, frozenset[str]] = {
+    "deals": frozenset({"deal", "contract", "invoice"}),
+    "organizations": frozenset({"customer_company"}),
+    "contacts": frozenset({"person", "customer_site"}),
+    "leads": frozenset({"lead"}),
+}
+
+
 # ── The inputs and the entry ─────────────────────────────────────────────────
 
 
@@ -184,7 +195,9 @@ class Entry:
 
     ``fields`` maps a key part to its field. A part with ``None`` was asked,
     and no answer was sure. An absent part is not answered. ``open`` names
-    each part that waits for a question.
+    each part that waits for a question. ``alike`` (a core entity only) names
+    the label of each module whose purpose fits the entity and that holds
+    records (CRM-Q31-2 item 7).
     """
 
     module: str
@@ -199,6 +212,7 @@ class Entry:
     links: list[Field] = field(default_factory=list)
     open: list[str] = field(default_factory=list)
     stale: list[str] = field(default_factory=list)
+    alike: list[str] = field(default_factory=list)
 
 
 # ── The words of a name (the rule of map_pipeline.SLOT_WORDS) ───────────────
@@ -485,11 +499,19 @@ def build(
     roles = dict(roles or {})
     stored = stored_items(items)
     purposes = purposes_of(sources, roles, stored)
-    return [entry_of(src, purposes, roles, stored.get(src.module)) for src in sources]
+    entries = [entry_of(src, purposes, roles, stored.get(src.module)) for src in sources]
+    for entry in entries:
+        fits = CORE_FITS.get(entry.entity) if entry.kind == "entity" else None
+        if fits:
+            entry.alike = [
+                e.label for e in entries
+                if e.kind == "module" and e.records > 0 and e.purpose in fits
+            ]
+    return entries
 
 
 __all__ = [
-    "AMOUNT_NAMES", "BY_WORDS", "CORE_KEY_COLUMNS", "CORE_PURPOSES",
+    "AMOUNT_NAMES", "BY_WORDS", "CORE_FITS", "CORE_KEY_COLUMNS", "CORE_PURPOSES",
     "KEY_PARTS", "KIND_CATALOGUE", "MONEY_PURPOSES", "PART_TYPES", "PURPOSES",
     "PURPOSE_WORDS", "SLOT_PURPOSES", "STANDARD_PURPOSES", "SYSTEM_TIMES", "Entry",
     "Field", "Source", "build", "code_amount", "code_date", "code_parent",

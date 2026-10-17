@@ -1025,8 +1025,12 @@ async def test_the_aggregate_sends_the_filters_of_the_list(monkeypatch) -> None:
         "deals", "owner", measure="weighted", close_from="2026-10-01",
         custom={"cf_region": "South"},
     )
-    params = calls[-1]["params"]
-    assert calls[-1]["path"] == "/crm/aggregate"
+    # CRM-Q31-2 item 7: a total of 0 on a core entity reads the catalogue
+    # after the aggregate, for the empty core line.
+    aggregate = [c for c in calls if c["path"] == "/crm/aggregate"]
+    assert len(aggregate) == 1
+    assert [c["path"] for c in calls][-1] == "/crm/catalogue"
+    params = aggregate[0]["params"]
     assert (params["entity"], params["group_by"], params["measure"]) == (
         "deals", "owner", "weighted",
     )

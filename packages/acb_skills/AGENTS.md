@@ -370,6 +370,10 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    `crm_list_modules` reads `GET /crm/catalogue` first (CRM-Q31-1). It
    renders one line for each entry, then the money block. On a 404
    `catalogue_off` it answers from `/crm/modules`, as before.
+   `crm_aggregate` names the label of the real field, and "the amount"
+   for a key word (CRM-Q31-2). A total of 0 on a core entity reads the
+   catalogue once more. When the entity holds no records, the answer
+   names the modules that hold them.
    Fences: `tests/unit/test_crm_agent.py`, `tests/unit/test_skills_registry.py`
    and `tests/unit/test_reports_by_code.py`.
 5m. untrusted.py -- the ONE frame for text that a stranger wrote (WS-17
