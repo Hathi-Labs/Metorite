@@ -538,6 +538,23 @@ def test_6_the_value_of_a_live_rule_goes_back_to_null_when_the_draft_drops_it() 
     assert values["industry"] is None
 
 
+def test_6_a_numeric_rule_value_from_the_database_matches_its_float() -> None:
+    """Round 2 review P2. The database gives a NUMERIC column as a
+    ``Decimal``, and the transform gives a ``float``. ``Decimal('1234.56')
+    == 1234.56`` is False, so the preview read a live rule's value as a
+    value of the fixed map, and kept it."""
+    from decimal import Decimal
+
+    values = {"annual_revenue": Decimal("1234.56")}
+    preview_record("company", values, {"Revenue": "1234.56"},
+                   live={"annual_revenue": "Revenue"}, draft={})
+    assert values["annual_revenue"] is None, "the live rule wrote it, so it goes back"
+    zoho = {"annual_revenue": Decimal("999.00")}
+    preview_record("company", zoho, {"Revenue": "1234.56"},
+                   live={"annual_revenue": "Revenue"}, draft={})
+    assert zoho["annual_revenue"] == Decimal("999.00"), "a Zoho value stays"
+
+
 def test_6_the_preview_names_the_columns_that_did_not_map_never_a_value() -> None:
     values: dict[str, Any] = {"no_of_employees": None, "lost_note": None}
     missed = preview_record("lead", values, {"Head": "lots", "Why": "Price"}, live={},

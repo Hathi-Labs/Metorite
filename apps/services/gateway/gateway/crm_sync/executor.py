@@ -64,6 +64,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from types import MappingProxyType
 from typing import Any
 
@@ -478,7 +479,22 @@ def _is_rule_value(
     or NULL. Then the live rule wrote it, and not the fixed map."""
     if stored is None:
         return True
-    return run(target, custom.get(field_api_name)).value == stored
+    return same_value(run(target, custom.get(field_api_name)).value, stored)
+
+
+def same_value(a: Any, b: Any) -> bool:
+    """Equal as the column holds them. A number compares through its text as
+    a ``Decimal``: the transform gives a ``float`` for a NUMERIC column, and
+    the database gives a ``Decimal``, and ``Decimal('1234.56') == 1234.56``
+    is False (round 2 review, P2). Each other value compares as it is."""
+    numbers = (int, float, Decimal)
+    if (isinstance(a, numbers) and isinstance(b, numbers)
+            and not isinstance(a, bool) and not isinstance(b, bool)):
+        try:
+            return Decimal(str(a)) == Decimal(str(b))
+        except InvalidOperation:
+            return False
+    return a == b
 
 
 __all__ = [
