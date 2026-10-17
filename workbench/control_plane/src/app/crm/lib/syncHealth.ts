@@ -265,7 +265,15 @@ export function isUnavailable(entity: HealthEntity): boolean {
 
 /** Why the module is unavailable, in words the admin can act on (CRM-Q15). */
 export function unavailableSentence(entity: HealthEntity): string {
-  return (entity.last_run.hidden ?? 0) > 0 ? HIDDEN_SENTENCE : UNAVAILABLE_SENTENCE;
+  return isTurnedOff(entity) ? HIDDEN_SENTENCE : UNAVAILABLE_SENTENCE;
+}
+
+/**
+ * Zoho refused the module: it is turned off, or hidden from the user who
+ * connected (CRM-Q15). A missing scope is unavailable, and not turned off.
+ */
+export function isTurnedOff(entity: HealthEntity): boolean {
+  return isUnavailable(entity) && (entity.last_run.hidden ?? 0) > 0;
 }
 
 export function moduleState(module: HealthModule): string {
@@ -361,6 +369,76 @@ export function largeUnheld(health: SyncHealth | null | undefined, entity: Healt
 /** The suggestion for a large row that is not held. */
 export function largeSentence(label: string, count: number): string {
   return `${label} has ${recordCount(count)} records. Hold it, and sync it on its own when Metorite is quiet`;
+}
+
+// ── "Needs you" (CRM-Q17b item 8, spec section 18.9.6) ─────────────────────
+
+/** What the one button of a "Needs you" item does. */
+export type NeedsYouAction = "check-again" | "sync-alone" | "hold";
+
+/** The words of each button. */
+export const NEEDS_YOU_ACTIONS: Record<NeedsYouAction, string> = {
+  // A run of the one key, which asks Zoho at once (engine `_unavailable_now`).
+  "check-again": "Check again",
+  "sync-alone": "Sync it on its own",
+  hold: "Hold it",
+};
+
+export type NeedsYouItem = {
+  key: string;
+  kind: "unavailable" | "held" | "large";
+  /** The name of the module, or null when the text starts with it. */
+  name: string | null;
+  text: string;
+  action: NeedsYouAction;
+};
+
+/**
+ * The block at the top of Sync health (CRM-Q17b item 8): the modules that
+ * need the admin, each with one action. A module that Zoho refuses comes
+ * first ("Check again"), then a held module ("Sync it on its own"), then a
+ * large module that nobody decided on ("Hold it"). A key shows once, by
+ * that order.
+ */
+export function needsYou(health: SyncHealth | null | undefined): NeedsYouItem[] {
+  if (!health) return [];
+  const label = (key: string) => entityLabel(key, health.modules);
+  const seen = new Set<string>();
+  const items: NeedsYouItem[] = [];
+  const add = (item: NeedsYouItem) => {
+    if (seen.has(item.key)) return;
+    seen.add(item.key);
+    items.push(item);
+  };
+  for (const entity of health.entities.filter(isUnavailable)) {
+    add({
+      key: entity.key,
+      kind: "unavailable",
+      name: label(entity.key),
+      text: unavailableSentence(entity),
+      action: "check-again",
+    });
+  }
+  for (const key of heldKeys(health)) {
+    const count = recordsOf(health, key);
+    add({
+      key,
+      kind: "held",
+      name: count === null ? label(key) : null,
+      text: count === null ? "" : holdSentence(label(key), count),
+      action: "sync-alone",
+    });
+  }
+  for (const entity of health.entities.filter((e) => largeUnheld(health, e))) {
+    add({
+      key: entity.key,
+      kind: "large",
+      name: null,
+      text: largeSentence(label(entity.key), recordsOf(health, entity.key, entity) ?? 0),
+      action: "hold",
+    });
+  }
+  return items;
 }
 
 // ── A short read and the activities left out (CRM-Q24, spec section 18.10) ──

@@ -13,7 +13,9 @@
 // 6. The Columns picker has a search box, shows the chosen fields first, and
 //    shows "% filled" beside each field. A disabled box looks disabled.
 // 7. At phone width, each list row is a two-line card.
-// (Item 8 has its own block below.)
+// 8. Sync health opens with a "Needs you" block: held, large and turned-off
+//    modules, each with one action. The Sync switch of a turned-off module is
+//    disabled. The detail table folds.
 import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -23,6 +25,14 @@ import type { FieldDef } from "../lib/fields";
 import { fieldMatches, fillLabel } from "../lib/fields";
 import { SHOWN_FILTERS, hiddenActiveCount, moreFiltersLabel, splitFilters } from "../lib/filterBar";
 import type { CrmModule } from "../lib/modules";
+import {
+  HIDDEN_SENTENCE,
+  NEEDS_YOU_ACTIONS,
+  isTurnedOff,
+  needsYou,
+  type HealthEntity,
+  type SyncHealth,
+} from "../lib/syncHealth";
 import { DEFAULT_VIEW } from "../lib/urlState";
 import {
   MODULE_GROUP_LABEL,
@@ -39,6 +49,7 @@ import CrmRail from "./CrmRail";
 import FilterBar from "./FilterBar";
 import KanbanBoard from "./KanbanBoard";
 import { CARD_DETAILS, CHOSEN_HEADING, ColumnChoices, FULL_TIP, RecordCards } from "./RecordList";
+import { SyncHealthCardView } from "./SyncHealthCard";
 
 const noop = () => undefined;
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf-8");
@@ -464,5 +475,98 @@ describe("item 7: at phone width each list row is a two-line card", () => {
   it("draws the cards on a phone, and the table elsewhere", () => {
     const list = read("./RecordList.tsx");
     expect(list).toMatch(/isMobile \? \(\s*<RecordCards/);
+  });
+});
+
+// ── Item 8: "Needs you" on Sync health ──────────────────────────────────────
+
+const entity = (key: string, over: Partial<HealthEntity> = {}): HealthEntity => ({
+  key,
+  zoho_count: 10,
+  ours: 10,
+  last_run: {},
+  ...over,
+});
+
+const health = (over: Partial<SyncHealth> = {}): SyncHealth => ({
+  last_run: { kind: "incremental", status: "ok", started_at: null, finished_at: null, error: null, credits_used: 4 },
+  last_success_at: null,
+  next_run_at: null,
+  entities: [
+    entity("contacts"),
+    entity("deals", { zoho_count: null, ours: 0, last_run: { unavailable: 1, hidden: 1 } }),
+    entity("module:Invoices", { zoho_count: 31924, ours: 0 }),
+    entity("module:Payment_Received", { zoho_count: 8681, ours: 0 }),
+  ],
+  modules: [
+    { api_name: "Invoices", label: "Invoices", custom: false, api_supported: true, mirrored: true },
+    { api_name: "Payment_Received", label: "Payment Received", custom: true, api_supported: true, mirrored: true },
+  ],
+  history: [],
+  running: false,
+  credits: { budget_24h: 500, used_24h: 20 },
+  holds: { "module:Invoices": { held: true, by: "auto", count: 31924, at: null } },
+  ...over,
+});
+
+describe("item 8: Sync health opens with a 'Needs you' block", () => {
+  it("lists the turned-off, held and large modules, each with one action", () => {
+    const items = needsYou(health());
+    expect(items.map((i) => [i.key, i.kind, i.action])).toEqual([
+      ["deals", "unavailable", "check-again"],
+      ["module:Invoices", "held", "sync-alone"],
+      ["module:Payment_Received", "large", "hold"],
+    ]);
+    expect(items[0].text).toBe(HIDDEN_SENTENCE);
+    expect(items[1].text).toBe("Invoices has 31,924 records in Zoho. Sync it on its own when Metorite is quiet, so the rest stays fast");
+    expect(NEEDS_YOU_ACTIONS["check-again"]).toBe("Check again");
+  });
+
+  it("lists a key once, and nothing for a healthy sync", () => {
+    const both = health({
+      entities: [entity("module:Invoices", { zoho_count: 31924, ours: 0, last_run: { unavailable: 1, hidden: 1 } })],
+    });
+    expect(needsYou(both).map((i) => i.kind)).toEqual(["unavailable"]);
+    expect(needsYou(health({ entities: [entity("contacts")], holds: {} }))).toEqual([]);
+    expect(needsYou(null)).toEqual([]);
+  });
+
+  const draw = (over: Record<string, unknown> = {}) =>
+    renderToStaticMarkup(
+      createElement(SyncHealthCardView, { health: health(), nowMs: 0, onSyncNow: noop, ...over }),
+    );
+
+  it("draws the block first, with one button for each item", () => {
+    const html = draw();
+    expect(html).toContain('aria-label="Needs you"');
+    expect(html.indexOf("Needs you")).toBeLessThan(html.indexOf("Credits used"));
+    for (const word of ["Check again", "Sync it on its own", "Hold it", HIDDEN_SENTENCE]) {
+      expect(html).toContain(word);
+    }
+  });
+
+  it("folds the detail table", () => {
+    const html = draw();
+    expect(html).toContain("Show the details");
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).not.toContain("<table");
+    expect(html).not.toContain("Modules in your Zoho");
+    expect(draw({ detailsOpen: true })).toContain("<table");
+  });
+
+  it("disables the Sync switch of a turned-off module", () => {
+    const html = draw({ detailsOpen: true });
+    const box = (name: string) => html.match(new RegExp(`<input[^>]*aria-label="Sync ${name}"[^>]*>`))?.[0] ?? "";
+    expect(box("Deals")).toContain('disabled=""');
+    expect(box("Contacts")).not.toContain('disabled=""');
+    expect(isTurnedOff(health().entities[1])).toBe(true);
+    // A missing scope is unavailable, and not turned off.
+    expect(isTurnedOff(entity("tasks", { last_run: { unavailable: 1 } }))).toBe(false);
+  });
+
+  it("reads the one short-read rule of lib/syncHealth.ts (Batch M review)", () => {
+    const card = read("./SyncHealthCard.tsx");
+    expect(card).toContain("shortReadSentence(entity)");
+    expect(card).not.toMatch(/short_by|zoho_count\s*-|-\s*entity\.ours/);
   });
 });
