@@ -90,6 +90,8 @@ class Question:
     forbid_numbers: tuple[Any, ...] = ()
     #: The answer must match none of these regular expressions.
     forbid_patterns: tuple[str, ...] = ()
+    #: Lines that the output of a tool must hold (CRM-Q30b).
+    tool_lines: tuple[str, ...] = ()
     #: False for the note search, which needs the embed door, not a route
     #: that the R8 test can serve.
     route_check: bool = True
@@ -548,21 +550,27 @@ def make(ds: Dataset) -> tuple[Question, ...]:
              "because the search needs the embed door.",
     ))
 
-    # The short read (CRM-Q24): Zoho counts more than the connected user can read.
+    # The short read (CRM-Q24, CRM-Q30b): Zoho counts more than the connected
+    # user can read, and the tool says so in one line.
     mirrored = len(pm)
+    zoho = ds.zoho_counts["Payment_Made"]
     add(Question(
         "Q31", "short_read", "How many Payment Made records do we have in Zoho?",
         (need(
             {"path": MODULES},
             agg("module:Payment_Made", measure="count"),
         ),),
-        (Fact("mirrored", mirrored, (0, "module", "Payment_Made", "count")),),
+        (Fact("mirrored", mirrored, (0, "module", "Payment_Made", "count")),
+         Fact("zoho", zoho, ("short", "module:Payment_Made", "zoho_count")),
+         Fact("readable", mirrored, ("short", "module:Payment_Made", "readable"),
+              in_answer=False)),
         flags=("connected zoho user", "sync health", "cannot see", "can't see", "can read",
                "can see", "may not include", "might not include", "not all", "permission",
                "visible to"),
-        forbid_numbers=(ds.zoho_counts["Payment_Made"],),
-        note="Zoho counts more records than the connected user can read. No tool shows "
-             "that count, so the answer must flag the gap and must not invent the Zoho count.",
+        tool_lines=(f"Note: Zoho holds {zoho:,} Payment_Made records, and the connected "
+                    f"Zoho user can read {mirrored:,}.",),
+        note="Zoho counts more records than the connected user can read. The tool says so "
+             "in one line (CRM-Q30b), and the answer must give both counts.",
     ))
     return tuple(out)
 

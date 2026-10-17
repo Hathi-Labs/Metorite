@@ -47,12 +47,22 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
 pytestmark = _DB_GATE
 
 
+def _mirror_on(monkeypatch) -> None:
+    """The short reads route (CRM-Q30b) needs the mirror switch too."""
+    from acb_common import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "crm_mirror", True, raising=False)
+    monkeypatch.setattr(settings, "crm_mirror_orgs", "*", raising=False)
+
+
 @pytest.fixture
 def seeded(promoted, monkeypatch):
     from evals.crm_founder_questions.seed import TABLES, statements
     from tests.unit._crm_fakes import crm_switch_on
 
     crm_switch_on(monkeypatch, "*")
+    _mirror_on(monkeypatch)
     with promoted.admin_engine.begin() as c:
         for sql, rows in statements(promoted.org_a):
             c.execute(text(sql), rows)
@@ -90,7 +100,7 @@ async def _run_all(p: Any) -> tuple[dict[str, Any], dict[str, list[str]]]:
         calls, _texts = await run.run_tools(answers[q.id], _route(p, p.org_a))
         for c in calls:
             seen[run.route_key(c.path, c.params)] = c.data
-        found = checkers.check_agree(q, [c.data for c in calls])
+        found = checkers.check_agree(q, calls)
         found += checkers.check_tools(q.needs, calls)
         if found:
             problems[q.id] = found

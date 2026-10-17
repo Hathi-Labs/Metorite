@@ -4,6 +4,7 @@ Spec: ``project-docs/specs/crm_platform.md`` §5.4 (Sync now, Health).
 
     GET   /crm/sync/status
     GET   /crm/sync/health      (admin; CRM-Q9, the Sync health card)
+    GET   /crm/sync/short-reads (each member; CRM-Q30b, the short reads)
     POST  /crm/sync/zoho
 
 ⚠️ **Dark twice.** Each route needs the CRM kill switch (``CRM_ENABLED`` and
@@ -327,6 +328,12 @@ _MODULE_OURS_SQL = (
     "GROUP BY module"
 )
 
+#: ``ours`` of one generic module (CRM-Q30b).
+_MODULE_OURS_ONE_SQL = (
+    "SELECT count(*) AS n FROM crm_module_records "
+    "WHERE organization_id = CAST(:org AS uuid) AND ext_source = :src AND module = :module"
+)
+
 
 #: CRM-Q24: the ``activity_recovered`` counts of the runs that started in the
 #: last 7 days, and after the last start over, summed by module. The key is
@@ -373,6 +380,84 @@ def _short_by_keys(cursors: dict[str, Any], engine: Any) -> dict[str, int]:
         if value is not None and value > 0:
             out[key] = value
     return out
+
+
+class ShortReadModel(BaseModel):
+    """One entity or module that Zoho holds more of than the mirror can read
+    (CRM-Q30b). Counts only."""
+
+    #: The count key: a core slug (``contacts``) or ``module:<ApiName>``.
+    key: str
+    #: Zoho's count: the count of the last run, else ours plus the gap.
+    zoho_count: int
+    #: What the connected Zoho user can read: Zoho's count minus the gap.
+    readable: int
+    #: The gap of the cursor, ``short_by`` (CRM-Q24).
+    short_by: int
+
+
+async def _ours_of(db: Any, org: str, key: str, engine: Any) -> int:
+    """The mirrored rows of one count key."""
+    if key.startswith(MODULE_KEY_PREFIX):
+        row = (await db.execute(text(_MODULE_OURS_ONE_SQL), {
+            "org": org, "src": engine.EXT_SOURCE, "module": key[len(MODULE_KEY_PREFIX):],
+        })).first()
+        return int(row.n or 0) if row is not None else 0
+    table = _OURS_TABLES.get(key)
+    if table is None:
+        return 0
+    row = (await db.execute(text(
+        f"SELECT count(*) AS n FROM {table} "
+        "WHERE organization_id = CAST(:org AS uuid) AND ext_source = :src"),
+        {"org": org, "src": engine.EXT_SOURCE})).first()
+    return int(row.n or 0) if row is not None else 0
+
+
+async def short_reads(db: Any, org: str) -> list[ShortReadModel]:
+    """Each key with a short read, and its two counts (WS-53 CRM-Q30b).
+
+    The ONE reader of the short reads for the read tools. It reads the gap
+    through :func:`_short_by_keys`, as the health route does. The two counts
+    follow the rule of the card (``syncHealth.ts`` ``shortReadSentence``):
+    Zoho's count is the count of the last run, else ours plus the gap, and
+    the readable count is Zoho's count minus the gap. With no gap it reads
+    no run and no count, so the common case costs one statement.
+    """
+    from gateway.crm_sync import engine, runs
+
+    cursors = await runs.read_cursors(db, org, f"{engine.PROVIDER}:")
+    short = _short_by_keys(cursors, engine)
+    if not short:
+        return []
+    latest = await runs.latest(db, org)
+    estimate = (latest.estimate if latest is not None else None) or {}
+    out = []
+    for key, gap in sorted(short.items()):
+        zoho = _int(estimate.get(key))
+        if zoho is None or zoho <= 0:
+            zoho = await _ours_of(db, org, key, engine) + gap
+        out.append(ShortReadModel(key=key, zoho_count=zoho, readable=max(zoho - gap, 0),
+                                  short_by=gap))
+    return out
+
+
+@router.get(
+    "/sync/short-reads", response_model=list[ShortReadModel],
+    dependencies=[Depends(require_crm_mirror)],
+)
+async def get_short_reads(
+    user: UserContext = Depends(get_current_user),
+) -> list[ShortReadModel]:
+    """The short reads, for each member that the CRM access rule admits
+    (CRM-Q30b). The read tools of ``crm_tools.py`` add one line for each.
+    Counts only. A Native org gets an empty list."""
+    from gateway.routes.crm.core import is_mirror_mode
+
+    org = _organization(user)
+    async with _tenant_session() as db:
+        if not await is_mirror_mode(db, org):
+            return []
+        return await short_reads(db, org)
 
 
 def _unkept(

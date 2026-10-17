@@ -1665,6 +1665,14 @@
     "singular_label": "Payment Received",
     "count": 262
    }
+  ],
+  "/crm/sync/short-reads": [
+   {
+    "key": "module:Payment_Made",
+    "zoho_count": 148,
+    "readable": 90,
+    "short_by": 58
+   }
   ]
  }
 }

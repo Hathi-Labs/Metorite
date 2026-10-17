@@ -45,6 +45,13 @@ _PROFILE = (
     "profile_hash) SELECT CAST(:o AS uuid), conn.id, 1, CAST(:p AS jsonb), :h FROM conn"
 )
 
+#: The cursor of a module whose full read ended short (CRM-Q24): Zoho
+#: counts more records than the connected user can read.
+_SHORT = (
+    "INSERT INTO crm_sync_cursors (organization_id, module, last_run_at, last_status, "
+    "cursor_state) VALUES (CAST(:o AS uuid), :m, now(), 'ok', CAST(:s AS jsonb))"
+)
+
 _DEF = (
     "INSERT INTO crm_field_defs (organization_id, entity, key, label, type, options, "
     "source, provider_api_name, position, is_system) VALUES (CAST(:o AS uuid), :e, :k, "
@@ -113,6 +120,10 @@ def statements(org: str, ds: Dataset | None = None) -> list[Statement]:
         {"o": org, "n": c.name, "w": c.owner, "f": json.dumps(c.fields), "e": c.ext_id}
         for c in ds.contacts
     ]))
+    out.append((_SHORT, [
+        {"o": org, "m": f"zoho:module:{name}", "s": json.dumps({"short_by": count - len(ds.records[name])})}
+        for name, count in sorted(ds.zoho_counts.items()) if count > len(ds.records[name])
+    ]))
     out.append((_NOTE, [
         {"o": org, "s": n.subject, "b": n.body, "t": n.occurred.isoformat(), "a": SEED_AUTHOR,
          "e": n.ext_id, "m": n.module, "r": n.record_ext_id}
@@ -123,7 +134,7 @@ def statements(org: str, ds: Dataset | None = None) -> list[Statement]:
 
 #: The tables that the seed writes, children first, for a clean-up.
 TABLES: tuple[str, ...] = (
-    "crm_activities", "crm_module_records", "crm_contacts", "crm_field_defs",
+    "crm_sync_cursors", "crm_activities", "crm_module_records", "crm_contacts", "crm_field_defs",
     "crm_source_profiles", "integration_connections", "crm_settings",
 )
 

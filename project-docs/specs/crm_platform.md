@@ -1270,6 +1270,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q27** | 🔨 built 2026-10-16 on `crm-batch-i`, merged (#1111), dark. Search of note text by meaning. §18.11 | P2 |
 | **CRM-Q28** | A weekly digest on the powerful tier. §18.11 | P2 |
 | **CRM-Q30** | 🔨 built 2026-10-17 on `crm-founder-evals`, not merged. A founder question set for CRM insights: an eval of the assistant over CRM data. §18.11 | P1 |
+| **CRM-Q30b** | 🔨 built 2026-10-17 on `crm-founder-evals`, not merged. The read tools say when Zoho holds more records than the connected Zoho user can read. §18.11 | P1 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
 
@@ -3627,8 +3628,8 @@ merged (#1100, migration 278), dark. CRM-Q25b, CRM-Q25c and CRM-Q27
 (migration 279, dark): built on 2026-10-16 in the batch branch
 `crm-batch-i`, with a fix round on 2026-10-17, and merged as #1111
 (`d72f92184`). CRM-Q28: specified, not built. Verified against code at
-`origin/main` `634cf54ee`. CRM-Q30: built on 2026-10-17 in the branch
-`crm-founder-evals`, not merged, with no migration.
+`origin/main` `634cf54ee`. CRM-Q30 and CRM-Q30b: built on 2026-10-17 in the
+branch `crm-founder-evals`, not merged, with no migration.
 
 **Owner direction (2026-10-16, in chat).** Use the decide, balanced and
 powerful tiers to run inference on the CRM data and produce insights. Build
@@ -4421,6 +4422,37 @@ Verify with:
 - `uv run pytest tests/unit/test_crm_short_reads_r8.py tests/unit/test_crm_founder_questions_r8.py tests/unit/test_crm_sync_health_r8.py tests/unit/test_crm_aggregate*.py -q`,
   on a private database, with no test skipped.
 - `uv run python -m evals.crm_founder_questions --scripted`
+
+**Built as (2026-10-17, branch `crm-founder-evals`, not merged).** No
+migration and no flag.
+
+- `sync.short_reads(db, org)` reads the cursors through `_short_by_keys`.
+  With no gap it runs one statement and stops. With a gap it reads the last
+  run, and it counts our rows only for a key that the run did not count.
+- `GET /crm/sync/short-reads` sits on the shared CRM router, behind
+  `require_crm_mirror`, as each other sync route is. A Native org gets an
+  empty list.
+- `crm_tools._short_note` is the one helper, and `_short_line` writes the
+  one sentence. `crm_list_modules` adds a line for each module with a gap.
+  The other three tools add the line of their own entity or module only.
+- The helper catches each failure of its read, a refusal included, so a
+  failed read changes no answer.
+- Two tests of `test_crm_agent.py` read the last call as the aggregate. They
+  now assert the two calls in order: the aggregate, then one short read.
+- The seed of the eval writes the cursor of `Payment_Made` with a gap of
+  58. Q31 now needs the line in the tool output and both counts in the
+  answer, and it forbids no number. The checkers gain the bar `tool_text`.
+  The agreement leaves the short-read call out of the call index, and a
+  fact reads it as `("short", key, field)`.
+
+**The result.** The unit test of the tools holds 11 tests. A mutation that
+drops `+ note` from `crm_aggregate` fails three of them. The R8 test holds
+4 tests. The scripted run passes 31 of 31 questions on each of the seven
+bars. The mutation that takes the line out of the tools fails Q31 only.
+
+**Not changed.** The Sync health card keeps its own copy of the rule of
+the two counts (`syncHealth.ts`). A later slice can make the card read
+`zoho_count` and `readable` from this route.
 
 #### 18.11.3 Verification
 

@@ -4,12 +4,14 @@ Spec: ``project-docs/specs/crm_platform.md`` §18.11.2, CRM-Q30 items 9 and 10.
 
 A run gives, for each question, the GET requests that the CRM tools sent
 (:class:`RouteCall`) and the answer text. :func:`score_question` scores them
-on six bars:
+on seven bars:
 
 * ``tools``: each :class:`questions.Need` has a request that matches one of
   its alternatives. A request matches when it has the path, and each named
   parameter with its value. A key that ends in ``~`` matches a part of the
   value, without case.
+* ``tool_text``: the output of a tool holds each line that the question
+  needs, for example the short-read line of CRM-Q30b.
 * ``numbers``: the answer holds each number fact (:func:`numbers.matches`).
 * ``names``: the answer holds each name fact, without case, and the names
   of a ranked list in the order of the rank.
@@ -35,7 +37,13 @@ from evals.crm_founder_questions.questions import Fact, Need, Question
 #: The share of questions that a live run must pass in full.
 LIVE_BAR = 0.80
 
-BARS: tuple[str, ...] = ("tools", "numbers", "names", "flags", "forbid", "agree")
+#: The route of the short reads (CRM-Q30b). Each list tool reads it once,
+#: beside its own route, so the agreement counts the calls without it.
+SHORT_READS = "/crm/sync/short-reads"
+
+BARS: tuple[str, ...] = (
+    "tools", "tool_text", "numbers", "names", "flags", "forbid", "agree",
+)
 
 
 @dataclass(frozen=True)
@@ -194,16 +202,30 @@ def same(fact: Any, got: Any) -> bool:
     return abs(Decimal(str(fact)) - Decimal(str(got))) <= Decimal("0.005")
 
 
-def check_agree(q: Question, answers: list[Any]) -> list[str]:
-    """Each fact with a ``src`` against the route answer of its call."""
+def check_tool_text(q: Question, texts: list[str]) -> list[str]:
+    """Each required line is in the output of a tool (CRM-Q30b)."""
+    joined = "\n".join(texts)
+    return [f"no tool output holds {line!r}" for line in q.tool_lines if line not in joined]
+
+
+def check_agree(q: Question, calls: list[RouteCall]) -> list[str]:
+    """Each fact with a ``src`` against the route answer of its call. The
+    index counts the calls of the tools' own routes. ``("short", ...)`` reads
+    the answer of the short reads."""
+    answers = [c.data for c in calls if c.path != SHORT_READS]
+    short = [c.data for c in calls if c.path == SHORT_READS]
     out = []
     for f in q.facts:
         if f.src is None:
             continue
-        index, *selector = f.src
+        head, *selector = f.src
         try:
-            got = select(answers[index], tuple(selector))
-        except (IndexError, KeyError, TypeError) as exc:
+            if head == "short":
+                key, part = selector
+                got = next(r for r in short[-1] if r["key"] == key)[part]
+            else:
+                got = select(answers[head], tuple(selector))
+        except (IndexError, KeyError, TypeError, StopIteration) as exc:
             out.append(f"{f.key}: {type(exc).__name__} {exc}")
             continue
         if not same(f.value, got):
@@ -215,17 +237,20 @@ def check_agree(q: Question, answers: list[Any]) -> list[str]:
 
 
 def score_question(q: Question, calls: list[RouteCall], answer: str, *,
-                   agree: bool) -> QuestionScore:
+                   agree: bool, texts: list[str] | None = None) -> QuestionScore:
+    """*texts* holds the output of each tool, for ``tool_text``."""
     s = QuestionScore(q.id, q.category, agreed=agree)
     s.problems["tools"] = check_tools(q.needs, calls)
+    s.problems["tool_text"] = check_tool_text(q, texts or [])
     s.problems["numbers"] = check_numbers(q.numbers(), answer)
     s.problems["names"] = check_names(q.names(), answer)
     s.problems["flags"] = check_flags(q.flags, answer)
     s.problems["forbid"] = check_forbid(q, answer)
     if agree:
-        s.problems["agree"] = check_agree(q, [c.data for c in calls])
+        s.problems["agree"] = check_agree(q, calls)
     return s
 
 
-__all__ = ["BARS", "LIVE_BAR", "QuestionScore", "RouteCall", "Score", "call_matches",
-           "check_agree", "check_tools", "score_question", "select"]
+__all__ = ["BARS", "LIVE_BAR", "SHORT_READS", "QuestionScore", "RouteCall", "Score",
+           "call_matches", "check_agree", "check_tool_text", "check_tools", "score_question",
+           "select"]

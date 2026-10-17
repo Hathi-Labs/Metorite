@@ -131,10 +131,14 @@ class TestTheQuestions:
             assert q.needs, q.id
             assert q.numbers() or q.names() or q.flags, q.id
 
-    def test_the_short_read_question_forbids_the_zoho_count(self) -> None:
+    def test_the_short_read_question_needs_the_tool_line(self) -> None:
+        """CRM-Q30b: Q31 passes because the tool says what Zoho holds."""
         q = by_id()["Q31"]
-        assert q.forbid_numbers == (dataset.build().zoho_counts["Payment_Made"],)
-        assert facts_of(q)["mirrored"] < q.forbid_numbers[0]
+        ds = dataset.build()
+        facts = facts_of(q)
+        assert facts["zoho"] == ds.zoho_counts["Payment_Made"] > facts["mirrored"]
+        assert q.tool_lines and str(f"{facts['zoho']:,}") in q.tool_lines[0]
+        assert not q.forbid_numbers, "the two counts come from the tool, so they may be quoted"
 
     def test_no_scripted_answer_writes_a_fact_by_hand(self) -> None:
         """Each number of an answer comes from a placeholder. The text around
@@ -237,11 +241,26 @@ class TestTheEval:
         answers["Q22"]["answer"] = "The combined annual revenue is INR 0, no value recorded."
         assert "forbid" in _failed(_scripted(answers))["Q22"]
 
-    def test_the_invented_zoho_count_fails_the_forbid_bar(self) -> None:
-        hidden = dataset.build().zoho_counts["Payment_Made"]
-        answers = copy.deepcopy(run.load_answers())
-        answers["Q31"]["answer"] += f" Zoho holds {hidden}."
-        assert "forbid" in _failed(_scripted(answers))["Q31"]
+    def test_a_tool_with_no_short_read_line_fails_q31(self, monkeypatch) -> None:
+        """The mutation of CRM-Q30b: take the line out of the tools, and Q31
+        fails on ``tool_text`` even though its answer still reads well. No
+        other question fails."""
+        from acb_skills import crm_tools
+
+        async def no_line(_keys):
+            return ""
+
+        monkeypatch.setattr(crm_tools, "_short_note", no_line)
+        failed = _failed(_scripted())
+        assert set(failed) == {"Q31"}
+        # With no line the tools also read no short read, so the Zoho count
+        # has no route answer either.
+        assert set(failed["Q31"]) == {"tool_text", "agree"}
+
+    def test_a_short_read_that_disagrees_fails_the_agree_bar(self) -> None:
+        routes = copy.deepcopy(run.load_routes())
+        routes[checkers.SHORT_READS][0]["zoho_count"] += 1
+        assert "agree" in _failed(_scripted(routes=routes))["Q31"]
 
     def test_a_route_that_disagrees_fails_the_agree_bar(self) -> None:
         routes = copy.deepcopy(run.load_routes())

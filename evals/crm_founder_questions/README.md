@@ -29,7 +29,7 @@ ground truth and the route give the same numbers.
 | `questions.py` | The 31 questions. Each has its category, the calls that it needs and its facts. Plain Python computes each fact |
 | `scripted_answers.json` | The tool calls and the answer that `--scripted` replays. An answer holds placeholders, not numbers |
 | `recorded_routes.json` | The answers of the real routes on the seeded dataset. The R8 test records them |
-| `checkers.py` | The six bars and the score of a run |
+| `checkers.py` | The seven bars and the score of a run |
 | `numbers.py` | The number check of an answer. It is local until CRM-Q29 merges |
 | `seed.py` | The dataset as SQL statements for one org. It opens no connection |
 | `run.py` | The runner: `--scripted`, `--live` and `--seed` |
@@ -75,13 +75,14 @@ The dataset has the shape of DEWiN after its import. It holds about 800 rows.
 | `relabel` | Q25, Q26 | The core Contacts, with the label "Existing Sites" |
 | `picklist` | Q10, Q27, Q28 | A group by a picklist or a boolean |
 | `note_search` | Q30 | `crm_search_notes` (CRM-Q27). The R8 test does not run it, because it needs the embed door |
-| `short_read` | Q31 | The count of Payment Made. The answer must say that the connected Zoho user cannot see each record (CRM-Q24) |
+| `short_read` | Q31 | The count of Payment Made. The tool output must hold the short-read line of CRM-Q30b, and the answer must give both counts of that line |
 
 ## The bars
 
 | Bar | What passes |
 |---|---|
 | `tools` | Each call that the question needs has a GET request that matches one of its alternatives |
+| `tool_text` | The output of a tool holds each line that the question needs. Q31 needs the short-read line (CRM-Q30b) |
 | `numbers` | The answer holds each number fact, in a written form that is not coarser than 0.5 percent |
 | `names` | The answer holds each name fact, and the names of a ranked list in rank order |
 | `flags` | The answer holds one of the flag phrases of the question |
@@ -105,10 +106,11 @@ Exit code 2 means that the run cannot start.
 `tests/unit/test_crm_founder_questions.py` runs the scripted set. Its
 mutations prove that each of these fails a bar:
 
+- A tool with no short-read line (Q31 fails on `tool_text`).
 - A wrong measure, a missing filter or a missing second call.
 - A wrong number, a rounded total or a wrong order.
-- A missing flag, a zero for an empty field or an invented Zoho count.
-- A route answer that disagrees with a fact.
+- A missing flag or a zero for an empty field.
+- A route answer or a short read that disagrees with a fact.
 
 ## How to record the routes again
 
@@ -132,7 +134,8 @@ on a local stack. CI never runs it.
 1. Start the local stack with the Router (`docs/` and the memory note
    "local dev stack recipe").
 2. Make an empty org with one member. Put the org in `CRM_ORGS`, and put it
-   in `CRM_FILL_RANK_ORGS` so the chat reads the label "Existing Sites".
+   in `CRM_FILL_RANK_ORGS` so the chat reads the label "Existing Sites". Put
+   it in `CRM_MIRROR_ORGS`, so the tools can read the short reads.
 3. Seed the org:
 
    ```bash
@@ -159,8 +162,9 @@ the search is off, and Q30 fails.
 
 ## Known limits
 
-- No tool reads the short read of CRM-Q24. So the assistant can flag the gap
-  of Q31 only from general care, and a live run can show that gap.
+- The list tools and the aggregate read `GET /crm/sync/short-reads` once in
+  each call (CRM-Q30b). The scripted run replays its recorded answer, and the
+  agreement bar does not count it as a call of the question.
 - The scripted answer of the note search is synthetic. It holds the notes
   that hold each word of the query.
 - `numbers.py` is local. When CRM-Q29 merges, `checkers.py` must call the

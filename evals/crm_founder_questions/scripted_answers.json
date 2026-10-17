@@ -133,7 +133,7 @@
     },
     "Q31": {
       "calls": [{"tool": "crm_list_modules", "args": {}}],
-      "answer": "The CRM mirrors {n:mirrored} Payment Made records. That is the count the connected Zoho user can read, and Zoho may hold more. Sync health shows the gap."
+      "answer": "Zoho holds {n:zoho} Payment Made records, and the connected Zoho user can read {n:mirrored} of them, so totals of Payment Made may be short. An admin can widen that user's access in Zoho."
     }
   }
 }

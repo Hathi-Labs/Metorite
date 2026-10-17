@@ -195,14 +195,15 @@ async def run_scripted(answers: dict[str, dict[str, Any]] | None = None,
             score.questions.append(qs)
             continue
         try:
-            calls, _texts = await run_tools(entry, recorded(routes))
+            calls, texts = await run_tools(entry, recorded(routes))
         except LookupError as exc:
             qs = checkers.QuestionScore(q.id, q.category)
             qs.problems["agree"].append(str(exc))
             score.questions.append(qs)
             continue
         text = render(entry["answer"], facts_of(q))
-        score.questions.append(checkers.score_question(q, calls, text, agree=True))
+        score.questions.append(checkers.score_question(q, calls, text, agree=True,
+                                                       texts=texts))
     return score
 
 
@@ -249,7 +250,9 @@ async def _live(qs: list[Question], org: str, member: str, tier: str) -> list[di
             with tools_get(answer, calls):
                 record = await harness.drive(q.words, shell.system_context(None), member=member,
                                              org=org, tier=tier, timeout=300.0)
-            s = checkers.score_question(q, calls, record.answer, agree=False)
+            texts = [str(ev.get("content") or "") for ev in record.events
+                     if ev.get("type") in ("TOOL_CALL_RESULT", "SUB_AGENT_TOOL_CALL_RESULT")]
+            s = checkers.score_question(q, calls, record.answer, agree=False, texts=texts)
             rows.append({**s.summary(), "words": q.words, "answer": record.answer[:3000],
                          "requests": [route_key(c.path, c.params) for c in calls],
                          "tool_calls": [n for n, _ in record.tool_calls],
