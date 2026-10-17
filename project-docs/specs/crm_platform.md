@@ -4402,8 +4402,8 @@ and `uv run python scripts/affected_tests.py --base origin/main`.
   "roughly", "nearly", "almost", "close to", "some", `~`, `≈` or the other
   words of `_APPROX_BEFORE`, a number matches a source within 10 percent of
   it.
-- **Mutations.** 13 mutations in the build, and 8 more in the fix round,
-  one for each fix. The suites kill each one. The rules: the room for rounding, money against a percent, a
+- **Mutations.** 13 mutations in the build, and 12 more in the fix round,
+  one or more for each fix. The suites kill each one. The rules: the room for rounding, money against a percent, a
   date, an exact scaled number, the arm, the model's text as a source, no
   extra request on a pass, one retry for each run, no draft in the fallback,
   no text on a failed tool step, the seam, the default mode, and no note text
