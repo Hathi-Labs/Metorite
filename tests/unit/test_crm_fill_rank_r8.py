@@ -478,6 +478,31 @@ async def test_the_mode_route_serves_the_state_of_each_core_entity(fz) -> None:
     assert states["leads"]["turned_off"] is False  # a missing scope is not "off"
     assert states["organizations"]["turned_off"] is False
 
+    # Fix round 1, item 5: a converted lead is hidden from the default list,
+    # so it does not make Leads "hold records". An open lead does.
+    with p.admin_engine.begin() as c:
+        status = c.execute(text(
+            "INSERT INTO crm_lead_statuses (organization_id, name, position, type) "
+            "VALUES (CAST(:o AS uuid), 'Fill R8 status', 99, 'open') RETURNING id"),
+            {"o": p.org_a}).scalar()
+        c.execute(text(
+            "INSERT INTO crm_leads (organization_id, lead_name, status_id, ext_source, "
+            "ext_id, converted_at) VALUES (CAST(:o AS uuid), 'Converted lead', :s, "
+            "'zoho', 'conv-1', now())"), {"o": p.org_a, "s": status})
+    states = (await _get(p.org_a, "/crm/mode")).json()["entities"]
+    assert states["leads"]["records"] is False
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_leads (organization_id, lead_name, status_id, ext_source, "
+            "ext_id) VALUES (CAST(:o AS uuid), 'Open lead', :s, 'zoho', 'open-1')"),
+            {"o": p.org_a, "s": status})
+    states = (await _get(p.org_a, "/crm/mode")).json()["entities"]
+    assert states["leads"]["records"] is True
+    with p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM crm_leads WHERE organization_id = CAST(:o AS uuid) "
+                       "AND ext_id IN ('conv-1', 'open-1')"), {"o": p.org_a})
+        c.execute(text("DELETE FROM crm_lead_statuses WHERE id = :s"), {"s": status})
+
     # Outside the list, and in Native mode, the body has no `entities` key.
     assert "entities" not in (await _get(p.org_b, "/crm/mode")).json()
     with p.admin_engine.begin() as c:

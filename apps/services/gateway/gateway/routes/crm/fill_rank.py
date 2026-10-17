@@ -81,6 +81,7 @@ from gateway.routes.crm.core import (
     CUSTOM_PREFIX,
     ENTITIES,
     FIELD_ENTITY_BY_SLUG,
+    OPEN_LEAD_SQL,
     SYSTEM_FIELDS,
     from_jsonb,
     is_mirror_mode,
@@ -536,7 +537,10 @@ class EntityState(BaseModel):
     """What the rail and the first screen need to know about one core entity
     (§18.9.6, CRM-Q17b items 2 to 4)."""
 
-    #: The org holds at least one record of the entity in its own table.
+    #: The org holds at least one record of the entity in its own table. For
+    #: leads, an OPEN lead (``core.OPEN_LEAD_SQL``): the list hides a
+    #: converted lead by default, so only an open one makes the list show a
+    #: row (fix round 1, item 5).
     records: bool
     #: Zoho refused the module the last time the sync asked: it is turned off
     #: in Zoho, or hidden from the user who connected (CRM-Q15, the cursor
@@ -550,9 +554,11 @@ _CORE_SLUGS: tuple[str, ...] = tuple(sorted(ENTITIES))
 #: One row: for each core entity, whether the org holds a record of it. Each
 #: ``EXISTS`` reads one row at most, through the index on ``organization_id``
 #: (``241_crm_tenancy.sql``). The table names are constants of ``core.py``.
+#: An entity whose default list hides converted rows counts open rows only.
 _HOLDS_SQL = "SELECT " + ", ".join(
     f"EXISTS (SELECT 1 FROM {ENTITIES[slug].table} "
-    f"WHERE organization_id = CAST(:org AS uuid)) AS {slug}"
+    f"WHERE organization_id = CAST(:org AS uuid)"
+    f"{f' AND ({OPEN_LEAD_SQL})' if ENTITIES[slug].hides_converted else ''}) AS {slug}"
     for slug in _CORE_SLUGS
 )
 
