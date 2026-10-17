@@ -29,7 +29,9 @@
 >
 > **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12). CRM-Q8, filters and saved views (2026-10-12, migration 250). The Deals board stages fix (2026-10-12, §18.5). CRM-Q10, a reconnect never freezes the mirror (2026-10-13, §18, a production hotfix). CRM-Q15, a Zoho module that the account turned off no longer stops the sync (2026-10-15, §18, a production hotfix). CRM-Q16, hold a module and sync one module on its own (2026-10-15, §18.8, migration 269). CRM-Q17a-1, the backend of the fill rank (2026-10-16, §18.9.3, migration 274). It is dark behind `CRM_FILL_RANK_ORGS`. CRM-Q23b, a dropped activity comes back once its module record is in (2026-10-16, §18.10, no migration).
 >
-> **Specified, not built:** CRM-Q17b, CRM-Q20-3, CRM-Q21 and CRM-Q22, of a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9). Batch M builds the rest of CRM-Q17a to CRM-Q20 on the branch `crm-batch-m`, not merged (§18.12.1).
+> **Specified, not built:** CRM-Q17b, CRM-Q21 and CRM-Q22, of a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9). Batch M builds the rest of CRM-Q17a to CRM-Q20 on the branch `crm-batch-m`, not merged (§18.12.1).
+>
+> **Specified 2026-10-17, not built:** CRM-Q31, the catalogue that tells the AI what each module is for, and CRM-Q20-3, the overlay in the aggregate, the AI tools and the board (§18.13). No migration.
 >
 > **Built later, not merged (Batch M, `crm-batch-m`):** CRM-Q17a-1b, a "still empty" check of a stale entity (2026-10-16, §18.9.6, no migration). CRM-Q17a-2, the screens of the fill rank (2026-10-16, no migration). CRM-Q18-1b, two deadlocks of the plan lock (2026-10-16, no migration). CRM-Q19, the executor and the 200-record preview (2026-10-16, no migration).
 >
@@ -1269,6 +1271,8 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q26** | Labels on notes, on the decide tier, in shadow. §18.11 | P1 |
 | **CRM-Q27** | 🔨 built 2026-10-16 on `crm-batch-i`, merged (#1111), dark. Search of note text by meaning. §18.11 | P2 |
 | **CRM-Q28** | A weekly digest on the powerful tier. §18.11 | P2 |
+| **CRM-Q31** | The CRM catalogue for the AI: the purpose of each module, its key fields by meaning, and its links. Code first, then the decide tier. Four slices (Q31-1 to Q31-4). §18.13 | P0 |
+| **CRM-Q20-3** | The overlay reaches the readers: `GET /crm/aggregate` and the AI tools first (Q20-3a), then the overlaid board with an "Unsorted" lane (Q20-3b). §18.13 | P1 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
 
@@ -3034,17 +3038,11 @@ Commercials plays Deals.
 6. Undo approves a version with no `role` item for the slot. The rail row
    then opens the core list again.
 
-**CRM-Q20-3 · The overlaid board and the projection (stub, not
-dispatchable).** A later slice. It waits for CRM-Q20-2 and for CRM-Q25,
-because the projection builds its SQL over `fields` with
-`routes/crm/field_sql.py`. Its spec must cover these points before a
-dispatch.
-
-1. Each core reader of item 5 above: does it read the overlay, and how.
-2. The lanes of an overlaid board: one for each `stage` value of the
-   module's statuses, in Zoho's order, then `won` and `lost`.
-3. A stage value with no entry goes to a visible lane, "Unsorted", and is
-   never hidden.
+**CRM-Q20-3 · The overlay reaches the readers (specified 2026-10-17).**
+§18.13.5 and §18.13.6 hold its contract, in two slices: CRM-Q20-3a (the
+aggregate and the AI tools) and CRM-Q20-3b (the overlaid board). They
+cover the three points of the stub of 2026-10-16: each core reader, the
+lane order, and the "Unsorted" lane.
 
 **Which mode gates the run.** Each kind has its own feature. The CRM-Q20-1
 run starts when at least one of the three is `shadow` or `on`, for an org in
@@ -4287,7 +4285,7 @@ beside the usual diff review, not in its place. The tables name the risk.
 | 3 | CRM-Q19 | CRM-Q18-1b and CRM-Q18-3 | The sync engine: the one path of a rule value. Tenancy: the preview route |
 | 4 | CRM-Q20-1 | CRM-Q19 | Credits: the decide calls, the token cap and the payer |
 | 5 | CRM-Q20-2 | CRM-Q20-1 | Tenancy: `overlays` on `GET /crm/mode` names only the modules of the bound org. The overlay itself only changes where a rail row points |
-| Later | CRM-Q20-3 | CRM-Q20-2 and CRM-Q25 | A stub, not dispatchable. Not in this batch |
+| Later | CRM-Q20-3 | CRM-Q20-2, CRM-Q25 and CRM-Q31-2 | Specified on 2026-10-17 in §18.13. Not in this batch |
 
 **Why this order.**
 
@@ -4373,6 +4371,846 @@ and runs the verification of both slices again.
 `CRM_DECIDE_ORGS`, the mode of `crm.note_labels`, a name in
 `CRM_NOTE_SEARCH_ORGS`, a name in `CRM_DIGEST_ORGS` and, later, a name in
 `CRM_DIGEST_EMAIL_ORGS`. Each one spends money or reaches a person.
+
+### 18.13 The mapping reaches the AI (CRM-Q31, CRM-Q20-3, 2026-10-17)
+
+**Status (2026-10-17).** Specified, not built. Verified against code at
+`origin/main` `4a0a41c24`, with Batch M (#1112) merged. Verified against
+DEWiN's production data on 2026-10-17, read only and counts only (§18.13.2).
+
+**Migrations.** No slice needs one. A slice that finds a need takes the next
+free number at build time, and checks it again at merge (R1). Batch I2 takes
+281.
+
+**The answer in one paragraph.** A founder asks "what is our revenue this
+quarter?". Today the chat model sees 17 module names, with no purpose and no
+field that it can trust as the amount or the date. An approved overlay
+changes only the rail (§18.9.6, the read path, item 5). CRM-Q31 gives the
+model a catalogue: what each module is for, its key fields by meaning, and
+its links. Code answers most of it at 0 tokens, and the decide tier answers
+the rest.
+
+CRM-Q20-3 makes `GET /crm/aggregate` and the AI tools read the module of an
+approved overlay.
+
+**Owner direction (2026-10-17, in chat).** Founders chat with their CRM, and
+get reports and answers at once. A better map of the modules must make the
+answers of the AI better.
+
+#### 18.13.1 What the code does today
+
+Frontend paths in §18.13 are relative to `workbench/control_plane/src/app/crm/`.
+Gateway paths are relative to `apps/services/gateway/gateway/`, and package
+paths to `packages/`.
+
+| Fact | Anchor |
+|---|---|
+| A tool description is a static docstring, the same for each org. The schema test pins the parameters of each CRM tool. So no text of one org can go into a tool description | `acb_skills/crm_tools.py:433-1170`, `tests/unit/test_tool_schema_diet.py:55-108` |
+| `crm_list_modules` answers the label, the API name and the record count of each module, and nothing more | `crm_tools.py:1024-1040` |
+| `crm_list_fields` and `crm_list_module_records` give the key, the type and the use of each field. The model must guess which currency field is the amount | `crm_tools.py:500-541`, `crm_tools.py:1070-1082` |
+| On a module, the aggregate refuses `sum_amount` and `weighted` ("A module has no amount") | `routes/crm/aggregate.py:322-323` |
+| On a module, the aggregate groups by `owner`, `created_month` or `updated_month`, or by one field that the call names by its key | `aggregate.py:154-163` |
+| `field_sql.module_scope` reads the field definitions of the module. Each name goes through `FieldScope.ref` | `routes/crm/field_sql.py:146-155`, `field_sql.py:216-223` |
+| A snapshot of the plan keeps an item of an unknown kind as it is (`split_rules`). `kind_key`, `check_kinds` and `merge_kinds` know `role`, `target` and `stage` only | `routes/crm/mapping_plans.py:281-298`, `mapping_plans.py:357-455` |
+| `commit` is the one approve. A draft and a restore pass their whole snapshot to it | `mapping_plans.py:592-644` |
+| `approved_overlays` reads the approved `role` items, and `GET /crm/mode` serves them to each member | `mapping_plans.py:756-774`, `routes/crm/settings.py:338-357` |
+| Rule 2 of the kinds gives the deal slot no `amount`, no owner and no parent target | `crm_sources/zoho/mapping.py:595-601`, §18.9.6 "Not in this slice" |
+| The pipeline has three features. A run stops at 20,000 estimated tokens or 12 requests. An org has 40 requests in a UTC day | `crm_sync/map_pipeline.py:107-148` |
+| The pipeline loads only the items of its three kinds from the approved plan | `map_pipeline.py:1410-1416` |
+| A lookup names its target module in `crm_field_defs.options.lookup_module` | `routes/crm/modules.py:278-289`, `modules.py:305-321` |
+| The run assembly reads `GET /crm/mode` as the member, only to drop the record write tools | `orchestrator/_tool_injection.py:1456-1490` |
+| The CRM section of the addendum names the tools in four lines, with no data of the org | `acb_skills/addendum.py:398-402` |
+| A test proves that no core reader names the plan or the overlay. A second test proves that each core reader gives the same answer with and without a role | `tests/unit/test_crm_map_suggest_r8.py:339-356`, `test_crm_map_suggest_r8.py:391-405` |
+
+#### 18.13.2 DEWiN's real shape (production, 2026-10-17, counts only)
+
+Read with `BEGIN READ ONLY` and `ROLLBACK`, with the org in the predicate of
+each statement. No record value, name, email or phone was read out.
+
+- **Core.** 0 companies, 805 contacts, 59 leads, 0 deals and 17,519
+  activities. Zoho names Contacts "Existing Sites". Accounts and Deals are off.
+- **Modules.** The profile lists 25 generic modules, and 17 of them hold
+  records. Those 17 have 871 field definitions in all. The records by module:
+
+  | Module | Records |
+  |---|---|
+  | Invoices | 30,177 |
+  | Payment_Received ("Collection") | 8,681 |
+  | Outstanding | 3,623 |
+  | Payment_Made | 3,003 |
+  | Operator_Associates | 871 |
+  | Asserts | 100 |
+  | Partners, Clients, POCs, Airwave and Circles | 24, 19, 18, 15 and 11 |
+  | Products, Branches, Bills, Operators, Company and Vendors | 9, 7, 7, 4, 1 and 1 |
+
+- **Standard modules.** 10 of the 25 are standard Zoho modules. Of them, only
+  Invoices, Products and Vendors hold records. Commercials, Quotes and
+  Sales_Orders hold 0.
+- **Links.** 28 lookups link a module to another module or to a core entity.
+  Invoices links to Clients, Contacts and Operators. Payment_Received links to
+  Invoices, Operators and Contacts. `Owner`, `Created_By` and `Modified_By`
+  name no module.
+- **No single amount is sure by code in the large modules.** Invoices has 60
+  currency fields, and 10 of them are over 50% filled. It has no
+  `Grand_Total`, because DEWiN removed the standard fields. Operator_Associates
+  has 12 currency fields over 50%. Payment_Received splits each payment into
+  IP, Rent and EB parts, and each part is about 50% filled.
+- **Code answers some parts.** Invoices has one date field named like its
+  module (`Invoice_Date`, 100%). Outstanding has one currency field
+  (`Outstanding_Amount`, 100%). Bills has a field named `Total`.
+- **No status is sure by code.** Invoices has `Status` (42%) and `Status3`
+  (63%). Operator_Associates has `Site_Status` (100%) and `RFAI_Status` (94%).
+- **A fill can be missing.** Payment_Received has no fill numbers yet. It
+  waits in `pending` of the cursor `zoho:fill_rank`. So a rule that needs the
+  fill must also work without it.
+- **The plan.** DEWiN has version 1, approved, with 0 items. The cursor row
+  `zoho:map_pipeline` exists.
+- **Dates.** The invoice dates run from 2023 to 2026. 13,161 invoices are
+  dated in 2026.
+
+So the model must know three facts. "Collection" is money in. Invoices is
+what the org billed. And each of them has one field for the amount and one
+for the date.
+
+Code can answer about half of it. The decide tier answers most of the rest.
+A part that stays unsure stays empty, and the answer of the model says so.
+
+#### 18.13.3 Scope and non-goals
+
+**In scope.**
+
+1. A catalogue of each core entity and each mirrored module (CRM-Q31). It
+   holds the purpose, the key fields by meaning, and the links.
+2. The key fields in the typed aggregate (CRM-Q31). A total then picks its
+   amount and its date by meaning.
+3. The overlay in `GET /crm/aggregate` and in the AI tools (CRM-Q20-3a).
+4. The overlaid board, with an "Unsorted" lane (CRM-Q20-3b).
+
+**Not in scope.**
+
+- A model that writes SQL, or a number that comes from a model. §18.11.1
+  stays.
+- A join of two modules in one aggregate ("revenue by the industry of the
+  client"). A group by one lookup works today.
+- A fiscal year. "This quarter" is the same three months in a calendar and in
+  an Indian fiscal year. The `quarter` bucket keeps its calendar label
+  (`2026-Q2`).
+- The links of a core entity. A core lookup stores no target module today.
+- Promote (CRM-Q21), and a write to Zoho.
+- A tool description or a system prompt with the data of one org.
+
+#### 18.13.4 The catalogue (CRM-Q31)
+
+**One entry for each core entity and each mirrored module.**
+
+| Part | What it is | Who answers |
+|---|---|---|
+| `purpose` | One word of the fixed list below | Code, then the decide tier |
+| `amount` | The main money field of a record | Code, then the decide tier, or none |
+| `date` | The main business date of a record | Code, then the decide tier, or none |
+| `status` | The field that holds the status or the stage | Code, then the decide tier, or none |
+| `parent` | The lookup to the customer of the record | Code, then the decide tier, or none |
+| `name` | The name of a record | Code only: `display_field` of the profile |
+| `owner` | The owner of a record | Code only: `crm_module_records.owner_email` |
+| `links` | Each lookup and its target module | Code only: `options.lookup_module` |
+| `records` | The count of mirrored records | Code only |
+
+**The fixed list of purposes.** These are the options of each purpose
+question. `catalogue.PURPOSES` holds them in this order.
+
+| Word | Meaning |
+|---|---|
+| `customer_company` | A company that buys from the org |
+| `customer_site` | A site, a branch or a place of a customer |
+| `person` | A person at a company |
+| `lead` | A possible customer who is not qualified yet |
+| `deal` | A sale in progress: a deal, an opportunity, a quote or an offer |
+| `contract` | An agreement, an order or a subscription that runs for a time |
+| `invoice` | A bill that the org sends to a customer |
+| `payment_in` | Money that a customer paid to the org |
+| `receivable` | Money that a customer still owes to the org |
+| `payment_out` | Money that the org paid or must pay: a payment, an expense or a vendor bill |
+| `product` | A thing or a service that the org sells |
+| `asset` | Equipment or property that the org owns or runs |
+| `vendor` | A company that sells to the org |
+| `partner` | A company or a person that works with the org and is not a customer |
+| `activity` | A task, a call, a meeting or a visit |
+| `reference` | A list that other modules point to, such as the regions of the org |
+| `other` | None of these |
+
+**The money purposes.** `deal`, `contract`, `invoice`, `payment_in`,
+`receivable` and `payment_out` hold money or time. Only an entry with one of
+them gets `amount`, `date`, `status` and `parent`. Each other entry gets
+`name`, `owner` and `links` only. So a reference list costs no question.
+
+**Code answers first, at 0 tokens.** `crm_sync/catalogue.py` holds these
+rules as pure functions. The read route and the pipeline call the same
+functions, so they give the same answer.
+
+1. **A core entity** keeps its fixed purpose: Leads is `lead`, Contacts is
+   `person`, Accounts is `customer_company` and Deals is `deal`. Its key
+   fields are its fixed columns. A core entity whose source label is not its
+   standard name gets one purpose question. On DEWiN, Contacts is "Existing
+   Sites".
+2. **A standard Zoho module** takes its purpose from its API name.
+   `catalogue.STANDARD_PURPOSES` holds the map:
+
+   | API name | Purpose |
+   |---|---|
+   | Invoices | `invoice` |
+   | Quotes | `deal` |
+   | Sales_Orders | `contract` |
+   | Purchase_Orders | `payment_out` |
+   | Products | `product` |
+   | Price_Books and Solutions | `reference` |
+   | Vendors | `vendor` |
+   | Cases | `activity` |
+   | Campaigns | `other` |
+
+3. **A custom module** can take a purpose from its name. Its whole label or
+   API name must be a name of `catalogue.PURPOSE_WORDS`. Examples:
+   "Payment Received" and "Collection" are `payment_in`. "Payment Made",
+   "Expense" and "Bill" are `payment_out`. "Outstanding" and "Receivable" are
+   `receivable`. "Client" and "Customer" are `customer_company`. This is the
+   rule of `SLOT_WORDS` (`map_pipeline.py:165`): "Clients" matches, and
+   "Client Visits" does not.
+4. **A module that plays a slot** takes the purpose of the slot from its
+   approved `role` item. The role wins over each other answer.
+5. **A module with 0 records** gets no question. It keeps the answer of code,
+   or no purpose.
+6. **`amount`.** A currency field with a standard name, filled 50% or more:
+   `Grand_Total`, `Amount`, `Total`, `Total_Amount` or `<Singular>_Amount`.
+   Else the one currency field that is filled 50% or more. Else a question.
+7. **`date`.** A date field named `<Singular>_Date`, filled 50% or more. Else
+   the one date or datetime field filled 90% or more. The system times
+   `Created_Time`, `Modified_Time`, `Last_Activity_Time` and
+   `Unsubscribed_Time` never count. Else a question.
+8. **`status`.** The one select field named `Status`, `Stage`,
+   `<Singular>_Status` or `<Singular>_Stage` that is filled 50% or more. Else
+   a question.
+9. **`parent`.** The one lookup to a `customer_company` entry. Else the one
+   lookup to a `customer_site` or a `person` entry. Else a question.
+10. **No fill.** A rule that needs the fill skips a module with no fill row.
+    The pipeline then uses the share of its 200-record sample, as step 1 does
+    (`detail_module`, `map_pipeline.py:1511`).
+
+**The decide tier answers the rest.** One new feature, `crm.map_catalogue`,
+runs inside the mapping pipeline of CRM-Q20-1. So the payer, the day counter,
+the cache, the park rule and the caps are the ones of that pipeline.
+
+- **The purpose request.** One request holds the purpose question of each
+  entry that code left open, at most 16 questions to a state
+  (`decide_features.QUESTION_LIMIT`). The state names each entry by path
+  (`modules.m3`). It holds the label, the record count, the count of fields
+  and the labels of the 8 most filled fields.
+- **One key-field request for each money entry** with an open part. It holds
+  at most 4 questions: `amount`, `date`, `status` and `parent`. The
+  candidates are the fields of the right type with a fill above 0, the most
+  filled first, at most 40 (`MAX_CANDIDATES`). The state names each field by
+  path (`fields.f7`): its label, type, fill, distinct count, pattern class and
+  lookup target.
+- **The rules of §18.9.4 hold.** A first question copies no value. A re-ask
+  goes once, under 0.75 or with its top two within 0.15, with 5 masked
+  samples (`map_pipeline.masked`). A person's email, phone or name goes as its
+  pattern class only.
+- **None beats a wrong answer.** An answer that stays unsure leaves the part
+  empty. The guidance of each question says so, as `_TARGET_GUIDANCE` does.
+- **The cache.** The keys are `catalogue:purposes` and
+  `catalogue:<ApiName>` in the cursor row `zoho:map_pipeline`. The hash holds
+  the metadata of each field (key, label, type and lookup target), the fill in
+  steps of 10%, the purpose and the mode. A run on an unchanged schema asks
+  nothing.
+- **The order.** `_catalogue()` runs after `_module` and `_shadow`, last in
+  `Pipeline.run`. So the mapping of CRM-Q20-1 spends first, and the catalogue
+  never takes its budget.
+- **The caps.** The catalogue step counts on its own counters:
+  `CATALOGUE_TOKENS` 24,000 estimated input tokens and `CATALOGUE_REQUESTS`
+  12 for each run. It does not count on `TOKEN_CAP` (20,000) and
+  `RUN_REQUESTS` (12) of the run (`map_pipeline.py:857-862`). It shares
+  `DAILY_REQUESTS` (40) and its Redis counter with the mapping.
+- **A cap stop is local.** Past a catalogue cap, the catalogue step stops and
+  keeps each key that it finished. The run then ends normally. A stop of the
+  payer still ends the whole run: `daily_cap`, `member_left`, `cooldown`,
+  `stopped` and `no_answer`.
+- **The worst case of one run** is 44,000 estimated tokens and 24 requests.
+  The mapping takes at most 20,000 and 12. The catalogue takes at most
+  24,000 and 12. The run stays under `DAILY_REQUESTS` (40).
+- **`shadow`** asks only the questions of the answer key below, writes
+  nothing, and logs the asked and agreed counts.
+- **`on`** writes `catalogue` items through `mapping_plans.apply_catalogue`.
+
+**The shadow answer key.** The pipeline asks these questions as if code did
+not know the answer. The log line holds counts only.
+
+- **Purpose.** Each standard Zoho module of code rule 2 that holds records,
+  and each core entity with its standard label that holds records. On DEWiN:
+  Invoices, Products, Vendors and Leads, 4 questions.
+- **Key fields.** The standard fields of a standard module, when the module
+  has them filled 50% or more. Invoices: `Grand_Total`, `Invoice_Date`,
+  `Status` and `Account_Name`. Quotes: `Grand_Total`, `Quote_Stage` and
+  `Account_Name`. Sales_Orders: `Grand_Total`, `Status` and `Account_Name`.
+  Purchase_Orders: `Grand_Total`, `PO_Date`, `Status` and `Vendor_Name`. On
+  DEWiN only `Invoice_Date` and `Status` of Invoices pass, 2 questions.
+
+**Where the catalogue lives: the plan, as a fourth kind.** It is one item of
+the kind `catalogue` for each module, in `crm_mapping_plans`. No new table.
+
+```json
+{"kind": "catalogue", "module": "Invoices", "purpose": "invoice",
+ "amount": "Total_Product_Amount", "date": "Invoice_Date", "status": null,
+ "parent": "Clients", "profile_version": 14,
+ "by": {"purpose": "code", "amount": "ai", "date": "code",
+        "status": "ai", "parent": "ai"}}
+```
+
+- A part with `null` was asked, and no answer was sure. An absent part was
+  not asked yet.
+- A core entry uses the source API name of its module, for example
+  `Contacts`. A Native CRM stores no entry, because code answers each part.
+- **Rule 4 of the kinds** (`check_kinds`): `purpose` is a word of
+  `catalogue.PURPOSES`. Each of `amount`, `date`, `status` and `parent` is a
+  field API name or `null`. `by` names `code`, `ai` or `admin` for each part.
+  One item for each module: `kind_key` gives `("catalogue", module)`.
+- The type of each field needs the field definitions, so the writer checks
+  it (`catalogue.problem`). The read leaves out a part whose field is gone or
+  has another type, and counts it as `stale`.
+- **The read wins in this order:** an `admin` part, then a stored part, then
+  the answer of code.
+
+**Why the plan, and what it costs.** The plan is the one store of what
+Metorite decided about a source. It has one lock, one history and one Undo.
+`split_rules` already keeps an item of a new kind, and `_follow_live`
+carries it. The cost is one difference: a catalogue item applies with no
+approval, and a plan version is the admin's to approve. Two rules close it.
+
+1. **The catalogue rides the version in use.** `commit` gains the keyword
+   `catalogue=None`. Only `apply_catalogue` passes it. With `None`, `commit`
+   drops the `catalogue` items of the snapshot that it gets. It puts in the
+   `catalogue` items of the approved version in use. The swap lives inside
+   `commit`. The reason: the approve route (`mapping_plans.py:1051-1055`)
+   and the restore route (`mapping_plans.py:1085-1089`) pass the `others`
+   of their snapshot today. So a draft approve, a restore ("Go back") or a
+   change of one rule never brings back an old catalogue.
+2. **A draft holds no catalogue item.** `write_draft`, `carry_draft` and
+   `POST /crm/mapping/plans` leave them out.
+
+`apply_catalogue(db, items, by)` takes the plan lock (`lock_plan`), and
+merges the items (`merge_kinds`). It calls `commit` with the field rules of
+the version in use, and with the merged items as `catalogue`. So no row of
+`crm_field_rules` changes. When an open draft exists, it then moves that
+draft onto the new version (`carry_draft`), so a pick by hand stays. With no
+open draft, it writes no draft. The pipeline never replaces a part with
+`by: admin`.
+
+If the builder finds that one of the two rules cannot hold in the code, the
+builder stops and reports. The fallback is a new tenant table with the next
+free migration number.
+
+**What applies with no approval, and what waits.**
+
+| Choice | Example | Rule |
+|---|---|---|
+| A purpose or a key field of a module that stays its own module | "Collection is money in, and no single field is its amount" | Applies with no approval, through `apply_catalogue`. It changes no record and no screen, so it is the row "Changes nothing" of §18.9.4. An admin can change it (CRM-Q31-4) |
+| The purpose of a module that plays a slot | Commercials plays Deals | Comes from the `role` item. Waits for the admin, as today |
+| A target or a stage of an overlay | Which value of Status is Won | Waits for the admin, as today |
+| A key field that the overlay reads | The amount of Commercials | Applies, because a read moves no record. The panel of CRM-Q20-2 shows it beside the role |
+
+**How the catalogue reaches the model.** No new tool, and no change of a
+pinned parameter.
+
+- A system prompt block would cost tokens in every run and one more read at
+  each run assembly. A tool description is static. A new tool adds its schema
+  to every run.
+- So `crm_list_modules` answers the catalogue. The model calls it already to
+  find a module, and the answer costs tokens only when the model calls it.
+- Each entry is one line. It holds the label, the entity or module word, the
+  purpose and the record count. Then it holds the key fields by label and
+  key, and the links.
+- A **money block** follows, built by code from the purposes. Each total of
+  the model starts there.
+
+```text
+- Existing Sites (entity contacts): customer_site, 805 records.
+- Invoices (module:Invoices): invoice, 30,177 records. Amount Total Product
+  Amount (Total_Product_Amount). Date Invoice Date (Invoice_Date). Customer
+  Clients (Clients -> Clients). Links: Contact_Name -> Contacts, Operators ->
+  Operators.
+- Collection (module:Payment_Received): payment_in, 8,681 records. Amount: no
+  single field. Date Date of Payment Record (Date_of_Payment_Record).
+Money: billed in Invoices. Received in Collection. Paid out in Payment Made
+and Bills. Owed in Outstanding.
+For a total, call crm_aggregate on the module with measure 'sum_amount', and
+group_field '@date' with a bucket.
+```
+
+- DEWiN has 19 entries, about 1,000 tokens in one answer. The answer of
+  today is about 250 tokens. The pages of 50 lines stay.
+- The addendum (`addendum.py:398-402`) gains one line. "Before a total over a
+  module, call crm_list_modules. Name the module and the fields that each
+  number comes from." The default meaning of revenue waits for owner call 2,
+  and no slice writes it before the answer.
+
+**How a total uses the key fields.** The aggregate takes four key words on a
+module: `@amount`, `@date`, `@status` and `@parent`. A Zoho API name cannot
+start with `@`, so a key word never hides a real field. On a module,
+`measure=sum_amount` is the `sum` of `@amount`. The answer names the real
+field that each key word used.
+
+"What is our revenue this quarter?" on DEWiN, with owner call 2 answered as
+recommended:
+
+1. The model calls `crm_list_modules`. The money block says "billed in
+   Invoices".
+2. The model calls `crm_aggregate` with `entity='module:Invoices'`,
+   `measure='sum_amount'`, `group_field='@date'` and `bucket='quarter'`. The
+   date range of the quarter goes in `field_filters` (`@date.from`,
+   `@date.to`).
+3. The route reads `@amount` as `Total_Product_Amount` and `@date` as
+   `Invoice_Date`, and SQL makes the sum.
+4. The tool says "Invoices, sum of Total Product Amount (the amount) by
+   Invoice Date (quarter)", then the number. It makes 2 tool calls and 0
+   decide calls.
+
+**An empty core entity points at the module.** In Mirror mode, a total on a
+core entity with 0 records can get one more line. The line names each module
+of the catalogue with a fitting purpose. Example: "Deals holds no records.
+Commercials and Invoices hold sales."
+
+#### 18.13.5 The overlay reaches the readers (CRM-Q20-3)
+
+This replaces item 5 of "The read path of an approved overlay" (§18.9.6) for
+two readers: `GET /crm/aggregate` and the AI tools. They serve the founders,
+so they go first. Each other core reader stays as it is (the table "Readers
+that wait" below).
+
+**One read of an overlay.** A new `routes/crm/overlay.py` holds
+`overlay_of(db, org, slot)`. It returns the approved `role` item of the slot
+with its `target` and `stage` items, and the catalogue entry of the module.
+It returns `None` with no approved role. Like `approved_overlays`, it puts
+the org in the predicate, reads through RLS, and names only a mirrored
+module.
+
+**The projection in the aggregate.** With an overlay, a core entity of the
+slot reads the records of the module. Each piece of SQL lives in
+`field_sql.py`, so the fence `test_the_aggregate_holds_no_field_sql` stays
+true. With no overlay, the core filters still go through `records.list_query`
+only.
+
+| The word of the core entity | On an overlay it reads | When the source is missing |
+|---|---|---|
+| `count` | `count(*)` of the records of the module | Never missing |
+| `sum_amount` | The `amount` target, else the catalogue `amount` | 422 `overlay_no_amount` |
+| `weighted` | The amount times the `probability` target over 100, for the values that map to `open` | 422 `overlay_no_probability` |
+| `group_by=status` | The field of the `stage` item, in the lane order below | 422 `overlay_no_stage` |
+| `group_by=owner` | `owner_email` | Never missing |
+| `group_by=created_month` | `ext_created_at` in the CRM zone. A module record keeps Zoho's created time, so the Mirror refusal of a core entity does not apply | Never missing |
+| `group_by=updated_month` | `coalesce(ext_modified_at, updated_at)` | Never missing |
+| `group_by=close_month` | The `expected_close_date` target, else the catalogue `date` | 422 `overlay_no_date` |
+| `group_by=pipeline` or `source` | Nothing | 422 `overlay_unfit` |
+| `field`, `group_field`, `field.<key>` | A field of the module, or a key word | 422, as today |
+| The filter `owner` | `owner_email` | Never missing |
+| The filter `q` | `name` | Never missing |
+| The filters `close_from` and `close_to` | The date of `close_month` | 422 `overlay_no_date` |
+| The filters `updated_from` and `updated_to` | `coalesce(ext_modified_at, updated_at)` | Never missing |
+| The filters `status_id`, `custom.<key>`, `pipeline_id`, `company_id` and `contact_id` | Nothing | 422 `overlay_filter` |
+
+The answer carries `overlay`, for example `{"slot": "deal", "module":
+"Commercials"}`. The tool says "Deals come from the module Commercials".
+
+**A status filter stays a sentence.** On an overlaid slot, a `status` filter
+gives one sentence, as each other filter that the overlay does not take. It
+stays so until this section states two rules of precedence. The `stage` item
+would win for `@status`. The `amount` and `expected_close_date` targets
+would win for `@amount` and `@date`.
+
+**The lanes of an overlaid slot.** The status group of the aggregate and
+the board use one order.
+
+1. Each value of the stage field that maps to `open`. They come in the
+   order of the options of the field in Zoho (`crm_field_defs.options`).
+2. Each value that maps to `won`, in the same order.
+3. Each value that maps to `lost`, in the same order.
+4. **Unsorted**: one lane that holds each value with no entry in the stage
+   map. It also holds a value that is not an option, and a blank value. It shows
+   while it holds a record, also when the member hides empty stages. It is
+   never hidden.
+
+`lib/board.ts` `orderLanes` stays the one column order. It gains the lane
+type `unsorted`, last in both modes. The "Not sorted" lane of CRM-Q22 item 2
+is this lane, with this name.
+
+**The AI tools on an overlaid slot.** Each tool reads `overlays` from
+`GET /crm/mode` (`crm_tools.crm_mode` reads the same route).
+
+| Tool | On an overlaid slot |
+|---|---|
+| `crm_aggregate` | The route answers from the module. A `status` filter gives one sentence, as each other filter that the overlay does not take |
+| `crm_list_records` | Lists the module through `/crm/modules/{module}/records`, with `q` and `page`. Each other filter gives one sentence that names `crm_aggregate` |
+| `crm_get_record` | Reads `/crm/modules/{module}/records/{id}` |
+| `crm_list_pipelines` | Lists the lanes of the stage field in the lane order |
+| `crm_report` | `pipeline`: the count and `sum_amount` by status, through the aggregate. `funnel`, `win-loss` and `owners`: one sentence that the report is not available for this slot, and the aggregate call to use |
+| `crm_deal_contacts` | One sentence: a module record has no deal contacts, and `crm_get_record` shows its links |
+| `crm_stage_dwell` | No change. Mirror mode records no stage change |
+
+**Readers that wait.** None of them changes in CRM-Q20-3.
+
+| Reader | Why it waits |
+|---|---|
+| `records.list_query` and the list routes | The rail opens the module list (option A) |
+| The export (`routes/crm/export.py`) | The member exports from the list that the rail opens |
+| Cmd-K search (`routes/shell/search.py`) | A module record is in no search today, for any module. A later ticket adds module records to search for each module |
+| The My Day kinds (`aggregate.my_day_rows`) | `deal_quiet` needs a stage clock, and Mirror mode records none. `deal_close_passed` could read the `date` key. It waits until an org uses an overlay |
+| The next-activity chips (`core.attach_next_activity`) | The activities of a module record are CRM-Q23 |
+| The related lists | A module record shows its links (CRM-Q6b) |
+| `reports.py`: funnel, win-loss and owners | They read the stage log and the types of `crm_deal_statuses`. Mirror mode keeps no stage log |
+
+**No org uses an overlay today.** DEWiN has no sure candidate for Deals,
+because Commercials holds 0 records (§18.9.2). So CRM-Q20-3 serves no org on
+the day it ships, and CRM-Q31 serves DEWiN at once. Build CRM-Q31-1 and
+CRM-Q31-2 first.
+
+#### 18.13.6 Tickets
+
+| Ticket | Slice | Gate | Size | Waits for |
+|---|---|---|---|---|
+| CRM-Q31-1 | The catalogue by code, its read, and `crm_list_modules` | AGENT-SAFE | M | — |
+| CRM-Q31-2 | The key words in the aggregate, and `sum_amount` on a module | AGENT-SAFE | S | CRM-Q31-1 |
+| CRM-Q20-3a | The overlay in `GET /crm/aggregate` and in the AI tools | AGENT-SAFE | M | CRM-Q31-2 |
+| CRM-Q31-3 | The catalogue on the decide tier, and the kind `catalogue` | AGENT-SAFE to build. The flip is OWNER-GATE | M | CRM-Q31-1 |
+| CRM-Q31-4 | The admin screen of the catalogue | AGENT-SAFE | S | CRM-Q31-3 |
+| CRM-Q20-3b | The overlaid board and the "Unsorted" lane | AGENT-SAFE | M | CRM-Q20-3a |
+
+**The flips.** A name in `CRM_CATALOGUE_ORGS` spends nothing, so it is the
+gate `enforcement-flip`. A name in `CRM_DECIDE_ORGS`, and a mode other than
+`off` for `crm.map_catalogue`, spend the org's credits. Each of them is an
+owner flip, as §18.11.2 rules for `crm.note_labels`. The `enforcement-flip`
+grant does not cover them.
+
+**CRM-Q31-1 · The catalogue by code.** Done when:
+
+1. A new module `gateway/crm_sync/catalogue.py` holds `PURPOSES`,
+   `MONEY_PURPOSES`, `STANDARD_PURPOSES` and `PURPOSE_WORDS`. It holds the
+   code rules 1 to 10 of §18.13.4 as pure functions. It reads no database and
+   calls no model. A unit test proves each rule on synthetic data with
+   DEWiN's shape. An agent invents each name, as `evals/crm_mapping/` does.
+2. `GET /crm/catalogue` lives in a new `routes/crm/catalogue.py` on the CRM
+   router. Each member that the access rule admits may read it. It runs in
+   one `_tenant_session()`, and the org comes from the session (R5).
+3. It reads the latest profile and the record count of each mirrored
+   module. It reads the field definitions and the fill rows of the module
+   entities. It reads the `role` and `catalogue` items of the approved plan.
+   It returns one entry for each core entity and each mirrored module.
+4. An entry holds the label, the entity or module word, `records`,
+   `purpose` and `by`. It holds each key field as key, label and type, each
+   link as field and target, and `stale`.
+5. The body holds no value of `crm_module_records.fields` and no owner
+   email. A test seeds records with marked values and proves that no mark
+   reaches the body.
+6. The whole catalogue is dark behind the new list `CRM_CATALOGUE_ORGS`, in
+   every mode. An org outside the list gets 404 `catalogue_off`, in Native
+   mode and in Mirror mode. The list ships empty, and `*` means every org.
+   `routes/crm/flags.py` gains `catalogue_allowed`, as `fill_rank_allowed`.
+7. Inside the list, a Native org gets the four core entities from code.
+8. `crm_list_modules` reads `GET /crm/catalogue`, and renders one line for
+   each entry and the money block (§18.13.4). On 404 `catalogue_off` it
+   answers as today, from `/crm/modules`. So at merge, no org sees a change,
+   Native or Mirror. Its parameters do not change, and
+   `test_tool_schema_diet.py` stays green with no edit to its pins.
+9. The addendum gains the line "Before a total over a module, call
+   crm_list_modules. Name the module and the fields that each number comes
+   from." It names no default meaning of revenue. Owner call 2 stays open.
+10. `routes/crm/catalogue.py` exports one reader, `entry_of(db, org, module)`.
+    It returns the entry of one module in the caller's tenant session, or
+    `None`. The route and CRM-Q31-2 use it, and no other code reads the
+    catalogue.
+11. A module with 0 records shows "no records" and no purpose question.
+12. An R8 test seeds 25 modules and 1,300 field definitions. The route
+    answers 200 under 1 s on the scratch database, and the test asserts it.
+13. `test_crm_catalogue_r8.py` seeds two orgs with different modules and
+    plans. Each org reads only its own entries, through the route and
+    through `entry_of`.
+
+Files: a new `crm_sync/catalogue.py`, a new `routes/crm/catalogue.py`,
+`routes/crm/__init__.py`, `routes/crm/flags.py`, `acb_common/settings.py`,
+`acb_skills/crm_tools.py`, `acb_skills/addendum.py`, and the new tests
+`tests/unit/test_crm_catalogue.py` and `tests/unit/test_crm_catalogue_r8.py`.
+Also `tests/unit/test_crm_agent.py`. Gate: AGENT-SAFE. Size: M. Migration:
+none.
+
+**CRM-Q31-2 · The key words in the aggregate.** Done when:
+
+1. `field_sql.module_scope` (`field_sql.py:216`) adds `@amount`, `@date`,
+   `@status` and `@parent` to `FieldScope.fields`. It reads the entry of the
+   module only through `catalogue.entry_of`. Each key word is an alias of the
+   real `FieldRef`.
+2. A key word joins the scope only when its type fits. `amount` needs a type
+   of `MEASURE_TYPES`, and `date` a type of `DATE_TYPES`. `status` needs a
+   `select`, and `parent` a `lookup`.
+3. A key word with no key field gives 422 `no_key_field`. The message names
+   the module and says that `crm_list_modules` names its key fields.
+4. On a module, `measure=sum_amount` is the `sum` of `@amount`. `_check`
+   (`aggregate.py:322-323`) no longer refuses it. `weighted` stays refused on
+   a module.
+5. The answer gains `field_label`, and `keys`: each key word that the call
+   used, with its real key.
+6. The tool line of `crm_aggregate` names the label of the real field. Its
+   docstring names the four key words and `sum_amount` on a module. Its
+   pinned parameters do not change.
+7. The empty core line of §18.13.4 shows on a total of 0 in Mirror mode.
+   The tool writes it in `crm_tools.py`, from `GET /crm/catalogue`. The route
+   does not.
+8. `aggregate.py` holds no read of the catalogue and no alias rule. Both
+   live in `field_sql.py` and `routes/crm/catalogue.py`. The two existing fences of
+   `test_crm_aggregate.py` stay green, and one new test proves this item.
+9. R8: a `sum_amount` on a module equals the `sum` of its real amount
+   field. A bucket by `@date` equals the bucket by the real key. A key word
+   never reaches the SQL text. The hostile-name test sends `@amount'--`.
+
+Files: `routes/crm/field_sql.py`, `routes/crm/aggregate.py`,
+`routes/crm/catalogue.py`, `crm_sync/catalogue.py`, `acb_skills/crm_tools.py`,
+`tests/unit/test_crm_aggregate.py` and
+`tests/unit/test_crm_aggregate_fields_r8.py`. Gate: AGENT-SAFE. Size: S.
+Migration: none.
+
+**CRM-Q31-3 · The catalogue on the decide tier.** Done when:
+
+1. `crm.map_catalogue` joins `CRM_FEATURES`, `REGISTERED` and `ON_FEATURES`
+   (`decide_features.py:173-229`), and starts `off`. `map_pipeline.FEATURES`
+   holds it, so `modes_now` and `enabled_for` see it.
+2. `Pipeline.run` calls a new step `_catalogue()` last, after `_roles()`,
+   `_module` and `_shadow`. A module that plays a slot takes the purpose of
+   its slot. The step builds no question of a part that code answers.
+3. The requests, the state, the re-ask and the rule "none beats a wrong
+   answer" follow §18.13.4. A scripted fake of `decide` proves each one.
+4. A second run on the same schema makes 0 `ask` calls. A test proves it.
+5. The step counts on its own counters, `CATALOGUE_TOKENS` (24,000) and
+   `CATALOGUE_REQUESTS` (12). It does not count on `TOKEN_CAP` and
+   `RUN_REQUESTS` of the run (`map_pipeline.py:857-862`). The day counter is
+   the one of CRM-Q20-1.
+6. A catalogue cap stops only the catalogue step, and the step keeps each
+   finished key. A payer stop (`daily_cap`, `member_left`, `cooldown`,
+   `stopped` or `no_answer`) ends the run. A test proves each cap and each
+   kind of stop. One more test proves the worst case of one run: 44,000
+   estimated tokens and 24 requests, under `DAILY_REQUESTS` (40).
+7. In `shadow` the step asks only the answer key of §18.13.4, and writes no
+   item. It logs `crm.map_pipeline.shadow` with `asked` and `agreed` only.
+8. In `on` the step writes through `mapping_plans.apply_catalogue`, never
+   through a draft.
+9. `kind_key` learns `catalogue` only together with a branch of
+   `check_kinds` (rule 4) for it. Without that branch, a `catalogue` item
+   falls into the `role_missing` check (`mapping_plans.py:416-419`) and
+   gives 422. `merge_kinds` knows the kind too, and
+   `map_pipeline._approved_items` loads it.
+10. `commit` gains the keyword `catalogue=None`, and only `apply_catalogue`
+    passes it. With `None`, `commit` swaps in the `catalogue` items of the
+    version in use, so the approve route (`mapping_plans.py:1051-1055`) and
+    the restore route (`mapping_plans.py:1085-1089`) need no change. An R8
+    test makes a draft approve, a restore and a change of one rule. Each
+    keeps the catalogue of the version in use.
+11. The builder strips `catalogue` items from a draft in each writer of one:
+    `write_draft` (`mapping_plans.py:837-840`), `carry_draft`
+    (`mapping_plans.py:715-721`) and `POST /crm/mapping/plans`
+    (`mapping_plans.py:989-1020`). Each strips them on both sides of its
+    `_canonical` compare, so a catalogue change never reads as a draft
+    change. `_write` (`map_pipeline.py:1761-1767`) keeps catalogue items out
+    of `result.items`, so they never reach `write_draft`. An R8 test proves
+    that no draft holds a catalogue item.
+12. `rule_count` of `GET /crm/mapping/plans` (`_LIST_SQL`,
+    `mapping_plans.py:143`) leaves out `catalogue` items. The Field map card
+    shows that count (`components/FieldMapCard.tsx:195` and `:272`). The
+    fence is a new R8 test in `test_crm_map_plan_r8.py`: a version with 2
+    field rules and 3 catalogue items lists `rule_count` 2.
+13. `apply_catalogue` changes no row of `crm_field_rules`, and it keeps the
+    picks by hand of the open draft. With no open draft, it writes no draft.
+    An R8 test proves each of the three.
+14. The pipeline never replaces a part with `by: admin`. A test proves it.
+15. `evals/crm_mapping/` gains the expected purposes and key fields of the
+    `dewin` schema. A new bar fails on a wrong `amount`. A part left empty is
+    not a failure. `uv run python -m evals.crm_mapping --scripted` passes.
+16. The payer is the one of CRM-Q20-1 (`_Payer`). A log line holds counts,
+    keys of ours and request ids, and never a field name, a label or a value.
+17. `work_plan.md` §6 registers the two owner flips.
+18. The Field map history gets no new label in this slice. A version that
+    `apply_catalogue` writes shows as the history shows a version today.
+
+Files: `gateway/decide_features.py`, `crm_sync/catalogue.py`,
+`crm_sync/map_pipeline.py`, `routes/crm/mapping_plans.py`,
+`evals/crm_mapping/`, `project-docs/work_plan.md` §6, and the tests
+`test_crm_catalogue.py`, `test_crm_map_pipeline.py`,
+`test_crm_map_pipeline_r8.py` and `test_crm_map_plan_r8.py`. Gate:
+AGENT-SAFE to build. The flips are OWNER-GATE. Size: M. Migration: none.
+Narrow reviewer: credits, for the decide calls, the caps and the payer.
+
+**Post-flip check (OWNER-GATE), not part of the build.** After the owner
+flips DEWiN to `shadow`, the next sync run logs one
+`crm.map_pipeline.shadow` line for `crm.map_catalogue`. A join of its
+request ids to `usage_event` gives the measured tokens. The result goes into
+this section. An agent prepares the check and stops.
+
+**CRM-Q31-4 · The admin screen.** Done when:
+
+1. One entry of `lib/settingsSections.ts`, the one list of CRM-C1, shows the
+   catalogue. It shows to an admin in Mirror mode, for an org in
+   `CRM_CATALOGUE_ORGS`.
+2. Each module shows its purpose and its key fields under the Zoho labels.
+   No confidence number and no engine word shows. "Metorite chose" and "You
+   chose" name the source of each part.
+3. An admin changes a part with the shared `SelectButton`.
+   `PUT /crm/catalogue/{module}` (admin, Mirror mode) writes it through
+   `apply_catalogue`. A field of the wrong type gives 422.
+4. Each part of the PUT body takes one of three values:
+   - a field API name, or a purpose word: the admin's choice, stored with
+     `by: admin`;
+   - `null`: the admin says that no field holds this part, stored with
+     `by: admin`;
+   - `"@auto"`: the admin part goes away, and the stored answer of the
+     pipeline or the answer of code shows again. A Zoho API name cannot start
+     with `@`, so this value never names a field.
+
+   `null` in a pipeline item still means "asked, not sure". The PUT value
+   `"@auto"` is a third value, apart from `null`.
+5. The toast of a change has Undo. Undo of a part that Metorite chose sends
+   `"@auto"`, so the part never freezes as `by: admin`. Undo of an earlier
+   choice of the admin sends that choice again.
+6. A new R8 suite `tests/unit/test_crm_catalogue_put_r8.py` proves the PUT.
+   A member who is not an admin gets 403. Native mode gets 409. A field of
+   the wrong type gets 422. `"@auto"` clears the admin part. An admin of
+   org B cannot change the catalogue of org A.
+7. The `visual-review` skill runs in light mode, at compact density, with a
+   changed accent, and at phone width.
+
+Files: `routes/crm/catalogue.py`, `lib/api.ts`, `lib/settingsSections.ts`,
+`components/SettingsCards.tsx`, a new component of the card, a new
+`components/crmQ31.test.ts` and a new
+`tests/unit/test_crm_catalogue_put_r8.py`. Gate: AGENT-SAFE. Size: S.
+Migration: none.
+
+**CRM-Q20-3a · The overlay in the aggregate and the AI tools.** Done when:
+
+1. A new `routes/crm/overlay.py` holds `overlay_of`, as §18.13.5 says.
+2. `GET /crm/aggregate` on a core entity whose slot has an overlay reads the
+   module through the projection table of §18.13.5. Each refusal is the 422
+   that the table names, never a 500.
+3. The status group follows the lane order, with one "Unsorted" group.
+4. The answer carries `overlay`. With no overlay, the answer is the answer
+   of today, byte for byte.
+5. The AI tools follow the tool table of §18.13.5. A `status` filter on an
+   overlaid slot gives one sentence, as each other filter that the overlay
+   does not take. A test proves it.
+6. Undo of the role gives the answers of today again.
+7. The fences of `test_crm_map_suggest_r8.py` change on purpose:
+   `READERS` loses `aggregate.py` and `crm_tools.py`. The same-answer test
+   keeps each other reader. It asserts that the aggregate of deals now
+   counts the records of the module.
+8. A new R8 suite `test_crm_overlay_read_r8.py` covers `count`, and
+   `sum_amount` through the catalogue amount. It covers the lane order with
+   "Unsorted", `close_month` and the `owner` filter. It covers each 422 of
+   the table, and Native mode. It also proves that org B never reads the
+   overlay of org A.
+
+Files: a new `routes/crm/overlay.py`, `routes/crm/aggregate.py`,
+`routes/crm/field_sql.py`, `acb_skills/crm_tools.py`,
+`tests/unit/test_crm_map_suggest_r8.py`, a new
+`tests/unit/test_crm_overlay_read_r8.py` and `tests/unit/test_crm_agent.py`.
+Gate: AGENT-SAFE. Size: M. Migration: none. Narrow reviewer: tenancy, for the
+overlay read.
+
+**CRM-Q20-3b · The overlaid board.** Done when:
+
+1. `GET /crm/modules/{module}/board?slot=<slot>` returns the lanes in the
+   lane order. Each lane has its value, its type and its count. The type is
+   `open`, `won`, `lost` or `unsorted`. A lane also has the sum of `@amount`
+   when the catalogue has one. One grouped statement through `field_sql.py`
+   gives the counts.
+2. Each lane holds its first 50 cards by `ext_modified_at`, in the row shape
+   of the module list. The lane counts add up to the records of the module
+   under the filters.
+3. With a `stage` item, the rail row of the slot opens the module. It has
+   the list or board switch of Deals. No card drags in Mirror mode.
+4. `orderLanes` gains the type `unsorted`, last in both modes. The
+   "Unsorted" lane shows while it holds a record, whatever the choice of
+   "Empty stages".
+5. The `visual-review` skill runs in light mode, at compact density, with a
+   changed accent, and at phone width.
+
+Files: `routes/crm/modules.py`, `routes/crm/field_sql.py`,
+`routes/crm/overlay.py`, `ModuleList.tsx`, `KanbanBoard.tsx`,
+`lib/board.ts`, `CrmRail.tsx`, `boardStages.test.ts`, `crmQ20.test.ts`, and
+a new `tests/unit/test_crm_overlay_board_r8.py`. Gate: AGENT-SAFE. Size: M.
+Migration: none.
+
+#### 18.13.7 The cost for DEWiN (estimated)
+
+| Run | Questions | Requests | Estimated input tokens |
+|---|---|---|---|
+| Purposes, first setup | 9: Operator_Associates, Operators, Asserts, Airwave, POCs, Circles, Branches, Company, and Contacts ("Existing Sites") | 1 | About 2,700 |
+| Key fields, first setup | About 16, for Invoices, Payment_Received, Payment_Made, Bills, Outstanding and Operator_Associates | 6 | About 10,800 |
+| Re-asks | About 6 | About 3 | About 1,800 |
+| **First setup in `on`** | **About 31** | **About 10** | **About 15,300** |
+| Shadow | 6: 4 purposes and 2 key fields | 2 | About 2,500 |
+| A run on the same schema | 0 | 0 | 0 |
+
+- Code answers the purpose of 9 of the 17 modules, and of Leads. It answers
+  the name, the owner and the links of each module, and 6 key fields of the
+  money modules.
+- At the rate of §18.9.4, the first setup costs about USD 0.001 in the org's
+  credits. The first setup of CRM-Q20-1 adds about 3 requests. Together they
+  fit the day limit of 40 requests.
+- A question in chat makes no decide call. "Revenue this quarter" costs 2
+  tool calls. The answer of `crm_list_modules` grows from about 250 to about
+  1,000 tokens.
+- The measured count needs the post-flip check of CRM-Q31-3.
+
+#### 18.13.8 Open owner calls
+
+1. **May the catalogue apply with no approval?** It changes no record and no
+   screen. Recommended: yes, with the admin screen of CRM-Q31-4 to change it.
+   Nothing waits on this answer before the flip, because `shadow` writes
+   nothing. The owner answers it with the flip of `crm.map_catalogue` to
+   `on`, after CRM-Q31-4 ships.
+2. **What does "revenue" mean by default?** Billed (the `invoice` modules) or
+   received (the `payment_in` modules). Recommended: billed. DEWiN's invoices
+   are whole, with 30,177 records and one date, and Payment_Received has no
+   single amount. Each answer names its basis and offers the other number.
+3. **Does rule 2 of the kinds gain `amount`, the owner and the parent?**
+   This is the open call of CRM-Q20-1. Recommended: no, for reads. The overlay
+   reads them from the catalogue (CRM-Q31), because a read moves no record.
+   Rule 2 grows with CRM-Q21, where a value must land in a column.
+4. **Which goes first?** Recommended: CRM-Q31-1 and CRM-Q31-2, because they
+   serve DEWiN at once. CRM-Q20-3 serves no org until an org approves a role.
+
+#### 18.13.9 Verification
+
+- `bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"`
+- `uv run pytest tests/unit/test_crm_catalogue.py tests/unit/test_crm_catalogue_r8.py tests/unit/test_crm_catalogue_put_r8.py tests/unit/test_crm_aggregate.py tests/unit/test_crm_aggregate_fields_r8.py tests/unit/test_crm_aggregate_r8.py tests/unit/test_crm_agent.py tests/unit/test_tool_schema_diet.py -q`,
+  with no test skipped.
+- `uv run pytest tests/unit/test_crm_map_pipeline.py tests/unit/test_crm_map_pipeline_r8.py tests/unit/test_crm_map_plan_r8.py tests/unit/test_crm_map_suggest_r8.py tests/unit/test_crm_overlay_read_r8.py tests/unit/test_crm_overlay_board_r8.py -q`,
+  with no test skipped. Each slice runs the suites that exist when it ships.
+- `uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py tests/unit/test_feed_decide.py tests/unit/test_crm_note_labels.py -q`.
+  The other features of the registry must behave as before.
+- `uv run python -m evals.crm_mapping --scripted`
+- `npx tsc --noEmit && npx vitest run src/app/crm` in `workbench/control_plane`,
+  for CRM-Q31-4 and CRM-Q20-3b.
+- `uv run python scripts/affected_tests.py --run`
+
+**The DB gate.** Each new R8 suite sets `pytestmark = _DB_GATE`, as
+`test_crm_map_suggest_r8.py:71` does: `test_crm_catalogue_r8.py`,
+`test_crm_catalogue_put_r8.py`, `test_crm_overlay_read_r8.py` and
+`test_crm_overlay_board_r8.py`. Without it, `deploy.yml` has no ladder
+database and the suite errors.
+
+**The files that two slices share.** A slice that merges second takes the
+change of the first, and runs the verification of both again.
+
+| File | Slices |
+|---|---|
+| `crm_sync/catalogue.py` | CRM-Q31-1, CRM-Q31-2, CRM-Q31-3 |
+| `routes/crm/field_sql.py` | CRM-Q31-2, CRM-Q20-3a, CRM-Q20-3b |
+| `routes/crm/aggregate.py` | CRM-Q31-2, CRM-Q20-3a |
+| `acb_skills/crm_tools.py` | CRM-Q31-1, CRM-Q31-2, CRM-Q20-3a |
+| `routes/crm/catalogue.py` | CRM-Q31-1, CRM-Q31-2 (`entry_of`), CRM-Q31-4 |
+| `routes/crm/mapping_plans.py` | CRM-Q31-3 |
+| `routes/crm/overlay.py` | CRM-Q20-3a, CRM-Q20-3b |
 
 ---
 
