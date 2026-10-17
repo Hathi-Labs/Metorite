@@ -5791,6 +5791,28 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `docs/multiplayer/memory-clearance.md`, `specs/knowledge_base.md` §6.5
 - **Added:** 2026-10-16 · WS-61 KB-4a review
 
+### H-352 · Email work holds a pool connection across provider and model calls · [AGENT] · finding
+- **Check:** in `apps/services/gateway/gateway/routes/email/automation/runner.py`,
+  find "Block W" in `_run_rules_job`. If `_apply_matches` still runs inside
+  that `async with _tenant_session()`, this is open. Also check
+  `_ensure_subscription` in `transport/sync.py`, and the hydrate in
+  `get_message` in `transport/messages.py`.
+- **Why.** Production logged a 503 from `QueuePool limit of size 7 overflow 2
+  reached` during sync. The gateway pool holds 9 connections. Block W of the
+  rules job holds one for each new mail across the Graph actions, the AI
+  draft of a REPLY rule and `_reconcile_thread_labels`. Its own comment says
+  "EM-T4 owns the model and provider I/O that stays inside". The subscription
+  renew holds one across three Graph calls. The `get_message` hydrate and the
+  `update_message` and `delete_message` pushes hold one across a provider
+  call. A few mailboxes that sync at once take the pool. The phases of
+  `email_ingestion.scheduler._sync_account` are short, and so is the sweep.
+  The route of the full body held one too. PR `email-route-errors` fixed it.
+- **Do this:** move the provider and model calls of Block W out of the block,
+  as the sweep does (provider first, then a short write block). Do the same
+  for `_ensure_subscription`. Do not change the pool size.
+- **Authority:** `specs/engineering_practice.md` §1.1, the EM-T4 notes in `runner.py`
+- **Added:** 2026-10-18 · email route errors (gateway log, 7 days)
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

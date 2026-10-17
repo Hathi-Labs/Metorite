@@ -37,13 +37,13 @@ Fence: ``tests/unit/test_email_insights_route.py`` (R8, as the role
 """
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query
+from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.automation.insights_store import (
     DOMAINS,
     FACT_FIELDS,
@@ -155,11 +155,9 @@ async def list_insights(
         raise _bad(f"window must be one of {', '.join(WINDOWS)}")
     if state not in STATES:
         raise _bad(f"state must be one of {', '.join(STATES)}")
-    if account_id:
-        try:
-            account_id = str(uuid.UUID(account_id))
-        except ValueError:
-            raise _bad("account_id is not a valid id") from None
+    # The shared reader (account_ref). Only an address opens a session.
+    account_id = await resolve_account_filter(
+        None, account_id, user.email or "anonymous")
     limit = max(1, min(int(limit), MAX_LIMIT))
     offset = max(0, int(offset))
 

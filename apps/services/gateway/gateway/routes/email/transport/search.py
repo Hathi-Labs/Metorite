@@ -39,6 +39,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, Query
+from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     KNOWN_LABELS_LOWER,
     UNCATEGORIZED_SQL,
@@ -205,6 +206,7 @@ async def search_messages(
     accounts, except a mailbox that the member keeps separate (EM-T8g-1)."""
     async with _tenant_session() as db:
         uid = user.email or "anonymous"
+        account_id = await resolve_account_filter(db, account_id, uid)
         text_q = (q or "").strip()
         params: dict[str, Any] = {"uid": uid, "q": text_q}
 

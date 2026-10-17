@@ -53,6 +53,12 @@ logger = logging.getLogger(__name__)
 # but we never block a whole sync cycle on one throttled message.
 _MAX_RETRY_AFTER_SECS = 30.0
 
+#: The longest wait of the one retry of a read that a person waits on
+#: (``_graph_read``). A 429 that asks for more gets no retry: the route then
+#: answers 429 with the provider's own ``Retry-After``, and the caller tries
+#: again later. Fence: tests/unit/test_email_provider_errors.py.
+_READ_RETRY_MAX_WAIT_SECS = 5.0
+
 # Canonical keys that mean "system folder" (used to classify by display name on
 # personal/consumer accounts, which omit wellKnownName — see below).
 _CORE_CANONICAL = frozenset({"inbox", "sent", "drafts", "trash", "junk", "archive"})
@@ -768,6 +774,30 @@ class OutlookProvider(BaseEmailProvider):
             return resp
         return resp
 
+    async def _graph_read(self, url: str, **kwargs: Any) -> httpx.Response:
+        """One Graph GET that a person waits on, with one bounded retry.
+
+        A 429 waits for ``Retry-After`` (1 second with none) and tries once
+        more, but only when the wait is at most
+        :data:`_READ_RETRY_MAX_WAIT_SECS`. A longer wait gets no retry. The
+        answer of the last try goes back, and the caller calls
+        ``raise_for_status()``, so the route sees the 429 and its header.
+        ``_graph_send`` keeps its own longer bound for the label applies of
+        a sync.
+        """
+        client = await self._get_client()
+        resp = await client.get(url, **kwargs)
+        if resp.status_code != 429:
+            return resp
+        try:
+            delay = float(resp.headers.get("Retry-After", "1") or 1)
+        except ValueError:
+            delay = 1.0
+        if delay > _READ_RETRY_MAX_WAIT_SECS:
+            return resp
+        await asyncio.sleep(max(delay, 0.0))
+        return await client.get(url, **kwargs)
+
     async def _master_category_names(self) -> set[str]:
         """Lower-cased master-category names for this account, fetched once and
         cached on the instance. Personal/MSA accounts 403 on the endpoint; that
@@ -1036,8 +1066,8 @@ class OutlookProvider(BaseEmailProvider):
         return messages, next_token
 
     async def get_message(self, provider_message_id: str) -> EmailMessage:
-        client = await self._get_client()
-        resp = await client.get(
+        # One bounded retry on a 429 (``_graph_read``).
+        resp = await self._graph_read(
             f"/me/messages/{provider_message_id}",
             params={"$expand": "attachments"},
         )
@@ -1052,8 +1082,7 @@ class OutlookProvider(BaseEmailProvider):
         body only, so this read selects ``id`` and ``body`` and expands
         nothing. Fence: ``tests/unit/test_email_html_tier.py``.
         """
-        client = await self._get_client()
-        resp = await client.get(
+        resp = await self._graph_read(
             f"/me/messages/{provider_message_id}",
             params={"$select": "id,body"},
         )

@@ -15,7 +15,7 @@ from fastapi import BackgroundTasks
 from gateway.routes.email.automation import replyzero as r
 from tests.unit._email_fakes import bind_db
 
-_ACC = "acc-reclass"
+_ACC = "a0000000-0000-4000-8000-00000000ec1a"
 
 
 class _User:

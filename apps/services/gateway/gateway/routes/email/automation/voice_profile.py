@@ -25,6 +25,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from email_ingestion.llm_cap import automation_job, llm_slot
 from fastapi import BackgroundTasks, Depends, HTTPException, Query, status
+from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.automation.jobs import JobTracker
 from gateway.routes.email.core import (
     _assert_account_owner,
@@ -481,6 +482,8 @@ async def get_voice_profile(
     """The account's voice profile (or an EMPTY placeholder), plus how many
     suggested knowledge entries are waiting for review."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         row = (await db.execute(text(
             """SELECT enabled, status, style_guide, traits, sources,
@@ -506,6 +509,8 @@ async def preview_voice_profile(
     start = _parse_iso_date(start_date, end_of_day=False)
     end = _parse_iso_date(end_date, end_of_day=True)
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         counts: dict[str, int] = {}
         for folder in _VALID_SOURCES:
@@ -599,6 +604,8 @@ async def voice_profile_status(
 ):
     """Live progress for the most recent build on this account. {"status":
     "idle"} when none has run (or it belongs to a different user)."""
+    account_id = await resolve_account_filter(
+        None, account_id, user.email or "anonymous", required=True)
     job = _VOICE_JOBS.get(account_id)
     if not job or job.get("owner") != (user.email or "anonymous"):
         return {"status": "idle"}
@@ -655,6 +662,8 @@ async def delete_voice_profile(
     """Remove the profile — and the knowledge suggestions it proposed that were
     never approved (approved entries are the user's now and stay)."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         await db.execute(text(
             """DELETE FROM email_knowledge

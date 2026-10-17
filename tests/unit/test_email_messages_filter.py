@@ -28,7 +28,7 @@ async def _run_list(label):
     user = SimpleNamespace(email="u@example.com")
     with patch.object(m.transport.messages, "_tenant_session", bind_db(db)):
         resp = await m.list_messages(
-            account_id="acc-1", folder="inbox", label=label,
+            account_id="a0000000-0000-4000-8000-000000000001", folder="inbox", label=label,
             query=None, thread_id=None,
             received_after=None, received_before=None, is_read=None,
             is_starred=None, has_attachments=None, importance=None,
@@ -70,7 +70,7 @@ async def _run_list_full(**kw):
     db.execute.side_effect = fake_execute
     user = SimpleNamespace(email="u@example.com")
     args = dict(
-        account_id="acc-1", folder="inbox", label=None, query=None,
+        account_id="a0000000-0000-4000-8000-000000000001", folder="inbox", label=None, query=None,
         thread_id=None, received_after=None, received_before=None, is_read=None,
         is_starred=None, has_attachments=None, importance=None, from_email=None,
         sender_category=None, sort="newest", collapse=False,
@@ -160,7 +160,7 @@ async def test_priority_inbox_ranks_and_excludes_bulk():
             patch.object(m.transport.messages, "_assert_account_owner",
                          AsyncMock()):
         resp = await m.priority_inbox(
-            account_id="acc-1", days=30, limit=20, user=user)
+            account_id="a0000000-0000-4000-8000-000000000001", days=30, limit=20, user=user)
 
     sql = " ".join(s for s, _ in captured)
     assert "NEEDS_REPLY" in sql
@@ -176,7 +176,7 @@ async def test_priority_inbox_ranks_and_excludes_bulk():
 
 def _msg_row(*, has_attachments: bool):
     return SimpleNamespace(
-        id="m1", provider_message_id="pm1", thread_id="t1", account_id="acc-1",
+        id="m1", provider_message_id="pm1", thread_id="t1", account_id="a0000000-0000-4000-8000-000000000001",
         folder="inbox", labels=[],
         from_address={"name": "Jo", "email": "jo@x.com"},
         to_addresses=[], cc_addresses=[], bcc_addresses=[], subject="Hi",
@@ -212,7 +212,7 @@ async def _run_thread_list(*, thread_id, msg_row, att_rows):
     user = SimpleNamespace(email="u@example.com")
     with patch.object(m.transport.messages, "_tenant_session", bind_db(db)):
         resp = await m.list_messages(
-            account_id="acc-1", folder=None, label=None, query=None,
+            account_id="a0000000-0000-4000-8000-000000000001", folder=None, label=None, query=None,
             thread_id=thread_id, received_after=None, received_before=None,
             is_read=None, is_starred=None, has_attachments=None, importance=None,
             from_email=None, sender_category=None, sort="oldest",

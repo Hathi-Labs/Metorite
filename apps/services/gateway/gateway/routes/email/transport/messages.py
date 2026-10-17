@@ -12,8 +12,21 @@ from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
 from email_ingestion import html_tier
 from email_ingestion import storage as ingest_storage
 from email_ingestion.body_backfill import _html_to_text
-from email_ingestion.providers.base import ProviderRateLimited, local_folder_after_move
+from email_ingestion.providers.base import local_folder_after_move
 from fastapi import Depends, HTTPException, Query, status
+from gateway.routes.email.account_ref import resolve_account_filter
+from gateway.routes.email.provider_errors import (
+    RETRY_AFTER_MAX_SECS,
+    provider_http_error,
+    reconnect,
+)
+# The names that ``transport/inline_images.py`` and the HTML route read.
+from gateway.routes.email.provider_errors import (
+    is_provider_429 as _is_provider_429,
+)
+from gateway.routes.email.provider_errors import (
+    provider_retry_after as _provider_retry_after,
+)
 from gateway.routes.email.core import (
     ATTACHMENT_CACHE_TTL_SECS,
     HUMAN_SENDER_CATEGORIES_LOWER,
@@ -125,6 +138,8 @@ async def message_facets(
     1,204" is the number that tells you where to start.
     """
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous")
         params: dict[str, Any] = {"user_id": user.email or "anonymous"}
         where = ["ea.user_id = :user_id"]
         # The counts of All inboxes leave out a separate mailbox (EM-T8g-1).
@@ -221,6 +236,9 @@ async def list_messages(
     Ignored when ``thread_id`` is set (the conversation view wants every message).
     """
     async with _tenant_session() as db:
+        # "all", an address or garbage never reach the SQL as a UUID.
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous")
         where_clauses = [
             "ea.user_id = :user_id"
         ]
@@ -477,6 +495,8 @@ async def priority_inbox(
     are excluded so the list stays high-signal. Returns one row per thread with
     the reason it ranked, newest-first within score."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         rows = (await db.execute(text(
             """WITH latest AS (
@@ -1125,61 +1145,71 @@ async def get_full_body(
     Use this when body_truncated is true on a message — the stored body
     was capped to stay within storage limits.  This endpoint reaches out
     to Gmail/Microsoft/IMAP live to retrieve the complete message body.
+
+    No session is open across the provider call, as in the HTML route
+    below. Block A reads the row and closes. The fetch runs with no
+    connection held, so a throttled fetch that waits holds no slot of the
+    pool. Block B opens only when the provider rotated its tokens.
+
+    A provider failure maps through ``provider_errors``: a rate limit is 429
+    with ``Retry-After``, a gone message is 404, a refused sign-in is 409.
     """
+    mid = _canonical_uuid(message_id)
+    if mid is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    # Block A: the owner read. The session opens OUTSIDE any try, so
+    # `TenantUnbound` and a refused connect reach the handlers of main.py.
     async with _tenant_session() as db:
-        try:
-            result = await db.execute(
-                text(
-                    """SELECT em.provider_message_id, em.account_id,
-                              p.provider, p.credentials_encrypted
-                       FROM email_messages em
-                       JOIN email_accounts p ON em.account_id = p.id
-                       WHERE em.id = :mid AND p.user_id = :user_id"""
-                ),
-                {"mid": message_id, "user_id": user.email or "anonymous"},
-            )
-            row = result.fetchone()
-            if not row:
-                raise HTTPException(status_code=404, detail="Message not found")
+        row = (await db.execute(
+            text(
+                """SELECT em.provider_message_id, em.account_id,
+                          p.provider, p.credentials_encrypted
+                   FROM email_messages em
+                   JOIN email_accounts p ON em.account_id = p.id
+                   WHERE em.id = :mid AND p.user_id = :user_id"""
+            ),
+            {"mid": mid, "user_id": user.email or "anonymous"},
+        )).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Message not found")
 
-            # Decrypt credentials
-            from acb_llm.key_store import get_key_store
-            store = get_key_store()
-            creds = json.loads(store.decrypt(row.credentials_encrypted))
-
-            # Instantiate provider
-            provider = _instantiate_provider(row.provider, creds)
-
-            if not await provider.authenticate():
-                raise HTTPException(
-                    status_code=401,
-                    detail="Email account authentication failed",
-                )
-
-            msg = await provider.get_message(row.provider_message_id)
-            # A 401 on the fetch refreshes the token (EM-T4c). Keep it.
-            await _persist_rotated_creds(
-                db, store, str(row.account_id), provider)
-            return {
-                "message_id": message_id,
-                "body_text": msg.body_text,
-                "body_html": msg.body_html,
-                "subject": msg.subject,
-                "from": (
-                    f"{msg.from_address.name} <{msg.from_address.email}>"
-                    if msg.from_address else ""
-                ),
-            }
-        except HTTPException:
-            raise
-        except Exception as exc:
-            _log.error(
-                "full_body.failed", message_id=message_id, error=str(exc)[:200]
-            )
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to fetch full body: {str(exc)}",
-            )
+    creds, store = _decrypt_credentials(row.credentials_encrypted)
+    provider = _instantiate_provider(row.provider, creds)
+    account_id = str(row.account_id)
+    fetch_error: Exception | None = None
+    msg: Any = None
+    try:
+        if not await provider.authenticate():
+            raise reconnect()
+        msg = await provider.get_message(row.provider_message_id)
+    except HTTPException:
+        raise
+    except Exception as exc:  # mapped below, after the token write
+        fetch_error = exc
+    finally:
+        # Block B: keep a token that the provider rotated, also after a
+        # failed fetch (EM-T4c). A 401 on the fetch refreshes the token.
+        if provider.credentials_dirty():
+            try:
+                async with _tenant_session() as db:
+                    await _persist_rotated_creds(db, store, account_id, provider)
+            except Exception as exc:  # never fail the read on it
+                _log.warning("full_body.creds_persist_failed",
+                             message_id=mid, error=type(exc).__name__)
+    if fetch_error is not None:
+        raise provider_http_error(
+            fetch_error, route="get_full_body", message_id=mid,
+            account_id=account_id)
+    return {
+        "message_id": message_id,
+        "body_text": msg.body_text,
+        "body_html": msg.body_html,
+        "subject": msg.subject,
+        "from": (
+            f"{msg.from_address.name} <{msg.from_address.email}>"
+            if msg.from_address else ""
+        ),
+    }
 
 
 # ── The HTML of a message, from the provider (WS-17 EM-S1) ──────────────────
@@ -1193,50 +1223,8 @@ HTML_CACHE_TTL_SECS = ATTACHMENT_CACHE_TTL_SECS
 #: The wait that a refused prefetch asks for (§14.4.2 item 2).
 PREFETCH_RETRY_AFTER_SECS = 30
 #: The longest ``Retry-After`` of a provider 429 that the route passes on.
-#: A longer or unreadable value gives :data:`PREFETCH_RETRY_AFTER_SECS`.
-PROVIDER_RETRY_AFTER_MAX_SECS = 300
-
-
-def _provider_429_response(exc: BaseException) -> Any:
-    """The HTTP answer of a provider 429 in the chain of *exc*, else None.
-
-    A ``ProviderRateLimited`` counts with or without an answer, because a
-    provider raises it when its own tries are spent (``GmailRateLimited``).
-    """
-    seen: set[int] = set()
-    cur: BaseException | None = exc
-    while cur is not None and id(cur) not in seen and len(seen) < 8:
-        seen.add(id(cur))
-        response = getattr(cur, "response", None)
-        if getattr(response, "status_code", None) == 429:
-            return response
-        if isinstance(cur, ProviderRateLimited):
-            return response if response is not None else True
-        cur = cur.__cause__
-    return None
-
-
-def _is_provider_429(exc: BaseException) -> bool:
-    """True when the provider refused the fetch for a rate limit."""
-    return _provider_429_response(exc) is not None
-
-
-def _provider_retry_after(exc: BaseException) -> int:
-    """The ``Retry-After`` that the route sends for a provider 429.
-
-    The seconds of the provider's own header, from 1 to
-    :data:`PROVIDER_RETRY_AFTER_MAX_SECS`. Else :data:`PREFETCH_RETRY_AFTER_SECS`.
-    """
-    response = _provider_429_response(exc)
-    headers = getattr(response, "headers", None)
-    raw = headers.get("Retry-After") if headers is not None else None
-    try:
-        wait = int(str(raw).strip())
-    except (TypeError, ValueError):
-        return PREFETCH_RETRY_AFTER_SECS
-    if 1 <= wait <= PROVIDER_RETRY_AFTER_MAX_SECS:
-        return wait
-    return PREFETCH_RETRY_AFTER_SECS
+#: A longer or unreadable value gives the default of ``provider_errors``.
+PROVIDER_RETRY_AFTER_MAX_SECS = RETRY_AFTER_MAX_SECS
 
 
 class MessageHtmlModel(BaseModel):
