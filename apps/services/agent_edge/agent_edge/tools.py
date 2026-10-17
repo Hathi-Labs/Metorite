@@ -495,7 +495,7 @@ _ID_RE = re.compile(_UUID_PATTERN)
 #: A key-shaped string: a field name, a category, a link type.
 _KEY_RE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
 
-#: A member address: the shape of ``skill_projects/client.py`` (``_EMAIL``),
+#: A member address: the shape of ``acb_common/tool_refusals.py`` (``_EMAIL``),
 #: with caps. The domain has at most 4 labels (fix round 2). With
 #: :data:`MAX_ADDRESS_CHARS` it bounds what a planted address can carry. A
 #: short phrase of up to 64 characters can still fit (spec §9.4, residuals).

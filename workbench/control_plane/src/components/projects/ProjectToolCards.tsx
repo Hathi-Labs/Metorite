@@ -694,8 +694,11 @@ export function classifyActionResult(
   status: ToolEvent["status"],
   tool = "",
 ): ActionOutcome {
-  if (status === "error") return "failed";
   const text = (result || "").trim();
+  // A server refusal ("Refused: ...") now arrives with `success: false`, so
+  // its status is "error". It is still a refusal, not a fault: it keeps the
+  // muted "Not done" receipt it drew before the stream marked it.
+  if (status === "error") return /^Refused:/.test(text) ? "refused" : "failed";
   if (text.startsWith(CANCELLED)) return "cancelled";
   // A batch that stopped part way (WS-27bm S7d, §13.6 rule 9): something
   // exists, and the receipt says what did not happen. It is not a success.

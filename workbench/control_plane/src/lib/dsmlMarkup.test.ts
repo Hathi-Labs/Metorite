@@ -98,6 +98,115 @@ describe("stripDsmlMarkup", () => {
   });
 });
 
+// Owner report, 2026-10-17: an answer about outstanding payments showed the
+// markup with TWO bars on each side of DSML. The bar code point could not be
+// read, so the marker is tolerant. This fence holds the renderer to it.
+
+const BB = BAR + BAR;
+const LOW = String.fromCharCode(0x2581);
+const BOX = String.fromCharCode(0x2502);
+const DIVIDES = String.fromCharCode(0x2223);
+const HALF = String.fromCharCode(0xffe8);
+
+/** The owner's text of 2026-10-17, transcribed from the screenshot. */
+const ownerParam = (name: string, value: string) =>
+  `<${BB}DSML${BB}parameter name="${name}" string="true">${value}</${BB}DSML${BB}parameter>`;
+const ownerInvoke = (measure: string) =>
+  `<${BB}DSML${BB}invoke name="crm_aggregate"> ` +
+  [
+    ownerParam("entity", "module:Outstanding"),
+    ownerParam("field", "Outstanding_Amount"),
+    ownerParam("group_field", "Name"),
+    ownerParam("measure", measure),
+  ].join(" ") +
+  ` </${BB}DSML${BB}invoke>`;
+const OWNER_DOUBLE_BAR =
+  `<${BB}DSML${BB}tool_calls> ${ownerInvoke("sum")} ${ownerInvoke("count")} ` +
+  `</${BB}DSML${BB}tool_calls>`;
+
+/** The canonical markup in `text`, rewritten with other delimiters. */
+const variant = (text: string, left: string, right: string) =>
+  text.split(T).join(`${left}DSML${right}`);
+
+const VARIANTS: [string, string, string][] = [
+  ["two bars", BB, BB],
+  ["ASCII bars", "|", "|"],
+  ["spaces inside", ` ${BAR} `, ` ${BAR}`],
+  ["tabs inside", `\t${BAR}\t`, `\t${BAR}`],
+  ["mixed bars", `${BAR}|`, `${BOX}${DIVIDES}${HALF}`],
+  ["the longest form", `  ${BAR}  ${BAR}  ${BAR}  `, `  ${BAR}  ${BAR}  ${BAR}`],
+];
+
+const v3Token = (name: string) => `<${BAR}${name.split("_").join(LOW)}${BAR}>`;
+const V3_CALL =
+  v3Token("tool_calls_begin") +
+  v3Token("tool_call_begin") +
+  "function" +
+  v3Token("tool_sep") +
+  'update_task\n```json\n{"task_id": "t1"}\n```' +
+  v3Token("tool_call_end") +
+  v3Token("tool_calls_end");
+
+describe("stripDsmlMarkup with a variant marker", () => {
+  it("hides the owner's exact double-bar text", () => {
+    const out = stripDsmlMarkup(`Let me check. ${OWNER_DOUBLE_BAR}`);
+    expect(out).toBe("Let me check. ");
+    expect(out).not.toContain("DSML");
+    expect(out).not.toContain("crm_aggregate");
+    expect(hasDsmlMarkup(OWNER_DOUBLE_BAR)).toBe(true);
+  });
+
+  it.each(VARIANTS)("hides a block with %s", (_name, left, right) => {
+    const text = `On it. ${variant(OWNER, left, right)} Done.`;
+    expect(stripDsmlMarkup(text)).toBe("On it.  Done.");
+  });
+
+  it.each(VARIANTS)("keeps a fenced block with %s as written", (_name, left, right) => {
+    const text = `The email says:\n\`\`\`\n${variant(OWNER, left, right)}\n\`\`\`\nThat is all.`;
+    expect(stripDsmlMarkup(text)).toBe(text);
+  });
+
+  it("hides a variant head cut off at the end", () => {
+    expect(stripDsmlMarkup(`done <${BB}DSML|inv`)).toBe("done ");
+  });
+
+  it("keeps a marker with a space before the tag name, or four bars", () => {
+    const spaced = `See <${BB}DSML${BB} invoke> here.`;
+    expect(stripDsmlMarkup(spaced)).toBe(spaced);
+    const four = `<${BB}${BB}DSML${BAR}invoke name="x"></${BB}${BB}DSML${BAR}invoke>`;
+    expect(stripDsmlMarkup(four)).toBe(four);
+  });
+
+  it("returns ordinary text with the word DSML as the SAME string", () => {
+    const text = "The DSML spec | v2, a < 3, a lone " + BAR + " and <b>x</b>";
+    expect(hasDsmlMarkup(text)).toBe(false);
+    expect(stripDsmlMarkup(text)).toBe(text);
+  });
+});
+
+describe("stripDsmlMarkup with DeepSeek V3 tokens", () => {
+  it("hides a V3 tool-call region", () => {
+    expect(stripDsmlMarkup(`Checking. ${V3_CALL}\nDone.`)).toBe("Checking. \nDone.");
+    expect(hasDsmlMarkup(V3_CALL)).toBe(true);
+  });
+
+  it("does not let the region's JSON fence quote the markup after it", () => {
+    expect(stripDsmlMarkup(`${V3_CALL} then ${OWNER}`)).toBe(" then ");
+  });
+
+  it("keeps a fenced V3 region as written", () => {
+    const text = `Quote:\n\`\`\`\n${V3_CALL}\n\`\`\`\nDone.`;
+    expect(stripDsmlMarkup(text)).toBe(text);
+  });
+
+  it("hides an unterminated region, a stray token, and a variant bar", () => {
+    const cut = V3_CALL.slice(0, V3_CALL.indexOf("```json") + 9);
+    expect(stripDsmlMarkup(`Checking. ${cut}`)).toBe("Checking. ");
+    expect(stripDsmlMarkup(`a ${v3Token("tool_sep")} b`)).toBe("a  b");
+    expect(stripDsmlMarkup(`x ${V3_CALL.split(BAR).join(BB)}`)).toBe("x ");
+  });
+});
+
 // The wiring fence: the ONE chat renderer must call the strip. Without this
 // case, deleting the call from `MarkdownBody` would leave the suite green.
 
@@ -110,6 +219,20 @@ describe("the chat renderer", () => {
     expect(html).toContain("Done.");
     expect(html).not.toContain("DSML");
     expect(html).not.toContain("5ec5d369");
+  });
+
+  it("MarkdownBody hides the owner's double-bar text and a V3 region", () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownBody, {
+        content: `Checking. ${OWNER_DOUBLE_BAR}\n\n${V3_CALL}\n\nDone.`,
+        entityPills: false,
+      }),
+    );
+    expect(html).toContain("Checking.");
+    expect(html).toContain("Done.");
+    expect(html).not.toContain("DSML");
+    expect(html).not.toContain("crm_aggregate");
+    expect(html).not.toContain(LOW);
   });
 
   it("MarkdownMessage hides it in a stored message", () => {
