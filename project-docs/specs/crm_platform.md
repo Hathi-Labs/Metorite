@@ -65,13 +65,14 @@
 > CRM-Q25c, a NUL byte answers 422 (§18.11, no migration). CRM-Q27, the
 > search of note text by meaning, dark (§18.11, migration 279).
 >
-> **Built later, not merged (Batch I2, `crm-batch-i2`):** CRM-Q28, CRM-Q29,
+> **Built later, merged (Batch I2, #1116, `413ebb1c8`):** CRM-Q28, CRM-Q29,
 > CRM-Q30 and CRM-Q30b were built on 2026-10-17 in the batch branch
-> `crm-batch-i2`. None is merged to `main`, and none is on. CRM-Q28, the
+> `crm-batch-i2`. None is on. CRM-Q28, the
 > weekly digest on `tier-powerful`, dark behind `CRM_DIGEST_ORGS` (branch
 > `crm-q28-digest`, migration 281). CRM-Q29, the number check of each CRM
 > answer, with two fix rounds, dark (`CRM_ANSWER_CHECK` is `off`, branch
-> `crm-answer-check`, no migration). CRM-Q30, a founder question set for CRM
+> `crm-answer-check`, no migration). CRM-Q29 fix round 3 is built on
+> 2026-10-17 on `crm-answer-check-r3`, not merged. CRM-Q30, a founder question set for CRM
 > insights, and CRM-Q30b, the read tools say when Zoho holds more (branch
 > `crm-founder-evals`, no migration). See §18.11.
 >
@@ -1281,7 +1282,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q26** | Labels on notes, on the decide tier, in shadow. §18.11 | P1 |
 | **CRM-Q27** | 🔨 built 2026-10-16 on `crm-batch-i`, merged (#1111), dark. Search of note text by meaning. §18.11 | P2 |
 | **CRM-Q28** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-q28-digest`, migration 281), not merged, dark. A weekly digest on the powerful tier. §18.11 | P2 |
-| **CRM-Q29** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-answer-check`, with two fix rounds), not merged, dark. The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
+| **CRM-Q29** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-answer-check`, with two fix rounds), merged as #1116, dark. Fix round 3 built 2026-10-17 on `crm-answer-check-r3`, not merged. The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
 | **CRM-Q30** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. A founder question set for CRM insights: an eval of the assistant over CRM data. §18.11 | P1 |
 | **CRM-Q30b** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. The read tools say when Zoho holds more records than the connected Zoho user can read. §18.11 | P1 |
 | **CRM-Q31** | The CRM catalogue for the AI: the purpose of each module, its key fields by meaning, and its links. Code first, then the decide tier. Four slices (Q31-1 to Q31-4). §18.13 | P0 |
@@ -3638,8 +3639,10 @@ merged (#1100, migration 278), dark. CRM-Q25b, CRM-Q25c and CRM-Q27
 `crm-batch-i`, with a fix round on 2026-10-17, and merged as #1111
 (`d72f92184`). CRM-Q28 (migration 281, dark), CRM-Q29 (two fix rounds,
 dark, `CRM_ANSWER_CHECK` is `off`, no migration), CRM-Q30 and CRM-Q30b (no
-migration): built on 2026-10-17 in the batch branch `crm-batch-i2`, not
-merged. CRM-Q28 uses the one number check of CRM-Q29. Verified against
+migration): built on 2026-10-17 in the batch branch `crm-batch-i2`, and
+merged as #1116. CRM-Q29 fix round 3: built on 2026-10-17 on
+`crm-answer-check-r3`, not merged. CRM-Q28 uses the one number check of
+CRM-Q29. Verified against
 code at `origin/main` `a8ef53c93`.
 
 **Owner direction (2026-10-16, in chat).** Use the decide, balanced and
@@ -4367,7 +4370,14 @@ Done when:
    year from 1900 to 2100, a list marker, a number inside a word or an id
    (`Q3`, `H-236`, a UUID), a URL and a code span. An inline list marker
    ("1. Open 2. Won 3. Lost", a run that counts from 1 in order) is no
-   figure. A lone "2." is a figure. (Fix round 2.)
+   figure. A lone "2." is a figure. (Fix round 2.) Only the first marker of
+   a run can come after a label, so "Won: 1. Lost: 2." holds two counts.
+   "of" and "to" make a year only after a word of time ("the end of 2026")
+   or a year ("2025 to 2026"), so "of 2047" and "to 1985" are counts. The
+   parser blanks an inline marker first (bold, italic, strike, a citation
+   such as `[1]`, `[^1]` or `^1`). So a marker neither hides a count nor adds
+   one. "## 2047 contacts" is a count, and a heading number needs its dot.
+   (Fix round 3.)
 4. **The sources of a turn.** A function middleware records the text of each
    tool result of the run, in memory, for that run only. The arguments of
    each CRM tool call are sources too, and a date in them gives its count of
@@ -4375,7 +4385,9 @@ Done when:
    executor puts them in the run context (`member_message`), and a delegated
    run takes its parent's words. A text that a model wrote is never a source:
    not the packed prompt string, which holds the earlier answers, and not the
-   answer of a delegated agent. (Fix round, 2026-10-17.)
+   answer of a delegated agent. (Fix round, 2026-10-17.) The ledger adds
+   each tool result to its sources when the result arrives, so a check never
+   parses the results of the run again. (Fix round 3.)
 5. **The arm.** The check arms when the run records the result of a CRM tool:
    a name in `CRM_TOOL_NAMES`, or one of the four reads of `crm-assistant`. A
    run that reads no CRM tool is not checked and not changed.
@@ -4395,6 +4407,10 @@ Done when:
    `write_artifact`) shows its arguments to the member. So the check reads
    the shown text of its arguments too. A failed card fails the whole
    answer, as a failed text does, and the card never ships. (Fix round.)
+   A WhatsApp element (`whatsapp_ui`) is a display call too. The check
+   removes the text of a failed step only when the step shows the member
+   nothing. A failed step that calls a display tool or `share_artifact`
+   fails, and gets the retry or the fallback. (Fix round 3.)
 8. **A derived figure** *(changed in fix round 2, 2026-10-17, from the 31
    founder questions of CRM-Q30)*. A founder asks for a figure that two tool
    results give, for example net cash flow, received minus paid (Q21). So a
@@ -4408,7 +4424,11 @@ Done when:
    fails, also when it is near a pair result. The CRM section of
    `addendum.py` and the instructions of `crm-assistant` say this, and say
    that anything more comes from another `crm_aggregate` call. The model
-   writes each figure in digits.
+   writes each figure in digits. *(Changed in fix round 3.)* A derived
+   figure passes only when the same answer also states BOTH operands, each
+   as a figure of its own. A derived figure gets the room of its stated
+   precision and no more. "About" gives room only to a figure that a source
+   holds. So Q21 of CRM-Q30 states received and paid out with the net.
 9. **The seam.** `_inject_agent_tools` puts the check provider on the per-run
    view of each native MAF agent that holds a CRM tool, after the H-236 step.
    That covers the stream run, the batch run and the sub-agent. No second
@@ -4449,11 +4469,13 @@ AGENT-SAFE to build. `shadow` or `on` on a box is `enforcement-flip`. Size: M.
 Waits for: CRM-Q25, merged as #1104. No migration. CRM-Q28 item 9 imports
 item 1, so CRM-Q28 merges after this ticket, or it rebases onto it.
 
-Verify: `uv run pytest tests/unit/test_number_check.py tests/unit/test_crm_answer_check.py tests/unit/test_crm_agent.py tests/unit/test_tool_schema_diet.py tests/unit/test_generated_addendum.py -q`,
+Verify: `uv run pytest tests/unit/test_number_check.py tests/unit/test_number_check_invented.py tests/unit/test_crm_answer_check.py tests/unit/test_crm_agent.py tests/unit/test_tool_schema_diet.py tests/unit/test_generated_addendum.py -q`,
 and `uv run python scripts/affected_tests.py --base origin/main`.
 
 **Built as (2026-10-17).** Branch `crm-answer-check`, with two fix rounds,
-in the batch branch `crm-batch-i2`, not merged. No migration, dark.
+merged in Batch I2 (#1116). Fix round 3 is built on 2026-10-17 on the
+branch `crm-answer-check-r3`, not merged. No migration, dark
+(`CRM_ANSWER_CHECK` is `off`).
 
 - **The shared API, for CRM-Q28 item 9.** `acb_common.number_check` gives
   `find_figures(text) -> list[Figure]`, `Sources()` with `add_text(text)` and
@@ -4502,8 +4524,50 @@ in the batch branch `crm-batch-i2`, not merged. No migration, dark.
   markers of item 3, a behaviour test of the seam through
   `_inject_agent_tools`, and an entry for `CRM_ANSWER_CHECK` in `work_plan.md`
   §6.1.
-- **Mutations.** 13 mutations in the build, 12 more in fix round 1 and 9 in
-  fix round 2, one or more for each fix. The suites kill each one. The rules: the room for rounding, money against a percent, a
+- **Fix round 3 (2026-10-17, the review of round 2).** The review said
+  "APPROVE for a dark merge and for `shadow`, REQUEST-CHANGES before `on`".
+  It measured that 92 to 100 percent of invented numbers passed the pair
+  rule. Seven changes, each with a fence and a mutation:
+  1. A derived figure needs both operands in the answer, each as a figure
+     of its own, and it gets no room for "about" (item 8). Fence:
+     `TestDerivedFigures` in `test_number_check.py`.
+  2. `whatsapp_ui` is a display tool. `share_artifact` shows a file, so a
+     failed step that calls it fails. A strip passes only a step that shows
+     the member nothing (item 7). Fence: `test_crm_answer_check.py`.
+  3. The Tier 1.5 and Tier 2 relays drop the hold beat
+     (`executor._relayable`). A delegated native run puts its beat on the
+     queue of its parent, so before this a Copilot or Tier 2 parent sent it
+     to the member. Fence: `test_each_relay_of_a_run_queue_drops_the_hold_beat`
+     in `test_crm_answer_check_executor.py`, which reads each relay of a run
+     queue in `executor.py` (8 sites).
+  4. The ledger builds its sources as each result arrives (item 4). One text
+     adds 200 figures of a kind at most to a derive pool
+     (`MAX_DERIVE_PER_TEXT`). A full pool of 500 drops its OLDEST value, so
+     the newest results always take part. The fallback keeps the 3 newest
+     results of `FALLBACK_TOOLS` only. Fence: `TestFixRound3Sources` and the
+     ledger tests.
+  5. The parse rules of item 3: "of" and "to" before a count, the inline
+     markers, a count after a label, and a heading. A scale letter stays on
+     the line of its number, so "12,10,000" and a next line "B: …" is no
+     billion. Fence: `TestFixRound3Parse`.
+  6. `_CODE_LIKE` reads the shape of code, not a word. "An expected return of
+     ₹5 lakh" is prose, and the check reads its number. Fence:
+     `test_prose_with_a_code_word_is_still_checked`.
+  7. Q21 of CRM-Q30 asks for what came in and what went out, and its answer
+     states both operands of the net. Fence: `test_crm_founder_questions.py`.
+- **The measured rate (fix round 3).** `test_number_check_invented.py` builds
+  70 answers with a seeded generator. Each of them holds two true figures
+  of the tool results and one invented figure in seven forms: whole lakh, lakh with one
+  decimal, "about" lakh, crore, whole percent, percent with one decimal and
+  a count. An oracle in the test makes sure that the invented figure is no
+  tool figure and no sum, difference or percent of the two stated figures.
+  With a money result of 12 groups, 25 of 70 passed on `413ebb1c8` (36
+  percent), and 0 of 70 pass after round 3. With 50 groups, 52 of 70 passed
+  (74 percent), and 0 of 70 pass now. The fence holds the rate under 10
+  percent.
+- **Mutations.** 13 mutations in the build, 12 more in fix round 1, 9 in
+  fix round 2 and 21 in fix round 3, one or more for each fix. The suites
+  kill each one. The rules: the room for rounding, money against a percent, a
   date, an exact scaled number, the arm, the model's text as a source, no
   extra request on a pass, one retry for each run, no draft in the fallback,
   no text on a failed tool step, the seam, the default mode, and no note text
@@ -4522,10 +4586,16 @@ in the batch branch `crm-batch-i2`, not merged. No migration, dark.
   can read, so its numbers are not checked. A card's number under a layout
   key (`width`, `size`, `level` and others) is not checked. An approximation
   word gives a room of 10 percent, so "about ₹5 lakh" passes against
-  4,60,000. The second number of a range ("10-20") is not checked. A pair
-  of tool figures gives many sums, differences and percents. So a number
-  that the model made up can pass when it is equal by chance to one of them.
-  A pool holds 500 figures of each kind at most.
+  4,60,000. The second number of a range ("10-20") is not checked. A made-up
+  number can still pass when it is equal by chance to a sum, a difference or
+  a percent of two figures that the answer also states. A derive pool holds
+  the newest 500 figures of each kind, and 200 of one result at most. Each
+  figure stays a direct source. `share_artifact` shows a file that another
+  tool made, and its arguments hold only a path, so the check cannot read
+  the numbers of that file. The parser blanks a citation such as "[3]", so a
+  count in square brackets is not checked. A four-digit count from 1900 to
+  2100 after "by", "from", "(" or "'" still reads as a year. A count glued
+  to a colon ("Count:2047") is no figure.
 
 **CRM-Q30 · A founder question set for CRM insights (2026-10-17).**
 
@@ -4807,7 +4877,7 @@ the two counts (`syncHealth.ts`). A later slice can make the card read
   The email and My Day features must behave as before.
 - `uv run python -m evals.crm_note_labels.run --scripted`
 - `uv run python scripts/affected_tests.py --run`
-- CRM-Q29: `uv run pytest tests/unit/test_number_check.py tests/unit/test_crm_answer_check.py tests/unit/test_crm_answer_check_executor.py -q`.
+- CRM-Q29: `uv run pytest tests/unit/test_number_check.py tests/unit/test_number_check_invented.py tests/unit/test_crm_answer_check.py tests/unit/test_crm_answer_check_executor.py -q`.
   These suites need no database.
 - CRM-Q27 and CRM-Q28 add their new suites to the pytest line above, with no
   test skipped. CRM-Q28 also runs
@@ -4820,7 +4890,8 @@ CRM-Q25b, CRM-Q25c and CRM-Q27 were built on the batch branch
 `crm-batch-i`, with a fix round on 2026-10-17, and merged as #1111
 (`d72f92184`). Batch I2: CRM-Q28 (migration 281), CRM-Q29 with its two
 fix rounds, CRM-Q30 and CRM-Q30b were built on 2026-10-17. They are in the
-batch branch `crm-batch-i2`, not merged, and dark. The owner flip of
+batch branch `crm-batch-i2`, merged as #1116, and dark. CRM-Q29 fix round 3
+is built on `crm-answer-check-r3`, not merged. The owner flip of
 CRM-Q26 is not done. Batch M: CRM-Q17a-1b, CRM-Q17a-2, CRM-Q18-1b, CRM-Q18-2, CRM-Q18-3,
 CRM-Q19 and CRM-Q20-1 are built on the batch branch `crm-batch-m`, and
 CRM-Q20-2 on `crm-q20-2-suggestions` from it. None is merged. CRM-Q20-3 is
