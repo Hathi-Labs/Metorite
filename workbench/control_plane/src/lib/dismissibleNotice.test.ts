@@ -89,9 +89,17 @@ afterEach(() => {
 });
 
 describe("which notices only inform", () => {
-  // Mutation: drop `!words.action` from isInfoOnlyNotice, and the list grows.
+  // Mutation: drop `!words.retry` from isInfoOnlyNotice, and the list grows.
   it("the two restart notices and the other-account notice, and nothing else", () => {
     expect(CODES.filter((c) => isInfoOnlyNotice(RUN_ERROR_WORDS[c])).sort()).toEqual([...INFO_ONLY].sort());
+  });
+
+  // Mutation: drop `!words.action`, and this fails. No code today has an
+  // action without a retry, so the list above cannot see that clause.
+  it("a notice with an action is never info-only, with or without a retry", () => {
+    expect(isInfoOnlyNotice({ title: "t", body: "b", retry: false, tone: "notice", action: "Open" })).toBe(false);
+    expect(isInfoOnlyNotice({ title: "t", body: "b", retry: false })).toBe(false);
+    expect(isInfoOnlyNotice({ title: "t", body: "b", retry: false, tone: "notice" })).toBe(true);
   });
 });
 
