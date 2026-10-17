@@ -461,10 +461,6 @@ def make(ds: Dataset) -> tuple[Question, ...]:
             Fact("paid_out", q3_out, (1, "total")),
             Fact("net", q3_in - q3_out),
         ),
-        answer_check_waits=("net",),
-        wait_reason="CRM-Q29 adds a rule that a figure may be the sum, difference or "
-                    "percent of two tool figures. Until it merges, the net cash flow "
-                    "has no source.",
     ))
 
     # Empty fields.

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import dataclasses
 import json
 import re
 from datetime import UTC
@@ -233,8 +234,10 @@ class TestTheEval:
         assert "numbers" in _failed(_scripted(answers))["Q09"]
 
     def test_a_rounded_total_fails_the_numbers_bar(self) -> None:
+        """No approximation word: since CRM-Q29 fix round 1, "about" gives a
+        room of 10 percent, so "about ₹7 crore" passes for ₹7.06 crore."""
         answers = copy.deepcopy(run.load_answers())
-        answers["Q01"]["answer"] = "We invoiced about ₹7 crore in FY 2025-26."
+        answers["Q01"]["answer"] = "We invoiced ₹7 crore in FY 2025-26."
         assert "numbers" in _failed(_scripted(answers))["Q01"]
 
     def test_a_wrong_order_fails_the_names_bar(self) -> None:
@@ -295,14 +298,23 @@ class TestTheEval:
 
     # ── answer_check: the chat check of CRM-Q29 on each scripted answer ─────
 
-    def test_only_the_net_cash_flow_of_q21_waits(self) -> None:
-        """Q21's net is a difference of two tool figures. CRM-Q29 adds that
-        rule later. Until then that one figure waits, and nothing else."""
-        score = _scripted()
-        waiting = {q.id: q.waiting for q in score.questions if q.waiting}
-        assert list(waiting) == ["Q21"] and len(waiting["Q21"]) == 1
+    def _q21_texts_and_answer(self) -> tuple[list[str], str]:
+        q = by_id()["Q21"]
+        answers = run.load_answers()
+        _calls, texts = asyncio.run(run.run_tools(answers["Q21"],
+                                                  run.recorded(run.load_routes())))
+        return texts, run.render(answers["Q21"]["answer"], facts_of(q))
+
+    def test_no_figure_waits_and_the_net_of_q21_passes_by_the_pair_rule(self) -> None:
+        """Q21's net is a difference of two tool figures. No tool prints it,
+        and the pair rule of CRM-Q29 sources it. So no figure waits."""
+        assert not any(q.answer_check_waits for q in questions())
+        assert not any(q.waiting for q in _scripted().questions)
+        texts, answer = self._q21_texts_and_answer()
         net = facts_of(by_id()["Q21"])["net"]
-        assert checkers.states(net, waiting["Q21"][0].split(":")[0])
+        assert checkers.states(net, answer)
+        assert not any(checkers.states(net, t) for t in texts)
+        assert checkers.check_answer(by_id()["Q21"], answer, texts) == ([], [])
 
     def test_a_figure_with_no_source_fails_answer_check(self) -> None:
         answers = copy.deepcopy(run.load_answers())
@@ -317,18 +329,18 @@ class TestTheEval:
         answers["Q08"]["answer"] = f"The largest single payment is ₹{max_paid:,.2f}."
         assert "answer_check" in _failed(_scripted(answers))["Q08"]
 
-    def test_the_wait_of_q21_does_not_cover_another_figure(self) -> None:
+    def test_the_pair_rule_does_not_cover_a_made_up_figure_in_q21(self) -> None:
         answers = copy.deepcopy(run.load_answers())
         answers["Q21"]["answer"] += " Next quarter looks like INR 98,76,543."
         assert "answer_check" in _failed(_scripted(answers))["Q21"]
 
     def test_a_wait_that_no_figure_needs_fails(self) -> None:
-        """When CRM-Q29's rule lands, the wait goes stale and fails, so the
-        mark cannot outlive its reason."""
-        q = by_id()["Q21"]
-        _calls, texts = asyncio.run(run.run_tools(run.load_answers()["Q21"],
-                                                  run.recorded(run.load_routes())))
-        answer = run.render("Received {inr:received}, paid out {inr:paid_out}.", facts_of(q))
+        """A wait that the check no longer needs goes stale and fails, so the
+        mark cannot outlive its reason. The pair rule made the old Q21 wait
+        stale, and this test keeps that fence."""
+        q = dataclasses.replace(by_id()["Q21"], answer_check_waits=("net",),
+                                wait_reason="a test wait")
+        texts, answer = self._q21_texts_and_answer()
         problems, waiting = checkers.check_answer(q, answer, texts)
         assert not waiting and any(p.startswith("stale wait") for p in problems)
 

@@ -84,7 +84,7 @@ The dataset has the shape of DEWiN after its import. It holds about 800 rows.
 | `tool_text` | The output of a tool holds each line that the question needs. Q31 needs the short-read line (CRM-Q30b) |
 | `tool_figures` | The output of the real tools holds each number fact that a route gives. So the scripted run checks the text that the member reads |
 | `numbers` | The answer holds each number fact, by the rule of `acb_common.number_check` |
-| `answer_check` | The answer passes `acb_common.number_check.check`, the chat check of CRM-Q29, with the tool output and the question as its sources. Q21's net cash flow waits for a rule of CRM-Q29, and the report names it under `waiting` |
+| `answer_check` | The answer passes `acb_common.number_check.check`, the chat check of CRM-Q29, with the tool output and the question as its sources. A figure can wait for a rule of CRM-Q29 (`answer_check_waits`), and the report names it under `waiting`. No figure waits now. The pair rule of CRM-Q29 gives the source of Q21's net cash flow |
 | `names` | The answer holds each name fact, and the names of a ranked list in rank order |
 | `flags` | The answer holds one of the flag phrases of the question |
 | `forbid` | The answer holds no forbidden number, for example the Zoho count, and no "INR 0" for an empty field |

@@ -4687,17 +4687,31 @@ scripted answers through the CRM-Q29 check.
 - A new bar, `answer_check`, runs `acb_common.number_check.check` on each
   answer. Its sources are the tool output of the run and the question. So
   the eval and the chat check of CRM-Q29 cannot disagree in silence.
-- Q21 states the net cash flow, a difference of two tool figures. CRM-Q29
-  adds that rule later. Until then that one figure waits
-  (`answer_check_waits`), and the report names it under `waiting`. Any
-  other figure with no source still fails. When the rule lands, the wait
-  goes stale and fails, so the mark goes with it. Merge
-  `origin/crm-answer-check` again after that rule lands.
+- Q21 states the net cash flow, a difference of two tool figures. On this
+  branch, CRM-Q29 did not have that rule yet. So that one figure waited
+  (`answer_check_waits`), and the report named it under `waiting`. Any
+  other figure with no source still failed. A wait that no figure needs
+  fails as stale, so the mark goes when the rule lands.
 - Q11 wrote its ranks inline ("1. ... 2. ..."), and the check read each rank
   as a figure. The answer is now a list, one rank on each line, as a chat
   answer is.
 - Five new tests: the one wait, a figure with no source, paise that no tool
   printed, a wait that covers no other figure, and a stale wait.
+
+**The wait goes (2026-10-17, in the batch branch `crm-batch-i2`).** The
+batch branch merges CRM-Q29 fix round 2, which adds the pair rule. So the
+Q21 wait went stale, and its test failed, as it must. The wait is gone, and
+no figure waits now. The net cash flow passes `answer_check` by the pair
+rule. `--scripted` passes 31 of 31, with `answer_check` at 1.0 and an empty
+`waiting`.
+
+- Since CRM-Q29 fix round 1, "about" gives a room of 10 percent. So "about
+  ₹7 crore" passes for ₹7.06 crore. The rounded-total mutation now writes
+  "₹7 crore" with no approximation word, and it fails `numbers` again.
+- The tests of the wait now check three things. No figure waits, and the
+  net of Q21 has no source but the pair rule. The pair rule does not cover
+  a made-up figure in Q21. A test wait on the net goes stale. The unit test
+  holds 47 tests.
 
 **CRM-Q30b · The read tools say when Zoho holds more (2026-10-17).**
 
