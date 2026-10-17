@@ -1350,11 +1350,15 @@ _COUNTS_SQL = (
 )
 
 #: The field definitions of the generic modules, and of the core entities
-#: for the shadow.
+#: for the shadow: the rows that the sync wrote (`source = 'zoho'`).
+#: ⚠️ The SQL of the sync never names a column of the field studio
+#: (`test_crm_mirror_readonly.py`, CRM-C4a done when 14). A studio row, an
+#: `is_system` overlay or a retired field, has `source = 'metorite'`, and the
+#: studio refuses Mirror mode (409), so the source alone leaves them out.
 _DEFS_SQL = (
     "SELECT entity, key, label, type, options FROM crm_field_defs "
-    "WHERE entity = ANY(CAST(:entities AS text[])) AND NOT is_system "
-    "AND retired_at IS NULL ORDER BY entity, position, key"
+    "WHERE entity = ANY(CAST(:entities AS text[])) AND source = 'zoho' "
+    "ORDER BY entity, position, key"
 )
 
 #: Whether a core table holds a mirrored record. The table is a constant of

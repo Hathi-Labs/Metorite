@@ -119,7 +119,6 @@ MACHINE_SITES: dict[str, str] = {
     GW + "email/automation/learning.py::_ai_confirms_sender_pattern._old": "yes or no",
     GW + "email/automation/replyzero.py::_llm_determine_thread_status._old": "thread status",
     GW + "notes/copilot.py::_decide": "act or stay silent, as JSON",
-    GW + "crm/field_rules.py::_ask_model": "Field map proposals as JSON; an admin approves each one (CRM-Q7b)",
     GW + "tasks/ai.py::_find_parent_task": "an index",
     GW + "tasks/ai.py::_llm_enrich": "enum and assignee fields",
     ORC + "resolution.py::resolve_with_llm": "an entity tie-break integer",
