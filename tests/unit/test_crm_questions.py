@@ -425,12 +425,13 @@ def test_questions_allowed_is_the_and_of_two_lists(
 
 def test_the_step_sets_new_at_only_when_an_id_is_new() -> None:
     first = qs.step_state(None, ["a", "b"], True, NOW)
-    assert first == {"seen": ["a", "b"], "money": True, "new_at": NOW.isoformat()}
+    assert first == {"seen": ["a", "b"], "money": True, "new_at": NOW.isoformat(), "new": 2}
     # An answer closes "a": no new_at.
     later = NOW + timedelta(hours=3)
     assert qs.step_state(first, ["b"], False, later) == {"seen": ["b"], "money": False}
     # A new id sets new_at again.
-    assert qs.step_state({"seen": ["b"]}, ["b", "c"], False, later)["new_at"] == later.isoformat()
+    again = qs.step_state({"seen": ["b"]}, ["b", "c"], False, later)
+    assert (again["new_at"], again["new"]) == (later.isoformat(), 1)
 
 
 def test_the_wire_of_a_question() -> None:
@@ -497,3 +498,61 @@ def test_only_a_ranked_purpose_or_key_field_joins_a_batch() -> None:
     best = by["key:Payment_Received:amount"].best()
     assert qs.applied_line(by["key:Payment_Received:amount"], best) == (
         "Totals of Collection now use IP Amount.")
+
+
+# ── CRM-Q32-4: the questions step starts after each sync run ────────────────
+
+
+async def test_the_step_starts_with_each_mapping_mode_off(monkeypatch) -> None:
+    """Item 3: ``questions_allowed`` gates the step, and the modes of the
+    mapping pipeline do not, because each of them is ``off`` by default."""
+    import asyncio
+
+    from acb_common import get_settings
+    from gateway.crm_sync import scheduler
+    from gateway.routes.crm import questions as route
+
+    from tests.unit._crm_fakes import crm_switch_on
+
+    crm_switch_on(monkeypatch, "*")
+    monkeypatch.setattr(get_settings(), "crm_catalogue_orgs", "*", raising=False)
+    monkeypatch.setattr(get_settings(), "crm_questions_orgs", "", raising=False)
+    ran: list[str] = []
+
+    async def _step(org, *, now=None):
+        ran.append(org)
+        return 3
+
+    monkeypatch.setattr(route, "questions_after_run", _step)
+    monkeypatch.setattr(scheduler, "_questioning", set())
+    assert not mp.enabled_for("o-1")
+    assert scheduler.start_questions("o-1") is None, "outside the list: no task"
+    monkeypatch.setattr(get_settings(), "crm_questions_orgs", "*", raising=False)
+    task = scheduler.start_questions("o-1")
+    assert task is not None and scheduler.start_questions("o-1") is None, "one at a time"
+    assert await task == 3 and ran == ["o-1"]
+    await asyncio.sleep(0)
+    assert "o-1" not in scheduler._questioning
+    # It waits for the mapping pipeline of the same run.
+    gate = asyncio.Event()
+
+    async def _mapping():
+        await gate.wait()
+
+    mapping = asyncio.get_running_loop().create_task(_mapping())
+    task = scheduler.start_questions("o-2", after=mapping)
+    await asyncio.sleep(0)
+    assert ran == ["o-1"], "the step waits for the pipeline"
+    gate.set()
+    await task
+    assert ran == ["o-1", "o-2"]
+
+
+def test_each_run_starts_the_step_after_the_mapping_pipeline() -> None:
+    """Both points that start the steps of a run start the questions step,
+    after ``start_mapping`` of the same run."""
+    source = (REPO / "apps/services/gateway/gateway/crm_sync/scheduler.py").read_text(
+        encoding="utf-8")
+    assert source.count("start_questions(org, after=start_mapping(org))") == 1
+    assert source.count(
+        "start_questions(handle.org, after=start_mapping(handle.org))") == 1

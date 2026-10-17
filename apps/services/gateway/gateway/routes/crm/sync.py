@@ -154,6 +154,9 @@ class SyncHealthModel(BaseModel):
     holds: dict[str, HoldModel] = {}
     #: CRM-Q24: the activities that the mirror does not hold.
     activities: HealthActivitiesModel = HealthActivitiesModel()
+    #: CRM-Q32-4: the count of the open questions (``questions.count_open``),
+    #: so "Needs you" stays pure. ``None`` outside ``CRM_QUESTIONS_ORGS``.
+    open_questions: int | None = None
 
 
 class StartedModel(BaseModel):
@@ -610,6 +613,9 @@ async def get_sync_health(
                 "org": org, "key": engine.ACTIVITY_RECOVERED_KEY,
             })).fetchall()
         }
+        # CRM-Q32-4: the count of the open questions, only for an org on
+        # CRM_QUESTIONS_ORGS, so a dark box sends no new statement.
+        open_questions = await _open_questions(db, org)
     counts = latest.counts if latest is not None else {}
     estimate = (latest.estimate if latest is not None else None) or {}
     module_ours = {k: v for k, v in ours.items() if k.startswith(MODULE_KEY_PREFIX)}
@@ -651,7 +657,19 @@ async def get_sync_health(
         credits=HealthCreditsModel(budget_24h=budget, used_24h=used, resumes_at=resumes),
         holds=_holds_out(hold_entries),
         activities=_activities(cursors, recovered, engine, body),
+        open_questions=open_questions,
     )
+
+
+async def _open_questions(db: Any, org: str) -> int | None:
+    """``questions.count_open`` for the health card, or ``None`` outside
+    ``CRM_QUESTIONS_ORGS`` (CRM-Q32-4)."""
+    from gateway.routes.crm.flags import questions_allowed
+    from gateway.routes.crm.questions import count_open
+
+    if not questions_allowed(org):
+        return None
+    return await count_open(db, org)
 
 
 @router.post(

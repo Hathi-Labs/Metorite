@@ -54,6 +54,14 @@ a background task, outside the run lock. For an org outside
 ``CRM_DIGEST_ORGS`` it starts no task. The step itself goes on only when the
 week has no digest yet and the time is after Monday 06:00 in the CRM zone.
 One step runs at a time for each org (``_digesting``).
+
+**The open questions** (WS-53 CRM-Q32-4, ``crm_platform.md`` §18.14.5). At
+the same two points, :func:`start_questions` starts
+``routes/crm/questions.questions_after_run`` as a background task. It waits
+for the mapping pipeline of the same run, so it sees each part that the
+pipeline closed. For an org outside ``CRM_QUESTIONS_ORGS`` it starts no
+task, and no mode of the mapping pipeline gates it. One step runs at a time
+for each org (``_questioning``).
 """
 
 from __future__ import annotations
@@ -106,6 +114,8 @@ _label_tasks: dict[str, asyncio.Task[Any]] = {}
 _embedding: set[str] = set()
 #: The orgs whose digest step runs now (CRM-Q28).
 _digesting: set[str] = set()
+#: The orgs whose questions step runs now (CRM-Q32-4).
+_questioning: set[str] = set()
 
 
 async def _organization_ids() -> list[str]:
@@ -169,7 +179,7 @@ async def _run_one(org: str, gate: asyncio.Semaphore) -> int:
             return 0
         # `run_org` returns after `runs.finish` released the lock (CRM-Q26).
         start_vectors(org, after=start_labels(org))
-        start_mapping(org)
+        start_questions(org, after=start_mapping(org))
         start_digest(org)
         return 1
 
@@ -364,13 +374,51 @@ def start_digest(org: str) -> asyncio.Task[Any] | None:
         return None
 
 
+async def _questions_after(org: str, after: asyncio.Task[Any] | None) -> Any:
+    """Wait for the mapping pipeline ``after`` of the run, then the
+    questions step (CRM-Q32-4). ``asyncio.wait`` never raises its error."""
+    from gateway.routes.crm.questions import questions_after_run
+
+    if after is not None:
+        await asyncio.wait({after})
+    return await questions_after_run(org)
+
+
+def start_questions(org: str, *, after: asyncio.Task[Any] | None = None,
+                    ) -> asyncio.Task[Any] | None:
+    """Start the questions step of ``org`` in the background (CRM-Q32-4).
+    Never raises.
+
+    It starts after ``after``, the mapping pipeline of the same run, or at
+    once when the pipeline did not start. It starts nothing when the loop
+    stops, when the org is not on ``CRM_QUESTIONS_ORGS``, or when a step of
+    the org runs already. The modes of the mapping pipeline do not gate it,
+    because each of them is ``off`` by default.
+    """
+    try:
+        if _stopping.is_set() or org in _questioning or not flags.questions_allowed(org):
+            return None
+        _questioning.add(org)
+        task = asyncio.get_running_loop().create_task(
+            _questions_after(org, after), name="crm-questions",
+        )
+        # A done-callback, as for the label step: a task cancelled before its
+        # first step never runs a `finally`.
+        task.add_done_callback(lambda _t: _questioning.discard(org))
+        return _track(task)
+    except Exception as exc:  # a questions step never breaks a sync run
+        _questioning.discard(org)
+        _log.warning("crm.questions.not_started class=%s", type(exc).__name__)
+        return None
+
+
 async def _execute_then_label(handle: engine.RunHandle) -> engine.RunResult:
     """Run the handle, then start the label step, the vector step, the
     mapping pipeline and the digest step. The run's result is the task's
     result, as before CRM-Q26."""
     result = await engine.execute(handle, should_stop=_stopping.is_set)
     start_vectors(handle.org, after=start_labels(handle.org))
-    start_mapping(handle.org)
+    start_questions(handle.org, after=start_mapping(handle.org))
     start_digest(handle.org)
     return result
 
@@ -417,6 +465,7 @@ __all__ = [
     "start_first_import",
     "start_labels",
     "start_mapping",
+    "start_questions",
     "start_vectors",
     "stop_crm_mirror_sync",
 ]

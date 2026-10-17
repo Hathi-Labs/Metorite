@@ -976,8 +976,14 @@ async def my_day_rows(user: UserContext, *, now: datetime, limit: int) -> dict[s
     ``digest`` is the newest weekly digest of the org that was stored inside
     the last day (CRM-Q28 item 14), or None. The read runs only for an org
     on ``CRM_DIGEST_ORGS``, so a dark box sends no new statement.
+
+    ``questions`` is the card of the open questions (CRM-Q32-4), or None. It
+    reads ONE cursor row, ``zoho:questions``, and builds no question. The
+    read runs only for a CRM admin of an org on ``CRM_QUESTIONS_ORGS``.
     """
     from gateway.routes.crm import activities, digests, flags
+    from gateway.routes.crm.access import ADMIN_PERMISSION
+    from gateway.routes.crm.questions import questions_card
     from gateway.routes.projects.personal import stored_zone, zone_name
 
     async with _tenant_session() as db:
@@ -995,6 +1001,11 @@ async def my_day_rows(user: UserContext, *, now: datetime, limit: int) -> dict[s
             "digest": (
                 await digests.ready_digest(db, str(org), now)
                 if org and flags.digest_allowed(org) else None
+            ),
+            "questions": (
+                await questions_card(db, str(org), now)
+                if org and flags.questions_allowed(org)
+                and user.has_permission(ADMIN_PERMISSION) else None
             ),
         }
 

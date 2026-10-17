@@ -266,6 +266,56 @@ async def module_question_ids(db: Any, org: str | None,
     return out
 
 
+# ── The questions step and My Day (CRM-Q32-4, §18.14.5) ────────────────────
+
+
+async def questions_after_run(org: str, *, now: datetime | None = None) -> int | None:
+    """The questions step after a sync run, for *org*. Never raises.
+
+    It runs for an org where ``questions_allowed`` is true, and no mode of
+    the mapping pipeline gates it. It builds the open ids and compares them
+    with ``seen`` of ``zoho:questions``. It writes ``seen``, ``money`` and,
+    only when an id is new, ``new_at`` and ``new``. So an answer that only
+    closes questions sets no ``new_at``. The org comes from the scheduler,
+    never from a request (R5). Returns the open count, or ``None``."""
+    from acb_common.db import bind_tenant, release_tenant
+    from gateway.crm_sync import runs
+
+    if not questions_allowed(org):
+        return None
+    token = bind_tenant(org)
+    try:
+        moment = now or datetime.now(UTC)
+        async with _tenant_session(org) as db:
+            inputs = await load(db, org, now=moment)
+            if inputs is None:
+                return None
+            found = qs.build(inputs)
+            cursors = await runs.read_cursors(db, org, qs.QUESTIONS_ROW)
+            state = getattr(cursors.get(qs.QUESTIONS_ROW), "state", None)
+            keys = qs.step_state(state, [q.id for q in found], qs.count_money(found), moment)
+            await runs.merge_cursor_keys(db, org, qs.QUESTIONS_ROW, keys)
+        _log.info("crm.questions.step", organization_id=org, open=len(found),
+                  new=int(keys.get("new") or 0), money=bool(keys["money"]))
+        return len(found)
+    except Exception as exc:  # the step never breaks the sync loop
+        _log.warning("crm.questions.step_failed", organization_id=org,
+                     error_type=type(exc).__name__)
+        return None
+    finally:
+        release_tenant(token)
+
+
+async def questions_card(db: Any, org: str, now: datetime) -> dict[str, Any] | None:
+    """The My Day card of the questions, or ``None`` (§18.14.5). It reads
+    ONE cursor row, ``zoho:questions``, in the caller's session, and builds
+    no question. The caller checks ``questions_allowed`` and the admin."""
+    from gateway.crm_sync import runs
+
+    cursors = await runs.read_cursors(db, org, qs.QUESTIONS_ROW)
+    return qs.card_of(getattr(cursors.get(qs.QUESTIONS_ROW), "state", None), now)
+
+
 # ── The wire ────────────────────────────────────────────────────────────────
 
 
@@ -728,6 +778,8 @@ __all__ = [
     "list_questions",
     "load",
     "module_question_ids",
+    "questions_after_run",
+    "questions_card",
     "questions_off",
     "samples",
 ]

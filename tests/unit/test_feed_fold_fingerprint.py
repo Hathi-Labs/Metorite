@@ -111,6 +111,9 @@ def _real(kind: str) -> shell.Signal | None:
                                      "at": (NOW - timedelta(hours=5)).isoformat()}, "m-1")
     if kind == "digest_ready":
         return feed._digest_signal({"week_start": date(2026, 10, 5), "stored_at": NOW})
+    if kind == "crm_open_questions":
+        # WS-53 CRM-Q32-4: the open questions of the CRM, for a CRM admin.
+        return feed._questions_signal({"new_at": NOW, "count": 2, "open": 5, "money": True})
     if kind == "no_answer":
         return feed._no_answer_signal({
             "thread_id": THREAD, "message_id": "m-2", "subject": "S", "who": "dana",

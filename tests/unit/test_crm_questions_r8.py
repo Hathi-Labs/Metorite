@@ -532,3 +532,98 @@ async def test_twenty_five_modules_and_1300_fields_answer_under_one_second(
     assert res.status_code == 200, res.text
     assert res.json()["open"] >= 25
     assert took < BOUND_S, f"the questions took {took:.3f} s"
+
+
+# ── CRM-Q32-4: the questions step, My Day and Sync health ───────────────────
+
+
+async def step(p: Any, org: str, now: Any) -> Any:
+    from gateway.routes.crm.questions import questions_after_run
+
+    async with tenant_engine_scope(p.app_url.render_as_string(hide_password=False)):
+        return await questions_after_run(org, now=now)
+
+
+async def test_the_step_runs_with_each_mode_off_and_an_answer_sets_no_new_at(
+    q_env, app_engine,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from gateway.crm_sync import map_pipeline as mp
+
+    p = q_env
+    seed_a(p)
+    assert not mp.enabled_for(p.org_a), "each mode of the pipeline is off"
+    first = datetime(2026, 10, 18, 6, 0, tzinfo=UTC)
+    count = await step(p, p.org_a, first)
+    state = cursor_state(p, p.org_a, "zoho:questions")
+    assert count == len(state["seen"]) > 0
+    assert (state["new_at"], state["money"], state["new"]) == (
+        first.isoformat(), True, count)
+    # An answer closes one question. The next step sets no new_at.
+    got = await call(p, _user(p.org_a), "POST", "/crm/questions/purpose:Towers/answer",
+                     {"value": "asset"})
+    assert got.status_code == 200, got.text
+    await step(p, p.org_a, first + timedelta(hours=2))
+    state = cursor_state(p, p.org_a, "zoho:questions")
+    assert state["new_at"] == first.isoformat() and "purpose:Towers" not in state["seen"]
+    assert len(state["seen"]) == count - 1
+    # A dismissal written beside the step stays.
+    await call(p, _user(p.org_a), "POST", "/crm/questions/key:Fee_Receipts:date/dismiss")
+    await step(p, p.org_a, first + timedelta(hours=3))
+    state = cursor_state(p, p.org_a, "zoho:questions")
+    assert "key:Fee_Receipts:date" in state["dismissed"]
+
+
+async def test_two_steps_on_one_day_give_one_card_for_an_admin_only(
+    q_env, app_engine,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from gateway.routes.crm.aggregate import my_day_rows
+    from gateway.routes.shell import feed
+
+    p = q_env
+    seed_a(p)
+    morning = datetime(2026, 10, 18, 6, 0, tzinfo=UTC)
+    await step(p, p.org_a, morning)
+    # A new module with records brings a new question later the same day.
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_source_profiles SET profile = jsonb_set(profile, '{modules}', "
+            "profile -> 'modules' || CAST(:m AS jsonb)) WHERE organization_id = "
+            "CAST(:o AS uuid)"), {"o": p.org_a, "m": json.dumps([module_row("Masts")])})
+    records(p, p.org_a, "Masts", [{"Name": "M1"}])
+    evening = morning + timedelta(hours=12)
+    await step(p, p.org_a, evening)
+    state = cursor_state(p, p.org_a, "zoho:questions")
+    assert (state["new_at"], state["new"]) == (evening.isoformat(), 1)
+
+    async def rows_of(user: Any) -> Any:
+        return await bound(p, p.org_a, lambda _db: my_day_rows(
+            user, now=evening + timedelta(hours=1), limit=5))
+
+    admin = await rows_of(_user(p.org_a))
+    signal = feed._questions_signal(admin["questions"])
+    assert signal.signal_id == "crm:questions:2026-10-18"
+    assert (signal.facts["count"], signal.facts["money"]) == (1, True)
+    member = await rows_of(_user(p.org_a, admin=False))
+    assert member["questions"] is None
+    # The next day the card is gone: one card a day at most.
+    later = await bound(p, p.org_a, lambda _db: my_day_rows(
+        _user(p.org_a), now=evening + timedelta(hours=25), limit=5))
+    assert later["questions"] is None
+
+
+async def test_sync_health_carries_the_open_count(q_env, app_engine, monkeypatch) -> None:
+    from acb_common import get_settings
+
+    p = q_env
+    seed_a(p)
+    full = (await call(p, _user(p.org_a), "GET", "/crm/questions")).json()
+    health = await call(p, _user(p.org_a), "GET", "/crm/sync/health")
+    assert health.status_code == 200, health.text
+    assert health.json()["open_questions"] == full["open"] > 0
+    monkeypatch.setattr(get_settings(), "crm_questions_orgs", "", raising=False)
+    health = await call(p, _user(p.org_a), "GET", "/crm/sync/health")
+    assert health.json()["open_questions"] is None

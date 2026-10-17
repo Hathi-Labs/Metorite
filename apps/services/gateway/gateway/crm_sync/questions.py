@@ -765,9 +765,38 @@ def step_state(state: Mapping[str, Any] | None, open_ids: Sequence[str], money: 
     before = {str(i) for i in seen} if isinstance(seen, list) else set()
     ids = sorted(set(open_ids))
     out: dict[str, Any] = {"seen": ids, "money": bool(money)}
-    if set(ids) - before:
+    fresh = set(ids) - before
+    if fresh:
         out["new_at"] = now.astimezone(UTC).isoformat()
+        out["new"] = len(fresh)
     return out
+
+
+#: The card of My Day shows while ``new_at`` is less than this old.
+CARD_HOURS = 24
+
+
+def card_of(state: Mapping[str, Any] | None, now: datetime) -> dict[str, Any] | None:
+    """The My Day card of the state of :data:`QUESTIONS_ROW`, or ``None``
+    (§18.14.5): ``new_at`` is less than :data:`CARD_HOURS` old, and a
+    question is still open. It builds no question."""
+    raw = (state or {}).get("new_at")
+    try:
+        at = datetime.fromisoformat(str(raw)) if raw else None
+    except ValueError:
+        at = None
+    seen = (state or {}).get("seen")
+    if at is None or not isinstance(seen, list) or not seen:
+        return None
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=UTC)
+    age = now - at
+    if age.total_seconds() < 0 or age.total_seconds() >= CARD_HOURS * 3600:
+        return None
+    new = (state or {}).get("new")
+    count = new if isinstance(new, int) and not isinstance(new, bool) and new > 0 else len(seen)
+    return {"new_at": at, "count": min(count, len(seen)), "open": len(seen),
+            "money": (state or {}).get("money") is True}
 
 
 def wire(q: Question) -> dict[str, Any]:
@@ -826,6 +855,7 @@ __all__ = [
     "batch_joins",
     "build",
     "candidates",
+    "card_of",
     "count_money",
     "dismissed",
     "dismissed_of",

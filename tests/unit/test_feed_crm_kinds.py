@@ -225,8 +225,10 @@ class TestDarkUntilListed:
         assert (p.gated, p.needs, p.features, p.app, p.handled, p.permission) == (
             True, False, ("crm",), None, None, None)
         # WS-53 CRM-Q28 item 14 adds `digest_ready`, which reads the org's
-        # weekly digest and no record of the member.
-        assert p.kinds == frozenset({*CRM_KINDS, "digest_ready"}) == feed.CRM_KINDS
+        # weekly digest and no record of the member. WS-53 CRM-Q32-4 adds
+        # `crm_open_questions`, which reads one cursor row of the org.
+        assert p.kinds == frozenset({*CRM_KINDS, "digest_ready", "crm_open_questions"}
+                                    ) == feed.CRM_KINDS
         assert shell.source_app("crm") == "crm"
 
     def test_with_the_list_empty_no_read_runs_and_no_byte_changes(self, crm, monkeypatch):
@@ -866,3 +868,120 @@ class TestAFoldKeepsADismissedDealDismissed:
         both = feed.build_cards([late, quiet], now, tz, today)
         assert both[0]["folded"] == ["deal_quiet"]
         assert not state.join(both, {"crm:deal:d-x": row}, state.Context(now, day))
+
+
+# ── WS-53 CRM-Q32-4: the card of the open questions ─────────────────────────
+
+
+class TestTheOpenQuestionsCard:
+    NOW = datetime(2026, 10, 18, 9, 30, tzinfo=UTC)
+
+    def test_the_kind_is_in_each_table(self):
+        from gateway.reach import classes
+        from gateway.routes.shell import prefs
+
+        assert "crm_open_questions" in feed.CRM_KINDS
+        assert feed_rank.BASE["crm_open_questions"] == 22 < feed_rank.BASE["digest_ready"]
+        assert prefs._kinds(["crm_open_questions"]) == ["crm_open_questions"]
+        assert classes.REACH_CLASS["crm_open_questions"] == "none"
+
+    def test_the_group_follows_money(self):
+        now, today = self.NOW, self.NOW.date()
+        assert feed_rank.group("crm_open_questions", {"money": True}, now, today) == "needs_you"
+        assert feed_rank.group("crm_open_questions", {"money": False}, now, today) == "fyi"
+
+    def test_two_runs_on_one_day_give_one_signal_id(self):
+        early = feed._questions_signal({"new_at": self.NOW.replace(hour=1), "count": 2,
+                                        "open": 2, "money": False})
+        late = feed._questions_signal({"new_at": self.NOW.replace(hour=23), "count": 1,
+                                       "open": 3, "money": True})
+        assert early.signal_id == late.signal_id == "crm:questions:2026-10-18"
+        tomorrow = feed._questions_signal({"new_at": self.NOW + timedelta(days=1),
+                                           "count": 1, "open": 3})
+        assert tomorrow.signal_id == "crm:questions:2026-10-19"
+
+    def test_the_card_links_to_settings_and_holds_no_question(self):
+        from gateway.retrieval.sources import crm_settings_href
+
+        signal = feed._questions_signal({"new_at": self.NOW, "count": 3, "open": 7,
+                                         "money": True})
+        assert crm_settings_href("questions") == "/crm?tab=settings&section=questions"
+        assert signal.href == "/crm?tab=settings&section=questions"
+        assert [(a["id"], a["label"]) for a in signal.acts] == [("answer", "Answer")]
+        assert set(signal.facts) == {"count", "open", "money", "new_at"}
+        tz = ZoneInfo("UTC")
+        assert feed._md3_why("crm_open_questions", signal.facts, tz, self.NOW.date()) == (
+            "open_questions", "Jev has 3 new questions about your CRM data.")
+        assert feed._md3_why("crm_open_questions", {"count": 1}, tz, self.NOW.date())[1] == (
+            "Jev has 1 new question about your CRM data.")
+
+    def test_the_card_shows_for_one_day_after_new_at(self):
+        from gateway.crm_sync import questions as qs
+
+        state_ = {"seen": ["a", "b"], "new_at": self.NOW.isoformat(), "new": 1, "money": True}
+        card_ = qs.card_of(state_, self.NOW + timedelta(hours=23))
+        assert card_ is not None and (card_["count"], card_["open"], card_["money"]) == (
+            1, 2, True)
+        assert qs.card_of(state_, self.NOW + timedelta(hours=24)) is None
+        assert qs.card_of({**state_, "seen": []}, self.NOW) is None
+        assert qs.card_of({"seen": ["a"]}, self.NOW) is None
+
+    async def test_my_day_rows_reads_the_card_for_an_admin_only(self, monkeypatch):
+        """``my_day_rows`` reads ONE cursor row for an admin of an org on
+        ``CRM_QUESTIONS_ORGS``, in its one session. A member reads none."""
+        from acb_common import get_settings
+        from gateway.routes.crm import questions as crm_questions
+
+        crm_switch_on(monkeypatch, "*")
+        settings = get_settings()
+        monkeypatch.setattr(settings, "crm_catalogue_orgs", "*", raising=False)
+        monkeypatch.setattr(settings, "crm_questions_orgs", "*", raising=False)
+        reads: list[str] = []
+
+        async def _card(db, org, now):
+            reads.append(org)
+            return {"new_at": now, "count": 1, "open": 1, "money": False}
+
+        monkeypatch.setattr(crm_questions, "questions_card", _card)
+        rows = await _my_day_rows_with(monkeypatch, crm_admin("crm"), self.NOW)
+        assert rows["questions"]["count"] == 1 and reads == [ORG]
+        rows = await _my_day_rows_with(monkeypatch, member("crm"), self.NOW)
+        assert rows["questions"] is None and reads == [ORG]
+        monkeypatch.setattr(settings, "crm_questions_orgs", "", raising=False)
+        rows = await _my_day_rows_with(monkeypatch, crm_admin("crm"), self.NOW)
+        assert rows["questions"] is None and reads == [ORG]
+
+
+async def _my_day_rows_with(monkeypatch, user, now):
+    """``aggregate.my_day_rows`` with each read faked, and ONE session."""
+    from gateway.routes.crm import digests
+    from gateway.routes.projects import personal
+
+    sessions: list[int] = []
+
+    @contextlib.asynccontextmanager
+    async def _session(org=None):
+        sessions.append(1)
+        yield SimpleNamespace()
+
+    async def _none(*_a, **_k):
+        return []
+
+    async def _zone(db, email):
+        return "UTC"
+
+    monkeypatch.setattr(crm_aggregate, "_tenant_session", _session)
+    monkeypatch.setattr(personal, "stored_zone", _zone)
+    monkeypatch.setattr(crm_activities, "my_due_activities", _none)
+    monkeypatch.setattr(crm_aggregate, "my_overdue_deals", _none)
+    monkeypatch.setattr(crm_aggregate, "my_close_passed_deals", _none)
+    monkeypatch.setattr(digests, "ready_digest", _none)
+    from acb_common.db import bind_tenant, release_tenant
+
+    bound = bind_tenant(ORG)
+    try:
+        rows = await crm_aggregate.my_day_rows(user, now=now, limit=5)
+    finally:
+        release_tenant(bound)
+    assert sessions == [1]
+    return rows

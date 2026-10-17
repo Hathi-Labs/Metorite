@@ -222,6 +222,15 @@ def crm_reports_href() -> str:
     return "/crm?tab=reports"
 
 
+def crm_settings_href(section: str) -> str:
+    """The link that opens one section of CRM settings:
+    ``/crm?tab=settings&section=<section>`` (WS-53 CRM-Q32-4). ``crm_href``
+    links a record only. The My Day card ``crm_open_questions`` and the 422
+    of the aggregate call it, so the CRM links of the gateway stay in this
+    one module."""
+    return "/crm?tab=settings&section=" + quote(str(section))
+
+
 def _crm_title(kind: str, row: dict[str, Any]) -> str:
     if kind == "lead":
         return row.get("lead_name") or ""
