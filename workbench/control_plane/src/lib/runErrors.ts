@@ -174,6 +174,16 @@ export const RUN_ERROR_WORDS: Record<RunErrorCode, RunErrorWords> = {
 };
 
 /**
+ * True for a notice that only informs: it has no button, because nothing is
+ * lost and the member has nothing to do. The chat draws it as a slim line
+ * with a Dismiss control (owner report, 2026-10-17). A notice with an action,
+ * and every error, keeps its card until the member acts.
+ */
+export function isInfoOnlyNotice(words: RunErrorWords): boolean {
+  return words.tone === "notice" && !words.retry && !words.action;
+}
+
+/**
  * The body of a notice, with `{account}` filled in from its `raw` text
  * (WS-51 S2). A body with no placeholder is returned as it is.
  */
