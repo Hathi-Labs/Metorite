@@ -8,8 +8,8 @@ and 14.
 **Read only.** The route sits on the shared ``core.router``, so the kill
 switch, ``feature:crm`` and ``require_crm_access`` apply before this body
 runs. A digest counts the whole org, so the access rule of the CRM is the
-whole gate. The tenant comes from the session that the router binds, never
-from the request (R5), and each statement names it too.
+whole gate. The org comes from the signed-in member, never from the
+request (R5), and each statement names it too.
 
 **Only a stored text.** ``crm_sync/digest.py`` stores ``body`` only after
 the text passed the number check of item 9. A row with no body is a try
@@ -29,8 +29,10 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from fastapi import Query
-from gateway.routes.crm.core import _tenant_session, current_tenant, router
+from acb_auth import UserContext, get_current_user
+from fastapi import Depends, Query
+from gateway.routes.crm.connection import _organization
+from gateway.routes.crm.core import _tenant_session, router
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -88,9 +90,15 @@ def _numbers(raw: Any) -> dict[str, Any]:
 
 
 @router.get("/digests", response_model=DigestsResponse)
-async def list_digests(limit: int = Query(4, ge=1, le=MAX_LIMIT)) -> DigestsResponse:
-    """The newest weekly digests of the org, newest first."""
-    org = current_tenant()
+async def list_digests(
+    limit: int = Query(4, ge=1, le=MAX_LIMIT),
+    user: UserContext = Depends(get_current_user),
+) -> DigestsResponse:
+    """The newest weekly digests of the org, newest first.
+
+    The org comes from the signed-in member (R5), as in ``get_crm_counts``.
+    """
+    org = _organization(user)
     async with _tenant_session() as db:
         rows = (await db.execute(text(_LIST_SQL), {"o": str(org), "n": limit})).fetchall()
     return DigestsResponse(digests=[
