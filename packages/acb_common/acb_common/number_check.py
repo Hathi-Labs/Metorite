@@ -59,6 +59,8 @@ _SCALE_WORDS: dict[str, Decimal] = {
 _SCALE_LETTERS: dict[str, Decimal] = {
     "k": Decimal(10) ** 3, "K": Decimal(10) ** 3, "L": Decimal(10) ** 5,
     "M": Decimal(10) ** 6, "B": Decimal(10) ** 9,
+    # Only after a currency sign (fix round 4): "₹19.2m", "$4.5b", "$3mm".
+    "m": Decimal(10) ** 6, "mm": Decimal(10) ** 6, "b": Decimal(10) ** 9,
 }
 
 _CURRENCY_BEFORE = r"₹|Rs\.?|INR|USD|US\$|\$|€|EUR|£|GBP"
@@ -75,9 +77,10 @@ _FIGURE = re.compile(
     r"(?P<num>(?:\d{1,2}(?:,\d{2})+,\d{3}|\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)"
     r"(?![.,]\d)(?!:\d)(?!/\d)"
     # A scale stays on the line of its number: "12,10,000\nB: ..." is no
-    # billion (fix round 3).
-    r"(?:[ \t]?(?P<scale>(?i:lakhs?|lacs?|crores?|cr|thousand|million|mn|billion|bn)"
-    r"|k|K|L|M|B)(?![A-Za-z0-9_]))?"
+    # billion (fix round 3). A no-break space may come before it, and "m",
+    # "mm" and "b" are a scale only after a currency sign (fix round 4).
+    r"(?:[ \t\u00a0\u202f]?(?P<scale>(?i:lakhs?|lacs?|crores?|cr|thousand|million|mn|"
+    r"billion|bn)|k|K|L|M|B|(?(cur)(?:mm|m|b)|(?!)))(?![A-Za-z0-9_]))?"
     r"(?:\s?(?P<pct>%|(?i:per\s?cent)))?"
     rf"(?:\s?(?P<cur2>(?i:{_CURRENCY_AFTER}))(?![A-Za-z]))?"
     r"(?P<mult>[x\u00d7](?![A-Za-z0-9_]))?"
@@ -92,6 +95,18 @@ _APPROX_BEFORE = re.compile(
 )
 #: How far an approximate number may stand from its source: 10 percent.
 APPROX_SHARE = Decimal("0.10")
+#: The most room that "about" gives a percent: 1 point. So "nearly 66%" is
+#: no approximation of 60% (fix round 4).
+APPROX_PERCENT_POINTS = Decimal(1)
+
+#: A currency sign before digits that are glued to letters: "₹19.2xy". The
+#: parser cannot read it, so it keeps it as a figure that always fails. A
+#: figure after a currency sign never disappears (fix round 4).
+_GLUED = re.compile(
+    r"(?<![A-Za-z0-9_])"
+    rf"(?:{_CURRENCY_BEFORE})[\s\u00a0\u202f]?"
+    r"(?P<num>\d[\d,]*(?:\.\d+)?)[A-Za-z_][A-Za-z0-9_]*"
+)
 
 #: The words before a plain four-digit number that make it a year: "in 2026",
 #: "since 2025", "FY 2026", "March 2026", "2025-2026". With no such word,
@@ -187,6 +202,9 @@ class Figure:
     end: int
     approx: bool = False
     short: bool = False
+    #: True for a figure the parser cannot read (``_GLUED``). It never
+    #: matches, and it is never a source.
+    unreadable: bool = False
 
     @property
     def strict_room(self) -> Decimal:
@@ -199,7 +217,10 @@ class Figure:
         after "about"."""
         room = Decimal(0) if self.exact else self.unit / 2
         if self.approx:
-            room = max(room, abs(self.value) * APPROX_SHARE)
+            share = abs(self.value) * APPROX_SHARE
+            if self.kind == PERCENT:
+                share = min(share, APPROX_PERCENT_POINTS)
+            room = max(room, share)
         return room
 
 
@@ -314,6 +335,20 @@ def _parse(text: str, *, skip_years: bool) -> list[Figure]:
             approx=approx,
             short=short,
         ))
+    spans = [(f.start, f.end) for f in found]
+    for g in _GLUED.finditer(scan):
+        if any(start <= g.start() < end for start, end in spans):
+            continue
+        try:
+            number = Decimal(g.group("num").replace(",", ""))
+        except InvalidOperation:
+            number = Decimal(0)
+        found.append(Figure(
+            text=text[g.start():g.end()].strip(), value=number, kind=MONEY,
+            unit=Decimal(1), exact=True, start=g.start(), end=g.end(),
+            unreadable=True,
+        ))
+    found.sort(key=lambda f: f.start)
     return found
 
 
@@ -336,7 +371,48 @@ MAX_DERIVE = 500
 #: So one large result cannot push out the figures of every other result.
 MAX_DERIVE_PER_TEXT = 200
 
+#: The kinds that have a derive pool. A percent pool gives only the sum or
+#: the difference of two percents ("a gap of 9.8 points", fix round 4).
+_POOL_KINDS = (MONEY, PLAIN, PERCENT)
+
 _HUNDRED = Decimal(100)
+
+#: A value of compact JSON (``{"target":1234567}``) and of a CSV row
+#: (``region,1234567,88``). The figure parse skips both, because a number
+#: after ":" or "," is a time or a part of a grouped number in prose. So a
+#: source text reads them here too (fix round 4).
+_JSON_VALUE = re.compile(r'"[^"\n]{1,80}"\s*:\s*(-?\d+(?:\.\d+)?)(?=\s*[,}\]])')
+_CSV_ROW = re.compile(r"^[^\n,]*,[^\n]*$", re.MULTILINE)
+_CSV_NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
+_CSV_DATE = re.compile(r"\d{4}-\d{2}-\d{2}(?:[T ][\d:.+Z-]*)?")
+
+
+def _data_values(text: str, spans: list[tuple[int, int]]) -> list[tuple[int, str]]:
+    """Each JSON value and CSV field of *text* that the figure parse did not
+    read: (offset, digits). A CSV row has no ", " and holds only numbers,
+    dates and fields with no digit, so a grouped number in prose is no row."""
+    out: list[tuple[int, str]] = []
+
+    def _free(at: int) -> bool:
+        return not any(start <= at < end for start, end in spans)
+
+    for m in _JSON_VALUE.finditer(text):
+        if _free(m.start(1)):
+            out.append((m.start(1), m.group(1)))
+    for row in _CSV_ROW.finditer(text):
+        line = row.group(0)
+        if ", " in line or line.count(",") < 1:
+            continue
+        fields = line.split(",")
+        if not all(_CSV_NUMBER.fullmatch(f.strip()) or _CSV_DATE.fullmatch(f.strip())
+                   or not any(c.isdigit() for c in f) for f in fields):
+            continue
+        at = row.start()
+        for f in fields:
+            if _CSV_NUMBER.fullmatch(f.strip()) and _free(at):
+                out.append((at, f.strip()))
+            at += len(f) + 1
+    return out
 
 
 class _Pool:
@@ -391,15 +467,14 @@ class Sources:
     Add a text with :meth:`add_text` (a tool result, a member's message, a
     prompt) or a value with :meth:`add_value`. A source value is taken as
     exact. The sign is not compared: a text may say "down 5%" for -5. A book
-    grows as its texts arrive, so a caller adds each tool result once.
+    grows as its texts arrive, so a caller adds each tool result once. A new
+    value waits in a list and the book sorts once before its next match, so
+    a text of 100,000 figures costs one sort, not one insert each (round 4).
 
     A source added with ``derive=True`` (a figure that a tool or code gave)
-    also goes into the derive pool of its kind. A figure that no source holds
-    may be the sum or the difference of two pool values of one kind (money
-    with money, plain with plain), or the percent change or the percent share
-    of two (a percent figure). :func:`check` passes it only when the text also
-    cites both operands. Pairs only, never a chain. A member's words are
-    added with ``derive=False``.
+    also goes into the derive pool of its kind. :func:`check` passes a
+    figure that no source holds only as a derived figure of two operands
+    that the text also cites, next to it in its sentence. Pairs only.
 
     :meth:`layer` gives a new book that reads this one too. Use it for a
     source of one check only (the member's words), with no copy.
@@ -407,11 +482,13 @@ class Sources:
 
     _values: list[Decimal] = field(default_factory=list)
     _kinds: list[str] = field(default_factory=list)
+    _pending: list[tuple[Decimal, str]] = field(default_factory=list)
     _pools: dict[str, _Pool] = field(default_factory=dict)
     _base: Sources | None = None
 
     def __len__(self) -> int:
-        return len(self._values) + (len(self._base) if self._base is not None else 0)
+        own = len(self._values) + len(self._pending)
+        return own + (len(self._base) if self._base is not None else 0)
 
     def layer(self) -> Sources:
         """A new, empty book on top of this one. A value added to the new
@@ -425,28 +502,39 @@ class Sources:
             number = abs(Decimal(str(value)))
         except InvalidOperation:
             return
-        at = bisect.bisect_left(self._values, number)
-        self._values.insert(at, number)
-        self._kinds.insert(at, kind)
-        if derive and kind in (MONEY, PLAIN):
+        self._pending.append((number, kind))
+        if derive and kind in _POOL_KINDS:
             self._pools.setdefault(kind, _Pool(MAX_DERIVE)).add(number)
 
     def add_text(self, text: str, *, derive: bool = False) -> None:
         """Add each number in *text*. A year counts here, as a source. With
         *derive*, the first :data:`MAX_DERIVE_PER_TEXT` figures of each kind
-        also go into the derive pool."""
+        also go into the derive pool. A JSON value and a CSV field count too.
+        A figure that the parser cannot read is no source."""
         pooled: dict[str, int] = {}
-        for figure in _parse(text, skip_years=False):
-            used = pooled.get(figure.kind, 0)
+        figures = [f for f in _parse(text, skip_years=False) if not f.unreadable]
+        data = _data_values(text or "", [(f.start, f.end) for f in figures])
+        values = [(f.value, f.kind) for f in figures] + [(Decimal(v), PLAIN) for _at, v in data]
+        for value, kind in values:
+            used = pooled.get(kind, 0)
             take = derive and used < MAX_DERIVE_PER_TEXT
             if take:
-                pooled[figure.kind] = used + 1
-            self.add_value(figure.value, figure.kind, derive=take)
+                pooled[kind] = used + 1
+            self.add_value(value, kind, derive=take)
 
     def pool(self, kind: str) -> list[Decimal]:
         """The values of the derive pool of *kind*, oldest first."""
         found = self._pool(kind)
         return found.values() if found is not None else []
+
+    def _settle(self) -> None:
+        if not self._pending:
+            return
+        merged = sorted([*zip(self._values, self._kinds, strict=True), *self._pending],
+                        key=lambda item: item[0])
+        self._values = [value for value, _kind in merged]
+        self._kinds = [kind for _value, kind in merged]
+        self._pending = []
 
     def _books(self) -> list[Sources]:
         books: list[Sources] = []
@@ -464,11 +552,15 @@ class Sources:
 
     def matches(self, figure: Figure) -> bool:
         """True when a source value rounds to *figure* at its precision, or
-        lies within 10 percent of it after "about". A derived figure is no
-        match here. :func:`check` decides it, because it needs the text."""
+        lies near it after "about". A derived figure is no match here.
+        :func:`check` decides it, because it needs the text. A figure that
+        the parser cannot read never matches."""
+        if figure.unreadable:
+            return False
         target = abs(figure.value)
         room = figure.room
         for book in self._books():
+            book._settle()
             lo = bisect.bisect_left(book._values, target - room)
             hi = bisect.bisect_right(book._values, target + room)
             if any(_compatible(figure.kind, book._kinds[i]) for i in range(lo, hi)):
@@ -477,15 +569,18 @@ class Sources:
 
     def _cited(self, figures: tuple[Figure, ...]) -> dict[str, list[_Cited]]:
         """Each pool entry that a figure of the text states at the room of
-        its stated precision (no room for "about"), sorted by value."""
+        its stated precision (no room for "about"), sorted by value. Only a
+        percent cites the percent pool, and a percent cites nothing else."""
         out: dict[str, list[_Cited]] = {}
-        for kind in (MONEY, PLAIN):
+        for kind in _POOL_KINDS:
             pool = self._pool(kind)
             if pool is None:
                 continue
             cited: list[_Cited] = []
             for index, figure in enumerate(figures):
-                if figure.kind == PERCENT or not _compatible(figure.kind, kind):
+                if figure.unreadable or (figure.kind == PERCENT) != (kind == PERCENT):
+                    continue
+                if not _compatible(figure.kind, kind):
                     continue
                 target, room = abs(figure.value), figure.strict_room
                 cited.extend((value, index, seq)
@@ -495,15 +590,17 @@ class Sources:
         return out
 
 
-def _ranges(kind: str, a: Decimal, target: Decimal,
+def _ranges(target_kind: str, pool_kind: str, a: Decimal, target: Decimal,
             room: Decimal) -> list[tuple[Decimal, Decimal]]:
     """The ranges of the other operand ``b`` that give *target* with *a*.
 
-    Money or plain: a + b, or b - a with b the larger. Percent: the share
-    a / b * 100, or the change (b - a) / a * 100 up or down.
+    A sum or a difference: a + b, or b - a with b the larger. That is the
+    rule of a money or plain target, and of each target from the percent
+    pool. A percent target from a money or plain pool: the share a / b * 100,
+    or the change (b - a) / a * 100 up or down.
     """
     low, high = target - room, target + room
-    if kind != PERCENT:
+    if target_kind != PERCENT or pool_kind == PERCENT:
         return [(low - a, high - a), (a + low, a + high)]
     out: list[tuple[Decimal, Decimal]] = []
     if a == 0 or high <= 0:
@@ -516,18 +613,92 @@ def _ranges(kind: str, a: Decimal, target: Decimal,
     return out
 
 
-def _derived(figure: Figure, index: int, cited: dict[str, list[_Cited]]) -> bool:
+#: The pools that can give a derived figure of each kind.
+_TARGET_POOLS: dict[str, tuple[str, ...]] = {
+    MONEY: (MONEY,),
+    PLAIN: (MONEY, PLAIN, PERCENT),
+    PERCENT: (MONEY, PLAIN, PERCENT),
+}
+
+#: The end of a sentence: ".", "!", "?" or ";" before a space, or a new line.
+#: "Rs." and "vs." are no end (fix round 4).
+_SENTENCE_END = re.compile(r"(?<!\bRs)(?<!\bvs)(?<!\bNo)[.!?;](?=\s|$)|\n")
+
+#: A word that says a figure is derived (fix round 4). A derived figure needs
+#: one in its sentence, at most :data:`_WORD_BEFORE` characters before it or
+#: :data:`_WORD_AFTER` after it.
+_DERIVE_WORDS = re.compile(
+    r"\b(?i:total|totals|sum|together|combined|altogether|in\s+all|plus|net|minus|"
+    r"gap|difference|differs?|change|changed|share|of|more\s+than|less\s+than|"
+    r"fewer\s+than|exceeds?|exceeded|over|under|up|down|points?|rest|remaining|so)\b"
+)
+_WORD_BEFORE = 48
+_WORD_AFTER = 16
+
+#: How many citing figures next to a derived figure give its operands: the
+#: nearest two before it and the nearest one after it, in its sentence. So a
+#: pair of far figures of a long list never gives a figure by chance.
+_NEAR_BEFORE = 2
+_NEAR_AFTER = 1
+
+
+@dataclass(frozen=True)
+class _Text:
+    """The sentences of the checked text, for the rule of a derived figure."""
+
+    scan: str
+    ends: tuple[int, ...]
+
+    @classmethod
+    def of(cls, text: str) -> _Text:
+        scan = _blank(text or "")
+        return cls(scan, tuple(m.start() for m in _SENTENCE_END.finditer(scan)))
+
+    def sentence(self, at: int) -> int:
+        return bisect.bisect_left(self.ends, at)
+
+    def bounds(self, at: int) -> tuple[int, int]:
+        i = self.sentence(at)
+        start = self.ends[i - 1] + 1 if i > 0 else 0
+        end = self.ends[i] if i < len(self.ends) else len(self.scan)
+        return start, end
+
+    def has_word(self, figure: Figure) -> bool:
+        start, end = self.bounds(figure.start)
+        lo = max(start, figure.start - _WORD_BEFORE)
+        hi = min(end, figure.end + _WORD_AFTER)
+        return bool(_DERIVE_WORDS.search(self.scan[lo:hi]))
+
+
+def _near_citers(entries: list[_Cited], index: int, figures: tuple[Figure, ...],
+                 text: _Text) -> set[int]:
+    """The citing figures next to figure *index* in its sentence."""
+    here = text.sentence(figures[index].start)
+    citers = sorted({by for _v, by, _s in entries
+                     if by != index and text.sentence(figures[by].start) == here})
+    before = [by for by in citers if by < index][-_NEAR_BEFORE:]
+    after = [by for by in citers if by > index][:_NEAR_AFTER]
+    return {*before, *after}
+
+
+def _derived(figures: tuple[Figure, ...], index: int, cited: dict[str, list[_Cited]],
+             text: _Text) -> bool:
     """True when two operands that two OTHER figures of the text cite give
-    *figure*, at the room of its stated precision (rule 1 of fix round 3)."""
+    figure *index*, at the room of its stated precision (round 3). The two
+    figures stand next to it in its sentence, and a word of derivation stands
+    near it (round 4)."""
+    figure = figures[index]
+    if figure.unreadable or not text.has_word(figure):
+        return False
     target, room = abs(figure.value), figure.strict_room
-    kinds = [MONEY] if figure.kind == MONEY else [MONEY, PLAIN]
-    for kind in kinds:
-        entries = [c for c in cited.get(kind, []) if c[1] != index]
+    for kind in _TARGET_POOLS[figure.kind]:
+        near = _near_citers(cited.get(kind, []), index, figures, text)
+        entries = [c for c in cited.get(kind, []) if c[1] in near]
         if len(entries) < 2:
             continue
         values = [c[0] for c in entries]
         for a, by, seq in entries:
-            for lo, hi in _ranges(figure.kind, a, target, room):
+            for lo, hi in _ranges(figure.kind, kind, a, target, room):
                 start = bisect.bisect_left(values, lo)
                 end = bisect.bisect_right(values, hi)
                 if any(entries[j][1] != by and entries[j][2] != seq
@@ -541,7 +712,8 @@ def check(text: str, sources: Sources | Iterable[str]) -> CheckResult:
 
     *sources* is a :class:`Sources`, or texts to read into one (each with
     ``derive=True``). A figure passes when a source holds it, or when two
-    OTHER figures of *text* cite two pool values that give it.
+    OTHER figures next to it in its sentence cite two pool values that give
+    it, and a word of derivation stands near it.
     """
     if not isinstance(sources, Sources):
         book = Sources()
@@ -551,12 +723,14 @@ def check(text: str, sources: Sources | Iterable[str]) -> CheckResult:
     figures = tuple(find_figures(text))
     unmatched: list[Figure] = []
     cited: dict[str, list[_Cited]] | None = None
+    shape: _Text | None = None
     for index, figure in enumerate(figures):
         if sources.matches(figure):
             continue
-        if cited is None:
+        if cited is None or shape is None:
             cited = sources._cited(figures)
-        if not _derived(figure, index, cited):
+            shape = _Text.of(text)
+        if not _derived(figures, index, cited, shape):
             unmatched.append(figure)
     return CheckResult(figures=figures, unmatched=tuple(unmatched))
 

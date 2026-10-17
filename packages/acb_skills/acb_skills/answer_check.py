@@ -51,9 +51,12 @@ No log line holds a number or a text. Fence: ``tests/unit/test_crm_answer_check.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import re
 import sys
+import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -106,19 +109,38 @@ FALLBACK_TOOLS: frozenset[str] = frozenset({
 })
 
 #: The tools whose ARGUMENTS the member reads: a card, a report, a document,
-#: a text file and a WhatsApp element (``whatsapp_ui``, fix round 3). The
-#: check reads their shown text as it reads the answer.
+#: a text file, a WhatsApp element (``whatsapp_ui``, fix round 3), and the
+#: question and confirmation cards (``ask_questions``,
+#: ``request_confirmation``, fix round 4). The check reads their shown text
+#: as it reads the answer.
 DISPLAY_TOOLS: frozenset[str] = frozenset({
     "emit_generative_ui", "make_report", "make_document", "write_artifact",
-    "whatsapp_ui",
+    "whatsapp_ui", "ask_questions", "request_confirmation",
 })
 
-#: Each tool that shows the member something: the display tools, and
-#: ``share_artifact``, which shows a file that another tool made. Its
-#: arguments hold only a path, so the check cannot read the numbers of the
-#: file (a stated limit, spec §18.11.2). A failed step that calls one of
-#: these is never stripped and sent. It fails (fix round 3).
-SHOWN_TOOLS: frozenset[str] = DISPLAY_TOOLS | frozenset({"share_artifact"})
+#: The memory reads. They show nothing and send nothing.
+RECALL_TOOLS: frozenset[str] = frozenset({
+    "remember", "recall_timeline", "recall_agent", "recall_org", "recall_notes",
+})
+
+#: The ONLY tools that a failed step may call and still go out without its
+#: text (fix round 4). Each one shows the member nothing and sends nothing:
+#: the CRM reads and the memory reads. A failed step that calls any other
+#: tool fails, so a card, a file, a message or a tool that this list does
+#: not know never ships beside a failed text. A new quiet tool joins here.
+QUIET_TOOLS: frozenset[str] = ARM_TOOLS | RECALL_TOOLS
+
+#: A tool result that a model wrote, or a script that a model wrote printed.
+#: It is no source (fix round 4): ``code_task`` runs a coding agent, as a
+#: delegation does, and the others print what the model's own code prints.
+#: So a number that only such a result holds fails the check.
+MODEL_WRITTEN_TOOLS: frozenset[str] = DELEGATION_TOOLS | frozenset({
+    "code_task", "run_script", "run_command", "code_task_run_command",
+})
+
+#: A result longer than this many characters is read on a worker thread, so
+#: a result with 100,000 figures does not hold the event loop (fix round 4).
+RECORD_INLINE_CHARS = 20_000
 
 #: ``write_artifact`` shows text only for these files. A script is code.
 TEXT_FILE_SUFFIXES: tuple[str, ...] = (".md", ".txt", ".html", ".htm", ".csv")
@@ -371,13 +393,16 @@ class RunLedger:
     book: Sources = field(default_factory=Sources)
     armed: bool = False
     retried: bool = False
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False,
+                                  compare=False)
 
     def record(self, tool: str, text: str, *, arguments: Any = None,
                delegated: bool = False) -> None:
         """Keep one tool result. A CRM result arms the check.
 
-        A delegated answer (*delegated*) is text that a model wrote, so it
-        is no source. The arguments of a CRM call are sources. Only a tool
+        A delegated answer (*delegated*) or a result of
+        :data:`MODEL_WRITTEN_TOOLS` is text that a model wrote, so it is no
+        source. The arguments of a CRM call are sources. Only a tool
         result takes part in a derived figure (a sum, a difference or a
         percent of two), and ``acb_common.number_check`` caps the share of
         each result in that pool.
@@ -387,13 +412,14 @@ class RunLedger:
             # knows that a long result was cut.
             self.results.append((tool, text[:FALLBACK_CHARS + 1]))
             del self.results[:-FALLBACK_RESULTS]
-        if not delegated and tool not in DELEGATION_TOOLS:
-            self.book.add_text(text, derive=True)
-        if tool in ARM_TOOLS:
-            self.armed = True
-            if arguments is not None:
-                for value in argument_sources(arguments):
-                    self.book.add_text(value)
+        with self._lock:
+            if not delegated and tool not in MODEL_WRITTEN_TOOLS:
+                self.book.add_text(text, derive=True)
+            if tool in ARM_TOOLS:
+                self.armed = True
+                if arguments is not None:
+                    for value in argument_sources(arguments):
+                        self.book.add_text(value)
 
     def sources(self) -> Sources:
         """Each source of the run (item 4), the member's words included.
@@ -461,11 +487,16 @@ class RecordToolResults(FunctionMiddleware):
         function = getattr(context, "function", None)
         name = tool_name(function) if function is not None else ""
         try:
-            self._ledger.record(
-                name, _result_text(getattr(context, "result", None)),
+            text = _result_text(getattr(context, "result", None))
+            record = functools.partial(
+                self._ledger.record, name, text,
                 arguments=getattr(context, "arguments", None),
                 delegated=function is not None and is_delegation_tool(function),
             )
+            if len(text) > RECORD_INLINE_CHARS:
+                await asyncio.to_thread(record)
+            else:
+                record()
         except Exception as exc:  # the record never breaks a tool call
             _log.warning("answer_check.record_failed", tool=name, error=type(exc).__name__)
 
@@ -530,8 +561,8 @@ class CheckAnswers(ChatMiddleware):
 
         A display call shows its arguments to the member, so a failed card
         fails the whole answer, and never ships. ``strip`` is only for a
-        step whose calls show the member nothing (no :data:`SHOWN_TOOLS`
-        call). A failed step that shows something fails (fix round 3).
+        step whose calls are ALL in :data:`QUIET_TOOLS`. Any other call
+        makes a failed step fail (fix round 4).
         """
         book = self._ledger.sources()
         card = _card_text(response)
@@ -539,8 +570,8 @@ class CheckAnswers(ChatMiddleware):
         if result.ok:
             return PASS, result
         calls = _calls(response)
-        shown = any(str(getattr(c, "name", "") or "") in SHOWN_TOOLS for c in calls)
-        return (STRIP if calls and not shown else FAIL), result
+        quiet = all(str(getattr(c, "name", "") or "") in QUIET_TOOLS for c in calls)
+        return (STRIP if calls and quiet else FAIL), result
 
     async def _drain(self, stream: ResponseStream) -> tuple[list[ChatResponseUpdate], ChatResponse]:
         """Read the whole of *stream*, with a sign of life as it goes."""
@@ -717,10 +748,29 @@ class AnswerCheckProvider(ContextProvider):
 
 
 __all__ = [
-    "ARM_TOOLS", "CRM_ASSISTANT_READS", "DISPLAY_TOOLS", "FALLBACK_TOOLS",
-    "HEARTBEAT_S", "HOLD_EVENT", "MEMBER_MESSAGE", "MODES", "OFF", "ON", "SHADOW",
-    "SHOWN_TOOLS",
-    "AnswerCheckProvider", "CheckAnswers", "RecordToolResults", "RunLedger",
-    "answer_check_mode", "argument_sources", "display_text", "fallback_text",
-    "holds_crm_tool", "member_words", "retry_note",
+    "ARM_TOOLS",
+    "CRM_ASSISTANT_READS",
+    "DISPLAY_TOOLS",
+    "FALLBACK_TOOLS",
+    "HEARTBEAT_S",
+    "HOLD_EVENT",
+    "MEMBER_MESSAGE",
+    "MODEL_WRITTEN_TOOLS",
+    "MODES",
+    "OFF",
+    "ON",
+    "QUIET_TOOLS",
+    "RECALL_TOOLS",
+    "SHADOW",
+    "AnswerCheckProvider",
+    "CheckAnswers",
+    "RecordToolResults",
+    "RunLedger",
+    "answer_check_mode",
+    "argument_sources",
+    "display_text",
+    "fallback_text",
+    "holds_crm_tool",
+    "member_words",
+    "retry_note",
 ]

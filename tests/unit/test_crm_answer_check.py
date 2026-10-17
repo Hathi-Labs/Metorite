@@ -710,10 +710,10 @@ async def test_a_derived_figure_with_no_operands_is_caught(stream: bool) -> None
 
 
 def test_whatsapp_ui_is_a_display_tool() -> None:
-    from acb_skills.answer_check import DISPLAY_TOOLS, SHOWN_TOOLS, display_text
+    from acb_skills.answer_check import DISPLAY_TOOLS, QUIET_TOOLS, display_text
 
     assert "whatsapp_ui" in DISPLAY_TOOLS
-    assert "share_artifact" in SHOWN_TOOLS - DISPLAY_TOOLS
+    assert "share_artifact" not in QUIET_TOOLS
     shown = display_text("whatsapp_ui", _stats(1834567))
     assert "1834567" in shown and "stats" not in shown
 
@@ -825,3 +825,128 @@ def test_the_ledger_keeps_only_the_newest_fallback_results() -> None:
     assert fallback_text(ledger).endswith("…")
     # Each result is still a source, also one that left the fallback list.
     assert ledger.check("INR 1,000").ok
+
+
+# ── Fix round 4 (2026-10-17): the adversarial review of round 3 ───────────
+
+def _response(text: str, calls: list[tuple[str, dict[str, Any]]]) -> ChatResponse:
+    contents = ([Content.from_text(text)] if text else []) + [
+        Content.from_function_call(f"c{i}", name, arguments=json.dumps(args))
+        for i, (name, args) in enumerate(calls)]
+    return ChatResponse(messages=[Message("assistant", contents)])
+
+
+def _verdict(text: str, calls: list[tuple[str, dict[str, Any]]]) -> str:
+    from acb_skills.answer_check import CheckAnswers
+
+    ledger = RunLedger()
+    ledger.record("crm_aggregate", CRM_RESULT, arguments={"entity": "deals"})
+    verdict, _result = CheckAnswers(ledger, ON)._verdict(_response(text, calls))
+    return verdict
+
+
+@pytest.mark.parametrize(("name", "args"), [
+    ("ask_questions", {"questions": json.dumps([{
+        "header": "Drill down", "question": "The pipeline is Rs 14.6 crore. Which stage?",
+        "options": [{"label": "Open (Rs 5.9 crore)"}]}])}),
+    ("request_confirmation", {"title": "Log a Rs 22 lakh deal?",
+                              "detail": "Amount Rs 22,40,000"}),
+])
+def test_a_question_or_confirmation_card_is_checked(name: str, args: dict[str, Any]) -> None:
+    """Rule 1: the two cards show their arguments, so their numbers count."""
+    from acb_skills.answer_check import DISPLAY_TOOLS, display_text
+
+    assert name in DISPLAY_TOOLS
+    assert display_text(name, args)
+    assert _verdict("Here is the split.", [(name, args)]) == "fail"
+
+
+@pytest.mark.parametrize("name", [
+    "ask_questions", "share_artifact", "web_lookup", "send_email", "a_tool_no_one_knows",
+])
+def test_a_failed_step_with_a_call_outside_the_quiet_list_fails(name: str) -> None:
+    """Rule 1: a strip is allowed only when EACH call is quiet."""
+    assert _verdict("Open deals hold ₹99 lakh.", [(name, {"x": "y"})]) == "fail"
+    assert _verdict("Open deals hold ₹99 lakh.",
+                    [("crm_aggregate", {"entity": "deals"}), (name, {"x": "y"})]) == "fail"
+
+
+@pytest.mark.parametrize("name", ["crm_aggregate", "get_pipeline", "recall_notes", "remember"])
+def test_a_failed_step_with_only_quiet_calls_is_stripped(name: str) -> None:
+    from acb_skills.answer_check import QUIET_TOOLS
+
+    assert name in QUIET_TOOLS
+    assert _verdict("Open deals hold ₹99 lakh.", [(name, {"entity": "deals"})]) == "strip"
+
+
+@pytest.mark.parametrize(("tool", "text"), [
+    ("code_task", "Session report: the pipeline total is Rs 19.2 crore."),
+    ("run_script", "exit 0\nstdout:\n192000000\n"),
+    ("run_command", "192000000"),
+    ("call_agent", "The pipeline total is Rs 19.2 crore."),
+])
+def test_text_that_a_model_wrote_is_no_source(tool: str, text: str) -> None:
+    """Rule 3: a coding agent's report and the output of the model's own
+    script are no source, as a delegated answer is not."""
+    ledger = RunLedger()
+    ledger.record("crm_aggregate", CRM_RESULT)
+    ledger.record(tool, text)
+    assert not ledger.check("The pipeline total is Rs 19.2 crore.").ok
+    assert not ledger.check("The pipeline total is 192000000.").ok
+
+
+async def test_a_large_result_is_read_off_the_event_loop(monkeypatch) -> None:
+    """Rule 8: a result over RECORD_INLINE_CHARS is read on a thread."""
+    import asyncio
+
+    from acb_skills.answer_check import RECORD_INLINE_CHARS, RecordToolResults
+
+    threads: list[str] = []
+    real = asyncio.to_thread
+
+    async def _to_thread(fn: Any, *args: Any, **kwargs: Any) -> Any:
+        threads.append(getattr(getattr(fn, "func", fn), "__name__", "?"))
+        return await real(fn, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", _to_thread)
+
+    class _Context:
+        function = None
+        arguments = None
+
+        def __init__(self, result: str) -> None:
+            self.result = result
+
+    async def _next() -> None:
+        return None
+
+    ledger = RunLedger()
+    middleware = RecordToolResults(ledger)
+    await middleware.process(_Context("Small: INR 5,00,000"), _next)
+    assert threads == []
+    big = "\n".join(f"- row {i}: INR {1000 + i}" for i in range(RECORD_INLINE_CHARS // 10))
+    await middleware.process(_Context(big), _next)
+    assert threads == ["record"]
+    assert ledger.check("Row holds INR 1,005.").ok
+
+
+async def test_the_win_loss_report_says_its_window(monkeypatch) -> None:
+    """Rule 6: "in the last 90 days" has a source."""
+    from acb_common.number_check import check
+    from acb_skills import crm_tools
+
+    async def _get(path: str, params: dict[str, Any] | None = None) -> Any:
+        if path.endswith("win-loss"):
+            return {"since": "2026-07-19", "won": 12, "lost": 8, "win_rate": 60.0,
+                    "won_amount": 18400000, "lost_amount": 9750000,
+                    "closed_without_date": 0, "lost_reasons": [], "window_days": 90}
+        return {"owners": [{"owner_email": "a@x.test", "open_deals": 3, "weighted": 100,
+                            "won_amount": 200}], "window_days": 90}
+
+    monkeypatch.setattr(crm_tools, "_get", _get)
+    for kind in ("win-loss", "owners"):
+        text = await crm_tools.crm_report(kind)
+        assert "The window is the last 90 days." in text, text
+    text = await crm_tools.crm_report("win-loss")
+    answer = "In the last 90 days we won 12 deals and lost 8, a 60% win rate."
+    assert check(answer, [text]).ok

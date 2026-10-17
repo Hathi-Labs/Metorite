@@ -359,7 +359,7 @@ class TestDerivedFigures:
     def test_a_chain_of_three_fails(self) -> None:
         sources = ["100 open", "200 won", "400 lost"]
         assert not check("100 open, 200 won and 400 lost: 700 deals.", sources).ok
-        assert check("100 open and 200 won: 300 deals.", sources).ok
+        assert check("100 open and 200 won, 300 deals in total.", sources).ok
         assert not check("In all, 300 deals.", sources).ok
 
     def test_the_member_s_words_take_no_part(self) -> None:
@@ -479,3 +479,129 @@ class TestFixRound3Sources:
         top.add_text("over ₹7 lakh")
         assert check("Over ₹7 lakh: INR 12,34,567 and INR 5,00,000, ₹17.3 lakh.", top).ok
         assert not check("Over ₹7 lakh.", base).ok
+
+
+# ── Fix round 4 (2026-10-17): the adversarial review of round 3 ───────────
+
+PIPE = (
+    "CRM report pipeline:\n"
+    "- Qualification: 14 deals · INR 23,450,000 · weighted INR 4,690,000\n"
+    "- Proposal: 9 deals · INR 41,200,000 · weighted INR 20,600,000\n"
+    "- Negotiation: 5 deals · INR 70,623,000 · weighted INR 52,967,250\n"
+    "Total: 28 deals · INR 135,273,000 · weighted INR 78,257,250"
+)
+WIN_LOSS = (
+    "CRM report win-loss:\n"
+    "In the last 90 days, since 2026-07-19: won 12, lost 8, win rate 60.0%.\n"
+    "Won INR 18,400,000, lost INR 9,750,000."
+)
+
+
+class TestFixRound4Scale:
+    """Rule 2: a scale after a currency sign, a no-break space, and a glued
+    figure that never disappears."""
+
+    @pytest.mark.parametrize(("text", "value"), [
+        ("₹19.2m", Decimal("19200000")), ("$4.5b", Decimal("4500000000")),
+        ("$3mm", Decimal("3000000")), ("₹12\u00a0crore", Decimal("120000000")),
+        ("₹12\u202flakh", Decimal("1200000")),
+    ])
+    def test_the_scale_reads(self, text: str, value: Decimal) -> None:
+        figures = find_figures(f"The pipeline is {text} now.")
+        assert [f.value for f in figures] == [value]
+
+    def test_a_lower_case_scale_needs_a_currency_sign(self) -> None:
+        assert [f.text for f in find_figures("Walk 5 m to the 12 b block.")] == ["5", "12"]
+
+    @pytest.mark.parametrize("text", ["₹19.2xy", "INR 5,00,000abc", "$4.5bnz"])
+    def test_a_glued_figure_is_kept_and_fails(self, text: str) -> None:
+        result = check(f"The pipeline is {text} now.", [PIPE])
+        assert [f.text for f in result.unmatched] == [text]
+        assert result.unmatched[0].unreadable
+
+    def test_a_glued_figure_is_no_source(self) -> None:
+        assert not check("₹19.2 is the figure.", ["Total ₹19.2xy"]).ok
+
+
+class TestFixRound4Derivation:
+    """Rule 4: the operands stand next to the derived figure in its sentence,
+    and a word of derivation stands near it. Rule 5: two percents."""
+
+    def test_operands_in_another_sentence_fail(self) -> None:
+        text = "Won INR 1,84,00,000 and lost INR 97,50,000. The net is INR 86,50,000."
+        assert not check(text, [WIN_LOSS]).ok
+        assert check("Won INR 1,84,00,000 and lost INR 97,50,000, a net of INR 86,50,000.",
+                     [WIN_LOSS]).ok
+
+    def test_a_derived_figure_needs_a_word_of_derivation(self) -> None:
+        assert not check("Won 12 and lost 8: 20 deals.", [WIN_LOSS]).ok
+        assert check("We won 12 and lost 8, so 20 deals closed.", [WIN_LOSS]).ok
+
+    def test_far_operands_of_a_long_list_take_no_part(self) -> None:
+        # 14 + 5 = 19, but 9 stands between them and the figure.
+        text = "Qualification has 14 deals, Negotiation 5 and Proposal 9, so 19 are stalled."
+        assert not check(text, [PIPE]).ok
+        text = "Qualification has 14 deals and Negotiation 5, so 19 are in the two stages."
+        assert check(text, [PIPE]).ok
+
+    def test_a_share_with_one_operand_after_it_passes(self) -> None:
+        text = "Negotiation holds ₹7.06 crore, 52% of the ₹13.53 crore pipeline."
+        assert check(text, [PIPE]).ok
+
+    def test_a_gap_of_two_percents_passes(self) -> None:
+        tool = "Win rate this quarter: 45%. Last quarter: 35.2%."
+        assert check("The win rate is 45% against 35.2%, a gap of 9.8 points.", [tool]).ok
+        assert check("The win rate is 45% against 35.2%, up 9.8% in all.", [tool]).ok
+        assert not check("The win rate is 45% against 35.2%, a gap of 8.8 points.", [tool]).ok
+
+    def test_a_percent_pool_gives_no_share(self) -> None:
+        tool = "Win rate this quarter: 45%. Last quarter: 30%."
+        # 45 / 30 is 150 percent, but a percent of a percent is no rule.
+        assert not check("The win rate is 45% against 30%, a change of 150%.", [tool]).ok
+
+
+class TestFixRound4Approx:
+    def test_about_gives_a_percent_one_point_at_most(self) -> None:
+        assert not check("nearly 66% win rate", [WIN_LOSS]).ok
+        assert check("nearly 61% win rate", [WIN_LOSS]).ok
+        assert check("about 59% win rate", [WIN_LOSS]).ok
+
+
+class TestFixRound4Sources:
+    def test_a_csv_row_is_a_source(self) -> None:
+        assert check("Target is 1234567.", ["region,1234567,88"]).ok
+        assert check("Target is 88.", ["region,1234567,88"]).ok
+        assert check("Target is 1234567.", ["2026-10-01,Acme,1234567"]).ok
+
+    def test_compact_json_is_a_source(self) -> None:
+        assert check("Target is 1234567.", ['{"target":1234567}']).ok
+        assert check("Target is 12.5.", ['{"a":{"b":12.5}}']).ok
+
+    def test_a_grouped_number_in_prose_gives_no_parts(self) -> None:
+        # "1,234,567" in prose is ONE value, never 234 and 567.
+        assert not check("We had 234 deals.", ["Total: INR 1,234,567."]).ok
+        assert not check("We had 234 deals.", ["Total,1,234,567 INR"]).ok
+
+    def test_a_large_result_costs_one_sort(self) -> None:
+        import time
+
+        text = "\n".join(f"- row: {1000 + i} and {i}.{i % 100:02d}" for i in range(50_000))
+        book = Sources()
+        start = time.perf_counter()
+        book.add_text(text, derive=True)
+        assert check("The row holds 41234.", book).ok
+        assert time.perf_counter() - start < 5.0
+        assert len(book) == 100_000
+
+
+class TestFixRound4Limits:
+    """Rule 9: these forms are known limits of §18.11.2, not figures."""
+
+    @pytest.mark.parametrize("text", [
+        "Won to lost is 4:1.", "We closed 17/29 deals.", "The 7th deal.", "We hold #9.",
+    ])
+    def test_the_form_is_a_known_limit(self, text: str) -> None:
+        assert find_figures(text) == []
+
+    def test_a_multiplier_is_read(self) -> None:
+        assert [f.text for f in find_figures("Proposal is 3x Negotiation.")] == ["3x"]
