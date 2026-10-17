@@ -458,3 +458,42 @@ def test_answered_lists_each_part_in_use_with_current() -> None:
     assert done["purpose:Invoices"].current == "invoice"
     # A part that waits for a question is not in use.
     assert "key:Invoices:amount" not in done
+
+
+# ── CRM-Q32-2: the answer of each kind, pure ────────────────────────────────
+
+
+def test_the_answer_of_each_kind_and_its_item() -> None:
+    by = _by_id(qs.build(_inputs(slots=EMPTY_DEALS, stages=(DEAL_STAGE,))))
+    key, purpose = by["key:Payment_Received:amount"], by["purpose:Towers"]
+    assert qs.answer_problem(key, "Rent_Amount", COLLECTION) is None
+    assert qs.answer_problem(key, None, COLLECTION) is None
+    assert qs.answer_problem(key, "Date_of_Payment_Record", COLLECTION) == "bad_answer"
+    assert qs.answer_problem(key, "@auto", COLLECTION) == "bad_answer"
+    assert qs.answer_problem(purpose, "castle") == "bad_answer"
+    assert qs.answer_problem(by["slot:deal"], "Towers") == "bad_answer"
+    assert qs.answer_problem(by["slot:deal"], None) is None
+    stage = by[qs.stage_id("deal", "On Hold")]
+    assert qs.answer_problem(stage, None) == "bad_answer"
+    assert qs.answer_problem(stage, "won") is None
+    assert qs.answer_problem(by["revenue"], None) == "bad_answer"
+    assert qs.answer_item(key, None) == {
+        "kind": "catalogue", "module": "Payment_Received", "amount": None,
+        "by": {"amount": "admin"}}
+    assert qs.answer_item(purpose, None)["purpose"] == "other"
+    assert qs.answer_item(by["revenue"], "invoice")["module"] == "@org"
+    with pytest.raises(ValueError):
+        qs.answer_item(by["slot:deal"], "Invoices")
+
+
+def test_only_a_ranked_purpose_or_key_field_joins_a_batch() -> None:
+    items = [{"kind": "catalogue", "module": "Payment_Received", "amount": None,
+              "by": {"amount": "ai"}, "ranked": {"amount": ["IP_Amount"]}}]
+    by = _by_id(qs.build(_inputs(items, slots=EMPTY_DEALS, stages=(DEAL_STAGE,))))
+    assert qs.batch_joins(by["key:Payment_Received:amount"])
+    assert not qs.batch_joins(by["key:Payment_Received:date"])  # no rank
+    for qid in ("slot:deal", "revenue", qs.stage_id("deal", "On Hold")):
+        assert not qs.batch_joins(by[qid]), qid
+    best = by["key:Payment_Received:amount"].best()
+    assert qs.applied_line(by["key:Payment_Received:amount"], best) == (
+        "Totals of Collection now use IP Amount.")

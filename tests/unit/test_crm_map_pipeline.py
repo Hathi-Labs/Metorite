@@ -1470,3 +1470,38 @@ class TestQ32RankedAndDoubts:
         old = {"schema": {"slots": "x"}, "items": {}, "failures": {}}
         assert mp.Cache.of(old).doubts == {}
         assert mp.Cache.of({**old, "doubts": {"deal": ["A", 3, ""]}}).doubts == {"deal": ["A"]}
+
+
+class TestQ32AnAdminPartIsNeverAsked:
+    async def test_the_pipeline_asks_no_part_with_by_admin(self):
+        """CRM-Q32-2 item 6: a part with ``by: admin``, also a null by the
+        admin, makes 0 ``ask`` calls (§18.14.8). ``entry_of`` keeps a stored
+        part out of ``open``. A fence."""
+        schema = _schema("dewin")
+        admin = (
+            {"kind": "catalogue", "module": "Payment_Received", "amount": None,
+             "by": {"amount": "admin"}},
+            {"kind": "catalogue", "module": "AMC_Contracts", "purpose": "other",
+             "by": {"purpose": "admin"}},
+        )
+        inputs = mp.Inputs(1, schema.inputs.modules, schema.inputs.slots, admin)
+        asker = eval_run.ScriptedAsker(_cat_answers())
+        result = await mp.Pipeline(inputs, CAT_ON, mp.Cache(), eval_run.EvalSource(schema),
+                                   asker).run()
+        assert result.reason == "done" and result.catalogue_reason is None
+        asked = json.dumps(_states(asker))
+        assert "AMC Contracts" not in asked
+        part_states = [s for s in _states(asker) if "module" in s]
+        assert not [s for s in part_states if s["module"]["name"] == "Payment Received"]
+        # The control: with no admin part, both are asked.
+        control = eval_run.ScriptedAsker(_cat_answers())
+        await mp.Pipeline(schema.inputs, CAT_ON, mp.Cache(), eval_run.EvalSource(schema),
+                          control).run()
+        assert "AMC Contracts" in json.dumps(_states(control))
+        assert [s for s in _states(control)
+                if "module" in s and s["module"]["name"] == "Payment Received"]
+        # No item of the run names a part of the admin.
+        for item in result.catalogue_items:
+            if item["module"] == "Payment_Received":
+                assert "amount" not in item
+            assert item["module"] != "AMC_Contracts"

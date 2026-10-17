@@ -2,6 +2,9 @@
 
     GET  /crm/questions                      the open questions, ranked
                                              (``?all=1`` adds each part in use)
+    POST /crm/questions/{id}/answer          {"value": <choice>} answers one
+    POST /crm/questions/{id}/dismiss         "Not relevant"
+    POST /crm/questions/accept-best          {"ids": [...], "dry_run": true}
 
 The CRM shows the admin each question that Jev could not answer with
 confidence about the data of the org. The kinds, the gate of ``open``, the
@@ -43,8 +46,9 @@ from gateway.crm_sync import questions as qs
 from gateway.routes.crm.core import _tenant_session, from_jsonb, router
 from gateway.routes.crm.field_rules import _GUARDS, _organization, _require_mirror
 from gateway.routes.crm.flags import questions_allowed
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 _log = get_logger("crm.questions")
 
@@ -365,11 +369,362 @@ async def list_questions(
     )
 
 
+# ── Answering (CRM-Q32-2, §18.14.6) ─────────────────────────────────────────
+
+
+def _conflict(code: str, message: str) -> HTTPException:
+    return HTTPException(status_code=409, detail={"code": code, "message": message})
+
+
+def question_moved() -> HTTPException:
+    """409 ``question_moved``: the question is no longer open, so the card
+    reads the list again."""
+    return _conflict("question_moved", "This question is no longer open.")
+
+
+def plan_moved() -> HTTPException:
+    return _conflict("plan_moved", "The mapping plan changed after this question.")
+
+
+class AnswerIn(BaseModel):
+    """``{"value": <choice>}``. ``null`` is "None of these". ``version`` is
+    the plan version that the card read (``GET /crm/questions`` ``plan``):
+    a plan that moved gives 409 ``plan_moved``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: str | None
+    version: int | None = None
+
+
+class UndoModel(BaseModel):
+    """What the Undo of an answer sends. With ``question``, the answer route
+    of that id again with ``value`` (a ``stage_value``). Else
+    ``PUT /crm/catalogue/{module}`` with ``{part: value}``."""
+
+    module: str | None = None
+    part: str | None = None
+    value: str | None = None
+    question: str | None = None
+
+
+class AnswerOut(BaseModel):
+    id: str
+    kind: str
+    #: The approved version of the plan after the answer, or the open draft
+    #: of a ``slot`` answer (its panel approves it).
+    version: int | None = None
+    #: What changed, for the toast.
+    line: str | None = None
+    undo: UndoModel | None = None
+    #: A ``stage_value`` answer: the records that leave Unsorted.
+    moved: int | None = None
+    slot: str | None = None
+    module: str | None = None
+
+
+def _answer_line(q: qs.Question, value: Any) -> str | None:
+    if value is None:
+        return None
+    choice = next((c for c in q.choices if c.value == value), None)
+    if choice is None and q.kind in (qs.KIND_PURPOSE, qs.KIND_KEY):
+        choice = next((c for c in q.options if c.value == value), None)
+    return qs.applied_line(q, choice) if choice is not None and q.kind in (
+        qs.KIND_PURPOSE, qs.KIND_KEY) else None
+
+
+async def _open_question(db: Any, org: str, question_id: str) -> tuple[qs.Inputs, qs.Question]:
+    """The inputs and the open question *question_id*, or 409
+    ``question_moved``."""
+    inputs = await load(db, org)
+    found = next((q for q in qs.build(inputs) if q.id == question_id),
+                 None) if inputs is not None else None
+    if inputs is None or found is None:
+        raise question_moved()
+    return inputs, found
+
+
+async def _commit_stage(db: Any, org: str, by: str, approved: Any, slot: str,
+                        module: str | None, change: Any) -> Any:
+    """Commit the approved ``stage`` item of *slot* with *change* applied to
+    its values, then carry the open draft, as ``approve_suggestion`` does.
+    409 ``plan_moved`` when the stage item of the question is gone."""
+    from gateway.routes.crm.mapping_plans import (
+        _rules_of,
+        carry_draft,
+        commit,
+        merge_kinds,
+        open_draft,
+        split_rules,
+    )
+
+    fields, others = split_rules(_rules_of(approved))
+    stage = next((o for o in others if o.get("kind") == "stage" and o.get("slot") == slot
+                  and (module is None or o.get("module") == module)), None)
+    if stage is None:
+        raise plan_moved()
+    values = dict(stage.get("values") or {})
+    change(values)
+    draft = await open_draft(db, approved)
+    row = await commit(db, org=org, fields=fields,
+                       others=merge_kinds(others, [{**stage, "values": values}]), by=by,
+                       based_on=int(approved.version))
+    if draft is not None:
+        await carry_draft(db, draft, row)
+    return row, stage
+
+
+async def _undo_stage(db: Any, org: str, by: str, approved: Any, question_id: str) -> AnswerOut:
+    """The Undo of a ``stage_value`` answer: commit the item without the
+    value, the same way (CRM-Q32-2 item 7)."""
+    parts = question_id.split(":")
+    if len(parts) != 3:
+        raise question_moved()
+    from gateway.routes.crm.mapping_plans import _rules_of, split_rules
+
+    others = split_rules(_rules_of(approved))[1]
+    stage = next((o for o in others if o.get("kind") == "stage" and o.get("slot") == parts[1]),
+                 None)
+    value = qs.stage_for(stage, question_id) if stage is not None else None
+    if value is None:
+        raise question_moved()
+    row, _stage = await _commit_stage(db, org, by, approved, parts[1], stage.get("module"),
+                                      lambda values: values.pop(value, None))
+    return AnswerOut(id=question_id, kind=qs.KIND_STAGE, version=int(row.version),
+                     slot=parts[1], module=str(stage.get("module")))
+
+
+async def _answer_slot(db: Any, org: str, by: str, q: qs.Question,
+                       value: str | None) -> AnswerOut:
+    """A ``slot`` answer. "None of these" records the id in
+    ``zoho:questions`` with the hash of the roles, and never
+    ``map_pipeline.dismiss``, because that row keeps one module for each
+    slot. A module writes the ``role`` item into the open draft, by the
+    admin. Its panel shows real records first, then approves it."""
+    from gateway.crm_sync import profiles, runs
+    from gateway.routes.crm.mapping_plans import _approved, open_draft, write_draft
+
+    if value is None:
+        await runs.merge_cursor_entry(db, org, qs.QUESTIONS_ROW, "dismissed", q.id,
+                                      {"schema": q.hash})
+        return AnswerOut(id=q.id, kind=q.kind, slot=q.slot)
+    latest = await profiles.latest(db, org)
+    item = {"kind": "role", "slot": q.slot, "module": value,
+            "profile_version": int(latest.version) if latest is not None else 0}
+    row = await write_draft(db, items=[item], by=by, org=org)
+    if row is None:
+        approved = await _approved(db)
+        row = await open_draft(db, approved) if approved is not None else None
+    return AnswerOut(id=q.id, kind=q.kind, slot=q.slot, module=value,
+                     version=int(row.version) if row is not None else None)
+
+
+async def _answer(db: Any, org: str, by: str, question_id: str, payload: AnswerIn) -> AnswerOut:
+    """One answer, under the plan lock (§18.14.6, the table)."""
+    from gateway.crm_sync import catalogue as cat
+    from gateway.routes.crm.catalogue import AUTO, bad_answer, write_answer
+    from gateway.routes.crm.mapping_plans import lock_plan
+
+    approved = await lock_plan(db, by)
+    if payload.version is not None and int(payload.version) != int(approved.version):
+        raise plan_moved()
+    if question_id.startswith("stage:") and payload.value == AUTO:
+        return await _undo_stage(db, org, by, approved, question_id)
+    inputs, q = await _open_question(db, org, question_id)
+    if qs.answer_problem(q, payload.value, inputs.sources.get(q.module or "")) is not None:
+        raise bad_answer("That is not an answer of this question.", q.part)
+    if q.kind == qs.KIND_SLOT:
+        return await _answer_slot(db, org, by, q, payload.value)
+    if q.kind == qs.KIND_STAGE:
+        row, _stage = await _commit_stage(
+            db, org, by, approved, str(q.slot), q.module,
+            lambda values: values.__setitem__(str(q.value), str(payload.value)))
+        return AnswerOut(id=q.id, kind=q.kind, version=int(row.version), moved=q.count,
+                         slot=q.slot, module=q.module,
+                         undo=UndoModel(module=q.module, question=q.id, value=AUTO))
+    item = qs.answer_item(q, payload.value)
+    module = str(item["module"])
+    parts = {k: item[k] for k in cat.parts_of(module) if k in item}
+    row = await write_answer(db, org, by=by, module=module, parts=parts)
+    part = next(iter(parts))
+    return AnswerOut(
+        id=q.id, kind=q.kind, version=int((row or approved).version),
+        line=_answer_line(q, payload.value), module=module,
+        undo=UndoModel(module=module, part=part, value=AUTO),
+    )
+
+
+def _guard_db(exc: DBAPIError) -> HTTPException | None:
+    from gateway.routes.crm.field_rules import _db_conflict
+
+    return _db_conflict(exc)
+
+
+@router.post("/questions/{question_id}/answer", response_model=AnswerOut,
+             dependencies=_GUARDS)
+async def answer_question(
+    question_id: str, payload: AnswerIn, user: UserContext = Depends(get_current_user),
+) -> AnswerOut:
+    """Answer one open question (§18.14.6). A ``purpose``, a ``key_field``
+    and ``revenue`` apply at once through the one writer
+    (``catalogue.write_answer``). A ``slot`` writes its role into the open
+    draft. A ``stage_value`` commits the stage item with the value.
+
+    422 ``bad_answer`` for a value that is not a choice. 409
+    ``question_moved`` for a question that is no longer open, and
+    ``plan_moved`` for a plan that moved. The actor comes from
+    ``UserContext`` only (R5, R11)."""
+    from gateway.routes.crm.core import actor
+
+    org = _organization(user)
+    if not questions_allowed(org):
+        raise questions_off()
+    by = actor(user).lower()
+    try:
+        async with _tenant_session() as db:
+            await _require_mirror(db, org)
+            return await _answer(db, org, by, question_id, payload)
+    except DBAPIError as exc:
+        conflict = _guard_db(exc)
+        if conflict is not None:
+            raise conflict from exc
+        raise
+
+
+class DismissOut(BaseModel):
+    id: str
+    dismissed: bool = True
+
+
+@router.post("/questions/{question_id}/dismiss", response_model=DismissOut,
+             dependencies=_GUARDS)
+async def dismiss_question(
+    question_id: str, user: UserContext = Depends(get_current_user),
+) -> DismissOut:
+    """"Not relevant": record the id in ``zoho:questions`` with the hash of
+    the question. A changed hash asks again. ``revenue`` takes no
+    dismissal, because it has a default (§18.14.6)."""
+    from gateway.crm_sync import runs
+    from gateway.routes.crm.catalogue import bad_answer
+
+    org = _organization(user)
+    if not questions_allowed(org):
+        raise questions_off()
+    async with _tenant_session() as db:
+        await _require_mirror(db, org)
+        _inputs, q = await _open_question(db, org, question_id)
+        if q.hash is None:
+            raise bad_answer("The meaning of revenue takes no dismissal. It has a default.")
+        await runs.merge_cursor_entry(db, org, qs.QUESTIONS_ROW, "dismissed", q.id,
+                                      {"schema": q.hash})
+    return DismissOut(id=q.id)
+
+
+class AcceptBestIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ids: list[str] = Field(min_length=1, max_length=MAX_LIMIT)
+    dry_run: bool = True
+    version: int | None = None
+
+
+class BestGuessModel(BaseModel):
+    id: str
+    label: str
+    part: str | None = None
+    value: str
+    value_label: str
+    #: What changes, for the dry run.
+    line: str
+
+
+class AcceptBestOut(BaseModel):
+    dry_run: bool
+    items: list[BestGuessModel]
+    #: The approved version after the batch. ``None`` on a dry run.
+    version: int | None = None
+    #: The Undo of the batch: ``"@auto"`` for each part.
+    undo: list[UndoModel] = Field(default_factory=list)
+
+
+def _best_guesses(inputs: qs.Inputs, ids: Sequence[str]) -> list[tuple[qs.Question, qs.Choice]]:
+    """Jev's best guess of each id. 409 ``question_moved`` for an id that is
+    not open, and 422 for one that may not join a batch."""
+    from gateway.routes.crm.catalogue import bad_answer
+
+    found = {q.id: q for q in qs.build(inputs)}
+    out = []
+    for qid in dict.fromkeys(ids):
+        q = found.get(qid)
+        if q is None:
+            raise question_moved()
+        best = q.best()
+        if not qs.batch_joins(q) or best is None:
+            raise bad_answer("Only a purpose or a key field with a best guess joins a batch.",
+                             q.part)
+        out.append((q, best))
+    return out
+
+
+@router.post("/questions/accept-best", response_model=AcceptBestOut, dependencies=_GUARDS)
+async def accept_best(
+    payload: AcceptBestIn, user: UserContext = Depends(get_current_user),
+) -> AcceptBestOut:
+    """Accept Jev's best guesses (§18.14.6, "Batch"). ``dry_run`` reads and
+    writes nothing. Without it, ONE ``apply_catalogue`` call writes one plan
+    version. Only ``purpose`` and ``key_field`` questions with a best guess
+    join, so a ``slot`` id gives 422."""
+    from gateway.routes.crm.catalogue import AUTO
+    from gateway.routes.crm.core import actor
+    from gateway.routes.crm.mapping_plans import apply_catalogue, lock_plan
+
+    org = _organization(user)
+    if not questions_allowed(org):
+        raise questions_off()
+    by = actor(user).lower()
+    try:
+        async with _tenant_session() as db:
+            await _require_mirror(db, org)
+            approved = None if payload.dry_run else await lock_plan(db, by)
+            if (approved is not None and payload.version is not None
+                    and int(payload.version) != int(approved.version)):
+                raise plan_moved()
+            inputs = await load(db, org)
+            if inputs is None:
+                raise question_moved()
+            guesses = _best_guesses(inputs, payload.ids)
+            items = [qs.answer_item(q, best.value) for q, best in guesses]
+            row = None
+            if not payload.dry_run:
+                row = await apply_catalogue(db, items, by=by, org=org) or approved
+    except DBAPIError as exc:
+        conflict = _guard_db(exc)
+        if conflict is not None:
+            raise conflict from exc
+        raise
+    return AcceptBestOut(
+        dry_run=payload.dry_run,
+        items=[BestGuessModel(id=q.id, label=q.label, part=q.part, value=best.value,
+                              value_label=best.label, line=qs.applied_line(q, best))
+               for q, best in guesses],
+        version=int(row.version) if row is not None else None,
+        undo=[] if payload.dry_run else [
+            UndoModel(module=q.module, part=q.part, value=AUTO) for q, _best in guesses],
+    )
+
+
 __all__ = [
     "QUESTIONS_OFF",
+    "AcceptBestIn",
+    "AcceptBestOut",
+    "AnswerIn",
+    "AnswerOut",
     "QuestionModel",
     "QuestionsModel",
+    "accept_best",
+    "answer_question",
     "count_open",
+    "dismiss_question",
     "list_questions",
     "load",
     "module_question_ids",
