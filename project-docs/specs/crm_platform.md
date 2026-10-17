@@ -4285,9 +4285,13 @@ Done when:
    year from 1900 to 2100, a list marker, a number inside a word or an id
    (`Q3`, `H-236`, a UUID), a URL and a code span.
 4. **The sources of a turn.** A function middleware records the text of each
-   tool result of the run, in memory, for that run only. The text of the
-   member's messages and of the tool results in the request are sources too.
-   A text that the model wrote is never a source.
+   tool result of the run, in memory, for that run only. The arguments of
+   each CRM tool call are sources too, and a date in them gives its count of
+   days to today. The member's own words of this turn are a source. The
+   executor puts them in the run context (`member_message`), and a delegated
+   run takes its parent's words. A text that a model wrote is never a source:
+   not the packed prompt string, which holds the earlier answers, and not the
+   answer of a delegated agent. (Fix round, 2026-10-17.)
 5. **The arm.** The check arms when the run records the result of a CRM tool:
    a name in `CRM_TOOL_NAMES`, or one of the four reads of `crm-assistant`. A
    run that reads no CRM tool is not checked and not changed.
@@ -4302,7 +4306,11 @@ Done when:
    the member gets a fallback. The fallback says that a number did not match,
    and it then shows the figures of the CRM tools as they came. The member
    never sees the failed draft. The check removes the text of a failed step
-   that also calls a tool, and it keeps the tool call.
+   that also calls a tool, and it keeps the tool call. A display call (a card
+   of `emit_generative_ui`, `make_report`, `make_document`, or a text file of
+   `write_artifact`) shows its arguments to the member. So the check reads
+   the shown text of its arguments too. A failed card fails the whole
+   answer, as a failed text does, and the card never ships. (Fix round.)
 8. **A derived figure.** The model does not add, subtract or divide tool
    numbers in its text. A sum of two results matches no source, so the check
    flags it. The CRM section of `addendum.py` and the instructions of
@@ -4316,11 +4324,17 @@ Done when:
 10. **Streaming.** On an armed run, the text of a model response reaches the
     member in one piece when the response ends, not token by token. A run that
     is not armed streams as before. The thinking text and the tool calls of a
-    held response go out in their order, with the text.
+    held response go out in their order, with the text. While it holds, the
+    check puts a sign of life (`answer_check.held`) on the run queue at most
+    each 15 s, and only when the model sent an update. The executor resets
+    its idle watchdog on it and shows nothing. A model that stops sending
+    still meets the watchdog. (Fix round.)
 11. **The flag.** `CRM_ANSWER_CHECK` is `off`, `shadow` or `on`, and the
     default is `off`. `shadow` checks each armed response at its end and logs
     the count of mismatches, with no hold and no retry. `on` does items 6 and
-    7. A value on a box is the grant `enforcement-flip`.
+    7. A value on a box is the grant `enforcement-flip`. The one reader is
+    `acb_common.settings.crm_answer_check_mode`, so the orchestrator reads
+    the mode before it imports the check. (Fix round.)
 12. **The cost bound.** A passed check makes no model request. A run makes one
     extra model request at most, whatever fails.
 13. **Logs.** Each check logs `answer_check.checked` with the run id, the
@@ -4366,9 +4380,30 @@ and `uv run python scripts/affected_tests.py --base origin/main`.
 - **What the tests measure.** With a scripted model in a real MAF `Agent`, on
   the stream run and the batch run: a true answer makes 2 requests, a
   misquote 3, and two failures 3, with the fallback. A later failure in the
-  same run makes no second retry.
-- **Mutations.** 13 mutations, one for each key rule, and the suites kill
-  each one. The rules: the room for rounding, money against a percent, a
+  same run makes no second retry. A bad card with clean text makes 4
+  requests, and only the good card is drawn. A bad card with bad text gives
+  the fallback and no card. Through the real executor
+  (`test_crm_answer_check_executor.py`), the packed prompt of production is
+  no source, and a held answer that streams for 1.6 s outlives an idle bound
+  of 0.6 s.
+- **The fix round (2026-10-17, the review of Batch I2).** Six findings. The
+  packed prompt was a source (P1). A card was not checked (P1). The hold
+  could meet the idle watchdog (P2). True answers failed on a value of a
+  tool argument, a phone number or an approximation (P2). A plain count from
+  1900 to 2100 and a multiplier (`5x`) were not checked. A box with no
+  `acb_skills` raised while the flag was off. Each one has a fence and a
+  mutation.
+- **The rules of the number check, after the fix round.** A plain
+  four-digit number from 1900 to 2100 is a year only after a word such as
+  "in", "since", "FY" or a month, or at the start of a range ("2025-26").
+  Else it is a count, and the check reads it. `5x` is the figure 5. A phone
+  number is no figure (`+91 98450 12345`, `98450 12345`, `(080) 2345-6789`,
+  and ten digits from 6 to 9 with no grouping). After "about", "around",
+  "roughly", "nearly", "almost", "close to", "some", `~`, `≈` or the other
+  words of `_APPROX_BEFORE`, a number matches a source within 10 percent of
+  it.
+- **Mutations.** 13 mutations in the build, and 8 more in the fix round,
+  one for each fix. The suites kill each one. The rules: the room for rounding, money against a percent, a
   date, an exact scaled number, the arm, the model's text as a source, no
   extra request on a pass, one retry for each run, no draft in the fallback,
   no text on a failed tool step, the seam, the default mode, and no note text
@@ -4381,7 +4416,13 @@ and `uv run python scripts/affected_tests.py --base origin/main`.
   prompts ask for digits. The sign of a number is not compared. A Copilot SDK
   agent gets no check. When a parent agent quotes the answer of a delegated
   `crm-assistant`, the parent's own run checks nothing, because it read no
-  CRM tool itself. The delegated run checks its own answer.
+  CRM tool itself. The delegated run checks its own answer. A figure of an
+  earlier turn is no source, so the model must read it again with a tool,
+  or the check fails it. A card of React code shows nothing that the check
+  can read, so its numbers are not checked. A card's number under a layout
+  key (`width`, `size`, `level` and others) is not checked. An approximation
+  word gives a room of 10 percent, so "about ₹5 lakh" passes against
+  4,60,000. The second number of a range ("10-20") is not checked.
 
 #### 18.11.3 Verification
 
@@ -4392,7 +4433,7 @@ and `uv run python scripts/affected_tests.py --base origin/main`.
   The email and My Day features must behave as before.
 - `uv run python -m evals.crm_note_labels.run --scripted`
 - `uv run python scripts/affected_tests.py --run`
-- CRM-Q29: `uv run pytest tests/unit/test_number_check.py tests/unit/test_crm_answer_check.py -q`.
+- CRM-Q29: `uv run pytest tests/unit/test_number_check.py tests/unit/test_crm_answer_check.py tests/unit/test_crm_answer_check_executor.py -q`.
   These suites need no database.
 - CRM-Q27 and CRM-Q28 add their new suites to the pytest line above, with no
   test skipped. CRM-Q28 also runs

@@ -298,7 +298,7 @@ class Settings(BaseSettings):
     # `off` (the default), `shadow` (check at the end of the answer and log
     # the count of mismatches, no hold and no retry) or `on` (hold each
     # answer, check it, one retry, then a fallback). Any other value reads as
-    # `off`. The one reader is `acb_skills.answer_check.answer_check_mode`.
+    # `off`. The one reader is `crm_answer_check_mode` below.
     # A value on a box is the grant `enforcement-flip`. Fence:
     # tests/unit/test_crm_answer_check.py.
     crm_answer_check: str = "off"
@@ -1424,3 +1424,22 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Cached accessor; call from anywhere."""
     return Settings()  # type: ignore[call-arg]
+
+
+#: The modes of ``CRM_ANSWER_CHECK`` (WS-53 CRM-Q29).
+CRM_ANSWER_CHECK_MODES: tuple[str, ...] = ("off", "shadow", "on")
+
+
+def crm_answer_check_mode() -> str:
+    """The ONE reader of ``CRM_ANSWER_CHECK``: ``off``, ``shadow`` or ``on``.
+
+    Any other value, and a settings load that fails, read as ``off``. It
+    lives here, not in ``acb_skills``, so that the orchestrator reads the
+    mode before it imports the check (``crm_platform.md`` §18.11.2).
+    """
+    try:
+        raw = str(getattr(get_settings(), "crm_answer_check", "off") or "off")
+    except Exception:  # a broken settings load never turns the check on
+        return "off"
+    mode = raw.strip().lower()
+    return mode if mode in CRM_ANSWER_CHECK_MODES else "off"

@@ -3167,6 +3167,8 @@ async def _run_agent_inner(
     # belong to the organization (write_artifact). A delegated run is not:
     # its parent's chat may hold a member's data.
     _batch_thread = _minted_thread and not _parent_ctx.get("session_id")
+    # CRM-Q29: the member's own words, a source of the number check.
+    _member_words = _member_words_for_run(_parent_ctx, event_payload)
     # H-236: decide this run's no_egress once, from the parent's binding and
     # this agent's own cover, and bind it before anything can fail. A load
     # error then retries (self-anneal) with this answer, never the parent's.
@@ -3439,6 +3441,7 @@ async def _run_agent_inner(
                 agent_name=agent_name,
                 run_id=run_id,
                 workspace_root=_effective_agent_dir,
+                member_message=_member_words,  # CRM-Q29
                 # H-227: True only when this executor minted the thread of a
                 # run with no chat and no parent (see `_batch_thread`).
                 batch_thread=_batch_thread,
@@ -4152,6 +4155,9 @@ async def run_agent_stream(
     # another run is a delegation. Read it BEFORE this run opens its own. A
     # delegated run neither loads nor saves a native session.
     _delegated_run = bool(artifact_context().get("run_id"))
+    # CRM-Q29: the member's own words of this turn, a source of the number
+    # check. A delegated run takes its parent's words, never its payload.
+    _member_words = _member_words_for_run(artifact_context(), event_payload)
     _artifact_token = enter_artifact_context()
     # H-236: decide this run's no_egress ONCE, before anything can fail, and
     # bind it. A covered agent's run is a covered run, whatever its parent.
@@ -4363,6 +4369,7 @@ async def run_agent_stream(
                 agent_name=agent_name,
                 run_id=run_id,
                 workspace_root=_effective_ws,
+                member_message=_member_words,  # CRM-Q29
                 batch_thread=_batch_thread,  # H-227
                 # The blob-store partition every write-through must carry —
                 # keeping disk and store on the SAME tenant key (migration
@@ -4857,7 +4864,11 @@ async def run_agent_stream(
                                     # output. Hold it until the step gives
                                     # output, so a Tier 1 fault before any
                                     # output still falls back to Tier 2.
-                                    if _is_route_event(_qev) and not _n_emitted:
+                                    # CRM-Q29: a hold beat only resets the
+                                    # wait above, and shows nothing.
+                                    if _is_hold_beat(_qev):
+                                        pass
+                                    elif _is_route_event(_qev) and not _n_emitted:
                                         _held_routes.append(_qev)
                                     else:
                                         for _hr in _held_routes:
@@ -4972,7 +4983,7 @@ async def run_agent_stream(
                             # manage_todo_list, …) emitted during this update.
                             while not _nq.empty():
                                 _qev = _nq.get_nowait()
-                                if not _qev:
+                                if not _qev or _is_hold_beat(_qev):
                                     continue
                                 if _is_route_event(_qev) and not _n_emitted:
                                     _held_routes.append(_qev)
@@ -4992,7 +5003,7 @@ async def run_agent_stream(
                     _held_routes.clear()
                     while not _nq.empty():
                         _qev = _nq.get_nowait()
-                        if _qev:
+                        if _qev and not _is_hold_beat(_qev):
                             yield _sse(_qev)
                     for _ev in _close_text_message(_t_state):
                         yield _sse(_ev)
@@ -7295,6 +7306,33 @@ async def _tier_policy_for_run(
         kind=turn.kind,
         effort=effort,
         emit=None if (is_copilot or not emit) else _emit_to_run(thread_id),
+    )
+
+
+def _member_words_for_run(parent: Any, event_payload: dict[str, Any]) -> str:
+    """The member's own words of a run, for the CRM number check (CRM-Q29).
+
+    ``acb_skills.answer_check.member_words`` decides. *parent* is the run
+    context read BEFORE this run sets its own. With no ``acb_skills``, "".
+    """
+    try:
+        from acb_skills.answer_check import member_words
+    except ImportError:
+        return ""
+    return member_words(parent or {}, event_payload or {})
+
+
+def _is_hold_beat(event: Any) -> bool:
+    """True for the CRM number check's sign of life (CRM-Q29).
+
+    It says that the check holds an answer while the model writes it. It
+    resets the idle watchdog of the native loop, and it is not output, so
+    the loop shows nothing for it.
+    """
+    return (
+        isinstance(event, dict)
+        and event.get("type") == "CUSTOM"
+        and event.get("name") == "answer_check.held"
     )
 
 

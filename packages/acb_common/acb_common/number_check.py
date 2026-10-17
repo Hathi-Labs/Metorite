@@ -62,15 +62,38 @@ _CURRENCY_AFTER = r"INR|rupees?|USD|dollars?"
 _FIGURE = re.compile(
     r"(?<![A-Za-z0-9_])"
     rf"(?:(?P<cur>{_CURRENCY_BEFORE})\s?)?"
-    r"(?(cur)|(?<![\w.,/:#@])(?<!\w-))"
+    r"(?(cur)|(?<![\w.,/:#@])(?<!\w[-\u2013]))"
     r"(?P<num>(?:\d{1,2}(?:,\d{2})+,\d{3}|\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)"
     r"(?![.,]\d)(?!:\d)(?!/\d)"
     r"(?:\s?(?P<scale>(?i:lakhs?|lacs?|crores?|cr|thousand|million|mn|billion|bn)"
     r"|k|K|L|M|B)(?![A-Za-z0-9_]))?"
     r"(?:\s?(?P<pct>%|(?i:per\s?cent)))?"
     rf"(?:\s?(?P<cur2>(?i:{_CURRENCY_AFTER}))(?![A-Za-z]))?"
+    r"(?P<mult>[x\u00d7](?![A-Za-z0-9_]))?"
     r"(?![A-Za-z0-9_])"
 )
+
+#: The words before a number that make it an approximation ("about ₹5
+#: lakh"). Such a number matches a source within :data:`APPROX_SHARE` of it.
+_APPROX_BEFORE = re.compile(
+    r"(?:\b(?i:about|around|approximately|approx\.?|roughly|nearly|almost|"
+    r"close\s+to|some)|~|≈)\s*$"
+)
+#: How far an approximate number may stand from its source: 10 percent.
+APPROX_SHARE = Decimal("0.10")
+
+#: The words before a plain four-digit number that make it a year: "in 2026",
+#: "since 2025", "FY 2026", "March 2026", "2025-2026". With no such word,
+#: "2047 contacts" is a count and the check reads it.
+_YEAR_BEFORE = re.compile(
+    r"(?:\b(?i:in|since|by|of|from|to|until|till|before|after|during|year|"
+    r"years|fy|cy|q[1-4]|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
+    r"june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|"
+    r"dec(?:ember)?)|[-\u2013/'(])\s*$"
+)
+#: A year that opens a range of years: "2025-26", "2025 to 2026".
+_YEAR_AFTER = re.compile(r"\s*(?:[-\u2013/]|to)\s*\d{2,4}(?!\d)")
+_LOOK_BACK = 24
 
 _MONTHS = (
     r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
@@ -90,6 +113,10 @@ _NOT_FIGURES = re.compile(
         r"\b\d{4}-\d{2}\b",                              # a month: 2026-10
         r"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b",          # 17/10/2026
         r"\b\d{1,2}:\d{2}(?::\d{2})?(?:\s?(?i:am|pm))?\b",  # a time
+        r"\+\d{1,3}[\s-]?\(?\d{2,5}\)?[\s-]?\d{3,5}(?:[\s-]?\d{2,5})?",  # a phone
+        r"\(\d{2,5}\)\s?\d{3,4}[\s-]?\d{3,5}",           # (080) 2345-6789
+        r"\b\d{5}[\s-]\d{5}\b",                           # 98450 12345
+        r"\b\d{3,4}-\d{3,4}-\d{4}\b",                     # 080-2345-6789
         rf"\b\d{{1,2}}(?:st|nd|rd|th)?\s+{_MONTHS}(?:,?\s+\d{{4}})?\b",
         rf"\b{_MONTHS}\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+\d{{4}})?\b",
         rf"\b{_MONTHS}\s+\d{{4}}\b",
@@ -117,6 +144,7 @@ class Figure:
     exact: bool
     start: int
     end: int
+    approx: bool = False
 
 
 @dataclass(frozen=True)
@@ -170,17 +198,24 @@ def _parse(text: str, *, skip_years: bool) -> list[Figure]:
         else:
             kind = PLAIN
         grouped = "," in m.group("num")
-        if (skip_years and kind == PLAIN and scale == 1 and not grouped
-                and decimals == 0 and len(raw) == 4 and 1900 <= int(raw) <= 2100):
+        bare = kind == PLAIN and scale == 1 and not grouped and decimals == 0
+        before = scan[max(0, m.start() - _LOOK_BACK):m.start()]
+        if (skip_years and bare and not m.group("mult") and len(raw) == 4
+                and 1900 <= int(raw) <= 2100 and (_YEAR_BEFORE.search(before)
+                     or _YEAR_AFTER.match(scan, m.end()))):
             continue
+        if bare and len(raw) == 10 and raw[0] in "6789":
+            continue  # a mobile number with no grouping: 9845012345
+        approx = bool(_APPROX_BEFORE.search(before))
         found.append(Figure(
             text=text[m.start():m.end()].strip(),
             value=number * scale,
             kind=kind,
             unit=(Decimal(1).scaleb(-decimals)) * scale,
-            exact=scale != 1 and _significant(raw) < 2,
+            exact=scale != 1 and _significant(raw) < 2 and not approx,
             start=m.start(),
             end=m.end(),
+            approx=approx,
         ))
     return found
 
@@ -229,6 +264,8 @@ class Sources:
         """True when a source value rounds to *figure* at its precision."""
         target = abs(figure.value)
         room = Decimal(0) if figure.exact else figure.unit / 2
+        if figure.approx:
+            room = max(room, target * APPROX_SHARE)
         lo = bisect.bisect_left(self._values, target - room)
         hi = bisect.bisect_right(self._values, target + room)
         return any(_compatible(figure.kind, self._kinds[i]) for i in range(lo, hi))

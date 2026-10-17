@@ -237,3 +237,45 @@ def test_the_chat_check_imports_the_one_check() -> None:
         for alias in node.names
     }
     assert ("acb_common.number_check", "check") in imports
+
+
+# ── Fix round (2026-10-17): years, multipliers, phones, approximations ─────
+
+class TestTheFixRound:
+    @pytest.mark.parametrize("text", [
+        "In 2026 we met.", "Since 2025 the pipeline grew.", "FY 2026 closed.",
+        "March 2026 was strong.", "The 2025-26 plan.", "The 2025–26 plan.",  # noqa: RUF001
+        "From 2025 to 2026.",
+    ])
+    def test_a_year_in_its_context_is_no_figure(self, text: str) -> None:
+        assert find_figures(text) == []
+
+    def test_a_four_digit_count_is_a_figure(self) -> None:
+        assert _values("We have 2047 contacts.") == [("2047", Decimal("2047"), PLAIN)]
+        assert not check("We have 2047 contacts.", [TOOL_RESULT]).ok
+
+    def test_a_multiplier_is_a_figure(self) -> None:
+        assert _values("Growth of 5x.") == [("5x", Decimal("5"), PLAIN)]
+        assert _values("Growth of 3× this year.") == [("3×", Decimal("3"), PLAIN)]  # noqa: RUF001
+        assert not check("A 5x jump.", [TOOL_RESULT]).ok
+
+    @pytest.mark.parametrize("text", [
+        "Call +91 98450 12345.", "Call 98450 12345.", "Call 9845012345.",
+        "Call (080) 2345-6789.", "Call 080-2345-6789.",
+    ])
+    def test_a_phone_number_is_no_figure(self, text: str) -> None:
+        assert find_figures(text) == []
+
+    @pytest.mark.parametrize("claim", [
+        "about ₹4.7 lakh", "around ₹5 lakh", "roughly INR 4,60,000", "~₹4.6 lakh",
+        "nearly 12 lakh",
+    ])
+    def test_an_approximation_matches_within_ten_percent(self, claim: str) -> None:
+        assert check(f"Won deals hold {claim}.", ["Won: INR 500,000", "Open: INR 1,234,567"]).ok
+
+    @pytest.mark.parametrize("claim", ["about ₹9 lakh", "around ₹4.4 lakh"])
+    def test_an_invented_approximation_still_fails(self, claim: str) -> None:
+        assert not check(f"Won deals hold {claim}.", ["Won: INR 500,000"]).ok
+
+    def test_the_same_number_with_no_approximation_word_is_strict(self) -> None:
+        assert not check("Won deals hold ₹4.7 lakh.", ["Won: INR 500,000"]).ok
