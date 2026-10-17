@@ -734,6 +734,11 @@ PUBLIC_ROUTES: frozenset[str] = frozenset({
     # contain.
     "/webhooks/gmail",
     "/webhooks/zoho",
+    # WS-54 GH-4 — the Metorite GitHub App. HMAC-SHA256 of the raw body
+    # (X-Hub-Signature-256, hmac.compare_digest) after a 5 MiB stream cap,
+    # and the org comes only from the SECURITY DEFINER installation lookup.
+    # With GITHUB_APP_ENABLED off it answers 404. routes/github/webhook.py.
+    "/webhooks/github",
 
     # Agent dispatch — HMAC-SHA256 over the raw body (X-CC-Signature), and it
     # fails closed when unconfigured. See routes/agent.verify_webhook_signature.
@@ -1419,6 +1424,15 @@ try:
     from gateway.routes.github.connect import router as _github_connect_router
 
     app.include_router(_github_connect_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-54 GH-4 — POST /webhooks/github, in PUBLIC_ROUTES above. It
+    # authenticates itself with the HMAC of github_integration.md §8.2.
+    from gateway.routes.github.webhook import router as _github_webhook_router
+
+    app.include_router(_github_webhook_router)
 except Exception:  # pragma: no cover
     pass
 

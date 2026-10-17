@@ -190,6 +190,11 @@ GATED_ROUTERS: dict[str, set[str]] = {
     # of a member who holds neither cannot reach it. The member's own pair is
     # `/agent-access/connections`, which needs no feature (D-EA-9).
     "gateway.routes.integrations_agents": set(),
+    # WS-54 GH-3 — the connect flow of the Metorite GitHub App. Gated on
+    # `feature:integrations`, and each route also needs `integrations:manage`.
+    # No exemption: the callback runs behind the member session through the
+    # BFF. The webhook is a separate router in PUBLIC_ROUTES.
+    "gateway.routes.github.connect": set(),
     "gateway.routes.workflows": {
         "/workflows/hooks/{hook_token}",
     },

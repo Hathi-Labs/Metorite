@@ -1,0 +1,97 @@
+{
+  "about": "WS-54 GH-4 (github_integration.md section 10): how a pull request names its task. `grammar` holds the pure cases of `routes/projects/github_autolink.candidates`: a description, a head branch, the app host, and the candidates in order. `rules` holds the cases that need the database (tests/unit/test_github_webhook_r8.py): each names how the pull request points at a task, what the task is, and whether a link lands. EA-13f reads `short_form` for the branch name that an agent writes.",
+  "app_host": "app.metorite.com",
+  "short_form": {
+    "prefix": "mt-",
+    "hex_chars": 8,
+    "example_task": "1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d",
+    "example_branch": "feat/mt-1a2b3c4d-login-fix"
+  },
+  "grammar": [
+    {
+      "name": "a task URL in the description",
+      "body": "Fixes https://app.metorite.com/projects?view=board&task=1A2B3C4D-5E6F-4A1B-8C2D-3E4F5A6B7C8D for the login.",
+      "head_ref": "feature/login",
+      "expect": [["uuid", "1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d"]]
+    },
+    {
+      "name": "a task URL in Markdown link syntax",
+      "body": "See [the task](https://app.metorite.com/projects?task=1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d).",
+      "head_ref": "",
+      "expect": [["uuid", "1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d"]]
+    },
+    {
+      "name": "a full UUID in the head branch",
+      "body": "",
+      "head_ref": "agent/1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d",
+      "expect": [["uuid", "1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d"]]
+    },
+    {
+      "name": "the short form in the head branch",
+      "body": null,
+      "head_ref": "feat/mt-1a2b3c4d-login-fix",
+      "expect": [["short", "1a2b3c4d"]]
+    },
+    {
+      "name": "the short form after an underscore, at the end",
+      "body": "",
+      "head_ref": "fix_mt-0f0f0f0f",
+      "expect": [["short", "0f0f0f0f"]]
+    },
+    {
+      "name": "a staging URL in production links nothing",
+      "body": "https://dev.metorite.com/projects?task=1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d",
+      "head_ref": "main",
+      "expect": []
+    },
+    {
+      "name": "another host with the same path links nothing",
+      "body": "https://app.metorite.com.evil.example/projects?task=1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d https://evil.example/projects?task=1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d",
+      "head_ref": "",
+      "expect": []
+    },
+    {
+      "name": "a host that only ends with the app host links nothing",
+      "body": "https://evilapp.metorite.com/projects?task=1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d https://x.app.metorite.com/projects?task=1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d",
+      "head_ref": "",
+      "expect": []
+    },
+    {
+      "name": "a URL of another page links nothing",
+      "body": "https://app.metorite.com/tasks?task=1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d",
+      "head_ref": "",
+      "expect": []
+    },
+    {
+      "name": "the short form inside a longer word links nothing",
+      "body": "",
+      "head_ref": "feat/xmt-1a2b3c4d and/mt-1a2b3c4dz and/mt-1a2b3c4",
+      "expect": []
+    },
+    {
+      "name": "upper-case hex in the short form links nothing",
+      "body": "",
+      "head_ref": "feat/mt-1A2B3C4D",
+      "expect": []
+    },
+    {
+      "name": "one task named twice is one candidate, the description first",
+      "body": "https://app.metorite.com/projects?task=1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d",
+      "head_ref": "feat/1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d/mt-0a0b0c0d",
+      "expect": [["uuid", "1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d"], ["short", "0a0b0c0d"]]
+    }
+  ],
+  "rules": [
+    {"name": "L1 a description URL links", "points": "body", "task": "live", "source": "same_repo", "links": true},
+    {"name": "L2 a full UUID branch links", "points": "branch_uuid", "task": "live", "source": "same_repo", "links": true},
+    {"name": "L3 an mt- branch links", "points": "branch_short", "task": "live", "source": "same_repo", "links": true},
+    {"name": "L4a a staging URL in production links nothing", "points": "staging_body", "task": "live", "source": "same_repo", "links": false},
+    {"name": "L4b an archived task links nothing", "points": "branch_uuid", "task": "archived", "source": "same_repo", "links": false},
+    {"name": "L4c a task in a personal project links nothing", "points": "branch_uuid", "task": "personal", "source": "same_repo", "links": false},
+    {"name": "L4d a prefix with two matches links nothing", "points": "branch_short", "task": "prefix_twin", "source": "same_repo", "links": false},
+    {"name": "L5a a fork from an outsider links nothing", "points": "branch_uuid", "task": "live", "source": "fork_outsider", "links": false},
+    {"name": "L5b a fork from a collaborator links", "points": "branch_uuid", "task": "live", "source": "fork_collaborator", "links": true},
+    {"name": "L4e a task of another org links nothing", "points": "branch_uuid", "task": "other_org", "source": "same_repo", "links": false},
+    {"name": "L6 the sixth candidate links nothing", "points": "six_in_body", "task": "live", "source": "same_repo", "links": false}
+  ]
+}
