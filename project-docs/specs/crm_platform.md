@@ -4528,6 +4528,11 @@ and 10 of them are mutations that each fail one bar.
   because its files hold lakh and crore as test input, not as a parser.
 - The shared check reads "July 15" as a date. The scripted answer of Q05
   now writes "15 in July".
+- Measured. With the money formatter of `crm_aggregate` changed to print
+  "INR 0" and each other figure "0", `--scripted` passes 4 of 31 and exits
+  1. `tool_figures` fails 27 questions. The 4 that pass have no figure of an
+  aggregate: Q22, Q23, Q30 and Q31. On the private database, 569 tests pass
+  with no skip.
 
 **CRM-Q30b · The read tools say when Zoho holds more (2026-10-17).**
 
