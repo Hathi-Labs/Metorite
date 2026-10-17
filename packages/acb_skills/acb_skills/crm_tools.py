@@ -34,9 +34,11 @@ call. A failed read adds nothing.
 **The overlay of an empty core slot (WS-53 CRM-Q20-3a, ``crm_platform.md``
 §18.13.5).** An approved role can say that a module plays an empty slot:
 Commercials plays Deals. ``crm_aggregate`` then answers from the module, and
-the route says so. The other tools read ``overlays`` of ``GET /crm/mode``
-only when the core answer is empty or names no record, so a CRM with no
-overlay reads as before. A filter that the overlay does not take gives one
+the route says so. Some tools read ``overlays`` of ``GET /crm/mode``:
+``crm_list_pipelines`` reads it first, and so does a ``status`` filter on
+leads or deals. ``crm_list_records``, ``crm_get_record``,
+``crm_deal_contacts`` and ``crm_report`` read it only after an empty core
+answer or a 404. A filter that the overlay does not take gives one
 sentence.
 
 **An answer is text, 50 rows at most.** When more rows exist, it ends with
@@ -1286,8 +1288,8 @@ async def _empty_core_line(slug: str) -> str | None:
     module fits. Only a Mirror CRM has a module, so a Native CRM never gets
     the line."""
     try:
-        body = await _get("/crm/catalogue")
-    except _GatewayError:
+        body = await _catalogue_body()
+    except (_GatewayError, _Refused):
         # The line is a hint. The total above is the answer, so a failed
         # read of the catalogue never fails the tool.
         return None
@@ -1440,6 +1442,24 @@ def _catalogue_answer(body: Any, page: int | None) -> str:
     return "\n".join(lines)
 
 
+async def _catalogue_body() -> Any | None:
+    """The body of ``GET /crm/catalogue``, or ``None`` when the catalogue is
+    off: a 404 ``catalogue_off``, or a bare 404 of a gateway that has no
+    such route yet (a deploy in progress). A bare 404 is also the kill
+    switch, so the caller then reads the old route, and the kill switch
+    answers there as before (fix round, item 7). Any other failure goes up."""
+    try:
+        return await _get("/crm/catalogue")
+    except _GatewayError as exc:
+        if exc.code != CATALOGUE_OFF:
+            raise
+        return None
+    except _Refused as refused:
+        if str(refused) != CRM_OFF:
+            raise
+        return None
+
+
 @_read_tool
 async def crm_list_modules(page: int = 1) -> str:
     """The other Zoho modules this CRM mirrors (Products, Quotes, custom
@@ -1447,11 +1467,8 @@ async def crm_list_modules(page: int = 1) -> str:
     crm_list_fields take a module as entity 'module:<api_name>'. When the
     catalogue is on, it also says what each entity and module is for, its
     key fields, and where the money is."""
-    try:
-        body = await _get("/crm/catalogue")
-    except _GatewayError as exc:
-        if exc.code != CATALOGUE_OFF:
-            raise
+    body = await _catalogue_body()
+    if body is None:
         return await _modules_answer(page)
     # CRM-Q30b: the short-read lines of the modules, as the old answer has.
     return _catalogue_answer(body, page) + await _short_note(None)

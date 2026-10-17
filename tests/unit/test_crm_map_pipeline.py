@@ -229,6 +229,8 @@ class TestTheGate:
     @pytest.mark.parametrize("mode", ["shadow", "on"])
     def test_shadow_and_on_are_accepted(self, monkeypatch, mode):
         _modes(monkeypatch, ",".join(f"{f}={mode}" for f in mp.FEATURES))
+        # CRM-Q31-3 fix round: the catalogue mode needs CRM_CATALOGUE_ORGS.
+        _catalogue_open(monkeypatch)
         token = bind_tenant(ORG)
         try:
             assert mp.modes_now() == dict.fromkeys(mp.FEATURES, mode)
@@ -1019,9 +1021,14 @@ class TestTheCatalogueStep:
         assert first > 0 and set(features[first:]) == {mp.FEATURE_CATALOGUE}
 
     async def test_a_module_that_plays_a_slot_and_a_part_of_code_ask_nothing(self):
-        """Item 2: the role gives the purpose of Operator_Associates, and
-        code answers each part of Invoices."""
-        result, asker = await _pipeline("dewin", CAT_ON, answers=_cat_answers())
+        """Item 2: the APPROVED role gives the purpose of Operator_Associates,
+        and code answers each part of Invoices."""
+        schema = _schema("dewin")
+        role = {"kind": "role", "slot": "company", "module": "Operator_Associates"}
+        inputs = mp.Inputs(1, schema.inputs.modules, schema.inputs.slots, (role,))
+        asker = eval_run.ScriptedAsker(_cat_answers())
+        result = await mp.Pipeline(inputs, CAT_ON, mp.Cache(), eval_run.EvalSource(schema),
+                                   asker).run()
         names = json.dumps(_states(asker))
         assert "Operator Associates" not in names and "Invoices" not in names
         assert (_entry(result, "Operator_Associates").purpose,
@@ -1068,7 +1075,8 @@ class TestTheCatalogueStep:
         assert result.reason == "done"
         assert result.catalogue_reason == "catalogue_run_cap"
         assert result.catalogue_requests <= 2
-        assert mp.CATALOGUE_PURPOSES_KEY in result.done, "the finished key stays"
+        assert [k for k in result.done if k.startswith(mp.CATALOGUE_PURPOSES_KEY)], (
+            "the finished keys stay")
         assert not [k for k in result.done if k.startswith("catalogue:Payment")]
         assert [i["kind"] for i in result.items].count("role") == 1, "the mapping stands"
         monkeypatch.setattr(mp, "CATALOGUE_REQUESTS", 12)
@@ -1145,6 +1153,7 @@ class TestTheCatalogueStep:
     async def test_on_writes_through_apply_catalogue_and_never_a_draft(self, monkeypatch):
         """Item 8, through the database half of the run."""
         _modes(monkeypatch, ALL_ON + ",crm.map_catalogue=on")
+        _catalogue_open(monkeypatch)
         fake = _fake(monkeypatch, answers=_cat_answers())
         box = Box(monkeypatch)
         applied: list[Any] = []
@@ -1179,6 +1188,7 @@ class TestTheCatalogueStep:
     async def test_the_lines_hold_counts_and_no_name(self, monkeypatch):
         """Item 16: counts, keys of ours and request ids only."""
         _modes(monkeypatch, ALL_ON + ",crm.map_catalogue=on")
+        _catalogue_open(monkeypatch)
         _fake(monkeypatch, answers=_cat_answers())
         Box(monkeypatch)
 
@@ -1206,3 +1216,123 @@ class TestTheCatalogueStep:
         answers["dewin"]["catalogue"]["k:Payment Made.amount"] = {"pick": "none", "p": 0.9}
         report = await eval_run.run_all(answers)
         assert report["schemas"][0]["bars"]["catalogue"] is True
+
+
+# ── CRM-Q31-3 fix round (credits review) ────────────────────────────────────
+
+
+def _catalogue_open(monkeypatch, orgs: str = ORG) -> None:
+    """The CRM switch and CRM_CATALOGUE_ORGS, so modes_now keeps the mode."""
+    from tests.unit._crm_fakes import crm_switch_on
+
+    crm_switch_on(monkeypatch, "*")
+    monkeypatch.setattr(get_settings(), "crm_catalogue_orgs", orgs, raising=False)
+
+
+def _widgets(count: int) -> mp.Inputs:
+    """*count* custom modules that code cannot name, each with 12 fields."""
+    modules = tuple(
+        mp.ModuleShape(api_name=f"Widget_{i}", label=f"Widget {i}", singular=f"Widget {i}",
+                       records=10 + i, display_field="Name", custom=True,
+                       fields=tuple(mp.FieldShape(key=f"F_{n}", label=f"Field label {n}",
+                                                  type="text") for n in range(12)))
+        for i in range(count))
+    slots = tuple(mp.SlotShape(slot=s, empty=False) for s in mp.executor.SLOTS)
+    return mp.Inputs(1, modules, slots, (),
+                     fills={m.api_name: {f.key: 0.6 for f in m.fields} for m in modules})
+
+
+class _WidgetSource:
+    async def module_detail(self, module, slot):
+        return mp.detail_module(module, [{"Name": "ACME-0001"}] * 5)
+
+    async def slot_detail(self, slot):
+        return slot
+
+
+_CAT_ONLY = {mp.FEATURE_ROLE: "off", mp.FEATURE_TARGET: "off", mp.FEATURE_STAGE: "off",
+             mp.FEATURE_CATALOGUE: "on"}
+
+
+def _purpose_names(asker: eval_run.ScriptedAsker, first_round: bool = True) -> set[str]:
+    """The module names of the purpose requests of *asker*: the first round
+    only (no samples), or each round."""
+    return {m["name"] for s in _states(asker) for m in (s.get("modules") or {}).values()
+            if not first_round or "samples" not in m}
+
+
+class TestTheCatalogueFixRound:
+    async def test_a_second_run_never_resends_the_first_round_of_the_first(self):
+        """P1: the batch fits the budget with room for a re-ask, each asked
+        entry closes its own key, and the next run asks only the rest."""
+        inputs = _widgets(44)
+        answers = {f"p:Widget {i}": {"pick": "other", "p": 0.5} for i in range(44)}
+        cache, asked, seen = mp.Cache(), [], set()
+        for _run in range(3):
+            asker = eval_run.ScriptedAsker(answers)
+            result = await mp.Pipeline(inputs, _CAT_ONLY, cache, _WidgetSource(), asker).run()
+            assert result.catalogue_reason is None, "the batch fits, so no cap stops it"
+            assert result.catalogue_requests <= mp.CATALOGUE_REQUESTS
+            names = _purpose_names(asker)
+            assert not names & seen, "a first round is never bought twice"
+            seen |= names
+            asked.append(len(names))
+            for key, (digest, items) in result.done.items():
+                cache.schema[key], cache.items[key] = digest, items
+        assert asked[0] > 0 and asked[1] > 0 and asked[2] == 0
+        assert len(seen) == 44
+
+    async def test_the_batch_starts_with_the_most_records(self):
+        inputs = _widgets(44)
+        asker = eval_run.ScriptedAsker({})
+        await mp.Pipeline(inputs, _CAT_ONLY, mp.Cache(), _WidgetSource(), asker).run()
+        names = _purpose_names(asker)
+        assert "Widget 43" in names and "Widget 0" not in names
+
+    async def test_a_cap_at_the_re_ask_keeps_the_first_round(self, monkeypatch):
+        """P1 (b): the sure answers of round one stay, and the unsure ones
+        close as null. Each asked key is finished."""
+        monkeypatch.setattr(mp._CatalogueAsk, "purpose_batch", lambda self, entries: list(entries))
+        monkeypatch.setattr(mp, "CATALOGUE_REQUESTS", 1)
+        answers = {"p:Widget 0": {"pick": "asset", "p": 0.95},
+                   "p:Widget 1": {"pick": "other", "p": 0.5}}
+        asker = eval_run.ScriptedAsker(answers)
+        result = await mp.Pipeline(_widgets(2), _CAT_ONLY, mp.Cache(), _WidgetSource(),
+                                   asker).run()
+        assert result.catalogue_reason == "catalogue_run_cap" and len(asker.calls) == 1
+        items = {i["module"]: i["purpose"] for i in result.catalogue_items}
+        assert items == {"Widget_0": "asset", "Widget_1": None}
+        assert {f"{mp.CATALOGUE_PURPOSES_KEY}Widget_{i}" for i in (0, 1)} <= set(result.done)
+
+    async def test_the_key_parts_run_when_the_purposes_stop_on_a_cap(self, monkeypatch):
+        """P1 (c): a catalogue cap of the purpose step still lets the key
+        parts of a money module go out."""
+        async def capped(self, entries):
+            raise mp.Stop("catalogue_token_cap")
+
+        monkeypatch.setattr(mp._CatalogueAsk, "purposes", capped)
+        result, asker = await _pipeline("dewin", CAT_ON, answers=_cat_answers())
+        assert result.catalogue_reason == "catalogue_token_cap"
+        assert any(q.startswith("k.") for _f, reqs in asker.calls for _s, q in reqs for q in q)
+
+    async def test_a_role_that_waits_for_the_admin_sets_no_purpose(self):
+        """P2: rule 4 reads the APPROVED roles. The role of this run is a
+        draft, so Operator_Associates is asked like each other module."""
+        result, asker = await _pipeline("dewin", CAT_ON, answers=_cat_answers())
+        assert [i for i in result.items if i["kind"] == "role"], "the run drafts a role"
+        assert "Operator Associates" in json.dumps(_states(asker))
+        assert _entry(result, "Operator_Associates").by["purpose"] == "ai"
+
+    def test_the_mode_is_off_outside_crm_catalogue_orgs(self, monkeypatch):
+        """P2: a flip of crm.map_catalogue spends only for an org that the
+        catalogue serves."""
+        _modes(monkeypatch, ALL_ON + ",crm.map_catalogue=shadow")
+        _catalogue_open(monkeypatch, orgs="")
+        token = bind_tenant(ORG)
+        try:
+            assert mp.modes_now()[mp.FEATURE_CATALOGUE] == "off"
+            assert mp.modes_now()[mp.FEATURE_ROLE] == "on"
+            monkeypatch.setattr(get_settings(), "crm_catalogue_orgs", ORG, raising=False)
+            assert mp.modes_now()[mp.FEATURE_CATALOGUE] == "shadow"
+        finally:
+            release_tenant(token)

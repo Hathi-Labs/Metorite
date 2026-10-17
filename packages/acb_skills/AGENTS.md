@@ -368,16 +368,19 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    `crm_aggregate` says the zone line only for a zoned month group or a
    `datetime` bucket (`group_field_type`).
    `crm_list_modules` reads `GET /crm/catalogue` first (CRM-Q31-1). It
-   renders one line for each entry, then the money block. On a 404
-   `catalogue_off` it answers from `/crm/modules`, as before.
-   `crm_aggregate` names the label of the real field, and "the amount"
-   for a key word (CRM-Q31-2). A total of 0 on a core entity reads the
-   catalogue once more. When the entity holds no records, the answer
-   names the modules that hold them.
+   renders one line for each entry, then the money block. A 404
+   `catalogue_off` or a bare 404 makes it answer from `/crm/modules`, as
+   before.
+   `crm_aggregate` names the label of the real field (CRM-Q31-2). It says
+   "the amount" for a key word. A total of 0 on a core entity reads the
+   catalogue once more. When the entity holds no records, the answer names
+   the modules that hold them.
    On a slot with an approved overlay (CRM-Q20-3a), `crm_aggregate` names
-   the module, and a refusal of the route is one sentence. The other record
-   tools read `overlays` of `GET /crm/mode` only when the core answer is
-   empty or names no record, so a CRM with no overlay reads as before.
+   the module. A refusal of the route is one sentence. Some tools read
+   `overlays` of `GET /crm/mode`. `crm_list_pipelines` reads it first. A
+   status filter on leads or deals reads it first too. `crm_list_records`,
+   `crm_get_record`, `crm_deal_contacts` and `crm_report` read it after an
+   empty answer or a 404.
    Fences: `tests/unit/test_crm_agent.py`, `tests/unit/test_skills_registry.py`
    and `tests/unit/test_reports_by_code.py`.
 5l-1. answer_check.py -- the number check of a chat answer that read a CRM

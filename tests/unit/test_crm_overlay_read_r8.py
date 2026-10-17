@@ -241,3 +241,31 @@ async def test_org_b_never_reads_the_overlay_of_org_a(ov, app_engine) -> None:
     # Org A still reads its own module, and never org B's record.
     mine = await _agg(ov, ov.org_a, entity="deals", measure="sum_amount", group_by="owner")
     assert mine["total"] == 1065.0
+
+
+async def test_the_digest_of_an_overlaid_org_reads_the_lanes(ov, app_engine) -> None:
+    """Fix round, item 4: with an approved deal role, the typed parts of the
+    weekly digest read the lane type of the answer. The Unsorted lane is a
+    stated gap, and the part names the module."""
+    from datetime import date
+
+    from acb_common.db import bind_tenant, release_tenant
+    from gateway.crm_sync import digest
+
+    from tests.unit._tenant_ladder import tenant_engine_scope
+
+    week = digest.Week(start=date(2026, 10, 5), end=date(2026, 10, 11), zone="UTC",
+                       close_from=date(2026, 10, 1), close_to=date(2026, 12, 31))
+    token = bind_tenant(ov.org_a)
+    try:
+        async with tenant_engine_scope(ov.app_url.render_as_string(hide_password=False)):
+            numbers = await digest.gather(ov.org_a, week)
+    finally:
+        release_tenant(token)
+    parts = {p["key"]: p for p in numbers["parts"]}
+    count, amount = parts["open_deals_by_stage"], parts["open_amount_by_stage"]
+    assert count["rows"] == [{"label": "Proposal", "value": "1"},
+                             {"label": "Open stage", "value": "1"}]
+    assert (count["unsorted"], count["from_module"]) == ("3", "Commercials")
+    assert [r["label"] for r in amount["rows"]] == ["Proposal", "Open stage"]
+    assert amount["unsorted"] == "INR 65"

@@ -521,3 +521,58 @@ def test_a_merge_keeps_each_part_of_the_admin() -> None:
     admin = cat.merge_item(old, {**new, "by": {"amount": "admin"}})
     assert admin["amount"] == "Late_Fee"
     assert cat.without_catalogue([old, {"kind": "role"}]) == [{"kind": "role"}]
+
+
+# ── 7. Fix round (CRM-Q31 review) ────────────────────────────────────────────
+
+
+async def test_a_bare_404_of_the_catalogue_gives_the_answer_of_today(monkeypatch) -> None:
+    """Item 7: during a deploy a gateway has no /crm/catalogue yet. Its bare
+    404 is no kill switch: the tool answers from /crm/modules, as before."""
+    seen = _gateway(monkeypatch, lambda p: (404, {"detail": "Not Found"})
+                    if p == "/crm/catalogue" else (200, _MODULES))
+    assert await tools.crm_list_modules() == _TODAY
+    assert seen == ["/crm/catalogue", "/crm/modules", "/crm/sync/short-reads"]
+
+
+async def test_the_empty_core_line_survives_a_bare_404(monkeypatch) -> None:
+    """Item 7: a total stands when the catalogue read gives a bare 404."""
+    def answer(path):
+        if path == "/crm/catalogue":
+            return 404, {"detail": "Not Found"}
+        return 200, {"entity": "deals", "measure": "count", "groups": [], "total": 0,
+                     "other": 0, "omitted": 0}
+
+    _gateway(monkeypatch, answer)
+    assert await tools.crm_aggregate("deals", group_by="owner") == (
+        "Deals, count by owner:\nTotal: 0.")
+
+
+def test_a_dark_org_keeps_the_refusal_of_before() -> None:
+    """Item 9: outside CRM_CATALOGUE_ORGS no message points at key fields."""
+    from fastapi import HTTPException
+    from gateway.routes.crm import field_sql as fs
+
+    dark = fs.FieldScope(column="fields", owner="module:X", fields={}, catalogue=False)
+    with pytest.raises(HTTPException) as exc:
+        dark.ref("@amount")
+    assert exc.value.detail == "'sum_amount' needs deals. A module has no amount."
+    with pytest.raises(HTTPException) as exc:
+        dark.ref("@date")
+    assert exc.value.detail["code"] == "unknown_field"
+    lit = fs.FieldScope(column="fields", owner="module:X", fields={})
+    with pytest.raises(HTTPException) as exc:
+        lit.ref("@amount")
+    assert exc.value.detail["code"] == "no_key_field"
+
+
+def test_the_overlay_reads_the_catalogue_once() -> None:
+    """Item 5: overlay_of loads no catalogue entry. module_scope is the one
+    read of it in a total."""
+    import dataclasses
+
+    from gateway.routes.crm import overlay
+
+    assert "entry" not in {f.name for f in dataclasses.fields(overlay.Overlay)}
+    source = Path(overlay.__file__).read_text(encoding="utf-8")
+    assert "entry_of(" not in source

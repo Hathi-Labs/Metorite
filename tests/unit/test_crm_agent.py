@@ -1210,7 +1210,10 @@ async def test_a_refusal_is_the_answer(
     monkeypatch.setattr(_T, "_current_user_email", lambda: "sales@fracktal.in")
     answer = await _INVOCATIONS[tool]()
     assert expected in answer
-    assert len(calls) == 1
+    # Fix round, item 7: a bare 404 of /crm/catalogue reads the old route
+    # once, and the kill switch answers there.
+    fallback = tool == "crm_list_modules" and status == 404
+    assert len(calls) == (2 if fallback else 1)
 
 
 @pytest.mark.parametrize("tool", _SHARED_TOOLS, ids=_SHARED_TOOLS)

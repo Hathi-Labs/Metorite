@@ -176,7 +176,10 @@ MAPPING_CAP_STOPS = frozenset({"token_cap", "run_cap"})
 
 #: The cache keys of the catalogue step.
 CATALOGUE_KEY = "catalogue:"
-CATALOGUE_PURPOSES_KEY = "catalogue:purposes"
+#: The prefix of the purpose key of one entry: ``catalogue:purpose:<ApiName>``.
+#: A key of its own for each entry, so a run that asks part of the entries
+#: keeps them, and the next run asks only the rest (fix round, P1).
+CATALOGUE_PURPOSES_KEY = "catalogue:purpose:"
 CATALOGUE_SHADOW_KEY = "catalogue:shadow:"
 
 #: The labels of the most filled fields that a purpose question shows.
@@ -911,7 +914,6 @@ class Pipeline:
         return self.modes.get(feature, "off")
 
     async def run(self) -> Result:
-        roles = approved_roles(self.inputs.approved)
         try:
             roles = await self._roles()
             for slot, api_name in sorted(roles.items()):
@@ -925,8 +927,10 @@ class Pipeline:
                 return self.result
         # CRM-Q31-3: the catalogue runs last, on its own caps, so the mapping
         # spends first. A cap of the mapping does not stop it. A payer stop does.
+        # Only an APPROVED role gives a purpose (rule 4): a role of this run
+        # waits for the admin, so it sets nothing yet (fix round, P2).
         try:
-            await self._catalogue(roles)
+            await self._catalogue(approved_roles(self.inputs.approved))
         except Stop as stop:
             self.result.reason = stop.reason
         return self.result
@@ -1543,10 +1547,8 @@ class _CatalogueAsk:
                 f"Which purpose fits the records of state.modules.{ref}?", _PURPOSE_GUIDANCE),
             criteria=df.clip_choice(criteria))
 
-    async def purposes(self, entries: Sequence[Any]) -> dict[str, str | None]:
-        """Ask the purpose of each entry. Returns module → purpose, ``None``
-        when no answer was sure. A module gets one re-ask with the masked
-        names of its records. A core entity gets none."""
+    def _purpose_state(self, entries: Sequence[Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        """The state and the questions of one purpose request."""
         refs = {f"m{i}": e for i, e in enumerate(entries)}
         state: dict[str, Any] = {"modules": {
             ref: {"name": df.clip_fact(e.label, 120), "records": e.records,
@@ -1554,7 +1556,47 @@ class _CatalogueAsk:
                   "top_fields": _top_fields(self.sources[e.module])}
             for ref, e in refs.items()
         }}
-        questions = {f"p.{ref}": self._purpose_question(ref) for ref in refs}
+        return state, {f"p.{ref}": self._purpose_question(ref) for ref in refs}
+
+    def purpose_batch(self, entries: Sequence[Any]) -> list[Any]:
+        """The entries that one run asks: the most records first, as many as
+        fit the catalogue budget that is left, with room for a re-ask of each
+        (fix round, P1). The rest waits for the next run under keys of its
+        own. The worst re-ask holds :data:`REASK_SAMPLES` samples of
+        :data:`SAMPLE_CLIP` characters for each entry."""
+        ranked = sorted(entries, key=lambda e: (-e.records, e.module))
+        tokens = CATALOGUE_TOKENS - self.p.result.catalogue_tokens
+        requests = CATALOGUE_REQUESTS - self.p.result.catalogue_requests
+        pad = ["x" * SAMPLE_CLIP] * REASK_SAMPLES
+        for size in range(len(ranked), 0, -1):
+            state, questions = self._purpose_state(ranked[:size])
+            worst = {"modules": {ref: {**m, "samples": pad}
+                                 for ref, m in state["modules"].items()}}
+            first, again = split(questions, state), split(questions, worst)
+            if (estimate(first) + estimate(again) <= tokens
+                    and len(first) + len(again) <= requests):
+                return ranked[:size]
+        return []
+
+    async def _again(self, feature: str, state: dict[str, Any],
+                     questions: Mapping[str, Any]) -> Any | None:
+        """A re-ask, or ``None`` when a catalogue cap stops it. The sure
+        answers of the first round stay, so a billed round is never lost
+        (fix round, P1). Any other stop goes up."""
+        try:
+            return await self.p.ask(feature, state, questions)
+        except Stop as stop:
+            if stop.reason not in CATALOGUE_STOPS:
+                raise
+            self.p.result.catalogue_reason = stop.reason
+            return None
+
+    async def purposes(self, entries: Sequence[Any]) -> dict[str, str | None]:
+        """Ask the purpose of each entry. Returns module → purpose, ``None``
+        when no answer was sure. A module gets one re-ask with the masked
+        names of its records. A core entity gets none."""
+        state, questions = self._purpose_state(entries)
+        refs = {qid[2:]: e for qid, e in zip(questions, entries, strict=True)}
         keys = [*cat.PURPOSES, _NONE]
         decision = await self.p.ask(FEATURE_CATALOGUE, state, questions)
         found, unsure = Pipeline._read(decision, questions, keys)
@@ -1570,9 +1612,10 @@ class _CatalogueAsk:
             samples[qid[2:]] = {**state["modules"][qid[2:]],
                                 "samples": list(detail.names[:REASK_SAMPLES])}
         if again:
-            decision = await self.p.ask(FEATURE_CATALOGUE, {"modules": samples}, again)
-            more, _still = Pipeline._read(decision, again, keys)
-            found.update(more)
+            decision = await self._again(FEATURE_CATALOGUE, {"modules": samples}, again)
+            if decision is not None:
+                more, _still = Pipeline._read(decision, again, keys)
+                found.update(more)
         out: dict[str, str | None] = {}
         for ref, entry in refs.items():
             choice = found.get(f"p.{ref}")
@@ -1581,11 +1624,10 @@ class _CatalogueAsk:
                 self.p.result.unsure += 1
         return out
 
-    async def parts(self, entry: Any, detail: ModuleShape,
-                    parts: Sequence[str]) -> tuple[dict[str, str | None], dict[str, str]]:
-        """Ask the key *parts* of one money entry, in one request. Returns
-        part → field key (``None`` when no answer was sure), and part → the
-        ref of each field, for the shadow."""
+    @staticmethod
+    def _part_questions(detail: ModuleShape, parts: Sequence[str],
+                        ) -> tuple[dict[str, FieldShape], dict[str, Any]]:
+        """The field refs and the questions of the key *parts* of one module."""
         from acb_llm import ChoiceQuestion
 
         refs: dict[str, FieldShape] = {}
@@ -1611,6 +1653,14 @@ class _CatalogueAsk:
                     f"({cat.PART_MEANINGS[part]}) of the records of state.module?",
                     _PART_GUIDANCE),
                 criteria=df.clip_choice(criteria))
+        return refs, questions
+
+    async def parts(self, entry: Any, detail: ModuleShape,
+                    parts: Sequence[str]) -> tuple[dict[str, str | None], dict[str, str]]:
+        """Ask the key *parts* of one money entry, in one request. Returns
+        part → field key (``None`` when no answer was sure), and part → the
+        ref of each field, for the shadow."""
+        refs, questions = self._part_questions(detail, parts)
         if not questions:
             return {}, {}
 
@@ -1640,10 +1690,11 @@ class _CatalogueAsk:
         if unsure:
             again = {q: narrowed(questions[q], _answer(decision, q)) for q in unsure}
             kept = {k for q in again.values() for k in q.criteria if k in refs}
-            decision = await self.p.ask(FEATURE_CATALOGUE, state(True, kept), again)
-            more, still = Pipeline._read(decision, again)
-            found.update(more)
-            self.p.result.unsure += len(still)
+            decision = await self._again(FEATURE_CATALOGUE, state(True, kept), again)
+            if decision is not None:
+                more, still = Pipeline._read(decision, again)
+                found.update(more)
+                self.p.result.unsure += len(still)
         answers: dict[str, str | None] = {}
         for qid in questions:
             choice = found.get(qid)
@@ -1680,23 +1731,13 @@ class _CatalogueWork(_CatalogueAsk):
         sources = list(self.sources.values())
         try:
             entries = cat.build(sources, self.roles, approved)
-            waiting = [e for e in entries if "purpose" in e.open]
-            if waiting:
-                key = CATALOGUE_PURPOSES_KEY
-                digest = catalogue_hash([self.sources[e.module] for e in waiting], mode)
-                if p.cache.hit(key, digest):
-                    p.result.cached += 1
-                    self._keep(p.cache.items.get(key, []), working)
-                elif not p._parked(key, digest):
-                    found = await self.purposes(waiting)
-                    items = []
-                    for module, purpose in sorted(found.items()):
-                        item = {**self._item(module), "purpose": purpose,
-                                "by": {"purpose": "ai"}}
-                        items.append(item)
-                    p.result.done[key] = (digest, items)
-                    self._keep(items, working)
-                    self._keep(items, fresh)
+            try:
+                await self._purposes(entries, mode, working, fresh)
+            except Stop as stop:
+                # A catalogue cap of the purposes still lets the key parts run.
+                if stop.reason not in CATALOGUE_STOPS:
+                    raise
+                p.result.catalogue_reason = stop.reason
             entries = cat.build(sources, self.roles, [*approved, *working.values()])
             for entry in sorted(entries, key=lambda e: e.module):
                 waiting_parts = [x for x in cat.KEY_PARTS if x in entry.open]
@@ -1724,6 +1765,39 @@ class _CatalogueWork(_CatalogueAsk):
             p.result.catalogue_items = [fresh[m] for m in sorted(fresh)]
             p.result.catalogue_entries = cat.build(
                 sources, self.roles, [*approved, *working.values()])
+
+    async def _purposes(self, entries: Sequence[Any], mode: str,
+                        working: dict[str, dict[str, Any]],
+                        fresh: dict[str, dict[str, Any]]) -> None:
+        """The purpose step: a key of its own for each entry that code left
+        open. A cached key asks nothing. The rest is asked in one batch that
+        fits the budget (:meth:`purpose_batch`), and each asked entry closes
+        its key, sure or not."""
+        p = self.p
+        todo: list[tuple[Any, str, str]] = []
+        for entry in (e for e in entries if "purpose" in e.open):
+            key = f"{CATALOGUE_PURPOSES_KEY}{entry.module}"
+            digest = catalogue_hash([self.sources[entry.module]], mode)
+            if p.cache.hit(key, digest):
+                p.result.cached += 1
+                self._keep(p.cache.items.get(key, []), working)
+            elif p.cache.parked(key, digest, p.now):
+                p.result.parked += 1
+            else:
+                todo.append((entry, key, digest))
+        batch = self.purpose_batch([entry for entry, _key, _digest in todo])
+        if not batch:
+            return
+        keys = {entry.module: (key, digest) for entry, key, digest in todo}
+        p.asking = keys[batch[0].module]
+        found = await self.purposes(batch)
+        for entry in batch:
+            key, digest = keys[entry.module]
+            item = {**self._item(entry.module), "purpose": found.get(entry.module),
+                    "by": {"purpose": "ai"}}
+            p.result.done[key] = (digest, [item])
+            self._keep([item], working)
+            self._keep([item], fresh)
 
     async def _module_item(self, entry: Any, src: Any, detail: ModuleShape,
                            approved: Sequence[Mapping[str, Any]],
@@ -2131,8 +2205,20 @@ class Mapped:
 
 
 def modes_now() -> dict[str, str]:
-    """The mode of each feature for the bound tenant (item 1, gate (b))."""
-    return {f: df.mode_for(f) for f in FEATURES}
+    """The mode of each feature for the bound tenant (item 1, gate (b)).
+
+    CRM-Q31-3 fix round: the catalogue step reads ``off`` for an org
+    outside ``CRM_CATALOGUE_ORGS`` (``flags.catalogue_allowed``), so a flip
+    of ``crm.map_catalogue`` spends only for an org that can read the
+    catalogue."""
+    from acb_common.db import current_tenant
+
+    from gateway.routes.crm.flags import catalogue_allowed
+
+    modes = {f: df.mode_for(f) for f in FEATURES}
+    if modes[FEATURE_CATALOGUE] != "off" and not catalogue_allowed(current_tenant()):
+        modes[FEATURE_CATALOGUE] = "off"
+    return modes
 
 
 def enabled_for(org: str) -> bool:

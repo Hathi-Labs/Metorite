@@ -33,7 +33,7 @@
 >
 > **Specified, not built:** CRM-Q21 and CRM-Q22, of a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9). Batch M builds the rest of CRM-Q17a to CRM-Q20 on the branch `crm-batch-m`, not merged (§18.12.1).
 >
-> **Specified 2026-10-17, not built:** CRM-Q31, the catalogue that tells the AI what each module is for, and CRM-Q20-3, the overlay in the aggregate, the AI tools and the board (§18.13). No migration.
+> **Built 2026-10-17, not merged, dark (`crm-batch-ai`):** CRM-Q31-1 to CRM-Q31-3, the catalogue that tells the AI what each module is for, and CRM-Q20-3a, the overlay in the aggregate and the AI tools (§18.13). No migration. CRM-Q31-4 and CRM-Q20-3b are specified, not built.
 >
 > **Built later, not merged (Batch M, `crm-batch-m`):** CRM-Q17a-1b, a "still empty" check of a stale entity (2026-10-16, §18.9.6, no migration). CRM-Q17a-2, the screens of the fill rank (2026-10-16, no migration). CRM-Q18-1b, two deadlocks of the plan lock (2026-10-16, no migration). CRM-Q19, the executor and the 200-record preview (2026-10-16, no migration).
 >
@@ -5003,7 +5003,9 @@ and runs the verification of both slices again.
 
 ### 18.13 The mapping reaches the AI (CRM-Q31, CRM-Q20-3, 2026-10-17)
 
-**Status (2026-10-17).** Specified, not built. Verified against code at
+**Status (2026-10-17).** Built, not merged, dark: CRM-Q31-1 to CRM-Q31-3 and
+CRM-Q20-3a (see "Built" below). CRM-Q31-4 and CRM-Q20-3b are specified, not
+built. The spec was verified against code at
 `origin/main` `4a0a41c24`, with Batch M (#1112) merged. Verified against
 DEWiN's production data on 2026-10-17, read only and counts only (§18.13.2).
 

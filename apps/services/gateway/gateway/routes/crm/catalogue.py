@@ -202,9 +202,12 @@ def _shares(fills: Mapping[str, Any] | None) -> dict[str, float] | None:
 
 async def _module_sources(
     db: Any, org: str, mirrored: Mapping[str, Mapping[str, Any]], only: str | None,
+    *, count: bool = True,
 ) -> list[Any]:
     """The mirrored modules. With *only*, the defs, the fill and the count of
-    that module alone: the others need their names only."""
+    that module alone: the others need their names only. With *count*
+    False, no record count is read, and each module counts 0 records: the
+    key fields of an entry need no count (fix round, item 6)."""
     from gateway.crm_sources.zoho.mapping import module_entity
     from gateway.crm_sync import catalogue as cat
     from gateway.routes.crm.fill_rank import fills_of
@@ -214,12 +217,13 @@ async def _module_sources(
     counts: dict[str, int] = {}
     defs: dict[str, list[Any]] = {}
     fills: dict[str, Any] | None = None
-    if read:
+    if read and count:
         counts = {
             str(r.module): int(r.n) for r in (await db.execute(
                 text(_MODULE_COUNTS_SQL), {"org": org, "modules": read},
             )).fetchall()
         }
+    if read:
         for r in (await db.execute(
             text(_DEFS_SQL), {"org": org, "entities": entities},
         )).fetchall():
@@ -247,7 +251,7 @@ async def _module_sources(
 
 
 async def _load(
-    db: Any, org: str, *, only: str | None = None,
+    db: Any, org: str, *, only: str | None = None, count: bool = True,
 ) -> tuple[str, list[Any], dict[str, str], list[dict[str, Any]]]:
     """The mode, the sources, the approved roles (slot → module) and the
     approved items of other kinds, in the caller's tenant session."""
@@ -269,7 +273,7 @@ async def _load(
     labels = labels_of(profile.get("modules"))
     mirrored = mirrored_of(profile)
     sources = _core_sources(counts, labels)
-    sources += await _module_sources(db, org, mirrored, only)
+    sources += await _module_sources(db, org, mirrored, only, count=count)
     others = await approved_others(db, org)
     roles = {slot: m for slot, m in roles_of(others).items() if m in mirrored}
     return "mirror", sources, roles, others
@@ -307,7 +311,9 @@ async def entry_of(db: Any, org: str | None, module: str) -> Any | None:
     """
     if not org or not catalogue_allowed(str(org)):
         return None
-    mode, sources, roles, others = await _load(db, str(org), only=module)
+    # The aggregate reads the key fields of an entry, never its count, so
+    # the count(*) over the module is skipped (fix round, item 6).
+    mode, sources, roles, others = await _load(db, str(org), only=module, count=False)
     if mode != "mirror":
         return None
     return next(

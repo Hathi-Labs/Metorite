@@ -1089,7 +1089,9 @@ async def test_a_key_word_with_no_key_field_is_a_422(keyed, app_engine, monkeypa
     monkeypatch.setattr(get_settings(), "crm_catalogue_orgs", "", raising=False)
     res = await _call(keyed, _admin(a), "GET", _path(
         entity="module:Invoices", measure="sum_amount", group_by="owner"))
-    assert res.status_code == 422 and res.json()["detail"]["code"] == "no_key_field"
+    # Fix round, item 9: the refusal of before, with no key fields to name.
+    assert res.status_code == 422, res.text
+    assert res.json()["detail"] == "'sum_amount' needs deals. A module has no amount."
     # The real field still answers, so the dark org keeps the answer of today.
     real = await _agg(keyed, a, entity="module:Invoices", measure="sum",
                       field="Grand_Total", group_by="owner")

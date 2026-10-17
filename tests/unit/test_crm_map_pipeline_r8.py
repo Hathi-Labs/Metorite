@@ -612,18 +612,23 @@ async def test_q31_3_8_a_run_in_on_applies_the_catalogue_and_drafts_none(
                         "crm.map_role=on,crm.map_target=on,crm.map_stage=on,"
                         "crm.map_catalogue=on", raising=False)
     df._parse_modes.cache_clear()
+    # Fix round: the catalogue step runs only for an org on CRM_CATALOGUE_ORGS.
+    monkeypatch.setattr(get_settings(), "crm_catalogue_orgs", p.org_a, raising=False)
     await _imported(p, p.org_a, a)
     _no_deals(p, p.org_a)
     _seed_module(p, p.org_a, "Commercials", "Commercials")
+    p.fake.scripted.answers["p:Commercials"] = {"pick": "deal", "p": 0.9}
     rules = _rule_rows(p, p.org_a)
     got = await _run(p.org_a)
     assert got.reason == "done", got
     (item,) = [i for i in _in_use(p, p.org_a) if i["module"] == "Commercials"]
-    # Commercials plays Deals in this run, so its purpose is the slot's. Code
-    # answers its date and its status on the sample (rule 10). The decide
-    # tier is asked the amount, and its sure "none" leaves it empty.
-    assert (item["date"], item["status"], item["amount"]) == ("Closing_Date", "Status", None)
-    assert item["by"] == {"date": "code", "status": "code", "amount": "ai"}
+    # The role of this run waits for the admin, so it gives no purpose (rule
+    # 4 reads the approved roles, fix round P2). The decide tier answers the
+    # purpose. Code answers the date and the status on the sample (rule 10),
+    # and the sure "none" of the amount leaves it empty.
+    assert (item["purpose"], item["date"], item["status"], item["amount"]) == (
+        "deal", "Closing_Date", "Status", None)
+    assert item["by"] == {"purpose": "ai", "date": "code", "status": "code", "amount": "ai"}
     for version in _versions(p, p.org_a):
         if version[1] == "draft":
             assert _catalogue_of(version[4]) == []

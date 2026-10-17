@@ -8,8 +8,9 @@ module serves two more readers, ``GET /crm/aggregate`` and the AI tools: a
 total over Deals then reads the records of the module.
 
 **One read.** :func:`overlay_of` returns the approved ``role`` of one slot,
-with its ``target`` and ``stage`` items and the catalogue entry of the module
-(``catalogue.entry_of``). It returns ``None`` with no approved role. As
+with its ``target`` and ``stage`` items. The catalogue entry of the module
+reaches the aggregate through ``field_sql.module_scope`` only, so one total
+reads it once (fix round, item 5). It returns ``None`` with no approved role. As
 ``mapping_plans.approved_overlays`` does, it puts the org in the predicate,
 reads through RLS, and names only a module that the bound org mirrors. A
 Native CRM has no mirrored module, so it has no overlay.
@@ -39,8 +40,7 @@ class Overlay:
 
     ``targets`` maps a target column to the field API names of its item.
     ``stage`` is the API name of the stage field, and ``values`` maps each
-    stage value to ``won``, ``lost`` or ``open``. ``entry`` is the catalogue
-    entry of the module, or ``None`` outside ``CRM_CATALOGUE_ORGS``.
+    stage value to ``won``, ``lost`` or ``open``.
     """
 
     slot: str
@@ -48,7 +48,6 @@ class Overlay:
     targets: dict[str, list[str]] = field(default_factory=dict)
     stage: str | None = None
     values: dict[str, str] = field(default_factory=dict)
-    entry: Any = None
 
     def wire(self) -> dict[str, str]:
         """What the answer carries: the slot and the module."""
@@ -77,7 +76,6 @@ def lanes(options: Mapping[str, str], values: Mapping[str, str]) -> list[tuple[s
 async def overlay_of(db: Any, org: str | None, slot: str | None) -> Overlay | None:
     """The approved overlay of *slot* for *org*, or ``None``, in the
     caller's tenant session."""
-    from gateway.routes.crm.catalogue import entry_of
     from gateway.routes.crm.mapping_plans import (
         KIND_STAGE,
         KIND_TARGET,
@@ -106,7 +104,6 @@ async def overlay_of(db: Any, org: str | None, slot: str | None) -> Overlay | No
         slot=slot, module=module, targets=targets,
         stage=str(stage["field_api_name"]) if stage and stage.get("field_api_name") else None,
         values={str(k): str(v) for k, v in values.items()} if isinstance(values, Mapping) else {},
-        entry=await entry_of(db, str(org), module),
     )
 
 

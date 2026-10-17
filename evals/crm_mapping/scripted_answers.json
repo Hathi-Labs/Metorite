@@ -19,6 +19,7 @@
         "t.lead_source": {"pick": "Enquiry From", "p": 0.55}
       },
       "catalogue": {
+        "p:Operator Associates": {"pick": "customer_company", "p": 0.9},
         "p:Site Visits": {"pick": "activity", "p": 0.9},
         "p:Service Tickets": {"pick": "activity", "p": 0.88},
         "p:AMC Contracts": {"pick": "contract", "p": 0.62, "p2": 0.86},

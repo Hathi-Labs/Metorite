@@ -433,3 +433,24 @@ async def test_twenty_five_modules_and_1300_fields_answer_under_one_second(
     assert res.status_code == 200, res.text
     assert len(res.json()["entries"]) == 29
     assert took < BOUND_S, f"the catalogue took {took:.3f} s"
+
+
+async def test_entry_of_reads_no_record_count(org_a, app_engine) -> None:
+    """Fix round, item 6: the aggregate reads the key fields of an entry,
+    never its count, so entry_of sends no count(*) over the module."""
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    seen: list[str] = []
+
+    def _record_sql(_conn, _cursor, statement, *_args) -> None:
+        seen.append(statement)
+
+    event.listen(Engine, "before_cursor_execute", _record_sql)
+    try:
+        entry = await _entry_of(org_a, org_a.org_a, "Invoices")
+    finally:
+        event.remove(Engine, "before_cursor_execute", _record_sql)
+    assert entry is not None and entry.fields["amount"].key == "Net_Value"
+    assert any("crm_field_defs" in sql for sql in seen), "the listener saw the read"
+    assert not [sql for sql in seen if "FROM crm_module_records" in sql]

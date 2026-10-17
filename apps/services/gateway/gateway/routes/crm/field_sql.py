@@ -166,6 +166,10 @@ class FieldScope:
     column: str
     owner: str
     fields: dict[str, FieldRef]
+    #: True when the catalogue serves the org (``CRM_CATALOGUE_ORGS``). An
+    #: org outside the list keeps the refusals of before the key words, and
+    #: no message points it at key fields it cannot see (fix round, item 9).
+    catalogue: bool = True
 
     def __post_init__(self) -> None:
         if self.column not in _COLUMNS:
@@ -174,7 +178,11 @@ class FieldScope:
     def ref(self, key: str | None) -> FieldRef:
         """The field named *key*, or a 422 that names the legal keys."""
         found = self.fields.get(key or "")
-        if found is None and (key or "") in KEY_WORDS:
+        if found is None and key == AMOUNT_WORD and not self.catalogue:
+            # The refusal of before CRM-Q31-2: `sum_amount` on a module.
+            raise HTTPException(status_code=422,
+                                detail="'sum_amount' needs deals. A module has no amount.")
+        if found is None and (key or "") in KEY_WORDS and self.catalogue:
             raise HTTPException(status_code=422, detail={
                 "code": "no_key_field",
                 "message": f"{self.owner} has no key field for {key}. "
@@ -258,11 +266,14 @@ async def module_scope(db: Any, module: str) -> FieldScope:
     """
     from gateway.routes.crm.catalogue import entry_of
     from gateway.routes.crm.core import current_tenant
+    from gateway.routes.crm.flags import catalogue_allowed
 
+    org = current_tenant()
     defs = await _field_defs(db, module)
     fields = {d.key: _ref(d) for d in defs}
-    fields.update(key_words(fields, await entry_of(db, current_tenant(), module)))
-    return FieldScope(column=MODULE_COLUMN, owner=f"module:{module}", fields=fields)
+    fields.update(key_words(fields, await entry_of(db, org, module)))
+    return FieldScope(column=MODULE_COLUMN, owner=f"module:{module}", fields=fields,
+                      catalogue=catalogue_allowed(org))
 
 
 def key_words(fields: dict[str, FieldRef], entry: Any) -> dict[str, FieldRef]:
