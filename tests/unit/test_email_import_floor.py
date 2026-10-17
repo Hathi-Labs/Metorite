@@ -281,7 +281,7 @@ def core(monkeypatch):
             last_history_id=None, sync_interval_secs=300,
             initial_sync_done=done, import_since=import_since)
         monkeypatch.setattr(sched, "tenant_session", _fake_sessions(row))
-        res = await sched._sync_account("acc-1", organization_id=_ORG, **kw)
+        res = await sched._sync_account("a0000000-0000-4000-8000-000000000001", organization_id=_ORG, **kw)
         assert "error" not in res, res
         # The first call: the import of EM-T6b when one runs, or else the
         # recurring sweep. Each call after an import is the recurring sweep.
@@ -405,7 +405,7 @@ async def test_the_backstop_drops_old_mail_that_is_not_stored(caplog) -> None:
                 _msg("old-b", 120), _msg("no-date", None)]
     db = _StoredDb({"old-stored"})
     with caplog.at_level(logging.INFO, logger=sched.logger.name):
-        kept = await sched._drop_below_floor(db, "acc-1", messages, floor)
+        kept = await sched._drop_below_floor(db, "a0000000-0000-4000-8000-000000000001", messages, floor)
     assert [m.provider_message_id for m in kept] == ["new", "old-stored", "no-date"]
     assert len(db.queries) == 1, "the stored ids take ONE query"
     assert sorted(db.queries[0][1]["pids"]) == ["old-a", "old-b", "old-stored"]
@@ -417,7 +417,7 @@ async def test_the_backstop_makes_no_query_when_nothing_is_old() -> None:
     db = _StoredDb(set())
     messages = [_msg("new", 1), _msg("no-date", None)]
     kept = await sched._drop_below_floor(
-        db, "acc-1", messages, _now() - timedelta(days=30))
+        db, "a0000000-0000-4000-8000-000000000001", messages, _now() - timedelta(days=30))
     assert kept == messages
     assert db.queries == []
 
@@ -949,10 +949,10 @@ async def test_clean_older_mail_with_no_date_reaches_back_180_days(
     bg = BackgroundTasks()
     try:
         res = await c.cleanup_backfill(
-            c.CleanupBackfillRequest(account_id="acc-t6a-clean"),
+            c.CleanupBackfillRequest(account_id="a0000000-0000-4000-8000-0000000006a1"),
             background=bg, user=SimpleNamespace(email="u@x"))
     finally:
-        c._SWEEP_JOBS.pop("acc-t6a-clean", None)
+        c._SWEEP_JOBS.pop("a0000000-0000-4000-8000-0000000006a1", None)
     assert res["scheduled"] is True
     since = bg.tasks[0].args[1]
     assert since is not None and _near(since, _now() - timedelta(days=180))
@@ -1040,7 +1040,7 @@ async def test_load_older_writes_nothing_past_the_ceiling_and_stops(
     monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
 
     res = await folders.backfill_folder(
-        "acc-1", folders.BackfillRequest(folder="inbox", max_pages=10),
+        "a0000000-0000-4000-8000-000000000001", folders.BackfillRequest(folder="inbox", max_pages=10),
         user=SimpleNamespace(email="u@x"))
 
     assert written == ["a", "b", "c"], "the backfill wrote mail past the ceiling"
