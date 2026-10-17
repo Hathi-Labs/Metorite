@@ -115,3 +115,44 @@ def test_both_paths_cut_with_the_one_function() -> None:
     tool = inspect.getsource(ask_tools.ask_questions)
     assert "clip_words(" in tool
     assert "[:200]" not in tool and "[:100]" not in tool
+
+
+def test_an_optional_question_reaches_the_card() -> None:
+    """Owner report, 2026-10-17: a question the member may skip.
+
+    The card holds Submit back until every question has an answer, unless
+    the question says ``"required": false``. Both paths that build the card
+    must keep that key, and only when it is False, so every other card
+    stays exactly as before.
+
+    Mutations caught: the tool drops the key; the tool sends it for every
+    question; the bridge drops the key.
+    """
+
+    async def run() -> dict:
+        queue: asyncio.Queue = asyncio.Queue()
+        token = ex._active_run_queue.set(queue)
+        try:
+            task = asyncio.create_task(ask_questions(json.dumps({"questions": [
+                {"header": "Target deadline", "question": "What date?", "required": False},
+                {"header": "Task owners", "question": "Who owns the tasks?",
+                 "options": [{"label": "Propose from the team", "recommended": True}]},
+                {"header": "Notes", "question": "Anything else?", "required": True},
+            ]})))
+            event = await asyncio.wait_for(queue.get(), 5)
+            ex._pending_user_input.pop(event["value"]["request_id"]).set_result({"answer": "ok"})
+            await task
+            return event
+        finally:
+            ex._active_run_queue.reset(token)
+
+    qs = asyncio.run(run())["value"]["questions"]
+    assert qs[0]["required"] is False
+    assert "required" not in qs[1]
+    assert "required" not in qs[2]
+
+    src = (ROOT / "apps/services/orchestrator/orchestrator/executor.py").read_text(encoding="utf-8")
+    bridge = src[src.index('if _tc_name == "ask_questions":'):]
+    bridge = bridge[: bridge.index('"elicitation_requested"')]
+    assert 'if _q.get("required") is False:' in bridge
+    assert '_entry["required"] = False' in bridge

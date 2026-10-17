@@ -25,7 +25,13 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
-import ElicitationCard, { ANSWERED_TITLE, QUESTION_ICON, questionsTitle } from "./ElicitationCard";
+import ElicitationCard, {
+  ANSWERED_TITLE,
+  NEEDS_ANSWER,
+  OPTIONAL_MARK,
+  QUESTION_ICON,
+  questionsTitle,
+} from "./ElicitationCard";
 
 /** Longer than the old server cap of 200, as the owner's question was. */
 const LONG_Q =
@@ -114,5 +120,65 @@ describe("ElicitationCard: one look with the other chat cards", () => {
     expect(done).toContain("Archive both #22 and #23");
     expect(done).not.toContain("data-elicitation-submit");
     expect(done).not.toContain("<textarea");
+  });
+});
+
+// Owner report, 2026-10-17: "even after selecting, i cant submit." A pick
+// did count, but the text question above it had no answer, and the card
+// did not say so. The click path (a pick, then the reason and the mark,
+// then text, then Submit) runs in a real browser in
+// `e2e/genui-option-picker.spec.ts`. The rules are in
+// `src/lib/elicitationAnswer.test.ts`.
+// Mutations caught: the reason line goes, Submit loses its
+// `aria-describedby`, the mark shows on a card with no answer, and an
+// optional question loses its mark.
+describe("ElicitationCard: Submit never blocks without a reason", () => {
+  const OWNER = [
+    {
+      header: "Target deadline",
+      question: "What date should the system be live by?",
+      allowFreeformInput: true,
+      options: null,
+    },
+    {
+      header: "Task owners",
+      question: "Who should own the plan tasks?",
+      allowFreeformInput: true,
+      options: [{ label: "Propose from the team", recommended: true }, { label: "I'll give owners" }],
+    },
+  ];
+
+  it("names the questions that block Submit, and Submit points at that line", () => {
+    const two = render({ questions: OWNER });
+    const submit = element(two, "data-elicitation-submit");
+    expect(submit).toMatch(/\sdisabled=""/);
+    const describedBy = /aria-describedby="([^"]+)"/.exec(submit)?.[1];
+    expect(describedBy).toBeTruthy();
+    const reason = element(two, "data-elicitation-blocked");
+    expect(reason).toContain(`id="${describedBy}"`);
+    expect(reason).toContain('aria-live="polite"');
+    expect(two).toContain(">Answer Target deadline and Task owners to submit.<");
+  });
+
+  it("marks no question on a card with no answer yet", () => {
+    const two = render({ questions: OWNER });
+    expect(two).not.toContain(NEEDS_ANSWER);
+    expect(two).not.toContain("data-elicitation-unanswered");
+  });
+
+  it("says 'the question' on a card of one question", () => {
+    expect(html).toContain(">Answer the question to submit.<");
+  });
+
+  it("marks an optional question, and does not count it", () => {
+    const optional = render({ questions: [{ ...OWNER[0], required: false }, OWNER[1]] });
+    expect(optional).toContain(`· ${OPTIONAL_MARK}`);
+    expect(optional).toContain(">Answer Task owners to submit.<");
+  });
+
+  it("draws no reason and no mark on an answered card", () => {
+    const done = render({ questions: OWNER, answered: "Target deadline: 1 Dec" });
+    expect(done).not.toContain("data-elicitation-blocked");
+    expect(done).not.toContain(OPTIONAL_MARK);
   });
 });

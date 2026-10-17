@@ -263,6 +263,11 @@ and a stale row after a 409 reads as success.
 - ConfirmationCard.tsx — Approve/Reject prompt for agent confirmation requests
 - ElicitationCard.tsx — Structured question card (VS Code ask_questions parity):
   single/multi-select options, freeform text input, recommended defaults
+  - The card never blocks Submit without a reason (owner report, 2026-10-17).
+    `submitBlockedReason` in `lib/elicitationAnswer.ts` names each question
+    with no answer, beside Submit. A question with `required: false` never
+    blocks Submit. Fences: `lib/elicitationAnswer.test.ts`,
+    `components/elicitationCard.test.ts` and `e2e/genui-option-picker.spec.ts`
 - TodoPanel.tsx — VS Code-style "Todos (n/m)" collapsible panel above input
 - Both cards render inline in the chat thread; user answers are sent as
   the next chat message for the agent to process

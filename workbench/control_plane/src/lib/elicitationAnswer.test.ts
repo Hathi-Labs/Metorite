@@ -20,6 +20,9 @@ import {
   canSubmitAnswers,
   collectAnswers,
   formattedAnswers,
+  isAnswered,
+  submitBlockedReason,
+  unansweredQuestions,
   userInputAnswer,
   type ElicitationQuestion,
 } from "@/lib/elicitationAnswer";
@@ -102,5 +105,126 @@ describe("the answered card's line", () => {
       "Archive both #22 and #23",
     );
     expect(answerSummary(TWO, { Scope: { selected: ["#22"] }, Note: { freeform: "ok" } })).toBe("Scope: #22 · Note: ok");
+  });
+});
+
+// Owner report, 2026-10-17: "even after selecting, i cant submit." The card
+// had two questions. The pick on the second one counted, and Submit stayed
+// off because the first, a text question, had no answer. Nothing said so.
+// Mutations caught: a pick that stops counting, typed text that stops
+// counting, an optional question that still blocks, a reason that names
+// the wrong question or none, and a recommended option sent unpicked.
+const OWNER: ElicitationQuestion[] = [
+  {
+    header: "Target deadline",
+    question: "What date should the system be live by? I'll schedule the plan tasks backwards from it.",
+    multiSelect: false,
+    allowFreeformInput: true,
+    options: null,
+  },
+  {
+    header: "Task owners",
+    question: "Who should own the plan tasks?",
+    multiSelect: false,
+    allowFreeformInput: true,
+    options: [
+      { label: "Propose from the team", description: null, recommended: true },
+      { label: "I'll give owners", description: null, recommended: false },
+    ],
+  },
+];
+const PICK = { "Task owners": { selected: ["Propose from the team"] } };
+const DATE = { "Target deadline": "2026-12-01" };
+
+describe("the owner's two-question card", () => {
+  it("counts a pick alone as the answer to its question", () => {
+    expect(isAnswered(OWNER[1], PICK, {})).toBe(true);
+    expect(unansweredQuestions(OWNER, PICK, {})).toEqual([OWNER[0]]);
+  });
+
+  it("holds Submit back on the text question, and names it", () => {
+    expect(canSubmitAnswers(OWNER, PICK, {})).toBe(false);
+    expect(submitBlockedReason(OWNER, unansweredQuestions(OWNER, PICK, {}))).toBe(
+      "Answer Target deadline to submit.",
+    );
+  });
+
+  it("counts typed text alone as an answer, and names the question left", () => {
+    expect(isAnswered(OWNER[0], {}, DATE)).toBe(true);
+    expect(isAnswered(OWNER[0], {}, { "Target deadline": "   " })).toBe(false);
+    expect(canSubmitAnswers(OWNER, {}, DATE)).toBe(false);
+    expect(submitBlockedReason(OWNER, unansweredQuestions(OWNER, {}, DATE))).toBe(
+      "Answer Task owners to submit.",
+    );
+  });
+
+  it("turns Submit on when both questions have an answer", () => {
+    expect(canSubmitAnswers(OWNER, PICK, DATE)).toBe(true);
+    expect(submitBlockedReason(OWNER, unansweredQuestions(OWNER, PICK, DATE))).toBeNull();
+  });
+
+  it("names every question of a card with no answer yet", () => {
+    expect(submitBlockedReason(OWNER, unansweredQuestions(OWNER, {}, {}))).toBe(
+      "Answer Target deadline and Task owners to submit.",
+    );
+  });
+
+  it("takes the own-answer text in place of a pick", () => {
+    const own = { ...DATE, "Task owners": "Priya owns all of them" };
+    expect(canSubmitAnswers(OWNER, {}, own)).toBe(true);
+    const sent = blockingAnswer(OWNER, collectAnswers(OWNER, {}, own)).answer;
+    expect(sent).toBe("[Target deadline]\nAnswer: 2026-12-01\n\n[Task owners]\nAnswer: Priya owns all of them");
+    expect(sent).not.toContain("Selected:");
+  });
+
+  it("lets an optional question stay empty", () => {
+    const optional = [{ ...OWNER[0], required: false }, OWNER[1]];
+    expect(canSubmitAnswers(optional, PICK, {})).toBe(true);
+    expect(submitBlockedReason(optional, unansweredQuestions(optional, PICK, {}))).toBeNull();
+    // `required: true` is the same as no key.
+    const marked = [{ ...OWNER[0], required: true }, OWNER[1]];
+    expect(canSubmitAnswers(marked, PICK, {})).toBe(false);
+  });
+
+  it("sends both answers under their own headers, and no unpicked recommendation", () => {
+    const answers = collectAnswers(OWNER, PICK, DATE);
+    expect(answers).toEqual({
+      "Target deadline": { selected: [], freeform: "2026-12-01" },
+      "Task owners": { selected: ["Propose from the team"], freeform: undefined },
+    });
+    expect(blockingAnswer(OWNER, answers)).toEqual({
+      answer: "[Target deadline]\nAnswer: 2026-12-01\n\n[Task owners]\nSelected: Propose from the team",
+      wasFreeform: false,
+    });
+    // The member typed a date and picked nothing: the recommended option
+    // does not go out.
+    const unpicked = collectAnswers(OWNER, {}, { ...DATE, "Task owners": "Ask me later" });
+    expect(unpicked["Task owners"].selected).toEqual([]);
+    expect(blockingAnswer(OWNER, unpicked).answer).not.toContain("Propose from the team");
+  });
+});
+
+describe("the reason beside a blocked Submit", () => {
+  const q = (header: string): ElicitationQuestion => ({ header, question: `${header}?` });
+
+  it("says 'the question' on a card of one question, which shows no header", () => {
+    expect(submitBlockedReason(ONE, ONE)).toBe("Answer the question to submit.");
+  });
+
+  it("lists three names, and counts more than three", () => {
+    const three = [q("A"), q("B"), q("C")];
+    expect(submitBlockedReason(three, three)).toBe("Answer A, B and C to submit.");
+    const four = [...three, q("D")];
+    expect(submitBlockedReason(four, four)).toBe("Answer the 4 open questions to submit.");
+  });
+
+  it("names a header without its «marks»", () => {
+    const fenced = [q("Owner of «Launch»"), q("B")];
+    expect(submitBlockedReason(fenced, [fenced[0]])).toBe("Answer Owner of Launch to submit.");
+  });
+
+  it("keeps a question with no options and no box unanswered, as before", () => {
+    const mute = { header: "Note", question: "Read this.", allowFreeformInput: false, options: null };
+    expect(isAnswered(mute, {}, { Note: "typed" })).toBe(false);
   });
 });
