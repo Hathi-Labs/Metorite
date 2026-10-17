@@ -1269,6 +1269,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q26** | Labels on notes, on the decide tier, in shadow. §18.11 | P1 |
 | **CRM-Q27** | 🔨 built 2026-10-16 on `crm-batch-i`, merged (#1111), dark. Search of note text by meaning. §18.11 | P2 |
 | **CRM-Q28** | A weekly digest on the powerful tier. §18.11 | P2 |
+| **CRM-Q30** | A founder question set for CRM insights: an eval of the assistant over CRM data. §18.11 | P1 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
 
@@ -3658,6 +3659,7 @@ each value. Embeddings help the model find text. They never make a number.
 | CRM-Q28 | A weekly digest on the powerful tier | AGENT-SAFE | M | CRM-Q25 |
 | CRM-Q25b | One time zone for each month bucket of the aggregate | AGENT-SAFE | S | CRM-Q25 |
 | CRM-Q25c | A NUL byte in a list query answers 422 | AGENT-SAFE | S | — |
+| CRM-Q30 | A founder question set for CRM insights | AGENT-SAFE | M | CRM-Q25, CRM-Q27 |
 
 CRM-Q25b, CRM-Q27 and CRM-Q28 have their done-when lists after CRM-Q26
 (2026-10-16). To build each ticket is AGENT-SAFE. For CRM-Q26, a mode other than
@@ -4240,6 +4242,82 @@ also edits `acb_common/settings.py`, `routes/crm/flags.py`,
 names one org in `CRM_DIGEST_ORGS`, the first digest of that org runs. Its
 credits come from `usage_event`, because the rate card of production lives
 in the Console database. The result goes into this section.
+
+**CRM-Q30 · A founder question set for CRM insights (2026-10-17).**
+
+**Owner direction (2026-10-17, in chat).** Founders will ask the AI chat for
+insights over their CRM. We must prove that the assistant picks the right
+tools and arguments. It must also combine modules correctly and answer with
+the right numbers. The set must catch a regression.
+
+**The facts (code check of 2026-10-17, `origin/main` `a8ef53c93`).**
+
+- `evals/crm_note_labels/` and `evals/crm_mapping/` are the pattern. Each has
+  synthetic data, checkers, a `--scripted` mode and a row in
+  `evals/README.md`.
+- `crm_aggregate` (CRM-Q25) needs `group_by` or `group_field`. So a plain
+  total is the `total` of a grouped answer.
+- A module filter takes one value or a date range only. No filter takes "not
+  equal" or a number range.
+- The route sorts a value group largest first, and it keeps 50 groups.
+- No tool reads the short read of CRM-Q24. Only the Sync health card shows
+  it.
+- CRM-Q29, a shared function that checks the numbers of an answer, is not on
+  `origin/main`.
+
+Done when:
+
+1. `evals/crm_founder_questions/` holds a synthetic dataset in the shape of
+   DEWiN. A seeded script makes it, so each run gives the same rows. No row
+   comes from a real customer.
+2. The dataset has the custom modules Invoices, Payment_Received,
+   Payment_Made, Clients, Company and Operator_Associates, with lookups
+   between them. Commercials has fields and no record.
+3. The dataset has a currency field in INR, `date` fields, and `datetime`
+   fields with the offset of Asia/Kolkata. It also has picklists, a boolean,
+   a field that every row leaves empty, and fields that some rows leave
+   empty.
+4. The core Contacts carry the label "Existing Sites" in the profile, with
+   custom fields. Notes hang off module records. The profile names the zone
+   Asia/Kolkata.
+5. About 30 founder questions each have a category, the expected tool calls,
+   and the expected facts. Plain Python computes each fact from the dataset.
+   Nobody writes the numbers by hand.
+6. The categories are: totals, trends by month and quarter in the CRM zone,
+   top-N, overdue or unpaid, cross-module, an empty field, two aggregate
+   calls, the relabel of Contacts, a note search and a short read. The note
+   search question uses `crm_search_notes` (CRM-Q27), and the set marks it
+   as such. The short read question expects the answer to flag that the
+   connected Zoho user cannot see each record.
+7. `--scripted` replays recorded tool calls and answers. It runs the real
+   tool functions of `crm_tools.py` on recorded route answers. It needs no
+   model and no network, and CI runs it.
+8. `--live` asks the real assistant on a local stack, with a seeded
+   database. CI does not run it. A person runs it.
+9. The checkers score the tool choice and its arguments, and the numbers in
+   the answer, against the expected facts. They also score a required flag
+   and a forbidden number. A local number check does this until CRM-Q29
+   merges. Then the eval moves to the shared function.
+10. A unit test runs the scripted set. Mutations prove that a wrong tool, a
+    wrong argument, a wrong number and a missing flag each fail a bar.
+11. An R8 test loads the dataset into a private database. It sends each
+    expected call through the real routes, and it asserts that each answer
+    agrees with the Python fact. It skips no question except the note
+    search, which needs the embed door.
+12. `evals/README.md` gains a row.
+
+Files: a new `evals/crm_founder_questions/`, `evals/README.md`,
+`tests/unit/test_crm_founder_questions.py`,
+`tests/unit/test_crm_founder_questions_r8.py` and this section. Gate:
+AGENT-SAFE. Size: M. Waits for: CRM-Q25, CRM-Q25b, CRM-Q25c and CRM-Q27,
+all merged (#1104, #1111). No migration and no flag.
+
+Verify with:
+
+- `uv run python -m evals.crm_founder_questions --scripted`
+- `uv run pytest tests/unit/test_crm_founder_questions.py -q`
+- `uv run pytest tests/unit/test_crm_founder_questions_r8.py tests/unit/test_crm_aggregate*.py tests/unit/test_crm_agent.py -q`,
+  on a private database, with no test skipped.
 
 #### 18.11.3 Verification
 
