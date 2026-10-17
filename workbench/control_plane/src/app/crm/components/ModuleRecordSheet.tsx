@@ -9,8 +9,10 @@
  * `FieldValue` draws each value by the CRM-Q4 rules of `fields.ts`.
  *
  * - The header: the name as the title, the owner and the modified date.
- * - The tabs: Overview and Fields, and Related only when a lookup holds a
- *   value. No timeline: a generic record has none.
+ * - The tabs: Overview, Timeline and Fields, and Related only when a lookup
+ *   holds a value. Since CRM-Q23c the Timeline tab shows the activities that
+ *   the sync links to the record (`crm_platform.md` section 18.10), read
+ *   only: `Timeline` in its `readOnly` mode, with no composer.
  * - A lookup opens the record page of its target: a known record (a deal, a
  *   contact) or another generic record. The gateway resolves the link. A
  *   lookup with no link stays text.
@@ -25,6 +27,7 @@
  */
 
 import Button from "@/components/ui/Button";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { useCachedResource } from "@/lib/useCachedResource";
 import * as api from "../lib/api";
 import { CrmError } from "../lib/api";
@@ -39,6 +42,8 @@ import {
   moduleRelated,
   moduleSheetState,
   moduleTabs,
+  moduleTimelineKey,
+  moduleTimelineState,
   moduleTitle,
   sheetTitle,
   shownModuleTab,
@@ -46,10 +51,13 @@ import {
   type ModuleLink,
   type ModuleRecordPage,
   type ModuleTab,
+  type ModuleTimelineState,
 } from "../lib/modules";
+import type { TimelineEntry } from "../lib/types";
 import FieldValue from "./FieldValue";
 import { FoldedFields } from "./FieldsPanel";
 import { RecordFacts, RecordModal, RecordTabBar } from "./RecordShell";
+import Timeline from "./Timeline";
 
 export default function ModuleRecordSheet({
   module,
@@ -80,6 +88,13 @@ export default function ModuleRecordSheet({
   );
   const state = moduleSheetState(res.data, res.error, id);
   const page = state.kind === "page" ? state.page : null;
+  // CRM-Q23c: the timeline is read only when its tab is on screen.
+  const wantsTimeline = page !== null && shownModuleTab(page, tab) === "timeline";
+  const stream = useCachedResource<{ entries: TimelineEntry[] }>(
+    wantsTimeline ? moduleTimelineKey(module, id) : null,
+    () => api.getModuleTimeline(module, id),
+  );
+  const timeline = moduleTimelineState(stream.data, stream.error);
   const noun = page?.module.singular_label || page?.module.label || module;
   return (
     <RecordModal
@@ -93,7 +108,14 @@ export default function ModuleRecordSheet({
       onClose={onClose}
     >
       {state.kind === "page" ? (
-        <ModuleRecordBody page={state.page} tab={tab} onTab={onTab} onOpenLink={onOpenLink} />
+        <ModuleRecordBody
+          page={state.page}
+          tab={tab}
+          onTab={onTab}
+          onOpenLink={onOpenLink}
+          timeline={timeline}
+          onRetryTimeline={stream.refresh}
+        />
       ) : state.kind === "failed" ? (
         <div className="flex flex-col items-center gap-3 p-8 text-center">
           <p className="text-xs text-muted-foreground">This record did not load. Try again.</p>
@@ -116,11 +138,16 @@ export function ModuleRecordBody({
   tab,
   onTab,
   onOpenLink,
+  timeline = { kind: "loading" },
+  onRetryTimeline = () => undefined,
 }: {
   page: ModuleRecordPage;
   tab: string;
   onTab: (tab: ModuleTab) => void;
   onOpenLink: (link: ModuleLink) => void;
+  /** CRM-Q23c: the read of the Timeline tab. */
+  timeline?: ModuleTimelineState;
+  onRetryTimeline?: () => void;
 }) {
   const shown = shownModuleTab(page, tab);
   const rows = moduleFieldRows(page);
@@ -139,7 +166,9 @@ export function ModuleRecordBody({
       <RecordTabBar tabs={moduleTabs(page)} active={shown} onTab={onTab} />
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {shown === "related" ? (
+        {shown === "timeline" ? (
+          <ModuleTimeline state={timeline} onRetry={onRetryTimeline} />
+        ) : shown === "related" ? (
           <FieldList rows={moduleRelated(page)} empty="No linked records." onOpenLink={onOpenLink} />
         ) : shown === "fields" ? (
           ranked ? (
@@ -175,6 +204,39 @@ export function ModuleRecordBody({
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * The Timeline tab of a module record (CRM-Q23c): the shared `Timeline` in
+ * its read-only mode. A wait draws a skeleton, and a failure offers a retry.
+ */
+export function ModuleTimeline({
+  state,
+  onRetry,
+}: {
+  state: ModuleTimelineState;
+  onRetry: () => void;
+}) {
+  if (state.kind === "entries") {
+    return <Timeline entries={state.entries} readOnly parentMirrored />;
+  }
+  if (state.kind === "failed") {
+    return (
+      <div className="flex flex-col items-center gap-3 p-8 text-center">
+        <p className="text-xs text-muted-foreground">The timeline did not load. Try again.</p>
+        <Button variant="secondary" size="sm" icon="RefreshCw" onClick={onRetry}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-2 p-4" aria-busy="true">
+      <Skeleton className="h-4 w-2/3" />
+      <Skeleton className="h-4 w-1/2" />
+      <Skeleton className="h-4 w-3/5" />
     </div>
   );
 }

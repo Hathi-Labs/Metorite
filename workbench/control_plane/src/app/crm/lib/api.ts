@@ -458,6 +458,21 @@ export function getModuleRecord(module: string, id: string): Promise<ModuleRecor
   );
 }
 
+/**
+ * The activities of one module record, newest first (CRM-Q23a). Read only:
+ * no route writes an activity on a module record. An unknown module or
+ * record is a 404.
+ */
+export function getModuleTimeline(
+  module: string,
+  id: string,
+  limit = 100,
+): Promise<{ entries: TimelineEntry[] }> {
+  return call<{ entries: TimelineEntry[] }>(
+    `/modules/${encodeURIComponent(module)}/records/${encodeURIComponent(id)}/timeline?limit=${limit}`,
+  );
+}
+
 // ── Mode, connection and sync (WS-53 CRM-U5, CRM-Z7) ───────────────────────
 //
 // A 404 from the three reads below means the Zoho mirror is dark for this

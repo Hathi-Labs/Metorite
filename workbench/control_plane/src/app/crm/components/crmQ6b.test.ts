@@ -293,14 +293,15 @@ describe("the lookup links", () => {
   });
 
   it("shows Related only when a lookup holds a value", () => {
-    expect(moduleTabs(PAGE)).toEqual(["overview", "fields", "related"]);
+    // CRM-Q23c adds the Timeline tab to each module record.
+    expect(moduleTabs(PAGE)).toEqual(["overview", "timeline", "fields", "related"]);
     const noLookup = {
       ...PAGE,
       record: { ...PAGE.record, fields: { Subject: "Quote 1" } },
     };
-    expect(moduleTabs(noLookup)).toEqual(["overview", "fields"]);
+    expect(moduleTabs(noLookup)).toEqual(["overview", "timeline", "fields"]);
     expect(shownModuleTab(noLookup, "related")).toBe("overview");
-    expect(shownModuleTab(PAGE, "timeline")).toBe("overview");
+    expect(shownModuleTab(PAGE, "timeline")).toBe("timeline");
   });
 
   it("counts only a visible lookup for the Related tab (review note 1)", () => {
@@ -311,7 +312,7 @@ describe("the lookup links", () => {
       field_defs: PAGE.field_defs.map((d) => (d.key === "Deal_Name" ? { ...d, visible: false } : d)),
     };
     expect(lookupKeys(hidden)).toEqual([]);
-    expect(moduleTabs(hidden)).toEqual(["overview", "fields"]);
+    expect(moduleTabs(hidden)).toEqual(["overview", "timeline", "fields"]);
     expect(moduleRelated(hidden)).toEqual([]);
   });
 });
@@ -355,7 +356,8 @@ describe("the state of the generic record sheet (review notes 2 and 3)", () => {
     expect(html).toContain(">Modified<");
     expect(html).toContain(">Overview<");
     expect(html).toContain(">Related<");
-    expect(html).not.toContain(">Timeline<");
+    // CRM-Q23c: the Timeline tab joins, read only (`crmQ23c.test.ts`).
+    expect(html).toContain(">Timeline<");
     expect(html).toMatch(/<button[^>]*>Bosch<\/button>/);
     expect(html).toMatch(/<button[^>]*>Widget<\/button>/);
     expect(html).not.toMatch(/<button[^>]*>Acme Vendor<\/button>/);

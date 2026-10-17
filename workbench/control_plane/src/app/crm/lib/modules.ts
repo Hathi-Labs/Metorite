@@ -18,7 +18,7 @@ import { fieldRows, type FieldDef, type FieldRow, type FieldValue } from "./fiel
 import { LIST_PAGE_SIZE, type ListQuery } from "./filters";
 import { dateTime, shortDate } from "./format";
 import type { CrmColumn } from "./columns";
-import type { EntitySlug } from "./types";
+import type { EntitySlug, TimelineEntry } from "./types";
 import { MODULE_NAME, isModuleName } from "./urlState";
 
 type Row = Record<string, unknown>;
@@ -176,8 +176,11 @@ export function listRow(record: ModuleRecord): Row {
 
 // ── The record page ────────────────────────────────────────────────────────
 
-/** The tabs of a generic record page. No timeline: a generic record has none. */
-export type ModuleTab = "overview" | "fields" | "related";
+/**
+ * The tabs of a generic record page. Since CRM-Q23c the Timeline tab shows
+ * the activities that the sync links to the record (CRM-Q23a), read only.
+ */
+export type ModuleTab = "overview" | "timeline" | "fields" | "related";
 
 /**
  * Each field key whose definition is a VISIBLE lookup and whose value is set.
@@ -190,9 +193,38 @@ export function lookupKeys(page: Pick<ModuleRecordPage, "record" | "field_defs">
     .map((d) => d.key);
 }
 
-/** Overview and Fields, and Related only when a visible lookup holds a value. */
+/**
+ * Overview, Timeline and Fields, and Related only when a visible lookup holds
+ * a value. Each record has the Timeline tab: an empty one says so, and the
+ * tab does not wait for a read to decide whether it shows (CRM-Q23c).
+ */
 export function moduleTabs(page: Pick<ModuleRecordPage, "record" | "field_defs">): ModuleTab[] {
-  return lookupKeys(page).length > 0 ? ["overview", "fields", "related"] : ["overview", "fields"];
+  const tabs: ModuleTab[] = ["overview", "timeline", "fields"];
+  return lookupKeys(page).length > 0 ? [...tabs, "related"] : tabs;
+}
+
+/** The cache key of the timeline of one module record (CRM-Q23c). */
+export function moduleTimelineKey(module: string, id: string): string {
+  return `crm:module-timeline:${module}:${id}`;
+}
+
+/**
+ * What the Timeline tab of a module record draws (CRM-Q23c). Only a
+ * missing record is "missing". A failed read is "failed", and the tab offers
+ * a retry. A read that has not answered is "loading", and nothing else shows.
+ */
+export type ModuleTimelineState =
+  | { kind: "entries"; entries: TimelineEntry[] }
+  | { kind: "loading" }
+  | { kind: "failed" };
+
+export function moduleTimelineState(
+  data: { entries: TimelineEntry[] } | undefined,
+  error: string | null,
+): ModuleTimelineState {
+  if (data && Array.isArray(data.entries)) return { kind: "entries", entries: data.entries };
+  if (error) return { kind: "failed" };
+  return { kind: "loading" };
 }
 
 /** The tab the page draws: the one asked for, or Overview. */
