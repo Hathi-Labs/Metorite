@@ -68,7 +68,9 @@ import ModuleList from "./components/ModuleList";
 import ModuleRecordSheet from "./components/ModuleRecordSheet";
 import { moduleLabel, type ModuleLink } from "./lib/modules";
 import { openModuleRecord, selectModule } from "./lib/urlState";
-import { useModules, useSourceLabels } from "./lib/useCrmMode";
+import { useModules, useOverlays, useSourceLabels } from "./lib/useCrmMode";
+import { SlotSuggestionArea, useSuggestions } from "./components/Suggestions";
+import { memberEmptyLine, suggestionFor } from "./lib/suggestions";
 import * as api from "./lib/api";
 import { CrmError } from "./lib/api";
 import {
@@ -104,6 +106,7 @@ import {
   canEditView,
   captureView,
   deleteCopy,
+  isFiltered,
   resolveBareLink,
   viewDiverges,
   type SavedView,
@@ -197,6 +200,11 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   // CRM-Q17a-2 item 7: in Mirror mode, the source's names of the core
   // entities. A Native CRM, or an org off the list, keeps the CRM's names.
   const labels = useSourceLabels(ctx.mode === "mirror");
+  // CRM-Q20-2 (option A): the Zoho module that each core list opens, for
+  // each member. With none, each list opens its own records.
+  const overlays = useOverlays(ctx.mode === "mirror");
+  // CRM-Q20-2 item 5: the suggestion of an empty list, for an admin only.
+  const { list: suggestionList } = useSuggestions(ctx.isAdmin && ctx.mode === "mirror");
   /** The Refresh button of a module list reads page 1 again. */
   const [moduleReload, setModuleReload] = useState(0);
   const { isMobile } = useViewMode();
@@ -516,6 +524,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   const chips = listEntity
     ? chipsFor(listEntity, statusesFor(listEntity), view)
     : [];
+  /** CRM-Q20-2: the suggestion of the core list on screen, list or board. */
+  const slotSuggestion = isEntity(view.tab) ? suggestionFor(suggestionList, view.tab) : null;
 
   const totals = boardTotals(store.lanes);
   const leadCount = store.leadLanes.reduce((n, lane) => n + lane.count, 0);
@@ -842,6 +852,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                       modules={railModules}
                       settings={railSettings}
                       labels={labels}
+                      overlays={overlays}
                     />
                   </nav>
                 )
@@ -878,6 +889,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               modules={railModules}
               settings={railSettings}
               labels={labels}
+              overlays={overlays}
             />
           </nav>
         ) : null}
@@ -963,7 +975,15 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               Reload button, and the rail stays. The key clears it when the
               member picks another view (CRM-Q3, spec section 18.6). */}
           <CrmBoundary key={boundaryKey(withShownSection(view, sectionCtx), pipelineId)}>
-          {boardOn ? (
+          {slotSuggestion ? (
+            // CRM-Q20-2 item 5: the list is empty, and Metorite knows where
+            // its records are. The admin previews them first.
+            <SlotSuggestionArea
+              suggestion={slotSuggestion}
+              listLabel={viewLabel(view.tab, labels)}
+              labelOf={(slug) => viewLabel(slug, labels)}
+            />
+          ) : boardOn ? (
             <KanbanBoard
               entity={view.tab === "leads" ? "leads" : "deals"}
               lanes={view.tab === "leads" ? store.leadLanes : dealLanes}
@@ -1055,6 +1075,12 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                 onLoadMore={() => void store.loadMore()}
                 loadingMore={store.loadingMore}
                 hasMore={store.hasMore}
+                // CRM-Q20-2 item 5: an empty Mirror list says why, with no filter on.
+                emptyNote={
+                  ctx.mode === "mirror" && !isFiltered(view)
+                    ? memberEmptyLine(viewLabel(listEntity, labels))
+                    : undefined
+                }
                 sort={view.sort}
                 direction={view.dir}
                 onSort={(key) => go(applySort(view, key))}

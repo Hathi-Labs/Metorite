@@ -18,7 +18,6 @@ import { asFieldLayout, type FieldLayout } from "./fieldLayout";
 import type {
   FieldMap,
   FieldRule,
-  FieldSuggestion,
   MappingPlan,
   PlanChange,
   PlanList,
@@ -27,6 +26,12 @@ import type { CrmOwner } from "./filterBar";
 import type { SavedView, SavedViewBody } from "./savedViews";
 import type { SyncHealth, SyncHold } from "./syncHealth";
 import type { SourceLabels } from "./views";
+import type {
+  OverlayPreview,
+  SlotWord,
+  SuggestionDone,
+  SuggestionList,
+} from "./suggestions";
 import type { RecordCounts, ResetThen } from "./setup";
 import type { ResetResult } from "./startOver";
 import type {
@@ -487,12 +492,18 @@ export function getCrmSettings(): Promise<CrmSettings> {
 }
 
 /** The body of `GET /crm/mode`. */
-export type CrmModeBody = { mode: string | null; labels?: SourceLabels | null };
+export type CrmModeBody = {
+  mode: string | null;
+  labels?: SourceLabels | null;
+  /** CRM-Q20-2: by core slot, the Zoho module that plays it. */
+  overlays?: Partial<Record<SlotWord, string>> | null;
+};
 
 /**
  * `GET /crm/mode`, for each member the access rule admits. In Mirror mode,
  * for an org on `CRM_FILL_RANK_ORGS`, it also holds the source's names of the
  * core entities (CRM-Q17a-1 item 6). Each other body has no `labels` key.
+ * CRM-Q20-2: with an approved role, `overlays` names the module of each slot.
  */
 export function getCrmMode(): Promise<CrmModeBody> {
   return call<CrmModeBody>("/mode");
@@ -665,20 +676,6 @@ export function decideFieldRule(
   });
 }
 
-/**
- * Admin only (CRM-Q7b). The assistant proposes a column for the fields of one
- * entity. Each answer is a `proposed` rule that waits for approve or reject.
- * When the proposals of the current profile version exist, the gateway
- * returns them and calls no model (`asked` is false). A model failure is a
- * 502 with a short sentence.
- */
-export function suggestFieldRules(entity: EntitySlug): Promise<FieldSuggestion> {
-  return call<FieldSuggestion>("/field-rules/suggest", {
-    method: "POST",
-    body: JSON.stringify({ entity }),
-  });
-}
-
 // ── The plan of the Field map (WS-53 CRM-Q18-2) ───────────────────────────
 //
 // Admin only, Mirror mode only. The routes are CRM-Q18-1's. A 409 keeps its
@@ -715,6 +712,46 @@ export function approveMappingPlan(version: number): Promise<MappingPlan> {
 export function restoreMappingPlan(version: number): Promise<MappingPlan> {
   return call<MappingPlan>(`/mapping/plans/${encodeURIComponent(String(version))}/restore`, {
     method: "POST",
+  });
+}
+
+// ── The suggestions of the mapping (WS-53 CRM-Q20-2) ──────────────────────
+//
+// Admin only, Mirror mode only. `lib/suggestions.ts` holds the types and the
+// words. Each write is for one slot, and a 409 keeps its code.
+
+/** The open suggestions, and the slots that a module plays now. It reads only. */
+export function listSuggestions(): Promise<SuggestionList> {
+  return call<SuggestionList>("/mapping/suggestions");
+}
+
+/** The records of the module of one suggestion, as the slot reads them. It writes nothing. */
+export async function previewSuggestion(version: number, slot: SlotWord): Promise<OverlayPreview> {
+  const body = await call<{ overlay: OverlayPreview }>("/mapping/preview", {
+    method: "POST",
+    body: JSON.stringify({ version, slot }),
+  });
+  return body.overlay;
+}
+
+/** The module of the suggestion plays the slot. */
+export function approveSuggestion(slot: SlotWord, version: number): Promise<SuggestionDone> {
+  return call<SuggestionDone>(`/mapping/suggestions/${slot}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ version }),
+  });
+}
+
+/** The slot shows its own list again. */
+export function undoSuggestion(slot: SlotWord): Promise<SuggestionDone> {
+  return call<SuggestionDone>(`/mapping/suggestions/${slot}/undo`, { method: "POST" });
+}
+
+/** Do not offer the module for the slot again, until Zoho changes. */
+export function dismissSuggestion(slot: SlotWord, version: number): Promise<SuggestionDone> {
+  return call<SuggestionDone>(`/mapping/suggestions/${slot}/dismiss`, {
+    method: "POST",
+    body: JSON.stringify({ version }),
   });
 }
 

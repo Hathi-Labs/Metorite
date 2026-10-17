@@ -92,9 +92,13 @@ export function labelledViews(labels: SourceLabels | null | undefined): CrmRailV
   return CRM_VIEWS.map((view) => ({ ...view, label: viewLabel(view.id, labels) }));
 }
 
-/** One row of the rail: a view, or a generic Zoho module (CRM-Q6b). */
+/**
+ * One row of the rail: a view, or a generic Zoho module (CRM-Q6b). A view
+ * with `module` is a core list that a Zoho module plays (CRM-Q20-2, option
+ * A): the row keeps the label of the list and opens the module's list.
+ */
 export type RailEntry =
-  | { kind: "view"; view: CrmRailView }
+  | { kind: "view"; view: CrmRailView; module?: string }
   | { kind: "module"; row: ModuleRailRow };
 
 /**
@@ -107,17 +111,25 @@ export type RailEntry =
  *
  * With `labels`, a known view takes the source's plural label (CRM-Q17a-2
  * item 7). Contacts can read "Existing Sites". With none, it reads as before.
+ *
+ * With `overlays` (CRM-Q20-2), the row of a list that a module plays opens
+ * that module, and the module's own row leaves the group.
  */
 export function railEntries(
   modules: readonly CrmModule[] | null | undefined,
   labels?: SourceLabels | null,
+  overlays?: Partial<Record<EntitySlug, string>> | null,
 ): RailEntry[] {
-  const rows = moduleRailRows(modules);
+  // CRM-Q20-2: a module that plays a list has that list's row, so its own
+  // row leaves the group. One list, one row.
+  const playing = new Set(Object.values(overlays ?? {}));
+  const rows = moduleRailRows(modules).filter((row) => !playing.has(row.module));
   const views = labelledViews(labels);
   const lastKnown = views.reduce((at, view, i) => (isEntity(view.id) ? i : at), -1);
   const entries: RailEntry[] = [];
   views.forEach((view, i) => {
-    entries.push({ kind: "view", view });
+    const module = isEntity(view.id) ? overlays?.[view.id] : undefined;
+    entries.push(module ? { kind: "view", view, module } : { kind: "view", view });
     if (i === lastKnown) entries.push(...rows.map((row) => ({ kind: "module" as const, row })));
   });
   return entries;

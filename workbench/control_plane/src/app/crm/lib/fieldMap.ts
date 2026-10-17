@@ -66,20 +66,6 @@ export type FieldMap = {
   targets: FieldMapTarget[];
 };
 
-/**
- * `POST /crm/field-rules/suggest` (CRM-Q7b). `asked` is false when the press
- * called no model. `dropped` counts the answers that the gateway refused.
- */
-export type FieldSuggestion = {
-  entity: string;
-  profile_version: number | null;
-  asked: boolean;
-  dropped: number;
-  /** The fields of the batches whose call failed or whose answer was bad. */
-  unread: number;
-  proposals: FieldRule[];
-};
-
 /** What an admin can do with the rule of one field. */
 export type FieldAction = "approve" | "reject" | "pick";
 
@@ -89,24 +75,6 @@ export const FIELD_MAP_NOTE =
 export const NO_FIELDS = "No Zoho field goes to custom.";
 export const NO_TARGET = "No column can take this field.";
 export const STALE_SENTENCE = "Zoho changed this field. Decide again.";
-export const SUGGEST_LABEL = "Suggest mappings";
-export const SUGGEST_FAILED = "The assistant could not suggest mappings.";
-
-/**
- * The sentence after a press of "Suggest mappings" (CRM-Q7b). A proposal
- * waits for the admin, so the sentence asks for a decision and never says
- * that a field is mapped.
- */
-export function suggestionLine(result: FieldSuggestion): string {
-  const n = result.proposals.filter((rule) => rule.status === "proposed").length;
-  if (n === 0) {
-    return result.asked
-      ? "The assistant found no field that fits a column."
-      : "No proposal waits for you.";
-  }
-  const what = n === 1 ? "1 proposal waits" : `${n} proposals wait`;
-  return `${what} for you. Approve or reject each one.`;
-}
 
 const STATUS_LABEL: Record<FieldRuleStatus, string> = {
   proposed: "Proposed",
@@ -166,12 +134,6 @@ export function pickOptions(field: FieldMapField): SelectOption[] {
   return field.targets.map((column) => ({ value: column, label: columnLabel(column) }));
 }
 
-/** "62% sure", for a proposal of the assistant. */
-export function confidenceLabel(confidence: number | null): string | null {
-  if (confidence === null || Number.isNaN(confidence)) return null;
-  return `${Math.round(Math.min(Math.max(confidence, 0), 1) * 100)}% sure`;
-}
-
 /** The proposals and the stale rules: what waits for the admin. */
 export function waitingCount(maps: Array<FieldMap | null>): number {
   return maps.reduce(
@@ -181,11 +143,14 @@ export function waitingCount(maps: Array<FieldMap | null>): number {
   );
 }
 
-/** One line under a rule: who made it, and why. */
+/**
+ * One line under a rule: who made it, and why. CRM-Q20-2: no confidence
+ * number reaches the screen (section 18.9.2), so a proposal that the old
+ * proposer wrote shows who proposed it and its reason only.
+ */
 export function ruleLine(rule: FieldRule): string {
   const who = rule.proposed_by === "ai" ? "Proposed by the assistant" : "Picked by an admin";
-  const sure = rule.proposed_by === "ai" ? confidenceLabel(rule.confidence) : null;
-  return [who, sure, rule.reason].filter(Boolean).join(" · ");
+  return [who, rule.reason].filter(Boolean).join(" · ");
 }
 
 // ── The plan: the versions of the Field map (CRM-Q18-2) ───────────────────

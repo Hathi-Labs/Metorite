@@ -33,6 +33,8 @@ import {
 } from "./connect";
 import type { CrmModule } from "./modules";
 import type { SourceLabels } from "./views";
+import { overlaysBySlug } from "./suggestions";
+import type { CrmModeBody } from "./api";
 
 const KEY_CONNECTION = "crm:connection";
 const KEY_SETTINGS = "crm:settings";
@@ -203,21 +205,37 @@ export function useSyncHealth(enabled: boolean): SyncHealthState {
 }
 
 /**
+ * The body of `GET /crm/mode`, in Mirror mode only. One read and one cache
+ * key serve the labels and the overlays, so the two never disagree about the
+ * shape under the key. A failure gives `null`, and the CRM draws as before.
+ */
+function useModeBody(enabled: boolean): CrmModeBody | null {
+  const res = useCachedResource<CrmModeBody | null>(
+    enabled ? "crm:mode" : null,
+    () => api.getCrmMode().catch(() => null),
+  );
+  return enabled ? (res.data ?? null) : null;
+}
+
+/**
  * The source's names of the core entities (CRM-Q17a-2 item 7), from
  * `GET /crm/mode`. Only Mirror mode reads it. A failure, a Native CRM and an
  * org off `CRM_FILL_RANK_ORGS` each give `null`, and the CRM keeps its own
  * names. A label that fails to load must not stop the CRM.
  */
 export function useSourceLabels(enabled: boolean): SourceLabels | null {
-  const res = useCachedResource<SourceLabels | null>(
-    enabled ? "crm:mode" : null,
-    () =>
-      api
-        .getCrmMode()
-        .then((body) => (body.labels && typeof body.labels === "object" ? body.labels : null))
-        .catch(() => null),
-  );
-  return enabled ? (res.data ?? null) : null;
+  const body = useModeBody(enabled);
+  return body?.labels && typeof body.labels === "object" ? body.labels : null;
+}
+
+/**
+ * The Zoho module that each core list opens (CRM-Q20-2, option A), from the
+ * `overlays` of `GET /crm/mode`. Each member reads it. A Native CRM, a
+ * failure and a CRM with no approved suggestion give `{}`, and each list
+ * opens its own records.
+ */
+export function useOverlays(enabled: boolean): Partial<Record<EntitySlug, string>> {
+  return overlaysBySlug(useModeBody(enabled)?.overlays);
 }
 
 export type ModulesState = { modules: CrmModule[] | null; loading: boolean };

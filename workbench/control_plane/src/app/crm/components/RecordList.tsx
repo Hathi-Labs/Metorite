@@ -149,6 +149,7 @@ export default function RecordList({
   onLoadMore,
   loadingMore = false,
   hasMore = true,
+  emptyNote,
 }: {
   /** The collection, or a generic module (`module:Products`, CRM-Q6b). */
   entity: EntitySlug | `module:${string}`;
@@ -181,6 +182,11 @@ export default function RecordList({
   loadingMore?: boolean;
   /** False once a page came back short or empty: the list has ended. */
   hasMore?: boolean;
+  /**
+   * CRM-Q20-2 item 5: why the list is empty, with no filter on. A member
+   * reads it in place of "Nothing matches this view.", which is for a filter.
+   */
+  emptyNote?: string;
 }) {
   // CRM-C2: the Stage dot reads the mode, so it agrees with the board.
   const mode = useCrmModeValue();
@@ -335,7 +341,7 @@ export default function RecordList({
         </table>
         {!loading && rows.length === 0 && (
           <p className="p-8 text-center text-xs text-muted-foreground">
-            Nothing matches this view.
+            {emptyNote ?? "Nothing matches this view."}
           </p>
         )}
         {!loading && onLoadMore && hasMore && rows.length > 0 && rows.length < total && (

@@ -76,6 +76,7 @@ import ConvertMappingCard from "./ConvertMappingCard";
 import FieldMapCard from "./FieldMapCard";
 import FieldsCard from "./FieldsCard";
 import { Card, NameList, PipelineSections } from "./SettingsCards";
+import SuggestionsCard from "./Suggestions";
 import SyncHealthCard from "./SyncHealthCard";
 import type {
   DealPipeline,
@@ -309,6 +310,8 @@ export default function PipelineSettings({
           {readOnly && show("field-mapping") && <FieldMapCard />}
           {/* CRM-C6a: the lead-conversion mapping, Native mode, a studio admin. */}
           {!readOnly && studioAdmin && show("field-mapping") && <ConvertMappingCard />}
+          {/* CRM-Q20-2: the suggestions of the mapping, Mirror mode only. */}
+          {readOnly && show("suggestions") && <SuggestionsCard />}
           {readOnly && show("sync-health") && <SyncHealthCard />}
         </>
       )}

@@ -4,14 +4,31 @@
  * The small cards of the CRM settings page (WS-53 CRM-Q3, spec section 18.4).
  *
  * The page is one column of cards in a fixed order: Setup (with the Zoho
- * connection, CRM-X0), Access, Deal stages, Lead statuses, Lost reasons, Fields, Sync health.
+ * connection, CRM-X0), Access, Deal stages, Lead statuses, Lost reasons, Fields,
+ * Suggestions (CRM-Q20-2), Sync health.
  * `PipelineSettings` composes them. The editable grids stay in that file, and
  * these are the cards that only read or only wait.
  */
 
+import Button from "@/components/ui/Button";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { stagesOf } from "../lib/pipelines";
-import type { DealPipeline, Status } from "../lib/types";
+import type { DealPipeline, EntitySlug, Status } from "../lib/types";
 import { zohoLink } from "../lib/connect";
+import {
+  DISMISS_LABEL,
+  NO_SUGGESTIONS,
+  SLOT_SLUG,
+  SUGGESTIONS_NOTE,
+  SUGGESTIONS_TITLE,
+  UNDO_LABEL,
+  emptyLine,
+  inUseLine,
+  previewLabel,
+  type OverlayInUse,
+  type Suggestion,
+  type SuggestionList,
+} from "../lib/suggestions";
 
 /** The frame every card shares, so the page has one look. */
 export function Card({
@@ -121,6 +138,96 @@ export function PipelineSections({
         </div>
       ) : (
         <NameList names={fallback.map((s) => s.name)} />
+      )}
+    </Card>
+  );
+}
+
+/** What the Suggestions card can do (CRM-Q20-2). The caller owns the requests. */
+export type SuggestionsHandlers = {
+  /** The label of a core list, as the rail draws it ("Deals"). */
+  listLabel: (slug: EntitySlug) => string;
+  onPreview: (s: Suggestion) => void;
+  onDismiss: (s: Suggestion) => void;
+  onUndo: (o: OverlayInUse) => void;
+  /** The slot whose request runs, or `null`. */
+  busy: string | null;
+};
+
+/**
+ * Settings → Suggestions (WS-53 CRM-Q20-2): each open suggestion, with
+ * Preview and "Not now", and each list that a Zoho module shows now, with
+ * Undo. It holds no state and no hook, so a test reads its element tree.
+ */
+export function SuggestionsCardView({
+  list,
+  failed = false,
+  handlers,
+}: {
+  /** `GET /crm/mapping/suggestions`, or `null` while it loads. */
+  list: SuggestionList | null;
+  failed?: boolean;
+  handlers: SuggestionsHandlers;
+}) {
+  const label = (slot: Suggestion["slot"]) => handlers.listLabel(SLOT_SLUG[slot]);
+  return (
+    <Card title={SUGGESTIONS_TITLE} note={SUGGESTIONS_NOTE}>
+      {list === null ? (
+        <div className="px-4 py-3">
+          {failed ? (
+            <p className="text-xs text-muted-foreground">The suggestions did not load.</p>
+          ) : (
+            <Skeleton className="h-4 w-56" />
+          )}
+        </div>
+      ) : (
+        <ul className="divide-y divide-border/60">
+          {list.overlays.map((o) => (
+            <li key={`use:${o.slot}`} className="flex flex-wrap items-center gap-2 px-4 py-3">
+              <span className="w-full min-w-0 text-xs text-foreground sm:w-auto sm:flex-1">
+                {inUseLine(o, label(o.slot))}
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                icon="Undo2"
+                loading={handlers.busy === o.slot}
+                disabled={handlers.busy !== null}
+                onClick={() => handlers.onUndo(o)}
+              >
+                {UNDO_LABEL}
+              </Button>
+            </li>
+          ))}
+          {list.suggestions.map((s) => (
+            <li key={`suggest:${s.slot}`} className="flex flex-wrap items-center gap-2 px-4 py-3">
+              <span className="w-full min-w-0 text-xs text-foreground sm:w-auto sm:flex-1">
+                {emptyLine(s, label(s.slot))}
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                loading={handlers.busy === s.slot}
+                disabled={handlers.busy !== null}
+                onClick={() => handlers.onDismiss(s)}
+              >
+                {DISMISS_LABEL}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                icon="Eye"
+                disabled={handlers.busy !== null}
+                onClick={() => handlers.onPreview(s)}
+              >
+                {previewLabel(s, label(s.slot))}
+              </Button>
+            </li>
+          ))}
+          {list.overlays.length === 0 && list.suggestions.length === 0 && (
+            <li className="px-4 py-3 text-xs text-muted-foreground">{NO_SUGGESTIONS}</li>
+          )}
+        </ul>
       )}
     </Card>
   );
