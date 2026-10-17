@@ -93,10 +93,20 @@ class MergeOutcome:
 
     moved: list[str] = field(default_factory=list)
     events: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    #: The org of the merge. The events go out after the caller's commit, when
+    #: the request has released its tenant, so :meth:`emit_all` binds it again,
+    #: as ``claim_task`` emits inside a bound request.
+    org: str | None = None
 
     async def emit_all(self) -> None:
-        for name, payload in self.events:
-            await emit(name, payload)
+        from gateway.db import bind_tenant, release_tenant
+
+        token = bind_tenant(self.org) if self.org else None
+        try:
+            for name, payload in self.events:
+                await emit(name, payload)
+        finally:
+            release_tenant(token)
 
 
 def _via_of(meta: Any) -> str:
@@ -135,7 +145,7 @@ async def on_merged(
     *merged_at* is ``None`` for a close without a merge. The function writes in
     the caller's transaction and returns the events to emit after its commit.
     """
-    outcome = MergeOutcome()
+    outcome = MergeOutcome(org=org)
     at = merged_at or datetime.now(UTC)
     repo, number = _repo_and_number(ref)
     tasks = (await db.execute(text(_TASKS_SQL), {"org": org, "ref": ref})).fetchall()

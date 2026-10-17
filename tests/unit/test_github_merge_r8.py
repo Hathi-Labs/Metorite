@@ -91,7 +91,10 @@ def world(p, monkeypatch, tmp_path):
     events: list[tuple[str, dict]] = []
 
     async def _emit(name: str, payload: dict) -> None:
-        events.append((name, payload))
+        from acb_common.db import current_tenant
+
+        # The org that the event goes out under, after the commit.
+        events.append((name, {**payload, "_bound_org": current_tenant()}))
 
     monkeypatch.setattr(github_merge, "emit", _emit)
 
@@ -207,6 +210,8 @@ async def test_d1_an_agent_run_task_moves_to_its_done_lane(world) -> None:
                     t=task) is not None
     names = [n for n, p in w.events if p.get("task_id") == task]
     assert names == ["pm.task.updated", "pm.task.status_changed"]
+    # The events go out after the answer, under the org of the merge.
+    assert {p["_bound_org"] for _, p in w.events} == {w.p.org_a}
 
 
 async def test_d2_an_mcp_act_with_no_run_moves_the_task(world) -> None:
