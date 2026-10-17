@@ -449,7 +449,7 @@ def make(ds: Dataset) -> tuple[Question, ...]:
     add(Question(
         "Q21", "two_calls",
         "What was our net cash flow from July to September 2026: money received minus money "
-        "paid out?",
+        "paid out? Show what came in and what went out too.",
         (
             need(agg("module:Payment_Received", measure="sum", field="Amount",
                      **_range("Received_On", "2026-07-01", "2026-09-30"))),
@@ -461,6 +461,8 @@ def make(ds: Dataset) -> tuple[Question, ...]:
             Fact("paid_out", q3_out, (1, "total")),
             Fact("net", q3_in - q3_out),
         ),
+        note="The net is a derived figure. CRM-Q29 fix round 3 passes it only beside both "
+             "operands, so the answer states received and paid_out too.",
     ))
 
     # Empty fields.

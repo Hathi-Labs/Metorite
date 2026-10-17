@@ -289,22 +289,62 @@ class TestTheFixRound:
 
 class TestDerivedFigures:
     """A sum, a difference, a percent change or a percent share of TWO tool
-    figures is a true figure (CRM-Q30 Q21: net cash flow)."""
+    figures is a true figure (CRM-Q30 Q21: net cash flow). Fix round 3: it
+    passes only when the text also cites BOTH operands."""
 
-    @pytest.mark.parametrize("claim", [
-        "₹17.3 lakh",       # Open + Won
-        "₹8.65 lakh",       # Total - Open
-        "INR 7,34,567",     # Open - Won
-        "58.8%",            # Open as a share of Total
-        "40.5%",            # Won as a share of Open
-        "70.1%",            # the change from Open to Total
+    OPEN, WON, TOTAL = "INR 12,34,567", "INR 5,00,000", "INR 21,00,000"
+
+    @pytest.mark.parametrize(("claim", "first", "second"), [
+        ("₹17.3 lakh", OPEN, WON),       # Open + Won
+        ("₹8.65 lakh", TOTAL, OPEN),     # Total - Open
+        ("INR 7,34,567", OPEN, WON),     # Open - Won
+        ("58.8%", OPEN, TOTAL),          # Open as a share of Total
+        ("40.5%", WON, OPEN),            # Won as a share of Open
+        ("70.1%", OPEN, TOTAL),          # the change from Open to Total
     ])
-    def test_a_pair_figure_matches(self, claim: str) -> None:
-        assert check(f"The answer: {claim}.", [TOOL_RESULT]).ok
+    def test_a_pair_figure_matches(self, claim: str, first: str, second: str) -> None:
+        text = f"One holds {first}, one holds {second}, so the answer is {claim}."
+        assert check(text, [TOOL_RESULT]).ok
+
+    @pytest.mark.parametrize(("claim", "first", "second"), [
+        ("₹17.3 lakh", OPEN, WON),
+        ("58.8%", OPEN, TOTAL),
+        ("70.1%", OPEN, TOTAL),
+    ])
+    def test_a_pair_figure_needs_both_operands(self, claim: str, first: str,
+                                               second: str) -> None:
+        """Rule 1 of fix round 3: no operand, or one, is not enough."""
+        for text in (f"The answer is {claim}.",
+                     f"One holds {first}, so the answer is {claim}.",
+                     f"One holds {second}, so the answer is {claim}."):
+            result = check(text, [TOOL_RESULT])
+            assert [f.text for f in result.unmatched] == [claim], text
+
+    def test_one_figure_cannot_cite_both_operands(self) -> None:
+        """"₹12 lakh" rounds to both tool figures, but it is ONE figure."""
+        tool = "A: INR 12,10,000\nB: INR 12,40,000"
+        assert not check("Both are near ₹12 lakh, a gap of INR 30,000.", [tool]).ok
+        assert check("A holds ₹12.1 lakh and B ₹12.4 lakh, a gap of INR 30,000.",
+                     [tool]).ok
+
+    def test_about_gives_no_room_to_a_derived_figure(self) -> None:
+        text = f"Open holds {self.OPEN} and won {self.WON}, about ₹16.5 lakh in all."
+        assert [f.text for f in check(text, [TOOL_RESULT]).unmatched] == ["₹16.5 lakh"]
+        # "about" still gives room to a figure that a source holds.
+        assert check("Won deals hold about ₹4.7 lakh.", [TOOL_RESULT]).ok
+
+    def test_a_short_derived_figure_after_about_must_be_exact(self) -> None:
+        tool = "Open: INR 1,234,567\nWon: INR 3,765,433"
+        text = "Open holds INR 12,34,567 and won INR 37,65,433, about ₹5 lakh more."
+        assert not check(text, [tool]).ok   # 25,30,866 is no 5 lakh
+        assert check("Open holds INR 12,34,567 and won INR 37,65,433, ₹50 lakh in all.",
+                     [tool]).ok
 
     def test_net_cash_flow_matches(self) -> None:
         tool = "Received: INR 2,50,00,000\nPaid: INR 1,45,22,392"
-        assert check("Net cash flow is INR 1,04,77,608.", [tool]).ok
+        assert check("Received INR 2,50,00,000, paid INR 1,45,22,392, so the net "
+                     "cash flow is INR 1,04,77,608.", [tool]).ok
+        assert not check("Net cash flow is INR 1,04,77,608.", [tool]).ok
 
     @pytest.mark.parametrize("claim", [
         "₹17.4 lakh",       # near the sum 17,34,567, but not at its precision
@@ -313,28 +353,31 @@ class TestDerivedFigures:
         "59.9%",            # near the share 58.8, but not equal
     ])
     def test_a_number_near_a_pair_figure_fails(self, claim: str) -> None:
-        assert not check(f"The answer: {claim}.", [TOOL_RESULT]).ok
+        text = f"Open {self.OPEN}, won {self.WON}, total {self.TOTAL}: {claim}."
+        assert not check(text, [TOOL_RESULT]).ok
 
     def test_a_chain_of_three_fails(self) -> None:
-        assert not check("In all, 700 deals.", ["100 open", "200 won", "400 lost"]).ok
-        assert check("In all, 300 deals.", ["100 open", "200 won", "400 lost"]).ok
+        sources = ["100 open", "200 won", "400 lost"]
+        assert not check("100 open, 200 won and 400 lost: 700 deals.", sources).ok
+        assert check("100 open and 200 won: 300 deals.", sources).ok
+        assert not check("In all, 300 deals.", sources).ok
 
     def test_the_member_s_words_take_no_part(self) -> None:
         book = Sources()
         book.add_text("Deals: 200", derive=True)
         book.add_text("Is it over 300?")
-        assert not check("Together, 500 deals.", book).ok
+        assert not check("We have 200 and you said 300, so together 500 deals.", book).ok
         assert check("Over 300 deals?", book).ok
 
     def test_money_and_plain_never_pair(self) -> None:
         book = Sources()
         book.add_text("INR 1,000", derive=True)
         book.add_text("500 deals", derive=True)
-        assert not check("INR 1,500 in all.", book).ok
-        assert not check("1,500 in all.", book).ok
+        assert not check("INR 1,000 and 500 deals, INR 1,500 in all.", book).ok
+        assert not check("INR 1,000 and 500 deals, 1,500 in all.", book).ok
 
     def test_money_never_meets_a_percent_of_a_pair(self) -> None:
-        assert not check("INR 58.8", [TOOL_RESULT]).ok
+        assert not check(f"Open {self.OPEN} of {self.TOTAL} is INR 58.8.", [TOOL_RESULT]).ok
 
 
 class TestInlineListMarkers:
@@ -354,3 +397,85 @@ class TestInlineListMarkers:
 
     def test_a_run_out_of_order_is_no_list(self) -> None:
         assert [f.text for f in find_figures("We had 3. Then 7. Then 9.")] == ["3", "7", "9"]
+
+
+# ── Fix round 3 (2026-10-17): parse rules and the sources ─────────────────
+
+class TestFixRound3Parse:
+    @pytest.mark.parametrize(("text", "count"), [
+        ("A total of 2047 contacts.", "2047"),
+        ("Leads fell to 1985 this week.", "1985"),
+        ("Out of 2047 contacts, few replied.", "2047"),
+        ("Up to 1999 deals.", "1999"),
+    ])
+    def test_of_and_to_before_a_count(self, text: str, count: str) -> None:
+        assert [f.text for f in find_figures(text)] == [count]
+
+    @pytest.mark.parametrize("text", [
+        "At the end of 2026 we met.", "In the first quarter of 2026.",
+        "Q3 of 2026 was strong.", "From 2025 to 2026.", "In the second half of 2025.",
+    ])
+    def test_of_and_to_after_a_word_of_time_is_a_year(self, text: str) -> None:
+        assert find_figures(text) == []
+
+    @pytest.mark.parametrize("text", [
+        "We have __2047__ contacts.", "We have _2047_ contacts.",
+        "We have **2047** contacts.", "We have ~~2047~~ contacts.",
+        "We have <b>2047</b> contacts.", "We have 2047[1] contacts.",
+        "We have 2047[^2] contacts.", "We have 2047^3 contacts.",
+        "We have 2047【source】 contacts.", "We have 2047† contacts.",
+        "## 2047 contacts",
+    ])
+    def test_a_marker_neither_hides_nor_adds_a_count(self, text: str) -> None:
+        assert [f.text for f in find_figures(text)] == ["2047"]
+
+    def test_a_year_word_reads_through_bold(self) -> None:
+        assert find_figures("In **2026** we met.") == []
+
+    def test_a_bold_inline_list_is_a_run(self) -> None:
+        assert find_figures("Top stages: **1.** Open **2.** Won **3.** Lost") == []
+
+    def test_a_count_after_a_label_breaks_a_run(self) -> None:
+        text = "Won deals: 1. Lost deals: 2. Open: 3."
+        assert [f.text for f in find_figures(text)] == ["1", "2", "3"]
+
+    def test_a_numbered_heading_keeps_its_marker(self) -> None:
+        assert find_figures("## 2. Deals\n### 2.1 Open") == []
+
+    def test_a_scale_letter_on_the_next_line_is_no_scale(self) -> None:
+        figures = find_figures("A: INR 12,10,000\nB: INR 12,40,000")
+        assert [f.value for f in figures] == [Decimal(1210000), Decimal(1240000)]
+        assert find_figures("₹12.3L")[0].value == Decimal(1230000)
+
+
+class TestFixRound3Sources:
+    def test_a_full_pool_keeps_the_newest_values(self) -> None:
+        from acb_common import number_check
+
+        book = Sources()
+        for i in range(number_check.MAX_DERIVE + 50):
+            book.add_value(1000 + i, MONEY, derive=True)
+        pool = book.pool(MONEY)
+        assert len(pool) == number_check.MAX_DERIVE
+        assert pool[-1] == Decimal(1000 + number_check.MAX_DERIVE + 49)
+        assert Decimal(1000) not in pool
+        # Each value is still a direct source.
+        assert check("INR 1,000", book).ok
+
+    def test_one_text_adds_a_capped_share_to_the_pool(self) -> None:
+        from acb_common import number_check
+
+        cap = number_check.MAX_DERIVE_PER_TEXT
+        book = Sources()
+        book.add_text(" ".join(f"INR {1000 + i}" for i in range(cap + 40)), derive=True)
+        book.add_text("INR 77", derive=True)
+        assert len(book.pool(MONEY)) == cap + 1
+        assert Decimal(77) in book.pool(MONEY)
+
+    def test_a_layer_reads_its_base_and_leaves_it_alone(self) -> None:
+        base = Sources()
+        base.add_text("Open: INR 12,34,567\nWon: INR 5,00,000", derive=True)
+        top = base.layer()
+        top.add_text("over ₹7 lakh")
+        assert check("Over ₹7 lakh: INR 12,34,567 and INR 5,00,000, ₹17.3 lakh.", top).ok
+        assert not check("Over ₹7 lakh.", base).ok

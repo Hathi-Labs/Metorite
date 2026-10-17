@@ -111,6 +111,7 @@ and streams chat responses as AG-UI events.
    - With `CRM_ANSWER_CHECK` `off` it changes nothing. It reads the mode (`acb_common.settings.crm_answer_check_mode`) before it imports the check, so a box with no `acb_skills` runs. A Copilot SDK agent gets no check.
    - Both run starts bind `member_message`, the member's own words, into the artifact context (`_member_words_for_run`). A delegated run takes its parent's words, never its payload.
    - The native loop reads `answer_check.held` (`_is_hold_beat`) as a sign of life: it resets the idle wait and shows nothing.
+   - The Tier 1.5 and Tier 2 relays copy the run queue to the stream through `_relayable`, which drops the beat. A delegated native run puts its beat on its parent's queue. Each new relay of a run queue must check it, and `test_each_relay_of_a_run_queue_drops_the_hold_beat` reads each one.
    - Do not attach the provider anywhere else. Fences: `tests/unit/test_crm_answer_check.py` and `tests/unit/test_crm_answer_check_executor.py`.
 
 ## Work Guidance

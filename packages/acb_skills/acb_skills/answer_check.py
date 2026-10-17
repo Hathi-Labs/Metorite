@@ -18,7 +18,7 @@ sub-agent. The provider adds two middlewares to ONE run:
 * :class:`CheckAnswers` (chat) does nothing until the check arms. Then, with
   the mode ``on``, it holds each model response until the response ends, and
   checks its text and the shown text of each display call (a card, a report,
-  a document) with ``acb_common.number_check.check``.
+  a document, a WhatsApp element) with ``acb_common.number_check.check``.
 
 **The sources (item 4).** The tool results of the run (no delegated answer,
 which a model wrote), the arguments of the run's CRM tool calls (a date gives
@@ -105,11 +105,20 @@ FALLBACK_TOOLS: frozenset[str] = frozenset({
     "crm_aggregate", "crm_report", "crm_stage_dwell", "get_pipeline",
 })
 
-#: The tools whose ARGUMENTS the member reads: a card, a report, a document
-#: and a text file. The check reads their shown text as it reads the answer.
+#: The tools whose ARGUMENTS the member reads: a card, a report, a document,
+#: a text file and a WhatsApp element (``whatsapp_ui``, fix round 3). The
+#: check reads their shown text as it reads the answer.
 DISPLAY_TOOLS: frozenset[str] = frozenset({
     "emit_generative_ui", "make_report", "make_document", "write_artifact",
+    "whatsapp_ui",
 })
+
+#: Each tool that shows the member something: the display tools, and
+#: ``share_artifact``, which shows a file that another tool made. Its
+#: arguments hold only a path, so the check cannot read the numbers of the
+#: file (a stated limit, spec §18.11.2). A failed step that calls one of
+#: these is never stripped and sent. It fails (fix round 3).
+SHOWN_TOOLS: frozenset[str] = DISPLAY_TOOLS | frozenset({"share_artifact"})
 
 #: ``write_artifact`` shows text only for these files. A script is code.
 TEXT_FILE_SUFFIXES: tuple[str, ...] = (".md", ".txt", ".html", ".htm", ".csv")
@@ -158,7 +167,19 @@ FALLBACK_NONE = "Ask again, or ask for one figure at a time."
 _ISO_DAY = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
 _TAG = re.compile(r"<[^>]*>")
 _SCRIPT = re.compile(r"<(script|style)\b.*?</\1\s*>", re.I | re.S)
-_CODE_LIKE = re.compile(r"=>|\bfunction\b|\bimport\b|\bconst\b|\breturn\b")
+#: The shape of code, not a word of prose. "An expected return of ₹5 lakh"
+#: and "import duties" are prose, so the check reads their numbers (fix
+#: round 3). A string of this shape shows nothing the check can read.
+_CODE_LIKE = re.compile(
+    r"=>"
+    r"|\bfunction\s*\w*\s*\("
+    r"|^\s*import\s+[\w{*][^\n]*\bfrom\s+['\"]"
+    r"|^\s*(?:import|from)\s+[\w.]+(?:\s+import\b|\s*$)"
+    r"|\b(?:const|let|var)\s+\w+\s*="
+    r"|\breturn\s*[(<{\[]"
+    r"|\breturn\s+[\w.$\[\]]+\s*;",
+    re.MULTILINE,
+)
 
 
 def holds_crm_tool(names: Iterable[str]) -> bool:
@@ -340,13 +361,14 @@ class RunLedger:
     """What one run has read, in memory, for that run only (item 4).
 
     ``armed`` turns true at the first CRM tool result. ``retried`` turns true
-    when the run spends its one retry. ``results`` holds every tool result,
-    for the fallback. ``sources`` holds the numbers the answer may state.
+    when the run spends its one retry. ``results`` holds the newest results
+    of :data:`FALLBACK_TOOLS`, for the fallback. ``book`` holds the numbers
+    the answer may state. It grows as each tool result arrives (fix round
+    3), so a check never parses the run's results again.
     """
 
     results: list[tuple[str, str]] = field(default_factory=list)
-    texts: list[str] = field(default_factory=list)
-    argument_texts: list[str] = field(default_factory=list)
+    book: Sources = field(default_factory=Sources)
     armed: bool = False
     retried: bool = False
 
@@ -355,34 +377,40 @@ class RunLedger:
         """Keep one tool result. A CRM result arms the check.
 
         A delegated answer (*delegated*) is text that a model wrote, so it
-        is no source. The arguments of a CRM call are sources.
+        is no source. The arguments of a CRM call are sources. Only a tool
+        result takes part in a derived figure (a sum, a difference or a
+        percent of two), and ``acb_common.number_check`` caps the share of
+        each result in that pool.
         """
-        self.results.append((tool, text))
+        if tool in FALLBACK_TOOLS:
+            # One character more than the fallback shows, so it still
+            # knows that a long result was cut.
+            self.results.append((tool, text[:FALLBACK_CHARS + 1]))
+            del self.results[:-FALLBACK_RESULTS]
         if not delegated and tool not in DELEGATION_TOOLS:
-            self.texts.append(text)
+            self.book.add_text(text, derive=True)
         if tool in ARM_TOOLS:
             self.armed = True
             if arguments is not None:
-                self.argument_texts.extend(argument_sources(arguments))
+                for value in argument_sources(arguments):
+                    self.book.add_text(value)
 
     def sources(self) -> Sources:
         """Each source of the run (item 4), the member's words included.
 
-        Only a tool result takes part in a derived figure (a sum, a
-        difference or a percent of two). The arguments and the member's
-        words are sources as they stand.
+        The member's words of this check go on a layer over the run's book,
+        so they are a source as they stand and change nothing in the book.
         """
-        book = Sources()
-        for text in self.texts:
-            book.add_text(text, derive=True)
-        for text in self.argument_texts:
-            book.add_text(text)
         try:
             from acb_skills.write_artifact import artifact_context
 
-            book.add_text(str(artifact_context().get(MEMBER_MESSAGE) or ""))
+            words = str(artifact_context().get(MEMBER_MESSAGE) or "")
         except Exception:  # no run context: no member words
-            pass
+            words = ""
+        if not words:
+            return self.book
+        book = self.book.layer()
+        book.add_text(words)
         return book
 
     def check(self, text: str) -> CheckResult:
@@ -398,7 +426,8 @@ def retry_note(result: CheckResult) -> str:
         f"holds: {named}. Write the answer again, with any card again. Copy "
         "each number from a tool result, or round it and keep its unit. You "
         "may state the sum, the difference, the percent change or the percent "
-        "share of TWO tool numbers. For anything more, call crm_aggregate with "
+        "share of TWO tool numbers, and then you must also state both of those "
+        "numbers. For anything more, call crm_aggregate with "
         "the right group or filter, or leave the number out. Write each figure "
         "in digits."
     )
@@ -500,16 +529,18 @@ class CheckAnswers(ChatMiddleware):
         """``pass``, ``strip`` (the text failed, the calls may go) or ``fail``.
 
         A display call shows its arguments to the member, so a failed card
-        fails the whole answer, and never ships.
+        fails the whole answer, and never ships. ``strip`` is only for a
+        step whose calls show the member nothing (no :data:`SHOWN_TOOLS`
+        call). A failed step that shows something fails (fix round 3).
         """
         book = self._ledger.sources()
         card = _card_text(response)
         result = check("\n".join(p for p in (response.text, card) if p), book)
         if result.ok:
             return PASS, result
-        if card and not check(card, book).ok:
-            return FAIL, result
-        return (STRIP if _calls(response) else FAIL), result
+        calls = _calls(response)
+        shown = any(str(getattr(c, "name", "") or "") in SHOWN_TOOLS for c in calls)
+        return (STRIP if calls and not shown else FAIL), result
 
     async def _drain(self, stream: ResponseStream) -> tuple[list[ChatResponseUpdate], ChatResponse]:
         """Read the whole of *stream*, with a sign of life as it goes."""
@@ -688,6 +719,7 @@ class AnswerCheckProvider(ContextProvider):
 __all__ = [
     "ARM_TOOLS", "CRM_ASSISTANT_READS", "DISPLAY_TOOLS", "FALLBACK_TOOLS",
     "HEARTBEAT_S", "HOLD_EVENT", "MEMBER_MESSAGE", "MODES", "OFF", "ON", "SHADOW",
+    "SHOWN_TOOLS",
     "AnswerCheckProvider", "CheckAnswers", "RecordToolResults", "RunLedger",
     "answer_check_mode", "argument_sources", "display_text", "fallback_text",
     "holds_crm_tool", "member_words", "retry_note",
