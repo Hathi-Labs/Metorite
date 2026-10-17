@@ -109,6 +109,8 @@ def _real(kind: str) -> shell.Signal | None:
                                      "detail": "From dana",
                                      "href": f"/email?email=m-1&account={ACCT}",
                                      "at": (NOW - timedelta(hours=5)).isoformat()}, "m-1")
+    if kind == "digest_ready":
+        return feed._digest_signal({"week_start": date(2026, 10, 5), "stored_at": NOW})
     if kind == "no_answer":
         return feed._no_answer_signal({
             "thread_id": THREAD, "message_id": "m-2", "subject": "S", "who": "dana",

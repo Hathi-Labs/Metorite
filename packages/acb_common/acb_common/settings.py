@@ -293,6 +293,24 @@ class Settings(BaseSettings):
     # grant `enforcement-flip` does not cover it. Fence:
     # tests/unit/test_crm_note_vectors.py.
     crm_note_search_orgs: str = ""
+    # `crm_digest_orgs` (WS-53 CRM-Q28, 2026-10-17) lists the organization
+    # ids that get the weekly CRM digest on the powerful tier
+    # (`crm_platform.md` §18.11.2), in the grammar of `crm_orgs`. Default
+    # empty means NO organization (fail closed). An org outside the list gets
+    # no digest step after a sync run, and no model call. The one reader is
+    # `gateway.routes.crm.flags`. 🔴 OWNER-GATE on a box: each digest spends
+    # the org's credits (`work_plan.md` §6). The grant `enforcement-flip`
+    # does not cover it. Fence: tests/unit/test_crm_digest.py.
+    crm_digest_orgs: str = ""
+    # `crm_answer_check` (WS-53 CRM-Q29, 2026-10-17) is the number check of
+    # a chat answer that read a CRM tool (`crm_platform.md` §18.11.2):
+    # `off` (the default), `shadow` (check at the end of the answer and log
+    # the count of mismatches, no hold and no retry) or `on` (hold each
+    # answer, check it, one retry, then a fallback). Any other value reads as
+    # `off`. The one reader is `crm_answer_check_mode` below.
+    # A value on a box is the grant `enforcement-flip`. Fence:
+    # tests/unit/test_crm_answer_check.py.
+    crm_answer_check: str = "off"
 
     # ── The My Day loop (WS-58 MD-5b, 2026-10-14) ───────────────────────────
     #
@@ -1415,3 +1433,22 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Cached accessor; call from anywhere."""
     return Settings()  # type: ignore[call-arg]
+
+
+#: The modes of ``CRM_ANSWER_CHECK`` (WS-53 CRM-Q29).
+CRM_ANSWER_CHECK_MODES: tuple[str, ...] = ("off", "shadow", "on")
+
+
+def crm_answer_check_mode() -> str:
+    """The ONE reader of ``CRM_ANSWER_CHECK``: ``off``, ``shadow`` or ``on``.
+
+    Any other value, and a settings load that fails, read as ``off``. It
+    lives here, not in ``acb_skills``, so that the orchestrator reads the
+    mode before it imports the check (``crm_platform.md`` §18.11.2).
+    """
+    try:
+        raw = str(getattr(get_settings(), "crm_answer_check", "off") or "off")
+    except Exception:  # a broken settings load never turns the check on
+        return "off"
+    mode = raw.strip().lower()
+    return mode if mode in CRM_ANSWER_CHECK_MODES else "off"

@@ -919,6 +919,8 @@ export const FEED_KIND_LABELS: Readonly<Record<string, string>> = {
   deal_close_passed: "Close date passed",
   colleague_out: "Colleague away",
   agent_asks: "Waiting for your answer",
+  // WS-53 CRM-Q28 item 14: the weekly CRM digest is ready in Reports.
+  digest_ready: "Weekly digest",
 };
 
 /**
