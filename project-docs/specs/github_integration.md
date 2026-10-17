@@ -567,8 +567,8 @@ Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. Every slice ships da
 | GH-2 | 🔨 BUILT on branch `github-batch-a`, in review. Migration 282. 6 mutations, each red | `test_github_migration_r8.py` |
 | GH-3 | 🔨 BUILT on branch `github-batch-a`, in review. 18 mutations, each red. Visual review done | `test_github_connect_r8.py`, `githubConnect.test.ts`, the BFF route tests |
 | GH-4 | 🔨 BUILT on branch `github-batch-a`, in review. 17 mutations, each red | `test_github_webhook_r8.py`, `test_github_autolink.py` |
-| GH-5 | 🔨 BUILT on branch `github-batch-a`, in review. 12 mutations, each red | `test_github_checks.py`, `test_github_reconcile_r8.py` |
-| GH-6 | 🔨 BUILT on branch `github-batch-a`, in review. 9 mutations, each red. `core.py` has no diff | `test_github_merge_r8.py` |
+| GH-5 | 🔨 BUILT on branch `github-batch-a`, in review. 13 mutations, each red | `test_github_checks.py`, `test_github_reconcile_r8.py` |
+| GH-6 | 🔨 BUILT on branch `github-batch-a`, in review. 10 mutations, each red. `core.py` has no diff | `test_github_merge_r8.py` |
 | GH-7 | 🔨 BUILT on branch `github-batch-a`, in review. 9 mutations, each red. Visual review done | `test_github_per_org_r8.py`, the token route test |
 | GH-8 | 🔴 Waits for GH-0 and the merge | — |
 
