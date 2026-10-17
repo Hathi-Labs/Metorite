@@ -3661,6 +3661,7 @@ each value. Embeddings help the model find text. They never make a number.
 | CRM-Q25b | One time zone for each month bucket of the aggregate | AGENT-SAFE | S | CRM-Q25 |
 | CRM-Q25c | A NUL byte in a list query answers 422 | AGENT-SAFE | S | — |
 | CRM-Q30 | A founder question set for CRM insights | AGENT-SAFE | M | CRM-Q25, CRM-Q27 |
+| CRM-Q30b | The read tools say when Zoho holds more than the connected user can read | AGENT-SAFE | S | CRM-Q24, CRM-Q30 |
 
 CRM-Q25b, CRM-Q27 and CRM-Q28 have their done-when lists after CRM-Q26
 (2026-10-16). To build each ticket is AGENT-SAFE. For CRM-Q26, a mode other than
@@ -4363,10 +4364,63 @@ and 10 of them are mutations that each fail one bar.
 **Findings for later work.**
 
 - No tool reads `short_by` of CRM-Q24. The assistant can flag the gap of
-  Q31 only from general care. A later slice can give the tool the line of
-  the Sync health card.
+  Q31 only from general care. CRM-Q30b, below, gives the tools that line.
 - CRM-Q29 is not on `origin/main`. `numbers.py` is the local number check,
   and the eval moves to the shared function when CRM-Q29 merges.
+
+**CRM-Q30b · The read tools say when Zoho holds more (2026-10-17).**
+
+**Why.** CRM-Q30 found that no CRM tool reads `short_by` of CRM-Q24. Only
+the Sync health card shows it, and only an admin reads that card. So the
+assistant can give a total that is short, and not say so.
+
+**The facts (code check of 2026-10-17).**
+
+- `routes/crm/sync.py` `_short_by_keys` reads `short_by` from the cursor of
+  each core entity and each module. `GET /crm/sync/health` uses it.
+- That route needs an admin and Mirror mode. A tool runs as the member, so
+  it cannot read the route.
+- The card (`syncHealth.ts` `shortReadSentence`) takes Zoho's count from the
+  row, or our count plus the gap. The readable count is Zoho's count minus
+  the gap.
+
+Done when:
+
+1. One function in `routes/crm/sync.py`, `short_reads(db, org)`, gives each
+   key with a short read: Zoho's count, the readable count and the gap. It
+   reads the cursors through `_short_by_keys`, and it uses the rule of the
+   card for the two counts.
+2. `GET /crm/sync/short-reads` serves that list to each member that the CRM
+   access rule admits. It holds counts only. A Native org gets an empty
+   list. The tenant comes from the session.
+3. One helper in `crm_tools.py` reads the route once in each tool call, and
+   it gives one line for each matching key, for example: "Note: Zoho holds
+   4,947 Payment_Made records, and the connected Zoho user can read 3,003.
+   Totals may be short. An admin can widen that user's access in Zoho."
+4. `crm_aggregate`, `crm_list_records`, `crm_list_module_records` and
+   `crm_list_modules` add the line. A tool that reads one record does not,
+   because it gives no total.
+5. A failed read of the route adds no line, and the tool answers as before.
+6. The docstrings of the tools do not change, so the pinned contract of
+   `test_tool_schema_diet.py` does not change.
+7. Q31 of `evals/crm_founder_questions/` expects the line in the tool output,
+   and the two counts of the line in the answer. A mutation that removes the
+   line fails Q31.
+8. An R8 test covers the route: the counts, a member who is not an admin, a
+   Native org and tenant isolation. A unit test covers the line of each tool
+   and the failed read, with a mutation.
+
+Files: `routes/crm/sync.py`, `packages/acb_skills/acb_skills/crm_tools.py`,
+`evals/crm_founder_questions/`, `tests/unit/test_crm_short_read_note.py`,
+`tests/unit/test_crm_short_reads_r8.py` and this section. Gate: AGENT-SAFE.
+Size: S. Waits for: CRM-Q24 and CRM-Q30. No migration and no flag.
+
+Verify with:
+
+- `uv run pytest tests/unit/test_crm_short_read_note.py tests/unit/test_crm_founder_questions.py tests/unit/test_crm_agent.py tests/unit/test_tool_schema_diet.py -q`
+- `uv run pytest tests/unit/test_crm_short_reads_r8.py tests/unit/test_crm_founder_questions_r8.py tests/unit/test_crm_sync_health_r8.py tests/unit/test_crm_aggregate*.py -q`,
+  on a private database, with no test skipped.
+- `uv run python -m evals.crm_founder_questions --scripted`
 
 #### 18.11.3 Verification
 
