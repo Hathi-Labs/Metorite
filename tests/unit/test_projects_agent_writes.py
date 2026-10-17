@@ -2772,3 +2772,177 @@ async def test_a_lost_project_write_gives_a_receipt_and_writes_nothing_else(
     assert not any(c["method"] == "POST" and c["path"] == "/projects/tasks" for c in calls)
     assert not any(c["method"] == "PUT" and c["path"].endswith("/assignees") for c in calls)
     assert not any(c["path"].endswith("/links") for c in calls)
+
+
+# ── §26: a plan row with no owner is an unassigned task (owner, 2026-10-17) ─
+#
+# The owner asked "we should allow for unassigned tasks, no?" after the chat
+# refused a plan with no owners and offered a placeholder owner or a Markdown
+# file. Each test names the mutation that turns it red (R7).
+
+
+def _owners(*who: str) -> list[dict[str, Any]]:
+    """PLAN_DEPS with the owners given, in order. "" is an unassigned row."""
+    return [{**row, "owner": w} for row, w in zip(PLAN_DEPS, who, strict=True)]
+
+
+async def test_a_plan_with_no_owner_creates_every_task_unassigned(monkeypatch) -> None:
+    """Zero owners. The card draws, no row carries a fit, hours or a mark,
+    the tasks are made with no assignee write, and the links still land.
+    Mutation: put "owner" back in PLAN_FIELDS -> the plan is refused."""
+    rows = _owners("", "", "")
+    drawn = form_stub(monkeypatch, _plan_submit(rows))
+    asked = approve(monkeypatch)
+    seen: list[dict] = []
+    base = _plan_gateway(seen=seen)
+
+    def made_with_nobody(call: dict) -> Any:
+        # The create route assigns nobody (`tasks.create_task` adds the
+        # creator as a watcher only). The shared TASK fake carries an
+        # assignee, so this answer drops it.
+        got = base(call)
+        if call["method"] == "POST" and call["path"] == "/projects/tasks":
+            return {**got, "assignees": []}
+        return got
+
+    calls = fake_gateway(monkeypatch, made_with_nobody)
+    out = await skill_projects.propose_plan("Frame", _json.dumps(rows))
+
+    card = drawn[0]["props"]["data"]
+    assert [r["owner"] for r in card["tasks"]] == ["", "", ""]
+    for row in card["tasks"]:
+        assert not {"fit", "hours", "marks", "warnings"} & set(row), row
+    # The plan card counts the owners itself (planCard.ts), so its capacity
+    # line is the server's. The confirm card's line says nobody is measured.
+    assert "no owner" not in card["capacity"]
+    assert "capacity: «No task has an owner" in asked[0]["context"]
+    # The preview reads the rows with an empty owner. No owner is resolved.
+    assert all(r["owner"] == "" for r in seen[0]["rows"])
+    assert not any(c["path"] == "/projects/assignees" for c in calls)
+
+    assert len(asked) == 1
+    assert "3 unassigned" in asked[0]["detail"]
+    assert "task 1: «Order the steel» · unassigned · 120 min" in asked[0]["context"]
+    posted = [c for c in writes(calls) if c["method"] == "POST" and c["path"] == "/projects/tasks"]
+    assert len(posted) == 3
+    assert all("assignees" not in c["json"] for c in posted)
+    assert not any(c["method"] == "PUT" for c in writes(calls))
+    assert sum(c["path"].endswith("/links") for c in writes(calls)) == 2
+    assert out.count("full_id:") == 3 and "stopped:" not in out
+    assert out.count("· unassigned") == 3, out
+
+
+async def test_a_plan_with_some_owners_assigns_only_those(monkeypatch) -> None:
+    """Some owners. The preview's fit for an unassigned row is never shown,
+    and the capacity line counts that row apart. Mutation: drop the
+    ``key in nobody`` skip in ``_capacity`` -> the empty row shows a fit."""
+    rows = _owners("priya@x.io", "", "sam@x.io")
+    drawn = form_stub(monkeypatch, _plan_submit(rows))
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    out = await skill_projects.propose_plan("Frame", _json.dumps(rows))
+
+    card = {r["key"]: r for r in drawn[0]["props"]["data"]["tasks"]}
+    assert card["t1"]["fit"] == "welding" and card["t3"]["fit"] == "welding"
+    assert not {"fit", "hours", "marks"} & set(card["t2"]), card["t2"]
+    assert drawn[0]["props"]["data"]["capacity"].startswith("Hours cover")
+    assert "1 of 3 tasks has no owner, so it carries no fit or hours.»" in asked[0]["context"]
+
+    assert "1 unassigned" in asked[0]["detail"]
+    assert "«Weld the frame» · unassigned ·" in asked[0]["context"]
+    puts = [c for c in writes(calls) if c["method"] == "PUT"]
+    assert [c["json"] for c in puts] == [
+        {"assignees": ["priya@x.io"]}, {"assignees": ["sam@x.io"]},
+    ]
+    assert out.count("full_id:") == 3 and "stopped:" not in out
+
+
+async def test_a_plan_where_every_task_has_an_owner_is_as_before(monkeypatch) -> None:
+    """All owners. No line says "unassigned", and every task gets its PUT."""
+    drawn = form_stub(monkeypatch, _plan_submit(PLAN_DEPS))
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
+    assert "no owner" not in drawn[0]["props"]["data"]["capacity"]
+    assert "no owner" not in asked[0]["context"]
+    assert "unassigned" not in asked[0]["detail"] + asked[0]["context"]
+    assert sum(c["method"] == "PUT" for c in writes(calls)) == 3
+
+
+async def test_the_member_clears_an_owner_on_the_card(monkeypatch) -> None:
+    """The model gave every row an owner, and the member emptied one on the
+    card. The submit is no refusal, and that task is made with nobody."""
+    edited = _owners("priya@x.io", "priya@x.io", "")
+    form_stub(monkeypatch, _plan_submit(edited))
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    out = await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
+    assert len(asked) == 1 and "1 unassigned" in asked[0]["detail"]
+    assert sum(c["method"] == "PUT" for c in writes(calls)) == 2
+    assert "project_id:" in out
+
+
+async def test_a_stopped_plan_counts_only_the_owners_it_has(monkeypatch) -> None:
+    """The partial receipt counts the assigned rows, never every row. With
+    no owner at all it says 0 of 0, and nothing divides by it. Mutation:
+    count ``len(final)`` as the owners again -> "0 of 3"."""
+    rows = _owners("priya@x.io", "", "")
+    form_stub(monkeypatch, _plan_submit(rows))
+    approve(monkeypatch)
+    fake_gateway(monkeypatch, _plan_gateway(refuse_task=2))
+    out = await skill_projects.propose_plan("Frame", _json.dumps(rows))
+    assert "not tried: 1 task · 0 of 1 owners assigned · 0 of 2 links written" in out
+
+    rows = _owners("", "", "")
+    form_stub(monkeypatch, _plan_submit(rows))
+    approve(monkeypatch)
+    fake_gateway(monkeypatch, _plan_gateway(refuse_task=3))
+    out = await skill_projects.propose_plan("Frame", _json.dumps(rows))
+    assert "not tried: 0 tasks · 0 of 0 owners assigned · 0 of 2 links written" in out
+
+
+async def test_a_lost_project_write_counts_only_the_owners_it_has(monkeypatch) -> None:
+    base = _plan_gateway()
+
+    def fail(call: dict) -> Any:
+        if call["method"] == "POST" and call["path"] == "/projects/nodes":
+            raise client.GatewayRefusal("Projects POST /projects/nodes: Failed (403).")
+        return base(call)
+
+    rows = _owners("", "sam@x.io", "")
+    form_stub(monkeypatch, _plan_submit(rows))
+    approve(monkeypatch)
+    fake_gateway(monkeypatch, fail)
+    out = await skill_projects.propose_plan("Frame", _json.dumps(rows))
+    assert "not tried: 3 tasks · 0 of 1 owners assigned · 0 of 2 links written" in out
+
+
+async def test_a_row_with_no_effort_is_still_refused(monkeypatch) -> None:
+    """The owner left the required list, and nothing else did."""
+    drawn = form_stub(monkeypatch, _plan_submit(PLAN_DEPS))
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    out = await skill_projects.propose_plan(
+        "Frame", _json.dumps([{"key": "t1", "title": "Cut", "due": "2026-10-10"}])
+    )
+    assert "lacks effort_mins" in out and "The owner can be empty." in out
+    assert drawn == [] and calls == []
+
+
+def test_the_instructions_never_ask_for_an_owner_or_offer_a_file() -> None:
+    """The model asked who owns each task and offered a Markdown file in
+    place of the card. Mutation: restore "an owner" to the W1 required list
+    -> this test fails."""
+    root = SKILL_DIR.parents[2]
+    text_ = (root / "agents/agent-projects/instructions.md").read_text(encoding="utf-8")
+    w1 = " ".join(text_.split("**W1 · Plan a project from a goal.**", 1)[1]
+                  .split("**W2", 1)[0].split())
+    assert "verb-plus-object title, an effort in minutes and a due date" in w1
+    assert "The owner is optional." in w1
+    assert "Do not ask about owners" in w1
+    assert "never put a placeholder owner" in w1
+    assert "Never write a plan to a file instead" in w1
+    many = " ".join(text_.split("## Several new tasks", 1)[1].split("## ", 1)[0].split())
+    assert "approves every task on one card" in many
+    assert "Leave `assignees` out when the member names nobody" in many
+    doc = " ".join((F.propose_plan.__doc__ or "").split())
+    assert "empty for an unassigned task" in doc and "do not ask" in doc

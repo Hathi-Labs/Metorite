@@ -19,7 +19,10 @@
  *    `after` key that no remaining row carries. The skill lists the dropped
  *    links on the confirm card.
  * 4. **A mark warns and never blocks** (§13.6 rule 3). `planIncomplete` reads
- *    the four required fields and a start after the due date, and no mark.
+ *    the three required fields and a start after the due date, and no mark.
+ *    The owner is NOT required (owner, 2026-10-17, spec §26). A row with no
+ *    owner is an unassigned task: it shows no fit, no hours and no mark
+ *    (`planFacts`, `isMarked`), and `ownerSummary` counts it apart.
  * 5. **The card cannot make a cycle** (WS-27bm S10, §16.2 rule 6).
  *    `afterOptions` offers a row every other row except the rows that wait on
  *    it, directly or through other rows. The server still refuses a cycle and
@@ -106,9 +109,54 @@ export function planRowsFrom(tasks: unknown): PlanRow[] {
   return (Array.isArray(tasks) ? tasks : []).map((t, i) => planRowFrom(t, i));
 }
 
-/** Is this row marked? A marked row still submits (rule 3). */
+/** Does this row have no owner? Then it is an unassigned task (§26). */
+export function isUnassigned(row: PlanRow): boolean {
+  return !row.owner.trim();
+}
+
+/** What an empty owner field shows. The member can type an owner over it. */
+export const UNASSIGNED_LABEL = "Unassigned";
+
+/** Is this row marked? A marked row still submits (rule 3). A mark is about
+ *  an owner, so a row with no owner carries none, even a stale one from
+ *  the owner the member cleared (§26). */
 export function isMarked(row: PlanRow): boolean {
-  return row.marks.length > 0;
+  return !isUnassigned(row) && row.marks.length > 0;
+}
+
+/**
+ * The read-only line under a row: what it waits on, then the fit and the
+ * hours. An unassigned row shows no fit and no hours, because nobody is
+ * there to measure (§26). A fit for an owner the member cleared is stale,
+ * so it does not show either.
+ */
+export function planFacts(row: PlanRow, rows: PlanRow[]): string[] {
+  const after = afterLabel(row, rows);
+  const owned = !isUnassigned(row);
+  return [
+    after ? `After: ${after}` : "",
+    owned && row.fit != null ? `Fit: ${row.fit}` : "",
+    owned && row.hours != null ? `Hours: ${row.hours}` : "",
+  ].filter(Boolean);
+}
+
+/**
+ * The line that counts the owners of the plan, or "" when every task has
+ * one. The unassigned tasks are a count of their own, and the line follows
+ * the member's edits. The skill's capacity line on the plan card leaves the
+ * count to this line, so the card says it once. Nothing here divides, so a
+ * plan with no owner at all is safe (§26).
+ */
+export function ownerSummary(rows: PlanRow[]): string {
+  const nobody = rows.filter(isUnassigned).length;
+  if (nobody === 0) return "";
+  if (nobody === rows.length) {
+    return nobody === 1
+      ? "The task is unassigned, so it shows no fit or hours."
+      : `All ${nobody} tasks are unassigned, so no row shows a fit or hours.`;
+  }
+  const said = nobody === 1 ? "is unassigned, so it shows" : "are unassigned, so they show";
+  return `${nobody} of ${rows.length} tasks ${said} no fit or hours.`;
 }
 
 /** The one line a marked row shows under its cells. */
@@ -130,13 +178,14 @@ export function blankRow(rows: PlanRow[]): PlanRow {
   return planRowFrom({ key: newRowKey(rows), effort_mins: 60 }, rows.length);
 }
 
-/** Why the submit is off, or "" when the plan can go. Marks never block. */
+/** Why the submit is off, or "" when the plan can go. Marks never block,
+ *  and an empty owner never blocks (§26). */
 export function planIncomplete(name: string, rows: PlanRow[]): string {
   if (!name.trim()) return "The project needs a name.";
   if (rows.length === 0) return "The plan needs at least one task.";
   for (const r of rows) {
-    if (!r.title.trim() || !r.owner.trim() || !r.due.trim() || !(r.effort_mins > 0)) {
-      return "Every task needs a title, an owner, an effort and a due date.";
+    if (!r.title.trim() || !r.due.trim() || !(r.effort_mins > 0)) {
+      return "Every task needs a title, an effort and a due date.";
     }
     if (r.start && r.due && r.start > r.due) return "A task starts after its due date.";
   }
