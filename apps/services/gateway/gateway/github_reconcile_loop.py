@@ -205,8 +205,16 @@ async def run_org(org: str, tick: str) -> TickResult:
             result.rate_limited = True
             _log.warning("github.reconcile.rate_limited")
             break
-        except (github_app.GitHubAppNotConfigured, github_app.GitHubCallFailed) as exc:
-            _log.info("github.reconcile.read_failed", error=type(exc).__name__)
+        except github_app.GitHubAppNotConfigured:
+            _log.info("github.reconcile.not_configured")
+            break
+        except github_app.GitHubCallFailed as exc:
+            _log.info("github.reconcile.read_failed", code=exc.code)
+            if exc.code == "installation_gone":
+                # No token for this installation: every other read of the
+                # tick would ask for one again. The uninstall webhook or the
+                # admin fixes the row.
+                break
     return result
 
 

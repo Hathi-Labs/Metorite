@@ -79,12 +79,17 @@ class FakeGitHub:
         self.rate_limit_at: int | None = None
         self.on_checks: Any = None
         self.open_at_call: list[int] = []
+        self.tokens_gone = False
+        self.token_asks = 0
 
     async def handle(self, request: httpx.Request) -> httpx.Response:
         self.open_at_call.append(self.w.opened["n"])
         path = request.url.path
         self.requests.append(path)
         if path.endswith("/access_tokens"):
+            self.token_asks += 1
+            if self.tokens_gone:
+                return httpx.Response(404, json={"message": "Not Found"})
             return httpx.Response(201, json={"token": "ghs_R8", "expires_at": "2099-01-01T00:00:00Z"})
         if "/pulls/" in path:
             self.pr_reads += 1
@@ -281,6 +286,21 @@ async def test_k4_a_rate_limit_stops_the_tick(world) -> None:
         result = await github_reconcile_loop.run_org(w.p.org_a, "tick-limit")
     assert result.rate_limited
     assert w.gh.pr_reads == 3
+
+
+async def test_a_gone_installation_stops_the_tick_after_one_token_request(world) -> None:
+    from gateway import github_reconcile_loop
+
+    w = world
+    task = _task(w)
+    for n in range(300, 306):
+        _ref(w, task, n)
+        w.gh.pulls[n] = _pull(n)
+    w.gh.tokens_gone = True
+    async with tenant_engine_scope(g.app_dsn(w.p)):
+        result = await github_reconcile_loop.run_org(w.p.org_a, "tick-gone")
+    assert result.claimed and w.gh.token_asks == 1, w.gh.token_asks
+    assert w.gh.pr_reads == 0
 
 
 async def test_a_fresh_reference_is_not_read(world) -> None:
