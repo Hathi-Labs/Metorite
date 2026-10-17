@@ -4419,7 +4419,7 @@ and `uv run python scripts/affected_tests.py --base origin/main`.
   markers of item 3, a behaviour test of the seam through
   `_inject_agent_tools`, and an entry for `CRM_ANSWER_CHECK` in `work_plan.md`
   §6.1.
-- **Mutations.** 13 mutations in the build, 12 more in fix round 1 and 5 in
+- **Mutations.** 13 mutations in the build, 12 more in fix round 1 and 9 in
   fix round 2, one or more for each fix. The suites kill each one. The rules: the room for rounding, money against a percent, a
   date, an exact scaled number, the arm, the model's text as a source, no
   extra request on a pass, one retry for each run, no draft in the fallback,
