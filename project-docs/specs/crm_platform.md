@@ -73,8 +73,8 @@
 > weekly digest on `tier-powerful`, dark behind `CRM_DIGEST_ORGS` (branch
 > `crm-q28-digest`, migration 281). CRM-Q29, the number check of each CRM
 > answer, with two fix rounds, dark (`CRM_ANSWER_CHECK` is `off`, branch
-> `crm-answer-check`, no migration). CRM-Q29 fix round 3 is built on
-> 2026-10-17 on `crm-answer-check-r3`, not merged. CRM-Q30, a founder question set for CRM
+> `crm-answer-check`, no migration). CRM-Q29 fix round 3 is merged as #1120.
+> Fix round 4 is built on 2026-10-17 on `crm-answer-check-r4`, not merged. CRM-Q30, a founder question set for CRM
 > insights, and CRM-Q30b, the read tools say when Zoho holds more (branch
 > `crm-founder-evals`, no migration). See §18.11.
 >
@@ -1284,7 +1284,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q26** | Labels on notes, on the decide tier, in shadow. §18.11 | P1 |
 | **CRM-Q27** | 🔨 built 2026-10-16 on `crm-batch-i`, merged (#1111), dark. Search of note text by meaning. §18.11 | P2 |
 | **CRM-Q28** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-q28-digest`, migration 281), not merged, dark. A weekly digest on the powerful tier. §18.11 | P2 |
-| **CRM-Q29** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-answer-check`, with two fix rounds), merged as #1116, dark. Fix round 3 built 2026-10-17 on `crm-answer-check-r3`, not merged. The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
+| **CRM-Q29** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-answer-check`, with two fix rounds), merged as #1116, dark. Fix round 3 merged as #1120. Fix round 4 built 2026-10-17 on `crm-answer-check-r4`, not merged. The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
 | **CRM-Q30** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. A founder question set for CRM insights: an eval of the assistant over CRM data. §18.11 | P1 |
 | **CRM-Q30b** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. The read tools say when Zoho holds more records than the connected Zoho user can read. §18.11 | P1 |
 | **CRM-Q31** | The CRM catalogue for the AI: the purpose of each module, its key fields by meaning, and its links. Code first, then the decide tier. Four slices (Q31-1 to Q31-4). §18.13 | P0 |
@@ -3706,8 +3706,8 @@ merged (#1100, migration 278), dark. CRM-Q25b, CRM-Q25c and CRM-Q27
 (`d72f92184`). CRM-Q28 (migration 281, dark), CRM-Q29 (two fix rounds,
 dark, `CRM_ANSWER_CHECK` is `off`, no migration), CRM-Q30 and CRM-Q30b (no
 migration): built on 2026-10-17 in the batch branch `crm-batch-i2`, and
-merged as #1116. CRM-Q29 fix round 3: built on 2026-10-17 on
-`crm-answer-check-r3`, not merged. CRM-Q28 uses the one number check of
+merged as #1116. CRM-Q29 fix round 3: merged as #1120. CRM-Q29 fix round
+4: built on 2026-10-17 on `crm-answer-check-r4`, not merged. CRM-Q28 uses the one number check of
 CRM-Q29. Verified against
 code at `origin/main` `a8ef53c93`.
 
@@ -4453,7 +4453,10 @@ Done when:
    not the packed prompt string, which holds the earlier answers, and not the
    answer of a delegated agent. (Fix round, 2026-10-17.) The ledger adds
    each tool result to its sources when the result arrives, so a check never
-   parses the results of the run again. (Fix round 3.)
+   parses the results of the run again. (Fix round 3.) The report of
+   `code_task` and the output of a script of the model are no source,
+   because a model wrote them (`MODEL_WRITTEN_TOOLS`). A CSV row and compact
+   JSON are sources. (Fix round 4.)
 5. **The arm.** The check arms when the run records the result of a CRM tool:
    a name in `CRM_TOOL_NAMES`, or one of the four reads of `crm-assistant`. A
    run that reads no CRM tool is not checked and not changed.
@@ -4476,7 +4479,10 @@ Done when:
    A WhatsApp element (`whatsapp_ui`) is a display call too. The check
    removes the text of a failed step only when the step shows the member
    nothing. A failed step that calls a display tool or `share_artifact`
-   fails, and gets the retry or the fallback. (Fix round 3.)
+   fails, and gets the retry or the fallback. (Fix round 3.) The text of a
+   failed step goes out only when each call is a CRM read or a memory read
+   (`QUIET_TOOLS`). Each other call fails the step. The question and
+   confirmation cards are display calls. (Fix round 4.)
 8. **A derived figure** *(changed in fix round 2, 2026-10-17, from the 31
    founder questions of CRM-Q30)*. A founder asks for a figure that two tool
    results give, for example net cash flow, received minus paid (Q21). So a
@@ -4495,6 +4501,10 @@ Done when:
    as a figure of its own. A derived figure gets the room of its stated
    precision and no more. "About" gives room only to a figure that a source
    holds. So Q21 of CRM-Q30 states received and paid out with the net.
+   *(Changed in fix round 4.)* The two operands come from the citing
+   figures next to the derived figure in its sentence: the nearest two
+   before it and the nearest one after it. A word of derivation must stand
+   near it. Two cited percents give a sum or a difference.
 9. **The seam.** `_inject_agent_tools` puts the check provider on the per-run
    view of each native MAF agent that holds a CRM tool, after the H-236 step.
    That covers the stream run, the batch run and the sub-agent. No second
@@ -4539,9 +4549,9 @@ Verify: `uv run pytest tests/unit/test_number_check.py tests/unit/test_number_ch
 and `uv run python scripts/affected_tests.py --base origin/main`.
 
 **Built as (2026-10-17).** Branch `crm-answer-check`, with two fix rounds,
-merged in Batch I2 (#1116). Fix round 3 is built on 2026-10-17 on the
-branch `crm-answer-check-r3`, not merged. No migration, dark
-(`CRM_ANSWER_CHECK` is `off`).
+merged in Batch I2 (#1116). Fix round 3 is merged as #1120. Fix round 4 is
+built on 2026-10-17 on the branch `crm-answer-check-r4`, not merged. No
+migration, dark (`CRM_ANSWER_CHECK` is `off`).
 
 - **The shared API, for CRM-Q28 item 9.** `acb_common.number_check` gives
   `find_figures(text) -> list[Figure]`, `Sources()` with `add_text(text)` and
@@ -4621,6 +4631,49 @@ branch `crm-answer-check-r3`, not merged. No migration, dark
      `test_prose_with_a_code_word_is_still_checked`.
   7. Q21 of CRM-Q30 asks for what came in and what went out, and its answer
      states both operands of the net. Fence: `test_crm_founder_questions.py`.
+- **Fix round 4 (2026-10-17, the adversarial review of round 3).** The
+  review said "shadow yes, on no". Nine changes, each with a fence:
+  1. A failed step goes out without its text only when EACH call is in
+     `QUIET_TOOLS`: the CRM reads (`ARM_TOOLS`) and the memory reads
+     (`RECALL_TOOLS`). Any other call fails the step, so an unknown tool
+     fails closed. `ask_questions` and `request_confirmation` are display
+     tools, so the check reads the numbers of their cards. Fence:
+     `test_crm_answer_check.py`.
+  2. After a currency sign, `m`, `mm` and `b` are a scale ("₹19.2m",
+     "$4.5b"). A no-break space can come before a scale word. A currency
+     sign before digits glued to letters ("₹19.2xy") gives a figure that
+     always fails, so a figure after a currency sign never disappears.
+     Fence: `TestFixRound4Scale`.
+  3. **The choice for code.** A text that a model wrote, or that a script of
+     the model printed, is NO source. `MODEL_WRITTEN_TOOLS` holds the
+     delegations, `code_task`, `run_script`, `run_command` and
+     `code_task_run_command`. A number that only such a result holds fails,
+     and the model gets the figure again from a CRM tool. Fence:
+     `test_text_that_a_model_wrote_is_no_source`.
+  4. A derived figure takes its operands only from the citing figures next
+     to it in its sentence: the nearest two before it and the nearest one
+     after it. A word of derivation ("total", "net", "minus", "gap",
+     "difference", "change", "share", "of", "more than", "less than", "so"
+     and the other words of `_DERIVE_WORDS`) must stand near it. Fences:
+     `TestFixRound4Derivation` and the k corpus of
+     `test_number_check_invented.py`.
+  5. Two cited percents give a gap: "45% and 35.2%, a gap of 9.8 points". A
+     percent pool gives only a sum or a difference, never a share. Fence:
+     `test_a_gap_of_two_percents_passes`.
+  6. The win-loss and owners reports of `crm_report` say "The window is the
+     last 90 days.", so "in the last 90 days" has a source. Fence:
+     `test_the_win_loss_report_says_its_window`.
+  7. "About" gives a percent 1 point at most (`APPROX_PERCENT_POINTS`), so
+     "nearly 66%" fails against 60%. Fence: `TestFixRound4Approx`.
+  8. A CSV row ("region,1234567,88") and compact JSON
+     (`{"target":1234567}`) are sources. A CSV row holds only numbers,
+     dates and fields with no digit, so a grouped number in prose gives no
+     parts. A new value waits in a list, and the book sorts once, not on
+     each insert. The ledger reads a result over 20,000 characters on a
+     worker thread, and sorts the book there. Fences: `TestFixRound4Sources`
+     and `test_a_large_result_is_read_off_the_event_loop`.
+  9. "4:1", "17/29", "7th" and "#9" are known limits (below). "3x" is the
+     figure 3. Fence: `TestFixRound4Limits`.
 - **The measured rate (fix round 3).** `test_number_check_invented.py` builds
   70 answers with a seeded generator. Each of them holds two true figures
   of the tool results and one invented figure in seven forms: whole lakh, lakh with one
@@ -4631,8 +4684,16 @@ branch `crm-answer-check-r3`, not merged. No migration, dark
   percent), and 0 of 70 pass after round 3. With 50 groups, 52 of 70 passed
   (74 percent), and 0 of 70 pass now. The fence holds the rate under 10
   percent.
+- **The measured rate (fix round 4).** The review found a fault in the
+  generator: a form with one decimal could print "₹10 lakh" for 10.0. Round
+  4 prints each such form with its decimal. A second corpus cites k true
+  figures in one sentence, in the shape of the review's probe: 200 answers
+  for each k. With the rule of round 3, 7.0 percent passed at k = 4, 9.0
+  percent at k = 6 and 14.0 percent at k = 10. With the rule of round 4, 0
+  of 200 pass at each k. The fence holds the rate under 5 percent at each k.
 - **Mutations.** 13 mutations in the build, 12 more in fix round 1, 9 in
-  fix round 2 and 21 in fix round 3, one or more for each fix. The suites
+  fix round 2, 21 in fix round 3 and 21 in fix round 4, one or more for
+  each fix. The suites
   kill each one. The rules: the room for rounding, money against a percent, a
   date, an exact scaled number, the arm, the model's text as a source, no
   extra request on a pass, one retry for each run, no draft in the fallback,
@@ -4652,16 +4713,27 @@ branch `crm-answer-check-r3`, not merged. No migration, dark
   can read, so its numbers are not checked. A card's number under a layout
   key (`width`, `size`, `level` and others) is not checked. An approximation
   word gives a room of 10 percent, so "about ₹5 lakh" passes against
-  4,60,000. The second number of a range ("10-20") is not checked. A made-up
-  number can still pass when it is equal by chance to a sum, a difference or
-  a percent of two figures that the answer also states. A derive pool holds
+  4,60,000. On a percent the room is 1 point at most. The second number of a
+  range ("10-20") is not checked. A made-up number can still pass when it is
+  equal by chance to a sum, a difference or a percent of two figures next to
+  it in its sentence. A true derived figure fails when its operands stand
+  in another sentence or with no word of derivation, and the model then
+  writes it again. A figure that only a script of the model printed fails,
+  also when it is true. A derive pool holds
   the newest 500 figures of each kind, and 200 of one result at most. Each
   figure stays a direct source. `share_artifact` shows a file that another
   tool made, and its arguments hold only a path, so the check cannot read
   the numbers of that file. The parser blanks a citation such as "[3]", so a
   count in square brackets is not checked. A four-digit count from 1900 to
   2100 after "by", "from", "(" or "'" still reads as a year. A count glued
-  to a colon ("Count:2047") is no figure.
+  to a colon ("Count:2047") is no figure. A ratio ("4:1"), a fraction
+  ("17/29"), an ordinal ("7th") and a number after "#" ("#9") are no
+  figures, so their numbers are not checked. A multiplier that is a ratio
+  of two tool figures ("1.9x") fails, because no rule derives it. The shown
+  text of a card skips prose with an arrow ("Proposal => Negotiation") and
+  "return (" as code. `write_artifact` shows the text of `.md`, `.txt`,
+  `.html`, `.htm` and `.csv` only, so the numbers of a `.svg`, a `.json` or
+  a `.markdown` file are not checked.
 
 **CRM-Q30 · A founder question set for CRM insights (2026-10-17).**
 
@@ -4957,7 +5029,7 @@ CRM-Q25b, CRM-Q25c and CRM-Q27 were built on the batch branch
 (`d72f92184`). Batch I2: CRM-Q28 (migration 281), CRM-Q29 with its two
 fix rounds, CRM-Q30 and CRM-Q30b were built on 2026-10-17. They are in the
 batch branch `crm-batch-i2`, merged as #1116, and dark. CRM-Q29 fix round 3
-is built on `crm-answer-check-r3`, not merged. The owner flip of
+is merged as #1120, and fix round 4 is built on `crm-answer-check-r4`, not merged. The owner flip of
 CRM-Q26 is not done. Batch M: CRM-Q17a-1b, CRM-Q17a-2, CRM-Q18-1b, CRM-Q18-2, CRM-Q18-3,
 CRM-Q19 and CRM-Q20-1 are built on the batch branch `crm-batch-m`, and
 CRM-Q20-2 on `crm-q20-2-suggestions` from it. None is merged. CRM-Q20-3 is
