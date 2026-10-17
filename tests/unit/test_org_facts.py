@@ -155,7 +155,7 @@ def test_the_crm_facts_of_the_entries_and_the_plan() -> None:
     entries = {e.module: e for e in _entries()}
     rows = facts.entry_facts(entries["Invoices"], NOW)
     by_key = {r.key: r for r in rows}
-    assert by_key["purpose"].meaning == "Invoices is a invoice module."
+    assert by_key["purpose"].meaning == "Invoices holds invoice records."
     assert (by_key["purpose"].source, by_key["purpose"].set_at) == ("code", None)
     assert by_key["amount"].subject == "field:Invoices.Total"
     assert by_key["amount"].meaning == "The amount of Invoices is Total (Total)."

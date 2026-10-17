@@ -93,7 +93,7 @@ def entry_facts(entry: Any, approved_at: Any) -> list[org_facts.Fact]:
         source = _source(entry.by.get("purpose"))
         noun = PURPOSE_LABELS.get(entry.purpose, entry.purpose).lower()
         out.append(org_facts.fact(APP, subject, "purpose", entry.purpose,
-                                  f"{entry.label} is a {noun} module.", source,
+                                  f"{entry.label} holds {noun} records.", source,
                                   _when(source, approved_at)))
     if entry.purpose not in cat.MONEY_PURPOSES:
         return out
