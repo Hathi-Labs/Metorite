@@ -1,0 +1,289 @@
+"""One number check for text that a model wrote (WS-53 CRM-Q29).
+
+Spec: ``project-docs/specs/crm_platform.md`` §18.11.2, CRM-Q29 items 1 to 3.
+
+A model writes the sentence around a number that SQL gave. This module finds
+each number in that sentence and checks it against the numbers of its
+sources: the tool results of a chat turn (CRM-Q29), or the numbers of a digest
+prompt (CRM-Q28 item 9). It is the ONE number check. Do not write a second.
+
+It is pure: no I/O, no model, no settings. It lives in ``acb_common`` because
+the gateway (the digest) and ``acb_skills`` (the chat check) both declare it.
+
+**The rule of a match.** A number of the text matches when a source holds a
+value that rounds to it at the precision that the text states. "12.3 lakh"
+states a precision of 0.1 lakh, so it matches each source value from
+12,25,000 to 12,35,000. A scaled number (lakh, crore, ``k``, million,
+billion) that states fewer than two significant digits must be exact. A money
+value never matches a percent value, and a percent never matches money. A
+number with no unit can match either.
+
+**What is not a figure.** A date, a time, a year from 1900 to 2100 with no
+unit, a list marker, a number inside a word or an id (``Q3``, ``H-236``, a
+UUID), a URL and a code span. The parser skips them.
+
+Fence: ``tests/unit/test_number_check.py``.
+"""
+
+from __future__ import annotations
+
+import bisect
+import re
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+
+#: The three kinds of a figure.
+PLAIN = "plain"
+MONEY = "money"
+PERCENT = "percent"
+
+#: Each scale word, with its multiplier. Case counts for the one-letter forms.
+_SCALE_WORDS: dict[str, Decimal] = {
+    "lakh": Decimal(10) ** 5, "lakhs": Decimal(10) ** 5,
+    "lac": Decimal(10) ** 5, "lacs": Decimal(10) ** 5,
+    "crore": Decimal(10) ** 7, "crores": Decimal(10) ** 7, "cr": Decimal(10) ** 7,
+    "thousand": Decimal(10) ** 3,
+    "million": Decimal(10) ** 6, "mn": Decimal(10) ** 6,
+    "billion": Decimal(10) ** 9, "bn": Decimal(10) ** 9,
+}
+_SCALE_LETTERS: dict[str, Decimal] = {
+    "k": Decimal(10) ** 3, "K": Decimal(10) ** 3, "L": Decimal(10) ** 5,
+    "M": Decimal(10) ** 6, "B": Decimal(10) ** 9,
+}
+
+_CURRENCY_BEFORE = r"₹|Rs\.?|INR|USD|US\$|\$|€|EUR|£|GBP"
+_CURRENCY_AFTER = r"INR|rupees?|USD|dollars?"
+
+#: One figure: a currency before, the digits, a scale, a percent, a currency
+#: after. The digits take Indian grouping (12,34,567), Western grouping
+#: (1,234,567) or none. The conditional keeps a number glued to a word, a
+#: path, a time or a version out: ``H-236``, ``3/4``, ``10:30``, ``1.2.3``.
+_FIGURE = re.compile(
+    r"(?<![A-Za-z0-9_])"
+    rf"(?:(?P<cur>{_CURRENCY_BEFORE})\s?)?"
+    r"(?(cur)|(?<![\w.,/:#@])(?<!\w-))"
+    r"(?P<num>(?:\d{1,2}(?:,\d{2})+,\d{3}|\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)"
+    r"(?![.,]\d)(?!:\d)(?!/\d)"
+    r"(?:\s?(?P<scale>(?i:lakhs?|lacs?|crores?|cr|thousand|million|mn|billion|bn)"
+    r"|k|K|L|M|B)(?![A-Za-z0-9_]))?"
+    r"(?:\s?(?P<pct>%|(?i:per\s?cent)))?"
+    rf"(?:\s?(?P<cur2>(?i:{_CURRENCY_AFTER}))(?![A-Za-z]))?"
+    r"(?![A-Za-z0-9_])"
+)
+
+_MONTHS = (
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+    r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|"
+    r"Dec(?:ember)?)\.?"
+)
+
+#: The spans that hold no figure. The parser blanks them before it scans.
+_NOT_FIGURES = re.compile(
+    "|".join((
+        r"```.*?```",                                   # a fenced code block
+        r"`[^`\n]*`",                                    # a code span
+        r"\bhttps?://\S+",                               # a URL
+        r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b",
+        r"\bid=\S+",                                     # an id that a tool prints
+        r"\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?\b",
+        r"\b\d{4}-\d{2}\b",                              # a month: 2026-10
+        r"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b",          # 17/10/2026
+        r"\b\d{1,2}:\d{2}(?::\d{2})?(?:\s?(?i:am|pm))?\b",  # a time
+        rf"\b\d{{1,2}}(?:st|nd|rd|th)?\s+{_MONTHS}(?:,?\s+\d{{4}})?\b",
+        rf"\b{_MONTHS}\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+\d{{4}})?\b",
+        rf"\b{_MONTHS}\s+\d{{4}}\b",
+        r"^[ \t]*(?:[-*+][ \t]+)?\d{1,3}[.)](?=[ \t])",  # a list marker
+        r"^[ \t]*#{1,6}[ \t]+\d+(?:\.\d+)*",         # a numbered heading
+    )),
+    re.DOTALL | re.MULTILINE,
+)
+
+
+@dataclass(frozen=True)
+class Figure:
+    """One number in a text, with its value in plain units.
+
+    ``value`` is in rupees (or the currency), percent points or a count.
+    ``unit`` is the precision that the text states, in the same units. Half
+    of it is the room for rounding. ``exact`` is true for a scaled number with
+    fewer than two significant digits, which must match exactly.
+    """
+
+    text: str
+    value: Decimal
+    kind: str
+    unit: Decimal
+    exact: bool
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
+class CheckResult:
+    """The answer of :func:`check`: the figures found, and those that failed."""
+
+    figures: tuple[Figure, ...]
+    unmatched: tuple[Figure, ...]
+
+    @property
+    def ok(self) -> bool:
+        """True when each figure of the text matched a source."""
+        return not self.unmatched
+
+
+def _blank(text: str) -> str:
+    """*text* with each span that holds no figure turned into spaces."""
+    return _NOT_FIGURES.sub(lambda m: " " * (m.end() - m.start()), text)
+
+
+def _scale_of(token: str | None) -> Decimal:
+    if not token:
+        return Decimal(1)
+    if token in _SCALE_LETTERS:
+        return _SCALE_LETTERS[token]
+    return _SCALE_WORDS.get(token.lower(), Decimal(1))
+
+
+def _significant(digits: str) -> int:
+    """The count of significant digits in *digits* (no sign, no grouping)."""
+    stripped = digits.replace(".", "").lstrip("0")
+    return len(stripped)
+
+
+def _parse(text: str, *, skip_years: bool) -> list[Figure]:
+    scan = _blank(text or "")
+    found: list[Figure] = []
+    for m in _FIGURE.finditer(scan):
+        raw = m.group("num").replace(",", "")
+        try:
+            number = Decimal(raw)
+        except InvalidOperation:
+            continue
+        scale_token = m.group("scale")
+        scale = _scale_of(scale_token)
+        decimals = len(raw.split(".", 1)[1]) if "." in raw else 0
+        if m.group("pct"):
+            kind = PERCENT
+        elif m.group("cur") or m.group("cur2"):
+            kind = MONEY
+        else:
+            kind = PLAIN
+        grouped = "," in m.group("num")
+        if (skip_years and kind == PLAIN and scale == 1 and not grouped
+                and decimals == 0 and len(raw) == 4 and 1900 <= int(raw) <= 2100):
+            continue
+        found.append(Figure(
+            text=text[m.start():m.end()].strip(),
+            value=number * scale,
+            kind=kind,
+            unit=(Decimal(1).scaleb(-decimals)) * scale,
+            exact=scale != 1 and _significant(raw) < 2,
+            start=m.start(),
+            end=m.end(),
+        ))
+    return found
+
+
+def find_figures(text: str) -> list[Figure]:
+    """Each figure that *text* states, in order. Skips each form of item 3."""
+    return _parse(text, skip_years=True)
+
+
+def _compatible(claim: str, source: str) -> bool:
+    """Money and percent never meet. A plain number meets either."""
+    return {claim, source} != {MONEY, PERCENT}
+
+
+@dataclass
+class Sources:
+    """The numbers that a text may state, kept sorted for a fast match.
+
+    Add a text with :meth:`add_text` (a tool result, a member's message, a
+    prompt) or a value with :meth:`add_value`. A source value is taken as
+    exact. The sign is not compared: a text may say "down 5%" for -5.
+    """
+
+    _values: list[Decimal] = field(default_factory=list)
+    _kinds: list[str] = field(default_factory=list)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def add_value(self, value: Decimal | int | float | str, kind: str = PLAIN) -> None:
+        """Add one exact value of *kind*."""
+        try:
+            number = abs(Decimal(str(value)))
+        except InvalidOperation:
+            return
+        at = bisect.bisect_left(self._values, number)
+        self._values.insert(at, number)
+        self._kinds.insert(at, kind)
+
+    def add_text(self, text: str) -> None:
+        """Add each number in *text*. A year counts here, as a source."""
+        for figure in _parse(text, skip_years=False):
+            self.add_value(figure.value, figure.kind)
+
+    def matches(self, figure: Figure) -> bool:
+        """True when a source value rounds to *figure* at its precision."""
+        target = abs(figure.value)
+        room = Decimal(0) if figure.exact else figure.unit / 2
+        lo = bisect.bisect_left(self._values, target - room)
+        hi = bisect.bisect_right(self._values, target + room)
+        return any(_compatible(figure.kind, self._kinds[i]) for i in range(lo, hi))
+
+
+def check(text: str, sources: Sources | Iterable[str]) -> CheckResult:
+    """Check each figure of *text* against *sources*.
+
+    *sources* is a :class:`Sources`, or texts to read into one.
+    """
+    if not isinstance(sources, Sources):
+        book = Sources()
+        for source in sources:
+            book.add_text(source)
+        sources = book
+    figures = tuple(find_figures(text))
+    return CheckResult(
+        figures=figures,
+        unmatched=tuple(f for f in figures if not sources.matches(f)),
+    )
+
+
+def group_indian(whole: int) -> str:
+    """*whole* with Indian grouping: 1234567 -> ``12,34,567``."""
+    sign = "-" if whole < 0 else ""
+    digits = str(abs(int(whole)))
+    if len(digits) <= 3:
+        return sign + digits
+    head, tail = digits[:-3], digits[-3:]
+    pairs: list[str] = []
+    while len(head) > 2:
+        pairs.insert(0, head[-2:])
+        head = head[:-2]
+    return sign + ",".join([head, *pairs, tail])
+
+
+def format_figure(value: Decimal | int | float, kind: str = PLAIN, *, decimals: int = 0) -> str:
+    """The ONE formatter of a figure for a prompt (CRM-Q28 item 9).
+
+    Money: ``INR 12,34,567``. Percent: ``45.3%``. Plain: ``12,34,567``. It
+    rounds half up to *decimals* places. :func:`check` reads each form back.
+    """
+    quantum = Decimal(1).scaleb(-decimals)
+    number = Decimal(str(value)).quantize(quantum, rounding=ROUND_HALF_UP)
+    sign = "-" if number < 0 else ""
+    whole, _, frac = f"{abs(number):f}".partition(".")
+    text = sign + group_indian(int(whole)) + (f".{frac}" if frac else "")
+    if kind == MONEY:
+        return f"INR {text}"
+    if kind == PERCENT:
+        return f"{text}%"
+    return text
+
+
+__all__ = [
+    "MONEY", "PERCENT", "PLAIN", "CheckResult", "Figure", "Sources", "check",
+    "find_figures", "format_figure", "group_indian",
+]

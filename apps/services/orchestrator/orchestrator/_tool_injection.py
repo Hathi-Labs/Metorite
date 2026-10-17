@@ -2397,7 +2397,46 @@ def _inject_agent_tools(
     # a native MAF agent gets the call-time refusal, as a per-run view.
     if no_egress:
         _apply_no_egress(agents, agent_name, injected=_egress)
+    # CRM-Q29: a native MAF agent that holds a CRM tool gets the number
+    # check, as a per-run view, after the H-236 step.
+    _apply_answer_check(agents, agent_name)
     return _run_tool_names
+
+
+def _apply_answer_check(agents: list[Any], agent_name: str | None) -> None:
+    """The number check of a CRM answer on ONE run (WS-53 CRM-Q29).
+
+    It replaces each native MAF ``Agent`` in *agents* that holds a CRM tool
+    with a per-run view that carries ``acb_skills.answer_check``'s provider,
+    so the caller reads ``agents`` again, as every call site does. It is the
+    one seam of the check (``crm_platform.md`` §18.11.2 item 9). With
+    ``CRM_ANSWER_CHECK`` ``off`` it changes nothing. A Copilot SDK agent and a
+    plain object are left as they are.
+    """
+    from acb_skills.answer_check import (
+        OFF,
+        AnswerCheckProvider,
+        answer_check_mode,
+        holds_crm_tool,
+    )
+
+    mode = answer_check_mode()
+    if mode == OFF:
+        return
+    try:
+        from agent_framework import Agent
+    except ImportError:
+        return
+    from orchestrator._native_run_context import agent_with_providers
+
+    for i, agent in enumerate(agents):
+        if not isinstance(agent, Agent):
+            continue
+        held = [_tool_name(t) for _label, pool in _own_tool_pools(agent) for t in pool]
+        if not holds_crm_tool(held):
+            continue
+        agents[i] = agent_with_providers(agent, [AnswerCheckProvider(mode)])
+        _log.info("executor.answer_check_on", agent=agent_name, mode=mode)
 
 
 def _apply_no_egress(

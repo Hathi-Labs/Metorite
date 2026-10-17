@@ -1273,6 +1273,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q26** | Labels on notes, on the decide tier, in shadow. §18.11 | P1 |
 | **CRM-Q27** | 🔨 built 2026-10-16 on `crm-batch-i`, merged (#1111), dark. Search of note text by meaning. §18.11 | P2 |
 | **CRM-Q28** | 🔨 built 2026-10-17 on `crm-q28-digest`, not merged, dark. A weekly digest on the powerful tier. §18.11 | P2 |
+| **CRM-Q29** | 🔨 built 2026-10-17 on `crm-answer-check`, not merged, dark. The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
 
@@ -3631,7 +3632,9 @@ merged (#1100, migration 278), dark. CRM-Q25b, CRM-Q25c and CRM-Q27
 `crm-batch-i`, with a fix round on 2026-10-17, and merged as #1111
 (`d72f92184`). CRM-Q28 (migration 281, dark): built on 2026-10-17 on the
 branch `crm-q28-digest`, not merged. Verified against code at
-`origin/main` `a8ef53c93`.
+`origin/main` `a8ef53c93`. CRM-Q29: built 2026-10-17 on the branch
+`crm-answer-check`, not merged, dark (`CRM_ANSWER_CHECK` is `off`), no
+migration. CRM-Q28 uses its one number check.
 
 **Owner direction (2026-10-16, in chat).** Use the decide, balanced and
 powerful tiers to run inference on the CRM data and produce insights. Build
@@ -3663,6 +3666,7 @@ each value. Embeddings help the model find text. They never make a number.
 | CRM-Q28 | A weekly digest on the powerful tier | AGENT-SAFE | M | CRM-Q25 |
 | CRM-Q25b | One time zone for each month bucket of the aggregate | AGENT-SAFE | S | CRM-Q25 |
 | CRM-Q25c | A NUL byte in a list query answers 422 | AGENT-SAFE | S | — |
+| CRM-Q29 | The CRM assistant never misquotes a number | AGENT-SAFE | M | CRM-Q25 |
 
 CRM-Q25b, CRM-Q27 and CRM-Q28 have their done-when lists after CRM-Q26
 (2026-10-16). To build each ticket is AGENT-SAFE. For CRM-Q26, a mode other than
@@ -4299,6 +4303,144 @@ R8: `tests/unit/test_crm_digest_r8.py`, with the start over in
 `tests/unit/test_crm_reset_r8.py`. Hermetic: `tests/unit/test_crm_digest.py`.
 `vitest`: `src/app/crm/components/crmQ28.test.ts`.
 
+**CRM-Q29 · The CRM assistant never misquotes a number (2026-10-17).**
+
+**Why (owner, 2026-10-16 and 2026-10-17, in chat).** Founders read insights
+in the AI chat over their CRM. SQL gives each number (CRM-Q25), but the model
+writes the sentence around it. So the model can misquote a number, round it
+wrongly, add two results itself or invent one. This ticket puts a check
+between the model and the member.
+
+**The facts (code check of 2026-10-17, at `a8ef53c93`).**
+
+- Each agent that holds a CRM tool runs on the native MAF runtime. That
+  includes `crm-assistant` and the one assistant, `orchestrator`.
+- `orchestrator/_tool_injection._inject_agent_tools` is the one assembly step
+  of all three run paths: the stream run, the batch run and the sub-agent.
+  WhatsApp uses the batch run. H-236 already puts a per-run view with its own
+  middleware there (`_with_egress_guard`).
+- A MAF chat middleware wraps each model request inside the tool loop. A
+  function middleware wraps each tool call. A context provider adds both to
+  one run (`tier_policy.TierPolicyProvider` does this).
+- The stream run sends each text delta to the member when it arrives. So a
+  check after the stream cannot stop a wrong number.
+- CRM-Q28 item 9 needs the same check for the digest.
+
+Done when:
+
+1. One pure module, `acb_common/number_check.py`, finds each number in a text
+   and checks it against its sources. CRM-Q28 item 9 imports it, and no second
+   number check exists. It has no I/O and no model. It lives in `acb_common`
+   because the gateway and `acb_skills` both declare that package.
+2. **The rule of a match.** A number in the answer matches when a source holds
+   a value that rounds to it at the precision that the answer states. So
+   "₹12.3 lakh" matches 12,34,567. The parser reads `INR`, `Rs`, `₹`, `$`,
+   lakh, crore, `k`, million, billion, `%` and Indian or Western grouping. A
+   scaled number (lakh, crore, `k`, million, billion) states two significant
+   digits, or it must be exact. A money value never matches a percent value, and
+   a percent never matches money. A number with no unit can match either.
+3. **The numbers that are not figures.** The check skips a date, a time, a
+   year from 1900 to 2100, a list marker, a number inside a word or an id
+   (`Q3`, `H-236`, a UUID), a URL and a code span.
+4. **The sources of a turn.** A function middleware records the text of each
+   tool result of the run, in memory, for that run only. The text of the
+   member's messages and of the tool results in the request are sources too.
+   A text that the model wrote is never a source.
+5. **The arm.** The check arms when the run records the result of a CRM tool:
+   a name in `CRM_TOOL_NAMES`, or one of the four reads of `crm-assistant`. A
+   run that reads no CRM tool is not checked and not changed.
+6. **The check.** On an armed run, the chat middleware holds each model
+   response until it ends. Then it checks the text against the sources. When
+   a response passes, it goes out with no change. So the normal path makes no extra
+   model request, and its cost is one parse of the text.
+7. **A mismatch: the chosen behaviour.** The first failed answer of a run gets
+   ONE more model request. That request names each number that matched no
+   source, and it says how to fix it. The check reads the second answer too.
+   When the second answer also fails, or when the run has used its one retry,
+   the member gets a fallback. The fallback says that a number did not match,
+   and it then shows the figures of the CRM tools as they came. The member
+   never sees the failed draft. The check removes the text of a failed step
+   that also calls a tool, and it keeps the tool call.
+8. **A derived figure.** The model does not add, subtract or divide tool
+   numbers in its text. A sum of two results matches no source, so the check
+   flags it. The CRM section of `addendum.py` and the instructions of
+   `crm-assistant` say that a new total comes from another `crm_aggregate`
+   call, and that the model writes each figure in digits.
+9. **The seam.** `_inject_agent_tools` puts the check provider on the per-run
+   view of each native MAF agent that holds a CRM tool, after the H-236 step.
+   That covers the stream run, the batch run and the sub-agent. No second
+   runtime and no second middleware chain exist. A Copilot SDK agent gets no
+   check. Today no Copilot agent holds a CRM tool.
+10. **Streaming.** On an armed run, the text of a model response reaches the
+    member in one piece when the response ends, not token by token. A run that
+    is not armed streams as before. The thinking text and the tool calls of a
+    held response go out in their order, with the text.
+11. **The flag.** `CRM_ANSWER_CHECK` is `off`, `shadow` or `on`, and the
+    default is `off`. `shadow` checks each armed response at its end and logs
+    the count of mismatches, with no hold and no retry. `on` does items 6 and
+    7. A value on a box is the grant `enforcement-flip`.
+12. **The cost bound.** A passed check makes no model request. A run makes one
+    extra model request at most, whatever fails.
+13. **Logs.** Each check logs `answer_check.checked` with the run id, the
+    count of numbers, the count of mismatches and the outcome. It never logs a
+    number or a text.
+14. **Tests with a scripted fake model.** A correct answer passes with no
+    extra request. A misquoted number is caught, and the second answer goes
+    out. An invented total is caught. Two failures give the fallback. INR,
+    lakh, crore and percent forms parse. A run with no CRM tool holds nothing.
+    A fence pins the one seam and the one number check.
+
+Files: `packages/acb_common/acb_common/number_check.py` (new),
+`packages/acb_skills/acb_skills/answer_check.py` (new),
+`acb_common/settings.py`, `orchestrator/_tool_injection.py`,
+`acb_skills/addendum.py`, `apps/agents/agent-crm/instructions.md`,
+`tests/unit/test_number_check.py` (new),
+`tests/unit/test_crm_answer_check.py` (new) and the DOX files. Gate:
+AGENT-SAFE to build. `shadow` or `on` on a box is `enforcement-flip`. Size: M.
+Waits for: CRM-Q25, merged as #1104. No migration. CRM-Q28 item 9 imports
+item 1, so CRM-Q28 merges after this ticket, or it rebases onto it.
+
+Verify: `uv run pytest tests/unit/test_number_check.py tests/unit/test_crm_answer_check.py tests/unit/test_crm_agent.py tests/unit/test_tool_schema_diet.py tests/unit/test_generated_addendum.py -q`,
+and `uv run python scripts/affected_tests.py --base origin/main`.
+
+**Built as (2026-10-17).** Branch `crm-answer-check`, no migration, dark.
+
+- **The shared API, for CRM-Q28 item 9.** `acb_common.number_check` gives
+  `find_figures(text) -> list[Figure]`, `Sources()` with `add_text(text)` and
+  `add_value(value, kind)`, `check(text, sources) -> CheckResult` and
+  `format_figure(value, kind, decimals=0)`. `sources` is a `Sources` or a list
+  of texts. `CheckResult.ok` is true when each figure matched, and
+  `CheckResult.unmatched` holds each `Figure` that failed. A `Figure` holds
+  `text`, `value`, `kind`, `unit` and `exact`. The kinds are `PLAIN`, `MONEY`
+  and `PERCENT`. So the digest writes each number of its prompt with
+  `format_figure`, reads the prompt into `Sources`, and stores a text only
+  when `check(text, sources).ok` is true.
+- **The chat half.** `acb_skills/answer_check.py` holds the ledger of a run,
+  the two middlewares and `AnswerCheckProvider`.
+  `_tool_injection._apply_answer_check` is the one seam.
+- **The two prompts.** The CRM section of `addendum.py` and
+  `agent-crm/instructions.md` say that a new total comes from another
+  `crm_aggregate` call, and that the model writes each figure in digits.
+- **What the tests measure.** With a scripted model in a real MAF `Agent`, on
+  the stream run and the batch run: a true answer makes 2 requests, a
+  misquote 3, and two failures 3, with the fallback. A later failure in the
+  same run makes no second retry.
+- **Mutations.** 13 mutations, one for each key rule, and the suites kill
+  each one. The rules: the room for rounding, money against a percent, a
+  date, an exact scaled number, the arm, the model's text as a source, no
+  extra request on a pass, one retry for each run, no draft in the fallback,
+  no text on a failed tool step, the seam, the default mode, and no note text
+  in the fallback.
+- **The grant.** The retry is one more request of the member's own chat turn.
+  The member's chat pays for it as for each other request, so no new payer
+  exists. That is why `enforcement-flip` covers a value on a box. The owner
+  can make it an owner flip in the PR.
+- **Known limits.** A number in words ("seven deals") is not checked, so the
+  prompts ask for digits. The sign of a number is not compared. A Copilot SDK
+  agent gets no check. When a parent agent quotes the answer of a delegated
+  `crm-assistant`, the parent's own run checks nothing, because it read no
+  CRM tool itself. The delegated run checks its own answer.
+
 #### 18.11.3 Verification
 
 - `bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"`
@@ -4308,6 +4450,8 @@ R8: `tests/unit/test_crm_digest_r8.py`, with the start over in
   The email and My Day features must behave as before.
 - `uv run python -m evals.crm_note_labels.run --scripted`
 - `uv run python scripts/affected_tests.py --run`
+- CRM-Q29: `uv run pytest tests/unit/test_number_check.py tests/unit/test_crm_answer_check.py -q`.
+  These suites need no database.
 - CRM-Q27 and CRM-Q28 add their new suites to the pytest line above, with no
   test skipped. CRM-Q28 also runs
   `npx tsc --noEmit && npx vitest run src/app/crm` in `workbench/control_plane`.
