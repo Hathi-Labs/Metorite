@@ -529,6 +529,71 @@ async def source_labels(db: Any, org: str | None) -> dict[str, EntityLabel] | No
     return labels_of(from_jsonb(row.modules)) or None
 
 
+# ── The state of each core entity (CRM-Q17b) ─────────────────────────────────
+
+
+class EntityState(BaseModel):
+    """What the rail and the first screen need to know about one core entity
+    (§18.9.6, CRM-Q17b items 2 to 4)."""
+
+    #: The org holds at least one record of the entity in its own table.
+    records: bool
+    #: Zoho refused the module the last time the sync asked: it is turned off
+    #: in Zoho, or hidden from the user who connected (CRM-Q15, the cursor
+    #: reason ``hidden``). A missing scope is not "turned off".
+    turned_off: bool
+
+
+#: The slug of each core entity, in a fixed order, for the one statement.
+_CORE_SLUGS: tuple[str, ...] = tuple(sorted(ENTITIES))
+
+#: One row: for each core entity, whether the org holds a record of it. Each
+#: ``EXISTS`` reads one row at most, through the index on ``organization_id``
+#: (``241_crm_tenancy.sql``). The table names are constants of ``core.py``.
+_HOLDS_SQL = "SELECT " + ", ".join(
+    f"EXISTS (SELECT 1 FROM {ENTITIES[slug].table} "
+    f"WHERE organization_id = CAST(:org AS uuid)) AS {slug}"
+    for slug in _CORE_SLUGS
+)
+
+
+def turned_off_of(state: Any) -> bool:
+    """True when a cursor state says that Zoho refused the module. The engine
+    writes ``unavailable`` with the reason ``hidden`` (``engine._mark_unavailable``)."""
+    return isinstance(state, dict) and bool(state.get("unavailable")) and (
+        state.get("reason") == "hidden"
+    )
+
+
+async def entity_states(db: Any, org: str | None) -> dict[str, EntityState] | None:
+    """The state of each core entity, by API slug, for ``GET /crm/mode``.
+
+    ``None`` for an org outside ``CRM_FILL_RANK_ORGS`` and outside Mirror
+    mode, as :func:`source_labels`. That keeps CRM-Q17b dark until the flip.
+    It reads one row of four ``EXISTS`` and the four cursor rows of the core
+    entities. It never counts a table.
+    """
+    if not org or not fill_rank_allowed(org):
+        return None
+    if not await is_mirror_mode(db, str(org)):
+        return None
+    holds = (await db.execute(text(_HOLDS_SQL), {"org": str(org)})).first()
+    rows = [f"{PROVIDER}:{FIELD_ENTITY_BY_SLUG[slug]}" for slug in _CORE_SLUGS]
+    cursors = {
+        str(r.module): from_jsonb(r.cursor_state)
+        for r in (await db.execute(
+            text(_CURSORS_SQL), {"org": str(org), "rows": rows},
+        )).fetchall()
+    }
+    return {
+        slug: EntityState(
+            records=bool(getattr(holds, slug, False)) if holds is not None else False,
+            turned_off=turned_off_of(cursors.get(f"{PROVIDER}:{FIELD_ENTITY_BY_SLUG[slug]}")),
+        )
+        for slug in _CORE_SLUGS
+    }
+
+
 __all__ = [
     "FILL_ROW",
     "LIST_ALIASES",
@@ -537,6 +602,7 @@ __all__ = [
     "RULES_ROW",
     "STILL_EMPTY",
     "EntityLabel",
+    "EntityState",
     "Fill",
     "annotate",
     "backfilling_entities",
@@ -545,6 +611,7 @@ __all__ = [
     "count_key",
     "empty_columns",
     "empty_set",
+    "entity_states",
     "fill_key",
     "fills_for",
     "labels_of",
@@ -560,4 +627,5 @@ __all__ = [
     "standard_keys",
     "still_empty_of",
     "still_empty_set",
+    "turned_off_of",
 ]

@@ -83,7 +83,12 @@ from gateway.routes.crm.core import (
     reset_crm_from_admin,
     router,
 )
-from gateway.routes.crm.fill_rank import EntityLabel, source_labels
+from gateway.routes.crm.fill_rank import (
+    EntityLabel,
+    EntityState,
+    entity_states,
+    source_labels,
+)
 from gateway.routes.crm.flags import crm_mirror_allowed
 from gateway.routes.crm.seed import seed_native_pipeline
 from gateway.routes.projects.core import validate_grant_subject
@@ -332,6 +337,13 @@ class CrmModeModel(BaseModel):
     overlays: dict[str, str] | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )
+    #: CRM-Q17b (§18.9.6 items 2 to 4): by API slug, whether the org holds a
+    #: record of each core entity, and whether Zoho turned it off. The rail
+    #: drops a row that is off and empty, and ``/crm`` opens on the first row
+    #: that holds records. Left OUT of the body where ``labels`` is left out.
+    entities: dict[str, EntityState] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
 
 
 @router.get("/mode", response_model=CrmModeModel)
@@ -344,7 +356,8 @@ async def get_crm_mode(
     groups. An agent run reads this route as the member, to drop the record
     write tools in Mirror mode. No row reads as mode NULL. It is also the one
     route of the source labels (CRM-Q17a-1 item 6), and of the overlays of
-    the approved roles (CRM-Q20-2), which only a Mirror CRM can hold.
+    the approved roles (CRM-Q20-2), which only a Mirror CRM can hold, and
+    of the state of each core entity (CRM-Q17b).
     """
     from gateway.routes.crm.mapping_plans import approved_overlays
 
@@ -354,7 +367,10 @@ async def get_crm_mode(
         mode = getattr(row, "mode", None) if row is not None else None
         labels = await source_labels(db, org)
         overlays = await approved_overlays(db, org) if mode == "mirror" else {}
-    return CrmModeModel(mode=mode, labels=labels, overlays=overlays or None)
+        entities = await entity_states(db, org)
+    return CrmModeModel(
+        mode=mode, labels=labels, overlays=overlays or None, entities=entities,
+    )
 
 
 @router.patch(
