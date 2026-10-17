@@ -4099,7 +4099,10 @@ Done when:
 9. The step takes the newest notes first, 640 at most (10 requests of 64).
    The cap counts requests in Redis for each org and UTC day, before each
    request goes out, as CRM-Q26 does. The cap is 80 requests, so 5,120
-   notes, in one day. A Redis failure embeds nothing.
+   notes, in one day. A Redis failure embeds nothing. While more than 1,000
+   notes wait, the cap is 400 requests (25,600 notes). A step then takes
+   2,560 notes. So the first pass of an org ends in one day (owner request,
+   2026-10-17). DEWiN's full pass costs about USD 0.02.
 10. The payer check is the one of CRM-Q26 item 7: the `connected_by` member
     of the Zoho connection, still an active member of this org
     (`my_day_loop.departed`). With no such member, the step skips and logs a

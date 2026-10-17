@@ -28,6 +28,14 @@ embeds nothing: spend fails closed. The door writes no ``usage_event`` row,
 so Metorite pays the vendor and no org pays credits (``knowledge_base.md``
 §6.4). Its log line gives the token estimate of each call.
 
+**The backlog allowance** (owner request, 2026-10-17). While more than
+:data:`BACKLOG_THRESHOLD` (1,000) notes wait, the cap is
+:data:`BACKLOG_DAILY_REQUESTS` (400) requests, so 25,600 notes, and one step
+takes :data:`BACKLOG_STEP_LIMIT` (2,560) notes. So the first pass of an org
+ends in one day. DEWiN's 17,519 notes are about 0.76M tokens, about USD 0.02.
+The step counts the waiting notes up to the threshold plus one only, as
+CRM-Q26 does, and it reserves each request against the cap that it read.
+
 **Who pays.** Nobody, today. The check is still the payer check of CRM-Q26:
 the ``connected_by`` of the org's Zoho connection, still an ACTIVE member of
 THIS org (``my_day_loop.departed``). With no such member, the step skips,
@@ -98,6 +106,16 @@ STEP_LIMIT = 10 * NOTES_PER_REQUEST
 
 #: The requests of one org in one UTC day (§18.11.2 item 9), so 5,120 notes.
 DAILY_REQUESTS = 80
+
+#: The requests of one org in one UTC day while more than
+#: :data:`BACKLOG_THRESHOLD` notes wait (owner request, 2026-10-17), so 25,600
+#: notes. The first pass of an org then ends in one day, not in four. At the
+#: threshold or below, the normal caps apply.
+BACKLOG_DAILY_REQUESTS = 400
+BACKLOG_THRESHOLD = 1000
+
+#: The notes of one step while the backlog holds: 40 requests.
+BACKLOG_STEP_LIMIT = 40 * NOTES_PER_REQUEST
 
 #: The text of a note: the subject and the body, clipped to this many
 #: characters, about 500 tokens (§18.11.2 item 8).
@@ -246,6 +264,32 @@ _EMPTY_SQL = (
 )
 
 
+#: The waiting notes, counted up to ``:n`` only, so a large backlog costs no
+#: full count (as ``note_labels._BACKLOG_SQL``).
+_BACKLOG_SQL = "SELECT count(*) FROM (SELECT 1 " + _WAITING + "LIMIT :n) AS waiting"
+
+
+async def _backlog(db: Any, org: str) -> int:
+    """The waiting notes, up to :data:`BACKLOG_THRESHOLD` + 1."""
+    return int((await db.execute(text(_BACKLOG_SQL), {
+        "o": org, "n": BACKLOG_THRESHOLD + 1, "max_failures": MAX_FAILURES,
+        "park_days": PARK_DAYS,
+    })).scalar() or 0)
+
+
+def daily_requests(backlog: int) -> int:
+    """The org's request cap for one day. A backlog above
+    :data:`BACKLOG_THRESHOLD` takes :data:`BACKLOG_DAILY_REQUESTS`, and
+    otherwise :data:`DAILY_REQUESTS`."""
+    return BACKLOG_DAILY_REQUESTS if backlog > BACKLOG_THRESHOLD else DAILY_REQUESTS
+
+
+def step_limit(backlog: int) -> int:
+    """The notes of one step. A backlog above :data:`BACKLOG_THRESHOLD`
+    takes :data:`BACKLOG_STEP_LIMIT`, and otherwise :data:`STEP_LIMIT`."""
+    return BACKLOG_STEP_LIMIT if backlog > BACKLOG_THRESHOLD else STEP_LIMIT
+
+
 async def _pending(db: Any, org: str, limit: int) -> list[Note]:
     rows = (await db.execute(text(_PENDING_SQL), {
         "o": org, "n": limit, "max_failures": MAX_FAILURES, "park_days": PARK_DAYS,
@@ -378,12 +422,14 @@ async def _embed(org: str, should_stop: Callable[[], bool], utc_date: str) -> Em
 
     # A Redis failure raises here, and the step embeds nothing (spend fails closed).
     used = await requests_used(org, utc_date)
-    room = DAILY_REQUESTS - used
-    if room <= 0:
-        return Embedded("daily_cap")
     async with tenant_session(org) as db:
+        backlog = await _backlog(db, org)
+        cap = daily_requests(backlog)
+        room = cap - used
+        if room <= 0:
+            return Embedded("daily_cap")
         member = await note_labels._member(db, org)
-        notes = await _pending(db, org, min(STEP_LIMIT, room * NOTES_PER_REQUEST))
+        notes = await _pending(db, org, min(step_limit(backlog), room * NOTES_PER_REQUEST))
     # Fix round 2 (2026-10-17): a note with no text to embed never goes out.
     # The vendor refuses an empty input for the WHOLE request, so one such
     # note in a chunk gave no vector for any note of it, and the outage rule
@@ -408,7 +454,8 @@ async def _embed(org: str, should_stop: Callable[[], bool], utc_date: str) -> Em
         if should_stop():
             reason = "stopped"
             break
-        if not await reserve_request(org, utc_date, DAILY_REQUESTS):
+        # The reserve holds the cap that this step read, never a second one.
+        if not await reserve_request(org, utc_date, cap):
             reason = "daily_cap"
             break
         requests += 1
@@ -435,6 +482,9 @@ async def _embed(org: str, should_stop: Callable[[], bool], utc_date: str) -> Em
 
 
 __all__ = [
+    "BACKLOG_DAILY_REQUESTS",
+    "BACKLOG_STEP_LIMIT",
+    "BACKLOG_THRESHOLD",
     "BODY_CLIP",
     "DAILY_REQUESTS",
     "FEATURE",
@@ -443,10 +493,12 @@ __all__ = [
     "STEP_LIMIT",
     "Embedded",
     "Note",
+    "daily_requests",
     "embed_after_run",
     "enabled_for",
     "note_text",
     "requests_used",
     "reserve_request",
+    "step_limit",
     "usable",
 ]

@@ -7,7 +7,8 @@ its RLS, the anti-join, the caps and the search on a real database are in
 * ``TestTheOrgList`` (items 4 and 5): ``CRM_NOTE_SEARCH_ORGS`` is empty by
   default, ``flags.note_search_allowed`` is the one check, and ``work_plan.md``
   §6 registers the flip.
-* ``TestTheText`` (items 8 and 11): the clip, and no zero vector.
+* ``TestTheText`` (items 8, 9 and 11): the clip, the caps, the backlog
+  allowance, and no zero vector.
 * ``TestTheStepGate`` (item 6): an org outside the list costs no SQL and no
   embed call.
 * ``TestTheScheduler`` (item 6): the step starts after the label step of the
@@ -146,6 +147,23 @@ class TestTheText:
         assert nv.STEP_LIMIT == 640
         assert nv.DAILY_REQUESTS * nv.NOTES_PER_REQUEST == 5120
         assert (nv.MAX_FAILURES, nv.PARK_DAYS) == (nl.MAX_FAILURES, nl.PARK_DAYS)
+
+    def test_the_backlog_caps(self):
+        """Item 9, the backlog allowance (owner request, 2026-10-17)."""
+        assert nv.BACKLOG_THRESHOLD == 1000
+        assert nv.BACKLOG_DAILY_REQUESTS * nv.NOTES_PER_REQUEST == 25600
+        assert nv.BACKLOG_STEP_LIMIT == 40 * nv.NOTES_PER_REQUEST == 2560
+
+    @pytest.mark.parametrize(("backlog", "requests", "notes"), [
+        (0, 80, 640), (1000, 80, 640), (1001, 400, 2560),
+    ])
+    def test_the_caps_follow_the_backlog(self, backlog, requests, notes):
+        assert nv.daily_requests(backlog) == requests
+        assert nv.step_limit(backlog) == notes
+
+    def test_the_backlog_count_is_bounded_and_uses_the_waiting_rule(self):
+        assert nv._BACKLOG_SQL.startswith("SELECT count(*) FROM (SELECT 1 " + nv._WAITING)
+        assert nv._BACKLOG_SQL.endswith("LIMIT :n) AS waiting")
 
 
 # ── Item 6: the gate of the step ────────────────────────────────────────────
