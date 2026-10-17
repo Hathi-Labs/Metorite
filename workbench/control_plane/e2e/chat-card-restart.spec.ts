@@ -223,6 +223,13 @@ test.describe("A card answered after the assistant restarted", () => {
     await expect(page.getByText(REPLY).first()).toBeVisible({ timeout: 10_000 });
     await expect(page.getByText("Your answer went to it as a new message.")).toBeVisible();
     await expectNoEnvelope(page);
+
+    // The notice only informs, so the member can dismiss it (owner report,
+    // 2026-10-17). It is a slim line, not the warning card.
+    const marker = page.locator("[data-chat-notice-marker]");
+    await expect(marker).toBeVisible();
+    await marker.getByRole("button", { name: "Dismiss" }).click();
+    await expect(page.getByText("Your answer went to it as a new message.")).toHaveCount(0);
   });
 
   test("an answer that meets a live run steers it, and is not lost", async ({ page }) => {

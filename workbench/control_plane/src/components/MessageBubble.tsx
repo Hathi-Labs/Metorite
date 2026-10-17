@@ -25,7 +25,7 @@ import { genUiTarget } from "@/lib/askPin";
 import GenerativeUINode, { genUiRootOwnsHead } from "@/components/GenerativeUINode";
 import ErrorCard from "@/components/ChatErrorCard";
 import { DismissableCard } from "@/components/ToolCardShell";
-import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
+import { useDismissedToolCards, dismissToolCard, noticeDismissKey } from "@/lib/dismissedTools";
 import { openDoc, openGenUI } from "@/lib/sidePanelStore";
 import { useSidePanelFits } from "@/lib/sidePanelFit";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
@@ -339,6 +339,7 @@ function MessageBubble({
       return (
         <ErrorCard
           id={`error:${message.id}`}
+          dismissKey={noticeDismissKey(sessionId, message.id)}
           error={parseStoredRunError(content.slice(9))}
           onRetry={onRetryMessage ? () => onRetryMessage(message) : undefined}
         />

@@ -1,10 +1,85 @@
 "use client";
 
 import React from "react";
+import Icon from "@/components/Icon";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import Button from "@/components/ui/Button";
-import { RUN_ERROR_WORDS, noticeBody, type RunErrorView } from "@/lib/runErrors";
+import { dismissToolCard, useDismissedToolCards } from "@/lib/dismissedTools";
+import { RUN_ERROR_WORDS, isInfoOnlyNotice, noticeBody, type RunErrorView } from "@/lib/runErrors";
 import { openActivity } from "@/lib/shell/ActivityControl";
+import { accentForHue } from "@/lib/statusAccent";
+
+/** The quiet tones of an info-only notice: muted words, an info icon. */
+const MUTED = accentForHue("gray");
+const INFO = accentForHue("blue");
+
+/**
+ * An info-only notice, as the transcript draws it (owner report,
+ * 2026-10-17): "shouldn't this card be closable? At the moment, it is
+ * persistent." It is one slim line, not a warning card, because nothing
+ * failed and nothing remains to do. The title leads, the body follows, and
+ * the row wraps on a narrow screen.
+ *
+ * Pure, with no hook, so a test can call it and press its Dismiss.
+ */
+export function InfoNoticeView({
+  title,
+  body,
+  onDismiss,
+}: {
+  title: string;
+  body: string;
+  onDismiss: () => void;
+}) {
+  return (
+    <div
+      data-chat-notice-marker
+      data-tone="info"
+      role="status"
+      className={`flex w-full min-w-0 max-w-full items-start gap-1.5 rounded-md px-2 py-1 text-[11px] ${MUTED.soft} ${MUTED.text}`}
+    >
+      <Icon name="Info" size={12} className={`mt-0.5 shrink-0 ${INFO.text}`} />
+      <p className="min-w-0 flex-1 leading-relaxed wrap-anywhere">
+        <span className="font-medium text-foreground">{title}</span>
+        <span aria-hidden="true">{" · "}</span>
+        <span>{body}</span>
+      </p>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-xs"
+        icon="X"
+        aria-label="Dismiss"
+        title="Dismiss"
+        onClick={onDismiss}
+        className="shrink-0"
+      />
+    </div>
+  );
+}
+
+/**
+ * The marker with its state. A dismissal goes into the chat's one set of
+ * dismissed cards (`lib/dismissedTools.ts`), under `dismissKey`, so a
+ * remount or a reload keeps it gone. The local flag hides it at once, also
+ * when there is no key or the browser refuses storage.
+ */
+function InfoNotice({ error, dismissKey }: { error: RunErrorView; dismissKey?: string }) {
+  const dismissed = useDismissedToolCards();
+  const [hidden, setHidden] = React.useState(false);
+  if (hidden || (dismissKey && dismissed.has(dismissKey))) return null;
+  const words = RUN_ERROR_WORDS[error.code];
+  return (
+    <InfoNoticeView
+      title={words.title}
+      body={noticeBody(words, error.raw)}
+      onDismiss={() => {
+        setHidden(true);
+        if (dismissKey) dismissToolCard(dismissKey);
+      }}
+    />
+  );
+}
 
 /**
  * The error card a failed turn leaves in the thread.
@@ -24,6 +99,9 @@ import { openActivity } from "@/lib/shell/ActivityControl";
  *   in the warning tokens, with `role="status"`, and with no fold: nothing
  *   failed for good, and there is no raw text to show (incident 2026-10-09).
  *   Its button carries the code's own verb, such as "Continue".
+ * - An info-only notice (`isInfoOnlyNotice`: no retry, no action) draws as
+ *   {@link InfoNoticeView}, a slim line with a Dismiss control (owner
+ *   report, 2026-10-17). A notice with an action keeps its card.
  *
  * - One look with the other chat cards (owner report, 2026-10-13): the
  *   shared frame size, and a title row that is `RollupHeader`, with an icon
@@ -38,6 +116,7 @@ export function ErrorCardView({
   onRetry,
   defaultOpen = false,
   id,
+  dismissKey,
 }: {
   error: RunErrorView;
   onRetry?: () => void;
@@ -45,11 +124,15 @@ export function ErrorCardView({
   defaultOpen?: boolean;
   /** The roll-up's id: stable for the card's life (its message id). */
   id?: string;
+  /** Where an info-only notice keeps its dismissal (`noticeDismissKey`).
+   *  Without one, a dismissal lasts for the life of the line only. */
+  dismissKey?: string;
 }) {
   const [copied, setCopied] = React.useState(false);
   const [expanded, setExpanded] = React.useState(defaultOpen);
   const words = RUN_ERROR_WORDS[error.code];
   const notice = words.tone === "notice";
+  if (isInfoOnlyNotice(words)) return <InfoNotice error={error} dismissKey={dismissKey} />;
 
   const handleCopy = () => {
     const text = error.ref ? `${error.raw}\n\nReference: ${error.ref}` : error.raw;
@@ -123,7 +206,17 @@ export function ErrorCardView({
  * retry: it opens the activity panel, so the member can stop a run. It never
  * re-sends the turn.
  */
-export default function ErrorCard({ error, onRetry, id }: { error: RunErrorView; onRetry?: () => void; id?: string }) {
+export default function ErrorCard({
+  error,
+  onRetry,
+  id,
+  dismissKey,
+}: {
+  error: RunErrorView;
+  onRetry?: () => void;
+  id?: string;
+  dismissKey?: string;
+}) {
   const action = error.code === "too_many_runs" ? openActivity : onRetry;
-  return <ErrorCardView error={error} onRetry={action} id={id} />;
+  return <ErrorCardView error={error} onRetry={action} id={id} dismissKey={dismissKey} />;
 }
