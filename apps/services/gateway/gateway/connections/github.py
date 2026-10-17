@@ -3,7 +3,7 @@
 Spec: ``project-docs/specs/integrations_console.md`` §2.2 (IN-D10, IN-D18),
 §3.2, §3.3 and §7.2 (IN-7).
 
-* **One row per org.** The device flow saves an org connection in
+* **One row per org.** A connect saves the org connection in
   the connection registry through :mod:`gateway.connections.store`. The
   provider is ``github`` and the owning app is ``integrations``. The login and
   the token scopes are non-secret, so they sit in ``provider_meta`` and
@@ -68,7 +68,7 @@ NOT_CONNECTED = "GitHub is not connected for your organization."
 _NO_EXPIRY = datetime(9999, 12, 31, tzinfo=UTC)
 
 
-#: One writer at a time for each org, until the commit. The device flow and the
+#: One writer at a time for each org, until the commit. Each writer and the
 #: move of an old row both take it (the pattern of ``routes/crm/connection.py``).
 _LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"
 
@@ -106,11 +106,12 @@ def _credential(
         refresh_token=refresh_token or "",
         expires_at=expires_at,
         scopes=tuple(scopes),
-        provider_meta={"login": login or ""},
+        # WS-54 GH-7: a token row says so, beside an App row's `auth = "app"`.
+        provider_meta={"login": login or "", "auth": AUTH_TOKEN},
     )
 
 
-async def save_device_token(
+async def save_token(
     db: Any,
     org: str,
     *,
@@ -121,7 +122,14 @@ async def save_device_token(
     refresh_token: str = "",
     expires_in: int | None = None,
 ) -> store.Connection:
-    """Save the org connection that the device flow produced (or update it)."""
+    """Save a pasted token as the org connection, or update it (WS-54 GH-7).
+
+    The one writer of a ``token`` row. ``PUT /integrations/github/token``
+    calls it, and so does the move of an old ``provider_keys`` row. An App row
+    becomes a token row: the upsert replaces ``provider_meta``, so the
+    installation id goes and the unique index of migration 282 lets the
+    installation go too. The caller drops the cached installation token.
+    """
     await lock(db, org)
     return await store.save_credential(
         db, org, PROVIDER, OWNING_APP,
@@ -140,7 +148,7 @@ async def migrate_legacy_token(db: Any, org: str, *, connected_by: str = "") -> 
     already exists and the caller does not reach this function.
     """
     keys = store.legacy_keys()
-    # Under the lock, look again. A device flow that finished a moment ago has
+    # Under the lock, look again. A connect that finished a moment ago has
     # a newer token than the old row, and the old row must never replace it.
     await lock(db, org)
     if await store.get(db, org, PROVIDER, OWNING_APP) is not None:
@@ -149,7 +157,7 @@ async def migrate_legacy_token(db: Any, org: str, *, connected_by: str = "") -> 
     legacy = await keys.get(LEGACY_PROVIDER_KEY, organization_id=org)
     if not legacy:
         return False
-    await save_device_token(
+    await save_token(
         db, org, access_token=legacy, login="", scopes=(),
         connected_by=connected_by or "migrated-from-provider-keys",
     )
@@ -175,7 +183,7 @@ async def _live_credential(db: Any, org: str) -> SourceCredential | None:
     # the registry holds no row at all.
     if await store.get(db, org, PROVIDER, OWNING_APP) is not None:
         return None
-    # The move may find a connection that a device flow saved a moment ago.
+    # The move may find a connection that a connect saved a moment ago.
     # Read again either way, so that connection wins over the old row.
     await migrate_legacy_token(db, org)
     return await store.load_credential(db, org, PROVIDER, OWNING_APP)

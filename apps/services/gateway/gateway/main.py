@@ -1441,8 +1441,12 @@ try:
     # its routes answers 404. The callback runs behind the member session
     # through the BFF, so it is NOT in PUBLIC_ROUTES.
     from gateway.routes.github.connect import router as _github_connect_router
+    from gateway.routes.github.connect import token_router as _github_token_router
 
     app.include_router(_github_connect_router)
+    # WS-54 GH-7 — PUT /integrations/github/token, the Advanced token. NOT
+    # behind the App flag: it is the path for an org with no App install.
+    app.include_router(_github_token_router)
 except Exception:  # pragma: no cover
     pass
 

@@ -34,7 +34,7 @@ import json
 import os
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 import httpx
 import pytest
@@ -304,7 +304,7 @@ class _NoDb:
 
 @pytest.fixture()
 def gh_saves(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
-    """WS-54 IN-7: the device poll saves an org connection, not a key row.
+    """WS-54 IN-7: a GitHub token saves an org connection, not a key row.
 
     The real save runs against Postgres in ``test_github_per_org_r8.py``.
     """
@@ -314,7 +314,7 @@ def gh_saves(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
         saved.append({"org": org, **kwargs})
 
     monkeypatch.setattr(integrations, "tenant_session", _NoDb)
-    monkeypatch.setattr(integrations.github_connection, "save_device_token", fake_save)
+    monkeypatch.setattr(integrations.github_connection, "save_token", fake_save)
     return saved
 
 
@@ -363,41 +363,22 @@ class TestTheWritersStoreForTheTenantOnly:
         assert [(p, v) for p, v, _ in store.puts] == [("apollo:api_key", "org-a-key")]
         assert store.puts[0][2]["organization_id"] == tenant
 
-    async def test_the_device_poll(
-        self, env_file, store, tenant, monkeypatch, byok_on, gh_saves,
+    async def test_the_device_poll_is_410_and_stores_nothing(
+        self, env_file, store, tenant, monkeypatch, gh_saves,
     ) -> None:
-        monkeypatch.setenv("GITHUB_CLIENT_ID", "Iv1.8a61f9b3a7aba766")
-        get_settings.cache_clear()
+        """WS-54 GH-7 (T4): the device flow is retired. BYOK on or off, the
+        poll answers 410, calls GitHub for nothing and stores nothing."""
         monkeypatch.setattr(integrations.httpx, "AsyncClient", _FakeGithub)
         before = _snapshot(env_file)
-        out = await integrations.github_device_poll(
-            integrations.DevicePollRequest(device_code="d"), user=USER,
-        )
+        for byok in (True, False):
+            monkeypatch.setattr(get_settings(), "byok_enabled", byok, raising=False)
+            with pytest.raises(HTTPException) as caught:
+                await integrations.github_device_poll(
+                    integrations.DevicePollRequest(device_code="d"), user=USER,
+                )
+            assert caught.value.status_code == 410
         _assert_untouched(env_file, before)
-        assert out == {"status": "authorized", "login": "octocat"}
-        # IN-7: the token is an org connection and no provider_keys row.
-        assert store.puts == []
-        assert [(g["org"], g["access_token"], g["connected_by"]) for g in gh_saves] == [
-            (tenant, "gho_In0Token123", USER.email),
-        ]
-
-    async def test_the_device_poll_answers_503_when_the_store_fails(
-        self, env_file, monkeypatch, tenant, byok_on, gh_saves,
-    ) -> None:
-        async def failing_save(*_: Any, **__: Any) -> None:
-            raise RuntimeError("db down")
-
-        monkeypatch.setattr(integrations.github_connection, "save_device_token", failing_save)
-        monkeypatch.setenv("GITHUB_CLIENT_ID", "Iv1.8a61f9b3a7aba766")
-        get_settings.cache_clear()
-        monkeypatch.setattr(integrations.httpx, "AsyncClient", _FakeGithub)
-        before = _snapshot(env_file)
-        with pytest.raises(HTTPException) as caught:
-            await integrations.github_device_poll(
-                integrations.DevicePollRequest(device_code="d"), user=USER,
-            )
-        assert caught.value.status_code == 503
-        _assert_untouched(env_file, before)
+        assert store.puts == [] and gh_saves == []
 
     async def test_delete_keys_leaves_the_env_var(self, env_file, store, tenant) -> None:
         os.environ["APOLLO_API_KEY"] = "from-the-box"
@@ -853,44 +834,37 @@ async def test_put_keys_stores_the_name_the_startup_copy_reads(
     assert [p for p, _, _ in store.puts] == [_startup_provider()[key]]
 
 
-# ── IN-7 review: a typed GITHUB_TOKEN is the org connection, never a key row ─
+# ── GH-7: a typed GITHUB_TOKEN has ONE writer, and it is not this module ─────
 
 
 class TestAPatIsTheOrgConnection:
-    async def test_configure(self, env_file, store, tenant, byok_on, gh_saves, monkeypatch) -> None:
-        monkeypatch.setattr(integrations.httpx, "AsyncClient", _FakeGithub)
-        req = integrations.ConfigureRequest(
-            vars=[integrations.IntegrationVar(key="GITHUB_TOKEN", value="ghp_Typed0123456789")],
-        )
-        out = await integrations.configure_integrations(req, user=USER)
-        assert out["written"] == ["GITHUB_TOKEN"]
-        assert store.puts == [], "nothing may write the legacy github:token row"
-        assert [(g["org"], g["access_token"], g["login"]) for g in gh_saves] == [
-            (tenant, "ghp_Typed0123456789", "octocat"),
-        ]
+    """WS-54 GH-7 (T3): configure and ``PUT /keys`` answer 422 for
+    ``GITHUB_TOKEN``, with BYOK on or off, and write nothing. The one writer
+    is ``PUT /integrations/github/token`` (``test_github_per_org_r8.py``)."""
 
-    async def test_put_keys(self, env_file, store, tenant, byok_on, gh_saves, monkeypatch) -> None:
-        monkeypatch.setattr(integrations.httpx, "AsyncClient", _FakeGithub)
-        req = integrations.IntegrationKeyRequest(
-            service="github", key_name="token", value="ghp_Typed0123456789",
-        )
-        out = await integrations.put_integration_key(req, user=USER)
-        assert out["env_var"] == "GITHUB_TOKEN"
-        assert store.puts == []
-        assert [g["access_token"] for g in gh_saves] == ["ghp_Typed0123456789"]
+    async def test_configure(self, env_file, store, tenant, gh_saves, monkeypatch) -> None:
+        for byok in (True, False):
+            monkeypatch.setattr(get_settings(), "byok_enabled", byok, raising=False)
+            req = integrations.ConfigureRequest(
+                vars=[integrations.IntegrationVar(key="GITHUB_TOKEN", value="ghp_Typed0123456789")],
+            )
+            with pytest.raises(HTTPException) as caught:
+                await integrations.configure_integrations(req, user=USER)
+            assert caught.value.status_code == 422
+            assert caught.value.detail == "Connect GitHub in Integrations."
+        assert store.puts == [] and gh_saves == []
 
-    async def test_a_failed_save_is_503(self, env_file, store, tenant, byok_on, gh_saves, monkeypatch) -> None:
-        async def failing(*_: Any, **__: Any) -> None:
-            raise RuntimeError("db down")
-
-        monkeypatch.setattr(integrations.httpx, "AsyncClient", _FakeGithub)
-        monkeypatch.setattr(integrations.github_connection, "save_device_token", failing)
-        req = integrations.IntegrationKeyRequest(
-            service="github", key_name="token", value="ghp_Typed0123456789",
-        )
-        with pytest.raises(HTTPException) as caught:
-            await integrations.put_integration_key(req, user=USER)
-        assert caught.value.status_code == 503
+    async def test_put_keys(self, env_file, store, tenant, gh_saves, monkeypatch) -> None:
+        for byok in (True, False):
+            monkeypatch.setattr(get_settings(), "byok_enabled", byok, raising=False)
+            req = integrations.IntegrationKeyRequest(
+                service="github", key_name="token", value="ghp_Typed0123456789",
+            )
+            with pytest.raises(HTTPException) as caught:
+                await integrations.put_integration_key(req, user=USER)
+            assert caught.value.status_code == 422
+            assert caught.value.detail == "Connect GitHub in Integrations."
+        assert store.puts == [] and gh_saves == []
 
     async def test_delete_keys_disconnects(self, env_file, store, tenant, byok_on, monkeypatch) -> None:
         called: list[str] = []
@@ -906,75 +880,17 @@ class TestAPatIsTheOrgConnection:
         assert store.deletes == []
 
 
-# ── Fix round 1, P2: the device flow reads the client id of the org ─────────
+# ── GH-7: the device flow and the customer client id are gone ──────────────
 
 
-class _RecordingGithub(_FakeGithub):
-    """Records the ``client_id`` of each POST to GitHub."""
-
-    sent: ClassVar[list[str]] = []
-
-    async def post(self, url: str, *_: Any, data: dict[str, Any] | None = None, **__: Any,
-                   ) -> httpx.Response:
-        _RecordingGithub.sent.append((data or {}).get("client_id", ""))
-        if url.endswith("/login/device/code"):
-            return httpx.Response(200, json={
-                "user_code": "U", "verification_uri": "https://github.com/login/device",
-                "device_code": "D", "expires_in": 900, "interval": 5,
-            })
-        return httpx.Response(200, json={"access_token": "gho_In0Token123"})
-
-
-@pytest.fixture()
-def github(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    _RecordingGithub.sent = []
-    monkeypatch.setattr(integrations.httpx, "AsyncClient", _RecordingGithub)
-    return _RecordingGithub.sent
-
-
-class TestTheDeviceFlowReadsTheOrgClientId:
-    async def test_start_uses_the_client_id_of_the_org(
-        self, store, tenant, github, monkeypatch,
-    ) -> None:
-        monkeypatch.delenv("GITHUB_CLIENT_ID", raising=False)
-        get_settings.cache_clear()
+class TestTheDeviceFlowIsRetired:
+    async def test_start_is_410_and_reads_no_client_id(self, store, tenant, monkeypatch) -> None:
+        monkeypatch.setattr(integrations.httpx, "AsyncClient", _FakeGithub)
         store.held["github:client_id"] = "Iv1.org-a-client"
-        out = await integrations.github_device_start(user=USER)
-        assert out["device_code"] == "D"
-        assert github == ["Iv1.org-a-client"]
-        assert store.gets == [("github:client_id", {"organization_id": tenant})]
-
-    async def test_start_falls_back_to_the_operator_value(
-        self, store, tenant, github, monkeypatch,
-    ) -> None:
-        monkeypatch.setenv("GITHUB_CLIENT_ID", "Iv1.operator-client")
-        get_settings.cache_clear()
-        await integrations.github_device_start(user=USER)
-        assert github == ["Iv1.operator-client"]
-
-    async def test_start_is_422_when_neither_holds_one(
-        self, store, tenant, github, monkeypatch,
-    ) -> None:
-        monkeypatch.delenv("GITHUB_CLIENT_ID", raising=False)
-        get_settings.cache_clear()
         with pytest.raises(HTTPException) as caught:
             await integrations.github_device_start(user=USER)
-        assert caught.value.status_code == 422
-        assert github == []
-
-    async def test_poll_uses_the_client_id_of_the_org(
-        self, store, tenant, github, monkeypatch, byok_on, gh_saves,
-    ) -> None:
-        monkeypatch.delenv("GITHUB_CLIENT_ID", raising=False)
-        get_settings.cache_clear()
-        store.held["github:client_id"] = "Iv1.org-a-client"
-        out = await integrations.github_device_poll(
-            integrations.DevicePollRequest(device_code="d"), user=USER,
-        )
-        assert out["status"] == "authorized"
-        assert github == ["Iv1.org-a-client"]
-        assert store.puts == []
-        assert [g["access_token"] for g in gh_saves] == ["gho_In0Token123"]
+        assert caught.value.status_code == 410
+        assert store.gets == []
 
 
 # ── Fix round 1, P2: the guard reads raw bytes, so ask for no encoding ───────

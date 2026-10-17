@@ -5,6 +5,7 @@ Spec: ``project-docs/specs/github_integration.md`` §7.1 to §7.5 and §13.
     POST  /integrations/github/app/start      → {url}
     GET   /integrations/github/app/callback   → 302 /integrations?view=connections&github=<code>
     POST  /integrations/github/app/confirm    → {status, account_login}
+    PUT   /integrations/github/token          → {status, login}   (GH-7, §7.6)
 
 ⚠️ **Dark.** With ``github_app_enabled`` off each route answers 404, before
 any other check (:func:`require_github_app`, the first dependency).
@@ -42,6 +43,14 @@ through ``connections/github.py`` under the org's lock (§7.4). The unique index
 of migration 282 refuses an installation that another org holds:
 ``other_org``. One ``acb_audit`` row records ``github.app.connected``.
 
+**The Advanced token (GH-7, §7.6).** ``PUT /integrations/github/token`` is the
+ONE writer of a pasted token. It is on :data:`token_router`, which the App
+flag does NOT gate, because the token is the path for an org that cannot or
+will not install the App. It asks ``GET https://api.github.com/user`` with the
+token, refuses a token that GitHub refuses with 422, and stores it through
+``connections/github.save_token``. It does not call the BYOK gate: a GitHub
+token is not an LLM key.
+
 **No secret out.** The user token, the client secret and the App JWT never
 reach a log line, a redirect URL, the database or Redis. Fence:
 ``tests/unit/test_github_connect_r8.py``.
@@ -65,7 +74,7 @@ from gateway.routes.email.transport.signing import (
     sign_state,
     verify_state,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError
 
 _log = get_logger("gateway.github.connect")
@@ -428,4 +437,71 @@ async def confirm_github_app(user: UserContext = Depends(get_current_user)) -> C
                       account_type=account_type, repository_selection=selection)
 
 
-__all__ = ["CODES", "STATE_PURPOSE", "require_github_app", "router"]
+# ── The Advanced token (GH-7, §7.6) ────────────────────────────────────────
+
+#: The token route is NOT behind the App flag, so it has its own router.
+token_router = APIRouter(
+    prefix="/integrations/github",
+    tags=["integrations", "github"],
+    dependencies=[require_feature_router("integrations")],
+)
+
+#: The longest token that the route reads. A GitHub token is far shorter.
+MAX_TOKEN_CHARS = 255
+
+
+class TokenIn(BaseModel):
+    """``{token}``. No length rule here: a validation error would echo the
+    value in the 422, so the route checks the length itself."""
+
+    model_config = ConfigDict(extra="forbid")
+    token: str
+
+
+class TokenOut(BaseModel):
+    status: str
+    login: str
+    scopes: list[str]
+
+
+@token_router.put("/token", response_model=TokenOut, dependencies=[_REQUIRE_MANAGE])
+async def put_github_token(
+    payload: TokenIn, user: UserContext = Depends(get_current_user),
+) -> TokenOut:
+    """Store a pasted token as the org's ``token`` row (§7.6)."""
+    org = _organization(user)
+    member = _member(user)
+    token = payload.token.strip()
+    if not token or len(token) > MAX_TOKEN_CHARS or any(ch.isspace() for ch in token):
+        raise HTTPException(status_code=422, detail="That is not a GitHub token.")
+    # Layer A of the env guard: one plain value, no control character.
+    from gateway.routes.integrations import _refuse_unsafe_env_writes, audit_integration
+
+    _refuse_unsafe_env_writes([("GITHUB_TOKEN", token)], actor=member)
+    try:
+        answer = await github_app.call("GET", "/user", auth=f"Bearer {token}")
+    except github_app.GitHubCallFailed:
+        raise HTTPException(status_code=503, detail="GitHub did not answer.") from None
+    body = answer.body if isinstance(answer.body, dict) else {}
+    login = str(body.get("login") or "")
+    if not answer.ok or not login:
+        _log.info("github.token.refused", status=answer.status, actor=member)
+        raise HTTPException(status_code=422, detail="GitHub refused this token.")
+    scopes = github_connection.parse_scopes(answer.headers.get("x-oauth-scopes", ""))
+    async with tenant_session(org) as db:
+        from gateway.connections import store as connection_store
+
+        before = await connection_store.get(
+            db, org, github_connection.PROVIDER, github_connection.OWNING_APP)
+        await github_connection.save_token(
+            db, org, access_token=token, login=login, scopes=scopes, connected_by=member,
+        )
+    if github_connection.is_app_row(before) and before is not None:
+        github_app.drop_installation(before.provider_meta.get("installation_id"))
+    audit_integration(user, org, "github", action="github.token.connected",
+                      member=member, login=login)
+    _log.info("github.token.connected", actor=member)
+    return TokenOut(status="connected", login=login, scopes=list(scopes))
+
+
+__all__ = ["CODES", "STATE_PURPOSE", "require_github_app", "router", "token_router"]

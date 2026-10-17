@@ -398,7 +398,7 @@ async def test_c7_a_token_row_becomes_an_app_row(world) -> None:
     from tests.unit._tenant_ladder import tenant_engine_scope
 
     async with tenant_engine_scope(g.app_dsn(w.p)), tenant_session(w.p.org_a) as db:
-        await github_connection.save_device_token(
+        await github_connection.save_token(
             db, w.p.org_a, access_token="ghp_OLD_PASTED_TOKEN", login="old", scopes=("repo",),
             connected_by=ADMIN_A)
     admin = g.user(ADMIN_A, w.p.org_a)
@@ -482,7 +482,7 @@ async def test_c8_one_reader_answers_both_modes(world) -> None:
         assert await github_connection.token_or_none(w.p.org_a) == \
             f"ghs_INSTALLATION_TOKEN_{INSTALL_ORG}"
         async with tenant_session(w.p.org_b) as db:
-            await github_connection.save_device_token(
+            await github_connection.save_token(
                 db, w.p.org_b, access_token="ghp_PASTED_TOKEN_OF_B", login="b",
                 scopes=("repo",), connected_by=ADMIN_B)
         assert await github_connection.token_or_none(w.p.org_b) == "ghp_PASTED_TOKEN_OF_B"

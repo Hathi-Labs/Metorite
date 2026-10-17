@@ -11,6 +11,9 @@
  *   Disconnect. Connect asks the BFF for the install link and sends the
  *   browser to GitHub. When a personal access token is connected now, a
  *   dialog says first that the App replaces it (§7.4).
+ *   A fold, "Advanced: use a personal access token", holds the token field
+ *   (GH-7, §7.6). It is the path for a private agent repository, and for a
+ *   GitHub account that will not install the App.
  * - `GitHubAppReturn` lives in the Connections view, where GitHub sends the
  *   browser back. `?github=confirm&account=<login>` opens the dialog
  *   "Connect <login> to <org>?". Only that click writes the connection. Every
@@ -26,17 +29,22 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAccess } from "@/components/AccessProvider";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
+import { CollapsibleSection } from "@/components/ui/Collapsible";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
+import { Input } from "@/components/ui/Input";
 import { useToast } from "@/components/ui/Toast";
 import { consoleAccess } from "@/app/integrations/lib/connections";
 import {
   GITHUB_RETURN_TEXT,
+  TOKEN_FOLD_HELP,
+  TOKEN_FOLD_LABEL,
   confirmCopy,
   githubCardView,
   parseGitHubReturn,
   refusalText,
   replaceTokenCopy,
   safeInstallationUrl,
+  tokenProblem,
   type GitHubAccount,
 } from "@/lib/githubConnect";
 
@@ -65,13 +73,15 @@ function GitHubMark({ className = "h-4 w-4" }: { className?: string }) {
 }
 
 export interface GitHubAppConnectProps {
-  /** Called after a disconnect, so the page reads its lists again. */
+  /** Called after a disconnect or a saved token, so the page reads its lists again. */
   onChange?: () => void;
-  /** The Advanced fold (GH-7), drawn under the card when given. */
-  advanced?: React.ReactNode;
+  /** Called after a token is saved (the agent wizards go on with it). */
+  onConfigured?: () => void;
+  /** Open the Advanced fold at once (the agent wizards need a token). */
+  advancedOpen?: boolean;
 }
 
-export default function GitHubAppConnect({ onChange, advanced }: GitHubAppConnectProps) {
+export default function GitHubAppConnect({ onChange, onConfigured, advancedOpen }: GitHubAppConnectProps) {
   const { access } = useAccess();
   const canManage = consoleAccess(access).canManage;
   const [info, setInfo] = useState<GitHubAccount | null>(null);
@@ -82,6 +92,9 @@ export default function GitHubAppConnect({ onChange, advanced }: GitHubAppConnec
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
   const [uninstallUrl, setUninstallUrl] = useState<string | null>(null);
+  const [token, setToken] = useState("");
+  const [savingToken, setSavingToken] = useState(false);
+  const [tokenNote, setTokenNote] = useState<{ ok: boolean; text: string } | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -124,6 +137,37 @@ export default function GitHubAppConnect({ onChange, advanced }: GitHubAppConnec
       setConfirmingDisconnect(false);
     } finally {
       setDisconnecting(false);
+    }
+  }
+
+  async function saveToken() {
+    const problem = tokenProblem(token);
+    if (problem) {
+      setTokenNote({ ok: false, text: problem });
+      return;
+    }
+    setSavingToken(true);
+    setTokenNote(null);
+    try {
+      const res = await fetch("/api/integrations/github/token", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: token.trim() }),
+      });
+      const body = (await res.json().catch(() => null)) as { login?: string; detail?: string } | null;
+      if (!res.ok) {
+        setTokenNote({ ok: false, text: body?.detail ?? "Metorite could not save the token." });
+        return;
+      }
+      setToken("");
+      setTokenNote({ ok: true, text: `Connected as ${body?.login ?? "GitHub"}.` });
+      await refresh();
+      onChange?.();
+      onConfigured?.();
+    } catch {
+      setTokenNote({ ok: false, text: "Metorite could not save the token." });
+    } finally {
+      setSavingToken(false);
     }
   }
 
@@ -212,7 +256,36 @@ export default function GitHubAppConnect({ onChange, advanced }: GitHubAppConnec
         </p>
       ) : null}
 
-      {advanced}
+      {canManage ? (
+        <CollapsibleSection label={TOKEN_FOLD_LABEL} icon="KeyRound" defaultOpen={advancedOpen ?? false}>
+          <div className="space-y-2 pt-1">
+            <p className="text-xs text-muted-foreground">{TOKEN_FOLD_HELP}</p>
+            <div className="flex gap-2">
+              <Input
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                aria-label="Personal access token"
+                placeholder="ghp_…"
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                className="flex-1 font-mono"
+              />
+              <Button size="sm" variant="secondary" loading={savingToken} onClick={() => void saveToken()}>
+                Save token
+              </Button>
+            </div>
+            {tokenNote ? (
+              <p
+                role={tokenNote.ok ? "status" : "alert"}
+                className={`text-xs ${tokenNote.ok ? "text-success" : "text-destructive"}`}
+              >
+                {tokenNote.text}
+              </p>
+            ) : null}
+          </div>
+        </CollapsibleSection>
+      ) : null}
 
       <ConfirmDialog
         open={warning}

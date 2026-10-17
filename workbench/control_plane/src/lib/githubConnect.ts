@@ -243,6 +243,27 @@ export function safeInstallationUrl(raw: unknown): string | null {
   return ok && !url.search && !url.hash ? url.toString() : null;
 }
 
+// ── The Advanced token (GH-7, §7.6) ─────────────────────────────────────────
+
+/** The fold of the card that holds the token field (§7.6). */
+export const TOKEN_FOLD_LABEL = "Advanced: use a personal access token";
+
+/** What the fold says, so a member knows when to use it. */
+export const TOKEN_FOLD_HELP =
+  "Use a token when an agent must read a private repository, or when your GitHub account will not install the App. " +
+  "The token replaces the App connection.";
+
+/** The longest token the card sends. A GitHub token is far shorter. */
+export const MAX_TOKEN_CHARS = 255;
+
+/** Why a typed token cannot be sent, or null when it can. */
+export function tokenProblem(raw: string): string | null {
+  const token = raw.trim();
+  if (!token) return "Paste a token first.";
+  if (token.length > MAX_TOKEN_CHARS || /\s/.test(token)) return "That is not a GitHub token.";
+  return null;
+}
+
 /** The words of a refusal of the confirm or the start BFF routes. */
 export function refusalText(detail: unknown): string {
   if (typeof detail === "string" && (GITHUB_RETURN_CODES as readonly string[]).includes(detail)) {

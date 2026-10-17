@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import {
   GITHUB_RETURN_CODES,
   GITHUB_RETURN_TEXT,
+  TOKEN_FOLD_LABEL,
   confirmCopy,
   githubCardView,
   githubReturnPath,
@@ -19,6 +20,7 @@ import {
   refusalText,
   replaceTokenCopy,
   safeInstallationUrl,
+  tokenProblem,
   type GitHubAccount,
 } from "./githubConnect";
 
@@ -153,6 +155,28 @@ describe("the card", () => {
     expect(view.mode).toBe("token");
     expect(view.warnsOfToken).toBe(true);
     expect(replaceTokenCopy().note).toBe("This replaces the token that is connected now.");
+  });
+});
+
+describe("the Advanced token (GH-7)", () => {
+  it("names the fold as the spec does", () => {
+    expect(TOKEN_FOLD_LABEL).toBe("Advanced: use a personal access token");
+  });
+
+  it("refuses an empty, spaced or oversized token before any request", () => {
+    expect(tokenProblem("")).toBe("Paste a token first.");
+    expect(tokenProblem("   ")).toBe("Paste a token first.");
+    expect(tokenProblem("ghp_a b")).toBe("That is not a GitHub token.");
+    expect(tokenProblem("x".repeat(256))).toBe("That is not a GitHub token.");
+    expect(tokenProblem(" ghp_AbCdEf0123456789 ")).toBeNull();
+  });
+
+  it("the device flow is gone from the client", () => {
+    const here = new URL("../components/", import.meta.url);
+    expect(() => readFileSync(new URL("GitHubDeviceConnect.tsx", here), "utf-8")).toThrow();
+    const badge = readFileSync(new URL("GitHubAccountBadge.tsx", here), "utf-8");
+    expect(badge).not.toMatch(/fetch\(\s*["'`]\/api\/integrations\/github\/connect-cli/);
+    expect(badge).not.toMatch(/device\/(start|poll)/);
   });
 });
 

@@ -21,7 +21,7 @@ import Button from "@/components/ui/Button";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentEntry } from "@/app/api/agent/list/route";
 import type { IntegrationStatus } from "@/app/api/integrations/status/route";
-import GitHubDeviceConnect from "@/components/GitHubDeviceConnect";
+import GitHubAppConnect from "@/components/GitHubAppConnect";
 import ZohoInCrm from "@/components/ZohoInCrm";
 import { appOwnedTile } from "@/app/integrations/lib/connections";
 
@@ -523,10 +523,8 @@ export default function AddAgentWizard({
 
           {/* ── GitHub step ───────────────────────────────────────────────── */}
           {currentStep.kind === "github" && (
-            <GitHubDeviceConnect
-              integration={currentStep.integration}
-              onConfigured={handleGitHubConfigured}
-            />
+            // WS-54 GH-7: a clone needs a token, so the fold opens at once.
+            <GitHubAppConnect advancedOpen onConfigured={handleGitHubConfigured} />
           )}
 
           {/* ── Mandatory integration step ────────────────────────────────── */}

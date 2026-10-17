@@ -261,7 +261,8 @@ async def call(
                 chunks.append(chunk)
             raw = b"".join(chunks)
             kept = {k.lower(): v for k, v in resp.headers.items()
-                    if k.lower().startswith(("x-ratelimit", "retry-after", "link"))}
+                    if k.lower().startswith(("x-ratelimit", "retry-after", "link",
+                                             "x-oauth-scopes"))}
             status = resp.status_code
     except GitHubCallFailed:
         raise

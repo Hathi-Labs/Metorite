@@ -9,8 +9,12 @@ the operator's, so no customer run reads either.
 What this proves against a REAL Postgres, through the real ``/integrations``
 router, as the NON-privileged role of the phase-4 rehearsal:
 
-- two organizations each run the device-flow poll (a fake GitHub on
+- two organizations each paste a token through ``PUT
+  /integrations/github/token`` (WS-54 GH-7, a fake GitHub on
   ``httpx.MockTransport``) and hold two different tokens, as ciphertext;
+- the route stores a token that ``GET /user`` accepts with BYOK OFF (T1),
+  refuses one that GitHub refuses with 422 and stores nothing (T2), and no
+  source file reads the customer client id any more (T5);
 - a reader in org A gets A's token and never B's;
 - a reader with no connection gets "not connected", and no request carries the
   sentinel ``GITHUB_TOKEN`` of the deployment;
@@ -86,7 +90,7 @@ class FakeGithub:
             return httpx.Response(200, json={"error": "authorization_pending"})
         if host == "api.github.com" and path == "/user":
             auth = request.headers.get("authorization", "")
-            token = auth.removeprefix("token ").strip()
+            token = auth.removeprefix("token ").removeprefix("Bearer ").strip()
             if token in _BY_TOKEN:
                 login, scope = _BY_TOKEN[token]
                 return httpx.Response(
@@ -177,6 +181,7 @@ async def _call(
     from acb_common.db import bind_tenant, clear_tenant, release_tenant
     from fastapi import FastAPI
     from gateway.routes import integrations, integrations_connections
+    from gateway.routes.github import connect
 
     async def _caller() -> Any:
         bind_tenant(user.organization_id)
@@ -185,6 +190,7 @@ async def _call(
     app = FastAPI()
     app.include_router(integrations.router)
     app.include_router(integrations_connections.router)
+    app.include_router(connect.token_router)
     app.dependency_overrides[get_current_user] = _caller
     scope = clear_tenant()
     try:
@@ -199,9 +205,10 @@ async def _call(
 
 
 async def _connect(p: Any, org: str, email: str, device: str) -> Any:
+    """GH-7: the one writer of a pasted token. ``device`` names the token."""
     return await _call(
-        p, _user(email, org), "POST", "/integrations/github/device/poll",
-        {"device_code": device},
+        p, _user(email, org), "PUT", "/integrations/github/token",
+        {"token": _BY_DEVICE[device][0]},
     )
 
 
@@ -209,7 +216,7 @@ def _rows(p: Any, org: str) -> list[Any]:
     with p.admin_engine.connect() as c:
         return list(c.execute(text(
             "SELECT status, connected_by, scopes, credentials_encrypted, "
-            "provider_meta ->> 'login' AS login "
+            "provider_meta ->> 'login' AS login, provider_meta "
             "FROM integration_connections WHERE organization_id = CAST(:o AS uuid) "
             "AND provider = 'github' AND owning_app = 'integrations' "
             "AND scope_kind = 'org'"), {"o": org}).all())
@@ -247,8 +254,10 @@ async def test_two_orgs_hold_two_tokens_and_a_reader_gets_its_own(ns, app_engine
 
     a = await _connect(ns, ns.org_a, ADMIN_A, "DEV-A")
     b = await _connect(ns, ns.org_b, ADMIN_B, "DEV-B")
-    assert a.status_code == 200 and a.json() == {"status": "authorized", "login": "octo-a"}, a.text
-    assert b.status_code == 200 and b.json() == {"status": "authorized", "login": "octo-b"}, b.text
+    assert a.status_code == 200 and a.json() == {
+        "status": "connected", "login": "octo-a", "scopes": ["repo", "copilot"]}, a.text
+    assert b.status_code == 200 and b.json() == {
+        "status": "connected", "login": "octo-b", "scopes": ["repo"]}, b.text
 
     (row_a,) = _rows(ns, ns.org_a)
     (row_b,) = _rows(ns, ns.org_b)
@@ -431,8 +440,8 @@ async def test_a_disconnect_deletes_the_blob_and_the_old_row_cannot_bring_it_bac
     body = res.json()
     assert res.status_code == 200, res.text
     assert body["disconnected"] is True and body["revoked_at_github"] is False
-    assert "client secret" in body["note"]
-    assert ns.github.requests == [], "no revoke call is possible without the client secret"
+    assert "settings/tokens" in body["note"]
+    assert ns.github.requests == [], "a disconnect calls nothing at GitHub"
 
     (row_a,) = _rows(ns, ns.org_a)
     assert row_a.status == "disconnected" and row_a.credentials_encrypted is None
@@ -482,7 +491,7 @@ async def test_no_github_token_appears_in_any_response_or_log_line(ns, app_engin
         assert secret not in haystack, f"a GitHub token leaked: {secret[:8]}..."
 
 
-# ── The move of an old row never overwrites a fresh device-flow token ────────
+# ── The move of an old row never overwrites a fresh token ───────────────────
 
 async def test_the_move_of_an_old_row_never_overwrites_a_fresh_device_token(ns, app_engine) -> None:  # noqa: F811
     """A device flow commits between the first look and the move. The fresh token wins.
@@ -504,7 +513,7 @@ async def test_the_move_of_an_old_row_never_overwrites_a_fresh_device_token(ns, 
             reader = asyncio.create_task(github.token_or_none(ns.org_a))
             await asyncio.sleep(1.5)
             assert not reader.done(), "the reader must wait for the lock"
-            await github.save_device_token(
+            await github.save_token(
                 holder, ns.org_a, access_token=fresh, login="octo-a",
                 scopes=("repo",), connected_by=ADMIN_A,
             )
@@ -557,6 +566,87 @@ async def test_the_console_disconnect_of_a_github_row_uses_the_github_disconnect
     assert await _read_token(ns, ns.org_a) is None
     assert await _read_token(ns, ns.org_b) == TOKEN_B
     assert ns.github.requests == []
-    (event,) = events
+    # GH-7: each pasted token writes its own `github.token.connected` row.
+    assert [e.action for e in events].count("github.token.connected") == 2
+    (event,) = [e for e in events if e.action == "integration.disconnect"]
     assert event.target == f"github:{gid}" and event.action == "integration.disconnect"
     assert TOKEN_A not in res.text and LEGACY_A not in res.text
+
+
+# ── GH-7: the Advanced token ────────────────────────────────────────────────
+
+async def test_t1_the_token_route_stores_a_token_with_byok_off(ns, app_engine, monkeypatch) -> None:  # noqa: F811
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "byok_enabled", False, raising=False)
+    res = await _connect(ns, ns.org_a, ADMIN_A, "DEV-A")
+    assert res.status_code == 200, res.text
+    (row,) = _rows(ns, ns.org_a)
+    assert row.status == "connected" and row.login == "octo-a"
+    assert row.provider_meta["auth"] == "token"
+    assert TOKEN_A not in row.credentials_encrypted
+    assert await _read_token(ns, ns.org_a) == TOKEN_A
+    assert TOKEN_A not in res.text
+
+
+async def test_t2_a_token_that_github_refuses_is_422_and_stores_nothing(ns, app_engine) -> None:  # noqa: F811
+    res = await _call(ns, _user(ADMIN_A, ns.org_a), "PUT", "/integrations/github/token",
+                      {"token": "ghp_NOT_A_REAL_TOKEN_0123456789"})
+    assert res.status_code == 422 and res.json()["detail"] == "GitHub refused this token."
+    assert _rows(ns, ns.org_a) == []
+    assert "ghp_NOT_A_REAL_TOKEN_0123456789" not in res.text
+    for bad in ("", "  ", "has space", "x" * 300):
+        refused = await _call(ns, _user(ADMIN_A, ns.org_a), "PUT",
+                              "/integrations/github/token", {"token": bad})
+        assert refused.status_code in (400, 422), (bad[:10], refused.status_code)
+        assert (bad.strip() == "" or bad not in refused.text)
+    assert _rows(ns, ns.org_a) == []
+
+
+async def test_the_token_route_needs_the_manage_right(ns, app_engine) -> None:  # noqa: F811
+    from acb_auth import UserContext, UserRole, build_access
+
+    reader = UserContext(
+        email="reader@in7-r8.test", role=UserRole.EMPLOYEE,
+        access=build_access(["feature:integrations"]), organization_id=ns.org_a,
+    )
+    res = await _call(ns, reader, "PUT", "/integrations/github/token", {"token": TOKEN_A})
+    assert res.status_code == 403
+    assert _rows(ns, ns.org_a) == [] and ns.github.requests == []
+
+
+async def test_a_token_takes_the_place_of_an_app_row(ns, app_engine) -> None:  # noqa: F811
+    import json
+
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO integration_connections (organization_id, provider, owning_app, "
+            "scope_kind, status, provider_meta) VALUES (CAST(:o AS uuid), 'github', "
+            "'integrations', 'org', 'connected', CAST(:m AS jsonb))"),
+            {"o": ns.org_a, "m": json.dumps({"auth": "app", "installation_id": "424242"})})
+    res = await _connect(ns, ns.org_a, ADMIN_A, "DEV-A")
+    assert res.status_code == 200, res.text
+    (row,) = _rows(ns, ns.org_a)
+    assert row.provider_meta["auth"] == "token"
+    assert "installation_id" not in row.provider_meta
+    assert await _read_token(ns, ns.org_a) == TOKEN_A
+
+
+def test_t5_no_source_file_reads_the_customer_client_id() -> None:
+    """WS-54 GH-7: nothing reads the org row of the OAuth App client id."""
+    from pathlib import Path
+
+    from acb_llm.key_store import INTEGRATION_ENV_MAP
+
+    root = Path(__file__).resolve().parents[2]
+    hits = [
+        str(path.relative_to(root)) for base in ("apps", "packages")
+        for path in (root / base).rglob("*.py")
+        if "github:client_id" in path.read_text(encoding="utf-8")
+    ]
+    assert hits == [], hits
+    assert "client_id" not in INTEGRATION_ENV_MAP["github"]
+    from gateway.routes import integrations
+
+    assert "GITHUB_CLIENT_ID" not in integrations.BUILTIN_ENV_KEYS
+    assert not hasattr(integrations, "_github_org_store")
