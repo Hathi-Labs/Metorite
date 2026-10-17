@@ -181,8 +181,8 @@ export function shareOfForecast(
 // The digest card shows the newest digest: its week, its numbers as a table,
 // and a line that says AI wrote the text from them. ⚠️ Like the rest of this
 // file, it computes NO number. Each value is the server's one text of the
-// number (`crm_sync/digest.py` `fmt`), drawn verbatim, so the table and the
-// text that the server checked against it hold the same digits.
+// number (`acb_common.number_check.format_figure`), drawn verbatim, so the
+// table and the text that the server checked against it hold the same digits.
 
 /** The line under the text (item 13). */
 export const DIGEST_AI_LINE =
@@ -234,10 +234,14 @@ export function digestMissing(numbers: DigestNumbers | null | undefined): string
   return [...(numbers?.missing ?? [])];
 }
 
-/** A unit is shown only for a number. "no values recorded" takes none. */
-export function digestValue(row: Pick<DigestTableRow, "value" | "unit">): string {
-  if (!/^\d/.test(row.value)) return row.value;
-  return row.unit === "INR" ? `INR ${row.value}` : row.value;
+/**
+ * The value as the server wrote it, with no change. The server formats each
+ * number once (`acb_common.number_check.format_figure`: `INR 12,34,567` or
+ * `12,34,567`), and the number check read that same text, so a second format
+ * here could show a number that the check never saw.
+ */
+export function digestValue(row: Pick<DigestTableRow, "value">): string {
+  return row.value;
 }
 
 /** The newest digest of a list that the server sends newest first. */

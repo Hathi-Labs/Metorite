@@ -87,9 +87,9 @@ def _numbers() -> dict[str, Any]:
              "rows": [{"label": "Qualify", "value": "12"},
                       {"label": "Stage 2", "value": "7"}]},
             {"key": "amount_by_close_month", "title": "Amount by close month",
-             "unit": "INR", "total": "1234567.5",
-             "rows": [{"label": "November 2026", "value": "1000000"},
-                      {"label": "December 2026", "value": "234567.5"}]},
+             "unit": "INR", "total": "INR 12,34,567.50",
+             "rows": [{"label": "November 2026", "value": "INR 10,00,000"},
+                      {"label": "December 2026", "value": "INR 2,34,567.50"}]},
             {"key": "new_leads", "title": "New leads in the week", "unit": "leads",
              "rows": [], "total": "4"},
         ],
@@ -211,7 +211,6 @@ class TestTheQueries:
         titles = [q.title for q in dg.DIGEST_QUERIES] + [dg.LABELS_TITLE]
         for title in titles:
             assert not re.search(r"\d", title), title
-            assert not dg._WORDS.search(title), title
 
     def test_the_route_and_the_step_run_one_body(self):
         route = ast.parse(AGGREGATE.read_text(encoding="utf-8"))
@@ -280,14 +279,14 @@ class TestThePart:
     def test_a_month_key_reads_as_words(self):
         query = next(q for q in dg.DIGEST_QUERIES if q.key == "amount_by_close_month")
         part = dg._part(query, self._answer([("2026-11", "2026-11", 1500.5)], 1500.5), {})
-        assert part["rows"] == [{"label": "November 2026", "value": "1500.5"}]
-        assert part["total"] == "1500.5"
+        assert part["rows"] == [{"label": "November 2026", "value": "INR 1,500.50"}]
+        assert part["total"] == "INR 1,500.50"
 
     def test_the_folded_groups_are_the_answers_own_numbers(self):
         query = next(q for q in dg.DIGEST_QUERIES if q.key == "amount_by_close_month")
         part = dg._part(query, self._answer([("2026-11", "2026-11", 10)], 25, other=15,
                                             omitted=2), {})
-        assert part["rows"][-1] == {"label": "All other groups", "value": "15"}
+        assert part["rows"][-1] == {"label": "All other groups", "value": "INR 15"}
         assert part["other_groups"] == "2"
 
     def test_an_empty_measure_reads_no_values_recorded(self):
@@ -438,80 +437,96 @@ class TestThePrompt:
 
 
 class TestTheFormatter:
-    @pytest.mark.parametrize(("value", "text"), [
-        (12, "12"), (12.0, "12"), (1234567.5, "1234567.5"), (0.125, "0.13"),
-        (1500.10, "1500.1"), (0, "0"), (None, dg.NO_VALUES), (10 ** 9, "1000000000"),
+    @pytest.mark.parametrize(("value", "unit", "text"), [
+        (12, "deals", "12"), (12.0, "deals", "12"), (1234567, "deals", "12,34,567"),
+        (1234567.5, "INR", "INR 12,34,567.50"), (0.125, "deals", "0.13"),
+        (1500.10, "INR", "INR 1,500.10"), (0, "INR", "INR 0"),
+        (None, "INR", dg.NO_VALUES), (10 ** 9, "deals", "1,00,00,00,000"),
     ])
-    def test_one_text_for_each_number(self, value, text):
-        assert dg.fmt(value) == text
+    def test_one_text_for_each_number(self, value, unit, text):
+        assert dg.fmt(value, unit) == text
+
+    def test_the_text_is_the_one_shared_formatter(self):
+        from acb_common.number_check import MONEY, PLAIN, format_figure
+
+        assert dg.fmt(1234567, "INR") == format_figure(1234567, MONEY)
+        assert dg.fmt(42, "deals") == format_figure(42, PLAIN)
 
     def test_no_value_is_never_zero(self):
-        assert dg.fmt(None) != "0"
+        assert dg.fmt(None) != "0" and dg.fmt(None, "INR") == "no values recorded"
 
     def test_a_boolean_is_no_number(self):
         with pytest.raises(TypeError):
             dg.fmt(True)
 
-    def test_the_prompt_and_the_check_read_the_one_formatter(self):
+    def test_the_step_holds_no_formatter_and_no_check_of_its_own(self):
         tree = ast.parse(STEP.read_text(encoding="utf-8"))
-        fmt_calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
-                     and isinstance(n.func, ast.Name) and n.func.id == "fmt"]
-        assert len(fmt_calls) >= 6
-        # No other number formatter in the step: no format spec, no round().
+        imports = {(n.module, a.name) for n in ast.walk(tree)
+                   if isinstance(n, ast.ImportFrom) for a in n.names}
+        assert ("acb_common.number_check", "format_figure") in imports
+        assert ("acb_common", "number_check") in imports
         source = STEP.read_text(encoding="utf-8")
+        assert "number_check.check(" in source
+        # No second formatter: no format spec, no round(), no group rule.
         assert not re.search(r"\{[^{}]*:[,.]\d*f\}", source)
-        assert "round(" not in source
+        assert "round(" not in source and "group_indian" not in source
+        # One regex with a digit class in the step, the month key, and no other.
+        patterns = [n.args[0].value for n in ast.walk(tree)
+                    if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "compile"
+                    and n.args and isinstance(n.args[0], ast.Constant)]
+        assert [p for p in patterns if r"\d" in p] == [dg._MONTH_KEY.pattern]
 
 
 class TestTheNumberCheck:
     @pytest.mark.parametrize("text", [
         "This week 12 deals sit in Qualify and 7 in Stage 2.",
-        "The amount for November 2026 is 1000000, and 234567.5 for December 2026.",
-        "In total 1234567.5 INR closes in the window. 4 new leads came in.",
+        "The amount for November 2026 is INR 10,00,000, and INR 2,34,567.50 for "
+        "December 2026.",
+        "In total INR 12,34,567.50 closes in the window. 4 new leads came in.",
         "New contacts in the week: the numbers are not available.",
-        "The amount is 1234567.50 INR.",
         "Qualify holds 12 deals.",
+        # The shared rule: a figure matches at the precision that it states.
+        "About INR 12.3 lakh closes in the window.",
     ])
     def test_a_text_with_only_input_numbers_passes(self, text):
         assert dg.check(text, _numbers()) == []
 
     @pytest.mark.parametrize(("text", "bad"), [
         # A sum the model made: 12 + 7.
-        ("The open stages hold 19 deals.", ["19"]),
+        ("The open stages hold 19 deals.", "19"),
         # A share the model made.
-        ("Qualify holds 63% of the open deals.", ["%", "63"]),
-        # A number as a word, which the check cannot read.
-        ("Two stages hold deals.", ["Two"]),
-        ("Four new leads came in.", ["Four"]),
-        ("About one third closes in November 2026.", ["one"]),
-        ("The pipeline is worth 12 lakh.", ["lakh"]),
-        # A group separator splits a number, and each half must pass.
-        ("The amount is 1,234,567.5 INR.", ["1", "234", "567.5"]),
-        # A part of a month label is no label.
-        ("The amount for 2026 is 1000000.", ["2026"]),
-        ("The amount for 2026-11 is 1000000.", ["2026", "11"]),
-        # A date of the week is not in the input.
-        ("The week from 5 October saw 4 new leads.", ["5"]),
-        # A rounded number.
-        ("The window holds 1.2 million INR.", ["million", "1.2"]),
-        ("The window holds 1234568 INR.", ["1234568"]),
+        ("Qualify holds 63% of the open deals.", "63%"),
+        # Money at a precision that no source gives.
+        ("The window holds INR 15 lakh.", "15 lakh"),
+        ("The pipeline grew by 98765 deals.", "98765"),
+        # Money never matches a percent.
+        ("November 2026 grew by 10,00,000%.", "10,00,000%"),
     ])
     def test_a_number_that_is_not_in_the_input_fails(self, text, bad):
-        assert dg.check(text, _numbers()) == bad
+        got = dg.check(text, _numbers())
+        assert got and any(bad in g for g in got), got
 
     def test_an_empty_field_must_not_read_zero(self):
         numbers = {"parts": [{"key": "x", "title": "T", "unit": "INR",
                               "rows": [{"label": "Won", "value": dg.NO_VALUES}]}],
                    "missing": []}
         assert dg.check("Won: no values recorded.", numbers) == []
-        assert dg.check("Won: 0.", numbers) == ["0"]
+        assert dg.check("Won: INR 0.", numbers) == ["INR 0"]
 
-    def test_a_label_with_a_number_word_is_named_whole(self):
-        numbers = {"parts": [{"key": "x", "title": "T", "unit": "deals",
-                              "rows": [{"label": "Phase One", "value": "3"}]}],
-                   "missing": []}
-        assert dg.check("Phase One holds 3 deals.", numbers) == []
-        assert dg.check("One deal is in Phase One.", numbers) == ["One"]
+    def test_the_sources_are_the_prompts_own_numbers(self):
+        """The check reads the same JSON that the prompt holds, so a number
+        of the system text or of the week is no source."""
+        book = dg.sources_for(_numbers())
+        prompt = dg.messages_for(_numbers())[1]["content"]
+        assert json.loads(prompt.split("\n", 1)[1]) == dg.payload(_numbers())
+        assert len(book) > 0
+        assert dg.check("The week holds 800 deals.", _numbers()) == ["800"]
+
+    def test_the_known_limit_a_word_is_not_read(self):
+        """CRM-Q29 records it: the one check reads digits only. So the prompt
+        asks for digits, and this test pins the limit, not a wish."""
+        assert dg.check("Two stages hold deals.", _numbers()) == []
+        assert "Never write a number as a word." in dg.SYSTEM
 
 
 # ── Item 10: the payer ──────────────────────────────────────────────────────

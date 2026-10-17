@@ -4280,11 +4280,15 @@ The build made these choices, which the list above does not name.
   the migration holds the same cap. A text that fails the check is not
   stored, and the step writes again while a try is left. A row with no
   `body` is never served.
-- The number check is strict. It takes out each label that holds a digit or
-  a number word, such as `November 2026`, but only as a whole label. Then
-  each number of the text must equal one value of the input, compared as a
-  decimal. A number written as a word, a share and a `%` sign each fail.
-  A group separator splits a number in two, and each half must pass.
+- The number check is the ONE check of CRM-Q29,
+  `acb_common.number_check`. The digest builds no second one. Each number of
+  the prompt goes through `format_figure`, so money reads `INR 12,34,567`.
+  The sources are the user message of the prompt (`add_text`), and the step
+  stores a text only when `check(text, sources).ok`. So the match rule is
+  the one of CRM-Q29: a figure matches a source that rounds to it at the
+  precision that the text states, and money never matches a percent. The
+  check skips a date, a month and a year. It does not read a number written
+  as a word, which is its known limit, so the prompt asks for digits.
 - The labels of CRM-Q26 count only in `on`. Their SQL is
   `note_labels.week_counts`, beside the one writer of the table, so the
   table keeps one module that names it.

@@ -12,12 +12,14 @@ it (``routes/crm/digests.py``).
 **THE NUMBER RULE.** Every number that a member reads comes from SQL. Each
 query is a CRM-Q25 aggregate, and it goes through ``aggregate.compute``, the
 one body that ``GET /crm/aggregate`` also runs, with the org of the run
-bound. The model chooses no query. It may only phrase. One formatter,
-:func:`fmt`, writes each number for the prompt AND for the check, and
-:func:`check` finds each number of the text in the input. A text with one
-number that is not in the input, or a number written as a word, is not
-stored, and the try counts. An empty field reads ``no values recorded``,
-never 0 (CRM-Q25c item 3).
+bound. The model chooses no query. It may only phrase. Each number of the
+prompt goes through ``acb_common.number_check.format_figure`` (:func:`fmt`),
+and :func:`check` is ``acb_common.number_check.check``, the ONE number check
+of CRM-Q29, with the prompt's numbers as its sources. A text with one figure
+that no source gives is not stored, and the try counts. An empty field reads
+``no values recorded``, never 0 (CRM-Q25c item 3). The one check does not
+read a number written as a word (its known limit), so the prompt asks for
+digits.
 
 **When it runs.** Only for an org on ``CRM_DIGEST_ORGS``
 (:func:`enabled_for`). The scheduler starts it after a sync run, outside the
@@ -52,7 +54,6 @@ Fences: ``tests/unit/test_crm_digest.py`` and
 
 from __future__ import annotations
 
-import contextlib
 import json
 import re
 import time
@@ -60,12 +61,13 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as clock
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from acb_common import get_logger
+from acb_common import get_logger, number_check
 from acb_common.db import bind_tenant, release_tenant, tenant_session
+from acb_common.number_check import MONEY, PLAIN, Sources, format_figure
 from sqlalchemy import text
 
 from gateway.crm_sync import note_labels
@@ -242,19 +244,21 @@ KIND_WORDS: Mapping[str, str] = {
 # ── The one formatter (item 9) ──────────────────────────────────────────────
 
 
-def fmt(value: Any) -> str:
-    """The ONE text of a number, for the prompt and for the check.
+def fmt(value: Any, unit: str = "") -> str:
+    """The text of one number of the digest, for the prompt and the table.
 
-    No group separator, at most two decimals, no trailing zero. None (a
-    field with no value) is :data:`NO_VALUES`, never 0."""
+    It calls ``acb_common.number_check.format_figure``, the ONE formatter of
+    a figure (CRM-Q29), which the ONE check reads back. A part in ``INR``
+    gives money (``INR 12,34,567``), and each other part a plain number
+    (``12,34,567``). A whole value takes no decimals, and any other takes
+    two. None (a field with no value) is :data:`NO_VALUES`, never 0."""
     if value is None:
         return NO_VALUES
     if isinstance(value, bool):
         raise TypeError("a boolean is not a number of the digest")
-    number = Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    if number == number.to_integral_value():
-        return str(int(number))
-    return format(number.normalize(), "f")
+    number = Decimal(str(value))
+    decimals = 0 if number == number.to_integral_value() else 2
+    return format_figure(number, MONEY if unit == "INR" else PLAIN, decimals=decimals)
 
 
 _MONTH_KEY = re.compile(r"^(\d{4})-(0[1-9]|1[0-2])$")
@@ -289,17 +293,17 @@ def _part(query: DigestQuery, answer: Any, types: Mapping[str, str]) -> dict[str
     part: dict[str, Any] = {"key": query.key, "title": query.title, "unit": query.unit}
     if query.show == "total":
         part["rows"] = rows
-        part["total"] = fmt(answer.total)
+        part["total"] = fmt(answer.total, query.unit)
         return part
     for group in answer.groups:
         if query.types is not None and types.get(str(group.key)) not in query.types:
             continue
-        rows.append({"label": month_words(str(group.label)), "value": fmt(group.value)})
+        rows.append({"label": month_words(str(group.label)), "value": fmt(group.value, query.unit)})
     part["rows"] = rows
     if query.types is None:
-        part["total"] = fmt(answer.total)
+        part["total"] = fmt(answer.total, query.unit)
         if answer.omitted:
-            rows.append({"label": "All other groups", "value": fmt(answer.other)})
+            rows.append({"label": "All other groups", "value": fmt(answer.other, query.unit)})
             part["other_groups"] = fmt(answer.omitted)
     elif answer.omitted:
         # A folded group has no type here, so it can be in no typed row.
@@ -369,8 +373,8 @@ SYSTEM = (
     "The user message holds the numbers of the week as JSON. The rules:\n"
     "- Use only the numbers in the JSON. Add no number. Do not add, subtract, "
     "multiply, divide, round or compare numbers to make a new number.\n"
-    "- Write each number in digits, exactly as the JSON writes it, with no "
-    "group separator. Never write a number as a word.\n"
+    "- Write each number in digits, exactly as the JSON writes it. Never "
+    "write a number as a word.\n"
     "- Write a month as the JSON writes it. Write no other date.\n"
     "- When a value is \"no values recorded\", write that, and never 0.\n"
     "- For each title in \"missing\", say that its numbers are not available.\n"
@@ -417,66 +421,22 @@ def fit(numbers: dict[str, Any]) -> dict[str, Any]:
 
 # ── The number check (item 9) ───────────────────────────────────────────────
 
-#: A number in the text: a run of digits, with one decimal part at most. A
-#: group separator splits a number into two, and each half must pass.
-_NUMBER = re.compile(r"\d+(?:\.\d+)?")
 
-#: A number written as a word, or a share. The text must write each number
-#: in digits, so the check can see it.
-_WORDS = re.compile(
-    r"\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
-    r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|"
-    r"thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|hundreds|thousand|"
-    r"thousands|million|millions|billion|lakh|lakhs|crore|crores|dozen|dozens|"
-    r"half|twice|double|triple|percent|per\s+cent)\b|%",
-    re.IGNORECASE,
-)
-
-
-def _values(numbers: Mapping[str, Any]) -> set[Decimal]:
-    """Every number of the input, as :func:`fmt` wrote it."""
-    out: set[Decimal] = set()
-
-    def add(raw: Any) -> None:
-        # "no values recorded" is no number, so it adds nothing.
-        with contextlib.suppress(InvalidOperation, ValueError):
-            out.add(Decimal(str(raw)))
-
-    for part in numbers.get("parts") or []:
-        for row in part.get("rows") or []:
-            add(row.get("value"))
-        for name in ("total", "other_groups"):
-            if name in part:
-                add(part[name])
-    return out
-
-
-def _phrases(numbers: Mapping[str, Any]) -> list[str]:
-    """Each label of the input that holds a digit or a number word, longest
-    first: a month (``November 2026``) or a stage name (``Stage 2``, ``Phase
-    one``). The text may name them WHOLE, and the check takes them out
-    before it reads numbers. A part of a label is no label, so ``2026``
-    alone still has to be a value."""
-    found = {str(row.get("label") or "") for part in numbers.get("parts") or []
-             for row in part.get("rows") or []}
-    return sorted((p for p in found
-                   if any(ch.isdigit() for ch in p) or _WORDS.search(p)),
-                  key=len, reverse=True)
+def sources_for(numbers: Mapping[str, Any]) -> Sources:
+    """The sources of the check: the user message of the prompt, which holds
+    the numbers as JSON, read back by the ONE check. The system text is no
+    source, so a number of a rule never passes."""
+    book = Sources()
+    book.add_text(messages_for(numbers)[1]["content"])
+    return book
 
 
 def check(text_: str, numbers: Mapping[str, Any]) -> list[str]:
-    """The numbers of ``text_`` that are not in ``numbers``, and each number
-    word. Empty means the text passes. Strict: one bad token fails the whole
-    text, and the step then stores nothing (item 9)."""
-    scrubbed = text_
-    for phrase in _phrases(numbers):
-        scrubbed = re.sub(re.escape(phrase), " ", scrubbed, flags=re.IGNORECASE)
-    allowed = _values(numbers)
-    bad = [m.group(0) for m in _WORDS.finditer(scrubbed)]
-    for token in _NUMBER.findall(scrubbed):
-        if Decimal(token) not in allowed:
-            bad.append(token)
-    return bad
+    """The figures of ``text_`` that no number of ``numbers`` gives. Empty
+    means the text passes. It is ``acb_common.number_check.check``, the ONE
+    number check (CRM-Q29), with the prompt's numbers as its sources. One
+    figure that fails fails the whole text, and the step stores nothing."""
+    return [f.text for f in number_check.check(text_, sources_for(numbers)).unmatched]
 
 
 # ── The model call ──────────────────────────────────────────────────────────

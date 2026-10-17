@@ -20,7 +20,7 @@ import { DigestCardView } from "./Reports";
 const digest = (over: Partial<CrmDigest> = {}): CrmDigest => ({
   week_start: "2026-10-05",
   week_end: "2026-10-11",
-  text: "Qualify holds 12 deals. The amount for November 2026 is 1000000.",
+  text: "Qualify holds 12 deals. The amount for November 2026 is INR 10,00,000.",
   created_at: "2026-10-12T06:10:00Z",
   stored_at: "2026-10-12T06:10:05Z",
   numbers: {
@@ -41,8 +41,8 @@ const digest = (over: Partial<CrmDigest> = {}): CrmDigest => ({
         key: "amount_by_close_month",
         title: "Amount of the deals by expected close month",
         unit: "INR",
-        rows: [{ label: "November 2026", value: "1000000" }],
-        total: "1000000",
+        rows: [{ label: "November 2026", value: "INR 10,00,000" }],
+        total: "INR 10,00,000",
       },
       { key: "new_leads", title: "New leads in the week", unit: "leads", rows: [], total: "4" },
       {
@@ -70,8 +70,8 @@ describe("the digest helpers", () => {
     expect(rows.map((r) => [r.label, r.value])).toEqual([
       ["Qualify", "12"],
       ["Proposal", "7"],
-      ["November 2026", "1000000"],
-      ["Total", "1000000"],
+      ["November 2026", "INR 10,00,000"],
+      ["Total", "INR 10,00,000"],
       ["Total", "4"],
       ["Qualify", NO_VALUES],
     ]);
@@ -88,10 +88,10 @@ describe("the digest helpers", () => {
     expect(values).not.toContain("19");
   });
 
-  it("never draws an empty field as 0", () => {
-    expect(digestValue({ value: NO_VALUES, unit: "INR" })).toBe("no values recorded");
-    expect(digestValue({ value: "0", unit: "INR" })).toBe("INR 0");
-    expect(digestValue({ value: "12", unit: "deals" })).toBe("12");
+  it("draws each value verbatim, and an empty field never as 0", () => {
+    expect(digestValue({ value: NO_VALUES })).toBe("no values recorded");
+    expect(digestValue({ value: "INR 12,34,567" })).toBe("INR 12,34,567");
+    expect(digestValue({ value: "12" })).toBe("12");
   });
 
   it("names the missing parts and takes the newest digest", () => {
@@ -118,7 +118,7 @@ describe("the digest card", () => {
   it("shows the numbers as a table", () => {
     expect(html).toContain("<table");
     expect(html).toContain("November 2026");
-    expect(html).toContain("INR 1000000");
+    expect(html).toContain("INR 10,00,000");
     expect(html).toContain("no values recorded");
   });
 

@@ -367,9 +367,9 @@ async def test_the_digest_holds_the_numbers_of_the_aggregate_route(dg8) -> None:
     assert {"label": next(n for n, (i, _t) in stages.items() if i == open_id),
             "value": "4"} in stage["rows"]
     months = _part(numbers, "amount_by_close_month")
-    assert months["rows"] == [{"label": "November 2026", "value": "3003"},
-                              {"label": "December 2026", "value": "2500.5"}]
-    assert months["total"] == "5503.5"
+    assert months["rows"] == [{"label": "November 2026", "value": "INR 3,003"},
+                              {"label": "December 2026", "value": "INR 2,500.50"}]
+    assert months["total"] == "INR 5,503.50"
     leads = (await _call(dg8, a, "GET", "/crm/aggregate?entity=leads&measure=count&"
                          "group_by=created_month&created_from=2026-10-05&"
                          "created_to=2026-10-11&include_converted=true")).json()
@@ -404,7 +404,7 @@ async def test_an_empty_amount_reads_as_its_route_does(dg8) -> None:
     await _step(dg8, a)
     [row] = _row(dg8, a)
     assert _part(row.numbers, "amount_by_close_month")["rows"] == [
-        {"label": "October 2026", "value": "0"}]
+        {"label": "October 2026", "value": "INR 0"}]
 
 
 # ── Item 8: the prompt holds no name, no email and no note text ─────────────
