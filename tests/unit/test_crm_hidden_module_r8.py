@@ -126,6 +126,41 @@ async def test_hidden_accounts_and_deals_no_longer_stop_the_other_modules(ns, zo
     assert "contact" not in (queued[0][0] or {}).get("reread", []), "the re-read is done"
 
 
+async def test_check_again_asks_a_turned_off_module_at_once(ns, zoho) -> None:
+    """CRM-Q17b item 8: "Check again" on Sync health is a run of the one key.
+    It asks Zoho at once, and does not wait for the hour of a normal run."""
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    a.add("Deals", "d1", 5, Deal_Name="Deal", Stage="Qualify")
+    _hide(a, "Deals")
+    await _connect(ns, ns.org_a, a)
+    first = await engine.run_org(ns.org_a)
+    assert first.counts["deals"]["hidden"] == 1
+    assert _count(ns, "crm_deals", ns.org_a) == 0
+
+    # The customer turns Deals on. A normal run inside the hour still waits.
+    a.faults.pop("Deals")
+    before = _calls(a, "Deals")
+    waiting = await engine.run_org(ns.org_a)
+    assert waiting.counts["deals"]["hidden"] == 1
+    assert _calls(a, "Deals") == before
+
+    # "Check again": a run of the one key asks at once, and the deal lands.
+    checked = await engine.run_org(ns.org_a, only=frozenset({"deals"}))
+    assert checked.status == "ok"
+    assert _calls(a, "Deals") > before
+    assert checked.counts["deals"].get("unavailable", 0) == 0
+    assert _count(ns, "crm_deals", ns.org_a) == 1
+
+    # A module that stays off is marked again, with a new time of the ask.
+    _hide(a, "Accounts")
+    again = await engine.run_org(ns.org_a, only=frozenset({"organizations"}))
+    assert again.status == "ok"
+    assert again.counts["organizations"]["hidden"] == 1
+
+
 async def test_a_module_turned_off_later_keeps_its_rows(ns, zoho) -> None:
     from gateway.crm_sync import engine
 

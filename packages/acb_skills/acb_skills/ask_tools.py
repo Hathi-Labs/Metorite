@@ -214,7 +214,8 @@ async def ask_questions(questions: str) -> str:
         questions: JSON string. ``header`` and ``question`` are required;
             ``options`` is optional (each needs ``label``);
             ``allowFreeformInput`` defaults to true only when there are no
-            options. Shape:
+            options. Every question needs an answer. Set
+            ``"required": false`` on one the user may skip. Shape:
             {
               "questions": [
                 {
@@ -274,7 +275,7 @@ async def ask_questions(questions: str) -> str:
                     })
 
         has_options = len(options) > 0
-        cleaned.append({
+        entry = {
             "header": header,
             "question": question,
             "multiSelect": bool(q.get("multiSelect", False)),
@@ -282,7 +283,13 @@ async def ask_questions(questions: str) -> str:
                 "allowFreeformInput", not has_options,
             )),
             "options": options if has_options else None,
-        })
+        }
+        # A question the member may skip never blocks the card's Submit
+        # (owner report, 2026-10-17). The key goes only when it is False,
+        # so every other card is exactly as before.
+        if q.get("required") is False:
+            entry["required"] = False
+        cleaned.append(entry)
 
     # ── Emit elicitation event ──────────────────────────────────────────
     # Two paths, unified on the same _pending_user_input mechanism as the

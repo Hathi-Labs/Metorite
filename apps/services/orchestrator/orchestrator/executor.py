@@ -5354,7 +5354,7 @@ async def run_agent_stream(
                                     )
                                     if not _qt:
                                         continue
-                                    _valid.append({
+                                    _entry: dict[str, Any] = {
                                         "header": _qh,
                                         "question": _qt,
                                         "multiSelect": bool(
@@ -5370,7 +5370,12 @@ async def run_agent_stream(
                                             ) and len(_q["options"]) > 0
                                             else None
                                         ),
-                                    })
+                                    }
+                                    # The tool's own path keeps this key
+                                    # the same way (``acb_skills.ask_tools``).
+                                    if _q.get("required") is False:
+                                        _entry["required"] = False
+                                    _valid.append(_entry)
                             if _valid:
                                 _req_id = uuid.uuid4().hex
                                 _active_elicitation_request_id.set(_req_id)

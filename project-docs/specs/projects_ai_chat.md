@@ -37,7 +37,9 @@ merged. §21.18 (a NUL in a tool result fails no save) was built
 2026-10-09. §14.9 (a file link opens the viewer, never raw text) was built
 2026-10-16, on a branch. §14.10 B1 (`make_report`: a report as a chat card, a file
 and a PDF) was built 2026-10-16. §14.10.9 B3 (`crm_report` and
-`render_report` make a kept report by code) was built 2026-10-16.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+`render_report` make a kept report by code) was built 2026-10-16. §24.9.1 (a
+card of questions says why Submit is off) was built 2026-10-17, on a
+branch.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -5949,6 +5951,33 @@ browser, with 200 and with 409).
 ⚠️ **Not done here.** `AgentChat`'s history read compares the server rows with
 the messages of its first render, so a slow read can replace a live turn. The
 replay hit that race on a cold compile.
+
+### 24.9.1 A card of questions says why Submit is off (2026-10-17)
+
+**The report.** The owner got a card of two questions from the Projects
+assistant. The first question took typed text, and the second took a pick.
+The owner picked an option, and Submit stayed off. The owner wrote "even
+after selecting, i cant submit."
+
+**The cause.** The pick counted. A replay in a real browser showed the option
+pressed and the right answer in the post. Submit stayed off because the first
+question had no answer, and the card did not say so.
+
+**The rule.** The card never blocks Submit without a reason.
+
+- The line beside Submit names each question that blocks it, for example
+  "Answer Target deadline to submit." Submit points at that line with
+  `aria-describedby`.
+- After the first answer, each question that still blocks Submit shows
+  "Needs an answer".
+- A question with `"required": false` never blocks Submit, and it shows
+  "Optional". The tool and the bridge of the executor send that key only when
+  the model sets it to false.
+- The answer that the run gets does not change. An option that the member did
+  not pick never goes out.
+
+Fences: `elicitationAnswer.test.ts`, `elicitationCard.test.ts`,
+`e2e/genui-option-picker.spec.ts` and `tests/unit/test_ask_questions_text.py`.
 
 ## 25. The fixed prefix of each request (2026-10-09)
 

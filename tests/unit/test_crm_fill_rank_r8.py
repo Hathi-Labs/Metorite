@@ -443,6 +443,74 @@ async def test_the_mode_route_serves_the_source_labels_in_mirror_mode(fz) -> Non
     assert (await _get(p.org_a, "/crm/mode")).json() == {"mode": "native"}
 
 
+# ── CRM-Q17b: the state of each core entity ──────────────────────────────────
+
+
+async def test_the_mode_route_serves_the_state_of_each_core_entity(fz) -> None:
+    """CRM-Q17b items 2 to 4 (§18.9.6). The seed holds one Account and no
+    contact, lead or deal. A cursor that the engine marked ``hidden`` is a
+    module that Zoho turned off. A missing scope is not."""
+    p, a, b = fz
+    await _both_synced(p, a, b)
+
+    states = (await _get(p.org_a, "/crm/mode")).json()["entities"]
+    assert set(states) == {"organizations", "contacts", "leads", "deals"}
+    for slug, table in (
+        ("organizations", "crm_companies"), ("contacts", "crm_contacts"),
+        ("leads", "crm_leads"), ("deals", "crm_deals"),
+    ):
+        held = _q(p, f"SELECT count(*) FROM {table} WHERE organization_id = "
+                     "CAST(:o AS uuid)", o=p.org_a)[0][0]
+        assert states[slug]["records"] is (held > 0), slug
+    assert states["organizations"]["records"] is True
+    assert states["deals"] == {"records": False, "turned_off": False}
+
+    # The engine's mark of a module that Zoho refused (`_mark_unavailable`).
+    with p.admin_engine.begin() as c:
+        for module, reason in (("zoho:deal", "hidden"), ("zoho:lead", "scope")):
+            c.execute(text(
+                "UPDATE crm_sync_cursors SET cursor_state = COALESCE(cursor_state, "
+                "'{}'::jsonb) || jsonb_build_object('unavailable', true, 'reason', "
+                "CAST(:r AS text)) WHERE organization_id = CAST(:o AS uuid) "
+                "AND module = :m"), {"o": p.org_a, "m": module, "r": reason})
+    states = (await _get(p.org_a, "/crm/mode")).json()["entities"]
+    assert states["deals"] == {"records": False, "turned_off": True}
+    assert states["leads"]["turned_off"] is False  # a missing scope is not "off"
+    assert states["organizations"]["turned_off"] is False
+
+    # Fix round 1, item 5: a converted lead is hidden from the default list,
+    # so it does not make Leads "hold records". An open lead does.
+    with p.admin_engine.begin() as c:
+        status = c.execute(text(
+            "INSERT INTO crm_lead_statuses (organization_id, name, position, type) "
+            "VALUES (CAST(:o AS uuid), 'Fill R8 status', 99, 'open') RETURNING id"),
+            {"o": p.org_a}).scalar()
+        c.execute(text(
+            "INSERT INTO crm_leads (organization_id, lead_name, status_id, ext_source, "
+            "ext_id, converted_at) VALUES (CAST(:o AS uuid), 'Converted lead', :s, "
+            "'zoho', 'conv-1', now())"), {"o": p.org_a, "s": status})
+    states = (await _get(p.org_a, "/crm/mode")).json()["entities"]
+    assert states["leads"]["records"] is False
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_leads (organization_id, lead_name, status_id, ext_source, "
+            "ext_id) VALUES (CAST(:o AS uuid), 'Open lead', :s, 'zoho', 'open-1')"),
+            {"o": p.org_a, "s": status})
+    states = (await _get(p.org_a, "/crm/mode")).json()["entities"]
+    assert states["leads"]["records"] is True
+    with p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM crm_leads WHERE organization_id = CAST(:o AS uuid) "
+                       "AND ext_id IN ('conv-1', 'open-1')"), {"o": p.org_a})
+        c.execute(text("DELETE FROM crm_lead_statuses WHERE id = :s"), {"s": status})
+
+    # Outside the list, and in Native mode, the body has no `entities` key.
+    assert "entities" not in (await _get(p.org_b, "/crm/mode")).json()
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE crm_settings SET mode = 'native' "
+                       "WHERE organization_id = CAST(:o AS uuid)"), {"o": p.org_a})
+    assert "entities" not in (await _get(p.org_a, "/crm/mode")).json()
+
+
 # ── The cost bound: one statement on 30,000 module rows ─────────────────────
 
 #: DEWiN's Invoices: 31,924 records and 236 fields (§18.9.2), mostly unique.
