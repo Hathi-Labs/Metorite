@@ -774,8 +774,41 @@ async def approved_overlays(db: Any, org: str) -> dict[str, str]:
     return {slot: module for slot, module in roles.items() if module in mirrored}
 
 
+async def _not_dismissed(
+    db: Any, org: str | None, items: Sequence[Mapping[str, Any]], digest: str | None,
+) -> list[dict[str, Any]]:
+    """*items* less the items of each slot whose role the admin dismissed or
+    undid on the schema of today, read again under the plan lock. *digest*
+    is the schema hash of the roles of the run. With none, the stored hash
+    of the cursor row serves.
+
+    ⚠️ Round 2 review P2: the run reads the dismissals when it starts
+    (``map_pipeline.load``). A dismiss or an Undo that commits while the run
+    asks would else come back through the cached items of the run.
+    """
+    # Imported here: ``gateway.crm_sync`` imports ``routes.crm.core``.
+    from acb_common.db import current_tenant
+    from gateway.crm_sync import map_pipeline, runs
+
+    org = org or current_tenant()
+    if not org:
+        return [dict(i) for i in items]
+    cursors = await runs.read_cursors(db, str(org), "zoho:map_")
+    digest = digest or map_pipeline.slots_digest(
+        getattr(cursors.get(map_pipeline.CURSOR_ROW), "state", None))
+    dismissed = map_pipeline.dismissed_of(
+        getattr(cursors.get(map_pipeline.DISMISSED_ROW), "state", None))
+    gone = {
+        (slot, module) for slot, module in roles_of(items).items()
+        if map_pipeline.is_dismissed(dismissed, slot, module, digest)
+    }
+    return [dict(i) for i in items
+            if not (kind_key(i) is not None and (i.get("slot"), i.get("module")) in gone)]
+
+
 async def write_draft(
     db: Any, *, items: Sequence[Mapping[str, Any]], by: str = SUGGEST_ACTOR,
+    org: str | None = None, digest: str | None = None,
 ) -> Any | None:
     """A draft of the mapping pipeline (CRM-Q20-1 item 3), in the caller's
     tenant session, under :func:`lock_plan`.
@@ -788,19 +821,30 @@ async def write_draft(
     Returns the new draft row, or ``None`` when the draft would change
     nothing: the open draft, or with none the approved version, holds the
     items already.
+
+    Under the lock it drops the items of a slot that the admin dismissed or
+    undid (:func:`_not_dismissed`). A draft on an open draft of the admin
+    keeps the admin as its author, because it holds the admin's picks
+    (round 2 review): the history then never says "Suggested by Metorite"
+    for them.
     """
     # Version 1 of an org with no plan is the work of the system, not of the
     # pipeline, so the lock names the system.
     approved = await lock_plan(db, SYSTEM_ACTOR)
-    base = await open_draft(db, approved) or approved
+    items = await _not_dismissed(db, org, items, digest)
+    draft = await open_draft(db, approved)
+    base = draft or approved
     fields, others = split_rules(_rules_of(base))
     merged = merge_kinds(others, items)
     check_kinds(merged)
     if _canonical(merged) == _canonical(others):
         return None
+    author = by
+    if draft is not None and draft.created_by not in (SUGGEST_ACTOR, SYSTEM_ACTOR):
+        author = draft.created_by
     row = (await db.execute(text(_INSERT_DRAFT_SQL), {
         "v": await _next_version(db), "rules": _dump(fields, merged),
-        "by": by, "based_on": int(approved.version),
+        "by": author, "based_on": int(approved.version),
     })).first()
     _log.info("crm.mapping_plan_suggested version=%s items=%s", row.version, len(merged))
     return row

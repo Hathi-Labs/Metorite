@@ -467,7 +467,9 @@ async def test_a_suggestion_keeps_the_picks_by_hand_of_the_open_draft(mp_env) ->
     row = await _write_draft(p.org_a, [ROLE, TARGET])
     assert row is not None
     _version, state, by, based_on, items = _versions(p, p.org_a)[-1]
-    assert (state, by, based_on) == ("draft", "suggestion", approved)
+    # Round 2 review: the draft holds the admin's pick, so the admin stays its
+    # author, and the history never says "Suggested by Metorite" for it.
+    assert (state, by, based_on) == ("draft", "admin@crm-sync.test", approved)
     assert ("Why_Lost", "lost_note") in _field_items(items), "the pick stays"
     assert _kind_items(items) == ["role", "target"]
     assert await _write_draft(p.org_a, [ROLE, TARGET]) is None, "the open draft holds them"

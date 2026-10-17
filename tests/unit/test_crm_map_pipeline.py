@@ -181,7 +181,8 @@ class Box:
             self.left_asked.append(who)
             return left
 
-        async def _write_draft(db, *, items, by=mapping_plans.SUGGEST_ACTOR):
+        async def _write_draft(db, *, items, by=mapping_plans.SUGGEST_ACTOR, org=None,
+                               digest=None):
             self.drafts.append([dict(i) for i in items])
             return SimpleNamespace(version=7)
 

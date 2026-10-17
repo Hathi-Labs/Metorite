@@ -1756,7 +1756,11 @@ async def _write(org: str, inputs: Inputs, modes: Mapping[str, str], cache: Cach
     draft: int | None = None
     if result.items:
         async with tenant_session(org) as db:
-            row = await mapping_plans.write_draft(db, items=result.items)
+            # The schema hash of the roles of THIS run: a dismissal on an
+            # older schema no longer holds (round 2 review P2).
+            digest = result.done.get(SLOTS_KEY, (cache.schema.get(SLOTS_KEY), []))[0]
+            row = await mapping_plans.write_draft(
+                db, items=result.items, org=org, digest=digest)
             draft = int(row.version) if row is not None else None
     if result.done or result.failed:
         for key, (digest, items) in result.done.items():

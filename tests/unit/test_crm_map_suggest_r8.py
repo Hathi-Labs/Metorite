@@ -468,3 +468,37 @@ async def test_r2_a_dismiss_of_an_older_draft_is_409_and_records_nothing(mp_env)
     items = _open_items(p, p.org_a)
     assert any(i.get("field_api_name") == "Why_Lost" for i in items)
     assert not [i for i in items if i.get("kind") in ("role", "target", "stage")]
+
+
+async def test_r2_a_dismiss_during_a_run_does_not_come_back(mp_env, monkeypatch) -> None:
+    """Round 2 review P2, made on purpose. A run reads the dismissals when it
+    starts. The admin dismisses the suggestion while the run asks. The run
+    then writes its cached items: the role must not come back."""
+    from gateway.routes.crm import mapping_plans
+
+    p, a, _b = mp_env
+    one = await _suggested(p, a)
+    real = mapping_plans.write_draft
+    order: list[str] = []
+
+    async def dismiss_first(db: Any, **kw: Any) -> Any:
+        # The run has loaded its inputs and asked. The admin's dismiss
+        # commits in its own session now, before the run writes.
+        got = await _req(_admin_of(p.org_a), "POST", f"{SUGGEST}/deal/dismiss",
+                         {"version": one["version"]})
+        assert got.status_code == 200, got.text
+        order.append("dismissed")
+        row = await real(db, **kw)
+        order.append("written" if row is not None else "nothing")
+        return row
+
+    monkeypatch.setattr(mapping_plans, "write_draft", dismiss_first)
+    got = await _run(p.org_a)
+    assert order == ["dismissed", "nothing"], order
+    assert got.draft is None
+    drafts = [v for v in _versions(p, p.org_a) if v[1] == "draft"
+              and any(i.get("kind") == "role" for i in v[4])]
+    # The dismiss deleted the draft, which held only the suggestion, and no
+    # new draft brings the role back.
+    assert drafts == []
+    assert (await _req(_admin_of(p.org_a), "GET", SUGGEST)).json()["suggestions"] == []
