@@ -512,6 +512,11 @@ export type CrmModeBody = {
   labels?: SourceLabels | null;
   /** CRM-Q20-2: by core slot, the Zoho module that plays it. */
   overlays?: Partial<Record<SlotWord, string>> | null;
+  /**
+   * CRM-Q17b: by API slug, whether the org holds a record of each core
+   * entity, and whether Zoho turned it off. Read it through `coreStatesOf`.
+   */
+  entities?: unknown;
 };
 
 /**

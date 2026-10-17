@@ -31,6 +31,7 @@ import { ModeSwitch } from "@/components/ModeSwitch";
 import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import SelectButton from "@/components/ui/SelectButton";
+import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useAccess } from "@/components/AccessProvider";
@@ -68,9 +69,9 @@ import ModuleList from "./components/ModuleList";
 import ModuleRecordSheet from "./components/ModuleRecordSheet";
 import { moduleLabel, type ModuleLink } from "./lib/modules";
 import { openModuleRecord, selectModule } from "./lib/urlState";
-import { useModules, useOverlays, useSourceLabels } from "./lib/useCrmMode";
+import { useCoreStates, useModules, useOverlays, useSourceLabels } from "./lib/useCrmMode";
 import { SlotSuggestionArea, useSuggestions } from "./components/Suggestions";
-import { memberEmptyLine, suggestionFor } from "./lib/suggestions";
+import { suggestionFor } from "./lib/suggestions";
 import * as api from "./lib/api";
 import { CrmError } from "./lib/api";
 import {
@@ -160,7 +161,7 @@ import {
   type SettingsSectionId,
 } from "./lib/settingsSections";
 import { convertSkippedNote } from "./lib/convertMapping";
-import { viewLabel } from "./lib/views";
+import { emptyListLine, landing, railEntries, viewLabel, type Landing } from "./lib/views";
 
 /** Which URL parameter opens a record of each collection. */
 const PARAM_FOR: Record<EntitySlug, SheetParam> = {
@@ -196,13 +197,16 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
 
   const store = useCrmStore();
   // The mirrored generic Zoho modules, for the rail (CRM-Q6b). Native: none.
-  const { modules } = useModules(ctx.mode === "mirror");
+  const { modules, loading: modulesLoading } = useModules(ctx.mode === "mirror");
   // CRM-Q17a-2 item 7: in Mirror mode, the source's names of the core
   // entities. A Native CRM, or an org off the list, keeps the CRM's names.
   const labels = useSourceLabels(ctx.mode === "mirror");
   // CRM-Q20-2 (option A): the Zoho module that each core list opens, for
   // each member. With none, each list opens its own records.
   const overlays = useOverlays(ctx.mode === "mirror");
+  // CRM-Q17b: whether each core entity holds records, and whether Zoho
+  // turned it off. Mirror mode, for an org on `CRM_FILL_RANK_ORGS` only.
+  const { states: coreStates, loading: statesLoading } = useCoreStates(ctx.mode === "mirror");
   // CRM-Q20-2 item 5: the suggestion of an empty list, for an admin only.
   const { list: suggestionList } = useSuggestions(ctx.isAdmin && ctx.mode === "mirror");
   /** The Refresh button of a module list reads page 1 again. */
@@ -317,6 +321,30 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     if (opened) replaceView(viewHref(opened));
   }, [search, savedList]);
 
+  // CRM-Q17b item 3: a bare `/crm` opens on the first row that holds
+  // records (`lib/views.ts` `landing`). With no state from the gateway, only
+  // the overlays count: a module that plays Deals opens in place of the
+  // empty Deals board. Nothing loads until the answer is known, so the
+  // empty board never shows first. A replace, so Back leaves the CRM.
+  const landingKnown = ctx.mode !== "mirror" || (!modulesLoading && !statesLoading);
+  const landingTo: Landing | null =
+    search === "" && ctx.mode === "mirror" && landingKnown
+      ? landing(railEntries(modules, labels, overlays, coreStates), coreStates, modules, overlays)
+      : null;
+  const landingHref = landingTo
+    ? viewHref(
+        landingTo.kind === "module"
+          ? selectModule(view, landingTo.module)
+          : selectTab(view, landingTo.tab),
+      )
+    : null;
+  const here = viewHref(view);
+  const landingPending =
+    search === "" && ctx.mode === "mirror" && (!landingKnown || (landingHref !== null && landingHref !== here));
+  useEffect(() => {
+    if (landingHref && landingHref !== here) replaceView(landingHref);
+  }, [landingHref, here]);
+
   useEffect(() => {
     store.loadVocabulary();
     // Loaded once: the vocabulary is small and every tab needs it.
@@ -324,6 +352,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   }, []);
 
   useEffect(() => {
+    // CRM-Q17b item 3: a bare `/crm` waits for its first screen.
+    if (landingPending) return;
     // Deals waits for the pipeline list, so the board loads once and not twice.
     if (view.tab === "deals" && pipelinesLoading) return;
     if (waitingForDefs || unchecked) return;
@@ -358,6 +388,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     waitingForDefs,
     unchecked,
     cardSort,
+    landingPending,
   ]);
 
   useEffect(() => {
@@ -529,6 +560,20 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
 
   const totals = boardTotals(store.lanes);
   const leadCount = store.leadLanes.reduce((n, lane) => n + lane.count, 0);
+  /** Every deal on the board, won and lost too, under the filters on screen. */
+  const dealCount = store.lanes.reduce((n, lane) => n + lane.count, 0);
+
+  /**
+   * CRM-Q17b item 4: why the collection on screen holds no record. A filter
+   * says "Nothing matches this view.", and with no filter the line says
+   * why: Zoho turned the module off, Zoho sent none, or none exists yet.
+   */
+  const emptyLineOf = (entity: EntitySlug): string =>
+    emptyListLine(viewLabel(entity, labels), {
+      filtered: isFiltered(view),
+      mirror: ctx.mode === "mirror",
+      turnedOff: coreStates?.[entity]?.turned_off === true,
+    });
 
   // Empty stages on the Deals board (lib/emptyStages.ts). The member's choice
   // is kept in this browser per member and organization. With no choice, the
@@ -853,6 +898,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                       settings={railSettings}
                       labels={labels}
                       overlays={overlays}
+                      states={coreStates}
                     />
                   </nav>
                 )
@@ -890,6 +936,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               settings={railSettings}
               labels={labels}
               overlays={overlays}
+              states={coreStates}
             />
           </nav>
         ) : null}
@@ -914,9 +961,10 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             />
           )}
 
-          {filterEntity && (
+          {filterEntity && !landingPending && (
             <FilterBar
               entity={filterEntity}
+              labels={labels}
               view={view}
               onChange={go}
               owners={owners}
@@ -975,7 +1023,10 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               Reload button, and the rail stays. The key clears it when the
               member picks another view (CRM-Q3, spec section 18.6). */}
           <CrmBoundary key={boundaryKey(withShownSection(view, sectionCtx), pipelineId)}>
-          {slotSuggestion ? (
+          {landingPending ? (
+            // CRM-Q17b item 3: the first screen is not known yet.
+            <SkeletonRows className="p-4" />
+          ) : slotSuggestion ? (
             // CRM-Q20-2 item 5: the list is empty, and Metorite knows where
             // its records are. The admin previews them first.
             <SlotSuggestionArea
@@ -989,6 +1040,12 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               lanes={view.tab === "leads" ? store.leadLanes : dealLanes}
               hiddenEmpty={view.tab === "leads" ? 0 : store.lanes.length - dealLanes.length}
               loading={store.loading}
+              // CRM-Q17b item 4: a board with no record says why.
+              emptyNote={
+                (view.tab === "leads" ? leadCount : dealCount) === 0
+                  ? emptyLineOf(view.tab === "leads" ? "leads" : "deals")
+                  : undefined
+              }
               readOnly={ctx.mode === "mirror"}
               // CRM-C2: the lane colour reads the mode, and the card of the
               // open record wears the cursor ring.
@@ -1075,12 +1132,9 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                 onLoadMore={() => void store.loadMore()}
                 loadingMore={store.loadingMore}
                 hasMore={store.hasMore}
-                // CRM-Q20-2 item 5: an empty Mirror list says why, with no filter on.
-                emptyNote={
-                  ctx.mode === "mirror" && !isFiltered(view)
-                    ? memberEmptyLine(viewLabel(listEntity, labels))
-                    : undefined
-                }
+                // CRM-Q17b item 4 (and CRM-Q20-2 item 5): an empty list says
+                // why. "Nothing matches this view." is for a filter only.
+                emptyNote={emptyLineOf(listEntity)}
                 sort={view.sort}
                 direction={view.dir}
                 onSort={(key) => go(applySort(view, key))}

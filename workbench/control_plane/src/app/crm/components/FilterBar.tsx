@@ -50,10 +50,16 @@ import { clearFilters, type SavedView } from "../lib/savedViews";
 import type { EntitySlug } from "../lib/types";
 import type { CrmView } from "../lib/urlState";
 import { useFieldLayout } from "../lib/useCrmMode";
-import { viewLabel } from "../lib/views";
+import { viewLabel, type SourceLabels } from "../lib/views";
 
 export type FilterBarProps = {
   entity: EntitySlug;
+  /**
+   * The source's names of the core entities (CRM-Q17a-2 item 7). The search
+   * box names the list as the rail does, so "Existing Sites" searches as
+   * "Filter existing sites", never as "contacts".
+   */
+  labels?: SourceLabels | null;
   view: CrmView;
   onChange: (next: CrmView) => void;
   /**
@@ -88,6 +94,7 @@ export type FilterBarProps = {
 
 export default function FilterBar({
   entity,
+  labels = null,
   view,
   onChange,
   owners = null,
@@ -131,7 +138,7 @@ export default function FilterBar({
       <div className="flex flex-wrap items-center gap-2">
         {search ? (
           <SearchBox
-            label={viewLabel(entity).toLowerCase()}
+            label={viewLabel(entity, labels).toLowerCase()}
             value={view.q}
             onCommit={(q) => {
               if (searchChanges(q, view.q)) onChange({ ...view, q });
