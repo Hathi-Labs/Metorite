@@ -44,6 +44,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from acb_common import get_logger
+from acb_common.tool_refusals import is_refusal
 
 _log = get_logger("orchestrator.event_translator")
 
@@ -338,7 +339,10 @@ def translate_update(
                 "type": "TOOL_CALL_RESULT",
                 "toolCallId": tc_id,
                 "content": (str(exc) if exc else str(result))[:RESULT_CAP],
-                "success": exc is None,
+                # A refused call returns "Refused: ..." so the model reads
+                # it, and it is still no success: a card must never draw it
+                # as a done act ("Email sent"). `is_refusal` is the one test.
+                "success": exc is None and not is_refusal(result),
             })
             if hooks and hooks.on_function_result:
                 try:

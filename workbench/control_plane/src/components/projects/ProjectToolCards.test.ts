@@ -75,6 +75,15 @@ describe("parseTaskRows", () => {
 });
 
 describe("classifyActionResult", () => {
+  it("keeps a server refusal muted when the stream marks it failed", () => {
+    // Review of #1126: "Refused: ..." now arrives with `success: false`, so
+    // its status is "error". It stays the muted "Not done" receipt.
+    const refused = "Refused: Not permitted (403).\nGateway said: «Only an admin may.»";
+    expect(classifyActionResult(refused, "error")).toBe("refused");
+    expect(classifyActionResult(refused, "done")).toBe("refused");
+    expect(classifyActionResult("Error: Function failed.", "error")).toBe("failed");
+  });
+
   it("is done only when the result carries the row it wrote", () => {
     expect(classifyActionResult(`Created:\n- #9 «Call» · unassigned\n  full_id: ${ID}`, "done")).toBe(
       "done",

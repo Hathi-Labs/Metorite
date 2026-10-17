@@ -527,9 +527,10 @@ class TestTheTool:
         from acb_skills import crm_tools as t
 
         calls = _gateway(monkeypatch, {"hits": [], "degraded": False})
+        # The refusal is text the model reads (acb_common.tool_refusals).
         for query in ("   ", "x" * 501):
-            with pytest.raises(RuntimeError):
-                await t.crm_search_notes(query)
+            out = await t.crm_search_notes(query)
+            assert out.startswith("Refused:") and "query" in out
         assert calls == []
 
     def test_the_tool_joins_the_family_the_annotations_and_the_addendum(self):

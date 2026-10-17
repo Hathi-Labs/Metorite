@@ -19,6 +19,14 @@ the kill switch says that the CRM is off for this organization. A 403 says
 that the CRM is not open to this member. Each tool returns that sentence, so
 the agent can tell the member and stop.
 
+**Every other refusal is text too.** Any other 4xx or 5xx of a route is an
+``acb_common.tool_refusals.GatewayRefusal`` with the route's safe detail,
+and so is a bad value that a validator here refuses. :func:`_read_tool`
+wraps each tool in ``refusals_as_text`` with :data:`CRM_VOICE`, so the model
+reads "Refused: … / Gateway said: «…» / Next: …" and can fix its call. MAF
+would give it only "Error: Function failed.". Any other exception still
+raises. Fence: ``tests/unit/test_crm_email_tool_refusals.py``.
+
 **The path is bounded.** Each value that goes into a path is checked first:
 the entity by :func:`_entity_slug`, an id by :func:`_record_uuid`, a module
 name by :func:`_module_name` and a report kind by :func:`_report_kind`. The
@@ -62,6 +70,14 @@ from uuid import UUID
 
 import httpx
 from acb_common.paging import page_line, paged, prefix_page
+from acb_common.tool_refusals import (
+    GatewayRefusal,
+    RefusalVoice,
+    refusals_as_text,
+    response_body,
+    route_template,
+    safe_detail,
+)
 
 from acb_skills.tool_annotations import TOOL_ANNOTATIONS
 
@@ -130,17 +146,40 @@ class _Refused(Exception):
     """The gateway said the CRM is off, or not open to this member."""
 
 
-class _GatewayError(RuntimeError):
+#: The CRM words of the shared refusal text (``acb_common.tool_refusals``).
+#: ``agent-crm`` wraps its own tools with the same voice.
+CRM_VOICE = RefusalVoice(
+    app="CRM",
+    log_event="crm.tool_refused",
+    not_found_next=(
+        "Find the right id or name with a list tool, for example "
+        "crm_list_records, crm_list_modules or crm_list_module_records. "
+        "Do not guess an id."
+    ),
+)
+
+#: The longest route detail the model reads from the CRM. A 422 of the
+#: aggregate names up to 20 field keys, so it needs more than the default.
+CRM_DETAIL_MAX = 800
+
+
+class _GatewayError(GatewayRefusal):
     """A failed read. ``code`` is the ``detail.code`` of the answer, when the
     gateway gave one (``catalogue_off``), ``detail`` the text of the answer,
-    and ``status`` the HTTP status."""
+    and ``status`` the HTTP status.
+
+    It is the shared ``GatewayRefusal`` (``acb_common.tool_refusals``), so a
+    read that a tool does not catch reaches the model as "Refused: ..."
+    text (:func:`_read_tool`). ``detail`` is the SAFE detail of the route
+    (``safe_detail``), so the overlay sentence that a tool relays is safe
+    too. A status of 0 (a test double) reads as no status."""
 
     def __init__(self, message: str, code: str | None = None, *,
-                 detail: str = "", status: int = 0) -> None:
-        super().__init__(message)
+                 detail: str = "", status: int = 0,
+                 fields: tuple[str, ...] = (), route: str = "") -> None:
+        super().__init__(message, status=status or None, detail=detail,
+                         fields=fields, route=route)
         self.code = code
-        self.detail = detail
-        self.status = status
 
 
 # ── Transport ───────────────────────────────────────────────────────────────
@@ -233,9 +272,16 @@ async def _get(path: str, params: dict[str, Any] | None = None) -> Any:
         # The kill switch answers the bare "Not Found". A missing record
         # names itself ("Deal not found"), so it falls through below.
         raise _Refused(CRM_OFF)
+    # The model reads the SAFE detail (no URL, key, address or stack). The
+    # message keeps the route's words for a caller that reads it in code.
+    safe, fields = safe_detail(
+        status, response_body(resp), member=_current_user_email(),
+        limit=CRM_DETAIL_MAX,
+    )
     raise _GatewayError(
         f"CRM GET {path} failed ({status})" + (f": {detail}" if detail else ""),
-        _detail_code(resp), detail=detail, status=status,
+        _detail_code(resp), detail=safe, status=status, fields=fields,
+        route=route_template(path),
     )
 
 
@@ -267,12 +313,16 @@ def _answers_refusals(
 def _read_tool(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
     """Answer a refusal in text, and carry the tool's risk on the function.
 
+    Two layers: :func:`_answers_refusals` answers the CRM-off and the
+    not-open sentence, and ``refusals_as_text`` answers every other
+    :class:`GatewayRefusal` in the shared shape (:data:`CRM_VOICE`).
+
     The risk lives in the platform's static table
     (``tool_annotations.TOOL_ANNOTATIONS``), as for every injected tool. A
     name with no entry there is a KeyError at import, never a tool with no
     ``open_world`` (H-236).
     """
-    wrapped = _answers_refusals(fn)
+    wrapped = refusals_as_text(_answers_refusals(fn), CRM_VOICE)
     wrapped.__tool_risk__ = TOOL_ANNOTATIONS[fn.__name__]  # type: ignore[attr-defined]
     return wrapped
 
@@ -352,7 +402,7 @@ def _entity_slug(entity: str, *, allow_module: bool = False) -> str:
         legal = ", ".join(ENTITY_LABELS)
         if allow_module:
             legal += ", or 'module:<api_name>' from crm_list_modules"
-        raise RuntimeError(f"Unknown CRM record type {entity!r}. One of: {legal}.")
+        raise GatewayRefusal(f"Unknown CRM record type {entity!r}. One of: {legal}.")
     return slug
 
 
@@ -411,7 +461,7 @@ def _record_uuid(record_id: str) -> str:
     try:
         return str(UUID(str(record_id).strip()))
     except (AttributeError, TypeError, ValueError):
-        raise RuntimeError(
+        raise GatewayRefusal(
             f"Invalid CRM record id {record_id!r}. A CRM id is a UUID — use an "
             "id that another CRM tool returned, not a name."
         ) from None
@@ -420,7 +470,7 @@ def _record_uuid(record_id: str) -> str:
 def _module_name(module: str) -> str:
     name = str(module or "").strip()
     if not _MODULE_NAME.match(name):
-        raise RuntimeError(
+        raise GatewayRefusal(
             f"Invalid module name {module!r}. Use an api_name that "
             "crm_list_modules returned, for example 'Products'."
         )
@@ -430,7 +480,7 @@ def _module_name(module: str) -> str:
 def _report_kind(kind: str) -> str:
     key = str(kind or "").strip().lower().replace("_", "-")
     if key not in REPORT_KINDS:
-        raise RuntimeError(
+        raise GatewayRefusal(
             f"Unknown report {kind!r}. One of: {', '.join(REPORT_KINDS)}."
         )
     return key
@@ -560,14 +610,14 @@ async def _resolve_status(slug: str, params: dict[str, Any]) -> str | None:
         pass
     kind = _STATUS_KIND.get(slug)
     if kind is None:
-        raise RuntimeError(f"{slug} have no status. Drop the status filter.")
+        raise GatewayRefusal(f"{slug} have no status. Drop the status filter.")
     vocab = kind
     rows = await _get(f"/crm/statuses/{vocab}")
     wanted = str(status).strip().lower()
     found = [r for r in rows or [] if str(r.get("name", "")).strip().lower() == wanted]
     if len(found) != 1:
         names = ", ".join(str(r.get("name")) for r in rows or [])
-        raise RuntimeError(
+        raise GatewayRefusal(
             f"'{status}' names {'no' if not found else 'more than one'} "
             f"{kind} status. The statuses are: {names}."
         )
@@ -1159,6 +1209,44 @@ def _number(value: float) -> str:
     return text.rstrip("0").rstrip(".") if "." in text else text
 
 
+def _measure_words(measure: str, field: str | None, data: dict[str, Any]) -> str:
+    """CRM-Q31-2 item 6: the measure, with the label of the real field, and
+    "the amount" when the field came from the key word or sum_amount."""
+    if not (field or data.get("field")):
+        return measure
+    keys = data.get("keys") or {}
+    name = data.get("field_label") or field or data.get("field")
+    word = "sum" if measure == "sum_amount" else measure
+    return f"{word} of {name}" + (" (the amount)" if "@amount" in keys else "")
+
+
+def _one_total(lead: str, data: dict[str, Any], measured: Any, measure: str,
+               fmt: Callable[[Any], str]) -> str:
+    """The line of a total with no group (PR #1126): the total, and the
+    count of records that the filters matched."""
+    records = data.get("records")
+    if measured and data.get("values") == 0:
+        return f"{lead}: no values recorded for {measured}."
+    if measure == "count" or records is None:
+        return f"{lead}: {fmt(data.get('total'))}."
+    noun = "record" if int(records) == 1 else "records"
+    return f"{lead}: {fmt(data.get('total'))} across {int(records):,} matching {noun}."
+
+
+async def _total_tail(head: str, slug: str, data: dict[str, Any],
+                      overlay: dict[str, Any] | None) -> list[str]:
+    """*head*, then the overlay line (CRM-Q20-3a) or the empty core line
+    (CRM-Q31-2 item 7), as for a grouped answer."""
+    lines = [head]
+    if overlay and slug in ENTITY_LABELS:
+        lines.append(_from_module(slug, str(overlay.get("module"))))
+    elif slug in ENTITY_LABELS and data.get("total") == 0:
+        empty = await _empty_core_line(slug)
+        if empty:
+            lines.append(empty)
+    return lines
+
+
 @_read_tool
 async def crm_aggregate(
     entity: str,
@@ -1181,19 +1269,23 @@ async def crm_aggregate(
     field_filters: dict[str, str] | None = None,
     page: int = 1,
 ) -> str:
-    """Count, sum or average CRM records by one group. The server computes
-    every number: report them as given. entity is 'leads', 'deals',
-    'contacts', 'organizations' or 'module:<api_name>' (crm_list_modules).
-    measure is 'count', 'sum_amount' or 'weighted' (deals: amount times the
-    effective probability, open and ongoing stages only), or 'sum', 'avg',
-    'min' or 'max' of the number field named by field. Give group_by or
-    group_field. group_by is 'status', 'owner', 'pipeline', 'source',
-    'created_month', 'updated_month' or 'close_month' (a module: 'owner',
-    'created_month', 'updated_month'). group_field is a picklist, boolean,
-    lookup or date field; a date needs bucket 'month', 'quarter' or 'year'.
-    Field keys and what each can do come from crm_list_fields. A core entity
-    takes the filters of crm_list_records. A module takes field_filters:
-    {key: value}, or {'key.from': date, 'key.to': date} for a date field.
+    """Count, sum or average CRM records, as one total or by one group. The
+    server computes every number: report them as given. entity is 'leads',
+    'deals', 'contacts', 'organizations' or 'module:<api_name>'
+    (crm_list_modules). measure is 'count', 'sum_amount' or 'weighted'
+    (deals: amount times the effective probability, open and ongoing stages
+    only), or 'sum', 'avg', 'min' or 'max' of the number field named by
+    field. The group is optional: give no group_by and no group_field for
+    one total over every record that the filters match (for example the sum
+    of an amount field for one month). Or give one of them. group_by is
+    'status', 'owner', 'pipeline', 'source', 'created_month',
+    'updated_month' or 'close_month' (a module: 'owner', 'created_month',
+    'updated_month'). group_field is a picklist, boolean, lookup or date
+    field; a date needs bucket 'month', 'quarter' or 'year'. A text field
+    cannot group: filter on it instead. Field keys and what each can do come
+    from crm_list_fields. A core entity takes the filters of
+    crm_list_records. A module takes field_filters: {key: value}, or
+    {'key.from': date, 'key.to': date} for a date field.
     On a module, 'sum_amount' sums its amount, and field, group_field and
     field_filters also take the key words '@amount', '@date', '@status' and
     '@parent' (crm_list_modules names the key fields)."""
@@ -1229,25 +1321,22 @@ async def crm_aggregate(
             return f"INR {float(value):,.0f}"
         return f"{float(value):,.0f}" if measure == "count" else _number(float(value))
 
-    # CRM-Q31-2 item 6: the line names the label of the real field, and
-    # "the amount" when the field came from the key word or sum_amount.
-    keys = data.get("keys") or {}
-    name = data.get("field_label") or field or data.get("field")
-    if field or data.get("field"):
-        word = "sum" if measure == "sum_amount" else measure
-        what = f"{word} of {name}" + (" (the amount)" if "@amount" in keys else "")
-    else:
-        what = measure
+    what = _measure_words(measure, field, data)
+    plural = f"{ENTITY_LABELS[slug]}s" if slug in ENTITY_LABELS else _entity_label(slug)
+    note = await _short_note(frozenset({slug}))
+    overlay = data.get("overlay") if isinstance(data.get("overlay"), dict) else None
+    if not group_by and not group_field:
+        # One total over every filtered record: one line.
+        head = _one_total(f"{plural}, {what}", data, field or data.get("field"),
+                          measure, fmt)
+        return "\n".join(await _total_tail(head, slug, data, overlay)) + note
     grouped = data.get("group_field_label") or group_field
     by = group_by or f"{grouped}" + (f" ({bucket})" if bucket else "")
     shown = _page_of(groups, page, "groups")
-    plural = f"{ENTITY_LABELS[slug]}s" if slug in ENTITY_LABELS else _entity_label(slug)
-    note = await _short_note(frozenset({slug}))
     if (field or data.get("field")) and data.get("values") == 0:
         # CRM-Q25c item 3: an empty field has no total, and 0 would be false.
         return f"{plural}, {what} by {by}: no values recorded for {field or data.get('field')}.{note}"
     lines = [f"{plural}, {what} by {by}:"]
-    overlay = data.get("overlay") if isinstance(data.get("overlay"), dict) else None
     if overlay and slug in ENTITY_LABELS:
         # CRM-Q20-3a: the route read the module that plays the slot.
         lines.append(_from_module(slug, str(overlay.get("module"))))
@@ -1595,9 +1684,9 @@ async def crm_search_notes(query: str, limit: int = 10) -> str:
     crm_aggregate, never from these notes."""
     words = " ".join(str(query or "").split())
     if not words:
-        raise RuntimeError("Give a query: the words to look for in the CRM notes.")
+        raise GatewayRefusal("Give a query: the words to look for in the CRM notes.")
     if len(words) > SEARCH_QUERY_CHARS:
-        raise RuntimeError(
+        raise GatewayRefusal(
             f"The query is too long. Use at most {SEARCH_QUERY_CHARS} characters.")
     size = max(1, min(int(limit or 10), SEARCH_MAX))
     data = await _get("/crm/notes/search", {"q": words, "limit": size}) or {}
@@ -1646,6 +1735,6 @@ CRM_TOOLS: tuple[Callable[..., Awaitable[str]], ...] = (
 CRM_TOOL_NAMES: frozenset[str] = frozenset(fn.__name__ for fn in CRM_TOOLS)
 
 __all__ = [
-    "CRM_CLOSED", "CRM_OFF", "CRM_SHARED_ROOM", "CRM_TOOLS", "CRM_TOOL_NAMES", "MAX_ROWS",
+    "CRM_CLOSED", "CRM_DETAIL_MAX", "CRM_OFF", "CRM_VOICE", "CRM_SHARED_ROOM", "CRM_TOOLS", "CRM_TOOL_NAMES", "MAX_ROWS",
     "SEARCH_NUMBERS", "SEARCH_OFF", "SHORT_READS_PATH", "crm_mode", *(fn.__name__ for fn in CRM_TOOLS),
 ]

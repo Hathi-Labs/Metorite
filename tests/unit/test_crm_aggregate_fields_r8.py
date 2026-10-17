@@ -425,6 +425,58 @@ async def test_a_core_entity_measures_and_groups_a_custom_field(ns, app_engine) 
                          **{"field.units": "3"}) == 422
 
 
+# ── 4b. No group: one total over every filtered record ───────────────────────
+
+
+async def test_a_module_total_with_no_group(mods, app_engine) -> None:
+    """The prod question: the sum of one field over a date range, with no
+    group. The answer has no group, the total and the count of records."""
+    a = mods.org_a
+    count = await _agg(mods, a, entity="module:Products")
+    assert (count["groups"], count["total"], count["records"]) == ([], 4, 4)
+    total = await _agg(mods, a, entity="module:Products", measure="sum", field="Unit_Price")
+    # "abc" is no number, so 3 records hold 2 values.
+    assert (total["total"], total["values"], total["records"]) == (350.5, 2, 4)
+    assert total["field_type"] == "currency"
+    ranged = await _agg(mods, a, entity="module:Products", measure="sum",
+                        field="Unit_Price", **{"field.Sales_Start.from": "2026-02-01",
+                                               "field.Sales_Start.to": "2026-02-28"})
+    assert (ranged["total"], ranged["records"]) == (250.5, 1)
+    hardware = await _agg(mods, a, entity="module:Products", **{"field.Category": "HW"})
+    assert (hardware["total"], hardware["records"]) == (2, 2)
+    avg = await _agg(mods, a, entity="module:Products", measure="avg", field="Unit_Price")
+    assert avg["total"] == 175.25
+    # No row matches: one row still, a count of 0, and no sum to report.
+    nothing = await _agg(mods, a, entity="module:Products", measure="sum",
+                         field="Unit_Price", **{"field.Category": "None"})
+    assert (nothing["total"], nothing["values"], nothing["records"]) == (None, 0, 0)
+    # Org B mirrors one product of its own, and A's rows never reach it.
+    b = await _agg(mods, mods.org_b, entity="module:Products", measure="sum",
+                   field="Unit_Price")
+    assert (b["total"], b["records"]) == (99999, 1)
+
+
+async def test_a_422_names_the_valid_choices(mods, app_engine) -> None:
+    """The model reads the detail and picks a real field or module."""
+    a = mods.org_a
+
+    async def message(**query: Any) -> str:
+        res = await _call(mods, _admin(a), "GET", _path(**query))
+        assert res.status_code in (404, 422), (query, res.text)
+        return res.json()["detail"]["message"]
+
+    text_group = await message(entity="module:Products", group_field="Description")
+    assert ("can group are: Category, Sales_Start, Taxable, Updated_On, "
+            "Vendor_Name") in text_group
+    assert "field.Description=<value>" in text_group
+    unknown = await message(entity="module:Products", measure="sum", field="Price")
+    assert "Its fields are: Category, Description, Margin, Qty" in unknown
+    filter_unknown = await message(entity="module:Products", **{"field.Name": "x"})
+    assert "'Name' is not a field of module:Products" in filter_unknown
+    module = await message(entity="module:Outstanding")
+    assert "The mirrored modules are: Products, Quotes." in module
+
+
 # ── 5. Each unfit value is a 422, and so is each hostile name ────────────────
 
 
@@ -439,7 +491,6 @@ async def test_a_core_entity_measures_and_groups_a_custom_field(ns, app_engine) 
     {"group_field": "Category", "bucket": "month"},
     {"group_by": "owner", "bucket": "month"},
     {"group_by": "owner", "group_field": "Category"},
-    {"measure": "count"},
     {"measure": "sum", "group_by": "owner"},                           # no field
     {"measure": "count", "field": "Unit_Price", "group_by": "owner"},
     {"measure": "sum_amount", "group_by": "owner"},
@@ -499,9 +550,10 @@ async def test_an_empty_value_is_an_absent_one(mods, app_engine) -> None:
     each of the four. It once raised KeyError('') as a 500."""
     a = mods.org_a
     for entity in ("module:Products", "deals"):
-        # No group at all is a 422, never a 500.
-        assert await _status(mods, a, entity=entity, group_field="") == 422
-        assert await _status(mods, a, entity=entity, group_by="", group_field="") == 422
+        # No group at all is one total, never a 500.
+        for query in ({"group_field": ""}, {"group_by": "", "group_field": ""}):
+            body = await _agg(mods, a, entity=entity, **query)
+            assert body["groups"] == [] and body["total"] == body["records"], body
         # A sum with an empty field names no field: a 422.
         assert await _status(mods, a, entity=entity, measure="sum", field="",
                              group_by="owner") == 422

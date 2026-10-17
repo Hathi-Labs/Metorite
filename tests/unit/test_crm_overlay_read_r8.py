@@ -144,6 +144,21 @@ async def test_count_sum_amount_and_weighted_read_the_module(ov, app_engine) -> 
     assert weighted["total"] == 102.5
 
 
+async def test_no_group_reads_the_module_as_one_total(ov, app_engine) -> None:
+    """PR #1126: a total with no group over an overlaid slot is one row of
+    the module, with the count of records. It never fails on a missing key."""
+    a = ov.org_a
+    count = await _agg(ov, a, entity="deals")
+    assert (count["groups"], count["total"], count["records"]) == ([], 7, 7)
+    assert count["overlay"] == {"slot": "deal", "module": "Commercials"}
+    money = await _agg(ov, a, entity="deals", measure="sum_amount")
+    assert (money["total"], money["records"]) == (1065.0, 7)
+    weighted = await _agg(ov, a, entity="deals", measure="weighted")
+    assert weighted["total"] == 102.5 and weighted["records"] is None
+    mine = await _agg(ov, a, entity="deals", owner="b@q203.test")
+    assert (mine["total"], mine["records"]) == (2, 2)
+
+
 async def test_the_status_group_follows_the_lane_order(ov, app_engine) -> None:
     """Open, then won, then lost, in the option order of Zoho, then one
     Unsorted lane: a value with no entry, a value that is no option, and a
