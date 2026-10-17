@@ -33,7 +33,7 @@
 >
 > **Specified, not built:** CRM-Q21 and CRM-Q22, of a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9). Batch M builds the rest of CRM-Q17a to CRM-Q20 on the branch `crm-batch-m`, not merged (§18.12.1).
 >
-> **Specified 2026-10-17, not built:** CRM-Q31, the catalogue that tells the AI what each module is for, and CRM-Q20-3, the overlay in the aggregate, the AI tools and the board (§18.13). No migration.
+> **Built 2026-10-17, not merged, dark (`crm-batch-ai`):** CRM-Q31-1 to CRM-Q31-3, the catalogue that tells the AI what each module is for, and CRM-Q20-3a, the overlay in the aggregate and the AI tools (§18.13). No migration. CRM-Q31-4 and CRM-Q20-3b are specified, not built.
 >
 > **Built later, not merged (Batch M, `crm-batch-m`):** CRM-Q17a-1b, a "still empty" check of a stale entity (2026-10-16, §18.9.6, no migration). CRM-Q17a-2, the screens of the fill rank (2026-10-16, no migration). CRM-Q18-1b, two deadlocks of the plan lock (2026-10-16, no migration). CRM-Q19, the executor and the 200-record preview (2026-10-16, no migration).
 >
@@ -4104,7 +4104,10 @@ Done when:
 9. The step takes the newest notes first, 640 at most (10 requests of 64).
    The cap counts requests in Redis for each org and UTC day, before each
    request goes out, as CRM-Q26 does. The cap is 80 requests, so 5,120
-   notes, in one day. A Redis failure embeds nothing.
+   notes, in one day. A Redis failure embeds nothing. While more than 1,000
+   notes wait, the cap is 400 requests (25,600 notes). A step then takes
+   2,560 notes. So the first pass of an org ends in one day (owner request,
+   2026-10-17). DEWiN's full pass costs about USD 0.02.
 10. The payer check is the one of CRM-Q26 item 7: the `connected_by` member
     of the Zoho connection, still an active member of this org
     (`my_day_loop.departed`). With no such member, the step skips and logs a
@@ -5080,9 +5083,16 @@ and runs the verification of both slices again.
 
 ### 18.13 The mapping reaches the AI (CRM-Q31, CRM-Q20-3, 2026-10-17)
 
-**Status (2026-10-17).** Specified, not built. Verified against code at
+**Status (2026-10-17).** Built, not merged, dark: CRM-Q31-1 to CRM-Q31-3 and
+CRM-Q20-3a (see "Built" below). CRM-Q31-4 and CRM-Q20-3b are specified, not
+built. The spec was verified against code at
 `origin/main` `4a0a41c24`, with Batch M (#1112) merged. Verified against
 DEWiN's production data on 2026-10-17, read only and counts only (§18.13.2).
+
+**Built (2026-10-17).** CRM-Q31-1, CRM-Q31-2, CRM-Q31-3 and CRM-Q20-3a are
+built on `crm-batch-ai`, not merged, dark. `CRM_CATALOGUE_ORGS` ships empty,
+and `crm.map_catalogue` starts `off`. CRM-Q20-3a reads an overlay only after
+an admin approves a role, and no org has one. CRM-Q31-4 and CRM-Q20-3b wait.
 
 **Migrations.** No slice needs one. A slice that finds a need takes the next
 free number at build time, and checks it again at merge (R1). Batch I2 takes

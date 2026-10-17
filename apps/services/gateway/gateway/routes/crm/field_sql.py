@@ -25,6 +25,23 @@ literal of this module, and a bucket picks its unit and format from
 ``boolean`` and ``lookup`` by value, and ``date`` and ``datetime`` by a bucket.
 Any other type is a 422.
 
+**The key words of a module** (CRM-Q31-2, ``crm_platform.md`` §18.13.4). A
+module scope also takes ``@amount``, ``@date``, ``@status`` and ``@parent``.
+Each is an alias of the real field that the catalogue names for the module
+(``routes/crm/catalogue.entry_of``), and only when its type fits. A Zoho API
+name cannot start with ``@``, so a key word never hides a real field. The
+SQL binds the real key, so a key word never reaches the SQL text. A key word
+with no key field is a 422 ``no_key_field``. On a module, ``sum_amount`` is
+the ``sum`` of ``@amount`` (:func:`module_measure`). This module and the
+catalogue hold every alias rule, and ``aggregate.py`` holds none.
+
+**The overlay of an empty core slot** (CRM-Q20-3a, §18.13.5). With an
+approved ``role``, a total over a core entity reads the records of the
+module. :func:`overlay_where` builds its WHERE clause, and the ``overlay_*``
+functions pick the field of each word of the core entity, or give the 422
+that the projection table of §18.13.5 names. The SQL stays here, so
+``aggregate.py`` still holds no jsonb operator.
+
 **One zone for each month** (CRM-Q25b). :func:`crm_zone` gives the CRM zone,
 the zone of the Zoho org, or UTC. A ``datetime`` field and the fixed month
 groups of ``aggregate.py`` take their month on that clock, through
@@ -116,6 +133,17 @@ MAX_EXPONENT = 100
 #: one, and a module can hold a few hundred fields.
 CHOICES_MAX = 20
 
+#: CRM-Q31-2: each key word of a module scope → its key part of the
+#: catalogue (``crm_sync.catalogue.KEY_PARTS``).
+KEY_WORDS: dict[str, str] = {
+    "@amount": "amount", "@date": "date", "@status": "status", "@parent": "parent",
+}
+AMOUNT_WORD = "@amount"
+
+#: CRM-Q31-2 item 4: a measure of a module that reads a key word, and the
+#: field measure that it is.
+MODULE_MEASURES: dict[str, tuple[str, str]] = {"sum_amount": ("sum", AMOUNT_WORD)}
+
 #: The parameter names of this module. A list filter uses no name with the
 #: prefix, except :data:`ZONE_PARAM`, which holds the same zone.
 _MEASURE_KEY = "agf_m"
@@ -142,6 +170,10 @@ class FieldScope:
     column: str
     owner: str
     fields: dict[str, FieldRef]
+    #: True when the catalogue serves the org (``CRM_CATALOGUE_ORGS``). An
+    #: org outside the list keeps the refusals of before the key words, and
+    #: no message points it at key fields it cannot see (fix round, item 9).
+    catalogue: bool = True
 
     def __post_init__(self) -> None:
         if self.column not in _COLUMNS:
@@ -149,9 +181,11 @@ class FieldScope:
 
     def choices(self, types: tuple[str, ...] | None = None) -> str:
         """The keys of the fields of *types* (every field when None), sorted,
-        at most :data:`CHOICES_MAX` of them, as one phrase for a 422."""
+        at most :data:`CHOICES_MAX` of them, as one phrase for a 422. A key
+        word (``@amount``) is an alias of a real field, so it is left out."""
         keys = sorted(
-            k for k, ref in self.fields.items() if types is None or ref.type in types
+            k for k, ref in self.fields.items()
+            if k not in KEY_WORDS and (types is None or ref.type in types)
         )
         if not keys:
             return "none"
@@ -168,6 +202,16 @@ class FieldScope:
     def ref(self, key: str | None) -> FieldRef:
         """The field named *key*, or a 422 that names the legal keys."""
         found = self.fields.get(key or "")
+        if found is None and key == AMOUNT_WORD and not self.catalogue:
+            # The refusal of before CRM-Q31-2: `sum_amount` on a module.
+            raise HTTPException(status_code=422,
+                                detail="'sum_amount' needs deals. A module has no amount.")
+        if found is None and (key or "") in KEY_WORDS and self.catalogue:
+            raise HTTPException(status_code=422, detail={
+                "code": "no_key_field",
+                "message": f"{self.owner} has no key field for {key}. "
+                           "crm_list_modules names the key fields of each module.",
+            })
         if found is None:
             raise HTTPException(status_code=422, detail={
                 "code": "unknown_field",
@@ -237,13 +281,63 @@ async def core_scope(db: Any, slug: str) -> FieldScope:
 
 
 async def module_scope(db: Any, module: str) -> FieldScope:
-    """The fields of a mirrored module. The caller has checked the module
-    against the mirrored set of the profile (``modules._require_module``)."""
+    """The fields of a mirrored module, and its key words (CRM-Q31-2). The
+    caller has checked the module against the mirrored set of the profile
+    (``modules._require_module``).
+
+    The catalogue entry comes from ``catalogue.entry_of``, the ONE reader of
+    one entry, for the bound tenant. Outside ``CRM_CATALOGUE_ORGS`` it gives
+    no entry, and the scope has no key word.
+    """
+    from gateway.routes.crm.catalogue import entry_of
+    from gateway.routes.crm.core import current_tenant
+    from gateway.routes.crm.flags import catalogue_allowed
+
+    org = current_tenant()
     defs = await _field_defs(db, module)
-    return FieldScope(
-        column=MODULE_COLUMN, owner=f"module:{module}",
-        fields={d.key: _ref(d) for d in defs},
-    )
+    fields = {d.key: _ref(d) for d in defs}
+    fields.update(key_words(fields, await entry_of(db, org, module)))
+    return FieldScope(column=MODULE_COLUMN, owner=f"module:{module}", fields=fields,
+                      catalogue=catalogue_allowed(org))
+
+
+def key_words(fields: dict[str, FieldRef], entry: Any) -> dict[str, FieldRef]:
+    """Each key word of *entry* (a ``crm_sync.catalogue.Entry``, or ``None``)
+    → the real field it names. A key word joins only when its field is in
+    *fields* and its type fits the part (``catalogue.PART_TYPES``): a measure
+    type for ``@amount``, a date type for ``@date``, a select for
+    ``@status`` and a lookup for ``@parent``."""
+    from gateway.crm_sync.catalogue import PART_TYPES
+
+    parts = getattr(entry, "fields", None) or {}
+    out: dict[str, FieldRef] = {}
+    for word, part in KEY_WORDS.items():
+        named = parts.get(part)
+        ref = fields.get(named.key) if named is not None else None
+        if ref is not None and ref.type in PART_TYPES[part]:
+            out[word] = ref
+    return out
+
+
+def module_measure(measure: str, field: str | None) -> tuple[str, str | None]:
+    """The field measure and the field of a module aggregate (CRM-Q31-2
+    item 4). ``sum_amount`` is the ``sum`` of ``@amount``. Each other measure
+    stays as the call gives it."""
+    return MODULE_MEASURES.get(measure, (measure, field))
+
+
+def used_keys(scope: FieldScope, names: list[str | None]) -> dict[str, str]:
+    """Each key word that *names* use, with the real key it read (CRM-Q31-2
+    item 5). A filter name may end in ``.from`` or ``.to``."""
+    out: dict[str, str] = {}
+    for name in names:
+        word = name or ""
+        for end in RANGE_ENDS:
+            if word.endswith(end) and word[: -len(end)] in KEY_WORDS:
+                word = word[: -len(end)]
+        if word in KEY_WORDS and word in scope.fields:
+            out[word] = scope.fields[word].key
+    return out
 
 
 def _refuse(message: str) -> HTTPException:
@@ -488,8 +582,10 @@ def _split(scope: FieldScope, name: str) -> tuple[FieldRef, str | None]:
     """The field and the range end of one filter name."""
     if name not in scope.fields:
         for end in RANGE_ENDS:
-            if name.endswith(end) and name[: -len(end)] in scope.fields:
-                return scope.fields[name[: -len(end)]], end
+            base = name[: -len(end)]
+            if name.endswith(end) and (base in scope.fields or base in KEY_WORDS):
+                # A key word with no key field is the 422 `no_key_field`.
+                return scope.ref(base), end
     return scope.ref(name), None
 
 
@@ -564,10 +660,193 @@ def module_where(
     return WhereSql(sql=" WHERE " + " AND ".join(clauses), params=params)
 
 
+# ── The overlay of an empty core slot (CRM-Q20-3a, §18.13.5) ────────────────
+
+#: The list filters of a core entity that an overlay does not take. Each
+#: gives 422 ``overlay_filter``, never a silent answer of the whole module.
+OVERLAY_REFUSED: tuple[str, ...] = (
+    "status_id", "custom", "pipeline_id", "company_id", "contact_id", "source",
+    "created_from", "created_to", "include_converted",
+)
+
+#: The bound names of the overlay clauses.
+_OWNER = "agf_owner"
+_Q = "agf_q"
+_UPDATED_FROM = "agf_uf"
+_UPDATED_TO = "agf_ut"
+
+
+def overlay_refusal(code: str, message: str) -> HTTPException:
+    """A 422 of the projection table: ``overlay_no_amount``,
+    ``overlay_no_probability``, ``overlay_no_stage``, ``overlay_no_date``,
+    ``overlay_unfit`` or ``overlay_filter``."""
+    return HTTPException(status_code=422, detail={"code": code, "message": message})
+
+
+def _target_ref(scope: FieldScope, overlay: Any, target: str,
+                types: tuple[str, ...]) -> FieldRef | None:
+    """The field of the ``target`` item *target*, when the module has it with
+    a type of *types*."""
+    keys = (getattr(overlay, "targets", None) or {}).get(target) or []
+    ref = scope.fields.get(keys[0]) if keys else None
+    return ref if ref is not None and ref.type in types else None
+
+
+def _from(overlay: Any) -> str:
+    return f"This slot comes from the module {getattr(overlay, 'module', '')}."
+
+
+def overlay_amount(scope: FieldScope, overlay: Any) -> FieldRef:
+    """``sum_amount``: the ``amount`` target, else the catalogue amount."""
+    ref = _target_ref(scope, overlay, "amount", MEASURE_TYPES) or scope.fields.get(AMOUNT_WORD)
+    if ref is None:
+        raise overlay_refusal("overlay_no_amount", f"{_from(overlay)} It has no amount. "
+                              "crm_list_modules names its key fields.")
+    return ref
+
+
+def overlay_probability(scope: FieldScope, overlay: Any) -> FieldRef:
+    """``weighted``: the ``probability`` target."""
+    ref = _target_ref(scope, overlay, "probability", MEASURE_TYPES)
+    if ref is None:
+        raise overlay_refusal("overlay_no_probability",
+                              f"{_from(overlay)} It has no probability, so no weighted total.")
+    return ref
+
+
+def overlay_stage(scope: FieldScope, overlay: Any) -> FieldRef:
+    """``group_by=status`` and ``weighted``: the field of the ``stage`` item."""
+    ref = scope.fields.get(getattr(overlay, "stage", None) or "")
+    if ref is None:
+        raise overlay_refusal("overlay_no_stage",
+                              f"{_from(overlay)} No stage field is approved for it.")
+    return ref
+
+
+def overlay_close(scope: FieldScope, overlay: Any) -> FieldRef:
+    """``close_month`` and the ``close_*`` filters: the
+    ``expected_close_date`` target, else the catalogue date."""
+    ref = (_target_ref(scope, overlay, "expected_close_date", DATE_TYPES)
+           or scope.fields.get("@date"))
+    if ref is None or ref.type not in DATE_TYPES:
+        raise overlay_refusal("overlay_no_date", f"{_from(overlay)} It has no close date.")
+    return ref
+
+
+def overlay_filters(label: str, overlay: Any, params: Any) -> None:
+    """A 422 ``overlay_filter`` for each list filter of *params* (a
+    ``records.ListParams``) that the overlay does not take: one sentence that
+    names the module and the call to use."""
+    given = [name for name in OVERLAY_REFUSED if getattr(params, name, None)]
+    if given:
+        module = getattr(overlay, "module", "")
+        raise overlay_refusal(
+            "overlay_filter",
+            f"{label}s come from the module {module}, and a total of them takes no "
+            f"{', '.join(given)} filter. Call crm_aggregate with entity "
+            f"'module:{module}' and field_filters, or group by status.",
+        )
+
+
+def overlay_where(
+    scope: FieldScope, overlay: Any, pairs: list[tuple[str, str]], *, zone: str,
+    owner: str | None, params: Any,
+) -> WhereSql:
+    """The WHERE clause of an overlaid core entity (§18.13.5): the module,
+    each ``field.<key>`` filter, the owner (``owner_email``), ``q`` on the
+    name, the updated range on ``coalesce(ext_modified_at, updated_at)`` in
+    the CRM zone, and the close range on the close date of
+    :func:`overlay_close`. *params* is the ``records.ListParams`` of the
+    call, and *owner* its resolved owner. Each value is bound."""
+    q = getattr(params, "q", None)
+    updated_from = getattr(params, "updated_from", None)
+    updated_to = getattr(params, "updated_to", None)
+    close_from = getattr(params, "close_from", None)
+    close_to = getattr(params, "close_to", None)
+    pairs = list(pairs)
+    if close_from or close_to:
+        close = overlay_close(scope, overlay)
+        if close_from:
+            pairs.append((f"{close.key}.from", close_from))
+        if close_to:
+            pairs.append((f"{close.key}.to", close_to))
+    where = module_where(scope, str(overlay.module), pairs, zone=zone)
+    clauses = [where.sql]
+    params = dict(where.params)
+    if owner:
+        clauses.append(f"lower(owner_email) = :{_OWNER}")
+        params[_OWNER] = owner.strip().lower()
+    if q and q.strip():
+        clauses.append(f"name ILIKE :{_Q}")
+        params[_Q] = f"%{q.strip()}%"
+    if updated_from:
+        clauses.append("coalesce(ext_modified_at, updated_at) >= "
+                       + day_start(f"CAST(:{_UPDATED_FROM} AS date)"))
+        params[_UPDATED_FROM] = _iso_date("updated_from", updated_from)
+    if updated_to:
+        clauses.append("coalesce(ext_modified_at, updated_at) < "
+                       + day_start(f"CAST(:{_UPDATED_TO} AS date) + 1"))
+        params[_UPDATED_TO] = _iso_date("updated_to", updated_to)
+    return WhereSql(sql=" AND ".join(clauses), params=params)
+
+
+def overlay_weighted(
+    scope: FieldScope, amount: FieldRef, probability: FieldRef, stage: FieldRef,
+    open_values: list[str],
+) -> MeasureSql:
+    """``weighted`` on an overlay: the amount times the probability over
+    100, for the records whose stage value maps to ``open``. Each key and
+    each value is bound."""
+    column = scope.column
+    a, w = _number(column, "agf_wa"), _number(column, "agf_wp")
+    weight = (f"(CASE WHEN {column} ->> :agf_ws = ANY(CAST(:agf_open AS text[])) "
+              f"THEN {a} * {w} / 100.0 END)")
+    return MeasureSql(
+        value=f"COALESCE(SUM({weight}), 0)", sum=f"SUM({weight})", count=f"COUNT({weight})",
+        params={"agf_wa": amount.key, "agf_wp": probability.key, "agf_ws": stage.key,
+                "agf_open": list(open_values)},
+    )
+
+
 __all__ = [
-    "BUCKETS", "CHOICES_MAX", "DATE_TYPES", "DEFAULT_ZONE", "FIELD_MEASURES", "FIELD_PREFIX",
-    "MEASURE_TYPES", "VALUE_GROUP_TYPES", "ZONE_PARAM", "FieldRef", "FieldScope",
-    "GroupSql", "MeasureSql", "WhereSql", "check_group", "check_measure",
-    "core_scope", "crm_zone", "day_start", "field_pairs", "group_sql", "measure_sql",
-    "module_scope", "module_where", "zoned",
+    "AMOUNT_WORD",
+    "BUCKETS",
+    "CHOICES_MAX",
+    "DATE_TYPES",
+    "DEFAULT_ZONE",
+    "FIELD_MEASURES",
+    "FIELD_PREFIX",
+    "KEY_WORDS",
+    "MEASURE_TYPES",
+    "MODULE_MEASURES",
+    "OVERLAY_REFUSED",
+    "VALUE_GROUP_TYPES",
+    "ZONE_PARAM",
+    "FieldRef",
+    "FieldScope",
+    "GroupSql",
+    "MeasureSql",
+    "WhereSql",
+    "check_group",
+    "check_measure",
+    "core_scope",
+    "crm_zone",
+    "day_start",
+    "field_pairs",
+    "group_sql",
+    "key_words",
+    "measure_sql",
+    "module_measure",
+    "module_scope",
+    "module_where",
+    "overlay_amount",
+    "overlay_close",
+    "overlay_filters",
+    "overlay_probability",
+    "overlay_refusal",
+    "overlay_stage",
+    "overlay_weighted",
+    "overlay_where",
+    "used_keys",
+    "zoned",
 ]

@@ -335,16 +335,16 @@ async def test_overlays_name_only_a_module_of_the_bound_org(mp_env) -> None:
 
 # ── Option A item 5: each core reader stays as it is ─────────────────────────
 
-#: The modules of the core readers. None of them reads the plan.
+#: The modules of the core readers. None of them reads the plan. CRM-Q20-3a
+#: (§18.13.5) takes out aggregate.py and crm_tools.py on purpose: they read
+#: the module of an approved overlay (``routes/crm/overlay.py``).
 READERS = (
     "apps/services/gateway/gateway/routes/crm/records.py",
     "apps/services/gateway/gateway/routes/crm/export.py",
-    "apps/services/gateway/gateway/routes/crm/aggregate.py",
     "apps/services/gateway/gateway/routes/crm/activities.py",
     "apps/services/gateway/gateway/routes/crm/deal_contacts.py",
     "apps/services/gateway/gateway/routes/shell/search.py",
     "apps/services/gateway/gateway/routes/shell/feed.py",
-    "packages/acb_skills/acb_skills/crm_tools.py",
 )
 
 
@@ -402,7 +402,14 @@ async def test_each_core_reader_gives_the_same_answer_with_and_without_a_role(mp
     assert (await _mode(_admin_of(p.org_a)))["overlays"] == {"deal": "Commercials"}, (
         "the role is in use, so the comparison is not blind")
 
-    assert await _readers(p, p.org_a) == before
+    after = await _readers(p, p.org_a)
+    # CRM-Q20-3a item 7: the aggregate of deals now counts the records of the
+    # module that plays Deals. Each other reader gives the answer of before.
+    module = _q(p, "SELECT count(*) FROM crm_module_records WHERE organization_id = "
+                   "CAST(:o AS uuid) AND module = 'Commercials'", o=p.org_a)[0][0]
+    assert after.pop("aggregate:deals")["total"] == module > 0
+    before.pop("aggregate:deals")
+    assert after == before
 
 
 # ── Round 2 review: a write on an older draft of the same base ───────────────

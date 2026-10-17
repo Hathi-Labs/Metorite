@@ -16,7 +16,8 @@ fence.
 2. A step through a fake door: one row for each note, the md5 and the vector,
    with no session open across the door.
 3. A note that did not change is never sent again. A changed note is.
-4. The cap of 640 notes, newest first, and the daily cap of requests.
+4. The cap of 640 notes, newest first, the daily cap of requests, and the
+   backlog allowance of 400 requests.
 5. A failed vector, a zero vector, a door that is down, and a Redis failure.
 6. An org outside ``CRM_NOTE_SEARCH_ORGS``, and the payer check.
 7. Tenant isolation of the step and of the search.
@@ -507,6 +508,46 @@ async def test_the_cap_holds_when_the_count_moves_after_the_read(nv, monkeypatch
     got = await _step(nv, a, now=DAY)
     assert got.reason == "daily_cap" and got.requests == 0 and nv.door.calls == []
     assert _requests_today(nv, a, "2026-10-16") == 2
+
+
+def _many_notes(p: Any, org: str, n: int) -> None:
+    company = _company(p, org)
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_activities (organization_id, type, subject, body, company_id, "
+            "created_by, ext_modified_at) SELECT CAST(:o AS uuid), 'note', 'N' || g, 'b', "
+            "CAST(:c AS uuid), 'seed@crm-q27-r8.test', "
+            "timestamptz '2026-10-01' + make_interval(mins => g) "
+            "FROM generate_series(1, :n) AS g"), {"o": org, "c": company, "n": n})
+
+
+async def test_a_backlog_lets_one_step_take_more_than_640_notes(nv) -> None:
+    """Item 9, the backlog allowance: 1,100 notes wait, more than the
+    threshold of 1,000, so one step takes them all, not 640."""
+    a = nv.org_a
+    _connect(nv, a)
+    _many_notes(nv, a, 1100)
+    got = await _step(nv, a, now=DAY)
+    assert got.reason == "done" and got.embedded == 1100 > 640
+    assert got.requests == 18 == len(nv.door.calls)
+    assert _requests_today(nv, a, "2026-10-16") == 18
+
+
+async def test_the_backlog_cap_holds_at_400_requests(nv) -> None:
+    """The step reserves against the backlog cap that it read: 398 requests
+    are spent, so 2 more go out, and then the cap stops the org at 400."""
+    from gateway.crm_sync import note_vectors
+
+    a = nv.org_a
+    _connect(nv, a)
+    _many_notes(nv, a, 1100)
+    nv.redis.store[f"cc:{a}:{note_vectors.NAMESPACE}:requests:2026-10-16"] = "398"
+    got = await _step(nv, a, now=DAY)
+    assert got.embedded == 128 and got.requests == 2 == len(nv.door.calls)
+    assert _requests_today(nv, a, "2026-10-16") == 400
+    later = await _step(nv, a, now=DAY + timedelta(hours=4))
+    assert later.reason == "daily_cap" and later.requests == 0
+    assert len(nv.door.calls) == 2 and _requests_today(nv, a, "2026-10-16") == 400
 
 
 async def test_a_redis_failure_embeds_nothing(nv) -> None:

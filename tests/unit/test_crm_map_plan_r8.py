@@ -954,3 +954,31 @@ async def test_q18_1b_b_a_start_over_beside_an_approve_never_deadlocks(
     assert got.status_code == 200, got.text
     assert _count(p, "crm_mapping_plans", p.org_a) == 0
     assert _count(p, "crm_field_rules", p.org_a) == 0
+
+
+# ── CRM-Q31-3 item 12: rule_count leaves the catalogue out ───────────────────
+
+
+async def test_q31_3_12_rule_count_counts_no_catalogue_item(fr) -> None:
+    """A version with 2 field rules and 3 catalogue items lists rule_count 2.
+    The Field map card shows that count."""
+    import json
+
+    p, a, _b = fr
+    await _imported(p, p.org_a, a)
+    await _plans(p.org_a)
+    fields = [{"kind": "field", "entity": "lead", "field_api_name": key,
+               "field_type": "text", "target_column": column, "profile_version": 1}
+              for key, column in (("Why_Lost", "lost_note"), ("Sector", "industry"))]
+    catalogue = [{"kind": "catalogue", "module": m, "purpose": "other", "by": {"purpose": "ai"}}
+                 for m in ("Towers", "Sites", "Crews")]
+    with p.admin_engine.begin() as c:
+        version = c.execute(text(
+            "SELECT max(version) + 1 FROM crm_mapping_plans "
+            "WHERE organization_id = CAST(:o AS uuid)"), {"o": p.org_a}).scalar()
+        c.execute(text(
+            "INSERT INTO crm_mapping_plans (organization_id, version, state, rules, "
+            "created_by) VALUES (CAST(:o AS uuid), :v, 'superseded', CAST(:r AS jsonb), "
+            "'seed')"), {"o": p.org_a, "v": version, "r": json.dumps(fields + catalogue)})
+    listed = {v["version"]: v for v in (await _plans(p.org_a))["versions"]}
+    assert listed[version]["rule_count"] == 2

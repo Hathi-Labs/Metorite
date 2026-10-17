@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -314,3 +315,254 @@ async def test_the_tool_says_an_empty_field_has_no_values(monkeypatch) -> None:
                                     measure="sum", field="Discount")
     assert out == "Products, sum of Discount by owner: no values recorded for Discount."
     assert "0" not in out
+
+
+# ── The key words of a module (WS-53 CRM-Q31-2, crm_platform.md §18.13.4) ───
+
+
+def _entry(**parts: Any) -> Any:
+    """A catalogue entry that names a key field for each part."""
+    from gateway.crm_sync import catalogue as cat
+
+    return cat.Entry(
+        module="Invoices", entity="module:Invoices", kind="module", label="Invoices",
+        records=3, purpose="invoice",
+        fields={part: cat.Field(key=key, label=key, type="x") for part, key in parts.items()},
+    )
+
+
+def _invoice_scope(entry: Any) -> Any:
+    from gateway.routes.crm import field_sql as fs
+
+    real = {
+        "Billed_Value": fs.FieldRef(key="Billed_Value", type="currency", label="Billed Value"),
+        "Invoice_Date": fs.FieldRef(key="Invoice_Date", type="date", label="Invoice Date"),
+        "Status": fs.FieldRef(key="Status", type="select", label="Status"),
+        "Buyer": fs.FieldRef(key="Buyer", type="lookup", label="Buyer"),
+        "Memo": fs.FieldRef(key="Memo", type="text", label="Memo"),
+    }
+    return fs.FieldScope(column="fields", owner="module:Invoices",
+                         fields={**real, **fs.key_words(real, entry)})
+
+
+def test_a_key_word_is_an_alias_of_the_real_field_when_its_type_fits() -> None:
+    """Items 1 and 2: each key word is the real FieldRef, and joins only
+    when its type fits."""
+    scope = _invoice_scope(_entry(amount="Billed_Value", date="Invoice_Date",
+                                  status="Status", parent="Buyer"))
+    assert scope.fields["@amount"] is scope.fields["Billed_Value"]
+    assert scope.fields["@date"] is scope.fields["Invoice_Date"]
+    assert scope.fields["@status"] is scope.fields["Status"]
+    assert scope.fields["@parent"] is scope.fields["Buyer"]
+    wrong = _invoice_scope(_entry(amount="Memo", date="Status", status="Buyer",
+                                  parent="Billed_Value"))
+    assert not [k for k in wrong.fields if k.startswith("@")]
+    # A field the module does not have, and no entry at all, give no word.
+    assert not [k for k in _invoice_scope(_entry(amount="Gone")).fields if k.startswith("@")]
+    assert not [k for k in _invoice_scope(None).fields if k.startswith("@")]
+
+
+def test_a_key_word_with_no_key_field_is_a_422_that_names_the_module() -> None:
+    """Item 3, for a measure, a group and a range filter."""
+    from fastapi import HTTPException
+    from gateway.routes.crm import field_sql as fs
+
+    scope = _invoice_scope(_entry(amount="Billed_Value"))
+    for call in (
+        lambda: fs.check_measure(scope, "@date"),
+        lambda: fs.check_group(scope, "@status", None),
+        lambda: fs.module_where(scope, "Invoices", [("@date.from", "2026-01-01")],
+                                zone="UTC"),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            call()
+        assert exc.value.status_code == 422
+        assert exc.value.detail["code"] == "no_key_field"
+        assert "module:Invoices" in exc.value.detail["message"]
+        assert "crm_list_modules" in exc.value.detail["message"]
+    # A name that only looks like a key word is an unknown field.
+    with pytest.raises(HTTPException) as exc:
+        fs.check_measure(scope, "@amount'--")
+    assert exc.value.detail["code"] == "unknown_field"
+
+
+def test_sum_amount_on_a_module_is_the_sum_of_the_amount_word() -> None:
+    """Item 4: the one rule of the measure lives in field_sql."""
+    from gateway.routes.crm import field_sql as fs
+
+    assert fs.module_measure("sum_amount", None) == ("sum", "@amount")
+    assert fs.module_measure("avg", "Qty") == ("avg", "Qty")
+    assert fs.module_measure("count", None) == ("count", None)
+
+
+def test_a_key_word_never_reaches_the_sql_text() -> None:
+    """Item 9: the builders bind the real key, never the key word."""
+    from gateway.routes.crm import field_sql as fs
+
+    scope = _invoice_scope(_entry(amount="Billed_Value", date="Invoice_Date",
+                                  status="Status", parent="Buyer"))
+    measure = fs.measure_sql(scope, fs.check_measure(scope, "@amount"), "sum")
+    group = fs.group_sql(scope, fs.check_group(scope, "@date", "quarter"), "quarter",
+                         zone="UTC")
+    where = fs.module_where(scope, "Invoices", [
+        ("@date.from", "2026-04-01"), ("@date.to", "2026-06-30"),
+        ("@status", "Paid"), ("@parent", "x1"),
+    ], zone="UTC")
+    for sql, params in ((f"{measure.value} {measure.sum}", measure.params),
+                        (group.key, group.params), (where.sql, where.params)):
+        assert "@" not in sql, sql
+        assert not [v for v in params.values() if isinstance(v, str) and v.startswith("@")]
+    assert measure.params["agf_m"] == "Billed_Value"
+    assert group.params["agf_g"] == "Invoice_Date"
+    assert fs.used_keys(scope, ["@amount", "@date", "@date.from", "Memo", None]) == {
+        "@amount": "Billed_Value", "@date": "Invoice_Date",
+    }
+
+
+#: Text that only a read of the catalogue or an alias rule would hold.
+_ALIAS_NAMES = frozenset({
+    "entry_of", "key_words", "KEY_WORDS", "MODULE_MEASURES", "AMOUNT_WORD", "catalogue",
+})
+
+
+def _alias_offenders(source: str) -> list[str]:
+    """Each read of the catalogue or alias rule in *source*: a name of
+    :data:`_ALIAS_NAMES`, or a string constant (docstrings left out) that
+    holds a key word."""
+    tree = ast.parse(source)
+    docstrings = {
+        id(node.body[0].value) for node in ast.walk(tree)
+        if isinstance(node, ast.Module | ast.FunctionDef | ast.AsyncFunctionDef
+                      | ast.ClassDef)
+        and node.body and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+    }
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in _ALIAS_NAMES:
+            found.append(f"name {node.id}")
+        if isinstance(node, ast.alias) and (
+                node.name in _ALIAS_NAMES or "catalogue" in node.name):
+            found.append(f"import {node.name}")
+        if isinstance(node, ast.ImportFrom) and "catalogue" in (node.module or ""):
+            found.append(f"import from {node.module}")
+        if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and id(node) not in docstrings and "@" in node.value):
+            found.append(f"text {node.value[:40]!r}")
+    return found
+
+
+def test_the_aggregate_holds_no_read_of_the_catalogue_and_no_alias_rule() -> None:
+    """Item 8: both live in field_sql.py and catalogue.py. The aggregate
+    reaches them through ``module_scope``, ``module_measure`` and
+    ``used_keys`` only."""
+    source = (_CRM / "aggregate.py").read_text(encoding="utf-8")
+    assert _alias_offenders(source) == []
+    calls = {
+        n.func.id for n in ast.walk(ast.parse(source))
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    }
+    assert {"module_scope", "module_measure", "used_keys"} <= calls
+
+
+def test_the_alias_fence_sees_a_copy() -> None:
+    """The fence on the fence."""
+    good = '"""Doc @amount."""\nx = module_measure(1, 2)\n'
+    assert _alias_offenders(good) == []
+    assert _alias_offenders(good + "W = '@amount'\n")
+    assert _alias_offenders(good + "from gateway.routes.crm.catalogue import entry_of\n")
+    assert _alias_offenders(good + "from gateway.routes.crm.field_sql import KEY_WORDS\n")
+
+
+# ── The tool lines of CRM-Q31-2 (items 6 and 7) ─────────────────────────────
+
+
+async def test_the_tool_names_the_label_of_the_real_field(monkeypatch) -> None:
+    """Item 6: the tool says which real field each key word used."""
+    import acb_skills.crm_tools as tools
+
+    async def _get(path: str, params: dict | None = None) -> dict:
+        return {
+            "entity": "module:Invoices", "measure": "sum_amount",
+            "field": "Billed_Value", "field_type": "currency",
+            "field_label": "Billed Value", "group_field": "@date",
+            "group_field_label": "Invoice Date", "group_field_type": "date",
+            "bucket": "quarter", "keys": {"@amount": "Billed_Value",
+                                          "@date": "Invoice_Date"},
+            "groups": [{"key": "2026-Q2", "label": "2026-Q2", "value": 1250000}],
+            "total": 1250000, "other": 0, "omitted": 0, "values": 7,
+        }
+
+    monkeypatch.setattr(tools, "_get", _get)
+    out = await tools.crm_aggregate("module:Invoices", measure="sum_amount",
+                                    group_field="@date", bucket="quarter")
+    assert out.splitlines()[0] == (
+        "Invoices, sum of Billed Value (the amount) by Invoice Date (quarter):"
+    )
+    assert "- 2026-Q2: INR 1,250,000" in out
+
+
+def _empty_deals(alike: list[str], records: int = 0) -> Any:
+    async def _get(path: str, params: dict | None = None) -> dict:
+        if path == "/crm/catalogue":
+            return {"mode": "mirror", "entries": [
+                {"entity": "deals", "module": "Deals", "kind": "entity",
+                 "label": "Deals", "records": records, "purpose": "deal",
+                 "alike": alike},
+            ]}
+        return {"entity": "deals", "measure": "count", "groups": [], "total": 0,
+                "other": 0, "omitted": 0}
+    return _get
+
+
+async def test_an_empty_core_entity_points_at_the_module(monkeypatch) -> None:
+    """Item 7: a total of 0 on an empty core entity, in Mirror mode."""
+    import acb_skills.crm_tools as tools
+
+    monkeypatch.setattr(tools, "_get", _empty_deals(["Commercials", "Invoices"]))
+    out = await tools.crm_aggregate("deals", group_by="owner")
+    assert out.splitlines()[-1] == (
+        "Deals holds no records. Commercials and Invoices hold sales."
+    )
+    monkeypatch.setattr(tools, "_get", _empty_deals(["Invoices"]))
+    assert (await tools.crm_aggregate("deals", group_by="owner")).endswith(
+        "Invoices holds sales.")
+    # No line when the entity holds records, or no module fits.
+    for getter in (_empty_deals(["Invoices"], records=4), _empty_deals([])):
+        monkeypatch.setattr(tools, "_get", getter)
+        assert "holds no records" not in await tools.crm_aggregate("deals", group_by="owner")
+
+
+async def test_no_empty_core_line_when_the_catalogue_is_off(monkeypatch) -> None:
+    import acb_skills.crm_tools as tools
+
+    async def _get(path: str, params: dict | None = None) -> dict:
+        if path == "/crm/catalogue":
+            raise tools._GatewayError("off", "catalogue_off")
+        return {"entity": "deals", "measure": "count", "groups": [], "total": 0,
+                "other": 0, "omitted": 0}
+
+    monkeypatch.setattr(tools, "_get", _get)
+    out = await tools.crm_aggregate("deals", group_by="owner")
+    assert out == "Deals, count by owner:\nTotal: 0."
+
+
+def test_the_catalogue_names_the_modules_that_fit_an_empty_core_entity() -> None:
+    """Item 7, the data: ``alike`` holds each module with a fitting purpose
+    and records. A module with no record is never named."""
+    from gateway.crm_sync import catalogue as cat
+
+    def module(api: str, label: str, records: int) -> cat.Source:
+        return cat.Source(module=api, entity=f"module:{api}", kind="module",
+                          label=label, records=records, custom=api != "Invoices")
+
+    entries = {e.module: e for e in cat.build([
+        cat.Source(module="Deals", entity="deals", kind="entity", label="Deals"),
+        cat.Source(module="Accounts", entity="organizations", kind="entity",
+                   label="Accounts", records=3),
+        module("Invoices", "Invoices", 9), module("Quotes", "Quotes", 0),
+        module("Buyer_Clients", "Clients", 2),
+    ])}
+    assert entries["Deals"].alike == ["Invoices"]
+    assert entries["Accounts"].alike == ["Clients"]
+    assert not entries["Invoices"].alike

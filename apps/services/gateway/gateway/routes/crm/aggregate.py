@@ -18,7 +18,11 @@ mirror is a 404 (``modules._require_module``), before any read of a record.
 
 **The measure.** ``count``, ``sum_amount`` and ``weighted`` (deals), or
 ``sum``, ``avg``, ``min`` and ``max`` of one number field, given as
-``field=<key>``.
+``field=<key>``. On a module, ``sum_amount`` is the sum of the amount that
+the catalogue names, and ``weighted`` is a 422 (CRM-Q31-2). A module also
+takes the key words of ``field_sql`` as a field name. This module holds no
+read of the catalogue and no alias rule: both live in ``field_sql.py`` and
+``catalogue.py``.
 
 **The group.** ``group_by`` names a fixed key of :data:`GROUPS`, or of
 :data:`MODULE_GROUPS` for a module. ``group_field=<key>`` groups by one field
@@ -44,6 +48,15 @@ module holds no jsonb operator. Fence:
 **Fixed SQL.** Every identifier in a statement comes from a literal of this
 module or of ``field_sql``, and every caller value is a bound parameter. The
 statement runs under a LOCAL ``statement_timeout`` of 10 s.
+
+**The overlay of an empty core slot** (CRM-Q20-3a, ``crm_platform.md``
+§18.13.5). When an approved ``role`` names a module for the slot of a core
+entity (``overlay.overlay_of``), the total reads the records of that module
+through the projection table of §18.13.5. The SQL of it lives in
+``field_sql.py``. Each refusal is a 422 that names an ``overlay_*`` code. A
+status group follows the lane order, with one "Unsorted" group last. The
+answer carries ``overlay``. With no overlay, the answer is the answer of
+today, byte for byte.
 
 **At most 50 groups.** The answer keeps the 50 largest groups. ``other`` holds
 the measure over the rest, and ``omitted`` counts them. The order stays: the
@@ -82,6 +95,7 @@ Fence: ``tests/unit/test_feed_crm_kinds_r8.py``.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field as dc_field
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -98,6 +112,7 @@ from gateway.routes.crm.core import (
     _tenant_session,
     current_tenant,
     is_mirror_mode,
+    resolve_owner,
     router,
 )
 from gateway.routes.crm.field_sql import (
@@ -114,13 +129,31 @@ from gateway.routes.crm.field_sql import (
     field_pairs,
     group_sql,
     measure_sql,
+    module_measure,
     module_scope,
     module_where,
+    overlay_amount,
+    overlay_close,
+    overlay_filters,
+    overlay_probability,
+    overlay_refusal,
+    overlay_stage,
+    overlay_weighted,
+    overlay_where,
+    used_keys,
     zoned,
 )
 from gateway.routes.crm.modules import _require_module, mirrored_modules
+from gateway.routes.crm.overlay import (
+    SLOT_OF,
+    UNSORTED,
+    UNSORTED_LABEL,
+    Overlay,
+    lanes,
+    overlay_of,
+)
 from gateway.routes.crm.records import ListParams, list_query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
@@ -225,6 +258,9 @@ class AggregateGroup(BaseModel):
     label: str
     #: None when no record of the group holds a value (``avg``, ``min``, ``max``).
     value: float | None
+    #: CRM-Q20-3a: the lane type of a status group of an overlay: ``open``,
+    #: ``won``, ``lost`` or ``unsorted``. Absent from every other answer.
+    type: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class AggregateResponse(BaseModel):
@@ -236,6 +272,11 @@ class AggregateResponse(BaseModel):
     #: The field of a ``sum``, ``avg``, ``min`` or ``max``, and its type.
     field: str | None = None
     field_type: str | None = None
+    #: The label of that field, and of the group field (CRM-Q31-2 item 5).
+    field_label: str | None = None
+    group_field_label: str | None = None
+    #: Each key word that the call used, with the real key that it read.
+    keys: dict[str, str] = {}
     #: The stored type of ``group_field``, so a caller can tell a ``datetime``
     #: bucket, which reads the zone, from a ``date`` bucket, which does not.
     group_field_type: str | None = None
@@ -258,6 +299,9 @@ class AggregateResponse(BaseModel):
     #: The count of records that the filters matched, over every group. None
     #: for ``weighted``, which reads only the open and ongoing deal lanes.
     records: int | None = None
+    #: CRM-Q20-3a: the slot and the module of an overlay, for example
+    #: ``{"slot": "deal", "module": "Commercials"}``. Absent with no overlay.
+    overlay: dict[str, str] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StageDwell(BaseModel):
@@ -340,8 +384,8 @@ def _check(
             "one total.",
         )
     if module is not None:
-        if measure in DEAL_MEASURES:
-            raise _refuse(f"'{measure}' needs deals. A module has no amount.")
+        if measure == "weighted":
+            raise _refuse("'weighted' needs deals. A module has no probability.")
         return None, module
     assert found is not None
     if found.table != "crm_deals" and (
@@ -356,17 +400,22 @@ def _check(
     return found, None
 
 
+def _core_pairs_refusal() -> HTTPException:
+    """A core entity with no overlay takes no ``field.<key>`` filter."""
+    return _refuse(
+        "A field.<key> filter takes a module entity. A core entity "
+        "takes the list filters, and custom.<key>=<value> for a "
+        "custom field.",
+    )
+
+
 def _check_filters(module: str | None, request: Request) -> list[tuple[str, str]]:
     """The ``field.<key>`` filters. A core entity takes none, and a module
     takes nothing else. The names are checked against the fields later."""
     pairs = field_pairs(request.query_params)
     if module is None:
         if pairs:
-            raise _refuse(
-                "A field.<key> filter takes a module entity. A core entity "
-                "takes the list filters, and custom.<key>=<value> for a "
-                "custom field.",
-            )
+            raise _core_pairs_refusal()
         return pairs
     other = sorted({
         k for k in request.query_params
@@ -485,6 +534,11 @@ class _Read:
     measured: FieldRef | None
     grouped: FieldRef | None
     zone: str
+    keys: dict[str, str]
+    #: CRM-Q20-3a: the overlay of the answer, and the lane type of each
+    #: status group.
+    overlay: dict[str, str] | None = None
+    types: dict[str, str] = dc_field(default_factory=dict)
 
 
 def _is_timeout(exc: DBAPIError) -> bool:
@@ -504,9 +558,11 @@ async def _read(
     await db.execute(text(_TIMEOUT_SQL), {"ms": str(STATEMENT_TIMEOUT_MS)})
     scope: FieldScope | None = None
     zone = ""
+    field_measure = measure
     if module is not None:
         _require_module(await mirrored_modules(db), module)
         scope = await module_scope(db, module)
+        field_measure, field = module_measure(measure, field)
         # CRM-Q25b: one zone for each bucket and each range of the answer.
         zone = await crm_zone(db, current_tenant())
         where = module_where(scope, module, pairs, zone=zone)
@@ -546,7 +602,7 @@ async def _read(
     else:
         value_sql, sum_sql, count_sql = MEASURES.get(measure, ""), "0", "0"
         if measured is not None and scope is not None:
-            sql = measure_sql(scope, measured, measure)
+            sql = measure_sql(scope, measured, field_measure)
             value_sql, sum_sql, count_sql = sql.value, sql.sum, sql.count
             bound.update(sql.params)
         rows = (await db.execute(
@@ -569,7 +625,119 @@ async def _read(
     order = (
         await _status_order(db, found) if found and group_by == "status" else {}
     )
-    return _Read(values, labels, order, measured, grouped, zone)
+    keys = (
+        used_keys(scope, [field, group_field, *(name for name, _value in pairs)])
+        if module is not None and scope is not None else {}
+    )
+    return _Read(values, labels, order, measured, grouped, zone, keys)
+
+
+#: The groups that an overlay has no source for.
+_UNFIT_GROUPS = frozenset({"pipeline", "source"})
+
+
+def _fold(measure: str, accs: list[_Acc]) -> _Acc:
+    """One group of *accs*: the Unsorted lane of an overlay."""
+    return _Acc(value=_combine(measure, accs), s=sum(a.s for a in accs),
+                n=sum(a.n for a in accs), rows=sum(a.rows for a in accs))
+
+
+async def _read_overlay(
+    db: Any, found: Entity, overlay: Overlay, *,
+    measure: str, group_by: str | None, field: str | None,
+    group_field: str | None, bucket: str | None,
+    pairs: list[tuple[str, str]], params: ListParams, user: UserContext,
+) -> _Read:
+    """Every statement of one aggregate of an overlaid core entity, in the
+    caller's tenant session (§18.13.5, the projection table)."""
+    overlay_filters(found.label, overlay, params)
+    if group_by in _UNFIT_GROUPS:
+        raise overlay_refusal(
+            "overlay_unfit", f"{found.label}s come from the module {overlay.module}, "
+            f"which has no {group_by}. Group by another key.")
+    await db.execute(text(_TIMEOUT_SQL), {"ms": str(STATEMENT_TIMEOUT_MS)})
+    scope = await module_scope(db, overlay.module)
+    zone = await crm_zone(db, current_tenant())
+    where = overlay_where(scope, overlay, pairs, zone=zone,
+                          owner=resolve_owner(params.owner, user), params=params)
+    bound = dict(where.params)
+    measured: FieldRef | None = None
+    value_sql, sum_sql, count_sql = MEASURES["count"], "0", "0"
+    if measure == "sum_amount":
+        measured = overlay_amount(scope, overlay)
+        sql = measure_sql(scope, measured, "sum")
+    elif measure == "weighted":
+        sql = overlay_weighted(
+            scope, overlay_amount(scope, overlay), overlay_probability(scope, overlay),
+            overlay_stage(scope, overlay),
+            sorted(v for v, word in overlay.values.items() if word == "open"))
+    elif measure in FIELD_MEASURES:
+        measured = check_measure(scope, field)
+        sql = measure_sql(scope, measured, measure)
+    else:
+        sql = None
+    if sql is not None:
+        value_sql, sum_sql, count_sql = sql.value, sql.sum, sql.count
+        bound.update(sql.params)
+    grouped: FieldRef | None = None
+    stage: FieldRef | None = None
+    label_sql = "NULL"
+    if group_field:
+        grouped = check_group(scope, group_field, bucket)
+        group = group_sql(scope, grouped, bucket, zone=zone)
+    elif group_by == "status":
+        stage = overlay_stage(scope, overlay)
+        group = group_sql(scope, stage, None, zone=zone)
+    elif group_by == "close_month":
+        group = group_sql(scope, overlay_close(scope, overlay), "month", zone=zone)
+    else:
+        group = None
+    # No group: one row over every record of the module, as in `_read`.
+    group_clause = " GROUP BY 1"
+    if group is not None:
+        key_sql, label_sql = group.key, group.label
+        bound.update(group.params)
+    elif group_by is not None:
+        key_sql = MODULE_GROUPS[group_by]
+    else:
+        key_sql, group_clause = "NULL", ""
+    bound[ZONE_PARAM] = zone
+    rows = (await db.execute(
+        text(
+            f"SELECT {key_sql} AS key, {label_sql} AS label, "
+            f"{value_sql} AS value, {sum_sql} AS s, {count_sql} AS n, "
+            f"count(*) AS c FROM {MODULE_TABLE}{where.sql}{group_clause}"
+        ),
+        bound,
+    )).fetchall()
+    values = {
+        _key(r.key): _Acc(
+            value=None if r.value is None else float(r.value),
+            s=float(r.s or 0), n=int(r.n or 0), name=r.label,
+            rows=int(getattr(r, "c", 0) or 0),
+        )
+        for r in rows
+    }
+    labels: dict[str, str] = {}
+    order: dict[str, int] = {}
+    types: dict[str, str] = {}
+    if stage is not None:
+        # The lane order of §18.13.5: open, won, lost, then one Unsorted lane
+        # for each value with no entry, a value that is not an option, and a
+        # blank value. The Unsorted lane has the key None.
+        kept = lanes(stage.options, overlay.values)
+        lane_keys = {value for value, _word in kept}
+        rest = [acc for key, acc in values.items() if key not in lane_keys]
+        values = {key: acc for key, acc in values.items() if key in lane_keys}
+        if rest:
+            values[None] = _fold(measure, rest)
+        for index, (value, word) in enumerate(kept):
+            order[value], types[value] = index, word
+            labels[value] = stage.options.get(value) or value
+        order[""], types[""], labels[""] = len(kept), UNSORTED, UNSORTED_LABEL
+    keys = used_keys(scope, [field, group_field, *(name for name, _value in pairs)])
+    return _Read(values, labels, order, measured, grouped, zone, keys,
+                 overlay=overlay.wire(), types=types)
 
 
 @router.get("/aggregate", response_model=AggregateResponse)
@@ -594,7 +762,10 @@ async def aggregate(
     group_by, field = group_by or None, field or None
     group_field, bucket = group_field or None, bucket or None
     _found, module = _check(entity, measure, group_by, group_field, field, bucket)
-    pairs = _check_filters(module, request)
+    # CRM-Q20-3a: a core entity passes its field.<key> filters on. With an
+    # overlay they filter the module. With none, compute refuses them.
+    pairs = (field_pairs(request.query_params) if module is None
+             else _check_filters(module, request))
     return await compute(
         entity, measure=measure, group_by=group_by, field=field,
         group_field=group_field, bucket=bucket, pairs=pairs, params=params, user=user,
@@ -622,11 +793,26 @@ async def compute(
     pairs = list(pairs or [])
     try:
         async with _tenant_session() as db:
-            read = await _read(
-                db, found, module, measure=measure, group_by=group_by,
-                field=field, group_field=group_field, bucket=bucket,
-                pairs=pairs, params=params, user=user,
+            # CRM-Q20-3a: a core entity whose slot has an approved overlay
+            # reads the module. With none, the read of today, unchanged.
+            overlay = (
+                await overlay_of(db, current_tenant(), SLOT_OF.get(found.slug))
+                if found is not None else None
             )
+            if overlay is not None and found is not None:
+                read = await _read_overlay(
+                    db, found, overlay, measure=measure, group_by=group_by,
+                    field=field, group_field=group_field, bucket=bucket,
+                    pairs=pairs, params=params, user=user,
+                )
+            else:
+                if module is None and pairs:
+                    raise _core_pairs_refusal()
+                read = await _read(
+                    db, found, module, measure=measure, group_by=group_by,
+                    field=field, group_field=group_field, bucket=bucket,
+                    pairs=pairs, params=params, user=user,
+                )
     except DBAPIError as exc:
         if _is_timeout(exc):
             raise HTTPException(status_code=503, detail=TIMEOUT_DETAIL) from None
@@ -651,6 +837,7 @@ async def compute(
                     or key or "(none)"
                 ),
                 value=_rounded(acc.value),
+                type=read.types.get(key or "") if read.types else None,
             ),
             acc,
         )
@@ -670,6 +857,9 @@ async def compute(
         measure=measure, group_by=group_by, group_field=group_field,
         field=measured.key if measured is not None else None,
         field_type=measured.type if measured is not None else None,
+        field_label=measured.label if measured is not None else None,
+        group_field_label=grouped.label if grouped is not None else None,
+        keys=read.keys,
         group_field_type=grouped.type if grouped is not None else None,
         bucket=bucket if bucketed else None,
         groups=shown,
@@ -688,6 +878,7 @@ async def compute(
             None if measure == "weighted"
             else sum(acc.rows for acc in read.values.values())
         ),
+        overlay=read.overlay,
     )
 
 

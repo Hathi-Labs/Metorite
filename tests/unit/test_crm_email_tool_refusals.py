@@ -80,6 +80,10 @@ class _Refusing(FakeClient):
     body: Any = None
 
     async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+        if url.endswith("/crm/mode"):
+            # The mode read of the overlay (CRM-Q20-3a) answers as a Native
+            # CRM, so a refused read stays the refusal under test.
+            return FakeResponse({"mode": "native"}, 200)
         self._calls.append({"method": method, "url": url, "params": kwargs.get("params")})
         return FakeResponse(self.body, self.status)
 

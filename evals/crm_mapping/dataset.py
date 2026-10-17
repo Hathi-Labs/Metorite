@@ -92,6 +92,8 @@ def _module(spec: dict[str, Any]) -> tuple[mp.ModuleShape, list[dict[str, Any]]]
         api_name=spec["api_name"], label=spec["label"], singular=spec.get("singular"),
         records=int(spec["records"]), display_field=spec.get("display_field"),
         fields=tuple(mp.FieldShape(key=f[0], label=f[1], type=f[2]) for f in fields),
+        # CRM-Q31-3: code rule 2 of the catalogue reads it.
+        custom=spec["api_name"] not in mapping.GENERIC_STANDARD_MODULES,
     )
     return shape, _records(fields, min(int(spec["records"]), mp.SAMPLE_ROWS))
 
