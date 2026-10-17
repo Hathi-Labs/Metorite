@@ -613,8 +613,10 @@ def test_a_box_with_no_check_module_still_runs(mode: str, monkeypatch) -> None:
 @STREAMS
 async def test_a_difference_of_two_tool_figures_passes(stream: bool) -> None:
     """Fix round 2, A: a founder asks for open minus won. The answer states
-    the difference of two tool figures, with no extra request."""
-    answer = "Open deals exceed won deals by ₹7.3 lakh."
+    the difference of two tool figures, with no extra request. Fix round 3:
+    it also states both operands."""
+    answer = ("Open deals hold ₹12.3 lakh and won deals ₹5 lakh, so open "
+              "exceeds won by ₹7.3 lakh.")
     agent, client = _agent([("call", "crm_aggregate", {"entity": "deals"}),
                             ("text", answer)])
     assert await _run(agent, stream=stream) == answer
@@ -658,5 +660,168 @@ def test_the_ledger_derives_from_tool_results_only() -> None:
         assert ledger.check("Over 300, and the top 400.").ok
         assert not ledger.check("Together, 500 deals.").ok   # 200 + 300
         assert not ledger.check("Together, 600 deals.").ok   # 200 + 400
+        assert not ledger.check("200 and 300, together 500 deals.").ok
+        assert not ledger.check("200 and 400, together 600 deals.").ok
     ledger.record("crm_aggregate", "Won: 100")
-    assert ledger.check("Together, 300 deals.").ok           # 200 + 100
+    assert ledger.check("200 and 100, together 300 deals.").ok   # 200 + 100
+    assert not ledger.check("Together, 300 deals.").ok           # no operands
+
+
+# ── Fix round 3 (2026-10-17): the re-review of round 2 ────────────────────
+
+#: Each element that the fake ``whatsapp_ui`` queued, and each file that the
+#: fake ``share_artifact`` showed, in order.
+ELEMENTS: list[Any] = []
+
+
+async def whatsapp_ui(kind: str, data: dict[str, Any]) -> str:
+    """A fake WhatsApp element tool. It keeps each element it queues."""
+    ELEMENTS.append((kind, data))
+    return "queued"
+
+
+async def share_artifact(path: str) -> str:
+    """A fake file card tool. It keeps each path it shows."""
+    ELEMENTS.append(("file", path))
+    return "shown"
+
+
+@pytest.fixture(autouse=True)
+def _no_elements() -> Any:
+    ELEMENTS.clear()
+    yield
+    ELEMENTS.clear()
+
+
+def _stats(value: int) -> dict[str, Any]:
+    return {"kind": "stats", "data": {"items": [{"label": "Open", "value": value}]}}
+
+
+@STREAMS
+async def test_a_derived_figure_with_no_operands_is_caught(stream: bool) -> None:
+    """Rule 1: open minus won, with neither operand, gets the retry."""
+    draft = "Open deals exceed won deals by ₹7.3 lakh."
+    fixed = "Open deals hold ₹12.3 lakh and won ₹5 lakh, a gap of ₹7.3 lakh."
+    agent, client = _agent([("call", "crm_aggregate", {"entity": "deals"}),
+                            ("text", draft), ("text", fixed)])
+    assert await _run(agent, stream=stream) == fixed
+    assert len(client.requests) == 3
+    assert '"₹7.3 lakh"' in _user_texts(client.requests[-1])[-1]
+
+
+def test_whatsapp_ui_is_a_display_tool() -> None:
+    from acb_skills.answer_check import DISPLAY_TOOLS, SHOWN_TOOLS, display_text
+
+    assert "whatsapp_ui" in DISPLAY_TOOLS
+    assert "share_artifact" in SHOWN_TOOLS - DISPLAY_TOOLS
+    shown = display_text("whatsapp_ui", _stats(1834567))
+    assert "1834567" in shown and "stats" not in shown
+
+
+@STREAMS
+async def test_a_bad_whatsapp_element_is_never_sent(stream: bool) -> None:
+    """Rule 2: the element shows its data, so a made-up figure in it fails."""
+    agent, client = _agent([
+        ("call", "crm_aggregate", {"entity": "deals"}),
+        ("both", "Here is the pipeline.", "whatsapp_ui", _stats(1834567)),
+        ("both", "Here is the pipeline.", "whatsapp_ui", _stats(1234567)),
+        ("text", "Done."),
+    ], tools=[crm_aggregate, whatsapp_ui])
+    out = await _run(agent, stream=stream)
+    assert [("stats", _stats(1234567)["data"])] == ELEMENTS
+    assert out.endswith("Done.")
+    assert '"1834567"' in _user_texts(client.requests[2])[-1]
+    assert len(client.requests) == 4
+
+
+@STREAMS
+async def test_a_failed_text_beside_a_good_card_is_not_stripped(stream: bool) -> None:
+    """Rule 2: a strip passes only a step that shows nothing. A step that
+    draws a card and states a made-up figure fails, and the card waits."""
+    agent, client = _agent([
+        ("call", "crm_aggregate", {"entity": "deals"}),
+        ("both", "Open deals hold ₹99 lakh.", "emit_generative_ui", _card(1234567)),
+        ("both", "Open deals hold INR 12,34,567.", "emit_generative_ui", _card(1234567)),
+        ("text", "Done."),
+    ])
+    out = await _run(agent, stream=stream)
+    assert [_card(1234567)["ui"]] == CARDS     # drawn once, by the retry
+    assert "99" not in out
+    assert '"₹99 lakh"' in _user_texts(client.requests[2])[-1]
+    assert len(client.requests) == 4
+
+
+@STREAMS
+async def test_a_failed_text_beside_a_shared_file_is_not_stripped(stream: bool) -> None:
+    """``share_artifact`` shows a file, so its step is never stripped."""
+    agent, client = _agent([
+        ("call", "crm_aggregate", {"entity": "deals"}),
+        ("both", "Open deals hold ₹99 lakh.", "share_artifact", {"path": "outputs/a.pdf"}),
+        ("both", "Open deals hold ₹99 lakh.", "share_artifact", {"path": "outputs/a.pdf"}),
+    ], tools=[crm_aggregate, share_artifact])
+    out = await _run(agent, stream=stream)
+    assert ELEMENTS == []
+    assert out.startswith(FALLBACK_LEAD)
+    assert len(client.requests) == 3
+
+
+@pytest.mark.parametrize("label", [
+    "Expected return of INR 18,34,567", "Import duties: INR 18,34,567",
+    "The function of sales: INR 18,34,567", "A constant INR 18,34,567",
+])
+def test_prose_with_a_code_word_is_still_checked(label: str) -> None:
+    """Rule 6: "return" in prose is no code, so its figure is read."""
+    from acb_skills.answer_check import display_text
+
+    ui = json.dumps({"template": "kpi", "items": [{"label": label}]})
+    assert "18,34,567" in display_text("emit_generative_ui", {"ui": ui})
+
+
+@pytest.mark.parametrize("code", [
+    "const total = 1834567;", "function Card() { return total }",
+    "() => 1834567", "import React from 'react'\nexport default 1834567",
+    "if (x) return total;",
+])
+def test_code_still_shows_nothing(code: str) -> None:
+    from acb_skills.answer_check import display_text
+
+    assert display_text("emit_generative_ui", {"ui": code}) == ""
+
+
+def test_the_ledger_builds_its_sources_as_results_arrive(monkeypatch) -> None:
+    """Rule 4: each result is parsed once, when it arrives, and a check
+    parses no result again."""
+    from acb_common import number_check
+
+    parsed: list[str] = []
+    real = number_check._parse
+
+    def _counting(text: str, *, skip_years: bool) -> list[Any]:
+        if not skip_years:
+            parsed.append(text)
+        return real(text, skip_years=skip_years)
+
+    monkeypatch.setattr(number_check, "_parse", _counting)
+    ledger = RunLedger()
+    ledger.record("crm_aggregate", CRM_RESULT, arguments={"entity": "deals"})
+    after_record = len(parsed)
+    for _ in range(3):
+        assert ledger.check("Open deals hold INR 12,34,567.").ok
+    assert len(parsed) == after_record
+    assert ledger.sources() is ledger.book
+
+
+def test_the_ledger_keeps_only_the_newest_fallback_results() -> None:
+    from acb_skills.answer_check import FALLBACK_CHARS, FALLBACK_RESULTS
+
+    ledger = RunLedger()
+    for i in range(FALLBACK_RESULTS + 4):
+        ledger.record("crm_aggregate", f"Result {i}: INR {1000 + i}")
+    ledger.record("crm_search_notes", "a stranger wrote 9 lakh")
+    ledger.record("crm_aggregate", "x" * (FALLBACK_CHARS * 3))
+    assert len(ledger.results) == FALLBACK_RESULTS
+    assert all(t == "crm_aggregate" for t, _ in ledger.results)
+    assert len(ledger.results[-1][1]) == FALLBACK_CHARS + 1
+    assert fallback_text(ledger).endswith("…")
+    # Each result is still a source, also one that left the fallback list.
+    assert ledger.check("INR 1,000").ok
