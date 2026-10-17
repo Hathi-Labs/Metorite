@@ -29,7 +29,7 @@ ground truth and the route give the same numbers.
 | `questions.py` | The 31 questions. Each has its category, the calls that it needs and its facts. Plain Python computes each fact |
 | `scripted_answers.json` | The tool calls and the answer that `--scripted` replays. An answer holds placeholders, not numbers |
 | `recorded_routes.json` | The answers of the real routes on the seeded dataset. The R8 test records them |
-| `checkers.py` | The eight bars and the score of a run. It asks `acb_common.number_check`, the one number check of CRM-Q29 |
+| `checkers.py` | The nine bars and the score of a run. It asks `acb_common.number_check`, the one number check of CRM-Q29 |
 | `seed.py` | The dataset as SQL statements for one org. It opens no connection |
 | `run.py` | The runner: `--scripted`, `--live` and `--seed` |
 
@@ -84,6 +84,7 @@ The dataset has the shape of DEWiN after its import. It holds about 800 rows.
 | `tool_text` | The output of a tool holds each line that the question needs. Q31 needs the short-read line (CRM-Q30b) |
 | `tool_figures` | The output of the real tools holds each number fact that a route gives. So the scripted run checks the text that the member reads |
 | `numbers` | The answer holds each number fact, by the rule of `acb_common.number_check` |
+| `answer_check` | The answer passes `acb_common.number_check.check`, the chat check of CRM-Q29, with the tool output and the question as its sources. Q21's net cash flow waits for a rule of CRM-Q29, and the report names it under `waiting` |
 | `names` | The answer holds each name fact, and the names of a ranked list in rank order |
 | `flags` | The answer holds one of the flag phrases of the question |
 | `forbid` | The answer holds no forbidden number, for example the Zoho count, and no "INR 0" for an empty field |
@@ -170,4 +171,6 @@ the search is off, and Q30 fails.
 - The scripted answer of the note search is synthetic. It holds the notes
   that hold each word of the query.
 - The shared check reads "July 15" as a date, not as a count. So a scripted
-  answer writes "15 in July".
+  answer writes "15 in July". A ranked list puts one rank on each line.
+- A scripted answer writes money in whole rupees, as the tool prints it.
+  The facts keep their paise.

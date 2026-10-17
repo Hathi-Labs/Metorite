@@ -63,6 +63,11 @@
 > CRM-Q25c, a NUL byte answers 422 (§18.11, no migration). CRM-Q27, the
 > search of note text by meaning, dark (§18.11, migration 279).
 >
+> **Built later, not merged:** Batch I2, on the batch branch `crm-batch-i2`
+> (2026-10-17). CRM-Q29, the number check of a CRM answer, dark (§18.11, no
+> migration). CRM-Q30, the founder question set (§18.11, no migration).
+> CRM-Q30b, the short-read line of the read tools (§18.11, no migration).
+>
 > **Built from §19:** CRM-X4, the record page v2 (2026-10-12, §19.8).
 >
 > **Built from §20:** CRM-C2, one board (2026-10-13, §20.5). CRM-C3, stages
@@ -1269,9 +1274,9 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q26** | Labels on notes, on the decide tier, in shadow. §18.11 | P1 |
 | **CRM-Q27** | 🔨 built 2026-10-16 on `crm-batch-i`, merged (#1111), dark. Search of note text by meaning. §18.11 | P2 |
 | **CRM-Q28** | A weekly digest on the powerful tier. §18.11 | P2 |
-| **CRM-Q29** | 🔨 built 2026-10-17 on `crm-answer-check`, not merged, dark. The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
-| **CRM-Q30** | 🔨 built 2026-10-17 on `crm-founder-evals`, not merged. A founder question set for CRM insights: an eval of the assistant over CRM data. §18.11 | P1 |
-| **CRM-Q30b** | 🔨 built 2026-10-17 on `crm-founder-evals`, not merged. The read tools say when Zoho holds more records than the connected Zoho user can read. §18.11 | P1 |
+| **CRM-Q29** | 🔨 built 2026-10-17 on `crm-answer-check`, in the batch branch `crm-batch-i2`, not merged, dark. The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
+| **CRM-Q30** | 🔨 built 2026-10-17 on `crm-founder-evals`, in the batch branch `crm-batch-i2`, not merged. A founder question set for CRM insights: an eval of the assistant over CRM data. §18.11 | P1 |
+| **CRM-Q30b** | 🔨 built 2026-10-17 on `crm-founder-evals`, in the batch branch `crm-batch-i2`, not merged. The read tools say when Zoho holds more records than the connected Zoho user can read. §18.11 | P1 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
 
@@ -3629,10 +3634,10 @@ merged (#1100, migration 278), dark. CRM-Q25b, CRM-Q25c and CRM-Q27
 (migration 279, dark): built on 2026-10-16 in the batch branch
 `crm-batch-i`, with a fix round on 2026-10-17, and merged as #1111
 (`d72f92184`). CRM-Q28: specified, not built. Verified against code at
-`origin/main` `634cf54ee`. CRM-Q29: built 2026-10-17 on the branch
-`crm-answer-check`, not merged, dark (`CRM_ANSWER_CHECK` is `off`), no
-migration. CRM-Q30 and CRM-Q30b: built on 2026-10-17 in the branch
-`crm-founder-evals`, not merged, with no migration.
+`origin/main` `634cf54ee`. Batch I2, on the batch branch `crm-batch-i2`,
+not merged, no migration: CRM-Q29 was built on 2026-10-17 on
+`crm-answer-check`, dark (`CRM_ANSWER_CHECK` is `off`). CRM-Q30 and
+CRM-Q30b were built on 2026-10-17 on `crm-founder-evals`.
 
 **Owner direction (2026-10-16, in chat).** Use the decide, balanced and
 powerful tiers to run inference on the CRM data and produce insights. Build
@@ -4506,10 +4511,11 @@ and 10 of them are mutations that each fail one bar.
 
 **Findings for later work.**
 
-- No tool reads `short_by` of CRM-Q24. The assistant can flag the gap of
-  Q31 only from general care. CRM-Q30b, below, gives the tools that line.
-- CRM-Q29 is not on `origin/main`. `numbers.py` is the local number check,
-  and the eval moves to the shared function when CRM-Q29 merges.
+- At build time no tool read `short_by` of CRM-Q24. CRM-Q30b, below,
+  closes this. The read tools now give that line, and Q31 needs it.
+- At build time CRM-Q29 was on no branch of this one. The fix round below
+  closes this. The eval now asks `acb_common.number_check`, and
+  `numbers.py` is gone.
 
 **Fix round (2026-10-17, review of Batch I2).** The branch merges
 `origin/main` and `crm-answer-check` (CRM-Q29).
@@ -4533,6 +4539,28 @@ and 10 of them are mutations that each fail one bar.
   1. `tool_figures` fails 27 questions. The 4 that pass have no figure of an
   aggregate: Q22, Q23, Q30 and Q31. On the private database, 569 tests pass
   with no skip.
+
+**Fix round 2 (2026-10-17, the Batch I2 verifier).** The verifier ran the 31
+scripted answers through the CRM-Q29 check.
+
+- Seven answers (Q04, Q07, Q08, Q12, Q18, Q24, Q29) wrote paise, and the
+  tool prints whole rupees. So they stated a precision that no tool gave.
+  A member reads whole rupees, so the answers now write whole rupees, as
+  the tool does. The facts keep their paise. The format `inrp` is gone.
+- A new bar, `answer_check`, runs `acb_common.number_check.check` on each
+  answer. Its sources are the tool output of the run and the question. So
+  the eval and the chat check of CRM-Q29 cannot disagree in silence.
+- Q21 states the net cash flow, a difference of two tool figures. CRM-Q29
+  adds that rule later. Until then that one figure waits
+  (`answer_check_waits`), and the report names it under `waiting`. Any
+  other figure with no source still fails. When the rule lands, the wait
+  goes stale and fails, so the mark goes with it. Merge
+  `origin/crm-answer-check` again after that rule lands.
+- Q11 wrote its ranks inline ("1. ... 2. ..."), and the check read each rank
+  as a figure. The answer is now a list, one rank on each line, as a chat
+  answer is.
+- Five new tests: the one wait, a figure with no source, paise that no tool
+  printed, a wait that covers no other figure, and a stale wait.
 
 **CRM-Q30b · The read tools say when Zoho holds more (2026-10-17).**
 
@@ -4641,7 +4669,8 @@ the two counts (`syncHealth.ts`). A later slice can make the card read
 CRM-Q25b, CRM-Q25c and CRM-Q27 were built on the batch branch
 `crm-batch-i`, with a fix round on 2026-10-17, and merged as #1111
 (`d72f92184`). CRM-Q28 is not built. The owner flip of CRM-Q26 is not
-done. Batch M: CRM-Q17a-1b, CRM-Q17a-2, CRM-Q18-1b, CRM-Q18-2, CRM-Q18-3,
+done. Batch I2: CRM-Q29, CRM-Q30 and CRM-Q30b are built on the batch
+branch `crm-batch-i2`, and none is merged. Batch M: CRM-Q17a-1b, CRM-Q17a-2, CRM-Q18-1b, CRM-Q18-2, CRM-Q18-3,
 CRM-Q19 and CRM-Q20-1 are built on the batch branch `crm-batch-m`, and
 CRM-Q20-2 on `crm-q20-2-suggestions` from it. None is merged. CRM-Q20-3 is
 a stub. The spec audit of 2026-10-16 gave GO-NARROWED for both batches, and

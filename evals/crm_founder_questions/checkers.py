@@ -4,7 +4,7 @@ Spec: ``project-docs/specs/crm_platform.md`` §18.11.2, CRM-Q30 items 9 and 10.
 
 A run gives, for each question, the GET requests that the CRM tools sent
 (:class:`RouteCall`) and the answer text. :func:`score_question` scores them
-on eight bars:
+on nine bars:
 
 * ``tools``: each :class:`questions.Need` has a request that matches one of
   its alternatives. A request matches when it has the path, and each named
@@ -20,6 +20,10 @@ on eight bars:
   of a ranked list in the order of the rank.
 * ``flags``: the answer holds one of the flag phrases of the question.
 * ``forbid``: the answer holds no forbidden number and no forbidden pattern.
+* ``answer_check``: the answer passes ``acb_common.number_check.check``,
+  the chat check of CRM-Q29, with the tool output and the question as its
+  sources. So the eval and the chat check cannot disagree in silence. A
+  fact in ``answer_check_waits`` may wait for a rule of CRM-Q29.
 * ``agree``: each fact with a ``src`` equals the route answer that it names.
   Only the scripted run scores it, on the recorded answers. The R8 test
   scores it on the real route.
@@ -34,7 +38,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
-from acb_common.number_check import Sources, find_figures
+from acb_common.number_check import Sources, check, find_figures
 
 from evals.crm_founder_questions.questions import Fact, Need, Question
 
@@ -46,7 +50,8 @@ LIVE_BAR = 0.80
 SHORT_READS = "/crm/sync/short-reads"
 
 BARS: tuple[str, ...] = (
-    "tools", "tool_text", "tool_figures", "numbers", "names", "flags", "forbid", "agree",
+    "tools", "tool_text", "tool_figures", "numbers", "names", "flags", "forbid",
+    "answer_check", "agree",
 )
 
 
@@ -66,6 +71,9 @@ class QuestionScore:
     problems: dict[str, list[str]] = field(default_factory=lambda: {b: [] for b in BARS})
     #: False when the run did not score ``agree``, as a live run does not.
     agreed: bool = True
+    #: The figures that wait for a rule of CRM-Q29 (``answer_check_waits``).
+    #: They do not fail the question, and each summary names them.
+    waiting: list[str] = field(default_factory=list)
 
     def bars(self) -> dict[str, bool]:
         return {b: not self.problems[b] for b in BARS if b != "agree" or self.agreed}
@@ -76,7 +84,8 @@ class QuestionScore:
     def summary(self) -> dict[str, Any]:
         return {"id": self.id, "category": self.category, "passed": self.passed(),
                 "bars": self.bars(),
-                "problems": {b: p for b, p in self.problems.items() if p}}
+                "problems": {b: p for b, p in self.problems.items() if p},
+                **({"waiting": self.waiting} if self.waiting else {})}
 
 
 @dataclass
@@ -109,6 +118,7 @@ class Score:
             "rate": round(self.rate(), 3), "bar_rates": self.bar_rates(),
             "passed": self.passed(),
             "failed": [q.summary() for q in self.questions if not q.passed()],
+            "waiting": {q.id: q.waiting for q in self.questions if q.waiting},
         }
 
 
@@ -200,6 +210,24 @@ def check_forbid(q: Question, answer: str) -> list[str]:
     return out
 
 
+def check_answer(q: Question, answer: str, texts: list[str]) -> tuple[list[str], list[str]]:
+    """The chat check of CRM-Q29 on the answer: each figure must have a
+    source in the tool output of the run or in the question. Gives the
+    problems, and the figures that wait (``answer_check_waits``)."""
+    result = check(answer, [q.words, *texts])
+    waits = [f for f in q.facts if f.key in q.answer_check_waits]
+    problems: list[str] = []
+    waiting: list[str] = []
+    for figure in result.unmatched:
+        if any(states(f.value, figure.text) for f in waits):
+            waiting.append(f"{figure.text}: {q.wait_reason}")
+        else:
+            problems.append(f"{figure.text} has no source in the tool output or the question")
+    if waits and not waiting:
+        problems.append(f"stale wait: {list(q.answer_check_waits)} pass now. Remove the wait.")
+    return problems, waiting
+
+
 # ── agreement with the route ────────────────────────────────────────────────
 
 
@@ -278,11 +306,27 @@ def score_question(q: Question, calls: list[RouteCall], answer: str, *,
     s.problems["names"] = check_names(q.names(), answer)
     s.problems["flags"] = check_flags(q.flags, answer)
     s.problems["forbid"] = check_forbid(q, answer)
+    s.problems["answer_check"], s.waiting = check_answer(q, answer, texts or [])
     if agree:
         s.problems["agree"] = check_agree(q, calls)
     return s
 
 
-__all__ = ["BARS", "LIVE_BAR", "SHORT_READS", "QuestionScore", "RouteCall", "Score",
-           "call_matches", "check_agree", "check_tool_figures", "check_tool_text", "check_tools",
-           "score_question", "select", "states", "states_exactly"]
+__all__ = [
+    "BARS",
+    "LIVE_BAR",
+    "SHORT_READS",
+    "QuestionScore",
+    "RouteCall",
+    "Score",
+    "call_matches",
+    "check_agree",
+    "check_answer",
+    "check_tool_figures",
+    "check_tool_text",
+    "check_tools",
+    "score_question",
+    "select",
+    "states",
+    "states_exactly",
+]

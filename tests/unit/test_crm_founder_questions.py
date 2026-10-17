@@ -267,8 +267,9 @@ class TestTheEval:
         failed = _failed(_scripted())
         assert set(failed) == {"Q31"}
         # With no line the tools also read no short read, and print no Zoho count,
-        # so the Zoho count has no route answer and no figure in the output.
-        assert set(failed["Q31"]) == {"tool_text", "tool_figures", "agree"}
+        # so the Zoho count has no route answer, no figure in the output and no
+        # source for the chat check.
+        assert set(failed["Q31"]) == {"tool_text", "tool_figures", "answer_check", "agree"}
 
     def test_tools_that_print_zero_fail_the_tool_figures_bar(self, monkeypatch) -> None:
         """The reviewer's mutation (Batch I2): each figure that a tool prints
@@ -289,7 +290,47 @@ class TestTheEval:
                    if any(f.src is not None and f.value not in (None, 0) for f in q.numbers())}
         assert figured and figured <= {qid for qid, bars in failed.items()
                                        if "tool_figures" in bars}
-        assert all(set(bars) <= {"tool_figures", "tool_text"} for bars in failed.values())
+        assert all(set(bars) <= {"tool_figures", "tool_text", "answer_check"}
+                   for bars in failed.values())
+
+    # ── answer_check: the chat check of CRM-Q29 on each scripted answer ─────
+
+    def test_only_the_net_cash_flow_of_q21_waits(self) -> None:
+        """Q21's net is a difference of two tool figures. CRM-Q29 adds that
+        rule later. Until then that one figure waits, and nothing else."""
+        score = _scripted()
+        waiting = {q.id: q.waiting for q in score.questions if q.waiting}
+        assert list(waiting) == ["Q21"] and len(waiting["Q21"]) == 1
+        net = facts_of(by_id()["Q21"])["net"]
+        assert checkers.states(net, waiting["Q21"][0].split(":")[0])
+
+    def test_a_figure_with_no_source_fails_answer_check(self) -> None:
+        answers = copy.deepcopy(run.load_answers())
+        answers["Q09"]["answer"] += " The pipeline adds INR 98,76,543 next month."
+        assert set(_failed(_scripted(answers))["Q09"]) == {"answer_check"}
+
+    def test_paise_that_no_tool_printed_fail_answer_check(self) -> None:
+        """Batch I2 verifier: the tool prints whole rupees, so an answer in
+        paise states a precision that no tool gave."""
+        answers = copy.deepcopy(run.load_answers())
+        max_paid = facts_of(by_id()["Q08"])["max"]
+        answers["Q08"]["answer"] = f"The largest single payment is ₹{max_paid:,.2f}."
+        assert "answer_check" in _failed(_scripted(answers))["Q08"]
+
+    def test_the_wait_of_q21_does_not_cover_another_figure(self) -> None:
+        answers = copy.deepcopy(run.load_answers())
+        answers["Q21"]["answer"] += " Next quarter looks like INR 98,76,543."
+        assert "answer_check" in _failed(_scripted(answers))["Q21"]
+
+    def test_a_wait_that_no_figure_needs_fails(self) -> None:
+        """When CRM-Q29's rule lands, the wait goes stale and fails, so the
+        mark cannot outlive its reason."""
+        q = by_id()["Q21"]
+        _calls, texts = asyncio.run(run.run_tools(run.load_answers()["Q21"],
+                                                  run.recorded(run.load_routes())))
+        answer = run.render("Received {inr:received}, paid out {inr:paid_out}.", facts_of(q))
+        problems, waiting = checkers.check_answer(q, answer, texts)
+        assert not waiting and any(p.startswith("stale wait") for p in problems)
 
     def test_a_short_read_that_disagrees_fails_the_agree_bar(self) -> None:
         routes = copy.deepcopy(run.load_routes())
