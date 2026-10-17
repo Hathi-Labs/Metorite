@@ -109,6 +109,13 @@ def seed_task(
             "CAST(:rule AS uuid))"),
             {"id": task, "o": org, "p": project, "n": number, "s": lanes[category],
              "e": email, "arch": archived, "parent": parent, "rule": rule})
+        # The counter follows the seed, so a task the code makes (a recurrence
+        # successor) takes the next free number.
+        c.execute(text(
+            "INSERT INTO pm_task_counters (organization_id, project_id, last_value) "
+            "VALUES (CAST(:o AS uuid), CAST(:p AS uuid), :n) ON CONFLICT (project_id) "
+            "DO UPDATE SET last_value = GREATEST(pm_task_counters.last_value, :n)"),
+            {"o": org, "p": project, "n": number})
     return task
 
 

@@ -47,7 +47,7 @@ import hmac
 import json
 import re
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from acb_common import get_logger, get_settings, tenant_redis
@@ -343,8 +343,23 @@ async def _on_pull_request(
 
         host = github_autolink.app_host(str(getattr(get_settings(), "app_public_url", "") or ""))
         await github_autolink.link_pull_request(db, org, pull_request, host=host)
-    await write_pull_request(db, org, f"{full_name}#{number}", pull_request)
-    return []
+    ref = f"{full_name}#{number}"
+    await write_pull_request(db, org, ref, pull_request)
+    if action != "closed":
+        return []
+    # GH-6 (§12): a close, merged or not, can finish a task that an agent
+    # worked. It writes in this transaction, and its events go out after the
+    # answer, so after the commit.
+    from gateway.routes.projects import github_merge
+
+    merged_by = _obj(pull_request.get("merged_by")).get("login")
+    merged_at = None
+    if pull_request.get("merged"):
+        merged_at = _stamp(pull_request.get("merged_at")) or datetime.now(UTC)
+    outcome = await github_merge.on_merged(
+        db, org, ref, merged_at, str(merged_by) if merged_by else None, delivery=delivery,
+    )
+    return [outcome.emit_all] if outcome.events else []
 
 
 async def _handle(
