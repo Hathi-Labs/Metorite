@@ -63,6 +63,10 @@
 > CRM-Q25c, a NUL byte answers 422 (§18.11, no migration). CRM-Q27, the
 > search of note text by meaning, dark (§18.11, migration 279).
 >
+> **Built later, not merged:** CRM-Q28, the weekly digest on `tier-powerful`,
+> dark behind `CRM_DIGEST_ORGS` (2026-10-17, branch `crm-q28-digest`,
+> migration 281). See §18.11.
+>
 > **Built from §19:** CRM-X4, the record page v2 (2026-10-12, §19.8).
 >
 > **Built from §20:** CRM-C2, one board (2026-10-13, §20.5). CRM-C3, stages
@@ -1268,7 +1272,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q25** | The typed aggregate over every module and field, and its AI tool. §18.11 | P0 |
 | **CRM-Q26** | Labels on notes, on the decide tier, in shadow. §18.11 | P1 |
 | **CRM-Q27** | 🔨 built 2026-10-16 on `crm-batch-i`, merged (#1111), dark. Search of note text by meaning. §18.11 | P2 |
-| **CRM-Q28** | A weekly digest on the powerful tier. §18.11 | P2 |
+| **CRM-Q28** | 🔨 built 2026-10-17 on `crm-q28-digest`, not merged, dark. A weekly digest on the powerful tier. §18.11 | P2 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
 
@@ -3625,8 +3629,9 @@ one run. R8: `test_a_drop_on_a_core_module_is_unkept` and
 merged (#1100, migration 278), dark. CRM-Q25b, CRM-Q25c and CRM-Q27
 (migration 279, dark): built on 2026-10-16 in the batch branch
 `crm-batch-i`, with a fix round on 2026-10-17, and merged as #1111
-(`d72f92184`). CRM-Q28: specified, not built. Verified against code at
-`origin/main` `634cf54ee`.
+(`d72f92184`). CRM-Q28 (migration 281, dark): built on 2026-10-17 on the
+branch `crm-q28-digest`, not merged. Verified against code at
+`origin/main` `a8ef53c93`.
 
 **Owner direction (2026-10-16, in chat).** Use the decide, balanced and
 powerful tiers to run inference on the CRM data and produce insights. Build
@@ -4241,11 +4246,64 @@ names one org in `CRM_DIGEST_ORGS`, the first digest of that org runs. Its
 credits come from `usage_event`, because the rate card of production lives
 in the Console database. The result goes into this section.
 
+**Built as (2026-10-17, branch `crm-q28-digest`, not merged).** Migration
+281 adds `crm_digests`. `crm_sync/digest.py` holds the step, and
+`scheduler.start_digest` starts it after each sync run, outside the run
+lock. `routes/crm/digests.py` serves `GET /crm/digests`. `CRM_DIGEST_ORGS`
+ships empty, so nothing runs for any org.
+
+The build made these choices, which the list above does not name.
+
+- `aggregate.compute` is the one body of `GET /crm/aggregate`. The route
+  calls it, and so does each query of the digest, with the org of the run
+  bound. A source fence holds the two together.
+- `DIGEST_QUERIES` holds 8 calls. They are the open deals by stage, the
+  amount of the open deals by stage, and the amount by expected close month
+  for this month and the next two. They also hold the deals in a won or lost
+  stage that changed in the week, and the new leads, deals, contacts and
+  organizations of the week.
+- The overdue activities of the list are left out. An activity is no entity
+  of CRM-Q25, so no aggregate gives the count, and a number from other SQL
+  would break the number rule. The owner can add an entity to CRM-Q25 first.
+- In Mirror mode the aggregate refuses the created date (CRM-Q8). So in a Mirror org
+  the four "new" parts are always missing, and the digest says so (item 6).
+  The owner can change them to "changed in the week" in the PR.
+- No query groups by an owner or a record, so the prompt holds no email
+  address and no record name. The prompt holds no date of the week either.
+  The card and the stored numbers show the week.
+- One row holds each week. The step adds one to `tries` in the row in one
+  statement before each request, and the statement stops at 3. A CHECK in
+  the migration holds the same cap. A text that fails the check is not
+  stored, and the step writes again while a try is left. A row with no
+  `body` is never served.
+- The number check is strict. It takes out each label that holds a digit or
+  a number word, such as `November 2026`, but only as a whole label. Then
+  each number of the text must equal one value of the input, compared as a
+  decimal. A number written as a word, a share and a `%` sign each fail.
+  A group separator splits a number in two, and each half must pass.
+- The labels of CRM-Q26 count only in `on`. Their SQL is
+  `note_labels.week_counts`, beside the one writer of the table, so the
+  table keeps one module that names it.
+- The My Day card reads the digest only for an org on `CRM_DIGEST_ORGS`, in
+  the same session as the other CRM reads (`aggregate.my_day_rows`). Its
+  reach class is `none`, so it never leaves My Day.
+
+**The cost (estimate, not measured on a real model).** A typical digest
+of 6 stages, 3 months and the labels is about 3,040 characters of input,
+about 760 tokens. With a text of about 250 tokens, one week costs about
+1,000 tokens on `tier-powerful`. The bound is 3 requests of at most 2,000
+tokens in and 800 out, so 8,400 tokens for each org and week. The post-flip
+check above reads the real credits.
+
+R8: `tests/unit/test_crm_digest_r8.py`, with the start over in
+`tests/unit/test_crm_reset_r8.py`. Hermetic: `tests/unit/test_crm_digest.py`.
+`vitest`: `src/app/crm/components/crmQ28.test.ts`.
+
 #### 18.11.3 Verification
 
 - `bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"`
-- `uv run pytest tests/unit/test_crm_aggregate*.py tests/unit/test_crm_note_labels*.py tests/unit/test_crm_mirror_run_tools.py -q`,
-  with no test skipped.
+- `uv run pytest tests/unit/test_crm_aggregate*.py tests/unit/test_crm_note_labels*.py tests/unit/test_crm_digest*.py tests/unit/test_crm_mirror_run_tools.py -q`,
+  with no test skipped. CRM-Q28 added `test_crm_digest*.py` on 2026-10-17.
 - `uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py tests/unit/test_feed_decide.py -q`.
   The email and My Day features must behave as before.
 - `uv run python -m evals.crm_note_labels.run --scripted`
@@ -4259,7 +4317,8 @@ in the Console database. The result goes into this section.
 **Status (2026-10-17).** Batch I: CRM-Q25 merged (#1104). CRM-Q24,
 CRM-Q25b, CRM-Q25c and CRM-Q27 were built on the batch branch
 `crm-batch-i`, with a fix round on 2026-10-17, and merged as #1111
-(`d72f92184`). CRM-Q28 is not built. The owner flip of CRM-Q26 is not
+(`d72f92184`). CRM-Q28 was built on 2026-10-17 on the branch
+`crm-q28-digest` and is not merged. The owner flip of CRM-Q26 is not
 done. Batch M: CRM-Q17a-1b, CRM-Q17a-2, CRM-Q18-1b, CRM-Q18-2, CRM-Q18-3,
 CRM-Q19 and CRM-Q20-1 are built on the batch branch `crm-batch-m`, and
 CRM-Q20-2 on `crm-q20-2-suggestions` from it. None is merged. CRM-Q20-3 is

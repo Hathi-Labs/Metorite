@@ -293,6 +293,15 @@ class Settings(BaseSettings):
     # grant `enforcement-flip` does not cover it. Fence:
     # tests/unit/test_crm_note_vectors.py.
     crm_note_search_orgs: str = ""
+    # `crm_digest_orgs` (WS-53 CRM-Q28, 2026-10-17) lists the organization
+    # ids that get the weekly CRM digest on the powerful tier
+    # (`crm_platform.md` §18.11.2), in the grammar of `crm_orgs`. Default
+    # empty means NO organization (fail closed). An org outside the list gets
+    # no digest step after a sync run, and no model call. The one reader is
+    # `gateway.routes.crm.flags`. 🔴 OWNER-GATE on a box: each digest spends
+    # the org's credits (`work_plan.md` §6). The grant `enforcement-flip`
+    # does not cover it. Fence: tests/unit/test_crm_digest.py.
+    crm_digest_orgs: str = ""
 
     # ── The My Day loop (WS-58 MD-5b, 2026-10-14) ───────────────────────────
     #

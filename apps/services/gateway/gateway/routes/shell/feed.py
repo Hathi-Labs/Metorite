@@ -675,6 +675,10 @@ register(Provider("email_followups", ("email",), _email_followups, MAIL_FOLLOWUP
 # The source `crm`: `crm_followup_due`, `deal_quiet` and `deal_close_passed`.
 # Each keys on `crm:<deal|lead|contact|organization>:<id>`, so one record
 # gives one card, and links to the record through `sources.crm_href`.
+# WS-53 CRM-Q28 item 14 adds `digest_ready`: the weekly digest of the org was
+# stored inside the last day. It keys on `crm:digest:<week_start>`, its why
+# line is a code template, and its one act opens Reports. It shows no model
+# text. Only an org on `CRM_DIGEST_ORGS` reads it (`aggregate.my_day_rows`).
 #
 # The gate, in the order of the CRM router: `feature:crm` (the Provider),
 # then the kill switch, then the access rule. A closed switch and a 403 of
@@ -688,7 +692,10 @@ register(Provider("email_followups", ("email",), _email_followups, MAIL_FOLLOWUP
 # `tests/unit/test_feed_crm_kinds.py` and `test_feed_crm_kinds_r8.py`.
 
 #: The kinds of the source (§5.9 item 13).
-CRM_KINDS = frozenset({"crm_followup_due", "deal_quiet", "deal_close_passed"})
+CRM_KINDS = frozenset({"crm_followup_due", "deal_quiet", "deal_close_passed",
+                       "digest_ready"})
+#: The link of the ``digest_ready`` act: the Reports tab of the CRM.
+DIGEST_HREF = "/crm?tab=reports"
 #: The record word of a signal id → the kind of ``sources.CRM_KINDS``.
 _CRM_RECORDS = {"deal": "deal", "lead": "lead", "contact": "contact",
                 "organization": "company"}
@@ -765,6 +772,23 @@ def _close_passed_signal(row: dict[str, Any], tz: ZoneInfo) -> Signal:
                        facts={"due_at": due}, act=("move-date", "Move the date"), at=due)
 
 
+def _digest_signal(row: dict[str, Any]) -> Signal:
+    """``digest_ready``: the weekly digest of the org is ready (CRM-Q28 item
+    14). The facts are the week and the time it was stored, never the text.
+    Its one act opens Reports."""
+    week = row["week_start"]
+    if not isinstance(week, date):
+        week = date.fromisoformat(str(week))
+    title = "Weekly CRM digest"
+    return Signal(
+        signal_id=f"crm:digest:{week.isoformat()}", app="crm", kind="digest_ready",
+        entity={"type": "digest", "id": week.isoformat(), "label": title}, title=title,
+        facts={"week_start": week.isoformat(), "stored_at": _iso(row.get("stored_at"))},
+        href=DIGEST_HREF, acts=(link("open-reports", "Open Reports", DIGEST_HREF),),
+        at=_iso(row.get("stored_at")),
+    )
+
+
 def _crm_order(signal: Signal, today: date, tz: ZoneInfo) -> tuple[int, int, float, str]:
     """By ``BASE``, then a follow-up due from my local today on before an
     older one, then by age (§5.9 item 13). So the cap of 15 never cuts a
@@ -807,6 +831,8 @@ async def _crm(user: UserContext) -> Found:
     signals: list[Signal] = [_followup_signal(r, tz) for r in due]
     signals += [_quiet_deal_signal(r, now) for r in quiet]
     signals += [_close_passed_signal(r, tz) for r in passed]
+    if rows.get("digest"):
+        signals.append(_digest_signal(rows["digest"]))
     signals.sort(key=lambda s: _crm_order(s, today, tz))
     full = any(len(part) >= size for part in (due, quiet, passed))
     return Found([], 0, capped=full or len(signals) > PER_APP,
@@ -1087,6 +1113,17 @@ def _followup_line(facts: dict[str, Any], tz: ZoneInfo, today: date) -> str:
     return f"A follow-up is due {when}."
 
 
+def _digest_line(facts: dict[str, Any]) -> str:
+    """The why line of ``digest_ready`` (CRM-Q28 item 14). A code template:
+    it names the week and never shows a word of the model's text."""
+    try:
+        week = date.fromisoformat(str(facts.get("week_start")))
+    except ValueError:
+        return "The weekly CRM digest is ready in Reports."
+    return (f"The CRM digest of the week from {week.day} {week.strftime('%b')} "
+            "is ready in Reports.")
+
+
 def _colleague_line(facts: dict[str, Any]) -> str:
     names = [str(n) for n in facts.get("out") or [] if n]
     task = facts.get("task") or "a task"
@@ -1101,7 +1138,8 @@ def _md3_why(kind: str, facts: dict[str, Any], tz: ZoneInfo,
     """The templates of the eleven MD-3 kinds (§5.9 items 11 to 14). MD-3c
     writes them all, so MD-3d to MD-3f add only their providers. Each reads
     the facts that its provider must give, and the spec names them (§5.9,
-    "The facts of each template"). An unknown kind raises."""
+    "The facts of each template"). WS-53 CRM-Q28 adds ``digest_ready``, a
+    CRM kind of its own. An unknown kind raises."""
     if kind == "waiting_quiet":
         n = _days(facts.get("waited_days"))
         who = facts.get("who")
@@ -1135,6 +1173,8 @@ def _md3_why(kind: str, facts: dict[str, Any], tz: ZoneInfo,
                                 "and the deal is still open.")
     if kind == "colleague_out":
         return "colleague_out", _colleague_line(facts)
+    if kind == "digest_ready":
+        return "digest_ready", _digest_line(facts)
     if kind == "agent_asks":
         at = facts.get("waiting_since")
         return "asks", (f"Asked {_when(at, tz, today)} at {_clock(at, tz)}. "
