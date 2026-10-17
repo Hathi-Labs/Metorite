@@ -10787,10 +10787,12 @@ and the first live call follow the dev-phase window (root `CLAUDE.md` §3a).
 **Size.** Small. One route, one migration of three INSERTs, one client
 function, and one changed post in the gateway.
 
-**Owner question, open.** With `CUSTOMER_CONSOLE_SPEND_GATE` on, an org at
-zero credits gets a 402 on this door too, and its index degrades. The door
-draws nothing, so the owner may want it outside the balance wall. Decide
-before the gate flips (`work_plan.md` A2).
+**Owner decision (2026-10-17): the balance wall stays.** With
+`CUSTOMER_CONSOLE_SPEND_GATE` on, an org at zero credits gets a 402 on this
+door too, and its index degrades. The owner accepts this. A zero-credit org
+gets no embeddings, and the premium features of a zero-credit org are decided
+later. The door keeps the shared prelude. A page saved during the refusal
+keeps NULL vectors until its next edit.
 
 ## 6B. CP-11 in detail — credits, keys, and the hop that makes them real
 
