@@ -3,7 +3,7 @@
  *
  * Mutations caught, by test:
  * - a pill text leaves the table of §12.1, or the client name loses its
- *   title case (`mcp:claude-code` must read "Claude Code");
+ *   label (`mcp:claude.ai:claude-code` must read "Claude Code");
  * - a state takes a hue the spec does not name, or `working` goes through
  *   `resolveHue` and turns blue;
  * - the answer sends labels and not option ids, sends two ids for a single
@@ -19,6 +19,9 @@
  *
  * The click paths run in a real browser in `e2e/agent-runs.spec.ts`.
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -33,6 +36,7 @@ import { AgentPill } from "../components/AgentPill";
 import {
   AGENT_STATE_VALUES,
   ARCHIVE_CARD_TITLE,
+  CLIENT_LABELS,
   ARCHIVE_HINT,
   type AgentActivity,
   type AgentRun,
@@ -76,7 +80,7 @@ const ELICIT: AgentActivity = {
     allow_multiple: false,
   },
   actor: "priya@example.com",
-  actor_via: "mcp:claude-code",
+  actor_via: "mcp:claude.ai:claude-code",
 };
 
 const MULTI: AgentActivity = {
@@ -87,7 +91,7 @@ const MULTI: AgentActivity = {
 
 describe("the pill: state → text, by the table in §12.1", () => {
   const facts = {
-    clientVia: "mcp:claude-code",
+    clientVia: "mcp:claude.ai:claude-code",
     memberEmail: "priya.sharma@example.com",
     thought: "Reading the migration runner",
   };
@@ -116,11 +120,38 @@ describe("the pill: state → text, by the table in §12.1", () => {
     expect(agentPillText("working").text).toBe("Agent working");
   });
 
-  it("names the client from its slug", () => {
-    expect(clientName("mcp:claude-code")).toBe("Claude Code");
-    expect(clientName("mcp:cursor")).toBe("Cursor");
-    expect(clientName("mcp:chatgpt")).toBe("ChatGPT");
-    expect(clientName("")).toBe("Agent");
+});
+
+/**
+ * WS-55 EA-13a (§12.2 item 1, EA3-45). ONE case file holds the label map and
+ * each stamp's label. `tests/unit/test_agent_client_stamp.py` reads the same
+ * file for `agent_oauth.client_label`, so the two maps cannot drift.
+ *
+ * Mutations caught: a key of `CLIENT_LABELS` added, dropped or relabelled
+ * (the map test); the host fallback returns the stamp body or title case
+ * (N7, `mcp:evil.example:claude-code`); the legacy `mcp:claude.ai` reads
+ * "Claude.ai" again (N6); `mcp:constructor` reads a property of Object.
+ */
+describe("the client name: one case file with the gateway (EA-13a)", () => {
+  const FILE = JSON.parse(
+    readFileSync(
+      fileURLToPath(new URL("../../../../../../tests/fixtures/agent_client_names.json", import.meta.url)),
+      "utf-8",
+    ),
+  ) as { labels: Record<string, string>; cases: { via: string; label: string; why: string }[] };
+
+  it("holds the map of the case file, key for key", () => {
+    expect({ ...CLIENT_LABELS }).toEqual(FILE.labels);
+  });
+
+  it("gives each stamp of the case file its label", () => {
+    expect(FILE.cases.length).toBeGreaterThan(5);
+    for (const c of FILE.cases) expect(clientName(c.via), c.why).toBe(c.label);
+  });
+
+  it("never reads a property of Object as a label", () => {
+    expect(clientName("mcp:constructor")).toBe("constructor");
+    expect(clientName("mcp:__proto__:x")).toBe("__proto__");
   });
 });
 
@@ -257,7 +288,7 @@ describe("the run panel's reads", () => {
     id: "r",
     task_id: "t",
     member_email: "vj@example.com",
-    client_via: "mcp:claude-code",
+    client_via: "mcp:claude.ai:claude-code",
     status: "in_progress",
     ...over,
   });
@@ -347,7 +378,7 @@ describe("the archive request (EA-6g, EA3-40)", () => {
       ],
       allow_multiple: false,
     },
-    actor_via: "mcp:claude-code",
+    actor_via: "mcp:claude.ai:claude-code",
   };
   const FREE: AgentActivity = { ...TYPED, id: "q8", content_metadata: null };
   const NOW = Date.parse("2026-10-15T10:00:00Z");

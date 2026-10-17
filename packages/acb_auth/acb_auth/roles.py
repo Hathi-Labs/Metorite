@@ -60,7 +60,9 @@ class AgentScope:
     #: D-EA-4. False hides every personal project.
     include_personal: bool = False
     client_origin: str = ""
-    #: ``mcp:<slug>``, the value of ``agent_oauth.actor_via_for(client_origin)``.
+    #: The stamp ``mcp:<host>:<slug>`` (EA-13a), the value of
+    #: ``agent_oauth.actor_via_for(client_origin, client_id=...)`` for the
+    #: connection's client id. Without a slug it is the host stamp.
     actor_via: str = ""
 
 

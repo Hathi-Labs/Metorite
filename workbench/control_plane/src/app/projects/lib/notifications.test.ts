@@ -202,7 +202,7 @@ suite("describe", () => {
 
   it("names an agent's client and asks as the shell bell does", () => {
     // WS-55 EA-12c: the same words as `routes/shell/needs.py` `_sentence`.
-    expect(describe(row({ kind: "agent_question", actor: "mcp:claude-code" }))).toBe(
+    expect(describe(row({ kind: "agent_question", actor: "mcp:claude.ai:claude-code" }))).toBe(
       "Claude Code asked you about #12 Fix the extruder",
     );
   });

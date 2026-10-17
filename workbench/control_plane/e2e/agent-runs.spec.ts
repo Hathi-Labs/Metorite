@@ -85,7 +85,7 @@ const ELICITATION = {
     allow_multiple: false,
   },
   actor: ME,
-  actor_via: "mcp:claude-code",
+  actor_via: "mcp:claude.ai:claude-code",
   in_reply_to: null,
   created_at: "2026-10-14T10:00:00Z",
 };
@@ -98,7 +98,7 @@ const THOUGHT = {
   signal: null,
   signal_metadata: null,
   actor: ME,
-  actor_via: "mcp:claude-code",
+  actor_via: "mcp:claude.ai:claude-code",
   in_reply_to: null,
   created_at: "2026-10-14T09:59:00Z",
 };
@@ -108,7 +108,7 @@ function run(status: string, state: string) {
     id: "r1",
     task_id: "t2",
     member_email: ME,
-    client_via: "mcp:claude-code",
+    client_via: "mcp:claude.ai:claude-code",
     status,
     state,
     started_at: "2026-10-14T09:58:00Z",
@@ -142,7 +142,7 @@ function archiveRequest(expired = false) {
       allow_multiple: false,
     },
     actor: ME,
-    actor_via: "mcp:claude-code",
+    actor_via: "mcp:claude.ai:claude-code",
     in_reply_to: null,
     created_at: "2026-10-14T10:00:00Z",
   };

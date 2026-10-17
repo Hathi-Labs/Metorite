@@ -50,7 +50,7 @@ function run(over: Partial<AgentRun> = {}): AgentRun {
     id: "r1",
     task_id: "t1",
     member_email: "you@example.com",
-    client_via: "mcp:claude-code",
+    client_via: "mcp:claude.ai:claude-code",
     status: "created",
     state: "queued",
     ...over,

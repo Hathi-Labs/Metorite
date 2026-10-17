@@ -1,0 +1,19 @@
+{
+  "_comment": "WS-55 EA-13a (external_agent_access.md section 12.2 item 1, EA3-45, EA3-47). ONE case file for the label of a client stamp. labels is CLIENT_LABELS of packages/acb_auth/acb_auth/agent_oauth.py and of workbench/control_plane/src/app/projects/lib/agentRuns.ts, key for key. cases is each stamp and the label that both readers must give. tests/unit/test_agent_client_stamp.py and agentRuns.test.ts read this file.",
+  "labels": {
+    "claude.ai:claude-code": "Claude Code",
+    "claude.ai": "Claude"
+  },
+  "cases": [
+    {"via": "mcp:claude.ai:claude-code", "label": "Claude Code", "why": "N1: the stamp of Claude Code"},
+    {"via": "MCP:Claude.AI:Claude-Code", "label": "Claude Code", "why": "the case of a stamp does not matter"},
+    {"via": "mcp:claude.ai", "label": "Claude", "why": "N6: a legacy host stamp of claude.ai"},
+    {"via": "mcp:claude.ai:desktop", "label": "Claude", "why": "another client of a known host reads as the label of its host"},
+    {"via": "mcp:evil.example:claude-code", "label": "evil.example", "why": "N7: a document at another host that says Claude Code reads as its host"},
+    {"via": "mcp:client.example", "label": "client.example", "why": "an unknown host stamp reads as its host"},
+    {"via": "mcp:client.example:meta", "label": "client.example", "why": "an unknown client stamp reads as its host"},
+    {"via": "mcp:0123456789abcdef", "label": "0123456789abcdef", "why": "the hash stamp reads as itself"},
+    {"via": "", "label": "Agent", "why": "no stamp"},
+    {"via": "mcp:", "label": "Agent", "why": "an empty stamp"}
+  ]
+}

@@ -331,7 +331,7 @@ B_MEMBER = "b-member@mcpauth.test"
 MOVER = "mover@mcpauth.test"
 OWNER = "owner@mcpauth.test"
 ORIGIN = "https://client.example"
-VIA = "mcp:client.example"
+VIA = "mcp:client.example:meta"  # EA-13a: the slug of the client id `meta.json`
 
 
 def _exec_sql_file(conn, sql: str) -> None:

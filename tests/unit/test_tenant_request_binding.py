@@ -1088,9 +1088,15 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: the writes flag after the signature and built the Redis client inside the
 #: ``try``. The pins of the first build were 3.12 ``8de38247…cafdb2`` and
 #: 3.13 ``0cc35491…59e002c``.
+#:
+#: EA-13a (2026-10-18) changed step 5. The stamp that branch 0 expects is now
+#: ``actor_via_for(client_origin, client_id=connection.client_id)``, so a
+#: connection with a CIMD client id stamps ``mcp:<host>:<slug>`` (EA3-47).
+#: The pins before it were 3.12 ``6e8ea012…bc318257`` and 3.13
+#: ``be0315c7…ce74bc00``.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
-    (3, 12): "6e8ea0123adca18a5165232771eccf40753d40a0cdaaf0d869e54bb9bc318257",
-    (3, 13): "be0315c701550a8e4c6b01ca15b21223f6d68c931f3c5f18cfb9eb3ace74bc00",
+    (3, 12): "781888b3124bd8e6eb9b5aabc83a69f3af67aa22e5664efa077a855885dbbb29",
+    (3, 13): "17748943ef887e1c2efb9f99b127573e5b5a89dc875b4731ad7909d7ad2a1c44",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see

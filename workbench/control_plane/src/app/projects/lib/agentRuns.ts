@@ -220,29 +220,35 @@ export function newIdempotencyKey(): string {
 /* ── Names ───────────────────────────────────────────────────────────────── */
 
 /**
- * Names that title case gets wrong. Every other slug draws in title case,
- * so `mcp:claude-code` reads "Claude Code".
+ * WS-55 EA-13a (spec §12.2 item 1, EA3-45, EA3-47). The curated name of a
+ * client stamp. A stamp is `mcp:<host>:<slug>` for a client with a metadata
+ * document, or the legacy `mcp:<host>`. This map is `CLIENT_LABELS` of
+ * `acb_auth/agent_oauth.py`, key for key. `tests/fixtures/agent_client_names.json`
+ * holds both, and `agentRuns.test.ts` and `test_agent_client_stamp.py` fail
+ * when either map differs from it.
+ *
+ * ⚠️ The self-declared `client_name` of a document never names a client here.
+ * Any host can publish a document that says "Claude Code".
  */
-const CLIENT_NAMES: Record<string, string> = {
-  chatgpt: "ChatGPT",
-  "claude-ai": "Claude",
-  vscode: "VS Code",
-  "vs-code": "VS Code",
-  "github-copilot": "GitHub Copilot",
-  openai: "OpenAI",
+export const CLIENT_LABELS: Readonly<Record<string, string>> = {
+  "claude.ai:claude-code": "Claude Code",
+  // The legacy host stamp. It is true for every client on that host.
+  "claude.ai": "Claude",
 };
 
-/** `mcp:claude-code` → "Claude Code". An empty value reads "Agent". */
+/**
+ * The name of a client stamp. A known stamp reads its label. Else the label
+ * of its host, else the host itself, so `mcp:evil.example:claude-code` reads
+ * "evil.example". An empty value reads "Agent".
+ */
 export function clientName(via?: string | null): string {
-  const raw = (via ?? "").trim();
-  const slug = (raw.startsWith("mcp:") ? raw.slice(4) : raw).toLowerCase();
-  if (!slug) return "Agent";
-  if (CLIENT_NAMES[slug]) return CLIENT_NAMES[slug];
-  return slug
-    .split(/[-_\s]+/)
-    .filter(Boolean)
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(" ");
+  const raw = (via ?? "").trim().toLowerCase();
+  const body = raw.startsWith("mcp:") ? raw.slice(4) : raw;
+  // An own key only: `mcp:constructor` must not read a property of Object.
+  const label = (key: string) =>
+    Object.prototype.hasOwnProperty.call(CLIENT_LABELS, key) ? CLIENT_LABELS[key] : null;
+  const host = body.split(":")[0];
+  return label(body) ?? label(host) ?? (host || "Agent");
 }
 
 /** A member's display name: the directory label, else the address's local part. */

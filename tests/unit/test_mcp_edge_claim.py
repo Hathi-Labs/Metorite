@@ -83,6 +83,7 @@ from tests.unit._tenant_ladder import apply_ladder
 _DB_GATE = w._DB_GATE
 _uuid = w._uuid
 GOOD, KEY, VIA = w.GOOD, w.KEY, w.VIA
+R8_VIA = w.R8_VIA
 TASK, PROJECT = w.TASK, w.PROJECT
 S_TODO, S_DOING = w.S_TODO, w.S_DOING
 V1, V2, V3 = w.V1, w.V2, tw.V3
@@ -526,7 +527,7 @@ class TestClaimOnARealDatabase:
         await _claim(live, task)
         [assignment] = _activities(live, task, "assignment")
         [move] = _activities(live, task, "status_change")
-        assert assignment.meta["via"] == VIA and move.meta["via"] == VIA
+        assert assignment.meta["via"] == R8_VIA and move.meta["via"] == R8_VIA
         assert assignment.meta["added"] == [MEMBER]
         assert assignment.created_by == MEMBER and move.created_by == MEMBER
 
@@ -585,7 +586,7 @@ class TestAnAgentMayMoveATaskToDone:
         row = _row(live, task)
         assert str(row.status_id) == live.s.done and row.completed_at is not None
         [move] = _activities(live, task, "status_change")
-        assert move.meta["via"] == VIA and move.meta["to_category"] == "done"
+        assert move.meta["via"] == R8_VIA and move.meta["to_category"] == "done"
 
     async def test_f2_cancel_is_refused_at_the_edge_and_at_the_gateway(self, live):
         task = _task(live, live.team, live.s.doing, "f2")
@@ -673,7 +674,7 @@ async def _gateway_unscoped(world, method: str, path: str, *, body: dict[str, An
     sent: dict[str, str] = {"Content-Type": "application/json"}
     if signed is not None:
         sent.update(agent_signing.signed_headers(
-            KEY, organization_id=world.org, connection_id=world.c[signed], actor_via=VIA,
+            KEY, organization_id=world.org, connection_id=world.c[signed], actor_via=R8_VIA,
             method=method, path=path, query="", body=raw))
     else:
         sent.update({"Authorization": f"Bearer {tw.INTERNAL}", "X-User-Email": MEMBER})

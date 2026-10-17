@@ -739,8 +739,11 @@ async def _agent_user(request: Request) -> UserContext:
         return _refuse_agent("connection_org", **ids)
 
     # 5. Checked before the resolve, so a bad stamp binds no tenant. The stamp
-    # is the one the connection's origin gives, and it has the stamp's shape.
-    expected_via = agent_oauth.actor_via_for(connection.client_origin)
+    # is the one the connection's origin and client id give (EA-13a), and it
+    # has the stamp's shape.
+    expected_via = agent_oauth.actor_via_for(
+        connection.client_origin, client_id=connection.client_id,
+    )
     if (
         not connection.client_origin
         or actor_via != expected_via

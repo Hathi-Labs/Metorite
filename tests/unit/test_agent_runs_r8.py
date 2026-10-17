@@ -58,7 +58,10 @@ _REPO = Path(__file__).resolve().parents[2]
 _MIGRATIONS = _REPO / "infra" / "postgres"
 
 ORIGIN = "https://claude.ai"
-VIA = "mcp:claude.ai"
+#: EA-13a. The stamp of Claude Code's connection: its client id is
+#: :data:`CLIENT_ID`, so ``agent_oauth.actor_via_for`` adds the slug.
+CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
+VIA = "mcp:claude.ai:claude-code"
 
 # ── Hermetic: the status machine of §12.1 ───────────────────────────────────
 
@@ -158,7 +161,8 @@ def test_the_bell_reads_an_agent_question_as_a_question() -> None:
     assert set(NOTIFICATION_KINDS) <= set(needs._VERB)
     assert "agent_question" in needs.ASKING_NOTIFICATIONS
     row = {"kind": "agent_question", "actor": VIA, "task_title": "Fix it", "task_number": 4}
-    assert needs._sentence(row) == "Claude.ai asked you about #4 Fix it"
+    # EA-13a: the label of the stamp, never "Claude.ai" (EA3-45).
+    assert needs._sentence(row) == "Claude Code asked you about #4 Fix it"
 
 
 # ── R8: the helpers ─────────────────────────────────────────────────────────
@@ -289,10 +293,10 @@ def _seed_connection(p: Any, org: str, email: str) -> str:
         return str(c.execute(text(
             "INSERT INTO agent_connection (organization_id, member_email, client_id,"
             " client_name, client_origin, scopes, pinned_projects, include_personal,"
-            " expires_at) VALUES (CAST(:o AS uuid), :m, 'https://claude.ai/client.json',"
-            " 'Claude', :origin, ARRAY['projects:read', 'projects:write'],"
+            " expires_at) VALUES (CAST(:o AS uuid), :m, :client,"
+            " 'Claude Code', :origin, ARRAY['projects:read', 'projects:write'],"
             " CAST('{}' AS uuid[]), false, now() + interval '1 day') RETURNING id"),
-            {"o": org, "m": email, "origin": ORIGIN}).scalar())
+            {"o": org, "m": email, "origin": ORIGIN, "client": CLIENT_ID}).scalar())
 
 
 def _count(p: Any, sql: str, **params: Any) -> int:
