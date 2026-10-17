@@ -42,6 +42,7 @@ import {
   emptyListLine,
   hiddenCoreRow,
   landing,
+  landingPlan,
   railEntries,
   railSections,
   type CoreStates,
@@ -235,9 +236,95 @@ describe("item 3: /crm opens on the first row that holds records", () => {
   it("waits for the answer before it loads a list, and replaces the address", () => {
     const page = read("../page.tsx");
     expect(page).toMatch(/if \(landingPending\) return;/);
-    expect(page).toMatch(/search === "" && ctx\.mode === "mirror"/);
-    expect(page).toMatch(/replaceView\(landingHref\)/);
+    expect(page).toMatch(/replaceView\(plan\.redirect\)/);
     expect(page).toMatch(/landingPending \? \(/);
+    // The page keeps the decision for its mount, and feeds it back.
+    expect(page).toMatch(/decided: landed,/);
+    expect(page).toMatch(/if \(plan\.decide\) setLanded\(true\);/);
+  });
+});
+
+// ── Fix round 1, P1: the landing happens once for each mount ───────────────
+
+/**
+ * The page as a loop over its renders: each render asks `landingPlan`, keeps
+ * `decided` as the page does, and follows a redirect as `replaceView` does.
+ * `target` is what `landing` gives for the state of that render.
+ */
+function navigator(target: () => string | null) {
+  let decided = false;
+  let search = "";
+  const render = (known = true) => {
+    const plan = landingPlan({
+      decided,
+      search,
+      mirror: true,
+      known,
+      target: target(),
+      here: search ? `/crm?${search}` : "/crm",
+    });
+    if (plan.decide) decided = true;
+    if (plan.redirect) {
+      search = plan.redirect.replace(/^\/crm\??/, "");
+      render(known);
+    }
+    return plan;
+  };
+  return {
+    render,
+    go: (next: string) => {
+      search = next;
+      return render();
+    },
+    get address() {
+      return search ? `/crm?${search}` : "/crm";
+    },
+  };
+}
+
+describe("fix round 1, P1: /crm lands once for each mount of the page", () => {
+  it("waits while the reads run, then lands on Leads", () => {
+    const nav = navigator(() => "/crm?tab=leads");
+    expect(nav.render(false).pending).toBe(true);
+    expect(nav.address).toBe("/crm");
+    nav.render(true);
+    expect(nav.address).toBe("/crm?tab=leads");
+  });
+
+  it("keeps the member on Deals after a click, though Deals is a bare /crm", () => {
+    const nav = navigator(() => "/crm?tab=leads");
+    nav.render();
+    expect(nav.address).toBe("/crm?tab=leads");
+    // The URL grammar writes no `tab` for the Deals board.
+    const plan = nav.go("");
+    expect(plan).toEqual({ decide: false, redirect: null, pending: false });
+    expect(nav.address).toBe("/crm");
+  });
+
+  it("does not move the member when the mode is read again", () => {
+    let target: string | null = "/crm?tab=leads";
+    const nav = navigator(() => target);
+    nav.render();
+    nav.go("");
+    // A new read of `GET /crm/mode` gives another first row.
+    target = "/crm?tab=contacts";
+    expect(nav.render().redirect).toBeNull();
+    expect(nav.address).toBe("/crm");
+  });
+
+  it("never lands when the page opened on an address with a view", () => {
+    const nav = navigator(() => "/crm?tab=leads");
+    expect(nav.go("tab=reports")).toEqual({ decide: true, redirect: null, pending: false });
+    expect(nav.go("")).toEqual({ decide: false, redirect: null, pending: false });
+  });
+
+  it("decides at once when the landing is the bare address itself", () => {
+    expect(
+      landingPlan({ decided: false, search: "", mirror: true, known: true, target: "/crm", here: "/crm" }),
+    ).toEqual({ decide: true, redirect: null, pending: false });
+    expect(
+      landingPlan({ decided: false, search: "", mirror: false, known: false, target: null, here: "/crm" }),
+    ).toEqual({ decide: true, redirect: null, pending: false });
   });
 });
 

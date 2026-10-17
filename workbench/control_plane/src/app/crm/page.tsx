@@ -161,7 +161,7 @@ import {
   type SettingsSectionId,
 } from "./lib/settingsSections";
 import { convertSkippedNote } from "./lib/convertMapping";
-import { emptyListLine, landing, railEntries, viewLabel, type Landing } from "./lib/views";
+import { emptyListLine, landing, landingPlan, railEntries, viewLabel, type Landing } from "./lib/views";
 
 /** Which URL parameter opens a record of each collection. */
 const PARAM_FOR: Record<EntitySlug, SheetParam> = {
@@ -326,9 +326,13 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   // the overlays count: a module that plays Deals opens in place of the
   // empty Deals board. Nothing loads until the answer is known, so the
   // empty board never shows first. A replace, so Back leaves the CRM.
+  // ⚠️ ONCE for each mount (`landingPlan`). A bare `/crm` is also the Deals
+  // board, so the member's own click on Deals, or a read of the mode that
+  // comes again, must not land a second time (fix round 1, P1).
+  const [landed, setLanded] = useState(false);
   const landingKnown = ctx.mode !== "mirror" || (!modulesLoading && !statesLoading);
   const landingTo: Landing | null =
-    search === "" && ctx.mode === "mirror" && landingKnown
+    !landed && search === "" && ctx.mode === "mirror" && landingKnown
       ? landing(railEntries(modules, labels, overlays, coreStates), coreStates, modules, overlays)
       : null;
   const landingHref = landingTo
@@ -338,12 +342,21 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           : selectTab(view, landingTo.tab),
       )
     : null;
-  const here = viewHref(view);
-  const landingPending =
-    search === "" && ctx.mode === "mirror" && (!landingKnown || (landingHref !== null && landingHref !== here));
+  const plan = landingPlan({
+    decided: landed,
+    search,
+    mirror: ctx.mode === "mirror",
+    known: landingKnown,
+    target: landingHref,
+    here: viewHref(view),
+  });
+  // State that follows the address: settled during the render, so no
+  // effect sets state (the React rule for derived state).
+  if (plan.decide) setLanded(true);
+  const landingPending = plan.pending;
   useEffect(() => {
-    if (landingHref && landingHref !== here) replaceView(landingHref);
-  }, [landingHref, here]);
+    if (plan.redirect) replaceView(plan.redirect);
+  }, [plan.redirect]);
 
   useEffect(() => {
     store.loadVocabulary();

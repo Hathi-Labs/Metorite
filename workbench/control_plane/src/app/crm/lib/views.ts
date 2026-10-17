@@ -180,9 +180,9 @@ export function railEntries(
   const lastKnown = views.reduce((at, view, i) => (isEntity(view.id) ? i : at), -1);
   const entries: RailEntry[] = [];
   views.forEach((view, i) => {
-    const module = isEntity(view.id) ? overlays?.[view.id] : undefined;
+    const played = isEntity(view.id) ? overlays?.[view.id] : undefined;
     const hidden = isEntity(view.id) && hiddenCoreRow(view.id, states, overlays);
-    if (!hidden) entries.push(module ? { kind: "view", view, module } : { kind: "view", view });
+    if (!hidden) entries.push(played ? { kind: "view", view, module: played } : { kind: "view", view });
     if (i === lastKnown) entries.push(...rows.map((row) => ({ kind: "module" as const, row })));
   });
   return entries;
@@ -257,6 +257,49 @@ export function landing(
   }
   const first = group.find((row) => row.count > 0);
   return first ? { kind: "module", module: first.module } : null;
+}
+
+/**
+ * What the page does about the landing on this render (CRM-Q17b item 3).
+ * `decide`: the landing is settled for this mount of the page. `redirect`:
+ * the address to replace the bare one with. `pending`: hold the list, because
+ * the first screen is not known yet, or the redirect has not arrived.
+ */
+export type LandingPlan = { decide: boolean; redirect: string | null; pending: boolean };
+
+/**
+ * The landing happens ONCE for each mount of the page (fix round 1, P1).
+ *
+ * A bare `/crm` is also the address of the Deals board, because the URL
+ * grammar writes no `tab` for it. So a member who clicks Deals, or a read of
+ * the mode that comes again, must never land a second time. The page keeps
+ * `decided`, and sets it on the first render whose `decide` is true:
+ *
+ * - The page opened on an address with a view, or in Native mode: decided,
+ *   with no redirect.
+ * - A bare address while the reads wait: pending.
+ * - A bare address with an answer: a redirect when the target differs, and
+ *   pending until the address changes. The render after the change decides.
+ *   With no redirect, decided at once.
+ */
+export function landingPlan(input: {
+  decided: boolean;
+  /** The query of the address, as `URLSearchParams.toString()` gives it. */
+  search: string;
+  mirror: boolean;
+  /** The reads that `landing` needs have answered. */
+  known: boolean;
+  /** The address of the landing, or null for "stay". */
+  target: string | null;
+  /** The address of the view on screen. */
+  here: string;
+}): LandingPlan {
+  const { decided, search, mirror, known, target, here } = input;
+  if (decided) return { decide: false, redirect: null, pending: false };
+  if (search !== "" || !mirror) return { decide: true, redirect: null, pending: false };
+  if (!known) return { decide: false, redirect: null, pending: true };
+  if (target && target !== here) return { decide: false, redirect: target, pending: true };
+  return { decide: true, redirect: null, pending: false };
 }
 
 /** The sentence of a list that a filter empties (CRM-Q17b item 4). */
