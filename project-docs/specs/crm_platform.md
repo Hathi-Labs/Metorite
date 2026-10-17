@@ -4637,7 +4637,7 @@ The build made four choices that the list above does not name.
   names in the wrong order fails `names`.
 - A written number counts only when it is not coarser than 0.5 percent of
   the fact. So "₹1.2 crore" fails for 1,23,45,678, and "₹1.23 crore"
-  passes.
+  passes. The fix round below replaced this rule with the rule of CRM-Q29.
 - The note search answer of `--scripted` is synthetic, because the search
   needs the embed door.
 
@@ -4648,10 +4648,56 @@ and 10 of them are mutations that each fail one bar.
 
 **Findings for later work.**
 
-- No tool reads `short_by` of CRM-Q24. The assistant can flag the gap of
-  Q31 only from general care. CRM-Q30b, below, gives the tools that line.
-- CRM-Q29 is not on `origin/main`. `numbers.py` is the local number check,
-  and the eval moves to the shared function when CRM-Q29 merges.
+- At build time no tool read `short_by` of CRM-Q24. CRM-Q30b, below,
+  closes this. The read tools now give that line, and Q31 needs it.
+- At build time CRM-Q29 was on no branch of this one. The fix round below
+  closes this. The eval now asks `acb_common.number_check`, and
+  `numbers.py` is gone.
+
+**Fix round (2026-10-17, review of Batch I2).** The branch merges
+`origin/main` and `crm-answer-check` (CRM-Q29).
+
+- The reviewer made each tool print every figure as 0, and `--scripted`
+  still passed 31 of 31. The answer came from the facts, and `agree` read
+  the route JSON only. A new bar, `tool_figures`, now finds each number fact
+  that a route gives in the output text of the real tools. A test runs the
+  reviewer's mutation, and each question with a route figure fails.
+- `evals/crm_founder_questions/numbers.py` is gone. The checkers ask
+  `acb_common.number_check` through two thin helpers, `states` and
+  `states_exactly`. The runner formats with `format_figure` and
+  `group_indian`. So "₹1.2 crore" now counts for 1,23,45,678 by the
+  precision rule of CRM-Q29.
+- `test_no_second_number_check` now reads `evals/` too. `tests/` stays out,
+  because its files hold lakh and crore as test input, not as a parser.
+- The shared check reads "July 15" as a date. The scripted answer of Q05
+  now writes "15 in July".
+- Measured. With the money formatter of `crm_aggregate` changed to print
+  "INR 0" and each other figure "0", `--scripted` passes 4 of 31 and exits
+  1. `tool_figures` fails 27 questions. The 4 that pass have no figure of an
+  aggregate: Q22, Q23, Q30 and Q31. On the private database, 569 tests pass
+  with no skip.
+
+**Fix round 2 (2026-10-17, the Batch I2 verifier).** The verifier ran the 31
+scripted answers through the CRM-Q29 check.
+
+- Seven answers (Q04, Q07, Q08, Q12, Q18, Q24, Q29) wrote paise, and the
+  tool prints whole rupees. So they stated a precision that no tool gave.
+  A member reads whole rupees, so the answers now write whole rupees, as
+  the tool does. The facts keep their paise. The format `inrp` is gone.
+- A new bar, `answer_check`, runs `acb_common.number_check.check` on each
+  answer. Its sources are the tool output of the run and the question. So
+  the eval and the chat check of CRM-Q29 cannot disagree in silence.
+- Q21 states the net cash flow, a difference of two tool figures. CRM-Q29
+  adds that rule later. Until then that one figure waits
+  (`answer_check_waits`), and the report names it under `waiting`. Any
+  other figure with no source still fails. When the rule lands, the wait
+  goes stale and fails, so the mark goes with it. Merge
+  `origin/crm-answer-check` again after that rule lands.
+- Q11 wrote its ranks inline ("1. ... 2. ..."), and the check read each rank
+  as a figure. The answer is now a list, one rank on each line, as a chat
+  answer is.
+- Five new tests: the one wait, a figure with no source, paise that no tool
+  printed, a wait that covers no other figure, and a stale wait.
 
 **CRM-Q30b · The read tools say when Zoho holds more (2026-10-17).**
 

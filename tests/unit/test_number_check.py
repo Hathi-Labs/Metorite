@@ -210,9 +210,13 @@ def _regex_literals(tree: ast.AST) -> list[str]:
 
 
 def test_no_second_number_check() -> None:
-    """A new module that parses lakh and crore is a second number check."""
+    """A new module that parses lakh and crore is a second number check.
+
+    ``evals/`` is in scope (CRM-Q30 fix round): an eval scores the numbers of
+    an answer, so it must ask this check too. ``tests/`` is not, because its
+    files hold lakh and crore as the INPUT of a test, not as a parser."""
     found: set[str] = set()
-    for base in ("apps", "packages"):
+    for base in ("apps", "packages", "evals"):
         for path in (ROOT / base).rglob("*.py"):
             if ".venv" in path.parts or "node_modules" in path.parts:
                 continue

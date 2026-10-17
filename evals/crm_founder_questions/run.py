@@ -40,6 +40,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
+from acb_common.number_check import MONEY, format_figure
+
 from evals.crm_founder_questions import checkers
 from evals.crm_founder_questions.checkers import RouteCall
 from evals.crm_founder_questions.dataset import build
@@ -68,34 +70,18 @@ def route_key(path: str, params: dict[str, Any] | None) -> str:
 # ── The formats of a scripted answer ────────────────────────────────────────
 
 
-def indian(whole: int) -> str:
-    """A whole number in the Indian grouping: 12,34,567."""
-    text = str(abs(whole))
-    if len(text) > 3:
-        head, tail = text[:-3], text[-3:]
-        groups = []
-        while len(head) > 2:
-            groups.insert(0, head[-2:])
-            head = head[:-2]
-        text = ",".join([head, *groups]) + "," + tail if head else ",".join(groups) + "," + tail
-    return ("-" if whole < 0 else "") + text
-
-
 def _round(value: Any, places: str = "1") -> Decimal:
     return Decimal(str(value)).quantize(Decimal(places), rounding=ROUND_HALF_UP)
 
 
-def _paise(value: Decimal) -> str:
-    """Rupees with paise: ₹12,34,567.89."""
-    return f"₹{indian(int(value))}.{int(abs(value) % 1 * 100):02d}"
-
-
+#: The forms of a figure in a scripted answer. Money is whole rupees, the
+#: precision that ``crm_aggregate`` prints, so an answer never states more
+#: than a tool gave. The facts keep their paise.
 FORMATS = {
-    "inr": lambda v: f"INR {indian(int(_round(v)))}",
-    "inrp": lambda v: _paise(_round(v, "0.01")),
+    "inr": lambda v: format_figure(v, MONEY),
     "lakh": lambda v: f"₹{_round(Decimal(str(v)) / 100_000, '0.01')} lakh",
     "crore": lambda v: f"₹{_round(Decimal(str(v)) / 10_000_000, '0.01')} crore",
-    "n": lambda v: indian(int(_round(v))),
+    "n": lambda v: format_figure(v),
     "name": str,
 }
 

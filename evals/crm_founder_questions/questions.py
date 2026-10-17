@@ -92,6 +92,12 @@ class Question:
     forbid_patterns: tuple[str, ...] = ()
     #: Lines that the output of a tool must hold (CRM-Q30b).
     tool_lines: tuple[str, ...] = ()
+    #: The number facts whose figure ``answer_check`` cannot source yet, and
+    #: why. Only a figure that states one of these facts may wait. Any other
+    #: unsourced figure still fails, and a wait that no figure needs fails
+    #: too, so the mark goes when the rule lands.
+    answer_check_waits: tuple[str, ...] = ()
+    wait_reason: str = ""
     #: False for the note search, which needs the embed door, not a route
     #: that the R8 test can serve.
     route_check: bool = True
@@ -455,6 +461,10 @@ def make(ds: Dataset) -> tuple[Question, ...]:
             Fact("paid_out", q3_out, (1, "total")),
             Fact("net", q3_in - q3_out),
         ),
+        answer_check_waits=("net",),
+        wait_reason="CRM-Q29 adds a rule that a figure may be the sum, difference or "
+                    "percent of two tool figures. Until it merges, the net cash flow "
+                    "has no source.",
     ))
 
     # Empty fields.
