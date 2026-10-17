@@ -25,6 +25,7 @@ import type { FieldDef } from "../lib/fields";
 import { fieldMatches, fillLabel } from "../lib/fields";
 import { SHOWN_FILTERS, hiddenActiveCount, moreFiltersLabel, splitFilters } from "../lib/filterBar";
 import type { CrmModule } from "../lib/modules";
+import type { OverlayPreview, Suggestion } from "../lib/suggestions";
 import {
   HIDDEN_SENTENCE,
   NEEDS_YOU_ACTIONS,
@@ -49,6 +50,7 @@ import CrmRail from "./CrmRail";
 import FilterBar from "./FilterBar";
 import KanbanBoard from "./KanbanBoard";
 import { CARD_DETAILS, CHOSEN_HEADING, ColumnChoices, FULL_TIP, RecordCards } from "./RecordList";
+import { SuggestionPanelBody } from "./Suggestions";
 import { SyncHealthCardView } from "./SyncHealthCard";
 
 const noop = () => undefined;
@@ -568,5 +570,42 @@ describe("item 8: Sync health opens with a 'Needs you' block", () => {
     const card = read("./SyncHealthCard.tsx");
     expect(card).toContain("shortReadSentence(entity)");
     expect(card).not.toMatch(/short_by|zoho_count\s*-|-\s*entity\.ours/);
+  });
+});
+
+// ── Batch M review: the preview at 375 px ───────────────────────────────────
+
+describe("the module preview does not scroll sideways at phone width (Batch M review)", () => {
+  const suggestion: Suggestion = {
+    slot: "deal",
+    version: 7,
+    module: "Commercials",
+    label: "Commercials",
+    records: 24,
+    targets: [{ target: "name", fields: ["Commercial_Name"], labels: ["Commercial Name"], unmapped: 0 }],
+    stage: null,
+  };
+  const preview: OverlayPreview = {
+    slot: "deal",
+    module: "Commercials",
+    columns: ["name", "probability", "stage"],
+    rows: [{ id: "r1", values: { name: "A very long commercial name for a site", probability: 40, stage: "won" } }],
+    total: 24,
+    unmapped: {},
+    unsorted: 0,
+  };
+  const html = renderToStaticMarkup(
+    createElement(SuggestionPanelBody, { suggestion, listLabel: "Deals", preview }),
+  );
+
+  it("stacks each record below sm, and keeps the table from sm up", () => {
+    expect(html).toMatch(/<ul class="space-y-2 sm:hidden"/);
+    expect(html).toMatch(/class="hidden overflow-x-auto rounded-lg border border-border sm:block"/);
+    // The stacked block cuts a long value, so no row grows past the panel.
+    expect(html).toMatch(/<dd class="min-w-0 flex-1 truncate/);
+    const from = html.indexOf('<ul class="space-y-2 sm:hidden"');
+    const stacked = html.slice(from, html.indexOf("</ul>", from));
+    expect(stacked).toContain("A very long commercial name for a site");
+    expect(stacked).toContain("40");
   });
 });

@@ -138,42 +138,75 @@ export function useSuggestionActions(listLabel: (slug: EntitySlug) => string) {
   return { busy, apply, undo, dismiss };
 }
 
-/** The records of the module, as the list would read them. It writes nothing. */
+/**
+ * The records of the module, as the list would read them. It writes nothing.
+ *
+ * A table from `sm` up. Below it, at phone width, each record is a short
+ * block of label and value, so the panel never scrolls sideways (Batch M
+ * review, 375 px). The two draw the same rows and the same words.
+ */
 function PreviewTable({ preview }: { preview: OverlayPreview }) {
   const rows = preview.rows.slice(0, PREVIEW_SHOWN);
+  const [first, ...rest] = preview.columns;
   return (
-    <div className="overflow-x-auto rounded-lg border border-border">
-      <table className="w-full border-collapse text-xs">
-        <thead>
-          <tr className="border-b border-border">
-            {preview.columns.map((column) => (
-              <th
-                key={column}
-                className="whitespace-nowrap px-3 py-1.5 text-left font-medium text-muted-foreground"
-              >
-                {columnName(column)}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.id} className="border-b border-border/60 last:border-b-0">
-              {preview.columns.map((column) => {
+    <>
+      <ul className="space-y-2 sm:hidden" aria-label="Records">
+        {rows.map((row) => (
+          <li key={row.id} className="min-w-0 rounded-lg border border-border px-3 py-2">
+            {first ? (
+              <p className="truncate text-xs font-medium text-foreground">
+                {cellText(first, row.values[first])}
+              </p>
+            ) : null}
+            <dl className="mt-1 space-y-0.5">
+              {rest.map((column) => {
                 const text = cellText(column, row.values[column]);
                 return (
-                  <td key={column} className="whitespace-nowrap px-3 py-1.5 text-foreground">
-                    <span className="block max-w-48 truncate" title={text}>
+                  <div key={column} className="flex min-w-0 gap-2 text-xs">
+                    <dt className="w-24 shrink-0 truncate text-muted-foreground">{columnName(column)}</dt>
+                    <dd className="min-w-0 flex-1 truncate text-foreground" title={text}>
                       {text}
-                    </span>
-                  </td>
+                    </dd>
+                  </div>
                 );
               })}
+            </dl>
+          </li>
+        ))}
+      </ul>
+      <div className="hidden overflow-x-auto rounded-lg border border-border sm:block">
+        <table className="w-full border-collapse text-xs">
+          <thead>
+            <tr className="border-b border-border">
+              {preview.columns.map((column) => (
+                <th
+                  key={column}
+                  className="whitespace-nowrap px-3 py-1.5 text-left font-medium text-muted-foreground"
+                >
+                  {columnName(column)}
+                </th>
+              ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.id} className="border-b border-border/60 last:border-b-0">
+                {preview.columns.map((column) => {
+                  const text = cellText(column, row.values[column]);
+                  return (
+                    <td key={column} className="whitespace-nowrap px-3 py-1.5 text-foreground">
+                      <span className="block max-w-48 truncate" title={text}>
+                        {text}
+                      </span>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 
