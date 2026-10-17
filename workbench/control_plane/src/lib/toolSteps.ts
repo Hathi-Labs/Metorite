@@ -349,8 +349,12 @@ export function splitAgentLabel(step: ToolStep): { lead: string; agent: string }
   return { lead: step.label.slice(0, -step.agent.length).trimEnd(), agent: step.agent };
 }
 
-function statusOf(event: Pick<ToolEvent, "status">): StepStatus {
+function statusOf(event: Pick<ToolEvent, "status" | "result">): StepStatus {
   if (event.status === "error") return "failed";
+  // A server refusal ("Refused: ...", `acb_common.tool_refusals`) is no done
+  // act, even if it reached us as "done": a refused CRM write, which has no
+  // card of its own, must not read "Created lead" (review of #1126).
+  if (event.status === "done" && /^\s*Refused:/.test(event.result ?? "")) return "failed";
   return event.status === "running" ? "running" : "done";
 }
 
@@ -367,7 +371,7 @@ function phrase(verb: Verb, status: StepStatus, object: string): string {
  * name, then a regex guess at the kind, and last "Used <name>".
  */
 export function describeToolStep(
-  event: Pick<ToolEvent, "name" | "args" | "status" | "subAgentName">,
+  event: Pick<ToolEvent, "name" | "args" | "status" | "subAgentName" | "result">,
 ): ToolStep {
   const status = statusOf(event);
   const bare = bareToolName(event.name);

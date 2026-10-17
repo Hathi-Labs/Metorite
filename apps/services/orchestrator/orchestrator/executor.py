@@ -5884,12 +5884,15 @@ async def run_agent_stream(
                                 })
                                 raise
                             else:
+                                from acb_common.tool_refusals import (  # noqa: PLC0415
+                                    is_refusal as _is_refusal,
+                                )
                                 result_str = str(result) if result is not None else ""
                                 await queue.put({
                                     "type": "TOOL_CALL_RESULT",
                                     "toolCallId": tool_call_id,
                                     "content": result_str[:2000],
-                                    "success": True,
+                                    "success": not _is_refusal(result),
                                 })
                                 return result
                         # Couldn't heal — surface a clear, actionable error.
@@ -5928,16 +5931,24 @@ async def run_agent_stream(
                         # context. No pending steer => `result` is returned
                         # unchanged, so this path is a dict lookup for every
                         # ordinary call.
+                        from acb_common.tool_refusals import (  # noqa: PLC0415
+                            is_refusal,
+                        )
                         from orchestrator.steer import (  # noqa: PLC0415
                             decorate_tool_result,
                         )
+                        # Asked BEFORE the steer text joins the result. A
+                        # refused call returns its text for the model, and it
+                        # is still no success for the card (event_translator
+                        # asks the same function).
+                        refused = is_refusal(result)
                         result = decorate_tool_result(result, thread_id)
                         result_str = str(result) if result is not None else ""
                         await queue.put({
                             "type": "TOOL_CALL_RESULT",
                             "toolCallId": tool_call_id,
                             "content": result_str[:2000],  # truncate for SSE safety
-                            "success": True,
+                            "success": not refused,
                         })
                         return result
 

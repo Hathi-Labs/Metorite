@@ -360,8 +360,10 @@ async def test_an_org_outside_the_list_gets_the_answer_of_today_byte_for_byte(
 
 async def test_another_failure_of_the_catalogue_is_no_fallback(monkeypatch) -> None:
     _gateway(monkeypatch, lambda p: (500, {"detail": {"code": "boom", "message": "x"}}))
-    with pytest.raises(RuntimeError, match="500"):
-        await tools.crm_list_modules()
+    # PR #1126: the 500 is a refusal the model reads, never the fallback.
+    out = await tools.crm_list_modules()
+    assert out.startswith("Refused:") and "(500)" in out
+    assert "Gateway said" not in out
     # The kill switch is still the answer, not a fallback.
     _gateway(monkeypatch, lambda p: (404, {"detail": "Not Found"}))
     assert await tools.crm_list_modules() == tools.CRM_OFF

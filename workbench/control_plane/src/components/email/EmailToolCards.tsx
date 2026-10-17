@@ -2164,10 +2164,15 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
  *  member, a send that the tool refused, or a cancel. The card for it never
  *  says the act is done. Before EM-T8e-2, "Email sent" stood over a "Not sent."
  *  answer, which told the member that mail went out. */
-export type NoAction = "question" | "not-sent" | "unchanged" | "cancelled";
+export type NoAction = "question" | "not-sent" | "unchanged" | "cancelled" | "refused";
 
 export function noActionOf(raw: string | null | undefined): NoAction | null {
   const t = (raw || "").trimStart();
+  // The server refused the call (`acb_common.tool_refusals.REFUSED`). The
+  // stream marks it failed too, and this keeps a success card off it in any
+  // case: no "Email sent" over a refused send, and no draft with a Send
+  // button whose body is the refusal.
+  if (/^Refused:/.test(t)) return "refused";
   if (/^(Send from which mailbox\?|Which mailbox\?)/.test(t)) return "question";
   if (/^Not sent\./.test(t)) return "not-sent";
   if (/^Nothing changed\./.test(t)) return "unchanged";
@@ -2180,6 +2185,7 @@ const NO_ACTION_META: Record<NoAction, { icon: string; label: string }> = {
   "not-sent": { icon: "MailX", label: "Not sent" },
   unchanged: { icon: "CircleSlash", label: "Nothing changed" },
   cancelled: { icon: "X", label: "Cancelled" },
+  refused: { icon: "CircleSlash", label: "Not done" },
 };
 
 function NoActionCard({ event: e, kind }: { event: ToolEvent; kind: NoAction }) {

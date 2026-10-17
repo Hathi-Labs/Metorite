@@ -63,6 +63,7 @@ from typing import Any
 from acb_common import get_logger
 from acb_common.number_check import CheckResult, Sources, check
 from acb_common.settings import crm_answer_check_mode
+from acb_common.tool_refusals import is_refusal
 from agent_framework import (
     ChatMiddleware,
     ChatResponse,
@@ -387,7 +388,9 @@ class RunLedger:
             # knows that a long result was cut.
             self.results.append((tool, text[:FALLBACK_CHARS + 1]))
             del self.results[:-FALLBACK_RESULTS]
-        if not delegated and tool not in DELEGATION_TOOLS:
+        # A refusal ("Refused: ...") holds a status code and the route's
+        # words, never a figure of the data, so it is no source.
+        if not delegated and tool not in DELEGATION_TOOLS and not is_refusal(text):
             self.book.add_text(text, derive=True)
         if tool in ARM_TOOLS:
             self.armed = True
