@@ -1491,6 +1491,76 @@ async def _drop_mirror_record_writes(
         )
 
 
+def _append_instructions(agent: Any, block: str, marker: str) -> bool:
+    """Append *block* to the system prompt of *agent*, at the END, on each
+    runtime shape (the shapes of :func:`_apply_voice`). *marker* guards a
+    second append. Returns True when the block went in."""
+    joined = "\n\n"
+    opts = getattr(agent, "_default_options", None)
+    if hasattr(agent, "_tools") and isinstance(agent._tools, list) and isinstance(opts, dict):
+        sys_msg = opts.get("system_message")
+        text = (sys_msg.get("content") if isinstance(sys_msg, dict) else sys_msg) or ""
+        if marker in text:
+            return False
+        if isinstance(sys_msg, dict):
+            sys_msg["content"] = text + joined + block
+        else:
+            opts["system_message"] = {"mode": "append", "content": text + joined + block}
+        return True
+    _do = getattr(agent, "default_options", None)
+    if isinstance(_do, dict):
+        text = _do.get("instructions") or ""
+        if marker in text:
+            return False
+        _do["instructions"] = text + joined + block
+        return True
+    text = getattr(agent, "instructions", None)
+    if isinstance(text, str) and marker not in text:
+        agent.instructions = text + joined + block
+        return True
+    return False
+
+
+async def _add_crm_facts_block(
+    agents: list[Any], run_tools: Any, *, no_egress: bool = False,
+) -> None:
+    """Add the CRM facts block to a run that holds a CRM tool (WS-53
+    CRM-Q32-5, ``crm_platform.md`` §18.14.4): the answered facts of the money
+    modules and of the stages, at most 12 lines, at the END of the prompt,
+    so the stable prefix stays byte-stable.
+
+    It reads ``GET /org/facts?app=crm`` as the run's member
+    (``acb_skills.org_facts_tools.crm_facts_block_for_run``), never a
+    request field, and keeps nothing between runs. So a run of one org never
+    carries the block of another org. The gateway gives no CRM fact outside
+    ``CRM_QUESTIONS_ORGS``, so the block is empty there, and a box with the
+    list empty sends no request at all. A ``no_egress`` run
+    reads nothing, as :func:`_drop_mirror_record_writes` does. A failed read
+    adds no block. A change in place holds for this run only, because the
+    executor builds the agents of each run again.
+    """
+    if no_egress:
+        return
+    from acb_common import get_settings
+
+    # A box with CRM_QUESTIONS_ORGS empty serves no CRM fact to any org, so
+    # it sends no request at all. The gateway decides for each org.
+    if not str(getattr(get_settings(), "crm_questions_orgs", "") or "").strip():
+        return
+    try:
+        from acb_skills.crm_tools import CRM_TOOL_NAMES
+        from acb_skills.org_facts_tools import BLOCK_MARKER, crm_facts_block_for_run
+    except ImportError:
+        return
+    if not (frozenset(run_tools or ()) & CRM_TOOL_NAMES):
+        return
+    block = await crm_facts_block_for_run()
+    if not block:
+        return
+    added = sum(1 for agent in agents if _append_instructions(agent, block, BLOCK_MARKER))
+    _log.info("executor.crm_facts_block", lines=block.count("\n") + 1, agents=added)
+
+
 def _whatsapp_withheld() -> frozenset[str]:
     """The tools a WhatsApp run does not get, or nothing outside one (WAC-10a).
 
@@ -1817,6 +1887,13 @@ def _collect_injectable_platform_tools(agent_name: str | None = None) -> list[An
     try:
         from acb_skills.crm_tools import CRM_TOOLS
         _all_tools = [*_all_tools, *CRM_TOOLS]
+    except ImportError:
+        pass
+    # WS-53 CRM-Q32-5: `org_facts` loads with the `crm` family only, so the
+    # core floor does not change (crm_platform.md §18.14.4).
+    try:
+        from acb_skills.org_facts_tools import ORG_FACTS_TOOLS
+        _all_tools = [*_all_tools, *ORG_FACTS_TOOLS]
     except ImportError:
         pass
 

@@ -1485,6 +1485,16 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-53 CRM-Q32-5 — the org-facts read seam, `GET /org/facts`
+    # (crm_platform.md §18.14.4). Each app registers one provider in
+    # `gateway/org_facts.py`, and each provider applies its own access rule.
+    from gateway.routes.org_facts import router as _org_facts_router
+
+    app.include_router(_org_facts_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-61 — the Knowledge app (spec: project-docs/specs/knowledge_base.md).
     # Spaces and pages, dark behind KNOWLEDGE_ENABLED and KNOWLEDGE_ORGS.
     from gateway.routes.knowledge import router as _knowledge_router

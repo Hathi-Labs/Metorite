@@ -197,6 +197,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "crm_report",
             "crm_search_notes",
             "crm_stage_dwell",
+            # WS-53 CRM-Q32-5: the org-facts read loads with this family only,
+            # so the core floor does not change (crm_platform.md §18.14.4).
+            "org_facts",
         ),
         "core": False,
         "scope_governed": True,
