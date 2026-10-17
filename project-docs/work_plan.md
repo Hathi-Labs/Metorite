@@ -5795,6 +5795,16 @@ and one thing that cannot be written until a second person exists.
 > is an open owner question (`specs/crm_platform.md` §18.11.2, CRM-Q27). No
 > plan-guard rule names this flag either.
 >
+> **WS-53 — the CRM number check.** *(Registered 2026-10-17 with CRM-Q29.)* To
+> build CRM-Q29 is AGENT-SAFE, and it ships dark: `CRM_ANSWER_CHECK` is `off`.
+> The agent who built it chose the grant `enforcement-flip` for `shadow` and
+> for `on`. `shadow` spends nothing. `on` spends at most one more model
+> request in a chat turn whose answer fails the check, and the member's own
+> chat pays for it as for each other request. So no new payer exists. The
+> owner can change this entry to an owner flip in one line. Then an agent
+> prepares the flip and stops. `specs/crm_platform.md` §18.11.2 is the
+> authority. No plan-guard rule names this flag either.
+>
 > **WS-29 — moving any customer onto the pooled tier.** Cutover is a data move against
 > live customer data. AGENT-SAFE to build; **OWNER-GATE to execute.**
 >

@@ -193,14 +193,14 @@ async def test_a_misquote_gets_one_retry(stream: bool) -> None:
 
 @STREAMS
 async def test_an_invented_total_is_caught(stream: bool) -> None:
-    # 12,34,567 + 5,00,000 = 17,34,567: a sum that the model made.
-    invented = "Open and won together come to ₹17.3 lakh."
+    # No pair of tool figures gives 18,90,000: the model made it up.
+    invented = "Open and won together come to ₹18.9 lakh."
     fixed = "Open deals hold INR 12,34,567 and won deals hold INR 5,00,000."
     agent, client = _agent([("call", "crm_aggregate", {"entity": "deals"}),
                             ("text", invented), ("text", fixed)])
     out = await _run(agent, stream=stream)
     assert out == fixed
-    assert '"₹17.3 lakh"' in _user_texts(client.requests[-1])[-1]
+    assert '"₹18.9 lakh"' in _user_texts(client.requests[-1])[-1]
 
 
 @STREAMS
@@ -440,14 +440,14 @@ async def test_a_bad_card_with_clean_text_is_never_shipped(stream: bool) -> None
     card fails the answer. The bad card is never drawn, and the retry is."""
     agent, client = _agent([
         ("call", "crm_aggregate", {"entity": "deals"}),
-        ("both", "Here is the pipeline.", "emit_generative_ui", _card(1734567)),
+        ("both", "Here is the pipeline.", "emit_generative_ui", _card(1834567)),
         ("both", "Here is the pipeline.", "emit_generative_ui", _card(1234567)),
         ("text", "Done."),
     ])
     out = await _run(agent, stream=stream)
     assert [_card(1234567)["ui"]] == CARDS
     assert out.endswith("Done.")
-    assert '"1734567"' in _user_texts(client.requests[2])[-1]
+    assert '"1834567"' in _user_texts(client.requests[2])[-1]
     assert len(client.requests) == 4
 
 
@@ -455,8 +455,8 @@ async def test_a_bad_card_with_clean_text_is_never_shipped(stream: bool) -> None
 async def test_a_bad_card_with_bad_text_gives_the_fallback(stream: bool) -> None:
     agent, client = _agent([
         ("call", "crm_aggregate", {"entity": "deals"}),
-        ("both", "Open and won hold ₹17.3 lakh.", "emit_generative_ui", _card(1734567)),
-        ("both", "Still ₹17.3 lakh.", "emit_generative_ui", _card(1734567)),
+        ("both", "Open and won hold ₹18.3 lakh.", "emit_generative_ui", _card(1834567)),
+        ("both", "Still ₹18.3 lakh.", "emit_generative_ui", _card(1834567)),
     ])
     out = await _run(agent, stream=stream)
     assert CARDS == []
@@ -608,3 +608,38 @@ def test_a_box_with_no_check_module_still_runs(mode: str, monkeypatch) -> None:
     agents = [agent]
     _tool_injection._apply_answer_check(agents, "crm-assistant")
     assert agents[0] is agent
+
+
+@STREAMS
+async def test_a_difference_of_two_tool_figures_passes(stream: bool) -> None:
+    """Fix round 2, A: a founder asks for open minus won. The answer states
+    the difference of two tool figures, with no extra request."""
+    answer = "Open deals exceed won deals by ₹7.3 lakh."
+    agent, client = _agent([("call", "crm_aggregate", {"entity": "deals"}),
+                            ("text", answer)])
+    assert await _run(agent, stream=stream) == answer
+    assert len(client.requests) == 2
+
+
+@pytest.mark.parametrize("mode", ["off", "shadow", "on"])
+def test_the_injection_puts_the_provider_on_the_agent(mode: str, monkeypatch) -> None:
+    """Fix round 2, C: the real ``_inject_agent_tools`` path, not a source
+    scan. The provider is on the agent for shadow and on, and absent for
+    off."""
+    import acb_common.settings as settings_mod
+    from orchestrator import _tool_injection
+
+    monkeypatch.setattr(settings_mod, "crm_answer_check_mode", lambda: mode)
+    agent, _ = _agent([])
+    agents = [agent]
+    _tool_injection._inject_agent_tools(
+        agents, tool_scope=["ask_questions"], agent_name="crm-assistant",
+        agent_config={"sharing": {"instancing": "shared"}}, no_egress=False,
+    )
+    providers = [p for p in (agents[0].context_providers or [])
+                 if isinstance(p, AnswerCheckProvider)]
+    if mode == "off":
+        assert providers == []
+    else:
+        assert len(providers) == 1
+        assert providers[0].mode == mode

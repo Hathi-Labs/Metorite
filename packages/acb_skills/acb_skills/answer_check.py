@@ -346,6 +346,7 @@ class RunLedger:
 
     results: list[tuple[str, str]] = field(default_factory=list)
     texts: list[str] = field(default_factory=list)
+    argument_texts: list[str] = field(default_factory=list)
     armed: bool = False
     retried: bool = False
 
@@ -362,12 +363,19 @@ class RunLedger:
         if tool in ARM_TOOLS:
             self.armed = True
             if arguments is not None:
-                self.texts.extend(argument_sources(arguments))
+                self.argument_texts.extend(argument_sources(arguments))
 
     def sources(self) -> Sources:
-        """Each source of the run (item 4), the member's words included."""
+        """Each source of the run (item 4), the member's words included.
+
+        Only a tool result takes part in a derived figure (a sum, a
+        difference or a percent of two). The arguments and the member's
+        words are sources as they stand.
+        """
         book = Sources()
         for text in self.texts:
+            book.add_text(text, derive=True)
+        for text in self.argument_texts:
             book.add_text(text)
         try:
             from acb_skills.write_artifact import artifact_context
@@ -388,10 +396,11 @@ def retry_note(result: CheckResult) -> str:
     return (
         "A check of your answer found numbers that no tool result of this turn "
         f"holds: {named}. Write the answer again, with any card again. Copy "
-        "each number from a tool result, or round it and keep its unit. Do not "
-        "add, subtract or divide tool numbers yourself. For a new total, call "
-        "crm_aggregate with the right group or filter, or leave the number "
-        "out. Write each figure in digits."
+        "each number from a tool result, or round it and keep its unit. You "
+        "may state the sum, the difference, the percent change or the percent "
+        "share of TWO tool numbers. For anything more, call crm_aggregate with "
+        "the right group or filter, or leave the number out. Write each figure "
+        "in digits."
     )
 
 

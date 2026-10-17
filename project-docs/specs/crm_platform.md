@@ -4283,7 +4283,9 @@ Done when:
    a percent never matches money. A number with no unit can match either.
 3. **The numbers that are not figures.** The check skips a date, a time, a
    year from 1900 to 2100, a list marker, a number inside a word or an id
-   (`Q3`, `H-236`, a UUID), a URL and a code span.
+   (`Q3`, `H-236`, a UUID), a URL and a code span. An inline list marker
+   ("1. Open 2. Won 3. Lost", a run that counts from 1 in order) is no
+   figure. A lone "2." is a figure. (Fix round 2.)
 4. **The sources of a turn.** A function middleware records the text of each
    tool result of the run, in memory, for that run only. The arguments of
    each CRM tool call are sources too, and a date in them gives its count of
@@ -4311,11 +4313,20 @@ Done when:
    `write_artifact`) shows its arguments to the member. So the check reads
    the shown text of its arguments too. A failed card fails the whole
    answer, as a failed text does, and the card never ships. (Fix round.)
-8. **A derived figure.** The model does not add, subtract or divide tool
-   numbers in its text. A sum of two results matches no source, so the check
-   flags it. The CRM section of `addendum.py` and the instructions of
-   `crm-assistant` say that a new total comes from another `crm_aggregate`
-   call, and that the model writes each figure in digits.
+8. **A derived figure** *(changed in fix round 2, 2026-10-17, from the 31
+   founder questions of CRM-Q30)*. A founder asks for a figure that two tool
+   results give, for example net cash flow, received minus paid (Q21). So a
+   figure also matches when it equals, at its stated precision, the sum or
+   the difference of two tool figures of one kind (money with money, plain
+   with plain). A percent figure also matches the percent change or the
+   percent share of two tool figures. Only pairs count, never a chain of
+   three. Only figures of the tool results of this run take part, not the
+   member's words and not the tool arguments. Money never matches a percent,
+   except through the two percent rules. A number that no pair gives still
+   fails, also when it is near a pair result. The CRM section of
+   `addendum.py` and the instructions of `crm-assistant` say this, and say
+   that anything more comes from another `crm_aggregate` call. The model
+   writes each figure in digits.
 9. **The seam.** `_inject_agent_tools` puts the check provider on the per-run
    view of each native MAF agent that holds a CRM tool, after the H-236 step.
    That covers the stream run, the batch run and the sub-agent. No second
@@ -4402,8 +4413,14 @@ and `uv run python scripts/affected_tests.py --base origin/main`.
   "roughly", "nearly", "almost", "close to", "some", `~`, `≈` or the other
   words of `_APPROX_BEFORE`, a number matches a source within 10 percent of
   it.
-- **Mutations.** 13 mutations in the build, and 12 more in the fix round,
-  one or more for each fix. The suites kill each one. The rules: the room for rounding, money against a percent, a
+- **Fix round 2 (2026-10-17, the verifier of Batch I2).** It ran the 31
+  founder questions of CRM-Q30 through the check, and 9 true answers
+  failed. Four changes: the derived figures of item 8, the inline list
+  markers of item 3, a behaviour test of the seam through
+  `_inject_agent_tools`, and an entry for `CRM_ANSWER_CHECK` in `work_plan.md`
+  §6.1.
+- **Mutations.** 13 mutations in the build, 12 more in fix round 1 and 5 in
+  fix round 2, one or more for each fix. The suites kill each one. The rules: the room for rounding, money against a percent, a
   date, an exact scaled number, the arm, the model's text as a source, no
   extra request on a pass, one retry for each run, no draft in the fallback,
   no text on a failed tool step, the seam, the default mode, and no note text
@@ -4422,7 +4439,10 @@ and `uv run python scripts/affected_tests.py --base origin/main`.
   can read, so its numbers are not checked. A card's number under a layout
   key (`width`, `size`, `level` and others) is not checked. An approximation
   word gives a room of 10 percent, so "about ₹5 lakh" passes against
-  4,60,000. The second number of a range ("10-20") is not checked.
+  4,60,000. The second number of a range ("10-20") is not checked. A pair
+  of tool figures gives many sums, differences and percents. So a number
+  that the model made up can pass when it is equal by chance to one of them.
+  A pool holds 500 figures of each kind at most.
 
 #### 18.11.3 Verification
 

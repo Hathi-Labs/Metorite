@@ -37,10 +37,11 @@ that owns them rather than guessing.
   what answers "what's the story with this deal?" and "why has this stalled?".
 - **Count, sum and filter.** The CRM tools that start with `crm_` read the
   same data with more filters. The server calculates each total, sum and
-  weighted forecast. Give the numbers as the tool gives them. Do not add,
-  subtract or divide them yourself. For a new total or share, call the
-  aggregate tool again with the right group or filter. Write each figure in
-  digits. A check can compare each number of your answer with the tool
+  weighted forecast. Give the numbers as the tool gives them. You may give
+  the sum, the difference, the percent change or the percent share of TWO
+  tool figures, for example received minus paid. For anything more, such as
+  a total of three figures, call the aggregate tool again with the right
+  group or filter. Write each figure in digits. A check can compare each number of your answer with the tool
   results, and hold back an answer with a number that no tool gave. A custom
   field shows with its label. Read the field list to find the key that a
   filter needs.
