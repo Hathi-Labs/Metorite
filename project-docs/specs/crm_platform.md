@@ -29,7 +29,9 @@
 >
 > **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12). CRM-Q8, filters and saved views (2026-10-12, migration 250). The Deals board stages fix (2026-10-12, §18.5). CRM-Q10, a reconnect never freezes the mirror (2026-10-13, §18, a production hotfix). CRM-Q15, a Zoho module that the account turned off no longer stops the sync (2026-10-15, §18, a production hotfix). CRM-Q16, hold a module and sync one module on its own (2026-10-15, §18.8, migration 269). CRM-Q17a-1, the backend of the fill rank (2026-10-16, §18.9.3, migration 274). It is dark behind `CRM_FILL_RANK_ORGS`. CRM-Q23b, a dropped activity comes back once its module record is in (2026-10-16, §18.10, no migration).
 >
-> **Specified, not built:** CRM-Q17b, CRM-Q20-3, CRM-Q21 and CRM-Q22, of a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9). Batch M builds the rest of CRM-Q17a to CRM-Q20 on the branch `crm-batch-m`, not merged (§18.12.1).
+> **Built 2026-10-17 on `crm-batch-m2`, not merged:** CRM-Q17b (§18.9.6) and CRM-Q23c (§18.10).
+>
+> **Specified, not built:** CRM-Q20-3, CRM-Q21 and CRM-Q22, of a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9). Batch M builds the rest of CRM-Q17a to CRM-Q20 on the branch `crm-batch-m`, not merged (§18.12.1).
 >
 > **Built later, not merged (Batch M, `crm-batch-m`):** CRM-Q17a-1b, a "still empty" check of a stale entity (2026-10-16, §18.9.6, no migration). CRM-Q17a-2, the screens of the fill rank (2026-10-16, no migration). CRM-Q18-1b, two deadlocks of the plan lock (2026-10-16, no migration). CRM-Q19, the executor and the 200-record preview (2026-10-16, no migration).
 >
@@ -2104,6 +2106,11 @@ builds CRM-Q20-2 on the Batch M branch, with no migration and no flag of its
 own. It is not merged. A suggestion shows only after the pipeline of
 CRM-Q20-1 writes one, so the owner flips of CRM-Q20-1 keep it dark.
 
+**Status (2026-10-17, CRM-Q17b).** Built 2026-10-17 on `crm-batch-m2`, not
+merged. No migration. Items 2 and 3 read `entities` of `GET /crm/mode`, which
+the gateway sends only for an org on `CRM_FILL_RANK_ORGS`, so they are dark
+until that flip. The "Built as" list under the ticket holds the detail.
+
 **Design record.** The owner's design page is "Source Mapping Studio" v4.
 Its link is https://claude.ai/artifact/QcBY3s2ATxo3Kb9QCpR3Zr. This section
 is the build contract, and it wins where the two differ.
@@ -2289,7 +2296,7 @@ with 16 questions, to learn whether the vendor bills the state once.
 |---|---|---|---|---|
 | CRM-Q17a (Q17a-1 merged, #1093. Q17a-2 🔨 built 2026-10-16, not merged) | Lists and records by fill rank, in two slices (Q17a-1, Q17a-2). No AI | AGENT-SAFE | M | — |
 | CRM-Q17a-1b 🔨 built 2026-10-16, not merged | A "still empty" check of a stale entity, in each run. No AI | AGENT-SAFE | S | CRM-Q17a-1 |
-| CRM-Q17b | Getting around: rail, first screen, filters, Columns, phone, Sync health. No AI | AGENT-SAFE | M | CRM-Q17a |
+| CRM-Q17b 🔨 built 2026-10-17, not merged | Getting around: rail, first screen, filters, Columns, phone, Sync health. No AI | AGENT-SAFE | M | CRM-Q17a |
 | CRM-Q18 (Q18-1 merged, #1094. Q18-2 and Q18-3 🔨 built 2026-10-16, not merged) | One plan: a table of versions, and the live rule set | AGENT-SAFE | M | — |
 | CRM-Q18-1b 🔨 built 2026-10-16, not merged | Two deadlocks of the plan lock, found on a real database | AGENT-SAFE | S | CRM-Q18-1 |
 | CRM-Q19 🔨 built 2026-10-16, not merged | The executor and the 200-record preview | AGENT-SAFE | M | CRM-Q18 |
@@ -2549,6 +2556,41 @@ Frontend files, under `src/app/crm/`: `lib/columns.ts`, `lib/fields.ts`,
 
 Each item is checked with the `visual-review` skill in light mode, compact
 density, a changed accent and 375 px.
+
+**Built as** (2026-10-17, branch `crm-batch-m2`, no migration):
+
+- **The data.** `GET /crm/mode` gains `entities`: for each core slug,
+  `records` and `turned_off`. `fill_rank.entity_states` reads four `EXISTS`
+  and the four core cursor rows. `turned_off` is the cursor mark
+  `unavailable` with the reason `hidden`. A missing scope is not "off".
+  The gateway sends the block only in Mirror mode, for an org on
+  `CRM_FILL_RANK_ORGS`. Each other org reads the body of before. Fence:
+  `test_crm_fill_rank_r8.py`.
+- Item 1: `railSections` in `lib/views.ts` splits the rail. The group is
+  "More modules". It opens while one of its modules is on screen, and its
+  rows scroll in a `max-h-64` box.
+- Item 2: `hiddenCoreRow`. A row that a module plays stays.
+- Item 3: `landing`. A bare `/crm` waits for the reads, then replaces the
+  address. With no `entities`, a module that plays Deals opens in place of
+  the empty Deals board (Batch M review).
+- Item 4: `emptyListLine` is the one rule of a list and a board. In Mirror
+  mode with no filter, it keeps the CRM-Q20-2 line "Your Zoho sent no …".
+  A Native list says "No records yet."
+- Item 5: `splitFilters`. "Filters (n)" counts the filters in force
+  behind the button, and it opens when one is in force.
+- Item 6: `ColumnChoices` has "Find a field", the heading "Shown in the
+  list" and `fillLabel`. A disabled box has a muted label and a tip.
+- Item 7: `RecordCards` in `RecordList.tsx`, at `isMobile`.
+- Item 8: `needsYou` in `lib/syncHealth.ts`. The actions are "Check again"
+  for a module that Zoho refuses, "Sync it on its own" for a held module
+  and "Hold it" for a large module. "Check again" is a run of one key, and
+  `engine._unavailable_now` now lets that run ask at once (fence:
+  `test_crm_hidden_module_r8.py`). The table and the list of Zoho modules
+  fold under "Show the details".
+- Batch M review: the search box names the list with the source label, and
+  the preview panel stacks its records below `sm`.
+- Fence: `components/crmQ17b.test.ts`. The golden files `list.html` and
+  `filters.html` of `c4b-flag-off` come from this tree.
 
 **CRM-Q18 · One plan.** The spec audit of 2026-10-16 found that rows of
 versions do not fit the unique indexes of `crm_field_rules` under R6. So the
@@ -3325,7 +3367,8 @@ owner flips.
 **Status (2026-10-16).** CRM-Q23a (#1086, migration 275) and CRM-Q23b
 (#1098, no migration) are merged. The batch branch `crm-batch-i` holds
 CRM-Q24, with no migration, and nobody has merged it yet. CRM-Q23c:
-specified, not built. Verified against code at `origin/main` `c4bef9ec0`.
+built 2026-10-17 on `crm-batch-m2`, not merged. Verified against code at
+`origin/main` `c4bef9ec0`.
 Found on DEWiN's import (H-326, H-327).
 
 #### 18.10.1 What the import found
@@ -3365,7 +3408,7 @@ that the user cannot see.
 |---|---|---|---|---|
 | CRM-Q23a | Link an activity to a module record, and serve it. Backend | AGENT-SAFE | M | — |
 | CRM-Q23b | Recover an activity dropped before its module record landed | AGENT-SAFE | M | CRM-Q23a |
-| CRM-Q23c | The timeline on a module record page. Frontend | AGENT-SAFE | S | CRM-Q23a |
+| CRM-Q23c 🔨 built 2026-10-17, not merged | The timeline on a module record page. Frontend | AGENT-SAFE | S | CRM-Q23a |
 | CRM-Q24 | A short read shows on the Sync health card, with the lost and recovered activities | AGENT-SAFE | M (S until 2026-10-16) | — |
 
 **Not in scope of CRM-Q23.** A composer or any write on a module record. A
@@ -3491,6 +3534,11 @@ that it checks is mid-read. A module that comes back can stop at
    `lib/modules.ts` get the fetch.
 3. The `visual-review` skill checks the record page in light mode, compact
    density and 375 px.
+
+**Built as** (2026-10-17, branch `crm-batch-m2`, no migration). Each module
+record has a Timeline tab. The sheet reads `getModuleTimeline` only while
+the tab is on screen. `Timeline` gets `readOnly`: no composer, and a task
+shows its state with no control. Fence: `components/crmQ23c.test.ts`.
 
 **Verify CRM-Q23 with:**
 
