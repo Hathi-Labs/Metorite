@@ -16,9 +16,13 @@ status:
   member, and the member's session is fine.
 * anything else: 500. The log line names the route.
 
+A sign-in probe that gives False (``authenticate()``) is a 503 with
+:data:`SIGN_IN_UNCHECKED_DETAIL`. The probe gives False for a throttle or an
+outage too, so the route does not say "reconnect" (:func:`sign_in_unchecked`).
+
 The provider clients make the one bounded retry (``OutlookProvider``
-``_graph_read``, and ``GmailBearer`` for Gmail). This module only reads the
-error that is left.
+``_graph_read`` when the caller sets ``read_retry_429``, and ``GmailBearer``
+for Gmail). This module only reads the error that is left.
 
 Fence: ``tests/unit/test_email_provider_errors.py``.
 """
@@ -46,6 +50,13 @@ RECONNECT_DETAIL = (
     "The mail provider refused the sign-in of this mailbox. Reconnect the "
     "mailbox in Email settings, then try again."
 )
+
+SIGN_IN_UNCHECKED_DETAIL = (
+    "The mail provider did not answer the sign-in check. Try again in a "
+    "moment. If this keeps failing, reconnect the mailbox."
+)
+#: The wait that a 503 of the sign-in check asks for.
+SIGN_IN_RETRY_AFTER_SECS = 30
 
 #: The hosts of the OAuth token endpoints. A failed refresh there is a
 #: refused sign-in, whatever its status.
@@ -95,7 +106,7 @@ def provider_retry_after(exc: BaseException) -> int:
     raw = headers.get("Retry-After") if headers is not None else None
     try:
         wait = int(float(str(raw).strip()))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # "inf" and "1e999" too
         return DEFAULT_RETRY_AFTER_SECS
     if 1 <= wait <= RETRY_AFTER_MAX_SECS:
         return wait
@@ -152,6 +163,20 @@ def throttled(seconds: int) -> HTTPException:
 def reconnect() -> HTTPException:
     """The 409 that a route answers when the provider refused the sign-in."""
     return HTTPException(status_code=409, detail=RECONNECT_DETAIL)
+
+
+def sign_in_unchecked() -> HTTPException:
+    """The 503 that a route answers when ``authenticate()`` gave False.
+
+    ``authenticate()`` of Gmail and of Outlook gives False for a refused
+    token, and also for a 429, a 5xx or a timeout of the probe. A bool
+    cannot tell them apart, so the route does not say "reconnect" for a
+    mailbox that may work, and the caller may try again.
+    """
+    return HTTPException(
+        status_code=503, detail=SIGN_IN_UNCHECKED_DETAIL,
+        headers={"Retry-After": str(SIGN_IN_RETRY_AFTER_SECS)},
+    )
 
 
 def provider_http_error(

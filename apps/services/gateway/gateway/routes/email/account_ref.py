@@ -10,8 +10,8 @@ log, October 2026: 28 answers of 500 on ``GET /email/messages``).
 
 * empty, or one of :data:`ALL_ACCOUNTS` in any case: no mailbox filter. A
   route that needs one mailbox answers 422.
-* a UUID: that id, as the caller wrote it (stripped). The route then
-  applies its own owner check, as it did before.
+* a UUID: that id, in canonical form (``str(uuid.UUID(value))``). The route
+  then applies its own owner check, as it did before.
 * a value with ``@``: a mailbox address. The read finds it only among the
   mailboxes of the acting member in the bound tenant. The predicate is the
   owner predicate that the routes use (``user_id``), and the tenant predicate
@@ -49,15 +49,17 @@ ONE_ACCOUNT_DETAIL = (
 )
 
 #: The detail of a 404 for an address that is not a mailbox of the member.
+#: It names no address: the tool layer removes an address from a detail
+#: (``safe_detail``), so the text must read well without one.
 NO_SUCH_ADDRESS_DETAIL = (
-    "No mailbox of yours has the address {address}. Call list_accounts for "
-    "the account ids"
+    "That address is not one of your mailboxes. Call list_accounts for your "
+    "mailbox ids."
 )
 
 #: The detail of a 422 for an address that two mailboxes of the member share.
 AMBIGUOUS_ADDRESS_DETAIL = (
-    "More than one of your mailboxes has the address {address}. Send its "
-    "account id from list_accounts"
+    "More than one of your mailboxes has that address. Send the mailbox id "
+    "from list_accounts."
 )
 
 #: The read of a mailbox by its address. The owner predicate is the one of
@@ -124,7 +126,9 @@ async def resolve_account_filter(
         return None
     value = (raw or "").strip()
     if kind == "uuid":
-        return value
+        # Canonical: asyncpg takes 32 to 36 characters only, and
+        # ``uuid.UUID`` also reads the braced and the ``urn:uuid:`` forms.
+        return str(uuid.UUID(value))
     if kind == "bad":
         if bad_is_not_found:
             raise HTTPException(status_code=404, detail="Account not found")
@@ -136,8 +140,8 @@ async def resolve_account_filter(
         rows = await _rows_for_address(db, value, owner)
     if not rows:
         raise HTTPException(
-            status_code=404, detail=NO_SUCH_ADDRESS_DETAIL.format(address=value))
+            status_code=404, detail=NO_SUCH_ADDRESS_DETAIL)
     if len(rows) > 1:
         raise HTTPException(
-            status_code=422, detail=AMBIGUOUS_ADDRESS_DETAIL.format(address=value))
+            status_code=422, detail=AMBIGUOUS_ADDRESS_DETAIL)
     return str(rows[0].id)

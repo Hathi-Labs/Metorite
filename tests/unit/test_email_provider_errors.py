@@ -67,6 +67,13 @@ def test_a_429_with_retry_after_is_a_429_with_that_wait():
                           "Try again in 7 seconds.")
 
 
+@pytest.mark.parametrize("raw", ["inf", "1e999", "-inf", "nan", "soon"])
+def test_a_retry_after_that_is_no_number_waits_the_default(raw):
+    err = pe.provider_http_error(
+        _status_error(429, headers={"Retry-After": raw}), route="t")
+    assert err.headers == {"Retry-After": str(pe.DEFAULT_RETRY_AFTER_SECS)}
+
+
 def test_a_429_with_no_retry_after_waits_the_default():
     err = pe.provider_http_error(_status_error(429), route="t")
     assert err.status_code == 429
@@ -144,7 +151,8 @@ def _ok() -> httpx.Response:
     })
 
 
-def _provider(graph: _Graph, monkeypatch) -> tuple[OutlookProvider, list[float]]:
+def _provider(graph: _Graph, monkeypatch, *, retry: bool = True,
+              ) -> tuple[OutlookProvider, list[float]]:
     waits: list[float] = []
 
     async def _sleep(seconds: float) -> None:
@@ -154,7 +162,62 @@ def _provider(graph: _Graph, monkeypatch) -> tuple[OutlookProvider, list[float]]
     p = OutlookProvider({"access_token": "t", "refresh_token": "r"})
     p._http = httpx.AsyncClient(base_url=GRAPH_API_BASE,
                                 transport=httpx.MockTransport(graph.handle))
+    p.read_retry_429 = retry
     return p, waits
+
+
+@pytest.mark.parametrize("method", ["get_message", "get_message_body"])
+async def test_the_retry_is_off_unless_the_caller_asks(monkeypatch, method):
+    """H-352: a caller that holds a session across the read must never
+    sleep on a pool slot. The default makes no retry and no wait."""
+    assert OutlookProvider({"access_token": "t"}).read_retry_429 is False
+    graph = _Graph(httpx.Response(429, headers={"Retry-After": "2"}))
+    p, waits = _provider(graph, monkeypatch, retry=False)
+    with pytest.raises(httpx.HTTPStatusError):
+        await getattr(p, method)("pm-1")
+    assert (graph.gets, waits) == (1, [])
+
+
+async def test_the_body_hydrate_with_its_session_open_never_sleeps(monkeypatch):
+    """``hydrate_message_body`` holds the caller's session across the fetch.
+    A throttled Outlook read there fails at once and keeps the stored text."""
+    from gateway.routes.email import core
+
+    graph = _Graph(httpx.Response(429, headers={"Retry-After": "2"}))
+    p, waits = _provider(graph, monkeypatch, retry=False)
+
+    async def _authed() -> bool:
+        return True
+
+    p.authenticate = _authed  # type: ignore[method-assign]
+
+    async def _row(_db, _mid):
+        return SimpleNamespace(body_text="", body_html=None, snippet="s",
+                               received_at=None, stored_bytes=0)
+
+    async def _for_message(_db, _mid, _user):
+        return p, "pm-1", _ACC, _Store()
+
+    monkeypatch.setattr(core, "_hydrate_row", _row)
+    monkeypatch.setattr(core, "_provider_for_message", _for_message)
+    got = await core.hydrate_message_body(AsyncMock(), _MID, "u@x.example")
+    assert got == ""
+    assert (graph.gets, waits) == (1, [])
+
+
+def test_only_the_full_body_route_turns_the_retry_on():
+    """The flag is set in one place, a route that holds no session."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "apps"
+    hits = [f.relative_to(root).as_posix() for f in root.rglob("*.py")
+            if "read_retry_429 = True" in f.read_text(encoding="utf-8")]
+    assert hits == [
+        "services/gateway/gateway/routes/email/transport/messages.py"]
+    src = (root / hits[0]).read_text(encoding="utf-8")
+    body = src[src.index("async def get_full_body"):]
+    body = body[:body.index("@router", 1)]
+    assert "read_retry_429 = True" in body
 
 
 @pytest.mark.parametrize("method", ["get_message", "get_message_body"])
@@ -231,12 +294,16 @@ class _Raises:
         self.exc = exc
         self.sessions = sessions
         self.open_at_fetch: int | None = None
+        self.read_retry_429 = False
+        self.retry_at_fetch: bool | None = None
+        self.auth_ok = True
 
     async def authenticate(self) -> bool:
-        return True
+        return self.auth_ok
 
     async def get_message(self, _pmid: str):
         self.open_at_fetch = self.sessions[0]
+        self.retry_at_fetch = self.read_retry_429
         raise self.exc
 
     def credentials_dirty(self) -> bool:
@@ -285,6 +352,20 @@ async def test_the_full_body_route_maps_a_provider_failure(monkeypatch, exc, sta
     if status == 429:
         assert got.value.headers == {"Retry-After": "9"}
     assert provider.open_at_fetch == 0  # no session held across the fetch
+    assert provider.retry_at_fetch is True  # so it may wait on a 429
+
+
+async def test_a_false_sign_in_probe_is_a_503_not_a_reconnect(monkeypatch):
+    """``authenticate()`` gives False for a throttled probe too. The answer
+    must not tell the member to reconnect a mailbox that may work."""
+    provider = _wire_full_body(monkeypatch, RuntimeError("never reached"))
+    provider.auth_ok = False
+    with pytest.raises(HTTPException) as got:
+        await messages_mod.get_full_body(_MID, user=SimpleNamespace(email="u@x.example"))
+    assert got.value.status_code == 503
+    assert got.value.detail == pe.SIGN_IN_UNCHECKED_DETAIL
+    assert got.value.headers == {"Retry-After": str(pe.SIGN_IN_RETRY_AFTER_SECS)}
+    assert provider.open_at_fetch is None
 
 
 async def test_the_full_body_route_answers_404_for_an_id_that_is_no_uuid(monkeypatch):

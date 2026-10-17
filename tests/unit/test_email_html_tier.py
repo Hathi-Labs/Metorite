@@ -456,12 +456,14 @@ class TestTheRoute:
         await _html(org=None)
         assert h.redis.calls == [] and h.provider_calls == 2
 
-    async def test_a_failed_auth_is_401_and_caches_nothing(self, monkeypatch) -> None:
+    async def test_a_failed_auth_is_503_and_caches_nothing(self, monkeypatch) -> None:
+        """``authenticate()`` gives False for a throttled or a failed probe
+        too, so the answer is a 503 the caller may retry, not a 401."""
         h = _Harness(monkeypatch)
         h.auth_ok = False
         with pytest.raises(HTTPException) as err:
             await _html()
-        assert err.value.status_code == 401
+        assert err.value.status_code == 503
         assert h.redis.store == {}
 
     async def test_a_provider_fault_is_502_and_caches_nothing(self, monkeypatch) -> None:

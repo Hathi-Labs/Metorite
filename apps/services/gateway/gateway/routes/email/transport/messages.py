@@ -18,7 +18,7 @@ from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.provider_errors import (
     RETRY_AFTER_MAX_SECS,
     provider_http_error,
-    reconnect,
+    sign_in_unchecked,
 )
 # The names that ``transport/inline_images.py`` and the HTML route read.
 from gateway.routes.email.provider_errors import (
@@ -1180,7 +1180,12 @@ async def get_full_body(
     msg: Any = None
     try:
         if not await provider.authenticate():
-            raise reconnect()
+            raise sign_in_unchecked()
+        # No session is open here, so a short 429 may wait and retry once
+        # (Outlook ``_graph_read``). A caller that holds a session never
+        # sets this (H-352).
+        if hasattr(provider, "read_retry_429"):
+            provider.read_retry_429 = True
         msg = await provider.get_message(row.provider_message_id)
     except HTTPException:
         raise
@@ -1362,9 +1367,9 @@ async def get_message_html(
     html: str | None = None
     try:
         if not await provider.authenticate():
-            raise HTTPException(
-                status_code=401, detail="Email account authentication failed",
-            )
+            # The same answer as the full-body route: a False probe may be
+            # a throttle or an outage, not a refused token.
+            raise sign_in_unchecked()
         # The body only. `get_message` of Outlook expands each attachment,
         # and Graph then sends the bytes of each file (EM-S1 fix round 1).
         full = await provider.get_message_body(row.provider_message_id)

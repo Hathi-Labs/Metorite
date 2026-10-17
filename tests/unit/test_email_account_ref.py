@@ -83,11 +83,15 @@ async def test_a_route_that_needs_one_mailbox_refuses_all(raw):
     assert "needs one mailbox" in exc.value.detail
 
 
-async def test_a_uuid_is_unchanged():
+@pytest.mark.parametrize("raw", [
+    _OWN_ID, f" {_OWN_ID.upper()} ", _OWN_ID.replace("-", ""),
+    "{" + _OWN_ID + "}", "urn:uuid:" + _OWN_ID,
+])
+async def test_a_uuid_goes_on_in_canonical_form(raw):
+    """asyncpg takes 32 to 36 characters only, and ``uuid.UUID`` also reads
+    the braced and the urn forms. So the reader gives the canonical text."""
     db = _Db()
-    assert await account_ref.resolve_account_filter(db, _OWN_ID, "u@x.example") == _OWN_ID
-    assert await account_ref.resolve_account_filter(
-        db, f" {_OWN_ID.upper()} ", "u@x.example") == _OWN_ID.upper()
+    assert await account_ref.resolve_account_filter(db, raw, "u@x.example") == _OWN_ID
     assert db.statements == []
 
 
@@ -126,7 +130,9 @@ async def test_an_address_of_no_own_mailbox_is_a_404():
         await account_ref.resolve_account_filter(
             _Db(), "someone@else.example", "u@x.example")
     assert exc.value.status_code == 404
-    assert "someone@else.example" in exc.value.detail
+    # No address in the text: the tool layer removes one (safe_detail).
+    assert exc.value.detail == account_ref.NO_SUCH_ADDRESS_DETAIL
+    assert "@" not in exc.value.detail and "list_accounts" in exc.value.detail
 
 
 async def test_an_address_of_two_own_mailboxes_asks_for_the_id():
