@@ -845,6 +845,30 @@ async def test_q18_3_a_stale_entity_opens_no_fixed_column(fe) -> None:
     assert _count(p, "crm_field_rules", p.org_a) == 0
 
 
+async def test_q18_3_a_stale_entity_opens_a_column_that_its_check_serves(fe) -> None:
+    """Item 3, the positive case (Batch M verifier F3). The leads are stale,
+    and the "still empty" check of CRM-Q17a-1b holds ``email`` with a time
+    after the last run. ``empty_columns`` then serves ``email``, so the fixed
+    column opens and the rule carries the mark."""
+    p, a, _b = fe
+    await _imported(p, p.org_a, a)
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_sync_cursors SET cursor_state = jsonb_set(jsonb_set("
+            "cursor_state, '{pending}', '[\"lead\"]'), '{still_empty}', "
+            "jsonb_build_object('lead', jsonb_build_object('keys', "
+            "'[\"email\"]'::jsonb, 'at', to_jsonb(clock_timestamp())))) "
+            "WHERE organization_id = CAST(:o AS uuid) AND module = 'zoho:fill_rank'"),
+            {"o": p.org_a})
+    layout = await _req(_admin_of(p.org_a), "GET", "/crm/fields/leads?layout=1")
+    assert layout.json()["empty_columns"] == ["email"], "the check serves the stale entity"
+    targets = {t["column"]: t for t in (await _lead_targets(p.org_a))["targets"]}
+    assert (targets["email"]["open"], targets["email"]["reason"]) == (True, None)
+    made = await _post(p.org_a, "Why_Lost", "email")
+    assert made.status_code == 201, made.text
+    assert _opened(p, p.org_a)["Why_Lost"] == ("approved", "email", True)
+
+
 async def test_q18_3_an_opened_rule_does_not_go_stale_for_its_layout(fe) -> None:
     """Items 2, 6 and 8, and case 3 of item 9."""
     p, a, _b = fe
