@@ -47,6 +47,13 @@ run started and that has not ended. It runs by itself when the label mode is
 ``off``. For an
 org outside ``CRM_NOTE_SEARCH_ORGS`` it starts no task. One step runs at a
 time for each org (``_embedding``).
+
+**The weekly digest** (WS-53 CRM-Q28, ``crm_platform.md`` §18.11.2). At the
+same two points, :func:`start_digest` starts ``digest.digest_after_run`` as
+a background task, outside the run lock. For an org outside
+``CRM_DIGEST_ORGS`` it starts no task. The step itself goes on only when the
+week has no digest yet and the time is after Monday 06:00 in the CRM zone.
+One step runs at a time for each org (``_digesting``).
 """
 
 from __future__ import annotations
@@ -60,7 +67,15 @@ from acb_common.db import get_db, tenant_session
 from sqlalchemy import text
 
 from gateway.connections import store
-from gateway.crm_sync import engine, map_pipeline, note_labels, note_vectors, profiles, runs
+from gateway.crm_sync import (
+    digest,
+    engine,
+    map_pipeline,
+    note_labels,
+    note_vectors,
+    profiles,
+    runs,
+)
 from gateway.crm_sync.engine import NotConnected
 from gateway.crm_sync.runs import SyncRunning
 from gateway.routes.crm import access as crm_access
@@ -89,6 +104,8 @@ _mapping: set[str] = set()
 _label_tasks: dict[str, asyncio.Task[Any]] = {}
 #: The orgs whose vector step runs now (CRM-Q27).
 _embedding: set[str] = set()
+#: The orgs whose digest step runs now (CRM-Q28).
+_digesting: set[str] = set()
 
 
 async def _organization_ids() -> list[str]:
@@ -153,6 +170,7 @@ async def _run_one(org: str, gate: asyncio.Semaphore) -> int:
         # `run_org` returns after `runs.finish` released the lock (CRM-Q26).
         start_vectors(org, after=start_labels(org))
         start_mapping(org)
+        start_digest(org)
         return 1
 
 
@@ -320,12 +338,40 @@ def start_vectors(org: str, *, after: asyncio.Task[Any] | None = None) -> asynci
         return None
 
 
+def start_digest(org: str) -> asyncio.Task[Any] | None:
+    """Start the weekly digest step of ``org`` in the background (CRM-Q28).
+    Never raises.
+
+    It starts nothing when the loop stops, when the org is not on
+    ``CRM_DIGEST_ORGS``, or when a step of the org runs already. The step
+    checks the week and the Monday rule itself, in a tenant session.
+    """
+    try:
+        if _stopping.is_set() or org in _digesting or not digest.enabled_for(org):
+            return None
+        _digesting.add(org)
+        task = asyncio.get_running_loop().create_task(
+            digest.digest_after_run(org, should_stop=_stopping.is_set),
+            name="crm-digest",
+        )
+        # A done-callback, as for the label step: a task cancelled before its
+        # first step never runs a `finally`.
+        task.add_done_callback(lambda _t: _digesting.discard(org))
+        return _track(task)
+    except Exception as exc:  # a digest step never breaks a sync run
+        _digesting.discard(org)
+        _log.warning("crm.digest.not_started class=%s", type(exc).__name__)
+        return None
+
+
 async def _execute_then_label(handle: engine.RunHandle) -> engine.RunResult:
-    """Run the handle, then start the label step, the vector step and the
-    mapping pipeline. The run's result is the task's result, as before CRM-Q26."""
+    """Run the handle, then start the label step, the vector step, the
+    mapping pipeline and the digest step. The run's result is the task's
+    result, as before CRM-Q26."""
     result = await engine.execute(handle, should_stop=_stopping.is_set)
     start_vectors(handle.org, after=start_labels(handle.org))
     start_mapping(handle.org)
+    start_digest(handle.org)
     return result
 
 
@@ -367,6 +413,7 @@ __all__ = [
     "run_tick",
     "spawn",
     "start_crm_mirror_sync",
+    "start_digest",
     "start_first_import",
     "start_labels",
     "start_mapping",

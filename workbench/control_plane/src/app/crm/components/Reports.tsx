@@ -22,20 +22,35 @@
  *   · **Orphaned stage names are shown.** Renaming a lane orphans its history
  *     from the funnel, and a total that silently shrank when somebody fixed a
  *     typo is worse than a total with a footnote.
+ *
+ * **The weekly digest** (WS-53 CRM-Q28 item 13). `DigestCard` reads the
+ * newest digest of the org and shows its week, its text, its numbers as a
+ * table and a line that says AI wrote the text from them. The server checked
+ * each number of the text against that table, and this file draws both
+ * verbatim. An org with no digest sees no card.
  */
 
+import { useEffect, useState } from "react";
+
 import Icon from "@/components/Icon";
+import { listDigests } from "../lib/api";
 import { stageAccent } from "../lib/board";
 import { useCrmModeValue } from "../lib/modeContext";
 import { compactMoney, money, shortDate } from "../lib/format";
 import {
   byWeight,
+  DIGEST_AI_LINE,
+  digestMissing,
+  digestTableRows,
+  digestValue,
+  digestWeekLabel,
   dwellSummary,
   funnelWidths,
   hasFunnel,
   hasOwners,
   hasPipeline,
   hasWinLoss,
+  newestDigest,
   ownerLabel,
   percentLabel,
   pipelineWidths,
@@ -43,7 +58,7 @@ import {
   undatedNotice,
   windowLabel,
 } from "../lib/reports";
-import type { CrmReports } from "../lib/types";
+import type { CrmDigest, CrmReports } from "../lib/types";
 
 export default function Reports({
   reports,
@@ -63,6 +78,7 @@ export default function Reports({
   }
   return (
     <div className="flex-1 space-y-6 overflow-y-auto p-4 sm:p-6">
+      <DigestCard />
       <Forecast reports={reports} />
       <Funnel reports={reports} />
       <div className="grid gap-6 lg:grid-cols-2">
@@ -369,6 +385,74 @@ function Leaderboard({ reports }: { reports: CrmReports }) {
         <p className="mt-3 text-[11px] text-muted-foreground">
           {owners.omitted} more owner(s) not shown — the leaderboard is capped,
           and says so rather than looking complete.
+        </p>
+      )}
+    </Block>
+  );
+}
+
+// ── 5 · the weekly digest (WS-53 CRM-Q28) ─────────────────────────────────
+
+/**
+ * Loads the newest digest. A failed read and an empty list draw nothing:
+ * the digest is extra, and the four blocks below must not wait for it.
+ */
+function DigestCard() {
+  const [digest, setDigest] = useState<CrmDigest | null>(null);
+  useEffect(() => {
+    let live = true;
+    listDigests(4)
+      .then((digests) => {
+        if (live) setDigest(newestDigest(digests));
+      })
+      .catch(() => {
+        if (live) setDigest(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+  return digest ? <DigestCardView digest={digest} /> : null;
+}
+
+/** The newest digest: its week, its text, its numbers and the AI line. */
+export function DigestCardView({ digest }: { digest: CrmDigest }) {
+  const rows = digestTableRows(digest.numbers);
+  const missing = digestMissing(digest.numbers);
+  return (
+    <Block title="Weekly digest" blurb={digestWeekLabel(digest)}>
+      <p className="whitespace-pre-line text-sm text-foreground">{digest.text}</p>
+      <div className="mt-3 flex items-start gap-2 rounded-lg border border-border bg-secondary p-2.5">
+        <Icon name="Sparkles" className="mt-0.5 h-3.5 w-3.5 text-muted-foreground" />
+        <p className="text-[11px] text-muted-foreground" data-digest-ai-line>
+          {DIGEST_AI_LINE}
+        </p>
+      </div>
+      {rows.length > 0 && (
+        <table className="mt-4 w-full text-xs">
+          <thead>
+            <tr className="text-muted-foreground">
+              <th className="pb-2 text-left font-normal">Part</th>
+              <th className="pb-2 text-left font-normal">Group</th>
+              <th className="pb-2 text-right font-normal">Number</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, index) => (
+              <tr key={`${row.part}-${row.label}-${index}`} className="border-t border-border">
+                <td className="max-w-[14rem] truncate py-1.5 text-muted-foreground">{row.part}</td>
+                <td className="max-w-[12rem] truncate py-1.5 text-foreground">{row.label}</td>
+                <td className="py-1.5 text-right tabular-nums text-foreground">
+                  {digestValue(row)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {missing.length > 0 && (
+        <p className="mt-3 text-[11px] text-muted-foreground">
+          Not counted this week: {missing.join(", ")}.
         </p>
       )}
     </Block>

@@ -58,6 +58,9 @@ VOICE_SITES: dict[str, tuple[tuple[str, ...], str | None]] = {
     GW + "email/automation/drafting.py::_llm_compose_assist": (("email",), None),
     GW + "email/automation/rules.py::_llm_generate_rules": (("title",), None),
     GW + "email/digest.py::_digest_brief": (("summary",), GW + "email/digest.py::_BRIEF_SYSTEM"),
+    # WS-53 CRM-Q28: the weekly CRM digest, prose a member reads on Reports.
+    "apps/services/gateway/gateway/crm_sync/digest.py::_complete": (
+        ("summary",), "apps/services/gateway/gateway/crm_sync/digest.py::SYSTEM"),
     GW + "notes/copilot.py::_craft": (("chat",), None),
     GW + "notes/copilot_agenda.py::draft_agenda": (("chat", "title"), None),
     GW + "notes/share.py::_draft": (("email",), None),

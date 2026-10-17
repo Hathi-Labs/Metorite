@@ -2611,6 +2611,8 @@ RESET_TABLES: tuple[str, ...] = (
     "crm_convert_mappings",
     # CRM-Q17a-1: the fill rank counts the records and fields above.
     "crm_field_fill",
+    # CRM-Q28: the weekly digests count the records of the old account.
+    "crm_digests",
 )
 
 #: What the start over keeps: the access rule and the mode row, the saved

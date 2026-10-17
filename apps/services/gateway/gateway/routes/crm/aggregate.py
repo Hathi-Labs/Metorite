@@ -62,6 +62,12 @@ is the effective value of today. CRM-C3 changes the stage half.
 because the sync writes none. So in Mirror mode the route answers an empty
 result with a ``reason``, and never a number that looks measured.
 
+**One body for the route and the digest** (CRM-Q28). :func:`compute` is
+the body of ``GET /crm/aggregate``. The weekly digest
+(``crm_sync/digest.py``) calls the same function for each of its fixed
+queries, with the org of its run bound. So a digest number and a route
+number are one answer. Fence: ``tests/unit/test_crm_digest.py``.
+
 **Two reads for My Day** (WS-58 MD-3e). ``my_overdue_deals`` and
 ``my_close_passed_deals`` are not routes. The feed's ``crm`` provider calls
 them with its own session, after the kill switch and the access rule. Each
@@ -473,7 +479,7 @@ async def _read(
     db: Any, found: Entity | None, module: str | None, *,
     measure: str, group_by: str | None, field: str | None,
     group_field: str | None, bucket: str | None,
-    pairs: list[tuple[str, str]], params: ListParams, user: UserContext,
+    pairs: list[tuple[str, str]], params: ListParams, user: UserContext | None,
 ) -> _Read:
     """Every statement of one aggregate, in the caller's tenant session."""
     await db.execute(text(_TIMEOUT_SQL), {"ms": str(STATEMENT_TIMEOUT_MS)})
@@ -561,8 +567,33 @@ async def aggregate(
     # (CRM-Q25 fix round). `group_field=` alone is then "no group", a 422.
     group_by, field = group_by or None, field or None
     group_field, bucket = group_field or None, bucket or None
-    found, module = _check(entity, measure, group_by, group_field, field, bucket)
+    _found, module = _check(entity, measure, group_by, group_field, field, bucket)
     pairs = _check_filters(module, request)
+    return await compute(
+        entity, measure=measure, group_by=group_by, field=field,
+        group_field=group_field, bucket=bucket, pairs=pairs, params=params, user=user,
+    )
+
+
+async def compute(
+    entity: str, *, measure: str = "count", group_by: str | None = None,
+    field: str | None = None, group_field: str | None = None,
+    bucket: str | None = None, pairs: list[tuple[str, str]] | None = None,
+    params: ListParams, user: UserContext | None = None,
+) -> AggregateResponse:
+    """The ONE body of an aggregate. ``GET /crm/aggregate`` calls it, and so
+    does the weekly digest of CRM-Q28 (``crm_sync/digest.py``), so a digest
+    number and the number of the route are one answer.
+
+    The tenant is the bound one (``current_tenant``): the route binds it from
+    the session, and the digest step binds the org of its run. A caller never
+    names an org here (R5). ``pairs`` are the checked ``field.<key>``
+    filters of a module. Each refusal is an ``HTTPException``: 422 for a bad
+    name, 503 ``aggregate_timeout`` past the timeout."""
+    group_by, field = group_by or None, field or None
+    group_field, bucket = group_field or None, bucket or None
+    found, module = _check(entity, measure, group_by, group_field, field, bucket)
+    pairs = list(pairs or [])
     try:
         async with _tenant_session() as db:
             read = await _read(
@@ -755,14 +786,19 @@ async def my_day_rows(user: UserContext, *, now: datetime, limit: int) -> dict[s
     ``personal.stored_zone``, so "today" is the member's own, and the
     follow-ups follow the one CRM day rule (``activities._MY_DUE_SQL``). The caller has applied the kill switch and the access rule
     before it calls this. Each read takes ``limit`` rows at most.
+
+    ``digest`` is the newest weekly digest of the org that was stored inside
+    the last day (CRM-Q28 item 14), or None. The read runs only for an org
+    on ``CRM_DIGEST_ORGS``, so a dark box sends no new statement.
     """
-    from gateway.routes.crm import activities
+    from gateway.routes.crm import activities, digests, flags
     from gateway.routes.projects.personal import stored_zone, zone_name
 
     async with _tenant_session() as db:
         zone = zone_name(await stored_zone(db, user.email))
         tz = ZoneInfo(zone)
         today = now.astimezone(tz).date()
+        org = current_tenant()
         return {
             "zone": zone,
             "today": today,
@@ -770,6 +806,10 @@ async def my_day_rows(user: UserContext, *, now: datetime, limit: int) -> dict[s
                                                       limit=limit),
             "quiet": await my_overdue_deals(db, user, limit=limit),
             "passed": await my_close_passed_deals(db, user, today=today, limit=limit),
+            "digest": (
+                await digests.ready_digest(db, str(org), now)
+                if org and flags.digest_allowed(org) else None
+            ),
         }
 
 

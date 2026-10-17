@@ -148,6 +148,8 @@ _RESET_DELETES: tuple[str, ...] = (
     "crm_field_sections",
     # CRM-C6a: the lead-conversion mapping names the fields that go below.
     "crm_convert_mappings",
+    # CRM-Q28: the weekly digests count the records of the old setup.
+    "crm_digests",
 )
 
 _HAS_RECORDS = {

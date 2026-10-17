@@ -227,6 +227,42 @@ export type OwnerLeaderboard = {
   omitted: number;
 };
 
+/**
+ * One row of a digest part (WS-53 CRM-Q28). `value` is the server's one
+ * text of the number, or "no values recorded" for an empty field.
+ */
+export type DigestRow = { label: string; value: string };
+
+/** One part of a weekly digest: the answer of one CRM-Q25 aggregate. */
+export type DigestPart = {
+  key: string;
+  title: string;
+  unit: string;
+  rows: DigestRow[];
+  total?: string;
+  other_groups?: string;
+  cut?: boolean;
+};
+
+/** The numbers of one digest, exactly as the prompt held them. */
+export type DigestNumbers = {
+  week_start?: string;
+  week_end?: string;
+  zone?: string;
+  parts: DigestPart[];
+  missing: string[];
+};
+
+/** One weekly digest (`GET /crm/digests`). */
+export type CrmDigest = {
+  week_start: string;
+  week_end: string;
+  numbers: DigestNumbers;
+  text: string;
+  created_at: string;
+  stored_at: string | null;
+};
+
 /** The four blocks the reports tab loads together. */
 export type CrmReports = {
   pipeline: PipelineReport;

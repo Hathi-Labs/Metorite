@@ -461,6 +461,43 @@ def daily_requests(backlog: int) -> int:
     return notes // NOTES_PER_REQUEST
 
 
+# ── The counts of one week, for the digest (CRM-Q28 item 7) ─────────────────
+
+#: A note "needs action" at this probability or above.
+NEEDS_ACTION_AT = 0.5
+
+#: The labeled notes of one week, by kind, and how many of them need action.
+#: A note of the week is one whose time (``occurred_at``, else
+#: ``created_at``) is inside ``[:start, :end)``. Only a row with a label
+#: counts. The SQL lives HERE, beside the one writer of the table, so the
+#: table keeps one module that names it (CRM-Q26 item 9). Keys and counts
+#: only, never a note's text.
+_WEEK_COUNTS_SQL = (
+    "SELECT l.kind AS kind, count(*) AS notes, "
+    "count(*) FILTER (WHERE l.needs_action >= :at) AS needs_action "
+    "FROM crm_note_labels l JOIN crm_activities a ON a.id = l.activity_id "
+    "WHERE l.organization_id = CAST(:o AS uuid) "
+    "AND a.organization_id = CAST(:o AS uuid) AND a.type = 'note' "
+    "AND l.labeled_at IS NOT NULL AND l.kind IS NOT NULL "
+    "AND COALESCE(a.occurred_at, a.created_at) >= :start "
+    "AND COALESCE(a.occurred_at, a.created_at) < :end "
+    "GROUP BY l.kind ORDER BY l.kind"
+)
+
+
+async def week_counts(
+    db: Any, org: str, start: datetime, end: datetime,
+) -> list[dict[str, Any]]:
+    """The labeled notes of ``[start, end)`` by kind: ``[{kind, notes,
+    needs_action}]``. The digest calls it only while the mode of
+    :data:`FEATURE` is ``on``. In ``shadow`` no reader sees a label."""
+    rows = (await db.execute(text(_WEEK_COUNTS_SQL), {
+        "o": org, "start": start, "end": end, "at": NEEDS_ACTION_AT,
+    })).fetchall()
+    return [{"kind": str(r.kind), "notes": int(r.notes or 0),
+             "needs_action": int(r.needs_action or 0)} for r in rows]
+
+
 async def _write(org: str, rows: Sequence[Mapping[str, Any]], step_mode: str) -> int:
     """Write the rows of one request in one transaction. Answers how many
     landed (a note deleted since the read writes nothing)."""
@@ -682,4 +719,5 @@ __all__ = [
     "reader",
     "requests_used",
     "reserve_request",
+    "week_counts",
 ]

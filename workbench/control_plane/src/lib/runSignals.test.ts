@@ -108,6 +108,10 @@ const ago = (mins: number) => new Date(NOW - mins * 60_000).toISOString();
 let storage: MemoryStorage;
 
 beforeEach(() => {
+  // The code prunes an unread entry by the real clock (UNREAD_TTL_MS, 7 days).
+  // Freeze the clock at NOW, or every test fails 7 days after NOW.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
   storage = new MemoryStorage();
   vi.stubGlobal("window", { localStorage: storage });
   vi.stubGlobal("localStorage", storage);
@@ -120,6 +124,7 @@ afterEach(() => {
   bindChatScope(null);
   _resetRunSignalsForTests();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 type Run = {
