@@ -3021,6 +3021,8 @@ _CLAIM_INPUT: dict[str, Any] = {
 
 _CLAIM_OUTPUT: dict[str, Any] = _object({
     "task": _TASK_SCHEMA, "moved": {"type": "boolean"},
+    # EA-13c (EA3-42): the run that the claim opened or found, or null.
+    "agent_run_id": _NULLABLE_STRING,
 })
 
 
@@ -3047,7 +3049,10 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     no_names: dict[str, str] = {}
     names = await _after_write(
         lambda: _names_after_write(ctx, current.get("project_id")), no_names)
-    return {"task": _task(current, names), "moved": written.get("moved") is True}
+    # EA-13c (EA3-42): the gateway opens the agent's run in the claim. The id
+    # leaves only in the shape of an id.
+    return {"task": _task(current, names), "moved": written.get("moved") is True,
+            "agent_run_id": _id(written.get("agent_run_id"))}
 
 
 CLAIM_TASK = Tool(
@@ -3062,7 +3067,9 @@ CLAIM_TASK = Tool(
         " triage task is refused. Send the version that get_task returned as"
         " expected_version. When the task changed after that read, the tool"
         " refuses, and you read the task again. A second claim changes"
-        " nothing. Returns the task with its new version." + _UNTRUSTED_NOTE
+        " nothing. Returns the task with its new version, and agent_run_id:"
+        " the agent run that the claim opened or found, or null when agent"
+        " runs are off." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_CLAIM_INPUT,

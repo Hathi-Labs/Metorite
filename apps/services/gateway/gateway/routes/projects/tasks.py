@@ -1515,6 +1515,12 @@ async def claim_task(
     key. That is the order of ``set_assignees``: the key before the row,
     and the watcher key after it. So the claim adds no lock order that a
     member path does not already have, and it changes no member path.
+
+    **EA-13c (EA3-42).** Between the key and the row, an agent's claim
+    opens its run through ``agent_runs.open_run_for_claim`` while the runs
+    flag is on. A run writer takes the run before the task row, so the
+    order stays one order. The answer carries ``agent_run_id``, which is
+    None for a member and with the flag off.
     """
     me = actor(user).strip().lower()
     async with _tenant_session() as db:
@@ -1548,6 +1554,15 @@ async def claim_task(
         # `assignment` row, answered `assigned: true` and emitted
         # `pm.task.assigned` for a row it did not write.
         added = await _insert_claim_assignees(db, task_id, wanted, by=actor(user))
+
+        # 2b. EA-13c (EA3-42): an agent's claim opens its run while the runs
+        # flag is on, through the one run writer. After the key and BEFORE
+        # the row: each run writer takes the run, then the task row (its
+        # comment bumps the row), so the claim keeps that order. A refusal
+        # below rolls the run back with the claim. None for a member.
+        from gateway.routes.projects import agent_runs
+
+        run_id = await agent_runs.open_run_for_claim(db, task_id, user)
 
         # 3. The row lock, and the row as the lock read it (fix round 1).
         # Two claims serialise here, and the second one sees the new
@@ -1610,6 +1625,8 @@ async def claim_task(
         result["moved"] = moved is not None
         result["assigned"] = bool(added)
         result["not_notified"] = notified["skipped"]
+        # EA-13c: the run that this claim opened or found, else None.
+        result["agent_run_id"] = run_id
 
     if added:
         await emit("pm.task.assigned", {

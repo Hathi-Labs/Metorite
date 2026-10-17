@@ -1349,29 +1349,72 @@ async def _earlier_archive_request(db: Any, task_id: str, me: str, key: str) -> 
     )).fetchone()
 
 
+async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
+                          via: str) -> tuple[str | None, bool]:
+    """The id of the agent's open run on the task, or of a new
+    ``in_progress`` run (EA12-6), and True when this call made it.
+
+    The ONE place where an agent's act, not a start, opens a run: the archive
+    request (EA-6g) and the claim (EA-13c). It writes no activity and no
+    comment. The id is None only when a concurrent start won the open-run
+    index and then rolled back, which the caller answers as a retry.
+    """
+    open_args = _open_run_args(task_id, me, via, legacy=_legacy_via(user),
+                               connection_id=str(user.agent.connection_id))  # type: ignore[union-attr]
+    existing = (await db.execute(text(_OPEN_RUN_SQL), open_args)).fetchone()
+    if existing is not None:
+        return str(existing.id), False
+    ts = await _clock(db)
+    made = (await db.execute(text(_INSERT_RUN_SQL), {
+        "tid": task_id, "me": me, "cid": str(user.agent.connection_id),  # type: ignore[union-attr]
+        "via": via, "status": "in_progress", "by": via, "started": ts,
+        "link": None, "ts": ts, "agent_ts": ts, "key": None,
+    })).fetchone()
+    if made is not None:
+        return str(made.id), True
+    # A concurrent start won the open-run index. Its run is the answer.
+    existing = (await db.execute(text(_OPEN_RUN_SQL), open_args)).fetchone()
+    return (str(existing.id) if existing is not None else None), False
+
+
 async def _open_or_new_run(db: Any, user: UserContext, task_id: str, me: str,
                            via: str) -> Any:
     """The open run of this member and client on the task, or a new
     ``in_progress`` run, LOCKED for this transaction (EA12-6, as
     ``ask_on_task`` gets it through the start)."""
-    open_sql = _OPEN_RUN_SQL
-    open_args = _open_run_args(task_id, me, via, legacy=_legacy_via(user),
-                               connection_id=str(user.agent.connection_id))  # type: ignore[union-attr]
-    existing = (await db.execute(text(open_sql), open_args)).fetchone()
-    if existing is None:
-        ts = await _clock(db)
-        made = (await db.execute(text(_INSERT_RUN_SQL), {
-            "tid": task_id, "me": me, "cid": str(user.agent.connection_id),  # type: ignore[union-attr]
-            "via": via, "status": "in_progress", "by": via, "started": ts,
-            "link": None, "ts": ts, "agent_ts": ts, "key": None,
-        })).fetchone()
-        if made is not None:
-            return await _lock_run(db, str(made.id))
-        # A concurrent start won the open-run index. Its run is the answer.
-        existing = (await db.execute(text(open_sql), open_args)).fetchone()
-        if existing is None:
-            raise HTTPException(status_code=409, detail="Send the request again.")
-    return await _lock_run(db, str(existing.id))
+    run_id, _ = await _agent_open_run(db, user, task_id, me, via)
+    if run_id is None:
+        raise HTTPException(status_code=409, detail="Send the request again.")
+    return await _lock_run(db, run_id)
+
+
+async def open_run_for_claim(db: Any, task_id: str, user: UserContext) -> str | None:
+    """WS-55 EA-13c (spec §12.2 item 3, EA3-42). A claim by an agent opens
+    its run, so the card reads "working" even when the agent skips
+    ``start_agent_run``. ``claim_task`` calls it in the claim's OWN
+    transaction, so a refused claim (C4, C5) rolls the run back with it.
+
+    * Only for a signed agent claim (``UserContext.agent``) while
+      ``agent_runs_enabled`` is on. A member's claim opens no run, and None
+      comes back.
+    * With an open run of this task, member and stamp (EA12-6, and the legacy
+      stamp of EA-13a), it writes nothing and returns that run. Else it
+      inserts one ``in_progress`` run, started by the stamp, with the
+      connection and ``last_agent_activity_at`` now. No activity row, no
+      comment and no notification (C7 and C9 of EA-6b).
+    * ``start_agent_run`` after the claim finds this run and answers
+      ``created: false``. After a Stop and a terminal run, the next claim
+      opens a new run.
+
+    ⚠️ The lock order. ``claim_task`` calls this after its assignee key and
+    BEFORE its row lock. Every run writer takes the run first and the task
+    row after it (a comment bumps the row), so the claim takes them in the
+    same order. ``test_mcp_edge_claim.py`` proves it with looped races.
+    """
+    if getattr(user, "agent", None) is None or not agent_runs_enabled():
+        return None
+    run_id, _ = await _agent_open_run(db, user, task_id, _member(user), _agent_via(user) or "")
+    return run_id
 
 
 @router.post("/tasks/{task_id}/archive-request", status_code=201, dependencies=_ENABLED)
