@@ -11,9 +11,12 @@
  * Fence: `src/lib/elicitationAnswer.test.ts`, which snapshots each one.
  *
  * The card's look is `components/ElicitationCard.tsx`. Only
- * {@link answerSummary} is for the member: the one line an answered card
- * shows.
+ * {@link answerSummary} and {@link submitBlockedReason} are for the member:
+ * the one line an answered card shows, and the line that says why Submit
+ * is off.
  */
+
+import { plainTitle } from "@/lib/fencedText";
 
 export interface ElicitationOption {
   label: string;
@@ -27,6 +30,12 @@ export interface ElicitationQuestion {
   multiSelect?: boolean;
   allowFreeformInput?: boolean;
   options?: ElicitationOption[] | null;
+  /**
+   * `false` lets the member skip this question: it never holds Submit back.
+   * Absent or `true`, the question needs an answer. The server sends the
+   * key only when the model set it to `false` (`acb_skills.ask_tools`).
+   */
+  required?: boolean;
 }
 
 export interface ElicitationAnswers {
@@ -56,24 +65,71 @@ export function collectAnswers(
 }
 
 /**
- * May the member submit? Every question needs an answer. When a question
- * offers both options and a box, typed text alone is an answer.
+ * Has the member answered this question? A pick is an answer, and typed
+ * text in the question's box is an answer too. A question with no options
+ * and no box can take no answer, so it stays unanswered, as before.
+ */
+export function isAnswered(
+  q: ElicitationQuestion,
+  picks: ElicitationAnswers,
+  typed: Readonly<Record<string, string>>,
+): boolean {
+  const hasOptions = !!q.options && q.options.length > 0;
+  const hasFreeform = q.allowFreeformInput !== false;
+  const selected = picks[q.header]?.selected?.length ?? 0;
+  const freeformFilled = (typed[q.header] ?? "").trim().length > 0;
+  return (hasOptions && selected > 0) || (hasFreeform && freeformFilled);
+}
+
+/**
+ * The questions that hold Submit back, in the card's order: each one with
+ * no answer that is not optional (`required: false`).
+ */
+export function unansweredQuestions(
+  questions: readonly ElicitationQuestion[],
+  picks: ElicitationAnswers,
+  typed: Readonly<Record<string, string>>,
+): ElicitationQuestion[] {
+  return questions.filter((q) => q.required !== false && !isAnswered(q, picks, typed));
+}
+
+/**
+ * May the member submit? Every question that is not optional needs an
+ * answer. When a question offers both options and a box, typed text alone
+ * is an answer.
  */
 export function canSubmitAnswers(
   questions: readonly ElicitationQuestion[],
   picks: ElicitationAnswers,
   typed: Readonly<Record<string, string>>,
 ): boolean {
-  return questions.every((q) => {
-    const hasOptions = !!q.options && q.options.length > 0;
-    const hasFreeform = q.allowFreeformInput !== false;
-    const selected = picks[q.header]?.selected?.length ?? 0;
-    const freeformFilled = (typed[q.header] ?? "").trim().length > 0;
-    if (hasOptions && hasFreeform) return selected > 0 || freeformFilled;
-    if (hasOptions) return selected > 0;
-    if (hasFreeform) return freeformFilled;
-    return false;
-  });
+  return unansweredQuestions(questions, picks, typed).length === 0;
+}
+
+/** The most question names a blocked Submit lists. More reads as a count. */
+const MAX_NAMED = 3;
+
+/**
+ * Why Submit is off, in words for the member, or `null` when it is on.
+ *
+ * Owner report, 2026-10-17: the member picked an option and could not
+ * submit, because a text question above it had no answer, and nothing said
+ * so. Now the line beside Submit names each question that blocks it:
+ * "Answer Target deadline to submit." A card of one question shows no
+ * header, so it says "Answer the question to submit."
+ */
+export function submitBlockedReason(
+  questions: readonly ElicitationQuestion[],
+  unanswered: readonly ElicitationQuestion[],
+): string | null {
+  if (unanswered.length === 0) return null;
+  if (questions.length === 1) return "Answer the question to submit.";
+  if (unanswered.length > MAX_NAMED) return `Answer the ${unanswered.length} open questions to submit.`;
+  const names = unanswered.map((q) => plainTitle(q.header) || "the question");
+  const listed = names.length === 1
+    ? names[0]
+    : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  return `Answer ${listed} to submit.`;
 }
 
 /** Every answer as `[header]` blocks: the message the non-blocking path sends. */

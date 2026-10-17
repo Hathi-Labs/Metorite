@@ -362,6 +362,10 @@ approved a "Create 9 tasks" card. His bubble then showed the fenced envelope,
 The notice now says what has happened: "Your answer went to it as a new
 message."
 
+**Status, 2026-10-17: BUILT, branch `dismissible-notices`.** The two restart
+notices and the other-account notice are one slim line with a Dismiss
+control, and the dismissal stays after a reload (`isInfoOnlyNotice`).
+
 **Review of #942 (2026-10-13).** One fix round closed four P2 findings:
 
 - **The neutralising pass sees look-alikes.** Before its ASCII patterns, it

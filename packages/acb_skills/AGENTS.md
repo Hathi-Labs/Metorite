@@ -393,11 +393,14 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    (never a delegated answer), the arguments of its CRM calls (a date gives
    its count of days) and the member's own words, `member_message` of the
    run context. Never the packed prompt, which holds the model's earlier
-   answers. It also checks the shown text of each `DISPLAY_TOOLS` call (a
-   card, a report, a document, a text file), and a failed card fails the
-   answer and never ships. A failed answer gets ONE retry for each run, and
+   answers. The ledger adds each result to its sources when it arrives. It
+   also checks the shown text of each `DISPLAY_TOOLS` call (a card, a report,
+   a document, a text file, a `whatsapp_ui` element), and a failed card
+   fails the answer and never ships. A failed answer gets ONE retry for each run, and
    then `fallback_text`, which shows the results of `FALLBACK_TOOLS` and
-   never the draft. A failed step whose calls show nothing loses its text. A
+   never the draft. A failed step whose calls show nothing loses its text.
+   A failed step with a `SHOWN_TOOLS` call (a display tool or
+   `share_artifact`) fails. A
    passed check makes no model request. While it holds, it puts
    `HOLD_EVENT` on the run queue at most each `HEARTBEAT_S`, only on a model
    update, so the idle watchdog sees life. The one reader of

@@ -37,7 +37,11 @@ merged. §21.18 (a NUL in a tool result fails no save) was built
 2026-10-09. §14.9 (a file link opens the viewer, never raw text) was built
 2026-10-16, on a branch. §14.10 B1 (`make_report`: a report as a chat card, a file
 and a PDF) was built 2026-10-16. §14.10.9 B3 (`crm_report` and
-`render_report` make a kept report by code) was built 2026-10-16.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+`render_report` make a kept report by code) was built 2026-10-16. §24.9.1 (a
+card of questions says why Submit is off) was built 2026-10-17, on a
+branch. §26 (a plan row with no owner is an unassigned task, and one card
+approves many tasks) was built 2026-10-17, on a branch.** §10 says which
+slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -303,6 +307,8 @@ draw one template each. W4 and W5 stay instructions over the tools.
    (`emit_generative_ui`, `hitl: true`, inline — the rail has no panel host).
    Each task has a verb-plus-object title, an owner, an effort estimate and
    a date. A task that lacks one of the four is not proposed.
+   ⚠️ **Amended 2026-10-17 (§26).** The owner is optional. A task with no
+   owner is an unassigned task, and the agent does not ask for one.
 4. Priority score is `impact × urgency × effort`, each 1 to 5, shown per task
    and never stored. It is a sorting aid, not a field.
 5. The agent names three ways the plan fails, before it asks for approval.
@@ -1522,6 +1528,9 @@ local day. The route checks every visible blocker, and reads the UTC day.
   the hours.
 
 The plan still creates everything under one card, in one batch.
+
+⚠️ **Amended 2026-10-17 (§26).** A row can have no owner. That row shows no
+fit, no hours and no mark, and the plan creates it with nobody assigned.
 
 **No phases (owner, 2026-09-24).** The first draft of this section created
 phases as parent tasks. The owner declined them. The Projects app already has
@@ -5950,6 +5959,33 @@ browser, with 200 and with 409).
 the messages of its first render, so a slow read can replace a live turn. The
 replay hit that race on a cold compile.
 
+### 24.9.1 A card of questions says why Submit is off (2026-10-17)
+
+**The report.** The owner got a card of two questions from the Projects
+assistant. The first question took typed text, and the second took a pick.
+The owner picked an option, and Submit stayed off. The owner wrote "even
+after selecting, i cant submit."
+
+**The cause.** The pick counted. A replay in a real browser showed the option
+pressed and the right answer in the post. Submit stayed off because the first
+question had no answer, and the card did not say so.
+
+**The rule.** The card never blocks Submit without a reason.
+
+- The line beside Submit names each question that blocks it, for example
+  "Answer Target deadline to submit." Submit points at that line with
+  `aria-describedby`.
+- After the first answer, each question that still blocks Submit shows
+  "Needs an answer".
+- A question with `"required": false` never blocks Submit, and it shows
+  "Optional". The tool and the bridge of the executor send that key only when
+  the model sets it to false.
+- The answer that the run gets does not change. An option that the member did
+  not pick never goes out.
+
+Fences: `elicitationAnswer.test.ts`, `elicitationCard.test.ts`,
+`e2e/genui-option-picker.spec.ts` and `tests/unit/test_ask_questions_text.py`.
+
 ## 25. The fixed prefix of each request (2026-10-09)
 
 **Status.** Built 2026-10-09, branch `agent-prefix-slim`. It changes what the
@@ -6089,3 +6125,82 @@ sweep can measure the requests of a turn.
   no gate name `load_design_system` and `load_artifact_kit`, and the static
   risk block names each platform tool. Only a Copilot agent reads them, and
   both agents here are native MAF agents.
+
+## 26. Unassigned plan rows, and one card for many tasks (2026-10-17)
+
+**Status.** Built 2026-10-17, branch `plan-card-unassigned-batch`. It adds
+no flag. It removes a refusal, and it adds no write path.
+
+### 26.1 The report
+
+The owner asked for two things on 2026-10-17.
+
+1. "We should allow for unassigned tasks, no?" The assistant refused a plan
+   whose tasks had no owner. It said that the plan card needs an owner for
+   the fit and the load. It offered a placeholder owner on every task, or a
+   Markdown file of the plan.
+2. One approval for many tasks. In the owner's words, the card must "take
+   approval for all the tasks at the same time".
+
+### 26.2 What was already there for ask 2
+
+One card for many tasks existed before this change. The code shows it.
+
+- `create_tasks` (`forms.py`, WS-46 P13, `projects_agent_parity.md` §12)
+  takes many tasks in ONE call. It shows ONE confirmation card, with a
+  checkbox for each task. Each row starts ticked.
+- `ConfirmationCard.tsx` draws those checkboxes. The summary counts the
+  ticked rows. Approve sends the ticked ids, and Reject writes nothing.
+- The tool writes only the ticked rows, and each row is its own write. A row
+  that fails does not stop the others. The receipt names each task made and
+  each row that failed.
+- `propose_plan` writes the project, every task and every link under one
+  confirmation card.
+- `create_tags` and `create_types` use the same card (§24.5).
+- The instructions already told the agent to use `create_tasks` for two or
+  more tasks.
+
+So this change adds no second card and no second approval path. It adds a
+test that a 403 on one row refuses that row only, and two lines in the
+instructions. Several new statuses still have no batch tool (§24.5).
+
+### 26.3 Rules for ask 1
+
+1. **The owner is optional.** A plan row needs a title, an effort and a due
+   date. `forms.py` `PLAN_FIELDS`, `plan_preview.py` `PlanRowIn` and
+   `planCard.ts` `planIncomplete` agree.
+2. **An unassigned row shows no fit, no hours and no mark.** Nobody is there
+   to measure. The preview answers `unassigned: true` for the row and adds
+   its effort to no walk. The card hides the old fit of an owner that the
+   member clears.
+3. **The plan counts unassigned rows apart.** The plan card gives the count
+   once, in a line that follows the edits of the member. The capacity line
+   and the detail of the confirmation card give it too. The partial receipt
+   counts only the rows that have an owner. A plan with no owner says "0 of
+   0 owners assigned". No figure divides by the owners.
+4. **The write.** An unassigned row gets no assignee write. The order of
+   §13.6 rule 8 does not change.
+5. **The agent does not ask.** W1 says that the owner is optional. It
+   forbids a placeholder owner, and it forbids a file in place of the plan
+   card. A row of `create_tasks` can have no assignee too.
+
+### 26.4 Fences (R7)
+
+| Rule | Test |
+|---|---|
+| 1, 4 | `test_projects_agent_writes.py` `test_a_plan_with_no_owner_creates_every_task_unassigned` |
+| 2 | `test_a_plan_with_some_owners_assigns_only_those`, `test_projects_plan_preview.py` `test_an_unassigned_row_carries_no_fit_no_hours_and_no_mark` |
+| 2, R8 | `test_an_unassigned_row_adds_no_hours_to_anybody` |
+| 3 | `test_a_stopped_plan_counts_only_the_owners_it_has`, `planCard.test.ts` "ownerSummary" |
+| 5 | `test_the_instructions_never_ask_for_an_owner_or_offer_a_file` |
+| The card | `genUITemplates.test.ts` "the plan card with unassigned rows" |
+| Ask 2 | `test_projects_create_tasks.py` `test_one_approval_never_lends_a_permission_to_a_row` |
+
+### 26.5 What this does not do
+
+- **No people picker on the plan card.** The owner field stays a text
+  field. It shows "Unassigned" when it is empty.
+- **The rows card keeps its controls.** Approve sends the ticked rows. This
+  change adds no "select all" control.
+- **`addendum.REPORT_RULE` does not change.** The rule against a plan file
+  is in the Projects instructions, beside W1.

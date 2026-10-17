@@ -307,7 +307,8 @@ class TestTheEval:
 
     def test_no_figure_waits_and_the_net_of_q21_passes_by_the_pair_rule(self) -> None:
         """Q21's net is a difference of two tool figures. No tool prints it,
-        and the pair rule of CRM-Q29 sources it. So no figure waits."""
+        and the pair rule of CRM-Q29 sources it. So no figure waits. Fix
+        round 3: the answer cites both operands, so the rule passes it."""
         assert not any(q.answer_check_waits for q in questions())
         assert not any(q.waiting for q in _scripted().questions)
         texts, answer = self._q21_texts_and_answer()
@@ -328,6 +329,28 @@ class TestTheEval:
         max_paid = facts_of(by_id()["Q08"])["max"]
         answers["Q08"]["answer"] = f"The largest single payment is ₹{max_paid:,.2f}."
         assert "answer_check" in _failed(_scripted(answers))["Q08"]
+
+    def test_q21_cites_both_operands_of_its_net(self) -> None:
+        """CRM-Q29 fix round 3, rule 1: a derived figure passes only beside
+        both of its operands. Q21's question asks for both, and its scripted
+        answer states both with the net."""
+        q = by_id()["Q21"]
+        facts = facts_of(q)
+        _texts, answer = self._q21_texts_and_answer()
+        for key in ("received", "paid_out", "net"):
+            assert checkers.states(facts[key], answer), key
+        assert "came in" in q.words and "went out" in q.words
+
+    @pytest.mark.parametrize("drop", ["received", "paid_out", "both"])
+    def test_the_net_of_q21_without_an_operand_fails_answer_check(self, drop: str) -> None:
+        q = by_id()["Q21"]
+        texts, _answer = self._q21_texts_and_answer()
+        parts = {"received": "received {inr:received}", "paid_out": "paid out {inr:paid_out}"}
+        kept = [v for k, v in parts.items() if drop not in (k, "both")]
+        template = ", ".join(["July to September 2026", *kept]) + ", net {inr:net}."
+        answer = run.render(template, facts_of(q))
+        problems, _waiting = checkers.check_answer(q, answer, texts)
+        assert any("has no source" in p for p in problems), answer
 
     def test_the_pair_rule_does_not_cover_a_made_up_figure_in_q21(self) -> None:
         answers = copy.deepcopy(run.load_answers())

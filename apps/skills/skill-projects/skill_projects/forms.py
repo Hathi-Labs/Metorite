@@ -430,7 +430,12 @@ async def edit_project(project_id: str) -> str:
 # There are no phases (owner, 2026-09-24): start dates and `blocks` links
 # carry the order of a plan, and the Timeline draws it.
 
-PLAN_FIELDS = ("title", "owner", "effort_mins", "due")
+#: The fields a plan row must carry. The owner is not one of them (owner,
+#: 2026-10-17, spec §26): a row with no owner is an unassigned task. It shows
+#: no fit and no hours, and the plan creates it with nobody assigned.
+PLAN_FIELDS = ("title", "effort_mins", "due")
+#: What the card and the receipt say for a row with no owner.
+UNASSIGNED = "unassigned"
 #: The three sort scores. They travel through the submit, so the score after
 #: the submit is the score the card showed (§13.6 rule 10).
 SCORE_KEYS = ("impact", "urgency", "effort")
@@ -475,7 +480,7 @@ def _plan_row(i: int, item: Any) -> dict[str, Any] | str:
     if missing:
         return (
             f"Task {i} ({data(item.get('title') or '?')}) lacks {', '.join(missing)}. "
-            "Every task needs all four."
+            "Every task needs a title, an effort and a due date. The owner can be empty."
         )
     try:
         effort = int(item.get("effort_mins"))
@@ -574,10 +579,11 @@ def _block_cycle(rows: list[dict[str, Any]]) -> list[str]:
 def _plan_rows(raw: Any, *, dropped: frozenset[str] = frozenset()) -> list[dict[str, Any]] | str:
     """The plan's task rows, validated, or the refusal string.
 
-    W1 rule: a task that lacks a title, an owner, an effort or a date is not
-    proposed. §13.6 rule 7 refuses, before any card and with zero writes, a
-    start date after the due date, an ``after`` key that names no row, a row
-    that blocks itself, and a ``blocks`` cycle. ``dropped`` holds the keys of
+    W1 rule: a task that lacks a title, an effort or a date is not proposed.
+    A task with no owner is proposed as an unassigned task (§26). §13.6 rule
+    7 refuses, before any card and with zero writes, a start date after the
+    due date, an ``after`` key that names no row, a row that blocks itself,
+    and a ``blocks`` cycle. ``dropped`` holds the keys of
     rows the member removed on the card: their links drop with them.
     """
     if isinstance(raw, str):
@@ -585,7 +591,7 @@ def _plan_rows(raw: Any, *, dropped: frozenset[str] = frozenset()) -> list[dict[
             raw = json.loads(raw)
         except (TypeError, ValueError):
             return (
-                "tasks is a JSON list of {key, title, owner, effort_mins, start?, due, "
+                "tasks is a JSON list of {key, title, owner?, effort_mins, start?, due, "
                 "after?, level?, important?, leveraged?}."
             )
     if not isinstance(raw, list) or not raw:
@@ -697,6 +703,9 @@ def _capacity(
     warnings as sentences, and the one capacity line for the card."""
     titles = {r["key"]: r["title"] for r in rows}
     due_of = {r["key"]: r["due"] for r in rows}
+    # §26: a row with no owner has nobody to measure. It gets no fit, no
+    # hours and no mark, whatever the preview sends for it.
+    nobody = {r["key"] for r in rows if not r["owner"]}
     # A name that did not resolve is picker data every member reads, not HR
     # data. So the mark shows with or without the grant, and without a
     # preview (review round 1, P2a). The member fixes it before the submit.
@@ -717,7 +726,7 @@ def _capacity(
         return by_key, warnings, str(answer.get("hr_note") or "An admin can see capacity.")
     for got in answer.get("rows") or []:
         key = str(got.get("key") or "")
-        if key not in titles:
+        if key not in titles or key in nobody:
             continue
         fit = got.get("fit") or {}
         marks = [MARK_WORDS.get(str(m), str(m)) for m in got.get("marks") or []]
@@ -735,6 +744,26 @@ def _capacity(
     window = answer.get("window") or {}
     line = f"Hours cover {window.get('starts_on')} to {window.get('ends_on')}, across all your visible work."
     return by_key, warnings, line
+
+
+def _with_unassigned(line: str, rows: list[dict[str, Any]]) -> str:
+    """The confirm card's capacity line, with the unassigned rows counted
+    apart (§26). The plan card counts them itself, live, as the member edits
+    the owners (``planCard.ts`` ``ownerSummary``), so it gets the bare line.
+
+    When no row has an owner, nothing is measured, so the line says only
+    that. The count is a count: no figure here divides by the owners.
+    """
+    nobody = sum(1 for r in rows if not r["owner"])
+    if not nobody:
+        return line
+    if nobody == len(rows):
+        return (
+            "No task has an owner, so no row carries a fit or hours. "
+            "Give a task an owner on the card to see them."
+        )
+    said = "has no owner, so it carries" if nobody == 1 else "have no owner, so they carry"
+    return f"{line} {nobody} of {len(rows)} tasks {said} no fit or hours."
 
 
 def _card_rows(rows: list[dict[str, Any]], checks: dict[str, dict[str, Any]]) -> list[dict]:
@@ -760,11 +789,13 @@ def _row_flags(row: dict[str, Any]) -> dict[str, Any]:
 
 def _task_card_line(row: dict[str, Any], owner: str) -> str:
     # Every field the POST carries is on this line (spec §5.3). The priority
-    # shows as the flags and the level the app will draw (H-173).
+    # shows as the flags and the level the app will draw (H-173). A row with
+    # no owner says "unassigned", unfenced, because no member wrote it (§26).
     flags = _row_flags(row)
     shown = card_view(flags)
+    who = data(owner) if owner else UNASSIGNED
     return (
-        f"{data(row['title'])} · {data(owner)} · {row['effort_mins']} min · "
+        f"{data(row['title'])} · {who} · {row['effort_mins']} min · "
         + (f"start {row['start']} · " if row.get("start") else "")
         + f"due {row['due']}"
         + "".join(f" · {k} {v}" for k, v in shown.items())
@@ -814,12 +845,14 @@ def _not_tried(tasks_left: int, owners: tuple[int, int], links: tuple[int, int])
     )
 
 
-def _project_stopped(label: str, exc: Exception, *, tasks: int, links: int) -> str:
+def _project_stopped(
+    label: str, exc: Exception, *, tasks: int, links: int, owners: int | None = None
+) -> str:
     """The receipt when the FIRST write, the project node, fails (WS-27bm S10,
     §16.2 rule 9). No other write runs, so every task, owner and link is not
     tried. A refusal made nothing. A broken connection may have made the
     project, so the member reads the tree before a retry."""
-    left = _not_tried(tasks, (0, tasks), (0, links))
+    left = _not_tried(tasks, (0, tasks if owners is None else owners), (0, links))
     if isinstance(exc, httpx.TransportError):
         return "\n".join([
             f"stopped: the project {data(label)} lost its connection to the gateway "
@@ -836,11 +869,12 @@ def _project_stopped(label: str, exc: Exception, *, tasks: int, links: int) -> s
 
 
 async def _soft_owners(rows: list[dict[str, Any]]) -> tuple[dict[str, str], dict[str, str]]:
-    """Each owner as written, to an address, and the ones that did not resolve."""
+    """Each owner as written, to an address, and the ones that did not resolve.
+    A row with no owner resolves nothing (§26)."""
     soft: dict[str, str] = {}
     unresolved: dict[str, str] = {}
     for row in rows:
-        if row["owner"] not in soft:
+        if row["owner"] and row["owner"] not in soft:
             soft[row["owner"]], why = await _soft_owner(row["owner"])
             if why:
                 unresolved[row["owner"]] = why
@@ -875,7 +909,7 @@ def _confirm_card(
     if about:
         card["description"] = about
     for i, row in enumerate(final, start=1):
-        card[f"task {i}"] = _task_card_line(row, owners[row["owner"]])
+        card[f"task {i}"] = _task_card_line(row, owners.get(row["owner"], ""))
         check = _check_line(checks.get(row["key"], {}))
         if check:
             card[f"task {i} check"] = check
@@ -902,18 +936,21 @@ async def propose_plan(
 ) -> str:
     """W1: propose a project plan as an editable card, then create it as
     ONE batch under one confirmation card. name is the project's name.
-    tasks is a JSON list of {key, title, owner, effort_mins, start?, due,
+    tasks is a JSON list of {key, title, owner?, effort_mins, start?, due,
     after?, level?, important?, leveraged?, impact?, urgency?, effort?}.
     level is a priority level name, and sets that level's Important and
     Leveraged flags. important and leveraged are true or false. key is a short label
     such as t1. start and due are YYYY-MM-DD. after lists the keys of the
     tasks that must finish first, and becomes blocks links. Every task needs
-    a verb-plus-object title, an owner (email or name), an effort and a due
-    date, or it is refused. A start after the due date, an unknown key or a
-    circle of blocks is refused before the card. impact, urgency and effort
-    (1 to 5) make a priority score the card shows and nothing stores. The
-    card shows each owner's skill fit and hours across the plan, and marks a
-    row that lacks either. A mark warns and never blocks. risks is the three
+    a verb-plus-object title, an effort and a due date, or it is refused.
+    owner is an email or a name, or empty for an unassigned task. Leave it
+    empty when the member gives no owner or asks for none, and do not ask.
+    A start after the due date, an unknown key or a circle of blocks is
+    refused before the card. impact, urgency and effort (1 to 5) make a
+    priority score the card shows and nothing stores. The card shows each
+    owner's skill fit and hours across the plan, and marks a row that lacks
+    either. An unassigned row shows neither, and the member can give it an
+    owner on the card. A mark warns and never blocks. risks is the three
     ways the plan fails, one per line. parent_project_id is a full_id from
     projects_tree; empty makes a space. There are no phases."""
     label = _clean(name)
@@ -960,7 +997,7 @@ async def propose_plan(
     owners: dict[str, str] = {}
     for row in final:
         who = row["owner"]
-        if who not in owners:
+        if who and who not in owners:
             owners[who] = await _resolve_assignee(who)
     strangers = await _unknown_addresses(sorted(set(owners.values())))
     # §13.6 rule 3: the server computes the marks again, for the plan the
@@ -982,7 +1019,7 @@ async def propose_plan(
             "not in the directory": ", ".join(strangers),
         },
     )
-    card["capacity"] = capacity_line
+    card["capacity"] = _with_unassigned(capacity_line, final)
     if checks or warnings:
         card["note"] = WARNS_NOT_BLOCKS
     if not _fits_on_card(card):
@@ -991,9 +1028,11 @@ async def propose_plan(
             f"{len(links)} links). Split it into two plans. Nothing was created."
         )
     n_links = f", {len(links)} link{'s' if len(links) != 1 else ''}" if links else ""
+    nobody = sum(1 for r in final if not r["owner"])
+    n_nobody = f", {nobody} {UNASSIGNED}" if nobody else ""
     if not await _confirm(
         title=f"Create {data(label)} with {len(final)} task{'s' if len(final) != 1 else ''}?",
-        detail=f"under {parent_label} · one batch, {len(final)} tasks{n_links}",
+        detail=f"under {parent_label} · one batch, {len(final)} tasks{n_links}{n_nobody}",
         context=_fields_block(card),
     ):
         return CANCELLED
@@ -1012,7 +1051,9 @@ async def _write_plan(
 ) -> str:
     """Rule 8's order: the project node, the tasks with their start dates,
     the owners, then the links. At the first refusal it stops (rule 9), and
-    the project node is a write like any other (S10)."""
+    the project node is a write like any other (S10). A row with no owner
+    gets no assignee write, and the counts of owners leave it out (§26)."""
+    assigned = sum(1 for r in final if r["owner"])
     payload: dict[str, Any] = {"name": label, "kind": "project"}
     if parent_id:
         payload["parent_project_id"] = parent_id
@@ -1021,7 +1062,9 @@ async def _write_plan(
     try:
         node = await post("/projects/nodes", payload)
     except _WRITE_FAILED as exc:
-        return _project_stopped(label, exc, tasks=len(final), links=len(links))
+        return _project_stopped(
+            label, exc, tasks=len(final), links=len(links), owners=assigned
+        )
     pid = uuid_of(str(node.get("id")), "project_id")
     out = [f"Created project {data(node.get('name'))} under {parent_label}.\n  project_id: {pid}"]
     created: list[tuple[dict[str, Any], dict[str, Any]]] = []
@@ -1042,13 +1085,16 @@ async def _write_plan(
                 out.extend(_task_line(made))
             return _stopped(
                 out, f"task {n + 1} of {len(final)}, {data(row['title'])},", exc,
-                tasks_left=len(final) - n - 1, owners=(0, len(final)), links=(0, len(links)),
+                tasks_left=len(final) - n - 1, owners=(0, assigned), links=(0, len(links)),
             )
         created.append((row, task))
     tids: dict[str, str] = {}
-    for n, (row, task) in enumerate(created):
+    done = 0
+    for row, task in created:
         tid = uuid_of(str(task.get("id")), "task_id")
         tids[row["key"]] = tid
+        if not row["owner"]:
+            continue  # §26: an unassigned task gets no assignee write.
         try:
             await put(f"/projects/tasks/{tid}/assignees", {"assignees": [owners[row["owner"]]]})
         except _WRITE_FAILED as exc:
@@ -1056,9 +1102,10 @@ async def _write_plan(
                 out.extend(_task_line(made))
             return _stopped(
                 out, f"the owner of {data(row['title'])}", exc,
-                tasks_left=0, owners=(n, len(final)), links=(0, len(links)),
+                tasks_left=0, owners=(done, assigned), links=(0, len(links)),
             )
         task["assignees"] = [owners[row["owner"]]]
+        done += 1
     for _, made in created:
         out.extend(_task_line(made))
     for n, (a, b) in enumerate(links):
@@ -1072,7 +1119,7 @@ async def _write_plan(
         except _WRITE_FAILED as exc:
             return _stopped(
                 out, f"the link {link}", exc,
-                tasks_left=0, owners=(len(final), len(final)), links=(n, len(links)),
+                tasks_left=0, owners=(assigned, assigned), links=(n, len(links)),
             )
         out.append(f"linked: {link}")
     return "\n".join(out)
