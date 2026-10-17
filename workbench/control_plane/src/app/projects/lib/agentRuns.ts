@@ -251,6 +251,79 @@ export function clientName(via?: string | null): string {
   return label(body) ?? label(host) ?? (host || "Agent");
 }
 
+/* ── The honest timeline (EA-13b) ─────────────────────────────────────────── */
+
+/** The `via` of a row that the GitHub App wrote (`github_integration.md` §12.4). */
+export const GITHUB_VIA = "github";
+/** The `created_by` of a row that the GitHub App wrote. */
+export const GITHUB_ACTOR = "system:github";
+
+/**
+ * WS-55 EA-13b (spec §12.2 item 5, EA3-44). The ONE label of a `via` stamp:
+ * the client label of EA-13a for `mcp:…`, and "GitHub" for `github`. Null
+ * for every other stamp, the chat's `chat:projects-assistant` too, and for no
+ * stamp, which is a person's own act.
+ */
+export function viaLabel(via?: string | null): string | null {
+  const raw = (via ?? "").trim().toLowerCase();
+  if (raw === GITHUB_VIA) return "GitHub";
+  if (raw.startsWith("mcp:")) return clientName(raw);
+  return null;
+}
+
+/** The parts of a timeline row that the stamp decides. */
+export interface ActivityAttribution {
+  /** "GitHub" for a row of the GitHub App. Null: the byline names the author. */
+  who: string | null;
+  /** `through Claude Code` for an act through an agent. Null for a person's act. */
+  through: string | null;
+  /** The sentence of a GitHub merge row, which replaces the row's text. */
+  reason: string | null;
+}
+
+/** The fields of one timeline row that `activityAttribution` reads. */
+export interface AttributedRow {
+  created_by?: string | null;
+  meta?: Record<string, unknown> | null;
+}
+
+/**
+ * The byline and the text of one timeline row, by its stamp (EA3-44).
+ *
+ * - A row whose `meta.via` starts with `mcp:` reads "through <client>": a
+ *   comment, a status move, an assignment, a claim and a link alike. So
+ *   "Ravi through Claude Code" sits above "moved this to In review".
+ * - A row of `system:github` reads "GitHub". Its merge row (§12.4 of
+ *   `github_integration.md`) reads "GitHub moved this to Done after
+ *   owner/repo#12 merged".
+ * - A person's own row, and a chat row, get nothing.
+ */
+export function activityAttribution(row: AttributedRow): ActivityAttribution {
+  const meta = row.meta ?? {};
+  const via = typeof meta.via === "string" ? meta.via.trim().toLowerCase() : "";
+  const fromGithub = (row.created_by ?? "").trim().toLowerCase() === GITHUB_ACTOR;
+  return {
+    who: fromGithub ? "GitHub" : null,
+    through: via.startsWith("mcp:") ? `through ${clientName(via)}` : null,
+    reason: fromGithub ? githubMergeReason(meta) : null,
+  };
+}
+
+/**
+ * "GitHub moved this to Done after owner/repo#12 merged", from the `github`
+ * object of a merge row's meta. Null when the row names no pull request. The
+ * lane name is `meta.to` when the row carries one, else "Done".
+ */
+export function githubMergeReason(meta: Record<string, unknown>): string | null {
+  const gh = meta.github;
+  if (!gh || typeof gh !== "object") return null;
+  const { repo, number } = gh as { repo?: unknown; number?: unknown };
+  if (typeof repo !== "string" || !repo.trim()) return null;
+  if (typeof number !== "number" || !Number.isInteger(number) || number < 1) return null;
+  const lane = typeof meta.to === "string" && meta.to.trim() ? meta.to.trim() : "Done";
+  return `GitHub moved this to ${lane} after ${repo.trim()}#${number} merged`;
+}
+
 /** A member's display name: the directory label, else the address's local part. */
 export function personName(
   email?: string | null,

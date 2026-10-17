@@ -37,6 +37,9 @@ import {
   AGENT_STATE_VALUES,
   ARCHIVE_CARD_TITLE,
   CLIENT_LABELS,
+  activityAttribution,
+  githubMergeReason,
+  viaLabel,
   ARCHIVE_HINT,
   type AgentActivity,
   type AgentRun,
@@ -476,5 +479,70 @@ describe("the archive request (EA-6g, EA3-40)", () => {
     };
     expect(answerTo([TYPED, prompt], TYPED)).toBe(prompt);
     expect(answeredLine(prompt, TYPED)).toBe("Answered by Vj: Approve");
+  });
+});
+
+/**
+ * WS-55 EA-13b (§12.2 item 5, EA3-44). The timeline names the client of
+ * each agent act. `viaLabel` makes each label from the map of EA-13a.
+ *
+ * Mutations caught: `viaLabel` titles a stamp again or drops `github`; the
+ * suffix reads only a row with `meta.agent_kind` (the rule before EA-13b);
+ * a chat row or a person's row gets a suffix; a GitHub row keeps the raw
+ * `system:github` byline; the merge reason drops the pull request.
+ */
+describe("the honest timeline (EA-13b)", () => {
+  it("labels each stamp through the one map", () => {
+    expect(viaLabel("mcp:claude.ai:claude-code")).toBe("Claude Code");
+    expect(viaLabel("mcp:claude.ai")).toBe("Claude");
+    expect(viaLabel("github")).toBe("GitHub");
+    expect(viaLabel("chat:projects-assistant")).toBeNull();
+    expect(viaLabel("text")).toBeNull();
+    expect(viaLabel("")).toBeNull();
+    expect(viaLabel(null)).toBeNull();
+  });
+
+  const AGENT = { via: "mcp:claude.ai:claude-code" };
+  it.each([
+    ["a comment", { ...AGENT }],
+    ["a status move", { ...AGENT, from: "To do", to: "In review" }],
+    ["an assignment", { ...AGENT, added: ["ravi@example.com"], removed: [] }],
+    ["a link", { ...AGENT, link_type: "relates_to" }],
+  ])("draws %s through Claude Code", (_kind, meta) => {
+    const got = activityAttribution({ created_by: "ravi@example.com", meta });
+    expect(got).toEqual({ who: null, through: "through Claude Code", reason: null });
+  });
+
+  it("draws no suffix on a member's own row or a chat row", () => {
+    expect(activityAttribution({ created_by: "ravi@example.com", meta: {} }).through).toBeNull();
+    expect(activityAttribution({ created_by: "ravi@example.com", meta: null }).through).toBeNull();
+    expect(
+      activityAttribution({ created_by: "ravi@example.com", meta: { via: "chat:projects-assistant" } })
+        .through,
+    ).toBeNull();
+  });
+
+  it("draws a GitHub merge row as GitHub, with its reason", () => {
+    const got = activityAttribution({
+      created_by: "system:github",
+      meta: {
+        via: "github", automation: true, reason: "agent_run",
+        github: { repo: "owner/repo", number: 12, merged_by: "octo", delivery: "d-1" },
+      },
+    });
+    expect(got).toEqual({
+      who: "GitHub", through: null,
+      reason: "GitHub moved this to Done after owner/repo#12 merged",
+    });
+  });
+
+  it("keeps the row's own text for a GitHub row that names no pull request", () => {
+    const got = activityAttribution({ created_by: "system:github", meta: { via: "github" } });
+    expect(got).toEqual({ who: "GitHub", through: null, reason: null });
+    expect(githubMergeReason({ github: { repo: "owner/repo", number: "12" } })).toBeNull();
+    expect(githubMergeReason({ github: { repo: "", number: 12 } })).toBeNull();
+    expect(githubMergeReason({ to: "Shipped", github: { repo: "o/r", number: 3 } })).toBe(
+      "GitHub moved this to Shipped after o/r#3 merged",
+    );
   });
 });

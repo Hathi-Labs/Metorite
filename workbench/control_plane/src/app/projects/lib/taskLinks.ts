@@ -12,6 +12,7 @@
 
 import type { BadgeTone } from "@/components/ui/Badge";
 
+import { GITHUB_VIA, viaLabel } from "./agentRuns";
 import type { TaskRefRow } from "./api";
 
 type Drawn = Pick<TaskRefRow, "kind" | "provider" | "state" | "title" | "label" | "url">;
@@ -82,4 +83,20 @@ export function pastedLink(text: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * WS-55 EA-13b (spec §12.2 item 5, EA3-44). Who added a link, when it was
+ * not a person: "added by Claude Code" for a reference whose `via` is an
+ * agent's stamp, and "linked by GitHub" for `via = 'github'`. Null for a
+ * person, the chat and a link from a task's text. `viaLabel` in
+ * `agentRuns.ts` makes the name.
+ */
+export function refAddedBy(ref: Pick<TaskRefRow, "via">): string | null {
+  const via = (ref.via ?? "").trim().toLowerCase();
+  if (via === GITHUB_VIA) return "linked by GitHub";
+  // `viaLabel` names an `mcp:` stamp only, so a person, the chat and a
+  // link from the text read nothing.
+  const name = viaLabel(via);
+  return name ? `added by ${name}` : null;
 }
