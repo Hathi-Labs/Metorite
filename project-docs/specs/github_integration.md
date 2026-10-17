@@ -1,6 +1,6 @@
 # GitHub — a Metorite-owned GitHub App, webhooks, and pull requests on the task
 
-**Status: 📝 SPECIFIED, nothing built (2026-10-18).** The owner decided G-1 to G-5 on 2026-10-18 (§3). **Verified against code on 2026-10-18 at `origin/main` `1625cca13`.** The GitHub facts in §4.2 were read on docs.github.com on 2026-10-18.
+**Status: 📝 SPECIFIED, nothing built (2026-10-18).** The owner decided G-1 to G-9 on 2026-10-18 (§3). No owner question is open (§20). **Verified against code on 2026-10-18 at `origin/main` `1625cca13`.** The GitHub facts in §4.2 were read on docs.github.com on 2026-10-18.
 
 **Board row:** WS-54 (`work_plan.md` §2). **Consumers:** WS-57 (`task_references.md`) reads the pull request state and the checks. WS-55 (`external_agent_access.md` §12.2, EA-13) draws them on the card.
 
@@ -22,7 +22,7 @@
 **Not in scope:**
 
 - **A write to GitHub.** The App asks for read permissions only (§13.2). It posts no comment, no check and no status. A later slice that needs a write names its permission and its reason first.
-- **More than one installation for each organization.** One org maps to one installation in v1. The unique index of `integration_connections` already allows one `github` row for each org (§9.3). §20 Q1 asks the owner about a company with two GitHub organizations.
+- **More than one installation for each organization.** One org maps to one installation in v1. The unique index of `integration_connections` already allows one `github` row for each org (§9.3). The owner confirmed this rule on 2026-10-18 (G-6).
 - **User-to-server tokens for a session.** WS-56 (`external_agent_dispatch.md` D-DX-2) proposes them. This App is the App that WS-56 would use, and its manifest already names a callback URL. This spec uses a user token only once, to check an installation (§7.3), and keeps none.
 - **GitLab and Bitbucket.** `task_references.md` reads only GitHub, and so does this spec.
 - **Issues.** The webhook reads pull requests and checks. An issue reference keeps the lazy read of TR-1.
@@ -38,6 +38,12 @@
 | G-3 | **Auto-link.** A pull request links itself to a task when its description holds the Metorite task URL, or its head branch holds the task id. The id is the UUID or the short form `mt-<8 hex>` (§10.2). `link_from_text` stays as it is | `task_number` is unique only per root project, and `task_prefix` has no unique constraint (§10.2) |
 | G-4 | **On merge, Metorite moves the task to Done only when an agent worked it.** An agent run existed, or the claim came through MCP. Never a task that people run. Never to cancelled. The done lane, the recurrence and the successors of the project apply. The timeline names a GitHub actor | An agent closes the loop after a person merges (EA3-32, owner answer 1 of the sixth audit). A person keeps the decision on their own tasks |
 | G-5 | **The old setup stays as an "Advanced" fallback**: a pasted token, with no BYOK coupling. The customer-made OAuth App client id path and the device flow that depends on it are retired | A token reaches repositories that an App installation cannot, for example a personal account that will not install an App |
+| G-6 | **One GitHub installation for each Metorite org.** A company with two GitHub organizations connects one of them in v1 | The registry already holds one `github` row for each org (§9.3), so v1 needs no new key |
+| G-7 | **The production App is public,** so any customer can install it. The staging App stays private | A private App installs only on the account that owns it, and a customer must install the production App with no help |
+| G-8 | **The Hathi Labs organization on GitHub owns both Apps,** staging and production | Metorite is the Hathi Labs product. The owner of an App controls its settings and its private key |
+| G-9 | **The App asks for no Contents permission.** An org that needs a private agent repository's `config.json` keeps the Advanced token (G-5) | Least privilege. Only the agent config fetch needs Contents (§6.3) |
+
+**G-6 to G-9** were the four open questions of the first draft. The owner took each proposed answer on 2026-10-18.
 
 **Scope and tenancy (owner, 2026-10-18).** These rules bind every slice:
 
@@ -170,7 +176,7 @@ Most callers keep their code. `refs.py` reads through `token_or_none` and needs 
 
 - `_test_github` (`routes/integrations.py:1617`) calls `GET /user`, which GitHub refuses for an installation token. In `app` mode it calls `GET /installation/repositories?per_page=1` instead.
 - `_github_connected` (`routes/integrations.py:1610`) would make a token on each status read. In `app` mode it reads the row's `status` and makes no token.
-- `_org_github_token` (`routes/agent.py:1381`) fetches an agent `config.json` from a repository. That read needs Contents (read), and §13.2 asks for none. In `app` mode it returns an empty token, so a public repository still works and a private one does not. An org that needs a private agent repository keeps the Advanced token (§7.6). §20 Q4 asks the owner whether to add Contents (read).
+- `_org_github_token` (`routes/agent.py:1381`) fetches an agent `config.json` from a repository. That read needs Contents (read), and §13.2 asks for none. In `app` mode it returns an empty token, so a public repository still works and a private one does not. An org that needs a private agent repository keeps the Advanced token (§7.6). The owner chose this on 2026-10-18 (G-9).
 
 The `app` row also holds `installation_id`, `account_login`, `account_type`, `repository_selection`, `app_slug` and `connected_by` in `provider_meta`. None of them is a secret.
 
@@ -456,7 +462,7 @@ An open agent run on the task stays open. The agent finishes it. Nothing moves a
 | Checks | read | `check_suite` and `check_run` events and `GET …/check-runs` |
 | Commit statuses | read | `status` events and `GET …/status` |
 | Members (organization) | read | `GET /user/memberships/orgs/{org}` for the admin check of §7.3 step 7. Only a user token uses it |
-| Contents | none | Not needed. `GET …/pulls/{n}` works with Pull requests (read) (§4.2 fact 12) |
+| Contents | none | Not needed (G-9). `GET …/pulls/{n}` works with Pull requests (read) (§4.2 fact 12) |
 
 No permission is `write`. GitHub lists `GET /user/memberships/orgs/{org}` under Members (read), for user tokens only (<https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps>). The App subscribes to `pull_request`, `check_suite`, `check_run` and `status`. The two installation events need no subscription.
 
@@ -482,7 +488,7 @@ An App has one webhook URL (§4.2 fact 14). Staging (`dev.metorite.com`) and pro
 | Homepage | `https://dev.metorite.com` | `https://metorite.com` |
 | Webhook URL | `https://api.dev.metorite.com/webhooks/github` | `https://api.metorite.com/webhooks/github` |
 | Callback URL | `https://dev.metorite.com/api/integrations/github/callback` | `https://app.metorite.com/api/integrations/github/callback` |
-| Public | No. Only the owner's GitHub accounts install it | Yes. Any customer installs it |
+| Public | No. Only the Hathi Labs organization installs it (G-7, G-8) | Yes. Any customer installs it (G-7) |
 | Box | `srv1747539` (`metorite-dev`) | `srv1914284` (`metorite`) |
 | Secret file | `github-app-staging.env` and `github-app-staging.pem` | `github-app.env` and `github-app.pem` |
 
@@ -496,7 +502,7 @@ Each box holds eight: `GITHUB_APP_ENABLED`, `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, 
 
 The script is `scripts/github_app_manifest.py`, from GH-1. It holds the manifest of §13.2 and §14, so you type no permission.
 
-1. Open a terminal in the repo. Run `uv run python scripts/github_app_manifest.py --env staging --owner <your GitHub organization>`.
+1. Open a terminal in the repo. Run `uv run python scripts/github_app_manifest.py --env staging --owner Hathi-Labs`. The Hathi Labs organization owns both Apps (G-8).
 2. The script opens a page in your browser. Click **Create GitHub App for <organization>**.
 3. GitHub returns to the script on `http://127.0.0.1:<port>`. The script exchanges the code and writes `github-app-staging.env` and `github-app-staging.pem`. It prints the App name and the file names, and no value.
 4. Run the same command with `--env production`, and click Create again.
@@ -599,14 +605,9 @@ The orchestrator took these when it wrote the spec. None is a product or pricing
 | GH-E9 | **The installation token lives in process memory only.** One request for each process an hour is cheap, and a token in Redis is a credential at rest |
 | GH-E10 | **Disconnect does not uninstall at GitHub.** Metorite unlinks and gives the admin the link. An uninstall is the customer's act on their own GitHub account |
 
-## 20. Open questions for the owner
+## 20. Owner questions
 
-| # | Question | Default if not answered |
-|---|---|---|
-| Q1 | A company with two GitHub organizations needs two installations. Should one Metorite org hold more than one? | One installation for each org in v1 (§2) |
-| Q2 | Should the production App be public, so any customer can install it, or private until a customer asks? | Public (§14). A private App installs only on the owner's account |
-| Q4 | Should the App ask for Contents (read), so an org on the App can keep a private agent repository (§6.3)? | No. Least privilege. Such an org keeps the Advanced token |
-| Q3 | Which GitHub organization owns the two Apps? The owner of an App can change its settings and its key | The Hathi Labs organization on GitHub, because Metorite is its product. The script takes it as `--owner` |
+None is open. The owner answered the four questions of the first draft on 2026-10-18, and §3 records the answers as G-6 to G-9. The owner keeps the choice of a D-number for G-1 to G-9 in `work_plan.md` §3.
 
 ## 21. Shell manifest (R9)
 
@@ -616,3 +617,4 @@ R9 does not apply. This spec adds no app. The Integrations app's manifest is in 
 
 - 2026-10-18 — Written from the owner decisions G-1 to G-5. The code anchors were read at `1625cca13`, and the GitHub facts on docs.github.com the same day.
 - 2026-10-18 — The spec audit gave GO-NARROWED for both specs, and this round closes its 14 points. The callback checks that the user administers the account, and the admin confirms before the write. The delivery key goes on a handler error. A close without a merge can finish a task, and any MCP act counts as agent work. A chat move is a person's move. Three token callers change in `app` mode. The merge rule leaves `core.py` alone. GH-0 names eight settings. The order and two anchors are corrected.
+- 2026-10-18 — The owner answered the four questions of §20 and took each proposed answer. §3 records them as G-6 to G-9. They are one installation for each org, a public production App, Hathi Labs as the owner of both Apps, and no Contents permission. §20 now holds no open question.
