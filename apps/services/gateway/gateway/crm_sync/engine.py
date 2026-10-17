@@ -2043,9 +2043,15 @@ def _unavailable_now(ctx: _Ctx, entity: str) -> bool:
 
     The run then reads nothing and counts the module as unavailable. After the
     hour it asks once more, so a reconnect that grants the scope heals the sync.
+
+    An "on its own" run that names the key asks at once (CRM-Q17b item 8).
+    That is "Check again" on Sync health: the admin turned the module on in
+    Zoho, and an hour of waiting would read as a broken button.
     """
     state = _row(ctx, changed_module(entity)).state or {}
     if not state.get("unavailable"):
+        return False
+    if ctx.only is not None and count_key(entity) in ctx.only:
         return False
     checked = _parse(state.get("checked_at"))
     if checked is not None and ctx.started - checked >= UNAVAILABLE_RETRY:

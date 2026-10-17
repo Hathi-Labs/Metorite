@@ -38,6 +38,7 @@ import type {
   Activity,
   Contact,
   ConvertResult,
+  CrmDigest,
   Deal,
   DealContact,
   DealPipeline,
@@ -431,6 +432,15 @@ export function getOwnerLeaderboard(): Promise<OwnerLeaderboard> {
   return call<OwnerLeaderboard>("/reports/owners");
 }
 
+/**
+ * The newest weekly digests of the org (WS-53 CRM-Q28). Read only. An org
+ * with no digest gets an empty list, which the Reports tab draws as nothing.
+ */
+export async function listDigests(limit = 4): Promise<CrmDigest[]> {
+  const res = await call<{ digests: CrmDigest[] }>(`/digests?limit=${limit}`);
+  return res?.digests ?? [];
+}
+
 // ── The generic Zoho modules (WS-53 CRM-Q6b) ──────────────────────────────
 
 /** The mirrored generic modules, in the profile order. Empty in Native mode. */
@@ -455,6 +465,21 @@ export function listModuleRecords(
 export function getModuleRecord(module: string, id: string): Promise<ModuleRecordPage> {
   return call<ModuleRecordPage>(
     `/modules/${encodeURIComponent(module)}/records/${encodeURIComponent(id)}`,
+  );
+}
+
+/**
+ * The activities of one module record, newest first (CRM-Q23a). Read only:
+ * no route writes an activity on a module record. An unknown module or
+ * record is a 404.
+ */
+export function getModuleTimeline(
+  module: string,
+  id: string,
+  limit = 100,
+): Promise<{ entries: TimelineEntry[] }> {
+  return call<{ entries: TimelineEntry[] }>(
+    `/modules/${encodeURIComponent(module)}/records/${encodeURIComponent(id)}/timeline?limit=${limit}`,
   );
 }
 
@@ -497,6 +522,11 @@ export type CrmModeBody = {
   labels?: SourceLabels | null;
   /** CRM-Q20-2: by core slot, the Zoho module that plays it. */
   overlays?: Partial<Record<SlotWord, string>> | null;
+  /**
+   * CRM-Q17b: by API slug, whether the org holds a record of each core
+   * entity, and whether Zoho turned it off. Read it through `coreStatesOf`.
+   */
+  entities?: unknown;
 };
 
 /**

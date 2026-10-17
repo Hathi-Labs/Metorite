@@ -113,6 +113,10 @@ outside ``CRM_NOTE_SEARCH_ORGS`` gets ``degraded`` with no embed call. Its
 entity and each mirrored module is for, with its key fields and links. Read
 only. The code rules live in ``crm_sync/catalogue.py``. An org outside
 ``CRM_CATALOGUE_ORGS`` gets 404 ``catalogue_off`` in each mode.
+
+``digests.py`` is WS-53 CRM-Q28 — ``GET /crm/digests``, the weekly digests
+of the org. Read only. ``crm_sync/digest.py`` writes
+the table, and only for an org on ``CRM_DIGEST_ORGS``.
 """
 
 from gateway.routes.crm import activities as _activities  # noqa: F401
@@ -122,6 +126,7 @@ from gateway.routes.crm import catalogue as _catalogue  # noqa: F401
 from gateway.routes.crm import connection as _connection  # noqa: F401
 from gateway.routes.crm import convert_mapping as _convert_mapping  # noqa: F401
 from gateway.routes.crm import deal_contacts as _deal_contacts  # noqa: F401
+from gateway.routes.crm import digests as _digests  # noqa: F401
 from gateway.routes.crm import export as _export  # noqa: F401
 from gateway.routes.crm import field_rules as _field_rules  # noqa: F401
 from gateway.routes.crm import field_studio as _field_studio  # noqa: F401

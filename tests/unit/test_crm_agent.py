@@ -1025,12 +1025,13 @@ async def test_the_aggregate_sends_the_filters_of_the_list(monkeypatch) -> None:
         "deals", "owner", measure="weighted", close_from="2026-10-01",
         custom={"cf_region": "South"},
     )
-    # CRM-Q31-2 item 7: a total of 0 on a core entity reads the catalogue
-    # after the aggregate, for the empty core line.
-    aggregate = [c for c in calls if c["path"] == "/crm/aggregate"]
-    assert len(aggregate) == 1
-    assert [c["path"] for c in calls][-1] == "/crm/catalogue"
-    params = aggregate[0]["params"]
+    # CRM-Q30b: the aggregate, then ONE read of the short reads. CRM-Q31-2
+    # item 7: a total of 0 on a core entity then reads the catalogue, for
+    # the empty core line.
+    assert [c["path"] for c in calls] == [
+        "/crm/aggregate", _T.SHORT_READS_PATH, "/crm/catalogue",
+    ]
+    params = calls[0]["params"]
     assert (params["entity"], params["group_by"], params["measure"]) == (
         "deals", "owner", "weighted",
     )
@@ -1051,8 +1052,9 @@ async def test_the_aggregate_takes_a_module_and_the_field_arguments(monkeypatch)
         group_field="Sales_Start", bucket="month",
         field_filters={"Category": "HW", "Sales_Start.from": "2026-01-01"},
     )
-    params = calls[-1]["params"]
-    assert calls[-1]["path"] == "/crm/aggregate"
+    # CRM-Q30b: the aggregate, then ONE read of the short reads.
+    assert [c["path"] for c in calls] == ["/crm/aggregate", _T.SHORT_READS_PATH]
+    params = calls[0]["params"]
     assert params["entity"] == "module:Products"
     assert (params["measure"], params["field"]) == ("sum", "Unit_Price")
     assert (params["group_field"], params["bucket"]) == ("Sales_Start", "month")

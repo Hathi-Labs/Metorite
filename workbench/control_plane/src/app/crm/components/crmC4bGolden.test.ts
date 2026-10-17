@@ -16,6 +16,12 @@
 // changes nothing there either. Only `list.html` changed: the other three
 // files came out the same from this tree.
 //
+// A third later edit (WS-53 CRM-Q17b items 5 and 6, 2026-10-17). The filter
+// bar shows Owner and the 3 fullest picklists, and the rest sit behind
+// "Filters". The Columns chooser has a search box and a heading of the chosen
+// fields. The flag changes neither. `C4B_GOLDEN_OUT` made `filters.html` and
+// `list.html` again from this tree, and the other two came out the same.
+//
 // The runner has no DOM. So `Modal` draws its children in a plain `div`, and
 // for the list one `useState(false)` starts true, which opens the Columns
 // chooser. Both sides of the compare run under the same two mocks.

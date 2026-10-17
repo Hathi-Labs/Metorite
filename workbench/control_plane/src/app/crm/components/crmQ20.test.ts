@@ -34,7 +34,7 @@ import {
   type Suggestion,
   type SuggestionList,
 } from "../lib/suggestions";
-import { railEntries } from "../lib/views";
+import { emptyListLine, railEntries } from "../lib/views";
 import CrmRail from "./CrmRail";
 import RecordList from "./RecordList";
 import { SuggestionsCardView, type SuggestionsHandlers } from "./SettingsCards";
@@ -199,7 +199,8 @@ describe("the suggestion in an empty list (item 5)", () => {
   it("reads the suggestions for an admin in Mirror mode only", () => {
     const page = read("../page.tsx");
     expect(page).toContain('useSuggestions(ctx.isAdmin && ctx.mode === "mirror")');
-    expect(page).toMatch(/\{slotSuggestion \? \(\s*\/\/[\s\S]*?<SlotSuggestionArea/);
+    // CRM-Q17b puts the wait for the first screen before it.
+    expect(page).toMatch(/: slotSuggestion \? \(\s*\/\/[\s\S]*?<SlotSuggestionArea/);
   });
 
   it("tells a member why the list is empty, with no suggestion", () => {
@@ -220,9 +221,15 @@ describe("the suggestion in an empty list (item 5)", () => {
     );
     expect(html).toContain(line);
     expect(html).not.toContain("Nothing matches this view.");
-    // A filter keeps the sentence of a filter.
+    // A filter keeps the sentence of a filter. Since CRM-Q17b one rule
+    // decides the line (`emptyListLine`), and Mirror mode keeps this one.
     const page = read("../page.tsx");
-    expect(page).toContain('ctx.mode === "mirror" && !isFiltered(view)');
+    expect(page).toContain("emptyNote={emptyLineOf(listEntity)}");
+    expect(page).toContain("filtered: isFiltered(view)");
+    expect(emptyListLine("Deals", { filtered: false, mirror: true, turnedOff: false })).toBe(line);
+    expect(emptyListLine("Deals", { filtered: true, mirror: true, turnedOff: false })).toBe(
+      "Nothing matches this view.",
+    );
   });
 });
 

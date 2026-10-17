@@ -29,7 +29,9 @@
 >
 > **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12). CRM-Q8, filters and saved views (2026-10-12, migration 250). The Deals board stages fix (2026-10-12, §18.5). CRM-Q10, a reconnect never freezes the mirror (2026-10-13, §18, a production hotfix). CRM-Q15, a Zoho module that the account turned off no longer stops the sync (2026-10-15, §18, a production hotfix). CRM-Q16, hold a module and sync one module on its own (2026-10-15, §18.8, migration 269). CRM-Q17a-1, the backend of the fill rank (2026-10-16, §18.9.3, migration 274). It is dark behind `CRM_FILL_RANK_ORGS`. CRM-Q23b, a dropped activity comes back once its module record is in (2026-10-16, §18.10, no migration).
 >
-> **Specified, not built:** CRM-Q17b, CRM-Q21 and CRM-Q22, of a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9). Batch M builds the rest of CRM-Q17a to CRM-Q20 on the branch `crm-batch-m`, not merged (§18.12.1).
+> **Built 2026-10-17 on `crm-batch-m2`, not merged:** CRM-Q17b (§18.9.6) and CRM-Q23c (§18.10).
+>
+> **Specified, not built:** CRM-Q21 and CRM-Q22, of a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9). Batch M builds the rest of CRM-Q17a to CRM-Q20 on the branch `crm-batch-m`, not merged (§18.12.1).
 >
 > **Specified 2026-10-17, not built:** CRM-Q31, the catalogue that tells the AI what each module is for, and CRM-Q20-3, the overlay in the aggregate, the AI tools and the board (§18.13). No migration.
 >
@@ -64,6 +66,16 @@
 > time zone for each month and each date range (§18.11, no migration).
 > CRM-Q25c, a NUL byte answers 422 (§18.11, no migration). CRM-Q27, the
 > search of note text by meaning, dark (§18.11, migration 279).
+>
+> **Built later, not merged (Batch I2, `crm-batch-i2`):** CRM-Q28, CRM-Q29,
+> CRM-Q30 and CRM-Q30b were built on 2026-10-17 in the batch branch
+> `crm-batch-i2`. None is merged to `main`, and none is on. CRM-Q28, the
+> weekly digest on `tier-powerful`, dark behind `CRM_DIGEST_ORGS` (branch
+> `crm-q28-digest`, migration 281). CRM-Q29, the number check of each CRM
+> answer, with two fix rounds, dark (`CRM_ANSWER_CHECK` is `off`, branch
+> `crm-answer-check`, no migration). CRM-Q30, a founder question set for CRM
+> insights, and CRM-Q30b, the read tools say when Zoho holds more (branch
+> `crm-founder-evals`, no migration). See §18.11.
 >
 > **Built from §19:** CRM-X4, the record page v2 (2026-10-12, §19.8).
 >
@@ -1270,7 +1282,10 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q25** | The typed aggregate over every module and field, and its AI tool. §18.11 | P0 |
 | **CRM-Q26** | Labels on notes, on the decide tier, in shadow. §18.11 | P1 |
 | **CRM-Q27** | 🔨 built 2026-10-16 on `crm-batch-i`, merged (#1111), dark. Search of note text by meaning. §18.11 | P2 |
-| **CRM-Q28** | A weekly digest on the powerful tier. §18.11 | P2 |
+| **CRM-Q28** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-q28-digest`, migration 281), not merged, dark. A weekly digest on the powerful tier. §18.11 | P2 |
+| **CRM-Q29** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-answer-check`, with two fix rounds), not merged, dark. The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
+| **CRM-Q30** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. A founder question set for CRM insights: an eval of the assistant over CRM data. §18.11 | P1 |
+| **CRM-Q30b** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. The read tools say when Zoho holds more records than the connected Zoho user can read. §18.11 | P1 |
 | **CRM-Q31** | The CRM catalogue for the AI: the purpose of each module, its key fields by meaning, and its links. Code first, then the decide tier. Four slices (Q31-1 to Q31-4). §18.13 | P0 |
 | **CRM-Q20-3** | The overlay reaches the readers: `GET /crm/aggregate` and the AI tools first (Q20-3a), then the overlaid board with an "Unsorted" lane (Q20-3b). §18.13 | P1 |
 
@@ -2108,6 +2123,11 @@ builds CRM-Q20-2 on the Batch M branch, with no migration and no flag of its
 own. It is not merged. A suggestion shows only after the pipeline of
 CRM-Q20-1 writes one, so the owner flips of CRM-Q20-1 keep it dark.
 
+**Status (2026-10-17, CRM-Q17b).** Built 2026-10-17 on `crm-batch-m2`, not
+merged. No migration. Items 2 and 3 read `entities` of `GET /crm/mode`, which
+the gateway sends only for an org on `CRM_FILL_RANK_ORGS`, so they are dark
+until that flip. The "Built as" list under the ticket holds the detail.
+
 **Design record.** The owner's design page is "Source Mapping Studio" v4.
 Its link is https://claude.ai/artifact/QcBY3s2ATxo3Kb9QCpR3Zr. This section
 is the build contract, and it wins where the two differ.
@@ -2293,7 +2313,7 @@ with 16 questions, to learn whether the vendor bills the state once.
 |---|---|---|---|---|
 | CRM-Q17a (Q17a-1 merged, #1093. Q17a-2 🔨 built 2026-10-16, not merged) | Lists and records by fill rank, in two slices (Q17a-1, Q17a-2). No AI | AGENT-SAFE | M | — |
 | CRM-Q17a-1b 🔨 built 2026-10-16, not merged | A "still empty" check of a stale entity, in each run. No AI | AGENT-SAFE | S | CRM-Q17a-1 |
-| CRM-Q17b | Getting around: rail, first screen, filters, Columns, phone, Sync health. No AI | AGENT-SAFE | M | CRM-Q17a |
+| CRM-Q17b 🔨 built 2026-10-17, not merged | Getting around: rail, first screen, filters, Columns, phone, Sync health. No AI | AGENT-SAFE | M | CRM-Q17a |
 | CRM-Q18 (Q18-1 merged, #1094. Q18-2 and Q18-3 🔨 built 2026-10-16, not merged) | One plan: a table of versions, and the live rule set | AGENT-SAFE | M | — |
 | CRM-Q18-1b 🔨 built 2026-10-16, not merged | Two deadlocks of the plan lock, found on a real database | AGENT-SAFE | S | CRM-Q18-1 |
 | CRM-Q19 🔨 built 2026-10-16, not merged | The executor and the 200-record preview | AGENT-SAFE | M | CRM-Q18 |
@@ -2553,6 +2573,59 @@ Frontend files, under `src/app/crm/`: `lib/columns.ts`, `lib/fields.ts`,
 
 Each item is checked with the `visual-review` skill in light mode, compact
 density, a changed accent and 375 px.
+
+**Built as** (2026-10-17, branch `crm-batch-m2`, no migration):
+
+- **The data.** `GET /crm/mode` gains `entities`: for each core slug,
+  `records` and `turned_off`. `fill_rank.entity_states` reads four `EXISTS`
+  and the four core cursor rows. `turned_off` is the cursor mark
+  `unavailable` with the reason `hidden`. A missing scope is not "off".
+  The gateway sends the block only in Mirror mode, for an org on
+  `CRM_FILL_RANK_ORGS`. Each other org reads the body of before. Fence:
+  `test_crm_fill_rank_r8.py`.
+- Item 1: `railSections` in `lib/views.ts` splits the rail. The group is
+  "More modules". It opens while one of its modules is on screen, and its
+  rows scroll in a `max-h-64` box.
+- Item 2: `hiddenCoreRow`. A row that a module plays stays.
+- Item 3: `landing`. A bare `/crm` waits for the reads, then replaces the
+  address. With no `entities`, a module that plays Deals opens in place of
+  the empty Deals board (Batch M review).
+- Item 4: `emptyListLine` is the one rule of a list and a board. In Mirror
+  mode with no filter, it keeps the CRM-Q20-2 line "Your Zoho sent no …".
+  A Native list says "No records yet."
+- Item 5: `splitFilters`. "Filters (n)" counts the filters in force
+  behind the button, and it opens when one is in force.
+- Item 6: `ColumnChoices` has "Find a field", the heading "Shown in the
+  list" and `fillLabel`. A disabled box has a muted label and a tip.
+- Item 7: `RecordCards` in `RecordList.tsx`, at `isMobile`.
+- Item 8: `needsYou` in `lib/syncHealth.ts`. The actions are "Check again"
+  for a module that Zoho refuses, "Sync it on its own" for a held module
+  and "Hold it" for a large module. "Check again" is a run of one key, and
+  `engine._unavailable_now` now lets that run ask at once (fence:
+  `test_crm_hidden_module_r8.py`). The table and the list of Zoho modules
+  fold under "Show the details".
+- Batch M review: the search box names the list with the source label, and
+  the preview panel stacks its records below `sm`.
+- Fence: `components/crmQ17b.test.ts`. The golden files `list.html` and
+  `filters.html` of `c4b-flag-off` come from this tree.
+
+Fix round 1 (review of 2026-10-17):
+
+- P1. The landing happens once for each mount of the page (`landingPlan`).
+  A bare `/crm` is also the address of the Deals board. So before the fix, a
+  click on Deals sent the member back to the landing row, and a new read of
+  the mode could do the same. Fences: the `landingPlan` cases in
+  `crmQ17b.test.ts` and `e2e/crm-landing-once.spec.ts`.
+- P2. `unavailableAction` gives "Check again" only to a key that Zoho
+  turned off and that a run of one key accepts (`isHoldable`). A missing
+  scope gets "Connect again", which opens Setup and sync. A turned-off step
+  key, such as `deal_contacts`, gets no button.
+- At phone width, `PhoneSort` sorts the cards with a `SelectButton` and one
+  direction button.
+- The second row of the filter bar also opens when a hidden filter comes
+  in after the bar mounted (`moreOpenAfter`).
+- `records` of Leads counts an open lead only (`core.OPEN_LEAD_SQL`),
+  because the default list hides a converted lead.
 
 **CRM-Q18 · One plan.** The spec audit of 2026-10-16 found that rows of
 versions do not fit the unique indexes of `crm_field_rules` under R6. So the
@@ -3323,7 +3396,8 @@ owner flips.
 **Status (2026-10-16).** CRM-Q23a (#1086, migration 275) and CRM-Q23b
 (#1098, no migration) are merged. The batch branch `crm-batch-i` holds
 CRM-Q24, with no migration, and nobody has merged it yet. CRM-Q23c:
-specified, not built. Verified against code at `origin/main` `c4bef9ec0`.
+built 2026-10-17 on `crm-batch-m2`, not merged. Verified against code at
+`origin/main` `c4bef9ec0`.
 Found on DEWiN's import (H-326, H-327).
 
 #### 18.10.1 What the import found
@@ -3363,7 +3437,7 @@ that the user cannot see.
 |---|---|---|---|---|
 | CRM-Q23a | Link an activity to a module record, and serve it. Backend | AGENT-SAFE | M | — |
 | CRM-Q23b | Recover an activity dropped before its module record landed | AGENT-SAFE | M | CRM-Q23a |
-| CRM-Q23c | The timeline on a module record page. Frontend | AGENT-SAFE | S | CRM-Q23a |
+| CRM-Q23c 🔨 built 2026-10-17, not merged | The timeline on a module record page. Frontend | AGENT-SAFE | S | CRM-Q23a |
 | CRM-Q24 | A short read shows on the Sync health card, with the lost and recovered activities | AGENT-SAFE | M (S until 2026-10-16) | — |
 
 **Not in scope of CRM-Q23.** A composer or any write on a module record. A
@@ -3489,6 +3563,11 @@ that it checks is mid-read. A module that comes back can stop at
    `lib/modules.ts` get the fetch.
 3. The `visual-review` skill checks the record page in light mode, compact
    density and 375 px.
+
+**Built as** (2026-10-17, branch `crm-batch-m2`, no migration). Each module
+record has a Timeline tab. The sheet reads `getModuleTimeline` only while
+the tab is on screen. `Timeline` gets `readOnly`: no composer, and a task
+shows its state with no control. Fence: `components/crmQ23c.test.ts`.
 
 **Verify CRM-Q23 with:**
 
@@ -3623,8 +3702,11 @@ one run. R8: `test_a_drop_on_a_core_module_is_unkept` and
 merged (#1100, migration 278), dark. CRM-Q25b, CRM-Q25c and CRM-Q27
 (migration 279, dark): built on 2026-10-16 in the batch branch
 `crm-batch-i`, with a fix round on 2026-10-17, and merged as #1111
-(`d72f92184`). CRM-Q28: specified, not built. Verified against code at
-`origin/main` `634cf54ee`.
+(`d72f92184`). CRM-Q28 (migration 281, dark), CRM-Q29 (two fix rounds,
+dark, `CRM_ANSWER_CHECK` is `off`, no migration), CRM-Q30 and CRM-Q30b (no
+migration): built on 2026-10-17 in the batch branch `crm-batch-i2`, not
+merged. CRM-Q28 uses the one number check of CRM-Q29. Verified against
+code at `origin/main` `a8ef53c93`.
 
 **Owner direction (2026-10-16, in chat).** Use the decide, balanced and
 powerful tiers to run inference on the CRM data and produce insights. Build
@@ -3656,6 +3738,9 @@ each value. Embeddings help the model find text. They never make a number.
 | CRM-Q28 | A weekly digest on the powerful tier | AGENT-SAFE | M | CRM-Q25 |
 | CRM-Q25b | One time zone for each month bucket of the aggregate | AGENT-SAFE | S | CRM-Q25 |
 | CRM-Q25c | A NUL byte in a list query answers 422 | AGENT-SAFE | S | — |
+| CRM-Q29 | The CRM assistant never misquotes a number | AGENT-SAFE | M | CRM-Q25 |
+| CRM-Q30 | A founder question set for CRM insights | AGENT-SAFE | M | CRM-Q25, CRM-Q27 |
+| CRM-Q30b | The read tools say when Zoho holds more than the connected user can read | AGENT-SAFE | S | CRM-Q24, CRM-Q30 |
 
 CRM-Q25b, CRM-Q27 and CRM-Q28 have their done-when lists after CRM-Q26
 (2026-10-16). To build each ticket is AGENT-SAFE. For CRM-Q26, a mode other than
@@ -4239,15 +4324,557 @@ names one org in `CRM_DIGEST_ORGS`, the first digest of that org runs. Its
 credits come from `usage_event`, because the rate card of production lives
 in the Console database. The result goes into this section.
 
+**Built as (2026-10-17, branch `crm-q28-digest`, in the batch branch
+`crm-batch-i2`, not merged).** Migration
+281 adds `crm_digests`. `crm_sync/digest.py` holds the step, and
+`scheduler.start_digest` starts it after each sync run, outside the run
+lock. `routes/crm/digests.py` serves `GET /crm/digests`. `CRM_DIGEST_ORGS`
+ships empty, so nothing runs for any org.
+
+The build made these choices, which the list above does not name.
+
+- `aggregate.compute` is the one body of `GET /crm/aggregate`. The route
+  calls it, and so does each query of the digest, with the org of the run
+  bound. A source fence holds the two together.
+- `DIGEST_QUERIES` holds 8 calls. They are the open deals by stage, the
+  amount of the open deals by stage, and the amount by expected close month
+  for this month and the next two. They also hold the deals in a won or lost
+  stage that changed in the week, and the new leads, deals, contacts and
+  organizations of the week.
+- The overdue activities of the list are left out. An activity is no entity
+  of CRM-Q25, so no aggregate gives the count, and a number from other SQL
+  would break the number rule. The owner can add an entity to CRM-Q25 first.
+- In Mirror mode the aggregate refuses the created date (CRM-Q8). So in a Mirror org
+  the four "new" parts are always missing, and the digest says so (item 6).
+  The owner can change them to "changed in the week" in the PR.
+- No query groups by an owner or a record, so the prompt holds no email
+  address and no record name. The prompt holds no date of the week either.
+  The card and the stored numbers show the week.
+- One row holds each week. The step adds one to `tries` in the row in one
+  statement before each request, and the statement stops at 3. A CHECK in
+  the migration holds the same cap. A text that fails the check is not
+  stored, and the step writes again while a try is left. A row with no
+  `body` is never served.
+- The number check is the ONE check of CRM-Q29,
+  `acb_common.number_check`. The digest builds no second one. Each number of
+  the prompt goes through `format_figure`, so money reads `INR 12,34,567`.
+  The sources are the user message of the prompt (`add_text`), and the step
+  stores a text only when `check(text, sources).ok`. So the match rule is
+  the one of CRM-Q29: a figure matches a source that rounds to it at the
+  precision that the text states, and money never matches a percent. The
+  check skips a date, a month and a year. It does not read a number written
+  as a word, which is its known limit, so the prompt asks for digits.
+- The labels of CRM-Q26 count only in `on`. Their SQL is
+  `note_labels.week_counts`, beside the one writer of the table, so the
+  table keeps one module that names it.
+- The My Day card reads the digest only for an org on `CRM_DIGEST_ORGS`, in
+  the same session as the other CRM reads (`aggregate.my_day_rows`). Its
+  reach class is `none`, so it never leaves My Day. Its link comes from
+  `sources.crm_reports_href`, beside the one builder of a CRM link. The new
+  kind raises `prefs.MAX_KINDS` from 20 to 21 (`my_day_feed.md` §5.9 item
+  10.6).
+- A member reads the text, so the system prompt ends with
+  `voice_prompt("summary")`, and `test_drafting_voice.py` lists the call.
+- Mutations, each run and restored with `git checkout`, and each killed:
+  the check passes any figure, the step stores with no check, the try
+  statement has no cap, an empty field reads 0, the labels count in
+  `shadow`, no payer check, no Monday rule, the route serves a failed try,
+  the flag allows each org, one week runs twice, the input is not cut, and
+  the route skips `compute`.
+
+**The cost (estimate, not measured on a real model).** A typical digest
+of 6 stages, 3 months and the labels is about 4,580 characters of input,
+about 1,150 tokens, with the house voice. With a text of about 250 tokens,
+one week costs about 1,400 tokens on `tier-powerful`. The bound is 3 requests of at most 2,000
+tokens in and 800 out, so 8,400 tokens for each org and week. The post-flip
+check above reads the real credits.
+
+R8: `tests/unit/test_crm_digest_r8.py`, with the start over in
+`tests/unit/test_crm_reset_r8.py`. Hermetic: `tests/unit/test_crm_digest.py`.
+`vitest`: `src/app/crm/components/crmQ28.test.ts`.
+
+**CRM-Q29 · The CRM assistant never misquotes a number (2026-10-17).**
+
+**Why (owner, 2026-10-16 and 2026-10-17, in chat).** Founders read insights
+in the AI chat over their CRM. SQL gives each number (CRM-Q25), but the model
+writes the sentence around it. So the model can misquote a number, round it
+wrongly, add two results itself or invent one. This ticket puts a check
+between the model and the member.
+
+**The facts (code check of 2026-10-17, at `a8ef53c93`).**
+
+- Each agent that holds a CRM tool runs on the native MAF runtime. That
+  includes `crm-assistant` and the one assistant, `orchestrator`.
+- `orchestrator/_tool_injection._inject_agent_tools` is the one assembly step
+  of all three run paths: the stream run, the batch run and the sub-agent.
+  WhatsApp uses the batch run. H-236 already puts a per-run view with its own
+  middleware there (`_with_egress_guard`).
+- A MAF chat middleware wraps each model request inside the tool loop. A
+  function middleware wraps each tool call. A context provider adds both to
+  one run (`tier_policy.TierPolicyProvider` does this).
+- The stream run sends each text delta to the member when it arrives. So a
+  check after the stream cannot stop a wrong number.
+- CRM-Q28 item 9 needs the same check for the digest.
+
+Done when:
+
+1. One pure module, `acb_common/number_check.py`, finds each number in a text
+   and checks it against its sources. CRM-Q28 item 9 imports it, and no second
+   number check exists. It has no I/O and no model. It lives in `acb_common`
+   because the gateway and `acb_skills` both declare that package.
+2. **The rule of a match.** A number in the answer matches when a source holds
+   a value that rounds to it at the precision that the answer states. So
+   "₹12.3 lakh" matches 12,34,567. The parser reads `INR`, `Rs`, `₹`, `$`,
+   lakh, crore, `k`, million, billion, `%` and Indian or Western grouping. A
+   scaled number (lakh, crore, `k`, million, billion) states two significant
+   digits, or it must be exact. A money value never matches a percent value, and
+   a percent never matches money. A number with no unit can match either.
+3. **The numbers that are not figures.** The check skips a date, a time, a
+   year from 1900 to 2100, a list marker, a number inside a word or an id
+   (`Q3`, `H-236`, a UUID), a URL and a code span. An inline list marker
+   ("1. Open 2. Won 3. Lost", a run that counts from 1 in order) is no
+   figure. A lone "2." is a figure. (Fix round 2.)
+4. **The sources of a turn.** A function middleware records the text of each
+   tool result of the run, in memory, for that run only. The arguments of
+   each CRM tool call are sources too, and a date in them gives its count of
+   days to today. The member's own words of this turn are a source. The
+   executor puts them in the run context (`member_message`), and a delegated
+   run takes its parent's words. A text that a model wrote is never a source:
+   not the packed prompt string, which holds the earlier answers, and not the
+   answer of a delegated agent. (Fix round, 2026-10-17.)
+5. **The arm.** The check arms when the run records the result of a CRM tool:
+   a name in `CRM_TOOL_NAMES`, or one of the four reads of `crm-assistant`. A
+   run that reads no CRM tool is not checked and not changed.
+6. **The check.** On an armed run, the chat middleware holds each model
+   response until it ends. Then it checks the text against the sources. When
+   a response passes, it goes out with no change. So the normal path makes no extra
+   model request, and its cost is one parse of the text.
+7. **A mismatch: the chosen behaviour.** The first failed answer of a run gets
+   ONE more model request. That request names each number that matched no
+   source, and it says how to fix it. The check reads the second answer too.
+   When the second answer also fails, or when the run has used its one retry,
+   the member gets a fallback. The fallback says that a number did not match,
+   and it then shows the figures of the CRM tools as they came. The member
+   never sees the failed draft. The check removes the text of a failed step
+   that also calls a tool, and it keeps the tool call. A display call (a card
+   of `emit_generative_ui`, `make_report`, `make_document`, or a text file of
+   `write_artifact`) shows its arguments to the member. So the check reads
+   the shown text of its arguments too. A failed card fails the whole
+   answer, as a failed text does, and the card never ships. (Fix round.)
+8. **A derived figure** *(changed in fix round 2, 2026-10-17, from the 31
+   founder questions of CRM-Q30)*. A founder asks for a figure that two tool
+   results give, for example net cash flow, received minus paid (Q21). So a
+   figure also matches when it equals, at its stated precision, the sum or
+   the difference of two tool figures of one kind (money with money, plain
+   with plain). A percent figure also matches the percent change or the
+   percent share of two tool figures. Only pairs count, never a chain of
+   three. Only figures of the tool results of this run take part, not the
+   member's words and not the tool arguments. Money never matches a percent,
+   except through the two percent rules. A number that no pair gives still
+   fails, also when it is near a pair result. The CRM section of
+   `addendum.py` and the instructions of `crm-assistant` say this, and say
+   that anything more comes from another `crm_aggregate` call. The model
+   writes each figure in digits.
+9. **The seam.** `_inject_agent_tools` puts the check provider on the per-run
+   view of each native MAF agent that holds a CRM tool, after the H-236 step.
+   That covers the stream run, the batch run and the sub-agent. No second
+   runtime and no second middleware chain exist. A Copilot SDK agent gets no
+   check. Today no Copilot agent holds a CRM tool.
+10. **Streaming.** On an armed run, the text of a model response reaches the
+    member in one piece when the response ends, not token by token. A run that
+    is not armed streams as before. The thinking text and the tool calls of a
+    held response go out in their order, with the text. While it holds, the
+    check puts a sign of life (`answer_check.held`) on the run queue at most
+    each 15 s, and only when the model sent an update. The executor resets
+    its idle watchdog on it and shows nothing. A model that stops sending
+    still meets the watchdog. (Fix round.)
+11. **The flag.** `CRM_ANSWER_CHECK` is `off`, `shadow` or `on`, and the
+    default is `off`. `shadow` checks each armed response at its end and logs
+    the count of mismatches, with no hold and no retry. `on` does items 6 and
+    7. A value on a box is the grant `enforcement-flip`. The one reader is
+    `acb_common.settings.crm_answer_check_mode`, so the orchestrator reads
+    the mode before it imports the check. (Fix round.)
+12. **The cost bound.** A passed check makes no model request. A run makes one
+    extra model request at most, whatever fails.
+13. **Logs.** Each check logs `answer_check.checked` with the run id, the
+    count of numbers, the count of mismatches and the outcome. It never logs a
+    number or a text.
+14. **Tests with a scripted fake model.** A correct answer passes with no
+    extra request. A misquoted number is caught, and the second answer goes
+    out. An invented total is caught. Two failures give the fallback. INR,
+    lakh, crore and percent forms parse. A run with no CRM tool holds nothing.
+    A fence pins the one seam and the one number check.
+
+Files: `packages/acb_common/acb_common/number_check.py` (new),
+`packages/acb_skills/acb_skills/answer_check.py` (new),
+`acb_common/settings.py`, `orchestrator/_tool_injection.py`,
+`acb_skills/addendum.py`, `apps/agents/agent-crm/instructions.md`,
+`tests/unit/test_number_check.py` (new),
+`tests/unit/test_crm_answer_check.py` (new) and the DOX files. Gate:
+AGENT-SAFE to build. `shadow` or `on` on a box is `enforcement-flip`. Size: M.
+Waits for: CRM-Q25, merged as #1104. No migration. CRM-Q28 item 9 imports
+item 1, so CRM-Q28 merges after this ticket, or it rebases onto it.
+
+Verify: `uv run pytest tests/unit/test_number_check.py tests/unit/test_crm_answer_check.py tests/unit/test_crm_agent.py tests/unit/test_tool_schema_diet.py tests/unit/test_generated_addendum.py -q`,
+and `uv run python scripts/affected_tests.py --base origin/main`.
+
+**Built as (2026-10-17).** Branch `crm-answer-check`, with two fix rounds,
+in the batch branch `crm-batch-i2`, not merged. No migration, dark.
+
+- **The shared API, for CRM-Q28 item 9.** `acb_common.number_check` gives
+  `find_figures(text) -> list[Figure]`, `Sources()` with `add_text(text)` and
+  `add_value(value, kind)`, `check(text, sources) -> CheckResult` and
+  `format_figure(value, kind, decimals=0)`. `sources` is a `Sources` or a list
+  of texts. `CheckResult.ok` is true when each figure matched, and
+  `CheckResult.unmatched` holds each `Figure` that failed. A `Figure` holds
+  `text`, `value`, `kind`, `unit` and `exact`. The kinds are `PLAIN`, `MONEY`
+  and `PERCENT`. So the digest writes each number of its prompt with
+  `format_figure`, reads the prompt into `Sources`, and stores a text only
+  when `check(text, sources).ok` is true.
+- **The chat half.** `acb_skills/answer_check.py` holds the ledger of a run,
+  the two middlewares and `AnswerCheckProvider`.
+  `_tool_injection._apply_answer_check` is the one seam.
+- **The two prompts.** The CRM section of `addendum.py` and
+  `agent-crm/instructions.md` say that a new total comes from another
+  `crm_aggregate` call, and that the model writes each figure in digits.
+- **What the tests measure.** With a scripted model in a real MAF `Agent`, on
+  the stream run and the batch run: a true answer makes 2 requests, a
+  misquote 3, and two failures 3, with the fallback. A later failure in the
+  same run makes no second retry. A bad card with clean text makes 4
+  requests, and only the good card is drawn. A bad card with bad text gives
+  the fallback and no card. Through the real executor
+  (`test_crm_answer_check_executor.py`), the packed prompt of production is
+  no source, and a held answer that streams for 1.6 s outlives an idle bound
+  of 0.6 s.
+- **The fix round (2026-10-17, the review of Batch I2).** Six findings. The
+  packed prompt was a source (P1). A card was not checked (P1). The hold
+  could meet the idle watchdog (P2). True answers failed on a value of a
+  tool argument, a phone number or an approximation (P2). A plain count from
+  1900 to 2100 and a multiplier (`5x`) were not checked. A box with no
+  `acb_skills` raised while the flag was off. Each one has a fence and a
+  mutation.
+- **The rules of the number check, after the fix round.** A plain
+  four-digit number from 1900 to 2100 is a year only after a word such as
+  "in", "since", "FY" or a month, or at the start of a range ("2025-26").
+  Else it is a count, and the check reads it. `5x` is the figure 5. A phone
+  number is no figure (`+91 98450 12345`, `98450 12345`, `(080) 2345-6789`,
+  and ten digits from 6 to 9 with no grouping). After "about", "around",
+  "roughly", "nearly", "almost", "close to", "some", `~`, `≈` or the other
+  words of `_APPROX_BEFORE`, a number matches a source within 10 percent of
+  it.
+- **Fix round 2 (2026-10-17, the verifier of Batch I2).** It ran the 31
+  founder questions of CRM-Q30 through the check, and 9 true answers
+  failed. Four changes: the derived figures of item 8, the inline list
+  markers of item 3, a behaviour test of the seam through
+  `_inject_agent_tools`, and an entry for `CRM_ANSWER_CHECK` in `work_plan.md`
+  §6.1.
+- **Mutations.** 13 mutations in the build, 12 more in fix round 1 and 9 in
+  fix round 2, one or more for each fix. The suites kill each one. The rules: the room for rounding, money against a percent, a
+  date, an exact scaled number, the arm, the model's text as a source, no
+  extra request on a pass, one retry for each run, no draft in the fallback,
+  no text on a failed tool step, the seam, the default mode, and no note text
+  in the fallback.
+- **The grant.** The retry is one more request of the member's own chat turn.
+  The member's chat pays for it as for each other request, so no new payer
+  exists. That is why `enforcement-flip` covers a value on a box. The owner
+  can make it an owner flip in the PR.
+- **Known limits.** A number in words ("seven deals") is not checked, so the
+  prompts ask for digits. The sign of a number is not compared. A Copilot SDK
+  agent gets no check. When a parent agent quotes the answer of a delegated
+  `crm-assistant`, the parent's own run checks nothing, because it read no
+  CRM tool itself. The delegated run checks its own answer. A figure of an
+  earlier turn is no source, so the model must read it again with a tool,
+  or the check fails it. A card of React code shows nothing that the check
+  can read, so its numbers are not checked. A card's number under a layout
+  key (`width`, `size`, `level` and others) is not checked. An approximation
+  word gives a room of 10 percent, so "about ₹5 lakh" passes against
+  4,60,000. The second number of a range ("10-20") is not checked. A pair
+  of tool figures gives many sums, differences and percents. So a number
+  that the model made up can pass when it is equal by chance to one of them.
+  A pool holds 500 figures of each kind at most.
+
+**CRM-Q30 · A founder question set for CRM insights (2026-10-17).**
+
+**Owner direction (2026-10-17, in chat).** Founders will ask the AI chat for
+insights over their CRM. We must prove that the assistant picks the right
+tools and arguments. It must also combine modules correctly and answer with
+the right numbers. The set must catch a regression.
+
+**The facts (code check of 2026-10-17, `origin/main` `a8ef53c93`).**
+
+- `evals/crm_note_labels/` and `evals/crm_mapping/` are the pattern. Each has
+  synthetic data, checkers, a `--scripted` mode and a row in
+  `evals/README.md`.
+- `crm_aggregate` (CRM-Q25) needs `group_by` or `group_field`. So a plain
+  total is the `total` of a grouped answer.
+- A module filter takes one value or a date range only. No filter takes "not
+  equal" or a number range.
+- The route sorts a value group largest first, and it keeps 50 groups.
+- No tool reads the short read of CRM-Q24. Only the Sync health card shows
+  it.
+- CRM-Q29, a shared function that checks the numbers of an answer, is not on
+  `origin/main`.
+
+Done when:
+
+1. `evals/crm_founder_questions/` holds a synthetic dataset in the shape of
+   DEWiN. A seeded script makes it, so each run gives the same rows. No row
+   comes from a real customer.
+2. The dataset has the custom modules Invoices, Payment_Received,
+   Payment_Made, Clients, Company and Operator_Associates, with lookups
+   between them. Commercials has fields and no record.
+3. The dataset has a currency field in INR, `date` fields, and `datetime`
+   fields with the offset of Asia/Kolkata. It also has picklists, a boolean,
+   a field that every row leaves empty, and fields that some rows leave
+   empty.
+4. The core Contacts carry the label "Existing Sites" in the profile, with
+   custom fields. Notes hang off module records. The profile names the zone
+   Asia/Kolkata.
+5. About 30 founder questions each have a category, the expected tool calls,
+   and the expected facts. Plain Python computes each fact from the dataset.
+   Nobody writes the numbers by hand.
+6. The categories are: totals, trends by month and quarter in the CRM zone,
+   top-N, overdue or unpaid, cross-module, an empty field, two aggregate
+   calls, the relabel of Contacts, a note search and a short read. The note
+   search question uses `crm_search_notes` (CRM-Q27), and the set marks it
+   as such. The short read question expects the answer to flag that the
+   connected Zoho user cannot see each record.
+7. `--scripted` replays recorded tool calls and answers. It runs the real
+   tool functions of `crm_tools.py` on recorded route answers. It needs no
+   model and no network, and CI runs it.
+8. `--live` asks the real assistant on a local stack, with a seeded
+   database. CI does not run it. A person runs it.
+9. The checkers score the tool choice and its arguments, and the numbers in
+   the answer, against the expected facts. They also score a required flag
+   and a forbidden number. A local number check does this until CRM-Q29
+   merges. Then the eval moves to the shared function.
+10. A unit test runs the scripted set. Mutations prove that a wrong tool, a
+    wrong argument, a wrong number and a missing flag each fail a bar.
+11. An R8 test loads the dataset into a private database. It sends each
+    expected call through the real routes, and it asserts that each answer
+    agrees with the Python fact. It skips no question except the note
+    search, which needs the embed door.
+12. `evals/README.md` gains a row.
+
+Files: a new `evals/crm_founder_questions/`, `evals/README.md`,
+`tests/unit/test_crm_founder_questions.py`,
+`tests/unit/test_crm_founder_questions_r8.py` and this section. Gate:
+AGENT-SAFE. Size: M. Waits for: CRM-Q25, CRM-Q25b, CRM-Q25c and CRM-Q27,
+all merged (#1104, #1111). No migration and no flag.
+
+Verify with:
+
+- `uv run python -m evals.crm_founder_questions --scripted`
+- `uv run pytest tests/unit/test_crm_founder_questions.py -q`
+- `uv run pytest tests/unit/test_crm_founder_questions_r8.py tests/unit/test_crm_aggregate*.py tests/unit/test_crm_agent.py -q`,
+  on a private database, with no test skipped.
+
+**Built as (2026-10-17, branch `crm-founder-evals`, in the batch branch
+`crm-batch-i2`, not merged).** No
+migration and no flag. `evals/crm_founder_questions/` holds the set.
+
+- `dataset.py` makes about 800 rows from the seed `20261017`. "Today" is 15
+  October 2026 (`AS_OF`), and no invoice falls due on that day. So "due
+  before today" and "due on or before today" give the same rows.
+- `questions.py` holds 31 questions in 13 categories. Q30 is the note
+  search, and Q31 is the short read.
+- A fact names the route answer that gives it, for example the total of
+  call 0 or the label of the first group. The scripted run and the R8 test
+  both read that selector.
+- `scripted_answers.json` holds the tool calls, and an answer with
+  placeholders. The runner fills each placeholder from the fact, in a form
+  such as `INR 12,34,567`, lakh or crore.
+- `recorded_routes.json` holds the answers of the real routes on the seeded
+  dataset. The R8 test writes it with `CRM_FOUNDER_RECORD=1`, and each other
+  run of the test holds the file to the routes.
+- `seed.py` opens no connection. The R8 test runs it on its fixture, and
+  `--seed` runs it in `tenant_session(org)` on a database of this machine
+  only.
+- `--live` drives `orchestrator` through the routing harness, with the real
+  specialists and the real CRM mode. Nobody has run it yet.
+
+The build made four choices that the list above does not name.
+
+- The checkers score the GET request of each tool, not the tool name. The
+  request is what the route answers, and one call can take many forms.
+- A ranked list must name its entries in rank order. A list with the right
+  names in the wrong order fails `names`.
+- A written number counts only when it is not coarser than 0.5 percent of
+  the fact. So "₹1.2 crore" fails for 1,23,45,678, and "₹1.23 crore"
+  passes. The fix round below replaced this rule with the rule of CRM-Q29.
+- The note search answer of `--scripted` is synthetic, because the search
+  needs the embed door.
+
+**The result.** Each of the 30 questions with a route agrees with the real
+route on the private database. No fact and no route disagree. The scripted
+run passes 31 of 31 questions on each bar. The unit test holds 40 tests,
+and 10 of them are mutations that each fail one bar.
+
+**Findings for later work.**
+
+- At build time no tool read `short_by` of CRM-Q24. CRM-Q30b, below,
+  closes this. The read tools now give that line, and Q31 needs it.
+- At build time CRM-Q29 was on no branch of this one. The fix round below
+  closes this. The eval now asks `acb_common.number_check`, and
+  `numbers.py` is gone.
+
+**Fix round (2026-10-17, review of Batch I2).** The branch merges
+`origin/main` and `crm-answer-check` (CRM-Q29).
+
+- The reviewer made each tool print every figure as 0, and `--scripted`
+  still passed 31 of 31. The answer came from the facts, and `agree` read
+  the route JSON only. A new bar, `tool_figures`, now finds each number fact
+  that a route gives in the output text of the real tools. A test runs the
+  reviewer's mutation, and each question with a route figure fails.
+- `evals/crm_founder_questions/numbers.py` is gone. The checkers ask
+  `acb_common.number_check` through two thin helpers, `states` and
+  `states_exactly`. The runner formats with `format_figure` and
+  `group_indian`. So "₹1.2 crore" now counts for 1,23,45,678 by the
+  precision rule of CRM-Q29.
+- `test_no_second_number_check` now reads `evals/` too. `tests/` stays out,
+  because its files hold lakh and crore as test input, not as a parser.
+- The shared check reads "July 15" as a date. The scripted answer of Q05
+  now writes "15 in July".
+- Measured. With the money formatter of `crm_aggregate` changed to print
+  "INR 0" and each other figure "0", `--scripted` passes 4 of 31 and exits
+  1. `tool_figures` fails 27 questions. The 4 that pass have no figure of an
+  aggregate: Q22, Q23, Q30 and Q31. On the private database, 569 tests pass
+  with no skip.
+
+**Fix round 2 (2026-10-17, the Batch I2 verifier).** The verifier ran the 31
+scripted answers through the CRM-Q29 check.
+
+- Seven answers (Q04, Q07, Q08, Q12, Q18, Q24, Q29) wrote paise, and the
+  tool prints whole rupees. So they stated a precision that no tool gave.
+  A member reads whole rupees, so the answers now write whole rupees, as
+  the tool does. The facts keep their paise. The format `inrp` is gone.
+- A new bar, `answer_check`, runs `acb_common.number_check.check` on each
+  answer. Its sources are the tool output of the run and the question. So
+  the eval and the chat check of CRM-Q29 cannot disagree in silence.
+- Q21 states the net cash flow, a difference of two tool figures. On this
+  branch, CRM-Q29 did not have that rule yet. So that one figure waited
+  (`answer_check_waits`), and the report named it under `waiting`. Any
+  other figure with no source still failed. A wait that no figure needs
+  fails as stale, so the mark goes when the rule lands.
+- Q11 wrote its ranks inline ("1. ... 2. ..."), and the check read each rank
+  as a figure. The answer is now a list, one rank on each line, as a chat
+  answer is.
+- Five new tests: the one wait, a figure with no source, paise that no tool
+  printed, a wait that covers no other figure, and a stale wait.
+
+**The wait goes (2026-10-17, in the batch branch `crm-batch-i2`).** The
+batch branch merges CRM-Q29 fix round 2, which adds the pair rule. So the
+Q21 wait went stale, and its test failed, as it must. The wait is gone, and
+no figure waits now. The net cash flow passes `answer_check` by the pair
+rule. `--scripted` passes 31 of 31, with `answer_check` at 1.0 and an empty
+`waiting`.
+
+- Since CRM-Q29 fix round 1, "about" gives a room of 10 percent. So "about
+  ₹7 crore" passes for ₹7.06 crore. The rounded-total mutation now writes
+  "₹7 crore" with no approximation word, and it fails `numbers` again.
+- The tests of the wait now check three things. No figure waits, and the
+  net of Q21 has no source but the pair rule. The pair rule does not cover
+  a made-up figure in Q21. A test wait on the net goes stale. The unit test
+  holds 47 tests.
+
+**CRM-Q30b · The read tools say when Zoho holds more (2026-10-17).**
+
+**Why.** CRM-Q30 found that no CRM tool reads `short_by` of CRM-Q24. Only
+the Sync health card shows it, and only an admin reads that card. So the
+assistant can give a total that is short, and not say so.
+
+**The facts (code check of 2026-10-17).**
+
+- `routes/crm/sync.py` `_short_by_keys` reads `short_by` from the cursor of
+  each core entity and each module. `GET /crm/sync/health` uses it.
+- That route needs an admin and Mirror mode. A tool runs as the member, so
+  it cannot read the route.
+- The card (`syncHealth.ts` `shortReadSentence`) takes Zoho's count from the
+  row, or our count plus the gap. The readable count is Zoho's count minus
+  the gap.
+
+Done when:
+
+1. One function in `routes/crm/sync.py`, `short_reads(db, org)`, gives each
+   key with a short read: Zoho's count, the readable count and the gap. It
+   reads the cursors through `_short_by_keys`, and it uses the rule of the
+   card for the two counts.
+2. `GET /crm/sync/short-reads` serves that list to each member that the CRM
+   access rule admits. It holds counts only. A Native org gets an empty
+   list. The tenant comes from the session.
+3. One helper in `crm_tools.py` reads the route once in each tool call, and
+   it gives one line for each matching key, for example: "Note: Zoho holds
+   4,947 Payment_Made records, and the connected Zoho user can read 3,003.
+   Totals may be short. An admin can widen that user's access in Zoho."
+4. `crm_aggregate`, `crm_list_records`, `crm_list_module_records` and
+   `crm_list_modules` add the line. A tool that reads one record does not,
+   because it gives no total.
+5. A failed read of the route adds no line, and the tool answers as before.
+6. The docstrings of the tools do not change, so the pinned contract of
+   `test_tool_schema_diet.py` does not change.
+7. Q31 of `evals/crm_founder_questions/` expects the line in the tool output,
+   and the two counts of the line in the answer. A mutation that removes the
+   line fails Q31.
+8. An R8 test covers the route: the counts, a member who is not an admin, a
+   Native org and tenant isolation. A unit test covers the line of each tool
+   and the failed read, with a mutation.
+
+Files: `routes/crm/sync.py`, `packages/acb_skills/acb_skills/crm_tools.py`,
+`evals/crm_founder_questions/`, `tests/unit/test_crm_short_read_note.py`,
+`tests/unit/test_crm_short_reads_r8.py` and this section. Gate: AGENT-SAFE.
+Size: S. Waits for: CRM-Q24 and CRM-Q30. No migration and no flag.
+
+Verify with:
+
+- `uv run pytest tests/unit/test_crm_short_read_note.py tests/unit/test_crm_founder_questions.py tests/unit/test_crm_agent.py tests/unit/test_tool_schema_diet.py -q`
+- `uv run pytest tests/unit/test_crm_short_reads_r8.py tests/unit/test_crm_founder_questions_r8.py tests/unit/test_crm_sync_health_r8.py tests/unit/test_crm_aggregate*.py -q`,
+  on a private database, with no test skipped.
+- `uv run python -m evals.crm_founder_questions --scripted`
+
+**Built as (2026-10-17, branch `crm-founder-evals`, in the batch branch
+`crm-batch-i2`, not merged).** No
+migration and no flag.
+
+- `sync.short_reads(db, org)` reads the cursors through `_short_by_keys`.
+  With no gap it runs one statement and stops. With a gap it reads the last
+  run, and it counts our rows only for a key that the run did not count.
+- `GET /crm/sync/short-reads` sits on the shared CRM router, behind
+  `require_crm_mirror`, as each other sync route is. A Native org gets an
+  empty list.
+- `crm_tools._short_note` is the one helper, and `_short_line` writes the
+  one sentence. `crm_list_modules` adds a line for each module with a gap.
+  The other three tools add the line of their own entity or module only.
+- The helper catches each failure of its read, a refusal included, so a
+  failed read changes no answer.
+- Two tests of `test_crm_agent.py` read the last call as the aggregate. They
+  now assert the two calls in order: the aggregate, then one short read.
+- The seed of the eval writes the cursor of `Payment_Made` with a gap of
+  58. Q31 now needs the line in the tool output and both counts in the
+  answer, and it forbids no number. The checkers gain the bar `tool_text`.
+  The agreement leaves the short-read call out of the call index, and a
+  fact reads it as `("short", key, field)`.
+
+**The result.** The unit test of the tools holds 11 tests. A mutation that
+drops `+ note` from the end of `crm_aggregate` fails
+`test_a_module_tool_adds_the_line[crm_aggregate]`. The R8 test holds
+4 tests. The scripted run passes 31 of 31 questions on each of the seven
+bars. The mutation that takes the line out of the tools fails Q31 only.
+
+**Not changed.** The Sync health card keeps its own copy of the rule of
+the two counts (`syncHealth.ts`). A later slice can make the card read
+`zoho_count` and `readable` from this route.
+
 #### 18.11.3 Verification
 
 - `bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"`
-- `uv run pytest tests/unit/test_crm_aggregate*.py tests/unit/test_crm_note_labels*.py tests/unit/test_crm_mirror_run_tools.py -q`,
-  with no test skipped.
+- `uv run pytest tests/unit/test_crm_aggregate*.py tests/unit/test_crm_note_labels*.py tests/unit/test_crm_digest*.py tests/unit/test_crm_mirror_run_tools.py -q`,
+  with no test skipped. CRM-Q28 added `test_crm_digest*.py` on 2026-10-17.
 - `uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py tests/unit/test_feed_decide.py -q`.
   The email and My Day features must behave as before.
 - `uv run python -m evals.crm_note_labels.run --scripted`
 - `uv run python scripts/affected_tests.py --run`
+- CRM-Q29: `uv run pytest tests/unit/test_number_check.py tests/unit/test_crm_answer_check.py tests/unit/test_crm_answer_check_executor.py -q`.
+  These suites need no database.
 - CRM-Q27 and CRM-Q28 add their new suites to the pytest line above, with no
   test skipped. CRM-Q28 also runs
   `npx tsc --noEmit && npx vitest run src/app/crm` in `workbench/control_plane`.
@@ -4257,8 +4884,10 @@ in the Console database. The result goes into this section.
 **Status (2026-10-17).** Batch I: CRM-Q25 merged (#1104). CRM-Q24,
 CRM-Q25b, CRM-Q25c and CRM-Q27 were built on the batch branch
 `crm-batch-i`, with a fix round on 2026-10-17, and merged as #1111
-(`d72f92184`). CRM-Q28 is not built. The owner flip of CRM-Q26 is not
-done. Batch M: CRM-Q17a-1b, CRM-Q17a-2, CRM-Q18-1b, CRM-Q18-2, CRM-Q18-3,
+(`d72f92184`). Batch I2: CRM-Q28 (migration 281), CRM-Q29 with its two
+fix rounds, CRM-Q30 and CRM-Q30b were built on 2026-10-17. They are in the
+batch branch `crm-batch-i2`, not merged, and dark. The owner flip of
+CRM-Q26 is not done. Batch M: CRM-Q17a-1b, CRM-Q17a-2, CRM-Q18-1b, CRM-Q18-2, CRM-Q18-3,
 CRM-Q19 and CRM-Q20-1 are built on the batch branch `crm-batch-m`, and
 CRM-Q20-2 on `crm-q20-2-suggestions` from it. None is merged. CRM-Q20-3 is
 a stub. The spec audit of 2026-10-16 gave GO-NARROWED for both batches, and
@@ -4399,12 +5028,16 @@ answers of the AI better.
 
 #### 18.13.1 What the code does today
 
+Frontend paths in §18.13 are relative to `workbench/control_plane/src/app/crm/`.
+Gateway paths are relative to `apps/services/gateway/gateway/`, and package
+paths to `packages/`.
+
 | Fact | Anchor |
 |---|---|
 | A tool description is a static docstring, the same for each org. The schema test pins the parameters of each CRM tool. So no text of one org can go into a tool description | `acb_skills/crm_tools.py:433-1170`, `tests/unit/test_tool_schema_diet.py:55-108` |
 | `crm_list_modules` answers the label, the API name and the record count of each module, and nothing more | `crm_tools.py:1024-1040` |
 | `crm_list_fields` and `crm_list_module_records` give the key, the type and the use of each field. The model must guess which currency field is the amount | `crm_tools.py:500-541`, `crm_tools.py:1070-1082` |
-| On a module, the aggregate refuses `sum_amount` and `weighted` ("A module has no amount") | `routes/crm/aggregate.py:322-325` |
+| On a module, the aggregate refuses `sum_amount` and `weighted` ("A module has no amount") | `routes/crm/aggregate.py:322-323` |
 | On a module, the aggregate groups by `owner`, `created_month` or `updated_month`, or by one field that the call names by its key | `aggregate.py:154-163` |
 | `field_sql.module_scope` reads the field definitions of the module. Each name goes through `FieldScope.ref` | `routes/crm/field_sql.py:146-155`, `field_sql.py:216-223` |
 | A snapshot of the plan keeps an item of an unknown kind as it is (`split_rules`). `kind_key`, `check_kinds` and `merge_kinds` know `role`, `target` and `stage` only | `routes/crm/mapping_plans.py:281-298`, `mapping_plans.py:357-455` |
@@ -4616,10 +5249,21 @@ the cache, the park rule and the caps are the ones of that pipeline.
   the metadata of each field (key, label, type and lookup target), the fill in
   steps of 10%, the purpose and the mode. A run on an unchanged schema asks
   nothing.
-- **The caps.** The catalogue step has its own caps: `CATALOGUE_TOKENS`
-  24,000 estimated input tokens and `CATALOGUE_REQUESTS` 12 for each run. It
-  shares `DAILY_REQUESTS` (40) and its Redis counter with the mapping. Past a
-  cap the step stops, and it keeps each key that it finished.
+- **The order.** `_catalogue()` runs after `_module` and `_shadow`, last in
+  `Pipeline.run`. So the mapping of CRM-Q20-1 spends first, and the catalogue
+  never takes its budget.
+- **The caps.** The catalogue step counts on its own counters:
+  `CATALOGUE_TOKENS` 24,000 estimated input tokens and `CATALOGUE_REQUESTS`
+  12 for each run. It does not count on `TOKEN_CAP` (20,000) and
+  `RUN_REQUESTS` (12) of the run (`map_pipeline.py:857-862`). It shares
+  `DAILY_REQUESTS` (40) and its Redis counter with the mapping.
+- **A cap stop is local.** Past a catalogue cap, the catalogue step stops and
+  keeps each key that it finished. The run then ends normally. A stop of the
+  payer still ends the whole run: `daily_cap`, `member_left`, `cooldown`,
+  `stopped` and `no_answer`.
+- **The worst case of one run** is 44,000 estimated tokens and 24 requests.
+  The mapping takes at most 20,000 and 12. The catalogue takes at most
+  24,000 and 12. The run stays under `DAILY_REQUESTS` (40).
 - **`shadow`** asks only the questions of the answer key below, writes
   nothing, and logs the asked and agreed counts.
 - **`on`** writes `catalogue` items through `mapping_plans.apply_catalogue`.
@@ -4668,20 +5312,24 @@ Metorite decided about a source. It has one lock, one history and one Undo.
 carries it. The cost is one difference: a catalogue item applies with no
 approval, and a plan version is the admin's to approve. Two rules close it.
 
-1. **The catalogue rides the version in use.** `commit` takes the
-   `catalogue` items of the approved version in use, and never those of the
-   snapshot that it approves. Only `apply_catalogue` changes them. So a draft
-   approve, a restore ("Go back") or a change of one rule never brings back
-   an old catalogue.
+1. **The catalogue rides the version in use.** `commit` gains the keyword
+   `catalogue=None`. Only `apply_catalogue` passes it. With `None`, `commit`
+   drops the `catalogue` items of the snapshot that it gets. It puts in the
+   `catalogue` items of the approved version in use. The swap lives inside
+   `commit`. The reason: the approve route (`mapping_plans.py:1051-1055`)
+   and the restore route (`mapping_plans.py:1085-1089`) pass the `others`
+   of their snapshot today. So a draft approve, a restore ("Go back") or a
+   change of one rule never brings back an old catalogue.
 2. **A draft holds no catalogue item.** `write_draft`, `carry_draft` and
    `POST /crm/mapping/plans` leave them out.
 
-`apply_catalogue(db, items, by)` takes the plan lock (`lock_plan`), merges
-the items (`merge_kinds`), and calls `commit` with the field rules of the
-version in use. So no row of `crm_field_rules` changes. Then it moves the
-open draft onto the new version (`carry_draft`), so a pick by hand stays.
-The pipeline never replaces a part with `by: admin`. The Field map history
-names such a version "Metorite described N modules".
+`apply_catalogue(db, items, by)` takes the plan lock (`lock_plan`), and
+merges the items (`merge_kinds`). It calls `commit` with the field rules of
+the version in use, and with the merged items as `catalogue`. So no row of
+`crm_field_rules` changes. When an open draft exists, it then moves that
+draft onto the new version (`carry_draft`), so a pick by hand stays. With no
+open draft, it writes no draft. The pipeline never replaces a part with
+`by: admin`.
 
 If the builder finds that one of the two rules cannot hold in the code, the
 builder stops and reports. The fallback is a new tenant table with the next
@@ -4728,8 +5376,8 @@ group_field '@date' with a bucket.
   today is about 250 tokens. The pages of 50 lines stay.
 - The addendum (`addendum.py:398-402`) gains one line. "Before a total over a
   module, call crm_list_modules. Name the module and the fields that each
-  number comes from." It also states the default meaning of revenue (owner
-  call 2).
+  number comes from." The default meaning of revenue waits for owner call 2,
+  and no slice writes it before the answer.
 
 **How a total uses the key fields.** The aggregate takes four key words on a
 module: `@amount`, `@date`, `@status` and `@parent`. A Zoho API name cannot
@@ -4793,10 +5441,16 @@ only.
 | The filter `q` | `name` | Never missing |
 | The filters `close_from` and `close_to` | The date of `close_month` | 422 `overlay_no_date` |
 | The filters `updated_from` and `updated_to` | `coalesce(ext_modified_at, updated_at)` | Never missing |
-| The filters `status_id`, `custom.<key>`, `pipeline_id`, `company_id` and `contact_id` | Nothing | 422 `overlay_filter`. The tool sends a status as `field.@status` |
+| The filters `status_id`, `custom.<key>`, `pipeline_id`, `company_id` and `contact_id` | Nothing | 422 `overlay_filter` |
 
 The answer carries `overlay`, for example `{"slot": "deal", "module":
 "Commercials"}`. The tool says "Deals come from the module Commercials".
+
+**A status filter stays a sentence.** On an overlaid slot, a `status` filter
+gives one sentence, as each other filter that the overlay does not take. It
+stays so until this section states two rules of precedence. The `stage` item
+would win for `@status`. The `amount` and `expected_close_date` targets
+would win for `@amount` and `@date`.
 
 **The lanes of an overlaid slot.** The status group of the aggregate and
 the board use one order.
@@ -4819,7 +5473,7 @@ is this lane, with this name.
 
 | Tool | On an overlaid slot |
 |---|---|
-| `crm_aggregate` | The route answers from the module. The tool sends `status` as `field.@status` |
+| `crm_aggregate` | The route answers from the module. A `status` filter gives one sentence, as each other filter that the overlay does not take |
 | `crm_list_records` | Lists the module through `/crm/modules/{module}/records`, with `q` and `page`. Each other filter gives one sentence that names `crm_aggregate` |
 | `crm_get_record` | Reads `/crm/modules/{module}/records/{id}` |
 | `crm_list_pipelines` | Lists the lanes of the stage field in the lane order |
@@ -4881,18 +5535,29 @@ grant does not cover them.
 5. The body holds no value of `crm_module_records.fields` and no owner
    email. A test seeds records with marked values and proves that no mark
    reaches the body.
-6. In Native mode the route returns the four core entities from code. In
-   Mirror mode, an org outside the new list `CRM_CATALOGUE_ORGS` gets 404
-   `catalogue_off`. The list ships empty, and `*` means every org.
+6. The whole catalogue is dark behind the new list `CRM_CATALOGUE_ORGS`, in
+   every mode. An org outside the list gets 404 `catalogue_off`, in Native
+   mode and in Mirror mode. The list ships empty, and `*` means every org.
    `routes/crm/flags.py` gains `catalogue_allowed`, as `fill_rank_allowed`.
-7. `crm_list_modules` reads `GET /crm/catalogue`, and renders one line for
+7. Inside the list, a Native org gets the four core entities from code.
+8. `crm_list_modules` reads `GET /crm/catalogue`, and renders one line for
    each entry and the money block (§18.13.4). On 404 `catalogue_off` it
-   answers as today, from `/crm/modules`. Its parameters do not change, and
+   answers as today, from `/crm/modules`. So at merge, no org sees a change,
+   Native or Mirror. Its parameters do not change, and
    `test_tool_schema_diet.py` stays green with no edit to its pins.
-8. The addendum gains the line of §18.13.4.
-9. A module with 0 records shows "no records" and no purpose question.
-10. An R8 test seeds 25 modules and 1,300 field definitions. The route
+9. The addendum gains the line "Before a total over a module, call
+   crm_list_modules. Name the module and the fields that each number comes
+   from." It names no default meaning of revenue. Owner call 2 stays open.
+10. `routes/crm/catalogue.py` exports one reader, `entry_of(db, org, module)`.
+    It returns the entry of one module in the caller's tenant session, or
+    `None`. The route and CRM-Q31-2 use it, and no other code reads the
+    catalogue.
+11. A module with 0 records shows "no records" and no purpose question.
+12. An R8 test seeds 25 modules and 1,300 field definitions. The route
     answers 200 under 1 s on the scratch database, and the test asserts it.
+13. `test_crm_catalogue_r8.py` seeds two orgs with different modules and
+    plans. Each org reads only its own entries, through the route and
+    through `entry_of`.
 
 Files: a new `crm_sync/catalogue.py`, a new `routes/crm/catalogue.py`,
 `routes/crm/__init__.py`, `routes/crm/flags.py`, `acb_common/settings.py`,
@@ -4903,16 +5568,17 @@ none.
 
 **CRM-Q31-2 · The key words in the aggregate.** Done when:
 
-1. `field_sql.module_scope` adds `@amount`, `@date`, `@status` and `@parent`
-   to `FieldScope.fields`, from the catalogue entry of the module. Each one
-   is an alias of the real `FieldRef`.
+1. `field_sql.module_scope` (`field_sql.py:216`) adds `@amount`, `@date`,
+   `@status` and `@parent` to `FieldScope.fields`. It reads the entry of the
+   module only through `catalogue.entry_of`. Each key word is an alias of the
+   real `FieldRef`.
 2. A key word joins the scope only when its type fits. `amount` needs a type
    of `MEASURE_TYPES`, and `date` a type of `DATE_TYPES`. `status` needs a
    `select`, and `parent` a `lookup`.
 3. A key word with no key field gives 422 `no_key_field`. The message names
    the module and says that `crm_list_modules` names its key fields.
 4. On a module, `measure=sum_amount` is the `sum` of `@amount`. `_check`
-   (`aggregate.py:322-325`) no longer refuses it. `weighted` stays refused on
+   (`aggregate.py:322-323`) no longer refuses it. `weighted` stays refused on
    a module.
 5. The answer gains `field_label`, and `keys`: each key word that the call
    used, with its real key.
@@ -4920,15 +5586,17 @@ none.
    docstring names the four key words and `sum_amount` on a module. Its
    pinned parameters do not change.
 7. The empty core line of §18.13.4 shows on a total of 0 in Mirror mode.
+   The tool writes it in `crm_tools.py`, from `GET /crm/catalogue`. The route
+   does not.
 8. `aggregate.py` holds no read of the catalogue and no alias rule. Both
-   live in `field_sql.py` and `catalogue.py`. The two existing fences of
+   live in `field_sql.py` and `routes/crm/catalogue.py`. The two existing fences of
    `test_crm_aggregate.py` stay green, and one new test proves this item.
 9. R8: a `sum_amount` on a module equals the `sum` of its real amount
    field. A bucket by `@date` equals the bucket by the real key. A key word
    never reaches the SQL text. The hostile-name test sends `@amount'--`.
 
 Files: `routes/crm/field_sql.py`, `routes/crm/aggregate.py`,
-`crm_sync/catalogue.py`, `acb_skills/crm_tools.py`,
+`routes/crm/catalogue.py`, `crm_sync/catalogue.py`, `acb_skills/crm_tools.py`,
 `tests/unit/test_crm_aggregate.py` and
 `tests/unit/test_crm_aggregate_fields_r8.py`. Gate: AGENT-SAFE. Size: S.
 Migration: none.
@@ -4938,33 +5606,61 @@ Migration: none.
 1. `crm.map_catalogue` joins `CRM_FEATURES`, `REGISTERED` and `ON_FEATURES`
    (`decide_features.py:173-229`), and starts `off`. `map_pipeline.FEATURES`
    holds it, so `modes_now` and `enabled_for` see it.
-2. `Pipeline.run` calls a new step `_catalogue()` after `_roles()`. So a
-   module that plays a slot takes the purpose of its slot. The step builds
-   no question of a part that code answers.
+2. `Pipeline.run` calls a new step `_catalogue()` last, after `_roles()`,
+   `_module` and `_shadow`. A module that plays a slot takes the purpose of
+   its slot. The step builds no question of a part that code answers.
 3. The requests, the state, the re-ask and the rule "none beats a wrong
    answer" follow §18.13.4. A scripted fake of `decide` proves each one.
 4. A second run on the same schema makes 0 `ask` calls. A test proves it.
-5. The caps `CATALOGUE_TOKENS` (24,000) and `CATALOGUE_REQUESTS` (12) stop the
-   step, and the step keeps each finished key. The day counter is the one of
-   CRM-Q20-1. A test proves each cap.
-6. In `shadow` the step asks only the answer key of §18.13.4, and writes no
+5. The step counts on its own counters, `CATALOGUE_TOKENS` (24,000) and
+   `CATALOGUE_REQUESTS` (12). It does not count on `TOKEN_CAP` and
+   `RUN_REQUESTS` of the run (`map_pipeline.py:857-862`). The day counter is
+   the one of CRM-Q20-1.
+6. A catalogue cap stops only the catalogue step, and the step keeps each
+   finished key. A payer stop (`daily_cap`, `member_left`, `cooldown`,
+   `stopped` or `no_answer`) ends the run. A test proves each cap and each
+   kind of stop. One more test proves the worst case of one run: 44,000
+   estimated tokens and 24 requests, under `DAILY_REQUESTS` (40).
+7. In `shadow` the step asks only the answer key of §18.13.4, and writes no
    item. It logs `crm.map_pipeline.shadow` with `asked` and `agreed` only.
-7. In `on` the step writes through `mapping_plans.apply_catalogue`, never
+8. In `on` the step writes through `mapping_plans.apply_catalogue`, never
    through a draft.
-8. `kind_key`, `check_kinds` (rule 4) and `merge_kinds` know `catalogue`.
+9. `kind_key` learns `catalogue` only together with a branch of
+   `check_kinds` (rule 4) for it. Without that branch, a `catalogue` item
+   falls into the `role_missing` check (`mapping_plans.py:416-419`) and
+   gives 422. `merge_kinds` knows the kind too, and
    `map_pipeline._approved_items` loads it.
-9. The two rules of §18.13.4 hold. An R8 test makes a draft approve, a
-   restore and a change of one rule. Each keeps the catalogue of the version
-   in use. A second R8 test proves that no draft holds a catalogue item.
-10. `apply_catalogue` changes no row of `crm_field_rules`, and it keeps the
-    picks by hand of the open draft. An R8 test proves both.
-11. The pipeline never replaces a part with `by: admin`. A test proves it.
-12. `evals/crm_mapping/` gains the expected purposes and key fields of the
+10. `commit` gains the keyword `catalogue=None`, and only `apply_catalogue`
+    passes it. With `None`, `commit` swaps in the `catalogue` items of the
+    version in use, so the approve route (`mapping_plans.py:1051-1055`) and
+    the restore route (`mapping_plans.py:1085-1089`) need no change. An R8
+    test makes a draft approve, a restore and a change of one rule. Each
+    keeps the catalogue of the version in use.
+11. The builder strips `catalogue` items from a draft in each writer of one:
+    `write_draft` (`mapping_plans.py:837-840`), `carry_draft`
+    (`mapping_plans.py:715-721`) and `POST /crm/mapping/plans`
+    (`mapping_plans.py:989-1020`). Each strips them on both sides of its
+    `_canonical` compare, so a catalogue change never reads as a draft
+    change. `_write` (`map_pipeline.py:1761-1767`) keeps catalogue items out
+    of `result.items`, so they never reach `write_draft`. An R8 test proves
+    that no draft holds a catalogue item.
+12. `rule_count` of `GET /crm/mapping/plans` (`_LIST_SQL`,
+    `mapping_plans.py:143`) leaves out `catalogue` items. The Field map card
+    shows that count (`components/FieldMapCard.tsx:195` and `:272`). The
+    fence is a new R8 test in `test_crm_map_plan_r8.py`: a version with 2
+    field rules and 3 catalogue items lists `rule_count` 2.
+13. `apply_catalogue` changes no row of `crm_field_rules`, and it keeps the
+    picks by hand of the open draft. With no open draft, it writes no draft.
+    An R8 test proves each of the three.
+14. The pipeline never replaces a part with `by: admin`. A test proves it.
+15. `evals/crm_mapping/` gains the expected purposes and key fields of the
     `dewin` schema. A new bar fails on a wrong `amount`. A part left empty is
     not a failure. `uv run python -m evals.crm_mapping --scripted` passes.
-13. The payer is the one of CRM-Q20-1 (`_Payer`). A log line holds counts,
+16. The payer is the one of CRM-Q20-1 (`_Payer`). A log line holds counts,
     keys of ours and request ids, and never a field name, a label or a value.
-14. `work_plan.md` §6 registers the two owner flips.
+17. `work_plan.md` §6 registers the two owner flips.
+18. The Field map history gets no new label in this slice. A version that
+    `apply_catalogue` writes shows as the history shows a version today.
 
 Files: `gateway/decide_features.py`, `crm_sync/catalogue.py`,
 `crm_sync/map_pipeline.py`, `routes/crm/mapping_plans.py`,
@@ -4990,14 +5686,33 @@ this section. An agent prepares the check and stops.
    chose" name the source of each part.
 3. An admin changes a part with the shared `SelectButton`.
    `PUT /crm/catalogue/{module}` (admin, Mirror mode) writes it through
-   `apply_catalogue` with `by: admin`. A field of the wrong type gives 422.
-4. The toast of a change has Undo. Undo applies the part as it was.
-5. The `visual-review` skill runs in light mode, at compact density, with a
+   `apply_catalogue`. A field of the wrong type gives 422.
+4. Each part of the PUT body takes one of three values:
+   - a field API name, or a purpose word: the admin's choice, stored with
+     `by: admin`;
+   - `null`: the admin says that no field holds this part, stored with
+     `by: admin`;
+   - `"@auto"`: the admin part goes away, and the stored answer of the
+     pipeline or the answer of code shows again. A Zoho API name cannot start
+     with `@`, so this value never names a field.
+
+   `null` in a pipeline item still means "asked, not sure". The PUT value
+   `"@auto"` is a third value, apart from `null`.
+5. The toast of a change has Undo. Undo of a part that Metorite chose sends
+   `"@auto"`, so the part never freezes as `by: admin`. Undo of an earlier
+   choice of the admin sends that choice again.
+6. A new R8 suite `tests/unit/test_crm_catalogue_put_r8.py` proves the PUT.
+   A member who is not an admin gets 403. Native mode gets 409. A field of
+   the wrong type gets 422. `"@auto"` clears the admin part. An admin of
+   org B cannot change the catalogue of org A.
+7. The `visual-review` skill runs in light mode, at compact density, with a
    changed accent, and at phone width.
 
 Files: `routes/crm/catalogue.py`, `lib/api.ts`, `lib/settingsSections.ts`,
-`SettingsCards.tsx`, a new component of the card, and a new
-`components/crmQ31.test.ts`. Gate: AGENT-SAFE. Size: S. Migration: none.
+`components/SettingsCards.tsx`, a new component of the card, a new
+`components/crmQ31.test.ts` and a new
+`tests/unit/test_crm_catalogue_put_r8.py`. Gate: AGENT-SAFE. Size: S.
+Migration: none.
 
 **CRM-Q20-3a · The overlay in the aggregate and the AI tools.** Done when:
 
@@ -5008,7 +5723,9 @@ Files: `routes/crm/catalogue.py`, `lib/api.ts`, `lib/settingsSections.ts`,
 3. The status group follows the lane order, with one "Unsorted" group.
 4. The answer carries `overlay`. With no overlay, the answer is the answer
    of today, byte for byte.
-5. The AI tools follow the tool table of §18.13.5.
+5. The AI tools follow the tool table of §18.13.5. A `status` filter on an
+   overlaid slot gives one sentence, as each other filter that the overlay
+   does not take. A test proves it.
 6. Undo of the role gives the answers of today again.
 7. The fences of `test_crm_map_suggest_r8.py` change on purpose:
    `READERS` loses `aggregate.py` and `crm_tools.py`. The same-answer test
@@ -5094,7 +5811,7 @@ Migration: none.
 #### 18.13.9 Verification
 
 - `bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"`
-- `uv run pytest tests/unit/test_crm_catalogue.py tests/unit/test_crm_catalogue_r8.py tests/unit/test_crm_aggregate.py tests/unit/test_crm_aggregate_fields_r8.py tests/unit/test_crm_aggregate_r8.py tests/unit/test_crm_agent.py tests/unit/test_tool_schema_diet.py -q`,
+- `uv run pytest tests/unit/test_crm_catalogue.py tests/unit/test_crm_catalogue_r8.py tests/unit/test_crm_catalogue_put_r8.py tests/unit/test_crm_aggregate.py tests/unit/test_crm_aggregate_fields_r8.py tests/unit/test_crm_aggregate_r8.py tests/unit/test_crm_agent.py tests/unit/test_tool_schema_diet.py -q`,
   with no test skipped.
 - `uv run pytest tests/unit/test_crm_map_pipeline.py tests/unit/test_crm_map_pipeline_r8.py tests/unit/test_crm_map_plan_r8.py tests/unit/test_crm_map_suggest_r8.py tests/unit/test_crm_overlay_read_r8.py tests/unit/test_crm_overlay_board_r8.py -q`,
   with no test skipped. Each slice runs the suites that exist when it ships.
@@ -5105,6 +5822,12 @@ Migration: none.
   for CRM-Q31-4 and CRM-Q20-3b.
 - `uv run python scripts/affected_tests.py --run`
 
+**The DB gate.** Each new R8 suite sets `pytestmark = _DB_GATE`, as
+`test_crm_map_suggest_r8.py:71` does: `test_crm_catalogue_r8.py`,
+`test_crm_catalogue_put_r8.py`, `test_crm_overlay_read_r8.py` and
+`test_crm_overlay_board_r8.py`. Without it, `deploy.yml` has no ladder
+database and the suite errors.
+
 **The files that two slices share.** A slice that merges second takes the
 change of the first, and runs the verification of both again.
 
@@ -5114,7 +5837,7 @@ change of the first, and runs the verification of both again.
 | `routes/crm/field_sql.py` | CRM-Q31-2, CRM-Q20-3a, CRM-Q20-3b |
 | `routes/crm/aggregate.py` | CRM-Q31-2, CRM-Q20-3a |
 | `acb_skills/crm_tools.py` | CRM-Q31-1, CRM-Q31-2, CRM-Q20-3a |
-| `routes/crm/catalogue.py` | CRM-Q31-1, CRM-Q31-4 |
+| `routes/crm/catalogue.py` | CRM-Q31-1, CRM-Q31-2 (`entry_of`), CRM-Q31-4 |
 | `routes/crm/mapping_plans.py` | CRM-Q31-3 |
 | `routes/crm/overlay.py` | CRM-Q20-3a, CRM-Q20-3b |
 

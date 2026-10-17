@@ -25,6 +25,12 @@ name by :func:`_module_name` and a report kind by :func:`_report_kind`. The
 result goes into the path under the name ``slug``, ``record``, ``mod`` or
 ``report``, and a status vocabulary from a fixed map under ``vocab``. ``tests/unit/test_crm_agent.py`` checks that by AST.
 
+**A short read says so** (CRM-Q30b). When Zoho holds more records of an
+entity or a module than the connected Zoho user can read (CRM-Q24), the
+list tools and the aggregate add one line with both counts. One helper,
+:func:`_short_note`, reads ``GET /crm/sync/short-reads`` once for each tool
+call. A failed read adds nothing.
+
 **An answer is text, 50 rows at most.** When more rows exist, it ends with
 "More: call again with page=N". Every tool reads only, so each one carries
 ``read_only=True`` and ``open_world=False`` in
@@ -281,6 +287,51 @@ def _entity_label(slug: str) -> str:
     return ENTITY_LABELS.get(slug) or slug[len(MODULE_PREFIX):]
 
 
+# ── The short read (CRM-Q30b) ───────────────────────────────────────────────
+
+#: The route of the short reads: the keys that Zoho holds more of than the
+#: connected Zoho user can read (CRM-Q24), with the two counts.
+SHORT_READS_PATH = "/crm/sync/short-reads"
+
+
+def _short_line(row: dict[str, Any]) -> str | None:
+    """The one line of a short read, or None for a row of a wrong shape."""
+    key = str(row.get("key") or "")
+    zoho, readable = row.get("zoho_count"), row.get("readable")
+    if not key or not isinstance(zoho, int) or not isinstance(readable, int):
+        return None
+    name = key[len(MODULE_PREFIX):] if key.startswith(MODULE_PREFIX) else (
+        f"{ENTITY_LABELS[key]}s" if key in ENTITY_LABELS else key)
+    return (
+        f"Note: Zoho holds {zoho:,} {name} records, and the connected Zoho user can "
+        f"read {readable:,}. Totals may be short. An admin can widen that user's "
+        "access in Zoho."
+    )
+
+
+async def _short_note(keys: frozenset[str] | None) -> str:
+    """The short-read lines for *keys*, or for each module when *keys* is
+    None, as a block to add to an answer. Empty when nothing is short.
+
+    ONE read of the route for each tool call. The line is advice, so a read
+    that fails, a refusal included, adds nothing and the tool answers as
+    before (CRM-Q30b item 5)."""
+    try:
+        rows = await _get(SHORT_READS_PATH)
+    except Exception:  # advice only: the answer stands without it
+        return ""
+    lines = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get("key") or "")
+        wanted = key.startswith(MODULE_PREFIX) if keys is None else key in keys
+        line = _short_line(row) if wanted else None
+        if line:
+            lines.append(line)
+    return "\n" + "\n".join(lines) if lines else ""
+
+
 def _record_uuid(record_id: str) -> str:
     """The canonical UUID. A path can then hold no separator or dot segment."""
     try:
@@ -487,12 +538,13 @@ async def crm_list_records(
     data = await _get(f"/crm/{slug}", params)
     rows = (data or {}).get("rows") or []
     total = int((data or {}).get("total") or len(rows))
+    note = await _short_note(frozenset({slug}))
     if not rows:
-        return f"No {slug} match these filters."
+        return f"No {slug} match these filters.{note}"
     head = f"{ENTITY_LABELS[slug]}s: {total} match, page {number}."
     return "\n".join([head, *(_line(slug, r) for r in rows)]) + _more(
         total, number, size,
-    )
+    ) + note
 
 
 @_read_tool
@@ -1000,9 +1052,10 @@ async def crm_aggregate(
     by = group_by or f"{grouped}" + (f" ({bucket})" if bucket else "")
     shown = _page_of(groups, page, "groups")
     plural = f"{ENTITY_LABELS[slug]}s" if slug in ENTITY_LABELS else _entity_label(slug)
+    note = await _short_note(frozenset({slug}))
     if (field or data.get("field")) and data.get("values") == 0:
         # CRM-Q25c item 3: an empty field has no total, and 0 would be false.
-        return f"{plural}, {what} by {by}: no values recorded for {name}."
+        return f"{plural}, {what} by {by}: no values recorded for {field or data.get('field')}.{note}"
     lines = [f"{plural}, {what} by {by}:"]
     lines.extend(f"- {g['label']}: {fmt(g.get('value'))}" for g in shown.items)
     lines.append(f"{_OVERALL.get(measure, 'Total')}: {fmt(data.get('total'))}.")
@@ -1024,7 +1077,7 @@ async def crm_aggregate(
         empty = await _empty_core_line(slug)
         if empty:
             lines.append(empty)
-    return "\n".join(lines)
+    return "\n".join(lines) + note
 
 
 #: CRM-Q31-2 item 7: what the modules that fit an empty core entity hold.
@@ -1208,7 +1261,8 @@ async def crm_list_modules(page: int = 1) -> str:
         if exc.code != CATALOGUE_OFF:
             raise
         return await _modules_answer(page)
-    return _catalogue_answer(body, page)
+    # CRM-Q30b: the short-read lines of the modules, as the old answer has.
+    return _catalogue_answer(body, page) + await _short_note(None)
 
 
 async def _modules_answer(page: int | None) -> str:
@@ -1225,7 +1279,7 @@ async def _modules_answer(page: int | None) -> str:
         for m in shown.items
     ) + (f"\n{shown.line}" if shown.line else "") + (
         "\nTo total a module, call crm_aggregate with entity 'module:<api_name>'."
-    )
+    ) + await _short_note(None)
 
 
 @_read_tool
@@ -1243,7 +1297,7 @@ async def crm_list_module_records(
     rows = data.get("rows") or []
     total = int(data.get("total") or len(rows))
     if not rows:
-        return f"No {mod} records match."
+        return f"No {mod} records match.{await _short_note(frozenset({MODULE_PREFIX + mod}))}"
     lines = [f"{mod}: {total} records, page {number}."]
     lines.extend(
         f"- {r.get('name') or '(unnamed)'}"
@@ -1252,7 +1306,8 @@ async def crm_list_module_records(
         for r in rows
     )
     lines.append(_aggregate_fields(mod, data.get("field_defs") or []))
-    return "\n".join(lines) + _more(total, number, size)
+    return "\n".join(lines) + _more(total, number, size) + await _short_note(
+        frozenset({MODULE_PREFIX + mod}))
 
 
 def _aggregate_fields(mod: str, defs: list[Any]) -> str:
@@ -1379,5 +1434,5 @@ CRM_TOOL_NAMES: frozenset[str] = frozenset(fn.__name__ for fn in CRM_TOOLS)
 
 __all__ = [
     "CRM_CLOSED", "CRM_OFF", "CRM_SHARED_ROOM", "CRM_TOOLS", "CRM_TOOL_NAMES", "MAX_ROWS",
-    "SEARCH_NUMBERS", "SEARCH_OFF", "crm_mode", *(fn.__name__ for fn in CRM_TOOLS),
+    "SEARCH_NUMBERS", "SEARCH_OFF", "SHORT_READS_PATH", "crm_mode", *(fn.__name__ for fn in CRM_TOOLS),
 ]

@@ -32,7 +32,7 @@ import {
   type SyncStatus,
 } from "./connect";
 import type { CrmModule } from "./modules";
-import type { SourceLabels } from "./views";
+import { coreStatesOf, type CoreStates, type SourceLabels } from "./views";
 import { overlaysBySlug } from "./suggestions";
 import type { CrmModeBody } from "./api";
 
@@ -209,12 +209,33 @@ export function useSyncHealth(enabled: boolean): SyncHealthState {
  * key serve the labels and the overlays, so the two never disagree about the
  * shape under the key. A failure gives `null`, and the CRM draws as before.
  */
-function useModeBody(enabled: boolean): CrmModeBody | null {
+function useModeRead(enabled: boolean): { body: CrmModeBody | null; loading: boolean } {
   const res = useCachedResource<CrmModeBody | null>(
     enabled ? "crm:mode" : null,
     () => api.getCrmMode().catch(() => null),
   );
-  return enabled ? (res.data ?? null) : null;
+  return { body: enabled ? (res.data ?? null) : null, loading: enabled && res.loading };
+}
+
+function useModeBody(enabled: boolean): CrmModeBody | null {
+  return useModeRead(enabled).body;
+}
+
+export type CoreStatesState = {
+  /** `null` with no `entities` block: the rail and `/crm` draw as before. */
+  states: CoreStates | null;
+  /** True until the first answer of the mode read. */
+  loading: boolean;
+};
+
+/**
+ * The state of each core entity (CRM-Q17b), from the `entities` of
+ * `GET /crm/mode`, through the same one read as the labels and the overlays.
+ * A failure, a Native CRM and an org off `CRM_FILL_RANK_ORGS` give `null`.
+ */
+export function useCoreStates(enabled: boolean): CoreStatesState {
+  const { body, loading } = useModeRead(enabled);
+  return { states: coreStatesOf(body?.entities), loading };
 }
 
 /**

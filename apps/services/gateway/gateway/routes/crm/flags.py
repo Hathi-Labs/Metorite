@@ -40,6 +40,13 @@ gateway reads them.
   ``crm_list_modules`` answers as before. :func:`catalogue_allowed` is the one
   check. A name in the list spends nothing, so its flip is gate
   ``enforcement-flip``.
+* ``CRM_DIGEST_ORGS`` — the organization ids that get the weekly CRM digest
+  on the powerful tier (WS-53 CRM-Q28, ``crm_platform.md`` §18.11.2). The
+  grammar is the one of ``CRM_ORGS``. An empty list allows no organization:
+  the sync starts no digest step, and no model call goes out.
+  :func:`digest_allowed` is the one check. 🔴 A name in the list is
+  OWNER-GATE, because each digest spends the org's credits. The grant
+  ``enforcement-flip`` does not cover it.
 
 :func:`require_crm_enabled` is the router dependency in ``core.py``. It runs
 BEFORE ``require_feature_router("crm")``, so an organization outside the list
@@ -201,6 +208,25 @@ def catalogue_allowed(organization_id: str | None) -> bool:
         return False
     org = str(organization_id).strip().lower()
     orgs = crm_catalogue_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+def crm_digest_orgs() -> frozenset[str]:
+    """The organization ids that get the weekly digest. Empty means none."""
+    return _parse_orgs(str(get_settings().crm_digest_orgs or ""))
+
+
+def digest_allowed(organization_id: str | None) -> bool:
+    """True when the weekly digest step may run for this org.
+
+    It needs the CRM switch with the CRM list (:func:`crm_org_allowed`) AND a
+    place on ``CRM_DIGEST_ORGS``, or ``*`` there (CRM-Q28). It reads the
+    settings and nothing else, so a dark box sends no SQL and no model call.
+    """
+    if not crm_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = crm_digest_orgs()
     return ALL_ORGS in orgs or org in orgs
 
 

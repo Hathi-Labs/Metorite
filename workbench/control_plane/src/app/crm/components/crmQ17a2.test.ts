@@ -638,7 +638,8 @@ describe("a core entity shows the source's label in Mirror mode (item 7)", () =>
   it("reads the labels in Mirror mode only, and hands them to the rail, the heading and the record", () => {
     const page = source("page.tsx");
     expect(page).toContain('useSourceLabels(ctx.mode === "mirror")');
-    expect(page.match(/labels=\{labels\}/g)?.length).toBe(3);
+    // The rail (twice), the record and, since CRM-Q17b, the filter bar.
+    expect(page.match(/labels=\{labels\}/g)?.length).toBe(4);
     expect(page).toContain("viewLabel(view.tab, labels)");
     expect(page).not.toMatch(/viewLabel\(view\.tab\)/);
     expect(source("components/RecordSheet.tsx")).toContain(

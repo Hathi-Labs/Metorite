@@ -353,7 +353,7 @@ async def test_an_org_outside_the_list_gets_the_answer_of_today_byte_for_byte(
     ``/crm/modules`` and answers exactly as before."""
     seen = _gateway(monkeypatch, lambda p: _OFF if p == "/crm/catalogue" else (200, _MODULES))
     assert await tools.crm_list_modules() == _TODAY
-    assert seen == ["/crm/catalogue", "/crm/modules"]
+    assert seen == ["/crm/catalogue", "/crm/modules", "/crm/sync/short-reads"]
     _gateway(monkeypatch, lambda p: _OFF if p == "/crm/catalogue" else (200, []))
     assert await tools.crm_list_modules() == "This CRM mirrors no other module."
 
@@ -411,7 +411,7 @@ async def test_the_catalogue_renders_one_line_for_each_entry_and_the_money(
 ) -> None:
     seen = _gateway(monkeypatch, lambda p: (200, {"mode": "mirror", "entries": _ENTRIES}))
     out = await tools.crm_list_modules()
-    assert seen == ["/crm/catalogue"]
+    assert seen == ["/crm/catalogue", "/crm/sync/short-reads"]
     lines = out.splitlines()
     assert lines[1] == "- Field Sites (entity contacts): customer_site, 805 records."
     assert lines[2] == "- Deals (entity deals): deal, no records."

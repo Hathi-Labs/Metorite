@@ -376,6 +376,30 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    names the modules that hold them.
    Fences: `tests/unit/test_crm_agent.py`, `tests/unit/test_skills_registry.py`
    and `tests/unit/test_reports_by_code.py`.
+5l-1. answer_check.py -- the number check of a chat answer that read a CRM
+   tool (WS-53 CRM-Q29, spec `project-docs/specs/crm_platform.md` §18.11.2).
+   `AnswerCheckProvider` adds two middlewares to ONE run. `RecordToolResults`
+   keeps the text of each tool result, and a result of `ARM_TOOLS` arms the
+   check. `CheckAnswers` does nothing before the arm. After it, with the mode
+   `on`, it holds each model response until it ends, and checks the text with
+   `acb_common.number_check.check`. The sources are the run's tool results
+   (never a delegated answer), the arguments of its CRM calls (a date gives
+   its count of days) and the member's own words, `member_message` of the
+   run context. Never the packed prompt, which holds the model's earlier
+   answers. It also checks the shown text of each `DISPLAY_TOOLS` call (a
+   card, a report, a document, a text file), and a failed card fails the
+   answer and never ships. A failed answer gets ONE retry for each run, and
+   then `fallback_text`, which shows the results of `FALLBACK_TOOLS` and
+   never the draft. A failed step whose calls show nothing loses its text. A
+   passed check makes no model request. While it holds, it puts
+   `HOLD_EVENT` on the run queue at most each `HEARTBEAT_S`, only on a model
+   update, so the idle watchdog sees life. The one reader of
+   `CRM_ANSWER_CHECK` is `acb_common.settings.crm_answer_check_mode`. The
+   one seam that attaches the provider is
+   `orchestrator._tool_injection._apply_answer_check`. The log line
+   `answer_check.checked` holds counts only. Fences:
+   `tests/unit/test_crm_answer_check.py` and
+   `tests/unit/test_crm_answer_check_executor.py`.
 5m. untrusted.py -- the ONE frame for text that a stranger wrote (WS-17
    EM-G11d, UMCC, spec `email_app_master_plan.md` §12.3.13.8). Make one
    `UntrustedFrame` for each model call. `wrap(label, text)` puts the text

@@ -48,6 +48,9 @@ REACH_CLASS: dict[str, str] = {
     "waiting_quiet": "brief",
     "stale_next": "brief",
     "absent_on_due": "brief",
+    # WS-53 CRM-Q28 item 14: the weekly CRM digest. It never leaves My Day.
+    # Delivery outside the app is CRM-Q28b, an owner gate.
+    "digest_ready": "none",
     # "Tell me on WhatsApp" (RE-5, §11.3). A rule or a workflow at ``normal``
     # interrupts. The member's own request, and a rule at ``urgent``, are
     # ``urgent`` (below).

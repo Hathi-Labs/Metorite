@@ -79,9 +79,11 @@ const healthy = (over: Partial<SyncHealth> = {}): SyncHealth => ({
   ...over,
 });
 
+// CRM-Q17b item 8 folds the table under "Details". These tests read the
+// table, so they draw it open. `crmQ17b.test.ts` holds the fold.
 const draw = (health: SyncHealth) =>
   renderToStaticMarkup(
-    createElement(SyncHealthCardView, { health, nowMs: NOW, onSyncNow: () => undefined }),
+    createElement(SyncHealthCardView, { health, nowMs: NOW, onSyncNow: () => undefined, detailsOpen: true }),
   );
 
 describe("the Sync health card, healthy", () => {

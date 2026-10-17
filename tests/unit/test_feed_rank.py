@@ -45,6 +45,8 @@ class TestTheTable:
             "unblocked": 38, "waiting_quiet": 37, "block_soon": 36, "no_answer": 35,
             "deal_close_passed": 34, "deal_quiet": 33, "day_overbooked": 32,
             "stale_next": 30, "no_plan_yet": 28, "colleague_out": 26,
+            # WS-53 CRM-Q28 item 14.
+            "digest_ready": 24,
         }
 
     def test_the_needs_kinds_start_above_every_other_kind(self):
@@ -172,6 +174,7 @@ class TestTheGroupTable:
         ("deal_close_passed", {}, "needs_you"),
         ("colleague_out", {}, "fyi"),
         ("agent_asks", {}, "needs_you"),
+        ("digest_ready", {}, "fyi"),
     ])
     def test_each_row_of_section_4_3(self, kind, facts, group):
         assert feed_rank.group(kind, facts, NOW, TODAY) == group

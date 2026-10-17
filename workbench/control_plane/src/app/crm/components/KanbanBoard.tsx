@@ -60,6 +60,7 @@ export default function KanbanBoard({
   hiddenEmpty = 0,
   mode = null,
   cursorId = null,
+  emptyNote,
 }: {
   /** Which record the cards are. Deals unless stated. */
   entity?: "deals" | "leads";
@@ -79,6 +80,11 @@ export default function KanbanBoard({
   mode?: CrmMode;
   /** The record that the sheet shows. Its card wears the cursor ring (CRM-X4). */
   cursorId?: string | null;
+  /**
+   * CRM-Q17b item 4: the caller gives it when no lane holds a record. It says
+   * why: a filter, a module that Zoho turned off, or no record yet.
+   */
+  emptyNote?: string;
 }) {
   const [dragging, setDragging] = useState<Card | null>(null);
   const [over, setOver] = useState<string | null>(null);
@@ -89,7 +95,7 @@ export default function KanbanBoard({
     // stage exists.
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
-        <p className="text-sm text-muted-foreground">No deals match this view.</p>
+        <p className="text-sm text-muted-foreground">{emptyNote ?? "No deals match this view."}</p>
         <p className="max-w-sm text-xs text-muted-foreground">
           {hiddenEmpty} empty {hiddenEmpty === 1 ? "stage is" : "stages are"} hidden. Use
           &quot;Empty stages&quot; in the bar to show them.
@@ -99,6 +105,16 @@ export default function KanbanBoard({
   }
 
   if (!loading && lanes.length === 0) {
+    // CRM-Q17b item 4: a Mirror board with no stage and no record says why,
+    // for example "Deals is turned off in your Zoho." A Native board keeps
+    // the hint, because there a stage is the next step.
+    if (readOnly && emptyNote) {
+      return (
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
+          <p className="text-sm text-muted-foreground">{emptyNote}</p>
+        </div>
+      );
+    }
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
         <p className="text-sm text-muted-foreground">
@@ -114,85 +130,93 @@ export default function KanbanBoard({
   }
 
   return (
-    <Board className="flex-1">
-      {(lanes as Array<BoardLane | LeadLane>).map((lane) => {
-        const isTarget = over === lane.status.id;
-        return (
-          <BoardColumn
-            key={lane.status.id}
-            header={{
-              accent: stageAccent(lane.status, mode),
-              title: lane.status.name,
-              count: lane.count,
-              icon: stageIcon(lane.status.type),
-            }}
-            dropTarget={isTarget && !readOnly}
-            // CRM-C3: a hidden stage, or one that Zoho no longer lists, shows
-            // only with records, and says so.
-            hidden={isRetired(lane.status)}
-            empty={lane.rows.length === 0 ? "Nothing here" : undefined}
-            totals={isDeals ? <LaneTotals lane={lane} /> : undefined}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setOver(lane.status.id);
-            }}
-            onDragLeave={() => setOver((v) => (v === lane.status.id ? null : v))}
-            onDrop={(e) => {
-              e.preventDefault();
-              setOver(null);
-              if (!dragging || readOnly) return;
-              const move = planMove(dragging, lane.status.id);
-              setDragging(null);
-              // A drop back into the same lane is not a transition: sending
-              // it would write a dwell of zero and a "Proposal → Proposal"
-              // line onto the timeline.
-              if (move) onMove(move, lane.status);
-            }}
+    <>
+      {!loading && emptyNote ? (
+        // The lanes stay, so a stage and its + stay in reach (CRM-Q17b item 4).
+        <p role="status" className="shrink-0 border-b border-border px-4 py-2 text-xs text-muted-foreground">
+          {emptyNote}
+        </p>
+      ) : null}
+      <Board className="flex-1">
+        {(lanes as Array<BoardLane | LeadLane>).map((lane) => {
+          const isTarget = over === lane.status.id;
+          return (
+            <BoardColumn
+              key={lane.status.id}
+              header={{
+                accent: stageAccent(lane.status, mode),
+                title: lane.status.name,
+                count: lane.count,
+                icon: stageIcon(lane.status.type),
+              }}
+              dropTarget={isTarget && !readOnly}
+              // CRM-C3: a hidden stage, or one that Zoho no longer lists, shows
+              // only with records, and says so.
+              hidden={isRetired(lane.status)}
+              empty={lane.rows.length === 0 ? "Nothing here" : undefined}
+              totals={isDeals ? <LaneTotals lane={lane} /> : undefined}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setOver(lane.status.id);
+              }}
+              onDragLeave={() => setOver((v) => (v === lane.status.id ? null : v))}
+              onDrop={(e) => {
+                e.preventDefault();
+                setOver(null);
+                if (!dragging || readOnly) return;
+                const move = planMove(dragging, lane.status.id);
+                setDragging(null);
+                // A drop back into the same lane is not a transition: sending
+                // it would write a dwell of zero and a "Proposal → Proposal"
+                // line onto the timeline.
+                if (move) onMove(move, lane.status);
+              }}
+            >
+              {(lane.rows as Card[]).map((card) => (
+                <RecordCard
+                  key={card.id}
+                  entity={entity}
+                  card={card}
+                  locked={readOnly}
+                  atCursor={card.id === cursorId}
+                  warnLost={needsLostReason(card, lane.status)}
+                  // WS-26h rot: presentation only. The card's EXISTING
+                  // stage-age badge changes colour and nothing else moves,
+                  // closes or hides — discipline by visibility, not locks.
+                  rot={rotLevel(
+                    (card as Deal).status_changed_at,
+                    isDeals ? lane.status.max_dwell_days : null,
+                  )}
+                  maxDwellDays={isDeals ? (lane.status.max_dwell_days ?? null) : null}
+                  // CRM-X3: overdue, today, later or none. A won or lost
+                  // lane gets no chip.
+                  next={nextActivityChip(card.next_activity, lane.status.type)}
+                  onDragStart={(e) => {
+                    // ⚠️ Firefox refuses to START a drag unless dragstart
+                    // sets something on the dataTransfer — without this the
+                    // board is inert there while working everywhere else.
+                    e.dataTransfer.setData("text/plain", card.id);
+                    e.dataTransfer.effectAllowed = "move";
+                    setDragging(card);
+                  }}
+                  onDragEnd={() => setDragging(null)}
+                  onOpen={() => onOpen(card.id)}
+                />
+              ))}
+            </BoardColumn>
+          );
+        })}
+        {onCreate && (
+          <button
+            onClick={onCreate}
+            className="flex h-9 w-[180px] shrink-0 items-center justify-center gap-1.5 self-start rounded-lg border border-dashed border-border text-xs text-muted-foreground hover:border-primary/40 hover:text-foreground tech-transition"
           >
-            {(lane.rows as Card[]).map((card) => (
-              <RecordCard
-                key={card.id}
-                entity={entity}
-                card={card}
-                locked={readOnly}
-                atCursor={card.id === cursorId}
-                warnLost={needsLostReason(card, lane.status)}
-                // WS-26h rot: presentation only. The card's EXISTING
-                // stage-age badge changes colour and nothing else moves,
-                // closes or hides — discipline by visibility, not locks.
-                rot={rotLevel(
-                  (card as Deal).status_changed_at,
-                  isDeals ? lane.status.max_dwell_days : null,
-                )}
-                maxDwellDays={isDeals ? (lane.status.max_dwell_days ?? null) : null}
-                // CRM-X3: overdue, today, later or none. A won or lost
-                // lane gets no chip.
-                next={nextActivityChip(card.next_activity, lane.status.type)}
-                onDragStart={(e) => {
-                  // ⚠️ Firefox refuses to START a drag unless dragstart
-                  // sets something on the dataTransfer — without this the
-                  // board is inert there while working everywhere else.
-                  e.dataTransfer.setData("text/plain", card.id);
-                  e.dataTransfer.effectAllowed = "move";
-                  setDragging(card);
-                }}
-                onDragEnd={() => setDragging(null)}
-                onOpen={() => onOpen(card.id)}
-              />
-            ))}
-          </BoardColumn>
-        );
-      })}
-      {onCreate && (
-        <button
-          onClick={onCreate}
-          className="flex h-9 w-[180px] shrink-0 items-center justify-center gap-1.5 self-start rounded-lg border border-dashed border-border text-xs text-muted-foreground hover:border-primary/40 hover:text-foreground tech-transition"
-        >
-          <Icon name="Plus" className="w-3.5 h-3.5" />
-          {isDeals ? "New deal" : "New lead"}
-        </button>
-      )}
-    </Board>
+            <Icon name="Plus" className="w-3.5 h-3.5" />
+            {isDeals ? "New deal" : "New lead"}
+          </button>
+        )}
+      </Board>
+    </>
   );
 }
 
