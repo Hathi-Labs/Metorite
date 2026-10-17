@@ -27,6 +27,14 @@ from urllib.parse import urlsplit
 import httpx
 from acb_common import get_logger, get_settings
 from acb_common.paging import bounds, page_line, paged, prefix_limit, prefix_page
+from acb_common.tool_refusals import (
+    GatewayRefusal,
+    RefusalVoice,
+    refusals_as_text,
+    response_body,
+    route_template,
+    safe_detail,
+)
 
 # WS-17 EM-G11d (UMCC): each text that a sender wrote reaches the model inside
 # the ONE frame of ``acb_skills.untrusted``. No tool builds a marker itself.
@@ -208,25 +216,48 @@ def _headers() -> dict[str, str]:
     }
 
 
-class GatewayError(RuntimeError):
+class GatewayError(GatewayRefusal):
     """A 4xx or 5xx from the gateway, with its status (EM-T13a review round 1).
 
     It is still a ``RuntimeError`` with the same text, so each old caller is
     unchanged. A tool reads ``status`` to tell a route that the gateway does
-    not serve yet (404 or 405) from any other failure."""
+    not serve yet (404 or 405) from any other failure.
 
-    def __init__(self, message: str, status: int) -> None:
-        super().__init__(message)
-        self.status = status
+    It is the shared ``GatewayRefusal`` too, with the route's SAFE detail and
+    the fields that a 422 names. So a tool that lets it escape answers the
+    model with the route's words, not with "Error: Function failed."
+    (:func:`_agent_tools`)."""
+
+    def __init__(
+        self,
+        message: str,
+        status: int,
+        *,
+        detail: str = "",
+        fields: tuple[str, ...] = (),
+        route: str = "",
+    ) -> None:
+        super().__init__(message, status=status, detail=detail, fields=fields, route=route)
+
+
+#: The email words of the shared refusal text (``acb_common.tool_refusals``).
+EMAIL_VOICE = RefusalVoice(
+    app="email app",
+    log_event="email.tool_refused",
+    not_found_next=(
+        "Find the right id with a read tool, for example list_accounts, "
+        "query_inbox or read_thread. Do not guess an id."
+    ),
+)
 
 
 def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
     """Surface gateway errors as a concise, user-facing message.
 
-    The agent relays a tool's raised exception to the user, so a raw
-    ``httpx.HTTPStatusError`` (status line + URL + a help link) reads badly.
-    Turn 4xx/5xx into a short ``RuntimeError`` with the gateway's own
-    ``detail``/``error`` message instead.
+    A raw ``httpx.HTTPStatusError`` (status line + URL + a help link) reads
+    badly. Turn 4xx/5xx into a :class:`GatewayError` with the gateway's own
+    ``detail``/``error`` message instead. The model reads only the SAFE
+    detail (``acb_common.tool_refusals.safe_detail``), never the message.
     """
     if resp.status_code < 400:
         return
@@ -237,10 +268,16 @@ def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
             detail = str(body.get("detail") or body.get("error") or "")
     except Exception:  # non-JSON body
         detail = (resp.text or "")[:200]
+    safe, fields = safe_detail(
+        resp.status_code, response_body(resp), member=_current_user_email(),
+    )
     raise GatewayError(
         f"Email {method} {path} failed ({resp.status_code})"
         + (f": {detail}" if detail else ""),
         resp.status_code,
+        detail=safe,
+        fields=fields,
+        route=route_template(path),
     )
 
 
@@ -4689,6 +4726,21 @@ def _register_agent_tools() -> dict[str, Any]:
     return {fn.__name__: fn for fn in _TOOLS}
 
 
+def _agent_tools() -> list[Any]:
+    """Each tool as the agent registers it: a gateway refusal is text.
+
+    MAF answers a tool that raises with "Error: Function failed.". In prod
+    the model then guessed again and again, because it never read the
+    route's 422. ``refusals_as_text`` (the ONE seam,
+    ``acb_common.tool_refusals``) answers a :class:`GatewayError` in the
+    shared shape, with the email words. Any other exception still raises,
+    so no stack, query or host reaches the model. The name, the docstring,
+    the signature and ``__tool_risk__`` stay. Fence:
+    ``tests/unit/test_crm_email_tool_refusals.py``.
+    """
+    return [refusals_as_text(fn, EMAIL_VOICE) for fn in _TOOLS]
+
+
 # ── MAF agent factory (Dynamic Agent Loader entry point) ─────────────────────
 
 def _llm_provider() -> dict[str, Any]:
@@ -4751,7 +4803,7 @@ def build_agents() -> list[Any]:
         ),
     )
     narrow = _narrow_tool()
-    tools = [*_TOOLS, narrow] if narrow is not None else list(_TOOLS)
+    tools = [*_agent_tools(), narrow] if narrow is not None else _agent_tools()
     return [
         Agent(
             client=client,

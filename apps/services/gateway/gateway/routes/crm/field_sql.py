@@ -112,6 +112,10 @@ ZONE_PARAM = "agf_zone"
 MAX_DIGITS = 60
 MAX_EXPONENT = 100
 
+#: The most field keys that one 422 names. A model reads the list and picks
+#: one, and a module can hold a few hundred fields.
+CHOICES_MAX = 20
+
 #: The parameter names of this module. A list filter uses no name with the
 #: prefix, except :data:`ZONE_PARAM`, which holds the same zone.
 _MEASURE_KEY = "agf_m"
@@ -143,6 +147,18 @@ class FieldScope:
         if self.column not in _COLUMNS:
             raise ValueError(f"field_sql: {self.column!r} is not a field column")
 
+    def choices(self, types: tuple[str, ...] | None = None) -> str:
+        """The keys of the fields of *types* (every field when None), sorted,
+        at most :data:`CHOICES_MAX` of them, as one phrase for a 422."""
+        keys = sorted(
+            k for k, ref in self.fields.items() if types is None or ref.type in types
+        )
+        if not keys:
+            return "none"
+        more = len(keys) - CHOICES_MAX
+        shown = ", ".join(keys[:CHOICES_MAX])
+        return f"{shown}, and {more} more" if more > 0 else shown
+
     def ref(self, key: str | None) -> FieldRef:
         """The field named *key*, or a 422 that names the legal keys."""
         found = self.fields.get(key or "")
@@ -150,7 +166,8 @@ class FieldScope:
             raise HTTPException(status_code=422, detail={
                 "code": "unknown_field",
                 "message": f"'{key}' is not a field of {self.owner}. "
-                           "Read the field keys with crm_list_fields.",
+                           f"Its fields are: {self.choices()}. "
+                           "crm_list_fields gives the type of each.",
             })
         return found
 
@@ -239,7 +256,8 @@ def check_measure(scope: FieldScope, key: str | None) -> FieldRef:
     if ref.type not in MEASURE_TYPES:
         raise _refuse(
             f"'{ref.key}' is a {ref.type} field. A measure takes a field of "
-            f"type {_type_words(MEASURE_TYPES)}.",
+            f"type {_type_words(MEASURE_TYPES)}. The number fields of "
+            f"{scope.owner} are: {scope.choices(MEASURE_TYPES)}.",
         )
     return ref
 
@@ -258,7 +276,11 @@ def check_group(scope: FieldScope, key: str | None, bucket: str | None) -> Field
     if ref.type not in VALUE_GROUP_TYPES:
         raise _refuse(
             f"'{ref.key}' is a {ref.type} field. A group takes a field of type "
-            f"{_type_words(VALUE_GROUP_TYPES)}, or a date with a bucket.",
+            f"{_type_words(VALUE_GROUP_TYPES)}, or a date with a bucket. The "
+            f"fields of {scope.owner} that can group are: "
+            f"{scope.choices(VALUE_GROUP_TYPES + DATE_TYPES)}. To count the "
+            f"records where '{ref.key}' has one value, give no group and the "
+            f"filter field.{ref.key}=<value>.",
         )
     if bucket is not None:
         raise _refuse(f"A bucket goes with a date field, not with '{ref.key}'.")
@@ -465,13 +487,16 @@ def _split(scope: FieldScope, name: str) -> tuple[FieldRef, str | None]:
     return scope.ref(name), None
 
 
-def _filter(column: str, ref: FieldRef, end: str | None, k: str, v: str,
+def _filter(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: str,
             value: str) -> tuple[str, Any]:
     """One filter clause and its bound value."""
+    column = scope.column
     if end is not None:
         if ref.type not in DATE_TYPES:
             raise _refuse(
-                f"'{ref.key}' is a {ref.type} field. A range takes a date field.",
+                f"'{ref.key}' is a {ref.type} field. A range takes a date field. "
+                f"The date fields of {scope.owner} are: {scope.choices(DATE_TYPES)}. "
+                f"To match one value, give field.{ref.key}=<value>.",
             )
         # CRM-Q25b: a datetime takes its day in the CRM zone, as its bucket.
         return (
@@ -526,7 +551,7 @@ def module_where(
     for index, (name, value) in enumerate(pairs):
         ref, end = _split(scope, name)
         k, v = f"agf_k{index}", f"agf_v{index}"
-        clause, bound = _filter(scope.column, ref, end, k, v, value)
+        clause, bound = _filter(scope, ref, end, k, v, value)
         clauses.append(clause)
         params[k] = ref.key
         params[v] = bound
@@ -534,7 +559,7 @@ def module_where(
 
 
 __all__ = [
-    "BUCKETS", "DATE_TYPES", "DEFAULT_ZONE", "FIELD_MEASURES", "FIELD_PREFIX",
+    "BUCKETS", "CHOICES_MAX", "DATE_TYPES", "DEFAULT_ZONE", "FIELD_MEASURES", "FIELD_PREFIX",
     "MEASURE_TYPES", "VALUE_GROUP_TYPES", "ZONE_PARAM", "FieldRef", "FieldScope",
     "GroupSql", "MeasureSql", "WhereSql", "check_group", "check_measure",
     "core_scope", "crm_zone", "day_start", "field_pairs", "group_sql", "measure_sql",

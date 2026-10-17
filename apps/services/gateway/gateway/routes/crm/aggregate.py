@@ -3,7 +3,7 @@
 Spec: ``project-docs/specs/crm_platform.md`` §20.10 item 2, and §18.11
 CRM-Q25 (the typed aggregate).
 
-    GET /crm/aggregate               one measure, by one group
+    GET /crm/aggregate               one measure, by one group or overall
     GET /crm/aggregate/stage-dwell   days in each deal stage, and the deals
                                      that sit past their limit
 
@@ -22,7 +22,11 @@ mirror is a 404 (``modules._require_module``), before any read of a record.
 
 **The group.** ``group_by`` names a fixed key of :data:`GROUPS`, or of
 :data:`MODULE_GROUPS` for a module. ``group_field=<key>`` groups by one field
-instead, with ``bucket`` for a date. A call gives one of the two.
+instead, with ``bucket`` for a date. A call gives one of the two, or neither.
+With neither, the answer is the measure over every filtered record: no
+group, the ``total``, and the count of records in ``records``. A model asks
+"the sum of the invoices of October" with no group, and a 422 on that taught
+it nothing.
 
 **One filter builder.** A core entity takes the filters of the list routes,
 through the same ``records.ListParams`` and ``records.list_query``. So an
@@ -251,6 +255,9 @@ class AggregateResponse(BaseModel):
     #: then ``total`` and each group value are None. None for ``count``,
     #: ``sum_amount`` and ``weighted``, which read no field.
     values: int | None = None
+    #: The count of records that the filters matched, over every group. None
+    #: for ``weighted``, which reads only the open and ongoing deal lanes.
+    records: int | None = None
 
 
 class StageDwell(BaseModel):
@@ -318,13 +325,20 @@ def _check(
         raise _refuse(
             f"'field' goes with {list(FIELD_MEASURES)}, not with '{measure}'.",
         )
-    if (group_by is None) == (group_field is None):
-        raise _refuse("Give group_by or group_field, and only one of them.")
+    if group_by is not None and group_field is not None:
+        raise _refuse(
+            "Give group_by or group_field, not both. Give neither for one "
+            "total over every record.",
+        )
     if bucket is not None and group_field is None:
         raise _refuse("'bucket' goes with group_field.")
     allowed = MODULE_GROUPS if module is not None else GROUPS
     if group_by is not None and group_by not in allowed:
-        raise _refuse(f"Unknown group_by '{group_by}'. One of: {list(allowed)}.")
+        raise _refuse(
+            f"Unknown group_by '{group_by}'. One of: {list(allowed)}. To group "
+            "by a field, give group_field=<key> instead, or give no group for "
+            "one total.",
+        )
     if module is not None:
         if measure in DEAL_MEASURES:
             raise _refuse(f"'{measure}' needs deals. A module has no amount.")
@@ -350,7 +364,8 @@ def _check_filters(module: str | None, request: Request) -> list[tuple[str, str]
         if pairs:
             raise _refuse(
                 "A field.<key> filter takes a module entity. A core entity "
-                "takes the list filters.",
+                "takes the list filters, and custom.<key>=<value> for a "
+                "custom field.",
             )
         return pairs
     other = sorted({
@@ -402,6 +417,8 @@ class _Acc:
     s: float = 0.0
     n: int = 0
     name: str | None = None
+    #: The count of records in the group (``count(*)``).
+    rows: int = 0
 
 
 def _key(value: Any) -> str | None:
@@ -410,8 +427,10 @@ def _key(value: Any) -> str | None:
 
 async def _weighted(
     db: Any, key_sql: str, label_sql: str, where: str, params: dict[str, Any],
+    group_clause: str = " GROUP BY 1",
 ) -> dict[str | None, _Acc]:
-    """Weighted ₹ for each key, one statement per open or ongoing lane."""
+    """Weighted ₹ for each key, one statement per open or ongoing lane.
+    With no group, *group_clause* is empty and each lane gives one row."""
     lanes = (await db.execute(
         text("SELECT id, type, probability FROM crm_deal_statuses"), {},
     )).fetchall()
@@ -422,8 +441,8 @@ async def _weighted(
         rows = (await db.execute(
             text(
                 f"SELECT {key_sql} AS key, {label_sql} AS label, {WEIGHTED_SQL} "
-                f"FROM crm_deals{_and(where, 'status_id = CAST(:agg_lane AS uuid)')} "
-                "GROUP BY 1"
+                f"FROM crm_deals{_and(where, 'status_id = CAST(:agg_lane AS uuid)')}"
+                f"{group_clause}"
             ),
             {
                 **params,
@@ -508,17 +527,22 @@ async def _read(
         zone = await crm_zone(db, current_tenant())
     measured = check_measure(scope, field) if field and scope else None
     grouped = check_group(scope, group_field, bucket) if group_field and scope else None
+    # No group: one row over every filtered record. The statement then has
+    # no GROUP BY, so an empty set still gives its one row (a count of 0).
+    group_clause = " GROUP BY 1"
     if grouped is not None and scope is not None:
         group = group_sql(scope, grouped, bucket, zone=zone)
         key_sql, label_sql = group.key, group.label
         bound.update(group.params)
-    else:
-        key_sql = (MODULE_GROUPS if module is not None else GROUPS)[group_by or ""]
+    elif group_by is not None:
+        key_sql = (MODULE_GROUPS if module is not None else GROUPS)[group_by]
         label_sql = "NULL"
+    else:
+        key_sql, label_sql, group_clause = "NULL", "NULL", ""
     # The fixed month groups read the zone too. A bound value, never text.
     bound[ZONE_PARAM] = zone
     if measure == "weighted":
-        values = await _weighted(db, key_sql, label_sql, where_sql, bound)
+        values = await _weighted(db, key_sql, label_sql, where_sql, bound, group_clause)
     else:
         value_sql, sum_sql, count_sql = MEASURES.get(measure, ""), "0", "0"
         if measured is not None and scope is not None:
@@ -528,8 +552,8 @@ async def _read(
         rows = (await db.execute(
             text(
                 f"SELECT {key_sql} AS key, {label_sql} AS label, "
-                f"{value_sql} AS value, {sum_sql} AS s, {count_sql} AS n "
-                f"FROM {table}{where_sql} GROUP BY 1"
+                f"{value_sql} AS value, {sum_sql} AS s, {count_sql} AS n, "
+                f"count(*) AS c FROM {table}{where_sql}{group_clause}"
             ),
             bound,
         )).fetchall()
@@ -537,6 +561,7 @@ async def _read(
             _key(r.key): _Acc(
                 value=None if r.value is None else float(r.value),
                 s=float(r.s or 0), n=int(r.n or 0), name=r.label,
+                rows=int(getattr(r, "c", 0) or 0),
             )
             for r in rows
         }
@@ -559,12 +584,13 @@ async def aggregate(
     params: ListParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> AggregateResponse:
-    """One measure of one entity or module, by one group, over the filters.
+    """One measure of one entity or module, by one group or over every
+    record, over the filters.
 
     The NUL guard of CRM-Q25c runs in ``ListParams``, which this route takes,
     before this body runs. A second call here would be a copy."""
     # An empty optional value is an absent one, the same for each of the four
-    # (CRM-Q25 fix round). `group_field=` alone is then "no group", a 422.
+    # (CRM-Q25 fix round). `group_field=` alone is then "no group": one total.
     group_by, field = group_by or None, field or None
     group_field, bucket = group_field or None, bucket or None
     _found, module = _check(entity, measure, group_by, group_field, field, bucket)
@@ -606,6 +632,7 @@ async def compute(
             raise HTTPException(status_code=503, detail=TIMEOUT_DETAIL) from None
         raise
     measured, grouped = read.measured, read.grouped
+    overall = group_by is None and group_field is None
     bucketed = grouped is not None and grouped.type in DATE_TYPES
     options = grouped.options if grouped is not None else {}
     # CRM-Q25c item 3: the count of field values that the measure read. With
@@ -632,7 +659,8 @@ async def compute(
     # The 50 largest groups stay. The rest fold into `other`.
     groups.sort(key=lambda g: (g[0].value is None, -(g[0].value or 0.0), g[0].label))
     kept, rest = groups[:MAX_GROUPS], groups[MAX_GROUPS:]
-    shown = [g for g, _acc in kept]
+    # With no group, the one row IS the total, so no group is shown.
+    shown = [] if overall else [g for g, _acc in kept]
     if group_by == "status":
         shown.sort(key=lambda g: (read.order.get(g.key or "", 1 << 30), g.label))
     elif bucketed or group_by in MONTH_GROUPS:
@@ -656,6 +684,10 @@ async def compute(
         omitted=len(rest),
         zone=read.zone,
         values=values,
+        records=(
+            None if measure == "weighted"
+            else sum(acc.rows for acc in read.values.values())
+        ),
     )
 
 

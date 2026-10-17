@@ -3769,6 +3769,11 @@ that comes from a model. A per-member record scope (§18.5, CRM-Q12).
    `group_by=owner` groups by the owner email. A date or a datetime needs a
    `bucket`. The types `multiselect`, `text` and `formula`, and each other
    type, give 422.
+   **Changed 2026-10-18:** a call can give neither. The answer is then one
+   total over every filtered record, with no group, and `records` holds the
+   count of records. A 422 for a field names the valid field keys, at most
+   20. Fences: `tests/unit/test_crm_aggregate_r8.py` and
+   `tests/unit/test_crm_aggregate_fields_r8.py`.
 4. A filter on a module can name a field with one value
    (`field.<key>=<value>`), or a date field with a range (`field.<key>.from`
    and `field.<key>.to`). The core entities keep the list filters they have
@@ -4676,7 +4681,8 @@ the right numbers. The set must catch a regression.
   synthetic data, checkers, a `--scripted` mode and a row in
   `evals/README.md`.
 - `crm_aggregate` (CRM-Q25) needs `group_by` or `group_field`. So a plain
-  total is the `total` of a grouped answer.
+  total is the `total` of a grouped answer. (Changed 2026-10-18: a call can
+  give no group, and the answer is one total.)
 - A module filter takes one value or a date range only. No filter takes "not
   equal" or a number range.
 - The route sorts a value group largest first, and it keeps 50 groups.

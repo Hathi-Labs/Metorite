@@ -1091,6 +1091,12 @@ as the answer. The slices build to these answers.
   now one sentence with full day names. The instructions gain the section
   "Repeating work and settings". PO-1 and PO-2 run in scripted mode in the
   fence file until P3 builds `evals/projects_ops/`.
+- 2026-10-18 — The generic half of P2 moved to
+  `packages/acb_common/acb_common/tool_refusals.py`: `GatewayRefusal`,
+  `safe_detail`, `refusal_text` and `refusals_as_text`. `skill_projects`
+  keeps its words and re-exports the rest. The CRM tools and the email
+  tools now use the same seam, so the model reads a refused call of those
+  tools as text too. Fence: `tests/unit/test_crm_email_tool_refusals.py`.
 - 2026-10-06 — P2 is built, for the Projects agent only. These facts are
   as built:
   - `skill_projects/refusals.py` holds `refusals_as_text` and the text of

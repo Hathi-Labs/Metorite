@@ -200,8 +200,6 @@ ALLOWED: dict[str, str] = {
         'Text, not rows: the cut shortens one string.',
     'apps/services/orchestrator/orchestrator/agents.py::enrich_instructions_with_memory::user_query[:80]':
         'Text, not rows: the cut shortens one string.',
-    'apps/skills/skill-projects/skill_projects/client.py::safe_detail::text[:DETAIL_MAX - 1]':
-        'Text, not rows: the cut shortens one string.',
     "apps/skills/skill-projects/skill_projects/forms.py::propose_plan::[r.strip() for r in str(risks or '').splitlines() if r.strip()][:5]":
         'The risk lines the MODEL wrote into its own plan card. Not company data, and the card shows five.',
     'apps/skills/skill-projects/skill_projects/guarded.py::_short_ref::title[:TITLE_CLIP - 1]':

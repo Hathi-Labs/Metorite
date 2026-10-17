@@ -56,11 +56,18 @@ from uuid import UUID
 import httpx
 from acb_common import get_logger, get_settings
 from acb_common.paging import bounds, page_line
+from acb_common.tool_refusals import (
+    GatewayRefusal,
+    refusals_as_text,
+    response_body,
+    route_template,
+    safe_detail,
+)
 
 # WS-53 CRM-C7: the twelve CRM read tools have ONE implementation, in
 # ``acb_skills.crm_tools``. Every other agent gets the same functions as the
 # ``crm`` skill family. This agent imports them and defines no second copy.
-from acb_skills.crm_tools import CRM_TOOLS
+from acb_skills.crm_tools import CRM_DETAIL_MAX, CRM_TOOLS, CRM_VOICE
 
 # H-236: the four writes carry ``open_world=True``. Per D-CRM-9 an agent write
 # queues for the live Zoho tenant when ``CRM_ZOHO_SYNC`` is on, so it can carry
@@ -200,8 +207,10 @@ def _mirror_message(exc: _MirrorBlocked) -> str:
 
 
 def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
-    """Turn a 4xx/5xx into a short user-facing error (the agent relays raised
-    exceptions verbatim, so a raw httpx error reads badly)."""
+    """Turn a 4xx/5xx into a :class:`GatewayRefusal` with the route's safe
+    detail. ``build_agents`` wraps each tool in ``refusals_as_text``, so the
+    model reads the refusal as text (``acb_common.tool_refusals``). The
+    message keeps the route's words for a caller that reads it in code."""
     if resp.status_code < 400:
         return
     detail = ""
@@ -217,9 +226,15 @@ def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
         raise
     except Exception:  # non-JSON body
         detail = (resp.text or "")[:200]
-    raise RuntimeError(
+    safe, fields = safe_detail(
+        resp.status_code, response_body(resp), member=_current_user_email(),
+        limit=CRM_DETAIL_MAX,
+    )
+    raise GatewayRefusal(
         f"CRM {method} {path} failed ({resp.status_code})"
-        + (f": {detail}" if detail else "")
+        + (f": {detail}" if detail else ""),
+        status=resp.status_code, detail=safe, fields=fields,
+        route=route_template(path),
     )
 
 
@@ -1049,6 +1064,19 @@ def _register_agent_tools() -> dict[str, Any]:
     return {fn.__name__: fn for fn in _TOOLS}
 
 
+def _agent_tools() -> list[Any]:
+    """Each tool as the agent registers it: a gateway refusal is text.
+
+    MAF answers a tool that raises with "Error: Function failed.", so the
+    model could not read the route's words. ``refusals_as_text`` (the ONE
+    seam, ``acb_common.tool_refusals``) answers a ``GatewayRefusal`` in the
+    shared shape, with the CRM words. The shared CRM tools are wrapped
+    already, and the wrapper returns them as they are. Any other exception
+    still raises. Fence: ``tests/unit/test_crm_email_tool_refusals.py``.
+    """
+    return [refusals_as_text(fn, CRM_VOICE) for fn in _TOOLS]
+
+
 def _llm_provider() -> dict[str, Any]:
     """BYOK provider config pointing at the gateway's /v1 (litellm SDK)."""
     settings = get_settings()
@@ -1109,7 +1137,7 @@ def build_agents() -> list[Any]:
                 "first, and does nothing if nobody is there to ask. It never "
                 "deletes a CRM record."
             ),
-            tools=list(_TOOLS),
+            tools=_agent_tools(),
         )
     ]
 
