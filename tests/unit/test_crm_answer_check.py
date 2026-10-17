@@ -12,6 +12,9 @@ The cases, item by item:
 * item 7, a misquote gets one retry -> ``test_a_misquote_gets_one_retry``;
 * item 8, an invented total is caught -> ``test_an_invented_total_is_caught``;
 * item 7, two failures give the fallback -> ``test_two_failures_give_the_fallback``;
+* item 12, one retry for each run -> ``test_the_run_has_one_retry_in_all``;
+* item 4, the model's text is never a source ->
+  ``test_the_model_s_own_text_is_never_a_source``;
 * item 7, a failed step with a tool call loses its text ->
   ``test_a_failed_step_with_a_tool_call_loses_its_text``;
 * item 5, a run with no CRM tool is not held ->
@@ -198,6 +201,27 @@ async def test_two_failures_give_the_fallback(stream: bool) -> None:
     assert CRM_RESULT in out
     assert "13.5" not in out and "₹14 lakh" not in out
     assert len(client.requests) == 3  # one extra request at most
+
+
+@STREAMS
+async def test_the_model_s_own_text_is_never_a_source(stream: bool) -> None:
+    """Item 4: an earlier answer of the model holds an invented number. When
+    the model says it again, the check still catches it."""
+    from orchestrator._native_run_context import agent_with_providers
+
+    agent, client = _agent([("call", "crm_aggregate", {"entity": "deals"}),
+                            ("text", "You still have ₹99 lakh open."),
+                            ("text", "You have INR 12,34,567 open.")])
+    view = agent_with_providers(agent, [AnswerCheckProvider(ON)])
+    history = [Message("user", ["What is open?"]),
+               Message("assistant", ["You had ₹99 lakh open."]),
+               Message("user", ["And now?"])]
+    if stream:
+        out = "".join([u.text or "" async for u in view.run(history, stream=True)])
+    else:
+        out = (await view.run(history)).text
+    assert out == "You have INR 12,34,567 open."
+    assert len(client.requests) == 3
 
 
 @STREAMS

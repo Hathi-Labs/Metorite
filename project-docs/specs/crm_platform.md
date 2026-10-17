@@ -4367,6 +4367,12 @@ and `uv run python scripts/affected_tests.py --base origin/main`.
   the stream run and the batch run: a true answer makes 2 requests, a
   misquote 3, and two failures 3, with the fallback. A later failure in the
   same run makes no second retry.
+- **Mutations.** 13 mutations, one for each key rule, and the suites kill
+  each one. The rules: the room for rounding, money against a percent, a
+  date, an exact scaled number, the arm, the model's text as a source, no
+  extra request on a pass, one retry for each run, no draft in the fallback,
+  no text on a failed tool step, the seam, the default mode, and no note text
+  in the fallback.
 - **The grant.** The retry is one more request of the member's own chat turn.
   The member's chat pays for it as for each other request, so no new payer
   exists. That is why `enforcement-flip` covers a value on a box. The owner
