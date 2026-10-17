@@ -250,7 +250,7 @@ class TestTheQueries:
         got = await dg.gather(ORG, WEEK)
         assert [s["entity"] for s in seen] == [q.entity for q in dg.DIGEST_QUERIES]
         assert [s["group_by"] for s in seen] == [q.group_by for q in dg.DIGEST_QUERIES]
-        assert all("organization" not in k and "org" != k for s in seen for k in s)
+        assert all("organization" not in k and k != "org" for s in seen for k in s)
         assert got["missing"] == []
         new_leads = next(p for p in got["parts"] if p["key"] == "new_leads")
         assert new_leads == {"key": "new_leads", "title": "New leads in the week",
