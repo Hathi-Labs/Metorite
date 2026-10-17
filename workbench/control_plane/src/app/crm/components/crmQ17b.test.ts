@@ -18,6 +18,7 @@
 //    disabled. The detail table folds.
 import { readFileSync } from "node:fs";
 import { createElement } from "react";
+import type React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
@@ -785,6 +786,23 @@ describe("fix round 1, item 3: a phone member can sort the cards", () => {
     expect(html).toContain("Email");
     expect(html).toContain('aria-label="Sort descending"');
     expect(html).not.toContain(">Title<");
+  });
+
+  it("sorts as a header click does: a new column, then the direction", () => {
+    const calls: string[] = [];
+    // PhoneSort has no hook, so its element tree can be read and driven.
+    const tree = PhoneSort({
+      columns,
+      sortable: new Set(["first_name", "email"]),
+      sort: "email",
+      direction: "asc",
+      onSort: (key) => calls.push(key),
+    }) as React.ReactElement<{ children: React.ReactElement<Record<string, unknown>>[] }>;
+    const [select, turn] = tree.props.children;
+    (select.props.onChange as (v: string) => void)("first_name");
+    (select.props.onChange as (v: string) => void)("email"); // the same key: no call
+    (turn.props.onClick as () => void)();
+    expect(calls).toEqual(["first_name", "email"]);
   });
 
   it("draws nothing with no sortable column", () => {
