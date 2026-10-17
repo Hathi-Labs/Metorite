@@ -3259,6 +3259,16 @@ branch. No migration and no flag of its own.
   times in a row parks for 7 days or until its schema hash changes. (4) The
   history names a draft of the pipeline "Suggested by Metorite". (5) The
   preview keeps a Zoho value in a column that a live rule fills.
+- **Round 2 of the review (2026-10-17).** (1) A write of a suggestion
+  needs the open draft itself, not only its base. An older draft on the same
+  base gives 409 `plan_moved`, because its carry dropped the picks of the
+  newer draft. The Field map card reads the suggestions again after each
+  write, and the panel says in plain words that the map changed. (2) So a
+  dismiss of an older draft records nothing. (3) `write_draft` reads the
+  dismissals again under the plan lock, with the schema hash of the run, so
+  a dismiss during a run does not come back. (4) A NUMERIC rule value
+  compares as a `Decimal` (`executor.same_value`). (5) A draft built on an
+  open draft of the admin keeps the admin as its author.
 - Fences: 12 tests in `test_crm_map_suggest_r8.py` (11 of them R8), 3 in
   `test_crm_field_map_ai.py`, 2 more in `test_crm_map_pipeline_r8.py`, 3 in
   `test_crm_map_pipeline.py`, 3 in `test_crm_executor.py`, 1 in
