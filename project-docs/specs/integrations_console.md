@@ -286,6 +286,7 @@ unions three sources and gives one row shape:
 | Source | Rows |
 |---|---|
 | `integration_connections` | Zoho, MCP servers (after IN-4), GitHub (after IN-7), the next providers |
+| `integration_connections`, GitHub App mode | One `github` row for each org, with `provider_meta.auth` of `app` or `token`. `github_integration.md` (2026-10-18) owns the App, its connect flow and its webhook. The customer-made OAuth App path and the device flow retire in its GH-7 |
 | `email_accounts` | Mailboxes. An admin sees each mailbox's owner, provider and health, and never its content (D-EM-4) |
 | `wa_accounts` | WhatsApp numbers |
 
@@ -768,6 +769,7 @@ IN-0 comes first and alone, because it closes live holes.
 | **IN-8b** 🔨 BUILT 2026-10-14 | Refresh at run time, the 401 on connect, and `needs_reconnect` (§3.6.7), dark | 🟢 AGENT-SAFE | O7, O8 and O14 |
 | **IN-8c** 🔨 BUILT 2026-10-15 | The console Connect button, the BFF route for `POST /integrations/mcp/{name}/oauth/start`, the dialog text, the acts-as label and the card line (§3.6.9), dark | 🟢 AGENT-SAFE | O10. Visual review passes |
 | **IN-8d** | Pre-registered providers: GitHub, Slack and HubSpot (§3.6.2) | 🔴 OWNER-GATE. The owner creates each OAuth app, and its secret goes in the operator plane (D56) | The owner's consent with each provider stores an org connection in Fracktal |
+| **GH-0 to GH-8** 📝 SPECIFIED 2026-10-18 | **GitHub through a Metorite-owned GitHub App.** `github_integration.md` owns the slices, the acceptance and the gates. The customer-made OAuth App client id path and its device flow retire (GH-7), and a pasted token stays as "Advanced". The GitHub OAuth app of IN-8d is a separate registration, for the GitHub MCP server | 🔴 OWNER-GATE: GH-0 (register the Apps) and the install in GH-8. The rest is 🟢 AGENT-SAFE | See `github_integration.md` §16 |
 
 ### 7.3 IN-4 acceptance
 
