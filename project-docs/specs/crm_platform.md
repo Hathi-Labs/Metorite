@@ -4446,7 +4446,8 @@ migration and no flag.
   fact reads it as `("short", key, field)`.
 
 **The result.** The unit test of the tools holds 11 tests. A mutation that
-drops `+ note` from `crm_aggregate` fails three of them. The R8 test holds
+drops `+ note` from the end of `crm_aggregate` fails
+`test_a_module_tool_adds_the_line[crm_aggregate]`. The R8 test holds
 4 tests. The scripted run passes 31 of 31 questions on each of the seven
 bars. The mutation that takes the line out of the tools fails Q31 only.
 
