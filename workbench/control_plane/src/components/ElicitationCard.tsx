@@ -28,7 +28,21 @@
  *   and a circle (one choice) or a box (many) from the icon set.
  * - `RecommendedBadge` is the one mark of a recommended option.
  * - Submit is the shared primary `Button`. It is disabled only while a
- *   question has no answer.
+ *   question that is not optional has no answer.
+ *
+ * ## Never stuck without a reason (owner report, 2026-10-17)
+ *
+ * The owner picked an option on a card of two questions and could not
+ * submit. The pick did count. The first question was a text question with
+ * no answer, and nothing on the card said that it blocked Submit. Now:
+ *
+ * - The line beside Submit names each question that blocks it
+ *   (`submitBlockedReason`), and Submit points at that line through
+ *   `aria-describedby`.
+ * - Once the member answers one question, each question that still blocks
+ *   Submit shows "Needs an answer".
+ * - A question with `required: false` never blocks Submit, and it shows
+ *   "Optional".
  *
  * A question, a header and an option draw through `GenUiText`, so a «mark»
  * never reaches the member (AGENTS.md rule 4).
@@ -44,13 +58,16 @@ import GenUiText from "@/components/GenUiText";
 import Icon from "@/components/Icon";
 import RecommendedBadge from "@/components/RecommendedBadge";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
+import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
 import { Textarea } from "@/components/ui/Input";
 import { plainTitle } from "@/lib/fencedText";
 import {
-  canSubmitAnswers,
   collectAnswers,
+  isAnswered as hasAnswer,
+  submitBlockedReason,
+  unansweredQuestions,
   type ElicitationAnswers,
   type ElicitationQuestion,
 } from "@/lib/elicitationAnswer";
@@ -65,6 +82,10 @@ export const ANSWERED_ICON = "CircleCheck";
 export const ANSWERED_TITLE = "Answered";
 /** The line beside Submit. */
 export const SUBMIT_HINT = "The assistant waits for your answer.";
+/** The mark of a question that still blocks Submit. */
+export const NEEDS_ANSWER = "Needs an answer";
+/** The mark of a question the member may skip (`required: false`). */
+export const OPTIONAL_MARK = "Optional";
 
 /** The card's short title. Never a part of the question. */
 export function questionsTitle(count: number): string {
@@ -127,7 +148,13 @@ export default function ElicitationCard({
     [locked],
   );
 
-  const canSubmit = canSubmitAnswers(questions, answers, freeformTexts);
+  const unanswered = unansweredQuestions(questions, answers, freeformTexts);
+  const canSubmit = unanswered.length === 0;
+  const blockedReason = submitBlockedReason(questions, unanswered);
+  // The marks wait for the first answer, so a new card is not a wall of
+  // warnings. The line beside Submit says it from the start.
+  const touched = questions.some((q) => hasAnswer(q, answers, freeformTexts));
+  const reasonId = `${uid}-blocked`;
   const handleSubmit = () => {
     if (locked || !canSubmit) return;
     onSubmit(collectAnswers(questions, answers, freeformTexts));
@@ -159,11 +186,25 @@ export default function ElicitationCard({
             const selected = answers[q.header]?.selected ?? [];
             const ft = freeformTexts[q.header] ?? "";
             const qid = `${uid}-q${qi}`;
+            const optional = q.required === false;
+            const blocks = !isAnswered && touched && unanswered.includes(q);
             return (
-              <div key={qi} role="group" aria-labelledby={qid} className="space-y-1.5">
+              <div
+                key={qi}
+                role="group"
+                aria-labelledby={qid}
+                data-elicitation-unanswered={blocks ? "" : undefined}
+                className="space-y-1.5"
+              >
                 {many && (
-                  <div className="text-[10px] font-medium text-muted-foreground">
+                  <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-medium text-muted-foreground">
                     <GenUiText text={q.header} />
+                    {optional && !isAnswered && <span className="font-normal">· {OPTIONAL_MARK}</span>}
+                    {blocks && (
+                      <Badge tone="warning" size="xs">
+                        {NEEDS_ANSWER}
+                      </Badge>
+                    )}
                   </div>
                 )}
                 <p
@@ -236,10 +277,20 @@ export default function ElicitationCard({
                 icon="Send"
                 onClick={handleSubmit}
                 disabled={locked || !canSubmit}
+                aria-describedby={blockedReason ? reasonId : undefined}
                 data-elicitation-submit=""
               >
                 Submit
               </Button>
+              {/* Always mounted, so a screen reader hears it change. */}
+              <span
+                id={reasonId}
+                aria-live="polite"
+                data-elicitation-blocked=""
+                className="text-[10px] font-medium text-foreground empty:hidden"
+              >
+                {blockedReason ?? ""}
+              </span>
               <span className="text-[10px] text-muted-foreground">{hint}</span>
             </div>
           )}

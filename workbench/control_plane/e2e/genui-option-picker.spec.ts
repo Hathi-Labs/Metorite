@@ -35,9 +35,26 @@ const OPTIONS = [
   { id: "skip", label: "Do nothing", description: "Leave it for now." },
 ];
 
+/** The owner's card of 2026-10-17: a text question, then a pick. */
+const OWNER_Q1 = "What date should the system be live by? I'll schedule the plan tasks backwards from it.";
+const OWNER_QUESTIONS = [
+  { header: "Target deadline", question: OWNER_Q1, multiSelect: false, allowFreeformInput: true, options: null },
+  {
+    header: "Task owners",
+    question: "Who should own the plan tasks?",
+    multiSelect: false,
+    allowFreeformInput: true,
+    options: [
+      { label: "Propose from the team", description: null, recommended: true },
+      { label: "I'll give owners", description: null, recommended: false },
+    ],
+  },
+];
+
 type Scenario = {
-  /** The card the run parks on: the generative-UI picker, or ask_questions. */
-  ask: "picker" | "question";
+  /** The card the run parks on: the generative-UI picker, ask_questions,
+   *  or the owner's two-question ask_questions card. */
+  ask: "picker" | "question" | "owner";
   /** The status that `/api/agent/respond-input` answers. */
   respondStatus: number;
   /** A multi-select card instead of a single one. */
@@ -45,6 +62,13 @@ type Scenario = {
 };
 
 function askEvent(scenario: Scenario): Record<string, unknown> {
+  if (scenario.ask === "owner") {
+    return {
+      type: "custom",
+      name: "elicitation_requested",
+      value: { request_id: "req-plan-1", questions: OWNER_QUESTIONS },
+    };
+  }
   if (scenario.ask === "question") {
     return {
       type: "custom",
@@ -181,7 +205,7 @@ async function installScenario(page: Page, scenario: Scenario) {
   await page.route("**/api/memory/**", (r) => r.fulfill({ json: [] }));
 }
 
-async function startTurn(page: Page) {
+async function startTurn(page: Page, shows: string = QUESTION) {
   await page.goto("/chat");
   // A fresh visit opens the agent picker. The default agent is the
   // orchestrator, which drew the owner's card.
@@ -194,7 +218,7 @@ async function startTurn(page: Page) {
   await expect(box).toBeEnabled({ timeout: 30_000 });
   await box.fill("Forward the BQ email with its PDF to Geo");
   await page.getByRole("button", { name: "Send", exact: true }).click();
-  await expect(page.getByText(QUESTION).first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(shows).first()).toBeVisible({ timeout: 15_000 });
 }
 
 const respondBodies = (page: Page) =>
@@ -336,5 +360,45 @@ test.describe("The ask_questions card answers the click", () => {
     await expect.poll(async () => (await chatBodies(page)).length).toBe(2);
     expect((await chatBodies(page)).at(-1)?.message).toBe("Send a link");
     await expect(page.getByText("Got it: Send a link").first()).toBeVisible({ timeout: 10_000 });
+  });
+});
+
+// Owner report, 2026-10-17: "even after selecting, i cant submit." The pick
+// counted. The text question above it had no answer, and nothing said so.
+test.describe("A card of two questions says why Submit is off", () => {
+  test.describe.configure({ timeout: 120_000 });
+
+  test("a pick alone names the text question, then a date turns Submit on", async ({ page }) => {
+    await installScenario(page, { ask: "owner", respondStatus: 200 });
+    await startTurn(page, OWNER_Q1);
+
+    const card = page.locator('[data-elicitation-card="open"]');
+    const submit = card.getByRole("button", { name: "Submit", exact: true });
+    const reason = card.locator("[data-elicitation-blocked]");
+    await expect(reason).toHaveText("Answer Target deadline and Task owners to submit.");
+    await expect(card.getByText("Needs an answer")).toHaveCount(0);
+
+    const pick = card.getByRole("button", { name: /Propose from the team/ });
+    await pick.click();
+    await expect(pick).toHaveAttribute("aria-pressed", "true");
+    await expect(submit).toBeDisabled();
+    await expect(reason).toHaveText("Answer Target deadline to submit.");
+    await expect(submit).toHaveAttribute("aria-describedby", (await reason.getAttribute("id"))!);
+    // The question that blocks Submit says so, and only that one.
+    const blocked = card.locator("[data-elicitation-unanswered]");
+    await expect(blocked).toHaveCount(1);
+    await expect(blocked).toContainText("Target deadline");
+    await expect(blocked).toContainText("Needs an answer");
+
+    await card.getByRole("textbox", { name: "Your answer" }).fill("2026-12-01");
+    await expect(submit).toBeEnabled();
+    await expect(reason).toHaveText("");
+    await expect(blocked).toHaveCount(0);
+    await submit.click();
+
+    await expect.poll(async () => (await respondBodies(page)).at(-1)?.answer).toBe(
+      "[Target deadline]\nAnswer: 2026-12-01\n\n[Task owners]\nSelected: Propose from the team",
+    );
+    expect((await respondBodies(page)).at(-1)?.request_id).toBe("req-plan-1");
   });
 });
