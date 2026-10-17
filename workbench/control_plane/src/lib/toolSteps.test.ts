@@ -74,6 +74,14 @@ describe("describeToolStep — a step in words", () => {
     expect(step("run_command", { command: "ls" }, "error").status).toBe("failed");
   });
 
+  it("never reads a refused write as done (review of #1126)", () => {
+    // A CRM write has no card, so its step row is all the member sees.
+    const refused = "Refused: The CRM refused an argument (422).\nGateway said: «Name is required.»";
+    expect(describeToolStep({ name: "create_lead", args: {}, status: "done", result: refused }).status).toBe("failed");
+    expect(describeToolStep({ name: "create_lead", args: {}, status: "error", result: refused }).status).toBe("failed");
+    expect(describeToolStep({ name: "create_lead", args: {}, status: "done", result: "Lead created." }).status).toBe("done");
+  });
+
   it("names a file read with its path, and a file write with its name", () => {
     expect(step("read_file", { path: "outputs/data.csv" }).label).toBe("Read file outputs/data.csv");
     expect(step("read_file", { path: "outputs/q3/sales/data.csv" }).label).toBe("Read file …/sales/data.csv");

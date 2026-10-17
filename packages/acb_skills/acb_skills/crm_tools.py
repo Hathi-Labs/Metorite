@@ -1073,8 +1073,8 @@ async def crm_aggregate(
             return f"{plural}, {what}: {fmt(data.get('total'))}.{note}"
         noun = "record" if int(records) == 1 else "records"
         return (
-            f"{plural}, {what}: {fmt(data.get('total'))} over "
-            f"{int(records):,} {noun}.{note}"
+            f"{plural}, {what}: {fmt(data.get('total'))} across "
+            f"{int(records):,} matching {noun}.{note}"
         )
     by = group_by or f"{group_field}" + (f" ({bucket})" if bucket else "")
     shown = _page_of(groups, page, "groups")

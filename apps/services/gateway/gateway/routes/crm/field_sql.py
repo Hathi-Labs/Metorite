@@ -159,6 +159,12 @@ class FieldScope:
         shown = ", ".join(keys[:CHOICES_MAX])
         return f"{shown}, and {more} more" if more > 0 else shown
 
+    def filter_word(self, key: str) -> str:
+        """The query word that filters on *key*: ``custom.<key>`` for a core
+        entity (the list filters of ``records.ListParams``) and
+        ``field.<key>`` for a module (:func:`module_where`)."""
+        return f"custom.{key}" if self.column == CORE_COLUMN else f"{FIELD_PREFIX}{key}"
+
     def ref(self, key: str | None) -> FieldRef:
         """The field named *key*, or a 422 that names the legal keys."""
         found = self.fields.get(key or "")
@@ -280,7 +286,7 @@ def check_group(scope: FieldScope, key: str | None, bucket: str | None) -> Field
             f"fields of {scope.owner} that can group are: "
             f"{scope.choices(VALUE_GROUP_TYPES + DATE_TYPES)}. To count the "
             f"records where '{ref.key}' has one value, give no group and the "
-            f"filter field.{ref.key}=<value>.",
+            f"filter {scope.filter_word(ref.key)}=<value>.",
         )
     if bucket is not None:
         raise _refuse(f"A bucket goes with a date field, not with '{ref.key}'.")
@@ -496,7 +502,7 @@ def _filter(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: str,
             raise _refuse(
                 f"'{ref.key}' is a {ref.type} field. A range takes a date field. "
                 f"The date fields of {scope.owner} are: {scope.choices(DATE_TYPES)}. "
-                f"To match one value, give field.{ref.key}=<value>.",
+                f"To match one value, give {scope.filter_word(ref.key)}=<value>.",
             )
         # CRM-Q25b: a datetime takes its day in the CRM zone, as its bucket.
         return (

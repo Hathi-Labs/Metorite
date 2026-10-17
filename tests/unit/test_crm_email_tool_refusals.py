@@ -340,7 +340,7 @@ async def test_the_aggregate_with_no_group_prints_one_line(monkeypatch) -> None:
         "module:Invoices", measure="sum", field="Total_Invoice_Amount",
         field_filters={"Invoice_Date.from": "2026-10-01", "Invoice_Date.to": "2026-10-31"},
     )
-    assert out == "Invoices, sum of Total_Invoice_Amount: INR 123,456 over 42 records."
+    assert out == "Invoices, sum of Total_Invoice_Amount: INR 123,456 across 42 matching records."
     sent = next(c["params"] for c in calls if c["path"] == "/crm/aggregate")
     assert "group_by" not in sent and "group_field" not in sent
     assert sent["field.Invoice_Date.from"] == "2026-10-01"
@@ -444,3 +444,102 @@ def test_an_unknown_module_names_the_mirrored_ones() -> None:
     assert exc.value.status_code == 404
     assert exc.value.detail["code"] == "unknown_module"
     assert "The mirrored modules are: Invoices, Quotes." in exc.value.detail["message"]
+
+
+# ── 6. A refusal is no success on the stream (review of #1126, P1) ──────────
+
+
+def test_is_refusal_reads_text_and_content_items() -> None:
+    assert shared.is_refusal("Refused: The CRM refused an argument (422).")
+    assert shared.is_refusal("  Refused: x")
+    assert shared.is_refusal([SimpleNamespace(text="Refused: x")])
+    assert not shared.is_refusal("Email sent to ravi@x.in")
+    assert not shared.is_refusal([SimpleNamespace(text="Draft saved")])
+    assert not shared.is_refusal(None) and not shared.is_refusal([])
+
+
+def _result_event(result: Any, exc: Any = None) -> dict:
+    from orchestrator.event_translator import TranslationState, translate_update
+
+    content = SimpleNamespace(type="function_result", call_id="c1", result=result,
+                              exception=exc)
+    update = SimpleNamespace(role="tool", contents=[content])
+    events = translate_update(update, TranslationState(run_id="r1"))
+    return next(e for e in events if e["type"] == "TOOL_CALL_RESULT")
+
+
+def test_the_translator_marks_a_refusal_failed_and_keeps_its_text() -> None:
+    refused = _result_event("Refused: The email app is not available right now (503).")
+    assert refused["success"] is False
+    assert refused["content"].startswith("Refused:")
+    assert _result_event("Email sent to ravi@x.in")["success"] is True
+    assert _result_event("", exc=RuntimeError("boom"))["success"] is False
+
+
+def test_the_tier2_shim_asks_the_same_function_before_the_steer() -> None:
+    """The shim of ``executor.py`` marks a refusal failed, and it asks before
+    the steer text joins the result (that text could come first)."""
+    source = (REPO / "apps" / "services" / "orchestrator" / "orchestrator"
+              / "executor.py").read_text(encoding="utf-8")
+    at = source.index("refused = is_refusal(result)")
+    assert at < source.index("result = decorate_tool_result(result, thread_id)", at)
+    assert '"success": not refused,' in source
+    assert '"success": not _is_refusal(result),' in source
+
+
+def test_a_refusal_is_no_number_source_of_the_answer_check() -> None:
+    from acb_skills.answer_check import RunLedger
+
+    ledger = RunLedger()
+    ledger.record("crm_aggregate", "Refused: The CRM refused an argument (422).\n"
+                                   "Gateway said: «Give a bucket, one of: 2026.»")
+    assert len(ledger.book) == 0
+    assert ledger.armed
+    ledger.record("crm_aggregate", "Deals, count: 7.")
+    assert len(ledger.book) > 0
+
+
+# ── 7. The hint names the filter word of the scope (review of #1126, P2) ─────
+
+
+def test_the_group_hint_names_custom_for_a_core_entity() -> None:
+    from fastapi import HTTPException
+    from gateway.routes.crm import field_sql as fs
+
+    core = fs.FieldScope(column="custom", owner="deals", fields={
+        "region": fs.FieldRef("region", "text", "Region"),
+        "tier": fs.FieldRef("tier", "select", "Tier"),
+    })
+    with pytest.raises(HTTPException) as exc:
+        fs.check_group(core, "region", None)
+    message = exc.value.detail["message"]
+    assert "custom.region=<value>" in message and "field.region" not in message
+    module = fs.FieldScope(column="fields", owner="module:X", fields=core.fields)
+    with pytest.raises(HTTPException) as exc:
+        fs.check_group(module, "region", None)
+    assert "field.region=<value>" in exc.value.detail["message"]
+
+
+# ── 8. The crm-assistant's own input checks are text (review, P2) ───────────
+
+
+async def test_a_guessed_id_of_a_crm_agent_tool_is_text_and_sends_nothing(
+    monkeypatch,
+) -> None:
+    from tests.unit._crm_agent_fakes import approve
+
+    asked = approve(monkeypatch)
+    calls = _refusing(_CRM, monkeypatch, 200, {})
+    tools = _registered(_CRM)
+    for out in (
+        await tools["get_record"]("deals", "ACME-123"),
+        await tools["get_timeline"]("deals", "../../admin/members"),
+        await tools["log_activity"]("deals", "deal-42", "note", "Called"),
+        await tools["update_deal_status"]("ACME-123", "Negotiation"),
+        await tools["convert_lead"]("null"),
+    ):
+        assert out.startswith(f"{REFUSED} Invalid CRM record id"), out
+        assert "\nNext: Fix the one argument" in out
+    out = await tools["get_record"]("invoices", "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d")
+    assert out.startswith(f"{REFUSED} Unknown CRM record type 'invoices'.")
+    assert calls == [] and asked == []

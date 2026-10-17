@@ -59,6 +59,7 @@ __all__ = [
     "GatewayRefusal",
     "RefusalVoice",
     "data",
+    "is_refusal",
     "refusal_text",
     "refusals_as_text",
     "response_body",
@@ -361,6 +362,25 @@ def refusal_text(exc: GatewayRefusal, voice: RefusalVoice) -> str:
         lines.append(f"Gateway said: {data(detail)}")
     lines.append(f"Next: {nxt}")
     return "\n".join(lines)
+
+
+def is_refusal(value: Any) -> bool:
+    """True when a tool result is a refusal: its text starts with
+    :data:`REFUSED`.
+
+    A refused call RETURNS its text, so the model can read it. The stream
+    must still mark it ``success: false``. Otherwise a chat card draws a
+    refused write as done ("Email sent"). Both stream paths ask this one
+    function (``orchestrator.event_translator`` and the Tier 2 shim in
+    ``orchestrator.executor``). *value* is a string, or a list of content
+    items that each carry ``text``.
+    """
+    if isinstance(value, str):
+        return value.lstrip().startswith(REFUSED)
+    if isinstance(value, (list, tuple)) and value:
+        first = getattr(value[0], "text", value[0])
+        return isinstance(first, str) and first.lstrip().startswith(REFUSED)
+    return False
 
 
 def refusals_as_text(

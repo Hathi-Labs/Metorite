@@ -320,11 +320,15 @@ def _entity_slug(entity: str) -> str:
     An unrecognised type is an error, never a silent fall back to leads — the
     same rule the list kernel applies to an unknown sort key. Answering about
     the wrong record type is worse than saying we did not understand.
+
+    The refusal is a client ``GatewayRefusal``, so the registered tool
+    answers the model with these words (``refusals_as_text``), not with
+    "Error: Function failed.". :func:`_record_uuid` does the same.
     """
     key = (entity or "").strip().lower()
     slug = _ENTITY_ALIASES.get(key, key)
     if slug not in ENTITY_LABELS:
-        raise RuntimeError(
+        raise GatewayRefusal(
             f"Unknown CRM record type {entity!r}. "
             f"One of: {', '.join(ENTITY_LABELS)}."
         )
@@ -364,7 +368,7 @@ def _record_uuid(record_id: str) -> str:
     try:
         return str(UUID(str(record_id).strip()))
     except (AttributeError, TypeError, ValueError):
-        raise RuntimeError(
+        raise GatewayRefusal(
             f"Invalid CRM record id {record_id!r}. A CRM id is a UUID — use the "
             "id returned by search_crm or get_pipeline, not a name or a code."
         ) from None
