@@ -527,6 +527,12 @@ class Sources:
         found = self._pool(kind)
         return found.values() if found is not None else []
 
+    def settle(self) -> None:
+        """Sort each value that waits. A caller on a worker thread calls it
+        after a large text, so the next match on the event loop sorts
+        nothing (fix round 4)."""
+        self._settle()
+
     def _settle(self) -> None:
         if not self._pending:
             return

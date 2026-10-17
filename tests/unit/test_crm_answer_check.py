@@ -927,6 +927,8 @@ async def test_a_large_result_is_read_off_the_event_loop(monkeypatch) -> None:
     big = "\n".join(f"- row {i}: INR {1000 + i}" for i in range(RECORD_INLINE_CHARS // 10))
     await middleware.process(_Context(big), _next)
     assert threads == ["record"]
+    # The thread also sorts the book, so the check on the loop sorts nothing.
+    assert ledger.book._pending == []
     assert ledger.check("Row holds INR 1,005.").ok
 
 

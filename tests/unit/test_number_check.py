@@ -583,14 +583,15 @@ class TestFixRound4Sources:
         assert not check("We had 234 deals.", ["Total,1,234,567 INR"]).ok
 
     def test_a_large_result_costs_one_sort(self) -> None:
-        import time
-
+        """A value waits in a list, and the book sorts once before its next
+        match. An insert for each value cost 31 s for 100,000 figures."""
         text = "\n".join(f"- row: {1000 + i} and {i}.{i % 100:02d}" for i in range(50_000))
         book = Sources()
-        start = time.perf_counter()
         book.add_text(text, derive=True)
+        assert book._values == [] and len(book._pending) == 100_000
+        book.settle()
+        assert book._pending == [] and book._values == sorted(book._values)
         assert check("The row holds 41234.", book).ok
-        assert time.perf_counter() - start < 5.0
         assert len(book) == 100_000
 
 

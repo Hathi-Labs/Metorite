@@ -420,6 +420,7 @@ class RunLedger:
                 if arguments is not None:
                     for value in argument_sources(arguments):
                         self.book.add_text(value)
+            self.book.settle()
 
     def sources(self) -> Sources:
         """Each source of the run (item 4), the member's words included.
