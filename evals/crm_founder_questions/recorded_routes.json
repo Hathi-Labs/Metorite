@@ -49,7 +49,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 98
+   "values": 98,
+   "records": 98
   },
   "/crm/aggregate?bucket=month&entity=module%3APayment_Received&field=Amount&field.Received_On.from=2026-06-01&field.Received_On.to=2026-08-31&group_field=Received_On&measure=sum": {
    "entity": "module:Payment_Received",
@@ -84,7 +85,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 44
+   "values": 44,
+   "records": 44
   },
   "/crm/aggregate?bucket=quarter&entity=module%3AInvoices&field=Grand_Total&field.Invoice_Date.from=2026-01-01&field.Invoice_Date.to=2026-12-31&group_field=Invoice_Date&measure=sum": {
    "entity": "module:Invoices",
@@ -124,7 +126,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 132
+   "values": 132,
+   "records": 132
   },
   "/crm/aggregate?custom.Site_State=Maharashtra&entity=contacts&field=Plant_Capacity_MLD&group_by=owner&measure=sum": {
    "entity": "contacts",
@@ -159,7 +162,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 9
+   "values": 9,
+   "records": 11
   },
   "/crm/aggregate?entity=contacts&group_field=Site_State&measure=count": {
    "entity": "contacts",
@@ -204,7 +208,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": null
+   "values": null,
+   "records": 60
   },
   "/crm/aggregate?entity=module%3AClients&group_field=Key_Account&measure=count": {
    "entity": "module:Clients",
@@ -234,7 +239,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": null
+   "values": null,
+   "records": 40
   },
   "/crm/aggregate?entity=module%3AClients&group_field=Segment&measure=count": {
    "entity": "module:Clients",
@@ -269,7 +275,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": null
+   "values": null,
+   "records": 40
   },
   "/crm/aggregate?entity=module%3ACommercials&field=Quote_Value&group_by=owner&measure=sum": {
    "entity": "module:Commercials",
@@ -288,7 +295,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 0
+   "values": 0,
+   "records": 0
   },
   "/crm/aggregate?entity=module%3ACompany&field=Annual_Revenue&group_by=owner&measure=sum": {
    "entity": "module:Company",
@@ -323,7 +331,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 0
+   "values": 0,
+   "records": 12
   },
   "/crm/aggregate?entity=module%3AInvoices&field.Due_Date.to=2026-10-14&group_field=Status&measure=count": {
    "entity": "module:Invoices",
@@ -358,7 +367,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": null
+   "values": null,
+   "records": 239
   },
   "/crm/aggregate?entity=module%3AInvoices&field.Invoice_Date.from=2026-09-01&field.Invoice_Date.to=2026-09-30&group_by=owner&measure=count": {
    "entity": "module:Invoices",
@@ -393,7 +403,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": null
+   "values": null,
+   "records": 14
   },
   "/crm/aggregate?entity=module%3AInvoices&field=Balance_Due&field.Due_Date.to=2026-10-14&group_field=Status&measure=sum": {
    "entity": "module:Invoices",
@@ -428,7 +439,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 239
+   "values": 239,
+   "records": 239
   },
   "/crm/aggregate?entity=module%3AInvoices&field=Balance_Due&group_by=owner&measure=sum": {
    "entity": "module:Invoices",
@@ -463,7 +475,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 260
+   "values": 260,
+   "records": 260
   },
   "/crm/aggregate?entity=module%3AInvoices&field=Balance_Due&group_field=Client&measure=sum": {
    "entity": "module:Invoices",
@@ -658,7 +671,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 260
+   "values": 260,
+   "records": 260
   },
   "/crm/aggregate?entity=module%3AInvoices&field=Balance_Due&group_field=Status&measure=sum": {
    "entity": "module:Invoices",
@@ -693,7 +707,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 260
+   "values": 260,
+   "records": 260
   },
   "/crm/aggregate?entity=module%3AInvoices&field=Discount&field.Invoice_Date.from=2026-01-01&group_by=owner&measure=sum": {
    "entity": "module:Invoices",
@@ -728,7 +743,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 35
+   "values": 35,
+   "records": 132
   },
   "/crm/aggregate?entity=module%3AInvoices&field=Grand_Total&field.Invoice_Date.from=2025-04-01&field.Invoice_Date.to=2026-03-31&group_by=owner&measure=min": {
    "entity": "module:Invoices",
@@ -763,7 +779,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 158
+   "values": 158,
+   "records": 158
   },
   "/crm/aggregate?entity=module%3AInvoices&field=Grand_Total&field.Invoice_Date.from=2025-04-01&field.Invoice_Date.to=2026-03-31&group_by=owner&measure=sum": {
    "entity": "module:Invoices",
@@ -798,7 +815,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 158
+   "values": 158,
+   "records": 158
   },
   "/crm/aggregate?entity=module%3AInvoices&field=Grand_Total&field.Invoice_Date.from=2026-01-01&field.Invoice_Date.to=2026-12-31&group_by=owner&measure=avg": {
    "entity": "module:Invoices",
@@ -833,7 +851,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 132
+   "values": 132,
+   "records": 132
   },
   "/crm/aggregate?entity=module%3AInvoices&field=Grand_Total&field.Invoice_Date.from=2026-04-01&field.Invoice_Date.to=2026-06-30&group_by=owner&measure=sum": {
    "entity": "module:Invoices",
@@ -868,7 +887,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 50
+   "values": 50,
+   "records": 50
   },
   "/crm/aggregate?entity=module%3AInvoices&field=Grand_Total&group_field=Client&measure=sum": {
    "entity": "module:Invoices",
@@ -1063,7 +1083,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 260
+   "values": 260,
+   "records": 260
   },
   "/crm/aggregate?entity=module%3AInvoices&group_by=created_month&measure=count": {
    "entity": "module:Invoices",
@@ -1178,7 +1199,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": null
+   "values": null,
+   "records": 260
   },
   "/crm/aggregate?entity=module%3AInvoices&group_field=Status&measure=count": {
    "entity": "module:Invoices",
@@ -1213,7 +1235,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": null
+   "values": null,
+   "records": 260
   },
   "/crm/aggregate?entity=module%3APayment_Made&field=Amount&field.Paid_On.from=2025-04-01&field.Paid_On.to=2026-03-31&group_by=owner&measure=sum": {
    "entity": "module:Payment_Made",
@@ -1248,7 +1271,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 48
+   "values": 48,
+   "records": 48
   },
   "/crm/aggregate?entity=module%3APayment_Made&field=Amount&field.Paid_On.from=2026-01-01&group_field=Operator&measure=sum": {
    "entity": "module:Payment_Made",
@@ -1343,7 +1367,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 55
+   "values": 55,
+   "records": 55
   },
   "/crm/aggregate?entity=module%3APayment_Made&field=Amount&field.Paid_On.from=2026-07-01&field.Paid_On.to=2026-09-30&group_by=owner&measure=sum": {
    "entity": "module:Payment_Made",
@@ -1378,7 +1403,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 20
+   "values": 20,
+   "records": 20
   },
   "/crm/aggregate?entity=module%3APayment_Received&field=Amount&field.Received_On.from=2025-04-01&field.Received_On.to=2026-03-31&group_field=Mode&measure=sum": {
    "entity": "module:Payment_Received",
@@ -1418,7 +1444,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 159
+   "values": 159,
+   "records": 159
   },
   "/crm/aggregate?entity=module%3APayment_Received&field=Amount&field.Received_On.from=2026-04-01&field.Received_On.to=2026-06-30&group_by=owner&measure=sum": {
    "entity": "module:Payment_Received",
@@ -1453,7 +1480,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 40
+   "values": 40,
+   "records": 40
   },
   "/crm/aggregate?entity=module%3APayment_Received&field=Amount&field.Received_On.from=2026-07-01&field.Received_On.to=2026-09-30&group_by=owner&measure=sum": {
    "entity": "module:Payment_Received",
@@ -1488,7 +1516,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 45
+   "values": 45,
+   "records": 45
   },
   "/crm/aggregate?entity=module%3APayment_Received&field=Amount&group_by=owner&measure=max": {
    "entity": "module:Payment_Received",
@@ -1523,7 +1552,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 262
+   "values": 262,
+   "records": 262
   },
   "/crm/aggregate?entity=module%3APayment_Received&field=Amount&group_field=Client&measure=sum": {
    "entity": "module:Payment_Received",
@@ -1713,7 +1743,8 @@
    "other": 0.0,
    "omitted": 0,
    "zone": "Asia/Kolkata",
-   "values": 262
+   "values": 262,
+   "records": 262
   },
   "/crm/catalogue": {
    "_refused": {

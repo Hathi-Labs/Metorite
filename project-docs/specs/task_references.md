@@ -22,15 +22,15 @@ The owner asked for five things on 2026-10-13:
 - **Linear.** A branch name or "Fixes ENG-123" in a PR links the issue. The issue shows the PR and its state. An automation moves the issue when the PR merges.
 - **OpenProject.** A work package has a GitHub tab. It lists each PR with its state (open, merged) and its check runs. `OP#87` in a PR description links it. A PR and a work package are many-to-many.
 
-**What we take.** A list of typed references on the card, with the PR state shown. Many-to-many. A reference added by a person, by the chat agent or by an outside agent. **What we leave for later.** Webhook linking by a key in a PR title (§8), and moving the status when a PR merges.
+**What we take.** A list of typed references on the card, with the PR state shown. Many-to-many. A reference added by a person, by the chat agent or by an outside agent. **What we leave for later.** Webhook linking and a status move on merge. Both are now planned in `github_integration.md` (§8).
 
 ## 3. Scope and non-goals
 
 **In scope:** TR-1 to TR-5 (§6).
 
 **Not in scope:**
-- A GitHub App or a webhook. `external_agent_access.md` §14 names it as later work, and an App is a third-party registration (OWNER-GATE).
-- A status change when a PR merges. It needs the webhook.
+- A GitHub App or a webhook. `github_integration.md` (WS-54) owns both since 2026-10-18. Its GH-0 is the OWNER-GATE registration.
+- A status change when a PR merges. `github_integration.md` §12 owns it.
 - A preview of any URL that is not GitHub. A server fetch of an arbitrary URL is a request-forgery risk, so a generic link shows its host and the title the member typed.
 - A rich-text editor. WS-27ao (`project_management_app.md` §9.4.2) owns it. TR-4 keeps the plain field for editing and renders the saved text.
 - The MCP tool `add_task_reference`. EA-6 owns it, and it calls the TR-1 route.
@@ -146,8 +146,8 @@ R8: run the route test against a private database (`bash scripts/dev_db.sh`), ne
 
 ## 8. Later work, named so it is not built by accident
 
-- **A GitHub App with a webhook.** A PR whose title or branch holds the task key links itself, and a merge can move the status. `external_agent_dispatch.md` D-DX-2 proposes the App. Registering it is an OWNER-GATE.
-- **The task key.** A short key per project (`MET-123`) to put in a branch name. Today a task has only `#N`.
+- **A GitHub App with a webhook.** Planned since 2026-10-18 in `github_integration.md`. That spec owns the App, the webhook, the auto-link, the checks columns of `pm_task_refs` and the merge-to-Done rule. This spec keeps the table, the route and the Links section, and adds nothing to that design.
+- **The task key.** `github_integration.md` §10.2 defines a short form for a branch name, `mt-<8 hex>`. A per-project key (`MET-123`) stays later work, because `task_prefix` has no unique constraint.
 - **Unfurl for other providers,** through an allow-list of hosts, after a request-forgery review.
 
 ## 9. Change log
@@ -157,3 +157,4 @@ R8: run the route test against a private database (`bash scripts/dev_db.sh`), ne
 - 2026-10-13 — TR-1 and TR-3 built. Migration 255 holds the table. The status header, §6 and the WS-57 row say so.
 - 2026-10-13 — TR-5 built on branch `task-pills`. §4 names the merged exports. §6 TR-5 records the root rule, the caps and the write paths.
 - 2026-10-13 — TR-5 review round 1. A root resolves a number alone, with no fallback. Only a number that is new in the edit links. The two Markdown layers share one case file. One save links at most 25 tasks. The My Tasks title and the organize steps join.
+- 2026-10-18 — §2, §3 and §8 point to `github_integration.md`, which now plans the GitHub App, the webhook and the merge rule.

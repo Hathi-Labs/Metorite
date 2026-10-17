@@ -1066,18 +1066,19 @@ async def test_the_aggregate_takes_a_module_and_the_field_arguments(monkeypatch)
 @pytest.mark.parametrize("bad", ["module:../admin", "module:", "module:1abc"])
 async def test_a_bad_module_entity_never_reaches_the_gateway(bad, monkeypatch) -> None:
     calls = _fake_gateway(monkeypatch, _responder)
+    # A bad value is a refusal the model reads, and nothing is sent.
+    for out in (await _T.crm_aggregate(bad, "owner"), await _T.crm_list_fields(bad)):
+        assert out.startswith("Refused:") and "Invalid module name" in out
     with pytest.raises(RuntimeError, match="Invalid module name"):
-        await _T.crm_aggregate(bad, "owner")
-    with pytest.raises(RuntimeError, match="Invalid module name"):
-        await _T.crm_list_fields(bad)
+        _T._entity_slug(bad, allow_module=True)
     assert calls == []
 
 
 async def test_only_the_aggregate_and_the_field_list_take_a_module(monkeypatch) -> None:
     """A record tool builds ``/crm/{slug}``, so a module entity stays refused."""
     calls = _fake_gateway(monkeypatch, _responder)
-    with pytest.raises(RuntimeError, match="Unknown CRM record type"):
-        await _T.crm_list_records("module:Products")
+    out = await _T.crm_list_records("module:Products")
+    assert out.startswith("Refused:") and "Unknown CRM record type" in out
     assert calls == []
 
 
@@ -1240,8 +1241,11 @@ async def test_a_missing_record_is_not_read_as_the_crm_off(monkeypatch) -> None:
     monkeypatch.setattr(_T, "httpx", SimpleNamespace(
         AsyncClient=lambda **_kw: _refusing(404, "Deal not found")([], None)))
     monkeypatch.setattr(_T, "_current_user_email", lambda: "sales@fracktal.in")
-    with pytest.raises(RuntimeError, match="Deal not found"):
-        await _T.crm_get_record("deals", _ID)
+    # A 404 that names the record reaches the model as a refusal with the
+    # route's words, never as the CRM-off sentence.
+    out = await _T.crm_get_record("deals", _ID)
+    assert out.startswith("Refused:") and "(404)" in out
+    assert "«Deal not found»" in out and _T.CRM_OFF not in out
 
 
 async def test_mirror_dwell_relays_the_reason(monkeypatch) -> None:
@@ -1267,10 +1271,10 @@ def test_the_shared_tools_bound_every_path_segment() -> None:
 @pytest.mark.parametrize("bad", ["../admin", "Products/../../x", "1abc", ""])
 async def test_a_bad_module_name_never_reaches_the_gateway(bad, monkeypatch) -> None:
     calls = _fake_gateway(monkeypatch, _responder)
-    with pytest.raises(RuntimeError, match="Invalid module name"):
-        await _T.crm_list_module_records(bad)
-    with pytest.raises(RuntimeError, match="Unknown report"):
-        await _T.crm_report("../../admin")
+    out = await _T.crm_list_module_records(bad)
+    assert out.startswith("Refused:") and "Invalid module name" in out
+    out = await _T.crm_report("../../admin")
+    assert out.startswith("Refused:") and "Unknown report" in out
     assert calls == []
 
 
@@ -1521,8 +1525,10 @@ async def test_a_record_and_its_contacts_on_an_overlaid_slot(monkeypatch) -> Non
 async def test_a_missing_record_with_no_overlay_stays_an_error(monkeypatch) -> None:
     _overlaid(monkeypatch, {"/crm/mode": {"mode": "mirror"},
                             f"/crm/deals/{_ID}": (404, {"detail": "Deal not found"})})
-    with pytest.raises(RuntimeError, match="Deal not found"):
-        await _T.crm_get_record("deals", _ID)
+    # PR #1126: the 404 stays a refusal, and the model reads it as text.
+    out = await _T.crm_get_record("deals", _ID)
+    assert out.startswith("Refused:") and "(404)" in out
+    assert "«Deal not found»" in out
 
 
 async def test_the_pipelines_of_an_overlaid_slot_are_its_lanes(monkeypatch) -> None:
@@ -1629,12 +1635,13 @@ async def test_q32_a_no_key_field_with_an_open_question_passes_the_href_on(
                                  group_field="@date", bucket="month")
     assert out.splitlines() == [
         detail["message"], "Open questions: /crm?tab=settings&section=questions"]
-    # With no href, the refusal stays an error, as before.
+    # With no href, the refusal reads as before (#1126: "Refused: ..."), and
+    # it names no Open questions.
     bare = {k: v for k, v in detail.items() if k != "href"}
     _q32_gateway(monkeypatch, lambda p: (422, {"detail": bare}))
-    with pytest.raises(_T._GatewayError):
-        await _T.crm_aggregate("module:Payment_Received", measure="sum_amount",
-                               group_by="owner")
+    out = await _T.crm_aggregate("module:Payment_Received", measure="sum_amount",
+                                 group_by="owner")
+    assert out.startswith("Refused:") and "Open questions:" not in out
     source = inspect.getsource(_T)
     assert "crm_settings_href" not in source and "section=questions" not in source
 
