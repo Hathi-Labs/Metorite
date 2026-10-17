@@ -1,6 +1,8 @@
 # GitHub — a Metorite-owned GitHub App, webhooks, and pull requests on the task
 
-**Status: 📝 SPECIFIED, nothing built (2026-10-18).** The owner decided G-1 to G-9 on 2026-10-18 (§3). No owner question is open (§20). **Verified against code on 2026-10-18 at `origin/main` `1625cca13`.** The GitHub facts in §4.2 were read on docs.github.com on 2026-10-18.
+**Status: 🔨 GH-1 to GH-7 BUILT on branch `github-batch-a`, in review (2026-10-18).** Every slice ships dark behind `github_app_enabled`, and the migration is 282. GH-0 (register the two Apps) and GH-8 (go live) wait for the owner. §16.1 records each slice.
+
+The owner decided G-1 to G-9 on 2026-10-18 (§3). No owner question is open (§20). **Verified against code on 2026-10-18 at `origin/main` `1625cca13`.** The GitHub facts in §4.2 were read on docs.github.com on 2026-10-18.
 
 **Board row:** WS-54 (`work_plan.md` §2). **Consumers:** WS-57 (`task_references.md`) reads the pull request state and the checks. WS-55 (`external_agent_access.md` §12.2, EA-13) draws them on the card.
 
@@ -506,17 +508,21 @@ The script is `scripts/github_app_manifest.py`, from GH-1. It holds the manifest
 2. The script opens a page in your browser. Click **Create GitHub App for <organization>**.
 3. GitHub returns to the script on `http://127.0.0.1:<port>`. The script exchanges the code and writes `github-app-staging.env` and `github-app-staging.pem`. It prints the App name and the file names, and no value.
 4. Run the same command with `--env production`, and click Create again.
-5. Tell the agent "the GitHub Apps are registered". The agent does the rest:
+5. Tell the agent "the GitHub Apps are registered". The agent does the rest. It pushes the key file of each App first, and then its env file:
+   - `METORITE_SSH_HOST=metorite-dev scripts/secrets.sh push github-app-staging-key`
    - `METORITE_SSH_HOST=metorite-dev scripts/secrets.sh push github-app-staging`
+   - `scripts/secrets.sh push github-app-key`
    - `scripts/secrets.sh push github-app`
    - It checks that the gateway restarted, and that `/webhooks/github` answers 401 to an unsigned POST.
+
+   ⚠️ Push each entry by name. The two env entries write the same app env file, so `push --all` with both files in the folder pushes both Apps to one box.
 
 **What the script does.**
 
 1. It serves one local page with a hidden form. The form POSTs the manifest to `https://github.com/organizations/<org>/settings/apps/new?state=<random>` (§4.2 fact 1).
 2. It checks the returned `state`, and calls `POST /app-manifests/{code}/conversions` within the hour.
-3. It writes `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` and `GITHUB_APP_WEBHOOK_SECRET` to the `.env` file. It writes the `pem` to the key file.
-4. It refuses to overwrite a file that exists.
+3. It writes `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` and `GITHUB_APP_WEBHOOK_SECRET` to the `.env` file. It also writes the three fixed settings of §14: `GITHUB_APP_ENABLED=false`, `GITHUB_APP_PRIVATE_KEY_PATH=/opt/acb/github-app.pem` and `APP_PUBLIC_URL`. So the push lands all eight with the flag off. It writes the `pem` to the key file.
+4. It refuses to overwrite a file that exists. An empty template of `scripts/secrets.sh init` holds no value, so the script replaces it.
 5. It stops the local server after one exchange or after 15 minutes.
 
 **The manifest.**
@@ -551,6 +557,29 @@ Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. Every slice ships da
 - GH-4 follows GH-2 and GH-3, because its tests use the fixtures of GH-3.
 - GH-6 follows GH-4. GH-5 follows GH-6, because K5 calls `on_merged`.
 - GH-8 comes last.
+
+### 16.1 Build record
+
+| # | Status | Fence |
+|---|---|---|
+| GH-0 | 🔴 Waits for the owner. The script and the four secrets entries are ready | — |
+| GH-1 | 🔨 BUILT on branch `github-batch-a`, in review. 13 mutations, each red | `test_github_app_auth.py` |
+| GH-2 | 🔨 BUILT on branch `github-batch-a`, in review. Migration 282. 6 mutations, each red | `test_github_migration_r8.py` |
+| GH-3 | 🔨 BUILT on branch `github-batch-a`, in review. 18 mutations, each red. Visual review done | `test_github_connect_r8.py`, `githubConnect.test.ts`, the BFF route tests |
+| GH-4 | 🔨 BUILT on branch `github-batch-a`, in review. 17 mutations, each red | `test_github_webhook_r8.py`, `test_github_autolink.py` |
+| GH-5 | 🔨 BUILT on branch `github-batch-a`, in review. 12 mutations, each red | `test_github_checks.py`, `test_github_reconcile_r8.py` |
+| GH-6 | 🔨 BUILT on branch `github-batch-a`, in review. 9 mutations, each red. `core.py` has no diff | `test_github_merge_r8.py` |
+| GH-7 | 🔨 BUILT on branch `github-batch-a`, in review. 9 mutations, each red. Visual review done | `test_github_per_org_r8.py`, the token route test |
+| GH-8 | 🔴 Waits for GH-0 and the merge | — |
+
+**What the build chose, where the spec left room.**
+
+- **Four secrets entries, not two.** One entry of `scripts/secrets.sh` holds one file. So each App has a key entry (`github-app-staging-key`, `github-app-key`) and an env entry. §15 step 5 names all four.
+- **The script writes all eight settings.** The three fixed ones join the five from GitHub, so the push lands with the flag off.
+- **The token route has its own router** (`connect.token_router`), because the App flag must not gate the Advanced path.
+- **The checks read of the refs route runs in the background.** The list answers at once, and the next list shows the result (§11).
+- **A pull request that the auto-link links takes its facts in the same event.** The link writes first, then the facts.
+- **R8 runs on a real Redis when `GITHUB_R8_REDIS_URL` names one**, and on a fake under the real `TenantRedis` wrapper in CI.
 
 ## 17. Verification commands
 
@@ -618,3 +647,4 @@ R9 does not apply. This spec adds no app. The Integrations app's manifest is in 
 - 2026-10-18 — Written from the owner decisions G-1 to G-5. The code anchors were read at `1625cca13`, and the GitHub facts on docs.github.com the same day.
 - 2026-10-18 — The spec audit gave GO-NARROWED for both specs, and this round closes its 14 points. The callback checks that the user administers the account, and the admin confirms before the write. The delivery key goes on a handler error. A close without a merge can finish a task, and any MCP act counts as agent work. A chat move is a person's move. Three token callers change in `app` mode. The merge rule leaves `core.py` alone. GH-0 names eight settings. The order and two anchors are corrected.
 - 2026-10-18 — The owner answered the four questions of §20 and took each proposed answer. §3 records them as G-6 to G-9. They are one installation for each org, a public production App, Hathi Labs as the owner of both Apps, and no Contents permission. §20 now holds no open question.
+- 2026-10-18 — Batch A built GH-1 to GH-7 on branch `github-batch-a`, with migration 282. §16.1 records each slice and what the build chose. §15 step 5 now pushes four secrets entries, a key file and an env file for each App.
