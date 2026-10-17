@@ -4495,7 +4495,7 @@ The build made four choices that the list above does not name.
   names in the wrong order fails `names`.
 - A written number counts only when it is not coarser than 0.5 percent of
   the fact. So "₹1.2 crore" fails for 1,23,45,678, and "₹1.23 crore"
-  passes.
+  passes. The fix round below replaced this rule with the rule of CRM-Q29.
 - The note search answer of `--scripted` is synthetic, because the search
   needs the embed door.
 
@@ -4510,6 +4510,24 @@ and 10 of them are mutations that each fail one bar.
   Q31 only from general care. CRM-Q30b, below, gives the tools that line.
 - CRM-Q29 is not on `origin/main`. `numbers.py` is the local number check,
   and the eval moves to the shared function when CRM-Q29 merges.
+
+**Fix round (2026-10-17, review of Batch I2).** The branch merges
+`origin/main` and `crm-answer-check` (CRM-Q29).
+
+- The reviewer made each tool print every figure as 0, and `--scripted`
+  still passed 31 of 31. The answer came from the facts, and `agree` read
+  the route JSON only. A new bar, `tool_figures`, now finds each number fact
+  that a route gives in the output text of the real tools. A test runs the
+  reviewer's mutation, and each question with a route figure fails.
+- `evals/crm_founder_questions/numbers.py` is gone. The checkers ask
+  `acb_common.number_check` through two thin helpers, `states` and
+  `states_exactly`. The runner formats with `format_figure` and
+  `group_indian`. So "₹1.2 crore" now counts for 1,23,45,678 by the
+  precision rule of CRM-Q29.
+- `test_no_second_number_check` now reads `evals/` too. `tests/` stays out,
+  because its files hold lakh and crore as test input, not as a parser.
+- The shared check reads "July 15" as a date. The scripted answer of Q05
+  now writes "15 in July".
 
 **CRM-Q30b · The read tools say when Zoho holds more (2026-10-17).**
 

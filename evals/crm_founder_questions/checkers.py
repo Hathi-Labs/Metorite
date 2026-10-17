@@ -4,7 +4,7 @@ Spec: ``project-docs/specs/crm_platform.md`` §18.11.2, CRM-Q30 items 9 and 10.
 
 A run gives, for each question, the GET requests that the CRM tools sent
 (:class:`RouteCall`) and the answer text. :func:`score_question` scores them
-on seven bars:
+on eight bars:
 
 * ``tools``: each :class:`questions.Need` has a request that matches one of
   its alternatives. A request matches when it has the path, and each named
@@ -12,7 +12,10 @@ on seven bars:
   value, without case.
 * ``tool_text``: the output of a tool holds each line that the question
   needs, for example the short-read line of CRM-Q30b.
-* ``numbers``: the answer holds each number fact (:func:`numbers.matches`).
+* ``tool_figures``: the output of the tools holds each number fact that a
+  route gives. So the scripted run proves the text that the member reads,
+  not only the JSON of the route.
+* ``numbers``: the answer holds each number fact.
 * ``names``: the answer holds each name fact, without case, and the names
   of a ranked list in the order of the rank.
 * ``flags``: the answer holds one of the flag phrases of the question.
@@ -31,7 +34,8 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
-from evals.crm_founder_questions import numbers
+from acb_common.number_check import Sources, find_figures
+
 from evals.crm_founder_questions.questions import Fact, Need, Question
 
 #: The share of questions that a live run must pass in full.
@@ -42,7 +46,7 @@ LIVE_BAR = 0.80
 SHORT_READS = "/crm/sync/short-reads"
 
 BARS: tuple[str, ...] = (
-    "tools", "tool_text", "numbers", "names", "flags", "forbid", "agree",
+    "tools", "tool_text", "tool_figures", "numbers", "names", "flags", "forbid", "agree",
 )
 
 
@@ -137,9 +141,36 @@ def check_tools(needs: tuple[Need, ...], calls: list[RouteCall]) -> list[str]:
 # ── the answer ──────────────────────────────────────────────────────────────
 
 
+# The number rule is the ONE check of CRM-Q29 (``acb_common.number_check``).
+# These two helpers only ask it in the direction that an eval needs: does a
+# text state this fact?
+
+
+def states(value: Any, text: str) -> bool:
+    """True when *text* holds a figure that *value* rounds to, at the
+    precision that the text states (``number_check`` rule of a match)."""
+    book = Sources()
+    book.add_value(value)
+    return any(book.matches(figure) for figure in find_figures(text))
+
+
+def states_exactly(value: Any, text: str) -> bool:
+    """True when *text* holds *value* as a figure, for a forbidden number."""
+    want = Decimal(str(value))
+    return any(abs(figure.value) == want for figure in find_figures(text))
+
+
 def check_numbers(facts: list[Fact], answer: str) -> list[str]:
     return [f"{f.key}={f.value} missing" for f in facts
-            if f.value is not None and not numbers.matches(f.value, answer)]
+            if f.value is not None and not states(f.value, answer)]
+
+
+def check_tool_figures(facts: list[Fact], texts: list[str]) -> list[str]:
+    """Each number fact that a route gives is in the output of a tool. A
+    tool that prints a wrong figure fails here, though its route is right."""
+    joined = "\n".join(texts)
+    return [f"{f.key}={f.value} not in the tool output" for f in facts
+            if f.src is not None and f.value is not None and not states(f.value, joined)]
 
 
 def check_names(facts: list[Fact], answer: str) -> list[str]:
@@ -163,7 +194,7 @@ def check_flags(flags: tuple[str, ...], answer: str) -> list[str]:
 
 def check_forbid(q: Question, answer: str) -> list[str]:
     out = [f"forbidden number {n}" for n in q.forbid_numbers
-           if numbers.holds_exactly(n, answer)]
+           if states_exactly(n, answer)]
     out += [f"forbidden pattern {p!r}" for p in q.forbid_patterns
             if re.search(p, answer, re.IGNORECASE)]
     return out
@@ -242,6 +273,7 @@ def score_question(q: Question, calls: list[RouteCall], answer: str, *,
     s = QuestionScore(q.id, q.category, agreed=agree)
     s.problems["tools"] = check_tools(q.needs, calls)
     s.problems["tool_text"] = check_tool_text(q, texts or [])
+    s.problems["tool_figures"] = check_tool_figures(q.numbers(), texts or [])
     s.problems["numbers"] = check_numbers(q.numbers(), answer)
     s.problems["names"] = check_names(q.names(), answer)
     s.problems["flags"] = check_flags(q.flags, answer)
@@ -252,5 +284,5 @@ def score_question(q: Question, calls: list[RouteCall], answer: str, *,
 
 
 __all__ = ["BARS", "LIVE_BAR", "SHORT_READS", "QuestionScore", "RouteCall", "Score",
-           "call_matches", "check_agree", "check_tool_text", "check_tools", "score_question",
-           "select"]
+           "call_matches", "check_agree", "check_tool_figures", "check_tool_text", "check_tools",
+           "score_question", "select", "states", "states_exactly"]

@@ -19,7 +19,7 @@
     },
     "Q05": {
       "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Invoices", "measure": "count", "group_by": "created_month"}}],
-      "answer": "Invoice records created in Zoho: July {n:created.2026-07}, August {n:created.2026-08}, September {n:created.2026-09}. Months count in Asia/Kolkata time."
+      "answer": "Invoice records created in Zoho: {n:created.2026-07} in July, {n:created.2026-08} in August and {n:created.2026-09} in September. Months count in Asia/Kolkata time."
     },
     "Q06": {
       "calls": [{"tool": "crm_aggregate", "args": {"entity": "module:Payment_Made", "measure": "sum", "field": "Amount", "group_by": "owner", "field_filters": {"Paid_On.from": "2025-04-01", "Paid_On.to": "2026-03-31"}}}],
