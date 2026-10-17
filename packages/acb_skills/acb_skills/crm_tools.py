@@ -31,6 +31,14 @@ list tools and the aggregate add one line with both counts. One helper,
 :func:`_short_note`, reads ``GET /crm/sync/short-reads`` once for each tool
 call. A failed read adds nothing.
 
+**The overlay of an empty core slot (WS-53 CRM-Q20-3a, ``crm_platform.md``
+§18.13.5).** An approved role can say that a module plays an empty slot:
+Commercials plays Deals. ``crm_aggregate`` then answers from the module, and
+the route says so. The other tools read ``overlays`` of ``GET /crm/mode``
+only when the core answer is empty or names no record, so a CRM with no
+overlay reads as before. A filter that the overlay does not take gives one
+sentence.
+
 **An answer is text, 50 rows at most.** When more rows exist, it ends with
 "More: call again with page=N". Every tool reads only, so each one carries
 ``read_only=True`` and ``open_world=False`` in
@@ -122,11 +130,15 @@ class _Refused(Exception):
 
 class _GatewayError(RuntimeError):
     """A failed read. ``code`` is the ``detail.code`` of the answer, when the
-    gateway gave one (``catalogue_off``)."""
+    gateway gave one (``catalogue_off``), ``detail`` the text of the answer,
+    and ``status`` the HTTP status."""
 
-    def __init__(self, message: str, code: str | None = None) -> None:
+    def __init__(self, message: str, code: str | None = None, *,
+                 detail: str = "", status: int = 0) -> None:
         super().__init__(message)
         self.code = code
+        self.detail = detail
+        self.status = status
 
 
 # ── Transport ───────────────────────────────────────────────────────────────
@@ -221,7 +233,7 @@ async def _get(path: str, params: dict[str, Any] | None = None) -> Any:
         raise _Refused(CRM_OFF)
     raise _GatewayError(
         f"CRM GET {path} failed ({status})" + (f": {detail}" if detail else ""),
-        _detail_code(resp),
+        _detail_code(resp), detail=detail, status=status,
     )
 
 
@@ -261,6 +273,66 @@ def _read_tool(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str
     wrapped = _answers_refusals(fn)
     wrapped.__tool_risk__ = TOOL_ANNOTATIONS[fn.__name__]  # type: ignore[attr-defined]
     return wrapped
+
+
+# ── The overlay of an empty core slot (CRM-Q20-3a) ──────────────────────────
+
+#: The slot of each core entity, as ``GET /crm/mode`` names its overlays.
+_SLOT_OF: dict[str, str] = {
+    "organizations": "company", "contacts": "contact", "leads": "lead", "deals": "deal",
+}
+
+#: The prefix of each 422 code of an overlay (``field_sql.overlay_refusal``).
+_OVERLAY_CODE = "overlay_"
+
+
+async def _overlay_module(slug: str) -> str | None:
+    """The module that plays the slot of *slug*, from ``overlays`` of
+    ``GET /crm/mode``, or ``None``. A name that fails the module rule is
+    ``None`` too."""
+    body = await _get("/crm/mode")
+    overlays = body.get("overlays") if isinstance(body, dict) else None
+    module = overlays.get(_SLOT_OF.get(slug, "")) if isinstance(overlays, dict) else None
+    if not isinstance(module, str) or not _MODULE_NAME.match(module):
+        return None
+    return module
+
+
+def _from_module(slug: str, module: str) -> str:
+    return f"{ENTITY_LABELS[slug]}s come from the module {module}."
+
+
+async def _overlay_status(slug: str, status: str | None) -> str | None:
+    """One sentence when *status* filters an overlaid slot, else ``None``.
+    An overlaid slot has no core status to resolve (CRM-Q20-3a)."""
+    if not status or slug not in _STATUS_KIND:
+        return None
+    mod = await _overlay_module(slug)
+    if mod is None:
+        return None
+    return (f"{_from_module(slug, mod)} A total of them takes no status filter. "
+            f"Group by status, or call crm_aggregate with entity 'module:{mod}' "
+            "and field_filters {'@status': '<value>'}.")
+
+
+async def _aggregate_or_refusal(params: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """The answer of ``GET /crm/aggregate``, or the one sentence of a refusal
+    of the overlay (``overlay_*``, CRM-Q20-3a)."""
+    try:
+        return (await _get("/crm/aggregate", params) or {}), None
+    except _GatewayError as exc:
+        if (exc.code or "").startswith(_OVERLAY_CODE) and exc.detail:
+            return {}, exc.detail
+        raise
+
+
+def _no_filter(slug: str, module: str) -> str:
+    """The one sentence of a filter that an overlaid slot does not take."""
+    return (
+        f"{_from_module(slug, module)} That list takes q and page only, so this "
+        f"filter does not apply. Call crm_aggregate with entity 'module:{module}' "
+        "and field_filters, or with group_by 'status'."
+    )
 
 
 # ── Validators: every path segment goes through one ─────────────────────────
@@ -533,11 +605,24 @@ async def crm_list_records(
         updated_from=updated_from, updated_to=updated_to,
         close_from=close_from, close_to=close_to, custom=custom,
     )
+    filtered = any(v not in (None, "", {}) for k, v in params.items() if k != "q")
+    if status and slug in _STATUS_KIND:
+        # CRM-Q20-3a: an overlaid slot has no core status to resolve.
+        mod = await _overlay_module(slug)
+        if mod is not None:
+            return _no_filter(slug, mod)
     params["status_id"] = await _resolve_status(slug, params)
     params.update(page=number, page_size=size)
     data = await _get(f"/crm/{slug}", params)
     rows = (data or {}).get("rows") or []
     total = int((data or {}).get("total") or len(rows))
+    if not rows:
+        # CRM-Q20-3a: an empty core list may be an overlaid slot.
+        mod = await _overlay_module(slug)
+        if mod is not None:
+            if filtered:
+                return _no_filter(slug, mod)
+            return await _overlay_list(slug, mod, q, number, size)
     note = await _short_note(frozenset({slug}))
     if not rows:
         return f"No {slug} match these filters.{note}"
@@ -547,6 +632,26 @@ async def crm_list_records(
     ) + note
 
 
+async def _overlay_list(slug: str, mod: str, q: str | None, number: int, size: int) -> str:
+    """The records of the module that plays the slot of *slug* (CRM-Q20-3a)."""
+    data = await _get(f"/crm/modules/{mod}/records", {
+        "q": q, "page": number, "page_size": size,
+    }) or {}
+    rows = data.get("rows") or []
+    total = int(data.get("total") or len(rows))
+    head = _from_module(slug, mod)
+    if not rows:
+        return f"{head} No record of it matches."
+    lines = [f"{head} {total} records, page {number}."]
+    lines.extend(
+        f"- {r.get('name') or '(unnamed)'}"
+        + (f" · owner {r['owner_email']}" if r.get("owner_email") else "")
+        + f" (id={r.get('id')})"
+        for r in rows
+    )
+    return "\n".join(lines) + _more(total, number, size)
+
+
 @_read_tool
 async def crm_get_record(entity: str, record_id: str) -> str:
     """Read one CRM record in full, with each custom field under its label and
@@ -554,7 +659,14 @@ async def crm_get_record(entity: str, record_id: str) -> str:
     or 'organizations', and record_id is an id from another CRM tool."""
     slug = _entity_slug(entity)
     record = _record_uuid(record_id)
-    row = await _get(f"/crm/{slug}/{record}")
+    try:
+        row = await _get(f"/crm/{slug}/{record}")
+    except _GatewayError as exc:
+        # CRM-Q20-3a: the id of a record of the module that plays the slot.
+        mod = await _overlay_module(slug) if exc.status == 404 else None
+        if mod is None:
+            raise
+        return _from_module(slug, mod) + "\n" + await _module_record_answer(mod, record, 1)
     defs = await _get(f"/crm/fields/{slug}")
     if not isinstance(row, dict):
         return f"{ENTITY_LABELS[slug]} {record} returned no fields."
@@ -614,10 +726,28 @@ async def crm_list_fields(entity: str, page: int = 1) -> str:
     return "\n".join(lines)
 
 
+async def _overlay_lanes(mod: str) -> str:
+    """CRM-Q20-3a: the lanes of the stage field of the module that plays
+    Deals, in the lane order, with a count each."""
+    try:
+        data = await _get("/crm/aggregate", {"entity": "deals", "group_by": "status"}) or {}
+    except _GatewayError as exc:
+        if (exc.code or "").startswith(_OVERLAY_CODE):
+            return f"{_from_module('deals', mod)} {exc.detail}"
+        raise
+    lines = [f"{_from_module('deals', mod)} Its lanes, in order:"]
+    lines.extend(f"- {g.get('label')} · {g.get('type') or 'open'}: {int(g.get('value') or 0)}"
+                 for g in data.get("groups") or [])
+    return "\n".join(lines)
+
+
 @_read_tool
 async def crm_list_pipelines() -> str:
     """The deal pipelines, each with its stages in order: the stage type, the
     probability that a weighted forecast uses, and the stage id."""
+    mod = await _overlay_module("deals")
+    if mod is not None:
+        return await _overlay_lanes(mod)
     pipelines = await _get("/crm/pipelines")
     if not pipelines:
         return "The CRM has no deal pipeline yet."
@@ -642,7 +772,15 @@ async def crm_deal_contacts(deal_id: str, page: int = 1) -> str:
     """The contacts on one deal (a deal id from crm_list_records), primary
     first, each with its role on the deal."""
     record = _record_uuid(deal_id)
-    data = await _get(f"/crm/deals/{record}/contacts")
+    try:
+        data = await _get(f"/crm/deals/{record}/contacts")
+    except _GatewayError as exc:
+        mod = await _overlay_module("deals") if exc.status == 404 else None
+        if mod is None:
+            raise
+        # CRM-Q20-3a: a module record has no deal contacts.
+        return (f"{_from_module('deals', mod)} A module record has no deal contacts. "
+                "crm_get_record shows its links.")
     rows = (data or {}).get("rows") or []
     if not rows:
         return "This deal has no contacts."
@@ -907,6 +1045,11 @@ async def crm_report(kind: str, page: int = 1, make_report: bool = False) -> str
     numbers, with no number from you."""
     report = _report_kind(kind)
     data = await _get(f"/crm/reports/{report}") or {}
+    if _no_deals(report, data):
+        # CRM-Q20-3a: a report with no deal may be an overlaid slot.
+        mod = await _overlay_module("deals")
+        if mod is not None:
+            return await _overlay_report(report, mod)
     if report == "pipeline":
         lines = [
             f"- {s['status']['name']}: {s['count']} deals · INR {s['amount']:,.0f}"
@@ -952,6 +1095,46 @@ async def crm_report(kind: str, page: int = 1, make_report: bool = False) -> str
                             tool="crm_report",
                             say="Say in one or two lines what the report shows.")
     return f"CRM report {report}:\n" + "\n".join([*shown.items, *tail, *outcome.lines])
+
+
+def _no_deals(report: str, data: dict[str, Any]) -> bool:
+    """True when the core report holds no deal."""
+    if report == "pipeline":
+        return not int(data.get("count") or 0)
+    if report == "funnel":
+        return not any(int(s.get("entered") or 0) for s in data.get("stages") or [])
+    if report == "win-loss":
+        return not (int(data.get("won") or 0) + int(data.get("lost") or 0))
+    return not data.get("owners")
+
+
+async def _overlay_report(report: str, mod: str) -> str:
+    """CRM-Q20-3a: ``pipeline`` is the count and the amount by status, through
+    the aggregate. Each other report needs the stage log, which Mirror mode
+    does not keep."""
+    head = _from_module("deals", mod)
+    if report != "pipeline":
+        return (f"{head} The {report} report is not available for them, because it "
+                "reads the stage log. Call crm_aggregate with entity 'deals' and "
+                "group_by 'status'.")
+    try:
+        counts = await _get("/crm/aggregate", {"entity": "deals", "group_by": "status"}) or {}
+        amounts = await _get("/crm/aggregate", {
+            "entity": "deals", "group_by": "status", "measure": "sum_amount"}) or {}
+    except _GatewayError as exc:
+        if (exc.code or "").startswith(_OVERLAY_CODE):
+            return f"CRM report pipeline:\n{head} {exc.detail}"
+        raise
+    money = {g.get("key"): g.get("value") for g in amounts.get("groups") or []}
+    lines = ["CRM report pipeline:", head]
+    for g in counts.get("groups") or []:
+        amount = money.get(g.get("key"))
+        lines.append(f"- {g.get('label')}: {int(g.get('value') or 0)} records"
+                     + (f" · INR {float(amount):,.0f}" if amount is not None else ""))
+    lines.append(f"Total: {int(counts.get('total') or 0)} records"
+                 + (f" · INR {float(amounts['total']):,.0f}" if amounts.get("total") is not None
+                    else "") + ".")
+    return "\n".join(lines)
 
 
 #: The measures whose numbers are rupees whatever the field.
@@ -1019,6 +1202,9 @@ async def crm_aggregate(
         updated_from=updated_from, updated_to=updated_to,
         close_from=close_from, close_to=close_to, custom=custom,
     )
+    refused = await _overlay_status(slug, status)
+    if refused is not None:
+        return refused
     params["status_id"] = await _resolve_status(slug, params)
     for key, value in (field_filters or {}).items():
         params[f"field.{key}"] = value
@@ -1026,7 +1212,9 @@ async def crm_aggregate(
         entity=slug, group_by=group_by, measure=measure, field=field,
         group_field=group_field, bucket=bucket,
     )
-    data = await _get("/crm/aggregate", params) or {}
+    data, refusal = await _aggregate_or_refusal(params)
+    if refusal is not None:
+        return refusal
     groups = data.get("groups") or []
     module = slug.startswith(MODULE_PREFIX)
     # On a module the amount is a field, so only a currency field is rupees.
@@ -1057,6 +1245,10 @@ async def crm_aggregate(
         # CRM-Q25c item 3: an empty field has no total, and 0 would be false.
         return f"{plural}, {what} by {by}: no values recorded for {field or data.get('field')}.{note}"
     lines = [f"{plural}, {what} by {by}:"]
+    overlay = data.get("overlay") if isinstance(data.get("overlay"), dict) else None
+    if overlay and slug in ENTITY_LABELS:
+        # CRM-Q20-3a: the route read the module that plays the slot.
+        lines.append(_from_module(slug, str(overlay.get("module"))))
     lines.extend(f"- {g['label']}: {fmt(g.get('value'))}" for g in shown.items)
     lines.append(f"{_OVERALL.get(measure, 'Total')}: {fmt(data.get('total'))}.")
     if shown.line:
@@ -1073,7 +1265,7 @@ async def crm_aggregate(
         # CRM-Q25b: the route took each month on the clock of the CRM zone.
         # A `date` bucket takes no zone, so the line would be false there.
         lines.append(f"Months count in the CRM time zone, {zone}.")
-    if slug in ENTITY_LABELS and data.get("total") == 0:
+    if slug in ENTITY_LABELS and data.get("total") == 0 and not overlay:
         empty = await _empty_core_line(slug)
         if empty:
             lines.append(empty)
@@ -1330,8 +1522,12 @@ async def crm_get_module_record(module: str, record_id: str, page: int = 1) -> s
     """One record of a mirrored module (a module from crm_list_modules and an
     id from crm_list_module_records), each field under its label. The field
     keys and types are in crm_list_fields('module:<api_name>')."""
-    mod = _module_name(module)
-    record = _record_uuid(record_id)
+    return await _module_record_answer(_module_name(module), _record_uuid(record_id), page)
+
+
+async def _module_record_answer(mod: str, record: str, page: int | None) -> str:
+    """One record of a module, each field under its label. *mod* and
+    *record* passed their validators."""
     data = await _get(f"/crm/modules/{mod}/records/{record}") or {}
     row = data.get("record") or {}
     defs = data.get("field_defs") or []

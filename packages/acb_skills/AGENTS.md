@@ -374,6 +374,10 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    for a key word (CRM-Q31-2). A total of 0 on a core entity reads the
    catalogue once more. When the entity holds no records, the answer
    names the modules that hold them.
+   On a slot with an approved overlay (CRM-Q20-3a), `crm_aggregate` names
+   the module, and a refusal of the route is one sentence. The other record
+   tools read `overlays` of `GET /crm/mode` only when the core answer is
+   empty or names no record, so a CRM with no overlay reads as before.
    Fences: `tests/unit/test_crm_agent.py`, `tests/unit/test_skills_registry.py`
    and `tests/unit/test_reports_by_code.py`.
 5l-1. answer_check.py -- the number check of a chat answer that read a CRM

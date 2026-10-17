@@ -35,6 +35,13 @@ with no key field is a 422 ``no_key_field``. On a module, ``sum_amount`` is
 the ``sum`` of ``@amount`` (:func:`module_measure`). This module and the
 catalogue hold every alias rule, and ``aggregate.py`` holds none.
 
+**The overlay of an empty core slot** (CRM-Q20-3a, §18.13.5). With an
+approved ``role``, a total over a core entity reads the records of the
+module. :func:`overlay_where` builds its WHERE clause, and the ``overlay_*``
+functions pick the field of each word of the core entity, or give the 422
+that the projection table of §18.13.5 names. The SQL stays here, so
+``aggregate.py`` still holds no jsonb operator.
+
 **One zone for each month** (CRM-Q25b). :func:`crm_zone` gives the CRM zone,
 the zone of the Zoho org, or UTC. A ``datetime`` field and the fixed month
 groups of ``aggregate.py`` take their month on that clock, through
@@ -609,12 +616,192 @@ def module_where(
     return WhereSql(sql=" WHERE " + " AND ".join(clauses), params=params)
 
 
+# ── The overlay of an empty core slot (CRM-Q20-3a, §18.13.5) ────────────────
+
+#: The list filters of a core entity that an overlay does not take. Each
+#: gives 422 ``overlay_filter``, never a silent answer of the whole module.
+OVERLAY_REFUSED: tuple[str, ...] = (
+    "status_id", "custom", "pipeline_id", "company_id", "contact_id", "source",
+    "created_from", "created_to", "include_converted",
+)
+
+#: The bound names of the overlay clauses.
+_OWNER = "agf_owner"
+_Q = "agf_q"
+_UPDATED_FROM = "agf_uf"
+_UPDATED_TO = "agf_ut"
+
+
+def overlay_refusal(code: str, message: str) -> HTTPException:
+    """A 422 of the projection table: ``overlay_no_amount``,
+    ``overlay_no_probability``, ``overlay_no_stage``, ``overlay_no_date``,
+    ``overlay_unfit`` or ``overlay_filter``."""
+    return HTTPException(status_code=422, detail={"code": code, "message": message})
+
+
+def _target_ref(scope: FieldScope, overlay: Any, target: str,
+                types: tuple[str, ...]) -> FieldRef | None:
+    """The field of the ``target`` item *target*, when the module has it with
+    a type of *types*."""
+    keys = (getattr(overlay, "targets", None) or {}).get(target) or []
+    ref = scope.fields.get(keys[0]) if keys else None
+    return ref if ref is not None and ref.type in types else None
+
+
+def _from(overlay: Any) -> str:
+    return f"This slot comes from the module {getattr(overlay, 'module', '')}."
+
+
+def overlay_amount(scope: FieldScope, overlay: Any) -> FieldRef:
+    """``sum_amount``: the ``amount`` target, else the catalogue amount."""
+    ref = _target_ref(scope, overlay, "amount", MEASURE_TYPES) or scope.fields.get(AMOUNT_WORD)
+    if ref is None:
+        raise overlay_refusal("overlay_no_amount", f"{_from(overlay)} It has no amount. "
+                              "crm_list_modules names its key fields.")
+    return ref
+
+
+def overlay_probability(scope: FieldScope, overlay: Any) -> FieldRef:
+    """``weighted``: the ``probability`` target."""
+    ref = _target_ref(scope, overlay, "probability", MEASURE_TYPES)
+    if ref is None:
+        raise overlay_refusal("overlay_no_probability",
+                              f"{_from(overlay)} It has no probability, so no weighted total.")
+    return ref
+
+
+def overlay_stage(scope: FieldScope, overlay: Any) -> FieldRef:
+    """``group_by=status`` and ``weighted``: the field of the ``stage`` item."""
+    ref = scope.fields.get(getattr(overlay, "stage", None) or "")
+    if ref is None:
+        raise overlay_refusal("overlay_no_stage",
+                              f"{_from(overlay)} No stage field is approved for it.")
+    return ref
+
+
+def overlay_close(scope: FieldScope, overlay: Any) -> FieldRef:
+    """``close_month`` and the ``close_*`` filters: the
+    ``expected_close_date`` target, else the catalogue date."""
+    ref = (_target_ref(scope, overlay, "expected_close_date", DATE_TYPES)
+           or scope.fields.get("@date"))
+    if ref is None or ref.type not in DATE_TYPES:
+        raise overlay_refusal("overlay_no_date", f"{_from(overlay)} It has no close date.")
+    return ref
+
+
+def overlay_filters(label: str, overlay: Any, params: Any) -> None:
+    """A 422 ``overlay_filter`` for each list filter of *params* (a
+    ``records.ListParams``) that the overlay does not take: one sentence that
+    names the module and the call to use."""
+    given = [name for name in OVERLAY_REFUSED if getattr(params, name, None)]
+    if given:
+        module = getattr(overlay, "module", "")
+        raise overlay_refusal(
+            "overlay_filter",
+            f"{label}s come from the module {module}, and a total of them takes no "
+            f"{', '.join(given)} filter. Call crm_aggregate with entity "
+            f"'module:{module}' and field_filters, or group by status.",
+        )
+
+
+def overlay_where(
+    scope: FieldScope, overlay: Any, pairs: list[tuple[str, str]], *, zone: str,
+    owner: str | None, params: Any,
+) -> WhereSql:
+    """The WHERE clause of an overlaid core entity (§18.13.5): the module,
+    each ``field.<key>`` filter, the owner (``owner_email``), ``q`` on the
+    name, the updated range on ``coalesce(ext_modified_at, updated_at)`` in
+    the CRM zone, and the close range on the close date of
+    :func:`overlay_close`. *params* is the ``records.ListParams`` of the
+    call, and *owner* its resolved owner. Each value is bound."""
+    q = getattr(params, "q", None)
+    updated_from = getattr(params, "updated_from", None)
+    updated_to = getattr(params, "updated_to", None)
+    close_from = getattr(params, "close_from", None)
+    close_to = getattr(params, "close_to", None)
+    pairs = list(pairs)
+    if close_from or close_to:
+        close = overlay_close(scope, overlay)
+        if close_from:
+            pairs.append((f"{close.key}.from", close_from))
+        if close_to:
+            pairs.append((f"{close.key}.to", close_to))
+    where = module_where(scope, str(overlay.module), pairs, zone=zone)
+    clauses = [where.sql]
+    params = dict(where.params)
+    if owner:
+        clauses.append(f"lower(owner_email) = :{_OWNER}")
+        params[_OWNER] = owner.strip().lower()
+    if q and q.strip():
+        clauses.append(f"name ILIKE :{_Q}")
+        params[_Q] = f"%{q.strip()}%"
+    if updated_from:
+        clauses.append("coalesce(ext_modified_at, updated_at) >= "
+                       + day_start(f"CAST(:{_UPDATED_FROM} AS date)"))
+        params[_UPDATED_FROM] = _iso_date("updated_from", updated_from)
+    if updated_to:
+        clauses.append("coalesce(ext_modified_at, updated_at) < "
+                       + day_start(f"CAST(:{_UPDATED_TO} AS date) + 1"))
+        params[_UPDATED_TO] = _iso_date("updated_to", updated_to)
+    return WhereSql(sql=" AND ".join(clauses), params=params)
+
+
+def overlay_weighted(
+    scope: FieldScope, amount: FieldRef, probability: FieldRef, stage: FieldRef,
+    open_values: list[str],
+) -> MeasureSql:
+    """``weighted`` on an overlay: the amount times the probability over
+    100, for the records whose stage value maps to ``open``. Each key and
+    each value is bound."""
+    column = scope.column
+    a, w = _number(column, "agf_wa"), _number(column, "agf_wp")
+    weight = (f"(CASE WHEN {column} ->> :agf_ws = ANY(CAST(:agf_open AS text[])) "
+              f"THEN {a} * {w} / 100.0 END)")
+    return MeasureSql(
+        value=f"COALESCE(SUM({weight}), 0)", sum=f"SUM({weight})", count=f"COUNT({weight})",
+        params={"agf_wa": amount.key, "agf_wp": probability.key, "agf_ws": stage.key,
+                "agf_open": list(open_values)},
+    )
+
+
 __all__ = [
-    "AMOUNT_WORD", "BUCKETS", "DATE_TYPES", "DEFAULT_ZONE", "FIELD_MEASURES",
-    "FIELD_PREFIX", "KEY_WORDS", "MEASURE_TYPES", "MODULE_MEASURES",
-    "VALUE_GROUP_TYPES", "ZONE_PARAM", "FieldRef", "FieldScope", "GroupSql",
-    "MeasureSql", "WhereSql", "check_group", "check_measure", "core_scope",
-    "crm_zone", "day_start", "field_pairs", "group_sql", "key_words",
-    "measure_sql", "module_measure", "module_scope", "module_where", "used_keys",
+    "AMOUNT_WORD",
+    "BUCKETS",
+    "DATE_TYPES",
+    "DEFAULT_ZONE",
+    "FIELD_MEASURES",
+    "FIELD_PREFIX",
+    "KEY_WORDS",
+    "MEASURE_TYPES",
+    "MODULE_MEASURES",
+    "OVERLAY_REFUSED",
+    "VALUE_GROUP_TYPES",
+    "ZONE_PARAM",
+    "FieldRef",
+    "FieldScope",
+    "GroupSql",
+    "MeasureSql",
+    "WhereSql",
+    "check_group",
+    "check_measure",
+    "core_scope",
+    "crm_zone",
+    "day_start",
+    "field_pairs",
+    "group_sql",
+    "key_words",
+    "measure_sql",
+    "module_measure",
+    "module_scope",
+    "module_where",
+    "overlay_amount",
+    "overlay_close",
+    "overlay_filters",
+    "overlay_probability",
+    "overlay_refusal",
+    "overlay_stage",
+    "overlay_weighted",
+    "overlay_where",
+    "used_keys",
     "zoned",
 ]

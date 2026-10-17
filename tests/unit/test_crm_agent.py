@@ -1417,3 +1417,135 @@ def test_a_scope_that_holds_the_note_search_is_told_about_it(sub_agent: bool) ->
             registry_block="", risk_block="",
         )
         assert "crm_search_notes" in text
+
+
+# ── CRM-Q20-3a: the AI tools on an overlaid slot (crm_platform.md §18.13.5) ──
+
+_OVERLAID = {"mode": "mirror", "overlays": {"deal": "Commercials"}}
+
+
+class _Routed(FakeClient):
+    """A gateway whose responder may answer ``(status, payload)``."""
+
+    async def request(self, method: str, url: str, **kwargs: Any):
+        path = "/" + url.split("/", 3)[-1]
+        self._calls.append({"method": method, "url": url, "path": path,
+                            "params": kwargs.get("params") or {},
+                            "headers": kwargs.get("headers") or {}})
+        answer = self._responder({"path": path, "params": kwargs.get("params") or {}})
+        if isinstance(answer, tuple):
+            return FakeResponse(answer[1], answer[0])
+        return FakeResponse(answer)
+
+
+def _overlaid(monkeypatch, routes: dict[str, Any]) -> list[dict]:
+    def answer(call: dict) -> Any:
+        found = routes.get(call["path"])
+        if callable(found):
+            return found(call)
+        return found if found is not None else {"rows": [], "total": 0}
+
+    calls = fake_gateway(_T, monkeypatch, answer, client_class=_Routed)
+    return calls
+
+
+_LANES = {"entity": "deals", "measure": "count", "group_by": "status", "total": 5,
+          "overlay": {"slot": "deal", "module": "Commercials"},
+          "groups": [{"key": "Open", "label": "Open", "value": 3, "type": "open"},
+                     {"key": "Won", "label": "Won", "value": 1, "type": "won"},
+                     {"key": None, "label": "Unsorted", "value": 1, "type": "unsorted"}]}
+
+
+async def test_a_status_filter_on_an_overlaid_slot_is_one_sentence(monkeypatch) -> None:
+    """Item 5: the narrowing of the audit. No core status is resolved, and no
+    total is sent."""
+    calls = _overlaid(monkeypatch, {"/crm/mode": _OVERLAID})
+    out = await _T.crm_aggregate("deals", "owner", status="Won")
+    assert out.startswith("Deals come from the module Commercials.")
+    assert "takes no status filter" in out and "'@status'" in out
+    assert [c["path"] for c in calls] == ["/crm/mode"]
+    listed = await _T.crm_list_records("deals", status="Won")
+    assert listed.startswith("Deals come from the module Commercials.")
+
+
+async def test_a_refusal_of_the_overlay_is_the_sentence_of_the_route(monkeypatch) -> None:
+    detail = {"code": "overlay_filter",
+              "message": "Deals come from the module Commercials, and a total of them "
+                         "takes no pipeline_id filter."}
+    _overlaid(monkeypatch, {"/crm/aggregate": (422, {"detail": detail})})
+    out = await _T.crm_aggregate("deals", "owner", pipeline_id=_ID)
+    assert out == detail["message"]
+
+
+async def test_the_aggregate_names_the_module_of_the_slot(monkeypatch) -> None:
+    _overlaid(monkeypatch, {"/crm/aggregate": _LANES})
+    out = await _T.crm_aggregate("deals", "status")
+    assert out.splitlines()[1] == "Deals come from the module Commercials."
+    assert "- Unsorted: 1" in out
+    assert "holds no records" not in out, "an overlay needs no empty core line"
+
+
+async def test_the_list_of_an_overlaid_slot_lists_the_module(monkeypatch) -> None:
+    calls = _overlaid(monkeypatch, {
+        "/crm/mode": _OVERLAID,
+        "/crm/modules/Commercials/records": {"rows": [{"id": _ID, "name": "C-1"}], "total": 1},
+    })
+    out = await _T.crm_list_records("deals", q="C-1")
+    assert out.splitlines()[0] == "Deals come from the module Commercials. 1 records, page 1."
+    assert f"(id={_ID})" in out
+    module_call = next(c for c in calls if c["path"] == "/crm/modules/Commercials/records")
+    assert module_call["params"]["q"] == "C-1"
+    # Each other filter gives one sentence that names crm_aggregate.
+    filtered = await _T.crm_list_records("deals", owner="me")
+    assert filtered.startswith("Deals come from the module Commercials.")
+    assert "crm_aggregate" in filtered
+
+
+async def test_a_record_and_its_contacts_on_an_overlaid_slot(monkeypatch) -> None:
+    _overlaid(monkeypatch, {
+        "/crm/mode": _OVERLAID,
+        f"/crm/deals/{_ID}": (404, {"detail": "Deal not found"}),
+        f"/crm/deals/{_ID}/contacts": (404, {"detail": "Deal not found"}),
+        f"/crm/modules/Commercials/records/{_ID}": {
+            "record": {"id": _ID, "name": "C-1", "fields": {}}, "field_defs": []},
+    })
+    record = await _T.crm_get_record("deals", _ID)
+    assert record.startswith("Deals come from the module Commercials.\nCommercials: C-1")
+    contacts = await _T.crm_deal_contacts(_ID)
+    assert "A module record has no deal contacts" in contacts
+
+
+async def test_a_missing_record_with_no_overlay_stays_an_error(monkeypatch) -> None:
+    _overlaid(monkeypatch, {"/crm/mode": {"mode": "mirror"},
+                            f"/crm/deals/{_ID}": (404, {"detail": "Deal not found"})})
+    with pytest.raises(RuntimeError, match="Deal not found"):
+        await _T.crm_get_record("deals", _ID)
+
+
+async def test_the_pipelines_of_an_overlaid_slot_are_its_lanes(monkeypatch) -> None:
+    _overlaid(monkeypatch, {"/crm/mode": _OVERLAID, "/crm/aggregate": _LANES})
+    out = await _T.crm_list_pipelines()
+    assert out.splitlines() == [
+        "Deals come from the module Commercials. Its lanes, in order:",
+        "- Open · open: 3", "- Won · won: 1", "- Unsorted · unsorted: 1",
+    ]
+
+
+async def test_the_reports_of_an_overlaid_slot(monkeypatch) -> None:
+    def aggregate(call: dict) -> Any:
+        if call["params"].get("measure") == "sum_amount":
+            return {**_LANES, "total": 900.0,
+                    "groups": [{"key": "Open", "label": "Open", "value": 600.0},
+                               {"key": "Won", "label": "Won", "value": 300.0},
+                               {"key": None, "label": "Unsorted", "value": 0.0}]}
+        return _LANES
+
+    _overlaid(monkeypatch, {
+        "/crm/mode": _OVERLAID, "/crm/aggregate": aggregate,
+        "/crm/reports/pipeline": {"stages": [], "count": 0, "amount": 0, "weighted": 0},
+        "/crm/reports/funnel": {"stages": []},
+    })
+    out = await _T.crm_report("pipeline")
+    assert "- Open: 3 records · INR 600" in out and "Total: 5 records · INR 900." in out
+    funnel = await _T.crm_report("funnel")
+    assert "is not available" in funnel and "crm_aggregate" in funnel
