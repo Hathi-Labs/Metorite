@@ -63,9 +63,15 @@
 > CRM-Q25c, a NUL byte answers 422 (§18.11, no migration). CRM-Q27, the
 > search of note text by meaning, dark (§18.11, migration 279).
 >
-> **Built later, not merged:** CRM-Q28, the weekly digest on `tier-powerful`,
-> dark behind `CRM_DIGEST_ORGS` (2026-10-17, branch `crm-q28-digest`,
-> migration 281). See §18.11.
+> **Built later, not merged (Batch I2, `crm-batch-i2`):** CRM-Q28, CRM-Q29,
+> CRM-Q30 and CRM-Q30b were built on 2026-10-17 in the batch branch
+> `crm-batch-i2`. None is merged to `main`, and none is on. CRM-Q28, the
+> weekly digest on `tier-powerful`, dark behind `CRM_DIGEST_ORGS` (branch
+> `crm-q28-digest`, migration 281). CRM-Q29, the number check of each CRM
+> answer, with two fix rounds, dark (`CRM_ANSWER_CHECK` is `off`, branch
+> `crm-answer-check`, no migration). CRM-Q30, a founder question set for CRM
+> insights, and CRM-Q30b, the read tools say when Zoho holds more (branch
+> `crm-founder-evals`, no migration). See §18.11.
 >
 > **Built from §19:** CRM-X4, the record page v2 (2026-10-12, §19.8).
 >
@@ -1272,10 +1278,10 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q25** | The typed aggregate over every module and field, and its AI tool. §18.11 | P0 |
 | **CRM-Q26** | Labels on notes, on the decide tier, in shadow. §18.11 | P1 |
 | **CRM-Q27** | 🔨 built 2026-10-16 on `crm-batch-i`, merged (#1111), dark. Search of note text by meaning. §18.11 | P2 |
-| **CRM-Q28** | 🔨 built 2026-10-17 on `crm-q28-digest`, not merged, dark. A weekly digest on the powerful tier. §18.11 | P2 |
-| **CRM-Q29** | 🔨 built 2026-10-17 on `crm-answer-check`, not merged, dark. The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
-| **CRM-Q30** | 🔨 built 2026-10-17 on `crm-founder-evals`, not merged. A founder question set for CRM insights: an eval of the assistant over CRM data. §18.11 | P1 |
-| **CRM-Q30b** | 🔨 built 2026-10-17 on `crm-founder-evals`, not merged. The read tools say when Zoho holds more records than the connected Zoho user can read. §18.11 | P1 |
+| **CRM-Q28** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-q28-digest`, migration 281), not merged, dark. A weekly digest on the powerful tier. §18.11 | P2 |
+| **CRM-Q29** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-answer-check`, with two fix rounds), not merged, dark. The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
+| **CRM-Q30** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. A founder question set for CRM insights: an eval of the assistant over CRM data. §18.11 | P1 |
+| **CRM-Q30b** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. The read tools say when Zoho holds more records than the connected Zoho user can read. §18.11 | P1 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
 
@@ -3632,8 +3638,8 @@ one run. R8: `test_a_drop_on_a_core_module_is_unkept` and
 merged (#1100, migration 278), dark. CRM-Q25b, CRM-Q25c and CRM-Q27
 (migration 279, dark): built on 2026-10-16 in the batch branch
 `crm-batch-i`, with a fix round on 2026-10-17, and merged as #1111
-(`d72f92184`). CRM-Q28 (migration 281, dark), CRM-Q29 (dark,
-`CRM_ANSWER_CHECK` is `off`, no migration), CRM-Q30 and CRM-Q30b (no
+(`d72f92184`). CRM-Q28 (migration 281, dark), CRM-Q29 (two fix rounds,
+dark, `CRM_ANSWER_CHECK` is `off`, no migration), CRM-Q30 and CRM-Q30b (no
 migration): built on 2026-10-17 in the batch branch `crm-batch-i2`, not
 merged. CRM-Q28 uses the one number check of CRM-Q29. Verified against
 code at `origin/main` `a8ef53c93`.
@@ -4254,7 +4260,8 @@ names one org in `CRM_DIGEST_ORGS`, the first digest of that org runs. Its
 credits come from `usage_event`, because the rate card of production lives
 in the Console database. The result goes into this section.
 
-**Built as (2026-10-17, branch `crm-q28-digest`, not merged).** Migration
+**Built as (2026-10-17, branch `crm-q28-digest`, in the batch branch
+`crm-batch-i2`, not merged).** Migration
 281 adds `crm_digests`. `crm_sync/digest.py` holds the step, and
 `scheduler.start_digest` starts it after each sync run, outside the run
 lock. `routes/crm/digests.py` serves `GET /crm/digests`. `CRM_DIGEST_ORGS`
@@ -4360,11 +4367,17 @@ Done when:
    a percent never matches money. A number with no unit can match either.
 3. **The numbers that are not figures.** The check skips a date, a time, a
    year from 1900 to 2100, a list marker, a number inside a word or an id
-   (`Q3`, `H-236`, a UUID), a URL and a code span.
+   (`Q3`, `H-236`, a UUID), a URL and a code span. An inline list marker
+   ("1. Open 2. Won 3. Lost", a run that counts from 1 in order) is no
+   figure. A lone "2." is a figure. (Fix round 2.)
 4. **The sources of a turn.** A function middleware records the text of each
-   tool result of the run, in memory, for that run only. The text of the
-   member's messages and of the tool results in the request are sources too.
-   A text that the model wrote is never a source.
+   tool result of the run, in memory, for that run only. The arguments of
+   each CRM tool call are sources too, and a date in them gives its count of
+   days to today. The member's own words of this turn are a source. The
+   executor puts them in the run context (`member_message`), and a delegated
+   run takes its parent's words. A text that a model wrote is never a source:
+   not the packed prompt string, which holds the earlier answers, and not the
+   answer of a delegated agent. (Fix round, 2026-10-17.)
 5. **The arm.** The check arms when the run records the result of a CRM tool:
    a name in `CRM_TOOL_NAMES`, or one of the four reads of `crm-assistant`. A
    run that reads no CRM tool is not checked and not changed.
@@ -4379,12 +4392,25 @@ Done when:
    the member gets a fallback. The fallback says that a number did not match,
    and it then shows the figures of the CRM tools as they came. The member
    never sees the failed draft. The check removes the text of a failed step
-   that also calls a tool, and it keeps the tool call.
-8. **A derived figure.** The model does not add, subtract or divide tool
-   numbers in its text. A sum of two results matches no source, so the check
-   flags it. The CRM section of `addendum.py` and the instructions of
-   `crm-assistant` say that a new total comes from another `crm_aggregate`
-   call, and that the model writes each figure in digits.
+   that also calls a tool, and it keeps the tool call. A display call (a card
+   of `emit_generative_ui`, `make_report`, `make_document`, or a text file of
+   `write_artifact`) shows its arguments to the member. So the check reads
+   the shown text of its arguments too. A failed card fails the whole
+   answer, as a failed text does, and the card never ships. (Fix round.)
+8. **A derived figure** *(changed in fix round 2, 2026-10-17, from the 31
+   founder questions of CRM-Q30)*. A founder asks for a figure that two tool
+   results give, for example net cash flow, received minus paid (Q21). So a
+   figure also matches when it equals, at its stated precision, the sum or
+   the difference of two tool figures of one kind (money with money, plain
+   with plain). A percent figure also matches the percent change or the
+   percent share of two tool figures. Only pairs count, never a chain of
+   three. Only figures of the tool results of this run take part, not the
+   member's words and not the tool arguments. Money never matches a percent,
+   except through the two percent rules. A number that no pair gives still
+   fails, also when it is near a pair result. The CRM section of
+   `addendum.py` and the instructions of `crm-assistant` say this, and say
+   that anything more comes from another `crm_aggregate` call. The model
+   writes each figure in digits.
 9. **The seam.** `_inject_agent_tools` puts the check provider on the per-run
    view of each native MAF agent that holds a CRM tool, after the H-236 step.
    That covers the stream run, the batch run and the sub-agent. No second
@@ -4393,11 +4419,17 @@ Done when:
 10. **Streaming.** On an armed run, the text of a model response reaches the
     member in one piece when the response ends, not token by token. A run that
     is not armed streams as before. The thinking text and the tool calls of a
-    held response go out in their order, with the text.
+    held response go out in their order, with the text. While it holds, the
+    check puts a sign of life (`answer_check.held`) on the run queue at most
+    each 15 s, and only when the model sent an update. The executor resets
+    its idle watchdog on it and shows nothing. A model that stops sending
+    still meets the watchdog. (Fix round.)
 11. **The flag.** `CRM_ANSWER_CHECK` is `off`, `shadow` or `on`, and the
     default is `off`. `shadow` checks each armed response at its end and logs
     the count of mismatches, with no hold and no retry. `on` does items 6 and
-    7. A value on a box is the grant `enforcement-flip`.
+    7. A value on a box is the grant `enforcement-flip`. The one reader is
+    `acb_common.settings.crm_answer_check_mode`, so the orchestrator reads
+    the mode before it imports the check. (Fix round.)
 12. **The cost bound.** A passed check makes no model request. A run makes one
     extra model request at most, whatever fails.
 13. **Logs.** Each check logs `answer_check.checked` with the run id, the
@@ -4422,7 +4454,8 @@ item 1, so CRM-Q28 merges after this ticket, or it rebases onto it.
 Verify: `uv run pytest tests/unit/test_number_check.py tests/unit/test_crm_answer_check.py tests/unit/test_crm_agent.py tests/unit/test_tool_schema_diet.py tests/unit/test_generated_addendum.py -q`,
 and `uv run python scripts/affected_tests.py --base origin/main`.
 
-**Built as (2026-10-17).** Branch `crm-answer-check`, no migration, dark.
+**Built as (2026-10-17).** Branch `crm-answer-check`, with two fix rounds,
+in the batch branch `crm-batch-i2`, not merged. No migration, dark.
 
 - **The shared API, for CRM-Q28 item 9.** `acb_common.number_check` gives
   `find_figures(text) -> list[Figure]`, `Sources()` with `add_text(text)` and
@@ -4443,9 +4476,36 @@ and `uv run python scripts/affected_tests.py --base origin/main`.
 - **What the tests measure.** With a scripted model in a real MAF `Agent`, on
   the stream run and the batch run: a true answer makes 2 requests, a
   misquote 3, and two failures 3, with the fallback. A later failure in the
-  same run makes no second retry.
-- **Mutations.** 13 mutations, one for each key rule, and the suites kill
-  each one. The rules: the room for rounding, money against a percent, a
+  same run makes no second retry. A bad card with clean text makes 4
+  requests, and only the good card is drawn. A bad card with bad text gives
+  the fallback and no card. Through the real executor
+  (`test_crm_answer_check_executor.py`), the packed prompt of production is
+  no source, and a held answer that streams for 1.6 s outlives an idle bound
+  of 0.6 s.
+- **The fix round (2026-10-17, the review of Batch I2).** Six findings. The
+  packed prompt was a source (P1). A card was not checked (P1). The hold
+  could meet the idle watchdog (P2). True answers failed on a value of a
+  tool argument, a phone number or an approximation (P2). A plain count from
+  1900 to 2100 and a multiplier (`5x`) were not checked. A box with no
+  `acb_skills` raised while the flag was off. Each one has a fence and a
+  mutation.
+- **The rules of the number check, after the fix round.** A plain
+  four-digit number from 1900 to 2100 is a year only after a word such as
+  "in", "since", "FY" or a month, or at the start of a range ("2025-26").
+  Else it is a count, and the check reads it. `5x` is the figure 5. A phone
+  number is no figure (`+91 98450 12345`, `98450 12345`, `(080) 2345-6789`,
+  and ten digits from 6 to 9 with no grouping). After "about", "around",
+  "roughly", "nearly", "almost", "close to", "some", `~`, `≈` or the other
+  words of `_APPROX_BEFORE`, a number matches a source within 10 percent of
+  it.
+- **Fix round 2 (2026-10-17, the verifier of Batch I2).** It ran the 31
+  founder questions of CRM-Q30 through the check, and 9 true answers
+  failed. Four changes: the derived figures of item 8, the inline list
+  markers of item 3, a behaviour test of the seam through
+  `_inject_agent_tools`, and an entry for `CRM_ANSWER_CHECK` in `work_plan.md`
+  §6.1.
+- **Mutations.** 13 mutations in the build, 12 more in fix round 1 and 9 in
+  fix round 2, one or more for each fix. The suites kill each one. The rules: the room for rounding, money against a percent, a
   date, an exact scaled number, the arm, the model's text as a source, no
   extra request on a pass, one retry for each run, no draft in the fallback,
   no text on a failed tool step, the seam, the default mode, and no note text
@@ -4458,7 +4518,17 @@ and `uv run python scripts/affected_tests.py --base origin/main`.
   prompts ask for digits. The sign of a number is not compared. A Copilot SDK
   agent gets no check. When a parent agent quotes the answer of a delegated
   `crm-assistant`, the parent's own run checks nothing, because it read no
-  CRM tool itself. The delegated run checks its own answer.
+  CRM tool itself. The delegated run checks its own answer. A figure of an
+  earlier turn is no source, so the model must read it again with a tool,
+  or the check fails it. A card of React code shows nothing that the check
+  can read, so its numbers are not checked. A card's number under a layout
+  key (`width`, `size`, `level` and others) is not checked. An approximation
+  word gives a room of 10 percent, so "about ₹5 lakh" passes against
+  4,60,000. The second number of a range ("10-20") is not checked. A pair
+  of tool figures gives many sums, differences and percents. So a number
+  that the model made up can pass when it is equal by chance to one of them.
+  A pool holds 500 figures of each kind at most.
+
 **CRM-Q30 · A founder question set for CRM insights (2026-10-17).**
 
 **Owner direction (2026-10-17, in chat).** Founders will ask the AI chat for
@@ -4535,7 +4605,8 @@ Verify with:
 - `uv run pytest tests/unit/test_crm_founder_questions_r8.py tests/unit/test_crm_aggregate*.py tests/unit/test_crm_agent.py -q`,
   on a private database, with no test skipped.
 
-**Built as (2026-10-17, branch `crm-founder-evals`, not merged).** No
+**Built as (2026-10-17, branch `crm-founder-evals`, in the batch branch
+`crm-batch-i2`, not merged).** No
 migration and no flag. `evals/crm_founder_questions/` holds the set.
 
 - `dataset.py` makes about 800 rows from the seed `20261017`. "Today" is 15
@@ -4636,7 +4707,8 @@ Verify with:
   on a private database, with no test skipped.
 - `uv run python -m evals.crm_founder_questions --scripted`
 
-**Built as (2026-10-17, branch `crm-founder-evals`, not merged).** No
+**Built as (2026-10-17, branch `crm-founder-evals`, in the batch branch
+`crm-batch-i2`, not merged).** No
 migration and no flag.
 
 - `sync.short_reads(db, org)` reads the cursors through `_short_by_keys`.
@@ -4677,7 +4749,7 @@ the two counts (`syncHealth.ts`). A later slice can make the card read
   The email and My Day features must behave as before.
 - `uv run python -m evals.crm_note_labels.run --scripted`
 - `uv run python scripts/affected_tests.py --run`
-- CRM-Q29: `uv run pytest tests/unit/test_number_check.py tests/unit/test_crm_answer_check.py -q`.
+- CRM-Q29: `uv run pytest tests/unit/test_number_check.py tests/unit/test_crm_answer_check.py tests/unit/test_crm_answer_check_executor.py -q`.
   These suites need no database.
 - CRM-Q27 and CRM-Q28 add their new suites to the pytest line above, with no
   test skipped. CRM-Q28 also runs
@@ -4688,9 +4760,10 @@ the two counts (`syncHealth.ts`). A later slice can make the card read
 **Status (2026-10-17).** Batch I: CRM-Q25 merged (#1104). CRM-Q24,
 CRM-Q25b, CRM-Q25c and CRM-Q27 were built on the batch branch
 `crm-batch-i`, with a fix round on 2026-10-17, and merged as #1111
-(`d72f92184`). CRM-Q28 was built on 2026-10-17 on the branch
-`crm-q28-digest` and is not merged. The owner flip of CRM-Q26 is not
-done. Batch M: CRM-Q17a-1b, CRM-Q17a-2, CRM-Q18-1b, CRM-Q18-2, CRM-Q18-3,
+(`d72f92184`). Batch I2: CRM-Q28 (migration 281), CRM-Q29 with its two
+fix rounds, CRM-Q30 and CRM-Q30b were built on 2026-10-17. They are in the
+batch branch `crm-batch-i2`, not merged, and dark. The owner flip of
+CRM-Q26 is not done. Batch M: CRM-Q17a-1b, CRM-Q17a-2, CRM-Q18-1b, CRM-Q18-2, CRM-Q18-3,
 CRM-Q19 and CRM-Q20-1 are built on the batch branch `crm-batch-m`, and
 CRM-Q20-2 on `crm-q20-2-suggestions` from it. None is merged. CRM-Q20-3 is
 a stub. The spec audit of 2026-10-16 gave GO-NARROWED for both batches, and

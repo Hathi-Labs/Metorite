@@ -108,8 +108,10 @@ and streams chat responses as AG-UI events.
 22. **A run that holds a CRM tool gets the number check** (WS-53 CRM-Q29, `project-docs/specs/crm_platform.md` §18.11.2).
    - `_tool_injection._apply_answer_check` runs at the end of `_inject_agent_tools`, after the H-236 step. So the stream run, the batch run and the sub-agent all get it.
    - It replaces each native MAF `Agent` that holds a tool of `acb_skills.answer_check.ARM_TOOLS` with a per-run view (`agent_with_providers`) that carries `AnswerCheckProvider`. Read `agents` again after injection.
-   - With `CRM_ANSWER_CHECK` `off` it changes nothing. A Copilot SDK agent gets no check.
-   - Do not attach the provider anywhere else. Fence: `tests/unit/test_crm_answer_check.py`.
+   - With `CRM_ANSWER_CHECK` `off` it changes nothing. It reads the mode (`acb_common.settings.crm_answer_check_mode`) before it imports the check, so a box with no `acb_skills` runs. A Copilot SDK agent gets no check.
+   - Both run starts bind `member_message`, the member's own words, into the artifact context (`_member_words_for_run`). A delegated run takes its parent's words, never its payload.
+   - The native loop reads `answer_check.held` (`_is_hold_beat`) as a sign of life: it resets the idle wait and shows nothing.
+   - Do not attach the provider anywhere else. Fences: `tests/unit/test_crm_answer_check.py` and `tests/unit/test_crm_answer_check_executor.py`.
 
 ## Work Guidance
 

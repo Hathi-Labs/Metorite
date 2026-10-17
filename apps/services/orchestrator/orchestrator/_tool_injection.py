@@ -2411,21 +2411,20 @@ def _apply_answer_check(agents: list[Any], agent_name: str | None) -> None:
     so the caller reads ``agents`` again, as every call site does. It is the
     one seam of the check (``crm_platform.md`` §18.11.2 item 9). With
     ``CRM_ANSWER_CHECK`` ``off`` it changes nothing. A Copilot SDK agent and a
-    plain object are left as they are.
+    plain object are left as they are. The mode is read BEFORE the check is
+    imported, so a box with no ``acb_skills`` runs as before while the flag
+    is ``off``, and skips the check with a warning while it is on.
     """
-    from acb_skills.answer_check import (
-        OFF,
-        AnswerCheckProvider,
-        answer_check_mode,
-        holds_crm_tool,
-    )
+    from acb_common.settings import crm_answer_check_mode
 
-    mode = answer_check_mode()
-    if mode == OFF:
+    mode = crm_answer_check_mode()
+    if mode == "off":
         return
     try:
+        from acb_skills.answer_check import AnswerCheckProvider, holds_crm_tool
         from agent_framework import Agent
-    except ImportError:
+    except ImportError as exc:
+        _log.warning("executor.answer_check_unavailable", error=str(exc)[:200])
         return
     from orchestrator._native_run_context import agent_with_providers
 

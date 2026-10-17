@@ -62,15 +62,38 @@ _CURRENCY_AFTER = r"INR|rupees?|USD|dollars?"
 _FIGURE = re.compile(
     r"(?<![A-Za-z0-9_])"
     rf"(?:(?P<cur>{_CURRENCY_BEFORE})\s?)?"
-    r"(?(cur)|(?<![\w.,/:#@])(?<!\w-))"
+    r"(?(cur)|(?<![\w.,/:#@])(?<!\w[-\u2013]))"
     r"(?P<num>(?:\d{1,2}(?:,\d{2})+,\d{3}|\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)"
     r"(?![.,]\d)(?!:\d)(?!/\d)"
     r"(?:\s?(?P<scale>(?i:lakhs?|lacs?|crores?|cr|thousand|million|mn|billion|bn)"
     r"|k|K|L|M|B)(?![A-Za-z0-9_]))?"
     r"(?:\s?(?P<pct>%|(?i:per\s?cent)))?"
     rf"(?:\s?(?P<cur2>(?i:{_CURRENCY_AFTER}))(?![A-Za-z]))?"
+    r"(?P<mult>[x\u00d7](?![A-Za-z0-9_]))?"
     r"(?![A-Za-z0-9_])"
 )
+
+#: The words before a number that make it an approximation ("about ₹5
+#: lakh"). Such a number matches a source within :data:`APPROX_SHARE` of it.
+_APPROX_BEFORE = re.compile(
+    r"(?:\b(?i:about|around|approximately|approx\.?|roughly|nearly|almost|"
+    r"close\s+to|some)|~|≈)\s*$"
+)
+#: How far an approximate number may stand from its source: 10 percent.
+APPROX_SHARE = Decimal("0.10")
+
+#: The words before a plain four-digit number that make it a year: "in 2026",
+#: "since 2025", "FY 2026", "March 2026", "2025-2026". With no such word,
+#: "2047 contacts" is a count and the check reads it.
+_YEAR_BEFORE = re.compile(
+    r"(?:\b(?i:in|since|by|of|from|to|until|till|before|after|during|year|"
+    r"years|fy|cy|q[1-4]|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
+    r"june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|"
+    r"dec(?:ember)?)|[-\u2013/'(])\s*$"
+)
+#: A year that opens a range of years: "2025-26", "2025 to 2026".
+_YEAR_AFTER = re.compile(r"\s*(?:[-\u2013/]|to)\s*\d{2,4}(?!\d)")
+_LOOK_BACK = 24
 
 _MONTHS = (
     r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
@@ -90,6 +113,10 @@ _NOT_FIGURES = re.compile(
         r"\b\d{4}-\d{2}\b",                              # a month: 2026-10
         r"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b",          # 17/10/2026
         r"\b\d{1,2}:\d{2}(?::\d{2})?(?:\s?(?i:am|pm))?\b",  # a time
+        r"\+\d{1,3}[\s-]?\(?\d{2,5}\)?[\s-]?\d{3,5}(?:[\s-]?\d{2,5})?",  # a phone
+        r"\(\d{2,5}\)\s?\d{3,4}[\s-]?\d{3,5}",           # (080) 2345-6789
+        r"\b\d{5}[\s-]\d{5}\b",                           # 98450 12345
+        r"\b\d{3,4}-\d{3,4}-\d{4}\b",                     # 080-2345-6789
         rf"\b\d{{1,2}}(?:st|nd|rd|th)?\s+{_MONTHS}(?:,?\s+\d{{4}})?\b",
         rf"\b{_MONTHS}\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+\d{{4}})?\b",
         rf"\b{_MONTHS}\s+\d{{4}}\b",
@@ -117,6 +144,7 @@ class Figure:
     exact: bool
     start: int
     end: int
+    approx: bool = False
 
 
 @dataclass(frozen=True)
@@ -151,10 +179,34 @@ def _significant(digits: str) -> int:
     return len(stripped)
 
 
+#: A candidate for an inline list marker: "1. ", "2) ".
+_INLINE_MARKER = re.compile(r"(?<![\w.,])(\d{1,2})[.)](?=\s)")
+
+
+def _inline_markers(scan: str) -> set[int]:
+    """The start of each inline list marker: "1. a 2. b 3. c".
+
+    A marker is a number with "." or ")" and a space, in a run that counts
+    1, 2, 3 in order. A run needs two markers at least. A lone "2. crore"
+    is no run, so its number stays a figure.
+    """
+    run: list[int] = []
+    expected = 1
+    for m in _INLINE_MARKER.finditer(scan):
+        if int(m.group(1)) == expected:
+            run.append(m.start())
+            expected += 1
+    return set(run) if len(run) >= 2 else set()
+
+
 def _parse(text: str, *, skip_years: bool) -> list[Figure]:
     scan = _blank(text or "")
+    # The original text, so a run can start at a line-start marker.
+    markers = _inline_markers(text or "") if skip_years else set()
     found: list[Figure] = []
     for m in _FIGURE.finditer(scan):
+        if m.start() in markers and not m.group("cur"):
+            continue
         raw = m.group("num").replace(",", "")
         try:
             number = Decimal(raw)
@@ -170,17 +222,24 @@ def _parse(text: str, *, skip_years: bool) -> list[Figure]:
         else:
             kind = PLAIN
         grouped = "," in m.group("num")
-        if (skip_years and kind == PLAIN and scale == 1 and not grouped
-                and decimals == 0 and len(raw) == 4 and 1900 <= int(raw) <= 2100):
+        bare = kind == PLAIN and scale == 1 and not grouped and decimals == 0
+        before = scan[max(0, m.start() - _LOOK_BACK):m.start()]
+        if (skip_years and bare and not m.group("mult") and len(raw) == 4
+                and 1900 <= int(raw) <= 2100 and (_YEAR_BEFORE.search(before)
+                     or _YEAR_AFTER.match(scan, m.end()))):
             continue
+        if bare and len(raw) == 10 and raw[0] in "6789":
+            continue  # a mobile number with no grouping: 9845012345
+        approx = bool(_APPROX_BEFORE.search(before))
         found.append(Figure(
             text=text[m.start():m.end()].strip(),
             value=number * scale,
             kind=kind,
             unit=(Decimal(1).scaleb(-decimals)) * scale,
-            exact=scale != 1 and _significant(raw) < 2,
+            exact=scale != 1 and _significant(raw) < 2 and not approx,
             start=m.start(),
             end=m.end(),
+            approx=approx,
         ))
     return found
 
@@ -195,6 +254,20 @@ def _compatible(claim: str, source: str) -> bool:
     return {claim, source} != {MONEY, PERCENT}
 
 
+#: The most values of one kind that take part in a derived figure.
+MAX_DERIVE = 500
+
+_HUNDRED = Decimal(100)
+
+
+def _any_in(values: list[Decimal], lo: Decimal, hi: Decimal, skip: int) -> bool:
+    """True when *values* (sorted) holds a value in [lo, hi] at an index
+    other than *skip*."""
+    start = bisect.bisect_left(values, lo)
+    end = bisect.bisect_right(values, hi)
+    return any(i != skip for i in range(start, end))
+
+
 @dataclass
 class Sources:
     """The numbers that a text may state, kept sorted for a fast match.
@@ -202,15 +275,23 @@ class Sources:
     Add a text with :meth:`add_text` (a tool result, a member's message, a
     prompt) or a value with :meth:`add_value`. A source value is taken as
     exact. The sign is not compared: a text may say "down 5%" for -5.
+
+    A source added with ``derive=True`` (a figure that a tool or code gave)
+    also takes part in a DERIVED figure: the sum or the difference of two
+    such figures of one kind (money with money, plain with plain), or the
+    percent change or the percent share of two (a percent figure). Pairs
+    only, never a chain. A member's words are added with ``derive=False``.
     """
 
     _values: list[Decimal] = field(default_factory=list)
     _kinds: list[str] = field(default_factory=list)
+    _derive: dict[str, list[Decimal]] = field(default_factory=dict)
 
     def __len__(self) -> int:
         return len(self._values)
 
-    def add_value(self, value: Decimal | int | float | str, kind: str = PLAIN) -> None:
+    def add_value(self, value: Decimal | int | float | str, kind: str = PLAIN,
+                  *, derive: bool = False) -> None:
         """Add one exact value of *kind*."""
         try:
             number = abs(Decimal(str(value)))
@@ -219,19 +300,65 @@ class Sources:
         at = bisect.bisect_left(self._values, number)
         self._values.insert(at, number)
         self._kinds.insert(at, kind)
+        if derive and kind in (MONEY, PLAIN):
+            pool = self._derive.setdefault(kind, [])
+            if len(pool) < MAX_DERIVE:
+                bisect.insort(pool, number)
 
-    def add_text(self, text: str) -> None:
+    def add_text(self, text: str, *, derive: bool = False) -> None:
         """Add each number in *text*. A year counts here, as a source."""
         for figure in _parse(text, skip_years=False):
-            self.add_value(figure.value, figure.kind)
+            self.add_value(figure.value, figure.kind, derive=derive)
 
     def matches(self, figure: Figure) -> bool:
-        """True when a source value rounds to *figure* at its precision."""
+        """True when a source value, or a derived figure of two sources,
+        rounds to *figure* at its precision."""
         target = abs(figure.value)
         room = Decimal(0) if figure.exact else figure.unit / 2
+        if figure.approx:
+            room = max(room, target * APPROX_SHARE)
         lo = bisect.bisect_left(self._values, target - room)
         hi = bisect.bisect_right(self._values, target + room)
-        return any(_compatible(figure.kind, self._kinds[i]) for i in range(lo, hi))
+        if any(_compatible(figure.kind, self._kinds[i]) for i in range(lo, hi)):
+            return True
+        return self._derived(figure.kind, target, room)
+
+    def _derived(self, kind: str, target: Decimal, room: Decimal) -> bool:
+        """True when two derive sources give *target* (rule above)."""
+        if kind == PERCENT:
+            return any(self._percent(pool, target, room) for pool in self._derive.values())
+        pools = [self._derive.get(MONEY, [])]
+        if kind == PLAIN:
+            pools.append(self._derive.get(PLAIN, []))
+        for pool in pools:
+            for i, a in enumerate(pool):
+                # a + b = target, or |a - b| = target with b the larger.
+                if _any_in(pool, target - room - a, target + room - a, i):
+                    return True
+                if _any_in(pool, a + target - room, a + target + room, i):
+                    return True
+        return False
+
+    @staticmethod
+    def _percent(pool: list[Decimal], target: Decimal, room: Decimal) -> bool:
+        """A percent share a/b, or a percent change (b - a)/a, of two values."""
+        low, high = target - room, target + room
+        for i, a in enumerate(pool):
+            if a == 0:
+                continue
+            # share: a / b * 100 in [low, high], so b in [a*100/high, a*100/low].
+            b_lo = a * _HUNDRED / high if high > 0 else None
+            b_hi = a * _HUNDRED / low if low > 0 else None
+            if b_lo is not None and _any_in(pool, b_lo, b_hi if b_hi is not None
+                                            else pool[-1], i):
+                return True
+            # change: b = a * (1 +- t / 100).
+            for sign in (1, -1):
+                ends = sorted((a * (1 + sign * low / _HUNDRED),
+                               a * (1 + sign * high / _HUNDRED)))
+                if _any_in(pool, ends[0], ends[1], i):
+                    return True
+        return False
 
 
 def check(text: str, sources: Sources | Iterable[str]) -> CheckResult:
@@ -242,7 +369,7 @@ def check(text: str, sources: Sources | Iterable[str]) -> CheckResult:
     if not isinstance(sources, Sources):
         book = Sources()
         for source in sources:
-            book.add_text(source)
+            book.add_text(source, derive=True)
         sources = book
     figures = tuple(find_figures(text))
     return CheckResult(

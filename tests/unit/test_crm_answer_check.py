@@ -63,9 +63,21 @@ CRM_RESULT = (
 )
 
 
-async def crm_aggregate(entity: str) -> str:
+async def crm_aggregate(
+    entity: str, updated_from: str | None = None, page_size: int | None = None,
+) -> str:
     """A fake CRM aggregate."""
     return CRM_RESULT
+
+
+#: Each card that the fake ``emit_generative_ui`` drew, in order.
+CARDS: list[str] = []
+
+
+async def emit_generative_ui(ui: str) -> str:
+    """A fake card tool. It keeps each card it draws."""
+    CARDS.append(ui)
+    return "drawn"
 
 
 async def web_lookup(query: str) -> str:
@@ -129,7 +141,7 @@ class ScriptedClient(FunctionInvocationLayer, ChatMiddlewareLayer, BaseChatClien
 def _agent(script: list[tuple[Any, ...]], tools: list[Any] | None = None) -> tuple[Agent, ScriptedClient]:
     client = ScriptedClient(script)
     agent = Agent(client=client, name="crm-assistant",
-                  tools=tools if tools is not None else [crm_aggregate])
+                  tools=tools if tools is not None else [crm_aggregate, emit_generative_ui])
     return agent, client
 
 
@@ -181,14 +193,14 @@ async def test_a_misquote_gets_one_retry(stream: bool) -> None:
 
 @STREAMS
 async def test_an_invented_total_is_caught(stream: bool) -> None:
-    # 12,34,567 + 5,00,000 = 17,34,567: a sum that the model made.
-    invented = "Open and won together come to ₹17.3 lakh."
+    # No pair of tool figures gives 18,90,000: the model made it up.
+    invented = "Open and won together come to ₹18.9 lakh."
     fixed = "Open deals hold INR 12,34,567 and won deals hold INR 5,00,000."
     agent, client = _agent([("call", "crm_aggregate", {"entity": "deals"}),
                             ("text", invented), ("text", fixed)])
     out = await _run(agent, stream=stream)
     assert out == fixed
-    assert '"₹17.3 lakh"' in _user_texts(client.requests[-1])[-1]
+    assert '"₹18.9 lakh"' in _user_texts(client.requests[-1])[-1]
 
 
 @STREAMS
@@ -349,9 +361,10 @@ class _CopilotShaped:
 
 class TestTheSeam:
     def _apply(self, agents: list[Any], mode: str, monkeypatch) -> list[Any]:
+        import acb_common.settings as settings_mod
         from orchestrator import _tool_injection
 
-        monkeypatch.setattr(answer_check, "answer_check_mode", lambda: mode)
+        monkeypatch.setattr(settings_mod, "crm_answer_check_mode", lambda: mode)
         _tool_injection._apply_answer_check(agents, "crm-assistant")
         return agents
 
@@ -405,3 +418,245 @@ class TestTheSeam:
         assert own >= answer_check.CRM_ASSISTANT_READS
         assert answer_check.FALLBACK_TOOLS <= answer_check.ARM_TOOLS
         assert "crm_search_notes" not in answer_check.FALLBACK_TOOLS
+
+
+# ── Fix round (2026-10-17): the review of Batch I2 ─────────────────────────
+
+def _card(value: int) -> dict[str, Any]:
+    return {"ui": json.dumps({"template": "kpi", "width": 3,
+                              "items": [{"label": "Open", "value": value}]})}
+
+
+@pytest.fixture(autouse=True)
+def _no_cards() -> Any:
+    CARDS.clear()
+    yield
+    CARDS.clear()
+
+
+@STREAMS
+async def test_a_bad_card_with_clean_text_is_never_shipped(stream: bool) -> None:
+    """Item 7, fix 2: the card shows its arguments, so a made-up total in a
+    card fails the answer. The bad card is never drawn, and the retry is."""
+    agent, client = _agent([
+        ("call", "crm_aggregate", {"entity": "deals"}),
+        ("both", "Here is the pipeline.", "emit_generative_ui", _card(1834567)),
+        ("both", "Here is the pipeline.", "emit_generative_ui", _card(1234567)),
+        ("text", "Done."),
+    ])
+    out = await _run(agent, stream=stream)
+    assert [_card(1234567)["ui"]] == CARDS
+    assert out.endswith("Done.")
+    assert '"1834567"' in _user_texts(client.requests[2])[-1]
+    assert len(client.requests) == 4
+
+
+@STREAMS
+async def test_a_bad_card_with_bad_text_gives_the_fallback(stream: bool) -> None:
+    agent, client = _agent([
+        ("call", "crm_aggregate", {"entity": "deals"}),
+        ("both", "Open and won hold ₹18.3 lakh.", "emit_generative_ui", _card(1834567)),
+        ("both", "Still ₹18.3 lakh.", "emit_generative_ui", _card(1834567)),
+    ])
+    out = await _run(agent, stream=stream)
+    assert CARDS == []
+    assert out.startswith(FALLBACK_LEAD)
+    assert len(client.requests) == 3
+
+
+def test_the_shown_text_of_a_card_skips_layout_and_code() -> None:
+    from acb_skills.answer_check import display_text
+
+    ui = json.dumps({"template": "kpi", "width": 7, "color": "#123456",
+                     "items": [{"label": "Won 12 deals", "value": 500000}]})
+    shown = display_text("emit_generative_ui", {"ui": ui})
+    assert "500000" in shown and "Won 12 deals" in shown
+    assert "7" not in shown.split() and "123456" not in shown
+    html = "<div style='width:300px'>Open <b>INR 12,34,567</b></div>"
+    assert "300" not in display_text("emit_generative_ui", {"ui": html})
+    assert "12,34,567" in display_text("emit_generative_ui", {"ui": html})
+    assert display_text("write_artifact", {"path": "outputs/a.py", "content": "x = 99"}) == ""
+    assert "99" in display_text("write_artifact", {"path": "outputs/a.md", "content": "99 deals"})
+    assert display_text("crm_aggregate", {"entity": "deals"}) == ""
+
+
+@STREAMS
+async def test_the_arguments_of_a_crm_call_are_sources(stream: bool) -> None:
+    """Fix 4: "the last 7 days" after updated_from, "top 5" after page_size."""
+    from datetime import date, timedelta
+
+    since = (date.today() - timedelta(days=7)).isoformat()
+    answer = "In the last 7 days, the top 5 stages hold INR 12,34,567."
+    agent, client = _agent([
+        ("call", "crm_aggregate", {"entity": "deals", "updated_from": since, "page_size": 5}),
+        ("text", answer),
+    ])
+    assert await _run(agent, stream=stream) == answer
+    assert len(client.requests) == 2
+
+
+@STREAMS
+async def test_an_invented_number_still_fails_beside_the_arguments(stream: bool) -> None:
+    from datetime import date, timedelta
+
+    since = (date.today() - timedelta(days=7)).isoformat()
+    agent, client = _agent([
+        ("call", "crm_aggregate", {"entity": "deals", "updated_from": since, "page_size": 5}),
+        ("text", "In the last 9 days, 6 stages moved."),
+        ("text", "In the last 7 days, 5 stages moved."),
+    ])
+    assert await _run(agent, stream=stream) == "In the last 7 days, 5 stages moved."
+    assert len(client.requests) == 3
+
+
+@STREAMS
+async def test_an_approximation_and_a_phone_pass(stream: bool) -> None:
+    answer = "Won deals hold about ₹4.7 lakh. Call the owner on +91 98450 12345."
+    agent, client = _agent([("call", "crm_aggregate", {"entity": "deals"}),
+                            ("text", answer)])
+    assert await _run(agent, stream=stream) == answer
+    assert len(client.requests) == 2
+
+
+def test_a_delegated_answer_is_no_source() -> None:
+    """Fix 1: the answer of another agent is text that a model wrote."""
+    ledger = RunLedger()
+    ledger.record("crm_aggregate", CRM_RESULT)
+    ledger.record("call_agent", "The total is ₹99 lakh.", delegated=True)
+    assert not ledger.check("₹99 lakh").ok
+    assert ledger.check("INR 12,34,567").ok
+
+
+def test_the_member_s_words_come_from_the_run_context() -> None:
+    from acb_skills.answer_check import MEMBER_MESSAGE, member_words
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    payload = {"message": "Show the deals over ₹7 lakh"}
+    assert member_words({}, payload) == "Show the deals over ₹7 lakh"
+    # A delegated run takes the parent's words, never its own payload.
+    parent = {"run_id": "r1", MEMBER_MESSAGE: "What is open?"}
+    assert member_words(parent, {"message": "the total is ₹99 lakh"}) == "What is open?"
+    ledger = RunLedger()
+    ledger.record("crm_aggregate", CRM_RESULT)
+    with artifact_context_scope():
+        bind_artifact_context(**{MEMBER_MESSAGE: payload["message"]})
+        assert ledger.check("The deals over ₹7 lakh hold INR 12,34,567.").ok
+    assert not ledger.check("The deals over ₹7 lakh hold INR 12,34,567.").ok
+
+
+@STREAMS
+async def test_the_packed_prompt_of_production_is_no_source(stream: bool) -> None:
+    """Fix 1: with MAF_NATIVE_SESSIONS off, the executor packs the history,
+    the model's earlier answers too, into ONE user string. A number the model
+    invented in turn 1 must not become a source in turn 2."""
+    from acb_skills.answer_check import member_words
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+    from orchestrator import executor
+    from orchestrator._native_run_context import agent_with_providers
+
+    payload = {
+        "message": "And now?",
+        "messages": [{"role": "user", "content": "What is open?"},
+                     {"role": "assistant", "content": "You had ₹99 lakh open."}],
+    }
+    packed = executor._compose_maf_run_input("crm-assistant", "r1", payload, {})
+    assert "₹99 lakh" in packed  # the shape that production sends
+    agent, client = _agent([("call", "crm_aggregate", {"entity": "deals"}),
+                            ("text", "You still have ₹99 lakh open."),
+                            ("text", "You have INR 12,34,567 open.")])
+    view = agent_with_providers(agent, [AnswerCheckProvider(ON)])
+    with artifact_context_scope():
+        bind_artifact_context(member_message=member_words({}, payload))
+        if stream:
+            out = "".join([u.text or "" async for u in view.run(packed, stream=True)])
+        else:
+            out = (await view.run(packed)).text
+    assert out == "You have INR 12,34,567 open."
+    assert len(client.requests) == 3
+
+
+async def test_a_hold_sends_a_sign_of_life_for_each_update(monkeypatch) -> None:
+    """Fix 3: while it holds, the check beats on each update of the model."""
+    beats: list[int] = []
+    monkeypatch.setattr(answer_check, "HEARTBEAT_S", 0.0)
+    monkeypatch.setattr(answer_check, "_beat", lambda: beats.append(1))
+    agent, _client = _agent([("call", "crm_aggregate", {"entity": "deals"}),
+                             ("text", "Open deals hold INR 12,34,567.")])
+    await _run(agent, stream=True)
+    assert len(beats) >= 2  # the held answer streams two deltas
+
+
+def test_the_executor_knows_the_hold_event() -> None:
+    from orchestrator import executor
+
+    assert executor._is_hold_beat({"type": "CUSTOM", "name": answer_check.HOLD_EVENT})
+    assert not executor._is_hold_beat({"type": "CUSTOM", "name": "artifact_created"})
+
+
+@pytest.mark.parametrize("mode", ["off", "on"])
+def test_a_box_with_no_check_module_still_runs(mode: str, monkeypatch) -> None:
+    """Fix 6: the mode is read before the import, and a missing module
+    never raises."""
+    import sys
+
+    import acb_common.settings as settings_mod
+    from orchestrator import _tool_injection
+
+    monkeypatch.setattr(settings_mod, "crm_answer_check_mode", lambda: mode)
+    monkeypatch.setitem(sys.modules, "acb_skills.answer_check", None)
+    agent, _ = _agent([])
+    agents = [agent]
+    _tool_injection._apply_answer_check(agents, "crm-assistant")
+    assert agents[0] is agent
+
+
+@STREAMS
+async def test_a_difference_of_two_tool_figures_passes(stream: bool) -> None:
+    """Fix round 2, A: a founder asks for open minus won. The answer states
+    the difference of two tool figures, with no extra request."""
+    answer = "Open deals exceed won deals by ₹7.3 lakh."
+    agent, client = _agent([("call", "crm_aggregate", {"entity": "deals"}),
+                            ("text", answer)])
+    assert await _run(agent, stream=stream) == answer
+    assert len(client.requests) == 2
+
+
+@pytest.mark.parametrize("mode", ["off", "shadow", "on"])
+def test_the_injection_puts_the_provider_on_the_agent(mode: str, monkeypatch) -> None:
+    """Fix round 2, C: the real ``_inject_agent_tools`` path, not a source
+    scan. The provider is on the agent for shadow and on, and absent for
+    off."""
+    import acb_common.settings as settings_mod
+    from orchestrator import _tool_injection
+
+    monkeypatch.setattr(settings_mod, "crm_answer_check_mode", lambda: mode)
+    agent, _ = _agent([])
+    agents = [agent]
+    _tool_injection._inject_agent_tools(
+        agents, tool_scope=["ask_questions"], agent_name="crm-assistant",
+        agent_config={"sharing": {"instancing": "shared"}}, no_egress=False,
+    )
+    providers = [p for p in (agents[0].context_providers or [])
+                 if isinstance(p, AnswerCheckProvider)]
+    if mode == "off":
+        assert providers == []
+    else:
+        assert len(providers) == 1
+        assert providers[0].mode == mode
+
+
+def test_the_ledger_derives_from_tool_results_only() -> None:
+    """Fix round 2, A: the member's words and the tool arguments are sources
+    as they stand, and never take part in a pair."""
+    from acb_skills.answer_check import MEMBER_MESSAGE
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    ledger = RunLedger()
+    ledger.record("crm_aggregate", "Deals: 200", arguments={"page_size": 400})
+    with artifact_context_scope():
+        bind_artifact_context(**{MEMBER_MESSAGE: "Is it over 300?"})
+        assert ledger.check("Over 300, and the top 400.").ok
+        assert not ledger.check("Together, 500 deals.").ok   # 200 + 300
+        assert not ledger.check("Together, 600 deals.").ok   # 200 + 400
+    ledger.record("crm_aggregate", "Won: 100")
+    assert ledger.check("Together, 300 deals.").ok           # 200 + 100

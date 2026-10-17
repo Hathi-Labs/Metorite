@@ -124,7 +124,7 @@ class TestTheMatch:
 
     @pytest.mark.parametrize("claim", [
         "₹13.5 lakh",       # misquoted
-        "₹17.3 lakh",       # Open + Won, added by the model
+        "₹18.9 lakh",       # a total that no pair of figures gives
         "INR 1,234,000",    # rounded at a precision the text does not state
         "₹1 crore",         # one significant digit, and not exact
         "58%",              # rounded wrongly
@@ -237,3 +237,116 @@ def test_the_chat_check_imports_the_one_check() -> None:
         for alias in node.names
     }
     assert ("acb_common.number_check", "check") in imports
+
+
+# ── Fix round (2026-10-17): years, multipliers, phones, approximations ─────
+
+class TestTheFixRound:
+    @pytest.mark.parametrize("text", [
+        "In 2026 we met.", "Since 2025 the pipeline grew.", "FY 2026 closed.",
+        "March 2026 was strong.", "The 2025-26 plan.", "The 2025–26 plan.",  # noqa: RUF001
+        "From 2025 to 2026.",
+    ])
+    def test_a_year_in_its_context_is_no_figure(self, text: str) -> None:
+        assert find_figures(text) == []
+
+    def test_a_four_digit_count_is_a_figure(self) -> None:
+        assert _values("We have 2047 contacts.") == [("2047", Decimal("2047"), PLAIN)]
+        assert not check("We have 2047 contacts.", [TOOL_RESULT]).ok
+
+    def test_a_multiplier_is_a_figure(self) -> None:
+        assert _values("Growth of 5x.") == [("5x", Decimal("5"), PLAIN)]
+        assert _values("Growth of 3× this year.") == [("3×", Decimal("3"), PLAIN)]  # noqa: RUF001
+        assert not check("A 5x jump.", [TOOL_RESULT]).ok
+
+    @pytest.mark.parametrize("text", [
+        "Call +91 98450 12345.", "Call 98450 12345.", "Call 9845012345.",
+        "Call (080) 2345-6789.", "Call 080-2345-6789.",
+    ])
+    def test_a_phone_number_is_no_figure(self, text: str) -> None:
+        assert find_figures(text) == []
+
+    @pytest.mark.parametrize("claim", [
+        "about ₹4.7 lakh", "around ₹5 lakh", "roughly INR 4,60,000", "~₹4.6 lakh",
+        "nearly 12 lakh",
+    ])
+    def test_an_approximation_matches_within_ten_percent(self, claim: str) -> None:
+        assert check(f"Won deals hold {claim}.", ["Won: INR 500,000", "Open: INR 1,234,567"]).ok
+
+    @pytest.mark.parametrize("claim", ["about ₹9 lakh", "around ₹4.4 lakh"])
+    def test_an_invented_approximation_still_fails(self, claim: str) -> None:
+        assert not check(f"Won deals hold {claim}.", ["Won: INR 500,000"]).ok
+
+    def test_the_same_number_with_no_approximation_word_is_strict(self) -> None:
+        assert not check("Won deals hold ₹4.7 lakh.", ["Won: INR 500,000"]).ok
+
+
+# ── Fix round 2 (2026-10-17): derived figures and inline list markers ──────
+
+class TestDerivedFigures:
+    """A sum, a difference, a percent change or a percent share of TWO tool
+    figures is a true figure (CRM-Q30 Q21: net cash flow)."""
+
+    @pytest.mark.parametrize("claim", [
+        "₹17.3 lakh",       # Open + Won
+        "₹8.65 lakh",       # Total - Open
+        "INR 7,34,567",     # Open - Won
+        "58.8%",            # Open as a share of Total
+        "40.5%",            # Won as a share of Open
+        "70.1%",            # the change from Open to Total
+    ])
+    def test_a_pair_figure_matches(self, claim: str) -> None:
+        assert check(f"The answer: {claim}.", [TOOL_RESULT]).ok
+
+    def test_net_cash_flow_matches(self) -> None:
+        tool = "Received: INR 2,50,00,000\nPaid: INR 1,45,22,392"
+        assert check("Net cash flow is INR 1,04,77,608.", [tool]).ok
+
+    @pytest.mark.parametrize("claim", [
+        "₹17.4 lakh",       # near the sum 17,34,567, but not at its precision
+        "INR 17,34,600",    # near the sum, and the text states rupees
+        "INR 7,00,000",     # near the difference, but not equal
+        "59.9%",            # near the share 58.8, but not equal
+    ])
+    def test_a_number_near_a_pair_figure_fails(self, claim: str) -> None:
+        assert not check(f"The answer: {claim}.", [TOOL_RESULT]).ok
+
+    def test_a_chain_of_three_fails(self) -> None:
+        assert not check("In all, 700 deals.", ["100 open", "200 won", "400 lost"]).ok
+        assert check("In all, 300 deals.", ["100 open", "200 won", "400 lost"]).ok
+
+    def test_the_member_s_words_take_no_part(self) -> None:
+        book = Sources()
+        book.add_text("Deals: 200", derive=True)
+        book.add_text("Is it over 300?")
+        assert not check("Together, 500 deals.", book).ok
+        assert check("Over 300 deals?", book).ok
+
+    def test_money_and_plain_never_pair(self) -> None:
+        book = Sources()
+        book.add_text("INR 1,000", derive=True)
+        book.add_text("500 deals", derive=True)
+        assert not check("INR 1,500 in all.", book).ok
+        assert not check("1,500 in all.", book).ok
+
+    def test_money_never_meets_a_percent_of_a_pair(self) -> None:
+        assert not check("INR 58.8", [TOOL_RESULT]).ok
+
+
+class TestInlineListMarkers:
+    def test_an_inline_list_has_no_figure_in_its_markers(self) -> None:
+        assert find_figures("Top stages: 1. Open 2. Won 3. Lost.") == []
+
+    def test_a_figure_in_an_inline_list_still_counts(self) -> None:
+        text = "1. Open INR 12,34,567 2. Won INR 5,00,000"
+        assert [f.text for f in find_figures(text)] == ["INR 12,34,567", "INR 5,00,000"]
+
+    def test_a_lone_number_with_a_dot_still_counts(self) -> None:
+        assert [f.text for f in find_figures("Revenue 2. crore was the goal.")] == ["2"]
+        assert not check("Revenue 2. crore was the goal.", [TOOL_RESULT]).ok
+
+    def test_a_lone_one_with_a_dot_still_counts(self) -> None:
+        assert [f.text for f in find_figures("Only 1. Then nothing.")] == ["1"]
+
+    def test_a_run_out_of_order_is_no_list(self) -> None:
+        assert [f.text for f in find_figures("We had 3. Then 7. Then 9.")] == ["3", "7", "9"]
