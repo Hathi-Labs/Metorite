@@ -345,5 +345,8 @@ class TestInlineListMarkers:
         assert [f.text for f in find_figures("Revenue 2. crore was the goal.")] == ["2"]
         assert not check("Revenue 2. crore was the goal.", [TOOL_RESULT]).ok
 
+    def test_a_lone_one_with_a_dot_still_counts(self) -> None:
+        assert [f.text for f in find_figures("Only 1. Then nothing.")] == ["1"]
+
     def test_a_run_out_of_order_is_no_list(self) -> None:
         assert [f.text for f in find_figures("We had 3. Then 7. Then 9.")] == ["3", "7", "9"]

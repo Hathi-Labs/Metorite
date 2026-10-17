@@ -643,3 +643,20 @@ def test_the_injection_puts_the_provider_on_the_agent(mode: str, monkeypatch) ->
     else:
         assert len(providers) == 1
         assert providers[0].mode == mode
+
+
+def test_the_ledger_derives_from_tool_results_only() -> None:
+    """Fix round 2, A: the member's words and the tool arguments are sources
+    as they stand, and never take part in a pair."""
+    from acb_skills.answer_check import MEMBER_MESSAGE
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    ledger = RunLedger()
+    ledger.record("crm_aggregate", "Deals: 200", arguments={"page_size": 400})
+    with artifact_context_scope():
+        bind_artifact_context(**{MEMBER_MESSAGE: "Is it over 300?"})
+        assert ledger.check("Over 300, and the top 400.").ok
+        assert not ledger.check("Together, 500 deals.").ok   # 200 + 300
+        assert not ledger.check("Together, 600 deals.").ok   # 200 + 400
+    ledger.record("crm_aggregate", "Won: 100")
+    assert ledger.check("Together, 300 deals.").ok           # 200 + 100
