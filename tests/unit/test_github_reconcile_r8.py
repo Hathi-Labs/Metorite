@@ -1,0 +1,403 @@
+"""R8 — the checks read and the reconcile poll (WS-54 GH-5).
+
+Spec: ``project-docs/specs/github_integration.md`` §8.5 and §11. A real
+Postgres (the promoted phase-4 catalog, as the NON-privileged role), GitHub
+mocked at the HTTP layer, Redis real (``GITHUB_R8_REDIS_URL``) or a fake under
+the real ``TenantRedis`` wrapper.
+
+* **K2** a read for an old head writes nothing, also when the head moves
+  while the read is at GitHub.
+* **K3** no database session is open during a GitHub call (the fence of
+  EA12-4, R11): a counting wrapper around ``tenant_session`` sees zero open
+  sessions at each request.
+* **K4** a poll tick runs in one process only, reads at most 50 references,
+  and stops on a rate-limit answer.
+* **K5** a poll that finds ``merged`` calls ``on_merged`` once.
+* **K6** ``GET /refs`` returns ``checks_state``, ``checks_summary``,
+  ``head_ref`` and ``merged_at``.
+* **K7** the org list site is registered in ``test_db_engine_seam.py``.
+* The webhook's ``check_suite`` event schedules the read, after the answer.
+
+R7, the mutations. Each one turns a test here red (run 2026-10-18):
+
+* K-M5 drop ``AND head_sha = :sha`` from the checks write -> ``test_k2_*``.
+* K-M6 the checks read holds its first session across the GitHub call -> ``test_k3_*``.
+* K-M7 the tick guard always claims -> ``test_k4_one_process_*``.
+* K-M8 ``LIMIT :limit`` dropped -> ``test_k4_at_most_fifty_*``.
+* K-M9 the rate limit is not raised -> ``test_k4_a_rate_limit_*``.
+* K-M10 the poll skips ``on_merged`` -> ``test_k5_*``.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import uuid
+from contextlib import asynccontextmanager
+from typing import Any
+
+import httpx
+import pytest
+
+pytest.importorskip("sqlalchemy")
+
+from sqlalchemy import text
+
+from tests.unit import _github_r8 as g
+from tests.unit._tenant_ladder import tenant_engine_scope
+from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
+    _DB_GATE,
+    app_engine,
+    promoted,
+)
+
+pytestmark = _DB_GATE
+
+REAL_CLIENT = httpx.AsyncClient
+INSTALL = 9101
+REPO = "acme/widgets"
+EMAIL = "dev@gh5-r8.test"
+SHA_OLD = "1" * 40
+SHA_NEW = "2" * 40
+
+
+@pytest.fixture(scope="module")
+def p(promoted):  # noqa: F811
+    g.grant_lookup(promoted)
+    return promoted
+
+
+class FakeGitHub:
+    def __init__(self, world: Any) -> None:
+        self.w = world
+        self.requests: list[str] = []
+        self.pulls: dict[int, dict] = {}
+        self.runs: dict[str, list] = {}
+        self.status: dict[str, dict] = {}
+        self.pr_reads = 0
+        self.rate_limit_at: int | None = None
+        self.on_checks: Any = None
+        self.open_at_call: list[int] = []
+
+    async def handle(self, request: httpx.Request) -> httpx.Response:
+        self.open_at_call.append(self.w.opened["n"])
+        path = request.url.path
+        self.requests.append(path)
+        if path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "ghs_R8", "expires_at": "2099-01-01T00:00:00Z"})
+        if "/pulls/" in path:
+            self.pr_reads += 1
+            if self.rate_limit_at is not None and self.pr_reads >= self.rate_limit_at:
+                return httpx.Response(403, json={"message": "rate limit"},
+                                      headers={"x-ratelimit-remaining": "0"})
+            number = int(path.rsplit("/", 1)[1])
+            body = self.pulls.get(number)
+            return httpx.Response(200, json=body) if body else httpx.Response(404, json={})
+        if path.endswith("/check-runs"):
+            sha = path.split("/")[-2]
+            if self.on_checks is not None:
+                self.on_checks(sha)
+            runs = self.runs.get(sha, [])
+            return httpx.Response(200, json={"total_count": len(runs), "check_runs": runs})
+        if path.endswith("/status"):
+            sha = path.split("/")[-2]
+            return httpx.Response(200, json=self.status.get(sha, {"state": "pending",
+                                                                  "statuses": []}))
+        return httpx.Response(404, json={})
+
+
+@pytest.fixture
+def world(p, monkeypatch, tmp_path):
+    from gateway import github_reconcile_loop, github_sync
+    from gateway.routes.projects import github_merge
+
+    g.configure_app(monkeypatch, g.make_private_key(tmp_path))
+    g.use_redis(monkeypatch)
+    g.clear_github(p)
+    g.seed_github_row(p, p.org_a, INSTALL)
+
+    class W:
+        pass
+
+    w = W()
+    w.p = p
+    w.opened = {"n": 0}
+    real = github_sync.tenant_session
+
+    @asynccontextmanager
+    async def counted(*args: Any, **kwargs: Any):
+        w.opened["n"] += 1
+        try:
+            async with real(*args, **kwargs) as db:
+                yield db
+        finally:
+            w.opened["n"] -= 1
+
+    monkeypatch.setattr(github_sync, "tenant_session", counted)
+    monkeypatch.setattr(github_reconcile_loop, "tenant_session", counted)
+    w.events = []
+
+    async def _emit(name: str, payload: dict) -> None:
+        w.events.append((name, payload))
+
+    monkeypatch.setattr(github_merge, "emit", _emit)
+    w.gh = FakeGitHub(w)
+    g.patch_github(monkeypatch, w.gh.handle, REAL_CLIENT)
+    w.project, w.lanes = g.seed_project(p, p.org_a, EMAIL)
+    yield w
+    g.clear_github(p)
+
+
+def _ref(w: Any, task: str, number: int, *, state: str = "open", head: str | None = SHA_OLD,
+         checks: str | None = None, stale: bool = True) -> str:
+    with w.p.admin_engine.begin() as c:
+        return str(c.execute(text(
+            "INSERT INTO pm_task_refs (organization_id, task_id, kind, provider, ref, url, "
+            "state, via, created_by, head_sha, checks_state, fetched_at, checks_fetched_at) "
+            "VALUES (CAST(:o AS uuid), CAST(:t AS uuid), 'pull_request', 'github', :ref, :url, "
+            ":s, 'ui', :e, :h, :c, CASE WHEN :stale THEN now() - interval '2 hours' ELSE now() "
+            "END, CASE WHEN :stale THEN now() - interval '2 hours' ELSE now() END) RETURNING id"),
+            {"o": w.p.org_a, "t": task, "ref": f"{REPO}#{number}",
+             "url": f"https://github.com/{REPO}/pull/{number}", "s": state, "e": EMAIL,
+             "h": head, "c": checks, "stale": stale}).scalar_one())
+
+
+def _task(w: Any) -> str:
+    return g.seed_task(w.p, w.p.org_a, EMAIL, project=w.project, lanes=w.lanes,
+                       category="in_progress")
+
+
+def _pull(number: int, *, state: str = "open", merged: bool = False, sha: str = SHA_OLD,
+          updated: str = "2026-10-18T10:00:00Z") -> dict:
+    return {"number": number, "title": f"PR {number}", "state": state, "merged": merged,
+            "merged_at": "2026-10-18T10:00:00Z" if merged else None, "draft": False,
+            "updated_at": updated, "merged_by": {"login": "octo"},
+            "head": {"ref": "feat/x", "sha": sha}, "base": {"ref": "main"}}
+
+
+def _row(w: Any, ref_id: str) -> Any:
+    (row,) = g.rows(w.p, "SELECT state, head_sha, checks_state, checks_summary, "
+                         "checks_fetched_at FROM pm_task_refs WHERE id = CAST(:i AS uuid)",
+                    i=ref_id)
+    return row
+
+
+# ── K2, K3: the checks read ─────────────────────────────────────────────────
+
+
+async def test_k2_a_read_for_an_old_head_writes_nothing(world) -> None:
+    from gateway import github_sync
+
+    w = world
+    task = _task(w)
+    ref = _ref(w, task, 1, head=SHA_NEW, checks="pending")
+    w.gh.runs[SHA_OLD] = [{"status": "completed", "conclusion": "failure"}]
+    async with tenant_engine_scope(g.app_dsn(w.p)):
+        await github_sync.read_checks(w.p.org_a, REPO, SHA_OLD)
+    assert _row(w, ref).checks_state == "pending"
+    assert w.gh.requests == [], "no reference holds the old head, so nothing is read"
+
+    # The head moves WHILE the read is at GitHub: the late write must miss.
+    with w.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE pm_task_refs SET head_sha = :s WHERE id = CAST(:i AS uuid)"),
+                  {"s": SHA_OLD, "i": ref})
+
+    def _move(sha: str) -> None:
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE pm_task_refs SET head_sha = :s WHERE id = CAST(:i AS uuid)"),
+                      {"s": SHA_NEW, "i": ref})
+
+    w.gh.on_checks = _move
+    async with tenant_engine_scope(g.app_dsn(w.p)):
+        await github_sync.read_checks(w.p.org_a, REPO, SHA_OLD)
+    row = _row(w, ref)
+    assert (row.head_sha, row.checks_state) == (SHA_NEW, "pending")
+
+
+async def test_k3_no_session_is_open_during_a_github_call(world) -> None:
+    from gateway import github_reconcile_loop, github_sync
+
+    w = world
+    task = _task(w)
+    ref = _ref(w, task, 2, head=SHA_OLD, checks="pending")
+    w.gh.runs[SHA_OLD] = [{"status": "completed", "conclusion": "success"}]
+    w.gh.status[SHA_OLD] = {"state": "success", "statuses": [{"state": "success"}]}
+    async with tenant_engine_scope(g.app_dsn(w.p)):
+        await github_sync.read_checks(w.p.org_a, REPO, SHA_OLD)
+        w.gh.pulls[2] = _pull(2)
+        await github_reconcile_loop.run_org(w.p.org_a, "k3-tick")
+    row = _row(w, ref)
+    assert row.checks_state == "passing"
+    assert row.checks_summary == {"passed": 2, "failed": 0, "pending": 0, "skipped": 0,
+                                  "total": 2}
+    assert w.gh.open_at_call, "GitHub saw no call"
+    assert set(w.gh.open_at_call) == {0}, w.gh.open_at_call
+
+
+# ── K4: one process, fifty references, a rate limit ─────────────────────────
+
+
+async def test_k4_one_process_runs_a_tick(world) -> None:
+    from gateway import github_reconcile_loop
+
+    w = world
+    _ref(w, _task(w), 3)
+    w.gh.pulls[3] = _pull(3)
+    async with tenant_engine_scope(g.app_dsn(w.p)):
+        first = await github_reconcile_loop.run_org(w.p.org_a, "tick-one")
+        reads = w.gh.pr_reads
+        second = await github_reconcile_loop.run_org(w.p.org_a, "tick-one")
+    assert first.claimed and not second.claimed
+    assert w.gh.pr_reads == reads == 1
+
+
+async def test_k4_at_most_fifty_references_in_a_tick(world) -> None:
+    from gateway import github_reconcile_loop
+
+    w = world
+    task = _task(w)
+    for n in range(100, 160):
+        _ref(w, task, n)
+        w.gh.pulls[n] = _pull(n)
+    async with tenant_engine_scope(g.app_dsn(w.p)):
+        result = await github_reconcile_loop.run_org(w.p.org_a, "tick-fifty")
+    assert result.pr_reads == 50 and w.gh.pr_reads == 50
+    fresh = g.scalar(w.p, "SELECT count(*) FROM pm_task_refs WHERE fetched_at > now() - "
+                          "interval '1 minute'")
+    assert fresh == 50
+
+
+async def test_k4_a_rate_limit_stops_the_tick(world) -> None:
+    from gateway import github_reconcile_loop
+
+    w = world
+    task = _task(w)
+    for n in range(200, 210):
+        _ref(w, task, n)
+        w.gh.pulls[n] = _pull(n)
+    w.gh.rate_limit_at = 3
+    async with tenant_engine_scope(g.app_dsn(w.p)):
+        result = await github_reconcile_loop.run_org(w.p.org_a, "tick-limit")
+    assert result.rate_limited
+    assert w.gh.pr_reads == 3
+
+
+async def test_a_fresh_reference_is_not_read(world) -> None:
+    from gateway import github_reconcile_loop
+
+    w = world
+    _ref(w, _task(w), 4, stale=False)
+    async with tenant_engine_scope(g.app_dsn(w.p)):
+        result = await github_reconcile_loop.run_org(w.p.org_a, "tick-fresh")
+    assert result.claimed and result.pr_reads == 0 and w.gh.requests == []
+
+
+# ── K5: a merge that the poll finds ─────────────────────────────────────────
+
+
+async def test_k5_a_poll_that_finds_merged_calls_on_merged_once(world, monkeypatch) -> None:
+    from gateway import github_reconcile_loop
+    from gateway.routes.projects import github_merge
+
+    w = world
+    task = _task(w)
+    with w.p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO pm_agent_runs (organization_id, task_id, member_email, client_via, "
+            "status, started_by, created_at) VALUES (CAST(:o AS uuid), CAST(:t AS uuid), :e, "
+            "'mcp:claude-code', 'completed', :e, now() - interval '1 day')"),
+            {"o": w.p.org_a, "t": task, "e": EMAIL})
+    _ref(w, task, 5)
+    w.gh.pulls[5] = _pull(5, state="closed", merged=True)
+    calls: list[str] = []
+    real = github_merge.on_merged
+
+    async def spy(db: Any, org: str, ref: str, *args: Any, **kwargs: Any) -> Any:
+        calls.append(ref)
+        return await real(db, org, ref, *args, **kwargs)
+
+    monkeypatch.setattr(github_merge, "on_merged", spy)
+    async with tenant_engine_scope(g.app_dsn(w.p)):
+        first = await github_reconcile_loop.run_org(w.p.org_a, "tick-k5-a")
+        await github_reconcile_loop.run_org(w.p.org_a, "tick-k5-b")
+    assert calls == [f"{REPO}#5"]
+    assert first.merged == 1
+    assert g.scalar(w.p, "SELECT s.category FROM pm_tasks t JOIN pm_task_statuses s ON "
+                         "s.id = t.status_id WHERE t.id = CAST(:t AS uuid)", t=task) == "done"
+    assert ("pm.task.status_changed" in [n for n, _ in w.events])
+
+
+# ── K6, K7 ──────────────────────────────────────────────────────────────────
+
+
+async def test_k6_the_refs_route_returns_the_github_fields(world) -> None:
+    from gateway.routes import projects as projects_package
+
+    w = world
+    task = _task(w)
+    ref = _ref(w, task, 6)
+    with w.p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE pm_task_refs SET head_ref = 'feat/x', checks_state = 'failing', "
+            "checks_summary = CAST(:s AS jsonb), merged_at = now() WHERE id = CAST(:i AS uuid)"),
+            {"s": json.dumps({"passed": 1, "failed": 1, "pending": 0, "skipped": 0,
+                              "total": 2}), "i": ref})
+    member = g.user(EMAIL, w.p.org_a)
+    from acb_auth import UserContext, UserRole, build_access
+
+    member = UserContext(email=EMAIL, role=UserRole.EMPLOYEE, organization_id=w.p.org_a,
+                         access=build_access(["feature:projects", "data:org:read"]))
+    resp = await g.call(w.p, member, [projects_package.router], "GET",
+                        f"/projects/tasks/{task}/refs", params={"refresh": "false"},
+                        real_client=REAL_CLIENT)
+    assert resp.status_code == 200, resp.text
+    (row,) = resp.json()["rows"]
+    assert row["checks_state"] == "failing"
+    assert row["checks_summary"] == {"passed": 1, "failed": 1, "pending": 0, "skipped": 0,
+                                     "total": 2}
+    assert row["head_ref"] == "feat/x"
+    assert row["merged_at"] is not None
+
+
+def test_k7_the_org_list_is_a_registered_discovery_site() -> None:
+    from tests.unit.test_db_engine_seam import H2_TENANT_DISCOVERY_SITES
+
+    assert ("apps/services/gateway/gateway/github_reconcile_loop.py",
+            "_organization_ids") in H2_TENANT_DISCOVERY_SITES
+
+
+async def test_the_loop_starts_only_with_the_flag(world, monkeypatch) -> None:
+    from acb_common import get_settings
+    from gateway import github_reconcile_loop
+
+    monkeypatch.setattr(get_settings(), "github_app_enabled", False)
+    assert await github_reconcile_loop.start_github_reconcile_loop() is False
+    assert not github_reconcile_loop._task
+
+
+# ── The webhook schedules the read ──────────────────────────────────────────
+
+
+async def test_a_check_suite_event_reads_the_checks_after_the_answer(world) -> None:
+    from fastapi import FastAPI
+    from gateway.routes.github import webhook
+
+    w = world
+    ref = _ref(w, _task(w), 7, head=SHA_NEW, checks="pending")
+    w.gh.runs[SHA_NEW] = [{"status": "completed", "conclusion": "failure"}]
+    payload = {"action": "completed", "installation": {"id": INSTALL},
+               "repository": {"full_name": REPO},
+               "check_suite": {"head_sha": SHA_NEW, "status": "completed"}}
+    raw = json.dumps(payload).encode()
+    app = FastAPI()
+    app.include_router(webhook.router)
+    async with tenant_engine_scope(g.app_dsn(w.p)), REAL_CLIENT(
+        transport=httpx.ASGITransport(app=app), base_url="http://gateway.test",
+    ) as client:
+        resp = await client.post("/webhooks/github", content=raw, headers={
+            "X-GitHub-Event": "check_suite", "X-GitHub-Delivery": str(uuid.uuid4()),
+            "X-Hub-Signature-256": "sha256=" + hmac.new(
+                b"r8-webhook-secret", raw, hashlib.sha256).hexdigest()})
+        assert resp.status_code == 200, resp.text
+    assert _row(w, ref).checks_state == "failing"

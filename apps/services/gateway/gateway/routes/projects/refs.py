@@ -82,8 +82,14 @@ GITHUB_API = "https://api.github.com"
 
 _COLUMNS = (
     "id, task_id, kind, provider, ref, url, title, state, fetched_at, via, "
-    "created_by, created_at, updated_at"
+    "created_by, created_at, updated_at, "
+    # WS-54 GH-5 (migration 282): what the webhook and the poll write.
+    "head_sha, head_ref, checks_state, checks_summary, checks_fetched_at, merged_at"
 )
+
+#: A pending checks state older than this is read again by the list of an
+#: org on the GitHub App (WS-54 GH-5, §11).
+CHECKS_STALE_AFTER = timedelta(minutes=5)
 
 
 class RefIn(BaseModel):
@@ -142,7 +148,28 @@ def _row(row: Any) -> dict[str, Any]:
         "created_by": row.created_by,
         "created_at": wire(row.created_at),
         "updated_at": wire(row.updated_at),
+        # WS-54 GH-5: the head and the CI state. EA-13d draws the PR chip.
+        "head_sha": getattr(row, "head_sha", None),
+        "head_ref": getattr(row, "head_ref", None),
+        "checks_state": getattr(row, "checks_state", None),
+        "checks_summary": _summary(getattr(row, "checks_summary", None)),
+        "checks_fetched_at": wire(getattr(row, "checks_fetched_at", None)),
+        "merged_at": wire(getattr(row, "merged_at", None)),
     }
+
+
+def _summary(value: Any) -> dict[str, int] | None:
+    """The checks counts, as a plain object, or ``None``."""
+    if isinstance(value, str):
+        import json
+
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    if not isinstance(value, dict):
+        return None
+    return {str(k): int(v) for k, v in value.items() if isinstance(v, int)}
 
 
 def _parse_uuid(value: str, what: str) -> str:
@@ -360,7 +387,66 @@ async def list_refs(
         ]
     if not refresh:
         return {"rows": rows}
-    return {"rows": await refresh_from_github(task_id, rows)}
+    refreshed = await refresh_from_github(task_id, rows)
+    await _refresh_checks(refreshed)
+    return {"rows": refreshed}
+
+
+#: The checks reads that a list started, held so the loop does not collect them.
+_CHECK_READS: set[asyncio.Task[None]] = set()
+
+
+def _checks_due(row: dict[str, Any], now: datetime) -> bool:
+    if row.get("provider") != "github" or row.get("kind") != "pull_request":
+        return False
+    if not row.get("head_sha") or row.get("state") not in ("open", "draft"):
+        return False
+    if row.get("checks_state") not in (None, "pending"):
+        return False
+    stamp = row.get("checks_fetched_at")
+    if not stamp:
+        return True
+    try:
+        at = datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return True
+    return now - (at if at.tzinfo else at.replace(tzinfo=UTC)) >= CHECKS_STALE_AFTER
+
+
+async def _refresh_checks(rows: list[dict[str, Any]], *, now: datetime | None = None) -> int:
+    """WS-54 GH-5 (§11): an org on the GitHub App reads the checks too.
+
+    A pull request with a head and a pending (or never read) CI state gets a
+    checks read in the BACKGROUND, so the list answers at once and the next
+    list shows the result. A ``token`` row keeps the lazy read of TR-1 only.
+    Answers how many reads it started. Never raises.
+    """
+    clock = now or datetime.now(UTC)
+    due = [r for r in rows if _checks_due(r, clock)][:MAX_READS]
+    if not due:
+        return 0
+    from gateway import github_sync
+    from gateway.connections import github as github_connection
+    from gateway.db import current_tenant
+
+    try:
+        org = current_tenant()
+        if not org or not github_connection.is_app_row(await github_connection.connection(org)):
+            return 0
+    except Exception as exc:
+        _log.warning("projects.refs.checks_unreadable", error=type(exc).__name__)
+        return 0
+    started = 0
+    for row in due:
+        parsed = github_sync.split_ref(str(row["ref"]))
+        if parsed is None:
+            continue
+        task = asyncio.get_running_loop().create_task(
+            github_sync.read_checks(str(org), parsed[0], str(row["head_sha"])))
+        _CHECK_READS.add(task)
+        task.add_done_callback(_CHECK_READS.discard)
+        started += 1
+    return started
 
 
 async def insert_ref(

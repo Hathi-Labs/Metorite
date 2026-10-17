@@ -418,6 +418,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.my_day_loop_skipped", error=str(exc))
 
+    # Start the GitHub reconcile poll (gateway/github_reconcile_loop.py; spec
+    # github_integration.md §11, WS-54 GH-5). It repairs what a missed webhook
+    # left stale, every 10 minutes. Dark by default: with GITHUB_APP_ENABLED
+    # off it starts no task and logs once. The gate lives inside the start
+    # function.
+    try:
+        from gateway.github_reconcile_loop import start_github_reconcile_loop
+        github_reconcile_started = await start_github_reconcile_loop()
+        _log.info("gateway.github_reconcile_loop", started=github_reconcile_started)
+    except Exception as exc:
+        _log.warning("gateway.github_reconcile_loop_skipped", error=str(exc))
+
     # Start the Reach loop (gateway/reach/loop.py; spec proactive_reach.md,
     # WS-59 RE-1a). It messages an allowlisted member first on WhatsApp. Dark
     # by default: with REACH_ENABLED off it starts no task and logs once.
@@ -519,6 +531,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.my_day_loop import stop_my_day_loop
         await stop_my_day_loop()
+    except Exception:
+        pass
+
+    # Stop the GitHub reconcile poll. Unconditional, like the My Day stop.
+    try:
+        from gateway.github_reconcile_loop import stop_github_reconcile_loop
+        await stop_github_reconcile_loop()
     except Exception:
         pass
 

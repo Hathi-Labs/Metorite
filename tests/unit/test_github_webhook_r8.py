@@ -283,10 +283,20 @@ async def test_the_headers_are_checked_after_the_signature(world, monkeypatch) -
 # ── The pull request write, W5, W6, W7 ──────────────────────────────────────
 
 
-async def test_a_pull_request_event_writes_every_reference_of_the_org(world) -> None:
+async def test_a_pull_request_event_writes_every_reference_of_the_org(world, monkeypatch) -> None:
+    from gateway import github_sync
+
     w = world
     task = g.seed_task(w.p, w.p.org_a, EMAIL_A)
     ref = _seed_ref(w.p, w.p.org_a, task)
+    jobs: list[tuple[str, str, str]] = []
+
+    async def _read(org: str, repo: str, sha: str) -> None:
+        jobs.append((org, repo, sha))
+
+    # GH-5: the checks read is a job AFTER the answer. Recorded here, so the
+    # handler's own work can be shown to call nothing at GitHub.
+    monkeypatch.setattr(github_sync, "read_checks", _read)
     resp = await _post(w, "pull_request", _pr_payload(INSTALL_A, head_ref="feat/x"))
     assert resp.status_code == 200 and resp.json() == {"ok": True}, resp.text
     row = _ref(w.p, ref)
@@ -295,6 +305,7 @@ async def test_a_pull_request_event_writes_every_reference_of_the_org(world) -> 
     assert row.checks_state == "pending"
     assert row.pr_updated_at is not None
     assert w.github_calls == [], "no GitHub read may run before the answer"
+    assert jobs == [(w.p.org_a, REPO, "a" * 40)]
     key = [k for k in w.redis.items() if ":github:delivery:" in k]
     assert len(key) == 1 and key[0].startswith(f"cc:{w.p.org_a}:")
 
@@ -342,9 +353,9 @@ async def test_w7_an_event_of_org_a_never_writes_a_row_of_org_b(world) -> None:
     assert _ref(w.p, ref_b).title is None, "org A's event wrote a row of org B"
     # And the SQL itself names the org, so an owner role that skips RLS still
     # writes one org only.
-    from gateway.routes.github import webhook
+    from gateway import github_sync
 
-    assert "organization_id = CAST(:org AS uuid)" in webhook._PR_UPDATE_SQL
+    assert "organization_id = CAST(:org AS uuid)" in github_sync._PR_UPDATE_SQL
 
 
 # ── W9 ──────────────────────────────────────────────────────────────────────

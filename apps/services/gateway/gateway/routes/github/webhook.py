@@ -53,6 +53,7 @@ from typing import Any
 from acb_common import get_logger, get_settings, tenant_redis
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from gateway import github_sync
 from gateway.connections import github as github_connection
 from gateway.connections import github_app, store
 from gateway.db import bind_tenant, get_db, release_tenant, tenant_session
@@ -278,52 +279,9 @@ async def _on_installation_repositories(
     return []
 
 
-#: §8.4 and §8.6: one pull request's facts onto every reference of the org,
-#: and only when GitHub's ``updated_at`` is newer. A new head makes the CI
-#: state ``pending`` until the checks read writes.
-_PR_UPDATE_SQL = (
-    "UPDATE pm_task_refs SET "
-    "title = COALESCE(CAST(:title AS text), title), state = CAST(:state AS text), "
-    "checks_state = CASE WHEN CAST(:sha AS text) IS NOT NULL "
-    "  AND head_sha IS DISTINCT FROM CAST(:sha AS text) "
-    "  THEN 'pending' ELSE checks_state END, "
-    "head_sha = COALESCE(CAST(:sha AS text), head_sha), "
-    "head_ref = COALESCE(CAST(:head_ref AS text), head_ref), "
-    "pr_updated_at = CAST(:updated AS timestamptz), "
-    "merged_at = CAST(:merged AS timestamptz), "
-    "fetched_at = now(), updated_at = now() "
-    "WHERE organization_id = CAST(:org AS uuid) AND provider = 'github' "
-    "AND kind = 'pull_request' AND ref = :ref "
-    "AND (pr_updated_at IS NULL OR pr_updated_at < CAST(:updated AS timestamptz)) "
-    "RETURNING id, task_id, state"
-)
-
-
-async def write_pull_request(
-    db: Any, org: str, ref: str, pull_request: dict[str, Any],
-) -> list[Any]:
-    """Write one pull request's facts onto the org's references (§8.4).
-
-    Shared by the webhook and the reconcile poll. Returns the rows it wrote,
-    and none for an event older than the row (§8.6).
-    """
-    from gateway.routes.projects.refs import _clean_title, github_state
-
-    updated = _stamp(pull_request.get("updated_at"))
-    if updated is None:
-        return []
-    head = _obj(pull_request.get("head"))
-    sha = str(head.get("sha") or "").lower()
-    head_ref = str(head.get("ref") or "")[:255] or None
-    return list((await db.execute(text(_PR_UPDATE_SQL), {
-        "org": org, "ref": ref,
-        "title": _clean_title(str(pull_request.get("title") or "")) or None,
-        "state": github_state("pull_request", pull_request),
-        "sha": sha if _SHA_RE.match(sha) else None,
-        "head_ref": head_ref,
-        "updated": updated,
-        "merged": _stamp(pull_request.get("merged_at")),
-    })).fetchall())
+#: The pull request write lives in ``gateway/github_sync.py``, shared with the
+#: reconcile poll (§8.4, §8.6). Re-exported here for the callers of GH-4.
+write_pull_request = github_sync.write_pull_request
 
 
 async def _on_pull_request(
@@ -346,6 +304,10 @@ async def _on_pull_request(
     ref = f"{full_name}#{number}"
     await write_pull_request(db, org, ref, pull_request)
     if action != "closed":
+        # GH-5 (§8.5): a new or moved head gets a checks read after the answer.
+        sha = str(_obj(pull_request.get("head")).get("sha") or "").lower()
+        if action in CHECKS_ACTIONS and _SHA_RE.match(sha):
+            return [github_sync.checks_job(org, full_name, sha)]
         return []
     # GH-6 (§12): a close, merged or not, can finish a task that an agent
     # worked. It writes in this transaction, and its events go out after the
@@ -362,6 +324,45 @@ async def _on_pull_request(
     return [outcome.emit_all] if outcome.events else []
 
 
+#: §8.4: the checks events, and the actions that schedule a read.
+CHECK_EVENTS: dict[str, frozenset[str] | None] = {
+    "check_suite": frozenset({"completed"}),
+    "check_run": frozenset({"created", "completed"}),
+    "status": None,  # every state
+}
+#: The ``pull_request`` actions whose head needs a checks read.
+CHECKS_ACTIONS: frozenset[str] = frozenset({
+    "opened", "reopened", "synchronize", "ready_for_review",
+})
+
+_HEAD_HELD_SQL = (
+    "SELECT 1 FROM pm_task_refs WHERE organization_id = CAST(:org AS uuid) "
+    "AND provider = 'github' AND kind = 'pull_request' AND head_sha = :sha LIMIT 1"
+)
+
+
+async def _on_checks(
+    db: Any, org: str, event: str, action: str, payload: dict[str, Any],
+) -> list[Job]:
+    """§8.4: schedule a checks read for a head that a reference holds. A head
+    that no reference holds does nothing."""
+    allowed = CHECK_EVENTS[event]
+    if allowed is not None and action not in allowed:
+        return []
+    if event == "status":
+        sha = str(payload.get("sha") or "")
+    else:
+        sha = str(_obj(payload.get(event)).get("head_sha") or "")
+    sha = sha.lower()
+    full_name = _repo_full_name(payload)
+    if not _SHA_RE.match(sha) or full_name is None:
+        return []
+    held = (await db.execute(text(_HEAD_HELD_SQL), {"org": org, "sha": sha})).first()
+    if held is None:
+        return []
+    return [github_sync.checks_job(org, full_name, sha)]
+
+
 async def _handle(
     db: Any, org: str, event: str, payload: dict[str, Any], installation_id: int,
     delivery: str,
@@ -374,6 +375,8 @@ async def _handle(
         return await _on_installation_repositories(db, org, installation_id, payload)
     if event == "pull_request":
         return await _on_pull_request(db, org, action, payload, delivery)
+    if event in CHECK_EVENTS:
+        return await _on_checks(db, org, event, action, payload)
     return []
 
 

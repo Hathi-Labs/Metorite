@@ -736,6 +736,13 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "lists the RLS-EXEMPT `organization` table, so it does not go blind. "
         "The sweep after it binds one organization with `tenant_session`, and "
         "the Redis work binds it with `organization_scope`",
+    ("apps/services/gateway/gateway/github_reconcile_loop.py",
+     "_organization_ids"):
+        "WS-54 GH-5: which organizations the GitHub reconcile poll looks at. "
+        "It lists the RLS-EXEMPT `organization` table, so it does not go "
+        "blind. Every read and write after it binds one organization with "
+        "`tenant_session`, and its tick guard binds it with "
+        "`organization_scope`",
     ("apps/services/gateway/gateway/routes/github/webhook.py",
      "_installation_org"):
         "WS-54 GH-4: which org owns the GitHub installation of a webhook. "
