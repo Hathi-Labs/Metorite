@@ -8,12 +8,20 @@
 // 3. `/crm` opens on the first row that holds records.
 // 4. An entity with no records says why. "Nothing matches this view" shows
 //    only with a filter.
-// (Items 5 to 8 have their own blocks below.)
+// 5. The filter bar shows Owner and the 3 fullest picklist filters. The rest
+//    sit behind "Filters (n)".
+// 6. The Columns picker has a search box, shows the chosen fields first, and
+//    shows "% filled" beside each field. A disabled box looks disabled.
+// 7. At phone width, each list row is a two-line card.
+// (Item 8 has its own block below.)
 import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
+import type { FieldDef } from "../lib/fields";
+import { fieldMatches, fillLabel } from "../lib/fields";
+import { SHOWN_FILTERS, hiddenActiveCount, moreFiltersLabel, splitFilters } from "../lib/filterBar";
 import type { CrmModule } from "../lib/modules";
 import { DEFAULT_VIEW } from "../lib/urlState";
 import {
@@ -30,6 +38,7 @@ import {
 import CrmRail from "./CrmRail";
 import FilterBar from "./FilterBar";
 import KanbanBoard from "./KanbanBoard";
+import { CARD_DETAILS, CHOSEN_HEADING, ColumnChoices, FULL_TIP, RecordCards } from "./RecordList";
 
 const noop = () => undefined;
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf-8");
@@ -297,5 +306,163 @@ describe("the search box names the list on screen (Batch M review)", () => {
 
   it("keeps the CRM's name with no source label", () => {
     expect(bar()).toContain('data-page-filter="contacts"');
+  });
+});
+
+// ── Item 5: the filter bar folds ────────────────────────────────────────────
+
+const pick = (key: string, fill: number | null, position: number): FieldDef => ({
+  key,
+  label: key.charAt(0).toUpperCase() + key.slice(1),
+  type: "select",
+  options: ["a", "b"],
+  position,
+  visible: true,
+  source: "zoho",
+  api_name: key,
+  fill,
+});
+
+describe("item 5: the filter bar shows Owner and the 3 fullest picklists", () => {
+  const defs = [
+    pick("region", 0.2, 0),
+    pick("tier", 0.9, 1),
+    pick("segment", 0.5, 2),
+    pick("channel", 0.9, 3),
+    pick("zone", 0.1, 4),
+  ];
+  const filters = defs.map((def) => ({ def, kind: "options" as const }));
+
+  it("takes the fullest picklists, a tie in the order of the bar", () => {
+    const { shown, more } = splitFilters(filters);
+    expect(shown.map((f) => f.def.key)).toEqual(["tier", "segment", "channel"]);
+    expect(more.map((f) => f.def.key)).toEqual(["region", "zone"]);
+    expect(SHOWN_FILTERS).toBe(3);
+  });
+
+  it("takes the first picklists with no fill number, and never a checkbox at rest", () => {
+    const flat = defs.map((def) => ({ def: { ...def, fill: null }, kind: "options" as const }));
+    expect(splitFilters(flat).shown.map((f) => f.def.key)).toEqual(["region", "tier", "segment"]);
+    const box = { def: { ...pick("signed", 1, 9), type: "boolean" }, kind: "boolean" as const };
+    expect(splitFilters([box, ...filters]).more).toContain(box);
+  });
+
+  it("counts the filters in force behind the button", () => {
+    const { more } = splitFilters(filters);
+    expect(hiddenActiveCount(DEFAULT_VIEW, more)).toBe(0);
+    const view = { ...DEFAULT_VIEW, source: "email", ranges: { updated_from: "2026-10-01" }, custom: { zone: ["a"] } };
+    expect(hiddenActiveCount(view, more)).toBe(3);
+    expect(moreFiltersLabel(0)).toBe("Filters");
+    expect(moreFiltersLabel(3)).toBe("Filters (3)");
+  });
+
+  it("draws the three at rest, and Source and the rest behind the button", () => {
+    const html = renderToStaticMarkup(
+      createElement(FilterBar, {
+        entity: "leads",
+        view: { ...DEFAULT_VIEW, tab: "leads", layout: "list" },
+        onChange: noop,
+        owners: null,
+        fieldDefs: defs,
+        activeView: null,
+        dirty: false,
+        canEdit: false,
+        isAdmin: false,
+        saving: false,
+        onSave: async () => undefined,
+        onUpdate: async () => undefined,
+        onReset: noop,
+      }),
+    );
+    for (const word of ["Owner", "Tier", "Segment", "Channel", ">Filters<", 'aria-expanded="false"']) {
+      expect(html).toContain(word);
+    }
+    for (const word of ["Region", "Zone", "Source", "Updated"]) expect(html).not.toContain(word);
+  });
+});
+
+// ── Item 6: the Columns picker ──────────────────────────────────────────────
+
+describe("item 6: the Columns picker", () => {
+  const defs = [pick("region", 0.2, 0), pick("tier", 0.94, 1), pick("segment", null, 2)];
+  const draw = (chosen: string[]) =>
+    renderToStaticMarkup(
+      createElement(ColumnChoices, {
+        groups: [{ section: null, fields: defs }],
+        chosen,
+        onToggle: noop,
+      }),
+    );
+
+  it("has a search box", () => {
+    expect(draw([])).toContain('aria-label="Find a field"');
+    expect(fieldMatches(defs[1], "TI")).toBe(true);
+    expect(fieldMatches(defs[1], "zone")).toBe(false);
+    expect(fieldMatches(defs[1], "  ")).toBe(true);
+  });
+
+  it("shows the chosen fields first, under their own heading", () => {
+    const html = draw(["segment"]);
+    expect(html).toContain(CHOSEN_HEADING);
+    expect(html.indexOf(">Segment<")).toBeLessThan(html.indexOf(">Region<"));
+    expect(draw([])).not.toContain(CHOSEN_HEADING);
+  });
+
+  it("shows '% filled' beside each field with a number", () => {
+    const html = draw([]);
+    expect(html).toContain("94% filled");
+    expect(html).toContain("20% filled");
+    expect(fillLabel(defs[2])).toBeNull();
+    expect(fillLabel({ ...defs[0], fill: 0.001 })).toBe("1% filled");
+    expect(fillLabel({ ...defs[0], fill: 0 })).toBe("0% filled");
+  });
+
+  it("makes a disabled box look disabled", () => {
+    const keys = ["a", "b", "c", "d", "e"];
+    const full = [...keys.map((k, i) => pick(k, 1, 10 + i)), pick("region", 0.2, 0)];
+    const html = renderToStaticMarkup(
+      createElement(ColumnChoices, { groups: [{ section: null, fields: full }], chosen: keys, onToggle: noop }),
+    );
+    expect(html).toMatch(/class="[^"]*cursor-not-allowed text-muted-foreground"[^>]*title="[^"]*Clear one first/);
+    expect(html).toContain("disabled:bg-muted");
+    expect(FULL_TIP).toContain("Clear one first");
+  });
+});
+
+// ── Item 7: a two-line card at phone width ──────────────────────────────────
+
+describe("item 7: at phone width each list row is a two-line card", () => {
+  const rows = [
+    { id: "c1", first_name: "Ravi", last_name: "Kumar", email: "ravi@dewin.test", phone: "", owner_email: null },
+  ];
+  const columns = [
+    { key: "first_name", label: "Name" },
+    { key: "email", label: "Email" },
+    { key: "phone", label: "Phone" },
+    { key: "owner_email", label: "Owner" },
+  ];
+
+  it("draws the name, then the next filled cells on one line, as one button", () => {
+    const html = renderToStaticMarkup(
+      createElement(RecordCards, {
+        rows,
+        columns,
+        extra: [],
+        ctx: { statuses: [], mode: "mirror" },
+        onOpen: noop,
+      }),
+    );
+    expect(html).toMatch(/<button type="button"[^>]*>/);
+    expect(html).toContain("Ravi Kumar");
+    expect(html).toContain("ravi@dewin.test");
+    // Two lines: the name and one line of details, each cut, never wrapped.
+    expect(html.match(/class="block w-full truncate/g)?.length).toBe(1);
+    expect(html).toContain("whitespace-nowrap");
+    expect(CARD_DETAILS).toBe(3);
+  });
+
+  it("draws the cards on a phone, and the table elsewhere", () => {
+    const list = read("./RecordList.tsx");
+    expect(list).toMatch(/isMobile \? \(\s*<RecordCards/);
   });
 });

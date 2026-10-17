@@ -24,12 +24,18 @@
  * - A cell does not wrap. Long text ends in an ellipsis, and the cell's title
  *   holds the full text.
  * - An owner who is not a member shows by the Zoho name, with "Zoho only".
+ *
+ * At phone width each row is a two-line card (WS-53 CRM-Q17b item 7,
+ * `RecordCards`): the name, then the next columns on one muted line. The
+ * whole card is one button, so the keyboard opens the record too.
  */
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
+import { Input } from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
+import { useViewMode } from "@/components/ViewModeProvider";
 import { relativeTime } from "@/lib/taskCard";
 import { useId, useState } from "react";
 import {
@@ -37,7 +43,9 @@ import {
   chosenDefs,
   columnGroups,
   effectiveColumns,
+  fieldMatches,
   fieldText,
+  fillLabel,
   listCell,
   pickable,
   readColumns,
@@ -190,6 +198,8 @@ export default function RecordList({
 }) {
   // CRM-C2: the Stage dot reads the mode, so it agrees with the board.
   const mode = useCrmModeValue();
+  // CRM-Q17b item 7: at phone width each row is a two-line card.
+  const { isMobile } = useViewMode();
   // The choice is per entity and lives in this browser. The state re-seats
   // while rendering when the entity changes, so no frame shows the old list's choice.
   // `null` is "nothing saved", and `[]` is "saved empty" (CRM-Q17a-2 item 2).
@@ -245,100 +255,110 @@ export default function RecordList({
         />
       )}
       <div className="flex-1 overflow-auto">
-        <table className="w-full border-collapse text-xs">
-          <thead className="sticky top-0 bg-background">
-            <tr className="border-b border-border">
-              {columns.map((column) => (
-                <th
-                  key={column.key}
-                  className="whitespace-nowrap px-4 py-2 text-left font-medium text-muted-foreground"
-                >
-                  {column.sort && sortable.has(column.sort) ? (
-                    <button
-                      onClick={() => onSort(column.sort!)}
-                      className="inline-flex items-center gap-1 hover:text-foreground tech-transition"
-                    >
-                      {column.label}
-                      {sort === column.sort &&
-                        (direction === "asc" ? (
-                          <Icon name="ArrowUp" className="w-3 h-3" />
-                        ) : (
-                          <Icon name="ArrowDown" className="w-3 h-3" />
-                        ))}
-                    </button>
-                  ) : (
-                    column.label
-                  )}
-                </th>
-              ))}
-              {extra.map((def) => (
-                <th
-                  key={`custom:${def.key}`}
-                  className="whitespace-nowrap px-4 py-2 text-left font-medium text-muted-foreground"
-                >
-                  {def.label}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr
-                key={String(row.id)}
-                onClick={() => onOpen(String(row.id))}
-                className="cursor-pointer border-b border-border/60 hover:bg-secondary/40 tech-transition"
-              >
-                {columns.map((column, index) => {
-                  const content = cell(column.key, row, { statuses, mode });
-                  const title = cellTitle(column.key, row, content);
-                  return (
-                    <td
-                      key={column.key}
-                      className={`whitespace-nowrap px-4 py-2 text-muted-foreground ${column.className ?? ""}`}
-                    >
-                      {index === 0 ? (
-                        // The row opens on a click, and Tab cannot reach a row. So
-                        // the first cell is a real button: the keyboard opens the
-                        // record here (DESIGN_SYSTEM §9, fence `crmRowKeyboard.test.ts`).
-                        <button
-                          type="button"
-                          title={title}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            onOpen(String(row.id));
-                          }}
-                          className={`cc-link rounded-sm text-left ${ONE_LINE}`}
-                        >
-                          {content}
-                        </button>
-                      ) : (
-                        <span className={ONE_LINE} title={title}>
-                          {content}
-                        </span>
-                      )}
-                    </td>
-                  );
-                })}
-                {extra.map((def) => {
-                  const value = listCell(row, def);
-                  return (
-                    <td
-                      key={`custom:${def.key}`}
-                      className="whitespace-nowrap px-4 py-2 text-muted-foreground"
-                    >
-                      <span
-                        className={ONE_LINE}
-                        title={value.kind === "empty" ? undefined : fieldText(value)}
+        {isMobile ? (
+          <RecordCards
+            rows={rows}
+            columns={columns}
+            extra={extra}
+            ctx={{ statuses, mode }}
+            onOpen={onOpen}
+          />
+        ) : (
+          <table className="w-full border-collapse text-xs">
+            <thead className="sticky top-0 bg-background">
+              <tr className="border-b border-border">
+                {columns.map((column) => (
+                  <th
+                    key={column.key}
+                    className="whitespace-nowrap px-4 py-2 text-left font-medium text-muted-foreground"
+                  >
+                    {column.sort && sortable.has(column.sort) ? (
+                      <button
+                        onClick={() => onSort(column.sort!)}
+                        className="inline-flex items-center gap-1 hover:text-foreground tech-transition"
                       >
-                        <FieldValue value={value} compact />
-                      </span>
-                    </td>
-                  );
-                })}
+                        {column.label}
+                        {sort === column.sort &&
+                          (direction === "asc" ? (
+                            <Icon name="ArrowUp" className="w-3 h-3" />
+                          ) : (
+                            <Icon name="ArrowDown" className="w-3 h-3" />
+                          ))}
+                      </button>
+                    ) : (
+                      column.label
+                    )}
+                  </th>
+                ))}
+                {extra.map((def) => (
+                  <th
+                    key={`custom:${def.key}`}
+                    className="whitespace-nowrap px-4 py-2 text-left font-medium text-muted-foreground"
+                  >
+                    {def.label}
+                  </th>
+                ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr
+                  key={String(row.id)}
+                  onClick={() => onOpen(String(row.id))}
+                  className="cursor-pointer border-b border-border/60 hover:bg-secondary/40 tech-transition"
+                >
+                  {columns.map((column, index) => {
+                    const content = cell(column.key, row, { statuses, mode });
+                    const title = cellTitle(column.key, row, content);
+                    return (
+                      <td
+                        key={column.key}
+                        className={`whitespace-nowrap px-4 py-2 text-muted-foreground ${column.className ?? ""}`}
+                      >
+                        {index === 0 ? (
+                          // The row opens on a click, and Tab cannot reach a row. So
+                          // the first cell is a real button: the keyboard opens the
+                          // record here (DESIGN_SYSTEM §9, fence `crmRowKeyboard.test.ts`).
+                          <button
+                            type="button"
+                            title={title}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onOpen(String(row.id));
+                            }}
+                            className={`cc-link rounded-sm text-left ${ONE_LINE}`}
+                          >
+                            {content}
+                          </button>
+                        ) : (
+                          <span className={ONE_LINE} title={title}>
+                            {content}
+                          </span>
+                        )}
+                      </td>
+                    );
+                  })}
+                  {extra.map((def) => {
+                    const value = listCell(row, def);
+                    return (
+                      <td
+                        key={`custom:${def.key}`}
+                        className="whitespace-nowrap px-4 py-2 text-muted-foreground"
+                      >
+                        <span
+                          className={ONE_LINE}
+                          title={value.kind === "empty" ? undefined : fieldText(value)}
+                        >
+                          <FieldValue value={value} compact />
+                        </span>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
         {!loading && rows.length === 0 && (
           <p className="p-8 text-center text-xs text-muted-foreground">
             {emptyNote ?? "Nothing matches this view."}
@@ -356,6 +376,77 @@ export default function RecordList({
         {loading ? "Loading…" : `${rows.length} of ${total}`}
       </footer>
     </div>
+  );
+}
+
+/** The most cells on the second line of a phone card, after the name. */
+export const CARD_DETAILS = 3;
+
+/** A cell that draws nothing: no value, or the dash of an empty value. */
+function blank(node: React.ReactNode): boolean {
+  return node === null || node === undefined || node === "" || node === "—";
+}
+
+/**
+ * The rows at phone width (CRM-Q17b item 7): a two-line card for each row.
+ * Line 1 is the first column, the name. Line 2 holds the next cells that
+ * have a value, at most `CARD_DETAILS`, with the custom columns last. Each
+ * line is cut with an ellipsis, so a card never grows past two lines.
+ */
+export function RecordCards({
+  rows,
+  columns,
+  extra,
+  ctx,
+  onOpen,
+}: {
+  rows: Row[];
+  columns: ReadonlyArray<{ key: string; label: string }>;
+  extra: FieldDef[];
+  ctx: CellContext;
+  onOpen: (id: string) => void;
+}) {
+  return (
+    <ul className="divide-y divide-border/60" aria-label="Records">
+      {rows.map((row) => {
+        const [first, ...rest] = columns;
+        const name = first ? cell(first.key, row, ctx) : String(row.id);
+        const details: Array<{ key: string; label: string; node: React.ReactNode }> = [];
+        for (const column of rest) {
+          const node = cell(column.key, row, ctx);
+          if (!blank(node)) details.push({ key: column.key, label: column.label, node });
+        }
+        for (const def of extra) {
+          const value = listCell(row, def);
+          if (value.kind !== "empty") {
+            details.push({ key: `custom:${def.key}`, label: def.label, node: fieldText(value) });
+          }
+        }
+        return (
+          <li key={String(row.id)}>
+            <button
+              type="button"
+              onClick={() => onOpen(String(row.id))}
+              className="flex w-full min-w-0 flex-col gap-0.5 px-4 py-2.5 text-left hover:bg-secondary/40 tech-transition"
+            >
+              <span className="block w-full truncate text-sm font-medium text-foreground">{name}</span>
+              <span className="flex w-full min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap text-[11px] text-muted-foreground">
+                {details.length === 0 ? (
+                  <span>—</span>
+                ) : (
+                  details.slice(0, CARD_DETAILS).map((d, i) => (
+                    <span key={d.key} className="inline-flex min-w-0 items-center gap-1.5 truncate" title={d.label}>
+                      {i > 0 ? <span aria-hidden="true">·</span> : null}
+                      <span className="truncate">{d.node}</span>
+                    </span>
+                  ))
+                )}
+              </span>
+            </button>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -385,10 +476,21 @@ function ColumnChooser({
   );
 }
 
+/** The heading of the chosen fields at the top of the Columns control. */
+export const CHOSEN_HEADING = "Shown in the list";
+
+/** Why a box of the Columns control is disabled. */
+export const FULL_TIP = `The list shows ${MAX_COLUMNS} fields at most. Clear one first.`;
+
 /**
  * The list of the Columns control. A group with a section draws its label
  * as a heading (CRM-C4b). A group with no section draws no heading, so the
  * list of today, one group with no section, draws as before.
+ *
+ * CRM-Q17b item 6: a search box finds a field by its label. The chosen
+ * fields come first, under their own heading. Each field shows "% filled"
+ * when the gateway sent a fill number. A box that the limit disables looks
+ * disabled: a muted label, the not-allowed cursor and a tip.
  */
 export function ColumnChoices({
   groups,
@@ -401,45 +503,92 @@ export function ColumnChoices({
 }) {
   const full = chosen.length >= MAX_COLUMNS;
   const baseId = useId();
+  const [query, setQuery] = useState("");
+  const all = groups.flatMap((group) => group.fields);
+  const picked = chosen
+    .map((key) => all.find((def) => def.key === key))
+    .filter((def): def is FieldDef => def !== undefined && fieldMatches(def, query));
+  const rest = groups
+    .map((group) => ({
+      ...group,
+      fields: group.fields.filter((def) => !chosen.includes(def.key) && fieldMatches(def, query)),
+    }))
+    .filter((group) => group.fields.length > 0);
   const item = (def: FieldDef) => {
     const on = chosen.includes(def.key);
+    const off = full && !on;
+    const filled = fillLabel(def);
     return (
       <li key={def.key}>
-        <label className="flex items-center gap-2 text-xs text-foreground">
+        <label
+          className={`flex items-center gap-2 text-xs ${off ? "cursor-not-allowed text-muted-foreground" : "text-foreground"}`}
+          title={off ? FULL_TIP : undefined}
+        >
           <Checkbox
             checked={on}
-            disabled={full && !on}
+            disabled={off}
+            className="disabled:bg-muted"
             onChange={() => onToggle(def.key)}
             aria-label={def.label}
           />
-          {def.label}
+          <span className="min-w-0 flex-1 truncate">{def.label}</span>
+          {filled ? (
+            <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{filled}</span>
+          ) : null}
         </label>
       </li>
     );
   };
+  const chosenId = `${baseId}-chosen`;
   return (
-    <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto p-4">
-      {groups.flatMap((group) => {
-        if (!group.section) return group.fields.map(item);
-        // A section is a group with its label as the name (review note).
-        const headingId = `${baseId}-${group.section.id}`;
-        return [
-          <li
-            key={`section:${group.section.id}`}
-            role="group"
-            aria-labelledby={headingId}
-            className="pt-2 first:pt-0"
-          >
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="shrink-0 px-4 pt-4">
+        <Input
+          icon="Search"
+          inputSize="sm"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Find a field"
+          aria-label="Find a field"
+        />
+      </div>
+      <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto p-4">
+        {picked.length > 0 ? (
+          <li key="chosen" role="group" aria-labelledby={chosenId} className="pb-2">
             <span
-              id={headingId}
+              id={chosenId}
               className="block text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
             >
-              {group.section.label}
+              {CHOSEN_HEADING}
             </span>
-            <ul className="mt-1 space-y-1">{group.fields.map(item)}</ul>
-          </li>,
-        ];
-      })}
-    </ul>
+            <ul className="mt-1 space-y-1">{picked.map(item)}</ul>
+          </li>
+        ) : null}
+        {picked.length === 0 && rest.length === 0 ? (
+          <li className="py-4 text-center text-xs text-muted-foreground">No field matches.</li>
+        ) : null}
+        {rest.flatMap((group) => {
+          if (!group.section) return group.fields.map(item);
+          // A section is a group with its label as the name (review note).
+          const headingId = `${baseId}-${group.section.id}`;
+          return [
+            <li
+              key={`section:${group.section.id}`}
+              role="group"
+              aria-labelledby={headingId}
+              className="pt-2 first:pt-0"
+            >
+              <span
+                id={headingId}
+                className="block text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+              >
+                {group.section.label}
+              </span>
+              <ul className="mt-1 space-y-1">{group.fields.map(item)}</ul>
+            </li>,
+          ];
+        })}
+      </ul>
+    </div>
   );
 }

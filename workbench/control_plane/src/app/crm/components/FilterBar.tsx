@@ -14,6 +14,11 @@
  *
  * The choices live in `lib/filterBar.ts` and the view rules in
  * `lib/savedViews.ts`. This file is markup and local state only.
+ *
+ * Since WS-53 CRM-Q17b item 5 the bar shows Owner and the fullest picklists
+ * at rest (`splitFilters`). Source, each other custom filter and the date
+ * ranges sit behind one button, "Filters (n)", where n counts the ones in
+ * force (`hiddenActiveCount`). The button opens them on a second row.
  */
 
 import Button from "@/components/ui/Button";
@@ -21,7 +26,7 @@ import Checkbox from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 import SelectButton, { OFF_DEFAULT } from "@/components/ui/SelectButton";
 import { filterWord } from "@/lib/shell/registry";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import type { FieldDef } from "../lib/fields";
 import {
@@ -32,6 +37,8 @@ import {
   customFilters,
   dateFilterValue,
   dateFilters,
+  hiddenActiveCount,
+  moreFiltersLabel,
   numberFilterValue,
   optionsOf,
   ownerOptions,
@@ -44,6 +51,7 @@ import {
   searchCommitter,
   setCustom,
   setRange,
+  splitFilters,
   type CrmOwner,
 } from "../lib/filterBar";
 import { clearFilters, type SavedView } from "../lib/savedViews";
@@ -122,6 +130,63 @@ export default function FilterBar({
     layout?.studio === true
       ? customFilters(layout.fields, true)
       : picklistDefs(fieldDefs).map((def) => ({ def, kind: "options" }));
+  // CRM-Q17b item 5: the fullest picklists at rest, the rest behind a button.
+  const { shown, more } = splitFilters(filters);
+  const hiddenActive = hiddenActiveCount(view, more);
+  // Open at first when a filter behind the button is in force.
+  const [moreOpen, setMoreOpen] = useState(hiddenActive > 0);
+  const moreId = useId();
+
+  /** One custom filter: a picklist, a checkbox, a number or a day. */
+  function customFilter({ def, kind }: CustomFilter) {
+    const chosen = view.custom[def.key] ?? [];
+    if (kind === "boolean") {
+      return (
+        <SelectButton
+          key={def.key}
+          label={def.label}
+          widthClass="w-40"
+          className={chosen.length > 0 ? OFF_DEFAULT : ""}
+          value={chosen[0] ?? ANY}
+          defaultValue={ANY}
+          onChange={(next) => onChange(setCustom(view, def.key, next))}
+          options={booleanFilterOptions(def)}
+        />
+      );
+    }
+    if (kind === "number" || kind === "date") {
+      return (
+        <EqualsFilter
+          key={def.key}
+          def={def}
+          kind={kind}
+          value={chosen[0] ?? ANY}
+          onCommit={(next) => onChange(setCustom(view, def.key, next))}
+        />
+      );
+    }
+    const options = optionsOf(def);
+    const known = chosen.every((c) => options.some((o) => o.value === c));
+    return (
+      <SelectButton
+        key={def.key}
+        label={def.label}
+        widthClass="w-40"
+        className={chosen.length > 0 ? OFF_DEFAULT : ""}
+        value={chosen[0] ?? ANY}
+        defaultValue={ANY}
+        onChange={(next) => onChange(setCustom(view, def.key, next))}
+        options={[
+          { value: ANY, label: `Any ${def.label.toLowerCase()}` },
+          ...options,
+          // A saved view can name an option that the field no longer lists.
+          ...(known || chosen.length === 0
+            ? []
+            : [{ value: chosen[0], label: chosen.join(", ") }]),
+        ]}
+      />
+    );
+  }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -154,94 +219,68 @@ export default function FilterBar({
           onChange={(next) => onChange({ ...view, owner: next || null })}
           options={ownerOptions(owners, view.owner)}
         />
-        <SelectButton
-          label="Source"
-          widthClass="w-36"
-          className={view.source ? OFF_DEFAULT : ""}
-          value={view.source ?? ANY}
-          defaultValue={ANY}
-          onChange={(next) => onChange({ ...view, source: next || null })}
-          options={[{ value: ANY, label: "Any source" }, ...SOURCE_OPTIONS]}
-        />
-        {filters.map(({ def, kind }) => {
-          const chosen = view.custom[def.key] ?? [];
-          if (kind === "boolean") {
-            return (
-              <SelectButton
-                key={def.key}
-                label={def.label}
-                widthClass="w-40"
-                className={chosen.length > 0 ? OFF_DEFAULT : ""}
-                value={chosen[0] ?? ANY}
-                defaultValue={ANY}
-                onChange={(next) => onChange(setCustom(view, def.key, next))}
-                options={booleanFilterOptions(def)}
-              />
-            );
-          }
-          if (kind === "number" || kind === "date") {
-            return (
-              <EqualsFilter
-                key={def.key}
-                def={def}
-                kind={kind}
-                value={chosen[0] ?? ANY}
-                onCommit={(next) => onChange(setCustom(view, def.key, next))}
-              />
-            );
-          }
-          const options = optionsOf(def);
-          const known = chosen.every((c) => options.some((o) => o.value === c));
-          return (
-            <SelectButton
-              key={def.key}
-              label={def.label}
-              widthClass="w-40"
-              className={chosen.length > 0 ? OFF_DEFAULT : ""}
-              value={chosen[0] ?? ANY}
-              defaultValue={ANY}
-              onChange={(next) => onChange(setCustom(view, def.key, next))}
-              options={[
-                { value: ANY, label: `Any ${def.label.toLowerCase()}` },
-                ...options,
-                // A saved view can name an option that the field no longer lists.
-                ...(known || chosen.length === 0
-                  ? []
-                  : [{ value: chosen[0], label: chosen.join(", ") }]),
-              ]}
-            />
-          );
-        })}
-        {dateFilters(entity, mirror).map((range) => (
-          <div
-            key={range.label}
-            className="flex items-center gap-1"
-            role="group"
-            aria-label={`${range.label} dates`}
-          >
-            <span className="text-xs text-muted-foreground">{range.label}</span>
-            <Input
-              type="date"
-              inputSize="sm"
-              aria-label={`${range.label} from`}
-              value={view.ranges[range.from] ?? ""}
-              onChange={(e) => onChange(setRange(view, range.from, e.target.value))}
-            />
-            <Input
-              type="date"
-              inputSize="sm"
-              aria-label={`${range.label} to`}
-              value={view.ranges[range.to] ?? ""}
-              onChange={(e) => onChange(setRange(view, range.to, e.target.value))}
-            />
-          </div>
-        ))}
+        {shown.map(customFilter)}
+        <Button
+          variant="ghost"
+          size="sm"
+          icon="SlidersHorizontal"
+          selected={hiddenActive > 0}
+          aria-expanded={moreOpen}
+          aria-controls={moreId}
+          onClick={() => setMoreOpen((open) => !open)}
+        >
+          {moreFiltersLabel(hiddenActive)}
+        </Button>
         {activeCount(view) > 0 || view.statusId || view.q ? (
           <Button variant="ghost" size="sm" icon="X" onClick={() => onChange(clearFilters(view))}>
             Clear
           </Button>
         ) : null}
       </div>
+
+      {moreOpen ? (
+        <div
+          id={moreId}
+          role="group"
+          aria-label="More filters"
+          className="mt-2 flex flex-wrap items-center gap-2"
+        >
+          <SelectButton
+            label="Source"
+            widthClass="w-36"
+            className={view.source ? OFF_DEFAULT : ""}
+            value={view.source ?? ANY}
+            defaultValue={ANY}
+            onChange={(next) => onChange({ ...view, source: next || null })}
+            options={[{ value: ANY, label: "Any source" }, ...SOURCE_OPTIONS]}
+          />
+          {more.map(customFilter)}
+          {dateFilters(entity, mirror).map((range) => (
+            <div
+              key={range.label}
+              className="flex items-center gap-1"
+              role="group"
+              aria-label={`${range.label} dates`}
+            >
+              <span className="text-xs text-muted-foreground">{range.label}</span>
+              <Input
+                type="date"
+                inputSize="sm"
+                aria-label={`${range.label} from`}
+                value={view.ranges[range.from] ?? ""}
+                onChange={(e) => onChange(setRange(view, range.from, e.target.value))}
+              />
+              <Input
+                type="date"
+                inputSize="sm"
+                aria-label={`${range.label} to`}
+                value={view.ranges[range.to] ?? ""}
+                onChange={(e) => onChange(setRange(view, range.to, e.target.value))}
+              />
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       {removed.length > 0 ? (
         <p role="status" className="mt-2 text-[11px] text-muted-foreground">
