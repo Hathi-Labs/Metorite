@@ -20,6 +20,8 @@ import Checkbox from "@/components/ui/Checkbox";
 import ProgressBar from "@/components/ui/ProgressBar";
 import { useToast } from "@/components/ui/Toast";
 import { useId, useState } from "react";
+import { pushView } from "../lib/history";
+import { DEFAULT_VIEW, selectSection, viewHref } from "../lib/urlState";
 import * as api from "../lib/api";
 import { CrmError } from "../lib/api";
 import { syncFailureMessage } from "../lib/connect";
@@ -83,6 +85,7 @@ export function SyncHealthCardView({
   onSetSync = () => undefined,
   onSyncOnly = () => undefined,
   detailsOpen = false,
+  onReconnect = () => pushView(viewHref(selectSection(DEFAULT_VIEW, "setup"))),
 }: {
   health: SyncHealth;
   nowMs?: number;
@@ -96,6 +99,8 @@ export function SyncHealthCardView({
   onSyncOnly?: (key: string) => void;
   /** CRM-Q17b item 8: the table of counts starts open. A test opens it. */
   detailsOpen?: boolean;
+  /** "Connect again" of a missing scope: Setup and sync, where the consent is. */
+  onReconnect?: () => void;
 }) {
   const lines = statusLines(health, nowMs);
   const running = isRunning(health);
@@ -109,6 +114,7 @@ export function SyncHealthCardView({
   /** The one button of a "Needs you" item. */
   const act = (item: NeedsYouItem) => {
     if (item.action === "hold") onSetSync(item.key, false);
+    else if (item.action === "reconnect") onReconnect();
     else onSyncOnly(item.key);
   };
 
@@ -159,16 +165,18 @@ export function SyncHealthCardView({
                         {item.text}
                       </span>
                     )}
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      className="ml-auto shrink-0"
-                      loading={busyKey === item.key}
-                      disabled={blocked}
-                      onClick={() => act(item)}
-                    >
-                      {NEEDS_YOU_ACTIONS[item.action]}
-                    </Button>
+                    {item.action ? (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="ml-auto shrink-0"
+                        loading={busyKey === item.key}
+                        disabled={item.action === "reconnect" ? false : blocked}
+                        onClick={() => act(item)}
+                      >
+                        {NEEDS_YOU_ACTIONS[item.action]}
+                      </Button>
+                    ) : null}
                   </li>
                 );
               })}

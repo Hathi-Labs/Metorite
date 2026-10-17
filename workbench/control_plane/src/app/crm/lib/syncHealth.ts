@@ -374,15 +374,29 @@ export function largeSentence(label: string, count: number): string {
 // ── "Needs you" (CRM-Q17b item 8, spec section 18.9.6) ─────────────────────
 
 /** What the one button of a "Needs you" item does. */
-export type NeedsYouAction = "check-again" | "sync-alone" | "hold";
+export type NeedsYouAction = "check-again" | "reconnect" | "sync-alone" | "hold";
 
 /** The words of each button. */
 export const NEEDS_YOU_ACTIONS: Record<NeedsYouAction, string> = {
   // A run of the one key, which asks Zoho at once (engine `_unavailable_now`).
   "check-again": "Check again",
+  // A missing scope clears only with a new consent, in Setup and sync.
+  reconnect: "Connect again",
   "sync-alone": "Sync it on its own",
   hold: "Hold it",
 };
+
+/**
+ * The action of a module that the last run could not read (fix round 1,
+ * P2). "Check again" is a run of the one key, so it goes only to a key that
+ * Zoho turned off and that `PUT /crm/sync/modules` and `POST /crm/sync/zoho`
+ * accept (`isHoldable`). A missing scope never clears by a run, so it gets
+ * "Connect again". A turned-off key that a run cannot name gets no button.
+ */
+export function unavailableAction(entity: HealthEntity): NeedsYouAction | null {
+  if (!isTurnedOff(entity)) return "reconnect";
+  return isHoldable(entity.key) ? "check-again" : null;
+}
 
 export type NeedsYouItem = {
   key: string;
@@ -390,13 +404,14 @@ export type NeedsYouItem = {
   /** The name of the module, or null when the text starts with it. */
   name: string | null;
   text: string;
-  action: NeedsYouAction;
+  /** `null`: the item says what to do in Zoho, and has no button. */
+  action: NeedsYouAction | null;
 };
 
 /**
  * The block at the top of Sync health (CRM-Q17b item 8): the modules that
  * need the admin, each with one action. A module that Zoho refuses comes
- * first ("Check again"), then a held module ("Sync it on its own"), then a
+ * first (`unavailableAction`), then a held module ("Sync it on its own"), then a
  * large module that nobody decided on ("Hold it"). A key shows once, by
  * that order.
  */
@@ -416,7 +431,7 @@ export function needsYou(health: SyncHealth | null | undefined): NeedsYouItem[] 
       kind: "unavailable",
       name: label(entity.key),
       text: unavailableSentence(entity),
-      action: "check-again",
+      action: unavailableAction(entity),
     });
   }
   for (const key of heldKeys(health)) {

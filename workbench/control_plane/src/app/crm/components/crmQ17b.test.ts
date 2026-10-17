@@ -31,6 +31,7 @@ import {
   NEEDS_YOU_ACTIONS,
   isTurnedOff,
   needsYou,
+  unavailableAction,
   type HealthEntity,
   type SyncHealth,
 } from "../lib/syncHealth";
@@ -711,5 +712,44 @@ describe("the module preview does not scroll sideways at phone width (Batch M re
     const stacked = html.slice(from, html.indexOf("</ul>", from));
     expect(stacked).toContain("A very long commercial name for a site");
     expect(stacked).toContain("40");
+  });
+});
+
+// ── Fix round 1, P2: "Check again" only where a run can clear it ────────────
+
+describe("fix round 1, P2: the action of a module that the last run could not read", () => {
+  const scope = entity("module:Install_Base", { last_run: { unavailable: 1 } });
+  const offStep = entity("deal_contacts", { last_run: { unavailable: 1, hidden: 1 } });
+  const offDeals = entity("deals", { last_run: { unavailable: 1, hidden: 1 } });
+
+  it("gives Check again only to a turned-off key that a run of one key accepts", () => {
+    expect(unavailableAction(offDeals)).toBe("check-again");
+    expect(unavailableAction(offStep)).toBeNull();
+    expect(unavailableAction(scope)).toBe("reconnect");
+    expect(NEEDS_YOU_ACTIONS.reconnect).toBe("Connect again");
+  });
+
+  it("draws Connect again for a missing scope, and no button for a step key", () => {
+    let reconnected = 0;
+    const html = renderToStaticMarkup(
+      createElement(SyncHealthCardView, {
+        health: health({ entities: [scope, offStep], holds: {} }),
+        nowMs: 0,
+        onSyncNow: noop,
+        onReconnect: () => (reconnected += 1),
+      }),
+    );
+    expect(html).toContain("Connect again");
+    expect(html).not.toContain("Check again");
+    // Two items, one button: the step key says what to do, with no action.
+    expect(html.match(/>Unavailable</g)?.length).toBe(2);
+    expect(html.match(/>Connect again</g)?.length).toBe(1);
+    expect(reconnected).toBe(0);
+  });
+
+  it("sends Connect again to Setup and sync, and never to a run", () => {
+    const card = read("./SyncHealthCard.tsx");
+    expect(card).toMatch(/onReconnect = \(\) => pushView\(viewHref\(selectSection\(DEFAULT_VIEW, "setup"\)\)\)/);
+    expect(card).toMatch(/else if \(item\.action === "reconnect"\) onReconnect\(\);/);
   });
 });
