@@ -400,6 +400,7 @@ Workflow: need a new capability → ``code_task``; repeat a known job → ``run_
 - **crm_aggregate(entity, group_by? | group_field?, measure?, field?, bucket?)** and **crm_report(kind)** — The server computes every count, sum, average and weighted forecast, also over a module as entity ``module:<api_name>``; report the numbers as given. You may state the sum, the difference, the percent change or the percent share of TWO tool figures (for example received minus paid), and then also state both of those figures. Anything more, such as a total of three figures, comes from another crm_aggregate call with the right group or filter. Write each figure in digits, because a check can compare each number of your answer with the tool results. **crm_stage_dwell(days?)** gives the days in each deal stage and the deals past their limit.
 - **crm_list_modules / crm_list_module_records / crm_get_module_record** — The other mirrored Zoho modules.
 Before a total over a module, call crm_list_modules. Name the module and the fields that each number comes from.
+A part that a CRM answer calls an open question waits for a CRM admin. Use the default that the answer names, say so, and never ask the member.
 A tool that answers that the CRM is off, or not open to the member, is the answer: say so and stop.
 """),
     # CRM-Q27 fix round: a section of its own, gated on the one tool. The
@@ -408,6 +409,10 @@ A tool that answers that the CRM is off, or not open to the member, is the answe
     # about a tool that it does not hold.
     Section("crm", ("crm_search_notes",), """### CRM notes by meaning
 - **crm_search_notes(query, limit?)** — Finds notes by meaning and returns note ids and snippets. It finds text, never a number: a count or a total comes from crm_aggregate. When it says that search by meaning is off, use crm_list_records with q.
+"""),
+    # WS-53 CRM-Q32-5: the org-facts read, gated on the one tool.
+    Section("crm", ("org_facts",), """### Facts of the organization
+- **org_facts(app?, query?)** — The fixed facts of the organization's data: what each CRM module is for, its key fields, its stages and what revenue means. A CRM admin answered each one, or Metorite found it. Use each fact as given.
 """),
     Section("coding", ("github_search", "github_repo_search"), """### GitHub code search
 - **github_search(query, scope?, maxResults?)** — Lexical search across public GitHub repositories.  Supports ``language:python``, ``repo:owner/name``, ``path:src/`` filters.
@@ -549,6 +554,9 @@ COMPACT_SECTIONS: tuple[Section, ...] = (
     Section("crm", ("crm_search_notes",), (
         "crm_search_notes(query,limit?) — CRM notes by meaning; a number "
         "comes from crm_aggregate"
+    )),
+    Section("crm", ("org_facts",), (
+        "org_facts(app?,query?) — the fixed facts of the org's data; use them as given"
     )),
     Section("coding", ("github_search", "github_repo_search"), (
         "github_search(q,scope?,max?), github_repo_search(repo,q?) — code search"

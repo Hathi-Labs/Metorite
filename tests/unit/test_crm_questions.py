@@ -556,3 +556,26 @@ def test_each_run_starts_the_step_after_the_mapping_pipeline() -> None:
     assert source.count("start_questions(org, after=start_mapping(org))") == 1
     assert source.count(
         "start_questions(handle.org, after=start_mapping(handle.org))") == 1
+
+
+# ── CRM-Q32-6: the 422 of an open key part names where to answer ────────────
+
+
+def test_a_no_key_field_of_an_open_part_carries_the_href() -> None:
+    from fastapi import HTTPException
+    from gateway.routes.crm.field_sql import FieldScope
+
+    plain = FieldScope(column="fields", owner="module:Payment_Received", fields={})
+    with pytest.raises(HTTPException) as got:
+        plain.ref("@amount")
+    assert got.value.detail["code"] == "no_key_field" and "href" not in got.value.detail
+    asked = FieldScope(column="fields", owner="module:Payment_Received", fields={},
+                       questions=frozenset({"amount"}))
+    with pytest.raises(HTTPException) as got:
+        asked.ref("@amount")
+    assert got.value.detail["href"] == "/crm?tab=settings&section=questions"
+    assert got.value.detail["message"].endswith(
+        "A CRM admin can answer this in CRM settings, Open questions.")
+    with pytest.raises(HTTPException) as got:
+        asked.ref("@date")
+    assert "href" not in got.value.detail

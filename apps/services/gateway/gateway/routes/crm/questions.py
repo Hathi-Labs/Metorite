@@ -266,6 +266,14 @@ async def module_question_ids(db: Any, org: str | None,
     return out
 
 
+async def open_parts(db: Any, org: str | None, module: str) -> frozenset[str]:
+    """The key parts of *module* that are an open question (CRM-Q32-6),
+    for the 422 ``no_key_field`` of the aggregate. Empty outside
+    ``CRM_QUESTIONS_ORGS``. It reads in the caller's tenant session."""
+    ids = (await module_question_ids(db, org)).get(module, [])
+    return frozenset(qid.rsplit(":", 1)[1] for qid in ids if qid.startswith("key:"))
+
+
 # ── The questions step and My Day (CRM-Q32-4, §18.14.5) ────────────────────
 
 
@@ -778,6 +786,7 @@ __all__ = [
     "list_questions",
     "load",
     "module_question_ids",
+    "open_parts",
     "questions_after_run",
     "questions_card",
     "questions_off",

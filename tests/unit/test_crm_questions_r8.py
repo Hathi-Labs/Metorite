@@ -627,3 +627,23 @@ async def test_sync_health_carries_the_open_count(q_env, app_engine, monkeypatch
     monkeypatch.setattr(get_settings(), "crm_questions_orgs", "", raising=False)
     health = await call(p, _user(p.org_a), "GET", "/crm/sync/health")
     assert health.json()["open_questions"] is None
+
+
+async def test_the_aggregate_422_of_an_open_key_part_names_open_questions(
+    q_env, app_engine, monkeypatch,
+) -> None:
+    """CRM-Q32-6 item 2: the gateway puts ``href`` in the 422 detail of
+    ``no_key_field`` when the part is an open question, and only then."""
+    from acb_common import get_settings
+
+    p = q_env
+    seed_a(p)
+    path = "/crm/aggregate?entity=module:Fee_Receipts&measure=sum_amount&group_by=owner"
+    got = await call(p, _user(p.org_a, admin=False), "GET", path)
+    assert got.status_code == 422, got.text
+    detail = got.json()["detail"]
+    assert (detail["code"], detail["href"]) == (
+        "no_key_field", "/crm?tab=settings&section=questions")
+    monkeypatch.setattr(get_settings(), "crm_questions_orgs", "", raising=False)
+    got = await call(p, _user(p.org_a, admin=False), "GET", path)
+    assert got.status_code == 422 and "href" not in got.json()["detail"]
