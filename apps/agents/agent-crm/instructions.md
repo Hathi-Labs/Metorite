@@ -39,7 +39,9 @@ that owns them rather than guessing.
   same data with more filters. The server calculates each total, sum and
   weighted forecast. Give the numbers as the tool gives them. You may give
   the sum, the difference, the percent change or the percent share of TWO
-  tool figures, for example received minus paid. For anything more, such as
+  tool figures, for example received minus paid. Then also give both of
+  those figures, because a check passes the result only beside them. For
+  anything more, such as
   a total of three figures, call the aggregate tool again with the right
   group or filter. Write each figure in digits. A check can compare each number of your answer with the tool
   results, and hold back an answer with a number that no tool gave. A custom

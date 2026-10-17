@@ -5549,12 +5549,12 @@ async def run_agent_stream(
                             # artifact_created CUSTOM events here) ──────────
                             while not _artifact_queue.empty():
                                 _aev = _artifact_queue.get_nowait()
-                                if _aev:
+                                if _relayable(_aev):
                                     yield _sse(_aev)
                         # Drain any remaining artifact events after stream ends
                         while not _artifact_queue.empty():
                             _aev = _artifact_queue.get_nowait()
-                            if _aev:
+                            if _relayable(_aev):
                                 yield _sse(_aev)
                         break  # success — exit retry loop
                     except Exception as _exc:
@@ -5646,7 +5646,7 @@ async def run_agent_stream(
                 # ── Drain any late-arriving artifact events + reset queue ─
                 while not _artifact_queue.empty():
                     _aev = _artifact_queue.get_nowait()
-                    if _aev:
+                    if _relayable(_aev):
                         yield _sse(_aev)
                 _active_run_queue.reset(_t15_token)
                 _unregister_run_queue(_t15_qkey)
@@ -6083,13 +6083,14 @@ async def run_agent_stream(
                     ev = await asyncio.wait_for(queue.get(), timeout=0.1)
                     if ev is None:
                         break
-                    yield _sse(ev)
+                    if _relayable(ev):
+                        yield _sse(ev)
                 except asyncio.TimeoutError:
                     if run_task.done():
                         # Drain any remaining events
                         while not queue.empty():
                             ev = queue.get_nowait()
-                            if ev:
+                            if _relayable(ev):
                                 yield _sse(ev)
                         break
 
@@ -7334,6 +7335,18 @@ def _is_hold_beat(event: Any) -> bool:
         and event.get("type") == "CUSTOM"
         and event.get("name") == "answer_check.held"
     )
+
+
+def _relayable(event: Any) -> bool:
+    """True for a run queue event that a relay sends to the member.
+
+    The Tier 1.5 and Tier 2 relays copy the run queue to the stream. A
+    delegated native run puts its hold beat (CRM-Q29) on its parent's queue,
+    so each relay drops it here: the beat is no output and no answer. The
+    native loop reads it in its own way (``_is_hold_beat``). Fence:
+    ``tests/unit/test_crm_answer_check_executor.py``.
+    """
+    return bool(event) and not _is_hold_beat(event)
 
 
 def _is_route_event(event: Any) -> bool:

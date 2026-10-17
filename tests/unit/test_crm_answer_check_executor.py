@@ -163,3 +163,118 @@ def test_a_slow_held_answer_outlives_the_idle_watchdog(monkeypatch) -> None:
     assert not [e for e in events if e.get("type") == "RUN_ERROR"]
     # The sign of life resets the watchdog, and the member never sees it.
     assert not [e for e in events if e.get("name") == answer_check.HOLD_EVENT]
+
+
+# ── Fix round 3: the hold beat never leaves a relay ─────────────────────────
+
+def test_a_relay_drops_the_hold_beat() -> None:
+    from acb_skills import answer_check
+    from orchestrator import executor
+
+    beat = {"type": "CUSTOM", "name": answer_check.HOLD_EVENT, "value": {}}
+    assert not executor._relayable(beat)
+    assert not executor._relayable(None)
+    assert executor._relayable({"type": "CUSTOM", "name": "artifact_created"})
+
+
+def _queue_reads(func: Any) -> set[str]:
+    """Each name that *func* binds from a run queue read."""
+    import ast
+
+    names: set[str] = set()
+    for node in ast.walk(func):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        reads = [n for n in ast.walk(node.value) if isinstance(n, ast.Attribute)
+                 and n.attr in ("get_nowait", "get")]
+        if reads:
+            names.add(target.id)
+    return names
+
+
+def _drops_the_beat(test: Any, name: str, *, in_body: bool) -> bool:
+    """True when the branch of *test* keeps a beat out. In the body of the
+    ``if``, that is ``_relayable(name)`` or ``not _is_hold_beat(name)``. In
+    its ``else``, or before a ``continue``, it is the reverse."""
+    import ast
+
+    negated: set[int] = set()
+    for node in ast.walk(test):
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            negated.update(id(n) for n in ast.walk(node.operand))
+    for call in (n for n in ast.walk(test) if isinstance(n, ast.Call)):
+        fn = getattr(call.func, "id", "")
+        if name not in [getattr(a, "id", None) for a in call.args]:
+            continue
+        keeps = (fn == "_relayable") != (id(call) in negated)
+        if fn == "_is_hold_beat":
+            keeps = id(call) in negated
+        if fn in ("_relayable", "_is_hold_beat") and keeps == in_body:
+            return True
+    return False
+
+
+def _guarded(node: Any, name: str, parents: dict[Any, Any]) -> bool:
+    """True when a hold beat check of *name* keeps a beat away from *node*."""
+    import ast
+
+    child, up = node, parents.get(node)
+    while up is not None and not isinstance(up, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(up, ast.If):
+            in_body = any(child is n for n in up.body)
+            if _drops_the_beat(up.test, name, in_body=in_body):
+                return True
+        # A sibling before it: "if not x or _is_hold_beat(x): continue".
+        for field in ("body", "orelse"):
+            block = getattr(up, field, None)
+            if isinstance(block, list) and child in block:
+                for prior in block[:block.index(child)]:
+                    if (isinstance(prior, ast.If)
+                            and any(isinstance(b, ast.Continue) for b in prior.body)
+                            and _drops_the_beat(prior.test, name, in_body=False)):
+                        return True
+        child, up = up, parents.get(up)
+    return False
+
+
+def _relay_sites(tree: Any) -> list[tuple[int, bool]]:
+    """Each ``yield _sse(x)`` of an event read from a run queue, with true
+    when a hold beat check guards it."""
+    import ast
+
+    parents: dict[Any, Any] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+    sites: list[tuple[int, bool]] = []
+    for func in (n for n in ast.walk(tree)
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))):
+        reads = _queue_reads(func)
+        for node in ast.walk(func):
+            call = getattr(node, "value", None)
+            if not (isinstance(node, ast.Yield) and isinstance(call, ast.Call)):
+                continue
+            if getattr(call.func, "id", "") != "_sse" or len(call.args) != 1:
+                continue
+            arg = call.args[0]
+            if isinstance(arg, ast.Name) and arg.id in reads:
+                sites.append((node.lineno, _guarded(node, arg.id, parents)))
+    return sites
+
+
+def test_each_relay_of_a_run_queue_drops_the_hold_beat() -> None:
+    """Fix round 3, rule 3: each ``yield _sse(x)`` of an event read from a
+    run queue sits behind a hold beat check: the native loop, Tier 1.5 and
+    Tier 2. A delegated native run puts its beat on its parent's queue, so a
+    relay that forgets the check sends it to the member."""
+    import ast
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / (
+        "apps/services/orchestrator/orchestrator/executor.py")
+    sites = _relay_sites(ast.parse(path.read_text(encoding="utf-8-sig")))
+    assert len(sites) >= 8, sites   # 3 native, 3 at Tier 1.5, 2 at Tier 2
+    assert [line for line, ok in sites if not ok] == []
