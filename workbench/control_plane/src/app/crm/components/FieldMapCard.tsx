@@ -91,6 +91,7 @@ import {
   type PlanList,
   type PlanOutcome,
 } from "../lib/fieldMap";
+import { SUGGESTIONS_KEY } from "../lib/suggestions";
 import type { EntitySlug } from "../lib/types";
 import { FIELD_ENTITIES } from "./FieldsCard";
 import { Card } from "./SettingsCards";
@@ -446,12 +447,22 @@ function usePlan(version: number | null): MappingPlan | null {
   return res.data ?? null;
 }
 
+/**
+ * Read the card again, and the suggestions too (round 2 review P1): a pick
+ * by hand writes a new open draft, so a suggestion on screen must read the
+ * new draft, or its approve would act on the older one.
+ */
+function rereadPlan(): void {
+  invalidate(KEY_PREFIX);
+  invalidate(SUGGESTIONS_KEY);
+}
+
 /** The calls of the plan. A write reads the card again, whatever its result. */
 const PLAN_CALLS: PlanCalls = {
   draft: api.draftMappingPlan,
   approve: api.approveMappingPlan,
   restore: api.restoreMappingPlan,
-  reread: () => invalidate(KEY_PREFIX),
+  reread: rereadPlan,
 };
 
 /** The card with its data. The page draws it for an admin in Mirror mode. */
@@ -491,7 +502,7 @@ export default function FieldMapCard() {
       toast.show({ key: "crm-field-map", variant: "error", title: message });
     } finally {
       setBusy(null);
-      invalidate(KEY_PREFIX);
+      rereadPlan();
     }
   }
 

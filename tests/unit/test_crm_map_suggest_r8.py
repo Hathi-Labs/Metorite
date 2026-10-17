@@ -403,3 +403,68 @@ async def test_each_core_reader_gives_the_same_answer_with_and_without_a_role(mp
         "the role is in use, so the comparison is not blind")
 
     assert await _readers(p, p.org_a) == before
+
+
+# ── Round 2 review: a write on an older draft of the same base ───────────────
+
+
+async def _older_sibling(p: Any, a: Any) -> tuple[dict[str, Any], int]:
+    """The pipeline draft S, then a pick by hand H built on S. Both sit on
+    the version in use. Returns the suggestion as the panel read it (on S)
+    and the version of H."""
+    one = await _suggested(p, a)
+    hand = await _req(_admin_of(p.org_a), "POST", PLANS, {"changes": [
+        {"op": "put", "entity": "leads", "field_api_name": "Why_Lost",
+         "target_column": "lost_note"}]})
+    assert hand.status_code == 201, hand.text
+    newer = int(hand.json()["version"])
+    assert newer > one["version"] and hand.json()["based_on"] == (await _plans(p.org_a))["approved"]
+    return one, newer
+
+
+def _open_items(p: Any, org: str) -> list[dict[str, Any]]:
+    approved = _q(p, "SELECT version FROM crm_mapping_plans WHERE organization_id = "
+                     "CAST(:o AS uuid) AND state = 'approved'", o=org)[0][0]
+    rows = _q(p, "SELECT rules FROM crm_mapping_plans WHERE organization_id = "
+                 "CAST(:o AS uuid) AND state = 'draft' AND based_on = :b "
+                 "ORDER BY version DESC LIMIT 1", o=org, b=approved)
+    return rows[0][0] if rows else []
+
+
+async def test_r2_an_approve_of_an_older_draft_is_409_and_the_pick_survives(mp_env) -> None:
+    """Round 2 review P1. The panel holds S, and a pick by hand wrote H on
+    top of S. An approve of S used to pass, and ``carry_draft`` of S then
+    dropped the pick of H with no word."""
+    p, a, _b = mp_env
+    stale, newer = await _older_sibling(p, a)
+    count = len(_versions(p, p.org_a))
+    got = await _approve(p.org_a, "deal", stale["version"])
+    assert got.status_code == 409, got.text
+    assert got.json()["detail"]["code"] == "plan_moved"
+    assert len(_versions(p, p.org_a)) == count, "the refused approve wrote nothing"
+    assert _approved_items(p, p.org_a) == []
+    assert any(i.get("field_api_name") == "Why_Lost" for i in _open_items(p, p.org_a))
+    # The suggestion read again names the open draft, and its approve keeps the pick.
+    (fresh,) = (await _req(_admin_of(p.org_a), "GET", SUGGEST)).json()["suggestions"]
+    assert fresh["version"] == newer
+    assert (await _approve(p.org_a, "deal", newer)).status_code == 200
+    assert any(i.get("field_api_name") == "Why_Lost" for i in _open_items(p, p.org_a))
+
+
+async def test_r2_a_dismiss_of_an_older_draft_is_409_and_records_nothing(mp_env) -> None:
+    """Round 2 review P2. A dismiss of S used to record the dismissal and
+    skip ``carry_draft``, so the open draft H kept the items of the slot and
+    the Field map card could approve them."""
+    p, a, _b = mp_env
+    stale, newer = await _older_sibling(p, a)
+    got = await _req(_admin_of(p.org_a), "POST", f"{SUGGEST}/deal/dismiss",
+                     {"version": stale["version"]})
+    assert got.status_code == 409 and got.json()["detail"]["code"] == "plan_moved"
+    assert _dismissed(p, p.org_a) is None, "nothing is recorded"
+    # The open draft is dismissed through its own version, and it then loses
+    # the items of the slot and keeps the pick.
+    ok = await _req(_admin_of(p.org_a), "POST", f"{SUGGEST}/deal/dismiss", {"version": newer})
+    assert ok.status_code == 200, ok.text
+    items = _open_items(p, p.org_a)
+    assert any(i.get("field_api_name") == "Why_Lost" for i in items)
+    assert not [i for i in items if i.get("kind") in ("role", "target", "stage")]

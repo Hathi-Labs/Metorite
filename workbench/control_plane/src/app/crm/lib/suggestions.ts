@@ -10,7 +10,7 @@
 // carry no engine term and no confidence number (section 18.9.2): no "draft",
 // no "version", no "role", no "slot", no "overlay", no percent.
 
-import type { CrmModeBody } from "./api";
+import { CrmError, type CrmModeBody } from "./api";
 import { humanizeKey } from "./connect";
 import type { EntitySlug } from "./types";
 
@@ -189,6 +189,23 @@ export const SUGGESTIONS_NOTE =
   "Metorite reads your Zoho and suggests where an empty list can find its records. Nothing changes until you choose.";
 export const NO_SUGGESTIONS = "No suggestion waits for you.";
 export const PREVIEW_UNREAD = "The records did not load. Try again.";
+/** A 409 `plan_moved`: the field map changed after the admin opened the suggestion. */
+export const SUGGESTION_MOVED =
+  "The field map changed after you opened this. Nothing was saved. Look at the suggestion again.";
+
+/** The cache key of the suggestions. A write of the field map wakes it too. */
+export const SUGGESTIONS_KEY = "crm:suggestions";
+
+/**
+ * The sentence of a failed write. A 409 `plan_moved` (round 2 review P1)
+ * says that the map changed, in plain words, and the caller reads again.
+ */
+export function suggestionError(err: unknown, fallback: string): string {
+  if (err instanceof CrmError && err.status === 409 && err.code === "plan_moved") {
+    return SUGGESTION_MOVED;
+  }
+  return err instanceof CrmError && err.message ? err.message : fallback;
+}
 
 /** The toast after a use. It carries Undo. */
 export function usedLine(s: { label: string }, listLabel: string): string {

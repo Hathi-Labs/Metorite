@@ -244,12 +244,20 @@ def _conflict(code: str, message: str) -> HTTPException:
 
 async def _open_suggestion(db: Any, approved: Any, version: int, slot: str) -> tuple[Any, str]:
     """The draft *version* and the module of its role for *slot*. The draft
-    must be the open draft: 409 ``not_draft`` or ``plan_moved``, and 404
-    ``no_suggestion`` when it names no module for the slot."""
+    must be the open draft (``mapping_plans.open_draft``): 409 ``not_draft``
+    or ``plan_moved``, and 404 ``no_suggestion`` when it names no module for
+    the slot.
+
+    ⚠️ Round 2 review P1: the base alone is not enough. An older draft on the
+    same base passes that test, and ``carry_draft`` of it then drops each
+    pick of the newer draft. So only the newest draft on the version in use
+    is open."""
     draft = await _version(db, version)
     if draft.state != "draft":
         raise _conflict("not_draft", "This suggestion is no longer open.")
-    if draft.based_on != approved.version:
+    current = await open_draft(db, approved)
+    if (draft.based_on != approved.version or current is None
+            or int(current.version) != int(draft.version)):
         raise _conflict("plan_moved", "The field map changed after this suggestion.")
     module = roles_of(split_rules(_rules_of(draft))[1]).get(slot)
     if module is None:
@@ -351,11 +359,11 @@ async def dismiss_suggestion(
             approved = await lock_plan(db, by)
             draft, module = await _open_suggestion(db, approved, payload.version, slot)
             await map_pipeline.dismiss(db, org, slot, module)
-            current = await open_draft(db, approved)
-            if current is not None and current.version == draft.version:
-                carried = await carry_draft(db, draft, approved, drop_slot=slot)
-                if carried is None:
-                    await db.execute(text(_DELETE_DRAFT_SQL), {"v": int(draft.version)})
+            # The draft is the open draft (`_open_suggestion`), so the card
+            # can never approve the items of the dismissed slot.
+            carried = await carry_draft(db, draft, approved, drop_slot=slot)
+            if carried is None:
+                await db.execute(text(_DELETE_DRAFT_SQL), {"v": int(draft.version)})
     except DBAPIError as exc:
         conflict = _db_conflict(exc)
         if conflict is not None:

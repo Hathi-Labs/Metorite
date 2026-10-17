@@ -9,10 +9,12 @@ import { describe, expect, it } from "vitest";
 
 import Button from "@/components/ui/Button";
 import * as api from "../lib/api";
+import { CrmError } from "../lib/api";
 import { visibleSections } from "../lib/settingsSections";
 import {
   DISMISS_LABEL,
   NO_SUGGESTIONS,
+  SUGGESTION_MOVED,
   UNDO_LABEL,
   checks,
   dismissedLine,
@@ -22,6 +24,7 @@ import {
   overlaysBySlug,
   previewLabel,
   slotOf,
+  suggestionError,
   suggestionFor,
   undoneLine,
   useLabel,
@@ -376,5 +379,32 @@ describe("the words (item 8) and the proposer (item 9)", () => {
     expect(read("./FieldMapCard.tsx")).not.toMatch(/suggestFieldRules|SuggestControl|SUGGEST_LABEL|onSuggest/);
     expect(read("../lib/api.ts")).not.toContain("/field-rules/suggest");
     expect(read("../lib/fieldMap.ts")).not.toMatch(/confidenceLabel|% sure/);
+  });
+});
+
+// ── Round 2 review P1: a write on an older draft ─────────────────────────────
+
+describe("a suggestion never acts on an older draft (round 2 review P1)", () => {
+  it("says in plain words that the map changed, on a 409 plan_moved", () => {
+    const moved = new CrmError("The field map changed after this suggestion.", 409, "plan_moved");
+    expect(suggestionError(moved, "x")).toBe(SUGGESTION_MOVED);
+    expect(SUGGESTION_MOVED).not.toMatch(ENGINE_WORDS);
+    const other = new CrmError("No module plays this list.", 404, "no_overlay");
+    expect(suggestionError(other, "x")).toBe("No module plays this list.");
+    expect(suggestionError(new Error("boom"), "That did not save.")).toBe("That did not save.");
+  });
+
+  it("reads the suggestions again after each write of the field map", () => {
+    const card = read("./FieldMapCard.tsx");
+    expect(card).toMatch(/function rereadPlan\(\): void \{\s*invalidate\(KEY_PREFIX\);\s*invalidate\(SUGGESTIONS_KEY\);/);
+    expect(card).toContain("reread: rereadPlan,");
+    // Each other read goes through `rereadPlan`, so no write skips the suggestions.
+    expect(card.split("invalidate(KEY_PREFIX)").length - 1).toBe(1);
+  });
+
+  it("keeps the slot of the open panel, never a copy of the suggestion", () => {
+    const panel = read("./Suggestions.tsx");
+    expect(panel).not.toMatch(/useState<Suggestion \| null>/);
+    expect(panel).toContain("list?.suggestions.find((s) => s.slot === previewingSlot)");
   });
 });

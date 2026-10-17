@@ -30,11 +30,12 @@ import { useCachedResource } from "@/lib/useCachedResource";
 import { useState } from "react";
 
 import * as api from "../lib/api";
-import { CrmError } from "../lib/api";
 import {
   PREVIEW_SHOWN,
   PREVIEW_UNREAD,
   SLOT_SLUG,
+  SUGGESTIONS_KEY,
+  suggestionError,
   cellText,
   checks,
   columnName,
@@ -56,8 +57,6 @@ import { useSourceLabels } from "../lib/useCrmMode";
 import { viewLabel } from "../lib/views";
 import { SuggestionsCardView } from "./SettingsCards";
 
-/** The cache key of the suggestions. `invalidate("crm:")` wakes it with the mode. */
-export const SUGGESTIONS_KEY = "crm:suggestions";
 
 /** The open suggestions, for an admin in Mirror mode. A failure reads as none. */
 export function useSuggestions(enabled: boolean): {
@@ -76,7 +75,7 @@ function rereadAll(): void {
 }
 
 function message(err: unknown, fallback: string): string {
-  return err instanceof CrmError && err.message ? err.message : fallback;
+  return suggestionError(err, fallback);
 }
 
 /**
@@ -342,7 +341,11 @@ export default function SuggestionsCard() {
   const labelOf = (slug: EntitySlug) => viewLabel(slug, labels);
   const { list, failed } = useSuggestions(true);
   const actions = useSuggestionActions(labelOf);
-  const [previewing, setPreviewing] = useState<Suggestion | null>(null);
+  // The slot only, never a copy of the suggestion: the panel draws the
+  // suggestion of the newest read, so a write elsewhere cannot leave it on
+  // an older draft (round 2 review P1).
+  const [previewingSlot, setPreviewingSlot] = useState<Suggestion["slot"] | null>(null);
+  const previewing = list?.suggestions.find((s) => s.slot === previewingSlot) ?? null;
   return (
     <>
       <SuggestionsCardView
@@ -351,7 +354,7 @@ export default function SuggestionsCard() {
         handlers={{
           listLabel: labelOf,
           busy: actions.busy,
-          onPreview: setPreviewing,
+          onPreview: (s) => setPreviewingSlot(s.slot),
           onDismiss: (s) => void actions.dismiss(s),
           onUndo: (o) => void actions.undo(o),
         }}
@@ -361,10 +364,10 @@ export default function SuggestionsCard() {
           suggestion={previewing}
           listLabel={labelOf(SLOT_SLUG[previewing.slot])}
           busy={actions.busy === previewing.slot}
-          onClose={() => setPreviewing(null)}
+          onClose={() => setPreviewingSlot(null)}
           onUse={() => {
             const s = previewing;
-            void actions.apply(s).then((done) => done && setPreviewing(null));
+            void actions.apply(s).then((done) => done && setPreviewingSlot(null));
           }}
         />
       )}
