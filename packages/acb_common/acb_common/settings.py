@@ -293,6 +293,15 @@ class Settings(BaseSettings):
     # grant `enforcement-flip` does not cover it. Fence:
     # tests/unit/test_crm_note_vectors.py.
     crm_note_search_orgs: str = ""
+    # `crm_answer_check` (WS-53 CRM-Q29, 2026-10-17) is the number check of
+    # a chat answer that read a CRM tool (`crm_platform.md` §18.11.2):
+    # `off` (the default), `shadow` (check at the end of the answer and log
+    # the count of mismatches, no hold and no retry) or `on` (hold each
+    # answer, check it, one retry, then a fallback). Any other value reads as
+    # `off`. The one reader is `acb_skills.answer_check.answer_check_mode`.
+    # A value on a box is the grant `enforcement-flip`. Fence:
+    # tests/unit/test_crm_answer_check.py.
+    crm_answer_check: str = "off"
 
     # ── The My Day loop (WS-58 MD-5b, 2026-10-14) ───────────────────────────
     #

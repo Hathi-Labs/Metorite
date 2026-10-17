@@ -105,6 +105,12 @@ and streams chat responses as AG-UI events.
    - `_KB_INDEX_CACHE` keeps the block for each org and member for 300 s, so two turns get the same bytes. The preamble reads only the cache.
    - Fences: `tests/unit/test_knowledge_index_block.py` and `evals/trajectories/test_knowledge_grounding_trajectory.py`.
 
+22. **A run that holds a CRM tool gets the number check** (WS-53 CRM-Q29, `project-docs/specs/crm_platform.md` §18.11.2).
+   - `_tool_injection._apply_answer_check` runs at the end of `_inject_agent_tools`, after the H-236 step. So the stream run, the batch run and the sub-agent all get it.
+   - It replaces each native MAF `Agent` that holds a tool of `acb_skills.answer_check.ARM_TOOLS` with a per-run view (`agent_with_providers`) that carries `AnswerCheckProvider`. Read `agents` again after injection.
+   - With `CRM_ANSWER_CHECK` `off` it changes nothing. A Copilot SDK agent gets no check.
+   - Do not attach the provider anywhere else. Fence: `tests/unit/test_crm_answer_check.py`.
+
 ## Work Guidance
 
 ### Adding a new agent runtime feature

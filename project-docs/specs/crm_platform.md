@@ -1269,7 +1269,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q26** | Labels on notes, on the decide tier, in shadow. §18.11 | P1 |
 | **CRM-Q27** | 🔨 built 2026-10-16 on `crm-batch-i`, merged (#1111), dark. Search of note text by meaning. §18.11 | P2 |
 | **CRM-Q28** | A weekly digest on the powerful tier. §18.11 | P2 |
-| **CRM-Q29** | The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
+| **CRM-Q29** | 🔨 built 2026-10-17 on `crm-answer-check`, not merged, dark. The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
 
@@ -3627,7 +3627,9 @@ merged (#1100, migration 278), dark. CRM-Q25b, CRM-Q25c and CRM-Q27
 (migration 279, dark): built on 2026-10-16 in the batch branch
 `crm-batch-i`, with a fix round on 2026-10-17, and merged as #1111
 (`d72f92184`). CRM-Q28: specified, not built. Verified against code at
-`origin/main` `634cf54ee`. CRM-Q29: specified 2026-10-17, not built.
+`origin/main` `634cf54ee`. CRM-Q29: built 2026-10-17 on the branch
+`crm-answer-check`, not merged, dark (`CRM_ANSWER_CHECK` is `off`), no
+migration.
 
 **Owner direction (2026-10-16, in chat).** Use the decide, balanced and
 powerful tiers to run inference on the CRM data and produce insights. Build
@@ -4343,6 +4345,38 @@ item 1, so CRM-Q28 merges after this ticket, or it rebases onto it.
 Verify: `uv run pytest tests/unit/test_number_check.py tests/unit/test_crm_answer_check.py tests/unit/test_crm_agent.py tests/unit/test_tool_schema_diet.py tests/unit/test_generated_addendum.py -q`,
 and `uv run python scripts/affected_tests.py --base origin/main`.
 
+**Built as (2026-10-17).** Branch `crm-answer-check`, no migration, dark.
+
+- **The shared API, for CRM-Q28 item 9.** `acb_common.number_check` gives
+  `find_figures(text) -> list[Figure]`, `Sources()` with `add_text(text)` and
+  `add_value(value, kind)`, `check(text, sources) -> CheckResult` and
+  `format_figure(value, kind, decimals=0)`. `sources` is a `Sources` or a list
+  of texts. `CheckResult.ok` is true when each figure matched, and
+  `CheckResult.unmatched` holds each `Figure` that failed. A `Figure` holds
+  `text`, `value`, `kind`, `unit` and `exact`. The kinds are `PLAIN`, `MONEY`
+  and `PERCENT`. So the digest writes each number of its prompt with
+  `format_figure`, reads the prompt into `Sources`, and stores a text only
+  when `check(text, sources).ok` is true.
+- **The chat half.** `acb_skills/answer_check.py` holds the ledger of a run,
+  the two middlewares and `AnswerCheckProvider`.
+  `_tool_injection._apply_answer_check` is the one seam.
+- **The two prompts.** The CRM section of `addendum.py` and
+  `agent-crm/instructions.md` say that a new total comes from another
+  `crm_aggregate` call, and that the model writes each figure in digits.
+- **What the tests measure.** With a scripted model in a real MAF `Agent`, on
+  the stream run and the batch run: a true answer makes 2 requests, a
+  misquote 3, and two failures 3, with the fallback. A later failure in the
+  same run makes no second retry.
+- **The grant.** The retry is one more request of the member's own chat turn.
+  The member's chat pays for it as for each other request, so no new payer
+  exists. That is why `enforcement-flip` covers a value on a box. The owner
+  can make it an owner flip in the PR.
+- **Known limits.** A number in words ("seven deals") is not checked, so the
+  prompts ask for digits. The sign of a number is not compared. A Copilot SDK
+  agent gets no check. When a parent agent quotes the answer of a delegated
+  `crm-assistant`, the parent's own run checks nothing, because it read no
+  CRM tool itself. The delegated run checks its own answer.
+
 #### 18.11.3 Verification
 
 - `bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"`
@@ -4352,6 +4386,8 @@ and `uv run python scripts/affected_tests.py --base origin/main`.
   The email and My Day features must behave as before.
 - `uv run python -m evals.crm_note_labels.run --scripted`
 - `uv run python scripts/affected_tests.py --run`
+- CRM-Q29: `uv run pytest tests/unit/test_number_check.py tests/unit/test_crm_answer_check.py -q`.
+  These suites need no database.
 - CRM-Q27 and CRM-Q28 add their new suites to the pytest line above, with no
   test skipped. CRM-Q28 also runs
   `npx tsc --noEmit && npx vitest run src/app/crm` in `workbench/control_plane`.
