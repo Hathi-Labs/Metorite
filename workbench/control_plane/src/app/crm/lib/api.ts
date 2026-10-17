@@ -38,6 +38,7 @@ import type {
   Activity,
   Contact,
   ConvertResult,
+  CrmDigest,
   Deal,
   DealContact,
   DealPipeline,
@@ -429,6 +430,15 @@ export function getWinLossReport(): Promise<WinLossReport> {
 
 export function getOwnerLeaderboard(): Promise<OwnerLeaderboard> {
   return call<OwnerLeaderboard>("/reports/owners");
+}
+
+/**
+ * The newest weekly digests of the org (WS-53 CRM-Q28). Read only. An org
+ * with no digest gets an empty list, which the Reports tab draws as nothing.
+ */
+export async function listDigests(limit = 4): Promise<CrmDigest[]> {
+  const res = await call<{ digests: CrmDigest[] }>(`/digests?limit=${limit}`);
+  return res?.digests ?? [];
 }
 
 // ── The generic Zoho modules (WS-53 CRM-Q6b) ──────────────────────────────

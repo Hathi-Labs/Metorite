@@ -224,7 +224,9 @@ class TestDarkUntilListed:
         p = shell.REGISTRY["crm"]
         assert (p.gated, p.needs, p.features, p.app, p.handled, p.permission) == (
             True, False, ("crm",), None, None, None)
-        assert p.kinds == frozenset(CRM_KINDS) == feed.CRM_KINDS
+        # WS-53 CRM-Q28 item 14 adds `digest_ready`, which reads the org's
+        # weekly digest and no record of the member.
+        assert p.kinds == frozenset({*CRM_KINDS, "digest_ready"}) == feed.CRM_KINDS
         assert shell.source_app("crm") == "crm"
 
     def test_with_the_list_empty_no_read_runs_and_no_byte_changes(self, crm, monkeypatch):

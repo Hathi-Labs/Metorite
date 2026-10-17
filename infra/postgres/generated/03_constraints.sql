@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 178
+-- Tables in this phase: 179
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -2197,3 +2197,15 @@ ALTER TABLE crm_note_vectors ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE crm_note_vectors ADD CONSTRAINT crm_note_vectors_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS crm_note_vectors_org_idx ON crm_note_vectors (organization_id);
+
+-- crm_digests
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM crm_digests WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: crm_digests still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE crm_digests ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE crm_digests ADD CONSTRAINT crm_digests_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS crm_digests_org_idx ON crm_digests (organization_id);

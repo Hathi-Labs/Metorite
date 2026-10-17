@@ -215,6 +215,13 @@ def crm_href(kind: str, record_id: Any) -> str:
     return f"/crm?tab={tab}&{param}={quote(str(record_id))}"
 
 
+def crm_reports_href() -> str:
+    """The link that opens the Reports tab of the CRM (WS-53 CRM-Q28 item
+    14). The My Day card ``digest_ready`` calls it, so the CRM links of the
+    gateway stay in this one module."""
+    return "/crm?tab=reports"
+
+
 def _crm_title(kind: str, row: dict[str, Any]) -> str:
     if kind == "lead":
         return row.get("lead_name") or ""

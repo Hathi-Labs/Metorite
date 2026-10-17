@@ -16,6 +16,8 @@
 // Spec: project-docs/specs/crm_app.md §5.1 system 2 (WS-26g).
 
 import type {
+  CrmDigest,
+  DigestNumbers,
   FunnelReport,
   FunnelStage,
   OwnerLeaderboard,
@@ -172,4 +174,77 @@ export function shareOfForecast(
 ): number {
   if (!report.weighted) return 0;
   return Math.round((stage.weighted / report.weighted) * 1000) / 10;
+}
+
+// ── The weekly digest (WS-53 CRM-Q28) ──────────────────────────────────────
+//
+// The digest card shows the newest digest: its week, its numbers as a table,
+// and a line that says AI wrote the text from them. ⚠️ Like the rest of this
+// file, it computes NO number. Each value is the server's one text of the
+// number (`acb_common.number_check.format_figure`), drawn verbatim, so the
+// table and the text that the server checked against it hold the same digits.
+
+/** The line under the text (item 13). */
+export const DIGEST_AI_LINE =
+  "AI wrote this text from the numbers in the table. Each number in the text is a number of the table.";
+
+/** What the server writes for a field with no value. Never "0". */
+export const NO_VALUES = "no values recorded";
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** `2026-10-05` → `5 Oct 2026`, with no time zone shift: a week is a date. */
+export function dayLabel(iso: string | null | undefined): string {
+  const found = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso ?? "");
+  if (!found) return "—";
+  const month = MONTHS[Number(found[2]) - 1];
+  if (!month) return "—";
+  return `${Number(found[3])} ${month} ${found[1]}`;
+}
+
+/** "Week of 5 Oct 2026 to 11 Oct 2026". */
+export function digestWeekLabel(digest: Pick<CrmDigest, "week_start" | "week_end">): string {
+  return `Week of ${dayLabel(digest.week_start)} to ${dayLabel(digest.week_end)}`;
+}
+
+/** One line of the digest table. */
+export type DigestTableRow = { part: string; label: string; value: string; unit: string };
+
+/**
+ * The numbers of a digest as table rows, in the order of the parts. A part
+ * that shows its total only gets one "Total" row. A part with groups gets
+ * its groups, then "Total" when the server sent one. The values pass through
+ * as the server wrote them.
+ */
+export function digestTableRows(numbers: DigestNumbers | null | undefined): DigestTableRow[] {
+  const out: DigestTableRow[] = [];
+  for (const part of numbers?.parts ?? []) {
+    for (const row of part.rows ?? []) {
+      out.push({ part: part.title, label: row.label, value: row.value, unit: part.unit });
+    }
+    if (part.total !== undefined) {
+      out.push({ part: part.title, label: "Total", value: part.total, unit: part.unit });
+    }
+  }
+  return out;
+}
+
+/** The titles of the parts that did not answer (item 6). */
+export function digestMissing(numbers: DigestNumbers | null | undefined): string[] {
+  return [...(numbers?.missing ?? [])];
+}
+
+/**
+ * The value as the server wrote it, with no change. The server formats each
+ * number once (`acb_common.number_check.format_figure`: `INR 12,34,567` or
+ * `12,34,567`), and the number check read that same text, so a second format
+ * here could show a number that the check never saw.
+ */
+export function digestValue(row: Pick<DigestTableRow, "value">): string {
+  return row.value;
+}
+
+/** The newest digest of a list that the server sends newest first. */
+export function newestDigest(digests: CrmDigest[] | null | undefined): CrmDigest | null {
+  return digests && digests.length > 0 ? digests[0] : null;
 }
