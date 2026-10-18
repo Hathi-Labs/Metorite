@@ -70,6 +70,102 @@ export interface Accounts {
 
 export const NO_ACCOUNTS: Accounts = { enabled: false, active: null, others: [] };
 
+const sameEmail = (a: string | null | undefined, b: string) =>
+  !!a && a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/** True when `email` is the active account. Case and spaces do not count. */
+export function isActiveAccount(accounts: Accounts, email: string): boolean {
+  return accounts.enabled && !!email.trim() && sameEmail(accounts.active?.email, email);
+}
+
+/**
+ * The slot that holds `email`, among the accounts this browser may switch
+ * to. Case and spaces do not count. Null with the switcher off, when this
+ * browser is not signed in to that account, and when it is the active
+ * account, because a switch to the active account is no switch. The chat's
+ * other-account notice reads it (`components/ChatErrorCard.tsx`).
+ */
+export function slotFor(accounts: Accounts, email: string): OtherAccount | null {
+  if (!accounts.enabled || !email.trim() || isActiveAccount(accounts, email)) return null;
+  return accounts.others.find((o) => sameEmail(o.email, email)) ?? null;
+}
+
+/** What a press of the other-account notice's Switch button did. */
+export type SwitchPress = "switched" | "active" | "signin" | "busy";
+
+/**
+ * True while one press reads the accounts or switches. A second tap in that
+ * time would switch twice, and the second switch swaps the accounts back.
+ * After a switch starts, the cover takes every click until the page leaves.
+ */
+let pressing = false;
+
+/** For tests: forget a press in progress. */
+export function resetPress(): void {
+  pressing = false;
+}
+
+/**
+ * A press of the other-account notice's Switch button (review of #1131).
+ *
+ * ⚠️ The slots the notice read at mount can be stale. A switch in another
+ * tab swaps the active session into a slot (`api/accounts/[action]`), so
+ * slot 1 can hold a different account now, and that tab does not always
+ * reload. A switch to the old index then made the wrong account active
+ * while the cover named the right one. So the press reads the accounts
+ * again, and decides from the fresh answer:
+ *
+ * - `active`: the account is active now. Nothing to switch, and the member
+ *   can answer the question again.
+ * - `signin`: this browser holds no slot for it now.
+ * - `switched`: it switched to the slot that holds it NOW.
+ * - `busy`: another press is in progress, so this one does nothing.
+ *
+ * Fence: `otherAccountNotice.test.ts`.
+ */
+export async function pressSwitch(
+  email: string,
+  read: () => Promise<Accounts>,
+  pick: (target: OtherAccount) => Promise<unknown> | void,
+): Promise<SwitchPress> {
+  if (pressing) return "busy";
+  pressing = true;
+  try {
+    const fresh = await read();
+    if (isActiveAccount(fresh, email)) return "active";
+    const target = slotFor(fresh, email);
+    if (!target) return "signin";
+    await pick(target);
+    return "switched";
+  } finally {
+    pressing = false;
+  }
+}
+
+/** Why a switch did not happen, and whether the slot is gone. */
+export interface SwitchFailure {
+  error: string;
+  /** True when the account is no longer signed in here: read the list again. */
+  gone: boolean;
+}
+
+/**
+ * Run one switch, and say why it failed, or null when the page now leaves.
+ * A network fault is a failure too (review of #1131): without the catch, the
+ * press rejected and left the cover up, which nothing can close.
+ */
+export async function trySwitch(
+  target: OtherAccount,
+  run: (slot: number) => Promise<boolean> = (slot) => switchTo(slot),
+): Promise<SwitchFailure | null> {
+  try {
+    if (await run(target.slot)) return null;
+    return { error: `${target.email} is no longer signed in here. Add it again.`, gone: true };
+  } catch {
+    return { error: `Could not switch to ${target.email}. Check your connection, then try again.`, gone: false };
+  }
+}
+
 export async function fetchAccounts(withOrgs: boolean): Promise<Accounts> {
   try {
     const res = await fetch(`/api/accounts${withOrgs ? "?orgs=1" : ""}`, { cache: "no-store" });

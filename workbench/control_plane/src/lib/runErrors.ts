@@ -146,11 +146,15 @@ export const RUN_ERROR_WORDS: Record<RunErrorCode, RunErrorWords> = {
     retry: false,
     tone: "notice",
   },
-  // WS-51 S2: the card belongs to another signed-in account. Nothing was
-  // sent. `{account}` is the account's address, from the notice's `raw`.
+  // WS-51 S2: the card belongs to another account. Nothing was sent.
+  // `{account}` is the account's address, from the notice's `raw`. These are
+  // the words when this browser holds no slot for that account, so the
+  // notice only informs. With a slot, the chat draws
+  // `otherAccountSwitchWords` instead: a card with a Switch button (owner
+  // call, 2026-10-18).
   answer_in_other_account: {
     title: "This question is for another account",
-    body: "Your answer was not sent. Switch to {account} to answer it.",
+    body: "Your answer was not sent. Sign in to {account} from the account menu to answer it.",
     retry: false,
     tone: "notice",
   },
@@ -182,6 +186,36 @@ export const RUN_ERROR_WORDS: Record<RunErrorCode, RunErrorWords> = {
 export function isInfoOnlyNotice(words: RunErrorWords): boolean {
   return words.tone === "notice" && !words.retry && !words.action;
 }
+
+/**
+ * The other-account notice when this browser holds a slot for that account
+ * (owner call, 2026-10-18). Dismissing the info-only line left the member
+ * stuck, because only the other account can answer the question. So the
+ * notice has an action, the switch, and keeps its card until the member
+ * acts (`isInfoOnlyNotice` is false). `account` is the slot's address, and
+ * the button carries it.
+ */
+export function otherAccountSwitchWords(account: string): RunErrorWords {
+  return {
+    title: RUN_ERROR_WORDS.answer_in_other_account.title,
+    body: "Your answer was not sent. Switch to {account} to answer it.",
+    retry: true,
+    tone: "notice",
+    action: `Switch to ${account.trim()}`,
+  };
+}
+
+/**
+ * The other-account notice when that account is the active one now, such as
+ * after a switch in another tab (review of #1131). Nothing to switch, so the
+ * notice only informs, and tells the member to answer again.
+ */
+export const OTHER_ACCOUNT_ACTIVE_WORDS: RunErrorWords = {
+  title: "You can answer this question now",
+  body: "{account} is the active account now. Answer the question again.",
+  retry: false,
+  tone: "notice",
+};
 
 /**
  * The body of a notice, with `{account}` filled in from its `raw` text
