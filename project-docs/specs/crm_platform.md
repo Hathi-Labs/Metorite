@@ -82,7 +82,7 @@
 > `crm-q28-digest`, migration 281). CRM-Q29, the number check of each CRM
 > answer, with two fix rounds, dark (`CRM_ANSWER_CHECK` is `off`, branch
 > `crm-answer-check`, no migration). CRM-Q29 fix round 3 is merged as #1120.
-> Fix rounds 4 and 5 are built on `crm-answer-check-r4` (PR #1133), not merged. CRM-Q30, a founder question set for CRM
+> Fix rounds 4, 5 and 6 are built on `crm-answer-check-r4` (PR #1133), not merged. CRM-Q30, a founder question set for CRM
 > insights, and CRM-Q30b, the read tools say when Zoho holds more (branch
 > `crm-founder-evals`, no migration). See §18.11.
 >
@@ -1292,7 +1292,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q26** | Labels on notes, on the decide tier, in shadow. §18.11 | P1 |
 | **CRM-Q27** | 🔨 built 2026-10-16 on `crm-batch-i`, merged (#1111), dark. Search of note text by meaning. §18.11 | P2 |
 | **CRM-Q28** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-q28-digest`, migration 281), not merged, dark. A weekly digest on the powerful tier. §18.11 | P2 |
-| **CRM-Q29** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-answer-check`, with two fix rounds), merged as #1116, dark. Fix round 3 merged as #1120. Fix rounds 4 and 5 built 2026-10-17 and 2026-10-18 on `crm-answer-check-r4` (PR #1133), not merged. The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
+| **CRM-Q29** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-answer-check`, with two fix rounds), merged as #1116, dark. Fix round 3 merged as #1120. Fix rounds 4, 5 and 6 built 2026-10-17 and 2026-10-18 on `crm-answer-check-r4` (PR #1133), not merged. The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
 | **CRM-Q30** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. A founder question set for CRM insights: an eval of the assistant over CRM data. §18.11 | P1 |
 | **CRM-Q30b** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. The read tools say when Zoho holds more records than the connected Zoho user can read. §18.11 | P1 |
 | **CRM-Q31** | The CRM catalogue for the AI: the purpose of each module, its key fields by meaning, and its links. Code first, then the decide tier. Q31-1 to Q31-3 merged as #1122, dark. Q31-4 is absorbed into CRM-Q32 (§18.14). §18.13 | P0 |
@@ -3716,7 +3716,7 @@ merged (#1100, migration 278), dark. CRM-Q25b, CRM-Q25c and CRM-Q27
 dark, `CRM_ANSWER_CHECK` is `off`, no migration), CRM-Q30 and CRM-Q30b (no
 migration): built on 2026-10-17 in the batch branch `crm-batch-i2`, and
 merged as #1116. CRM-Q29 fix round 3: merged as #1120. CRM-Q29 fix round
-4 and 5: built on 2026-10-17 and 2026-10-18 on `crm-answer-check-r4`, not merged. CRM-Q28 uses the one number check of
+4, 5 and 6: built on 2026-10-17 and 2026-10-18 on `crm-answer-check-r4`, not merged. CRM-Q28 uses the one number check of
 CRM-Q29. Verified against
 code at `origin/main` `a8ef53c93`.
 
@@ -4570,8 +4570,8 @@ Verify: `uv run pytest tests/unit/test_number_check.py tests/unit/test_number_ch
 and `uv run python scripts/affected_tests.py --base origin/main`.
 
 **Built as (2026-10-17).** Branch `crm-answer-check`, with two fix rounds,
-merged in Batch I2 (#1116). Fix round 3 is merged as #1120. Fix rounds 4
-and 5 are built on 2026-10-17 and 2026-10-18 on the branch
+merged in Batch I2 (#1116). Fix round 3 is merged as #1120. Fix rounds 4,
+5 and 6 are built on 2026-10-17 and 2026-10-18 on the branch
 `crm-answer-check-r4` (PR #1133), not merged. No migration, dark
 (`CRM_ANSWER_CHECK` is `off`).
 
@@ -4751,9 +4751,44 @@ and 5 are built on 2026-10-17 and 2026-10-18 on the branch
   at 0 of 200 at k = 4, 6 and 10. The review's probe4 at k = 10: 1 percent
   for all forms, 2 percent for a whole percent and 4 percent for a crore
   with one decimal, as in round 4.
+- **Fix round 6 (2026-10-18, the review of round 5, NOT-READY).**
+  1. **A total with its parts is a sum**, with no derive word. The parts
+     stand in brackets or after a colon right after the total ("27 (20 won,
+     7 lost)", "27 deals: 20 won and 7 lost", "25 deals (12 + 8 + 5)"), or
+     before it with a colon, "=", "make" or "together" ("Won (20) and Lost
+     (7): 27"). Each part must cite a tool figure, never the member's words.
+     Two to 8 parts add up to the total at its stated precision, so "28 (20
+     won, 7 lost)" fails. Fence: `TestFixRound6Parts`.
+  2. **A ratio of two cited figures** ("₹13.53 crore is 6x ₹2.245 crore",
+     "6 times") derives, with the two figures next to it in its block.
+     Fence: `TestFixRound6Ratio`. A rank, a limit, a rate and a share of a
+     whole that the answer does not state stay unchecked by any rule. The
+     retry note now tells the model to state the whole, or to cite the
+     figure as the tool gave it.
+  3. **A failed check never loses the turn.** In `on` mode a check that
+     raises logs `answer_check.check_failed` and sends the answer unchanged.
+     A spec nested too deep gives its raw text or nothing, and never raises.
+     Fences: `test_a_check_that_raises_lets_the_answer_through` and the
+     deep spec tests.
+  4. **Both numbers of a fraction are read.** "Won 25/40" fails. The second
+     number passes when it is the first plus ANOTHER source value, so "Won
+     20/27" passes (20 won and 7 lost) and "Won 20/40" fails. A month or a
+     year ("07/2026", "2025/26") is no fraction. Fence:
+     `TestFixRound6Fraction`.
+  5. **The book takes its lock** to add, sort, match and cite. Fence:
+     `test_a_match_takes_the_lock_of_the_book`.
+- **The measured rate (fix round 6).** The review's true answers (p1, p6
+  and p8, 95 answers): 32 failed at the first try with round 5, and 23 fail
+  now. Each of the 23 states a figure that no tool gave and that no
+  figure of the answer gives: a share or a rate of a whole that the answer
+  does not state, a rank, a limit, a window that the member asked for, a
+  ratio with no figures, or a sum with no derive word or parts shape. The
+  review's invented figures: 3 of 20 pass (each states a true tool figure
+  in a false context), and "Won 25/40" now fails. Probes 1 to 11 are as in
+  round 5.
 - **Mutations.** 13 mutations in the build, 12 more in fix round 1, 9 in
-  fix round 2, 21 in fix round 3, 21 in fix round 4 and 15 in fix round 5,
-  one or more for each fix. The suites
+  fix round 2, 21 in fix round 3, 21 in fix round 4, 15 in fix round 5 and
+  11 in fix round 6, one or more for each fix. The suites
   kill each one. The rules: the room for rounding, money against a percent, a
   date, an exact scaled number, the arm, the model's text as a source, no
   extra request on a pass, one retry for each run, no draft in the fallback,
@@ -5091,7 +5126,7 @@ CRM-Q25b, CRM-Q25c and CRM-Q27 were built on the batch branch
 (`d72f92184`). Batch I2: CRM-Q28 (migration 281), CRM-Q29 with its two
 fix rounds, CRM-Q30 and CRM-Q30b were built on 2026-10-17. They are in the
 batch branch `crm-batch-i2`, merged as #1116, and dark. CRM-Q29 fix round 3
-is merged as #1120, and fix rounds 4 and 5 are built on `crm-answer-check-r4`, not merged. The owner flip of
+is merged as #1120, and fix rounds 4, 5 and 6 are built on `crm-answer-check-r4`, not merged. The owner flip of
 CRM-Q26 is not done. Batch M: CRM-Q17a-1b, CRM-Q17a-2, CRM-Q18-1b, CRM-Q18-2, CRM-Q18-3,
 CRM-Q19 and CRM-Q20-1 are built on the batch branch `crm-batch-m`, and
 CRM-Q20-2 on `crm-q20-2-suggestions` from it. None is merged. CRM-Q20-3 is
