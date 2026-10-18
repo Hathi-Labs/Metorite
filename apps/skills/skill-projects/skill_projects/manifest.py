@@ -567,6 +567,13 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # card. Each ticked row is one POST to the single tool's own route.
     "create_tags": frozenset({"create_tag"}),
     "create_types": frozenset({"create_type"}),
+    # 2026-10-18 — several tasks filed into their projects under ONE card
+    # with a checkbox for each task. Each ticked row is move_task's own
+    # planned write (`_plan_move`, `_Move.send`), on move_task's routes.
+    "file_tasks": frozenset({"move_task"}),
+    # 2026-10-19 — several links under ONE card with a checkbox for each
+    # link. Each ticked row is link_tasks' own POST.
+    "link_tasks_batch": frozenset({"link_tasks"}),
     # S6 — navigation reads the row it opens, then dispatches to the page.
     "open_in_app": frozenset({"task_detail", "project_summary"}),
 }
