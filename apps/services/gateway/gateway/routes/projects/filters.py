@@ -506,7 +506,9 @@ SHOWN_FIELDS: tuple[str, ...] = (
     # is "a preference the server silently strips on the next save" — the
     # member ticks Type, it draws, and their next saved view drops it.
     "status", "type", "source", "assignees", "start_date", "due_at", "importance",
-    "subtasks", "blocked", "tags", "attachments", "estimate", "created_at",
+    # WS-55 EA-13d: `pr`, the pull request chip, in the SAME change as the
+    # client's `FIELD_KEYS` and the export's `FIELD_LABELS`.
+    "subtasks", "blocked", "pr", "tags", "attachments", "estimate", "created_at",
 )
 
 #: D-PM-38 — how a view draws a subtask. `nested` puts it under its parent,
@@ -940,21 +942,44 @@ AGENT_RUN_STATE_SQL = (
 
 _OPEN_LIST = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
 
-#: The pill of each task, from its OPEN runs (§12.1, "The task pill"):
-#:
-#: 1. an `awaiting` run, because a person must act, and a newer run of
-#:    another member must not hide the question;
-#: 2. else an `answered` run, so the answer stays in view;
-#: 3. else the newest open run.
-#:
-#: A task with no open run shows a `failed` run that is the newest run of its
-#: task (EA12-12: the pill stays until a newer run exists). One query for the
-#: page, as `_ASSIGNEES_SQL` does.
-_AGENT_STATE_SQL = f"""
+#: The newest line of the open run, for the hover of the pill (EA-13d, EA3-41):
+#: the first line of the body of the newest `thought`, `response` or
+#: `elicitation`. A leading blank line is skipped. Python cuts it to
+#: :data:`AGENT_NOTE_MAX` characters.
+_AGENT_NOTE_SQL = (
+    "(SELECT split_part(btrim(a.content->>'body', E' \t\r\n'), E'\n', 1)"
+    "   FROM pm_agent_run_activities a"
+    "  WHERE a.run_id = r.id AND a.type IN ('thought', 'response', 'elicitation')"
+    "  ORDER BY a.seq DESC LIMIT 1)"
+)
+
+#: The longest ``agent_note``, in characters (EA3-41, EA-13d P4).
+AGENT_NOTE_MAX = 140
+
+
+def agent_state_sql(task_filter: str) -> str:
+    """The pill query over the tasks that *task_filter* selects (alias ``r``).
+
+    ONE text of the pick rule. The list rows bind ``:ids`` through
+    :data:`_AGENT_STATE_SQL`, and the project summary (EA-13e) binds a
+    subquery, so a count and a card cannot disagree about a task's state.
+
+    The pill of each task comes from its OPEN runs (§12.1, "The task pill"):
+
+    1. an `awaiting` run, because a person must act, and a newer run of
+       another member must not hide the question;
+    2. else an `answered` run, so the answer stays in view;
+    3. else the newest open run.
+
+    A task with no open run shows a `failed` run that is the newest run of its
+    task (EA12-12: the pill stays until a newer run exists). One query for the
+    page, as `_ASSIGNEES_SQL` does.
+    """
+    return f"""
 SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state,
-       r.client_via, r.member_email
+       r.client_via, r.member_email, r.status AS run_status, {_AGENT_NOTE_SQL} AS note
   FROM pm_agent_runs r
- WHERE r.task_id = ANY(CAST(:ids AS uuid[]))
+ WHERE {task_filter}
    AND (r.status IN ({_OPEN_LIST})
         OR (r.status = 'failed'
             AND NOT EXISTS (SELECT 1 FROM pm_agent_runs n
@@ -967,6 +992,9 @@ SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state,
 """
 
 
+_AGENT_STATE_SQL = agent_state_sql("r.task_id = ANY(CAST(:ids AS uuid[]))")
+
+
 def agent_runs_enabled() -> bool:
     """The flag ``agent_runs_enabled`` (default OFF). The gateway side of the
     one reader, ``acb_auth.agent_oauth.runs_enabled``, which the edge reads
@@ -977,24 +1005,115 @@ def agent_runs_enabled() -> bool:
 
 
 async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Fill each row's ``agent_state``, ``agent_client_via`` and
-    ``agent_member_email``, mutating and returning the list.
+    """Fill each row's ``agent_state``, ``agent_client_via``,
+    ``agent_member_email`` and ``agent_note``, mutating and returning the list.
 
     ``queued``, ``working``, ``awaiting``, ``answered``, ``stopping``,
     ``stale`` or ``failed``. ``None`` for a task with no open run. While the
-    flag is off, every row gets ``None`` and no statement runs, so the task
-    reads cost nothing until the owner turns the feature on.
+    flag is off, every row gets ``None`` and no pill statement runs, so the
+    task reads cost nothing until the owner turns the feature on.
+
+    EA-13d and EA-13e ride the same call, because every route that hands a
+    task row to the client already calls it, and the client merges the row
+    over its own copy (a missing ``pr`` would erase the chip). So the call
+    also fills ``pr`` (:func:`attach_pr_chip`), one batched query.
     """
     for row in rows:
-        row.update(agent_state=None, agent_client_via=None, agent_member_email=None)
+        row.update(agent_state=None, agent_client_via=None, agent_member_email=None,
+                   agent_note=None)
     ids = [str(r["id"]) for r in rows if r.get("id")]
-    if not ids or not agent_runs_enabled():
+    if ids and agent_runs_enabled():
+        found = (await db.execute(text(_AGENT_STATE_SQL), {"ids": ids})).fetchall()
+        by_task = {str(r.task_id): r for r in found}
+        for row in rows:
+            hit = by_task.get(str(row["id"]))
+            if hit is not None:
+                note = " ".join(str(hit.note or "").split())
+                row.update(agent_state=hit.state, agent_client_via=hit.client_via,
+                           agent_member_email=hit.member_email,
+                           agent_note=note[:AGENT_NOTE_MAX] or None)
+    await attach_pr_chip(db, rows)
+    return rows
+
+
+# ── WS-55 EA-13d: the PR chip (external_agent_access.md §12.2 item 2, EA3-48) ──
+
+#: One query for the page. The partition picks ONE pull request for each task,
+#: by EA3-48: an open or draft one first, the newest by ``pr_updated_at``. Else
+#: the newest merged one, else the newest closed one. ``total`` counts every
+#: pull request of the task whose state is read, so ``more`` is ``total - 1``.
+#: A reference that GitHub has not been read for (``state`` NULL) has no word
+#: for the chip, so it neither shows nor counts.
+_PR_CHIP_SQL = """
+SELECT x.task_id, x.ref, x.url, x.title, x.state, x.checks_state, x.checks_summary,
+       x.merged_at, x.total
+  FROM (
+    SELECT r.task_id, r.ref, r.url, r.title, r.state, r.checks_state,
+           r.checks_summary, r.merged_at,
+           row_number() OVER (
+             PARTITION BY r.task_id
+             ORDER BY CASE r.state WHEN 'open' THEN 0 WHEN 'draft' THEN 0
+                                   WHEN 'merged' THEN 1 ELSE 2 END,
+                      COALESCE(r.pr_updated_at, r.updated_at) DESC,
+                      r.created_at DESC, r.id DESC) AS rn,
+           count(*) OVER (PARTITION BY r.task_id) AS total
+      FROM pm_task_refs r
+     WHERE r.task_id = ANY(CAST(:ids AS uuid[]))
+       AND r.kind = 'pull_request' AND r.provider = 'github'
+       AND r.state IN ('open', 'draft', 'merged', 'closed')
+  ) x
+ WHERE x.rn = 1
+"""
+
+
+def _checks_summary(value: Any) -> dict[str, int] | None:
+    """The checks counts as a plain object of integers, or ``None``."""
+    if isinstance(value, str):
+        import json
+
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    if not isinstance(value, dict):
+        return None
+    return {str(k): int(v) for k, v in value.items()
+            if isinstance(v, int) and not isinstance(v, bool)}
+
+
+def _pr_chip(hit: Any) -> dict[str, Any]:
+    repo, _, number = str(hit.ref).rpartition("#")
+    merged = getattr(hit, "merged_at", None)
+    return {
+        "repo": repo,
+        "number": int(number) if number.isdigit() else None,
+        "state": hit.state,
+        "checks_state": hit.checks_state,
+        "checks_summary": _checks_summary(hit.checks_summary),
+        "url": hit.url,
+        # Beyond the shape of the spec: the hover shows the title (EA3-41),
+        # and the strip's "merged this week" button reads the merge time.
+        "title": hit.title,
+        "merged_at": merged.isoformat() if merged is not None else None,
+        "more": max(int(hit.total) - 1, 0),
+    }
+
+
+async def attach_pr_chip(db: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fill each row's ``pr``: ``{repo, number, state, checks_state,
+    checks_summary, url, title, merged_at, more}``, or ``None`` for a task with
+    no pull request reference. ONE query for the whole list, never one for each
+    row (EA-13d, P5). The session is bound to the tenant, so a reference of
+    another organization is out of reach under RLS (P3)."""
+    for row in rows:
+        row["pr"] = None
+    ids = [str(r["id"]) for r in rows if r.get("id")]
+    if not ids:
         return rows
-    found = (await db.execute(text(_AGENT_STATE_SQL), {"ids": ids})).fetchall()
+    found = (await db.execute(text(_PR_CHIP_SQL), {"ids": ids})).fetchall()
     by_task = {str(r.task_id): r for r in found}
     for row in rows:
         hit = by_task.get(str(row["id"]))
         if hit is not None:
-            row.update(agent_state=hit.state, agent_client_via=hit.client_via,
-                       agent_member_email=hit.member_email)
+            row["pr"] = _pr_chip(hit)
     return rows

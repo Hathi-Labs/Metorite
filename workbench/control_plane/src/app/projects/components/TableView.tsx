@@ -41,7 +41,13 @@ import { Input } from "@/components/ui/Input";
 import SelectButton from "@/components/ui/SelectButton";
 import { useToast } from "@/components/ui/Toast";
 import { Checkbox } from "@/components/ui/Checkbox";
-import { TASK_SOURCES, type TaskSource, durationLabel, priorityChip } from "@/lib/taskCard";
+import {
+  TASK_SOURCES,
+  type TaskSource,
+  durationLabel,
+  priorityChip,
+  pullRequestChip,
+} from "@/lib/taskCard";
 import { useMemo, useRef, useState } from "react";
 
 import { accentForStatus } from "../lib/accent";
@@ -429,6 +435,10 @@ export function TableView({
       }
       case "blocked":
         return task.blocked_by_count ? String(task.blocked_by_count) : "—";
+      case "pr":
+        // WS-55 EA-13d. The chip's own words, from the ONE descriptor, so the
+        // column and the card cannot read the same pull request two ways.
+        return pullRequestChip(task.pr)?.label ?? "—";
       case "tags":
         return task.tags?.length ? task.tags.join(", ") : "—";
       case "attachments":

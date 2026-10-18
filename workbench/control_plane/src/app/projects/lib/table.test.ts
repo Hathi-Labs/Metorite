@@ -117,6 +117,9 @@ describe("tableColumns", () => {
       "importance",
       "subtasks",
       "blocked",
+      // WS-55 EA-13d: the pull request chip is shown by default, so its
+      // column is too. A task with no pull request reads "—".
+      "pr",
       "tags",
     ]);
   });

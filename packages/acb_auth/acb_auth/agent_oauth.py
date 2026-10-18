@@ -694,6 +694,18 @@ def client_label(via: str | None) -> str:
     return CLIENT_LABELS.get(body) or CLIENT_LABELS.get(host) or host or "Agent"
 
 
+def client_host(via: str | None) -> str:
+    """The host of a client stamp, for the run pill ``<client> · <host>``
+    (EA-13d). ``mcp:claude.ai:claude-code`` gives ``claude.ai``. An empty
+    value gives ``""``. An IPv6 host stamp reads whole, as in
+    :func:`client_label`. The host is the part that the gateway verified when
+    the member connected the client, so it is the part that no client names for
+    itself.
+    """
+    body = (via or "").strip().lower().removeprefix("mcp:")
+    return body if body.count(":") > 1 else body.split(":", 1)[0]
+
+
 def authorization_redirect(redirect_uri: str, params: Mapping[str, str | None]) -> str:
     """*redirect_uri* with *params* added to its query (RFC 6749 §4.1.2).
 
@@ -732,6 +744,7 @@ __all__ = [
     "ascii_host",
     "authorization_redirect",
     "authorize_url",
+    "client_host",
     "client_label",
     "client_origin",
     "client_slug",

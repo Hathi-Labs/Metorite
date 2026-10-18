@@ -102,6 +102,7 @@ from gateway.routes.projects.custom_fields import load_definitions
 from gateway.routes.projects.filters import (
     SHOWN_FIELDS,
     attach_assignees,
+    attach_pr_chip,
     attach_relation_counts,
     build_task_filters,
     normalise_view_config,
@@ -136,6 +137,7 @@ FIELD_LABELS: dict[str, str] = {
     "importance": "Priority",
     "subtasks": "Subtasks",
     "blocked": "Blocked",
+    "pr": "Pull request",
     "tags": "Tags",
     "attachments": "Files",
     "estimate": "Estimate",
@@ -229,6 +231,14 @@ def _render(
         return f"{int(counts.get('done') or 0)}/{total}" if total else ""
     if key == "blocked":
         return task.get("blocked_by_count") or ""
+    if key == "pr":
+        # WS-55 EA-13d. The stored words, for `source`'s reason: the display
+        # vocabulary lives in the browser, and a spreadsheet wants a value it
+        # can filter on, `acme/widgets#12 open`.
+        pr = task.get("pr") or {}
+        if not pr.get("number"):
+            return ""
+        return f"{pr.get('repo')}#{pr['number']} {pr.get('state')}"
     if key == "attachments":
         # The one column the file knows more than the screen: the table renders
         # "—" here because the LIST endpoint does not count attachments
@@ -403,6 +413,8 @@ async def export_tasks_csv(
         exported = [row_to_dict(r, TaskModel) for r in rows]
         await attach_assignees(db, exported)
         await attach_relation_counts(db, exported, vis)
+        # EA-13d: the pull request column, one batched read like the two above.
+        await attach_pr_chip(db, exported)
 
         ids = [str(r["id"]) for r in exported if r.get("id")]
         statuses: dict[str, str] = {}

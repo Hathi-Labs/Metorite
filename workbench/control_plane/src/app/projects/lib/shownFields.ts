@@ -29,6 +29,9 @@ export const FIELD_KEYS = [
   "importance",
   "subtasks",
   "blocked",
+  // WS-55 EA-13d: the pull request chip. Declared here AND in the gateway's
+  // `filters.SHOWN_FIELDS`, `export.FIELD_LABELS`, or a saved view loses it.
+  "pr",
   "tags",
   "attachments",
   "estimate",
@@ -47,6 +50,7 @@ export const FIELD_LABELS: Record<FieldKey, string> = {
   importance: "Priority",
   subtasks: "Subtasks",
   blocked: "Blocked",
+  pr: "Pull request",
   tags: "Tags",
   attachments: "Files",
   estimate: "Estimate",
@@ -90,6 +94,10 @@ export const DEFAULT_SHOWN: readonly string[] = [
   "importance",
   "subtasks",
   "blocked",
+  // The pull request chip shows by default on the Board and the List
+  // (EA-13d, EA3-41). A task with no pull request earns no chip, so a project
+  // that uses no GitHub sees no change.
+  "pr",
   "tags",
 ];
 

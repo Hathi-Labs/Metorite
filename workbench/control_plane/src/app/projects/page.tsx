@@ -4052,6 +4052,7 @@ function ProjectsWorkspace() {
               filters={filters}
               onClearFilters={() => changeFilters(EMPTY_FILTERS)}
               waitingOnMe={waitingOnMe}
+              me={me}
               lanes={lanes}
               onToggleLane={(key) =>
                 setLanes((current) => ({
@@ -4100,6 +4101,7 @@ function ProjectsWorkspace() {
               filters={filters}
               onClearFilters={() => changeFilters(EMPTY_FILTERS)}
               waitingOnMe={waitingOnMe}
+              me={me}
               statuses={statuses}
               tags={tags}
               taskTypes={taskTypes}
@@ -4165,6 +4167,7 @@ function ProjectsWorkspace() {
     <TaskPanel
       where={openWhere(openTask)}
       personLabels={personLabels}
+      me={me}
       /**
        * ⚠️ People the BOARD never saw.
        *

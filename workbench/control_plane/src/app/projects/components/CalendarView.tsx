@@ -308,6 +308,7 @@ export function CalendarView({
                         state={task.agent_state}
                         clientVia={task.agent_client_via}
                         memberEmail={task.agent_member_email}
+                        note={task.agent_note}
                       />
                       <TaskMeta
                         chips={visibleChips(

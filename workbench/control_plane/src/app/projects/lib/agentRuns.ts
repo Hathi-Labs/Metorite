@@ -137,6 +137,14 @@ export interface AgentRun {
   member_email: string;
   /** `mcp:<slug>`. */
   client_via: string;
+  /**
+   * EA-13d. The curated name of the stamp ("Claude Code"), from the one map
+   * `CLIENT_LABELS` of the gateway. Optional because a gateway before EA-13d
+   * does not send it. `runIdentity` falls back to `clientName(client_via)`.
+   */
+  client_name?: string | null;
+  /** EA-13d. The host that the gateway verified, "claude.ai". Never self-declared. */
+  client_host?: string | null;
   status: AgentRunStatus;
   /** The derived state (`AGENT_RUN_STATE_SQL`). A closed run reads its status. */
   state?: AgentRunState | null;
@@ -360,6 +368,17 @@ export interface AgentPillFacts {
   memberEmail?: string | null;
   /** The newest thought, for the tooltip of "working". */
   thought?: string | null;
+  /**
+   * EA-13d (EA3-41). `agent_note` of the row: the first line of the newest
+   * thought, response or question. It shows on hover, whatever the state.
+   */
+  note?: string | null;
+  /**
+   * EA-13d (EA3-50). The person who looks at the card. An `awaiting` run reads
+   * "Needs you" to the run's member and "Waiting for <first name>" to everyone
+   * else. Without it, the pill reads as it did before EA-13d.
+   */
+  viewerEmail?: string | null;
   labels?: ReadonlyMap<string, string>;
 }
 
@@ -380,8 +399,34 @@ export function agentPillText(
 ): AgentPillText {
   const client = clientName(facts.clientVia);
   const member = firstName(facts.memberEmail, facts.labels);
+  const answer = pillText(state, facts, client, member);
+  // The agent's newest line is the better hover than a sentence about the
+  // state, so it takes the title when the row carries one (EA3-41).
+  const note = facts.note?.trim();
+  return note ? { ...answer, title: note } : answer;
+}
+
+/** Whether *viewer* is the member of the run (case-insensitive). */
+function isViewer(member?: string | null, viewer?: string | null): boolean {
+  const who = (viewer ?? "").trim().toLowerCase();
+  return Boolean(who) && (member ?? "").trim().toLowerCase() === who;
+}
+
+function pillText(
+  state: AgentState,
+  facts: AgentPillFacts,
+  client: string,
+  member: string,
+): AgentPillText {
   switch (state) {
     case "awaiting":
+      if (isViewer(facts.memberEmail, facts.viewerEmail)) {
+        // EA3-50: the question is the viewer's to answer.
+        return {
+          text: "Needs you",
+          title: `${client} asked a question and waits for your answer`,
+        };
+      }
       return {
         text: member ? `Waiting for ${member}` : "Waiting for an answer",
         title: `${client} asked a question and waits for an answer`,
@@ -672,6 +717,31 @@ export const WAITING_ON_ME_EMPTY = "Nothing waits on you";
 
 /** The hint under the list's empty state while the filter is on. */
 export const WAITING_ON_ME_HINT = "No agent waits for your answer on a task in this view.";
+
+/* ── The run pill (WS-55 EA-13d) ─────────────────────────────────────────── */
+
+/**
+ * The words of the run pill in the run panel's header (EA-13d, the item that
+ * EA-13a deferred): `<client_name> · <host>`, for example "Claude Code ·
+ * claude.ai". The name is the curated label and the host is the host that the
+ * gateway verified when the member connected the client. A client that names
+ * itself "Claude Code" on any other host reads as its own host, because the
+ * label comes from the map and never from the client.
+ */
+export function runIdentity(
+  run: Pick<AgentRun, "client_via" | "client_name" | "client_host">,
+): string {
+  const name = run.client_name?.trim() || clientName(run.client_via);
+  const host = run.client_host?.trim() || hostOfStamp(run.client_via);
+  return host && host.toLowerCase() !== name.toLowerCase() ? `${name} \u00b7 ${host}` : name;
+}
+
+/** The host part of a stamp, `mcp:claude.ai:claude-code` -> `claude.ai`. */
+export function hostOfStamp(via?: string | null): string {
+  const raw = (via ?? "").trim().toLowerCase();
+  const body = raw.startsWith("mcp:") ? raw.slice(4) : raw;
+  return (body.match(/:/g) ?? []).length > 1 ? body : body.split(":")[0];
+}
 
 /* ── The archive request (EA-6g, EA3-33 and EA3-40) ──────────────────────── */
 

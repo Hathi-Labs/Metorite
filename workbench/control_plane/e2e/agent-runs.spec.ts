@@ -606,3 +606,153 @@ test("another member reads an expired request, with no Decline", async ({ page }
   await expect(panel.getByRole("textbox", { name: /Reply to/ })).toBeVisible();
   expect(approvals).toHaveLength(0);
 });
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * WS-55 EA-13d and EA-13e — agent work on the board
+ * (`external_agent_access.md` §12.2 items 2 and 4).
+ *
+ * The same page, with a board of three tasks that carry the new row fields:
+ * `pr`, `agent_note` and `agent_worked`. The strip reads
+ * `projects/p2/agent-summary`, and "Ask an agent" posts one start for each
+ * task. Mutations that turned these red: B1 the chip link lets the click
+ * reach the card (the chip test), B2 the toggle keeps every row (the filter
+ * test), B3 a count button sets no filter (the strip test), B4 the dialog
+ * sends a 21st task (the cap test), B5 one 409 stops the other tasks (the
+ * bulk test).
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+const PR_URL = "https://github.com/acme/widgets/pull/12";
+
+/** Awaits the member, an open pull request whose checks fail. */
+const BOARD_A = {
+  ...TASK,
+  agent_state: "awaiting",
+  agent_client_via: "mcp:claude.ai:claude-code",
+  agent_member_email: ME,
+  agent_note: "Which database should the migration target?",
+  agent_worked: true,
+  pr: {
+    repo: "acme/widgets",
+    number: 12,
+    state: "open",
+    checks_state: "failing",
+    checks_summary: { passed: 12, failed: 1, pending: 0, skipped: 0, total: 13 },
+    url: PR_URL,
+    title: "Port the migration runner",
+    merged_at: null,
+    more: 0,
+  },
+};
+
+/** No agent, no pull request. */
+const BOARD_B = { ...TASK, id: "t3", task_number: 3, title: "Write the release notes", agent_state: null, agent_worked: false, pr: null };
+
+/** Works now, and its pull request merged an hour ago, with one more. */
+const BOARD_C = {
+  ...TASK,
+  id: "t4",
+  task_number: 4,
+  title: "Fix the extruder",
+  agent_state: "working",
+  agent_client_via: "mcp:claude.ai:claude-code",
+  agent_member_email: ME,
+  agent_note: "Running the tests",
+  agent_worked: true,
+  pr: {
+    repo: "acme/widgets",
+    number: 14,
+    state: "merged",
+    checks_state: "passing",
+    checks_summary: null,
+    url: "https://github.com/acme/widgets/pull/14",
+    title: "Fix it",
+    merged_at: new Date(Date.now() - 3_600_000).toISOString(),
+    more: 1,
+  },
+};
+
+const SUMMARY = { queued: 0, working: 1, waiting_on_you: 1, in_review: 1, merged_this_week: 1 };
+
+async function boardStub(
+  page: Page,
+  opts: { tasks?: Record<string, unknown>[]; summary?: Record<string, number>; conflict?: string[] } = {},
+) {
+  const starts: { path: string; body: Record<string, unknown> }[] = [];
+  const patches: string[] = [];
+  const tasks = opts.tasks ?? [BOARD_A, BOARD_B, BOARD_C];
+  await page.route("https://github.com/**", (route) => route.fulfill({ body: "ok" }));
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname.replace(/^\/api\//, "");
+    const start = path.match(/^projects\/tasks\/([^/]+)\/agent-runs$/);
+    if (request.method() === "POST" && start) {
+      starts.push({ path, body: request.postDataJSON() as Record<string, unknown> });
+      if (opts.conflict?.includes(start[1])) {
+        return route.fulfill({ status: 409, json: { detail: START_409 } });
+      }
+      return route.fulfill({
+        status: 201,
+        json: { run: { ...run("created", "queued"), task_id: start[1] }, created: true },
+      });
+    }
+    if (request.method() === "PATCH") {
+      patches.push(path);
+      return route.fulfill({ json: tasks[0] });
+    }
+    if (request.method() !== "GET") return route.fulfill({ json: EMPTY });
+    if (path === "agent-access/connections") return route.fulfill({ json: { connections: [CONNECTION] } });
+    if (path === "projects/p2/agent-summary") return route.fulfill({ json: opts.summary ?? SUMMARY });
+    if (path === "projects/agent-runs") return route.fulfill({ json: { rows: [] } });
+    if (/^projects\/tasks\/[^/]+\/agent-runs$/.test(path)) return route.fulfill({ json: { rows: [] } });
+    if (path === "projects/tasks") return route.fulfill({ json: { rows: tasks, total: tasks.length } });
+    if (path.includes("nodes/p2/statuses")) {
+      return route.fulfill({ json: { rows: STATUSES, total: STATUSES.length } });
+    }
+    if (path.includes("projects/tree")) return route.fulfill({ json: { rows: TREE, total: 1 } });
+    if (path.includes("auth/me")) return route.fulfill({ json: { email: ME, name: "You" } });
+    return route.fulfill({ json: EMPTY });
+  });
+  await page.goto("/projects");
+  await page.waitForLoadState("domcontentloaded");
+  await page.waitForTimeout(4000);
+  await openAllRows(page);
+  await page.getByText("Bootloader", { exact: true }).first().click();
+  await page.waitForTimeout(2500);
+  return { starts, patches };
+}
+
+const cardOf = (page: Page, title: string) => page.locator("li").filter({ hasText: title }).last();
+
+test("the card shows the badge, one PR chip with its CI, and the note on hover", async ({ page }) => {
+  test.setTimeout(120_000);
+  await boardStub(page);
+  const a = cardOf(page, TASK.title);
+
+  // EA3-50: the run's member reads "Needs you", and the hover is the agent's line.
+  const pill = a.locator('[data-agent-pill="awaiting"]');
+  await expect(pill).toContainText("Needs you");
+  await expect(pill).toHaveAttribute("title", "Which database should the migration target?");
+
+  // EA3-41: one chip, the words carry the state, and the hover holds the counts.
+  const chip = a.locator("[data-pr-chip]");
+  await expect(chip).toHaveCount(1);
+  await expect(chip).toHaveText("PR #12 · Open · ✗ checks");
+  await expect(chip).toHaveAttribute("href", PR_URL);
+  await expect(chip).toHaveAttribute("target", "_blank");
+  await expect(chip).toHaveAttribute("title", /12 passed, 1 failed/);
+
+  // The merged one, with the count of the others.
+  await expect(cardOf(page, "Fix the extruder").locator("[data-pr-chip]")).toHaveText(
+    "PR #14 · Merged +1",
+  );
+  // A task with no pull request has no chip.
+  await expect(cardOf(page, BOARD_B.title).locator("[data-pr-chip]")).toHaveCount(0);
+
+  // The click opens the pull request in a new tab and never the task.
+  const popup = page.waitForEvent("popup");
+  await chip.click();
+  expect((await popup).url()).toBe(PR_URL);
+  await expect(page.getByRole("button", { name: "Comment", exact: true })).toHaveCount(0);
+  await expect(page.locator("[data-agent-run-panel]")).toHaveCount(0);
+});

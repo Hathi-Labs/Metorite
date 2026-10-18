@@ -119,6 +119,11 @@ interface Props {
    * nothing waits on the member, not "Drop here".
    */
   waitingOnMe?: boolean;
+  /**
+   * WS-55 EA-13d (EA3-50) — the person who looks at the board. An `awaiting`
+   * pill reads "Needs you" to the run's member.
+   */
+  me?: string;
   /** WS-27y — the second axis and its lane state. */
   lanes: BoardLanes;
   onToggleLane: (key: string) => void;
@@ -201,6 +206,7 @@ export function TaskBoard({
   filters,
   onClearFilters,
   waitingOnMe = false,
+  me,
   lanes,
   onToggleLane,
   onShowEmptyLanes,
@@ -850,6 +856,8 @@ export function TaskBoard({
               state={task.agent_state}
               clientVia={task.agent_client_via}
               memberEmail={task.agent_member_email}
+              note={task.agent_note}
+              viewerEmail={me}
               labels={personLabels}
             />
           </div>

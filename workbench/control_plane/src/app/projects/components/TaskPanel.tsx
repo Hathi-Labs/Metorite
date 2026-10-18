@@ -114,6 +114,8 @@ interface Props {
   onMode?: (next: PanelMode) => void;
   /** See TaskBoard's prop of the same name. */
   personLabels?: ReadonlyMap<string, string>;
+  /** WS-55 EA-13d (EA3-50) — the viewer, so the pill reads "Needs you" to the run's member. */
+  me?: string;
   /**
    * Addresses this panel has seen that the board may not have.
    *
@@ -144,6 +146,7 @@ export function TaskPanel({
   mode = "side",
   onMode,
   personLabels,
+  me,
   onPeopleSeen,
   where,
 }: Props) {
@@ -273,6 +276,8 @@ export function TaskPanel({
             size="sm"
             clientVia={task.agent_client_via}
             memberEmail={task.agent_member_email}
+            note={task.agent_note}
+            viewerEmail={me}
             labels={personLabels}
           />
           {task.completed_at ? (

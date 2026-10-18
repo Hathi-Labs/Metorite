@@ -68,7 +68,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
-from acb_auth import UserContext, get_current_user
+from acb_auth import UserContext, agent_oauth, get_current_user
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN, PROJECTS_WRITE, actor_via_for
 from acb_common import get_logger
 from fastapi import Depends, HTTPException, Query, Response
@@ -475,6 +475,11 @@ async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
             "member_email": row.member_email,
             "connection_id": wire(row.connection_id),
             "client_via": row.client_via,
+            # EA-13d: the curated name and the verified host of the stamp, for
+            # the run pill "<client_name> · <host>". The name comes from the one
+            # map `CLIENT_LABELS`, never from the self-declared client name.
+            "client_name": agent_oauth.client_label(row.client_via),
+            "client_host": agent_oauth.client_host(row.client_via),
             "status": row.status,
             "state": row.state,
             "started_by": row.started_by,
