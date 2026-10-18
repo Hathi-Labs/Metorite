@@ -5358,20 +5358,24 @@ owner's directive, as D96 was. It changes no price and no product surface.
 ### D106 — Context stays current: a stamp, recency, a digest and healthy connectors (2026-10-18)
 
 Owner directive, 2026-10-18, in chat. The owner pointed at a talk on AI
-knowledge bases and asked that its ideas guide how all of Metorite feeds the
-AI. Board: **WS-61**. Owning spec: **`specs/company_context.md`**. It
+knowledge bases, and gave its build prompt as the template, made general.
+The owner asked that its ideas guide how all of Metorite feeds the AI. Board: **WS-61**. Owning spec: **`specs/company_context.md`**. It
 extends D105 and changes neither D104 nor D105.
 
 1. **Every hit carries a stamp**, the date its record last changed in
    substance, beside `when`.
-2. **The seam ranks newer above older inside each app**, by a half-life per
-   app with a floor. A Knowledge page decays by its review state, not by its
-   age. The model reads the stamp, and the newer record wins a conflict.
-3. **A cheap model writes a digest per record**: a summary, the likely
-   questions and the atoms. Code checks each atom against the record. The
-   digest lives in the owning app's table, under the record's visibility.
-4. **Lexical first.** A digest comes before a vector. A fixed-question eval
-   is the fence for every ranking change.
+2. **The seam ranks newer above older inside each app**, by a decay per app
+   with a floor. A Knowledge page decays by its review state, not by its
+   age. A replaced record scores at half. The model reads the stamp, and
+   the newer record wins a conflict.
+3. **A cheap model writes a digest per long record**, in the record's own
+   words. It holds segments (a topic, its question, a short summary) and
+   atoms. Code checks each atom against the record, and masks secrets
+   first. The digest lives in the owning app's table, under the record's
+   visibility.
+4. **Lexical first.** The query asks for any of its words. A digest comes
+   before a vector. A fixed-question eval is the fence for every ranking
+   change.
 5. **Every connector holds a cursor, reads only, and reports
    `last_new_at`.** A quiet connector makes a card for an admin.
 6. **Past AI sessions are a source**, for their participants only.
