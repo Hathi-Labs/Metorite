@@ -309,8 +309,9 @@ draw one template each. W4 and W5 stay instructions over the tools.
    a date. A task that lacks one of the four is not proposed.
    ⚠️ **Amended 2026-10-17 (§26).** The owner is optional. A task with no
    owner is an unassigned task, and the agent does not ask for one.
-4. Priority score is `impact × urgency × effort`, each 1 to 5, shown per task
-   and never stored. It is a sorting aid, not a field.
+4. Priority score is `impact × urgency × effort`, each 1 to 5, shown in each
+   task's open row and never stored. It is a sorting aid, not a field.
+   ⚠️ **Amended 2026-10-18 (§27).** The line at rest leaves it out.
 5. The agent names three ways the plan fails, before it asks for approval.
    That step was the satellite skill's inversion check, and it stays.
 6. On approval, `create_project` and `create_task` run as **one class B
@@ -1539,6 +1540,10 @@ progress, Done). For a team of this size, start dates and dependencies carry
 the order of a plan, and the Timeline draws it. A plan big enough to need
 grouping uses sub-projects, which exist already. A phase would also add a
 parent task that needs an owner and that the analytics would count as work.
+
+⚠️ **Amended 2026-10-18 (§27).** A row can carry a `phase` label. The card
+groups and folds the rows under it. The label makes no task, and nothing
+stores it.
 
 **Rules for the build.** The S7d audit (2026-09-24) found these decisions. The
 owner took rules 1, 2 and 3 on 2026-09-24.
@@ -6204,3 +6209,64 @@ instructions. Several new statuses still have no batch tool (§24.5).
   change adds no "select all" control.
 - **`addendum.REPORT_RULE` does not change.** The rule against a plan file
   is in the Projects instructions, beside W1.
+
+## 27. The plan card reads first (2026-10-18)
+
+**Status.** Built 2026-10-18, branch `plan-card-redesign`. It adds no flag.
+It changes how the card looks. It does not change what the card sends.
+
+### 27.1 The report
+
+On 2026-10-17 the owner said that the plan card "feels intimidating" and
+that "the UI looks poor". The card drew a full form for each task. On
+2026-10-18 the owner approved nine changes to it.
+
+### 27.2 The nine changes, as built
+
+1. **Read first, edit on click.** Each task is one line of text. A click on
+   the line or on its pencil opens that row only. Enter opens it too.
+   Escape or Done closes it, and focus goes back to the line.
+2. **One dense line per task.** The tick, the title, the owner chip, the
+   effort and the dates. The effort shows in hours or days. A working day is
+   480 minutes, the last step of `ESTIMATE_PRESETS` (D77). The open row edits
+   the effort in minutes, hours or days. Dates are short, day first.
+3. **A summary line.** The project name is its title, and a click renames
+   it. Then the count of tasks, the owners, the span and the total effort.
+4. **A timeline strip.** It draws one bar for each ticked task. A marked task
+   draws in the warning tone.
+5. **Phases fold.** A row can carry a `phase` label (amends §13.6). The card
+   groups the rows under it, and each group folds. The label is for display.
+   The card never sends it, and the server never stores it or makes a task.
+6. **Marks are badges.** "Overloaded", "Skill gap", "Not in directory" and
+   "Unknown owner". The fit, the hours, the full mark and the priority score
+   show in the open row.
+   An unassigned row shows its owner chip as "Unassigned", in a neutral tone.
+7. **Edit several.** The member picks rows, then sets one owner or moves all
+   their dates by the same count of days.
+8. **One footer.** "Create 7 tasks" counts the ticks. Cancel sends "Cancel".
+   That answer is no submit, so the tool writes nothing.
+9. **One look.** The card keeps the chat card's header and frame. In a column
+   narrower than 34 rem, each task is a small stacked card.
+
+### 27.3 Rules
+
+1. **The submit does not change.** The card sends `planSubmit` over the
+   ticked rows, with the same "<label> — <json>" answer. An unticked row
+   leaves the payload as a dropped row did (§13.6 rule 6).
+2. **The server change is additive.** `_plan_row` keeps a `phase` that the
+   model gives, and `_card_rows` passes it to the card. No POST, no preview
+   and no confirm card reads it.
+3. **The confirmation card stays.** "Create 7 tasks" sends the plan. The one
+   approval that follows creates all the ticked tasks (§26.2).
+
+### 27.4 Fences (R7)
+
+| Rule | Test |
+|---|---|
+| 1 | `planCardReadFirst.test.ts` "the submit payload is byte-identical" |
+| 1, 8 | `e2e/plan-card.spec.ts` "the ticks count in the footer" |
+| 2 | `test_projects_agent_writes.py` `test_a_phase_reaches_the_card_and_never_a_write` |
+| 8 | `test_cancel_on_the_plan_card_writes_nothing` |
+| 1 to 9, at rest | `components/planCardBody.test.ts` |
+| Other forms | `planCardBody.test.ts` "a form that is not a plan" |
+| Clicks, keys, 390 px | `e2e/plan-card.spec.ts` |

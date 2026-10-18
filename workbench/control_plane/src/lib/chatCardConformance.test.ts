@@ -72,6 +72,7 @@ const CHAT_CARDS: Record<string, { seam: true } | { exempt: string }> = {
   "components/Readout.tsx": { exempt: "the body of a read card, under the card's own header" },
   "components/RecommendedBadge.tsx": { exempt: "a badge inside an option row" },
   "components/TodoPanel.tsx": { exempt: "the plan above the composer, not a card of the transcript" },
+  "components/PlanCardBody.tsx": { exempt: "the body of the plan card, under its TemplateHead in genUITemplates" },
 };
 
 const SEAM = /<(?:RollupHeader|CollapsibleCardHeader|TemplateHead|ToolCardShell)\b/;
@@ -227,8 +228,8 @@ describe("rule 2b: each Email card draws the shared header (follow-up of #945)",
  */
 const CONTROL_DEBT: Record<string, { count: number; why: string }> = {
   "components/genUITemplates.tsx": {
-    count: 8,
-    why: "the form card's fields and toggle, and the plan card's inline editors. Their own pass",
+    count: 6,
+    why: "the form card's fields and toggle. The plan card left with its redesign (2026-10-18)",
   },
   "components/projects/ProjectToolCards.tsx": { count: 1, why: "the task row's open button" },
   "components/tasks/TaskToolCards.tsx": { count: 3, why: "the row, Apply plan and Open in My Tasks. The Tasks pass" },
