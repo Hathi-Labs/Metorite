@@ -653,24 +653,59 @@ def _late_key(org: str, qid: str, email: str) -> str:
     return f"cc:{org}:crm_question_answered:{qid}:{email}"
 
 
-def _card_of(qid: str) -> dict:
-    """The stored payload of a parked CRM card of *qid*, as the row keeps it."""
-    return {"request_id": "r-late", "questions": [{
-        "header": "Collection: amount", "question": "Which field?", "crm_question": qid,
-        "options": [{"label": "Part A", "key": "Part_A"}, {"label": "Part B", "key": "Part_B"},
-                    {"label": "Use the default", "key": "@default"}]}]}
+async def _real_card(p: Any, org: str, user: Any, qid: str) -> tuple[dict, dict[str, str]]:
+    """The card that the tool builds for *qid* from the real ``/ask`` read,
+    as ``ask_questions`` stores it, and the label of each option key."""
+    import acb_skills.crm_tools as tools
+
+    got = await ask(p, user, qid)
+    assert got.status_code == 200, got.text
+    (q,) = got.json()["questions"]
+    payload, keys = tools._card(q)
+    return payload, {key: label for label, key in keys}
 
 
 async def _answered_late(p: Any, monkeypatch: Any, org: str, user: Any, qid: str,
-                         label: str) -> None:
-    """The member answered the parked card of *qid* late with *label*: what
-    ``routes/agent._late_answer_from_row`` records, with the session's org.
-    The tool of the next run then reads the run's org."""
+                         key: str) -> None:
+    """The member answered the parked card of *qid* late with the option
+    *key*: what ``routes/agent._late_answer_from_row`` records, with the
+    session's org. The tool of the next run then reads the run's org."""
     import acb_skills.crm_tools as tools
     from gateway.routes.crm.questions import record_late_answer
 
-    assert await record_late_answer(org, user.email, "questions", _card_of(qid), label)
+    payload, labels = await _real_card(p, org, user, qid)
+    async with tenant_engine_scope(p.app_url.render_as_string(hide_password=False)):
+        assert await record_late_answer(org, user.email, "questions", payload, labels[key])
     monkeypatch.setattr(tools, "_run_org", lambda: org)
+
+
+async def test_the_server_checks_the_card_label_on_a_real_question(
+    chat_env, app_engine, hold,
+) -> None:
+    """Hardening: the key of a late answer counts only when the server's own
+    card shows that label for it. A forged label, or two options with one
+    label, records nothing."""
+    from gateway.routes.crm.questions import record_late_answer
+
+    p = chat_env
+    seed_a(p)
+    user = member(p.org_a)
+    payload, labels = await _real_card(p, p.org_a, user, KEY)
+    assert labels["Part_A"].startswith("Part A (")
+    forged = {"questions": [{**payload["questions"][0], "options": [
+        {"label": "Yes, continue", "key": "Part_A"}]}]}
+    twins = {"questions": [{**payload["questions"][0], "options": [
+        {"label": labels["Part_A"], "key": "Part_A"},
+        {"label": labels["Part_A"], "key": "Part_B"}]}]}
+    async with tenant_engine_scope(p.app_url.render_as_string(hide_password=False)):
+        assert not await record_late_answer(p.org_a, user.email, "questions", forged,
+                                            "Yes, continue")
+        assert not await record_late_answer(p.org_a, user.email, "questions", twins,
+                                            labels["Part_A"])
+        assert hold.store == {}
+        assert await record_late_answer(p.org_a, user.email, "questions", payload,
+                                        labels["Part_B"])
+    assert hold.store[_late_key(p.org_a, KEY, user.email)][1] == "Part_B"
 
 
 async def test_a_late_answer_lets_the_matching_pick_through_once(
@@ -684,7 +719,7 @@ async def test_a_late_answer_lets_the_matching_pick_through_once(
     p = chat_env
     seed_a(p)
     user = member(p.org_a)
-    await _answered_late(p, monkeypatch, p.org_a, user, KEY, "Part A")
+    await _answered_late(p, monkeypatch, p.org_a, user, KEY, "Part_A")
     assert hold.store[_late_key(p.org_a, KEY, user.email)][1] == "Part_A"
     assert card_run.asked == set()  # this run showed no card
     out, again = await _through_the_tool(p, user, monkeypatch, [(KEY, "Part_A"), (KEY, "Part_A")])
@@ -692,7 +727,7 @@ async def test_a_late_answer_lets_the_matching_pick_through_once(
     assert proposals(p, p.org_a)[KEY][0]["value"] == "Part_A"
     assert _late_key(p.org_a, KEY, user.email) not in hold.store
     # A late answer of Part A never lets the model send Part B.
-    await _answered_late(p, monkeypatch, p.org_a, user, KEY, "Part A")
+    await _answered_late(p, monkeypatch, p.org_a, user, KEY, "Part_A")
     (wrong,) = await _through_the_tool(p, user, monkeypatch, [(KEY, "Part_B")])
     assert wrong == NO_CARD_PICK
     assert [x["value"] for x in proposals(p, p.org_a)[KEY]] == ["Part_A"]
@@ -709,11 +744,9 @@ async def test_org_b_cannot_use_the_late_answer_of_org_a(
     p = chat_env
     seed_a(p)
     seed_b(p)
-    await _answered_late(p, monkeypatch, p.org_a, member(p.org_a), "purpose:Ledgers",
-                         "Use the default")
+    await _answered_late(p, monkeypatch, p.org_a, member(p.org_a), KEY, "@default")
     monkeypatch.setattr(tools, "_run_org", lambda: p.org_b)
-    outs = await _through_the_tool(p, member(p.org_b), monkeypatch,
-                                   [("purpose:Ledgers", "@default")])
+    outs = await _through_the_tool(p, member(p.org_b), monkeypatch, [(KEY, "@default")])
     assert outs == [NO_CARD_PICK]
     assert proposals(p, p.org_b) == {} and hold.store != {}  # org A's record is untouched
 
@@ -729,7 +762,7 @@ async def test_a_batch_run_never_picks_with_a_late_answer(
     p = chat_env
     seed_a(p)
     before = versions(p, p.org_a)
-    await _answered_late(p, monkeypatch, p.org_a, _user(p.org_a), KEY, "Part A")
+    await _answered_late(p, monkeypatch, p.org_a, _user(p.org_a), KEY, "Part_A")
     token = tools._RUN_ASKS.set(None)
     try:
         outs = await _through_the_tool(p, _user(p.org_a), monkeypatch, [(KEY, "Part_A")])
@@ -745,9 +778,9 @@ async def test_an_admin_answer_and_a_default_clear_the_late_answers(
     seed_a(p)
     one, two = member(p.org_a, 1), member(p.org_a, 2)
     for user in (one, two):
-        await _answered_late(p, monkeypatch, p.org_a, user, KEY, "Part A")
-    await _answered_late(p, monkeypatch, p.org_a, one, "revenue", "Use the default")
-    await _answered_late(p, monkeypatch, p.org_a, two, "revenue", "Use the default")
+        await _answered_late(p, monkeypatch, p.org_a, user, KEY, "Part_A")
+    await _answered_late(p, monkeypatch, p.org_a, one, "revenue", "@default")
+    await _answered_late(p, monkeypatch, p.org_a, two, "revenue", "@default")
     # "@default" of member 2 clears its own late answer of revenue only.
     assert (await reply(p, two, "revenue", "@default")).status_code == 200
     assert _late_key(p.org_a, "revenue", two.email) not in hold.store

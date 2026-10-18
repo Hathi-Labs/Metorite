@@ -1766,6 +1766,19 @@ _REVENUE_HINTS: dict[str, str] = {
 }
 
 
+def card_option_label(q: dict[str, Any], key: str) -> str | None:
+    """The label that a card of *q* (a question of ``/crm/questions/ask``)
+    shows for the option *key*, cut as ``ask_questions`` cuts it, or None
+    when the card has no such option. The gateway checks a late answer
+    against it, so a card that a model wrote with a label of its own never
+    records a pick (CRM-Q32-8, hardening of the late pick)."""
+    from acb_skills.ask_tools import OPTION_LABEL_MAX, clip_words
+
+    _payload, keys = _card(q)
+    found = [label for label, k in keys if k == key]
+    return clip_words(found[0], OPTION_LABEL_MAX) if len(found) == 1 else None
+
+
 def _card(q: dict[str, Any]) -> tuple[dict[str, Any], list[tuple[str, str]]]:
     """The payload of ``ask_questions`` for one question, and the key of
     each option, in order. The model sends the key, never the label:
@@ -2419,5 +2432,5 @@ __all__ = [
     "CRM_CLOSED", "CRM_DETAIL_MAX", "CRM_OFF", "CRM_VOICE", "CRM_SHARED_ROOM", "CRM_TOOLS", "CRM_TOOL_NAMES", "MAX_ROWS",
     "SEARCH_NUMBERS", "SEARCH_OFF", "SHORT_READS_PATH", "crm_mode", *(fn.__name__ for fn in CRM_TOOLS),
     "CLARIFY", "CRM_QUESTION_TOOLS", "CrmAsks", "MAX_ASKS_PER_RUN", "crm_answer_question",
-    "ANSWERED_NAMESPACE", "NO_CARD_PICK", "mark_answer_tool", "open_asks_for_run", "release_asks", "run_asks",
+    "ANSWERED_NAMESPACE", "NO_CARD_PICK", "card_option_label", "mark_answer_tool", "open_asks_for_run", "release_asks", "run_asks",
 ]

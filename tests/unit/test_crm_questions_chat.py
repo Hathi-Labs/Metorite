@@ -412,6 +412,11 @@ def _crm_card(qid: str = "key:A:amount") -> dict:
                     {"label": "Use the default", "key": "@default"}]}]}
 
 
+#: The labels that the server's own card of ``key:A:amount`` shows.
+_SERVER_LABELS = {"IP": "IP Basic Amount (52% filled)", "none": "None of these",
+                  "@default": "Use the default"}
+
+
 @pytest.fixture
 def late_redis(monkeypatch):
     from gateway.routes.crm import questions as routes
@@ -420,7 +425,49 @@ def late_redis(monkeypatch):
 
     raw = RawRedis()
     monkeypatch.setattr(routes, "_redis", lambda: tenant_client(raw))
+
+    async def server_label(org, qid, key):
+        return _SERVER_LABELS.get(key) if qid == "key:A:amount" else None
+
+    monkeypatch.setattr(routes, "_server_label", server_label)
     return raw
+
+
+async def test_two_options_with_one_label_record_nothing(late_redis) -> None:
+    """``ask_questions`` cuts a label at 100 characters, so two options can
+    show one label. Then the answer names no single option."""
+    from gateway.routes.crm import questions as routes
+
+    card = _crm_card()
+    card["questions"][0]["options"] = [{"label": "Same", "key": "IP"},
+                                       {"label": "Same", "key": "none"}]
+    assert not await routes.record_late_answer("org-a", "a@x.test", "questions", card, "Same")
+    assert late_redis.store == {}
+
+
+async def test_a_card_label_that_the_server_would_not_show_records_nothing(late_redis) -> None:
+    """A card that a model wrote: "Yes, continue" over a real key. The
+    server's own card shows another label for that key, so nothing is
+    recorded. A failed check records nothing either."""
+    from gateway.routes.crm import questions as routes
+
+    card = _crm_card()
+    card["questions"][0]["options"] = [{"label": "Yes, continue", "key": "IP"}]
+    assert not await routes.record_late_answer("org-a", "a@x.test", "questions", card,
+                                               "Yes, continue")
+    assert late_redis.store == {}
+
+
+async def test_a_failed_label_check_records_nothing(late_redis, monkeypatch) -> None:
+    from gateway.routes.crm import questions as routes
+
+    async def broken(org, qid, key):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(routes, "_server_label", broken)
+    assert not await routes.record_late_answer("org-a", "a@x.test", "questions", _crm_card(),
+                                               "IP Basic Amount (52% filled)")
+    assert late_redis.store == {}
 
 
 async def test_a_late_answer_records_the_option_that_the_member_picked(late_redis) -> None:

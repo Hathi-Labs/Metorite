@@ -933,12 +933,14 @@ ANSWERED_NAMESPACE = "crm_question_answered"
 LATE_ANSWER_TTL_S = 30 * 60
 
 
-def _card_option_key(payload: Any, answer: str) -> tuple[str, str] | None:
-    """The CRM question id and the key of the option that *answer* picked,
-    from the payload of a parked ``questions`` card, or None. The card must
-    ask ONE CRM question, and *answer* must be the label of one option of
-    it. The id and the key come from the card that the server stored,
-    never from the request."""
+def _card_option_key(payload: Any, answer: str) -> tuple[str, str, str] | None:
+    """The CRM question id, the key of the option that *answer* picked, and
+    its label, from the payload of a parked ``questions`` card, or None. The
+    card must ask ONE CRM question, and *answer* must be the label of
+    exactly ONE option of it: ``ask_questions`` cuts a long label, so two
+    options can show one label, and then nothing is recorded. The id and
+    the key come from the card that the server stored, never from the
+    request."""
     from acb_skills.ask_tools import card_option_key, crm_card_tag
 
     found = payload.get("questions") if isinstance(payload, Mapping) else None
@@ -949,11 +951,39 @@ def _card_option_key(payload: Any, answer: str) -> tuple[str, str] | None:
     if qid is None:
         return None
     said = (answer or "").strip()
-    for option in question.get("options") or []:
-        if isinstance(option, Mapping) and str(option.get("label") or "").strip() == said:
-            key = card_option_key(option)
-            return (qid, key) if key else None
-    return None
+    hits = [o for o in question.get("options") or []
+            if isinstance(o, Mapping) and str(o.get("label") or "").strip() == said]
+    if len(hits) != 1:
+        return None
+    key = card_option_key(hits[0])
+    return (qid, key, said) if key else None
+
+
+async def _server_label(org: str, question_id: str, option: str) -> str | None:
+    """The label that the server's own card of *question_id* shows for the
+    option *option* now, or None: the question as ``/ask`` reads it, with
+    its masked samples, through ``crm_tools.card_option_label``. One tenant
+    session of *org*, which the caller took from the session (R5)."""
+    from acb_common.db import bind_tenant, release_tenant
+    from acb_skills.crm_tools import card_option_label
+
+    token = bind_tenant(org)
+    try:
+        async with _tenant_session(org) as db:
+            inputs = await load(db, org, full=False)
+            if inputs is None:
+                return None
+            q = _chat_questions(inputs, True).get(question_id)
+            if q is None:
+                return None
+            inputs = await samples(db, org, inputs, [q])
+            q = _chat_questions(inputs, True).get(question_id)
+            if q is None:
+                return None
+    finally:
+        release_tenant(token)
+    wire = _ask_model(q, inputs, member="", admin=False, held=False).model_dump()
+    return card_option_label(wire, option)
 
 
 async def record_late_answer(org: str, member: str, kind: str, payload: Any,
@@ -972,7 +1002,20 @@ async def record_late_answer(org: str, member: str, kind: str, payload: Any,
     picked = _card_option_key(payload, answer)
     if picked is None:
         return False
-    qid, option = picked
+    qid, option, label = picked
+    # The card that ``ask_questions`` stored came from the model's JSON. So
+    # the key counts only when the server's own card of that question shows
+    # the same label for it: a forged card ("Yes, continue" over the key
+    # payment_in) records nothing.
+    try:
+        expected = await _server_label(org, qid, option)
+    except Exception as exc:
+        _log.warning("crm.questions.late_answer_check_failed", organization_id=org,
+                     error_type=type(exc).__name__)
+        return False
+    if expected is None or expected != label:
+        _log.info("crm.questions.late_answer_label_mismatch", organization_id=org)
+        return False
     try:
         with organization_scope(org):
             await _redis().setex(key(ANSWERED_NAMESPACE, qid, member.strip().lower()),

@@ -2404,3 +2404,19 @@ async def test_q32_8_a_choice_on_the_date_keeps_the_revenue_line(monkeypatch, ru
                                  group_field="@date", bucket="month")
     assert "This uses Paid On, as you chose." in out
     assert "CLARIFY" in out and 'question_id="revenue"' in out
+
+
+def test_q32_8_the_server_builds_the_label_of_each_option_as_the_card_cuts_it() -> None:
+    """``card_option_label`` is the label that the server's own card shows
+    for a key, cut at ``OPTION_LABEL_MAX`` as ``ask_questions`` cuts it. The
+    gateway compares a late answer with it."""
+    from acb_skills.ask_tools import OPTION_LABEL_MAX, clip_words
+
+    q = _ask_body()["questions"][0]
+    _payload, keys = _T._card(q)
+    for label, key in keys:
+        assert _T.card_option_label(q, key) == clip_words(label, OPTION_LABEL_MAX)
+    assert _T.card_option_label(q, "Invented") is None
+    long_q = _ask_body(long_label=True)["questions"][0]
+    cut = _T.card_option_label(long_q, "IP")
+    assert cut is not None and len(cut) <= OPTION_LABEL_MAX and cut.endswith("…")
