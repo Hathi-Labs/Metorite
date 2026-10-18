@@ -497,15 +497,16 @@ def test_the_migration_is_found_by_content_and_forces_row_level_security(af) -> 
             ("org", None, "a-b", "", "chat"),               # an empty body
             ("org", None, "a-b", "x", "email"),             # an unknown origin
         ]
+        from sqlalchemy.exc import IntegrityError
+
         for scope, email, slug, body, origin in bad:
-            with pytest.raises(Exception):
-                with c.begin_nested():
-                    c.execute(text(
-                        "INSERT INTO crm_business_rules (organization_id, scope, member_email, "
-                        "slug, body, origin, created_by, updated_by) VALUES (CAST(:o AS uuid), "
-                        ":s, :m, :g, :b, :r, 'x', 'x')"),
-                        {"o": p.org_a, "s": scope, "m": email, "g": slug, "b": body,
-                         "r": origin})
+            with pytest.raises(IntegrityError), c.begin_nested():
+                c.execute(text(
+                    "INSERT INTO crm_business_rules (organization_id, scope, member_email, "
+                    "slug, body, origin, created_by, updated_by) VALUES (CAST(:o AS uuid), "
+                    ":s, :m, :g, :b, :r, 'x', 'x')"),
+                    {"o": p.org_a, "s": scope, "m": email, "g": slug, "b": body,
+                     "r": origin})
 
 
 # ── Part 1, end to end: the tool over the real router ───────────────────────

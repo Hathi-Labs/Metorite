@@ -311,8 +311,9 @@ async def rules_for(db: Any, org: str, member: str | None) -> list[RuleRow]:
     the rule of another member."""
     if not answer_first_allowed(org):
         return []
+    # With no member, "" matches no rule of a member: each one holds an email.
     rows = (await db.execute(text(_LIST_SQL), {
-        "org": org, "me": (member or "").strip().lower() or "\x00none"})).fetchall()
+        "org": org, "me": (member or "").strip().lower()})).fetchall()
     return [RuleRow(scope=_scope_word(r), slug=str(r.slug), body=str(r.body)) for r in rows]
 
 

@@ -26,11 +26,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import acb_skills.crm_tools as _T
 import pytest
 from gateway.crm_sync import catalogue as cat
 from gateway.crm_sync import questions as qs
 
-import acb_skills.crm_tools as _T
 from tests.unit.test_crm_agent import _Gateway, _no_key
 
 # ── DEWiN's Collection (the real case, synthetic values) ─────────────────────
