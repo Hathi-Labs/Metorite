@@ -810,8 +810,22 @@ UNCATEGORIZED_SQL = (
 )
 
 
-def text_match_sql(param: str) -> str:
-    """The text match of a mail search, over ``em``, on the bind ``:param``.
+#: The most ids one text search gives back, newest first (incident
+#: 2026-10-18, fix round 1). The search asks the function for one more, so it
+#: can tell a full set from a cut one.
+SEARCH_MATCH_CAP = 20000
+
+#: The text match of a search, over ``em``. It binds ``:match_ids``, which
+#: ``text_match_ids`` gives. ``uuid_eq`` is LEAKPROOF, so under RLS this is an
+#: index qual on the primary key.
+TEXT_MATCH_SQL = "em.id = ANY(CAST(:match_ids AS uuid[]))"
+
+
+async def text_match_ids(
+    db: Any, query: str, *, uid: str, account_id: str | None,
+    pooled_only: bool,
+) -> tuple[list[Any], bool]:
+    """Run the text match of a mail search ONCE. Return ``(ids, truncated)``.
 
     ⚠️ Do NOT write ``to_tsvector(...) @@ ...`` against ``email_messages`` in a
     route. Under FORCE RLS the app role cannot use a GIN index for ``@@``,
@@ -819,16 +833,28 @@ def text_match_sql(param: str) -> str:
     ``to_tsvector`` over every body of the organization. On 2026-10-18 this
     made 7 of 12 ``query_inbox`` calls die on the 30 s statement timeout.
 
-    ``public.email_message_search`` (migration 284) is SECURITY DEFINER. It
-    finds the ids of the bound organization through the GIN index
-    ``idx_email_messages_fts_all``. The ids then reach the rows by primary key,
-    under RLS. ``ARRAY(...)`` makes that an index qual (``uuid_eq`` is
-    LEAKPROOF). The grammar is ``websearch_to_tsquery``, over subject, body,
-    the sender and the To and Cc recipients.
+    ``public.email_message_search`` (migration 286) is SECURITY DEFINER. Its
+    owner finds the ids through the GIN index ``idx_email_messages_fts_all``.
+    It reads only the mailboxes of the member: the same set as
+    ``_owned_accounts_sql`` (``:uid``, and ``account_id`` or ``pooled_only``),
+    never request input. So a common word costs the mailboxes of the member,
+    never the organization. It gives the newest ``SEARCH_MATCH_CAP`` ids, and
+    ``truncated`` says that more matched. The caller binds the ids once, as
+    ``:match_ids``, for both its COUNT and its page (``TEXT_MATCH_SQL``).
+
+    The grammar is ``websearch_to_tsquery``, over the subject, the body, the
+    sender and the To and Cc recipients.
 
     Fence: ``tests/unit/test_email_search_index_r8.py``.
     """
-    return f"em.id = ANY(ARRAY(SELECT public.email_message_search(:{param})))"
+    params: dict[str, Any] = {
+        "uid": uid, "q": query, "lim": SEARCH_MATCH_CAP + 1}
+    owned = _owned_accounts_sql(account_id, params, pooled_only=pooled_only)
+    res = await db.execute(text(
+        "SELECT id FROM public.email_message_search("
+        f":q, ARRAY({owned}), :lim) AS id"), params)
+    ids = list(res.scalars().all())
+    return ids[:SEARCH_MATCH_CAP], len(ids) > SEARCH_MATCH_CAP
 
 
 # "Uncategorized" is a STATE — the absence of any known label — never a label

@@ -1,10 +1,10 @@
 -- ============================================================================
--- 284_email_search_index.sql — mail search that uses its index under RLS.
+-- 286_email_search_index.sql — mail search that uses its index under RLS.
 -- ============================================================================
 --
--- ⚠️ The number was taken from the directory at BUILD time (R1). On
---    2026-10-18 main held 282, and the open branches `mail-handoff-refused`
---    and `crm-q33-answer-first` held 283. Check it again at merge.
+-- ⚠️ The number was taken from the directory at BUILD time (R1). It was 284
+--    until 2026-10-19, when #1154 took 284 on main. #1151 holds 283 and the
+--    hotfix branch `mail-handoff-refused` holds 285. Check it again at merge.
 --    `tests/unit/test_email_search_index_r8.py` finds this file by CONTENT
 --    (`email_message_search`), never by number, so a renumber costs nothing.
 --
@@ -13,9 +13,12 @@
 --   idx_email_messages_fts_all
 --       GIN over the search vector: subject, body, the sender, and the
 --       names and addresses of To and Cc.
---   public.email_message_search(p_query text) RETURNS SETOF uuid
---       The ids of the mail of the BOUND organization that match p_query in
---       the `websearch_to_tsquery` grammar.
+--   public.email_message_search(p_query text, p_accounts uuid[],
+--                               p_limit integer) RETURNS SETOF uuid
+--       The ids of the mail of the BOUND organization, in the mailboxes
+--       p_accounts, that match p_query in the `websearch_to_tsquery` grammar.
+--       Newest first, at most p_limit (the route asks 20 001 and shows
+--       20 000).
 --
 -- Why:  incident 2026-10-18, `project-docs/specs/email_app_master_plan.md`
 --       §18 "Incident 2026-10-18: search speed", board WS-17. On WhatsApp seven of
@@ -51,6 +54,11 @@
 -- policy. The rules of 222_chat_session_exists.sql and 263 hold:
 --
 --   * It returns ids of the bound organization only, never a row.
+--   * It reads only the mailboxes in p_accounts. The route passes the
+--     mailboxes of the member (`core._owned_accounts_sql`), never request
+--     input. So the cost is bounded by the mailboxes of the member, never by
+--     the organization (fix round 1: a word in each mail of the org cost
+--     18.3 s when the function filtered on the org alone).
 --   * No organization bound, no ids. This fails closed, as the policy does.
 --   * `SET search_path = pg_catalog, pg_temp`, and the table is qualified with
 --     `public.`. A caller cannot plant an `email_messages` of its own.
@@ -101,6 +109,13 @@
 -- 2026-10-18, so expect one minute or more. The daily release runs at 21:30
 -- UTC, which is 03:00 in India, where the mail of customer zero lives.
 --
+-- ⚠️ PRODUCTION BUILDS THIS INDEX BY HAND, with `CREATE INDEX CONCURRENTLY`,
+-- before the release. Then `IF NOT EXISTS` below skips the build and takes no
+-- lock. The by-hand statement and its validity check are in
+-- email_app_master_plan.md §18.7. ⚠️ The definition below and the by-hand
+-- statement must stay the same, character for character. An index with this
+-- name and another expression would satisfy `IF NOT EXISTS` and serve nothing.
+--
 -- ⚠️ The server default `statement_timeout` on production is 120 s, and the
 -- migration role has no override. A build past it fails the deploy. So this
 -- session lifts the timeout for this file only. The runner gives each file
@@ -122,7 +137,12 @@ CREATE INDEX IF NOT EXISTS idx_email_messages_fts_all
         )
     );
 
-CREATE OR REPLACE FUNCTION public.email_message_search(p_query text)
+-- A copy of this file before fix round 1 made a one-argument version. It was
+-- never merged, so no box but a scratch database holds it.
+DROP FUNCTION IF EXISTS public.email_message_search(text);
+
+CREATE OR REPLACE FUNCTION public.email_message_search(
+    p_query text, p_accounts uuid[], p_limit integer)
 RETURNS SETOF uuid
 LANGUAGE plpgsql
 STABLE
@@ -134,10 +154,14 @@ DECLARE
     v_org uuid;
     v_has_org boolean;
     v_rls boolean;
+    v_limit integer;
 BEGIN
-    IF p_query IS NULL OR btrim(p_query) = '' THEN
+    IF p_query IS NULL OR btrim(p_query) = ''
+       OR p_accounts IS NULL OR cardinality(p_accounts) = 0 THEN
         RETURN;
     END IF;
+    -- The cap. The caller asks for one more than it shows, to see a cut.
+    v_limit := LEAST(GREATEST(COALESCE(p_limit, 20001), 0), 50000);
 
     SELECT EXISTS (
                SELECT 1 FROM pg_attribute a
@@ -159,14 +183,17 @@ BEGIN
         RETURN QUERY
             SELECT m.id
               FROM public.email_messages m
-             WHERE to_tsvector('english',
-                       coalesce(m.subject, '') || ' ' ||
-                       coalesce(m.body_text, '') || ' ' ||
-                       coalesce(m.from_address->>'name', '') || ' ' ||
-                       coalesce(m.from_address->>'email', '') || ' ' ||
-                       coalesce(jsonb_path_query_array(m.to_addresses, '$[*].*')::text, '') || ' ' ||
-                       coalesce(jsonb_path_query_array(m.cc_addresses, '$[*].*')::text, ''))
-                   @@ websearch_to_tsquery('english', p_query);
+             WHERE m.account_id = ANY(p_accounts)
+               AND to_tsvector('english',
+                   coalesce(m.subject, '') || ' ' ||
+                   coalesce(m.body_text, '') || ' ' ||
+                   coalesce(m.from_address->>'name', '') || ' ' ||
+                   coalesce(m.from_address->>'email', '') || ' ' ||
+                   coalesce(jsonb_path_query_array(m.to_addresses, '$[*].*')::text, '') || ' ' ||
+                   coalesce(jsonb_path_query_array(m.cc_addresses, '$[*].*')::text, ''))
+               @@ websearch_to_tsquery('english', p_query)
+             ORDER BY m.received_at DESC NULLS LAST, m.id DESC
+             LIMIT v_limit;
         RETURN;
     END IF;
 
@@ -181,6 +208,7 @@ BEGIN
         SELECT m.id
           FROM public.email_messages m
          WHERE m.organization_id = v_org
+           AND m.account_id = ANY(p_accounts)
            AND to_tsvector('english',
                    coalesce(m.subject, '') || ' ' ||
                    coalesce(m.body_text, '') || ' ' ||
@@ -188,17 +216,20 @@ BEGIN
                    coalesce(m.from_address->>'email', '') || ' ' ||
                    coalesce(jsonb_path_query_array(m.to_addresses, '$[*].*')::text, '') || ' ' ||
                    coalesce(jsonb_path_query_array(m.cc_addresses, '$[*].*')::text, ''))
-               @@ websearch_to_tsquery('english', p_query);
+               @@ websearch_to_tsquery('english', p_query)
+         ORDER BY m.received_at DESC NULLS LAST, m.id DESC
+         LIMIT v_limit;
 END
 $email_message_search$;
 
-COMMENT ON FUNCTION public.email_message_search(text) IS
-    'Ids of the mail of the organization in app.tenant_id that match the '
-    'websearch_to_tsquery text. Returns ids, never a row. SECURITY DEFINER so '
-    'the GIN index idx_email_messages_fts_all serves it under RLS. WS-17, '
-    'incident 2026-10-18, email_app_master_plan.md.';
+COMMENT ON FUNCTION public.email_message_search(text, uuid[], integer) IS
+    'Ids of the mail of the organization in app.tenant_id, in the mailboxes '
+    'p_accounts, that match the websearch_to_tsquery text. Newest first, at '
+    'most p_limit. Returns ids, never a row. SECURITY DEFINER so the GIN index '
+    'idx_email_messages_fts_all serves it under RLS. WS-17, incident '
+    '2026-10-18, email_app_master_plan.md §18.';
 
-REVOKE ALL ON FUNCTION public.email_message_search(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.email_message_search(text, uuid[], integer) FROM PUBLIC;
 
 DO $$
 DECLARE
@@ -208,12 +239,12 @@ BEGIN
     FOREACH r IN ARRAY ARRAY['anon', 'authenticated', 'service_role'] LOOP
         IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = r) THEN
             EXECUTE format(
-                'REVOKE ALL ON FUNCTION public.email_message_search(text) FROM %I', r);
+                'REVOKE ALL ON FUNCTION public.email_message_search(text, uuid[], integer) FROM %I', r);
         END IF;
     END LOOP;
     -- The application role of saas_multitenancy_handover.md §H3.
     IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'acb_app') THEN
-        GRANT EXECUTE ON FUNCTION public.email_message_search(text) TO acb_app;
+        GRANT EXECUTE ON FUNCTION public.email_message_search(text, uuid[], integer) TO acb_app;
     END IF;
 END
 $$;

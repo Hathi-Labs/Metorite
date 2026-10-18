@@ -549,6 +549,18 @@ async def list_accounts() -> str:
     return "\n".join(lines)
 
 
+def _truncated_note(data: dict[str, Any]) -> str:
+    """The line that says a text search was cut at the newest matches.
+
+    The gateway matches the newest ``match_cap`` mails at most (incident
+    2026-10-18), so the count is then a floor, not the whole number."""
+    if not data.get("truncated"):
+        return ""
+    cap = int(data.get("match_cap") or 0)
+    return (f"These are the newest {cap:,} matches. More mail matched. Add a "
+            "word or a date range to narrow the search.")
+
+
 async def search_emails(
     query: str, folder: str = "inbox", account_id: str | None = None
 ) -> str:
@@ -562,6 +574,8 @@ async def search_emails(
     labels = {} if account_id else await _account_labels()
     multi = len(labels) > 1
     lines = [f"Found {total} emails matching '{query}' in {folder}:"]
+    if note := _truncated_note(data):
+        lines.append(note)
     for e in emails[:10]:
         frm = e.get("from_address", {}) or {}
         acct = f" [{labels.get(str(e.get('account_id')), '?')}]" if multi else ""
@@ -1126,6 +1140,8 @@ async def query_inbox(
         return page_line(total, start, 0) or "No emails matched those filters."
     shown = emails
     lines = [f"Found {total} emails ({query or 'filtered'}); showing {len(shown)}:"]
+    if note := _truncated_note(data):
+        lines.append(note)
     for e in shown:
         frm = e.get("from_address", {}) or {}
         flags = []

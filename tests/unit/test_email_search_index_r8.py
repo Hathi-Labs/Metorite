@@ -1,7 +1,7 @@
 """WS-17 — mail search uses its GIN index under RLS (incident 2026-10-18).
 
 Spec: ``project-docs/specs/email_app_master_plan.md``, "Incident 2026-10-18:
-search speed". Migration ``*_email_search_index.sql`` (284 at build time).
+search speed". Migration ``*_email_search_index.sql`` (286 at build time).
 
 **The incident.** On WhatsApp, 7 of 12 ``query_inbox`` calls of one member died
 on the 30 s statement timeout. Each ran the COUNT(*) of ``GET /email/messages``

@@ -124,21 +124,23 @@ async def test_query_uses_websearch_tsquery_not_plainto():
     # websearch_to_tsquery (matching transport/search.py) so OR works.
     #
     # Since the incident of 2026-10-18 the match runs in the SQL function
-    # email_message_search (migration 284), so the grammar lives in that
+    # email_message_search (migration 286), so the grammar lives in that
     # file. The route passes the text through, unchanged, to the function.
     _resp, captured = await _run_list_full(query="urgent OR deadline OR ASAP")
     sql = " ".join(s for s, _ in captured)
     params: dict = {}
     for _s, p in captured:
         params.update(p)
-    assert "public.email_message_search(:query)" in sql
+    assert "public.email_message_search(:q, ARRAY(" in sql
     assert "plainto_tsquery" not in sql
-    assert params["query"] == "urgent OR deadline OR ASAP"
+    assert params["q"] == "urgent OR deadline OR ASAP"
     migration = next(
         (_ROOT / "infra" / "postgres").glob("*_email_search_index.sql")
     ).read_text(encoding="utf-8")
     body = migration.split("CREATE OR REPLACE FUNCTION public.email_message_search", 1)[1]
     assert body.count("websearch_to_tsquery('english', p_query)") == 2
+    assert body.count("m.account_id = ANY(p_accounts)") == 2
+    assert body.count("LIMIT v_limit") == 2
     assert "plainto_tsquery" not in body
 
 
@@ -146,10 +148,17 @@ async def test_query_never_runs_an_inline_tsvector_under_rls():
     # Under FORCE RLS the app role cannot use a GIN index for an inline
     # `to_tsvector(...) @@`, because `@@` is not LEAKPROOF. The inline form
     # read every body of the org per call (incident 2026-10-18).
-    _resp, captured = await _run_list_full(query="Sanjeev Goel Payal Dave")
+    resp, captured = await _run_list_full(query="Sanjeev Goel Payal Dave")
     sql = " ".join(s for s, _ in captured)
     assert "to_tsvector" not in sql
-    assert "em.id = ANY(ARRAY(SELECT public.email_message_search(:query)))" in sql
+    # The match runs ONCE, scoped to the member's mailboxes, and both the
+    # COUNT and the page bind its ids.
+    calls = [s for s, _ in captured if "email_message_search" in s]
+    assert len(calls) == 1
+    assert "SELECT id FROM email_accounts WHERE user_id = :uid" in calls[0]
+    shared = [s for s, _ in captured if "em.id = ANY(CAST(:match_ids AS uuid[]))" in s]
+    assert len(shared) == 2
+    assert resp["truncated"] is False and resp["match_cap"] == 20000
 
 
 async def test_sort_importance_orders_by_priority_case():

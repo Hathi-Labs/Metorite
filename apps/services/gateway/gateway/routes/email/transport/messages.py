@@ -52,7 +52,9 @@ from gateway.routes.email.core import (
     _truncate_body,
     folder_scope,
     router,
-    text_match_sql,
+    SEARCH_MATCH_CAP,
+    TEXT_MATCH_SQL,
+    text_match_ids,
 )
 from gateway.routes.email.transport.attachments import _canonical_uuid
 from gateway.routes.email.quoting import strip_for_reading
@@ -228,7 +230,9 @@ async def list_messages(
     sender address, sender category) + ``sort`` let the assistant answer inbox-wide
     questions ("sales emails in the last month", "important unread mail") without
     pulling the whole inbox. ``query`` is a full-text match over subject, body,
-    the sender and the To and Cc recipients (``core.text_match_sql``).
+    the sender and the To and Cc recipients (``core.text_match_ids``). It
+    matches the newest ``SEARCH_MATCH_CAP`` mails at most, and ``truncated``
+    says that more matched, so ``total`` is then a floor.
 
     ``collapse`` returns one row per conversation — the newest message in the
     current view represents its thread, and ``total`` counts conversations, not
@@ -241,6 +245,7 @@ async def list_messages(
         # "all", an address or garbage never reach the SQL as a UUID.
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous")
+        truncated = False
         where_clauses = [
             "ea.user_id = :user_id"
         ]
@@ -295,11 +300,15 @@ async def list_messages(
             # (the old call here) AND-s EVERYTHING, so the agent's find_urgent
             # ("urgent OR deadline OR ASAP OR action required") could only match
             # a message containing every one of those words — i.e. never.
-            # The match runs in public.email_message_search (migration 284),
-            # through its GIN index. An inline to_tsvector here cannot use any
-            # index under RLS (incident 2026-10-18, core.text_match_sql).
-            where_clauses.append(text_match_sql("query"))
-            params["query"] = query
+            # The match runs ONCE, in public.email_message_search (migration
+            # 286), over the mailboxes of the member, through its GIN index.
+            # COUNT and the page share the ids. An inline to_tsvector here
+            # cannot use any index under RLS (incident 2026-10-18).
+            match_ids, truncated = await text_match_ids(
+                db, query, uid=user.email or "anonymous",
+                account_id=account_id, pooled_only=not thread_id)
+            where_clauses.append(TEXT_MATCH_SQL)
+            params["match_ids"] = match_ids
         # Date range (received_at).
         dt_after, dt_before = _parse_dt(received_after), _parse_dt(received_before)
         if dt_after is not None:
@@ -466,6 +475,10 @@ async def list_messages(
             "total": total,
             "page": page,
             "page_size": page_size,
+            # True when the text matched more than SEARCH_MATCH_CAP mails, so
+            # only the newest ones were counted and listed.
+            "truncated": truncated,
+            "match_cap": SEARCH_MATCH_CAP,
         }
 
 

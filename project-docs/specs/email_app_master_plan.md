@@ -31,7 +31,7 @@
 > 🔨 **AI-call attribution is BUILT on branch `ai-call-attribution` (2026-10-10).** Each email model call now names its feature on the usage report, as `email.rule_match`. A mailbox job names `email.automation`. Before, 97% of the email calls showed as "not attributed". It has no flag, because it changes metadata only. `customer_console.md` §4.3a owns the rule and lists the names.
 > 🔨 **§16 is BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** Each message has one action row, and the body adapts to dark mode. It also fixes a "Loading message…" that never ended. Review fix rounds 1 to 3 are in.
 > 📝 **§17 is SPECIFIED, not built (2026-10-12, D-EM-63, EM-T17).** One seam chooses the AI context of a conversation. The target goes in whole, every message gets an index line, and `decide` chooses the earlier bodies. No body is cut without a label. Each wait has a bound, so drafting never hangs. 🔨 **EM-T17 PR-A is built, not merged** (2026-10-12, branch `email-stall-pra`, no flag, no migration): the stream bounds, the `model_*` and `server_timeout` reasons, the heartbeat, the body-only fetch and `email.draft_timing`.
-> 🔨 **§18, the search-speed fix, is BUILT on branch `mail-search-speed`, not merged (2026-10-19, migration 284, no flag).** A text search now uses its GIN index under RLS, and a name in To or Cc matches.
+> 🔨 **§18, the search-speed fix, is BUILT on branch `mail-search-speed`, not merged (2026-10-19, migration 286, no flag).** A text search now uses its GIN index under RLS, and a name in To or Cc matches.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -20132,7 +20132,7 @@ flip waits for the owner answer to D-EM-62 open (a).
 
 ## 18. Incident 2026-10-18: search speed
 
-**Status:** 🔨 BUILT on branch `mail-search-speed`, not merged (2026-10-19). Migration 284, no
+**Status:** 🔨 BUILT on branch `mail-search-speed`, not merged (2026-10-19). Migration 286, no
 flag. Board WS-17.
 
 ### 18.1 What happened
@@ -20153,7 +20153,7 @@ of `GET /email/messages` with the text match.
 
 ### 18.3 The fix
 
-- **Migration 284** adds `idx_email_messages_fts_all`, a GIN index over the subject, the body,
+- **Migration 286** adds `idx_email_messages_fts_all`, a GIN index over the subject, the body,
   the sender, and each value of To and Cc. It also adds `public.email_message_search(text)`.
 - **The function is SECURITY DEFINER.** Its owner on production is `postgres`, which is
   BYPASSRLS, so the match is a plain qual and the index serves it. It returns the ids of the

@@ -457,7 +457,7 @@ class TestTheReadsOfMoreThanOneMailbox:
     """``email-keep-separate-reads`` and ``email-keep-separate-self``."""
 
     def _seed(self, p) -> SimpleNamespace:
-        # The text search calls email_message_search (migration 284), which
+        # The text search calls email_message_search (migration 286), which
         # grants EXECUTE to `acb_app` only. The rehearsal role has a
         # suite-private name, so it gets the same grant here.
         with p.admin_engine.begin() as c:
