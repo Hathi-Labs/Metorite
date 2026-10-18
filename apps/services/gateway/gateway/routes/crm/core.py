@@ -2617,8 +2617,11 @@ RESET_TABLES: tuple[str, ...] = (
 
 #: What the start over keeps: the access rule and the mode row, the saved
 #: views, the run history, and the cursor of the mail hook (not a record).
+#: CRM-Q33: the business rules too. A rule describes the business ("all
+#: amounts net of GST"), never the old Zoho account.
 RESET_KEEPS: tuple[str, ...] = (
     "crm_settings", "crm_views", "crm_sync_runs", "crm_auto_lead_cursors",
+    "crm_business_rules",
 )
 
 

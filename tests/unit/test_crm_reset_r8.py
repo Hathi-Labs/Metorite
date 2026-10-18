@@ -90,7 +90,9 @@ EMPTIED = (
     "crm_mapping_plans",
 )
 #: What the start over keeps. The same set as ``core.RESET_KEEPS``.
-KEPT = ("crm_settings", "crm_views", "crm_sync_runs", "crm_auto_lead_cursors")
+KEPT = ("crm_settings", "crm_views", "crm_sync_runs", "crm_auto_lead_cursors",
+        # CRM-Q33: a business rule describes the business, not the account.
+        "crm_business_rules")
 ALL = EMPTIED + KEPT
 
 
@@ -341,6 +343,12 @@ def _seed(p: Any, org: str, *, tag: str, deals: int, status: str = "disconnected
         c.execute(text(
             "INSERT INTO crm_views (organization_id, entity, name, owner_email) "
             "VALUES (CAST(:o AS uuid), 'deals', 'Mine', 'admin@crm-t5-r8.test')"), o)
+        # CRM-Q33: a business rule of the org. The start over keeps it.
+        c.execute(text(
+            "INSERT INTO crm_business_rules (organization_id, scope, slug, body, origin, "
+            "created_by, updated_by) VALUES (CAST(:o AS uuid), 'org', 'net-of-gst', "
+            "'All amounts net of GST', 'settings', 'admin@crm-t5-r8.test', "
+            "'admin@crm-t5-r8.test')"), o)
         c.execute(text(
             "INSERT INTO crm_field_rules (organization_id, ext_source, entity, "
             "field_api_name, field_type, profile_version, target_column, status, "

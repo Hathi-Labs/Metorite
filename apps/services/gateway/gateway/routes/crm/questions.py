@@ -389,12 +389,16 @@ class QuestionChoiceModel(BaseModel):
     records: int | None = None
     #: A ``revenue`` choice: the labels of its modules.
     modules: list[str] | None = None
+    #: CRM-Q33 part 5: "Includes GST", "Excludes GST", "After TDS".
+    evidence: list[str] | None = None
 
 
 class QuestionOptionModel(BaseModel):
     value: str
     label: str
     fill: float | None = None
+    #: CRM-Q33 part 5: the evidence of a money field.
+    evidence: list[str] | None = None
 
 
 class ProposalModel(BaseModel):
@@ -444,6 +448,8 @@ class QuestionModel(BaseModel):
     #: CRM-Q32-8: the proposals of the members, newest last. A proposal that
     #: equals the answer in use is left out.
     proposals: list[ProposalModel] = Field(default_factory=list)
+    #: CRM-Q33 part 5: the fields whose sum a business rule points at.
+    suggested_sum: list[str] = Field(default_factory=list)
     #: CRM-Q33 part 4: on a part in use that an admin set, who set it, by
     #: display name ("A member" with no name, never an email), and when.
     set_by: str | None = None

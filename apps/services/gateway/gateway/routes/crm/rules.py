@@ -174,10 +174,14 @@ def clean_body(raw: Any) -> str | None:
 
 def slug_of(body: str, taken: set[str] | frozenset[str] = frozenset()) -> str:
     """The short id of a rule: its first words in lower case, joined by
-    ``-``, at most 40 characters. A slug that the owner holds already takes
-    ``-2``, ``-3`` and on."""
+    ``-``, at most 40 characters, cut between two words. A slug that the
+    owner holds already takes ``-2``, ``-3`` and on."""
     words = re.findall(r"[a-z0-9]+", unicodedata.normalize("NFKD", body).lower())
-    base = "-".join(words)[:40].strip("-") or "rule"
+    joined = "-".join(words)
+    base = joined[:40]
+    if len(joined) > 40 and joined[40] != "-" and "-" in base:
+        base = base.rsplit("-", 1)[0]
+    base = base.strip("-") or "rule"
     slug, n = base, 2
     while slug in taken:
         slug = f"{base[:40]}-{n}"
