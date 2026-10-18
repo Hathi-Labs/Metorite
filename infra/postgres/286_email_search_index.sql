@@ -148,9 +148,15 @@ LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
+-- The planner settings of the exact path below. Each one lives only for the
+-- call. work_mem keeps the bitmap exact (a lossy page is rechecked with
+-- to_tsvector).
+SET enable_seqscan = off
+SET work_mem = '16MB'
 ROWS 100
 AS $email_message_search$
 DECLARE
+    v_q tsquery;
     v_org uuid;
     v_has_org boolean;
     v_rls boolean;
@@ -204,6 +210,42 @@ BEGIN
         RETURN;
     END IF;
 
+    v_q := websearch_to_tsquery('english', p_query);
+    IF numnode(v_q) = 0 THEN
+        RETURN;   -- only stop words: nothing to match
+    END IF;
+
+    IF strpos(v_q::text, '!') = 0 AND strpos(v_q::text, '<') = 0 THEN
+        -- THE EXACT PATH. With no NOT and no phrase, the GIN bitmap is exact,
+        -- so the heap scan runs no to_tsvector at all. The planner cannot see
+        -- that: it charges the vector to every row of every bitmap path, so
+        -- for a word in each mail it took the org and mailbox btrees and ran
+        -- to_tsvector over the whole mailbox (7.1 s on 20 000 mails). Here
+        -- the org and the mailboxes are checked on the heap row in a form no
+        -- btree serves (`IS TRUE`), and `enable_seqscan = off` above leaves
+        -- the GIN index as the one path. The checks still bind each row.
+        RETURN QUERY
+            SELECT m.id
+              FROM public.email_messages m
+             WHERE to_tsvector('english',
+                   coalesce(m.subject, '') || ' ' ||
+                   coalesce(m.body_text, '') || ' ' ||
+                   coalesce(m.from_address->>'name', '') || ' ' ||
+                   coalesce(m.from_address->>'email', '') || ' ' ||
+                   coalesce(jsonb_path_query_array(m.to_addresses, '$[*].*')::text, '') || ' ' ||
+                   coalesce(jsonb_path_query_array(m.cc_addresses, '$[*].*')::text, ''))
+                   @@ v_q
+               AND (m.organization_id = v_org) IS TRUE
+               AND (m.account_id = ANY(p_accounts)) IS TRUE
+             ORDER BY m.received_at DESC NULLS LAST, m.id DESC
+             LIMIT v_limit;
+        RETURN;
+    END IF;
+
+    -- THE SCOPED PATH. A NOT or a phrase makes GIN recheck each candidate
+    -- with to_tsvector, so the candidates must be the mailboxes of the
+    -- member, never the whole table. The worst case is one scan of those
+    -- mailboxes, as on main before the fix.
     RETURN QUERY
         SELECT m.id
           FROM public.email_messages m
@@ -216,7 +258,7 @@ BEGIN
                    coalesce(m.from_address->>'email', '') || ' ' ||
                    coalesce(jsonb_path_query_array(m.to_addresses, '$[*].*')::text, '') || ' ' ||
                    coalesce(jsonb_path_query_array(m.cc_addresses, '$[*].*')::text, ''))
-               @@ websearch_to_tsquery('english', p_query)
+               @@ v_q
          ORDER BY m.received_at DESC NULLS LAST, m.id DESC
          LIMIT v_limit;
 END
