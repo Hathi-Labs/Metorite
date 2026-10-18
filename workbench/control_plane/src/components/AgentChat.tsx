@@ -64,6 +64,7 @@ import {
   formattedAnswers,
   userInputAnswer,
 } from "@/lib/elicitationAnswer";
+import { DECLINED_ANSWER, declineBody } from "@/lib/declineAnswer";
 import TodoPanel from "@/components/TodoPanel";
 import ContextRing from "@/components/ContextRing";
 import { PHONE_MAX_WIDTH, composerCap, composerHeight, offerExpand } from "@/lib/composerHeight";
@@ -946,6 +947,9 @@ export default function AgentChat({
      *  shows (`answerSummary`). The card waits no more. The run's end
      *  clears it, as it clears a waiting card. */
     answered?: string;
+    /** The member pressed "Not now" (`lib/declineAnswer.ts`). The card
+     *  locks and reads "Not answered". The run's end clears it. */
+    declined?: boolean;
   } | null>(null);
 
   // ── Native ask_user state (Copilot SDK on_user_input_request) ────────
@@ -958,6 +962,8 @@ export default function AgentChat({
     allowFreeform: boolean;
     /** As for `elicitation`: the answer, once the run took it. */
     answered?: string;
+    /** As for `elicitation`: the member pressed "Not now". */
+    declined?: boolean;
   } | null>(null);
 
   // The words of each answer this session sent to a blocking generative-UI
@@ -1171,7 +1177,7 @@ export default function AgentChat({
   // caller then hears "resent" and sends nothing of its own.
   const postRespondInput = useCallback(
     (
-      payload: { request_id: string; answer: string; was_freeform: boolean },
+      payload: { request_id: string; answer: string; was_freeform: boolean; declined?: boolean },
       restoreCard: () => void,
       settle?: (outcome: "ok" | "drop" | "resent") => void,
     ) => {
@@ -1653,6 +1659,31 @@ export default function AgentChat({
     [postRespondInput, submitText]
   );
 
+  // "Not now" on a blocking generative-UI card (`lib/declineAnswer.ts`). The
+  // card reads the decline from the answer map, so it stays declined on a
+  // remount. A decline that cannot pass now (a network fault, a 5xx) opens
+  // the card again. A 4xx keeps it declined: no run waits on it, and a
+  // decline sends nothing as a message.
+  const handleGenUiDecline = useCallback(
+    (requestId: string) => {
+      setAnsweredAsks((prev) => new Set(prev).add(requestId));
+      setAskAnswers((prev) => new Map(prev).set(requestId, DECLINED_ANSWER));
+      postRespondInput(declineBody(requestId), () => {
+        setAnsweredAsks((prev) => {
+          const next = new Set(prev);
+          next.delete(requestId);
+          return next;
+        });
+        setAskAnswers((prev) => {
+          const next = new Map(prev);
+          next.delete(requestId);
+          return next;
+        });
+      });
+    },
+    [postRespondInput]
+  );
+
   // Stable callbacks for MessageBubble so React.memo can skip re-rendering
   // unchanged messages (per-message closures used to defeat the memoization —
   // every message re-ran ReactMarkdown on every streamed token).
@@ -1788,8 +1819,8 @@ export default function AgentChat({
 
   // A question card that the run took an answer for waits no more. It
   // stays in view with its answer until the run ends (owner, 2026-10-13).
-  const elicitationWaits = !!elicitation && elicitation.answered === undefined;
-  const userInputWaits = !!userInput && userInput.answered === undefined;
+  const elicitationWaits = !!elicitation && elicitation.answered === undefined && !elicitation.declined;
+  const userInputWaits = !!userInput && userInput.answered === undefined && !userInput.declined;
   const renderHitlCards = (): React.ReactNode => {
     if (!hasConfirmations && !elicitation && !userInput) return null;
     // One mark for the group: the pin above the composer scrolls here
@@ -1814,6 +1845,15 @@ export default function AgentChat({
             id={`ask:${elicitation.requestId ?? "questions"}`}
             questions={elicitation.questions}
             answered={elicitation.answered}
+            declined={elicitation.declined}
+            // Only a blocking card parks a run, so only it can be declined.
+            // A decline that cannot pass now opens the card again. A 4xx
+            // keeps it declined: no run waits, and nothing goes as a message.
+            onDecline={elicitation.requestId ? () => {
+              const card = elicitation;
+              setElicitation({ ...card, declined: true });
+              postRespondInput(declineBody(card.requestId!), () => setElicitation(card));
+            } : undefined}
             onSubmit={(answers: ElicitationAnswers) => {
               if (elicitation.requestId) {
                 // The wire shape is `lib/elicitationAnswer.ts`, unchanged.
@@ -1856,6 +1896,12 @@ export default function AgentChat({
                 : null,
             }]}
             answered={userInput.answered}
+            declined={userInput.declined}
+            onDecline={() => {
+              const card = userInput;
+              setUserInput({ ...card, declined: true });
+              postRespondInput(declineBody(card.requestId), () => setUserInput(card));
+            }}
             onSubmit={(answers: ElicitationAnswers) => {
               const { answer, wasFreeform } = userInputAnswer(answers);
               const card = userInput;
@@ -2134,6 +2180,7 @@ export default function AgentChat({
                 )}
                 <MessageBubble message={msg} sessionId={sessionId} onChoice={handleChoice}
                   onHitlRespond={handleGenUiHitl}
+                  onHitlDecline={handleGenUiDecline}
                   askAnswers={cardAskAnswers}
                   emailContext={emailContext}
                   onFileOpen={handleFileOpen}

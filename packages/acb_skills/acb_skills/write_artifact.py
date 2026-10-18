@@ -1871,6 +1871,21 @@ async def emit_generative_ui(ui: str) -> dict:
                 _result = await wait_user_future(_fut, 3600)
             finally:
                 _pending_user_input.pop(_request_id, None)
+            # The member's "Not now" (owner request, 2026-10-18): the run
+            # goes on, and the note says what to do without the answer. The
+            # ``declined`` key lets the chat draw the card as "Not answered"
+            # after a reload (``askAnswers.ts``).
+            from acb_skills.ask_tools import declined_text, is_declined
+
+            if is_declined(_result):
+                return {
+                    "ok": True,
+                    "declined": True,
+                    "response": None,
+                    "note": declined_text(what="card"),
+                    "request_id": _request_id,
+                    **_warn_fields(_ui_warnings),
+                }
             # The request id rides in the result, so the chat can tell an
             # answered card from an open one after a reload (``askAnswers.ts``
             # in the workbench, review round 1 P2-c).

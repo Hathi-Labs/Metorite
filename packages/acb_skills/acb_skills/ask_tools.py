@@ -214,6 +214,124 @@ def clip_words(text: str, limit: int) -> str:
     return f"{cut}{ELLIPSIS}"
 
 
+# ── "Not now": the member declines a card (owner request, 2026-10-18) ────────
+#
+# The owner wrote: "if I don't want to answer a question for some reason, I
+# should be allowed to turn off the card. The agent should take it as input
+# that the user does not want to answer the question at the moment and might
+# want to do something else later on."
+#
+# **The envelope.** The chat posts ``POST /agent/respond-input`` with
+# ``{"declined": true, "answer": ""}``. The gateway refuses a decline that
+# carries an answer, and a ``declined`` that is not a JSON boolean. The
+# parked Future resolves with ``{"answer": "", "declined": True}``, and the
+# run RESUMES: a decline is an answer, never a cancel. :func:`is_declined` is
+# the one reader of it on the run side.
+#
+# **What the model reads.** :func:`declined_text`, in plain words. It names
+# the default of each question that has one (:func:`question_defaults`). A
+# CRM question card also gets the line that sends its ``@default``, which
+# holds the question for the member for 24 hours (``crm_tools``), so the
+# chat does not ask it again the next day either.
+# Fence: ``tests/unit/test_question_decline.py``.
+
+#: The key of the decline, in the respond-input body and in the result of a
+#: parked Future.
+DECLINED_KEY = "declined"
+
+#: The key of the option of a CRM card that keeps the default
+#: (``crm_tools.DEFAULT_KEY``). A test holds the two equal.
+CRM_DEFAULT_KEY = "@default"
+
+
+def is_declined(result: Any) -> bool:
+    """True when a parked Future's *result* is the member's "Not now"."""
+    return isinstance(result, dict) and result.get(DECLINED_KEY) is True
+
+
+def _sentence(text: str) -> str:
+    t = " ".join(str(text or "").split()).rstrip(" .")
+    return f"{t}." if t else ""
+
+
+def question_defaults(questions: Any) -> list[tuple[str, str]]:
+    """``(header, default)`` of each question of a card that has a default.
+
+    The default of a CRM card is its "Use the default" option, in the words
+    of its description ("Billed, until a CRM admin answers"). Any other
+    question's default is its recommended option. A question with neither
+    has no default, and is left out.
+    """
+    out: list[tuple[str, str]] = []
+    for q in questions if isinstance(questions, list) else []:
+        if not isinstance(q, dict):
+            continue
+        options = [o for o in q.get("options") or [] if isinstance(o, dict)]
+        kept = next((o for o in options if o.get("key") == CRM_DEFAULT_KEY), None)
+        if kept is not None:
+            said = str(kept.get("description") or kept.get("label") or "").strip()
+        else:
+            picks = [str(o.get("label") or "").strip() for o in options if o.get("recommended")]
+            picks = [p for p in picks if p]
+            said = f"{', '.join(picks)} (the recommended choice)" if picks else ""
+        if said:
+            out.append((str(q.get("header") or "").strip(), said))
+    return out
+
+
+def _crm_questions_with_default(questions: Any) -> list[str]:
+    """The ids of the CRM questions of a card that offer ``@default``."""
+    out: list[str] = []
+    for q in questions if isinstance(questions, list) else []:
+        qid = crm_card_tag(q)
+        if qid and any(isinstance(o, dict) and o.get("key") == CRM_DEFAULT_KEY
+                       for o in q.get("options") or []):
+            out.append(qid)
+    return out
+
+
+def declined_text(questions: Any = None, *, what: str = "question") -> str:
+    """What the model reads when the member pressed "Not now" on a card.
+
+    *questions* are the card's cleaned questions, so the text can name each
+    default. *what* names the card: ``question`` or ``form``.
+    """
+    lines = [
+        f"The member chose not to answer this {what} now.",
+        "Do not ask it again in this reply.",
+        "Continue with what you can do without the answer.",
+    ]
+    found = question_defaults(questions)
+    if len(found) == 1:
+        lines.append(_sentence(f"Use the default: {found[0][1]}"))
+    elif found:
+        lines.extend(_sentence(f'For "{h or "the question"}", use the default: {d}') for h, d in found)
+    else:
+        lines.append("Where the question states a default, use it.")
+    for qid in _crm_questions_with_default(questions):
+        lines.append(
+            f'Send the default for the member: crm_answer_question(question_id="{qid}", '
+            f'choice="{CRM_DEFAULT_KEY}"). Then Metorite does not ask it again for 24 hours.'
+        )
+    lines.append("Tell the member in one line what you assumed.")
+    lines.append("The member can come back to it later.")
+    return " ".join(lines)
+
+
+def answer_text(result: Any, questions: Any = None) -> str:
+    """The tool result of a question card, from its parked Future's result.
+
+    The one place the three blocking paths of :func:`ask_questions` phrase
+    an answer, so a decline reads the same on each of them.
+    """
+    if is_declined(result):
+        return declined_text(questions)
+    answer = str((result or {}).get("answer", "") or "").strip() if isinstance(result, dict) else ""
+    if not answer:
+        return "User provided an empty response."
+    return f"User response: {answer}"
+
+
 async def ask_questions(questions: str) -> str:
     """Ask the user one or more clarifying questions before proceeding.
 
@@ -372,10 +490,7 @@ async def ask_questions(questions: str) -> str:
             _pending_user_input.pop(_request_id, None)
             return "User did not respond in time."
 
-        _answer = str(_result.get("answer", "") or "").strip()
-        if not _answer:
-            return "User provided an empty response."
-        return f"User response: {_answer}"
+        return answer_text(_result, cleaned)
 
     # ── Path B: Copilot SDK / standalone ──────────────────────────────
     # Two sub-paths:
@@ -427,11 +542,7 @@ async def ask_questions(questions: str) -> str:
                     _result = await wait_user_future(_fut, 3600)
                 except _asyncio.TimeoutError:
                     return "User did not respond in time."
-                _answer = str(
-                    _result.get("answer", "") or "").strip()
-                if not _answer:
-                    return "User provided an empty response."
-                return f"User response: {_answer}"
+                return answer_text(_result, cleaned)
     except Exception:  # noqa: BLE001
         pass
 
@@ -483,11 +594,7 @@ async def ask_questions(questions: str) -> str:
             finally:
                 _pending_user_input.pop(_request_id, None)
 
-            _answer = str(
-                _result.get("answer", "") or "").strip()
-            if not _answer:
-                return "User provided an empty response."
-            return f"User response: {_answer}"
+            return answer_text(_result, cleaned)
     except Exception:  # noqa: BLE001
         pass
 

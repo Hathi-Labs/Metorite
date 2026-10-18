@@ -57,6 +57,8 @@ import PlanCardBody from "@/components/PlanCardBody";
 import Badge from "@/components/ui/Badge";
 import RecommendedBadge, { RECOMMENDED_RING } from "@/components/RecommendedBadge";
 import { pickedFromAnswer } from "@/lib/askAnswers";
+import { cardExit, isDeclinedAnswer } from "@/lib/declineAnswer";
+import { DeclinedNote, NotNowButton, NotNowClose } from "@/components/NotNow";
 import { Checkbox } from "@/components/ui/Checkbox";
 import GenUiText from "@/components/GenUiText";
 import { clipWords, plainTitle } from "@/lib/fencedText";
@@ -917,6 +919,16 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
     return init;
   });
   const [submitted, setSubmitted] = useState(false);
+  // "Not now" (`lib/declineAnswer.ts`): the card reads its decline from the
+  // answer the chat holds, so a remount and a reload keep it declined.
+  const declined = isDeclinedAnswer(ctx?.answered);
+  const locked = submitted || declined;
+  const canDecline = !!ctx?.onDecline && !locked;
+  // Submit and Not now: only the first one fires.
+  const exit = useRef(cardExit());
+  useEffect(() => {
+    if (!locked) exit.current = cardExit();
+  }, [locked]);
   const set = (name: string, v: unknown) => setValues((p) => ({ ...p, [name]: v }));
   const missing = fields.some((f) => {
     if (!f.required) return false;
@@ -924,14 +936,23 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
     return v == null || v === "";
   });
   const submit = () => {
-    if (!ctx?.onAction || submitted) return;
-    setSubmitted(true);
-    const label = str(data.submitLabel ?? data.title, "Form");
-    ctx.onAction(`${label} — ${JSON.stringify(values)}`);
+    const act = ctx?.onAction;
+    if (!act || locked) return;
+    exit.current.submit(() => {
+      setSubmitted(true);
+      const label = str(data.submitLabel ?? data.title, "Form");
+      act(`${label} — ${JSON.stringify(values)}`);
+    });
+  };
+  const decline = () => {
+    const off = ctx?.onDecline;
+    if (!off || locked) return;
+    exit.current.decline(off);
   };
   return (
     <div style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", padding: 16 }}>
-      <TemplateHead icon="clipboard-list" rich gap={4} title={data.title != null ? str(data.title) : null} />
+      <TemplateHead icon="clipboard-list" rich gap={4} title={data.title != null ? str(data.title) : null}
+        actions={canDecline ? <NotNowClose onClick={decline} /> : undefined} />
       <TemplateBody>
       {data.description != null && (
         <div style={{ fontSize: TYPE.xs, color: "var(--muted-foreground)", marginBottom: 10 }}><GenUiText text={str(data.description)} /></div>
@@ -947,7 +968,7 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
             return (
               <label key={name || i} className="flex min-w-0 items-start gap-2"
                 style={{ animation: `ccFadeUp .3s ease ${i * 0.04}s both` }}>
-                <Checkbox size="sm" checked={!!v} disabled={submitted} className="mt-0.5"
+                <Checkbox size="sm" checked={!!v} disabled={locked} className="mt-0.5"
                   onChange={(e) => set(name, e.target.checked)} />
                 <span className="flex min-w-0 flex-col gap-0.5">
                   <span className="text-xs text-foreground" style={{ overflowWrap: "anywhere" }}>
@@ -974,7 +995,7 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
                 )}
               </span>
               {type === "select" ? (
-                <select value={str(v)} disabled={submitted} style={FIELD_INPUT_STYLE}
+                <select value={str(v)} disabled={locked} style={FIELD_INPUT_STYLE}
                   onChange={(e) => set(name, e.target.value)}>
                   <option value="" disabled>{str(f.placeholder, "Choose…")}</option>
                   {arr(f.options).map((o) => (
@@ -982,27 +1003,27 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
                   ))}
                 </select>
               ) : type === "textarea" ? (
-                <textarea value={str(v)} disabled={submitted} rows={3} placeholder={str(f.placeholder)}
+                <textarea value={str(v)} disabled={locked} rows={3} placeholder={str(f.placeholder)}
                   style={{ ...FIELD_INPUT_STYLE, resize: "vertical" }}
                   onChange={(e) => set(name, e.target.value)} />
               ) : type === "toggle" ? (
-                <button type="button" disabled={submitted} onClick={() => set(name, !v)}
+                <button type="button" disabled={locked} onClick={() => set(name, !v)}
                   aria-pressed={!!v}
                   style={{ width: 40, height: 22, borderRadius: 999, border: "1px solid var(--border)",
                     background: v ? "var(--primary)" : "var(--secondary)", position: "relative",
-                    cursor: submitted ? "default" : "pointer", transition: "background 0.2s var(--cc-ease, ease)" }}>
+                    cursor: locked ? "default" : "pointer", transition: "background 0.2s var(--cc-ease, ease)" }}>
                   <span style={{ position: "absolute", top: 2, left: v ? 20 : 2, width: 16, height: 16,
                     borderRadius: "50%", background: v ? "var(--primary-foreground)" : "var(--foreground)",
                     transition: "left 0.2s var(--cc-ease, ease)" }} />
                 </button>
               ) : type === "slider" ? (
-                <input type="range" disabled={submitted} min={num(f.min, 0)} max={num(f.max, 100)}
+                <input type="range" disabled={locked} min={num(f.min, 0)} max={num(f.max, 100)}
                   step={num(f.step, 1)} value={num(v, num(f.min, 0))}
                   onChange={(e) => set(name, parseFloat(e.target.value))}
                   style={{ width: "100%", accentColor: "var(--primary)" }} />
               ) : (
                 <input type={type === "number" ? "number" : type === "date" ? "date" : "text"}
-                  value={str(v)} disabled={submitted} placeholder={str(f.placeholder)}
+                  value={str(v)} disabled={locked} placeholder={str(f.placeholder)}
                   min={f.min != null ? num(f.min) : undefined} max={f.max != null ? num(f.max) : undefined}
                   style={FIELD_INPUT_STYLE}
                   onChange={(e) => set(name, type === "number" && e.target.value !== ""
@@ -1012,12 +1033,22 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
           );
         })}
       </div>
-      {submitted ? (
+      {declined ? (
+        <DeclinedNote className="mt-3" />
+      ) : submitted ? (
         <div role="status" className="mt-3 flex items-center gap-2">
           <Badge tone="success" icon="Check">{PICKER_SENT}</Badge>
           <span style={{ fontSize: TYPE.caption, color: "var(--muted-foreground)" }}>{PICKER_SENT_NOTE}</span>
         </div>
+      ) : canDecline ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Button size="sm" onClick={submit} disabled={!ctx?.onAction || missing}>
+            {str(data.submitLabel, "Submit")}
+          </Button>
+          <NotNowButton onClick={decline} />
+        </div>
       ) : (
+        // A form that parks no run keeps its one Submit, exactly as before.
         <Button size="sm" onClick={submit} disabled={!ctx?.onAction || missing} className="mt-3">
           {str(data.submitLabel, "Submit")}
         </Button>
@@ -1041,7 +1072,10 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   // An answer the run already got survives a remount: a reload, or a move of
   // the card in the tree. Without it an answered picker drew as new, and a
   // second click sent the answer again (review round 1, P2-c).
-  const answered = ctx?.answered ?? "";
+  // "Not now" (`lib/declineAnswer.ts`) is held as the card's answer, so a
+  // remount and a reload keep it declined. It is no pick.
+  const declined = isDeclinedAnswer(ctx?.answered);
+  const answered = declined ? "" : (ctx?.answered ?? "");
   const submitted = clickedSend || !!answered;
   const picked = clicked.length > 0
     ? clicked
@@ -1049,14 +1083,28 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
         id: str(o.id, str(o.label, String(i))), label: str(o.label) })));
   // No handler means no way to answer: say so, and take no click. A click
   // that does nothing reads as a broken card (owner report, 2026-10-09).
-  const inert = !ctx?.onAction && !submitted;
-  const locked = submitted || inert;
+  const inert = !ctx?.onAction && !submitted && !declined;
+  const locked = submitted || inert || declined;
+  const canDecline = !!ctx?.onDecline && !locked;
+  // A pick and Not now: only the first one fires.
+  const exit = useRef(cardExit());
+  useEffect(() => {
+    if (!locked) exit.current = cardExit();
+  }, [locked]);
   const submit = (ids: string[]) => {
-    if (!ctx?.onAction || submitted || !ids.length) return;
-    setSubmitted(true);
-    const labels = ids.map((id) =>
-      str(options.find((o) => str(o.id) === id)?.label, id));
-    ctx.onAction(`Selected: ${labels.join(", ")}`);
+    const act = ctx?.onAction;
+    if (!act || locked || !ids.length) return;
+    exit.current.submit(() => {
+      setSubmitted(true);
+      const labels = ids.map((id) =>
+        str(options.find((o) => str(o.id) === id)?.label, id));
+      act(`Selected: ${labels.join(", ")}`);
+    });
+  };
+  const decline = () => {
+    const off = ctx?.onDecline;
+    if (!off || locked) return;
+    exit.current.decline(off);
   };
   const toggle = (id: string) => {
     if (locked) return;
@@ -1069,7 +1117,8 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   };
   return (
     <div style={CARD_BOX}>
-      <TemplateHead icon="list-checks" gap={4} rich title={data.title != null ? str(data.title) : null} />
+      <TemplateHead icon="list-checks" gap={4} rich title={data.title != null ? str(data.title) : null}
+        actions={canDecline ? <NotNowClose onClick={decline} /> : undefined} />
       <TemplateBody>
       {data.description != null && (
         <div style={{ fontSize: TYPE.xs, color: "var(--muted-foreground)", marginBottom: 10 }}><GenUiText text={str(data.description)} /></div>
@@ -1114,11 +1163,22 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
           );
         })}
       </div>
-      {multi && !submitted && (
-        <Button size="sm" onClick={() => submit(picked)} disabled={inert || !picked.length} className="mt-3">
+      {!locked && (multi || canDecline) && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          {multi && (
+            <Button size="sm" onClick={() => submit(picked)} disabled={!picked.length}>
+              Confirm selection
+            </Button>
+          )}
+          {canDecline && <NotNowButton onClick={decline} />}
+        </div>
+      )}
+      {multi && inert && (
+        <Button size="sm" disabled className="mt-3">
           Confirm selection
         </Button>
       )}
+      {declined && <DeclinedNote className="mt-3" />}
       {submitted && (
         <div role="status" style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12 }}>
           <Badge tone="success" icon="Check">{PICKER_SENT}</Badge>
@@ -1681,7 +1741,7 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
     <div data-plan-card="" className="@container min-w-0" style={CARD_BOX}>
       <TemplateHead icon="list-todo" title="Plan" gap={8} />
       <TemplateBody>
-        <PlanCardBody data={data} onAction={ctx?.onAction} answered={ctx?.answered ?? ""} />
+        <PlanCardBody data={data} onAction={ctx?.onAction} answered={ctx?.answered ?? ""} onDecline={ctx?.onDecline} />
       </TemplateBody>
     </div>
   );
@@ -2082,6 +2142,9 @@ export interface TemplateCtx {
   /** The answer a blocking card already got (`lib/askAnswers.ts`). A card
    *  that has one draws as sent and takes no click, after any remount. */
   answered?: string;
+  /** "Not now" (`lib/declineAnswer.ts`): set only for a card that parks a
+   *  run. A card with it draws the shared `NotNow` controls. */
+  onDecline?: () => void;
 }
 
 export type TemplateRenderer = (data: Data, ctx?: TemplateCtx) => React.ReactElement;

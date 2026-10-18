@@ -25,6 +25,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
+import { DECLINED_NOTE, DECLINED_TITLE } from "@/lib/declineAnswer";
 import ElicitationCard, {
   ANSWERED_TITLE,
   NEEDS_ANSWER,
@@ -180,5 +181,46 @@ describe("ElicitationCard: Submit never blocks without a reason", () => {
     const done = render({ questions: OWNER, answered: "Target deadline: 1 Dec" });
     expect(done).not.toContain("data-elicitation-blocked");
     expect(done).not.toContain(OPTIONAL_MARK);
+  });
+});
+
+// Owner request, 2026-10-18: "if I don't want to answer a question for some
+// reason, I should be allowed to turn off the card." The envelope and the
+// gate are in `src/lib/declineAnswer.test.ts`, and the shared control in
+// `src/components/notNow.test.ts`.
+// Mutations caught: Not now shows on a card that parks no run, the X loses
+// its name, a declined card keeps Submit, Not now or the box, it draws as an
+// error, or Submit and Not now stop sharing the one gate.
+describe("ElicitationCard: Not now", () => {
+  it("draws Not now beside Submit and an X in the title row", () => {
+    const live = render({ onDecline: () => {} });
+    expect(live).toContain('data-not-now=""');
+    expect(element(live, "data-not-now-close")).toContain('aria-label="Not now"');
+    // Submit comes first, then Not now.
+    expect(live.indexOf("data-elicitation-submit")).toBeLessThan(live.indexOf('data-not-now=""'));
+  });
+
+  it("draws no Not now on a card that parks no run", () => {
+    expect(html).not.toContain("data-not-now");
+  });
+
+  it("locks a declined card, and says Not answered in muted words", () => {
+    const done = render({ onDecline: () => {}, declined: true });
+    expect(done).toContain('data-elicitation-card="declined"');
+    expect(done).toContain(`>${DECLINED_TITLE}<`);
+    expect(done).toContain(DECLINED_NOTE);
+    expect(done).not.toContain("data-elicitation-submit");
+    expect(done).not.toContain("data-not-now");
+    expect(done).not.toContain("<textarea");
+    expect(done).not.toMatch(/destructive|role="alert"/);
+    // Each option is off.
+    const opts = done.match(/<button[^>]*data-elicitation-option[^>]*>/g) ?? [];
+    expect(opts.length).toBe(2);
+    expect(opts.every((b) => b.includes("disabled"))).toBe(true);
+  });
+
+  it("sends Submit and Not now through one gate, so only the first fires", () => {
+    expect(src).toMatch(/exit\.current\.submit\(\(\) => onSubmit\(/);
+    expect(src).toMatch(/exit\.current\.decline\(onDecline\)/);
   });
 });

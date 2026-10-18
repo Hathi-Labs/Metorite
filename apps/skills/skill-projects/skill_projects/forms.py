@@ -118,14 +118,30 @@ def _answer(response: Any) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-async def _ask(spec: dict[str, Any]) -> dict[str, Any] | None:
+def declined_form() -> str:
+    """What a tool says when the member pressed "Not now" (or the plan
+    card's Cancel) on its form: nothing changed, and the decline text of
+    ``ask_tools`` (owner request, 2026-10-18)."""
+    try:
+        from acb_skills.ask_tools import declined_text
+    except Exception:  # pragma: no cover — platform package absent in isolation
+        return NOT_SUBMITTED
+    return f"{NOT_SUBMITTED} {declined_text(what='form')}"
+
+
+async def _ask(spec: dict[str, Any]) -> dict[str, Any] | str:
+    """The values the member submitted, or the tool's reply when there are
+    none: :data:`NOT_SUBMITTED`, or :func:`declined_form` for a "Not now"."""
     result = await _emit({**spec, "hitl": True})
     if not result.get("ok"):
         raise GatewayRefusal(
             "The form could not be drawn (no chat surface to draw into). "
             "Pass the changes as arguments to update_task or update_project instead."
         )
-    return _answer(result.get("response"))
+    if result.get("declined") is True:
+        return declined_form()
+    values = _answer(result.get("response"))
+    return NOT_SUBMITTED if values is None else values
 
 
 def _clean(value: Any) -> str:
@@ -218,8 +234,8 @@ async def edit_task(task_id: str) -> str:
             },
         )
     )
-    if values is None:
-        return NOT_SUBMITTED
+    if isinstance(values, str):
+        return values
     changes = _task_changes(task, values, current)
     if isinstance(changes, str):
         return changes
@@ -404,8 +420,8 @@ async def edit_project(project_id: str) -> str:
             },
         )
     )
-    if values is None:
-        return NOT_SUBMITTED
+    if isinstance(values, str):
+        return values
     changes: dict[str, Any] = {}
     name = _clean(values.get("name"))
     if name and name != _clean(node.get("name")):
@@ -998,8 +1014,8 @@ async def propose_plan(
             },
         )
     )
-    if values is None:
-        return NOT_SUBMITTED
+    if isinstance(values, str):
+        return values
     final = _submitted_rows(values.get("tasks"), rows)
     if isinstance(final, str):
         return final
