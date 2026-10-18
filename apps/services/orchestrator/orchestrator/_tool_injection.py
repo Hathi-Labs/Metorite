@@ -1585,13 +1585,20 @@ def _facts_withheld() -> frozenset[str]:
     (WS-53 CRM-Q32 follow-up). The name leaves the SCOPE, so the addendum
     of a Copilot-runtime agent never names a tool the run does not hold, and
     the final list, so no fallback brings it back. The org is the run's own,
-    from the run boundary (R11). No org withholds it."""
+    from the run boundary (R11). No org withholds it.
+
+    A box with the list empty withholds nothing here. Its addendum hides
+    ``org_facts`` already (``addendum._dark_tools``), and
+    :func:`_add_crm_facts_block` takes the tool from the run. So the
+    injected set of a box with no list stays byte-identical to the
+    collection chain (``skills_registry.md`` rule 3,
+    ``test_skill_toggle_enforcement.py``)."""
     try:
-        from acb_skills.crm_tools import questions_org_on
+        from acb_skills.crm_tools import questions_box_on, questions_org_on
         from acb_skills.org_facts_tools import ORG_FACTS_TOOLS
     except ImportError:
         return frozenset()
-    if questions_org_on(_run_org_or_none()):
+    if not questions_box_on() or questions_org_on(_run_org_or_none()):
         return frozenset()
     return frozenset(fn.__name__ for fn in ORG_FACTS_TOOLS)
 
