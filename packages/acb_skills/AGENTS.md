@@ -275,6 +275,14 @@ clone cache.
    store `tests/unit/_egress_mark_store.py`. Then `permission_policy.decide` answers
    `untrusted_answer_confirm` for each egress call: the member's card first,
    and no call with no card channel.
+   WS-17 incident 2026-10-18: `NO_EGRESS_BY_MARK_KEY` beside `no_egress` says
+   that the session mark ALONE set the flag. `asks_own_card()` names an
+   agent's own tool that asks the member's own card (the attribute
+   `ASKS_OWN_CARD_ATTR`, which the email assistant sets on each tool of its
+   `MAILBOX_WRITE_TOOLS`). `EgressGuardProvider`, `WithholdEgressTools` and
+   `RefuseEgressTools` take an optional `keep` picker. The orchestrator
+   passes `asks_own_card` only for a mail agent's run whose flag the mark
+   alone set. Everywhere else the attribute does nothing.
 5h. tool_annotations.py -- `annotate()` has NO default for `open_world`
    (H-236). Every tool of every in-repo agent states it, and the WS43-F24
    fence reads the real registry to check. The risk block of the addendum is

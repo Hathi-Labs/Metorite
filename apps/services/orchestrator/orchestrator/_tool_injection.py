@@ -349,8 +349,10 @@ try:
         MAIL_STORE_WRITE_REFUSED,
         MARK_CLEAR,
         MARK_MARKED,
+        NO_EGRESS_BY_MARK_KEY,
         STORE_WRITES,
         UNTRUSTED_INPUT_AGENTS,
+        asks_own_card,
         is_delegation_tool,
         read_untrusted_answer,
         run_holds_mail,
@@ -364,6 +366,11 @@ except ImportError:  # pragma: no cover - acb_skills ships with the platform
         "save_memory", "save_episode", "save_agent_memory", "save_org_memory", "save_note",
     })
     MAIL_STORE_WRITE_REFUSED = "{tool} did not run."
+    NO_EGRESS_BY_MARK_KEY = "no_egress_by_mark"
+
+    def asks_own_card(item: Any) -> bool:
+        """Fail closed: with no rule, no tool stays."""
+        return False
 
     async def run_holds_mail(agent_name: Any = None, ctx: Any = None) -> bool:
         """Fail closed: with no reader, each run holds mail."""
@@ -385,7 +392,9 @@ except ImportError:  # pragma: no cover - acb_skills ships with the platform
         return True
 
 
-def _delegated_no_egress(parent_ctx: Any, child: str | None = None) -> bool:
+def _delegated_no_egress(
+    parent_ctx: Any, child: str | None = None, *, marks: bool = True,
+) -> bool:
     """True when the PARENT of a run that starts on this frame was no_egress.
 
     *parent_ctx* is the artifact context of the frame, read BEFORE the new run
@@ -400,18 +409,47 @@ def _delegated_no_egress(parent_ctx: Any, child: str | None = None) -> bool:
     whose binding predates a scope change, or a parent that bound no flag,
     still passes it on. No request field and no tool argument reaches this
     function.
+
+    *marks* False asks only the HARD reasons (incident 2026-10-18): it skips
+    the session mark, and a parent flag whose
+    :data:`~acb_skills.egress.NO_EGRESS_BY_MARK_KEY` says that the mark alone
+    set it. :func:`_no_egress_answer` uses it to tell the two apart.
     """
     if not parent_ctx:
         return False
-    if parent_ctx.get("no_egress", False) is not False:
+    if parent_ctx.get("no_egress", False) is not False and (
+            marks or parent_ctx.get(NO_EGRESS_BY_MARK_KEY) is not True):
         return True
     parent = str(parent_ctx.get("agent_name") or "")
     if parent in UNTRUSTED_INPUT_AGENTS and parent != (child or ""):
         return True
     # Round 2: a parent that read an untrusted agent's answer passes it on.
-    if read_untrusted_answer(parent_ctx):
+    if marks and read_untrusted_answer(parent_ctx):
         return True
     return _run_covered(parent)
+
+
+def _no_egress_answer(
+    agent_name: str | None, parent_ctx: Any, organization_id: str | None = None,
+) -> tuple[bool, bool]:
+    """``(no_egress, by_mark)`` of a run of *agent_name* that starts now.
+
+    *no_egress* is :func:`_run_no_egress`. *by_mark* is True when the run binds
+    ``no_egress`` ONLY because its chat session read an untrusted agent's
+    answer (WS-17 incident 2026-10-18, ``email_app_master_plan.md``
+    12.3.13.8). A covered run (H-236), any run under one, and a run that a
+    mail agent delegates to are hard reasons, and give False. Each run
+    boundary binds both, under ``no_egress`` and
+    :data:`~acb_skills.egress.NO_EGRESS_BY_MARK_KEY`. Only the second one lets
+    a mail agent keep its own carded writes (:func:`_keeps_own_mail_writes`).
+    """
+    child = str(agent_name or "")
+    if _delegated_no_egress(parent_ctx, child, marks=False) or _run_covered(
+            child, organization_id):
+        return True, False
+    if _delegated_no_egress(parent_ctx, child):
+        return True, True
+    return False, False
 
 
 def _run_no_egress(
@@ -424,9 +462,37 @@ def _run_no_egress(
     this run's own agent is covered (:func:`_run_covered`), whatever its parent.
     Each run boundary computes it once, before anything can fail, and binds it.
     """
-    return _delegated_no_egress(parent_ctx, str(agent_name or "")) or _run_covered(
-        str(agent_name or ""), organization_id,
-    )
+    return _no_egress_answer(agent_name, parent_ctx, organization_id)[0]
+
+
+def _no_egress_by_mark(
+    agent_name: str | None, parent_ctx: Any, organization_id: str | None = None,
+) -> bool:
+    """The *by_mark* half of :func:`_no_egress_answer`. A run boundary asks it
+    only when its ``no_egress`` answer is True."""
+    return _no_egress_answer(agent_name, parent_ctx, organization_id) == (True, True)
+
+
+def _keeps_own_mail_writes(agent_name: str | None) -> bool:
+    """True when a ``no_egress`` run of *agent_name* keeps its OWN carded
+    mailbox writes (WS-17 incident 2026-10-18, fix 2).
+
+    Only an agent of :data:`UNTRUSTED_INPUT_AGENTS`
+    (:func:`_run_reads_mail_itself`), and only when the bound context says
+    that the session mark alone set the flag
+    (:data:`~acb_skills.egress.NO_EGRESS_BY_MARK_KEY`). Each kept tool asks the
+    member's own card (EM-G11c1, ``acb_skills.egress.asks_own_card``), so a
+    mail cannot send through it unseen. A covered parent never sets the key,
+    so the H-236 rule there is unchanged. A fault reads False: it fails closed.
+    """
+    if not _run_reads_mail_itself(agent_name):
+        return False
+    try:
+        from acb_skills.write_artifact import artifact_context
+
+        return (artifact_context() or {}).get(NO_EGRESS_BY_MARK_KEY) is True
+    except Exception:
+        return False
 
 
 def _is_egress(tool: Any) -> bool:
@@ -474,21 +540,26 @@ def _inspectable(agent: Any) -> bool:
     return any(isinstance(p, list) for p in pools)
 
 
-def _withhold_egress_from_agent(agent: Any) -> list[str]:
+def _withhold_egress_from_agent(agent: Any, keep: Any = None) -> list[str]:
     """Take every egress tool and MCP server out of ONE per-run agent (H-236).
 
     The factory built this agent object for this run, as every injection site
     assumes. The lists are filtered in place, as ``_apply_own_tool_scope``
     does. Returns the names it took out. The MCP servers of a MAF agent
     (``mcp_tools``) leave on the guarded view (:func:`_with_egress_guard`).
+    *keep* picks the agent's own tools that stay (WS-17 incident 2026-10-18,
+    :func:`_keeps_own_mail_writes`). None keeps nothing.
     """
     removed: list[str] = []
+
+    def _goes(tool: Any) -> bool:
+        return _is_egress(tool) and not (keep is not None and keep(tool))
 
     def _filter(pool: Any) -> None:
         if not isinstance(pool, list):
             return
-        kept = [t for t in pool if not _is_egress(t)]
-        removed.extend(_tool_name(t) for t in pool if _is_egress(t))
+        kept = [t for t in pool if not _goes(t)]
+        removed.extend(_tool_name(t) for t in pool if _goes(t))
         pool[:] = kept
 
     _do = getattr(agent, "default_options", None)
@@ -508,7 +579,7 @@ def _withhold_egress_from_agent(agent: Any) -> list[str]:
     return removed
 
 
-def _with_egress_guard(agent: Any) -> Any:
+def _with_egress_guard(agent: Any, keep: Any = None) -> Any:
     """A per-run view of a native MAF agent that holds no egress tool (H-236).
 
     The view carries no MCP server (``mcp_tools``, which MAF expands into
@@ -526,7 +597,7 @@ def _with_egress_guard(agent: Any) -> Any:
         return agent
     from orchestrator._native_run_context import agent_with_providers
 
-    view = agent_with_providers(agent, [EgressGuardProvider()])
+    view = agent_with_providers(agent, [EgressGuardProvider(keep)])
     view.mcp_tools = []
     return view
 
@@ -1098,7 +1169,7 @@ def _gate_injected_tool(fn: Any) -> Any:
     return _register_platform_wrapper(fn, _sgated)
 
 
-def _run_reads_mail_itself() -> bool:
+def _run_reads_mail_itself(agent_name: str | None = None) -> bool:
     """True when the run on this frame IS an agent of
     :data:`UNTRUSTED_INPUT_AGENTS` (WS-17 EM-G11f3, round 2).
 
@@ -1106,7 +1177,13 @@ def _run_reads_mail_itself() -> bool:
     request field or a tool argument. Such a run ignores the session's
     untrusted-answer mark: the mark holds what the CALLER does after the
     answer, and each write of the mail agent asks its own card. A fault reads
-    False, so the mark applies and the gate fails closed."""
+    False, so the mark applies and the gate fails closed.
+
+    *agent_name* is the run's own name, for the injection of a run whose
+    context still names its parent (the batch path binds the name later). It
+    comes from the executor, never from input."""
+    if agent_name is not None:
+        return str(agent_name) in UNTRUSTED_INPUT_AGENTS
     try:
         from acb_skills.write_artifact import artifact_context
 
@@ -2624,6 +2701,18 @@ def _apply_answer_check(agents: list[Any], agent_name: str | None) -> None:
 def _apply_no_egress(
     agents: list[Any], agent_name: str | None, *, injected: frozenset[str] = frozenset(),
 ) -> None:
+    """:func:`_apply_no_egress_with`, with *keep* decided here from the run's
+    bound context (:func:`_keeps_own_mail_writes`, incident 2026-10-18)."""
+    keep = asks_own_card if _keeps_own_mail_writes(agent_name) else None
+    if keep is not None:
+        _log.info("executor.own_mail_writes_kept", agent=agent_name)
+    _apply_no_egress_with(agents, agent_name, injected=injected, keep=keep)
+
+
+def _apply_no_egress_with(
+    agents: list[Any], agent_name: str | None, *, injected: frozenset[str] = frozenset(),
+    keep: Any = None,
+) -> None:
     """The H-236 control on every agent of ONE run.
 
     It replaces each native MAF agent in *agents* with its guarded view, so
@@ -2645,8 +2734,8 @@ def _apply_no_egress(
                 "sandboxed turn, and its tools cannot be checked for a send."
             )
         try:
-            removed.update(_withhold_egress_from_agent(agent))
-            agents[i] = _with_egress_guard(agent)
+            removed.update(_withhold_egress_from_agent(agent, keep))
+            agents[i] = _with_egress_guard(agent, keep)
         except Exception as exc:
             _log.error(
                 "executor.no_egress_failed", agent=agent_name, error=str(exc)[:200],

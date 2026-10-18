@@ -106,6 +106,7 @@ from orchestrator._tool_injection import (
     _close_mcp_tools,
     _inject_mcp_servers,
     NoEgressRefused,
+    _no_egress_by_mark,
     _run_covered,
     _run_no_egress,
     _tool_name,
@@ -1332,8 +1333,11 @@ async def _run_sub_agent_streaming(
     # or when its own agent is covered. Decided once, from the parent's
     # binding, and bound at once, so no later path reads the parent's frame.
     _parent_ctx_sub = artifact_context()
+    # WS-17 incident 2026-10-18: and whether the session mark ALONE set it,
+    # so a mail agent keeps its own carded writes (``_keeps_own_mail_writes``).
     _sub_no_egress = _run_no_egress(agent_name, _parent_ctx_sub)
-    derive_artifact_context(no_egress=_sub_no_egress)
+    _sub_by_mark = _sub_no_egress and _no_egress_by_mark(agent_name, _parent_ctx_sub)
+    derive_artifact_context(no_egress=_sub_no_egress, no_egress_by_mark=_sub_by_mark)
     # WS-17 EM-G11f3: a run of an agent that reads mail marks the CALLING
     # session now, before it does any work, so a cancel or an error cannot
     # skip the mark. After the no_egress decision, so the sub-run's tools do
@@ -1513,6 +1517,7 @@ async def _run_sub_agent_streaming(
                 # H-236: set from the parent's binding, never cleared here.
                 # The batch run of a MAF sub-agent reads it as its parent.
                 no_egress=_sub_no_egress,
+                no_egress_by_mark=_sub_by_mark,
                 # The chat that asked. The batch run of a MAF sub-agent
                 # passes it on (``delegation_target``).
                 deliver_to=_deliver_to,
@@ -3184,11 +3189,18 @@ async def _run_agent_inner(
         # this run's no_egress BEFORE it marked the session for a mail agent
         # (WS-17 EM-G11f3), so keep its decision, plus this agent's own cover.
         # Asking the mark again here would read the run's own mark.
+        _own_cover = _run_covered(agent_name, organization_id)
         _no_egress = (_parent_ctx.get("no_egress", False) is not False
-                      or _run_covered(agent_name, organization_id))
+                      or _own_cover)
+        # WS-17 incident 2026-10-18: the frame's "mark alone" answer stays,
+        # unless this agent's own cover is a hard reason.
+        _by_mark = (_no_egress and not _own_cover
+                    and _parent_ctx.get("no_egress_by_mark") is True)
     else:
         _no_egress = _run_no_egress(agent_name, _parent_ctx, organization_id)
-    derive_artifact_context(no_egress=_no_egress)
+        _by_mark = _no_egress and _no_egress_by_mark(
+            agent_name, _parent_ctx, organization_id)
+    derive_artifact_context(no_egress=_no_egress, no_egress_by_mark=_by_mark)
     # WS-17 EM-G11f3: the batch twin of the mark in _run_sub_agent_streaming.
     await _mark_untrusted_session(agent_name, _parent_ctx)
     # WS-45 S4: a covered batch run has its own tier policy (below). Its
@@ -3483,6 +3495,8 @@ async def _run_agent_inner(
                 # H-236: a delegated run of a covered parent sends nothing
                 # off the platform. Its own delegations inherit this.
                 no_egress=_no_egress,
+                # WS-17 incident 2026-10-18: True when the mark alone set it.
+                no_egress_by_mark=_by_mark,
                 # The chat that asked, for a delegated run.
                 **({"deliver_to": _deliver_to} if _deliver_to is not None else {}),
                 # WS-45 S4: the System-1 threshold of a covered run follows
@@ -4175,7 +4189,9 @@ async def run_agent_stream(
     from acb_skills.write_artifact import artifact_context as _ctx_now
     from acb_skills.write_artifact import derive_artifact_context as _derive_ctx
     _stream_no_egress = _run_no_egress(agent_name, _ctx_now(), organization_id)
-    _derive_ctx(no_egress=_stream_no_egress)
+    _stream_by_mark = _stream_no_egress and _no_egress_by_mark(
+        agent_name, _ctx_now(), organization_id)
+    _derive_ctx(no_egress=_stream_no_egress, no_egress_by_mark=_stream_by_mark)
     if _stream_no_egress:
         _remember_no_egress_run(run_id)
     # Expose the run's model so sub-agents inherit the parent tier. Seed with the
@@ -4421,6 +4437,8 @@ async def run_agent_stream(
                 # bind True for itself: its delegations compute it from
                 # covers(), and the sandbox middleware withholds its own.
                 no_egress=_stream_no_egress,
+                # WS-17 incident 2026-10-18: True when the mark alone set it.
+                no_egress_by_mark=_stream_by_mark,
                 # WS-45 S1: the effort mode, so the System-1 `decide` reads
                 # its threshold from the run binding (ai_tier_routing.md §5).
                 think_mode=think_mode or "auto",

@@ -654,7 +654,8 @@ def test_the_call_time_refusal_holds_when_injection_misses_a_tool(
     sandbox, monkeypatch,  # noqa: F811
 ) -> None:
     _register_every_annotation()
-    monkeypatch.setattr(ti, "_withhold_egress_from_agent", lambda agent: [])
+    # The seam takes the incident fix's *keep* too (2026-10-18). None here.
+    monkeypatch.setattr(ti, "_withhold_egress_from_agent", lambda agent, keep=None: [])
     email = _email_turns()
     sent = _harness(monkeypatch, sandbox, {PA: _parent_calls(EMAIL), EMAIL: email})
     _run_parent(ORG_A)
@@ -1373,15 +1374,24 @@ def test_the_callers_own_egress_after_the_hand_off_still_asks_the_card(
     assert any("fetch_page" in t and _UNTRUSTED_CARD in t for t in titles), titles
 
 
-def test_a_known_mark_still_holds_the_delegated_send(
+def test_a_known_mark_binds_no_egress_and_keeps_the_mail_agents_own_send(
     sandbox, monkeypatch, mark_store,  # noqa: F811
 ) -> None:
     """The control of a known mark stays: with the session marked in Redis,
-    the delegation binds ``no_egress`` and the sub-run cannot send."""
+    the delegation binds ``no_egress``, and the sub-run holds no network tool.
+
+    Changed by the incident of 2026-10-18 (fix 2), with this reason. The
+    sub-run is the email assistant, and the mark alone set its flag, so it
+    keeps its OWN carded writes. ``send_email`` asks the member's own card,
+    which shows each recipient and the body, so a mail cannot send through
+    it unseen. Before, the flag dropped it, and "send a top-up mail" could
+    never work on the second turn of a thread. The send asks exactly ONE
+    card, its own. Mutation: let ``no_egress`` drop the mail agent's own
+    send again, and this test is red."""
     _register_every_annotation()
-    _open_card_channel(monkeypatch)
-    thread = f"chat-{new_thread()}"
-    mark_store.keys[f"cc:{ORG_B}:{eg.MARK_NAMESPACE}:{thread}"] = "1"
+    titles = _open_card_channel(monkeypatch)
+    _stub_mailbox(monkeypatch)
+    thread = _marked_thread(mark_store)
     pa = _Model([
         _call("call_agent", {"agent_name": EMAIL, "message": "Send the note to Y"}),
         _say("done"),
@@ -1392,8 +1402,88 @@ def test_a_known_mark_still_holds_the_delegated_send(
     ])
     sent = _harness(monkeypatch, sandbox, {PA: pa, EMAIL: email})
     _run_top(PA, ORG_B, thread=thread, cards=True)
-    assert email.bodies and "send_email" not in _offered(email.bodies[0])
-    assert sent == []
+    assert email.bodies, "the delegation never ran"
+    child = _offered(email.bodies[0])
+    assert "send_email" in child, "no_egress dropped the mail agent's own send"
+    assert not _NETWORK_TOOLS & child, sorted(_NETWORK_TOOLS & child)
+    assert len(titles) == 1 and titles[0].startswith("Send this"), titles
+    assert sent, "the send never reached the host"
+
+
+async def test_the_call_time_guard_keeps_only_a_carded_own_tool() -> None:
+    """The middleware pair takes *keep* (fix 2). With
+    ``asks_own_card`` it keeps the email assistant's own carded send, and it
+    still withholds the same tool when no mark asked for it, and a tool
+    that carries no such word. With no *keep*, it keeps neither."""
+    from agent_framework._tools import normalize_tools
+
+    _register_every_annotation()
+    email = _MODULES[EMAIL]
+    own = {t.__name__: t for t in email._agent_tools()}
+    assert eg.asks_own_card(own["send_email"]) and not eg.asks_own_card(email.send_email)
+    assert not eg.asks_own_card(own["query_inbox"]), "a read is not a carded write"
+    tools = normalize_tools([own["send_email"], own["query_inbox"], email.forward_email])
+    for guard, want in ((eg.WithholdEgressTools(eg.asks_own_card), ["send_email", "query_inbox"]),
+                        (eg.WithholdEgressTools(), ["query_inbox"])):
+        ctx = types.SimpleNamespace(options={"tools": tools})
+        seen: list[list[str]] = []
+
+        async def nxt(ctx: Any = ctx, seen: list[list[str]] = seen) -> None:
+            seen.append([eg.tool_name(t) for t in ctx.options["tools"]])
+
+        await guard.process(ctx, nxt)
+        assert seen == [want], seen
+
+
+def test_a_known_mark_still_drops_another_agents_writes(
+    sandbox, monkeypatch, mark_store,  # noqa: F811
+) -> None:
+    """Fix 2 is for the mail agent only. A marked session delegates to
+    crm-assistant, whose writes ask cards too. The mark binds ``no_egress``,
+    and that run keeps none of its open-world writes, as before."""
+    _register_every_annotation()
+    _open_card_channel(monkeypatch)
+    thread = _marked_thread(mark_store)
+    pa = _Model([
+        _call("call_agent", {"agent_name": CRM, "message": "Log a call on lead Y"}),
+        _say("done"),
+    ])
+    crm = _Model([_say("ok")])
+    _harness(monkeypatch, sandbox, {PA: pa, CRM: crm})
+    _run_top(PA, ORG_B, thread=thread, cards=True)
+    assert crm.bodies, "the delegation never ran"
+    child = _offered(crm.bodies[0])
+    assert "search_crm" in child, "the fixture is wrong"
+    assert not {"create_lead", "log_activity", "update_deal_status"} & child, sorted(child)
+    assert not _egress_in(crm.bodies[0]), _egress_in(crm.bodies[0])
+
+
+def test_the_mark_alone_is_told_apart_from_a_hard_reason(sandbox) -> None:  # noqa: F811
+    """``_no_egress_answer`` gives ``(no_egress, by_mark)``. Only a flag that
+    the session mark alone set is ``by_mark``. A covered parent, a parent
+    flag with no ``by_mark``, and a mail agent's delegation to another agent
+    are hard reasons."""
+    from acb_common.db import bind_tenant, release_tenant
+
+    marked = {"agent_name": ORCH, "run_id": "r", "session_id": "chat-m",
+              "member": "m@example.com", "no_egress": False}
+    token = bind_tenant(ORG_B)
+    try:
+        assert ti._no_egress_answer(EMAIL, marked) == (False, False)
+        eg._MARKED_SESSIONS.add((ORG_B, "chat-m"))
+        assert ti._no_egress_answer(EMAIL, marked) == (True, True)
+        assert ti._no_egress_answer(CRM, marked) == (True, True)
+        held = dict(marked, no_egress=True, no_egress_by_mark=True)
+        assert ti._no_egress_answer(EMAIL, held) == (True, True)
+        hard = dict(marked, no_egress=True)
+        assert ti._no_egress_answer(EMAIL, hard) == (True, False)
+        assert ti._no_egress_answer(EMAIL, dict(hard, no_egress_by_mark=False)) == (True, False)
+        assert ti._no_egress_answer(CRM, dict(marked, agent_name=EMAIL)) == (True, False)
+    finally:
+        release_tenant(token)
+    with bound_run(ORG_A, agent=PA, thread=new_thread()):
+        assert ti._no_egress_answer(EMAIL, {"agent_name": PA, "no_egress": False}) == (
+            True, False)
 
 
 # -- WS-17 incident 2026-10-18: a hand-off in a marked session -----------------
@@ -1409,6 +1499,21 @@ _NETWORK_TOOLS = frozenset({
     "web_search", "fetch_page", "github_search", "github_repo_search",
     "request_network_access", "install_dependency", "run_script", "code_task",
 })
+
+
+def _stub_mailbox(monkeypatch) -> None:
+    """The member has one mailbox, so ``send_email`` reaches its card with no
+    gateway read. The send itself still goes to the host trap."""
+    module = _MODULES[EMAIL]
+
+    async def one_mailbox(_recipient: str) -> tuple[str, str]:
+        return "acct-1", ""
+
+    async def name(_account_id: str) -> str:
+        return "Work · me@example.com"
+
+    monkeypatch.setattr(module, "_new_mail_mailbox", one_mailbox)
+    monkeypatch.setattr(module, "_mailbox_name", name)
 
 
 def _marked_thread(mark_store: _MarkRedis) -> str:
@@ -1442,6 +1547,32 @@ def test_a_marked_orchestrator_hands_off_to_the_email_assistant_with_no_card(
     assert not any("mcp" in name for name in child), sorted(child)
     assert "You have one mail." in _results(orch.bodies[1])[-1]
     assert sent == []
+
+
+def test_a_send_in_a_marked_chat_asks_one_card_its_own(
+    sandbox, monkeypatch, mark_store,  # noqa: F811
+) -> None:
+    """Fix 2, in chat. Turn 2 of a marked session: "send a reply". The
+    orchestrator hands off to ``email_assistant``, and the child reaches
+    ``send_email``. Exactly ONE card shows, the tool's own, and the send
+    reaches the host after the yes. The child still holds no network tool."""
+    _register_every_annotation()
+    titles = _open_card_channel(monkeypatch)
+    _stub_mailbox(monkeypatch)
+    thread = _marked_thread(mark_store)
+    orch = _Model([_call("email_assistant", {"task": "Send a reply to Y"}), _say("done")])
+    email = _Model([
+        _call("send_email", {"to": ["y@example.com"], "subject": "Re: note", "body": "hi"}),
+        _say("sent"),
+    ])
+    sent = _harness(monkeypatch, sandbox, {ORCH: orch, EMAIL: email})
+    _run_top(ORCH, ORG_B, thread=thread, cards=True)
+    assert email.bodies, "the hand-off did not run"
+    child = _offered(email.bodies[0])
+    assert "send_email" in child, "no_egress dropped the mail agent's own send"
+    assert not _NETWORK_TOOLS & child, sorted(_NETWORK_TOOLS & child)
+    assert len(titles) == 1 and titles[0].startswith("Send this"), titles
+    assert sent, "the send never reached the host"
 
 
 def test_redis_down_leaves_an_unmarked_batch_run_its_egress(
@@ -2106,6 +2237,11 @@ def test_every_artifact_context_site_binds_no_egress() -> None:
     assert len(sites) >= 3, sites
     missing = [f"{n} at executor.py:{line}" for n, line, keys in sites if "no_egress" not in keys]
     assert not missing, f"these sites bind no no_egress: {missing}"
+    # WS-17 incident 2026-10-18: each one also says whether the mark ALONE
+    # set it, or a run would read a stale answer from its parent's frame.
+    missing = [f"{n} at executor.py:{line}" for n, line, keys in sites
+               if "no_egress_by_mark" not in keys]
+    assert not missing, f"these sites bind no no_egress_by_mark: {missing}"
 
 
 def test_every_injection_and_the_self_anneal_pass_no_egress() -> None:

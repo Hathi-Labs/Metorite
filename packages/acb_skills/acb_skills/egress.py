@@ -38,7 +38,7 @@ import sys
 import threading
 import weakref
 from collections import OrderedDict
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from acb_common import get_logger
@@ -49,6 +49,7 @@ from acb_skills.tool_guard import RefuseTools, WithholdTools, tool_name
 _log = get_logger("acb_skills.egress")
 
 __all__ = [
+    "ASKS_OWN_CARD_ATTR",
     "DELEGATION_TOOLS",
     "EGRESS_WITHHELD_ANSWER",
     "MAIL_STORE_WRITE_REFUSED",
@@ -59,12 +60,14 @@ __all__ = [
     "MARK_TTL_S",
     "MARK_UNKNOWN",
     "MCP_LOADER_KEY",
+    "NO_EGRESS_BY_MARK_KEY",
     "NO_EGRESS_KEY",
     "STORE_WRITES",
     "UNTRUSTED_INPUT_AGENTS",
     "EgressGuardProvider",
     "RefuseEgressTools",
     "WithholdEgressTools",
+    "asks_own_card",
     "egress_tool_names",
     "has_explicit_open_world",
     "is_delegation_tool",
@@ -82,6 +85,18 @@ __all__ = [
 
 #: The artifact-context key. ``True`` means this run holds no egress tool.
 NO_EGRESS_KEY = "no_egress"
+#: The artifact-context key beside :data:`NO_EGRESS_KEY` (WS-17 incident
+#: 2026-10-18, ``email_app_master_plan.md`` 12.3.13.8). ``True`` means the run
+#: binds ``no_egress`` ONLY because its chat session read an untrusted agent's
+#: answer. A covered run (H-236), a run under one, and a run that a mail agent
+#: delegates to never set it. The run boundaries of the orchestrator set it
+#: (``_tool_injection._no_egress_answer``), and ``agent_tools`` sets it where a
+#: known mark holds a delegation. A request field never reaches it.
+NO_EGRESS_BY_MARK_KEY = "no_egress_by_mark"
+#: The attribute that marks an agent's own tool that asks the member's own
+#: card before its first write (``agent-email-assistant``
+#: ``MAILBOX_WRITE_TOOLS``, EM-G11c1). See :func:`asks_own_card`.
+ASKS_OWN_CARD_ATTR = "__asks_own_card__"
 SOURCE_ID = "metorite-no-egress"
 
 #: The tools that hand a task to another agent. The owner kept them in a
@@ -601,6 +616,26 @@ def is_egress_tool(item: Any) -> bool:
     return not (isinstance(hints, Mapping) and hints.get("open_world") is False)
 
 
+def asks_own_card(item: Any) -> bool:
+    """True for an agent's OWN tool that asks the member's own card before
+    its first write (WS-17 incident 2026-10-18).
+
+    The agent marks it with :data:`ASKS_OWN_CARD_ATTR` (the email assistant
+    marks each tool of its ``MAILBOX_WRITE_TOOLS``, and
+    ``tests/unit/test_email_agent_write_cards.py`` proves that each one asks
+    a card). An MCP tool and a store write never count. The caller decides
+    WHERE this applies: only in a ``no_egress`` run of an agent of
+    :data:`UNTRUSTED_INPUT_AGENTS` whose flag came from the session mark
+    alone (:data:`NO_EGRESS_BY_MARK_KEY`). Everywhere else the attribute does
+    nothing, so another repo that sets it gains nothing."""
+    if isinstance(item, str) or _from_mcp(item):
+        return False
+    if tool_name(item) in STORE_WRITES:
+        return False
+    return any(getattr(obj, ASKS_OWN_CARD_ATTR, False) is True
+               for obj in (item, getattr(item, "func", None)) if obj is not None)
+
+
 def egress_tool_names(tools: Iterable[Any]) -> frozenset[str]:
     """The names of the egress tools among *tools*."""
     return frozenset(t if isinstance(t, str) else tool_name(t)
@@ -631,22 +666,35 @@ def _egress_answer(name: str) -> str:
     return EGRESS_WITHHELD_ANSWER.format(name=name)
 
 
+#: A picker of the tools that stay in a ``no_egress`` run.
+Keep = Callable[[Any], bool]
+
+
+def _egress_picker(keep: Keep | None) -> Any:
+    """:func:`is_egress_tool`, less what *keep* says yes to."""
+    if keep is None:
+        return is_egress_tool
+    return lambda item: is_egress_tool(item) and not keep(item)
+
+
 class WithholdEgressTools(WithholdTools):
     """Takes every egress tool out of each model request of ONE run.
 
     Injection already left them out. This catches a tool that joined the run
     later, for example a sandbox provider's tool or an MCP server's tool.
+    *keep* names the tools that stay (:func:`asks_own_card`, in the one case
+    that the orchestrator allows). None keeps nothing.
     """
 
-    def __init__(self) -> None:
-        super().__init__(is_egress_tool)
+    def __init__(self, keep: Keep | None = None) -> None:
+        super().__init__(_egress_picker(keep))
 
 
 class RefuseEgressTools(RefuseTools):
     """Refuses a call to an egress tool, in case the model names one."""
 
-    def __init__(self) -> None:
-        super().__init__(is_egress_tool, _egress_answer)
+    def __init__(self, keep: Keep | None = None) -> None:
+        super().__init__(_egress_picker(keep), _egress_answer)
 
 
 class EgressGuardProvider(ContextProvider):
@@ -654,12 +702,15 @@ class EgressGuardProvider(ContextProvider):
 
     ``_tool_injection._inject_agent_tools`` attaches it to the run's own view
     of the agent (``agent_with_providers``), never to a shared agent object.
+    *keep* goes to both middlewares.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, keep: Keep | None = None) -> None:
         super().__init__(SOURCE_ID)
+        self._keep = keep
 
     async def before_run(
         self, *, agent: Any, session: Any, context: Any, state: dict[str, Any],
     ) -> None:
-        context.extend_middleware(SOURCE_ID, [WithholdEgressTools(), RefuseEgressTools()])
+        context.extend_middleware(SOURCE_ID, [
+            WithholdEgressTools(self._keep), RefuseEgressTools(self._keep)])

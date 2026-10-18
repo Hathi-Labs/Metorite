@@ -228,15 +228,26 @@ async def _session_marked() -> bool:
 def _delegate_held(held: bool) -> Iterator[None]:
     """While *held*, the run that starts in the block binds ``no_egress``: it
     reads this frame's artifact context as its parent (H-236). The scope gives
-    the frame its own context back at the end."""
+    the frame its own context back at the end.
+
+    WS-17 incident 2026-10-18: it also binds ``no_egress_by_mark``. That is
+    True unless the frame already held a HARD ``no_egress`` (a covered run,
+    or a run under one), which the mark must never soften."""
     if not held:
         yield
         return
-    from acb_skills.egress import NO_EGRESS_KEY
-    from acb_skills.write_artifact import artifact_context_scope, derive_artifact_context
+    from acb_skills.egress import NO_EGRESS_BY_MARK_KEY, NO_EGRESS_KEY
+    from acb_skills.write_artifact import (
+        artifact_context,
+        artifact_context_scope,
+        derive_artifact_context,
+    )
 
+    frame = artifact_context() or {}
+    hard = (frame.get(NO_EGRESS_KEY, False) is not False
+            and frame.get(NO_EGRESS_BY_MARK_KEY) is not True)
     with artifact_context_scope():
-        derive_artifact_context(**{NO_EGRESS_KEY: True})
+        derive_artifact_context(**{NO_EGRESS_KEY: True, NO_EGRESS_BY_MARK_KEY: not hard})
         yield
 
 

@@ -4737,8 +4737,18 @@ def _agent_tools() -> list[Any]:
     so no stack, query or host reaches the model. The name, the docstring,
     the signature and ``__tool_risk__`` stay. Fence:
     ``tests/unit/test_crm_email_tool_refusals.py``.
+
+    WS-17 incident 2026-10-18: each tool of :data:`MAILBOX_WRITE_TOOLS` also
+    says that it asks the member's own card (``__asks_own_card__``, read by
+    ``acb_skills.egress.asks_own_card``). So a run that a marked chat
+    session delegates to keeps it, and still holds no network tool
+    (``email_app_master_plan.md`` 12.3.13.8).
     """
-    return [refusals_as_text(fn, EMAIL_VOICE) for fn in _TOOLS]
+    tools = [refusals_as_text(fn, EMAIL_VOICE) for fn in _TOOLS]
+    for tool in tools:
+        if tool.__name__ in MAILBOX_WRITE_TOOLS:
+            tool.__asks_own_card__ = True  # type: ignore[attr-defined]
+    return tools
 
 
 # ── MAF agent factory (Dynamic Agent Loader entry point) ─────────────────────
