@@ -67,6 +67,10 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "assignees_add": { label: "Assign", kind: "person", many: true },
   "assignees_remove": { label: "Unassign", kind: "person", many: true },
   "body": { label: "Text" },
+  // `file_tasks` (2026-10-18): a task the batch leaves out, and why.
+  // `link_tasks_batch` (2026-10-19): a link the batch leaves out, and why.
+  "cannot link N": { label: "Cannot link" },
+  "cannot move N": { label: "Cannot move" },
   "capacity": { label: "Capacity" },
   "category": { label: "Category", kind: "category" },
   "close_after_months": { label: "Close after (months)" },
@@ -84,6 +88,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "delegated_at": { label: "Delegated", kind: "date" },
   "dependency warnings": { label: "Order warnings" },
   "description": { label: "Description" },
+  // `file_tasks`: one project the batch files into, its count and its drops.
+  "destination N": { label: "Into" },
   "disposition": { label: "Triage", kind: "words" },
   "dropped links": { label: "Links dropped" },
   "drops (values with no field in the destination)": { label: "Values dropped" },
