@@ -44,10 +44,13 @@ import ConfirmationCard from "@/components/ConfirmationCard";
 import FencedText from "@/components/FencedText";
 import MessageBubble from "@/components/MessageBubble";
 import type { ChatMessage } from "@/hooks/useAgentChat";
-import { agentAuthor } from "@/lib/projectsAgent";
+import EntityPill, { PillNavigateContext } from "@/components/ui/EntityPill";
+import { agentAuthor, askedTaskAgent, taskRefModeForTurn } from "@/lib/projectsAgent";
+import { onChatLink } from "@/lib/shell/assistant";
 import {
   createTaskRefResolver,
   pickTask,
+  revalidateChat,
   revalidateStep,
   taskRefResolver,
   type TaskRefHit,
@@ -90,11 +93,18 @@ const OWNER_REPLY = [
 beforeAll(async () => {
   vi.stubGlobal("fetch", async () =>
     new Response(JSON.stringify({
-      rows: [...NINE.map((n) => row(n, TITLES[n])), row(247, T247), row(248, T248)],
+      rows: [
+        ...NINE.map((n) => row(n, TITLES[n])),
+        row(247, T247),
+        row(248, T248),
+        // Unique numbers that a relayed email or list can also carry.
+        row(1, "Set up the build box"),
+        row(12, "Fix the login page"),
+      ],
     }), { status: 200 }),
   );
   // The session's answers and the cards (scope "") read the same store.
-  for (const n of NINE) taskRefResolver.request(SESSION, n);
+  for (const n of [...NINE, 1, 12]) taskRefResolver.request(SESSION, n);
   for (const n of [247, 248]) taskRefResolver.request("", n);
   await taskRefResolver.flush();
   vi.unstubAllGlobals();
@@ -105,22 +115,28 @@ beforeEach(() => {
   activations.length = 0;
 });
 
-function turn(content: string, author: string): ChatMessage {
+/** The owner's turn: the orchestrator asked the Projects assistant
+ *  ("Asked Projects assistant 66.8s"), through its tool for that agent. */
+const ASKED_PROJECTS = [
+  { id: "t1", name: "projects_assistant", args: { task: "Create nine tasks in Metorite" }, status: "done", result: "Done." },
+];
+
+function turn(content: string, author: string, toolEvents: unknown[] = []): ChatMessage {
   return {
     id: "m1",
     role: "assistant",
     content,
     timestamp: new Date("2026-10-19T10:00:00Z").getTime(),
-    toolEvents: [],
+    toolEvents,
     ...agentAuthor(author),
   } as unknown as ChatMessage;
 }
 
 /** The main chat: `AgentChat` passes the session's agent as `taskRefAgent`. */
-function mainChat(content: string, agent = "orchestrator"): string {
+function mainChat(content: string, agent = "orchestrator", toolEvents: unknown[] = ASKED_PROJECTS): string {
   return renderToStaticMarkup(
     createElement(MessageBubble, {
-      message: turn(content, agent),
+      message: turn(content, agent, toolEvents),
       sessionId: SESSION,
       entityPills: false,
       taskRefAgent: agent,
@@ -152,6 +168,33 @@ describe("cause 1: the main chat's answer links its task numbers", () => {
 
   it("also under the orchestrator's old name, and in the assistant dock's sessions", () => {
     expect(hrefs(mainChat("Next: #235.", "metorite"))).toEqual([idOf(235)]);
+  });
+
+  it("an orchestrator turn that asked no task agent: a relayed number stays text (review P1)", () => {
+    for (const text of ["Ticket #235 is closed.", "Option #1: wait a week.", "See issue #12 on GitHub."]) {
+      expect(hrefs(mainChat(text, "orchestrator", []))).toEqual([]);
+    }
+    // Another specialist is not a task agent either.
+    const email = [{ id: "t2", name: "email_assistant", args: { task: "Read the Acme mail" }, status: "done" }];
+    expect(hrefs(mainChat("Ticket #235 from Acme.", "orchestrator", email))).toEqual([]);
+  });
+
+  it("an orchestrator turn that asked no task agent: a number followed by its title links", () => {
+    const html = mainChat(`Start with #235 ${TITLES[235]}, then the rest.`, "orchestrator", []);
+    expect(hrefs(html)).toEqual([idOf(235)]);
+    // The guillemet form carries its title, so it links too.
+    expect(hrefs(mainChat(`Made #236 «${TITLES[236]}».`, "orchestrator", []))).toEqual([idOf(236)]);
+  });
+
+  it("a hand-off read as the app switch reads it: the agent name or the sub-agent", () => {
+    expect(askedTaskAgent([{ name: "task_manager" }])).toBe(true);
+    expect(askedTaskAgent([{ name: "call_agent", subAgentName: "projects-assistant" }])).toBe(true);
+    expect(askedTaskAgent([{ name: "call_agent", args: { agent_name: "projects_assistant" } }])).toBe(true);
+    expect(askedTaskAgent([{ name: "email_assistant" }, { name: "web_search" }])).toBe(false);
+    expect(taskRefModeForTurn("orchestrator", agentAuthor("orchestrator"), [])).toBe("echo");
+    expect(taskRefModeForTurn("orchestrator", agentAuthor("orchestrator"), [{ name: "projects_assistant" }])).toBe(true);
+    // A task agent keeps today's rule, with or without a hand-off.
+    expect(taskRefModeForTurn("task-manager", agentAuthor("task-manager"), [])).toBe(true);
   });
 
   it("still not an email agent's answer", () => {
@@ -316,5 +359,73 @@ describe("cause 4: two spaces with a #234", () => {
   it("links neither when the text echoes both or none", () => {
     expect(pickTask(two, undefined, () => true)).toBeNull();
     expect(pickTask(two, undefined, () => false)).toBeNull();
+  });
+});
+
+describe("review P2: a finished tool asks again only this chat's numbers", () => {
+  it("asks the session's scope and the cards' scope, never another chat's", async () => {
+    const asked: number[][] = [];
+    const resolver = createTaskRefResolver(async (numbers) => {
+      asked.push(numbers);
+      return [];
+    });
+    // Three chats with seven numbers each, and the cards with seven.
+    for (const scope of ["chat-a", "chat-b", "chat-c", ""]) {
+      for (let n = 1; n <= 7; n++) resolver.request(scope, n);
+    }
+    await resolver.flush();
+    expect(asked).toHaveLength(4);
+    asked.length = 0;
+    revalidateChat(resolver, "chat-a");
+    await resolver.flush();
+    // One batch for chat-a and one for the cards: 14 numbers, not 28.
+    expect(asked).toHaveLength(2);
+    expect(asked.flat()).toHaveLength(14);
+  });
+
+  it("asks only the cards' scope for a chat with no session id", async () => {
+    const asked: number[][] = [];
+    const resolver = createTaskRefResolver(async (numbers) => {
+      asked.push(numbers);
+      return [];
+    });
+    resolver.request("chat-a", 3);
+    resolver.request("", 4);
+    await resolver.flush();
+    asked.length = 0;
+    revalidateChat(resolver, undefined);
+    await resolver.flush();
+    expect(asked).toEqual([[4]]);
+  });
+});
+
+describe("review P2: a task pill in the phone's assistant sheet closes the sheet", () => {
+  const pill = () =>
+    createElement(EntityPill, { kind: "task", label: T247, number: "#247", href: `/projects?task=${idOf(247)}` });
+
+  it("runs the surface's step before it navigates, for every linked pill", () => {
+    const before = vi.fn();
+    renderToStaticMarkup(createElement(PillNavigateContext.Provider, { value: before }, pill()));
+    const link = activations.find((a) => a.href === `/projects?task=${idOf(247)}`);
+    link!.go();
+    expect(before).toHaveBeenCalledWith(`/projects?task=${idOf(247)}`);
+    expect(push).toHaveBeenCalledWith(`/projects?task=${idOf(247)}`);
+    expect(before.mock.invocationCallOrder[0]).toBeLessThan(push.mock.invocationCallOrder[0]);
+  });
+
+  it("navigates as before with no provider", () => {
+    renderToStaticMarkup(pill());
+    activations.find((a) => a.href === `/projects?task=${idOf(247)}`)!.go();
+    expect(push).toHaveBeenCalledWith(`/projects?task=${idOf(247)}`);
+  });
+
+  it("closes on a phone only, and the dock provides it around its chat", async () => {
+    expect(onChatLink({ phone: true })).toBe("close");
+    expect(onChatLink({ phone: false })).toBeNull();
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const dock = readFileSync(fileURLToPath(new URL("../lib/shell/AssistantDock.tsx", import.meta.url)), "utf-8");
+    expect(dock).toContain("<PillNavigateContext.Provider value={beforePillNavigate}>");
+    expect(dock).toMatch(/onChatLink\(\{ phone \}\) === "close"\) closeAssistant\(\)/);
   });
 });

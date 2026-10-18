@@ -1,3 +1,5 @@
+import { agentSlug } from "@/lib/agentName";
+
 /**
  * The Projects assistant's agent name, in one place.
  *
@@ -50,13 +52,12 @@ export function pillsForTurn(
  * assistant names the same tasks. Another agent's `#4521` is an invoice or an
  * issue number, so it stays text.
  *
- * The orchestrator is on the list (owner report, 2026-10-19). Since D99 it
- * is the one assistant: the main chat and the assistant dock run it, and it
- * asks the Projects assistant and then repeats what that agent wrote. Its
- * answer "#234 Spec tool-gap detection" drew as text. `metorite` is the old
- * name of the same agent, still on old sessions. The guards that keep an
- * invoice number out are the parser's (`OTHER_KINDS`: `Invoice #4521`) and
- * the lookup's: a number links only to the one visible task that has it.
+ * The orchestrator is on the list (owner report, 2026-10-19), with a
+ * stricter rule (`taskRefModeForTurn`). Since D99 it is the one assistant:
+ * the main chat and the assistant dock run it, and it asks the Projects
+ * assistant and then repeats what that agent wrote. Its answer "#234 Spec
+ * tool-gap detection" drew as text. `metorite` is the old name of the same
+ * agent, still on old sessions.
  */
 export const TASK_REF_AGENTS: ReadonlySet<string> = new Set([
   PROJECTS_AGENT,
@@ -64,6 +65,57 @@ export const TASK_REF_AGENTS: ReadonlySet<string> = new Set([
   "orchestrator",
   "metorite",
 ]);
+
+/** The agents that own tasks. Their answers link every bare `#171`. */
+export const TASK_AGENTS: ReadonlySet<string> = new Set([PROJECTS_AGENT, "task-manager"]);
+
+/** The agents that relay other agents' text: the orchestrator, by both names. */
+export const RELAY_AGENTS: ReadonlySet<string> = new Set(["orchestrator", "metorite"]);
+
+/** How one turn links its bare `#171`s: not at all, always, or only when
+ *  the words after the number are the task's title (`"echo"`). */
+export type TaskRefMode = boolean | "echo";
+
+/** The parts of a tool event that name the agent a hand-off asked. */
+interface HandOff {
+  name?: string;
+  subAgentName?: string;
+  args?: Record<string, unknown>;
+}
+
+/** True when one of the turn's tools asked a task agent (`TASK_AGENTS`).
+ *  The names read as `paneForDelegate` reads them (`agentSlug`). */
+export function askedTaskAgent(events: readonly HandOff[] | undefined): boolean {
+  return (events ?? []).some((e) =>
+    [e.subAgentName, e.name, e.args?.agent_name, e.args?.agent].some(
+      (n) => typeof n === "string" && TASK_AGENTS.has(agentSlug(n)),
+    ),
+  );
+}
+
+/**
+ * How one turn links its bare task references (review of PR #1156, P1).
+ *
+ * - A task agent's turn (`TASK_AGENTS`) links every bare `#171`, as before.
+ * - The orchestrator relays email, CRM and plain text too. There a bare
+ *   "Ticket #48 from Acme" or "Option #1" is no task, and the parser leaves
+ *   "issue", "ticket", "item" and "option" to the lookup on purpose. So an
+ *   orchestrator turn links every bare number only when it asked a task
+ *   agent (the owner's turn asked the Projects assistant). Any other
+ *   orchestrator turn links a number only when the words after it are the
+ *   task's title (`"echo"`, `echoesTitle`).
+ * - Any other turn links nothing (`taskRefsForTurn`).
+ */
+export function taskRefModeForTurn(
+  threadAgent: string | undefined,
+  turn: { authorKind?: string; authorEmail?: string | null },
+  events?: readonly HandOff[],
+): TaskRefMode {
+  if (!taskRefsForTurn(threadAgent, turn)) return false;
+  const author = turn.authorEmail || threadAgent || "";
+  if (!RELAY_AGENTS.has(author)) return true;
+  return askedTaskAgent(events) ? true : "echo";
+}
 
 /**
  * True when one turn may link its bare task references. `threadAgent` is the

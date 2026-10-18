@@ -500,14 +500,25 @@ export function useTaskRef(
 export function useRevalidateOnTools(
   finished: number,
   streaming: boolean,
+  scope?: string,
   resolver: TaskRefResolver = taskRefResolver,
 ): void {
   const seen = useRef<ToolWatch | null>(null);
   useEffect(() => {
     const step = revalidateStep(seen.current, finished, streaming);
     seen.current = step.next;
-    if (step.revalidate) resolver.revalidate();
-  }, [finished, streaming, resolver]);
+    if (step.revalidate) revalidateChat(resolver, scope);
+  }, [finished, streaming, scope, resolver]);
+}
+
+/**
+ * Ask again the numbers ONE chat can show: its answers (`scope`, the session
+ * id) and the cards (`""`). Never every scope: one finished tool must not
+ * ask again the numbers of every other chat (review of PR #1156).
+ */
+export function revalidateChat(resolver: TaskRefResolver, scope?: string): void {
+  resolver.revalidate("");
+  if (scope) resolver.revalidate(scope);
 }
 
 /** What `useRevalidateOnTools` remembers between two renders of one turn. */
@@ -576,12 +587,15 @@ export function TaskRefPill({
   label,
   resolver = taskRefResolver,
   echoed,
+  accept,
   fit,
 }: {
   number: number;
   title?: string;
   /** Breaks a tie between two tasks with this number (`pickTask`). */
   echoed?: (title: string) => boolean;
+  /** False for a task the caller will not link: the fallback draws. */
+  accept?: (task: TaskRef) => boolean;
   /** Fill a card's value column, as `EntityPill`'s `fit` does. */
   fit?: boolean;
   /** The words the pill shows. Absent: the task's title, or `title`. */
@@ -594,7 +608,8 @@ export function TaskRefPill({
   resolver?: TaskRefResolver;
 }) {
   const entry = useTaskRef(scope, number, live, resolver);
-  const task = live ? taskOf(entry, title, echoed) : null;
+  const found = live ? taskOf(entry, title, echoed) : null;
+  const task = found && (!accept || accept(found)) ? found : null;
   if (!task) return createElement(Fragment, null, fallback ?? `#${number}`);
   return createElement(TaskPill, { task, label: label ? label(task) : title, fit });
 }

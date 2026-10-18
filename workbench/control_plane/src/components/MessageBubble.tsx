@@ -33,7 +33,7 @@ import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import { capabilityLabel, type RoomParticipant } from "@/lib/rooms";
 import { EntityIndexContext } from "@/components/ChatEntityPill";
 import { buildEntityIndex } from "@/lib/entityIndex";
-import { pillsForTurn, taskRefsForTurn } from "@/lib/projectsAgent";
+import { pillsForTurn, taskRefModeForTurn } from "@/lib/projectsAgent";
 import { useRevalidateOnTools } from "@/lib/taskRefs";
 import AnswerDetails from "@/components/AnswerDetails";
 import { tierRouteLabel, tierRoutingUiOn } from "@/lib/tierRouting";
@@ -242,13 +242,17 @@ function MessageBubble({
   // the context. Only a Projects turn builds it: another agent's tools hold
   // email bodies and other text that no pill may resolve against.
   const pills = pillsForTurn(entityPills, message);
-  const refs = taskRefsForTurn(taskRefAgent, message);
+  // An orchestrator turn links every bare #N only when it asked a task agent
+  // (review of PR #1156). Otherwise only a number followed by its title.
+  const refs = taskRefModeForTurn(taskRefAgent, message, dedupedToolEvents);
   // A tool of this turn may have created the #234 that its answer, or a card,
   // names next. Ask the task lookup again, so a miss read before the write
-  // does not stay text (owner report, 2026-10-19).
+  // does not stay text (owner report, 2026-10-19). Only this chat's answers
+  // and the cards (`""`) are asked again, never another session's numbers.
   useRevalidateOnTools(
     dedupedToolEvents.filter((t) => t.status === "done").length,
     !!message.streaming,
+    sessionId,
   );
   const entityIndex = useMemo(
     () => (pills ? buildEntityIndex(dedupedToolEvents) : null),

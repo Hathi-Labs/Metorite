@@ -60,6 +60,7 @@ export default function ChatTaskRef({
   scope = "",
   live = true,
   resolver = taskRefResolver,
+  mustEcho = false,
 }: {
   /** The reference as the answer wrote it: `#171`. */
   refText: string;
@@ -72,14 +73,19 @@ export default function ChatTaskRef({
   /** False while the answer streams. */
   live?: boolean;
   resolver?: TaskRefResolver;
+  /** Link only when the words after the number are the task's title: an
+   *  orchestrator turn that asked no task agent (`taskRefModeForTurn`). */
+  mustEcho?: boolean;
 }) {
   const number = Number(refText.slice(1));
   const echoed = (title: string) => echoesTitle(after, title);
   const label = (task: Pick<TaskRef, "title">) => (echoed(task.title) ? "" : task.title);
+  const accept = mustEcho ? (task: Pick<TaskRef, "title">) => echoed(task.title) : undefined;
   const local = indexTasksByNumber(index, refText);
   if (local.length === 1 && live) {
     const t = local[0];
     const task: TaskRef = { id: t.id, number, title: t.title, status: t.status, category: t.category };
+    if (accept && !accept(task)) return <>{refText}</>;
     return <TaskPill task={task} label={label(task)} />;
   }
   return (
@@ -92,6 +98,7 @@ export default function ChatTaskRef({
       // Two spaces can each hold a #234. The title the answer wrote after
       // the number picks one (owner report, 2026-10-19).
       echoed={echoed}
+      accept={accept}
       resolver={resolver}
     />
   );
