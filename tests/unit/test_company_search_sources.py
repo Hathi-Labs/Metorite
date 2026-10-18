@@ -541,3 +541,71 @@ class TestTheRouteIsMounted:
         paths = {getattr(c, "path", None) for c in iter_route_contexts(app.routes)}
         assert "/search/company" in paths
         assert "/shell/search" in paths  # non-vacuity: the walk sees mounted routes
+
+
+# ── KB-3c: the consumer picks meaning ───────────────────────────────────────
+
+class TestMeaningIsTheConsumers:
+    """WS-61 KB-3c (``knowledge_base.md`` §20.4). The assistant's route asks
+    the knowledge source for ``hybrid`` when ``KNOWLEDGE_EMBED`` names the
+    org. The command bar never asks, so a keystroke costs no embed.
+
+    Mutations this class catches (R7): the bar's provider passes
+    ``hybrid=True`` -> ``test_the_bar_stays_lexical``; the route stops
+    passing it -> ``test_the_route_asks_for_meaning_when_allowed``; the route
+    ignores the flag -> ``test_the_route_stays_lexical_when_not_allowed``.
+    """
+
+    @staticmethod
+    def _embed(monkeypatch, orgs: str) -> None:
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "knowledge_embed", orgs, raising=False)
+
+    @staticmethod
+    def _hybrid(apps: Apps) -> list[bool]:
+        return [kw["hybrid"] for n, _, kw in apps.calls if n == "knowledge"]
+
+    def test_only_knowledge_has_meaning(self):
+        assert [k for k, s in sources.REGISTRY.items() if s.meaning] == ["knowledge"]
+
+    def test_find_defaults_to_lexical(self, apps, monkeypatch):
+        self._embed(monkeypatch, ORG)
+        find("knowledge", member("knowledge"))
+        assert self._hybrid(apps) == [False]
+
+    def test_the_route_asks_for_meaning_when_allowed(self, apps, monkeypatch):
+        self._embed(monkeypatch, ORG)
+        run(member(*ALL))
+        assert self._hybrid(apps) == [True]
+
+    def test_the_route_stays_lexical_when_not_allowed(self, apps, monkeypatch):
+        self._embed(monkeypatch, OTHER_ORG)
+        run(member(*ALL))
+        assert self._hybrid(apps) == [False]
+
+    def test_the_route_stays_lexical_with_knowledge_off(self, apps, monkeypatch):
+        from acb_common import get_settings
+
+        self._embed(monkeypatch, "*")
+        monkeypatch.setattr(get_settings(), "knowledge_orgs", OTHER_ORG, raising=False)
+        run(member(*ALL))
+        assert self._hybrid(apps) == []  # the switch is closed: no call at all
+
+    def test_a_source_without_meaning_gets_no_hybrid(self, apps, monkeypatch):
+        self._embed(monkeypatch, "*")
+        run(member(*ALL))
+        for name in ("email", "whatsapp"):
+            kw = next(kw for n, _, kw in apps.calls if n == name)
+            assert kw["hybrid"] is False, f"{name} embedded the query"
+
+    def test_the_bar_stays_lexical(self, apps, monkeypatch):
+        """The bar's provider for knowledge, as KB-12 projects it. With the
+        flag on, it still asks for the lexical half only."""
+        from gateway.routes.shell import search as shell
+
+        self._embed(monkeypatch, ORG)
+        provider = shell._projected("knowledge")
+        items = asyncio.run(provider(member("knowledge"), "refund"))
+        assert items, "non-vacuity: the provider ran"
+        assert self._hybrid(apps) == [False]

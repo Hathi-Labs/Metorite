@@ -21,6 +21,18 @@ generated phases and two organizations:
 - the table forces row level security, refuses a row of another tenant,
   carries the partial HNSW index, and its migration replays.
 
+KB-3c adds, against the same database:
+
+- ``GET /search/company`` finds a page by a paraphrase that shares no word
+  with it, with one embed call, and only when ``KNOWLEDGE_EMBED`` names the
+  org;
+- the command bar's Knowledge provider makes no embed call;
+- two concurrent saves embed each chunk once, and the job carries the
+  acting member;
+- a page published before the flag gets its vectors in one sweep tick, the
+  sweep leaves a fresh chunk to its job, takes ``MAX_CHUNKS`` at most, binds
+  the author, and never reads an org off the list.
+
 The generated ``tsv``, ``websearch_to_tsquery``, the ``<=>`` operator, the
 partial HNSW index, the upsert on ``content_sha`` and the join under the one
 visibility clause are each SQL that a hermetic fake would accept unread.
@@ -28,6 +40,9 @@ visibility clause are each SQL that a hermetic fake would accept unread.
 
 from __future__ import annotations
 
+import asyncio
+import uuid
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +65,7 @@ from tests.unit.test_kb_pages_r8 import (  # noqa: F401
     _add_group,
     _add_member,
     _address,
+    _app_dsn,
     _assert_non_priv,
     _call,
     _ok,
@@ -98,13 +114,24 @@ def fake_vector(value: str) -> list[float]:
 
 
 class Embedder:
-    """A stand-in for ``kb_index.embed.embed``. It counts each call."""
+    """A stand-in for ``kb_index.embed.embed``. It counts each call.
 
-    def __init__(self) -> None:
+    It records the member of the run context of each call (KB-3c). A
+    ``delay`` holds each call open, so two jobs overlap.
+    """
+
+    def __init__(self, delay: float = 0.0) -> None:
         self.calls: list[list[str]] = []
+        self.members: list[str | None] = []
+        self.delay = delay
 
     async def __call__(self, texts: list[str], **kw: Any) -> list[list[float] | None]:
+        from acb_llm.routed import run_attribution
+
         self.calls.append(list(texts))
+        self.members.append(run_attribution().get("member"))
+        if self.delay:
+            await asyncio.sleep(self.delay)
         return [fake_vector(t) for t in texts]
 
 
@@ -440,3 +467,263 @@ def test_the_migration_replays_with_no_change(kb) -> None:
         policies = c.execute(text(
             "SELECT count(*) FROM pg_policies WHERE tablename = 'kb_chunks'")).scalar()
     assert policies == 1
+
+
+# ── KB-3c: meaning in the assistant's search ───────────────────────────────
+
+async def _bound(p: Any, user: Any, coro_fn: Any) -> Any:
+    """Run *coro_fn* as a request runs it: the app engine, the user's tenant."""
+    from acb_common.db import bind_tenant, clear_tenant, release_tenant
+
+    from tests.unit._tenant_ladder import tenant_engine_scope
+
+    scope = clear_tenant()
+    try:
+        async with tenant_engine_scope(_app_dsn(p)):
+            if user is not None:
+                bind_tenant(user.organization_id)
+            return await coro_fn()
+    finally:
+        release_tenant(scope)
+
+
+async def _company(p: Any, user: Any, q: str) -> dict[str, Any]:
+    """``GET /search/company`` through FastAPI, with room for a cold database."""
+    from acb_auth import get_current_user
+    from fastapi import FastAPI
+    from gateway.retrieval import company
+
+    async def _caller() -> Any:
+        from acb_common.db import bind_tenant
+
+        bind_tenant(user.organization_id)
+        return user
+
+    app = FastAPI()
+    app.include_router(company.router)
+    app.dependency_overrides[get_current_user] = _caller
+
+    async def go() -> Any:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url="http://kb3c.test") as client:
+            return await client.get("/search/company", params={"q": q})
+
+    res = await _bound(p, None, go)
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+@pytest.fixture
+def roomy(monkeypatch):
+    from gateway.retrieval import company
+
+    monkeypatch.setattr(company, "SOURCE_TIMEOUT_S", 30.0)
+    monkeypatch.setattr(company, "TOTAL_BUDGET_S", 60.0)
+
+
+def _knowledge_ids(answer: dict[str, Any]) -> list[str]:
+    assert answer["skipped"] == [], answer["skipped"]
+    return [h["id"] for h in answer["hits"] if h["app"] == "knowledge"]
+
+
+async def test_company_search_finds_a_paraphrase_by_meaning(
+        kb, app_engine, monkeypatch, roomy,  # noqa: F811
+) -> None:
+    _assert_non_priv(app_engine)
+    embedder = _embed_on(monkeypatch, Embedder())
+    admin = _principal(_address("admin"), kb.org_a, CAPABILITY)
+    space = await _space(kb, admin, "Customer", [{"subject": "org", "level": "read"}])
+    refunds = await _page(kb, admin, space, "Returns policy",
+                          "Customers can return goods within thirty days for a full refund.")
+    await _page(kb, admin, space, "Shipping", "The courier collects parcels at noon.")
+    member = _principal(_address("m"), kb.org_a)
+
+    embedder.calls.clear()
+    answer = await _company(kb, member, "how do I get my money back")
+    assert _knowledge_ids(answer)[:1] == [refunds]
+    assert embedder.calls == [["how do I get my money back"]], "one embed per search"
+
+    # The org off KNOWLEDGE_EMBED: the lexical half only, and no call.
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "knowledge_embed", kb.org_b, raising=False)
+    embedder.calls.clear()
+    assert _knowledge_ids(await _company(kb, member, "how do I get my money back")) == []
+    assert embedder.calls == []
+
+
+async def test_the_command_bar_makes_no_embed_call(
+        kb, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    from gateway.routes.shell import search as shell_search
+
+    _assert_non_priv(app_engine)
+    embedder = _embed_on(monkeypatch, Embedder())
+    admin = _principal(_address("admin"), kb.org_a, CAPABILITY)
+    space = await _space(kb, admin, "Bar", [{"subject": "org", "level": "read"}])
+    page = await _page(kb, admin, space, "Refund window", "Thirty days for a refund.")
+    member = _principal(_address("m"), kb.org_a)
+
+    embedder.calls.clear()
+    # The bar's provider for the knowledge source: the projection of KB-12.
+    provider = shell_search._projected("knowledge")
+    items = await _bound(kb, member, lambda: provider(member, "refund window"))
+    assert [i["href"] for i in items] == [f"/knowledge/pages/{page}"]
+    assert embedder.calls == [], "a keystroke in the bar cost an embed"
+
+
+# ── KB-3c: each chunk once, with a member ──────────────────────────────────
+
+async def test_two_concurrent_saves_embed_each_chunk_once(
+        kb, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    from tests.unit.test_kb_pages_r8 import _calls
+
+    _assert_non_priv(app_engine)
+    embedder = _embed_on(monkeypatch, Embedder(delay=0.4))
+    writer = _address("writer")
+    admin = _principal(writer, kb.org_a, CAPABILITY)
+    space = await _space(kb, admin, "Saves", [{"subject": "org", "level": "read"}])
+    body = "# One\n\nalpha text.\n\n# Two\n\nbeta text.\n\n# Three\n\ngamma text."
+    page = await _page(kb, admin, space, "Quick saves", body)
+    embedder.calls.clear()
+    embedder.members.clear()
+
+    first = body.replace("alpha text", "alpha changed")
+    second = first.replace("beta text", "beta changed")
+    answers = await _calls(kb, admin, [
+        ("PATCH", f"/knowledge/pages/{page}", {"body_md": first}),
+        ("PATCH", f"/knowledge/pages/{page}", {"body_md": second}),
+    ])
+    assert [a.status_code for a in answers] == [200, 200], [a.text for a in answers]
+
+    sent = Counter(t for call in embedder.calls for t in call)
+    assert sent, "non-vacuity: the saves embedded"
+    assert max(sent.values()) == 1, f"a chunk was embedded twice: {sent}"
+    assert all(r.has_vector for r in _chunks(kb, page))
+    # The job ran after the response, and it carried the acting member.
+    assert embedder.members and set(embedder.members) == {writer}
+
+
+# ── KB-3c: the sweep ────────────────────────────────────────────────────────
+
+def _r8_member(p: Any, org: str, tag: str) -> str:
+    """An active member of *org* in the identity tables, as production has."""
+    email = f"{tag}.{uuid.uuid4().hex[:8]}@kb3c-r8.test"
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO app_user (email, display_name, role, status, organization_id) "
+            "VALUES (:e, :e, 'employee', 'active', CAST(:o AS uuid))"),
+            {"e": email, "o": org})
+        uid = c.execute(text(
+            "INSERT INTO user_identity (email, display_name) VALUES (:e, :e) "
+            "RETURNING id::text"), {"e": email}).scalar()
+        c.execute(text(
+            "INSERT INTO org_membership (organization_id, user_id, status, joined_at) "
+            "VALUES (CAST(:o AS uuid), CAST(:u AS uuid), 'active', now())"),
+            {"o": org, "u": uid})
+    return email
+
+
+@pytest.fixture
+def sweeping(kb, monkeypatch):
+    """The sweep's state cleared, and the identity rows removed after."""
+    from gateway.kb_index import sweep
+
+    # The departed check reads the RLS-exempt identity tables, as production
+    # does with the cutover on (my_day_loop.departed).
+    monkeypatch.setenv("IDENTITY_CUTOVER", "1")
+    sweep._waiting.clear()
+    sweep._stopping.clear()
+    yield sweep
+    sweep._waiting.clear()
+    with kb.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM org_membership m USING user_identity ui "
+                       "WHERE m.user_id = ui.id AND ui.email LIKE '%@kb3c-r8.test'"))
+        c.execute(text("DELETE FROM user_identity WHERE email LIKE '%@kb3c-r8.test'"))
+        c.execute(text("DELETE FROM app_user WHERE email LIKE '%@kb3c-r8.test'"))
+
+
+def _age(p: Any, page_id: str) -> None:
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE kb_chunks SET created_at = now() - interval '1 hour' "
+                       "WHERE source_id = CAST(:p AS uuid)"), {"p": page_id})
+
+
+async def test_a_page_published_before_the_flag_gets_vectors_in_one_tick(
+        kb, sweeping, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    from acb_common import get_settings
+
+    _assert_non_priv(app_engine)
+    author = _r8_member(kb, kb.org_a, "author")
+    admin = _principal(author, kb.org_a, CAPABILITY)
+    space = await _space(kb, admin, "Before", [{"subject": "org", "level": "read"}])
+    page = await _page(kb, admin, space, "Old policy",
+                       "# Leave\n\nTake leave in March.\n\n# Pay\n\nPay day is the 1st.")
+    assert not any(r.has_vector for r in _chunks(kb, page)), "the flag was off"
+
+    # The flag names org B only: the sweep never reads org A, and calls nothing.
+    embedder = _embed_on(monkeypatch, Embedder())
+    monkeypatch.setattr(get_settings(), "knowledge_embed", kb.org_b, raising=False)
+    _age(kb, page)
+    await _bound(kb, None, sweeping.run_tick)
+    assert embedder.calls == [] and not any(r.has_vector for r in _chunks(kb, page))
+
+    # The flag names org A. A fresh chunk belongs to its job, so it waits.
+    monkeypatch.setattr(get_settings(), "knowledge_embed", kb.org_a, raising=False)
+    with kb.admin_engine.begin() as c:
+        c.execute(text("UPDATE kb_chunks SET created_at = now() "
+                       "WHERE source_id = CAST(:p AS uuid)"), {"p": page})
+    fresh = await _bound(kb, None, sweeping.run_tick)
+    assert fresh.chunks == 0 and embedder.calls == []
+
+    # Old enough: one tick indexes the page, as its author.
+    _age(kb, page)
+    done = await _bound(kb, None, sweeping.run_tick)
+    assert done.written == 2 and done.no_member == 0
+    assert all(r.has_vector for r in _chunks(kb, page))
+    assert embedder.members == [author]
+
+    # The paraphrase now finds it, and a second tick has nothing to do.
+    member = _principal(_address("m"), kb.org_a)
+    assert _found(await _search(kb, member, "when is my vacation"))[:1] == [page]
+    embedder.calls.clear()
+    again = await _bound(kb, None, sweeping.run_tick)
+    assert again.chunks == 0 and embedder.calls == []
+
+
+async def test_the_sweep_takes_at_most_max_chunks_in_a_tick(
+        kb, sweeping, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    _assert_non_priv(app_engine)
+    author = _r8_member(kb, kb.org_a, "author")
+    admin = _principal(author, kb.org_a, CAPABILITY)
+    space = await _space(kb, admin, "Bound", [{"subject": "org", "level": "read"}])
+    page = await _page(kb, admin, space, "Three parts",
+                       "# A\n\nfirst.\n\n# B\n\nsecond.\n\n# C\n\nthird.")
+    embedder = _embed_on(monkeypatch, Embedder())
+    monkeypatch.setattr(sweeping, "MAX_CHUNKS", 2)
+    _age(kb, page)
+
+    first = await _bound(kb, None, sweeping.run_tick)
+    assert first.chunks == 2 and first.written == 2
+    second = await _bound(kb, None, sweeping.run_tick)
+    assert second.chunks == 1 and second.written == 1
+    assert sum(len(c) for c in embedder.calls) == 3
+    assert all(r.has_vector for r in _chunks(kb, page))
+
+
+async def test_the_sweep_skips_a_page_whose_members_left(
+        kb, sweeping, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    _assert_non_priv(app_engine)
+    gone = _address("gone")  # never a member: no app_user and no identity row
+    admin = _principal(gone, kb.org_a, CAPABILITY)
+    space = await _space(kb, admin, "Left", [{"subject": "org", "level": "read"}])
+    page = await _page(kb, admin, space, "Orphan", "Nobody pays for this page.")
+    embedder = _embed_on(monkeypatch, Embedder())
+    _age(kb, page)
+    result = await _bound(kb, None, sweeping.run_tick)
+    assert result.no_member == 1 and embedder.calls == []
+    assert not any(r.has_vector for r in _chunks(kb, page))

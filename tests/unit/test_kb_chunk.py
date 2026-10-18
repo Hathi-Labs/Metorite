@@ -441,7 +441,7 @@ def test_embed_pending_with_the_flag_off_opens_nothing(monkeypatch: pytest.Monke
         raise AssertionError("embed_pending read the index with the flag off")
 
     monkeypatch.setattr(index_mod, "select_pending", no_select)
-    assert asyncio.run(index_mod.embed_pending(ORG, "p")) == 0
+    assert asyncio.run(index_mod.embed_pending(ORG, "p", ("sha",), "a@x.test")) == 0
     assert calls == []
 
 
