@@ -785,7 +785,7 @@ select optgroup {
   border-radius: calc(var(--radius) - 4px);
 }
 .kb-editor-shell.is-editing:focus-within {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ring) 45%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ring) 30%, transparent);
 }
 /* The same rhythm as the chat's Markdown (`MarkdownBody`): compact
    headings under the page title, and tight lists. */

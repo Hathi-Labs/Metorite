@@ -175,9 +175,10 @@ export interface KnowledgeEditorProps {
   onTouched?: () => void;
   /**
    * Edit: the editor puts its flush here. A flush writes the body at once,
-   * calls `onChange`, and returns the body.
+   * calls `onChange`, and returns the body. A `silent` flush returns the body
+   * and calls nothing, for a caller that must not set state.
    */
-  flushRef?: React.RefObject<(() => string | null) | null>;
+  flushRef?: React.RefObject<((opts?: { silent?: boolean }) => string | null) | null>;
   /** Edit: the open page, which the page picker leaves out. */
   pageId?: string | null;
   /** Edit: the spaces whose pages the picker lists. */
@@ -294,30 +295,35 @@ export default function KnowledgeEditor({
 
   // ── The write: after a pause, or at once on a flush ─────────────────────
   const pendingRef = useRef(false);
+  // The body of the last silent flush, which no `onChange` has carried yet.
+  const lastRef = useRef<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const flushNowRef = useRef<() => string | null>(() => null);
+  const flushNowRef = useRef<(opts?: { silent?: boolean }) => string | null>(() => null);
   useEffect(() => {
-    flushNowRef.current = () => {
+    flushNowRef.current = (opts) => {
       if (timerRef.current) clearTimeout(timerRef.current);
       timerRef.current = null;
       const e = editorRef.current;
-      if (!e || !pendingRef.current) return null;
+      if (!e || !pendingRef.current) return opts?.silent ? lastRef.current : null;
       pendingRef.current = false;
       const base = baselineRef.current;
       if (base.baseline === null) {
         base.baseline = base.opened === base.stored ? writeBody(initialDoc) : normaliseBody(base.stored);
       }
       const next = bodyAfterEdit(base.stored, base.baseline, writeBody(e.getJSON()));
-      onChangeRef.current?.(next);
+      lastRef.current = next;
+      if (!opts?.silent) onChangeRef.current?.(next);
       return next;
     };
   });
   useEffect(() => {
     if (!flushRef) return;
-    flushRef.current = () => flushNowRef.current();
+    flushRef.current = (opts) => flushNowRef.current(opts);
     return () => {
-      // A remount (the 767 px frame swap) must not lose the last keys.
-      flushNowRef.current();
+      // A remount (the 767 px frame swap) must not lose the last keys. A
+      // silent flush may have taken them already, so send that body too.
+      const body = flushNowRef.current() ?? lastRef.current;
+      if (body !== null) onChangeRef.current?.(body);
       flushRef.current = null;
     };
   }, [flushRef]);

@@ -73,6 +73,7 @@ import {
 } from "../lib/draft";
 import { dayLabel, publishBody, reasonLabel, stateLabel, stateTone, STATE_LABELS } from "../lib/labels";
 import { KNOWLEDGE_HOME, pageHref, spaceHref } from "../lib/links";
+import { flushLiveDraft, registerLiveDraft } from "../lib/liveDrafts";
 import { PAGE_NOT_FOUND_BODY, PAGE_NOT_FOUND_TITLE, pageRefusal, type PageRead } from "../lib/phase";
 import type { PageDetail, PageVersion } from "../lib/types";
 import KnowledgeEditor from "./editor/KnowledgeEditor";
@@ -141,7 +142,7 @@ export default function PageView({ pageId }: { pageId: string }) {
   // cheap on a long page. `pending` marks the draft dirty from the first
   // key, and `flushRef` writes the body at once before a save or a switch.
   const [pending, setPending] = useState(false);
-  const flushRef = useRef<(() => string | null) | null>(null);
+  const flushRef = useRef<((opts?: { silent?: boolean }) => string | null) | null>(null);
   const draftRef = useRef(draft);
   useEffect(() => {
     draftRef.current = draft;
@@ -199,6 +200,16 @@ export default function PageView({ pageId }: { pageId: string }) {
     persistDraft(next);
   }
 
+  // The writer a new view of this page calls before it reads the stored
+  // draft. It touches session storage only.
+  useEffect(() => {
+    if (!editing) return;
+    return registerLiveDraft(pageId, () => {
+      const body = flushRef.current?.({ silent: true }) ?? null;
+      if (body !== null && editingRef.current) persistDraft({ ...draftRef.current, body_md: body });
+    });
+  });
+
   /** The draft with the editor's newest body, written at once. */
   function flushedDraft(): Draft {
     const body = flushRef.current?.() ?? null;
@@ -210,6 +221,9 @@ export default function PageView({ pageId }: { pageId: string }) {
   const [restoredFor, setRestoredFor] = useState<string | null>(null);
   if (page && scope && !editing && restoredFor !== page.id) {
     setRestoredFor(page.id);
+    // The old view of this page may still be on screen, with keys it has
+    // not written yet (the 767 px swap). It stores them first.
+    flushLiveDraft(page.id);
     const store = sessionStore();
     const stored = store ? readDraft(store, scope, page.id) : null;
     if (stored && page.can_write && page.state !== "archived") startEdit(page, stored);

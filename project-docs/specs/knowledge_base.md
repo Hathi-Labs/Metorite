@@ -1611,14 +1611,35 @@ The order is KB-2b and KB-2e in parallel, then KB-2d, then KB-2f, KB-2g and KB-2
 - **No edit, no write.** The draft keeps the stored body while the editor
   writes what it wrote at open (`bodyAfterEdit`). An empty block holds no
   text, so a save drops it.
+- **One parse for each edit.** The editor parses the body once, when it
+  opens. It writes Markdown 300 ms after the last key. The page flushes the
+  write before a save, a leave and a switch to the Markdown field. A key on
+  a 20 KB page parses nothing (fix round, 2026-10-18).
+- **What a save keeps** (fix round, 2026-10-18). The golden set holds each
+  of these shapes:
+  - a linked image, an image inside link text, and a link with no text
+  - entities, and a code span with a backtick in it
+  - a link destination with a space or a bracket, and a quote in a title
+  - each list's bullet, delimiter and looseness, and the child indent of `10. `
+  - two lists next to each other, and `1. [ ]` in a numbered list
+  - `<details open>`, front matter and footnotes
+- **What a save normalises, on purpose.** A list that mixes task items and
+  plain items becomes two lists. A `|` in a code span in a table cell stays
+  in the code and writes as `\|`. A reference link writes as an inline link,
+  and an unused definition goes. A setext heading writes as one `#` line.
+  `_em_` writes as `*em*`, and a trailing space at the end of a paragraph goes.
 - **The Markdown field stays** as the fallback of Q7 in §16. The Markdown
   button switches an edit between the blocks and the text.
 - **Fences.** `lib/editor/editorMarkdown.test.ts` holds the golden set, the
-  fixed point and the shortcut list with no `Mod-k`.
+  fixed point and the shortcut list with no `Mod-k`. It also reads each
+  saved body with micromark (`lib/editor/gfmShape.ts`). The saved body must
+  mean what the stored body meant under CommonMark and GFM, unless the case
+  names its reason in `gfmDiffers`.
   `tests/unit/test_kb_editor_golden.py` runs the chunker on the saved bodies.
   `src/components/markdownImage.test.ts` holds each editor image to
   `MarkdownImage`. `e2e/knowledge-pages.spec.ts` drives the menus, the
   handle, `[[` and the round trip in a browser.
-- **Limits.** The block handle answers the mouse only. A keyboard move of a
-  block is a later slice. Table columns do not resize, because Markdown keeps
-  no width.
+- **Limits.** The block handle answers the mouse only, and a phone does not
+  draw it. A keyboard move of a block is a later slice. Table columns do not
+  resize, because Markdown keeps no width. Tab in the last cell of a table
+  leaves the editor.
