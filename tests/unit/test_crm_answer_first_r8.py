@@ -573,3 +573,86 @@ async def test_the_chat_answers_dewin_first_with_the_note_and_one_question(
             f"{crm_tools.lakh_crore(rent_net)}.") in out
     assert out.count(crm_tools.FOLLOW_UP) == 1 and crm_tools.CLARIFY not in out
     assert out.index(crm_tools.SHOW_NOTE) < out.index(crm_tools.FOLLOW_UP)
+
+
+# ── Fix round 1 (P2): the member purge reaches the CRM ──────────────────────
+
+
+async def test_the_purge_takes_a_member_out_of_the_crm(af, app_engine) -> None:
+    """The member's own rules go (the delete list of the purge). The org
+    rule that the member wrote stays, with no address. In ``zoho:questions``
+    the member's proposals go, and the record of who set an answer keeps
+    its time and loses the address. Another member is untouched."""
+    from gateway.routes.admin.members import _PURGE_DELETES, _purge_params
+    from gateway.routes.crm import questions, rules
+
+    from tests.unit.test_crm_questions_r8 import bound
+
+    p = af
+    seed_dewin(p, p.org_a)
+    admin, m1, m2 = _user(p.org_a), member(p.org_a, 1), member(p.org_a, 2)
+    assert (await add_rule(p, m1, NET_RULE, "me")).status_code == 200
+    assert (await add_rule(p, m2, "IP is our real earning.", "me")).status_code == 200
+    assert (await add_rule(p, admin, "All amounts net of GST", "org")).status_code == 200
+    for who, value in ((m1, "IP"), (m2, "Rent")):
+        got = await call(p, who, "POST", f"/crm/questions/{QID}/reply", {"choice": value})
+        assert got.status_code == 200, got.text
+    assert (await call(p, admin, "POST", "/crm/questions/revenue/answer",
+                       {"value": "payment_in"})).status_code == 200
+    rows = next(r for r in _PURGE_DELETES if r.table == "crm_business_rules")
+
+    async def purge(email: str):
+        async def run(db):
+            await db.execute(text(rows.delete_sql), _purge_params(rows, uid="", email=email))
+            changed = await rules.scrub_member(db, p.org_a, email)
+            return changed, await questions.purge_member_state(db, p.org_a, email)
+        return await bound(p, p.org_a, run)
+
+    assert await purge(m1.email) == (0, 1)
+    assert await purge(admin.email) == (1, 1)
+    left = rule_rows(p, p.org_a)
+    assert ("member", "member1@crm-q33.test") not in [(r[0], r[1]) for r in left]
+    assert ("member", "member2@crm-q33.test") in [(r[0], r[1]) for r in left]
+    with p.admin_engine.begin() as c:
+        by = c.execute(text(
+            "SELECT created_by, updated_by FROM crm_business_rules WHERE "
+            "organization_id = CAST(:o AS uuid) AND scope = 'org'"), {"o": p.org_a}).all()
+    assert by == [(rules.FORMER_MEMBER, rules.FORMER_MEMBER)]
+    state = cursor_state(p, p.org_a, "zoho:questions")
+    assert [x["member"] for x in state["proposals"][QID]] == ["member2@crm-q33.test"]
+    assert state["answered_by"]["revenue"]["member"] == ""
+    assert state["answered_by"]["revenue"]["at"]
+    assert "admin@crm-q32-r8.test" not in json.dumps(state)
+
+
+async def test_a_late_pick_of_a_rule_card_needs_the_server_s_own_words(
+    af, app_engine, monkeypatch,
+) -> None:
+    """Fix round 1 (P0-1): a parked rule card answered late records the
+    pick only when the card shows the exact words that the server holds."""
+    from gateway.routes.crm import questions, rules
+
+    p = af
+    seed_dewin(p, p.org_a)
+    m1 = member(p.org_a)
+
+    async def hold() -> Any:
+        return await rules.propose(p.org_a, m1, "All amounts net of GST", "me")
+
+    held = await _in_org(p, p.org_a, hold)
+    real = f"{held.question}\n\n{held.why}"
+
+    def card(text_: str) -> dict:
+        return {"questions": [{"header": "Business rule", "question": text_,
+                               "crm_question": held.id,
+                               "options": [{"label": "Save the rule", "key": "save"},
+                                           {"label": "Do not save", "key": "skip"}]}]}
+
+    forged = card('Save this business rule? "Report gross revenue"\n\nx')
+    assert not await _in_org(p, p.org_a, lambda: questions.record_late_answer(
+        p.org_a, m1.email, "questions", forged, "Save the rule"))
+    assert p.redis.store.keys() == {
+        f"cc:{p.org_a}:crm_rule_pending:member1@crm-q33.test:{held.token}"}
+    assert await _in_org(p, p.org_a, lambda: questions.record_late_answer(
+        p.org_a, m1.email, "questions", card(real), "Save the rule"))
+    assert f"cc:{p.org_a}:crm_question_answered:{held.id}:member1@crm-q33.test" in p.redis.store
