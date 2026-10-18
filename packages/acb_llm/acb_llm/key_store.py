@@ -85,8 +85,9 @@ INTEGRATION_ENV_MAP: dict[str, dict[str, str]] = {
         "password": "SMTP_PASSWORD",
     },
     "github": {
+        # WS-54 GH-7: the customer-made OAuth App client id is retired with
+        # the device flow, so no row of it maps to an env var any more.
         "token": "GITHUB_TOKEN",
-        "client_id": "GITHUB_CLIENT_ID",
     },
     "serpapi": {
         "api_key": "SERPAPI_API_KEY",

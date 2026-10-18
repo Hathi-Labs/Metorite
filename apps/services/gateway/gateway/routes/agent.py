@@ -47,7 +47,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from gateway.connections import github as github_connection
 from gateway.db import TenantUnbound, current_tenant
 from gateway.room_stream import publish_room_event
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool, model_validator
 
 _log = get_logger("gateway.agent")
 
@@ -568,6 +568,17 @@ class UserInputResponseRequest(BaseModel):
     # Thread the parked run belongs to — used to relay the answer to whichever
     # worker owns the run when it's not parked on THIS worker (P1-2).
     thread_id: str | None = None
+    # The member's "Not now" (owner request, 2026-10-18). A JSON boolean
+    # only: ``"yes"`` or ``1`` is refused, never read as a decline. A decline
+    # carries no answer (:meth:`_a_decline_has_no_answer`).
+    declined: StrictBool = False
+
+    @model_validator(mode="after")
+    def _a_decline_has_no_answer(self) -> UserInputResponseRequest:
+        """A decline with words in it is malformed: is it an answer or not?"""
+        if self.declined and self.answer.strip():
+            raise ValueError("A declined card carries no answer.")
+        return self
 
 
 class WebhookEvent(BaseModel):
@@ -1384,15 +1395,78 @@ async def _org_github_token() -> str:
     WS-54 IN-7. A request for a customer reads the org connection only. It
     never reads the deployment ``GITHUB_TOKEN``, which is the operator's. With
     no connection the fetch goes out with no token, so it reads a public repo.
+
+    WS-54 GH-3 (§6.3): an ``app`` row gives ``""``. The fetch needs Contents
+    (read), and the App asks for none, so a public repo still works and a
+    private one does not. An org with a private agent repo keeps the Advanced
+    token.
     """
     org = current_tenant()
     if not org:
         return ""
     try:
-        return await github_connection.token_or_none(str(org)) or ""
+        return await github_connection.stored_token_or_none(str(org)) or ""
     except Exception as exc:
         _log.warning("agent.github_token_unreadable", error=type(exc).__name__)
         return ""
+
+
+#: Fix round 1, item 3: the words when an org on the GitHub App names a
+#: private agent repository. The App has no Contents permission (G-9).
+#: GitHub answers 404 to an unauthenticated read of a private repository AND of
+#: one that does not exist, so the words name both (fix round 2, item 6).
+PRIVATE_REPO_IN_APP_MODE = (
+    "This repository is private or does not exist. If it is private, add an "
+    "Advanced GitHub token in Integrations to read it."
+)
+
+_REPO_SLUG_RE = re.compile(r"\A[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}\Z")
+
+
+async def _github_app_without_token() -> bool:
+    """True when the org reads GitHub through the App only (no token row)."""
+    org = current_tenant()
+    if not org:
+        return False
+    try:
+        return github_connection.is_app_row(await github_connection.connection(str(org)))
+    except Exception as exc:
+        _log.warning("agent.github_mode_unreadable", error=type(exc).__name__)
+        return False
+
+
+async def _private_repo_refusal(slug: str) -> HTTPException | None:
+    """For an org on the App with no token: the refusal for a repository that
+    GitHub does not show without a token, or ``None`` (fix round 1, item 3).
+
+    raw.githubusercontent.com answers 404 for a private repository AND for a
+    public one with no ``config.json``. So an unauthenticated ``GET
+    /repos/{o}/{r}`` through the one GitHub door tells the two apart. A
+    public repository with no ``config.json`` keeps the ``maf`` default. Any
+    other case is a clear 422, never a silent ``maf`` registration.
+    """
+    from gateway.connections import github_app
+
+    if not _REPO_SLUG_RE.match(slug) or not await _github_app_without_token():
+        return None
+    try:
+        answer = await github_app.call("GET", f"/repos/{slug}")
+    except github_app.GitHubCallFailed:
+        return HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"GitHub did not answer for {slug!r}. Try again.",
+        )
+    body = answer.body if isinstance(answer.body, dict) else {}
+    if answer.status == 200 and body.get("private") is False:
+        return None
+    if answer.rate_limited():
+        return HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="GitHub is busy. Try again in a minute.",
+        )
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=PRIVATE_REPO_IN_APP_MODE,
+    )
 
 
 @router.get("/config", summary="Fetch config.json from a GitHub agent repo or local path")
@@ -1445,6 +1519,10 @@ async def get_agent_config(
                 except Exception:  # noqa: BLE001
                     raise HTTPException(status_code=422, detail="config.json is not valid JSON.")
 
+    if not token:
+        refusal = await _private_repo_refusal(slug)
+        if refusal is not None:
+            raise refusal
     raise HTTPException(
         status_code=404,
         detail=f"config.json not found in {slug!r} (tried main, master, HEAD).",
@@ -1916,6 +1994,11 @@ async def register_agent(
                 repo=repo_name,
             )
         elif last_status in (403, 404):
+            # Fix round 1, item 3: an org on the App reads no private repo.
+            # Refuse clearly, and never register it as `maf` with nothing.
+            refusal = None if gh_token else await _private_repo_refusal(repo_name)
+            if refusal is not None:
+                raise refusal
             _log.warning(
                 "agent.config_not_found_or_forbidden",
                 name=req.name,
@@ -3224,6 +3307,12 @@ async def _late_answer_from_row(
         return None, True
     if moved is None:
         return None, True
+    # WS-53 CRM-Q32-8: a late answer of a CRM question card is the member's
+    # own act, so it opens the gate of `crm_answer_question` once, for the
+    # option picked. The org and the member are the session's (R5, R11).
+    from gateway.routes.crm.questions import record_late_answer
+
+    await record_late_answer(org, me, str(row.get("kind") or ""), row.get("payload"), req.answer)
     # The question no longer waits, so its My Day card leaves at once (WS-58
     # MD-3f fix round 1, §5.9 item 14). `bump_member_safe` waits 0.5 seconds
     # at most and never raises, so the answer stands.
@@ -3236,6 +3325,67 @@ async def _late_answer_from_row(
         state=str(row.get("state") or ""),
     )
     return resend, True
+
+
+async def _late_decline_from_row(
+    req: UserInputResponseRequest, user: UserContext,
+) -> bool:
+    """Close the durable row of a card no run waits on. True when closed.
+
+    The member's "Not now" (owner request, 2026-10-18) on a card whose run
+    parked or died. It starts no run. It closes the row, so the chat draws
+    the card no more and My Day drops it. The same rules as a late answer
+    (:func:`_late_answer_from_row`): the caller's own tenant (R5e), the
+    thread that asked, and only the member who was asked (review of #813).
+    The move is one statement, so a second decline or answer finds nothing.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from orchestrator import pending_ask  # noqa: PLC0415
+
+    if not pending_ask.durable_asks_enabled():
+        return False
+    org = (getattr(user, "organization_id", None) or "").strip()
+    if not org or not req.thread_id:
+        return False
+    try:
+        row = await asyncio.to_thread(pending_ask.read_ask, org, req.request_id)
+    except Exception:  # noqa: BLE001 — the 409 still answers
+        _log.warning("agent.pending_ask_read_failed", exc_info=True)
+        return False
+    if row is None or str(row.get("thread_id") or "") != req.thread_id:
+        return False
+    me = (getattr(user, "email", "") or "").strip().lower()
+    if not me or str(row.get("actor_email") or "") != me:
+        return False
+    if str(row.get("state") or "") == "open":
+        # The same liveness rule as a late answer
+        # (``chat_recovery.card_answer_from_ask``). An open row of a LIVE run
+        # still has a run that waits, so the row stays open, and the member
+        # can try again. A dead run is closed and saved first.
+        from orchestrator.run_liveness import run_liveness  # noqa: PLC0415
+
+        liveness = await run_liveness(req.thread_id)
+        if liveness == "dead":
+            from gateway.chat_recovery import recover_dead_run  # noqa: PLC0415
+
+            await recover_dead_run(req.thread_id, why="card_decline_undelivered")
+        elif liveness != "idle":
+            return False
+    try:
+        moved = await asyncio.to_thread(
+            pending_ask.move_ask, org, req.request_id,
+            to="closed", from_states=pending_ask.WAITING,
+        )
+    except Exception:  # noqa: BLE001
+        _log.warning("agent.pending_ask_decline_failed", exc_info=True)
+        return False
+    if moved is None:
+        return False
+    from gateway.routes.shell import cache as feed_cache
+
+    await feed_cache.bump_member_safe(org, me)
+    return True
 
 
 @router.post(
@@ -3282,8 +3432,11 @@ async def respond_user_input(
         )
 
     # Fast path: the run is parked on THIS worker — resolve its Future inline.
+    # A decline ("Not now", owner request 2026-10-18) resolves it too, so
+    # the run RESUMES and reads the decline as its tool result.
     delivered = resolve_user_input(
         req.request_id, req.answer, req.was_freeform, thread_id=req.thread_id,
+        declined=req.declined,
     )
     # Cross-worker (P1-2): the run may be parked on another worker.  Relay the
     # answer over the control bus so the owning worker resolves its own Future.
@@ -3293,10 +3446,28 @@ async def respond_user_input(
         "answer": req.answer,
         "was_freeform": req.was_freeform,
     }
+    if req.declined:
+        # Only on a decline, so an answer's command is exactly as before.
+        _command["declined"] = True
     if not delivered:
         from orchestrator.stream_relay import dispatch_control  # noqa: PLC0415
 
         delivered = await dispatch_control(req.thread_id, _command)
+    if not delivered and req.declined:
+        # No run waits on this card. A decline starts no new run: the member
+        # chose to do something else. A card with a durable row closes, so
+        # it never draws again. Anything else is the plain 409.
+        if await _late_decline_from_row(req, user):
+            _log.info(
+                "agent.pending_ask_declined_late",
+                request_id=req.request_id[:12], thread_id=req.thread_id[:12],
+            )
+            return {"ok": True, "declined": True}
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No pending question matches that request_id "
+            "(the run may have already finished).",
+        )
     if not delivered:
         # ── A card answer across a restart (incident 2026-10-09) ─────────────
         # The run that asked may have died with its process. Then a bare 409
@@ -3344,8 +3515,11 @@ async def respond_user_input(
             detail="No pending question matches that request_id "
             "(the run may have already finished).",
         )
-    _log.info("agent.user_input_resolved", request_id=req.request_id[:12])
-    return {"ok": True}
+    _log.info(
+        "agent.user_input_resolved", request_id=req.request_id[:12],
+        declined=req.declined,
+    )
+    return {"ok": True, "declined": True} if req.declined else {"ok": True}
 
 
 @router.get(

@@ -101,11 +101,8 @@ export function CollapsibleSection({
           says a control carries `.cc-control`, and the consequence is that
           its casing follows the theme like every other control's.
 
-          The static `FieldCell` labels inside still hard-code `uppercase`,
-          so the two disagree under a theme that sets `none`. That is a real
-          inconsistency and it is the FieldCell side that is wrong — filed
-          rather than patched here, because changing it touches every panel
-          in the app, not this primitive. */}
+          The task body's `FieldCell` labels hard-coded `uppercase` until
+          2026-10-19. They are sentence case now, so the two agree. */}
       <h3 className="text-[11px] font-semibold tracking-wide">
       <Base.Trigger
         aria-label={ariaLabel}

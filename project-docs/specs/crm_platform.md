@@ -7210,6 +7210,15 @@ The fences are `tests/unit/test_crm_questions_chat.py`,
   (a WhatsApp text chat) or no holder, it sends nothing. The chat then
   states the default and names Open questions. So a member's pick in the
   chat cannot change an answered part with no card first.
+- A late pick (follow-up after #1140, and its security review). A card
+  answered after the park window arrives in a new run. The card carries the
+  question id and the key of each option. When the member answers the parked
+  card late, the gateway records the key of the picked option in Redis, for
+  the member and the org of the session, for 30 minutes. The gate of the
+  next run takes one pick (GETDEL), and only of that option. A CLARIFY block
+  records nothing. A batch run (a workflow, a dispatch, `/agent/run/async`)
+  never holds `crm_answer_question` and never passes the gate. A fault of
+  Redis fails closed. The gateway clears a record on each admin write.
 - A run that does not hold `crm_answer_question` (a failed facts read, a
   `no_egress` run) shows no card. The assembly of a streamed run tells the
   holder (`mark_answer_tool`).

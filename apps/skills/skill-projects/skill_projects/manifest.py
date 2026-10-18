@@ -461,6 +461,10 @@ MANIFEST: tuple[Route, ...] = (
     # class C, and it stays out of MCP_ROUTES (external_agent_access.md §9.5).
     Route("POST", "/projects/tasks/{task_id}/archive-request", "request_task_archive", "B"),
     Route("POST", "/projects/agent-runs/{run_id}/archive-approval", "approve_task_archive", "C"),
+    # ── agent_summary.py — the strip above the board (WS-55 EA-13e, EA3-43) ──
+    # Five counts over the tasks the caller can see. A read, so class A. The
+    # chat reads the same counts through a tool after EA-12e.
+    Route("GET", "/projects/{project_id}/agent-summary", "agent_summary", "A"),
     Route("PUT", "/projects/tasks/{task_id}/watch", "watch", "B"),
     Route("DELETE", "/projects/tasks/{task_id}/watch", "watch", "B"),
     Route("GET", "/projects/tasks/{task_id}/watchers", "watchers", "A"),
@@ -498,6 +502,8 @@ PLANNED: dict[str, str] = {
     "start_agent_run": "WS-55 EA-12e, in-product chat parity",
     "post_agent_activity": "WS-55 EA-12e, in-product chat parity",
     "finish_agent_run": "WS-55 EA-12e, in-product chat parity",
+    # WS-55 EA-13e (2026-10-18) added the summary route for the board strip.
+    "agent_summary": "WS-55, in-product chat parity, after EA-12e",
     # WS-55 EA-6b (2026-10-15) added the claim route for an outside agent.
     # The chat assigns through `assign` and moves through `update_task`.
     "claim_task": "WS-55, in-product chat parity, after EA-12e",
@@ -561,6 +567,13 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # card. Each ticked row is one POST to the single tool's own route.
     "create_tags": frozenset({"create_tag"}),
     "create_types": frozenset({"create_type"}),
+    # 2026-10-18 — several tasks filed into their projects under ONE card
+    # with a checkbox for each task. Each ticked row is move_task's own
+    # planned write (`_plan_move`, `_Move.send`), on move_task's routes.
+    "file_tasks": frozenset({"move_task"}),
+    # 2026-10-19 — several links under ONE card with a checkbox for each
+    # link. Each ticked row is link_tasks' own POST.
+    "link_tasks_batch": frozenset({"link_tasks"}),
     # S6 — navigation reads the row it opens, then dispatches to the page.
     "open_in_app": frozenset({"task_detail", "project_summary"}),
 }
@@ -1308,6 +1321,9 @@ UI_ACTIONS: dict[str, str] = {
     # EA-12d: "Ask an agent", a member starts a run for their own agent.
     "agentRunsApi.start": "start_agent_run",
     "agentRunsApi.enabled": "agent_runs",
+    # EA-13e: the strip's five counts. The chat reads the same route through a
+    # tool after EA-12e (`PLANNED`).
+    "agentRunsApi.summary": "agent_summary",
     # EA-6g: the run's member approves or declines an archive request.
     "agentRunsApi.archiveApproval": "approve_task_archive",
     # ── notificationsApi ─────────────────────────────────────────────────

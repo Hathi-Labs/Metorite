@@ -144,6 +144,11 @@ held='(WHATSAPP|MEETING_BOT|EMAIL|REACH_|INVITE|CUSTOMER_CONSOLE|SELF_SERVE|SIGN
 # The export's own name rule, checked again here: a line that names anything
 # else (DEPLOY_ENV, a URL, a key) is never applied.
 switch='^(NEXT_PUBLIC_[A-Z0-9_]+|[A-Z0-9_]+_ENABLED|[A-Z0-9_]+_LENS|IDENTITY_CUTOVER|ACB_GRAPH_TENANT_BIND)$'
+# H-358: `acb-staging-flag set` names each key it writes here, one per line.
+# Such a key keeps its staging value in the root .env, so a flag that an agent
+# set on staging does not go back to production's value each night. `unset`
+# takes the key out again. Fence: tests/unit/test_staging_box.py.
+pinned="$app_dir/.staging-flags"
 apply_flags() {
   local scope="$1" file="$2" line name
   [ -f "$file" ] || return 0
@@ -155,6 +160,7 @@ apply_flags() {
     [[ "$name" =~ $switch ]] || continue
     [[ "$name" =~ (KEY|SECRET|TOKEN|PASSWORD|PASSWD|DSN|URL|PASS) ]] && continue
     [[ "$name" =~ $held ]] && continue
+    [ "$scope" = root ] && [ -f "${pinned:-}" ] && grep -qxF -- "$name" "$pinned" && continue
     ( umask 077; { grep -v "^$name=" "$file" || true; } > "$file.tmp" )
     echo "$line" >> "$file.tmp"
     cat "$file.tmp" > "$file"; rm -f "$file.tmp"

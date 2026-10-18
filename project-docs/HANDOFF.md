@@ -5656,21 +5656,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/knowledge_base.md` §6.4, `specs/email_app_master_plan.md`
 - **Added:** 2026-10-16 · WS-61 KB-3
 
-### H-330 · Two quick edits of a page embed the same chunks twice · [AGENT]
-- **Check:** `rg -n "FOR UPDATE SKIP LOCKED|shas" apps/services/gateway/gateway/kb_index/index.py`.
-  No hit in `select_pending` or `embed_pending` means this is open.
-- **Why.** Each page write schedules one `embed_pending` job. Two saves inside
-  one embed round trip schedule two jobs, and both select the same chunks
-  with a NULL embedding. The `content_sha` guard in `write_vectors` keeps the
-  data right, so only the spend doubles. It matters once `KNOWLEDGE_EMBED`
-  names an org.
-- **Do this:** pass the new shas from `reindex_page` to the job and embed
-  only those, or claim the rows in `select_pending` with a short
-  `FOR UPDATE SKIP LOCKED`. Add an R8 test with two concurrent jobs that
-  counts the door calls.
-- **Authority:** `specs/knowledge_base.md` §6.2 and §6.4
-- **Added:** 2026-10-16 · WS-61 KB-3 review
-
 ### H-331 · `test_fifteen_for_each_source` fails in the full unit run, and passes alone · [AGENT]
 - **Check:** in a CI log of the whole `tests/unit` run, search for
   `test_feed_handled.py::TestTheCap::test_fifteen_for_each_source FAILED`.
@@ -5883,6 +5868,87 @@ line — never reclaim a number by deleting the other entry.
   commit, and get the review of §10.1.
 - **Authority:** `specs/external_agent_access.md` §10.1 and §12.2 item 1
 - **Added:** 2026-10-18 · EA-13a fix round 1
+
+### H-357 · 🔴 A key that a chat saw must be rotated, and old rows scrubbed · [OWNER] · security
+- **Check:** ask each org whose chats set up a key, a GitHub token first.
+  Did it rotate that key after 2026-10-18? Then count the rows that still
+  hold a value, on production and on staging. In `chat_message`, test
+  `content`, `reasoning`, `tool_events`, `progress_lines`, `agent_state` and
+  `custom_events` for `<<<SETUP:` and for `ghp_`, `gho_`, `github_pat_` and
+  `ghs_`. Test `chat_session.last_preview` and `chat_session.title` too. Do
+  the same for `maf_agent_session.session_json` and `agent_run.trace`. If
+  every key is rotated and every count is 0, delete this entry.
+- **Why.** Before the merge of WS-54 Batch A, three stores kept the model's
+  `<<<SETUP:service:KEY=value>>>` marker as raw text. They are the native
+  session, the chat transcript and the run trace. Fix round 2
+  removes the marker on every write, and changes no row that exists. ⚠️ A
+  member who pastes a key as a plain chat message is stored as typed. The
+  text reaches `chat_message` (also the user rows), the run input, and
+  memory: Mem0 and the Graphiti `add_episode`. Nothing detects that. So
+  **rotation is the real remedy**, and the scrub only limits the copies.
+- **Do this:**
+  1. Ask each org to rotate each key that a chat saw.
+  2. Take a backup.
+  3. For each table, read each row that holds a value. Edit the text in
+     code: run `acb_common.setup_markers.redact_tree` on the decoded JSON of
+     each JSON column, and remove a pasted token by its exact value. Cast
+     the result back to `jsonb`, and check that it parses before the update.
+     ⚠️ Never run an in-place `regexp_replace` on a `::text` cast of a JSON
+     column. A pattern can eat a closing quote and break the row.
+  4. Check the user rows of `chat_message` too, not only the agent rows.
+  5. Search Mem0 and the Graphiti episodes of each such org for the same
+     values, and delete each memory or episode that holds one.
+  6. A production write needs the `deploy` grant and the backup evidence
+     (CLAUDE.md §3a rule 1).
+- **Authority:** `specs/github_integration.md` §7.6
+- **Added:** 2026-10-18 · WS-54 Batch A fix round 2, item 5. Widened in fix round 3.
+
+### H-359 · Three staging file races that the acb-staging-flag review left · [AGENT] · security
+- **Check:** in `scripts/staging_refresh.sh`, the write of `$file.tmp` runs as
+  `acb` (through `setpriv` or `runuser`), and `acb-staging-flag` checks the pin
+  file before it writes `.env`. If both hold, delete this entry.
+- **Why.** The security review of H-358 on 2026-10-18 approved the script and
+  named three left-overs. First, `staging_refresh.sh:165-167` writes
+  `$file.tmp` as root inside `/opt/acb/app`, which `acb` can write. That is the
+  same symlink race that the script fixed. Second, when `.staging-flags` is a
+  symlink, `acb-staging-flag` writes `.env`, then refuses on the pin file. So
+  the flag changes with no log line, no restart and no pin, and the next
+  refresh reverts it. Third, the sudoers line lets `dev` flip
+  `enforcement-flip` switches after the dev-phase grant ends on 2026-11-30.
+- **Do this:** run the refresh's file work as `acb`, as `as_owner` does in
+  the script. In the script, read and check the pin file before the `.env`
+  write. Say in the README that the sudoers line outlives the grant, so the
+  owner decides on 2026-11-30 whether it stays.
+- **Authority:** `deploy/hostinger/staging/README.md`, HANDOFF H-358
+- **Added:** 2026-10-18 · H-358 security review
+
+### H-360 · Widen acb-staging-flag: NEXT_PUBLIC_ rebuilds, a production mode, and an unset that lasts · [AGENT]
+- **Check:** `deploy/hostinger/staging/acb-staging-flag` (or its successor) can set a
+  `NEXT_PUBLIC_*` flag on staging and start a rebuild, and can set a flag on
+  production with `--production --reason`. If both hold, delete this entry.
+- **Why.** On 2026-10-18 the owner asked that the dev box set flags on staging
+  and, when a task needs it, on production, and deploy to production. #1145's
+  tool covers nine named staging flags and nothing else. Today a production
+  flag is a hand edit over `ssh metorite`, which the box's auto-mode rules
+  allow (backup first, one flag line). A tool is safer than a hand edit.
+- **Reuse.** Closed PR #1146 (branch `acb-flag`) holds a design that passed two
+  review rounds and eight mutations: the switch-name patterns, a forced
+  re-apply in `acb-staging.slice` that waits for the deploy lock, a
+  `--production --reason` mode that refuses outbound switches, an absent
+  `DEPLOY_ENV` read as production (as `vps_pull.sh` reads it), and an `unset`
+  record that the nightly refresh honours. Port those into the existing tool.
+  Do not add a second tool.
+- **Reinstall for `CONTEXT_RECENCY` (2026-10-18).** WS-61 CX-1 added
+  `CONTEXT_RECENCY` to `ALLOWED_KEYS` in the repo copy. The installed copy is
+  root's, so it still refuses that key. Copy the repo file over
+  `/usr/local/sbin/acb-staging-flag` as root, then run
+  `sudo -n /usr/local/sbin/acb-staging-flag --list` as `dev`.
+- **Already done (2026-10-18).** #1145's tool is installed: `/usr/local/sbin/acb-staging-flag`
+  and `/etc/sudoers.d/acb-staging-flag` (checked with `visudo`). Knowledge is on
+  in staging (`KNOWLEDGE_ENABLED=true`, `KNOWLEDGE_ORGS=*`). The box's
+  `~/.claude/settings.json` holds the owner-authorized `autoMode` rules.
+- **Authority:** owner, 2026-10-18. `specs/staging_and_daily_release.md`, CLAUDE.md §3a
+- **Added:** 2026-10-18
 
 # DONE — deleted, not archived
 

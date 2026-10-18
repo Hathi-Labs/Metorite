@@ -36,6 +36,7 @@ import { workspaceFileOfHref } from "@/lib/artifactKind";
 import ArtifactFileLink from "@/components/ArtifactLink";
 import { buildEntityIndex, projectIdOfHref, type EntityIndex } from "@/lib/entityIndex";
 import ProjectLinkPill from "@/components/ProjectLinkPill";
+import type { TaskRefMode } from "@/lib/projectsAgent";
 import type { TaskRefResolver } from "@/lib/taskRefs";
 import remarkEntityPills, {
   PILL_ATTR,
@@ -111,8 +112,9 @@ interface MarkdownMessageProps {
    *  does not. */
   fences?: boolean;
   /** Draw each bare `#171` as the task pill when it is a task the member can
-   *  see (owner report, 2026-10-13). Absent: on with `entityPills`. */
-  taskRefs?: boolean;
+   *  see (owner report, 2026-10-13). Absent: on with `entityPills`.
+   *  `"echo"`: only when the words after it are the task's title. */
+  taskRefs?: TaskRefMode;
   /** A read's receipt for its step in the trail (`ThinkingContainer`,
    *  spec `projects_ai_chat.md` §24 rule 2). `MessageBubble` supplies it. */
   evidenceFor?: (event: ToolEvent) => React.ReactNode | null;
@@ -392,8 +394,9 @@ export function MarkdownBody({
   entityPills?: boolean;
   entityIndex?: EntityIndex;
   fences?: boolean;
-  /** Absent: the same as `entityPills`. */
-  taskRefs?: boolean;
+  /** Absent: the same as `entityPills`. `"echo"`: a bare `#171` links only
+   *  when the words after it are the task's title (`taskRefModeForTurn`). */
+  taskRefs?: TaskRefMode;
   inline?: boolean;
   /** Draw the streaming caret at the end of the last line of words
    *  (`lib/streamCaret.ts`). Never after the body: that is a line of its own. */
@@ -414,9 +417,11 @@ export function MarkdownBody({
   // before that fix, and a box that serves without the Router.
   const visible = stripDsmlMarkup(content);
   const named = entityPills || fences;
-  const refs = (taskRefs ?? entityPills) && named;
+  const refs = !!(taskRefs ?? entityPills) && named;
   // The task card's mode: the `#171`s and nothing else (WS-57 TR-5).
   const refsOnly = taskRefs === true && !named;
+  // An orchestrator turn that asked no task agent (review of PR #1156).
+  const mustEcho = taskRefs === "echo";
   // While the answer streams, a number may be half typed: no lookup yet.
   const live = !caret;
   return (
@@ -445,7 +450,7 @@ export function MarkdownBody({
             return (
               <ChatTaskRef refText={attrs[TASK_REF_ATTR] as string}
                 after={String(attrs[TASK_REF_AFTER_ATTR] ?? "")} index={entityIndex}
-                scope={sessionId} live={live} resolver={taskRefResolver} />
+                scope={sessionId} live={live} resolver={taskRefResolver} mustEcho={mustEcho} />
             );
           }
           if ((entityPills || fences) && attrs[PILL_ATTR] !== undefined) {
@@ -455,7 +460,8 @@ export function MarkdownBody({
             return entityPills ? (
               <ChatEntityPill text={text} number={n} index={entityIndex} scope={sessionId} live={live} />
             ) : (
-              <FencedName text={text} number={n} />
+              // A `#5 «X»` links when the turn links task numbers (2026-10-19).
+              <FencedName text={text} number={n} live={live && refs} scope={sessionId} />
             );
           }
           // A name with no pill is a run of words, and it must wrap like

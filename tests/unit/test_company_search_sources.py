@@ -12,11 +12,13 @@ each case is written so a wrong build fails it:
   never called.
 * **No data path of its own.** No module of ``gateway/retrieval/`` imports
   ``sqlalchemy``, ``get_db`` or a session opener.
-* **No tenant from input.** The route takes ``q``, ``apps`` and ``k``, and
-  the member it passes on is the session's own object.
+* **No tenant from input.** The route takes ``q``, ``apps``, ``k`` and
+  ``after``, and the member it passes on is the session's own object.
+  ``after`` is a date (WS-61 CX-1, ``company_context.md`` §4.5).
 * **One source at a time**, and a failing source is named in ``skipped``.
-* **The command bar keeps its contract.** Four keys in its order, and an item
-  of exactly four keys. Knowledge is a source and not in the bar until KB-12.
+* **The command bar keeps its contract.** Five apps in its order, and an item
+  of exactly four keys. Knowledge joined the bar at KB-12 (2026-10-18), when
+  its pane went live. Artifacts and WhatsApp are sources and not in the bar.
 * **Knowledge applies its kill switch** (KR-3). Every member holds
   ``feature:*``, so the feature alone opens nothing. ``KNOWLEDGE_ENABLED`` and
   ``KNOWLEDGE_ORGS`` must allow the org, and the source calls the route with
@@ -28,7 +30,7 @@ Mutations this file catches (R7):
   feature -> ``TestTheFeatureGate``;
 * the route takes an org or a member from the query -> ``TestTheRouteTakesNoTenant``;
 * a source module imports a session opener -> ``TestNoDataPathOfItsOwn``;
-* knowledge joins ``BAR_APPS`` -> ``TestTheRegistry``;
+* knowledge leaves ``BAR_APPS``, or artifacts or whatsapp joins it -> ``TestTheRegistry``;
 * the knowledge source drops its kill switch -> ``TestTheKnowledgeSwitch``.
 """
 
@@ -235,10 +237,11 @@ class TestTheRegistry:
         for key, source in sources.REGISTRY.items():
             assert source.key == key and source.label
 
-    def test_the_bar_is_a_projection_of_four_sources_in_its_order(self):
+    def test_the_bar_is_a_projection_of_five_sources_in_its_order(self):
         from gateway.routes.shell import search as shell
 
-        assert list(shell.PROVIDERS) == ["tasks", "email", "people", "crm"]
+        # Five since 2026-10-18: Knowledge joined at KB-12, last.
+        assert list(shell.PROVIDERS) == ["tasks", "email", "people", "crm", "knowledge"]
         for key, (feature, label, _fn) in shell.PROVIDERS.items():
             assert (feature, label) == (sources.REGISTRY[key].feature,
                                         sources.REGISTRY[key].label)
@@ -248,21 +251,40 @@ class TestTheRegistry:
 
         answer = asyncio.run(shell.shell_search(q="acme", scope=None, user=member(*ALL)))
         apps_seen = [g["app"] for g in answer["groups"]]
-        assert apps_seen == ["tasks", "email", "people", "crm"]
+        assert apps_seen == ["tasks", "email", "people", "crm", "knowledge"]
         for group in answer["groups"]:
             for item in group["items"]:
                 assert set(item) == {"kind", "title", "hint", "href"}
-        # Artifacts, WhatsApp and Knowledge are sources, and the bar never asks them.
-        for key in ("artifacts", "whatsapp", "knowledge"):
+        # Artifacts and WhatsApp are sources, and the bar never asks them.
+        for key in ("artifacts", "whatsapp"):
             assert key not in apps.called()
 
-    def test_knowledge_is_not_in_the_bar_until_kb12(self):
-        """KR-3: Knowledge is a source of the seam, and not a group of the bar."""
+    def test_knowledge_is_in_the_bar_since_kb12(self):
+        """KB-12 (2026-10-18): the pane is live, so Knowledge is a group of the bar.
+
+        It was a source only from KR-3 to KB-12. The bar asks it like the
+        other apps, and the scope token of the app puts it first.
+        """
         from gateway.routes.shell import search as shell
 
         assert "knowledge" in sources.REGISTRY
-        assert "knowledge" not in shell.BAR_APPS
-        assert "knowledge" not in shell.PROVIDERS
+        assert "knowledge" in shell.BAR_APPS
+        assert "knowledge" in shell.PROVIDERS
+        assert shell.SCOPE_APPS["/knowledge"] == "knowledge"
+        assert shell._order("/knowledge")[0] == "knowledge"
+
+    def test_the_bar_asks_knowledge_with_no_model(self, apps):
+        """A bar search spends no credit: the source sends ``hybrid=False``."""
+        from gateway.routes.shell import search as shell
+
+        answer = asyncio.run(shell.shell_search(q="refund", scope=None, user=member("knowledge")))
+        assert [g["app"] for g in answer["groups"]] == ["knowledge"]
+        kw = next(kw for n, _, kw in apps.calls if n == "knowledge")
+        assert kw["hybrid"] is False
+        assert kw["k"] == shell.PER_APP
+        assert answer["groups"][0]["items"][0] == {
+            "kind": "page", "title": "Returns policy", "hint": "Knowledge · Company",
+            "href": "/knowledge/pages/k-1"}
 
 
 # ── The feature gate ────────────────────────────────────────────────────────
@@ -384,9 +406,11 @@ class TestNoDataPathOfItsOwn:
 # ── No tenant from input ────────────────────────────────────────────────────
 
 class TestTheRouteTakesNoTenant:
-    def test_the_route_takes_the_words_the_apps_and_k_and_nothing_else(self):
+    def test_the_route_takes_the_words_the_apps_k_and_after_and_nothing_else(self):
+        # CX-1 added `after`, a date (company_context.md §4.5). It names no
+        # org and no member.
         params = inspect.signature(company.company_search).parameters
-        assert set(params) == {"q", "apps", "k", "user"}
+        assert set(params) == {"q", "apps", "k", "after", "user"}
         assert params["user"].default.dependency is get_current_user
 
     def test_an_org_or_a_member_in_the_request_changes_nothing(self, apps):
@@ -541,3 +565,71 @@ class TestTheRouteIsMounted:
         paths = {getattr(c, "path", None) for c in iter_route_contexts(app.routes)}
         assert "/search/company" in paths
         assert "/shell/search" in paths  # non-vacuity: the walk sees mounted routes
+
+
+# ── KB-3c: the consumer picks meaning ───────────────────────────────────────
+
+class TestMeaningIsTheConsumers:
+    """WS-61 KB-3c (``knowledge_base.md`` §20.4). The assistant's route asks
+    the knowledge source for ``hybrid`` when ``KNOWLEDGE_EMBED`` names the
+    org. The command bar never asks, so a keystroke costs no embed.
+
+    Mutations this class catches (R7): the bar's provider passes
+    ``hybrid=True`` -> ``test_the_bar_stays_lexical``; the route stops
+    passing it -> ``test_the_route_asks_for_meaning_when_allowed``; the route
+    ignores the flag -> ``test_the_route_stays_lexical_when_not_allowed``.
+    """
+
+    @staticmethod
+    def _embed(monkeypatch, orgs: str) -> None:
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "knowledge_embed", orgs, raising=False)
+
+    @staticmethod
+    def _hybrid(apps: Apps) -> list[bool]:
+        return [kw["hybrid"] for n, _, kw in apps.calls if n == "knowledge"]
+
+    def test_only_knowledge_has_meaning(self):
+        assert [k for k, s in sources.REGISTRY.items() if s.meaning] == ["knowledge"]
+
+    def test_find_defaults_to_lexical(self, apps, monkeypatch):
+        self._embed(monkeypatch, ORG)
+        find("knowledge", member("knowledge"))
+        assert self._hybrid(apps) == [False]
+
+    def test_the_route_asks_for_meaning_when_allowed(self, apps, monkeypatch):
+        self._embed(monkeypatch, ORG)
+        run(member(*ALL))
+        assert self._hybrid(apps) == [True]
+
+    def test_the_route_stays_lexical_when_not_allowed(self, apps, monkeypatch):
+        self._embed(monkeypatch, OTHER_ORG)
+        run(member(*ALL))
+        assert self._hybrid(apps) == [False]
+
+    def test_the_route_stays_lexical_with_knowledge_off(self, apps, monkeypatch):
+        from acb_common import get_settings
+
+        self._embed(monkeypatch, "*")
+        monkeypatch.setattr(get_settings(), "knowledge_orgs", OTHER_ORG, raising=False)
+        run(member(*ALL))
+        assert self._hybrid(apps) == []  # the switch is closed: no call at all
+
+    def test_a_source_without_meaning_gets_no_hybrid(self, apps, monkeypatch):
+        self._embed(monkeypatch, "*")
+        run(member(*ALL))
+        for name in ("email", "whatsapp"):
+            kw = next(kw for n, _, kw in apps.calls if n == name)
+            assert kw["hybrid"] is False, f"{name} embedded the query"
+
+    def test_the_bar_stays_lexical(self, apps, monkeypatch):
+        """The bar's provider for knowledge, as KB-12 projects it. With the
+        flag on, it still asks for the lexical half only."""
+        from gateway.routes.shell import search as shell
+
+        self._embed(monkeypatch, ORG)
+        provider = shell._projected("knowledge")
+        items = asyncio.run(provider(member("knowledge"), "refund"))
+        assert items, "non-vacuity: the provider ran"
+        assert self._hybrid(apps) == [False]

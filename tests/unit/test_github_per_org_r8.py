@@ -9,8 +9,12 @@ the operator's, so no customer run reads either.
 What this proves against a REAL Postgres, through the real ``/integrations``
 router, as the NON-privileged role of the phase-4 rehearsal:
 
-- two organizations each run the device-flow poll (a fake GitHub on
+- two organizations each paste a token through ``PUT
+  /integrations/github/token`` (WS-54 GH-7, a fake GitHub on
   ``httpx.MockTransport``) and hold two different tokens, as ciphertext;
+- the route stores a token that ``GET /user`` accepts with BYOK OFF (T1),
+  refuses one that GitHub refuses with 422 and stores nothing (T2), and no
+  source file reads the customer client id any more (T5);
 - a reader in org A gets A's token and never B's;
 - a reader with no connection gets "not connected", and no request carries the
   sentinel ``GITHUB_TOKEN`` of the deployment;
@@ -23,6 +27,20 @@ router, as the NON-privileged role of the phase-4 rehearsal:
 
 Hermetic fakes agree with any SQL they are handed, so none of this is proved
 without the database.
+
+Fix round 1, item 3 (the App does not read a private agent repository, G-9),
+each mutation red when run:
+
+* 3-M1 ``PUT /token`` skips the live-App check ->
+  ``test_a_token_takes_the_place_of_an_app_row_only_with_a_confirm``.
+* 3-M2 the agent status keeps ``configured = _github_connected()`` ->
+  ``test_item3_the_agent_status_is_for_each_use``.
+* 3-M3 ``register_agent`` skips the private-repo refusal ->
+  ``test_item3_an_app_org_cannot_register_a_private_agent_repo``.
+* 3-M4 ``_private_repo_refusal`` answers ``None`` for a 404 ->
+  ``test_item3_the_config_fetch_of_an_app_org_names_a_private_repo``.
+* R2-6-M1 (fix round 2) the words say "private" only ->
+  ``test_item3_the_config_fetch_of_an_app_org_names_a_private_repo``.
 """
 
 from __future__ import annotations
@@ -86,7 +104,7 @@ class FakeGithub:
             return httpx.Response(200, json={"error": "authorization_pending"})
         if host == "api.github.com" and path == "/user":
             auth = request.headers.get("authorization", "")
-            token = auth.removeprefix("token ").strip()
+            token = auth.removeprefix("token ").removeprefix("Bearer ").strip()
             if token in _BY_TOKEN:
                 login, scope = _BY_TOKEN[token]
                 return httpx.Response(
@@ -95,6 +113,10 @@ class FakeGithub:
             return httpx.Response(401, json={"message": "Bad credentials"})
         if host == "raw.githubusercontent.com":
             return httpx.Response(404, json={})
+        if host == "api.github.com" and path == "/repos/octo/public-agent":
+            # Item 3: a public repository with no config.json.
+            return httpx.Response(200, json={"full_name": "octo/public-agent",
+                                             "private": False})
         return httpx.Response(404, json={})
 
     def sent_text(self) -> str:
@@ -177,6 +199,7 @@ async def _call(
     from acb_common.db import bind_tenant, clear_tenant, release_tenant
     from fastapi import FastAPI
     from gateway.routes import integrations, integrations_connections
+    from gateway.routes.github import connect
 
     async def _caller() -> Any:
         bind_tenant(user.organization_id)
@@ -185,6 +208,7 @@ async def _call(
     app = FastAPI()
     app.include_router(integrations.router)
     app.include_router(integrations_connections.router)
+    app.include_router(connect.token_router)
     app.dependency_overrides[get_current_user] = _caller
     scope = clear_tenant()
     try:
@@ -199,9 +223,10 @@ async def _call(
 
 
 async def _connect(p: Any, org: str, email: str, device: str) -> Any:
+    """GH-7: the one writer of a pasted token. ``device`` names the token."""
     return await _call(
-        p, _user(email, org), "POST", "/integrations/github/device/poll",
-        {"device_code": device},
+        p, _user(email, org), "PUT", "/integrations/github/token",
+        {"token": _BY_DEVICE[device][0]},
     )
 
 
@@ -209,7 +234,7 @@ def _rows(p: Any, org: str) -> list[Any]:
     with p.admin_engine.connect() as c:
         return list(c.execute(text(
             "SELECT status, connected_by, scopes, credentials_encrypted, "
-            "provider_meta ->> 'login' AS login "
+            "provider_meta ->> 'login' AS login, provider_meta "
             "FROM integration_connections WHERE organization_id = CAST(:o AS uuid) "
             "AND provider = 'github' AND owning_app = 'integrations' "
             "AND scope_kind = 'org'"), {"o": org}).all())
@@ -247,8 +272,10 @@ async def test_two_orgs_hold_two_tokens_and_a_reader_gets_its_own(ns, app_engine
 
     a = await _connect(ns, ns.org_a, ADMIN_A, "DEV-A")
     b = await _connect(ns, ns.org_b, ADMIN_B, "DEV-B")
-    assert a.status_code == 200 and a.json() == {"status": "authorized", "login": "octo-a"}, a.text
-    assert b.status_code == 200 and b.json() == {"status": "authorized", "login": "octo-b"}, b.text
+    assert a.status_code == 200 and a.json() == {
+        "status": "connected", "login": "octo-a", "scopes": ["repo", "copilot"]}, a.text
+    assert b.status_code == 200 and b.json() == {
+        "status": "connected", "login": "octo-b", "scopes": ["repo"]}, b.text
 
     (row_a,) = _rows(ns, ns.org_a)
     (row_b,) = _rows(ns, ns.org_b)
@@ -431,8 +458,8 @@ async def test_a_disconnect_deletes_the_blob_and_the_old_row_cannot_bring_it_bac
     body = res.json()
     assert res.status_code == 200, res.text
     assert body["disconnected"] is True and body["revoked_at_github"] is False
-    assert "client secret" in body["note"]
-    assert ns.github.requests == [], "no revoke call is possible without the client secret"
+    assert "settings/tokens" in body["note"]
+    assert ns.github.requests == [], "a disconnect calls nothing at GitHub"
 
     (row_a,) = _rows(ns, ns.org_a)
     assert row_a.status == "disconnected" and row_a.credentials_encrypted is None
@@ -482,7 +509,7 @@ async def test_no_github_token_appears_in_any_response_or_log_line(ns, app_engin
         assert secret not in haystack, f"a GitHub token leaked: {secret[:8]}..."
 
 
-# ── The move of an old row never overwrites a fresh device-flow token ────────
+# ── The move of an old row never overwrites a fresh token ───────────────────
 
 async def test_the_move_of_an_old_row_never_overwrites_a_fresh_device_token(ns, app_engine) -> None:  # noqa: F811
     """A device flow commits between the first look and the move. The fresh token wins.
@@ -504,7 +531,7 @@ async def test_the_move_of_an_old_row_never_overwrites_a_fresh_device_token(ns, 
             reader = asyncio.create_task(github.token_or_none(ns.org_a))
             await asyncio.sleep(1.5)
             assert not reader.done(), "the reader must wait for the lock"
-            await github.save_device_token(
+            await github.save_token(
                 holder, ns.org_a, access_token=fresh, login="octo-a",
                 scopes=("repo",), connected_by=ADMIN_A,
             )
@@ -557,6 +584,179 @@ async def test_the_console_disconnect_of_a_github_row_uses_the_github_disconnect
     assert await _read_token(ns, ns.org_a) is None
     assert await _read_token(ns, ns.org_b) == TOKEN_B
     assert ns.github.requests == []
-    (event,) = events
+    # GH-7: each pasted token writes its own `github.token.connected` row.
+    assert [e.action for e in events].count("github.token.connected") == 2
+    (event,) = [e for e in events if e.action == "integration.disconnect"]
     assert event.target == f"github:{gid}" and event.action == "integration.disconnect"
     assert TOKEN_A not in res.text and LEGACY_A not in res.text
+
+
+# ── GH-7: the Advanced token ────────────────────────────────────────────────
+
+async def test_t1_the_token_route_stores_a_token_with_byok_off(ns, app_engine, monkeypatch) -> None:  # noqa: F811
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "byok_enabled", False, raising=False)
+    res = await _connect(ns, ns.org_a, ADMIN_A, "DEV-A")
+    assert res.status_code == 200, res.text
+    (row,) = _rows(ns, ns.org_a)
+    assert row.status == "connected" and row.login == "octo-a"
+    assert row.provider_meta["auth"] == "token"
+    assert TOKEN_A not in row.credentials_encrypted
+    assert await _read_token(ns, ns.org_a) == TOKEN_A
+    assert TOKEN_A not in res.text
+
+
+async def test_t2_a_token_that_github_refuses_is_422_and_stores_nothing(ns, app_engine) -> None:  # noqa: F811
+    res = await _call(ns, _user(ADMIN_A, ns.org_a), "PUT", "/integrations/github/token",
+                      {"token": "ghp_NOT_A_REAL_TOKEN_0123456789"})
+    assert res.status_code == 422 and res.json()["detail"] == "GitHub refused this token."
+    assert _rows(ns, ns.org_a) == []
+    assert "ghp_NOT_A_REAL_TOKEN_0123456789" not in res.text
+    for bad in ("", "  ", "has space", "x" * 300):
+        refused = await _call(ns, _user(ADMIN_A, ns.org_a), "PUT",
+                              "/integrations/github/token", {"token": bad})
+        assert refused.status_code in (400, 422), (bad[:10], refused.status_code)
+        assert (bad.strip() == "" or bad not in refused.text)
+    assert _rows(ns, ns.org_a) == []
+
+
+async def test_the_token_route_needs_the_manage_right(ns, app_engine) -> None:  # noqa: F811
+    from acb_auth import UserContext, UserRole, build_access
+
+    reader = UserContext(
+        email="reader@in7-r8.test", role=UserRole.EMPLOYEE,
+        access=build_access(["feature:integrations"]), organization_id=ns.org_a,
+    )
+    res = await _call(ns, reader, "PUT", "/integrations/github/token", {"token": TOKEN_A})
+    assert res.status_code == 403
+    assert _rows(ns, ns.org_a) == [] and ns.github.requests == []
+
+
+def _seed_app_row(ns: Any, org: str) -> None:
+    import json
+
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO integration_connections (organization_id, provider, owning_app, "
+            "scope_kind, status, provider_meta) VALUES (CAST(:o AS uuid), 'github', "
+            "'integrations', 'org', 'connected', CAST(:m AS jsonb))"),
+            {"o": org, "m": json.dumps({"auth": "app", "installation_id": "424242"})})
+
+
+async def test_a_token_takes_the_place_of_an_app_row_only_with_a_confirm(ns, app_engine) -> None:  # noqa: F811
+    """Item 3: the org has ONE github row (G-6), so a token REPLACES the App.
+    With no confirm the route answers 409, asks GitHub nothing, and keeps
+    the App. With ``replace_app`` the token takes its place."""
+    _seed_app_row(ns, ns.org_a)
+    res = await _connect(ns, ns.org_a, ADMIN_A, "DEV-A")
+    assert res.status_code == 409 and res.json()["detail"] == "app_connected", res.text
+    assert ns.github.requests == [], "no GitHub call before the confirm"
+    (row,) = _rows(ns, ns.org_a)
+    assert row.provider_meta["auth"] == "app"
+    res = await _call(ns, _user(ADMIN_A, ns.org_a), "PUT", "/integrations/github/token",
+                      {"token": _BY_DEVICE["DEV-A"][0], "replace_app": True})
+    assert res.status_code == 200, res.text
+    (row,) = _rows(ns, ns.org_a)
+    assert row.provider_meta["auth"] == "token"
+    assert "installation_id" not in row.provider_meta
+    assert await _read_token(ns, ns.org_a) == TOKEN_A
+
+
+def test_t5_no_source_file_reads_the_customer_client_id() -> None:
+    """WS-54 GH-7: nothing reads the org row of the OAuth App client id."""
+    from pathlib import Path
+
+    from acb_llm.key_store import INTEGRATION_ENV_MAP
+
+    root = Path(__file__).resolve().parents[2]
+    hits = [
+        str(path.relative_to(root)) for base in ("apps", "packages")
+        for path in (root / base).rglob("*.py")
+        if "github:client_id" in path.read_text(encoding="utf-8")
+    ]
+    assert hits == [], hits
+    assert "client_id" not in INTEGRATION_ENV_MAP["github"]
+    from gateway.routes import integrations
+
+    assert "GITHUB_CLIENT_ID" not in integrations.BUILTIN_ENV_KEYS
+    assert not hasattr(integrations, "_github_org_store")
+
+
+# ── Fix round 1, item 3: the App reads no private agent repository ──────────
+
+
+async def _bound(ns: Any, org: str, coro: Any) -> Any:
+    from acb_common.db import bind_tenant, clear_tenant, release_tenant
+
+    scope = clear_tenant()
+    bind_tenant(org)
+    try:
+        async with tenant_engine_scope(_app_dsn(ns)):
+            return await coro()
+    finally:
+        release_tenant(scope)
+
+
+async def test_item3_the_agent_status_is_for_each_use(ns, app_engine, monkeypatch) -> None:  # noqa: F811
+    """An App org reads pull requests, and NOT a private agent repo. So the
+    agent wizard's GitHub step stays open for it, and closes for a token org."""
+    from acb_common import get_settings
+
+    # The App is ON, so the App org IS connected for pull requests.
+    monkeypatch.setattr(get_settings(), "github_app_enabled", True, raising=False)
+    _seed_app_row(ns, ns.org_a)
+    await _connect(ns, ns.org_b, ADMIN_B, "DEV-B")
+    for org, email, want in ((ns.org_a, ADMIN_A, False), (ns.org_b, ADMIN_B, True)):
+        res = await _call(ns, _user(email, org), "GET", "/integrations/status",
+                          params={"agent": "task-manager"})
+        assert res.status_code == 200, res.text
+        (github,) = [r for r in res.json() if r["service"] == "github"]
+        assert github["configured"] is want, (org, github)
+        assert github["github_coverage"]["agent_repo"] is want
+    tile = await _call(ns, _user(ADMIN_A, ns.org_a), "GET", "/integrations/status")
+    (row,) = [r for r in tile.json() if r["service"] == "github"]
+    assert row["configured"] is True, "the tile reads the App as connected"
+    assert row["github_coverage"] == {"pull_requests": True}
+
+
+async def test_item3_the_config_fetch_of_an_app_org_names_a_private_repo(ns, app_engine) -> None:  # noqa: F811
+    from fastapi import HTTPException
+    from gateway.routes import agent
+
+    _seed_app_row(ns, ns.org_a)
+    with pytest.raises(HTTPException) as private:
+        await _bound(ns, ns.org_a, lambda: agent.get_agent_config(
+            repo="octo/private-agent", user=_user(ADMIN_A, ns.org_a)))
+    assert private.value.status_code == 422
+    assert private.value.detail == agent.PRIVATE_REPO_IN_APP_MODE
+    # GitHub answers 404 for a private repo and for a missing one alike (R2-6).
+    assert "private or does not exist" in agent.PRIVATE_REPO_IN_APP_MODE
+    with pytest.raises(HTTPException) as public:
+        await _bound(ns, ns.org_a, lambda: agent.get_agent_config(
+            repo="octo/public-agent", user=_user(ADMIN_A, ns.org_a)))
+    assert public.value.status_code == 404, "a public repo with no config.json is a 404"
+    repo_reads = [r for r in ns.github.requests if r.url.path.startswith("/repos/")]
+    assert repo_reads and all("authorization" not in r.headers for r in repo_reads)
+
+
+async def test_item3_an_app_org_cannot_register_a_private_agent_repo(ns, app_engine, monkeypatch) -> None:  # noqa: F811
+    """Never a silent ``maf`` registration with no integrations: a clear 422."""
+    from fastapi import BackgroundTasks, HTTPException
+    from gateway.routes import agent
+
+    saved: list[Any] = []
+    monkeypatch.setattr(agent, "_load_dynamic_agents", lambda: [])
+    monkeypatch.setattr(agent, "_save_dynamic_agents", saved.append)
+    _seed_app_row(ns, ns.org_a)
+    req = agent.RegisterAgentRequest(name="private-bot", repo_url="octo/private-agent")
+    with pytest.raises(HTTPException) as caught:
+        await _bound(ns, ns.org_a, lambda: agent.register_agent(
+            req, BackgroundTasks(), _user(ADMIN_A, ns.org_a)))
+    assert caught.value.status_code == 422
+    assert caught.value.detail == agent.PRIVATE_REPO_IN_APP_MODE
+    assert saved == []
+    public = agent.RegisterAgentRequest(name="public-bot", repo_url="octo/public-agent")
+    entry = await _bound(ns, ns.org_a, lambda: agent.register_agent(
+        public, BackgroundTasks(), _user(ADMIN_A, ns.org_a)))
+    assert entry["agent_runtime"] == "maf" and len(saved) == 1

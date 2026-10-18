@@ -170,3 +170,17 @@ describe("review round 1", () => {
     expect(html).toContain("2026-10-08");
   });
 });
+
+describe("the one-card batches (file_tasks, link_tasks_batch, 2026-10-18)", () => {
+  // Mutation caught: a run of "cannot move" rows read as "Cannot moves".
+  it("names a run of numbered keys by its own plural when it has one", () => {
+    const body = parseCardBody(
+      "This change is recorded as yours.\n" +
+        "destination 1: «Website» · 2 tasks\ndestination 2: «Ops» · 1 task\n" +
+        "cannot move 1: #12 «Order the nozzle»: needs «Cost centre»\n" +
+        "cannot move 2: task «a9»: not found, or not visible to you",
+    );
+    expect(body.fields.map((f) => f.label)).toEqual(["Destinations", "Cannot move"]);
+    expect(body.fields.map((f) => f.values?.length)).toEqual([2, 2]);
+  });
+});

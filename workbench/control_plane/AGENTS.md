@@ -105,6 +105,11 @@ Ten rules on top of the three above. Each one exists because it was broken:
    layout and draws it as the email, as a Markdown file and as the HTML the
    gateway lays out as a PDF. `app/projects/lib/reportFiles.ts` is the one
    download path. Fences: `reportEmail.test.ts` and `reportFiles.test.ts`.
+   **`src/lib/numberFormat.mjs` is the one short-number formatter** (owner,
+   2026-10-19). It writes 12.5 L and 1.35 Cr by default, and 12.5M and 1.35B
+   for a member who chose the international system. The charts and the CRM's
+   `compactMoney` use it. Do not write a second "k/M" formatter. Fence:
+   `src/lib/numberFormat.test.ts`.
    **A report section draws with its Analytics panel** (WS-27bn R2b).
    `app/projects/lib/reportPanels.ts` maps a section to the panel's props
    and computes nothing. `Stat` in `AnalyticsPanels.tsx` is the one tile.
@@ -162,6 +167,16 @@ Ten rules on top of the three above. Each one exists because it was broken:
    **An entity in chat text is one pill,** `src/components/ui/EntityPill.tsx`
    (WS-27bm S9). Do not draw a task, a project or a person as bold text or
    as a second chip. Fence: `src/components/ui/EntityPill.test.ts`.
+   **The pull request chip is one descriptor** (WS-55 EA-13d).
+   `pullRequestChip` in `src/lib/taskCard.ts` builds it from the `pr` of a
+   task row. `prChipTone` and `PR_STATES` in `src/lib/statusAccent.ts` give
+   its tone and glyph. `TaskMeta.tsx` draws it as a link. The link opens a
+   new tab, and it keeps the click, the key and the drag from the card.
+   The gateway picks the pull request (EA3-48), so the client never picks
+   one. A merged pull request alone takes the `success` tone.
+   The strip of the board is `AgentWorkStrip.tsx`. The "Agent work" filter
+   and "Ask an agent" (EA-13e) use the shared `Button`. Fence:
+   `app/projects/lib/agentCard.test.ts` and `agentOversight.test.ts`.
    **A «mark» never reaches the member** (owner report, 2026-10-07). The
    server keeps its data fence, and `src/lib/fencedText.ts` is the one
    parser of it for display. Draw server text with `FencedText.tsx`, and a

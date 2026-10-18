@@ -40,6 +40,7 @@ pytest.importorskip("sqlalchemy")
 
 from sqlalchemy import text
 
+from tests.unit._crm_redis_fake import RawRedis, tenant_client
 from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_crm_questions_answer_r8 import approved, item_of, versions
 from tests.unit.test_crm_questions_r8 import (  # noqa: F401
@@ -74,26 +75,19 @@ def member(org: str, n: int = 1, *, crm: bool = True) -> Any:
     )
 
 
-class FakeHold:
-    """The Redis of a hold: ``exists`` and ``setex`` on a ``TenantKey``."""
-
-    def __init__(self) -> None:
-        self.store: dict[str, tuple[int, str]] = {}
-
-    async def exists(self, key: Any) -> int:
-        return int(key.value in self.store)
-
-    async def setex(self, key: Any, seconds: int, value: str) -> bool:
-        self.store[key.value] = (seconds, value)
-        return True
+class FakeHold(RawRedis):
+    """The Redis of a hold and of a shown card: a raw fake under the real
+    tenant wrapper, so each key carries the tenant prefix."""
 
 
 @pytest.fixture
 def hold(monkeypatch) -> FakeHold:
+    import acb_skills.crm_tools as tools
     from gateway.routes.crm import questions as routes
 
     fake = FakeHold()
-    monkeypatch.setattr(routes, "_redis", lambda: fake)
+    monkeypatch.setattr(routes, "_redis", lambda: tenant_client(fake))
+    monkeypatch.setattr(tools, "_answer_redis", lambda: tenant_client(fake))
     return fake
 
 
@@ -650,3 +644,149 @@ async def test_the_chat_card_makes_no_decide_call(
     assert (await reply(p, member(p.org_a, 2), "revenue", "@default")).status_code == 200
     assert (await reply(p, _user(p.org_a), "revenue", "invoice")).status_code == 200
     assert decide_calls == []
+
+
+# ── Follow-up: a late pick, through the member's own late answer ────────────
+
+
+def _late_key(org: str, qid: str, email: str) -> str:
+    return f"cc:{org}:crm_question_answered:{qid}:{email}"
+
+
+async def _real_card(p: Any, org: str, user: Any, qid: str) -> tuple[dict, dict[str, str]]:
+    """The card that the tool builds for *qid* from the real ``/ask`` read,
+    as ``ask_questions`` stores it, and the label of each option key."""
+    import acb_skills.crm_tools as tools
+
+    got = await ask(p, user, qid)
+    assert got.status_code == 200, got.text
+    (q,) = got.json()["questions"]
+    payload, keys = tools._card(q)
+    return payload, {key: label for label, key in keys}
+
+
+async def _answered_late(p: Any, monkeypatch: Any, org: str, user: Any, qid: str,
+                         key: str) -> None:
+    """The member answered the parked card of *qid* late with the option
+    *key*: what ``routes/agent._late_answer_from_row`` records, with the
+    session's org. The tool of the next run then reads the run's org."""
+    import acb_skills.crm_tools as tools
+    from gateway.routes.crm.questions import record_late_answer
+
+    payload, labels = await _real_card(p, org, user, qid)
+    async with tenant_engine_scope(p.app_url.render_as_string(hide_password=False)):
+        assert await record_late_answer(org, user.email, "questions", payload, labels[key])
+    monkeypatch.setattr(tools, "_run_org", lambda: org)
+
+
+async def test_the_server_checks_the_card_label_on_a_real_question(
+    chat_env, app_engine, hold,
+) -> None:
+    """Hardening: the key of a late answer counts only when the server's own
+    card shows that label for it. A forged label, or two options with one
+    label, records nothing."""
+    from gateway.routes.crm.questions import record_late_answer
+
+    p = chat_env
+    seed_a(p)
+    user = member(p.org_a)
+    payload, labels = await _real_card(p, p.org_a, user, KEY)
+    assert labels["Part_A"].startswith("Part A (")
+    forged = {"questions": [{**payload["questions"][0], "options": [
+        {"label": "Yes, continue", "key": "Part_A"}]}]}
+    twins = {"questions": [{**payload["questions"][0], "options": [
+        {"label": labels["Part_A"], "key": "Part_A"},
+        {"label": labels["Part_A"], "key": "Part_B"}]}]}
+    async with tenant_engine_scope(p.app_url.render_as_string(hide_password=False)):
+        assert not await record_late_answer(p.org_a, user.email, "questions", forged,
+                                            "Yes, continue")
+        assert not await record_late_answer(p.org_a, user.email, "questions", twins,
+                                            labels["Part_A"])
+        assert hold.store == {}
+        assert await record_late_answer(p.org_a, user.email, "questions", payload,
+                                        labels["Part_B"])
+    assert hold.store[_late_key(p.org_a, KEY, user.email)][1] == "Part_B"
+
+
+async def test_a_late_answer_lets_the_matching_pick_through_once(
+    chat_env, app_engine, hold, monkeypatch, card_run,
+) -> None:
+    """A late answer of a real card: the next run (a fresh holder that
+    showed nothing) sends the pick of that option, once, to the real router.
+    A second pick fails, and so does a pick of another option."""
+    from acb_skills.crm_tools import NO_CARD_PICK
+
+    p = chat_env
+    seed_a(p)
+    user = member(p.org_a)
+    await _answered_late(p, monkeypatch, p.org_a, user, KEY, "Part_A")
+    assert hold.store[_late_key(p.org_a, KEY, user.email)][1] == "Part_A"
+    assert card_run.asked == set()  # this run showed no card
+    out, again = await _through_the_tool(p, user, monkeypatch, [(KEY, "Part_A"), (KEY, "Part_A")])
+    assert out.startswith("This uses Part A, as you chose.") and again == NO_CARD_PICK
+    assert proposals(p, p.org_a)[KEY][0]["value"] == "Part_A"
+    assert _late_key(p.org_a, KEY, user.email) not in hold.store
+    # A late answer of Part A never lets the model send Part B.
+    await _answered_late(p, monkeypatch, p.org_a, user, KEY, "Part_A")
+    (wrong,) = await _through_the_tool(p, user, monkeypatch, [(KEY, "Part_B")])
+    assert wrong == NO_CARD_PICK
+    assert [x["value"] for x in proposals(p, p.org_a)[KEY]] == ["Part_A"]
+
+
+async def test_org_b_cannot_use_the_late_answer_of_org_a(
+    chat_env, app_engine, hold, monkeypatch, card_run,
+) -> None:
+    """The record carries the tenant prefix of org A. The same member email
+    in a run of org B reads nothing, and org B gets no proposal."""
+    import acb_skills.crm_tools as tools
+    from acb_skills.crm_tools import NO_CARD_PICK
+
+    p = chat_env
+    seed_a(p)
+    seed_b(p)
+    await _answered_late(p, monkeypatch, p.org_a, member(p.org_a), KEY, "@default")
+    monkeypatch.setattr(tools, "_run_org", lambda: p.org_b)
+    outs = await _through_the_tool(p, member(p.org_b), monkeypatch, [(KEY, "@default")])
+    assert outs == [NO_CARD_PICK]
+    assert proposals(p, p.org_b) == {} and hold.store != {}  # org A's record is untouched
+
+
+async def test_a_batch_run_never_picks_with_a_late_answer(
+    chat_env, app_engine, hold, monkeypatch,
+) -> None:
+    """P1-a: a batch run opens no holder, so even the member's own late
+    answer lets nothing through, and the plan stays."""
+    import acb_skills.crm_tools as tools
+    from acb_skills.crm_tools import NO_CARD_PICK
+
+    p = chat_env
+    seed_a(p)
+    before = versions(p, p.org_a)
+    await _answered_late(p, monkeypatch, p.org_a, _user(p.org_a), KEY, "Part_A")
+    token = tools._RUN_ASKS.set(None)
+    try:
+        outs = await _through_the_tool(p, _user(p.org_a), monkeypatch, [(KEY, "Part_A")])
+    finally:
+        tools._RUN_ASKS.reset(token)
+    assert outs == [NO_CARD_PICK] and versions(p, p.org_a) == before
+
+
+async def test_an_admin_answer_and_a_default_clear_the_late_answers(
+    chat_env, app_engine, hold, monkeypatch, card_run,
+) -> None:
+    p = chat_env
+    seed_a(p)
+    one, two = member(p.org_a, 1), member(p.org_a, 2)
+    for user in (one, two):
+        await _answered_late(p, monkeypatch, p.org_a, user, KEY, "Part_A")
+    await _answered_late(p, monkeypatch, p.org_a, one, "revenue", "@default")
+    await _answered_late(p, monkeypatch, p.org_a, two, "revenue", "@default")
+    # "@default" of member 2 clears its own late answer of revenue only.
+    assert (await reply(p, two, "revenue", "@default")).status_code == 200
+    assert _late_key(p.org_a, "revenue", two.email) not in hold.store
+    assert _late_key(p.org_a, "revenue", one.email) in hold.store
+    # An admin's answer closes KEY for each member.
+    got = await call(p, _user(p.org_a), "POST", f"{Q}/{KEY}/answer", {"value": "Part_A"})
+    assert got.status_code == 200, got.text
+    assert not [k for k in hold.store if ":crm_question_answered:" + KEY + ":" in k]
+    assert _late_key(p.org_a, "revenue", one.email) in hold.store

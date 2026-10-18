@@ -129,6 +129,9 @@ const APP_BAR_HOME: Record<string, string> = {
   "/settings/appearance": "app/settings/appearance/page.tsx",
   // Live since 2026-10-13 (owner, WS-54).
   "/integrations": "app/integrations/page.tsx",
+  // Live since 2026-10-18 (WS-61 KB-12). It was in `PREVIEW_BAR_HOME` before.
+  // The layout draws the bar over every Knowledge route.
+  "/knowledge": "app/knowledge/layout.tsx",
 };
 
 /**
@@ -137,9 +140,8 @@ const APP_BAR_HOME: Record<string, string> = {
  * When a pane goes live, its row moves to `APP_BAR_HOME`.
  */
 const PREVIEW_BAR_HOME: Record<string, string> = {
-  // WS-61 KB-0 (`knowledge_base.md` §11). Since KB-2a the layout draws the
-  // bar over every Knowledge route. It moves to `APP_BAR_HOME` at KB-12.
-  "/knowledge": "app/knowledge/layout.tsx",
+  // Empty since 2026-10-18: Knowledge went live (WS-61 KB-12), and its row
+  // moved to `APP_BAR_HOME`.
 };
 
 /** My Day at `/`, behind `NEXT_PUBLIC_MY_DAY`. Not a nav pane, so apart. */

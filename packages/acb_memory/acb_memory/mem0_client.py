@@ -233,7 +233,16 @@ class MemoryClient:
         """Extract and persist facts from *messages* for *user_id*.
 
         Non-blocking — designed to be called in a background task.
+
+        ⚠️ **No SETUP marker of the model reaches Mem0** (WS-54 fix round 5,
+        item 2). This is the one write of Mem0: the run-end extraction
+        (``add_memories_background``), the scoped helpers and
+        ``POST /memory/{scope}/add`` all come through here. So every message
+        passes through ``acb_common.setup_markers.redact_tree`` first.
         """
+        from acb_common.setup_markers import redact_tree
+
+        messages = redact_tree(messages)
         client = self._get_client()
         if client is None or not messages:
             return

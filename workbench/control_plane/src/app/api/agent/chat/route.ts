@@ -50,6 +50,7 @@ import { assistantCheckpointRow, checkpointAgent, checkpointIsEmpty } from "@/li
 import { isDefaultAgent } from "@/lib/chatMemorySave";
 import { wholeToolArgs } from "@/lib/toolArgs";
 import { codeForGatewayRefusal, codeForStatus } from "@/lib/runErrors";
+import { githubSetupNote, splitSetupVars, UNREACHABLE_NOTE } from "@/lib/setupTokens";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -945,13 +946,34 @@ export async function POST(req: NextRequest): Promise<Response> {
         }
         if (rawMatches.length > 0) {
           content = content.replace(/<<<SETUP:[^>]+>>>/g, "").trim();
-          const vars = rawMatches.filter((x) => x.value).map((x) => ({ key: x.key, value: x.value }));
+          // WS-54 fix round 1, item 8: GITHUB_TOKEN goes to the one writer of
+          // a pasted token, the other keys to configure (lib/setupTokens.ts).
+          const { githubToken, vars } = splitSetupVars(rawMatches);
           if (vars.length > 0) {
             gatewayFetch(`${GATEWAY_URL}/integrations/configure`, {
               method: "POST",
               headers: await buildGatewayHeaders(),
               body: JSON.stringify({ vars }),
             }).catch(() => {});
+          }
+          if (githubToken) {
+            let note = "";
+            try {
+              const saved = await gatewayFetch(
+                `${GATEWAY_URL}/integrations/github/token`,
+                {
+                  method: "PUT",
+                  headers: await buildGatewayHeaders(),
+                  body: JSON.stringify({ token: githubToken }),
+                },
+                { retry: false },
+              );
+              const answer = (await saved.json().catch(() => null)) as { detail?: unknown } | null;
+              note = githubSetupNote(saved.status, answer?.detail, githubToken);
+            } catch {
+              note = UNREACHABLE_NOTE;
+            }
+            if (note) content = `${content}\n\n${note}`.trim();
           }
         }
 

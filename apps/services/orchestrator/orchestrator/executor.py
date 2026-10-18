@@ -619,6 +619,56 @@ def _run_org_display_name() -> str:
     return name
 
 
+# ── The member's number system (whatsapp_assistant_channel.md §13.10) ────────
+
+
+def _read_number_system(org: str, member: str) -> str:
+    """The resolved system of *member* in *org*. One read. It never raises.
+
+    *org* is the run's tenant (:func:`_current_run_org`) and *member* the
+    run's verified member (:func:`_verified_run_member`), never request input
+    (R5). A failed read is the default, "indian".
+    """
+    from acb_common import number_system as ns
+
+    opener = _opener_for_org(org)
+    if opener is None:
+        return ns.DEFAULT
+    try:
+        from sqlalchemy import text
+
+        with opener() as session:
+            row = session.execute(text(ns.READ_SQL), {"org": org, "uid": member}).first()
+    except Exception:
+        return ns.DEFAULT
+    return ns.resolve(row[0], row[1]) if row else ns.DEFAULT
+
+
+def run_number_system() -> str:
+    """The number system of the run on this frame: the member's override,
+    then the org's value, then "indian".
+
+    The ONE reader of the run's preference. The per-turn context line
+    (:func:`_context_preamble_parts`) and the chart stamp
+    (``write_artifact.emit_generative_ui``, ``whatsapp_ui._chart``,
+    ``reports.make_report``) all call it. Cached for a minute per org and
+    member (``acb_common.number_system``), and a settings save drops the
+    cache, so a turn pays at most one read.
+    """
+    from acb_common import number_system as ns
+
+    org = _current_run_org()
+    if not org:
+        return ns.DEFAULT
+    member = _verified_run_member()
+    hit = ns.cached(org, member)
+    if hit is not None:
+        return hit
+    system = ns.resolve(None, _read_number_system(str(org), member))
+    ns.remember(org, member, system)
+    return system
+
+
 # ── WS-61 KB-4a: the Knowledge index block (knowledge_base.md §6.5) ─────────
 
 #: The one agent whose per-turn context carries the block.
@@ -1016,7 +1066,7 @@ _USER_INPUT_TIMEOUT = int(os.environ.get("ASK_USER_TIMEOUT", "3600"))
 
 def resolve_user_input(
     request_id: str, answer: str, was_freeform: bool = True,
-    *, thread_id: str | None,
+    *, thread_id: str | None, declined: bool = False,
 ) -> bool:
     """Resolve a pending ``ask_user`` request with the user's answer.
 
@@ -1027,6 +1077,11 @@ def resolve_user_input(
     thread that owns the request (:class:`_PendingUserInput`). A missing
     thread, an unknown owner or another thread resolves nothing. The route
     checks ``can_send`` in that thread's room first.
+
+    *declined* is the member's "Not now" (owner request, 2026-10-18). The
+    Future resolves with ``{"answer": "", "declined": True}`` and the run
+    goes on: each parking site reads it with ``ask_tools.is_declined``. The
+    key goes only on a decline, so every answer is exactly as before.
     """
     fut = _pending_user_input.get(request_id)
     if fut is None or fut.done():
@@ -1039,7 +1094,9 @@ def resolve_user_input(
             has_owner=bool(owner),
         )
         return False
-    payload = {"answer": answer, "wasFreeform": was_freeform}
+    payload: dict[str, Any] = {"answer": answer, "wasFreeform": was_freeform}
+    if declined:
+        payload = {"answer": "", "wasFreeform": False, "declined": True}
     try:
         loop = fut.get_loop()
     except Exception:
@@ -1079,6 +1136,8 @@ def _respond_input_applier(thread_id: str) -> Callable[[dict[str, Any]], bool]:
             str(command.get("answer", "")),
             bool(command.get("was_freeform", True)),
             thread_id=thread_id,
+            # Only a JSON true declines, never a truthy string.
+            declined=command.get("declined") is True,
         )
 
     return _apply
@@ -1129,12 +1188,12 @@ async def wait_user_future(
                 # Shield: a slice timeout must not cancel the shared future —
                 # the next slice keeps waiting on it.
                 result = await asyncio.wait_for(asyncio.shield(fut), timeout=wait)
-                answer = str((result or {}).get("answer", "") or "")
+                answer = _settled_answer(result)
                 return result
             except asyncio.TimeoutError:
                 if fut.done():
                     result = fut.result()
-                    answer = str((result or {}).get("answer", "") or "")
+                    answer = _settled_answer(result)
                     return result
                 if (
                     park_at is not None and rid and tid
@@ -1153,6 +1212,18 @@ async def wait_user_future(
         if rid:
             with contextlib.suppress(BaseException):
                 await asyncio.shield(pending_ask.settle(rid, answer=answer))
+
+
+def _settled_answer(result: Any) -> str | None:
+    """The answer a durable row keeps, or None to close it unanswered.
+
+    A "Not now" (owner request, 2026-10-18) closes the row: the member gave
+    no answer, and a closed row never draws its card again. The table has no
+    state for a decline, and a new state would need a migration.
+    """
+    if isinstance(result, dict) and result.get("declined") is True:
+        return None
+    return str((result or {}).get("answer", "") or "")
 
 
 def _request_id_of(fut: Any) -> str | None:
@@ -1229,6 +1300,17 @@ def _make_user_input_handler(thread_id: str) -> Any:
             result = {"answer": "", "wasFreeform": True}
         finally:
             _pending_user_input.pop(request_id, None)
+
+        # The member's "Not now" (owner request, 2026-10-18): the SDK hands
+        # the answer to the model as the member's words, so the answer IS
+        # the decline text. The run goes on.
+        if isinstance(result, dict) and result.get("declined") is True:
+            try:
+                from acb_skills.ask_tools import declined_text
+            except Exception:  # noqa: BLE001 — the platform package is absent
+                return {"answer": "The member chose not to answer this question now.",
+                        "wasFreeform": True}
+            return {"answer": declined_text(), "wasFreeform": True}
 
         return {
             "answer": str(result.get("answer", "")),
@@ -5391,6 +5473,21 @@ async def run_agent_stream(
                                     # the same way (``acb_skills.ask_tools``).
                                     if _q.get("required") is False:
                                         _entry["required"] = False
+                                    # WS-53 CRM-Q32-8: the id of a CRM
+                                    # question card, as the tool keeps it.
+                                    from acb_skills.ask_tools import (
+                                        card_default as _card_default,
+                                    )
+                                    from acb_skills.ask_tools import (
+                                        crm_card_tag as _crm_tag,
+                                    )
+                                    # The stated default, as the tool keeps
+                                    # it. The card draws it, so a "Not now"
+                                    # names only what the member saw.
+                                    if _card_default(_q):
+                                        _entry["default"] = _card_default(_q)
+                                    if _crm_tag(_q):
+                                        _entry["crm_question"] = _crm_tag(_q)
                                     _valid.append(_entry)
                             if _valid:
                                 _req_id = uuid.uuid4().hex
@@ -6160,18 +6257,24 @@ async def run_agent_stream(
             )
             if raw_matches:
                 text = setup_token_re.sub("", text).strip()
-                vars_to_save = [{"key": k, "value": v.strip()} for _, k, v in raw_matches if v.strip()]
-                if vars_to_save:
+                # WS-54 fix round 1, item 8: GITHUB_TOKEN goes to the one
+                # writer of a pasted token, and the other keys to configure, in
+                # two requests. A refusal adds a line, so the agent claims no
+                # save that did not happen (orchestrator/setup_tokens.py).
+                if any(v.strip() for _, _k, v in raw_matches):
                     _GATEWAY_URL = settings.gateway_base_url if hasattr(settings, "gateway_base_url") else "http://127.0.0.1:8000"
                     _token = getattr(settings, "gateway_internal_token", "") or getattr(settings, "litellm_master_key", "")
                     try:
                         import httpx
-                        async with httpx.AsyncClient(timeout=5) as c:
-                            await c.post(
-                                f"{_GATEWAY_URL}/integrations/configure",
-                                json={"vars": vars_to_save},
-                                headers={"Authorization": f"Bearer {_token}"},
+
+                        from orchestrator.setup_tokens import save_setup_vars
+                        async with httpx.AsyncClient(timeout=10) as c:
+                            _setup_note = await save_setup_vars(
+                                c, _GATEWAY_URL, {"Authorization": f"Bearer {_token}"},
+                                raw_matches,
                             )
+                        if _setup_note:
+                            text = f"{text}\n\n{_setup_note}".strip()
                     except Exception:
                         pass
 
@@ -7591,7 +7694,8 @@ def _context_preamble_parts(
     The run's organisation by name (:func:`_run_org_display_name`), the
     connected and missing integrations, the Knowledge index block of the
     orchestrator (:func:`_knowledge_index_block`, WS-61 KB-4a), then
-    ``memory_context``, then ``system_context`` (which carries the persona). :func:`_build_event_message`
+    ``memory_context``, then ``system_context`` (which carries the persona),
+    and last the member's number-system line (:func:`run_number_system`). :func:`_build_event_message`
     puts the history and the current turn after them. The structured path of
     WS-43t1 sends the same blocks through its per-run context provider
     (:func:`_run_context_text`). One builder, so the two paths cannot drift.
@@ -7635,6 +7739,16 @@ def _context_preamble_parts(
     system_ctx = event_payload.get("system_context") or ""
     if system_ctx:
         parts.append("## Current context\n" + system_ctx)
+
+    # The member's number system, one line (owner, 2026-10-19): lakh and
+    # crore by default. From the run boundary, never from the payload (R5).
+    # Last, so the blocks above keep their places. A run with no org (a
+    # webhook with no tenant) has no member preference, and gets no line.
+    # `whatsapp_assistant_channel.md` §13.10.
+    if _current_run_org():
+        from acb_common.number_system import prompt_line
+
+        parts.append(prompt_line(run_number_system()))
     return parts
 
 

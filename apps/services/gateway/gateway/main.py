@@ -418,6 +418,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.my_day_loop_skipped", error=str(exc))
 
+    # Start the GitHub reconcile poll (gateway/github_reconcile_loop.py; spec
+    # github_integration.md §11, WS-54 GH-5). It repairs what a missed webhook
+    # left stale, every 10 minutes. Dark by default: with GITHUB_APP_ENABLED
+    # off it starts no task and logs once. The gate lives inside the start
+    # function.
+    try:
+        from gateway.github_reconcile_loop import start_github_reconcile_loop
+        github_reconcile_started = await start_github_reconcile_loop()
+        _log.info("gateway.github_reconcile_loop", started=github_reconcile_started)
+    except Exception as exc:
+        _log.warning("gateway.github_reconcile_loop_skipped", error=str(exc))
+
     # Start the Reach loop (gateway/reach/loop.py; spec proactive_reach.md,
     # WS-59 RE-1a). It messages an allowlisted member first on WhatsApp. Dark
     # by default: with REACH_ENABLED off it starts no task and logs once.
@@ -437,6 +449,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await start_purge_loop()
     except Exception as exc:
         _log.warning("gateway.email_purge_loop_skipped", error=str(exc))
+
+    # Start the Knowledge embed sweep (gateway/kb_index/sweep.py; spec
+    # knowledge_base.md §6.4, WS-61 KB-3c). Every 120 s it embeds the chunks
+    # that have no vector, for each org on KNOWLEDGE_EMBED. The kill switch
+    # KNOWLEDGE_EMBED_SWEEP (default on) lives inside the start function.
+    # With no org on KNOWLEDGE_EMBED a tick reads nothing.
+    try:
+        from gateway.kb_index.sweep import start_kb_embed_sweep
+        kb_sweep_started = await start_kb_embed_sweep()
+        _log.info("gateway.kb_embed_sweep", started=kb_sweep_started)
+    except Exception as exc:
+        _log.warning("gateway.kb_embed_sweep_skipped", error=str(exc))
 
     # Chat-run liveness (incident 2026-10-09). This process beats a heartbeat
     # key, so a run it holds reads as alive and a run of a dead process reads
@@ -522,6 +546,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         pass
 
+    # Stop the GitHub reconcile poll. Unconditional, like the My Day stop.
+    try:
+        from gateway.github_reconcile_loop import stop_github_reconcile_loop
+        await stop_github_reconcile_loop()
+    except Exception:
+        pass
+
     # Stop the Reach loop. Unconditional, like the My Day stop above.
     try:
         from gateway.reach.loop import stop_reach_loop
@@ -533,6 +564,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.routes.email.memory_purge import stop_purge_loop
         await stop_purge_loop()
+    except Exception:
+        pass
+
+    # Stop the Knowledge embed sweep and wait for a tick in progress.
+    try:
+        from gateway.kb_index.sweep import stop_kb_embed_sweep
+        await stop_kb_embed_sweep()
     except Exception:
         pass
 
@@ -734,6 +772,11 @@ PUBLIC_ROUTES: frozenset[str] = frozenset({
     # contain.
     "/webhooks/gmail",
     "/webhooks/zoho",
+    # WS-54 GH-4 — the Metorite GitHub App. HMAC-SHA256 of the raw body
+    # (X-Hub-Signature-256, hmac.compare_digest) after a 5 MiB stream cap,
+    # and the org comes only from the SECURITY DEFINER installation lookup.
+    # With GITHUB_APP_ENABLED off it answers 404. routes/github/webhook.py.
+    "/webhooks/github",
 
     # Agent dispatch — HMAC-SHA256 over the raw body (X-CC-Signature), and it
     # fails closed when unconfigured. See routes/agent.verify_webhook_signature.
@@ -1408,6 +1451,30 @@ try:
     from gateway.routes.integrations_mcp_oauth import router as _mcp_oauth_router
 
     app.include_router(_mcp_oauth_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-54 GH-3 — the connect flow of the Metorite GitHub App
+    # (github_integration.md §7). Dark: with GITHUB_APP_ENABLED off, each of
+    # its routes answers 404. The callback runs behind the member session
+    # through the BFF, so it is NOT in PUBLIC_ROUTES.
+    from gateway.routes.github.connect import router as _github_connect_router
+    from gateway.routes.github.connect import token_router as _github_token_router
+
+    app.include_router(_github_connect_router)
+    # WS-54 GH-7 — PUT /integrations/github/token, the Advanced token. NOT
+    # behind the App flag: it is the path for an org with no App install.
+    app.include_router(_github_token_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-54 GH-4 — POST /webhooks/github, in PUBLIC_ROUTES above. It
+    # authenticates itself with the HMAC of github_integration.md §8.2.
+    from gateway.routes.github.webhook import router as _github_webhook_router
+
+    app.include_router(_github_webhook_router)
 except Exception:  # pragma: no cover
     pass
 

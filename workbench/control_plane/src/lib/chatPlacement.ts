@@ -171,6 +171,10 @@ const WRITE: readonly string[] = [
   "add_task_ref",
   "remove_task_ref",
   "move_task",
+  // Several tasks filed into their projects, one card with rows (2026-10-18).
+  "file_tasks",
+  // Several links between tasks, one card with rows (2026-10-19).
+  "link_tasks_batch",
   "watch",
   "complete",
   "defer",

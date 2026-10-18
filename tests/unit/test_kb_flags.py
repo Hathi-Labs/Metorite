@@ -131,7 +131,8 @@ def test_the_switch_runs_before_the_feature_gate() -> None:
     assert deps[0].dependency is kb_flags.require_knowledge_enabled
 
 
-@pytest.mark.parametrize("name", ["KNOWLEDGE_ENABLED", "KNOWLEDGE_ORGS", "KNOWLEDGE_EMBED"])
+@pytest.mark.parametrize("name", ["KNOWLEDGE_ENABLED", "KNOWLEDGE_ORGS", "KNOWLEDGE_EMBED",
+                                  "KNOWLEDGE_EMBED_SWEEP"])
 def test_both_names_are_platform_env(name: str) -> None:
     """A tenant cannot set the switch through an Integrations write."""
     assert is_platform_env(name)

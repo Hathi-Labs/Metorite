@@ -815,6 +815,16 @@ class FakeProjectsDB:
                 SimpleNamespace(task_id=task_id, people=sorted(people))
                 for task_id, people in grouped.items()
             ])
+        # WS-55 EA-13d and EA-13e: the PR chip and the agent-worked flag that
+        # `filters.attach_agent_state` now fills on every task row it hands
+        # back. Both are page aggregates that the generic WHERE reader cannot
+        # parse. The fake holds no pull request reference and no agent act, so
+        # both answer with no row. The real queries run against Postgres in
+        # `test_projects_pr_chip_r8.py` and `test_projects_agent_summary_r8.py`.
+        if "PARTITION BY r.task_id" in statement or (
+            "FROM unnest(CAST(:ids AS uuid[])) AS t(id)" in statement
+        ):
+            return _Result([])
         # WS-27ae's attachment roll-up: one aggregate over the exported ids,
         # the same page-aggregate shape as the assignee one above and taught
         # for the same reason. Fingerprinted on its own ALIAS rather than on

@@ -479,7 +479,6 @@ describe("no raw Tailwind palette colours", () => {
     "components/AgentStatusBar.tsx": 4,
     "components/ArtifactSidebar.tsx": 11,
     "components/ArtifactViewerModal.tsx": 5,
-    "components/GitHubAccountBadge.tsx": 1,
     "components/IntegrationSetup.tsx": 1,
     "lib/providers.ts": 30,
   };

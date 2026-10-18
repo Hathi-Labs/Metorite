@@ -1,6 +1,8 @@
 # GitHub — a Metorite-owned GitHub App, webhooks, and pull requests on the task
 
-**Status: 📝 SPECIFIED, nothing built (2026-10-18).** The owner decided G-1 to G-9 on 2026-10-18 (§3). No owner question is open (§20). **Verified against code on 2026-10-18 at `origin/main` `1625cca13`.** The GitHub facts in §4.2 were read on docs.github.com on 2026-10-18.
+**Status: 🔨 GH-1 to GH-7 BUILT on branch `github-batch-a`, fix rounds 1 to 5 done, in review (2026-10-18).** GH-1 to GH-6 ship dark behind `github_app_enabled`. GH-7 goes live at the merge (§16). The migration is 282. GH-0 (register the two Apps) and GH-8 (go live) wait for the owner. §16.1 records each slice and the fix round.
+
+The owner decided G-1 to G-9 on 2026-10-18 (§3). No owner question is open (§20). **Verified against code on 2026-10-18 at `origin/main` `1625cca13`.** The GitHub facts in §4.2 were read on docs.github.com on 2026-10-18.
 
 **Board row:** WS-54 (`work_plan.md` §2). **Consumers:** WS-57 (`task_references.md`) reads the pull request state and the checks. WS-55 (`external_agent_access.md` §12.2, EA-13) draws them on the card.
 
@@ -178,6 +180,14 @@ Most callers keep their code. `refs.py` reads through `token_or_none` and needs 
 - `_github_connected` (`routes/integrations.py:1610`) would make a token on each status read. In `app` mode it reads the row's `status` and makes no token.
 - `_org_github_token` (`routes/agent.py:1381`) fetches an agent `config.json` from a repository. That read needs Contents (read), and §13.2 asks for none. In `app` mode it returns an empty token, so a public repository still works and a private one does not. An org that needs a private agent repository keeps the Advanced token (§7.6). The owner chose this on 2026-10-18 (G-9).
 
+**A private agent repository in `app` mode (fix round 1, item 3).** A silent failure is not acceptable here. Before the fix, the fetch got 404 and the registration made a `maf` agent with no integrations. Now three rules hold:
+
+- **The answer is clear.** In `app` mode with no token, a `config.json` fetch that gets 403 or 404 asks `GET /repos/{owner}/{repo}` with no token, through the one GitHub door. A public repository with no `config.json` keeps the `maf` default. Any other answer is 422: "This repository is private or does not exist. If it is private, add an Advanced GitHub token in Integrations to read it." GitHub answers 404 for both cases, so the words name both (fix round 2, item 6). `GET /agent/config` and `POST /agent` both use the rule.
+- **"Configured" is for each use.** The `github` row of `GET /integrations/status` carries `github_coverage`. `pull_requests` is true for a live App row or a token row. With `?agent=`, it also carries `auth` and `agent_repo`, and `configured` is `agent_repo`. Only a `token` row reads a private repository. So the agent wizard keeps its GitHub step open for an App org, with a note.
+- **A token replaces the App.** The org has one `github` row (G-6), so the two modes cannot both hold it. §7.6 says how the admin confirms first.
+
+**The kill switch (fix round 1, F5).** `github_app_enabled` off stops every App-mode reader. `installation_of` answers `None` for every row, and `installation_token` and `app_jwt` raise `GitHubAppNotConfigured`, a cached token too. So `token_or_none`, the refs reads, the checks reads, the poll and the connection test make no token. A `token` row does not pass through these checks, so it keeps working.
+
 The `app` row also holds `installation_id`, `account_login`, `account_type`, `repository_selection`, `app_slug` and `connected_by` in `provider_meta`. None of them is a secret.
 
 ## 7. The connect flow
@@ -187,7 +197,7 @@ The `app` row also holds `installation_id`, `account_login`, `account_type`, `re
 `POST /integrations/github/app/start`, behind `feature:integrations` and `integrations:manage`, as every writer of IN-0. The flag `github_app_enabled` off gives 404.
 
 1. The gateway signs a state with `sign_state(purpose="github_install", org=current_tenant(), member=<caller>)`. The builder reads `_RESERVED_PURPOSES` (`signing.py:224`) first, and keeps `github_install` apart from each reserved purpose.
-2. It writes the pending connect `SET key("github", "connect", <member>) <nonce> NX EX 600` through the tenant Redis wrapper (R5c).
+2. It writes the pending connect `SET key("github", "connect", <member>) <nonce> EX 600` through the tenant Redis wrapper (R5c). A new start replaces a pending connect (fix round 1, F4). With `NX`, a confirm that the admin cancelled left its record, and the next Connect read `expired`. The state of the older start then fails the nonce check of §7.3 step 3.
 3. It answers `{"url": "https://github.com/apps/<slug>/installations/new?state=<state>"}`. The page opens the URL in the same tab.
 
 ### 7.2 GitHub
@@ -202,7 +212,9 @@ The gateway does these checks in this order. Each refusal redirects to `/integra
 
 1. **The session.** The caller holds `integrations:manage` in the org of the session. Else `forbidden`.
 2. **The pending connect.** `GETDEL key("github", "connect", <member>)` returns a nonce. Else `expired`. So the callback must follow a connect that this member started in this org within 10 minutes. It trusts nothing in the query string.
-3. **The state, when present.** A state that is present must verify with purpose `github_install`, the same org and the same member. Else `bad_state`. GH-8 measures U1 on staging and records it. A later change may make the state required.
+3. **The state, when GitHub sends it.** A state that GitHub sends must verify with purpose `github_install`, the same org and the same member. Its nonce must also equal the nonce of the pending connect, and `hmac.compare_digest` compares the two. An empty `state=` counts as sent. Else `bad_state`. So the state of an older start, or of another tab, fails (fix round 1, item 9). The BFF forwards an empty state and drops an absent one.
+
+   **A callback with no `state`** is the fallback (U1). The pending connect of step 2 alone binds it, and the gateway logs `github.connect.state_absent`. GH-8 counts that line on staging to measure U1. A later change may make the state required.
 4. **A request.** `setup_action=request` shows "Your GitHub organization owner must approve the install. Press Connect again after they approve." Nothing is written.
 5. **The code.** The gateway exchanges `code` at `https://github.com/login/oauth/access_token` with the App client id and secret. It holds the user token for this request only, and never writes it.
 6. **The installation belongs to the user.** `GET /user/installations` with the user token, through every page, must list `installation_id` (§4.2 fact 5). Else `not_yours`. This is the check that the docs require, because a query string can name any installation.
@@ -238,6 +250,11 @@ A webhook for a disconnected installation finds no org (§8.3), so it is dropped
 ### 7.6 The Advanced token (G-5)
 
 - **One writer.** `PUT /integrations/github/token` with `{token}`, behind `integrations:manage`. It calls `GET https://api.github.com/user` with the token, and refuses a token that GitHub refuses with 422. Then it stores the token through `save_token` (the device-token writer, renamed) as a `token` row. It does not call `_refuse_provider_key_without_byok`.
+- **A token replaces a live App only after a confirm** (fix round 1, item 3). The org has one `github` row, so a token row takes the place of the App row. Pull requests and checks then stop coming by webhook, and a merge no longer moves a task. So the route answers 409 `app_connected` while a live App row exists, unless the body holds `replace_app: true`. It asks GitHub nothing first. The card shows "Replace the Metorite App with this token?" and sends `replace_app` only after the admin confirms.
+- **The chat's setup token** (fix round 1, item 8). A chat agent writes `<<<SETUP:github:GITHUB_TOKEN=…>>>`. Before the fix, the executor and the chat BFF sent it to configure, which answers 422 for it. The agent still said that it saved the key. Now `orchestrator/setup_tokens.py` and `lib/setupTokens.ts` send `GITHUB_TOKEN` to this one writer, with its gates. The other keys go to configure in their own request, so a GitHub refusal does not drop them. A refusal adds one line to the answer, with no token in it. The chat sends no `replace_app`, so model output never replaces a live App. `GITHUB_TOKEN` stays in the guide's `env_vars`, because the chat setup still asks for it.
+- **The model's SETUP marker is never stored** (fix round 2, item 5, narrowed in fix round 3). Before the fix, the executor saved the native session before it removed the marker, and the chat transcript kept the raw answer. So a token sat in plain text. Now `acb_common.setup_markers` replaces each marker with `[setup value removed: <service> <key>]` on the write path of three stores. They are the native session body, `chat._upsert_messages` (the one seam of the browser save, the fold and the mint) and `run_trace._persist_row`. A marker that a cut stream never closed goes too.
+- **The whole value goes, and only decoded text is redacted** (fix round 5, item 1). The value of a marker runs to `>>>`, and quotes belong to it. So `<<<SETUP:github:GITHUB_TOKEN="ghp_…">>>` leaves no token. Round 3 stopped the value at a quote to protect serialized JSON, and the whole token then stayed. Now `redact` takes decoded text only. JSON is parsed, redacted with `redact_tree`, and serialized again, so it stays valid. A source fence refuses `redact(json.dumps(...))`.
+- ⚠️ **A member's own pasted secret is not detected.** Metorite stores a key that a member pastes as a plain chat message as typed. It goes to `chat_message`, to the run input, and to memory (Mem0 and the Graphiti `add_episode`). So the claim is narrow: the model's marker is never stored. The remedy for a key that a chat saw is to rotate it. HANDOFF H-357 asks the owner for the rotation, and for a one-off scrub of the rows that exist.
 - **The other writers go.** configure and `PUT /keys` answer 422 for `GITHUB_TOKEN` with "Connect GitHub in Integrations." `POST …/device/start` and `POST …/device/poll` answer 410, as `connect-cli` does.
 - **The UI.** The GitHub card in Integrations shows Connect GitHub. A fold named "Advanced: use a personal access token" holds the token field. `GitHubDeviceConnect.tsx` goes, and its four importers lose it. `GitHubAccountBadge.tsx` stops calling `connect-cli`.
 - **The customer client id goes.** Nothing reads the org row `github:client_id` after GH-7. The deployment `github_client_id` setting stays, unread, until a later clean-up removes it.
@@ -303,11 +320,28 @@ A checks event finds its references by `(organization_id, provider, head_sha)`. 
 
 A per-process limit allows 4 checks reads at once. A read that fails keeps the row, logs `github.checks.read_failed`, and leaves the repair to §11.
 
+**One leader reads each head** (fix round 1, item 7). A workflow of 30 jobs sends about 60 `check_run` events, and one read per event made about 120 calls. Now `github_sync.read_checks_joined` reads for each `(org, head_sha)`:
+
+1. `SET key("github", "checks", <sha>, "lead") NX` through the tenant Redis wrapper picks one leader, in every process.
+2. A job that does not lead sets the `again` mark and stops.
+3. The leader reads at once. Then it waits `JOIN_WINDOW_S` (20 seconds), and reads again only while a mark is there. This trailing read catches the last `completed`. It stops after 15 trailing reads.
+4. A webhook job runs the wait and the trailing reads in a separate task. The answer does not wait for the window.
+
+So a burst gives two reads, and a long run gives one read in each window. A Redis outage reads once, with no join.
+
+**The last mark** (fix round 2, item 4). A job can mark `again` after the leader's last `GETDEL` and before its `DELETE` of the lead. That job sees the lead held, and stops. So the leader looks once more AFTER the `DELETE`, and reads when a mark is there. A mark set after the `DELETE` belongs to a job that leads by itself. Before the fix, a late failing `check_run` showed `passing`, and §11 repairs only a `pending` head.
+
 ### 8.6 Idempotency and order
 
 GitHub can send events out of order, and can send one twice. Each handler holds these rules, and a test holds each rule:
 
-- A `pull_request` write needs `pull_request.updated_at > pr_updated_at`, or `pr_updated_at IS NULL`. An older event writes nothing.
+- A `pull_request` write needs `pull_request.updated_at >= pr_updated_at`, or `pr_updated_at IS NULL`. An older event writes nothing. **The same second writes too** (fix round 1, item 5). GitHub gives whole seconds, so an open and a merge in one second carry one stamp, and `>` dropped the close. A replay writes the same facts again, so `>=` is safe.
+- **The order inside one second** (fix round 2, item 3). `pr_rank` stores the rank of the last write. An open event is 0, and `merged` or `closed` is 1. `reopened` is 2, because a reopen follows a close. At an equal stamp, an event writes only when its rank is not lower than the row's. So a late `opened` cannot undo a merge. A close then a reopen in one second ends `open`, in either order of delivery. A read (the poll or the lazy read) gives the state at GitHub now. So at an equal stamp, a read always writes. A terminal row with no rank yet counts as rank 1.
+- **A merge is final** (fix round 5, item 3). GitHub never unmerges a pull request, so a row in `merged` takes only a `merged` write. A stale read or a late event of `closed` or `open` cannot turn it back. The probe PROBE5b shows the risk. A close, a reopen and a merge come in one second, and then a stale `closed` read. Without the guard, a later read counts the move INTO `merged` a second time. We chose the guard, and we did not accept the window.
+
+  ⚠️ **A known window: a stale read at an equal stamp** (fix round 4, item 5). A read always wins at an equal stamp, and GitHub stamps whole seconds. GitHub can answer a read just BEFORE a change in the same second. That read can write the older state over a newer event. The next event of the pull request, or the next poll of an open row, repairs it. A read can see `open` over a terminal row of the same second. That read becomes rank 2, so a redelivered event of that second cannot undo it. The fence is `test_own_3_*`. The write takes `FOR UPDATE` in its CTE, so a read that runs during a webhook write waits for its commit. The fence is `test_own_1_*`.
+- **One write path.** `github_sync.apply_pull_request` writes the facts. The webhook, the poll (§11) and the lazy read of `GET /refs` (§11) all call it.
+- **§12 runs on a transition only** (fix round 2, item 1). The write locks the rows and returns each one's state from before it. The rule runs for a task whose reference moved INTO `merged` from any other state, `closed` too (fix round 3, item 1). A reopen that no one saw leaves the row `closed`, and the merge after it must still run the rule. A move INTO `closed` with no merge runs the rule from a state that is not terminal. A re-read of a merged pull request writes too (see above). So before the fix, the rule ran again at each lazy read and each `edited` event. An agent or a workflow could move the task back to In progress, and it went to Done again. A recurring task gained a successor each time.
 - A checks write needs `head_sha = sha`.
 - The auto-link writes through the unique key of `pm_task_refs`, so a second link is a no-op (`refs.insert_ref`).
 - The merge rule skips a task that is already in a closing category (§12.3 step 1).
@@ -316,7 +350,7 @@ So a replay that passes the delivery key, for example during a Redis outage, cha
 
 ## 9. The data
 
-### 9.1 `pm_task_refs` gains seven columns
+### 9.1 `pm_task_refs` gains ten columns
 
 One expand-only migration (R6). Take the number at build time and check it again at merge (R1). The highest on 2026-10-18 was 281.
 
@@ -329,6 +363,9 @@ One expand-only migration (R6). Take the number at build time and check it again
 | `checks_fetched_at` | `timestamptz NULL` | When §8.5 last wrote |
 | `pr_updated_at` | `timestamptz NULL` | GitHub's `updated_at`, for the order rule of §8.6 |
 | `merged_at` | `timestamptz NULL` | GitHub's `merged_at`. The summary strip of EA-13e counts it |
+| `unreadable_since` | `timestamptz NULL` | When an App read of the pull request was first refused (fix round 1, item 6). A good read clears it. §12.3 step 4 reads it |
+| `unblocked_at` | `timestamptz NULL` | When a refused read first found `unreadable_since` past the bound (fix round 2, item 1). It is set once, so the rule runs once for the crossing. A good read clears it |
+| `pr_rank` | `smallint NULL`, CHECK 0 to 2 | The rank of the last write inside one second of `updated_at` (fix round 2, item 3, §8.6) |
 
 Every column is nullable with no default, so the code that runs now meets the new schema (R6).
 
@@ -372,6 +409,7 @@ On `pull_request` `opened`, `reopened`, `edited`, `synchronize` and `ready_for_r
 - **At most 5 tasks for each pull request.** More candidates link the first 5 and log `github.autolink.capped`.
 - **One insert.** Each link calls `refs.insert_ref` with `kind = 'pull_request'`, `provider = 'github'`, `via = 'github'` and `created_by = 'system:github'`. It writes the `link` activity that the route writes.
 - **Never removed by an edit.** A later edit that drops the URL keeps the link, as TR-5 does.
+- **A link that a person removed stays removed** (fix round 1, item 2). The auto-link runs on each `synchronize` and `edited`. Before the fix, a wrong link that a person deleted came back with the next push, and the merge then closed the unrelated task. The tombstone is the `link` timeline row that `DELETE …/refs/{id}` writes, with `ref_action = removed`. The auto-link skips a (task, pull request) pair whose newest `link` row is a removal, and logs `github.autolink.removed_by_person`. A person who adds the link again by hand writes a newer `added` row, and that clears it. The rule needs no migration and no second store.
 - **One grammar.** `tests/fixtures/github_autolink_cases.json` holds the cases. The gateway test reads it, and EA-13f reads it for the short form that the agent puts in a branch name.
 
 ## 11. The reconcile poll
@@ -388,12 +426,13 @@ On `pull_request` `opened`, `reopened`, `edited`, `synchronize` and `ready_for_r
 - **A merge it finds.** A reference that moves to `merged` in the poll runs §12, as the webhook does. So a missed `closed` delivery still closes an agent's task.
 - **The budget.** 50 references need at most about 150 requests for each org in a tick, which is 900 an hour. That is well under 5,000 an hour (§4.2 fact 13). A `403` or `429` with a rate-limit header stops the org's tick and logs `github.reconcile.rate_limited`.
 - **The lazy read stays.** `GET /refs?refresh=true` keeps its 15-minute read for issues and for `token` rows. For an `app` row, it reads the checks too.
+- **The lazy read of an `app` row uses the one write path** (fix round 1, item 1). Before the fix, the lazy read wrote `merged` or `closed` with its own UPDATE and ran no §12. The poll reads only `open` and `draft` rows, so the row was never read again. A `closed` delivery lost in a restart then left the agent's task open, with no log line. Now an `app` org's lazy read of a pull request goes through `github_sync.read_pull_request` and `apply_pull_request` (§8.6), and the events go out after the commit. A refused read marks the row (§12.3 step 4). Its issues keep the TR-1 read.
 
 ## 12. Merge-to-Done (G-4)
 
 ### 12.1 The trigger
 
-A `pull_request` `closed` event, merged or not, or a poll read that finds `merged` or `closed`. A close without a merge can still finish a task whose other pull request merged earlier (§12.3 step 4). `github_merge.on_merged(db, org, ref, merged_at, merged_by)` runs in the bound tenant, in the webhook's transaction.
+A `pull_request` `closed` event, merged or not, or a poll read or a lazy read (§11) that writes `merged` or `closed`. A close without a merge can still finish a task whose other pull request merged earlier (§12.3 step 4). `github_merge.on_merged(db, org, ref, merged_at, merged_by)` runs in the bound tenant, in the transaction of the write. `github_sync.apply_pull_request` is the one caller (§8.6). A refused read past the bound of step 4 calls `github_merge.on_unblocked` for the tasks of that reference.
 
 ### 12.2 The agent-worked rule
 
@@ -402,7 +441,7 @@ A task is **agent-worked** at time `T` when either of these rows exists, with `c
 1. **A run.** A `pm_agent_runs` row with `task_id` = the task, in any status.
 2. **An act through MCP.** Any `pm_activities` row with `task_id` = the task and `meta->>'via'` that matches `^mcp:`. A claim writes an `assignment` row (`tasks.py:1484`), and `record_activity` stamps the `via`. A claim of a task that is already assigned and started writes no row. So the rule also counts the agent's comment, status move and link on the task.
 
-`agent_worked.AGENT_WORKED_SQL` is the one copy of this predicate. `agent_worked.reason(db, task_id, T)` returns `"agent_run"` with the run id, `"mcp_act"` with the activity id, or None. The timeline row names the reason (§12.4), so a person can audit each move.
+`agent_worked.AGENT_WORKED_SQL` is the one copy of this predicate. `agent_worked.reason(db, task_id, T)` returns `"agent_run"` with the run id, `"mcp_act"` with the activity id, or None. The timeline row names the reason (§12.4), so a person can audit each move. Both come from one WHERE text for each half (`_RUN_WHERE` and `_MCP_WHERE`, fix round 1, F3). A test holds that the boolean and the reason agree on every case, the edge of `T` included.
 
 ### 12.3 The steps
 
@@ -416,10 +455,17 @@ For each task with a `pull_request` reference to the merged pull request:
    - it is newer than the newest agent row of §12.2.
 
    A person who moved the task after the agent keeps the decision.
-4. **Wait for the other pull requests.** Skip when a `pull_request` reference of the task has `state` `open` or `draft`. Skip when no reference of the task has `state` `merged`. The last merge or close of the set runs the rule again.
+4. **Wait for the other pull requests.** Skip when a `pull_request` reference of the task has `state` `open` or `draft`. Skip when no reference of the task has `state` `merged`. The last merge or close of the set runs the rule again. A skip for an open reference logs `github.merge.blocked_by`, with the blocking references.
+
+   **An unreadable reference does not block for ever** (fix round 1, item 6). A pull request of the token era, or one in a repository outside the installation, can stay `open` because the App cannot read it. Then the rule waited with no sign. The rule now is this:
+   - An App read that GitHub refuses (404, 410 or 301) stamps `unreadable_since` with the time of the FIRST refusal. A good read clears it. A 5xx is not a refusal.
+   - ⚠️ **A 403 is not a refusal** (fix round 2, item 2). A 403 comes for every pull request of an installation. The cause can be an IP allow list of the customer, or a secondary rate limit with no `retry-after`. The webhooks still say that the pull request is open, so a sibling merge must not finish the task. The read logs `github.read.forbidden` and stamps `fetched_at` only. The reference keeps blocking.
+   - A reference whose `unreadable_since` is older than `UNREADABLE_AFTER` (1 hour) does not block. Two refused reads of the poll, 30 minutes apart, cross the bound.
+   - ⚠️ **Only an `open` or `draft` row can block, so only such a row is marked or crosses** (fix round 4, item 1). A refused read of a `merged` or `closed` row stamps `fetched_at` only. `on_unblocked` also skips a reference that is not `open` or `draft`. Before the fix, a merged pull request that later answered 404 crossed the bound. The task then went to Done again after the agent moved it back.
+   - The ONE refused read that first finds the bound crossed sets `unblocked_at`, and `github_merge.on_unblocked` runs the rule again for the tasks of that row only. It uses the task's newest `merged` pull request, so the timeline names the merge that finished the task. A later refused read runs nothing (fix round 2, item 1).
 5. **Find the done lane.** `load_default_status(db, status_owner_id(db, task.project_id), COMPLETED_CATEGORY)`, the lane rule of `complete_for_member`. A set with no done lane skips the task and logs `github.merge.no_done_lane`.
 6. **Move.** Set the `ACTOR_VIA` context value (`core.py:81`) to `github`, then call `apply_status_transition(db, task, lane.id, created_by="system:github", automation=True)`. The recurrence successor comes from that helper. Then write one `system` activity row with the reason (§12.4). The subtasks stay open, as EA3-32 says.
-7. **After the commit.** Emit `pm.task.updated` and `pm.task.status_changed`, as `claim_task` does. A blocked task that waits on this one sees the change through the events that a member's move sends.
+7. **After the commit.** Emit `pm.task.updated` and `pm.task.status_changed`, as `claim_task` does. A blocked task that waits on this one sees the change through the events that a member's move sends. ⚠️ **A merge can start a workflow.** The Workflows catalog offers `pm.task.status_changed` as a trigger (`routes/workflows/catalog.py`). So a published workflow on that trigger runs after a merge-to-Done, as it runs after a member's move.
 
 An open agent run on the task stays open. The agent finishes it. Nothing moves a task to `cancelled`.
 
@@ -452,6 +498,10 @@ An open agent run on the task stays open. The agent finishes it. Nothing moves a
 | A leaked private key | The key lives in a root-owned file on the box, read by the gateway user only. It never enters a customer row, a log or an answer | GH-1 A4 |
 | A leaked installation token | Memory only, one hour, never logged | GH-1 A3 |
 | A person's task closed by a machine | The agent-worked rule, the take-back rule and the closed-task skip of §12.3 | GH-6 D1 to D9 |
+| A wrong link that comes back and closes an unrelated task | The tombstone rule of §10.3 | `test_item2_*` |
+| The production key on the staging box | The `host` pin on each GitHub secrets entry (§15) | `test_secrets_drop.py` pin tests |
+| Model output that swaps the org's GitHub connection | The chat sends no `replace_app`, so a live App is never replaced from a chat (§7.6) | `test_github_chat_setup.py` |
+| The state of an older start at the callback | The nonce compare of §7.3 step 3 | `test_item9_*` |
 
 ### 13.2 The permissions of the App
 
@@ -506,17 +556,21 @@ The script is `scripts/github_app_manifest.py`, from GH-1. It holds the manifest
 2. The script opens a page in your browser. Click **Create GitHub App for <organization>**.
 3. GitHub returns to the script on `http://127.0.0.1:<port>`. The script exchanges the code and writes `github-app-staging.env` and `github-app-staging.pem`. It prints the App name and the file names, and no value.
 4. Run the same command with `--env production`, and click Create again.
-5. Tell the agent "the GitHub Apps are registered". The agent does the rest:
+5. Tell the agent "the GitHub Apps are registered". The agent does the rest. It pushes the key file of each App first, and then its env file:
+   - `METORITE_SSH_HOST=metorite-dev scripts/secrets.sh push github-app-staging-key`
    - `METORITE_SSH_HOST=metorite-dev scripts/secrets.sh push github-app-staging`
+   - `scripts/secrets.sh push github-app-key`
    - `scripts/secrets.sh push github-app`
    - It checks that the gateway restarted, and that `/webhooks/github` answers 401 to an unsigned POST.
+
+   ⚠️ **The manifest pins each entry to its box** (fix round 1, item 4). The two env entries write the same app env file. Before the fix, `push --all` sent all four entries to the one `METORITE_SSH_HOST`, production last, so the production private key could land on the staging box. Now each GitHub entry carries a `host`: `metorite-dev` for the staging pair and `metorite` for the production pair. `push <name>` to another host fails before any probe. `push --all` skips an entry with a pin to another host, and names it.
 
 **What the script does.**
 
 1. It serves one local page with a hidden form. The form POSTs the manifest to `https://github.com/organizations/<org>/settings/apps/new?state=<random>` (§4.2 fact 1).
 2. It checks the returned `state`, and calls `POST /app-manifests/{code}/conversions` within the hour.
-3. It writes `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` and `GITHUB_APP_WEBHOOK_SECRET` to the `.env` file. It writes the `pem` to the key file.
-4. It refuses to overwrite a file that exists.
+3. It writes `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` and `GITHUB_APP_WEBHOOK_SECRET` to the `.env` file. It also writes the three fixed settings of §14: `GITHUB_APP_ENABLED=false`, `GITHUB_APP_PRIVATE_KEY_PATH=/opt/acb/github-app.pem` and `APP_PUBLIC_URL`. So the push lands all eight with the flag off. It writes the `pem` to the key file.
+4. It refuses to overwrite a file that exists. An empty template of `scripts/secrets.sh init` holds no value, so the script replaces it.
 5. It stops the local server after one exchange or after 15 minutes.
 
 **The manifest.**
@@ -530,13 +584,17 @@ The script is `scripts/github_app_manifest.py`, from GH-1. It holds the manifest
 
 ## 16. Slices
 
-Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. Every slice ships dark behind `github_app_enabled` (default false), except GH-0 and GH-8.
+Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. Every slice ships dark behind `github_app_enabled` (default false), except GH-0, GH-7 and GH-8.
+
+⚠️ **GH-7 goes live at the merge, not dark.** It retires the device flow and moves the pasted token to `PUT /integrations/github/token`. Those are changes to the paths that work today, so no flag can hold them back. The device flow needs the customer's own OAuth App client id, which G-5 retires, and BYOK blocks it. A dark copy would keep a path that the owner chose to remove.
+
+Three things stay safe. An org's token row keeps working with no action. `GITHUB_TOKEN` from the chat goes to the new writer (§7.6). The Advanced fold works with the App flag off, and the App half of the card shows "not turned on" until GH-8.
 
 | # | Slice | Files | Done when | Gate |
 |---|---|---|---|---|
 | GH-0 | **Register the two Apps, and push their secrets.** The owner runs §15 steps 1 to 4. The agent runs step 5. Needs GH-1 merged | None in the repo | Both Apps exist with the permissions of §13.2. Both boxes hold the eight settings of §14, with the flag off. An unsigned POST to each `/webhooks/github` answers 401 with the flag on, or 404 with it off | 🔴 OWNER-GATE: a registration at a third party under the owner's GitHub identity. The push is AGENT-SAFE under the grants `secrets` and `env-write` |
 | GH-1 | **The App auth core and the registration script.** §6.1, §6.2, §15. The settings `github_app_enabled` (default false), `github_app_slug`, `github_app_client_id`, `github_app_client_secret`, `github_app_webhook_secret` and `app_public_url` (default `https://app.metorite.com`), beside the two that exist. Two manifest entries in `deploy/secrets/manifest.json` | `connections/github_app.py`, `packages/acb_common/acb_common/settings.py`, `scripts/github_app_manifest.py`, `deploy/secrets/manifest.json`, `tests/unit/test_github_app_auth.py` | **A1** the JWT decodes with the public key, with `iat` 60 seconds back, `exp` at most 600 seconds ahead and `iss` the client id. **A2** a second call within the window makes no second token request, and a call 5 minutes before `expires_at` makes one. Two concurrent misses make one request. **A3** a sentinel token appears in no log line and no answer. **A4** a missing key file raises `GitHubAppNotConfigured`, and the message holds no path content. **A5** the script builds the manifest of §13.2 and §14 for each `--env`, refuses a wrong `state`, and refuses to overwrite a file. Each item red first under a named mutation | AGENT-SAFE. The manifest edit needs the grant `deploy-write` |
-| GH-2 | **The migration.** §9.1 to §9.3 | `infra/postgres/<next>_github_app.sql`, `tests/unit/test_github_migration_r8.py` | R8 on a real database, as `acb_app`, on the promoted catalog. **M1** the seven columns exist and are nullable. **M2** `via = 'github'` inserts, and `via = 'gitlab'` fails. **M3** a second live `github` row with the same installation id in another org fails, and a `disconnected` one passes. **M4** `github_installation_org` returns the org with no tenant bound, returns no row for an unknown or disconnected id, and `anon` cannot execute it. **M5** the migration runs twice with no error. **M6** a pre-check with a planted duplicate refuses with the count | AGENT-SAFE |
+| GH-2 | **The migration.** §9.1 to §9.3 | `infra/postgres/<next>_github_app.sql`, `tests/unit/test_github_migration_r8.py` | R8 on a real database, as `acb_app`, on the promoted catalog. **M1** the ten columns exist and are nullable. **M2** `via = 'github'` inserts, and `via = 'gitlab'` fails. **M3** a second live `github` row with the same installation id in another org fails, and a `disconnected` one passes. **M4** `github_installation_org` returns the org with no tenant bound, returns no row for an unknown or disconnected id, and `anon` cannot execute it. **M5** the migration runs twice with no error. **M6** a pre-check with a planted duplicate refuses with the count | AGENT-SAFE |
 | GH-3 | **The connect flow and the one reader.** §6.3, §7.1 to §7.5. The GitHub card's Connect GitHub button and the confirm dialog | `routes/github/connect.py`, `connections/github.py`, `routes/integrations.py` (`_test_github` and `_github_connected` only), `routes/agent.py` (`_org_github_token` only), the BFF routes `app/api/integrations/github/app/start/route.ts`, `app/api/integrations/github/app/confirm/route.ts` and `app/api/integrations/github/callback/route.ts` (in the shape of `api/integrations/mcp/oauth/callback/route.ts`), a new `components/GitHubAppConnect.tsx`, `tests/unit/test_github_connect_r8.py` | R8 with GitHub mocked at the HTTP layer. **C1** start answers the install URL with a state, and writes the pending key. **C2** a callback with no pending key gives `expired`, and writes nothing. **C3** a state of another member or org gives `bad_state`. **C4** an installation that `GET /user/installations` does not list gives `not_yours`. **C5** an installation held by org B gives `other_org` for org A. **C6** `setup_action=request` writes nothing. **C7** a good callback writes nothing, and the confirm POST writes one `app` row with no blob and one audit row. The user token appears nowhere. **C8** `token_or_none` returns an installation token for an `app` row and the stored token for a `token` row. **C9** a member without `integrations:manage` gets 403 at start and at the callback. **C11** a user who only reads a repository of the organization gets `not_admin`, and so does a `User` account of another id. **C12** a cross-site confirm POST gets 403, and a confirm with no pending key writes nothing. **C13** in `app` mode, `_test_github` calls `GET /installation/repositories`, `_github_connected` makes no token, and `_org_github_token` returns an empty token. Visual review of the card in light mode, at compact density and under a changed accent | AGENT-SAFE |
 | GH-4 | **The webhook receiver and the auto-link.** §8.1 to §8.4, §8.6, §10 | `routes/github/webhook.py`, `routes/projects/github_autolink.py`, `gateway/main.py` (the router and `PUBLIC_ROUTES`), `tests/fixtures/github_autolink_cases.json`, `tests/unit/test_github_webhook_r8.py`, `tests/unit/test_github_autolink.py` | **W1** a wrong signature gets 401 and writes nothing. **W2** a compare with `==` fails a source fence that requires `hmac.compare_digest`. **W3** a 6 MiB body gets 413 with no HMAC call. **W4** an unknown installation gets 202 and writes nothing. **W5** a second delivery with one GUID writes nothing. **W6** an older `pull_request` event after a newer one writes nothing. **W7** an event for org A's installation never writes a row of org B (R8, two orgs). **W8** the flag off gives 404. **W9** a handler that raises answers 500 and deletes the delivery key, and a redelivery of the same GUID then runs. **L1** to **L6**: the cases file links a description URL, a full UUID branch and an `mt-` branch. It refuses a staging URL in production, an archived task, a prefix with two matches, a fork from an outsider, and the sixth candidate. `/webhooks/github` is in `PUBLIC_ROUTES`, and `test_default_deny_auth.py` stays green | AGENT-SAFE. Full review loop: it adds a public route |
 | GH-5 | **The checks read and the reconcile poll.** §8.5, §11, and the checks fields in the refs route | `gateway/github_sync.py`, `gateway/github_reconcile_loop.py`, `routes/projects/refs.py`, `gateway/main.py` (the lifespan), `tests/unit/test_db_engine_seam.py`, `tests/unit/test_github_checks.py`, `tests/unit/test_github_reconcile_r8.py` | **K1** the fold of §8.5 passes a table of at least 15 cases. **K2** a read for an old head writes nothing. **K3** no database session is open during a GitHub call (the fence of EA12-4, R11). **K4** a poll tick runs in one process only, reads at most 50 references, and stops on a rate-limit answer. **K5** a poll that finds `merged` calls `on_merged` once. **K6** `GET /refs` returns `checks_state`, `checks_summary`, `head_ref` and `merged_at`. **K7** the org list site is registered in `test_db_engine_seam.py` | AGENT-SAFE |
@@ -552,6 +610,84 @@ Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. Every slice ships da
 - GH-6 follows GH-4. GH-5 follows GH-6, because K5 calls `on_merged`.
 - GH-8 comes last.
 
+### 16.1 Build record
+
+| # | Status | Fence |
+|---|---|---|
+| GH-0 | 🔴 Waits for the owner. The script and the four secrets entries are ready | — |
+| GH-1 | 🔨 BUILT on branch `github-batch-a`, in review. 13 mutations, and 6 more in fix round 1, each red | `test_github_app_auth.py` |
+| GH-2 | 🔨 BUILT on branch `github-batch-a`, in review. Migration 282, with an eighth column from fix round 1. 6 mutations, each red | `test_github_migration_r8.py` |
+| GH-3 | 🔨 BUILT on branch `github-batch-a`, in review. 18 mutations, and 9 more in fix round 1, each red. Visual review done | `test_github_connect_r8.py`, `githubConnect.test.ts`, the BFF route tests |
+| GH-4 | 🔨 BUILT on branch `github-batch-a`, in review. 17 mutations, and 2 more in fix round 1, each red | `test_github_webhook_r8.py`, `test_github_autolink.py` |
+| GH-5 | 🔨 BUILT on branch `github-batch-a`, in review. 13 mutations, and 10 more in fix round 1, each red | `test_github_checks.py`, `test_github_reconcile_r8.py` |
+| GH-6 | 🔨 BUILT on branch `github-batch-a`, in review. 10 mutations, and 7 more in fix round 1, each red. `core.py` has no diff | `test_github_merge_r8.py` |
+| GH-7 | 🔨 BUILT on branch `github-batch-a`, in review. 9 mutations, and 8 more in fix round 1, each red. Visual review done. Goes live at the merge (§16) | `test_github_per_org_r8.py`, the token route test |
+| GH-8 | 🔴 Waits for GH-0 and the merge | — |
+
+**What the build chose, where the spec left room.**
+
+- **Four secrets entries, not two.** One entry of `scripts/secrets.sh` holds one file. So each App has a key entry (`github-app-staging-key`, `github-app-key`) and an env entry. §15 step 5 names all four.
+- **The script writes all eight settings.** The three fixed ones join the five from GitHub, so the push lands with the flag off.
+- **The token route has its own router** (`connect.token_router`), because the App flag must not gate the Advanced path.
+- **The checks read of the refs route runs in the background.** The list answers at once, and the next list shows the result (§11).
+- **A pull request that the auto-link links takes its facts in the same event.** The link writes first, then the facts.
+- **R8 runs on a real Redis when `GITHUB_R8_REDIS_URL` names one**, and on a fake under the real `TenantRedis` wrapper in CI.
+
+**Fix round 1 (2026-10-18).** Three reviews found 4 P1, 5 P2 and 5 points of the verifier. Each fix has a test that goes red under a named mutation. The test modules list them. 42 new mutations, each red when run:
+
+| # | Fix | Slice | Section |
+|---|---|---|---|
+| 1 | The lazy read of an `app` org uses the one write path, so a lost `closed` still runs §12 | GH-5, GH-6 | §8.6, §11 |
+| 2 | A link that a person removed stays removed (the tombstone is the timeline row) | GH-4 | §10.3 |
+| 3 | The App reads no private agent repo. A clear 422, "configured" for each use, and a token replaces the App only after a confirm | GH-3, GH-7 | §6.3, §7.6 |
+| 4 | A `host` pin on each GitHub secrets entry | GH-1 | §15 |
+| 5 | An equal `updated_at` writes, with a tie-break for a terminal row | GH-5 | §8.6 |
+| 6 | An unreadable reference stops blocking after 1 hour, and the rule logs `blocked_by`. Migration 282 gains `unreadable_since` | GH-2, GH-6 | §9.1, §12.3 |
+| 7 | One leader reads the checks of each head | GH-5 | §8.5 |
+| 8 | A GitHub token from the chat reaches its one writer, and a refusal shows in the answer | GH-7 | §7.6 |
+| 9 | The callback compares the state nonce with the pending connect | GH-3 | §7.3 |
+| F1, F2 | Fences for the take-back time compare and the `:aw_before` bound | GH-6 | §12.2 |
+| F3 | One WHERE text for the boolean and the reason | GH-6 | §12.2 |
+| F4 | A new start replaces the pending connect | GH-3 | §7.1 |
+| F5 | `github_app_enabled` is a full kill switch | GH-1, GH-3 | §6.3 |
+
+**Fix round 2 (2026-10-18).** The product re-review found 1 new P1 and 3 new P2. A security note found a secret in stored chats, on main before this work. 14 new mutations, each red when run:
+
+| # | Fix | Slice | Section |
+|---|---|---|---|
+| 1 | Merge-to-Done runs only when a reference moves INTO a terminal state. `on_unblocked` runs once for each crossing | GH-5, GH-6 | §8.6, §12.3 |
+| 2 | A 403 is not a per-PR refusal, and the reference keeps blocking | GH-5, GH-6 | §12.3 |
+| 3 | `pr_rank` orders the events of one second, so a close then a reopen ends open | GH-5 | §8.6 |
+| 4 | The leader reads a mark set while its lead goes | GH-5 | §8.5 |
+| 5 | The model's SETUP marker never reaches a stored chat, session or run trace. A member's pasted secret is not detected. H-357 asks for a rotation and a scrub | GH-7 | §7.6 |
+| 6 | The private-repo refusal names a missing repo too | GH-3 | §6.3 |
+
+**Fix round 3 (2026-10-18).** The product re-review of round 2 found 3 P2. 4 new mutations, each red when run:
+
+| # | Fix | Slice | Section |
+|---|---|---|---|
+| 1 | A merge after a lost reopen runs §12: a move INTO `merged` counts from `closed` too | GH-5, GH-6 | §8.6 |
+| 2 | A failed checks read of the poll stamps `checks_fetched_at`, so unreadable rows do not starve an org | GH-5 | §11 |
+| 3 | The redaction claim is narrow, and H-357 makes rotation the remedy | GH-7 | §7.6 |
+
+**Fix round 4 (2026-10-18).** The independent verification of round 2 found 1 P1, 1 P2 and 3 more points. 10 new mutations, each red when run:
+
+| # | Fix | Slice | Section |
+|---|---|---|---|
+| 1 | A refused read of a merged or closed reference marks nothing and crosses nothing. `on_unblocked` skips a reference that never blocked | GH-5, GH-6 | §12.3 |
+| 2 | `chat_session.last_preview`, the title and `POST /memory/{scope}/add` store no marker | GH-7 | §7.6 |
+| 3 | Fences for `FOR UPDATE` in the CTE (OWN-1) and the rank promotion of a read (OWN-3) | GH-5 | §8.6 |
+| 4 | The lazy read fails closed when the GitHub row cannot be read | GH-5 | §11 |
+| 5 | The gateway `AGENTS.md` states the write order, and §8.6 records the stale-read window | — | §8.6 |
+
+**Fix round 5 (2026-10-18).** The re-verification of round 4 found 2 P2, both secrets in storage, and one point of R7. 6 new mutations, each red when run:
+
+| # | Fix | Slice | Section |
+|---|---|---|---|
+| 1 | `redact` takes the whole value, quotes too, and decoded text only | GH-7 | §7.6 |
+| 2 | Every write of Mem0 and Graphiti redacts, the run-end extraction included | GH-7 | §7.6, §17 |
+| 3 | A fence for the closed half of the transition, and a merge is final | GH-5, GH-6 | §8.6 |
+
 ## 17. Verification commands
 
 First run `eval "$(bash scripts/dev_db.sh --export)"`, or use a private ladder database. Never run two R8 runs at once. A new R8 suite starts with `pytestmark = _DB_GATE`, or `deploy.yml` errors.
@@ -564,6 +700,17 @@ uv run ruff check apps/services/gateway/gateway/connections apps/services/gatewa
 uv run mypy --ignore-missing-imports apps/services/gateway/gateway/connections/github_app.py apps/services/gateway/gateway/routes/github
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/integrations src/components
 ```
+
+**Not built: a scrub of the exact value** (fix round 3, item 3). The executor takes a value from a marker. It does not yet remove that same value from the stored history of the turn or from the memory input. A member who pastes the value again in plain text is not covered either. H-357 holds the remedy: rotate the key.
+
+**Not built: a strip in the Tier 1 stream** (fix round 4, item 2). The native stream sends each text delta to the browser as the model writes it, and a marker can span two deltas. A strip there needs a buffer that holds back a part of a marker, so this round does not build it. The browser then shows the marker, and the stream relay keeps it in Redis for at most 1 hour. These durable stores redact it, each on its one write path:
+
+- `chat_message`: `chat._upsert_messages`, for the browser save, the fold and the mint.
+- `chat_session.last_preview` and the title: the session upsert and the PATCH.
+- The native session: `native_session_store._session_body`.
+- The run trace: `run_trace._persist_row`.
+- Mem0: `MemoryClient.add`, the one write of Mem0 (fix round 5, item 2). It covers the run-end extraction of `routes/agent.py` and `main.py` (`add_memories_background`), the scoped helpers, and `POST /memory/{scope}/add`.
+- Graphiti: `GraphitiClient.add_episode`, the one write of an episode (fix round 5, item 2). It covers the run-end episode of `routes/agent.py` and `main.py`.
 
 Six vitest failures are known and come from CRLF line ends only: `layoutBoundary` (two), `railSessions`, `emailLink` and `reportsLiveOverview` (two). Any other failure is real. With `-rs`, a skipped R8 test shows its reason, and a skip is not a pass.
 
@@ -618,3 +765,9 @@ R9 does not apply. This spec adds no app. The Integrations app's manifest is in 
 - 2026-10-18 — Written from the owner decisions G-1 to G-5. The code anchors were read at `1625cca13`, and the GitHub facts on docs.github.com the same day.
 - 2026-10-18 — The spec audit gave GO-NARROWED for both specs, and this round closes its 14 points. The callback checks that the user administers the account, and the admin confirms before the write. The delivery key goes on a handler error. A close without a merge can finish a task, and any MCP act counts as agent work. A chat move is a person's move. Three token callers change in `app` mode. The merge rule leaves `core.py` alone. GH-0 names eight settings. The order and two anchors are corrected.
 - 2026-10-18 — The owner answered the four questions of §20 and took each proposed answer. §3 records them as G-6 to G-9. They are one installation for each org, a public production App, Hathi Labs as the owner of both Apps, and no Contents permission. §20 now holds no open question.
+- 2026-10-18 — Batch A built GH-1 to GH-7 on branch `github-batch-a`, with migration 282. §16.1 records each slice and what the build chose. §15 step 5 now pushes four secrets entries, a key file and an env file for each App.
+- 2026-10-18 — Fix round 1 closes 4 P1, 5 P2 and 5 verifier points (§16.1). The new rules are in §6.3, §7.1, §7.3, §7.6, §8.5, §8.6, §9.1, §10.3, §11, §12.1 to §12.3, §13.1 and §15. GH-7 goes live at the merge, and §16 says why. A merge can start a published workflow (§12.3 step 7).
+- 2026-10-18 — Fix round 2 closes 1 P1, 3 P2, a security note and a wording note (§16.1). Merge-to-Done runs on a transition only, and a 403 never unblocks. `pr_rank` orders one second. The trailing checks read keeps the last mark, and the stores keep no SETUP marker of the model. Migration 282 gains `unblocked_at` and `pr_rank`.
+- 2026-10-18 — Fix round 3 closes 3 P2. A merge after a lost reopen runs §12 (a move INTO `merged` counts from `closed` too, §8.6). A failed checks read of the poll stamps `checks_fetched_at`, so unreadable rows do not starve an org (§11). §7.6 narrows the redaction claim: the model's marker is never stored, and a member's pasted secret is not detected.
+- 2026-10-18 — Fix round 4 closes 1 P1, 1 P2 and 3 more points. A refused read of a merged reference no longer runs §12 again (§12.3). The session preview and the memory route store no marker. The lazy read fails closed. New fences hold `FOR UPDATE` and the rank promotion of a read, and §8.6 records the stale-read window.
+- 2026-10-18 — Fix round 5 closes 2 P2 and one point of R7. `redact` takes the whole value of a marker, quotes too, on decoded text only (§7.6). Every write of Mem0 and Graphiti redacts (§17). A fence holds the closed half of the transition, and a merge is final (§8.6).

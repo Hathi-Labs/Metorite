@@ -35,6 +35,7 @@ project's own list the way a status is, every match and never the first.
 
 from __future__ import annotations
 
+import asyncio
 import calendar
 import functools
 import json
@@ -1832,6 +1833,7 @@ class _Move:
         path: str,
         body: dict[str, Any],
         receipt: Callable[[Any], str],
+        card: dict[str, Any] | None = None,
     ) -> None:
         self.title = title
         self.detail = detail
@@ -1839,9 +1841,35 @@ class _Move:
         self.path = path
         self.body = body
         self.receipt = receipt
+        #: The card's facts before the clip (`_move_card`). ``file_tasks``
+        #: draws one row of its batch card from them.
+        self.card = card or {}
+
+    async def send(self) -> Any:
+        """The one write, and the route's answer. ``file_tasks`` calls this
+        for each ticked row, so a batch moves through the same write."""
+        return await post(self.path, self.body)
 
     async def apply(self) -> str:
-        return self.receipt(await post(self.path, self.body))
+        return self.receipt(await self.send())
+
+
+class _SubtaskQuestion(str):
+    """The subtask question of :func:`_plan_move`, as text that knows it is one.
+
+    ``move_task`` returns it as it is. ``file_tasks`` gathers every one of
+    its rows into ONE question before its card (D-PM-38: ask once for a
+    selection), so it needs to tell this answer from a refusal.
+    """
+
+    task: dict[str, Any]
+    subtasks: int
+
+    def __new__(cls, text: str, task: dict[str, Any], subtasks: int) -> _SubtaskQuestion:
+        made = super().__new__(cls, text)
+        made.task = task
+        made.subtasks = subtasks
+        return made
 
 
 async def _plan_reparent(ids: list[str], parent_task_id: str) -> _Move | str:
@@ -1965,7 +1993,7 @@ async def _plan_move(
     count = int((plan.get("subtasks") or {}).get("count") or 0)
     if wanted is None and count:
         head = tasks[0] if len(tasks) == 1 else {"title": f"This selection of {len(tasks)}"}
-        return ask_about_subtasks(head, count, "move")
+        return _SubtaskQuestion(ask_about_subtasks(head, count, "move"), head, count)
     refused = _move_subtask_refusal(plan, wanted)
     if refused:
         return refused
@@ -2007,6 +2035,7 @@ async def _plan_move(
         path=path,
         body=body,
         receipt=lambda result: _move_receipt(result, tasks, dest, card["to"], answers),
+        card=card,
     )
 
 
@@ -2046,6 +2075,877 @@ def _move_receipt(
         out.extend(_task_line({**t, "project_id": dest}))
     out.extend(_subtask_receipt(result, "subtasks_moved", "move"))
     return "\n".join(out)
+
+
+# ── One card for many acts: filing tasks, linking tasks (2026-10-18) ────────
+#
+# The owner filed an inbox into seven projects. `move_task` takes ONE source
+# and ONE destination per call, and each call asks its own card, so the run
+# asked card after card. One late answer parked the run, and the restart read
+# everything again. On 2026-10-19 the owner asked the same for links: "approve
+# multiple at a time instead of doing one at a time".
+#
+# So a batch tool plans every act FIRST, with reads only, and shows ONE card
+# with a checkbox for each act. A row that cannot run is named on the card
+# and left out. One approval runs every ticked act, each through the write
+# of the single tool (`_Move.send`, the link POST). The receipt names each
+# act, row by row. The card, the apply and the receipt below are shared, so
+# the two batch tools cannot drift apart.
+
+#: How many plans run at once. Each plan is a few reads, and a batch of 50
+#: rows should not wait for 150 reads one after the other.
+_PLAN_AT_ONCE = 6
+
+#: The answer of a card that named a row it did not offer.
+FORGED_BATCH_ROWS = (
+    "Refused: the card answered with a row it did not offer, so nothing was changed. "
+    "Tell the member, and do not try again."
+)
+
+
+class _BatchRow:
+    """One row of a one-card batch: a planned act, or why it cannot run.
+
+    A subclass names the row (``ref``), says what the card row shows
+    (``label``, ``hint``), and holds the one write (``send``) and its
+    receipt lines (``done``).
+    """
+
+    def __init__(self, index: int) -> None:
+        self.index = index
+        #: Why the row cannot run. Empty for a row that is ready.
+        self.why = ""
+
+    @property
+    def row_id(self) -> str:
+        return f"row-{self.index}"
+
+    @property
+    def ready(self) -> bool:  # pragma: no cover — every subclass says
+        raise NotImplementedError
+
+    @property
+    def ref(self) -> str:  # pragma: no cover — every subclass says
+        raise NotImplementedError
+
+    @property
+    def label(self) -> str:
+        return _unfence(self.ref)
+
+    @property
+    def hint(self) -> str:
+        return ""
+
+    @property
+    def failed_ref(self) -> str:
+        """How a failure line names the row."""
+        return self.ref
+
+    async def send(self) -> Any:  # pragma: no cover — every subclass says
+        raise NotImplementedError
+
+    def done(self, result: Any) -> list[str]:  # pragma: no cover — every subclass says
+        raise NotImplementedError
+
+
+class _BatchWords:
+    """The words of one batch tool's receipt."""
+
+    def __init__(
+        self, *, tool: str, noun: str, done: str, do: str, undone: str, maybe: str, again: str
+    ) -> None:
+        self.tool = tool
+        #: What one row is: ``task``, ``link``.
+        self.noun = noun
+        #: ``Moved``, ``Made``: the head of the receipt.
+        self.done = done
+        #: ``move``, ``link``: "1 could not move", "2 of 3 moves failed".
+        self.do = do
+        #: ``not moved``, ``not linked``: the line of a row that could not run.
+        self.undone = undone
+        #: ``moved``, ``been made``: "1 may have moved".
+        self.maybe = maybe
+        #: The line that tells the model never to do a listed act twice.
+        self.again = again
+
+    def nouns(self, n: int) -> str:
+        return self.noun if n == 1 else f"{self.noun}s"
+
+
+class _BatchOutcome:
+    """What the writes of a batch did, row by row."""
+
+    def __init__(self) -> None:
+        self.made = 0
+        #: The ids of the rows whose write landed.
+        self.ok: set[str] = set()
+        #: The ids of the rows whose write may or may not have landed.
+        self.maybe: set[str] = set()
+        self.lines: list[str] = []
+        self.failed: list[str] = []
+        self.unknown: list[str] = []
+
+
+def _named_refusal(exc: GatewayRefusal) -> bool:
+    """A refusal that one row may carry, not one that stops the call.
+
+    The gateway's answer (it has a status) names one task or project. A
+    client refusal that an argument can fix names one row's bad value. The
+    refusal with no acting member is neither: it stops the whole call, as it
+    does in every other tool.
+    """
+    return exc.status is not None or bool(exc.fixable)
+
+
+def _refusal_words(exc: GatewayRefusal) -> str:
+    """Why a row cannot run, from a refusal, in words the member reads."""
+    if exc.status == 404:
+        return "not found, or not visible to you"
+    if exc.status is not None:
+        detail = getattr(exc, "detail", "")
+        return f"refused ({exc.status})" + (f": {data(detail)}" if detail else "")
+    return " ".join(str(exc).split())
+
+
+def _unfence(text: str) -> str:
+    """Member text for a card row: no guillemets, one line."""
+    return " ".join(str(text).replace("«", "").replace("»", "").split())
+
+
+def _row_reason(why: str) -> str:
+    """A row's reason in a batch receipt. A single tool's refusal ends with
+    "Nothing was changed.", which a batch row must not say of the batch."""
+    return " ".join(str(why).replace("Nothing was changed.", "").split())
+
+
+def _hidden(task_id: str) -> str:
+    """How a card names a task the member cannot read: no title, a short id."""
+    return f"a hidden task (id {data(str(task_id)[:8])})"
+
+
+def _first_part(why: str) -> str:
+    """A reason, without the instruction to the model that may follow it."""
+    for cut in (" Ask the member", " Pass include_subtasks", " Nothing was changed"):
+        if cut in why:
+            why = why.split(cut, 1)[0]
+    return why.rstrip()
+
+
+async def _each_at_once(rows: list[Any], step: Callable[[Any], Awaitable[None]]) -> None:
+    """Run *step* on every row, a few at a time. Each step is reads only."""
+    gate = asyncio.Semaphore(_PLAN_AT_ONCE)
+
+    async def one(row: Any) -> None:
+        async with gate:
+            await step(row)
+
+    await asyncio.gather(*(one(r) for r in rows))
+
+
+async def _ask_batch(
+    title: str, detail: str, body: dict[str, Any], ready: list[_BatchRow], note: str = ""
+) -> tuple[list[_BatchRow], list[_BatchRow]] | str:
+    """ONE card with a checkbox for each ready row: ``(chosen, left)``, or
+    the answer for a card the member declined or that answered a forged row.
+    ``note`` is one plain sentence after the body, drawn as prose."""
+    context = _fields_block(body)
+    if note:
+        context = "\n".join([context, note])
+    ticked = await _confirm(
+        title=title,
+        detail=detail,
+        context=context,
+        rows=[{"id": r.row_id, "label": r.label, "hint": r.hint, "checked": True} for r in ready],
+    )
+    # The card answers with the ticked ids. `request_confirmation` already
+    # refuses an id it did not offer. This checks again, so a door that
+    # answers anything else writes nothing.
+    if not isinstance(ticked, frozenset) or not ticked:
+        return CANCELLED
+    if not ticked <= {r.row_id for r in ready}:
+        return FORGED_BATCH_ROWS
+    return [r for r in ready if r.row_id in ticked], [r for r in ready if r.row_id not in ticked]
+
+
+async def _apply_batch(chosen: list[_BatchRow]) -> _BatchOutcome:
+    """One write per ticked row, in card order.
+
+    A row that fails does not stop the next row, and nothing raises after the
+    first write: a raise reads to the model as "Function failed", and the
+    model would then do the acts again.
+    """
+    out = _BatchOutcome()
+    for r in chosen:
+        try:
+            result = await r.send()
+        except Exception as exc:  # each row ends in the receipt, never in a raise
+            if isinstance(exc, GatewayRefusal):
+                out.failed.append(f"failed: row {r.index} {r.failed_ref} {_refusal_words(exc)}.")
+            else:
+                out.maybe.add(r.row_id)
+                out.unknown.append(
+                    f"unknown: row {r.index} {r.failed_ref}: the write failed "
+                    f"({type(exc).__name__}), so it may or may not have happened. Read "
+                    "task_detail before a retry."
+                )
+            continue
+        out.made += 1
+        out.ok.add(r.row_id)
+        out.lines.extend(r.done(result))
+    return out
+
+
+def _batch_receipt(
+    words: _BatchWords,
+    head_all: str,
+    out: _BatchOutcome,
+    chosen: list[_BatchRow],
+    left: list[_BatchRow],
+    stuck: list[_BatchRow],
+) -> str:
+    """What the member reads: a count, a row per act done, and a line for
+    each row that was not done, with why."""
+    made = out.made
+    asked = len(chosen) + len(left) + len(stuck)
+    if made == asked:
+        head = head_all
+    else:
+        parts = [
+            f"{words.done} {made} of {asked} {words.nouns(asked)}."
+            if made
+            else f"No {words.noun} of the {asked} is known to be done."
+        ]
+        if stuck:
+            parts.append(f"{len(stuck)} could not {words.do}.")
+        if left:
+            parts.append(f"{len(left)} {'was' if len(left) == 1 else 'were'} unticked.")
+        if out.unknown:
+            parts.append(f"{len(out.unknown)} may have {words.maybe}: read the task before a retry.")
+        if out.failed:
+            parts.append(f"{len(out.failed)} {'was' if len(out.failed) == 1 else 'were'} refused.")
+        head = " ".join(parts)
+    lines = [head, *out.lines, *out.failed, *out.unknown]
+    if out.failed or out.unknown:
+        lines.append(
+            f"stopped: {len(out.failed) + len(out.unknown)} of {len(chosen)} "
+            f"{words.do}{'' if len(chosen) == 1 else 's'} failed."
+        )
+    if made:
+        lines.append(
+            f"The {made} {words.nouns(made)} listed above {words.again}. To retry a row that "
+            f"was {words.undone}, fix it and call {words.tool} with that row only."
+        )
+    lines.extend(f"{words.undone}: row {r.index} {r.ref}: {_row_reason(r.why)}" for r in stuck)
+    lines.extend(f"left out: row {r.index} {r.ref}, unticked on the card." for r in left)
+    return "\n".join(lines)
+
+
+def _json_rows(
+    raw: str, keys: tuple[str, ...], fmt: str, tool: str
+) -> list[dict[str, Any]] | str:
+    """The rows of a batch argument, or the refusal that names the bad row."""
+    try:
+        parsed = json.loads(str(raw or "").strip())
+    except ValueError:
+        return fmt
+    if not isinstance(parsed, list) or not parsed:
+        return fmt
+    if len(parsed) > MAX_BATCH:
+        return f"That is {len(parsed)} rows. The limit for one card is {MAX_BATCH}."
+    for i, item in enumerate(parsed, start=1):
+        if not isinstance(item, dict):
+            return f"Row {i} is not an object. {fmt}"
+        unknown = sorted(set(item) - set(keys))
+        if unknown:
+            return (
+                f"Row {i} has a key that {tool} does not take: {', '.join(unknown)}. "
+                f"The keys are {', '.join(keys)}. Nothing was changed."
+            )
+    return parsed
+
+
+# ── file_tasks: several tasks into their projects ───────────────────────────
+
+#: The keys of one `file_tasks` row.
+FILE_ROW_KEYS = ("task_id", "destination_project_id", "fields")
+
+FILE_FORMAT = (
+    'moves is a JSON list with one object per task, for example [{"task_id": "<full_id>", '
+    '"destination_project_id": "<full_id>"}]. A row may add fields, a JSON object keyed '
+    "by field NAME, for a required field of the destination."
+)
+
+FILE_WORDS = _BatchWords(
+    tool="file_tasks",
+    noun="task",
+    done="Moved",
+    do="move",
+    undone="not moved",
+    maybe="moved",
+    again="moved. Do not move them again",
+)
+
+
+class _FileRow(_BatchRow):
+    """One row of a `file_tasks` call, from the parse to the receipt."""
+
+    def __init__(self, index: int, task_id: str, dest: str, fields: str) -> None:
+        super().__init__(index)
+        self.task_id = task_id
+        self.dest = dest
+        self.fields = fields
+        #: The task as the gateway shows it to the member, once read.
+        self.task: dict[str, Any] = {}
+        #: The destination's name, once read.
+        self.where = ""
+        #: The planned move, once planned.
+        self.move: _Move | None = None
+        #: The subtask question of `_plan_move`, when the task has subtasks
+        #: and the call gave no answer.
+        self.question: _SubtaskQuestion | None = None
+        #: The row whose task is an ancestor of this one and takes its
+        #: subtasks along. This row then moves with it, never on its own.
+        self.carrier: _FileRow | None = None
+        #: A fact for the card row that the plan of `move_task` does not give.
+        self.note = ""
+
+    @property
+    def ready(self) -> bool:
+        return self.move is not None and self.carrier is None
+
+    @property
+    def ref(self) -> str:
+        """How the card and the receipt name the task. A task the member
+        cannot see has no title to show, so its id names it."""
+        return _ref(self.task) if self.task else _hidden(self.task_id)
+
+    @property
+    def failed_ref(self) -> str:
+        return f"{self.ref} to {data(self.where)}"
+
+    @property
+    def hint(self) -> str:
+        """Where the task goes, and what the move costs: `move_task`'s card."""
+        facts: list[str] = []
+        for key, value in (self.move.card if self.move else {}).items():
+            if key == "tasks" or key.startswith("task "):
+                continue
+            if key == "to":
+                facts.append(f"to {value}")
+            elif key.startswith("drops"):
+                facts.append(f"drops {value} (no field for it there)")
+            elif key == "statuses":
+                facts.append("lanes re-pointed by category")
+            elif key == "subtasks":
+                facts.append(str(value))
+            else:
+                facts.append(f"{key}: {value}")
+        if self.note:
+            facts.append(self.note)
+        return _unfence(" · ".join(facts))
+
+    async def send(self) -> Any:
+        assert self.move is not None
+        return await self.move.send()
+
+    def done(self, result: Any) -> list[str]:
+        lines = _task_line({**self.task, "project_id": self.dest, "project_name": self.where})
+        carried = result.get("subtasks_moved") if isinstance(result, dict) else None
+        if isinstance(carried, int) and carried:
+            lines.append(f"subtasks moved with {self.ref}: {carried}")
+        return lines
+
+
+def _file_rows(moves: str) -> list[_FileRow] | str:
+    """The rows of ``moves``, or the refusal that names the bad row."""
+    parsed = _json_rows(moves, FILE_ROW_KEYS, FILE_FORMAT, "file_tasks")
+    if isinstance(parsed, str):
+        return parsed
+    rows: list[_FileRow] = []
+    seen: dict[str, int] = {}
+    for i, item in enumerate(parsed, start=1):
+        try:
+            tid = uuid_of(item.get("task_id"), f"Row {i}: task_id")
+            dest = uuid_of(item.get("destination_project_id"), f"Row {i}: destination_project_id")
+        except GatewayRefusal as exc:
+            return f"{exc} Nothing was changed."
+        if tid in seen:
+            return (
+                f"Rows {seen[tid]} and {i} name the same task. Give each task one "
+                "destination. Nothing was changed."
+            )
+        seen[tid] = i
+        rows.append(_FileRow(i, tid, dest, _row_fields(item.get("fields"))))
+    return rows
+
+
+def _row_fields(raw: Any) -> str:
+    """A row's ``fields`` as `_plan_move` takes it. An empty object or blank
+    text is NO answer: `_plan_move` reads any text as one, and would then
+    refuse a move inside one space or take the one-task route."""
+    if isinstance(raw, dict):
+        return json.dumps(raw) if raw else ""
+    text = str(raw or "").strip()
+    try:
+        parsed = json.loads(text) if text else None
+    except ValueError:
+        return text  # `_plan_move` refuses it with the format, by row
+    return "" if parsed in (None, {}, "") else text
+
+
+async def _file_destinations(rows: list[_FileRow]) -> None:
+    """Read each destination once, and mark the rows that cannot land there.
+
+    A project the member cannot see, an archived project and a folder are
+    named on the card and left out. The read is the member's own: the route
+    answers 404 for a project the member may not see (R5).
+    """
+    for dest in dict.fromkeys(r.dest for r in rows):
+        why, name = "", ""
+        pid = uuid_of(dest, "destination_project_id")
+        try:
+            node = await get(f"/projects/nodes/{pid}")
+        except GatewayRefusal as exc:
+            if not _named_refusal(exc):
+                raise
+            why = f"the destination (id {data(dest[:8])}) is {_refusal_words(exc)}"
+        else:
+            name = str(node.get("name") or "")
+            if node.get("archived_at") or node.get("archived"):
+                why = f"{data(name)} is archived. Restore it first, or pick another project"
+            elif node.get("kind") == "folder":
+                why = f"{data(name)} is a folder. A folder holds projects, not tasks"
+        for r in rows:
+            if r.dest == dest:
+                r.where = name
+                r.why = why
+
+
+async def _file_plan(row: _FileRow, include_subtasks: str) -> None:
+    """Plan one row through `_plan_move`, the planner of `move_task`.
+
+    The task is read first, so the card names it by its number and title,
+    even when its destination already ruled the row out.
+    """
+    try:
+        row.task = (await _task(row.task_id))[1]
+        if row.why:
+            return
+        planned = await _plan_move([row.task_id], row.dest, row.fields, include_subtasks)
+    except GatewayRefusal as exc:
+        if not _named_refusal(exc):
+            raise
+        row.why = _refusal_words(exc)
+        return
+    if isinstance(planned, _Move):
+        row.move = planned
+    elif isinstance(planned, _SubtaskQuestion):
+        row.question, row.why = planned, str(planned)
+    elif planned.startswith("Those tasks are already in"):
+        row.why = f"already in {data(row.where)}"
+    else:
+        row.why = _row_reason(planned)
+
+
+#: The card's one sentence when a subtask row rides with its parent's row.
+RIDER_NOTE = (
+    "A subtask here moves with its parent. To keep it behind, ask to move the parent "
+    "without its subtasks."
+)
+
+#: How far up the tree the family check walks. A deeper tree is a fault.
+_ANCESTOR_STEPS = 8
+
+
+async def _file_family(rows: list[_FileRow], wanted: bool | None) -> None:
+    """A row whose task sits under the task of another row.
+
+    With ``include_subtasks=yes``, the move of the ancestor takes the whole
+    subtree along (`move.py`, `movable_subtree`). A row of its own for the
+    subtask would then race the ancestor's move, and the order of the writes
+    would decide where it lands. So the row rides with its TOPMOST planned
+    ancestor: the card says so, and the receipt reports it from the
+    ancestor's write. With ``no``, both rows move on their own, and the
+    subtask keeps its parent across projects, as the route leaves it.
+    """
+    planned = {r.task_id: r for r in rows if r.move is not None}
+    known = {r.task_id: r.task for r in rows if r.task}
+
+    async def parent_of(task_id: str) -> str:
+        task = known.get(task_id)
+        if task is None:
+            try:
+                task = (await _task(task_id))[1]
+            except GatewayRefusal as exc:
+                if not _named_refusal(exc):
+                    raise
+                return ""
+            known[task_id] = task
+        return str(task.get("parent_task_id") or "")
+
+    for r in rows:
+        if not r.task:
+            continue
+        top: _FileRow | None = None
+        nearest: _FileRow | None = None
+        step = str(r.task.get("parent_task_id") or "")
+        for _ in range(_ANCESTOR_STEPS):
+            if not step or step == r.task_id:
+                break
+            if step in planned:
+                top = planned[step]
+                nearest = nearest or top
+            step = await parent_of(step)
+        if top is None or nearest is None:
+            continue
+        if wanted:
+            r.carrier = top
+        elif r.move is not None:
+            r.note = f"stays a subtask of {nearest.ref}"
+
+
+def _rider_lines(riders: list[_FileRow], out: _BatchOutcome) -> list[str]:
+    """The receipt line of each row that moves with its ancestor."""
+    lines = []
+    for r in riders:
+        top = r.carrier
+        if top is not None and top.row_id in out.ok:
+            lines.append(
+                f"moved with its parent: row {r.index} {r.ref}, with {top.ref} "
+                f"to {data(top.where)}."
+            )
+        elif top is not None and top.row_id in out.maybe:
+            lines.append(
+                f"unknown: row {r.index} {r.ref} may or may not have moved with {top.ref}, "
+                "because the write of that row may or may not have landed. Read task_detail "
+                "before a retry."
+            )
+        elif top is not None:
+            lines.append(
+                f"not moved: row {r.index} {r.ref}: it was to move with {top.ref}, "
+                "which did not move."
+            )
+    return lines
+
+
+def _file_card(
+    movable: list[_FileRow], stuck: list[_FileRow], riders: list[_FileRow]
+) -> dict[str, Any]:
+    """The card body: each destination, each task that moves with its parent,
+    and each task that cannot move, named, with why.
+
+    It holds no count: the rows are the checkboxes, and a count goes stale
+    when the member unticks one (PR #691). A row's hint carries its drops.
+    """
+    card: dict[str, Any] = {}
+    for n, dest in enumerate(dict.fromkeys(r.dest for r in movable), start=1):
+        card[f"destination {n}"] = data(next(r.where for r in movable if r.dest == dest))
+    for n, r in enumerate(riders, start=1):
+        top = r.carrier
+        if top is not None:
+            line = f"{r.ref}: moves with {top.ref} to {data(top.where)}"
+            if r.dest != top.dest:
+                # The row asked for another project, and the parent's move wins.
+                line += f" (not to {data(r.where)})" if r.where else " (not to its own row's project)"
+            card[f"with parent {n}"] = line
+    for n, r in enumerate(stuck, start=1):
+        card[f"cannot move {n}"] = f"{r.ref}: {_first_part(r.why)}"
+    return card
+
+
+def _ask_subtasks_once(rows: list[_FileRow]) -> str:
+    """D-PM-38 for a selection: ONE question, before any card."""
+    named = "; ".join(
+        f"{_ref(r.task)} has {_subtasks_phrase(r.question.subtasks, 'move')}"
+        for r in rows
+        if r.question is not None
+    )
+    return (
+        f"{named}. Ask the member once: move the subtasks too, or only the tasks? In the "
+        "app, the default is: they go with it. Then call file_tasks again with every row "
+        "and include_subtasks=yes or include_subtasks=no. Nothing was changed."
+    )
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+async def file_tasks(moves: str, include_subtasks: str = "") -> str:
+    """File several tasks into their projects with ONE approval, for example
+    an inbox into the right projects. Use it for 2 or more tasks, even when
+    they go to different projects or come from different projects. Never
+    call move_task once for each task. moves is a JSON list with one object
+    per task: {"task_id": "<full_id>", "destination_project_id": "<full_id>"},
+    and fields (optional) answers that destination's REQUIRED fields for that
+    task, keyed by field NAME. The tool plans every move first, as move_task
+    does: what carries over, what drops, and which required field a task
+    lacks. A task that cannot move (a required field it lacks, a project not
+    visible to you, an archived project, a task already there) is named on the
+    card and left out. The member sees ONE card with a checkbox for each
+    task, unticks a wrong one, and approves once. include_subtasks (yes or
+    no) is for every task: when a task has subtasks and no answer is given,
+    the tool asks once, before the card. The receipt names each task moved
+    and each one that was not, with why. Never move a task again that the
+    receipt lists. Moving back is the undo."""
+    rows = _file_rows(moves)
+    if isinstance(rows, str):
+        return rows
+    wanted = _subtasks_wanted(include_subtasks)  # refuses a value that is not yes or no
+    await _file_destinations(rows)
+
+    async def plan(row: _FileRow) -> None:
+        await _file_plan(row, include_subtasks)
+
+    await _each_at_once(rows, plan)
+    if any(r.question is not None for r in rows):
+        return _ask_subtasks_once(rows)
+    await _file_family(rows, wanted)
+    # Grouped by destination, in the order the member gave them.
+    order = list(dict.fromkeys(r.dest for r in rows))
+    movable = sorted((r for r in rows if r.ready), key=lambda r: (order.index(r.dest), r.index))
+    riders = [r for r in rows if r.carrier is not None]
+    stuck = [r for r in rows if not r.ready and r.carrier is None]
+    if not movable:
+        return "\n".join(
+            ["No task of these can move. Nothing was changed."]
+            + [f"not moved: row {r.index} {r.ref}: {_row_reason(r.why)}" for r in stuck]
+        )
+    asked = await _ask_batch(
+        "Move these tasks into their projects?",
+        "one approval for every move · untick a task to leave it out",
+        _file_card(movable, stuck, riders),
+        list(movable),
+        RIDER_NOTE if riders else "",
+    )
+    if isinstance(asked, str):
+        return asked
+    chosen, left = asked
+    out = await _apply_batch(chosen)
+    done_places = len({r.dest for r in chosen if isinstance(r, _FileRow)})
+    head = (
+        f"Moved {out.made} task{'s' if out.made != 1 else ''} into {done_places} "
+        f"project{'s' if done_places != 1 else ''}:"
+    )
+    receipt = _batch_receipt(FILE_WORDS, head, out, chosen, left, list(stuck))
+    return "\n".join([receipt, *_rider_lines(riders, out)])
+
+
+# ── link_tasks_batch: several links between tasks ───────────────────────────
+
+#: The keys of one `link_tasks_batch` row.
+LINK_ROW_KEYS = ("from_task_id", "to_task_id", "type")
+
+LINK_FORMAT = (
+    'links is a JSON list with one object per link, for example [{"from_task_id": '
+    '"<full_id>", "to_task_id": "<full_id>", "type": "blocks"}]. type is blocks (the '
+    "first task blocks the second), relates_to or duplicates, and relates_to when left out."
+)
+
+LINK_WORDS = _BatchWords(
+    tool="link_tasks_batch",
+    noun="link",
+    done="Made",
+    do="link",
+    undone="not linked",
+    maybe="been made",
+    again="exist. Do not link them again",
+)
+
+#: How a card and a receipt say each link type.
+_LINK_VERB = {"blocks": "blocks", "relates_to": "relates to", "duplicates": "duplicates"}
+
+
+class _LinkRow(_BatchRow):
+    """One row of a `link_tasks_batch` call."""
+
+    def __init__(self, index: int, source: str, target: str, kind: str) -> None:
+        super().__init__(index)
+        self.source = source
+        self.target = target
+        self.kind = kind
+        self.src: dict[str, Any] = {}
+        self.dst: dict[str, Any] = {}
+
+    @property
+    def ready(self) -> bool:
+        return not self.why and bool(self.src) and bool(self.dst)
+
+    @property
+    def ref(self) -> str:
+        a = _ref(self.src) if self.src else _hidden(self.source)
+        b = _ref(self.dst) if self.dst else _hidden(self.target)
+        return f"{a} {_LINK_VERB[self.kind]} {b}"
+
+    @property
+    def hint(self) -> str:
+        if self.kind == "blocks":
+            return _unfence(f"{_ref(self.dst)} waits until {_ref(self.src)} is done")
+        if self.kind == "duplicates":
+            return _unfence(f"{_ref(self.src)} is a copy of {_ref(self.dst)}")
+        return "related tasks, with no order between them"
+
+    async def send(self) -> Any:
+        sid = uuid_of(self.source, "from_task_id")
+        tid = uuid_of(self.target, "to_task_id")
+        return await post(
+            f"/projects/tasks/{sid}/links", {"target_task_id": tid, "link_type": self.kind}
+        )
+
+    def done(self, result: Any) -> list[str]:
+        del result
+        return [
+            f"- {_ref(self.src)} · {_LINK_VERB[self.kind]} {_ref(self.dst)}",
+            f"  full_id: {self.source}",
+        ]
+
+
+def _link_rows(links: str) -> list[_LinkRow] | str:
+    """The rows of ``links``, or the refusal that names the bad row."""
+    parsed = _json_rows(links, LINK_ROW_KEYS, LINK_FORMAT, "link_tasks_batch")
+    if isinstance(parsed, str):
+        return parsed
+    rows: list[_LinkRow] = []
+    seen: dict[tuple[str, ...], int] = {}
+    for i, item in enumerate(parsed, start=1):
+        kind = str(item.get("type") or "relates_to").strip().lower()
+        if kind not in LINK_TYPES:
+            return f"Row {i}: type is one of {', '.join(LINK_TYPES)}. Nothing was changed."
+        try:
+            source = uuid_of(item.get("from_task_id"), f"Row {i}: from_task_id")
+            target = uuid_of(item.get("to_task_id"), f"Row {i}: to_task_id")
+        except GatewayRefusal as exc:
+            return f"{exc} Nothing was changed."
+        # `relates_to` reads both ways, so A-B and B-A are one link.
+        ends = tuple(sorted((source, target))) if kind == "relates_to" else (source, target)
+        key = (*ends, kind)
+        if key in seen:
+            return f"Rows {seen[key]} and {i} name the same link. Nothing was changed."
+        seen[key] = i
+        row = _LinkRow(i, source, target, kind)
+        if source == target:
+            row.why = "a task cannot be linked to itself"
+        rows.append(row)
+    return rows
+
+
+def _waits_on(edges: dict[str, set[str]], start: str, goal: str) -> bool:
+    """Does *start* reach *goal* along the ``blocks`` edges the tool knows?"""
+    seen, frontier = {start}, [start]
+    while frontier:
+        node = frontier.pop()
+        for nxt in edges.get(node, ()):
+            if nxt == goal:
+                return True
+            if nxt not in seen:
+                seen.add(nxt)
+                frontier.append(nxt)
+    return False
+
+
+async def _link_plan(rows: list[_LinkRow]) -> None:
+    """Read every task and its links, then mark each row that cannot link.
+
+    A task the member cannot see (the route's own 404, R5), a link that
+    exists already, and a ``blocks`` link that would close a loop are named
+    on the card and left out. The loop check knows the batch's own links and
+    one step of the links that exist. The route checks the whole chain again
+    at the write, and a refusal there is a row of the receipt.
+    """
+    ids = list(dict.fromkeys(t for r in rows for t in (r.source, r.target)))
+    tasks: dict[str, dict[str, Any]] = {}
+    hidden: dict[str, str] = {}
+    links: dict[str, list[dict[str, Any]]] = {}
+
+    async def read(task_id: str) -> None:
+        try:
+            tid, task = await _task(task_id)
+            tasks[task_id] = task
+            links[task_id] = ((await get(f"/projects/tasks/{tid}/relations")) or {}).get(
+                "links"
+            ) or []
+        except GatewayRefusal as exc:
+            if not _named_refusal(exc):
+                raise
+            hidden[task_id] = _refusal_words(exc)
+
+    await _each_at_once(ids, read)
+    # The `blocks` edges that exist, as the relations route lists them.
+    edges: dict[str, set[str]] = {}
+    for task_id, rels in links.items():
+        for link in rels:
+            if link.get("link_type") != "blocks":
+                continue
+            other = str(link.get("id") or "")
+            pair = (task_id, other) if link.get("direction") == "outgoing" else (other, task_id)
+            edges.setdefault(pair[0], set()).add(pair[1])
+    for r in rows:
+        r.src, r.dst = tasks.get(r.source, {}), tasks.get(r.target, {})
+        if r.why:
+            continue
+        gone = [t for t in (r.source, r.target) if t in hidden]
+        if gone:
+            r.why = f"task id {data(gone[0][:8])} is {hidden[gone[0]]}"
+            continue
+        if _link_exists(links.get(r.source, []), r):
+            r.why = "they are linked like this already"
+            continue
+        if r.kind == "blocks":
+            if _waits_on(edges, r.target, r.source):
+                r.why = (
+                    f"that would make a loop: {_ref(r.src)} already waits on {_ref(r.dst)}, "
+                    "so neither could ever finish"
+                )
+                continue
+            edges.setdefault(r.source, set()).add(r.target)
+
+
+def _link_exists(rels: list[dict[str, Any]], row: _LinkRow) -> bool:
+    """Is this link on the source already? ``relates_to`` reads both ways."""
+    for link in rels:
+        if str(link.get("id")) != row.target or link.get("link_type") != row.kind:
+            continue
+        if link.get("direction") == "outgoing" or row.kind == "relates_to":
+            return True
+    return False
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+async def link_tasks_batch(links: str) -> str:
+    """Link many pairs of tasks with ONE approval. Use it for 3 or more
+    links. For 1 or 2 links, use link_tasks. links is a JSON list with one
+    object per link: {"from_task_id": "<full_id>", "to_task_id": "<full_id>",
+    "type": "blocks"}. type is blocks (from blocks to: to waits until from is
+    done), relates_to, or duplicates, and relates_to when left out. The tool
+    checks every link first: a task not visible to you, a link that exists
+    already, and a blocks link that would make a loop are named on the card
+    and left out. The member sees ONE card with a checkbox for each link,
+    unticks a wrong one, and approves once. The receipt names each link made
+    and each one that was not, with why. Never make a link again that the
+    receipt lists. unlink_tasks removes a link."""
+    rows = _link_rows(links)
+    if isinstance(rows, str):
+        return rows
+    await _link_plan(rows)
+    ready = [r for r in rows if r.ready]
+    stuck = [r for r in rows if not r.ready]
+    if not ready:
+        return "\n".join(
+            ["No link of these can be made. Nothing was changed."]
+            + [f"not linked: row {r.index} {r.ref}: {r.why}" for r in stuck]
+        )
+    body = {f"cannot link {k}": f"{r.ref}: {r.why}" for k, r in enumerate(stuck, start=1)}
+    # No count on the card: a count goes stale when the member unticks a row.
+    more = " and the links below" if len(ready) > 1 else ""
+    asked = await _ask_batch(
+        "Make these links between tasks?",
+        f"{ready[0].ref}{more} · untick a link to leave it out",
+        body,
+        list(ready),
+    )
+    if isinstance(asked, str):
+        return asked
+    chosen, left = asked
+    out = await _apply_batch(chosen)
+    head = f"Made {out.made} link{'s' if out.made != 1 else ''}:"
+    return _batch_receipt(LINK_WORDS, head, out, chosen, left, list(stuck))
 
 
 @_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)

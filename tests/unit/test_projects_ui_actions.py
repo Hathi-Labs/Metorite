@@ -497,6 +497,7 @@ def test_the_reader_finds_the_client_objects_and_their_routes() -> None:
         "export.exportPath": [("GET", "/projects/export/tasks.csv")],
         "agentRunsApi.get": [("GET", "/projects/agent-runs/{}")],
         "agentRunsApi.enabled": [("GET", "/projects/agent-runs")],
+        "agentRunsApi.summary": [("GET", "/projects/{}/agent-summary")],
     }
     for name, calls in shapes.items():
         assert methods[name].calls == calls, f"{name}: read {methods[name].calls}"

@@ -744,12 +744,14 @@ async def answer_question(
             # CRM-Q32-8: an admin write of a part clears its proposals. The
             # plan lock is held, so the cursor row comes second.
             await clear_proposals(db, org, [question_id])
-            return answered
     except DBAPIError as exc:
         conflict = _guard_db(exc)
         if conflict is not None:
             raise conflict from exc
         raise
+    # After the commit: the card of this question is closed for each member.
+    await forget_late_answers(org, [question_id])
+    return answered
 
 
 class DismissOut(BaseModel):
@@ -780,6 +782,7 @@ async def dismiss_question(
                                       {"schema": q.hash})
         await refresh_seen(db, org)
         await clear_proposals(db, org, [q.id])
+    await forget_late_answers(org, [q.id])
     return DismissOut(id=q.id)
 
 
@@ -895,6 +898,8 @@ async def accept_best(
         if conflict is not None:
             raise conflict from exc
         raise
+    if not payload.dry_run:
+        await forget_late_answers(org, [q.id for q, _best in guesses])
     return AcceptBestOut(
         dry_run=payload.dry_run,
         items=[BestGuessModel(id=q.id, label=q.label, part=q.part, value=best.value,
@@ -913,6 +918,142 @@ DEFAULT_HOLD_HOURS = 24
 
 #: The Redis namespace of a hold. The key holds the member and the id.
 HOLD_NAMESPACE = "crm_question_hold"
+
+#: The Redis namespace of a late answer of a member (CRM-Q32-8, the late
+#: pick, after the security review). When a member answers a parked CRM
+#: question card late, :func:`record_late_answer` writes ``key(
+#: ANSWERED_NAMESPACE, question id, member)`` with the key of the option
+#: that the member picked, for :data:`LATE_ANSWER_TTL_S`. ``acb_skills.
+#: crm_tools`` reads it once (GETDEL) and takes the pick only when the
+#: choice equals it. The same name lives in ``crm_tools.py``, and a test
+#: holds the two equal.
+ANSWERED_NAMESPACE = "crm_question_answered"
+
+#: How long a late answer waits for the run that sends its pick.
+LATE_ANSWER_TTL_S = 30 * 60
+
+
+def _card_option_key(payload: Any, answer: str) -> tuple[str, str, str] | None:
+    """The CRM question id, the key of the option that *answer* picked, and
+    its label, from the payload of a parked ``questions`` card, or None. The
+    card must ask ONE CRM question, and *answer* must be the label of
+    exactly ONE option of it: ``ask_questions`` cuts a long label, so two
+    options can show one label, and then nothing is recorded. The id and
+    the key come from the card that the server stored, never from the
+    request."""
+    from acb_skills.ask_tools import card_option_key, crm_card_tag
+
+    found = payload.get("questions") if isinstance(payload, Mapping) else None
+    if not isinstance(found, list) or len(found) != 1:
+        return None
+    question = found[0]
+    qid = crm_card_tag(question)
+    if qid is None:
+        return None
+    said = (answer or "").strip()
+    hits = [o for o in question.get("options") or []
+            if isinstance(o, Mapping) and str(o.get("label") or "").strip() == said]
+    if len(hits) != 1:
+        return None
+    key = card_option_key(hits[0])
+    return (qid, key, said) if key else None
+
+
+async def _server_label(org: str, question_id: str, option: str) -> str | None:
+    """The label that the server's own card of *question_id* shows for the
+    option *option* now, or None: the question as ``/ask`` reads it, with
+    its masked samples, through ``crm_tools.card_option_label``. One tenant
+    session of *org*, which the caller took from the session (R5)."""
+    from acb_common.db import bind_tenant, release_tenant
+    from acb_skills.crm_tools import card_option_label
+
+    token = bind_tenant(org)
+    try:
+        async with _tenant_session(org) as db:
+            inputs = await load(db, org, full=False)
+            if inputs is None:
+                return None
+            q = _chat_questions(inputs, True).get(question_id)
+            if q is None:
+                return None
+            inputs = await samples(db, org, inputs, [q])
+            q = _chat_questions(inputs, True).get(question_id)
+            if q is None:
+                return None
+    finally:
+        release_tenant(token)
+    wire = _ask_model(q, inputs, member="", admin=False, held=False).model_dump()
+    return card_option_label(wire, option)
+
+
+async def record_late_answer(org: str, member: str, kind: str, payload: Any,
+                             answer: str) -> bool:
+    """Record the member's late answer of a parked CRM question card, so the
+    pick that the next run sends passes the gate of ``crm_answer_question``
+    once. The org and the member come from the caller's session
+    (``UserContext``), never from the request (R5, R11). Only the human act
+    writes this: a card that nobody answered opens no gate. A Redis fault
+    only logs: the late answer still reaches the chat, and the pick then
+    gives the default."""
+    from acb_common.tenant_redis import key, organization_scope
+
+    if kind != "questions" or not org or "@" not in (member or ""):
+        return False
+    picked = _card_option_key(payload, answer)
+    if picked is None:
+        return False
+    qid, option, label = picked
+    # The card that ``ask_questions`` stored came from the model's JSON. So
+    # the key counts only when the server's own card of that question shows
+    # the same label for it: a forged card ("Yes, continue" over the key
+    # payment_in) records nothing.
+    try:
+        expected = await _server_label(org, qid, option)
+    except Exception as exc:
+        _log.warning("crm.questions.late_answer_check_failed", organization_id=org,
+                     error_type=type(exc).__name__)
+        return False
+    if expected is None or expected != label:
+        _log.info("crm.questions.late_answer_label_mismatch", organization_id=org)
+        return False
+    try:
+        with organization_scope(org):
+            await _redis().setex(key(ANSWERED_NAMESPACE, qid, member.strip().lower()),
+                                 LATE_ANSWER_TTL_S, option)
+    except Exception as exc:
+        _log.warning("crm.questions.late_answer_write_failed", organization_id=org,
+                     error_type=type(exc).__name__)
+        return False
+    return True
+
+
+async def forget_late_answers(org: str, question_ids: Sequence[str], *,
+                       member: str | None = None) -> None:
+    """Remove the late answer of each of *question_ids*: for *member* only,
+    or for each member when *member* is None (an admin wrote the answer). It runs after the commit of the write. Any fault of
+    Redis only logs: the answer stands, and a stale record lets a late
+    pick reach ``/reply``, which checks the question again."""
+    from acb_common.tenant_redis import OUTAGE_ERRORS, key, match, organization_scope
+
+    wanted = [str(i) for i in dict.fromkeys(question_ids) if i]
+    if not wanted:
+        return
+    try:
+        with organization_scope(org):
+            redis = _redis()
+            for qid in wanted:
+                if member is not None:
+                    await redis.delete(key(ANSWERED_NAMESPACE, qid, member))
+                    continue
+                head = key(ANSWERED_NAMESPACE, qid).value + ":"
+                async for raw in redis.scan_iter(match(ANSWERED_NAMESPACE, qid)):
+                    name = raw.decode() if isinstance(raw, bytes) else str(raw)
+                    who = name[len(head):] if name.startswith(head) else ""
+                    if who and ":" not in who:
+                        await redis.delete(key(ANSWERED_NAMESPACE, qid, who))
+    except Exception as exc:  # the write committed: a clear never fails it
+        _log.warning("crm.questions.shown_clear_failed", organization_id=org,
+                     error_type=type(exc).__name__, outage=isinstance(exc, OUTAGE_ERRORS))
 
 #: The most ids that one card read takes.
 ASK_IDS_MAX = 2
@@ -1305,19 +1446,23 @@ async def reply_question(
                 if q.reason == qs.REASON_ANSWERED:
                     raise _bad_choice()
                 await hold(org, member, q.id)
-                return ReplyOut(id=q.id, kind=q.kind, result="default",
-                                line="Metorite uses the default for you for 24 hours.")
-            ok, value = qs.chat_choice(q, choice)
-            if not ok:
-                raise _bad_choice()
-            if admin:
-                return await _admin_reply(db, org, by, q, value, inputs)
-            return await _member_reply(db, org, member, q, value, inputs)
+                out = ReplyOut(id=q.id, kind=q.kind, result="default",
+                               line="Metorite uses the default for you for 24 hours.")
+            else:
+                ok, value = qs.chat_choice(q, choice)
+                if not ok:
+                    raise _bad_choice()
+                out = (await _admin_reply(db, org, by, q, value, inputs) if admin
+                       else await _member_reply(db, org, member, q, value, inputs))
     except DBAPIError as exc:
         conflict = _guard_db(exc)
         if conflict is not None:
             raise conflict from exc
         raise
+    # After the commit: the pick closes the card of this member. An admin's
+    # answer closes it for each member, because the question is answered.
+    await forget_late_answers(org, [q.id], member=None if out.result == "answer" else member)
+    return out
 
 
 # ── The check of a sum (CRM-Q32-9, §18.14.10) ───────────────────────────────
@@ -1410,6 +1555,7 @@ async def sum_check(
 
 
 __all__ = [
+    "ANSWERED_NAMESPACE",
     "ASK_IDS_MAX",
     "DEFAULT_HOLD_HOURS",
     "QUESTIONS_OFF",
@@ -1433,6 +1579,7 @@ __all__ = [
     "clear_proposals",
     "count_open",
     "dismiss_question",
+    "forget_late_answers",
     "held_ids",
     "hold",
     "list_questions",
@@ -1442,6 +1589,7 @@ __all__ = [
     "questions_after_run",
     "questions_card",
     "questions_off",
+    "record_late_answer",
     "refresh_seen",
     "reply_question",
     "samples",

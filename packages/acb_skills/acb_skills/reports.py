@@ -371,6 +371,13 @@ async def make_report(spec: dict[str, Any]) -> dict[str, Any]:
         report = check_report(spec)
     except (ValueError, TypeError, OverflowError) as exc:
         return {"ok": False, "error": str(exc)}
+    # Each chart of the card, the kept file and the PDF draws in the member's
+    # number system, which the server writes (whatsapp_assistant_channel.md
+    # §13.10). The kept `.report.json` carries it, so a later view agrees.
+    from acb_common.number_system import stamp_report
+
+    wa_mod = importlib.import_module("acb_skills.write_artifact")
+    stamp_report(report, wa_mod.run_numbering())
     given = spec.get("filename") if isinstance(spec.get("filename"), str) else ""
     slug = slug_of(report["title"], given)
     # The card's own validator, on the data the card gets, before any file.

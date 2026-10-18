@@ -122,6 +122,36 @@ _UPSERT_SQL = (
     f"RETURNING {_PUBLIC_COLUMNS}"
 )
 
+#: A connection that holds NO secret (WS-54 GH-3, the GitHub App). The App's
+#: key is the operator's (D56), so the customer row keeps no blob at all.
+#: ``credentials_encrypted`` is set to NULL, so a token row that becomes an
+#: App row loses its token in the same statement.
+_UPSERT_NO_SECRET_SQL = (
+    "INSERT INTO integration_connections (organization_id, provider, "
+    "owning_app, scope_kind, member_email, status, provider_meta, "
+    "credentials_encrypted, scopes, connected_by, last_error, created_at, "
+    "updated_at) VALUES (CAST(:org AS uuid), :provider, :owning_app, "
+    ":scope_kind, :member_email, 'connected', CAST(:provider_meta AS jsonb), "
+    "NULL, :scopes, :connected_by, NULL, now(), now()) "
+    "ON CONFLICT (organization_id, provider, owning_app, scope_kind, "
+    "(COALESCE(member_email, ''))) DO UPDATE SET status = 'connected', "
+    "provider_meta = EXCLUDED.provider_meta, credentials_encrypted = NULL, "
+    "scopes = EXCLUDED.scopes, connected_by = EXCLUDED.connected_by, "
+    "last_error = NULL, updated_at = now() "
+    f"RETURNING {_PUBLIC_COLUMNS}"
+)
+
+#: Set the status and ``last_error`` of one row, for a provider event (the
+#: GitHub App uninstall, suspend and unsuspend, GH-4). ``disconnected`` also
+#: drops the blob, as :func:`disconnect` does.
+_SET_STATUS_SQL = (
+    "UPDATE integration_connections SET status = :status, last_error = :code, "
+    "credentials_encrypted = CASE WHEN :status = 'disconnected' THEN NULL "
+    "ELSE credentials_encrypted END, updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    f"RETURNING {_PUBLIC_COLUMNS}"
+)
+
 _UPDATE_TOKENS_SQL = (
     "UPDATE integration_connections SET credentials_encrypted = :blob, "
     "provider_meta = provider_meta || CAST(:provider_meta AS jsonb), "
@@ -576,6 +606,56 @@ async def save_credential(
     profiles_sql = _STALE_PROFILES_SQL if keep_profile else _DROP_PROFILES_SQL
     await db.execute(text(profiles_sql), {"id": str(row.id), "org": str(row.organization_id)})
     return _connection(row)
+
+
+async def save_no_secret(
+    db: Any,
+    org: str,
+    provider: str,
+    owning_app: str,
+    *,
+    provider_meta: dict[str, Any],
+    connected_by: str,
+    scopes: Sequence[str] = (),
+) -> Connection:
+    """Insert or update an org connection that holds no secret (WS-54 GH-3).
+
+    The row is ``connected`` with NO blob: an existing blob is set to NULL.
+    *provider_meta* goes to a PLAIN column, so it must hold public facts only.
+    A unique index of the provider (the GitHub installation, migration 282)
+    can refuse the write with an ``IntegrityError``. The caller maps it.
+    """
+    params = _key(org, provider, owning_app, SCOPE_ORG, None)
+    params["member_email"] = params.pop("member") or None
+    params.update(
+        provider_meta=json.dumps(dict(provider_meta)),
+        scopes=list(scopes),
+        connected_by=(connected_by or "").strip().lower() or None,
+    )
+    row = (await db.execute(text(_UPSERT_NO_SECRET_SQL), params)).first()
+    return _connection(row)
+
+
+#: The values that :func:`set_status` may write. ``needs_reset`` stays with
+#: its own writer (:func:`mark_needs_reset`), because it keeps the blob.
+_EVENT_STATUSES = frozenset({STATUS_CONNECTED, STATUS_NEEDS_RECONNECT, STATUS_DISCONNECTED})
+
+
+async def set_status(
+    db: Any, org: str, connection_id: str, status: str, code: str | None,
+) -> Connection | None:
+    """Set the status of one row after a provider event, and ``last_error``.
+
+    *code* is kept only when it looks like a short word (:func:`safe_error_code`),
+    and ``None`` clears it. ``disconnected`` also drops the blob.
+    """
+    if status not in _EVENT_STATUSES:
+        raise ValueError("an event sets connected, needs_reconnect or disconnected")
+    row = (await db.execute(text(_SET_STATUS_SQL), {
+        "id": str(connection_id), "org": str(org), "status": status,
+        "code": safe_error_code(code) if code else None,
+    })).first()
+    return _connection(row) if row is not None else None
 
 
 async def update_tokens(

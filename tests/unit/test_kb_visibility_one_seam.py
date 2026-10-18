@@ -20,11 +20,14 @@ a write of the indexer, and it is not a read.
 The check is per statement, not per function. A function that calls the
 clause for one query and reads ``kb_pages`` raw in a second query fails.
 
-Integrity reads. Two reads look at pages the caller may not see, because a
+Integrity reads. Four reads look at pages the caller may not see, because a
 rule of the tree needs them: the children of a page (a move to another space
 refuses a page with children) and the ancestors of a page (a move refuses a
-cycle). A third reads the chunks that wait for a vector, for the embed job,
-which has no member. None returns a page or a chunk to a caller. Each is
+cycle). A third reads all the siblings of a page, because a move renumbers
+them 0 to n, and a fourth reads their highest place, for a create (KB-2e).
+A fifth and a sixth read the chunks that wait for a
+vector, for the embed job and the embed sweep, which apply no member's
+clause. None returns a page or a chunk to a caller. Each is
 listed in ``_INTEGRITY_READS`` with its reason, and the list fails when it
 goes stale.
 """
@@ -68,11 +71,30 @@ _INTEGRITY_READS: dict[tuple[str, str], str] = {
         "The walk passes through pages the caller may not see. It returns ids "
         "for a membership test and never a row."
     ),
+    ("core.py", "sibling_rows"): (
+        "A move renumbers ALL the siblings 0 to n (KB-2e), so a sibling the "
+        "caller cannot see keeps its place. Only pages._place reads the ids "
+        "and sort keys, to write positions. Nothing of it reaches the caller: "
+        "the move answer is the rank among the VISIBLE siblings."
+    ),
+    ("core.py", "next_position"): (
+        "A create puts the page after the last sibling, a hidden one too "
+        "(KB-2e). It returns one integer, which the INSERT stores. No answer "
+        "carries a stored position: each gives the rank among the siblings "
+        "the caller sees (pages._rank, page_dict)."
+    ),
     ("index.py", "select_pending"): (
         "The embed job of KB-3 reads the chunks of one page, already loaded "
         "and written by the route, that have no vector. It runs after the "
         "commit with no member, and it hands the text to the embed door "
         "only, never to a person."
+    ),
+    ("sweep.py", "select_waiting"): (
+        "The embed sweep of KB-3c reads the oldest chunks of published pages "
+        "that have no vector, for each org on KNOWLEDGE_EMBED. It runs in a "
+        "background loop with no member to apply the clause for. It hands "
+        "the text to the embed door only, and it returns no page, no chunk "
+        "and no text to a person. The author columns name who pays."
     ),
 }
 

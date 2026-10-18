@@ -185,7 +185,7 @@ export function parseCardBody(context: string | undefined): CardBody {
     const last = fields[fields.length - 1];
     if (numbered && last && runKey(last.key) === numbered) {
       last.values = [...(last.values ?? [last.value]), value];
-      last.label = plural(fieldSpec(key).label);
+      last.label = fieldSpec(key).plural ?? plural(fieldSpec(key).label);
       continue;
     }
     fields.push({ key, label: fieldSpec(key).label, value });

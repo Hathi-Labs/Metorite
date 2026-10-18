@@ -259,9 +259,14 @@ async def add_memories(
     client = _get_mem0()
     if client is None:
         return {"status": "mem0_disabled"}
+    # WS-54 fix round 4, item 2: the chat sends its turns here
+    # (chatMemorySave.ts). A SETUP marker of the model must not reach Mem0.
+    from acb_common.setup_markers import redact_tree
+
+    messages = redact_tree(req.messages)
     # Fire-and-forget: don't block the response
     asyncio.create_task(
-        client.add(scope, req.messages, agent_id=req.agent_id)
+        client.add(scope, messages, agent_id=req.agent_id)
     )
     return {"status": "queued", "message_count": len(req.messages)}
 

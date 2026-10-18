@@ -137,6 +137,15 @@ JOBS: tuple[Job, ...] = (
         None, "/integrations?view=agents"),
     Job("find-person", "Find a colleague", "find a colleague, or who knows or does something",
         "people", "/people"),
+    # WS-61 KB-12 (knowledge_base.md §11). The jobs landed with the promotion
+    # to live, because this list filters by feature and not by launch status.
+    # A link job, and a form that saves nothing.
+    Job("find-knowledge", "Find in Knowledge",
+        "find a page, a policy, a handbook entry or a how-to the company wrote down",
+        "knowledge", "/knowledge/search"),
+    Job("write-page", "Write a page",
+        "write a new page of company knowledge, such as a policy, a handbook entry or a how-to",
+        "knowledge", "/knowledge?do=write-page"),
     Job("edit-profile", "Update my profile", "change their own profile, skills, CV or working hours",
         None, "/people/me"),
     Job("appearance", "Change how Metorite looks", "change the theme, dark or light mode, density or accent",

@@ -54,6 +54,8 @@ import {
 import { FieldManager } from "./components/FieldManager";
 import { DeleteProjectDialog } from "./components/DeleteProjectDialog";
 import { MoveDialog } from "./components/MoveDialog";
+import { AgentWorkStrip } from "./components/AgentWorkStrip";
+import { AskAgentDialog } from "./components/AskAgentDialog";
 import { MergeTasksDialog } from "./components/MergeTasksDialog";
 import { MoveTasksDialog } from "./components/MoveTasksDialog";
 import { useSubtaskComplete } from "./components/useSubtaskComplete";
@@ -84,7 +86,13 @@ import { TimelineView } from "./components/TimelineView";
 import { TableView } from "./components/TableView";
 import { TaskBoard } from "./components/TaskBoard";
 import { TaskList } from "./components/TaskList";
-import { isWaitingOnMe } from "./lib/agentRuns";
+import {
+  type AgentFocus,
+  type AgentSummary,
+  isAgentWork,
+  isWaitingOnMe,
+  matchesAgentFocus,
+} from "./lib/agentRuns";
 import { TaskPanel } from "./components/TaskPanel";
 import type { TaskWhere } from "@/components/TaskPanelHeader";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
@@ -812,6 +820,20 @@ function ProjectsWorkspace() {
    */
   const [waitingOnMe, setWaitingOnMe] = useState(false);
   const [agentRunsOn, setAgentRunsOn] = useState(false);
+  /**
+   * WS-55 EA-13e (EA3-43, EA3-49) — "Agent work" and the count button of the
+   * strip. Page state like "Waiting on me": both filter the loaded rows in
+   * the browser. `agentSummary` is the strip's five counts, read from the
+   * gateway for the project on screen. `askingTasks` holds the tasks of the
+   * open "Ask an agent" dialog, or null while it is closed.
+   */
+  const [agentWork, setAgentWork] = useState(false);
+  const [agentFocus, setAgentFocus] = useState<AgentFocus | null>(null);
+  const [agentSummary, setAgentSummary] = useState<{
+    projectId: string;
+    counts: AgentSummary;
+  } | null>(null);
+  const [askingTasks, setAskingTasks] = useState<string[] | null>(null);
   useEffect(() => {
     let live = true;
     void agentRunsApi.enabled().then((on) => {
@@ -2036,6 +2058,34 @@ function ProjectsWorkspace() {
     };
   }, [selected]);
 
+  // WS-55 EA-13e — the strip's five counts for the project on screen. One read
+  // when the project changes and when an agent fact of a loaded row changes
+  // (a run starts, a pull request merges), never one for each poll.
+  const agentSig = useMemo(
+    () =>
+      tasks
+        .map((t) => `${t.id}|${t.agent_state ?? ""}|${t.pr?.state ?? ""}|${t.pr?.checks_state ?? ""}`)
+        .join(","),
+    [tasks]
+  );
+  const summaryProject = selected?.id ?? null;
+  useEffect(() => {
+    if (!agentRunsOn || !summaryProject) return;
+    let live = true;
+    void agentRunsApi
+      .summary(summaryProject)
+      .then((counts) => {
+        if (live) setAgentSummary({ projectId: summaryProject, counts });
+      })
+      .catch(() => {
+        // The strip is decoration beside the board. A failed read hides it.
+        if (live) setAgentSummary(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, [agentRunsOn, summaryProject, agentSig]);
+
   const projectName = useCallback(
     (id: string) =>
       flatten(roots).find((entry) => entry.node.id === id)?.node.name ?? "Project",
@@ -2049,7 +2099,12 @@ function ProjectsWorkspace() {
     () =>
       groupTasks(
         visibleTasks(
-          waitingOnMe ? tasks.filter((t) => isWaitingOnMe(t, me)) : tasks,
+          tasks.filter(
+            (t) =>
+              (!waitingOnMe || isWaitingOnMe(t, me)) &&
+              (!agentWork || isAgentWork(t)) &&
+              (!agentFocus || matchesAgentFocus(t, agentFocus, me))
+          ),
           subtaskMode,
         ),
         groupBy,
@@ -2058,7 +2113,7 @@ function ProjectsWorkspace() {
           projectName,
         },
       ),
-    [tasks, subtaskMode, groupBy, statuses, projectName, waitingOnMe, me]
+    [tasks, subtaskMode, groupBy, statuses, projectName, waitingOnMe, agentWork, agentFocus, me]
   );
 
   const onScreen = useMemo(() => visibleIds(groups), [groups]);
@@ -3811,6 +3866,8 @@ function ProjectsWorkspace() {
           me={me}
           waitingOnMe={waitingOnMe}
           onWaitingOnMe={agentRunsOn ? setWaitingOnMe : undefined}
+          agentWork={agentWork}
+          onAgentWork={agentRunsOn ? setAgentWork : undefined}
           people={people}
           tags={tags}
           shownFields={shownFields}
@@ -3827,6 +3884,19 @@ function ProjectsWorkspace() {
           onUpdateView={(view) => void updateView(view)}
           canSave={Boolean(selected)}
           onExport={exportCsv}
+        />
+      ) : null}
+
+      {selected && !overview && agentRunsOn ? (
+        <AgentWorkStrip
+          summary={agentSummary?.projectId === selected.id ? agentSummary.counts : null}
+          // The "waiting" button IS the "Waiting on me" filter, so the two
+          // never disagree about what is on.
+          focus={waitingOnMe ? "waiting" : agentFocus}
+          onFocus={(next) => {
+            setWaitingOnMe(next === "waiting");
+            setAgentFocus(next === "waiting" ? null : next);
+          }}
         />
       ) : null}
 
@@ -3858,6 +3928,7 @@ function ProjectsWorkspace() {
             setMergeError(null);
             setMergingTasks([...picked]);
           }}
+          onAskAgent={agentRunsOn ? () => setAskingTasks([...picked]) : undefined}
         />
       ) : null}
 
@@ -4052,6 +4123,8 @@ function ProjectsWorkspace() {
               filters={filters}
               onClearFilters={() => changeFilters(EMPTY_FILTERS)}
               waitingOnMe={waitingOnMe}
+              agentWork={agentWork}
+              me={me}
               lanes={lanes}
               onToggleLane={(key) =>
                 setLanes((current) => ({
@@ -4087,6 +4160,7 @@ function ProjectsWorkspace() {
                 setMergeError(null);
                 setMergingTasks([taskId]);
               }}
+              onAskAgent={agentRunsOn ? (taskId) => setAskingTasks([taskId]) : undefined}
               onExtendSelection={extendSelection}
               onSelect={(task) => void openWithStatuses(task)}
               onDrop={handleDrop}
@@ -4100,6 +4174,8 @@ function ProjectsWorkspace() {
               filters={filters}
               onClearFilters={() => changeFilters(EMPTY_FILTERS)}
               waitingOnMe={waitingOnMe}
+              agentWork={agentWork}
+              me={me}
               statuses={statuses}
               tags={tags}
               taskTypes={taskTypes}
@@ -4165,6 +4241,7 @@ function ProjectsWorkspace() {
     <TaskPanel
       where={openWhere(openTask)}
       personLabels={personLabels}
+      me={me}
       /**
        * ⚠️ People the BOARD never saw.
        *
@@ -4293,6 +4370,22 @@ function ProjectsWorkspace() {
           they can mean. Fetching every task in the project to populate a
           picker would be a second, unfiltered read of a list the page
           already holds. */}
+      {/* WS-55 EA-13e — "Ask an agent" for one task (the card menu) or for the
+          selection (the bulk bar). Keyed by its tasks, so a new ask starts clean. */}
+      <AskAgentDialog
+        key={`ask:${askingTasks?.join(",") ?? "none"}`}
+        open={askingTasks !== null}
+        tasks={(askingTasks ?? []).map((id) => ({
+          id,
+          title: tasks.find((t) => t.id === id)?.title,
+        }))}
+        onClose={() => setAskingTasks(null)}
+        onFinished={() => {
+          // Each started run is a pill on its card: read the project again.
+          if (selected) void loadProject(selected);
+        }}
+      />
+
       <MergeTasksDialog
         key={`merge:${mergingTasks?.join(",") ?? "none"}`}
         sources={mergingTasks}

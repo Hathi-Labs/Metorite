@@ -1,0 +1,424 @@
+#!/bin/bash
+# acb-staging-flag — set or clear a feature flag in the STAGING box's .env.
+#
+# HANDOFF H-358 (WS-61). The `dev` account that the agent sessions run as has no
+# sudo on the staging box, and /opt/acb/app/.env is acb:acb 0600. So each flag
+# needed the owner at a root terminal. This script is the one narrow door: the
+# owner installs it root-owned, and grants `dev` this one file through sudoers.
+#
+#   install -o root -g root -m 755 /opt/acb/app/deploy/hostinger/staging/acb-staging-flag /usr/local/sbin/acb-staging-flag
+#   /etc/sudoers.d/acb-staging-flag:  dev ALL=(root) NOPASSWD: /usr/local/sbin/acb-staging-flag
+#
+# Usage:
+#   acb-staging-flag --list
+#   acb-staging-flag [--no-restart] set KEY VALUE [KEY VALUE ...]
+#   acb-staging-flag [--no-restart] unset KEY [KEY ...]
+# `--no-restart` may also come last.
+#
+# Exit codes: 0 done, 1 the write or the health check failed, 2 refused.
+#
+# The rules, each fenced by tests/unit/test_acb_staging_flag.py:
+#   1. Staging only. The env file must say exactly DEPLOY_ENV=staging, read
+#      with the strict parse of scripts/vps_apply.sh. Anything else refuses.
+#   2. The file is fixed. ACB_STAGING_FLAG_ENV_FILE moves it for a test, and
+#      only when the script does NOT run as root. sudo resets the environment
+#      too, so it cannot carry that name.
+#   3. A key must be one of the exact names in ALLOWED_KEYS, and match no deny
+#      word. Deny wins. A NEXT_PUBLIC_* key is always refused. A requested key
+#      that the file names in an odd form (`export KEY=`, ` KEY=`) is refused.
+#   4. A value holds only [A-Za-z0-9_.,:@*+/-], 1 to 512 characters.
+#   5. Root does NO file work. /opt/acb/app belongs to acb, so a path there can
+#      be a symlink that acb swapped in. Each read and each write runs as acb
+#      (as_owner), so it reaches only what acb can reach already.
+#   6. A backup first (cp -p, the newest 20 kept), then one line per key,
+#      written INTO the same inode (deploy/AGENTS.md, WS-49 BH-2).
+#   7. Each key that `set` writes goes into .staging-flags beside the env file,
+#      so the nightly refresh does not copy production's value over it.
+#   8. A restart of acb-gateway, then a wait for /health.
+#   9. One syslog line that names the keys and the user, never a value.
+set -euo pipefail
+set -f   # A value may hold `*`. No word in this script is ever a glob.
+# sudo keeps LANG and LC_*. Under a UTF-8 locale, [A-Z] also matches a
+# non-ASCII capital such as U+212A, which Python lowercases to `k`. So every
+# regex below runs in the C locale.
+export LC_ALL=C
+unset BASH_ENV ENV CDPATH
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+umask 077
+# acb may not be able to enter the caller's folder, and each path here is absolute.
+cd /
+
+readonly FIXED_ENV_FILE=/opt/acb/app/.env
+readonly OWNER=acb
+readonly HEALTH_URL=http://127.0.0.1:8080/health
+readonly HEALTH_WAIT_S=90
+readonly BACKUPS_KEPT=20
+
+refuse() { printf 'acb-staging-flag: refused: %s\n' "$*" >&2; exit 2; }
+fail()   { printf 'acb-staging-flag: FAILED: %s\n' "$*" >&2; exit 1; }
+usage()  {
+  printf '%s\n' \
+    'usage: acb-staging-flag --list' \
+    '       acb-staging-flag [--no-restart] set KEY VALUE [KEY VALUE ...]' \
+    '       acb-staging-flag [--no-restart] unset KEY [KEY ...]' >&2
+  exit 2
+}
+
+# ── 2. The file ──────────────────────────────────────────────────────────────
+# Root ALWAYS uses the fixed path, so a sudo caller cannot point root at a
+# different file. The override exists only for a test that runs as a normal
+# user, and under it the script restarts nothing and writes no syslog line.
+ENV_FILE="$FIXED_ENV_FILE"
+TEST_MODE=0
+if [ "$EUID" -ne 0 ] && [ -n "${ACB_STAGING_FLAG_ENV_FILE:-}" ]; then
+  ENV_FILE="$ACB_STAGING_FLAG_ENV_FILE"
+  TEST_MODE=1
+fi
+unset ACB_STAGING_FLAG_ENV_FILE
+PIN_FILE="$(dirname -- "$ENV_FILE")/.staging-flags"
+
+# ── 5. The file work, as the owner of the file ──────────────────────────────
+# Every read and every write of ENV_FILE, PIN_FILE, a temp file and a backup is
+# in one of the fs_* functions below. They run ONLY through as_owner, in a new
+# bash as acb (or as the caller, under the test override). Root keeps
+# systemctl and logger. A test checks that no file work sits outside them.
+as_owner() {
+  local fn="$1"
+  shift
+  local prog
+  prog="$(declare -f fs_read fs_write_env fs_write_pin); set -euo pipefail; umask 077; $fn \"\$@\""
+  if [ "$EUID" -eq 0 ]; then
+    setpriv --reuid="$OWNER" --regid="$OWNER" --clear-groups -- /bin/bash -c "$prog" fs "$@"
+  else
+    /bin/bash -c "$prog" fs "$@"
+  fi
+}
+
+# fs_read FILE [optional]: print FILE. Exit 2 when it is a symlink, not a
+# regular file, or unreadable. With `optional`, a missing file prints nothing.
+fs_read() {
+  local f="$1" opt="${2:-}"
+  if [ -L "$f" ]; then echo "acb-staging-flag: refused: $f is a symlink" >&2; exit 2; fi
+  if [ ! -e "$f" ] && [ "$opt" = optional ]; then exit 0; fi
+  if [ ! -f "$f" ]; then echo "acb-staging-flag: refused: $f does not exist, so this is not a known staging box" >&2; exit 2; fi
+  if [ ! -r "$f" ]; then echo "acb-staging-flag: refused: $f cannot be read, so DEPLOY_ENV is unknown" >&2; exit 2; fi
+  cat -- "$f"
+}
+
+# fs_write_env FILE KEPT: write stdin INTO FILE (the same inode), after a
+# backup. Print the backup path. Keep the newest KEPT backups.
+fs_write_env() {
+  local f="$1" kept="$2" dir base tmp stamp bak n old
+  dir="$(dirname -- "$f")"
+  base="$(basename -- "$f")"
+  if [ -L "$f" ] || [ ! -f "$f" ]; then echo "acb-staging-flag: refused: $f is not a regular file" >&2; exit 2; fi
+  tmp="$(mktemp "$dir/.env-edit.XXXXXX")"
+  cat > "$tmp"
+  stamp="$(date -u +%Y%m%dT%H%M%S.%NZ)"
+  bak="$f.bak-$stamp"
+  n=1
+  while [ -e "$bak" ] || [ -L "$bak" ]; do bak="$f.bak-$stamp-$n"; n=$((n + 1)); done
+  if ! cp -p -- "$f" "$bak"; then
+    rm -f -- "$tmp"
+    echo "acb-staging-flag: FAILED: could not write the backup $bak. $f is unchanged." >&2
+    exit 1
+  fi
+  # The write truncates first. ENOSPC or a kill in the middle leaves a short
+  # file, so compare, and keep the full copy beside it when they differ.
+  if ! cat -- "$tmp" > "$f" || ! cmp -s -- "$tmp" "$f"; then
+    mv -- "$tmp" "$f.flag-failed-$stamp" 2>/dev/null || true
+    echo "acb-staging-flag: FAILED: the write of $f did not complete. The backup is $bak, and the full new copy is $f.flag-failed-$stamp." >&2
+    exit 1
+  fi
+  rm -f -- "$tmp"
+  chmod 600 -- "$f"
+  # The stamp sorts by time, so all but the last KEPT names are the oldest.
+  find "$dir" -maxdepth 1 -type f -name "$base.bak-*" -printf '%f\0' \
+    | sort -z | head -z -n "-$kept" \
+    | while IFS= read -r -d '' old; do rm -f -- "$dir/$old"; done
+  printf '%s\n' "$bak"
+}
+
+# fs_write_pin FILE: replace FILE with stdin, mode 600. The pin file is not a
+# bind mount, so a temp file and `mv` is right here.
+fs_write_pin() {
+  local f="$1" tmp
+  if [ -L "$f" ]; then echo "acb-staging-flag: refused: $f is a symlink" >&2; exit 2; fi
+  tmp="$(mktemp "$(dirname -- "$f")/.staging-flags.XXXXXX")"
+  cat > "$tmp"
+  chmod 600 -- "$tmp"
+  mv -f -- "$tmp" "$f"
+}
+
+# read_file FILE [optional]: the content of FILE, read as the owner, into the
+# global READ. The `x` keeps a trailing newline through the substitution.
+read_file() {
+  local out
+  out="$(as_owner fs_read "$@" && printf x)" || exit 2
+  READ="${out%x}"
+}
+
+# ── 3. The key rules ─────────────────────────────────────────────────────────
+readonly NAME_RE='^[A-Z][A-Z0-9_]{1,63}$'
+# EXACT names, never a glob (fix round 1). A glob such as *_ENABLED let in
+# owner-gated, money and third-party switches. Each name below is read in
+# packages/acb_common/acb_common/settings.py. None is owner-only, none spends
+# money and none reaches an outside party, with ONE exception:
+# KNOWLEDGE_EMBED (and KNOWLEDGE_EMBED_SWEEP, which lands with KB-3c) spends
+# tier-embed credits. The owner asked for embeddings on staging, so it stays.
+# Left out on purpose: DECIDE_ENABLED (owner-only, it sends content to a third
+# party), DECIDE_FEATURE_MODES (owner gate H-166 on a box) and
+# NARROWING_AGENTS (each agent added spends Router credits).
+# deploy/hostinger/staging/README.md lists the same names.
+readonly ALLOWED_KEYS=(
+  KNOWLEDGE_ENABLED
+  KNOWLEDGE_ORGS
+  KNOWLEDGE_EMBED
+  KNOWLEDGE_EMBED_SWEEP
+  COMPANY_SEARCH_ENABLED
+  CONTEXT_RECENCY
+  MY_DAY_PROVIDERS
+  ARTIFACT_REGISTRY_ENABLED
+  CRM_ENABLED
+  CRM_ORGS
+)
+# The second wall. A secret or a place, matched anywhere in the name.
+readonly DENY_RE='(KEY|SECRET|TOKEN|PASSWORD|PASS|DSN|URL|HOST|PORT|PRIVATE|CRED|AUTH|DATABASE|DEPLOY_ENV|ACB_MASTER)'
+# A switch that reaches a person or a third party. Staging holds a copy of
+# production's people, and its outbound switches stay off
+# (staging_and_daily_release.md §5.10 item 3). This is the `held` list of
+# scripts/staging_refresh.sh step 6, which keeps them off each night.
+readonly HELD_RE='(WHATSAPP|MEETING_BOT|EMAIL|REACH_|INVITE|CUSTOMER_CONSOLE|SELF_SERVE|SIGNUP|GMAIL|MSFT|SYNC|SEND|OUTBOUND|NOTIFY|PUSH|DIGEST|WEBHOOK|SMS|SCHEDULER)'
+readonly VALUE_RE='^[A-Za-z0-9_.,:@*+/-]{1,512}$'
+
+in_allowlist() {
+  local k="$1" a
+  for a in "${ALLOWED_KEYS[@]}"; do [ "$k" = "$a" ] && return 0; done
+  return 1
+}
+
+# key_allowed KEY: exit 0 when the key may be read or written.
+key_allowed() {
+  local k="$1"
+  [[ "$k" =~ $NAME_RE ]] || return 1
+  [[ "$k" == NEXT_PUBLIC_* ]] && return 1
+  [[ "$k" =~ $DENY_RE ]] && return 1
+  [[ "$k" =~ $HELD_RE ]] && return 1
+  in_allowlist "$k"
+}
+
+# check_key KEY: refuse the whole command on one bad key. The message names the
+# key and never a value.
+check_key() {
+  local k="$1"
+  [[ "$k" =~ $NAME_RE ]] || refuse "'$k' is not a key name (^[A-Z][A-Z0-9_]{1,63}\$)"
+  # The workbench reads NEXT_PUBLIC_* from workbench/control_plane/.env.local,
+  # and Next.js puts each value into the bundle at `next build`. This file and
+  # a restart cannot change it.
+  [[ "$k" == NEXT_PUBLIC_* ]] && refuse "a NEXT_PUBLIC key needs .env.local and a rebuild; this script cannot set it"
+  [[ "$k" =~ $DENY_RE ]] && refuse "$k names a secret or a place, and is never written here"
+  [[ "$k" =~ $HELD_RE ]] && refuse "$k is an outbound switch, and staging keeps it off (§5.10 item 3)"
+  in_allowlist "$k" || refuse "$k is not on the feature-flag allowlist"
+  return 0
+}
+
+# ── Arguments ────────────────────────────────────────────────────────────────
+RESTART=1
+ACTION=""
+ARGS=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --no-restart) RESTART=0 ;;
+    --list)       [ -z "$ACTION" ] || usage; ACTION=list ;;
+    set|unset)    [ -z "$ACTION" ] || usage; ACTION="$1"; shift; ARGS=("$@"); break ;;
+    *)            usage ;;
+  esac
+  shift
+done
+[ -n "$ACTION" ] || usage
+# --no-restart may also come after the keys. It is never a key or a value.
+rest=()
+for a in "${ARGS[@]+"${ARGS[@]}"}"; do
+  if [ "$a" = "--no-restart" ]; then RESTART=0; else rest+=("$a"); fi
+done
+ARGS=("${rest[@]+"${rest[@]}"}")
+
+# ── Check every key and value before anything is read ───────────────────────
+KEYS=()
+VALUES=()
+case "$ACTION" in
+  list)
+    [ "${#ARGS[@]}" -eq 0 ] || usage ;;
+  set)
+    [ "${#ARGS[@]}" -ge 2 ] && [ $(( ${#ARGS[@]} % 2 )) -eq 0 ] || usage
+    for (( i = 0; i < ${#ARGS[@]}; i += 2 )); do
+      check_key "${ARGS[$i]}"
+      [[ "${ARGS[$((i + 1))]}" =~ $VALUE_RE ]] \
+        || refuse "the value for ${ARGS[$i]} may hold only [A-Za-z0-9_.,:@*+/-], 1 to 512 characters"
+      KEYS+=("${ARGS[$i]}")
+      VALUES+=("${ARGS[$((i + 1))]}")
+    done ;;
+  unset)
+    [ "${#ARGS[@]}" -ge 1 ] || usage
+    for k in "${ARGS[@]}"; do
+      check_key "$k"
+      KEYS+=("$k")
+    done ;;
+esac
+
+# ── The file, read once as the owner, then parsed in memory ─────────────────
+read_file "$ENV_FILE"
+LINES=()
+mapfile -t LINES < <(printf '%s' "$READ")
+for (( i = 0; i < ${#LINES[@]}; i++ )); do LINES[i]="${LINES[i]%$'\r'}"; done
+
+# odd_form NAME: exit 0 when a line names NAME in a form other than NAME=…
+# (`export NAME=`, a leading space, `NAME = …`). systemd skips such a line,
+# and pydantic still reads it.
+odd_form() {
+  local name="$1" line
+  local re="^[[:space:]]*(export[[:space:]]+)?${name}[[:space:]]*="
+  for line in "${LINES[@]+"${LINES[@]}"}"; do
+    [[ "$line" =~ $re ]] && [[ "$line" != "$name="* ]] && return 0
+  done
+  return 1
+}
+
+# ── 1. Staging only ──────────────────────────────────────────────────────────
+# The parse of scripts/vps_apply.sh, made stricter: a missing file refuses
+# here (vps_apply reads it as production), and the last DEPLOY_ENV line must
+# be exactly `DEPLOY_ENV=staging`, with no quotes and no spaces.
+if odd_form DEPLOY_ENV; then
+  refuse "$ENV_FILE names DEPLOY_ENV in a form other than DEPLOY_ENV=<value>"
+fi
+deploy_line=""
+for line in "${LINES[@]+"${LINES[@]}"}"; do
+  if [[ "$line" == DEPLOY_ENV=* ]]; then deploy_line="$line"; fi
+done
+[ "$deploy_line" = "DEPLOY_ENV=staging" ] || refuse "$ENV_FILE does not say DEPLOY_ENV=staging"
+
+# ── --list ───────────────────────────────────────────────────────────────────
+# Each allowlisted key once, with the value of its last line (the value that
+# systemd reads), in the order of its first line. No other line is printed.
+if [ "$ACTION" = list ]; then
+  declare -A last=()
+  order=()
+  for line in "${LINES[@]+"${LINES[@]}"}"; do
+    [[ "$line" =~ ^([A-Z][A-Z0-9_]*)=(.*)$ ]] || continue
+    # Copy both groups first: key_allowed runs its own =~ and resets them.
+    k="${BASH_REMATCH[1]}"
+    v="${BASH_REMATCH[2]}"
+    key_allowed "$k" || continue
+    [ -n "${last[$k]+x}" ] || order+=("$k")
+    last[$k]="$v"
+  done
+  for k in "${order[@]+"${order[@]}"}"; do
+    printf '%s=%s\n' "$k" "${last[$k]}"
+  done
+  exit 0
+fi
+
+for k in "${KEYS[@]}"; do
+  if odd_form "$k"; then
+    refuse "$ENV_FILE names $k in a form other than $k=<value> (export, or a leading space). Repair that line by hand first"
+  fi
+done
+
+# ── 6. The new content ──────────────────────────────────────────────────────
+# The first line of a key takes the new value, each later line of it goes,
+# and a key with no line is appended. `unset` drops every line of the key.
+OLD=("${LINES[@]+"${LINES[@]}"}")
+for (( i = 0; i < ${#KEYS[@]}; i++ )); do
+  k="${KEYS[$i]}"
+  v="${VALUES[$i]:-}"
+  new=()
+  done_k=0
+  for line in "${LINES[@]+"${LINES[@]}"}"; do
+    if [[ "$line" == "$k="* ]]; then
+      if [ "$ACTION" = set ] && [ "$done_k" = 0 ]; then new+=("$k=$v"); done_k=1; fi
+      continue
+    fi
+    new+=("$line")
+  done
+  if [ "$ACTION" = set ] && [ "$done_k" = 0 ]; then new+=("$k=$v"); fi
+  LINES=("${new[@]+"${new[@]}"}")
+done
+
+# unchanged: exit 0 when LINES holds the same lines as OLD.
+unchanged() {
+  local j
+  [ "${#OLD[@]}" -eq "${#LINES[@]}" ] || return 1
+  for (( j = 0; j < ${#OLD[@]}; j++ )); do
+    [ "${OLD[j]}" = "${LINES[j]}" ] || return 1
+  done
+  return 0
+}
+
+# ── 7. The pin file ─────────────────────────────────────────────────────────
+# scripts/staging_refresh.sh step 6 copies production's switches over staging
+# each night. It skips each key named here, so a flag set here stays set.
+# `set` adds the key, and `unset` takes it out, so staging follows production
+# again.
+update_pins() {
+  local p k keep
+  local pins=() out=()
+  read_file "$PIN_FILE" optional
+  mapfile -t pins < <(printf '%s' "$READ")
+  for p in "${pins[@]+"${pins[@]}"}"; do
+    [[ "$p" =~ $NAME_RE ]] || continue
+    keep=1
+    for k in "${KEYS[@]}"; do [ "$p" = "$k" ] && keep=0; done
+    [ "$keep" = 1 ] && out+=("$p")
+  done
+  if [ "$ACTION" = set ]; then out+=("${KEYS[@]}"); fi
+  if [ "${#out[@]}" -eq 0 ]; then
+    printf '' | as_owner fs_write_pin "$PIN_FILE"
+  else
+    printf '%s\n' "${out[@]}" | sort -u | as_owner fs_write_pin "$PIN_FILE"
+  fi
+}
+
+if unchanged; then
+  update_pins
+  echo "acb-staging-flag: no change: ${KEYS[*]}"
+  exit 0
+fi
+
+bak="$(printf '%s\n' "${LINES[@]+"${LINES[@]}"}" | as_owner fs_write_env "$ENV_FILE" "$BACKUPS_KEPT")" \
+  || fail "the write of $ENV_FILE did not complete (see above)"
+update_pins
+echo "acb-staging-flag: $ACTION ${KEYS[*]} in $ENV_FILE (backup $bak)"
+
+# ── 9. The log ───────────────────────────────────────────────────────────────
+who="${SUDO_USER:-$(id -un)}"
+msg="user=$who $ACTION ${KEYS[*]}"
+if [ "$TEST_MODE" = 1 ]; then
+  echo "acb-staging-flag: log: $msg" >&2
+else
+  logger -t acb-staging-flag -- "$msg" || true
+fi
+
+# ── 8. The restart ───────────────────────────────────────────────────────────
+# `acb-gateway` loads /opt/acb/app/.env, so each allowed key takes effect at
+# its restart. No allowed key is a NEXT_PUBLIC_* key, so the workbench never
+# needs a restart here.
+if [ "$RESTART" = 0 ] || [ "$TEST_MODE" = 1 ]; then
+  echo "acb-staging-flag: no restart"
+  exit 0
+fi
+
+systemctl restart acb-gateway || fail "systemctl restart acb-gateway failed. The new $ENV_FILE stays, and the backup is $bak."
+echo "acb-staging-flag: restarted acb-gateway"
+
+# A curl that cannot connect exits non-zero, and `|| true` keeps `set -e` from
+# ending the loop on it.
+deadline=$(( SECONDS + HEALTH_WAIT_S ))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$HEALTH_URL" || true)"
+  if [ "$code" = 200 ]; then
+    echo "acb-staging-flag: $HEALTH_URL answers 200"
+    exit 0
+  fi
+  sleep 2
+done
+fail "$HEALTH_URL did not answer 200 in ${HEALTH_WAIT_S}s after the restart of acb-gateway. The backup is $bak."

@@ -18,6 +18,17 @@ back, or in a file on the box other than the target and its backups.
 
 Every case runs with a temp HOME. None of them reads or writes the real drop
 folder.
+
+WS-54 fix round 1, item 4 (a host pin on each GitHub App entry). The
+mutations, each one red when run (2026-10-18):
+
+* 4-M1 ``push <name>`` skips the pin check ->
+  ``test_a_pinned_entry_refuses_another_host``.
+* 4-M2 ``push --all`` skips no pinned entry ->
+  ``test_push_all_skips_a_pinned_entry_of_another_host``.
+* 4-M3 the ``github-app-key`` entry loses its pin ->
+  ``test_every_github_entry_is_pinned_to_its_box``.
+* 4-M4 the loader takes any ``host`` value -> ``test_a_bad_manifest_fails_loudly``.
 """
 from __future__ import annotations
 
@@ -361,11 +372,17 @@ def test_the_manifest_reader_agrees_with_json() -> None:
     assert got == _flatten(_manifest())
 
 
-def test_the_manifest_ships_the_three_entries() -> None:
+def test_the_manifest_ships_the_entries() -> None:
     m = _manifest()
     # The order is the order of push --all: the public key goes before the key
     # file, so the post-push check of backup-offbox finds both on the box.
-    assert [e["name"] for e in m["entries"]] == ["backup-gpg-public", "backup-offbox", "app-env"]
+    # WS-54 GH-1 (2026-10-18) added the four entries of the two GitHub Apps.
+    # Each key file goes before its env file, so the gateway restart finds the
+    # key. `test_github_app_auth.py` holds their shape.
+    assert [e["name"] for e in m["entries"]] == [
+        "backup-gpg-public", "backup-offbox", "app-env",
+        "github-app-staging-key", "github-app-staging", "github-app-key", "github-app",
+    ]
 
     off = _entry(m, "backup-offbox")
     seven = {
@@ -535,8 +552,82 @@ def test_an_entry_without_the_flag_never_calls_rootenv() -> None:
     assert _rootenv_calls(res["calls"]) == []
 
 
+def test_every_github_entry_is_pinned_to_its_box() -> None:
+    """WS-54 fix round 1, item 4: the staging App goes to metorite-dev, the
+    production App to metorite, and nothing else carries a pin."""
+    m = _manifest()
+    pins = {e["name"]: e.get("host") for e in m["entries"] if e.get("host")}
+    assert pins == {
+        "github-app-staging-key": "metorite-dev", "github-app-staging": "metorite-dev",
+        "github-app-key": "metorite", "github-app": "metorite",
+    }
+
+
+def _github_drop() -> str:
+    """The four GitHub files of the drop folder, filled, and the app env on the box."""
+    env = "".join(f"{k}={v}\\n" for k, v in {
+        "GITHUB_APP_ENABLED": "false", "GITHUB_APP_ID": "1", "GITHUB_APP_SLUG": "metorite",
+        "GITHUB_APP_CLIENT_ID": "Iv23.x", "GITHUB_APP_CLIENT_SECRET": "sec" + CANARY,
+        "GITHUB_APP_WEBHOOK_SECRET": "wh" + CANARY,
+        "GITHUB_APP_PRIVATE_KEY_PATH": "/opt/acb/github-app.pem",
+        "APP_PUBLIC_URL": "https://app.metorite.com",
+    }.items())
+    return (
+        "SD init >/dev/null\n"
+        f"printf '{env}' > \"$D/github-app.env\"\n"
+        f"printf '{env}' > \"$D/github-app-staging.env\"\n"
+        "printf 'PROD-KEY-' > \"$D/github-app.pem\"\n"
+        "printf 'STAGING-KEY-' > \"$D/github-app-staging.pem\"\n"
+        "chmod 600 \"$D\"/github-app*\n"
+        "printf 'KEEP=1\\n' > \"$BOX/opt/acb/app/.env\"\n"
+    )
+
+
+def test_a_pinned_entry_refuses_another_host() -> None:
+    res = _run(
+        _github_drop()
+        + "SD push github-app-key --yes; echo \"prod-to-dev=$?\"\n"
+        + "METORITE_SSH_HOST=metorite-dev SD push github-app-key --yes; echo \"again=$?\"\n"
+    )
+    out = res["out"]
+    assert "again=1" in out, out
+    assert "is pinned to the host metorite, and this push goes to metorite-dev." in res["err"]
+    assert "prod-to-dev=0" in out, res["err"]
+    # The default host is metorite, so the first push wrote the key once.
+    assert _box(res, "/opt/acb/github-app.pem") == b"PROD-KEY-"
+    assert len(_verb_calls(res["calls"], "write")) == 1
+
+
+def test_a_staging_entry_goes_to_the_staging_host_only() -> None:
+    res = _run(
+        _github_drop()
+        + "SD push github-app-staging-key --yes; echo \"to-prod=$?\"\n"
+    )
+    assert "to-prod=1" in res["out"], res["out"]
+    assert "github-app-staging-key is pinned to the host metorite-dev" in res["err"]
+    _no_write(res)
+    assert _box(res, "/opt/acb/github-app.pem") is None
+    ok = _run(_github_drop() + "METORITE_SSH_HOST=metorite-dev SD push github-app-staging-key --yes\n")
+    assert ok["rc"] == 0, ok["err"]
+    assert _box(ok, "/opt/acb/github-app.pem") == b"STAGING-KEY-"
+
+
+def test_push_all_skips_a_pinned_entry_of_another_host() -> None:
+    """With all four GitHub files in the drop folder, push --all to the
+    production box pushes the production App only, and names each skip."""
+    res = _run(_github_drop() + "SD push --all --yes\n")
+    assert res["rc"] == 0, res["err"]
+    out = res["out"]
+    assert "skip github-app-staging-key is pinned to the host metorite-dev" in out
+    assert "skip github-app-staging is pinned to the host metorite-dev" in out
+    assert "== push github-app-key" in out and "== push github-app\n" in out + "\n"
+    assert "== push github-app-staging" not in out
+    assert _box(res, "/opt/acb/github-app.pem") == b"PROD-KEY-"
+
+
 def test_a_bad_manifest_fails_loudly() -> None:
     m = _manifest()
+    _entry(m, "github-app")["host"] = "-oProxyCommand=x"
     _entry(m, "backup-offbox")["validators"]["BACKUP_S3_REGION"] = ["no_such_check"]
     _entry(m, "app-env")["remote_path"] = "/opt/acb/../etc/shadow"
     _entry(m, "app-env")["health"] = {"acb-gateway": "http://evil.example/health"}
@@ -547,6 +638,7 @@ def test_a_bad_manifest_fails_loudly() -> None:
     assert "remote_path must be an absolute path" in res["err"]
     assert "the health URL of acb-gateway must be http://127.0.0.1 or localhost" in res["err"]
     assert "restart must be a list of unit names" in res["err"]
+    assert "github-app: host must be a host name or an ssh alias." in res["err"]
     assert "ssh " not in res["calls"]
 
 
@@ -1177,6 +1269,12 @@ def test_status_reports_each_state_and_never_prints_a_value() -> None:
         "backup-gpg-public": "missing-local",
         "backup-offbox": "local-only",  # the template holds the prefilled values
         "app-env": "remote-only",
+        # WS-54 GH-1: the box env file holds none of the App keys, and no
+        # local file holds a value, so each App entry is missing on both sides.
+        "github-app-staging-key": "missing-local",
+        "github-app-staging": "missing-local",
+        "github-app-key": "missing-local",
+        "github-app": "missing-local",
     }
     assert _states(parts[1]) == {"backup-offbox": "local-only"}
     assert _states(parts[2]) == {"backup-offbox": "in-sync"}

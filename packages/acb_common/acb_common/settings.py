@@ -393,6 +393,13 @@ class Settings(BaseSettings):
     # spends `tier-embed` credits, so a flip for an org is the owner's.
     # Fence: tests/unit/test_kb_flags.py.
     knowledge_embed: str = ""
+    # WS-61 KB-3c (knowledge_base.md §6.4 and §13). The kill switch of the
+    # embed sweep, `gateway/kb_index/sweep.py`. Default ON, because the sweep
+    # does nothing unless `knowledge_embed` names an org. Off, the loop does
+    # not start. The one reader is `gateway.routes.knowledge.flags`, and the
+    # sweep reads it inside its start function. Fence:
+    # tests/unit/test_kb_embed_sweep.py.
+    knowledge_embed_sweep: bool = True
 
     reach_enabled: bool = False
     reach_orgs: str = ""
@@ -532,6 +539,19 @@ class Settings(BaseSettings):
     # agent's under the dev-phase `enforcement-flip` grant (knowledge_base.md
     # §13). Fence: tests/unit/test_company_search_tool.py.
     company_search_enabled: bool = False
+
+    # ── Recency in company retrieval (WS-61 CX-1, D106) ─────────────────────
+    #
+    # ON makes `GET /search/company` rank newer records first inside each app,
+    # put a `stamp` on each hit, apply the Knowledge review factor and take
+    # `after`. It also gives `search_company` its `after` argument and its
+    # header, and adds three grounding sentences to the persona that
+    # `company_search_enabled` turns on. OFF gives today's output byte for
+    # byte. The one reader is
+    # `acb_skills.company_search_tools.context_recency_enabled`. AGENT-SAFE:
+    # it spends nothing (company_context.md §11). Fence:
+    # tests/unit/test_company_search_recency.py.
+    context_recency: bool = False
 
     # ── The per-feature `decide` modes (WS-17 EM-T5, CP-13e) ────────────────
     #
@@ -873,6 +893,30 @@ class Settings(BaseSettings):
     github_app_id: str = ""                   # e.g. "123456"
     github_app_private_key_path: str = ""     # path to .pem file; never commit the key itself
     github_installation_id: str = ""          # org installation ID (visible in GitHub App settings)
+
+    # ── The Metorite GitHub App (WS-54 GH-1, github_integration.md §6, §14) ──
+    #
+    # Metorite owns one GitHub App for each environment. These are OPERATOR
+    # settings (D56). They live in /opt/acb/app/.env and in a key file on the
+    # box, and scripts/secrets.sh pushes them (entries `github-app` and
+    # `github-app-staging`). No customer row holds any of them. The names start
+    # with GITHUB_APP_, a platform prefix of `env_guard`, so no tenant write
+    # can set one. `github_app_id` and `github_app_private_key_path` above are
+    # the App's too.
+    #
+    # `github_app_enabled` is the switch of the whole feature, and it ships
+    # OFF. With it off the connect routes and `/webhooks/github` answer 404,
+    # and the reconcile poll starts no task. A flip on a box is the gate
+    # `enforcement-flip`. `connections/github_app.py` reads the key file once
+    # for each process. Fence: tests/unit/test_github_app_auth.py.
+    github_app_enabled: bool = False
+    github_app_slug: str = ""                 # the App's URL name, e.g. "metorite"
+    github_app_client_id: str = ""            # the JWT `iss`, and the OAuth client id
+    github_app_client_secret: str = ""        # the OAuth client secret of the App
+    github_app_webhook_secret: str = ""       # the HMAC key of X-Hub-Signature-256
+    # The origin of the workbench of this environment. The auto-link accepts
+    # only a task URL on this host, so a staging URL never links in production.
+    app_public_url: str = "https://app.metorite.com"
 
     github_org: str = "FracktalWorks"         # org that owns agent-* and skill-* repos
     # Persistent clone root for agent workspaces + generated artifacts.

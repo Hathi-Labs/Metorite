@@ -1,6 +1,6 @@
 import { describeFailure, detailText, readJsonBody } from "@/lib/apiError";
 import { cacheKey, invalidate } from "@/lib/dataCache";
-import type { ParentFact } from "@/lib/taskCard";
+import type { ParentFact, PullRequestFact } from "@/lib/taskCard";
 
 import {
   type AgentPromptBody,
@@ -11,6 +11,7 @@ import {
   type AgentState,
   type ArchiveApprovalBody,
   type ArchiveApprovalResult,
+  type AgentSummary,
   agentRunRows,
   normalizeRunDetail,
 } from "./agentRuns";
@@ -1255,6 +1256,21 @@ export interface TaskRow {
   agent_state?: AgentState | null;
   agent_client_via?: string | null;
   agent_member_email?: string | null;
+  /**
+   * WS-55 EA-13d (EA3-41) — the first line of the newest thing the agent said
+   * on its open run, at most 140 characters. The pill shows it on hover.
+   */
+  agent_note?: string | null;
+  /**
+   * WS-55 EA-13d (EA3-48) — the ONE pull request that the gateway picked for
+   * the task, with its CI. `lib/taskCard.pullRequestChip` draws it.
+   */
+  pr?: PullRequestFact | null;
+  /**
+   * WS-55 EA-13e (EA3-49) — an agent worked on this task, by the rule of
+   * `agent_worked.py`. The "Agent work" filter reads it.
+   */
+  agent_worked?: boolean | null;
 }
 
 export interface StatusRow {
@@ -2531,6 +2547,13 @@ export const agentRunsApi = {
       return false;
     }
   },
+
+  /**
+   * EA-13e (EA3-43). The five counts of the strip above the board, over the
+   * tasks of the project and its subprojects that the caller may see.
+   */
+  summary: (projectId: string) =>
+    call<AgentSummary>(`${encodeURIComponent(projectId)}/agent-summary`),
 };
 
 export interface NotificationRow {

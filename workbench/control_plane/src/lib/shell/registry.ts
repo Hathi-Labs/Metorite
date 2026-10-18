@@ -216,6 +216,26 @@ export const JOBS: readonly ShellJob[] = [
     href: "/people",
     icon: "Users",
   },
+  // WS-61 KB-12 (`knowledge_base.md` §11). The two jobs landed with the
+  // promotion to live, and not before: `held_jobs` filters a job by feature
+  // and not by launch status. "Find in Knowledge" is a link job to the Search
+  // view. "Write a page" opens the New page form, and it saves nothing.
+  {
+    id: "find-knowledge",
+    label: "Find in Knowledge",
+    words: ["knowledge", "wiki", "handbook", "docs", "manual", "policy", "policies", "page"],
+    app: "/knowledge",
+    href: "/knowledge/search",
+    icon: "FileSearch",
+  },
+  {
+    id: "write-page",
+    label: "Write a page",
+    words: ["page", "pages", "article", "wiki", "knowledge", "handbook"],
+    app: "/knowledge",
+    href: "/knowledge?do=write-page",
+    icon: "FilePlus",
+  },
   {
     id: "edit-profile",
     label: "Update my profile",

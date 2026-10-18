@@ -196,12 +196,17 @@ def _steps(first: str, *, runs: bool, start_run: bool) -> str:
         steps.append("Report progress with add_comment.")
     steps += [
         "Call add_task_reference for each branch and for each pull request.",
+        "Put the url that get_task gives in the description of the pull"
+        " request. Put the short_id that get_task gives in the name of the"
+        " branch. GitHub then links the pull request to this task.",
         "When you open the pull request, call get_project to read the"
         " statuses. Pick a status of the category in_progress whose name says"
         " review, and call set_task_status with it. When no such status exists,"
         " keep the status, and say so in your progress note.",
         "Call set_task_status with the done status only after the pull request"
-        " merges. Never cancel the task. A person does that.",
+        " merges. When GitHub already moved the task to done after the merge,"
+        " do not move it again, and say so in your progress note. Never cancel"
+        " the task. A person does that.",
     ]
     if runs:
         # A `created` run has no move to `completed` (`_MOVES` of the

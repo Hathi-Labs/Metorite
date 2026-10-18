@@ -368,6 +368,7 @@ Workspace folders visible in the Files Viewer: **outputs/** (default for generat
     Section("core", ("ask_questions",), """### Human-in-the-Loop (HITL) elicitation
 - **ask_user(question, choices?, allowFreeform?)** — Pause the run and ask the user ONE clarifying question via an interactive card.  This BLOCKS the agent turn: execution truly pauses and resumes automatically with the user's answer (no separate message turn).  ``choices`` is an optional list of suggested answers (rendered as buttons); ``allowFreeform`` (default true) lets the user type a custom answer.  Use when you need to disambiguate, a parameter is missing, or a decision has important implications.  Prefer ONE focused question per call.
 - **ask_questions(questions)** — Alternative for asking SEVERAL questions at once via a multi-question card (JSON object with a ``"questions"`` array; each has ``header``, ``question``, optional ``options``/``multiSelect``/``allowFreeformInput``).  Prefer ``ask_user`` for single blocking questions.
+- **Not now.** The member can decline a card, and the tool result then says so. Do not ask a declined question again in this conversation, unless the member brings up the topic. Continue without the answer, and use the stated default.
 """),
     Section("core", ("run_diagnostics", "get_errors"), """### Code quality & error checking
 - **run_diagnostics(filePaths?)** (alias **get_errors**) — Run code diagnostics: check Python files for syntax, type, and lint errors.  Call after editing or creating files, before committing, or to diagnose a failed run.  Pass a JSON array of file paths (e.g. ``'["executor.py"]'``) or ``'[]'`` to auto-discover recently changed files.  Runs ``py_compile`` (syntax) and ``ruff`` (lint, if installed).  Returns structured errors or ``"No errors found."``.  Both names call the same tool.
@@ -527,7 +528,8 @@ COMPACT_SECTIONS: tuple[Section, ...] = (
         "manage_todo_list(todoList) — structured task tracking panel (JSON array)"
     )),
     Section("core", ("ask_questions",), (
-        "ask_user(question,choices?) — HITL: pause and ask the user one question (blocking; the run resumes with their answer)"
+        "ask_user(question,choices?) — HITL: pause and ask the user one question (blocking; the run resumes with their answer). "
+        "A declined question (Not now): do not ask it again in this conversation, unless the member brings up the topic"
     )),
     Section("core", ("run_diagnostics", "get_errors"), (
         "run_diagnostics(filePaths?) — run code diagnostics: check Python files for syntax/lint errors (alias: get_errors)"

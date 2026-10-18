@@ -28,6 +28,9 @@
 #   fails if the canary shows in the output, in any argv, or in a log.
 #
 # The ssh target is METORITE_SSH_HOST, and `metorite` when it is not set.
+# An entry with a "host" pin goes to that host ONLY: `push <name>` to another
+# host fails before any probe, and `push --all` skips it and says so (WS-54
+# fix round 1, item 4: the production GitHub App key never lands on staging).
 set -euo pipefail
 set +x
 umask 077
@@ -523,6 +526,10 @@ load_manifest() {
     [[ "$(ef "$i" owner)" =~ ^[a-z_][a-z0-9_-]*$ ]] || errs+=("$name: owner is not a user name.")
     [[ "$(ef "$i" group)" =~ ^[a-z_][a-z0-9_-]*$ ]] || errs+=("$name: group is not a group name.")
     [[ "$(ef "$i" mode)" =~ ^0?[0-7]{3}$ ]] || errs+=("$name: mode must be octal, for example 0600.")
+    if [ -n "${mft[entries.$i.host]+x}" ]; then
+      [[ "$(ef "$i" host)" =~ ^[A-Za-z0-9_][A-Za-z0-9@._-]*$ ]] \
+        || errs+=("$name: host must be a host name or an ssh alias.")
+    fi
     if [ "${mft[entries.$i.restart]-}" != array ]; then
       errs+=("$name: restart must be a list of unit names. Use [] for none.")
     fi
@@ -597,6 +604,15 @@ entry() {
 }
 
 is_env_kind() { [ "$(ef "$1" kind)" != file ]; }
+
+# host_pin_problem I — why entry I may not go to $host, or nothing when it may.
+host_pin_problem() {
+  local pin
+  pin="$(ef "$1" host)"
+  if [ -n "$pin" ] && [ "$pin" != "$host" ]; then
+    printf '%s is pinned to the host %s, and this push goes to %s.' "$(ef "$1" name)" "$pin" "$host"
+  fi
+}
 mode_digits() { local m="$1"; m="${m#0}"; printf '%s' "$m"; }
 
 # ── Checks on the local file ──────────────────────────────────────────────────
@@ -1079,7 +1095,7 @@ roll_back() {
 }
 
 cmd_push() {
-  local name="" yes=0 verify=0 all=0 a i f kind rp owner group mode payload="" k out rc want bad=0 pre bak
+  local name="" yes=0 verify=0 all=0 a i f kind rp owner group mode payload="" k out rc want bad=0 pre bak pin_err
   local -a flags=()
   for a in "$@"; do
     case "$a" in
@@ -1098,6 +1114,8 @@ cmd_push() {
   [ -n "$name" ] || die "usage: scripts/secrets.sh push <name>|--all [--yes] [--verify]"
   ensure_drop
   i="$(entry "$name")"
+  pin_err="$(host_pin_problem "$i")"
+  [ -z "$pin_err" ] || die "$pin_err Set METORITE_SSH_HOST=$(ef "$i" host) to push it. Nothing changed."
   f="$drop/$(ef "$i" local_file)"
   kind="$(ef "$i" kind)"
   rp="$(ef "$i" remote_path)"
@@ -1189,10 +1207,12 @@ cmd_push() {
 # in manifest order. Each push runs in its own process, so a failure stops
 # the run before the next entry.
 cmd_push_all() {
-  local i name f k rc pushed=0 missing
+  local i name f k rc pushed=0 missing pin_err
   ensure_drop
   for ((i = 0; i < ent_count; i++)); do
     name="$(ef "$i" name)"
+    pin_err="$(host_pin_problem "$i")"
+    if [ -n "$pin_err" ]; then say "skip $pin_err"; continue; fi
     f="$drop/$(ef "$i" local_file)"
     if is_env_kind "$i"; then
       if [ ! -f "$f" ]; then say "skip $name: there is no local file."; continue; fi

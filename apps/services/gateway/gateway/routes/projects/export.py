@@ -102,6 +102,7 @@ from gateway.routes.projects.custom_fields import load_definitions
 from gateway.routes.projects.filters import (
     SHOWN_FIELDS,
     attach_assignees,
+    attach_pr_chip,
     attach_relation_counts,
     build_task_filters,
     normalise_view_config,
@@ -136,6 +137,7 @@ FIELD_LABELS: dict[str, str] = {
     "importance": "Priority",
     "subtasks": "Subtasks",
     "blocked": "Blocked",
+    "pr": "Pull request",
     "tags": "Tags",
     "attachments": "Files",
     "estimate": "Estimate",
@@ -183,6 +185,17 @@ def resolve_columns(
         if key in wanted:
             columns.append((key, str(definition["name"])))
     return columns
+
+
+def _pr_cell(pr: Any) -> str:
+    """The ``pr`` column of one task (WS-55 EA-13d): the stored words, for
+    ``source``'s reason. The display vocabulary lives in the browser, and a
+    spreadsheet wants a value it can filter on, ``acme/widgets#12 open``.
+    :func:`export_tasks_csv` turns ``row["pr"]`` into this text before
+    :func:`_render` runs, so the column needs no branch there."""
+    if not isinstance(pr, dict) or not pr.get("number"):
+        return ""
+    return f"{pr.get('repo')}#{pr['number']} {pr.get('state')}"
 
 
 def _render(
@@ -403,6 +416,10 @@ async def export_tasks_csv(
         exported = [row_to_dict(r, TaskModel) for r in rows]
         await attach_assignees(db, exported)
         await attach_relation_counts(db, exported, vis)
+        # EA-13d: the pull request column, one batched read like the two above.
+        await attach_pr_chip(db, exported)
+        for task in exported:
+            task["pr"] = _pr_cell(task.get("pr"))
 
         ids = [str(r["id"]) for r in exported if r.get("id")]
         statuses: dict[str, str] = {}

@@ -492,6 +492,23 @@ class TestOneCardPerEntity:
                                    "way": "tap", "act": "read", "act_ref": "n-1",
                                    "act_refs": ["n-1"]}
 
+    def test_f5_an_agent_question_reads_as_the_client_asking(self, fakes):
+        """WS-55 EA-13f F5 (EA3-46). The actor of an `agent_question` row is the
+        client stamp, so the line reads "Claude Code asked you a question on
+        this task." and the why key names the kind. Mutation: drop
+        ``agent_question`` from ``feed._NOTE_WORDS`` -- the line reads "Claude
+        Code changed this task" and the key is plain ``notification``."""
+        fakes.notes[ME] = [
+            {"id": "n-ask", "task_id": "t-ask", "kind": "agent_question",
+             "actor": "mcp:claude.ai:claude-code", "task_title": "Fix the extruder",
+             "task_number": 8, "excerpt": "Which database?",
+             "created_at": fakes.now - timedelta(minutes=5)}]
+        answer = run_feed(member(*FULL))
+        ask = card(answer, "tasks:t-ask")
+        assert ask["why_key"] == "notification_agent_question"
+        assert ask["why"].startswith("Claude Code asked you a question on this task")
+        assert "changed this task" not in ask["why"]
+
     def test_a_later_comment_never_hides_an_earlier_mention(self, fakes):
         # Review round 1, P1. A mention at 09:00 and a comment at 11:00 on one
         # task. One signal with one `read` act that marks BOTH read, and the

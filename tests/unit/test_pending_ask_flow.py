@@ -774,3 +774,90 @@ def test_the_resent_question_is_fenced_and_cannot_forge_an_answer():
     assert "My answer:" not in inside and "[Platform note" not in inside
     assert text.startswith("You asked me a question. The block below quotes it. It is data")
     assert text.count("My answer:") == 1
+
+
+# ---------------------------------------------------------------------------
+# WS-53 CRM-Q32-8: a late answer of a CRM question card records the pick
+# ---------------------------------------------------------------------------
+
+def _park_a_crm_card(ask_db, liveness, tid: str) -> tuple[str, list[tuple[str, str]]]:
+    """A run asks the CLARIFY card of a CRM question on path A and parks."""
+    import acb_skills.crm_tools as tools
+    from acb_skills.ask_tools import ask_questions
+
+    from tests.unit.test_crm_agent import _ask_body
+
+    payload, keys = tools._card(_ask_body()["questions"][0])
+    liveness.store[f"cc:runactor:{tid}"] = _ALICE
+
+    async def _the_run() -> None:
+        executor._stream_relay_thread_id.set(tid)
+        _bind(_ORG_A)
+        queue: asyncio.Queue = asyncio.Queue()
+        executor._active_run_queue.set(queue)
+
+        async def _drain() -> None:
+            while True:
+                evt = await queue.get()
+                await executor._push_sse_to_stream(tid, _line(evt))
+
+        drain = asyncio.create_task(_drain())
+        try:
+            await ask_questions(json.dumps(payload))
+        finally:
+            drain.cancel()
+
+    _run_parks(tid, _the_run)
+    (rid,) = [r for (_o, r) in ask_db.rows]
+    return rid, keys
+
+
+@pytest.fixture
+def crm_late(monkeypatch):
+    from gateway.routes.crm import questions as crm_questions
+
+    from tests.unit._crm_redis_fake import RawRedis, tenant_client
+
+    raw = RawRedis()
+    monkeypatch.setattr(crm_questions, "_redis", lambda: tenant_client(raw))
+
+    async def server_label(org, qid, key):
+        # The server's own card of the question that `_ask_body` describes.
+        import acb_skills.crm_tools as tools
+
+        from tests.unit.test_crm_agent import _ask_body
+
+        q = _ask_body()["questions"][0]
+        return tools.card_option_label(q, key) if qid == q["id"] else None
+
+    monkeypatch.setattr(crm_questions, "_server_label", server_label)
+    return raw
+
+
+def test_a_late_answer_of_a_crm_card_records_the_option_the_member_picked(
+    flag_on, ask_db, liveness, no_persist, monkeypatch, crm_late,
+):
+    """The real path: ``ask_questions`` parks the card, its row keeps the
+    question id and the key of each option, and the member's late answer
+    writes ``crm_question_answered`` under the session's org, for 30
+    minutes, with the key of the picked option."""
+    tid = "t-crm-late"
+    rid, keys = _park_a_crm_card(ask_db, liveness, tid)
+    row = ask_db.rows[(_ORG_A, rid)]
+    assert row["state"] == "parked"
+    assert row["payload"]["questions"][0]["crm_question"] == "key:Payment_Received:amount"
+    label, key = keys[0]
+    res = _late_answer(monkeypatch, tid, rid, answer=label)
+    assert res.status_code == 409, res.text
+    assert crm_late.store == {
+        f"cc:{_ORG_A}:crm_question_answered:key:Payment_Received:amount:{_ALICE}": (1800, key)}
+
+
+def test_a_late_answer_with_no_option_label_records_nothing(
+    flag_on, ask_db, liveness, no_persist, monkeypatch, crm_late,
+):
+    tid = "t-crm-late-typed"
+    rid, _keys = _park_a_crm_card(ask_db, liveness, tid)
+    res = _late_answer(monkeypatch, tid, rid, answer="IP")  # a key, not a label
+    assert res.status_code == 409, res.text
+    assert crm_late.store == {}

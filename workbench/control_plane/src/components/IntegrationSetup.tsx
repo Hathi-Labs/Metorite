@@ -3,7 +3,7 @@
 import Button from "@/components/ui/Button";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { IntegrationStatus } from "@/app/api/integrations/status/route";
-import GitHubDeviceConnect from "@/components/GitHubDeviceConnect";
+import GitHubAppConnect from "@/components/GitHubAppConnect";
 import ZohoInCrm from "@/components/ZohoInCrm";
 import { appOwnedTile } from "@/app/integrations/lib/connections";
 
@@ -348,7 +348,7 @@ export default function IntegrationSetup({
     }
   };
 
-  // Mark a service as configured (used by special-case components like GitHubDeviceConnect)
+  // Mark a service as configured (used by special-case components like GitHubAppConnect)
   const handleServiceConfigured = (service: string) => {
     setCardStates((prev) => ({
       ...prev,
@@ -434,10 +434,10 @@ export default function IntegrationSetup({
       <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
         {integrations.map((intg) =>
           intg.service === "github" ? (
-            // GitHub uses the OAuth Device Flow wizard instead of plain inputs
-            <GitHubDeviceConnect
+            // WS-54 GH-7: GitHub uses its own card, never plain inputs.
+            <GitHubAppConnect
               key={intg.service}
-              integration={intg}
+              advancedOpen
               onConfigured={() => handleServiceConfigured("github")}
             />
           ) : (

@@ -436,6 +436,16 @@ export function disconnectCopy(row: Connection): ConfirmCopy {
       confirmLabel: "Disconnect",
     };
   }
+  if (row.provider === "github") {
+    // WS-54 GH-3 (GH-E10): Metorite unlinks and does not uninstall at GitHub.
+    return {
+      title: "Disconnect GitHub?",
+      body:
+        "Metorite stops reading pull requests and checks. The links on tasks stay. " +
+        "If the Metorite App is installed, it stays installed at GitHub until you uninstall it there.",
+      confirmLabel: "Disconnect",
+    };
+  }
   const name = row.label || row.provider;
   return {
     title: `Disconnect ${name}?`,

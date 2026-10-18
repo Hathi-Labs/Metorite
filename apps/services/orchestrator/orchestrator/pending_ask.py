@@ -499,6 +499,16 @@ def _answered(fut: Any) -> bool:
     return fut is not None and fut.done()
 
 
+def _declined(fut: Any) -> bool:
+    """True when the Future's result is the member's "Not now" (owner
+    request, 2026-10-18). A decline gives no answer, so its row closes."""
+    try:
+        result = fut.result()
+    except BaseException:
+        return False
+    return isinstance(result, dict) and result.get("declined") is True
+
+
 def _answer_of(fut: Any) -> str:
     try:
         result = fut.result()
@@ -545,12 +555,18 @@ async def park(request_id: str, thread_id: str, fut: Any = None) -> bool:
         return False
     if _answered(fut):
         # The answer came in while the row moved. It reached the live run, so
-        # the row records it, and the run goes on.
+        # the row records it, and the run goes on. A "Not now" is no answer:
+        # its row closes, as `settle` closes it (review of #1152).
         with contextlib.suppress(Exception):
-            await asyncio.to_thread(
-                move_ask, org, request_id, to="answered",
-                from_states=("parked",), answer=_answer_of(fut),
-            )
+            if _declined(fut):
+                await asyncio.to_thread(
+                    move_ask, org, request_id, to="closed", from_states=("parked",),
+                )
+            else:
+                await asyncio.to_thread(
+                    move_ask, org, request_id, to="answered",
+                    from_states=("parked",), answer=_answer_of(fut),
+                )
         return False
     # No await from the check above to the pop: from here on, an answer finds
     # no Future and takes the late path.

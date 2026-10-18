@@ -21,7 +21,7 @@ import type { MutationEntry } from "@/app/api/agent/mutations/route";
 import type { IntegrationStatus } from "@/app/api/integrations/status/route";
 import type { SkillsCatalog, SkillFamily } from "@/app/api/integrations/skills/route";
 import type { AgentSkillSettings } from "@/app/api/agent/[name]/skills/route";
-import GitHubDeviceConnect from "@/components/GitHubDeviceConnect";
+import GitHubAppConnect from "@/components/GitHubAppConnect";
 import FilterPills from "@/components/FilterPills";
 import { AgentAvatar, useAgentAvatars, notifyAgentAvatarsChanged } from "@/components/AgentAvatar";
 import BreathingCharacter, { characterForAgent } from "@/components/BreathingCharacter";
@@ -1044,10 +1044,8 @@ function AddAgentModal({
                 <span className="font-mono text-foreground">{form.repoUrl}</span> and access
                 private repositories.
               </p>
-              <GitHubDeviceConnect
-                integration={githubStatus}
-                onConfigured={() => doRegister()}
-              />
+              {/* WS-54 GH-7: a clone needs a token, so the fold opens at once. */}
+              <GitHubAppConnect advancedOpen onConfigured={() => doRegister()} />
               <button
                 onClick={() => doRegister()}
                 className="mt-3 text-xs text-muted-foreground hover:text-muted-foreground underline"

@@ -41,6 +41,10 @@ dependencies = [
     # Workflow schedule triggers: cron parsing only (CronTrigger), no
     # scheduler process — see routes/workflows/scheduler.py.
     "apscheduler>=3.10,<4",
+    # WS-54 GH-1 — the GitHub App JWT is RS256 (connections/github_app.py).
+    # It was already in uv.lock through `mcp`. This line makes it a direct
+    # dependency, so the App auth does not rest on another package's choice.
+    "pyjwt[crypto]>=2.8",
 ]
 
 [build-system]

@@ -81,8 +81,8 @@ _REQUIRE_MANAGE = require_permission(MANAGE_PERMISSION)
 # IN-0, D96.3, 2026-10-11). A process env var and one `.env` file have one
 # value for the whole deployment. So when org #2 saved `ZOHO_CLIENT_ID`, it
 # replaced the value of org #1 for every caller. Configure, `PUT` and `DELETE
-# /integrations/keys` and the GitHub device poll now write the store of the
-# caller's organization only. `connect-cli` answers 410, and the OAuth routes
+# /integrations/keys` now write the store of the caller's organization only.
+# `connect-cli` and the GitHub device flow answer 410 (WS-54 GH-7), and the OAuth routes
 # of `routes/oauth.py` are retired. The fence is
 # `tests/unit/test_integrations_in0.py`, an AST scan of both files. Do not
 # restore an env write here, because it is a cross-tenant write.
@@ -240,34 +240,29 @@ _SETUP_GUIDES: dict[str, dict[str, Any]] = {
     },
     "github": {
         "label": "GitHub",
-        "description": "Private agent repo cloning and Copilot LLM models (GPT-4o, Claude Sonnet, o3-mini).",
-        # Two ways to authenticate — device flow (OAuth) or a PAT.
-        # A PAT with copilot+repo scopes covers both repo access AND the Copilot Models API.
-        "uses": ["Repo access", "Models"],
-        "setup_url": "https://github.com/settings/tokens/new?scopes=copilot,repo",
-        "docs_url": "https://docs.github.com/en/copilot/using-github-copilot/ai-models",
+        # WS-54 GH-3 and GH-7 (github_integration.md §7). The GitHub card
+        # connects the Metorite GitHub App, and a pasted token is the
+        # Advanced path. The customer-made OAuth App and its client id are
+        # retired, so the guide declares the token only. ⚠️ Configure and
+        # `PUT /keys` refuse `GITHUB_TOKEN` with 422: its one writer is
+        # `PUT /integrations/github/token`.
+        "description": (
+            "Pull requests and checks on your tasks, through the Metorite "
+            "GitHub App. A personal access token is the advanced path, for "
+            "private agent repositories."
+        ),
+        "uses": ["Pull requests", "Checks", "Repo access"],
+        # No "Get credentials" link: the GitHub card is the way in (GH-7).
+        "setup_url": "",
+        "docs_url": "https://docs.github.com/en/apps/using-github-apps/installing-a-github-app-from-a-third-party",
         "instructions": (
-            "One token covers both repo access and Copilot LLM models.\n\n"
-            "Option A — Personal Access Token (recommended):\n"
-            "1. Open the link above → GitHub → Settings → Developer Settings\n"
-            "   → Personal Access Tokens → Tokens (classic).\n"
-            "2. Select scopes: `copilot` (LLM model API) and `repo` (private repos).\n"
-            "3. Click 'Generate token', paste the value (ghp_...) below.\n\n"
-            "Option B — OAuth Device Flow (no token entry needed):\n"
-            "1. Create a GitHub OAuth App (Settings → Developer Settings → OAuth Apps).\n"
-            "   Name: 'Metorite', Callback URL: http://localhost.\n"
-            "2. Paste the Client ID and click 'Connect GitHub Account'.\n"
-            "   Note: device-flow tokens may not include the `copilot` scope —\n"
-            "   use Option A if you want Copilot model access."
+            "Press Connect GitHub, pick the GitHub account and the "
+            "repositories, and confirm in Metorite.\n\n"
+            "Advanced: paste a personal access token with the `repo` scope "
+            "when an agent must read a private repository."
         ),
         "env_vars": [
-            # GITHUB_TOKEN (Option A — recommended): classic or fine-grained PAT
-            # with copilot + repo scopes.  Shown first because it's the simpler,
-            # self-contained path.
-            {"key": "GITHUB_TOKEN", "label": "Personal Access Token — copilot + repo scopes (recommended)", "sensitive": True},
-            # GITHUB_CLIENT_ID is used for the OAuth device flow (Option B).
-            # Only needed if you prefer the device-flow UX over a PAT.
-            {"key": "GITHUB_CLIENT_ID", "label": "OAuth App Client ID (Option B — device flow)", "sensitive": False},
+            {"key": "GITHUB_TOKEN", "label": "Personal access token (Advanced)", "sensitive": True},
         ],
     },
     "serpapi": {
@@ -640,6 +635,23 @@ def _refuse_unsafe_env_writes(
         )
 
 
+#: WS-54 GH-7 (§7.6): the words of the 422 for a GitHub token sent to the
+#: generic writers. The one writer is ``PUT /integrations/github/token``.
+GITHUB_TOKEN_REFUSAL = "Connect GitHub in Integrations."
+
+
+def _refuse_github_token_here(names: Iterable[str]) -> None:
+    """422 when a configure or ``PUT /keys`` names ``GITHUB_TOKEN`` (GH-7).
+
+    It runs before every other check of the route, so the answer is the same
+    422 with BYOK on or off.
+    """
+    if any(str(n).strip().upper() == "GITHUB_TOKEN" for n in names):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=GITHUB_TOKEN_REFUSAL,
+        )
+
+
 def _refuse_provider_key_without_byok(names: Iterable[str]) -> None:
     """403 while BYOK is off, when a write names an LLM provider variable.
 
@@ -796,8 +808,18 @@ async def integration_status(
     for svc in services:
         guide = _SETUP_GUIDES.get(svc, {})
         configured = _is_configured(svc, settings)
+        github_coverage: dict[str, Any] | None = None
         if svc == "github":
             configured = await _github_connected()
+            # Fix round 1, item 3: "configured" is for each USE. The App reads
+            # pull requests and checks, but not a private agent repository
+            # (G-9). So the agent wizard asks: can this org read the agent's
+            # repository? Only a token row can.
+            github_coverage = {"pull_requests": configured}
+            if agent:
+                reach = await _github_agent_repo_reach()
+                github_coverage.update(reach)
+                configured = bool(reach["agent_repo"])
         app_owned = svc in APP_OWNED_SERVICES
         # The tile view reads the app's row. AGENT mode keeps the env check,
         # because the agent runtime still reads the operator env until IN-3.
@@ -816,17 +838,10 @@ async def integration_status(
             {"key": v["key"], "label": v["label"]}
             for v in guide.get("env_vars", []) if v["key"] not in BUILTIN_ENV_KEYS
         ]
-        # For GitHub, always compute missing_keys from actual env vars
-        # because the service can be "configured" via PAT (GITHUB_TOKEN)
-        # alone, but the OAuth device flow (Option B) needs
-        # GITHUB_CLIENT_ID separately.  Without this, a configured PAT
-        # hides the Client ID input and the device-flow start returns 422.
+        # GitHub connects through its card (WS-54 GH-3, GH-7), never a key
+        # form, so the tile names no missing key.
         if svc == "github":
-            missing_keys = [
-                v["key"]
-                for v in tenant_vars
-                if not os.getenv(v["key"], "").strip()
-            ]
+            missing_keys = []
         else:
             missing_keys = (
                 []
@@ -872,6 +887,7 @@ async def integration_status(
                 "storage": storage,
                 "category": _GUIDE_CATEGORIES.get(svc, "custom"),
                 "is_custom": False,
+                **({"github_coverage": github_coverage} if github_coverage is not None else {}),
             }
         )
 
@@ -971,7 +987,11 @@ async def configure_integrations(
     ``integration`` row, and the answer lists it under ``written``. A key that
     a registered CUSTOM integration declares is stored as a ``custom`` row,
     and the answer lists it under ``store_only``. Any other key is 422.
+
+    WS-54 GH-7: ``GITHUB_TOKEN`` is 422 here, before any other check. The
+    one writer of a pasted token is ``PUT /integrations/github/token``.
     """
+    _refuse_github_token_here(v.key for v in req.vars)
     # Layers A and B, over every key and value of the request.
     _refuse_unsafe_env_writes(
         ((v.key, v.value.strip()) for v in req.vars), actor=user.email,
@@ -1079,14 +1099,8 @@ async def configure_integrations(
         #    the env write carried the value. Now a swallowed failure would
         #    answer 200 with nothing written. Layer C makes every key here a
         #    built-in key, so `BUILTIN_PROVIDER` always holds it, under the
-        #    name that the startup copy reads.
-        if var.key == "GITHUB_TOKEN":
-            # IN-7: the org connection, not a `provider_keys` row.
-            await _store_github_pat(value, user)
-            db_written.append("github:connection")
-            written.append(var.key)
-            _log.info("integrations.configure", key=var.key, actor=user.email)
-            continue
+        #    name that the startup copy reads. `GITHUB_TOKEN` never reaches
+        #    here: `_refuse_github_token_here` refused it above (GH-7).
         svc, suffix = BUILTIN_PROVIDER[var.key]
         provider = f"{svc}:{suffix}"
         try:
@@ -1215,8 +1229,10 @@ async def put_integration_key(
             ),
         )
 
-    # Layers A and B, before the store write. Then the BYOK gate:
-    # GITHUB_TOKEN is a provider key (round 1, decision 4).
+    # WS-54 GH-7: a pasted GitHub token has ONE writer,
+    # `PUT /integrations/github/token`. Refused before any other check.
+    _refuse_github_token_here([env_var])
+    # Layers A and B, before the store write. Then the BYOK gate.
     _refuse_unsafe_env_writes([(env_var, value)], actor=user.email)
     _refuse_provider_key_without_byok([env_var])
 
@@ -1232,20 +1248,15 @@ async def put_integration_key(
         )
     svc, suffix = BUILTIN_PROVIDER[env_var]
     provider = f"{svc}:{suffix}"
-    if env_var == "GITHUB_TOKEN":
-        # IN-7: the org connection, not a `provider_keys` row.
-        await _store_github_pat(value, user)
-        provider = "github:connection"
-    else:
-        from acb_llm.key_store import get_key_store
-        store = get_key_store()
-        await store.put(
-            provider,
-            value,
-            credential_type="integration",
-            service=svc,
-            organization_id=current_tenant(),
-        )
+    from acb_llm.key_store import get_key_store
+    store = get_key_store()
+    await store.put(
+        provider,
+        value,
+        credential_type="integration",
+        service=svc,
+        organization_id=current_tenant(),
+    )
 
     _log.info(
         "integrations.key_put",
@@ -1607,19 +1618,80 @@ async def delete_custom_api(
 
 
 async def _github_connected() -> bool:
-    """True when the bound organization holds a live GitHub connection."""
+    """True when the bound organization holds a live GitHub connection.
+
+    WS-54 GH-3: an ``app`` row answers from its ``status`` and makes no
+    installation token, because a status read must not spend a GitHub call.
+    """
     try:
         org = current_tenant()
-        return bool(org and await github_connection.token_or_none(str(org)))
+        if not org:
+            return False
+        row = await github_connection.connection(str(org))
+        if github_connection.is_app_row(row):
+            return github_connection.installation_of(row) is not None
+        return bool(await github_connection.token_or_none(str(org)))
     except Exception as exc:
         _log.warning("github.status_unreadable", error=type(exc).__name__)
         return False
+
+
+async def _github_agent_repo_reach() -> dict[str, Any]:
+    """Can the bound org read a PRIVATE agent repository? (fix round 1, item 3)
+
+    ``{"auth": "app" | "token" | None, "agent_repo": bool}``. Only a ``token``
+    row can: the App asks for no Contents permission (G-9), and an org with no
+    connection reads public repositories only.
+    """
+    try:
+        org = current_tenant()
+        if not org:
+            return {"auth": None, "agent_repo": False}
+        row = await github_connection.connection(str(org))
+        if github_connection.is_app_row(row):
+            return {"auth": github_connection.AUTH_APP, "agent_repo": False}
+        token = await github_connection.stored_token_or_none(str(org))
+        auth = github_connection.AUTH_TOKEN if row is not None else None
+        return {"auth": auth, "agent_repo": bool(token)}
+    except Exception as exc:
+        _log.warning("github.reach_unreadable", error=type(exc).__name__)
+        return {"auth": None, "agent_repo": False}
+
+
+async def _test_github_app(row: Any, user: UserContext) -> dict[str, Any]:
+    """Test an ``app`` row (GH-3). GitHub refuses ``GET /user`` for an
+    installation token, so the test lists one repository of the installation."""
+    from gateway.connections import github_app
+
+    if not github_app.app_enabled():
+        # The kill switch (F5): no token is made while the flag is off.
+        return {"ok": False, "detail": "The GitHub App is turned off on this server."}
+    installation = github_connection.installation_of(row)
+    if installation is None:
+        return {"ok": False, "detail": github_connection.NOT_CONNECTED}
+    try:
+        answer = await github_app.installation_call(
+            installation, "GET", "/installation/repositories?per_page=1",
+        )
+    except github_app.GitHubAppNotConfigured:
+        return {"ok": False, "detail": "The GitHub App is not configured on this server."}
+    except github_app.GitHubCallFailed as exc:
+        return {"ok": False, "detail": f"GitHub did not answer ({exc.code})."}
+    _log.info("integrations.test", service="github", mode="app",
+              ok=answer.status == 200, actor=user.email)
+    if answer.status == 200:
+        login = row.provider_meta.get("account_login") or "?"
+        return {"ok": True, "detail": f"The Metorite GitHub App is installed on '{login}'."}
+    return {"ok": False, "detail": f"GitHub answered status {answer.status}."}
 
 
 async def _test_github(user: UserContext) -> dict[str, Any]:
     """Test the GitHub token of the caller's organization. Never the operator's."""
     org = _github_org()
     try:
+        row = await github_connection.connection(org)
+        if github_connection.is_app_row(row):
+            return await _test_github_app(row, user)
         token = await github_connection.token_or_none(org)
     except Exception as exc:
         _log.warning("github.test_unreadable", error=type(exc).__name__)
@@ -2438,71 +2510,24 @@ def _openapi_to_tool_defs(plugin_name: str, spec: dict[str, Any]) -> list[dict[s
 # GitHub OAuth Device Flow
 # ---------------------------------------------------------------------------
 
-async def _github_org_store() -> tuple[Any, str]:
-    """The key store, and the GitHub OAuth client id for the bound organization.
-
-    WS-54 IN-0 fix round 1. Configure stores ``GITHUB_CLIENT_ID`` as the
-    ``github:client_id`` row of the organization and no longer writes the env.
-    So the device flow reads that row first. The env value, which only the
-    operator sets, is the fallback. A failed read also falls back, because a
-    client id is public, and the poll still stores the token for this
-    organization only. One helper holds the store for start and poll, so the
-    flow adds no new store accessor line to the ceiling of
-    ``test_credential_tenant_threading.py`` (38).
-    """
-    from acb_llm.key_store import get_key_store
-    store = get_key_store()
-    client_id = ""
-    try:
-        client_id = await store.get("github:client_id", organization_id=current_tenant()) or ""
-    except Exception as exc:
-        _log.warning("github.client_id_unreadable", error=str(exc))
-    if not client_id.strip():
-        client_id = getattr(get_settings(), "github_client_id", "") or ""
-    return store, client_id.strip()
+#: WS-54 GH-7 (§7.6): the device flow needed the customer's own OAuth App
+#: client id (an org row of the key store), and BYOK blocked its poll. The
+#: Metorite GitHub App replaces it, and a pasted token stays as the Advanced
+#: path (`PUT /integrations/github/token`). Both routes stay as a 410, so an
+#: old client gets a clear answer. Nothing reads the client id any more.
+DEVICE_FLOW_GONE = (
+    "The GitHub device flow is retired. Connect GitHub in Integrations, or "
+    "paste a personal access token under Advanced."
+)
 
 
 @router.post("/github/device/start", dependencies=[_REQUIRE_MANAGE])
 async def github_device_start(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Initiate the GitHub OAuth Device Flow.
-
-    Returns the user_code and verification_uri to show in the UI.
-    The frontend polls /github/device/poll until the user approves.
-
-    Requires GITHUB_CLIENT_ID: the row of the organization (via /configure)
-    first, then the value that the operator set on the box.
-    """
-    _store, client_id = await _github_org_store()
-    if not client_id:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="GITHUB_CLIENT_ID is not configured. Save it via /integrations/configure first.",
-        )
-
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.post(
-            "https://github.com/login/device/code",
-            data={"client_id": client_id, "scope": "repo copilot"},
-            headers={"Accept": "application/json"},
-        )
-
-    data = resp.json()
-    if "error" in data:
-        raise HTTPException(
-            status_code=502,
-            detail=f"GitHub error: {data['error']} — {data.get('error_description', '')}",
-        )
-
-    _log.info("github.device.start", actor=user.email)
-    return {
-        "user_code": data["user_code"],
-        "verification_uri": data["verification_uri"],
-        "device_code": data["device_code"],
-        "expires_in": data["expires_in"],
-        "interval": data["interval"],
-    }
+    """Retired (WS-54 GH-7). It answers 410 and calls nothing."""
+    _log.info("github.device_start_retired", actor=user.email)
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail=DEVICE_FLOW_GONE)
 
 
 @router.post("/github/device/poll", dependencies=[_REQUIRE_MANAGE])
@@ -2510,104 +2535,14 @@ async def github_device_poll(
     req: DevicePollRequest,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Poll GitHub to check if the user has approved the device flow.
-
-    Returns:
-        {status: "authorized", login: str}  — token stored for this organization
-        {status: "pending"}                 — user hasn't approved yet, keep polling
-        {status: "slow_down", interval: int} — increase polling interval
-        {status: "expired"}                 — code expired, restart flow
-        {status: "denied"}                  — user denied access
-
-    🔒 WS-54 IN-7. The token becomes the ORG connection of the caller's
-    organization in the connection registry, through
-    ``gateway/connections/github.py``. It goes nowhere else: not to
-    ``provider_keys``, not to ``os.environ``, not to the env file. The BYOK
-    gate still runs first. A failed store write answers 503.
-    """
-    _refuse_provider_key_without_byok(["GITHUB_TOKEN"])
-    _store, client_id = await _github_org_store()
-    if not client_id:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="GITHUB_CLIENT_ID is not configured.",
-        )
-
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.post(
-            "https://github.com/login/oauth/access_token",
-            data={
-                "client_id": client_id,
-                "device_code": req.device_code,
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-            },
-            headers={"Accept": "application/json"},
-        )
-
-    data = resp.json()
-
-    if "access_token" in data:
-        token: str = data["access_token"]
-        # Layer A before any write: the token comes from GitHub, not from us.
-        _refuse_unsafe_env_writes([("GITHUB_TOKEN", str(token))], actor=user.email)
-        org = _github_org()
-
-        # Fetch the GitHub login name and the scopes for the connection card.
-        login = "unknown"
-        scopes = github_connection.parse_scopes(data.get("scope"))
-        try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                ur = await client.get(
-                    "https://api.github.com/user",
-                    headers={
-                        "Authorization": f"token {token}",
-                        "Accept": "application/vnd.github.v3+json",
-                    },
-                )
-                if ur.status_code == 200:
-                    login = ur.json().get("login", "unknown")
-                    header = ur.headers.get("X-OAuth-Scopes", "")
-                    scopes = scopes or github_connection.parse_scopes(header)
-        except Exception:  # noqa: BLE001
-            pass
-
-        try:
-            async with tenant_session(org) as db:
-                await github_connection.save_device_token(
-                    db, org, access_token=token, login=login, scopes=scopes,
-                    connected_by=user.email,
-                    refresh_token=str(data.get("refresh_token") or ""),
-                    expires_in=_int_or_none(data.get("expires_in")),
-                )
-        except Exception as exc:
-            _log.warning("github.device.store_failed", error=type(exc).__name__)
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Could not store the GitHub token for this organization.",
-            ) from None
-
-        _log.info("github.device.authorized", login=login, actor=user.email)
-        return {"status": "authorized", "login": login}
-
-    error = data.get("error", "unknown")
-    if error == "slow_down":
-        return {"status": "slow_down", "interval": data.get("interval", 10)}
-    if error in ("expired_token", "access_denied"):
-        return {"status": error.replace("_", "-")}
-    # authorization_pending and anything else
-    return {"status": "pending"}
+    """Retired (WS-54 GH-7). It answers 410, calls nothing and stores nothing."""
+    _log.info("github.device_poll_retired", actor=user.email)
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail=DEVICE_FLOW_GONE)
 
 
 # ---------------------------------------------------------------------------
 # GitHub account info & CLI import
 # ---------------------------------------------------------------------------
-
-def _int_or_none(value: Any) -> int | None:
-    try:
-        return int(value) if value else None
-    except (TypeError, ValueError):
-        return None
-
 
 def _github_org() -> str:
     """The organization of the request, from the bound tenant (R5). 403 if none."""
@@ -2617,47 +2552,6 @@ def _github_org() -> str:
             status_code=status.HTTP_403_FORBIDDEN, detail="No organization is bound.",
         )
     return str(org)
-
-
-async def _store_github_pat(token: str, user: UserContext) -> None:
-    """Save a token that a member typed as the org GitHub connection.
-
-    WS-54 IN-7 review. ``GITHUB_TOKEN`` in configure and ``PUT /keys`` used to
-    land in ``provider_keys``, where no reader looks once a connection row
-    exists. It is the same org connection as the device flow now. The login
-    and the scopes come from ``GET /user``. A lookup that fails leaves them
-    empty, and the token is still saved.
-    """
-    org = _github_org()
-    login = ""
-    scopes: tuple[str, ...] = ()
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            ur = await client.get(
-                "https://api.github.com/user",
-                headers={
-                    "Authorization": f"token {token}",
-                    "Accept": "application/vnd.github.v3+json",
-                },
-            )
-        if ur.status_code == 200:
-            login = str(ur.json().get("login") or "")
-            scopes = github_connection.parse_scopes(ur.headers.get("X-OAuth-Scopes", ""))
-    except Exception:
-        pass
-    try:
-        async with tenant_session(org) as db:
-            await github_connection.save_device_token(
-                db, org, access_token=token, login=login, scopes=scopes,
-                connected_by=user.email,
-            )
-    except Exception as exc:
-        _log.warning("github.pat.store_failed", error=type(exc).__name__)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Could not store GITHUB_TOKEN for this organization.",
-        ) from None
-    _log.info("github.pat.saved", actor=user.email)
 
 
 @router.get("/github/account")
@@ -2680,10 +2574,18 @@ async def github_account(
             the same facts under the names that the account badge reads
         gh_cli_*               — always empty. The CLI import is retired.
     """
+    from gateway.connections import github_app
+
     summary = await github_connection.account_summary(_github_org())
     scopes: list[str] = summary["scopes"]
+    try:
+        # WS-54 GH-3: the card offers Connect GitHub only when the App can run.
+        app_available = github_app.app_enabled() and bool(github_app.slug())
+    except github_app.GitHubAppNotConfigured:
+        app_available = False
     return {
         **summary,
+        "app_available": app_available,
         "token_configured": summary["connected"],
         "token_login": summary["login"],
         "token_scopes": scopes,
@@ -2703,22 +2605,40 @@ async def github_disconnect(
     """Disconnect GitHub for the caller's organization.
 
     🔒 WS-54 IN-7. It deletes the stored token and sets ``disconnected``.
-    GitHub revokes an OAuth app token only with ``DELETE
-    /applications/{client_id}/token``, and that call needs the client SECRET
-    of the app. The device flow holds the client id only, so the token is NOT
-    revoked at GitHub. The answer says so (``revoked_at_github: false``), and
-    the member can revoke the app at https://github.com/settings/applications.
+    Metorite cannot revoke a pasted personal access token at GitHub, so the
+    answer says so (``revoked_at_github: false``) and names
+    https://github.com/settings/tokens. For an ``app`` row (GH-3, GH-E10) it
+    uninstalls nothing at GitHub and answers the installation page instead.
     """
-    removed = await github_connection.disconnect(_github_org())
+    org = _github_org()
+    before = await github_connection.connection(org)
+    if github_connection.is_app_row(before):
+        # WS-54 GH-3 (§7.5, GH-E10): the row goes, and Metorite does NOT
+        # uninstall the App at GitHub. The answer gives the admin the link.
+        summary = await github_connection.account_summary(org)
+        removed = await github_connection.disconnect(org)
+        _log.info("github.disconnected", actor=user.email, removed=removed, mode="app")
+        return {
+            "disconnected": True,
+            "removed": removed,
+            "revoked_at_github": False,
+            "installation_url": summary.get("installation_url"),
+            "note": (
+                "Metorite no longer reads this GitHub account. The Metorite App "
+                "stays installed at GitHub. To remove it, open the installation "
+                "page and uninstall it there."
+            ),
+        }
+    removed = await github_connection.disconnect(org)
     _log.info("github.disconnected", actor=user.email, removed=removed)
     return {
         "disconnected": True,
         "removed": removed,
         "revoked_at_github": False,
         "note": (
-            "The token is deleted from Metorite. GitHub cannot revoke a "
-            "device-flow token without the client secret, so revoke the app "
-            "at https://github.com/settings/applications."
+            "The token is deleted from Metorite. Metorite cannot revoke a "
+            "personal access token at GitHub, so revoke it at "
+            "https://github.com/settings/tokens."
         ),
     }
 
@@ -2736,7 +2656,8 @@ async def github_connect_cli(
     own GitHub identity, and wrote it to ``GITHUB_TOKEN`` for the whole
     deployment. To store that token in a tenant row would give the
     operator's identity to that tenant, so it writes nothing at all. A member
-    connects GitHub with the device flow. It stays as a 410 so that an old client gets a clear answer.
+    connects GitHub with the GitHub card (WS-54 GH-3, GH-7). It stays as a 410
+    so that an old client gets a clear answer.
 
     🔒 The BYOK gate still runs first, so the answer with BYOK off stays 403.
     """
@@ -2745,7 +2666,7 @@ async def github_connect_cli(
     raise HTTPException(
         status_code=status.HTTP_410_GONE,
         detail=(
-            "Import from the GitHub CLI is retired. Connect GitHub with the "
-            "device flow instead."
+            "Import from the GitHub CLI is retired. Connect GitHub in "
+            "Integrations instead."
         ),
     )
