@@ -425,10 +425,14 @@ def test_questions_allowed_is_the_and_of_two_lists(
 
 def test_the_step_sets_new_at_only_when_an_id_is_new() -> None:
     first = qs.step_state(None, ["a", "b"], True, NOW)
-    assert first == {"seen": ["a", "b"], "money": True, "new_at": NOW.isoformat(), "new": 2}
+    # CRM-Q32-8: each step writes `proposals_seen`, and a write of `new_at`
+    # writes `proposed` too.
+    assert first == {"seen": ["a", "b"], "money": True, "new_at": NOW.isoformat(), "new": 2,
+                     "proposals_seen": [], "proposed": 0}
     # An answer closes "a": no new_at.
     later = NOW + timedelta(hours=3)
-    assert qs.step_state(first, ["b"], False, later) == {"seen": ["b"], "money": False}
+    assert qs.step_state(first, ["b"], False, later) == {"seen": ["b"], "money": False,
+                                                         "proposals_seen": []}
     # A new id sets new_at again.
     again = qs.step_state({"seen": ["b"]}, ["b", "c"], False, later)
     assert (again["new_at"], again["new"]) == (later.isoformat(), 1)

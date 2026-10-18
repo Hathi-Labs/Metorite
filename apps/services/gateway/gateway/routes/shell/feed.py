@@ -811,7 +811,9 @@ def _questions_signal(row: dict[str, Any]) -> Signal:
         signal_id=f"crm:questions:{day}", app="crm", kind="crm_open_questions",
         entity={"type": "questions", "id": day, "label": title}, title=title,
         facts={"count": int(row.get("count") or 0), "open": int(row.get("open") or 0),
-               "money": row.get("money") is True, "new_at": _iso(at)},
+               "money": row.get("money") is True, "new_at": _iso(at),
+               # CRM-Q32-8: the new answers that members proposed.
+               "proposed": int(row.get("proposed") or 0)},
         href=href, acts=(link("answer", "Answer", href),), at=_iso(at),
     )
 
@@ -1155,14 +1157,21 @@ def _digest_line(facts: dict[str, Any]) -> str:
 
 def _questions_line(facts: dict[str, Any]) -> str:
     """The why line of ``crm_open_questions`` (CRM-Q32-4). A code template
-    over a count: it shows no question and no model text."""
-    count = facts.get("count")
-    n = count if isinstance(count, int) and not isinstance(count, bool) and count > 0 else 0
-    if n == 1:
-        return "Jev has 1 new question about your CRM data."
-    if n > 1:
-        return f"Jev has {n} new questions about your CRM data."
-    return "Jev has new questions about your CRM data."
+    over a count: it shows no question and no model text. CRM-Q32-8: it
+    names the answers that members proposed too, and it says "the AI",
+    never the internal name of the model (the owner's copy rule)."""
+    def _n(key: str) -> int:
+        raw = facts.get(key)
+        return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else 0
+
+    n, proposed = _n("count"), _n("proposed")
+    asks = ("The AI has 1 new question about your CRM data." if n == 1 else
+            f"The AI has {n} new questions about your CRM data." if n > 1 else "")
+    if proposed:
+        team = ("1 answer proposed by your team." if proposed == 1
+                else f"{proposed} answers proposed by your team.")
+        return f"{asks} {team}" if asks else team
+    return asks or "The AI has new questions about your CRM data."
 
 
 def _colleague_line(facts: dict[str, Any]) -> str:

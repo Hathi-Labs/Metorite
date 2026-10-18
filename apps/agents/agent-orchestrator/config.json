@@ -43,6 +43,7 @@
     "crm_list_modules",
     "crm_list_module_records",
     "crm_get_module_record",
-    "org_facts"
+    "org_facts",
+    "crm_answer_question"
   ]
 }

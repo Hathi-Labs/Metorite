@@ -1553,13 +1553,14 @@ async def _add_crm_facts_block(
         from acb_skills.crm_tools import CRM_TOOL_NAMES, questions_org_on
         from acb_skills.org_facts_tools import (
             BLOCK_MARKER,
-            ORG_FACTS_TOOLS,
+            FACTS_GATED_TOOLS,
             crm_facts_block,
             crm_facts_for_run,
         )
     except ImportError:
         return held
-    facts_tools = frozenset(fn.__name__ for fn in ORG_FACTS_TOOLS)
+    # CRM-Q32-8: `crm_answer_question` goes with `org_facts`.
+    facts_tools = frozenset(fn.__name__ for fn in FACTS_GATED_TOOLS)
     own = {_tool_name(t) for agent in agents for _a, pool in _own_tool_pools(agent)
            for t in pool}
     holds_crm = bool((held | own) & CRM_TOOL_NAMES)
@@ -1595,12 +1596,13 @@ def _facts_withheld() -> frozenset[str]:
     ``test_skill_toggle_enforcement.py``)."""
     try:
         from acb_skills.crm_tools import questions_box_on, questions_org_on
-        from acb_skills.org_facts_tools import ORG_FACTS_TOOLS
+        from acb_skills.org_facts_tools import FACTS_GATED_TOOLS
     except ImportError:
         return frozenset()
     if not questions_box_on() or questions_org_on(_run_org_or_none()):
         return frozenset()
-    return frozenset(fn.__name__ for fn in ORG_FACTS_TOOLS)
+    # CRM-Q32-8: `crm_answer_question` is withheld wherever `org_facts` is.
+    return frozenset(fn.__name__ for fn in FACTS_GATED_TOOLS)
 
 
 def _whatsapp_withheld() -> frozenset[str]:
@@ -1932,10 +1934,11 @@ def _collect_injectable_platform_tools(agent_name: str | None = None) -> list[An
     except ImportError:
         pass
     # WS-53 CRM-Q32-5: `org_facts` loads with the `crm` family only, so the
-    # core floor does not change (crm_platform.md §18.14.4).
+    # core floor does not change (crm_platform.md §18.14.4). CRM-Q32-8:
+    # `crm_answer_question` loads with it, on the same terms.
     try:
-        from acb_skills.org_facts_tools import ORG_FACTS_TOOLS
-        _all_tools = [*_all_tools, *ORG_FACTS_TOOLS]
+        from acb_skills.org_facts_tools import FACTS_GATED_TOOLS
+        _all_tools = [*_all_tools, *FACTS_GATED_TOOLS]
     except ImportError:
         pass
 
@@ -2104,8 +2107,9 @@ def _inject_agent_tools(
     _wa_withheld = _whatsapp_withheld()
     if _wa_withheld:
         _drop_own_tools(agents, _wa_withheld)
-    # WS-53 CRM-Q32 follow-up: `org_facts` only for a run of an org on
-    # CRM_QUESTIONS_ORGS, so no prompt names it for another org.
+    # WS-53 CRM-Q32 follow-up: `org_facts` (and, since CRM-Q32-8,
+    # `crm_answer_question`) only for a run of an org on CRM_QUESTIONS_ORGS,
+    # so no prompt names them for another org.
     _facts_off = _facts_withheld()
     _scope_names = _resolve_injected_scope(
         tool_scope, disabled_families=_disabled_families,

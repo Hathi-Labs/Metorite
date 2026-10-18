@@ -1258,9 +1258,10 @@ async def test_mirror_dwell_relays_the_reason(monkeypatch) -> None:
 
 
 #: The names a /crm path in ``crm_tools`` may interpolate, each bound to a
-#: validator's result: the entity, an id, a module name, a report kind, and a
-#: status vocabulary from a fixed map.
-_SHARED_VALIDATED = frozenset({"slug", "record", "mod", "report", "vocab"})
+#: validator's result: the entity, an id, a module name, a report kind, a
+#: status vocabulary from a fixed map, and (CRM-Q32-8) a question id from
+#: ``_question_id``.
+_SHARED_VALIDATED = frozenset({"slug", "record", "mod", "report", "vocab", "question"})
 
 
 def test_the_shared_tools_bound_every_path_segment() -> None:
@@ -1687,11 +1688,15 @@ async def test_q32_a_revenue_total_names_its_default(
     assert not out.startswith("CRM GET")
 
 
-def test_q32_no_tool_asks_in_the_chat_or_waits_for_an_answer() -> None:
-    """Item 4: a CRM tool never asks a question and never waits."""
+def test_q32_no_tool_waits_for_an_answer() -> None:
+    """Item 4, as CRM-Q32-8 amends it (R7, on purpose): a CRM tool never
+    waits for an answer. It may NAME ``ask_questions``, because the CLARIFY
+    block holds its payload for the model to send. It still never holds a
+    card of its own and never waits: the four other words stay refused."""
     source = inspect.getsource(_T)
-    for word in ("ask_questions", "ElicitationCard", "elicit", "wait_for", "input("):
+    for word in ("ElicitationCard", "elicit", "wait_for", "input("):
         assert word not in source, word
+    assert "ask_questions" in source  # the CLARIFY block names it
 
 
 async def test_q32_a_dark_box_sends_no_catalogue_read_for_a_total(monkeypatch) -> None:

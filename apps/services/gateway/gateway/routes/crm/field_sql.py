@@ -95,6 +95,8 @@ BUCKETS: dict[str, tuple[str, str]] = {
 #: The jsonb column of each kind of record. The only two columns a scope takes.
 CORE_COLUMN = "custom"
 MODULE_COLUMN = "fields"
+#: The prefix of the ``owner`` of the scope of a module (``module:<api_name>``).
+MODULE_OWNER = "module:"
 _COLUMNS = (CORE_COLUMN, MODULE_COLUMN)
 
 #: A number that arrives as a string. Bound into no statement: it is a literal.
@@ -236,11 +238,16 @@ class FieldScope:
             "message": f"{self.owner} has no key field for {key}. "
                        "crm_list_modules names the key fields of each module.",
         }
-        if KEY_WORDS.get(key) in self.questions:
+        part = KEY_WORDS.get(key)
+        if part in self.questions:
+            from gateway.crm_sync.questions import key_id
             from gateway.retrieval.sources import crm_settings_href
 
             detail["message"] += " A CRM admin can answer this in CRM settings, Open questions."
             detail["href"] = crm_settings_href("questions")
+            # CRM-Q32-8: the id of the open question, so the chat can ask it.
+            if self.owner.startswith(MODULE_OWNER):
+                detail["question"] = key_id(self.owner[len(MODULE_OWNER):], str(part))
         return detail
 
 

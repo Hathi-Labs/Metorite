@@ -215,12 +215,13 @@ def test_build_catalog_caches_per_registry_hash():
 def test_the_crm_family_is_the_crm_tools_module() -> None:
     """One implementation: the family holds exactly ``crm_tools.CRM_TOOLS``,
     and the injection chain offers each of them. WS-53 CRM-Q32-5 adds the
-    org-facts read, which loads with this family only."""
+    org-facts read, which loads with this family only, and CRM-Q32-8 the
+    reply of a question card, which goes with it."""
     from acb_skills import crm_tools, org_facts_tools
 
     fam = sf.SKILL_FAMILIES["crm"]
     assert set(fam["tools"]) == set(crm_tools.CRM_TOOL_NAMES) | {
-        fn.__name__ for fn in org_facts_tools.ORG_FACTS_TOOLS}
+        fn.__name__ for fn in org_facts_tools.FACTS_GATED_TOOLS}
     assert fam["scope_governed"] is True and fam["core"] is False
     assert set(fam["tools"]) <= _injectable_names()
 

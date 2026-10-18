@@ -908,12 +908,23 @@ class TestTheOpenQuestionsCard:
         assert crm_settings_href("questions") == "/crm?tab=settings&section=questions"
         assert signal.href == "/crm?tab=settings&section=questions"
         assert [(a["id"], a["label"]) for a in signal.acts] == [("answer", "Answer")]
-        assert set(signal.facts) == {"count", "open", "money", "new_at"}
+        # CRM-Q32-8 adds `proposed`, the new answers of the team: a count.
+        assert set(signal.facts) == {"count", "open", "money", "new_at", "proposed"}
         tz = ZoneInfo("UTC")
+        # CRM-Q32-8: the line says "the AI", never the internal name (the
+        # owner's copy rule), and names the answers that members proposed.
         assert feed._md3_why("crm_open_questions", signal.facts, tz, self.NOW.date()) == (
-            "open_questions", "Jev has 3 new questions about your CRM data.")
+            "open_questions", "The AI has 3 new questions about your CRM data.")
         assert feed._md3_why("crm_open_questions", {"count": 1}, tz, self.NOW.date())[1] == (
-            "Jev has 1 new question about your CRM data.")
+            "The AI has 1 new question about your CRM data.")
+        assert feed._md3_why("crm_open_questions", {"count": 0, "proposed": 2}, tz,
+                             self.NOW.date())[1] == "2 answers proposed by your team."
+        assert feed._md3_why("crm_open_questions", {"count": 1, "proposed": 1}, tz,
+                             self.NOW.date())[1] == (
+            "The AI has 1 new question about your CRM data. 1 answer proposed by your team.")
+        for facts in ({"count": 3}, {"count": 0, "proposed": 2}):
+            assert "Jev" not in feed._md3_why("crm_open_questions", facts, tz,
+                                              self.NOW.date())[1]
 
     def test_the_card_shows_for_one_day_after_new_at(self):
         from gateway.crm_sync import questions as qs

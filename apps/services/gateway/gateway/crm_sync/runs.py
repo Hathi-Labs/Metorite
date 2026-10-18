@@ -407,14 +407,48 @@ _MERGE_ENTRY_SQL = (
 
 
 async def merge_cursor_entry(
-    db: Any, org: str, module: str, bucket: str, key: str, entry: dict[str, Any],
+    db: Any, org: str, module: str, bucket: str, key: str,
+    entry: dict[str, Any] | list[Any],
 ) -> None:
     """Set ``state[bucket][key] = entry`` in the cursor row *module*, and keep
-    each other entry. CRM-Q20-2 records a dismissed suggestion with it."""
+    each other entry. CRM-Q20-2 records a dismissed suggestion with it.
+    CRM-Q32-8 writes the list of the proposals of one question with it,
+    after :func:`lock_cursor`."""
     await db.execute(text(_MERGE_ENTRY_SQL), {
         "org": org, "module": module, "bucket": bucket, "key": key,
         "entry": json.dumps(entry),
     })
+
+
+#: CRM-Q32-8: the row of one cursor, made if it is absent. Two writers that
+#: both find no row both insert, and ``DO NOTHING`` keeps the first.
+_ENSURE_CURSOR_SQL = (
+    "INSERT INTO crm_sync_cursors (organization_id, module, last_run_at, last_status, "
+    "cursor_state) VALUES (CAST(:org AS uuid), :module, now(), 'ok', '{}'::jsonb) "
+    "ON CONFLICT (organization_id, module) DO NOTHING"
+)
+
+#: CRM-Q32-8: the lock of one cursor row, and its state, for the bound org.
+_LOCK_CURSOR_SQL = (
+    "SELECT cursor_state FROM crm_sync_cursors WHERE organization_id = CAST(:org AS uuid) "
+    "AND module = :module FOR UPDATE"
+)
+
+
+async def lock_cursor(db: Any, org: str, module: str) -> dict[str, Any]:
+    """Lock the cursor row *module* of *org* until the caller's transaction
+    ends, and give its state (CRM-Q32-8, the write idiom of a proposal). The
+    row is made first when it is absent (``ON CONFLICT DO NOTHING``), so
+    the lock always holds a row. Two writers of one row then take turns, and
+    a read, a change and a write of a list in the state lose no entry.
+
+    The lock order of the CRM: a writer that also takes ``lock_plan`` takes
+    it FIRST, then this row. The member path takes only this row."""
+    params = {"org": org, "module": module}
+    await db.execute(text(_ENSURE_CURSOR_SQL), params)
+    row = (await db.execute(text(_LOCK_CURSOR_SQL), params)).first()
+    state = _json(row.cursor_state) if row is not None else None
+    return state if isinstance(state, dict) else {}
 
 
 #: One entry removed from one object of a cursor row's state, for the bound
@@ -480,6 +514,7 @@ __all__ = [
     "finish",
     "last_success_at",
     "latest",
+    "lock_cursor",
     "member_emails",
     "merge_cursor_entry",
     "merge_cursor_keys",

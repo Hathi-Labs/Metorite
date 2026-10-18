@@ -23,7 +23,7 @@ from typing import Any
 
 from acb_common.paging import paged
 
-from acb_skills.crm_tools import _get, _read_tool
+from acb_skills.crm_tools import CRM_QUESTION_TOOLS, _get, _read_tool
 
 #: The route of the seam.
 ORG_FACTS_PATH = "/org/facts"
@@ -113,9 +113,17 @@ async def crm_facts_block_for_run() -> str:
 
 ORG_FACTS_TOOLS = (org_facts,)
 
+#: The tools that go with the facts (WS-53 CRM-Q32-8): ``org_facts`` and
+#: ``crm_answer_question``. The run assembly injects them together, and
+#: withholds them together (``_facts_withheld`` and the drop of
+#: ``_add_crm_facts_block``), so a run of an org off ``CRM_QUESTIONS_ORGS``
+#: holds neither.
+FACTS_GATED_TOOLS = (*ORG_FACTS_TOOLS, *CRM_QUESTION_TOOLS)
+
 __all__ = [
     "BLOCK_LINES",
     "BLOCK_MARKER",
+    "FACTS_GATED_TOOLS",
     "ORG_FACTS_PATH",
     "ORG_FACTS_TOOLS",
     "crm_facts_block",
