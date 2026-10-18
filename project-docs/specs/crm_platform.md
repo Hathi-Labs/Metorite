@@ -7632,6 +7632,45 @@ is the grant `enforcement-flip`. The org needs `CRM_QUESTIONS_ORGS` and
 - `npx tsc --noEmit && npx vitest run src/app/crm src/components/ui` in
   `workbench/control_plane`.
 
+#### 18.15.10 Fix round 1 (the security review of #1151, 2026-10-19)
+
+The review returned NOT-READY with two P0s. Both are closed, with the P1,
+the two P2s and the note.
+
+- **P0: a pick needs the member's click.** A card that was only shown
+  opened the gate of a pick before. So the model could hold a rule and send
+  "save" with no click. Now the tool registers each card that it builds
+  from the server's read. `ask_questions` hands the gateway's answer of the
+  member's click to `crm_tools.record_card_answer`. The pick counts only
+  for that card, its exact question text and one of its labels, and the
+  gate takes the key once (`CrmAsks.use_pick`). A typed answer is no pick.
+- **The rule card shows the stored words.** The server builds the question
+  of a rule card from the held row. A card with other words records no
+  pick, live or late (`questions._rule_label`).
+- **P1: every word of a rule.** `member_said` needs each word, number and
+  negation of the rule in the member's own words of the run. Only glue
+  words such as "the" and "of" may differ.
+- **P2: a parked act owns the next WhatsApp message.** While an act is
+  pending, the CRM's pending ask does not settle. A run that parked an act,
+  or whose reply asks its own numbered choice, offers no CRM question and
+  drops an earlier one.
+- **P2: the purge reaches the CRM.** The member's own rules go
+  (`_PURGE_DELETES`). An org rule keeps no address of the member. In
+  `zoho:questions` the member's proposals go, and the record of who set an
+  answer keeps its time and loses the address. The member's CRM keys leave
+  tenant Redis. A fence fails when a new table keyed by a member email is
+  not in the purge.
+- **The note goes in when the model leaves it out.** The tool registers
+  each note in the holder of the run. On the web, `executor._sse` watches
+  the text, and `executor._crm_note_events` adds the note before
+  RUN_FINISHED. On WhatsApp, `bot_run` adds it to the reply.
+  `answer_check.py` does not change.
+
+Fences: `tests/unit/test_crm_answer_first.py`,
+`tests/unit/test_crm_answer_first_fix1.py` and
+`tests/unit/test_crm_answer_first_r8.py`. Six mutations, one for each rule,
+each fail a test.
+
 ---
 
 ## 19. The daily-use UX (2026-10-12)
