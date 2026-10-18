@@ -259,6 +259,20 @@ def _sentence(text: str) -> str:
     return f"{t}." if t else ""
 
 
+def card_default(q: Any) -> str | None:
+    """The ``default`` a model set on a question, cut for the card, or None.
+
+    The ONE reader of the key for a card, so the tool's own paths (A and C)
+    and the executor's bridge (B1) draw the same words, and the member SEES
+    each default that a decline may name (review of #1152): the card draws
+    "If you skip: <default>" under the question.
+    """
+    said = q.get("default") if isinstance(q, dict) else None
+    if not isinstance(said, str) or not said.strip():
+        return None
+    return clip_words(said, OPTION_DESCRIPTION_MAX)
+
+
 def stated_default(q: Any) -> str:
     """The default a question STATES, or ``""`` when it states none.
 
@@ -273,8 +287,8 @@ def stated_default(q: Any) -> str:
     kept = next((o for o in options if o.get("key") == CRM_DEFAULT_KEY), None)
     if kept is not None:
         return str(kept.get("description") or kept.get("label") or "").strip()
-    said = q.get("default")
-    return said.strip() if isinstance(said, str) else ""
+    # The same words the card draws ("If you skip: ..."), never more.
+    return card_default(q) or ""
 
 
 def question_defaults(questions: Any) -> list[tuple[str, str]]:
@@ -460,9 +474,10 @@ async def ask_questions(questions: str) -> str:
         if q.get("required") is False:
             entry["required"] = False
         # The default the question states, if any: what a "Not now" may use
-        # (``stated_default``). The key goes only when the model set it.
-        if isinstance(q.get("default"), str) and q["default"].strip():
-            entry["default"] = clip_words(q["default"], OPTION_DESCRIPTION_MAX)
+        # (``stated_default``). The card draws it, so the member sees it. The
+        # key goes only when the model set it.
+        if card_default(q):
+            entry["default"] = card_default(q)
         # WS-53 CRM-Q32-8: a CRM question card keeps the id of its question,
         # so a late answer of the member can be tied to it (the gateway).
         if crm_card_tag(q):

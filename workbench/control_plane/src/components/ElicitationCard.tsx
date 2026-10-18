@@ -73,11 +73,13 @@ import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
 import { Textarea } from "@/components/ui/Input";
-import { cardExit, DECLINED_NOTE, DECLINED_TITLE } from "@/lib/declineAnswer";
+import { cardExit, DECLINED_TITLE, declinedNoteFor } from "@/lib/declineAnswer";
 import { plainTitle } from "@/lib/fencedText";
 import {
+  IF_YOU_SKIP,
   collectAnswers,
   isAnswered as hasAnswer,
+  statedDefault,
   submitBlockedReason,
   unansweredQuestions,
   type ElicitationAnswers,
@@ -200,7 +202,8 @@ export default function ElicitationCard({
   const title = declined
     ? DECLINED_TITLE
     : isAnswered ? ANSWERED_TITLE : (openTitle ?? questionsTitle(questions.length));
-  const aside = declined ? DECLINED_NOTE : answered ? plainTitle(answered) : undefined;
+  const declinedNote = declinedNoteFor(questions.map(statedDefault));
+  const aside = declined ? declinedNote : answered ? plainTitle(answered) : undefined;
   const canDecline = !!onDecline && !closed;
 
   return (
@@ -210,7 +213,7 @@ export default function ElicitationCard({
       icon={declined ? DECLINED_ICON : isAnswered ? ANSWERED_ICON : QUESTION_ICON}
       header="own"
       pending={!closed}
-      summary={declined ? DECLINED_NOTE : (answered || undefined)}
+      summary={declined ? declinedNote : (answered || undefined)}
     >
       <section
         aria-label={title}
@@ -262,6 +265,13 @@ export default function ElicitationCard({
                 >
                   <GenUiText text={q.question} />
                 </p>
+                {/* A stated default shows, so a "Not now" never uses a
+                    default the member did not see (review of #1152). */}
+                {!isAnswered && statedDefault(q) && (
+                  <p data-elicitation-default="" className="break-words text-[11px] text-muted-foreground">
+                    {IF_YOU_SKIP}: {plainTitle(statedDefault(q))}
+                  </p>
+                )}
 
                 {hasOptions && (
                   <div className="flex flex-col gap-0.5">

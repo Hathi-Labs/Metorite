@@ -43,6 +43,23 @@ export const DECLINED_NOTE = "You can ask again later.";
 export const DECLINED_LINE = `${DECLINED_TITLE} · ${DECLINED_NOTE}`;
 
 /**
+ * The words after "Not answered" on a declined question card. A card with a
+ * stated default says what Metorite uses now, because a CRM default holds
+ * the question for 24 hours, so "ask again later" would mislead. Any other
+ * card keeps {@link DECLINED_NOTE}.
+ */
+export function declinedNoteFor(defaults: readonly string[]): string {
+  const said = defaults.map((d) => d.trim()).filter(Boolean);
+  if (said.length === 0) return DECLINED_NOTE;
+  if (said.length === 1) {
+    const one = said[0].replace(/[.\s]+$/, "");
+    // "Keep them open for now" already says "for now": no second one.
+    return /\bfor now$/i.test(one) ? `Metorite uses ${one}.` : `Metorite uses ${one} for now.`;
+  }
+  return "Metorite uses the stated defaults for now.";
+}
+
+/**
  * The answer a declined blocking card holds in the chat's answer map
  * (`askAnswers`). It is no answer the run can get: a picker sends
  * "Selected: …" and a form sends "<label> — <json>".

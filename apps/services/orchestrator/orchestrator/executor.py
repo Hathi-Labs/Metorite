@@ -5426,8 +5426,16 @@ async def run_agent_stream(
                                     # WS-53 CRM-Q32-8: the id of a CRM
                                     # question card, as the tool keeps it.
                                     from acb_skills.ask_tools import (
+                                        card_default as _card_default,
+                                    )
+                                    from acb_skills.ask_tools import (
                                         crm_card_tag as _crm_tag,
                                     )
+                                    # The stated default, as the tool keeps
+                                    # it. The card draws it, so a "Not now"
+                                    # names only what the member saw.
+                                    if _card_default(_q):
+                                        _entry["default"] = _card_default(_q)
                                     if _crm_tag(_q):
                                         _entry["crm_question"] = _crm_tag(_q)
                                     _valid.append(_entry)

@@ -18,6 +18,7 @@ import {
   NOT_NOW,
   cardExit,
   declineBody,
+  declinedNoteFor,
   isDeclinedAnswer,
 } from "./declineAnswer";
 import { malformedDecline, otherAccountOf, sendRespondInputResult } from "./respondInput";
@@ -128,5 +129,17 @@ describe("the route", () => {
     expect((await post({ request_id: RID, answer: "Billed", declined: true, thread_id: "t1" })).status).toBe(400);
     expect((await post({ request_id: RID, answer: "", declined: "yes", thread_id: "t1" })).status).toBe(400);
     expect(gateway).not.toHaveBeenCalled();
+  });
+});
+
+describe("the note of a declined question card (review of #1152)", () => {
+  it("says what Metorite uses now when the card states a default", () => {
+    expect(declinedNoteFor([])).toBe("You can ask again later.");
+    expect(declinedNoteFor(["", " "])).toBe("You can ask again later.");
+    expect(declinedNoteFor(["Billed, until a CRM admin answers"])).toBe(
+      "Metorite uses Billed, until a CRM admin answers for now.",
+    );
+    expect(declinedNoteFor(["A.", "B"])).toBe("Metorite uses the stated defaults for now.");
+    expect(declinedNoteFor(["Keep them open for now"])).toBe("Metorite uses Keep them open for now.");
   });
 });

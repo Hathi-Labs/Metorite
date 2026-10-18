@@ -6026,6 +6026,13 @@ and not a stop.
   card states one only in its own `default` field. A recommended option is
   not a default. For example, "Archive the 8 done tasks?" with Yes
   recommended, then Not now, must not lead to an archive (review of #1152).
+- **The member sees each default that a decline can use.** The card draws
+  "If you skip: <default>" in muted words under the question. All three
+  paths of `ask_questions` and the executor's bridge read the `default` key
+  through `ask_tools.card_default`. The decline text names only those
+  words. A declined card with a default reads "Not answered · Metorite uses
+  <default> for now." Any other declined card reads "You can ask again
+  later."
 - The plan card's Cancel tells the model that the member cancelled the plan.
   The run created nothing, and the model does not propose the plan again unless
   the member asks for it (`forms.declined_plan`).

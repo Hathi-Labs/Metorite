@@ -129,6 +129,78 @@ def test_the_crm_default_key_is_the_crm_tools_key():
     assert at.CRM_DEFAULT_KEY == crm_tools.DEFAULT_KEY
 
 
+_DEFAULT_CARD = [
+    {"header": "Archive", "question": "Archive the 8 done tasks?", "default": "Keep them for now",
+     "options": [{"label": "Yes", "recommended": True}, {"label": "No"}]},
+]
+
+
+def test_the_default_reaches_the_card_on_path_a():
+    async def go() -> dict:
+        executor._stream_relay_thread_id.set("t-def-a")
+        queue: asyncio.Queue = asyncio.Queue()
+        executor._active_run_queue.set(queue)
+        run = asyncio.create_task(at.ask_questions(json.dumps({"questions": _DEFAULT_CARD})))
+        evt = await asyncio.wait_for(queue.get(), timeout=2)
+        assert executor.resolve_user_input(evt["value"]["request_id"], "", thread_id="t-def-a",
+                                           declined=True)
+        out = await run
+        return {"card": evt["value"], "out": out}
+
+    got = asyncio.run(go())
+    assert got["card"]["questions"][0]["default"] == "Keep them for now"
+    assert "Use the default that the question states: Keep them for now." in got["out"]
+
+
+def test_the_default_reaches_the_card_on_path_c(monkeypatch):
+    pushed: list[dict] = []
+
+    async def _push(_tid: str, line: str) -> None:
+        pushed.append(json.loads(line[len("data: "):].strip()))
+
+    monkeypatch.setattr(executor, "_push_sse_to_stream", _push)
+
+    async def go() -> str:
+        executor._stream_relay_thread_id.set("t-def-c")
+        executor._active_run_queue.set(None)
+        executor._active_elicitation_request_id.set(None)
+        run = asyncio.create_task(at.ask_questions(json.dumps({"questions": _DEFAULT_CARD})))
+        for _ in range(200):
+            if pushed:
+                break
+            await asyncio.sleep(0.01)
+        rid = pushed[0]["value"]["request_id"]
+        assert executor.resolve_user_input(rid, "", thread_id="t-def-c", declined=True)
+        return await asyncio.wait_for(run, timeout=3)
+
+    out = asyncio.run(go())
+    assert pushed[0]["value"]["questions"][0]["default"] == "Keep them for now"
+    assert "Keep them for now" in out
+
+
+def test_the_b1_bridge_draws_the_default_the_tool_names():
+    """The executor's bridge builds the card itself. It keeps the default
+    through the one reader, so the decline names only what the card drew."""
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[2]
+           / "apps/services/orchestrator/orchestrator/executor.py").read_text(encoding="utf-8")
+    bridge = src[src.index('if _tc_name == "ask_questions":'):]
+    bridge = bridge[: bridge.index('"elicitation_requested"')]
+    assert '_entry["default"] = _card_default(_q)' in bridge
+
+
+def test_a_default_the_card_did_not_draw_is_never_named():
+    long_default = "Keep them " + "and wait " * 40
+    drawn = at.card_default({"default": long_default})
+    assert drawn and drawn != long_default.strip() and len(drawn) <= at.OPTION_DESCRIPTION_MAX
+    text = at.declined_text([{"header": "A", "question": "Q?", "default": long_default}])
+    assert drawn.rstrip(" .") in text and long_default.strip() not in text
+    # A blank default draws nothing, so it names nothing.
+    blank = at.declined_text([{"header": "A", "question": "Q?", "default": "   "}])
+    assert "Do not act on this question" in blank and "use the default" not in blank.lower()
+
+
 def test_a_recommended_option_is_never_adopted_as_the_default():
     """Review of #1152. "Archive the 8 done tasks?", Yes recommended, then
     Not now: the model must not archive. A decline is never an answer."""

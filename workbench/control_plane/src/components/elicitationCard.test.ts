@@ -224,3 +224,44 @@ describe("ElicitationCard: Not now", () => {
     expect(src).toMatch(/exit\.current\.decline\(onDecline\)/);
   });
 });
+
+// Review of #1152: a "Not now" may name only a default the member SAW. The
+// card draws each stated default, and a declined card with one says what
+// Metorite uses now, not "ask again later".
+// Mutations caught: the line goes, a recommended option draws as a default,
+// or the declined note ignores the default.
+describe("ElicitationCard: the stated default", () => {
+  const STATED = [{
+    header: "Archive",
+    question: "Archive the 8 done tasks?",
+    default: "Keep them for now",
+    allowFreeformInput: false,
+    options: [{ label: "Yes", recommended: true }, { label: "No" }],
+  }];
+  const CRM = [{
+    header: "Revenue",
+    question: "When you ask about revenue, what should Metorite count?",
+    allowFreeformInput: false,
+    options: [
+      { label: "Billed", key: "invoice" },
+      { label: "Use the default", description: "Billed, until a CRM admin answers", key: "@default" },
+    ],
+  }];
+
+  it("draws If you skip under the question, from the card's default or the CRM default", () => {
+    expect(element(render({ questions: STATED }), "data-elicitation-default")).toContain("text-muted-foreground");
+    expect(render({ questions: STATED })).toMatch(/If you skip: .*Keep them for now/);
+    expect(render({ questions: CRM })).toMatch(/If you skip: .*Billed, until a CRM admin answers/);
+  });
+
+  it("never draws a recommended option as the default", () => {
+    expect(html).not.toContain("data-elicitation-default");
+  });
+
+  it("says what Metorite uses now on a declined card with a default", () => {
+    const done = render({ questions: STATED, onDecline: () => {}, declined: true });
+    expect(done).toContain("Metorite uses Keep them for now.");
+    expect(done).not.toContain(DECLINED_NOTE);
+    expect(render({ onDecline: () => {}, declined: true })).toContain(DECLINED_NOTE);
+  });
+});
