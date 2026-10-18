@@ -265,3 +265,35 @@ describe("ElicitationCard: the stated default", () => {
     expect(render({ onDecline: () => {}, declined: true })).toContain(DECLINED_NOTE);
   });
 });
+
+// Review of 64f663a72: the default line and the declined note are ONE plain
+// muted string. No pill, link, mark or highlight pass may wrap part of it
+// (for example the words of an option label inside the default).
+describe("ElicitationCard: the default line and the note are plain text", () => {
+  const CARD = [{
+    header: "Archive",
+    question: "Archive the 8 done tasks in Apollo?",
+    default: "Keep them open for now",
+    allowFreeformInput: false,
+    options: [{ label: "Archive all 8", recommended: true }, { label: "Keep them" }],
+  }];
+  /** The inner markup of the first element that carries `attr`. */
+  const inner = (markup: string, attr: string) => {
+    const open = element(markup, attr);
+    const tag = /^<(\w+)/.exec(open)![1];
+    const from = markup.indexOf(open) + open.length;
+    return markup.slice(from, markup.indexOf(`</${tag}>`, from));
+  };
+
+  it("draws the default line with no nested element", () => {
+    for (const declined of [false, true]) {
+      const body = inner(render({ questions: CARD, declined, onDecline: () => {} }), "data-elicitation-default");
+      expect(body).toBe("If you skip: Keep them open for now");
+    }
+  });
+
+  it("draws the declined note with no nested element", () => {
+    const body = inner(render({ questions: CARD, declined: true, onDecline: () => {} }), "data-rollup-aside");
+    expect(body).toBe("Metorite uses Keep them open for now.");
+  });
+});
