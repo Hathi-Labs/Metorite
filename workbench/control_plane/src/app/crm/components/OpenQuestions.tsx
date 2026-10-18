@@ -14,6 +14,11 @@
  *   in a `Modal`, then applies it as one change.
  * - **Your answers.** The corrections of CRM-Q31-4: each part in use, with a
  *   `SelectButton` to change it, and "Let Metorite choose".
+ * - **Proposed by your team** (CRM-Q32-8). A member who is not an admin can
+ *   say in the chat what unclear data means. The card shows each proposal,
+ *   "Proposed by <name> · <when>", with a one-click Confirm. Confirm on an
+ *   open question is the answer route. Confirm on a part in use is the
+ *   correction of "Your answers". The open tab sorts "Proposed first".
  *
  * `lib/questions.ts` holds every word and rule, and this file only draws
  * them. The views take props only, so a test reads their markup. No
@@ -38,6 +43,11 @@ import {
   ANSWERS_TAB,
   ANSWERS_UNREAD,
   ASKED_AGAIN_LINE,
+  CONFIRM_LABEL,
+  NONE_PICK,
+  PROPOSALS_HEADING,
+  SORT_LABEL,
+  SORT_OPTIONS,
   BATCH_NOTE,
   BATCH_TITLE,
   BATCH_UNREAD,
@@ -58,6 +68,7 @@ import {
   UNDONE_LINE,
   UNDO_LABEL,
   WHY_HEADING,
+  anyProposed,
   answerGroups,
   answerPicks,
   applyLabel,
@@ -69,6 +80,7 @@ import {
   batchUndoCalls,
   byLine,
   choiceView,
+  confirmLabel,
   correctionTarget,
   correctionUndo,
   currentLabel,
@@ -81,6 +93,9 @@ import {
   pickOptions,
   pickToValue,
   pickValue,
+  proposalLine,
+  proposalValueLabel,
+  proposalsOf,
   questionCopy,
   questionError,
   questionsGate,
@@ -95,6 +110,8 @@ import {
   type ChoiceView,
   type Question,
   type QuestionChoice,
+  type QuestionProposal,
+  type QuestionSort,
   type QuestionsBody,
   type QuestionsGate,
   type QuestionsRead,
@@ -220,6 +237,51 @@ function Choices({
 }
 
 /**
+ * The proposals of the members on one question (CRM-Q32-8): what each one
+ * would answer, "Proposed by <name> · <when>", and a one-click Confirm. The
+ * name is the display name from the server, or "A member". No hook.
+ */
+export function ProposalList({
+  q,
+  disabled,
+  onConfirm,
+  now,
+}: {
+  q: Question;
+  disabled: boolean;
+  onConfirm: (p: QuestionProposal) => void;
+  now?: Date;
+}) {
+  const list = proposalsOf(q);
+  if (list.length === 0) return null;
+  return (
+    <div className="min-w-0 space-y-1.5 rounded-md border border-border p-2.5" data-proposals="">
+      <p className="text-[11px] font-medium text-muted-foreground">{PROPOSALS_HEADING}</p>
+      <ul className="space-y-2" aria-label={PROPOSALS_HEADING}>
+        {list.map((p) => (
+          <li key={`${p.name}:${p.at}`} className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            <div className="min-w-0 flex-1">
+              <p className="break-words text-xs font-medium text-foreground">{proposalValueLabel(q, p)}</p>
+              <p className="break-words text-[11px] text-muted-foreground">{proposalLine(p, now)}</p>
+            </div>
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="Check"
+              disabled={disabled}
+              aria-label={confirmLabel(q, p)}
+              onClick={() => onConfirm(p)}
+            >
+              {CONFIRM_LABEL}
+            </Button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
  * One question, as a person reads it (owner feedback, 2026-10-18): the
  * question as a full sentence, a badge, why we ask, what the answer
  * changes, the choices, and plain actions under them. No hook, so a test
@@ -251,6 +313,7 @@ export function QuestionCard({ q, handlers }: { q: Question; handlers: QuestionH
         </div>
       </dl>
       <Choices q={q} handlers={handlers} disabled={disabled} />
+      <ProposalList q={q} disabled={disabled} onConfirm={(p) => handlers.onAnswer(q, p.value)} />
       {q.none || options.length > 0 || q.dismissible ? (
         <div className="flex flex-wrap items-center gap-2">
           {q.none ? (
@@ -362,6 +425,16 @@ export function YourAnswersView({
                     disabled={handlers.busy !== null}
                     onChange={(pick) => handlers.onChange(q, pick)}
                   />
+                  {proposalsOf(q).length > 0 ? (
+                    // A proposed change of a part in use: Confirm is the correction.
+                    <div className="w-full">
+                      <ProposalList
+                        q={q}
+                        disabled={handlers.busy !== null}
+                        onConfirm={(p) => handlers.onChange(q, p.value ?? NONE_PICK)}
+                      />
+                    </div>
+                  ) : null}
                 </li>
               );
             })}
@@ -392,6 +465,8 @@ export function OpenQuestionsView({
   handlers,
   onBatch,
   answers,
+  sort = "impact",
+  onSort,
 }: {
   /** The read of `GET /crm/questions`, or `undefined` while it loads. */
   read: QuestionsRead | undefined;
@@ -405,12 +480,17 @@ export function OpenQuestionsView({
   /** Open the batch Modal with these ids. */
   onBatch: (ids: string[]) => void;
   answers: { body: QuestionsBody | null; failed: boolean; handlers: AnswersHandlers };
+  /** CRM-Q32-8: the order of the open tab. */
+  sort?: QuestionSort;
+  onSort?: (sort: QuestionSort) => void;
 }) {
   if (read?.off) return null;
   const body = read?.body ?? null;
   const open = body?.open ?? 0;
   const ids = body ? batchIds(body.shown) : [];
-  const { cards, more } = body ? visibleQuestions(body, expanded) : { cards: [], more: 0 };
+  const { cards, more } = body ? visibleQuestions(body, expanded, sort) : { cards: [], more: 0 };
+  // The sort shows only when a question holds a proposal: it orders nothing else.
+  const sortable = body !== null && onSort !== undefined && anyProposed(body.shown);
   return (
     <Card title={QUESTIONS_TITLE} note={QUESTIONS_NOTE}>
       <div className="space-y-3 px-4 py-3">
@@ -442,16 +522,29 @@ export function OpenQuestionsView({
           <EmptyState icon="CircleCheck" tone="success" message={NO_QUESTIONS} />
         ) : (
           <>
-            {batchShown(ids) ? (
-              <Button
-                variant="secondary"
-                size="sm"
-                icon="ListChecks"
-                disabled={handlers.busy !== null}
-                onClick={() => onBatch(ids)}
-              >
-                {batchLabel(ids.length)}
-              </Button>
+            {batchShown(ids) || sortable ? (
+              <div className="flex flex-wrap items-center gap-2">
+                {batchShown(ids) ? (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    icon="ListChecks"
+                    disabled={handlers.busy !== null}
+                    onClick={() => onBatch(ids)}
+                  >
+                    {batchLabel(ids.length)}
+                  </Button>
+                ) : null}
+                {sortable && onSort ? (
+                  <SelectButton
+                    label={SORT_LABEL}
+                    value={sort}
+                    options={SORT_OPTIONS}
+                    widthClass="w-full sm:w-40"
+                    onChange={(value) => onSort(value === "proposed" ? "proposed" : "impact")}
+                  />
+                ) : null}
+              </div>
             ) : null}
             <ul className="space-y-2" aria-label={QUESTIONS_TITLE}>
               {cards.map((q) => (
@@ -550,6 +643,7 @@ export default function OpenQuestionsCard() {
   const { read, failed, refresh } = useQuestions(true);
   const [tab, setTab] = useState<SectionTab>("open");
   const [expanded, setExpanded] = useState(false);
+  const [sort, setSort] = useState<QuestionSort>("impact");
   const [busy, setBusy] = useState<string | null>(null);
   const [batch, setBatch] = useState<string[] | null>(null);
   const answers = useAnswers(tab === "answers");
@@ -726,6 +820,8 @@ export default function OpenQuestionsCard() {
           onSlot: (q, choice) => void slot(q, choice),
         }}
         onBatch={setBatch}
+        sort={sort}
+        onSort={setSort}
         answers={{
           body: answers.body,
           failed: answers.failed,

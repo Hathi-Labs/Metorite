@@ -40,6 +40,13 @@ export type QuestionChoice = {
 /** One choice of "Pick another". */
 export type QuestionOption = { value: string; label: string; fill?: number | null };
 
+/**
+ * One answer that a member proposed in the chat (CRM-Q32-8). The server
+ * sends the display name, or "A member", and never an email. `value` is
+ * `null` for "None of these".
+ */
+export type QuestionProposal = { name: string; value: string | null; label: string; at: string };
+
 /** One question (§18.14.3, "The wire"). */
 export type Question = {
   id: string;
@@ -67,6 +74,8 @@ export type Question = {
   count?: number | null;
   value?: string | null;
   field?: string | null;
+  /** CRM-Q32-8: the answers that members proposed in the chat, oldest first. */
+  proposals?: QuestionProposal[] | null;
 };
 
 /** `GET /crm/questions`. */
@@ -546,14 +555,95 @@ export function batchUndoCalls(
   return [...out].map(([module, parts]) => ({ module, parts }));
 }
 
+// ── The proposals of the members (CRM-Q32-8) ───────────────────────────────
+//
+// Owner direction, 2026-10-18: each member who meets unclear data in the chat
+// can say what it means. A CRM admin's choice is the answer. Another member's
+// choice is a proposal, and an admin confirms it here with one click.
+
+export const CONFIRM_LABEL = "Confirm";
+export const PROPOSALS_HEADING = "Proposed by your team";
+export const SORT_LABEL = "Sort the questions";
+export const SORT_IMPACT = "By impact";
+export const SORT_PROPOSED = "Proposed first";
+
+/** The order of the open tab: by impact (the read), or the proposed ones first. */
+export type QuestionSort = "impact" | "proposed";
+
+export const SORT_OPTIONS: ReadonlyArray<{ value: QuestionSort; label: string }> = [
+  { value: "impact", label: SORT_IMPACT },
+  { value: "proposed", label: SORT_PROPOSED },
+];
+
+/** The proposals of a question, or none. */
+export function proposalsOf(q: Question): QuestionProposal[] {
+  return Array.isArray(q.proposals) ? q.proposals : [];
+}
+
+/** True when a question of the list holds a proposal, so the sort can show. */
+export function anyProposed(questions: readonly Question[]): boolean {
+  return questions.some((q) => proposalsOf(q).length > 0);
+}
+
+/** "just now", "5 minutes ago", "3 hours ago", "2 days ago", or the date. */
+export function whenLabel(at: string, now: Date = new Date()): string {
+  const then = new Date(at);
+  const ms = now.getTime() - then.getTime();
+  if (!Number.isFinite(ms)) return "";
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${plural(minutes, "minute", "minutes")} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${plural(hours, "hour", "hours")} ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${plural(days, "day", "days")} ago`;
+  return then.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+}
+
+/** "Proposed by Asha Rao · 3 hours ago". The name is never an email. */
+export function proposalLine(p: QuestionProposal, now: Date = new Date()): string {
+  const when = whenLabel(p.at, now);
+  return when ? `Proposed by ${p.name} · ${when}` : `Proposed by ${p.name}`;
+}
+
+/** What a proposal would answer: the label of its value. */
+export function proposalValueLabel(q: Question, p: QuestionProposal): string {
+  if (p.value === null) return q.kind === "key_field" ? NONE_FIELDS_LABEL : NONE_LABEL;
+  if (q.kind === "purpose" && PURPOSE_WORDS[p.value]) return PURPOSE_WORDS[p.value].label;
+  return p.label || p.value;
+}
+
+/** The accessible name of a Confirm button: what it answers, and for whom. */
+export function confirmLabel(q: Question, p: QuestionProposal): string {
+  return `Confirm ${proposalValueLabel(q, p)}, proposed by ${p.name}, for ${q.label}`;
+}
+
+/** The newest time of a proposal of a question, or 0 with none. */
+function newestProposal(q: Question): number {
+  return proposalsOf(q).reduce((best, p) => Math.max(best, Date.parse(p.at) || 0), 0);
+}
+
+/**
+ * The open questions in the order of the sort. "Proposed first" puts each
+ * question with a proposal first, the newest proposal first, and keeps the
+ * order of impact inside each part. "By impact" is the order of the read.
+ */
+export function sortQuestions(questions: readonly Question[], sort: QuestionSort): Question[] {
+  if (sort !== "proposed") return [...questions];
+  const proposed = questions.filter((q) => proposalsOf(q).length > 0);
+  const rest = questions.filter((q) => proposalsOf(q).length === 0);
+  return [...proposed.sort((a, b) => newestProposal(b) - newestProposal(a)), ...rest];
+}
+
 // ── The cap of 5 ───────────────────────────────────────────────────────────
 
 /** The cards on screen, and the count that "Show <m> more" names. */
 export function visibleQuestions(
   body: QuestionsBody,
   expanded: boolean,
+  sort: QuestionSort = "impact",
 ): { cards: Question[]; more: number } {
-  const all = body.shown;
+  const all = sortQuestions(body.shown, sort);
   if (expanded) return { cards: all, more: 0 };
   const cards = all.slice(0, SHOWN);
   return { cards, more: Math.max(0, body.open - cards.length) };

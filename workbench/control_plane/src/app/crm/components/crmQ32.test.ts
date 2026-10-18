@@ -863,3 +863,109 @@ describe("the count on the rail (item 5)", () => {
     expect(html).not.toContain("data-meta-tone");
   });
 });
+
+// ── CRM-Q32-8: the proposals of the members (owner direction, 2026-10-18) ──
+
+describe("the proposals of the members (CRM-Q32-8)", () => {
+  const NOW = new Date("2026-10-18T12:00:00Z");
+  const ASHA = { name: "Asha Rao", value: "Amount_Due", label: "Amount Due", at: "2026-10-18T09:00:00Z" };
+  const NONAME = { name: "A member", value: null, label: "None of these", at: "2026-10-18T11:58:00Z" };
+  const PROPOSED = base({ ...KEY, id: "key:Payment_Received:amount", proposals: [ASHA, NONAME] });
+  const LATER = base({ ...DATE, proposals: [{ ...ASHA, value: "Paid_On", label: "Paid On", at: "2026-10-18T11:00:00Z" }] });
+
+  it("says who proposed it and when, and never an email", () => {
+    expect(questionsLib.proposalLine(ASHA, NOW)).toBe("Proposed by Asha Rao · 3 hours ago");
+    expect(questionsLib.proposalLine(NONAME, NOW)).toBe("Proposed by A member · 2 minutes ago");
+    expect(questionsLib.whenLabel("2026-10-18T11:59:40Z", NOW)).toBe("just now");
+    expect(questionsLib.whenLabel("2026-10-16T12:00:00Z", NOW)).toBe("2 days ago");
+    expect(questionsLib.whenLabel("not a time", NOW)).toBe("");
+    expect(questionsLib.proposalValueLabel(PROPOSED, NONAME)).toBe("None of these fields");
+    expect(questionsLib.confirmLabel(PROPOSED, ASHA)).toBe(
+      "Confirm Amount Due, proposed by Asha Rao, for Collection",
+    );
+  });
+
+  it("draws each proposal on the card with a one-click Confirm that answers its value", () => {
+    const answered: Array<[string, string | null]> = [];
+    const html = card(PROPOSED, { onAnswer: (q, value) => answered.push([q.id, value]) });
+    expect(html).toContain("data-proposals");
+    expect(textOf(html)).toContain("Proposed by your team");
+    expect(textOf(html)).toContain("Proposed by Asha Rao ·");
+    expect(textOf(html)).toContain("Proposed by A member ·");
+    expect(html.match(/>Confirm</g)).toHaveLength(2);
+    expect(html).toContain('aria-label="Confirm Amount Due, proposed by Asha Rao, for Collection"');
+    expect(textOf(html)).not.toMatch(/@|\bJev\b/);
+    // Confirm calls the answer route with the value of the proposal.
+    const list = questionsLib.proposalsOf(PROPOSED);
+    for (const p of list) handlers({ onAnswer: (q, value) => answered.push([q.id, value]) }).onAnswer(PROPOSED, p.value);
+    expect(answered).toEqual([
+      ["key:Payment_Received:amount", "Amount_Due"],
+      ["key:Payment_Received:amount", null],
+    ]);
+  });
+
+  it("draws no block for a question with no proposal", () => {
+    expect(card(KEY)).not.toContain("data-proposals");
+    expect(questionsLib.proposalsOf(base({ proposals: null }))).toEqual([]);
+  });
+
+  it("sorts the proposed questions first, the newest first, and keeps impact inside", () => {
+    const shown = [REVENUE, PROPOSED, PURPOSE, LATER];
+    expect(questionsLib.sortQuestions(shown, "impact").map((q) => q.id)).toEqual(shown.map((q) => q.id));
+    expect(questionsLib.sortQuestions(shown, "proposed").map((q) => q.id)).toEqual([
+      PROPOSED.id,
+      LATER.id,
+      REVENUE.id,
+      PURPOSE.id,
+    ]);
+    const { cards } = visibleQuestions(body(shown), true, "proposed");
+    expect(cards[0].id).toBe(PROPOSED.id);
+    expect(questionsLib.SORT_OPTIONS.map((o) => o.label)).toEqual(["By impact", "Proposed first"]);
+  });
+
+  it("shows the sort of the open tab only when a question holds a proposal", () => {
+    const sortName = 'aria-label="Sort the questions"';
+    expect(view({ read: ON(body([KEY, PURPOSE])), onSort: noop })).not.toContain(sortName);
+    const html = view({ read: ON(body([KEY, PROPOSED])), onSort: noop, sort: "proposed" });
+    expect(html).toContain(sortName);
+    expect(textOf(html)).toContain("Proposed first");
+  });
+
+  it("confirms a proposed change of a part in use through the correction", () => {
+    const changes: Array<[string, string]> = [];
+    const used = base({
+      ...KEY,
+      reason: "answered",
+      current: "IP_Amount",
+      by: "admin",
+      proposals: [ASHA, NONAME],
+    });
+    const html = renderToStaticMarkup(
+      createElement(YourAnswersView, {
+        body: body([], { answered: [used] }),
+        failed: false,
+        handlers: { ...answersHandlers, onChange: (q, pick) => changes.push([q.id, pick]) },
+      }),
+    );
+    expect(textOf(html)).toContain("Proposed by Asha Rao ·");
+    expect(html.match(/>Confirm</g)).toHaveLength(2);
+    // The value of "None of these" goes as the None pick of a correction.
+    const pick = (p: { value: string | null }) => p.value ?? NONE_PICK;
+    expect([ASHA, NONAME].map(pick)).toEqual(["Amount_Due", NONE_PICK]);
+    expect(pickToValue(pick(NONAME))).toBeNull();
+    expect(changes).toEqual([]);
+  });
+
+  it("names no engine and no email in its words", () => {
+    for (const value of [
+      questionsLib.CONFIRM_LABEL,
+      questionsLib.PROPOSALS_HEADING,
+      questionsLib.SORT_LABEL,
+      questionsLib.SORT_IMPACT,
+      questionsLib.SORT_PROPOSED,
+    ]) {
+      expect(value).not.toMatch(/\bJev\b|@/);
+      expect(value).not.toMatch(ENGINE_WORDS);
+    }
+  });
+});
