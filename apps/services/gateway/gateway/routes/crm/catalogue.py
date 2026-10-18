@@ -547,7 +547,7 @@ async def put_catalogue(
     from gateway.routes.crm.field_rules import _db_conflict, _organization, _require_mirror
     from gateway.routes.crm.flags import questions_allowed
     from gateway.routes.crm.mapping_plans import _approved
-    from gateway.routes.crm.questions import clear_proposals, questions_off
+    from gateway.routes.crm.questions import after_admin_write, questions_off
 
     org = _organization(user)
     if not questions_allowed(org):
@@ -563,9 +563,9 @@ async def put_catalogue(
             row = await write_answer(db, org, by=by, module=module, parts=parts)
             if row is None:
                 row = await _approved(db)
-            # CRM-Q32-8: an admin write of a part clears its proposals, after
-            # the plan lock of the writer (the lock order of the CRM).
-            await clear_proposals(db, org, part_question_ids(module, parts))
+            # CRM-Q32-8: an admin write of a part closes what waits on it in
+            # the questions, after the plan lock of the writer (the lock order).
+            await after_admin_write(db, org, part_question_ids(module, parts))
             _mode, sources, roles, others = await _load(db, org)
     except DBAPIError as exc:
         conflict = _db_conflict(exc)

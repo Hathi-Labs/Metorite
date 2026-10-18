@@ -1384,19 +1384,23 @@ async def crm_aggregate(
 
 
 async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
-                          chosen: str | None = None) -> str:
+                          chosen: str | None = None,
+                          handled: frozenset[str] = frozenset()) -> str:
     """The answer of one aggregate read with *params*. *chosen* is the line
-    of a member's own choice (CRM-Q32-8): the read already uses it, so it
-    asks nothing again."""
+    of a member's own choice (CRM-Q32-8): the read already uses it. *handled*
+    holds the questions that this answer handled already, so a re-read asks
+    only a NEW open part (a total with two open parts), and never loops."""
     measure = str(params.get("measure") or "count")
     field, group_by = params.get("field"), params.get("group_by")
     group_field, bucket = params.get("group_field"), params.get("bucket")
     data, refusal, question = await _aggregate_or_refusal(params)
     if refusal is not None:
-        if question and chosen is None:
+        if question and question not in handled:
             # CRM-Q32-8: the total depends on an open question. Ask first.
-            return await _ask_first(question, refusal, slug, params, page)
-        return refusal
+            asked = await _ask_first(question, refusal, slug, params, page,
+                                     handled | {question})
+            return f"{chosen}\n{asked}" if chosen else asked
+        return f"{refusal}\n{chosen}" if chosen else refusal
     groups = data.get("groups") or []
     module = slug.startswith(MODULE_PREFIX)
     # On a module the amount is a field, so only a currency field is rupees.
@@ -1661,14 +1665,26 @@ class CrmAsks:
     still changes it in place, and the next call sees the change."""
 
     asked: set[str] = dataclasses.field(default_factory=set)
+    #: True when this run holds ``crm_answer_question``. The run assembly
+    #: sets it (``mark_answer_tool``). A run that does not hold the tool
+    #: could not send the pick of a card, so it shows no card. False until
+    #: the assembly says so: a holder fails closed.
+    answer_tool: bool = False
 
     def take(self, question_id: str) -> bool:
         """Count *question_id* as asked, and say whether a card may show:
-        each question once, and at most :data:`MAX_ASKS_PER_RUN` in a run."""
+        the run holds the reply tool, each question once, and at most
+        :data:`MAX_ASKS_PER_RUN` in a run."""
+        if not self.answer_tool:
+            return False
         if question_id in self.asked or len(self.asked) >= MAX_ASKS_PER_RUN:
             return False
         self.asked.add(question_id)
         return True
+
+    def shown(self, question_id: str) -> bool:
+        """True when this run showed the card of *question_id*."""
+        return question_id in self.asked
 
 
 # ⚠️ The default is None, never a mutable object. A module-level object
@@ -1698,6 +1714,18 @@ def release_asks(token: contextvars.Token[CrmAsks | None]) -> None:
 def run_asks() -> CrmAsks | None:
     """The holder of this run, or ``None`` when the run opened none."""
     return _RUN_ASKS.get()
+
+
+def mark_answer_tool(held: bool) -> None:
+    """Say whether this run holds ``crm_answer_question`` (CRM-Q32-8, fix
+    round). ``orchestrator._tool_injection._add_crm_facts_block`` calls it at
+    the end of the assembly of a streamed run. A run whose assembly dropped
+    the tool (a failed facts read, a ``no_egress`` run, an org off the list)
+    then gives the line of what is not clear, never a card that no tool can
+    answer. No holder, no change."""
+    asks = run_asks()
+    if asks is not None:
+        asks.answer_tool = bool(held)
 
 
 def _not_clear_of_id(question_id: str) -> str:
@@ -1837,7 +1865,7 @@ def _with_override(params: dict[str, Any], override: dict[str, Any]) -> dict[str
 
 
 async def _ask_first(question_id: str, default: str, slug: str, params: dict[str, Any],
-                     page: int | None) -> str:
+                     page: int | None, handled: frozenset[str] = frozenset()) -> str:
     """A total that waits on the open key part *question_id* (CRM-Q32-8).
 
     * The member's own proposal on the open question: read again with the
@@ -1861,7 +1889,7 @@ async def _ask_first(question_id: str, default: str, slug: str, params: dict[str
         again = _with_override(params, override)
         if again is not None:
             chosen = f"This uses {label}, as you chose. A CRM admin can confirm it for everyone."
-            return await _aggregate_text(slug, again, page, chosen)
+            return await _aggregate_text(slug, again, page, chosen, handled)
     if q.get("held") or not _card_may_show(question_id):
         return f"{_not_clear(q)}\n{default}"
     return _clarify_block(q, href, default)
@@ -1869,7 +1897,8 @@ async def _ask_first(question_id: str, default: str, slug: str, params: dict[str
 
 def _card_may_show(question_id: str) -> bool:
     """True when this run may show a card for *question_id*: the run has a
-    card channel, it opened its holder, and the limit lets one more in."""
+    card channel, it opened its holder, it holds the reply tool, and the
+    limit lets one more in."""
     from acb_skills.ask_tools import cards_refused
 
     if cards_refused():
@@ -1905,6 +1934,26 @@ async def _ask_revenue(module: str, purpose: str) -> str:
     return _clarify_block(q, href, REVENUE_DEFAULT_LINE)
 
 
+#: What ``crm_answer_question`` answers when this run showed no card of the
+#: question: it saves nothing (CRM-Q32-8, fix round, the gate).
+NO_CARD_PICK = (
+    "Nothing is saved: this chat did not show the member a card of this question. "
+    "Only the member's pick on that card counts. Tell the member what is not "
+    "clear, use the default that the answer names, and say that a CRM admin "
+    "answers it in CRM settings, Open questions."
+)
+
+
+def _card_was_shown(question_id: str) -> bool:
+    """True when this run has a card channel and showed the card of
+    *question_id* (its CLARIFY block). A run with no card channel (a
+    WhatsApp text chat) and a run with no holder show none."""
+    from acb_skills.ask_tools import cards_refused
+
+    asks = run_asks()
+    return not cards_refused() and asks is not None and asks.shown(question_id)
+
+
 def _question_id(question_id: str) -> str:
     """The id of a CRM question, checked before it goes into a path."""
     qid = str(question_id or "").strip()
@@ -1931,6 +1980,11 @@ async def crm_answer_question(question_id: str, choice: str) -> str:
     if not key or len(key) > 200:
         raise GatewayRefusal("Send the key of one option.", detail="choice is empty or too long.",
                              fields=("choice",))
+    if not _card_was_shown(question):
+        # The gate (fix round): a pick needs a card that this run showed,
+        # so no model step and no text of a CRM record can answer for the
+        # member. Nothing is sent.
+        return NO_CARD_PICK
     body = await _post(f"/crm/questions/{question}/reply", {"choice": key}) or {}
     result = str(body.get("result") or "")
     line = str(body.get("line") or "")
@@ -2294,5 +2348,5 @@ __all__ = [
     "CRM_CLOSED", "CRM_DETAIL_MAX", "CRM_OFF", "CRM_VOICE", "CRM_SHARED_ROOM", "CRM_TOOLS", "CRM_TOOL_NAMES", "MAX_ROWS",
     "SEARCH_NUMBERS", "SEARCH_OFF", "SHORT_READS_PATH", "crm_mode", *(fn.__name__ for fn in CRM_TOOLS),
     "CLARIFY", "CRM_QUESTION_TOOLS", "CrmAsks", "MAX_ASKS_PER_RUN", "crm_answer_question",
-    "open_asks_for_run", "release_asks", "run_asks",
+    "NO_CARD_PICK", "mark_answer_tool", "open_asks_for_run", "release_asks", "run_asks",
 ]

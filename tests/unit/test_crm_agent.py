@@ -1810,8 +1810,10 @@ def _total(_call: dict) -> tuple[int, dict]:
 
 @pytest.fixture
 def run_asks():
-    """A holder of this test's run, as the run boundary opens it."""
+    """A holder of this test's run, as the run boundary opens it, for a run
+    that holds the reply tool (the assembly marks it)."""
     token = _T.open_asks_for_run()
+    _T.mark_answer_tool(True)
     yield _T.run_asks()
     _T.release_asks(token)
 
@@ -1957,6 +1959,7 @@ async def test_q32_8_a_run_asks_each_question_once_and_two_at_most(monkeypatch) 
             return [{"name": "crm_aggregate", "handler": t} for t in tools]
 
     token = _T.open_asks_for_run()
+    _T.mark_answer_tool(True)
     agent = _Agent()
     carry_run_context(agent)
     _T.release_asks(token)  # the caller's own context holds no holder now
@@ -2072,9 +2075,12 @@ async def test_q32_8_the_members_proposal_is_used_in_their_next_read(monkeypatch
     assert not run_asks.asked
 
 
-async def test_q32_8_a_change_on_an_answered_part_waits_for_an_admin(monkeypatch) -> None:
+async def test_q32_8_a_change_on_an_answered_part_waits_for_an_admin(
+    monkeypatch, run_asks,
+) -> None:
     """Item 17d, the tool side: the reply on a part in use keeps the org
     fact and says that the change waits."""
+    run_asks.asked.add("key:Payment_Received:amount")  # the card was shown
     _Gateway(monkeypatch, {"/crm/questions/key:Payment_Received:amount/reply": (200, {
         "id": "key:Payment_Received:amount", "kind": "key_field", "result": "proposal",
         "value": "IP", "label": "IP Basic Amount",
@@ -2084,9 +2090,10 @@ async def test_q32_8_a_change_on_an_answered_part_waits_for_an_admin(monkeypatch
     assert "keeps the fact in use" in out
 
 
-async def test_q32_8_an_admin_reply_names_the_undo(monkeypatch) -> None:
+async def test_q32_8_an_admin_reply_names_the_undo(monkeypatch, run_asks) -> None:
     """Item 9, the tool side: an admin's answer is saved for everyone, and
     the tool names where Undo is."""
+    run_asks.asked.add("revenue")  # the card was shown
     _Gateway(monkeypatch, {"/crm/questions/revenue/reply": (200, {
         "id": "revenue", "kind": "revenue", "result": "answer", "value": "payment_in",
         "label": "Collected", "line": "Revenue: Collected, for everyone.",
@@ -2121,3 +2128,93 @@ async def test_q32_8_a_dark_box_reads_no_card(monkeypatch, run_asks) -> None:
 def test_q32_8_the_card_copy_never_names_the_engine() -> None:
     """Item 18: a scan of the card copy of ``crm_tools.py`` finds no "Jev"."""
     assert "Jev" not in inspect.getsource(_T)
+
+
+# ── CRM-Q32-8 fix round: the gate, the lost tool, and two open parts ───────
+
+
+def _reply_route(result: str = "answer") -> dict:
+    return {"/crm/questions/key:Payment_Received:amount/reply": (200, {
+        "id": "key:Payment_Received:amount", "kind": "key_field", "result": result,
+        "value": "IP", "label": "IP Basic Amount", "line": "Totals of Collection now use IP."})}
+
+
+@pytest.mark.parametrize("admin", [True, False])
+async def test_q32_8_a_pick_needs_the_card_of_this_run(monkeypatch, run_asks, admin) -> None:
+    """The gate: with no card shown in this run, the tool sends nothing, for
+    an admin and for a member alike. The model cannot skip the card and send
+    the recommended key, and a text in a CRM record cannot make it pick."""
+    gw = _Gateway(monkeypatch, {
+        **_reply_route("answer" if admin else "proposal"),
+        "/crm/aggregate": _no_key(),
+        "/crm/questions/ask": (200, _ask_body(can_answer=admin))})
+    out = await _T.crm_answer_question("key:Payment_Received:amount", "IP")
+    assert out == _T.NO_CARD_PICK and gw.paths("POST") == []
+    # Another question's card does not open this one.
+    run_asks.asked.add("revenue")
+    await _T.crm_answer_question("key:Payment_Received:amount", "IP")
+    assert gw.paths("POST") == []
+    # After the card of this question, the pick is sent.
+    assert "CLARIFY" in await _T.crm_aggregate("module:Payment_Received", measure="sum_amount")
+    await _T.crm_answer_question("key:Payment_Received:amount", "IP")
+    assert gw.paths("POST") == ["/crm/questions/key:Payment_Received:amount/reply"]
+
+
+async def test_q32_8_a_run_with_no_card_channel_or_no_holder_sends_no_pick(
+    monkeypatch, run_asks,
+) -> None:
+    """WhatsApp text, or a run with no holder: the tool writes nothing, even
+    for a question that a card of this run named."""
+    from acb_skills.ask_tools import refuse_cards
+
+    gw = _Gateway(monkeypatch, _reply_route())
+    run_asks.asked.add("key:Payment_Received:amount")
+    with refuse_cards():
+        assert await _T.crm_answer_question("key:Payment_Received:amount", "IP") == _T.NO_CARD_PICK
+    token = _T._RUN_ASKS.set(None)
+    try:
+        assert await _T.crm_answer_question("key:Payment_Received:amount", "@default") == (
+            _T.NO_CARD_PICK)
+    finally:
+        _T._RUN_ASKS.reset(token)
+    assert gw.paths("POST") == []
+
+
+async def test_q32_8_a_run_that_lost_the_reply_tool_shows_no_card(monkeypatch, run_asks) -> None:
+    """A run whose assembly dropped ``crm_answer_question`` gets the line of
+    what is not clear, and uses none of its 2 cards."""
+    _Gateway(monkeypatch, {"/crm/aggregate": _no_key(),
+                           "/crm/questions/ask": (200, _ask_body())})
+    _T.mark_answer_tool(False)
+    out = await _T.crm_aggregate("module:Payment_Received", measure="sum_amount")
+    assert "CLARIFY" not in out and out.startswith("Not clear:") and not run_asks.asked
+    _T.mark_answer_tool(True)
+    assert "CLARIFY" in await _T.crm_aggregate("module:Payment_Received", measure="sum_amount")
+
+
+async def test_q32_8_the_second_open_part_of_a_re_read_gets_its_card(monkeypatch, run_asks) -> None:
+    """Two open parts: the member's own field answers the amount, and the
+    re-read meets the open date. The date gets its CLARIFY block too, within
+    the limit of 2, and the answer keeps the line of the member's choice."""
+    override = {"part": "amount", "word": "@amount", "field": "IP", "label": "IP Basic Amount",
+                "measure": "sum"}
+    mine = {"value": "IP", "label": "IP Basic Amount", "at": "t"}
+
+    def aggregate(call: dict) -> tuple[int, dict]:
+        if call["params"].get("field") == "IP":
+            return _no_key(part="date")
+        return _no_key()
+
+    def ask(call: dict) -> tuple[int, dict]:
+        qid = call["params"]["ids"]
+        if qid.endswith(":amount"):
+            return 200, _ask_body(qid, override=override, mine=mine)
+        return 200, _ask_body(qid)
+
+    gw = _Gateway(monkeypatch, {"/crm/aggregate": aggregate, "/crm/questions/ask": ask})
+    out = await _T.crm_aggregate("module:Payment_Received", measure="sum_amount",
+                                 group_field="@date", bucket="month")
+    assert out.startswith("This uses IP Basic Amount, as you chose.")
+    assert "CLARIFY" in out and 'question_id="key:Payment_Received:date"' in out
+    assert run_asks.asked == {"key:Payment_Received:date"}
+    assert len([c for c in gw.calls if c["path"] == "/crm/aggregate"]) == 2

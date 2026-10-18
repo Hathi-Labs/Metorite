@@ -175,7 +175,8 @@ async def _stages(db: Any, org: str, others: Sequence[Mapping[str, Any]],
 
 
 async def load(db: Any, org: str, *, now: datetime | None = None,
-               full: bool = True, loaded: Any = None) -> qs.Inputs | None:
+               full: bool = True, loaded: Any = None,
+               proposals: bool = False) -> qs.Inputs | None:
     """The inputs of the questions of *org*, in the caller's tenant session.
     ``None`` when the CRM is not a Mirror. With *full* False, only the
     inputs of the ``purpose`` and ``key_field`` questions: the catalogue,
@@ -202,7 +203,10 @@ async def load(db: Any, org: str, *, now: datetime | None = None,
         stored=cat.stored_items(others), mode=mp.modes_now()[mp.FEATURE_CATALOGUE],
         cache=mp.Cache.of(state(mp.CURSOR_ROW)), now=now or datetime.now(UTC),
         dismissed=qs.dismissed_of(state(qs.QUESTIONS_ROW)),
-        proposals=qs.proposals_of(state(qs.QUESTIONS_ROW)),
+        # CRM-Q32-8 fix round: the proposals of the members only for the two
+        # reads that show them (the admin list and the card of /ask). The
+        # count, the catalogue and the 422 of the aggregate never get them.
+        proposals=qs.proposals_of(state(qs.QUESTIONS_ROW)) if proposals else {},
     )
     if not full:
         return inputs
@@ -496,7 +500,7 @@ async def list_questions(
         raise questions_off()
     async with _tenant_session() as db:
         await _require_mirror(db, org)
-        inputs = await load(db, org)
+        inputs = await load(db, org, proposals=True)
         if inputs is None:
             return QuestionsModel(open=0, shown=[], more=0)
         found = qs.build(inputs)
@@ -922,8 +926,10 @@ _CHAT_GUARDS = [Depends(require_crm_mirror), Depends(access.require_crm_access)]
 async def clear_proposals(db: Any, org: str, question_ids: Sequence[str]) -> None:
     """Remove the proposals of *question_ids* from ``zoho:questions``, in
     the caller's transaction (CRM-Q32-8, "Each admin write clears"). It
-    locks the cursor row first. A caller that holds the plan lock took it
-    before, so the lock order of the CRM holds. No proposal, no write."""
+    locks the cursor row first, and ``lock_cursor`` makes the row when it is
+    absent, so a call with an id writes that row. A caller that holds
+    the plan lock took it before, so the lock order of the CRM holds. It
+    removes only the entries of the ids that hold a proposal."""
     from gateway.crm_sync import runs
 
     wanted = [str(i) for i in dict.fromkeys(question_ids) if i]
@@ -933,6 +939,14 @@ async def clear_proposals(db: Any, org: str, question_ids: Sequence[str]) -> Non
     for qid in wanted:
         if qid in found:
             await runs.drop_cursor_entry(db, org, qs.QUESTIONS_ROW, qs.PROPOSALS, qid)
+
+
+async def after_admin_write(db: Any, org: str, question_ids: Sequence[str]) -> None:
+    """The step of each admin write of a part that another module makes
+    (the catalogue PUT): it clears what the members proposed for those
+    questions. Only this module and ``crm_sync/questions.py`` know the
+    proposals, and a scan fences it (CRM-Q32-8 fix round)."""
+    await clear_proposals(db, org, question_ids)
 
 
 def _member(user: UserContext) -> str:
@@ -1119,7 +1133,7 @@ async def ask_questions_read(
     admin = user.has_permission(ADMIN_PERMISSION)
     async with _tenant_session() as db:
         await _require_mirror(db, org)
-        inputs = await load(db, org, full=False)
+        inputs = await load(db, org, full=False, proposals=True)
         if inputs is None:
             return AskOut(questions=[], href=crm_settings_href("questions"))
         found = _chat_questions(inputs, everything)
@@ -1413,6 +1427,7 @@ __all__ = [
     "SumCheckOut",
     "SumPairModel",
     "accept_best",
+    "after_admin_write",
     "answer_question",
     "ask_questions_read",
     "clear_proposals",

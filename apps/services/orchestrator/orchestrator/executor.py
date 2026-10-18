@@ -4315,8 +4315,10 @@ async def run_agent_stream(
                 no_egress=_stream_no_egress,  # H-236
             )  # inject call_agent / call_agent_background
             # CRM-Q32-5: the CRM facts block, read as the member.
+            # CRM-Q32-8: the holder of this run learns whether the run still
+            # holds the reply of a question card (`mark_run`).
             _run_tools = await _add_crm_facts_block(
-                agents, _run_tools, no_egress=_stream_no_egress)
+                agents, _run_tools, no_egress=_stream_no_egress, mark_run=True)
             _log_agent_tools_resolved(agent_name, agents, _own_tools)
             # Inject MCP servers from the registry into every agent at runtime.
             # H-236: an MCP server reaches outside the platform, so a

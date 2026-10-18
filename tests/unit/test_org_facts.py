@@ -620,3 +620,47 @@ def test_the_list_grammar_of_the_run_side() -> None:
             assert questions_org_on(org) is on, (raw, org)
     finally:
         settings.crm_questions_orgs = old
+
+
+# ── CRM-Q32-8 fix round: a run that lost the reply tool shows no card ───────
+
+
+@pytest.mark.parametrize(("rows", "no_egress", "tools", "held"), [
+    # The facts read gives rows, and the run holds the reply tool.
+    (True, False, {"crm_aggregate", "org_facts", "crm_answer_question"}, True),
+    # A failed or empty facts read drops the tool with org_facts.
+    (False, False, {"crm_aggregate", "org_facts", "crm_answer_question"}, False),
+    # A no_egress run reads nothing, so it drops the tool too.
+    (True, True, {"crm_aggregate", "org_facts", "crm_answer_question"}, False),
+    # A run whose scope never named the tool.
+    (True, False, {"crm_aggregate", "org_facts"}, False),
+])
+async def test_the_assembly_tells_the_holder_whether_the_run_holds_the_reply(
+    monkeypatch, questions_on, rows: bool, no_egress: bool, tools: set, held: bool,
+) -> None:
+    import acb_skills.crm_tools as crm
+    import orchestrator._tool_injection as ti
+    from acb_skills import org_facts_tools
+
+    async def read():
+        return [_row("revenue", "Revenue means billed.")] if rows else []
+
+    monkeypatch.setattr(org_facts_tools, "crm_facts_for_run", read)
+    token = crm.open_asks_for_run()
+    try:
+        crm.mark_answer_tool(not held)  # the opposite, so the call must set it
+        await ti._add_crm_facts_block([_MafAgent()], frozenset(tools), no_egress=no_egress,
+                                      mark_run=True)
+        assert crm.run_asks().answer_tool is held
+        # A sub-agent never marks the holder of its parent.
+        await ti._add_crm_facts_block([_MafAgent()], frozenset({"crm_aggregate"}))
+        assert crm.run_asks().answer_tool is held
+    finally:
+        crm.release_asks(token)
+
+
+def test_only_the_streamed_run_marks_the_holder() -> None:
+    source = (REPO / "apps/services/orchestrator/orchestrator/executor.py").read_text(
+        encoding="utf-8")
+    assert source.count("mark_run=True") == 1
+    assert source.index("_asks_token = open_asks_for_run()") < source.index("mark_run=True")

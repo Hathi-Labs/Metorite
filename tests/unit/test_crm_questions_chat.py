@@ -202,7 +202,17 @@ _SCANNED = (GATEWAY / "crm_sync", GATEWAY / "routes/crm", GATEWAY / "routes/shel
 #: The two modules that may read the proposals of the members.
 _ALLOWED = {GATEWAY / "crm_sync/questions.py", GATEWAY / "routes/crm/questions.py"}
 
-_WORD = re.compile(r"\bproposals\b")
+#: One exception, by file and by exact name, with its reason: in the action
+#: broker the name ``proposal`` is a pending broker action, another store.
+_OTHER_MEANING: dict[Path, frozenset[str]] = {
+    GATEWAY / "routes/crm/broker_handlers.py": frozenset({"proposal"}),
+}
+
+#: A name, an attribute or an import that names a proposal, in any case:
+#: ``qs.proposals_of``, ``live_proposals``, ``PROPOSALS``, ``my_proposal``.
+_NAME = re.compile(r"(?i)proposal")
+#: A string key of the store, in any case (``state.get("proposals")``).
+_KEY = re.compile(r"(?i)\bproposals\b")
 
 
 def _python_files() -> list[Path]:
@@ -212,43 +222,127 @@ def _python_files() -> list[Path]:
     return out
 
 
+def _names(node: ast.AST) -> list[str]:
+    """The identifiers that *node* writes in the code."""
+    if isinstance(node, ast.Name):
+        return [node.id]
+    if isinstance(node, ast.Attribute):
+        return [node.attr]
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        found = [a.name for a in node.names] + [a.asname for a in node.names if a.asname]
+        return found + ([node.module] if isinstance(node, ast.ImportFrom) and node.module else [])
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return [node.name]
+    if isinstance(node, ast.arg):
+        return [node.arg]
+    if isinstance(node, ast.keyword) and node.arg:
+        return [node.arg]
+    return []
+
+
+def _offenders(source: str, other: frozenset[str] = frozenset()) -> list[str]:
+    """Each place of *source* that reads or names the proposals."""
+    tree = ast.parse(source)
+    docs = {id(body[0].value) for parent in ast.walk(tree)
+            for body in [getattr(parent, "body", None)]
+            if isinstance(body, list) and body and isinstance(body[0], ast.Expr)}
+    out = []
+    for node in ast.walk(tree):
+        for name in _names(node):
+            if _NAME.search(name) and name not in other:
+                out.append(f"{node.lineno}:{name}")
+        if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and id(node) not in docs and _KEY.search(node.value)):
+            out.append(f"{node.lineno}:{node.value[:40]!r}")
+    return out
+
+
 def test_no_module_but_the_two_question_modules_reads_proposals() -> None:
     """Item 15 (R7, a fence): a member's choice must never reach
     ``aggregate.compute``, the digest or another member's run. So no module
     other than ``crm_sync/questions.py`` and ``routes/crm/questions.py``
-    names ``proposals`` in its code: a string, a name or an attribute."""
+    names a proposal in its code, in any case: a name, an attribute, an
+    import, a function, an argument or a string key."""
     offenders = []
     for path in _python_files():
         if path in _ALLOWED:
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            text = (node.value if isinstance(node, ast.Constant) and isinstance(node.value, str)
-                    else node.attr if isinstance(node, ast.Attribute)
-                    else node.id if isinstance(node, ast.Name) else None)
-            if text is not None and _WORD.search(text) and not _is_docstring(tree, node):
-                offenders.append(f"{path.relative_to(REPO)}:{node.lineno}")
+        found = _offenders(path.read_text(encoding="utf-8"),
+                           _OTHER_MEANING.get(path, frozenset()))
+        offenders.extend(f"{path.relative_to(REPO)}:{x}" for x in found)
     assert offenders == [], offenders
     assert len(_python_files()) > 50  # the scan reads the trees it names
 
 
-def _is_docstring(tree: ast.AST, node: ast.AST) -> bool:
-    for parent in ast.walk(tree):
-        body = getattr(parent, "body", None)
-        if (isinstance(body, list) and body and isinstance(body[0], ast.Expr)
-                and body[0].value is node):
-            return True
-    return False
+@pytest.mark.parametrize("reader", [
+    'x = state.get("proposals")\n',
+    'x = state.get("Proposals")\n',
+    "from gateway.crm_sync import questions as qs\nx = qs.proposals_of(state)\n",
+    "from gateway.crm_sync.questions import live_proposals\n",
+    "from gateway.crm_sync.questions import with_proposal as w\n",
+    "x = qs.PROPOSALS\n",
+    "x = body['questions'][0].my_proposal\n",
+])
+def test_the_scan_finds_each_kind_of_reader(reader: str) -> None:
+    """The fence fails on each reader that the first scan let through: a
+    mutation of the rule, kept as a test (fix round of CRM-Q32-8)."""
+    assert _offenders(reader)
 
 
-def test_the_scan_finds_a_reader() -> None:
-    """The fence fails on a reader: a mutation of the rule, kept as a test."""
-    tree = ast.parse('x = state.get("proposals")\n')
-    found = [n for n in ast.walk(tree) if isinstance(n, ast.Constant)
-             and isinstance(n.value, str) and _WORD.search(n.value)]
-    assert found
-    # `proposals_seen` and `my_proposal` are other words, so they pass.
-    assert not _WORD.search("proposals_seen") and not _WORD.search("my_proposal")
+def test_the_scan_turns_red_on_a_reader_in_the_aggregate() -> None:
+    """The mutation of the review: ``qs.proposals_of(...)`` in
+    ``routes/crm/aggregate.py`` is an offender."""
+    path = GATEWAY / "routes/crm/aggregate.py"
+    mutated = path.read_text(encoding="utf-8") + (
+        "\n\ndef _leak(state):\n"
+        "    from gateway.crm_sync import questions as qs\n\n"
+        "    return qs.proposals_of(state)\n")
+    assert _offenders(path.read_text(encoding="utf-8")) == []
+    assert any("proposals_of" in x for x in _offenders(mutated))
+
+
+def test_a_docstring_and_another_word_pass() -> None:
+    assert _offenders('def f():\n    """It reads no proposals."""\n') == []
+    assert _offenders("x = 'proposed_by'\n") == []
+
+
+def test_only_the_two_showing_reads_load_the_proposals() -> None:
+    """``load`` fills ``Inputs.proposals`` only on request. Only the admin
+    list and the read of a card ask for them, so the count, the catalogue
+    and the 422 of the aggregate never hold a member's choice."""
+    import inspect
+
+    from gateway.routes.crm import questions as routes
+
+    assert inspect.signature(routes.load).parameters["proposals"].default is False
+    tree = ast.parse((GATEWAY / "routes/crm/questions.py").read_text(encoding="utf-8"))
+    askers = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for call in ast.walk(fn):
+            if (isinstance(call, ast.Call) and getattr(call.func, "id", None) == "load"
+                    and any(k.arg == "proposals" for k in call.keywords)):
+                askers.add(fn.name)
+    assert askers == {"list_questions", "ask_questions_read"}
+
+
+async def test_the_aggregate_path_gets_no_proposals(monkeypatch) -> None:
+    """``module_question_ids`` (the catalogue entry and the 422 of the
+    aggregate) loads with no proposals, even when the row holds some."""
+    from gateway.routes.crm import questions as routes
+
+    seen: list[dict] = []
+
+    async def fake_load(db, org, **kw):
+        seen.append(kw)
+        return None
+
+    monkeypatch.setattr(routes, "load", fake_load)
+    monkeypatch.setattr(routes, "questions_allowed", lambda org: True)
+    assert await routes.module_question_ids(object(), "org-1") == {}
+    assert await routes.count_open(object(), "org-1") == 0
+    assert seen and all(not kw.get("proposals") for kw in seen)
 
 
 # ── Item 23: no decide call ─────────────────────────────────────────────────

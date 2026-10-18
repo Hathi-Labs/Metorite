@@ -1523,6 +1523,7 @@ def _append_instructions(agent: Any, block: str, marker: str) -> bool:
 
 async def _add_crm_facts_block(
     agents: list[Any], run_tools: Any, *, no_egress: bool = False,
+    mark_run: bool = False,
 ) -> frozenset[str]:
     """Add the CRM facts block to a run that holds a CRM tool (WS-53
     CRM-Q32-5, ``crm_platform.md`` §18.14.4): the answered facts of the money
@@ -1547,6 +1548,12 @@ async def _add_crm_facts_block(
     ``org_facts`` too, so the dark cost stays 0 and no run holds a tool that
     can only answer "no facts". Returns *run_tools* less what it took away,
     for the executor's ``run_tools``.
+
+    CRM-Q32-8 fix round: with *mark_run* (the streamed run, which opened the
+    holder of its CRM questions), it tells the holder whether the run still
+    holds ``crm_answer_question`` (``crm_tools.mark_answer_tool``). A run
+    that lost the tool shows no question card, because no tool could send
+    the pick. A sub-agent shares its parent's holder, so it never marks.
     """
     held = frozenset(run_tools or ())
     try:
@@ -1571,7 +1578,11 @@ async def _add_crm_facts_block(
         rows = await crm_facts_for_run()
     if not rows:
         _drop_own_tools(agents, facts_tools)
+        if mark_run:
+            _mark_answer_tool(agents, held - facts_tools)
         return held - facts_tools
+    if mark_run:
+        _mark_answer_tool(agents, held)
     block = crm_facts_block(rows)
     added = 0
     if block:
@@ -1579,6 +1590,18 @@ async def _add_crm_facts_block(
     _log.info("executor.crm_facts_block", facts=len(rows),
               lines=block.count("\n") + 1 if block else 0, agents=added)
     return held
+
+
+def _mark_answer_tool(agents: list[Any], held: frozenset[str]) -> None:
+    """Tell the holder of this run whether it holds ``crm_answer_question``,
+    as an injected tool or an agent's own (CRM-Q32-8 fix round)."""
+    try:
+        from acb_skills.crm_tools import mark_answer_tool
+    except ImportError:
+        return
+    own = {_tool_name(t) for agent in agents for _a, pool in _own_tool_pools(agent)
+           for t in pool}
+    mark_answer_tool("crm_answer_question" in (set(held) | own))
 
 
 def _facts_withheld() -> frozenset[str]:

@@ -369,22 +369,15 @@ async def test_a_member_never_writes_the_plan(chat_env, app_engine, hold) -> Non
     assert versions(p, p.org_a) == before
 
 
-async def test_a_member_never_writes_the_plan_through_the_tool(
-    chat_env, app_engine, hold, monkeypatch,
-) -> None:
-    """Item 13, through the tool: ``crm_answer_question`` posts to the real
-    router as the member, and the plan version stays."""
+async def _through_the_tool(p: Any, user: Any, monkeypatch: Any, calls: Any) -> list[str]:
+    """Run *calls* (pairs of a question id and a key) through
+    ``crm_answer_question``, which posts to the real router as *user*."""
     import acb_skills.crm_tools as tools
     import httpx
     from acb_auth import get_current_user
     from acb_common.db import bind_tenant, clear_tenant, release_tenant
     from fastapi import FastAPI
     from gateway.routes import crm as crm_package
-
-    p = chat_env
-    seed_a(p)
-    user = member(p.org_a)
-    before = versions(p, p.org_a)
 
     async def _caller() -> Any:
         bind_tenant(user.organization_id)
@@ -397,16 +390,76 @@ async def test_a_member_never_writes_the_plan_through_the_tool(
         transport=httpx.ASGITransport(app=app), base_url="http://crm.test")))
     monkeypatch.setattr(tools, "_current_user_email", lambda: user.email)
     scope = clear_tenant()
+    out = []
     try:
         async with tenant_engine_scope(p.app_url.render_as_string(hide_password=False)):
-            out = await tools.crm_answer_question(KEY, "Part_A")
-            refused = await tools.crm_answer_question("revenue", "@auto")
+            for qid, key in calls:
+                out.append(await tools.crm_answer_question(qid, key))
     finally:
         release_tenant(scope)
+    return out
+
+
+@pytest.fixture
+def card_run():
+    """The holder of a run that holds the reply tool, as the run boundary
+    and the assembly set it. A test adds the id of each card it shows."""
+    import acb_skills.crm_tools as tools
+
+    token = tools.open_asks_for_run()
+    tools.mark_answer_tool(True)
+    yield tools.run_asks()
+    tools.release_asks(token)
+
+
+async def test_a_member_never_writes_the_plan_through_the_tool(
+    chat_env, app_engine, hold, monkeypatch, card_run,
+) -> None:
+    """Item 13, through the tool: ``crm_answer_question`` posts to the real
+    router as the member, after the card of this run, and the plan version
+    stays."""
+    p = chat_env
+    seed_a(p)
+    before = versions(p, p.org_a)
+    card_run.asked.update({KEY, "revenue"})
+    out, refused = await _through_the_tool(p, member(p.org_a), monkeypatch,
+                                           [(KEY, "Part_A"), ("revenue", "@auto")])
     assert out.startswith("This uses Part A, as you chose.")
     assert refused.startswith("Refused:")
     assert versions(p, p.org_a) == before
     assert proposals(p, p.org_a)[KEY][0]["value"] == "Part_A"
+
+
+@pytest.mark.parametrize("admin", [True, False])
+async def test_no_pick_is_written_without_the_card_of_this_run(
+    chat_env, app_engine, hold, monkeypatch, card_run, admin: bool,
+) -> None:
+    """The gate of the fix round: an admin's call or a member's call with no
+    card shown in this run writes nothing, not the plan, not a proposal and
+    not a hold. A model that skips the card, or a text in a CRM record that
+    asks for the call, changes nothing. A run with no card channel neither."""
+    from acb_skills.ask_tools import refuse_cards
+    from acb_skills.crm_tools import NO_CARD_PICK
+
+    p = chat_env
+    seed_a(p)
+    user = _user(p.org_a) if admin else member(p.org_a)
+    before, plan_before = versions(p, p.org_a), approved(p, p.org_a)
+    outs = await _through_the_tool(p, user, monkeypatch, [
+        (KEY, "Part_B"), ("revenue", "payment_in"), (KEY, "@default")])
+    assert outs == [NO_CARD_PICK] * 3
+    card_run.asked.add(KEY)
+    with refuse_cards():
+        assert await _through_the_tool(p, user, monkeypatch, [(KEY, "Part_B")]) == [NO_CARD_PICK]
+    assert versions(p, p.org_a) == before and approved(p, p.org_a) == plan_before
+    assert proposals(p, p.org_a) == {} and hold.store == {}
+    # After the card of this run, the same call writes.
+    (done,) = await _through_the_tool(p, user, monkeypatch, [(KEY, "Part_B")])
+    assert done != NO_CARD_PICK
+    if admin:
+        assert item_of(p, p.org_a, "Fee_Receipts")["amount"] == "Part_B"
+    else:
+        assert proposals(p, p.org_a)[KEY][0]["value"] == "Part_B"
 
 
 # ── Item 14: the tenancy fences ─────────────────────────────────────────────
