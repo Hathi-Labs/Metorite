@@ -5903,49 +5903,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/github_integration.md` §7.6
 - **Added:** 2026-10-18 · WS-54 Batch A fix round 2, item 5. Widened in fix round 3.
 
-### H-358 · Let the dev account turn feature flags on and off on the staging box · [OWNER]
-- **Check:** as `dev` on the dev box (`srv1747539`), `sudo -n /usr/local/sbin/acb-staging-flag --list`
-  prints the flags with no password prompt. If it does, delete this entry.
-- **Why.** On 2026-10-18 the owner turned Knowledge on for every org in
-  production, then looked at `dev.metorite.com` and did not see it. Staging
-  reads its own `/opt/acb/app/.env`, which `acb` owns with mode 600, and the
-  `dev` account that the agent sessions run as has no sudo there. So an
-  agent cannot set a staging flag, and each flag needs the owner at a root
-  terminal. A staging box exists to test with flags on, so this blocks the
-  point of it.
-- **Do this now (owner, one time), to see Knowledge on staging today.** Paste this
-  in the dev box's root terminal (the hPanel browser terminal):
-  `sudo sh -c 'cp -p /opt/acb/app/.env /opt/acb/app/.env.bak-$(date -u +%Y%m%dT%H%M%SZ) && printf "\nKNOWLEDGE_ENABLED=true\nKNOWLEDGE_ORGS=*\nCOMPANY_SEARCH_ENABLED=true\n" >> /opt/acb/app/.env && systemctl restart acb-gateway'`.
-  Then open `https://dev.metorite.com/knowledge`.
-- **Then (agent). ✅ Built 2026-10-18** on branch `ws61-staging-flag`. The
-  script is `deploy/hostinger/staging/acb-staging-flag`, and its fence is
-  `tests/unit/test_acb_staging_flag.py`. `deploy/hostinger/staging/README.md`
-  holds the install commands, the use and the exact names it may write. The
-  script refuses unless `/opt/acb/app/.env` says exactly `DEPLOY_ENV=staging`.
-  It writes only a name on its exact list, and it refuses each `NEXT_PUBLIC_*`
-  key. Root does no file work, because each read and write runs as `acb`. It
-  makes a backup first and keeps the newest 20. It records each key that it
-  sets in `/opt/acb/app/.staging-flags`, and the nightly refresh skips those
-  keys. Then it restarts `acb-gateway`.
-- **Then (owner, one time).** After that PR merges, run on the dev box as root:
-  `install -o root -g root -m 755 /opt/acb/app/deploy/hostinger/staging/acb-staging-flag /usr/local/sbin/acb-staging-flag`
-  and add `dev ALL=(root) NOPASSWD: /usr/local/sbin/acb-staging-flag` to a new
-  file `/etc/sudoers.d/acb-staging-flag`, checked with `visudo -cf`. That
-  grants one script and nothing else.
-- **Then (owner, optional, a separate step).** ⚠️ On srv1747539, `dev` and
-  `acb` are in group `docker`, and `/var/run/docker.sock` is `root:docker`
-  0660. That group is root-equivalent. So until the owner removes `dev` and
-  `acb` from `docker`, this sudoers line is a convenience, not a security
-  boundary. Removing them from `docker` also needs every agent workflow that
-  uses docker (the scratch Postgres ladder) to keep working. So decide it as
-  its own step.
-- **Production stays as it is.** Production flags already work through
-  `ssh metorite` with sudo, under the dev-phase grant that ends on 2026-11-30.
-  This entry adds a staging path only.
-- **Authority:** `specs/staging_and_daily_release.md`, `specs/knowledge_base.md` §13,
-  CLAUDE.md §3a (`enforcement-flip`)
-- **Added:** 2026-10-18 · WS-61, owner request
-
 ### H-359 · Three staging file races that the acb-staging-flag review left · [AGENT] · security
 - **Check:** in `scripts/staging_refresh.sh`, the write of `$file.tmp` runs as
   `acb` (through `setpriv` or `runuser`), and `acb-staging-flag` checks the pin
@@ -5964,6 +5921,29 @@ line — never reclaim a number by deleting the other entry.
   owner decides on 2026-11-30 whether it stays.
 - **Authority:** `deploy/hostinger/staging/README.md`, HANDOFF H-358
 - **Added:** 2026-10-18 · H-358 security review
+
+### H-360 · Widen acb-staging-flag: NEXT_PUBLIC_ rebuilds, a production mode, and an unset that lasts · [AGENT]
+- **Check:** `deploy/hostinger/staging/acb-staging-flag` (or its successor) can set a
+  `NEXT_PUBLIC_*` flag on staging and start a rebuild, and can set a flag on
+  production with `--production --reason`. If both hold, delete this entry.
+- **Why.** On 2026-10-18 the owner asked that the dev box set flags on staging
+  and, when a task needs it, on production, and deploy to production. #1145's
+  tool covers nine named staging flags and nothing else. Today a production
+  flag is a hand edit over `ssh metorite`, which the box's auto-mode rules
+  allow (backup first, one flag line). A tool is safer than a hand edit.
+- **Reuse.** Closed PR #1146 (branch `acb-flag`) holds a design that passed two
+  review rounds and eight mutations: the switch-name patterns, a forced
+  re-apply in `acb-staging.slice` that waits for the deploy lock, a
+  `--production --reason` mode that refuses outbound switches, an absent
+  `DEPLOY_ENV` read as production (as `vps_pull.sh` reads it), and an `unset`
+  record that the nightly refresh honours. Port those into the existing tool.
+  Do not add a second tool.
+- **Already done (2026-10-18).** #1145's tool is installed: `/usr/local/sbin/acb-staging-flag`
+  and `/etc/sudoers.d/acb-staging-flag` (checked with `visudo`). Knowledge is on
+  in staging (`KNOWLEDGE_ENABLED=true`, `KNOWLEDGE_ORGS=*`). The box's
+  `~/.claude/settings.json` holds the owner-authorized `autoMode` rules.
+- **Authority:** owner, 2026-10-18. `specs/staging_and_daily_release.md`, CLAUDE.md §3a
+- **Added:** 2026-10-18
 
 # DONE — deleted, not archived
 
