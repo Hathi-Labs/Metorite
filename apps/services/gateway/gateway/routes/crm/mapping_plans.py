@@ -913,8 +913,33 @@ async def write_draft(
     return row
 
 
+async def _pipeline_parts(db: Any, org: str, modules: Iterable[str]) -> dict[str, dict]:
+    """The cached item of the pipeline for each of *modules*, from the
+    ``items`` of ``zoho:map_pipeline``: the purpose key
+    (``catalogue:purpose:<Module>``) merged with the key of the key parts
+    (``catalogue:<Module>``). A module that the cache does not hold is
+    absent (CRM-Q32-2, the value ``"@auto"``)."""
+    # Imported here: ``gateway.crm_sync`` imports ``routes.crm.core``.
+    from gateway.crm_sync import map_pipeline, runs
+
+    cursors = await runs.read_cursors(db, org, map_pipeline.CURSOR_ROW)
+    cache = map_pipeline.Cache.of(getattr(cursors.get(map_pipeline.CURSOR_ROW), "state", None))
+    out: dict[str, dict] = {}
+    for module in modules:
+        found: dict | None = None
+        for key in (f"{map_pipeline.CATALOGUE_PURPOSES_KEY}{module}",
+                    f"{map_pipeline.CATALOGUE_KEY}{module}"):
+            for item in cache.items.get(key, []):
+                if is_catalogue(item) and item.get("module") == module:
+                    found = merge_item(found, item)
+        if found is not None:
+            out[module] = found
+    return out
+
+
 async def apply_catalogue(
     db: Any, items: Sequence[Mapping[str, Any]], *, by: str, org: str,
+    clear: Mapping[str, Sequence[str]] | None = None,
 ) -> Any | None:
     """Apply ``catalogue`` items with no approval (CRM-Q31-3, §18.13.4), in
     the caller's tenant session.
@@ -926,11 +951,28 @@ async def apply_catalogue(
     moves the open draft onto the new version (:func:`carry_draft`), so a
     pick by hand stays. With no open draft it writes no draft. Returns the
     new approved version, or ``None`` when the catalogue would not change.
+
+    CRM-Q32-2 (§18.14.6): *clear* maps a module to the parts that go back
+    to the answer of the pipeline (the value ``"@auto"``). ``merge_item``
+    cannot remove a part, so each part comes back from the cached item of
+    the pipeline, with its ``by`` and its rank, and leaves the item only
+    when the cache holds none (``catalogue.clear_parts``). It applies before
+    *items*, under the same lock and in the same plan version.
     """
+    from gateway.crm_sync.catalogue import clear_parts
+
     approved = await lock_plan(db, by)
     fields, others = split_rules(_rules_of(approved))
     current = {str(o.get("module")): o for o in others if is_catalogue(o)}
     merged = dict(current)
+    if clear:
+        cached = await _pipeline_parts(db, org, clear)
+        for module, parts in clear.items():
+            kept = clear_parts(merged.get(module), parts, cached.get(module))
+            if kept is None:
+                merged.pop(module, None)
+            else:
+                merged[module] = kept
     for item in items:
         if not is_catalogue(item) or not isinstance(item.get("module"), str):
             continue

@@ -523,6 +523,11 @@ class Cache:
     #: The failed billed requests of each key, in a row: ``count``, the
     #: ``schema`` hash they asked on, and the time ``at`` of the last one.
     failures: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: CRM-Q32-1 item 6: the slot of each unsure role → its candidate
+    #: modules, best first. The doubts of the key :data:`SLOTS_KEY`, so a
+    #: cache hit on that key keeps them. A field of its own, because the run
+    #: writes :data:`CURSOR_ROW` whole and a key outside the cache is lost.
+    doubts: dict[str, list[str]] = field(default_factory=dict)
 
     @classmethod
     def of(cls, state: Mapping[str, Any] | None) -> Cache:
@@ -530,11 +535,14 @@ class Cache:
         schema = state.get("schema") if isinstance(state.get("schema"), Mapping) else {}
         items = state.get("items") if isinstance(state.get("items"), Mapping) else {}
         failures = state.get("failures") if isinstance(state.get("failures"), Mapping) else {}
+        doubts = state.get("doubts") if isinstance(state.get("doubts"), Mapping) else {}
         return cls(
             {str(k): str(v) for k, v in schema.items()},
             {str(k): [dict(i) for i in v if isinstance(i, Mapping)]
              for k, v in items.items() if isinstance(v, list)},
             {str(k): dict(v) for k, v in failures.items() if isinstance(v, Mapping)},
+            {str(k): [str(m) for m in v if isinstance(m, str) and m]
+             for k, v in doubts.items() if isinstance(v, list)},
         )
 
     def hit(self, key: str, digest: str) -> bool:
@@ -567,7 +575,8 @@ class Cache:
     def state(self) -> dict[str, Any]:
         return {"schema": dict(sorted(self.schema.items())),
                 "items": dict(sorted(self.items.items())),
-                "failures": dict(sorted(self.failures.items()))}
+                "failures": dict(sorted(self.failures.items())),
+                "doubts": {k: list(v) for k, v in sorted(self.doubts.items())}}
 
 
 # ── A dismissed role (CRM-Q20-2) ─────────────────────────────────────────────
@@ -779,6 +788,24 @@ def sure_choice(answer: Any, keys: Sequence[str]) -> tuple[str | None, bool]:
     return choice, p >= SURE and (margin is None or margin >= MARGIN)
 
 
+def ranked_of(answer: Any, keys: Sequence[str], limit: int = cat.RANK_LIMIT) -> list[str]:
+    """The keys of a choice answer, best first: by the answer's
+    ``probabilities``, with ``none`` and any key outside *keys* left out, at
+    most *limit* (CRM-Q32-1, ``ranked`` and ``doubts``). With no
+    probabilities, the choice alone. No number is kept."""
+    probabilities = getattr(answer, "probabilities", None)
+    if isinstance(probabilities, Mapping):
+        found = [
+            k for k in keys if k != _NONE
+            and isinstance(probabilities.get(k), int | float)
+            and not isinstance(probabilities.get(k), bool)
+        ]
+        found.sort(key=lambda k: (-float(probabilities[k]), k))
+        return found[:limit]
+    choice = getattr(answer, "choice", None)
+    return [choice] if isinstance(choice, str) and choice in keys and choice != _NONE else []
+
+
 def narrowed(question: Any, answer: Any) -> Any:
     """*question* for a re-ask: only the :data:`REASK_OPTIONS` options with
     the highest probability in *answer*, and ``none`` (step 5). With no
@@ -865,6 +892,9 @@ class Result:
     catalogue_items: list[dict[str, Any]] = field(default_factory=list)
     catalogue_entries: list[Any] = field(default_factory=list)
     catalogue_reason: str | None = None
+    #: CRM-Q32-1 item 6: the doubts of the roles that this run asked, or
+    #: ``None`` when it asked none (a cache hit keeps the cached doubts).
+    doubts: dict[str, list[str]] | None = None
 
     def agree(self, feature: str, asked: int, agreed: int) -> None:
         row = self.shadow.setdefault(feature, [0, 0])
@@ -1007,13 +1037,17 @@ class Pipeline:
         if mode == "shadow":
             # A smoke check only: steps 1 to 3, the counts, and no ask.
             self.result.done[key] = (digest, [])
+            self.result.doubts = {}
             return known
         if self.cache.hit(key, digest):
+            # CRM-Q32-1 item 6: a hit keeps the doubts of the key, so
+            # `result.doubts` stays None and the cache keeps its own.
             self.result.cached += 1
             items = self.cache.items.get(key, [])
         elif self._parked(key, digest):
             return known
         else:
+            self.result.doubts = {}
             items = [self._role_item(s, m) for s, m in by_code.items()]
             asked = [s for s in open_slots if s not in by_code]
             rest = [m for m in pool if m.api_name not in by_code.values()]
@@ -1041,6 +1075,8 @@ class Pipeline:
         questions = {f"role.{s}": self._role_question(s, refs) for s in slots}
         decision = await self.ask(FEATURE_ROLE, state, questions)
         found, unsure = self._read(decision, questions, keys)
+        # CRM-Q32-1: the last answer of each unsure question, for its doubt.
+        last = {q: _answer(decision, q) for q in unsure}
         if unsure:
             again = {q: narrowed(questions[q], _answer(decision, q)) for q in unsure}
             kept = {k for q in again.values() for k in q.criteria if k in refs}
@@ -1055,13 +1091,30 @@ class Pipeline:
             more, still = self._read(decision, again, keys)
             found.update(more)
             self.result.unsure += len(still)
+            last = {q: _answer(decision, q) for q in still}
         picked = {qid.split(".", 1)[1]: refs[ref].api_name
                   for qid, ref in found.items() if ref != _NONE}
         # One module plays one slot. A module that two answers name plays
         # neither: the answers disagree, so neither is sure.
         counts = Counter(picked.values())
         self.result.unsure += sum(1 for m in picked.values() if counts[m] > 1)
+        self._doubts(last, refs, {s: m for s, m in picked.items() if counts[m] > 1})
         return {s: m for s, m in picked.items() if counts[m] == 1}
+
+    def _doubts(self, last: Mapping[str, Any], refs: Mapping[str, ModuleShape],
+                split_picks: Mapping[str, str]) -> None:
+        """CRM-Q32-1 item 6: the doubt of each role that stayed unsure, as
+        its candidate modules, best first. The rank comes from the last
+        answer (the re-ask when there was one). A module that two answers
+        named is the one candidate of each of the two slots."""
+        doubts = self.result.doubts if self.result.doubts is not None else {}
+        for qid, answer in last.items():
+            ranked = [refs[r].api_name for r in ranked_of(answer, list(refs))]
+            if ranked:
+                doubts[qid.split(".", 1)[1]] = ranked
+        for slot, module in split_picks.items():
+            doubts[slot] = [module]
+        self.result.doubts = doubts
 
     @staticmethod
     def _role_question(slot: str, refs: Mapping[str, ModuleShape]) -> Any:
@@ -1539,6 +1592,18 @@ class _CatalogueAsk:
         self.p = pipeline
         self.roles = dict(roles)
         self.sources = {s.module: s for s in catalogue_sources(pipeline.inputs)}
+        #: CRM-Q32-1 item 5: module → part → its rank, for each part that an
+        #: answer closed as null. From the re-ask when there was one.
+        self.ranks: dict[str, dict[str, list[str]]] = {}
+
+    def _rank(self, module: str, part: str, ranked: Sequence[str]) -> None:
+        if ranked:
+            self.ranks.setdefault(module, {})[part] = list(ranked)[:cat.RANK_LIMIT]
+
+    def ranked_for(self, module: str, parts: Sequence[str]) -> dict[str, list[str]]:
+        """The ranks of *parts* of *module*, for the ``ranked`` of its item."""
+        found = self.ranks.get(module, {})
+        return {part: list(found[part]) for part in parts if found.get(part)}
 
     @staticmethod
     def _purpose_question(ref: str) -> Any:
@@ -1607,6 +1672,8 @@ class _CatalogueAsk:
         keys = [*cat.PURPOSES, _NONE]
         decision = await self.p.ask(FEATURE_CATALOGUE, state, questions)
         found, unsure = Pipeline._read(decision, questions, keys)
+        # CRM-Q32-1 item 5: the last answer of each question, for its rank.
+        last = {qid: _answer(decision, qid) for qid in questions}
         again: dict[str, Any] = {}
         samples: dict[str, Any] = {}
         for qid in unsure:
@@ -1623,12 +1690,16 @@ class _CatalogueAsk:
             if decision is not None:
                 more, _still = Pipeline._read(decision, again, keys)
                 found.update(more)
+                last.update({qid: _answer(decision, qid) for qid in again})
         out: dict[str, str | None] = {}
         for ref, entry in refs.items():
             choice = found.get(f"p.{ref}")
             out[entry.module] = choice if choice in cat.PURPOSES else None
             if choice is None:
                 self.p.result.unsure += 1
+            if out[entry.module] is None:
+                self._rank(entry.module, "purpose",
+                           ranked_of(last.get(f"p.{ref}"), list(cat.PURPOSES)))
         return out
 
     @staticmethod
@@ -1694,6 +1765,8 @@ class _CatalogueAsk:
 
         decision = await self.p.ask(FEATURE_CATALOGUE, state(False), questions)
         found, unsure = Pipeline._read(decision, questions)
+        # CRM-Q32-1 item 5: the last answer of each question, for its rank.
+        last = {qid: _answer(decision, qid) for qid in questions}
         if unsure:
             again = {q: narrowed(questions[q], _answer(decision, q)) for q in unsure}
             kept = {k for q in again.values() for k in q.criteria if k in refs}
@@ -1702,10 +1775,14 @@ class _CatalogueAsk:
                 more, still = Pipeline._read(decision, again)
                 found.update(more)
                 self.p.result.unsure += len(still)
+                last.update({qid: _answer(decision, qid) for qid in again})
         answers: dict[str, str | None] = {}
         for qid in questions:
             choice = found.get(qid)
             answers[qid[2:]] = refs[choice].key if choice in refs else None
+            if answers[qid[2:]] is None:
+                self._rank(entry.module, qid[2:],
+                           [refs[r].key for r in ranked_of(last.get(qid), list(refs))])
         return answers, {f.key: ref for ref, f in refs.items()}
 
     def detail_source(self, src: Any, detail: ModuleShape) -> Any:
@@ -1714,6 +1791,22 @@ class _CatalogueAsk:
             return src
         return replace(src, fills={f.key: float(f.fill) for f in detail.fields
                                    if f.fill is not None})
+
+
+def _view(approved: Sequence[Mapping[str, Any]],
+          working: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The items that the run reads: the approved items, with the catalogue
+    item of each module that the run worked on put OVER the approved item of
+    that module, part by part (``catalogue.merge_item``).
+
+    Fix round P2: ``stored_items`` keeps the last item of one module, so a
+    plain list of the approved items and the working items let the working
+    item hide each part of the admin. The run then asked those parts again,
+    and ``Result.catalogue_entries`` lost them."""
+    stored = cat.stored_items(approved)
+    merged = {m: cat.merge_item(stored.get(m), item) for m, item in working.items()}
+    return [*(dict(i) for i in approved if not (
+        cat.is_catalogue(i) and i.get("module") in merged)), *merged.values()]
 
 
 class _CatalogueWork(_CatalogueAsk):
@@ -1745,7 +1838,7 @@ class _CatalogueWork(_CatalogueAsk):
                 if stop.reason not in CATALOGUE_STOPS:
                     raise
                 p.result.catalogue_reason = stop.reason
-            entries = cat.build(sources, self.roles, [*approved, *working.values()])
+            entries = cat.build(sources, self.roles, _view(approved, working))
             for entry in sorted(entries, key=lambda e: e.module):
                 waiting_parts = [x for x in cat.KEY_PARTS if x in entry.open]
                 if entry.kind != "module" or not waiting_parts:
@@ -1771,7 +1864,7 @@ class _CatalogueWork(_CatalogueAsk):
         finally:
             p.result.catalogue_items = [fresh[m] for m in sorted(fresh)]
             p.result.catalogue_entries = cat.build(
-                sources, self.roles, [*approved, *working.values()])
+                sources, self.roles, _view(approved, working))
 
     async def _purposes(self, entries: Sequence[Any], mode: str,
                         working: dict[str, dict[str, Any]],
@@ -1802,6 +1895,9 @@ class _CatalogueWork(_CatalogueAsk):
             key, digest = keys[entry.module]
             item = {**self._item(entry.module), "purpose": found.get(entry.module),
                     "by": {"purpose": "ai"}}
+            ranked = self.ranked_for(entry.module, ["purpose"]) if item["purpose"] is None else {}
+            if ranked:
+                item["ranked"] = ranked
             p.result.done[key] = (digest, [item])
             self._keep([item], working)
             self._keep([item], fresh)
@@ -1814,7 +1910,7 @@ class _CatalogueWork(_CatalogueAsk):
         item = self._item(entry.module)
         sampled = self.detail_source(src, detail)
         if sampled is not src:
-            stored = cat.stored_items([*approved, *working.values()])
+            stored = cat.stored_items(_view(approved, working))
             purposes = cat.purposes_of(list(self.sources.values()), self.roles, stored)
             again = cat.entry_of(sampled, purposes, self.roles, stored.get(entry.module))
             for part in cat.KEY_PARTS:
@@ -1829,6 +1925,10 @@ class _CatalogueWork(_CatalogueAsk):
             for part, key in answers.items():
                 item[part] = key
                 item["by"][part] = "ai"
+            ranked = self.ranked_for(
+                entry.module, [part for part, key in answers.items() if key is None])
+            if ranked:
+                item["ranked"] = ranked
         return item if item["by"] else None
 
 
@@ -2370,6 +2470,9 @@ async def _write(org: str, inputs: Inputs, modes: Mapping[str, str], cache: Cach
             cache.schema[key] = digest
             cache.items[key] = items
             cache.failures.pop(key, None)
+        if SLOTS_KEY in result.done and result.doubts is not None:
+            # CRM-Q32-1 item 6: the doubts of the roles that this run asked.
+            cache.doubts = {k: list(v) for k, v in result.doubts.items()}
         if result.failed is not None:
             cache.failed(*result.failed, now or datetime.now(UTC))
         async with tenant_session(org) as db:
@@ -2419,6 +2522,7 @@ __all__ = [
     "masked",
     "modes_now",
     "pattern_of",
+    "ranked_of",
     "reserve_requests",
     "shape_values",
     "slot_empty",

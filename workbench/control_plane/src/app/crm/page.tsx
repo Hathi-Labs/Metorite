@@ -71,6 +71,8 @@ import { moduleLabel, type ModuleLink } from "./lib/modules";
 import { openModuleRecord, selectModule } from "./lib/urlState";
 import { useCoreStates, useModules, useOverlays, useSourceLabels } from "./lib/useCrmMode";
 import { SlotSuggestionArea, useSuggestions } from "./components/Suggestions";
+import OpenQuestionsCard, { useQuestions } from "./components/OpenQuestions";
+import { openCount, railCount } from "./lib/questions";
 import { suggestionFor } from "./lib/suggestions";
 import * as api from "./lib/api";
 import { CrmError } from "./lib/api";
@@ -692,12 +694,26 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   // layout. The read is shared with the Fields card, which reads leads first.
   const studioProbe = useFieldLayout(ctx.isAdmin && ctx.mode !== "mirror" ? "leads" : null);
   const studioAdmin = studioProbe.layout?.studio_admin === true;
+  // CRM-Q32-3 (§18.14.5): the open questions of an admin in Mirror mode. The
+  // read decides the section, the rail count and the default section. A 404
+  // `questions_off` hides all three.
+  const questions = useQuestions(ctx.isAdmin && ctx.mode === "mirror");
+  const questionsOpen = openCount(questions.read);
   const sectionCtx = useMemo(
-    () => ({ isAdmin: ctx.isAdmin, mode: ctx.mode, studioAdmin }),
-    [ctx.isAdmin, ctx.mode, studioAdmin],
+    () => ({
+      isAdmin: ctx.isAdmin,
+      mode: ctx.mode,
+      studioAdmin,
+      questions: questions.gate,
+      openQuestions: questionsOpen,
+    }),
+    [ctx.isAdmin, ctx.mode, studioAdmin, questions.gate, questionsOpen],
   );
   const settingsSection = shownSection(view.section, sectionCtx);
-  const sectionTrusted = !accessLoading && !accessStale && !ctx.modeReadFailed;
+  // The default section reads the open count, so a bare settings URL waits
+  // for the read of the questions too.
+  const sectionTrusted =
+    !accessLoading && !accessStale && !ctx.modeReadFailed && questions.gate !== "unknown";
   useEffect(() => {
     const redirect = sectionRedirect(view, sectionCtx, sectionTrusted);
     if (redirect) replaceView(viewHref({ ...view, section: redirect }));
@@ -755,6 +771,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     sections: visibleSections(sectionCtx),
     active: view.tab === "settings" ? settingsSection : null,
     onSelect: chooseSection,
+    // CRM-Q32-3: the open count of an admin, on two rows. It hides at 0.
+    questions: questions.gate === "on" ? railCount(questionsOpen) : null,
   };
 
   // The app's verb sits next to its name, as Capture does in My Tasks. It is
@@ -1110,6 +1128,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                 ) : undefined
               }
               access={ctx.isAdmin ? <AccessSection /> : undefined}
+              questions={questions.gate === "on" ? <OpenQuestionsCard /> : undefined}
               pipelines={pipelines}
               showAdminCards={ctx.isAdmin}
               dealStatuses={store.dealStatuses}

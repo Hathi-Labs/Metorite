@@ -1359,3 +1359,174 @@ class TestTheCatalogueFixRound:
             assert mp.modes_now()[mp.FEATURE_CATALOGUE] == "shadow"
         finally:
             release_tenant(token)
+
+
+# ── CRM-Q32-1: ``ranked`` and ``doubts`` (crm_platform.md §18.14.3) ─────────
+
+
+class _SwapAsker(eval_run.ScriptedAsker):
+    """The scripted asker, with a pick of its own for the re-ask of one key.
+    So a test can prove that the rank comes from the re-ask."""
+
+    def __init__(self, answers: dict[str, Any], key: str, reask_pick: str) -> None:
+        super().__init__(answers)
+        self.key, self.reask_pick = key, reask_pick
+
+    def _one(self, qid, question, state, reask):
+        if reask and self._key(qid, state) == self.key:
+            entry = {**self.answers[self.key], "pick": self.reask_pick}
+            saved = self.answers[self.key]
+            self.answers[self.key] = entry
+            try:
+                return super()._one(qid, question, state, reask)
+            finally:
+                self.answers[self.key] = saved
+        return super()._one(qid, question, state, reask)
+
+
+class TestQ32RankedAndDoubts:
+    async def test_a_part_closed_as_null_keeps_its_rank(self):
+        """Item 5: a sure ``none`` keeps the order of the other fields, and
+        no number."""
+        result, _asker = await _pipeline("dewin", CAT_ON, answers=_cat_answers())
+        items = {i["module"]: i for i in result.catalogue_items}
+        received = items["Payment_Received"]
+        assert received["amount"] is None
+        ranked = received["ranked"]["amount"]
+        assert 1 <= len(ranked) <= 3
+        currency = {f.key for f in _schema("dewin").inputs.module("Payment_Received").fields
+                    if f.type == "currency"}
+        assert set(ranked) <= currency
+        assert all(isinstance(w, str) for w in ranked)
+        # A sure field keeps no rank.
+        assert "ranked" not in items["Payment_Made"]
+        assert mapping_plans.check_kinds([received]) is None
+
+    async def test_the_rank_comes_from_the_re_ask(self):
+        answers = {**_cat_answers(),
+                   "k:Payment Made.amount": {"pick": "Paid Value", "p": 0.5, "p2": 0.55}}
+        schema = _schema("dewin")
+        asker = _SwapAsker(answers, "k:Payment Made.amount", "TDS")
+        result = await mp.Pipeline(schema.inputs, CAT_ON, mp.Cache(),
+                                   eval_run.EvalSource(schema), asker).run()
+        item = next(i for i in result.catalogue_items if i["module"] == "Payment_Made")
+        assert item["amount"] is None
+        assert item["ranked"]["amount"][0] == "Tds"
+
+    async def test_an_unsure_purpose_keeps_its_rank(self):
+        answers = {**_cat_answers(),
+                   "p:AMC Contracts": {"pick": "contract", "p": 0.5, "p2": 0.6}}
+        result, _asker = await _pipeline("dewin", CAT_ON, answers=answers)
+        item = next(i for i in result.catalogue_items if i["module"] == "AMC_Contracts")
+        assert item["purpose"] is None
+        assert item["ranked"]["purpose"][0] == "contract"
+        assert set(item["ranked"]["purpose"]) <= set(mp.cat.PURPOSES)
+
+    async def test_the_doubts_of_an_unsure_role_stay_on_a_cache_hit(self):
+        """Item 6: ``doubts`` is a field of ``Cache``. ``Cache.of`` and
+        ``Cache.state`` carry it, and a second run on one schema keeps it."""
+        answers = {**_cat_answers(),
+                   "role.deal": {"pick": "Tender Register", "p": 0.55, "p2": 0.6}}
+        result, _asker = await _pipeline("dewin", ON, answers=answers)
+        assert result.doubts is not None
+        assert result.doubts["deal"][0] == "Tender_Register"
+        assert len(result.doubts["deal"]) <= 3
+        cache = mp.Cache()
+        for key, (digest, items) in result.done.items():
+            cache.schema[key] = digest
+            cache.items[key] = items
+        cache.doubts = dict(result.doubts)
+        again = mp.Cache.of(json.loads(json.dumps(cache.state())))
+        assert again.doubts == {"deal": result.doubts["deal"]}
+        second, asker = await _pipeline("dewin", ON, cache=again, answers=answers)
+        assert second.doubts is None and not [q for q in _asked(asker) if q.startswith("role.")]
+        assert again.doubts == {"deal": result.doubts["deal"]}
+
+    async def test_the_write_keeps_the_doubts_of_a_hit_and_replaces_them_on_an_ask(
+        self, monkeypatch,
+    ):
+        """``_write`` writes the cursor row whole, so the doubts must ride in
+        it: kept on a cache hit, replaced when the run asks the roles."""
+        written: list[Any] = []
+
+        async def _write_cursor(db, org, row, status):
+            written.append(row.state)
+
+        @contextlib.asynccontextmanager
+        async def _session(org=None):
+            yield SimpleNamespace()
+
+        monkeypatch.setattr(runs, "write_cursor", _write_cursor)
+        monkeypatch.setattr(mp, "tenant_session", _session)
+        kept = mp.Cache(doubts={"deal": ["Old_Module"]})
+        hit = mp.Result(done={"core:deal": ("d", [])})
+        await mp._write(ORG, _schema().inputs, ON, kept, hit)
+        assert written[-1]["doubts"] == {"deal": ["Old_Module"]}
+        asked = mp.Result(done={mp.SLOTS_KEY: ("d2", [])}, doubts={"lead": ["A", "B"]})
+        await mp._write(ORG, _schema().inputs, ON, kept, asked)
+        assert written[-1]["doubts"] == {"lead": ["A", "B"]}
+
+    def test_a_cache_of_before_q32_reads_with_no_doubts(self):
+        old = {"schema": {"slots": "x"}, "items": {}, "failures": {}}
+        assert mp.Cache.of(old).doubts == {}
+        assert mp.Cache.of({**old, "doubts": {"deal": ["A", 3, ""]}}).doubts == {"deal": ["A"]}
+
+
+class TestQ32AnAdminPartIsNeverAsked:
+    async def test_the_pipeline_asks_no_part_with_by_admin(self):
+        """CRM-Q32-2 item 6: a part with ``by: admin``, also a null by the
+        admin, makes 0 ``ask`` calls (§18.14.8). ``entry_of`` keeps a stored
+        part out of ``open``. A fence."""
+        schema = _schema("dewin")
+        admin = (
+            {"kind": "catalogue", "module": "Payment_Received", "amount": None,
+             "by": {"amount": "admin"}},
+            {"kind": "catalogue", "module": "AMC_Contracts", "purpose": "other",
+             "by": {"purpose": "admin"}},
+        )
+        inputs = mp.Inputs(1, schema.inputs.modules, schema.inputs.slots, admin)
+        asker = eval_run.ScriptedAsker(_cat_answers())
+        result = await mp.Pipeline(inputs, CAT_ON, mp.Cache(), eval_run.EvalSource(schema),
+                                   asker).run()
+        assert result.reason == "done" and result.catalogue_reason is None
+        asked = json.dumps(_states(asker))
+        assert "AMC Contracts" not in asked
+        part_states = [s for s in _states(asker) if "module" in s]
+        assert not [s for s in part_states if s["module"]["name"] == "Payment Received"]
+        # The control: with no admin part, both are asked.
+        control = eval_run.ScriptedAsker(_cat_answers())
+        await mp.Pipeline(schema.inputs, CAT_ON, mp.Cache(), eval_run.EvalSource(schema),
+                          control).run()
+        assert "AMC Contracts" in json.dumps(_states(control))
+        assert [s for s in _states(control)
+                if "module" in s and s["module"]["name"] == "Payment Received"]
+        # No item of the run names a part of the admin.
+        for item in result.catalogue_items:
+            if item["module"] == "Payment_Received":
+                assert "amount" not in item
+            assert item["module"] != "AMC_Contracts"
+
+
+class TestQ32FixTheViewKeepsTheAdmin:
+    async def test_an_admin_key_part_with_an_open_purpose_is_never_asked(self):
+        """Fix round P2: the purpose step puts a working item for the module.
+        The view of the run merges it OVER the approved item, part by part,
+        so the amount of the admin stays answered and is never asked."""
+        module = mp.ModuleShape(
+            api_name="Ledger_0", label="Ledger 0", singular="Ledger 0", records=50,
+            display_field=None, custom=True,
+            fields=tuple(mp.FieldShape(key=f"Part_{n}", label=f"Part {n}", type="currency")
+                         for n in range(3)))
+        slots = tuple(mp.SlotShape(slot=s, empty=False) for s in mp.executor.SLOTS)
+        admin = {"kind": "catalogue", "module": "Ledger_0", "amount": "Part_1",
+                 "by": {"amount": "admin"}}
+        inputs = mp.Inputs(1, (module,), slots, (admin,),
+                           fills={"Ledger_0": {f"Part_{n}": 0.6 for n in range(3)}})
+        asker = eval_run.ScriptedAsker({"p:Ledger 0": {"pick": "invoice", "p": 0.9}})
+        result = await mp.Pipeline(inputs, CAT_ON, mp.Cache(), _LedgerSource(), asker).run()
+        asked = _asked(asker)
+        assert "p.m0" in asked, "the purpose was open and asked"
+        assert "k.amount" not in asked
+        entry = _entry(result, "Ledger_0")
+        assert (entry.purpose, entry.fields["amount"].key, entry.by["amount"]) == (
+            "invoice", "Part_1", "admin")

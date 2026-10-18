@@ -40,6 +40,14 @@ gateway reads them.
   ``crm_list_modules`` answers as before. :func:`catalogue_allowed` is the one
   check. A name in the list spends nothing, so its flip is gate
   ``enforcement-flip``.
+* ``CRM_QUESTIONS_ORGS`` — the organization ids that get the open questions
+  of the CRM (WS-53 CRM-Q32-1, ``crm_platform.md`` §18.14.3). The grammar is
+  the one of ``CRM_ORGS``. An empty list allows no organization:
+  ``GET /crm/questions`` and ``PUT /crm/catalogue/{module}`` answer 404
+  ``questions_off``, and no questions step, My Day card or CRM fact runs.
+  :func:`questions_allowed` is the one check, and it needs
+  :func:`catalogue_allowed` too. A name in the list spends nothing, so its
+  flip is gate ``enforcement-flip``.
 * ``CRM_DIGEST_ORGS`` — the organization ids that get the weekly CRM digest
   on the powerful tier (WS-53 CRM-Q28, ``crm_platform.md`` §18.11.2). The
   grammar is the one of ``CRM_ORGS``. An empty list allows no organization:
@@ -208,6 +216,25 @@ def catalogue_allowed(organization_id: str | None) -> bool:
         return False
     org = str(organization_id).strip().lower()
     orgs = crm_catalogue_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+def crm_questions_orgs() -> frozenset[str]:
+    """The organization ids that get the open questions. Empty means none."""
+    return _parse_orgs(str(get_settings().crm_questions_orgs or ""))
+
+
+def questions_allowed(organization_id: str | None) -> bool:
+    """True when the open questions may serve this org (CRM-Q32-1 item 10).
+
+    It is :func:`catalogue_allowed` AND a place on ``CRM_QUESTIONS_ORGS``, or
+    ``*`` there. The questions read the catalogue, so an org with no
+    catalogue gets no question. It reads the settings and nothing else.
+    """
+    if not catalogue_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = crm_questions_orgs()
     return ALL_ORGS in orgs or org in orgs
 
 

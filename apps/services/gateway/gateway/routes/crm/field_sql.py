@@ -174,6 +174,9 @@ class FieldScope:
     #: org outside the list keeps the refusals of before the key words, and
     #: no message points it at key fields it cannot see (fix round, item 9).
     catalogue: bool = True
+    #: CRM-Q32-6: the key parts of the module that are an open question
+    #: (``questions.open_parts``). Empty outside ``CRM_QUESTIONS_ORGS``.
+    questions: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if self.column not in _COLUMNS:
@@ -207,11 +210,7 @@ class FieldScope:
             raise HTTPException(status_code=422,
                                 detail="'sum_amount' needs deals. A module has no amount.")
         if found is None and (key or "") in KEY_WORDS and self.catalogue:
-            raise HTTPException(status_code=422, detail={
-                "code": "no_key_field",
-                "message": f"{self.owner} has no key field for {key}. "
-                           "crm_list_modules names the key fields of each module.",
-            })
+            raise HTTPException(status_code=422, detail=self._no_key_field(str(key)))
         if found is None:
             raise HTTPException(status_code=422, detail={
                 "code": "unknown_field",
@@ -220,6 +219,22 @@ class FieldScope:
                            "crm_list_fields gives the type of each.",
             })
         return found
+
+    def _no_key_field(self, key: str) -> dict[str, Any]:
+        """The detail of the 422 ``no_key_field``. When the part is an open
+        question (CRM-Q32-6), it names where an admin answers it, and
+        ``href`` links there (``sources.crm_settings_href``)."""
+        detail: dict[str, Any] = {
+            "code": "no_key_field",
+            "message": f"{self.owner} has no key field for {key}. "
+                       "crm_list_modules names the key fields of each module.",
+        }
+        if KEY_WORDS.get(key) in self.questions:
+            from gateway.retrieval.sources import crm_settings_href
+
+            detail["message"] += " A CRM admin can answer this in CRM settings, Open questions."
+            detail["href"] = crm_settings_href("questions")
+        return detail
 
 
 @dataclass(frozen=True)
@@ -289,16 +304,25 @@ async def module_scope(db: Any, module: str) -> FieldScope:
     one entry, for the bound tenant. Outside ``CRM_CATALOGUE_ORGS`` it gives
     no entry, and the scope has no key word.
     """
+    from gateway.crm_sync.catalogue import MONEY_PURPOSES
     from gateway.routes.crm.catalogue import entry_of
     from gateway.routes.crm.core import current_tenant
     from gateway.routes.crm.flags import catalogue_allowed
+    from gateway.routes.crm.questions import open_parts
 
     org = current_tenant()
     defs = await _field_defs(db, module)
     fields = {d.key: _ref(d) for d in defs}
-    fields.update(key_words(fields, await entry_of(db, org, module)))
+    entry = await entry_of(db, org, module)
+    fields.update(key_words(fields, entry))
+    # CRM-Q32-6: the open questions of a money module, read only when a key
+    # word has no field, and only for an org on CRM_QUESTIONS_ORGS. Only a
+    # money entry has key parts, so no other module asks.
+    missing = (getattr(entry, "purpose", None) in MONEY_PURPOSES
+               and any(word not in fields for word in KEY_WORDS))
+    questions = await open_parts(db, org, module) if missing else frozenset()
     return FieldScope(column=MODULE_COLUMN, owner=f"module:{module}", fields=fields,
-                      catalogue=catalogue_allowed(org))
+                      catalogue=catalogue_allowed(org), questions=questions)
 
 
 def key_words(fields: dict[str, FieldRef], entry: Any) -> dict[str, FieldRef]:
@@ -808,6 +832,39 @@ def overlay_weighted(
     )
 
 
+# ── The values of a stage field (CRM-Q32-1, §18.14.3) ───────────────────────
+
+#: The distinct values of one field of a mirrored module, each with its
+#: count of records, the most first. The org, the module and the key are
+#: bound, so no name reaches the SQL text.
+#: Fix round: each value is trimmed as ``mapping.text_value`` trims it, the
+#: rule of the executor, so " Won " counts as "Won" and never shows as a value
+#: with no entry. An object or a list is no value, as there.
+_TRIMMED = f"btrim({MODULE_COLUMN} ->> :{_GROUP_KEY}, E' \\t\\r\\n\\f\\x0b')"
+_VALUE_COUNTS_SQL = (
+    f"SELECT {_TRIMMED} AS v, count(*) AS n "
+    "FROM crm_module_records WHERE organization_id = CAST(:agf_org AS uuid) "
+    f"AND module = :{_MODULE} AND ext_source = 'zoho' "
+    f"AND jsonb_typeof({MODULE_COLUMN} -> :{_GROUP_KEY}) IN ('string', 'number') "
+    f"AND coalesce({_TRIMMED}, '') <> '' "
+    "GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT :agf_limit"
+)
+
+
+async def value_counts(
+    db: Any, org: str, module: str, key: str, limit: int,
+) -> list[tuple[str, int]]:
+    """The distinct values of the field *key* of *module*, each with its
+    count of records, the most first, at most *limit* (CRM-Q32-1, the
+    ``stage_value`` read). ONE grouped statement, in the caller's tenant
+    session, with the org in the predicate and RLS under it."""
+    rows = (await db.execute(text(_VALUE_COUNTS_SQL), {
+        "agf_org": str(org), _MODULE: module, _GROUP_KEY: key,
+        "agf_limit": max(1, int(limit)),
+    })).fetchall()
+    return [(str(r.v), int(r.n)) for r in rows if r.v is not None]
+
+
 __all__ = [
     "AMOUNT_WORD",
     "BUCKETS",
@@ -848,5 +905,6 @@ __all__ = [
     "overlay_weighted",
     "overlay_where",
     "used_keys",
+    "value_counts",
     "zoned",
 ]

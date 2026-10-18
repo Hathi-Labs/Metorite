@@ -11,7 +11,15 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { RailRow, expandKey, railRowClass, togglePress, type RailRowProps } from "./RailRow";
+import { badgeTone } from "./Badge";
+import {
+  RailRow,
+  expandKey,
+  railMetaClass,
+  railRowClass,
+  togglePress,
+  type RailRowProps,
+} from "./RailRow";
 
 const draw = (props: Partial<RailRowProps> = {}) =>
   renderToStaticMarkup(
@@ -53,6 +61,35 @@ describe("the trailing zone", () => {
     const html = draw({ meta: null, actions: undefined });
     expect(html).not.toContain("rail-row-meta");
     expect(html).not.toContain("rail-row-actions");
+  });
+
+  it("draws a muted count by default, which gives way to the actions on hover", () => {
+    const html = draw();
+    const meta = classOf(html, "rail-row-meta");
+    expect(meta).toContain("text-muted-foreground");
+    expect(meta).not.toContain("text-primary");
+    expect(html).toContain('data-meta-tone="muted"');
+    expect(railMetaClass("muted")).toContain("rail-row-meta");
+  });
+
+  // WS-53 CRM-Q32-3 (crm_platform.md §18.14.5): a count of items that wait
+  // for the member. It draws in --primary, the tone of the `primary` Badge,
+  // and it stays on hover, so it never carries `rail-row-meta`.
+  it("draws an attention count in --primary, and keeps it on hover and on focus", () => {
+    const html = draw({ metaTone: "attention", meta: 3 });
+    expect(html).toContain('data-meta-tone="attention"');
+    expect(html).not.toContain("rail-row-meta");
+    const count = classOf(html, "rail-row-count");
+    expect(count).toContain(badgeTone("primary"));
+    expect(count).toContain("text-primary");
+    expect(count).not.toContain("text-muted-foreground");
+    // The row still has actions, and the actions still reveal on hover.
+    expect(html).toContain('data-has-actions=""');
+    expect(classOf(html, "rail-row-actions")).toContain("reveal-on-hover");
+    // No hover rule of globals.css names the attention count.
+    const css = readFileSync(fileURLToPath(new URL("../../app/globals.css", import.meta.url)), "utf8");
+    expect(css).not.toContain("rail-row-count");
+    expect(railMetaClass("attention")).not.toContain("rail-row-meta");
   });
 
   it("pins the actions open with data-pinned, and only then", () => {

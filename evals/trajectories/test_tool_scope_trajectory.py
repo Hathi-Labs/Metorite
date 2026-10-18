@@ -53,6 +53,9 @@ INJECTABLE_PLATFORM_TOOLS = {
     "make_document",
     # projects_ai_chat.md §14.10 (2026-10-16): a report as a chat card and a PDF.
     "make_report",
+    # WS-53 CRM-Q32-5 (2026-10-18): the org facts of a listed org. The run
+    # drops it when the org is not on CRM_QUESTIONS_ORGS (_add_crm_facts_block).
+    "org_facts",
 }
 
 # The agents this item scopes, with a per-agent leanness ceiling.
@@ -66,7 +69,9 @@ SCOPED_AGENTS = {
     # in the AI chat, so the chat holds make_document beside the CRM reads.
     # 22 since §14.10 of projects_ai_chat.md (2026-10-16): a report is a card
     # in the chat with its PDF, so the chat holds make_report too.
-    "agent-orchestrator": 22,
+    # 23 since CRM-Q32-5 (2026-10-18): the chat reads the org facts of a
+    # listed org, so it holds org_facts. An unlisted org's run drops it.
+    "agent-orchestrator": 23,
 }
 
 

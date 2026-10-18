@@ -551,7 +551,7 @@ nothing (`navigation_shell.md` §4.5, "No second arithmetic").
 | `deal_close_passed` | A deal I own passed its close date and is open | Template | "Move the date" (opens the CRM form) | None | MD-3e, BUILT. §5.9 item 13 holds the rule |
 | `lead_replied` | A lead I own replied by mail | Template | Open thread | None | MD-9 |
 | `digest_ready` | The weekly CRM digest of my org was stored in the last day | Template: "The CRM digest of the week from 5 Oct is ready in Reports." | "Open Reports" | None. The card shows no model text | WS-53 CRM-Q28 item 14, BUILT 2026-10-17, not merged. Only for an org on `CRM_DIGEST_ORGS`. Reach class `none` |
-| `crm_open_questions` | The CRM holds a question about the data of the org that is new in the last day. Only for a CRM admin | Template: "Jev has 3 new questions about your CRM data." | "Answer" (`crm_settings_href`) | None. The card shows no model text | WS-53 CRM-Q32-4, specified 2026-10-17, not built. Only for an org where `questions_allowed` is true. One card a day at most (`crm_platform.md` §18.14.5) |
+| `crm_open_questions` | The CRM holds a question about the data of the org that is new in the last day. Only for a CRM admin | Template: "Jev has 3 new questions about your CRM data." | "Answer" (`crm_settings_href`) | None. The card shows no model text | WS-53 CRM-Q32-4, BUILT 2026-10-18 on `crm-batch-q32`, not merged. Only for an org where `questions_allowed` is true. One card a day at most (`crm_platform.md` §18.14.5). Reach class `none` |
 
 ### 5.6 People, approvals, agents and WhatsApp
 

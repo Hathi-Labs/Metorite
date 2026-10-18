@@ -410,6 +410,11 @@ A tool answer that starts with "Refused:" gives the server's words and a "Next:"
     Section("crm", ("crm_search_notes",), """### CRM notes by meaning
 - **crm_search_notes(query, limit?)** — Finds notes by meaning and returns note ids and snippets. It finds text, never a number: a count or a total comes from crm_aggregate. When it says that search by meaning is off, use crm_list_records with q.
 """),
+    # WS-53 CRM-Q32-5: the org-facts read, gated on the one tool.
+    Section("crm", ("org_facts",), """### Facts of the organization
+- **org_facts(app?, query?)** — The fixed facts of the organization's data: what each CRM module is for, its key fields, its stages and what revenue means. A CRM admin answered each one, or Metorite found it. Use each fact as given.
+A part that a CRM answer calls an open question waits for a CRM admin. Use the default that the answer names, say so, and never ask the member.
+"""),
     Section("coding", ("github_search", "github_repo_search"), """### GitHub code search
 - **github_search(query, scope?, maxResults?)** — Lexical search across public GitHub repositories.  Supports ``language:python``, ``repo:owner/name``, ``path:src/`` filters.
 - **github_repo_search(repo, query?)** — Search within a specific GitHub repository for code snippets and implementation patterns.
@@ -551,6 +556,9 @@ COMPACT_SECTIONS: tuple[Section, ...] = (
         "crm_search_notes(query,limit?) — CRM notes by meaning; a number "
         "comes from crm_aggregate"
     )),
+    Section("crm", ("org_facts",), (
+        "org_facts(app?,query?) — the fixed facts of the org's data; use them as given"
+    )),
     Section("coding", ("github_search", "github_repo_search"), (
         "github_search(q,scope?,max?), github_repo_search(repo,q?) — code search"
     )),
@@ -660,11 +668,24 @@ def _dark_tools() -> frozenset[str]:
     the one such tool. Its switch is ``decide_tools.decide_tool_enabled``,
     the same function the injection chain asks.
     """
+    dark: set[str] = set()
     try:
         from acb_skills.decide_tools import decide_tool_enabled
     except ImportError:
-        return frozenset({"decide"})
-    return frozenset() if decide_tool_enabled() else frozenset({"decide"})
+        dark.add("decide")
+    else:
+        if not decide_tool_enabled():
+            dark.add("decide")
+    # WS-53 CRM-Q32 fix round: `org_facts` and the open-question line are dark
+    # on a box with CRM_QUESTIONS_ORGS empty, so a CRM prompt gains no word.
+    try:
+        from acb_skills.crm_tools import questions_box_on
+    except ImportError:
+        dark.add("org_facts")
+    else:
+        if not questions_box_on():
+            dark.add("org_facts")
+    return frozenset(dark)
 
 
 def _mandatory_block(effective_scope: frozenset[str] | None) -> str | None:

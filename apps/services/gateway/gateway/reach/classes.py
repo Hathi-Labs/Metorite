@@ -51,6 +51,9 @@ REACH_CLASS: dict[str, str] = {
     # WS-53 CRM-Q28 item 14: the weekly CRM digest. It never leaves My Day.
     # Delivery outside the app is CRM-Q28b, an owner gate.
     "digest_ready": "none",
+    # WS-53 CRM-Q32-4: the open questions of the CRM, for a CRM admin. The
+    # admin answers them in CRM settings, so the card never leaves My Day.
+    "crm_open_questions": "none",
     # "Tell me on WhatsApp" (RE-5, §11.3). A rule or a workflow at ``normal``
     # interrupts. The member's own request, and a rule at ``urgent``, are
     # ``urgent`` (below).
