@@ -18,8 +18,10 @@ Hermetic: no git, no network. R8 binds nothing here.
 Mutations this suite catches (R7), each run red by hand:
 
 * the venv check is removed -> ``test_a_venv_skill_is_not_cloned``;
-* the venv check skips every skill -> ``test_a_skill_the_venv_lacks_is_cloned``;
-* a load path keeps its own loop -> ``test_both_load_paths_use_the_helper``.
+* the venv check skips every skill -> ``test_a_skill_the_venv_lacks_is_cloned``.
+
+``test_both_load_paths_use_the_helper`` spies on the helper, so a load path
+that keeps a loop of its own fails it. That one was not run as a mutation.
 """
 from __future__ import annotations
 
