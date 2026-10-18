@@ -1,0 +1,214 @@
+{
+  "_about": "WS-61 KB-2b golden set (knowledge_base.md §21.5). Each `md` is a stored body. `saved` is what the block editor writes for it: parse and write once. Vitest (src/app/knowledge/lib/editor/editorMarkdown.test.ts) holds the editor to `saved` and to the fixed point. Pytest (tests/unit/test_kb_editor_golden.py) runs the chunker on `saved`. `nodes` and `marks` are the blocks and marks that both bodies keep.",
+  "cases": [
+    {
+      "name": "headings-and-marks",
+      "md": "# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six\n\nText with **bold**, *italic*, ~~strike~~, `code`, ***both***, and a [**bold link**](https://example.com/a?b=1&c=2 \"Title\").\n",
+      "saved": "# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six\n\nText with **bold**, *italic*, ~~strike~~, `code`, ***both***, and a [**bold link**](https://example.com/a?b=1&c=2 \"Title\").",
+      "nodes": [
+        "doc",
+        "heading",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "bold",
+        "code",
+        "italic",
+        "link",
+        "strike"
+      ]
+    },
+    {
+      "name": "lists",
+      "md": "- one\n- two\n  - nested\n    - deeper\n- three\n\n3. three\n4. four\n   - inner bullet\n\n- [ ] open\n- [x] done\n  - [ ] nested task\n",
+      "saved": "- one\n- two\n  - nested\n    - deeper\n- three\n\n3. three\n4. four\n  - inner bullet\n\n- [ ] open\n- [x] done\n  - [ ] nested task",
+      "nodes": [
+        "bulletList",
+        "doc",
+        "listItem",
+        "orderedList",
+        "paragraph",
+        "taskItem",
+        "taskList",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "quotes",
+      "md": "> First paragraph.\n>\n> Second paragraph.\n>\n> > Nested quote.\n",
+      "saved": "> First paragraph.\n>\n> Second paragraph.\n>\n> > Nested quote.",
+      "nodes": [
+        "blockquote",
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "callouts",
+      "md": "> [!NOTE]\n> A note.\n\n> [!TIP]\n> A tip.\n\n> [!IMPORTANT]\n> First.\n>\n> - a list\n> - in it\n\n> [!WARNING]\n> Watch out.\n\n> [!caution]\n> Lower case marker.\n",
+      "saved": "> [!NOTE]\n> A note.\n\n> [!TIP]\n> A tip.\n\n> [!IMPORTANT]\n> First.\n>\n> - a list\n> - in it\n\n> [!WARNING]\n> Watch out.\n\n> [!CAUTION]\n> Lower case marker.",
+      "nodes": [
+        "bulletList",
+        "callout",
+        "doc",
+        "listItem",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "toggles",
+      "md": "<details>\n<summary>Why 5 < 6 & more</summary>\n\nBody **text**.\n\n- a\n- b\n\n<details>\n<summary>Inner</summary>\n\nInner body.\n\n</details>\n\n</details>\n\n<details>\n<summary>Empty</summary>\n\n</details>\n",
+      "saved": "<details>\n<summary>Why 5 &lt; 6 &amp; more</summary>\n\nBody **text**.\n\n- a\n- b\n\n<details>\n<summary>Inner</summary>\n\nInner body.\n\n</details>\n\n</details>\n\n<details>\n<summary>Empty</summary>\n\n</details>",
+      "nodes": [
+        "bulletList",
+        "details",
+        "detailsContent",
+        "detailsSummary",
+        "doc",
+        "listItem",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "bold"
+      ]
+    },
+    {
+      "name": "code",
+      "md": "```ts\nconst a = 1;\n```\n\n```\nno language\n```\n\n````md\n```js\nnested fence\n```\n````\n\n~~~py\nprint(1)\n~~~\n\n    indented code\n",
+      "saved": "```ts\nconst a = 1;\n```\n\n```\nno language\n```\n\n````md\n```js\nnested fence\n```\n````\n\n```py\nprint(1)\n```\n\n```\nindented code\n```",
+      "nodes": [
+        "codeBlock",
+        "doc",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "tables",
+      "md": "| Item | Days | Note |\n| --- | ---: | :---: |\n| **Shoes** | 30 | a \\| b |\n| Bags | 14 | `x` |\n",
+      "saved": "| Item | Days | Note |\n| --- | ---: | :---: |\n| **Shoes** | 30 | a \\| b |\n| Bags | 14 | `x` |",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableHeader",
+        "tableRow",
+        "text"
+      ],
+      "marks": [
+        "bold",
+        "code"
+      ]
+    },
+    {
+      "name": "media-and-breaks",
+      "md": "Line one  \nline two\\\nline three\n\n---\n\n![Remote chart](https://example.com/chart.png)\n\n![Local](/files/a.png \"A title\")\n\n![Alt [with] brackets](https://example.com/b.png)\n",
+      "saved": "Line one  \nline two  \nline three\n\n---\n\n![Remote chart](https://example.com/chart.png)\n\n![Local](/files/a.png \"A title\")\n\n![Alt \\[with\\] brackets](https://example.com/b.png)",
+      "nodes": [
+        "doc",
+        "hardBreak",
+        "horizontalRule",
+        "image",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "raw-html",
+      "md": "<div align=\"center\">\n<b>raw</b>\n</div>\n\n<!-- a comment -->\n\nPress <kbd>Ctrl</kbd> and <br> then.\n\n<details>\nNo summary here.\n</details>\n",
+      "saved": "<div align=\"center\">\n<b>raw</b>\n</div>\n\n<!-- a comment -->\n\nPress <kbd>Ctrl</kbd> and <br> then.\n\n<details>\nNo summary here.\n</details>",
+      "nodes": [
+        "doc",
+        "htmlBlock",
+        "htmlInline",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "page-links",
+      "md": "Read [Holidays](/knowledge/pages/kp-b) and [the space](/knowledge?space=ks-1).\n",
+      "saved": "Read [Holidays](/knowledge/pages/kp-b) and [the space](/knowledge?space=ks-1).",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "link"
+      ]
+    },
+    {
+      "name": "escapes",
+      "md": "Text with \\* star, a\\_b, 2 * 3, \\# not a heading, <3 hearts and \\[x\\] box.\n\n\\1. not a list\n",
+      "saved": "Text with \\* star, a\\_b, 2 \\* 3, # not a heading, &lt;3 hearts and \\[x\\] box.\n\n\\\\1. not a list",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "empty",
+      "md": "",
+      "saved": "",
+      "nodes": [
+        "doc",
+        "paragraph"
+      ],
+      "marks": []
+    },
+    {
+      "name": "line-start-escapes",
+      "md": "1\\. not a list\n\n\\# not a heading\n\n\\- not a bullet\n\n\\> not a quote\n\n\\+ plus\n\n\\--- not a rule\n\n\\[!NOTE\\] not a callout\n\n\\<details> not a toggle\n\n\\| not | a table\n",
+      "saved": "1\\. not a list\n\n\\# not a heading\n\n\\- not a bullet\n\n&gt; not a quote\n\n\\+ plus\n\n--- not a rule\n\n\\[!NOTE\\] not a callout\n\n&lt;details&gt; not a toggle\n\n| not | a table",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "table-breaks",
+      "md": "| A | B |\n| --- | --- |\n| one<br>two | `a|b` |\n",
+      "saved": "| A | B |\n| --- | --- |\n| one<br>two | `a\\|b` |",
+      "nodes": [
+        "doc",
+        "htmlInline",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableHeader",
+        "tableRow",
+        "text"
+      ],
+      "marks": [
+        "code"
+      ]
+    },
+    {
+      "name": "more-escapes",
+      "md": "Line\\\n\\# hash after break\n\n\\=== not setext\n\nTitle  \n\\=====\n\n\\`\\`\\` not a fence\n\n10\\) not a list\n\nA | B\n",
+      "saved": "Line  \n\\# hash after break\n\n=== not setext\n\nTitle  \n\\=====\n\n\\`\\`\\` not a fence\n\n10\\) not a list\n\nA | B",
+      "nodes": [
+        "doc",
+        "hardBreak",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    }
+  ]
+}
