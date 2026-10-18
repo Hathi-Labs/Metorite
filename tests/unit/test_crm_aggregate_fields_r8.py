@@ -1295,3 +1295,130 @@ async def test_org_b_never_adds_to_the_sum_of_org_a(summed, app_engine) -> None:
     body = await _agg(summed, summed.org_a, entity="module:Payment_Received",
                       measure="sum_amount")
     assert body["total"] == _SUM_TOTAL and "99999" not in json.dumps(body)
+
+
+# ── 11. A sum of 5 parts over 30,000 TOASTed rows (CRM-Q32-9a fix round) ────
+#
+# Each ``fields -> :key`` on the stored row reads the whole TOASTed jsonb
+# again. Before the fix, a sum of 5 parts read it 40 times a row: 1.77 s
+# against 0.28 s for a plain field on the scratch database (2026-10-18),
+# and 7.1 s against 1.36 s on the box of the SQL review. With one detoast a
+# row the sum took 0.34 s. The bound is a ratio to the plain field on the
+# same box, so it holds on a slow CI box and on a fast one.
+
+#: The most that a sum of 5 may cost against one plain field. Measured 1.2.
+#: Before the fix it was 6.3.
+SUM_RATIO_BOUND = 3.0
+#: An absolute bound under the 10 s statement timeout, for a slow box.
+SUM_BOUND_S = 5.0
+_TOASTED = 30_000
+_TOASTED_SQL = (
+    "INSERT INTO crm_module_records (organization_id, module, ext_source, ext_id, name, "
+    "owner_email, fields) SELECT CAST(:o AS uuid), 'Ledger', 'zoho', 't' || g, 'T ' || g, "
+    "'rep' || (g % 3) || '@q329.test', "
+    "(SELECT jsonb_object_agg('Field_' || k, md5(g::text || '-' || k)) "
+    " FROM generate_series(1, 60) k) || jsonb_build_object("
+    "'A', CASE WHEN g % 10 < 3 THEN NULL ELSE to_jsonb(g % 1000) END, "
+    "'B', CASE WHEN g % 7 = 0 THEN to_jsonb(CAST(g % 100 AS text)) ELSE to_jsonb(g % 500) END, "
+    "'C', to_jsonb(g % 50), 'D', CASE WHEN g % 3 = 0 THEN NULL ELSE to_jsonb(1) END, "
+    "'E', to_jsonb(g % 9)) FROM generate_series(1, :n) g"
+)
+
+
+async def _best_of(p: Any, org: str, queries: dict[str, dict], runs: int = 3,
+                   ) -> dict[str, tuple[dict, float]]:
+    """The best time of *runs* calls of each query, through ONE app, engine
+    and client, after one warm-up call of each. Name → (body, seconds)."""
+    import httpx
+    from acb_auth import get_current_user
+    from acb_common.db import bind_tenant, clear_tenant, release_tenant
+    from fastapi import FastAPI
+    from gateway.routes import crm as crm_package
+
+    user = _admin(org)
+
+    async def _caller() -> Any:
+        bind_tenant(user.organization_id)
+        return user
+
+    app = FastAPI()
+    app.include_router(crm_package.router)
+    app.dependency_overrides[get_current_user] = _caller
+    out: dict[str, tuple[dict, float]] = {}
+    scope = clear_tenant()
+    try:
+        async with (
+            tenant_engine_scope(p.app_url.render_as_string(hide_password=False)),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://crm.test",
+            ) as client,
+        ):
+            for name, query in queries.items():
+                warm = await client.get(_path(entity="module:Ledger", **query))
+                assert warm.status_code == 200, warm.text
+                best = float("inf")
+                for _ in range(runs):
+                    start = time.perf_counter()
+                    res = await client.get(_path(entity="module:Ledger", **query))
+                    best = min(best, time.perf_counter() - start)
+                    assert res.status_code == 200, res.text
+                out[name] = (res.json(), best)
+    finally:
+        release_tenant(scope)
+    return out
+
+
+async def test_a_sum_of_five_over_toasted_rows_costs_about_one_field(
+    summed, app_engine,
+) -> None:
+    """Fix round P1: the sum reads each row once, so 5 parts cost about one
+    plain field. The statement joins the detoasted copy once."""
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    a = summed.org_a
+    keys = list("ABCDE")
+    with summed.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_source_profiles SET profile = jsonb_set(profile, '{modules}', "
+            "(profile -> 'modules') || CAST(:m AS jsonb)) WHERE organization_id = "
+            "CAST(:o AS uuid)"), {"o": a, "m": json.dumps([_module("Ledger")])})
+        c.execute(text(_TOASTED_SQL), {"o": a, "n": _TOASTED})
+        c.execute(text("ANALYZE crm_module_records"))
+        c.execute(text("DELETE FROM crm_mapping_plans WHERE organization_id = "
+                       "CAST(:o AS uuid)"), {"o": a})
+        c.execute(text(
+            "INSERT INTO crm_mapping_plans (organization_id, version, state, rules, "
+            "created_by, approved_by, approved_at) VALUES (CAST(:o AS uuid), 1, "
+            "'approved', CAST(:r AS jsonb), 'r8', 'r8', now())"),
+            {"o": a, "r": json.dumps([{
+                "kind": "catalogue", "module": "Ledger", "purpose": "payment_out",
+                "amount": keys, "by": {"purpose": "admin", "amount": "admin"}}])})
+    _defs(summed, a, "module:Ledger", [(k, "currency", None, False, False) for k in keys])
+    seen: list[str] = []
+
+    def _record_sql(_conn, _cursor, statement, *_args) -> None:
+        seen.append(statement)
+
+    event.listen(Engine, "before_cursor_execute", _record_sql)
+    try:
+        timed = await _best_of(summed, a, {
+            "plain": {"measure": "sum", "field": "A"},
+            "sum5": {"measure": "sum_amount", **{"field.@amount": "0"}},
+            "sum5_total": {"measure": "sum_amount"},
+        })
+    finally:
+        event.remove(Engine, "before_cursor_execute", _record_sql)
+    plain_body, plain_s = timed["plain"]
+    sum_body, sum_s = timed["sum5_total"]
+    print("\nCRM-Q32-9a 30,000 TOASTed rows, seconds:",
+          {name: round(seconds, 3) for name, (_b, seconds) in timed.items()})
+    assert plain_body["total"] == 10_521_000
+    assert (sum_body["total"], sum_body["values"]) == (18_023_894, _TOASTED)
+    # The driver gets $n placeholders, so the alias names a read of a sum.
+    totals = [s for s in seen if "crm_module_records" in s and " AS value" in s]
+    summed_reads = [s for s in totals if "agf_d.agf_fields" in s]
+    assert summed_reads and all(s.count("CROSS JOIN LATERAL") == 1 for s in summed_reads)
+    assert any("LATERAL" not in s for s in totals), "the plain field joins nothing"
+    assert sum_s < SUM_BOUND_S, sum_s
+    assert sum_s < SUM_RATIO_BOUND * plain_s, (sum_s, plain_s)
