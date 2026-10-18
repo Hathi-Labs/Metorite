@@ -44,7 +44,7 @@ import inspect
 import json
 import math
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from acb_skills import company_search_tools as cst
@@ -96,9 +96,10 @@ def world(apps, monkeypatch):  # noqa: F811 — a fixture
     return apps
 
 
-def run(user: Any, q: str = "acme", apps: str | None = None, k: int = 5,
+def run(user: Any, q: str = "acme", first: str | None = None, k: int = 5,
         after: str | None = None) -> dict:
-    kwargs: dict[str, Any] = {"q": q, "apps": apps, "k": k, "user": user}
+    """The route, called directly. *first* is its ``apps`` parameter."""
+    kwargs: dict[str, Any] = {"q": q, "apps": first, "k": k, "user": user}
     if after is not None:
         kwargs["after"] = after
     return asyncio.run(company.company_search(**kwargs))
@@ -190,7 +191,8 @@ def tasks(apps, monkeypatch):  # noqa: F811 — a fixture
     import gateway.routes.projects.search as projects_search
 
     class _Tasks:
-        rows: list[dict[str, Any]] = []
+        def __init__(self) -> None:
+            self.rows: list[dict[str, Any]] = []
 
         async def __call__(self, **kw: Any) -> dict[str, Any]:
             return {"rows": list(self.rows)}
@@ -324,7 +326,6 @@ class TestTheReviewFactor:
 
 class TestAfter:
     def test_after_drops_an_older_hit(self, world, recency):
-        apps = world
         recency(True)
         before = {h["id"] for h in run(member(*ALL))["hits"]}
         assert {"m-1", "d-1", "w-1", "k-1"} <= before  # non-vacuity
@@ -337,21 +338,19 @@ class TestAfter:
         assert "p-1" in kept
 
     def test_email_and_whatsapp_filter_in_their_own_sql(self, world, recency):
-        apps = world
         recency(True)
         run(member(*ALL), after="2026-10-03")
-        email = next(kw for n, _, kw in apps.calls if n == "email")
-        whatsapp = next(kw for n, _, kw in apps.calls if n == "whatsapp")
+        email = next(kw for n, _, kw in world.calls if n == "email")
+        whatsapp = next(kw for n, _, kw in world.calls if n == "whatsapp")
         assert email["received_after"] == "2026-10-03T00:00:00+00:00"
         assert whatsapp["sent_after"] == datetime(2026, 10, 3, tzinfo=UTC)
 
     def test_a_bad_date_is_a_422(self, world, recency):
-        apps = world
         recency(True)
         with pytest.raises(HTTPException) as e:
             run(member(*ALL), after="last week")
         assert e.value.status_code == 422
-        assert apps.calls == []
+        assert world.calls == []
 
     def test_the_tool_sends_after(self, monkeypatch):
         seen: list[dict[str, Any]] = []
@@ -369,7 +368,6 @@ class TestAfter:
 
 class TestTheAnswerWithTheFlag:
     def test_each_hit_carries_its_stamp(self, world, recency):
-        apps = world
         recency(True)
         hits = {h["id"]: h for h in run(member(*ALL))["hits"]}
         for hit in hits.values():
@@ -383,9 +381,8 @@ class TestTheAnswerWithTheFlag:
         assert hits["p-1"]["stamp"] is None
 
     def test_the_answer_names_what_it_searched_and_skipped(self, world, recency):
-        apps = world
         recency(True)
-        apps.fail["whatsapp"] = TimeoutError()
+        world.fail["whatsapp"] = TimeoutError()
         answer = run(member(*ALL))
         assert answer["searched"] == ["tasks", "email", "people", "crm", "artifacts",
                                       "knowledge"]
@@ -396,7 +393,6 @@ class TestTheAnswerWithTheFlag:
 
 class TestFlagOffIsByteIdentical:
     def test_the_answer_ignores_after_and_keeps_eight_keys(self, world, recency):
-        apps = world
         recency(False)
         plain = run(member(*ALL))
         assert set(plain) == {"query", "hits", "skipped"}
@@ -407,7 +403,7 @@ class TestFlagOffIsByteIdentical:
         assert json.dumps(with_after) == json.dumps(plain)
         # Off, `after` is not even read: a bad value is not a 422.
         assert json.dumps(run(member(*ALL), after="not a date")) == json.dumps(plain)
-        for name, _, kw in apps.calls:
+        for name, _, kw in world.calls:
             if name == "email":
                 assert kw["received_after"] is None
             if name == "whatsapp":
@@ -440,7 +436,7 @@ class TestFlagOffIsByteIdentical:
 # ── The tool's answer with the flag on (§4.3) ───────────────────────────────
 
 class TestTheToolAnswer:
-    BODY = {
+    BODY: ClassVar[dict[str, Any]] = {
         "query": "launch",
         "searched": ["tasks", "email", "crm", "knowledge"],
         "skipped": ["whatsapp"],
