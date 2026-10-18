@@ -302,9 +302,12 @@ class _CopilotAgent:
 
 @pytest.fixture
 def questions_on(monkeypatch):
+    """The box lists every org, and the run belongs to ``org-a``."""
+    import orchestrator._tool_injection as ti
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "crm_questions_orgs", "*", raising=False)
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: "org-a")
 
 
 async def test_a_box_with_the_list_empty_sends_no_request(monkeypatch) -> None:
@@ -504,3 +507,64 @@ def test_both_real_configs_name_the_tool() -> None:
     for agent_dir in ("agent-orchestrator", "agent-crm"):
         scope = ti._resolve_injected_scope(_config(agent_dir)["tool_scope"])
         assert scope is not None and "org_facts" in scope, agent_dir
+
+
+# ── Follow-up: org_facts follows the run's org, not only the box ────────────
+
+
+def _copilot_with_tools() -> Any:
+    agent = _CopilotAgent()
+    agent._default_options["system_message"] = {"mode": "append", "content": "Sys."}
+    return agent
+
+
+@pytest.mark.parametrize(("run_org", "held"), [("org-a", False), ("other-org", True)])
+async def test_an_org_off_a_listed_box_gets_no_org_facts_and_no_prompt_word(
+    monkeypatch, run_org: str, held: bool,
+) -> None:
+    """A box that lists "other-org": a run of org-a holds no ``org_facts``,
+    its addendum names no ``org_facts``, and it sends no facts read. A run
+    of other-org holds the tool and the section."""
+    pytest.importorskip("agent_framework")
+    import orchestrator._tool_injection as ti
+    from acb_common import get_settings
+    from acb_skills import org_facts_tools as tools
+
+    monkeypatch.setattr(get_settings(), "crm_questions_orgs", "other-org", raising=False)
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: run_org)
+    ti._build_injected_tools_addendum.cache_clear()
+    reads: list[int] = []
+
+    async def rows():
+        reads.append(1)
+        return [_row("revenue", "Revenue means billed.")]
+
+    monkeypatch.setattr(tools, "crm_facts_for_run", rows)
+    cfg = _config("agent-orchestrator")
+    agent = _copilot_with_tools()
+    run_tools = ti._inject_agent_tools(
+        [agent], tool_scope=cfg["tool_scope"], agent_name=cfg["name"], agent_config=cfg,
+        no_egress=False)
+    run_tools = await ti._add_crm_facts_block([agent], run_tools)
+    prompt = agent._default_options["system_message"]["content"]
+    assert ("org_facts" in run_tools) is held
+    assert ("org_facts" in _pool_names([agent])) is held
+    assert ("org_facts(" in prompt) is held
+    assert ("## CRM facts" in prompt) is held
+    assert reads == ([1] if held else [])
+    ti._build_injected_tools_addendum.cache_clear()
+
+
+def test_the_list_grammar_of_the_run_side() -> None:
+    from acb_common import get_settings
+    from acb_skills.crm_tools import questions_org_on
+
+    settings = get_settings()
+    old = settings.crm_questions_orgs
+    try:
+        for raw, org, on in (("", "a1", False), ("*", "a1", True), ("*", None, False),
+                             ("b2, A1", "a1", True), ("b2", "a1", False)):
+            settings.crm_questions_orgs = raw
+            assert questions_org_on(org) is on, (raw, org)
+    finally:
+        settings.crm_questions_orgs = old

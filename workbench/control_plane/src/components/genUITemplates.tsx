@@ -53,24 +53,7 @@ import {
 } from "@/lib/report";
 import { resolveIcon } from "@/lib/icons";
 import { hasMoreToTheRight } from "@/lib/scrollCue";
-import {
-  PLAN_EDIT_COLS,
-  type PlanRow,
-  UNASSIGNED_LABEL,
-  afterCount,
-  afterOptions,
-  blankRow,
-  isMarked,
-  isUnassigned,
-  markLine,
-  ownerSummary,
-  planFacts,
-  planIncomplete,
-  planRowsFrom,
-  planSubmit,
-  waitsOnName,
-  withAfter,
-} from "@/app/projects/lib/planCard";
+import PlanCardBody from "@/components/PlanCardBody";
 import Badge from "@/components/ui/Badge";
 import RecommendedBadge, { RECOMMENDED_RING } from "@/components/RecommendedBadge";
 import { pickedFromAnswer } from "@/lib/askAnswers";
@@ -82,7 +65,6 @@ import { fieldSpec, formatCardDate } from "@/lib/cardFields";
 import {
   CollapsibleCardBody,
   CollapsibleCardHeader,
-  CollapsibleSection,
   useCardFold,
 } from "@/components/ui/Collapsible";
 import Button from "@/components/ui/Button";
@@ -216,8 +198,8 @@ export const TEMPLATE_CATALOG: TemplateSpec[] = [
   },
   {
     name: "planCard",
-    summary: "An editable project plan (title, owner, effort, start, due, after per task, with a priority score; the owner's fit, hours and marks read-only) that submits the edited rows back — pair with hitl. An empty owner is an unassigned task: no fit, no hours.",
-    data: "{ title?, description?, submitLabel?, project:{ name, parent?, description? }, tasks:[{ key, title, owner?, effort_mins, start?, due, after?:[key], important?:bool, leveraged?:bool, impact?, urgency?, effort?, priority?, fit?, hours?, marks?:[string], warnings?:[string] }], capacity?, warnings?:[string], risks?:[string] }",
+    summary: "An editable project plan (title, owner, effort, start, due, after per task, with a priority score in the open row; the owner's fit, hours and marks read-only) that submits the ticked rows back — pair with hitl. An empty owner is an unassigned task: no fit, no hours. A phase groups rows under a fold, and is never sent back.",
+    data: "{ title?, description?, submitLabel?, project:{ name, parent?, description? }, tasks:[{ key, title, owner?, effort_mins, start?, due, after?:[key], phase?, important?:bool, leveraged?:bool, impact?, urgency?, effort?, priority?, fit?, hours?, marks?:[string], warnings?:[string] }], capacity?, warnings?:[string], risks?:[string] }",
   },  {
     name: "chart",
     summary: "A live chart in Metorite's chart language (13 kinds), with a tooltip and a legend. The WhatsApp bot sends the same spec as an image.",
@@ -1686,162 +1668,20 @@ function ReportCard({ data }: { data: Data }) {
   );
 }
 
-/** The four short fields share one wrapping grid under the title. The rail
- *  beside the board is about 380px wide, and a five-column table there cut
- *  the title and the owner to a few letters (S7d visual review). */
-const PLAN_GRID: React.CSSProperties = {
-  display: "grid", gap: 6, marginTop: 6,
-  gridTemplateColumns: "repeat(auto-fit, minmax(7.5rem, 1fr))",
-};
-const PLAN_WRAP: React.CSSProperties = { overflowWrap: "anywhere" };
-
-/** A warning tint behind foreground text. Warning TEXT on a light card is too
- *  faint to read (S7c visual review), so the tint carries the tone. */
-const MARK_BOX: React.CSSProperties = {
-  ...CELL, fontSize: TYPE.caption, borderRadius: 6, padding: "3px 8px", marginTop: 2,
-  background: "color-mix(in srgb, var(--warning) 14%, transparent)",
-};
-
+/**
+ * The plan card (WS-27bm S7d; redesigned read-first, owner 2026-10-18). The
+ * title row is the chat card's one header, with a short title, because the
+ * card waits on the member. The project's name is in the body's summary
+ * line, where a click renames it. `PlanCardBody` draws the rest, and its
+ * header comment lists the owner's nine changes. `@container` lets a row
+ * be one line in a wide column and a small card in a narrow one.
+ */
 function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
-  const project = (data.project ?? {}) as Data;
-  const [name, setName] = useState(str(project.name));
-  const [rows, setRows] = useState<PlanRow[]>(() => planRowsFrom(data.tasks));
-  const [submitted, setSubmitted] = useState(false);
-  const risks = arr(data.risks).map((r) => str(r)).filter(Boolean);
-  const warnings = arr(data.warnings).map((w) => str(w)).filter(Boolean);
-  const capacity = str(data.capacity);
-  const setCell = (i: number, key: keyof PlanRow, v: unknown) =>
-    setRows((p) => p.map((r, k) => (k === i ? { ...r, [key]: v } : r)));
-  const drop = (i: number) => setRows((p) => p.filter((_, k) => k !== i));
-  const add = () => setRows((p) => [...p, blankRow(p)]);
-  const blocked = planIncomplete(name, rows);
-  const owners = ownerSummary(rows);
-  const submit = () => {
-    if (!ctx?.onAction || submitted || blocked) return;
-    setSubmitted(true);
-    const label = str(data.submitLabel ?? data.title, "Plan");
-    ctx.onAction(`${label} — ${JSON.stringify(planSubmit(project, name, rows))}`);
-  };
   return (
-    <div style={CARD_BOX}>
-      <TemplateHead icon="list-todo" title={str(data.title, "Plan")} gap={4} />
+    <div data-plan-card="" className="@container min-w-0" style={CARD_BOX}>
+      <TemplateHead icon="list-todo" title="Plan" gap={8} />
       <TemplateBody>
-      {data.description != null && <div style={{ ...MUTED, marginBottom: 10 }}><GenUiText text={str(data.description)} /></div>}
-      <label style={{ ...MUTED, display: "block", marginBottom: 10 }}>
-        Project name
-        <input value={name} onChange={(e) => setName(e.target.value)} disabled={submitted}
-          style={{ ...FIELD_INPUT_STYLE, marginTop: 4 }} />
-      </label>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {rows.map((r, i) => {
-          const options = afterOptions(r, rows);
-          const facts = planFacts(r, rows);
-          const [titleCol, ...shortCols] = PLAN_EDIT_COLS;
-          // §26: an empty owner is an unassigned task. The field says so in
-          // its placeholder, and the member can type an owner over it.
-          const nobody = isUnassigned(r);
-          const field = (c: (typeof PLAN_EDIT_COLS)[number]) => {
-            const owner = c.key === "owner";
-            return (
-              <label key={c.key} style={{ ...MUTED, display: "block", minWidth: 0 }}>
-                {c.label}
-                <input type={c.type} value={str(r[c.key])} disabled={submitted}
-                  placeholder={owner ? UNASSIGNED_LABEL : undefined}
-                  data-plan-unassigned={owner && nobody ? "" : undefined}
-                  onChange={(e) => setCell(i, c.key, c.type === "number" ? num(e.target.value) : e.target.value)}
-                  className={owner ? "placeholder:text-muted-foreground" : undefined}
-                  style={{ ...FIELD_INPUT_STYLE, padding: "5px 8px", marginTop: 2 }} />
-              </label>
-            );
-          };
-          return (
-            <div key={r.key} style={{ borderTop: "1px solid var(--border)", paddingTop: 8 }}>
-              <div style={{ display: "flex", alignItems: "flex-end", gap: 6 }}>
-                <div style={{ flex: 1, minWidth: 0 }}>{field(titleCol)}</div>
-                {r.priority != null && (
-                  <span title="Priority score, a sorting aid" style={{ ...MUTED, paddingBottom: 7,
-                    fontVariantNumeric: "tabular-nums" }}>{str(r.priority)}</span>
-                )}
-                {!submitted && (
-                  <Button variant="ghost" size="icon-xs" icon="X" onClick={() => drop(i)}
-                    aria-label="Remove task" className="mb-1" />
-                )}
-              </div>
-              <div style={PLAN_GRID}>{shortCols.map(field)}</div>
-              {/* WS-27bm S10: what this row waits on is an input. The list
-                  leaves out every row that waits on this one, so a tick
-                  cannot make a cycle. The server still refuses one. */}
-              {options.length === 0 && rows.length > 1 && (
-                <div className="mt-1.5 text-[11px] text-muted-foreground" style={PLAN_WRAP}>
-                  Waits on: none. Every other task waits on this one.
-                </div>
-              )}
-              {options.length > 0 && (
-                <CollapsibleSection label="Waits on" count={afterCount(r, rows)} defaultOpen={false}
-                  ariaLabel={waitsOnName(r)} className="mt-1.5">
-                  <div className="flex flex-col gap-1">
-                    {options.map((o) => (
-                      <label key={o.key} className="flex min-w-0 items-center gap-2 text-xs text-foreground">
-                        <Checkbox size="sm" checked={r.after.includes(o.key)} disabled={submitted}
-                          onChange={(e) => setCell(i, "after", withAfter(r, rows, o.key, e.target.checked))} />
-                        <span style={PLAN_WRAP}>{o.title.trim() || "Untitled task"}</span>
-                      </label>
-                    ))}
-                  </div>
-                </CollapsibleSection>
-              )}
-              {facts.length > 0 && <div style={{ ...MUTED, ...PLAN_WRAP, marginTop: 4 }}>{facts.join(" · ")}</div>}
-              {isMarked(r) && (
-                <div style={{ ...MARK_BOX, ...PLAN_WRAP, display: "flex", alignItems: "flex-start", gap: 4 }}>
-                  <Icon name="TriangleAlert" size={12} className="mt-px shrink-0" />
-                  <span>{markLine(r)}</span>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-      {!submitted && (
-        <Button variant="ghost" size="sm" icon="Plus" onClick={add} className="mt-1.5">
-          Add a task
-        </Button>
-      )}
-      {owners && <div style={{ ...MUTED, marginTop: 8 }} data-plan-owners="">{owners}</div>}
-      {capacity && <div style={{ ...MUTED, marginTop: 8 }}>{capacity}</div>}
-      {warnings.length > 0 && (
-        <div style={{ marginTop: 10, borderRadius: 10, padding: "8px 10px",
-          background: "color-mix(in srgb, var(--warning) 12%, transparent)" }}>
-          <div style={{ ...MUTED, fontWeight: 600, marginBottom: 4 }}>Order warnings</div>
-          <ul className="ml-4 list-disc space-y-0.5 marker:text-muted-foreground" style={CELL}>
-            {warnings.map((w, i) => <li key={i}><GenUiText text={w} /></li>)}
-          </ul>
-        </div>
-      )}
-      {risks.length > 0 && (
-        <div style={{ marginTop: 10, borderRadius: 10, padding: "8px 10px",
-          background: "color-mix(in srgb, var(--warning) 12%, transparent)" }}>
-          <div style={{ ...MUTED, fontWeight: 600, marginBottom: 4 }}>How this plan fails</div>
-          <ul className="ml-4 list-disc space-y-0.5 marker:text-muted-foreground" style={CELL}>
-            {risks.map((r, i) => <li key={i}><GenUiText text={r} /></li>)}
-          </ul>
-        </div>
-      )}
-      {submitted ? (
-        <div role="status" className="mt-3 flex items-center gap-2">
-          <Badge tone="success" icon="Check">{PICKER_SENT}</Badge>
-          <span style={MUTED}>A confirmation card follows.</span>
-        </div>
-      ) : (
-        <Button size="sm" onClick={submit} disabled={!ctx?.onAction || !!blocked} className="mt-3">
-          {str(data.submitLabel, "Review plan")}
-        </Button>
-      )}
-      {!submitted && (
-        <div style={{ ...MUTED, marginTop: 6 }}>
-          {blocked ? `${blocked} ` : ""}
-          A confirmation card follows. Nothing is created until you approve it. A mark warns and never blocks.
-        </div>
-      )}
+        <PlanCardBody data={data} onAction={ctx?.onAction} answered={ctx?.answered ?? ""} />
       </TemplateBody>
     </div>
   );
