@@ -5919,8 +5919,11 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-18 · WS-54 Batch A fix round 2, item 5. Widened in fix round 3.
 
 ### H-358 · Let the dev account turn feature flags on and off on the staging box · [OWNER]
-- **Check:** as `dev` on the dev box (`srv1747539`), `sudo -n /usr/local/sbin/acb-staging-flag --list`
+- **Check:** as `dev` on the dev box (`srv1747539`), `sudo -n /opt/acb/app/deploy/hostinger/acb-flag list`
   prints the flags with no password prompt. If it does, delete this entry.
+  (Built as `deploy/hostinger/acb-flag`, one tool for staging and production,
+  2026-10-18. The sudoers line points at the deployed checkout, so the tool
+  updates with each deploy.)
 - **Why.** On 2026-10-18 the owner turned Knowledge on for every org in
   production, then looked at `dev.metorite.com` and did not see it. Staging
   reads its own `/opt/acb/app/.env`, which `acb` owns with mode 600, and the
