@@ -7,10 +7,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   KnowledgeError,
+  archivePage,
   createPage,
   getPage,
   listPages,
   listSpaces,
+  moveBody,
+  movePage,
   publishPage,
   revertBody,
   revertPage,
@@ -54,6 +57,35 @@ describe("the revert payload", () => {
     expect(calls[0].url).toBe("/api/knowledge/pages/p1/revert");
     expect(calls[0].init?.method).toBe("POST");
     expect(JSON.parse(String(calls[0].init?.body))).toEqual({ version: 1 });
+  });
+});
+
+describe("the move payload (KB-2e)", () => {
+  it("sends the place only, for a reorder", async () => {
+    const calls = stubFetch(200, { id: "p1", position: 2 });
+    await movePage("p1", { position: 2 });
+    expect(calls[0].url).toBe("/api/knowledge/pages/p1/move");
+    expect(calls[0].init?.method).toBe("POST");
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ position: 2 });
+  });
+
+  it("sends a null parent for the root, and keeps it", async () => {
+    const calls = stubFetch(200, { id: "p1", version: 3 });
+    await movePage("p1", { parent_id: null, position: 0 });
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ parent_id: null, position: 0 });
+  });
+
+  it("refuses a place the gateway would refuse (ge=0, an int)", () => {
+    expect(() => moveBody({ position: -1 })).toThrow(RangeError);
+    expect(() => moveBody({ position: 0.5 })).toThrow(RangeError);
+    expect(moveBody({ position: 0 })).toEqual({ position: 0 });
+  });
+
+  it("archives through the page's archive route", async () => {
+    const calls = stubFetch(200, { id: "p1", state: "archived" });
+    await archivePage("p1");
+    expect(calls[0].url).toBe("/api/knowledge/pages/p1/archive");
+    expect(calls[0].init?.method).toBe("POST");
   });
 });
 

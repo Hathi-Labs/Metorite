@@ -122,7 +122,7 @@ import {
   resolvePipeline,
   showPicker,
 } from "./lib/pipelines";
-import { compactMoney } from "./lib/format";
+import { useCompactMoney } from "./lib/useCompactMoney";
 import { setRefusalSink, useCrmStore } from "./lib/store";
 import type { EntitySlug, Lead, Status } from "./lib/types";
 import {
@@ -191,6 +191,7 @@ type MirrorContext = {
 
 function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   const toast = useToast();
+  const compact = useCompactMoney();
   const searchParams = useSearchParams();
   const view = useMemo(
     () => parseView(searchParams.toString()),
@@ -728,7 +729,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
         // "₹4.2Cr in the pipeline" is what is on the table and "₹1.6Cr
         // weighted" is what the forecast believes, and a line that showed
         // only one of them would be answering a different question.
-        `${totals.count} open deals · ${compactMoney(totals.amount)} in the pipeline · ${compactMoney(totals.weighted)} weighted`
+        `${totals.count} open deals · ${compact(totals.amount)} in the pipeline · ${compact(totals.weighted)} weighted`
       : boardOn
         ? `${leadCount} leads by status`
         : view.tab === "settings"

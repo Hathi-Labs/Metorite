@@ -727,3 +727,40 @@ async def test_the_sweep_skips_a_page_whose_members_left(
     result = await _bound(kb, None, sweeping.run_tick)
     assert result.no_member == 1 and embedder.calls == []
     assert not any(r.has_vector for r in _chunks(kb, page))
+
+
+# ── WS-61 CX-1: the review factor on the company path (company_context.md §4.2)
+
+async def test_a_page_past_its_review_date_ranks_below_a_current_one(
+        kb, app_engine, monkeypatch, roomy,  # noqa: F811
+) -> None:
+    """Two pages with the same text. The page that the fusion puts first gets
+    a review date in the past. With ``CONTEXT_RECENCY`` on it goes second on
+    ``GET /search/company``. ``/knowledge/search`` keeps today's order."""
+    from acb_common import get_settings
+
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), kb.org_a, CAPABILITY)
+    space = await _space(kb, admin, "Policies", [{"subject": "org", "level": "read"}])
+    body = "The warranty covers the nozzle for twelve months."
+    pages = [await _page(kb, admin, space, "Warranty", body) for _ in range(2)]
+    member = _principal(_address("m"), kb.org_a)
+
+    first, second = _knowledge_ids(await _company(kb, member, "warranty nozzle"))
+    assert {first, second} == set(pages)
+    with kb.admin_engine.begin() as c:
+        c.execute(text("UPDATE kb_pages SET review_at = now() - interval '2 days' "
+                       "WHERE id = CAST(:p AS uuid)"), {"p": first})
+
+    # Off: the review date changes nothing, on either path.
+    assert _knowledge_ids(await _company(kb, member, "warranty nozzle")) == [first, second]
+    assert _found(await _search(kb, member, "warranty nozzle")) == [first, second]
+
+    monkeypatch.setattr(get_settings(), "context_recency", True, raising=False)
+    answer = await _company(kb, member, "warranty nozzle")
+    assert _knowledge_ids(answer) == [second, first]
+    assert all(h["stamp"] for h in answer["hits"] if h["app"] == "knowledge")
+    # The member's own search keeps the fusion of KB-3, and its keys.
+    plain = await _search(kb, member, "warranty nozzle")
+    assert _found(plain) == [first, second]
+    assert "review_at" not in plain["hits"][0]

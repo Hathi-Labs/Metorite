@@ -7,7 +7,7 @@ Spec: ``project-docs/specs/knowledge_base.md`` §4.2, §5.3 and §5.4.
     POST /knowledge/pages                             make a draft
     PATCH /knowledge/pages/{id}                       edit, one version
     POST /knowledge/pages/{id}/publish                publish
-    POST /knowledge/pages/{id}/move                   change the space or the parent
+    POST /knowledge/pages/{id}/move                   change the space, the parent or the place
     POST /knowledge/pages/{id}/archive                archive (manage on the space)
     POST /knowledge/pages/{id}/restore                archived back to its prior state (manage)
     POST /knowledge/pages/{id}/revert                 a new version with an old body
@@ -27,6 +27,18 @@ which runs after the session closes, and only when ``KNOWLEDGE_EMBED`` names
 the org. The job gets the shas that this write inserted, so it embeds each
 chunk once, and the acting member, which it binds for the embed door
 (KB-3c, H-330).
+
+The place of a page among its siblings is ``kb_pages.position`` (KB-2e,
+§21.5). A create puts the page last. A move with ``position`` renumbers the
+new siblings 0 to n under the tree lock of the space (``_lock_trees``). A
+move that changes only the place writes no version, does not change
+``updated_at`` and does not reindex, because a place in the tree is not a
+change in substance.
+
+⚠️ The stored position counts hidden siblings, so it never reaches a caller.
+Each answer carries the rank among the siblings the caller sees (``_rank``,
+and the grouping in ``list_pages``). The ``position`` of a move counts the
+same visible siblings.
 """
 
 from __future__ import annotations
@@ -49,6 +61,13 @@ MAX_BODY = 200_000
 #: The most rows one list returns.
 MAX_LIST = 500
 
+#: The highest place a move names. A higher one is the end of the list.
+MAX_POSITION = 100_000
+
+#: One tree write at a time in one space (KB-2e). The key names the org and
+#: the space, so two spaces never wait for each other.
+_TREE_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"
+
 
 class PageCreate(BaseModel):
     space_id: str | None = Field(None, max_length=64)
@@ -68,6 +87,8 @@ class PagePatch(BaseModel):
 class PageMove(BaseModel):
     space_id: str | None = Field(None, max_length=64)
     parent_id: str | None = Field(None, max_length=64)
+    #: The 0-based place among the new siblings that the caller sees (KB-2e).
+    position: int | None = Field(None, ge=0, le=MAX_POSITION)
 
 
 class PageRevert(BaseModel):
@@ -122,15 +143,104 @@ async def _written(
         db, user, row, title=row.title, body_md=row.body_md, reason=reason,
     )
     org = core.org_of(user)
+    rank = await _rank(db, user, row)
     reindexed = await kb_index.reindex_page(db, row, organization_id=org)
     if (background is not None and reindexed.new_shas
             and flags.knowledge_embed_allowed(org)):
         background.add_task(
             kb_index.embed_pending, org, str(row.id), reindexed.new_shas, user.email,
         )
-    out = core.page_dict(row)
+    out = core.page_dict(row, position=rank)
     out["version"] = version
     return out
+
+
+async def _lock_trees(db: Any, user: UserContext, *space_ids: str) -> None:
+    """Hold the tree lock of each space until the transaction ends (KB-2e).
+
+    ⚠️ Take them BEFORE a page row lock. A renumber writes the rows of the
+    siblings, so a move that held its own row and then waited here could
+    meet a move that holds this lock and waits for that row.
+
+    ⚠️ A move to another space takes BOTH trees, in sorted order. With one
+    lock each, a move from S1 to S2 and a move from S2 to S1 at once each
+    renumber a tree that holds the other's locked row, and Postgres ends
+    one of them as a deadlock.
+    """
+    org = core.org_of(user)
+    for space_id in sorted(set(space_ids)):
+        await db.execute(text(_TREE_LOCK_SQL), {"key": f"kb_tree:{org}:{space_id}"})
+
+
+async def _visible_siblings(
+    db: Any, user: UserContext, space_id: str, parent_id: str | None,
+    keep: str | None = None,
+) -> list[str]:
+    """The ids of the live siblings the caller sees, in the order of the tree.
+
+    *keep* names a page that stays in the list in any state, so an archived
+    page still gets its own rank in the answer of its archive.
+    """
+    vis, vparams = core.visible_pages_clause(user, "p")
+    params: dict[str, Any] = {**vparams, "vs_sid": space_id, "vs_keep": keep}
+    if parent_id is None:
+        under = "p.parent_id IS NULL"
+    else:
+        under = "p.parent_id = CAST(:vs_parent AS uuid)"
+        params["vs_parent"] = parent_id
+    rows = (await db.execute(
+        text(f"SELECT p.id, p.position, p.title, p.created_at FROM kb_pages p WHERE {vis} "
+             f"AND p.space_id = CAST(:vs_sid AS uuid) AND {under} "
+             "AND (p.state <> 'archived' OR p.id = CAST(:vs_keep AS uuid))"),
+        params,
+    )).fetchall()
+    return [str(r.id) for r in sorted(rows, key=core.sibling_key)]
+
+
+async def _rank(db: Any, user: UserContext, row: Any) -> int | None:
+    """The place of *row* among the siblings the caller sees."""
+    parent = str(row.parent_id) if row.parent_id else None
+    ids = await _visible_siblings(db, user, str(row.space_id), parent, keep=str(row.id))
+    return ids.index(str(row.id)) if str(row.id) in ids else None
+
+
+async def _place(
+    db: Any, user: UserContext, page_id: str, space_id: str,
+    parent_id: str | None, position: int | None,
+) -> int:
+    """Put a page at *position* among its siblings, renumber them, return its rank.
+
+    The caller holds the tree lock of *space_id*, and the page already sits
+    under *parent_id*. *position* counts among the siblings the caller sees,
+    because the tree the member drags shows only those. The page goes in
+    before the sibling that holds that place. With no *position*, or a place
+    past the last one, the page goes last. Then every sibling, a hidden one
+    too, gets 0 to n in that order. The UPDATE writes ``position`` only, so
+    no sibling gets a version or a new ``updated_at``. It skips a row that
+    left this tree meanwhile. The answer is the rank among the visible
+    siblings, never the stored place (``page_dict``).
+    """
+    visible = [
+        rid for rid in await _visible_siblings(db, user, space_id, parent_id)
+        if rid != page_id
+    ]
+    others = [
+        str(r.id) for r in await core.sibling_rows(db, user, space_id, parent_id)
+        if str(r.id) != page_id
+    ]
+    rank = len(visible) if position is None else min(position, len(visible))
+    at = len(others) if rank == len(visible) else others.index(visible[rank])
+    order = [*others[:at], page_id, *others[at:]]
+    await db.execute(
+        text("UPDATE kb_pages AS p SET position = o.ord - 1 "
+             "FROM unnest(CAST(:ids AS uuid[])) WITH ORDINALITY AS o(id, ord) "
+             "WHERE p.organization_id = CAST(:org AS uuid) AND p.id = o.id "
+             "AND p.space_id = CAST(:sid AS uuid) "
+             "AND p.parent_id IS NOT DISTINCT FROM CAST(:parent AS uuid) "
+             "AND p.position <> o.ord - 1"),
+        {"ids": order, "org": core.org_of(user), "sid": space_id, "parent": parent_id},
+    )
+    return rank
 
 
 # ── Reads ───────────────────────────────────────────────────────────────────
@@ -180,10 +290,28 @@ async def list_pages(
         vis, vparams = core.visible_pages_clause(user, "p")
         rows = (await db.execute(
             text(f"SELECT {core.PAGE_COLUMNS} FROM kb_pages p WHERE {vis}{extra} "
-                 "ORDER BY p.position, lower(p.title), p.created_at LIMIT :limit"),
+                 # Grouped by sibling set FIRST (KB-2e fix round 2). An order
+                 # by the stored place across parents would put a row among
+                 # another parent's rows by its stored place, and that tells
+                 # how many hidden siblings sit before it. Between groups the
+                 # order follows the ids only, and so does the LIMIT cut.
+                 "ORDER BY p.space_id, p.parent_id NULLS FIRST, p.position, "
+                 "lower(p.title), p.created_at, p.id LIMIT :limit"),
             {**vparams, **params},
         )).fetchall()
-    return {"pages": [core.page_dict(r, body=False) for r in rows]}
+    # The rank among the siblings in this answer, never the stored place.
+    groups: dict[tuple[str, str], list[Any]] = {}
+    for r in rows:
+        groups.setdefault((str(r.space_id), str(r.parent_id)), []).append(r)
+    rank: dict[str, int] = {}
+    for members in groups.values():
+        for i, r in enumerate(sorted(members, key=core.sibling_key)):
+            rank[str(r.id)] = i
+    # The rows go out in rank order inside each group, so a tie that SQL and
+    # Python break apart (a collation) cannot reorder them.
+    rows = sorted(rows, key=lambda r: (
+        str(r.space_id), r.parent_id is not None, str(r.parent_id), rank[str(r.id)]))
+    return {"pages": [core.page_dict(r, body=False, position=rank[str(r.id)]) for r in rows]}
 
 
 @router.get("/pages/{page_id}")
@@ -198,7 +326,7 @@ async def get_page(
             raise core.not_found()
         space = await _space_of(db, user, page)
         level = await core.space_level(db, user, space) if space is not None else None
-        out = core.page_dict(page)
+        out = core.page_dict(page, position=await _rank(db, user, page))
         # WS-61 KB-4a: the assistant's read_page names the space, and only
         # when the caller can open it. A draft reviewer may see a page in a
         # space with no grant, and then gets no name.
@@ -250,17 +378,20 @@ async def create_page(
                     detail="The parent must be a live page in the same space.",
                 )
             parent_id = str(parent.id)
+        # KB-2e: a new page goes last among its siblings, under the tree lock.
+        await _lock_trees(db, user, str(space.id))
+        position = await core.next_position(db, user, str(space.id), parent_id)
         row = (await db.execute(
             text("INSERT INTO kb_pages AS p "
-                 "(organization_id, space_id, parent_id, title, body_md, state, "
-                 "author_email, reviewers) "
+                 "(organization_id, space_id, parent_id, position, title, body_md, "
+                 "state, author_email, reviewers) "
                  "VALUES (CAST(:org AS uuid), CAST(:sid AS uuid), "
-                 "CAST(:parent AS uuid), :title, :body, 'draft', :author, "
+                 "CAST(:parent AS uuid), :position, :title, :body, 'draft', :author, "
                  "CAST(:reviewers AS text[])) "
                  f"RETURNING {core.PAGE_COLUMNS}"),
             {"org": core.org_of(user), "sid": str(space.id), "parent": parent_id,
-             "title": title, "body": body.body_md, "author": core.viewer_email(user),
-             "reviewers": reviewers},
+             "position": position, "title": title, "body": body.body_md,
+             "author": core.viewer_email(user), "reviewers": reviewers},
         )).first()
         return await _written(db, user, row, "create")
 
@@ -395,18 +526,33 @@ async def move_page(
     background: BackgroundTasks,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Change the space or the parent of a page.
+    """Change the space, the parent or the place of a page.
 
     The caller writes in both spaces. A page with children stays in its
     space, and a parent cannot be the page or one of its descendants. Only the
     author moves a page into their own ``me`` space.
+
+    ``position`` is the 0-based place among the new siblings (KB-2e). A move
+    that changes only the place writes no version, keeps ``updated_at`` and
+    does not reindex. A move to another space or parent writes the ``move``
+    version, and the page goes to ``position``, or last when none is named.
     """
     if not body.model_fields_set:
         raise HTTPException(status_code=422, detail="Nothing to move.")
     async with core._tenant_session() as db:
+        # The tree locks first, then the row lock (`_lock_trees`). A move to
+        # another space locks the source tree and the target tree, in one
+        # order, so two opposite moves cannot wait on each other.
+        seen = await core.load_page(db, user, page_id)
+        if seen is None:
+            raise core.not_found()
+        named_space = core.parse_id(body.space_id) if body.space_id is not None else None
+        await _lock_trees(db, user, str(seen.space_id), named_space or str(seen.space_id))
         page = await core.load_page(db, user, page_id, lock=True)
         if page is None:
             raise core.not_found()
+        if str(page.space_id) != str(seen.space_id):
+            raise _conflict("The page moved to another space while you moved it. Try again.")
         if page.state == "archived":
             raise _conflict("The page is archived.")
         source = await _space_of(db, user, page)
@@ -422,8 +568,15 @@ async def move_page(
             raise core.forbidden("Moving this page needs a write grant on its space.")
         new_parent = await _move_parent(db, user, page, target, body, moved_space)
         old_parent = str(page.parent_id) if page.parent_id else None
+        position = body.position if "position" in body.model_fields_set else None
         if not moved_space and new_parent == old_parent:
-            raise HTTPException(status_code=422, detail="Nothing to move.")
+            if position is None:
+                raise HTTPException(status_code=422, detail="Nothing to move.")
+            # KB-2e: a place in the tree is not a change in substance
+            # (`company_context.md` §3). No version, no `updated_at`, no index.
+            rank = await _place(db, user, str(page.id), str(target.id), new_parent, position)
+            placed = await core.load_page(db, user, str(page.id))
+            return core.page_dict(placed, position=rank)
         sets = "space_id = CAST(:sid AS uuid), parent_id = CAST(:parent AS uuid)"
         if target.kind == "me":
             sets += ", reviewers = '{}'"
@@ -432,6 +585,9 @@ async def move_page(
             {"sid": str(target.id), "parent": new_parent},
         )
         out = await _written(db, user, row, "move", background)
+        out["position"] = await _place(
+            db, user, str(page.id), str(target.id), new_parent, position,
+        )
         if moved_space:
             # The history written in the old space stays there (history_floor).
             await db.execute(

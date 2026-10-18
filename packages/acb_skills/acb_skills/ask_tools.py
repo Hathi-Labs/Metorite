@@ -214,6 +214,160 @@ def clip_words(text: str, limit: int) -> str:
     return f"{cut}{ELLIPSIS}"
 
 
+# ── "Not now": the member declines a card (owner request, 2026-10-18) ────────
+#
+# The owner wrote: "if I don't want to answer a question for some reason, I
+# should be allowed to turn off the card. The agent should take it as input
+# that the user does not want to answer the question at the moment and might
+# want to do something else later on."
+#
+# **The envelope.** The chat posts ``POST /agent/respond-input`` with
+# ``{"declined": true, "answer": ""}``. The gateway refuses a decline that
+# carries an answer, and a ``declined`` that is not a JSON boolean. The
+# parked Future resolves with ``{"answer": "", "declined": True}``, and the
+# run RESUMES: a decline is an answer, never a cancel. :func:`is_declined` is
+# the one reader of it on the run side.
+#
+# **What the model reads.** :func:`declined_text`, in plain words. It names
+# a default only where the question STATES one (:func:`question_defaults`):
+# the "Use the default" option of a CRM card, or the card's own ``default``
+# field. A recommended option is NOT a default (review of #1152). A decline
+# must never become an answer: "Archive the 8 done tasks?", Yes recommended,
+# Not now, must not lead to an archive. So a question with no stated default
+# tells the model not to act on it, or on anything that depends on it. A CRM
+# question card also gets the line that sends its ``@default``, which holds
+# the question for the member for 24 hours (``crm_tools``), so the chat does
+# not ask it again the next day either.
+# Fence: ``tests/unit/test_question_decline.py``.
+
+#: The key of the decline, in the respond-input body and in the result of a
+#: parked Future.
+DECLINED_KEY = "declined"
+
+#: The key of the option of a CRM card that keeps the default
+#: (``crm_tools.DEFAULT_KEY``). A test holds the two equal.
+CRM_DEFAULT_KEY = "@default"
+
+
+def is_declined(result: Any) -> bool:
+    """True when a parked Future's *result* is the member's "Not now"."""
+    return isinstance(result, dict) and result.get(DECLINED_KEY) is True
+
+
+def _sentence(text: str) -> str:
+    t = " ".join(str(text or "").split()).rstrip(" .")
+    return f"{t}." if t else ""
+
+
+def card_default(q: Any) -> str | None:
+    """The ``default`` a model set on a question, cut for the card, or None.
+
+    The ONE reader of the key for a card, so the tool's own paths (A and C)
+    and the executor's bridge (B1) draw the same words, and the member SEES
+    each default that a decline may name (review of #1152): the card draws
+    "If you skip: <default>" under the question.
+    """
+    said = q.get("default") if isinstance(q, dict) else None
+    if not isinstance(said, str) or not said.strip():
+        return None
+    return clip_words(said, OPTION_DESCRIPTION_MAX)
+
+
+def stated_default(q: Any) -> str:
+    """The default a question STATES, or ``""`` when it states none.
+
+    Two sources only: the "Use the default" option of a CRM card, in the
+    words of its description ("Billed, until a CRM admin answers"), and the
+    question's own ``default`` field. A recommended option is never a
+    default: a decline must never become an answer (review of #1152).
+    """
+    if not isinstance(q, dict):
+        return ""
+    options = [o for o in q.get("options") or [] if isinstance(o, dict)]
+    kept = next((o for o in options if o.get("key") == CRM_DEFAULT_KEY), None)
+    if kept is not None:
+        return str(kept.get("description") or kept.get("label") or "").strip()
+    # The same words the card draws ("If you skip: ..."), never more.
+    return card_default(q) or ""
+
+
+def question_defaults(questions: Any) -> list[tuple[str, str]]:
+    """``(header, default)`` of each question of a card that STATES a
+    default (:func:`stated_default`). A question with none is left out."""
+    out: list[tuple[str, str]] = []
+    for q in questions if isinstance(questions, list) else []:
+        said = stated_default(q)
+        if said:
+            out.append((str(q.get("header") or "").strip(), said))
+    return out
+
+
+def _crm_questions_with_default(questions: Any) -> list[str]:
+    """The ids of the CRM questions of a card that offer ``@default``."""
+    out: list[str] = []
+    for q in questions if isinstance(questions, list) else []:
+        qid = crm_card_tag(q)
+        if qid and any(isinstance(o, dict) and o.get("key") == CRM_DEFAULT_KEY
+                       for o in q.get("options") or []):
+            out.append(qid)
+    return out
+
+
+def declined_text(questions: Any = None, *, what: str = "question") -> str:
+    """What the model reads when the member pressed "Not now" on a card.
+
+    *questions* are the card's cleaned questions, so the text can name each
+    default. *what* names the card: ``question`` or ``form``.
+    """
+    lines = [
+        f"The member chose not to answer this {what} now.",
+        "Do not ask it again in this reply.",
+    ]
+    qs = [q for q in questions if isinstance(q, dict)] if isinstance(questions, list) else []
+    found = question_defaults(qs)
+    # A question with no stated default, or a card with no questions to read
+    # (an ask_user prompt, a form): the member set it aside, so nothing that
+    # needs its answer may happen. Never a guess, never the recommended one.
+    open_left = not qs or len(found) < len(qs)
+    if len(qs) == 1 and found:
+        lines.append("Continue with what you can do without the answer.")
+        lines.append(_sentence(f"Use the default that the question states: {found[0][1]}"))
+    elif found:
+        lines.extend(
+            _sentence(f'For "{h or "the question"}", use the default that it states: {d}')
+            for h, d in found
+        )
+    if open_left:
+        which = f"this {what}" if not found else "a question with no stated default"
+        lines.append(f"Do not act on {which}, or on anything that depends on it.")
+        lines.append("Do only the work that does not depend on it, or stop and let the member lead.")
+    for qid in _crm_questions_with_default(qs):
+        lines.append(
+            f'Send the default for the member: crm_answer_question(question_id="{qid}", '
+            f'choice="{CRM_DEFAULT_KEY}"). Then Metorite does not ask it again for 24 hours.'
+        )
+    if found:
+        lines.append("Tell the member in one line what you assumed.")
+    if open_left:
+        lines.append("Tell the member in one line what you did not do.")
+    lines.append("The member can come back to it later.")
+    return " ".join(lines)
+
+
+def answer_text(result: Any, questions: Any = None) -> str:
+    """The tool result of a question card, from its parked Future's result.
+
+    The one place the three blocking paths of :func:`ask_questions` phrase
+    an answer, so a decline reads the same on each of them.
+    """
+    if is_declined(result):
+        return declined_text(questions)
+    answer = str((result or {}).get("answer", "") or "").strip() if isinstance(result, dict) else ""
+    if not answer:
+        return "User provided an empty response."
+    return f"User response: {answer}"
+
+
 async def ask_questions(questions: str) -> str:
     """Ask the user one or more clarifying questions before proceeding.
 
@@ -239,7 +393,8 @@ async def ask_questions(questions: str) -> str:
             ``options`` is optional (each needs ``label``);
             ``allowFreeformInput`` defaults to true only when there are no
             options. Every question needs an answer. Set
-            ``"required": false`` on one the user may skip. Shape:
+            ``"required": false`` on one the user may skip. Set
+            ``"default"`` only to what you use with no answer. Shape:
             {
               "questions": [
                 {
@@ -318,6 +473,11 @@ async def ask_questions(questions: str) -> str:
         # so every other card is exactly as before.
         if q.get("required") is False:
             entry["required"] = False
+        # The default the question states, if any: what a "Not now" may use
+        # (``stated_default``). The card draws it, so the member sees it. The
+        # key goes only when the model set it.
+        if card_default(q):
+            entry["default"] = card_default(q)
         # WS-53 CRM-Q32-8: a CRM question card keeps the id of its question,
         # so a late answer of the member can be tied to it (the gateway).
         if crm_card_tag(q):
@@ -372,10 +532,7 @@ async def ask_questions(questions: str) -> str:
             _pending_user_input.pop(_request_id, None)
             return "User did not respond in time."
 
-        _answer = str(_result.get("answer", "") or "").strip()
-        if not _answer:
-            return "User provided an empty response."
-        return f"User response: {_answer}"
+        return answer_text(_result, cleaned)
 
     # ── Path B: Copilot SDK / standalone ──────────────────────────────
     # Two sub-paths:
@@ -427,11 +584,7 @@ async def ask_questions(questions: str) -> str:
                     _result = await wait_user_future(_fut, 3600)
                 except _asyncio.TimeoutError:
                     return "User did not respond in time."
-                _answer = str(
-                    _result.get("answer", "") or "").strip()
-                if not _answer:
-                    return "User provided an empty response."
-                return f"User response: {_answer}"
+                return answer_text(_result, cleaned)
     except Exception:  # noqa: BLE001
         pass
 
@@ -483,11 +636,7 @@ async def ask_questions(questions: str) -> str:
             finally:
                 _pending_user_input.pop(_request_id, None)
 
-            _answer = str(
-                _result.get("answer", "") or "").strip()
-            if not _answer:
-                return "User provided an empty response."
-            return f"User response: {_answer}"
+            return answer_text(_result, cleaned)
     except Exception:  # noqa: BLE001
         pass
 

@@ -782,7 +782,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   return (
     <RollupCard id={`tool:${e.id}`} title={heading} icon={icon} summary={unfenced(detail).split(NL)[0]} header="own">
     <div className={`rounded-lg border px-2.5 py-2 ${tone}`}>
-      <RollupHeader aside={aside ? <FencedText text={aside} pills={false} /> : undefined} />
+      <RollupHeader aside={aside ? <FencedText text={aside} pills={false} links={false} /> : undefined} />
       <RollupBody>
         {tasks.length > 0 ? (
           <>
@@ -1017,7 +1017,7 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
       header="own"
     >
     <div className={`rounded-lg border px-2.5 py-2 ${toneFor(outcome, e.name)}`}>
-      <RollupHeader aside={aside ? <FencedText text={aside} pills={false} /> : undefined} />
+      <RollupHeader aside={aside ? <FencedText text={aside} pills={false} links={false} /> : undefined} />
       <RollupBody>
           {head && !aside && (outcome !== "done" || rows.length === 0) && (
             <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap">

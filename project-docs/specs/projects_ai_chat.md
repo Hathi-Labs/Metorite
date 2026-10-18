@@ -5993,6 +5993,74 @@ question had no answer, and the card did not say so.
 Fences: `elicitationAnswer.test.ts`, `elicitationCard.test.ts`,
 `e2e/genui-option-picker.spec.ts` and `tests/unit/test_ask_questions_text.py`.
 
+### 24.9.2 A member can say Not now to a card (2026-10-18)
+
+**The request.** The owner got a CRM question card about revenue, and Submit
+stayed off until an answer. The owner wrote: "if I don't want to answer a
+question for some reason, I should be allowed to turn off the card. The agent
+should take it as input that the user does not want to answer the question at
+the moment and might want to do something else later on."
+
+**The rule.** Each card that parks a run has a way out that is not an answer
+and not a stop.
+
+- The question card, the form card and the option picker show "Not now"
+  beside Submit, and an X in the title row. The X has the name "Not now".
+  `components/NotNow.tsx` is the one control. The plan card keeps Cancel, and
+  Cancel sends the same decline.
+- The chat sends `{"declined": true, "answer": ""}` to
+  `POST /agent/respond-input`. The BFF route and the gateway refuse a decline
+  that has an answer, and a `declined` that is not a boolean. The route
+  refuses a decline from another account, as it refuses an answer (WS-51 S2).
+- The parked run continues. The run does not stop. `ask_tools.declined_text`
+  gives the model the tool result. It tells the model these things:
+  - The member chose not to answer now.
+  - Do not ask the question again in this reply.
+  - Where the question states a default, continue with that default, and
+    tell the member in one line what you assumed.
+  - Where the question states no default, do not act on the question or on
+    anything that depends on it. Do only the work that does not depend on
+    it, or stop and let the member lead. Tell the member in one line what
+    you did not do.
+  - The member can come back to it later.
+- **A decline is never an answer.** Only a default that the question states
+  counts. A CRM card states one in its "Use the default" option. Any other
+  card states one only in its own `default` field. A recommended option is
+  not a default. For example, "Archive the 8 done tasks?" with Yes
+  recommended, then Not now, must not lead to an archive (review of #1152).
+- **The member sees each default that a decline can use.** The card draws
+  "If you skip: <default>" in muted words under the question. All three
+  paths of `ask_questions` and the executor's bridge read the `default` key
+  through `ask_tools.card_default`. The decline text names only those
+  words. A declined card with a default reads "Not answered · Metorite uses
+  <default> for now." Any other declined card reads "You can ask again
+  later."
+- The plan card's Cancel tells the model that the member cancelled the plan.
+  The run created nothing, and the model does not propose the plan again unless
+  the member asks for it (`forms.declined_plan`).
+- A decline that lands while the run parks closes the durable row, as any
+  other decline does. It never records an empty answer.
+- A CRM card also tells the model to send `@default`. That keeps the question
+  away from the member for 24 hours, in Redis. This is the cheap durable
+  record. A general "asked and declined" record needs a new state in
+  `chat_pending_ask`, which needs a migration. This change adds none.
+- The card then locks, and it reads "Not answered · You can ask again later."
+  It is never an error. A generative-UI card keeps that state after a reload,
+  because its tool result records `declined: true` (`lib/askAnswers.ts`).
+- A decline of a card whose run ended closes the durable row and starts no
+  run. The member chose to do something else. A second answer to that card
+  gets a 409.
+- The shared instructions tell each agent not to ask a declined question again
+  in the conversation, unless the member brings up the topic
+  (`acb_skills.addendum`).
+- WhatsApp shows no cards. Its run refuses a question card at once (WS-47
+  WAC-3), so no question waits there. A typed "not now" is a message that the
+  model reads. No change was necessary.
+
+Fences: `tests/unit/test_question_decline.py`, `declineAnswer.test.ts`,
+`notNow.test.ts`, `elicitationCard.test.ts`, `askAnswers.test.ts` and
+`e2e/genui-option-picker.spec.ts`.
+
 ## 25. The fixed prefix of each request (2026-10-09)
 
 **Status.** Built 2026-10-09, branch `agent-prefix-slim`. It changes what the
