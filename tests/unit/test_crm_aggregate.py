@@ -589,13 +589,14 @@ def _callers(source: str, name: str) -> set[str]:
 
 def _amount_offenders(field_sql: str, others: dict[str, str]) -> list[str]:
     """Each place that wraps a field in ``_number`` outside the one builder.
-    Only ``_numbers`` calls ``_number``. Only ``_amount`` and the sum check
-    call ``_numbers``. The three readers of an amount call ``_amount``. No
+    Only ``_numbers`` calls ``_number``. Only ``_amount``, the sum check and
+    (CRM-Q33) the check of GST call ``_numbers``: both checks read raw
+    fields, never ``@amount``. The three readers of an amount call ``_amount``. No
     other file of the gateway names ``_number`` or ``_numbers`` of
     ``field_sql``."""
     found = [f"_number in {f}" for f in sorted(_callers(field_sql, "_number") - {"_numbers"})]
     found += [f"_numbers in {f}" for f in sorted(
-        _callers(field_sql, "_numbers") - {"_amount", "sum_check_sql"})]
+        _callers(field_sql, "_numbers") - {"_amount", "sum_check_sql", "gst_check_sql"})]
     missing = {"measure_sql", "_filter", "overlay_weighted"} - _callers(field_sql, "_amount")
     found += [f"no _amount in {f}" for f in sorted(missing)]
     for path, text in others.items():

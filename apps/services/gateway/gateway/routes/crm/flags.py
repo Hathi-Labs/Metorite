@@ -48,6 +48,13 @@ gateway reads them.
   :func:`questions_allowed` is the one check, and it needs
   :func:`catalogue_allowed` too. A name in the list spends nothing, so its
   flip is gate ``enforcement-flip``.
+* ``CRM_ANSWER_FIRST_ORGS`` — the organization ids whose chat answers first
+  and clarifies over time (WS-53 CRM-Q33, ``crm_platform.md`` §18.15). The
+  grammar is the one of ``CRM_ORGS``. An empty list allows no organization:
+  the chat asks before it answers (CRM-Q32-8), and the business rules answer
+  404 ``rules_off``. :func:`answer_first_allowed` is the one check, and it
+  needs :func:`questions_allowed` too. A name in the list spends nothing, so
+  its flip is gate ``enforcement-flip``.
 * ``CRM_DIGEST_ORGS`` — the organization ids that get the weekly CRM digest
   on the powerful tier (WS-53 CRM-Q28, ``crm_platform.md`` §18.11.2). The
   grammar is the one of ``CRM_ORGS``. An empty list allows no organization:
@@ -235,6 +242,26 @@ def questions_allowed(organization_id: str | None) -> bool:
         return False
     org = str(organization_id).strip().lower()
     orgs = crm_questions_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+def crm_answer_first_orgs() -> frozenset[str]:
+    """The organization ids whose chat answers first (CRM-Q33). Empty means none."""
+    return _parse_orgs(str(get_settings().crm_answer_first_orgs or ""))
+
+
+def answer_first_allowed(organization_id: str | None) -> bool:
+    """True when the chat of this org answers first and clarifies over time
+    (CRM-Q33, ``crm_platform.md`` §18.15).
+
+    It is :func:`questions_allowed` AND a place on ``CRM_ANSWER_FIRST_ORGS``,
+    or ``*`` there. The answer-first path reads the open questions, so an org
+    with no questions gets none of it. It reads the settings and nothing else.
+    """
+    if not questions_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = crm_answer_first_orgs()
     return ALL_ORGS in orgs or org in orgs
 
 

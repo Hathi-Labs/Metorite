@@ -203,6 +203,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             # WS-53 CRM-Q32-8: the reply of a CRM question card, on the same
             # terms. The gateway gates it by CRM_QUESTIONS_ORGS.
             "crm_answer_question",
+            # WS-53 CRM-Q33: a business rule from the chat, held for the
+            # member's confirm. The gateway gates it by CRM_ANSWER_FIRST_ORGS.
+            "crm_propose_rule",
         ),
         "core": False,
         "scope_governed": True,

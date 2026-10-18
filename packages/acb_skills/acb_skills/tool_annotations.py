@@ -155,6 +155,9 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # the member picked to `/crm/questions/{id}/reply`, as the member. The
     # server decides: an admin's answer (Undo in CRM settings), or a proposal.
     "crm_answer_question":   {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # WS-53 CRM-Q33: a business rule that the member said, held in tenant
+    # Redis for the member's confirm. It saves nothing by itself.
+    "crm_propose_rule":      {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
     # WS-61 KR-2: company retrieval (`company_search_tools.py`). It reads
     # `GET /search/company` as the member, and nothing leaves the platform.
     "search_company":        {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
@@ -208,6 +211,9 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     # WS-53 CRM-Q32-8: the reply of a card that the member picked. It is no
     # destructive act, and it goes with `org_facts`, so the block stays the same.
     "crm_answer_question",
+    # WS-53 CRM-Q33: the hold of a rule for the member's confirm, on the same
+    # terms. It saves nothing by itself.
+    "crm_propose_rule",
     # WS-61 KR-2: company retrieval only reads, and only the orchestrator
     # holds it, behind COMPANY_SEARCH_ENABLED. So every risk block stays
     # byte-identical.

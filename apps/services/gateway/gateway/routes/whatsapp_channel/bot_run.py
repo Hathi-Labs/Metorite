@@ -1463,6 +1463,11 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
         # room check below refuses the message (WAC-4 verifier, D7).
         settled = (await acts.settle(req, message)
                    if writes and not await _thread_shared(req.chat_session_id) else None)
+        # WS-53 CRM-Q33 part 2: the member's reply to the CRM's one question
+        # ("2", a label, or YES to save a rule), matched by code and never by
+        # the model. A reply that matches nothing runs as a normal message.
+        if settled is None and not await _thread_shared(req.chat_session_id):
+            settled = await _crm_text_answer(req, message)
         # WAC-10c: a quick command ("today", "calendar", a menu tap) is
         # answered by code, with no AI call. A view that fails falls back
         # to the assistant, so it never costs the member an answer.
@@ -1500,6 +1505,62 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
                    last_try=attempt.tries >= MAX_TRIES, ui=ui)
 
 
+async def _crm_text_answer(req: RunRequest, message: str) -> str | None:
+    """The reply to a pick of the CRM's pending question, or None (WS-53
+    CRM-Q33 part 2, ``routes/crm/text_asks.settle``). The org and the member
+    are the link's, never the message's. A fault never costs the member the
+    answer: the message then runs as a normal message."""
+    try:
+        from gateway.routes.crm import text_asks
+
+        return await text_asks.settle(req.organization_id, req.member_email,
+                                      text_asks.CHANNEL_WHATSAPP, message)
+    except Exception as exc:  # the record names the class only
+        _log.warning("whatsapp_channel.crm_ask.settle_failed", message_id=req.message_id,
+                     error_type=type(exc).__name__)
+        return None
+
+
+def _open_crm_asks(org: str) -> Any:
+    """The holder of the CRM's one text question of this run, for an org on
+    ``CRM_ANSWER_FIRST_ORGS`` only (WS-53 CRM-Q33 part 2), or None."""
+    try:
+        from acb_skills.crm_tools import open_text_asks
+        from gateway.routes.crm.flags import answer_first_allowed
+        from gateway.routes.crm.text_asks import CHANNEL_WHATSAPP
+    except ImportError:
+        return None
+    return open_text_asks(CHANNEL_WHATSAPP) if answer_first_allowed(org) else None
+
+
+def _close_crm_asks(token: Any) -> Any:
+    """Close the holder of the run, and give it, or None."""
+    if token is None:
+        return None
+    from acb_skills.crm_tools import release_text_asks, run_text_asks
+
+    holder = run_text_asks()
+    release_text_asks(token)
+    return holder
+
+
+async def _crm_follow_up(req: RunRequest, holder: Any) -> str | None:
+    """The text of the run's one CRM question, which the gateway built and
+    keeps as a pending ask, or None when the run named none. Only a run that
+    answered offers it, so the member sees each question that waits."""
+    if holder is None or getattr(holder, "ask", None) is None:
+        return None
+    try:
+        from gateway.routes.crm import text_asks
+
+        return await text_asks.offer(req.organization_id, req.member_email,
+                                     text_asks.CHANNEL_WHATSAPP, holder.ask)
+    except Exception as exc:  # a follow-up never fails the answer
+        _log.warning("whatsapp_channel.crm_ask.offer_failed", message_id=req.message_id,
+                     error_type=type(exc).__name__)
+        return None
+
+
 async def _model_answer(req: RunRequest, message: str,
                         history: list[dict[str, str]], attempt: _Attempt,
                         run_id: str, *, native: bool, writes: bool,
@@ -1520,6 +1581,9 @@ async def _model_answer(req: RunRequest, message: str,
         await _show_typing(req)
     _WAITING_ON_MODEL[req.message_id] = req
     run_started = time.time()
+    # WS-53 CRM-Q33 part 2: the holder of the CRM's one text question. The
+    # run's tasks copy the context, so they share this one holder.
+    crm_asks = _open_crm_asks(req.organization_id)
     try:
         with refuse_cards(), (whatsapp_run(
                 AGENT, org=req.organization_id,
@@ -1569,12 +1633,17 @@ async def _model_answer(req: RunRequest, message: str,
         return None
     finally:
         _WAITING_ON_MODEL.pop(req.message_id, None)
+        crm_holder = _close_crm_asks(crm_asks)
     _OUTAGE["answered"] = time.time()
 
     reply = final_text(result).strip()
     ui: list[Any] = []
     if wa_run is not None:
         reply, ui = await _native_parts(req, wa_run, reply)
+    follow_up = await _crm_follow_up(req, crm_holder) if reply else None
+    if follow_up:
+        # The one CRM question goes after the answer, as code built it.
+        reply = f"{reply}\n\n{follow_up}"
     if not reply and not ui:
         if await _end(req.message_id, "failed", "empty"):
             await _send(req, [REPLY_FAILED], kind="failed", attempt=attempt)

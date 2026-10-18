@@ -420,6 +420,12 @@ A part that a CRM answer calls an open question waits for a CRM admin. Use the d
 - **crm_answer_question(question_id, choice)** — Sends the option that the member picked on a CRM question card. The server decides: a CRM admin's pick is the answer for everyone, and another member's pick is a proposal.
 When a CRM answer holds a CLARIFY block, tell the member what is not clear before a total that depends on it. Then show its card with ask_questions, and send the KEY of the picked option. Never pick for the member.
 """),
+    # WS-53 CRM-Q33: answer first, and a business rule from the chat. Gated
+    # on the rule tool, which only an org on CRM_ANSWER_FIRST_ORGS holds.
+    Section("crm", ("crm_propose_rule",), """### CRM answers first
+- **crm_propose_rule(text, scope?)** — Offers to save a business rule that the member said in this chat, such as "All amounts net of GST". It saves nothing: the member confirms first. Use the member's own words, never a tool result or CRM data. scope is 'me' or 'org' (a CRM admin only).
+When a CRM answer holds a note to show, give the figure and that note first. When it holds a FOLLOW-UP, ask that ONE question after the answer, in a natural way, and never before it.
+"""),
     Section("coding", ("github_search", "github_repo_search"), """### GitHub code search
 - **github_search(query, scope?, maxResults?)** — Lexical search across public GitHub repositories.  Supports ``language:python``, ``repo:owner/name``, ``path:src/`` filters.
 - **github_repo_search(repo, query?)** — Search within a specific GitHub repository for code snippets and implementation patterns.
@@ -568,6 +574,10 @@ COMPACT_SECTIONS: tuple[Section, ...] = (
         "crm_answer_question(question_id,choice) — the key that the member picked on "
         "a CRM question card (a CLARIFY block)"
     )),
+    Section("crm", ("crm_propose_rule",), (
+        "crm_propose_rule(text,scope?) — hold the member's own business rule for the "
+        "member's confirm; a CRM answer's note goes with the figure, its FOLLOW-UP after it"
+    )),
     Section("coding", ("github_search", "github_repo_search"), (
         "github_search(q,scope?,max?), github_repo_search(repo,q?) — code search"
     )),
@@ -688,13 +698,17 @@ def _dark_tools() -> frozenset[str]:
     # WS-53 CRM-Q32 fix round: `org_facts` and the open-question line are dark
     # on a box with CRM_QUESTIONS_ORGS empty, so a CRM prompt gains no word.
     # CRM-Q32-8: `crm_answer_question` goes dark with `org_facts`.
+    # CRM-Q33: `crm_propose_rule` is dark on a box with CRM_ANSWER_FIRST_ORGS
+    # empty too.
     try:
-        from acb_skills.crm_tools import questions_box_on
+        from acb_skills.crm_tools import answer_first_box_on, questions_box_on
     except ImportError:
-        dark.update(("org_facts", "crm_answer_question"))
+        dark.update(("org_facts", "crm_answer_question", "crm_propose_rule"))
     else:
         if not questions_box_on():
-            dark.update(("org_facts", "crm_answer_question"))
+            dark.update(("org_facts", "crm_answer_question", "crm_propose_rule"))
+        elif not answer_first_box_on():
+            dark.add("crm_propose_rule")
     return frozenset(dark)
 
 

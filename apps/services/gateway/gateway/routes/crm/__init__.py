@@ -122,6 +122,11 @@ the order live in ``crm_sync/questions.py``, as pure functions.
 ``digests.py`` is WS-53 CRM-Q28 — ``GET /crm/digests``, the weekly digests
 of the org. Read only. ``crm_sync/digest.py`` writes
 the table, and only for an org on ``CRM_DIGEST_ORGS``.
+
+``rules.py`` is WS-53 CRM-Q33 — ``/crm/rules``, the business rules of the org
+and of each member (table ``crm_business_rules``), and the hold and the
+confirm of a rule from the chat. An org outside ``CRM_ANSWER_FIRST_ORGS``
+gets 404 ``rules_off``.
 """
 
 from gateway.routes.crm import activities as _activities  # noqa: F401
@@ -145,6 +150,7 @@ from gateway.routes.crm import pipelines as _pipelines  # noqa: F401
 from gateway.routes.crm import questions as _questions  # noqa: F401
 from gateway.routes.crm import records as _records  # noqa: F401
 from gateway.routes.crm import reports as _reports  # noqa: F401
+from gateway.routes.crm import rules as _rules  # noqa: F401
 from gateway.routes.crm import settings as _settings  # noqa: F401
 from gateway.routes.crm import stage_metadata as _stage_metadata  # noqa: F401
 from gateway.routes.crm import suggestions as _suggestions  # noqa: F401

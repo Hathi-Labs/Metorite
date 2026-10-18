@@ -1620,28 +1620,40 @@ def _facts_withheld() -> frozenset[str]:
 
     On a listed org, a run with no holder of its CRM questions (a batch
     run) loses ``crm_answer_question`` too: only a streamed chat run opens
-    the holder (``executor.run_agent_stream``)."""
+    the holder (``executor.run_agent_stream``). CRM-Q33: a WhatsApp run of
+    an org on ``CRM_ANSWER_FIRST_ORGS`` opens the holder of its one text
+    follow-up (``crm_tools.open_text_asks``), so it keeps the reply tool,
+    which there only names a question for the gateway to ask.
+    ``crm_propose_rule`` needs ``CRM_ANSWER_FIRST_ORGS`` and a holder too."""
     try:
         from acb_skills.crm_tools import (
             CRM_QUESTION_TOOLS,
+            CRM_RULE_TOOLS,
+            answer_first_org_on,
             questions_box_on,
             questions_org_on,
             run_asks,
+            run_text_asks,
         )
         from acb_skills.org_facts_tools import FACTS_GATED_TOOLS
     except ImportError:
         return frozenset()
     if not questions_box_on():
         return frozenset()
-    if not questions_org_on(_run_org_or_none()):
+    org = _run_org_or_none()
+    if not questions_org_on(org):
         # CRM-Q32-8: `crm_answer_question` is withheld wherever `org_facts` is.
         return frozenset(fn.__name__ for fn in FACTS_GATED_TOOLS)
-    if run_asks() is None:
+    off: set[str] = set()
+    if not answer_first_org_on(org):
+        # CRM-Q33: the rule tool is dark off CRM_ANSWER_FIRST_ORGS.
+        off.update(fn.__name__ for fn in CRM_RULE_TOOLS)
+    if run_asks() is None and run_text_asks() is None:
         # CRM-Q32-8, security review: a run with no holder of its questions
         # (a batch run: a workflow, a dispatch, /agent/run/async) shows no
         # card and has no human to pick, so it never holds the reply tool.
-        return frozenset(fn.__name__ for fn in CRM_QUESTION_TOOLS)
-    return frozenset()
+        off.update(fn.__name__ for fn in (*CRM_QUESTION_TOOLS, *CRM_RULE_TOOLS))
+    return frozenset(off)
 
 
 def _whatsapp_withheld() -> frozenset[str]:

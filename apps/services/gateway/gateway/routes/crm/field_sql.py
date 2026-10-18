@@ -212,8 +212,15 @@ class FieldScope:
         return f"custom.{key}" if self.column == CORE_COLUMN else f"{FIELD_PREFIX}{key}"
 
     def ref(self, key: str | None) -> FieldRef:
-        """The field named *key*, or a 422 that names the legal keys."""
+        """The field named *key*, or a 422 that names the legal keys.
+
+        CRM-Q33: a module also takes the keys of 2 to 5 currency fields
+        joined with ``+`` (``IP+Rent+EB_Total_Amount``), as ONE sum of the
+        parts, the shape of a summed ``@amount`` (CRM-Q32-9). So the chat
+        reads the total of an assumption that is a sum in one aggregate."""
         found = self.fields.get(key or "")
+        if found is None and key and self.column == MODULE_COLUMN:
+            found = self._sum_of(key)
         if found is None and key == AMOUNT_WORD and not self.catalogue:
             # The refusal of before CRM-Q31-2: `sum_amount` on a module.
             raise HTTPException(status_code=422,
@@ -228,6 +235,30 @@ class FieldScope:
                            "crm_list_fields gives the type of each.",
             })
         return found
+
+    def _sum_of(self, key: str) -> FieldRef | None:
+        """The one ``FieldRef`` of a sum named by its joined keys, or None.
+        Each part must be a real currency field of the scope, never a key
+        word, and the parts are 2 to 5 distinct keys. A key never reaches the
+        SQL text: :func:`_numbers` binds each part."""
+        from gateway.crm_sync.catalogue import (
+            SUM_KEY_JOIN,
+            SUM_LABEL_JOIN,
+            SUM_TYPES,
+            sum_shape_problem,
+        )
+
+        if SUM_KEY_JOIN not in key:
+            return None
+        keys = key.split(SUM_KEY_JOIN)
+        if sum_shape_problem(keys) or any(k in KEY_WORDS for k in keys):
+            return None
+        refs = [self.fields.get(k) for k in keys]
+        if any(r is None or r.type not in SUM_TYPES or r.parts for r in refs):
+            return None
+        found = [r for r in refs if r is not None]
+        return FieldRef(key=key, type=SUM_TYPES[0],
+                        label=SUM_LABEL_JOIN.join(r.label for r in found), parts=tuple(found))
 
     def _no_key_field(self, key: str) -> dict[str, Any]:
         """The detail of the 422 ``no_key_field``. When the part is an open
@@ -1075,6 +1106,82 @@ async def sum_check(db: Any, org: str, module: str, refs: tuple[FieldRef, ...]) 
                     overlap=int(getattr(row, "overlap", 0) or 0), pairs=pairs)
 
 
+# ── The evidence of GST and TDS (CRM-Q33 part 5, §18.15) ────────────────────
+
+#: The prefix of the bound keys of the check of GST.
+_GST_KEY = "agf_t"
+
+
+def gst_check_sql(keys: list[str], rels: list[Any]) -> tuple[str, dict[str, Any]]:
+    """The ONE statement of the check of GST, and its bound keys. *keys* are
+    the distinct fields that the relations name, and each relation of *rels*
+    (``crm_sync.questions.Relation``) names them by key. Each field is the
+    guarded number of :func:`_numbers`, and each alias comes from an index,
+    never from text. The org, the module and the limit are bound by the
+    caller, so one statement reads the first records of the module once.
+
+    A ``ratio`` holds where the field is its basic times 1.18, within 1% and
+    1 rupee. A ``sum`` holds where the field is its basic plus the GST field,
+    less the TDS field when it is set, within 1 rupee."""
+    from gateway.crm_sync.questions import GST_RATE
+
+    numbers = _numbers("agf_fields", FieldRef(key="", type="currency", label="",
+                                              parts=tuple(FieldRef(key=k, type="currency",
+                                                                   label=k) for k in keys)),
+                       _GST_KEY)
+    index = {k: i for i, k in enumerate(keys)}
+    params: dict[str, Any] = {"agf_rate": GST_RATE}
+    inner = []
+    for i, (sql, bound) in enumerate(numbers):
+        inner.append(f"{sql} AS n_{i}")
+        params.update(bound)
+    outer = ["count(*) AS records"]
+    for r, rel in enumerate(rels):
+        f, b = f"n_{index[rel.field]}", f"n_{index[rel.basic]}"
+        if rel.kind == "ratio":
+            can = f"{f} IS NOT NULL AND {b} IS NOT NULL AND {b} > 0"
+            held = f"abs({f} - {b} * CAST(:agf_rate AS numeric)) <= {b} * 0.01 + 1"
+            outer.append(f"count(*) FILTER (WHERE {can}) AS den_{r}")
+            outer.append(f"count(*) FILTER (WHERE {can} AND {held}) AS ok_{r}")
+            continue
+        g = f"n_{index[rel.gst]}"
+        can = f"{f} IS NOT NULL AND {b} IS NOT NULL AND {g} IS NOT NULL AND {g} <> 0"
+        if rel.tds is None:
+            held = f"abs({f} - ({b} + {g})) <= 1"
+            outer.append(f"count(*) FILTER (WHERE {can}) AS den_{r}")
+            outer.append(f"count(*) FILTER (WHERE {can} AND {held}) AS ok_{r}")
+            continue
+        t = f"n_{index[rel.tds]}"
+        held = f"abs({f} - ({b} + {g} - COALESCE({t}, 0))) <= 1"
+        outer.append(f"count(*) FILTER (WHERE {can}) AS den_{r}")
+        outer.append(f"count(*) FILTER (WHERE {can} AND {held}) AS ok_{r}")
+        outer.append(f"count(*) FILTER (WHERE {can} AND {held} AND {t} IS NOT NULL "
+                     f"AND {t} <> 0) AS tds_{r}")
+    sql = (
+        f"SELECT {', '.join(outer)} FROM (SELECT {', '.join(inner)} "
+        f"FROM (SELECT {MODULE_COLUMN} || CAST('{{}}' AS jsonb) AS agf_fields "
+        "FROM crm_module_records WHERE organization_id = CAST(:agf_org AS uuid) "
+        f"AND module = :{_MODULE} ORDER BY id LIMIT :agf_limit) d) r"
+    )
+    return sql, params
+
+
+async def gst_check(db: Any, org: str, module: str, keys: list[str],
+                    rels: list[Any]) -> list[tuple[int, int, int]]:
+    """``(rows, held, tds_rows)`` of each relation of *rels*: ONE bounded
+    statement over the first :data:`SUM_CHECK_ROWS` records of *module*, in
+    the caller's tenant session, with the org in its predicate and RLS under
+    it. The caller took each key from the field definitions of the module."""
+    if not rels:
+        return []
+    sql, params = gst_check_sql(keys, rels)
+    row = (await db.execute(text(sql), {
+        **params, "agf_org": str(org), _MODULE: module, "agf_limit": SUM_CHECK_ROWS,
+    })).first()
+    return [(int(getattr(row, f"den_{r}", 0) or 0), int(getattr(row, f"ok_{r}", 0) or 0),
+             int(getattr(row, f"tds_{r}", 0) or 0)) for r in range(len(rels))]
+
+
 __all__ = [
     "AMOUNT_WORD",
     "BUCKETS",
@@ -1106,6 +1213,8 @@ __all__ = [
     "field_pairs",
     "from_source",
     "group_sql",
+    "gst_check",
+    "gst_check_sql",
     "key_words",
     "measure_sql",
     "module_measure",

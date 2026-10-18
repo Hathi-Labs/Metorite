@@ -166,10 +166,12 @@ _CUT_MARKS = " ,;:.-" + chr(0x2013) + chr(0x2014)
 ELLIPSIS = "…"
 
 
-#: The shape of the id of a CRM question on a card (``crm_tools``).
+#: The shape of the id of a CRM question on a card (``crm_tools``). WS-53
+#: CRM-Q33: ``rule:<token>`` is the confirm of a held business rule.
 _CRM_QUESTION = _re.compile(
     r"^(revenue|purpose:[A-Za-z][A-Za-z0-9_]{0,99}"
-    r"|key:[A-Za-z][A-Za-z0-9_]{0,99}:(amount|date|status|parent))$"
+    r"|key:[A-Za-z][A-Za-z0-9_]{0,99}:(amount|date|status|parent)"
+    r"|rule:[0-9a-f]{16})$"
 )
 #: The shape of the key of an option of a CRM question card.
 _CARD_KEY = _re.compile(r"^[@A-Za-z0-9_]{1,100}$")
