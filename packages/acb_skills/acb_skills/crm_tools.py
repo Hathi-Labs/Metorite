@@ -1768,7 +1768,7 @@ def _not_clear(q: dict[str, Any]) -> str:
 def _lower_first(word: str) -> str:
     """*word* with its first letter in lower case: "Excludes GST" reads
     "excludes GST" inside a sentence, and GST keeps its capitals."""
-    return word[:1].lower() + word[1:]
+    return word[0].lower() + word[1:] if word else word
 
 
 def _card_label(choice: dict[str, Any]) -> str:
