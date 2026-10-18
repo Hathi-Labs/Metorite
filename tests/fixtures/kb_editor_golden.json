@@ -1,0 +1,1728 @@
+{
+  "_about": "WS-61 KB-2b golden set (knowledge_base.md §21.5, §21.6). Each `md` is a stored body. `saved` is what the block editor writes for it: parse and write once. Vitest (src/app/knowledge/lib/editor/editorMarkdown.test.ts) holds the editor to `saved`, to the fixed point, and to the same meaning under a CommonMark and GFM reader (`gfmShape.ts`). `gfmDiffers` names a shape the editor normalises on purpose, with the reason. Pytest (tests/unit/test_kb_editor_golden.py) runs the chunker on `saved`. `nodes` and `marks` are the blocks and marks that both bodies keep.",
+  "cases": [
+    {
+      "name": "headings-and-marks",
+      "md": "# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six\n\nText with **bold**, *italic*, ~~strike~~, `code`, ***both***, and a [**bold link**](https://example.com/a?b=1&c=2 \"Title\").\n",
+      "saved": "# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six\n\nText with **bold**, *italic*, ~~strike~~, `code`, ***both***, and a [**bold link**](https://example.com/a?b=1&c=2 \"Title\").",
+      "nodes": [
+        "doc",
+        "heading",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "bold",
+        "code",
+        "italic",
+        "link",
+        "strike"
+      ]
+    },
+    {
+      "name": "lists",
+      "md": "- one\n- two\n  - nested\n    - deeper\n- three\n\n3. three\n4. four\n   - inner bullet\n\n- [ ] open\n- [x] done\n  - [ ] nested task\n",
+      "saved": "- one\n- two\n  - nested\n    - deeper\n- three\n\n3. three\n4. four\n   - inner bullet\n\n- [ ] open\n- [x] done\n  - [ ] nested task",
+      "nodes": [
+        "bulletList",
+        "doc",
+        "listItem",
+        "orderedList",
+        "paragraph",
+        "taskItem",
+        "taskList",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "quotes",
+      "md": "> First paragraph.\n>\n> Second paragraph.\n>\n> > Nested quote.\n",
+      "saved": "> First paragraph.\n>\n> Second paragraph.\n>\n> > Nested quote.",
+      "nodes": [
+        "blockquote",
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "callouts",
+      "md": "> [!NOTE]\n> A note.\n\n> [!TIP]\n> A tip.\n\n> [!IMPORTANT]\n> First.\n>\n> - a list\n> - in it\n\n> [!WARNING]\n> Watch out.\n\n> [!caution]\n> Lower case marker.\n",
+      "saved": "> [!NOTE]\n> A note.\n\n> [!TIP]\n> A tip.\n\n> [!IMPORTANT]\n> First.\n>\n> - a list\n> - in it\n\n> [!WARNING]\n> Watch out.\n\n> [!caution]\n> Lower case marker.",
+      "nodes": [
+        "bulletList",
+        "callout",
+        "doc",
+        "listItem",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "toggles",
+      "md": "<details>\n<summary>Why 5 < 6 & more</summary>\n\nBody **text**.\n\n- a\n- b\n\n<details>\n<summary>Inner</summary>\n\nInner body.\n\n</details>\n\n</details>\n\n<details>\n<summary>Empty</summary>\n\n</details>\n",
+      "saved": "<details>\n<summary>Why 5 < 6 & more</summary>\n\nBody **text**.\n\n- a\n- b\n\n<details>\n<summary>Inner</summary>\n\nInner body.\n\n</details>\n\n</details>\n\n<details>\n<summary>Empty</summary>\n\n</details>",
+      "nodes": [
+        "bulletList",
+        "details",
+        "detailsContent",
+        "detailsSummary",
+        "doc",
+        "listItem",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "bold"
+      ]
+    },
+    {
+      "name": "code",
+      "md": "```ts\nconst a = 1;\n```\n\n```\nno language\n```\n\n````md\n```js\nnested fence\n```\n````\n\n~~~py\nprint(1)\n~~~\n\n    indented code\n",
+      "saved": "```ts\nconst a = 1;\n```\n\n```\nno language\n```\n\n````md\n```js\nnested fence\n```\n````\n\n```py\nprint(1)\n```\n\n```\nindented code\n```",
+      "nodes": [
+        "codeBlock",
+        "doc",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "tables",
+      "md": "| Item | Days | Note |\n| --- | ---: | :---: |\n| **Shoes** | 30 | a \\| b |\n| Bags | 14 | `x` |\n",
+      "saved": "| Item | Days | Note |\n| --- | ---: | :---: |\n| **Shoes** | 30 | a \\| b |\n| Bags | 14 | `x` |",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableHeader",
+        "tableRow",
+        "text"
+      ],
+      "marks": [
+        "bold",
+        "code"
+      ]
+    },
+    {
+      "name": "media-and-breaks",
+      "md": "Line one  \nline two\\\nline three\n\n---\n\n![Remote chart](https://example.com/chart.png)\n\n![Local](/files/a.png \"A title\")\n\n![Alt [with] brackets](https://example.com/b.png)\n",
+      "saved": "Line one  \nline two  \nline three\n\n---\n\n![Remote chart](https://example.com/chart.png)\n\n![Local](/files/a.png \"A title\")\n\n![Alt \\[with\\] brackets](https://example.com/b.png)",
+      "nodes": [
+        "doc",
+        "hardBreak",
+        "horizontalRule",
+        "image",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "raw-html",
+      "md": "<div align=\"center\">\n<b>raw</b>\n</div>\n\n<!-- a comment -->\n\nPress <kbd>Ctrl</kbd> and <br> then.\n\n<details>\nNo summary here.\n</details>\n",
+      "saved": "<div align=\"center\">\n<b>raw</b>\n</div>\n\n<!-- a comment -->\n\nPress <kbd>Ctrl</kbd> and <br> then.\n\n<details>\nNo summary here.\n</details>",
+      "nodes": [
+        "doc",
+        "htmlBlock",
+        "htmlInline",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "page-links",
+      "md": "Read [Holidays](/knowledge/pages/kp-b) and [the space](/knowledge?space=ks-1).\n",
+      "saved": "Read [Holidays](/knowledge/pages/kp-b) and [the space](/knowledge?space=ks-1).",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "link"
+      ]
+    },
+    {
+      "name": "escapes",
+      "md": "Text with \\* star, a\\_b, 2 * 3, \\# not a heading, <3 hearts and \\[x\\] box.\n\n\\1. not a list\n",
+      "saved": "Text with \\* star, a\\_b, 2 \\* 3, # not a heading, &lt;3 hearts and \\[x\\] box.\n\n\\\\1. not a list",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "line-start-escapes",
+      "md": "1\\. not a list\n\n\\# not a heading\n\n\\- not a bullet\n\n\\> not a quote\n\n\\+ plus\n\n\\--- not a rule\n\n\\[!NOTE\\] not a callout\n\n\\<details> not a toggle\n\n\\| not | a table\n",
+      "saved": "1\\. not a list\n\n\\# not a heading\n\n\\- not a bullet\n\n&gt; not a quote\n\n\\+ plus\n\n--- not a rule\n\n\\[!NOTE\\] not a callout\n\n&lt;details&gt; not a toggle\n\n| not | a table",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "table-breaks",
+      "md": "| A | B |\n| --- | --- |\n| one<br>two | `a\\|b` |\n",
+      "saved": "| A | B |\n| --- | --- |\n| one<br>two | `a\\|b` |",
+      "nodes": [
+        "doc",
+        "htmlInline",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableHeader",
+        "tableRow",
+        "text"
+      ],
+      "marks": [
+        "code"
+      ]
+    },
+    {
+      "name": "more-escapes",
+      "md": "Line\\\n\\# hash after break\n\n\\=== not setext\n\nTitle  \n\\=====\n\n\\`\\`\\` not a fence\n\n10\\) not a list\n\nA | B\n",
+      "saved": "Line  \n\\# hash after break\n\n=== not setext\n\nTitle  \n\\=====\n\n\\`\\`\\` not a fence\n\n10\\) not a list\n\nA | B",
+      "nodes": [
+        "doc",
+        "hardBreak",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "reflink",
+      "md": "See [the doc][1] here.\n\n[1]: https://example.com/a",
+      "saved": "See [the doc](https://example.com/a) here.",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "link"
+      ]
+    },
+    {
+      "name": "footnote",
+      "md": "Text[^1].\n\n[^1]: The note.",
+      "saved": "Text[^1].\n\n[^1]: The note.",
+      "nodes": [
+        "doc",
+        "htmlBlock",
+        "htmlInline",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "softbreak",
+      "md": "line one\nline two",
+      "saved": "line one\nline two",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "hardbreak2sp",
+      "md": "line one  \nline two",
+      "saved": "line one  \nline two",
+      "nodes": [
+        "doc",
+        "hardBreak",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "ordered5",
+      "md": "5. five\n6. six",
+      "saved": "5. five\n6. six",
+      "nodes": [
+        "doc",
+        "listItem",
+        "orderedList",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "nested-list",
+      "md": "- a\n  - b\n    - c",
+      "saved": "- a\n  - b\n    - c",
+      "nodes": [
+        "bulletList",
+        "doc",
+        "listItem",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "loose-list",
+      "md": "- a\n\n- b",
+      "saved": "- a\n\n- b",
+      "nodes": [
+        "bulletList",
+        "doc",
+        "listItem",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "js-link",
+      "md": "[x](javascript:alert(1))",
+      "saved": "[x](javascript:alert(1))",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "link"
+      ]
+    },
+    {
+      "name": "data-img",
+      "md": "![x](data:image/png;base64,AAAA)",
+      "saved": "![x](data:image/png;base64,AAAA)",
+      "nodes": [
+        "doc",
+        "image",
+        "paragraph"
+      ],
+      "marks": []
+    },
+    {
+      "name": "autolink",
+      "md": "<https://example.com>",
+      "saved": "[https://example.com](https://example.com)",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "link"
+      ]
+    },
+    {
+      "name": "bareurl",
+      "md": "visit https://example.com now",
+      "saved": "visit [https://example.com](https://example.com) now",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "link"
+      ]
+    },
+    {
+      "name": "empty-para-mid",
+      "md": "a\n\n\n\nb",
+      "saved": "a\n\n\n\nb",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "table-code",
+      "md": "| a | b |\n|---|---|\n| `x\\|y` | z |",
+      "saved": "| a | b |\n| --- | --- |\n| `x\\|y` | z |",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableHeader",
+        "tableRow",
+        "text"
+      ],
+      "marks": [
+        "code"
+      ]
+    },
+    {
+      "name": "table-list",
+      "md": "| a |\n|---|\n| - x |",
+      "saved": "| a |\n| --- |\n| \\- x |",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableHeader",
+        "tableRow",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "html-comment",
+      "md": "<!-- secret note -->\n\ntext",
+      "saved": "<!-- secret note -->\n\ntext",
+      "nodes": [
+        "doc",
+        "htmlBlock",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "details-open",
+      "md": "<details open>\n<summary>S</summary>\n\nbody\n\n</details>",
+      "saved": "<details open>\n<summary>S</summary>\n\nbody\n\n</details>",
+      "nodes": [
+        "details",
+        "detailsContent",
+        "detailsSummary",
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "details-no-summary",
+      "md": "<details>\nbody\n</details>",
+      "saved": "<details>\nbody\n</details>",
+      "nodes": [
+        "doc",
+        "htmlBlock",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "setext",
+      "md": "Title\n=====\n\ntext",
+      "saved": "# Title\n\ntext",
+      "nodes": [
+        "doc",
+        "heading",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "indented-code",
+      "md": "    code here\n    more",
+      "saved": "```\ncode here\nmore\n```",
+      "nodes": [
+        "codeBlock",
+        "doc",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "tilde-fence",
+      "md": "~~~py\nx = 1\n~~~",
+      "saved": "```py\nx = 1\n```",
+      "nodes": [
+        "codeBlock",
+        "doc",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "mathish",
+      "md": "$x$ and \\(y\\)",
+      "saved": "$x$ and (y)",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "escapes-2",
+      "md": "1\\. not a list and \\*not em\\*",
+      "saved": "1\\. not a list and \\*not em\\*",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "link-title",
+      "md": "[a](https://x.com \"T\")",
+      "saved": "[a](https://x.com \"T\")",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "link"
+      ]
+    },
+    {
+      "name": "img-in-link",
+      "md": "[![alt](https://x.com/i.png)](https://x.com)",
+      "saved": "[![alt](https://x.com/i.png)](https://x.com)",
+      "nodes": [
+        "doc",
+        "image",
+        "paragraph"
+      ],
+      "marks": [
+        "link"
+      ]
+    },
+    {
+      "name": "heading7",
+      "md": "####### not heading",
+      "saved": "####### not heading",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "strike-task",
+      "md": "- [x] ~~done~~\n- [ ] todo",
+      "saved": "- [x] ~~done~~\n- [ ] todo",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "taskItem",
+        "taskList",
+        "text"
+      ],
+      "marks": [
+        "strike"
+      ]
+    },
+    {
+      "name": "emphasis-underscore",
+      "md": "_em_ and __strong__",
+      "saved": "*em* and **strong**",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "bold",
+        "italic"
+      ]
+    },
+    {
+      "name": "hr",
+      "md": "a\n\n***\n\nb",
+      "saved": "a\n\n---\n\nb",
+      "nodes": [
+        "doc",
+        "horizontalRule",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "blockquote-nested",
+      "md": "> a\n>> b",
+      "saved": "> a\n>\n> > b",
+      "nodes": [
+        "blockquote",
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "callout-lower",
+      "md": "> [!note]\n> hi",
+      "saved": "> [!note]\n> hi",
+      "nodes": [
+        "callout",
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "quote-then-callout",
+      "md": "> plain\n\n> [!TIP]\n> tip",
+      "saved": "> plain\n\n> [!TIP]\n> tip",
+      "nodes": [
+        "blockquote",
+        "callout",
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "entity",
+      "md": "a &amp; b &copy; &lt;tag&gt;",
+      "saved": "a &amp; b © &lt;tag&gt;",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "trailing-spaces-code",
+      "md": "```\nline   \n```",
+      "saved": "```\nline   \n```",
+      "nodes": [
+        "codeBlock",
+        "doc",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "leading-ws-code",
+      "md": "```\n  indented\n```",
+      "saved": "```\n  indented\n```",
+      "nodes": [
+        "codeBlock",
+        "doc",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "code-empty",
+      "md": "```\n```",
+      "saved": "```\n\n```",
+      "nodes": [
+        "codeBlock",
+        "doc"
+      ],
+      "marks": []
+    },
+    {
+      "name": "script-block",
+      "md": "<script>alert(1)</script>",
+      "saved": "<script>alert(1)</script>",
+      "nodes": [
+        "doc",
+        "htmlBlock",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "iframe-inline",
+      "md": "x <img src=x onerror=alert(1)> y",
+      "saved": "x <img src=x onerror=alert(1)> y",
+      "nodes": [
+        "doc",
+        "htmlInline",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "ordered-paren",
+      "md": "1) a\n2) b",
+      "saved": "1) a\n2) b",
+      "nodes": [
+        "doc",
+        "listItem",
+        "orderedList",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "star-list",
+      "md": "* a\n* b",
+      "saved": "* a\n* b",
+      "nodes": [
+        "bulletList",
+        "doc",
+        "listItem",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "plus-list",
+      "md": "+ a",
+      "saved": "+ a",
+      "nodes": [
+        "bulletList",
+        "doc",
+        "listItem",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "list-after-para",
+      "md": "para\n- item",
+      "saved": "para\n\n- item",
+      "nodes": [
+        "bulletList",
+        "doc",
+        "listItem",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "heading-trailing-hashes",
+      "md": "## Title ##",
+      "saved": "## Title",
+      "nodes": [
+        "doc",
+        "heading",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "link-in-heading",
+      "md": "## [L](https://x.com)",
+      "saved": "## [L](https://x.com)",
+      "nodes": [
+        "doc",
+        "heading",
+        "text"
+      ],
+      "marks": [
+        "link"
+      ]
+    },
+    {
+      "name": "code-in-table-backtick",
+      "md": "| a |\n|---|\n| `|` |",
+      "saved": "| a |\n| --- |\n| `\\|` |",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableHeader",
+        "tableRow",
+        "text"
+      ],
+      "marks": [
+        "code"
+      ],
+      "gfmDiffers": "Normalised. A `|` inside a code span in a table cell stays in the code, as the editor reads it, and writes as `\\|`. GFM splits the cell at that `|`, so the source meant two odd cells."
+    },
+    {
+      "name": "image-title-quote",
+      "md": "![a](https://x.com/i.png \"say \\\"hi\\\"\")",
+      "saved": "![a](https://x.com/i.png \"say \\\"hi\\\"\")",
+      "nodes": [
+        "doc",
+        "image",
+        "paragraph"
+      ],
+      "marks": []
+    },
+    {
+      "name": "url-with-parens",
+      "md": "[w](https://en.wikipedia.org/wiki/Foo_(bar))",
+      "saved": "[w](https://en.wikipedia.org/wiki/Foo_(bar))",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "link"
+      ]
+    },
+    {
+      "name": "angle-link",
+      "md": "[a](<https://x.com/a b>)",
+      "saved": "[a](<https://x.com/a b>)",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "link"
+      ]
+    },
+    {
+      "name": "bold-in-word",
+      "md": "foo**bar**baz",
+      "saved": "foo**bar**baz",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "bold"
+      ]
+    },
+    {
+      "name": "multi-table-align",
+      "md": "| a | b |\n|:--|--:|\n| 1 | 2 |",
+      "saved": "| a | b |\n| :--- | ---: |\n| 1 | 2 |",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableHeader",
+        "tableRow",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "img-and-text-in-link",
+      "md": "[see ![alt](/i.png) here](https://x.com)",
+      "saved": "[see ![alt](/i.png) here](https://x.com)",
+      "nodes": [
+        "doc",
+        "image",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "link"
+      ]
+    },
+    {
+      "name": "nbsp",
+      "md": "a&nbsp;b &mdash; c &#169; &#x2014;",
+      "saved": "a b — c © —",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "mixed-task",
+      "md": "- [ ] a\n- b",
+      "saved": "- [ ] a\n\n* b",
+      "nodes": [
+        "bulletList",
+        "doc",
+        "listItem",
+        "paragraph",
+        "taskItem",
+        "taskList",
+        "text"
+      ],
+      "marks": [],
+      "gfmDiffers": "Normalised. A list that mixes task items and plain items becomes two lists, a task list and a bullet list, because the editor has one list kind for each. The second list takes the next bullet, so the two stay apart."
+    },
+    {
+      "name": "code-in-list",
+      "md": "- item\n\n  ```js\n  x()\n  ```",
+      "saved": "- item\n\n  ```js\n  x()\n  ```",
+      "nodes": [
+        "bulletList",
+        "codeBlock",
+        "doc",
+        "listItem",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "quote-in-list",
+      "md": "- item\n  > quoted",
+      "saved": "- item\n  > quoted",
+      "nodes": [
+        "blockquote",
+        "bulletList",
+        "doc",
+        "listItem",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "table-in-list",
+      "md": "- item\n\n  | a |\n  |---|\n  | b |",
+      "saved": "- item\n\n  | a |\n  | --- |\n  | b |",
+      "nodes": [
+        "bulletList",
+        "doc",
+        "listItem",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableHeader",
+        "tableRow",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "heading-in-quote",
+      "md": "> ## H\n> text",
+      "saved": "> ## H\n>\n> text",
+      "nodes": [
+        "blockquote",
+        "doc",
+        "heading",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "backslash-break",
+      "md": "a\\\nb",
+      "saved": "a  \nb",
+      "nodes": [
+        "doc",
+        "hardBreak",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "kbd",
+      "md": "press <kbd>Ctrl</kbd>",
+      "saved": "press <kbd>Ctrl</kbd>",
+      "nodes": [
+        "doc",
+        "htmlInline",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "html-in-list",
+      "md": "- <b>x</b>",
+      "saved": "- <b>x</b>",
+      "nodes": [
+        "bulletList",
+        "doc",
+        "htmlInline",
+        "listItem",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "link-with-code",
+      "md": "[`code`](https://x.com)",
+      "saved": "[`code`](https://x.com)",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "code",
+        "link"
+      ]
+    },
+    {
+      "name": "bold-link",
+      "md": "**[a](https://x.com)**",
+      "saved": "[**a**](https://x.com)",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "bold",
+        "link"
+      ]
+    },
+    {
+      "name": "empty-link-text",
+      "md": "[](https://x.com)",
+      "saved": "[](https://x.com)",
+      "nodes": [
+        "doc",
+        "htmlInline",
+        "paragraph"
+      ],
+      "marks": []
+    },
+    {
+      "name": "img-no-alt",
+      "md": "![](https://x.com/i.png)",
+      "saved": "![](https://x.com/i.png)",
+      "nodes": [
+        "doc",
+        "image",
+        "paragraph"
+      ],
+      "marks": []
+    },
+    {
+      "name": "task-nested",
+      "md": "- [ ] a\n  - [x] b",
+      "saved": "- [ ] a\n  - [x] b",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "taskItem",
+        "taskList",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "ordered-nested",
+      "md": "1. a\n   1. b\n2. c",
+      "saved": "1. a\n   1. b\n2. c",
+      "nodes": [
+        "doc",
+        "listItem",
+        "orderedList",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "table-empty-cell",
+      "md": "| a | b |\n|---|---|\n|  | x |",
+      "saved": "| a | b |\n| --- | --- |\n|  | x |",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableHeader",
+        "tableRow",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "table-no-body",
+      "md": "| a | b |\n|---|---|",
+      "saved": "| a | b |\n| --- | --- |",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "table",
+        "tableHeader",
+        "tableRow",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "table-inline",
+      "md": "| **b** | [l](https://x.com) |\n|---|---|\n| ![i](/a.png) | `c` |",
+      "saved": "| **b** | [l](https://x.com) |\n| --- | --- |\n| ![i](/a.png) | `c` |",
+      "nodes": [
+        "doc",
+        "image",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableHeader",
+        "tableRow",
+        "text"
+      ],
+      "marks": [
+        "bold",
+        "code",
+        "link"
+      ]
+    },
+    {
+      "name": "callout-nested",
+      "md": "> [!WARNING]\n> - a\n> - b\n>\n> ```\n> code\n> ```",
+      "saved": "> [!WARNING]\n> - a\n> - b\n>\n> ```\n> code\n> ```",
+      "nodes": [
+        "bulletList",
+        "callout",
+        "codeBlock",
+        "doc",
+        "listItem",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "details-nested",
+      "md": "<details>\n<summary>Outer</summary>\n\n<details>\n<summary>Inner</summary>\n\nx\n\n</details>\n\n</details>",
+      "saved": "<details>\n<summary>Outer</summary>\n\n<details>\n<summary>Inner</summary>\n\nx\n\n</details>\n\n</details>",
+      "nodes": [
+        "details",
+        "detailsContent",
+        "detailsSummary",
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "details-summary-markup",
+      "md": "<details>\n<summary>**bold** & co</summary>\n\nx\n\n</details>",
+      "saved": "<details>\n<summary>**bold** & co</summary>\n\nx\n\n</details>",
+      "nodes": [
+        "details",
+        "detailsContent",
+        "detailsSummary",
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "link-title-quote",
+      "md": "[a](https://x.com \"say \\\"hi\\\"\")",
+      "saved": "[a](https://x.com \"say \\\"hi\\\"\")",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "link"
+      ]
+    },
+    {
+      "name": "link-paren-unbalanced",
+      "md": "[a](https://x.com/a\\))",
+      "saved": "[a](<https://x.com/a)>)",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "link"
+      ]
+    },
+    {
+      "name": "frontmatter",
+      "md": "---\ntitle: x\n---\n\nbody",
+      "saved": "---\ntitle: x\n---\n\nbody",
+      "nodes": [
+        "doc",
+        "frontMatter",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "double-space-in-text",
+      "md": "a  b",
+      "saved": "a  b",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "leading-space-para",
+      "md": "   indented para",
+      "saved": "indented para",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "trailing-backslash",
+      "md": "end\\",
+      "saved": "end\\\\",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "star-in-text",
+      "md": "2 * 3 * 4",
+      "saved": "2 \\* 3 \\* 4",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "underscore-word",
+      "md": "snake_case_name",
+      "saved": "snake\\_case\\_name",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "pipe-in-text",
+      "md": "a | b",
+      "saved": "a | b",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "hash-in-mid",
+      "md": "C# and #tag",
+      "saved": "C# and #tag",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "number-dot",
+      "md": "2024. was a year",
+      "saved": "2024. was a year",
+      "nodes": [
+        "doc",
+        "listItem",
+        "orderedList",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "html-block-then-text",
+      "md": "<div>\nhi\n</div>\ntext right after",
+      "saved": "<div>\nhi\n</div>\ntext right after",
+      "nodes": [
+        "doc",
+        "htmlBlock",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "empty-blockquote",
+      "md": ">",
+      "saved": ">",
+      "nodes": [
+        "blockquote",
+        "doc",
+        "paragraph"
+      ],
+      "marks": []
+    },
+    {
+      "name": "nbsp-numeric",
+      "md": "A&nbsp;B &#8212; C &#x2713; D",
+      "saved": "A B — C ✓ D",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "setext-two-lines",
+      "md": "Line one\nline two\n========\n\nAfter",
+      "saved": "# Line one line two\n\nAfter",
+      "nodes": [
+        "doc",
+        "heading",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "ordered-code",
+      "md": "1. Run this:\n\n   ```bash\n   npm test\n   ```\n\n2. Then this",
+      "saved": "1. Run this:\n\n   ```bash\n   npm test\n   ```\n\n2. Then this",
+      "nodes": [
+        "codeBlock",
+        "doc",
+        "listItem",
+        "orderedList",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "ordered-ten",
+      "md": "9. nine\n10. ten\n    - under ten\n11. eleven",
+      "saved": "9. nine\n10. ten\n    - under ten\n11. eleven",
+      "nodes": [
+        "bulletList",
+        "doc",
+        "listItem",
+        "orderedList",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "bullet-code",
+      "md": "- item\n\n  ```js\n  x()\n  ```\n- next",
+      "saved": "- item\n\n  ```js\n  x()\n  ```\n\n- next",
+      "nodes": [
+        "bulletList",
+        "codeBlock",
+        "doc",
+        "listItem",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "callout-table",
+      "md": "> [!NOTE]\n> | a | b |\n> | --- | --- |\n> | 1 | 2 |",
+      "saved": "> [!NOTE]\n> | a | b |\n> | --- | --- |\n> | 1 | 2 |",
+      "nodes": [
+        "callout",
+        "doc",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableHeader",
+        "tableRow",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "alert-lower",
+      "md": "> [!note]\n> lower case tone",
+      "saved": "> [!note]\n> lower case tone",
+      "nodes": [
+        "callout",
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "quote-plain-then-alert-like",
+      "md": "> [!FOO]\n> not a tone",
+      "saved": "> \\[!FOO\\]\n> not a tone",
+      "nodes": [
+        "blockquote",
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "html-block-md-inside",
+      "md": "<div>\n\n**bold inside div**\n\n</div>",
+      "saved": "<div>\n\n**bold inside div**\n\n</div>",
+      "nodes": [
+        "doc",
+        "htmlBlock",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "bold"
+      ]
+    },
+    {
+      "name": "star-bullets-plus",
+      "md": "* a\n* b\n\n+ c\n+ d",
+      "saved": "* a\n* b\n\n+ c\n+ d",
+      "nodes": [
+        "bulletList",
+        "doc",
+        "listItem",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "image-in-link",
+      "md": "[![badge](https://img.example/b.svg)](https://ci.example)",
+      "saved": "[![badge](https://img.example/b.svg)](https://ci.example)",
+      "nodes": [
+        "doc",
+        "image",
+        "paragraph"
+      ],
+      "marks": [
+        "link"
+      ]
+    },
+    {
+      "name": "link-parens",
+      "md": "[wiki](https://en.wikipedia.org/wiki/Foo_(bar))",
+      "saved": "[wiki](https://en.wikipedia.org/wiki/Foo_(bar))",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "link"
+      ]
+    },
+    {
+      "name": "code-with-backticks",
+      "md": "Use `` a`b `` and ``` `` ```",
+      "saved": "Use ``a`b`` and ``` `` ```",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "code"
+      ]
+    },
+    {
+      "name": "heading-break",
+      "md": "# Title\nText right under",
+      "saved": "# Title\n\nText right under",
+      "nodes": [
+        "doc",
+        "heading",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "table-no-leading-pipe",
+      "md": "a | b\n--- | ---\n1 | 2",
+      "saved": "| a | b |\n| --- | --- |\n| 1 | 2 |",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableHeader",
+        "tableRow",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "details-nested-md",
+      "md": "<details>\n<summary>More</summary>\n\n- a\n- b\n\n```js\nx\n```\n\n</details>",
+      "saved": "<details>\n<summary>More</summary>\n\n- a\n- b\n\n```js\nx\n```\n\n</details>",
+      "nodes": [
+        "bulletList",
+        "codeBlock",
+        "details",
+        "detailsContent",
+        "detailsSummary",
+        "doc",
+        "listItem",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "task-ordered",
+      "md": "1. [ ] ordered task",
+      "saved": "1. [ ] ordered task",
+      "nodes": [
+        "doc",
+        "listItem",
+        "orderedList",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "empty-list-item",
+      "md": "- a\n-\n- c",
+      "saved": "- a\n-\n- c",
+      "nodes": [
+        "bulletList",
+        "doc",
+        "listItem",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "hr-variants",
+      "md": "***\n\n___\n\n- - -",
+      "saved": "---\n\n---\n\n---",
+      "nodes": [
+        "doc",
+        "horizontalRule"
+      ],
+      "marks": []
+    },
+    {
+      "name": "para-with-trailing-hash",
+      "md": "Price is 5 #",
+      "saved": "Price is 5 #",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "autolink-email",
+      "md": "<me@example.com>",
+      "saved": "[me@example.com](mailto:me@example.com)",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "link"
+      ]
+    },
+    {
+      "name": "image-and-text-in-link",
+      "md": "[see ![a](/i.png) here](https://x.example)",
+      "saved": "[see ![a](/i.png) here](https://x.example)",
+      "nodes": [
+        "doc",
+        "image",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "link"
+      ]
+    },
+    {
+      "name": "empty-link",
+      "md": "Before [](https://x.example) after",
+      "saved": "Before [](https://x.example) after",
+      "nodes": [
+        "doc",
+        "htmlInline",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "entities-named-numeric",
+      "md": "A&nbsp;B &copy; &mdash; &#169; &#x2713; &unknownthing; a & b",
+      "saved": "A B © — © ✓ &amp;unknownthing; a &amp; b",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "code-span-backtick",
+      "md": "Use `` a`b `` and ``` `` ``` here.",
+      "saved": "Use ``a`b`` and ``` `` ``` here.",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "code"
+      ]
+    },
+    {
+      "name": "link-destination-space",
+      "md": "[a](<https://x.example/a b>)",
+      "saved": "[a](<https://x.example/a b>)",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "link"
+      ]
+    },
+    {
+      "name": "link-title-quote-2",
+      "md": "[a](https://x.example \"say \\\"hi\\\"\")",
+      "saved": "[a](https://x.example \"say \\\"hi\\\"\")",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "link"
+      ]
+    },
+    {
+      "name": "ordered-child-indent",
+      "md": "1. one\n   - under one\n2. two",
+      "saved": "1. one\n   - under one\n2. two",
+      "nodes": [
+        "bulletList",
+        "doc",
+        "listItem",
+        "orderedList",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "ordered-loose-continuation",
+      "md": "1. first\n\n   more of first\n\n2. second",
+      "saved": "1. first\n\n   more of first\n\n2. second",
+      "nodes": [
+        "doc",
+        "listItem",
+        "orderedList",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "adjacent-lists",
+      "md": "- a\n- b\n\n* c\n* d\n\n1. e\n\n1) f",
+      "saved": "- a\n- b\n\n* c\n* d\n\n1. e\n\n1) f",
+      "nodes": [
+        "bulletList",
+        "doc",
+        "listItem",
+        "orderedList",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "front-matter",
+      "md": "---\ntitle: Refunds\nowner: ops\n---\n\nBody text.",
+      "saved": "---\ntitle: Refunds\nowner: ops\n---\n\nBody text.",
+      "nodes": [
+        "doc",
+        "frontMatter",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "details-open-2",
+      "md": "<details open>\n<summary>Shown</summary>\n\nBody.\n\n</details>",
+      "saved": "<details open>\n<summary>Shown</summary>\n\nBody.\n\n</details>",
+      "nodes": [
+        "details",
+        "detailsContent",
+        "detailsSummary",
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "ref-definitions",
+      "md": "See [the doc][1].\n\n[1]: https://example.com/a\n[unused]: https://example.com/b",
+      "saved": "See [the doc](https://example.com/a).",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "link"
+      ]
+    },
+    {
+      "name": "task-in-ordered",
+      "md": "1. [ ] open\n2. [x] done",
+      "saved": "1. [ ] open\n2. [x] done",
+      "nodes": [
+        "doc",
+        "listItem",
+        "orderedList",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "heading-trailing-hash",
+      "md": "## C# #",
+      "saved": "## C#",
+      "nodes": [
+        "doc",
+        "heading",
+        "text"
+      ],
+      "marks": []
+    }
+  ]
+}
