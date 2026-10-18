@@ -386,3 +386,17 @@ def test_the_run_boundary_opens_and_releases_the_holder() -> None:
     assert opened < source.index("_asks_token = open_asks_for_run()") < opened + 600
     released = source.index("release_cards_switch(_cards_token)")
     assert released < source.index("release_asks(_asks_token)") < released + 200
+
+
+def test_the_tool_and_the_gateway_name_one_record_of_a_shown_card() -> None:
+    """The tool writes the record of a shown card, and the gateway clears
+    it, so both read one namespace and one key shape (question, member)."""
+    import acb_skills.crm_tools as tools
+    from gateway.routes.crm import questions as routes
+
+    assert tools.SHOWN_NAMESPACE == routes.SHOWN_NAMESPACE == "crm_question_shown"
+    assert tools.SHOWN_TTL_S == 24 * 3600
+    src = (REPO / "packages/acb_skills/acb_skills/crm_tools.py").read_text(encoding="utf-8")
+    assert "key(SHOWN_NAMESPACE, question_id, member)" in src
+    gw = (GATEWAY / "routes/crm/questions.py").read_text(encoding="utf-8")
+    assert "key(SHOWN_NAMESPACE, qid, member)" in gw

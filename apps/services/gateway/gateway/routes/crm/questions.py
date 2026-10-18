@@ -744,12 +744,14 @@ async def answer_question(
             # CRM-Q32-8: an admin write of a part clears its proposals. The
             # plan lock is held, so the cursor row comes second.
             await clear_proposals(db, org, [question_id])
-            return answered
     except DBAPIError as exc:
         conflict = _guard_db(exc)
         if conflict is not None:
             raise conflict from exc
         raise
+    # After the commit: the card of this question is closed for each member.
+    await forget_shown(org, [question_id])
+    return answered
 
 
 class DismissOut(BaseModel):
@@ -780,6 +782,7 @@ async def dismiss_question(
                                       {"schema": q.hash})
         await refresh_seen(db, org)
         await clear_proposals(db, org, [q.id])
+    await forget_shown(org, [q.id])
     return DismissOut(id=q.id)
 
 
@@ -895,6 +898,8 @@ async def accept_best(
         if conflict is not None:
             raise conflict from exc
         raise
+    if not payload.dry_run:
+        await forget_shown(org, [q.id for q, _best in guesses])
     return AcceptBestOut(
         dry_run=payload.dry_run,
         items=[BestGuessModel(id=q.id, label=q.label, part=q.part, value=best.value,
@@ -913,6 +918,43 @@ DEFAULT_HOLD_HOURS = 24
 
 #: The Redis namespace of a hold. The key holds the member and the id.
 HOLD_NAMESPACE = "crm_question_hold"
+
+#: The Redis namespace of a card that a run showed to a member (CRM-Q32-8,
+#: the late pick). ``acb_skills.crm_tools`` writes ``key(SHOWN_NAMESPACE,
+#: question id, member)`` when it gives a CLARIFY block, for 24 hours, so a
+#: pick that arrives in a later run still passes the gate of
+#: ``crm_answer_question``. The same name lives in ``crm_tools.py``, and a
+#: test holds the two equal.
+SHOWN_NAMESPACE = "crm_question_shown"
+
+
+async def forget_shown(org: str, question_ids: Sequence[str], *,
+                       member: str | None = None) -> None:
+    """Remove the record that a card of each of *question_ids* was shown:
+    for *member* only, or for each member when *member* is None (an admin
+    wrote the answer). It runs after the commit of the write. A Redis
+    outage only logs: the answer stands, and a stale record lets a late
+    pick reach ``/reply``, which checks the question again."""
+    from acb_common.tenant_redis import OUTAGE_ERRORS, key, match, organization_scope
+
+    wanted = [str(i) for i in dict.fromkeys(question_ids) if i]
+    if not wanted:
+        return
+    try:
+        with organization_scope(org):
+            redis = _redis()
+            for qid in wanted:
+                if member is not None:
+                    await redis.delete(key(SHOWN_NAMESPACE, qid, member))
+                    continue
+                head = key(SHOWN_NAMESPACE, qid).value + ":"
+                async for raw in redis.scan_iter(match(SHOWN_NAMESPACE, qid)):
+                    name = raw.decode() if isinstance(raw, bytes) else str(raw)
+                    who = name[len(head):] if name.startswith(head) else ""
+                    if who and ":" not in who:
+                        await redis.delete(key(SHOWN_NAMESPACE, qid, who))
+    except OUTAGE_ERRORS:
+        _log.warning("crm.questions.shown_clear_failed", organization_id=org)
 
 #: The most ids that one card read takes.
 ASK_IDS_MAX = 2
@@ -1305,19 +1347,23 @@ async def reply_question(
                 if q.reason == qs.REASON_ANSWERED:
                     raise _bad_choice()
                 await hold(org, member, q.id)
-                return ReplyOut(id=q.id, kind=q.kind, result="default",
-                                line="Metorite uses the default for you for 24 hours.")
-            ok, value = qs.chat_choice(q, choice)
-            if not ok:
-                raise _bad_choice()
-            if admin:
-                return await _admin_reply(db, org, by, q, value, inputs)
-            return await _member_reply(db, org, member, q, value, inputs)
+                out = ReplyOut(id=q.id, kind=q.kind, result="default",
+                               line="Metorite uses the default for you for 24 hours.")
+            else:
+                ok, value = qs.chat_choice(q, choice)
+                if not ok:
+                    raise _bad_choice()
+                out = (await _admin_reply(db, org, by, q, value, inputs) if admin
+                       else await _member_reply(db, org, member, q, value, inputs))
     except DBAPIError as exc:
         conflict = _guard_db(exc)
         if conflict is not None:
             raise conflict from exc
         raise
+    # After the commit: the pick closes the card of this member. An admin's
+    # answer closes it for each member, because the question is answered.
+    await forget_shown(org, [q.id], member=None if out.result == "answer" else member)
+    return out
 
 
 # ── The check of a sum (CRM-Q32-9, §18.14.10) ───────────────────────────────
@@ -1433,6 +1479,7 @@ __all__ = [
     "clear_proposals",
     "count_open",
     "dismiss_question",
+    "forget_shown",
     "held_ids",
     "hold",
     "list_questions",

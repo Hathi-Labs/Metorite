@@ -40,6 +40,7 @@ pytest.importorskip("sqlalchemy")
 
 from sqlalchemy import text
 
+from tests.unit._crm_redis_fake import RawRedis, tenant_client
 from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_crm_questions_answer_r8 import approved, item_of, versions
 from tests.unit.test_crm_questions_r8 import (  # noqa: F401
@@ -74,26 +75,19 @@ def member(org: str, n: int = 1, *, crm: bool = True) -> Any:
     )
 
 
-class FakeHold:
-    """The Redis of a hold: ``exists`` and ``setex`` on a ``TenantKey``."""
-
-    def __init__(self) -> None:
-        self.store: dict[str, tuple[int, str]] = {}
-
-    async def exists(self, key: Any) -> int:
-        return int(key.value in self.store)
-
-    async def setex(self, key: Any, seconds: int, value: str) -> bool:
-        self.store[key.value] = (seconds, value)
-        return True
+class FakeHold(RawRedis):
+    """The Redis of a hold and of a shown card: a raw fake under the real
+    tenant wrapper, so each key carries the tenant prefix."""
 
 
 @pytest.fixture
 def hold(monkeypatch) -> FakeHold:
+    import acb_skills.crm_tools as tools
     from gateway.routes.crm import questions as routes
 
     fake = FakeHold()
-    monkeypatch.setattr(routes, "_redis", lambda: fake)
+    monkeypatch.setattr(routes, "_redis", lambda: tenant_client(fake))
+    monkeypatch.setattr(tools, "_shown_redis", lambda: tenant_client(fake))
     return fake
 
 
@@ -650,3 +644,84 @@ async def test_the_chat_card_makes_no_decide_call(
     assert (await reply(p, member(p.org_a, 2), "revenue", "@default")).status_code == 200
     assert (await reply(p, _user(p.org_a), "revenue", "invoice")).status_code == 200
     assert decide_calls == []
+
+
+# ── Follow-up: a late pick, through the record of a shown card ──────────────
+
+
+def _shown_key(org: str, qid: str, email: str) -> str:
+    return f"cc:{org}:crm_question_shown:{qid}:{email}"
+
+
+async def _record(p: Any, monkeypatch: Any, org: str, user: Any, qid: str) -> None:
+    """A run of *org* that showed *user* the card of *qid*."""
+    import acb_skills.crm_tools as tools
+
+    monkeypatch.setattr(tools, "_run_org", lambda: org)
+    monkeypatch.setattr(tools, "_current_user_email", lambda: user.email)
+    assert await tools._record_shown(qid) is True
+
+
+async def test_a_late_pick_passes_and_its_record_clears(
+    chat_env, app_engine, hold, monkeypatch, card_run,
+) -> None:
+    """A card answered in a later run: a fresh holder that showed nothing.
+    The record of the shown card lets the pick through, and the reply
+    clears the record of that member."""
+    p = chat_env
+    seed_a(p)
+    user = member(p.org_a)
+    await _record(p, monkeypatch, p.org_a, user, KEY)
+    assert _shown_key(p.org_a, KEY, user.email) in hold.store
+    assert card_run.asked == set()  # this run showed no card
+    (out,) = await _through_the_tool(p, user, monkeypatch, [(KEY, "Part_A")])
+    assert out.startswith("This uses Part A, as you chose.")
+    assert proposals(p, p.org_a)[KEY][0]["value"] == "Part_A"
+    assert _shown_key(p.org_a, KEY, user.email) not in hold.store
+    # The record is spent: a second late pick fails.
+    (again,) = await _through_the_tool(p, user, monkeypatch, [(KEY, "Part_B")])
+    from acb_skills.crm_tools import NO_CARD_PICK
+
+    assert again == NO_CARD_PICK
+
+
+async def test_org_b_cannot_use_the_record_of_org_a(
+    chat_env, app_engine, hold, monkeypatch, card_run,
+) -> None:
+    """The record carries the tenant prefix of org A. The same member email
+    in a run of org B reads no record, and org B gets no proposal."""
+    from acb_skills.crm_tools import NO_CARD_PICK
+
+    p = chat_env
+    seed_a(p)
+    seed_b(p)
+    await _record(p, monkeypatch, p.org_a, member(p.org_a), "purpose:Ledgers")
+    await _record(p, monkeypatch, p.org_a, member(p.org_a), KEY)
+    import acb_skills.crm_tools as tools
+
+    monkeypatch.setattr(tools, "_run_org", lambda: p.org_b)
+    outs = await _through_the_tool(p, member(p.org_b), monkeypatch,
+                                   [("purpose:Ledgers", "payment_out"), (KEY, "Part_A")])
+    assert outs == [NO_CARD_PICK, NO_CARD_PICK]
+    assert proposals(p, p.org_b) == {} and proposals(p, p.org_a) == {}
+
+
+async def test_an_admin_answer_and_a_default_clear_the_records(
+    chat_env, app_engine, hold, monkeypatch, card_run,
+) -> None:
+    p = chat_env
+    seed_a(p)
+    one, two = member(p.org_a, 1), member(p.org_a, 2)
+    for user in (one, two):
+        await _record(p, monkeypatch, p.org_a, user, KEY)
+    await _record(p, monkeypatch, p.org_a, one, "revenue")
+    # "@default" of member 2 clears its own record of revenue only.
+    await _record(p, monkeypatch, p.org_a, two, "revenue")
+    assert (await reply(p, two, "revenue", "@default")).status_code == 200
+    assert _shown_key(p.org_a, "revenue", two.email) not in hold.store
+    assert _shown_key(p.org_a, "revenue", one.email) in hold.store
+    # An admin's answer closes the card of KEY for each member.
+    got = await call(p, _user(p.org_a), "POST", f"{Q}/{KEY}/answer", {"value": "Part_A"})
+    assert got.status_code == 200, got.text
+    assert not [k for k in hold.store if ":crm_question_shown:" + KEY + ":" in k]
+    assert _shown_key(p.org_a, "revenue", one.email) in hold.store
