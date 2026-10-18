@@ -129,9 +129,20 @@ def declined_form() -> str:
     return f"{NOT_SUBMITTED} {declined_text(what='form')}"
 
 
-async def _ask(spec: dict[str, Any]) -> dict[str, Any] | str:
+def declined_plan() -> str:
+    """What ``propose_plan`` says when the member pressed the plan card's
+    Cancel: a cancel, not a "not now" (review of #1152). Nothing was made,
+    and the plan is not proposed again unless the member asks."""
+    return (
+        f"{NOT_SUBMITTED} The member cancelled the plan. Nothing was created. "
+        "Do not propose this plan again unless the member asks for it."
+    )
+
+
+async def _ask(spec: dict[str, Any], *, declined: Any = None) -> dict[str, Any] | str:
     """The values the member submitted, or the tool's reply when there are
-    none: :data:`NOT_SUBMITTED`, or :func:`declined_form` for a "Not now"."""
+    none: :data:`NOT_SUBMITTED`, or for a "Not now" *declined*'s text
+    (:func:`declined_form` when the caller names none)."""
     result = await _emit({**spec, "hitl": True})
     if not result.get("ok"):
         raise GatewayRefusal(
@@ -139,7 +150,7 @@ async def _ask(spec: dict[str, Any]) -> dict[str, Any] | str:
             "Pass the changes as arguments to update_task or update_project instead."
         )
     if result.get("declined") is True:
-        return declined_form()
+        return (declined or declined_form)()
     values = _answer(result.get("response"))
     return NOT_SUBMITTED if values is None else values
 
@@ -1012,7 +1023,8 @@ async def propose_plan(
                 "risks": [r.strip() for r in str(risks or "").splitlines() if r.strip()][:5],
                 "submitLabel": "Review plan",
             },
-        )
+        ),
+        declined=declined_plan,
     )
     if isinstance(values, str):
         return values

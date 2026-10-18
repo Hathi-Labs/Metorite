@@ -106,18 +106,20 @@ def test_the_decline_text_says_what_to_do_in_plain_words():
     assert text.startswith("The member chose not to answer this question now.")
     for words in (
         "Do not ask it again in this reply.",
-        "Continue with what you can do without the answer.",
-        "Where the question states a default, use it.",
-        "Tell the member in one line what you assumed.",
+        "Do not act on this question, or on anything that depends on it.",
+        "Do only the work that does not depend on it, or stop and let the member lead.",
+        "Tell the member in one line what you did not do.",
         "The member can come back to it later.",
     ):
         assert words in text
+    # With no stated default there is nothing to assume.
+    assert "assumed" not in text and "use the default" not in text.lower()
 
 
 def test_the_decline_text_names_the_crm_default_and_holds_the_question():
     text = at.declined_text(_CRM_CARD)
-    assert "Use the default: Billed, until a CRM admin answers." in text
-    assert "Where the question states a default" not in text
+    assert "Use the default that the question states: Billed, until a CRM admin answers." in text
+    assert "Do not act on" not in text
     assert 'crm_answer_question(question_id="revenue", choice="@default")' in text
     assert "24 hours" in text
 
@@ -127,18 +129,58 @@ def test_the_crm_default_key_is_the_crm_tools_key():
     assert at.CRM_DEFAULT_KEY == crm_tools.DEFAULT_KEY
 
 
-def test_the_recommended_option_is_the_default_of_a_plain_card():
-    qs = [
-        {"header": "Env", "question": "Where?", "options": [
-            {"label": "Staging", "recommended": True}, {"label": "Production"}]},
-        {"header": "When", "question": "When?", "options": [{"label": "Now"}]},
-    ]
-    assert at.question_defaults(qs) == [("Env", "Staging (the recommended choice)")]
-    assert "Use the default: Staging (the recommended choice)." in at.declined_text(qs)
-    two = [qs[0], {**qs[0], "header": "Region"}]
-    text = at.declined_text(two)
-    assert 'For "Env", use the default: Staging' in text
-    assert 'For "Region", use the default: Staging' in text
+def test_a_recommended_option_is_never_adopted_as_the_default():
+    """Review of #1152. "Archive the 8 done tasks?", Yes recommended, then
+    Not now: the model must not archive. A decline is never an answer."""
+    card = [{"header": "Archive", "question": "Archive the 8 done tasks?", "options": [
+        {"label": "Yes", "recommended": True}, {"label": "No"}]}]
+    assert at.question_defaults(card) == []
+    text = at.declined_text(card)
+    assert "Yes" not in text and "recommended" not in text
+    assert "use the default" not in text.lower() and "assumed" not in text
+    assert "Do not act on this question, or on anything that depends on it." in text
+    assert "stop and let the member lead" in text
+
+
+def test_only_a_default_the_question_states_is_named():
+    stated = {"header": "Env", "question": "Where?", "default": "Staging, until you say",
+              "options": [{"label": "Production", "recommended": True}, {"label": "Staging"}]}
+    plain = {"header": "Region", "question": "Which?", "options": [
+        {"label": "EU", "recommended": True}, {"label": "US"}]}
+    assert at.question_defaults([stated, plain]) == [("Env", "Staging, until you say")]
+    one = at.declined_text([stated])
+    assert "Use the default that the question states: Staging, until you say." in one
+    assert "Production" not in one and "Do not act on" not in one
+    # A card of two: the one with a default uses it, and the other is left
+    # alone with everything that depends on it.
+    two = at.declined_text([stated, plain])
+    assert 'For "Env", use the default that it states: Staging, until you say.' in two
+    assert "Do not act on a question with no stated default, or on anything that depends on it." in two
+    assert "EU" not in two
+    assert "what you assumed" in two and "what you did not do" in two
+
+
+def test_ask_questions_keeps_a_stated_default_on_the_card():
+    tid = "t-default"
+
+    async def go() -> dict:
+        executor._stream_relay_thread_id.set(tid)
+        queue: asyncio.Queue = asyncio.Queue()
+        executor._active_run_queue.set(queue)
+        run = asyncio.create_task(at.ask_questions(json.dumps({"questions": [
+            {"header": "Env", "question": "Where?", "default": "Staging",
+             "options": [{"label": "Staging"}, {"label": "Production"}]},
+            {"header": "Plain", "question": "Which?", "options": [{"label": "A"}]},
+        ]})))
+        evt = await asyncio.wait_for(queue.get(), timeout=2)
+        rid = evt["value"]["request_id"]
+        assert executor.resolve_user_input(rid, "", thread_id=tid, declined=True)
+        await run
+        return evt["value"]
+
+    value = asyncio.run(go())
+    assert value["questions"][0]["default"] == "Staging"
+    assert "default" not in value["questions"][1], "the key goes only when set"
 
 
 def test_only_a_json_true_declines():
@@ -176,7 +218,7 @@ def test_a_decline_resumes_ask_questions_and_names_the_default(monkeypatch):
     asyncio.run(go())
     assert out["cancelled"] is False
     assert out["result"] == at.declined_text(_CRM_CARD)
-    assert "Use the default: Billed, until a CRM admin answers." in out["result"]
+    assert "Use the default that the question states: Billed, until a CRM admin answers." in out["result"]
     assert out["again"] is False
 
 
@@ -278,6 +320,32 @@ async def test_a_declined_form_writes_nothing_and_says_so(monkeypatch):
     assert out == F.declined_form()
     assert out.startswith(F.NOT_SUBMITTED)
     assert "The member chose not to answer this form now." in out
+
+
+@pytest.mark.asyncio
+async def test_the_plan_card_s_cancel_reads_as_a_cancel(monkeypatch):
+    """Review of #1152: the plan card's Cancel sends the decline, and the
+    model reads that the member cancelled the plan, not "not now"."""
+    pytest.importorskip("skill_projects", reason="skill-projects not installed")
+    import skill_projects
+    from skill_projects import forms as F
+
+    from tests.unit._projects_agent_fakes import approve, fake_gateway, writes
+    from tests.unit.test_projects_agent_writes import PLAN_DEPS, _plan_gateway
+
+    async def _declined(_ui: str) -> dict:
+        return {"ok": True, "declined": True, "response": None, "note": "x"}
+
+    monkeypatch.setattr(wa, "emit_generative_ui", _declined)
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    out = await skill_projects.propose_plan("Frame", json.dumps(PLAN_DEPS))
+    assert out == F.declined_plan()
+    assert out.startswith(F.NOT_SUBMITTED)
+    assert "The member cancelled the plan. Nothing was created." in out
+    assert "Do not propose this plan again unless the member asks for it." in out
+    assert "not to answer" not in out
+    assert asked == [] and writes(calls) == []
 
 
 # ---------------------------------------------------------------------------
@@ -476,6 +544,46 @@ def test_a_live_decline_closes_the_durable_row(flag_on, ask_db, liveness):
 
     asyncio.run(go())
     assert at.is_declined(out["result"])
+    row = ask_db.rows[(_ORG_A, rid)]
+    assert row["state"] == "closed" and row["answer"] is None
+
+
+def test_a_decline_during_the_park_closes_the_row(flag_on, ask_db, liveness, monkeypatch):
+    """Review of #1152. The decline lands while the row moves to parked. The
+    run takes it and goes on, and the row says closed, never answered."""
+    tid, rid = "t-race-decline", uuid.uuid4().hex
+    liveness.store[f"cc:runactor:{tid}"] = _ALICE
+    real_move = ask_db.move_ask
+
+    def _move_and_decline(org, req, *, to, from_states, answer=None):
+        row = real_move(org, req, to=to, from_states=from_states, answer=answer)
+        if to == "parked":
+            assert executor.resolve_user_input(rid, "", thread_id=tid, declined=True)
+        return row
+
+    monkeypatch.setattr(pending_ask, "move_ask", _move_and_decline)
+    out: dict[str, Any] = {}
+
+    async def _the_run() -> None:
+        executor._stream_relay_thread_id.set(tid)
+        _bind(_ORG_A)
+        fut = asyncio.get_running_loop().create_future()
+        executor._pending_user_input.park(rid, fut, tid)
+        await executor._push_sse_to_stream(tid, _line({
+            "type": "CUSTOM", "name": "elicitation_requested",
+            "value": {"questions": _CRM_CARD, "request_id": rid},
+        }))
+        out["result"] = await executor.wait_user_future(fut, 30, thread_id=tid)
+
+    async def go() -> None:
+        run = asyncio.create_task(_the_run())
+        stream_relay._DETACHED_TASKS[tid] = run
+        await asyncio.wait_for(run, timeout=5)
+        out["cancelled"] = run.cancelled()
+
+    asyncio.run(go())
+    assert at.is_declined(out["result"]), "the run took the decline"
+    assert out["cancelled"] is False
     row = ask_db.rows[(_ORG_A, rid)]
     assert row["state"] == "closed" and row["answer"] is None
 

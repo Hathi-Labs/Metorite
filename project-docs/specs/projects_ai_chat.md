@@ -6014,11 +6014,23 @@ and not a stop.
   gives the model the tool result. It tells the model these things:
   - The member chose not to answer now.
   - Do not ask the question again in this reply.
-  - Continue without the answer, and use the stated default.
-  - Tell the member in one line what you assumed.
+  - Where the question states a default, continue with that default, and
+    tell the member in one line what you assumed.
+  - Where the question states no default, do not act on the question or on
+    anything that depends on it. Do only the work that does not depend on
+    it, or stop and let the member lead. Tell the member in one line what
+    you did not do.
   - The member can come back to it later.
-- The text names the default of each question that has one. A CRM card uses
-  its "Use the default" option. Any other card uses its recommended option.
+- **A decline is never an answer.** Only a default that the question states
+  counts. A CRM card states one in its "Use the default" option. Any other
+  card states one only in its own `default` field. A recommended option is
+  not a default. For example, "Archive the 8 done tasks?" with Yes
+  recommended, then Not now, must not lead to an archive (review of #1152).
+- The plan card's Cancel tells the model that the member cancelled the plan.
+  The run created nothing, and the model does not propose the plan again unless
+  the member asks for it (`forms.declined_plan`).
+- A decline that lands while the run parks closes the durable row, as any
+  other decline does. It never records an empty answer.
 - A CRM card also tells the model to send `@default`. That keeps the question
   away from the member for 24 hours, in Redis. This is the cheap durable
   record. A general "asked and declined" record needs a new state in
