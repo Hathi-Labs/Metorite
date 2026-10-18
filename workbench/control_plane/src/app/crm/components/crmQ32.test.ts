@@ -13,8 +13,12 @@ import { clearAll, peek, put } from "@/lib/dataCache";
 
 import * as api from "../lib/api";
 import { CrmError } from "../lib/api";
+import * as questionsLib from "../lib/questions";
 import {
   AUTO,
+  NOT_RELEVANT_TIP,
+  PURPOSE_WORDS,
+  REVENUE_DEFAULT_BADGE,
   LET_METORITE,
   NOT_DISMISSED_LINE,
   NONE_PICK,
@@ -37,6 +41,7 @@ import {
   correctionTarget,
   correctionUndo,
   currentLabel,
+  examplesLine,
   fillLabel,
   notDismissed,
   openCount,
@@ -48,6 +53,7 @@ import {
   railCount,
   readQuestions,
   reasonBadge,
+  sampleText,
   savedLine,
   undoOf,
   visibleQuestions,
@@ -316,27 +322,33 @@ describe("the section and its gate (item 1)", () => {
 describe("a key field card", () => {
   const html = card(KEY);
 
-  it("names the module and the part, the reason and why it matters", () => {
-    expect(questionTitle(KEY)).toBe("Collection: amount");
-    expect(html).toContain("Collection: amount");
-    expect(html).toContain("Not sure");
-    expect(html).toContain("Totals of Collection use this field.");
-    expect(html).toContain("8,681 records");
+  it("asks a full question, with a badge, why we ask and what the answer changes", () => {
+    expect(questionTitle(KEY)).toBe("Which field holds the amount of each record in Collection?");
+    expect(html).toContain("Which field holds the amount of each record in Collection?");
+    expect(html).toContain("Needs your answer");
+    expect(html).toContain("Why we ask");
+    expect(html).toContain("Collection has several money fields, and the AI could not tell which one is the full amount.");
+    expect(html).toContain("What your answer changes");
+    expect(html).toContain(
+      "Metorite adds up this field for totals of Collection, for example &quot;How much did we collect this quarter?&quot;",
+    );
+    expect(html).toContain("8,681 records in Collection");
   });
 
-  it("draws each choice with its fill and its samples, and marks Jev's best", () => {
+  it("draws each choice with its share of values and its examples, and marks the AI's suggestion", () => {
     expect(html).toContain("IP Amount");
-    expect(html).toContain("52% filled");
-    expect(html).toContain("12400 · 8000 · 3250");
+    expect(html).toContain("52% of records have a value");
+    expect(html).toContain("Examples: 12,400 · 8,000 · 3,250");
     expect(html.match(new RegExp(RECOMMENDED_LABEL, "g"))?.length).toBe(1);
-    // The samples sit in muted mono text, under the label.
-    expect(html).toMatch(/font-mono[^"]*text-muted-foreground[^>]*>12400/);
+    // The examples sit in muted text, under the label.
+    expect(html).toMatch(/text-muted-foreground[^>]*>Examples: 12,400/);
   });
 
-  it("offers None of these, Pick another field and Not relevant", () => {
-    expect(html).toContain("None of these");
-    expect(html).toContain("Pick another field");
-    expect(html).toContain("Not relevant");
+  it("offers None of these fields, Choose a different field and Does not apply, with its tooltip", () => {
+    expect(html).toContain("None of these fields");
+    expect(html).toContain("Choose a different field");
+    expect(html).toContain("Does not apply");
+    expect(html).toContain(`title="${NOT_RELEVANT_TIP}"`);
   });
 
   it("stacks the choices on a phone, and sets three across from sm", () => {
@@ -354,62 +366,121 @@ describe("a key field card", () => {
 });
 
 describe("the other kinds", () => {
-  it("names a gone field and a part that was not asked", () => {
+  it("names a gone field, a question that needs an answer, and the revenue default", () => {
     expect(reasonBadge("stale")).toEqual({ tone: "warning", label: "Field gone" });
-    expect(reasonBadge("open")).toEqual({ tone: "neutral", label: "Not asked" });
+    expect(reasonBadge("unsure")).toEqual({ tone: "warning", label: "Needs your answer" });
+    expect(reasonBadge("open")).toEqual({ tone: "neutral", label: "Needs your answer" });
+    expect(reasonBadge("open", "revenue")).toEqual({ tone: "neutral", label: REVENUE_DEFAULT_BADGE });
     expect(reasonBadge("answered")).toBeNull();
     expect(card(DATE)).toContain("Field gone");
-    expect(card(PURPOSE)).toContain("Not asked");
+    expect(card(DATE)).toContain("The field that Metorite used is gone from Collection in your Zoho.");
+    expect(card(PURPOSE)).toContain("Needs your answer");
+    expect(card(REVENUE)).toContain("Using Billed for now");
   });
 
-  it("offers a purpose with Pick another", () => {
+  it("asks a date question with an example of what it answers", () => {
+    const html = card({ ...DATE, reason: "unsure" });
+    expect(html).toContain("Which date tells when each record in Collection happened?");
+    expect(html).toContain("The AI could not tell which date of Collection to use.");
+    expect(html).toContain("Collections by month this year");
+  });
+
+  it("asks what a module holds, in plain words for each purpose", () => {
     const html = card(PURPOSE);
-    expect(html).toContain("Visits: purpose");
-    expect(html).toContain("Activity");
-    expect(html).toContain("Pick another");
-    expect(html).not.toContain("Pick another field");
+    expect(html).toContain("What kind of records does Visits hold?");
+    expect(html).toContain("The name &#x27;Visits&#x27; does not tell the AI what its records are.");
+    expect(html).toContain("The AI then knows which questions Visits can answer.");
+    expect(html).toContain(">Activities<");
+    expect(html).toContain(PURPOSE_WORDS.activity.example);
+    expect(html).toContain("Choose a different kind");
+    expect(html).not.toContain("Choose a different field");
+    expect(html).toContain(">None of these<");
   });
 
-  it("previews a module as a core list", () => {
+  it("has one plain line for each purpose word of the catalogue", () => {
+    const src = read("../../../../../../apps/services/gateway/gateway/crm_sync/catalogue.py");
+    const block = /^PURPOSES: tuple\[str, \.\.\.\] = \(([\s\S]*?)\)/m.exec(src)?.[1] ?? "";
+    const words = [...block.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+    expect(words.length).toBeGreaterThan(10);
+    expect(Object.keys(PURPOSE_WORDS).sort()).toEqual([...words].sort());
+  });
+
+  it("asks which module holds a core list, and previews it first", () => {
     const html = card(SLOT);
-    expect(html).toContain("Preview Commercials as Deals");
+    expect(html).toContain("Which module holds your deals?");
+    expect(html).toContain("Deals holds no records in your Zoho");
+    expect(html).toContain("That module then shows as Deals in the CRM and in reports. Nothing changes in Zoho.");
+    expect(html).toContain(">Commercials<");
     expect(html).toContain("24 records");
-    expect(html).toContain("A••• · B•••");
-    expect(html).toContain("None of these");
+    expect(html).toContain("You see a preview first");
+    expect(html).toContain("Examples: A••• · B•••");
+    expect(html).toContain(">None of these<");
     expect(textOf(html)).not.toMatch(ENGINE_WORDS);
   });
 
-  it("draws a stage value with its count and Open, Won and Lost", () => {
+  it("asks what a status means, with its count and Still open, Won and Lost", () => {
     const html = card(STAGE);
-    expect(html).toContain("Deals: the stage &quot;Negotiation&quot;");
-    expect(html).toContain("12 records with this value show as Unsorted.");
-    for (const word of ["Open", "Won", "Lost"]) expect(html).toContain(`>${word}<`);
+    expect(html).toContain("What does the status &#x27;Negotiation&#x27; mean in Deals?");
+    expect(html).toContain("12 records with this status move to that group in reports.");
+    for (const word of ["Still open", "Won", "Lost"]) expect(html).toContain(`>${word}<`);
     expect(html).not.toContain("None of these");
   });
 
-  it("draws revenue as two choices with their modules, and takes no dismissal", () => {
+  it("asks what revenue counts, with its modules, and takes no dismissal", () => {
     const html = card(REVENUE);
-    expect(html).toContain("Billed");
-    expect(html).toContain("Collected");
-    expect(html).toContain(">Invoices<");
-    expect(html).toContain(">Collection<");
+    expect(html).toContain("When you ask about revenue, what should Metorite count?");
+    expect(html).toContain(">Billed<");
+    expect(html).toContain(">Collected<");
+    expect(html).toContain("The amounts on your Invoices");
+    expect(html).toContain("The money received, in Collection");
     expect(html).toContain(REVENUE_DEFAULT_LINE);
     // The count of one module would read as the size of revenue.
     expect(html).not.toContain("records");
-    expect(html).not.toContain("Not relevant");
+    expect(html).not.toContain("Does not apply");
     expect(html).not.toContain("None of these");
   });
 
-  it("shows only Pick another field when no candidate is left", () => {
+  it("shows only Choose a different field when no candidate is left", () => {
     const html = card(base({ choices: [], options: [{ value: "Total", label: "Total" }] }));
     expect(html).not.toContain('aria-label="Choices"');
-    expect(html).toContain("Pick another field");
+    expect(html).toContain("Choose a different field");
   });
 
-  it("reads a fill as a share of filled records", () => {
-    expect(fillLabel(0.52)).toBe("52% filled");
-    expect(fillLabel(1.4)).toBe("100% filled");
+  it("reads a fill as the share of records with a value", () => {
+    expect(fillLabel(0.52)).toBe("52% of records have a value");
+    expect(fillLabel(1.4)).toBe("100% of records have a value");
     expect(fillLabel(null)).toBeNull();
+  });
+
+  it("writes a number sample with thousands separators, and keeps a date and a mask", () => {
+    expect(sampleText("21600")).toBe("21,600");
+    expect(sampleText("53713.8")).toBe("53,713.8");
+    expect(sampleText("-1250.50")).toBe("-1,250.50");
+    expect(sampleText("2026-01-02")).toBe("2026-01-02");
+    expect(sampleText("A•••")).toBe("A•••");
+    expect(sampleText("00123")).toBe("00123");
+    expect(examplesLine(["21600", "", "53713.8"])).toBe("Examples: 21,600 · 53,713.8");
+    expect(examplesLine([])).toBeNull();
+  });
+});
+
+// ── Owner feedback, 2026-10-18: the end user does not know the engine ──────
+
+describe("the name of the engine", () => {
+  it("is in no string that lib/questions.ts exports", () => {
+    const strings = Object.entries(questionsLib).filter(([, v]) => typeof v === "string");
+    expect(strings.length).toBeGreaterThan(20);
+    for (const [name, value] of strings) expect(`${name}: ${value}`).not.toMatch(/\bJev\b/);
+    for (const words of Object.values(PURPOSE_WORDS)) {
+      expect(`${words.label} ${words.example}`).not.toMatch(/\bJev\b/);
+    }
+  });
+
+  it("is on no card, in the section and in the batch", () => {
+    for (const q of [KEY, DATE, PURPOSE, SLOT, STAGE, REVENUE]) expect(textOf(card(q))).not.toMatch(/\bJev\b/);
+    expect(textOf(view({ read: ON(body([KEY, PURPOSE])) }))).not.toMatch(/\bJev\b/);
+    expect(textOf(view({ read: ON(body([])) }))).not.toMatch(/\bJev\b/);
+    expect(batchLabel(3)).not.toMatch(/\bJev\b/);
   });
 });
 
@@ -461,7 +532,7 @@ describe("the section", () => {
 
 // ── Item 6: the batch ──────────────────────────────────────────────────────
 
-describe("the batch of Jev's best guesses", () => {
+describe("the batch of the AI's suggestions", () => {
   it("takes a purpose and a key field with a best guess, and never a slot, a stage or revenue", () => {
     const ids = batchIds([KEY, DATE, PURPOSE, SLOT, STAGE, REVENUE, base({ id: "key:X:date", choices: [] })]);
     expect(ids).toEqual([KEY.id, DATE.id, PURPOSE.id]);
@@ -472,10 +543,10 @@ describe("the batch of Jev's best guesses", () => {
   it("shows the button above the cards with 2 or more, and opens with the ids", () => {
     let opened: string[] | null = null;
     const html = view({ read: ON(body([KEY, PURPOSE])), onBatch: (ids) => (opened = ids) });
-    expect(batchLabel(2)).toBe("Accept Jev's best guesses (2)");
-    expect(html).toContain("Accept Jev&#x27;s best guesses (2)");
-    expect(html.indexOf("best guesses")).toBeLessThan(html.indexOf('data-question="key_field"'));
-    expect(view({ read: ON(body([KEY, SLOT])) })).not.toContain("best guesses");
+    expect(batchLabel(2)).toBe("Accept the AI's suggestions (2)");
+    expect(html).toContain("Accept the AI&#x27;s suggestions (2)");
+    expect(html.indexOf("suggestions (2)")).toBeLessThan(html.indexOf('data-question="key_field"'));
+    expect(view({ read: ON(body([KEY, SLOT])) })).not.toContain("suggestions (");
     expect(opened).toBeNull();
   });
 
@@ -729,7 +800,7 @@ describe("Your answers", () => {
     );
   });
 
-  it("draws one row for each module, under the Zoho labels, with no number of Jev", () => {
+  it("draws one row for each module, under the Zoho labels, with no number of the AI", () => {
     const html = renderToStaticMarkup(
       createElement(YourAnswersView, {
         body: body([], { answered: [AMOUNT_ADMIN, PURPOSE_AI, REVENUE_ADMIN] }),

@@ -194,27 +194,45 @@ export function railCount(n: number): number | null {
 }
 
 // ── The words ──────────────────────────────────────────────────────────────
+//
+// Owner feedback, 2026-10-18, on the DEWiN screen: the end user does not
+// know the internal name of the AI, and a card that showed only "Collection:
+// amount" and some tiles did not say what it asked. So each card now asks a
+// full question, says why we ask, and says what the answer changes, with an
+// example of a question the founder can then ask. Say "the AI" on screen.
+// `crmQ32.test.ts` fails if an exported string names the engine.
 
 export const QUESTIONS_TITLE = "Open questions";
 export const QUESTIONS_NOTE =
-  "Jev was not sure about these. Your answer becomes a fixed fact for totals and chat.";
+  "The AI could not decide these on its own. Each answer tells Metorite how to read your data. It applies at once in totals, reports and chat, and you can undo it.";
 export const NO_QUESTIONS =
-  "No open questions. Jev is sure about your data, or you answered each question.";
+  "No open questions. The AI understands your data, or you answered each question.";
 export const QUESTIONS_UNREAD = "Could not load the questions. Try again.";
 export const ANSWERS_UNREAD = "Could not load your answers. Try again.";
 export const NO_ANSWERS = "No answer is in use yet. Each answer you give shows here.";
 export const TRY_AGAIN = "Try again";
+/** "None of these" of a module question (a purpose or a slot). */
 export const NONE_LABEL = "None of these";
-export const PICK_FIELD = "Pick another field";
-export const PICK_PURPOSE = "Pick another";
-export const NOT_RELEVANT = "Not relevant";
+/** "None of these" of a key field question. */
+export const NONE_FIELDS_LABEL = "None of these fields";
+export const PICK_FIELD = "Choose a different field";
+export const PICK_PURPOSE = "Choose a different kind";
+export const NOT_RELEVANT = "Does not apply";
+/** The tooltip of "Does not apply". */
+export const NOT_RELEVANT_TIP = "Hide this question. It comes back only if your Zoho fields change.";
+export const WHY_HEADING = "Why we ask";
+export const CHANGES_HEADING = "What your answer changes";
 export const ANSWERS_TAB = "Your answers";
 export const LET_METORITE = "Let Metorite choose";
 export const NONE_VALUE_LABEL = "None";
 export const UNDO_LABEL = "Undo";
 export const CANCEL_LABEL = "Cancel";
+/** The revenue badge: what applies until the admin answers. */
+export const REVENUE_DEFAULT_BADGE = "Using Billed for now";
 /** The revenue card: what applies until the admin answers. */
-export const REVENUE_DEFAULT_LINE = "Until you answer, Metorite uses Billed.";
+export const REVENUE_DEFAULT_LINE = "Until you answer, Metorite counts what you billed.";
+/** A slot choice opens the panel of the suggestion before it applies. */
+export const SLOT_PREVIEW_LINE = "You see a preview first";
 
 /** The tab of the open questions: "Open (3)". */
 export function openTabLabel(n: number): string {
@@ -235,38 +253,174 @@ export function partWord(part: string | null | undefined): string {
   return part ? (PART_WORDS[part] ?? part) : "";
 }
 
-/** The top line of a card: "Collection: amount". */
-export function questionTitle(q: Question): string {
+/**
+ * The singular noun of one record of a module. The wire has no noun, so
+ * each card says "record". A later wire field can fill this one place.
+ */
+export function recordNoun(): string {
+  return "record";
+}
+
+/** The plain words of each purpose, one for each word of `catalogue.PURPOSES`. */
+export const PURPOSE_WORDS: Record<string, { label: string; example: string }> = {
+  customer_company: { label: "Customers", example: "Companies or people you sell to" },
+  customer_site: { label: "Customer sites", example: "The branches or plants of a customer" },
+  person: { label: "People", example: "The contacts at your customers" },
+  lead: { label: "Leads", example: "People or companies that can buy from you later" },
+  deal: { label: "Deals or quotes", example: "Sales that are still open, each with a value" },
+  contract: { label: "Orders or contracts", example: "Sales that the customer agreed to" },
+  invoice: { label: "Invoices", example: "The bills that you send to customers" },
+  payment_in: { label: "Payments received", example: "The money that customers pay you" },
+  receivable: { label: "Money owed to you", example: "The amounts that customers must still pay" },
+  payment_out: { label: "Payments you made", example: "The money that you pay to vendors" },
+  product: { label: "Products", example: "The items or services that you sell" },
+  asset: { label: "Assets", example: "The machines or items at a customer site" },
+  vendor: { label: "Vendors", example: "The companies that you buy from" },
+  partner: { label: "Partners", example: "Resellers or companies that work with you" },
+  activity: { label: "Activities", example: "Visits, calls, tasks or service cases" },
+  reference: { label: "Reference lists", example: "Price lists, codes or other lookup data" },
+  other: { label: "Something else", example: "None of the kinds above" },
+};
+
+/** The plain words of each stage group. */
+const STAGE_WORDS: Record<string, string> = { open: "Still open", won: "Won", lost: "Lost" };
+
+function plural(n: number, one: string, many: string): string {
+  return `${n.toLocaleString("en-IN")} ${n === 1 ? one : many}`;
+}
+
+/** The labels of the modules of a revenue choice: "Invoices and Bills". */
+function moduleList(c: QuestionChoice | undefined, fallback: string): string {
+  const names = (c?.modules ?? []).filter((m) => m !== "");
+  if (names.length === 0) return fallback;
+  if (names.length === 1) return names[0];
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/** The three sentences of a card: the question, why we ask, and what the answer changes. */
+export type QuestionCopy = { question: string; why: string; changes: string };
+
+function keyFieldCopy(q: Question): QuestionCopy {
+  const m = q.label;
+  const r = recordNoun();
+  const several = q.choices.length >= 2;
+  const stale = q.reason === "stale" ? `The field that Metorite used is gone from ${m} in your Zoho.` : null;
+  switch (q.part) {
+    case "amount":
+      return {
+        question: `Which field holds the amount of each ${r} in ${m}?`,
+        why:
+          stale ??
+          (several
+            ? `${m} has several money fields, and the AI could not tell which one is the full amount.`
+            : `The AI could not tell which field of ${m} holds the full amount.`),
+        changes: `Metorite adds up this field for totals of ${m}, for example "How much did we collect this quarter?"`,
+      };
+    case "date":
+      return {
+        question: `Which date tells when each ${r} in ${m} happened?`,
+        why: stale ?? (several ? `${m} has several date fields.` : `The AI could not tell which date of ${m} to use.`),
+        changes: `Metorite groups ${m} by month or quarter on this date, for example "Collections by month this year".`,
+      };
+    case "status":
+      return {
+        question: `Which field shows the status of each ${r} in ${m}?`,
+        why:
+          stale ??
+          (several
+            ? `${m} has several fields that can hold a status.`
+            : `The AI could not tell which field of ${m} holds the status.`),
+        changes: `Metorite uses it to split ${m} into open, done and lost, for example "How many bills are unpaid?"`,
+      };
+    default:
+      return {
+        question: `Which field links each ${r} in ${m} to its customer?`,
+        why:
+          stale ??
+          (several
+            ? `${m} has several fields that can link to a customer.`
+            : `The AI could not tell which field of ${m} links to the customer.`),
+        changes: `Metorite uses it to answer per-customer questions, for example "Total collected from each client".`,
+      };
+  }
+}
+
+/** The question, why we ask, and what the answer changes, for each kind. */
+export function questionCopy(q: Question): QuestionCopy {
   switch (q.kind) {
     case "revenue":
-      return "Revenue: billed or collected";
-    case "slot":
-      return `${q.label}: where the records are`;
-    case "stage_value":
-      return `${q.label}: the stage "${q.value ?? ""}"`;
-    default:
-      return `${q.label}: ${partWord(q.part)}`;
+      return {
+        question: "When you ask about revenue, what should Metorite count?",
+        why: "Your CRM holds both invoices and payments, so 'revenue' can mean either.",
+        changes: `Every revenue figure in chat, reports and the weekly summary uses this. ${REVENUE_DEFAULT_LINE}`,
+      };
+    case "key_field":
+      return keyFieldCopy(q);
+    case "purpose":
+      return {
+        question: `What kind of records does ${q.label} hold?`,
+        why: `The name '${q.label}' does not tell the AI what its records are.`,
+        changes: `The AI then knows which questions ${q.label} can answer.`,
+      };
+    case "slot": {
+      const noun = q.label.toLowerCase();
+      return {
+        question: `Which module holds your ${noun}?`,
+        why: `${q.label} holds no records in your Zoho, so Metorite looks for another module that can take its place.`,
+        changes: `That module then shows as ${q.label} in the CRM and in reports. Nothing changes in Zoho.`,
+      };
+    }
+    case "stage_value": {
+      const n = q.count ?? q.records ?? 0;
+      const value = q.value ?? "";
+      return {
+        question: `What does the status '${value}' mean in ${q.label}?`,
+        why: `Metorite cannot tell if '${value}' is open, won or lost, so these records show as Unsorted.`,
+        changes: `${plural(n, "record with this status moves", "records with this status move")} to that group in reports.`,
+      };
+    }
   }
+}
+
+/** The title of a card: the question, as a full sentence. */
+export function questionTitle(q: Question): string {
+  return questionCopy(q).question;
 }
 
 export type ReasonBadge = { tone: "warning" | "neutral"; label: string };
 
 /** The badge that names the reason. An answered part has none. */
-export function reasonBadge(reason: QuestionReason): ReasonBadge | null {
-  if (reason === "unsure") return { tone: "warning", label: "Not sure" };
+export function reasonBadge(reason: QuestionReason, kind?: QuestionKind): ReasonBadge | null {
   if (reason === "stale") return { tone: "warning", label: "Field gone" };
-  if (reason === "open") return { tone: "neutral", label: "Not asked" };
+  if (reason === "open" && kind === "revenue") return { tone: "neutral", label: REVENUE_DEFAULT_BADGE };
+  if (reason === "unsure") return { tone: "warning", label: "Needs your answer" };
+  if (reason === "open") return { tone: "neutral", label: "Needs your answer" };
   return null;
 }
 
-/** "52% filled", or `null` with no fill. */
+/** "52% of records have a value", or `null` with no fill. */
 export function fillLabel(fill: number | null | undefined): string | null {
   if (typeof fill !== "number" || !Number.isFinite(fill)) return null;
-  return `${Math.round(Math.max(0, Math.min(1, fill)) * 100)}% filled`;
+  return `${Math.round(Math.max(0, Math.min(1, fill)) * 100)}% of records have a value`;
 }
 
-function plural(n: number, one: string, many: string): string {
-  return `${n.toLocaleString("en-IN")} ${n === 1 ? one : many}`;
+/**
+ * One sample, as a person reads it. A plain number gets thousands
+ * separators ("53713.8" is "53,713.8"). A date, a masked value and a code
+ * with a leading zero stay as they are.
+ */
+export function sampleText(s: string): string {
+  const m = /^(-?)(0|[1-9]\d*)(\.\d+)?$/.exec(s.trim());
+  if (!m) return s;
+  const whole = Number(m[2]);
+  if (!Number.isSafeInteger(whole)) return s;
+  return `${m[1]}${whole.toLocaleString("en-IN")}${m[3] ?? ""}`;
+}
+
+/** "Examples: 21,600 · 53,713.8", or `null` with no sample. */
+export function examplesLine(samples: readonly string[] | null | undefined): string | null {
+  const shown = (samples ?? []).filter((s) => s !== "").map(sampleText);
+  return shown.length > 0 ? `Examples: ${shown.join(" · ")}` : null;
 }
 
 /** The records of a module or a choice: "8,681 records". */
@@ -274,14 +428,65 @@ export function recordsLabel(n: number | null | undefined): string | null {
   return typeof n === "number" && n > 0 ? plural(n, "record", "records") : null;
 }
 
-/** A `slot` choice: "Preview Commercials as Deals". */
-export function slotChoiceLabel(q: Question, c: QuestionChoice): string {
-  return `Preview ${c.label} as ${q.label}`;
+/**
+ * The records line of a module question: "8,681 records in Collection". A
+ * slot, a stage and revenue carry their counts in the choices or the
+ * sentences, so they have none (visual review, 2026-10-18).
+ */
+export function recordsInLabel(q: Question): string | null {
+  if (q.kind !== "purpose" && q.kind !== "key_field") return null;
+  const n = recordsLabel(q.records);
+  return n ? `${n} in ${q.label}` : null;
 }
 
-/** The label of the one button of "Pick another". */
+/** What one choice tile shows: its label, its lines, and its examples. */
+export type ChoiceView = { label: string; lines: string[]; examples: string | null };
+
+export function choiceView(q: Question, c: QuestionChoice): ChoiceView {
+  switch (q.kind) {
+    case "purpose": {
+      const words = PURPOSE_WORDS[c.value];
+      return { label: words?.label ?? c.label, lines: words ? [words.example] : [], examples: null };
+    }
+    case "stage_value":
+      return { label: STAGE_WORDS[c.value] ?? c.label, lines: [], examples: null };
+    case "revenue": {
+      const line =
+        c.value === "payment_in"
+          ? `The money received, in ${moduleList(c, "your payments")}`
+          : `The amounts on your ${moduleList(c, "invoices")}`;
+      return { label: c.label, lines: [line], examples: null };
+    }
+    case "slot": {
+      const lines = [recordsLabel(c.records), SLOT_PREVIEW_LINE].filter((l): l is string => l !== null);
+      return { label: c.label, lines, examples: examplesLine(c.samples) };
+    }
+    default: {
+      const fill = fillLabel(c.fill);
+      return { label: c.label, lines: fill ? [fill] : [], examples: examplesLine(c.samples) };
+    }
+  }
+}
+
+/** The label of "None of these": a key field names its fields. */
+export function noneLabel(q: Question): string {
+  return q.kind === "key_field" ? NONE_FIELDS_LABEL : NONE_LABEL;
+}
+
+/** The label of the one button of "Choose a different". */
 export function pickLabel(q: Question): string {
   return q.kind === "purpose" ? PICK_PURPOSE : PICK_FIELD;
+}
+
+/** The options of "Choose a different": plain purpose words, or each field with its fill. */
+export function pickOptions(q: Question): AnswerPick[] {
+  return (q.options ?? []).map((o) => {
+    if (q.kind === "purpose") {
+      const words = PURPOSE_WORDS[o.value];
+      return { value: o.value, label: words?.label ?? o.label, hint: words?.example };
+    }
+    return { value: o.value, label: o.label, hint: fillLabel(o.fill) ?? undefined };
+  });
 }
 
 // ── The batch ──────────────────────────────────────────────────────────────
@@ -302,7 +507,7 @@ export function batchShown(ids: readonly string[]): boolean {
 }
 
 export function batchLabel(k: number): string {
-  return `Accept Jev's best guesses (${k})`;
+  return `Accept the AI's suggestions (${k})`;
 }
 
 export function applyLabel(k: number): string {
@@ -314,10 +519,10 @@ export function batchLine(item: BestGuess): string {
   return `${item.label}: ${partWord(item.part)}, ${item.value_label}`;
 }
 
-export const BATCH_TITLE = "Accept Jev's best guesses";
+export const BATCH_TITLE = "Accept the AI's suggestions";
 export const BATCH_NOTE =
   "Each answer becomes a fixed fact. No record changes, and Undo puts back each one.";
-export const BATCH_UNREAD = "Could not read the best guesses. Try again.";
+export const BATCH_UNREAD = "Could not read the suggestions. Try again.";
 
 /** The toast after a batch. */
 export function batchDoneLine(k: number): string {
@@ -436,6 +641,7 @@ export function currentLabel(q: Question): string {
   if (q.current === null) return NONE_VALUE_LABEL;
   const found =
     q.choices.find((c) => c.value === q.current) ?? q.options?.find((o) => o.value === q.current);
+  if (q.kind === "purpose" && PURPOSE_WORDS[q.current]) return PURPOSE_WORDS[q.current].label;
   return found?.label ?? q.current;
 }
 
@@ -451,11 +657,12 @@ export type AnswerPick = { value: string; label: string; hint?: string };
  */
 export function answerPicks(q: Question): AnswerPick[] {
   const base: AnswerPick[] = [{ value: AUTO, label: LET_METORITE }];
-  const own = (q.options && q.options.length > 0 ? q.options : q.choices).map((o) => ({
-    value: o.value,
-    label: o.label,
-    hint: fillLabel(o.fill) ?? undefined,
-  }));
+  const own = (q.options && q.options.length > 0 ? q.options : q.choices).map((o) => {
+    const words = q.kind === "purpose" ? PURPOSE_WORDS[o.value] : undefined;
+    return words
+      ? { value: o.value, label: words.label, hint: words.example }
+      : { value: o.value, label: o.label, hint: fillLabel(o.fill) ?? undefined };
+  });
   const none = q.kind === "key_field" ? [{ value: NONE_PICK, label: NONE_VALUE_LABEL }] : [];
   return [...base, ...own, ...none];
 }
