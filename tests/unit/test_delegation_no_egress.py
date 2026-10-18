@@ -1787,6 +1787,31 @@ def test_a_covered_grandparent_keeps_the_grandchilds_send_away(
     assert sent == [] and _no_process == []
 
 
+def test_a_marked_delegation_never_softens_a_hard_frame() -> None:
+    """Mutation E (fix round 1). ``_delegate_held`` binds
+    ``no_egress_by_mark`` False on a frame that already holds a HARD flag:
+    a run under a covered parent, whose own agent is not covered. Then the
+    email assistant that it delegates to binds a hard flag too, and keeps no
+    send. Through the executor a sub-run reads its own session, so this
+    frame is the unit form of the covered grandchild above."""
+    from acb_skills.agent_tools import _delegate_held
+    from acb_skills.write_artifact import (
+        artifact_context,
+        artifact_context_scope,
+        bind_artifact_context,
+    )
+
+    for hard, by_mark in ((True, False), (False, True)):
+        with artifact_context_scope():
+            bind_artifact_context(agent_name=ORCH, run_id="r", session_id="s",
+                                  no_egress=hard)
+            with _delegate_held(True):
+                frame = dict(artifact_context())
+        assert frame["no_egress"] is True
+        assert frame["no_egress_by_mark"] is by_mark, frame
+        assert ti._no_egress_answer(EMAIL, frame) == (True, by_mark)
+
+
 def test_a_send_in_a_marked_chat_asks_one_card_its_own(
     sandbox, monkeypatch, mark_store,  # noqa: F811
 ) -> None:
