@@ -29,4 +29,11 @@ regexes = [
     '''acb_dev_change_me''',       # documented dev Postgres password default
     '''change-me-dev-only''',      # documented dev session-secret default
     '''sk-local''',                # documented litellm_master_key dev default
+    # WS-54 fix round 6: the ONE fake GitHub token that commit c58caf42d put in
+    # workbench/control_plane/src/lib/setupTokens.test.ts as a literal. It is
+    # a test sentinel, never a real token. A later commit builds the value at
+    # run time, but a PR scan still reads the old commit, and history is not
+    # rewritten (no force-push). The entry matches this exact value and no
+    # other: never widen it.
+    '''ghp_BFF_SENTINEL_0123456789abcdef''',
 ]
