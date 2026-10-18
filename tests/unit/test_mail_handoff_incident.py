@@ -251,6 +251,53 @@ async def test_a_marked_whatsapp_fetch_asks_confirm_and_runs_only_after_a_yes(
         release_tenant(token)
 
 
+async def test_a_call_too_long_for_the_card_is_refused_never_cut(monkeypatch) -> None:
+    """Fix round 1, item 5 (reviewer P2). The untrusted-answer card shows the
+    call's arguments as JSON. A call longer than the card can show is
+    refused with a fixed answer, asks no card, parks nothing and does not
+    run, in chat and on WhatsApp. Before, the card cut the JSON at 600
+    characters, and a Confirm ran the whole stored call."""
+    from acb_common.db import bind_tenant, release_tenant
+    from acb_skills import ask_tools
+    from acb_skills import egress as eg
+    from acb_skills.whatsapp_ui import whatsapp_run
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+    from orchestrator import _tool_injection as ti
+
+    from tests.unit._egress_mark_store import install_memory_mark_store
+
+    store = install_memory_mark_store(monkeypatch)
+    gated, calls = _platform_fetch(monkeypatch)
+    titles: list[str] = []
+
+    async def approve(title: str, *_a: Any, **_k: Any) -> bool:
+        titles.append(title)
+        return True
+
+    monkeypatch.setattr(ask_tools, "request_confirmation", approve)
+    monkeypatch.setattr(ask_tools, "confirmation_channel_open", lambda: True)
+    long_url = URL + "?pad=" + "x" * ti.UNTRUSTED_CARD_ARGS_MAX
+    token = bind_tenant(ORG)
+    try:
+        store.values[f"cc:{ORG}:{eg.MARK_NAMESPACE}:{THREAD}"] = "1"
+        with artifact_context_scope():
+            bind_artifact_context(run_id="r", session_id=THREAD, member=MEMBER,
+                                  agent_name="orchestrator")
+            out = await gated(url=long_url)
+            assert out == ti.UNTRUSTED_CARD_TOO_LONG.format(tool="fetch_page"), out
+            assert titles == [] and calls == []
+            with ask_tools.refuse_cards(), whatsapp_run("orchestrator", writes=True,
+                                                        session_id=THREAD) as run:
+                out = await gated(url=long_url)
+            assert out == ti.UNTRUSTED_CARD_TOO_LONG.format(tool="fetch_page"), out
+            assert run.parked is None and calls == []
+            # A call that fits still asks the card, and runs after the yes.
+            assert await gated(url=URL) == f"fetched: {URL}"
+            assert len(titles) == 1 and calls == [URL]
+    finally:
+        release_tenant(token)
+
+
 def _email_module(monkeypatch) -> tuple[Any, list[tuple[str, dict[str, Any]]]]:
     """The email assistant, with one mailbox and a recorded send."""
     from tests.unit._native_maf_harness import load_agent_module

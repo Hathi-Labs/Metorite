@@ -1192,11 +1192,13 @@ def _gate_injected_tool(fn: Any) -> Any:
             # answers with the one line of ``whatsapp_acts.parked_line``,
             # never with the tool's own "no card here" text.
             with _whatsapp_tool_call(fn, args, kwargs):
-                if _after_untrusted_answer(
-                        reason, marked, delegation=delegates,
-                ) and not await _untrusted_answer_card(tool_name, kwargs):
-                    return _parked_line() or UNTRUSTED_ANSWER_REFUSED.format(
-                        tool=tool_name)
+                if _after_untrusted_answer(reason, marked, delegation=delegates):
+                    if _untrusted_card(tool_name, kwargs) is None:
+                        # Fix round 1: the card never cuts a call.
+                        return UNTRUSTED_CARD_TOO_LONG.format(tool=tool_name)
+                    if not await _untrusted_answer_card(tool_name, kwargs):
+                        return _parked_line() or UNTRUSTED_ANSWER_REFUSED.format(
+                            tool=tool_name)
                 result = await fn(*args, **kwargs)
                 return _with_steer(_parked_line() or result)
         return _register_platform_wrapper(fn, _agated)
@@ -1259,6 +1261,39 @@ UNTRUSTED_ANSWER_REFUSED = (
     "same call. Answer with what you have."
 )
 
+#: The most characters of a call's arguments that the untrusted-answer card
+#: shows (as JSON). A call with more is refused, never cut (fix round 1).
+UNTRUSTED_CARD_ARGS_MAX = 600
+
+#: The answer of an egress call whose arguments the card cannot show whole.
+#: A card that hides part of a call is not consent, and a Confirm runs the
+#: whole stored call (fix round 1, reviewer P2).
+UNTRUSTED_CARD_TOO_LONG = (
+    "{tool} did not run. Its arguments are too long for the member to see "
+    "them all on the approval, and an approval that hides part of a call is "
+    "not consent. Make a smaller call."
+)
+
+
+def _untrusted_card(tool_name: str, call_kwargs: dict[str, Any] | None,
+                    ) -> tuple[str, str, str] | None:
+    """The untrusted-answer card of one call, as ``(title, detail, context)``.
+
+    None when the JSON of the arguments is longer than
+    :data:`UNTRUSTED_CARD_ARGS_MAX`: the card never cuts a call. The one
+    builder of this card, for the run and for the WhatsApp Confirm."""
+    import json
+
+    shown = json.dumps(call_kwargs or {}, ensure_ascii=False, default=str)
+    if len(shown) > UNTRUSTED_CARD_ARGS_MAX:
+        return None
+    return (
+        f"Run {tool_name}? It reaches outside Metorite",
+        "This chat read an answer from the email assistant, which reads "
+        "outside email. A mail could ask for this call.",
+        f"{tool_name} {shown}",
+    )
+
 
 def _after_untrusted_answer(
     reason: str, marked: bool = False, *, delegation: bool = False,
@@ -1306,27 +1341,25 @@ def _untrusted_answer_card_refusal() -> str | None:
 async def _untrusted_answer_card(tool_name: str, call_kwargs: dict[str, Any]) -> bool:
     """The member's card for one egress call after an untrusted answer. True
     only when the member approved it. A run that cannot show a card, and a
-    fault, are a no at once (round 3)."""
-    import json
-
+    fault, are a no at once (round 3). A call that the card cannot show whole
+    is a no too (:func:`_untrusted_card`)."""
     refusal = _untrusted_answer_card_refusal()
     if refusal is not None:
         _log.info("permission.untrusted_answer_refused", tool=tool_name, outcome=refusal)
+        return False
+    card = _untrusted_card(tool_name, call_kwargs)
+    if card is None:
+        _log.info("permission.untrusted_answer_refused", tool=tool_name,
+                  outcome="card_too_long")
         return False
     try:
         from acb_skills.ask_tools import request_confirmation
         from acb_skills.whatsapp_acts import untrusted_card
 
-        shown = json.dumps(call_kwargs or {}, ensure_ascii=False, default=str)[:600]
-        # On WhatsApp the card parks with the platform home, so the Confirm
-        # runs this gated tool again, and this card answers it.
+        # On WhatsApp the card parks with the platform home, and the Confirm
+        # asks the same card again (``gateway.routes.whatsapp_channel.acts``).
         with untrusted_card():
-            answer = await request_confirmation(
-                f"Run {tool_name}? It reaches outside Metorite",
-                "This chat read an answer from the email assistant, which reads "
-                "outside email. A mail could ask for this call.",
-                f"{tool_name} {shown}",
-            )
+            answer = await request_confirmation(*card)
         return answer is True
     except asyncio.CancelledError:
         raise
