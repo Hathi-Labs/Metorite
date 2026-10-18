@@ -485,8 +485,9 @@ def test_the_confirm_finds_only_a_known_home_and_a_held_tool(monkeypatch) -> Non
 
 _REPO = Path(__file__).resolve().parents[2]
 
-#: Each text that answers "no card here", by file and its first words, with
-#: what a WhatsApp member gets. A new one fails the fence until it is here.
+#: Each text that answers "no card here", or sends a member to the app for an
+#: approval, by file and a part of its text, with what a WhatsApp member gets.
+#: A new one fails the fence until it is here.
 NO_CARD_TEXTS: dict[tuple[str, str], str] = {
     ("apps/agents/agent-email-assistant/agents.py", "Nothing changed. This needs your"): (
         "_NO_CARD_CHANNEL. On WhatsApp with writes on, the card parks, and the "
@@ -497,10 +498,26 @@ NO_CARD_TEXTS: dict[tuple[str, str], str] = {
         "confirmation_channel_open() is True, so save=true asks its card."),
     ("apps/agents/agent-email-assistant/agents.py", " characters, so the card canno"): (
         "A draft too long for its card. A refusal of content, not of a channel."),
+    ("apps/agents/agent-email-assistant/agents.py", "too many recipients to show"): (
+        "A draft with more recipients than one card can name. A refusal of "
+        "content, not of a channel."),
+    ("apps/services/gateway/gateway/routes/whatsapp_channel/acts.py",
+     "could not hold that change"): (
+        "REPLY_NOT_HELD: the phone has no current link row, so no act can be "
+        "stored for a Confirm. A link fault, not a missing card channel."),
     ("apps/services/gateway/gateway/routes/whatsapp_channel/bot_run.py",
-     "You are answering a member of t"): (
-        "SCOPE_RULE: a WhatsApp run with writes OFF for its org (spec 14.6, the "
-        "owner's switch). With writes on, SCOPE_RULE_WRITES replaces it."),
+     "This chat cannot show a confirmation card"): (
+        "SCOPE_RULE: a WhatsApp run with the native profile off. Production has "
+        "it on (WHATSAPP_ASSISTANT_NATIVE_UI)."),
+    ("apps/services/gateway/gateway/routes/whatsapp_channel/bot_run.py",
+     "You cannot change data from WhatsApp"): (
+        "_NO_CHANGE in SCOPE_RULE_NATIVE: a WhatsApp run with writes OFF for its "
+        "org (spec 14.6, the owner's switch). With writes on, SCOPE_RULE_WRITES "
+        "replaces it."),
+    ("apps/services/gateway/gateway/routes/whatsapp_channel/bot_run.py",
+     "If a change still cannot wait for Confirm here"): (
+        "SCOPE_RULE_WRITES: only a Projects act outside ALLOWED_ACTS (D-WAC-4) "
+        "and an MCP call cannot wait for Confirm. Every other change parks."),
     ("apps/services/orchestrator/orchestrator/_maf_mcp.py", "[not run: {tool} can change da"): (
         "NO_CARD_CHANNEL_TEXT. RESIDUAL: an MCP call needs the run's live server "
         "session, so it cannot park for a Confirm (email_app_master_plan.md "
@@ -515,14 +532,22 @@ NO_CARD_TEXTS: dict[tuple[str, str], str] = {
         "in text."),
 }
 
+#: The words of a refusal for want of a card, and of each text that sends a
+#: member to an app for an approval or a change (fix round 1, verifier). The
+#: incident's own answer, "an outgoing mail needs your approval in the
+#: Metorite app, and I can't take that step from here", matches twice.
 _NO_CARD = re.compile(
     r"(cannot|can't|can not) (show|take)[^.]{0,30}(card|step|questions)"
-    r"|card cannot show|no card channel", re.I)
+    r"|card cannot show|no card channel"
+    r"|(approv|confirm)\w*[^.]{0,60}\b(in|from|on) the (metorite )?(web )?(app|chat)\b"
+    r"|\b(make|run|do|ask for|save or send|fix|send|finish|change)\b[^.]{0,40}\b(in|from) the "
+    r"(metorite (web )?(app|chat)|web app|web chat|chat app|email app)",
+    re.I)
 
 
 def _no_card_texts() -> set[tuple[str, str]]:
     """Every string constant in the product code that says "no card here"
-    (docstrings aside), as (file, text)."""
+    or "go to the app" (docstrings aside), as (file, text)."""
     found: set[tuple[str, str]] = set()
     for base in ("apps", "packages"):
         for path in (_REPO / base).rglob("*.py"):
@@ -542,13 +567,24 @@ def _no_card_texts() -> set[tuple[str, str]]:
     return found
 
 
+def test_the_fence_reads_the_incidents_own_words() -> None:
+    """The verifier's case: the answer that the owner read on WhatsApp."""
+    said = ("I couldn't send it myself: an outgoing mail needs your approval in "
+            "the Metorite app, and I can't take that step from here.")
+    assert _NO_CARD.search(said)
+    assert _NO_CARD.search("Approve it in the Metorite app.")
+    assert _NO_CARD.search("Send it from the Email app.")
+    assert not _NO_CARD.search("Tap Confirm to make this change, or Cancel.")
+
+
 def test_every_no_card_answer_names_its_whatsapp_behaviour() -> None:
-    """Fence 6, the scan. A new "a card cannot show here" text fails until
-    NO_CARD_TEXTS names what a WhatsApp member gets. A stale entry fails too."""
+    """Fence 6, the scan. A new "a card cannot show here" or "go to the app"
+    text fails until NO_CARD_TEXTS names what a WhatsApp member gets. A
+    stale entry fails too."""
     found = _no_card_texts()
 
     def names(rel: str, text: str) -> list[tuple[str, str]]:
-        return [k for k in NO_CARD_TEXTS if k[0] == rel and text.startswith(k[1])]
+        return [k for k in NO_CARD_TEXTS if k[0] == rel and k[1] in text]
 
     unnamed = sorted((rel, text[:60]) for rel, text in found if not names(rel, text))
     assert not unnamed, f"name the WhatsApp behaviour of: {unnamed}"
