@@ -203,7 +203,15 @@ class GraphitiClient:
             source_description: Origin of the episode.
             reference_time: When the event occurred (defaults to now).
             group_id: Logical group for the episode (e.g. agent name, run_id).
+
+        ⚠️ **No SETUP marker of the model reaches the graph** (WS-54 fix
+        round 5, item 2). This is the one write of a Graphiti episode, so the
+        name and the content pass through ``acb_common.setup_markers`` first.
         """
+        from acb_common.setup_markers import redact
+
+        name = redact(name)
+        content = redact(content)
         g = await self._get_graphiti()
         if g is None:
             return

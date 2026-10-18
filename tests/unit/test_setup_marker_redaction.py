@@ -19,9 +19,14 @@ R7, the mutations. Each one turns a test here red (run 2026-10-18):
   ``test_a_marker_is_removed_in_every_shape``.
 * R2-5-M4 ``run_trace._persist_row`` skips ``redact_tree`` ->
   ``test_an_errored_run_trace_holds_no_setup_value``.
-* R3-3-M1 (fix round 3) ``OPEN_MARKER_RE`` runs to the end of the line again ->
-  ``test_a_marker_inside_json_text_stays_inside_its_string``.
-* R3-3-M2 ``MARKER_RE`` may cross a double quote again -> the same test.
+* R3-3 (fix round 3) is replaced by fix round 5: redact the PARSED object, then
+  serialize -> ``test_a_marker_inside_a_json_object_leaves_valid_json``.
+* R5-1-M1 (fix round 5) ``MARKER_RE`` stops at a double quote again (the
+  round-3 bound) -> ``test_a_quoted_value_leaves_no_token``.
+* R5-1-M2 ``OPEN_MARKER_RE`` stops at a quote again -> the same test.
+* R5-2-M1 ``Mem0Client.add`` skips ``redact_tree`` ->
+  ``test_the_run_end_extraction_reaches_mem0_and_graphiti_with_no_token``.
+* R5-2-M2 ``GraphitiClient.add_episode`` skips ``redact`` -> the same test.
 * R4-2-M1 (fix round 4) the session upsert stores the preview with
   ``storable`` only -> ``test_the_session_preview_holds_no_setup_value``.
 * R4-2-M2 the session PATCH stores the preview with ``storable`` only -> the
@@ -156,18 +161,49 @@ def test_an_errored_run_trace_holds_no_setup_value(monkeypatch) -> None:
     assert session.writes and TOKEN not in json.dumps(session.writes, default=str)
 
 
-def test_a_marker_inside_json_text_stays_inside_its_string() -> None:
-    """A tool result or an agent state can hold JSON TEXT. An unclosed marker
-    in one string value must not eat the closing quote and the next field."""
-    cut = '{"a": "done <<<SETUP:github:GITHUB_TOKEN=' + TOKEN + '", "b": 1, "c": "x>>>"}'
-    out = redact(cut)
-    assert TOKEN not in out
-    assert json.loads(out) == {"a": "done [setup value removed: github GITHUB_TOKEN]",
-                               "b": 1, "c": "x>>>"}
-    tree = redact_tree({"tool_events": [{"result": cut}], "agent_state": {"s": cut}})
-    for text in (tree["tool_events"][0]["result"], tree["agent_state"]["s"]):
-        assert json.loads(text)["b"] == 1 and TOKEN not in text
+def test_a_marker_inside_a_json_object_leaves_valid_json() -> None:
+    """R3-3 kept, R5-1: redact the PARSED object, then serialize. The JSON
+    stays valid, every other field keeps its value, and no token is left."""
+    state = {"a": "done <<<SETUP:github:GITHUB_TOKEN=" + TOKEN, "b": 1,
+             "c": "x>>>", "events": [{"result": f"ok {MARKER}"}]}
+    text = json.dumps(redact_tree(state))
+    back = json.loads(text)
+    assert TOKEN not in text
+    assert back["b"] == 1 and back["c"] == "x>>>"
+    assert back["a"] == "done [setup value removed: github GITHUB_TOKEN]"
 
+
+def test_a_quoted_value_leaves_no_token() -> None:
+    """R5-1: the callers' pattern ``=([^>]+)`` takes a quoted value, so the
+    redaction takes it whole, closed and unclosed."""
+    closed = f'Saved. <<<SETUP:github:GITHUB_TOKEN="{TOKEN}">>> Done.'
+    assert redact(closed) == "Saved. [setup value removed: github GITHUB_TOKEN] Done."
+    single = f"<<<SETUP:github:GITHUB_TOKEN='{TOKEN}'>>>"
+    assert TOKEN not in redact(single)
+    unclosed = f'first\n<<<SETUP:github:GITHUB_TOKEN="{TOKEN}" and more'
+    out = redact(unclosed)
+    assert TOKEN not in out and out.startswith("first\n")
+    # A value with a '>' that is not '>>>' is taken whole too.
+    assert TOKEN not in redact(f"<<<SETUP:x:KEY=a>{TOKEN}>b>>> tail")
+    assert redact(f"<<<SETUP:x:KEY=a>{TOKEN}>b>>> tail").endswith(" tail")
+
+
+def test_no_caller_passes_serialized_json_to_redact() -> None:
+    """R5-1: ``redact`` gets decoded text only. A caller that redacts JSON
+    parses it and calls ``redact_tree``."""
+    import re as _re
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parents[2]
+    bad = []
+    for base in ("apps", "packages"):
+        for path in (root / base).rglob("*.py"):
+            source = path.read_text(encoding="utf-8", errors="replace")
+            if "setup_markers" not in source:
+                continue
+            if _re.search(r"\bredact(?:_tree)?\(\s*json\.dumps", source):
+                bad.append(str(path.relative_to(root)))
+    assert bad == [], bad
 
 def test_the_session_preview_holds_no_setup_value(monkeypatch) -> None:
     """The browser sends the last reply as ``last_preview`` (AgentChat), on
@@ -223,3 +259,41 @@ async def test_the_memory_add_holds_no_setup_value(monkeypatch) -> None:
     assert out["status"] == "queued"
     assert seen and TOKEN not in json.dumps(seen)
     assert seen[0][1] == {"role": "user", "content": "thanks"}
+
+
+async def test_the_run_end_extraction_reaches_mem0_and_graphiti_with_no_token(monkeypatch) -> None:
+    """R5-2: the run-end extraction of ``routes/agent.py`` and ``main.py``
+    sends ``build_extraction_conversation(...)`` to ``add_memories_background``,
+    and the member's message to ``add_episode``. The Tier 1 stream does not
+    strip a marker, so the folded answer can hold one. Neither store gets it."""
+    from acb_memory import graphiti_client, mem0_client
+    from gateway.chat_fold import build_extraction_conversation
+
+    mem0_seen: list[Any] = []
+    graph_seen: list[dict[str, Any]] = []
+
+    class _Mem0:
+        def add(self, messages: Any, user_id: str = "", agent_id: str = "") -> None:
+            mem0_seen.append(messages)
+
+    class _Graph:
+        async def add_episode(self, **kw: Any) -> None:
+            graph_seen.append(kw)
+
+    client = mem0_client.get_memory_client()
+    monkeypatch.setattr(client, "_get_client", lambda: _Mem0())
+    graph = graphiti_client.get_graphiti_client()
+
+    async def _g() -> Any:
+        return _Graph()
+
+    monkeypatch.setattr(graph, "_get_graphiti", _g)
+    folded = {"content": f"Saved the key. {MARKER}", "tool_events": [], "reasoning": None,
+              "custom_events": []}
+    conv = build_extraction_conversation([], f"my token {MARKER}", folded)
+    assert conv and TOKEN in json.dumps(conv), "the probe must carry the marker in"
+    await mem0_client.add_memories_background("a@x.test", conv, agent_id="probe")
+    await graphiti_client.add_episode(name="agent:probe:a", content=f"my token {MARKER}",
+                                      group_id="a@x.test")
+    assert mem0_seen and TOKEN not in json.dumps(mem0_seen)
+    assert graph_seen and TOKEN not in json.dumps(graph_seen, default=str)

@@ -30,17 +30,23 @@ from __future__ import annotations
 import re
 from typing import Any
 
-#: One marker, up to the first ``>>>`` on its line. It is wider than the
-#: shape that the callers read, on purpose: a value that holds a ``>`` is not
-#: saved by them, and it must not be stored either. ⚠️ It stops at a double
-#: quote (fix round 3, item 3). A string can hold JSON text, for example a
-#: tool result, and a marker must never reach past the end of its JSON string
-#: into the next field.
-MARKER_RE = re.compile(r'<<<SETUP:([^:>\n"]{0,100}):?([A-Za-z0-9_]{0,100})[^\n"]*?>>>')
-#: A marker that never closes (a stream cut short). It is removed up to the
-#: first space, quote, backslash or angle bracket, so it stays inside its own
-#: JSON string value and never eats a closing quote (fix round 3, item 3).
-OPEN_MARKER_RE = re.compile(r'<<<SETUP:([^:>\n"]{0,100}):?([A-Za-z0-9_]{0,100})[^\s"\'\\<>]*')
+#: ⚠️ **Decoded text only** (fix round 5, item 1). :func:`redact` works on a
+#: DECODED string: a chat message, a title, or one string that
+#: :func:`redact_tree` meets inside a parsed object. It must never get the
+#: output of ``json.dumps``. Round 3 bounded the patterns at a double quote to
+#: protect serialized JSON, and a quoted value
+#: ``<<<SETUP:github:GITHUB_TOKEN="ghp_…">>>`` then kept its whole token. The
+#: callers' own pattern ``=([^>]+)`` takes that form, so it is real. Now the
+#: value runs to ``>>>``, and quotes belong to it. To redact JSON, parse it,
+#: call :func:`redact_tree`, and serialize the result.
+#:
+#: One marker, up to the first ``>>>`` on its line. It is wider than the shape
+#: that the callers read, on purpose: a value that holds a ``>`` is not saved
+#: by them, and it must not be stored either.
+MARKER_RE = re.compile(r"<<<SETUP:([^:>\n]{0,100}):?([A-Za-z0-9_]{0,100})[^\n]*?>>>")
+#: A marker that never closes (a stream cut short): removed to the end of its
+#: line, because the value has no other end.
+OPEN_MARKER_RE = re.compile(r"<<<SETUP:([^:>\n]{0,100}):?([A-Za-z0-9_]{0,100})[^\n]*")
 
 #: What a marker becomes. It holds no value and is not a marker.
 REPLACEMENT = "[setup value removed: {service} {key}]"
