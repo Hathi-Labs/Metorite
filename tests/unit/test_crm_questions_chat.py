@@ -279,3 +279,16 @@ def test_the_proposal_time_is_the_clock_of_the_server() -> None:
     assert set(ReplyIn.model_fields) == {"choice"}
     with pytest.raises(ValidationError):
         ReplyIn(choice="IP", member="x@y.test")  # extra="forbid"
+
+
+def test_the_run_boundary_opens_and_releases_the_holder() -> None:
+    """Item 6: the holder opens beside ``refuse_cards_for_run`` and closes in
+    the same ``finally``, once for each streamed run."""
+    source = (REPO / "apps/services/orchestrator/orchestrator/executor.py").read_text(
+        encoding="utf-8")
+    assert source.count("open_asks_for_run()") == 1
+    assert source.count("release_asks(_asks_token)") == 1
+    opened = source.index("_cards_token = refuse_cards_for_run(")
+    assert opened < source.index("_asks_token = open_asks_for_run()") < opened + 600
+    released = source.index("release_cards_switch(_cards_token)")
+    assert released < source.index("release_asks(_asks_token)") < released + 200
