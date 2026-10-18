@@ -2,7 +2,7 @@
 
 A MAF agent that checks the inbox, categorizes mail, manages automation rules,
 takes inbox actions, and drafts context-aware replies — handing off to the
-sales / task-manager agents and reading memory when an email needs their
+sales / projects agents and reading memory when an email needs their
 context. Modeled on inbox-zero's (elie222/inbox-zero) assistant tool surface.
 
 Registered as a MAF agent (name "email-assistant"); build_agents() is the
@@ -4567,7 +4567,7 @@ async def test_rule_match(
 # ── Tool registry ────────────────────────────────────────────────────────────
 
 # Tools attached to the MAF agent. call_agent and remember are injected by the
-# executor, so the agent can hand off to the sales / task-manager agents and
+# executor, so the agent can hand off to the sales / projects agents and
 # read memory without listing them here. The executor withholds save_memory and
 # each other store write from this agent (WS-17 EM-G11f3), so no mail text
 # reaches a memory store.

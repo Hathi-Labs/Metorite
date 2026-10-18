@@ -1864,6 +1864,12 @@ def _copilot_delegation(monkeypatch, sandbox, org: str, agent: _CopilotSub) -> _
         "name": "copilot-probe", "agent_runtime": "github-copilot",
         "repo_name": None, "local_path": None,
     }])
+    # Since 2026-10-19 the executor refuses a delegated Copilot agent before
+    # it runs (D84, D92, test_copilot_specialist_refused.py). The H-236 guard
+    # of the Copilot sub-agent branch stays as a second layer, so these tests
+    # switch the refusal off to keep that layer fenced.
+    # test_the_refusal_comes_before_the_guard proves the refusal itself.
+    monkeypatch.setattr(executor, "refuse_copilot_specialist", lambda *_a, **_k: None)
 
     async def call() -> str:
         return await executor._run_sub_agent_streaming(
@@ -1915,6 +1921,35 @@ def test_another_repos_unannotated_tools_are_withheld_and_refused(sandbox, monke
     assert not held & {"web_research", "zoho_crm"}, held
     for key in ("tool_web_research", "tool_zoho_crm", "tool_web_search"):
         assert _refused(agent.decisions[key]), (key, agent.decisions[key])
+
+
+def test_the_refusal_comes_before_the_guard(sandbox, monkeypatch) -> None:  # noqa: F811
+    """With the real refusal in place, a delegated Copilot agent asks the
+    guard nothing, because it never runs (D84, D92)."""
+    import gateway.routes.agent as routes_agent
+    from acb_common.db import bind_tenant, release_tenant
+    from acb_skills import loader
+
+    agent = _CopilotSub()
+    monkeypatch.setattr(routes_agent, "_load_dynamic_agents", lambda: [{
+        "name": "copilot-probe", "agent_runtime": "github-copilot",
+        "repo_name": None, "local_path": None,
+    }])
+    monkeypatch.setattr(executor, "load_agent", lambda *_a, **_k: pytest.fail("loaded"))
+
+    async def call() -> str:
+        return await executor._run_sub_agent_streaming(
+            "copilot-probe", "send the rows", "r-sub", event_queue=asyncio.Queue(),
+        )
+
+    token = bind_tenant(ORG_A)
+    try:
+        with bound_run(ORG_A, agent=PA, thread=new_thread()):
+            text = asyncio.run(call())
+    finally:
+        release_tenant(token)
+    assert loader.COPILOT_SPECIALIST_TEXT in text, text
+    assert agent.decisions == {}
 
 
 def test_a_copilot_sub_agent_of_an_uncovered_parent_is_unchanged(sandbox, monkeypatch) -> None:  # noqa: F811

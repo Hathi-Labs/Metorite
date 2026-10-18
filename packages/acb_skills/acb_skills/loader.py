@@ -80,13 +80,60 @@ COPILOT_AGENTS_SUPPORTED = True
 _copilot_deprecation_logged: set[str] = set()
 _copilot_deprecation_lock = threading.Lock()
 
+#: Each spelling of the Copilot runtime that a registry entry or a
+#: ``config.json`` can carry. ``gateway.routes.agent._normalize_runtime`` reads
+#: this set too, so the two cannot disagree.
+COPILOT_RUNTIME_LABELS: frozenset[str] = frozenset({
+    "github-copilot", "github_copilot", "githubcopilot", "copilot", "copilot-sdk",
+})
+
+#: The text that a delegation to a Copilot agent gets (D84, D92). The
+#: orchestrator reads it as the answer of the sub-task, so it says what to do.
+COPILOT_SPECIALIST_TEXT = (
+    "It runs on the GitHub Copilot SDK runtime, which Metorite retired "
+    "(D84, D92), so it does not run as a specialist. Use another registered "
+    "agent, or answer with your own tools."
+)
+
 
 class AgentRuntimeUnsupported(AgentLoadError):
-    """Raised when an agent builds a Copilot SDK agent after WS-43r.
+    """Raised when an agent builds a Copilot SDK agent after WS-43r, and when
+    a run delegates to a Copilot agent (:func:`refuse_copilot_specialist`).
 
     An ``AgentLoadError``, so every caller answers it as it answers an agent
     that does not load.
     """
+
+
+def is_copilot_runtime_label(label: Any) -> bool:
+    """True when *label* (a registry ``agent_runtime``) names the Copilot runtime."""
+    return isinstance(label, str) and label.strip().lower() in COPILOT_RUNTIME_LABELS
+
+
+def refuse_copilot_specialist(
+    agent_name: str, *, label: Any = None, built: list[Any] | None = None,
+) -> None:
+    """Refuse a DELEGATED run of a Copilot agent (D84, D92).
+
+    A Copilot agent still runs as the agent of its own app until its port
+    (WS-8i, WS-43h) or the WS-43r switch. As a specialist of another run it
+    does not: the sub-run would start the Copilot CLI on the retired runtime.
+    The caller (``call_agent``, ``call_agents_parallel``, a specialist tool,
+    ``delegate_to_agent``) gets the error as the answer of the sub-task, and
+    the orchestrator falls back to another agent or its own tools.
+
+    *label* is the registry ``agent_runtime``, read before the load, so a
+    labelled agent is refused with no clone and no import. *built* is the
+    ``build_agents()`` result, which finds a Copilot object whatever its label
+    says. Fence: ``tests/unit/test_copilot_specialist_refused.py``.
+    """
+    if not (is_copilot_runtime_label(label)
+            or any(is_copilot_agent(a) for a in (built or []))):
+        return
+    _log.warning("loader.copilot_specialist_refused", agent=agent_name)
+    raise AgentRuntimeUnsupported(
+        f"Agent {agent_name!r} cannot run as a specialist. " + COPILOT_SPECIALIST_TEXT
+    )
 
 
 def is_copilot_agent(agent: Any) -> bool:
@@ -1625,6 +1672,62 @@ class LoadedAgent:
         self.cleanup()
 
 
+def _attach_skill_repos(
+    skill_repos: list[str],
+    *,
+    agent_name: str,
+    org: str,
+    token: str | None,
+    cache_root: Path,
+    settings: Any,
+) -> list[str]:
+    """Make each skill of ``config.json`` importable. Return the paths it put
+    on ``sys.path``.
+
+    A skill that the gateway's venv already provides (a workspace member such
+    as ``skill-projects`` or ``skill-my-tasks``) is used from the venv. The
+    loader does not clone it, and it puts no path before the venv. A clone of
+    ``{org}/{skill}`` would only shadow the monorepo's copy with an older
+    one, and with no valid token every load logged a failed clone
+    (production, 2026-10-18).
+
+    Any other skill is cloned or pulled as before: a skill of a repo agent
+    that the venv does not hold still needs its repo. A failed clone logs a
+    warning and the agent still loads.
+    Fence: ``tests/unit/test_loader_venv_skills.py``.
+    """
+    injected: list[str] = []
+    for skill_repo_name in skill_repos:
+        provided = agent_site.venv_version(skill_repo_name)
+        if provided is not None:
+            _log.info(
+                "loader.skill_provided_by_venv",
+                skill=skill_repo_name, agent=agent_name, version=provided,
+            )
+            continue
+        try:
+            skill_dir = _ensure_repo(
+                skill_repo_name,
+                org=org,
+                token=token,
+                cache_root=cache_root,
+                settings=settings,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "loader.skill_clone_failed",
+                skill=skill_repo_name,
+                agent=agent_name,
+                error=str(exc),
+            )
+            continue
+        skill_src = skill_dir / "src"
+        skill_path = str(skill_src if skill_src.exists() else skill_dir)
+        sys.path.insert(0, skill_path)
+        injected.append(skill_path)
+    return injected
+
+
 def load_agent(
     agent_name: str,
     *,
@@ -1697,28 +1800,10 @@ def load_agent(
             except Exception as exc:  # noqa: BLE001
                 _log.warning("loader.config_parse_error", agent=agent_name, error=str(exc))
 
-        injected_paths: list[str] = []
-        for skill_repo_name in skill_repos:
-            try:
-                skill_dir = _ensure_repo(
-                    skill_repo_name,
-                    org=org,
-                    token=token,
-                    cache_root=cache_root,
-                    settings=settings,
-                )
-            except Exception as exc:  # noqa: BLE001
-                _log.warning(
-                    "loader.skill_clone_failed",
-                    skill=skill_repo_name,
-                    agent=agent_name,
-                    error=str(exc),
-                )
-                continue
-            skill_src = skill_dir / "src"
-            skill_path = str(skill_src if skill_src.exists() else skill_dir)
-            sys.path.insert(0, skill_path)
-            injected_paths.append(skill_path)
+        injected_paths = _attach_skill_repos(
+            skill_repos, agent_name=agent_name, org=org, token=token,
+            cache_root=cache_root, settings=settings,
+        )
 
         agent_path = str(agent_dir)
         sys.path.insert(0, agent_path)
@@ -1771,30 +1856,11 @@ def load_agent(
         except Exception as exc:  # noqa: BLE001
             _log.warning("loader.config_parse_error", agent=agent_name, error=str(exc))
 
-    injected_paths: list[str] = []
-
     # Ensure each skill repo is present and up-to-date
-    for skill_repo_name in skill_repos:
-        try:
-            skill_dir = _ensure_repo(
-                skill_repo_name,
-                org=org,
-                token=token,
-                cache_root=cache_root,
-                settings=settings,
-            )
-        except Exception as exc:  # noqa: BLE001
-            _log.warning(
-                "loader.skill_clone_failed",
-                skill=skill_repo_name,
-                agent=agent_name,
-                error=str(exc),
-            )
-            continue
-        skill_src = skill_dir / "src"
-        skill_path = str(skill_src if skill_src.exists() else skill_dir)
-        sys.path.insert(0, skill_path)
-        injected_paths.append(skill_path)
+    injected_paths = _attach_skill_repos(
+        skill_repos, agent_name=agent_name, org=org, token=token,
+        cache_root=cache_root, settings=settings,
+    )
 
     # Inject agent repo path
     agent_path = str(agent_dir)

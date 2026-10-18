@@ -123,16 +123,19 @@ CASES: tuple[Case, ...] = (
          "/projects", "crm-assistant", facts=_PROJECT,
          note="cross-app: asked in Projects, about the pipeline"),
 
-    # ── My Tasks and Calendar → task-manager ───────────────────────────────
+    # ── My Tasks and Calendar → projects-assistant ─────────────────────────
+    # One task store, three lenses (D52, D53, D54). task-manager runs on the
+    # retired Copilot runtime, so it is no specialist (D84, D92).
     Case("T1", "Capture a to-do: renew the domain before the 30th.",
-         "/tasks", "task-manager", facts=_MY_TASKS),
+         "/tasks", "projects-assistant", facts=_MY_TASKS,
+         note="a private task (ALSO_SERVES keeps the page in My Tasks)"),
     Case("T2", "What should I work on next?",
-         "/tasks", "task-manager", facts=_MY_TASKS),
+         "/tasks", "projects-assistant", facts=_MY_TASKS),
     Case("T3", "Block two hours tomorrow morning to write the board report.",
-         "/calendar", "task-manager",
+         "/calendar", "projects-assistant",
          note="Calendar has no agent of its own (ALSO_SERVES in assistant.ts)"),
     Case("T4", "Remind me to call Acme back on Thursday.",
-         "/crm", "task-manager",
+         "/crm", "projects-assistant",
          note="cross-app: a personal to-do asked in CRM"),
 
     # ── My WhatsApp → whatsapp-assistant ───────────────────────────────────
@@ -148,8 +151,9 @@ CASES: tuple[Case, ...] = (
     Case("I1", "Help me set up the API key for our SendGrid account.",
          "/integrations", "apis-config"),
     Case("B1", "Build me a small app that tracks visitor sign-ins at the front desk.",
-         "/chat", "app-builder",
-         note="App Workshop is a preview pane, so the page does not move"),
+         "/chat", None,
+         note="app-builder runs on the retired Copilot runtime, so it is no "
+              "specialist (D84, D92). The orchestrator answers itself"),
 
     # ── orchestrator answers itself ────────────────────────────────────────
     Case("N1", "What can you do?", "/chat", None),

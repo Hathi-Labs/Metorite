@@ -4549,6 +4549,17 @@ would hide the loss of the Copilot CLI's own shell and file tools.
    HTTP 400 at registration.
 2. Until WS-43r, a loaded Copilot agent still runs, and the loader logs one
    deprecation line that names it.
+   ⚠️ **Since 2026-10-19 it runs only as the agent of its own app.** A run
+   that delegates to it gets `AgentRuntimeUnsupported` from
+   `acb_skills.loader.refuse_copilot_specialist`. The executor reads the
+   label before the load, so the agent is not cloned or imported, and then
+   the object after the build. The two delegation paths are
+   `_run_sub_agent_streaming` and a batch run with a parent context. The
+   caller gets the error text as the answer of the sub-task. The
+   orchestrator does not list a Copilot agent as a specialist. Why: on
+   2026-10-18 production delegated inbox work to `task-manager`, and the
+   sub-run started the Copilot CLI. Fence:
+   `tests/unit/test_copilot_specialist_refused.py`.
 3. After WS-43r, the loader raises `acb_skills.loader.AgentRuntimeUnsupported`,
    with the migration text.
 4. The rows of `dynamic_agents` keep their old label. The executor decides by

@@ -526,14 +526,16 @@ export function paneForDelegate(name: string | null | undefined, sections: reado
 }
 
 /**
- * The other apps a specialist serves, where the page must stay. Calendar has
- * no agent of its own, and My Tasks' agent moves its time
- * (`navigation_shell.md` §5.3). A question asked in Calendar must not throw
- * the member into My Tasks. The manifest cannot say this, because two panes
- * may not name one agent (`runActivity.test.ts`).
+ * The other apps a specialist serves, where the page must stay. Projects, My
+ * Tasks and Calendar are one task store (D52, D53, D54), and the orchestrator
+ * sends their work to the Projects specialist. A question asked in My Tasks
+ * or Calendar must not throw the member into Projects. The manifest cannot
+ * say this, because two panes may not name one agent (`runActivity.test.ts`).
+ * task-manager is not here: it runs on the retired Copilot runtime, so it is
+ * no specialist of the orchestrator (D84, D92) and no run moves the page to it.
  */
 export const ALSO_SERVES: Readonly<Record<string, readonly string[]>> = {
-  "task-manager": ["/calendar"],
+  "projects-assistant": ["/tasks", "/calendar"],
 };
 
 /**

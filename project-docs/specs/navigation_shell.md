@@ -2277,8 +2277,15 @@ agent. Six cases are cross-app.
   choice. `--live` measures it on a local stack, through the Router, and
   writes `evals/routing/baseline.json`. Nobody has run it yet, so there is
   no accuracy figure.
-- **Catalog only:** the four `task-manager` cases and the `app-builder` case.
-  Their sub-runs start the Copilot CLI, which a hermetic run cannot start.
+- **Task work goes to `projects-assistant` (2026-10-19).** Projects, My
+  Tasks and Calendar are one task store (D52, D53, D54). So T1 to T4 expect
+  `projects-assistant`, and `ALSO_SERVES` keeps the page in My Tasks or
+  Calendar when that agent works. `task-manager` and `app-builder` run on
+  the retired Copilot runtime. The orchestrator does not hold them as
+  specialists, and the executor refuses a delegation to them (D84, D92,
+  `maf_coding_engine.md` §15.5). B1 now expects `orchestrator`. A live pane
+  whose agent the orchestrator does not hold needs no case. `task-manager`
+  stays the agent of the My Tasks rail until its port (WS-8i).
 - **The confirm cards of §7.1.** The server half of item 4 of "Done when"
   holds. The browser half is still open (§7.1).
 
