@@ -5932,31 +5932,53 @@ line — never reclaim a number by deleting the other entry.
   in the dev box's root terminal (the hPanel browser terminal):
   `sudo sh -c 'cp -p /opt/acb/app/.env /opt/acb/app/.env.bak-$(date -u +%Y%m%dT%H%M%SZ) && printf "\nKNOWLEDGE_ENABLED=true\nKNOWLEDGE_ORGS=*\nCOMPANY_SEARCH_ENABLED=true\n" >> /opt/acb/app/.env && systemctl restart acb-gateway'`.
   Then open `https://dev.metorite.com/knowledge`.
-- **Then (agent).** Write `deploy/hostinger/staging/acb-staging-flag`, a root
-  script with these rules:
-  - It refuses to run unless `/opt/acb/app/.env` holds `DEPLOY_ENV=staging`,
-    so it can never touch production.
-  - It sets or clears only a key on an allowlist kept in the script. The list
-    holds feature flags such as `KNOWLEDGE_*`, `COMPANY_SEARCH_ENABLED`,
-    `*_ENABLED` and `*_ORGS`. It refuses any key that holds `KEY`, `SECRET`,
-    `TOKEN`, `PASSWORD`, `DSN` or `URL`.
-  - It backs up the file first, and keeps the owner `acb` and mode 600.
-  - It restarts only the unit that reads the key: `acb-gateway`, or
-    `acb-workbench` for a `NEXT_PUBLIC_` key.
-  - `--list` prints the allowlisted keys and their values, and never another
-    line.
-  Add a test that drives it on a temp file, and open a PR.
+- **Then (agent). ✅ Built 2026-10-18** on branch `ws61-staging-flag`. The
+  script is `deploy/hostinger/staging/acb-staging-flag`, and its fence is
+  `tests/unit/test_acb_staging_flag.py`. `deploy/hostinger/staging/README.md`
+  holds the install commands, the use and the exact names it may write. The
+  script refuses unless `/opt/acb/app/.env` says exactly `DEPLOY_ENV=staging`.
+  It writes only a name on its exact list, and it refuses each `NEXT_PUBLIC_*`
+  key. Root does no file work, because each read and write runs as `acb`. It
+  makes a backup first and keeps the newest 20. It records each key that it
+  sets in `/opt/acb/app/.staging-flags`, and the nightly refresh skips those
+  keys. Then it restarts `acb-gateway`.
 - **Then (owner, one time).** After that PR merges, run on the dev box as root:
   `install -o root -g root -m 755 /opt/acb/app/deploy/hostinger/staging/acb-staging-flag /usr/local/sbin/acb-staging-flag`
   and add `dev ALL=(root) NOPASSWD: /usr/local/sbin/acb-staging-flag` to a new
   file `/etc/sudoers.d/acb-staging-flag`, checked with `visudo -cf`. That
   grants one script and nothing else.
+- **Then (owner, optional, a separate step).** ⚠️ On srv1747539, `dev` and
+  `acb` are in group `docker`, and `/var/run/docker.sock` is `root:docker`
+  0660. That group is root-equivalent. So until the owner removes `dev` and
+  `acb` from `docker`, this sudoers line is a convenience, not a security
+  boundary. Removing them from `docker` also needs every agent workflow that
+  uses docker (the scratch Postgres ladder) to keep working. So decide it as
+  its own step.
 - **Production stays as it is.** Production flags already work through
   `ssh metorite` with sudo, under the dev-phase grant that ends on 2026-11-30.
   This entry adds a staging path only.
 - **Authority:** `specs/staging_and_daily_release.md`, `specs/knowledge_base.md` §13,
   CLAUDE.md §3a (`enforcement-flip`)
 - **Added:** 2026-10-18 · WS-61, owner request
+
+### H-359 · Three staging file races that the acb-staging-flag review left · [AGENT] · security
+- **Check:** in `scripts/staging_refresh.sh`, the write of `$file.tmp` runs as
+  `acb` (through `setpriv` or `runuser`), and `acb-staging-flag` checks the pin
+  file before it writes `.env`. If both hold, delete this entry.
+- **Why.** The security review of H-358 on 2026-10-18 approved the script and
+  named three left-overs. First, `staging_refresh.sh:165-167` writes
+  `$file.tmp` as root inside `/opt/acb/app`, which `acb` can write. That is the
+  same symlink race that the script fixed. Second, when `.staging-flags` is a
+  symlink, `acb-staging-flag` writes `.env`, then refuses on the pin file. So
+  the flag changes with no log line, no restart and no pin, and the next
+  refresh reverts it. Third, the sudoers line lets `dev` flip
+  `enforcement-flip` switches after the dev-phase grant ends on 2026-11-30.
+- **Do this:** run the refresh's file work as `acb`, as `as_owner` does in
+  the script. In the script, read and check the pin file before the `.env`
+  write. Say in the README that the sudoers line outlives the grant, so the
+  owner decides on 2026-11-30 whether it stays.
+- **Authority:** `deploy/hostinger/staging/README.md`, HANDOFF H-358
+- **Added:** 2026-10-18 · H-358 security review
 
 # DONE — deleted, not archived
 
