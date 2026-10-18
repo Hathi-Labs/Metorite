@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import type { PageSummary } from "../types";
 import {
   addressOf,
+  isAllowedHref,
   linkedPageId,
   loadPageChoices,
   looksLikeAddress,
@@ -79,5 +80,19 @@ describe("the link a pick writes", () => {
     expect(addressOf("example.com")).toBe("https://example.com");
     expect(addressOf("mailto:a@b.example")).toBe("mailto:a@b.example");
     expect(addressOf("/knowledge/pages/a")).toBe("/knowledge/pages/a");
+  });
+});
+
+describe("isAllowedHref", () => {
+  it("allows a web address, mail, a phone, a path of this app and an anchor", () => {
+    for (const href of ["https://x.example/a", "http://x.example", "mailto:a@b.example", "tel:+911234", "/knowledge/pages/a", "#top"]) {
+      expect(isAllowedHref(href), href).toBe(true);
+    }
+  });
+
+  it("refuses a script address, another origin's path and an empty one", () => {
+    for (const href of ["javascript:alert(1)", "JavaScript:x", "data:text/html,x", "//evil.example/a", "/\\evil.example", "", "https://", "vbscript:x"]) {
+      expect(isAllowedHref(href), href).toBe(false);
+    }
   });
 });

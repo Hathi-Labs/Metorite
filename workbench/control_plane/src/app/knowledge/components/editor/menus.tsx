@@ -22,7 +22,9 @@ import { Input } from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
 
 import {
+  LINK_REFUSED,
   addressOf,
+  isAllowedHref,
   linkedPageId,
   looksLikeAddress,
   matchPages,
@@ -103,7 +105,7 @@ export function FormatBubble({
       editor={editor}
       pluginKey="kbFormat"
       shouldShow={({ editor: e, from, to }) => showsFormat(e, from, to)}
-      options={{ placement: "top", hide: true, scrollTarget, onHide: () => setLinking(false) }}
+      options={{ placement: "top", hide: true, shift: { padding: 8 }, scrollTarget, onHide: () => setLinking(false) }}
       className="kb-bubble shadow-md"
       role="toolbar"
       aria-label="Format the selection"
@@ -193,14 +195,20 @@ export function LinkPanel({
   const linkedTitle = linked ? pages?.find((p) => p.id === linked)?.title : null;
   const [text, setText] = useState(linkedTitle ?? initialHref);
   const [active, setActive] = useState(0);
+  const [error, setError] = useState<string | null>(null);
   const address = looksLikeAddress(text);
   const rows = useMemo(
     () => (address || !pages ? [] : matchPages(pages, text, { exclude: currentPageId, limit: 5 })),
     [address, pages, text, currentPageId],
   );
 
+  // A refused address keeps the panel open and says what to type. Before
+  // this, a `javascript:` address closed the panel and linked nothing.
   const apply = (href: string) => {
-    editor.chain().focus().extendMarkRange("link").setLink({ href }).run();
+    if (!isAllowedHref(href) || !editor.chain().focus().extendMarkRange("link").setLink({ href }).run()) {
+      setError(LINK_REFUSED);
+      return;
+    }
     onDone();
   };
   const submit = () => {
@@ -220,7 +228,10 @@ export function LinkPanel({
           onChange={(e) => {
             setText(e.target.value);
             setActive(0);
+            setError(null);
           }}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? "kb-link-error" : undefined}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
@@ -253,6 +264,11 @@ export function LinkPanel({
           />
         ) : null}
       </div>
+      {error ? (
+        <p id="kb-link-error" role="alert" className="px-1 text-[11px] text-destructive">
+          {error}
+        </p>
+      ) : null}
       {!address && text.trim() ? (
         <div role="listbox" aria-label="Pages" className="space-y-0.5">
           {pagesLoading && !pages ? <p className="px-2 py-1 text-[11px] text-muted-foreground">Loading pages…</p> : null}
@@ -312,7 +328,7 @@ export function TableTools({ editor, scrollTarget }: { editor: Editor; scrollTar
         const table = tableAtSelection(editor);
         return table ? { getBoundingClientRect: () => table.getBoundingClientRect() } : null;
       }}
-      options={{ placement: "top-start", hide: true, scrollTarget }}
+      options={{ placement: "top-start", hide: true, shift: { padding: 8 }, scrollTarget }}
       className="kb-bubble shadow-md"
       role="toolbar"
       aria-label="Table"

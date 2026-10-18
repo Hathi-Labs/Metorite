@@ -777,6 +777,16 @@ select optgroup {
 .kb-editor-shell { position: relative; }
 .kb-editor { outline: none; }
 .kb-editor-shell.is-editing .kb-editor { min-height: 16rem; padding-bottom: 2rem; }
+/* The body shows where the keys go while a member edits: a quiet ring
+   from the ring token, on the shell, so the text does not move. */
+.kb-editor-shell.is-editing {
+  margin: -0.25rem -0.5rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: calc(var(--radius) - 4px);
+}
+.kb-editor-shell.is-editing:focus-within {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ring) 45%, transparent);
+}
 /* The same rhythm as the chat's Markdown (`MarkdownBody`): compact
    headings under the page title, and tight lists. */
 .kb-editor :where(h2, h3, h4, h5, h6) { color: var(--foreground); font-weight: 600; line-height: 1.35; }
@@ -919,6 +929,9 @@ select optgroup {
 }
 .kb-editor :where(th, td) { padding: 0.4em 0.75em; vertical-align: top; }
 .kb-editor :where(td) { border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+/* While a member edits, a table leaves room above it for its tools, so they
+   never cover the block above. */
+.kb-editor-shell.is-editing .kb-editor .tableWrapper { margin-top: 2.75rem; }
 .kb-editor-shell.is-editing .kb-editor :where(td, th) { position: relative; border: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
 .kb-editor-shell.is-editing .kb-editor .selectedCell::after {
   content: "";
@@ -929,8 +942,12 @@ select optgroup {
 }
 .kb-editor :where(td, th) > p { margin: 0; }
 
-/* The block handle: a grip in the gutter, left of the block. */
+/* The block handle: a grip in the gutter, left of the block. A phone has
+   no pointer to drag with and no gutter, so the handle is not drawn there. */
 .kb-drag-handle { display: flex; align-items: center; justify-content: center; }
+@media (max-width: 640px) {
+  .kb-drag-handle { display: none; }
+}
 .kb-drag-grip {
   display: flex;
   align-items: center;

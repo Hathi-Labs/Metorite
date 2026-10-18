@@ -137,6 +137,21 @@ export default function PageView({ pageId }: { pageId: string }) {
   const [confirmPublish, setConfirmPublish] = useState(false);
   const [reverting, setReverting] = useState<PageVersion | null>(null);
   const [busy, setBusy] = useState(false);
+  // The editor writes its Markdown after a pause in the typing, so a key is
+  // cheap on a long page. `pending` marks the draft dirty from the first
+  // key, and `flushRef` writes the body at once before a save or a switch.
+  const [pending, setPending] = useState(false);
+  const flushRef = useRef<(() => string | null) | null>(null);
+  const draftRef = useRef(draft);
+  useEffect(() => {
+    draftRef.current = draft;
+  });
+  // False from the moment an edit ends, so a late write of the editor that
+  // unmounts cannot put a discarded draft back in session storage.
+  const editingRef = useRef(false);
+  useEffect(() => {
+    editingRef.current = editing;
+  }, [editing]);
 
   const writable = Boolean(page?.can_write) && page?.state !== "archived";
 
@@ -145,6 +160,7 @@ export default function PageView({ pageId }: { pageId: string }) {
     setDraft(restored?.draft ?? { title: from.title, body_md: from.body_md });
     setSession((n) => n + 1);
     setSource(false);
+    setPending(false);
     setSaveError(null);
     setStale(false);
     setEditing(true);
@@ -152,6 +168,8 @@ export default function PageView({ pageId }: { pageId: string }) {
 
   /** Close the editor and drop the draft, the stored copy too. */
   function endEdit() {
+    editingRef.current = false;
+    setPending(false);
     const store = sessionStore();
     if (store && scope) clearDraft(store, scope, pageId);
     setEditing(false);
@@ -160,7 +178,32 @@ export default function PageView({ pageId }: { pageId: string }) {
     setSaveError(null);
   }
 
-  const dirty = editing && snapshot !== null && isDirty(snapshot, draft);
+  const dirty = editing && snapshot !== null && (pending || isDirty(snapshot, draft));
+
+  /** Keep the draft in session storage now, not in an effect, so a remount keeps it. */
+  function persistDraft(next: Draft) {
+    const store = sessionStore();
+    if (!store || !scope || !snapshot) return;
+    if (isDirty(snapshot, next)) writeDraft(store, scope, snapshot, next);
+    else clearDraft(store, scope, snapshot.pageId);
+  }
+
+  /** The editor wrote its body: after a pause, on a flush, or as it unmounts. */
+  function onEditorChange(body_md: string) {
+    if (!editingRef.current) return;
+    setPending(false);
+    if (draftRef.current.body_md === body_md) return;
+    const next = { ...draftRef.current, body_md };
+    draftRef.current = next;
+    setDraft(next);
+    persistDraft(next);
+  }
+
+  /** The draft with the editor's newest body, written at once. */
+  function flushedDraft(): Draft {
+    const body = flushRef.current?.() ?? null;
+    return body === null ? draftRef.current : { ...draftRef.current, body_md: body };
+  }
 
   // A draft that waits in session storage comes back once, after the page
   // and the member are known. That covers the remount at 767px and Back.
@@ -189,6 +232,7 @@ export default function PageView({ pageId }: { pageId: string }) {
     if (!dirty) return;
     setLeaveGuard({ onDiscard: () => endEditRef.current() });
     const warn = (e: BeforeUnloadEvent) => {
+      flushRef.current?.();
       e.preventDefault();
       e.returnValue = "";
     };
@@ -245,7 +289,9 @@ export default function PageView({ pageId }: { pageId: string }) {
 
   async function save(anyway = false) {
     if (!page || !snapshot) return;
-    const patch = draftPatch(snapshot, draft);
+    // Write the editor's last keys first: the stale check and the patch
+    // read the newest body.
+    const patch = draftPatch(snapshot, flushedDraft());
     if (!patch) {
       endEdit();
       return;
@@ -307,6 +353,7 @@ export default function PageView({ pageId }: { pageId: string }) {
 
   const last = page.versions[0] ?? null;
   const patch = editing && snapshot ? draftPatch(snapshot, draft) : null;
+  const canSave = Boolean(patch) || pending;
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
@@ -344,6 +391,7 @@ export default function PageView({ pageId }: { pageId: string }) {
                   icon="FileCode"
                   selected={source}
                   onClick={() => {
+                    if (!source) flushedDraft();
                     setSource((v) => !v);
                     setSession((n) => n + 1);
                   }}
@@ -367,7 +415,9 @@ export default function PageView({ pageId }: { pageId: string }) {
                     mode="edit"
                     body={draft.body_md}
                     storedBody={snapshot?.body_md ?? page.body_md}
-                    onChange={(body_md) => setDraft((d) => (d.body_md === body_md ? d : { ...d, body_md }))}
+                    onChange={onEditorChange}
+                    onTouched={() => setPending(true)}
+                    flushRef={flushRef}
                     pageId={page.id}
                     spaces={spaces}
                     label="Page body"
@@ -407,7 +457,7 @@ export default function PageView({ pageId }: { pageId: string }) {
               {/* The save row stays in view at the foot of the scroller, so a
                   long page does not hide Save below the body. */}
               <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t border-border bg-background py-2">
-                <Button size="sm" loading={saving} disabled={saving || !patch || !draft.title.trim()} onClick={() => void save()}>
+                <Button size="sm" loading={saving} disabled={saving || !canSave || !draft.title.trim()} onClick={() => void save()}>
                   Save changes
                 </Button>
                 <Button variant="secondary" size="sm" disabled={saving} onClick={() => requestLeave(endEdit)}>

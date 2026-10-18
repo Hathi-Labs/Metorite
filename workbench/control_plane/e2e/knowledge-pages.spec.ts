@@ -661,6 +661,8 @@ test.describe("the block editor", () => {
     const body = await openEditor(page);
     const beta = body.locator("p", { hasText: "Beta" });
     const alpha = body.locator("p", { hasText: "Alpha" });
+    // The handle loads with the edit, as its own chunk.
+    await page.locator(".kb-drag-handle").waitFor({ state: "attached" });
     await beta.hover();
     const grip = page.locator(".kb-drag-grip");
     await expect(grip).toBeVisible();
@@ -756,6 +758,84 @@ test.describe("the block editor", () => {
     await page.getByRole("button", { name: "Save changes" }).click();
     await expect.poll(() => kb.writes.length).toBe(1);
     expect(kb.writes[0].body).toEqual({ body_md: "# From Markdown\n\n> [!TIP]\n> Typed as text." });
+  });
+
+  test("typing on a long page parses nothing, and Save still writes the last key", async ({ page }) => {
+    test.setTimeout(90_000);
+    await setup(page);
+    // About 20 KB of body: before the fix round each key cost a parse and a
+    // write of all of it.
+    const long = Array.from({ length: 300 }, (_, i) => `Paragraph ${i} holds some words so the body is long.`).join("\n\n");
+    const kb = await mockKnowledge(page, { level: "write", pages: pageWith(long) });
+    await openEditor(page);
+    type Work = { parses: number; writes: number };
+    const work = () => page.evaluate(() => ({ ...(window as unknown as { __kbMarkdownWork: Work }).__kbMarkdownWork }));
+    const before = await work();
+    const started = Date.now();
+    await page.keyboard.type(" and the last words");
+    const typing = Date.now() - started;
+    const after = await work();
+    expect(after.parses - before.parses).toBe(0);
+    expect(after.writes - before.writes).toBeLessThanOrEqual(1);
+    expect(typing).toBeLessThan(3_000);
+    // Save at once, inside the pause: the flush writes the last key.
+    await page.getByRole("button", { name: "Save changes" }).click();
+    await expect.poll(() => kb.writes.length).toBe(1);
+    expect((kb.writes[0].body as { body_md: string }).body_md.endsWith("is long. and the last words")).toBe(true);
+  });
+
+  test("Tab in the last cell of a table leaves the editor", async ({ page }) => {
+    await setup(page);
+    await mockKnowledge(page, { level: "write", pages: pageWith("| a | b |\n| --- | --- |\n| 1 | 2 |") });
+    const body = await openEditor(page);
+    await body.locator("th", { hasText: "a" }).click();
+    // ProseMirror reads a click's caret on the next `selectionchange`. The
+    // table tools show once the caret is in the table.
+    await expect(page.getByRole("toolbar", { name: "Table" })).toBeVisible();
+    for (let i = 0; i < 3; i++) await page.keyboard.press("Tab");
+    await expect(body).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(body).not.toBeFocused();
+    await expect(body.locator("tr")).toHaveCount(2);
+  });
+
+  test("the link control refuses a script address and says what to type", async ({ page }) => {
+    await setup(page);
+    await mockKnowledge(page, { level: "write", pages: pageWith("Start.") });
+    const body = await openEditor(page);
+    await newLine(page);
+    await page.keyboard.type("Bad link");
+    await body.locator("p", { hasText: "Bad link" }).selectText();
+    await page.getByRole("toolbar", { name: "Format the selection" }).getByRole("button", { name: "Link", exact: true }).click();
+    const field = page.getByRole("textbox", { name: "Link address or page" });
+    await field.fill("javascript:alert(1)");
+    await field.press("Enter");
+    await expect(page.getByRole("alert").filter({ hasText: "Use an address that starts with https://" })).toBeVisible();
+    await expect(field).toBeVisible();
+    await expect(body.locator("a", { hasText: "Bad link" })).toHaveCount(0);
+  });
+
+  test("the [[ picker names its open list and its active row on the editor", async ({ page }) => {
+    await setup(page);
+    await mockKnowledge(page, { level: "write", pages: pageWith("Start.") });
+    const body = await openEditor(page);
+    await newLine(page);
+    await page.keyboard.type("[[Holi");
+    await expect(page.getByRole("listbox", { name: "Pages" }).getByRole("option", { name: /Holidays/ })).toBeVisible();
+    await expect(body).toHaveAttribute("aria-expanded", "true");
+    await expect(body).toHaveAttribute("aria-controls", "kb-page-menu");
+    await expect(body).toHaveAttribute("aria-activedescendant", "kb-page-menu-option-0");
+    await page.keyboard.press("Escape");
+    await expect(body).toHaveAttribute("aria-expanded", "false");
+  });
+
+  test("a linked image keeps its link in the read view", async ({ page }) => {
+    await setup(page);
+    await mockKnowledge(page, { level: "write", pages: pageWith("[![badge](https://img.example/b.svg)](https://ci.example)") });
+    await page.goto("/knowledge/pages/kp-a");
+    const link = page.locator("article a[href='https://ci.example']");
+    await expect(link).toBeVisible({ timeout: 30_000 });
+    await expect(link.getByText("Image from img.example")).toBeVisible();
   });
 
   test("a remote image in a page loads only on a click", async ({ page }) => {

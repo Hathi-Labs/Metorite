@@ -89,3 +89,18 @@ export function addressOf(text: string): string {
   if (/^(?:[a-z][a-z0-9+.-]*:|\/|#)/i.test(t)) return t;
   return `https://${t}`;
 }
+
+/** What the link control says when it refuses an address. */
+export const LINK_REFUSED = "Use an address that starts with https://, or a page of this app.";
+
+/**
+ * True for an address a link may hold: `http:`, `https:`, `mailto:`,
+ * `tel:`, a path of this app (`/…`, never `//…`) or an anchor (`#…`).
+ */
+export function isAllowedHref(href: string): boolean {
+  const h = href.trim();
+  if (!h || /[\s\u0000-\u001f]/.test(h)) return false;
+  if (h.startsWith("#")) return true;
+  if (h.startsWith("/")) return !h.startsWith("//") && !h.startsWith("/\\");
+  return /^(?:https?:\/\/[^/\s]|mailto:|tel:)/i.test(h);
+}

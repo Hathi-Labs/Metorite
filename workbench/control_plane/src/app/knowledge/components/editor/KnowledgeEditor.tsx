@@ -7,11 +7,15 @@
  * The page view reads the body through it, read-only, and Edit opens the
  * same editor in place. So what a member reads is exactly what they edit.
  *
- * - The stored body stays Markdown. The editor parses it with the one
- *   manager of `lib/editor/markdown.ts`, and writes Markdown back on each
- *   change. When the member changed nothing that Markdown keeps, the draft
- *   keeps the stored body byte for byte, so a save with no edit writes
- *   nothing (`bodyAfterEdit`).
+ * - The stored body stays Markdown. The editor parses it ONCE, when it
+ *   mounts, with the one manager of `lib/editor/markdown.ts`. A keystroke
+ *   parses nothing and writes nothing: the write waits for a pause in the
+ *   typing (`WRITE_AFTER_MS`). `flushRef` writes at once, and the page calls
+ *   it before a save, a leave and a switch to the Markdown field. When the
+ *   member changed nothing that Markdown keeps, the draft keeps the stored
+ *   body byte for byte, so a save with no edit writes nothing
+ *   (`bodyAfterEdit`). Fix round P1: a parse and a write on each key cost
+ *   170 ms at 19 KB and 2 s at 75 KB.
  * - `/` opens the block menu, and `[[` opens the page picker. Both draw
  *   through `OptionList` from `src/components/ui/`.
  * - A selection raises the bubble menu: the marks, the link control and the
@@ -24,25 +28,36 @@
  * bar (D87), and `src/lib/shell/seams.test.ts` fails a ⌘K handler here.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { Extension, type Editor, type Range } from "@tiptap/core";
 import { PluginKey } from "@tiptap/pm/state";
 import { EditorContent, ReactNodeViewRenderer, useEditor } from "@tiptap/react";
 import Suggestion from "@tiptap/suggestion";
-import { DragHandle } from "@tiptap/extension-drag-handle-react";
 
 import Icon from "@/components/Icon";
-import { OptionList } from "@/components/ui/OptionList";
+import { OptionList, optionId } from "@/components/ui/OptionList";
 import { isInAppPath } from "@/lib/inAppLink";
 
 import { listPages } from "../../lib/api";
 import { matchBlocks, type BlockItem } from "../../lib/editor/blocks";
-import { bodyAfterEdit, normaliseBody, parseBody, writeBody } from "../../lib/editor/markdown";
+import { bodyAfterEdit, markdownWork, normaliseBody, parseBody, writeBody } from "../../lib/editor/markdown";
 import { loadPageChoices, matchPages, pageLinkHref, type PageChoice } from "../../lib/editor/pageLinks";
 import { knowledgeExtensions } from "../../lib/editor/schema";
 import type { Space } from "../../lib/types";
 import { FormatBubble, ImageDialog, TableTools, scrollParent } from "./menus";
 import { CalloutView, CodeBlockView, DetailsView, ImageView } from "./nodeViews";
 import { useSuggestionMenu, type SuggestionMenu } from "./useSuggestionMenu";
+
+/**
+ * The block handle, loaded only for an edit. Its package brings the Yjs
+ * collaboration code with it, and a reader needs none of that.
+ */
+const DragHandle = dynamic(() => import("@tiptap/extension-drag-handle-react").then((m) => m.DragHandle), {
+  ssr: false,
+});
+
+/** How long the editor waits after the last key before it writes Markdown. */
+export const WRITE_AFTER_MS = 300;
 
 /** The hint on an empty body while a member writes. */
 export const EDITOR_PLACEHOLDER = "Write here. Type / for a block, or [[ to link a page.";
@@ -151,8 +166,18 @@ export interface KnowledgeEditorProps {
   mode: "read" | "edit";
   /** Edit: the body the edit began with, for the no-edit rule. */
   storedBody?: string;
-  /** Edit: each change, as the body a save would write. */
+  /**
+   * Edit: the body a save would write. It comes after a pause in the typing,
+   * and on each flush.
+   */
   onChange?: (body: string) => void;
+  /** Edit: the first key after a write. The page marks the draft dirty. */
+  onTouched?: () => void;
+  /**
+   * Edit: the editor puts its flush here. A flush writes the body at once,
+   * calls `onChange`, and returns the body.
+   */
+  flushRef?: React.RefObject<(() => string | null) | null>;
   /** Edit: the open page, which the page picker leaves out. */
   pageId?: string | null;
   /** Edit: the spaces whose pages the picker lists. */
@@ -168,6 +193,8 @@ export default function KnowledgeEditor({
   mode,
   storedBody,
   onChange,
+  onTouched,
+  flushRef,
   pageId,
   spaces,
   label,
@@ -175,17 +202,24 @@ export default function KnowledgeEditor({
 }: KnowledgeEditorProps) {
   const editable = mode === "edit";
   const onChangeRef = useRef(onChange);
+  const onTouchedRef = useRef(onTouched);
   useEffect(() => {
     onChangeRef.current = onChange;
+    onTouchedRef.current = onTouched;
   });
 
-  // What the editor writes for the stored body when nothing changed.
+  // The document, parsed once for this editor. A later `body` prop is the
+  // draft the editor itself wrote, so it needs no parse.
+  const [initialDoc] = useState(() => parseBody(body));
+
+  // What the editor writes for the stored body when nothing changed. It is
+  // worked out at the first write, not at mount.
   const stored = storedBody ?? body;
-  const baseline = useMemo(() => normaliseBody(stored), [stored]);
-  const baselineRef = useRef({ stored, baseline });
-  useEffect(() => {
-    baselineRef.current = { stored, baseline };
-  }, [stored, baseline]);
+  const baselineRef = useRef<{ stored: string; opened: string; baseline: string | null }>({
+    stored,
+    opened: body,
+    baseline: null,
+  });
 
   // ── The member's pages, for `[[` and the link control ──────────────────
   const [pages, setPages] = useState<PageChoice[] | null>(null);
@@ -231,7 +265,7 @@ export default function KnowledgeEditor({
       immediatelyRender: false,
       editable,
       extensions,
-      content: parseBody(body),
+      content: initialDoc,
       editorProps: {
         attributes: editable
           ? {
@@ -242,9 +276,12 @@ export default function KnowledgeEditor({
             }
           : { class: "kb-editor cc-prose prose prose-sm max-w-none", "aria-label": label },
       },
-      onUpdate: ({ editor: e }) => {
-        const { stored: s, baseline: b } = baselineRef.current;
-        onChangeRef.current?.(bodyAfterEdit(s, b, writeBody(e.getJSON())));
+      onUpdate: () => {
+        // Cheap on purpose: no parse and no write on a key.
+        if (!pendingRef.current) onTouchedRef.current?.();
+        pendingRef.current = true;
+        if (timerRef.current) clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(() => flushNowRef.current(), WRITE_AFTER_MS);
       },
     },
     // A new editor for each mode. In edit mode the parent keys each session.
@@ -254,6 +291,43 @@ export default function KnowledgeEditor({
   useEffect(() => {
     editorRef.current = editor;
   }, [editor]);
+
+  // ── The write: after a pause, or at once on a flush ─────────────────────
+  const pendingRef = useRef(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushNowRef = useRef<() => string | null>(() => null);
+  useEffect(() => {
+    flushNowRef.current = () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = null;
+      const e = editorRef.current;
+      if (!e || !pendingRef.current) return null;
+      pendingRef.current = false;
+      const base = baselineRef.current;
+      if (base.baseline === null) {
+        base.baseline = base.opened === base.stored ? writeBody(initialDoc) : normaliseBody(base.stored);
+      }
+      const next = bodyAfterEdit(base.stored, base.baseline, writeBody(e.getJSON()));
+      onChangeRef.current?.(next);
+      return next;
+    };
+  });
+  useEffect(() => {
+    if (!flushRef) return;
+    flushRef.current = () => flushNowRef.current();
+    return () => {
+      // A remount (the 767 px frame swap) must not lose the last keys.
+      flushNowRef.current();
+      flushRef.current = null;
+    };
+  }, [flushRef]);
+
+  // The e2e spec reads how much Markdown work the editor did.
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "production") {
+      (window as unknown as { __kbMarkdownWork?: typeof markdownWork }).__kbMarkdownWork = markdownWork;
+    }
+  }, []);
 
   // The box that scrolls the page, so the floating menus follow a scroll.
   const [scroller, setScroller] = useState<HTMLElement | Window | undefined>(undefined);
@@ -292,8 +366,32 @@ export default function KnowledgeEditor({
   useEffect(() => {
     if (!editor || editable || shown.current === body) return;
     shown.current = body;
-    editor.commands.setContent(parseBody(body), { emitUpdate: false });
+    // After this render, never inside it: `setContent` renders the node
+    // views at once, and React warns on a `flushSync` inside an effect.
+    const doc = parseBody(body);
+    queueMicrotask(() => {
+      if (!editor.isDestroyed) editor.commands.setContent(doc, { emitUpdate: false });
+    });
   }, [editor, editable, body]);
+
+  // The editor names the open menu and its active row, so a screen reader
+  // follows the `/` menu and the `[[` picker while the caret stays put.
+  const menuId = slash.state ? "kb-slash-menu" : pageMenu.state ? "kb-page-menu" : null;
+  const menuActive = slash.state ? slash.state.active : (pageMenu.state?.active ?? 0);
+  useEffect(() => {
+    const dom = editor && editable ? (editor.view.dom as HTMLElement) : null;
+    if (!dom) return;
+    if (menuId) {
+      dom.setAttribute("aria-haspopup", "listbox");
+      dom.setAttribute("aria-expanded", "true");
+      dom.setAttribute("aria-controls", menuId);
+      dom.setAttribute("aria-activedescendant", optionId(menuId, menuActive));
+    } else {
+      dom.setAttribute("aria-expanded", "false");
+      dom.removeAttribute("aria-controls");
+      dom.removeAttribute("aria-activedescendant");
+    }
+  }, [editor, editable, menuId, menuActive]);
 
   // A link in the read view: a page of this app opens in place, and any
   // other address opens in a new tab. A modified click keeps the browser's
@@ -376,9 +474,13 @@ export default function KnowledgeEditor({
           />
         </>
       ) : null}
-      {editable && slash.state ? (
+      {editable && (slash.state || pageMenu.state) ? (
         <span className="sr-only" aria-live="polite">
-          {slashRows[slash.state.active]?.label ?? ""}
+          {slash.state
+            ? (slashRows[slash.state.active]?.label ?? "")
+            : pagesLoading && !pages
+              ? "Loading pages"
+              : (pickRows[pageMenu.state?.active ?? 0]?.title ?? "No page has that title.")}
         </span>
       ) : null}
     </div>

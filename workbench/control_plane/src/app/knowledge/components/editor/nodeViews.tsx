@@ -108,11 +108,12 @@ export function CalloutView({ node, editor, updateAttributes }: NodeViewProps) {
 
 /**
  * A toggle: a fold button, the summary, and the body. It opens while a
- * member edits, and it starts folded on the read view. The fold is the
+ * member edits, and it starts folded on the read view, unless the body
+ * wrote `<details open>`. The fold is the
  * reader's own state, so a fold writes nothing to the body.
  */
-export function DetailsView({ editor }: NodeViewProps) {
-  const [open, setOpen] = useState(editor.isEditable);
+export function DetailsView({ editor, node }: NodeViewProps) {
+  const [open, setOpen] = useState(editor.isEditable || Boolean(node.attrs.open));
   return (
     <NodeViewWrapper className="kb-toggle" data-open={open ? "true" : "false"}>
       <span className="kb-toggle-fold" contentEditable={false}>
