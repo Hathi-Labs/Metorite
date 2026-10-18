@@ -50,6 +50,8 @@ wa = importlib.import_module("acb_skills.write_artifact")
 
 # Fixtures, resolved by name. The imports are load-bearing.
 from tests.unit.test_chat_deploy_recovery import (  # noqa: E402, F401
+    _DEAD,
+    _seed_run,
     fake_redis,
     liveness,
     no_persist,
@@ -65,6 +67,7 @@ from tests.unit.test_pending_ask_flow import (  # noqa: E402, F401
     _line,
     _park_a_confirmation,
     _run_parks,
+    _seed_open_row,
     ask_db,
     flag_on,
 )
@@ -401,6 +404,41 @@ def test_a_late_decline_needs_the_thread_that_asked(
     res = _decline(monkeypatch, "t-some-other-room", rid)
     assert res.status_code == 409
     assert ask_db.rows[(_ORG_A, rid)]["state"] == "parked"
+
+
+def test_an_open_card_of_a_live_run_stays_open_on_a_late_decline(
+    flag_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """The decline did not reach the run that still waits. Closing its row
+    would leave that run parked on a card nobody can see, so the row stays
+    open and the member can try again (the rule of a late answer)."""
+    from orchestrator import run_liveness
+
+    tid = "t-live-open"
+    asyncio.run(stream_relay.mark_active(tid, reset=True, actor=_ALICE))
+    monkeypatch.setattr(run_liveness, "_LOCAL_RUNS", {tid})
+    rid = _seed_open_row(ask_db, _ORG_A, tid, _ALICE)
+    res = _decline(monkeypatch, tid, rid)
+    assert res.status_code == 409
+    assert ask_db.rows[(_ORG_A, rid)]["state"] == "open"
+
+
+def test_a_dead_run_s_open_card_closes_on_a_decline(
+    flag_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """A restart killed the run while its card was open. The dead run is
+    closed and saved, the row closes, and no run starts."""
+    tid = "t-died-decline"
+    _seed_run(liveness, tid, _DEAD, record={
+        "org": _ORG_A, "messageId": f"asst-{tid}", "agent": "orchestrator",
+        "runId": f"run-{tid}", "tokens": [],
+    })
+    rid = _seed_open_row(ask_db, _ORG_A, tid, _ALICE)
+    res = _decline(monkeypatch, tid, rid)
+    assert res.status_code == 200, res.text
+    assert res.json() == {"ok": True, "declined": True}
+    assert ask_db.rows[(_ORG_A, rid)]["state"] == "closed"
+    assert f"cc:active:{tid}" not in liveness.store, "the dead run is closed first"
 
 
 def test_with_durable_asks_off_a_decline_no_run_takes_is_a_409(

@@ -3358,6 +3358,20 @@ async def _late_decline_from_row(
     me = (getattr(user, "email", "") or "").strip().lower()
     if not me or str(row.get("actor_email") or "") != me:
         return False
+    if str(row.get("state") or "") == "open":
+        # The same liveness rule as a late answer
+        # (``chat_recovery.card_answer_from_ask``). An open row of a LIVE run
+        # still has a run that waits, so the row stays open, and the member
+        # can try again. A dead run is closed and saved first.
+        from orchestrator.run_liveness import run_liveness  # noqa: PLC0415
+
+        liveness = await run_liveness(req.thread_id)
+        if liveness == "dead":
+            from gateway.chat_recovery import recover_dead_run  # noqa: PLC0415
+
+            await recover_dead_run(req.thread_id, why="card_decline_undelivered")
+        elif liveness != "idle":
+            return False
     try:
         moved = await asyncio.to_thread(
             pending_ask.move_ask, org, req.request_id,
