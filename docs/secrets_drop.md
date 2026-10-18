@@ -33,11 +33,19 @@ script refuses to use a folder inside a checkout.
 Write each env line as `KEY=value`, with no quotes and no spaces. A `#` line
 is a comment. A file that a Windows editor saves with CRLF reads the same.
 
-⚠️ **Push the four GitHub App entries by name.** `scripts/github_app_manifest.py`
-writes their files (`github_integration.md` §15). The two env entries write
-the same app env file, so `push --all` with both files in the folder pushes
-both Apps to one box. Push the key entry first, then the env entry. Set
-`METORITE_SSH_HOST=metorite-dev` for the two staging entries.
+⚠️ **The manifest pins each GitHub App entry to its box.** `scripts/github_app_manifest.py`
+writes their files (`github_integration.md` §15). The manifest gives each
+entry a `host`. The two staging entries go to `metorite-dev`, and the two
+production entries go to `metorite`. The two env entries write the same app
+env file, so the pin is what keeps the production key off the staging box.
+
+- `push <name>` to another host fails before any probe. Set
+  `METORITE_SSH_HOST=metorite-dev` for the two staging entries.
+- `push --all` skips an entry with a pin to another host, and names it.
+- Push the key entry first, then the env entry.
+
+Fence: `tests/unit/test_secrets_drop.py` (`test_a_pinned_entry_refuses_another_host`
+and `test_push_all_skips_a_pinned_entry_of_another_host`).
 
 ## 2. The commands
 
@@ -97,7 +105,7 @@ backup, and it writes `result=verify-failed` to `push.log`.
 ### `push --all`
 
 `push --all` goes through the entries in manifest order. It skips an entry
-with no local file. It skips an env entry whose template still has an empty
+with a pin to another host. It skips an entry with no local file. It skips an env entry whose template still has an empty
 required key, and it names those keys. It skips an entry with no value to
 push. It stops at the first entry that fails, and pushes nothing after it.
 
