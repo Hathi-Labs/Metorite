@@ -356,7 +356,8 @@ function PlanResultCard({ event: e }: { event: ToolEvent }) {
     <ToolCardShell
       title={`${meta.label} ${applied ? "· applied" : "· proposed"}`}
       icon={<AppIcon name="CalendarDays" size={12} />}
-      onDismiss={() => dismissToolCard(e.id)}
+      // A day plan is a RESULT: it folds, and it never closes, because it
+      // is the record of the answer (spec `projects_ai_chat.md` §28 rule 2).
     >
       <div className="text-[11px] whitespace-pre-wrap break-words text-foreground/90 max-h-72 overflow-y-auto overflow-x-hidden scrollbar-thin">
         {body || "(no blocks)"}

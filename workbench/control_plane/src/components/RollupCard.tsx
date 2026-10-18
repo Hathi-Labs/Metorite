@@ -50,7 +50,10 @@ import {
   CollapsibleCardBody,
   CollapsibleCardHeader,
 } from "@/components/ui/Collapsible";
+import Button from "@/components/ui/Button";
 import {
+  CLAMP_PX,
+  clampShows,
   isLong,
   manualStateOf,
   rollupOpen,
@@ -85,6 +88,18 @@ export interface RollupCardProps {
   summary?: string;
   /** The card waits on the member. */
   pending?: boolean;
+  /**
+   * The card waited, and it has its answer now. It folds to its header,
+   * and `summary` says what happened (`lib/cardRollup.ts` rule 1a,
+   * `lib/askOutcome.ts`).
+   */
+  answered?: boolean;
+  /**
+   * A RESULT card: a long body opens cut at {@link CLAMP_PX}, with a
+   * "Show all" under it (`lib/cardRollup.ts` `clampShows`). A card that
+   * waits, or a receipt, never sets it.
+   */
+  clamp?: boolean;
   /** The card's `data-chat-ask` target. It waits while `lib/askPin.ts` says so. */
   askTarget?: string;
   /**
@@ -129,6 +144,8 @@ function RollupCardIn({
   rows,
   summary,
   pending: pendingProp = false,
+  answered = false,
+  clamp = false,
   askTarget,
   header = "frame",
   className,
@@ -198,7 +215,25 @@ function RollupCardIn({
   // Every card with a body may fold by hand (owner feedback, 2026-10-11).
   const hasBody = filled || (rows ?? 0) > 0;
   const toggle = showRollupToggle({ pending, hasBody });
-  const open = rollupOpen({ pending, manual, newest, long, held });
+  const open = rollupOpen({ pending, answered, manual, newest, long, held });
+  // "Show all" on a long result card, for the page's life of this mount.
+  const [all, setAll] = useState(false);
+  const cut = clampShows({ clamp, open, pending, heightPx: height, all });
+
+  // An answer folds the card at once (rule 1a). The control the member
+  // pressed is gone, so the focus goes to the header, which says what
+  // happened, and never drops to the page.
+  const wasAnswered = useRef(answered);
+  useEffect(() => {
+    if (answered && !wasAnswered.current) {
+      const root = rootRef.current;
+      const at = document.activeElement;
+      if (root && (at === null || at === document.body || root.contains(at))) {
+        root.querySelector<HTMLElement>("[aria-expanded]")?.focus();
+      }
+    }
+    wasAnswered.current = answered;
+  }, [answered]);
   // What the member sees now, for the focus to hold. Read in a handler only.
   const openRef = useRef(open);
   useLayoutEffect(() => {
@@ -238,8 +273,28 @@ function RollupCardIn({
         bodyRef={setBody}
         animate={animate}
       >
-        {children}
+        {cut ? (
+          <div
+            data-rollup-cut=""
+            className="overflow-hidden"
+            style={{
+              maxHeight: CLAMP_PX,
+              maskImage: "linear-gradient(to bottom, black calc(100% - 48px), transparent)",
+              WebkitMaskImage: "linear-gradient(to bottom, black calc(100% - 48px), transparent)",
+            }}
+          >
+            {children}
+          </div>
+        ) : (
+          children
+        )}
       </CollapsibleCard>
+      {cut && (
+        <Button variant="ghost" size="sm" icon="ChevronDown" className="mt-0.5" data-rollup-show-all=""
+          onClick={() => setAll(true)}>
+          Show all
+        </Button>
+      )}
     </div>
   );
 }

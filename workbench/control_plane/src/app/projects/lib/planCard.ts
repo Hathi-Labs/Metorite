@@ -465,43 +465,104 @@ export interface TimelineBar {
   /** Where the bar starts and how wide it is, as shares of the plan's span. */
   left: number;
   width: number;
+  /** The row states no start (or a start after its due date), so the bar
+   *  works back from the due date by the effort. It draws faint, because
+   *  its start is a guess and not a date anybody set. */
+  derived: boolean;
+  /** The row states no start and no effort: a dot on its due date, never
+   *  a bar of a made-up length. */
+  point: boolean;
+  /** The small warning marker. False on every bar when every row is
+   *  marked, because a marker on all of them tells the member nothing. */
   marked: boolean;
-  unassigned: boolean;
+  /** "22 Oct → 24 Oct", with "(start from effort)" for a derived bar. */
+  dates: string;
 }
 
 export interface PlanTimeline {
   from: string;
   to: string;
   bars: TimelineBar[];
+  /** The Mondays inside the span, as shares of it: faint week lines. */
+  weeks: number[];
+  /** The height of one row in px. The strip grows with the rows and stops
+   *  at {@link TIMELINE_MAX_PX}. */
+  rowPx: number;
 }
 
-/** The strip under the summary: one bar per ticked row, from its start to
- *  its due date, on the plan's own span. `null` with no dated row. */
-export function planTimeline(rows: PlanRow[]): PlanTimeline | null {
-  const dated = rows.filter((r) => Number.isFinite(dayNumber(r.due)));
-  if (dated.length === 0) return null;
-  const startOf = (r: PlanRow) => {
-    const s = dayNumber(rowStart(r));
-    const d = dayNumber(r.due);
-    return Number.isFinite(s) && s <= d ? s : d;
-  };
-  const first = Math.min(...dated.map(startOf));
-  const last = Math.max(...dated.map((r) => dayNumber(r.due)));
+/** The strip hides with fewer dated rows than this: two bars compare nothing. */
+export const TIMELINE_MIN_ROWS = 3;
+/** The tallest the strip grows, in px, before its rows get thinner. */
+export const TIMELINE_MAX_PX = 96;
+const ROW_MAX_PX = 8;
+const ROW_MIN_PX = 3;
+
+/** The working days an effort fills, at least one. */
+function effortDays(mins: number): number {
+  return Math.max(1, Math.ceil(mins / WORKDAY_MINS));
+}
+
+/**
+ * The strip under the summary (owner report, 2026-10-19). The first strip
+ * drew 19 yellow dashes on an empty box: a row with only a due date was one
+ * day wide, and a marked row filled its bar with the warning colour, so a
+ * plan where every row had a mark turned all yellow. Now:
+ *
+ * - a bar spans the start to the due date. A row with no start works back
+ *   from its due date by its effort, in working days, and draws faint. A row
+ *   with no start and no effort is a dot;
+ * - the rows follow the card's order, under their phases (`planGroups`);
+ * - a mark is a small marker at the bar's end, and only when some rows are
+ *   unmarked;
+ * - the height grows with the rows up to {@link TIMELINE_MAX_PX};
+ * - `null` when the strip says nothing: fewer than
+ *   {@link TIMELINE_MIN_ROWS} dated rows, or every bar on the same days.
+ *
+ * The list stays the source of truth. The card draws the strip
+ * `aria-hidden`, and the list carries every date in words.
+ */
+export function planTimeline(rows: PlanRow[], year = new Date().getFullYear()): PlanTimeline | null {
+  const ordered = planGroups(rows)?.flatMap((g) => g.rows) ?? rows;
+  const dated = ordered.filter((r) => Number.isFinite(dayNumber(r.due)));
+  if (dated.length < TIMELINE_MIN_ROWS) return null;
+  const spans = dated.map((r) => {
+    const due = dayNumber(r.due);
+    const set = dayNumber(r.start);
+    if (Number.isFinite(set) && set <= due) return { r, start: set, due, derived: false, point: false };
+    if (r.effort_mins > 0) return { r, start: due - effortDays(r.effort_mins) + 1, due, derived: true, point: false };
+    return { r, start: due, due, derived: false, point: true };
+  });
+  const first = Math.min(...spans.map((s) => s.start));
+  const last = Math.max(...spans.map((s) => s.due));
+  // Every bar on the same days compares nothing.
+  if (spans.every((s) => s.start === spans[0].start && s.due === spans[0].due)) return null;
   const days = last - first + 1;
+  const allMarked = dated.every(isMarked);
+  const weeks: number[] = [];
+  if (days >= 14) {
+    // 1970-01-01 was a Thursday, so a Monday is a day number n with (n + 3) % 7 === 0.
+    for (let d = first + 1; d <= last; d++) if ((d + 3) % 7 === 0) weeks.push((d - first) / days);
+  }
   return {
     from: isoOf(first),
     to: isoOf(last),
-    bars: dated.map((r) => {
-      const s = startOf(r);
+    bars: spans.map((s) => {
+      const span = s.start === s.due
+        ? planDay(isoOf(s.due), year)
+        : `${planDay(isoOf(s.start), year)} → ${planDay(isoOf(s.due), year)}`;
       return {
-        key: r.key,
-        title: r.title,
-        left: (s - first) / days,
-        width: (dayNumber(r.due) - s + 1) / days,
-        marked: isMarked(r),
-        unassigned: isUnassigned(r),
+        key: s.r.key,
+        title: s.r.title.trim() || "Untitled task",
+        left: (s.start - first) / days,
+        width: s.point ? 0 : (s.due - s.start + 1) / days,
+        derived: s.derived,
+        point: s.point,
+        marked: !allMarked && isMarked(s.r),
+        dates: s.derived ? `${span} (start from effort)` : s.point ? `due ${span}` : span,
       };
     }),
+    weeks,
+    rowPx: Math.max(ROW_MIN_PX, Math.min(ROW_MAX_PX, Math.floor(TIMELINE_MAX_PX / dated.length))),
   };
 }
 
@@ -722,4 +783,19 @@ export function answeredPlan(name: string, rows: PlanRow[], answered: string): A
     rows: [...merged, ...got.filter((r) => !known.has(r.key))],
     off: new Set(rows.filter((r) => !byKey.has(r.key)).map((r) => r.key)),
   };
+}
+
+/**
+ * The one line an answered plan card folds to (owner report, 2026-10-19).
+ * The folded card showed only "Plan", an empty header above the approval
+ * that followed, and the owner could not tell what it was. Now the fold
+ * says what happened: "19 tasks sent for approval", or "cancelled, nothing
+ * created". "" with no answer.
+ */
+export function planOutcome(rows: PlanRow[], answered: string): string {
+  const past = answeredPlan("", rows, answered);
+  if (!past) return "";
+  if (past.done === "cancelled") return "cancelled, nothing created";
+  const sent = past.rows.length - past.off.size;
+  return `${sent === 1 ? "1 task" : `${sent} tasks`} sent for approval`;
 }

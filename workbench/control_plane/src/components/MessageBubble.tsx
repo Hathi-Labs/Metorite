@@ -21,6 +21,7 @@ import { genUiFlow, genUiPlacement, genUiTitle, type FlowBlock } from "@/lib/cha
 import { unfenced } from "@/lib/fencedText";
 import RollupCard from "@/components/RollupCard";
 import { answersFromTools } from "@/lib/askAnswers";
+import { askOutcome } from "@/lib/askOutcome";
 import { genUiTarget } from "@/lib/askPin";
 import GenerativeUINode, { genUiRootOwnsHead } from "@/components/GenerativeUINode";
 import ErrorCard from "@/components/ChatErrorCard";
@@ -635,17 +636,21 @@ function MessageBubble({
     const header = genUiRootOwnsHead(spec) ? "own" : "frame";
     const icon = header === "own" ? undefined : "LayoutTemplate";
     if (ask) {
+      // An answered card folds to one line that says what happened (§28
+      // rule 1, owner report 2026-10-19). It never folds to a bare title.
       return (
         <RollupCard key={i} id={target} title={title} icon={icon} header={header}
-          askTarget={answered === undefined ? target : undefined}>
+          askTarget={answered === undefined ? target : undefined}
+          answered={answered !== undefined} summary={askOutcome(spec, answered) || undefined}>
           <div {...askAttr} className="min-w-0 outline-none">
             <GenerativeUINode spec={spec} onAction={act} answered={answered} />
           </div>
         </RollupCard>
       );
     }
+    // A result card: a long one opens cut, with "Show all" (§28 rule 2).
     return (
-      <RollupCard key={i} id={target} title={title} icon={icon} header={header}>
+      <RollupCard key={i} id={target} title={title} icon={icon} header={header} clamp>
         <GenerativeUINode spec={spec} onAction={act} answered={answered} />
       </RollupCard>
     );

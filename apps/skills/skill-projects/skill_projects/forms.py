@@ -932,6 +932,19 @@ def _confirm_card(
     return card
 
 
+def _under_line(label: str, parent_label: str) -> str:
+    """The plan card's "Under X." line, or "" when X is the plan's own name.
+
+    The owner saw "Under Personalization & Memory System." on the plan for
+    that same project (2026-10-19). The line said nothing there, and it read
+    as a defect. So the card gets no line in that case.
+    """
+    def norm(v: str) -> str:
+        return " ".join(v.split()).casefold()
+
+    return "" if norm(label) == norm(parent_label) else f"Under {parent_label}."
+
+
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 @agent_assignee_refusal_as_text
 async def propose_plan(
@@ -982,7 +995,8 @@ async def propose_plan(
             "planCard",
             {
                 "title": f"Plan · {label}",
-                "description": f"Under {parent_label}.",
+                # No "Under X." when X is the plan's own name (2026-10-19).
+                **({"description": under} if (under := _under_line(label, parent_label)) else {}),
                 "project": {
                     "name": label,
                     "parent": parent_label,

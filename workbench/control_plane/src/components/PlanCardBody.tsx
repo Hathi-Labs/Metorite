@@ -36,6 +36,7 @@ import {
   EFFORT_UNITS,
   type EffortUnit,
   type PlanRow,
+  type PlanTimeline,
   UNASSIGNED_LABEL,
   PLAN_CANCEL,
   afterCount,
@@ -127,7 +128,7 @@ export default function PlanCardBody({ data, onAction, answered = "" }: {
   const cycle = planCycle(kept);
   const days = wholeDays(bulkDays);
   const groups = planGroups(rows);
-  const timeline = planTimeline(kept);
+  const timeline = planTimeline(kept, year);
   const parts = summaryParts(planSummary(kept), year);
   const owners = ownerSummary(kept);
   const risks = list(data.risks);
@@ -250,30 +251,10 @@ export default function PlanCardBody({ data, onAction, answered = "" }: {
         <div className="-mt-1.5 text-[11px] text-muted-foreground"><GenUiText text={str(data.description)} /></div>
       )}
 
-      {/* 4 · the timeline strip. */}
-      {timeline && timeline.bars.length > 1 && (
-        <div
-          data-plan-timeline=""
-          role="img"
-          aria-label={`Timeline: ${timeline.bars.length} tasks, ${planDay(timeline.from, year)} to ${planDay(timeline.to, year)}`}
-        >
-          <div className="flex flex-col gap-[3px] rounded-md bg-secondary/60 px-1.5 py-1.5">
-            {timeline.bars.map((b) => (
-              <div key={b.key} className="relative h-1">
-                <div
-                  title={b.title}
-                  className={`absolute inset-y-0 rounded-full ${b.marked ? "bg-warning" : b.unassigned ? "bg-muted-foreground/40" : "bg-muted-foreground"}`}
-                  style={{ left: `${b.left * 100}%`, width: `max(${b.width * 100}%, 4px)` }}
-                />
-              </div>
-            ))}
-          </div>
-          <div className="mt-0.5 flex justify-between text-[10px] tabular-nums text-muted-foreground">
-            <span>{planDay(timeline.from, year)}</span>
-            <span>{planDay(timeline.to, year)}</span>
-          </div>
-        </div>
-      )}
+      {/* 4 · the timeline strip (owner report, 2026-10-19: `planTimeline`
+          says when it draws). The list is the source of truth and carries
+          every date in words, so the strip is hidden from a screen reader. */}
+      {timeline && <TimelineStrip timeline={timeline} year={year} />}
 
       {/* 7 · bulk edits. */}
       {!locked && rows.length > 1 && (
@@ -393,6 +374,69 @@ export default function PlanCardBody({ data, onAction, answered = "" }: {
           </span>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * The timeline strip: one row per dated task, in the list's order. A bar
+ * spans the start to the due date. A faint bar works back from the due
+ * date by the effort, and a dot is a due date alone. A small marker at a
+ * bar's end is a mark. Hover a row to read its task and dates.
+ */
+export function TimelineStrip({ timeline, year }: { timeline: PlanTimeline; year: number }) {
+  const [hover, setHover] = useState<string | null>(null);
+  const bar = timeline.bars.find((b) => b.key === hover);
+  const faint = timeline.bars.some((b) => b.derived);
+  // Short, so it fits beside the two dates at 390 px. A touch screen has
+  // no hover, and the list under the strip carries every date in words.
+  const hint = faint ? "Faint bar: no start date, length from effort" : "";
+  return (
+    <div data-plan-timeline="" aria-hidden="true" onPointerLeave={() => setHover(null)}>
+      <div
+        className="relative rounded-md bg-secondary/60 px-1.5 py-1"
+        style={{ height: timeline.bars.length * timeline.rowPx + 8 }}
+      >
+        {timeline.weeks.map((w) => (
+          <div key={w} className="absolute inset-y-1 w-px bg-border" style={{ left: `calc(0.375rem + (100% - 0.75rem) * ${w})` }} />
+        ))}
+        {timeline.bars.map((b, i) => (
+          <div
+            key={b.key}
+            data-plan-bar={b.key}
+            data-plan-bar-kind={b.point ? "point" : b.derived ? "derived" : "span"}
+            className={`absolute inset-x-1.5 ${hover === b.key ? "bg-foreground/5" : ""}`}
+            style={{ top: 4 + i * timeline.rowPx, height: timeline.rowPx }}
+            onPointerEnter={() => setHover(b.key)}
+          >
+            {b.point ? (
+              <span
+                className="absolute top-1/2 size-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-muted-foreground"
+                style={{ left: `${b.left * 100}%` }}
+              />
+            ) : (
+              <span
+                className={`absolute inset-y-[1px] rounded-full ${b.derived ? "bg-muted-foreground/35" : "bg-muted-foreground/80"}`}
+                style={{ left: `${b.left * 100}%`, width: `max(${b.width * 100}%, 3px)` }}
+              />
+            )}
+            {b.marked && (
+              <span
+                data-plan-bar-mark=""
+                className="absolute top-1/2 ml-0.5 size-1 -translate-y-1/2 rounded-full bg-warning"
+                style={{ left: `${(b.left + b.width) * 100}%` }}
+              />
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="mt-0.5 flex min-w-0 items-baseline justify-between gap-2 text-[10px] tabular-nums text-muted-foreground">
+        <span className="shrink-0">{planDay(timeline.from, year)}</span>
+        <span className="min-w-0 truncate text-center" data-plan-bar-caption="">
+          {bar ? <><span className="text-foreground">{bar.title}</span> · {bar.dates}</> : hint}
+        </span>
+        <span className="shrink-0">{planDay(timeline.to, year)}</span>
+      </div>
     </div>
   );
 }

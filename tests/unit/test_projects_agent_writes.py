@@ -2984,6 +2984,21 @@ async def test_a_plan_with_no_phase_draws_no_phase_key(monkeypatch) -> None:
     assert drawn[0]["props"]["data"]["description"] == "Under the top level (a new space)."
 
 
+async def test_the_plan_card_says_no_under_line_for_its_own_name(monkeypatch) -> None:
+    """The owner saw "Under Personalization & Memory System." on the plan for
+    that same project (2026-10-19). Mutation: draw the line whatever the
+    parent is called -> this test fails."""
+    drawn = form_stub(monkeypatch)
+    fake_gateway(monkeypatch, _plan_gateway())
+    # The fake parent is called "Ops" (`responder`).
+    await skill_projects.propose_plan(" ops ", _json.dumps(PLAN_DEPS), parent_project_id=UUID)
+    assert "description" not in drawn[0]["props"]["data"]
+    assert drawn[0]["props"]["data"]["project"]["parent"] == "Ops"
+    drawn.clear()
+    await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS), parent_project_id=UUID)
+    assert drawn[0]["props"]["data"]["description"] == "Under Ops."
+
+
 async def test_cancel_on_the_plan_card_writes_nothing(monkeypatch) -> None:
     """The card's Cancel sends "Cancel", which is no submit. Mutation: read
     any answer as a submit -> this test fails."""

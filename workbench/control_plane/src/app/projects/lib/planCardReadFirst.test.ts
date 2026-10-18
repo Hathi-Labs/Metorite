@@ -46,6 +46,9 @@ import {
   planSubmitTicked,
   planSummary,
   planTimeline,
+  planOutcome,
+  TIMELINE_MAX_PX,
+  TIMELINE_MIN_ROWS,
   rowBadges,
   rowProblem,
   rowSpan,
@@ -138,21 +141,84 @@ describe("the summary line", () => {
   });
 });
 
-describe("the timeline strip", () => {
-  it("places each bar on the plan's own span", () => {
-    const t = planTimeline(rows())!;
+describe("the timeline strip (owner report, 2026-10-19)", () => {
+  it("spans each bar from its start to its due date, on the plan's own span", () => {
+    const t = planTimeline(rows(), 2026)!;
     expect(t.from).toBe("2026-10-22");
     expect(t.to).toBe("2026-11-15");
     const days = 25;
-    expect(t.bars[0]).toMatchObject({ key: "t1", left: 0, width: 3 / days, marked: false });
-    expect(t.bars[1]).toMatchObject({ key: "t2", left: 1 / days, width: 1 / days, unassigned: true });
-    expect(t.bars[2].marked).toBe(true);
-    // No start: one day at its due date, the last day of the span.
-    expect(t.bars[4]).toMatchObject({ left: 24 / days, width: 1 / days });
+    expect(t.bars[0]).toMatchObject({ key: "t1", left: 0, width: 3 / days, derived: false, point: false });
+    expect(t.bars[0].dates).toBe("22 Oct → 24 Oct");
+    expect(t.bars[1]).toMatchObject({ key: "t2", left: 1 / days, width: 1 / days });
   });
 
-  it("is absent with no dated row", () => {
-    expect(planTimeline([])).toBeNull();
+  it("works a row with no start back from its due date by its effort, and draws it faint", () => {
+    const t = planTimeline(rows(), 2026)!;
+    // t5: 720 minutes is 1.5 working days, so two days that end on 15 Nov.
+    expect(t.bars[4]).toMatchObject({ key: "t5", left: 23 / 25, width: 2 / 25, derived: true, point: false });
+    expect(t.bars[4].dates).toBe("14 Nov → 15 Nov (start from effort)");
+  });
+
+  it("draws a row with no start and no effort as a dot, never a bar of a made-up length", () => {
+    const t = planTimeline([...rows().slice(0, 4), { ...rows()[4], effort_mins: 0 }], 2026)!;
+    expect(t.bars[4]).toMatchObject({ point: true, width: 0, left: 24 / 25 });
+    expect(t.bars[4].dates).toBe("due 15 Nov");
+  });
+
+  it("follows the list's order, under its phases", () => {
+    const mixed = planRowsFrom([
+      { ...TASKS[3], phase: "Rollout" },
+      { ...TASKS[0], phase: "Foundation" },
+      { ...TASKS[4], phase: "Rollout" },
+      { ...TASKS[1], phase: "" },
+    ]);
+    // planGroups: Rollout first (it shows first), then Foundation, then no phase.
+    expect(planTimeline(mixed, 2026)!.bars.map((b) => b.key)).toEqual(["t4", "t5", "t1", "t2"]);
+  });
+
+  it("puts a small marker on a marked row only, and never colours the bar", () => {
+    const t = planTimeline(rows(), 2026)!;
+    expect(t.bars.map((b) => b.marked)).toEqual([false, false, true, true, false]);
+  });
+
+  it("drops every marker when every row is marked: a plan of marks is not all yellow", () => {
+    const all = rows().map((r) => ({ ...r, owner: r.owner || "x@y.io", marks: ["no skill match"] }));
+    const t = planTimeline(all, 2026)!;
+    expect(t.bars.every((b) => !b.marked)).toBe(true);
+  });
+
+  it("grows with the rows, and stops at the cap", () => {
+    expect(planTimeline(rows(), 2026)!.rowPx).toBe(8);
+    const many = planRowsFrom(Array.from({ length: 19 }, (_, i) => ({
+      key: `k${i}`, title: `Task ${i}`, owner: "a@b.io", effort_mins: 600,
+      due: `2026-11-${String(i + 1).padStart(2, "0")}` })));
+    const t = planTimeline(many, 2026)!;
+    expect(t.rowPx).toBe(5);
+    expect(t.bars.length * t.rowPx).toBeLessThanOrEqual(TIMELINE_MAX_PX);
+  });
+
+  it("draws faint week lines on a span of two weeks or more", () => {
+    const t = planTimeline(rows(), 2026)!;
+    // 22 Oct 2026 is a Thursday: Mondays 26 Oct, 2 Nov, 9 Nov.
+    expect(t.weeks).toEqual([4 / 25, 11 / 25, 18 / 25]);
+  });
+
+  it("hides when it says nothing: under three dated rows, or every bar on the same days", () => {
+    expect(planTimeline([], 2026)).toBeNull();
+    expect(planTimeline(rows().slice(0, TIMELINE_MIN_ROWS - 1), 2026)).toBeNull();
+    const same = rows().slice(0, 3).map((r) => ({ ...r, start: "2026-10-22", due: "2026-10-24" }));
+    expect(planTimeline(same, 2026)).toBeNull();
+  });
+});
+
+describe("the answered plan folds to what happened (owner report, 2026-10-19)", () => {
+  it("names the tasks sent, or a cancel, and never an empty line", () => {
+    const sent = `Review plan — ${JSON.stringify(planSubmit({ name: "Memory" }, "Memory", rows()))}`;
+    expect(planOutcome(rows(), sent)).toBe("5 tasks sent for approval");
+    const one = `Review plan — ${JSON.stringify(planSubmit({ name: "Memory" }, "Memory", rows().slice(0, 1)))}`;
+    expect(planOutcome(rows(), one)).toBe("1 task sent for approval");
+    expect(planOutcome(rows(), PLAN_CANCEL)).toBe("cancelled, nothing created");
+    expect(planOutcome(rows(), "")).toBe("");
   });
 });
 
