@@ -18,6 +18,17 @@ back, or in a file on the box other than the target and its backups.
 
 Every case runs with a temp HOME. None of them reads or writes the real drop
 folder.
+
+WS-54 fix round 1, item 4 (a host pin on each GitHub App entry). The
+mutations, each one red when run (2026-10-18):
+
+* 4-M1 ``push <name>`` skips the pin check ->
+  ``test_a_pinned_entry_refuses_another_host``.
+* 4-M2 ``push --all`` skips no pinned entry ->
+  ``test_push_all_skips_a_pinned_entry_of_another_host``.
+* 4-M3 the ``github-app-key`` entry loses its pin ->
+  ``test_every_github_entry_is_pinned_to_its_box``.
+* 4-M4 the loader takes any ``host`` value -> ``test_a_bad_manifest_fails_loudly``.
 """
 from __future__ import annotations
 
