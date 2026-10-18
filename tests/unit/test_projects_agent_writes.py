@@ -2028,7 +2028,10 @@ async def test_every_manifest_tool_is_now_built() -> None:
     # only the run's member approves on the task. The chat archives through
     # `archive_task`, so neither tool has a chat build yet.
     ea_6g = {"request_task_archive", "approve_task_archive"}
-    assert set(m.PLANNED) <= {"my_areas"} | ea_12e | ea_6b | ea_6g, m.PLANNED
+    # WS-55 EA-13e: the strip of the board reads a count route. The chat reads
+    # the same counts through a tool after EA-12e.
+    ea_13e = {"agent_summary"}
+    assert set(m.PLANNED) <= {"my_areas"} | ea_12e | ea_6b | ea_6g | ea_13e, m.PLANNED
 
 
 async def test_a_capture_with_no_project_lands_in_the_personal_project(monkeypatch) -> None:

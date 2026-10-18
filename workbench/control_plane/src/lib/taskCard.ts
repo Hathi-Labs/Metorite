@@ -26,7 +26,13 @@
  *    quietly move that decision into a file with no theme.
  */
 
-import { type AccentHue, resolveHue } from "@/lib/statusAccent";
+import {
+  PR_STATES,
+  type AccentHue,
+  type PrState,
+  prChipTone,
+  resolveHue,
+} from "@/lib/statusAccent";
 // The level vocabulary (D78): labels, rank order and glyphs. Pure data, and
 // it imports nothing back from here.
 import {
@@ -44,8 +50,12 @@ import {
  * dot on a /tasks card). Adding it here rather than writing `text-warning` at
  * the one call site is the whole point of the descriptor — the tone stays a
  * NAME and `TaskMeta` stays the only file that knows what it looks like.
+ *
+ * `success` arrived with the pull request chip (WS-55 EA-13d): a merged pull
+ * request takes the green of a done lane (`--success`), and no other chip
+ * measures a thing that went well.
  */
-export type MetaTone = "muted" | "danger" | "accent" | "warning";
+export type MetaTone = "muted" | "danger" | "accent" | "warning" | "success";
 
 export interface MetaChip {
   /**
@@ -91,6 +101,13 @@ export interface MetaChip {
   rank?: PillRank;
   /** Long form, for `title=` — a chip reading "2/5" needs to say what of. */
   title: string;
+  /**
+   * Draw me as a link that opens in a new tab (WS-55 EA-13d: the pull request
+   * chip). Only an `https:` address draws as a link, so a chip never carries
+   * a `javascript:` URL that a reference could hold. `TaskMeta` is the one file
+   * that draws it, and it stops the click from opening the card under it.
+   */
+  href?: string;
 }
 
 /** The strength of a ranked pill, strongest first. */
@@ -223,6 +240,26 @@ export interface TaskFacts {
   tags?: readonly TagFact[] | null;
   attachmentCount?: number | null;
   estimateMins?: number | null;
+  /**
+   * WS-55 EA-13d (EA3-48) — the ONE pull request the gateway picked for the
+   * task. The card never picks one itself: the gateway's rule is open or
+   * draft first, then merged, then closed, with `more` for the others.
+   */
+  pr?: PullRequestFact | null;
+}
+
+/** `pr` on a list row (`filters.attach_pr_chip`). */
+export interface PullRequestFact {
+  repo: string;
+  number: number | null;
+  state: string;
+  checks_state?: string | null;
+  checks_summary?: Record<string, number> | null;
+  url?: string | null;
+  title?: string | null;
+  merged_at?: string | null;
+  /** How many other pull requests the task has. */
+  more?: number;
 }
 
 /**
@@ -411,6 +448,11 @@ export function taskMeta(facts: TaskFacts, nowMs = Date.now()): MetaChip[] {
     });
   }
 
+  // The pull request, after the progress and before the tags: it says where
+  // the work stands, which is a faster read than what the task is about.
+  const pr = pullRequestChip(facts.pr);
+  if (pr) chips.push(pr);
+
   // Named, in the order the row carries them, coloured by the registry.
   // Deliberately NOT sorted: a tag list is a small hand-curated set and
   // re-ordering it would move a chip under the reader's eye between two loads.
@@ -461,6 +503,64 @@ export function taskMeta(facts: TaskFacts, nowMs = Date.now()): MetaChip[] {
   }
 
   return chips;
+}
+
+/** What each `checks_state` adds to the chip text. `none` and null add nothing. */
+const CHECKS_WORDS: Record<string, string> = {
+  passing: "✓ checks",
+  failing: "✗ checks",
+  pending: "… checks",
+};
+
+/** "12 passed, 1 failed" from the counts of the checks read. Empty when none. */
+function checksCounts(summary?: Record<string, number> | null): string {
+  if (!summary) return "";
+  return (["passed", "failed", "pending"] as const)
+    .filter((key) => (summary[key] ?? 0) > 0)
+    .map((key) => `${summary[key]} ${key}`)
+    .join(", ");
+}
+
+/**
+ * The pull request chip (WS-55 EA-13d, EA3-41).
+ *
+ * `PR #12 · Open · ✓ checks`, `PR #12 · Open · ✗ checks`,
+ * `PR #12 · Draft · … checks`, `PR #12 · Merged` and `PR #12 · Closed`.
+ * With `checks_state` null or `none` the checks part is absent, and so it is for a
+ * merged or a closed pull request. `more` adds ` +2`. The WORDS carry the state, so
+ * the chip never depends on colour alone. The tone comes from `prChipTone`, and the
+ * glyph from `PR_STATES`, both in `statusAccent.ts`.
+ *
+ * Null for a task with no pull request, and for a state this client does not know
+ * (a newer server): a chip that names no state would say nothing true.
+ */
+export function pullRequestChip(pr?: PullRequestFact | null): MetaChip | null {
+  if (!pr) return null;
+  const known = PR_STATES[pr.state as PrState];
+  if (!known || !pr.number) return null;
+  const live = pr.state === "open" || pr.state === "draft";
+  const checks = live ? CHECKS_WORDS[pr.checks_state ?? ""] : undefined;
+  const more = pr.more && pr.more > 0 ? ` +${pr.more}` : "";
+  const label = [`PR #${pr.number}`, known.word, checks].filter(Boolean).join(" · ") + more;
+  const counts = live ? checksCounts(pr.checks_summary) : "";
+  const title = [
+    `${pr.title?.trim() || "Pull request"} (${pr.repo}#${pr.number})`,
+    `${known.word}.`,
+    counts ? `Checks: ${counts}.` : "",
+    pr.more && pr.more > 0 ? `${plural(pr.more, "other pull request")}.` : "",
+    "Opens in a new tab.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return {
+    key: "pr",
+    icon: known.icon,
+    label,
+    tone: prChipTone(pr.state, pr.checks_state),
+    title,
+    // Only an https address draws as a link (see `MetaChip.href`).
+    ...(pr.url && /^https:\/\//i.test(pr.url) ? { href: pr.url } : {}),
+  };
 }
 
 /**

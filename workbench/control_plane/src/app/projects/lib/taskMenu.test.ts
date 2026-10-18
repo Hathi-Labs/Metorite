@@ -114,6 +114,32 @@ describe("what a right-click offers", () => {
     expect(entries.some((e) => e.kind === "sep")).toBe(false);
   });
 
+  it("Ask an agent shows only where the surface can raise the dialog, and runs askAgent", () => {
+    // WS-55 EA-13e (EA3-43). Mutation: drop `when` from `task.askAgent` -- the
+    // first assertion fails. Mutation: `run` calls `rename` -- the third fails.
+    expect(ids(taskMenuItems(board()))).not.toContain("task.askAgent");
+    const entries = taskMenuItems(board({ canAskAgent: true }));
+    expect(ids(entries)).toContain("task.askAgent");
+    // After every shared act, behind its own rule: it is the one act that only
+    // Projects offers.
+    expect(ids(entries).at(-1)).toBe("task.askAgent");
+    const asked: string[] = [];
+    const found = entries.find((e) => e.kind === "item" && e.id === "task.askAgent");
+    if (found?.kind !== "item") throw new Error("not offered");
+    expect(found.label).toBe("Ask an agent…");
+    found.run(
+      { ...spyActions(), askAgent: (t) => asked.push(t.id) },
+      board({ canAskAgent: true }),
+    );
+    expect(asked).toEqual(["t1"]);
+  });
+
+  it("Ask an agent is not a strip button: the strip stays four", () => {
+    expect(taskQuickActions(board({ canAskAgent: true })).map((a) => a.id)).not.toContain(
+      "task.askAgent",
+    );
+  });
+
   it("the select row says what the click will do, not what the row is", () => {
     const label = (selected: boolean) =>
       taskMenuItems(board({ selected })).find(

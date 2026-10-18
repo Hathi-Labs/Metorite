@@ -36,6 +36,9 @@ const TONE: Record<MetaTone, string> = {
   // The step below `danger`. No extra weight — "High" and "Urgent" must not
   // both shout, or neither does.
   warning: "text-warning",
+  // The green of a done lane. Only the merged pull request chip is drawn in it
+  // (WS-55 EA-13d), and its words say "Merged", so the colour is never alone.
+  success: "text-success",
 };
 
 /**
@@ -70,6 +73,12 @@ const RANKED: Record<MetaTone, Record<PillRank, string>> = {
     strong: "border-primary/60 bg-primary/15 font-semibold text-primary",
     soft: "border-primary/30 bg-primary/5 font-medium text-primary",
     faint: "border-dashed border-primary/40 text-primary",
+  },
+  // No level uses `success` either. It is here because `MetaTone` has it.
+  success: {
+    strong: "border-success/60 bg-success/15 font-semibold text-success",
+    soft: "border-success/30 bg-success/5 font-medium text-success",
+    faint: "border-dashed border-success/40 text-success",
   },
 };
 
@@ -115,6 +124,42 @@ export function PriorityChip({
 }
 
 /**
+ * A chip with an address: the pull request chip (WS-55 EA-13d). It opens in a
+ * new tab, and it keeps the card from reading the click as "open the task".
+ *
+ * ⚠️ The card is `draggable`, and `TaskCardShell` calls `preventDefault()` on
+ * Enter and Space from any descendant, which cancels the click that the
+ * browser would make. So the link stops the pointer, the keyboard and the
+ * drag, as `TaskCardActions` does for its buttons, and it does NOT
+ * `preventDefault`, so its own default action still runs.
+ */
+function ChipLink({ chip }: { chip: MetaChip }) {
+  return (
+    <a
+      href={chip.href}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={chip.title}
+      draggable={false}
+      data-pr-chip=""
+      className={`${chipClass(chip)} max-w-full hover:underline`}
+      onClick={(event) => event.stopPropagation()}
+      onPointerDown={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
+      onDragStart={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+    >
+      {chip.icon ? (
+        <Icon name={chip.icon} className="h-3 w-3 shrink-0" aria-hidden />
+      ) : null}
+      <span className="truncate">{chip.label}</span>
+    </a>
+  );
+}
+
+/**
  * The wrapping row of chips. Renders nothing at all when there are none.
  *
  * **Two shapes, one row.** A chip with a `hue` is an identity — a tag — and
@@ -135,14 +180,18 @@ export function TaskMeta({
   if (chips.length === 0) return null;
   return (
     <span className={`flex flex-wrap items-center gap-x-2 gap-y-1 ${className}`}>
-      {chips.map((chip) => (
-        <span key={chip.key} title={chip.title} className={chipClass(chip)}>
-          {chip.icon ? (
-            <Icon name={chip.icon} className="h-3 w-3 shrink-0" aria-hidden />
-          ) : null}
-          {chip.label}
-        </span>
-      ))}
+      {chips.map((chip) =>
+        chip.href ? (
+          <ChipLink key={chip.key} chip={chip} />
+        ) : (
+          <span key={chip.key} title={chip.title} className={chipClass(chip)}>
+            {chip.icon ? (
+              <Icon name={chip.icon} className="h-3 w-3 shrink-0" aria-hidden />
+            ) : null}
+            {chip.label}
+          </span>
+        )
+      )}
     </span>
   );
 }

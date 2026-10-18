@@ -57,7 +57,8 @@ VIEW_TYPES = ("list", "board")
 #: ``filters.GROUP_BY`` and ``filters.SUBTASK_MODES``. The skill cannot import
 #: gateway code, so ``tests/unit/test_projects_project_fields.py`` holds these
 #: copies equal to the route's (WS-46 P7).
-GROUP_BY = ("status", "category", "assignee", "project", "importance", "tag", "none")
+# WS-55 EA-13e: `agent` groups by the agent state of a row (EA3-43), as the board does.
+GROUP_BY = ("status", "category", "assignee", "project", "importance", "tag", "agent", "none")
 SUBTASK_MODES = ("nested", "separate", "hidden")
 #: The status categories a view may filter on: the route's
 #: ``filters.STATUS_CATEGORIES``, held equal by the same test.

@@ -1063,8 +1063,13 @@ def _names(titles: list[str]) -> str:
 
 
 #: A notification's words, by its kind (``app/projects/lib/notifications.ts``).
+#: ``agent_question`` (WS-55 EA-13f, EA3-46) is the question an outside agent
+#: asks. Its ``who`` is the client label, because the actor of that row is the
+#: client stamp (EA12-8), and ``needs._who`` reads a stamp as its label. So the
+#: line reads "Claude Code asked you a question on this task."
 _NOTE_WORDS = {"assigned": "gave you this task", "mention": "mentioned you on this task",
-               "comment": "commented on this task", "nudge": "nudged you about this task"}
+               "comment": "commented on this task", "nudge": "nudged you about this task",
+               "agent_question": "asked you a question on this task"}
 
 
 def _note_clause(facts: dict[str, Any], tz: ZoneInfo, today: date) -> tuple[str, str]:
