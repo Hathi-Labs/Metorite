@@ -401,6 +401,7 @@ jobs:
               tests/unit/test_chat_session_archive_r8.py \
               tests/unit/test_projects_search_description_r8.py \
               tests/unit/test_staging_minimise_r8.py \
+              tests/unit/test_email_search_index_r8.py \
               tests/unit/test_staging_export.py
 
       - name: Write the measured timings

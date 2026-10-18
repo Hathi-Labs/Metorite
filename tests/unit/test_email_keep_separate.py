@@ -462,7 +462,7 @@ class TestTheReadsOfMoreThanOneMailbox:
         # suite-private name, so it gets the same grant here.
         with p.admin_engine.begin() as c:
             c.execute(text(
-                "GRANT EXECUTE ON FUNCTION public.email_message_search(text) "
+                "GRANT EXECUTE ON FUNCTION public.email_message_search(text, uuid[], integer) "
                 f"TO {_APP_ROLE}"))
         tag = uuid.uuid4().hex[:8]
         s = SimpleNamespace(tag=tag, owner=f"member-{tag}@t8g1.test")
