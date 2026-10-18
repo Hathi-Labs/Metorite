@@ -892,7 +892,8 @@ async def test_own_1_a_read_during_a_merge_sees_the_committed_state(world) -> No
     task = _task(w)
     _run(w, task)
     _ref(w, task, 851)
-    stamp = "2026-10-18T11:00:00Z"
+    # Now, so the agent run of two hours ago comes BEFORE the merge (§12.2).
+    stamp = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     pull = {"number": 851, "title": "PR 851", "state": "closed", "merged": True,
             "merged_at": stamp, "updated_at": stamp, "draft": False,
             "merged_by": {"login": "octo"}, "head": {"ref": "agent/x", "sha": "d" * 40}}
