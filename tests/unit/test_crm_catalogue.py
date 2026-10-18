@@ -578,3 +578,220 @@ def test_the_overlay_reads_the_catalogue_once() -> None:
     assert "entry" not in {f.name for f in dataclasses.fields(overlay.Overlay)}
     source = Path(overlay.__file__).read_text(encoding="utf-8")
     assert "entry_of(" not in source
+
+
+# ── 8. An amount can be the sum of several fields (CRM-Q32-9a) ─────────────
+#
+# crm_platform.md §18.14.10. DEWiN's Collection splits each payment into
+# parts. The keys below are the keys of the spec. The labels and the fills
+# are invented.
+
+_SUM_KEYS = ["Billing_Amount", "IP", "EB_Net_Amount"]
+
+
+def _collection(**more: Any) -> cat.Source:
+    fields = (
+        cat.Field("Billing_Amount", "Rent Net Amount", "currency"),
+        cat.Field("IP", "IP Basic Amount", "currency"),
+        cat.Field("EB_Net_Amount", "EB Net Amount", "currency"),
+        cat.Field("Rate", "Rate", "percent"),
+        cat.Field("Units", "Units", "number"),
+        cat.Field("Paid_On", "Paid On", "date"),
+        *more.get("extra", ()),
+    )
+    return _module("Payment_Received", label="Collection", records=8681, fields=fields,
+                   fills={"Billing_Amount": 0.52, "IP": 0.52, "EB_Net_Amount": 0.46,
+                          "Rate": 0.4, "Units": 0.3, "Paid_On": 0.98})
+
+
+def _summed(value: Any, *, by: Any = "admin", part: str = "amount") -> dict[str, Any]:
+    words = {"purpose": "admin"}
+    if by is not None:
+        words[part] = by
+    return {"kind": "catalogue", "module": "Payment_Received", "purpose": "payment_in",
+            part: value, "by": words}
+
+
+def test_item_problem_takes_a_sum_of_amount_by_the_admin_only() -> None:
+    """Item 1: 2 to 5 distinct keys, for amount only, with by admin."""
+    assert cat.item_problem(_summed(_SUM_KEYS)) is None
+    assert cat.item_problem(_summed(["A", "B"])) is None
+    assert cat.item_problem(_summed(["A", "B", "C", "D", "E"])) is None
+    for bad in (
+        _summed(["A"]),                                # 1 key
+        _summed(["A", "B", "C", "D", "E", "F"]),       # 6 keys
+        _summed(["A", "B", "A"]),                      # a duplicate key
+        _summed(["A", "B"], by="ai"),                  # by: ai
+        _summed(["A", "B"], by="code"),
+        _summed(["A", "B"], by=None),                  # no by at all
+        _summed([]),
+        _summed(["A", 7]),
+        _summed(["A", "@amount"]),
+        _summed(["A", "B+C"]),
+        _summed(["A", "x" * 300]),
+    ):
+        assert cat.item_problem(bad) == "amount", bad
+    assert cat.item_problem(_summed(["Paid_On", "Paid_On_2"], part="date")) == "date"
+    assert cat.item_problem(_summed(["A", "B"], part="status")) == "status"
+
+
+def test_the_plan_check_takes_a_sum_by_the_admin_and_refuses_one_by_ai() -> None:
+    """Item 1 through check_kinds, the check of each plan commit."""
+    from fastapi import HTTPException
+    from gateway.routes.crm import mapping_plans as mpl
+
+    mpl.check_kinds([_summed(_SUM_KEYS)])
+    with pytest.raises(HTTPException) as exc:
+        mpl.check_kinds([_summed(_SUM_KEYS, by="ai")])
+    assert exc.value.detail["code"] == "bad_catalogue"
+
+
+def test_build_reads_a_sum_into_one_composite_field() -> None:
+    """Item 2: the key, the label, the type and each part."""
+    entry = _one([_collection()], "Payment_Received", items=[_summed(_SUM_KEYS)])
+    amount = entry.fields["amount"]
+    assert amount is not None
+    assert amount.key == "Billing_Amount+IP+EB_Net_Amount"
+    assert amount.label == "Rent Net Amount + IP Basic Amount + EB Net Amount"
+    assert amount.type == "currency"
+    assert [p.key for p in amount.parts] == _SUM_KEYS
+    assert [p.label for p in amount.parts] == [
+        "Rent Net Amount", "IP Basic Amount", "EB Net Amount"]
+    assert (entry.by["amount"], entry.stale) == ("admin", [])
+    assert "amount" not in entry.open
+
+
+@pytest.mark.parametrize("keys", [
+    ["Billing_Amount", "Gone"],          # a key that is gone
+    ["Billing_Amount", "Rate"],          # a percent, not a currency
+    ["Billing_Amount", "Units"],         # a number, not a currency
+    ["Billing_Amount", "Paid_On"],       # a date
+])
+def test_a_gone_or_unfit_key_makes_the_whole_sum_stale(keys: list[str]) -> None:
+    """Item 2: one bad key, and the part is stale. The read never holds a
+    composite with a missing part."""
+    entry = _one([_collection()], "Payment_Received", items=[_summed(keys)])
+    assert "amount" in entry.stale
+    found = entry.fields.get("amount")
+    assert found is None or not found.parts
+
+
+def test_problem_and_resolve_of_a_list() -> None:
+    src = _collection()
+    assert cat.problem(src, "amount", _SUM_KEYS) is None
+    assert cat.problem(src, "amount", ["Billing_Amount", "Gone"]) == "gone"
+    assert cat.problem(src, "amount", ["Billing_Amount", "Rate"]) == "type"
+    assert cat.problem(src, "date", ["Paid_On", "Paid_On"]) == "type"
+    assert cat.resolve(src, None) is None
+    assert cat.resolve(src, "IP") == src.field("IP")
+    assert cat.resolve(src, _SUM_KEYS).parts == tuple(src.field(k) for k in _SUM_KEYS)
+
+
+def test_merge_keeps_a_sum_of_the_admin_and_never_takes_one_from_the_pipeline() -> None:
+    """Code and the pipeline never write a list. A merge of the admin keeps
+    its own copy, so a later change of the input does not move the plan."""
+    keys = list(_SUM_KEYS)
+    got = cat.merge_item(None, _summed(keys))
+    keys.append("Changed")
+    assert got["amount"] == _SUM_KEYS and got["amount"] is not keys
+    ai = {"kind": "catalogue", "module": "Payment_Received", "amount": "IP",
+          "by": {"amount": "ai"}}
+    assert cat.merge_item(got, ai)["amount"] == _SUM_KEYS
+    pipeline_list = {**ai, "amount": ["IP", "EB_Net_Amount"]}
+    assert "amount" not in cat.merge_item(None, pipeline_list)
+    old = {"kind": "catalogue", "module": "Payment_Received", "amount": "IP",
+           "by": {"amount": "ai"}}
+    assert cat.merge_item(old, pipeline_list)["amount"] == "IP"
+    admin = cat.merge_item(old, _summed(["IP", "EB_Net_Amount"]))
+    assert (admin["amount"], admin["by"]["amount"]) == (["IP", "EB_Net_Amount"], "admin")
+
+
+def test_auto_takes_a_sum_back_to_the_answer_of_the_pipeline() -> None:
+    """The value "@auto" on a sum: the cached item of the pipeline comes
+    back, and a list in the cache is no answer of the pipeline."""
+    stored = cat.merge_item(None, _summed(_SUM_KEYS))
+    cached = {"kind": "catalogue", "module": "Payment_Received", "amount": "IP",
+              "by": {"amount": "ai"}}
+    back = cat.clear_parts(stored, ["amount"], cached)
+    assert (back["amount"], back["by"]["amount"]) == ("IP", "ai")
+    gone = cat.clear_parts(stored, ["amount"], {**cached, "amount": _SUM_KEYS})
+    assert "amount" not in gone and "amount" not in gone["by"]
+
+
+def test_the_keys_of_an_answer_and_a_put_take_a_list() -> None:
+    """Item 8: check_parts and _bad_field take a list for amount only. Each
+    key must be a currency field of the module. Each bad list is a 422
+    bad_answer, and the shape is refused before any field is read."""
+    from fastapi import HTTPException
+    from gateway.routes.crm.catalogue import _bad_field, check_parts
+
+    src = _collection()
+    check_parts("Payment_Received", {"amount": _SUM_KEYS}, src)
+    check_parts("Payment_Received", {"amount": ["IP", "EB_Net_Amount"]}, src)
+    assert _bad_field(src, "amount", ["IP", "EB_Net_Amount"]) is False
+    for parts in (
+        {"amount": ["IP"]},
+        {"amount": ["IP", "EB_Net_Amount", "Billing_Amount", "A", "B", "C"]},
+        {"amount": ["IP", "IP"]},
+        {"amount": ["IP", "Rate"]},
+        {"amount": ["IP", "Gone"]},
+        {"amount": ["IP", "a'--"]},
+        {"amount": ["IP", "@amount"]},
+        {"amount": ["IP", "x" * 300]},
+        {"date": ["Paid_On", "IP"]},
+        {"status": ["IP", "EB_Net_Amount"]},
+    ):
+        with pytest.raises(HTTPException) as exc:
+            check_parts("Payment_Received", parts, src)
+        assert exc.value.status_code == 422, parts
+        assert exc.value.detail["code"] == "bad_answer", parts
+
+    class _NoRead:
+        def field(self, key: str) -> Any:
+            raise AssertionError("a bad shape must not reach a read of the fields")
+
+    assert _bad_field(_NoRead(), "amount", ["IP", "x" * 300]) is True
+    assert _bad_field(_NoRead(), "amount", ["IP"]) is True
+
+
+def test_the_answer_the_put_and_undo_take_a_list_on_the_wire() -> None:
+    """Item 8: AnswerIn, UndoModel and CatalogueChangeIn take a list."""
+    from gateway.routes.crm.catalogue import CatalogueChangeIn
+    from gateway.routes.crm.questions import AnswerIn, UndoModel
+    from pydantic import ValidationError
+
+    assert AnswerIn(value=_SUM_KEYS).value == _SUM_KEYS
+    assert AnswerIn(value="IP").value == "IP" and AnswerIn(value=None).value is None
+    undo = UndoModel(module="Payment_Received", part="amount", value=_SUM_KEYS)
+    assert undo.value == _SUM_KEYS
+    assert UndoModel(value="@auto").value == "@auto"
+    assert CatalogueChangeIn(amount=_SUM_KEYS).amount == _SUM_KEYS
+    assert CatalogueChangeIn(amount="IP").amount == "IP"
+    with pytest.raises(ValidationError):
+        AnswerIn(value=[f"K{i}" for i in range(9)])
+    with pytest.raises(ValidationError):
+        CatalogueChangeIn(purpose=["deal", "invoice"])
+
+
+def test_the_wire_of_a_sum_carries_its_parts() -> None:
+    """KeyField of the wire gains parts. A plain field has none."""
+    from gateway.routes.crm.catalogue import _wire
+
+    entry = _one([_collection()], "Payment_Received", items=[_summed(_SUM_KEYS)])
+    wire = _wire(entry).model_dump()
+    amount = wire["fields"]["amount"]
+    assert (amount["key"], amount["type"]) == ("Billing_Amount+IP+EB_Net_Amount", "currency")
+    assert [p["key"] for p in amount["parts"]] == _SUM_KEYS
+    assert wire["fields"]["date"]["parts"] is None
+
+
+async def test_the_tool_line_names_each_part_of_a_sum(monkeypatch) -> None:
+    """Item 9: crm_list_modules says "sum of" and names each part."""
+    from gateway.routes.crm.catalogue import _wire
+
+    entry = _one([_collection()], "Payment_Received", items=[_summed(_SUM_KEYS)])
+    body = _wire(entry).model_dump()
+    _gateway(monkeypatch, lambda p: (200, {"mode": "mirror", "entries": [body]}))
+    out = await tools.crm_list_modules()
+    assert ("Amount: sum of Rent Net Amount, IP Basic Amount and EB Net Amount "
+            "(Billing_Amount + IP + EB_Net_Amount).") in out

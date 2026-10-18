@@ -11,6 +11,7 @@ in ``test_crm_aggregate_r8.py``.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 from typing import Any
 
@@ -567,3 +568,173 @@ def test_the_catalogue_names_the_modules_that_fit_an_empty_core_entity() -> None
     assert entries["Deals"].alike == ["Invoices"]
     assert entries["Accounts"].alike == ["Clients"]
     assert not entries["Invoices"].alike
+
+
+# ── An amount can be the sum of several fields (WS-53 CRM-Q32-9a) ──────────
+
+_GATEWAY = _CRM.parents[1]
+
+
+def _callers(source: str, name: str) -> set[str]:
+    """The top-level functions of *source* that call *name*."""
+    out: set[str] = set()
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            for inner in ast.walk(node):
+                if (isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
+                        and inner.func.id == name):
+                    out.add(node.name)
+    return out
+
+
+def _amount_offenders(field_sql: str, others: dict[str, str]) -> list[str]:
+    """Each place that wraps a field in ``_number`` outside the one builder.
+    Only ``_numbers`` calls ``_number``. Only ``_amount`` and the sum check
+    call ``_numbers``. The three readers of an amount call ``_amount``. No
+    other file of the gateway names ``_number`` or ``_numbers`` of
+    ``field_sql``."""
+    found = [f"_number in {f}" for f in sorted(_callers(field_sql, "_number") - {"_numbers"})]
+    found += [f"_numbers in {f}" for f in sorted(
+        _callers(field_sql, "_numbers") - {"_amount", "sum_check_sql"})]
+    missing = {"measure_sql", "_filter", "overlay_weighted"} - _callers(field_sql, "_amount")
+    found += [f"no _amount in {f}" for f in sorted(missing)]
+    for path, text in others.items():
+        tree = ast.parse(text)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.alias) and node.name in ("_number", "_numbers", "_amount"):
+                found.append(f"import of {node.name} in {path}")
+            if (isinstance(node, ast.Attribute) and node.attr in ("_number", "_numbers")
+                    and isinstance(node.value, ast.Name) and node.value.id in (
+                        "field_sql", "fs")):
+                found.append(f"{node.attr} in {path}")
+    return found
+
+
+def test_amount_is_the_one_builder_of_the_number_of_amount() -> None:
+    """CRM-Q32-9a item 3: no code wraps ``@amount`` in ``_number`` outside
+    ``_amount``, so a sum reaches each reader through one seam."""
+    field_sql = (_CRM / "field_sql.py").read_text(encoding="utf-8")
+    others = {
+        str(p.relative_to(_GATEWAY)): p.read_text(encoding="utf-8")
+        for p in _GATEWAY.rglob("*.py") if p.name != "field_sql.py"
+    }
+    assert _amount_offenders(field_sql, others) == []
+
+
+def test_the_amount_fence_sees_a_copy() -> None:
+    """The fence on the fence."""
+    good = (
+        "def _number(c, p):\n    return p\n"
+        "def _numbers(c, r, p):\n    return [_number(c, p)]\n"
+        "def _amount(c, r, p):\n    return _numbers(c, r, p)\n"
+        "def sum_check_sql(r):\n    return _numbers(1, r, 2)\n"
+        "def measure_sql(s, r, m):\n    return _amount(1, r, 2)\n"
+        "def _filter(s, r):\n    return _amount(1, r, 2)\n"
+        "def overlay_weighted(s, a):\n    return _amount(1, a, 2)\n"
+    )
+    assert _amount_offenders(good, {}) == []
+    assert _amount_offenders(good + "def measure2(s, r):\n    return _number(1, 2)\n", {})
+    bad = good.replace("return _amount(1, a, 2)", "return _numbers(1, a, 2)")
+    assert _amount_offenders(bad, {})
+    assert _amount_offenders(good, {"x.py": "from gateway.routes.crm.field_sql import _number\n"})
+    assert _amount_offenders(good, {"x.py": "y = field_sql._number(1, 2)\n"})
+
+
+def _sum_scope(count: int = 5, *, extra: dict | None = None) -> Any:
+    """A module scope whose ``@amount`` is the sum of *count* currency
+    fields, with a hostile key among them."""
+    from gateway.crm_sync import catalogue as cat
+    from gateway.routes.crm import field_sql as fs
+
+    keys = [_HOSTILE_KEY, *(f"Part_{i}" for i in range(1, count))]
+    real = {k: fs.FieldRef(key=k, type="currency", label=f"L {k[:6]}") for k in keys}
+    real.update(extra or {})
+    entry = cat.Entry(
+        module="Payment_Received", entity="module:Payment_Received", kind="module",
+        label="Collection", records=3, purpose="payment_in",
+        fields={"amount": cat.composite([cat.Field(k, f"L {k[:6]}", "currency")
+                                         for k in keys])},
+    )
+    return fs.FieldScope(column="fields", owner="module:Payment_Received",
+                         fields={**real, **fs.key_words(real, entry)}), keys
+
+
+def test_the_key_word_of_a_sum_and_the_keys_of_the_answer() -> None:
+    """Item 9: ``key_words`` gives the composite ``FieldRef`` of ``@amount``,
+    and ``used_keys`` gives the list."""
+    from gateway.routes.crm import field_sql as fs
+
+    scope, keys = _sum_scope(3)
+    ref = scope.fields["@amount"]
+    assert [p.key for p in ref.parts] == keys and ref.type == "currency"
+    assert ref.key == "+".join(keys)
+    assert fs.check_measure(scope, "@amount") is ref
+    assert fs.used_keys(scope, ["@amount", None]) == {"@amount": keys}
+    # A part that the scope does not hold as a currency field: no key word.
+    from gateway.crm_sync import catalogue as cat
+
+    real = {"A": fs.FieldRef(key="A", type="currency", label="A"),
+            "B": fs.FieldRef(key="B", type="percent", label="B")}
+    entry = cat.Entry(module="M", entity="module:M", kind="module", label="M", records=1,
+                      purpose="invoice", fields={"amount": cat.composite(
+                          [cat.Field("A", "A", "currency"), cat.Field("B", "B", "currency")])})
+    assert "@amount" not in fs.key_words(real, entry)
+    assert "@amount" not in fs.key_words({"A": real["A"]}, entry)
+
+
+def test_a_sum_has_no_group() -> None:
+    """``group_field=@amount`` with a sum gives 422 ``composite_group``."""
+    from fastapi import HTTPException
+    from gateway.routes.crm import field_sql as fs
+
+    scope, _keys = _sum_scope(2)
+    with pytest.raises(HTTPException) as exc:
+        fs.check_group(scope, "@amount", None)
+    assert exc.value.status_code == 422
+    assert exc.value.detail["code"] == "composite_group"
+
+
+def test_the_sql_of_a_sum_binds_each_key() -> None:
+    """Item 3: the NULL rule of a sum, each key bound, no key in the text."""
+    from gateway.routes.crm import field_sql as fs
+
+    scope, keys = _sum_scope(5)
+    ref = scope.fields["@amount"]
+    measure = fs.measure_sql(scope, ref, "sum")
+    assert measure.params == {f"agf_m_{i}": k for i, k in enumerate(keys)}
+    assert measure.value.startswith("COALESCE(SUM((CASE WHEN ")
+    assert measure.value.count("COALESCE(") == 1 + 5
+    assert " IS NULL AND " in measure.value and "THEN NULL ELSE " in measure.value
+    where = fs.module_where(scope, "Payment_Received", [("@amount", "150")], zone="UTC")
+    weighted = fs.overlay_weighted(
+        scope, ref, fs.FieldRef(key="Win", type="percent", label="Win"),
+        fs.FieldRef(key="Stage", type="select", label="Stage"), ["Open"])
+    assert {f"agf_wa_{i}" for i in range(5)} <= set(weighted.params)
+    assert weighted.params["agf_wp_0"] == "Win"
+    for sql in (measure.value, measure.sum, measure.count, where.sql, weighted.value):
+        assert _HOSTILE_KEY not in sql and "x')" not in sql and "@" not in sql, sql
+    assert _HOSTILE_KEY in where.params.values()
+
+
+def test_eleven_filters_and_a_sum_of_five_bind_no_name_twice() -> None:
+    """Item 3: each bound name is ``{prefix}_{i}``. With ``prefix + digit``,
+    part 0 of filter 1 (``agf_k1`` + ``0``) is ``agf_k10``, the key of filter
+    10, and one value silently replaces the other."""
+    from gateway.routes.crm import field_sql as fs
+
+    picks = {f"Pick_{i}": fs.FieldRef(key=f"Pick_{i}", type="select", label=f"P{i}")
+             for i in range(11)}
+    scope, keys = _sum_scope(5, extra=picks)
+    pairs = [(f"Pick_{i}", f"v{i}") for i in range(11)]
+    pairs[1] = ("@amount", "150")
+    where = fs.module_where(scope, "Payment_Received", pairs, zone="UTC")
+    measure = fs.measure_sql(scope, scope.fields["@amount"], "sum")
+    names = [*where.params, *measure.params]
+    # The module, the zone, 11 values, 10 picklist keys, 5 parts in the
+    # filter and 5 in the measure: no name is lost to another.
+    assert len(names) == len(set(names)) == 2 + 11 + 10 + 5 + 5
+    assert [where.params[f"agf_k1_{i}"] for i in range(5)] == keys
+    assert where.params["agf_k10"] == "Pick_10"
+    # Each name in the text is bound. The zone is bound for a date range only.
+    placeholders = set(re.findall(r":(agf_\w+)", where.sql))
+    assert placeholders == set(where.params) - {fs.ZONE_PARAM}

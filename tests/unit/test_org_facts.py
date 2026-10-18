@@ -187,6 +187,28 @@ def test_the_crm_facts_of_the_entries_and_the_plan() -> None:
     assert {r.set_by for r in plan} == {"admin"}
 
 
+def test_the_fact_of_a_sum_names_each_part() -> None:
+    """CRM-Q32-9a item 9: the org-facts row of an amount that is a sum."""
+    from gateway.routes.crm import facts
+
+    collection = cat.Source(
+        "Payment_Received", "module:Payment_Received", "module", "Collection", 8681,
+        fields=(cat.Field("Billing_Amount", "Rent Net Amount", "currency"),
+                cat.Field("IP", "IP Basic Amount", "currency"),
+                cat.Field("EB_Net_Amount", "EB Net Amount", "currency")),
+        fills={"Billing_Amount": 0.52, "IP": 0.52, "EB_Net_Amount": 0.46})
+    item = {"kind": "catalogue", "module": "Payment_Received", "purpose": "payment_in",
+            "amount": ["Billing_Amount", "IP", "EB_Net_Amount"],
+            "by": {"purpose": "admin", "amount": "admin"}}
+    (entry,) = cat.build([collection], {}, [item])
+    rows = {r.key: r for r in facts.entry_facts(entry, NOW)}
+    assert rows["amount"].meaning == (
+        "The amount of Collection is the sum of Rent Net Amount, IP Basic Amount and "
+        "EB Net Amount.")
+    assert rows["amount"].value == "Billing_Amount+IP+EB_Net_Amount"
+    assert rows["amount"].set_by == "admin"
+
+
 async def test_the_provider_gives_nothing_outside_the_list_or_the_access_rule(
     monkeypatch,
 ) -> None:
