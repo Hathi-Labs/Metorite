@@ -290,7 +290,13 @@ async def list_pages(
         vis, vparams = core.visible_pages_clause(user, "p")
         rows = (await db.execute(
             text(f"SELECT {core.PAGE_COLUMNS} FROM kb_pages p WHERE {vis}{extra} "
-                 "ORDER BY p.position, lower(p.title), p.created_at LIMIT :limit"),
+                 # Grouped by sibling set FIRST (KB-2e fix round 2). An order
+                 # by the stored place across parents would put a row among
+                 # another parent's rows by its stored place, and that tells
+                 # how many hidden siblings sit before it. Between groups the
+                 # order follows the ids only, and so does the LIMIT cut.
+                 "ORDER BY p.space_id, p.parent_id NULLS FIRST, p.position, "
+                 "lower(p.title), p.created_at, p.id LIMIT :limit"),
             {**vparams, **params},
         )).fetchall()
     # The rank among the siblings in this answer, never the stored place.
@@ -301,6 +307,10 @@ async def list_pages(
     for members in groups.values():
         for i, r in enumerate(sorted(members, key=core.sibling_key)):
             rank[str(r.id)] = i
+    # The rows go out in rank order inside each group, so a tie that SQL and
+    # Python break apart (a collation) cannot reorder them.
+    rows = sorted(rows, key=lambda r: (
+        str(r.space_id), r.parent_id is not None, str(r.parent_id), rank[str(r.id)]))
     return {"pages": [core.page_dict(r, body=False, position=rank[str(r.id)]) for r in rows]}
 
 

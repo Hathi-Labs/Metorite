@@ -712,6 +712,48 @@ async def test_a_member_sees_no_gap_for_a_hidden_page(ns, app_engine) -> None:  
     assert [p for _t, p in seen(await _ok(ns, two, "GET", f"/knowledge/pages?space={space}"))] == [0, 1, 2]
 
 
+async def test_the_list_order_reveals_no_hidden_sibling(ns, app_engine) -> None:  # noqa: F811
+    """Fix round 2, P2. The list groups the rows by parent first. An order
+    by the stored place across parents would put a row of one parent
+    among the rows of another, and where it falls tells the stored place,
+    so the count of hidden siblings before it."""
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    one_email, two_email = _address("one"), _address("two")
+    one = _principal(one_email, ns.org_a)
+    two = _principal(two_email, ns.org_a)
+    space = await _space(ns, admin, "Groups", [
+        {"subject": one_email, "level": "write"},
+        {"subject": two_email, "level": "write"},
+    ])
+    p1 = await _published(ns, one, space, "P1")
+    p2 = await _published(ns, one, space, "P2")
+
+    async def child(parent: str, title: str) -> None:
+        made = await _ok(ns, one, "POST", "/knowledge/pages",
+                         {"space_id": space, "parent_id": parent, "title": title}, status=201)
+        await _ok(ns, one, "POST", f"/knowledge/pages/{made['id']}/publish")
+
+    await child(p1, "A")
+    # Another member's draft under P1: `one` cannot see it.
+    await _ok(ns, two, "POST", "/knowledge/pages",
+              {"space_id": space, "parent_id": p1, "title": "Hidden"}, status=201)
+    await child(p1, "B")
+    for title in ("C0", "C1", "C2", "C3"):
+        await child(p2, title)
+
+    listed = (await _ok(ns, one, "GET", f"/knowledge/pages?space={space}"))["pages"]
+    parents = [r["parent_id"] for r in listed]
+    # Each parent's rows come together, in rank order, so nothing between
+    # two groups depends on a stored place.
+    runs = [parent for i, parent in enumerate(parents) if i == 0 or parents[i - 1] != parent]
+    assert len(runs) == len(set(runs)), [(r["title"], r["parent_id"]) for r in listed]
+    for parent in set(parents):
+        assert [r["position"] for r in listed if r["parent_id"] == parent] == list(
+            range(sum(1 for q in parents if q == parent)))
+    assert [r["title"] for r in listed if r["parent_id"] == p1] == ["A", "B"]
+
+
 async def test_opposite_moves_between_two_spaces_do_not_deadlock(ns, app_engine) -> None:  # noqa: F811
     """Fix round, P2. X goes from S1 to S2 while Y goes from S2 to S1. Each
     move takes both tree locks in one order, so neither waits on the other
