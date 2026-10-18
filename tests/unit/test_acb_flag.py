@@ -123,6 +123,8 @@ def test_unset_removes_the_line_and_the_overlay_entry(tmp_path: pathlib.Path) ->
 def test_production_needs_the_flag_and_a_reason(tmp_path: pathlib.Path) -> None:
     app = _box(tmp_path, env="production")
     assert _run(tmp_path, "set", "KNOWLEDGE_ENABLED=true").returncode == 2
+    # A reason alone is not enough: the caller must say --production.
+    assert _run(tmp_path, "--reason", "x", "set", "KNOWLEDGE_ENABLED=true").returncode == 2
     assert _run(tmp_path, "--production", "set", "KNOWLEDGE_ENABLED=true").returncode == 2
     res = _run(tmp_path, "--production", "--reason", "owner asked", "set", "KNOWLEDGE_ENABLED=true")
     assert res.returncode == 0, res.stderr
