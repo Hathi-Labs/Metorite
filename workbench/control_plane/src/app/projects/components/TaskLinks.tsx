@@ -31,10 +31,13 @@ import { pastedLink, refAddedBy, refIcon, refNames, refState } from "../lib/task
 export function TaskLinks({
   taskId,
   onCount,
+  inputRef,
 }: {
   taskId: string;
   /** The row count, for the section header. */
   onCount?: (count: number) => void;
+  /** The add field, so the body's Link button can put the cursor in it. */
+  inputRef?: React.Ref<HTMLInputElement>;
 }) {
   const [rows, setRows] = useState<TaskRefRow[]>([]);
   const [draft, setDraft] = useState("");
@@ -153,6 +156,7 @@ export function TaskLinks({
         );
       })}
       <Input
+        ref={inputRef}
         icon="Link"
         value={draft}
         // Not `disabled` while adding: a disabled field drops the focus.
