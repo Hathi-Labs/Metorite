@@ -696,9 +696,13 @@ async def _bound(ns: Any, org: str, coro: Any) -> Any:
         release_tenant(scope)
 
 
-async def test_item3_the_agent_status_is_for_each_use(ns, app_engine) -> None:  # noqa: F811
+async def test_item3_the_agent_status_is_for_each_use(ns, app_engine, monkeypatch) -> None:  # noqa: F811
     """An App org reads pull requests, and NOT a private agent repo. So the
     agent wizard's GitHub step stays open for it, and closes for a token org."""
+    from acb_common import get_settings
+
+    # The App is ON, so the App org IS connected for pull requests.
+    monkeypatch.setattr(get_settings(), "github_app_enabled", True, raising=False)
     _seed_app_row(ns, ns.org_a)
     await _connect(ns, ns.org_b, ADMIN_B, "DEV-B")
     for org, email, want in ((ns.org_a, ADMIN_A, False), (ns.org_b, ADMIN_B, True)):
@@ -710,7 +714,8 @@ async def test_item3_the_agent_status_is_for_each_use(ns, app_engine) -> None:  
         assert github["github_coverage"]["agent_repo"] is want
     tile = await _call(ns, _user(ADMIN_A, ns.org_a), "GET", "/integrations/status")
     (row,) = [r for r in tile.json() if r["service"] == "github"]
-    assert row["github_coverage"] == {"pull_requests": row["configured"]}
+    assert row["configured"] is True, "the tile reads the App as connected"
+    assert row["github_coverage"] == {"pull_requests": True}
 
 
 async def test_item3_the_config_fetch_of_an_app_org_names_a_private_repo(ns, app_engine) -> None:  # noqa: F811
