@@ -455,7 +455,8 @@ export function MarkdownBody({
             return entityPills ? (
               <ChatEntityPill text={text} number={n} index={entityIndex} scope={sessionId} live={live} />
             ) : (
-              <FencedName text={text} number={n} />
+              // A `#5 «X»` links when the turn links task numbers (2026-10-19).
+              <FencedName text={text} number={n} live={live && refs} scope={sessionId} />
             );
           }
           // A name with no pill is a run of words, and it must wrap like

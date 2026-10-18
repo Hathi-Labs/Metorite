@@ -29,7 +29,7 @@
  * Fences: `taskRefs.test.ts` (a and c), `taskRefResolver.test.ts` (b).
  */
 
-import { createElement, Fragment, useEffect, useSyncExternalStore, type ReactNode } from "react";
+import { createElement, Fragment, useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
 
 import EntityPill from "@/components/ui/EntityPill";
 import { nameKey, taskHref } from "@/lib/entityIndex";
@@ -161,6 +161,13 @@ export function splitTaskRefs(text: string): TaskRefPart[] {
 //    when one task fits. A wrong link is worse than no link.
 // 4. The cache is per scope. The chat passes its session id. Any other
 //    caller gets the page's scope, `""`.
+// 5. A miss does not outlive a write (owner report, 2026-10-19). A chat turn
+//    can create #234 and then name it, so a number asked for before the
+//    write must be asked again after it. `revalidate` asks every answered
+//    number again and keeps the old answer until the new one comes, so a
+//    pill never blinks back to text. The chat calls it when a tool of a turn
+//    finishes (`useRevalidateOnTools`). A miss also expires by itself after
+//    `MISS_TTL_MS`, for a write that no chat turn made.
 
 /** One task the lookup found, as `GET /projects/search/refs` returns it. */
 export interface TaskRefHit {
@@ -186,28 +193,51 @@ export const MAX_REFS_PER_CALL = 50;
 /** The waits before each retry of a failed lookup. Then it stays text. */
 export const RETRY_MS: readonly number[] = [2_000, 8_000, 30_000];
 
+/** How long a miss (no visible task) is kept before a new mount asks again. */
+export const MISS_TTL_MS = 30_000;
+
 /**
  * The one task a reference names, or null.
  *
  * `title`, when given, is the title the answer wrote (`#5 «Title»`): then the
  * hit must carry that title too. Without it, an open task wins over an
  * archived one, and two open tasks with one number link to neither.
+ *
+ * `echoed`, when given, breaks a tie. It is true for a title that the text
+ * wrote right after the number (`#234 Spec tool-gap detection`). A number is
+ * unique per root project only, so an org with two spaces can hold two
+ * #234s. When exactly one of them carries the title the text wrote, that is
+ * the task the text names (owner report, 2026-10-19).
  */
-export function pickTask(hits: readonly TaskRefHit[], title?: string): TaskRefHit | null {
+export function pickTask(
+  hits: readonly TaskRefHit[],
+  title?: string,
+  echoed?: (title: string) => boolean,
+): TaskRefHit | null {
   let fit = [...hits];
   if (title !== undefined) {
     const key = nameKey(title);
     fit = fit.filter((h) => nameKey(h.title) === key);
   }
-  const ids = new Set(fit.map((h) => h.id));
-  if (ids.size === 1) return fit[0];
-  const open = fit.filter((h) => !h.archived);
-  return new Set(open.map((h) => h.id)).size === 1 ? open[0] : null;
+  const one = (rows: TaskRefHit[]) => (new Set(rows.map((h) => h.id)).size === 1 ? rows[0] : null);
+  const only = one(fit);
+  if (only) return only;
+  if (echoed) {
+    const said = fit.filter((h) => echoed(h.title));
+    const pick = one(said) ?? one(said.filter((h) => !h.archived));
+    if (pick) return pick;
+  }
+  return one(fit.filter((h) => !h.archived));
 }
 
 export interface TaskRefResolver {
   get(scope: string, number: number): TaskRefEntry | undefined;
   request(scope: string, number: number): void;
+  /**
+   * Ask every answered number again, in one batch per scope (rule 5). The
+   * old answer stays until the new one comes. No scope: every scope.
+   */
+  revalidate(scope?: string): void;
   subscribe(listener: () => void): () => void;
   /** Send what is queued now. Tests call it. The timer calls it otherwise. */
   flush(): Promise<void>;
@@ -216,9 +246,13 @@ export interface TaskRefResolver {
 export function createTaskRefResolver(
   fetcher: TaskRefFetcher,
   retryMs: readonly number[] = RETRY_MS,
+  now: () => number = Date.now,
+  missTtlMs: number = MISS_TTL_MS,
 ): TaskRefResolver {
   const cache = new Map<string, Map<number, TaskRefEntry>>();
   const queue = new Map<string, Set<number>>();
+  // When each number was last answered, keyed `scope\nnumber` (rule 5).
+  const answeredAt = new Map<string, number>();
   const listeners = new Set<() => void>();
   let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -260,6 +294,8 @@ export function createTaskRefResolver(
     } catch {
       for (const n of numbers) {
         const prev = m.get(n);
+        // A revalidation that fails keeps the answer it had (rule 5).
+        if (prev?.state === "done") continue;
         const attempts = (prev?.state === "failed" ? prev.attempts : 0) + 1;
         m.set(n, { state: "failed", attempts });
         const wait = retryMs[attempts - 1];
@@ -274,6 +310,7 @@ export function createTaskRefResolver(
     }
     for (const n of numbers) {
       m.set(n, { state: "done", hits: hits.filter((h) => Number(h.task_number) === n) });
+      answeredAt.set(`${scope}\n${n}`, now());
     }
     notify();
   }
@@ -299,11 +336,24 @@ export function createTaskRefResolver(
     request(scope, number) {
       const m = entries(scope);
       const known = m.get(number);
+      // An old miss is asked again, and keeps its answer meanwhile (rule 5).
+      const key = `${scope}\n${number}`;
+      if (known?.state === "done" && known.hits.length === 0 && now() - (answeredAt.get(key) ?? 0) >= missTtlMs) {
+        answeredAt.set(key, now());
+        enqueue(scope, number);
+        return;
+      }
       // Asked once is enough: a pending, answered or retrying number is not
       // asked again. A failed one asks again only on its own retry timer.
       if (known) return;
       m.set(number, { state: "pending" });
       enqueue(scope, number);
+    },
+    revalidate(scope) {
+      for (const [key, m] of cache) {
+        if (scope !== undefined && key !== scope) continue;
+        for (const [n, entry] of m) if (entry.state === "done") enqueue(key, n);
+      }
     },
     subscribe(listener) {
       listeners.add(listener);
@@ -376,10 +426,15 @@ function toTaskRef(hit: TaskRefHit): TaskRef {
   };
 }
 
-/** The task an entry names, or null: still pending, failed, none or two. */
-export function taskOf(entry: TaskRefEntry | undefined, title?: string): TaskRef | null {
+/** The task an entry names, or null: still pending, failed, none or two.
+ *  `echoed` breaks a tie, as in `pickTask`. */
+export function taskOf(
+  entry: TaskRefEntry | undefined,
+  title?: string,
+  echoed?: (title: string) => boolean,
+): TaskRef | null {
   if (entry?.state !== "done") return null;
-  const hit = pickTask(entry.hits, title);
+  const hit = pickTask(entry.hits, title, echoed);
   return hit ? toTaskRef(hit) : null;
 }
 
@@ -435,13 +490,63 @@ export function useTaskRef(
   return entry;
 }
 
+/**
+ * Ask the app's store again when a tool of a chat turn finishes (rule 5).
+ * `finished` is the count of the turn's tools that are done, and `streaming`
+ * is true while the turn runs. A turn that ran a tool asks once more when it
+ * ends, because its answer names what the tools wrote. A turn read from
+ * history asks nothing: no tool finishes while it is on the screen.
+ */
+export function useRevalidateOnTools(
+  finished: number,
+  streaming: boolean,
+  resolver: TaskRefResolver = taskRefResolver,
+): void {
+  const seen = useRef<ToolWatch | null>(null);
+  useEffect(() => {
+    const step = revalidateStep(seen.current, finished, streaming);
+    seen.current = step.next;
+    if (step.revalidate) resolver.revalidate();
+  }, [finished, streaming, resolver]);
+}
+
+/** What `useRevalidateOnTools` remembers between two renders of one turn. */
+export interface ToolWatch {
+  /** The count of finished tools at the last render. */
+  count: number;
+  /** A tool finished while this turn streamed. */
+  ran: boolean;
+}
+
+/**
+ * One render of `useRevalidateOnTools`, pure, so the node-env test holds it.
+ * `prev` is null on the first render.
+ */
+export function revalidateStep(
+  prev: ToolWatch | null,
+  finished: number,
+  streaming: boolean,
+): { next: ToolWatch; revalidate: boolean } {
+  const grew = finished > (prev?.count ?? 0);
+  if (streaming) {
+    // A tool finished during the run. The first render of a running turn
+    // counts too: a remount in the middle of a run must not lose a write.
+    return { next: { count: finished, ran: (prev?.ran ?? false) || grew }, revalidate: grew };
+  }
+  // A turn from history: nothing finished while it was on the screen.
+  if (prev === null) return { next: { count: finished, ran: false }, revalidate: false };
+  // The turn ended: its answer names what its tools wrote.
+  return { next: { count: finished, ran: false }, revalidate: prev.ran || grew };
+}
+
 // ═══ (c) The draw ═══════════════════════════════════════════════════════════
 
 /** A task that is already known, drawn as the task pill: `EntityPill`, the
  *  `#n`, the title, the status dot and the `?task=` link. `label` replaces
  *  the title when the text wrote its own. */
-export function TaskPill({ task, label }: { task: TaskRef; label?: string }) {
+export function TaskPill({ task, label, fit }: { task: TaskRef; label?: string; fit?: boolean }) {
   return createElement(EntityPill, {
+    fit,
     kind: "task",
     label: label ?? task.title,
     number: `#${task.number}`,
@@ -470,9 +575,15 @@ export function TaskRefPill({
   fallback,
   label,
   resolver = taskRefResolver,
+  echoed,
+  fit,
 }: {
   number: number;
   title?: string;
+  /** Breaks a tie between two tasks with this number (`pickTask`). */
+  echoed?: (title: string) => boolean;
+  /** Fill a card's value column, as `EntityPill`'s `fit` does. */
+  fit?: boolean;
   /** The words the pill shows. Absent: the task's title, or `title`. */
   label?: (task: TaskRef) => string;
   /** The cache's key. The chat passes its session id. */
@@ -483,9 +594,9 @@ export function TaskRefPill({
   resolver?: TaskRefResolver;
 }) {
   const entry = useTaskRef(scope, number, live, resolver);
-  const task = live ? taskOf(entry, title) : null;
+  const task = live ? taskOf(entry, title, echoed) : null;
   if (!task) return createElement(Fragment, null, fallback ?? `#${number}`);
-  return createElement(TaskPill, { task, label: label ? label(task) : title });
+  return createElement(TaskPill, { task, label: label ? label(task) : title, fit });
 }
 
 /**

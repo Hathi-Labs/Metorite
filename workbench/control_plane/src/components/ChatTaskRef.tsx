@@ -20,6 +20,8 @@
  *    number only, and the title stays in the text after it.
  */
 
+import type { ReactNode } from "react";
+
 import EntityPill from "@/components/ui/EntityPill";
 import { nameKey, type EntityIndex } from "@/lib/entityIndex";
 import {
@@ -72,7 +74,8 @@ export default function ChatTaskRef({
   resolver?: TaskRefResolver;
 }) {
   const number = Number(refText.slice(1));
-  const label = (task: Pick<TaskRef, "title">) => (echoesTitle(after, task.title) ? "" : task.title);
+  const echoed = (title: string) => echoesTitle(after, title);
+  const label = (task: Pick<TaskRef, "title">) => (echoed(task.title) ? "" : task.title);
   const local = indexTasksByNumber(index, refText);
   if (local.length === 1 && live) {
     const t = local[0];
@@ -86,6 +89,9 @@ export default function ChatTaskRef({
       // Two tasks in the turn's own reads: no lookup, text. Streaming: text.
       live={live && local.length === 0}
       label={label}
+      // Two spaces can each hold a #234. The title the answer wrote after
+      // the number picks one (owner report, 2026-10-19).
+      echoed={echoed}
       resolver={resolver}
     />
   );
@@ -95,7 +101,12 @@ export default function ChatTaskRef({
  * The fenced form `#5 «Title»` whose task the turn's tools did not read (an
  * earlier turn read it). The same lookup, and the title must match too.
  * Until it answers, and when it finds no single match, the neutral chip the
- * fenced form always drew.
+ * fenced form always drew, or the caller's `fallback`.
+ *
+ * The cards use it too (owner report, 2026-10-19): a confirmation card's
+ * `from: #247 «Build the memory store»` and a `#5 «X»` in any card text
+ * (`FencedText`, `CardFieldValue`). The number and the title are both on
+ * the card, so the pill opens only the task that carries both.
  */
 export function FencedTaskRef({
   refText,
@@ -103,12 +114,18 @@ export function FencedTaskRef({
   scope = "",
   live = true,
   resolver = taskRefResolver,
+  fallback,
+  fit,
 }: {
   refText: string;
   title: string;
   scope?: string;
   live?: boolean;
   resolver?: TaskRefResolver;
+  /** What draws until the lookup finds the task. Absent: the neutral chip. */
+  fallback?: ReactNode;
+  /** Fill a card's value column, as `EntityPill`'s `fit` does. */
+  fit?: boolean;
 }) {
   return (
     <TaskRefPill
@@ -117,7 +134,8 @@ export function FencedTaskRef({
       scope={scope}
       live={live}
       resolver={resolver}
-      fallback={<EntityPill kind="task" label={title} number={refText} />}
+      fit={fit}
+      fallback={fallback ?? <EntityPill fit={fit} kind="task" label={title} number={refText} />}
     />
   );
 }

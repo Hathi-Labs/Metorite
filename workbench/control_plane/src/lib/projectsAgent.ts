@@ -49,8 +49,21 @@ export function pillsForTurn(
  * (`ChatTaskRef.tsx`). Every task is one `pm_tasks` row, so the My Tasks
  * assistant names the same tasks. Another agent's `#4521` is an invoice or an
  * issue number, so it stays text.
+ *
+ * The orchestrator is on the list (owner report, 2026-10-19). Since D99 it
+ * is the one assistant: the main chat and the assistant dock run it, and it
+ * asks the Projects assistant and then repeats what that agent wrote. Its
+ * answer "#234 Spec tool-gap detection" drew as text. `metorite` is the old
+ * name of the same agent, still on old sessions. The guards that keep an
+ * invoice number out are the parser's (`OTHER_KINDS`: `Invoice #4521`) and
+ * the lookup's: a number links only to the one visible task that has it.
  */
-export const TASK_REF_AGENTS: ReadonlySet<string> = new Set([PROJECTS_AGENT, "task-manager"]);
+export const TASK_REF_AGENTS: ReadonlySet<string> = new Set([
+  PROJECTS_AGENT,
+  "task-manager",
+  "orchestrator",
+  "metorite",
+]);
 
 /**
  * True when one turn may link its bare task references. `threadAgent` is the

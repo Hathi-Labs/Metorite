@@ -34,6 +34,7 @@ import { capabilityLabel, type RoomParticipant } from "@/lib/rooms";
 import { EntityIndexContext } from "@/components/ChatEntityPill";
 import { buildEntityIndex } from "@/lib/entityIndex";
 import { pillsForTurn, taskRefsForTurn } from "@/lib/projectsAgent";
+import { useRevalidateOnTools } from "@/lib/taskRefs";
 import AnswerDetails from "@/components/AnswerDetails";
 import { tierRouteLabel, tierRoutingUiOn } from "@/lib/tierRouting";
 import { isEdited } from "@/lib/chatEdit";
@@ -242,6 +243,13 @@ function MessageBubble({
   // email bodies and other text that no pill may resolve against.
   const pills = pillsForTurn(entityPills, message);
   const refs = taskRefsForTurn(taskRefAgent, message);
+  // A tool of this turn may have created the #234 that its answer, or a card,
+  // names next. Ask the task lookup again, so a miss read before the write
+  // does not stay text (owner report, 2026-10-19).
+  useRevalidateOnTools(
+    dedupedToolEvents.filter((t) => t.status === "done").length,
+    !!message.streaming,
+  );
   const entityIndex = useMemo(
     () => (pills ? buildEntityIndex(dedupedToolEvents) : null),
     [pills, dedupedToolEvents],
