@@ -6331,7 +6331,8 @@ links, "only if there are a lot of tasks to be linked".
 5. **What `file_tasks` leaves out.** A task that lacks a required field of
    the destination, a hidden task or project, an archived project, a folder
    and a task that is already there. A row with `fields` moves through the
-   one-task route, as `move_task` sends it.
+   one-task route, as `move_task` sends it. An empty `fields` object or blank
+   text is no answer.
 6. **What `link_tasks_batch` leaves out.** A hidden task, a link that
    exists, a link of a task to itself, and a `blocks` link that makes a
    loop. The loop check knows the links of the batch and one step of the
@@ -6339,6 +6340,17 @@ links, "only if there are a lot of tasks to be linked".
 7. **Subtasks are one question.** When a task to file has subtasks and the
    call has no answer, the tool asks once for the selection, before any
    card (D-PM-38).
+7a. **A subtask row and its parent row (review round 1).** With
+   `include_subtasks=yes`, the move of the parent takes the whole subtree
+   (`move.py`, `movable_subtree`). So a row whose task sits under the task
+   of another row has no write of its own. It moves with its topmost
+   ancestor row. The card says "With parent", and the receipt
+   reports the row from the write of that ancestor. With
+   `include_subtasks=no`, both rows move on their own. The route keeps the
+   parent link across projects, and the card row says so.
+7b. **The card holds no count.** The title and the destination lines name
+   no number, because a number goes stale when the member unticks a row
+   (PR #691). A hidden task shows a short id and no title.
 8. **Each row is its own write.** A row that fails does not stop the next
    row, and nothing raises after the first write. The receipt counts each
    act done, refused, unknown, unticked and left out, row by row.
@@ -6356,6 +6368,8 @@ links, "only if there are a lot of tasks to be linked".
 | 4, 5 | `test_an_invisible_task_and_a_hidden_project_are_named_not_moved`, `test_an_archived_project_and_a_folder_are_named_not_moved`, `test_a_task_that_needs_a_field_is_left_out_and_named`, `test_a_row_with_its_fields_moves_through_the_narrow_route` |
 | 6 | `test_projects_link_batch.py` `test_a_hidden_task_an_existing_link_and_a_self_link_are_named`, `test_a_blocks_link_against_an_existing_one_is_a_loop`, `test_the_batchs_own_links_make_a_loop_and_the_closing_one_is_left_out` |
 | 7 | `test_subtasks_with_no_answer_are_one_question_before_any_card` |
+| 7a | `test_with_subtasks_a_subtask_row_moves_with_its_parent` (both orders), `test_a_subtask_rides_with_its_topmost_planned_ancestor`, `test_a_rider_whose_parent_failed_is_not_moved`, `test_without_subtasks_both_rows_move_and_the_card_says_the_link_stays` (both orders) |
+| 5, 7b | `test_an_empty_fields_value_is_no_answer`, `test_a_left_out_row_never_says_nothing_was_changed`, `test_relates_to_both_ways_is_one_link_in_a_batch` |
 | 8 | `test_a_refused_move_is_a_row_of_the_receipt_and_the_counts_hold`, `test_a_lost_connection_is_unknown_and_never_raises`, `test_a_refused_link_is_a_row_of_the_receipt` |
 | 9 | `test_the_projects_assistant_holds_the_tool_and_its_instructions_name_it`, `test_the_instructions_keep_link_tasks_for_one_or_two_links` |
 | The card | `cardFields.test.ts` "the one-card batches", `ProjectToolCards.test.ts` "the one-card batches of writes.py" |
