@@ -6784,9 +6784,9 @@ the questions of the section Open questions.
    option.
 7. The model calls `crm_answer_question(question_id, choice)`. The tool calls
    `POST /crm/questions/{id}/reply`. The server decides by the permission of
-   the caller, never by the tool:
+   the caller, never by the tool. It decides BEFORE any write:
    - for a CRM admin, it runs the code of `POST /crm/questions/{id}/answer`,
-     so the admin guard, the one plan seam and the Undo stay;
+     so the one plan seam stays;
    - for each other member with CRM access, it records a proposal (below)
      and writes nothing in the plan.
 8. The model calls the read again and gives the final answer. The answer
@@ -6803,17 +6803,38 @@ what is not clear, in one line.
 - **The override in the answer.** A proposal changes no plan. The reply
   gives the tool the real field key, the purpose word or the module of the
   choice. The model then calls the read again with that key in place of the
-  key word. An example is `field='IP'` in place of `@amount`. For revenue,
-  the model reads the chosen module. The aggregate takes a field key today, so this needs no new
-  parameter and stores nothing.
+  key word. An example is `measure='sum'` with `field='IP'`. For revenue,
+  the model reads the chosen module. The aggregate takes a field key today,
+  so this needs no new parameter and stores nothing.
+- ⚠️ **A note for the builder.** On an overlay, `sum_amount` does not read
+  `field` (`aggregate.py:666-668`). So the override always uses
+  `measure='sum'` with `field=<key>`, never `sum_amount`.
 - **Only the proposing member.** While the proposal of a member waits,
   `my_proposal` gives it to that member, and each run of that member uses
   it and says so. No other member gets it, and no org fact changes.
+- **An override applies to an OPEN question only** (coordinator decision,
+  2026-10-18). On an answered part, the choice of a member is stored as a
+  proposed change for the admin. The run of that member keeps the org fact,
+  and says one line: "Your suggested change is waiting for a CRM admin."
 - **The store.** The cursor row `zoho:questions` gains `proposals`:
   `{question_id: [{value, member, at}]}`. `member` is the email key of the
   member from `UserContext`, never from input. Each question keeps the 5
   newest proposals. The org comes from the session. No new table, and no
   migration.
+- **The write idiom.** The member path of `/reply`, and each clear, lock
+  the cursor row first, in one transaction:
+  1. Insert the row `(org, 'zoho:questions')` if it is absent, with
+     `ON CONFLICT DO NOTHING`.
+  2. Lock it with `SELECT ... FOR UPDATE`, through a new
+     `runs.lock_cursor(db, org, module)`.
+  3. Read the list, change it, and write it with
+     `runs.merge_cursor_entry(db, org, QUESTIONS_ROW, 'proposals', qid, list)`.
+- **The lock order.** An admin write takes `lock_plan` first, then the
+  cursor row. The member path takes only the cursor row. So no two paths
+  wait for each other in a loop.
+- **The step never writes `proposals`.** `merge_cursor_keys` never carries
+  `proposals`, and `step_state` and `seen_keys`
+  (`crm_sync/questions.py:774-808`) never return it.
 - **A second proposal of one member** for one question replaces the first.
   Two members with different proposals both show.
 - **The hold.** A proposal holds the question for that member, as
@@ -6823,17 +6844,31 @@ what is not clear, in one line.
 **What the admin sees.**
 
 - **The card in Open questions** shows each proposal: "Proposed by <name> ·
-  <when>", with the value and a one-click Confirm. `<name>` is the display
-  name of the member, which the server reads from the member directory of
-  the org. A non-admin never reads a name or an email of a proposal.
+  <when>", with the value and a one-click Confirm. A non-admin never reads a
+  name or an email of a proposal.
+- **The name.** The server reads `<name>` through the one read of the
+  member directory: the query of `people` that `assignees.person_names`
+  runs (`routes/projects/assignees.py:96-146`). The slice moves that query
+  into a shared `routes/people/core.names_of(db, emails)`, and both callers
+  use it. A second copy of the query would be a second seam. With no name,
+  the card says "A member", never the email.
 - **Confirm** calls `POST /crm/questions/{id}/answer` with the value of the
-  proposal. When the answer writes, the server clears the proposals of that
-  question. Undo of the answer does not bring the proposals back.
+  proposal. Undo of the answer does not bring the proposals back.
+- **Each admin write clears.** The server clears the proposals of a question
+  on EACH admin write of that part: `/answer`, `/reply` as an admin, the
+  catalogue PUT, accept-best and dismiss. It also drops a proposal whose
+  value equals the current answer.
 - **The tab Open (n)** gains the sort "Proposed first".
-- **My Day.** The questions step (CRM-Q32-4) also sets `new_at` when a
-  proposal is new, and writes `proposed`, the count of new proposals. The
-  card then says "2 answers proposed by your team". The rule of one card a
-  day at most stays.
+- **My Day.** The questions step (CRM-Q32-4) stores a top-level
+  `proposals_seen`: the sorted list of `qid|member|at`. A proposal is new
+  when it is not in that list. Only the step writes `proposals_seen`. The
+  step sets `new_at` when a proposal is new, and writes `proposed`, the
+  count of new proposals.
+- **The card.** Today `card_of` (`crm_sync/questions.py:810`) gives `None`
+  when `seen` is empty. It now also raises a card when there are new
+  proposals. So a proposal on an answered part still reaches the admin. The
+  card says "2 answers proposed by your team". The rule of one card a day at
+  most stays.
 - **CRM-Q32-9b.** The picker of a sum shows the proposals of its question
   too, with Confirm.
 
@@ -6948,12 +6983,27 @@ member with CRM access. The server decides.
 | Route | Who | What |
 |---|---|---|
 | `GET /crm/questions/ask?ids=` (new) | The CRM access rule | The questions of the chat card, with `can_answer`, `held` and `my_proposal`. No name and no email of another member |
-| `POST /crm/questions/{id}/reply` (new) | The CRM access rule | An answer for a CRM admin, a proposal for each other member, `@default` for each member |
-| `POST /crm/questions/{id}/answer` (exists) | A CRM admin only | Unchanged. Confirm of a proposal uses it, and then clears the proposals of the question |
+| `POST /crm/questions/{id}/reply` (new) | The CRM access rule | An answer for a CRM admin, a proposal for each other member, `@default` for each member. `@auto` gives 422 for each caller |
+| `POST /crm/questions/{id}/answer` (exists) | A CRM admin only | Unchanged guards. Confirm of a proposal uses it. Each admin write clears the proposals of the question |
 | `GET /crm/questions` (exists) | A CRM admin only | Gains `proposals` on each question: the display name, the value and the time |
 
 Each route reads the org from the session, and the member from
 `UserContext` (R5, R11). Each is behind `questions_allowed`.
+
+**The admin predicate.** The `_GUARDS` of `/answer` are FastAPI
+dependencies (`routes/crm/field_rules.py:94`). So a call of `_answer()`
+(`routes/crm/questions.py:602`) from `/reply` does not run them.
+
+- Both new routes take `dependencies=[Depends(require_crm_mirror),
+  Depends(access.require_crm_access)]`, and call `_require_mirror(db, org)`.
+- `/reply` takes the admin branch ONLY when
+  `user.has_permission(ADMIN_PERMISSION)` is true. It is the permission of
+  `_GUARDS` (`access.py:52`). `can_answer` of `/ask` uses the same call.
+- The branch is chosen BEFORE any write. `_answer` takes the path of
+  `stage:` with `@auto` (`questions.py:611`) before `_open_question`. A
+  `slot:` answer writes a draft. So a member must never reach `_answer`.
+- `/reply` refuses `@auto` with 422 for each caller. Undo stays on
+  `/answer` and on the catalogue PUT.
 
 **Withholding.** `crm_answer_question` is withheld wherever `org_facts` is:
 
@@ -7019,18 +7069,36 @@ with CRM access gets a CLARIFY block (CRM-Q32-8)."
     of the question clear. `GET /crm/questions` gives each proposal with
     the display name from the server.
 13. R8, the authority fences: a member who is not an admin never writes the
-    plan, through the tool, `/reply` or `/answer`. Each test reads the plan
-    after the call.
+    plan, through the tool, `/reply` or `/answer`. A member with CRM access
+    calls `/reply` once with each of these: `revenue`, a `key:` id, a `slot:`
+    id, and a `stage:` id with `@auto`. Each test reads the plan version
+    after the call, and it is unchanged. `@auto` gives 422 for an admin
+    too.
 14. R8, the tenancy fences: an admin of org B cannot answer a question of
     org A. A proposal of org B never shows in org A.
 15. The override of a member never reaches the run of another member. A test
-    runs two members on one question.
+    runs two members on one question. A Python scan proves that no module
+    other than `routes/crm/questions.py` and `crm_sync/questions.py` reads
+    `proposals`, so `aggregate.compute` and the digest never see it.
 16. Privacy: `GET /crm/questions/ask` never gives a name or an email of a
     proposal of another member. Only `GET /crm/questions`, for an admin,
     gives the display name. A test proves both.
-17. The questions step sets `new_at` for a new proposal and writes
-    `proposed`. The My Day card names the proposals, still at most once a
-    day.
+17. The questions step stores `proposals_seen`, and a proposal is new when
+    it is not in that list. The step sets `new_at` for a new proposal and
+    writes `proposed`. `card_of` raises a card for a new proposal on an
+    answered part. The My Day card names the proposals, still at most once
+    a day.
+17a. R8: two sessions propose on one question at once, and both proposals
+    stay. A test asserts that `step_state` and `seen_keys` never return
+    `proposals`.
+17b. Each admin write of a part clears its proposals: `/answer`, `/reply`
+    as an admin, the PUT, accept-best and dismiss. A proposal that equals
+    the current answer drops. A test proves each.
+17c. With no name in the member directory, the card says "A member" and
+    never the email. A test proves it.
+17d. On an answered part, the choice of a member is a proposed change. The
+    run of that member keeps the org fact and gives the line "Your suggested
+    change is waiting for a CRM admin." A test proves it.
 18. A Python scan of the card copy in `crm_tools.py` finds no "Jev".
 19. The number check passes a card with a fill and a sample in each label.
     `test_crm_answer_check.py` holds the case.
@@ -7048,7 +7116,9 @@ it. Also `orchestrator/_tool_injection.py`,
 `apps/agents/agent-orchestrator/config.json`,
 `apps/agents/agent-crm/config.json`, `routes/crm/questions.py`,
 `routes/crm/field_sql.py`, `routes/crm/aggregate.py` (the My Day row),
-`crm_sync/questions.py` and `routes/shell/feed.py` (the card copy).
+`crm_sync/questions.py`, `crm_sync/runs.py` (`lock_cursor`),
+`routes/people/core.py` (`names_of`), `routes/projects/assignees.py` and
+`routes/shell/feed.py` (the card copy).
 
 The frontend files are `lib/questions.ts` (the line "Proposed by" and the
 sort) and `components/OpenQuestions.tsx` (Confirm). They wait for the branch

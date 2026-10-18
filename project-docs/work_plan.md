@@ -5816,6 +5816,8 @@ and one thing that cannot be written until a second person exists.
 > `crm_answer_question` writes through the same admin route for a CRM admin.
 > For each other member it records a proposal in `zoho:questions`, and
 > writes no plan. An admin confirms a proposal through the same route.
+> `/reply` chooses the admin branch only on `has_permission`, before any
+> write, and refuses `@auto` for each caller.
 > The merge order: #1133, #1132, the spec, CRM-Q32-9a,
 > `crm-questions-copy`, CRM-Q32-9b, then CRM-Q32-8.
 >
