@@ -10,9 +10,10 @@ answers ``{query, hits, skipped}``. No chat model runs.
   once, within 0.8 s, and answers the lexical half when the door fails. So
   one search costs at most one embedding call and no chat model.
 
-* **The member comes from the session.** The route takes ``q``, ``apps`` and
-  ``k`` and nothing else, so no tenant and no member can come from input
-  (R5, R11). Each source passes this request's member to its app.
+* **The member comes from the session.** The route takes ``q``, ``apps``,
+  ``k`` and ``after`` (a date, CX-1) and nothing else, so no tenant and no
+  member can come from input (R5, R11). Each source passes this request's
+  member to its app.
 * **Each source checks its own gate.** The route adds no visibility rule of
   its own. A member without an app gets nothing from it.
 * **One source at a time**, never at once, because the pool budget is small
