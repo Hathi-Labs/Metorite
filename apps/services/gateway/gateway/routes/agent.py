@@ -3296,6 +3296,12 @@ async def _late_answer_from_row(
         return None, True
     if moved is None:
         return None, True
+    # WS-53 CRM-Q32-8: a late answer of a CRM question card is the member's
+    # own act, so it opens the gate of `crm_answer_question` once, for the
+    # option picked. The org and the member are the session's (R5, R11).
+    from gateway.routes.crm.questions import record_late_answer
+
+    await record_late_answer(org, me, str(row.get("kind") or ""), row.get("payload"), req.answer)
     # The question no longer waits, so its My Day card leaves at once (WS-58
     # MD-3f fix round 1, §5.9 item 14). `bump_member_safe` waits 0.5 seconds
     # at most and never raises, so the answer stands.

@@ -5391,6 +5391,13 @@ async def run_agent_stream(
                                     # the same way (``acb_skills.ask_tools``).
                                     if _q.get("required") is False:
                                         _entry["required"] = False
+                                    # WS-53 CRM-Q32-8: the id of a CRM
+                                    # question card, as the tool keeps it.
+                                    from acb_skills.ask_tools import (
+                                        crm_card_tag as _crm_tag,
+                                    )
+                                    if _crm_tag(_q):
+                                        _entry["crm_question"] = _crm_tag(_q)
                                     _valid.append(_entry)
                             if _valid:
                                 _req_id = uuid.uuid4().hex

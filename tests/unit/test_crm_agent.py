@@ -2218,3 +2218,205 @@ async def test_q32_8_the_second_open_part_of_a_re_read_gets_its_card(monkeypatch
     assert "CLARIFY" in out and 'question_id="key:Payment_Received:date"' in out
     assert run_asks.asked == {"key:Payment_Received:date"}
     assert len([c for c in gw.calls if c["path"] == "/crm/aggregate"]) == 2
+
+
+# ── CRM-Q32-8 follow-up: a late pick, and the revenue line beside a choice ─
+#
+# Security review of the late pick: only the member's own act (a late answer
+# of a parked card, which the gateway records) opens the late path, once,
+# for the option picked, and only in a streamed run that holds the tool.
+
+QID = "key:Payment_Received:amount"
+ME = "sales@q32.test"
+
+
+@pytest.fixture
+def answered(monkeypatch):
+    """The Redis of a late answer: the real tenant wrapper over a raw fake,
+    and a run of org-a."""
+    from tests.unit._crm_redis_fake import RawRedis, tenant_client
+
+    raw = RawRedis()
+    monkeypatch.setattr(_T, "_answer_redis", lambda: tenant_client(raw))
+    monkeypatch.setattr(_T, "_run_org", lambda: "org-a")
+    return raw
+
+
+def _late(raw, key: str, *, qid: str = QID, member: str = ME, org: str = "org-a") -> str:
+    """What ``routes/crm/questions.record_late_answer`` writes."""
+    name = f"cc:{org}:crm_question_answered:{qid}:{member}"
+    raw.store[name] = (1800, key)
+    return name
+
+
+def _card_route(member_ok: bool = True) -> dict:
+    return {"/crm/aggregate": _no_key(), "/crm/questions/ask": (200, _ask_body()),
+            **_reply_route("proposal")}
+
+
+async def _new_run(fn, *, holder: bool = True, tool: bool = True):
+    """*fn* in a streamed run of its own: a fresh holder. With *holder*
+    False, a batch run, which opens none."""
+    token = _T.open_asks_for_run() if holder else _T._RUN_ASKS.set(None)
+    if holder:
+        _T.mark_answer_tool(tool)
+    try:
+        return await fn()
+    finally:
+        _T._RUN_ASKS.reset(token)
+
+
+def _pick(choice: str = "IP", qid: str = QID):
+    return lambda: _T.crm_answer_question(qid, choice)
+
+
+async def test_q32_8_a_late_answer_lets_the_matching_pick_through_once(
+    monkeypatch, answered,
+) -> None:
+    """The member answered the parked card late with IP. The next run's pick
+    of IP passes, and the record is spent (GETDEL), so a second pick fails."""
+    gw = _Gateway(monkeypatch, _card_route())
+    name = _late(answered, "IP")
+    assert (await _new_run(_pick())).startswith("Totals of Collection now use IP.")
+    assert gw.paths("POST") == [f"/crm/questions/{QID}/reply"]
+    assert name not in answered.store
+    assert await _new_run(_pick()) == _T.NO_CARD_PICK
+    assert len(gw.paths("POST")) == 1
+
+
+async def test_q32_8_a_pick_that_differs_from_the_late_answer_fails(monkeypatch, answered) -> None:
+    """The member picked "None of these", and the model sends IP: nothing is
+    sent, and the record is spent by that one try."""
+    gw = _Gateway(monkeypatch, _card_route())
+    _late(answered, "none")
+    assert await _new_run(_pick("IP")) == _T.NO_CARD_PICK
+    assert await _new_run(_pick("none")) == _T.NO_CARD_PICK
+    assert gw.paths("POST") == [] and answered.store == {}
+
+
+async def test_q32_8_a_clarify_with_no_human_answer_never_opens_a_later_pick(
+    monkeypatch, answered,
+) -> None:
+    """A CLARIFY block writes nothing. A later run (another thread, a text in
+    a CRM record) cannot pick a question that the member never answered."""
+    gw = _Gateway(monkeypatch, _card_route())
+    assert "CLARIFY" in await _new_run(
+        lambda: _T.crm_aggregate("module:Payment_Received", measure="sum_amount"))
+    assert answered.store == {}
+    assert await _new_run(_pick()) == _T.NO_CARD_PICK
+    assert gw.paths("POST") == []
+
+
+@pytest.mark.parametrize(("holder", "tool"), [(False, True), (True, False)])
+async def test_q32_8_a_batch_run_never_picks(monkeypatch, answered, holder, tool) -> None:
+    """P1-a: a batch run (a workflow, a dispatch, /agent/run/async) has no
+    holder, and a run that does not hold the tool has no card. Neither picks,
+    even with a late answer of the member, and neither reads Redis."""
+    gw = _Gateway(monkeypatch, _card_route())
+    name = _late(answered, "IP")
+    assert await _new_run(_pick(), holder=holder, tool=tool) == _T.NO_CARD_PICK
+    assert gw.paths("POST") == [] and name in answered.store  # not even read
+
+
+async def test_q32_8_another_member_or_org_cannot_use_the_late_answer(
+    monkeypatch, answered,
+) -> None:
+    gw = _Gateway(monkeypatch, _card_route())
+    _late(answered, "IP")
+    monkeypatch.setattr(_T, "_current_user_email", lambda: "other@q32.test")
+    assert await _new_run(_pick()) == _T.NO_CARD_PICK
+    monkeypatch.setattr(_T, "_current_user_email", lambda: ME)
+    monkeypatch.setattr(_T, "_run_org", lambda: "org-b")
+    assert await _new_run(_pick()) == _T.NO_CARD_PICK
+    monkeypatch.setattr(_T, "_run_org", lambda: None)
+    assert await _new_run(_pick()) == _T.NO_CARD_PICK
+    assert gw.paths("POST") == []
+
+
+async def test_q32_8_a_redis_fault_fails_closed(monkeypatch, answered) -> None:
+    from redis.exceptions import ConnectionError as RedisDown
+
+    gw = _Gateway(monkeypatch, _card_route())
+    _late(answered, "IP")
+    answered.fail = RedisDown("down")
+    assert await _new_run(_pick()) == _T.NO_CARD_PICK
+    answered.fail = RuntimeError("Event loop is closed")
+    assert await _new_run(_pick()) == _T.NO_CARD_PICK
+    assert gw.paths("POST") == []
+
+
+async def test_q32_8_a_run_with_no_card_channel_takes_no_late_pick(monkeypatch, answered) -> None:
+    from acb_skills.ask_tools import refuse_cards
+
+    gw = _Gateway(monkeypatch, _card_route())
+    _late(answered, "IP")
+    with refuse_cards():
+        assert await _new_run(_pick()) == _T.NO_CARD_PICK
+    assert gw.paths("POST") == []
+
+
+async def test_q32_8_the_card_carries_its_question_and_the_key_of_each_option(
+    monkeypatch, run_asks,
+) -> None:
+    """The gateway ties a late answer to an option through the card that it
+    stored. So the card keeps the id and each key through ``ask_questions``,
+    and a wrong-shaped id or key is dropped."""
+    _Gateway(monkeypatch, {"/crm/aggregate": _no_key(),
+                           "/crm/questions/ask": (200, _ask_body())})
+    out = await _T.crm_aggregate("module:Payment_Received", measure="sum_amount")
+    cleaned, _answer = await _through_the_card(_payload(out))
+    assert cleaned[0]["crm_question"] == QID
+    assert [o["key"] for o in cleaned[0]["options"]] == ["IP", "Billing_Amount", "none", "@default"]
+    bad = {"questions": [{"header": "H", "question": "Q?", "crm_question": "slot:deal",
+                          "options": [{"label": "A", "key": "x y"}]}]}
+    cleaned, _answer = await _through_the_card(bad)
+    assert "crm_question" not in cleaned[0] and "key" not in cleaned[0]["options"][0]
+    plain = {"questions": [{"header": "H", "question": "Q?",
+                            "options": [{"label": "A", "key": "IP"}]}]}
+    cleaned, _answer = await _through_the_card(plain)
+    assert "key" not in cleaned[0]["options"][0]  # only a CRM card keeps keys
+
+
+async def test_q32_8_a_choice_on_the_date_keeps_the_revenue_line(monkeypatch, run_asks) -> None:
+    """A member's own field for the date of a revenue module: the answer
+    keeps the line of that choice AND asks the meaning of revenue."""
+    from tests.unit.test_crm_agent import _q32_catalogue
+
+    override = {"part": "date", "word": "@date", "field": "Paid_On", "label": "Paid On"}
+    mine = {"value": "Paid_On", "label": "Paid On", "at": "t"}
+
+    def aggregate(call: dict) -> tuple[int, dict]:
+        if call["params"].get("group_field") == "Paid_On":
+            return 200, {"groups": [{"key": "2026-10", "label": "2026-10", "value": 10}],
+                         "total": 10, "field": "Total", "field_type": "currency",
+                         "keys": {"@amount": "Total"}}
+        return _no_key("Invoices", "date")
+
+    def ask(call: dict) -> tuple[int, dict]:
+        qid = call["params"]["ids"]
+        if qid == "revenue":
+            return 200, _ask_body("revenue", kind="revenue")
+        return 200, _ask_body(qid, override=override, mine=mine)
+
+    _Gateway(monkeypatch, {"/crm/aggregate": aggregate, "/crm/questions/ask": ask,
+                           "/crm/catalogue": (200, _q32_catalogue())})
+    out = await _T.crm_aggregate("module:Invoices", measure="sum_amount",
+                                 group_field="@date", bucket="month")
+    assert "This uses Paid On, as you chose." in out
+    assert "CLARIFY" in out and 'question_id="revenue"' in out
+
+
+def test_q32_8_the_server_builds_the_label_of_each_option_as_the_card_cuts_it() -> None:
+    """``card_option_label`` is the label that the server's own card shows
+    for a key, cut at ``OPTION_LABEL_MAX`` as ``ask_questions`` cuts it. The
+    gateway compares a late answer with it."""
+    from acb_skills.ask_tools import OPTION_LABEL_MAX, clip_words
+
+    q = _ask_body()["questions"][0]
+    _payload, keys = _T._card(q)
+    for label, key in keys:
+        assert _T.card_option_label(q, key) == clip_words(label, OPTION_LABEL_MAX)
+    assert _T.card_option_label(q, "Invented") is None
+    long_q = _ask_body(long_label=True)["questions"][0]
+    cut = _T.card_option_label(long_q, "IP")
+    assert cut is not None and len(cut) <= OPTION_LABEL_MAX and cut.endswith("…")

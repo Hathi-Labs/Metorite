@@ -35,7 +35,9 @@ from __future__ import annotations
 import contextlib as _contextlib
 import contextvars as _contextvars
 import json as _json
+import re as _re
 from collections.abc import Iterator as _Iterator
+from typing import Any
 
 # ── A run with no card channel (WS-47 WAC-3) ──────────────────────────────────
 #
@@ -164,6 +166,28 @@ _CUT_MARKS = " ,;:.-" + chr(0x2013) + chr(0x2014)
 ELLIPSIS = "…"
 
 
+#: The shape of the id of a CRM question on a card (``crm_tools``).
+_CRM_QUESTION = _re.compile(
+    r"^(revenue|purpose:[A-Za-z][A-Za-z0-9_]{0,99}"
+    r"|key:[A-Za-z][A-Za-z0-9_]{0,99}:(amount|date|status|parent))$"
+)
+#: The shape of the key of an option of a CRM question card.
+_CARD_KEY = _re.compile(r"^[@A-Za-z0-9_]{1,100}$")
+
+
+def crm_card_tag(question: Any) -> str | None:
+    """The id of the CRM question that a card asks, or None (WS-53
+    CRM-Q32-8). Only a well-formed id passes, so no other text rides along."""
+    raw = question.get("crm_question") if isinstance(question, dict) else None
+    return raw if isinstance(raw, str) and _CRM_QUESTION.match(raw) else None
+
+
+def card_option_key(option: Any) -> str | None:
+    """The key of an option of a CRM question card, or None."""
+    raw = option.get("key") if isinstance(option, dict) else None
+    return raw if isinstance(raw, str) and _CARD_KEY.match(raw) else None
+
+
 def clip_words(text: str, limit: int) -> str:
     """*text*, stripped, and cut at a word to at most *limit* characters.
 
@@ -268,11 +292,16 @@ async def ask_questions(questions: str) -> str:
         if isinstance(opts_raw, list):
             for o in opts_raw:
                 if isinstance(o, dict) and o.get("label"):
-                    options.append({
+                    option = {
                         "label": clip_words(str(o["label"]), OPTION_LABEL_MAX),
                         "description": clip_words(str(o.get("description", "")), OPTION_DESCRIPTION_MAX) or None,
                         "recommended": bool(o.get("recommended", False)),
-                    })
+                    }
+                    # WS-53 CRM-Q32-8: the key of an option of a CRM
+                    # question card. Only when the card names its question.
+                    if crm_card_tag(q) and card_option_key(o):
+                        option["key"] = card_option_key(o)
+                    options.append(option)
 
         has_options = len(options) > 0
         entry = {
@@ -289,6 +318,10 @@ async def ask_questions(questions: str) -> str:
         # so every other card is exactly as before.
         if q.get("required") is False:
             entry["required"] = False
+        # WS-53 CRM-Q32-8: a CRM question card keeps the id of its question,
+        # so a late answer of the member can be tied to it (the gateway).
+        if crm_card_tag(q):
+            entry["crm_question"] = crm_card_tag(q)
         cleaned.append(entry)
 
     # ── Emit elicitation event ──────────────────────────────────────────

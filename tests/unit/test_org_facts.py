@@ -465,6 +465,41 @@ def _config(agent_dir: str) -> dict:
 GATED = ("org_facts", "crm_answer_question")
 
 
+@pytest.fixture(autouse=True)
+def _a_streamed_run():
+    """Each test here assembles a streamed chat run, which opens the holder
+    of its CRM questions (``executor.run_agent_stream``). A batch run opens
+    none: ``test_a_batch_run_never_holds_the_reply_tool`` takes it away."""
+    import acb_skills.crm_tools as crm
+
+    token = crm.open_asks_for_run()
+    yield
+    crm.release_asks(token)
+
+
+def test_a_batch_run_never_holds_the_reply_tool(monkeypatch) -> None:
+    """Security review of the late pick (P1-a): a run with no holder (a
+    workflow, a dispatch, ``/agent/run/async``) shows no card and has no
+    human, so a listed org's batch run keeps ``org_facts`` and loses
+    ``crm_answer_question`` from its scope."""
+    import acb_skills.crm_tools as crm
+    import orchestrator._tool_injection as ti
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "crm_questions_orgs", "org-a", raising=False)
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: "org-a")
+    assert ti._facts_withheld() == frozenset()
+    token = crm._RUN_ASKS.set(None)
+    try:
+        assert ti._facts_withheld() == frozenset({"crm_answer_question"})
+        cfg = _config("agent-orchestrator")
+        scope = ti._resolve_injected_scope(cfg["tool_scope"], withheld=ti._facts_withheld())
+        assert scope is not None and "org_facts" in scope
+        assert "crm_answer_question" not in scope
+    finally:
+        crm._RUN_ASKS.reset(token)
+
+
 def test_the_reply_tool_is_withheld_wherever_org_facts_is(monkeypatch) -> None:
     """CRM-Q32-8 item 20: one list of names feeds the three withholding
     sites, and the addendum hides both on a box with the list empty."""
