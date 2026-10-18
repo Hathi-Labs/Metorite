@@ -39,6 +39,13 @@ R7, the mutations. Each one turns at least one test here red (run 2026-10-18):
   ``test_the_script_never_overwrites_a_file``.
 * M12 the size check in ``call`` removed -> ``test_a_body_over_the_cap_is_refused``.
 * M13 ``follow_redirects=True`` in ``call`` -> ``test_a_redirect_is_not_followed``.
+
+Fix round 1, F5 (the flag is a full kill switch):
+
+* F5-M1 drop the ``app_enabled`` check in ``installation_token`` ->
+  ``test_the_switch_off_mints_no_token_and_serves_no_cached_one``.
+* F5-M2 drop the ``app_enabled`` check in ``app_jwt`` ->
+  ``test_the_switch_off_signs_no_jwt``.
 """
 
 from __future__ import annotations
@@ -86,6 +93,7 @@ def app(monkeypatch: pytest.MonkeyPatch, keypair: tuple[Path, Any]) -> Any:
     from acb_common import get_settings
 
     settings = get_settings()
+    monkeypatch.setattr(settings, "github_app_enabled", True, raising=False)
     monkeypatch.setattr(settings, "github_app_client_id", CLIENT_ID, raising=False)
     monkeypatch.setattr(settings, "github_app_id", "424242", raising=False)
     monkeypatch.setattr(settings, "github_app_private_key_path", str(keypair[0]), raising=False)
@@ -177,6 +185,26 @@ async def test_a_second_call_in_the_window_reuses_the_token(app: Any, fake: Fake
     assert await github_app.installation_token(77) == SENTINEL
     assert await github_app.installation_token(77) == SENTINEL
     assert fake.token_requests == 1
+
+
+async def test_the_switch_off_mints_no_token_and_serves_no_cached_one(
+    app: Any, fake: FakeGitHub, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F5: with ``github_app_enabled`` off, a token in the cache is not served,
+    and no new one is asked for."""
+    assert await github_app.installation_token(76) == SENTINEL
+    monkeypatch.setattr(app, "github_app_enabled", False)
+    with pytest.raises(github_app.GitHubAppNotConfigured):
+        await github_app.installation_token(76)
+    with pytest.raises(github_app.GitHubAppNotConfigured):
+        await github_app.installation_token(75)
+    assert fake.token_requests == 1
+
+
+def test_the_switch_off_signs_no_jwt(app: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(app, "github_app_enabled", False)
+    with pytest.raises(github_app.GitHubAppNotConfigured):
+        github_app.app_jwt()
 
 
 async def test_a_token_near_its_expiry_is_made_again(app: Any, fake: FakeGitHub) -> None:

@@ -13,8 +13,10 @@ Spec: ``project-docs/specs/github_integration.md`` §12.2. A task is
 (``github_merge.py``) reads it, and EA-13e's summary strip and filter import
 it. :data:`AGENT_WORKED_SQL` is a SQL boolean with two named parameters
 (``:aw_task`` and ``:aw_before``), and :func:`reason` names which row made it
-true, so a person can audit each move. Fence:
-``tests/unit/test_github_merge_r8.py``.
+true, so a person can audit each move. Both come from ONE WHERE clause for
+each half (``_RUN_WHERE`` and ``_MCP_WHERE``). Fence:
+``tests/unit/test_github_merge_r8.py`` (``test_f3_*`` holds that the boolean
+and the reason agree on every case).
 """
 
 from __future__ import annotations
@@ -28,19 +30,24 @@ from sqlalchemy import text
 #: The prefix of an act through MCP in ``meta.via`` (``acb_auth.agent_oauth``).
 MCP_VIA_PREFIX = "mcp:"
 
-#: The two halves of the predicate. ``LIKE 'mcp:%'`` holds no ``_``, so no
-#: character of the prefix is a wildcard.
-_RUN_EXISTS = (
-    "EXISTS (SELECT 1 FROM pm_agent_runs aw_r "
-    "WHERE aw_r.task_id = CAST(:aw_task AS uuid) "
-    "AND aw_r.created_at < CAST(:aw_before AS timestamptz))"
+#: ⚠️ **The ONE text of the rule** (fix round 1, F3). Each half of §12.2 is
+#: written ONCE, as a WHERE clause. :data:`AGENT_WORKED_SQL` (the boolean that
+#: EA-13e's filter imports) and ``_REASON_SQL`` (the row that
+#: :func:`reason` names) are both built from these two strings, so the two
+#: cannot drift. ``LIKE 'mcp:%'`` holds no ``_``, so no character of the prefix
+#: is a wildcard. ``created_at < :aw_before`` keeps an act after the merge out.
+_RUN_WHERE = (
+    "aw_r.task_id = CAST(:aw_task AS uuid) "
+    "AND aw_r.created_at < CAST(:aw_before AS timestamptz)"
 )
-_MCP_EXISTS = (
-    "EXISTS (SELECT 1 FROM pm_activities aw_a "
-    "WHERE aw_a.task_id = CAST(:aw_task AS uuid) "
+_MCP_WHERE = (
+    "aw_a.task_id = CAST(:aw_task AS uuid) "
     "AND aw_a.meta->>'via' LIKE 'mcp:%' "
-    "AND aw_a.created_at < CAST(:aw_before AS timestamptz))"
+    "AND aw_a.created_at < CAST(:aw_before AS timestamptz)"
 )
+
+_RUN_EXISTS = f"EXISTS (SELECT 1 FROM pm_agent_runs aw_r WHERE {_RUN_WHERE})"
+_MCP_EXISTS = f"EXISTS (SELECT 1 FROM pm_activities aw_a WHERE {_MCP_WHERE})"
 
 #: The predicate, as one SQL boolean. Bind ``aw_task`` and ``aw_before``.
 AGENT_WORKED_SQL = f"({_RUN_EXISTS} OR {_MCP_EXISTS})"
@@ -49,14 +56,11 @@ AGENT_WORKED_SQL = f"({_RUN_EXISTS} OR {_MCP_EXISTS})"
 #: MCP act. ``kind`` is ``agent_run`` or ``mcp_act``.
 _REASON_SQL = (
     "(SELECT 'agent_run' AS kind, aw_r.id AS row_id, aw_r.created_at "
-    " FROM pm_agent_runs aw_r WHERE aw_r.task_id = CAST(:aw_task AS uuid) "
-    " AND aw_r.created_at < CAST(:aw_before AS timestamptz) "
+    f" FROM pm_agent_runs aw_r WHERE {_RUN_WHERE} "
     " ORDER BY aw_r.created_at DESC LIMIT 1) "
     "UNION ALL "
     "(SELECT 'mcp_act' AS kind, aw_a.id AS row_id, aw_a.created_at "
-    " FROM pm_activities aw_a WHERE aw_a.task_id = CAST(:aw_task AS uuid) "
-    " AND aw_a.meta->>'via' LIKE 'mcp:%' "
-    " AND aw_a.created_at < CAST(:aw_before AS timestamptz) "
+    f" FROM pm_activities aw_a WHERE {_MCP_WHERE} "
     " ORDER BY aw_a.created_at DESC LIMIT 1)"
 )
 

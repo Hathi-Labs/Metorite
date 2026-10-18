@@ -26,6 +26,16 @@ R7, the mutations. Each one turns a test here red (run 2026-10-18):
 * K-M8 ``LIMIT :limit`` dropped -> ``test_k4_at_most_fifty_*``.
 * K-M9 the rate limit is not raised -> ``test_k4_a_rate_limit_*``.
 * K-M10 the poll skips ``on_merged`` -> ``test_k5_*``.
+
+Fix round 1, item 6 (an unreadable reference), each one red when run:
+
+* 6-M4 ``_REFUSED_SQL`` leaves ``unreadable_since`` alone ->
+  ``test_item6_a_refused_read_marks_the_ref_and_a_good_read_clears_it``.
+* 6-M5 ``_PR_UPDATE_SQL`` does not clear ``unreadable_since`` -> the same test.
+* 6-M6 ``record_refusal`` never calls ``on_unblocked`` ->
+  ``test_item6_a_refusal_past_the_bound_runs_the_rule_again``.
+* 6-M7 ``read_pull_request`` answers ``None`` for a 5xx too ->
+  ``test_item6_a_5xx_is_not_a_refusal``.
 """
 
 from __future__ import annotations
@@ -81,6 +91,7 @@ class FakeGitHub:
         self.open_at_call: list[int] = []
         self.tokens_gone = False
         self.token_asks = 0
+        self.pull_status: dict[int, int] = {}
 
     async def handle(self, request: httpx.Request) -> httpx.Response:
         self.open_at_call.append(self.w.opened["n"])
@@ -97,6 +108,8 @@ class FakeGitHub:
                 return httpx.Response(403, json={"message": "rate limit"},
                                       headers={"x-ratelimit-remaining": "0"})
             number = int(path.rsplit("/", 1)[1])
+            if number in self.pull_status:
+                return httpx.Response(self.pull_status[number], json={})
             body = self.pulls.get(number)
             return httpx.Response(200, json=body) if body else httpx.Response(404, json={})
         if path.endswith("/check-runs"):
@@ -421,3 +434,76 @@ async def test_a_check_suite_event_reads_the_checks_after_the_answer(world) -> N
                 b"r8-webhook-secret", raw, hashlib.sha256).hexdigest()})
         assert resp.status_code == 200, resp.text
     assert _row(w, ref).checks_state == "failing"
+
+
+# ── Fix round 1, item 6: an unreadable reference ────────────────────────────
+
+
+def _unreadable(w: Any, ref_id: str) -> Any:
+    return g.scalar(w.p, "SELECT unreadable_since FROM pm_task_refs WHERE id = CAST(:i AS uuid)",
+                    i=ref_id)
+
+
+def _stale(w: Any, ref_id: str) -> None:
+    with w.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE pm_task_refs SET fetched_at = now() - interval '2 hours' "
+                       "WHERE id = CAST(:i AS uuid)"), {"i": ref_id})
+
+
+async def test_item6_a_refused_read_marks_the_ref_and_a_good_read_clears_it(world) -> None:
+    from gateway import github_reconcile_loop
+
+    w = world
+    ref = _ref(w, _task(w), 501)
+    async with tenant_engine_scope(g.app_dsn(w.p)):
+        await github_reconcile_loop.run_org(w.p.org_a, "tick-501-a")
+        first = _unreadable(w, ref)
+        assert first is not None, "a 404 marks the reference"
+        _stale(w, ref)
+        await github_reconcile_loop.run_org(w.p.org_a, "tick-501-b")
+        assert _unreadable(w, ref) == first, "the FIRST refusal time stays"
+        w.gh.pulls[501] = _pull(501)
+        _stale(w, ref)
+        await github_reconcile_loop.run_org(w.p.org_a, "tick-501-c")
+    assert _unreadable(w, ref) is None, "a good read clears the mark"
+
+
+async def test_item6_a_refusal_past_the_bound_runs_the_rule_again(world) -> None:
+    """The task merged one pull request and waits on a second that the App
+    cannot read. When the refusal is older than the bound, the poll's next
+    refused read runs the rule again, and the task moves."""
+    from gateway import github_reconcile_loop
+
+    w = world
+    task = _task(w)
+    with w.p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO pm_agent_runs (organization_id, task_id, member_email, client_via, "
+            "status, started_by, created_at) VALUES (CAST(:o AS uuid), CAST(:t AS uuid), :e, "
+            "'mcp:claude-code', 'completed', :e, now() - interval '1 day')"),
+            {"o": w.p.org_a, "t": task, "e": EMAIL})
+    _ref(w, task, 502, state="merged", stale=False)
+    blocker = _ref(w, task, 503)
+    with w.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE pm_task_refs SET unreadable_since = now() - interval '2 hours' "
+                       "WHERE id = CAST(:i AS uuid)"), {"i": blocker})
+    async with tenant_engine_scope(g.app_dsn(w.p)):
+        result = await github_reconcile_loop.run_org(w.p.org_a, "tick-503")
+    assert result.merged == 1
+    assert g.scalar(w.p, "SELECT s.category FROM pm_tasks t JOIN pm_task_statuses s ON "
+                         "s.id = t.status_id WHERE t.id = CAST(:t AS uuid)", t=task) == "done"
+    (body,) = [r.body for r in g.rows(
+        w.p, "SELECT body FROM pm_activities WHERE task_id = CAST(:t AS uuid) "
+             "AND type = 'system' AND created_by = 'system:github'", t=task)]
+    assert body == f"GitHub moved this to Done after {REPO}#502 merged"
+
+
+async def test_item6_a_5xx_is_not_a_refusal(world) -> None:
+    from gateway import github_reconcile_loop
+
+    w = world
+    ref = _ref(w, _task(w), 504)
+    w.gh.pull_status[504] = 502
+    async with tenant_engine_scope(g.app_dsn(w.p)):
+        await github_reconcile_loop.run_org(w.p.org_a, "tick-504")
+    assert _unreadable(w, ref) is None

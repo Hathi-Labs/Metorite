@@ -97,8 +97,17 @@ def _stamp(value: Any) -> datetime | None:
 # ── The pull request write (§8.4, §8.6) ─────────────────────────────────────
 
 #: One pull request's facts onto every reference of the org, and only when
-#: GitHub's ``updated_at`` is newer. A new head makes the CI state ``pending``
-#: until the checks read writes.
+#: GitHub's ``updated_at`` is NOT OLDER than the row's (§8.6). A new head makes
+#: the CI state ``pending`` until the checks read writes. A good read clears
+#: ``unreadable_since``.
+#:
+#: ⚠️ **The same second writes too** (fix round 1, item 5). GitHub's
+#: ``updated_at`` has whole seconds, so a pull request that opens and merges in
+#: one second sends two events with one stamp. ``<`` dropped the ``closed``
+#: event, and merge-to-Done never ran. A replay writes the same facts, so
+#: ``<=`` is safe. One tie-break stays: at the SAME second a row in ``merged``
+#: or ``closed`` never goes back to ``open`` or ``draft``, so a late ``opened``
+#: cannot undo a merge.
 _PR_UPDATE_SQL = (
     "UPDATE pm_task_refs SET "
     "title = COALESCE(CAST(:title AS text), title), state = CAST(:state AS text), "
@@ -109,11 +118,36 @@ _PR_UPDATE_SQL = (
     "head_ref = COALESCE(CAST(:head_ref AS text), head_ref), "
     "pr_updated_at = CAST(:updated AS timestamptz), "
     "merged_at = CAST(:merged AS timestamptz), "
+    "unreadable_since = NULL, "
     "fetched_at = now(), updated_at = now() "
     "WHERE organization_id = CAST(:org AS uuid) AND provider = 'github' "
     "AND kind = 'pull_request' AND ref = :ref "
-    "AND (pr_updated_at IS NULL OR pr_updated_at < CAST(:updated AS timestamptz)) "
+    "AND (pr_updated_at IS NULL OR pr_updated_at < CAST(:updated AS timestamptz) "
+    "  OR (pr_updated_at = CAST(:updated AS timestamptz) "
+    "      AND NOT (state IN ('merged', 'closed') "
+    "               AND CAST(:state AS text) IN ('open', 'draft')))) "
     "RETURNING id, task_id, state, head_sha"
+)
+
+#: The answers of a pull request read that mean "the App cannot read this":
+#: no access (404), gone (410), forbidden (403 with no rate limit), and a
+#: renamed repository (301, redirects are off). A 5xx is not one of them.
+REFUSED_STATUSES: frozenset[int] = frozenset({301, 403, 404, 410})
+
+#: A read that found nothing newer: stamp it, and clear the refusal marker.
+_READ_OK_SQL = (
+    "UPDATE pm_task_refs SET fetched_at = now(), unreadable_since = NULL "
+    "WHERE organization_id = CAST(:org AS uuid) AND provider = 'github' "
+    "AND kind = 'pull_request' AND ref = :ref"
+)
+
+#: A refused read: stamp it, and keep the FIRST refusal time.
+_REFUSED_SQL = (
+    "UPDATE pm_task_refs SET fetched_at = now(), "
+    "unreadable_since = COALESCE(unreadable_since, now()) "
+    "WHERE organization_id = CAST(:org AS uuid) AND provider = 'github' "
+    "AND kind = 'pull_request' AND ref = :ref "
+    "RETURNING unreadable_since"
 )
 
 
@@ -143,6 +177,56 @@ async def write_pull_request(
     })).fetchall())
 
 
+async def apply_pull_request(
+    db: Any, org: str, ref: str, pull_request: dict[str, Any], *, delivery: str | None = None,
+) -> tuple[list[Any], Any]:
+    """THE write path of a pull request's facts (fix round 1, item 1).
+
+    The webhook, the poll and the lazy read of ``GET /refs`` all call it. It
+    writes the facts (:func:`write_pull_request`). When the write puts the
+    reference in ``merged`` or ``closed``, it runs merge-to-Done (§12) in the
+    same transaction. Returns ``(written rows, MergeOutcome or None)``. The
+    caller emits the outcome's events after its commit.
+
+    A read that writes nothing (an older answer) runs no rule, so a late
+    ``closed`` for a pull request that opened again moves nothing.
+    """
+    from gateway.routes.projects import github_merge
+
+    written = await write_pull_request(db, org, ref, pull_request)
+    state = written[0].state if written else None
+    if state not in ("merged", "closed"):
+        return written, None
+    merged_at = _stamp(pull_request.get("merged_at")) if state == "merged" else None
+    login = _obj(pull_request.get("merged_by")).get("login")
+    outcome = await github_merge.on_merged(
+        db, org, ref, merged_at, str(login) if login else None, delivery=delivery,
+    )
+    return written, outcome
+
+
+async def record_read(db: Any, org: str, ref: str) -> None:
+    """A read that found nothing newer: stamp the row, clear the refusal."""
+    await db.execute(text(_READ_OK_SQL), {"org": org, "ref": ref})
+
+
+async def record_refusal(db: Any, org: str, ref: str) -> Any:
+    """A read that GitHub refused (§12.3 step 4). Returns a ``MergeOutcome``
+    or ``None``.
+
+    It stamps the row and keeps the FIRST refusal time. When that time is
+    older than ``github_merge.UNREADABLE_AFTER``, the reference stops
+    blocking, so this runs the rule again for each task that holds it.
+    """
+    from gateway.routes.projects import github_merge
+
+    rows = (await db.execute(text(_REFUSED_SQL), {"org": org, "ref": ref})).fetchall()
+    since = min((r.unreadable_since for r in rows if r.unreadable_since), default=None)
+    if since is None or not github_merge.past_unreadable_bound(since):
+        return None
+    return await github_merge.on_unblocked(db, org, ref)
+
+
 # ── The reads ───────────────────────────────────────────────────────────────
 
 
@@ -153,9 +237,10 @@ def _check(answer: github_app.Answer) -> github_app.Answer:
 
 
 async def read_pull_request(installation_id: int, repo: str, number: int) -> dict[str, Any] | None:
-    """``GET /repos/{o}/{r}/pulls/{n}``, or ``None`` when GitHub refuses it.
+    """``GET /repos/{o}/{r}/pulls/{n}``, or ``None`` when GitHub refuses it
+    (one of :data:`REFUSED_STATUSES`).
 
-    Raises :class:`RateLimited`, ``GitHubCallFailed`` or
+    Raises :class:`RateLimited`, ``GitHubCallFailed`` (a 5xx too) or
     ``GitHubAppNotConfigured``.
     """
     names = split_repo(repo)
@@ -163,7 +248,12 @@ async def read_pull_request(installation_id: int, repo: str, number: int) -> dic
         return None
     answer = _check(await github_app.installation_call(
         installation_id, "GET", f"/repos/{names[0]}/{names[1]}/pulls/{int(number)}"))
-    return answer.body if answer.ok and isinstance(answer.body, dict) else None
+    if answer.ok and isinstance(answer.body, dict):
+        return answer.body
+    if answer.status in REFUSED_STATUSES:
+        return None
+    # A 5xx or an odd answer is not a refusal: the next read tries again.
+    raise github_app.GitHubCallFailed(f"status_{answer.status}")
 
 
 async def _check_runs(installation_id: int, repo: tuple[str, str], sha: str) -> list[dict[str, Any]]:
@@ -333,13 +423,17 @@ def checks_job(org: str, repo: str, sha: str) -> Any:
 __all__ = [
     "CHECK_PAGES",
     "CONCURRENCY",
+    "REFUSED_STATUSES",
     "RateLimited",
+    "apply_pull_request",
     "checks_job",
     "fetch_checks",
     "fold_checks",
     "installation_of_org",
     "read_checks",
     "read_pull_request",
+    "record_read",
+    "record_refusal",
     "split_ref",
     "split_repo",
     "write_checks",

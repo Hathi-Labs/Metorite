@@ -195,9 +195,18 @@ def is_app_row(row: store.Connection | None) -> bool:
 
 
 def installation_of(row: store.Connection | None) -> int | None:
-    """The installation id of a live ``app`` row, or ``None``."""
+    """The installation id of a live ``app`` row, or ``None``.
+
+    ⚠️ **The kill switch (fix round 1, F5).** While ``github_app_enabled`` is
+    off this is ``None`` for every row. So every App-mode reader stops at once:
+    :func:`token_or_none`, the refs reads, the checks reads, the poll and the
+    connection test. A ``token`` row does not pass through here, so it keeps
+    working.
+    """
     from gateway.connections import github_app
 
+    if not github_app.app_enabled():
+        return None
     if not is_app_row(row) or row is None or row.status != store.STATUS_CONNECTED:
         return None
     return github_app.installation_id_of(row.provider_meta.get("installation_id"))

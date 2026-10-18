@@ -195,9 +195,12 @@ def _private_key() -> Any:
 
 
 def app_jwt(now: float | None = None) -> str:
-    """The App JWT (§6.1). Raises :class:`GitHubAppNotConfigured`."""
+    """The App JWT (§6.1). Raises :class:`GitHubAppNotConfigured`, also while
+    ``github_app_enabled`` is off, so the switch mints nothing (F5)."""
     import jwt
 
+    if not app_enabled():
+        raise GitHubAppNotConfigured("the GitHub App is turned off")
     issued = int(time.time() if now is None else now)
     payload = {
         "iat": issued - JWT_BACKDATE_S,
@@ -334,6 +337,9 @@ async def installation_token(installation_id: int, *, now: datetime | None = Non
     :class:`GitHubCallFailed` when GitHub gives no token (``installation_gone``
     for a 401, 403 or 404, else ``token_refused``).
     """
+    # The kill switch (F5): no token, also not one from the cache.
+    if not app_enabled():
+        raise GitHubAppNotConfigured("the GitHub App is turned off")
     iid = installation_id_of(installation_id)
     if iid is None:
         raise GitHubCallFailed("bad_installation")

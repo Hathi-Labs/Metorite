@@ -2,9 +2,9 @@
 -- 282_github_app.sql — the columns, the index and the lookup of the Metorite
 -- GitHub App.
 --
--- What: (1) `pm_task_refs` gains seven nullable columns: `head_sha`,
+-- What: (1) `pm_task_refs` gains eight nullable columns: `head_sha`,
 --       `head_ref`, `checks_state`, `checks_summary`, `checks_fetched_at`,
---       `pr_updated_at` and `merged_at`. (2) The CHECK of `pm_task_refs.via`
+--       `pr_updated_at`, `merged_at` and `unreadable_since`. (2) The CHECK of `pm_task_refs.via`
 --       takes one more value, `github`. (3) Two indexes on `pm_task_refs` for
 --       the webhook reads. (4) One partial unique index on
 --       `integration_connections`, so one GitHub installation maps to one
@@ -63,7 +63,7 @@ SET lock_timeout = '5s';
 
 BEGIN;
 
--- ── 1. Seven columns on pm_task_refs (§9.1) ─────────────────────────────────
+-- ── 1. Eight columns on pm_task_refs (§9.1) ─────────────────────────────────
 
 ALTER TABLE pm_task_refs
     ADD COLUMN IF NOT EXISTS head_sha TEXT NULL
@@ -79,7 +79,8 @@ ALTER TABLE pm_task_refs
     ADD COLUMN IF NOT EXISTS checks_summary JSONB NULL,
     ADD COLUMN IF NOT EXISTS checks_fetched_at TIMESTAMPTZ NULL,
     ADD COLUMN IF NOT EXISTS pr_updated_at TIMESTAMPTZ NULL,
-    ADD COLUMN IF NOT EXISTS merged_at TIMESTAMPTZ NULL;
+    ADD COLUMN IF NOT EXISTS merged_at TIMESTAMPTZ NULL,
+    ADD COLUMN IF NOT EXISTS unreadable_since TIMESTAMPTZ NULL;
 
 COMMENT ON COLUMN pm_task_refs.head_sha IS
     'GH-2: the head commit of the pull request. The checks read writes only '
@@ -90,6 +91,10 @@ COMMENT ON COLUMN pm_task_refs.checks_state IS
 COMMENT ON COLUMN pm_task_refs.pr_updated_at IS
     'GH-2: GitHub''s updated_at of the pull request. An older event writes '
     'nothing (github_integration.md §8.6).';
+COMMENT ON COLUMN pm_task_refs.unreadable_since IS
+    'GH-6: when an App read of this pull request was first refused (404, 410, '
+    '403 or 301). A good read clears it. A ref refused for an hour stops '
+    'blocking merge-to-Done (github_integration.md §12.3 step 4).';
 
 
 -- ── 2. `via` takes `github` (§9.2) ──────────────────────────────────────────

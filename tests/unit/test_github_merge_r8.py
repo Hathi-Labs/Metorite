@@ -34,7 +34,31 @@ R7, the mutations. Each one turns a test here red (run 2026-10-18):
 * D-M6 step 4 drops the ``merged`` check -> ``test_d5b_*``.
 * D-M7 step 1 drops the closing categories -> ``test_d6_*``.
 * D-M8 no ``ACTOR_VIA`` set -> ``test_d8_*``.
-* D-M9 the webhook skips the merge rule on a close with no merge -> ``test_d5b_*``.
+* D-M9 ``apply_pull_request`` runs the rule for ``merged`` only, not for
+  ``closed`` -> ``test_d5b_*``.
+
+Fix round 1 (2026-10-18). Each new rule and its mutation, each one red when run:
+
+* **Item 1** a lazy read of ``GET /refs`` that finds ``merged`` moves the task,
+  after a ``closed`` delivery was lost. 1-M1 ``_refresh_pulls_as_app`` calls
+  ``write_pull_request`` and not ``apply_pull_request``; 1-M2
+  ``_app_installation`` answers ``None`` (the old TR-1 write) ->
+  ``test_item1_a_lazy_read_that_finds_merged_moves_the_task``.
+* **Item 5** an open and a merge in one second. 5-M1 the write needs ``<``
+  again -> ``test_item5_an_open_and_a_merge_in_one_second_move_the_task``.
+  5-M2 the same-second tie-break dropped ->
+  ``test_item5_a_late_open_at_the_same_second_does_not_undo_a_merge``.
+* **Item 6** an unreadable reference. 6-M1 ``_blocking`` ignores
+  ``unreadable_since`` -> ``test_item6_an_unreadable_ref_stops_blocking_after_the_bound``.
+  6-M2 no ``github.merge.blocked_by`` log line -> the same test.
+  6-M3 ``UNREADABLE_AFTER = timedelta(0)`` -> the same test (a fresh refusal
+  must still block).
+* **F1** ``row.created_at > work.latest_at`` replaced by ``True`` ->
+  ``test_f1_a_persons_older_move_does_not_keep_the_task``.
+* **F2** ``created_at < :aw_before`` dropped from ``_MCP_WHERE`` ->
+  ``test_f2_an_mcp_act_after_the_merge_does_not_count``.
+* **F3** ``AGENT_WORKED_SQL`` built from its own copy with no MCP half ->
+  ``test_f3_the_boolean_and_the_reason_agree``.
 """
 
 from __future__ import annotations
@@ -98,6 +122,12 @@ def world(p, monkeypatch, tmp_path):
 
     monkeypatch.setattr(github_merge, "emit", _emit)
 
+    async def _no_github(request: httpx.Request) -> httpx.Response:
+        # A checks job after an `opened` event must never reach the internet.
+        return httpx.Response(404, json={})
+
+    g.patch_github(monkeypatch, _no_github, REAL_CLIENT)
+
     class W:
         pass
 
@@ -136,14 +166,21 @@ def _act(w: Any, task: str, kind: str, by: str, via: str | None, ago: str) -> st
              "ago": ago}).scalar_one())
 
 
-def _ref(w: Any, task: str, number: int, state: str = "open") -> None:
+def _ref(
+    w: Any, task: str, number: int, state: str = "open", *, updated_at: str | None = None,
+    unreadable_ago: str | None = None,
+) -> None:
     with w.p.admin_engine.begin() as c:
         c.execute(text(
             "INSERT INTO pm_task_refs (organization_id, task_id, kind, provider, ref, url, "
-            "state, via, created_by) VALUES (CAST(:o AS uuid), CAST(:t AS uuid), "
-            "'pull_request', 'github', :ref, :url, :s, 'ui', :e)"),
+            "state, via, created_by, pr_updated_at, unreadable_since) VALUES "
+            "(CAST(:o AS uuid), CAST(:t AS uuid), 'pull_request', 'github', :ref, :url, :s, "
+            "'ui', :e, CAST(:u AS timestamptz), "
+            "CASE WHEN CAST(:ua AS text) IS NULL THEN NULL "
+            "     ELSE now() - CAST(:ua AS interval) END)"),
             {"o": w.p.org_a, "t": task, "ref": f"{REPO}#{number}",
-             "url": f"https://github.com/{REPO}/pull/{number}", "s": state, "e": EMAIL})
+             "url": f"https://github.com/{REPO}/pull/{number}", "s": state, "e": EMAIL,
+             "u": updated_at, "ua": unreadable_ago})
 
 
 def _category(w: Any, task: str) -> str:
@@ -161,16 +198,26 @@ async def _close(
     w: Any, number: int, *, merged: bool = True, delivery: str | None = None,
     updated_at: str | None = None,
 ) -> httpx.Response:
+    return await _event(w, "closed", number, merged=merged, delivery=delivery,
+                        updated_at=updated_at)
+
+
+async def _event(
+    w: Any, action: str, number: int, *, merged: bool = True, delivery: str | None = None,
+    updated_at: str | None = None,
+) -> httpx.Response:
     from fastapi import FastAPI
     from gateway.routes.github import webhook
 
     now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    closed = action == "closed"
     payload = {
-        "action": "closed", "number": number, "installation": {"id": INSTALL},
+        "action": action, "number": number, "installation": {"id": INSTALL},
         "repository": {"full_name": REPO},
         "pull_request": {
-            "number": number, "title": f"PR {number}", "state": "closed", "merged": merged,
-            "merged_at": now if merged else None, "merged_by": {"login": "octo"},
+            "number": number, "title": f"PR {number}",
+            "state": "closed" if closed else "open", "merged": closed and merged,
+            "merged_at": now if closed and merged else None, "merged_by": {"login": "octo"},
             "draft": False, "updated_at": updated_at or now, "body": "",
             "html_url": f"https://github.com/{REPO}/pull/{number}",
             "author_association": "MEMBER",
@@ -417,3 +464,163 @@ def test_d11_core_py_has_no_diff() -> None:
     assert "apply_status_transition" in source and "load_default_status" in source
     # Nothing here patches the core at run time.
     assert not re.search(r"core\.\w+\s*=", source)
+
+
+# ── Fix round 1 ─────────────────────────────────────────────────────────────
+
+
+async def test_f1_a_persons_older_move_does_not_keep_the_task(world) -> None:
+    """A person moved the task BEFORE the agent worked it: the agent's run is
+    newer, so the merge moves the task (§12.3 step 3)."""
+    w = world
+    task = _task(w)
+    _act(w, task, "status_change", EMAIL, None, "3 hours")
+    _run(w, task, "2 hours")
+    _ref(w, task, 401)
+    await _close(w, 401)
+    assert _category(w, task) == "done"
+
+
+async def test_f2_an_mcp_act_after_the_merge_does_not_count(world) -> None:
+    """§12.2 counts a row made BEFORE the merge. An agent's comment one hour
+    after the merge time makes no agent-worked task."""
+    w = world
+    task = _task(w)
+    _act(w, task, "comment", EMAIL, "mcp:claude-code", "-1 hour")
+    _ref(w, task, 402)
+    await _close(w, 402)
+    assert _category(w, task) == "in_progress"
+    assert _moves(w, task) == []
+
+
+async def test_f3_the_boolean_and_the_reason_agree(world) -> None:
+    """``AGENT_WORKED_SQL`` (the import of EA-13e) and ``reason`` give the
+    same answer on every case, the edge of ``:aw_before`` included."""
+    from gateway.db import tenant_session
+    from gateway.routes.projects import agent_worked
+
+    w = world
+    now = datetime.now(UTC)
+    cases: dict[str, str] = {}
+    cases["nothing"] = _task(w)
+    cases["run"] = _task(w)
+    _run(w, cases["run"], "2 hours")
+    cases["run_later"] = _task(w)
+    _run(w, cases["run_later"], "-2 hours")
+    cases["mcp"] = _task(w)
+    _act(w, cases["mcp"], "comment", EMAIL, "mcp:cursor", "1 hour")
+    cases["mcp_later"] = _task(w)
+    _act(w, cases["mcp_later"], "comment", EMAIL, "mcp:cursor", "-1 hour")
+    cases["chat"] = _task(w)
+    _act(w, cases["chat"], "comment", EMAIL, "chat:projects-assistant", "1 hour")
+    cases["lookalike"] = _task(w)
+    _act(w, cases["lookalike"], "comment", EMAIL, "mcpx:cursor", "1 hour")
+    cases["edge"] = _task(w)
+    edge_id = _act(w, cases["edge"], "comment", EMAIL, "mcp:cursor", "30 minutes")
+    edge_at = g.scalar(w.p, "SELECT created_at FROM pm_activities WHERE id = CAST(:i AS uuid)",
+                       i=edge_id)
+    expected = {"nothing": False, "run": True, "run_later": False, "mcp": True,
+                "mcp_later": False, "chat": False, "lookalike": False, "edge": False}
+    got: dict[str, tuple[bool, bool]] = {}
+    async with tenant_engine_scope(g.app_dsn(w.p)), tenant_session(w.p.org_a) as db:
+        for name, task in cases.items():
+            before = edge_at if name == "edge" else now
+            boolean = (await db.execute(text(f"SELECT {agent_worked.AGENT_WORKED_SQL} AS v"),
+                                        agent_worked.params(task, before))).scalar_one()
+            why = await agent_worked.reason(db, task, before)
+            got[name] = (bool(boolean), why is not None)
+    assert {k: v[0] for k, v in got.items()} == expected
+    assert all(a == b for a, b in got.values()), got
+
+
+async def test_item1_a_lazy_read_that_finds_merged_moves_the_task(world, monkeypatch) -> None:
+    """The ``closed`` delivery was lost in a restart. A member opens the task,
+    the lazy read finds ``merged``, and the agent's task moves (one write path)."""
+    from acb_auth import UserContext, UserRole, build_access
+    from gateway.routes import projects as projects_package
+
+    w = world
+    task = _task(w)
+    _run(w, task)
+    _ref(w, task, 403)
+    stamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "ghs_lazy",
+                                             "expires_at": "2099-01-01T00:00:00Z"})
+        if request.url.path == f"/repos/{REPO}/pulls/403":
+            return httpx.Response(200, json={
+                "number": 403, "title": "PR 403", "state": "closed", "merged": True,
+                "merged_at": stamp, "updated_at": stamp, "draft": False,
+                "merged_by": {"login": "octo"}, "head": {"ref": "agent/x", "sha": "e" * 40}})
+        return httpx.Response(404, json={})
+
+    g.patch_github(monkeypatch, handler, REAL_CLIENT)
+    member = UserContext(email=EMAIL, role=UserRole.EMPLOYEE, organization_id=w.p.org_a,
+                         access=build_access(["feature:projects", "data:org:read"]))
+    resp = await g.call(w.p, member, [projects_package.router], "GET",
+                        f"/projects/tasks/{task}/refs", real_client=REAL_CLIENT)
+    assert resp.status_code == 200, resp.text
+    (row,) = resp.json()["rows"]
+    assert row["state"] == "merged" and row["head_sha"] == "e" * 40
+    assert _category(w, task) == "done"
+    assert [n for n, p in w.events if p.get("task_id") == task] == [
+        "pm.task.updated", "pm.task.status_changed"]
+
+
+async def test_item5_an_open_and_a_merge_in_one_second_move_the_task(world) -> None:
+    """GitHub stamps whole seconds. The ``opened`` and the ``closed`` of one
+    second carry one ``updated_at``, and the close still writes."""
+    w = world
+    task = _task(w)
+    _run(w, task)
+    _ref(w, task, 404)
+    same = "2026-10-18T12:00:00Z"
+    await _event(w, "opened", 404, updated_at=same)
+    assert g.scalar(w.p, "SELECT state FROM pm_task_refs WHERE ref = :r",
+                    r=f"{REPO}#404") == "open"
+    await _close(w, 404, updated_at=same)
+    assert _category(w, task) == "done"
+
+
+async def test_item5_a_late_open_at_the_same_second_does_not_undo_a_merge(world) -> None:
+    w = world
+    task = _task(w, "done")
+    same = "2026-10-18T12:00:00Z"
+    _ref(w, task, 405, "merged", updated_at=same)
+    await _event(w, "synchronize", 405, updated_at=same)
+    assert g.scalar(w.p, "SELECT state FROM pm_task_refs WHERE ref = :r",
+                    r=f"{REPO}#405") == "merged"
+
+
+async def test_item6_an_unreadable_ref_stops_blocking_after_the_bound(world, monkeypatch) -> None:
+    """A pull request that the App cannot read (a token-era one, or one outside
+    the installation) blocks for a short refusal, names itself in the log,
+    and stops blocking after ``UNREADABLE_AFTER``."""
+    from gateway.routes.projects import github_merge
+
+    lines: list[tuple[str, dict]] = []
+
+    class _Log:
+        def info(self, event: str, **kw: Any) -> None:
+            lines.append((event, kw))
+
+        warning = info
+
+    monkeypatch.setattr(github_merge, "_log", _Log())
+    w = world
+    fresh = _task(w)
+    _run(w, fresh)
+    _ref(w, fresh, 406, "open", unreadable_ago="10 minutes")
+    _ref(w, fresh, 407)
+    await _close(w, 407)
+    assert _category(w, fresh) == "in_progress"
+    blocked = [kw for e, kw in lines if e == "github.merge.blocked_by"]
+    assert blocked and blocked[0]["refs"] == [f"{REPO}#406"]
+    old = _task(w)
+    _run(w, old)
+    _ref(w, old, 408, "open", unreadable_ago="2 hours")
+    _ref(w, old, 409)
+    await _close(w, 409)
+    assert _category(w, old) == "done"

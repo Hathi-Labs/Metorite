@@ -282,6 +282,108 @@ async def _github_token() -> str | None:
         return None
 
 
+#: The marker of an App read that failed (a timeout, a 5xx, a rate limit).
+_FAILED = object()
+
+
+async def _app_installation() -> tuple[str, int] | None:
+    """The bound org and its live App installation, or ``None``. Never raises.
+
+    ``installation_of`` answers ``None`` while ``github_app_enabled`` is off,
+    so the kill switch sends every read back to the token path (F5).
+    """
+    from gateway.connections import github as github_connection
+    from gateway.db import current_tenant
+
+    try:
+        org = current_tenant()
+        if not org:
+            return None
+        iid = github_connection.installation_of(await github_connection.connection(str(org)))
+    except Exception as exc:
+        _log.warning("projects.refs.connection_unreadable", error=type(exc).__name__)
+        return None
+    return (str(org), iid) if iid is not None else None
+
+
+async def _read_pull_as_app(installation: int, row: dict[str, Any]) -> Any:
+    """One pull request as the App: its body, ``None`` for a refusal, or
+    :data:`_FAILED`."""
+    from gateway import github_sync
+
+    parsed = github_sync.split_ref(str(row["ref"]))
+    if parsed is None:
+        return _FAILED
+    try:
+        return await asyncio.wait_for(
+            github_sync.read_pull_request(installation, parsed[0], parsed[1]),
+            timeout=READ_TIMEOUT,
+        )
+    except Exception as exc:  # a timeout, a rate limit, a 5xx, no App
+        _log.info("projects.refs.github_app_read_failed", error=type(exc).__name__)
+        return _FAILED
+
+
+async def _refresh_pulls_as_app(org: str, installation: int, pulls: list[dict[str, Any]]) -> None:
+    """The lazy read of an App org's pull requests (fix round 1, item 1).
+
+    It writes through ``github_sync.apply_pull_request``, the ONE write path of
+    the webhook and the poll. So a read that finds ``merged`` runs
+    merge-to-Done too: a ``closed`` delivery that GitHub dropped during a
+    restart still closes the agent's task when a member opens it. The events
+    go out after the commit. GitHub is called with no session open.
+    """
+    from gateway import github_sync
+
+    results = await asyncio.gather(*(_read_pull_as_app(installation, r) for r in pulls))
+    outcomes: list[Any] = []
+    try:
+        async with _tenant_session() as db:
+            for row, got in zip(pulls, results, strict=True):
+                ref = str(row["ref"])
+                outcome = None
+                if got is _FAILED:
+                    # Stamped, as a failed TR-1 read is (see refresh_from_github).
+                    await db.execute(text(
+                        "UPDATE pm_task_refs SET fetched_at = now() "
+                        " WHERE id = CAST(:rid AS uuid)"), {"rid": row["id"]})
+                elif got is None:
+                    outcome = await github_sync.record_refusal(db, org, ref)
+                else:
+                    written, outcome = await github_sync.apply_pull_request(db, org, ref, got)
+                    if not written:
+                        await github_sync.record_read(db, org, ref)
+                if outcome is not None and outcome.events:
+                    outcomes.append(outcome)
+    except Exception as exc:
+        _log.warning("projects.refs.save_failed", error=type(exc).__name__)
+        return
+    for outcome in outcomes:
+        await outcome.emit_all()
+
+
+async def _reload(task_id: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*rows* again from the database, in their order. A row deleted in the
+    meantime keeps what the caller had."""
+    ids = [r["id"] for r in rows]
+    try:
+        async with _tenant_session() as db:
+            found = {
+                str(r.id): _row(r) for r in (await db.execute(
+                    text(
+                        f"SELECT {_COLUMNS} FROM pm_task_refs "
+                        " WHERE task_id = CAST(:tid AS uuid) "
+                        "   AND id = ANY(CAST(:ids AS uuid[]))"
+                    ),
+                    {"tid": task_id, "ids": ids},
+                )).fetchall()
+            }
+    except Exception as exc:
+        _log.warning("projects.refs.reload_failed", error=type(exc).__name__)
+        return rows
+    return [found.get(r["id"], r) for r in rows]
+
+
 async def refresh_from_github(
     task_id: str, rows: list[dict[str, Any]], *, now: datetime | None = None,
 ) -> list[dict[str, Any]]:
@@ -313,6 +415,16 @@ async def refresh_from_github(
     )[:MAX_READS]
     if not due:
         return rows
+    # An org on the GitHub App reads its pull requests through the one write
+    # path of the webhook (fix round 1, item 1). Its issues keep TR-1 below.
+    pulls = [r for r in due if r["kind"] == "pull_request"]
+    app = await _app_installation() if pulls else None
+    if app is not None:
+        await _refresh_pulls_as_app(app[0], app[1], pulls)
+        rows = await _reload(task_id, rows)
+        due = [r for r in due if r["kind"] != "pull_request"]
+        if not due:
+            return rows
     token = await _github_token()
     if not token:
         return rows
@@ -431,7 +543,10 @@ async def _refresh_checks(rows: list[dict[str, Any]], *, now: datetime | None = 
 
     try:
         org = current_tenant()
-        if not org or not github_connection.is_app_row(await github_connection.connection(org)):
+        # `installation_of` is None for a token row, a dead App row, and while
+        # `github_app_enabled` is off (the kill switch, F5).
+        if not org or github_connection.installation_of(
+                await github_connection.connection(org)) is None:
             return 0
     except Exception as exc:
         _log.warning("projects.refs.checks_unreadable", error=type(exc).__name__)

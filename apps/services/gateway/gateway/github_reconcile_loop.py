@@ -86,12 +86,9 @@ _DUE_SQL = (
     "LIMIT :limit"
 )
 
-#: A read that GitHub refused stamps ``fetched_at`` too, so a refused row
-#: waits, as TR-1 does, and cannot hold a slot of every tick.
-_STAMP_SQL = (
-    "UPDATE pm_task_refs SET fetched_at = now() "
-    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid)"
-)
+#: A read that GitHub refused stamps ``fetched_at`` too
+#: (``github_sync.record_refusal``), so a refused row waits, as TR-1 does, and
+#: cannot hold a slot of every tick.
 
 
 def loop_enabled() -> bool:
@@ -140,8 +137,6 @@ async def _due(org: str) -> list[Any]:
 
 
 async def _reconcile_pr(org: str, installation: int, row: Any, result: TickResult) -> None:
-    from gateway.routes.projects import github_merge
-
     parsed = github_sync.split_ref(str(row.ref))
     if parsed is None:
         return
@@ -151,21 +146,16 @@ async def _reconcile_pr(org: str, installation: int, row: Any, result: TickResul
     pull_request = await github_sync.read_pull_request(installation, repo, number)
     async with tenant_session(org) as db:
         if pull_request is None:
-            await db.execute(text(_STAMP_SQL), {"id": str(row.id), "org": org})
-            return
-        written = await github_sync.write_pull_request(db, org, str(row.ref), pull_request)
-        if not written:
-            # Nothing newer at GitHub: stamp the read, so the row waits.
-            await db.execute(text(_STAMP_SQL), {"id": str(row.id), "org": org})
-        state = written[0].state if written else None
-        outcome = None
-        if state in ("merged", "closed"):
-            merged_at = github_sync._stamp(pull_request.get("merged_at")) \
-                if state == "merged" else None
-            merged_by = github_sync._obj(pull_request.get("merged_by")).get("login")
-            outcome = await github_merge.on_merged(
-                db, org, str(row.ref), merged_at, str(merged_by) if merged_by else None,
-            )
+            # GitHub refused the read. The row waits, and a refusal older than
+            # the bound stops blocking merge-to-Done (§12.3 step 4).
+            outcome = await github_sync.record_refusal(db, org, str(row.ref))
+        else:
+            # The ONE write path: the facts, then §12 for `merged` or `closed`.
+            written, outcome = await github_sync.apply_pull_request(
+                db, org, str(row.ref), pull_request)
+            if not written:
+                # Nothing newer at GitHub: stamp the read, so the row waits.
+                await github_sync.record_read(db, org, str(row.ref))
     if outcome is not None:
         result.merged += len(outcome.moved)
         await outcome.emit_all()

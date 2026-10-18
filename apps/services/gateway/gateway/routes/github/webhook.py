@@ -47,7 +47,7 @@ import hmac
 import json
 import re
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from acb_common import get_logger, get_settings, tenant_redis
@@ -302,26 +302,19 @@ async def _on_pull_request(
         host = github_autolink.app_host(str(getattr(get_settings(), "app_public_url", "") or ""))
         await github_autolink.link_pull_request(db, org, pull_request, host=host)
     ref = f"{full_name}#{number}"
-    await write_pull_request(db, org, ref, pull_request)
+    # The ONE write path of the facts (github_sync.apply_pull_request). A write
+    # that puts the reference in `merged` or `closed` runs GH-6 (§12) in this
+    # transaction, and its events go out after the answer, so after the commit.
+    _written, outcome = await github_sync.apply_pull_request(
+        db, org, ref, pull_request, delivery=delivery,
+    )
+    jobs: list[Job] = [outcome.emit_all] if outcome is not None and outcome.events else []
     if action != "closed":
         # GH-5 (§8.5): a new or moved head gets a checks read after the answer.
         sha = str(_obj(pull_request.get("head")).get("sha") or "").lower()
         if action in CHECKS_ACTIONS and _SHA_RE.match(sha):
-            return [github_sync.checks_job(org, full_name, sha)]
-        return []
-    # GH-6 (§12): a close, merged or not, can finish a task that an agent
-    # worked. It writes in this transaction, and its events go out after the
-    # answer, so after the commit.
-    from gateway.routes.projects import github_merge
-
-    merged_by = _obj(pull_request.get("merged_by")).get("login")
-    merged_at = None
-    if pull_request.get("merged"):
-        merged_at = _stamp(pull_request.get("merged_at")) or datetime.now(UTC)
-    outcome = await github_merge.on_merged(
-        db, org, ref, merged_at, str(merged_by) if merged_by else None, delivery=delivery,
-    )
-    return [outcome.emit_all] if outcome.events else []
+            jobs.append(github_sync.checks_job(org, full_name, sha))
+    return jobs
 
 
 #: §8.4: the checks events, and the actions that schedule a read.
