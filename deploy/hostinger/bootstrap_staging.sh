@@ -125,6 +125,13 @@ usermod -aG docker acb
 printf 'acb ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/acb-staging
 chmod 0440 /etc/sudoers.d/acb-staging
 visudo -cf /etc/sudoers.d/acb-staging >/dev/null
+# H-358: the agent sessions run as `dev`. They may run acb-flag as root, and
+# nothing else. Only acb can write that path, and acb already has sudo.
+if id dev >/dev/null 2>&1; then
+  printf 'dev ALL=(root) NOPASSWD: /opt/acb/app/deploy/hostinger/acb-flag\n' > /etc/sudoers.d/acb-flag
+  chmod 0440 /etc/sudoers.d/acb-flag
+  visudo -cf /etc/sudoers.d/acb-flag >/dev/null
+fi
 install -d -m 0755 -o acb -g acb /home/acb/.local /home/acb/.local/bin /opt/acb /opt/acb/data /var/lib/acb
 install -d -m 0700 -o acb -g acb /home/acb/.ssh
 [ -x /home/acb/.local/bin/uv ] || sudo -u acb -H bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' >/dev/null

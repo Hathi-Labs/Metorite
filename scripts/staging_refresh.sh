@@ -21,6 +21,8 @@
 #      staging as it binds production (R5).
 #   6. Copies production's feature switches into the two env files, except the
 #      switches that reach a person or a third party, which staging keeps off.
+#      Then it applies staging's own switches from /etc/acb/staging-flags.env
+#      (written by deploy/hostinger/acb-flag), so a flag on soak survives.
 #   7. Runs the normal deploy path, which applies the pending migrations of the
 #      `staging` ref, rebuilds and restarts.
 #
@@ -162,6 +164,32 @@ apply_flags() {
 }
 apply_flags root "$app_dir/.env"
 apply_flags workbench "$app_dir/workbench/control_plane/.env.local"
+
+# ── 6b. Staging's own switches, on top of production's (H-358) ──────────────
+# `deploy/hostinger/acb-flag set` records each staging flag in this file, so a
+# flag on soak survives the night (spec: "production's set, plus the flag on
+# soak"). It applies AFTER production's copy, so staging wins. The checks are
+# acb-flag's own: they admit *_ORGS and KNOWLEDGE_*, and a value with , * @ +.
+overlay="${STAGING_FLAGS_OVERLAY:-/etc/acb/staging-flags.env}"
+ov_switch='^(NEXT_PUBLIC_[A-Z0-9_]+|[A-Z0-9_]+_(ENABLED|ORGS|MEMBERS|LENS|ROLLOUT)|KNOWLEDGE_[A-Z0-9_]+|IDENTITY_CUTOVER|ACB_GRAPH_TENANT_BIND)$'
+apply_overlay() {
+  local scope="$1" file="$2" line name
+  [ -f "$file" ] && [ -f "$overlay" ] || return 0
+  while IFS= read -r line; do
+    case "$line" in "$scope":*) ;; *) continue ;; esac
+    line="${line#"$scope":}"
+    name="${line%%=*}"
+    [[ "$line" =~ ^[A-Z0-9_]+=[A-Za-z0-9_.:,*@+-]{0,512}$ ]] || continue
+    [[ "$name" =~ $ov_switch ]] || continue
+    [[ "$name" =~ (KEY|SECRET|TOKEN|PASSWORD|PASSWD|DSN|URL|PASS) ]] && continue
+    [[ "$name" =~ $held ]] && continue
+    ( umask 077; { grep -v "^$name=" "$file" || true; } > "$file.tmp" )
+    echo "$line" >> "$file.tmp"
+    cat "$file.tmp" > "$file"; rm -f "$file.tmp"
+  done < "$overlay"
+}
+apply_overlay root "$app_dir/.env"
+apply_overlay workbench "$app_dir/workbench/control_plane/.env.local"
 
 # ── 7. The normal deploy path ───────────────────────────────────────────────
 # Release the lock, then deploy. vps_pull.sh takes the lock itself, and exits 0
