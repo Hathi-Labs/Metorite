@@ -147,6 +147,28 @@ async def has_login(db: Any, email: str | None) -> bool:
     return row is not None
 
 
+#: The display names of a list of addresses, from the member directory. The
+#: one query of a name: ``/people/names`` of Projects and the proposals of
+#: the CRM questions (WS-53 CRM-Q32-8) both read through :func:`names_of`.
+_NAMES_SQL = (
+    "SELECT lower(email) AS email, name FROM people "
+    " WHERE lower(email) = ANY(:emails) AND name <> ''"
+)
+
+
+async def names_of(db: Any, emails: Any) -> dict[str, str]:
+    """Each address of *emails* that the directory names → its display
+    name, in the caller's tenant session (RLS binds the org). An address
+    with no row, or with an empty name, is ABSENT from the map, so the
+    caller picks its own fallback and never shows the address. The keys are
+    lower case."""
+    wanted = sorted({str(e).strip().lower() for e in emails or () if str(e).strip()})
+    if not wanted:
+        return {}
+    rows = (await db.execute(text(_NAMES_SQL), {"emails": wanted})).fetchall()
+    return {str(r.email): str(r.name) for r in rows if r.name}
+
+
 # ── The shared read seam ────────────────────────────────────────────────────
 #
 # `person_payload` and its two helpers live HERE, in the leaf module, and not

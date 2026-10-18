@@ -22,6 +22,8 @@ import Modal from "@/components/ui/Modal";
 import { useCachedResource } from "@/lib/useCachedResource";
 import { useEffect, useState } from "react";
 
+import { ProposalList } from "./ProposalList";
+
 import * as api from "../lib/api";
 import {
   CANCEL_LABEL,
@@ -45,6 +47,7 @@ import {
   sumWhy,
   toggleSum,
   type Question,
+  type QuestionProposal,
   type SumCheck,
   type SumCheckView,
 } from "../lib/questions";
@@ -56,12 +59,15 @@ export function SumPickerBody({
   check,
   disabled,
   onToggle,
+  onConfirm,
 }: {
   q: Question;
   picked: readonly string[];
   check: SumCheckView;
   disabled: boolean;
   onToggle: (key: string) => void;
+  /** CRM-Q32-8: Confirm of a proposal of a member. None, no list. */
+  onConfirm?: (p: QuestionProposal) => void;
 }) {
   const records = recordsInLabel(q);
   return (
@@ -120,6 +126,7 @@ export function SumPickerBody({
         <p className="text-[11px] text-muted-foreground">{sumHint(picked.length)}</p>
       </fieldset>
       <SumCheckLines check={check} />
+      {onConfirm ? <ProposalList q={q} disabled={disabled} onConfirm={onConfirm} /> : null}
     </div>
   );
 }
@@ -164,11 +171,14 @@ export function SumDialog({
   busy,
   onSave,
   onClose,
+  onConfirm,
 }: {
   q: Question;
   busy: boolean;
   onSave: (keys: string[]) => void;
   onClose: () => void;
+  /** CRM-Q32-8: Confirm of a proposal of a member, from the picker too. */
+  onConfirm?: (p: QuestionProposal) => void;
 }) {
   const [picked, setPicked] = useState<string[]>(() => sumStart(q));
   const [checked, setChecked] = useState<string[]>(picked);
@@ -189,6 +199,7 @@ export function SumDialog({
         check={sumReady(picked) && !ready ? { state: "loading" } : check}
         disabled={busy}
         onToggle={(key) => setPicked((now) => toggleSum(q, now, key))}
+        onConfirm={onConfirm}
       />
       <div className="flex flex-wrap justify-end gap-2 border-t border-border p-3">
         <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>

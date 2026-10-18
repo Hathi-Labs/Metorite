@@ -413,7 +413,12 @@ A tool answer that starts with "Refused:" gives the server's words and a "Next:"
     # WS-53 CRM-Q32-5: the org-facts read, gated on the one tool.
     Section("crm", ("org_facts",), """### Facts of the organization
 - **org_facts(app?, query?)** — The fixed facts of the organization's data: what each CRM module is for, its key fields, its stages and what revenue means. A CRM admin answered each one, or Metorite found it. Use each fact as given.
-A part that a CRM answer calls an open question waits for a CRM admin. Use the default that the answer names, say so, and never ask the member.
+A part that a CRM answer calls an open question waits for a CRM admin. Use the default that the answer names, and say so.
+"""),
+    # WS-53 CRM-Q32-8: the chat asks before it answers, gated on the one tool.
+    Section("crm", ("crm_answer_question",), """### CRM questions in the chat
+- **crm_answer_question(question_id, choice)** — Sends the option that the member picked on a CRM question card. The server decides: a CRM admin's pick is the answer for everyone, and another member's pick is a proposal.
+When a CRM answer holds a CLARIFY block, tell the member what is not clear before a total that depends on it. Then show its card with ask_questions, and send the KEY of the picked option. Never pick for the member.
 """),
     Section("coding", ("github_search", "github_repo_search"), """### GitHub code search
 - **github_search(query, scope?, maxResults?)** — Lexical search across public GitHub repositories.  Supports ``language:python``, ``repo:owner/name``, ``path:src/`` filters.
@@ -559,6 +564,10 @@ COMPACT_SECTIONS: tuple[Section, ...] = (
     Section("crm", ("org_facts",), (
         "org_facts(app?,query?) — the fixed facts of the org's data; use them as given"
     )),
+    Section("crm", ("crm_answer_question",), (
+        "crm_answer_question(question_id,choice) — the key that the member picked on "
+        "a CRM question card (a CLARIFY block)"
+    )),
     Section("coding", ("github_search", "github_repo_search"), (
         "github_search(q,scope?,max?), github_repo_search(repo,q?) — code search"
     )),
@@ -678,13 +687,14 @@ def _dark_tools() -> frozenset[str]:
             dark.add("decide")
     # WS-53 CRM-Q32 fix round: `org_facts` and the open-question line are dark
     # on a box with CRM_QUESTIONS_ORGS empty, so a CRM prompt gains no word.
+    # CRM-Q32-8: `crm_answer_question` goes dark with `org_facts`.
     try:
         from acb_skills.crm_tools import questions_box_on
     except ImportError:
-        dark.add("org_facts")
+        dark.update(("org_facts", "crm_answer_question"))
     else:
         if not questions_box_on():
-            dark.add("org_facts")
+            dark.update(("org_facts", "crm_answer_question"))
     return frozenset(dark)
 
 

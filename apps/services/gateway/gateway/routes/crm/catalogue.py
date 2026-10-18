@@ -498,6 +498,23 @@ class CatalogueChangeOut(BaseModel):
     revenue: RevenueModel = Field(default_factory=RevenueModel)
 
 
+def part_question_ids(module: str, parts: Mapping[str, Any]) -> list[str]:
+    """The question id of each part of *parts* of *module*: ``purpose:<M>``,
+    ``key:<M>:<part>``, or ``revenue`` for the part of ``@org``
+    (CRM-Q32-8, the clear of the proposals of a PUT)."""
+    from gateway.crm_sync import questions as qs
+
+    out: list[str] = []
+    for part in parts:
+        if part == "revenue":
+            out.append(qs.REVENUE_ID)
+        elif part == "purpose":
+            out.append(qs.purpose_id(module))
+        else:
+            out.append(qs.key_id(module, part))
+    return out
+
+
 async def _source_of(db: Any, org: str, module: str) -> Any:
     """The catalogue source of *module*, or a 404 ``unknown_module``.
     ``None`` for the org-level item ``@org``."""
@@ -530,7 +547,7 @@ async def put_catalogue(
     from gateway.routes.crm.field_rules import _db_conflict, _organization, _require_mirror
     from gateway.routes.crm.flags import questions_allowed
     from gateway.routes.crm.mapping_plans import _approved
-    from gateway.routes.crm.questions import questions_off
+    from gateway.routes.crm.questions import after_admin_write, questions_off
 
     org = _organization(user)
     if not questions_allowed(org):
@@ -546,6 +563,9 @@ async def put_catalogue(
             row = await write_answer(db, org, by=by, module=module, parts=parts)
             if row is None:
                 row = await _approved(db)
+            # CRM-Q32-8: an admin write of a part closes what waits on it in
+            # the questions, after the plan lock of the writer (the lock order).
+            await after_admin_write(db, org, part_question_ids(module, parts))
             _mode, sources, roles, others = await _load(db, org)
     except DBAPIError as exc:
         conflict = _db_conflict(exc)
@@ -564,4 +584,4 @@ async def put_catalogue(
 __all__ = ["AUTO", "CATALOGUE_OFF", "CatalogueChangeIn", "CatalogueChangeOut",
            "CatalogueEntry", "CatalogueResponse", "KeyField", "RevenueModel", "SumKeys",
            "bad_answer", "check_parts", "core_sources", "entry_of", "get_catalogue",
-           "put_catalogue", "write_answer"]
+           "part_question_ids", "put_catalogue", "write_answer"]

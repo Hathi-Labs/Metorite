@@ -200,6 +200,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             # WS-53 CRM-Q32-5: the org-facts read loads with this family only,
             # so the core floor does not change (crm_platform.md §18.14.4).
             "org_facts",
+            # WS-53 CRM-Q32-8: the reply of a CRM question card, on the same
+            # terms. The gateway gates it by CRM_QUESTIONS_ORGS.
+            "crm_answer_question",
         ),
         "core": False,
         "scope_governed": True,

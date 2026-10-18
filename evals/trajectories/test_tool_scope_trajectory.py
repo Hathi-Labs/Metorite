@@ -56,6 +56,10 @@ INJECTABLE_PLATFORM_TOOLS = {
     # WS-53 CRM-Q32-5 (2026-10-18): the org facts of a listed org. The run
     # drops it when the org is not on CRM_QUESTIONS_ORGS (_add_crm_facts_block).
     "org_facts",
+    # WS-53 CRM-Q32-8 (2026-10-18): the reply of a CRM question card. It goes
+    # with org_facts: withheld where org_facts is (_facts_withheld, the drop
+    # of _add_crm_facts_block and addendum._dark_tools).
+    "crm_answer_question",
 }
 
 # The agents this item scopes, with a per-agent leanness ceiling.
@@ -71,7 +75,9 @@ SCOPED_AGENTS = {
     # in the chat with its PDF, so the chat holds make_report too.
     # 23 since CRM-Q32-5 (2026-10-18): the chat reads the org facts of a
     # listed org, so it holds org_facts. An unlisted org's run drops it.
-    "agent-orchestrator": 23,
+    # 24 since CRM-Q32-8 (2026-10-18): the chat asks before it answers, so it
+    # holds crm_answer_question. An unlisted org's run drops it too.
+    "agent-orchestrator": 24,
 }
 
 

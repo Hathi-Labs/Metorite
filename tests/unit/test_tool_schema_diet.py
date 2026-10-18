@@ -106,6 +106,12 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     'crm_search_notes': {'params': {'limit': 'integer', 'query': 'string'},
                          'required': ['query']},
     'crm_stage_dwell': {'params': {'days': 'integer', 'page': 'integer'}, 'required': []},
+    # WS-53 CRM-Q32-8 (crm_platform.md §18.14.10): the reply of a CRM question
+    # card. It loads with the `crm` family only, with org_facts, so the core
+    # floor and its total do not move. `choice` is the KEY of an option. No
+    # member or org argument: the gateway binds them and decides (R5).
+    'crm_answer_question': {'params': {'choice': 'string', 'question_id': 'string'},
+                            'required': ['choice', 'question_id']},
     # WS-31 CP-13d (D75). One question per call. The schema has NO member
     # field on purpose: the member never comes from a tool argument.
     'decide': {'params': {'context': 'string', 'kind': 'string',
