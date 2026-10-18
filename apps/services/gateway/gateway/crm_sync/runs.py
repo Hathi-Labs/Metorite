@@ -417,6 +417,49 @@ async def merge_cursor_entry(
     })
 
 
+#: One entry removed from one object of a cursor row's state, for the bound
+#: org only. RETURNING tells whether the entry was there.
+_DROP_ENTRY_SQL = (
+    "UPDATE crm_sync_cursors SET cursor_state = jsonb_set(cursor_state, "
+    "ARRAY[CAST(:bucket AS text)], (cursor_state -> CAST(:bucket AS text)) - "
+    "CAST(:key AS text)) WHERE organization_id = CAST(:org AS uuid) AND module = :module "
+    "AND (cursor_state -> CAST(:bucket AS text)) ? CAST(:key AS text) RETURNING module"
+)
+
+
+async def drop_cursor_entry(db: Any, org: str, module: str, bucket: str, key: str) -> bool:
+    """Remove ``state[bucket][key]`` of the cursor row *module* of *org*,
+    and keep each other entry. True when the entry was there (CRM-Q32, the
+    Undo of a dismissal)."""
+    row = (await db.execute(text(_DROP_ENTRY_SQL), {
+        "org": org, "module": module, "bucket": bucket, "key": key,
+    })).first()
+    return row is not None
+
+
+#: Top-level keys merged into a cursor row's state: each key of the value
+#: replaces its key, and each other key stays (CRM-Q32-4). The upsert's row
+#: lock orders two writers, so an entry that another writer merged stays.
+_MERGE_KEYS_SQL = (
+    "INSERT INTO crm_sync_cursors (organization_id, module, last_run_at, "
+    "last_status, cursor_state) VALUES (CAST(:org AS uuid), :module, now(), 'ok', "
+    "CAST(:keys AS jsonb)) "
+    "ON CONFLICT (organization_id, module) DO UPDATE SET last_run_at = now(), "
+    "cursor_state = COALESCE(crm_sync_cursors.cursor_state, '{}'::jsonb) || "
+    "CAST(:keys AS jsonb)"
+)
+
+
+async def merge_cursor_keys(db: Any, org: str, module: str, keys: dict[str, Any]) -> None:
+    """Set each top-level key of *keys* in the state of the cursor row
+    *module*, and keep each other key. The questions step of CRM-Q32-4
+    writes ``seen``, ``new_at`` and ``money`` with it, and keeps the
+    ``dismissed`` entries of the admin."""
+    await db.execute(text(_MERGE_KEYS_SQL), {
+        "org": org, "module": module, "keys": json.dumps(keys),
+    })
+
+
 __all__ = [
     "KIND_IMPORT",
     "KIND_INCREMENTAL",
@@ -432,12 +475,14 @@ __all__ = [
     "RunRow",
     "SyncRunning",
     "credits_used_24h",
+    "drop_cursor_entry",
     "due_info",
     "finish",
     "last_success_at",
     "latest",
     "member_emails",
     "merge_cursor_entry",
+    "merge_cursor_keys",
     "progress",
     "read_cursors",
     "recent",

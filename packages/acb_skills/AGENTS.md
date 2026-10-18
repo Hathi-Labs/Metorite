@@ -367,8 +367,23 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    tool, because the orchestrator holds 12 of the 13 CRM tools.
    `crm_aggregate` says the zone line only for a zoned month group or a
    `datetime` bucket (`group_field_type`).
+   `crm_list_modules` reads `GET /crm/catalogue` first (CRM-Q31-1). It
+   renders one line for each entry, then the money block. A 404
+   `catalogue_off` or a bare 404 makes it answer from `/crm/modules`, as
+   before.
+   `crm_aggregate` names the label of the real field (CRM-Q31-2). It says
+   "the amount" for a key word. A total of 0 on a core entity reads the
+   catalogue once more. When the entity holds no records, the answer names
+   the modules that hold them.
+   On a slot with an approved overlay (CRM-Q20-3a), `crm_aggregate` names
+   the module. A refusal of the route is one sentence. Some tools read
+   `overlays` of `GET /crm/mode`. `crm_list_pipelines` reads it first. A
+   status filter on leads or deals reads it first too. `crm_list_records`,
+   `crm_get_record`, `crm_deal_contacts` and `crm_report` read it after an
+   empty answer or a 404.
    Fences: `tests/unit/test_crm_agent.py`, `tests/unit/test_skills_registry.py`
    and `tests/unit/test_reports_by_code.py`.
+5l-2. org_facts_tools.py -- the tool `org_facts(app, query)` and the CRM facts block (WS-53 CRM-Q32-5, spec `project-docs/specs/crm_platform.md` §18.14.4). The tool reads `GET /org/facts` as the run's member, with the transport of `crm_tools.py`, and it loads with the `crm` skill family only, so the core floor does not change. `crm_facts_block` builds the block of a run: the answered facts of the money modules, the meaning of revenue and the stages, at most 12 lines. `orchestrator._tool_injection._add_crm_facts_block` reads it as the member and adds it at the END of the prompt of a run that holds a CRM tool. A box with `CRM_QUESTIONS_ORGS` empty sends no request. A run that reads no fact row loses `org_facts` too, and the orchestrator and the CRM Assistant name the tool in their `tool_scope`. With the list empty, the addendum renders neither the `org_facts` section nor the open-question line (`addendum._dark_tools`), and a revenue total reads no catalogue (`crm_tools.questions_box_on`). CRM-Q32-6: `crm_list_modules` writes "an open question" on each open part, and `crm_aggregate` passes on the `href` of a 422 `no_key_field` and adds the line of the default of a revenue total. A tool never asks in the chat. Fences: `tests/unit/test_org_facts.py`, `tests/unit/test_org_facts_r8.py` and `tests/unit/test_crm_agent.py`.
 5l-1. answer_check.py -- the number check of a chat answer that read a CRM
    tool (WS-53 CRM-Q29, spec `project-docs/specs/crm_platform.md` §18.11.2).
    `AnswerCheckProvider` adds two middlewares to ONE run. `RecordToolResults`

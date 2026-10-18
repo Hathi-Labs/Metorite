@@ -54,7 +54,7 @@ async def _run(**kw):
 
 
 async def test_collapse_dedupes_by_conversation_and_counts_conversations() -> None:
-    _out, seen = await _run(account_id="a", folder="INBOX", collapse=True)
+    _out, seen = await _run(account_id="a0000000-0000-4000-8000-000000000001", folder="INBOX", collapse=True)
     joined = "\n".join(seen)
     # One row per conversation, newest-in-view first. The key names the
     # mailbox, so a conversation never spans two mailboxes (EM-T8d, MB-12).
@@ -67,7 +67,7 @@ async def test_collapse_dedupes_by_conversation_and_counts_conversations() -> No
 
 async def test_default_is_per_message_for_the_assistant() -> None:
     # collapse defaults off → the assistant's inbox queries stay per-message.
-    _out, seen = await _run(account_id="a", folder="INBOX")
+    _out, seen = await _run(account_id="a0000000-0000-4000-8000-000000000001", folder="INBOX")
     joined = "\n".join(seen)
     assert "DISTINCT ON" not in joined
     assert "COUNT(*)" in joined
@@ -75,7 +75,7 @@ async def test_default_is_per_message_for_the_assistant() -> None:
 
 async def test_thread_load_never_collapses() -> None:
     # Even with collapse=true, loading a specific thread returns every message.
-    _out, seen = await _run(account_id="a", thread_id="t-1", collapse=True)
+    _out, seen = await _run(account_id="a0000000-0000-4000-8000-000000000001", thread_id="t-1", collapse=True)
     joined = "\n".join(seen)
     assert "DISTINCT ON" not in joined
     assert "em.thread_id = :thread_id" in joined

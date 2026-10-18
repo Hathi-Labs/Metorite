@@ -10,7 +10,8 @@
  *
  * Since WS-53 CRM-Q17b item 8 the card opens with "Needs you" (`needsYou`):
  * the modules that Zoho refuses, the held modules and the large ones, each
- * with one action. The table of counts and the list of Zoho modules fold
+ * with one action. Since CRM-Q32-4 it also names the open questions about
+ * the data, and "Answer" opens Settings → Open questions. The table of counts and the list of Zoho modules fold
  * under "Details". The Sync switch of a turned-off module is disabled.
  */
 
@@ -58,10 +59,15 @@ import { Card } from "./SettingsCards";
 const NOTE = "The Zoho count against ours, skipped records and the last error.";
 
 /** CRM-Q17b: the badge of each kind of "Needs you" item. */
-const NEEDS_YOU_BADGES: Record<NeedsYouItem["kind"], { tone: "warning" | "neutral"; label: string }> = {
+const NEEDS_YOU_BADGES: Record<
+  NeedsYouItem["kind"],
+  { tone: "warning" | "neutral" | "primary"; label: string }
+> = {
   unavailable: { tone: "warning", label: "Unavailable" },
   held: { tone: "neutral", label: "Held" },
   large: { tone: "neutral", label: "Large" },
+  // CRM-Q32-4: questions wait for the admin, in the tone of the rail count.
+  questions: { tone: "primary", label: "Questions" },
 };
 
 /** CRM-Q24: the badge of each kind of activity line. */
@@ -86,6 +92,7 @@ export function SyncHealthCardView({
   onSyncOnly = () => undefined,
   detailsOpen = false,
   onReconnect = () => pushView(viewHref(selectSection(DEFAULT_VIEW, "setup"))),
+  onAnswer = () => pushView(viewHref(selectSection(DEFAULT_VIEW, "questions"))),
 }: {
   health: SyncHealth;
   nowMs?: number;
@@ -101,6 +108,8 @@ export function SyncHealthCardView({
   detailsOpen?: boolean;
   /** "Connect again" of a missing scope: Setup and sync, where the consent is. */
   onReconnect?: () => void;
+  /** CRM-Q32-4: "Answer" opens Settings → Open questions. */
+  onAnswer?: () => void;
 }) {
   const lines = statusLines(health, nowMs);
   const running = isRunning(health);
@@ -115,6 +124,7 @@ export function SyncHealthCardView({
   const act = (item: NeedsYouItem) => {
     if (item.action === "hold") onSetSync(item.key, false);
     else if (item.action === "reconnect") onReconnect();
+    else if (item.action === "answer") onAnswer();
     else onSyncOnly(item.key);
   };
 
@@ -171,7 +181,8 @@ export function SyncHealthCardView({
                         size="sm"
                         className="ml-auto shrink-0"
                         loading={busyKey === item.key}
-                        disabled={item.action === "reconnect" ? false : blocked}
+                        // A link to another section waits for no run.
+                        disabled={item.action === "reconnect" || item.action === "answer" ? false : blocked}
                         onClick={() => act(item)}
                       >
                         {NEEDS_YOU_ACTIONS[item.action]}

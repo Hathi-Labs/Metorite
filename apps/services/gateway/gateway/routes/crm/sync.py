@@ -34,6 +34,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user, require_permission
+from acb_common import get_logger
 from fastapi import Depends, HTTPException
 from gateway.connections import store
 from gateway.routes.crm.access import ADMIN_PERMISSION
@@ -154,6 +155,9 @@ class SyncHealthModel(BaseModel):
     holds: dict[str, HoldModel] = {}
     #: CRM-Q24: the activities that the mirror does not hold.
     activities: HealthActivitiesModel = HealthActivitiesModel()
+    #: CRM-Q32-4: the count of the open questions (``questions.count_open``),
+    #: so "Needs you" stays pure. ``None`` outside ``CRM_QUESTIONS_ORGS``.
+    open_questions: int | None = None
 
 
 class StartedModel(BaseModel):
@@ -610,6 +614,9 @@ async def get_sync_health(
                 "org": org, "key": engine.ACTIVITY_RECOVERED_KEY,
             })).fetchall()
         }
+        # CRM-Q32-4: the count of the open questions, only for an org on
+        # CRM_QUESTIONS_ORGS, so a dark box sends no new statement.
+        open_questions = await _open_questions(db, org)
     counts = latest.counts if latest is not None else {}
     estimate = (latest.estimate if latest is not None else None) or {}
     module_ours = {k: v for k, v in ours.items() if k.startswith(MODULE_KEY_PREFIX)}
@@ -651,7 +658,31 @@ async def get_sync_health(
         credits=HealthCreditsModel(budget_24h=budget, used_24h=used, resumes_at=resumes),
         holds=_holds_out(hold_entries),
         activities=_activities(cursors, recovered, engine, body),
+        open_questions=open_questions,
     )
+
+
+async def _open_questions(db: Any, org: str) -> int | None:
+    """The open count for the health card (CRM-Q32-4), or ``None``: outside
+    ``CRM_QUESTIONS_ORGS``, before the first questions step, or when the read
+    fails. Fix round P2: it reads ONE cursor row, ``zoho:questions``, as My
+    Day does (``seen`` of the last step), and builds no question. So a poll
+    of the card costs one statement, and the card never fails on it."""
+    from gateway.crm_sync import questions as qs
+    from gateway.crm_sync import runs
+    from gateway.routes.crm.flags import questions_allowed
+
+    if not questions_allowed(org):
+        return None
+    try:
+        # A savepoint, so a failed read leaves the session of the card whole.
+        async with db.begin_nested():
+            cursors = await runs.read_cursors(db, org, qs.QUESTIONS_ROW)
+    except Exception as exc:  # the count is advice: the health card answers anyway
+        get_logger("crm.sync").warning("crm.sync.open_questions_unread",
+                                       error_type=type(exc).__name__)
+        return None
+    return qs.open_count(getattr(cursors.get(qs.QUESTIONS_ROW), "state", None))
 
 
 @router.post(

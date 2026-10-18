@@ -67,11 +67,11 @@ def _load():
 
 agents = _load()
 
-BOX = "acc-1"
+BOX = "a0000000-0000-4000-8000-000000000001"
 #: A local draft id: ``email_messages.id`` is a uuid, and the draft routes
 #: answer 404 for any other value (``email_app_master_plan.md`` §17.11).
 LOCAL_DRAFT_ID = "00000000-0000-4000-8000-0000000000d1"
-OTHER_BOX = "acc-2"
+OTHER_BOX = "a0000000-0000-4000-8000-000000000002"
 SENDER = "news@list.example"
 ONE_CLICK = {"kind": "one-click", "link": "https://list.example.com/u?id=42",
              "host": "list.example.com", "address": None}

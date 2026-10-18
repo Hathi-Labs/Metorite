@@ -200,8 +200,6 @@ ALLOWED: dict[str, str] = {
         'Text, not rows: the cut shortens one string.',
     'apps/services/orchestrator/orchestrator/agents.py::enrich_instructions_with_memory::user_query[:80]':
         'Text, not rows: the cut shortens one string.',
-    'apps/skills/skill-projects/skill_projects/client.py::safe_detail::text[:DETAIL_MAX - 1]':
-        'Text, not rows: the cut shortens one string.',
     "apps/skills/skill-projects/skill_projects/forms.py::propose_plan::[r.strip() for r in str(risks or '').splitlines() if r.strip()][:5]":
         'The risk lines the MODEL wrote into its own plan card. Not company data, and the card shows five.',
     'apps/skills/skill-projects/skill_projects/guarded.py::_short_ref::title[:TITLE_CLIP - 1]':
@@ -973,7 +971,14 @@ crm_tools = pytest.importorskip("acb_skills.crm_tools")
 
 def test_crm_list_modules_pages_past_fifty(monkeypatch) -> None:
     mods = [{"label": f"M{k}", "api_name": f"m{k}", "count": 1} for k in range(1, 61)]
-    _gw(monkeypatch, crm_tools, lambda p, q: mods)
+
+    def answer(path, _params):
+        # CRM-Q31-1: the catalogue is off, so the tool lists /crm/modules.
+        if path == "/crm/catalogue":
+            raise crm_tools._GatewayError("off", "catalogue_off")
+        return mods
+
+    _gw(monkeypatch, crm_tools, answer)
     first = asyncio.run(crm_tools.crm_list_modules())
     assert "Showing 1-50 of 60. Call again with page=2 for the rest." in first
     last = asyncio.run(crm_tools.crm_list_modules(page=2))

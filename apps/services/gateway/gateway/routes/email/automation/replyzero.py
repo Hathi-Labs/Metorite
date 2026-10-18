@@ -14,6 +14,7 @@ from email_ingestion.llm_cap import LLMBudgetExhausted, automation_job
 from email_ingestion.post_sync import status_skips_rule_match, triage_once_per_cycle
 from fastapi import BackgroundTasks, Depends, Query
 from gateway import decide_features
+from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.automation.assistant import _load_assistant_about
 from gateway.routes.email.automation.identity import (
     SELF_ADDRESSES_SQL,
@@ -3117,6 +3118,8 @@ async def reclassify_reply_zero_status(
     """Progress of an in-flight (or the last) whole-mailbox reclassify: status,
     total threads to rebuild, how many remain, and how many are done."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
     job = _RECLASSIFY_JOBS.get(account_id)
     if not job:
@@ -3143,6 +3146,8 @@ async def reply_zero(
     populated; an existing draft for the thread is surfaced (``draft_id``) so the
     UI offers "View draft" instead of drafting a second reply."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         want = {"awaiting": "AWAITING", "done": "DONE"}.get(type, "NEEDS_REPLY")
         # Trash is hidden from every bucket; archiving a thread also drops it from

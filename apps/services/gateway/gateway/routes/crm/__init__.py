@@ -109,6 +109,16 @@ nearest to a query by meaning (table ``crm_note_vectors``). Read only. An org
 outside ``CRM_NOTE_SEARCH_ORGS`` gets ``degraded`` with no embed call. Its
 ``notes/`` segment is a literal, and no other route uses it.
 
+``catalogue.py`` is WS-53 CRM-Q31-1 — ``GET /crm/catalogue``, what each core
+entity and each mirrored module is for, with its key fields and links. Read
+only. The code rules live in ``crm_sync/catalogue.py``. An org outside
+``CRM_CATALOGUE_ORGS`` gets 404 ``catalogue_off`` in each mode.
+
+``questions.py`` is WS-53 CRM-Q32 — ``GET /crm/questions``, the open
+questions of the CRM, and their answers. The guards of the Field map, and an
+org outside ``CRM_QUESTIONS_ORGS`` gets 404 ``questions_off``. The kinds and
+the order live in ``crm_sync/questions.py``, as pure functions.
+
 ``digests.py`` is WS-53 CRM-Q28 — ``GET /crm/digests``, the weekly digests
 of the org. Read only. ``crm_sync/digest.py`` writes
 the table, and only for an org on ``CRM_DIGEST_ORGS``.
@@ -117,6 +127,7 @@ the table, and only for an org on ``CRM_DIGEST_ORGS``.
 from gateway.routes.crm import activities as _activities  # noqa: F401
 from gateway.routes.crm import admin as _admin  # noqa: F401
 from gateway.routes.crm import aggregate as _aggregate  # noqa: F401
+from gateway.routes.crm import catalogue as _catalogue  # noqa: F401
 from gateway.routes.crm import connection as _connection  # noqa: F401
 from gateway.routes.crm import convert_mapping as _convert_mapping  # noqa: F401
 from gateway.routes.crm import deal_contacts as _deal_contacts  # noqa: F401
@@ -131,6 +142,7 @@ from gateway.routes.crm import modules as _modules  # noqa: F401
 from gateway.routes.crm import note_search as _note_search  # noqa: F401
 from gateway.routes.crm import pipeline as _pipeline  # noqa: F401
 from gateway.routes.crm import pipelines as _pipelines  # noqa: F401
+from gateway.routes.crm import questions as _questions  # noqa: F401
 from gateway.routes.crm import records as _records  # noqa: F401
 from gateway.routes.crm import reports as _reports  # noqa: F401
 from gateway.routes.crm import settings as _settings  # noqa: F401

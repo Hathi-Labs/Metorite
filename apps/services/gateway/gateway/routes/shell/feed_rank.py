@@ -84,6 +84,9 @@ BASE: dict[str, int] = {
     # WS-53 CRM-Q28 item 14: the weekly CRM digest is ready. A thing to
     # know, so it sits below every MD-3 kind.
     "digest_ready": 24,
+    # WS-53 CRM-Q32-4: the CRM holds a new question about the data of the
+    # org, for a CRM admin. One card a day at most, below `digest_ready`.
+    "crm_open_questions": 22,
 }
 
 #: The urgency terms (§7).
@@ -193,6 +196,9 @@ def group(kind: str, facts: dict[str, Any], now: datetime, today: date) -> str:
         return "ready"
     if kind in ("stale_next", "deal_quiet", "colleague_out", "digest_ready"):
         return "fyi"
+    if kind == "crm_open_questions":
+        # CRM-Q32-4: needs you while a question about money is open.
+        return "needs_you" if facts.get("money") is True else "fyi"
     if kind in ("promise_due", "crm_followup_due"):
         return "now" if _due_within_soon(facts, now) else "needs_you"
     if kind == "due_today":

@@ -85,6 +85,10 @@ around.
 
 ## Hard rules
 
+- **A refusal starts with "Refused:"** — it gives the server's words and a
+  "Next:" line. Fix the one argument that it names, and call the tool once
+  more. If it refuses again, tell the member what the server said. Never write
+  a tool call as text.
 - **A write is a proposal until somebody approves it.** Never say you have
   created, moved, logged or converted anything until the tool has come back and
   told you it happened. When it comes back cancelled, say so plainly — "that

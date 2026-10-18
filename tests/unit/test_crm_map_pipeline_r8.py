@@ -491,3 +491,204 @@ async def test_a_pick_by_hand_joins_the_suggestion(mp_env) -> None:
     assert _kind_items(body["rules"]) == ["role", "stage", "target"], "S stays in the draft"
     # The pipeline does not write the items again: the open draft holds them.
     assert await _write_draft(p.org_a, [ROLE, TARGET, STAGE]) is None
+
+
+# ── CRM-Q31-3: the catalogue rides the version in use (§18.13.4) ────────────
+
+CAT = {"kind": "catalogue", "module": "Commercials", "purpose": "deal", "amount": None,
+       "by": {"purpose": "ai", "amount": "ai"}}
+OLD_CAT = {"kind": "catalogue", "module": "Commercials", "purpose": "vendor",
+           "by": {"purpose": "ai"}}
+
+
+async def _apply(org: str, items: list[dict[str, Any]]) -> Any:
+    from acb_common.db import tenant_session
+    from gateway.routes.crm import mapping_plans
+
+    async with tenant_session(org) as db:
+        return await mapping_plans.apply_catalogue(db, items, by="system", org=org)
+
+
+def _catalogue_of(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [i for i in items if i.get("kind") == "catalogue"]
+
+
+def _in_use(p: Any, org: str) -> list[dict[str, Any]]:
+    (row,) = [v for v in _versions(p, org) if v[1] == "approved"]
+    return _catalogue_of(row[4])
+
+
+async def test_q31_3_10_each_approve_keeps_the_catalogue_in_use(mp_env) -> None:
+    """Item 10: a draft approve, a restore and a change of one rule each keep
+    the catalogue of the version in use, and never bring back an old one."""
+    from tests.unit.test_crm_field_rules_r8 import _post
+
+    p, a, _b = mp_env
+    await _imported(p, p.org_a, a)
+    before = (await _plans(p.org_a))["approved"]
+    assert await _apply(p.org_a, [CAT]) is not None
+    assert _in_use(p, p.org_a) == [CAT]
+    in_use = (await _plans(p.org_a))["approved"]
+
+    # A draft that carries an old catalogue item: the approve swaps it out.
+    draft = _insert_version(p, p.org_a, "draft", [ROLE, TARGET, STAGE, OLD_CAT], in_use)
+    got = await _req(_admin_of(p.org_a), "POST", f"{PLANS}/{draft}/approve")
+    assert got.status_code == 200, got.text
+    assert _catalogue_of(got.json()["rules"]) == [CAT]
+    # A restore of the version before the catalogue keeps the catalogue.
+    got = await _req(_admin_of(p.org_a), "POST", f"{PLANS}/{before}/restore")
+    assert got.status_code == 201, got.text
+    assert _catalogue_of(got.json()["rules"]) == [CAT]
+    # A change of one rule keeps it too.
+    made = await _post(p.org_a, "Custom_Industry", "industry")
+    assert made.status_code == 201, made.text
+    assert _in_use(p, p.org_a) == [CAT]
+
+
+async def test_q31_3_11_no_draft_holds_a_catalogue_item(mp_env) -> None:
+    """Item 11: POST /crm/mapping/plans, write_draft and carry_draft strip
+    the catalogue items, so a catalogue change never reads as a draft change."""
+    p, a, _b = mp_env
+    await _imported(p, p.org_a, a)
+    assert await _apply(p.org_a, [CAT]) is not None
+    hand = await _req(_admin_of(p.org_a), "POST", PLANS,
+                      {"changes": [_put("Why_Lost", "lost_note")]})
+    assert hand.status_code == 201, hand.text
+    assert _catalogue_of(hand.json()["rules"]) == []
+    # The suggestion of a run: its catalogue item never reaches the draft.
+    row = await _write_draft(p.org_a, [ROLE, TARGET, {**CAT, "purpose": "contract"}])
+    assert row is not None
+    assert _catalogue_of(_versions(p, p.org_a)[-1][4]) == []
+    # Only a catalogue item is no change of the draft.
+    assert await _write_draft(p.org_a, [OLD_CAT]) is None
+    # A new catalogue moves the open draft (carry_draft), and the carried
+    # draft holds none.
+    assert await _apply(p.org_a, [{**CAT, "purpose": "contract"}]) is not None
+    drafts = [v for v in _versions(p, p.org_a) if v[1] == "draft"]
+    assert _catalogue_of(drafts[-1][4]) == []
+    assert ("Why_Lost", "lost_note") in _field_items(drafts[-1][4])
+    assert all(_catalogue_of(v[4]) == [] for v in drafts)
+
+
+async def test_q31_3_13_apply_catalogue_changes_no_rule_and_keeps_the_picks(mp_env) -> None:
+    """Item 13: no row of crm_field_rules changes, the picks by hand of the
+    open draft stay, and with no open draft no draft is written."""
+    p, a, _b = mp_env
+    await _imported(p, p.org_a, a)
+    await _plans(p.org_a)
+    rules = _rule_rows(p, p.org_a)
+    drafts = len([v for v in _versions(p, p.org_a) if v[1] == "draft"])
+    plan = await _apply(p.org_a, [CAT])
+    assert plan is not None and plan.created_by == "system"
+    assert _rule_rows(p, p.org_a) == rules
+    assert len([v for v in _versions(p, p.org_a) if v[1] == "draft"]) == drafts
+    # The same catalogue again writes nothing.
+    count = len(_versions(p, p.org_a))
+    assert await _apply(p.org_a, [CAT]) is None
+    assert len(_versions(p, p.org_a)) == count
+    # An open draft with a pick by hand moves onto the new version.
+    hand = await _req(_admin_of(p.org_a), "POST", PLANS,
+                      {"changes": [_put("Why_Lost", "lost_note")]})
+    assert hand.status_code == 201, hand.text
+    new = await _apply(p.org_a, [{**CAT, "date": "Closing_Date",
+                                  "by": {**CAT["by"], "date": "ai"}}])
+    assert new is not None
+    last = _versions(p, p.org_a)[-1]
+    assert (last[1], last[3]) == ("draft", new.version)
+    assert ("Why_Lost", "lost_note") in _field_items(last[4])
+    assert _rule_rows(p, p.org_a) == rules
+
+
+async def test_q31_3_8_a_run_in_on_applies_the_catalogue_and_drafts_none(
+    mp_env, monkeypatch,
+) -> None:
+    """Items 4 and 8, end to end: the run applies its catalogue items with
+    no approval and no draft, and a second run asks nothing."""
+    from acb_common import get_settings
+    from gateway import decide_features as df
+
+    p, a, _b = mp_env
+    monkeypatch.setattr(get_settings(), "decide_feature_modes",
+                        "crm.map_role=on,crm.map_target=on,crm.map_stage=on,"
+                        "crm.map_catalogue=on", raising=False)
+    df._parse_modes.cache_clear()
+    # Fix round: the catalogue step runs only for an org on CRM_CATALOGUE_ORGS.
+    monkeypatch.setattr(get_settings(), "crm_catalogue_orgs", p.org_a, raising=False)
+    await _imported(p, p.org_a, a)
+    _no_deals(p, p.org_a)
+    _seed_module(p, p.org_a, "Commercials", "Commercials")
+    p.fake.scripted.answers["p:Commercials"] = {"pick": "deal", "p": 0.9}
+    rules = _rule_rows(p, p.org_a)
+    got = await _run(p.org_a)
+    assert got.reason == "done", got
+    (item,) = [i for i in _in_use(p, p.org_a) if i["module"] == "Commercials"]
+    # The role of this run waits for the admin, so it gives no purpose (rule
+    # 4 reads the approved roles, fix round P2). The decide tier answers the
+    # purpose. Code answers the date and the status on the sample (rule 10),
+    # and the sure "none" of the amount leaves it empty.
+    assert (item["purpose"], item["date"], item["status"], item["amount"]) == (
+        "deal", "Closing_Date", "Status", None)
+    assert item["by"] == {"purpose": "ai", "date": "code", "status": "code", "amount": "ai"}
+    for version in _versions(p, p.org_a):
+        if version[1] == "draft":
+            assert _catalogue_of(version[4]) == []
+    # The run wrote its draft, then the catalogue moved it onto the new
+    # version (carry_draft). The open draft is the last one.
+    draft = [v for v in _versions(p, p.org_a) if v[1] == "draft"][-1]
+    approved = next(v for v in _versions(p, p.org_a) if v[1] == "approved")
+    assert draft[3] == approved[0], "the open draft sits on the version in use"
+    assert set(_kind_items(draft[4])) == {"role", "stage", "target"}
+    assert _rule_rows(p, p.org_a) == rules
+    calls, count = len(p.fake.calls), len(_versions(p, p.org_a))
+    again = await _run(p.org_a)
+    assert again.requests == 0 and len(p.fake.calls) == calls
+    assert len(_versions(p, p.org_a)) == count
+
+
+# ── CRM-Q32 fix round P1: "@auto" never leaves a part with no question ──────
+
+
+async def test_q32_fix_auto_after_on_makes_the_part_a_question(mp_env, monkeypatch) -> None:
+    """The exact sequence: with the catalogue `off` the admin answers the
+    amount. The owner sets `on`, and the run asks only the open parts, so
+    the cache item lacks the amount. The admin picks "Let Metorite choose",
+    and the part leaves the plan. The next run is a cache hit and asks
+    nothing. So the part must show as an open question, with 0 decide
+    calls."""
+    from acb_common import get_settings
+    from gateway import decide_features as df
+
+    p, a, _b = mp_env
+    settings = get_settings()
+    monkeypatch.setattr(settings, "crm_catalogue_orgs", p.org_a, raising=False)
+    monkeypatch.setattr(settings, "crm_questions_orgs", p.org_a, raising=False)
+    await _imported(p, p.org_a, a)
+    _seed_module(p, p.org_a, "Commercials", "Commercials")
+    admin = _admin_of(p.org_a)
+    q = "/crm/questions"
+    got = await _req(admin, "POST", f"{q}/purpose:Commercials/answer", {"value": "deal"})
+    assert got.status_code == 200, got.text
+    got = await _req(admin, "POST", f"{q}/key:Commercials:amount/answer",
+                     {"value": "Probability"})
+    assert got.status_code == 200, got.text
+    # The owner sets the catalogue step `on`.
+    monkeypatch.setattr(settings, "decide_feature_modes",
+                        "crm.map_role=on,crm.map_target=on,crm.map_stage=on,"
+                        "crm.map_catalogue=on", raising=False)
+    df._parse_modes.cache_clear()
+    first = await _run(p.org_a)
+    assert first.reason == "done", first
+    cached = _cursor(p, p.org_a)["items"]["catalogue:Commercials"]
+    assert cached and not any("amount" in item for item in cached)
+    # "Let Metorite choose": the cache holds no amount, so the part leaves.
+    got = await _req(admin, "PUT", "/crm/catalogue/Commercials", {"amount": "@auto"})
+    assert got.status_code == 200, got.text
+    (item,) = [i for i in _in_use(p, p.org_a) if i["module"] == "Commercials"]
+    assert "amount" not in item
+    calls = len(p.fake.calls)
+    again = await _run(p.org_a)
+    assert again.requests == 0 and len(p.fake.calls) == calls, "a cache hit asks nothing"
+    body = (await _req(admin, "GET", f"{q}?limit=200")).json()
+    amount = [x for x in body["shown"] if x["id"] == "key:Commercials:amount"]
+    assert [x["reason"] for x in amount] == ["open"], body["shown"]
+    assert len(p.fake.calls) == calls, "the question read makes no decide call"

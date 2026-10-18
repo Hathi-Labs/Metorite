@@ -425,6 +425,58 @@ async def test_a_core_entity_measures_and_groups_a_custom_field(ns, app_engine) 
                          **{"field.units": "3"}) == 422
 
 
+# ── 4b. No group: one total over every filtered record ───────────────────────
+
+
+async def test_a_module_total_with_no_group(mods, app_engine) -> None:
+    """The prod question: the sum of one field over a date range, with no
+    group. The answer has no group, the total and the count of records."""
+    a = mods.org_a
+    count = await _agg(mods, a, entity="module:Products")
+    assert (count["groups"], count["total"], count["records"]) == ([], 4, 4)
+    total = await _agg(mods, a, entity="module:Products", measure="sum", field="Unit_Price")
+    # "abc" is no number, so 3 records hold 2 values.
+    assert (total["total"], total["values"], total["records"]) == (350.5, 2, 4)
+    assert total["field_type"] == "currency"
+    ranged = await _agg(mods, a, entity="module:Products", measure="sum",
+                        field="Unit_Price", **{"field.Sales_Start.from": "2026-02-01",
+                                               "field.Sales_Start.to": "2026-02-28"})
+    assert (ranged["total"], ranged["records"]) == (250.5, 1)
+    hardware = await _agg(mods, a, entity="module:Products", **{"field.Category": "HW"})
+    assert (hardware["total"], hardware["records"]) == (2, 2)
+    avg = await _agg(mods, a, entity="module:Products", measure="avg", field="Unit_Price")
+    assert avg["total"] == 175.25
+    # No row matches: one row still, a count of 0, and no sum to report.
+    nothing = await _agg(mods, a, entity="module:Products", measure="sum",
+                         field="Unit_Price", **{"field.Category": "None"})
+    assert (nothing["total"], nothing["values"], nothing["records"]) == (None, 0, 0)
+    # Org B mirrors one product of its own, and A's rows never reach it.
+    b = await _agg(mods, mods.org_b, entity="module:Products", measure="sum",
+                   field="Unit_Price")
+    assert (b["total"], b["records"]) == (99999, 1)
+
+
+async def test_a_422_names_the_valid_choices(mods, app_engine) -> None:
+    """The model reads the detail and picks a real field or module."""
+    a = mods.org_a
+
+    async def message(**query: Any) -> str:
+        res = await _call(mods, _admin(a), "GET", _path(**query))
+        assert res.status_code in (404, 422), (query, res.text)
+        return res.json()["detail"]["message"]
+
+    text_group = await message(entity="module:Products", group_field="Description")
+    assert ("can group are: Category, Sales_Start, Taxable, Updated_On, "
+            "Vendor_Name") in text_group
+    assert "field.Description=<value>" in text_group
+    unknown = await message(entity="module:Products", measure="sum", field="Price")
+    assert "Its fields are: Category, Description, Margin, Qty" in unknown
+    filter_unknown = await message(entity="module:Products", **{"field.Name": "x"})
+    assert "'Name' is not a field of module:Products" in filter_unknown
+    module = await message(entity="module:Outstanding")
+    assert "The mirrored modules are: Products, Quotes." in module
+
+
 # ── 5. Each unfit value is a 422, and so is each hostile name ────────────────
 
 
@@ -439,7 +491,6 @@ async def test_a_core_entity_measures_and_groups_a_custom_field(ns, app_engine) 
     {"group_field": "Category", "bucket": "month"},
     {"group_by": "owner", "bucket": "month"},
     {"group_by": "owner", "group_field": "Category"},
-    {"measure": "count"},
     {"measure": "sum", "group_by": "owner"},                           # no field
     {"measure": "count", "field": "Unit_Price", "group_by": "owner"},
     {"measure": "sum_amount", "group_by": "owner"},
@@ -499,9 +550,10 @@ async def test_an_empty_value_is_an_absent_one(mods, app_engine) -> None:
     each of the four. It once raised KeyError('') as a 500."""
     a = mods.org_a
     for entity in ("module:Products", "deals"):
-        # No group at all is a 422, never a 500.
-        assert await _status(mods, a, entity=entity, group_field="") == 422
-        assert await _status(mods, a, entity=entity, group_by="", group_field="") == 422
+        # No group at all is one total, never a 500.
+        for query in ({"group_field": ""}, {"group_by": "", "group_field": ""}):
+            body = await _agg(mods, a, entity=entity, **query)
+            assert body["groups"] == [] and body["total"] == body["records"], body
         # A sum with an empty field names no field: a 422.
         assert await _status(mods, a, entity=entity, measure="sum", field="",
                              group_by="owner") == 422
@@ -960,3 +1012,139 @@ async def test_thirty_thousand_module_rows(mods, app_engine, monkeypatch) -> Non
     ))
     assert res.status_code == 503, res.text
     assert res.json()["detail"]["code"] == "aggregate_timeout"
+
+
+# ── 9. The key words of a module (WS-53 CRM-Q31-2, crm_platform.md §18.13.4) ──
+#
+# Item 9: a ``sum_amount`` on a module equals the ``sum`` of its real amount
+# field, a bucket by ``@date`` equals the bucket by the real key, and a key
+# word never reaches the SQL text. The catalogue answers by code: Invoices is
+# a standard module, ``Grand_Total`` is its amount and ``Invoice_Date`` its
+# date (rules 2, 6 and 7), from the fill rows below.
+
+_INVOICE_DEFS = [
+    ("Grand_Total", "currency", None, False, False),
+    ("Invoice_Date", "date", None, False, False),
+    ("Status", "select", None, False, False),
+]
+
+
+@pytest.fixture
+def keyed(mods, monkeypatch):
+    """Org A also mirrors Invoices, with three records and full fill rows.
+    The catalogue and the fill rank serve org A only."""
+    from acb_common import get_settings
+
+    a = mods.org_a
+    settings = get_settings()
+    monkeypatch.setattr(settings, "crm_catalogue_orgs", a, raising=False)
+    monkeypatch.setattr(settings, "crm_fill_rank_orgs", a, raising=False)
+    with mods.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_source_profiles SET profile = jsonb_set(profile, '{modules}', "
+            "(profile -> 'modules') || CAST(:m AS jsonb)) WHERE organization_id = "
+            "CAST(:o AS uuid)"), {"o": a, "m": json.dumps([_module("Invoices")])})
+        for ext, total, day in (("i1", 1000, "2026-04-10"), ("i2", 250.5, "2026-05-02"),
+                                ("i3", "300", "2026-01-15")):
+            _record(c, a, "Invoices", ext, "a@q25.test",
+                    {"Grand_Total": total, "Invoice_Date": day, "Status": "Paid"})
+        for key in ("Grand_Total", "Invoice_Date", "Status"):
+            c.execute(text(
+                "INSERT INTO crm_field_fill (organization_id, entity, key, filled, "
+                "total, distinct_count) VALUES (CAST(:o AS uuid), 'module:Invoices', "
+                ":k, 3, 3, 3)"), {"o": a, "k": key})
+    _defs(mods, a, "module:Invoices", _INVOICE_DEFS)
+    yield mods
+    with mods.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM crm_field_fill WHERE organization_id = "
+                       "CAST(:o AS uuid)"), {"o": a})
+
+
+async def test_sum_amount_on_a_module_is_the_sum_of_its_amount(keyed, app_engine) -> None:
+    a = keyed.org_a
+    real = await _agg(keyed, a, entity="module:Invoices", measure="sum",
+                      field="Grand_Total", group_by="owner")
+    amount = await _agg(keyed, a, entity="module:Invoices", measure="sum_amount",
+                        group_by="owner")
+    assert amount["total"] == real["total"] == 1550.5
+    assert _values(amount) == _values(real)
+    assert (amount["measure"], amount["field"], amount["field_label"]) == (
+        "sum_amount", "Grand_Total", "Grand Total")
+    assert amount["keys"] == {"@amount": "Grand_Total"}
+    word = await _agg(keyed, a, entity="module:Invoices", measure="sum",
+                      field="@amount", group_by="owner")
+    assert word["total"] == 1550.5 and word["keys"] == {"@amount": "Grand_Total"}
+    # weighted stays refused on a module.
+    assert await _status(keyed, a, entity="module:Invoices", measure="weighted",
+                         group_by="owner") == 422
+
+
+async def test_a_bucket_by_the_date_word_is_the_bucket_by_its_key(keyed, app_engine) -> None:
+    a = keyed.org_a
+    real = await _agg(keyed, a, entity="module:Invoices", measure="sum",
+                      field="Grand_Total", group_field="Invoice_Date", bucket="quarter")
+    word = await _agg(keyed, a, entity="module:Invoices", measure="sum_amount",
+                      group_field="@date", bucket="quarter",
+                      **{"field.@date.from": "2026-01-01", "field.@date.to": "2026-12-31"})
+    assert [(g["key"], g["value"]) for g in word["groups"]] == [
+        (g["key"], g["value"]) for g in real["groups"]
+    ] == [("2026-Q1", 300.0), ("2026-Q2", 1250.5)]
+    assert word["group_field_label"] == "Invoice Date"
+    assert word["keys"] == {"@amount": "Grand_Total", "@date": "Invoice_Date"}
+    narrow = await _agg(keyed, a, entity="module:Invoices", measure="sum_amount",
+                        group_by="owner", **{"field.@date.from": "2026-04-01"})
+    assert narrow["total"] == 1250.5
+
+
+async def test_a_key_word_never_reaches_the_sql_text(keyed, app_engine) -> None:
+    """Every statement of the answer, as the driver got it, holds no key
+    word. A hostile name that starts like one is a 422."""
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    seen: list[str] = []
+
+    def _record_sql(_conn, _cursor, statement, *_args) -> None:
+        seen.append(statement)
+
+    event.listen(Engine, "before_cursor_execute", _record_sql)
+    try:
+        body = await _agg(keyed, keyed.org_a, entity="module:Invoices",
+                          measure="sum_amount", group_field="@date", bucket="month",
+                          **{"field.@status": "Paid", "field.@date.from": "2026-01-01"})
+    finally:
+        event.remove(Engine, "before_cursor_execute", _record_sql)
+    assert body["total"] == 1550.5
+    assert any("crm_module_records" in sql for sql in seen), "the listener saw the read"
+    for sql in seen:
+        assert "@" not in sql, sql
+    for query in ({"measure": "sum", "field": "@amount'--", "group_by": "owner"},
+                  {"group_field": "@date'--", "bucket": "month"},
+                  {"group_by": "owner", "field.@amount'--": "1"}):
+        res = await _call(keyed, _admin(keyed.org_a), "GET",
+                          _path(entity="module:Invoices", **query))
+        assert res.status_code == 422, (query, res.text)
+
+
+async def test_a_key_word_with_no_key_field_is_a_422(keyed, app_engine, monkeypatch) -> None:
+    """Item 3. Products has no money purpose, so it has no amount. An org
+    outside CRM_CATALOGUE_ORGS has no key word at all."""
+    from acb_common import get_settings
+
+    a = keyed.org_a
+    res = await _call(keyed, _admin(a), "GET", _path(
+        entity="module:Products", measure="sum_amount", group_by="owner"))
+    assert res.status_code == 422, res.text
+    detail = res.json()["detail"]
+    assert detail["code"] == "no_key_field"
+    assert "module:Products" in detail["message"] and "crm_list_modules" in detail["message"]
+    monkeypatch.setattr(get_settings(), "crm_catalogue_orgs", "", raising=False)
+    res = await _call(keyed, _admin(a), "GET", _path(
+        entity="module:Invoices", measure="sum_amount", group_by="owner"))
+    # Fix round, item 9: the refusal of before, with no key fields to name.
+    assert res.status_code == 422, res.text
+    assert res.json()["detail"] == "'sum_amount' needs deals. A module has no amount."
+    # The real field still answers, so the dark org keeps the answer of today.
+    real = await _agg(keyed, a, entity="module:Invoices", measure="sum",
+                      field="Grand_Total", group_by="owner")
+    assert real["total"] == 1550.5 and real["keys"] == {}

@@ -9,6 +9,7 @@
 // flattened them all to "request failed" would leave the UI unable to explain
 // a refusal, which is the difference between a rule and a bug.
 
+import { invalidate } from "@/lib/dataCache";
 import { filenameFromDisposition, saveBlob, saveCsv } from "@/lib/export";
 import { moveRequest, type DealMove, type MoveExtras } from "./board";
 import { queryString, type ListQuery } from "./filters";
@@ -32,6 +33,12 @@ import type {
   SuggestionDone,
   SuggestionList,
 } from "./suggestions";
+import type {
+  AcceptBestDone,
+  AnswerDone,
+  CataloguePart,
+  QuestionsBody,
+} from "./questions";
 import type { RecordCounts, ResetThen } from "./setup";
 import type { ResetResult } from "./startOver";
 import type {
@@ -783,6 +790,105 @@ export function dismissSuggestion(slot: SlotWord, version: number): Promise<Sugg
     method: "POST",
     body: JSON.stringify({ version }),
   });
+}
+
+// ── The open questions (WS-53 CRM-Q32-3) ──────────────────────────────────
+//
+// Admin only, Mirror mode only, and dark behind `CRM_QUESTIONS_ORGS`: an org
+// outside it gets 404 `questions_off`. `lib/questions.ts` holds the types and
+// the words. Each write calls `invalidate("crm:")` on each answer, also a
+// refusal, so every CRM read wakes: the questions, the rail count, the
+// catalogue and Sync health (rule 2 of `workbench/AGENTS.md`, the CRM row).
+
+/** Each write wakes every CRM read, whatever the answer was. */
+async function writeAndWake<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } finally {
+    invalidate("crm:");
+  }
+}
+
+/** The open questions, by impact. `all` adds each part in use, for "Your answers". */
+export function listQuestions(opts: { all?: boolean; limit?: number } = {}): Promise<QuestionsBody> {
+  const query = new URLSearchParams();
+  if (opts.all) query.set("all", "1");
+  if (opts.limit !== undefined) query.set("limit", String(opts.limit));
+  const qs = query.toString();
+  return call<QuestionsBody>(`/questions${qs ? `?${qs}` : ""}`);
+}
+
+/**
+ * Answer one question. `null` is "None of these", and `"@auto"` on a
+ * `stage_value` is its Undo. `version` is the plan that the card read, so a
+ * plan that moved gives 409 `plan_moved`.
+ */
+export function answerQuestion(
+  id: string,
+  value: string | null,
+  version?: number | null,
+): Promise<AnswerDone> {
+  const body: { value: string | null; version?: number } = { value };
+  if (typeof version === "number") body.version = version;
+  return writeAndWake(() =>
+    call<AnswerDone>(`/questions/${encodeURIComponent(id)}/answer`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+/** "Not relevant": the question does not come back until the Zoho schema changes. */
+export function dismissQuestion(id: string): Promise<{ id: string; dismissed: boolean }> {
+  return writeAndWake(() =>
+    call<{ id: string; dismissed: boolean }>(`/questions/${encodeURIComponent(id)}/dismiss`, {
+      method: "POST",
+    }),
+  );
+}
+
+/**
+ * The Undo of "Not relevant" and of "None of these" on a slot: the question
+ * opens again. A 404 `not_dismissed` says that no dismissal exists.
+ */
+export function undismissQuestion(id: string): Promise<{ id: string; dismissed: boolean }> {
+  return writeAndWake(() =>
+    call<{ id: string; dismissed: boolean }>(`/questions/${encodeURIComponent(id)}/dismiss`, {
+      method: "DELETE",
+    }),
+  );
+}
+
+/**
+ * Accept Jev's best guesses. A dry run writes nothing and wakes nothing. A
+ * real run writes ONE plan version, and its Undo puts back each part.
+ */
+export function acceptBest(
+  ids: readonly string[],
+  dryRun: boolean,
+  version?: number | null,
+): Promise<AcceptBestDone> {
+  const body: { ids: string[]; dry_run: boolean; version?: number } = { ids: [...ids], dry_run: dryRun };
+  if (typeof version === "number") body.version = version;
+  const run = () =>
+    call<AcceptBestDone>("/questions/accept-best", { method: "POST", body: JSON.stringify(body) });
+  return dryRun ? run() : writeAndWake(run);
+}
+
+/**
+ * A correction of the catalogue (CRM-Q31-4). Each part takes a field, a
+ * purpose word, `null` ("None"), or `"@auto"` (the choice of Metorite).
+ */
+export function putCatalogue(
+  module: string,
+  parts: Partial<Record<CataloguePart, string | null>>,
+): Promise<{ module: string; version: number | null }> {
+  return writeAndWake(() =>
+    call<{ module: string; version: number | null }>(`/catalogue/${encodeURIComponent(module)}`, {
+      method: "PUT",
+      body: JSON.stringify(parts),
+    }),
+  );
 }
 
 // ── The setup hub and the start over (WS-53 CRM-X0) ───────────────────────

@@ -29,7 +29,8 @@
     "save_memory",
     "emit_generative_ui",
     "make_report",
-    "call_agent"
+    "call_agent",
+    "org_facts"
   ],
   "own_tool_scope": [
     "search_crm",

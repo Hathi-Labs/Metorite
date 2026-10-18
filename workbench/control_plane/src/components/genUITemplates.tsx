@@ -56,12 +56,15 @@ import { hasMoreToTheRight } from "@/lib/scrollCue";
 import {
   PLAN_EDIT_COLS,
   type PlanRow,
+  UNASSIGNED_LABEL,
   afterCount,
-  afterLabel,
   afterOptions,
   blankRow,
   isMarked,
+  isUnassigned,
   markLine,
+  ownerSummary,
+  planFacts,
   planIncomplete,
   planRowsFrom,
   planSubmit,
@@ -213,8 +216,8 @@ export const TEMPLATE_CATALOG: TemplateSpec[] = [
   },
   {
     name: "planCard",
-    summary: "An editable project plan (title, owner, effort, start, due, after per task, with a priority score; the owner's fit, hours and marks read-only) that submits the edited rows back — pair with hitl.",
-    data: "{ title?, description?, submitLabel?, project:{ name, parent?, description? }, tasks:[{ key, title, owner, effort_mins, start?, due, after?:[key], important?:bool, leveraged?:bool, impact?, urgency?, effort?, priority?, fit?, hours?, marks?:[string], warnings?:[string] }], capacity?, warnings?:[string], risks?:[string] }",
+    summary: "An editable project plan (title, owner, effort, start, due, after per task, with a priority score; the owner's fit, hours and marks read-only) that submits the edited rows back — pair with hitl. An empty owner is an unassigned task: no fit, no hours.",
+    data: "{ title?, description?, submitLabel?, project:{ name, parent?, description? }, tasks:[{ key, title, owner?, effort_mins, start?, due, after?:[key], important?:bool, leveraged?:bool, impact?, urgency?, effort?, priority?, fit?, hours?, marks?:[string], warnings?:[string] }], capacity?, warnings?:[string], risks?:[string] }",
   },  {
     name: "chart",
     summary: "A live chart in Metorite's chart language (13 kinds), with a tooltip and a legend. The WhatsApp bot sends the same spec as an image.",
@@ -1712,6 +1715,7 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   const drop = (i: number) => setRows((p) => p.filter((_, k) => k !== i));
   const add = () => setRows((p) => [...p, blankRow(p)]);
   const blocked = planIncomplete(name, rows);
+  const owners = ownerSummary(rows);
   const submit = () => {
     if (!ctx?.onAction || submitted || blocked) return;
     setSubmitted(true);
@@ -1730,22 +1734,26 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
       </label>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {rows.map((r, i) => {
-          const after = afterLabel(r, rows);
           const options = afterOptions(r, rows);
-          const facts = [
-            after ? `After: ${after}` : "",
-            r.fit != null ? `Fit: ${r.fit}` : "",
-            r.hours != null ? `Hours: ${r.hours}` : "",
-          ].filter(Boolean);
+          const facts = planFacts(r, rows);
           const [titleCol, ...shortCols] = PLAN_EDIT_COLS;
-          const field = (c: (typeof PLAN_EDIT_COLS)[number]) => (
-            <label key={c.key} style={{ ...MUTED, display: "block", minWidth: 0 }}>
-              {c.label}
-              <input type={c.type} value={str(r[c.key])} disabled={submitted}
-                onChange={(e) => setCell(i, c.key, c.type === "number" ? num(e.target.value) : e.target.value)}
-                style={{ ...FIELD_INPUT_STYLE, padding: "5px 8px", marginTop: 2 }} />
-            </label>
-          );
+          // §26: an empty owner is an unassigned task. The field says so in
+          // its placeholder, and the member can type an owner over it.
+          const nobody = isUnassigned(r);
+          const field = (c: (typeof PLAN_EDIT_COLS)[number]) => {
+            const owner = c.key === "owner";
+            return (
+              <label key={c.key} style={{ ...MUTED, display: "block", minWidth: 0 }}>
+                {c.label}
+                <input type={c.type} value={str(r[c.key])} disabled={submitted}
+                  placeholder={owner ? UNASSIGNED_LABEL : undefined}
+                  data-plan-unassigned={owner && nobody ? "" : undefined}
+                  onChange={(e) => setCell(i, c.key, c.type === "number" ? num(e.target.value) : e.target.value)}
+                  className={owner ? "placeholder:text-muted-foreground" : undefined}
+                  style={{ ...FIELD_INPUT_STYLE, padding: "5px 8px", marginTop: 2 }} />
+              </label>
+            );
+          };
           return (
             <div key={r.key} style={{ borderTop: "1px solid var(--border)", paddingTop: 8 }}>
               <div style={{ display: "flex", alignItems: "flex-end", gap: 6 }}>
@@ -1798,6 +1806,7 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
           Add a task
         </Button>
       )}
+      {owners && <div style={{ ...MUTED, marginTop: 8 }} data-plan-owners="">{owners}</div>}
       {capacity && <div style={{ ...MUTED, marginTop: 8 }}>{capacity}</div>}
       {warnings.length > 0 && (
         <div style={{ marginTop: 10, borderRadius: 10, padding: "8px 10px",

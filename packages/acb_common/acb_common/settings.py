@@ -293,6 +293,27 @@ class Settings(BaseSettings):
     # grant `enforcement-flip` does not cover it. Fence:
     # tests/unit/test_crm_note_vectors.py.
     crm_note_search_orgs: str = ""
+    # `crm_catalogue_orgs` (WS-53 CRM-Q31-1, 2026-10-17) lists the
+    # organization ids that get the CRM catalogue for the AI
+    # (`crm_platform.md` §18.13.4), in the grammar of `crm_orgs`. Default
+    # empty means NO organization (fail closed). An org outside the list gets
+    # 404 `catalogue_off` from `GET /crm/catalogue` in each mode, no key word
+    # in the aggregate, and the old answer of `crm_list_modules`. The one
+    # reader is `gateway.routes.crm.flags`. A name in the list spends
+    # nothing, so a flip on a box is gate `enforcement-flip`. Fence:
+    # tests/unit/test_crm_catalogue.py.
+    crm_catalogue_orgs: str = ""
+    # `crm_questions_orgs` (WS-53 CRM-Q32-1, 2026-10-18) lists the
+    # organization ids that get the open questions of the CRM
+    # (`crm_platform.md` §18.14.3), in the grammar of `crm_orgs`. Default
+    # empty means NO organization (fail closed). An org needs a place on
+    # `crm_catalogue_orgs` too. An org outside gets 404 `questions_off` from
+    # `GET /crm/questions` and `PUT /crm/catalogue/{module}`, no questions
+    # step after a sync run, no My Day card and no CRM facts. The one reader
+    # is `gateway.routes.crm.flags`. A name in the list spends nothing, so a
+    # flip on a box is gate `enforcement-flip`. Fence:
+    # tests/unit/test_crm_questions.py.
+    crm_questions_orgs: str = ""
     # `crm_digest_orgs` (WS-53 CRM-Q28, 2026-10-17) lists the organization
     # ids that get the weekly CRM digest on the powerful tier
     # (`crm_platform.md` §18.11.2), in the grammar of `crm_orgs`. Default

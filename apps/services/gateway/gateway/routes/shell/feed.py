@@ -691,9 +691,13 @@ register(Provider("email_followups", ("email",), _email_followups, MAIL_FOLLOWUP
 # covers the whole organization. Fence:
 # `tests/unit/test_feed_crm_kinds.py` and `test_feed_crm_kinds_r8.py`.
 
-#: The kinds of the source (§5.9 item 13).
+#: The kinds of the source (§5.9 item 13). WS-53 CRM-Q32-4 adds
+#: `crm_open_questions`: a new question about the data of the org, for a CRM
+#: admin. It keys on `crm:questions:<UTC date of new_at>`, so one day gives
+#: one card, and its one act opens CRM settings at Open questions. Only an
+#: org on `CRM_QUESTIONS_ORGS` reads it (`aggregate.my_day_rows`).
 CRM_KINDS = frozenset({"crm_followup_due", "deal_quiet", "deal_close_passed",
-                       "digest_ready"})
+                       "digest_ready", "crm_open_questions"})
 #: The record word of a signal id → the kind of ``sources.CRM_KINDS``.
 _CRM_RECORDS = {"deal": "deal", "lead": "lead", "contact": "contact",
                 "organization": "company"}
@@ -790,6 +794,28 @@ def _digest_signal(row: dict[str, Any]) -> Signal:
     )
 
 
+def _questions_signal(row: dict[str, Any]) -> Signal:
+    """``crm_open_questions``: the CRM holds a new question about the data of
+    the org (CRM-Q32-4, ``crm_platform.md`` §18.14.5). The signal id is the
+    UTC date of ``new_at``, so a second card on one day is the same card.
+    The facts are counts and a time, never a question. Its one act opens
+    CRM settings at Open questions, through the one builder of a CRM link."""
+    from gateway.retrieval.sources import crm_settings_href
+
+    href = crm_settings_href("questions")
+    at = _instant(row.get("new_at"))
+    # The feed reads no clock of its own: the card always carries `new_at`.
+    day = at.astimezone(ZoneInfo("UTC")).date().isoformat() if at is not None else "undated"
+    title = "Open questions about your CRM data"
+    return Signal(
+        signal_id=f"crm:questions:{day}", app="crm", kind="crm_open_questions",
+        entity={"type": "questions", "id": day, "label": title}, title=title,
+        facts={"count": int(row.get("count") or 0), "open": int(row.get("open") or 0),
+               "money": row.get("money") is True, "new_at": _iso(at)},
+        href=href, acts=(link("answer", "Answer", href),), at=_iso(at),
+    )
+
+
 def _crm_order(signal: Signal, today: date, tz: ZoneInfo) -> tuple[int, int, float, str]:
     """By ``BASE``, then a follow-up due from my local today on before an
     older one, then by age (§5.9 item 13). So the cap of 15 never cuts a
@@ -834,6 +860,8 @@ async def _crm(user: UserContext) -> Found:
     signals += [_close_passed_signal(r, tz) for r in passed]
     if rows.get("digest"):
         signals.append(_digest_signal(rows["digest"]))
+    if rows.get("questions"):
+        signals.append(_questions_signal(rows["questions"]))
     signals.sort(key=lambda s: _crm_order(s, today, tz))
     full = any(len(part) >= size for part in (due, quiet, passed))
     return Found([], 0, capped=full or len(signals) > PER_APP,
@@ -1125,6 +1153,18 @@ def _digest_line(facts: dict[str, Any]) -> str:
             "is ready in Reports.")
 
 
+def _questions_line(facts: dict[str, Any]) -> str:
+    """The why line of ``crm_open_questions`` (CRM-Q32-4). A code template
+    over a count: it shows no question and no model text."""
+    count = facts.get("count")
+    n = count if isinstance(count, int) and not isinstance(count, bool) and count > 0 else 0
+    if n == 1:
+        return "Jev has 1 new question about your CRM data."
+    if n > 1:
+        return f"Jev has {n} new questions about your CRM data."
+    return "Jev has new questions about your CRM data."
+
+
 def _colleague_line(facts: dict[str, Any]) -> str:
     names = [str(n) for n in facts.get("out") or [] if n]
     task = facts.get("task") or "a task"
@@ -1132,6 +1172,13 @@ def _colleague_line(facts: dict[str, Any]) -> str:
         return (f"{names[0]} and {len(names) - 1} more are away today. "
                 f"You share {task} with them.")
     return f"{names[0] if names else 'A colleague'} is away today. You share {task} with them."
+
+
+#: The why line of each CRM card of the org: its template id and its line.
+_ORG_CARD_LINES: dict[str, tuple[str, Any]] = {
+    "digest_ready": ("digest_ready", _digest_line),
+    "crm_open_questions": ("open_questions", _questions_line),
+}
 
 
 def _md3_why(kind: str, facts: dict[str, Any], tz: ZoneInfo,
@@ -1174,8 +1221,11 @@ def _md3_why(kind: str, facts: dict[str, Any], tz: ZoneInfo,
                                 "and the deal is still open.")
     if kind == "colleague_out":
         return "colleague_out", _colleague_line(facts)
-    if kind == "digest_ready":
-        return "digest_ready", _digest_line(facts)
+    if kind in _ORG_CARD_LINES:
+        # The two CRM cards of the org (CRM-Q28 and CRM-Q32-4): one template
+        # each over the facts, never a word of a model.
+        template, line = _ORG_CARD_LINES[kind]
+        return template, line(facts)
     if kind == "agent_asks":
         at = facts.get("waiting_since")
         return "asks", (f"Asked {_when(at, tz, today)} at {_clock(at, tz)}. "

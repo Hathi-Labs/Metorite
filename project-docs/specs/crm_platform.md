@@ -33,7 +33,9 @@
 >
 > **Specified, not built:** CRM-Q21 and CRM-Q22, of a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9). Batch M builds the rest of CRM-Q17a to CRM-Q20 on the branch `crm-batch-m`, not merged (§18.12.1).
 >
-> **Specified 2026-10-17, not built:** CRM-Q31, the catalogue that tells the AI what each module is for, and CRM-Q20-3, the overlay in the aggregate, the AI tools and the board (§18.13). No migration.
+> **Built 2026-10-17, merged as #1122, dark (`crm-batch-ai`):** CRM-Q31-1 to CRM-Q31-3, the catalogue that tells the AI what each module is for, and CRM-Q20-3a, the overlay in the aggregate and the AI tools (§18.13). No migration. CRM-Q20-3b is specified, not built. CRM-Q32 absorbs CRM-Q31-4.
+>
+> **Built 2026-10-18 on `crm-batch-q32`, not merged, dark:** CRM-Q32, the open questions (§18.14). CRM-Q32-1 to CRM-Q32-6 are built, the screens and both halves of CRM-Q32-4 too. CRM-Q32-7 is not, because it waits for WS-61. The CRM asks the admin each question that Jev could not answer with confidence. Each answer becomes a fixed fact in the mapping plan. Every app reads it through the one read seam `org facts`. No migration, and no model call of its own.
 >
 > **Built later, not merged (Batch M, `crm-batch-m`):** CRM-Q17a-1b, a "still empty" check of a stale entity (2026-10-16, §18.9.6, no migration). CRM-Q17a-2, the screens of the fill rank (2026-10-16, no migration). CRM-Q18-1b, two deadlocks of the plan lock (2026-10-16, no migration). CRM-Q19, the executor and the 200-record preview (2026-10-16, no migration).
 >
@@ -1287,7 +1289,8 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q29** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-answer-check`, with two fix rounds), merged as #1116, dark. Fix round 3 merged as #1120. Fix round 4 built 2026-10-17 on `crm-answer-check-r4`, not merged. The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
 | **CRM-Q30** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. A founder question set for CRM insights: an eval of the assistant over CRM data. §18.11 | P1 |
 | **CRM-Q30b** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. The read tools say when Zoho holds more records than the connected Zoho user can read. §18.11 | P1 |
-| **CRM-Q31** | The CRM catalogue for the AI: the purpose of each module, its key fields by meaning, and its links. Code first, then the decide tier. Four slices (Q31-1 to Q31-4). §18.13 | P0 |
+| **CRM-Q31** | The CRM catalogue for the AI: the purpose of each module, its key fields by meaning, and its links. Code first, then the decide tier. Q31-1 to Q31-3 merged as #1122, dark. Q31-4 is absorbed into CRM-Q32 (§18.14). §18.13 | P0 |
+| **CRM-Q32** | Open questions: the CRM asks the admin each question that Jev could not answer with confidence. Each answer is a fixed fact in the plan, and every app reads it through `org facts`. Seven slices (Q32-1 to Q32-7). Q32-1 to Q32-6 are built on `crm-batch-q32`, not merged (2026-10-18). §18.14 | P0 |
 | **CRM-Q20-3** | The overlay reaches the readers: `GET /crm/aggregate` and the AI tools first (Q20-3a), then the overlaid board with an "Unsorted" lane (Q20-3b). §18.13 | P1 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
@@ -3769,6 +3772,11 @@ that comes from a model. A per-member record scope (§18.5, CRM-Q12).
    `group_by=owner` groups by the owner email. A date or a datetime needs a
    `bucket`. The types `multiselect`, `text` and `formula`, and each other
    type, give 422.
+   **Changed 2026-10-18:** a call can give neither. The answer is then one
+   total over every filtered record, with no group, and `records` holds the
+   count of records. A 422 for a field names the valid field keys, at most
+   20. Fences: `tests/unit/test_crm_aggregate_r8.py` and
+   `tests/unit/test_crm_aggregate_fields_r8.py`.
 4. A filter on a module can name a field with one value
    (`field.<key>=<value>`), or a date field with a range (`field.<key>.from`
    and `field.<key>.to`). The core entities keep the list filters they have
@@ -4099,7 +4107,10 @@ Done when:
 9. The step takes the newest notes first, 640 at most (10 requests of 64).
    The cap counts requests in Redis for each org and UTC day, before each
    request goes out, as CRM-Q26 does. The cap is 80 requests, so 5,120
-   notes, in one day. A Redis failure embeds nothing.
+   notes, in one day. A Redis failure embeds nothing. While more than 1,000
+   notes wait, the cap is 400 requests (25,600 notes). A step then takes
+   2,560 notes. So the first pass of an org ends in one day (owner request,
+   2026-10-17). DEWiN's full pass costs about USD 0.02.
 10. The payer check is the one of CRM-Q26 item 7: the `connected_by` member
     of the Zoho connection, still an active member of this org
     (`my_day_loop.departed`). With no such member, the step skips and logs a
@@ -4748,7 +4759,8 @@ the right numbers. The set must catch a regression.
   synthetic data, checkers, a `--scripted` mode and a row in
   `evals/README.md`.
 - `crm_aggregate` (CRM-Q25) needs `group_by` or `group_field`. So a plain
-  total is the `total` of a grouped answer.
+  total is the `total` of a grouped answer. (Changed 2026-10-18: a call can
+  give no group, and the answer is one total.)
 - A module filter takes one value or a date range only. No filter takes "not
   equal" or a number range.
 - The route sorts a value group largest first, and it keeps 50 groups.
@@ -5146,9 +5158,16 @@ and runs the verification of both slices again.
 
 ### 18.13 The mapping reaches the AI (CRM-Q31, CRM-Q20-3, 2026-10-17)
 
-**Status (2026-10-17).** Specified, not built. Verified against code at
+**Status (2026-10-17).** Built, merged as #1122, dark: CRM-Q31-1 to CRM-Q31-3
+and CRM-Q20-3a (see "Built" below). CRM-Q20-3b is specified, not built.
+CRM-Q31-4 is absorbed into CRM-Q32 (§18.14.6). The spec was verified against code at
 `origin/main` `4a0a41c24`, with Batch M (#1112) merged. Verified against
 DEWiN's production data on 2026-10-17, read only and counts only (§18.13.2).
+
+**Built (2026-10-17).** CRM-Q31-1, CRM-Q31-2, CRM-Q31-3 and CRM-Q20-3a are
+built on `crm-batch-ai`, not merged, dark. `CRM_CATALOGUE_ORGS` ships empty,
+and `crm.map_catalogue` starts `off`. CRM-Q20-3a reads an overlay only after
+an admin approves a role, and no org has one. CRM-Q31-4 and CRM-Q20-3b wait.
 
 **Migrations.** No slice needs one. A slice that finds a need takes the next
 free number at build time, and checks it again at merge (R1). Batch I2 takes
@@ -5649,7 +5668,7 @@ CRM-Q31-2 first.
 | CRM-Q31-2 | The key words in the aggregate, and `sum_amount` on a module | AGENT-SAFE | S | CRM-Q31-1 |
 | CRM-Q20-3a | The overlay in `GET /crm/aggregate` and in the AI tools | AGENT-SAFE | M | CRM-Q31-2 |
 | CRM-Q31-3 | The catalogue on the decide tier, and the kind `catalogue` | AGENT-SAFE to build. The flip is OWNER-GATE | M | CRM-Q31-1 |
-| CRM-Q31-4 | The admin screen of the catalogue | AGENT-SAFE | S | CRM-Q31-3 |
+| CRM-Q31-4 | The admin screen of the catalogue. Absorbed into CRM-Q32-2 and CRM-Q32-3 (§18.14) | AGENT-SAFE | S | CRM-Q31-3 |
 | CRM-Q20-3b | The overlaid board and the "Unsorted" lane | AGENT-SAFE | M | CRM-Q20-3a |
 
 **The flips.** A name in `CRM_CATALOGUE_ORGS` spends nothing, so it is the
@@ -5819,7 +5838,10 @@ flips DEWiN to `shadow`, the next sync run logs one
 request ids to `usage_event` gives the measured tokens. The result goes into
 this section. An agent prepares the check and stops.
 
-**CRM-Q31-4 · The admin screen.** Done when:
+**CRM-Q31-4 · The admin screen.** ⚠️ Absorbed into CRM-Q32 (2026-10-17). A
+correction is the same act as an answer, so CRM-Q32-2 builds the PUT below
+and CRM-Q32-3 builds the screen (§18.14.6, §18.14.9). The items below stay
+the contract of the PUT. Done when:
 
 1. One entry of `lib/settingsSections.ts`, the one list of CRM-C1, shows the
    catalogue. It shows to an admin in Mirror mode, for an org in
@@ -5944,6 +5966,8 @@ Migration: none.
    received (the `payment_in` modules). Recommended: billed. DEWiN's invoices
    are whole, with 30,177 records and one date, and Payment_Received has no
    single amount. Each answer names its basis and offers the other number.
+   ⚠️ 2026-10-17: CRM-Q32 makes it a question of each org, with Billed as
+   the product default until the org answers (§18.14.11, call 1).
 3. **Does rule 2 of the kinds gain `amount`, the owner and the parent?**
    This is the open call of CRM-Q20-1. Recommended: no, for reads. The overlay
    reads them from the catalogue (CRM-Q31), because a read moves no record.
@@ -5983,6 +6007,845 @@ change of the first, and runs the verification of both again.
 | `routes/crm/catalogue.py` | CRM-Q31-1, CRM-Q31-2 (`entry_of`), CRM-Q31-4 |
 | `routes/crm/mapping_plans.py` | CRM-Q31-3 |
 | `routes/crm/overlay.py` | CRM-Q20-3a, CRM-Q20-3b |
+
+### 18.14 Open questions (CRM-Q32, 2026-10-17)
+
+**Status (2026-10-18).** Built on `crm-batch-q32`, not merged, and dark
+behind `CRM_QUESTIONS_ORGS`: CRM-Q32-1 to CRM-Q32-6. The backend came first.
+Then CRM-Q32-3 built the screens, and the frontend half of CRM-Q32-4 built the
+"Needs you" item of Sync health. CRM-Q32-7 is not built, because it waits for
+a writer of a system page (WS-61). Specified 2026-10-17, and verified
+against code at `origin/main` `c972551cb`, with CRM-Q31-1 to CRM-Q31-3 and
+CRM-Q20-3a merged as #1122, dark. CRM-Q32 absorbs CRM-Q31-4: a correction of the catalogue is
+the same act as an answer to a question. No slice needs a migration.
+
+**Bottom line.** The CRM shows the admin each question that Jev could not
+answer with confidence about the data of the org. Each answer becomes a
+fixed fact. The catalogue, the totals, the mapping and the chat then use it,
+and the AI never asks it again. CRM-Q32 makes no model call of its own.
+
+**Owner direction (2026-10-17, in chat).** The mapping must be correct.
+When the AI has a doubt about what to map and how, the CRM asks the user
+first. The questions show somewhere in the CRM, as open items that the user
+answers. The AI then knows how Metorite must organise, read and understand
+the data.
+
+**Owner direction, second part (2026-10-17, in chat).** It must scale. The
+memory of the CRM about an org stays in one central place, so each user can
+query it. It can become a part of the memory of the AI insights, for other
+apps too. Do not build a store again if one exists. §18.14.4 answers it.
+
+#### 18.14.1 What the code does today
+
+Frontend paths in §18.14 are relative to `workbench/control_plane/src/app/crm/`.
+Gateway paths are relative to `apps/services/gateway/gateway/`.
+
+| Fact | Anchor |
+|---|---|
+| An unsure answer is under `SURE` (0.75), or its top two are closer than `MARGIN` (0.15). It goes once more with samples | `crm_sync/map_pipeline.py:137-138`, `map_pipeline.py:761-779` |
+| An unsure purpose or key part closes as `null` ("asked, not sure"). The ranked candidates of the answer are not kept | `map_pipeline.py:1626-1632`, `map_pipeline.py:1705-1709` |
+| An unsure role makes no suggestion (§18.9.4, rule 7). Its candidates are not kept either | `map_pipeline.py:992-1031` |
+| An entry names each part that waits for a question in `open`. A part with `null` was asked. A part whose field is gone is in `stale` | `crm_sync/catalogue.py:192-215`, `catalogue.py:547-587` |
+| The candidates of a key part come from code: the right type, a fill above 0, the most filled first, at most 40 | `map_pipeline.py:1519-1530` |
+| `merge_item` keeps a part with `by: admin`. It cannot remove a part | `catalogue.py:456-477` |
+| `apply_catalogue` writes catalogue items with no approval, under the plan lock, and changes no field rule | `routes/crm/mapping_plans.py:916-953` |
+| `write_draft` puts items into the open draft. `commit` is the one approve | `mapping_plans.py:870-913`, `mapping_plans.py:628-660` |
+| A suggestion approves the items of one slot from the draft, with a preview. Dismiss records the slot and module with the schema hash in the cursor row `zoho:map_dismissed` | `routes/crm/suggestions.py:270-300`, `suggestions.py:342-368`, `map_pipeline.py:578-623` |
+| `GET /crm/catalogue` serves each member. `entry_of` is the one reader of one entry | `routes/crm/catalogue.py:304-345` |
+| `CRM_CATALOGUE_ORGS` gates the catalogue | `routes/crm/flags.py:200-211` |
+| The settings sections are one list. Suggestions and Sync health are admin sections in Mirror mode | `lib/settingsSections.ts:48-66`, `settingsSections.ts:92-100` |
+| The rail draws each row with `RailRow`. Its `meta` is a muted count. No row has an attention badge today | `components/CrmRail.tsx:219-295`, `src/components/ui/RailRow.tsx:141-142`, `RailRow.tsx:336-340` |
+| "Needs you" in Sync health is derived on the client from `GET /crm/sync/health`. It knows three kinds | `lib/syncHealth.ts:377-457`, `components/SyncHealthCard.tsx:61-65`, `SyncHealthCard.tsx:144-185` |
+| My Day has four CRM kinds. `feed_rank.BASE` is the one table of kinds, and `base()` refuses an unknown kind. No kind has a once-a-day rule | `routes/shell/feed.py:695-696`, `feed.py:846`, `routes/shell/feed_rank.py:58-87`, `feed_rank.py:119`, `feed_rank.py:184-209` |
+| `_short_note` adds one line to a CRM tool answer, and adds nothing when its read fails. No CRM tool returns a link today | `packages/acb_skills/acb_skills/crm_tools.py:386-406` |
+| `crm_href` links one CRM record only. `crm_reports_href` links Reports. No builder links a settings section | `retrieval/sources.py:207-221` |
+| The run assembly reads `GET /crm/mode` as the member | `apps/services/orchestrator/orchestrator/_tool_injection.py:1456-1490` |
+| The shared question card of chat is `ElicitationCard`. The tool is `ask_questions` | `workbench/control_plane/src/components/ElicitationCard.tsx:119-268`, `packages/acb_skills/acb_skills/ask_tools.py:193-292` |
+
+#### 18.14.2 Scope and non-goals
+
+**In scope.**
+
+1. One derived read of the open questions of an org, with the choices of
+   each question.
+2. An answer, a dismissal, a batch of best guesses, and Undo. An answer
+   writes through the one plan seam. A dismissal writes a cursor row.
+3. The corrections of CRM-Q31-4: the admin changes any part of the
+   catalogue, also a part that code answered.
+4. Five places that show the questions: CRM settings, the rail, Sync health,
+   My Day and the chat.
+5. The org-facts read seam, its CRM provider and its agent tool (§18.14.4).
+6. The meaning of "revenue" as a question of each org.
+
+**Not in scope.**
+
+- A new model call. CRM-Q32 shows what the pipeline and code already know.
+- A question to a member who is not a CRM admin.
+- A second store of CRM facts. The plan holds them (§18.14.4).
+- Native mode. Code answers each part of a Native CRM.
+- The detection of a Zoho change. CRM-Q22 keeps it (the next paragraph).
+- A write to Zoho.
+
+**CRM-Q22 and CRM-Q32.** CRM-Q22 item 1 finds a change in Zoho. CRM-Q32
+owns the one place where the admin answers. So a change reaches the admin
+as a question of a kind below, and never as a second inbox.
+
+- A new module with records becomes a `purpose` question when code cannot
+  name its purpose. The derived read sees it with no work of CRM-Q22.
+- A new value of a mapped stage field becomes a `stage_value` question. The
+  derived read sees it too.
+- A field that an answer named and that is gone, or has another type, makes
+  the part `stale`. It becomes a `key_field` question again.
+- A new field alone is no question. It "changes nothing" (§18.9.4).
+- A field rule that fails stays a suggestion of CRM-Q22.
+
+#### 18.14.3 The question model
+
+**One derived read. No new table.** `crm_sync/questions.py` builds the
+questions as pure functions from what the org holds today. The inputs are
+the catalogue entries (`catalogue.build`), the approved plan, the open draft,
+the cursor rows of the pipeline, and the empty slots. Two small states need
+rows of their own. Both are cursor rows of `crm_sync_cursors`, which is
+tenant-scoped with FORCE RLS, as `zoho:map_dismissed` is.
+
+| Cursor row | Holds | Written by |
+|---|---|---|
+| `zoho:questions` | `dismissed`: the id of each question that the admin marked "Not relevant", with its schema hash. `seen`: the ids of the open set after the last run, and `new_at` | The dismiss route, and the sync scheduler after the mapping run |
+| `zoho:map_pipeline` (exists) | Gains `doubts`: the slot of each unsure role, with its candidate modules, best first. `doubts` is a field of `Cache`, so `Cache.of` and `Cache.state` both carry it | The pipeline |
+
+**The kinds.**
+
+| Kind | Id | Shows when | Choices | Applies |
+|---|---|---|---|---|
+| `purpose` | `purpose:<Module>` | `purpose` is in `open` and the AI will not answer it (the gate below), or it is `null` by `ai`, or it is in `stale` | Up to 3 purposes, Jev's best first, then "Pick another" with the whole list of `PURPOSES` | At once, through `apply_catalogue` |
+| `key_field` | `key:<Module>:<part>` | The same rule, for `amount`, `date`, `status` or `parent` of a money entry | Up to 3 fields, Jev's best first, each with its fill and 3 masked sample values. Then "None of these" and "Pick another field" | At once, through `apply_catalogue` |
+| `slot` | `slot:<slot>` | A core slot is empty (`map_pipeline.slot_empty`), has no approved role, has no open suggestion, and has at least one candidate module | Up to 3 modules, each with its record count and 3 masked record names. Then "None of these" | Through the approve path of CRM-Q20-2, after a preview |
+| `stage_value` | `stage:<slot>:<hash of the value>` | An approved `stage` item has no entry for a value that at least one record holds | Open, Won, Lost | Through `commit`, after a preview |
+| `revenue` | `revenue` | The catalogue holds an `invoice` entry and a `payment_in` entry, each with records, and no admin answered | Billed (the `invoice` modules), Collected (the `payment_in` modules) | At once, through `apply_catalogue` |
+
+**The gate of `open`.** A part in `open` waits for the AI or for the admin.
+The admin sees it only when the AI will not answer it:
+
+1. the mode of `crm.map_catalogue` for the org is `off` or `shadow`, or
+2. the cache key of the part is parked (`Cache.parked`, `map_pipeline.py:543`).
+
+In `on`, the admin sees a part only after the pipeline closed it as `null`.
+So the admin never answers a question that the AI answers an hour later.
+
+**The candidates, best first.**
+
+- **Jev's order.** In `on`, the pipeline keeps the order of each unsure
+  answer. A catalogue item gains `ranked`: each part closed as `null`, with
+  up to 3 field keys or purpose words, by probability. The pipeline reads
+  the rank from the re-ask answer when there is one, else from the first
+  answer. No number is kept, and no number shows (CRM-Q31-4 item 2). The
+  ranks come from answers that the org paid for already, so they cost
+  nothing.
+- **The doubts of the roles.** `doubts` is a field of `Cache`, beside
+  `schema`, `items` and `failures`. `Cache.of` reads it and `Cache.state`
+  writes it. The run writes `zoho:map_pipeline` whole
+  (`map_pipeline.py:2375-2377`), so a field outside `Cache` would be lost.
+  A cache hit on `SLOTS_KEY` keeps the doubts of that key.
+- **Code's order.** With no rank, the order of `part_candidates` serves: the
+  most filled first. A purpose question with no rank offers no short list,
+  only "Pick another".
+- **The candidates of a slot.** Each slot word maps to its slug of
+  `catalogue.CORE_FITS`: `company` to `organizations`, `contact` to
+  `contacts`, `lead` to `leads` and `deal` to `deals`. With no doubt, the
+  slot takes each module whose purpose is in the fits of that slug and that
+  holds records, the most records first. A module that the admin dismissed
+  for that slot on the schema of today drops out (`map_pipeline.is_dismissed`).
+- **The values of a stage.** One grouped statement through `field_sql.py`
+  reads the distinct values of the stage field of an approved `stage` item,
+  each with its count of records. It orders them by count and stops at
+  `map_pipeline.DISTINCT_LIMIT` (500). Each value with no entry in `values`
+  is one `stage_value` question.
+- **A candidate that is gone** drops out. A question with no candidate left
+  shows "Pick another field" only.
+
+**The masked samples.** The read takes the 200 records with the lowest ids,
+as `_MODULE_SAMPLE_SQL` does (`map_pipeline.py:1917-1920`). It shows 3 values of each
+candidate through `map_pipeline.masked`, so a person's email, phone or name
+shows as its pattern class. Only an admin reads them.
+
+**Why it matters.** Code writes one sentence for each question from fixed
+templates, with no model. The sentence names what the answer changes.
+
+| Kind | The sentence names |
+|---|---|
+| `purpose` | The module, and that totals and chat answers about it wait for the answer |
+| `key_field` `amount` | "Totals of <label> use this field." It also names revenue when the module is the basis of revenue |
+| `key_field` `date` | "Totals of <label> by month or quarter use this date" |
+| `key_field` `status` | "Counts of <label> by status use this field" |
+| `key_field` `parent` | "Totals of <label> by customer use this link" |
+| `slot` | "<Slot> holds no records. <Module> could stand in for it" |
+| `stage_value` | "<Count> records with this value show as Unsorted" |
+| `revenue` | "Each answer about revenue uses this. Until you answer, Metorite uses Billed" |
+
+**The wire.** `GET /crm/questions` returns `{"open": n, "shown": [...],
+"more": m}`. Each question has this shape:
+
+```json
+{"id": "key:Payment_Received:amount", "kind": "key_field",
+ "module": "Payment_Received", "label": "Collection", "part": "amount",
+ "reason": "unsure", "records": 8681, "money": true,
+ "why": "Totals of Collection use this field.",
+ "choices": [{"value": "IP_Amount", "label": "IP Amount", "fill": 0.52,
+              "samples": ["12400", "8000", "3250"], "best": true}],
+ "none": true, "other": true, "current": null}
+```
+
+- `reason` is `open` (the AI will not ask), `unsure` (the AI asked and was
+  not sure) or `stale` (the field of an answer is gone).
+- `current` is the answer in use, for a correction. It is `null` for an open
+  question.
+- A `slot` question has no `fill`. A `stage_value` question has `count`.
+
+**Who may read and answer.** The guards of the Field map: the CRM switch,
+`CRM_MIRROR` (else 404), `admin:access:manage` (else 403) and Mirror mode
+(else 409 `not_mirror`). The new list `CRM_QUESTIONS_ORGS` holds the orgs
+that get the questions. `flags.questions_allowed(org)` is
+`catalogue_allowed(org)` AND a place on `CRM_QUESTIONS_ORGS`. An org outside
+gets 404 `questions_off`. The list ships empty, and `*` means every org. The
+org comes from the session (R5).
+
+#### 18.14.4 Org facts: one seam, no second store
+
+**The decision (2026-10-17, from the survey of the stores of the org).**
+The answered facts of the CRM stay in the mapping plan. Every app reads the
+facts of the org through ONE read seam, `org facts`. No ticket of CRM-Q32
+adds a table.
+
+**What the survey found.**
+
+| Store | Fit for org facts | Why |
+|---|---|---|
+| The mapping plan (`crm_mapping_plans`) | **Yes, for the CRM.** It is the store | It is per org, with FORCE RLS. It has versions, one lock, one Undo, and `by` for each part (`code`, `ai`, `role`, `admin`) |
+| Mem0 `org:global` | **No** | One key serves the whole deployment. Its table has no `organization_id` and no RLS. Retrieval is fuzzy and a model extracts the text. D17 plans the tenant binding and is not built. Production runs with `MEM0_ENABLED=false` and the table does not exist (`packages/acb_memory/acb_memory/compartments.py:35-38`, `compartments.py:160-183`) |
+| Knowledge (WS-61, `knowledge_base.md`) | **Yes, for people to read and cite** | Its tables have `organization_id` and FORCE RLS (migration 272), grants and versions. It holds no structured fact, and it is dark behind `KNOWLEDGE_ENABLED`, `KNOWLEDGE_ORGS` and `COMPANY_SEARCH_ENABLED` |
+| `org_settings` (`acb_common/org_settings.py`) | No | It holds the branding only, and no prompt reads it |
+| A data dictionary or a semantic layer | Does not exist | |
+
+**1. The CRM facts stay in the plan.** An answer writes through
+`apply_catalogue` or through the approve path (§18.14.6). The meaning of
+revenue is one org-level item of the kind `catalogue` in the same plan:
+
+```json
+{"kind": "catalogue", "module": "@org", "revenue": "invoice",
+ "by": {"revenue": "admin"}}
+```
+
+- A Zoho API name cannot start with `@`, so `@org` never names a module.
+- `revenue` takes `invoice` (billed) or `payment_in` (collected).
+- Rule 4 of the kinds (`catalogue.item_problem`) learns `@org` and its one
+  part. `kind_key` gives `("catalogue", "@org")`. `catalogue.build` never
+  makes an entry of it.
+
+**2. One read seam for every app.** A new `gateway/org_facts.py` holds a
+small registry. Each app registers a provider. A provider returns the facts
+of its app as rows of one shape:
+
+| Column | Example |
+|---|---|
+| `app` | `crm` |
+| `subject` | `module:Invoices`, `field:Invoices.Total_Product_Amount`, `term:revenue` |
+| `key` | `amount` |
+| `value` | `Total_Product_Amount` |
+| `meaning` | "The amount of an invoice is Total Product Amount." |
+| `source` | `code`, `ai` or `admin` |
+| `set_at` | The time of the plan version that holds the part |
+| `set_by` | `admin`, `Metorite` or `Jev`. Never an email, because an agent reads it |
+
+- **The CRM provider** reads the catalogue (`catalogue.build` through
+  `routes/crm/catalogue._load`) and the approved plan items. It returns the
+  purpose and each key part of each entry, each approved role, target and
+  stage, and the meaning of revenue. A part that the admin left as "none"
+  is a fact too: "Collection has no single amount."
+- **Other apps** (email, projects) add a provider later. The registry needs
+  no change for them.
+- **The read route** `GET /org/facts?app=&q=` lives in a new
+  `routes/org_facts.py`. The org comes from the server (R5). `q` matches
+  the subject and the meaning, case-insensitive, in code. Any member may
+  read. The CRM provider calls `access.require_crm_access(user)`
+  (`routes/crm/access.py:98`). A member that the CRM admits reads the CRM
+  facts, and any other member gets none.
+- **The owner of the seam.** WS-53 owns `org facts` until a cross-app owner
+  exists. `work_plan.md` §4 records it.
+- **The agent tool** `org_facts(app, query)` loads with the `crm` tool
+  family only, for now (coordinator decision, 2026-10-17). So the core floor
+  does not change: `CORE_SCHEMA_TOTAL_CEILING` is 6,700, and the measured
+  total is 6,680 (`test_tool_schema_diet.py:256`). The tool reads the route
+  as the member.
+- **Follow-up.** A later slice makes `org_facts` a core tool, after WS-23
+  pays for it by a cut of another core tool. §18.14.13 records it.
+- **The CRM facts block.** A run whose agents hold a CRM tool gets one
+  compact block. It lists the answered facts of the money modules and of the
+  stages, at most 12 lines. It goes in at the run assembly, beside the read
+  of `GET /crm/mode` (`_tool_injection.py:1456-1490`). This amends
+  "How the catalogue reaches the model" of §18.13.4 for answered facts
+  only. The rest of the catalogue stays in `crm_list_modules`.
+
+**3. People see the facts in Knowledge.** When Knowledge is on for the org,
+the CRM writes one read-only page, "How our CRM data is organised", in the
+`company` space. The system writes it, not an agent proposal. The CRM builds
+it from the org-facts read after each answer. `search_company` and people
+then find and cite it.
+
+When Knowledge is off, the CRM writes nothing. Knowledge has no writer for a
+system page today, so this is a later slice (CRM-Q32-7).
+
+**4. Onboarding scales.** A new org starts with the facts of code only, at
+0 tokens. Jev then fills each sure fact. The open questions fill the rest.
+No org needs a setup by hand.
+
+**5. Mem0 `org:global` is not a store of org facts** until D17 ships. One
+key serves every org there, with no RLS, so a fact of one org could reach
+another org. §18.14.13 records the risk.
+
+#### 18.14.5 Where it shows
+
+**In CRM settings, as a section beside Suggestions.** Recommended over a
+rail view, for one reason. `SETTINGS_SECTIONS` is the one list of admin
+places, with the admin and Mirror gates that a question needs. A rail view
+would be a second nav entry, and it would show to members who cannot
+answer.
+
+- `lib/settingsSections.ts` gains `{ id: "questions", label: "Open
+  questions", icon: "CircleHelp", audience: "admin", modes: ["mirror"] }`,
+  before Suggestions. The client learns `CRM_QUESTIONS_ORGS` from the
+  answer of `GET /crm/questions`. A 404 `questions_off` sets a new field of
+  the section context, and `visibleSections` then hides the section.
+- When the open count is above 0, `defaultSection` opens it first.
+
+**A count on the rail.** The row "CRM settings" and the section row "Open
+questions" show the open count. The count shows to an admin only, and hides
+at 0.
+
+The rows use the `meta` of `RailRow`. A count of an attention item needs a
+tone that `meta` does not have. So `src/components/ui/RailRow.tsx` gains one
+prop, `metaTone: "muted" | "attention"`. It is the one rail primitive
+(DESIGN_SYSTEM.md §6b), so the CRM adds no local badge.
+
+- `attention` draws the count in the token `--primary`, the tone of the
+  `primary` `Badge`. No new token.
+- A count with `attention` stays visible on hover. The `actions` of the row
+  take only the place of a `muted` count (`RailRow.tsx:283`).
+- The same PR adds `metaTone` to DESIGN_SYSTEM.md §6b.
+
+**A block in Sync health "Needs you".** `needsYou` (`lib/syncHealth.ts:418`)
+gains the kind `questions`. It gives one item, "<n> open questions about
+your data", with the action `answer`. The action opens the section.
+`GET /crm/sync/health` gains `open_questions`, the count of
+`questions.count_open`, so `needsYou` stays pure.
+
+**A card on My Day for the CRM admin.** A new kind
+`crm_open_questions` joins `CRM_KINDS` (`routes/shell/feed.py:695`) and
+`feed_rank.BASE`, with the base 22, below `digest_ready` (24).
+
+- **A questions step after each sync run.** The scheduler runs it after
+  each sync run, for an org where `questions_allowed` is true. The mapping
+  modes do not gate it, because each of them is `off` by default. The step
+  builds the open ids and compares them with `seen` of `zoho:questions`. It
+  writes `seen`, `new_at` and `money` (true while a money question is open).
+- **One card a day at most.** The step sets `new_at` only when an id is new.
+  The card shows while `new_at` is less than 24 hours old. Its signal id is
+  `crm:questions:<UTC date of new_at>`, so a second card on the same day is
+  the same card.
+- **My Day reads one cursor row.** `aggregate.my_day_rows` reads only
+  `zoho:questions`, inside its one session. It builds no question.
+- **No nag.** An answer that only closes questions sets no `new_at`. The
+  fatigue of `feed_rank` applies, and a member can mute the kind.
+- **Group.** `needs_you` while `money` is true, else `fyi`.
+- **Who.** Only a member with `admin:access:manage` and the CRM access rule
+  gets it. `aggregate.my_day_rows` adds `questions` for an admin only.
+- **Act.** "Answer", to a new `crm_settings_href(section)` beside
+  `crm_reports_href` (`retrieval/sources.py:218`). `crm_href` links records
+  only. The label in `src/lib/shell/feed.ts` `FEED_KIND_LABELS` is "Open
+  questions".
+- **The kind tables of My Day.** The five kind tables of
+  `specs/my_day_feed.md` name `crm_open_questions` since 2026-10-17: the
+  groups (§5), the CRM kinds (§5.5), the bases, the groups of the rank, and
+  the state facts.
+
+**One line in the chat.** When an answer of a CRM tool depends on an open
+question, the tool adds one line. It never blocks, never asks in the chat,
+and uses the stated default.
+
+- `crm_list_modules` writes "open question" on a part of an entry. An
+  example is "Amount: an open question." The money block names the basis of
+  revenue as "Billed (the default until a CRM admin answers)".
+- `crm_aggregate` on a key word with no key field gives 422 `no_key_field`
+  today (CRM-Q31-2 item 3). When the part is an open question, the gateway
+  puts `href` in the 422 detail, from `crm_settings_href("questions")`. The
+  message adds: "A CRM admin can answer this in CRM settings, Open
+  questions." `crm_tools` passes the `href` on, and does not import a link
+  builder.
+- **A revenue total** is `sum_amount` on a module whose purpose is `invoice`
+  or `payment_in`, while `@org` has no admin answer. It adds one line: "This
+  uses billed revenue, the default. A CRM admin can change it in Open
+  questions."
+- The line follows `_short_note` (`crm_tools.py:386-406`). A failed read of
+  the questions adds no line.
+- The line reads `GET /crm/catalogue`, which each member may read. The
+  catalogue entry gains `questions`: the ids of its open parts, only while
+  `questions_allowed` is true. `CatalogueResponse` gains `revenue`:
+  `{value, by}` from the `@org` item. A member then learns that a question
+  is open, and never its samples.
+
+#### 18.14.6 Answering
+
+**One click a question.** `POST /crm/questions/{id}/answer` with
+`{"value": <choice>}` writes the answer.
+
+| Kind | The click | The write | Undo |
+|---|---|---|---|
+| `purpose`, `key_field`, `revenue` | One choice | `apply_catalogue` with the part `by: admin`. It applies at once, because it changes no record and no screen (§18.13.4) | Sends `"@auto"` for a part that Metorite chose, or the earlier choice of the admin |
+| `slot` | One module, then Approve in the panel | `write_draft` with the `role` item, by the admin. The panel of CRM-Q20-2 shows real records first. Approve calls `POST /crm/mapping/suggestions/{slot}/approve` | The Undo of CRM-Q20-2 (`POST .../{slot}/undo`) |
+| `stage_value` | Open, Won or Lost. The card shows the count of records that move from Unsorted first | Under `lock_plan`: `commit` with the approved items and the `stage` item that gains the value, then `carry_draft`, as `approve_suggestion` does (`suggestions.py:283-293`). A plan that moved gives 409 `plan_moved` | Commits the `stage` item without the value, the same way |
+
+A `slot` or a `stage_value` changes what records mean, so it always goes
+through the approve path (§18.9.4).
+
+**"None of these".** On a `key_field`, it stores `null` with `by: admin`:
+no field holds the part. On a `purpose`, it stores `other` with `by: admin`.
+On a `slot`, it records the question id in `zoho:questions` with
+`slots_digest`. It does not call `map_pipeline.dismiss`, because that row
+keeps one module for each slot.
+
+**"Not relevant".** `POST /crm/questions/{id}/dismiss` records the id in
+`zoho:questions` with the schema hash of the question. A changed schema
+asks again. `revenue` takes no dismissal, because it has a default.
+
+- The hash of a module question is `catalogue_hash` of the module
+  (`map_pipeline.py:1504`).
+- The hash of a slot is `slots_digest`.
+- The hash of a stage value is the hash of the options of the stage field.
+
+**The corrections of CRM-Q31-4.** `PUT /crm/catalogue/{module}` stays as
+CRM-Q31-4 item 4 says: a field or a purpose word, `null`, or `"@auto"`. It
+calls the same writer as the answer route. `GET /crm/questions?all=1` adds
+each answered part as a question with `current`, so the admin changes any
+part in the same card. One writer serves both doors.
+
+- **The gate of the PUT.** `PUT /crm/catalogue/{module}` needs
+  `questions_allowed`, else 404 `questions_off`. It has the guards of the
+  Field map too.
+- **`"@auto"` puts back the answer of the pipeline.** `merge_item` cannot
+  remove a part, so `apply_catalogue` gains the keyword `clear`. For each
+  part, it reads the cached item of the pipeline in `zoho:map_pipeline`
+  `items`: `catalogue:purpose:<Module>` for a purpose, and
+  `catalogue:<Module>` for a key part. It puts that part back with
+  `by: ai` and its `ranked`. It removes the part only when the cache holds
+  none.
+- **Why.** In `on`, a cache hit (`map_pipeline.py:1756-1759`) keeps the
+  cached item in `working`, never in `fresh`. So the pipeline never writes
+  it again. A plain removal would leave the part empty, with no question.
+
+**Batch: accept Jev's best guesses.** `POST /crm/questions/accept-best`
+with `{"ids": [...], "dry_run": true}` returns each question, its best
+guess, and the sentence of what changes. The admin reads it in a Modal.
+The same call with `"dry_run": false` applies them.
+
+- Only `purpose` and `key_field` questions with a rank from Jev join. A
+  `slot` or `stage_value` changes what records mean, so it never joins a
+  batch. `revenue` never joins, because it has a default.
+- It writes ONE `apply_catalogue` call, so one plan version. Its Undo sends
+  `"@auto"` for each part of the batch.
+
+**Errors.** A choice that is not in the choices, or a field of the wrong
+type, gives 422 `bad_answer`. A question that is no longer open gives 409
+`question_moved`, and the card reads the list again. A plan that moved
+gives 409 `plan_moved`, as today.
+
+#### 18.14.7 Order and caps
+
+`questions.rank` orders the open questions by impact, in this order:
+
+1. `revenue`, because each answer about money uses it.
+2. Each question of a money entry (`MONEY_PURPOSES`) or of the slot
+   `deal`, the most records first. Inside a module: `amount`, `date`,
+   `status` and `parent`.
+3. Each `purpose` question, the most records first. A purpose decides
+   whether the key parts get asked.
+4. Each other question, the most records first.
+
+The section shows 5 questions, then "Show <m> more". The rail and Sync
+health show the whole count. On DEWiN with the catalogue `off`, the read
+gives about 9 purpose questions and the key parts of 6 money modules
+(§18.13.7). So the first 5 are revenue, then the amount and the date of
+Invoices and of Collection.
+
+#### 18.14.8 The AI side and the cost
+
+- **An admin answer always wins.** `merge_item` keeps a part with
+  `by: admin`, so the pipeline never replaces it (§18.13.4). The read of the
+  catalogue puts an admin part first.
+- **No re-ask.** The pipeline builds no question of a part with `by: admin`.
+  A part with `null` by `admin` is answered, and is never in `open`. A test
+  proves both.
+- **A dismissal holds** until the schema hash of the question changes.
+- **The chat reads answered facts as fixed.** `crm_list_modules`, the key
+  words of the aggregate and the org-facts block read the same plan. A part
+  with `by: admin` shows with no "open question".
+- **Cost: no decide call.** CRM-Q32 reads the answers that the pipeline
+  paid for, and keeps their order in `ranked` and `doubts`. The read, the
+  answer, the batch and the card call no model. The chat line costs 0 extra
+  tool calls. The org-facts tool costs one schema in a run that loads the
+  `crm` family. The CRM facts block costs at most 12 lines in a CRM run.
+
+#### 18.14.9 The screens
+
+Each screen follows `DESIGN_SYSTEM.md`. It uses the parts of
+`src/components/ui/`, the shared components of `src/components/` and the
+tokens only. `Tabs` is `src/components/Tabs.tsx` and `EmptyState` is
+`src/components/EmptyState.tsx`. The `Card` frame of
+`components/SettingsCards.tsx:34` holds each card.
+
+**Open questions (the section).**
+
+- The title is "Open questions". The note under it says "Jev was not sure
+  about these. Your answer becomes a fixed fact for totals and chat."
+- A row of `Tabs` (segmented): "Open (<n>)" and "Your answers".
+- One card for each question. The top line is the label of the module and
+  the part, for example "Collection: amount". A `Badge` names the reason:
+  "Not sure" (warning), "Field gone" (warning) or "Not asked" (neutral).
+- Under it is the sentence of why it matters, in muted text.
+- Each choice is one `Button` `variant="ghost"`. It shows the field label,
+  the fill ("52% filled") and the 3 samples in muted mono text. Jev's best
+  choice carries `RecommendedBadge` (`src/components/RecommendedBadge.tsx:24-35`)
+  as it is, with its label "Recommended". It takes no props, so its fences
+  (`genUITemplates.test.ts`, `elicitationCard.test.ts`) do not change.
+- "None of these" is a ghost `Button`. "Pick another field" opens a
+  `SelectButton` of each field of the right type. "Not relevant" is a ghost
+  `Button` at the end of the card.
+- A click applies, and a `useToast` toast says "Saved. Totals of Collection
+  now use IP Amount." with the action Undo.
+- A `slot` card says "Preview <Module> as <Slot>". It opens the
+  `SuggestionPanel` of `components/Suggestions.tsx:270`.
+- A `stage_value` card shows the value, its count, and three ghost Buttons:
+  Open, Won and Lost.
+- The `revenue` card shows two choices with the module names under each,
+  and the line "Until you answer, Metorite uses Billed."
+- After 5 cards: a ghost Button "Show <m> more".
+- Above the cards, when 2 or more questions have a best guess: a secondary
+  Button "Accept Jev's best guesses (<k>)". It opens a `Modal` with one line
+  for each question ("Collection: amount, IP Amount") and the buttons
+  "Apply <k> answers" and "Cancel".
+- **Empty.** `EmptyState`: "No open questions. Jev is sure about your data,
+  or you answered each question."
+- **Error.** "Could not load the questions. Try again." with a Button.
+
+**Your answers (the corrections of CRM-Q31-4).** One row for each module.
+It holds its purpose and its key parts, under the Zoho labels. A small text
+says "You chose", "Metorite chose" or "Not set". Each part has a
+`SelectButton` to change it, with "Let Metorite choose" for `"@auto"`. No
+confidence number and no engine word shows.
+
+**The rail.** The "CRM settings" row and the "Open questions" section row
+show the count, with `metaTone="attention"`.
+
+**Sync health.** One `<li>` in "Needs you", as the other kinds: a `Badge`
+"Questions" (tone `primary`), the text, and a secondary Button "Answer".
+
+**My Day.** The generic card of the feed, with "Open questions" as the kind
+label and "Answer" as the act.
+
+**Phone width (375 px).** A card stacks its choices one under the other.
+The samples wrap under the label. The batch Modal is full width.
+
+**The visual review.** The `visual-review` skill runs on the section, the
+rail, Sync health and the batch Modal. It runs in light mode, at compact
+density, with a changed accent, at 375 px, and beside the Suggestions
+section.
+
+#### 18.14.10 Tickets
+
+| Ticket | Slice | Gate | Size | Waits for |
+|---|---|---|---|---|
+| CRM-Q32-1 | The question read: `crm_sync/questions.py`, `GET /crm/questions`, `ranked` and `doubts` | AGENT-SAFE | M | — |
+| CRM-Q32-2 | Answer, dismiss, batch and the PUT of CRM-Q31-4 | AGENT-SAFE | M | CRM-Q32-1 |
+| CRM-Q32-3 | The section, "Your answers", the rail count and the batch Modal | AGENT-SAFE | M | CRM-Q32-2 |
+| CRM-Q32-4 | Sync health "Needs you" and the My Day card | AGENT-SAFE | S | CRM-Q32-3 |
+| CRM-Q32-5 | The org-facts seam, the CRM provider, `GET /org/facts`, the tool (with the `crm` family) and the CRM facts block | AGENT-SAFE | M | CRM-Q32-2 |
+| CRM-Q32-6 | The chat line | AGENT-SAFE | S | CRM-Q32-1 |
+| CRM-Q32-7 | The Knowledge page "How our CRM data is organised". ⚠️ NOT dispatchable: a stub | AGENT-SAFE to build, later | S | CRM-Q32-5, and a writer of a system page that WS-61 specifies in `knowledge_base.md` |
+
+**The flips.** A name in `CRM_QUESTIONS_ORGS` spends nothing, so it is the
+grant `enforcement-flip`. The org needs `CRM_CATALOGUE_ORGS` too, which is
+the same grant. CRM-Q32 adds no owner flip.
+
+**Migrations.** None. Each state is a cursor row or a plan item. A slice
+that finds a need takes the next free number at build time, and checks it
+again at merge (R1).
+
+**CRM-Q32-1 · The question read.** Done when:
+
+1. A new `crm_sync/questions.py` holds the five kinds, the gate of `open`,
+   `rank`, the ids and the sentences of why. Each is a pure function. It
+   reads no database and calls no model. A unit test proves each kind on synthetic
+   data with DEWiN's shape.
+2. `GET /crm/questions` lives in a new `routes/crm/questions.py`. It has the
+   guards of §18.14.3 and runs in one `_tenant_session()`. `all=1` adds the
+   answered parts with `current`.
+3. The body holds at most 3 samples for each choice, through
+   `map_pipeline.masked`. A test seeds an email, a phone and a name. It
+   proves that each reaches the body as its pattern class only.
+4. `questions.count_open(db, org)` gives the count, for Sync health and My
+   Day.
+5. The pipeline writes `ranked` on each catalogue part that it closes as
+   `null`, from the re-ask answer when there is one. `merge_item` carries
+   `ranked` and drops the rank of a part with `by: admin`. `item_problem`
+   accepts `ranked` with at most 3 strings for each part.
+6. `doubts` is a field of `Cache`. `Cache.of` and `Cache.state` carry it,
+   and a cache hit on `SLOTS_KEY` keeps it. A test runs twice on one schema
+   and proves that the doubts stay.
+7. `item_problem`, `kind_key` and `merge_item` know the item `@org` with
+   the part `revenue`. `catalogue.build` makes no entry of it.
+8. The catalogue entry gains `questions`, the ids of its open parts, only
+   while `questions_allowed` is true. `CatalogueResponse` gains `revenue`:
+   `{value, by}` from the `@org` item. The body of `GET /crm/catalogue`
+   stays free of record values.
+9. In `on`, a part in `open` makes no question. In `off`, it does. A
+   parked key makes one. A test proves the three.
+10. `routes/crm/flags.py` gains `questions_allowed`: `catalogue_allowed`
+    AND a place on `CRM_QUESTIONS_ORGS`. `acb_common/settings.py` gains
+    `CRM_QUESTIONS_ORGS`. A unit test proves the AND in all four cases.
+11. The `slot` and `stage_value` reads follow §18.14.3. A test proves that
+    a module that the admin dismissed for a slot is no candidate.
+12. R8: `test_crm_questions_r8.py` seeds two orgs with different modules,
+    plans and cursor rows. Each org reads only its own questions. A member
+    who is not an admin gets 403, and Native mode gets 409.
+13. R8: the read answers under 1 s with 25 modules and 1,300 field
+    definitions, and the test asserts it.
+
+Files: a new `crm_sync/questions.py`, a new `routes/crm/questions.py`,
+`routes/crm/__init__.py`, `routes/crm/flags.py`, `routes/crm/catalogue.py`,
+`crm_sync/catalogue.py`, `crm_sync/map_pipeline.py`,
+`acb_common/settings.py`, and the new tests `tests/unit/test_crm_questions.py`
+and `tests/unit/test_crm_questions_r8.py`. Also `test_crm_catalogue.py` and
+`test_crm_map_pipeline.py`. Gate: AGENT-SAFE. Size: M. Migration: none.
+Fences: the two new suites, and `test_crm_map_pipeline.py` for `ranked`.
+
+**CRM-Q32-2 · Answer, dismiss, batch and corrections.** Done when:
+
+1. `POST /crm/questions/{id}/answer` writes each kind as the table of
+   §18.14.6 says. A test proves each kind and each error.
+2. `apply_catalogue` gains `clear`. `"@auto"` puts back the cached part of
+   the pipeline with `by: ai` and its `ranked`, and removes the part only
+   when the cache holds none. An R8 test proves both, in `on`.
+3. `PUT /crm/catalogue/{module}` (CRM-Q31-4 items 3, 4 and 6) calls the same
+   writer, behind `questions_allowed`. `test_crm_catalogue_put_r8.py`
+   proves CRM-Q31-4 item 6, and 404 `questions_off`.
+4. `POST /crm/questions/{id}/dismiss` writes `zoho:questions`. A changed
+   schema hash shows the question again. A test proves both.
+5. `POST /crm/questions/accept-best` with `dry_run` writes nothing. Without
+   it, it writes one plan version, and only `purpose` and `key_field` join.
+   A test sends a `slot` id and gets 422.
+6. The pipeline asks no part with `by: admin`, also a part with `null` by
+   `admin`. This is true today: `entry_of` keeps a stored part out of
+   `open` (`catalogue.py:573-580`). A test with a scripted fake of `decide`
+   proves 0 `ask` calls for it, and stays as a fence.
+7. A `stage_value` answer holds `lock_plan`, commits through `commit` and
+   calls `carry_draft`. It reports the count of the records that leave
+   Unsorted. A plan that moved gives 409 `plan_moved`. Its Undo commits the
+   item without the value.
+8. "None of these" on a `slot` writes `zoho:questions` with `slots_digest`.
+   A test proves that `zoho:map_dismissed` does not change.
+9. R8: an admin of org B cannot answer or dismiss a question of org A.
+10. The actor comes from `UserContext` only (R5, R11).
+
+Files: `routes/crm/questions.py`, `routes/crm/catalogue.py`,
+`routes/crm/mapping_plans.py`, `crm_sync/questions.py`,
+`crm_sync/map_pipeline.py`, and the tests
+`tests/unit/test_crm_questions_answer_r8.py`,
+`tests/unit/test_crm_catalogue_put_r8.py` and `test_crm_map_pipeline.py`.
+Gate: AGENT-SAFE. Size: M. Migration: none. Narrow reviewer: tenancy and
+the plan lock.
+
+**CRM-Q32-3 · The screens.** Done when:
+
+1. `lib/settingsSections.ts` holds the section `questions`, gated as
+   §18.14.5 says. A 404 `questions_off` on `GET /crm/questions` hides it.
+   `components/crmQ32.test.ts` proves the gate.
+2. The section, its cards and "Your answers" follow §18.14.9. The copy lives
+   in a new `lib/questions.ts`, as `lib/suggestions.ts` holds its own.
+3. `lib/api.ts` gains `listQuestions`, `answerQuestion`, `dismissQuestion`,
+   `acceptBest` and `putCatalogue`. Each write calls `invalidate("crm:")`.
+4. Each answer shows a toast with Undo. Undo sends the value of §18.14.6.
+5. `RailRow` gains `metaTone`. `attention` draws in `--primary` and stays
+   visible on hover. `src/components/ui/RailRow.test.ts` proves both tones
+   and the hover. DESIGN_SYSTEM.md §6b names `metaTone` in the same PR. The
+   CRM rail passes the count to the two rows.
+6. The batch Modal lists the dry run and applies it.
+7. `components/crmQ32.test.ts` covers the kinds, the empty state, the error
+   state, the cap of 5 and the batch.
+8. The `visual-review` skill runs as §18.14.9 says.
+
+Files: `lib/settingsSections.ts`, a new `lib/questions.ts`, `lib/api.ts`, a
+new `components/OpenQuestions.tsx`, `components/PipelineSettings.tsx`,
+`components/CrmRail.tsx`, `page.tsx`, `src/components/ui/RailRow.tsx` and
+`workbench/control_plane/DESIGN_SYSTEM.md`. The tests are
+`components/crmQ32.test.ts` (new) and `src/components/ui/RailRow.test.ts`.
+Gate: AGENT-SAFE. Size: M. Migration: none.
+
+**CRM-Q32-4 · Sync health and My Day.** Done when:
+
+1. `GET /crm/sync/health` gains `open_questions`. `needsYou` gives the
+   kind `questions` with the action `answer`. `crmQ9.test.ts` proves it.
+2. `crm_open_questions` joins `CRM_KINDS`, `feed_rank.BASE` (22) and the
+   group rule of §18.14.5. `prefs` accepts it as a kind to mute.
+3. A questions step runs after each sync run, gated by `questions_allowed`
+   and not by the mapping modes. It writes `seen`, `new_at` and `money` in
+   `zoho:questions`. It sets `new_at` only when an id is new. A test proves
+   that an answer sets no `new_at`, and that the step runs with each mode
+   `off`.
+4. `aggregate.my_day_rows` reads only `zoho:questions`, in its one session.
+   The card shows for an admin only, at most once a day. A test with two
+   runs on one day proves one signal id.
+5. `retrieval/sources.py` gains `crm_settings_href(section)` beside
+   `crm_reports_href`. The card links through it.
+6. `FEED_KIND_LABELS` gains "Open questions".
+7. The five kind tables of `specs/my_day_feed.md` name `crm_open_questions`
+   since 2026-10-17: the groups (§5), the CRM kinds (§5.5), the bases, the
+   groups of the rank, and the state facts. The slice marks the §5.5 row
+   BUILT.
+
+Files: `routes/crm/sync.py`, `lib/syncHealth.ts`,
+`components/SyncHealthCard.tsx`, `routes/shell/feed.py`,
+`routes/shell/feed_rank.py`, `routes/crm/aggregate.py`,
+`crm_sync/scheduler.py`, `retrieval/sources.py`, `src/lib/shell/feed.ts`
+and `project-docs/specs/my_day_feed.md`. The tests are
+`tests/unit/test_feed_rank.py`, `tests/unit/test_feed_crm_kinds.py`,
+`tests/unit/test_feed_crm_kinds_r8.py`, `tests/unit/test_crm_questions_r8.py`
+and `components/crmQ9.test.ts`. Gate: AGENT-SAFE. Size: S. Migration: none.
+
+**CRM-Q32-5 · The org-facts seam.** Done when:
+
+1. A new `gateway/org_facts.py` holds the registry, the row shape of
+   §18.14.4 and `register(provider)`. A provider reads in the caller's
+   tenant session.
+2. The CRM provider returns the facts of §18.14.4 from the catalogue and
+   the approved plan. It calls `access.require_crm_access(user)` first. It
+   reads no record value and no email.
+3. `GET /org/facts?app=&q=` lives in a new `routes/org_facts.py`. The org
+   comes from the server. A member with no CRM access gets no CRM fact.
+4. The tool `org_facts(app, query)` lives in a new
+   `acb_skills/org_facts_tools.py`. It loads with the `crm` tool family
+   only. `test_tool_schema_diet.py` pins its parameters, and the core total
+   stays under `CORE_SCHEMA_TOTAL_CEILING` (6,700) with no edit.
+5. The run assembly adds the CRM facts block, at most 12 lines. It adds it
+   only when the run holds a CRM tool and the org is in `CRM_QUESTIONS_ORGS`.
+6. R8: `test_org_facts_r8.py` seeds two orgs. Each reads only its own
+   facts, through the route and the tool.
+7. A fence proves that a run of org A never carries the CRM facts block of
+   org B.
+8. A structural test proves that no module outside `org_facts.py` and the
+   providers builds a fact row.
+9. `work_plan.md` §4 names WS-53 as the owner of the org-facts seam, until
+   a cross-app owner exists.
+
+Files: a new `gateway/org_facts.py`, a new `routes/org_facts.py`, the
+gateway router list, a new `acb_skills/org_facts_tools.py`,
+`acb_skills/skill_families.py` (the `crm` family) and `project-docs/work_plan.md`
+§4. Also `apps/services/orchestrator/orchestrator/_tool_injection.py` and
+`tests/unit/test_tool_schema_diet.py`. The new tests are
+`tests/unit/test_org_facts.py` and `tests/unit/test_org_facts_r8.py`. Gate:
+AGENT-SAFE. Size: M. Migration: none. Narrow reviewer: tenancy.
+
+**CRM-Q32-6 · The chat line.** Done when:
+
+1. `crm_list_modules` writes "an open question" on each open part. It names
+   the basis of revenue in the money block, as §18.14.5 says.
+2. The gateway puts `href` in the 422 detail of `no_key_field` when the
+   part is an open question. `crm_aggregate` adds the line of §18.14.5 with
+   that `href`, and imports no link builder.
+2a. A revenue total is `sum_amount` on a module whose purpose is `invoice`
+   or `payment_in`, while `@org` has no admin answer. It gets the line of
+   the default. A test proves both sides of each condition.
+3. A failed read adds no line. A test proves it.
+4. No tool asks a question in the chat, and no tool waits for an answer.
+5. Each pinned parameter stays. `test_tool_schema_diet.py` stays green with
+   no edit.
+
+Files: `acb_skills/crm_tools.py`, `acb_skills/addendum.py`,
+`routes/crm/field_sql.py` (the 422 detail) and `tests/unit/test_crm_agent.py`.
+Gate: AGENT-SAFE. Size: S. Migration: none.
+
+**CRM-Q32-7 · The Knowledge page (a stub).** ⚠️ NOT dispatchable until
+WS-61 specifies a writer of a system page in `knowledge_base.md`. That spec
+owns the writer, so this slice adds none of its own. The intent, for the
+day it opens:
+
+1. With Knowledge on, an answer writes one page in the `company` space,
+   or replaces it. Its title is "How our CRM data is organised". The CRM
+   builds it from the org-facts read. The author is the system, and the
+   page is read-only.
+2. With Knowledge off, the CRM writes no page.
+3. `search_company` finds the page.
+
+Files, fences and verification: decided with that writer. Gate: AGENT-SAFE
+to build, later. Size: S. Migration: none.
+
+#### 18.14.11 Owner calls
+
+**Owner direction 2026-10-17: proceed with the recommendations (revenue
+default billed, batch accept for purpose and key fields after a dry run,
+one My Day card a day, masked samples).** So each slice builds to the
+recommended answer below.
+
+1. **The default meaning of revenue.** Recommended: Billed, until the org
+   answers. This folds owner call 2 of §18.13.8 into a question of each org.
+   The owner confirms the product default only.
+2. **May the admin accept a batch of unsure guesses?** Recommended: yes, for
+   `purpose` and `key_field` only, after the dry-run Modal. Each changes no
+   record, and Undo restores it.
+3. **The My Day card.** Recommended: on for each CRM admin, one card a day at
+   most, `fyi` unless a money question is open.
+4. **Samples to the admin.** Recommended: masked, as the owner direction
+   says. The admin can open the record for the real value.
+
+#### 18.14.12 Verification
+
+- `bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"`
+- `uv run pytest tests/unit/test_crm_questions.py tests/unit/test_crm_questions_r8.py tests/unit/test_crm_questions_answer_r8.py tests/unit/test_crm_catalogue.py tests/unit/test_crm_catalogue_r8.py tests/unit/test_crm_catalogue_put_r8.py -q`,
+  with no test skipped.
+- `uv run pytest tests/unit/test_crm_map_pipeline.py tests/unit/test_crm_map_pipeline_r8.py tests/unit/test_crm_map_plan_r8.py tests/unit/test_crm_map_suggest_r8.py -q`,
+  with no test skipped.
+- `uv run pytest tests/unit/test_org_facts.py tests/unit/test_org_facts_r8.py tests/unit/test_crm_agent.py tests/unit/test_tool_schema_diet.py tests/unit/test_feed_rank.py tests/unit/test_feed_crm_kinds.py tests/unit/test_feed_crm_kinds_r8.py -q`
+- `npx tsc --noEmit && npx vitest run src/app/crm src/components/ui` in
+  `workbench/control_plane`.
+- `uv run python scripts/affected_tests.py --run`
+
+**The DB gate.** Each new R8 suite sets `pytestmark = _DB_GATE`, as
+`test_crm_map_suggest_r8.py:71` does: `test_crm_questions_r8.py`,
+`test_crm_questions_answer_r8.py`, `test_crm_catalogue_put_r8.py` and
+`test_org_facts_r8.py`.
+
+**The files that two slices share.** A slice that merges second takes the
+change of the first, and runs the verification of both again.
+
+| File | Slices |
+|---|---|
+| `crm_sync/questions.py` | CRM-Q32-1, CRM-Q32-2 |
+| `routes/crm/questions.py` | CRM-Q32-1, CRM-Q32-2 |
+| `routes/crm/catalogue.py` | CRM-Q32-1, CRM-Q32-2 |
+| `crm_sync/map_pipeline.py` | CRM-Q32-1, CRM-Q32-2 |
+| `acb_skills/crm_tools.py` | CRM-Q32-6 |
+| `components/CrmRail.tsx`, `lib/settingsSections.ts` | CRM-Q32-3, CRM-Q32-4 |
+| `retrieval/sources.py` (`crm_settings_href`) | CRM-Q32-4, CRM-Q32-6 |
+| `routes/crm/field_sql.py` | CRM-Q32-1, CRM-Q32-6 |
+
+#### 18.14.13 Recorded risks
+
+- **Mem0 `org:global` is one key for every org, with no RLS.** Never use
+  it for org facts until D17 binds it to a tenant (§18.14.4).
+- **A rank goes stale.** `ranked` names fields of the schema that the
+  pipeline saw. The read drops a gone field, so a stale rank shows fewer
+  choices, never a wrong field.
+- **The org-facts tool reaches CRM runs only.** It loads with the `crm`
+  family, so the core floor stays. Follow-up: make it a core tool once WS-23
+  pays for it by a cut of another core tool. Until then, an agent of
+  another app cannot read org facts.
 
 ---
 

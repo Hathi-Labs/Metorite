@@ -110,6 +110,11 @@ def tools_get(answer: Any, calls: list[RouteCall]) -> Iterator[None]:
         clean = {k: str(v) for k, v in (params or {}).items() if v is not None}
         data = await answer(path, clean)
         calls.append(RouteCall(path, clean, data))
+        refusal = checkers.refused(data)
+        if refusal is not None:
+            # The error that crm_tools._get raises for this answer.
+            raise crm_tools._GatewayError(
+                f"CRM GET {path} failed ({refusal.get('status')})", refusal.get("code"))
         return data
 
     crm_tools._get = recording

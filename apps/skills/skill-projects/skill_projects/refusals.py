@@ -22,10 +22,9 @@ applied where the agent registers its tools (``agent-projects/agents.py``):
   tool does not declare. MAF drops such an argument in silence, and the call
   then succeeds without it. The agent's strict tool refuses it by name.
 
-Why not ``include_detailed_errors=True``: it reaches every tool of the run,
-also the tools that we do not own, and it prints the exception's own text.
-This wrapper reaches only our refusals, and their text is ours or is the
-route's detail after :func:`skill_projects.client.safe_detail`.
+The generic half lives in ``acb_common.tool_refusals``, the ONE seam that
+the CRM and email tools share. This module holds the Projects words (its
+:data:`PROJECTS_VOICE`) and the two refusals of the strict tool.
 
 Fences: F4 and F5, ``tests/unit/test_projects_agent_refusals.py``.
 """
@@ -33,128 +32,42 @@ Fences: F4 and F5, ``tests/unit/test_projects_agent_refusals.py``.
 from __future__ import annotations
 
 import difflib
-import functools
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
-from acb_common import get_logger
-
-from skill_projects.client import GatewayRefusal, data
-
-_log = get_logger("skill_projects.refusals")
+from acb_common import tool_refusals as _shared
+from acb_common.tool_refusals import REFUSED, WRAPPED_ATTR, GatewayRefusal, RefusalVoice
 
 __all__ = [
+    "PROJECTS_VOICE",
     "REFUSED",
+    "WRAPPED_ATTR",
     "bad_value_text",
     "refusal_text",
     "refusals_as_text",
     "unknown_argument_text",
 ]
 
-#: The first word of every refusal the model reads. The instructions name it.
-REFUSED = "Refused:"
-
-#: Marks a callable that :func:`refusals_as_text` made. F4 reads it.
-WRAPPED_ATTR = "__refusals_as_text__"
-
-#: What failed, and what to do, for each status the gateway sends.
-_BY_STATUS: dict[int, tuple[str, str]] = {
-    400: (
-        "The Projects app did not accept this request (400).",
-        "Fix the argument that the gateway names, and call the tool once more.",
-    ),
-    401: (
-        "The assistant could not sign in to the Projects app (401).",
-        "Tell the member. Do not try again.",
-    ),
-    403: (
-        "Not permitted (403).",
-        # Owner directive 2026-10-07 (projects_agent_parity.md §16): the
-        # server checked the member's grants and said no. Relay ITS words.
-        # The model names no role and no permission of its own.
-        "The server refused this for the member. Tell the member what the "
-        "gateway said. Name no role or permission that the gateway did not "
-        "name, and do not try again.",
-    ),
-    404: (
-        "Not found, or not visible to you (404).",
+#: The Projects words of the shared refusal text.
+PROJECTS_VOICE = RefusalVoice(
+    app="Projects app",
+    log_event="projects.tool_refused",
+    not_found_next=(
         "Find the right id or name with a read tool, for example find_tasks "
-        "or projects_tree. Do not guess an id.",
+        "or projects_tree. Do not guess an id."
     ),
-    409: (
-        "This conflicts with the current state of the row (409).",
-        "Read the row again, then call the tool once more.",
-    ),
-    412: (
-        "The row changed since it was read (412).",
-        "Read the row again, then call the tool once more.",
-    ),
-    422: (
-        "The Projects app refused an argument (422).",
-        "Fix the argument that the gateway names, and call the tool once more.",
-    ),
-    429: (
-        "Too many requests to the Projects app (429).",
-        "Wait a moment, then try again once.",
-    ),
-    503: (
-        "The Projects app is not available right now (503).",
-        "This is a fault on our side. Try again in a moment. If it fails "
-        "again, tell the member to try again later.",
-    ),
-}
-
-_CLIENT_NEXT = (
-    "Fix the one argument these words name, and call the tool once more. "
-    "If it is refused again, tell the member what it said."
-)
-
-#: For a refusal that no argument fixes: the manifest refused the route, or
-#: the run has no acting member (``GatewayRefusal.fixable`` is ``False``).
-_FINAL_NEXT = (
-    "Tell the member that this could not be done here. Do not try again, "
-    "and do not try another tool for the same act."
 )
 
 #: Argument names a model invents for a repeat rule.
 _REPEAT_WORDS = ("recur", "repeat", "rrule", "freq", "cron", "schedule")
 
 
-def _one_line(text: str) -> str:
-    return " ".join(str(text or "").split())
-
-
 def refusal_text(exc: GatewayRefusal) -> str:
-    """The text the model reads for *exc*, in the shape of the module doc.
+    """The text the model reads for *exc*, in the Projects words.
 
-    A refusal of the gateway is built from its status, its safe detail and
-    its fields, never from its message, so no route path reaches the model.
-    A refusal of the client is text this package wrote, so it is kept.
+    See :func:`acb_common.tool_refusals.refusal_text`.
     """
-    status = getattr(exc, "status", None)
-    if status is None:
-        nxt = _CLIENT_NEXT if getattr(exc, "fixable", True) else _FINAL_NEXT
-        return f"{REFUSED} {_one_line(str(exc))}\nNext: {nxt}"
-    if status in _BY_STATUS:
-        what, nxt = _BY_STATUS[status]
-    elif status >= 500:
-        what = f"The Projects app had an error ({status})."
-        nxt = "Try again once. If it fails again, tell the member."
-    else:
-        what = f"The Projects app refused the request ({status})."
-        nxt = "Fix the argument that the gateway names, and call the tool once more."
-    fields = tuple(getattr(exc, "fields", ()) or ())
-    if fields and status in (400, 422):
-        nxt = (
-            f"Fix the value for {', '.join(fields)}, and call the tool once more. "
-            "If it is refused again, tell the member what the gateway said."
-        )
-    lines = [f"{REFUSED} {what}"]
-    detail = getattr(exc, "detail", "") or ""
-    if detail:
-        lines.append(f"Gateway said: {data(detail)}")
-    lines.append(f"Next: {nxt}")
-    return "\n".join(lines)
+    return _shared.refusal_text(exc, PROJECTS_VOICE)
 
 
 def refusals_as_text(
@@ -162,35 +75,11 @@ def refusals_as_text(
 ) -> Callable[..., Awaitable[Any]]:
     """*fn*, answering a :class:`GatewayRefusal` with :func:`refusal_text`.
 
-    ``functools.wraps`` keeps the name, the docstring, the signature (MAF
-    builds the input model from it) and ``__tool_risk__``, which the egress
-    rule reads (H-236). Any other exception is raised again.
-
-    Each refusal it turns into text also writes ONE warning,
-    ``projects.tool_refused``, with the tool, the status and the route
-    template. The log line holds no detail and no message, because those
-    can hold a title a member typed. So a refusal stays visible in the log,
-    as it was while MAF logged "Function failed".
+    Each refusal writes ONE warning, ``projects.tool_refused``, with the
+    tool, the status and the route template. See
+    :func:`acb_common.tool_refusals.refusals_as_text`.
     """
-    if getattr(fn, WRAPPED_ATTR, False):
-        return fn
-    tool = getattr(fn, "__name__", "")
-
-    @functools.wraps(fn)
-    async def wrapper(*args: Any, **kwargs: Any) -> Any:
-        try:
-            return await fn(*args, **kwargs)
-        except GatewayRefusal as exc:
-            _log.warning(
-                "projects.tool_refused",
-                tool=tool,
-                status=getattr(exc, "status", None),
-                route=getattr(exc, "route", "") or "",
-            )
-            return refusal_text(exc)
-
-    setattr(wrapper, WRAPPED_ATTR, True)
-    return wrapper
+    return _shared.refusals_as_text(fn, PROJECTS_VOICE)
 
 
 def bad_value_text(tool: str, fields: Iterable[str]) -> str:

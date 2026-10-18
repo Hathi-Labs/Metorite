@@ -143,6 +143,7 @@ export default function PipelineSettings({
   readOnly = false,
   studioAdmin = false,
   section,
+  questions,
 }: {
   /**
    * The settings section on screen (CRM-C1). Only its cards draw. With no
@@ -152,6 +153,12 @@ export default function PipelineSettings({
   section?: SettingsSectionId;
   /** Mirror mode: Zoho owns the stages, and the gateway refuses a write. */
   readOnly?: boolean;
+  /**
+   * Open questions (CRM-Q32-3), Mirror mode only. The page passes it only
+   * while the read of the questions says the section is on, because a 404
+   * `questions_off` hides it (§18.14.5).
+   */
+  questions?: React.ReactNode;
   /**
    * `studio_admin` of the layout (CRM-C6a). In Native mode it draws the
    * lead-conversion mapping. The page gives the same value to the sections.
@@ -310,6 +317,8 @@ export default function PipelineSettings({
           {readOnly && show("field-mapping") && <FieldMapCard />}
           {/* CRM-C6a: the lead-conversion mapping, Native mode, a studio admin. */}
           {!readOnly && studioAdmin && show("field-mapping") && <ConvertMappingCard />}
+          {/* CRM-Q32-3: the open questions, Mirror mode only, before Suggestions. */}
+          {readOnly && show("questions") && questions}
           {/* CRM-Q20-2: the suggestions of the mapping, Mirror mode only. */}
           {readOnly && show("suggestions") && <SuggestionsCard />}
           {readOnly && show("sync-health") && <SyncHealthCard />}

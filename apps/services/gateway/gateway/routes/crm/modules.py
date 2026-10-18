@@ -230,9 +230,15 @@ async def mirrored_modules(db: Any) -> dict[str, dict[str, Any]]:
     latest = await profiles.latest(db, str(org))
     if latest is None:
         return {}
+    return mirrored_of(latest.profile)
+
+
+def mirrored_of(profile: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """The mirrored generic modules of one source profile, by API name, in
+    the profile order. The one filter of :func:`mirrored_modules`."""
     return {
         str(row["api_name"]): row
-        for row in _mapping().generic_modules(latest.profile)
+        for row in _mapping().generic_modules(profile)
         if row.get("mirrored") and row.get("api_name")
     }
 
@@ -247,14 +253,31 @@ def _summary(row: dict[str, Any], count: int = 0) -> ModuleSummary:
     )
 
 
+#: The most module names that one 404 names.
+MODULE_CHOICES_MAX = 20
+
+
 def _require_module(mirrored: dict[str, dict[str, Any]], module: str) -> dict[str, Any]:
     """The profile row of *module*, or 404. Runs before any read of a record,
-    so a name outside the mirrored set never reaches a statement."""
+    so a name outside the mirrored set never reaches a statement.
+
+    The 404 names the mirrored modules (at most :data:`MODULE_CHOICES_MAX`),
+    so a model that guessed a name can pick a real one. ``GET /crm/modules``
+    gives the same names to the same member."""
     row = mirrored.get(module)
     if row is None:
+        names = sorted(str(k) for k in mirrored)
+        more = len(names) - MODULE_CHOICES_MAX
+        shown = ", ".join(names[:MODULE_CHOICES_MAX]) or "none"
+        if more > 0:
+            shown += f", and {more} more"
         raise HTTPException(
             status_code=404,
-            detail={"code": "unknown_module", "message": "This module is not mirrored."},
+            detail={
+                "code": "unknown_module",
+                "message": f"This module is not mirrored. The mirrored modules "
+                           f"are: {shown}.",
+            },
         )
     return row
 

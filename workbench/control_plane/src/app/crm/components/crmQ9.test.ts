@@ -1,5 +1,6 @@
 // The Sync health card (WS-53 CRM-Q9, spec section 18.3 step 4 and 18.5).
 // The runner has no DOM, so each component is rendered to a string.
+import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
@@ -26,6 +27,9 @@ import {
   largeSentence,
   largeUnheld,
   moduleState,
+  needsYou,
+  openQuestionsOf,
+  questionsSentence,
   recordsOf,
   statusLines,
   unmappedCount,
@@ -540,5 +544,41 @@ describe("values that did not map (CRM-Q19, spec section 18.9.6 item 7)", () => 
     expect(unmappedCount(entity("leads", 1, 1))).toBe(0);
     expect(unmappedCount(entity("leads", 1, 1, { unmapped: 2 }))).toBe(2);
     expect(unmappedCount(entity("leads", 1, 1, { unmapped: -1 }))).toBe(0);
+  });
+});
+
+// ── CRM-Q32-4: the open questions in "Needs you" (crm_platform.md §18.14.5) ──
+
+describe("the open questions in Needs you (CRM-Q32-4)", () => {
+  it("gives one item with the action answer while a question is open", () => {
+    const items = needsYou(healthy({ open_questions: 3 }));
+    expect(items).toEqual([
+      { key: "@questions", kind: "questions", name: null, text: "3 open questions about your data", action: "answer" },
+    ]);
+    expect(questionsSentence(1)).toBe("1 open question about your data");
+  });
+
+  it("gives none at 0, outside the list (null), and from an older gateway", () => {
+    expect(needsYou(healthy({ open_questions: 0 }))).toEqual([]);
+    expect(needsYou(healthy({ open_questions: null }))).toEqual([]);
+    expect(needsYou(healthy())).toEqual([]);
+    expect(openQuestionsOf(healthy({ open_questions: -2 }))).toBe(0);
+  });
+
+  it("draws the Questions badge in primary, the text and Answer, which opens the section", () => {
+    const html = draw(healthy({ open_questions: 3 }));
+    expect(html).toContain('aria-label="Needs you"');
+    expect(html).toMatch(/bg-primary\/10 text-primary[^"]*">Questions</);
+    expect(html).toContain("3 open questions about your data");
+    expect(html).toContain(">Answer</button>");
+    // A link to another section waits for no run, and for no other write.
+    const busy = draw(healthy({ open_questions: 3, running: true }));
+    expect(busy).toMatch(/<button(?![^>]*disabled="")[^>]*>Answer<\/button>/);
+  });
+
+  it("links Answer to Settings → Open questions by default", () => {
+    const src = readFileSync(new URL("./SyncHealthCard.tsx", import.meta.url), "utf8");
+    expect(src).toContain('onAnswer = () => pushView(viewHref(selectSection(DEFAULT_VIEW, "questions"))),');
+    expect(src).toContain('else if (item.action === "answer") onAnswer();');
   });
 });

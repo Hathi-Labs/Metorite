@@ -932,7 +932,9 @@ _SHARED_ROUTES: dict[str, str] = {
     "crm_report": "/crm/reports/pipeline",
     "crm_aggregate": "/crm/aggregate",
     "crm_stage_dwell": "/crm/aggregate/stage-dwell",
-    "crm_list_modules": "/crm/modules",
+    # CRM-Q31-1: the catalogue first. ``/crm/modules`` answers only when the
+    # catalogue is off (``test_crm_catalogue.py``).
+    "crm_list_modules": "/crm/catalogue",
     "crm_list_module_records": "/crm/modules/Products/records",
     "crm_get_module_record": f"/crm/modules/Products/records/{_ID}",
     "crm_search_notes": "/crm/notes/search",
@@ -1023,8 +1025,12 @@ async def test_the_aggregate_sends_the_filters_of_the_list(monkeypatch) -> None:
         "deals", "owner", measure="weighted", close_from="2026-10-01",
         custom={"cf_region": "South"},
     )
-    # CRM-Q30b: the aggregate, then ONE read of the short reads.
-    assert [c["path"] for c in calls] == ["/crm/aggregate", _T.SHORT_READS_PATH]
+    # CRM-Q30b: the aggregate, then ONE read of the short reads. CRM-Q31-2
+    # item 7: a total of 0 on a core entity then reads the catalogue, for
+    # the empty core line.
+    assert [c["path"] for c in calls] == [
+        "/crm/aggregate", _T.SHORT_READS_PATH, "/crm/catalogue",
+    ]
     params = calls[0]["params"]
     assert (params["entity"], params["group_by"], params["measure"]) == (
         "deals", "owner", "weighted",
@@ -1060,18 +1066,19 @@ async def test_the_aggregate_takes_a_module_and_the_field_arguments(monkeypatch)
 @pytest.mark.parametrize("bad", ["module:../admin", "module:", "module:1abc"])
 async def test_a_bad_module_entity_never_reaches_the_gateway(bad, monkeypatch) -> None:
     calls = _fake_gateway(monkeypatch, _responder)
+    # A bad value is a refusal the model reads, and nothing is sent.
+    for out in (await _T.crm_aggregate(bad, "owner"), await _T.crm_list_fields(bad)):
+        assert out.startswith("Refused:") and "Invalid module name" in out
     with pytest.raises(RuntimeError, match="Invalid module name"):
-        await _T.crm_aggregate(bad, "owner")
-    with pytest.raises(RuntimeError, match="Invalid module name"):
-        await _T.crm_list_fields(bad)
+        _T._entity_slug(bad, allow_module=True)
     assert calls == []
 
 
 async def test_only_the_aggregate_and_the_field_list_take_a_module(monkeypatch) -> None:
     """A record tool builds ``/crm/{slug}``, so a module entity stays refused."""
     calls = _fake_gateway(monkeypatch, _responder)
-    with pytest.raises(RuntimeError, match="Unknown CRM record type"):
-        await _T.crm_list_records("module:Products")
+    out = await _T.crm_list_records("module:Products")
+    assert out.startswith("Refused:") and "Unknown CRM record type" in out
     assert calls == []
 
 
@@ -1157,9 +1164,18 @@ async def test_the_module_records_name_the_fields_the_aggregate_takes(monkeypatc
     out = await _T.crm_list_module_records("Products")
     assert ("Fields for crm_aggregate on module:Products: Unit_Price (currency), "
             "Sales_Start (date).") in out
-    _fake_gateway(monkeypatch, lambda _c: [
+    class _CatalogueOff(FakeClient):
+        """CRM-Q31-1: the org is outside ``CRM_CATALOGUE_ORGS``."""
+
+        async def request(self, method: str, url: str, **kwargs: Any):
+            if url.endswith("/crm/catalogue"):
+                self._calls.append({"method": method, "url": url})
+                return FakeResponse({"detail": {"code": "catalogue_off"}}, 404)
+            return await super().request(method, url, **kwargs)
+
+    fake_gateway(_T, monkeypatch, lambda _c: [
         {"label": "Products", "api_name": "Products", "count": 3},
-    ])
+    ], client_class=_CatalogueOff)
     modules = await _T.crm_list_modules()
     assert modules.endswith(
         "To total a module, call crm_aggregate with entity 'module:<api_name>'.",
@@ -1195,7 +1211,10 @@ async def test_a_refusal_is_the_answer(
     monkeypatch.setattr(_T, "_current_user_email", lambda: "sales@fracktal.in")
     answer = await _INVOCATIONS[tool]()
     assert expected in answer
-    assert len(calls) == 1
+    # Fix round, item 7: a bare 404 of /crm/catalogue reads the old route
+    # once, and the kill switch answers there.
+    fallback = tool == "crm_list_modules" and status == 404
+    assert len(calls) == (2 if fallback else 1)
 
 
 @pytest.mark.parametrize("tool", _SHARED_TOOLS, ids=_SHARED_TOOLS)
@@ -1222,8 +1241,11 @@ async def test_a_missing_record_is_not_read_as_the_crm_off(monkeypatch) -> None:
     monkeypatch.setattr(_T, "httpx", SimpleNamespace(
         AsyncClient=lambda **_kw: _refusing(404, "Deal not found")([], None)))
     monkeypatch.setattr(_T, "_current_user_email", lambda: "sales@fracktal.in")
-    with pytest.raises(RuntimeError, match="Deal not found"):
-        await _T.crm_get_record("deals", _ID)
+    # A 404 that names the record reaches the model as a refusal with the
+    # route's words, never as the CRM-off sentence.
+    out = await _T.crm_get_record("deals", _ID)
+    assert out.startswith("Refused:") and "(404)" in out
+    assert "«Deal not found»" in out and _T.CRM_OFF not in out
 
 
 async def test_mirror_dwell_relays_the_reason(monkeypatch) -> None:
@@ -1249,10 +1271,10 @@ def test_the_shared_tools_bound_every_path_segment() -> None:
 @pytest.mark.parametrize("bad", ["../admin", "Products/../../x", "1abc", ""])
 async def test_a_bad_module_name_never_reaches_the_gateway(bad, monkeypatch) -> None:
     calls = _fake_gateway(monkeypatch, _responder)
-    with pytest.raises(RuntimeError, match="Invalid module name"):
-        await _T.crm_list_module_records(bad)
-    with pytest.raises(RuntimeError, match="Unknown report"):
-        await _T.crm_report("../../admin")
+    out = await _T.crm_list_module_records(bad)
+    assert out.startswith("Refused:") and "Invalid module name" in out
+    out = await _T.crm_report("../../admin")
+    assert out.startswith("Refused:") and "Unknown report" in out
     assert calls == []
 
 
@@ -1402,3 +1424,297 @@ def test_a_scope_that_holds_the_note_search_is_told_about_it(sub_agent: bool) ->
             registry_block="", risk_block="",
         )
         assert "crm_search_notes" in text
+
+
+# ── CRM-Q20-3a: the AI tools on an overlaid slot (crm_platform.md §18.13.5) ──
+
+_OVERLAID = {"mode": "mirror", "overlays": {"deal": "Commercials"}}
+
+
+class _Routed(FakeClient):
+    """A gateway whose responder may answer ``(status, payload)``."""
+
+    async def request(self, method: str, url: str, **kwargs: Any):
+        path = "/" + url.split("/", 3)[-1]
+        self._calls.append({"method": method, "url": url, "path": path,
+                            "params": kwargs.get("params") or {},
+                            "headers": kwargs.get("headers") or {}})
+        answer = self._responder({"path": path, "params": kwargs.get("params") or {}})
+        if isinstance(answer, tuple):
+            return FakeResponse(answer[1], answer[0])
+        return FakeResponse(answer)
+
+
+def _overlaid(monkeypatch, routes: dict[str, Any]) -> list[dict]:
+    def answer(call: dict) -> Any:
+        found = routes.get(call["path"])
+        if callable(found):
+            return found(call)
+        return found if found is not None else {"rows": [], "total": 0}
+
+    calls = fake_gateway(_T, monkeypatch, answer, client_class=_Routed)
+    return calls
+
+
+_LANES = {"entity": "deals", "measure": "count", "group_by": "status", "total": 5,
+          "overlay": {"slot": "deal", "module": "Commercials"},
+          "groups": [{"key": "Open", "label": "Open", "value": 3, "type": "open"},
+                     {"key": "Won", "label": "Won", "value": 1, "type": "won"},
+                     {"key": None, "label": "Unsorted", "value": 1, "type": "unsorted"}]}
+
+
+async def test_a_status_filter_on_an_overlaid_slot_is_one_sentence(monkeypatch) -> None:
+    """Item 5: the narrowing of the audit. No core status is resolved, and no
+    total is sent."""
+    calls = _overlaid(monkeypatch, {"/crm/mode": _OVERLAID})
+    out = await _T.crm_aggregate("deals", "owner", status="Won")
+    assert out.startswith("Deals come from the module Commercials.")
+    assert "takes no status filter" in out and "'@status'" in out
+    assert [c["path"] for c in calls] == ["/crm/mode"]
+    listed = await _T.crm_list_records("deals", status="Won")
+    assert listed.startswith("Deals come from the module Commercials.")
+
+
+async def test_a_refusal_of_the_overlay_is_the_sentence_of_the_route(monkeypatch) -> None:
+    detail = {"code": "overlay_filter",
+              "message": "Deals come from the module Commercials, and a total of them "
+                         "takes no pipeline_id filter."}
+    _overlaid(monkeypatch, {"/crm/aggregate": (422, {"detail": detail})})
+    out = await _T.crm_aggregate("deals", "owner", pipeline_id=_ID)
+    assert out == detail["message"]
+
+
+async def test_the_aggregate_names_the_module_of_the_slot(monkeypatch) -> None:
+    _overlaid(monkeypatch, {"/crm/aggregate": _LANES})
+    out = await _T.crm_aggregate("deals", "status")
+    assert out.splitlines()[1] == "Deals come from the module Commercials."
+    assert "- Unsorted: 1" in out
+    assert "holds no records" not in out, "an overlay needs no empty core line"
+
+
+async def test_the_list_of_an_overlaid_slot_lists_the_module(monkeypatch) -> None:
+    calls = _overlaid(monkeypatch, {
+        "/crm/mode": _OVERLAID,
+        "/crm/modules/Commercials/records": {"rows": [{"id": _ID, "name": "C-1"}], "total": 1},
+    })
+    out = await _T.crm_list_records("deals", q="C-1")
+    assert out.splitlines()[0] == "Deals come from the module Commercials. 1 records, page 1."
+    assert f"(id={_ID})" in out
+    module_call = next(c for c in calls if c["path"] == "/crm/modules/Commercials/records")
+    assert module_call["params"]["q"] == "C-1"
+    # Each other filter gives one sentence that names crm_aggregate.
+    filtered = await _T.crm_list_records("deals", owner="me")
+    assert filtered.startswith("Deals come from the module Commercials.")
+    assert "crm_aggregate" in filtered
+
+
+async def test_a_record_and_its_contacts_on_an_overlaid_slot(monkeypatch) -> None:
+    _overlaid(monkeypatch, {
+        "/crm/mode": _OVERLAID,
+        f"/crm/deals/{_ID}": (404, {"detail": "Deal not found"}),
+        f"/crm/deals/{_ID}/contacts": (404, {"detail": "Deal not found"}),
+        f"/crm/modules/Commercials/records/{_ID}": {
+            "record": {"id": _ID, "name": "C-1", "fields": {}}, "field_defs": []},
+    })
+    record = await _T.crm_get_record("deals", _ID)
+    assert record.startswith("Deals come from the module Commercials.\nCommercials: C-1")
+    contacts = await _T.crm_deal_contacts(_ID)
+    assert "A module record has no deal contacts" in contacts
+
+
+async def test_a_missing_record_with_no_overlay_stays_an_error(monkeypatch) -> None:
+    _overlaid(monkeypatch, {"/crm/mode": {"mode": "mirror"},
+                            f"/crm/deals/{_ID}": (404, {"detail": "Deal not found"})})
+    # PR #1126: the 404 stays a refusal, and the model reads it as text.
+    out = await _T.crm_get_record("deals", _ID)
+    assert out.startswith("Refused:") and "(404)" in out
+    assert "«Deal not found»" in out
+
+
+async def test_the_pipelines_of_an_overlaid_slot_are_its_lanes(monkeypatch) -> None:
+    _overlaid(monkeypatch, {"/crm/mode": _OVERLAID, "/crm/aggregate": _LANES})
+    out = await _T.crm_list_pipelines()
+    assert out.splitlines() == [
+        "Deals come from the module Commercials. Its lanes, in order:",
+        "- Open · open: 3", "- Won · won: 1", "- Unsorted · unsorted: 1",
+    ]
+
+
+async def test_the_reports_of_an_overlaid_slot(monkeypatch) -> None:
+    def aggregate(call: dict) -> Any:
+        if call["params"].get("measure") == "sum_amount":
+            return {**_LANES, "total": 900.0,
+                    "groups": [{"key": "Open", "label": "Open", "value": 600.0},
+                               {"key": "Won", "label": "Won", "value": 300.0},
+                               {"key": None, "label": "Unsorted", "value": 0.0}]}
+        return _LANES
+
+    _overlaid(monkeypatch, {
+        "/crm/mode": _OVERLAID, "/crm/aggregate": aggregate,
+        "/crm/reports/pipeline": {"stages": [], "count": 0, "amount": 0, "weighted": 0},
+        "/crm/reports/funnel": {"stages": []},
+    })
+    out = await _T.crm_report("pipeline")
+    assert "- Open: 3 records · INR 600" in out and "Total: 5 records · INR 900." in out
+    funnel = await _T.crm_report("funnel")
+    assert "is not available" in funnel and "crm_aggregate" in funnel
+
+
+# ── WS-53 CRM-Q32-6: the chat line of an open question ──────────────────────
+
+
+def _q32_gateway(monkeypatch, answer, *, box_on: bool = True) -> list[str]:
+    from acb_common import get_settings
+
+    from tests.unit.test_crm_catalogue import _gateway
+
+    monkeypatch.setattr(get_settings(), "crm_questions_orgs", "*" if box_on else "",
+                        raising=False)
+    return _gateway(monkeypatch, answer)
+
+
+def _q32_catalogue(*, questions_on: bool = True, revenue_by: str | None = None) -> dict:
+    def entry(module: str, label: str, purpose: str | None, records: int,
+              questions: list[str], **more: Any) -> dict:
+        out = {"entity": f"module:{module}", "module": module, "kind": "module",
+               "label": label, "records": records, "purpose": purpose, "fields": {},
+               "open": [], **more}
+        if questions_on:
+            out["questions"] = questions
+        return out
+
+    return {
+        "mode": "mirror",
+        "entries": [
+            entry("Invoices", "Invoices", "invoice", 30, [],
+                  fields={"amount": {"key": "Total", "label": "Total", "type": "currency"}}),
+            entry("Payment_Received", "Collection", "payment_in", 8,
+                  ["key:Payment_Received:amount", "key:Payment_Received:date"],
+                  open=["amount", "date"]),
+            entry("Towers", "Towers", None, 4, ["purpose:Towers"], open=["purpose"]),
+        ],
+        "revenue": {"value": "payment_in" if revenue_by else None, "by": revenue_by},
+    }
+
+
+async def test_q32_list_modules_writes_an_open_question_and_the_basis_of_revenue(
+    monkeypatch,
+) -> None:
+    """Item 1: each open part reads "an open question", and the money block
+    names the basis of revenue."""
+    _q32_gateway(monkeypatch, lambda p: (200, _q32_catalogue()) if p == "/crm/catalogue"
+                 else (200, []))
+    out = await _T.crm_list_modules()
+    assert ("- Collection (module:Payment_Received): payment_in, 8 records. "
+            "Amount: an open question. Date: an open question.") in out
+    assert "- Towers (module:Towers): 4 records. Purpose: an open question." in out
+    assert "Revenue: Billed (the default until a CRM admin answers)." in out
+    _q32_gateway(monkeypatch, lambda p: (200, _q32_catalogue(revenue_by="admin"))
+                 if p == "/crm/catalogue" else (200, []))
+    assert "Revenue: Collected (a CRM admin chose it)." in await _T.crm_list_modules()
+    # Outside CRM_QUESTIONS_ORGS the entries carry no `questions`: no line.
+    _q32_gateway(monkeypatch, lambda p: (200, _q32_catalogue(questions_on=False))
+                 if p == "/crm/catalogue" else (200, []))
+    out = await _T.crm_list_modules()
+    assert "open question" not in out and "Revenue:" not in out
+
+
+async def test_q32_a_no_key_field_with_an_open_question_passes_the_href_on(
+    monkeypatch,
+) -> None:
+    """Item 2: the gateway puts ``href`` in the 422 detail. The tool passes
+    it on and imports no link builder."""
+    detail = {"code": "no_key_field", "href": "/crm?tab=settings&section=questions",
+              "message": "module:Payment_Received has no key field for @amount. "
+                         "crm_list_modules names the key fields of each module. "
+                         "A CRM admin can answer this in CRM settings, Open questions."}
+
+    def answer(path: str) -> tuple[int, dict]:
+        if path.startswith("/crm/aggregate"):
+            return 422, {"detail": detail}
+        return 200, {}
+
+    _q32_gateway(monkeypatch, answer)
+    out = await _T.crm_aggregate("module:Payment_Received", measure="sum_amount",
+                                 group_field="@date", bucket="month")
+    assert out.splitlines() == [
+        detail["message"], "Open questions: /crm?tab=settings&section=questions"]
+    # With no href, the refusal reads as before (#1126: "Refused: ..."), and
+    # it names no Open questions.
+    bare = {k: v for k, v in detail.items() if k != "href"}
+    _q32_gateway(monkeypatch, lambda p: (422, {"detail": bare}))
+    out = await _T.crm_aggregate("module:Payment_Received", measure="sum_amount",
+                                 group_by="owner")
+    assert out.startswith("Refused:") and "Open questions:" not in out
+    source = inspect.getsource(_T)
+    assert "crm_settings_href" not in source and "section=questions" not in source
+
+
+def _q32_total(catalogue: Any) -> Any:
+    def answer(path: str) -> tuple[int, Any]:
+        if path.startswith("/crm/aggregate"):
+            return 200, {"groups": [{"key": "a", "label": "a", "value": 10}], "total": 10,
+                         "field": "Total", "field_type": "currency", "keys": {"@amount": "Total"}}
+        if path == "/crm/catalogue":
+            return catalogue if isinstance(catalogue, tuple) else (200, catalogue)
+        return 200, []
+    return answer
+
+
+@pytest.mark.parametrize(("module", "catalogue", "measure", "line"), [
+    # A revenue total of an invoice module, no admin answer: the line.
+    ("Invoices", _q32_catalogue(), "sum_amount", True),
+    # And of a payment_in module.
+    ("Payment_Received", _q32_catalogue(), "sum_amount", True),
+    # An admin answered the meaning of revenue: no line.
+    ("Invoices", _q32_catalogue(revenue_by="admin"), "sum_amount", False),
+    # A module that is no money of revenue: no line.
+    ("Towers", _q32_catalogue(), "sum_amount", False),
+    # Not a revenue total: no line.
+    ("Invoices", _q32_catalogue(), "count", False),
+    # Outside CRM_QUESTIONS_ORGS: no line.
+    ("Invoices", _q32_catalogue(questions_on=False), "sum_amount", False),
+    # Item 3: a failed read of the catalogue adds no line.
+    ("Invoices", (500, {"detail": "boom"}), "sum_amount", False),
+])
+async def test_q32_a_revenue_total_names_its_default(
+    monkeypatch, module: str, catalogue: Any, measure: str, line: bool,
+) -> None:
+    """Item 2a: both sides of each condition, and item 3."""
+    _q32_gateway(monkeypatch, _q32_total(catalogue))
+    out = await _T.crm_aggregate(f"module:{module}", measure=measure, group_by="owner")
+    assert (_T.REVENUE_DEFAULT_LINE in out) is line, out
+    assert not out.startswith("CRM GET")
+
+
+def test_q32_no_tool_asks_in_the_chat_or_waits_for_an_answer() -> None:
+    """Item 4: a CRM tool never asks a question and never waits."""
+    source = inspect.getsource(_T)
+    for word in ("ask_questions", "ElicitationCard", "elicit", "wait_for", "input("):
+        assert word not in source, word
+
+
+async def test_q32_a_dark_box_sends_no_catalogue_read_for_a_total(monkeypatch) -> None:
+    """Fix round: with CRM_QUESTIONS_ORGS empty, a sum_amount on a module
+    makes no extra GET /crm/catalogue (the dark cost is 0)."""
+    seen = _q32_gateway(monkeypatch, _q32_total(_q32_catalogue()), box_on=False)
+    out = await _T.crm_aggregate("module:Invoices", measure="sum_amount", group_by="owner")
+    assert _T.REVENUE_DEFAULT_LINE not in out
+    assert "/crm/catalogue" not in seen and any(p.startswith("/crm/aggregate") for p in seen)
+
+
+@pytest.mark.parametrize("box_on", [False, True])
+def test_q32_the_addendum_gains_no_word_on_a_dark_box(monkeypatch, box_on: bool) -> None:
+    """Fix round: the open-question line and org_facts render only on a box
+    that lists an org."""
+    from acb_common import get_settings
+    from acb_skills.addendum import render_injected_tools_addendum
+
+    monkeypatch.setattr(get_settings(), "crm_questions_orgs", "*" if box_on else "",
+                        raising=False)
+    scope = frozenset({"crm_aggregate", "crm_list_modules", "org_facts"})
+    for sub in (False, True):
+        text = render_injected_tools_addendum(is_sub_agent=sub, effective_scope=scope)
+        assert ("org_facts(" in text) is box_on
+        if not sub:
+            assert ("calls an open question" in text) is box_on

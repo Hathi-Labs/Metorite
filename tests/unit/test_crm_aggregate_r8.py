@@ -191,6 +191,31 @@ async def test_weighted_reads_the_effective_probability(ns, app_engine) -> None:
     assert body["total"] == 3700
 
 
+async def test_no_group_is_one_total_over_every_record(ns, app_engine) -> None:  # noqa: F811
+    """No group_by and no group_field: one total and the count of records.
+    The statement then has no GROUP BY, so the weighted lanes add up too."""
+    count = await _get(ns, ns.org_a, "/crm/aggregate?entity=deals")
+    assert (count["groups"], count["total"], count["records"]) == ([], 4, 4)
+    assert count["group_by"] is None and count["group_field"] is None
+    amount = await _get(ns, ns.org_a, "/crm/aggregate?entity=deals&measure=sum_amount")
+    assert (amount["total"], amount["records"]) == (15000, 4)
+    weighted = await _get(ns, ns.org_a, "/crm/aggregate?entity=deals&measure=weighted")
+    assert weighted["total"] == 3700 and weighted["records"] is None
+    # The list filters still bind, and no row of org B is counted.
+    owner = await _get(
+        ns, ns.org_a, "/crm/aggregate?entity=deals&measure=sum_amount&owner=a2@c7.test")
+    assert (owner["total"], owner["records"]) == (2000, 1)
+    b = await _get(ns, ns.org_b, "/crm/aggregate?entity=deals&measure=sum_amount")
+    assert (b["total"], b["records"]) == (100000, 1)
+    # A filter that matches nothing still gives one row: a count of 0.
+    none = await _get(ns, ns.org_a, "/crm/aggregate?entity=deals&owner=nobody@c7.test")
+    assert (none["total"], none["records"]) == (0, 0)
+    # A grouped answer carries the count of records too.
+    grouped = await _get(ns, ns.org_a, "/crm/aggregate?entity=deals&measure=sum_amount"
+                                       "&group_by=owner")
+    assert grouped["records"] == 4
+
+
 async def test_each_other_group_answers(ns, app_engine) -> None:  # noqa: F811
     for group in ("pipeline", "source", "created_month", "updated_month", "close_month"):
         body = await _get(ns, ns.org_a, f"/crm/aggregate?entity=deals&group_by={group}")

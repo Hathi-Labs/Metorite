@@ -382,6 +382,7 @@ sets the group. A ticket that adds a kind adds its row in the same PR.
 | `colleague_out` | For your information |
 | `agent_asks` | Needs you |
 | `digest_ready` | For your information (WS-53 CRM-Q28) |
+| `crm_open_questions` | Needs you while a money question is open, else For your information (WS-53 CRM-Q32, specified 2026-10-17) |
 
 MD-3c added the last eleven rows (§5.9 item 3). Fence:
 `test_feed_rank.py::TestTheGroupTable`.
@@ -550,6 +551,7 @@ nothing (`navigation_shell.md` §4.5, "No second arithmetic").
 | `deal_close_passed` | A deal I own passed its close date and is open | Template | "Move the date" (opens the CRM form) | None | MD-3e, BUILT. §5.9 item 13 holds the rule |
 | `lead_replied` | A lead I own replied by mail | Template | Open thread | None | MD-9 |
 | `digest_ready` | The weekly CRM digest of my org was stored in the last day | Template: "The CRM digest of the week from 5 Oct is ready in Reports." | "Open Reports" | None. The card shows no model text | WS-53 CRM-Q28 item 14, BUILT 2026-10-17, not merged. Only for an org on `CRM_DIGEST_ORGS`. Reach class `none` |
+| `crm_open_questions` | The CRM holds a question about the data of the org that is new in the last day. Only for a CRM admin | Template: "Jev has 3 new questions about your CRM data." | "Answer" (`crm_settings_href`) | None. The card shows no model text | WS-53 CRM-Q32-4, BUILT 2026-10-18 on `crm-batch-q32`, not merged. Only for an org where `questions_allowed` is true. One card a day at most (`crm_platform.md` §18.14.5). Reach class `none` |
 
 ### 5.6 People, approvals, agents and WhatsApp
 
@@ -753,6 +755,7 @@ needs kind still starts above it.
 | `no_plan_yet` | 28 |
 | `colleague_out` | 26 |
 | `digest_ready` | 24, added by WS-53 CRM-Q28 |
+| `crm_open_questions` | 22, added by WS-53 CRM-Q32 (specified 2026-10-17) |
 
 The examples of §4.5 stay true. An overdue task that falls on my absence is
 one `overdue` card. `colleague_out` at 26 folds under each day card.
@@ -775,6 +778,7 @@ These rows join the table of §4.3 and `feed_rank.group`.
 | `colleague_out` | For your information |
 | `agent_asks` | Needs you |
 | `digest_ready` | For your information (WS-53 CRM-Q28) |
+| `crm_open_questions` | Needs you while a money question is open, else For your information (WS-53 CRM-Q32, specified 2026-10-17) |
 
 #### 4. The state facts
 
@@ -799,6 +803,7 @@ note is a change of the task. The fence covers every kind of `BASE`
 | `agent_asks` | `waiting_since`, the newest `asked_at` on the thread |
 | `colleague_out` | None. The id is the day, so a dismiss holds for that day |
 | `digest_ready` | None. The id is the week, so a dismiss holds for that week (WS-53 CRM-Q28) |
+| `crm_open_questions` | None. The id is the UTC date of `new_at`, so a dismiss holds for that day (WS-53 CRM-Q32) |
 
 Two names are not allowed:
 
