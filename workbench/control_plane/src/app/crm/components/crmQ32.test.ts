@@ -392,6 +392,8 @@ describe("the other kinds", () => {
     expect(html).toContain(">Invoices<");
     expect(html).toContain(">Collection<");
     expect(html).toContain(REVENUE_DEFAULT_LINE);
+    // The count of one module would read as the size of revenue.
+    expect(html).not.toContain("records");
     expect(html).not.toContain("Not relevant");
     expect(html).not.toContain("None of these");
   });

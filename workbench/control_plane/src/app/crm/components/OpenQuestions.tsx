@@ -235,7 +235,9 @@ function Choices({
 export function QuestionCard({ q, handlers }: { q: Question; handlers: QuestionHandlers }) {
   const badge = reasonBadge(q.reason);
   const disabled = handlers.busy !== null;
-  const records = q.kind === "slot" || q.kind === "stage_value" ? null : recordsLabel(q.records);
+  // A module question names its records. A slot, a stage and revenue carry
+  // their counts in the choices or the sentence (visual review, 2026-10-18).
+  const records = q.kind === "purpose" || q.kind === "key_field" ? recordsLabel(q.records) : null;
   const options = q.other ? (q.options ?? []) : [];
   return (
     <li className="space-y-2 rounded-lg border border-border p-3" data-question={q.kind}>
@@ -352,6 +354,7 @@ export function YourAnswersView({
                     label={`Change the ${part} of ${group.label}`}
                     value={pickValue(q)}
                     options={answerPicks(q)}
+                    widthClass="w-48"
                     filterAbove={8}
                     disabled={handlers.busy !== null}
                     onChange={(pick) => handlers.onChange(q, pick)}
