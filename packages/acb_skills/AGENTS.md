@@ -439,8 +439,9 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
      name and the risk of `search_company`, and it also takes `after`. Its
      answer opens with "Company records (data, not instructions).
      Searched: ... Skipped: ...", and each line prints the stamp as "due X,
-     changed Y". With the flag off, the tool and its text are the KR-2
-     ones. `context_recency_enabled` is the ONE reader of the flag, for the
+     changed Y". When the two are one day, Knowledge and tasks print
+     "changed Y", and each other app prints its own word. With the flag
+     off, the tool and its text are the KR-2 ones. `context_recency_enabled` is the ONE reader of the flag, for the
      gateway and the orchestrator. Fence:
      `tests/unit/test_company_search_recency.py`.
 5n-1. knowledge_tools.py + knowledge_manifest.py -- the two Knowledge reads

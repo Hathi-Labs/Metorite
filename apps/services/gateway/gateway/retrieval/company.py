@@ -26,7 +26,8 @@ answers ``{query, hits, skipped}``. No chat model runs.
   ``apps`` goes first, in the order named.
 
 **Recency, behind ``CONTEXT_RECENCY``** (WS-61 CX-1, ``company_context.md``
-§3, §4.1, §4.2 and §4.5). The flag is read at each request. With it on:
+§3, §4.1, §4.2 and §4.5). Each request reads the flag from the cached
+settings, so a change of the env file needs a restart. With it on:
 
 * each app's hits are sorted by :func:`score`, which lowers an old hit by
   the half-life of its app, and never below :data:`FLOOR`. Then the apps
@@ -34,11 +35,14 @@ answers ``{query, hits, skipped}``. No chat model runs.
 * Knowledge ranks a page past its review date lower (``reviewed``), in
   place of an age decay;
 * ``after`` drops each hit stamped before it. Email and WhatsApp filter in
-  their own SQL as well;
-* each hit carries ``stamp``, and the answer names the apps it ``searched``.
+  their own SQL. Each other app is asked for :func:`pool` hits, and the
+  route filters them BEFORE it cuts the list to ``k``, so old top matches
+  cannot hide a newer one;
+* each hit carries ``stamp``, and the answer names the apps it
+  ``searched``: each app that answered, with its switch open.
 
-With it off, the route ignores ``after``, and the answer is the one of
-KR-1, byte for byte.
+With it off, the route does not read ``after`` at all, not even its
+length, and the answer is the one of KR-1, byte for byte.
 """
 
 from __future__ import annotations
@@ -47,7 +51,7 @@ import asyncio
 import logging
 import math
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -88,10 +92,11 @@ TAU_DAYS: dict[str, float] = {
 
 
 def recency_enabled() -> bool:
-    """True when ``CONTEXT_RECENCY`` is on. Read at each request, default off.
+    """True when ``CONTEXT_RECENCY`` is on. Default off.
 
     The one reader is in ``acb_skills``, so the route, the tool and the
-    persona read one flag.
+    persona read one flag. It reads the cached settings, so a change of the
+    env file takes effect after a restart.
     """
     from acb_skills.company_search_tools import context_recency_enabled
 
@@ -140,11 +145,33 @@ def by_recency(hits: list[Hit], now: datetime) -> list[Hit]:
     return [h for _s, _r, h in scored]
 
 
+#: The most characters of ``after``, checked only with the flag on.
+AFTER_MAX_CHARS = 40
+#: The most hits an app is asked for when ``after`` filters after the read.
+#: Each app's own search accepts it: tasks 50, CRM a page, artifacts 200,
+#: and Knowledge 20, its route's own maximum.
+POOL_MAX = 20
+
+
+def pool(k: int) -> int:
+    """The hits to ask an app for when ``after`` filters after the read."""
+    return max(k, min(4 * k, POOL_MAX))
+
+
 def _after(value: str | None) -> datetime | None:
-    """``after`` as an aware instant. A bad value is a 422 (§4.5)."""
+    """``after`` as an aware instant. A bad value is a 422 (§4.5).
+
+    Called only with the flag on. The route declares no constraint on the
+    parameter, so with the flag off no value of it is ever refused.
+    """
     raw = (value or "").strip()
     if not raw:
         return None
+    if len(raw) > AFTER_MAX_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"'after' is a date of at most {AFTER_MAX_CHARS} characters.",
+        )
     try:
         when = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
@@ -202,8 +229,9 @@ async def company_search(
     apps: str | None = Query(None, max_length=200),
     k: int = Query(DEFAULT_K, ge=1, le=MAX_K),
     user: UserContext = Depends(get_current_user),
-    # `Annotated`, so a direct call that leaves it out gets None, not `Query`.
-    after: Annotated[str | None, Query(max_length=40)] = None,
+    # A plain default: FastAPI checks nothing on it, so with the flag off no
+    # value is refused, and a direct call that leaves it out gets None.
+    after: str | None = None,
 ) -> dict[str, Any]:
     """Records that match the words, from every app this member holds."""
     if not user.email:
@@ -234,8 +262,12 @@ async def company_search(
             skipped.append(key)
             continue
         try:
+            # With `after`, an app that cannot filter by date is asked for a
+            # pool, and the filter runs before the cut to `per_app`.
+            source = REGISTRY[key]
+            ask = pool(per_app) if since is not None and not source.dated else per_app
             hits = await asyncio.wait_for(
-                REGISTRY[key].find(user, words, per_app, hybrid=hybrid, **options),
+                source.find(user, words, ask, hybrid=hybrid, **options),
                 min(SOURCE_TIMEOUT_S, left),
             )
         except HTTPException:
@@ -255,6 +287,8 @@ async def company_search(
             )
             skipped.append(key)
             continue
+        if since is not None:
+            hits = [h for h in hits if _kept(h, since)]
         found[key] = list(hits)[:per_app]
 
     if not recency:
@@ -265,11 +299,10 @@ async def company_search(
         }
     now = datetime.now(UTC)
     for key, hits in found.items():
-        kept = [h for h in hits if since is None or _kept(h, since)]
-        found[key] = by_recency(kept, now)
+        found[key] = by_recency(hits, now)
     return {
         "query": words,
         "hits": [h.as_dict(stamp=True) for h in _interleave(order, found)],
-        "searched": [key for key in order if key in found],
+        "searched": [key for key in order if key in found and REGISTRY[key].reaches(user)],
         "skipped": skipped,
     }

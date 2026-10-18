@@ -193,9 +193,12 @@ def tasks(apps, monkeypatch):  # noqa: F811 — a fixture
     class _Tasks:
         def __init__(self) -> None:
             self.rows: list[dict[str, Any]] = []
+            self.limits: list[int] = []
 
         async def __call__(self, **kw: Any) -> dict[str, Any]:
-            return {"rows": list(self.rows)}
+            # The real search caps its rows at `limit`, so the fake does too.
+            self.limits.append(kw["limit"])
+            return {"rows": list(self.rows)[: kw["limit"]]}
 
     fake = _Tasks()
     monkeypatch.setattr(projects_search, "search_tasks", fake)
@@ -251,12 +254,35 @@ class TestTheReviewFactor:
 
     def test_the_factor_is_the_specs(self):
         f = kb_query.review_factor
+        now = datetime(2026, 10, 18, 12, tzinfo=UTC)
         assert kb_query.REVIEW_PASSED == 0.7
-        assert f(None, self.TODAY) == 1.0
-        assert f(datetime(2026, 12, 1, tzinfo=UTC), self.TODAY) == 1.0
-        assert f(datetime(2026, 10, 18, 1, tzinfo=UTC), self.TODAY) == 1.0
-        assert f(datetime(2026, 10, 17, 23, tzinfo=UTC), self.TODAY) == 0.7
-        assert f(date(2025, 1, 1), self.TODAY) == 0.7
+        assert f(None, now) == 1.0
+        assert f(datetime(2026, 12, 1, tzinfo=UTC), now) == 1.0
+        assert f(datetime(2026, 10, 18, 13, tzinfo=UTC), now) == 1.0
+        assert f(datetime(2026, 10, 17, 23, tzinfo=UTC), now) == 0.7
+        assert f(date(2025, 1, 1), now) == 0.7
+
+    def test_a_review_date_earlier_today_has_passed(self):
+        # Fix round 1: the instant, in UTC, not the date of the box's zone.
+        now = datetime(2026, 10, 18, 12, tzinfo=UTC)
+        assert kb_query.review_factor(now - timedelta(hours=1), now) == 0.7
+        assert kb_query.review_factor(now, now) == 0.7
+        assert kb_query.review_factor(now + timedelta(minutes=1), now) == 1.0
+        lexical = [_chunk(1, "stale", review_at=now - timedelta(hours=1)),
+                   _chunk(2, "current")]
+        out = kb_query.fuse(lexical, [], k=5, today=now.date(), now=now, reviewed=True)
+        assert [r["page_id"] for r in out] == ["current", "stale"]
+
+    def test_the_read_selects_the_source_kind(self):
+        # Fix round 1: without the column, every row reads as a page, and a
+        # source document (KB-7) would lose its age decay.
+        assert "c.source_kind" in kb_query._COLUMNS
+        row = {"page_id": "p", "space_id": "s", "space_name": "S", "title": "T",
+               "heading_path": "T", "raw": "x", "score": 0.1, "updated_at": None,
+               "source_kind": "page", "review_at": None}
+        assert set(kb_query._hit(row)) == {
+            "page_id", "space_id", "space_name", "title", "heading_path", "text",
+            "score", "updated_at", "href"}
 
     def test_a_stale_page_ranks_below_a_current_page_with_the_same_text(self):
         # The stale page is first in the lexical list: the same text, the
@@ -549,3 +575,112 @@ class TestThePersona:
         assert persona.replace(SENTENCES, "", 1) == mod._orchestrator_instructions(True)
         assert cst.search_company_dated in agent.kwargs["tools"]
         assert cst.search_company not in agent.kwargs["tools"]
+
+
+# ── Fix round 1 ─────────────────────────────────────────────────────────────
+
+class TestAfterAsksForAPool:
+    """P2: ``after`` must not cut the app's list BEFORE it filters, or five
+    old top matches hide every newer one."""
+
+    def test_a_new_low_ranked_task_behind_five_old_ones_comes_back(self, tasks, recency):
+        recency(True)
+        tasks.rows = [_task(f"old-{i}", f"Extruder {i}", _ago(300)) for i in range(5)]
+        tasks.rows.append(_task("new", "Notes", _ago(2), "the extruder"))
+        since = (datetime.now(UTC) - timedelta(days=30)).date().isoformat()
+        hits = run(member("projects"), after=since)["hits"]
+        assert [h["id"] for h in hits] == ["new"]
+        assert tasks.limits[-1] > 5, "the source was asked for a pool"
+
+    def test_without_after_the_app_is_asked_for_k(self, tasks, recency):
+        recency(True)
+        tasks.rows = [_task("t", "Extruder", _ago(2))]
+        run(member("projects"), k=3)
+        assert tasks.limits == [3]
+
+
+class TestTheOwnWordForOneDate:
+    """P3: when ``when`` and ``stamp`` are one day, the app's own word."""
+
+    @pytest.mark.parametrize(("app", "word"), [
+        ("email", "received"), ("whatsapp", "sent"), ("crm", "updated"),
+        ("artifacts", "updated"), ("knowledge", "changed"), ("tasks", "changed")])
+    def test_the_word(self, app, word):
+        hit = {"app": app, "kind": "k", "id": "1", "title": "T", "hint": "H",
+               "href": "/x", "when": "2026-10-01T08:00:00+00:00",
+               "stamp": "2026-10-01T08:00:00+00:00"}
+        line = cst.format_answer({"hits": [hit]}, dated=True).splitlines()[1]
+        assert line == f"- «T» (H, {word} 2026-10-01) /x"
+
+
+class TestAfterWithTheFlagOff:
+    """P3: off, ``after`` is not validated at all, and the tool reads a
+    FastAPI 422 whose detail is a list."""
+
+    def _client(self, world):
+        from acb_auth import get_current_user
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        app = FastAPI()
+        app.include_router(company.router)
+        user = member(*ALL)
+        app.dependency_overrides[get_current_user] = lambda: user
+        return TestClient(app)
+
+    def test_off_a_long_after_is_ignored(self, world, recency):
+        recency(False)
+        res = self._client(world).get("/search/company",
+                                      params={"q": "acme", "after": "x" * 100})
+        assert res.status_code == 200, res.text
+        assert set(res.json()) == {"query", "hits", "skipped"}
+
+    def test_on_a_long_after_is_a_422_with_a_sentence(self, world, recency):
+        recency(True)
+        res = self._client(world).get("/search/company",
+                                      params={"q": "acme", "after": "2026-10-01" * 10})
+        assert res.status_code == 422
+        assert isinstance(res.json()["detail"], str)
+
+    def test_the_tool_reads_a_list_shaped_detail(self, monkeypatch):
+        import httpx
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(422, json={"detail": [
+                {"loc": ["query", "after"], "msg": "String should have at most 40 characters",
+                 "type": "string_too_long"}]})
+
+        real = httpx.AsyncClient
+        monkeypatch.setattr(cst.httpx, "AsyncClient",
+                            lambda *a, **k: real(*a, transport=httpx.MockTransport(handler), **k))
+        monkeypatch.setattr(cst, "_current_user_email", lambda: "rep@customer.example")
+        out = asyncio.run(cst.search_company_dated("pricing", after="x"))
+        assert "at most 40 characters" in out
+        assert "2 to 300 characters" not in out
+
+
+class TestSearchedNamesOnlyAppsThatRan:
+    """P3, verifier: an app closed for the org is not "searched"."""
+
+    def test_knowledge_off_for_the_org_is_not_searched(self, world, recency, monkeypatch):
+        from acb_common import get_settings
+
+        recency(True)
+        monkeypatch.setattr(get_settings(), "knowledge_orgs", "someone-else", raising=False)
+        answer = run(member(*ALL))
+        assert "knowledge" not in answer["searched"]
+        assert "knowledge" not in answer["skipped"]
+        assert "tasks" in answer["searched"]  # non-vacuity
+
+    def test_the_crm_kill_switch_and_the_artifact_registry_too(
+            self, world, recency, monkeypatch):
+        import acb_memory.artifacts as registry
+        from acb_common import get_settings
+
+        recency(True)
+        monkeypatch.setattr(get_settings(), "crm_enabled", False, raising=False)
+        monkeypatch.setattr(registry, "enabled", lambda: False)
+        answer = run(member(*ALL))
+        assert "crm" not in answer["searched"]
+        assert "artifacts" not in answer["searched"]
+        assert "knowledge" in answer["searched"]

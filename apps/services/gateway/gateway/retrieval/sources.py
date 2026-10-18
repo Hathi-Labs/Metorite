@@ -121,6 +121,14 @@ class Source:
     #: True when the app ranks by review state. Its reader then takes
     #: ``reviewed`` (CX-1, §4.2).
     reviewed: bool = False
+    #: The app's switch for the member's org, beyond the feature, or
+    #: ``None``. A closed switch gives no hit. The route then does not name
+    #: the app as searched (CX-1). The reader still checks it itself.
+    gate: Callable[[UserContext], bool] | None = None
+
+    def reaches(self, user: UserContext) -> bool:
+        """True when *user* holds the feature and the app's switch is open."""
+        return holds(user, self.feature) and (self.gate is None or self.gate(user))
 
     async def find(
         self, user: UserContext, q: str, k: int, *, hybrid: bool = False,
@@ -145,6 +153,27 @@ class Source:
         if self.reviewed and reviewed:
             options["reviewed"] = True
         return (await self.read(user, q, k, **options))[:k]
+
+
+# ── The switches beyond the feature (CX-1) ──────────────────────────────────
+# Each reads its app's own switch at call time, the rule its reader applies.
+
+def _crm_open(user: UserContext) -> bool:
+    from gateway.routes.crm import flags
+
+    return bool(flags.crm_org_allowed(user.organization_id))
+
+
+def _artifacts_open(user: UserContext) -> bool:
+    from acb_memory import artifacts as registry
+
+    return bool(registry.enabled())
+
+
+def _knowledge_open(user: UserContext) -> bool:
+    from gateway.routes.knowledge import flags
+
+    return bool(flags.knowledge_org_allowed(user.organization_id))
 
 
 # ── Small helpers, one rule each ────────────────────────────────────────────
@@ -456,10 +485,10 @@ REGISTRY: dict[str, Source] = {
         Source("tasks", "projects", "Tasks", _tasks),
         Source("email", "email", "Email", _email, dated=True),
         Source("people", "people", "People", _people),
-        Source("crm", "crm", "CRM", _crm),
-        Source("artifacts", "artifacts", "Artifacts", _artifacts),
+        Source("crm", "crm", "CRM", _crm, gate=_crm_open),
+        Source("artifacts", "artifacts", "Artifacts", _artifacts, gate=_artifacts_open),
         Source("whatsapp", "whatsapp", "WhatsApp", _whatsapp, dated=True),
         Source("knowledge", "knowledge", "Knowledge", _knowledge, meaning=True,
-               reviewed=True),
+               reviewed=True, gate=_knowledge_open),
     )
 }
