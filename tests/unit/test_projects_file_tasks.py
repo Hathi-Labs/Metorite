@@ -192,13 +192,16 @@ async def test_three_destinations_are_one_card_and_one_approval_moves_them_all(
     out = await skill_projects.file_tasks(_moves((T1, WEB), (T2, OPS), (T3, SALES), (T4, WEB)))
     assert len(asked) == 1, f"{len(asked)} cards, not one"
     card = asked[0]
-    assert card["title"] == "Move 4 tasks into 3 projects?"
+    # No count on the card: it would go stale when the member unticks a row.
+    assert card["title"] == "Move these tasks into their projects?"
     # One checkbox per task, grouped by destination in the member's order.
     assert [r["id"] for r in card["rows"]] == ["row-1", "row-4", "row-2", "row-3"]
     assert "to Website" in card["rows"][0]["hint"]
     assert "drops cost" in card["rows"][2]["hint"]
-    assert "destination 1: «Website» · 2 tasks" in card["context"]
-    assert "destination 2: «Ops» · 1 task · drops cost" in card["context"]
+    lines = card["context"].splitlines()
+    assert "destination 1: «Website»" in lines
+    assert "destination 2: «Ops»" in lines
+    assert "destination 3: «Sales»" in lines
     # Every move is move_task's own write, one task each, after the card.
     bodies = _bulk_moves(calls)
     assert [(b["task_ids"], b["destination_project_id"]) for b in bodies] == [
@@ -264,7 +267,7 @@ async def test_a_task_that_needs_a_field_is_left_out_and_named(monkeypatch) -> N
     calls = fake_gateway(monkeypatch, responder)
     out = await skill_projects.file_tasks(_moves((T1, WEB), (T2, OPS), (T3, SALES)))
     card = asked[0]
-    assert card["title"] == "Move 2 tasks into 2 projects?"
+    assert card["title"] == "Move these tasks into their projects?"
     assert [r["id"] for r in card["rows"]] == ["row-1", "row-3"]
     assert (
         "cannot move 1: #2 «Order the nozzle»: The destination requires «Cost centre» (number)"
@@ -314,11 +317,12 @@ async def test_an_invisible_task_and_a_hidden_project_are_named_not_moved(monkey
     calls = fake_gateway(monkeypatch, responder)
     out = await skill_projects.file_tasks(_moves((T1, WEB), (HIDDEN, OPS), (T3, gone)))
     context = asked[0]["context"]
-    assert f"task «{HIDDEN}»: not found, or not visible to you" in context
-    assert f"#3 «Call the vendor»: the destination {gone} is not found" in context
+    assert "a hidden task (id «a9000000»): not found, or not visible to you" in context
+    assert "#3 «Call the vendor»: the destination (id «b0000000») is not found" in context
+    assert HIDDEN not in context and gone not in context
     assert [r["id"] for r in asked[0]["rows"]] == ["row-1"]
     assert _moved_ids(calls) == [T1]
-    assert f"not moved: row 2 task «{HIDDEN}»: not found, or not visible to you" in out
+    assert "not moved: row 2 a hidden task (id «a9000000»): not found, or not visible to you" in out
 
 
 async def test_an_archived_project_and_a_folder_are_named_not_moved(monkeypatch) -> None:
@@ -350,7 +354,7 @@ async def test_when_no_task_can_move_there_is_no_card(monkeypatch) -> None:
     assert asked == []
     assert writes(calls) == []
     assert out.startswith("No task of these can move. Nothing was changed.")
-    assert f"task «{HIDDEN}»" in out
+    assert "a hidden task (id «a9000000»)" in out
 
 
 # ── 6. A move that fails after the card ─────────────────────────────────────
@@ -475,3 +479,141 @@ def test_the_projects_assistant_holds_the_tool_and_its_instructions_name_it() ->
     section = text[start : text.index("\n## ", start + 1)]
     assert "`file_tasks`" in section
     assert "Do not call\n  `move_task` once for each task" in section
+
+
+# ── Review round 1: a row under another row's task ──────────────────────────
+#
+# With include_subtasks=yes, the move of a parent takes its whole subtree
+# (`move.py`, `movable_subtree`). A row of its own for the subtask raced that
+# move, and the order of the writes decided where it landed: the receipt said
+# Ops while the parent carried it to Website.
+
+P = "f1000000-0000-4000-8000-000000000000"  # the parent
+C = "f2000000-0000-4000-8000-000000000000"  # its subtask
+G = "f3000000-0000-4000-8000-000000000000"  # the subtask's own subtask
+
+
+@pytest.fixture
+def family() -> Any:
+    rows = {
+        P: {"title": "Launch the site", "task_number": 30, "parent_task_id": None},
+        C: {"title": "Write the copy", "task_number": 31, "parent_task_id": P},
+        G: {"title": "Check the spelling", "task_number": 32, "parent_task_id": C},
+    }
+    for tid, row in rows.items():
+        TASKS[tid] = {"id": tid, "project_id": INBOX, "status_id": None, "assignees": [], **row}
+    PREVIEWS[P] = {"subtasks": {"count": 2}}
+    PREVIEWS[C] = {"subtasks": {"count": 1}}
+    yield
+    for tid in rows:
+        TASKS.pop(tid, None)
+
+
+@pytest.mark.parametrize(
+    "order",
+    [((C, OPS), (P, WEB)), ((P, WEB), (C, WEB))],
+    ids=["subtask-first-other-project", "parent-first-same-project"],
+)
+async def test_with_subtasks_a_subtask_row_moves_with_its_parent(
+    order: Any, family: Any, monkeypatch
+) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.file_tasks(_moves(*order), include_subtasks="yes")
+    card = asked[0]
+    parent_row = "row-2" if order[0][0] == C else "row-1"
+    child_row = "row-1" if order[0][0] == C else "row-2"
+    assert [r["id"] for r in card["rows"]] == [parent_row]
+    assert (
+        "with parent 1: #31 «Write the copy»: moves with #30 «Launch the site», which takes "
+        "its subtasks along" in card["context"]
+    )
+    # ONE write: the parent's, with its subtree. The subtask has no write of
+    # its own to race it.
+    assert _moved_ids(calls) == [P]
+    assert _bulk_moves(calls)[0]["include_subtasks"] is True
+    index = child_row.split("-")[1]
+    assert (
+        f"moved with its parent: row {index} #31 «Write the copy», with #30 «Launch the site» "
+        "to «Website»." in out
+    )
+    assert "failed:" not in out and "not moved:" not in out
+
+
+async def test_a_subtask_rides_with_its_topmost_planned_ancestor(family: Any, monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    # G sits under C, which is not a row, and C sits under P, which is. The
+    # walk reads C to find P.
+    out = await skill_projects.file_tasks(_moves((G, OPS), (P, WEB)), include_subtasks="yes")
+    assert [r["id"] for r in asked[0]["rows"]] == ["row-2"]
+    assert _moved_ids(calls) == [P]
+    assert f"/projects/tasks/{C}" in [c["path"] for c in calls]
+    assert "moved with its parent: row 1 #32 «Check the spelling», with #30" in out
+
+
+async def test_a_rider_whose_parent_failed_is_not_moved(family: Any, monkeypatch) -> None:
+    def refusing(call: dict) -> Any:
+        if call["path"] == "/projects/tasks/move":
+            return FakeResponse({"detail": "The destination changed since you looked."}, 409)
+        return responder(call)
+
+    approve(monkeypatch)
+    fake_gateway(monkeypatch, refusing)
+    out = await skill_projects.file_tasks(_moves((C, OPS), (P, WEB)), include_subtasks="yes")
+    assert (
+        "not moved: row 1 #31 «Write the copy»: it was to move with #30 «Launch the site», "
+        "which did not move." in out
+    )
+    assert "moved with its parent" not in out
+
+
+@pytest.mark.parametrize(
+    "order", [((C, OPS), (P, WEB)), ((P, WEB), (C, WEB))], ids=["subtask-first", "parent-first"]
+)
+async def test_without_subtasks_both_rows_move_and_the_card_says_the_link_stays(
+    order: Any, family: Any, monkeypatch
+) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.file_tasks(_moves(*order), include_subtasks="no")
+    rows = {r["label"]: r for r in asked[0]["rows"]}
+    assert set(rows) == {"#30 Launch the site", "#31 Write the copy"}
+    # The route moves a subtask on its own and keeps its parent link
+    # (`move.py` writes only project, lane, fields and number).
+    assert "stays a subtask of #30 Launch the site" in rows["#31 Write the copy"]["hint"]
+    assert sorted(_moved_ids(calls)) == sorted([P, C])
+    assert all("include_subtasks" not in b for b in _bulk_moves(calls))
+    assert out.splitlines()[0].startswith("Moved 2 tasks into")
+
+
+# ── Review round 1: an empty fields object is no answer ─────────────────────
+
+
+@pytest.mark.parametrize("empty", [{}, "", "{}", "  "])
+async def test_an_empty_fields_value_is_no_answer(empty: Any, monkeypatch) -> None:
+    PREVIEWS[T1] = {"crosses_root": False, "drops": ["cost"]}
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.file_tasks(
+        json.dumps(
+            [
+                {"task_id": T1, "destination_project_id": WEB, "fields": empty},
+                {"task_id": T2, "destination_project_id": OPS},
+            ]
+        )
+    )
+    # The bulk route, with the drops the member saw bound to the write.
+    bodies = _bulk_moves(calls)
+    assert [b["task_ids"] for b in bodies] == [[T1], [T2]]
+    assert bodies[0]["accepted_drops"] == ["cost"]
+    assert "asks for no field" not in out
+
+
+async def test_a_left_out_row_never_says_nothing_was_changed(monkeypatch) -> None:
+    PREVIEWS[T2] = {"required_missing": ["Cost centre"]}
+    approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    out = await skill_projects.file_tasks(_moves((T1, WEB), (T2, OPS)))
+    line = next(x for x in out.splitlines() if x.startswith("not moved: row 2"))
+    assert "Nothing was changed" not in line

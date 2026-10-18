@@ -202,6 +202,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "visible to": { label: "Visible to" },
   "waiting since": { label: "Waiting since" },
   "waiting_on": { label: "Waiting on" },
+  // `file_tasks`: a subtask that moves with its parent's row, not on its own.
+  "with parent N": { label: "Moves with its parent", plural: "Move with their parent" },
 };
 
 /** The map key of a card key: digits read as `N`, a custom field as `field *`. */

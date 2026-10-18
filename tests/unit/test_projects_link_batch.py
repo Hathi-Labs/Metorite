@@ -140,7 +140,7 @@ async def test_three_links_are_one_card_and_one_approval_makes_them_all(monkeypa
     )
     assert len(asked) == 1
     card = asked[0]
-    assert card["title"] == "Make 3 links between tasks?"
+    assert card["title"] == "Make these links between tasks?"
     assert card["detail"].startswith("#247 «Design the bracket» blocks #248 «Print the bracket»")
     assert [r["id"] for r in card["rows"]] == ["row-1", "row-2", "row-3"]
     assert card["rows"][0]["label"] == "#247 Design the bracket blocks #248 Print the bracket"
@@ -213,7 +213,8 @@ async def test_a_hidden_task_an_existing_link_and_a_self_link_are_named(monkeypa
         )
     )
     context = asked[0]["context"]
-    assert f"task «{HIDDEN}» is not found, or not visible to you" in context
+    assert "task id «c9000000» is not found, or not visible to you" in context
+    assert HIDDEN not in context
     assert "they are linked like this already" in context
     assert "a task cannot be linked to itself" in context
     assert [r["id"] for r in asked[0]["rows"]] == ["row-1"]
@@ -344,3 +345,12 @@ def test_the_instructions_keep_link_tasks_for_one_or_two_links() -> None:
     section = text[start : text.index("\n## ", start + 1)]
     assert "Three or more links are ONE call" in section
     assert "For one or\n  two links, call `link_tasks`" in section
+
+
+async def test_relates_to_both_ways_is_one_link_in_a_batch(monkeypatch) -> None:
+    """Review round 1: A relates to B, and B relates to A, are one link."""
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.link_tasks_batch(_links((A, B, "relates_to"), (B, A, "relates_to")))
+    assert "Rows 1 and 2 name the same link" in out
+    assert calls == []

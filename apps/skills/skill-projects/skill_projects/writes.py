@@ -2177,6 +2177,8 @@ class _BatchOutcome:
 
     def __init__(self) -> None:
         self.made = 0
+        #: The ids of the rows whose write landed.
+        self.ok: set[str] = set()
         self.lines: list[str] = []
         self.failed: list[str] = []
         self.unknown: list[str] = []
@@ -2206,6 +2208,17 @@ def _refusal_words(exc: GatewayRefusal) -> str:
 def _unfence(text: str) -> str:
     """Member text for a card row: no guillemets, one line."""
     return " ".join(str(text).replace("«", "").replace("»", "").split())
+
+
+def _row_reason(why: str) -> str:
+    """A row's reason in a batch receipt. A single tool's refusal ends with
+    "Nothing was changed.", which a batch row must not say of the batch."""
+    return " ".join(str(why).replace("Nothing was changed.", "").split())
+
+
+def _hidden(task_id: str) -> str:
+    """How a card names a task the member cannot read: no title, a short id."""
+    return f"a hidden task (id {data(str(task_id)[:8])})"
 
 
 def _first_part(why: str) -> str:
@@ -2270,6 +2283,7 @@ async def _apply_batch(chosen: list[_BatchRow]) -> _BatchOutcome:
                 )
             continue
         out.made += 1
+        out.ok.add(r.row_id)
         out.lines.extend(r.done(result))
     return out
 
@@ -2314,7 +2328,7 @@ def _batch_receipt(
             f"The {made} {words.nouns(made)} listed above {words.again}. To retry a row that "
             f"was {words.undone}, fix it and call {words.tool} with that row only."
         )
-    lines.extend(f"{words.undone}: row {r.index} {r.ref}: {r.why}" for r in stuck)
+    lines.extend(f"{words.undone}: row {r.index} {r.ref}: {_row_reason(r.why)}" for r in stuck)
     lines.extend(f"left out: row {r.index} {r.ref}, unticked on the card." for r in left)
     return "\n".join(lines)
 
@@ -2382,16 +2396,21 @@ class _FileRow(_BatchRow):
         #: The subtask question of `_plan_move`, when the task has subtasks
         #: and the call gave no answer.
         self.question: _SubtaskQuestion | None = None
+        #: The row whose task is an ancestor of this one and takes its
+        #: subtasks along. This row then moves with it, never on its own.
+        self.carrier: _FileRow | None = None
+        #: A fact for the card row that the plan of `move_task` does not give.
+        self.note = ""
 
     @property
     def ready(self) -> bool:
-        return self.move is not None
+        return self.move is not None and self.carrier is None
 
     @property
     def ref(self) -> str:
         """How the card and the receipt name the task. A task the member
         cannot see has no title to show, so its id names it."""
-        return _ref(self.task) if self.task else f"task {data(self.task_id)}"
+        return _ref(self.task) if self.task else _hidden(self.task_id)
 
     @property
     def failed_ref(self) -> str:
@@ -2414,6 +2433,8 @@ class _FileRow(_BatchRow):
                 facts.append(str(value))
             else:
                 facts.append(f"{key}: {value}")
+        if self.note:
+            facts.append(self.note)
         return _unfence(" · ".join(facts))
 
     async def send(self) -> Any:
@@ -2447,10 +2468,22 @@ def _file_rows(moves: str) -> list[_FileRow] | str:
                 "destination. Nothing was changed."
             )
         seen[tid] = i
-        raw = item.get("fields")
-        fields = json.dumps(raw) if isinstance(raw, dict) else str(raw or "")
-        rows.append(_FileRow(i, tid, dest, fields))
+        rows.append(_FileRow(i, tid, dest, _row_fields(item.get("fields"))))
     return rows
+
+
+def _row_fields(raw: Any) -> str:
+    """A row's ``fields`` as `_plan_move` takes it. An empty object or blank
+    text is NO answer: `_plan_move` reads any text as one, and would then
+    refuse a move inside one space or take the one-task route."""
+    if isinstance(raw, dict):
+        return json.dumps(raw) if raw else ""
+    text = str(raw or "").strip()
+    try:
+        parsed = json.loads(text) if text else None
+    except ValueError:
+        return text  # `_plan_move` refuses it with the format, by row
+    return "" if parsed in (None, {}) else text
 
 
 async def _file_destinations(rows: list[_FileRow]) -> None:
@@ -2468,7 +2501,7 @@ async def _file_destinations(rows: list[_FileRow]) -> None:
         except GatewayRefusal as exc:
             if not _named_refusal(exc):
                 raise
-            why = f"the destination {dest} is {_refusal_words(exc)}"
+            why = f"the destination (id {data(dest[:8])}) is {_refusal_words(exc)}"
         else:
             name = str(node.get("name") or "")
             if node.get("archived_at") or node.get("archived"):
@@ -2504,24 +2537,96 @@ async def _file_plan(row: _FileRow, include_subtasks: str) -> None:
     elif planned.startswith("Those tasks are already in"):
         row.why = f"already in {data(row.where)}"
     else:
-        row.why = " ".join(planned.split())
+        row.why = _row_reason(planned)
 
 
-def _file_card(movable: list[_FileRow], stuck: list[_FileRow]) -> dict[str, Any]:
-    """The card body: each destination with its count and drops, then each
-    task that cannot move, named, with why."""
+#: How far up the tree the family check walks. A deeper tree is a fault.
+_ANCESTOR_STEPS = 8
+
+
+async def _file_family(rows: list[_FileRow], wanted: bool | None) -> None:
+    """A row whose task sits under the task of another row.
+
+    With ``include_subtasks=yes``, the move of the ancestor takes the whole
+    subtree along (`move.py`, `movable_subtree`). A row of its own for the
+    subtask would then race the ancestor's move, and the order of the writes
+    would decide where it lands. So the row rides with its TOPMOST planned
+    ancestor: the card says so, and the receipt reports it from the
+    ancestor's write. With ``no``, both rows move on their own, and the
+    subtask keeps its parent across projects, as the route leaves it.
+    """
+    planned = {r.task_id: r for r in rows if r.move is not None}
+    known = {r.task_id: r.task for r in rows if r.task}
+
+    async def parent_of(task_id: str) -> str:
+        task = known.get(task_id)
+        if task is None:
+            try:
+                task = (await _task(task_id))[1]
+            except GatewayRefusal as exc:
+                if not _named_refusal(exc):
+                    raise
+                return ""
+            known[task_id] = task
+        return str(task.get("parent_task_id") or "")
+
+    for r in rows:
+        if not r.task:
+            continue
+        top: _FileRow | None = None
+        nearest: _FileRow | None = None
+        step = str(r.task.get("parent_task_id") or "")
+        for _ in range(_ANCESTOR_STEPS):
+            if not step or step == r.task_id:
+                break
+            if step in planned:
+                top = planned[step]
+                nearest = nearest or top
+            step = await parent_of(step)
+        if top is None or nearest is None:
+            continue
+        if wanted:
+            r.carrier = top
+        elif r.move is not None:
+            r.note = f"stays a subtask of {nearest.ref}"
+
+
+def _rider_lines(riders: list[_FileRow], out: _BatchOutcome) -> list[str]:
+    """The receipt line of each row that moves with its ancestor."""
+    lines = []
+    for r in riders:
+        top = r.carrier
+        if top is not None and top.row_id in out.ok:
+            lines.append(
+                f"moved with its parent: row {r.index} {r.ref}, with {top.ref} "
+                f"to {data(top.where)}."
+            )
+        elif top is not None:
+            lines.append(
+                f"not moved: row {r.index} {r.ref}: it was to move with {top.ref}, "
+                "which did not move."
+            )
+    return lines
+
+
+def _file_card(
+    movable: list[_FileRow], stuck: list[_FileRow], riders: list[_FileRow]
+) -> dict[str, Any]:
+    """The card body: each destination, each task that moves with its parent,
+    and each task that cannot move, named, with why.
+
+    It holds no count: the rows are the checkboxes, and a count goes stale
+    when the member unticks one (PR #691). A row's hint carries its drops.
+    """
     card: dict[str, Any] = {}
-    groups: dict[str, list[_FileRow]] = {}
-    for r in movable:
-        groups.setdefault(r.dest, []).append(r)
-    for n, group in enumerate(groups.values(), start=1):
-        drops = sorted(
-            {d for r in group if r.move for d in (r.move.body.get("accepted_drops") or [])}
-        )
-        line = f"{data(group[0].where)} · {len(group)} task{'s' if len(group) != 1 else ''}"
-        if drops:
-            line += f" · drops {', '.join(drops)}"
-        card[f"destination {n}"] = line
+    for n, dest in enumerate(dict.fromkeys(r.dest for r in movable), start=1):
+        card[f"destination {n}"] = data(next(r.where for r in movable if r.dest == dest))
+    for n, r in enumerate(riders, start=1):
+        top = r.carrier
+        if top is not None:
+            card[f"with parent {n}"] = (
+                f"{r.ref}: moves with {top.ref}, which takes its subtasks along"
+            )
     for n, r in enumerate(stuck, start=1):
         card[f"cannot move {n}"] = f"{r.ref}: {_first_part(r.why)}"
     return card
@@ -2562,7 +2667,7 @@ async def file_tasks(moves: str, include_subtasks: str = "") -> str:
     rows = _file_rows(moves)
     if isinstance(rows, str):
         return rows
-    _subtasks_wanted(include_subtasks)  # refuses a value that is not yes or no
+    wanted = _subtasks_wanted(include_subtasks)  # refuses a value that is not yes or no
     await _file_destinations(rows)
 
     async def plan(row: _FileRow) -> None:
@@ -2571,21 +2676,21 @@ async def file_tasks(moves: str, include_subtasks: str = "") -> str:
     await _each_at_once(rows, plan)
     if any(r.question is not None for r in rows):
         return _ask_subtasks_once(rows)
+    await _file_family(rows, wanted)
     # Grouped by destination, in the order the member gave them.
     order = list(dict.fromkeys(r.dest for r in rows))
     movable = sorted((r for r in rows if r.ready), key=lambda r: (order.index(r.dest), r.index))
-    stuck = [r for r in rows if not r.ready]
+    riders = [r for r in rows if r.carrier is not None]
+    stuck = [r for r in rows if not r.ready and r.carrier is None]
     if not movable:
         return "\n".join(
             ["No task of these can move. Nothing was changed."]
-            + [f"not moved: row {r.index} {r.ref}: {r.why}" for r in stuck]
+            + [f"not moved: row {r.index} {r.ref}: {_row_reason(r.why)}" for r in stuck]
         )
-    n = len(movable)
-    places = len({r.dest for r in movable})
     asked = await _ask_batch(
-        f"Move {n} task{'s' if n != 1 else ''} into {places} project{'s' if places != 1 else ''}?",
+        "Move these tasks into their projects?",
         "one approval for every move · untick a task to leave it out",
-        _file_card(movable, stuck),
+        _file_card(movable, stuck, riders),
         list(movable),
     )
     if isinstance(asked, str):
@@ -2597,7 +2702,8 @@ async def file_tasks(moves: str, include_subtasks: str = "") -> str:
         f"Moved {out.made} task{'s' if out.made != 1 else ''} into {done_places} "
         f"project{'s' if done_places != 1 else ''}:"
     )
-    return _batch_receipt(FILE_WORDS, head, out, chosen, left, list(stuck))
+    receipt = _batch_receipt(FILE_WORDS, head, out, chosen, left, list(stuck))
+    return "\n".join([receipt, *_rider_lines(riders, out)])
 
 
 # ── link_tasks_batch: several links between tasks ───────────────────────────
@@ -2642,8 +2748,8 @@ class _LinkRow(_BatchRow):
 
     @property
     def ref(self) -> str:
-        a = _ref(self.src) if self.src else f"task {data(self.source)}"
-        b = _ref(self.dst) if self.dst else f"task {data(self.target)}"
+        a = _ref(self.src) if self.src else _hidden(self.source)
+        b = _ref(self.dst) if self.dst else _hidden(self.target)
         return f"{a} {_LINK_VERB[self.kind]} {b}"
 
     @property
@@ -2675,7 +2781,7 @@ def _link_rows(links: str) -> list[_LinkRow] | str:
     if isinstance(parsed, str):
         return parsed
     rows: list[_LinkRow] = []
-    seen: dict[tuple[str, str, str], int] = {}
+    seen: dict[tuple[str, ...], int] = {}
     for i, item in enumerate(parsed, start=1):
         kind = str(item.get("type") or "relates_to").strip().lower()
         if kind not in LINK_TYPES:
@@ -2685,7 +2791,9 @@ def _link_rows(links: str) -> list[_LinkRow] | str:
             target = uuid_of(item.get("to_task_id"), f"Row {i}: to_task_id")
         except GatewayRefusal as exc:
             return f"{exc} Nothing was changed."
-        key = (source, target, kind)
+        # `relates_to` reads both ways, so A-B and B-A are one link.
+        ends = tuple(sorted((source, target))) if kind == "relates_to" else (source, target)
+        key = (*ends, kind)
         if key in seen:
             return f"Rows {seen[key]} and {i} name the same link. Nothing was changed."
         seen[key] = i
@@ -2752,7 +2860,7 @@ async def _link_plan(rows: list[_LinkRow]) -> None:
             continue
         gone = [t for t in (r.source, r.target) if t in hidden]
         if gone:
-            r.why = f"task {data(gone[0])} is {hidden[gone[0]]}"
+            r.why = f"task id {data(gone[0][:8])} is {hidden[gone[0]]}"
             continue
         if _link_exists(links.get(r.source, []), r):
             r.why = "they are linked like this already"
@@ -2801,11 +2909,12 @@ async def link_tasks_batch(links: str) -> str:
             ["No link of these can be made. Nothing was changed."]
             + [f"not linked: row {r.index} {r.ref}: {r.why}" for r in stuck]
         )
-    n = len(ready)
     body = {f"cannot link {k}": f"{r.ref}: {r.why}" for k, r in enumerate(stuck, start=1)}
+    # No count on the card: a count goes stale when the member unticks a row.
+    more = " and the links below" if len(ready) > 1 else ""
     asked = await _ask_batch(
-        f"Make {n} link{'s' if n != 1 else ''} between tasks?",
-        f"{ready[0].ref}{f' and {n - 1} more' if n > 1 else ''} · untick a link to leave it out",
+        "Make these links between tasks?",
+        f"{ready[0].ref}{more} · untick a link to leave it out",
         body,
         list(ready),
     )
