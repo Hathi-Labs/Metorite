@@ -54,14 +54,28 @@ function showsFormat(editor: Editor, from: number, to: number): boolean {
   return !sel.node && !sel.$anchorCell;
 }
 
+/**
+ * The nearest box that scrolls the editor. The menus move with it: they
+ * hear `window` only by default, and the page scrolls inside its own box.
+ */
+export function scrollParent(el: HTMLElement | null): HTMLElement | Window {
+  for (let node = el?.parentElement ?? null; node; node = node.parentElement) {
+    const { overflowY } = getComputedStyle(node);
+    if (overflowY === "auto" || overflowY === "scroll") return node;
+  }
+  return window;
+}
+
 export function FormatBubble({
   editor,
   pages,
   pagesLoading,
   loadPages,
   currentPageId,
+  scrollTarget,
 }: {
   editor: Editor;
+  scrollTarget?: HTMLElement | Window;
   pages: readonly PageChoice[] | null;
   pagesLoading: boolean;
   loadPages: () => void;
@@ -89,7 +103,7 @@ export function FormatBubble({
       editor={editor}
       pluginKey="kbFormat"
       shouldShow={({ editor: e, from, to }) => showsFormat(e, from, to)}
-      options={{ placement: "top", onHide: () => setLinking(false) }}
+      options={{ placement: "top", hide: true, scrollTarget, onHide: () => setLinking(false) }}
       className="kb-bubble shadow-md"
       role="toolbar"
       aria-label="Format the selection"
@@ -278,14 +292,27 @@ const TABLE_ACTS = [
   { label: "Turn the header row on or off", icon: "PanelTop", run: (e: Editor) => e.chain().focus().toggleHeaderRow().run() },
 ] as const;
 
-/** The table tools, over the caret while it is in a table. */
-export function TableTools({ editor }: { editor: Editor }) {
+/** The table around the selection, as drawn, or `null`. */
+function tableAtSelection(editor: Editor): HTMLElement | null {
+  const { node } = editor.view.domAtPos(editor.state.selection.from);
+  const el = node instanceof HTMLElement ? node : node.parentElement;
+  return (el?.closest(".tableWrapper") ?? el?.closest("table")) as HTMLElement | null;
+}
+
+/** The table tools, over the table while the caret is in it. */
+export function TableTools({ editor, scrollTarget }: { editor: Editor; scrollTarget?: HTMLElement | Window }) {
   return (
     <BubbleMenu
       editor={editor}
       pluginKey="kbTable"
       shouldShow={({ editor: e, from, to }) => e.isEditable && e.isActive("table") && from === to}
-      options={{ placement: "top-start" }}
+      // The tools hang over the table, not over the caret, so they never
+      // hide the header row. They hide when the table scrolls out of view.
+      getReferencedVirtualElement={() => {
+        const table = tableAtSelection(editor);
+        return table ? { getBoundingClientRect: () => table.getBoundingClientRect() } : null;
+      }}
+      options={{ placement: "top-start", hide: true, scrollTarget }}
       className="kb-bubble shadow-md"
       role="toolbar"
       aria-label="Table"

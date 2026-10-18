@@ -40,7 +40,7 @@ import { bodyAfterEdit, normaliseBody, parseBody, writeBody } from "../../lib/ed
 import { loadPageChoices, matchPages, pageLinkHref, type PageChoice } from "../../lib/editor/pageLinks";
 import { knowledgeExtensions } from "../../lib/editor/schema";
 import type { Space } from "../../lib/types";
-import { FormatBubble, ImageDialog, TableTools } from "./menus";
+import { FormatBubble, ImageDialog, TableTools, scrollParent } from "./menus";
 import { CalloutView, CodeBlockView, DetailsView, ImageView } from "./nodeViews";
 import { useSuggestionMenu, type SuggestionMenu } from "./useSuggestionMenu";
 
@@ -255,6 +255,12 @@ export default function KnowledgeEditor({
     editorRef.current = editor;
   }, [editor]);
 
+  // The box that scrolls the page, so the floating menus follow a scroll.
+  const [scroller, setScroller] = useState<HTMLElement | Window | undefined>(undefined);
+  const shellRef = useCallback((el: HTMLDivElement | null) => {
+    if (el) setScroller(scrollParent(el));
+  }, []);
+
   // The menus' handles, for the plugins of `KnowledgeMenus`.
   useEffect(() => {
     if (!editor) return;
@@ -314,7 +320,7 @@ export default function KnowledgeEditor({
     : null;
 
   return (
-    <div className={editable ? "kb-editor-shell is-editing" : "kb-editor-shell"} onClick={onClick}>
+    <div ref={shellRef} className={editable ? "kb-editor-shell is-editing" : "kb-editor-shell"} onClick={onClick}>
       {editor && editable ? (
         <DragHandle editor={editor} className="kb-drag-handle">
           <span className="kb-drag-grip" title="Drag to move this block">
@@ -331,8 +337,9 @@ export default function KnowledgeEditor({
             pagesLoading={pagesLoading}
             loadPages={loadPages}
             currentPageId={pageId}
+            scrollTarget={scroller}
           />
-          <TableTools editor={editor} />
+          <TableTools editor={editor} scrollTarget={scroller} />
           <OptionList
             id="kb-slash-menu"
             label="Blocks"
