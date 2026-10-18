@@ -703,6 +703,12 @@ export function answeredPlan(name: string, rows: PlanRow[], answered: string): A
   } catch {
     return { done: "sent", name, rows, off: new Set() };
   }
+  // The server reads only a JSON object as a plan (review of #1136). `null`,
+  // an array or a string is not submitted, and `null` would throw below and
+  // take the whole chat page down on every reload.
+  if (sent === null || typeof sent !== "object" || Array.isArray(sent)) {
+    return { done: "cancelled", name, rows, off: new Set() };
+  }
   const got = planRowsFrom(sent.tasks);
   const byKey = new Map(got.map((r) => [r.key, r]));
   const merged = rows.map((r) => {

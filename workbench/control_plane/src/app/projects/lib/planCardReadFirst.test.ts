@@ -451,4 +451,11 @@ describe("an answered card draws as the member left it", () => {
     expect(answeredPlan("M", rows(), PLAN_CANCEL)!.done).toBe("cancelled");
     expect(answeredPlan("M", rows(), "")).toBeNull();
   });
+
+  it("reads an answer that is not a JSON object as not submitted, and never throws", () => {
+    // Review of #1136: `null` threw inside the card's state initialiser.
+    for (const body of ["null", "[1]", '"s"', "7"]) {
+      expect(answeredPlan("M", rows(), `Review plan — ${body}`)!.done).toBe("cancelled");
+    }
+  });
 });
