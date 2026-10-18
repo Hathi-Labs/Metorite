@@ -465,3 +465,47 @@ export function agentStateChip(value?: string | null): string {
   const accent = ACCENTS[visual ? visual.hue : "gray"];
   return visual?.muted ? `${accent.soft} ${accent.text}` : accent.chip;
 }
+
+/* ── Pull request chip (WS-55 EA-13d, `external_agent_access.md` §12.2 item 2) ──
+ *
+ * The chip on a card that names one pull request of the task and its CI. This
+ * is still the one module where a status becomes a tone (rule 4). The card
+ * descriptor (`taskCard.pullRequestChip`) asks here, and `TaskMeta` is the only
+ * file that turns the tone into a class. The words of the chip carry the state
+ * too, so the tone is never the only signal.
+ *
+ * The rule (EA3-41): a merged pull request takes the done tone, which is the
+ * green of a finished lane. Failing checks take danger. Pending checks take
+ * the warning tone. Every other chip takes muted, so an open pull request with
+ * passing checks stays quiet and one that needs a person is the one that shows.
+ */
+
+/** The tone names of the chip. `taskCard.MetaTone` holds the same four. */
+export type PrChipTone = "success" | "danger" | "warning" | "muted";
+
+/** The `state` of a pull request reference (`pm_task_refs.state`). */
+export type PrState = "open" | "draft" | "merged" | "closed";
+
+/** The `checks_state` of a reference (migration 282). Null: never read. */
+export type PrChecksState = "pending" | "passing" | "failing" | "none";
+
+/** The glyph and the word of each state. The icon is a Lucide name. */
+export const PR_STATES: Record<PrState, { icon: string; word: string }> = {
+  open: { icon: "GitPullRequest", word: "Open" },
+  draft: { icon: "GitPullRequestDraft", word: "Draft" },
+  merged: { icon: "GitMerge", word: "Merged" },
+  closed: { icon: "GitPullRequestClosed", word: "Closed" },
+};
+
+/** How a pull request chip draws, by its state and its checks. */
+export function prChipTone(
+  state?: string | null,
+  checksState?: string | null,
+): PrChipTone {
+  if (state === "merged") return "success";
+  // A merged or closed pull request has no live checks to report.
+  if (state === "closed") return "muted";
+  if (checksState === "failing") return "danger";
+  if (checksState === "pending") return "warning";
+  return "muted";
+}

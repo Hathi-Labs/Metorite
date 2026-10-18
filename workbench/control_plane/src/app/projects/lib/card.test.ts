@@ -98,6 +98,7 @@ describe("taskFacts", () => {
         { name: "urgent", color: undefined },
       ],
       estimateMins: 45,
+      pr: null,
     });
   });
 
@@ -111,6 +112,7 @@ describe("taskFacts", () => {
       blockedByCount: 0,
       tags: [],
       estimateMins: undefined,
+      pr: null,
     });
   });
 

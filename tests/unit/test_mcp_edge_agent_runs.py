@@ -321,6 +321,17 @@ class TestTheInstructions:
                        "never takes the subtasks"):
             assert needed in text, needed
 
+    async def test_f4_initialize_names_the_url_and_the_short_id_and_the_github_move(
+            self, runs_on):
+        """EA-13f F4 and F4b (EA3-46). The instructions tell the agent to put
+        the url in the pull request description and the short id in the branch
+        name, and to skip the move to done when GitHub did it. Mutation: drop
+        the sentence from ``_ROUTINE_INSTRUCTIONS``."""
+        text = await self._instructions()
+        for needed in ("Put the url that get_task gives in the description of each pull"
+                       " request", "short_id in the branch name", "not when GitHub already did"):
+            assert needed in " ".join(text.split()), needed
+
     async def test_with_the_flag_off_initialize_names_no_archive(self, edge, monkeypatch):  # noqa: F811 — a fixture
         """WS-55 EA-6g: the archive line shows only with the runs, as its tool."""
         monkeypatch.setattr(get_settings(), "agent_runs_enabled", False)
