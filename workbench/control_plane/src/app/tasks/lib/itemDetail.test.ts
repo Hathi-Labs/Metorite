@@ -110,12 +110,19 @@ describe("one task panel composition (S6e)", () => {
   });
 
   it("offers Subtask, Link and Attach above Details, each reaching its field", () => {
-    const bar = BODY.slice(BODY.indexOf('role="toolbar"'), BODY.indexOf('label="Details"'));
+    const bar = BODY.slice(BODY.indexOf('aria-label="Add to this task"'), BODY.indexOf('label="Details"'));
     expect(bar).toMatch(/reach\("links", subtaskBox\)/);
     expect(bar).toMatch(/reach\("refs", linkBox\)/);
     expect(bar).toMatch(/filePicker\.current\?\.click\(\)/);
     expect(BODY).toMatch(/ref=\{subtaskBox\}/);
     expect(BODY).toMatch(/inputRef=\{linkBox\}/);
+    // A folded section unmounts its content. The file input must live
+    // outside Files, or Attach finds no input while Files is folded.
+    const files = BODY.indexOf('label="Files"');
+    const filesEnd = BODY.indexOf("</CollapsibleSection>", files);
+    const input = BODY.indexOf("ref={filePicker}");
+    expect(input, "the file input is in the tree").toBeGreaterThan(0);
+    expect(input > files && input < filesEnd, "the file input sits inside Files").toBe(false);
   });
 
   it("the move dialog draws the body's assignee chips, not a copy", () => {

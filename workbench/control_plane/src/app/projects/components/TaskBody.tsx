@@ -218,17 +218,14 @@ const PAIRED_FIELDS = (twoColumn: boolean): string =>
  * Plane, Jira. The label is sentence case, like the section headings above it
  * (`Collapsible.tsx` filed the uppercase here as the wrong side).
  *
- * `trailing` sits at the end of the value (an accent dot, a count).
  */
 export function FieldCell({
   label,
   icon,
-  trailing,
   children,
 }: {
   label: string;
   icon: string;
-  trailing?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
@@ -239,7 +236,6 @@ export function FieldCell({
       </span>
       <div className="flex min-h-8 min-w-0 flex-1 items-center gap-2 text-sm text-foreground">
         <div className="min-w-0 flex-1">{children}</div>
-        {trailing}
       </div>
     </div>
   );
@@ -895,13 +891,13 @@ export function TaskBody({
         {above}
 
         <div className={SECTION_COLUMN}>
-          {/* The ADD toolbar (owner, 2026-10-19: "all the main, commonly used
+          {/* The ADD row (owner, 2026-10-19: "all the main, commonly used
               features easily accessible"). Each button reaches a section
               further down: it opens the section when it is folded, and puts
               the cursor in its field. Watch sits here too, because it is an
               act on the task and not a fact about it. */}
           <div
-            role="toolbar"
+            role="group"
             aria-label="Add to this task"
             className="flex flex-wrap items-center gap-1"
           >
@@ -1341,21 +1337,6 @@ export function TaskBody({
                 <p className="text-xs text-muted-foreground">Nothing attached.</p>
               ) : null}
             </div>
-            {/* The picker is a Button, not a bare file input (S5). The input
-                stays in the tree, hidden, because it is the only way to
-                raise the OS file dialog. Fenced by conformance rule 7. */}
-            <input
-              ref={filePicker}
-              type="file"
-              multiple
-              className="hidden"
-              tabIndex={-1}
-              aria-hidden
-              onChange={(e) => {
-                void uploadFiles(e.target.files);
-                e.target.value = "";
-              }}
-            />
             <Button
               className="mt-2"
               variant="secondary"
@@ -1514,6 +1495,13 @@ export function TaskBody({
       {/* ⚠️ The composer belongs to the COMMENTS list, and is hidden with it. */}
       <div
         className="shrink-0 border-t border-border bg-card p-3"
+        // ⚠️ On the CONTAINER, not the field. Tab from the field to a
+        // mention button blurs the field, and a field-level blur unmounted
+        // the row that held the next focus, so focus fell to <body>.
+        onFocus={() => setComposing(true)}
+        onBlur={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setComposing(false);
+        }}
         hidden={stream !== "comments"}
         onDragOver={inline.allowDrop}
         onDrop={(e) => inline.dropInto(e)}
@@ -1546,8 +1534,6 @@ export function TaskBody({
           ref={commentBox}
           value={comment}
           onChange={(e) => writeComment(e.target.value)}
-          onFocus={() => setComposing(true)}
-          onBlur={() => setComposing(false)}
           onPaste={(e) => inline.pasteInto(e, commentTarget)}
           onDragOver={inline.allowDrop}
           onDrop={(e) => inline.dropInto(e, commentTarget)}
@@ -1588,6 +1574,24 @@ export function TaskBody({
           <p className="mt-1 text-[11px] text-muted-foreground">{notDelivered}</p>
         ) : null}
       </div>
+      {/* The picker is a Button, not a bare file input (S5). The input
+          stays in the tree, hidden, because it is the only way to raise the
+          OS file dialog. Fenced by conformance rule 7.
+          ⚠️ At the ROOT, never inside the Files section. A folded section
+          unmounts its content, so the toolbar's Attach found no input and
+          raised no dialog (verifier, 2026-10-19). */}
+      <input
+        ref={filePicker}
+        type="file"
+        multiple
+        className="hidden"
+        tabIndex={-1}
+        aria-hidden
+        onChange={(e) => {
+          void uploadFiles(e.target.files);
+          e.target.value = "";
+        }}
+      />
       {/* The viewer is mounted at the root rather than inside the Files
           section, so it is not clipped by the scroll container. */}
       <AttachmentViewer

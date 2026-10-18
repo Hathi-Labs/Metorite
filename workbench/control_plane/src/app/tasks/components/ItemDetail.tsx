@@ -427,7 +427,9 @@ export function TaskDetail({
               task's facts) right below, so this strip names what it holds:
               the member's own planning. */}
           <SectionLabel icon={themedIcon("Tag")}>{lens ? "My planning" : "Details"}</SectionLabel>
-            <div className={`grid ${focused ? "grid-cols-2 gap-x-6 gap-y-1" : "grid-cols-1 gap-y-1"}`}>
+            {/* `-mx-2`: the strip pads `px-5` and the body `px-3`, so the
+                rows' label column lines up with the body's rows below. */}
+            <div className={`-mx-2 grid ${focused ? "grid-cols-2 gap-x-6 gap-y-1" : "grid-cols-1 gap-y-1"}`}>
               {/* Context */}
               <MetaEdit label="Context" icon={themedIcon("Tag")}
                 display={item.context
