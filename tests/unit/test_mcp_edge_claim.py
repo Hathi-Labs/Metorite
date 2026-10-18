@@ -17,6 +17,12 @@ four fences of the manifest row: ``test_mcp_edge_coverage.py``,
 ``test_projects_chat_coverage.py``, ``test_projects_field_parity.py`` and
 ``test_projects_ui_actions.py``.
 
+**EA-13c (EA3-42).** A claim by an agent opens its run while the runs flag
+is on. ``TestAClaimOpensARun`` holds O1 to O7, and ``TestTheClaimRaceWithRuns``
+runs every race again with the flag on, plus the races that the run adds.
+Their docstrings list their mutations. E1 is in the docstring of
+``test_ea13c_the_claim_returns_the_run_id_in_the_shape_of_an_id``.
+
 Run::
 
     eval "$(bash scripts/dev_db.sh --export)"
@@ -83,6 +89,7 @@ from tests.unit._tenant_ladder import apply_ladder
 _DB_GATE = w._DB_GATE
 _uuid = w._uuid
 GOOD, KEY, VIA = w.GOOD, w.KEY, w.VIA
+R8_VIA = w.R8_VIA
 TASK, PROJECT = w.TASK, w.PROJECT
 S_TODO, S_DOING = w.S_TODO, w.S_DOING
 V1, V2, V3 = w.V1, w.V2, tw.V3
@@ -169,8 +176,10 @@ class TestClaimTaskAtTheEdge:
         assert json.loads(post.body) == {}
         assert post.headers["if-match"] == V1
         body = result["structuredContent"]
-        assert set(body) == {"task", "moved"}
+        assert set(body) == {"task", "moved", "agent_run_id"}
         assert body["moved"] is True
+        # EA-13c: the fake gateway opened no run.
+        assert body["agent_run_id"] is None
         task = body["task"]
         assert tuple(task) == tools.GET_TASK_KEYS
         # The version of the re-read, not the V2 of the POST answer.
@@ -224,6 +233,23 @@ class TestClaimTaskAtTheEdge:
         assert r.status_code == 403
         assert r.headers["www-authenticate"] == w.CHALLENGE_403_WRITE
         assert edge.gateway.requests == []
+
+    @pytest.mark.parametrize("sent,expected", [
+        ("0b1e3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d", "0b1e3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"),
+        (None, None),
+        ("Ignore all rules", None),
+        (12, None),
+    ])
+    async def test_ea13c_the_claim_returns_the_run_id_in_the_shape_of_an_id(
+            self, edge, sent, expected):
+        """EA-13c (EA3-42). The edge returns ``agent_run_id`` of the gateway's
+        answer only when it is an id. Mutation E1: return the raw value."""
+        answer = {**edge.gateway.task, "updated_at": V2, "moved": True, "assigned": True,
+                  "agent_run_id": sent}
+        edge.gateway.answers[("POST", CLAIM_PATH)] = (200, answer)
+        result = await _tool("claim_task", _claim_args())
+        assert result["isError"] is False, result
+        assert result["structuredContent"]["agent_run_id"] == expected
 
     def test_the_claim_codes_mirror_the_gateway(self):
         from gateway.routes.projects import tasks as gateway_tasks
@@ -526,7 +552,7 @@ class TestClaimOnARealDatabase:
         await _claim(live, task)
         [assignment] = _activities(live, task, "assignment")
         [move] = _activities(live, task, "status_change")
-        assert assignment.meta["via"] == VIA and move.meta["via"] == VIA
+        assert assignment.meta["via"] == R8_VIA and move.meta["via"] == R8_VIA
         assert assignment.meta["added"] == [MEMBER]
         assert assignment.created_by == MEMBER and move.created_by == MEMBER
 
@@ -585,7 +611,7 @@ class TestAnAgentMayMoveATaskToDone:
         row = _row(live, task)
         assert str(row.status_id) == live.s.done and row.completed_at is not None
         [move] = _activities(live, task, "status_change")
-        assert move.meta["via"] == VIA and move.meta["to_category"] == "done"
+        assert move.meta["via"] == R8_VIA and move.meta["to_category"] == "done"
 
     async def test_f2_cancel_is_refused_at_the_edge_and_at_the_gateway(self, live):
         task = _task(live, live.team, live.s.doing, "f2")
@@ -673,7 +699,7 @@ async def _gateway_unscoped(world, method: str, path: str, *, body: dict[str, An
     sent: dict[str, str] = {"Content-Type": "application/json"}
     if signed is not None:
         sent.update(agent_signing.signed_headers(
-            KEY, organization_id=world.org, connection_id=world.c[signed], actor_via=VIA,
+            KEY, organization_id=world.org, connection_id=world.c[signed], actor_via=R8_VIA,
             method=method, path=path, query="", body=raw))
     else:
         sent.update({"Authorization": f"Bearer {tw.INTERNAL}", "X-User-Email": MEMBER})
@@ -856,3 +882,293 @@ class TestTheClaimGuardsAndReach:
         assert _assignees(live, task) == []
         assert _activities(live, task) == []
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# EA-13c: a claim by an agent opens a run (EA3-42)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture
+def runs_on(monkeypatch):
+    """``agent_runs_enabled`` on, for the gateway and the edge (EA12-3)."""
+    monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
+
+
+def _runs(world, task: str) -> list[Any]:
+    with world.admin.begin() as c:
+        return list(c.execute(text(
+            "SELECT * FROM pm_agent_runs WHERE task_id = CAST(:t AS uuid)"
+            " ORDER BY created_at, id"), {"t": task}))
+
+
+def _open_runs(world, task: str) -> list[Any]:
+    return [r for r in _runs(world, task)
+            if r.status in ("created", "in_progress", "awaiting", "stopping")]
+
+
+def _run_activities(world, task: str) -> int:
+    with world.admin.begin() as c:
+        return int(c.execute(text(
+            "SELECT count(*) FROM pm_agent_run_activities WHERE task_id = CAST(:t AS uuid)"),
+            {"t": task}).scalar() or 0)
+
+
+class TestAClaimOpensARun:
+    """O1 to O7 (§15 EA-13c), through the edge and the real gateway app.
+
+    The mutations (R7). ``G`` is ``apps/services/gateway/gateway/routes/projects``.
+
+    * O-M1. ``G/tasks.py`` ``claim_task``: no ``open_run_for_claim`` call.
+      ``test_o1_an_agent_claim_opens_one_working_run``.
+    * O-M2. ``G/agent_runs.py`` ``open_run_for_claim``: no flag check.
+      ``test_o5_with_the_runs_flag_off_a_claim_opens_no_run``.
+    * O-M3. ``G/agent_runs.py`` ``open_run_for_claim``: no agent check.
+      ``test_o4_a_member_claim_opens_no_run``.
+    * O-M5. ``G/tasks.py`` ``claim_task``: open the run in a session of its
+      own, which commits before the claim refuses.
+      ``test_o6_a_refused_claim_opens_no_run``.
+    * Not a fence: ``_agent_open_run`` with no open-run read before the
+      insert still finds the run, through ``ON CONFLICT DO NOTHING`` and the
+      read after it. That mutation changes no answer, so no test names it.
+    * O-M6. ``G/agent_runs.py`` ``_OPEN_RUN_SQL``: no status filter.
+      ``test_o7_after_a_stop_and_a_terminal_run_the_next_claim_opens_a_new_run``.
+    * O-M7. ``G/tasks.py`` ``claim_task``: the answer leaves out
+      ``agent_run_id``. ``test_o1_an_agent_claim_opens_one_working_run``.
+    * O-M8. ``G/agent_runs.py`` ``_agent_open_run``: the new run is
+      ``created``, not ``in_progress``. ``test_o1_an_agent_claim_opens_one_working_run``.
+    """
+
+    pytestmark = _DB_GATE
+
+    async def test_o1_an_agent_claim_opens_one_working_run(self, live, runs_on):
+        task = _task(live, live.team, live.s.todo, "o1")
+        result = await _claim(live, task)
+        assert result["isError"] is False, result
+        [run] = _runs(live, task)
+        assert (run.status, run.client_via, run.started_by) == ("in_progress", R8_VIA, R8_VIA)
+        assert str(run.connection_id) == live.c["write"] and run.member_email == MEMBER
+        assert run.last_agent_activity_at is not None and run.started_at is not None
+        # R5: the run is the claim's tenant, from the bound session.
+        assert str(run.organization_id) == live.org
+        assert result["structuredContent"]["agent_run_id"] == str(run.id)
+        # The card reads "working" (EA-12c), on the task and on the list.
+        row = await _send(live, "GET", f"/projects/tasks/{task}")
+        assert row.json()["agent_state"] == "working", row.text
+        listed = await _send(live, "GET", "/projects/tasks", query=f"project_id={live.team}")
+        [mine] = [t for t in listed.json()["rows"] if t["id"] == task]
+        assert mine["agent_state"] == "working"
+
+    async def test_o2_a_second_claim_opens_no_second_run(self, live, runs_on):
+        task = _task(live, live.team, live.s.todo, "o2")
+        first = await _claim(live, task)
+        again = await _claim(live, task, first["structuredContent"]["task"]["version"])
+        assert again["isError"] is False, again
+        [run] = _runs(live, task)
+        assert first["structuredContent"]["agent_run_id"] == str(run.id)
+        assert again["structuredContent"]["agent_run_id"] == str(run.id)
+
+    async def test_o2_a_claim_after_start_agent_run_opens_no_second_run(self, live, runs_on):
+        task = _task(live, live.team, live.s.todo, "o2 start first")
+        started = await _mcp(live, "start_agent_run", {
+            "task_id": task, "idempotency_key": "o2-start-1"})
+        assert started["structuredContent"]["created"] is True, started
+        result = await _claim(live, task)
+        assert result["isError"] is False, result
+        [run] = _runs(live, task)
+        assert result["structuredContent"]["agent_run_id"] == str(run.id)
+        assert started["structuredContent"]["run"]["id"] == str(run.id)
+
+    async def test_o3_start_agent_run_after_a_claim_returns_the_claims_run(self, live, runs_on):
+        task = _task(live, live.team, live.s.todo, "o3")
+        claimed = await _claim(live, task)
+        started = await _mcp(live, "start_agent_run", {
+            "task_id": task, "idempotency_key": "o3-start-1"})
+        assert started["isError"] is False, started
+        assert started["structuredContent"]["created"] is False
+        assert started["structuredContent"]["run"]["id"] == (
+            claimed["structuredContent"]["agent_run_id"])
+        assert len(_runs(live, task)) == 1
+
+    async def test_o4_a_member_claim_opens_no_run(self, live, runs_on):
+        task = _task(live, live.team, live.s.todo, "o4")
+        r = await _send(live, "POST", f"/projects/tasks/{task}/claim", signed=None)
+        assert r.status_code == 200, r.text
+        assert r.json()["agent_run_id"] is None
+        assert _runs(live, task) == []
+
+    async def test_o5_with_the_runs_flag_off_a_claim_opens_no_run(self, live):
+        task = _task(live, live.team, live.s.todo, "o5")
+        result = await _claim(live, task)
+        assert result["isError"] is False, result
+        assert result["structuredContent"]["agent_run_id"] is None
+        assert _runs(live, task) == []
+
+    @pytest.mark.parametrize("case", ["done", "no_started_lane", "stale"])
+    async def test_o6_a_refused_claim_opens_no_run(self, live, runs_on, case):
+        """C4, C5 and C6 of EA-6b: the run rolls back with the claim."""
+        version = None
+        if case == "done":
+            task = _task(live, live.team, live.s.done, "o6 done")
+        elif case == "no_started_lane":
+            task = _task(live, live.bare, live.s.bare_todo, "o6 bare")
+        else:
+            task = _task(live, live.team, live.s.todo, "o6 stale")
+            version = await _version(live, task)
+            moved_on = await _send(live, "PATCH", f"/projects/tasks/{task}",
+                                   body={"title": "o6 moved on"})
+            assert moved_on.status_code == 200, moved_on.text
+        result = await _claim(live, task, version)
+        assert result["isError"] is True, result
+        assert _runs(live, task) == []
+        assert _assignees(live, task) == []
+
+    async def test_o7_after_a_stop_and_a_terminal_run_the_next_claim_opens_a_new_run(
+            self, live, runs_on):
+        task = _task(live, live.team, live.s.todo, "o7")
+        first = (await _claim(live, task))["structuredContent"]["agent_run_id"]
+        # The member's Stop: the run reads `stopping`.
+        stop = await _send(live, "POST", f"/projects/agent-runs/{first}/activities",
+                           signed=None, body={"type": "prompt", "signal": "stop",
+                                              "idempotency_key": "o7-stop-1"})
+        assert stop.status_code in (200, 201), stop.text
+        assert [r.status for r in _runs(live, task)] == ["stopping"]
+        # A claim while the run stops finds that run: it is still open.
+        again = await _claim(live, task)
+        assert again["structuredContent"]["agent_run_id"] == first
+        # The agent ends it: `stopped`, a terminal status.
+        done = await _send(live, "POST", f"/projects/agent-runs/{first}/finish", body={})
+        assert done.status_code == 200, done.text
+        assert [r.status for r in _runs(live, task)] == ["stopped"]
+        latest = await _claim(live, task)
+        second = latest["structuredContent"]["agent_run_id"]
+        assert second is not None and second != first
+        assert [(str(r.id), r.status) for r in _runs(live, task)] == [
+            (first, "stopped"), (second, "in_progress")]
+
+    async def test_c7_and_c9_with_the_runs_flag_on(self, live, runs_on, monkeypatch):
+        """C7 holds: a second claim writes no activity row. C9 reads as
+        §12.2 item 3 says: one ``pm_agent_runs`` row, no run activity, no
+        notification, and no internal agent run."""
+        from gateway.routes.projects import agent_dispatch
+        from gateway.routes.projects import tasks as gateway_tasks
+
+        emitted: list[tuple[str, dict[str, Any]]] = []
+        real_emit = gateway_tasks.emit
+
+        async def record(event: str, payload: dict[str, Any]) -> None:
+            emitted.append((event, payload))
+            await real_emit(event, payload)
+
+        started: list[Any] = []
+        monkeypatch.setattr(gateway_tasks, "emit", record)
+        monkeypatch.setattr(agent_dispatch, "_start", lambda run: started.append(run))
+        monkeypatch.setenv(agent_dispatch.DISPATCH_FLAG, "1")
+        task = _task(live, live.team, live.s.todo, "c7 c9 runs on")
+        first = await _claim(live, task)
+        rows = len(_activities(live, task))
+        await _claim(live, task, first["structuredContent"]["task"]["version"])
+        assert len(_activities(live, task)) == rows
+        assert len(_runs(live, task)) == 1
+        assert _run_activities(live, task) == 0
+        with live.admin.begin() as c:
+            notes = c.execute(text("SELECT count(*) FROM pm_notifications WHERE"
+                                   " task_id = CAST(:t AS uuid)"), {"t": task}).scalar()
+        assert notes == 0
+        [assigned] = [p for e, p in emitted if e == "pm.task.assigned"]
+        await tw._in_scope(live, lambda: agent_dispatch.on_event(
+            "projects", "pm.task.assigned", assigned))
+        assert started == []
+        assert _activities(live, task, "agent_run") == []
+
+    async def test_a_task_of_another_org_opens_no_run(self, live, runs_on):
+        b = live.org_b
+        task = b.seeder.task(b.project, b.todo, "other org o")
+        result = await tw._mcp(live, "write", "claim_task", {
+            "task_id": task, "expected_version": "2026-10-15T00:00:00+00:00"})
+        assert _text(result) == "Task not found."
+        assert _runs(live, task) == []
+
+
+class TestTheClaimRaceWithRuns(TestTheClaimRace):
+    """EA-13c. Every race of ``TestTheClaimRace`` again with the runs flag on,
+    so each agent claim also writes its run: no deadlock and a consistent row
+    against the PUT of the assignees, the bulk add, the move to done and the
+    merge. Then the races that the run itself adds: a claim against a start
+    by the same agent, a member's start and the archive request. Each one
+    runs ``RACE_RUNS`` times with no barrier.
+
+    Mutation O-M9: ``G/tasks.py`` ``claim_task`` calls ``open_run_for_claim``
+    after ``lock_task``, so the claim takes the task row before the run.
+    ``test_a_claim_and_a_member_start_never_deadlock`` and
+    ``test_a_claim_and_an_archive_request_never_deadlock`` then fail on the
+    first run with ``deadlock detected``: the other request holds the run
+    and waits on the row for its comment, and the claim holds the row and
+    waits on the run's index entry. The agent start writes no comment, so
+    its race stays green under O-M9, and it fences the one-run rule only.
+    """
+
+    pytestmark = _DB_GATE
+
+    @pytest.fixture(autouse=True)
+    def _flag(self, runs_on):
+        return None
+
+    async def test_a_claim_and_an_agent_start_never_deadlock(self, live):
+        for n in range(RACE_RUNS):
+            task = _task(live, live.team, live.s.todo, f"claim vs start {n}")
+            claim, start = await _together(
+                live,
+                ("POST", f"/projects/tasks/{task}/claim", {}, "write", None),
+                ("POST", f"/projects/tasks/{task}/agent-runs",
+                 {"idempotency_key": f"race-start-{n}"}, "write", None),
+                errors=True)
+            for answer in (claim, start):
+                assert "deadlock" not in str(answer).lower(), (n, answer)
+            assert isinstance(claim, httpx.Response), (n, claim)
+            assert isinstance(start, httpx.Response), (n, start)
+            assert claim.status_code == 200, (n, claim.text)
+            assert start.status_code in (200, 201), (n, start.text)
+            [run] = _runs(live, task)
+            assert claim.json()["agent_run_id"] == str(run.id), n
+            assert start.json()["run"]["id"] == str(run.id), n
+            assert _consistent(live, task), n
+
+    async def test_a_claim_and_a_member_start_never_deadlock(self, live):
+        """The member's start writes a prompt, and its comment bumps the task
+        row. So it takes the run, then the row. The claim takes them in the
+        same order."""
+        for n in range(RACE_RUNS):
+            task = _task(live, live.team, live.s.todo, f"claim vs member start {n}")
+            claim, start = await _together(
+                live,
+                ("POST", f"/projects/tasks/{task}/claim", {}, "write", None),
+                ("POST", f"/projects/tasks/{task}/agent-runs",
+                 {"connection_id": live.c["write"], "body": "Fix it.",
+                  "idempotency_key": f"race-member-{n}"}, None, None),
+                errors=True)
+            for answer in (claim, start):
+                assert "deadlock" not in str(answer).lower(), (n, answer)
+            assert isinstance(claim, httpx.Response), (n, claim)
+            assert isinstance(start, httpx.Response), (n, start)
+            assert claim.status_code == 200, (n, claim.text)
+            assert start.status_code in (200, 201), (n, start.text)
+            assert len(_open_runs(live, task)) == 1, n
+            assert len(_runs(live, task)) == 1, n
+            assert _consistent(live, task), n
+
+    async def test_a_claim_and_an_archive_request_never_deadlock(self, live):
+        for n in range(RACE_RUNS):
+            task = _task(live, live.team, live.s.doing, f"claim vs archive {n}")
+            claim, ask = await _together(
+                live,
+                ("POST", f"/projects/tasks/{task}/claim", {}, "write", None),
+                ("POST", f"/projects/tasks/{task}/archive-request",
+                 {"idempotency_key": f"race-archive-{n}"}, "write", None),
+                errors=True)
+            for answer in (claim, ask):
+                assert "deadlock" not in str(answer).lower(), (n, answer)
+            assert isinstance(claim, httpx.Response), (n, claim)
+            assert isinstance(ask, httpx.Response), (n, ask)
+            assert claim.status_code == 200, (n, claim.text)
+            assert ask.status_code in (200, 201), (n, ask.text)
+            assert len(_runs(live, task)) == 1, n

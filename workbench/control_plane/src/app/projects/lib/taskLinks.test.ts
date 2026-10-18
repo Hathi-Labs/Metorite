@@ -2,11 +2,14 @@
  * The Links section's drawing rules (WS-57 TR-2): the icon, the state chip,
  * the two names and the paste-to-add rule. `lib/taskLinks.ts` holds them.
  */
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { isKnownIcon } from "@/lib/icons";
 
-import { pastedLink, refIcon, refNames, refState } from "./taskLinks";
+import { pastedLink, refAddedBy, refIcon, refNames, refState } from "./taskLinks";
 
 const KINDS = ["pull_request", "issue", "commit", "branch", "comment", "doc", "url"] as const;
 const PROVIDERS = ["github", "gitlab", "bitbucket", "google", "figma", "notion", "other"] as const;
@@ -79,5 +82,37 @@ describe("pastedLink", () => {
     expect(pastedLink("javascript:alert(1)")).toBeNull();
     expect(pastedLink("example.com")).toBeNull();
     expect(pastedLink("")).toBeNull();
+  });
+});
+
+/**
+ * WS-55 EA-13b (§12.2 item 5, EA3-44). Who added a link, when no person did.
+ * Mutations caught: the rule drops `github`, titles the stamp, or labels a
+ * person's link, a chat link or a link from the task's text.
+ */
+describe("refAddedBy", () => {
+  it("names the agent's client and the GitHub App", () => {
+    expect(refAddedBy({ via: "mcp:claude.ai:claude-code" })).toBe("added by Claude Code");
+    expect(refAddedBy({ via: "mcp:claude.ai" })).toBe("added by Claude");
+    expect(refAddedBy({ via: "github" })).toBe("linked by GitHub");
+  });
+
+  it("says nothing for a person, the chat or a link from the text", () => {
+    for (const via of ["ui", "chat", "text", ""])
+      expect(refAddedBy({ via }), via).toBeNull();
+  });
+});
+
+/**
+ * The Links section draws the rule. A DOM-free render cannot run the fetch
+ * of `TaskLinks`, so this reads its source. Mutation caught: the section
+ * drops the `added by` line, or computes it without `refAddedBy`.
+ */
+describe("TaskLinks draws refAddedBy (EA-13b)", () => {
+  const source = readFileSync(resolve(__dirname, "..", "components/TaskLinks.tsx"), "utf-8");
+
+  it("computes the line from the one rule and draws it", () => {
+    expect(source).toMatch(/const addedBy = refAddedBy\(row\);/);
+    expect(source).toMatch(/data-ref-added-by>\s*\{addedBy\}\s*</);
   });
 });

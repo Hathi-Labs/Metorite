@@ -28,8 +28,9 @@ issue, the edge bearer check and the connection read of branch 0.
 **The MCP surface (EA-3a, EA-6a).** :data:`MCP_ROUTES` is the one allowlist of
 gateway routes an outside agent may reach. :data:`MCP_WRITE_ROUTES` names its
 write pairs, and :func:`writes_enabled` is the one reader of the writes flag. :func:`actor_via_for` gives the
-``mcp:<slug>`` stamp of a connection. :data:`ACTOR_VIA_PATTERN` is the one
-shape of that stamp, and the Projects routes import it from here.
+``mcp:<host>:<slug>`` stamp of a connection (EA-13a). :data:`ACTOR_VIA_PATTERN`
+is the one shape of that stamp, and the Projects routes import it from here.
+:data:`CLIENT_LABELS` and :func:`client_label` give the name of a stamp.
 
 Fences: ``tests/unit/test_agent_oauth_server.py``,
 ``tests/unit/test_mcp_edge_signing.py`` and
@@ -44,6 +45,7 @@ import hmac
 import re
 import uuid
 from collections.abc import Iterable, Mapping
+from types import MappingProxyType
 from typing import NamedTuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -591,14 +593,54 @@ WRITE_WINDOW_S = 600
 WRITE_CAP_NAMESPACE = "agent_writes"
 
 
-def actor_via_for(client_origin: str | None) -> str:
-    """The ``X-Actor-Via`` stamp of a connection: ``mcp:<slug>``.
+#: EA-13a (spec §12.2 item 1, EA3-47). The longest ``<slug>`` of a client
+#: stamp, and the endings of a CIMD path segment that name no client.
+CLIENT_SLUG_MAX = 24
+_SLUG_ENDINGS = ("-client-metadata", "-metadata")
+_SLUG_JUNK = re.compile(r"[^a-z0-9-]+")
 
-    The slug is the lower-case ASCII host of *client_origin*, with no scheme
-    and no port. When that stamp does not match :data:`ACTOR_VIA_PATTERN`,
-    the slug is the first 16 hex characters of the SHA-256 of the origin. An
-    empty origin gives ``""``, which matches no pattern, so branch 0 refuses
-    it (spec §10.1, step 7).
+
+def client_slug(client_id: str | None) -> str:
+    """The ``<slug>`` of a CIMD client id, or ``""`` (EA3-47).
+
+    The last path segment in lower case. A ``.json`` end goes first, then a
+    ``-client-metadata`` or ``-metadata`` end. Each run of characters other
+    than ``[a-z0-9-]`` becomes one ``-``, and the slug keeps at most
+    :data:`CLIENT_SLUG_MAX` characters. A client id that is not a CIMD URL
+    (a dynamic registration) gives ``""``.
+    ``https://claude.ai/oauth/claude-code-client-metadata`` gives
+    ``claude-code``.
+    """
+    if not client_id or not is_cimd_client_id(client_id):
+        return ""
+    segment = urlsplit(client_id).path.rstrip("/").rsplit("/", 1)[-1].lower()
+    segment = segment.removesuffix(".json")
+    for ending in _SLUG_ENDINGS:
+        if segment.endswith(ending):
+            segment = segment.removesuffix(ending)
+            break
+    segment = _SLUG_JUNK.sub("-", segment).strip("-")
+    return segment[:CLIENT_SLUG_MAX].rstrip("-")
+
+
+def actor_via_for(client_origin: str | None, *, client_id: str | None) -> str:
+    """The ``X-Actor-Via`` stamp of a connection (spec §10.1, §12.2 item 1).
+
+    EA-13a (EA3-47): ``mcp:<host>:<slug>``, where ``<host>`` is the
+    lower-case ASCII host of *client_origin* and ``<slug>`` is
+    :func:`client_slug` of *client_id*, the connection's own client id. The
+    slug counts only when the client id is at that same host. Claude Code
+    gives ``mcp:claude.ai:claude-code``.
+
+    The fallbacks, in order. With no slug, or a stamp that does not match
+    :data:`ACTOR_VIA_PATTERN`, the host stamp ``mcp:<host>`` (the stamp of
+    every connection before EA-13a). When that does not match either, the
+    first 16 hex characters of the SHA-256 of the origin. An empty origin
+    gives ``""``, which matches no pattern, so branch 0 refuses it (step 7).
+
+    *client_id* is keyword-only and has no default, so a caller names it.
+    ``client_id=None`` gives the legacy host stamp, which the open-run read
+    of ``routes/projects/agent_runs.py`` matches for one release.
     """
     origin = (client_origin or "").strip()
     if not origin:
@@ -607,10 +649,49 @@ def actor_via_for(client_origin: str | None) -> str:
         host = (urlsplit(origin).hostname or "").lower()
     except ValueError:
         host = ""
+    host_ok = bool(host) and host.isascii()
+    # An IPv6 host has colons of its own, so a slug after it could not be
+    # read back. Such a host keeps the host stamp (EA-13a fix round 1).
+    slug = client_slug(client_id) if host_ok and ":" not in host else ""
+    if slug and ascii_host(urlsplit(client_id or "").hostname or "").lower() == host:
+        stamp = f"mcp:{host}:{slug}"
+        if ACTOR_VIA_PATTERN.fullmatch(stamp):
+            return stamp
     stamp = f"mcp:{host}"
-    if host and host.isascii() and ACTOR_VIA_PATTERN.fullmatch(stamp):
+    if host_ok and ACTOR_VIA_PATTERN.fullmatch(stamp):
         return stamp
     return "mcp:" + hashlib.sha256(origin.encode("utf-8")).hexdigest()[:16]
+
+
+#: EA-13a (spec §12.2 item 1, EA3-45). The ONE curated name of a client
+#: stamp, keyed by the stamp without ``mcp:``. The map ``CLIENT_LABELS`` of
+#: ``app/projects/lib/agentRuns.ts`` mirrors it, key for key, and
+#: ``tests/fixtures/agent_client_names.json`` holds both. A pytest and a
+#: vitest test read that file, so the two cannot drift.
+#:
+#: ⚠️ The self-declared ``client_name`` of a metadata document never names a
+#: client alone. Any host can publish a document that says "Claude Code".
+CLIENT_LABELS: Mapping[str, str] = MappingProxyType({
+    "claude.ai:claude-code": "Claude Code",
+    # The legacy host stamp. It is true for every client on that host.
+    "claude.ai": "Claude",
+})
+
+
+def client_label(via: str | None) -> str:
+    """The name of a client stamp, for a person to read (EA3-45).
+
+    A known stamp reads its label. Else the label of its host, else the host
+    itself, so ``mcp:evil.example:claude-code`` reads ``evil.example``. An
+    empty value reads ``"Agent"``.
+
+    A body with more than one colon is an IPv6 host stamp, because
+    :func:`actor_via_for` adds no slug to an IPv6 host. It reads whole.
+    """
+    raw = (via or "").strip().lower()
+    body = raw.removeprefix("mcp:")
+    host = body if body.count(":") > 1 else body.split(":", 1)[0]
+    return CLIENT_LABELS.get(body) or CLIENT_LABELS.get(host) or host or "Agent"
 
 
 def authorization_redirect(redirect_uri: str, params: Mapping[str, str | None]) -> str:
@@ -629,6 +710,8 @@ def authorization_redirect(redirect_uri: str, params: Mapping[str, str | None]) 
 __all__ = [
     "ACTOR_VIA_PATTERN",
     "ALL_ORGS",
+    "CLIENT_LABELS",
+    "CLIENT_SLUG_MAX",
     "CONTEXT_READ",
     "MAX_SCOPE_CHARS",
     "MAX_URL_CHARS",
@@ -649,7 +732,9 @@ __all__ = [
     "ascii_host",
     "authorization_redirect",
     "authorize_url",
+    "client_label",
     "client_origin",
+    "client_slug",
     "enabled",
     "is_allowed_redirect_uri",
     "is_cimd_client_id",
