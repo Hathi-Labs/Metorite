@@ -84,6 +84,8 @@ export function taskFacts(
       (name): TagFact => ({ name, color: colours?.get(name.toLowerCase()) })
     ),
     estimateMins: task.estimate_mins,
+    // WS-55 EA-13d: the gateway picked it (EA3-48), so the card picks nothing.
+    pr: task.pr ?? null,
   };
 }
 
@@ -159,6 +161,7 @@ export const CHIP_FIELD: Record<string, string> = {
   importance: "importance",
   due: "due_at",
   subtasks: "subtasks",
+  pr: "pr",
   tags: "tags",
   attachments: "attachments",
   estimate: "estimate",

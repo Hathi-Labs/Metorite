@@ -739,6 +739,18 @@ class TaskModel(BaseModel):
     #: text ("Waiting for <member>", "<client> working"). ``None`` with no run.
     agent_client_via: str | None = None
     agent_member_email: str | None = None
+    #: WS-55 EA-13d (EA3-41). The first line of the newest `thought`,
+    #: `response` or `elicitation` of that run, at most 140 characters, for the
+    #: hover of the pill. Filled by ``attach_agent_state``, as the three above.
+    agent_note: str | None = None
+    #: WS-55 EA-13d (EA3-48). The ONE pull request chip of the task:
+    #: ``{repo, number, state, checks_state, checks_summary, url, title,
+    #: merged_at, more}``, or ``None``. ``filters.attach_pr_chip`` fills it in
+    #: the same call as the agent state, one batched query for the list.
+    pr: dict | None = None
+    #: WS-55 EA-13e (EA3-49). True when the agent-worked rule of
+    #: ``agent_worked.py`` holds now. ``filters.attach_agent_worked`` fills it.
+    agent_worked: bool | None = None
 
     @field_validator("leveraged", mode="before")
     @classmethod

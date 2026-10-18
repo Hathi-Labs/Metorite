@@ -103,6 +103,7 @@ const GROUP_OPTION_LABELS: Record<GroupBy, string> = {
   project: "Group by project",
   importance: "Group by priority",
   tag: "Group by tag",
+  agent: "Group by agent state",
   none: "No grouping",
 };
 
@@ -113,6 +114,7 @@ const LANE_OPTION_LABELS: Record<GroupBy, string> = {
   project: "Lanes by project",
   importance: "Lanes by priority",
   tag: "Lanes by tag",
+  agent: "Lanes by agent state",
   none: "No lanes",
 };
 
@@ -232,6 +234,13 @@ interface Props {
    */
   waitingOnMe?: boolean;
   onWaitingOnMe?: (next: boolean) => void;
+  /**
+   * WS-55 EA-13e (EA3-43, EA3-49) — the "Agent work" filter: tasks that an
+   * agent worked on, by the rule of `agent_worked.py`. Page state like
+   * "Waiting on me", and it shows with it.
+   */
+  agentWork?: boolean;
+  onAgentWork?: (next: boolean) => void;
 }
 
 export function FilterBar({
@@ -263,6 +272,8 @@ export function FilterBar({
   onExport,
   waitingOnMe = false,
   onWaitingOnMe,
+  agentWork = false,
+  onAgentWork,
 }: Props) {
   const subGroupBy = lanes.subGroupBy;
 
@@ -277,7 +288,10 @@ export function FilterBar({
    * not back, which is exactly the availability the tree describes.
    */
   const axisOffered = (option: GroupBy, current: GroupBy): boolean =>
-    option !== "project" || spansProjects || current === "project";
+    (option !== "project" || spansProjects || current === "project") &&
+    // WS-55 EA-13e: the agent axis is offered while the agent routes are on,
+    // or when it is already the current value (a saved view is honoured).
+    (option !== "agent" || Boolean(onWaitingOnMe) || current === "agent");
   // The search box is held locally and pushed up on a delay. Refetching on
   // every keystroke turns a five-letter word into five round trips, and the
   // board flickering through four wrong answers reads as a broken filter.
@@ -501,6 +515,18 @@ export function FilterBar({
             onClick={() => onWaitingOnMe(!waitingOnMe)}
           >
             Waiting on me
+          </Button>
+        ) : null}
+        {onAgentWork ? (
+          <Button
+            variant={agentWork ? "primary" : "secondary"}
+            size="sm"
+            icon="Bot"
+            aria-pressed={agentWork}
+            title="Tasks that an agent worked on: a run, or an act through an agent"
+            onClick={() => onAgentWork(!agentWork)}
+          >
+            Agent work
           </Button>
         ) : null}
         {/*

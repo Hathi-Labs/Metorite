@@ -196,9 +196,18 @@ async def test_recurrence_still_spawns_through_the_cascade(subtree, monkeypatch)
 # ── The complete door ───────────────────────────────────────────────────────
 
 
+class _EmptyDb:
+    """Answers the batched reads that `attach_agent_state` runs even with the
+    runs flag off (the EA-13d PR chip, the EA-13e agent_worked) with no rows.
+    Every other call is faked by the fixtures."""
+
+    async def execute(self, *_a, **_k):
+        return SimpleNamespace(fetchall=lambda: [])
+
+
 class _Session:
     async def __aenter__(self):
-        return object()
+        return _EmptyDb()
 
     async def __aexit__(self, *exc):
         return False

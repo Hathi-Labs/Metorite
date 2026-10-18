@@ -41,6 +41,8 @@ Run::
 * M22. ``E/mcp.py`` ``instructions``: no ``_ROUTINE_INSTRUCTIONS``. ``test_p10_writes_and_projects_write_name_the_routine_tools``.
 * M23. ``test_agent_oauth_server.py`` ``_prompt_role_ids``: any value of ``"role"`` is exempt. ``test_the_prompt_role_is_the_one_exempt_position``.
 * M24. ``E/prompts.py`` holds a stray ``"member"`` literal. ``test_no_module_reads_a_tenant_or_a_member_from_input[prompts.py]``.
+* M28 (EA-13f). ``E/prompts.py`` ``_steps``: no step for the url and the short id. ``test_f3_the_pull_request_step_follows_the_branch_step`` and ``test_f3_the_flag_off_routine_has_the_step_too``.
+* M29 (EA-13f). ``E/prompts.py`` ``_steps``: the done step drops the GitHub sentence. ``test_f4b_the_done_step_skips_the_move_when_github_did_it``.
 * M25. ``E/mcp.py`` ``instructions`` returns ``_INSTRUCTIONS`` alone. ``test_mcp_edge_agent_runs.py::TestTheInstructions::test_with_the_flag_on_initialize_teaches_the_runs``.
 
 Fix round 1:
@@ -368,6 +370,33 @@ class TestTheMessage:
         assert "add_comment" in text  # the progress with no open run
         assert "Never cancel the task" in text
 
+    async def test_f3_the_pull_request_step_follows_the_branch_step(self, armed):
+        """EA-13f F3 (EA3-46). One step, in order after the branch: the task url
+        goes into the description of the pull request, and the short id goes into
+        the branch name. The step holds the NAMES of the two fields, never a host,
+        a url or member text. Mutation: drop the step from ``_steps``."""
+        text = await _prompt_text({"task": TASK})
+        _in_order(text, ("add_task_reference for each branch",
+                         "Put the url that get_task gives in the description of the pull"
+                         " request", "short_id", "name of the branch",
+                         "When you open the pull request"))
+        for planted in ("http", "app.metorite.com", "mt-"):
+            assert planted not in text, planted
+
+    async def test_f3_the_flag_off_routine_has_the_step_too(self, armed, monkeypatch):
+        _runs_off(monkeypatch)
+        text = await _prompt_text({"task": TASK})
+        _in_order(text, ("add_task_reference", "Put the url that get_task gives",
+                         "set_task_status"))
+
+    async def test_f4b_the_done_step_skips_the_move_when_github_did_it(self, armed):
+        """EA-13f F4b. Mutation: drop the sentence from the done step."""
+        text = await _prompt_text({"task": TASK})
+        _in_order(text, ("set_task_status with the done status only after the pull"
+                         " request merges", "When GitHub already moved the task to done",
+                         "do not move it again, and say so in your progress note",
+                         "Never cancel the task"))
+
     async def test_p7_the_routine_with_the_runs_flag_off(self, armed, monkeypatch):
         _runs_off(monkeypatch)
         text = await _prompt_text({"task": TASK})
@@ -532,6 +561,6 @@ class TestTheChecks:
             text = prompts._task_text("42", runs=runs) + prompts._queued_text()
             named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", text))
             unknown = named - set(tools.TOOLS) - {"task_id", "needs_agent",
-                                                 "expected_version", "in_progress",
+                                                 "expected_version", "in_progress", "short_id",
                                                  "untrusted_text"}
             assert not unknown, unknown

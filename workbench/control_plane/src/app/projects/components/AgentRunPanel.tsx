@@ -70,6 +70,7 @@ import {
   archiveWaitingText,
   cardQuestion,
   clientName,
+  runIdentity,
   isOpenRun,
   isRunMember,
   lastSeq,
@@ -409,7 +410,14 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
           340 px wide, and a wrapped Stop read as a second control row. */}
       <div className="flex min-w-0 items-center gap-2" data-agent-run-header="">
         <Icon name="Bot" size={14} className="shrink-0 text-muted-foreground" aria-hidden />
-        <span className="min-w-0 truncate text-sm font-medium text-foreground">{client}</span>
+        <span
+          className="min-w-0 truncate text-sm font-medium text-foreground"
+          // EA-13d: "Claude Code · claude.ai". The host is the one that the
+          // gateway verified, so a client cannot name its own.
+          data-agent-run-client=""
+        >
+          {runIdentity(run)}
+        </span>
         <span className="flex min-w-0">
           <AgentPill
             state={state}
