@@ -1,0 +1,155 @@
+{
+  "_comment": "One table of short-number cases for numberFormat.mjs and acb_common.number_system.compact_number (whatsapp_assistant_channel.md 13.10). Both test suites read it.",
+  "cases": [
+    {
+      "value": 0,
+      "indian": "0",
+      "international": "0"
+    },
+    {
+      "value": 0.5,
+      "indian": "0.5",
+      "international": "0.5"
+    },
+    {
+      "value": 2.345,
+      "indian": "2.35",
+      "international": "2.35"
+    },
+    {
+      "value": -0.004,
+      "indian": "0",
+      "international": "0"
+    },
+    {
+      "value": -3,
+      "indian": "-3",
+      "international": "-3"
+    },
+    {
+      "value": 999,
+      "indian": "999",
+      "international": "999"
+    },
+    {
+      "value": 999.996,
+      "indian": "1K",
+      "international": "1K"
+    },
+    {
+      "value": 1000,
+      "indian": "1K",
+      "international": "1K"
+    },
+    {
+      "value": 1200,
+      "indian": "1.2K",
+      "international": "1.2K"
+    },
+    {
+      "value": 1234,
+      "indian": "1.23K",
+      "international": "1.23K"
+    },
+    {
+      "value": 85000,
+      "indian": "85K",
+      "international": "85K"
+    },
+    {
+      "value": 99000,
+      "indian": "99K",
+      "international": "99K"
+    },
+    {
+      "value": 99999,
+      "indian": "1\u00a0L",
+      "international": "100K"
+    },
+    {
+      "value": 100000,
+      "indian": "1\u00a0L",
+      "international": "100K"
+    },
+    {
+      "value": 150000,
+      "indian": "1.5\u00a0L",
+      "international": "150K"
+    },
+    {
+      "value": 1250000,
+      "indian": "12.5\u00a0L",
+      "international": "1.25M"
+    },
+    {
+      "value": -1250000,
+      "indian": "-12.5\u00a0L",
+      "international": "-1.25M"
+    },
+    {
+      "value": 4530000,
+      "indian": "45.3\u00a0L",
+      "international": "4.53M"
+    },
+    {
+      "value": 999999,
+      "indian": "10\u00a0L",
+      "international": "1M"
+    },
+    {
+      "value": 1500000,
+      "indian": "15\u00a0L",
+      "international": "1.5M"
+    },
+    {
+      "value": -2000000,
+      "indian": "-20\u00a0L",
+      "international": "-2M"
+    },
+    {
+      "value": 9999999,
+      "indian": "1\u00a0Cr",
+      "international": "10M"
+    },
+    {
+      "value": 10000000,
+      "indian": "1\u00a0Cr",
+      "international": "10M"
+    },
+    {
+      "value": 13500000,
+      "indian": "1.35\u00a0Cr",
+      "international": "13.5M"
+    },
+    {
+      "value": 250000000,
+      "indian": "25\u00a0Cr",
+      "international": "250M"
+    },
+    {
+      "value": 999999999,
+      "indian": "100\u00a0Cr",
+      "international": "1B"
+    },
+    {
+      "value": 2500000000,
+      "indian": "250\u00a0Cr",
+      "international": "2.5B"
+    },
+    {
+      "value": 13500000000,
+      "indian": "1,350\u00a0Cr",
+      "international": "13.5B"
+    },
+    {
+      "value": 1500000000000,
+      "indian": "1,50,000\u00a0Cr",
+      "international": "1,500B"
+    },
+    {
+      "value": 1234560000000,
+      "indian": "1,23,456\u00a0Cr",
+      "international": "1,235B"
+    }
+  ]
+}

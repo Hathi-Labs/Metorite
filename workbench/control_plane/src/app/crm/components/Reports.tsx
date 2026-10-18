@@ -36,7 +36,8 @@ import Icon from "@/components/Icon";
 import { listDigests } from "../lib/api";
 import { stageAccent } from "../lib/board";
 import { useCrmModeValue } from "../lib/modeContext";
-import { compactMoney, money, shortDate } from "../lib/format";
+import { money, shortDate } from "../lib/format";
+import { useCompactMoney } from "../lib/useCompactMoney";
 import {
   byWeight,
   DIGEST_AI_LINE,
@@ -135,6 +136,7 @@ function Figure({
 
 function Forecast({ reports }: { reports: CrmReports }) {
   const mode = useCrmModeValue();
+  const compact = useCompactMoney();
   const { pipeline } = reports;
   const widths = pipelineWidths(pipeline);
   const ordered = pipeline.stages;
@@ -177,7 +179,7 @@ function Forecast({ reports }: { reports: CrmReports }) {
                 {stage.count} deals
               </span>
               <span className="w-24 shrink-0 text-right text-xs tabular-nums text-foreground">
-                {compactMoney(stage.weighted)}
+                {compact(stage.weighted)}
               </span>
             </li>
           ))}
@@ -273,6 +275,7 @@ function Funnel({ reports }: { reports: CrmReports }) {
 
 function WinLoss({ reports }: { reports: CrmReports }) {
   const { winLoss } = reports;
+  const compact = useCompactMoney();
   const notice = undatedNotice(winLoss);
   return (
     <Block
@@ -288,12 +291,12 @@ function WinLoss({ reports }: { reports: CrmReports }) {
             <Figure
               label="Won"
               value={String(winLoss.won)}
-              hint={compactMoney(winLoss.won_amount)}
+              hint={compact(winLoss.won_amount)}
             />
             <Figure
               label="Lost"
               value={String(winLoss.lost)}
-              hint={compactMoney(winLoss.lost_amount)}
+              hint={compact(winLoss.lost_amount)}
             />
             <Figure
               label="Average cycle"
@@ -322,7 +325,7 @@ function WinLoss({ reports }: { reports: CrmReports }) {
                     {reason.label}
                   </span>
                   <span className="shrink-0 tabular-nums text-muted-foreground">
-                    {reason.deals} · {compactMoney(reason.amount)}
+                    {reason.deals} · {compact(reason.amount)}
                   </span>
                 </li>
               ))}
@@ -344,6 +347,7 @@ function WinLoss({ reports }: { reports: CrmReports }) {
 
 function Leaderboard({ reports }: { reports: CrmReports }) {
   const { owners } = reports;
+  const compact = useCompactMoney();
   return (
     <Block
       title="By owner"
@@ -371,10 +375,10 @@ function Leaderboard({ reports }: { reports: CrmReports }) {
                   {row.open_deals}
                 </td>
                 <td className="py-1.5 text-right tabular-nums text-foreground">
-                  {compactMoney(row.weighted)}
+                  {compact(row.weighted)}
                 </td>
                 <td className="py-1.5 text-right tabular-nums text-muted-foreground">
-                  {compactMoney(row.won_amount)}
+                  {compact(row.won_amount)}
                 </td>
               </tr>
             ))}

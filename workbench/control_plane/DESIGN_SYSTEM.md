@@ -629,6 +629,10 @@ What the row does for you:
   no row keeps a chevron column. The toggle is a labelled button with
   `aria-expanded` at all times, and Tab reaches it at rest. ArrowRight opens
   the row and ArrowLeft closes it.
+- **ArrowUp and ArrowDown.** A rail that puts `moveRailFocus` on the element
+  that holds its rows moves the focus to the row above or below. The
+  Knowledge tree does this (WS-61 KB-2e). The ends hold, and the focus does
+  not wrap.
 - **Touch.** On a phone each row is 40 px. A row that opens draws its
   chevron in its own column, and its icon stays. Each row draws its
   `phoneActions`, one "···" at a 40 px target, because choosing a row closes
