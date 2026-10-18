@@ -204,7 +204,7 @@ _REFUSED_SQL = (
     "  THEN COALESCE(unreadable_since, now()) ELSE unreadable_since END, "
     "unblocked_at = CASE WHEN state IN ('open', 'draft') AND unblocked_at IS NULL "
     "  AND unreadable_since IS NOT NULL "
-    "  AND unreadable_since <= now() - CAST(:bound AS interval) THEN now() "
+    "  AND unreadable_since <= now() - make_interval(secs => :bound_s) THEN now() "
     "  ELSE unblocked_at END "
     "WHERE organization_id = CAST(:org AS uuid) AND provider = 'github' "
     "AND kind = 'pull_request' AND ref = :ref "
@@ -330,7 +330,8 @@ async def record_refusal(db: Any, org: str, ref: str) -> Any:
     from gateway.routes.projects import github_merge
 
     rows = (await db.execute(text(_REFUSED_SQL), {
-        "org": org, "ref": ref, "bound": github_merge.UNREADABLE_AFTER,
+        # An INT through make_interval (test_sql_interval_shape.py, round 6).
+        "org": org, "ref": ref, "bound_s": int(github_merge.UNREADABLE_AFTER.total_seconds()),
     })).fetchall()
     crossed = {str(r.task_id) for r in rows if r.crossed}
     if not crossed:

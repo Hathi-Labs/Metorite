@@ -72,15 +72,15 @@ _stopping = asyncio.Event()
 _DUE_SQL = (
     "SELECT id, ref, state, head_sha, checks_state, fetched_at, checks_fetched_at, "
     "  (state IN ('open', 'draft') AND (fetched_at IS NULL "
-    "     OR fetched_at < now() - CAST(:pr_stale AS interval))) AS pr_due, "
+    "     OR fetched_at < now() - make_interval(secs => :pr_stale_s))) AS pr_due, "
     "  (checks_state = 'pending' AND head_sha IS NOT NULL AND (checks_fetched_at IS NULL "
-    "     OR checks_fetched_at < now() - CAST(:checks_stale AS interval))) AS checks_due "
+    "     OR checks_fetched_at < now() - make_interval(secs => :checks_stale_s))) AS checks_due "
     "FROM pm_task_refs WHERE organization_id = CAST(:org AS uuid) "
     "AND provider = 'github' AND kind = 'pull_request' AND ("
     "  (state IN ('open', 'draft') AND (fetched_at IS NULL "
-    "     OR fetched_at < now() - CAST(:pr_stale AS interval))) "
+    "     OR fetched_at < now() - make_interval(secs => :pr_stale_s))) "
     "  OR (checks_state = 'pending' AND head_sha IS NOT NULL AND (checks_fetched_at IS NULL "
-    "     OR checks_fetched_at < now() - CAST(:checks_stale AS interval)))) "
+    "     OR checks_fetched_at < now() - make_interval(secs => :checks_stale_s)))) "
     "ORDER BY LEAST(COALESCE(fetched_at, '-infinity'), "
     "  COALESCE(checks_fetched_at, '-infinity')), id "
     "LIMIT :limit"
@@ -131,8 +131,11 @@ async def _due(org: str) -> list[Any]:
     async with tenant_session(org) as db:
         return list((await db.execute(text(_DUE_SQL), {
             "org": org, "limit": MAX_REFS,
-            # asyncpg binds an interval from a timedelta, never from text.
-            "pr_stale": PR_STALE, "checks_stale": CHECKS_STALE,
+            # INTS through make_interval, never CAST(:x AS interval): asyncpg,
+            # the driver of production, refuses that shape for text, and
+            # test_sql_interval_shape.py refuses it for every value (fix round 6).
+            "pr_stale_s": int(PR_STALE.total_seconds()),
+            "checks_stale_s": int(CHECKS_STALE.total_seconds()),
         })).fetchall())
 
 

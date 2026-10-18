@@ -705,3 +705,31 @@ async def test_r3_2_unreadable_checks_rows_do_not_starve_the_org(world) -> None:
         second = await github_reconcile_loop.run_org(w.p.org_a, "tick-r3-b")
     assert first.claimed and second.claimed
     assert _row(w, healthy).checks_state == "passing", (first, second)
+
+
+# ── Fix round 6: the interval shape, proven on asyncpg ─────────────────────
+
+
+async def test_r6_the_stale_and_bound_queries_run_on_asyncpg(world) -> None:
+    """``CAST(:x AS interval)`` failed on asyncpg, the driver of production.
+    The due read of the poll and the refusal write now bind INTS through
+    ``make_interval``. This runs both through the production engine, and
+    checks that the engine IS asyncpg, so a green run means the real driver."""
+    from acb_common.db import get_engine, tenant_session
+    from gateway import github_reconcile_loop, github_sync
+
+    w = world
+    task = _task(w)
+    due = _ref(w, task, 901)  # stale, open: due
+    _ref(w, task, 902, stale=False)  # fresh: not due
+    with w.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE pm_task_refs SET unreadable_since = now() - interval '2 hours' "
+                       "WHERE id = CAST(:i AS uuid)"), {"i": due})
+    async with tenant_engine_scope(g.app_dsn(w.p)):
+        assert get_engine().dialect.driver == "asyncpg", get_engine().dialect.driver
+        rows = await github_reconcile_loop._due(w.p.org_a)
+        async with tenant_session(w.p.org_a) as db:
+            await github_sync.record_refusal(db, w.p.org_a, f"{REPO}#901")
+    assert [str(r.id) for r in rows] == [due]
+    assert g.scalar(w.p, "SELECT unblocked_at IS NOT NULL FROM pm_task_refs "
+                         "WHERE id = CAST(:i AS uuid)", i=due) is True
