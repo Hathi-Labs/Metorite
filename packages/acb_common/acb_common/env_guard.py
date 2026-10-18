@@ -155,6 +155,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # to the decision model and spends credits, so only the operator writes it
     # (navigation_shell.md NS-4b).
     "COMMAND_BAR_AI",
+    # WS-61 CX-1: recency in company retrieval. It changes the order and the
+    # text that every member's assistant reads, so only the operator writes
+    # it (company_context.md §11).
+    "CONTEXT_RECENCY",
     # WS-58 MD-5a: My Day's read cache. It changes what every member's feed
     # serves, so only the operator writes it (my_day_feed.md §8.4 item 7).
     "MY_DAY_CACHE",
