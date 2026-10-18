@@ -31,7 +31,7 @@
 > 🔨 **AI-call attribution is BUILT on branch `ai-call-attribution` (2026-10-10).** Each email model call now names its feature on the usage report, as `email.rule_match`. A mailbox job names `email.automation`. Before, 97% of the email calls showed as "not attributed". It has no flag, because it changes metadata only. `customer_console.md` §4.3a owns the rule and lists the names.
 > 🔨 **§16 is BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** Each message has one action row, and the body adapts to dark mode. It also fixes a "Loading message…" that never ended. Review fix rounds 1 to 3 are in.
 > 📝 **§17 is SPECIFIED, not built (2026-10-12, D-EM-63, EM-T17).** One seam chooses the AI context of a conversation. The target goes in whole, every message gets an index line, and `decide` chooses the earlier bodies. No body is cut without a label. Each wait has a bound, so drafting never hangs. 🔨 **EM-T17 PR-A is built, not merged** (2026-10-12, branch `email-stall-pra`, no flag, no migration): the stream bounds, the `model_*` and `server_timeout` reasons, the heartbeat, the body-only fetch and `email.draft_timing`.
-> 🔨 **§18, the search-speed fix, is BUILT on branch `mail-search-speed`, not merged (2026-10-19, migration 286, no flag).** A text search now uses its GIN index under RLS, and a name in To or Cc matches.
+> 🔨 **§18, the search-speed fix, is BUILT on branch `mail-search-speed`, not merged (2026-10-19, migration 286, no flag). Fix round 1 is in.** A text search now uses its GIN index under RLS, reads only the mailboxes of the member, and stops at the newest 20 000 matches. A name in To or Cc matches. §18.7 is the runbook for the index build by hand.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -20132,8 +20132,8 @@ flip waits for the owner answer to D-EM-62 open (a).
 
 ## 18. Incident 2026-10-18: search speed
 
-**Status:** 🔨 BUILT on branch `mail-search-speed`, not merged (2026-10-19). Migration 286, no
-flag. Board WS-17.
+**Status:** 🔨 BUILT on branch `mail-search-speed`, not merged (2026-10-19). Fix round 1 is
+in. Migration 286, no flag. Board WS-17.
 
 ### 18.1 What happened
 
@@ -20154,34 +20154,57 @@ of `GET /email/messages` with the text match.
 ### 18.3 The fix
 
 - **Migration 286** adds `idx_email_messages_fts_all`, a GIN index over the subject, the body,
-  the sender, and each value of To and Cc. It also adds `public.email_message_search(text)`.
+  the sender, and each value of To and Cc. It also adds
+  `public.email_message_search(text, uuid[], integer)`.
 - **The function is SECURITY DEFINER.** Its owner on production is `postgres`, which is
   BYPASSRLS, so the match is a plain qual and the index serves it. It returns the ids of the
   organization in `app.tenant_id`, and nothing when no organization is bound.
-- **The routes read the rows by primary key, under RLS.** `core.text_match_sql` is the one
-  fragment, and `list_messages` and `search_messages` both use it.
+- **It reads only the mailboxes of the member.** The route passes the mailboxes from
+  `core._owned_accounts_sql`, never request input. So a common word costs the mail of the
+  member, never the mail of the organization.
+- **It runs once.** `core.text_match_ids` gives the ids, and COUNT and the page both bind
+  them.
+- **It has a cap.** The function gives the newest 20 000 ids at most. The routes then say
+  `truncated: true`, and the assistant says that it shows the newest 20 000 matches.
+- **It has two paths.** With no NOT and no phrase, the GIN bitmap is exact, so no
+  `to_tsvector` runs. The function then checks the org and the mailboxes on the heap row, and
+  GIN is the one path. A NOT or a phrase makes GIN recheck each candidate with `to_tsvector`.
+  So that path reads only the mailboxes of the member. Its worst case is one scan of those
+  mailboxes, which is less than one statement on main.
+- **`/email/search` ranks only the newest 500 matches.** `ts_rank_cd` runs `to_tsvector` over
+  each body it ranks. The other matches follow, newest first, with rank 0.
 - **The grammar stays `websearch_to_tsquery`.** Bare words AND together, `OR` unions, and a
   quoted phrase keeps its order.
 
 ### 18.4 Measured
 
-The test database was a private copy of the ladder. It held 20 002 mails in one mailbox and
-8 000 in a second organization. Each query ran as the app role, PG 16.
+The test database was a private copy of the ladder. Org A held 25 002 mails: 20 002 in the
+mailbox of the owner and 5 000 in the mailbox of a colleague. Org B held 8 000 mails. Each
+query ran as the app role, on PG 16. "order" is in each mail, and "invoice" is in 60%.
 
-| Query, "Sanjeev Goel Payal Dave" | Before | After |
-|---|---|---|
-| COUNT(*) | 6 815 ms, Filter on each row | 2.8 ms, `email_messages_pkey` |
-| Page of 25 | 6 785 ms | 0.5 ms |
-| Route, wall time | 14.7 s, 0 found | 0.46 s, 1 found |
+| Query | Main, COUNT | Round 0, one call | Round 1, one call | `list_messages` | `/email/search` |
+|---|---|---|---|---|---|
+| order | 14 169 ms | 17 465 ms | 31 ms | 155 ms | 428 ms |
+| invoice | 13 861 ms | 9 ms | 16 ms | 95 ms | 788 ms |
+| Sanjeev Goel Payal Dave | 6 980 ms, 0 found | 2 ms | 2 ms, 1 found | 11 ms | 10 ms |
+| "confirm the order" | not measured | not measured | 7 137 ms | 7 219 ms | 8 356 ms |
+| -xyz | not measured | not measured | 7 023 ms | 7 383 ms | 7 677 ms |
 
-A word that 3 346 mails hold took 20.8 ms for the COUNT. Production held about 44 000 mails
-(653 MB with toast) on 2026-10-18.
+- **Main** made two such statements in each call, the COUNT and the page.
+- **Round 0** was the first version of the fix, which filtered on the org alone. The route
+  called it twice.
+- **The last two rows** take the scoped path. They scan the mailbox of the member once.
+- **Rank:** 12 000 hits of "invoice" took 8 107 ms to rank, and the window of 500 took 351 ms.
+
+Production held about 44 000 mails (653 MB with toast) on 2026-10-18.
 
 ### 18.5 Fences
 
-`tests/unit/test_email_search_index_r8.py` (R8). The plan fence reads the plan inside the
-function with `auto_explain`. When the index is gone, the plan is a Seq Scan with the vector
-in a Filter, and the fence is red.
+`tests/unit/test_email_search_index_r8.py` (R8, on the `--must-run` list of `pr-check.yml`).
+The plan fences read the plan inside the function with `auto_explain`, for a rare word and for
+a word in each mail. Mutations: when the index is gone, the plan is a Seq Scan with the vector
+in a Filter. When the mailbox check is gone, three fences fail. When the cap is gone,
+`test_the_cap_keeps_the_newest` fails.
 
 ### 18.6 Follow-ups
 
@@ -20190,3 +20213,55 @@ in a Filter, and the fence is red.
   for a later release (R6).
 - **Other text searches have the same cause.** Any `@@` or `ILIKE` on a FORCE RLS table runs
   over each row of the organization. Measure the WhatsApp, Knowledge, artifact and CRM searches.
+- **The exact path reads every row of the table that holds the word.** It runs no
+  `to_tsvector`, so this costs little at 44 000 mails. With far more tenants, an index that
+  leads on the mailbox is the next step.
+
+### 18.7 Runbook: build the index by hand before the release
+
+Production builds the index with `CREATE INDEX CONCURRENTLY` before the release. Then
+`IF NOT EXISTS` in migration 286 skips the build and takes no lock. ⚠️ The statement below
+must stay the same as the index in the file, character for character. An index with this
+name and another expression satisfies `IF NOT EXISTS` and serves nothing.
+
+1. Connect with `psql` as the migration role (`postgres`). Do not open a transaction.
+2. Run this block.
+
+```sql
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_email_messages_fts_all
+    ON email_messages
+    USING GIN (
+        to_tsvector('english',
+            coalesce(subject, '') || ' ' ||
+            coalesce(body_text, '') || ' ' ||
+            coalesce(from_address->>'name', '') || ' ' ||
+            coalesce(from_address->>'email', '') || ' ' ||
+            coalesce(jsonb_path_query_array(to_addresses, '$[*].*')::text, '') || ' ' ||
+            coalesce(jsonb_path_query_array(cc_addresses, '$[*].*')::text, '')
+        )
+    );
+```
+
+3. Check the index. The first query must give `t`.
+
+```sql
+SELECT indisvalid
+  FROM pg_index
+ WHERE indexrelid = 'public.idx_email_messages_fts_all'::regclass;
+
+SELECT md5(pg_get_indexdef('public.idx_email_messages_fts_all'::regclass));
+```
+
+4. Compare the md5 with `bb1ac012bac6a78deb9ee4a49e164d6d`. That is the value from a database
+   that applied the file, on PG 16. If PG 17 gives another value, compare the text of
+   `pg_get_indexdef` with a scratch database that applied the file.
+5. If `indisvalid` is `f`, remove the index and do step 2 again.
+
+```sql
+DROP INDEX CONCURRENTLY IF EXISTS public.idx_email_messages_fts_all;
+```
+
+6. If step 2 waits for minutes, find the session that is `idle in transaction`.
+   `CONCURRENTLY` waits for each older transaction.
