@@ -837,11 +837,16 @@ def overlay_weighted(
 #: The distinct values of one field of a mirrored module, each with its
 #: count of records, the most first. The org, the module and the key are
 #: bound, so no name reaches the SQL text.
+#: Fix round: each value is trimmed as ``mapping.text_value`` trims it, the
+#: rule of the executor, so " Won " counts as "Won" and never shows as a value
+#: with no entry. An object or a list is no value, as there.
+_TRIMMED = f"btrim({MODULE_COLUMN} ->> :{_GROUP_KEY}, E' \\t\\r\\n\\f\\x0b')"
 _VALUE_COUNTS_SQL = (
-    f"SELECT {MODULE_COLUMN} ->> :{_GROUP_KEY} AS v, count(*) AS n "
+    f"SELECT {_TRIMMED} AS v, count(*) AS n "
     "FROM crm_module_records WHERE organization_id = CAST(:agf_org AS uuid) "
     f"AND module = :{_MODULE} AND ext_source = 'zoho' "
-    f"AND coalesce({MODULE_COLUMN} ->> :{_GROUP_KEY}, '') <> '' "
+    f"AND jsonb_typeof({MODULE_COLUMN} -> :{_GROUP_KEY}) IN ('string', 'number') "
+    f"AND coalesce({_TRIMMED}, '') <> '' "
     "GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT :agf_limit"
 )
 

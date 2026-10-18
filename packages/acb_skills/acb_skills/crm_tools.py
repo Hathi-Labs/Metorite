@@ -1389,7 +1389,7 @@ async def _hint_lines(slug: str, measure: str, data: dict[str, Any],
         empty = await _empty_core_line(slug)
         if empty:
             out.append(empty)
-    if measure == "sum_amount" and slug.startswith(MODULE_PREFIX):
+    if measure == "sum_amount" and slug.startswith(MODULE_PREFIX) and questions_box_on():
         default = await _revenue_default_line(slug[len(MODULE_PREFIX):])
         if default:
             out.append(default)
@@ -1480,6 +1480,16 @@ REVENUE_DEFAULT_LINE = (
 )
 #: The purposes of a revenue total.
 _REVENUE_PURPOSES = ("invoice", "payment_in")
+
+
+def questions_box_on() -> bool:
+    """True when this box serves the open questions to at least one org:
+    ``CRM_QUESTIONS_ORGS`` is not empty. With the list empty, no CRM-Q32 path
+    of a tool or a run sends a request or adds a word (the dark cost is 0).
+    The gateway still decides for each org."""
+    from acb_common import get_settings
+
+    return bool(str(getattr(get_settings(), "crm_questions_orgs", "") or "").strip())
 
 
 def _questions_on(entries: list[dict[str, Any]]) -> bool:

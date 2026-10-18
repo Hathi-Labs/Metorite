@@ -1793,6 +1793,22 @@ class _CatalogueAsk:
                                    if f.fill is not None})
 
 
+def _view(approved: Sequence[Mapping[str, Any]],
+          working: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The items that the run reads: the approved items, with the catalogue
+    item of each module that the run worked on put OVER the approved item of
+    that module, part by part (``catalogue.merge_item``).
+
+    Fix round P2: ``stored_items`` keeps the last item of one module, so a
+    plain list of the approved items and the working items let the working
+    item hide each part of the admin. The run then asked those parts again,
+    and ``Result.catalogue_entries`` lost them."""
+    stored = cat.stored_items(approved)
+    merged = {m: cat.merge_item(stored.get(m), item) for m, item in working.items()}
+    return [*(dict(i) for i in approved if not (
+        cat.is_catalogue(i) and i.get("module") in merged)), *merged.values()]
+
+
 class _CatalogueWork(_CatalogueAsk):
     """The catalogue step in ``on``: the purposes, then the key parts."""
 
@@ -1822,7 +1838,7 @@ class _CatalogueWork(_CatalogueAsk):
                 if stop.reason not in CATALOGUE_STOPS:
                     raise
                 p.result.catalogue_reason = stop.reason
-            entries = cat.build(sources, self.roles, [*approved, *working.values()])
+            entries = cat.build(sources, self.roles, _view(approved, working))
             for entry in sorted(entries, key=lambda e: e.module):
                 waiting_parts = [x for x in cat.KEY_PARTS if x in entry.open]
                 if entry.kind != "module" or not waiting_parts:
@@ -1848,7 +1864,7 @@ class _CatalogueWork(_CatalogueAsk):
         finally:
             p.result.catalogue_items = [fresh[m] for m in sorted(fresh)]
             p.result.catalogue_entries = cat.build(
-                sources, self.roles, [*approved, *working.values()])
+                sources, self.roles, _view(approved, working))
 
     async def _purposes(self, entries: Sequence[Any], mode: str,
                         working: dict[str, dict[str, Any]],
@@ -1894,7 +1910,7 @@ class _CatalogueWork(_CatalogueAsk):
         item = self._item(entry.module)
         sampled = self.detail_source(src, detail)
         if sampled is not src:
-            stored = cat.stored_items([*approved, *working.values()])
+            stored = cat.stored_items(_view(approved, working))
             purposes = cat.purposes_of(list(self.sources.values()), self.roles, stored)
             again = cat.entry_of(sampled, purposes, self.roles, stored.get(entry.module))
             for part in cat.KEY_PARTS:

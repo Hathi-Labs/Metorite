@@ -579,3 +579,61 @@ def test_a_no_key_field_of_an_open_part_carries_the_href() -> None:
     with pytest.raises(HTTPException) as got:
         asked.ref("@date")
     assert "href" not in got.value.detail
+
+
+# ── Fix round: Sync health never fails on the open count ────────────────────
+
+
+async def test_a_failed_read_of_the_open_count_gives_none(monkeypatch) -> None:
+    import contextlib
+
+    from acb_common import get_settings
+    from gateway.crm_sync import runs
+    from gateway.routes.crm import sync
+
+    from tests.unit._crm_fakes import crm_switch_on
+
+    crm_switch_on(monkeypatch, "*")
+    monkeypatch.setattr(get_settings(), "crm_catalogue_orgs", "*", raising=False)
+    monkeypatch.setattr(get_settings(), "crm_questions_orgs", "*", raising=False)
+
+    class _Db:
+        @contextlib.asynccontextmanager
+        async def begin_nested(self):
+            yield self
+
+    async def broken(*_a, **_k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(runs, "read_cursors", broken)
+    assert await sync._open_questions(_Db(), "o-1") is None
+
+    async def state(*_a, **_k):
+        return {qs.QUESTIONS_ROW: type("Row", (), {"state": {"seen": ["a", "b", "c"]}})()}
+
+    monkeypatch.setattr(runs, "read_cursors", state)
+    assert await sync._open_questions(_Db(), "o-1") == 3
+    assert qs.open_count(None) is None and qs.open_count({"seen": []}) == 0
+
+
+# ── Fix round item 7: "an" before a vowel sound ─────────────────────────────
+
+#: The article of each purpose label, written out by hand.
+_ARTICLES = {
+    "customer_company": "a", "customer_site": "a", "person": "a", "lead": "a",
+    "deal": "a", "contract": "a", "invoice": "an", "payment_in": "a",
+    "receivable": "a", "payment_out": "a", "product": "a", "asset": "an",
+    "vendor": "a", "partner": "a", "activity": "an", "reference": "a", "other": "an",
+}
+
+
+@pytest.mark.parametrize("word", cat.PURPOSES)
+def test_the_purpose_line_takes_the_right_article(word: str) -> None:
+    q = _by_id(qs.build(_inputs()))["purpose:Towers"]
+    choice = next(c for c in q.options if c.value == word)
+    noun = qs.PURPOSE_LABELS[word].lower()
+    assert qs.applied_line(q, choice) == f"Towers is now {_ARTICLES[word]} {noun} module."
+
+
+def test_each_purpose_has_its_article_written_out() -> None:
+    assert set(_ARTICLES) == set(cat.PURPOSES)

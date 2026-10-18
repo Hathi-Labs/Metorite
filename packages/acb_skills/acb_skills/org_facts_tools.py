@@ -94,15 +94,21 @@ def crm_facts_block(rows: list[Any]) -> str:
     return "\n".join(lines)
 
 
-async def crm_facts_block_for_run() -> str:
-    """The CRM facts block of this run, read as the run's member. A read
-    that fails gives no block, so the run starts as before."""
+async def crm_facts_for_run() -> list[Any]:
+    """The CRM facts of this run, read as the run's member. Empty when the
+    read fails, so the run starts as before."""
     try:
         body = await _get(ORG_FACTS_PATH, {"app": "crm"})
     except Exception:  # the block is advice: a run never fails on it
-        return ""
+        return []
     rows = body.get("facts") if isinstance(body, dict) else None
-    return crm_facts_block(list(rows or []))
+    return [r for r in rows or [] if isinstance(r, dict)]
+
+
+async def crm_facts_block_for_run() -> str:
+    """The CRM facts block of this run, read as the run's member. A read
+    that fails gives no block, so the run starts as before."""
+    return crm_facts_block(await crm_facts_for_run())
 
 
 ORG_FACTS_TOOLS = (org_facts,)
@@ -114,5 +120,6 @@ __all__ = [
     "ORG_FACTS_TOOLS",
     "crm_facts_block",
     "crm_facts_block_for_run",
+    "crm_facts_for_run",
     "org_facts",
 ]

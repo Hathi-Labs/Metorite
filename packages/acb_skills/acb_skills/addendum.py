@@ -400,7 +400,6 @@ Workflow: need a new capability → ``code_task``; repeat a known job → ``run_
 - **crm_aggregate(entity, group_by? | group_field?, measure?, field?, bucket?)** and **crm_report(kind)** — The server computes every count, sum, average and weighted forecast, also over a module as entity ``module:<api_name>``; report the numbers as given. The group is optional: give no group_by and no group_field for one total over every record that the filters match. You may state the sum, the difference, the percent change or the percent share of TWO tool figures (for example received minus paid), and then also state both of those figures. Anything more, such as a total of three figures, comes from another crm_aggregate call with the right group or filter. Write each figure in digits, because a check can compare each number of your answer with the tool results. **crm_stage_dwell(days?)** gives the days in each deal stage and the deals past their limit.
 - **crm_list_modules / crm_list_module_records / crm_get_module_record** — The other mirrored Zoho modules.
 Before a total over a module, call crm_list_modules. Name the module and the fields that each number comes from.
-A part that a CRM answer calls an open question waits for a CRM admin. Use the default that the answer names, say so, and never ask the member.
 A tool that answers that the CRM is off, or not open to the member, is the answer: say so and stop.
 A tool answer that starts with "Refused:" gives the server's words and a "Next:" line. Fix the one argument it names, and call the tool once more. Never write a tool call as text.
 """),
@@ -414,6 +413,7 @@ A tool answer that starts with "Refused:" gives the server's words and a "Next:"
     # WS-53 CRM-Q32-5: the org-facts read, gated on the one tool.
     Section("crm", ("org_facts",), """### Facts of the organization
 - **org_facts(app?, query?)** — The fixed facts of the organization's data: what each CRM module is for, its key fields, its stages and what revenue means. A CRM admin answered each one, or Metorite found it. Use each fact as given.
+A part that a CRM answer calls an open question waits for a CRM admin. Use the default that the answer names, say so, and never ask the member.
 """),
     Section("coding", ("github_search", "github_repo_search"), """### GitHub code search
 - **github_search(query, scope?, maxResults?)** — Lexical search across public GitHub repositories.  Supports ``language:python``, ``repo:owner/name``, ``path:src/`` filters.
@@ -668,11 +668,24 @@ def _dark_tools() -> frozenset[str]:
     the one such tool. Its switch is ``decide_tools.decide_tool_enabled``,
     the same function the injection chain asks.
     """
+    dark: set[str] = set()
     try:
         from acb_skills.decide_tools import decide_tool_enabled
     except ImportError:
-        return frozenset({"decide"})
-    return frozenset() if decide_tool_enabled() else frozenset({"decide"})
+        dark.add("decide")
+    else:
+        if not decide_tool_enabled():
+            dark.add("decide")
+    # WS-53 CRM-Q32 fix round: `org_facts` and the open-question line are dark
+    # on a box with CRM_QUESTIONS_ORGS empty, so a CRM prompt gains no word.
+    try:
+        from acb_skills.crm_tools import questions_box_on
+    except ImportError:
+        dark.add("org_facts")
+    else:
+        if not questions_box_on():
+            dark.add("org_facts")
+    return frozenset(dark)
 
 
 def _mandatory_block(effective_scope: frozenset[str] | None) -> str | None:

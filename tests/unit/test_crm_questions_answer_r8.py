@@ -351,3 +351,35 @@ async def test_a_member_cannot_answer_and_outside_the_list_is_404(
     off = await answer(p, p.org_a, "purpose:Towers", "asset")
     assert off.status_code == 404 and off.json()["detail"]["code"] == "questions_off"
     assert item_of(p, p.org_a, "Towers") is None
+
+
+# ── Fix round item 8: the Undo of a dismissal ───────────────────────────────
+
+
+async def test_an_undo_of_a_dismissal_opens_the_question_again(q_env, app_engine) -> None:
+    p = q_env
+    seed_a(p)
+    seed_b(p)
+    cursor(p, p.org_a, "zoho:map_pipeline", {"schema": {"slots": "s1"}, "items": {}})
+    got = await call(p, _user(p.org_a), "POST", f"{Q}/purpose:Towers/dismiss")
+    assert got.status_code == 200, got.text
+    none = await answer(p, p.org_a, "slot:company", None)
+    assert none.status_code == 200, none.text
+    opened = await open_ids(p, p.org_a)
+    assert "purpose:Towers" not in opened and "slot:company" not in opened
+    # Org B cannot undo a dismissal of org A, and org A keeps it.
+    other = await call(p, _user(p.org_b), "DELETE", f"{Q}/purpose:Towers/dismiss")
+    assert other.status_code == 404 and other.json()["detail"]["code"] == "not_dismissed"
+    assert "purpose:Towers" in cursor_state(p, p.org_a, "zoho:questions")["dismissed"]
+    member = await call(p, _user(p.org_a, admin=False), "DELETE",
+                        f"{Q}/purpose:Towers/dismiss")
+    assert member.status_code == 403, member.text
+    for qid in ("purpose:Towers", "slot:company"):
+        undo = await call(p, _user(p.org_a), "DELETE", f"{Q}/{qid}/dismiss")
+        assert undo.status_code == 200, undo.text
+        assert undo.json() == {"id": qid, "dismissed": False}
+    opened = await open_ids(p, p.org_a)
+    assert "purpose:Towers" in opened and "slot:company" in opened
+    assert cursor_state(p, p.org_a, "zoho:questions")["dismissed"] == {}
+    again = await call(p, _user(p.org_a), "DELETE", f"{Q}/purpose:Towers/dismiss")
+    assert again.status_code == 404

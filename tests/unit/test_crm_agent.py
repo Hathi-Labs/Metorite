@@ -1563,9 +1563,13 @@ async def test_the_reports_of_an_overlaid_slot(monkeypatch) -> None:
 # ── WS-53 CRM-Q32-6: the chat line of an open question ──────────────────────
 
 
-def _q32_gateway(monkeypatch, answer) -> list[str]:
+def _q32_gateway(monkeypatch, answer, *, box_on: bool = True) -> list[str]:
+    from acb_common import get_settings
+
     from tests.unit.test_crm_catalogue import _gateway
 
+    monkeypatch.setattr(get_settings(), "crm_questions_orgs", "*" if box_on else "",
+                        raising=False)
     return _gateway(monkeypatch, answer)
 
 
@@ -1688,3 +1692,29 @@ def test_q32_no_tool_asks_in_the_chat_or_waits_for_an_answer() -> None:
     source = inspect.getsource(_T)
     for word in ("ask_questions", "ElicitationCard", "elicit", "wait_for", "input("):
         assert word not in source, word
+
+
+async def test_q32_a_dark_box_sends_no_catalogue_read_for_a_total(monkeypatch) -> None:
+    """Fix round: with CRM_QUESTIONS_ORGS empty, a sum_amount on a module
+    makes no extra GET /crm/catalogue (the dark cost is 0)."""
+    seen = _q32_gateway(monkeypatch, _q32_total(_q32_catalogue()), box_on=False)
+    out = await _T.crm_aggregate("module:Invoices", measure="sum_amount", group_by="owner")
+    assert _T.REVENUE_DEFAULT_LINE not in out
+    assert "/crm/catalogue" not in seen and any(p.startswith("/crm/aggregate") for p in seen)
+
+
+@pytest.mark.parametrize("box_on", [False, True])
+def test_q32_the_addendum_gains_no_word_on_a_dark_box(monkeypatch, box_on: bool) -> None:
+    """Fix round: the open-question line and org_facts render only on a box
+    that lists an org."""
+    from acb_common import get_settings
+    from acb_skills.addendum import render_injected_tools_addendum
+
+    monkeypatch.setattr(get_settings(), "crm_questions_orgs", "*" if box_on else "",
+                        raising=False)
+    scope = frozenset({"crm_aggregate", "crm_list_modules", "org_facts"})
+    for sub in (False, True):
+        text = render_injected_tools_addendum(is_sub_agent=sub, effective_scope=scope)
+        assert ("org_facts(" in text) is box_on
+        if not sub:
+            assert ("calls an open question" in text) is box_on

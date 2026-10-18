@@ -4,6 +4,8 @@
                                              (``?all=1`` adds each part in use)
     POST /crm/questions/{id}/answer          {"value": <choice>} answers one
     POST /crm/questions/{id}/dismiss         "Not relevant"
+    DELETE /crm/questions/{id}/dismiss       its Undo, and the Undo of "None of
+                                             these" on a slot
     POST /crm/questions/accept-best          {"ids": [...], "dry_run": true}
 
 The CRM shows the admin each question that Jev could not answer with
@@ -678,6 +680,32 @@ async def dismiss_question(
     return DismissOut(id=q.id)
 
 
+@router.delete("/questions/{question_id}/dismiss", response_model=DismissOut,
+               dependencies=_GUARDS)
+async def undo_dismiss_question(
+    question_id: str, user: UserContext = Depends(get_current_user),
+) -> DismissOut:
+    """The Undo of "Not relevant", and of "None of these" on a slot: remove
+    the one dismissal of *question_id* from ``zoho:questions`` of the
+    caller's org, so the question is open again when it still applies. 404
+    ``not_dismissed`` when the org holds no such dismissal. The guards of
+    the dismiss, and the org of the session (R5, R11)."""
+    from gateway.crm_sync import runs
+
+    org = _organization(user)
+    if not questions_allowed(org):
+        raise questions_off()
+    async with _tenant_session() as db:
+        await _require_mirror(db, org)
+        found = await runs.drop_cursor_entry(db, org, qs.QUESTIONS_ROW, "dismissed",
+                                             question_id)
+    if not found:
+        raise HTTPException(status_code=404, detail={
+            "code": "not_dismissed", "message": "This question is not dismissed.",
+        })
+    return DismissOut(id=question_id, dismissed=False)
+
+
 class AcceptBestIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -791,4 +819,5 @@ __all__ = [
     "questions_card",
     "questions_off",
     "samples",
+    "undo_dismiss_question",
 ]
