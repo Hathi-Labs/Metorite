@@ -1030,7 +1030,7 @@ test.describe("the tree (KB-2e)", () => {
     await expect(dialog).toContainText("Under Refund policy in Company");
     await dialog.getByRole("textbox").fill("Exceptions");
     await dialog.getByRole("button", { name: "Create page" }).click();
-    await expect(page.getByRole("textbox", { name: "Page body in Markdown" })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole("textbox", { name: "Page body" })).toBeVisible({ timeout: 15_000 });
     expect(kb.writes[0].body).toEqual({ space_id: SPACE_ID, parent_id: "kp-r", title: "Exceptions" });
   });
 
