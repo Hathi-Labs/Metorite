@@ -216,6 +216,21 @@ def clip_words(text: str, limit: int) -> str:
     return f"{cut}{ELLIPSIS}"
 
 
+def _record_crm_pick(cleaned: list[dict], result: Any) -> None:
+    """WS-53 CRM-Q33 fix round 1 (P0): hand the member's answer of a CRM
+    question card to ``crm_tools.record_card_answer``. The answer is the
+    gateway's, from the member's click, never the model's. Any fault records
+    nothing, so a pick then saves nothing."""
+    if not any(crm_card_tag(q) for q in cleaned):
+        return
+    try:
+        from acb_skills.crm_tools import record_card_answer
+
+        record_card_answer(cleaned, result)
+    except Exception:  # noqa: BLE001 - a pick that is not recorded saves nothing
+        return
+
+
 async def ask_questions(questions: str) -> str:
     """Ask the user one or more clarifying questions before proceeding.
 
@@ -377,6 +392,7 @@ async def ask_questions(questions: str) -> str:
         _answer = str(_result.get("answer", "") or "").strip()
         if not _answer:
             return "User provided an empty response."
+        _record_crm_pick(cleaned, _result)
         return f"User response: {_answer}"
 
     # ── Path B: Copilot SDK / standalone ──────────────────────────────
@@ -433,6 +449,7 @@ async def ask_questions(questions: str) -> str:
                     _result.get("answer", "") or "").strip()
                 if not _answer:
                     return "User provided an empty response."
+                _record_crm_pick(cleaned, _result)
                 return f"User response: {_answer}"
     except Exception:  # noqa: BLE001
         pass
@@ -489,6 +506,7 @@ async def ask_questions(questions: str) -> str:
                 _result.get("answer", "") or "").strip()
             if not _answer:
                 return "User provided an empty response."
+            _record_crm_pick(cleaned, _result)
             return f"User response: {_answer}"
     except Exception:  # noqa: BLE001
         pass

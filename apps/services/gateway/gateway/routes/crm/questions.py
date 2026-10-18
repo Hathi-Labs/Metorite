@@ -498,6 +498,73 @@ async def record_answered(db: Any, org: str, question_ids: Sequence[str], member
                                       {"member": who, "at": at})
 
 
+async def purge_member_state(db: Any, org: str, email: str) -> int:
+    """The member purge of ``zoho:questions`` (CRM-Q33 fix round 1, P2), in
+    the caller's transaction: the member's own proposals go, and the record
+    of who set an answer keeps its time and loses the address. Returns the
+    count of entries that changed. It locks the cursor row first."""
+    from gateway.crm_sync import runs
+
+    me = (email or "").strip().lower()
+    if "@" not in me:
+        return 0
+    state = await runs.lock_cursor(db, org, qs.QUESTIONS_ROW)
+    changed = 0
+    for qid, entries in qs.proposals_of(state).items():
+        kept = [p for p in entries if p["member"] != me]
+        if len(kept) == len(entries):
+            continue
+        changed += len(entries) - len(kept)
+        if kept:
+            await runs.merge_cursor_entry(db, org, qs.QUESTIONS_ROW, qs.PROPOSALS, qid, kept)
+        else:
+            await runs.drop_cursor_entry(db, org, qs.QUESTIONS_ROW, qs.PROPOSALS, qid)
+    raw = state.get(ANSWERED_BY) if isinstance(state, Mapping) else None
+    for qid, entry in (raw.items() if isinstance(raw, Mapping) else ()):
+        if isinstance(entry, Mapping) and str(entry.get("member") or "").lower() == me:
+            changed += 1
+            await runs.merge_cursor_entry(db, org, qs.QUESTIONS_ROW, ANSWERED_BY, str(qid),
+                                          {"member": "", "at": str(entry.get("at") or "")})
+    return changed
+
+
+async def forget_member_keys(org: str, email: str) -> int:
+    """The member purge of the CRM keys in tenant Redis (CRM-Q33 fix round
+    1, P2): a held rule, a pending WhatsApp ask, a late pick and a hold of
+    the member. Returns the count of keys removed. A Redis fault only logs:
+    each key expires in a day at most."""
+    from acb_common.tenant_redis import key, match, organization_scope
+    from gateway.routes.crm.rules import PENDING_NAMESPACE
+    from gateway.routes.crm.text_asks import NAMESPACE as TEXT_ASK_NAMESPACE
+
+    me = (email or "").strip().lower()
+    if "@" not in me:
+        return 0
+    removed = 0
+    try:
+        with organization_scope(org):
+            redis = _redis()
+            # The member is the first part of these keys.
+            for ns in (PENDING_NAMESPACE, TEXT_ASK_NAMESPACE, HOLD_NAMESPACE):
+                head = key(ns, me).value + ":"
+                async for raw in redis.scan_iter(match(ns, me)):
+                    name = raw.decode() if isinstance(raw, bytes) else str(raw)
+                    if name.startswith(head) and name[len(head):]:
+                        removed += int(await redis.delete(key(ns, me, name[len(head):])) or 0)
+            # A late pick ends with the member.
+            head = key(ANSWERED_NAMESPACE, "x").value[:-1]
+            async for raw in redis.scan_iter(match(ANSWERED_NAMESPACE)):
+                name = raw.decode() if isinstance(raw, bytes) else str(raw)
+                rest = name[len(head):] if name.startswith(head) else ""
+                qid, _sep, who = rest.rpartition(":")
+                if qid and who == me:
+                    removed += int(await redis.delete(key(ANSWERED_NAMESPACE, qid, me)) or 0)
+    except Exception as exc:
+        _log.warning("crm.questions.purge_keys_failed", organization_id=org,
+                     error_type=type(exc).__name__)
+    return removed
+
+
 async def _answered_wire(db: Any, org: str, questions: Sequence[qs.Question],
                          ) -> dict[str, tuple[str, str]]:
     """Who set each admin answer of *questions*, by display name, and when.
@@ -1051,16 +1118,39 @@ async def _server_label(org: str, question_id: str, option: str,
     return card_option_label(wire, option)
 
 
-async def _rule_label(org: str, member: str, qid: str, option: str) -> str | None:
+async def _rule_label(org: str, member: str, qid: str, option: str,
+                      shown: Any = None) -> str | None:
     """The label of the option *option* of the confirm card of a held rule
-    (CRM-Q33 part 3), or None when *member* holds no such rule."""
-    from gateway.routes.crm.rules import OPTION_LABELS, RULE_ID_PREFIX, pending_rule
+    (CRM-Q33 part 3), or None when *member* holds no such rule. Fix round 1:
+    the card must show the exact words that the server holds, as the server
+    builds them, so a member never confirms other words."""
+    from acb_skills.ask_tools import QUESTION_TEXT_MAX, clip_words
+    from gateway.routes.crm.rules import (
+        OPTION_LABELS,
+        RULE_ID_PREFIX,
+        confirm_question,
+        pending_rule,
+    )
 
     token = qid[len(RULE_ID_PREFIX):]
     if option not in OPTION_LABELS:
         return None
     held = await pending_rule(org, member.strip().lower(), token)
-    return OPTION_LABELS[option] if held is not None else None
+    if held is None:
+        return None
+    question, why = confirm_question(held["body"], held["scope"])
+    if clip_words(f"{question}\n\n{why}", QUESTION_TEXT_MAX) != shown:
+        return None
+    return OPTION_LABELS[option]
+
+
+def _shown_question(payload: Any) -> str | None:
+    """The question text of the one question of a stored card, or None."""
+    found = payload.get("questions") if isinstance(payload, Mapping) else None
+    if not isinstance(found, list) or len(found) != 1 or not isinstance(found[0], Mapping):
+        return None
+    text_ = found[0].get("question")
+    return text_ if isinstance(text_, str) else None
 
 
 async def record_late_answer(org: str, member: str, kind: str, payload: Any,
@@ -1085,7 +1175,8 @@ async def record_late_answer(org: str, member: str, kind: str, payload: Any,
     # the same label for it: a forged card ("Yes, continue" over the key
     # payment_in) records nothing.
     try:
-        expected = (await _rule_label(org, member, qid, option) if qid.startswith("rule:")
+        expected = (await _rule_label(org, member, qid, option, _shown_question(payload))
+                    if qid.startswith("rule:")
                     else await _server_label(org, qid, option, member.strip().lower()))
     except Exception as exc:
         _log.warning("crm.questions.late_answer_check_failed", organization_id=org,
@@ -1913,6 +2004,7 @@ __all__ = [
     "count_open",
     "dismiss_question",
     "forget_late_answers",
+    "forget_member_keys",
     "held_ids",
     "hold",
     "list_questions",
@@ -1921,6 +2013,7 @@ __all__ = [
     "module_question_ids",
     "my_choices",
     "open_parts",
+    "purge_member_state",
     "questions_after_run",
     "questions_card",
     "questions_off",

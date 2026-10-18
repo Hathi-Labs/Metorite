@@ -34,6 +34,7 @@ Fences: ``tests/unit/test_crm_text_asks.py`` and
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -161,6 +162,23 @@ def match(pending: Mapping[str, Any], message: str) -> str | None:
     return None
 
 
+#: A line of a numbered option: "1. Rent", "2) EB".
+_NUMBERED = re.compile(r"^[ \t]*\d{1,2}[.)][ \t]+\S", re.MULTILINE)
+_REPLY_WORD = re.compile(r"\breply\b", re.IGNORECASE)
+
+
+def reply_asks_a_choice(text_: str) -> bool:
+    """True when the model's own reply asks the member to pick a numbered
+    option: two or more numbered lines, and the word "reply" or a closing
+    question. Then the CRM offers no numbered question of its own in that
+    reply (CRM-Q33 fix round 1), so a "2" never answers the wrong list."""
+    body = str(text_ or "")
+    if len(_NUMBERED.findall(body)) < 2:
+        return False
+    last = next((line.strip() for line in reversed(body.splitlines()) if line.strip()), "")
+    return bool(_REPLY_WORD.search(body)) or last.endswith("?")
+
+
 def parse(raw: Any) -> dict[str, Any] | None:
     """A stored pending ask, or None when it does not parse."""
     if isinstance(raw, bytes):
@@ -243,6 +261,21 @@ async def offer(org: str, member: str, channel: str, ask: Mapping[str, str]) -> 
     return text_
 
 
+async def drop(org: str, member: str, channel: str) -> None:
+    """Drop the pending ask of *member*, if any. A Redis fault only logs."""
+    from acb_common.tenant_redis import organization_scope
+
+    member = (member or "").strip().lower()
+    if channel not in CHANNELS or "@" not in member:
+        return
+    try:
+        with organization_scope(org):
+            await _redis().delete(_key(member, channel))
+    except Exception as exc:
+        _log.warning("crm.text_asks.drop_failed", organization_id=org,
+                     error_type=type(exc).__name__)
+
+
 async def settle(org: str, member: str, channel: str, message: str) -> str | None:
     """The reply to the member's next message when it picks an option of
     the pending ask, or None: no ask, no match, or an org off the list.
@@ -295,12 +328,14 @@ __all__ = [
     "KIND_RULE",
     "NAMESPACE",
     "TTL_S",
+    "drop",
     "match",
     "offer",
     "option_text",
     "parse",
     "question_options",
     "question_text",
+    "reply_asks_a_choice",
     "rule_text",
     "settle",
 ]

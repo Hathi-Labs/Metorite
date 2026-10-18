@@ -437,6 +437,33 @@ async def remove_rule(rule_id: str, user: UserContext = Depends(get_current_user
     return {"id": rule_id, "removed": True}
 
 
+# ── The member purge (CRM-Q33 fix round 1, P2) ──────────────────────────────
+
+#: The word that takes the place of a purged member's address on an org rule.
+FORMER_MEMBER = "former-member"
+
+_SCRUB_SQL = (
+    "UPDATE crm_business_rules SET "
+    "created_by = CASE WHEN lower(created_by) = :email THEN :word ELSE created_by END, "
+    "updated_by = CASE WHEN lower(updated_by) = :email THEN :word ELSE updated_by END "
+    "WHERE organization_id = CAST(:org AS uuid) AND scope = 'org' "
+    "AND (lower(created_by) = :email OR lower(updated_by) = :email) RETURNING id"
+)
+
+
+async def scrub_member(db: Any, org: str, email: str) -> int:
+    """Take a purged member's address off each org rule, in the caller's
+    transaction. The rule stays, because it is the org's. The member's own
+    rules go through the delete list of the purge
+    (``routes/admin/members._PURGE_DELETES``). Returns the rows changed."""
+    me = (email or "").strip().lower()
+    if "@" not in me:
+        return 0
+    rows = (await db.execute(text(_SCRUB_SQL), {
+        "org": org, "email": me, "word": FORMER_MEMBER})).fetchall()
+    return len(rows)
+
+
 # ── From the chat: hold, then confirm ───────────────────────────────────────
 
 
@@ -576,6 +603,7 @@ async def confirm_rule(rule_id: str, payload: PendingIn,
 
 __all__ = [
     "BODY_MAX",
+    "FORMER_MEMBER",
     "OPTION_LABELS",
     "PENDING_NAMESPACE",
     "PENDING_TTL_S",
@@ -612,5 +640,6 @@ __all__ = [
     "remove_rule",
     "rules_for",
     "rules_off",
+    "scrub_member",
     "slug_of",
 ]

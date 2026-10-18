@@ -1461,12 +1461,17 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
         # message voids it and runs below as a normal message.
         # A room is not this member's thread: no act settles there, and the
         # room check below refuses the message (WAC-4 verifier, D7).
+        shared = await _thread_shared(req.chat_session_id)
+        # WS-53 CRM-Q33 fix round 1 (P2): a parked act owns the next message.
+        # "yes" must never void the act AND save a CRM rule, so the CRM's
+        # pending ask waits while an act is pending.
+        act_pending = writes and not shared and await acts.has_pending(req)
         settled = (await acts.settle(req, message)
-                   if writes and not await _thread_shared(req.chat_session_id) else None)
+                   if writes and not shared else None)
         # WS-53 CRM-Q33 part 2: the member's reply to the CRM's one question
         # ("2", a label, or YES to save a rule), matched by code and never by
         # the model. A reply that matches nothing runs as a normal message.
-        if settled is None and not await _thread_shared(req.chat_session_id):
+        if settled is None and not shared and not act_pending:
             settled = await _crm_text_answer(req, message)
         # WAC-10c: a quick command ("today", "calendar", a menu tap) is
         # answered by code, with no AI call. A view that fails falls back
@@ -1533,6 +1538,19 @@ def _open_crm_asks(org: str) -> Any:
     return open_text_asks(CHANNEL_WHATSAPP) if answer_first_allowed(org) else None
 
 
+def _with_crm_notes(holder: Any, reply: str) -> str:
+    """*reply* with the "How I got this" note of a CRM total that the model
+    left out (``crm_tools.with_missing_notes``). Never raises."""
+    if holder is None or not reply:
+        return reply
+    try:
+        from acb_skills.crm_tools import with_missing_notes
+
+        return with_missing_notes(holder, reply)
+    except Exception:  # the note is advice: the answer stands
+        return reply
+
+
 def _close_crm_asks(token: Any) -> Any:
     """Close the holder of the run, and give it, or None."""
     if token is None:
@@ -1544,14 +1562,25 @@ def _close_crm_asks(token: Any) -> Any:
     return holder
 
 
-async def _crm_follow_up(req: RunRequest, holder: Any) -> str | None:
+async def _crm_follow_up(req: RunRequest, holder: Any, reply: str = "",
+                         parked: bool = False) -> str | None:
     """The text of the run's one CRM question, which the gateway built and
     keeps as a pending ask, or None when the run named none. Only a run that
-    answered offers it, so the member sees each question that waits."""
+    answered offers it, so the member sees each question that waits.
+
+    CRM-Q33 fix round 1 (P2): no CRM question goes out while the run parked
+    an act (its Confirm owns the next message), or when the model's own
+    reply asks a numbered choice. Then any earlier pending ask is dropped,
+    so a later "2" or "yes" can never pick in it."""
     if holder is None or getattr(holder, "ask", None) is None:
         return None
     try:
         from gateway.routes.crm import text_asks
+
+        if parked or text_asks.reply_asks_a_choice(reply):
+            await text_asks.drop(req.organization_id, req.member_email,
+                                 text_asks.CHANNEL_WHATSAPP)
+            return None
 
         return await text_asks.offer(req.organization_id, req.member_email,
                                      text_asks.CHANNEL_WHATSAPP, holder.ask)
@@ -1637,10 +1666,14 @@ async def _model_answer(req: RunRequest, message: str,
     _OUTAGE["answered"] = time.time()
 
     reply = final_text(result).strip()
+    # WS-53 CRM-Q33 fix round 1: the note of a CRM total goes in when the
+    # model left it out.
+    reply = _with_crm_notes(crm_holder, reply)
     ui: list[Any] = []
+    parked = wa_run is not None and getattr(wa_run, "parked", None) is not None
     if wa_run is not None:
         reply, ui = await _native_parts(req, wa_run, reply)
-    follow_up = await _crm_follow_up(req, crm_holder) if reply else None
+    follow_up = await _crm_follow_up(req, crm_holder, reply, parked) if reply else None
     if follow_up:
         # The one CRM question goes after the answer, as code built it.
         reply = f"{reply}\n\n{follow_up}"
