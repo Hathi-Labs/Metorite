@@ -299,8 +299,10 @@ guards. A workflow never reaches a write its tool class forbids.
    the work cannot begin at once. Put the order in `after`: the keys of the
    tasks that must finish first. They become `blocks` links. Give each task
    impact, urgency and effort from 1 to 5. The score is a sorting aid and
-   is never stored. Do not group tasks under parent tasks. A plan big
-   enough to need groups uses sub-projects.
+   is never stored. Do not group tasks under parent tasks. To group
+   tasks on the card, give each one the optional `phase` label. A phase
+   is a display label and never a task. A plan big enough to need groups
+   of its own uses sub-projects.
 4. Name three ways the plan fails. Pass them as `risks`.
 5. Call `propose_plan`. The card shows each owner's skill fit and hours
    across the plan, and marks a row that lacks either. An unassigned row

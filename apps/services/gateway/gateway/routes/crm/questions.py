@@ -7,6 +7,14 @@
     DELETE /crm/questions/{id}/dismiss       its Undo, and the Undo of "None of
                                              these" on a slot
     POST /crm/questions/accept-best          {"ids": [...], "dry_run": true}
+    GET  /crm/questions/{id}/sum-check       ?fields=A,B the check of a sum
+                                             (CRM-Q32-9)
+    GET  /crm/questions/ask?ids=             the questions of a chat card, for
+                                             each member with CRM access
+                                             (CRM-Q32-8)
+    POST /crm/questions/{id}/reply           {"choice": <key>}: an answer of a
+                                             CRM admin, a proposal of each
+                                             other member, or "@default"
 
 The CRM shows the admin each question that Jev could not answer with
 confidence about the data of the org. The kinds, the gate of ``open``, the
@@ -30,8 +38,20 @@ Mirror mode (else 409 ``not_mirror``). An org outside
 ``questions_off``. The session binds the organization of the caller, and the
 org comes from ``UserContext`` only (R5, R11).
 
+**The chat asks first (CRM-Q32-8, owner direction 2026-10-18).** The two
+chat routes need the CRM access rule, not the admin permission. ``/reply``
+decides by the permission of the caller, BEFORE any write: a CRM admin
+writes the org fact through the code of ``/answer``, and each other member
+records a PROPOSAL in ``zoho:questions`` and writes nothing in the plan.
+``@default`` holds a question for one member for 24 hours, in Redis through
+``acb_common.tenant_redis``. Each admin write of a part clears its
+proposals. Only this module and ``crm_sync/questions.py`` read
+``proposals``.
+
 Fences: ``tests/unit/test_crm_questions.py`` and
-``tests/unit/test_crm_questions_r8.py`` (R8).
+``tests/unit/test_crm_questions_r8.py`` (R8), and for the chat
+``tests/unit/test_crm_questions_chat.py`` and
+``tests/unit/test_crm_questions_chat_r8.py``.
 """
 
 from __future__ import annotations
@@ -45,9 +65,12 @@ from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
 from fastapi import Depends, HTTPException, Query
 from gateway.crm_sync import questions as qs
+from gateway.routes.crm import access
+from gateway.routes.crm.access import ADMIN_PERMISSION
+from gateway.routes.crm.catalogue import SumKeys
 from gateway.routes.crm.core import _tenant_session, from_jsonb, router
 from gateway.routes.crm.field_rules import _GUARDS, _organization, _require_mirror
-from gateway.routes.crm.flags import questions_allowed
+from gateway.routes.crm.flags import questions_allowed, require_crm_mirror
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
@@ -152,7 +175,8 @@ async def _stages(db: Any, org: str, others: Sequence[Mapping[str, Any]],
 
 
 async def load(db: Any, org: str, *, now: datetime | None = None,
-               full: bool = True, loaded: Any = None) -> qs.Inputs | None:
+               full: bool = True, loaded: Any = None,
+               proposals: bool = False) -> qs.Inputs | None:
     """The inputs of the questions of *org*, in the caller's tenant session.
     ``None`` when the CRM is not a Mirror. With *full* False, only the
     inputs of the ``purpose`` and ``key_field`` questions: the catalogue,
@@ -179,6 +203,10 @@ async def load(db: Any, org: str, *, now: datetime | None = None,
         stored=cat.stored_items(others), mode=mp.modes_now()[mp.FEATURE_CATALOGUE],
         cache=mp.Cache.of(state(mp.CURSOR_ROW)), now=now or datetime.now(UTC),
         dismissed=qs.dismissed_of(state(qs.QUESTIONS_ROW)),
+        # CRM-Q32-8 fix round: the proposals of the members only for the two
+        # reads that show them (the admin list and the card of /ask). The
+        # count, the catalogue and the 422 of the aggregate never get them.
+        proposals=qs.proposals_of(state(qs.QUESTIONS_ROW)) if proposals else {},
     )
     if not full:
         return inputs
@@ -276,6 +304,26 @@ async def open_parts(db: Any, org: str | None, module: str) -> frozenset[str]:
     return frozenset(qid.rsplit(":", 1)[1] for qid in ids if qid.startswith("key:"))
 
 
+async def refresh_seen(db: Any, org: str) -> None:
+    """Write ``seen`` and ``money`` of ``zoho:questions`` again from the open
+    set of now, in the caller's transaction (follow-up of CRM-Q32-4). An
+    answer, a dismissal, its Undo and a batch call it after their write, so
+    the count of Sync health (``len(seen)``) agrees with the rail at once,
+    and not only after the next sync run. Before the first questions step
+    the row has no ``seen``, and this writes nothing: that step must still
+    see each id as new, for the first card of My Day."""
+    from gateway.crm_sync import runs
+
+    cursors = await runs.read_cursors(db, org, qs.QUESTIONS_ROW)
+    state = getattr(cursors.get(qs.QUESTIONS_ROW), "state", None)
+    if not isinstance((state or {}).get("seen"), list):
+        return
+    inputs = await load(db, org)
+    if inputs is None:
+        return
+    await runs.merge_cursor_keys(db, org, qs.QUESTIONS_ROW, qs.seen_keys(qs.build(inputs)))
+
+
 # ── The questions step and My Day (CRM-Q32-4, §18.14.5) ────────────────────
 
 
@@ -349,6 +397,18 @@ class QuestionOptionModel(BaseModel):
     fill: float | None = None
 
 
+class ProposalModel(BaseModel):
+    """CRM-Q32-8: one proposal of a member, for a CRM admin only. ``name``
+    is the display name from the member directory, or "A member". It is
+    never an email."""
+
+    name: str
+    value: str | None = None
+    #: The label of the value: a field, a purpose, Billed or Collected.
+    label: str
+    at: str
+
+
 class QuestionModel(BaseModel):
     """One question (§18.14.3, "The wire")."""
 
@@ -365,18 +425,25 @@ class QuestionModel(BaseModel):
     choices: list[QuestionChoiceModel]
     none: bool
     other: bool
-    #: The answer in use, for a correction. ``None`` on an open question.
-    current: str | None = None
+    #: The answer in use, for a correction. ``None`` on an open question. A
+    #: sum of fields (CRM-Q32-9) is the list of its keys.
+    current: str | list[str] | None = None
     #: Who chose the answer in use: ``admin``, ``ai`` or ``code``.
     by: str | None = None
     #: False for ``revenue``, which takes no dismissal.
     dismissible: bool = True
     #: Each choice of "Pick another".
     options: list[QuestionOptionModel] | None = None
+    #: CRM-Q32-9: the fields of the picker of a sum, on an ``amount``
+    #: question when 2 or more currency fields each fill 20% or more.
+    sums: list[QuestionOptionModel] | None = None
     slot: str | None = None
     count: int | None = None
     value: str | None = None
     field: str | None = None
+    #: CRM-Q32-8: the proposals of the members, newest last. A proposal that
+    #: equals the answer in use is left out.
+    proposals: list[ProposalModel] = Field(default_factory=list)
 
 
 class QuestionsModel(BaseModel):
@@ -392,8 +459,30 @@ class QuestionsModel(BaseModel):
     plan: int | None = None
 
 
-def _model(q: qs.Question) -> QuestionModel:
-    return QuestionModel(**qs.wire(q))
+def _model(q: qs.Question, proposals: Sequence[ProposalModel] = ()) -> QuestionModel:
+    return QuestionModel(**qs.wire(q), proposals=list(proposals))
+
+
+async def _proposals_wire(db: Any, inputs: qs.Inputs, questions: Sequence[qs.Question],
+                          ) -> dict[str, list[ProposalModel]]:
+    """The proposals of each question of *questions*, with the display name
+    of each member from the one read of the directory
+    (``routes/people/core.names_of``). A member with no name is "A member",
+    never the email (CRM-Q32-8). One read of the directory, and none when
+    no question has a proposal."""
+    from gateway.routes.people.core import names_of
+
+    live = {q.id: (q, qs.live_proposals(inputs.proposals.get(q.id, ()), q))
+            for q in questions}
+    members = {p["member"] for _q, found in live.values() for p in found}
+    if not members:
+        return {}
+    names = await names_of(db, members)
+    return {
+        qid: [ProposalModel(name=names.get(p["member"]) or qs.A_MEMBER, value=p["value"],
+                            label=qs.value_label(q, p["value"]), at=p["at"]) for p in found]
+        for qid, (q, found) in live.items() if found
+    }
 
 
 @router.get("/questions", response_model=QuestionsModel, dependencies=_GUARDS)
@@ -411,20 +500,22 @@ async def list_questions(
         raise questions_off()
     async with _tenant_session() as db:
         await _require_mirror(db, org)
-        inputs = await load(db, org)
+        inputs = await load(db, org, proposals=True)
         if inputs is None:
             return QuestionsModel(open=0, shown=[], more=0)
         found = qs.build(inputs)
         extra = qs.answered(inputs) if everything else []
         inputs = await samples(db, org, inputs, [*found[:limit], *extra])
         approved = await _approved(db)
-    # The samples change no id and no order, so the read builds once more
-    # with them, and with no new statement.
-    found = qs.build(inputs)
+        # The samples change no id and no order, so the read builds once more
+        # with them, and with no new statement.
+        found = qs.build(inputs)
+        extra = qs.answered(inputs) if everything else []
+        proposals = await _proposals_wire(db, inputs, [*found[:limit], *extra])
     return QuestionsModel(
         open=len(found), more=max(0, len(found) - limit),
-        shown=[_model(q) for q in found[:limit]],
-        answered=[_model(q) for q in (qs.answered(inputs) if everything else [])],
+        shown=[_model(q, proposals.get(q.id, ())) for q in found[:limit]],
+        answered=[_model(q, proposals.get(q.id, ())) for q in extra],
         plan=int(approved.version) if approved is not None else None,
     )
 
@@ -449,11 +540,12 @@ def plan_moved() -> HTTPException:
 class AnswerIn(BaseModel):
     """``{"value": <choice>}``. ``null`` is "None of these". ``version`` is
     the plan version that the card read (``GET /crm/questions`` ``plan``):
-    a plan that moved gives 409 ``plan_moved``."""
+    a plan that moved gives 409 ``plan_moved``. CRM-Q32-9: the ``amount``
+    of a ``key_field`` also takes a list of 2 to 5 currency fields, a sum."""
 
     model_config = ConfigDict(extra="forbid")
 
-    value: str | None
+    value: str | SumKeys | None
     version: int | None = None
 
 
@@ -464,7 +556,8 @@ class UndoModel(BaseModel):
 
     module: str | None = None
     part: str | None = None
-    value: str | None = None
+    #: ``"@auto"``, or an earlier value, which can be a sum (CRM-Q32-9).
+    value: str | list[str] | None = None
     question: str | None = None
 
 
@@ -483,9 +576,12 @@ class AnswerOut(BaseModel):
     module: str | None = None
 
 
-def _answer_line(q: qs.Question, value: Any) -> str | None:
+def _answer_line(q: qs.Question, value: Any, src: Any = None) -> str | None:
     if value is None:
         return None
+    if isinstance(value, list):
+        # CRM-Q32-9: "Totals of Collection now use the sum of A, B and C."
+        return qs.applied_line(q, qs.sum_choice(src, value)) if src is not None else None
     choice = next((c for c in q.choices if c.value == value), None)
     if choice is None and q.kind in (qs.KIND_PURPOSE, qs.KIND_KEY):
         choice = next((c for c in q.options if c.value == value), None)
@@ -609,7 +705,7 @@ async def _answer(db: Any, org: str, by: str, question_id: str, payload: AnswerI
     part = next(iter(parts))
     return AnswerOut(
         id=q.id, kind=q.kind, version=int((row or approved).version),
-        line=_answer_line(q, payload.value), module=module,
+        line=_answer_line(q, payload.value, inputs.sources.get(module)), module=module,
         undo=UndoModel(module=module, part=part, value=AUTO),
     )
 
@@ -643,7 +739,12 @@ async def answer_question(
     try:
         async with _tenant_session() as db:
             await _require_mirror(db, org)
-            return await _answer(db, org, by, question_id, payload)
+            answered = await _answer(db, org, by, question_id, payload)
+            await refresh_seen(db, org)
+            # CRM-Q32-8: an admin write of a part clears its proposals. The
+            # plan lock is held, so the cursor row comes second.
+            await clear_proposals(db, org, [question_id])
+            return answered
     except DBAPIError as exc:
         conflict = _guard_db(exc)
         if conflict is not None:
@@ -677,6 +778,8 @@ async def dismiss_question(
             raise bad_answer("The meaning of revenue takes no dismissal. It has a default.")
         await runs.merge_cursor_entry(db, org, qs.QUESTIONS_ROW, "dismissed", q.id,
                                       {"schema": q.hash})
+        await refresh_seen(db, org)
+        await clear_proposals(db, org, [q.id])
     return DismissOut(id=q.id)
 
 
@@ -699,6 +802,8 @@ async def undo_dismiss_question(
         await _require_mirror(db, org)
         found = await runs.drop_cursor_entry(db, org, qs.QUESTIONS_ROW, "dismissed",
                                              question_id)
+        if found:
+            await refresh_seen(db, org)
     if not found:
         raise HTTPException(status_code=404, detail={
             "code": "not_dismissed", "message": "This question is not dismissed.",
@@ -783,6 +888,8 @@ async def accept_best(
             row = None
             if not payload.dry_run:
                 row = await apply_catalogue(db, items, by=by, org=org) or approved
+                await refresh_seen(db, org)
+                await clear_proposals(db, org, [q.id for q, _best in guesses])
     except DBAPIError as exc:
         conflict = _guard_db(exc)
         if conflict is not None:
@@ -799,18 +906,535 @@ async def accept_best(
     )
 
 
+# ── The chat asks first, and a member proposes (CRM-Q32-8) ─────────────────
+
+#: How long ``@default`` holds a question for one member (§18.14.10).
+DEFAULT_HOLD_HOURS = 24
+
+#: The Redis namespace of a hold. The key holds the member and the id.
+HOLD_NAMESPACE = "crm_question_hold"
+
+#: The most ids that one card read takes.
+ASK_IDS_MAX = 2
+
+#: The guards of the two chat routes: the CRM switch, ``CRM_MIRROR`` and the
+#: CRM access rule. NOT the admin permission: each member with CRM access
+#: reads a card and replies. ``/reply`` decides the admin branch itself.
+_CHAT_GUARDS = [Depends(require_crm_mirror), Depends(access.require_crm_access)]
+
+
+async def clear_proposals(db: Any, org: str, question_ids: Sequence[str]) -> None:
+    """Remove the proposals of *question_ids* from ``zoho:questions``, in
+    the caller's transaction (CRM-Q32-8, "Each admin write clears"). It
+    locks the cursor row first, and ``lock_cursor`` makes the row when it is
+    absent, so a call with an id writes that row. A caller that holds
+    the plan lock took it before, so the lock order of the CRM holds. It
+    removes only the entries of the ids that hold a proposal."""
+    from gateway.crm_sync import runs
+
+    wanted = [str(i) for i in dict.fromkeys(question_ids) if i]
+    if not wanted:
+        return
+    found = qs.proposals_of(await runs.lock_cursor(db, org, qs.QUESTIONS_ROW))
+    for qid in wanted:
+        if qid in found:
+            await runs.drop_cursor_entry(db, org, qs.QUESTIONS_ROW, qs.PROPOSALS, qid)
+
+
+async def after_admin_write(db: Any, org: str, question_ids: Sequence[str]) -> None:
+    """The step of each admin write of a part that another module makes
+    (the catalogue PUT): it clears what the members proposed for those
+    questions. Only this module and ``crm_sync/questions.py`` know the
+    proposals, and a scan fences it (CRM-Q32-8 fix round)."""
+    await clear_proposals(db, org, question_ids)
+
+
+def _member(user: UserContext) -> str:
+    """The email key of the caller, from ``UserContext`` only (R5, R11)."""
+    email = (getattr(user, "email", None) or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=403, detail="Forbidden: no member for this call.")
+    return email
+
+
+def _redis() -> Any:
+    from acb_common.tenant_redis import get_tenant_redis
+
+    return get_tenant_redis()
+
+
+def _hold_key(member: str, question_id: str) -> Any:
+    from acb_common.tenant_redis import key
+
+    return key(HOLD_NAMESPACE, member, question_id)
+
+
+async def held_ids(org: str, member: str, question_ids: Sequence[str]) -> set[str]:
+    """The ids of *question_ids* that ``@default`` holds for *member*. A
+    Redis outage holds nothing, so the card shows again (never a 500)."""
+    from acb_common.tenant_redis import OUTAGE_ERRORS, organization_scope
+
+    out: set[str] = set()
+    try:
+        with organization_scope(org):
+            redis = _redis()
+            for qid in question_ids:
+                if await redis.exists(_hold_key(member, qid)):
+                    out.add(qid)
+    except OUTAGE_ERRORS:
+        _log.warning("crm.questions.hold_read_failed", organization_id=org)
+        return set()
+    return out
+
+
+async def hold(org: str, member: str, question_id: str) -> None:
+    """Hold *question_id* for *member* for :data:`DEFAULT_HOLD_HOURS`. A
+    Redis outage is a 503 with ``Retry-After``: the hold is the whole act."""
+    from acb_common.tenant_redis import OUTAGE_ERRORS, organization_scope
+
+    try:
+        with organization_scope(org):
+            await _redis().setex(_hold_key(member, question_id),
+                                 DEFAULT_HOLD_HOURS * 3600, "1")
+    except OUTAGE_ERRORS as exc:
+        raise HTTPException(status_code=503, headers={"Retry-After": "30"}, detail={
+            "code": "hold_unavailable",
+            "message": "The default could not be kept now. Try again soon.",
+        }) from exc
+
+
+def _ask_ids(raw: Sequence[str]) -> list[str]:
+    """The ids of ``?ids=``: a repeated name, or one name with commas. 422
+    for none, and for more than :data:`ASK_IDS_MAX`."""
+    found = list(dict.fromkeys(i.strip() for value in raw for i in str(value).split(",")
+                               if i.strip()))
+    if not found or len(found) > ASK_IDS_MAX:
+        raise HTTPException(status_code=422, detail={
+            "code": "bad_ids", "message": f"Ask for 1 to {ASK_IDS_MAX} question ids."})
+    return found
+
+
+def _chat_questions(inputs: qs.Inputs, everything: bool) -> dict[str, qs.Question]:
+    """The questions that a chat card can ask, by id: each open one of
+    :data:`qs.CHAT_KINDS`, and with *everything* each part in use too."""
+    out = {q.id: q for q in qs.build(inputs) if q.kind in qs.CHAT_KINDS}
+    if everything:
+        for q in qs.answered(inputs):
+            if q.kind in qs.CHAT_KINDS:
+                out.setdefault(q.id, q)
+    return out
+
+
+def _purposes(inputs: qs.Inputs) -> dict[str, str]:
+    """Each module of the catalogue → its purpose, for the override of a
+    meaning of revenue."""
+    return {str(e.module): str(e.purpose) for e in inputs.entries
+            if getattr(e, "kind", None) == "module" and e.purpose}
+
+
+class AskChoiceModel(BaseModel):
+    value: str
+    label: str
+    best: bool = False
+    fill: float | None = None
+    #: Masked samples, never a raw value of a person.
+    samples: list[str] = Field(default_factory=list)
+
+
+class MyProposalModel(BaseModel):
+    value: str | None = None
+    label: str
+    at: str
+
+
+class AskQuestionModel(BaseModel):
+    """One question of a chat card (CRM-Q32-8). It names no other member:
+    ``my_proposal`` is the open proposal of the caller only."""
+
+    id: str
+    kind: str
+    module: str | None = None
+    label: str
+    part: str | None = None
+    reason: str
+    #: The question as a full sentence, the short title, and why it matters.
+    question: str
+    header: str
+    why: str
+    choices: list[AskChoiceModel]
+    #: "None of these" is a legal answer.
+    none: bool
+    #: The answer in use of a part in use, and its label.
+    current: str | list[str] | None = None
+    current_label: str | None = None
+    #: True for a CRM admin: a choice writes the org fact.
+    can_answer: bool
+    #: True while ``@default`` holds the question for the caller.
+    held: bool = False
+    my_proposal: MyProposalModel | None = None
+    #: The override of the caller's proposal on an OPEN question: what the
+    #: caller's own answer reads in place of the key word. ``None`` on a part
+    #: in use, where the org fact stays.
+    override: dict[str, Any] | None = None
+    #: An ``amount`` that could be a sum of fields (CRM-Q32-9): a CRM admin
+    #: sets a sum in CRM settings.
+    sums: bool = False
+
+
+class AskOut(BaseModel):
+    questions: list[AskQuestionModel]
+    #: Where a CRM admin answers each question (``crm_settings_href``).
+    href: str
+
+
+def _ask_model(q: qs.Question, inputs: qs.Inputs, *, member: str, admin: bool,
+               held: bool) -> AskQuestionModel:
+    mine = qs.my_proposal(inputs.proposals.get(q.id, ()), member)
+    if mine is not None and qs.equals_current(q, mine["value"]):
+        mine = None
+    open_q = q.reason != qs.REASON_ANSWERED
+    current = list(q.current) if isinstance(q.current, tuple) else q.current
+    return AskQuestionModel(
+        id=q.id, kind=q.kind, module=q.module, label=q.label, part=q.part, reason=q.reason,
+        question=qs.ask_sentence(q), header=qs.ask_header(q), why=q.why,
+        choices=[AskChoiceModel(value=c.value, label=c.label, best=c.best, fill=c.fill,
+                                samples=list(c.samples)) for c in q.choices],
+        none=q.none, current=current,
+        current_label=(qs.value_label(q, q.current) if not open_q
+                       and not isinstance(q.current, tuple) else None),
+        can_answer=admin, held=held,
+        my_proposal=(MyProposalModel(value=mine["value"], label=qs.value_label(q, mine["value"]),
+                                     at=mine["at"]) if mine is not None else None),
+        override=(qs.override_of(q, mine["value"], _purposes(inputs))
+                  if mine is not None and open_q else None),
+        sums=bool(q.sums),
+    )
+
+
+@router.get("/questions/ask", response_model=AskOut, dependencies=_CHAT_GUARDS)
+async def ask_questions_read(
+    ids: list[str] = Query(default_factory=list),
+    everything: bool = Query(False, alias="all"),
+    user: UserContext = Depends(get_current_user),
+) -> AskOut:
+    """The questions of a chat card (CRM-Q32-8), for each member with CRM
+    access. ``ids`` takes 1 or 2 ids, and only those questions come back.
+    With ``all=1`` an id of a part in use matches too, for a change. Each
+    question has its sentence, why it matters, its choices with masked
+    samples, ``can_answer``, ``held`` and ``my_proposal``. It never names
+    another member. It reads only, and the org comes from the session."""
+    from gateway.retrieval.sources import crm_settings_href
+
+    org = _organization(user)
+    if not questions_allowed(org):
+        raise questions_off()
+    wanted = _ask_ids(ids)
+    member = _member(user)
+    admin = user.has_permission(ADMIN_PERMISSION)
+    async with _tenant_session() as db:
+        await _require_mirror(db, org)
+        inputs = await load(db, org, full=False, proposals=True)
+        if inputs is None:
+            return AskOut(questions=[], href=crm_settings_href("questions"))
+        found = _chat_questions(inputs, everything)
+        picked = [found[i] for i in wanted if i in found]
+        if picked:
+            inputs = await samples(db, org, inputs, picked)
+            found = _chat_questions(inputs, everything)
+            picked = [found[q.id] for q in picked]
+    holds = await held_ids(org, member, [q.id for q in picked]) if picked else set()
+    return AskOut(
+        questions=[_ask_model(q, inputs, member=member, admin=admin, held=q.id in holds)
+                   for q in picked],
+        href=crm_settings_href("questions"),
+    )
+
+
+class ReplyIn(BaseModel):
+    """``{"choice": <key>}``: the key of the option that the member picked.
+    A field key, a purpose word, a revenue word, ``none`` or ``@default``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    choice: str = Field(min_length=1, max_length=200)
+
+
+class ReplyOut(BaseModel):
+    id: str
+    kind: str
+    #: ``answer``: a CRM admin wrote the org fact. ``proposal``: the choice
+    #: of a member waits for a CRM admin. ``default``: the question is held
+    #: for the caller. ``kept``: the choice is the answer in use already.
+    result: str
+    value: str | None = None
+    label: str | None = None
+    #: The sentence of what changed, for the chat.
+    line: str
+    #: A proposal on an OPEN question: what the member's own answer reads.
+    override: dict[str, Any] | None = None
+    #: An admin answer: what Undo sends (on ``/answer`` or the PUT).
+    undo: UndoModel | None = None
+    version: int | None = None
+
+
+def _bad_choice() -> HTTPException:
+    return HTTPException(status_code=422, detail={
+        "code": "bad_choice",
+        "message": "That is not an option of this question. Send the key of an option.",
+    })
+
+
+def _chat_kind(question_id: str) -> None:
+    """422 for a question that a chat card does not answer: a ``slot`` or a
+    ``stage_value`` changes what records mean, so it goes through the
+    preview of the CRM app (§18.14.6)."""
+    if question_id == qs.REVENUE_ID or question_id.startswith(("purpose:", "key:")):
+        return
+    raise HTTPException(status_code=422, detail={
+        "code": "not_in_chat",
+        "message": "A CRM admin answers this question in CRM settings, Open questions.",
+    })
+
+
+async def _admin_reply(db: Any, org: str, by: str, q: qs.Question, value: str | None,
+                       inputs: qs.Inputs) -> ReplyOut:
+    """The admin branch of ``/reply``: the org fact, through the one plan
+    seam. An open question runs the code of ``/answer``. A part in use
+    writes through ``catalogue.write_answer``, as the PUT does. Each clears
+    the proposals of the question after the plan lock (the lock order)."""
+    from gateway.crm_sync import catalogue as cat
+    from gateway.routes.crm.catalogue import AUTO, check_parts, write_answer
+    from gateway.routes.crm.mapping_plans import lock_plan
+
+    label = qs.value_label(q, value)
+    if q.reason != qs.REASON_ANSWERED:
+        done = await _answer(db, org, by, q.id, AnswerIn(value=value))
+        await refresh_seen(db, org)
+        await clear_proposals(db, org, [q.id])
+        line = done.line or f"{q.label}: {label}, for everyone."
+        return ReplyOut(id=q.id, kind=q.kind, result="answer", value=value, label=label,
+                        line=line, undo=done.undo, version=done.version)
+    approved = await lock_plan(db, by)
+    module = cat.ORG_MODULE if q.kind == qs.KIND_REVENUE else str(q.module)
+    part = "revenue" if q.kind == qs.KIND_REVENUE else str(q.part)
+    before: Any = AUTO
+    if q.by == "admin":
+        before = list(q.current) if isinstance(q.current, tuple) else q.current
+    check_parts(module, {part: value}, inputs.sources.get(module))
+    row = await write_answer(db, org, by=by, module=module, parts={part: value})
+    await refresh_seen(db, org)
+    await clear_proposals(db, org, [q.id])
+    return ReplyOut(id=q.id, kind=q.kind, result="answer", value=value, label=label,
+                    line=f"{q.label}: {label}, for everyone.",
+                    undo=UndoModel(module=module, part=part, value=before),
+                    version=int((row or approved).version))
+
+
+async def _member_reply(db: Any, org: str, member: str, q: qs.Question, value: str | None,
+                        inputs: qs.Inputs) -> ReplyOut:
+    """The member branch of ``/reply``: a PROPOSAL, and no write of the
+    plan. It locks the cursor row first, then reads, changes and writes the
+    list of the question in one transaction, so two members at once keep
+    both. On an open question the reply gives the override of the member's
+    own answer. On a part in use the org fact stays."""
+    from gateway.crm_sync import runs
+
+    label = qs.value_label(q, value)
+    if qs.equals_current(q, value):
+        return ReplyOut(id=q.id, kind=q.kind, result="kept", value=value, label=label,
+                        line=f"{label} is the answer in use already.")
+    state = await runs.lock_cursor(db, org, qs.QUESTIONS_ROW)
+    entries = qs.proposals_of(state).get(q.id, [])
+    at = datetime.now(UTC).isoformat()
+    await runs.merge_cursor_entry(db, org, qs.QUESTIONS_ROW, qs.PROPOSALS, q.id,
+                                  qs.with_proposal(entries, value, member, at))
+    if q.reason == qs.REASON_ANSWERED:
+        return ReplyOut(id=q.id, kind=q.kind, result="proposal", value=value, label=label,
+                        line=qs.CHANGE_WAITS)
+    return ReplyOut(
+        id=q.id, kind=q.kind, result="proposal", value=value, label=label,
+        line=f"This uses {label}, as you chose. A CRM admin can confirm it for everyone.",
+        override=qs.override_of(q, value, _purposes(inputs)),
+    )
+
+
+@router.post("/questions/{question_id}/reply", response_model=ReplyOut,
+             dependencies=_CHAT_GUARDS)
+async def reply_question(
+    question_id: str, payload: ReplyIn, user: UserContext = Depends(get_current_user),
+) -> ReplyOut:
+    """The reply of a chat card (CRM-Q32-8). The server decides by the
+    permission of the caller, never by the tool, and BEFORE any write:
+
+    * a CRM admin (``admin:access:manage``, the permission of ``_GUARDS``)
+      writes the org fact through the code of ``/answer``, also for a part
+      in use (``all=1`` of ``/ask``);
+    * each other member with CRM access records a PROPOSAL and writes
+      nothing in the plan;
+    * ``@default`` writes nothing and records no proposal. It holds the
+      question for the caller for 24 hours.
+
+    ``@auto`` gives 422 for each caller: Undo stays on ``/answer`` and on
+    the PUT. A key that no option has gives 422 and writes nothing. The org
+    comes from the session and the member from ``UserContext`` (R5, R11)."""
+    from gateway.routes.crm.core import actor
+
+    org = _organization(user)
+    if not questions_allowed(org):
+        raise questions_off()
+    choice = payload.choice.strip()
+    if choice == qs.AUTO:
+        raise HTTPException(status_code=422, detail={
+            "code": "no_undo_here",
+            "message": "Undo an answer in CRM settings, Your answers.",
+        })
+    _chat_kind(question_id)
+    member = _member(user)
+    # The branch is chosen here, before any read or write.
+    admin = user.has_permission(ADMIN_PERMISSION)
+    by = actor(user).lower()
+    try:
+        async with _tenant_session() as db:
+            await _require_mirror(db, org)
+            inputs = await load(db, org, full=False)
+            q = (_chat_questions(inputs, True).get(question_id)
+                 if inputs is not None else None)
+            if inputs is None or q is None:
+                raise question_moved()
+            if choice == qs.DEFAULT_KEY:
+                if q.reason == qs.REASON_ANSWERED:
+                    raise _bad_choice()
+                await hold(org, member, q.id)
+                return ReplyOut(id=q.id, kind=q.kind, result="default",
+                                line="Metorite uses the default for you for 24 hours.")
+            ok, value = qs.chat_choice(q, choice)
+            if not ok:
+                raise _bad_choice()
+            if admin:
+                return await _admin_reply(db, org, by, q, value, inputs)
+            return await _member_reply(db, org, member, q, value, inputs)
+    except DBAPIError as exc:
+        conflict = _guard_db(exc)
+        if conflict is not None:
+            raise conflict from exc
+        raise
+
+
+# ── The check of a sum (CRM-Q32-9, §18.14.10) ───────────────────────────────
+
+
+class SumPairModel(BaseModel):
+    """One pair of parts: the records that set both, and the records where
+    both hold the same value."""
+
+    fields: list[str]
+    labels: list[str]
+    both: int
+    equal: int
+
+
+class SumCheckOut(BaseModel):
+    """What the picker of a sum shows: the coverage line, and a warning for
+    each pair that holds the same value on half or more of the records
+    that set both. The admin can still save."""
+
+    id: str
+    module: str
+    fields: list[str]
+    #: The records that the check read: the first 10,000 of the module, by id.
+    records: int
+    #: The records with any part set, and with 2 or more parts set.
+    covered: int
+    overlap: int
+    #: True when the module may hold more records than the check read.
+    capped: bool
+    line: str
+    pairs: list[SumPairModel]
+    warnings: list[str]
+
+
+def _sum_keys(raw: Sequence[str]) -> list[str]:
+    """The keys of ``?fields=``: a repeated name, or one name with commas."""
+    return [k.strip() for value in raw for k in str(value).split(",") if k.strip()]
+
+
+@router.get("/questions/{question_id}/sum-check", response_model=SumCheckOut,
+            dependencies=_GUARDS)
+async def sum_check(
+    question_id: str,
+    fields: list[str] = Query(default_factory=list),
+    user: UserContext = Depends(get_current_user),
+) -> SumCheckOut:
+    """The check of a ticked set of fields for the ``amount`` question
+    *question_id* (CRM-Q32-9). 422 ``bad_answer`` for a set that is not 2 to
+    5 distinct keys, before any SQL, and for a key that is not a currency
+    field of the module, before the read of a record. Then ONE statement
+    over the first 10,000 records by id, with the org in its predicate. A
+    CRM admin only, and the org must be on ``CRM_QUESTIONS_ORGS``. The org
+    comes from ``UserContext`` only (R5, R11)."""
+    from gateway.crm_sync import catalogue as cat
+    from gateway.routes.crm import field_sql
+    from gateway.routes.crm.catalogue import _source_of, bad_answer
+
+    org = _organization(user)
+    if not questions_allowed(org):
+        raise questions_off()
+    head, _sep, rest = question_id.partition(":")
+    module, _sep, part = rest.rpartition(":")
+    if head != "key" or part != cat.SUM_PART or not module:
+        raise bad_answer("Only the amount of a module takes a sum.", part or None)
+    keys = _sum_keys(fields)
+    if cat.sum_shape_problem(keys):
+        raise bad_answer("A sum takes 2 to 5 different fields.", cat.SUM_PART)
+    async with _tenant_session() as db:
+        await _require_mirror(db, org)
+        src = await _source_of(db, org, module)
+        if qs.sum_problem(src, keys):
+            raise bad_answer("Each field of a sum must be a currency field of the module.",
+                             cat.SUM_PART)
+        parts = [src.field(k) for k in keys]
+        refs = tuple(field_sql.FieldRef(key=f.key, type=f.type, label=f.label) for f in parts)
+        counted = await field_sql.sum_check(db, org, module, refs)
+    labels = [f.label for f in parts]
+    report = qs.sum_report(labels, counted.records, counted.covered, counted.pairs,
+                           capped=counted.records >= field_sql.SUM_CHECK_ROWS)
+    return SumCheckOut(
+        id=question_id, module=module, fields=keys, records=counted.records,
+        covered=counted.covered, overlap=counted.overlap,
+        capped=counted.records >= field_sql.SUM_CHECK_ROWS, line=report.line,
+        pairs=[SumPairModel(fields=[keys[i], keys[j]], labels=[labels[i], labels[j]],
+                            both=both, equal=equal)
+               for i, j, both, equal in counted.pairs],
+        warnings=list(report.warnings),
+    )
+
+
 __all__ = [
+    "ASK_IDS_MAX",
+    "DEFAULT_HOLD_HOURS",
     "QUESTIONS_OFF",
     "AcceptBestIn",
     "AcceptBestOut",
     "AnswerIn",
     "AnswerOut",
+    "AskOut",
+    "AskQuestionModel",
+    "ProposalModel",
     "QuestionModel",
     "QuestionsModel",
+    "ReplyIn",
+    "ReplyOut",
+    "SumCheckOut",
+    "SumPairModel",
     "accept_best",
+    "after_admin_write",
     "answer_question",
+    "ask_questions_read",
+    "clear_proposals",
     "count_open",
     "dismiss_question",
+    "held_ids",
+    "hold",
     "list_questions",
     "load",
     "module_question_ids",
@@ -818,6 +1442,9 @@ __all__ = [
     "questions_after_run",
     "questions_card",
     "questions_off",
+    "refresh_seen",
+    "reply_question",
     "samples",
+    "sum_check",
     "undo_dismiss_question",
 ]

@@ -1088,9 +1088,21 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: the writes flag after the signature and built the Redis client inside the
 #: ``try``. The pins of the first build were 3.12 ``8de38247…cafdb2`` and
 #: 3.13 ``0cc35491…59e002c``.
+#:
+#: EA-13a (2026-10-18) changed step 5. The stamp that branch 0 expects is now
+#: ``actor_via_for(client_origin, client_id=connection.client_id)``, so a
+#: connection with a CIMD client id stamps ``mcp:<host>:<slug>`` (EA3-47).
+#: The pins before it were 3.12 ``6e8ea012…bc318257`` and 3.13
+#: ``be0315c7…ce74bc00``.
+#:
+#: EA-13a fix round 1 (2026-10-18) adds the legacy arm to step 5 for ONE
+#: release: branch 0 also accepts the host stamp of the same row, because the
+#: deploy restarts the gateway before the edge. The scope keeps the new stamp.
+#: HANDOFF holds the removal. The pins before it were 3.12 ``781888b3…5dbbb29``
+#: and 3.13 ``17748943…ad2a1c44``.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
-    (3, 12): "6e8ea0123adca18a5165232771eccf40753d40a0cdaaf0d869e54bb9bc318257",
-    (3, 13): "be0315c701550a8e4c6b01ca15b21223f6d68c931f3c5f18cfb9eb3ace74bc00",
+    (3, 12): "5987a23fd2de8cfe7185103986808c7e78d77d6a26b50dbf33b785e8c6a0876e",
+    (3, 13): "8d9596ed5a97db08541cdefe8b1c0673f39ebaed2ccd199cfb1f627f5afd4e3c",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see

@@ -4151,6 +4151,11 @@ async def run_agent_stream(
     # Cards are opt-in (see the docstring). Released in the same finally.
     from acb_skills.ask_tools import refuse_cards_for_run, release_cards_switch
     _cards_token = refuse_cards_for_run(not shows_cards)
+    # WS-53 CRM-Q32-8: a fresh holder of the CRM questions that this run
+    # asks, one object for the run, so a tool call in its own copy of the
+    # context still counts. Released in the same finally.
+    from acb_skills.crm_tools import open_asks_for_run, release_asks
+    _asks_token = open_asks_for_run()
     # H-201 (§21.16): this run's artifact context lives in this token's scope.
     from acb_skills.write_artifact import (
         artifact_context,
@@ -4310,8 +4315,10 @@ async def run_agent_stream(
                 no_egress=_stream_no_egress,  # H-236
             )  # inject call_agent / call_agent_background
             # CRM-Q32-5: the CRM facts block, read as the member.
+            # CRM-Q32-8: the holder of this run learns whether the run still
+            # holds the reply of a question card (`mark_run`).
             _run_tools = await _add_crm_facts_block(
-                agents, _run_tools, no_egress=_stream_no_egress)
+                agents, _run_tools, no_egress=_stream_no_egress, mark_run=True)
             _log_agent_tools_resolved(agent_name, agents, _own_tools)
             # Inject MCP servers from the registry into every agent at runtime.
             # H-236: an MCP server reaches outside the platform, so a
@@ -6224,6 +6231,7 @@ async def run_agent_stream(
             await _end_sandbox_run()
             _stream_relay_thread_id.reset(_relay_token)
             release_cards_switch(_cards_token)
+            release_asks(_asks_token)
             _active_run_model.reset(_model_token)
             # H-201: the run's workspace, tenant key and session end with it.
             reset_artifact_context(_artifact_token)

@@ -44,6 +44,7 @@ from tests.unit.test_mcp_edge_writes import (  # noqa: F401 — fixtures
     INTERNAL,
     ISSUER,
     MEMBER,
+    R8_VIA,
     TASK,
     WRITE_SCOPES,
     _call,
@@ -634,7 +635,7 @@ class TestAgentRunsOverMcp:
         (run,) = body["agent_runs"]
         assert run["state"] == "awaiting"
         assert run["open_question"]["body"] == {"untrusted_text": "Which?"}
-        assert run["client_via"] == "mcp:client.example"
+        assert run["client_via"] == R8_VIA
 
     async def test_ea12d_the_agent_finds_a_members_run_and_picks_it_up(self, runs):
         """EA-12d through the edge. The member starts a run for their own

@@ -1523,6 +1523,7 @@ def _append_instructions(agent: Any, block: str, marker: str) -> bool:
 
 async def _add_crm_facts_block(
     agents: list[Any], run_tools: Any, *, no_egress: bool = False,
+    mark_run: bool = False,
 ) -> frozenset[str]:
     """Add the CRM facts block to a run that holds a CRM tool (WS-53
     CRM-Q32-5, ``crm_platform.md`` §18.14.4): the answered facts of the money
@@ -1547,28 +1548,41 @@ async def _add_crm_facts_block(
     ``org_facts`` too, so the dark cost stays 0 and no run holds a tool that
     can only answer "no facts". Returns *run_tools* less what it took away,
     for the executor's ``run_tools``.
+
+    CRM-Q32-8 fix round: with *mark_run* (the streamed run, which opened the
+    holder of its CRM questions), it tells the holder whether the run still
+    holds ``crm_answer_question`` (``crm_tools.mark_answer_tool``). A run
+    that lost the tool shows no question card, because no tool could send
+    the pick. A sub-agent shares its parent's holder, so it never marks.
     """
     held = frozenset(run_tools or ())
     try:
-        from acb_skills.crm_tools import CRM_TOOL_NAMES, questions_box_on
+        from acb_skills.crm_tools import CRM_TOOL_NAMES, questions_org_on
         from acb_skills.org_facts_tools import (
             BLOCK_MARKER,
-            ORG_FACTS_TOOLS,
+            FACTS_GATED_TOOLS,
             crm_facts_block,
             crm_facts_for_run,
         )
     except ImportError:
         return held
-    facts_tools = frozenset(fn.__name__ for fn in ORG_FACTS_TOOLS)
+    # CRM-Q32-8: `crm_answer_question` goes with `org_facts`.
+    facts_tools = frozenset(fn.__name__ for fn in FACTS_GATED_TOOLS)
     own = {_tool_name(t) for agent in agents for _a, pool in _own_tool_pools(agent)
            for t in pool}
     holds_crm = bool((held | own) & CRM_TOOL_NAMES)
     rows: list[Any] = []
-    if holds_crm and not no_egress and questions_box_on():
+    # Follow-up: the run's own org must be on the list, so a run of another
+    # org on a box that lists one sends no request either.
+    if holds_crm and not no_egress and questions_org_on(_run_org_or_none()):
         rows = await crm_facts_for_run()
     if not rows:
         _drop_own_tools(agents, facts_tools)
+        if mark_run:
+            _mark_answer_tool(agents, held - facts_tools)
         return held - facts_tools
+    if mark_run:
+        _mark_answer_tool(agents, held)
     block = crm_facts_block(rows)
     added = 0
     if block:
@@ -1576,6 +1590,42 @@ async def _add_crm_facts_block(
     _log.info("executor.crm_facts_block", facts=len(rows),
               lines=block.count("\n") + 1 if block else 0, agents=added)
     return held
+
+
+def _mark_answer_tool(agents: list[Any], held: frozenset[str]) -> None:
+    """Tell the holder of this run whether it holds ``crm_answer_question``,
+    as an injected tool or an agent's own (CRM-Q32-8 fix round)."""
+    try:
+        from acb_skills.crm_tools import mark_answer_tool
+    except ImportError:
+        return
+    own = {_tool_name(t) for agent in agents for _a, pool in _own_tool_pools(agent)
+           for t in pool}
+    mark_answer_tool("crm_answer_question" in (set(held) | own))
+
+
+def _facts_withheld() -> frozenset[str]:
+    """``org_facts`` when the run's org is not on ``CRM_QUESTIONS_ORGS``
+    (WS-53 CRM-Q32 follow-up). The name leaves the SCOPE, so the addendum
+    of a Copilot-runtime agent never names a tool the run does not hold, and
+    the final list, so no fallback brings it back. The org is the run's own,
+    from the run boundary (R11). No org withholds it.
+
+    A box with the list empty withholds nothing here. Its addendum hides
+    ``org_facts`` already (``addendum._dark_tools``), and
+    :func:`_add_crm_facts_block` takes the tool from the run. So the
+    injected set of a box with no list stays byte-identical to the
+    collection chain (``skills_registry.md`` rule 3,
+    ``test_skill_toggle_enforcement.py``)."""
+    try:
+        from acb_skills.crm_tools import questions_box_on, questions_org_on
+        from acb_skills.org_facts_tools import FACTS_GATED_TOOLS
+    except ImportError:
+        return frozenset()
+    if not questions_box_on() or questions_org_on(_run_org_or_none()):
+        return frozenset()
+    # CRM-Q32-8: `crm_answer_question` is withheld wherever `org_facts` is.
+    return frozenset(fn.__name__ for fn in FACTS_GATED_TOOLS)
 
 
 def _whatsapp_withheld() -> frozenset[str]:
@@ -1907,10 +1957,11 @@ def _collect_injectable_platform_tools(agent_name: str | None = None) -> list[An
     except ImportError:
         pass
     # WS-53 CRM-Q32-5: `org_facts` loads with the `crm` family only, so the
-    # core floor does not change (crm_platform.md §18.14.4).
+    # core floor does not change (crm_platform.md §18.14.4). CRM-Q32-8:
+    # `crm_answer_question` loads with it, on the same terms.
     try:
-        from acb_skills.org_facts_tools import ORG_FACTS_TOOLS
-        _all_tools = [*_all_tools, *ORG_FACTS_TOOLS]
+        from acb_skills.org_facts_tools import FACTS_GATED_TOOLS
+        _all_tools = [*_all_tools, *FACTS_GATED_TOOLS]
     except ImportError:
         pass
 
@@ -2079,9 +2130,13 @@ def _inject_agent_tools(
     _wa_withheld = _whatsapp_withheld()
     if _wa_withheld:
         _drop_own_tools(agents, _wa_withheld)
+    # WS-53 CRM-Q32 follow-up: `org_facts` (and, since CRM-Q32-8,
+    # `crm_answer_question`) only for a run of an org on CRM_QUESTIONS_ORGS,
+    # so no prompt names them for another org.
+    _facts_off = _facts_withheld()
     _scope_names = _resolve_injected_scope(
         tool_scope, disabled_families=_disabled_families,
-        withheld=_withheld | _egress | _mail_store | _opted_out | _wa_withheld,
+        withheld=_withheld | _egress | _mail_store | _opted_out | _wa_withheld | _facts_off,
     )
     if _scope_names is not None:
         # Scope-typo guard (multi_agent_orchestration.md Phase 0.3): an entry
@@ -2146,7 +2201,8 @@ def _inject_agent_tools(
     # chain, shell tools included. So the withheld names leave the final
     # list too, whatever branch built it. So do the opted-out names, which
     # covers the workflow trio appended above.
-    _extra_tools = _drop_withheld(_extra_tools, _withheld | _opted_out | _wa_withheld)
+    _extra_tools = _drop_withheld(
+        _extra_tools, _withheld | _opted_out | _wa_withheld | _facts_off)
     # H-236, the same last word: an app or workflow tool that reaches outside
     # the platform leaves too, whatever branch added it.
     if no_egress:

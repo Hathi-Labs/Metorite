@@ -114,6 +114,11 @@ and streams chat responses as AG-UI events.
    - The Tier 1.5 and Tier 2 relays copy the run queue to the stream through `_relayable`, which drops the beat. A delegated native run puts its beat on its parent's queue. Each new relay of a run queue must check it, and `test_each_relay_of_a_run_queue_drops_the_hold_beat` reads each one.
    - Do not attach the provider anywhere else. Fences: `tests/unit/test_crm_answer_check.py` and `tests/unit/test_crm_answer_check_executor.py`.
 
+23. **A streamed run opens ONE holder of the CRM questions that it asks** (WS-53 CRM-Q32-8, `project-docs/specs/crm_platform.md` §18.14.10).
+   - `run_agent_stream` calls `acb_skills.crm_tools.open_asks_for_run()` beside `refuse_cards_for_run`, and `release_asks` in the same `finally`.
+   - A Copilot tool runs in its own copy of the run context (`carry_run_context`). The copy points at the same object, so the limit of 2 cards holds across the calls of one run.
+   - Never give the ContextVar a mutable default. Fences: `tests/unit/test_crm_questions_chat.py` and `tests/unit/test_crm_agent.py`.
+
 ## Work Guidance
 
 ### Adding a new agent runtime feature

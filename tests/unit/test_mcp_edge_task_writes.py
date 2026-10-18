@@ -116,6 +116,7 @@ _REDIS_GATE = pytest.mark.skipif(
 
 _uuid = w._uuid
 GOOD, KEY, ORG, CONN, VIA = w.GOOD, w.KEY, w.ORG, w.CONN, w.VIA
+R8_VIA = w.R8_VIA
 TASK, PROJECT = w.TASK, w.PROJECT
 S_TODO, S_DOING, S_DONE, S_CANCELLED = w.S_TODO, w.S_DOING, w.S_DONE, w.S_CANCELLED
 V1, V2 = w.V1, w.V2
@@ -974,7 +975,7 @@ async def _send(world, method: str, path: str, *, body: dict[str, Any] | None = 
     sent = dict(headers or {})
     if signed is not None:
         sent.update(agent_signing.signed_headers(
-            KEY, organization_id=world.org, connection_id=world.c[signed], actor_via=VIA,
+            KEY, organization_id=world.org, connection_id=world.c[signed], actor_via=R8_VIA,
             method=method, path=path, query=query, body=raw))
     else:
         sent.update({"Authorization": f"Bearer {INTERNAL}", "X-User-Email": MEMBER})
@@ -1020,7 +1021,7 @@ class TestTheSourceAndTheToolsOnARealDatabase:
             via = c.execute(text(
                 "SELECT meta->>'via' FROM pm_activities WHERE task_id = CAST(:t AS uuid)"
                 " AND body = 'Task created'"), {"t": task["id"]}).scalar()
-        assert via == VIA
+        assert via == R8_VIA
         assert task["status"]["name"] == {"untrusted_text": "To do"}
 
     async def test_a_subtask_in_the_same_project(self, live):
@@ -1109,7 +1110,7 @@ class TestTheSourceAndTheToolsOnARealDatabase:
             via = c.execute(text(
                 "SELECT meta->>'via' FROM pm_activities WHERE task_id = CAST(:t AS uuid)"
                 " AND type = 'field_change'"), {"t": task}).scalar()
-        assert via == VIA
+        assert via == R8_VIA
         stale = await _mcp(live, "write", "update_task", {
             "task_id": task, "expected_version": version, "title": "again"})
         assert stale["content"][0]["text"] == "The task changed. Read it again."

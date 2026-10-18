@@ -427,8 +427,11 @@ async def edit_project(project_id: str) -> str:
 # ── W1 · plan a project from a goal ──────────────────────────────────────────
 #
 # S7d (spec §13.6) added start dates, dependencies and the capacity preview.
-# There are no phases (owner, 2026-09-24): start dates and `blocks` links
-# carry the order of a plan, and the Timeline draws it.
+# There are no phase TASKS (owner, 2026-09-24): start dates and `blocks`
+# links carry the order of a plan, and the Timeline draws it. Since the card
+# redesign (owner, 2026-10-18), a row may carry a `phase` label. The plan
+# card groups and folds the rows under it. It is display only: the card never
+# sends it back, and nothing stores it or makes a task of it.
 
 #: The fields a plan row must carry. The owner is not one of them (owner,
 #: 2026-10-17, spec §26): a row with no owner is an unassigned task. It shows
@@ -509,6 +512,10 @@ def _plan_row(i: int, item: Any) -> dict[str, Any] | str:
         "due": due,
         "after": _after_of(item.get("after")),
     }
+    phase = _clean(item.get("phase"))
+    if phase:
+        # The card's group label. Display only, and the card cuts it to 80.
+        row["phase"] = phase
     start = _clean(item.get("start"))[:10]
     if start:
         try:
@@ -937,7 +944,8 @@ async def propose_plan(
     """W1: propose a project plan as an editable card, then create it as
     ONE batch under one confirmation card. name is the project's name.
     tasks is a JSON list of {key, title, owner?, effort_mins, start?, due,
-    after?, level?, important?, leveraged?, impact?, urgency?, effort?}.
+    after?, phase?, level?, important?, leveraged?, impact?, urgency?,
+    effort?}.
     level is a priority level name, and sets that level's Important and
     Leveraged flags. important and leveraged are true or false. key is a short label
     such as t1. start and due are YYYY-MM-DD. after lists the keys of the
@@ -947,12 +955,15 @@ async def propose_plan(
     empty when the member gives no owner or asks for none, and do not ask.
     A start after the due date, an unknown key or a circle of blocks is
     refused before the card. impact, urgency and effort (1 to 5) make a
-    priority score the card shows and nothing stores. The card shows each
+    priority score the card shows in each task's open row and nothing
+    stores. The card shows each
     owner's skill fit and hours across the plan, and marks a row that lacks
     either. An unassigned row shows neither, and the member can give it an
     owner on the card. A mark warns and never blocks. risks is the three
     ways the plan fails, one per line. parent_project_id is a full_id from
-    projects_tree; empty makes a space. There are no phases."""
+    projects_tree; empty makes a space. phase is an optional group name,
+    such as a milestone: the card folds the rows under it, and nothing stores
+    it or makes a task of it."""
     label = _clean(name)
     if not label:
         return "A project needs a name."
@@ -971,7 +982,7 @@ async def propose_plan(
             "planCard",
             {
                 "title": f"Plan · {label}",
-                "description": f"Under {parent_label}. Edit any row, drop one, then submit.",
+                "description": f"Under {parent_label}.",
                 "project": {
                     "name": label,
                     "parent": parent_label,

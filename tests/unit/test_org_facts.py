@@ -187,6 +187,28 @@ def test_the_crm_facts_of_the_entries_and_the_plan() -> None:
     assert {r.set_by for r in plan} == {"admin"}
 
 
+def test_the_fact_of_a_sum_names_each_part() -> None:
+    """CRM-Q32-9a item 9: the org-facts row of an amount that is a sum."""
+    from gateway.routes.crm import facts
+
+    collection = cat.Source(
+        "Payment_Received", "module:Payment_Received", "module", "Collection", 8681,
+        fields=(cat.Field("Billing_Amount", "Rent Net Amount", "currency"),
+                cat.Field("IP", "IP Basic Amount", "currency"),
+                cat.Field("EB_Net_Amount", "EB Net Amount", "currency")),
+        fills={"Billing_Amount": 0.52, "IP": 0.52, "EB_Net_Amount": 0.46})
+    item = {"kind": "catalogue", "module": "Payment_Received", "purpose": "payment_in",
+            "amount": ["Billing_Amount", "IP", "EB_Net_Amount"],
+            "by": {"purpose": "admin", "amount": "admin"}}
+    (entry,) = cat.build([collection], {}, [item])
+    rows = {r.key: r for r in facts.entry_facts(entry, NOW)}
+    assert rows["amount"].meaning == (
+        "The amount of Collection is the sum of Rent Net Amount, IP Basic Amount and "
+        "EB Net Amount.")
+    assert rows["amount"].value == "Billing_Amount+IP+EB_Net_Amount"
+    assert rows["amount"].set_by == "admin"
+
+
 async def test_the_provider_gives_nothing_outside_the_list_or_the_access_rule(
     monkeypatch,
 ) -> None:
@@ -302,9 +324,12 @@ class _CopilotAgent:
 
 @pytest.fixture
 def questions_on(monkeypatch):
+    """The box lists every org, and the run belongs to ``org-a``."""
+    import orchestrator._tool_injection as ti
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "crm_questions_orgs", "*", raising=False)
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: "org-a")
 
 
 async def test_a_box_with_the_list_empty_sends_no_request(monkeypatch) -> None:
@@ -435,6 +460,31 @@ def _config(agent_dir: str) -> dict:
         encoding="utf-8"))
 
 
+#: The tools that go together (CRM-Q32-8, "Withholding"): org_facts and the
+#: reply of a CRM question card.
+GATED = ("org_facts", "crm_answer_question")
+
+
+def test_the_reply_tool_is_withheld_wherever_org_facts_is(monkeypatch) -> None:
+    """CRM-Q32-8 item 20: one list of names feeds the three withholding
+    sites, and the addendum hides both on a box with the list empty."""
+    import orchestrator._tool_injection as ti
+    from acb_common import get_settings
+    from acb_skills import org_facts_tools
+    from acb_skills.addendum import _dark_tools
+
+    assert {fn.__name__ for fn in org_facts_tools.FACTS_GATED_TOOLS} == set(GATED)
+    monkeypatch.setattr(get_settings(), "crm_questions_orgs", "other-org", raising=False)
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: "org-a")
+    assert ti._facts_withheld() == frozenset(GATED)
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: "other-org")
+    assert ti._facts_withheld() == frozenset()
+    monkeypatch.setattr(get_settings(), "crm_questions_orgs", "", raising=False)
+    assert set(GATED) <= _dark_tools()
+    monkeypatch.setattr(get_settings(), "crm_questions_orgs", "*", raising=False)
+    assert not set(GATED) & _dark_tools()
+
+
 def _pool_names(agents: list[Any]) -> set[str]:
     import orchestrator._tool_injection as ti
 
@@ -481,7 +531,9 @@ async def test_the_real_agents_get_the_tool_and_the_block_for_a_listed_org(
 ) -> None:
     pytest.importorskip("agent_framework")
     agents, held = await _assemble(agent_dir, listed=True, monkeypatch=monkeypatch)
-    assert "org_facts" in _pool_names(agents) and "org_facts" in held
+    # CRM-Q32-8 item 20: crm_answer_question goes with org_facts.
+    for name in GATED:
+        assert name in _pool_names(agents) and name in held, name
     assert any("Revenue means billed: the amount of Invoices." in _instructions(a)
                for a in agents)
 
@@ -492,7 +544,8 @@ async def test_the_real_agents_get_neither_for_an_org_off_the_list(
 ) -> None:
     pytest.importorskip("agent_framework")
     agents, held = await _assemble(agent_dir, listed=False, monkeypatch=monkeypatch)
-    assert "org_facts" not in _pool_names(agents) and "org_facts" not in held
+    for name in GATED:
+        assert name not in _pool_names(agents) and name not in held, name
     assert not any("## CRM facts" in _instructions(a) for a in agents)
 
 
@@ -503,4 +556,111 @@ def test_both_real_configs_name_the_tool() -> None:
 
     for agent_dir in ("agent-orchestrator", "agent-crm"):
         scope = ti._resolve_injected_scope(_config(agent_dir)["tool_scope"])
-        assert scope is not None and "org_facts" in scope, agent_dir
+        for name in GATED:
+            assert scope is not None and name in scope, (agent_dir, name)
+
+
+# ── Follow-up: org_facts follows the run's org, not only the box ────────────
+
+
+def _copilot_with_tools() -> Any:
+    agent = _CopilotAgent()
+    agent._default_options["system_message"] = {"mode": "append", "content": "Sys."}
+    return agent
+
+
+@pytest.mark.parametrize(("run_org", "held"), [("org-a", False), ("other-org", True)])
+async def test_an_org_off_a_listed_box_gets_no_org_facts_and_no_prompt_word(
+    monkeypatch, run_org: str, held: bool,
+) -> None:
+    """A box that lists "other-org": a run of org-a holds no ``org_facts``,
+    its addendum names no ``org_facts``, and it sends no facts read. A run
+    of other-org holds the tool and the section."""
+    pytest.importorskip("agent_framework")
+    import orchestrator._tool_injection as ti
+    from acb_common import get_settings
+    from acb_skills import org_facts_tools as tools
+
+    monkeypatch.setattr(get_settings(), "crm_questions_orgs", "other-org", raising=False)
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: run_org)
+    ti._build_injected_tools_addendum.cache_clear()
+    reads: list[int] = []
+
+    async def rows():
+        reads.append(1)
+        return [_row("revenue", "Revenue means billed.")]
+
+    monkeypatch.setattr(tools, "crm_facts_for_run", rows)
+    cfg = _config("agent-orchestrator")
+    agent = _copilot_with_tools()
+    run_tools = ti._inject_agent_tools(
+        [agent], tool_scope=cfg["tool_scope"], agent_name=cfg["name"], agent_config=cfg,
+        no_egress=False)
+    run_tools = await ti._add_crm_facts_block([agent], run_tools)
+    prompt = agent._default_options["system_message"]["content"]
+    for name in GATED:
+        assert (name in run_tools) is held, name
+        assert (name in _pool_names([agent])) is held, name
+        assert (f"{name}(" in prompt) is held, name
+    assert ("## CRM facts" in prompt) is held
+    assert reads == ([1] if held else [])
+    ti._build_injected_tools_addendum.cache_clear()
+
+
+def test_the_list_grammar_of_the_run_side() -> None:
+    from acb_common import get_settings
+    from acb_skills.crm_tools import questions_org_on
+
+    settings = get_settings()
+    old = settings.crm_questions_orgs
+    try:
+        for raw, org, on in (("", "a1", False), ("*", "a1", True), ("*", None, False),
+                             ("b2, A1", "a1", True), ("b2", "a1", False)):
+            settings.crm_questions_orgs = raw
+            assert questions_org_on(org) is on, (raw, org)
+    finally:
+        settings.crm_questions_orgs = old
+
+
+# ── CRM-Q32-8 fix round: a run that lost the reply tool shows no card ───────
+
+
+@pytest.mark.parametrize(("rows", "no_egress", "tools", "held"), [
+    # The facts read gives rows, and the run holds the reply tool.
+    (True, False, {"crm_aggregate", "org_facts", "crm_answer_question"}, True),
+    # A failed or empty facts read drops the tool with org_facts.
+    (False, False, {"crm_aggregate", "org_facts", "crm_answer_question"}, False),
+    # A no_egress run reads nothing, so it drops the tool too.
+    (True, True, {"crm_aggregate", "org_facts", "crm_answer_question"}, False),
+    # A run whose scope never named the tool.
+    (True, False, {"crm_aggregate", "org_facts"}, False),
+])
+async def test_the_assembly_tells_the_holder_whether_the_run_holds_the_reply(
+    monkeypatch, questions_on, rows: bool, no_egress: bool, tools: set, held: bool,
+) -> None:
+    import acb_skills.crm_tools as crm
+    import orchestrator._tool_injection as ti
+    from acb_skills import org_facts_tools
+
+    async def read():
+        return [_row("revenue", "Revenue means billed.")] if rows else []
+
+    monkeypatch.setattr(org_facts_tools, "crm_facts_for_run", read)
+    token = crm.open_asks_for_run()
+    try:
+        crm.mark_answer_tool(not held)  # the opposite, so the call must set it
+        await ti._add_crm_facts_block([_MafAgent()], frozenset(tools), no_egress=no_egress,
+                                      mark_run=True)
+        assert crm.run_asks().answer_tool is held
+        # A sub-agent never marks the holder of its parent.
+        await ti._add_crm_facts_block([_MafAgent()], frozenset({"crm_aggregate"}))
+        assert crm.run_asks().answer_tool is held
+    finally:
+        crm.release_asks(token)
+
+
+def test_only_the_streamed_run_marks_the_holder() -> None:
+    source = (REPO / "apps/services/orchestrator/orchestrator/executor.py").read_text(
+        encoding="utf-8")
+    assert source.count("mark_run=True") == 1
+    assert source.index("_asks_token = open_asks_for_run()") < source.index("mark_run=True")

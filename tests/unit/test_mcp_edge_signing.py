@@ -625,13 +625,15 @@ def test_the_edge_helper_signs_what_the_gateway_checks():
     (None, ""),
 ])
 def test_actor_via_for_names_the_host(origin, stamp):
-    assert agent_oauth.actor_via_for(origin) == stamp
+    """With no client id, the host stamp of before EA-13a. EA-13a adds the
+    slug of a client id: ``test_agent_client_stamp.py``."""
+    assert agent_oauth.actor_via_for(origin, client_id=None) == stamp
 
 
 def test_actor_via_for_hashes_a_host_the_pattern_refuses():
     origin = "https://" + "a" * 70 + ".example"
     expected = "mcp:" + hashlib.sha256(origin.encode()).hexdigest()[:16]
-    assert agent_oauth.actor_via_for(origin) == expected
+    assert agent_oauth.actor_via_for(origin, client_id=None) == expected
     assert agent_oauth.ACTOR_VIA_PATTERN.match(expected)
 
 

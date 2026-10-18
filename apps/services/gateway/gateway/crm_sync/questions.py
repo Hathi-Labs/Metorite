@@ -76,6 +76,13 @@ SAMPLE_LIMIT = 3
 #: The questions that the section shows first (§18.14.7).
 SHOWN = 5
 
+#: CRM-Q32-9 (§18.14.10): the card of an ``amount`` question offers "These
+#: fields add up to the amount" when 2 or more currency fields each fill at
+#: least this share of the records. The picker lists at most
+#: :data:`SUM_CHOICES` of them, the most filled first.
+SUM_FILL_FLOOR = 0.2
+SUM_CHOICES = 12
+
 #: The words of a stage value, in the order the card shows them.
 STAGE_WORDS: tuple[str, ...] = ("open", "won", "lost")
 STAGE_LABELS: Mapping[str, str] = {"open": "Open", "won": "Won", "lost": "Lost"}
@@ -147,7 +154,8 @@ class Question:
     other: bool = False
     module: str | None = None
     part: str | None = None
-    current: str | None = None
+    #: The answer in use. A sum (CRM-Q32-9) is the tuple of its keys.
+    current: str | tuple[str, ...] | None = None
     by: str | None = None
     count: int | None = None
     slot: str | None = None
@@ -157,6 +165,9 @@ class Question:
     hash: str | None = None
     #: Each choice of "Pick another", for ``purpose`` and ``key_field``.
     options: tuple[Choice, ...] = ()
+    #: CRM-Q32-9: the fields of the picker of a sum, on an ``amount``
+    #: question only (:func:`sum_fields`). Empty when the card offers none.
+    sums: tuple[Choice, ...] = ()
 
     def best(self) -> Choice | None:
         """Jev's best guess, or ``None``."""
@@ -210,6 +221,8 @@ class Inputs:
     dismissed: Mapping[str, str | None] = field(default_factory=dict)
     samples: Mapping[str, Mapping[str, Sequence[str]]] = field(default_factory=dict)
     names: Mapping[str, Sequence[str]] = field(default_factory=dict)
+    #: CRM-Q32-8: question id → its proposals (:func:`proposals_of`).
+    proposals: Mapping[str, Sequence[Mapping[str, Any]]] = field(default_factory=dict)
 
 
 # ── Ids and hashes ───────────────────────────────────────────────────────────
@@ -413,6 +426,77 @@ def part_fields(src: Any, part: str) -> list[Any]:
             and not (part == "parent" and not f.target)]
 
 
+def sum_fields(src: Any) -> list[Any]:
+    """CRM-Q32-9: the fields that the picker of a sum lists. Each is a
+    ``currency`` field with a fill of :data:`SUM_FILL_FLOOR` or more, the
+    most filled first, at most :data:`SUM_CHOICES`. Empty when fewer than 2
+    fields pass, so the card offers no sum."""
+    found = [f for f in getattr(src, "fields", ())
+             if f.type in cat.SUM_TYPES and (_fill(src, f.key) or 0.0) >= SUM_FILL_FLOOR]
+    found.sort(key=lambda f: (-(_fill(src, f.key) or 0.0), f.key))
+    return found[:SUM_CHOICES] if len(found) >= cat.SUM_MIN else []
+
+
+def sum_problem(src: Any, keys: Any) -> bool:
+    """True unless *keys* is a list of 2 to 5 distinct keys, each a
+    ``currency`` field of *src* (CRM-Q32-9). The shape is checked first, so
+    a hostile key never reaches a read."""
+    if cat.sum_shape_problem(keys) or src is None:
+        return True
+    return cat.problem(src, cat.SUM_PART, keys) is not None
+
+
+def sum_choice(src: Any, keys: Sequence[str]) -> Choice:
+    """The choice of a sum, for the line of an answer: "the sum of A, B and
+    C". The caller checked *keys* (:func:`sum_problem`)."""
+    labels = [getattr(src.field(k), "label", k) for k in keys]
+    return Choice(value=cat.SUM_KEY_JOIN.join(keys), label=f"the sum of {names(labels)}")
+
+
+#: CRM-Q32-9: a pair of parts that holds the same value on this share or
+#: more of the records that set both gets a warning. A sum counts it twice.
+SUM_EQUAL_SHARE = 0.5
+
+
+@dataclass(frozen=True)
+class SumReport:
+    """The words of the sum check: the coverage line and each warning."""
+
+    line: str
+    warnings: tuple[str, ...] = ()
+
+
+def _percent(part: int, whole: int) -> int:
+    return round(100 * part / whole) if whole > 0 else 0
+
+
+def sum_report(labels: Sequence[str], records: int, covered: int,
+               pairs: Sequence[tuple[int, int, int, int]], *, capped: bool = False,
+               ) -> SumReport:
+    """The coverage line of a ticked set of *labels*, and a warning for each
+    pair ``(i, j, both, equal)`` whose parts are equal on
+    :data:`SUM_EQUAL_SHARE` or more of the records that set both. With
+    *capped*, the check read only the first records of the module."""
+    whole = f"the first {records:,}" if capped else f"{records:,}"
+    noun = "record" if records == 1 else "records"
+    line = (f"These {len(labels)} fields cover {covered:,} of {whole} {noun} "
+            f"({_percent(covered, records)}%).")
+    warnings = tuple(
+        f"{labels[i]} and {labels[j]} hold the same value on {_percent(equal, both)}% "
+        "of records. A sum counts it twice."
+        for i, j, both, equal in pairs
+        if both > 0 and equal >= SUM_EQUAL_SHARE * both
+    )
+    return SumReport(line=line, warnings=warnings)
+
+
+def names(labels: Sequence[str]) -> str:
+    """``A``, ``A and B`` or ``A, B and C``."""
+    if len(labels) < 2:
+        return "".join(labels)
+    return f"{', '.join(labels[:-1])} and {labels[-1]}"
+
+
 def candidates(src: Any, part: str) -> list[Any]:
     """The candidates of code, through ``map_pipeline.part_candidates``:
     the right type, a fill above 0, the most filled first."""
@@ -440,10 +524,12 @@ def key_choices(inputs: Inputs, src: Any, part: str) -> tuple[Choice, ...]:
 # ── The kinds ────────────────────────────────────────────────────────────────
 
 
-def _current_part(entry: Any, part: str) -> str | None:
+def _current_part(entry: Any, part: str) -> str | tuple[str, ...] | None:
     if part == "purpose":
         return entry.purpose
     found = entry.fields.get(part)
+    if found is not None and getattr(found, "parts", ()):
+        return tuple(p.key for p in found.parts)
     return found.key if found is not None else None
 
 
@@ -476,6 +562,8 @@ def _module_questions(inputs: Inputs, entry: Any, reasons: Mapping[str, str],
             module=entry.module, part=part, current=current, by=by, hash=digest,
             options=tuple(Choice(value=f.key, label=f.label, fill=_fill(src, f.key))
                           for f in part_fields(src, part)),
+            sums=tuple(Choice(value=f.key, label=f.label, fill=_fill(src, f.key))
+                       for f in sum_fields(src)) if part == cat.SUM_PART else (),
         ))
     return out
 
@@ -685,12 +773,19 @@ def with_samples(inputs: Inputs, samples: Mapping[str, Mapping[str, Sequence[str
 def answer_problem(q: Question, value: Any, src: Any = None) -> str | None:
     """Why *value* is not an answer of *q*, or ``None`` (§18.14.6,
     "Errors"). ``None`` is "None of these", legal for ``purpose``,
-    ``key_field`` and ``slot``."""
+    ``key_field`` and ``slot``. A list (CRM-Q32-9) answers only the
+    ``amount`` of a ``key_field``."""
+    if isinstance(value, list) and q.kind != KIND_KEY:
+        return "bad_answer"
     if q.kind == KIND_PURPOSE:
         return None if value is None or value in cat.PURPOSES else "bad_answer"
     if q.kind == KIND_KEY:
         if value is None:
             return None
+        if isinstance(value, list):
+            # CRM-Q32-9: only an amount takes a sum of currency fields.
+            legal = q.part == cat.SUM_PART and not sum_problem(src, value)
+            return None if legal else "bad_answer"
         if src is None or not isinstance(value, str) or not value or value.startswith("@"):
             return "bad_answer"
         legal = {f.key for f in part_fields(src, q.part or "")}
@@ -715,7 +810,8 @@ def answer_item(q: Question, value: Any) -> dict[str, Any]:
         return {"kind": cat.KIND_CATALOGUE, "module": q.module,
                 "purpose": value if value is not None else "other", "by": {"purpose": "admin"}}
     if q.kind == KIND_KEY:
-        return {"kind": cat.KIND_CATALOGUE, "module": q.module, str(q.part): value,
+        return {"kind": cat.KIND_CATALOGUE, "module": q.module,
+                str(q.part): list(value) if isinstance(value, list) else value,
                 "by": {str(q.part): "admin"}}
     raise ValueError(f"no catalogue item for {q.kind}")
 
@@ -759,6 +855,176 @@ def stage_for(stage: Any, q_id: str) -> str | None:
     return None
 
 
+# ── The chat asks first, and a member proposes (CRM-Q32-8) ──────────────────
+#
+# Owner direction, 2026-10-18. A CRM tool whose answer depends on an open
+# question shows the member a card before the final answer. An admin's
+# choice is the answer, through the one answer route. Each other member's
+# choice is a PROPOSAL: it changes that member's answer only, for an open
+# question, and waits for an admin. The proposals live in the cursor row
+# ``zoho:questions`` under ``proposals`` (no table, no migration). Only this
+# module and ``routes/crm/questions.py`` read them, and a scan fences it.
+
+#: The bucket of the proposals in :data:`QUESTIONS_ROW`: question id → a
+#: list of ``{"value", "member", "at"}``.
+PROPOSALS = "proposals"
+#: The top-level key that only the questions step writes: the sorted
+#: ``qid|member|at`` of each proposal it saw.
+PROPOSALS_SEEN = "proposals_seen"
+#: The proposals that one question keeps, the newest.
+PROPOSALS_KEEP = 5
+
+#: The kinds that a chat card asks. A ``slot`` or a ``stage_value`` changes
+#: what records mean, so it goes through the approve path with a preview in
+#: the CRM app, never through a chat reply (§18.14.6).
+CHAT_KINDS: tuple[str, ...] = (KIND_PURPOSE, KIND_KEY, KIND_REVENUE)
+
+#: The keys of the two options that each card adds.
+NONE_KEY = "none"
+DEFAULT_KEY = "@default"
+
+#: What a card names a member with no name in the directory. Never the email.
+A_MEMBER = "A member"
+
+#: The line of a member's choice on a part in use (§18.14.10, CRM-Q32-8).
+CHANGE_WAITS = "Your suggested change is waiting for a CRM admin."
+
+
+def _proposal(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, Mapping) or not isinstance(raw.get("member"), str):
+        return None
+    value = raw.get("value")
+    if value is not None and not isinstance(value, str):
+        return None
+    return {"value": value, "member": str(raw["member"]).lower(), "at": str(raw.get("at") or "")}
+
+
+def proposals_of(state: Mapping[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
+    """The proposals in the state of :data:`QUESTIONS_ROW`: question id → its
+    proposals, oldest first. An entry that does not parse is left out."""
+    raw = (state or {}).get(PROPOSALS)
+    out: dict[str, list[dict[str, Any]]] = {}
+    for qid, entries in (raw.items() if isinstance(raw, Mapping) else ()):
+        kept = [p for p in (_proposal(e) for e in entries or ()) if p is not None] \
+            if isinstance(entries, list) else []
+        if kept:
+            out[str(qid)] = kept
+    return out
+
+
+def with_proposal(entries: Sequence[Mapping[str, Any]], value: str | None, member: str,
+                  at: str) -> list[dict[str, Any]]:
+    """*entries* with the proposal of *member*. A second proposal of one
+    member replaces the first. The list keeps the :data:`PROPOSALS_KEEP`
+    newest, oldest first."""
+    me = member.lower()
+    kept = [dict(p) for p in (_proposal(e) for e in entries) if p is not None
+            and p["member"] != me]
+    kept.append({"value": value, "member": me, "at": at})
+    kept.sort(key=lambda p: p["at"])
+    return kept[-PROPOSALS_KEEP:]
+
+
+def live_proposals(entries: Sequence[Mapping[str, Any]], q: Question) -> list[dict[str, Any]]:
+    """The proposals of *q* that still ask for a change. On a part in use,
+    one that equals the answer in use drops. A sum in use (a tuple of keys)
+    equals no proposal. On an open question each proposal is live."""
+    if q.reason != REASON_ANSWERED or isinstance(q.current, tuple):
+        return [dict(p) for p in entries]
+    return [dict(p) for p in entries if p.get("value") != q.current]
+
+
+def equals_current(q: Question, value: str | None) -> bool:
+    """True when *value* is the answer in use of *q*, a part in use."""
+    return q.reason == REASON_ANSWERED and not isinstance(q.current, tuple) \
+        and value == q.current
+
+
+def proposal_keys(state: Mapping[str, Any] | None) -> list[str]:
+    """The sorted ``qid|member|at`` of each proposal in *state*, for
+    :data:`PROPOSALS_SEEN`."""
+    return sorted(f"{qid}|{p['member']}|{p['at']}"
+                  for qid, entries in proposals_of(state).items() for p in entries)
+
+
+def my_proposal(entries: Sequence[Mapping[str, Any]], member: str) -> dict[str, Any] | None:
+    """The proposal of *member* in *entries*, or ``None``."""
+    me = member.lower()
+    return next((dict(p) for p in entries if str(p.get("member") or "").lower() == me), None)
+
+
+def value_label(q: Question, value: str | None) -> str:
+    """The label of a value of *q*: a field, a purpose, Billed or Collected,
+    or "None of these"."""
+    if value is None:
+        return "None of these"
+    if q.kind == KIND_PURPOSE:
+        return PURPOSE_LABELS.get(value, value)
+    found = next((c for c in (*q.choices, *q.options) if c.value == value), None)
+    return found.label if found is not None else value
+
+
+def chat_choice(q: Question, key: str) -> tuple[bool, str | None]:
+    """The value of the option *key* of a card of *q*: ``(True, value)``,
+    or ``(False, None)`` when no option has the key. ``none`` is "None of
+    these" (``None``), legal where the question takes it. A field, a purpose
+    or a revenue word must be a choice or an option of the question, which
+    the server builds, so the model cannot invent a value. ``@default`` and
+    ``@auto`` are not values: the route takes them first."""
+    if key == NONE_KEY:
+        return (True, None) if q.none else (False, None)
+    if not key or key.startswith("@"):
+        return False, None
+    legal = {c.value for c in (*q.choices, *q.options)}
+    return (True, key) if key in legal else (False, None)
+
+
+def ask_sentence(q: Question) -> str:
+    """The question of a card as a full sentence (the owner's copy rule of
+    2026-10-18, the words of ``lib/questions.ts``). It never names the
+    engine."""
+    if q.kind == KIND_REVENUE:
+        return "When you ask about revenue, what should Metorite count?"
+    if q.kind == KIND_PURPOSE:
+        return f"What kind of records does {q.label} hold?"
+    if q.part == "amount":
+        return f"Which field holds the amount of each record in {q.label}?"
+    if q.part == "date":
+        return f"Which date tells when each record in {q.label} happened?"
+    if q.part == "status":
+        return f"Which field shows the status of each record in {q.label}?"
+    return f"Which field links each record in {q.label} to its customer?"
+
+
+def ask_header(q: Question) -> str:
+    """The short title of a card: "Collection: amount"."""
+    if q.kind == KIND_REVENUE:
+        return "Revenue"
+    word = "customer" if q.part == "parent" else (q.part or "purpose")
+    return f"{q.label}: {word}"
+
+
+def override_of(q: Question, value: str | None, modules: Mapping[str, str]) -> dict[str, Any]:
+    """What a member's choice changes in that member's own answer, for an
+    open question: the real field key of a key part, the purpose word, or
+    the modules of a meaning of revenue. It writes nothing. *modules* maps
+    each module of the catalogue to its purpose.
+
+    ⚠️ A key part of ``amount`` reads as ``measure='sum'`` with
+    ``field=<key>``, never ``sum_amount``, because ``sum_amount`` on an
+    overlay does not read ``field`` (``aggregate.py``)."""
+    if q.kind == KIND_REVENUE:
+        return {"revenue": value, "label": value_label(q, value),
+                "modules": sorted(m for m, p in modules.items() if p == value)}
+    if q.kind == KIND_PURPOSE:
+        return {"purpose": value, "label": value_label(q, value)}
+    out: dict[str, Any] = {"part": q.part, "word": f"@{q.part}", "field": value,
+                           "label": value_label(q, value)}
+    if q.part == "amount" and value is not None:
+        out["measure"] = "sum"
+    return out
+
+
 def dismissed_of(state: Mapping[str, Any] | None) -> dict[str, str | None]:
     """The dismissed questions in the state of :data:`QUESTIONS_ROW`: id to
     the hash it was dismissed on. An entry that does not parse is left out."""
@@ -775,20 +1041,41 @@ def step_state(state: Mapping[str, Any] | None, open_ids: Sequence[str], money: 
                now: datetime) -> dict[str, Any]:
     """The keys that the questions step writes after a sync run (§18.14.5):
     ``seen``, the open ids, and ``money``. ``new_at`` changes only when an
-    id is new, so an answer that only closes questions sets no ``new_at``."""
+    id is new, so an answer that only closes questions sets no ``new_at``.
+
+    CRM-Q32-8: it also writes ``proposals_seen``, the sorted
+    ``qid|member|at`` of each proposal now. A proposal that is not in the
+    list before is new: it sets ``new_at`` too, and ``proposed`` counts the
+    new ones. Each write of ``new_at`` writes ``new`` and ``proposed``
+    both, so the card never reads the count of an older step. It never
+    returns ``proposals``: only the reply route writes them."""
     seen = (state or {}).get("seen")
     before = {str(i) for i in seen} if isinstance(seen, list) else set()
     ids = sorted(set(open_ids))
-    out: dict[str, Any] = {"seen": ids, "money": bool(money)}
+    keys = proposal_keys(state)
+    seen_before = (state or {}).get(PROPOSALS_SEEN)
+    known = {str(k) for k in seen_before} if isinstance(seen_before, list) else set()
+    out: dict[str, Any] = {"seen": ids, "money": bool(money), PROPOSALS_SEEN: keys}
     fresh = set(ids) - before
-    if fresh:
+    proposed = len(set(keys) - known)
+    if fresh or proposed:
         out["new_at"] = now.astimezone(UTC).isoformat()
         out["new"] = len(fresh)
+        out["proposed"] = proposed
     return out
 
 
 #: The card of My Day shows while ``new_at`` is less than this old.
 CARD_HOURS = 24
+
+
+def seen_keys(open_questions: Sequence[Question]) -> dict[str, Any]:
+    """The keys that an answer, a dismissal, its Undo or a batch writes in
+    :data:`QUESTIONS_ROW`: ``seen`` and ``money`` of the open set NOW. It
+    sets no ``new_at``, so an answer never raises a My Day card (§18.14.5,
+    "No nag")."""
+    return {"seen": sorted({q.id for q in open_questions}),
+            "money": count_money(open_questions)}
 
 
 def open_count(state: Mapping[str, Any] | None) -> int | None:
@@ -798,27 +1085,39 @@ def open_count(state: Mapping[str, Any] | None) -> int | None:
     return len(seen) if isinstance(seen, list) else None
 
 
+def _count(raw: Any) -> int | None:
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0 else None
+
+
 def card_of(state: Mapping[str, Any] | None, now: datetime) -> dict[str, Any] | None:
     """The My Day card of the state of :data:`QUESTIONS_ROW`, or ``None``
     (§18.14.5): ``new_at`` is less than :data:`CARD_HOURS` old, and a
-    question is still open. It builds no question."""
+    question is still open. It builds no question.
+
+    CRM-Q32-8: new proposals raise the card too, also when no question is
+    open, so a proposal on an answered part reaches the admin. ``proposed``
+    is their count."""
     raw = (state or {}).get("new_at")
     try:
         at = datetime.fromisoformat(str(raw)) if raw else None
     except ValueError:
         at = None
     seen = (state or {}).get("seen")
-    if at is None or not isinstance(seen, list) or not seen:
+    seen = seen if isinstance(seen, list) else []
+    proposed = _count((state or {}).get("proposed")) or 0
+    if at is None or (not seen and not proposed):
         return None
     if at.tzinfo is None:
         at = at.replace(tzinfo=UTC)
     age = now - at
     if age.total_seconds() < 0 or age.total_seconds() >= CARD_HOURS * 3600:
         return None
-    new = (state or {}).get("new")
-    count = new if isinstance(new, int) and not isinstance(new, bool) and new > 0 else len(seen)
-    return {"new_at": at, "count": min(count, len(seen)), "open": len(seen),
-            "money": (state or {}).get("money") is True}
+    new = _count((state or {}).get("new"))
+    if new is None or (new == 0 and not proposed):
+        # A row of a step before CRM-Q32-8 has no `new` of 0: the open count.
+        new = len(seen)
+    return {"new_at": at, "count": min(new, len(seen)), "open": len(seen),
+            "money": (state or {}).get("money") is True, "proposed": proposed}
 
 
 def wire(q: Question) -> dict[str, Any]:
@@ -840,8 +1139,11 @@ def wire(q: Question) -> dict[str, Any]:
         "id": q.id, "kind": q.kind, "module": q.module, "label": q.label, "part": q.part,
         "reason": q.reason, "records": q.records, "money": q.money, "why": q.why,
         "choices": [choice(c) for c in q.choices], "none": q.none, "other": q.other,
-        "current": q.current, "by": q.by, "dismissible": q.hash is not None,
+        "current": list(q.current) if isinstance(q.current, tuple) else q.current,
+        "by": q.by, "dismissible": q.hash is not None,
     }
+    if q.sums:
+        body["sums"] = [{"value": c.value, "label": c.label, "fill": c.fill} for c in q.sums]
     if q.kind == KIND_STAGE:
         body.update(count=q.count, slot=q.slot, value=q.value, field=q.field)
     if q.kind == KIND_SLOT:
@@ -854,46 +1156,69 @@ def wire(q: Question) -> dict[str, Any]:
 
 __all__ = [
     "AUTO",
+    "A_MEMBER",
+    "CHANGE_WAITS",
+    "CHAT_KINDS",
     "CHOICE_LIMIT",
+    "DEFAULT_KEY",
     "KINDS",
     "KIND_KEY",
     "KIND_PURPOSE",
     "KIND_REVENUE",
     "KIND_SLOT",
     "KIND_STAGE",
+    "NONE_KEY",
+    "PROPOSALS",
+    "PROPOSALS_KEEP",
+    "PROPOSALS_SEEN",
     "QUESTIONS_ROW",
     "REVENUE_ID",
     "SHOWN",
     "STAGE_WORDS",
+    "SUM_CHOICES",
+    "SUM_EQUAL_SHARE",
+    "SUM_FILL_FLOOR",
     "Choice",
     "Inputs",
     "Question",
     "SlotState",
     "StageState",
+    "SumReport",
     "answer_item",
     "answer_problem",
     "answered",
     "applied_line",
     "article",
+    "ask_header",
+    "ask_sentence",
     "batch_joins",
     "build",
     "candidates",
     "card_of",
+    "chat_choice",
     "count_money",
     "dismissed",
     "dismissed_of",
+    "equals_current",
     "key_id",
+    "live_proposals",
     "module_hash",
     "module_questions",
+    "my_proposal",
+    "names",
     "open_count",
     "options_hash",
+    "override_of",
     "part_fields",
     "part_reasons",
+    "proposal_keys",
+    "proposals_of",
     "purpose_id",
     "rank",
     "revenue_basis",
     "revenue_question",
     "sampled_modules",
+    "seen_keys",
     "shows_open",
     "slot_candidates",
     "slot_id",
@@ -901,8 +1226,14 @@ __all__ = [
     "stage_for",
     "stage_id",
     "step_state",
+    "sum_choice",
+    "sum_fields",
+    "sum_problem",
+    "sum_report",
     "value_hash",
+    "value_label",
     "why_key",
     "wire",
+    "with_proposal",
     "with_samples",
 ]

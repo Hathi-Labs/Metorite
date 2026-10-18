@@ -3,17 +3,22 @@
 /**
  * Settings → Open questions (WS-53 CRM-Q32-3, spec crm_platform.md §18.14.9).
  *
- * The CRM asks the admin each question that Jev could not answer with
- * confidence about the data of the org. Each answer becomes a fixed fact for
+ * The CRM asks the admin each question that the AI (internally, Jev) could
+ * not answer with confidence about the data of the org. Each answer becomes a fixed fact for
  * totals and chat, and the AI never asks it again.
  *
  * - **Open (<n>).** One card for each question, by impact, 5 at a time. A
  *   click applies at once, and the toast carries Undo. A `slot` card opens
  *   the panel of the suggestion (`SuggestionPanel`), which shows real
- *   records before it approves. "Accept Jev's best guesses" opens a dry run
+ *   records before it approves. "Accept the AI's suggestions" opens a dry run
  *   in a `Modal`, then applies it as one change.
  * - **Your answers.** The corrections of CRM-Q31-4: each part in use, with a
  *   `SelectButton` to change it, and "Let Metorite choose".
+ * - **Proposed by your team** (CRM-Q32-8). A member who is not an admin can
+ *   say in the chat what unclear data means. The card shows each proposal,
+ *   "Proposed by <name> · <when>", with a one-click Confirm. Confirm on an
+ *   open question is the answer route. Confirm on a part in use is the
+ *   correction of "Your answers". The open tab sorts "Proposed first".
  *
  * `lib/questions.ts` holds every word and rule, and this file only draws
  * them. The views take props only, so a test reads their markup. No
@@ -38,13 +43,17 @@ import {
   ANSWERS_TAB,
   ANSWERS_UNREAD,
   ASKED_AGAIN_LINE,
+  NONE_PICK,
+  SORT_LABEL,
+  SORT_OPTIONS,
   BATCH_NOTE,
   BATCH_TITLE,
   BATCH_UNREAD,
   CANCEL_LABEL,
+  CHANGES_HEADING,
   DISMISSED_LINE,
-  NONE_LABEL,
   NOT_RELEVANT,
+  NOT_RELEVANT_TIP,
   NO_ANSWERS,
   NOT_DISMISSED_LINE,
   NO_QUESTIONS,
@@ -56,6 +65,8 @@ import {
   TRY_AGAIN,
   UNDONE_LINE,
   UNDO_LABEL,
+  WHY_HEADING,
+  anyProposed,
   answerGroups,
   answerPicks,
   applyLabel,
@@ -66,35 +77,50 @@ import {
   batchShown,
   batchUndoCalls,
   byLine,
+  choiceView,
   correctionTarget,
   correctionUndo,
   currentLabel,
-  fillLabel,
   moreLabel,
+  noneLabel,
   notDismissed,
   openTabLabel,
   partWord,
   pickLabel,
+  pickOptions,
   pickToValue,
   pickValue,
+  proposalsOf,
+  questionCopy,
   questionError,
-  questionTitle,
   questionsGate,
   readQuestions,
   reasonBadge,
-  recordsLabel,
+  recordsInLabel,
   savedLine,
-  slotChoiceLabel,
   undoOf,
   visibleQuestions,
   type AcceptBestDone,
   type BestGuess,
+  type ChoiceView,
   type Question,
   type QuestionChoice,
+  type QuestionSort,
   type QuestionsBody,
   type QuestionsGate,
   type QuestionsRead,
   type UndoCall,
+} from "../lib/questions";
+import {
+  AUTO,
+  LET_METORITE,
+  SUM_CHANGE,
+  SUM_CHOICE_LABEL,
+  SUM_CHOICE_LINE,
+  SUM_PICK,
+  isSum,
+  sumOffered,
+  type AnswerValue,
 } from "../lib/questions";
 import { SLOT_SLUG, type SlotWord, type Suggestion } from "../lib/suggestions";
 import type { EntitySlug } from "../lib/types";
@@ -102,6 +128,11 @@ import { useSourceLabels } from "../lib/useCrmMode";
 import { viewLabel } from "../lib/views";
 import { Card } from "./SettingsCards";
 import { SuggestionPanel, useSuggestionActions, useSuggestions } from "./Suggestions";
+import { ProposalList } from "./ProposalList";
+import { SumDialog } from "./SumPicker";
+
+// One copy, shared with the picker of a sum (CRM-Q32-8).
+export { ProposalList };
 
 // ── The reads ──────────────────────────────────────────────────────────────
 
@@ -146,32 +177,31 @@ function useAnswers(enabled: boolean): { body: QuestionsBody | null; failed: boo
 export type QuestionHandlers = {
   /** The id of the question whose request runs, `batch`, or `null`. */
   busy: string | null;
-  /** One answer. `null` is "None of these". */
-  onAnswer: (q: Question, value: string | null) => void;
+  /** One answer. `null` is "None of these". A list is a sum (CRM-Q32-9). */
+  onAnswer: (q: Question, value: AnswerValue) => void;
   onDismiss: (q: Question) => void;
   /** A `slot` choice: answer it, then open the panel of the suggestion. */
   onSlot: (q: Question, choice: QuestionChoice) => void;
+  /** "These fields add up to the amount": open the picker of a sum (CRM-Q32-9b). */
+  onSum: (q: Question) => void;
 };
 
-/** The text of one choice: its label, Jev's mark, the fill and the samples. */
-function ChoiceText({ choice, label, lines }: { choice: QuestionChoice; label: string; lines: string[] }) {
-  const samples = (choice.samples ?? []).filter((s) => s !== "");
+/** The text of one choice: its label, the AI's mark, its lines and its examples. */
+function ChoiceText({ choice, view }: { choice: QuestionChoice; view: ChoiceView }) {
   return (
     <>
       <span className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs font-medium text-foreground">
-        <span className="min-w-0 break-words">{label}</span>
+        <span className="min-w-0 break-words">{view.label}</span>
         {choice.best ? <RecommendedBadge /> : null}
       </span>
-      {lines.map((line) => (
+      {view.lines.map((line) => (
         <span key={line} className="text-[11px] text-muted-foreground">
           {line}
         </span>
       ))}
-      {samples.length > 0 ? (
-        // The samples wrap under the label, so a phone never scrolls sideways.
-        <span className="min-w-0 break-all font-mono text-[11px] text-muted-foreground">
-          {samples.join(" · ")}
-        </span>
+      {view.examples ? (
+        // The examples wrap under the label, so a phone never scrolls sideways.
+        <span className="min-w-0 break-words text-[11px] text-muted-foreground">{view.examples}</span>
       ) : null}
     </>
   );
@@ -187,70 +217,87 @@ function Choices({
   handlers: QuestionHandlers;
   disabled: boolean;
 }) {
-  if (q.choices.length === 0) return null;
+  const sum = sumOffered(q);
+  if (q.choices.length === 0 && !sum) return null;
   const compact = q.kind === "stage_value";
   return (
     <ul
       className={compact ? "flex flex-col gap-1.5 sm:flex-row sm:flex-wrap" : "grid gap-1.5 sm:grid-cols-3"}
       aria-label="Choices"
     >
-      {q.choices.map((choice) => {
-        const label = q.kind === "slot" ? slotChoiceLabel(q, choice) : choice.label;
-        const lines: string[] = [];
-        const fill = fillLabel(choice.fill);
-        if (fill) lines.push(fill);
-        const records = q.kind === "slot" ? recordsLabel(choice.records) : null;
-        if (records) lines.push(records);
-        if (q.kind === "revenue" && choice.modules && choice.modules.length > 0) {
-          lines.push(choice.modules.join(", "));
-        }
-        return (
-          <li
-            key={choice.value}
-            className={`min-w-0 rounded-md border ${choice.best ? "border-primary/40" : "border-border"}`}
+      {q.choices.map((choice) => (
+        <li
+          key={choice.value}
+          className={`min-w-0 rounded-md border ${choice.best ? "border-primary/40" : "border-border"}`}
+        >
+          <Button
+            variant="ghost"
+            size="none"
+            layout="flex w-full min-w-0 flex-col items-start gap-0.5"
+            className="px-3 py-2 text-left"
+            disabled={disabled}
+            loading={handlers.busy === q.id}
+            onClick={() =>
+              q.kind === "slot" ? handlers.onSlot(q, choice) : handlers.onAnswer(q, choice.value)
+            }
           >
-            <Button
-              variant="ghost"
-              size="none"
-              layout="flex w-full min-w-0 flex-col items-start gap-0.5"
-              className="px-3 py-2 text-left"
-              icon={q.kind === "slot" ? "Eye" : undefined}
-              disabled={disabled}
-              loading={handlers.busy === q.id}
-              onClick={() =>
-                q.kind === "slot" ? handlers.onSlot(q, choice) : handlers.onAnswer(q, choice.value)
-              }
-            >
-              <ChoiceText choice={choice} label={label} lines={lines} />
-            </Button>
-          </li>
-        );
-      })}
+            <ChoiceText choice={choice} view={choiceView(q, choice)} />
+          </Button>
+        </li>
+      ))}
+      {sum ? (
+        // CRM-Q32-9b: a choice of its own, a full row, that opens the picker of a sum.
+        <li className="min-w-0 rounded-md border border-dashed border-border sm:col-span-3">
+          <Button
+            variant="ghost"
+            size="none"
+            layout="flex w-full min-w-0 flex-col items-start gap-0.5"
+            className="px-3 py-2 text-left"
+            disabled={disabled}
+            onClick={() => handlers.onSum(q)}
+          >
+            <span className="text-xs font-medium text-foreground">{SUM_CHOICE_LABEL}</span>
+            <span className="text-[11px] text-muted-foreground">{SUM_CHOICE_LINE}</span>
+          </Button>
+        </li>
+      ) : null}
     </ul>
   );
 }
 
 /**
- * One question. The top line names the module and the part, a badge names
- * the reason, and the sentence under it says why it matters. No hook, so a
- * test reads its markup.
+ * One question, as a person reads it (owner feedback, 2026-10-18): the
+ * question as a full sentence, a badge, why we ask, what the answer
+ * changes, the choices, and plain actions under them. No hook, so a test
+ * reads its markup.
  */
 export function QuestionCard({ q, handlers }: { q: Question; handlers: QuestionHandlers }) {
-  const badge = reasonBadge(q.reason);
+  const badge = reasonBadge(q.reason, q.kind);
   const disabled = handlers.busy !== null;
-  // A module question names its records. A slot, a stage and revenue carry
-  // their counts in the choices or the sentence (visual review, 2026-10-18).
-  const records = q.kind === "purpose" || q.kind === "key_field" ? recordsLabel(q.records) : null;
-  const options = q.other ? (q.options ?? []) : [];
+  const copy = questionCopy(q);
+  const records = recordsInLabel(q);
+  const options = q.other ? pickOptions(q) : [];
   return (
-    <li className="space-y-2 rounded-lg border border-border p-3" data-question={q.kind}>
-      <div className="flex flex-wrap items-center gap-2">
-        <h3 className="min-w-0 break-words text-sm font-medium text-foreground">{questionTitle(q)}</h3>
-        {badge ? <Badge tone={badge.tone}>{badge.label}</Badge> : null}
-        {records ? <span className="ml-auto text-[11px] text-muted-foreground">{records}</span> : null}
+    <li className="space-y-2.5 rounded-lg border border-border p-3" data-question={q.kind}>
+      <div className="space-y-1">
+        <div className="flex flex-wrap items-start gap-x-2 gap-y-1">
+          <h3 className="min-w-0 flex-1 break-words text-sm font-medium text-foreground">{copy.question}</h3>
+          {badge ? <Badge tone={badge.tone}>{badge.label}</Badge> : null}
+        </div>
+        {records ? <p className="text-[11px] text-muted-foreground">{records}</p> : null}
       </div>
-      <p className="text-xs text-muted-foreground">{q.why}</p>
+      <dl className="grid gap-2 sm:grid-cols-2">
+        <div className="min-w-0 space-y-0.5">
+          <dt className="text-[11px] font-medium text-muted-foreground">{WHY_HEADING}</dt>
+          <dd className="break-words text-xs text-foreground">{copy.why}</dd>
+        </div>
+        <div className="min-w-0 space-y-0.5">
+          <dt className="text-[11px] font-medium text-muted-foreground">{CHANGES_HEADING}</dt>
+          <dd className="break-words text-xs text-foreground">{copy.changes}</dd>
+        </div>
+      </dl>
       <Choices q={q} handlers={handlers} disabled={disabled} />
+      <ProposalList q={q} disabled={disabled} onConfirm={(p) => handlers.onAnswer(q, p.value)} />
       {q.none || options.length > 0 || q.dismissible ? (
         <div className="flex flex-wrap items-center gap-2">
           {q.none ? (
@@ -260,19 +307,17 @@ export function QuestionCard({ q, handlers }: { q: Question; handlers: QuestionH
               disabled={disabled}
               onClick={() => handlers.onAnswer(q, null)}
             >
-              {NONE_LABEL}
+              {noneLabel(q)}
             </Button>
           ) : null}
           {options.length > 0 ? (
             <SelectButton
-              label={`${pickLabel(q)} for ${questionTitle(q)}`}
+              label={`${pickLabel(q)}. ${copy.question}`}
               prompt={pickLabel(q)}
               value=""
-              options={options.map((o) => ({
-                value: o.value,
-                label: o.label,
-                hint: fillLabel(o.fill) ?? undefined,
-              }))}
+              options={options}
+              // The prompt is a full phrase, so it keeps its width (visual review, 2026-10-18).
+              widthClass="w-full sm:w-56"
               filterAbove={8}
               disabled={disabled}
               onChange={(value) => handlers.onAnswer(q, value)}
@@ -283,6 +328,7 @@ export function QuestionCard({ q, handlers }: { q: Question; handlers: QuestionH
               variant="ghost"
               size="sm"
               className="ml-auto"
+              title={NOT_RELEVANT_TIP}
               disabled={disabled}
               onClick={() => handlers.onDismiss(q)}
             >
@@ -303,6 +349,8 @@ export type AnswersHandlers = {
   /** A pick of the `SelectButton` of a part. */
   onChange: (q: Question, pick: string) => void;
   onRetry: () => void;
+  /** Open the picker of a sum for this part (CRM-Q32-9b). */
+  onSum: (q: Question) => void;
 };
 
 /**
@@ -353,16 +401,49 @@ export function YourAnswersView({
                     {currentLabel(q)}
                     <span className="ml-2 text-[11px] text-muted-foreground">{byLine(q)}</span>
                   </span>
-                  <SelectButton
-                    label={`Change the ${part} of ${group.label}`}
-                    value={pickValue(q)}
-                    options={answerPicks(q)}
-                    // A line of its own on a phone, so the answer in use keeps its room.
-                    widthClass="w-full sm:w-48"
-                    filterAbove={8}
-                    disabled={handlers.busy !== null}
-                    onChange={(pick) => handlers.onChange(q, pick)}
-                  />
+                  {isSum(q.current) ? (
+                    // A sum: Change opens the same picker, and Metorite can choose again.
+                    <span className="flex w-full flex-wrap gap-2 sm:w-auto">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        aria-label={`${SUM_CHANGE} the ${part} of ${group.label}`}
+                        disabled={handlers.busy !== null}
+                        onClick={() => handlers.onSum(q)}
+                      >
+                        {SUM_CHANGE}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={handlers.busy !== null}
+                        onClick={() => handlers.onChange(q, AUTO)}
+                      >
+                        {LET_METORITE}
+                      </Button>
+                    </span>
+                  ) : (
+                    <SelectButton
+                      label={`Change the ${part} of ${group.label}`}
+                      value={pickValue(q)}
+                      options={answerPicks(q)}
+                      // A line of its own on a phone, so the answer in use keeps its room.
+                      widthClass="w-full sm:w-48"
+                      filterAbove={8}
+                      disabled={handlers.busy !== null}
+                      onChange={(pick) => (pick === SUM_PICK ? handlers.onSum(q) : handlers.onChange(q, pick))}
+                    />
+                  )}
+                  {proposalsOf(q).length > 0 ? (
+                    // A proposed change of a part in use: Confirm is the correction.
+                    <div className="w-full">
+                      <ProposalList
+                        q={q}
+                        disabled={handlers.busy !== null}
+                        onConfirm={(p) => handlers.onChange(q, p.value ?? NONE_PICK)}
+                      />
+                    </div>
+                  ) : null}
                 </li>
               );
             })}
@@ -393,6 +474,8 @@ export function OpenQuestionsView({
   handlers,
   onBatch,
   answers,
+  sort = "impact",
+  onSort,
 }: {
   /** The read of `GET /crm/questions`, or `undefined` while it loads. */
   read: QuestionsRead | undefined;
@@ -406,12 +489,17 @@ export function OpenQuestionsView({
   /** Open the batch Modal with these ids. */
   onBatch: (ids: string[]) => void;
   answers: { body: QuestionsBody | null; failed: boolean; handlers: AnswersHandlers };
+  /** CRM-Q32-8: the order of the open tab. */
+  sort?: QuestionSort;
+  onSort?: (sort: QuestionSort) => void;
 }) {
   if (read?.off) return null;
   const body = read?.body ?? null;
   const open = body?.open ?? 0;
   const ids = body ? batchIds(body.shown) : [];
-  const { cards, more } = body ? visibleQuestions(body, expanded) : { cards: [], more: 0 };
+  const { cards, more } = body ? visibleQuestions(body, expanded, sort) : { cards: [], more: 0 };
+  // The sort shows only when a question holds a proposal: it orders nothing else.
+  const sortable = body !== null && onSort !== undefined && anyProposed(body.shown);
   return (
     <Card title={QUESTIONS_TITLE} note={QUESTIONS_NOTE}>
       <div className="space-y-3 px-4 py-3">
@@ -443,16 +531,29 @@ export function OpenQuestionsView({
           <EmptyState icon="CircleCheck" tone="success" message={NO_QUESTIONS} />
         ) : (
           <>
-            {batchShown(ids) ? (
-              <Button
-                variant="secondary"
-                size="sm"
-                icon="ListChecks"
-                disabled={handlers.busy !== null}
-                onClick={() => onBatch(ids)}
-              >
-                {batchLabel(ids.length)}
-              </Button>
+            {batchShown(ids) || sortable ? (
+              <div className="flex flex-wrap items-center gap-2">
+                {batchShown(ids) ? (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    icon="ListChecks"
+                    disabled={handlers.busy !== null}
+                    onClick={() => onBatch(ids)}
+                  >
+                    {batchLabel(ids.length)}
+                  </Button>
+                ) : null}
+                {sortable && onSort ? (
+                  <SelectButton
+                    label={SORT_LABEL}
+                    value={sort}
+                    options={SORT_OPTIONS}
+                    widthClass="w-full sm:w-40"
+                    onChange={(value) => onSort(value === "proposed" ? "proposed" : "impact")}
+                  />
+                ) : null}
+              </div>
             ) : null}
             <ul className="space-y-2" aria-label={QUESTIONS_TITLE}>
               {cards.map((q) => (
@@ -484,7 +585,7 @@ export function BatchBody({ items, failed }: { items: BestGuess[] | null; failed
     <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
       <p className="text-xs text-muted-foreground">{BATCH_NOTE}</p>
       {items ? (
-        <ul className="space-y-1.5" aria-label="Best guesses">
+        <ul className="space-y-1.5" aria-label="The AI's suggestions">
           {items.map((item) => (
             <li key={item.id} className="space-y-0.5">
               <p className="text-xs font-medium text-foreground">{batchLine(item)}</p>
@@ -551,8 +652,11 @@ export default function OpenQuestionsCard() {
   const { read, failed, refresh } = useQuestions(true);
   const [tab, setTab] = useState<SectionTab>("open");
   const [expanded, setExpanded] = useState(false);
+  const [sort, setSort] = useState<QuestionSort>("impact");
   const [busy, setBusy] = useState<string | null>(null);
   const [batch, setBatch] = useState<string[] | null>(null);
+  // CRM-Q32-9b: the question whose picker of a sum is open, and where it came from.
+  const [sum, setSum] = useState<{ q: Question; from: "card" | "answers" } | null>(null);
   const answers = useAnswers(tab === "answers");
   // The slot whose panel is open. The panel draws the suggestion of the
   // newest read, with the read of the click as a fallback (CRM-Q20-2).
@@ -586,7 +690,7 @@ export default function OpenQuestionsCard() {
     }
   }
 
-  async function answer(q: Question, value: string | null) {
+  async function answer(q: Question, value: AnswerValue): Promise<boolean> {
     const key = `crm-question:${q.id}`;
     setBusy(q.id);
     try {
@@ -599,8 +703,10 @@ export default function OpenQuestionsCard() {
         title: savedLine(q, done, value),
         action: undo ? { label: UNDO_LABEL, onClick: () => void runUndo(key, undo) } : undefined,
       });
+      return true;
     } catch (err) {
       fail(key, err, "That answer did not save.");
+      return false;
     } finally {
       setBusy(null);
     }
@@ -686,13 +792,19 @@ export default function OpenQuestionsCard() {
   }
 
   async function correct(q: Question, pick: string) {
+    if (pick === pickValue(q)) return;
+    await correctTo(q, pickToValue(pick));
+  }
+
+  /** A correction to a value: a pick, or the list of a sum. Undo puts back the part before. */
+  async function correctTo(q: Question, value: AnswerValue): Promise<boolean> {
     const target = correctionTarget(q);
-    if (!target || pick === pickValue(q)) return;
+    if (!target) return false;
     const key = `crm-answer:${q.id}`;
     const before = correctionUndo(q);
     setBusy(q.id);
     try {
-      await api.putCatalogue(target.module, { [target.part]: pickToValue(pick) });
+      await api.putCatalogue(target.module, { [target.part]: value });
       toast.show({
         key,
         variant: "success",
@@ -703,11 +815,27 @@ export default function OpenQuestionsCard() {
             void runUndo(key, { kind: "put", module: target.module, parts: { [target.part]: before } }),
         },
       });
+      return true;
     } catch (err) {
       fail(key, err, "That change did not save.");
+      return false;
     } finally {
       setBusy(null);
     }
+  }
+
+  /** Save the picker of a sum: an answer from a card, a correction from "Your answers". */
+  /** Confirm of a proposal in the picker of a sum: one field, or none. */
+  async function confirmInSum(value: string | null) {
+    if (!sum) return;
+    const done = sum.from === "card" ? await answer(sum.q, value) : await correctTo(sum.q, value);
+    if (done) setSum(null);
+  }
+
+  async function saveSum(keys: string[]) {
+    if (!sum) return;
+    const done = sum.from === "card" ? await answer(sum.q, keys) : await correctTo(sum.q, keys);
+    if (done) setSum(null);
   }
 
   return (
@@ -725,12 +853,20 @@ export default function OpenQuestionsCard() {
           onAnswer: (q, value) => void answer(q, value),
           onDismiss: (q) => void dismiss(q),
           onSlot: (q, choice) => void slot(q, choice),
+          onSum: (q) => setSum({ q, from: "card" }),
         }}
         onBatch={setBatch}
+        sort={sort}
+        onSort={setSort}
         answers={{
           body: answers.body,
           failed: answers.failed,
-          handlers: { busy, onChange: (q, pick) => void correct(q, pick), onRetry: answers.refresh },
+          handlers: {
+            busy,
+            onChange: (q, pick) => void correct(q, pick),
+            onRetry: answers.refresh,
+            onSum: (q) => setSum({ q, from: "answers" }),
+          },
         }}
       />
       {batch ? (
@@ -739,6 +875,15 @@ export default function OpenQuestionsCard() {
           busy={busy === "batch"}
           onClose={() => setBatch(null)}
           onApply={() => void applyBatch(batch)}
+        />
+      ) : null}
+      {sum ? (
+        <SumDialog
+          q={sum.q}
+          busy={busy === sum.q.id}
+          onClose={() => setSum(null)}
+          onSave={(keys) => void saveSum(keys)}
+          onConfirm={(p) => void confirmInSum(p.value)}
         />
       ) : null}
       {previewing && preview ? (

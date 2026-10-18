@@ -30,7 +30,8 @@
     "emit_generative_ui",
     "make_report",
     "call_agent",
-    "org_facts"
+    "org_facts",
+    "crm_answer_question"
   ],
   "own_tool_scope": [
     "search_crm",

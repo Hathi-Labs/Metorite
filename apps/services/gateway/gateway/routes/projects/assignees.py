@@ -134,16 +134,12 @@ async def person_names(
 
     # Imported here, not at module scope: the picker below does the same, and
     # the reason is the import cycle between this package and `routes.people`.
-    from gateway.routes.people.core import _tenant_session
+    # `names_of` is the one query of a name (WS-53 CRM-Q32-8 moved it there).
+    from gateway.routes.people.core import _tenant_session, names_of
 
     async with _tenant_session() as db:
-        rows = (await db.execute(text(
-            "SELECT lower(email) AS email, name FROM people "
-            " WHERE lower(email) = ANY(:emails) AND name <> ''"),
-            {"emails": wanted})).fetchall()
-    return NamesResponse(
-        names={str(r.email): str(r.name) for r in rows if r.name},
-    )
+        names = await names_of(db, wanted)
+    return NamesResponse(names=names)
 
 
 @router.get("/assignees", response_model=PickerResponse)

@@ -690,3 +690,39 @@ async def test_a_stage_value_with_a_blank_around_it_is_the_value(q_env, app_engi
     stages = [q["value"] for q in body["shown"] if q["kind"] == "stage_value"]
     assert stages == ["On Hold"]
     assert qs.stage_id("deal", " Won ") not in ids(body)
+
+
+async def test_the_health_count_follows_each_answer_at_once(q_env, app_engine) -> None:
+    """Follow-up of CRM-Q32-4: an answer, a dismissal, its Undo and a batch
+    write ``seen`` again in their own transaction, so the count of Sync
+    health agrees with the rail at once. None of them sets ``new_at``."""
+    from datetime import UTC, datetime
+
+    p = q_env
+    seed_a(p)
+    await step(p, p.org_a, datetime(2026, 10, 18, 6, 0, tzinfo=UTC))
+    new_at = cursor_state(p, p.org_a, "zoho:questions")["new_at"]
+
+    async def counts() -> tuple[int, int]:
+        health = (await call(p, _user(p.org_a), "GET", "/crm/sync/health")).json()
+        rail = (await call(p, _user(p.org_a), "GET", "/crm/questions")).json()["open"]
+        return health["open_questions"], rail
+
+    first, rail = await counts()
+    assert first == rail > 2
+    got = await call(p, _user(p.org_a), "POST", "/crm/questions/purpose:Towers/answer",
+                     {"value": "asset"})
+    assert got.status_code == 200, got.text
+    assert await counts() == (first - 1, first - 1)
+    got = await call(p, _user(p.org_a), "POST",
+                     "/crm/questions/key:Fee_Receipts:status/dismiss")
+    assert got.status_code == 200, got.text
+    assert await counts() == (first - 2, first - 2)
+    got = await call(p, _user(p.org_a), "DELETE",
+                     "/crm/questions/key:Fee_Receipts:status/dismiss")
+    assert got.status_code == 200, got.text
+    assert await counts() == (first - 1, first - 1)
+    state = cursor_state(p, p.org_a, "zoho:questions")
+    assert state["new_at"] == new_at, "an answer sets no new_at"
+    assert "purpose:Towers" not in state["seen"]
+    assert "key:Fee_Receipts:status" in state["seen"]

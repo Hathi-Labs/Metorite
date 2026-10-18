@@ -90,6 +90,10 @@ ORG = "11111111-2222-4333-8444-555555555555"
 CONN = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 OTHER_CONN = "aaaaaaaa-bbbb-4ccc-8ddd-ffffffffffff"
 ORIGIN = "https://client.example"
+#: EA-13a. The stamp of an R8 connection, whose client id is
+#: ``https://client.example/meta.json``. The database-free fakes carry no
+#: connection client id, so they keep the host stamp ``mcp:client.example``.
+R8_VIA = "mcp:client.example:meta"
 
 GOOD = "good-token"
 CHALLENGE_401 = f'Bearer resource_metadata="{METADATA_URL}"'
@@ -2198,7 +2202,7 @@ async def _signed_list(world, name: str, query: str = "page_size=100") -> tuple[
     path = "/projects/tasks"
     headers = agent_signing.signed_headers(
         KEY, organization_id=world.org, connection_id=world.c[name],
-        actor_via="mcp:client.example", method="GET", path=path, query=query)
+        actor_via=R8_VIA, method="GET", path=path, query=query)
 
     async def go() -> httpx.Response:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=gateway_app),
@@ -2257,7 +2261,7 @@ class TestTheSameTasksOverMcp:
         query = "q=alpha&limit=50"
         headers = agent_signing.signed_headers(
             KEY, organization_id=live.org, connection_id=live.c["pinned"],
-            actor_via="mcp:client.example", method="GET", path="/projects/search",
+            actor_via=R8_VIA, method="GET", path="/projects/search",
             query=query)
 
         async def go() -> httpx.Response:
@@ -2443,7 +2447,7 @@ async def _signed_get(world, name: str, path: str, query: str = "") -> httpx.Res
 
     headers = agent_signing.signed_headers(
         KEY, organization_id=world.org, connection_id=world.c[name],
-        actor_via="mcp:client.example", method="GET", path=path, query=query)
+        actor_via=R8_VIA, method="GET", path=path, query=query)
 
     async def go() -> httpx.Response:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=gateway_app),

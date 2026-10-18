@@ -425,10 +425,14 @@ def test_questions_allowed_is_the_and_of_two_lists(
 
 def test_the_step_sets_new_at_only_when_an_id_is_new() -> None:
     first = qs.step_state(None, ["a", "b"], True, NOW)
-    assert first == {"seen": ["a", "b"], "money": True, "new_at": NOW.isoformat(), "new": 2}
+    # CRM-Q32-8: each step writes `proposals_seen`, and a write of `new_at`
+    # writes `proposed` too.
+    assert first == {"seen": ["a", "b"], "money": True, "new_at": NOW.isoformat(), "new": 2,
+                     "proposals_seen": [], "proposed": 0}
     # An answer closes "a": no new_at.
     later = NOW + timedelta(hours=3)
-    assert qs.step_state(first, ["b"], False, later) == {"seen": ["b"], "money": False}
+    assert qs.step_state(first, ["b"], False, later) == {"seen": ["b"], "money": False,
+                                                         "proposals_seen": []}
     # A new id sets new_at again.
     again = qs.step_state({"seen": ["b"]}, ["b", "c"], False, later)
     assert (again["new_at"], again["new"]) == (later.isoformat(), 1)
@@ -637,3 +641,134 @@ def test_the_purpose_line_takes_the_right_article(word: str) -> None:
 
 def test_each_purpose_has_its_article_written_out() -> None:
     assert set(_ARTICLES) == set(cat.PURPOSES)
+
+
+# ── Follow-up: hermetic fences of the cache-hit rule and the drop SQL ───────
+
+
+def test_a_cache_hit_that_lacks_the_part_shows_it_in_on() -> None:
+    """The cache-hit rule of ``shows_open``, with no database: in ``on``, an
+    open part shows when its key is a cache hit and the cached item lacks
+    the part, because the pipeline never asks a hit again."""
+    entry = next(e for e in cat.build(SOURCES, {}, []) if e.module == "Invoices")
+    key = f"{mp.CATALOGUE_KEY}Invoices"
+    digest = mp.catalogue_hash([INVOICES], "on", entry.purpose)
+    lacking = mp.Cache(schema={key: digest},
+                       items={key: [{"kind": "catalogue", "module": "Invoices",
+                                     "date": None, "by": {"date": "ai"}}]})
+    ids = _ids(qs.build(_inputs(mode="on", cache=lacking)))
+    assert "key:Invoices:amount" in ids
+    # The cached item holds the part: the AI answered it, so no question.
+    holding = mp.Cache(schema={key: digest},
+                       items={key: [{"kind": "catalogue", "module": "Invoices",
+                                     "amount": None, "date": None,
+                                     "by": {"amount": "ai", "date": "ai"}}]})
+    assert "key:Invoices:amount" not in _ids(qs.build(_inputs(mode="on", cache=holding)))
+    # A hash that does not match is no hit: the AI asks it again.
+    stale = mp.Cache(schema={key: "an-older-hash"}, items=lacking.items)
+    assert "key:Invoices:amount" not in _ids(qs.build(_inputs(mode="on", cache=stale)))
+
+
+def test_the_drop_of_a_dismissal_names_its_org() -> None:
+    """``runs._DROP_ENTRY_SQL`` names the org in its predicate. RLS alone
+    would hide a removal of it, so the text holds the shape."""
+    import re
+
+    from gateway.crm_sync import runs
+
+    sql = " ".join(runs._DROP_ENTRY_SQL.split())
+    where = sql.split(" WHERE ", 1)[1]
+    assert re.search(r"organization_id = CAST\(:org AS uuid\)", where)
+    assert "module = :module" in where and "? CAST(:key AS text)" in where
+    assert sql.startswith("UPDATE crm_sync_cursors SET cursor_state")
+
+
+def test_seen_keys_hold_the_open_set_and_no_new_at() -> None:
+    found = qs.build(_inputs(slots=EMPTY_DEALS, stages=(DEAL_STAGE,)))
+    keys = qs.seen_keys(found)
+    assert set(keys) == {"seen", "money"}
+    assert keys["seen"] == sorted(q.id for q in found) and keys["money"] is True
+
+
+# ── CRM-Q32-9a: an amount can be the sum of several fields ──────────────────
+
+
+_SUM = ["IP_Amount", "Rent_Amount", "EB_Amount"]
+
+
+def test_the_amount_card_offers_a_sum_of_the_filled_currency_fields() -> None:
+    """The offer rule (§18.14.10): 2 or more currency fields, each filled
+    20% or more. The picker lists them, the most filled first, at most 12."""
+    by = _by_id(qs.build(_inputs()))
+    amount = by["key:Payment_Received:amount"]
+    assert [c.value for c in amount.sums] == ["IP_Amount", "EB_Amount", "Rent_Amount"]
+    assert [c.fill for c in amount.sums] == [0.52, 0.51, 0.5]
+    assert by["key:Payment_Received:date"].sums == ()
+    wire = qs.wire(amount)
+    assert wire["sums"][0] == {"value": "IP_Amount", "label": "IP Amount", "fill": 0.52}
+    assert "sums" not in qs.wire(by["key:Payment_Received:date"])
+
+
+def test_no_sum_with_one_filled_currency_field() -> None:
+    low = _module("Dues", "Dues", 40,
+                  [_f("Name", "text"), _f("Due", "currency"), _f("Fee", "currency"),
+                   _f("Rate", "percent"), _f("Paid_On", "date")],
+                  {"Due": 0.9, "Fee": 0.19, "Rate": 0.9, "Paid_On": 0.2})
+    assert qs.sum_fields(low) == []
+    many = _module("Big", "Big", 40, [_f(f"C{i:02d}", "currency") for i in range(15)],
+                   {f"C{i:02d}": 0.2 + i / 100 for i in range(15)})
+    picked = qs.sum_fields(many)
+    assert len(picked) == qs.SUM_CHOICES == 12
+    assert picked[0].key == "C14" and "C00" not in {f.key for f in picked}
+
+
+def test_a_sum_answers_an_amount_and_nothing_else() -> None:
+    by = _by_id(qs.build(_inputs(slots=EMPTY_DEALS, stages=(DEAL_STAGE,))))
+    amount, date = by["key:Payment_Received:amount"], by["key:Payment_Received:date"]
+    assert qs.answer_problem(amount, _SUM, COLLECTION) is None
+    assert qs.answer_problem(amount, ["IP_Amount", "Rent_Amount"], COLLECTION) is None
+    for bad in (["IP_Amount"], ["IP_Amount", "IP_Amount"], ["IP_Amount", "Gone"],
+                ["IP_Amount", "Date_of_Payment_Record"], ["IP_Amount", "a'--"],
+                ["IP_Amount", "@amount"], ["IP_Amount", "x" * 300], [*_SUM, "A", "B", "C"]):
+        assert qs.answer_problem(amount, bad, COLLECTION) == "bad_answer", bad
+    assert qs.answer_problem(date, _SUM, COLLECTION) == "bad_answer"
+    for qid in ("purpose:Towers", "slot:deal", "revenue", qs.stage_id("deal", "On Hold")):
+        assert qs.answer_problem(by[qid], _SUM, COLLECTION) == "bad_answer", qid
+    item = qs.answer_item(amount, _SUM)
+    assert item == {"kind": "catalogue", "module": "Payment_Received", "amount": _SUM,
+                    "by": {"amount": "admin"}}
+    assert cat.item_problem(item) is None
+    line = qs.applied_line(amount, qs.sum_choice(COLLECTION, _SUM))
+    assert line == "Totals of Collection now use the sum of IP Amount, Rent Amount and EB Amount."
+
+
+def test_a_sum_in_use_shows_its_keys_as_current() -> None:
+    items = [{"kind": "catalogue", "module": "Payment_Received", "amount": _SUM,
+              "by": {"amount": "admin"}}]
+    done = _by_id(qs.answered(_inputs(items)))
+    amount = done["key:Payment_Received:amount"]
+    assert (amount.current, amount.by) == (tuple(_SUM), "admin")
+    assert qs.wire(amount)["current"] == _SUM
+    assert "key:Payment_Received:amount" not in _ids(qs.build(_inputs(items)))
+
+
+def test_the_sum_check_line_and_its_warning() -> None:
+    """The coverage line, and a warning for a pair that holds the same value
+    on half or more of the records that set both. The admin can still save."""
+    labels = ["Rent Net Amount", "IP Basic Amount", "EB Net Amount"]
+    report = qs.sum_report(labels, 8681, 8458, [(0, 1, 4472, 12), (0, 2, 0, 0), (1, 2, 0, 0)])
+    assert report.line == "These 3 fields cover 8,458 of 8,681 records (97%)."
+    assert report.warnings == ()
+    twice = qs.sum_report(["Rent Net Amount", "Rent Total Amount"], 100, 90,
+                          [(0, 1, 50, 45)])
+    assert twice.warnings == (
+        "Rent Net Amount and Rent Total Amount hold the same value on 90% of records. "
+        "A sum counts it twice.",)
+    half = qs.sum_report(["A", "B"], 10, 10, [(0, 1, 10, 5)])
+    assert len(half.warnings) == 1
+    below = qs.sum_report(["A", "B"], 10, 10, [(0, 1, 10, 4)])
+    assert below.warnings == ()
+    capped = qs.sum_report(["A", "B"], 10_000, 9_000, [], capped=True)
+    assert capped.line == "These 2 fields cover 9,000 of the first 10,000 records (90%)."
+    empty = qs.sum_report(["A", "B"], 0, 0, [])
+    assert empty.line == "These 2 fields cover 0 of 0 records (0%)."

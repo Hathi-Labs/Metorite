@@ -13,8 +13,12 @@ import { clearAll, peek, put } from "@/lib/dataCache";
 
 import * as api from "../lib/api";
 import { CrmError } from "../lib/api";
+import * as questionsLib from "../lib/questions";
 import {
   AUTO,
+  NOT_RELEVANT_TIP,
+  PURPOSE_WORDS,
+  REVENUE_DEFAULT_BADGE,
   LET_METORITE,
   NOT_DISMISSED_LINE,
   NONE_PICK,
@@ -37,6 +41,7 @@ import {
   correctionTarget,
   correctionUndo,
   currentLabel,
+  examplesLine,
   fillLabel,
   notDismissed,
   openCount,
@@ -48,6 +53,7 @@ import {
   railCount,
   readQuestions,
   reasonBadge,
+  sampleText,
   savedLine,
   undoOf,
   visibleQuestions,
@@ -55,6 +61,24 @@ import {
   type Question,
   type QuestionsBody,
   type QuestionsRead,
+} from "../lib/questions";
+import {
+  SUM_CHECKING,
+  SUM_CHECK_DELAY,
+  SUM_CHECK_FAILED,
+  SUM_CHOICE_LABEL,
+  SUM_CHOICE_LINE,
+  SUM_PICK,
+  sumBlocked,
+  sumCheckKey,
+  sumCheckView,
+  sumHint,
+  sumOffered,
+  sumReady,
+  sumStart,
+  toggleSum,
+  type SumCheck,
+  type SumCheckView,
 } from "../lib/questions";
 import { defaultSection, shownSection, visibleSections } from "../lib/settingsSections";
 import CrmRail, { SettingsSectionRows } from "./CrmRail";
@@ -66,6 +90,7 @@ import {
   type AnswersHandlers,
   type QuestionHandlers,
 } from "./OpenQuestions";
+import { SumPickerBody } from "./SumPicker";
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
 const noop = () => undefined;
@@ -205,10 +230,11 @@ const handlers = (over: Partial<QuestionHandlers> = {}): QuestionHandlers => ({
   onAnswer: noop,
   onDismiss: noop,
   onSlot: noop,
+  onSum: noop,
   ...over,
 });
 
-const answersHandlers: AnswersHandlers = { busy: null, onChange: noop, onRetry: noop };
+const answersHandlers: AnswersHandlers = { busy: null, onChange: noop, onRetry: noop, onSum: noop };
 
 const card = (q: Question, over: Partial<QuestionHandlers> = {}) =>
   renderToStaticMarkup(createElement(QuestionCard, { q, handlers: handlers(over) }));
@@ -316,27 +342,33 @@ describe("the section and its gate (item 1)", () => {
 describe("a key field card", () => {
   const html = card(KEY);
 
-  it("names the module and the part, the reason and why it matters", () => {
-    expect(questionTitle(KEY)).toBe("Collection: amount");
-    expect(html).toContain("Collection: amount");
-    expect(html).toContain("Not sure");
-    expect(html).toContain("Totals of Collection use this field.");
-    expect(html).toContain("8,681 records");
+  it("asks a full question, with a badge, why we ask and what the answer changes", () => {
+    expect(questionTitle(KEY)).toBe("Which field holds the amount of each record in Collection?");
+    expect(html).toContain("Which field holds the amount of each record in Collection?");
+    expect(html).toContain("Needs your answer");
+    expect(html).toContain("Why we ask");
+    expect(html).toContain("Collection has several money fields, and the AI could not tell which one is the full amount.");
+    expect(html).toContain("What your answer changes");
+    expect(html).toContain(
+      "Metorite adds up this field for totals of Collection, for example &quot;How much did we collect this quarter?&quot;",
+    );
+    expect(html).toContain("8,681 records in Collection");
   });
 
-  it("draws each choice with its fill and its samples, and marks Jev's best", () => {
+  it("draws each choice with its share of values and its examples, and marks the AI's suggestion", () => {
     expect(html).toContain("IP Amount");
-    expect(html).toContain("52% filled");
-    expect(html).toContain("12400 · 8000 · 3250");
+    expect(html).toContain("52% of records have a value");
+    expect(html).toContain("Examples: 12,400 · 8,000 · 3,250");
     expect(html.match(new RegExp(RECOMMENDED_LABEL, "g"))?.length).toBe(1);
-    // The samples sit in muted mono text, under the label.
-    expect(html).toMatch(/font-mono[^"]*text-muted-foreground[^>]*>12400/);
+    // The examples sit in muted text, under the label.
+    expect(html).toMatch(/text-muted-foreground[^>]*>Examples: 12,400/);
   });
 
-  it("offers None of these, Pick another field and Not relevant", () => {
-    expect(html).toContain("None of these");
-    expect(html).toContain("Pick another field");
-    expect(html).toContain("Not relevant");
+  it("offers None of these fields, Choose a different field and Does not apply, with its tooltip", () => {
+    expect(html).toContain("None of these fields");
+    expect(html).toContain("Choose a different field");
+    expect(html).toContain("Does not apply");
+    expect(html).toContain(`title="${NOT_RELEVANT_TIP}"`);
   });
 
   it("stacks the choices on a phone, and sets three across from sm", () => {
@@ -354,62 +386,121 @@ describe("a key field card", () => {
 });
 
 describe("the other kinds", () => {
-  it("names a gone field and a part that was not asked", () => {
+  it("names a gone field, a question that needs an answer, and the revenue default", () => {
     expect(reasonBadge("stale")).toEqual({ tone: "warning", label: "Field gone" });
-    expect(reasonBadge("open")).toEqual({ tone: "neutral", label: "Not asked" });
+    expect(reasonBadge("unsure")).toEqual({ tone: "warning", label: "Needs your answer" });
+    expect(reasonBadge("open")).toEqual({ tone: "neutral", label: "Needs your answer" });
+    expect(reasonBadge("open", "revenue")).toEqual({ tone: "neutral", label: REVENUE_DEFAULT_BADGE });
     expect(reasonBadge("answered")).toBeNull();
     expect(card(DATE)).toContain("Field gone");
-    expect(card(PURPOSE)).toContain("Not asked");
+    expect(card(DATE)).toContain("The field that Metorite used is gone from Collection in your Zoho.");
+    expect(card(PURPOSE)).toContain("Needs your answer");
+    expect(card(REVENUE)).toContain("Using Billed for now");
   });
 
-  it("offers a purpose with Pick another", () => {
+  it("asks a date question with an example of what it answers", () => {
+    const html = card({ ...DATE, reason: "unsure" });
+    expect(html).toContain("Which date tells when each record in Collection happened?");
+    expect(html).toContain("The AI could not tell which date of Collection to use.");
+    expect(html).toContain("Collections by month this year");
+  });
+
+  it("asks what a module holds, in plain words for each purpose", () => {
     const html = card(PURPOSE);
-    expect(html).toContain("Visits: purpose");
-    expect(html).toContain("Activity");
-    expect(html).toContain("Pick another");
-    expect(html).not.toContain("Pick another field");
+    expect(html).toContain("What kind of records does Visits hold?");
+    expect(html).toContain("The name &#x27;Visits&#x27; does not tell the AI what its records are.");
+    expect(html).toContain("The AI then knows which questions Visits can answer.");
+    expect(html).toContain(">Activities<");
+    expect(html).toContain(PURPOSE_WORDS.activity.example);
+    expect(html).toContain("Choose a different kind");
+    expect(html).not.toContain("Choose a different field");
+    expect(html).toContain(">None of these<");
   });
 
-  it("previews a module as a core list", () => {
+  it("has one plain line for each purpose word of the catalogue", () => {
+    const src = read("../../../../../../apps/services/gateway/gateway/crm_sync/catalogue.py");
+    const block = /^PURPOSES: tuple\[str, \.\.\.\] = \(([\s\S]*?)\)/m.exec(src)?.[1] ?? "";
+    const words = [...block.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+    expect(words.length).toBeGreaterThan(10);
+    expect(Object.keys(PURPOSE_WORDS).sort()).toEqual([...words].sort());
+  });
+
+  it("asks which module holds a core list, and previews it first", () => {
     const html = card(SLOT);
-    expect(html).toContain("Preview Commercials as Deals");
+    expect(html).toContain("Which module holds your deals?");
+    expect(html).toContain("Deals holds no records in your Zoho");
+    expect(html).toContain("That module then shows as Deals in the CRM and in reports. Nothing changes in Zoho.");
+    expect(html).toContain(">Commercials<");
     expect(html).toContain("24 records");
-    expect(html).toContain("A••• · B•••");
-    expect(html).toContain("None of these");
+    expect(html).toContain("You see a preview first");
+    expect(html).toContain("Examples: A••• · B•••");
+    expect(html).toContain(">None of these<");
     expect(textOf(html)).not.toMatch(ENGINE_WORDS);
   });
 
-  it("draws a stage value with its count and Open, Won and Lost", () => {
+  it("asks what a status means, with its count and Still open, Won and Lost", () => {
     const html = card(STAGE);
-    expect(html).toContain("Deals: the stage &quot;Negotiation&quot;");
-    expect(html).toContain("12 records with this value show as Unsorted.");
-    for (const word of ["Open", "Won", "Lost"]) expect(html).toContain(`>${word}<`);
+    expect(html).toContain("What does the status &#x27;Negotiation&#x27; mean in Deals?");
+    expect(html).toContain("12 records with this status move to that group in reports.");
+    for (const word of ["Still open", "Won", "Lost"]) expect(html).toContain(`>${word}<`);
     expect(html).not.toContain("None of these");
   });
 
-  it("draws revenue as two choices with their modules, and takes no dismissal", () => {
+  it("asks what revenue counts, with its modules, and takes no dismissal", () => {
     const html = card(REVENUE);
-    expect(html).toContain("Billed");
-    expect(html).toContain("Collected");
-    expect(html).toContain(">Invoices<");
-    expect(html).toContain(">Collection<");
+    expect(html).toContain("When you ask about revenue, what should Metorite count?");
+    expect(html).toContain(">Billed<");
+    expect(html).toContain(">Collected<");
+    expect(html).toContain("The amounts on your Invoices");
+    expect(html).toContain("The money received, in Collection");
     expect(html).toContain(REVENUE_DEFAULT_LINE);
     // The count of one module would read as the size of revenue.
     expect(html).not.toContain("records");
-    expect(html).not.toContain("Not relevant");
+    expect(html).not.toContain("Does not apply");
     expect(html).not.toContain("None of these");
   });
 
-  it("shows only Pick another field when no candidate is left", () => {
+  it("shows only Choose a different field when no candidate is left", () => {
     const html = card(base({ choices: [], options: [{ value: "Total", label: "Total" }] }));
     expect(html).not.toContain('aria-label="Choices"');
-    expect(html).toContain("Pick another field");
+    expect(html).toContain("Choose a different field");
   });
 
-  it("reads a fill as a share of filled records", () => {
-    expect(fillLabel(0.52)).toBe("52% filled");
-    expect(fillLabel(1.4)).toBe("100% filled");
+  it("reads a fill as the share of records with a value", () => {
+    expect(fillLabel(0.52)).toBe("52% of records have a value");
+    expect(fillLabel(1.4)).toBe("100% of records have a value");
     expect(fillLabel(null)).toBeNull();
+  });
+
+  it("writes a number sample with thousands separators, and keeps a date and a mask", () => {
+    expect(sampleText("21600")).toBe("21,600");
+    expect(sampleText("53713.8")).toBe("53,713.8");
+    expect(sampleText("-1250.50")).toBe("-1,250.50");
+    expect(sampleText("2026-01-02")).toBe("2026-01-02");
+    expect(sampleText("A•••")).toBe("A•••");
+    expect(sampleText("00123")).toBe("00123");
+    expect(examplesLine(["21600", "", "53713.8"])).toBe("Examples: 21,600 · 53,713.8");
+    expect(examplesLine([])).toBeNull();
+  });
+});
+
+// ── Owner feedback, 2026-10-18: the end user does not know the engine ──────
+
+describe("the name of the engine", () => {
+  it("is in no string that lib/questions.ts exports", () => {
+    const strings = Object.entries(questionsLib).filter(([, v]) => typeof v === "string");
+    expect(strings.length).toBeGreaterThan(20);
+    for (const [name, value] of strings) expect(`${name}: ${value}`).not.toMatch(/\bJev\b/);
+    for (const words of Object.values(PURPOSE_WORDS)) {
+      expect(`${words.label} ${words.example}`).not.toMatch(/\bJev\b/);
+    }
+  });
+
+  it("is on no card, in the section and in the batch", () => {
+    for (const q of [KEY, DATE, PURPOSE, SLOT, STAGE, REVENUE]) expect(textOf(card(q))).not.toMatch(/\bJev\b/);
+    expect(textOf(view({ read: ON(body([KEY, PURPOSE])) }))).not.toMatch(/\bJev\b/);
+    expect(textOf(view({ read: ON(body([])) }))).not.toMatch(/\bJev\b/);
+    expect(batchLabel(3)).not.toMatch(/\bJev\b/);
   });
 });
 
@@ -461,7 +552,7 @@ describe("the section", () => {
 
 // ── Item 6: the batch ──────────────────────────────────────────────────────
 
-describe("the batch of Jev's best guesses", () => {
+describe("the batch of the AI's suggestions", () => {
   it("takes a purpose and a key field with a best guess, and never a slot, a stage or revenue", () => {
     const ids = batchIds([KEY, DATE, PURPOSE, SLOT, STAGE, REVENUE, base({ id: "key:X:date", choices: [] })]);
     expect(ids).toEqual([KEY.id, DATE.id, PURPOSE.id]);
@@ -472,10 +563,10 @@ describe("the batch of Jev's best guesses", () => {
   it("shows the button above the cards with 2 or more, and opens with the ids", () => {
     let opened: string[] | null = null;
     const html = view({ read: ON(body([KEY, PURPOSE])), onBatch: (ids) => (opened = ids) });
-    expect(batchLabel(2)).toBe("Accept Jev's best guesses (2)");
-    expect(html).toContain("Accept Jev&#x27;s best guesses (2)");
-    expect(html.indexOf("best guesses")).toBeLessThan(html.indexOf('data-question="key_field"'));
-    expect(view({ read: ON(body([KEY, SLOT])) })).not.toContain("best guesses");
+    expect(batchLabel(2)).toBe("Accept the AI's suggestions (2)");
+    expect(html).toContain("Accept the AI&#x27;s suggestions (2)");
+    expect(html.indexOf("suggestions (2)")).toBeLessThan(html.indexOf('data-question="key_field"'));
+    expect(view({ read: ON(body([KEY, SLOT])) })).not.toContain("suggestions (");
     expect(opened).toBeNull();
   });
 
@@ -724,12 +815,12 @@ describe("Your answers", () => {
     expect(correctionTarget(REVENUE_ADMIN)).toEqual({ module: "@org", part: "revenue" });
     expect(correctionUndo(AMOUNT_ADMIN)).toBe("IP_Amount");
     expect(correctionUndo(PURPOSE_AI)).toBe(AUTO);
-    expect(read("./OpenQuestions.tsx")).toContain(
-      "await api.putCatalogue(target.module, { [target.part]: pickToValue(pick) });",
-    );
+    const comp = read("./OpenQuestions.tsx");
+    expect(comp).toContain("await correctTo(q, pickToValue(pick));");
+    expect(comp).toContain("await api.putCatalogue(target.module, { [target.part]: value });");
   });
 
-  it("draws one row for each module, under the Zoho labels, with no number of Jev", () => {
+  it("draws one row for each module, under the Zoho labels, with no number of the AI", () => {
     const html = renderToStaticMarkup(
       createElement(YourAnswersView, {
         body: body([], { answered: [AMOUNT_ADMIN, PURPOSE_AI, REVENUE_ADMIN] }),
@@ -790,5 +881,389 @@ describe("the count on the rail (item 5)", () => {
       }),
     );
     expect(html).not.toContain("data-meta-tone");
+  });
+});
+
+// ── CRM-Q32-8: the proposals of the members (owner direction, 2026-10-18) ──
+
+describe("the proposals of the members (CRM-Q32-8)", () => {
+  const NOW = new Date("2026-10-18T12:00:00Z");
+  const ASHA = { name: "Asha Rao", value: "Amount_Due", label: "Amount Due", at: "2026-10-18T09:00:00Z" };
+  const NONAME = { name: "A member", value: null, label: "None of these", at: "2026-10-18T11:58:00Z" };
+  const PROPOSED = base({ ...KEY, id: "key:Payment_Received:amount", proposals: [ASHA, NONAME] });
+  const LATER = base({ ...DATE, proposals: [{ ...ASHA, value: "Paid_On", label: "Paid On", at: "2026-10-18T11:00:00Z" }] });
+
+  it("says who proposed it and when, and never an email", () => {
+    expect(questionsLib.proposalLine(ASHA, NOW)).toBe("Proposed by Asha Rao · 3 hours ago");
+    expect(questionsLib.proposalLine(NONAME, NOW)).toBe("Proposed by A member · 2 minutes ago");
+    expect(questionsLib.whenLabel("2026-10-18T11:59:40Z", NOW)).toBe("just now");
+    expect(questionsLib.whenLabel("2026-10-16T12:00:00Z", NOW)).toBe("2 days ago");
+    expect(questionsLib.whenLabel("not a time", NOW)).toBe("");
+    expect(questionsLib.proposalValueLabel(PROPOSED, NONAME)).toBe("None of these fields");
+    expect(questionsLib.confirmLabel(PROPOSED, ASHA)).toBe(
+      "Confirm Amount Due, proposed by Asha Rao, for Collection",
+    );
+  });
+
+  it("draws each proposal on the card with a one-click Confirm that answers its value", () => {
+    const answered: Array<[string, unknown]> = [];
+    const html = card(PROPOSED, { onAnswer: (q, value) => answered.push([q.id, value]) });
+    expect(html).toContain("data-proposals");
+    expect(textOf(html)).toContain("Proposed by your team");
+    expect(textOf(html)).toContain("Proposed by Asha Rao ·");
+    expect(textOf(html)).toContain("Proposed by A member ·");
+    expect(html.match(/>Confirm</g)).toHaveLength(2);
+    expect(html).toContain('aria-label="Confirm Amount Due, proposed by Asha Rao, for Collection"');
+    expect(textOf(html)).not.toMatch(/@|\bJev\b/);
+    // Confirm calls the answer route with the value of the proposal.
+    const list = questionsLib.proposalsOf(PROPOSED);
+    for (const p of list) handlers({ onAnswer: (q, value) => answered.push([q.id, value]) }).onAnswer(PROPOSED, p.value);
+    expect(answered).toEqual([
+      ["key:Payment_Received:amount", "Amount_Due"],
+      ["key:Payment_Received:amount", null],
+    ]);
+  });
+
+  it("draws no block for a question with no proposal", () => {
+    expect(card(KEY)).not.toContain("data-proposals");
+    expect(questionsLib.proposalsOf(base({ proposals: null }))).toEqual([]);
+  });
+
+  it("sorts the proposed questions first, the newest first, and keeps impact inside", () => {
+    const shown = [REVENUE, PROPOSED, PURPOSE, LATER];
+    expect(questionsLib.sortQuestions(shown, "impact").map((q) => q.id)).toEqual(shown.map((q) => q.id));
+    expect(questionsLib.sortQuestions(shown, "proposed").map((q) => q.id)).toEqual([
+      PROPOSED.id,
+      LATER.id,
+      REVENUE.id,
+      PURPOSE.id,
+    ]);
+    const { cards } = visibleQuestions(body(shown), true, "proposed");
+    expect(cards[0].id).toBe(PROPOSED.id);
+    expect(questionsLib.SORT_OPTIONS.map((o) => o.label)).toEqual(["By impact", "Proposed first"]);
+  });
+
+  it("shows the sort of the open tab only when a question holds a proposal", () => {
+    const sortName = 'aria-label="Sort the questions"';
+    expect(view({ read: ON(body([KEY, PURPOSE])), onSort: noop })).not.toContain(sortName);
+    const html = view({ read: ON(body([KEY, PROPOSED])), onSort: noop, sort: "proposed" });
+    expect(html).toContain(sortName);
+    expect(textOf(html)).toContain("Proposed first");
+  });
+
+  it("confirms a proposed change of a part in use through the correction", () => {
+    const changes: Array<[string, string]> = [];
+    const used = base({
+      ...KEY,
+      reason: "answered",
+      current: "IP_Amount",
+      by: "admin",
+      proposals: [ASHA, NONAME],
+    });
+    const html = renderToStaticMarkup(
+      createElement(YourAnswersView, {
+        body: body([], { answered: [used] }),
+        failed: false,
+        handlers: { ...answersHandlers, onChange: (q, pick) => changes.push([q.id, pick]) },
+      }),
+    );
+    expect(textOf(html)).toContain("Proposed by Asha Rao ·");
+    expect(html.match(/>Confirm</g)).toHaveLength(2);
+    // The value of "None of these" goes as the None pick of a correction.
+    const pick = (p: { value: string | null }) => p.value ?? NONE_PICK;
+    expect([ASHA, NONAME].map(pick)).toEqual(["Amount_Due", NONE_PICK]);
+    expect(pickToValue(pick(NONAME))).toBeNull();
+    expect(changes).toEqual([]);
+  });
+
+  it("names no engine and no email in its words", () => {
+    for (const value of [
+      questionsLib.CONFIRM_LABEL,
+      questionsLib.PROPOSALS_HEADING,
+      questionsLib.SORT_LABEL,
+      questionsLib.SORT_IMPACT,
+      questionsLib.SORT_PROPOSED,
+    ]) {
+      expect(value).not.toMatch(/\bJev\b|@/);
+      expect(value).not.toMatch(ENGINE_WORDS);
+    }
+  });
+});
+
+// ── CRM-Q32-9b: an amount can be the sum of several fields (§18.14.10) ─────
+//
+// DEWiN's Collection keeps one payment in parts. The fixture is in the shape
+// of the wire of CRM-Q32-9a: `sums` lists the currency fields that each fill
+// 20% or more, the most filled first.
+
+describe("the picker of a sum (CRM-Q32-9b)", () => {
+  const SUMS = [
+    { value: "Billing_Amount", label: "Rent Net Amount", fill: 0.52 },
+    { value: "IP", label: "IP Basic Amount", fill: 0.52 },
+    { value: "EB_Net_Amount", label: "EB Net Amount", fill: 0.46 },
+    { value: "TDS_Amount", label: "TDS Amount", fill: 0.21 },
+  ];
+  const SUM_Q = base({
+    choices: [
+      { value: "Billing_Amount", label: "Rent Net Amount", fill: 0.52, samples: ["21600", "53713.8"], best: true },
+      { value: "IP", label: "IP Basic Amount", fill: 0.52, samples: ["3240"], best: false },
+    ],
+    options: SUMS.map(({ value, label, fill }) => ({ value, label, fill })),
+    sums: SUMS,
+  });
+  const SIX = { ...SUM_Q, sums: [...SUMS, { value: "Rent_Total", label: "Rent Total", fill: 0.3 }, { value: "Extra", label: "Extra", fill: 0.25 }] };
+  const THREE = ["Billing_Amount", "IP", "EB_Net_Amount"];
+  const SUM_ADMIN = { ...SUM_Q, reason: "answered" as const, by: "admin", current: THREE };
+  const CHECK: SumCheck = {
+    id: SUM_Q.id,
+    module: "Payment_Received",
+    fields: THREE,
+    records: 8681,
+    covered: 8458,
+    overlap: 4472,
+    capped: false,
+    line: "These 3 fields cover 8,458 of 8,681 records (97%).",
+    pairs: [],
+    warnings: ["Rent Net Amount and Rent Total hold the same value on 90% of records. A sum counts it twice."],
+  };
+  const picker = (picked: string[], check: SumCheckView, q: Question = SIX) =>
+    renderToStaticMarkup(createElement(SumPickerBody, { q, picked, check, disabled: false, onToggle: noop }));
+
+  it("is offered on the amount of a module with 2 or more fields in sums, and nowhere else", () => {
+    expect(sumOffered(SUM_Q)).toBe(true);
+    expect(sumOffered(KEY)).toBe(false);
+    expect(sumOffered({ ...SUM_Q, part: "date" })).toBe(false);
+    expect(sumOffered({ ...SUM_Q, sums: SUMS.slice(0, 1) })).toBe(false);
+    expect(sumOffered({ ...PURPOSE, sums: SUMS })).toBe(false);
+  });
+
+  it("puts the choice on the amount card as a full row, also with no candidate", () => {
+    const html = card(SUM_Q);
+    expect(html).toContain(SUM_CHOICE_LABEL);
+    expect(html).toContain(SUM_CHOICE_LINE);
+    expect(html).toMatch(/border-dashed[^"]*sm:col-span-3/);
+    expect(card(KEY)).not.toContain(SUM_CHOICE_LABEL);
+    expect(card({ ...SUM_Q, choices: [] })).toContain(SUM_CHOICE_LABEL);
+    // The tile opens the picker. It never answers on its own.
+    expect(read("./OpenQuestions.tsx")).toMatch(
+      /onClick=\{\(\) => handlers\.onSum\(q\)\}\s*>\s*<span[^>]*>\{SUM_CHOICE_LABEL\}/,
+    );
+  });
+
+  it("ticks 2 to 5 fields, in the order of sums, and refuses a sixth", () => {
+    expect(toggleSum(SIX, [], "IP")).toEqual(["IP"]);
+    expect(toggleSum(SIX, ["IP"], "Billing_Amount")).toEqual(["Billing_Amount", "IP"]);
+    expect(toggleSum(SIX, ["Billing_Amount", "IP"], "IP")).toEqual(["Billing_Amount"]);
+    const five = ["Billing_Amount", "IP", "EB_Net_Amount", "TDS_Amount", "Rent_Total"];
+    expect(toggleSum(SIX, five, "Extra")).toEqual(five);
+    expect(sumBlocked(five, "Extra")).toBe(true);
+    expect(sumBlocked(five, "IP")).toBe(false);
+    expect(sumBlocked(["IP"], "Extra")).toBe(false);
+    expect(sumReady([])).toBe(false);
+    expect(sumReady(["IP"])).toBe(false);
+    expect(sumReady(["IP", "Billing_Amount"])).toBe(true);
+    expect(sumReady(five)).toBe(true);
+    expect(sumReady([...five, "Extra"])).toBe(false);
+    expect(sumReady(["IP", "IP"])).toBe(false);
+    expect(sumHint(0)).toBe("Tick 2 to 5 fields.");
+    expect(sumHint(1)).toBe("Tick one more field.");
+    expect(sumHint(5)).toBe("5 fields are ticked. That is the most a sum takes.");
+  });
+
+  it("asks a full question, with why we ask and what the answer changes", () => {
+    const html = picker([], { state: "idle" }, SUM_Q);
+    expect(html).toContain("Which fields add up to the amount of each record in Collection?");
+    expect(html).toContain("Why we ask");
+    expect(html).toContain("What your answer changes");
+    expect(html).toContain("Totals of Collection add up these fields for each record");
+    expect(html).toContain("8,681 records in Collection");
+    expect(textOf(html)).not.toMatch(/\bJev\b/);
+    expect(textOf(html)).not.toMatch(ENGINE_WORDS);
+  });
+
+  it("draws a shared Checkbox for each field, with its share of values and its examples", () => {
+    const html = picker([], { state: "idle" });
+    expect(html.match(/type="checkbox"/g)).toHaveLength(6);
+    expect(html).toContain("cc-checkbox");
+    expect(html).toContain(">Rent Net Amount<");
+    expect(html).toContain("52% of records have a value");
+    expect(html).toContain("Examples: 21,600 · 53,713.8");
+    expect(html).not.toMatch(/checked=""/);
+    expect(read("./SumPicker.tsx")).toContain('import { Checkbox } from "@/components/ui/Checkbox";');
+  });
+
+  it("disables each unticked box when 5 are ticked", () => {
+    const five = ["Billing_Amount", "IP", "EB_Net_Amount", "TDS_Amount", "Rent_Total"];
+    const html = picker(five, { state: "loading" });
+    expect(html.match(/checked=""/g)).toHaveLength(5);
+    expect(html.match(/disabled=""/g)).toHaveLength(1);
+    expect(picker(["IP"], { state: "idle" }).match(/disabled=""/g)).toBeNull();
+  });
+
+  it("shows the coverage line and each warning of the check, and the warning does not block Save", () => {
+    const html = picker(THREE, { state: "done", line: CHECK.line, warnings: CHECK.warnings });
+    expect(html).toContain("These 3 fields cover 8,458 of 8,681 records (97%).");
+    expect(html).toContain("hold the same value on 90% of records. A sum counts it twice.");
+    expect(html.match(/role="alert"/g)).toHaveLength(1);
+    expect(html).toMatch(/text-warning/);
+    expect(picker(THREE, { state: "done", line: CHECK.line, warnings: [] })).not.toContain('role="alert"');
+    expect(picker(THREE, { state: "loading" })).toContain(SUM_CHECKING);
+    // Save waits for 2 to 5 fields only, never for the check.
+    expect(read("./SumPicker.tsx")).toContain("disabled={busy || !sumReady(picked)}");
+  });
+
+  it("reads the check into idle, loading, done and failed", () => {
+    expect(sumCheckView(false, CHECK, null)).toEqual({ state: "idle" });
+    expect(sumCheckView(true, undefined, null)).toEqual({ state: "loading" });
+    expect(sumCheckView(true, CHECK, null)).toEqual({ state: "done", line: CHECK.line, warnings: CHECK.warnings });
+    expect(sumCheckView(true, undefined, new CrmError("A sum takes 2 to 5 different fields.", 422, "bad_answer"))).toEqual({
+      state: "failed",
+      message: "A sum takes 2 to 5 different fields.",
+    });
+    expect(sumCheckView(true, undefined, new Error("boom"))).toEqual({ state: "failed", message: SUM_CHECK_FAILED });
+  });
+
+  it("runs the check after a short wait, through the read cache, keyed by the ticked set", () => {
+    const src = read("./SumPicker.tsx");
+    expect(src).toMatch(/setTimeout\(\(\) => setChecked\(picked\), SUM_CHECK_DELAY\)/);
+    expect(src).toMatch(/useCachedResource<SumCheck>\(sumReady\(checked\) \? sumCheckKey\(q\.id, checked\) : null/);
+    expect(src).toContain("api.sumCheck(q.id, checked)");
+    expect(SUM_CHECK_DELAY).toBeGreaterThanOrEqual(200);
+    expect(sumCheckKey(SUM_Q.id, THREE)).toBe("crm:questions:sum:key:Payment_Received:amount:Billing_Amount,IP,EB_Net_Amount");
+  });
+
+  it("saves the list: an answer from the card, a correction from Your answers", () => {
+    const comp = read("./OpenQuestions.tsx");
+    expect(comp).toContain('const done = sum.from === "card" ? await answer(sum.q, keys) : await correctTo(sum.q, keys);');
+    expect(comp).toContain("onSave={(keys) => void saveSum(keys)}");
+    expect(read("./SumPicker.tsx")).toContain("onClick={() => onSave(picked)}");
+  });
+
+  it("names a sum in Your answers, with Change and Let Metorite choose", () => {
+    expect(currentLabel(SUM_ADMIN)).toBe("Sum of Rent Net Amount, IP Basic Amount and EB Net Amount");
+    expect(pickValue(SUM_ADMIN)).toBe(SUM_PICK);
+    expect(sumStart(SUM_ADMIN)).toEqual(THREE);
+    expect(sumStart(SUM_Q)).toEqual([]);
+    const html = renderToStaticMarkup(
+      createElement(YourAnswersView, {
+        body: body([], { answered: [SUM_ADMIN] }),
+        failed: false,
+        handlers: answersHandlers,
+      }),
+    );
+    expect(html).toContain("Sum of Rent Net Amount, IP Basic Amount and EB Net Amount");
+    expect(html).toContain(">Change<");
+    expect(html).toContain(">Let Metorite choose<");
+    expect(html).toContain("You chose");
+    // An amount that is one field offers the picker from its SelectButton.
+    expect(answerPicks({ ...SUM_Q, reason: "answered", by: "admin", current: "IP" }).at(-1)?.value).toBe(SUM_PICK);
+    expect(answerPicks(KEY).some((p) => p.value === SUM_PICK)).toBe(false);
+    expect(read("./OpenQuestions.tsx")).toContain(
+      "onChange={(pick) => (pick === SUM_PICK ? handlers.onSum(q) : handlers.onChange(q, pick))}",
+    );
+  });
+
+  it("undoes a sum: back to the earlier list, or to the choice of Metorite", () => {
+    const done: AnswerDone = {
+      id: SUM_Q.id,
+      kind: "key_field",
+      version: 43,
+      line: "Totals of Collection now use the sum of Rent Net Amount, IP Basic Amount and EB Net Amount.",
+      undo: { module: "Payment_Received", part: "amount", value: AUTO },
+      moved: null,
+      slot: null,
+      module: "Payment_Received",
+    };
+    expect(undoOf(SUM_Q, done, THREE)).toEqual({ kind: "put", module: "Payment_Received", parts: { amount: AUTO } });
+    expect(undoOf({ ...SUM_ADMIN }, done, ["IP", "TDS_Amount"])).toEqual({
+      kind: "put",
+      module: "Payment_Received",
+      parts: { amount: THREE },
+    });
+    expect(correctionUndo(SUM_ADMIN)).toEqual(THREE);
+    expect(batchUndoCalls([{ module: "Payment_Received", part: "amount", value: THREE }])).toEqual([
+      { module: "Payment_Received", parts: { amount: THREE } },
+    ]);
+    expect(savedLine(SUM_Q, done, THREE)).toBe(
+      "Saved. Totals of Collection now use the sum of Rent Net Amount, IP Basic Amount and EB Net Amount.",
+    );
+  });
+
+  describe("the client", () => {
+    type Sent = { url: string; method: string; body: unknown };
+    const original = globalThis.fetch;
+    afterEach(() => {
+      globalThis.fetch = original;
+      clearAll();
+    });
+    function stub(answer: unknown): Sent[] {
+      const sent: Sent[] = [];
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        sent.push({
+          url: String(input),
+          method: init?.method ?? "GET",
+          body: init?.body ? JSON.parse(String(init.body)) : null,
+        });
+        return new Response(JSON.stringify(answer), { status: 200, headers: { "content-type": "application/json" } });
+      }) as typeof fetch;
+      return sent;
+    }
+
+    it("reads the sum check with the ticked keys, and wakes nothing", async () => {
+      const sent = stub(CHECK);
+      put("crm:mode", { mode: "mirror" });
+      expect(await api.sumCheck(SUM_Q.id, THREE)).toEqual(CHECK);
+      expect(sent[0]).toEqual({
+        url: "/api/crm/questions/key%3APayment_Received%3Aamount/sum-check?fields=Billing_Amount%2CIP%2CEB_Net_Amount",
+        method: "GET",
+        body: null,
+      });
+      expect(peek("crm:mode")).toBeDefined();
+    });
+
+    it("sends a list through the answer route and the PUT of the catalogue", async () => {
+      const sent = stub({});
+      await api.answerQuestion(SUM_Q.id, THREE);
+      await api.putCatalogue("Payment_Received", { amount: THREE });
+      expect(sent[0].body).toEqual({ value: THREE });
+      expect(sent[1]).toMatchObject({ method: "PUT", body: { amount: THREE } });
+    });
+  });
+});
+
+describe("the proposals in the picker of a sum (CRM-Q32-8 and CRM-Q32-9b)", () => {
+  const ASHA = { name: "Asha Rao", value: "IP", label: "IP Basic Amount", at: "2026-10-18T09:00:00Z" };
+  const SUMS = [
+    { value: "Billing_Amount", label: "Rent Net Amount", fill: 0.52 },
+    { value: "IP", label: "IP Basic Amount", fill: 0.52 },
+  ];
+  const Q = base({ ...KEY, sums: SUMS, proposals: [ASHA] });
+
+  it("shows each proposal with Confirm, which answers its one field", () => {
+    const confirmed: Array<string | null> = [];
+    const html = renderToStaticMarkup(
+      createElement(SumPickerBody, {
+        q: Q,
+        picked: [],
+        check: { state: "idle" },
+        disabled: false,
+        onToggle: noop,
+        onConfirm: (p) => confirmed.push(p.value),
+      }),
+    );
+    expect(html).toContain("data-proposals");
+    expect(textOf(html)).toContain("Proposed by Asha Rao ·");
+    expect(html).toContain('aria-label="Confirm IP Basic Amount, proposed by Asha Rao, for Collection"');
+    expect(read("./OpenQuestions.tsx")).toContain("onConfirm={(p) => void confirmInSum(p.value)}");
+    expect(confirmed).toEqual([]);
+  });
+
+  it("draws no list with no Confirm handler, and one shared component", () => {
+    const html = renderToStaticMarkup(
+      createElement(SumPickerBody, { q: Q, picked: [], check: { state: "idle" }, disabled: false, onToggle: noop }),
+    );
+    expect(html).not.toContain("data-proposals");
+    expect(read("./SumPicker.tsx")).toContain('import { ProposalList } from "./ProposalList";');
+    expect(read("./OpenQuestions.tsx")).toContain('import { ProposalList } from "./ProposalList";');
   });
 });

@@ -56,10 +56,23 @@ sentence.
 with ``make_report=true`` it makes a kept report from the route's data
 (``projects_ai_chat.md`` §14.10.9), so it writes two files and carries
 ``read_only=False`` and ``idempotent=False``. It still sends only GET.
+
+**The chat asks before it answers (CRM-Q32-8, owner direction 2026-10-18).**
+When a total depends on an open question, ``crm_aggregate`` reads
+``GET /crm/questions/ask`` as the member and gives a CLARIFY block: what is
+not clear, why it matters, and the payload of a question card with the key
+of each option. The model shows the card, and ``crm_answer_question`` posts
+the picked key to ``POST /crm/questions/{id}/reply``, the one POST of this
+module. The server decides: an admin's answer, or a member's proposal. No
+tool here waits for the member. A run asks each question once, and at most
+:data:`MAX_ASKS_PER_RUN`, through a holder that the run boundary opens
+(:func:`open_asks_for_run`).
 """
 
 from __future__ import annotations
 
+import contextvars
+import dataclasses
 import functools
 import os
 import re
@@ -178,11 +191,13 @@ class _GatewayError(GatewayRefusal):
     def __init__(self, message: str, code: str | None = None, *,
                  detail: str = "", status: int = 0,
                  fields: tuple[str, ...] = (), route: str = "",
-                 href: str | None = None) -> None:
+                 href: str | None = None, question: str | None = None) -> None:
         super().__init__(message, status=status or None, detail=detail,
                          fields=fields, route=route)
         self.code = code
         self.href = href
+        #: CRM-Q32-8: the id of the open question that the gateway named.
+        self.question = question
 
 
 # ── Transport ───────────────────────────────────────────────────────────────
@@ -257,6 +272,26 @@ def _detail_href(resp: Any) -> str | None:
     return str(href) if isinstance(href, str) and href.startswith("/") else None
 
 
+#: The shape of a question id that a tool may send in a path (CRM-Q32-8):
+#: ``revenue``, ``purpose:<Module>`` or ``key:<Module>:<part>``.
+_QUESTION_ID = re.compile(
+    r"^(revenue|purpose:[A-Za-z][A-Za-z0-9_]{0,99}"
+    r"|key:[A-Za-z][A-Za-z0-9_]{0,99}:(amount|date|status|parent))$"
+)
+
+
+def _detail_question(resp: Any) -> str | None:
+    """The ``detail.question`` of an answer, or ``None`` (CRM-Q32-8): the id
+    of the open question that a 422 ``no_key_field`` names."""
+    try:
+        body = resp.json()
+    except Exception:
+        return None
+    detail = body.get("detail") if isinstance(body, dict) else None
+    found = detail.get("question") if isinstance(detail, dict) else None
+    return str(found) if isinstance(found, str) and _QUESTION_ID.match(found) else None
+
+
 def _detail(resp: Any) -> str:
     try:
         body = resp.json()
@@ -271,12 +306,28 @@ def _detail(resp: Any) -> str:
 
 
 async def _get(path: str, params: dict[str, Any] | None = None) -> Any:
-    """One GET as the member. The only verb this module speaks."""
+    """One GET as the member. Every tool but one speaks only this verb."""
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.request(
             "GET", f"{_gateway_url()}{path}", headers=_headers(),
             params={k: v for k, v in (params or {}).items() if v is not None},
         )
+    return _answer_of(resp, path, "GET")
+
+
+async def _post(path: str, body: dict[str, Any]) -> Any:
+    """One POST as the member. Only ``crm_answer_question`` speaks it, to
+    ``/crm/questions/{id}/reply`` (CRM-Q32-8). It writes no record: the
+    server records an admin's answer or a member's proposal."""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.request(
+            "POST", f"{_gateway_url()}{path}", headers=_headers(), json=body,
+        )
+    return _answer_of(resp, path, "POST")
+
+
+def _answer_of(resp: Any, path: str, method: str) -> Any:
+    """The body of a good answer, or the refusal of a bad one."""
     status = int(resp.status_code)
     if status < 400:
         return resp.json()
@@ -294,9 +345,10 @@ async def _get(path: str, params: dict[str, Any] | None = None) -> Any:
         limit=CRM_DETAIL_MAX,
     )
     raise _GatewayError(
-        f"CRM GET {path} failed ({status})" + (f": {detail}" if detail else ""),
+        f"CRM {method} {path} failed ({status})" + (f": {detail}" if detail else ""),
         _detail_code(resp), detail=safe, status=status, fields=fields,
         route=route_template(path), href=_detail_href(resp),
+        question=_detail_question(resp),
     )
 
 
@@ -382,18 +434,21 @@ async def _overlay_status(slug: str, status: str | None) -> str | None:
             "and field_filters {'@status': '<value>'}.")
 
 
-async def _aggregate_or_refusal(params: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+async def _aggregate_or_refusal(
+    params: dict[str, Any],
+) -> tuple[dict[str, Any], str | None, str | None]:
     """The answer of ``GET /crm/aggregate``, or the one sentence of a refusal
     of the overlay (``overlay_*``, CRM-Q20-3a). CRM-Q32-6: a ``no_key_field``
     whose part is an open question is the answer too, with the link that
-    the gateway gave."""
+    the gateway gave. CRM-Q32-8: the third value is the id of that open
+    question, so the tool can ask it first."""
     try:
-        return (await _get("/crm/aggregate", params) or {}), None
+        return (await _get("/crm/aggregate", params) or {}), None, None
     except _GatewayError as exc:
         if (exc.code or "").startswith(_OVERLAY_CODE) and exc.detail:
-            return {}, exc.detail
+            return {}, exc.detail, None
         if exc.code == NO_KEY_FIELD and exc.href and exc.detail:
-            return {}, f"{exc.detail}\nOpen questions: {exc.href}"
+            return {}, f"{exc.detail}\nOpen questions: {exc.href}", exc.question
         raise
 
 
@@ -1330,9 +1385,27 @@ async def crm_aggregate(
         entity=slug, group_by=group_by, measure=measure, field=field,
         group_field=group_field, bucket=bucket,
     )
-    data, refusal = await _aggregate_or_refusal(params)
+    return await _aggregate_text(slug, params, page)
+
+
+async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
+                          chosen: str | None = None,
+                          handled: frozenset[str] = frozenset()) -> str:
+    """The answer of one aggregate read with *params*. *chosen* is the line
+    of a member's own choice (CRM-Q32-8): the read already uses it. *handled*
+    holds the questions that this answer handled already, so a re-read asks
+    only a NEW open part (a total with two open parts), and never loops."""
+    measure = str(params.get("measure") or "count")
+    field, group_by = params.get("field"), params.get("group_by")
+    group_field, bucket = params.get("group_field"), params.get("bucket")
+    data, refusal, question = await _aggregate_or_refusal(params)
     if refusal is not None:
-        return refusal
+        if question and question not in handled:
+            # CRM-Q32-8: the total depends on an open question. Ask first.
+            asked = await _ask_first(question, refusal, slug, params, page,
+                                     handled | {question})
+            return f"{chosen}\n{asked}" if chosen else asked
+        return f"{refusal}\n{chosen}" if chosen else refusal
     groups = data.get("groups") or []
     module = slug.startswith(MODULE_PREFIX)
     # On a module the amount is a field, so only a currency field is rupees.
@@ -1349,11 +1422,14 @@ async def crm_aggregate(
     plural = f"{ENTITY_LABELS[slug]}s" if slug in ENTITY_LABELS else _entity_label(slug)
     note = await _short_note(frozenset({slug}))
     overlay = data.get("overlay") if isinstance(data.get("overlay"), dict) else None
+    mine = [chosen] if chosen else []
     if not group_by and not group_field:
         # One total over every filtered record: one line.
         head = _one_total(f"{plural}, {what}", data, field or data.get("field"),
                           measure, fmt)
-        return "\n".join(await _total_tail(head, slug, data, overlay)) + note
+        lines = await _total_tail(head, slug, data, overlay)
+        lines.extend(mine or await _revenue_lines(slug, measure))
+        return "\n".join(lines) + note
     grouped = data.get("group_field_label") or group_field
     by = group_by or f"{grouped}" + (f" ({bucket})" if bucket else "")
     shown = _page_of(groups, page, "groups")
@@ -1380,25 +1456,37 @@ async def crm_aggregate(
         # CRM-Q25b: the route took each month on the clock of the CRM zone.
         # A `date` bucket takes no zone, so the line would be false there.
         lines.append(f"Months count in the CRM time zone, {zone}.")
-    lines.extend(await _hint_lines(slug, measure, data, overlay))
+    lines.extend(await _hint_lines(slug, data, overlay))
+    lines.extend(mine or await _revenue_lines(slug, measure))
     return "\n".join(lines) + note
 
 
-async def _hint_lines(slug: str, measure: str, data: dict[str, Any],
+async def _hint_lines(slug: str, data: dict[str, Any],
                       overlay: dict[str, Any] | None) -> list[str]:
-    """The hints after a total: the empty core line (CRM-Q31-2 item 7), and
-    the default of a revenue total (CRM-Q32-6 item 2a). Each read of a hint
-    that fails adds no line."""
+    """The empty core line after a total (CRM-Q31-2 item 7). A read that
+    fails adds no line."""
     out: list[str] = []
     if slug in ENTITY_LABELS and data.get("total") == 0 and not overlay:
         empty = await _empty_core_line(slug)
         if empty:
             out.append(empty)
-    if measure == "sum_amount" and slug.startswith(MODULE_PREFIX) and questions_box_on():
-        default = await _revenue_default_line(slug[len(MODULE_PREFIX):])
-        if default:
-            out.append(default)
     return out
+
+
+async def _revenue_lines(slug: str, measure: str) -> list[str]:
+    """The lines of a revenue total (CRM-Q32-6 item 2a, CRM-Q32-8): a
+    ``sum_amount`` on a module whose purpose is ``invoice`` or
+    ``payment_in``, while no CRM admin answered the meaning of revenue. The
+    member is asked first (a CLARIFY block), or gets the line of the
+    default. A read that fails adds no line, and a box with
+    ``CRM_QUESTIONS_ORGS`` empty reads nothing."""
+    if measure != "sum_amount" or not slug.startswith(MODULE_PREFIX) or not questions_box_on():
+        return []
+    module = slug[len(MODULE_PREFIX):]
+    purpose = await _revenue_open(module)
+    if purpose is None:
+        return []
+    return [await _ask_revenue(module, purpose)]
 
 
 #: CRM-Q31-2 item 7: what the modules that fit an empty core entity hold.
@@ -1497,6 +1585,22 @@ def questions_box_on() -> bool:
     return bool(str(getattr(get_settings(), "crm_questions_orgs", "") or "").strip())
 
 
+def questions_org_on(org: Any) -> bool:
+    """True when ``CRM_QUESTIONS_ORGS`` lists *org*, the run's org from the
+    run boundary, or holds ``*``. The grammar of ``gateway.routes.crm.flags``
+    (ids with a comma between them, any case). A run here cannot import the
+    gateway, so this is the run side of ``flags.questions_allowed``: the
+    gateway still decides the CRM switch and the catalogue list itself. No
+    org gives False."""
+    from acb_common import get_settings
+
+    raw = str(getattr(get_settings(), "crm_questions_orgs", "") or "")
+    orgs = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    if not orgs or not org:
+        return False
+    return "*" in orgs or str(org).strip().lower() in orgs
+
+
 def _questions_on(entries: list[dict[str, Any]]) -> bool:
     """True when the catalogue carries the open questions: an entry has a
     ``questions`` list, which the gateway sends only for an org on
@@ -1505,11 +1609,12 @@ def _questions_on(entries: list[dict[str, Any]]) -> bool:
     return any(isinstance(e.get("questions"), list) for e in entries)
 
 
-async def _revenue_default_line(module: str) -> str | None:
-    """CRM-Q32-6 item 2a: the line of a revenue total, or ``None``. A revenue
-    total is ``sum_amount`` on a module whose purpose is ``invoice`` or
+async def _revenue_open(module: str) -> str | None:
+    """CRM-Q32-6 item 2a: the purpose of *module* when a revenue total of it
+    waits on the meaning of revenue, else ``None``. A revenue total is
+    ``sum_amount`` on a module whose purpose is ``invoice`` or
     ``payment_in``, while no CRM admin answered the meaning of revenue. A
-    read that fails adds no line."""
+    read that fails gives ``None``."""
     try:
         body = await _catalogue_body()
     except Exception:  # advice only: the total above is the answer
@@ -1523,7 +1628,395 @@ async def _revenue_default_line(module: str) -> str | None:
     revenue = body.get("revenue") if isinstance(body.get("revenue"), dict) else {}
     if entry is None or entry.get("purpose") not in _REVENUE_PURPOSES:
         return None
-    return None if revenue.get("by") == "admin" else REVENUE_DEFAULT_LINE
+    return None if revenue.get("by") == "admin" else str(entry.get("purpose"))
+
+
+async def _revenue_default_line(module: str) -> str | None:
+    """The line of the default of a revenue total, or ``None``."""
+    return REVENUE_DEFAULT_LINE if await _revenue_open(module) is not None else None
+
+
+# ── The chat asks before it answers (CRM-Q32-8) ─────────────────────────────
+#
+# Owner direction, 2026-10-18: when a total depends on data that is not
+# clear, the chat tells the member, and asks before the final answer. An
+# admin's pick is the org fact. Each other member's pick is a proposal: it
+# changes that member's answer only, for an open question, and a CRM admin
+# confirms it. The server decides which, never this module.
+
+#: The most question cards of one run before the final answer.
+MAX_ASKS_PER_RUN = 2
+
+#: The keys of the two options that each card adds.
+NONE_KEY = "none"
+DEFAULT_KEY = "@default"
+
+#: The marker of the block, so a test and a reader find it.
+CLARIFY = "CLARIFY"
+
+#: What a member who is not a CRM admin reads under the question.
+MEMBER_CONFIRM_LINE = "A CRM admin confirms your choice for everyone."
+
+#: How many masked samples one option label names.
+_LABEL_SAMPLES = 2
+
+
+@dataclasses.dataclass
+class CrmAsks:
+    """The questions that one run asked (CRM-Q32-8). ONE object for each
+    run: the run boundary sets it with :func:`open_asks_for_run`, and each
+    copy of the run context points at the same object. So a tool call that
+    runs in its own copy of the context (``copilot_agent.carry_run_context``)
+    still changes it in place, and the next call sees the change."""
+
+    asked: set[str] = dataclasses.field(default_factory=set)
+    #: True when this run holds ``crm_answer_question``. The run assembly
+    #: sets it (``mark_answer_tool``). A run that does not hold the tool
+    #: could not send the pick of a card, so it shows no card. False until
+    #: the assembly says so: a holder fails closed.
+    answer_tool: bool = False
+
+    def take(self, question_id: str) -> bool:
+        """Count *question_id* as asked, and say whether a card may show:
+        the run holds the reply tool, each question once, and at most
+        :data:`MAX_ASKS_PER_RUN` in a run."""
+        if not self.answer_tool:
+            return False
+        if question_id in self.asked or len(self.asked) >= MAX_ASKS_PER_RUN:
+            return False
+        self.asked.add(question_id)
+        return True
+
+    def shown(self, question_id: str) -> bool:
+        """True when this run showed the card of *question_id*."""
+        return question_id in self.asked
+
+
+# ⚠️ The default is None, never a mutable object. A module-level object
+# would be shared by each run and each org.
+_RUN_ASKS: contextvars.ContextVar[CrmAsks | None] = contextvars.ContextVar(
+    "acb_crm_asks", default=None,
+)
+
+
+def open_asks_for_run() -> contextvars.Token[CrmAsks | None]:
+    """Open a fresh holder for the run that starts now. The executor calls
+    it beside ``ask_tools.refuse_cards_for_run``, and gives the token to
+    :func:`release_asks` in the same ``finally``. A run that never opens one
+    asks nothing: each tool then gives the line of what is not clear."""
+    return _RUN_ASKS.set(CrmAsks())
+
+
+def release_asks(token: contextvars.Token[CrmAsks | None]) -> None:
+    """Undo :func:`open_asks_for_run`. A token of another context sets the
+    default, so a holder never leaks into the next run on this task."""
+    try:
+        _RUN_ASKS.reset(token)
+    except ValueError:
+        _RUN_ASKS.set(None)
+
+
+def run_asks() -> CrmAsks | None:
+    """The holder of this run, or ``None`` when the run opened none."""
+    return _RUN_ASKS.get()
+
+
+def mark_answer_tool(held: bool) -> None:
+    """Say whether this run holds ``crm_answer_question`` (CRM-Q32-8, fix
+    round). ``orchestrator._tool_injection._add_crm_facts_block`` calls it at
+    the end of the assembly of a streamed run. A run whose assembly dropped
+    the tool (a failed facts read, a ``no_egress`` run, an org off the list)
+    then gives the line of what is not clear, never a card that no tool can
+    answer. No holder, no change."""
+    asks = run_asks()
+    if asks is not None:
+        asks.answer_tool = bool(held)
+
+
+def _not_clear_of_id(question_id: str) -> str:
+    """The line of what is not clear, from the id alone (a read that
+    failed): no samples and no other member."""
+    if question_id == "revenue":
+        return "Not clear: whether revenue means what you billed or what you collected."
+    parts = question_id.split(":")
+    if parts[0] == "key" and len(parts) == 3:
+        word = "customer link" if parts[2] == "parent" else parts[2]
+        return f"Not clear: which field holds the {word} of module:{parts[1]}."
+    return f"Not clear: what module:{parts[-1]} holds."
+
+
+def _not_clear(q: dict[str, Any]) -> str:
+    return f"Not clear: {q.get('question')} {q.get('why')}".strip()
+
+
+def _card_label(choice: dict[str, Any]) -> str:
+    """One option of a card: "IP Basic Amount (52% filled, such as 12400)".
+    The fill and the samples come from the CRM read, so each number traces
+    to a source (the number check of CRM-Q29)."""
+    bits = []
+    fill = choice.get("fill")
+    if isinstance(fill, (int, float)) and not isinstance(fill, bool):
+        bits.append(f"{round(float(fill) * 100)}% filled")
+    samples = [str(s) for s in choice.get("samples") or [] if str(s).strip()][:_LABEL_SAMPLES]
+    if samples:
+        bits.append("such as " + " or ".join(samples))
+    label = str(choice.get("label") or choice.get("value"))
+    return f"{label} ({', '.join(bits)})" if bits else label
+
+
+#: What a revenue option means, under its label.
+_REVENUE_HINTS: dict[str, str] = {
+    "invoice": "The amounts that you billed",
+    "payment_in": "The money that you received",
+}
+
+
+def _card(q: dict[str, Any]) -> tuple[dict[str, Any], list[tuple[str, str]]]:
+    """The payload of ``ask_questions`` for one question, and the key of
+    each option, in order. The model sends the key, never the label:
+    ``ask_questions`` cuts a long label, and a cut label maps to no option."""
+    options: list[dict[str, Any]] = []
+    keys: list[tuple[str, str]] = []
+    revenue = q.get("kind") == "revenue"
+    for choice in q.get("choices") or []:
+        if not isinstance(choice, dict) or not choice.get("value"):
+            continue
+        label = _card_label(choice)
+        option: dict[str, Any] = {"label": label, "recommended": bool(choice.get("best"))}
+        if revenue and str(choice["value"]) in _REVENUE_HINTS:
+            option["description"] = _REVENUE_HINTS[str(choice["value"])]
+        options.append(option)
+        keys.append((label, str(choice["value"])))
+    if q.get("none"):
+        options.append({"label": "None of these", "recommended": False})
+        keys.append(("None of these", NONE_KEY))
+    default = ("Billed, until a CRM admin answers" if revenue
+               else "Skip it for now. The total waits for a CRM admin")
+    options.append({"label": "Use the default", "description": default, "recommended": False})
+    keys.append(("Use the default", DEFAULT_KEY))
+    text = f"{q.get('question')}\n\n{q.get('why')}"
+    if not q.get("can_answer"):
+        text += f"\n{MEMBER_CONFIRM_LINE}"
+    payload = {"questions": [{
+        "header": str(q.get("header") or "CRM question"), "question": text,
+        "multiSelect": False, "allowFreeformInput": False, "options": options,
+    }]}
+    return payload, keys
+
+
+def _clarify_block(q: dict[str, Any], href: str | None, default: str) -> str:
+    """The CLARIFY block (§18.14.10, the flow, step 5): what is not clear
+    and why, then the payload of ``ask_questions``, ready to send, with the
+    key of each option, and what to do after the pick."""
+    import json
+
+    payload, keys = _card(q)
+    qid = str(q.get("id"))
+    lines = [
+        f"{CLARIFY}: ask the member before the final answer.",
+        _not_clear(q),
+        "1. Tell the member in plain words what is not clear, and why it matters.",
+        "2. Call ask_questions with this payload, as it is:",
+        json.dumps(payload, ensure_ascii=False),
+        f'3. Send the KEY of the option that the member picks, never its label: '
+        f'crm_answer_question(question_id="{qid}", choice="<key>"). The keys:',
+        *(f'- "{label}" -> {key}' for label, key in keys),
+        "4. Then call crm_aggregate again with the same arguments, and give the "
+        "final answer. Name the fact that the answer used.",
+    ]
+    if not q.get("can_answer"):
+        lines.append("The member is not a CRM admin. The pick is a proposal: it changes "
+                     "this member's answer only, and a CRM admin confirms it.")
+    if q.get("sums") and href:
+        lines.append("If the amount is a sum of fields, a CRM admin can set it in CRM "
+                     f"settings: {href}")
+    lines.append(f"If the member does not pick: {default}")
+    return "\n".join(lines)
+
+
+async def _ask_read(question_id: str) -> tuple[dict[str, Any] | None, str | None]:
+    """The question *question_id* of ``GET /crm/questions/ask``, as the
+    member, and the link of Open questions. ``(None, None)`` for any
+    refusal (403, 404, 409 in Native mode) or a failed read."""
+    try:
+        body = await _get("/crm/questions/ask", {"ids": question_id})
+    except Exception:  # advice only: the default line still answers
+        return None, None
+    found = body.get("questions") if isinstance(body, dict) else None
+    q = next((x for x in found or [] if isinstance(x, dict) and x.get("id") == question_id),
+             None)
+    href = body.get("href") if isinstance(body, dict) else None
+    return q, href if isinstance(href, str) and href.startswith("/") else None
+
+
+def _with_override(params: dict[str, Any], override: dict[str, Any]) -> dict[str, Any] | None:
+    """*params* with a member's own key field in place of the key word, or
+    ``None``. ``@amount`` with ``sum_amount`` reads as ``measure='sum'`` and
+    ``field=<key>``: ``sum_amount`` on an overlay does not read ``field``."""
+    word, key = override.get("word"), override.get("field")
+    if not isinstance(word, str) or not isinstance(key, str) or not key:
+        return None
+    out: dict[str, Any] = {}
+    for name, value in params.items():
+        if name.startswith(f"field.{word}"):
+            out[f"field.{key}{name[len('field.') + len(word):]}"] = value
+        elif name in ("field", "group_field") and value == word:
+            out[name] = key
+        else:
+            out[name] = value
+    if word == "@amount" and out.get("measure") == "sum_amount":
+        out["measure"], out["field"] = "sum", key
+    return out
+
+
+async def _ask_first(question_id: str, default: str, slug: str, params: dict[str, Any],
+                     page: int | None, handled: frozenset[str] = frozenset()) -> str:
+    """A total that waits on the open key part *question_id* (CRM-Q32-8).
+
+    * The member's own proposal on the open question: read again with the
+      chosen field, and say so.
+    * A card may show: the CLARIFY block.
+    * Else (no card channel, no holder of the run, the limit, a hold of
+      ``@default``, or any refusal of the read): the line of what is not
+      clear, and the default."""
+    if not questions_box_on():
+        return default
+    q, href = await _ask_read(question_id)
+    if q is None:
+        return f"{_not_clear_of_id(question_id)}\n{default}"
+    override = q.get("override") if isinstance(q.get("override"), dict) else None
+    if override is not None:
+        mine = q.get("my_proposal") if isinstance(q.get("my_proposal"), dict) else {}
+        label = str(mine.get("label") or override.get("label") or "")
+        if override.get("field") is None:
+            return (f"{default}\nYou chose that no field holds this. A CRM admin can "
+                    "confirm it for everyone.")
+        again = _with_override(params, override)
+        if again is not None:
+            chosen = f"This uses {label}, as you chose. A CRM admin can confirm it for everyone."
+            return await _aggregate_text(slug, again, page, chosen, handled)
+    if q.get("held") or not _card_may_show(question_id):
+        return f"{_not_clear(q)}\n{default}"
+    return _clarify_block(q, href, default)
+
+
+def _card_may_show(question_id: str) -> bool:
+    """True when this run may show a card for *question_id*: the run has a
+    card channel, it opened its holder, it holds the reply tool, and the
+    limit lets one more in."""
+    from acb_skills.ask_tools import cards_refused
+
+    if cards_refused():
+        return False
+    asks = run_asks()
+    return asks is not None and asks.take(question_id)
+
+
+#: What a revenue total reads in each purpose, for a line.
+_REVENUE_WORDS: dict[str, str] = {"invoice": "billed", "payment_in": "collected"}
+
+
+async def _ask_revenue(module: str, purpose: str) -> str:
+    """The line of a revenue total of *module* (purpose *purpose*) while no
+    CRM admin answered the meaning of revenue: the member's own proposal,
+    the CLARIFY block, or the default line (CRM-Q32-8)."""
+    q, href = await _ask_read("revenue")
+    if q is None:
+        return REVENUE_DEFAULT_LINE
+    override = q.get("override") if isinstance(q.get("override"), dict) else None
+    if override is not None:
+        chose = str(override.get("revenue") or "")
+        word = _REVENUE_WORDS.get(chose, chose)
+        if chose == purpose:
+            return f"This uses {word} revenue, as you chose. A CRM admin can confirm it for everyone."
+        others = ", ".join(f"module:{m}" for m in override.get("modules") or [])
+        return (f"You chose {word} revenue, and this total reads module:{module}, which is "
+                f"{_REVENUE_WORDS.get(purpose, purpose)}. For your answer, call crm_aggregate "
+                f"on {others or 'the modules of that kind'} with measure 'sum_amount'. "
+                "A CRM admin can confirm your choice for everyone.")
+    if q.get("held") or not _card_may_show("revenue"):
+        return f"{_not_clear(q)}\n{REVENUE_DEFAULT_LINE}"
+    return _clarify_block(q, href, REVENUE_DEFAULT_LINE)
+
+
+#: What ``crm_answer_question`` answers when this run showed no card of the
+#: question: it saves nothing (CRM-Q32-8, fix round, the gate).
+NO_CARD_PICK = (
+    "Nothing is saved: this chat did not show the member a card of this question. "
+    "Only the member's pick on that card counts. Tell the member what is not "
+    "clear, use the default that the answer names, and say that a CRM admin "
+    "answers it in CRM settings, Open questions."
+)
+
+
+def _card_was_shown(question_id: str) -> bool:
+    """True when this run has a card channel and showed the card of
+    *question_id* (its CLARIFY block). A run with no card channel (a
+    WhatsApp text chat) and a run with no holder show none."""
+    from acb_skills.ask_tools import cards_refused
+
+    asks = run_asks()
+    return not cards_refused() and asks is not None and asks.shown(question_id)
+
+
+def _question_id(question_id: str) -> str:
+    """The id of a CRM question, checked before it goes into a path."""
+    qid = str(question_id or "").strip()
+    if not _QUESTION_ID.match(qid):
+        raise GatewayRefusal(
+            "That is not the id of a CRM question.",
+            detail="The id is 'revenue', 'purpose:<Module>' or 'key:<Module>:<part>'. "
+                   "Copy it from the CLARIFY block.",
+            fields=("question_id",),
+        )
+    return qid
+
+
+@_read_tool
+async def crm_answer_question(question_id: str, choice: str) -> str:
+    """Send the option that the member picked on a CRM question card. Call
+    it only after the member picked, with the question_id and the KEY of
+    the option that the CLARIFY block names (never the label). The server
+    decides what the pick does: a CRM admin's pick is the answer for
+    everyone, and each other member's pick is a proposal that a CRM admin
+    confirms. Then call the read again for the final answer."""
+    question = _question_id(question_id)
+    key = str(choice or "").strip()
+    if not key or len(key) > 200:
+        raise GatewayRefusal("Send the key of one option.", detail="choice is empty or too long.",
+                             fields=("choice",))
+    if not _card_was_shown(question):
+        # The gate (fix round): a pick needs a card that this run showed,
+        # so no model step and no text of a CRM record can answer for the
+        # member. Nothing is sent.
+        return NO_CARD_PICK
+    body = await _post(f"/crm/questions/{question}/reply", {"choice": key}) or {}
+    result = str(body.get("result") or "")
+    line = str(body.get("line") or "")
+    if result == "answer":
+        return (f"Saved for everyone: {line}\nTo undo it, a CRM admin can change it in CRM "
+                "settings, Your answers.\nCall the read again, and give the final answer. "
+                "Name the fact that it used.")
+    if result == "proposal":
+        override = body.get("override") if isinstance(body.get("override"), dict) else None
+        if override is None:
+            return (f"{line} The answer keeps the fact in use now. Call the read again, and "
+                    "give the final answer.")
+        how = ""
+        if override.get("field") and override.get("word"):
+            how = (f" The read now uses field '{override['field']}' in place of "
+                   f"'{override['word']}' for this member.")
+        return f"{line}{how}\nCall the read again with the same arguments, and give the final answer."
+    if result == "default":
+        return f"{line}\nCall the read again. It gives the answer with the default."
+    return line or "Nothing changed."
+
+
+#: The tools of the open questions, withheld where ``org_facts`` is
+#: (``org_facts_tools.FACTS_GATED_TOOLS``). Not in :data:`CRM_TOOLS`: it is
+#: no read of a record.
+CRM_QUESTION_TOOLS: tuple[Callable[..., Awaitable[str]], ...] = (crm_answer_question,)
+
 
 #: What a line calls each key part of an entry.
 _PART_WORDS: dict[str, str] = {
@@ -1584,6 +2077,12 @@ def _entry_line(entry: dict[str, Any]) -> str:
             found = fields[part]
             if not isinstance(found, dict):
                 parts.append(f"{name}: no single field.")
+                continue
+            summed = [p for p in found.get("parts") or [] if isinstance(p, dict)]
+            if summed:
+                # CRM-Q32-9: the amount is the sum of several fields.
+                parts.append(f"{name}: sum of {_names([str(p.get('label')) for p in summed])} "
+                             f"({' + '.join(str(p.get('key')) for p in summed)}).")
                 continue
             target = f" -> {found['target']}" if part == "parent" and found.get("target") else ""
             parts.append(f"{name} {found.get('label')} ({found.get('key')}{target}).")
@@ -1853,4 +2352,6 @@ CRM_TOOL_NAMES: frozenset[str] = frozenset(fn.__name__ for fn in CRM_TOOLS)
 __all__ = [
     "CRM_CLOSED", "CRM_DETAIL_MAX", "CRM_OFF", "CRM_VOICE", "CRM_SHARED_ROOM", "CRM_TOOLS", "CRM_TOOL_NAMES", "MAX_ROWS",
     "SEARCH_NUMBERS", "SEARCH_OFF", "SHORT_READS_PATH", "crm_mode", *(fn.__name__ for fn in CRM_TOOLS),
+    "CLARIFY", "CRM_QUESTION_TOOLS", "CrmAsks", "MAX_ASKS_PER_RUN", "crm_answer_question",
+    "NO_CARD_PICK", "mark_answer_tool", "open_asks_for_run", "release_asks", "run_asks",
 ]

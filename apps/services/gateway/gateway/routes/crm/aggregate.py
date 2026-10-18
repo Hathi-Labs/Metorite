@@ -127,6 +127,7 @@ from gateway.routes.crm.field_sql import (
     core_scope,
     crm_zone,
     field_pairs,
+    from_source,
     group_sql,
     measure_sql,
     module_measure,
@@ -275,8 +276,9 @@ class AggregateResponse(BaseModel):
     #: The label of that field, and of the group field (CRM-Q31-2 item 5).
     field_label: str | None = None
     group_field_label: str | None = None
-    #: Each key word that the call used, with the real key that it read.
-    keys: dict[str, str] = {}
+    #: Each key word that the call used, with the real key that it read. A
+    #: sum of fields (CRM-Q32-9) gives the list of its keys.
+    keys: dict[str, str | list[str]] = {}
     #: The stored type of ``group_field``, so a caller can tell a ``datetime``
     #: bucket, which reads the zone, from a ``date`` bucket, which does not.
     group_field_type: str | None = None
@@ -534,7 +536,7 @@ class _Read:
     measured: FieldRef | None
     grouped: FieldRef | None
     zone: str
-    keys: dict[str, str]
+    keys: dict[str, str | list[str]]
     #: CRM-Q20-3a: the overlay of the answer, and the lane type of each
     #: status group.
     overlay: dict[str, str] | None = None
@@ -567,6 +569,7 @@ async def _read(
         zone = await crm_zone(db, current_tenant())
         where = module_where(scope, module, pairs, zone=zone)
         table, where_sql, bound = MODULE_TABLE, where.sql, dict(where.params)
+        source = where.source
     else:
         assert found is not None
         if group_by == "created_month" and await is_mirror_mode(db, current_tenant()):
@@ -578,6 +581,7 @@ async def _read(
             })
         query = await list_query(db, found, params, user)
         table, where_sql, bound = found.table, query.where, dict(query.params)
+        source = ""
         if field or group_field:
             scope = await core_scope(db, found.slug)
         zone = await crm_zone(db, current_tenant())
@@ -605,11 +609,12 @@ async def _read(
             sql = measure_sql(scope, measured, field_measure)
             value_sql, sum_sql, count_sql = sql.value, sql.sum, sql.count
             bound.update(sql.params)
+            source = from_source(source, sql.source)
         rows = (await db.execute(
             text(
                 f"SELECT {key_sql} AS key, {label_sql} AS label, "
                 f"{value_sql} AS value, {sum_sql} AS s, {count_sql} AS n, "
-                f"count(*) AS c FROM {table}{where_sql}{group_clause}"
+                f"count(*) AS c FROM {table}{source}{where_sql}{group_clause}"
             ),
             bound,
         )).fetchall()
@@ -676,9 +681,11 @@ async def _read_overlay(
         sql = measure_sql(scope, measured, measure)
     else:
         sql = None
+    source = where.source
     if sql is not None:
         value_sql, sum_sql, count_sql = sql.value, sql.sum, sql.count
         bound.update(sql.params)
+        source = from_source(source, sql.source)
     grouped: FieldRef | None = None
     stage: FieldRef | None = None
     label_sql = "NULL"
@@ -706,7 +713,7 @@ async def _read_overlay(
         text(
             f"SELECT {key_sql} AS key, {label_sql} AS label, "
             f"{value_sql} AS value, {sum_sql} AS s, {count_sql} AS n, "
-            f"count(*) AS c FROM {MODULE_TABLE}{where.sql}{group_clause}"
+            f"count(*) AS c FROM {MODULE_TABLE}{source}{where.sql}{group_clause}"
         ),
         bound,
     )).fetchall()

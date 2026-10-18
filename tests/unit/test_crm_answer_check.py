@@ -991,3 +991,67 @@ def test_the_retry_note_states_the_rule_of_the_check() -> None:
     for words in ("BOTH", "same paragraph", "total", "net", "share", "average",
                   "in brackets"):
         assert words in note, words
+
+
+# ── WS-53 CRM-Q32-8 item 19: a CLARIFY card passes the number check ─────────
+
+
+def _clarify() -> tuple[str, dict[str, Any]]:
+    """The CLARIFY block of a real tool answer, and the arguments of the
+    ``ask_questions`` call that the model makes from it."""
+    import acb_skills.crm_tools as tools
+
+    from tests.unit.test_crm_agent import _ask_body
+
+    q = _ask_body()["questions"][0]
+    block = tools._clarify_block(q, "/crm?tab=settings&section=questions", "No total yet.")
+    payload = next(line for line in block.splitlines() if line.startswith('{"questions"'))
+    return block, {"questions": payload}
+
+
+def test_q32_8_each_number_of_a_card_label_traces_to_the_clarify_block() -> None:
+    """Item 19: each option label holds a fill and a sample ("IP Basic Amount
+    (52% filled, such as 12400 or 8000)"). Each number comes from the
+    CLARIFY block, which is a CRM read, so the check passes the card."""
+    from acb_skills.answer_check import DISPLAY_TOOLS, display_text
+
+    block, arguments = _clarify()
+    labels = [o["label"] for o in json.loads(arguments["questions"])["questions"][0]["options"]]
+    assert labels[0] == "IP Basic Amount (52% filled, such as 12400 or 8000)"
+    ledger = RunLedger()
+    ledger.record("crm_aggregate", block)
+    for label in labels:
+        assert ledger.check(label).ok, label
+    # Round 4 of CRM-Q29 (#1133) makes the card a display call. Then the
+    # check reads each label, and each still passes.
+    if "ask_questions" in DISPLAY_TOOLS:
+        shown = display_text("ask_questions", arguments)
+        assert "12400" in shown and ledger.check(shown).ok
+    # A label with a number that no CRM read holds still fails.
+    assert not ledger.check("IP Basic Amount (77% filled, such as 99999)").ok
+
+
+@STREAMS
+async def test_q32_8_a_run_that_shows_the_card_needs_no_retry(stream: bool) -> None:
+    """Item 19, a whole run: the CRM read, then the card, then a line with
+    no new number. The answer goes out with no retry."""
+    block, arguments = _clarify()
+    shown: list[str] = []
+
+    async def crm_aggregate(entity: str) -> str:
+        """A fake CRM aggregate that gives a CLARIFY block."""
+        return block
+
+    async def ask_questions(questions: str) -> str:
+        """A fake question card."""
+        shown.append(questions)
+        return "Questions displayed to the user. Waiting for response."
+
+    answer = "I need one answer first: which field holds the amount of Collection?"
+    agent, client = _agent([
+        ("call", "crm_aggregate", {"entity": "module:Payment_Received"}),
+        ("call", "ask_questions", arguments),
+        ("text", answer),
+    ], tools=[crm_aggregate, ask_questions])
+    assert await _run(agent, stream=stream) == answer
+    assert shown == [arguments["questions"]] and len(client.requests) == 3

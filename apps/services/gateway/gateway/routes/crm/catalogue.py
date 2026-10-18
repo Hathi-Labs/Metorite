@@ -35,7 +35,7 @@ FORCE row level security under it (R5).
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Annotated, Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
@@ -54,6 +54,10 @@ from sqlalchemy.exc import DBAPIError
 
 #: The code of the 404 that an org outside ``CRM_CATALOGUE_ORGS`` gets.
 CATALOGUE_OFF = "catalogue_off"
+
+#: CRM-Q32-9: the list of keys of a sum, on the wire. The shape stops a long
+#: list at the edge. :func:`check_parts` checks each key against the fields.
+SumKeys = Annotated[list[str], Field(min_length=1, max_length=8)]
 
 #: The order of the core entries: the slots of the mapping preview.
 CORE_ORDER: tuple[str, ...] = ("organizations", "contacts", "leads", "deals")
@@ -98,12 +102,17 @@ _DEFS_SQL = (
 
 class KeyField(BaseModel):
     """One field of an entry: its key, its label, its type and, for a
-    lookup, the API name of the module it points at."""
+    lookup, the API name of the module it points at.
+
+    CRM-Q32-9: a sum of fields holds each field in ``parts``. Its key is the
+    keys joined with ``+``, and its label the labels joined with " + "."""
 
     key: str
     label: str
     type: str
     target: str | None = None
+    #: Absent for a plain field, so its wire is the wire of before.
+    parts: list[KeyField] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class CatalogueEntry(BaseModel):
@@ -157,7 +166,9 @@ def _off() -> HTTPException:
 
 
 def _key_field(f: Any) -> KeyField:
-    return KeyField(key=f.key, label=f.label, type=f.type, target=f.target)
+    parts = getattr(f, "parts", ())
+    return KeyField(key=f.key, label=f.label, type=f.type, target=f.target,
+                    parts=[_key_field(p) for p in parts] if parts else None)
 
 
 def _wire(entry: Any, questions: list[str] | None = None) -> CatalogueEntry:
@@ -390,10 +401,17 @@ def bad_answer(message: str, part: str | None = None) -> HTTPException:
 
 
 def _bad_field(src: Any, part: str, value: Any) -> bool:
-    if not isinstance(value, str) or src is None or src.field(value) is None:
-        return True
+    """True unless *value* names a field of *src* that can hold *part*.
+    CRM-Q32-9: ``amount`` also takes a list of 2 to 5 distinct keys, each a
+    ``currency`` field of *src*. The shape is checked before any field."""
     from gateway.crm_sync import catalogue as cat
 
+    if isinstance(value, list):
+        if part != cat.SUM_PART or cat.sum_shape_problem(value) or src is None:
+            return True
+        return cat.problem(src, part, value) is not None
+    if not isinstance(value, str) or src is None or src.field(value) is None:
+        return True
     if cat.problem(src, part, value) is not None:
         return True
     return part == "parent" and not src.field(value).target
@@ -403,7 +421,8 @@ def check_parts(module: str, parts: Mapping[str, Any], src: Any) -> None:
     """422 ``bad_answer`` unless each value of *parts* is legal for *module*:
     a purpose word, a field of the right type, ``null`` or ``"@auto"``, and
     ``invoice`` or ``payment_in`` for ``revenue`` of ``@org``. *src* is the
-    catalogue source of the module (``None`` for ``@org``)."""
+    catalogue source of the module (``None`` for ``@org``). CRM-Q32-9:
+    ``amount`` also takes a list of 2 to 5 currency fields, a sum."""
     from gateway.crm_sync import catalogue as cat
 
     legal = cat.parts_of(module)
@@ -454,15 +473,19 @@ async def write_answer(
 class CatalogueChangeIn(BaseModel):
     """``PUT /crm/catalogue/{module}`` (CRM-Q31-4 item 4). Each part that
     the body names takes a field API name or a purpose word, ``null``, or
-    ``"@auto"``. A part that the body leaves out does not change."""
+    ``"@auto"``. A part that the body leaves out does not change.
+
+    CRM-Q32-9: a key part takes a list too, so :func:`check_parts` answers
+    each list with ``bad_answer``. Only ``amount`` keeps a list of 2 to 5
+    currency fields."""
 
     model_config = ConfigDict(extra="forbid")
 
     purpose: str | None = None
-    amount: str | None = None
-    date: str | None = None
-    status: str | None = None
-    parent: str | None = None
+    amount: str | SumKeys | None = None
+    date: str | SumKeys | None = None
+    status: str | SumKeys | None = None
+    parent: str | SumKeys | None = None
     revenue: str | None = None
 
 
@@ -473,6 +496,23 @@ class CatalogueChangeOut(BaseModel):
     #: The entry of the module after the change. ``None`` for ``@org``.
     entry: CatalogueEntry | None = None
     revenue: RevenueModel = Field(default_factory=RevenueModel)
+
+
+def part_question_ids(module: str, parts: Mapping[str, Any]) -> list[str]:
+    """The question id of each part of *parts* of *module*: ``purpose:<M>``,
+    ``key:<M>:<part>``, or ``revenue`` for the part of ``@org``
+    (CRM-Q32-8, the clear of the proposals of a PUT)."""
+    from gateway.crm_sync import questions as qs
+
+    out: list[str] = []
+    for part in parts:
+        if part == "revenue":
+            out.append(qs.REVENUE_ID)
+        elif part == "purpose":
+            out.append(qs.purpose_id(module))
+        else:
+            out.append(qs.key_id(module, part))
+    return out
 
 
 async def _source_of(db: Any, org: str, module: str) -> Any:
@@ -507,7 +547,7 @@ async def put_catalogue(
     from gateway.routes.crm.field_rules import _db_conflict, _organization, _require_mirror
     from gateway.routes.crm.flags import questions_allowed
     from gateway.routes.crm.mapping_plans import _approved
-    from gateway.routes.crm.questions import questions_off
+    from gateway.routes.crm.questions import after_admin_write, questions_off
 
     org = _organization(user)
     if not questions_allowed(org):
@@ -523,6 +563,9 @@ async def put_catalogue(
             row = await write_answer(db, org, by=by, module=module, parts=parts)
             if row is None:
                 row = await _approved(db)
+            # CRM-Q32-8: an admin write of a part closes what waits on it in
+            # the questions, after the plan lock of the writer (the lock order).
+            await after_admin_write(db, org, part_question_ids(module, parts))
             _mode, sources, roles, others = await _load(db, org)
     except DBAPIError as exc:
         conflict = _db_conflict(exc)
@@ -539,6 +582,6 @@ async def put_catalogue(
 
 
 __all__ = ["AUTO", "CATALOGUE_OFF", "CatalogueChangeIn", "CatalogueChangeOut",
-           "CatalogueEntry", "CatalogueResponse", "KeyField", "RevenueModel",
+           "CatalogueEntry", "CatalogueResponse", "KeyField", "RevenueModel", "SumKeys",
            "bad_answer", "check_parts", "core_sources", "entry_of", "get_catalogue",
-           "put_catalogue", "write_answer"]
+           "part_question_ids", "put_catalogue", "write_answer"]
