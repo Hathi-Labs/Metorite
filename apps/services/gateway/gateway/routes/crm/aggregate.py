@@ -275,8 +275,9 @@ class AggregateResponse(BaseModel):
     #: The label of that field, and of the group field (CRM-Q31-2 item 5).
     field_label: str | None = None
     group_field_label: str | None = None
-    #: Each key word that the call used, with the real key that it read.
-    keys: dict[str, str] = {}
+    #: Each key word that the call used, with the real key that it read. A
+    #: sum of fields (CRM-Q32-9) gives the list of its keys.
+    keys: dict[str, str | list[str]] = {}
     #: The stored type of ``group_field``, so a caller can tell a ``datetime``
     #: bucket, which reads the zone, from a ``date`` bucket, which does not.
     group_field_type: str | None = None
@@ -534,7 +535,7 @@ class _Read:
     measured: FieldRef | None
     grouped: FieldRef | None
     zone: str
-    keys: dict[str, str]
+    keys: dict[str, str | list[str]]
     #: CRM-Q20-3a: the overlay of the answer, and the lane type of each
     #: status group.
     overlay: dict[str, str] | None = None

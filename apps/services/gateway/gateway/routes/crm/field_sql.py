@@ -154,12 +154,19 @@ _MODULE = "agf_module"
 @dataclass(frozen=True)
 class FieldRef:
     """One checked field: its key, its stored type, its label, and the label
-    of each picklist value."""
+    of each picklist value.
+
+    CRM-Q32-9: ``@amount`` can be the sum of 2 to 5 currency fields. Its
+    ``parts`` hold each field, its key is the keys joined with ``+``, its
+    label the labels joined with " + ", and its type ``currency``. Only
+    :func:`_amount` reads the parts, and a sum takes no group
+    (:func:`check_group`)."""
 
     key: str
     type: str
     label: str
     options: dict[str, str] = field(default_factory=dict)
+    parts: tuple[FieldRef, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -337,10 +344,29 @@ def key_words(fields: dict[str, FieldRef], entry: Any) -> dict[str, FieldRef]:
     out: dict[str, FieldRef] = {}
     for word, part in KEY_WORDS.items():
         named = parts.get(part)
+        if named is not None and getattr(named, "parts", ()):
+            summed = _sum_ref(fields, named)
+            if summed is not None and word == AMOUNT_WORD:
+                out[word] = summed
+            continue
         ref = fields.get(named.key) if named is not None else None
         if ref is not None and ref.type in PART_TYPES[part]:
             out[word] = ref
     return out
+
+
+def _sum_ref(fields: dict[str, FieldRef], named: Any) -> FieldRef | None:
+    """The one ``FieldRef`` of a sum (CRM-Q32-9), or ``None`` when a part is
+    not a currency field of *fields*. The catalogue checked each key, and
+    this checks them again against the fields of the scope."""
+    from gateway.crm_sync.catalogue import SUM_LABEL_JOIN, SUM_TYPES
+
+    refs = [fields.get(getattr(p, "key", "")) for p in named.parts]
+    if not refs or any(r is None or r.type not in SUM_TYPES for r in refs):
+        return None
+    found = [r for r in refs if r is not None]
+    return FieldRef(key=str(named.key), type=SUM_TYPES[0],
+                    label=SUM_LABEL_JOIN.join(r.label for r in found), parts=tuple(found))
 
 
 def module_measure(measure: str, field: str | None) -> tuple[str, str | None]:
@@ -350,17 +376,19 @@ def module_measure(measure: str, field: str | None) -> tuple[str, str | None]:
     return MODULE_MEASURES.get(measure, (measure, field))
 
 
-def used_keys(scope: FieldScope, names: list[str | None]) -> dict[str, str]:
+def used_keys(scope: FieldScope, names: list[str | None]) -> dict[str, str | list[str]]:
     """Each key word that *names* use, with the real key it read (CRM-Q31-2
-    item 5). A filter name may end in ``.from`` or ``.to``."""
-    out: dict[str, str] = {}
+    item 5). A filter name may end in ``.from`` or ``.to``. A sum
+    (CRM-Q32-9) gives the list of its keys."""
+    out: dict[str, str | list[str]] = {}
     for name in names:
         word = name or ""
         for end in RANGE_ENDS:
             if word.endswith(end) and word[: -len(end)] in KEY_WORDS:
                 word = word[: -len(end)]
         if word in KEY_WORDS and word in scope.fields:
-            out[word] = scope.fields[word].key
+            ref = scope.fields[word]
+            out[word] = [p.key for p in ref.parts] if ref.parts else ref.key
     return out
 
 
@@ -390,6 +418,13 @@ def check_group(scope: FieldScope, key: str | None, bucket: str | None) -> Field
     """The field of ``group_field``, or a 422. A date needs a bucket, and a
     value group takes none."""
     ref = scope.ref(key)
+    if ref.parts:
+        # CRM-Q32-9: a sum has no single value to group by.
+        raise HTTPException(status_code=422, detail={
+            "code": "composite_group",
+            "message": f"'{key}' is the sum of {len(ref.parts)} fields, so it has no "
+                       "single value to group by. Group by another field, or filter on it.",
+        })
     if ref.type in DATE_TYPES:
         if bucket not in BUCKETS:
             raise _refuse(
@@ -424,6 +459,40 @@ def _number(column: str, p: str) -> str:
         f"AND {column} ->> :{p} ~ " + _NUMBER_TEXT + " "
         f"THEN CAST({column} ->> :{p} AS numeric) END)"
     )
+
+
+def _numbers(column: str, ref: FieldRef, prefix: str) -> list[tuple[str, dict[str, Any]]]:
+    """Each part of *ref* as a guarded number, with its bound key. A plain
+    field is one part. Each bound name is ``{prefix}_{i}``: a separator, so
+    ``agf_k1`` and part ``0`` never give ``agf_k10``, the key of filter 10
+    (CRM-Q32-9). No key reaches the SQL text."""
+    parts = ref.parts or (ref,)
+    out = []
+    for i, part in enumerate(parts):
+        p = f"{prefix}_{i}"
+        out.append((_number(column, p), {p: part.key}))
+    return out
+
+
+def _amount(column: str, ref: FieldRef, prefix: str) -> tuple[str, dict[str, Any]]:
+    """THE builder of the number of a measure field, ``@amount`` with it
+    (CRM-Q32-9). :func:`measure_sql`, the number filter of
+    :func:`module_where` and :func:`overlay_weighted` call it, so
+    ``sum_amount``, the overlay and the digest read a sum with no change of
+    their own.
+
+    A plain field is its guarded number. A sum of fields is NULL when no
+    part is set, so ``COUNT`` does not count the record. Else it is the sum
+    of the parts that are set, each NULL part taken as 0."""
+    numbers = _numbers(column, ref, prefix)
+    params: dict[str, Any] = {}
+    for _sql, bound in numbers:
+        params.update(bound)
+    if len(numbers) == 1:
+        return numbers[0][0], params
+    unset = " AND ".join(f"{n} IS NULL" for n, _b in numbers)
+    total = " + ".join(f"COALESCE({n}, 0)" for n, _b in numbers)
+    return f"(CASE WHEN {unset} THEN NULL ELSE {total} END)", params
 
 
 def _date(column: str, p: str) -> str:
@@ -544,13 +613,14 @@ def _lookup_id(column: str, p: str) -> str:
 
 
 def measure_sql(scope: FieldScope, ref: FieldRef, measure: str) -> MeasureSql:
-    """``measure`` of the field *ref*, with its sum and count of values."""
-    number = _number(scope.column, _MEASURE_KEY)
+    """``measure`` of the field *ref*, with its sum and count of values. A
+    sum of fields (CRM-Q32-9) reads through :func:`_amount`."""
+    number, params = _amount(scope.column, ref, _MEASURE_KEY)
     return MeasureSql(
         value=FIELD_MEASURES[measure].format(n=number),
         sum=f"SUM({number})",
         count=f"COUNT({number})",
-        params={_MEASURE_KEY: ref.key},
+        params=params,
     )
 
 
@@ -614,8 +684,20 @@ def _split(scope: FieldScope, name: str) -> tuple[FieldRef, str | None]:
 
 
 def _filter(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: str,
-            value: str) -> tuple[str, Any]:
-    """One filter clause and its bound value."""
+            value: str) -> tuple[str, Any, dict[str, Any]]:
+    """One filter clause, its bound value and its bound key."""
+    clause, bound = _filter_value(scope, ref, end, k, v, value)
+    if ref.type in MEASURE_TYPES and end is None:
+        number, keys = _amount(scope.column, ref, k)
+        return f"{number} = {clause}", bound, keys
+    return clause, bound, {k: ref.key}
+
+
+def _filter_value(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: str,
+                  value: str) -> tuple[str, Any]:
+    """One filter clause and its bound value. A number gives only the right
+    side of its clause: :func:`_filter` puts the number of :func:`_amount`
+    on the left."""
     column = scope.column
     if end is not None:
         if ref.type not in DATE_TYPES:
@@ -643,7 +725,7 @@ def _filter(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: str,
                 f"'field.{ref.key}' must be a number of at most {MAX_DIGITS} "
                 f"digits, below 10^{MAX_EXPONENT}.",
             )
-        return f"{_number(column, k)} = CAST(:{v} AS numeric)", str(number)
+        return f"CAST(:{v} AS numeric)", str(number)
     if ref.type == "boolean":
         word = value.strip().lower()
         if word not in ("true", "false"):
@@ -677,9 +759,9 @@ def module_where(
     for index, (name, value) in enumerate(pairs):
         ref, end = _split(scope, name)
         k, v = f"agf_k{index}", f"agf_v{index}"
-        clause, bound = _filter(scope, ref, end, k, v, value)
+        clause, bound, keys = _filter(scope, ref, end, k, v, value)
         clauses.append(clause)
-        params[k] = ref.key
+        params.update(keys)
         params[v] = bound
     return WhereSql(sql=" WHERE " + " AND ".join(clauses), params=params)
 
@@ -820,15 +902,16 @@ def overlay_weighted(
 ) -> MeasureSql:
     """``weighted`` on an overlay: the amount times the probability over
     100, for the records whose stage value maps to ``open``. Each key and
-    each value is bound."""
+    each value is bound. The amount reads through :func:`_amount`, so a sum
+    of fields (CRM-Q32-9) weighs too."""
     column = scope.column
-    a, w = _number(column, "agf_wa"), _number(column, "agf_wp")
+    a, a_keys = _amount(column, amount, "agf_wa")
+    w, w_keys = _amount(column, probability, "agf_wp")
     weight = (f"(CASE WHEN {column} ->> :agf_ws = ANY(CAST(:agf_open AS text[])) "
               f"THEN {a} * {w} / 100.0 END)")
     return MeasureSql(
         value=f"COALESCE(SUM({weight}), 0)", sum=f"SUM({weight})", count=f"COUNT({weight})",
-        params={"agf_wa": amount.key, "agf_wp": probability.key, "agf_ws": stage.key,
-                "agf_open": list(open_values)},
+        params={**a_keys, **w_keys, "agf_ws": stage.key, "agf_open": list(open_values)},
     )
 
 
@@ -865,6 +948,81 @@ async def value_counts(
     return [(str(r.v), int(r.n)) for r in rows if r.v is not None]
 
 
+# ── The check of a sum (CRM-Q32-9, §18.14.10) ───────────────────────────────
+
+#: The sum check reads at most this many records of a module, by id.
+SUM_CHECK_ROWS = 10_000
+
+#: The prefix of the bound keys of the sum check.
+_SUM_KEY = "agf_s"
+
+
+@dataclass(frozen=True)
+class SumCheck:
+    """What ONE statement of the sum check counted, over the first
+    :data:`SUM_CHECK_ROWS` records of a module. ``covered`` holds the
+    records with any part set, ``overlap`` the records with 2 or more parts
+    set. ``pairs`` gives ``(i, j, both, equal)`` for each pair of parts:
+    the records that set both, and the records where both are equal."""
+
+    records: int
+    covered: int
+    overlap: int
+    pairs: tuple[tuple[int, int, int, int], ...]
+
+
+def sum_check_sql(refs: tuple[FieldRef, ...]) -> tuple[str, dict[str, Any]]:
+    """The ONE statement of the sum check, and its bound keys. Each part is
+    the guarded number of :func:`_numbers`, so a part is set when its value
+    is a number or a numeric string. The org, the module and the limit are
+    bound by the caller. Each alias comes from an index, never from text."""
+    numbers = _numbers(MODULE_COLUMN, FieldRef(key="", type="currency", label="",
+                                               parts=tuple(refs)), _SUM_KEY)
+    params: dict[str, Any] = {}
+    inner = []
+    for i, (sql, bound) in enumerate(numbers):
+        inner.append(f"{sql} AS n_{i}")
+        params.update(bound)
+    count = len(numbers)
+    set_flags = " + ".join(f"(CASE WHEN n_{i} IS NOT NULL THEN 1 ELSE 0 END)"
+                           for i in range(count))
+    outer = [
+        "count(*) AS records",
+        f"count(*) FILTER (WHERE {set_flags} >= 1) AS covered",
+        f"count(*) FILTER (WHERE {set_flags} >= 2) AS overlap",
+    ]
+    for i in range(count):
+        for j in range(i + 1, count):
+            outer.append(f"count(*) FILTER (WHERE n_{i} IS NOT NULL AND n_{j} IS NOT NULL) "
+                         f"AS both_{i}_{j}")
+            outer.append(f"count(*) FILTER (WHERE n_{i} = n_{j}) AS equal_{i}_{j}")
+    sql = (
+        f"SELECT {', '.join(outer)} FROM (SELECT {', '.join(inner)} "
+        "FROM crm_module_records WHERE organization_id = CAST(:agf_org AS uuid) "
+        f"AND module = :{_MODULE} ORDER BY id LIMIT :agf_limit) r"
+    )
+    return sql, params
+
+
+async def sum_check(db: Any, org: str, module: str, refs: tuple[FieldRef, ...]) -> SumCheck:
+    """The counts of a ticked set of parts (CRM-Q32-9): ONE bounded
+    statement in the caller's tenant session, with the org in its
+    predicate and RLS under it. The caller checked each part first."""
+    sql, params = sum_check_sql(refs)
+    row = (await db.execute(text(sql), {
+        **params, "agf_org": str(org), _MODULE: module, "agf_limit": SUM_CHECK_ROWS,
+    })).first()
+    count = len(refs)
+    pairs = tuple(
+        (i, j, int(getattr(row, f"both_{i}_{j}", 0) or 0),
+         int(getattr(row, f"equal_{i}_{j}", 0) or 0))
+        for i in range(count) for j in range(i + 1, count)
+    )
+    return SumCheck(records=int(getattr(row, "records", 0) or 0),
+                    covered=int(getattr(row, "covered", 0) or 0),
+                    overlap=int(getattr(row, "overlap", 0) or 0), pairs=pairs)
+
+
 __all__ = [
     "AMOUNT_WORD",
     "BUCKETS",
@@ -877,12 +1035,14 @@ __all__ = [
     "MEASURE_TYPES",
     "MODULE_MEASURES",
     "OVERLAY_REFUSED",
+    "SUM_CHECK_ROWS",
     "VALUE_GROUP_TYPES",
     "ZONE_PARAM",
     "FieldRef",
     "FieldScope",
     "GroupSql",
     "MeasureSql",
+    "SumCheck",
     "WhereSql",
     "check_group",
     "check_measure",
@@ -904,6 +1064,8 @@ __all__ = [
     "overlay_stage",
     "overlay_weighted",
     "overlay_where",
+    "sum_check",
+    "sum_check_sql",
     "used_keys",
     "value_counts",
     "zoned",

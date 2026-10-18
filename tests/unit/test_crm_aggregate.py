@@ -412,7 +412,8 @@ def test_a_key_word_never_reaches_the_sql_text() -> None:
                         (group.key, group.params), (where.sql, where.params)):
         assert "@" not in sql, sql
         assert not [v for v in params.values() if isinstance(v, str) and v.startswith("@")]
-    assert measure.params["agf_m"] == "Billed_Value"
+    # CRM-Q32-9: each bound key name is `{prefix}_{i}`.
+    assert measure.params["agf_m_0"] == "Billed_Value"
     assert group.params["agf_g"] == "Invoice_Date"
     assert fs.used_keys(scope, ["@amount", "@date", "@date.from", "Memo", None]) == {
         "@amount": "Billed_Value", "@date": "Invoice_Date",

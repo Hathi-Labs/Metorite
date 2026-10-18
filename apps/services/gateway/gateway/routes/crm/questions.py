@@ -7,6 +7,8 @@
     DELETE /crm/questions/{id}/dismiss       its Undo, and the Undo of "None of
                                              these" on a slot
     POST /crm/questions/accept-best          {"ids": [...], "dry_run": true}
+    GET  /crm/questions/{id}/sum-check       ?fields=A,B the check of a sum
+                                             (CRM-Q32-9)
 
 The CRM shows the admin each question that Jev could not answer with
 confidence about the data of the org. The kinds, the gate of ``open``, the
@@ -45,6 +47,7 @@ from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
 from fastapi import Depends, HTTPException, Query
 from gateway.crm_sync import questions as qs
+from gateway.routes.crm.catalogue import SumKeys
 from gateway.routes.crm.core import _tenant_session, from_jsonb, router
 from gateway.routes.crm.field_rules import _GUARDS, _organization, _require_mirror
 from gateway.routes.crm.flags import questions_allowed
@@ -385,14 +388,18 @@ class QuestionModel(BaseModel):
     choices: list[QuestionChoiceModel]
     none: bool
     other: bool
-    #: The answer in use, for a correction. ``None`` on an open question.
-    current: str | None = None
+    #: The answer in use, for a correction. ``None`` on an open question. A
+    #: sum of fields (CRM-Q32-9) is the list of its keys.
+    current: str | list[str] | None = None
     #: Who chose the answer in use: ``admin``, ``ai`` or ``code``.
     by: str | None = None
     #: False for ``revenue``, which takes no dismissal.
     dismissible: bool = True
     #: Each choice of "Pick another".
     options: list[QuestionOptionModel] | None = None
+    #: CRM-Q32-9: the fields of the picker of a sum, on an ``amount``
+    #: question when 2 or more currency fields each fill 20% or more.
+    sums: list[QuestionOptionModel] | None = None
     slot: str | None = None
     count: int | None = None
     value: str | None = None
@@ -469,11 +476,12 @@ def plan_moved() -> HTTPException:
 class AnswerIn(BaseModel):
     """``{"value": <choice>}``. ``null`` is "None of these". ``version`` is
     the plan version that the card read (``GET /crm/questions`` ``plan``):
-    a plan that moved gives 409 ``plan_moved``."""
+    a plan that moved gives 409 ``plan_moved``. CRM-Q32-9: the ``amount``
+    of a ``key_field`` also takes a list of 2 to 5 currency fields, a sum."""
 
     model_config = ConfigDict(extra="forbid")
 
-    value: str | None
+    value: str | SumKeys | None
     version: int | None = None
 
 
@@ -484,7 +492,8 @@ class UndoModel(BaseModel):
 
     module: str | None = None
     part: str | None = None
-    value: str | None = None
+    #: ``"@auto"``, or an earlier value, which can be a sum (CRM-Q32-9).
+    value: str | list[str] | None = None
     question: str | None = None
 
 
@@ -503,9 +512,12 @@ class AnswerOut(BaseModel):
     module: str | None = None
 
 
-def _answer_line(q: qs.Question, value: Any) -> str | None:
+def _answer_line(q: qs.Question, value: Any, src: Any = None) -> str | None:
     if value is None:
         return None
+    if isinstance(value, list):
+        # CRM-Q32-9: "Totals of Collection now use the sum of A, B and C."
+        return qs.applied_line(q, qs.sum_choice(src, value)) if src is not None else None
     choice = next((c for c in q.choices if c.value == value), None)
     if choice is None and q.kind in (qs.KIND_PURPOSE, qs.KIND_KEY):
         choice = next((c for c in q.options if c.value == value), None)
@@ -629,7 +641,7 @@ async def _answer(db: Any, org: str, by: str, question_id: str, payload: AnswerI
     part = next(iter(parts))
     return AnswerOut(
         id=q.id, kind=q.kind, version=int((row or approved).version),
-        line=_answer_line(q, payload.value), module=module,
+        line=_answer_line(q, payload.value, inputs.sources.get(module)), module=module,
         undo=UndoModel(module=module, part=part, value=AUTO),
     )
 
@@ -825,6 +837,95 @@ async def accept_best(
     )
 
 
+# ── The check of a sum (CRM-Q32-9, §18.14.10) ───────────────────────────────
+
+
+class SumPairModel(BaseModel):
+    """One pair of parts: the records that set both, and the records where
+    both hold the same value."""
+
+    fields: list[str]
+    labels: list[str]
+    both: int
+    equal: int
+
+
+class SumCheckOut(BaseModel):
+    """What the picker of a sum shows: the coverage line, and a warning for
+    each pair that holds the same value on half or more of the records
+    that set both. The admin can still save."""
+
+    id: str
+    module: str
+    fields: list[str]
+    #: The records that the check read: the first 10,000 of the module, by id.
+    records: int
+    #: The records with any part set, and with 2 or more parts set.
+    covered: int
+    overlap: int
+    #: True when the module may hold more records than the check read.
+    capped: bool
+    line: str
+    pairs: list[SumPairModel]
+    warnings: list[str]
+
+
+def _sum_keys(raw: Sequence[str]) -> list[str]:
+    """The keys of ``?fields=``: a repeated name, or one name with commas."""
+    return [k.strip() for value in raw for k in str(value).split(",") if k.strip()]
+
+
+@router.get("/questions/{question_id}/sum-check", response_model=SumCheckOut,
+            dependencies=_GUARDS)
+async def sum_check(
+    question_id: str,
+    fields: list[str] = Query(default_factory=list),
+    user: UserContext = Depends(get_current_user),
+) -> SumCheckOut:
+    """The check of a ticked set of fields for the ``amount`` question
+    *question_id* (CRM-Q32-9). 422 ``bad_answer`` for a set that is not 2 to
+    5 distinct keys, before any SQL, and for a key that is not a currency
+    field of the module, before the read of a record. Then ONE statement
+    over the first 10,000 records by id, with the org in its predicate. A
+    CRM admin only, and the org must be on ``CRM_QUESTIONS_ORGS``. The org
+    comes from ``UserContext`` only (R5, R11)."""
+    from gateway.crm_sync import catalogue as cat
+    from gateway.routes.crm import field_sql
+    from gateway.routes.crm.catalogue import _source_of, bad_answer
+
+    org = _organization(user)
+    if not questions_allowed(org):
+        raise questions_off()
+    head, _sep, rest = question_id.partition(":")
+    module, _sep, part = rest.rpartition(":")
+    if head != "key" or part != cat.SUM_PART or not module:
+        raise bad_answer("Only the amount of a module takes a sum.", part or None)
+    keys = _sum_keys(fields)
+    if cat.sum_shape_problem(keys):
+        raise bad_answer("A sum takes 2 to 5 different fields.", cat.SUM_PART)
+    async with _tenant_session() as db:
+        await _require_mirror(db, org)
+        src = await _source_of(db, org, module)
+        if qs.sum_problem(src, keys):
+            raise bad_answer("Each field of a sum must be a currency field of the module.",
+                             cat.SUM_PART)
+        parts = [src.field(k) for k in keys]
+        refs = tuple(field_sql.FieldRef(key=f.key, type=f.type, label=f.label) for f in parts)
+        counted = await field_sql.sum_check(db, org, module, refs)
+    labels = [f.label for f in parts]
+    report = qs.sum_report(labels, counted.records, counted.covered, counted.pairs,
+                           capped=counted.records >= field_sql.SUM_CHECK_ROWS)
+    return SumCheckOut(
+        id=question_id, module=module, fields=keys, records=counted.records,
+        covered=counted.covered, overlap=counted.overlap,
+        capped=counted.records >= field_sql.SUM_CHECK_ROWS, line=report.line,
+        pairs=[SumPairModel(fields=[keys[i], keys[j]], labels=[labels[i], labels[j]],
+                            both=both, equal=equal)
+               for i, j, both, equal in counted.pairs],
+        warnings=list(report.warnings),
+    )
+
+
 __all__ = [
     "QUESTIONS_OFF",
     "AcceptBestIn",
@@ -833,6 +934,8 @@ __all__ = [
     "AnswerOut",
     "QuestionModel",
     "QuestionsModel",
+    "SumCheckOut",
+    "SumPairModel",
     "accept_best",
     "answer_question",
     "count_open",
@@ -846,5 +949,6 @@ __all__ = [
     "questions_off",
     "refresh_seen",
     "samples",
+    "sum_check",
     "undo_dismiss_question",
 ]
