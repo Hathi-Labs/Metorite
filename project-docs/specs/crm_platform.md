@@ -76,7 +76,7 @@
 > `crm-q28-digest`, migration 281). CRM-Q29, the number check of each CRM
 > answer, with two fix rounds, dark (`CRM_ANSWER_CHECK` is `off`, branch
 > `crm-answer-check`, no migration). CRM-Q29 fix round 3 is merged as #1120.
-> Fix round 4 is built on 2026-10-17 on `crm-answer-check-r4`, not merged. CRM-Q30, a founder question set for CRM
+> Fix rounds 4 and 5 are built on `crm-answer-check-r4` (PR #1133), not merged. CRM-Q30, a founder question set for CRM
 > insights, and CRM-Q30b, the read tools say when Zoho holds more (branch
 > `crm-founder-evals`, no migration). See §18.11.
 >
@@ -1286,7 +1286,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q26** | Labels on notes, on the decide tier, in shadow. §18.11 | P1 |
 | **CRM-Q27** | 🔨 built 2026-10-16 on `crm-batch-i`, merged (#1111), dark. Search of note text by meaning. §18.11 | P2 |
 | **CRM-Q28** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-q28-digest`, migration 281), not merged, dark. A weekly digest on the powerful tier. §18.11 | P2 |
-| **CRM-Q29** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-answer-check`, with two fix rounds), merged as #1116, dark. Fix round 3 merged as #1120. Fix round 4 built 2026-10-17 on `crm-answer-check-r4`, not merged. The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
+| **CRM-Q29** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-answer-check`, with two fix rounds), merged as #1116, dark. Fix round 3 merged as #1120. Fix rounds 4 and 5 built 2026-10-17 and 2026-10-18 on `crm-answer-check-r4` (PR #1133), not merged. The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
 | **CRM-Q30** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. A founder question set for CRM insights: an eval of the assistant over CRM data. §18.11 | P1 |
 | **CRM-Q30b** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. The read tools say when Zoho holds more records than the connected Zoho user can read. §18.11 | P1 |
 | **CRM-Q31** | The CRM catalogue for the AI: the purpose of each module, its key fields by meaning, and its links. Code first, then the decide tier. Q31-1 to Q31-3 merged as #1122, dark. Q31-4 is absorbed into CRM-Q32 (§18.14). §18.13 | P0 |
@@ -3710,7 +3710,7 @@ merged (#1100, migration 278), dark. CRM-Q25b, CRM-Q25c and CRM-Q27
 dark, `CRM_ANSWER_CHECK` is `off`, no migration), CRM-Q30 and CRM-Q30b (no
 migration): built on 2026-10-17 in the batch branch `crm-batch-i2`, and
 merged as #1116. CRM-Q29 fix round 3: merged as #1120. CRM-Q29 fix round
-4: built on 2026-10-17 on `crm-answer-check-r4`, not merged. CRM-Q28 uses the one number check of
+4 and 5: built on 2026-10-17 and 2026-10-18 on `crm-answer-check-r4`, not merged. CRM-Q28 uses the one number check of
 CRM-Q29. Verified against
 code at `origin/main` `a8ef53c93`.
 
@@ -4515,7 +4515,11 @@ Done when:
    *(Changed in fix round 4.)* The two operands come from the citing
    figures next to the derived figure in its sentence: the nearest two
    before it and the nearest one after it. A word of derivation must stand
-   near it. Two cited percents give a sum or a difference.
+   near it. Two cited percents give a sum or a difference. *(Changed in fix
+   round 5.)* The window is the block, up to a blank line, with two citing
+   figures on each side. A percent in brackets or a table cell right after
+   a figure is its share, the whole of a stated share derives, and so does
+   an average.
 9. **The seam.** `_inject_agent_tools` puts the check provider on the per-run
    view of each native MAF agent that holds a CRM tool, after the H-236 step.
    That covers the stream run, the batch run and the sub-agent. No second
@@ -4560,9 +4564,10 @@ Verify: `uv run pytest tests/unit/test_number_check.py tests/unit/test_number_ch
 and `uv run python scripts/affected_tests.py --base origin/main`.
 
 **Built as (2026-10-17).** Branch `crm-answer-check`, with two fix rounds,
-merged in Batch I2 (#1116). Fix round 3 is merged as #1120. Fix round 4 is
-built on 2026-10-17 on the branch `crm-answer-check-r4`, not merged. No
-migration, dark (`CRM_ANSWER_CHECK` is `off`).
+merged in Batch I2 (#1116). Fix round 3 is merged as #1120. Fix rounds 4
+and 5 are built on 2026-10-17 and 2026-10-18 on the branch
+`crm-answer-check-r4` (PR #1133), not merged. No migration, dark
+(`CRM_ANSWER_CHECK` is `off`).
 
 - **The shared API, for CRM-Q28 item 9.** `acb_common.number_check` gives
   `find_figures(text) -> list[Figure]`, `Sources()` with `add_text(text)` and
@@ -4702,9 +4707,47 @@ migration, dark (`CRM_ANSWER_CHECK` is `off`).
   for each k. With the rule of round 3, 7.0 percent passed at k = 4, 9.0
   percent at k = 6 and 14.0 percent at k = 10. With the rule of round 4, 0
   of 200 pass at each k. The fence holds the rate under 5 percent at each k.
+- **Fix round 5 (2026-10-18, the final review of round 4).** The review said
+  NOT-ON-READY. Round 4 failed 7 of 25 true founder answers and 6 of 7
+  breakdown shapes, and a question card failed on "Last 90 days". Changes:
+  1. **The window of a derived figure is its block**, up to a blank line. A
+     paragraph, a list and a markdown table are each one block. Two citing
+     figures on EACH side of the figure give its operands. A percent in
+     brackets or in a table cell right after a figure is the share of that
+     figure in a figure of the block, with no derive word ("₹7.06 crore
+     (52%)", "| ₹13.53 crore | 100% |"). The whole of a stated share
+     derives ("12 of 20 closed deals, a 60% win rate"), and so does a money
+     figure over a count near "average", "per", "each" or "over". "more",
+     "less", "higher", "lower", "between" and "that is" are derive words.
+     Fences: `TestFixRound5TrueShapes`, with 13 true shapes and 6 of the same
+     shapes with a wrong figure, and the k corpus of round 4.
+  2. **A choice is no claim.** In an option of `ask_questions`, a figure
+     right after a choice word ("top", "last", "next", "first", "above",
+     "below", "over", "under", "at least", "at most", "more than", "less
+     than", "within", "up to") is skipped. "Proposal (Rs 5.9 crore)" is still
+     checked, and so is the question text. Fences:
+     `test_a_choice_in_an_option_label_is_not_checked` and
+     `test_a_claim_in_a_question_card_is_still_checked`.
+  3. **The retry note states the rule**: state BOTH tool numbers in the same
+     paragraph, next to the result, with a word of derivation. Fence:
+     `test_the_retry_note_states_the_rule_of_the_check`.
+  4. Cheap fixes, all done: both ends of a range are read with the shared
+     unit ("₹3-25 lakh", "5-17 deals"). A scale word on the next line joins
+     ("₹14" and a new line "crore"), and a scale letter still does not. A
+     percent never quotes a plain count ("down 12%" against a count of 12).
+     A JSON or CSV value can still stand for a percent. Fence:
+     `TestFixRound5Parse`.
+- **The measured rate (fix round 5).** The review's 25 true founder answers:
+  7 failed with round 4, 0 fail now. Its 7 breakdown shapes: 6 failed, 0
+  fail now. Its 40 invented figures: 7 passed with round 4, 4 pass now (a
+  sign that is not compared, numbers in words, a CSV table in an answer,
+  and "₹14 crore" that rounds to the true ₹13.53 crore). The k corpus stays
+  at 0 of 200 at k = 4, 6 and 10. The review's probe4 at k = 10: 1 percent
+  for all forms, 2 percent for a whole percent and 4 percent for a crore
+  with one decimal, as in round 4.
 - **Mutations.** 13 mutations in the build, 12 more in fix round 1, 9 in
-  fix round 2, 21 in fix round 3 and 21 in fix round 4, one or more for
-  each fix. The suites
+  fix round 2, 21 in fix round 3, 21 in fix round 4 and 15 in fix round 5,
+  one or more for each fix. The suites
   kill each one. The rules: the room for rounding, money against a percent, a
   date, an exact scaled number, the arm, the model's text as a source, no
   extra request on a pass, one retry for each run, no draft in the fallback,
@@ -4724,12 +4767,13 @@ migration, dark (`CRM_ANSWER_CHECK` is `off`).
   can read, so its numbers are not checked. A card's number under a layout
   key (`width`, `size`, `level` and others) is not checked. An approximation
   word gives a room of 10 percent, so "about ₹5 lakh" passes against
-  4,60,000. On a percent the room is 1 point at most. The second number of a
-  range ("10-20") is not checked. A made-up number can still pass when it is
-  equal by chance to a sum, a difference or a percent of two figures next to
-  it in its sentence. A true derived figure fails when its operands stand
-  in another sentence or with no word of derivation, and the model then
-  writes it again. A figure that only a script of the model printed fails,
+  4,60,000. On a percent the room is 1 point at most. A made-up number can
+  still pass when it is equal by chance to a sum, a difference or a percent
+  of two figures next to it in its block. A true derived figure fails when
+  its operands stand in another block or with no word of derivation, and
+  the model then writes it again. A table or a CSV in an answer with no
+  spaces after its commas ("Proposal,10,43000000") holds no figure that the
+  check reads. A figure that only a script of the model printed fails,
   also when it is true. A derive pool holds
   the newest 500 figures of each kind, and 200 of one result at most. Each
   figure stays a direct source. `share_artifact` shows a file that another
@@ -5041,7 +5085,7 @@ CRM-Q25b, CRM-Q25c and CRM-Q27 were built on the batch branch
 (`d72f92184`). Batch I2: CRM-Q28 (migration 281), CRM-Q29 with its two
 fix rounds, CRM-Q30 and CRM-Q30b were built on 2026-10-17. They are in the
 batch branch `crm-batch-i2`, merged as #1116, and dark. CRM-Q29 fix round 3
-is merged as #1120, and fix round 4 is built on `crm-answer-check-r4`, not merged. The owner flip of
+is merged as #1120, and fix rounds 4 and 5 are built on `crm-answer-check-r4`, not merged. The owner flip of
 CRM-Q26 is not done. Batch M: CRM-Q17a-1b, CRM-Q17a-2, CRM-Q18-1b, CRM-Q18-2, CRM-Q18-3,
 CRM-Q19 and CRM-Q20-1 are built on the batch branch `crm-batch-m`, and
 CRM-Q20-2 on `crm-q20-2-suggestions` from it. None is merged. CRM-Q20-3 is
