@@ -477,11 +477,11 @@ const PART_ORDER: Record<string, number> = {
 export function answerGroups(answered: readonly Question[]): AnswerGroup[] {
   const groups = new Map<string, AnswerGroup>();
   for (const q of answered) {
-    const module = q.kind === "revenue" ? ORG_MODULE : (q.module ?? q.id);
+    const key = q.kind === "revenue" ? ORG_MODULE : (q.module ?? q.id);
     const label = q.kind === "revenue" ? "Revenue" : q.label;
-    const group = groups.get(module) ?? { module, label, parts: [] };
+    const group = groups.get(key) ?? { module: key, label, parts: [] };
     group.parts.push(q);
-    groups.set(module, group);
+    groups.set(key, group);
   }
   for (const g of groups.values()) {
     g.parts.sort((a, b) => (PART_ORDER[a.part ?? ""] ?? 9) - (PART_ORDER[b.part ?? ""] ?? 9));
