@@ -400,3 +400,27 @@ def test_the_tool_and_the_gateway_name_one_record_of_a_shown_card() -> None:
     assert "key(SHOWN_NAMESPACE, question_id, member)" in src
     gw = (GATEWAY / "routes/crm/questions.py").read_text(encoding="utf-8")
     assert "key(SHOWN_NAMESPACE, qid, member)" in gw
+
+
+async def test_a_fault_of_redis_never_fails_an_answer_that_committed(monkeypatch) -> None:
+    """The clear of a shown card runs after the commit. A fault of Redis, an
+    outage or any other, only logs, so the admin's answer stands."""
+    from gateway.routes.crm import questions as routes
+    from redis.exceptions import ConnectionError as RedisDown
+
+    from tests.unit._crm_redis_fake import RawRedis, tenant_client
+
+    raw = RawRedis()
+    monkeypatch.setattr(routes, "_redis", lambda: tenant_client(raw))
+    for fault in (RedisDown("down"), RuntimeError("Event loop is closed")):
+        raw.fail = fault
+        await routes.forget_shown("org-a", ["revenue"])
+        await routes.forget_shown("org-a", ["revenue"], member="a@x.test")
+    raw.fail = None
+    raw.store = {"cc:org-a:crm_question_shown:revenue:a@x.test": (1, "1"),
+                 "cc:org-a:crm_question_shown:revenue:b@x.test": (1, "1"),
+                 "cc:org-a:crm_question_shown:key:A:amount:a@x.test": (1, "1"),
+                 "cc:org-b:crm_question_shown:revenue:a@x.test": (1, "1")}
+    await routes.forget_shown("org-a", ["revenue"])
+    assert sorted(raw.store) == ["cc:org-a:crm_question_shown:key:A:amount:a@x.test",
+                                 "cc:org-b:crm_question_shown:revenue:a@x.test"]

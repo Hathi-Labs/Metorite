@@ -932,8 +932,8 @@ async def forget_shown(org: str, question_ids: Sequence[str], *,
                        member: str | None = None) -> None:
     """Remove the record that a card of each of *question_ids* was shown:
     for *member* only, or for each member when *member* is None (an admin
-    wrote the answer). It runs after the commit of the write. A Redis
-    outage only logs: the answer stands, and a stale record lets a late
+    wrote the answer). It runs after the commit of the write. Any fault of
+    Redis only logs: the answer stands, and a stale record lets a late
     pick reach ``/reply``, which checks the question again."""
     from acb_common.tenant_redis import OUTAGE_ERRORS, key, match, organization_scope
 
@@ -953,8 +953,9 @@ async def forget_shown(org: str, question_ids: Sequence[str], *,
                     who = name[len(head):] if name.startswith(head) else ""
                     if who and ":" not in who:
                         await redis.delete(key(SHOWN_NAMESPACE, qid, who))
-    except OUTAGE_ERRORS:
-        _log.warning("crm.questions.shown_clear_failed", organization_id=org)
+    except Exception as exc:  # the write committed: a clear never fails it
+        _log.warning("crm.questions.shown_clear_failed", organization_id=org,
+                     error_type=type(exc).__name__, outage=isinstance(exc, OUTAGE_ERRORS))
 
 #: The most ids that one card read takes.
 ASK_IDS_MAX = 2
