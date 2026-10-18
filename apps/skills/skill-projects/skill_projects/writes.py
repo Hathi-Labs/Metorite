@@ -2179,6 +2179,8 @@ class _BatchOutcome:
         self.made = 0
         #: The ids of the rows whose write landed.
         self.ok: set[str] = set()
+        #: The ids of the rows whose write may or may not have landed.
+        self.maybe: set[str] = set()
         self.lines: list[str] = []
         self.failed: list[str] = []
         self.unknown: list[str] = []
@@ -2241,14 +2243,18 @@ async def _each_at_once(rows: list[Any], step: Callable[[Any], Awaitable[None]])
 
 
 async def _ask_batch(
-    title: str, detail: str, body: dict[str, Any], ready: list[_BatchRow]
+    title: str, detail: str, body: dict[str, Any], ready: list[_BatchRow], note: str = ""
 ) -> tuple[list[_BatchRow], list[_BatchRow]] | str:
     """ONE card with a checkbox for each ready row: ``(chosen, left)``, or
-    the answer for a card the member declined or that answered a forged row."""
+    the answer for a card the member declined or that answered a forged row.
+    ``note`` is one plain sentence after the body, drawn as prose."""
+    context = _fields_block(body)
+    if note:
+        context = "\n".join([context, note])
     ticked = await _confirm(
         title=title,
         detail=detail,
-        context=_fields_block(body),
+        context=context,
         rows=[{"id": r.row_id, "label": r.label, "hint": r.hint, "checked": True} for r in ready],
     )
     # The card answers with the ticked ids. `request_confirmation` already
@@ -2276,6 +2282,7 @@ async def _apply_batch(chosen: list[_BatchRow]) -> _BatchOutcome:
             if isinstance(exc, GatewayRefusal):
                 out.failed.append(f"failed: row {r.index} {r.failed_ref} {_refusal_words(exc)}.")
             else:
+                out.maybe.add(r.row_id)
                 out.unknown.append(
                     f"unknown: row {r.index} {r.failed_ref}: the write failed "
                     f"({type(exc).__name__}), so it may or may not have happened. Read "
@@ -2483,7 +2490,7 @@ def _row_fields(raw: Any) -> str:
         parsed = json.loads(text) if text else None
     except ValueError:
         return text  # `_plan_move` refuses it with the format, by row
-    return "" if parsed in (None, {}) else text
+    return "" if parsed in (None, {}, "") else text
 
 
 async def _file_destinations(rows: list[_FileRow]) -> None:
@@ -2539,6 +2546,12 @@ async def _file_plan(row: _FileRow, include_subtasks: str) -> None:
     else:
         row.why = _row_reason(planned)
 
+
+#: The card's one sentence when a subtask row rides with its parent's row.
+RIDER_NOTE = (
+    "A subtask here moves with its parent. To keep it behind, ask to move the parent "
+    "without its subtasks."
+)
 
 #: How far up the tree the family check walks. A deeper tree is a fault.
 _ANCESTOR_STEPS = 8
@@ -2601,6 +2614,12 @@ def _rider_lines(riders: list[_FileRow], out: _BatchOutcome) -> list[str]:
                 f"moved with its parent: row {r.index} {r.ref}, with {top.ref} "
                 f"to {data(top.where)}."
             )
+        elif top is not None and top.row_id in out.maybe:
+            lines.append(
+                f"unknown: row {r.index} {r.ref} may or may not have moved with {top.ref}, "
+                "because the write of that row may or may not have landed. Read task_detail "
+                "before a retry."
+            )
         elif top is not None:
             lines.append(
                 f"not moved: row {r.index} {r.ref}: it was to move with {top.ref}, "
@@ -2624,9 +2643,11 @@ def _file_card(
     for n, r in enumerate(riders, start=1):
         top = r.carrier
         if top is not None:
-            card[f"with parent {n}"] = (
-                f"{r.ref}: moves with {top.ref}, which takes its subtasks along"
-            )
+            line = f"{r.ref}: moves with {top.ref} to {data(top.where)}"
+            if r.dest != top.dest:
+                # The row asked for another project, and the parent's move wins.
+                line += f" (not to {data(r.where)})" if r.where else " (not to its own row's project)"
+            card[f"with parent {n}"] = line
     for n, r in enumerate(stuck, start=1):
         card[f"cannot move {n}"] = f"{r.ref}: {_first_part(r.why)}"
     return card
@@ -2692,6 +2713,7 @@ async def file_tasks(moves: str, include_subtasks: str = "") -> str:
         "one approval for every move · untick a task to leave it out",
         _file_card(movable, stuck, riders),
         list(movable),
+        RIDER_NOTE if riders else "",
     )
     if isinstance(asked, str):
         return asked

@@ -524,10 +524,12 @@ async def test_with_subtasks_a_subtask_row_moves_with_its_parent(
     parent_row = "row-2" if order[0][0] == C else "row-1"
     child_row = "row-1" if order[0][0] == C else "row-2"
     assert [r["id"] for r in card["rows"]] == [parent_row]
-    assert (
-        "with parent 1: #31 «Write the copy»: moves with #30 «Launch the site», which takes "
-        "its subtasks along" in card["context"]
-    )
+    lines = card["context"].splitlines()
+    rider = "with parent 1: #31 «Write the copy»: moves with #30 «Launch the site» to «Website»"
+    # The row's own destination loses to the parent's move, and the card says so.
+    assert (rider + " (not to «Ops»)" if order[0][0] == C else rider) in lines
+    # One plain sentence, drawn as prose: the last line of the card body.
+    assert lines[-1] == W.RIDER_NOTE
     # ONE write: the parent's, with its subtree. The subtask has no write of
     # its own to race it.
     assert _moved_ids(calls) == [P]
@@ -568,6 +570,27 @@ async def test_a_rider_whose_parent_failed_is_not_moved(family: Any, monkeypatch
     assert "moved with its parent" not in out
 
 
+async def test_a_rider_whose_parent_write_is_unknown_may_or_may_not_have_moved(
+    family: Any, monkeypatch
+) -> None:
+    """The connection dropped after the parent's POST: nobody knows whether
+    the subtree moved, so the rider's line must not say "not moved"."""
+
+    def dropping(call: dict) -> Any:
+        if call["path"] == "/projects/tasks/move":
+            raise httpx.ConnectError("reset")
+        return responder(call)
+
+    approve(monkeypatch)
+    fake_gateway(monkeypatch, dropping)
+    out = await skill_projects.file_tasks(_moves((C, OPS), (P, WEB)), include_subtasks="yes")
+    assert (
+        "unknown: row 1 #31 «Write the copy» may or may not have moved with #30 «Launch the site»"
+        in out
+    )
+    assert "not moved: row 1" not in out and "moved with its parent:" not in out
+
+
 @pytest.mark.parametrize(
     "order", [((C, OPS), (P, WEB)), ((P, WEB), (C, WEB))], ids=["subtask-first", "parent-first"]
 )
@@ -590,7 +613,7 @@ async def test_without_subtasks_both_rows_move_and_the_card_says_the_link_stays(
 # ── Review round 1: an empty fields object is no answer ─────────────────────
 
 
-@pytest.mark.parametrize("empty", [{}, "", "{}", "  "])
+@pytest.mark.parametrize("empty", [{}, "", "{}", "  ", '""'])
 async def test_an_empty_fields_value_is_no_answer(empty: Any, monkeypatch) -> None:
     PREVIEWS[T1] = {"crosses_root": False, "drops": ["cost"]}
     approve(monkeypatch)

@@ -6344,8 +6344,11 @@ links, "only if there are a lot of tasks to be linked".
    `include_subtasks=yes`, the move of the parent takes the whole subtree
    (`move.py`, `movable_subtree`). So a row whose task sits under the task
    of another row has no write of its own. It moves with its topmost
-   ancestor row. The card says "With parent", and the receipt
-   reports the row from the write of that ancestor. With
+   ancestor row. The card says "With parent" and names the parent's
+   project, and the project of the row when the two differ. One sentence
+   then tells the member how to keep the subtask behind. The receipt
+   reports the row from the write of that ancestor. When that write ended
+   unknown, the row may or may not have moved, and the receipt says so. With
    `include_subtasks=no`, both rows move on their own. The route keeps the
    parent link across projects, and the card row says so.
 7b. **The card holds no count.** The title and the destination lines name
