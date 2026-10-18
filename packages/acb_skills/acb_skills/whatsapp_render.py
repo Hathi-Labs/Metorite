@@ -19,7 +19,13 @@ import colorsys
 import math
 import re
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any
 from xml.sax.saxutils import escape
+
+from acb_common.number_system import big_band, compact_number
 
 # ── The look (light values of globals.css) ──────────────────────────────────
 
@@ -146,9 +152,38 @@ def _number(value: object, field: str) -> float:
     return number
 
 
+#: The number system of the image being drawn, or None for the old rule.
+#: ``whatsapp_ui._chart`` sets it from the chart spec's stamped ``numbering``
+#: (``whatsapp_assistant_channel.md`` §13.10). A ContextVar, so two charts
+#: drawn at once on two threads never read each other's system.
+_NUMBERING: ContextVar[str | None] = ContextVar("whatsapp_render_numbering", default=None)
+
+
+@contextmanager
+def numbering(system: Any) -> Iterator[None]:
+    """Draw every number inside in *system* (resolved: a bad value is
+    "indian")."""
+    from acb_common.number_system import resolve
+
+    token = _NUMBERING.set(resolve(None, system))
+    try:
+        yield
+    finally:
+        _NUMBERING.reset(token)
+
+
 def fmt(value: float, unit: str = "") -> str:
-    """A short number: 1234 → 1,234, 12.5 → 12.5, with the unit after it."""
-    text = f"{value:,.0f}" if float(value).is_integer() else f"{value:,.1f}"
+    """A short number: 1234 → 1,234, 12.5 → 12.5, with the unit after it.
+
+    Inside :func:`numbering`, a number from the system's big band up is short
+    in that system: 12.5 L and 1.35 Cr, or 12.5M and 1.35B, with its own
+    digit grouping. Below the band every digit stays, as before.
+    """
+    system = _NUMBERING.get()
+    if system is not None and abs(float(value)) >= big_band(system):
+        text = compact_number(value, system)
+    else:
+        text = f"{value:,.0f}" if float(value).is_integer() else f"{value:,.1f}"
     if not unit:
         return text
     return f"{unit}{text}" if unit in {"₹", "$", "€", "£"} else f"{text} {unit}"
