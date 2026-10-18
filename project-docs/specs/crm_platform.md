@@ -7059,6 +7059,12 @@ The fences are `tests/unit/test_crm_questions_chat.py`,
   (a WhatsApp text chat) or no holder, it sends nothing. The chat then
   states the default and names Open questions. So a member's pick in the
   chat cannot change an answered part with no card first.
+- A late pick (follow-up after #1140). A card answered after the park
+  window arrives in a new run. So the tool records each card that it shows
+  in Redis, for the member and the org, for 24 hours. The gate takes a pick
+  of a card shown in this run or in that record, and never with no card
+  channel or on a fault of Redis. The gateway clears the record on the
+  pick, on `@default` and on each admin write of the question.
 - A run that does not hold `crm_answer_question` (a failed facts read, a
   `no_egress` run) shows no card. The assembly of a streamed run tells the
   holder (`mark_answer_tool`).
