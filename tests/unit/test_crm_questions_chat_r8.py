@@ -502,6 +502,9 @@ async def test_two_sessions_propose_at_once_and_both_stay(chat_env, app_engine, 
 
     p = chat_env
     seed_a(p)
+    # The row is there first, so the insert of `lock_cursor` waits on nothing:
+    # only the lock of the row orders the two sessions.
+    cursor(p, p.org_a, "zoho:questions", {"seen": []})
     paused, go = asyncio.Event(), asyncio.Event()
     real_merge = runs.merge_cursor_entry
 
