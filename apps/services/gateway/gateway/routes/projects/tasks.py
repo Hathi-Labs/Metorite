@@ -1515,6 +1515,16 @@ async def claim_task(
     key. That is the order of ``set_assignees``: the key before the row,
     and the watcher key after it. So the claim adds no lock order that a
     member path does not already have, and it changes no member path.
+
+    **EA-13c (EA3-42).** Before the row lock, an agent's claim opens its
+    run through ``agent_runs.open_run_for_claim`` while the runs flag is on.
+    The one proven rule is the run BEFORE the task row: a run writer (a
+    member's start, the archive request) takes the run and then the row for
+    its comment, and O-M9 of ``test_mcp_edge_claim.py`` deadlocks when the
+    claim takes the row first. The run's place against the assignee key does
+    not matter, because no run writer takes an assignee key, so no cycle can
+    pass through the key. The answer carries ``agent_run_id``, which is None
+    for a member and with the flag off.
     """
     me = actor(user).strip().lower()
     async with _tenant_session() as db:
@@ -1548,6 +1558,16 @@ async def claim_task(
         # `assignment` row, answered `assigned: true` and emitted
         # `pm.task.assigned` for a row it did not write.
         added = await _insert_claim_assignees(db, task_id, wanted, by=actor(user))
+
+        # 2b. EA-13c (EA3-42): an agent's claim opens its run while the runs
+        # flag is on, through the one run writer. BEFORE the row: a run writer
+        # takes the run, then the task row (its comment bumps the row), and
+        # the claim keeps that order (O-M9). Its place after the key does not
+        # matter: no run writer takes an assignee key. A refusal below rolls
+        # the run back with the claim. None for a member.
+        from gateway.routes.projects import agent_runs
+
+        run_id = await agent_runs.open_run_for_claim(db, task_id, user)
 
         # 3. The row lock, and the row as the lock read it (fix round 1).
         # Two claims serialise here, and the second one sees the new
@@ -1610,6 +1630,8 @@ async def claim_task(
         result["moved"] = moved is not None
         result["assigned"] = bool(added)
         result["not_notified"] = notified["skipped"]
+        # EA-13c: the run that this claim opened or found, else None.
+        result["agent_run_id"] = run_id
 
     if added:
         await emit("pm.task.assigned", {

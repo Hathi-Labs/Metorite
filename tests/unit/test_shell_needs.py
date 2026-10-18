@@ -1004,24 +1004,23 @@ class TestAnAgentQuestionReadsAsTheProjectsBellReadsIt:
     client as the Projects UI does ("Claude Code"), with the same verb."""
 
     def test_the_sentence_names_the_client(self):
-        row = {"kind": "agent_question", "actor": "mcp:claude-code",
+        row = {"kind": "agent_question", "actor": "mcp:claude.ai:claude-code",
                "task_title": "Fix the extruder", "task_number": 12}
         assert shell._sentence(row) == "Claude Code asked you about #12 Fix the extruder"
 
-    def test_the_name_table_is_the_one_of_agent_runs_ts(self):
-        import re
+    def test_the_name_is_the_one_label_of_the_case_file(self):
+        """WS-55 EA-13a. The bell reads ``agent_oauth.client_label``, the ONE
+        label map. ``tests/fixtures/agent_client_names.json`` holds each case,
+        and ``agentRuns.test.ts`` reads the same file. Mutation: a second
+        table in ``needs.py`` that titles a slug fails here."""
+        import json
         from pathlib import Path
 
-        src = (Path(__file__).resolve().parents[2] / "workbench" / "control_plane" / "src"
-               / "app" / "projects" / "lib" / "agentRuns.ts").read_text(encoding="utf-8")
-        block = src[src.index("const CLIENT_NAMES"):]
-        block = block[: block.index("};")]
-        ts = dict(re.findall(r'^\s*"?([\w-]+)"?\s*:\s*"([^"]+)"', block, re.M))
-        assert ts and ts == shell.CLIENT_NAMES
-        for slug, name in ts.items():
-            assert shell.client_name(f"mcp:{slug}") == name
-        assert shell.client_name("mcp:cursor") == "Cursor"
-        assert shell.client_name("") == "Agent"
+        cases = json.loads((Path(__file__).resolve().parents[1] / "fixtures"
+                            / "agent_client_names.json").read_text(encoding="utf-8"))
+        for case in cases["cases"]:
+            assert shell.client_name(case["via"]) == case["label"], case["why"]
+        assert not hasattr(shell, "CLIENT_NAMES")
 
     def test_the_verb_is_the_one_of_notifications_ts(self):
         import re

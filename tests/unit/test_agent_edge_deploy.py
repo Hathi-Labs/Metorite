@@ -314,14 +314,24 @@ def _index(lines: list[str], needle: str) -> int:
     return next(i for i, ln in enumerate(lines) if needle in ln)
 
 
-def test_the_step_sits_between_the_console_restart_and_the_strict_check() -> None:
+def test_the_step_sits_right_after_the_gateway_and_before_the_strict_check() -> None:
+    """EA-13a fix round 1. The edge restarts right after the gateway answers,
+    before the Console. The gateway checks the stamp that the edge signs, so a
+    gap between the two restarts is a window of 401s. Mutation: move the step
+    back after the Console restart, and this fails."""
     lines = _read(APPLY).splitlines()
     begin, end = lines.index(BEGIN), lines.index(END)
     assert lines.count(BEGIN) == 1 and lines.count(END) == 1
+    gateway = _index(lines, 'echo "Gateway is active"')
     console = _index(lines, "sudo systemctl restart acb-customer-console")
     dropins = _index(lines, 'install_dropins "$APP_DIR/deploy/hostinger"')
     check = _index(lines, "if ! bh2_strict_check; then")
-    assert dropins < console < begin < end < check
+    assert dropins < gateway < begin < end < console < check
+    # Nothing but the step's own heading and comments sits between the
+    # gateway's last line and the step.
+    between = [ln for ln in lines[gateway + 1: begin]
+               if ln.strip() and not ln.lstrip().startswith("#")]
+    assert between == ['echo "==> Restarting the agent edge (systemd, WS-55 EA-10a)"'], between
 
 
 def test_the_step_is_guarded_by_is_enabled() -> None:

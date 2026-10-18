@@ -168,7 +168,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 from urllib.parse import quote, urlencode
 
-from acb_auth import UserContext, get_current_user
+from acb_auth import UserContext, agent_oauth, get_current_user
 from acb_common.priority import task_cell
 from fastapi import Depends, HTTPException
 from gateway.routes.projects.personal import NOT_NOW_DISPOSITIONS
@@ -505,29 +505,15 @@ def _who(actor: Any) -> str:
     return raw.split("@")[0] or raw
 
 
-#: Names that title case gets wrong. The same table as ``CLIENT_NAMES`` in
-#: ``app/projects/lib/agentRuns.ts``, and ``tests/unit/test_shell_needs.py``
-#: fails when the two differ.
-CLIENT_NAMES: dict[str, str] = {
-    "chatgpt": "ChatGPT",
-    "claude-ai": "Claude",
-    "vscode": "VS Code",
-    "vs-code": "VS Code",
-    "github-copilot": "GitHub Copilot",
-    "openai": "OpenAI",
-}
-
-
 def client_name(via: Any) -> str:
-    """``mcp:claude-code`` → "Claude Code", as ``clientName`` in
-    ``agentRuns.ts`` reads it. An empty value reads "Agent"."""
-    raw = str(via or "").strip()
-    slug = (raw[len("mcp:"):] if raw.startswith("mcp:") else raw).lower()
-    if not slug:
-        return "Agent"
-    if slug in CLIENT_NAMES:
-        return CLIENT_NAMES[slug]
-    return " ".join(w[:1].upper() + w[1:] for w in re.split(r"[-_\s]+", slug) if w)
+    """``mcp:claude.ai:claude-code`` → "Claude Code", as ``clientName`` in
+    ``agentRuns.ts`` reads it. An empty value reads "Agent".
+
+    WS-55 EA-13a (spec §12.2 item 1): the ONE label map is
+    ``acb_auth.agent_oauth.CLIENT_LABELS``, and this reads it. The table that
+    lived here is gone, so the bell and the Projects UI cannot drift.
+    """
+    return agent_oauth.client_label(str(via or ""))
 
 
 def closed_by(actor: Any, member: str) -> dict[str, str | None]:

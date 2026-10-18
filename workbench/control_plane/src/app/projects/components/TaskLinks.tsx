@@ -12,6 +12,10 @@
  *
  * Each row opens its link in a new tab, so the task stays where it is. The
  * drawing rules (icon, state chip, names) are `lib/taskLinks.ts`.
+ *
+ * WS-55 EA-13b (EA3-44): a link that an agent added reads "added by Claude
+ * Code", and one that the GitHub App made reads "linked by GitHub"
+ * (`refAddedBy`). A person's own link reads nothing more.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -22,7 +26,7 @@ import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 
 import { refsApi, type TaskRefRow } from "../lib/api";
-import { pastedLink, refIcon, refNames, refState } from "../lib/taskLinks";
+import { pastedLink, refAddedBy, refIcon, refNames, refState } from "../lib/taskLinks";
 
 export function TaskLinks({
   taskId,
@@ -104,6 +108,7 @@ export function TaskLinks({
       {rows.map((row) => {
         const { main, aside } = refNames(row);
         const state = refState(row.state);
+        const addedBy = refAddedBy(row);
         return (
           <div
             key={row.id}
@@ -117,8 +122,19 @@ export function TaskLinks({
               className="flex min-w-0 flex-1 items-center gap-2 text-left hover:text-primary"
             >
               <AppIcon name={refIcon(row)} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 truncate text-foreground">{main}</span>
-              {aside ? <span className="shrink-0 text-muted-foreground">{aside}</span> : null}
+              {/* EA-13b: who added the link sits on a second line, so the
+                  title keeps the width of the row. */}
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="min-w-0 truncate text-foreground">{main}</span>
+                  {aside ? <span className="shrink-0 text-muted-foreground">{aside}</span> : null}
+                </span>
+                {addedBy ? (
+                  <span className="truncate text-[10px] text-muted-foreground" data-ref-added-by>
+                    {addedBy}
+                  </span>
+                ) : null}
+              </span>
             </a>
             {state ? (
               <Badge tone={state.tone} title={`${row.label} is ${state.label.toLowerCase()}`}>

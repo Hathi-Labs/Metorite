@@ -124,7 +124,9 @@ def signed_request_headers(
         key,
         organization_id=caller.organization_id,
         connection_id=caller.connection_id,
-        actor_via=agent_oauth.actor_via_for(caller.client_origin),
+        # EA-13a: the connection's own client id, as branch 0 stamps it.
+        actor_via=agent_oauth.actor_via_for(
+            caller.client_origin, client_id=caller.connection_client_id),
         method=method,
         path=path,
         query=list(query),

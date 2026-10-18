@@ -95,6 +95,11 @@ ORG = "11111111-2222-4333-8444-555555555555"
 CONN = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 ORIGIN = "https://client.example"
 VIA = "mcp:client.example"
+#: EA-13a. The stamp of an R8 connection. Its client id is
+#: ``https://client.example/meta.json``, so ``agent_oauth.actor_via_for`` adds
+#: the slug ``meta``. :data:`VIA` stays the host stamp of the database-free
+#: fakes and of the golden signed string.
+R8_VIA = "mcp:client.example:meta"
 GOOD = "good-token"
 WRITE_SCOPES = ("projects:read", "projects:write")
 CHALLENGE_403_WRITE = (
@@ -885,7 +890,7 @@ async def _result(world, name: str, tool: str, **arguments: Any) -> dict[str, An
 def _signed(world, name: str, method: str, path: str, *, body: bytes = b"",
             query: str = "", if_match: str | None = None) -> dict[str, str]:
     headers = agent_signing.signed_headers(
-        KEY, organization_id=world.org, connection_id=world.c[name], actor_via=VIA,
+        KEY, organization_id=world.org, connection_id=world.c[name], actor_via=R8_VIA,
         method=method, path=path, query=query, body=body)
     if method != "GET":
         headers["Content-Type"] = "application/json"
@@ -1172,14 +1177,14 @@ class TestTheToolsOverMcp:
         via = live.seeder.one(
             "SELECT meta->>'via' FROM pm_activities WHERE task_id = CAST(:t AS uuid)"
             " AND type = 'status_change'", t=task)
-        assert via == "mcp:client.example"
+        assert via == R8_VIA
         ref_via = live.seeder.one(
             "SELECT via FROM pm_task_refs WHERE task_id = CAST(:t AS uuid)", t=task)
-        assert ref_via == "mcp:client.example"
+        assert ref_via == R8_VIA
         link_via = live.seeder.one(
             "SELECT meta->>'via' FROM pm_activities WHERE task_id = CAST(:t AS uuid)"
             " AND type = 'link'", t=task)
-        assert link_via == "mcp:client.example"
+        assert link_via == R8_VIA
 
     async def test_a_move_into_cancelled_stays_a_human_step(self, live):
         """EA-6f (EA3-32). ``test_mcp_edge_claim.py`` holds the move to done."""
