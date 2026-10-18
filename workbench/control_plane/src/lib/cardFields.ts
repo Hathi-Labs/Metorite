@@ -44,6 +44,8 @@ export interface FieldSpec {
   kind?: FieldKind;
   /** Several values of this kind, one element each. */
   many?: boolean;
+  /** The label of a run of numbered keys, when adding "s" reads wrong. */
+  plural?: string;
 }
 
 /**
@@ -69,8 +71,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "body": { label: "Text" },
   // `file_tasks` (2026-10-18): a task the batch leaves out, and why.
   // `link_tasks_batch` (2026-10-19): a link the batch leaves out, and why.
-  "cannot link N": { label: "Cannot link" },
-  "cannot move N": { label: "Cannot move" },
+  "cannot link N": { label: "Cannot link", plural: "Cannot link" },
+  "cannot move N": { label: "Cannot move", plural: "Cannot move" },
   "capacity": { label: "Capacity" },
   "category": { label: "Category", kind: "category" },
   "close_after_months": { label: "Close after (months)" },
@@ -89,7 +91,7 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "dependency warnings": { label: "Order warnings" },
   "description": { label: "Description" },
   // `file_tasks`: one project the batch files into, its count and its drops.
-  "destination N": { label: "Into" },
+  "destination N": { label: "Destination" },
   "disposition": { label: "Triage", kind: "words" },
   "dropped links": { label: "Links dropped" },
   "drops (values with no field in the destination)": { label: "Values dropped" },

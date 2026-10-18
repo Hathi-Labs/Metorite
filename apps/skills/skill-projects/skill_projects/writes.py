@@ -2551,8 +2551,8 @@ async def file_tasks(moves: str, include_subtasks: str = "") -> str:
     and fields (optional) answers that destination's REQUIRED fields for that
     task, keyed by field NAME. The tool plans every move first, as move_task
     does: what carries over, what drops, and which required field a task
-    lacks. A task that cannot move (a required field it lacks, a project you
-    cannot see, an archived project, a task already there) is named on the
+    lacks. A task that cannot move (a required field it lacks, a project not
+    visible to you, an archived project, a task already there) is named on the
     card and left out. The member sees ONE card with a checkbox for each
     task, unticks a wrong one, and approves once. include_subtasks (yes or
     no) is for every task: when a task has subtasks and no answer is given,
@@ -2784,7 +2784,7 @@ async def link_tasks_batch(links: str) -> str:
     object per link: {"from_task_id": "<full_id>", "to_task_id": "<full_id>",
     "type": "blocks"}. type is blocks (from blocks to: to waits until from is
     done), relates_to, or duplicates, and relates_to when left out. The tool
-    checks every link first: a task you cannot see, a link that exists
+    checks every link first: a task not visible to you, a link that exists
     already, and a blocks link that would make a loop are named on the card
     and left out. The member sees ONE card with a checkbox for each link,
     unticks a wrong one, and approves once. The receipt names each link made

@@ -185,6 +185,8 @@ loses the description again.
 | "Break it into three steps" | `add_subtasks` | `POST /projects/tasks` × n, `parent_task_id` | Archive |
 | "It is blocked by #140" | `link_tasks` | `POST /projects/tasks/{id}/links` | `DELETE …/links/{id}` |
 | "Move it into the Q4 project" | `move_task` | `POST /projects/tasks/move/preview`, then `/move` | Move back |
+| "File my inbox into the right projects" | `file_tasks` (§28) | The routes of `move_task`, one task at a time | Move back |
+| "Link these six tasks in order" | `link_tasks_batch` (§28) | The route of `link_tasks`, one link at a time | `DELETE …/links/{id}` |
 | "Watch this task for me" | `watch` | `PUT /projects/tasks/{id}/watch` | Unwatch |
 | "Defer it to Monday" | `defer` | `POST /projects/tasks/{id}/defer` | Per-member overlay, mine |
 | "Make a project called Q4 launch under Marketing" | `create_project` | `POST /projects/nodes` | Archive |
@@ -6270,3 +6272,100 @@ that "the UI looks poor". The card drew a full form for each task. On
 | 1 to 9, at rest | `components/planCardBody.test.ts` |
 | Other forms | `planCardBody.test.ts` "a form that is not a plan" |
 | Clicks, keys, 390 px | `e2e/plan-card.spec.ts` |
+
+## 28. One card to file or link many tasks (2026-10-18)
+
+**Status.** Built 2026-10-18 and 2026-10-19, branch `inbox-file-batch`. It
+adds no flag, no route and no SQL. It adds two tools that write through the
+routes of `move_task` and `link_tasks`.
+
+### 28.1 The report
+
+On 2026-10-18 the owner wrote: "I have been trying to move tasks from my
+inbox to the appropriate project in the project app, but it constantly
+fails."
+
+The production trace of run 6847ff16 shows the cause. The chat read the
+inbox and seven projects, and then it asked an approval card. Nobody
+answered for ten minutes, so the run parked with nothing written. A late
+answer started the run again from the start. The trace shows ten such
+restarts in three days.
+
+`move_task` moves tasks from ONE source project to ONE destination in each
+call, and each call asks its own card. So an inbox that goes into seven
+projects needs seven cards in one long run. On 2026-10-17 the owner asked to
+approve many tasks at once. On 2026-10-19 the owner asked the same for
+links, "only if there are a lot of tasks to be linked".
+
+### 28.2 What is built
+
+- **`file_tasks(moves, include_subtasks)`.** `moves` is a JSON list of
+  `{task_id, destination_project_id, fields?}`. The rows can go to different
+  projects and come from different projects.
+- **`link_tasks_batch(links)`.** `links` is a JSON list of
+  `{from_task_id, to_task_id, type?}`. `type` is `blocks`, `relates_to` or
+  `duplicates`.
+- **One engine.** `writes.py` holds `_ask_batch` (the card), `_apply_batch`
+  (the writes) and `_batch_receipt` (the receipt). Both tools use them.
+- **The card is the rows card of `create_tasks`.** It is
+  `request_confirmation(rows=…)` through `_confirm`, with one checkbox for
+  each act. The member can untick a row and approve the rest once.
+- **The receipt card is `BatchReceiptCard`.** `ProjectToolCards.tsx` lists
+  both tools in `BATCH_TOOLS`.
+
+### 28.3 Rules
+
+1. **Plan first, with reads only.** `file_tasks` reads each destination
+   once, then plans each task through `_plan_move`, the planner of
+   `move_task`. `link_tasks_batch` reads each task and its links. No write
+   comes before the card.
+2. **One card, one approval.** The card lists each act that can run. The
+   body names each act that cannot run, with the reason. One approval runs
+   every ticked act.
+3. **No second write path.** A move is `_Move.send()`, the write of
+   `move_task`. A link is the POST of `link_tasks`. `manifest.COMPOSITE`
+   records each tool as a composite of the single tool.
+4. **The member's own visibility decides (R5).** Every read and every write
+   goes as the member. When the gateway answers 404 for a task or a project,
+   the card names that row and leaves it out.
+5. **What `file_tasks` leaves out.** A task that lacks a required field of
+   the destination, a hidden task or project, an archived project, a folder
+   and a task that is already there. A row with `fields` moves through the
+   one-task route, as `move_task` sends it.
+6. **What `link_tasks_batch` leaves out.** A hidden task, a link that
+   exists, a link of a task to itself, and a `blocks` link that makes a
+   loop. The loop check knows the links of the batch and one step of the
+   links that exist. The route checks the whole chain at the write.
+7. **Subtasks are one question.** When a task to file has subtasks and the
+   call has no answer, the tool asks once for the selection, before any
+   card (D-PM-38).
+8. **Each row is its own write.** A row that fails does not stop the next
+   row, and nothing raises after the first write. The receipt counts each
+   act done, refused, unknown, unticked and left out, row by row.
+9. **The agent picks the tool by count.** Two or more tasks to file go to
+   `file_tasks`. Three or more links go to `link_tasks_batch`. One or two
+   links stay with `link_tasks`, as the owner asked.
+
+### 28.4 Fences (R7)
+
+| Rule | Test |
+|---|---|
+| 1, 2 | `test_projects_file_tasks.py` `test_three_destinations_are_one_card_and_one_approval_moves_them_all`, `test_everything_before_the_card_is_a_read`, and the same two in `test_projects_link_batch.py` |
+| 2 | `test_an_unticked_row_is_not_moved_and_the_receipt_names_it`, `test_an_unticked_link_is_not_made`, `test_a_declined_card_writes_nothing` (both files) |
+| 3 | `test_projects_agent_writes.py` `test_every_write_is_a_class_b_route_the_manifest_gives_this_tool`, `test_every_class_b_tool_awaits_the_one_confirm_door` |
+| 4, 5 | `test_an_invisible_task_and_a_hidden_project_are_named_not_moved`, `test_an_archived_project_and_a_folder_are_named_not_moved`, `test_a_task_that_needs_a_field_is_left_out_and_named`, `test_a_row_with_its_fields_moves_through_the_narrow_route` |
+| 6 | `test_projects_link_batch.py` `test_a_hidden_task_an_existing_link_and_a_self_link_are_named`, `test_a_blocks_link_against_an_existing_one_is_a_loop`, `test_the_batchs_own_links_make_a_loop_and_the_closing_one_is_left_out` |
+| 7 | `test_subtasks_with_no_answer_are_one_question_before_any_card` |
+| 8 | `test_a_refused_move_is_a_row_of_the_receipt_and_the_counts_hold`, `test_a_lost_connection_is_unknown_and_never_raises`, `test_a_refused_link_is_a_row_of_the_receipt` |
+| 9 | `test_the_projects_assistant_holds_the_tool_and_its_instructions_name_it`, `test_the_instructions_keep_link_tasks_for_one_or_two_links` |
+| The card | `cardFields.test.ts` "the one-card batches", `ProjectToolCards.test.ts` "the one-card batches of writes.py" |
+
+### 28.5 What this does not do
+
+- **It does not stop a run from parking.** A card that nobody answers in ten
+  minutes still parks the run. The change makes one card where there were
+  many, so one answer files the whole inbox.
+- **A row does not take a status.** The move puts each task in a lane of the
+  destination by category, as `move_task` does. To set a status after the
+  move, use `update_task` or `bulk_update`.
+- **Several new statuses still have no batch tool** (§24.5).
