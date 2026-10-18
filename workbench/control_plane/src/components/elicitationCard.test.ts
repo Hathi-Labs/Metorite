@@ -25,6 +25,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
+import { DECLINED_NOTE, DECLINED_TITLE } from "@/lib/declineAnswer";
 import ElicitationCard, {
   ANSWERED_TITLE,
   NEEDS_ANSWER,
@@ -180,5 +181,119 @@ describe("ElicitationCard: Submit never blocks without a reason", () => {
     const done = render({ questions: OWNER, answered: "Target deadline: 1 Dec" });
     expect(done).not.toContain("data-elicitation-blocked");
     expect(done).not.toContain(OPTIONAL_MARK);
+  });
+});
+
+// Owner request, 2026-10-18: "if I don't want to answer a question for some
+// reason, I should be allowed to turn off the card." The envelope and the
+// gate are in `src/lib/declineAnswer.test.ts`, and the shared control in
+// `src/components/notNow.test.ts`.
+// Mutations caught: Not now shows on a card that parks no run, the X loses
+// its name, a declined card keeps Submit, Not now or the box, it draws as an
+// error, or Submit and Not now stop sharing the one gate.
+describe("ElicitationCard: Not now", () => {
+  it("draws Not now beside Submit and an X in the title row", () => {
+    const live = render({ onDecline: () => {} });
+    expect(live).toContain('data-not-now=""');
+    expect(element(live, "data-not-now-close")).toContain('aria-label="Not now"');
+    // Submit comes first, then Not now.
+    expect(live.indexOf("data-elicitation-submit")).toBeLessThan(live.indexOf('data-not-now=""'));
+  });
+
+  it("draws no Not now on a card that parks no run", () => {
+    expect(html).not.toContain("data-not-now");
+  });
+
+  it("locks a declined card, and says Not answered in muted words", () => {
+    const done = render({ onDecline: () => {}, declined: true });
+    expect(done).toContain('data-elicitation-card="declined"');
+    expect(done).toContain(`>${DECLINED_TITLE}<`);
+    expect(done).toContain(DECLINED_NOTE);
+    expect(done).not.toContain("data-elicitation-submit");
+    expect(done).not.toContain("data-not-now");
+    expect(done).not.toContain("<textarea");
+    expect(done).not.toMatch(/destructive|role="alert"/);
+    // Each option is off.
+    const opts = done.match(/<button[^>]*data-elicitation-option[^>]*>/g) ?? [];
+    expect(opts.length).toBe(2);
+    expect(opts.every((b) => b.includes("disabled"))).toBe(true);
+  });
+
+  it("sends Submit and Not now through one gate, so only the first fires", () => {
+    expect(src).toMatch(/exit\.current\.submit\(\(\) => onSubmit\(/);
+    expect(src).toMatch(/exit\.current\.decline\(onDecline\)/);
+  });
+});
+
+// Review of #1152: a "Not now" may name only a default the member SAW. The
+// card draws each stated default, and a declined card with one says what
+// Metorite uses now, not "ask again later".
+// Mutations caught: the line goes, a recommended option draws as a default,
+// or the declined note ignores the default.
+describe("ElicitationCard: the stated default", () => {
+  const STATED = [{
+    header: "Archive",
+    question: "Archive the 8 done tasks?",
+    default: "Keep them for now",
+    allowFreeformInput: false,
+    options: [{ label: "Yes", recommended: true }, { label: "No" }],
+  }];
+  const CRM = [{
+    header: "Revenue",
+    question: "When you ask about revenue, what should Metorite count?",
+    allowFreeformInput: false,
+    options: [
+      { label: "Billed", key: "invoice" },
+      { label: "Use the default", description: "Billed, until a CRM admin answers", key: "@default" },
+    ],
+  }];
+
+  it("draws If you skip under the question, from the card's default or the CRM default", () => {
+    expect(element(render({ questions: STATED }), "data-elicitation-default")).toContain("text-muted-foreground");
+    expect(render({ questions: STATED })).toMatch(/If you skip: .*Keep them for now/);
+    expect(render({ questions: CRM })).toMatch(/If you skip: .*Billed, until a CRM admin answers/);
+  });
+
+  it("never draws a recommended option as the default", () => {
+    expect(html).not.toContain("data-elicitation-default");
+  });
+
+  it("says what Metorite uses now on a declined card with a default", () => {
+    const done = render({ questions: STATED, onDecline: () => {}, declined: true });
+    expect(done).toContain("Metorite uses Keep them for now.");
+    expect(done).not.toContain(DECLINED_NOTE);
+    expect(render({ onDecline: () => {}, declined: true })).toContain(DECLINED_NOTE);
+  });
+});
+
+// Review of 64f663a72: the default line and the declined note are ONE plain
+// muted string. No pill, link, mark or highlight pass may wrap part of it
+// (for example the words of an option label inside the default).
+describe("ElicitationCard: the default line and the note are plain text", () => {
+  const CARD = [{
+    header: "Archive",
+    question: "Archive the 8 done tasks in Apollo?",
+    default: "Keep them open for now",
+    allowFreeformInput: false,
+    options: [{ label: "Archive all 8", recommended: true }, { label: "Keep them" }],
+  }];
+  /** The inner markup of the first element that carries `attr`. */
+  const inner = (markup: string, attr: string) => {
+    const open = element(markup, attr);
+    const tag = /^<(\w+)/.exec(open)![1];
+    const from = markup.indexOf(open) + open.length;
+    return markup.slice(from, markup.indexOf(`</${tag}>`, from));
+  };
+
+  it("draws the default line with no nested element", () => {
+    for (const declined of [false, true]) {
+      const body = inner(render({ questions: CARD, declined, onDecline: () => {} }), "data-elicitation-default");
+      expect(body).toBe("If you skip: Keep them open for now");
+    }
+  });
+
+  it("draws the declined note with no nested element", () => {
+    const body = inner(render({ questions: CARD, declined: true, onDecline: () => {} }), "data-rollup-aside");
+    expect(body).toBe("Metorite uses Keep them open for now.");
   });
 });

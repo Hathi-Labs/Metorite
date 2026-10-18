@@ -34,7 +34,8 @@ import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import { capabilityLabel, type RoomParticipant } from "@/lib/rooms";
 import { EntityIndexContext } from "@/components/ChatEntityPill";
 import { buildEntityIndex } from "@/lib/entityIndex";
-import { pillsForTurn, taskRefsForTurn } from "@/lib/projectsAgent";
+import { pillsForTurn, taskRefModeForTurn } from "@/lib/projectsAgent";
+import { useRevalidateOnTools } from "@/lib/taskRefs";
 import AnswerDetails from "@/components/AnswerDetails";
 import { tierRouteLabel, tierRoutingUiOn } from "@/lib/tierRouting";
 import { isEdited } from "@/lib/chatEdit";
@@ -117,6 +118,7 @@ function MessageBubble({
   sessionId,
   onChoice,
   onHitlRespond,
+  onHitlDecline,
   askAnswers,
   onFileOpen,
   onEditLast,
@@ -135,6 +137,9 @@ function MessageBubble({
    *  answers resume the parked run via /agent/respond-input instead of being
    *  sent as a new chat message. Falls back to onChoice when absent. */
   onHitlRespond?: (requestId: string, answer: string) => void;
+  /** "Not now" on a blocking generative-UI card (`lib/declineAnswer.ts`).
+   *  Only a card with a `request_id` parks a run, so only it gets one. */
+  onHitlDecline?: (requestId: string) => void;
   /** The answers this session sent to blocking cards, by `request_id`
    *  (`lib/askAnswers.ts`). A card that has one stays locked on a remount. */
   askAnswers?: ReadonlyMap<string, string>;
@@ -242,7 +247,18 @@ function MessageBubble({
   // the context. Only a Projects turn builds it: another agent's tools hold
   // email bodies and other text that no pill may resolve against.
   const pills = pillsForTurn(entityPills, message);
-  const refs = taskRefsForTurn(taskRefAgent, message);
+  // An orchestrator turn links every bare #N only when it asked a task agent
+  // (review of PR #1156). Otherwise only a number followed by its title.
+  const refs = taskRefModeForTurn(taskRefAgent, message, dedupedToolEvents);
+  // A tool of this turn may have created the #234 that its answer, or a card,
+  // names next. Ask the task lookup again, so a miss read before the write
+  // does not stay text (owner report, 2026-10-19). Only this chat's answers
+  // and the cards (`""`) are asked again, never another session's numbers.
+  useRevalidateOnTools(
+    dedupedToolEvents.filter((t) => t.status === "done").length,
+    !!message.streaming,
+    sessionId,
+  );
   const entityIndex = useMemo(
     () => (pills ? buildEntityIndex(dedupedToolEvents) : null),
     [pills, dedupedToolEvents],
@@ -600,6 +616,7 @@ function MessageBubble({
     const answered = requestId
       ? (askAnswers?.get(requestId) ?? toolAnswers.get(requestId))
       : undefined;
+    const decline = requestId && onHitlDecline ? () => onHitlDecline(requestId) : undefined;
     // An element that needs the member is marked, so the pin above
     // the composer can find it and scroll to it (§24 rule 1).
     const ask = genUiPlacement(spec) === "ask";
@@ -643,7 +660,7 @@ function MessageBubble({
           askTarget={answered === undefined ? target : undefined}
           answered={answered !== undefined} summary={askOutcome(spec, answered) || undefined}>
           <div {...askAttr} className="min-w-0 outline-none">
-            <GenerativeUINode spec={spec} onAction={act} answered={answered} />
+            <GenerativeUINode spec={spec} onAction={act} answered={answered} onDecline={decline} />
           </div>
         </RollupCard>
       );
@@ -651,7 +668,7 @@ function MessageBubble({
     // A result card: a long one opens cut, with "Show all" (§29 rule 2).
     return (
       <RollupCard key={i} id={target} title={title} icon={icon} header={header} clamp>
-        <GenerativeUINode spec={spec} onAction={act} answered={answered} />
+        <GenerativeUINode spec={spec} onAction={act} answered={answered} onDecline={decline} />
       </RollupCard>
     );
   };
@@ -820,6 +837,7 @@ export default React.memo(MessageBubble, (a, b) =>
   // render when the card arrived, with a stale `submitText` inside it, so a
   // 409 fallback could queue the answer behind a run that had ended.
   a.onHitlRespond === b.onHitlRespond &&
+  a.onHitlDecline === b.onHitlDecline &&
   a.askAnswers === b.askAnswers &&
   a.onEditLast === b.onEditLast &&
   a.onRetryMessage === b.onRetryMessage &&

@@ -37,6 +37,7 @@ export function WeightToggles({
   onChange,
   size = "md",
   showDeepWork = true,
+  after,
 }: {
   item: Pick<MyTask, "important" | "leveraged" | "deepWork" | "dueAt">;
   urgentWindowHours?: number;
@@ -49,6 +50,8 @@ export function WeightToggles({
   /** Deep work is the member's own (it is how I do the work, not what the
    *  work is). Projects draws the SHARED pair and leaves it off (D78). */
   showDeepWork?: boolean;
+  /** Drawn last in the same wrapping row: the task body's level badge. */
+  after?: React.ReactNode;
 }) {
   const urgent = isUrgent(item, urgentWindowHours);
   const pad = size === "sm" ? "px-2 py-0.5 text-[11px]" : "px-2.5 py-1 text-xs";
@@ -102,6 +105,7 @@ export function WeightToggles({
         Urgent
         <span className="text-[9px] opacity-60">(auto)</span>
       </span>
+      {after}
     </div>
   );
 }

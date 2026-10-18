@@ -98,6 +98,8 @@
     "defer",
     "link_tasks",
     "move_task",
+    "file_tasks",
+    "link_tasks_batch",
     "report_save",
     "unarchive_task",
     "unlink_tasks",

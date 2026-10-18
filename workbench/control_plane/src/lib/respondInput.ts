@@ -54,6 +54,23 @@ export interface RespondInputBody {
   /** The account this tab drew the card for (WS-51 S2). The route refuses
    *  the answer when the browser is signed in to another account now. */
   as?: string | null;
+  /** The member's "Not now" (`lib/declineAnswer.ts`). `answer` is then
+   *  empty, and the run goes on without one. */
+  declined?: boolean;
+}
+
+/**
+ * The route's refusal for a malformed decline, or null to go on. `declined`
+ * must be a boolean, and a decline carries no answer. The gateway checks the
+ * same (`UserInputResponseRequest`), so this only saves it the trip.
+ */
+export function malformedDecline(declined: unknown, answer: string): Response | null {
+  if (declined === undefined || declined === false) return null;
+  if (declined === true && !answer.trim()) return null;
+  return new Response(
+    JSON.stringify({ error: "A declined card carries no answer, and declined is true or false." }),
+    { status: 400, headers: { "Content-Type": "application/json" } },
+  );
 }
 
 /**

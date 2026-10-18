@@ -98,7 +98,9 @@ from skill_projects.writes import (
     create_type,
     defer,
     edit_comment,
+    file_tasks,
     link_tasks,
+    link_tasks_batch,
     move_task,
     remove_task_ref,
     report_save,
@@ -204,6 +206,10 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     # Class B — several new tags or types, one batch (H-273)
     "create_tags",
     "create_types",
+    # Class B — several tasks filed into their projects, one card (2026-10-18)
+    "file_tasks",
+    # Class B — several links between tasks, one card (2026-10-19)
+    "link_tasks_batch",
     # Class B — the rest of the writes (S5)
     "capture_intake",
     "mark_notifications_read",

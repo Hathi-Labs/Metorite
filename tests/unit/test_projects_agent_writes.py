@@ -543,6 +543,21 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     "create_types": [
         {"project_id": UUID, "types": '[{"name": "Chore", "icon": "broom"}, {"name": "Spike"}]'},
     ],
+    # 2026-10-19 — several links between tasks, one card with rows.
+    "link_tasks_batch": [
+        {
+            "links": f'[{{"from_task_id": "{UUID}", "to_task_id": "{OTHER}"}}, '
+            f'{{"from_task_id": "{OTHER}", "to_task_id": "{UUID}", "type": "duplicates"}}, '
+            f'{{"from_task_id": "{UUID}", "to_task_id": "{OTHER}", "type": "duplicates"}}]',
+        }
+    ],
+    # 2026-10-18 — several tasks filed into their projects, one card with rows.
+    "file_tasks": [
+        {
+            "moves": f'[{{"task_id": "{UUID}", "destination_project_id": "{OTHER}"}}, '
+            f'{{"task_id": "{OTHER}", "destination_project_id": "{SALES}"}}]',
+        }
+    ],
     "propose_plan": [
         {
             "name": "Q4 launch",
@@ -746,11 +761,23 @@ def test_every_class_b_tool_awaits_the_one_confirm_door() -> None:
     tree = ast.parse(source)
     assert source.count("def _confirm(") == 1, "a second card door"
     delegates = {"edit_task": "update_task", "edit_project": "update_project"}
+    # The one-card batches (2026-10-18) share `_ask_batch`, which is itself
+    # a caller of `_confirm`, so it is no second door.
+    shared = next(
+        fn for fn in ast.walk(tree)
+        if isinstance(fn, ast.AsyncFunctionDef) and fn.name == "_ask_batch"
+    )
+    assert "_confirm" in {getattr(n.func, "id", "") for n in ast.walk(shared)
+                          if isinstance(n, ast.Call)}
+    batches = {"file_tasks", "link_tasks_batch"}
     for fn in ast.walk(tree):
         if not isinstance(fn, ast.AsyncFunctionDef) or fn.name not in _class_b_built():
             continue
         awaited = {getattr(n.func, "id", "") for n in ast.walk(fn) if isinstance(n, ast.Call)}
         # A form (S4) delegates its card to the class B tool it wraps.
+        if fn.name in batches:
+            assert "_ask_batch" in awaited, f"{fn.name} never awaits _ask_batch"
+            continue
         assert "_confirm" in awaited or delegates.get(fn.name) in awaited, (
             f"{fn.name} never awaits _confirm"
         )

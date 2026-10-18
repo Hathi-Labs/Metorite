@@ -21,7 +21,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
-import { otherAccountRefusal } from "@/lib/respondInput";
+import { malformedDecline, otherAccountRefusal } from "@/lib/respondInput";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,6 +35,9 @@ interface RespondInputRequest {
   thread_id?: string;
   /** The account that drew the card (WS-51 S2). Refuses only, never grants. */
   as?: string;
+  /** The member's "Not now" (`lib/declineAnswer.ts`). A boolean, with an
+   *  empty answer. The run resumes and reads the decline. */
+  declined?: boolean;
 }
 
 export async function POST(req: NextRequest) {
@@ -65,6 +68,10 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const malformed = malformedDecline(body.declined, body.answer);
+  if (malformed) return malformed;
+
+  // A decline is refused for another account like an answer (WS-51 S2).
   const refused = otherAccountRefusal(body.as, me.email);
   if (refused) return refused;
 
@@ -77,6 +84,8 @@ export async function POST(req: NextRequest) {
         answer: body.answer,
         was_freeform: body.was_freeform ?? true,
         thread_id: body.thread_id ?? null,
+        // Only on a decline, so an answer's body is exactly as before.
+        ...(body.declined === true ? { declined: true } : {}),
       }),
     });
 

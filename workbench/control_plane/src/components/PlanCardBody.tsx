@@ -78,6 +78,7 @@ import {
   withOwner,
   withShift,
 } from "@/app/projects/lib/planCard";
+import { isDeclinedAnswer } from "@/lib/declineAnswer";
 import GenUiText from "@/components/GenUiText";
 import Icon from "@/components/Icon";
 import Badge from "@/components/ui/Badge";
@@ -96,12 +97,16 @@ const list = (v: unknown): string[] => (Array.isArray(v) ? v.map((x) => str(x)).
 /** The words a sent card shows: the option picker's word. */
 const SENT = "Sent";
 
-export default function PlanCardBody({ data, onAction, answered = "" }: {
+export default function PlanCardBody({ data, onAction, answered = "", onDecline }: {
   data: Data;
   onAction?: (message: string) => void;
   /** The answer the run already got (`lib/askAnswers.ts`). A reload then
    *  draws the card locked, as the member left it, as the option picker does. */
   answered?: string;
+  /** "Not now" of a card that parks a run (`lib/declineAnswer.ts`). With it,
+   *  Cancel sends the decline, and the run goes on without a plan. Without
+   *  it (a card that parks nothing), Cancel sends "Cancel" as before. */
+  onDecline?: () => void;
 }) {
   const project = (data.project ?? {}) as Data;
   // One read of the answer, at mount: the card as the member left it.
@@ -118,7 +123,8 @@ export default function PlanCardBody({ data, onAction, answered = "" }: {
   const [bulkDays, setBulkDays] = useState("");
   const [clicked, setDone] = useState<"" | "sent" | "cancelled">("");
   // An answer that lands after mount locks the card too.
-  const done = clicked || past?.done || (answered ? (answered === PLAN_CANCEL ? "cancelled" : "sent") : "");
+  const done = clicked || past?.done
+    || (answered ? (answered === PLAN_CANCEL || isDeclinedAnswer(answered) ? "cancelled" : "sent") : "");
   const root = useRef<HTMLDivElement | null>(null);
   const ownersList = useId();
 
@@ -164,11 +170,12 @@ export default function PlanCardBody({ data, onAction, answered = "" }: {
     onAction(`${label} — ${JSON.stringify(planSubmitTicked(project, name, rows, off))}`);
   };
   const cancel = () => {
-    if (!onAction || locked) return;
+    if ((!onAction && !onDecline) || locked) return;
     setDone("cancelled");
     setOpen(null);
     setBulk(false);
-    onAction(PLAN_CANCEL);
+    if (onDecline) onDecline();
+    else onAction?.(PLAN_CANCEL);
   };
   const endNaming = () => {
     setNaming(false);
@@ -367,7 +374,7 @@ export default function PlanCardBody({ data, onAction, answered = "" }: {
             <Button size="sm" icon="Check" onClick={submit} disabled={!onAction || !!blocked} data-plan-submit="">
               {createLabel(kept.length)}
             </Button>
-            <Button variant="secondary" size="sm" onClick={cancel} disabled={!onAction}>Cancel</Button>
+            <Button variant="secondary" size="sm" onClick={cancel} disabled={!onAction && !onDecline}>Cancel</Button>
           </div>
           <span className="text-[11px] text-muted-foreground" data-plan-note="">
             {blocked && kept.length > 0 ? `${blocked} ` : ""}{footerNote(kept.length)}

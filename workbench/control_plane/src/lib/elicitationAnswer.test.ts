@@ -228,3 +228,17 @@ describe("the reason beside a blocked Submit", () => {
     expect(isAnswered(mute, {}, { Note: "typed" })).toBe(false);
   });
 });
+
+// Review of #1152: only a default the question STATES counts, the same rule
+// as `ask_tools.stated_default`. A recommended option is never one.
+describe("the stated default", () => {
+  it("reads the CRM default option, else the card's own default, and never a recommended one", async () => {
+    const { statedDefault } = await import("./elicitationAnswer");
+    expect(statedDefault({ header: "A", question: "Q?", options: [{ label: "Yes", recommended: true }] })).toBe("");
+    expect(statedDefault({ header: "A", question: "Q?", default: " Keep them " })).toBe("Keep them");
+    expect(statedDefault({
+      header: "R", question: "Q?", default: "ignored",
+      options: [{ label: "Use the default", description: "Billed, until a CRM admin answers", key: "@default" }],
+    })).toBe("Billed, until a CRM admin answers");
+  });
+});

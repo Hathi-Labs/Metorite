@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 
 import { askOutcome, OUTCOME_MAX, sentFormValues } from "@/lib/askOutcome";
+import { DECLINED_ANSWER } from "@/lib/declineAnswer";
 
 const template = (name: string, data: Record<string, unknown> = {}) => ({
   type: "template", props: { name, data }, request_id: "a".repeat(32),
@@ -28,13 +29,13 @@ describe("askOutcome", () => {
     expect(askOutcome(plan, sent)).toBe("1 task sent for approval");
     expect(askOutcome(plan, "Cancel")).toBe("cancelled, nothing created");
     // #1152: the plan's Cancel sends the decline, and it is a cancel there.
-    expect(askOutcome(plan, "__declined__")).toBe("cancelled, nothing created");
+    expect(askOutcome(plan, DECLINED_ANSWER)).toBe("cancelled, nothing created");
   });
 
   it("a picker names the pick, a form says Sent, and a decline says Not answered", () => {
     expect(askOutcome(template("optionPicker"), "Selected: Weekly, Monthly")).toBe("Sent: Weekly, Monthly");
     expect(askOutcome(template("formCard"), 'Save — {"a":1}')).toBe("Sent");
-    expect(askOutcome(template("optionPicker"), "__declined__")).toBe("Not answered");
+    expect(askOutcome(template("optionPicker"), DECLINED_ANSWER)).toBe("Not answered");
     expect(askOutcome({ type: "card", children: [] }, "yes")).toBe("Answered");
   });
 
@@ -51,7 +52,7 @@ describe("sentFormValues", () => {
     expect(sentFormValues('Save — {"due":"2026-11-02","notify":true}')).toEqual({ due: "2026-11-02", notify: true });
     expect(sentFormValues("Save — [1,2]")).toBeNull();
     expect(sentFormValues("Save — not json")).toBeNull();
-    expect(sentFormValues("__declined__")).toBeNull();
+    expect(sentFormValues(DECLINED_ANSWER)).toBeNull();
     expect(sentFormValues(undefined)).toBeNull();
   });
 });

@@ -13,14 +13,8 @@
  */
 
 import { planOutcome, planRowsFrom } from "@/app/projects/lib/planCard";
+import { isDeclinedAnswer } from "@/lib/declineAnswer";
 import { unfenced } from "@/lib/fencedText";
-
-/**
- * The answer a "Not now" leaves on a card. PR #1152 owns the constant
- * (`lib/declineAnswer.ts` `DECLINED_ANSWER`). This copy goes when that PR
- * lands, and `askOutcome.test.ts` holds the words.
- */
-const DECLINED = "__declined__";
 
 /** The longest outcome line, in characters. The header cuts it anyway. */
 export const OUTCOME_MAX = 80;
@@ -57,7 +51,7 @@ export function askOutcome(spec: unknown, answered: string | null | undefined): 
   // The plan card's Cancel sends the decline since #1152, and it means a
   // cancel there: `planOutcome` reads any answer but a submit as one.
   if (t?.name === "planCard") return planOutcome(planRowsFrom(t.data.tasks), answered);
-  if (answered === DECLINED) return "Not answered";
+  if (isDeclinedAnswer(answered)) return "Not answered";
   switch (t?.name) {
     case "optionPicker": {
       const picked = answered.replace(/^\s*Selected:\s*/i, "");

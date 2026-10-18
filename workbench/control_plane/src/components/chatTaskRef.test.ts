@@ -186,7 +186,10 @@ describe("which chats link a bare #N", () => {
   it("taskRefsForTurn", () => {
     expect(taskRefsForTurn(PROJECTS_AGENT, {})).toBe(true);
     expect(taskRefsForTurn("task-manager", agentAuthor("task-manager"))).toBe(true);
-    expect(taskRefsForTurn("orchestrator", {})).toBe(false);
+    // The one assistant since D99 (owner report, 2026-10-19).
+    expect(taskRefsForTurn("orchestrator", agentAuthor("orchestrator"))).toBe(true);
+    expect(taskRefsForTurn("metorite", {})).toBe(true);
+    expect(taskRefsForTurn("email-assistant", {})).toBe(false);
     expect(taskRefsForTurn(undefined, {})).toBe(false);
     expect(taskRefsForTurn(PROJECTS_AGENT, { authorKind: "human", authorEmail: "a@x.io" })).toBe(false);
   });

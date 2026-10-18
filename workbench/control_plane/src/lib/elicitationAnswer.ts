@@ -22,6 +22,9 @@ export interface ElicitationOption {
   label: string;
   description?: string | null;
   recommended?: boolean;
+  /** The key of an option of a CRM question card (`ask_tools`). The
+   *  "Use the default" option has the key {@link CRM_DEFAULT_KEY}. */
+  key?: string;
 }
 
 export interface ElicitationQuestion {
@@ -36,6 +39,32 @@ export interface ElicitationQuestion {
    * key only when the model set it to `false` (`acb_skills.ask_tools`).
    */
   required?: boolean;
+  /**
+   * What the run uses when the member skips the question. The server sends
+   * the key only when the model set it (`ask_tools.card_default`). The card
+   * draws it as "If you skip: <default>", because a "Not now" may name only
+   * a default that the member saw (review of #1152).
+   */
+  default?: string;
+}
+
+/** The key of the "Use the default" option of a CRM card (`ask_tools`). */
+export const CRM_DEFAULT_KEY = "@default";
+
+/** The words before a question's default on the card. */
+export const IF_YOU_SKIP = "If you skip";
+
+/**
+ * The default a question STATES, or `""`: the "Use the default" option of a
+ * CRM card, in its description's words, else the question's own `default`.
+ * A recommended option is never a default. The same rule as
+ * `ask_tools.stated_default`, so the card shows each default the model may
+ * name after a "Not now". Fence: `elicitationAnswer.test.ts`.
+ */
+export function statedDefault(q: ElicitationQuestion): string {
+  const kept = (q.options ?? []).find((o) => o?.key === CRM_DEFAULT_KEY);
+  if (kept) return String(kept.description || kept.label || "").trim();
+  return typeof q.default === "string" ? q.default.trim() : "";
 }
 
 export interface ElicitationAnswers {

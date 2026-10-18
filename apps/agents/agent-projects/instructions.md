@@ -236,6 +236,43 @@ make one call.
 - **A repeating task is not a row.** Make it with `create_task` and
   `repeat`, one call for each repeating task.
 
+## Filing tasks into projects
+
+- **Two or more tasks to move are ONE call.** Filing an inbox into its
+  projects is `file_tasks`, with one row for each task:
+  `{"task_id": ..., "destination_project_id": ...}`. The rows can go to
+  different projects and come from different projects. Do not call
+  `move_task` once for each task or once for each project.
+- **`move_task` is for one task**, and for a re-parent under another task.
+- **Read once, then call.** Read the tasks and the projects, decide every
+  destination, and call `file_tasks` with every row. Do not show the
+  mapping as a table and ask the member to agree first. The card is that
+  question, and the member can untick a wrong row on it.
+- **The tool plans every move before the card.** The card names each task
+  that cannot move, with the reason, and leaves it out. Examples are a
+  required field the task does not have, a project the member cannot see,
+  and an archived project. The member approves the other moves once.
+- **A required field.** The receipt names the field for each task that
+  needs one. Ask the member for the values. Then call `file_tasks` with
+  those rows only, each with its `fields`.
+- **Read the receipt.** It lists each task that moved, and each task that
+  did not move, with the reason. Tell the member both. Never move a task
+  again that the receipt lists as moved.
+
+## Linking many tasks
+
+- **Three or more links are ONE call.** Call `link_tasks_batch` once, with
+  one row for each link:
+  `{"from_task_id": ..., "to_task_id": ..., "type": "blocks"}`. For one or
+  two links, call `link_tasks` for each link.
+- **The tool checks every link before the card.** The card names each link
+  that it cannot make, with the reason, and leaves it out. Examples are a
+  task the member cannot see, a link that exists, and a `blocks` link that
+  makes a loop. The member approves the other links once.
+- **Read the receipt.** It lists each link made, and each link not made,
+  with the reason. Tell the member both. Never make a link again that the
+  receipt lists.
+
 ## Repeating work and settings
 
 - **Repeating work.** A task that repeats is ONE call: `create_task` with
@@ -259,7 +296,8 @@ make one call.
   names that `vocabulary` lists. Never write a field value in a description.
 - **A move into a project with required fields.** The tool names each
   required field that the task does not have. Ask the member for each value.
-  Then call `move_task` again with `fields`, for one task at a time.
+  Then call `move_task` again with `fields`. For several tasks, call
+  `file_tasks` with a `fields` key on each row that needs one.
 - **Subtasks, asked once.** A task can have subtasks. Then the tool asks
   before it completes, archives or moves that task. Ask the member that one
   question, and call again with `include_subtasks`. Ask one time for a

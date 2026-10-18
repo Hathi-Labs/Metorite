@@ -33,6 +33,7 @@ import { isSafeColor } from "@/lib/theme/css";
 import type { AppearanceSettings, Density, ThemeMode } from "@/lib/theme/types";
 import { DENSITY_SCALE } from "@/lib/theme/types";
 import { AppTopBar } from "@/components/AppTopBar";
+import { MyNumberFormat } from "@/components/NumberFormatSettings";
 import {
   AUTO_FOLD_EVENT,
   autoFoldEnabled,
@@ -90,6 +91,7 @@ export default function AppearancePage() {
           <div className="space-y-8">
             <PersonalSettings />
             <SidebarSettings />
+            <MyNumberFormat />
           </div>
         ) : (
           <OrganisationSettings />
@@ -110,7 +112,7 @@ function AppearanceHeader() {
   return (
     <AppTopBar
       title="Appearance"
-      subtitle="Colour mode, density, accent and the sidebar"
+      subtitle="Colour mode, density, accent, the sidebar and number format"
     />
   );
 }

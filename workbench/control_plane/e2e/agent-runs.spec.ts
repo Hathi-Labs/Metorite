@@ -420,7 +420,9 @@ test("with the routes off, the task shows no panel and no filter", async ({ page
   await expect(page.getByRole("button", { name: "Watching" }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "Waiting on me" })).toHaveCount(0);
   await page.getByText(TASK.title, { exact: true }).first().click();
-  await expect(page.getByRole("button", { name: "Comment", exact: true })).toBeVisible({ timeout: 15_000 });
+  // The comment field, not the button: the Comment button shows only once
+  // the composer opens (2026-10-19). The field is there while the panel is.
+  await expect(page.getByRole("textbox", { name: "Add a comment" })).toBeVisible({ timeout: 15_000 });
   await expect(page.locator("[data-agent-run-panel]")).toHaveCount(0);
   await expect(page.locator("[data-agent-pill]")).toHaveCount(0);
   // EA-12d: no "Ask an agent" while the routes answer 404.
@@ -753,7 +755,7 @@ test("the card shows the badge, one PR chip with its CI, and the note on hover",
   const popup = page.waitForEvent("popup");
   await chip.click();
   expect((await popup).url()).toBe(PR_URL);
-  await expect(page.getByRole("button", { name: "Comment", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "Add a comment" })).toHaveCount(0);
   await expect(page.locator("[data-agent-run-panel]")).toHaveCount(0);
 });
 

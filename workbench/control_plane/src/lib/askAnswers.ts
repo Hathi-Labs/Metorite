@@ -16,8 +16,14 @@
  * MAF hands the result over as `str(result)`, so it can be JSON or a Python
  * dict repr. The reader takes both, and reads nothing else.
  *
+ * A card the member declined ("Not now", `lib/declineAnswer.ts`) records
+ * `declined: true` and no response. It reads as {@link DECLINED_ANSWER}, so
+ * the card draws as "Not answered" after a reload too.
+ *
  * Fence: `askAnswers.test.ts`.
  */
+
+import { DECLINED_ANSWER } from "@/lib/declineAnswer";
 
 const GENUI_TOOL = "emit_generative_ui";
 
@@ -25,10 +31,19 @@ const GENUI_TOOL = "emit_generative_ui";
 const RID = /['"]request_id['"]\s*:\s*['"]([0-9a-f]{32})['"]/;
 /** The response, in either quote style, up to the closing quote. */
 const RESPONSE = /['"]response['"]\s*:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')/;
+/**
+ * A decline in a Python repr: `'declined': True`. Only the repr's own
+ * spelling, so a form value `{"declined": true}` inside the response (JSON,
+ * lower case) never reads as a decline. JSON goes through `fromJson`.
+ */
+const DECLINED = /'declined'\s*:\s*True\b/;
 
 function fromJson(text: string): [string, string] | null {
   try {
     const v = JSON.parse(text) as Record<string, unknown>;
+    if (v && typeof v.request_id === "string" && v.declined === true) {
+      return [v.request_id, DECLINED_ANSWER];
+    }
     if (v && typeof v.request_id === "string" && typeof v.response === "string" && v.response) {
       return [v.request_id, v.response];
     }
@@ -40,6 +55,7 @@ function fromJson(text: string): [string, string] | null {
 
 function fromRepr(text: string): [string, string] | null {
   const rid = RID.exec(text)?.[1];
+  if (rid && DECLINED.test(text)) return [rid, DECLINED_ANSWER];
   const m = RESPONSE.exec(text);
   const raw = m ? (m[1] ?? m[2] ?? "") : "";
   if (!rid || !raw) return null;

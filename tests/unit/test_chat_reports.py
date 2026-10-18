@@ -228,9 +228,12 @@ async def test_the_file_holds_the_contract_and_the_card_draws_it(
             {"label": "Revenue", "value": 128, "unit": "L", "delta": "+18%", "good": "up"},
             {"label": "Win rate", "value": 31, "unit": "%"},
         ],
-        # The visuals stay DATA, so the web draws live charts from them.
+        # The visuals stay DATA, so the web draws live charts from them. A
+        # chart carries the member's number system, which the server writes
+        # (whatsapp_assistant_channel.md §13.10): "indian" outside a run.
         "sections": [
-            {"heading": "Revenue", "text": "Revenue rose each month.", "visual": CHART},
+            {"heading": "Revenue", "text": "Revenue rose each month.",
+             "visual": {**CHART, "numbering": "indian"}},
             {"heading": "Deals", "bullets": ["Bharat Steel is the biggest"], "visual": TABLE},
         ],
         "sources": ["CRM pipeline, 16 Oct 2026"],
