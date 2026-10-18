@@ -109,6 +109,10 @@ def world(p, monkeypatch, tmp_path):
     from gateway.routes.projects import github_merge
 
     g.configure_app(monkeypatch, g.make_private_key(tmp_path))
+    from gateway import github_sync
+
+    # Item 7: a short join window, so a trailing loop ends inside the test.
+    monkeypatch.setattr(github_sync, "JOIN_WINDOW_S", 0.05)
     g.use_redis(monkeypatch)
     g.clear_github(p)
     g.seed_github_row(p, p.org_a, INSTALL)

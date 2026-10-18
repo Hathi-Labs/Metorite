@@ -36,10 +36,20 @@ Fix round 1, item 6 (an unreadable reference), each one red when run:
   ``test_item6_a_refusal_past_the_bound_runs_the_rule_again``.
 * 6-M7 ``read_pull_request`` answers ``None`` for a 5xx too ->
   ``test_item6_a_5xx_is_not_a_refusal``.
+
+Fix round 1, item 7 (the checks reads of one head are joined):
+
+* 7-M1 a job that does not lead reads anyway (no ``return 0``) ->
+  ``test_item7_a_burst_of_events_gives_at_most_two_reads``.
+* 7-M2 the leader makes no trailing read (``break`` at once) ->
+  ``test_item7_the_trailing_read_catches_the_last_completed``.
+* 7-M3 ``checks_job`` calls ``read_checks`` and not the joined read ->
+  ``test_item7_the_webhook_job_is_the_joined_read``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -153,6 +163,8 @@ def world(p, monkeypatch, tmp_path):
             w.opened["n"] -= 1
 
     monkeypatch.setattr(github_sync, "tenant_session", counted)
+    # Item 7: a short join window, so a trailing loop ends inside the test.
+    monkeypatch.setattr(github_sync, "JOIN_WINDOW_S", 0.05)
     monkeypatch.setattr(github_reconcile_loop, "tenant_session", counted)
     w.events = []
 
@@ -507,3 +519,61 @@ async def test_item6_a_5xx_is_not_a_refusal(world) -> None:
     async with tenant_engine_scope(g.app_dsn(w.p)):
         await github_reconcile_loop.run_org(w.p.org_a, "tick-504")
     assert _unreadable(w, ref) is None
+
+
+# ── Fix round 1, item 7: the checks reads of one head are joined ────────────
+
+
+def _check_reads(w: Any) -> int:
+    return sum(1 for path in w.gh.requests if path.endswith("/check-runs"))
+
+
+async def test_item7_a_burst_of_events_gives_at_most_two_reads(world) -> None:
+    from gateway import github_sync
+
+    w = world
+    ref = _ref(w, _task(w), 601, head=SHA_NEW, checks="pending")
+    w.gh.runs[SHA_NEW] = [{"status": "completed", "conclusion": "success"}]
+    w.gh.status[SHA_NEW] = {"state": "success", "statuses": [{"state": "success"}]}
+    async with tenant_engine_scope(g.app_dsn(w.p)):
+        made = await asyncio.gather(*(
+            github_sync.read_checks_joined(w.p.org_a, REPO, SHA_NEW) for _ in range(12)))
+    assert 1 <= _check_reads(w) <= 2, w.gh.requests
+    assert sum(made) == _check_reads(w)
+    assert _row(w, ref).checks_state == "passing"
+
+
+async def test_item7_the_trailing_read_catches_the_last_completed(world, monkeypatch) -> None:
+    from gateway import github_sync
+
+    monkeypatch.setattr(github_sync, "JOIN_WINDOW_S", 0.3)
+    w = world
+    ref = _ref(w, _task(w), 602, head=SHA_NEW, checks="pending")
+    w.gh.runs[SHA_NEW] = [{"status": "in_progress", "conclusion": None}]
+    async with tenant_engine_scope(g.app_dsn(w.p)):
+        leader = asyncio.ensure_future(github_sync.read_checks_joined(w.p.org_a, REPO, SHA_NEW))
+        for _ in range(200):
+            if _check_reads(w) >= 1 and _row(w, ref).checks_fetched_at is not None:
+                break
+            await asyncio.sleep(0.01)
+        assert _row(w, ref).checks_state == "pending"
+        # The last job completes while the leader waits.
+        w.gh.runs[SHA_NEW] = [{"status": "completed", "conclusion": "success"}]
+        w.gh.status[SHA_NEW] = {"state": "success", "statuses": [{"state": "success"}]}
+        assert await github_sync.read_checks_joined(w.p.org_a, REPO, SHA_NEW) == 0
+        assert await leader == 2
+    assert _row(w, ref).checks_state == "passing"
+
+
+def test_item7_the_webhook_job_is_the_joined_read(monkeypatch) -> None:
+    from gateway import github_sync
+
+    seen: list[tuple] = []
+
+    async def _joined(org: str, repo: str, sha: str, **kw: Any) -> int:
+        seen.append((org, repo, sha, kw))
+        return 1
+
+    monkeypatch.setattr(github_sync, "read_checks_joined", _joined)
+    asyncio.run(github_sync.checks_job("o", REPO, SHA_NEW)())
+    assert seen == [("o", REPO, SHA_NEW, {"trailing_in_background": True})]

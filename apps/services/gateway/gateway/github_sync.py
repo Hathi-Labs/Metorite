@@ -31,7 +31,7 @@ import re
 from datetime import datetime
 from typing import Any
 
-from acb_common import get_logger
+from acb_common import get_logger, tenant_redis
 from sqlalchemy import text
 
 from gateway.connections import github as github_connection
@@ -44,6 +44,16 @@ _log = get_logger("gateway.github_sync")
 CHECK_PAGES = 3
 #: §8.5: the checks reads that run at once in one process.
 CONCURRENCY = 4
+
+#: §8.5, fix round 1 item 7: the checks reads of ONE head are joined. A
+#: workflow of 30 jobs sends about 60 ``check_run`` events, and each read is
+#: two calls or more. The first event of a head reads at once and LEADS. Each
+#: event in the next :data:`JOIN_WINDOW_S` only marks "read again". When the
+#: window ends, the leader reads once more if a mark is there. So a burst gives
+#: two reads, and a long run one read in each window.
+JOIN_WINDOW_S = 20.0
+#: The most trailing reads that one leader makes before it lets go.
+MAX_TRAILING_READS = 15
 
 #: §8.5 step 3, the words of GitHub.
 FAIL_CONCLUSIONS: frozenset[str] = frozenset({
@@ -412,10 +422,89 @@ async def read_checks(org: str, repo: str, sha: str) -> None:
         _log.info("github.checks.read_failed", error=type(exc).__name__)
 
 
+def _join_ttl() -> int:
+    return max(int(JOIN_WINDOW_S * 3), 5)
+
+
+async def read_checks_joined(
+    org: str, repo: str, sha: str, *, trailing_in_background: bool = False,
+) -> int:
+    """The checks read of §8.5, joined for each ``(org, head)``. Never raises.
+
+    ``SET key("github", "checks", <sha>, "lead") NX`` through the tenant Redis
+    wrapper picks one leader. A job that does not lead sets the ``again`` mark
+    and returns. The leader reads at once, then waits :data:`JOIN_WINDOW_S`,
+    and reads again only while a mark is there (the trailing read, so the last
+    ``completed`` is never lost). Answers the reads that this call made.
+
+    With *trailing_in_background* the wait and the trailing reads run in a
+    task of their own, so a webhook answer never holds the request (or a
+    restart) for the window. A Redis outage reads once, unjoined. A mark set
+    in the last moment after the leader lets go is read by the poll (§11),
+    which reads a pending head after 5 minutes.
+    """
+    sha = (sha or "").lower()
+    if split_repo(repo) is None or not _SHA_RE.match(sha):
+        return 0
+    with tenant_redis.organization_scope(org):
+        try:
+            client = tenant_redis.get_tenant_redis()
+            leads = bool(await client.set(client.key("github", "checks", sha, "lead"), "1",
+                                          nx=True, ex=_join_ttl()))
+            if not leads:
+                await client.set(client.key("github", "checks", sha, "again"), "1",
+                                 ex=_join_ttl())
+                return 0
+        except Exception as exc:  # the class only: an outage reads, unjoined
+            _log.info("github.checks.join_unavailable", error=type(exc).__name__)
+            await read_checks(org, repo, sha)
+            return 1
+    await read_checks(org, repo, sha)
+    if trailing_in_background:
+        task = asyncio.get_running_loop().create_task(_trail(org, repo, sha))
+        _TRAILS.add(task)
+        task.add_done_callback(_TRAILS.discard)
+        return 1
+    return 1 + await _trail(org, repo, sha)
+
+
+#: The trailing loops that a webhook started, held so the loop keeps them.
+_TRAILS: set[asyncio.Task[int]] = set()
+
+
+async def _trail(org: str, repo: str, sha: str) -> int:
+    """The leader's wait and its trailing reads, then the lead goes."""
+    reads = 0
+    with tenant_redis.organization_scope(org):
+        try:
+            client = tenant_redis.get_tenant_redis()
+            lead = client.key("github", "checks", sha, "lead")
+            again = client.key("github", "checks", sha, "again")
+        except Exception as exc:  # the class only
+            _log.info("github.checks.join_failed", error=type(exc).__name__)
+            return 0
+        try:
+            for _ in range(MAX_TRAILING_READS):
+                await asyncio.sleep(JOIN_WINDOW_S)
+                if not await client.getdel(again):
+                    break
+                await client.set(lead, "1", ex=_join_ttl())
+                await read_checks(org, repo, sha)
+                reads += 1
+        except Exception as exc:  # the class only
+            _log.info("github.checks.join_failed", error=type(exc).__name__)
+        finally:
+            try:
+                await client.delete(lead)
+            except Exception as exc:  # the class only
+                _log.info("github.checks.join_release_failed", error=type(exc).__name__)
+    return reads
+
+
 def checks_job(org: str, repo: str, sha: str) -> Any:
-    """A background job for the webhook's answer."""
+    """A background job for the webhook's answer: a JOINED read (item 7)."""
     async def _job() -> None:
-        await read_checks(org, repo, sha)
+        await read_checks_joined(org, repo, sha, trailing_in_background=True)
 
     return _job
 
@@ -431,6 +520,7 @@ __all__ = [
     "fold_checks",
     "installation_of_org",
     "read_checks",
+    "read_checks_joined",
     "read_pull_request",
     "record_read",
     "record_refusal",

@@ -102,6 +102,10 @@ def p(promoted):  # noqa: F811
 @pytest.fixture
 def world(p, monkeypatch, tmp_path):
     g.configure_app(monkeypatch, g.make_private_key(tmp_path))
+    from gateway import github_sync
+
+    # Item 7: a short join window, so a trailing loop ends inside the test.
+    monkeypatch.setattr(github_sync, "JOIN_WINDOW_S", 0.05)
     redis = g.use_redis(monkeypatch)
     g.clear_github(p)
     with p.admin_engine.begin() as c:

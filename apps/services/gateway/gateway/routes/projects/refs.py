@@ -557,7 +557,7 @@ async def _refresh_checks(rows: list[dict[str, Any]], *, now: datetime | None = 
         if parsed is None:
             continue
         task = asyncio.get_running_loop().create_task(
-            github_sync.read_checks(str(org), parsed[0], str(row["head_sha"])))
+            github_sync.read_checks_joined(str(org), parsed[0], str(row["head_sha"])))
         _CHECK_READS.add(task)
         task.add_done_callback(_CHECK_READS.discard)
         started += 1
