@@ -24,8 +24,8 @@ The table `kb_chunks` has a generated `tsv` and a partial HNSW index, and
 query. Each page write writes or deletes the page's chunks in its own
 transaction, and a background task embeds the new chunks after the commit.
 `GET /knowledge/search` fuses the two halves. Knowledge is the seventh
-source of `gateway/retrieval/`, and it is not in the command bar. It asks
-for the lexical half only, because §20.4 runs no model.
+source of `gateway/retrieval/`, and it is not in the command bar. It asked
+for the lexical half only until KB-3c.
 
 **KB-2a is BUILT, 2026-10-16** (PR #1074, frontend only, no
 migration). The BFF proxy `api/knowledge/[...path]`, the Spaces view, the
@@ -54,12 +54,21 @@ returns `published_count`. Both the stream path and the batch path of
 WhatsApp read it, and a shared room gets no block. `GET /knowledge/pages/{id}`
 now returns `space_name` when the caller can open the space.
 
-**KB-12 is DONE, 2026-10-18** (branch `ws61-kb12`, no migration). The owner
+**KB-12 is DONE, 2026-10-18** (PR #1144, no migration). The owner
 approved the promotion in chat (H-21) and asked for Knowledge on for all orgs.
 The pane is `live`, so the sidebar shows it under Apps to a member with
 `feature:knowledge`. The command bar has the jobs "Find in Knowledge" and
 "Write a page", and its search asks Knowledge as a fifth app. The gateway still
 answers only for an org on `KNOWLEDGE_ORGS`, which is `*` on production.
+
+**KB-3c is BUILT, 2026-10-18** (branch `ws61-kb3c`, no migration, dark
+behind `KNOWLEDGE_EMBED`). The owner asked on 2026-10-18 that the whole
+knowledge base be indexed, so that the assistant finds it for any question.
+`GET /search/company` now asks Knowledge for the vector half when
+`KNOWLEDGE_EMBED` names the org. The command bar stays lexical. The sweep
+`kb_index/sweep.py` gives a vector to each chunk that has none, also to a
+page published before the flag. The embed job embeds only the chunks that
+its write inserted, so two quick saves embed each chunk once (H-330).
 
 **§20 (D105, 2026-10-15)** adds company
 retrieval across every app. **KR-1 and KR-2 are BUILT, 2026-10-15**
@@ -582,8 +591,32 @@ rank every chunk the same and poison the semantic half.
 inside its transaction. The embed call runs after the session closes, as a
 FastAPI background task, in the three steps of `email_embeddings.py`:
 select, compute with no session, write. A query embeds its words before it
-opens a session, with a 0.8 s limit. A failed embed waits for the next edit
-of the page. A sweep for missed chunks is KB-7b's loop.
+opens a session, with a 0.8 s limit.
+
+**Each chunk once, with a member (KB-3c).** `reindex_page` returns the shas
+that its write inserted, and the job embeds only those. The unique key on
+`content_sha` lets one transaction insert a sha, so two jobs never select the
+same chunk. We did not use `FOR UPDATE SKIP LOCKED`. Its lock ends with the
+short select, and this rule forbids a session across the embed. The job
+binds the acting member with `job_member_scope`, because a request binds its
+member on one auth branch only.
+
+**The sweep (KB-3c).** `kb_index/sweep.py` runs every 120 s. For each org on
+`KNOWLEDGE_EMBED`, it takes at most 128 chunks with no vector, of a
+published page, older than 120 s. The age keeps it off a chunk that a job
+still holds, because the longest job takes 80 s. It embeds each page with no
+session open, as the page's author or its newest editor. That member must
+still be active in the org. If the identity read fails, the page waits for
+the next tick. A chunk that the door refused waits one hour. Each tick logs
+one line of counts, and never page text.
+
+**A page with no vector at all.** The door gives no vector for a refusal,
+an outage, a count mismatch or a vector of the wrong size. The sweep cannot
+tell these apart. So a page of two or more chunks with no vector waits two
+ticks (240 s), and the sweep goes on to the next page. After two pages in a
+row with no vector, the org stops for that tick. So an outage costs at most
+two calls for each org in a tick, and one bad page does not hold the pages
+after it.
 
 **The usage row.** The Router writes one `usage_event` row for each request,
 with the tokens. The `(tier-embed, embed)` card is `absorbed` (D19.2), so the
@@ -1033,6 +1066,7 @@ The first migration adds, and nothing renames (R6).
 | `KNOWLEDGE_ORGS` | empty | The organizations the routes serve. A star is every org | owner |
 | ~~`NEXT_PUBLIC_KNOWLEDGE`~~ | — | Not built. KB-12 found no such flag in the code. The launch status of the pane is the one gate of the sidebar (`launch_surface.md` §3), so no second flag is needed | — |
 | `KNOWLEDGE_EMBED` | off | Chunks get a vector. Off, the index is lexical only | AGENT-SAFE. Spends `tier-embed` credits, so a flip for an org is the owner's |
+| `KNOWLEDGE_EMBED_SWEEP` | on | The embed sweep of §6.4 starts. It does nothing for an org that `KNOWLEDGE_EMBED` does not name. Off, the loop does not start. Then a chunk that the door refused once gets a vector only when its text changes, because the request-time job embeds only new shas | AGENT-SAFE. The spend follows `KNOWLEDGE_EMBED` |
 | `KNOWLEDGE_SOURCES` | empty | The providers a member can connect: `dropbox`, `onedrive`, `google_drive` | owner. `google_drive` waits on §7.4 |
 | `KNOWLEDGE_SYNC_ENABLED` | off | The loop runs | AGENT-SAFE to build, owner to flip on the box |
 | `MY_DAY_PROVIDERS` | as WS-58 | `knowledge` joins the list | MD-10's rule |
@@ -1123,6 +1157,7 @@ its own branch, three or four in flight at most.
 | **KB-2b** | The TipTap editor over the same Markdown, links as pills with `[[`, the "Knowledge about this" component | The body round-trips through Markdown with no loss for the supported marks. A task shows its linked pages | AGENT-SAFE |
 | **KB-3** ✅ BUILT 2026-10-16 | Backend only. Migration 273 (check at merge): `kb_chunks` with the generated `tsv` and a partial HNSW index. `gateway/kb_index/`: chunking, `embed()` with the zero-vector rule, `query()` with fusion, and the hook in `_written` that writes or deletes a page's chunks in its transaction, then embeds after the commit. `GET /knowledge/search`. The flag `KNOWLEDGE_EMBED` (default off). KR-3 ships on the same branch | A published page is found by an exact token, and by a paraphrase with a fixed fake embedder in the R8 suite. A draft is never found, and an archived page leaves the index. The embed door down returns the lexical half with `degraded`. `test_kb_one_index.py` holds, and the one-seam fence covers `kb_chunks` reads | AGENT-SAFE to build. The embed flip spends credits: owner |
 | **KB-3b** ✅ BUILT 2026-10-16 | The Search rail entry and view over `GET /knowledge/search`, results grouped by space with the heading path | A member finds a published page by a word in its body, and the hit opens the page at `/knowledge/pages/<id>` | AGENT-SAFE |
+| **KB-3c** ✅ BUILT 2026-10-18 | The whole index by meaning (owner request, 2026-10-18). `GET /search/company` asks Knowledge for the vector half when `KNOWLEDGE_EMBED` names the org, and the command bar stays lexical. The sweep `kb_index/sweep.py` and its kill switch `KNOWLEDGE_EMBED_SWEEP`. The embed job takes the new shas only and binds the acting member (H-330) | A page published before the flag gets vectors in one tick. `search_company` finds a paraphrase that shares no word with the page. The bar makes no embed call. Two concurrent saves embed each chunk once. The job and the sweep carry a member. With the flag off for an org, nothing calls the door | AGENT-SAFE to build. The flip of `KNOWLEDGE_EMBED` for an org: owner |
 | **KB-3a** | Lift the CRM-only side effects out of `connections/store.py` behind an `owning_app` test | `save_credential` for `owning_app = knowledge` touches no `crm_source_profiles` row. The CRM tests are unchanged | AGENT-SAFE |
 | **KB-4a** ✅ BUILT 2026-10-16 | `acb_skills/knowledge_tools.py` with two read tools, `read_page` (one section by heading path, at most 4 000 tokens) and `list_spaces`, behind `COMPANY_SEARCH_ENABLED` in the orchestrator's `core_tools`. `acb_skills/knowledge_manifest.py` lists every Knowledge route with its class, and the client refuses an unmapped route. The index block of §6.5, built in the executor. One line in the flag-on persona names the two tools | With the flag off, the persona and the tools are byte-identical to main. A scripted orchestrator run with "what is our refund window" calls `search_company`, then `read_page`. The model's input holds the index block, and the answer cites `/knowledge/pages/<id>`. With no hit, the answer says the company's records hold nothing on it. The block is absent for an org that is not on `KNOWLEDGE_ORGS`, and for a member who can read no published page, and it is identical across two turns. Every Knowledge route is in the manifest | AGENT-SAFE |
 | **KB-4b** | Pills for in-app links that a tool result carries, for every kind of `search_company` (§8.3) | An answer that cites a page, a task and a deal draws three chips, and a link absent from the tool results draws none | AGENT-SAFE |
@@ -1162,13 +1197,14 @@ uv run pytest tests/unit/test_company_search_r8.py -q   # needs the ladder datab
 # The fences this spec adds. Each exists from the slice named after it.
 uv run pytest tests/unit/test_kb_visibility_one_seam.py tests/unit/test_kb_flags.py -q   # KB-1
 uv run pytest tests/unit/test_kb_one_index.py -q                                         # KB-3
+uv run pytest tests/unit/test_kb_embed_sweep.py -q                                       # KB-3c
 uv run pytest tests/unit/test_knowledge_chat_coverage.py -q                              # KB-4
 uv run pytest tests/unit/test_kb_sources_no_global_creds.py -q                           # KB-7a
 
 # The R8 suites, with a real database
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_kb_pages_r8.py -q    # KB-1
-uv run pytest tests/unit/test_kb_search_r8.py -q   # KB-3
+uv run pytest tests/unit/test_kb_search_r8.py -q   # KB-3 and KB-3c
 uv run pytest tests/unit/test_kb_sources_r8.py -q  # KB-7a
 
 # The shared fences that must not move
@@ -1325,7 +1361,12 @@ page.
 - **Gates.** The member comes from the session. Each source checks its
   feature, and the CRM source also checks its kill switch and access rule.
   The route adds no visibility rule of its own.
-- **Output.** `{query, hits: [hit], skipped: [key]}`. No model runs.
+- **Meaning (KB-3c).** When `KNOWLEDGE_EMBED` names the member's org, the
+  route asks the Knowledge source for the vector half. That source embeds
+  the words once, within 0.8 s, and answers the lexical half when the door
+  fails. So one search makes at most one embedding call. The command bar
+  asks for the lexical half only, so a keystroke costs no embedding.
+- **Output.** `{query, hits: [hit], skipped: [key]}`. No chat model runs.
 
 ### 20.5 `search_company` — the assistant's tool
 
@@ -1402,7 +1443,7 @@ shapes were weighed against them.
 | **A subagent per app.** The assistant delegates to the CRM agent, the email agent and the tasks agent, each of which searches and answers | Each delegation is a full model run with its own persona and tools. Three apps cost three runs before the assistant writes a word | Slowest. Runs are sequential or parallel model calls | Each subagent summarises, and the assistant reads summaries of summaries | No for reads. Delegation stays for writes and deep work inside one app |
 | **One central vector store of everything** | No model call per question, but every row is embedded first, and again on each edit | Fast | Weak on exact names and numbers. Visibility must be copied | No (§20.2) |
 | **Inject retrieved context into every turn** | Every turn pays for passages, also "thanks" and "draft a reply" | Fast | Noise in the prompt lowers answer quality | No |
-| **One tool over the federated seam, called when needed** | One tool call. The answer is at most about 1500 tokens: 5 hits an app, 6 apps, a 400-character snippet each. No model inside the seam | One round of database reads, inside a 4 s budget | The app's own best search, cited | **Yes** |
+| **One tool over the federated seam, called when needed** | One tool call. The answer is at most about 1500 tokens: 5 hits an app, 6 apps, a 400-character snippet each. No chat model inside the seam. One embedding call when the org has `KNOWLEDGE_EMBED` (KB-3c) | One round of database reads, inside a 4 s budget | The app's own best search, cited | **Yes** |
 
 **Four rules keep it there.**
 

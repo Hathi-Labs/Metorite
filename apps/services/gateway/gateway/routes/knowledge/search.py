@@ -12,10 +12,11 @@ answers 404 unless ``KNOWLEDGE_ENABLED`` and ``KNOWLEDGE_ORGS`` allow the
 caller's org, then 403 without ``feature:knowledge``.
 
 The query's vector is made BEFORE the session opens (§6.4). ``hybrid=false``
-asks for the lexical half only, with no call to the embed door. The company
-source asks for that, because ``GET /search/company`` runs no model (§20.4),
-as its email and WhatsApp sources do. The member and the tenant come from the
-session, never from the query (R5, R11).
+asks for the lexical half only, with no call to the embed door. The command
+bar asks for that, so a keystroke costs no embed. ``GET /search/company``
+asks for ``hybrid`` when ``KNOWLEDGE_EMBED`` names the org (KB-3c, §20.4):
+one embedding call, and no chat model. The member and the tenant come from
+the session, never from the query (R5, R11).
 """
 
 from __future__ import annotations

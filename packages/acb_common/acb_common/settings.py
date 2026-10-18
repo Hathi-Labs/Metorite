@@ -393,6 +393,13 @@ class Settings(BaseSettings):
     # spends `tier-embed` credits, so a flip for an org is the owner's.
     # Fence: tests/unit/test_kb_flags.py.
     knowledge_embed: str = ""
+    # WS-61 KB-3c (knowledge_base.md §6.4 and §13). The kill switch of the
+    # embed sweep, `gateway/kb_index/sweep.py`. Default ON, because the sweep
+    # does nothing unless `knowledge_embed` names an org. Off, the loop does
+    # not start. The one reader is `gateway.routes.knowledge.flags`, and the
+    # sweep reads it inside its start function. Fence:
+    # tests/unit/test_kb_embed_sweep.py.
+    knowledge_embed_sweep: bool = True
 
     reach_enabled: bool = False
     reach_orgs: str = ""

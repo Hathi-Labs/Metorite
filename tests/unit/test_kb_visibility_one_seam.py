@@ -23,8 +23,9 @@ clause for one query and reads ``kb_pages`` raw in a second query fails.
 Integrity reads. Two reads look at pages the caller may not see, because a
 rule of the tree needs them: the children of a page (a move to another space
 refuses a page with children) and the ancestors of a page (a move refuses a
-cycle). A third reads the chunks that wait for a vector, for the embed job,
-which has no member. None returns a page or a chunk to a caller. Each is
+cycle). A third and a fourth read the chunks that wait for a vector, for the
+embed job and the embed sweep, which apply no member's clause. None returns a
+page or a chunk to a caller. Each is
 listed in ``_INTEGRITY_READS`` with its reason, and the list fails when it
 goes stale.
 """
@@ -73,6 +74,13 @@ _INTEGRITY_READS: dict[tuple[str, str], str] = {
         "and written by the route, that have no vector. It runs after the "
         "commit with no member, and it hands the text to the embed door "
         "only, never to a person."
+    ),
+    ("sweep.py", "select_waiting"): (
+        "The embed sweep of KB-3c reads the oldest chunks of published pages "
+        "that have no vector, for each org on KNOWLEDGE_EMBED. It runs in a "
+        "background loop with no member to apply the clause for. It hands "
+        "the text to the embed door only, and it returns no page, no chunk "
+        "and no text to a person. The author columns name who pays."
     ),
 }
 

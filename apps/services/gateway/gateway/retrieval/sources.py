@@ -19,6 +19,12 @@ and then calls the app's OWN search function with this request's member. So:
 * **Each app function is imported when the source runs**, never at import
   time. The suites replace a function on its module, and a name bound here
   at import would keep the real one.
+* **The consumer picks meaning, not the source** (WS-61 KB-3c). A source
+  with ``meaning=True`` takes ``hybrid`` from ``Source.find``, and the
+  default is ``False``. ``GET /search/company`` asks for it when
+  ``KNOWLEDGE_EMBED`` names the org, so the assistant finds a paraphrase.
+  The command bar calls ``find`` with no ``hybrid``, so a keystroke never
+  costs an embed. Only the knowledge source has ``meaning=True``.
 
 A **hit** has one shape for every consumer: ``app``, ``kind``, ``id``,
 ``title``, ``hint``, ``snippet``, ``when`` and ``href``. Code builds the
@@ -65,7 +71,9 @@ class Hit:
         }
 
 
-Reader = Callable[[UserContext, str, int], Awaitable[list[Hit]]]
+#: ``read(user, q, k)``. A source with ``meaning=True`` also takes
+#: ``hybrid=`` by name.
+Reader = Callable[..., Awaitable[list[Hit]]]
 
 
 def holds(user: UserContext, feature: str) -> bool:
@@ -81,11 +89,23 @@ class Source:
     feature: str
     label: str
     read: Reader
+    #: True when the app can also search by meaning. Its reader then takes
+    #: ``hybrid``, and the consumer decides it (KB-3c).
+    meaning: bool = False
 
-    async def find(self, user: UserContext, q: str, k: int) -> list[Hit]:
-        """At most *k* hits for *q*, as *user*. No feature, no call and no hit."""
+    async def find(
+        self, user: UserContext, q: str, k: int, *, hybrid: bool = False,
+    ) -> list[Hit]:
+        """At most *k* hits for *q*, as *user*. No feature, no call and no hit.
+
+        *hybrid* asks a source with ``meaning`` for the vector half too. It
+        costs one embed call, so it is ``False`` unless the consumer asks.
+        A source without ``meaning`` ignores it.
+        """
         if not holds(user, self.feature):
             return []
+        if self.meaning:
+            return (await self.read(user, q, k, hybrid=hybrid))[:k]
         return (await self.read(user, q, k))[:k]
 
 
@@ -329,15 +349,20 @@ async def _whatsapp(user: UserContext, q: str, k: int) -> list[Hit]:
 
 # ── knowledge ───────────────────────────────────────────────────────────────
 
-async def _knowledge(user: UserContext, q: str, k: int) -> list[Hit]:
+async def _knowledge(
+    user: UserContext, q: str, k: int, *, hybrid: bool = False,
+) -> list[Hit]:
     """The published Knowledge pages the member can see (WS-61 KR-3, §20.3).
 
     The Knowledge router answers 404 unless ``KNOWLEDGE_ENABLED`` is on and
     the org is on ``KNOWLEDGE_ORGS``. Called from here, the route function
     skips its router, so this source applies the same switch first. A closed
-    switch gives no hit and no call. ``hybrid`` stays off for the reason of
-    the email source: the route would embed the query, and §20.4 says no
-    model runs. One hit for each page, its best chunk.
+    switch gives no hit and no call. One hit for each page, its best chunk.
+
+    *hybrid* comes from the consumer (KB-3c). ``GET /search/company`` asks
+    for it when ``KNOWLEDGE_EMBED`` names the org: the route then embeds the
+    words once, with its 0.8 s limit, and answers the lexical half when the
+    door fails. The command bar never asks, so a keystroke costs no embed.
     """
     from gateway.routes.knowledge import flags
     from gateway.routes.knowledge.search import search_knowledge
@@ -345,7 +370,7 @@ async def _knowledge(user: UserContext, q: str, k: int) -> list[Hit]:
     if not flags.knowledge_org_allowed(user.organization_id):
         return []
     # ⚠️ Every parameter, by name: the route declares `Query(...)` defaults.
-    answer = await search_knowledge(q=q, space=None, k=k, hybrid=False, user=user)
+    answer = await search_knowledge(q=q, space=None, k=k, hybrid=bool(hybrid), user=user)
     out: list[Hit] = []
     seen: set[str] = set()
     for row in answer.get("hits") or []:
@@ -372,6 +397,6 @@ REGISTRY: dict[str, Source] = {
         Source("crm", "crm", "CRM", _crm),
         Source("artifacts", "artifacts", "Artifacts", _artifacts),
         Source("whatsapp", "whatsapp", "WhatsApp", _whatsapp),
-        Source("knowledge", "knowledge", "Knowledge", _knowledge),
+        Source("knowledge", "knowledge", "Knowledge", _knowledge, meaning=True),
     )
 }

@@ -2,7 +2,13 @@
 
 One route, for agents and for later consumers. It is not a page a member
 opens. It asks each source of :data:`gateway.retrieval.sources.REGISTRY` and
-answers ``{query, hits, skipped}``. No model runs.
+answers ``{query, hits, skipped}``. No chat model runs.
+
+* **Meaning, when the org has it** (WS-61 KB-3c). With ``KNOWLEDGE_EMBED``
+  on for the member's org, the route asks each source with ``meaning`` for
+  ``hybrid``. Today that is Knowledge alone. Its route embeds the words
+  once, within 0.8 s, and answers the lexical half when the door fails. So
+  one search costs at most one embedding call and no chat model.
 
 * **The member comes from the session.** The route takes ``q``, ``apps`` and
   ``k`` and nothing else, so no tenant and no member can come from input
@@ -59,6 +65,17 @@ def _order(apps: str | None) -> list[str]:
     return first + [key for key in REGISTRY if key not in first]
 
 
+def _meaning_allowed(user: UserContext) -> bool:
+    """True when ``KNOWLEDGE_EMBED`` names the member's org (KB-3c).
+
+    The org comes from the session's ``UserContext``, never from the query.
+    The flag module is read at call time: it lives under ``routes``.
+    """
+    from gateway.routes.knowledge import flags
+
+    return flags.knowledge_embed_allowed(user.organization_id)
+
+
 def _interleave(order: list[str], found: dict[str, list[Hit]]) -> list[Hit]:
     """Every app's first hit, then every app's second, in *order*."""
     out: list[Hit] = []
@@ -91,6 +108,7 @@ async def company_search(
     # An app the member does not hold is not asked, and it is not "skipped":
     # the member has no such app. Each source checks the feature again.
     order = [key for key in _order(apps) if holds(user, REGISTRY[key].feature)]
+    hybrid = _meaning_allowed(user)
 
     found: dict[str, list[Hit]] = {}
     skipped: list[str] = []
@@ -103,7 +121,8 @@ async def company_search(
             continue
         try:
             hits = await asyncio.wait_for(
-                REGISTRY[key].find(user, words, per_app), min(SOURCE_TIMEOUT_S, left),
+                REGISTRY[key].find(user, words, per_app, hybrid=hybrid),
+                min(SOURCE_TIMEOUT_S, left),
             )
         except HTTPException:
             # The app's own refusal: a query too short for it, an access rule.

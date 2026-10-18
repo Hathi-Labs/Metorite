@@ -450,6 +450,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.email_purge_loop_skipped", error=str(exc))
 
+    # Start the Knowledge embed sweep (gateway/kb_index/sweep.py; spec
+    # knowledge_base.md §6.4, WS-61 KB-3c). Every 120 s it embeds the chunks
+    # that have no vector, for each org on KNOWLEDGE_EMBED. The kill switch
+    # KNOWLEDGE_EMBED_SWEEP (default on) lives inside the start function.
+    # With no org on KNOWLEDGE_EMBED a tick reads nothing.
+    try:
+        from gateway.kb_index.sweep import start_kb_embed_sweep
+        kb_sweep_started = await start_kb_embed_sweep()
+        _log.info("gateway.kb_embed_sweep", started=kb_sweep_started)
+    except Exception as exc:
+        _log.warning("gateway.kb_embed_sweep_skipped", error=str(exc))
+
     # Chat-run liveness (incident 2026-10-09). This process beats a heartbeat
     # key, so a run it holds reads as alive and a run of a dead process reads
     # as dead. The loop also sweeps: each run a dead process left is closed,
@@ -552,6 +564,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.routes.email.memory_purge import stop_purge_loop
         await stop_purge_loop()
+    except Exception:
+        pass
+
+    # Stop the Knowledge embed sweep and wait for a tick in progress.
+    try:
+        from gateway.kb_index.sweep import stop_kb_embed_sweep
+        await stop_kb_embed_sweep()
     except Exception:
         pass
 

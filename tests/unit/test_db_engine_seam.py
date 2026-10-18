@@ -743,6 +743,13 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "blind. Every read and write after it binds one organization with "
         "`tenant_session`, and its tick guard binds it with "
         "`organization_scope`",
+    ("apps/services/gateway/gateway/kb_index/sweep.py",
+     "_organization_ids"):
+        "WS-61 KB-3c: which organizations the Knowledge embed sweep looks "
+        "at. It lists the RLS-EXEMPT `organization` table, so it does not go "
+        "blind. It runs only when `KNOWLEDGE_EMBED` names an org, and every "
+        "chunk read and write after it binds one organization with "
+        "`tenant_session`",
     ("apps/services/gateway/gateway/routes/github/webhook.py",
      "_installation_org"):
         "WS-54 GH-4: which org owns the GitHub installation of a webhook. "
