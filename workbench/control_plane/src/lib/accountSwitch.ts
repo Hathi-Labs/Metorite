@@ -70,6 +70,18 @@ export interface Accounts {
 
 export const NO_ACCOUNTS: Accounts = { enabled: false, active: null, others: [] };
 
+/**
+ * The slot that holds `email`, among the accounts this browser may switch
+ * to. Case and spaces do not count. Null with the switcher off, or when
+ * this browser is not signed in to that account. The chat's other-account
+ * notice reads it (`components/ChatErrorCard.tsx`).
+ */
+export function slotFor(accounts: Accounts, email: string): OtherAccount | null {
+  const want = email.trim().toLowerCase();
+  if (!accounts.enabled || !want) return null;
+  return accounts.others.find((o) => o.email.trim().toLowerCase() === want) ?? null;
+}
+
 export async function fetchAccounts(withOrgs: boolean): Promise<Accounts> {
   try {
     const res = await fetch(`/api/accounts${withOrgs ? "?orgs=1" : ""}`, { cache: "no-store" });
