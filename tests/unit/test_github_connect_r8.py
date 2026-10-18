@@ -615,11 +615,10 @@ async def test_f5_the_flag_off_stops_every_app_reader_and_keeps_a_token_row(
 
     w = world
     g.seed_github_row(w.p, w.p.org_a, INSTALL_ORG)
-    async with tenant_engine_scope(g.app_dsn(w.p)):
-        async with tenant_session(w.p.org_b) as db:
-            await github_connection.save_token(
-                db, w.p.org_b, access_token="ghp_TOKEN_ROW_OF_B", login="b",
-                scopes=("repo",), connected_by=ADMIN_B)
+    async with tenant_engine_scope(g.app_dsn(w.p)), tenant_session(w.p.org_b) as db:
+        await github_connection.save_token(
+            db, w.p.org_b, access_token="ghp_TOKEN_ROW_OF_B", login="b",
+            scopes=("repo",), connected_by=ADMIN_B)
     monkeypatch.setattr(get_settings(), "github_app_enabled", False)
     scope = clear_tenant()
     bind_tenant(w.p.org_a)
