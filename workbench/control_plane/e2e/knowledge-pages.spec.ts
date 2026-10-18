@@ -548,6 +548,40 @@ test.describe("the tree (KB-2e)", () => {
     await expect(page.getByRole("button", { name: "Collapse Refund policy" })).toBeVisible();
   });
 
+  test("the drop line starts at the depth of the place it means", async ({ page }) => {
+    await setup(page);
+    const kb = await mockKnowledge(page, { level: "write", pages: treePages() });
+    await page.goto("/knowledge/pages/kp-l");
+    await expect(row(page, "kp-l")).toBeVisible({ timeout: 30_000 });
+    const from = await row(page, "kp-t").boundingBox();
+    const leave = await row(page, "kp-l").boundingBox();
+    const leaveIcon = await row(page, "kp-l").locator("[data-rail-icon]").boundingBox();
+    const refundIcon = await row(page, "kp-r").locator("[data-rail-icon]").boundingBox();
+    const refund = await row(page, "kp-r").boundingBox();
+    if (!from || !leave || !leaveIcon || !refund || !refundIcon) throw new Error("no row box");
+    const line = page.getByRole("navigation", { name: "Knowledge spaces" }).locator("[data-drop-line]");
+
+    await page.mouse.move(from.x + 40, from.y + from.height / 2);
+    await page.mouse.down();
+    // The top edge of Leave: a place under Handbook, one level in.
+    await page.mouse.move(leave.x + 60, leave.y + leave.height / 2, { steps: 6 });
+    await page.mouse.move(leave.x + 60, leave.y + 3, { steps: 3 });
+    await expect(line).toHaveCount(1);
+    const nested = await line.boundingBox();
+    expect(Math.abs((nested?.x ?? 0) - leaveIcon.x)).toBeLessThan(3);
+    // The top edge of Refund policy, after the open branch: a place at the root.
+    await page.mouse.move(refund.x + 60, refund.y + refund.height / 2, { steps: 3 });
+    await page.mouse.move(refund.x + 60, refund.y + 3, { steps: 3 });
+    await expect(line).toHaveCount(1);
+    const root = await line.boundingBox();
+    expect(Math.abs((root?.x ?? 0) - refundIcon.x)).toBeLessThan(3);
+    expect(leaveIcon.x - refundIcon.x).toBeGreaterThan(10);
+    // Let go away from the tree: nothing moves.
+    await page.mouse.move(1000, 700, { steps: 4 });
+    await page.mouse.up();
+    expect(kb.writes).toEqual([]);
+  });
+
   test("a page cannot drop into its own subtree", async ({ page }) => {
     await setup(page);
     const kb = await mockKnowledge(page, { level: "write", pages: treePages() });

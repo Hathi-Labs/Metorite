@@ -680,6 +680,73 @@ async def test_a_hidden_sibling_keeps_its_place(ns, app_engine) -> None:  # noqa
     assert _tree_rows(ns, space) == [("Hidden", 0), ("A", 1), ("B", 2)]
 
 
+async def test_a_member_sees_no_gap_for_a_hidden_page(ns, app_engine) -> None:  # noqa: F811
+    """Fix round, P2. The stored place counts hidden siblings. Each answer
+    gives the caller only the rank among the siblings the caller sees, so no
+    gap tells a member that a hidden page sits there."""
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    one_email, two_email = _address("one"), _address("two")
+    one = _principal(one_email, ns.org_a)
+    two = _principal(two_email, ns.org_a)
+    space = await _space(ns, admin, "Gaps", [
+        {"subject": one_email, "level": "write"},
+        {"subject": two_email, "level": "write"},
+    ])
+    a = await _published(ns, one, space, "A")
+    await _ok(ns, two, "POST", "/knowledge/pages",
+              {"space_id": space, "title": "Hidden"}, status=201)
+    b = await _published(ns, one, space, "B")
+    # The stored places hold the hidden draft between A and B.
+    assert _tree_rows(ns, space) == [("A", 0), ("Hidden", 1), ("B", 2)]
+
+    def seen(listed: dict) -> list[tuple[str, int]]:
+        return [(r["title"], r["position"]) for r in listed["pages"]]
+
+    assert seen(await _ok(ns, one, "GET", f"/knowledge/pages?space={space}")) == [("A", 0), ("B", 1)]
+    assert (await _ok(ns, one, "GET", f"/knowledge/pages/{b}"))["position"] == 1
+    moved = await _ok(ns, one, "POST", f"/knowledge/pages/{a}/move", {"position": 1})
+    assert moved["position"] == 1
+    assert seen(await _ok(ns, one, "GET", f"/knowledge/pages?space={space}")) == [("B", 0), ("A", 1)]
+    # The author of the draft sees all three, each at its rank.
+    assert [p for _t, p in seen(await _ok(ns, two, "GET", f"/knowledge/pages?space={space}"))] == [0, 1, 2]
+
+
+async def test_opposite_moves_between_two_spaces_do_not_deadlock(ns, app_engine) -> None:  # noqa: F811
+    """Fix round, P2. X goes from S1 to S2 while Y goes from S2 to S1. Each
+    move takes both tree locks in one order, so neither waits on the other
+    in a circle, and both land."""
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    writer_email = _address("writer")
+    writer = _principal(writer_email, ns.org_a)
+    grant = [{"subject": writer_email, "level": "write"}]
+    s1 = await _space(ns, admin, "One", grant)
+    s2 = await _space(ns, admin, "Two", grant)
+    x = await _published(ns, writer, s1, "X")
+    y = await _published(ns, writer, s2, "Y")
+    for title in ("P1", "P2", "P3"):
+        await _published(ns, writer, s1, title)
+        await _published(ns, writer, s2, title.replace("P", "Q"))
+    here, there = s1, s2
+    for _round in range(4):
+        responses = await _calls(ns, writer, [
+            ("POST", f"/knowledge/pages/{x}/move", {"space_id": there, "position": 0}),
+            ("POST", f"/knowledge/pages/{y}/move", {"space_id": here, "position": 0}),
+        ])
+        assert [r.status_code for r in responses] == [200, 200], [r.text for r in responses]
+        here, there = there, here
+    # Four rounds: each page is back where it began, first in its tree. A
+    # page that leaves a tree leaves a gap there, so the places are distinct
+    # and need not be contiguous. The visible rank hides the gap.
+    for space, first in ((s1, "X"), (s2, "Y")):
+        rows = _tree_rows(ns, space)
+        assert rows[0] == (first, 0) and len(rows) == 4
+        assert len({pos for _t, pos in rows}) == len(rows)
+        listed = await _ok(ns, writer, "GET", f"/knowledge/pages?space={space}")
+        assert [r["position"] for r in listed["pages"]] == [0, 1, 2, 3]
+
+
 async def test_concurrent_reorders_leave_one_order(ns, app_engine) -> None:  # noqa: F811
     """The tree lock: moves at once in one space end in 0 to n, each place once."""
     _assert_non_priv(app_engine)

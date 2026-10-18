@@ -411,6 +411,9 @@ function PageBranch({
   const litAfter =
     !open && over?.kind === "between" && over.parentId === parentId && over.index === index + 1;
 
+  // In rem, as the row's indent is, so it follows the density setting.
+  const lineIndent = { left: `calc(${depth}rem + 0.5rem)` };
+
   const targetAt = (event: React.DragEvent<HTMLElement>): PageDropTarget => {
     const box = event.currentTarget.getBoundingClientRect();
     return targetFor(dropZoneAt(event.clientY - box.top, box.height), page.id, parentId, index, open);
@@ -505,17 +508,21 @@ function PageBranch({
   return (
     <>
       <div className="relative">
-        {/* The drop line. Drawn on the row, so it stays in step with the list. */}
+        {/* The drop line. Drawn on the row, so it stays in step with the list.
+            It starts where this row's icon starts, so it shows the depth of
+            the place it means: one `w-4` step per level, after the `px-2`. */}
         {litBefore ? (
           <div
             data-drop-line="before"
-            className="pointer-events-none absolute left-0 right-0 top-0 z-10 h-0.5 bg-primary"
+            style={lineIndent}
+            className="pointer-events-none absolute right-0 top-0 z-10 h-0.5 bg-primary"
           />
         ) : null}
         {litAfter ? (
           <div
             data-drop-line="after"
-            className="pointer-events-none absolute bottom-0 left-0 right-0 z-10 h-0.5 bg-primary"
+            style={lineIndent}
+            className="pointer-events-none absolute bottom-0 right-0 z-10 h-0.5 bg-primary"
           />
         ) : null}
         <RailRow
