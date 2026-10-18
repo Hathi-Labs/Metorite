@@ -14919,6 +14919,25 @@ mutation that turns its fence red.
    scans the product code for each such text, and each one must name what a WhatsApp member
    gets. `test_with_the_whatsapp_channel_bound_every_card_gate_asks` runs the gates.
 
+**Fix round 1 (2026-10-19).** The verifier failed round 0 on narrow points, and the reviewer
+approved it with P2 items.
+
+- **R1.** The migration is now `285_whatsapp_act_home.sql`. PR #1151 holds 283, and branch
+  `mail-search-speed` holds 284.
+- **R7.** Two guards had no fence. `test_only_the_mail_agent_keeps_a_carded_own_tool_under_a_mark`
+  fences `_keeps_own_mail_writes`. `test_a_marked_delegation_never_softens_a_hard_frame` fences
+  `_delegate_held`. Through the executor, a sub-run reads its own session, so the covered
+  grandchild is held by H-236 at each hop. The unit fence holds the guard itself. Fix 1 now runs
+  on `crm-assistant`, which holds the web tools when no mark binds `no_egress`.
+- **The card never cuts a call.** The untrusted card showed 600 characters of the arguments,
+  and a Confirm ran the whole stored call. A longer call is now refused with
+  `UNTRUSTED_CARD_TOO_LONG`.
+- **A platform Confirm asks its card first.** `acts._run` asks the untrusted card of a
+  `platform` act before the call. The raw tool runs only when that card matches the stored
+  card. Otherwise the act closes `void`.
+- **The fence reads "go to the app" too.** The incident's own answer, "needs your approval in
+  the Metorite app", now matches.
+
 **Why this rule (part 3).** The mark exists because a relayed answer is in the model's context.
 So the mark must end when that answer can no longer reach the model.
 
