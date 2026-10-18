@@ -62,6 +62,24 @@ import {
   type QuestionsBody,
   type QuestionsRead,
 } from "../lib/questions";
+import {
+  SUM_CHECKING,
+  SUM_CHECK_DELAY,
+  SUM_CHECK_FAILED,
+  SUM_CHOICE_LABEL,
+  SUM_CHOICE_LINE,
+  SUM_PICK,
+  sumBlocked,
+  sumCheckKey,
+  sumCheckView,
+  sumHint,
+  sumOffered,
+  sumReady,
+  sumStart,
+  toggleSum,
+  type SumCheck,
+  type SumCheckView,
+} from "../lib/questions";
 import { defaultSection, shownSection, visibleSections } from "../lib/settingsSections";
 import CrmRail, { SettingsSectionRows } from "./CrmRail";
 import {
@@ -72,6 +90,7 @@ import {
   type AnswersHandlers,
   type QuestionHandlers,
 } from "./OpenQuestions";
+import { SumPickerBody } from "./SumPicker";
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
 const noop = () => undefined;
@@ -211,10 +230,11 @@ const handlers = (over: Partial<QuestionHandlers> = {}): QuestionHandlers => ({
   onAnswer: noop,
   onDismiss: noop,
   onSlot: noop,
+  onSum: noop,
   ...over,
 });
 
-const answersHandlers: AnswersHandlers = { busy: null, onChange: noop, onRetry: noop };
+const answersHandlers: AnswersHandlers = { busy: null, onChange: noop, onRetry: noop, onSum: noop };
 
 const card = (q: Question, over: Partial<QuestionHandlers> = {}) =>
   renderToStaticMarkup(createElement(QuestionCard, { q, handlers: handlers(over) }));
@@ -795,9 +815,9 @@ describe("Your answers", () => {
     expect(correctionTarget(REVENUE_ADMIN)).toEqual({ module: "@org", part: "revenue" });
     expect(correctionUndo(AMOUNT_ADMIN)).toBe("IP_Amount");
     expect(correctionUndo(PURPOSE_AI)).toBe(AUTO);
-    expect(read("./OpenQuestions.tsx")).toContain(
-      "await api.putCatalogue(target.module, { [target.part]: pickToValue(pick) });",
-    );
+    const comp = read("./OpenQuestions.tsx");
+    expect(comp).toContain("await correctTo(q, pickToValue(pick));");
+    expect(comp).toContain("await api.putCatalogue(target.module, { [target.part]: value });");
   });
 
   it("draws one row for each module, under the Zoho labels, with no number of the AI", () => {
@@ -886,7 +906,7 @@ describe("the proposals of the members (CRM-Q32-8)", () => {
   });
 
   it("draws each proposal on the card with a one-click Confirm that answers its value", () => {
-    const answered: Array<[string, string | null]> = [];
+    const answered: Array<[string, unknown]> = [];
     const html = card(PROPOSED, { onAnswer: (q, value) => answered.push([q.id, value]) });
     expect(html).toContain("data-proposals");
     expect(textOf(html)).toContain("Proposed by your team");
@@ -967,5 +987,283 @@ describe("the proposals of the members (CRM-Q32-8)", () => {
       expect(value).not.toMatch(/\bJev\b|@/);
       expect(value).not.toMatch(ENGINE_WORDS);
     }
+  });
+});
+
+// ── CRM-Q32-9b: an amount can be the sum of several fields (§18.14.10) ─────
+//
+// DEWiN's Collection keeps one payment in parts. The fixture is in the shape
+// of the wire of CRM-Q32-9a: `sums` lists the currency fields that each fill
+// 20% or more, the most filled first.
+
+describe("the picker of a sum (CRM-Q32-9b)", () => {
+  const SUMS = [
+    { value: "Billing_Amount", label: "Rent Net Amount", fill: 0.52 },
+    { value: "IP", label: "IP Basic Amount", fill: 0.52 },
+    { value: "EB_Net_Amount", label: "EB Net Amount", fill: 0.46 },
+    { value: "TDS_Amount", label: "TDS Amount", fill: 0.21 },
+  ];
+  const SUM_Q = base({
+    choices: [
+      { value: "Billing_Amount", label: "Rent Net Amount", fill: 0.52, samples: ["21600", "53713.8"], best: true },
+      { value: "IP", label: "IP Basic Amount", fill: 0.52, samples: ["3240"], best: false },
+    ],
+    options: SUMS.map(({ value, label, fill }) => ({ value, label, fill })),
+    sums: SUMS,
+  });
+  const SIX = { ...SUM_Q, sums: [...SUMS, { value: "Rent_Total", label: "Rent Total", fill: 0.3 }, { value: "Extra", label: "Extra", fill: 0.25 }] };
+  const THREE = ["Billing_Amount", "IP", "EB_Net_Amount"];
+  const SUM_ADMIN = { ...SUM_Q, reason: "answered" as const, by: "admin", current: THREE };
+  const CHECK: SumCheck = {
+    id: SUM_Q.id,
+    module: "Payment_Received",
+    fields: THREE,
+    records: 8681,
+    covered: 8458,
+    overlap: 4472,
+    capped: false,
+    line: "These 3 fields cover 8,458 of 8,681 records (97%).",
+    pairs: [],
+    warnings: ["Rent Net Amount and Rent Total hold the same value on 90% of records. A sum counts it twice."],
+  };
+  const picker = (picked: string[], check: SumCheckView, q: Question = SIX) =>
+    renderToStaticMarkup(createElement(SumPickerBody, { q, picked, check, disabled: false, onToggle: noop }));
+
+  it("is offered on the amount of a module with 2 or more fields in sums, and nowhere else", () => {
+    expect(sumOffered(SUM_Q)).toBe(true);
+    expect(sumOffered(KEY)).toBe(false);
+    expect(sumOffered({ ...SUM_Q, part: "date" })).toBe(false);
+    expect(sumOffered({ ...SUM_Q, sums: SUMS.slice(0, 1) })).toBe(false);
+    expect(sumOffered({ ...PURPOSE, sums: SUMS })).toBe(false);
+  });
+
+  it("puts the choice on the amount card as a full row, also with no candidate", () => {
+    const html = card(SUM_Q);
+    expect(html).toContain(SUM_CHOICE_LABEL);
+    expect(html).toContain(SUM_CHOICE_LINE);
+    expect(html).toMatch(/border-dashed[^"]*sm:col-span-3/);
+    expect(card(KEY)).not.toContain(SUM_CHOICE_LABEL);
+    expect(card({ ...SUM_Q, choices: [] })).toContain(SUM_CHOICE_LABEL);
+    // The tile opens the picker. It never answers on its own.
+    expect(read("./OpenQuestions.tsx")).toMatch(
+      /onClick=\{\(\) => handlers\.onSum\(q\)\}\s*>\s*<span[^>]*>\{SUM_CHOICE_LABEL\}/,
+    );
+  });
+
+  it("ticks 2 to 5 fields, in the order of sums, and refuses a sixth", () => {
+    expect(toggleSum(SIX, [], "IP")).toEqual(["IP"]);
+    expect(toggleSum(SIX, ["IP"], "Billing_Amount")).toEqual(["Billing_Amount", "IP"]);
+    expect(toggleSum(SIX, ["Billing_Amount", "IP"], "IP")).toEqual(["Billing_Amount"]);
+    const five = ["Billing_Amount", "IP", "EB_Net_Amount", "TDS_Amount", "Rent_Total"];
+    expect(toggleSum(SIX, five, "Extra")).toEqual(five);
+    expect(sumBlocked(five, "Extra")).toBe(true);
+    expect(sumBlocked(five, "IP")).toBe(false);
+    expect(sumBlocked(["IP"], "Extra")).toBe(false);
+    expect(sumReady([])).toBe(false);
+    expect(sumReady(["IP"])).toBe(false);
+    expect(sumReady(["IP", "Billing_Amount"])).toBe(true);
+    expect(sumReady(five)).toBe(true);
+    expect(sumReady([...five, "Extra"])).toBe(false);
+    expect(sumReady(["IP", "IP"])).toBe(false);
+    expect(sumHint(0)).toBe("Tick 2 to 5 fields.");
+    expect(sumHint(1)).toBe("Tick one more field.");
+    expect(sumHint(5)).toBe("5 fields are ticked. That is the most a sum takes.");
+  });
+
+  it("asks a full question, with why we ask and what the answer changes", () => {
+    const html = picker([], { state: "idle" }, SUM_Q);
+    expect(html).toContain("Which fields add up to the amount of each record in Collection?");
+    expect(html).toContain("Why we ask");
+    expect(html).toContain("What your answer changes");
+    expect(html).toContain("Totals of Collection add up these fields for each record");
+    expect(html).toContain("8,681 records in Collection");
+    expect(textOf(html)).not.toMatch(/\bJev\b/);
+    expect(textOf(html)).not.toMatch(ENGINE_WORDS);
+  });
+
+  it("draws a shared Checkbox for each field, with its share of values and its examples", () => {
+    const html = picker([], { state: "idle" });
+    expect(html.match(/type="checkbox"/g)).toHaveLength(6);
+    expect(html).toContain("cc-checkbox");
+    expect(html).toContain(">Rent Net Amount<");
+    expect(html).toContain("52% of records have a value");
+    expect(html).toContain("Examples: 21,600 · 53,713.8");
+    expect(html).not.toMatch(/checked=""/);
+    expect(read("./SumPicker.tsx")).toContain('import { Checkbox } from "@/components/ui/Checkbox";');
+  });
+
+  it("disables each unticked box when 5 are ticked", () => {
+    const five = ["Billing_Amount", "IP", "EB_Net_Amount", "TDS_Amount", "Rent_Total"];
+    const html = picker(five, { state: "loading" });
+    expect(html.match(/checked=""/g)).toHaveLength(5);
+    expect(html.match(/disabled=""/g)).toHaveLength(1);
+    expect(picker(["IP"], { state: "idle" }).match(/disabled=""/g)).toBeNull();
+  });
+
+  it("shows the coverage line and each warning of the check, and the warning does not block Save", () => {
+    const html = picker(THREE, { state: "done", line: CHECK.line, warnings: CHECK.warnings });
+    expect(html).toContain("These 3 fields cover 8,458 of 8,681 records (97%).");
+    expect(html).toContain("hold the same value on 90% of records. A sum counts it twice.");
+    expect(html.match(/role="alert"/g)).toHaveLength(1);
+    expect(html).toMatch(/text-warning/);
+    expect(picker(THREE, { state: "done", line: CHECK.line, warnings: [] })).not.toContain('role="alert"');
+    expect(picker(THREE, { state: "loading" })).toContain(SUM_CHECKING);
+    // Save waits for 2 to 5 fields only, never for the check.
+    expect(read("./SumPicker.tsx")).toContain("disabled={busy || !sumReady(picked)}");
+  });
+
+  it("reads the check into idle, loading, done and failed", () => {
+    expect(sumCheckView(false, CHECK, null)).toEqual({ state: "idle" });
+    expect(sumCheckView(true, undefined, null)).toEqual({ state: "loading" });
+    expect(sumCheckView(true, CHECK, null)).toEqual({ state: "done", line: CHECK.line, warnings: CHECK.warnings });
+    expect(sumCheckView(true, undefined, new CrmError("A sum takes 2 to 5 different fields.", 422, "bad_answer"))).toEqual({
+      state: "failed",
+      message: "A sum takes 2 to 5 different fields.",
+    });
+    expect(sumCheckView(true, undefined, new Error("boom"))).toEqual({ state: "failed", message: SUM_CHECK_FAILED });
+  });
+
+  it("runs the check after a short wait, through the read cache, keyed by the ticked set", () => {
+    const src = read("./SumPicker.tsx");
+    expect(src).toMatch(/setTimeout\(\(\) => setChecked\(picked\), SUM_CHECK_DELAY\)/);
+    expect(src).toMatch(/useCachedResource<SumCheck>\(sumReady\(checked\) \? sumCheckKey\(q\.id, checked\) : null/);
+    expect(src).toContain("api.sumCheck(q.id, checked)");
+    expect(SUM_CHECK_DELAY).toBeGreaterThanOrEqual(200);
+    expect(sumCheckKey(SUM_Q.id, THREE)).toBe("crm:questions:sum:key:Payment_Received:amount:Billing_Amount,IP,EB_Net_Amount");
+  });
+
+  it("saves the list: an answer from the card, a correction from Your answers", () => {
+    const comp = read("./OpenQuestions.tsx");
+    expect(comp).toContain('const done = sum.from === "card" ? await answer(sum.q, keys) : await correctTo(sum.q, keys);');
+    expect(comp).toContain("onSave={(keys) => void saveSum(keys)}");
+    expect(read("./SumPicker.tsx")).toContain("onClick={() => onSave(picked)}");
+  });
+
+  it("names a sum in Your answers, with Change and Let Metorite choose", () => {
+    expect(currentLabel(SUM_ADMIN)).toBe("Sum of Rent Net Amount, IP Basic Amount and EB Net Amount");
+    expect(pickValue(SUM_ADMIN)).toBe(SUM_PICK);
+    expect(sumStart(SUM_ADMIN)).toEqual(THREE);
+    expect(sumStart(SUM_Q)).toEqual([]);
+    const html = renderToStaticMarkup(
+      createElement(YourAnswersView, {
+        body: body([], { answered: [SUM_ADMIN] }),
+        failed: false,
+        handlers: answersHandlers,
+      }),
+    );
+    expect(html).toContain("Sum of Rent Net Amount, IP Basic Amount and EB Net Amount");
+    expect(html).toContain(">Change<");
+    expect(html).toContain(">Let Metorite choose<");
+    expect(html).toContain("You chose");
+    // An amount that is one field offers the picker from its SelectButton.
+    expect(answerPicks({ ...SUM_Q, reason: "answered", by: "admin", current: "IP" }).at(-1)?.value).toBe(SUM_PICK);
+    expect(answerPicks(KEY).some((p) => p.value === SUM_PICK)).toBe(false);
+    expect(read("./OpenQuestions.tsx")).toContain(
+      "onChange={(pick) => (pick === SUM_PICK ? handlers.onSum(q) : handlers.onChange(q, pick))}",
+    );
+  });
+
+  it("undoes a sum: back to the earlier list, or to the choice of Metorite", () => {
+    const done: AnswerDone = {
+      id: SUM_Q.id,
+      kind: "key_field",
+      version: 43,
+      line: "Totals of Collection now use the sum of Rent Net Amount, IP Basic Amount and EB Net Amount.",
+      undo: { module: "Payment_Received", part: "amount", value: AUTO },
+      moved: null,
+      slot: null,
+      module: "Payment_Received",
+    };
+    expect(undoOf(SUM_Q, done, THREE)).toEqual({ kind: "put", module: "Payment_Received", parts: { amount: AUTO } });
+    expect(undoOf({ ...SUM_ADMIN }, done, ["IP", "TDS_Amount"])).toEqual({
+      kind: "put",
+      module: "Payment_Received",
+      parts: { amount: THREE },
+    });
+    expect(correctionUndo(SUM_ADMIN)).toEqual(THREE);
+    expect(batchUndoCalls([{ module: "Payment_Received", part: "amount", value: THREE }])).toEqual([
+      { module: "Payment_Received", parts: { amount: THREE } },
+    ]);
+    expect(savedLine(SUM_Q, done, THREE)).toBe(
+      "Saved. Totals of Collection now use the sum of Rent Net Amount, IP Basic Amount and EB Net Amount.",
+    );
+  });
+
+  describe("the client", () => {
+    type Sent = { url: string; method: string; body: unknown };
+    const original = globalThis.fetch;
+    afterEach(() => {
+      globalThis.fetch = original;
+      clearAll();
+    });
+    function stub(answer: unknown): Sent[] {
+      const sent: Sent[] = [];
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        sent.push({
+          url: String(input),
+          method: init?.method ?? "GET",
+          body: init?.body ? JSON.parse(String(init.body)) : null,
+        });
+        return new Response(JSON.stringify(answer), { status: 200, headers: { "content-type": "application/json" } });
+      }) as typeof fetch;
+      return sent;
+    }
+
+    it("reads the sum check with the ticked keys, and wakes nothing", async () => {
+      const sent = stub(CHECK);
+      put("crm:mode", { mode: "mirror" });
+      expect(await api.sumCheck(SUM_Q.id, THREE)).toEqual(CHECK);
+      expect(sent[0]).toEqual({
+        url: "/api/crm/questions/key%3APayment_Received%3Aamount/sum-check?fields=Billing_Amount%2CIP%2CEB_Net_Amount",
+        method: "GET",
+        body: null,
+      });
+      expect(peek("crm:mode")).toBeDefined();
+    });
+
+    it("sends a list through the answer route and the PUT of the catalogue", async () => {
+      const sent = stub({});
+      await api.answerQuestion(SUM_Q.id, THREE);
+      await api.putCatalogue("Payment_Received", { amount: THREE });
+      expect(sent[0].body).toEqual({ value: THREE });
+      expect(sent[1]).toMatchObject({ method: "PUT", body: { amount: THREE } });
+    });
+  });
+});
+
+describe("the proposals in the picker of a sum (CRM-Q32-8 and CRM-Q32-9b)", () => {
+  const ASHA = { name: "Asha Rao", value: "IP", label: "IP Basic Amount", at: "2026-10-18T09:00:00Z" };
+  const SUMS = [
+    { value: "Billing_Amount", label: "Rent Net Amount", fill: 0.52 },
+    { value: "IP", label: "IP Basic Amount", fill: 0.52 },
+  ];
+  const Q = base({ ...KEY, sums: SUMS, proposals: [ASHA] });
+
+  it("shows each proposal with Confirm, which answers its one field", () => {
+    const confirmed: Array<string | null> = [];
+    const html = renderToStaticMarkup(
+      createElement(SumPickerBody, {
+        q: Q,
+        picked: [],
+        check: { state: "idle" },
+        disabled: false,
+        onToggle: noop,
+        onConfirm: (p) => confirmed.push(p.value),
+      }),
+    );
+    expect(html).toContain("data-proposals");
+    expect(textOf(html)).toContain("Proposed by Asha Rao ·");
+    expect(html).toContain('aria-label="Confirm IP Basic Amount, proposed by Asha Rao, for Collection"');
+    expect(read("./OpenQuestions.tsx")).toContain("onConfirm={(p) => void confirmInSum(p.value)}");
+    expect(confirmed).toEqual([]);
+  });
+
+  it("draws no list with no Confirm handler, and one shared component", () => {
+    const html = renderToStaticMarkup(
+      createElement(SumPickerBody, { q: Q, picked: [], check: { state: "idle" }, disabled: false, onToggle: noop }),
+    );
+    expect(html).not.toContain("data-proposals");
+    expect(read("./SumPicker.tsx")).toContain('import { ProposalList } from "./ProposalList";');
+    expect(read("./OpenQuestions.tsx")).toContain('import { ProposalList } from "./ProposalList";');
   });
 });

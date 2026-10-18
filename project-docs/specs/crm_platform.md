@@ -37,11 +37,11 @@
 >
 > **Built 2026-10-18, merged as #1130, dark:** CRM-Q32, the open questions (§18.14). CRM-Q32-1 to CRM-Q32-6 are built, the screens and both halves of CRM-Q32-4 too. CRM-Q32-7 is not, because it waits for WS-61. The CRM asks the admin each question that Jev could not answer with confidence. Each answer becomes a fixed fact in the mapping plan. Every app reads it through the one read seam `org facts`. No migration, and no model call of its own.
 >
-> **Built 2026-10-18 on `crm-q32-8`, not merged:** CRM-Q32-8, the chat tells each member with CRM access what is not clear and asks before it answers. An admin answers, and each other member proposes an answer that an admin confirms (owner direction 2026-10-18, two parts). No migration. It ships behind `CRM_QUESTIONS_ORGS`. The branch sits on `crm-q32-9a`.
+> **Built 2026-10-18 on `crm-q32-8`, not merged:** CRM-Q32-8, the chat tells each member with CRM access what is not clear and asks before it answers. An admin answers, and each other member proposes an answer that an admin confirms (owner direction 2026-10-18, two parts). No migration. It ships behind `CRM_QUESTIONS_ORGS`. It merges after CRM-Q32-9a (#1138) and CRM-Q32-9b (#1139).
 >
-> **Specified 2026-10-18, not built:** CRM-Q32-9b, the picker of a sum (§18.14.10). The merge order is in §18.14.10.
+> **Built 2026-10-18 on `crm-q32-9b`, not merged:** CRM-Q32-9b, the picker of a sum (§18.14.10). The amount card offers "These fields add up to the amount", and the picker shows the coverage line and the warning of the sum check. "Your answers" shows a sum, with Change and "Let Metorite choose". Frontend only. No migration. CRM-Q32-8 adds the proposals of the members to the picker, each with Confirm.
 >
-> **Built 2026-10-18 on `crm-q32-9a`, not merged:** CRM-Q32-9a, the backend of an amount as the sum of 2 to 5 fields (§18.14.10). No migration. The screens wait for CRM-Q32-9b, but a CRM admin of an org on `CRM_QUESTIONS_ORGS` can already store a sum through `PUT /crm/catalogue/{module}` or the answer route. Do not revert CRM-Q32-9a after that (§18.14.13).
+> **Built 2026-10-18, merged as #1138:** CRM-Q32-9a, the backend of an amount as the sum of 2 to 5 fields (§18.14.10). No migration. The screens wait for CRM-Q32-9b, but a CRM admin of an org on `CRM_QUESTIONS_ORGS` can already store a sum through `PUT /crm/catalogue/{module}` or the answer route. Do not revert CRM-Q32-9a after that (§18.14.13).
 >
 > **Built later, not merged (Batch M, `crm-batch-m`):** CRM-Q17a-1b, a "still empty" check of a stale entity (2026-10-16, §18.9.6, no migration). CRM-Q17a-2, the screens of the fill rank (2026-10-16, no migration). CRM-Q18-1b, two deadlocks of the plan lock (2026-10-16, no migration). CRM-Q19, the executor and the 200-record preview (2026-10-16, no migration).
 >
@@ -6520,7 +6520,7 @@ section.
 | CRM-Q32-7 | The Knowledge page "How our CRM data is organised". ⚠️ NOT dispatchable: a stub | AGENT-SAFE to build, later | S | CRM-Q32-5, and a writer of a system page that WS-61 specifies in `knowledge_base.md` |
 | CRM-Q32-8 | The chat tells each member what is not clear and asks before it answers. An admin answers, and each other member proposes. `crm_answer_question` serves both (owner direction 2026-10-18, two parts). ✅ Built 2026-10-18 on `crm-q32-8`, not merged | AGENT-SAFE | L | #1133 (CRM-Q29 rounds 4 and 5), #1132 (merged), CRM-Q32-9a and `crm-questions-copy` |
 | CRM-Q32-9a | The backend of an amount as the sum of 2 to 5 fields. ✅ Built 2026-10-18 on `crm-q32-9a`, not merged | AGENT-SAFE | M | This spec merged |
-| CRM-Q32-9b | The picker of a sum, and "Your answers" | AGENT-SAFE | S | CRM-Q32-9a and the branch `crm-questions-copy` |
+| CRM-Q32-9b | The picker of a sum, and "Your answers". ✅ Built 2026-10-18 on `crm-q32-9b`, not merged | AGENT-SAFE | S | CRM-Q32-9a and the branch `crm-questions-copy` |
 
 **The flips.** A name in `CRM_QUESTIONS_ORGS` spends nothing, so it is the
 grant `enforcement-flip`. The org needs `CRM_CATALOGUE_ORGS` too, which is
@@ -7306,6 +7306,11 @@ Migration: none. Waits for: this spec merged. Narrow reviewer: SQL, for
 `_amount` and the sum check.
 
 **CRM-Q32-9b · The picker of a sum. Done when:**
+
+**Built 2026-10-18 on `crm-q32-9b`, not merged.** Each item below has its test
+in `components/crmQ32.test.ts`, and a mutation of each rule fails it. The
+picker is `components/SumPicker.tsx`. The proposals of CRM-Q32-8 join the
+picker when CRM-Q32-8 is built.
 
 1. The card of an `amount` question offers the choice "These fields add up
    to the amount". It opens the picker of check boxes, as "When the card

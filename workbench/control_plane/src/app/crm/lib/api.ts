@@ -36,8 +36,10 @@ import type {
 import type {
   AcceptBestDone,
   AnswerDone,
-  CataloguePart,
+  AnswerValue,
+  CatalogueParts,
   QuestionsBody,
+  SumCheck,
 } from "./questions";
 import type { RecordCounts, ResetThen } from "./setup";
 import type { ResetResult } from "./startOver";
@@ -820,15 +822,16 @@ export function listQuestions(opts: { all?: boolean; limit?: number } = {}): Pro
 
 /**
  * Answer one question. `null` is "None of these", and `"@auto"` on a
- * `stage_value` is its Undo. `version` is the plan that the card read, so a
- * plan that moved gives 409 `plan_moved`.
+ * `stage_value` is its Undo. The `amount` of a module also takes a list of
+ * 2 to 5 field keys, a sum (CRM-Q32-9). `version` is the plan that the card
+ * read, so a plan that moved gives 409 `plan_moved`.
  */
 export function answerQuestion(
   id: string,
-  value: string | null,
+  value: AnswerValue,
   version?: number | null,
 ): Promise<AnswerDone> {
-  const body: { value: string | null; version?: number } = { value };
+  const body: { value: AnswerValue; version?: number } = { value };
   if (typeof version === "number") body.version = version;
   return writeAndWake(() =>
     call<AnswerDone>(`/questions/${encodeURIComponent(id)}/answer`, {
@@ -878,10 +881,11 @@ export function acceptBest(
 /**
  * A correction of the catalogue (CRM-Q31-4). Each part takes a field, a
  * purpose word, `null` ("None"), or `"@auto"` (the choice of Metorite).
+ * `amount` also takes a list of 2 to 5 field keys, a sum (CRM-Q32-9).
  */
 export function putCatalogue(
   module: string,
-  parts: Partial<Record<CataloguePart, string | null>>,
+  parts: CatalogueParts,
 ): Promise<{ module: string; version: number | null }> {
   return writeAndWake(() =>
     call<{ module: string; version: number | null }>(`/catalogue/${encodeURIComponent(module)}`, {
@@ -889,6 +893,17 @@ export function putCatalogue(
       body: JSON.stringify(parts),
     }),
   );
+}
+
+/**
+ * The check of a ticked set of fields for a sum (CRM-Q32-9): the coverage
+ * line, and a warning for a pair that holds the same value. A read, so it
+ * writes nothing and wakes nothing. 422 `bad_answer` for a set that is not
+ * 2 to 5 currency fields of the module.
+ */
+export function sumCheck(id: string, keys: readonly string[]): Promise<SumCheck> {
+  const query = new URLSearchParams({ fields: keys.join(",") });
+  return call<SumCheck>(`/questions/${encodeURIComponent(id)}/sum-check?${query.toString()}`);
 }
 
 // ── The setup hub and the start over (WS-53 CRM-X0) ───────────────────────
