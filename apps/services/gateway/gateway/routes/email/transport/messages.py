@@ -52,6 +52,7 @@ from gateway.routes.email.core import (
     _truncate_body,
     folder_scope,
     router,
+    text_match_sql,
 )
 from gateway.routes.email.transport.attachments import _canonical_uuid
 from gateway.routes.email.quoting import strip_for_reading
@@ -226,7 +227,8 @@ async def list_messages(
     The optional filters (date range, read/starred/attachment state, importance,
     sender address, sender category) + ``sort`` let the assistant answer inbox-wide
     questions ("sales emails in the last month", "important unread mail") without
-    pulling the whole inbox. ``query`` is a full-text match over subject/body/from.
+    pulling the whole inbox. ``query`` is a full-text match over subject, body,
+    the sender and the To and Cc recipients (``core.text_match_sql``).
 
     ``collapse`` returns one row per conversation — the newest message in the
     current view represents its thread, and ``total`` counts conversations, not
@@ -292,17 +294,11 @@ async def list_messages(
             # AND-ed, but "OR" and quoted phrases are honoured. plainto_tsquery
             # (the old call here) AND-s EVERYTHING, so the agent's find_urgent
             # ("urgent OR deadline OR ASAP OR action required") could only match
-            # a message containing every one of those words — i.e. never. The
-            # vector below is byte-identical to search._FTS_VECTOR and the GIN
-            # index (72_email_search_fts.sql); keep the three in lock-step.
-            where_clauses.append(
-                """to_tsvector('english',
-                   coalesce(em.subject,'') || ' ' ||
-                   coalesce(em.body_text,'') || ' ' ||
-                   coalesce(em.from_address->>'name','') || ' ' ||
-                   coalesce(em.from_address->>'email',''))
-                   @@ websearch_to_tsquery('english', :query)"""
-            )
+            # a message containing every one of those words — i.e. never.
+            # The match runs in public.email_message_search (migration 284),
+            # through its GIN index. An inline to_tsvector here cannot use any
+            # index under RLS (incident 2026-10-18, core.text_match_sql).
+            where_clauses.append(text_match_sql("query"))
             params["query"] = query
         # Date range (received_at).
         dt_after, dt_before = _parse_dt(received_after), _parse_dt(received_before)

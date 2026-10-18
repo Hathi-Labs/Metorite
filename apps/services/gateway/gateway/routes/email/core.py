@@ -809,6 +809,28 @@ UNCATEGORIZED_SQL = (
     " WHERE LOWER(TRIM(c)) = ANY(:known_labels))"
 )
 
+
+def text_match_sql(param: str) -> str:
+    """The text match of a mail search, over ``em``, on the bind ``:param``.
+
+    ⚠️ Do NOT write ``to_tsvector(...) @@ ...`` against ``email_messages`` in a
+    route. Under FORCE RLS the app role cannot use a GIN index for ``@@``,
+    because ``ts_match_vq`` is not LEAKPROOF. So that predicate runs
+    ``to_tsvector`` over every body of the organization. On 2026-10-18 this
+    made 7 of 12 ``query_inbox`` calls die on the 30 s statement timeout.
+
+    ``public.email_message_search`` (migration 284) is SECURITY DEFINER. It
+    finds the ids of the bound organization through the GIN index
+    ``idx_email_messages_fts_all``. The ids then reach the rows by primary key,
+    under RLS. ``ARRAY(...)`` makes that an index qual (``uuid_eq`` is
+    LEAKPROOF). The grammar is ``websearch_to_tsquery``, over subject, body,
+    the sender and the To and Cc recipients.
+
+    Fence: ``tests/unit/test_email_search_index_r8.py``.
+    """
+    return f"em.id = ANY(ARRAY(SELECT public.email_message_search(:{param})))"
+
+
 # "Uncategorized" is a STATE — the absence of any known label — never a label
 # itself. It must not be writable as a category anywhere: not by a rule's LABEL
 # action (an AI-resolved {{...}} label could produce it), not by the manual

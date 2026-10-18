@@ -3,9 +3,11 @@
 This is the dedicated search surface (``GET /email/search``), distinct from the
 folder-oriented ``/email/messages`` list:
 
-  • It searches the WHOLE message — subject + body_text + sender name + email —
-    over an FTS index whose expression matches the query exactly (migration 72),
-    so body matches are found via the GIN index, not a sequential scan.
+  • It searches the WHOLE message — subject + body_text + the sender + the To
+    and Cc recipients — through ``core.text_match_sql``. That calls the
+    SECURITY DEFINER ``email_message_search`` (migration 284), because under
+    RLS an inline ``to_tsvector`` match cannot use any index (incident
+    2026-10-18).
   • It ranks by relevance (``ts_rank_cd``), not just recency, so the best match
     surfaces first — with recency as the tie-break.
   • It searches ACROSS folders and (optionally) across all of the user's
@@ -48,14 +50,14 @@ from gateway.routes.email.core import (
     _row_to_message,
     folder_scope,
     router,
+    text_match_sql,
 )
 from gateway.routes.email.transport.messages import _also_in_by_message
 from sqlalchemy import text
 
-# The tsvector expression — MUST stay byte-for-byte identical to the GIN index
-# in migration 72 (idx_email_messages_fts_body) so the planner uses the index
-# instead of recomputing per row. One constant, referenced everywhere it's
-# needed (WHERE match, rank, headline), so they can never drift apart.
+# The tsvector that RANKS a match (ts_rank_cd). It is NOT the match: the WHERE
+# goes through core.text_match_sql (migration 284), because under RLS no index
+# serves an inline to_tsvector. The rank runs only over the rows that matched.
 _FTS_VECTOR = (
     "to_tsvector('english', "
     "coalesce(em.subject,'') || ' ' || "
@@ -215,8 +217,7 @@ async def search_messages(
         where = [_account_scope(account_id, params, pooled_only=True)]
         # Filters-only search: no text ⇒ no FTS predicate and nothing to rank.
         if text_q:
-            where.append(
-                f"{_FTS_VECTOR} @@ websearch_to_tsquery('english', :q)")
+            where.append(text_match_sql("q"))
 
         # Search is the one place "all" spans sent mail too: the browse view
         # excludes it (All shows what arrived), but "what did I tell them?" is
