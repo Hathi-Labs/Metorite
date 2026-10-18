@@ -782,7 +782,8 @@ def test_the_wire_of_a_sum_carries_its_parts() -> None:
     amount = wire["fields"]["amount"]
     assert (amount["key"], amount["type"]) == ("Billing_Amount+IP+EB_Net_Amount", "currency")
     assert [p["key"] for p in amount["parts"]] == _SUM_KEYS
-    assert wire["fields"]["date"]["parts"] is None
+    # A plain field has no parts key, so its wire is the wire of before.
+    assert "parts" not in wire["fields"]["date"]
 
 
 async def test_the_tool_line_names_each_part_of_a_sum(monkeypatch) -> None:

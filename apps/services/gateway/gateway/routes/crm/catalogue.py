@@ -111,7 +111,8 @@ class KeyField(BaseModel):
     label: str
     type: str
     target: str | None = None
-    parts: list[KeyField] | None = None
+    #: Absent for a plain field, so its wire is the wire of before.
+    parts: list[KeyField] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class CatalogueEntry(BaseModel):
