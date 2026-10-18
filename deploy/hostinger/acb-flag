@@ -1,9 +1,10 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # acb-flag — set Metorite feature flags on a box, and nothing else.
 #
 #   acb-flag list
 #   acb-flag set NAME=VALUE [NAME=VALUE ...]
 #   acb-flag unset NAME [NAME ...]
+#   acb-flag reset NAME [NAME ...]     (staging: follow production's value again)
 #   acb-flag deploy [--force]          (staging only)
 #
 # On PRODUCTION every command needs `--production --reason "<why>"` first:
@@ -15,11 +16,12 @@
 # agent could set a staging flag, and the point of staging is to test with
 # flags on. One sudoers line lets `dev` run THIS file as root:
 #   dev ALL=(root) NOPASSWD: /opt/acb/app/deploy/hostinger/acb-flag
-# That grants nothing new. Only `acb` can write this path, and `acb` already
-# has full sudo on both boxes.
+# Only `acb` can write this path, and `acb` already has full sudo.
 #
 # The rules, each one a refusal:
-#   * The box must say DEPLOY_ENV=staging or DEPLOY_ENV=production in its .env.
+#   * The box: DEPLOY_ENV=staging, or DEPLOY_ENV=production / no DEPLOY_ENV
+#     line (the deploy reads "absent" as production, vps_pull.sh). A line in
+#     any other form, or another value, is refused, as the deploy refuses it.
 #     Production needs --production and a --reason. Staging refuses --production.
 #   * A name must be a switch: NEXT_PUBLIC_*, *_ENABLED, *_ORGS, *_MEMBERS,
 #     *_LENS, *_ROLLOUT, KNOWLEDGE_*, IDENTITY_CUTOVER or ACB_GRAPH_TENANT_BIND.
@@ -29,17 +31,29 @@
 #     those for the owner, who edits the file as root.
 #   * `list` prints switch lines only, never another line of the file.
 #
+# Which file. The gateway reads the root .env, and the workbench reads its own
+# .env.local (NEXT_PUBLIC_* at BUILD time, the rest at start). So a name goes
+# to every file that already holds it. A new NEXT_PUBLIC_ goes to .env.local,
+# and any other new name goes to both, because the tool cannot know its reader.
+#
 # What it does after a change:
 #   * backs the file up, keeps owner acb and mode 600,
-#   * root .env  -> restarts acb-gateway (and acb-agent-edge if it runs),
-#   * workbench .env.local -> starts a forced re-apply in the background,
-#     because Next.js bakes NEXT_PUBLIC_* in at build time,
-#   * on staging, records the value in /etc/acb/staging-flags.env, which the
-#     nightly refresh applies AFTER production's flags, so it survives the night,
+#   * root .env changed -> restarts acb-gateway,
+#   * .env.local changed -> restarts acb-workbench, or for a NEXT_PUBLIC_ name
+#     rebuilds it. On staging the rebuild is a forced re-apply in the
+#     background that waits for any running deploy. On production a rebuild
+#     is a deploy, so the tool does not start one: the value takes effect at
+#     the next release (21:30 UTC), or at a dispatched one.
+#   * on staging, records the change in /etc/acb/staging-flags.env. The
+#     nightly refresh applies that file AFTER production's flags, so a staging
+#     `set` or `unset` survives the night. `reset` drops the record, and the
+#     next refresh brings production's value back.
 #   * appends one line to /var/log/acb-flag.log: when, who, box, what, why.
 #
 # Fence: tests/unit/test_acb_flag.py.
 set -euo pipefail
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
 
 # Test seams. Honoured only for a non-root caller, so `sudo` can never be
 # pointed at another file. sudo also clears the environment by default.
@@ -54,6 +68,7 @@ ENV_ROOT="$APP/.env"
 ENV_WB="$APP/workbench/control_plane/.env.local"
 OVERLAY="$root/etc/acb/staging-flags.env"
 LOG="$root/var/log/acb-flag.log"
+LOCK="$root/run/acb-flag.lock"
 
 die() { echo "acb-flag: $*" >&2; exit 2; }
 
@@ -74,11 +89,17 @@ while [ $# -gt 0 ]; do
     *) break ;;
   esac
 done
-[ $# -ge 1 ] || die "usage: acb-flag [--production --reason WHY] list|set|unset|deploy ..."
+[ $# -ge 1 ] || die "usage: acb-flag [--production --reason WHY] list|set|unset|reset|deploy ..."
 cmd="$1"; shift
 
-[ -f "$ENV_ROOT" ] || die "$ENV_ROOT does not exist"
-box="$(grep -E '^DEPLOY_ENV=' "$ENV_ROOT" | tail -1 | cut -d= -f2- | tr -d "\"' \r" || true)"
+[ -f "$ENV_ROOT" ] && [ -r "$ENV_ROOT" ] || die "$ENV_ROOT is missing or unreadable"
+# The deploy's own rule (vps_pull.sh): a DEPLOY_ENV line in any other form
+# (`export DEPLOY_ENV=…`, `DEPLOY_ENV = …`, a leading space) is refused.
+if awk '/^[[:space:]]*(export[[:space:]]+)?DEPLOY_ENV[[:space:]]*=/ && !/^DEPLOY_ENV=/ { bad = 1 } END { exit !bad }' "$ENV_ROOT"; then
+  die "$ENV_ROOT names DEPLOY_ENV in a form other than DEPLOY_ENV=<value>. Refusing."
+fi
+box="$( { grep -E '^DEPLOY_ENV=' "$ENV_ROOT" || true; } | tail -1 | cut -d= -f2- | tr -d "\"' \r")"
+box="${box:-production}"
 case "$box" in
   staging)
     [ "$production" = 0 ] || die "this box is staging. Drop --production." ;;
@@ -88,6 +109,11 @@ case "$box" in
   *) die "$ENV_ROOT says DEPLOY_ENV='$box', not staging or production. Refusing." ;;
 esac
 
+# One acb-flag at a time: each change is a read-modify-write of the files.
+mkdir -p "$(dirname "$LOCK")"
+exec 7>>"$LOCK"
+flock -w 60 7 || die "another acb-flag is running"
+
 # ── helpers ────────────────────────────────────────────────────────────────
 check_name() {
   local n="$1"
@@ -96,17 +122,18 @@ check_name() {
   [[ "$n" =~ $HELD ]] && die "$n reaches a person or a third party. It stays with the owner (CLAUDE.md §3a rule 3): edit the file as root."
   return 0
 }
-file_for() {
-  # The file that already holds the name wins. A new NEXT_PUBLIC_ goes to the
-  # workbench, anything else to the root .env.
-  local n="$1"
-  if [ -f "$ENV_WB" ] && grep -qE "^$n=" "$ENV_WB"; then echo "$ENV_WB"
-  elif grep -qE "^$n=" "$ENV_ROOT"; then echo "$ENV_ROOT"
-  elif [[ "$n" == NEXT_PUBLIC_* ]]; then echo "$ENV_WB"
-  else echo "$ENV_ROOT"; fi
+has() { [ -f "$2" ] && grep -qE "^$1=" "$2"; }
+targets() {
+  # Every file that holds the name. A NEXT_PUBLIC_ always includes the
+  # workbench, which builds it. A new name of any other kind goes to both.
+  local n="$1" out=()
+  has "$n" "$ENV_ROOT" && out+=("$ENV_ROOT")
+  if [[ "$n" == NEXT_PUBLIC_* ]] || has "$n" "$ENV_WB"; then out+=("$ENV_WB")
+  elif [ ${#out[@]} -eq 0 ]; then out+=("$ENV_ROOT" "$ENV_WB"); fi
+  printf '%s\n' "${out[@]}"
 }
 scope_of() { [ "$1" = "$ENV_WB" ] && echo workbench || echo root; }
-current() { grep -E "^$1=" "$2" 2>/dev/null | tail -1 | cut -d= -f2- || true; }
+current() { { grep -E "^$1=" "$2" 2>/dev/null || true; } | tail -1 | cut -d= -f2-; }
 backup() {
   local f="$1" ts
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -114,44 +141,39 @@ backup() {
   # Keep the ten newest backups of this file.
   ls -1t "$f".bak-acb-flag-* 2>/dev/null | tail -n +11 | xargs -r rm -f
 }
-rewrite() {
-  # Replace NAME's line (or drop it when VALUE is the unset marker) in place:
-  # `cat >` keeps the inode, so the owner and mode 600 stay as they were.
-  local f="$1" n="$2" v="$3" tmp
+replace_lines() {
+  # Drop every line matching the ERE $2 from file $1, then append $3 if it is
+  # not empty. `cat >` keeps the inode, so the owner and mode 600 stay.
+  local f="$1" drop="$2" add="$3" tmp
   tmp="$(mktemp "$f.acb-flag.XXXXXX")"
-  { grep -vE "^$n=" "$f" || true; } > "$tmp"
-  [ "$v" = "__UNSET__" ] || printf '%s=%s\n' "$n" "$v" >> "$tmp"
+  { grep -vE "$drop" "$f" || true; } > "$tmp"
+  [ -z "$add" ] || printf '%s\n' "$add" >> "$tmp"
   cat "$tmp" > "$f"; rm -f "$tmp"
 }
 overlay() {
-  # Staging only: remember a value so the nightly refresh applies it after
-  # production's flags. The file uses the refresh's own "<scope>:NAME=VALUE".
+  # Staging only. "<scope>:NAME=VALUE" sets, "<scope>:-NAME" removes, and an
+  # empty record (reset) follows production again. The refresh reads it.
   [ "$box" = staging ] || return 0
-  local scope="$1" n="$2" v="$3"
+  local scope="$1" n="$2" record="$3"
   mkdir -p "$(dirname "$OVERLAY")"
   [ -f "$OVERLAY" ] || { ( umask 077; : > "$OVERLAY" ); }
-  rewrite "$OVERLAY" "$scope:$n" "$v"
+  replace_lines "$OVERLAY" "^$scope:(-$n\$|$n=)" "$record"
 }
 log() {
   mkdir -p "$(dirname "$LOG")"
   printf '%s user=%s box=%s %s reason=%q\n' "$(date -u +%FT%TZ)" "${SUDO_USER:-$(id -un)}" "$box" "$*" "$reason" >> "$LOG"
 }
 run() { if [ -n "$dry" ]; then echo "DRY: $*"; else "$@"; fi; }
-restart_gateway() {
-  run systemctl restart acb-gateway
-  if [ -n "$dry" ] || systemctl is-active --quiet acb-agent-edge 2>/dev/null; then
-    run systemctl restart acb-agent-edge
-  fi
-  echo "restarted acb-gateway"
-}
 reapply() {
-  # A forced re-apply of the box's own ref, in the background: it rebuilds the
-  # workbench with the new NEXT_PUBLIC_ values (~8 minutes on this box).
-  local unit="acb-flag-reapply-$(date -u +%Y%m%d%H%M%S)"
-  run systemd-run --no-block --unit="$unit" --uid=acb --gid=acb \
+  # Staging only. A forced re-apply of the box's own ref, in the background,
+  # in the staging slice. vps_pull.sh exits 0 with "nothing to do" while
+  # another deploy holds the lock, so retry until a run really applied.
+  local unit
+  unit="acb-flag-reapply-$(date -u +%Y%m%d%H%M%S)"
+  run systemd-run --no-block --unit="$unit" --uid=acb --gid=acb --slice=acb-staging.slice \
     --setenv=APP_DIR=/opt/acb/app \
     --setenv=PATH=/home/acb/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-    /bin/bash /opt/acb/app/scripts/vps_pull.sh --force
+    /bin/bash /opt/acb/app/deploy/hostinger/acb-flag-reapply.sh
   echo "rebuild started in the background: journalctl -u $unit -f"
 }
 
@@ -170,32 +192,55 @@ case "$cmd" in
     ;;
   set|unset)
     [ $# -ge 1 ] || die "$cmd needs at least one name"
-    root_changed=0; wb_changed=0
+    root_changed=0; wb_restart=0; wb_build=0
     for arg in "$@"; do
       if [ "$cmd" = set ]; then
         [[ "$arg" == *=* ]] || die "set takes NAME=VALUE, got '$arg'"
         n="${arg%%=*}"; v="${arg#*=}"
         [[ "$v" =~ $VALUE ]] || die "$n: the value may hold only letters, digits and _ . : , * @ + -"
       else
-        n="$arg"; v="__UNSET__"
+        n="$arg"; v=""
       fi
       check_name "$n"
-      f="$(file_for "$n")"
-      [ -f "$f" ] || die "$f does not exist"
-      old="$(current "$n" "$f")"
-      if [ "$v" != "__UNSET__" ] && [ "$old" = "$v" ] && grep -qE "^$n=" "$f"; then
-        echo "$n is already $v"; overlay "$(scope_of "$f")" "$n" "$v"; continue
-      fi
-      backup "$f"
-      rewrite "$f" "$n" "$v"
-      overlay "$(scope_of "$f")" "$n" "$v"
-      log "$cmd $(scope_of "$f") $n old=${old:-<none>} new=${v/__UNSET__/<unset>}"
-      echo "$(scope_of "$f"): $n ${old:-<none>} -> ${v/__UNSET__/<unset>}"
-      if [ "$f" = "$ENV_WB" ]; then wb_changed=1; else root_changed=1; fi
+      while IFS= read -r f; do
+        [ -f "$f" ] || die "$f does not exist"
+        scope="$(scope_of "$f")"
+        old="$(current "$n" "$f")"
+        if [ "$cmd" = set ]; then
+          overlay "$scope" "$n" "$scope:$n=$v"
+          if has "$n" "$f" && [ "$old" = "$v" ]; then echo "$scope: $n is already $v"; continue; fi
+          new="$v"; line="$n=$v"
+        else
+          overlay "$scope" "$n" "$scope:-$n"
+          has "$n" "$f" || { echo "$scope: $n is not set"; continue; }
+          new="<unset>"; line=""
+        fi
+        backup "$f"
+        replace_lines "$f" "^$n=" "$line"
+        log "$cmd $scope $n old=${old:-<none>} new=$new"
+        echo "$scope: $n ${old:-<none>} -> $new"
+        if [ "$f" = "$ENV_WB" ]; then
+          if [[ "$n" == NEXT_PUBLIC_* ]]; then wb_build=1; else wb_restart=1; fi
+        else root_changed=1; fi
+      done < <(targets "$n")
     done
-    # A re-apply restarts the gateway too, so one is enough.
-    if [ "$wb_changed" = 1 ]; then reapply
-    elif [ "$root_changed" = 1 ]; then restart_gateway; fi
+    [ "$root_changed" = 1 ] && { run systemctl restart acb-gateway; echo "restarted acb-gateway"; }
+    if [ "$wb_build" = 1 ]; then
+      if [ "$box" = staging ]; then reapply
+      else echo "production: a NEXT_PUBLIC_ value is baked in at build. It takes effect at the next release (21:30 UTC), or dispatch one: gh workflow run deploy.yml --ref main -f reason=\"<why>\""; fi
+    elif [ "$wb_restart" = 1 ]; then
+      run systemctl restart acb-workbench; echo "restarted acb-workbench"
+    fi
+    ;;
+  reset)
+    [ "$box" = staging ] || die "reset is for staging: production has no overlay"
+    [ $# -ge 1 ] || die "reset needs at least one name"
+    for n in "$@"; do
+      check_name "$n"
+      for scope in root workbench; do overlay "$scope" "$n" ""; done
+      log "reset $n"
+      echo "$n: staging's own value dropped. The next nightly refresh brings production's value back."
+    done
     ;;
   deploy)
     [ "$box" = staging ] || die "production deploys go through GitHub, so the tests and the backup run: gh workflow run deploy.yml --ref main -f reason=\"<why>\""
@@ -203,5 +248,5 @@ case "$cmd" in
     else run systemctl start --no-block acb-pull.service; log "deploy"
       echo "staging pull started: journalctl -u acb-pull.service -f"; fi
     ;;
-  *) die "unknown command '$cmd'. Use list, set, unset or deploy." ;;
+  *) die "unknown command '$cmd'. Use list, set, unset, reset or deploy." ;;
 esac

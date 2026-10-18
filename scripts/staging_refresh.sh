@@ -173,18 +173,22 @@ apply_flags workbench "$app_dir/workbench/control_plane/.env.local"
 overlay="${STAGING_FLAGS_OVERLAY:-/etc/acb/staging-flags.env}"
 ov_switch='^(NEXT_PUBLIC_[A-Z0-9_]+|[A-Z0-9_]+_(ENABLED|ORGS|MEMBERS|LENS|ROLLOUT)|KNOWLEDGE_[A-Z0-9_]+|IDENTITY_CUTOVER|ACB_GRAPH_TENANT_BIND)$'
 apply_overlay() {
-  local scope="$1" file="$2" line name
+  local scope="$1" file="$2" line name add
   [ -f "$file" ] && [ -f "$overlay" ] || return 0
   while IFS= read -r line; do
     case "$line" in "$scope":*) ;; *) continue ;; esac
     line="${line#"$scope":}"
-    name="${line%%=*}"
-    [[ "$line" =~ ^[A-Z0-9_]+=[A-Za-z0-9_.:,*@+-]{0,512}$ ]] || continue
+    # "-NAME" records an `acb-flag unset`: staging keeps the name OFF.
+    if [[ "$line" =~ ^-([A-Z0-9_]+)$ ]]; then name="${BASH_REMATCH[1]}"; add=""
+    else
+      name="${line%%=*}"; add="$line"
+      [[ "$line" =~ ^[A-Z0-9_]+=[A-Za-z0-9_.:,*@+-]{0,512}$ ]] || continue
+    fi
     [[ "$name" =~ $ov_switch ]] || continue
     [[ "$name" =~ (KEY|SECRET|TOKEN|PASSWORD|PASSWD|DSN|URL|PASS) ]] && continue
     [[ "$name" =~ $held ]] && continue
     ( umask 077; { grep -v "^$name=" "$file" || true; } > "$file.tmp" )
-    echo "$line" >> "$file.tmp"
+    [ -z "$add" ] || echo "$add" >> "$file.tmp"
     cat "$file.tmp" > "$file"; rm -f "$file.tmp"
   done < "$overlay"
 }

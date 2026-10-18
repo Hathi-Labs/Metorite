@@ -5918,47 +5918,21 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/github_integration.md` §7.6
 - **Added:** 2026-10-18 · WS-54 Batch A fix round 2, item 5. Widened in fix round 3.
 
-### H-358 · Let the dev account turn feature flags on and off on the staging box · [OWNER]
+### H-358 · Install the acb-flag sudoers line on the dev box · [AGENT]
 - **Check:** as `dev` on the dev box (`srv1747539`), `sudo -n /opt/acb/app/deploy/hostinger/acb-flag list`
   prints the flags with no password prompt. If it does, delete this entry.
-  (Built as `deploy/hostinger/acb-flag`, one tool for staging and production,
-  2026-10-18. The sudoers line points at the deployed checkout, so the tool
-  updates with each deploy.)
-- **Why.** On 2026-10-18 the owner turned Knowledge on for every org in
-  production, then looked at `dev.metorite.com` and did not see it. Staging
-  reads its own `/opt/acb/app/.env`, which `acb` owns with mode 600, and the
-  `dev` account that the agent sessions run as has no sudo there. So an
-  agent cannot set a staging flag, and each flag needs the owner at a root
-  terminal. A staging box exists to test with flags on, so this blocks the
-  point of it.
-- **Do this now (owner, one time), to see Knowledge on staging today.** Paste this
-  in the dev box's root terminal (the hPanel browser terminal):
-  `sudo sh -c 'cp -p /opt/acb/app/.env /opt/acb/app/.env.bak-$(date -u +%Y%m%dT%H%M%SZ) && printf "\nKNOWLEDGE_ENABLED=true\nKNOWLEDGE_ORGS=*\nCOMPANY_SEARCH_ENABLED=true\n" >> /opt/acb/app/.env && systemctl restart acb-gateway'`.
-  Then open `https://dev.metorite.com/knowledge`.
-- **Then (agent).** Write `deploy/hostinger/staging/acb-staging-flag`, a root
-  script with these rules:
-  - It refuses to run unless `/opt/acb/app/.env` holds `DEPLOY_ENV=staging`,
-    so it can never touch production.
-  - It sets or clears only a key on an allowlist kept in the script. The list
-    holds feature flags such as `KNOWLEDGE_*`, `COMPANY_SEARCH_ENABLED`,
-    `*_ENABLED` and `*_ORGS`. It refuses any key that holds `KEY`, `SECRET`,
-    `TOKEN`, `PASSWORD`, `DSN` or `URL`.
-  - It backs up the file first, and keeps the owner `acb` and mode 600.
-  - It restarts only the unit that reads the key: `acb-gateway`, or
-    `acb-workbench` for a `NEXT_PUBLIC_` key.
-  - `--list` prints the allowlisted keys and their values, and never another
-    line.
-  Add a test that drives it on a temp file, and open a PR.
-- **Then (owner, one time).** After that PR merges, run on the dev box as root:
-  `install -o root -g root -m 755 /opt/acb/app/deploy/hostinger/staging/acb-staging-flag /usr/local/sbin/acb-staging-flag`
-  and add `dev ALL=(root) NOPASSWD: /usr/local/sbin/acb-staging-flag` to a new
-  file `/etc/sudoers.d/acb-staging-flag`, checked with `visudo -cf`. That
-  grants one script and nothing else.
-- **Production stays as it is.** Production flags already work through
-  `ssh metorite` with sudo, under the dev-phase grant that ends on 2026-11-30.
-  This entry adds a staging path only.
-- **Authority:** `specs/staging_and_daily_release.md`, `specs/knowledge_base.md` §13,
-  CLAUDE.md §3a (`enforcement-flip`)
+- **Why.** The agent sessions on the dev box run as `dev`, and the staging
+  `.env` is `acb`'s with mode 600. So no agent could set a staging flag, and
+  the owner turned Knowledge on in production and did not see it on staging
+  (2026-10-18).
+- **Built.** `deploy/hostinger/acb-flag` sets feature switches on staging, and
+  on production with `--production --reason`. Its header holds the rules.
+  `staging_refresh.sh` keeps a staging flag through the night.
+- **Do this (agent, owner-authorized 2026-10-18).** After the PR reaches
+  staging, write `dev ALL=(root) NOPASSWD: /opt/acb/app/deploy/hostinger/acb-flag`
+  to `/etc/sudoers.d/acb-flag` (mode 0440) as `acb` with sudo, and check it with
+  `visudo -cf`. `bootstrap_staging.sh` writes the same line on a rebuilt box.
+- **Authority:** `specs/staging_and_daily_release.md`, CLAUDE.md §3a (`enforcement-flip`)
 - **Added:** 2026-10-18 · WS-61, owner request
 
 # DONE — deleted, not archived
