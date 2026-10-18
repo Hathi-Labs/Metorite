@@ -5932,20 +5932,16 @@ line — never reclaim a number by deleting the other entry.
   in the dev box's root terminal (the hPanel browser terminal):
   `sudo sh -c 'cp -p /opt/acb/app/.env /opt/acb/app/.env.bak-$(date -u +%Y%m%dT%H%M%SZ) && printf "\nKNOWLEDGE_ENABLED=true\nKNOWLEDGE_ORGS=*\nCOMPANY_SEARCH_ENABLED=true\n" >> /opt/acb/app/.env && systemctl restart acb-gateway'`.
   Then open `https://dev.metorite.com/knowledge`.
-- **Then (agent).** Write `deploy/hostinger/staging/acb-staging-flag`, a root
-  script with these rules:
-  - It refuses to run unless `/opt/acb/app/.env` holds `DEPLOY_ENV=staging`,
-    so it can never touch production.
-  - It sets or clears only a key on an allowlist kept in the script. The list
-    holds feature flags such as `KNOWLEDGE_*`, `COMPANY_SEARCH_ENABLED`,
-    `*_ENABLED` and `*_ORGS`. It refuses any key that holds `KEY`, `SECRET`,
-    `TOKEN`, `PASSWORD`, `DSN` or `URL`.
-  - It backs up the file first, and keeps the owner `acb` and mode 600.
-  - It restarts only the unit that reads the key: `acb-gateway`, or
-    `acb-workbench` for a `NEXT_PUBLIC_` key.
-  - `--list` prints the allowlisted keys and their values, and never another
-    line.
-  Add a test that drives it on a temp file, and open a PR.
+- **Then (agent). ✅ Built 2026-10-18** on branch `ws61-staging-flag`. The
+  script is `deploy/hostinger/staging/acb-staging-flag`, and its fence is
+  `tests/unit/test_acb_staging_flag.py`. `deploy/hostinger/staging/README.md`
+  holds the install commands and the use. The script refuses unless
+  `/opt/acb/app/.env` says exactly `DEPLOY_ENV=staging`. It writes only an
+  allowlisted flag, never a secret, a host or an outbound switch. It makes a
+  backup first and keeps the inode, the owner `acb` and mode 600. Then it
+  restarts `acb-gateway`, or `acb-workbench` for a `NEXT_PUBLIC_` key.
+  ⚠️ The workbench reads `NEXT_PUBLIC_*` from `.env.local` at `next build`, so
+  that restart does not apply such a key. The script warns about it.
 - **Then (owner, one time).** After that PR merges, run on the dev box as root:
   `install -o root -g root -m 755 /opt/acb/app/deploy/hostinger/staging/acb-staging-flag /usr/local/sbin/acb-staging-flag`
   and add `dev ALL=(root) NOPASSWD: /usr/local/sbin/acb-staging-flag` to a new

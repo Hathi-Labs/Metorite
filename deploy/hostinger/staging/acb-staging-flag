@@ -1,0 +1,287 @@
+#!/usr/bin/env bash
+# acb-staging-flag — set or clear a feature flag in the STAGING box's .env.
+#
+# HANDOFF H-358 (WS-61). The `dev` account that the agent sessions run as has no
+# sudo on the staging box, and /opt/acb/app/.env is acb:acb 0600. So each flag
+# needed the owner at a root terminal. This script is the one narrow door: the
+# owner installs it root-owned, and grants `dev` this one file through sudoers.
+#
+#   install -o root -g root -m 755 /opt/acb/app/deploy/hostinger/staging/acb-staging-flag /usr/local/sbin/acb-staging-flag
+#   /etc/sudoers.d/acb-staging-flag:  dev ALL=(root) NOPASSWD: /usr/local/sbin/acb-staging-flag
+#
+# Usage:
+#   acb-staging-flag --list
+#   acb-staging-flag [--no-restart] set KEY VALUE [KEY VALUE ...]
+#   acb-staging-flag [--no-restart] unset KEY [KEY ...]
+# `--no-restart` may also come last.
+#
+# Exit codes: 0 done, 1 the write or the health check failed, 2 refused.
+#
+# The rules, each fenced by tests/unit/test_acb_staging_flag.py:
+#   1. Staging only. The env file must say exactly DEPLOY_ENV=staging, read
+#      with the strict parse of scripts/vps_apply.sh. Anything else refuses.
+#   2. The file is fixed. ACB_STAGING_FLAG_ENV_FILE moves it for a test, and
+#      only when the script does NOT run as root. sudo resets the environment
+#      too, so it cannot carry that name.
+#   3. A key must pass the name grammar, match the allowlist, and match no deny
+#      word. Deny wins.
+#   4. A value holds only [A-Za-z0-9_.,:@*+/-], up to 512 characters.
+#   5. A backup first (cp -p), then one line per key, written INTO the same
+#      inode (deploy/AGENTS.md, WS-49 BH-2).
+#   6. A restart of the unit that reads the key, then a wait for /health.
+#   7. One syslog line that names the keys and the user, never a value.
+set -euo pipefail
+set -f   # A value may hold `*`. No word in this script is ever a glob.
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+umask 077
+
+readonly FIXED_ENV_FILE=/opt/acb/app/.env
+readonly HEALTH_URL=http://127.0.0.1:8080/health
+readonly HEALTH_WAIT_S=90
+
+refuse() { printf 'acb-staging-flag: refused: %s\n' "$*" >&2; exit 2; }
+fail()   { printf 'acb-staging-flag: FAILED: %s\n' "$*" >&2; exit 1; }
+usage()  {
+  cat >&2 <<'EOF'
+usage: acb-staging-flag --list
+       acb-staging-flag [--no-restart] set KEY VALUE [KEY VALUE ...]
+       acb-staging-flag [--no-restart] unset KEY [KEY ...]
+EOF
+  exit 2
+}
+
+# ── 2. The file ──────────────────────────────────────────────────────────────
+# Root ALWAYS uses the fixed path, so a sudo caller cannot point root at a
+# different file. The override exists only for a test that runs as a normal
+# user, and under it the script restarts nothing and writes no syslog line.
+ENV_FILE="$FIXED_ENV_FILE"
+TEST_MODE=0
+if [ "$EUID" -ne 0 ] && [ -n "${ACB_STAGING_FLAG_ENV_FILE:-}" ]; then
+  ENV_FILE="$ACB_STAGING_FLAG_ENV_FILE"
+  TEST_MODE=1
+fi
+
+# ── 3. The key rules ─────────────────────────────────────────────────────────
+readonly NAME_RE='^[A-Z][A-Z0-9_]{1,63}$'
+# The feature flags. `my_day.*` takes its modes from ONE env var,
+# DECIDE_FEATURE_MODES (acb_common/settings.py), so that name is listed, and
+# no per-feature *_MODE key exists to list.
+readonly ALLOW_RE='^(KNOWLEDGE_[A-Z0-9_]+|COMPANY_SEARCH_ENABLED|[A-Z0-9_]+_ENABLED|[A-Z0-9_]+_ORGS|[A-Z0-9_]+_MEMBERS|NEXT_PUBLIC_[A-Z0-9_]+_ENABLED|NEXT_PUBLIC_SHOW_PREVIEW_APPS|MY_DAY_PROVIDERS|NARROWING_AGENTS|DECIDE_ENABLED|DECIDE_FEATURE_MODES)$'
+# A secret or a place, matched anywhere in the name.
+readonly DENY_RE='(KEY|SECRET|TOKEN|PASSWORD|PASS|DSN|URL|HOST|PORT|PRIVATE|CRED|AUTH|DATABASE|DEPLOY_ENV|ACB_MASTER)'
+# A switch that reaches a person or a third party. Staging holds a copy of
+# production's people, and its outbound switches stay off
+# (staging_and_daily_release.md §5.10 item 3). This is the `held` list of
+# scripts/staging_refresh.sh step 6, which keeps them off each night.
+readonly HELD_RE='(WHATSAPP|MEETING_BOT|EMAIL|REACH_|INVITE|CUSTOMER_CONSOLE|SELF_SERVE|SIGNUP|GMAIL|MSFT|SYNC|SEND|OUTBOUND|NOTIFY|PUSH|DIGEST|WEBHOOK|SMS|SCHEDULER)'
+readonly VALUE_RE='^[A-Za-z0-9_.,:@*+/-]{0,512}$'
+
+# key_allowed KEY: exit 0 when the key may be read or written.
+key_allowed() {
+  local k="$1"
+  [[ "$k" =~ $NAME_RE ]] || return 1
+  [[ "$k" =~ $DENY_RE ]] && return 1
+  [[ "$k" =~ $HELD_RE ]] && return 1
+  [[ "$k" =~ $ALLOW_RE ]] || return 1
+  return 0
+}
+
+# check_key KEY: refuse the whole command on one bad key. The message names the
+# key and never a value.
+check_key() {
+  local k="$1"
+  [[ "$k" =~ $NAME_RE ]] || refuse "'$k' is not a key name (^[A-Z][A-Z0-9_]{1,63}\$)"
+  [[ "$k" =~ $DENY_RE ]] && refuse "$k names a secret or a place, and is never written here"
+  [[ "$k" =~ $HELD_RE ]] && refuse "$k is an outbound switch, and staging keeps it off (§5.10 item 3)"
+  [[ "$k" =~ $ALLOW_RE ]] || refuse "$k is not on the feature-flag allowlist"
+  return 0
+}
+
+# ── 1. Staging only ──────────────────────────────────────────────────────────
+# The parse of scripts/vps_apply.sh, made stricter: a missing file refuses
+# here (vps_apply reads it as production), and the last DEPLOY_ENV line must
+# be exactly `DEPLOY_ENV=staging`, with no quotes and no spaces.
+require_staging() {
+  [ -L "$ENV_FILE" ] && refuse "$ENV_FILE is a symlink"
+  [ -f "$ENV_FILE" ] || refuse "$ENV_FILE does not exist, so this is not a known staging box"
+  [ -r "$ENV_FILE" ] || refuse "$ENV_FILE cannot be read, so DEPLOY_ENV is unknown"
+  # awk, not a grep pipe: under pipefail an early `grep -q` exit is a SIGPIPE.
+  if awk '/^[[:space:]]*(export[[:space:]]+)?DEPLOY_ENV[[:space:]]*=/ && !/^DEPLOY_ENV=/ { bad = 1 } END { exit !bad }' "$ENV_FILE"; then
+    refuse "$ENV_FILE names DEPLOY_ENV in a form other than DEPLOY_ENV=<value>"
+  fi
+  local line
+  line="$( { grep -E '^DEPLOY_ENV=' "$ENV_FILE" || true; } | tail -1 | tr -d '\r')"
+  [ "$line" = "DEPLOY_ENV=staging" ] || refuse "$ENV_FILE does not say DEPLOY_ENV=staging"
+}
+
+# ── Arguments ────────────────────────────────────────────────────────────────
+RESTART=1
+ACTION=""
+ARGS=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --no-restart) RESTART=0 ;;
+    --list)       [ -z "$ACTION" ] || usage; ACTION=list ;;
+    set|unset)    [ -z "$ACTION" ] || usage; ACTION="$1"; shift; ARGS=("$@"); break ;;
+    -h|--help)    usage ;;
+    *)            usage ;;
+  esac
+  shift
+done
+[ -n "$ACTION" ] || usage
+# --no-restart may also come after the keys. It is never a key or a value.
+rest=()
+for a in "${ARGS[@]+"${ARGS[@]}"}"; do
+  if [ "$a" = "--no-restart" ]; then RESTART=0; else rest+=("$a"); fi
+done
+ARGS=("${rest[@]+"${rest[@]}"}")
+
+require_staging
+
+# ── --list ───────────────────────────────────────────────────────────────────
+# Each allowlisted key once, with the value of its last line (the value that
+# systemd reads), in the order of its first line. No other line is printed.
+if [ "$ACTION" = list ]; then
+  [ "${#ARGS[@]}" -eq 0 ] || usage
+  declare -A last=()
+  order=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    [[ "$line" =~ ^([A-Z][A-Z0-9_]*)=(.*)$ ]] || continue
+    # Copy both groups first: key_allowed runs its own =~ and resets them.
+    k="${BASH_REMATCH[1]}"
+    v="${BASH_REMATCH[2]}"
+    key_allowed "$k" || continue
+    [ -n "${last[$k]+x}" ] || order+=("$k")
+    last[$k]="$v"
+  done < "$ENV_FILE"
+  for k in "${order[@]+"${order[@]}"}"; do
+    printf '%s=%s\n' "$k" "${last[$k]}"
+  done
+  exit 0
+fi
+
+# ── set / unset: check every key and value before anything changes ───────────
+KEYS=()
+VALUES=()
+if [ "$ACTION" = set ]; then
+  [ "${#ARGS[@]}" -ge 2 ] && [ $(( ${#ARGS[@]} % 2 )) -eq 0 ] || usage
+  for (( i = 0; i < ${#ARGS[@]}; i += 2 )); do
+    check_key "${ARGS[$i]}"
+    [[ "${ARGS[$((i + 1))]}" =~ $VALUE_RE ]] \
+      || refuse "the value for ${ARGS[$i]} may hold only [A-Za-z0-9_.,:@*+/-], up to 512 characters"
+    KEYS+=("${ARGS[$i]}")
+    VALUES+=("${ARGS[$((i + 1))]}")
+  done
+else
+  [ "${#ARGS[@]}" -ge 1 ] || usage
+  for k in "${ARGS[@]}"; do
+    check_key "$k"
+    KEYS+=("$k")
+  done
+fi
+
+# ── 5. The write ─────────────────────────────────────────────────────────────
+# deploy/AGENTS.md and WS-49 BH-2: the gateway sandbox binds the INODE that
+# .env has when the gateway starts. A temp file and `mv` would leave a running
+# gateway on the old, unlinked copy. So build the new content in a temp file
+# in the same folder, then write it back INTO the file, as `env_edit_in_place`
+# in scripts/vps_apply.sh does. The inode, the owner and the mode stay.
+dir="$(dirname "$ENV_FILE")"
+tmp="$(mktemp "$dir/.env-edit.XXXXXX")"
+work="$(mktemp "$dir/.env-edit.XXXXXX")"
+trap 'rm -f "$tmp" "$work"' EXIT
+cat "$ENV_FILE" > "$tmp"
+for (( i = 0; i < ${#KEYS[@]}; i++ )); do
+  k="${KEYS[$i]}"
+  v="${VALUES[$i]:-}"
+  # The first line of the key takes the new value, each later line of it goes,
+  # and a key with no line is appended. `unset` drops every line of the key.
+  awk -v k="$k" -v v="$v" -v mode="$ACTION" '
+    index($0, k "=") == 1 { if (mode == "set" && !done) { print k "=" v; done = 1 } next }
+    { print }
+    END { if (mode == "set" && !done) print k "=" v }
+  ' "$tmp" > "$work"
+  cat "$work" > "$tmp"
+done
+
+if cmp -s "$tmp" "$ENV_FILE"; then
+  echo "acb-staging-flag: no change: ${KEYS[*]}"
+  exit 0
+fi
+
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+bak="$ENV_FILE.bak-$stamp"
+n=1
+while [ -e "$bak" ] || [ -L "$bak" ]; do bak="$ENV_FILE.bak-$stamp-$n"; n=$((n + 1)); done
+cp -p "$ENV_FILE" "$bak" || fail "could not write the backup $bak. $ENV_FILE is unchanged."
+
+# The write truncates first. ENOSPC or a kill in the middle leaves a short
+# file, so compare, and keep the full copy beside it when they differ.
+if ! cat "$tmp" > "$ENV_FILE" || ! cmp -s "$tmp" "$ENV_FILE"; then
+  keep="$ENV_FILE.flag-failed-$stamp"
+  cp -p "$tmp" "$keep" 2>/dev/null || true
+  fail "the write of $ENV_FILE did not complete. The backup is $bak, and the full new copy is $keep."
+fi
+chmod 600 "$ENV_FILE"
+if [ "$EUID" -eq 0 ]; then
+  chown acb:acb "$ENV_FILE"
+fi
+echo "acb-staging-flag: $ACTION ${KEYS[*]} in $ENV_FILE (backup $bak)"
+
+# ── 7. The log ───────────────────────────────────────────────────────────────
+who="${SUDO_USER:-$(id -un)}"
+msg="user=$who $ACTION ${KEYS[*]}"
+if [ "$TEST_MODE" = 1 ]; then
+  echo "acb-staging-flag: log: $msg" >&2
+else
+  logger -t acb-staging-flag -- "$msg" || true
+fi
+
+# ── 6. The restart ───────────────────────────────────────────────────────────
+# `acb-gateway` loads /opt/acb/app/.env, so a gateway key takes effect at its
+# restart.
+#
+# ⚠️ A NEXT_PUBLIC_* key does NOT reach the workbench from this file, and a
+# restart is not enough. `acb-workbench.service` loads
+# workbench/control_plane/.env.local, never this .env. Next.js also inlines
+# each NEXT_PUBLIC_* value into the bundle at `next build`, and vps_apply.sh
+# rebuilds the workbench only on a deploy (it copies only DEPLOY_ENV and the
+# internal token from .env to .env.local). So a NEXT_PUBLIC_* change needs the
+# key in .env.local AND a rebuild. This script restarts acb-workbench, as H-358
+# asks, and says so on stderr.
+gw=0
+wb=0
+for k in "${KEYS[@]}"; do
+  case "$k" in
+    NEXT_PUBLIC_*) wb=1 ;;
+    *) gw=1 ;;
+  esac
+done
+if [ "$wb" = 1 ]; then
+  echo "acb-staging-flag: WARNING: the workbench reads NEXT_PUBLIC_* from .env.local at next build. This write to $ENV_FILE does not reach it, and a restart does not repaint it." >&2
+fi
+
+if [ "$RESTART" = 0 ] || [ "$TEST_MODE" = 1 ]; then
+  echo "acb-staging-flag: no restart"
+  exit 0
+fi
+
+units=()
+[ "$gw" = 1 ] && units+=(acb-gateway)
+[ "$wb" = 1 ] && units+=(acb-workbench)
+systemctl restart "${units[@]}" || fail "systemctl restart ${units[*]} failed. The new $ENV_FILE stays, and the backup is $bak."
+echo "acb-staging-flag: restarted ${units[*]}"
+
+# A curl that cannot connect exits non-zero, and `|| true` keeps `set -e` from
+# ending the loop on it.
+deadline=$(( SECONDS + HEALTH_WAIT_S ))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$HEALTH_URL" || true)"
+  if [ "$code" = 200 ]; then
+    echo "acb-staging-flag: $HEALTH_URL answers 200"
+    exit 0
+  fi
+  sleep 2
+done
+fail "$HEALTH_URL did not answer 200 in ${HEALTH_WAIT_S}s after the restart of ${units[*]}. The backup is $bak."
