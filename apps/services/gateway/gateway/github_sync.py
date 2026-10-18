@@ -121,6 +121,12 @@ def _stamp(value: Any) -> datetime | None:
 #: (the poll, the lazy read) is the state at GitHub now, so at an equal stamp
 #: it always writes. A row with no rank yet reads as 1 when it is terminal.
 #:
+#: ⚠️ **A merge is final** (fix round 5, item 3). GitHub never unmerges a pull
+#: request, so a row in ``merged`` takes only a ``merged`` write. A stale read
+#: or a late event of ``closed`` or ``open`` cannot turn it back. Without
+#: this, a stale ``closed`` over ``merged`` in one second let a later read
+#: count the move INTO ``merged`` a second time (the probe PROBE5b).
+#:
 #: ⚠️ **The old state comes back** (fix round 2, item 1). The CTE locks the
 #: rows and returns each one's state from BEFORE the write, so the caller runs
 #: merge-to-Done only for a row that moves INTO ``merged`` or ``closed``.
@@ -149,6 +155,8 @@ _PR_UPDATE_SQL = (
     "  OR (r.pr_updated_at = CAST(:updated AS timestamptz) "
     "      AND (CAST(:is_read AS boolean) "
     "           OR CAST(:rank AS smallint) >= COALESCE(r.pr_rank, CASE WHEN r.state IN ('merged', 'closed') THEN 1 ELSE 0 END)))) "
+    "AND NOT (r.state IS NOT DISTINCT FROM 'merged' "
+    "         AND CAST(:state AS text) IS DISTINCT FROM 'merged') "
     "RETURNING r.id, r.task_id, r.state, r.head_sha, old.old_state"
 )
 

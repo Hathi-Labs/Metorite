@@ -91,6 +91,13 @@ Fix round 4 (2026-10-18), each one red when run:
   ``test_own_3_a_read_of_a_reopen_holds_against_a_redelivered_close``.
 * **R4-4** the lazy read fails closed. R4-4-M1 ``_app_installation`` answers
   ``None`` on a lookup error -> ``test_r4_4_a_lookup_error_writes_no_pr_state``.
+
+Fix round 5 (2026-10-18), each one red when run:
+
+* **R5-3** the closed half of the transition. R5-3-M1 (the verifier's MINE-B)
+  a re-read of a closed row counts as a move -> ``test_r5_3_a_closed_reread_never_runs_the_rule_again``.
+* **R5-3b** a merge is final. R5-3b-M1 the guard ``NOT (state = 'merged' AND
+  :state <> 'merged')`` dropped -> ``test_r5_3b_a_stale_closed_never_overwrites_a_merge``.
 """
 
 from __future__ import annotations
@@ -965,3 +972,66 @@ async def test_r4_4_a_lookup_error_writes_no_pr_state(world, monkeypatch) -> Non
     await _lazy_read(w, task)
     assert g.scalar(w.p, "SELECT state FROM pm_task_refs WHERE ref = :r",
                     r=f"{REPO}#861") == "open", "TR-1 wrote past the one write path"
+
+
+# ── Fix round 5 ─────────────────────────────────────────────────────────────
+
+
+async def test_r5_3_a_closed_reread_never_runs_the_rule_again(world, monkeypatch) -> None:
+    """One pull request merged earlier, the other closes with no merge, and
+    the close moves the task (§12.1). The agent moves it back. An ``edited``
+    event and a re-read of the closed row leave it In progress."""
+    from gateway import github_sync
+    from gateway.db import tenant_session
+
+    w = world
+    task = _task(w)
+    _run(w, task)
+    _ref(w, task, 871, "merged")
+    _ref(w, task, 872, "open")
+    await _close(w, 872, merged=False, updated_at="2026-10-18T14:00:00Z")
+    assert _category(w, task) == "done"
+    _move_back(w, task)
+    await _event(w, "edited", 872, merged=False, updated_at="2026-10-18T14:10:00Z",
+                 closed_state=True)
+    assert _category(w, task) == "in_progress", "an edited close ran the rule again"
+    closed = {"number": 872, "title": "PR 872", "state": "closed", "merged": False,
+              "merged_at": None, "updated_at": "2026-10-18T14:20:00Z", "draft": False,
+              "head": {"ref": "agent/x", "sha": "d" * 40}}
+    async with tenant_engine_scope(g.app_dsn(w.p)), tenant_session(w.p.org_a) as db:
+        written, outcome = await github_sync.apply_pull_request(
+            db, w.p.org_a, f"{REPO}#872", closed)
+    assert written and outcome is None, "a re-read of a closed row ran the rule"
+    assert _category(w, task) == "in_progress"
+    assert len(_moves(w, task)) == 1
+
+
+async def test_r5_3b_a_stale_closed_never_overwrites_a_merge(world) -> None:
+    """PROBE5b: close, reopen and merge in one second. A stale read of
+    ``closed`` must not turn the merged row back, or a later read counts the
+    move INTO ``merged`` a second time."""
+    from gateway import github_sync
+    from gateway.db import tenant_session
+
+    w = world
+    task = _task(w)
+    _run(w, task)
+    _ref(w, task, 873)
+    same = "2026-10-18T15:00:00Z"
+    await _close(w, 873, updated_at=same)
+    assert _category(w, task) == "done"
+    _move_back(w, task)
+    stale = {"number": 873, "title": "PR 873", "state": "closed", "merged": False,
+             "merged_at": None, "updated_at": same, "draft": False,
+             "head": {"ref": "agent/x", "sha": "d" * 40}}
+    merged = dict(stale, merged=True, merged_at=same, updated_at="2026-10-18T15:05:00Z")
+    async with tenant_engine_scope(g.app_dsn(w.p)), tenant_session(w.p.org_a) as db:
+        await github_sync.apply_pull_request(db, w.p.org_a, f"{REPO}#873", stale)
+    assert g.scalar(w.p, "SELECT state FROM pm_task_refs WHERE ref = :r",
+                    r=f"{REPO}#873") == "merged"
+    async with tenant_engine_scope(g.app_dsn(w.p)), tenant_session(w.p.org_a) as db:
+        _written, outcome = await github_sync.apply_pull_request(
+            db, w.p.org_a, f"{REPO}#873", merged)
+    assert outcome is None
+    assert _category(w, task) == "in_progress"
+    assert len(_moves(w, task)) == 1
