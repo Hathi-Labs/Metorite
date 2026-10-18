@@ -570,6 +570,6 @@ async def test_the_chat_answers_dewin_first_with_the_note_and_one_question(
         f"INR {ex_gst:,.0f} across {len(rows)} matching records."), out
     assert f'This assumes the business rule "{NET_RULE}".' in out
     assert (f"With Rent Net Amount (includes GST, after TDS) instead, the total is "
-            f"INR {rent_net:,.0f}.") in out
+            f"{crm_tools.lakh_crore(rent_net)}.") in out
     assert out.count(crm_tools.FOLLOW_UP) == 1 and crm_tools.CLARIFY not in out
     assert out.index(crm_tools.SHOW_NOTE) < out.index(crm_tools.FOLLOW_UP)

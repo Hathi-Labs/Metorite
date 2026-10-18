@@ -333,8 +333,9 @@ async def test_the_answer_comes_first_with_its_note_and_one_question_after(
     note = next(x for x in lines if x.startswith(_T.SHOW_NOTE))
     assert "How I got this: IP Basic Amount (excludes GST) + Rent Basic Amount" in note
     assert f'This assumes the business rule "{NET_RULE}".' in note
+    # The figures of the note read in lakh and crore, never million.
     assert ("With Rent Net Amount (includes GST, after TDS) instead, the total is "
-            "INR 1,400,000.") in note
+            "₹14 lakh.") in note
     # Then ONE question, after the answer, with the card of CRM-Q32-8.
     assert out.index(_T.SHOW_NOTE) < out.index(_T.FOLLOW_UP)
     assert out.count(_T.FOLLOW_UP) == 1 and _T.CLARIFY not in out
@@ -396,6 +397,15 @@ async def test_whatsapp_names_one_question_for_the_gateway_and_writes_none(monke
     assert _T.TEXT_ASK_LINE in out2  # the same question, still the one ask
     assert gw.paths("POST") == []
     assert _T.run_text_asks() is None
+
+
+@pytest.mark.parametrize(("value", "words"), [
+    (4_530_000, "₹45.3 lakh"), (13_500_000, "₹1.35 crore"), (100_000, "₹1 lakh"),
+    (99_000, "₹99,000"), (250_000_000, "₹25 crore"), (-1_400_000, "₹-14 lakh"),
+])
+def test_the_note_writes_rupees_in_lakh_and_crore(value: float, words: str) -> None:
+    assert _T.lakh_crore(value) == words
+    assert "million" not in _T.lakh_crore(value)
 
 
 def test_the_text_holder_takes_one_question_a_run() -> None:

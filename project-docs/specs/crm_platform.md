@@ -7477,7 +7477,9 @@ GST". The fixtures of both test suites use this shape with synthetic values.
   fields of the module, and refuses each other key.
 - The tool answer holds the figure, then a note. The note starts with "SHOW
   THIS NOTE". It says "How I got this", "This assumes", and the figure of
-  the alternative, which costs one more read. Then it holds ONE follow-up.
+  the alternative, which costs one more read. Each figure of the note reads
+  in lakh and crore ("₹45.3 lakh", "₹1.35 crore"), never million. Then it
+  holds ONE follow-up.
 - On the web, the follow-up is the card of CRM-Q32-8, after the answer. Its
   last option is "Keep this for now", which holds the question for 24 hours.
   The card gate and the late pick of CRM-Q32-8 stay as they are.
@@ -7618,6 +7620,9 @@ is the grant `enforcement-flip`. The org needs `CRM_QUESTIONS_ORGS` and
   hold lasts. A hold from a WhatsApp run has no web card.
 - Only "net of GST" steers the recommendation. Other rules reach the AI as
   text and the facts block.
+- The number format of the org (lakh and crore, or million) is another
+  builder's work, on the branch `number-system`. This batch writes only the
+  figures of its own note in lakh and crore.
 
 #### 18.15.9 Verification
 

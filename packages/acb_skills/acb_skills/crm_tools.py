@@ -2105,12 +2105,25 @@ def _follow_up(q: dict[str, Any], href: str | None, box: dict[str, bool] | None)
     return ""
 
 
+def lakh_crore(value: float) -> str:
+    """Rupees in lakh and crore, never million (coordinator direction,
+    2026-10-18): "₹45.3 lakh", "₹1.35 crore", "₹99,000". The note of an
+    answer-first total uses it. The number format of the org is the work of
+    another branch (``number_system``), so this is the one place here."""
+    v = float(value)
+    for unit, size, places in (("crore", 1e7, 2), ("lakh", 1e5, 1)):
+        if abs(v) >= size:
+            shown = f"{v / size:,.{places}f}".rstrip("0").rstrip(".")
+            return f"₹{shown} {unit}"
+    return f"₹{v:,.0f}"
+
+
 def _money_text(data: dict[str, Any], measure: str) -> str:
     total = data.get("total")
     if total is None:
         return "no value"
     if data.get("field_type") == "currency" or measure in _MONEY_MEASURES:
-        return f"INR {float(total):,.0f}"
+        return lakh_crore(float(total))
     return _number(float(total))
 
 
