@@ -15,8 +15,9 @@ each case is written so a wrong build fails it:
 * **No tenant from input.** The route takes ``q``, ``apps`` and ``k``, and
   the member it passes on is the session's own object.
 * **One source at a time**, and a failing source is named in ``skipped``.
-* **The command bar keeps its contract.** Four keys in its order, and an item
-  of exactly four keys. Knowledge is a source and not in the bar until KB-12.
+* **The command bar keeps its contract.** Five apps in its order, and an item
+  of exactly four keys. Knowledge joined the bar at KB-12 (2026-10-18), when
+  its pane went live. Artifacts and WhatsApp are sources and not in the bar.
 * **Knowledge applies its kill switch** (KR-3). Every member holds
   ``feature:*``, so the feature alone opens nothing. ``KNOWLEDGE_ENABLED`` and
   ``KNOWLEDGE_ORGS`` must allow the org, and the source calls the route with
@@ -28,7 +29,7 @@ Mutations this file catches (R7):
   feature -> ``TestTheFeatureGate``;
 * the route takes an org or a member from the query -> ``TestTheRouteTakesNoTenant``;
 * a source module imports a session opener -> ``TestNoDataPathOfItsOwn``;
-* knowledge joins ``BAR_APPS`` -> ``TestTheRegistry``;
+* knowledge leaves ``BAR_APPS``, or artifacts or whatsapp joins it -> ``TestTheRegistry``;
 * the knowledge source drops its kill switch -> ``TestTheKnowledgeSwitch``.
 """
 
@@ -235,10 +236,11 @@ class TestTheRegistry:
         for key, source in sources.REGISTRY.items():
             assert source.key == key and source.label
 
-    def test_the_bar_is_a_projection_of_four_sources_in_its_order(self):
+    def test_the_bar_is_a_projection_of_five_sources_in_its_order(self):
         from gateway.routes.shell import search as shell
 
-        assert list(shell.PROVIDERS) == ["tasks", "email", "people", "crm"]
+        # Five since 2026-10-18: Knowledge joined at KB-12, last.
+        assert list(shell.PROVIDERS) == ["tasks", "email", "people", "crm", "knowledge"]
         for key, (feature, label, _fn) in shell.PROVIDERS.items():
             assert (feature, label) == (sources.REGISTRY[key].feature,
                                         sources.REGISTRY[key].label)
@@ -248,21 +250,40 @@ class TestTheRegistry:
 
         answer = asyncio.run(shell.shell_search(q="acme", scope=None, user=member(*ALL)))
         apps_seen = [g["app"] for g in answer["groups"]]
-        assert apps_seen == ["tasks", "email", "people", "crm"]
+        assert apps_seen == ["tasks", "email", "people", "crm", "knowledge"]
         for group in answer["groups"]:
             for item in group["items"]:
                 assert set(item) == {"kind", "title", "hint", "href"}
-        # Artifacts, WhatsApp and Knowledge are sources, and the bar never asks them.
-        for key in ("artifacts", "whatsapp", "knowledge"):
+        # Artifacts and WhatsApp are sources, and the bar never asks them.
+        for key in ("artifacts", "whatsapp"):
             assert key not in apps.called()
 
-    def test_knowledge_is_not_in_the_bar_until_kb12(self):
-        """KR-3: Knowledge is a source of the seam, and not a group of the bar."""
+    def test_knowledge_is_in_the_bar_since_kb12(self):
+        """KB-12 (2026-10-18): the pane is live, so Knowledge is a group of the bar.
+
+        It was a source only from KR-3 to KB-12. The bar asks it like the
+        other apps, and the scope token of the app puts it first.
+        """
         from gateway.routes.shell import search as shell
 
         assert "knowledge" in sources.REGISTRY
-        assert "knowledge" not in shell.BAR_APPS
-        assert "knowledge" not in shell.PROVIDERS
+        assert "knowledge" in shell.BAR_APPS
+        assert "knowledge" in shell.PROVIDERS
+        assert shell.SCOPE_APPS["/knowledge"] == "knowledge"
+        assert shell._order("/knowledge")[0] == "knowledge"
+
+    def test_the_bar_asks_knowledge_with_no_model(self, apps):
+        """A bar search spends no credit: the source sends ``hybrid=False``."""
+        from gateway.routes.shell import search as shell
+
+        answer = asyncio.run(shell.shell_search(q="refund", scope=None, user=member("knowledge")))
+        assert [g["app"] for g in answer["groups"]] == ["knowledge"]
+        kw = next(kw for n, _, kw in apps.calls if n == "knowledge")
+        assert kw["hybrid"] is False
+        assert kw["k"] == shell.PER_APP
+        assert answer["groups"][0]["items"][0] == {
+            "kind": "page", "title": "Returns policy", "hint": "Knowledge · Company",
+            "href": "/knowledge/pages/k-1"}
 
 
 # ── The feature gate ────────────────────────────────────────────────────────

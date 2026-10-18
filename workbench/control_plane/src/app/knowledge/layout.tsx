@@ -17,8 +17,9 @@
  *      is "no feature". A 404 on one page is never "off".
  *
  * It mounts no ⌘K listener, no palette, no bell and no assistant rail. The
- * shell owns those (`AGENTS.md` rule 10, `seams.test.ts`). The jobs of §11
- * land with KB-12, not before.
+ * shell owns those (`AGENTS.md` rule 10, `seams.test.ts`). The job
+ * "Write a page" (KB-12) arrives as `?do=write-page`, and `ShellJob` opens
+ * the New page form through the leave guard. The form saves nothing by itself.
  */
 
 import { Suspense, useCallback, useMemo, useRef, useState, type ReactNode } from "react";
@@ -34,6 +35,7 @@ import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { invalidate } from "@/lib/dataCache";
 import { railClass, useRailFold } from "@/lib/railFold";
+import { ShellJob } from "@/lib/shell/doJob";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import {
@@ -244,6 +246,7 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
 
   return (
     <KnowledgeContext.Provider value={context}>
+      <ShellJob id="write-page" onOpen={() => requestLeave(() => openNewPage({ spaceId: selectedSpaceId }))} />
       <div className="flex h-full w-full flex-col overflow-hidden bg-background">
         <AppTopBar
           rail={{ open: rail.open, onToggle: rail.toggle, noun: "the spaces" }}
