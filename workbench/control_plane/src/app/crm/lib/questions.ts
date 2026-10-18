@@ -40,6 +40,13 @@ export type QuestionChoice = {
 /** One choice of "Pick another". */
 export type QuestionOption = { value: string; label: string; fill?: number | null };
 
+/**
+ * One answer that a member proposed in the chat (CRM-Q32-8). The server
+ * sends the display name, or "A member", and never an email. `value` is
+ * `null` for "None of these".
+ */
+export type QuestionProposal = { name: string; value: string | null; label: string; at: string };
+
 /** One question (§18.14.3, "The wire"). */
 export type Question = {
   id: string;
@@ -56,17 +63,27 @@ export type Question = {
   none: boolean;
   /** "Pick another" offers `options`. */
   other: boolean;
-  /** The answer in use, for a correction. `null` on an open question. */
-  current: string | null;
+  /**
+   * The answer in use, for a correction. `null` on an open question. A sum
+   * of fields (CRM-Q32-9) is the list of its keys.
+   */
+  current: string | string[] | null;
   /** Who chose the answer in use: `admin`, `ai` or `code`. */
   by: string | null;
   /** `false` for `revenue`, which has a default. */
   dismissible: boolean;
   options?: QuestionOption[] | null;
+  /**
+   * CRM-Q32-9: the fields of the picker of a sum, on an `amount` question,
+   * when 2 or more currency fields each fill 20% or more. Most filled first.
+   */
+  sums?: QuestionOption[] | null;
   slot?: string | null;
   count?: number | null;
   value?: string | null;
   field?: string | null;
+  /** CRM-Q32-8: the answers that members proposed in the chat, oldest first. */
+  proposals?: QuestionProposal[] | null;
 };
 
 /** `GET /crm/questions`. */
@@ -84,7 +101,8 @@ export type QuestionsBody = {
 export type QuestionUndo = {
   module?: string | null;
   part?: string | null;
-  value?: string | null;
+  /** `"@auto"`, or an earlier value, which can be a sum (CRM-Q32-9). */
+  value?: AnswerValue;
   /** A `stage_value`: the answer route of this id again. */
   question?: string | null;
 };
@@ -120,6 +138,15 @@ export type AcceptBestDone = {
 
 /** The parts that `PUT /crm/catalogue/{module}` takes. */
 export type CataloguePart = "purpose" | "amount" | "date" | "status" | "parent" | "revenue";
+
+/**
+ * The value of an answer: a choice, `null` ("None of these"), or, for the
+ * `amount` of a module only, a list of 2 to 5 field keys, a sum (CRM-Q32-9).
+ */
+export type AnswerValue = string | string[] | null;
+
+/** The parts of a correction, as `PUT /crm/catalogue/{module}` takes them. */
+export type CatalogueParts = Partial<Record<CataloguePart, AnswerValue>>;
 
 // ── The keys and the gate ──────────────────────────────────────────────────
 
@@ -535,8 +562,8 @@ export function batchDoneLine(k: number): string {
  */
 export function batchUndoCalls(
   undo: readonly QuestionUndo[],
-): Array<{ module: string; parts: Partial<Record<CataloguePart, string | null>> }> {
-  const out = new Map<string, Partial<Record<CataloguePart, string | null>>>();
+): Array<{ module: string; parts: CatalogueParts }> {
+  const out = new Map<string, CatalogueParts>();
   for (const u of undo) {
     if (!u.module || !u.part) continue;
     const parts = out.get(u.module) ?? {};
@@ -546,14 +573,95 @@ export function batchUndoCalls(
   return [...out].map(([module, parts]) => ({ module, parts }));
 }
 
+// ── The proposals of the members (CRM-Q32-8) ───────────────────────────────
+//
+// Owner direction, 2026-10-18: each member who meets unclear data in the chat
+// can say what it means. A CRM admin's choice is the answer. Another member's
+// choice is a proposal, and an admin confirms it here with one click.
+
+export const CONFIRM_LABEL = "Confirm";
+export const PROPOSALS_HEADING = "Proposed by your team";
+export const SORT_LABEL = "Sort the questions";
+export const SORT_IMPACT = "By impact";
+export const SORT_PROPOSED = "Proposed first";
+
+/** The order of the open tab: by impact (the read), or the proposed ones first. */
+export type QuestionSort = "impact" | "proposed";
+
+export const SORT_OPTIONS: ReadonlyArray<{ value: QuestionSort; label: string }> = [
+  { value: "impact", label: SORT_IMPACT },
+  { value: "proposed", label: SORT_PROPOSED },
+];
+
+/** The proposals of a question, or none. */
+export function proposalsOf(q: Question): QuestionProposal[] {
+  return Array.isArray(q.proposals) ? q.proposals : [];
+}
+
+/** True when a question of the list holds a proposal, so the sort can show. */
+export function anyProposed(questions: readonly Question[]): boolean {
+  return questions.some((q) => proposalsOf(q).length > 0);
+}
+
+/** "just now", "5 minutes ago", "3 hours ago", "2 days ago", or the date. */
+export function whenLabel(at: string, now: Date = new Date()): string {
+  const then = new Date(at);
+  const ms = now.getTime() - then.getTime();
+  if (!Number.isFinite(ms)) return "";
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${plural(minutes, "minute", "minutes")} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${plural(hours, "hour", "hours")} ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${plural(days, "day", "days")} ago`;
+  return then.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+}
+
+/** "Proposed by Asha Rao · 3 hours ago". The name is never an email. */
+export function proposalLine(p: QuestionProposal, now: Date = new Date()): string {
+  const when = whenLabel(p.at, now);
+  return when ? `Proposed by ${p.name} · ${when}` : `Proposed by ${p.name}`;
+}
+
+/** What a proposal would answer: the label of its value. */
+export function proposalValueLabel(q: Question, p: QuestionProposal): string {
+  if (p.value === null) return q.kind === "key_field" ? NONE_FIELDS_LABEL : NONE_LABEL;
+  if (q.kind === "purpose" && PURPOSE_WORDS[p.value]) return PURPOSE_WORDS[p.value].label;
+  return p.label || p.value;
+}
+
+/** The accessible name of a Confirm button: what it answers, and for whom. */
+export function confirmLabel(q: Question, p: QuestionProposal): string {
+  return `Confirm ${proposalValueLabel(q, p)}, proposed by ${p.name}, for ${q.label}`;
+}
+
+/** The newest time of a proposal of a question, or 0 with none. */
+function newestProposal(q: Question): number {
+  return proposalsOf(q).reduce((best, p) => Math.max(best, Date.parse(p.at) || 0), 0);
+}
+
+/**
+ * The open questions in the order of the sort. "Proposed first" puts each
+ * question with a proposal first, the newest proposal first, and keeps the
+ * order of impact inside each part. "By impact" is the order of the read.
+ */
+export function sortQuestions(questions: readonly Question[], sort: QuestionSort): Question[] {
+  if (sort !== "proposed") return [...questions];
+  const proposed = questions.filter((q) => proposalsOf(q).length > 0);
+  const rest = questions.filter((q) => proposalsOf(q).length === 0);
+  return [...proposed.sort((a, b) => newestProposal(b) - newestProposal(a)), ...rest];
+}
+
 // ── The cap of 5 ───────────────────────────────────────────────────────────
 
 /** The cards on screen, and the count that "Show <m> more" names. */
 export function visibleQuestions(
   body: QuestionsBody,
   expanded: boolean,
+  sort: QuestionSort = "impact",
 ): { cards: Question[]; more: number } {
-  const all = body.shown;
+  const all = sortQuestions(body.shown, sort);
   if (expanded) return { cards: all, more: 0 };
   const cards = all.slice(0, SHOWN);
   return { cards, more: Math.max(0, body.open - cards.length) };
@@ -566,7 +674,7 @@ export function moreLabel(m: number): string {
 // ── An answer, its toast and its Undo ──────────────────────────────────────
 
 /** The toast after an answer. */
-export function savedLine(q: Question, done: AnswerDone, value: string | null): string {
+export function savedLine(q: Question, done: AnswerDone, value: AnswerValue): string {
   if (done.line) return `Saved. ${done.line}`;
   if (q.kind === "stage_value") {
     const n = done.moved ?? q.count ?? 0;
@@ -612,17 +720,18 @@ export function notDismissed(err: unknown): boolean {
  * that the admin chose before gets that choice back.
  */
 export type UndoCall =
-  | { kind: "put"; module: string; parts: Partial<Record<CataloguePart, string | null>> }
+  | { kind: "put"; module: string; parts: CatalogueParts }
   | { kind: "answer"; id: string; value: string }
   | { kind: "undismiss"; id: string };
 
-export function undoOf(q: Question, done: AnswerDone, value: string | null = null): UndoCall | null {
+export function undoOf(q: Question, done: AnswerDone, value: AnswerValue = null): UndoCall | null {
   // "None of these" on a slot records a dismissal. Its Undo removes it.
   if (q.kind === "slot" && value === null) return { kind: "undismiss", id: q.id };
   const u = done.undo;
   if (!u) return null;
-  if (u.question) return { kind: "answer", id: u.question, value: u.value ?? AUTO };
+  if (u.question) return { kind: "answer", id: u.question, value: typeof u.value === "string" ? u.value : AUTO };
   if (!u.module || !u.part) return null;
+  // A sum the admin chose before comes back as its list (CRM-Q32-9).
   const before = q.reason === "answered" && q.by === "admin" ? q.current : AUTO;
   return { kind: "put", module: u.module, parts: { [u.part]: before } };
 }
@@ -639,6 +748,7 @@ export function byLine(q: Question): string {
 /** The label of the answer in use: a field, a purpose, Billed or "None". */
 export function currentLabel(q: Question): string {
   if (q.current === null) return NONE_VALUE_LABEL;
+  if (Array.isArray(q.current)) return sumLabel(q, q.current);
   const found =
     q.choices.find((c) => c.value === q.current) ?? q.options?.find((o) => o.value === q.current);
   if (q.kind === "purpose" && PURPOSE_WORDS[q.current]) return PURPOSE_WORDS[q.current].label;
@@ -664,12 +774,15 @@ export function answerPicks(q: Question): AnswerPick[] {
       : { value: o.value, label: o.label, hint: fillLabel(o.fill) ?? undefined };
   });
   const none = q.kind === "key_field" ? [{ value: NONE_PICK, label: NONE_VALUE_LABEL }] : [];
-  return [...base, ...own, ...none];
+  // CRM-Q32-9: an amount that can be a sum offers the picker of a sum.
+  const sum = sumOffered(q) ? [{ value: SUM_PICK, label: SUM_CHOICE_LABEL, hint: SUM_CHOICE_LINE }] : [];
+  return [...base, ...own, ...none, ...sum];
 }
 
 /** The value a `SelectButton` shows for a part in use. */
 export function pickValue(q: Question): string {
   if (q.by !== "admin") return AUTO;
+  if (Array.isArray(q.current)) return SUM_PICK;
   return q.current === null ? NONE_PICK : q.current;
 }
 
@@ -679,7 +792,7 @@ export function pickToValue(pick: string): string | null {
 }
 
 /** The value that puts a part back as it was before a correction. */
-export function correctionUndo(q: Question): string | null {
+export function correctionUndo(q: Question): AnswerValue {
   return q.by === "admin" ? q.current : AUTO;
 }
 
@@ -716,6 +829,165 @@ export function correctionTarget(q: Question): { module: string; part: Catalogue
   if (!q.module || !q.part) return null;
   return { module: q.module, part: q.part as CataloguePart };
 }
+
+// ── A sum of fields (CRM-Q32-9b, §18.14.10) ────────────────────────────────
+//
+// Some modules keep one amount in parts. DEWiN's Collection splits a payment
+// into Rent Net Amount, IP Basic Amount and EB Net Amount, and each alone
+// covers 52% of the records or less. So the `amount` question offers "These
+// fields add up to the amount". The admin ticks 2 to 5 fields in a picker,
+// the sum check shows how many records they cover, and a pair that holds
+// the same money gets a warning. The warning never blocks the save.
+
+/** The fewest and the most fields of a sum (`catalogue.SUM_MIN`, `SUM_MAX`). */
+export const SUM_MIN = 2;
+export const SUM_MAX = 5;
+
+/** The wait after the last tick before the sum check runs. */
+export const SUM_CHECK_DELAY = 400;
+
+/** The value of the sum in a `SelectButton` of "Your answers". */
+export const SUM_PICK = "@sum";
+
+export const SUM_CHOICE_LABEL = "These fields add up to the amount";
+export const SUM_CHOICE_LINE = "Choose 2 to 5 fields that together make one amount";
+export const SUM_DIALOG_TITLE = "Add up fields for the amount";
+export const SUM_SAVE = "Save the sum";
+export const SUM_CHANGE = "Change";
+export const SUM_CHECKING = "Checking these fields.";
+export const SUM_CHECK_FAILED = "Could not check these fields. You can still save.";
+export const SUM_FIELDS_LABEL = "Fields to add up";
+
+/** The question of the picker: "Which fields add up to the amount of each record in Collection?" */
+export function sumQuestion(q: Question): string {
+  return `Which fields add up to the amount of each ${recordNoun()} in ${q.label}?`;
+}
+
+/** Why we ask, in the picker. */
+export function sumWhy(q: Question): string {
+  return `${q.label} can keep one amount in parts, in separate fields, so one field alone can miss money.`;
+}
+
+/** What the answer changes, in the picker. */
+export function sumChanges(q: Question): string {
+  return `Totals of ${q.label} add up these fields for each record, for example "How much did we collect this quarter?"`;
+}
+
+/** The card offers a sum: the `amount` of a module, with 2 or more fields in `sums`. */
+export function sumOffered(q: Question): boolean {
+  return q.kind === "key_field" && q.part === "amount" && (q.sums?.length ?? 0) >= SUM_MIN;
+}
+
+/** A value is a sum: a list of keys. */
+export function isSum(value: AnswerValue | undefined): value is string[] {
+  return Array.isArray(value);
+}
+
+/** The label of one key of the module, from the fields that the question knows. */
+function keyLabel(q: Question, key: string): string {
+  return (
+    q.sums?.find((o) => o.value === key)?.label ??
+    q.options?.find((o) => o.value === key)?.label ??
+    q.choices.find((c) => c.value === key)?.label ??
+    key
+  );
+}
+
+/** "A", "A and B", or "A, B and C". */
+export function namesOf(labels: readonly string[]): string {
+  if (labels.length < 2) return labels.join("");
+  return `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
+}
+
+/** "Sum of Rent Net Amount, IP Basic Amount and EB Net Amount". */
+export function sumLabel(q: Question, keys: readonly string[]): string {
+  return `Sum of ${namesOf(keys.map((k) => keyLabel(q, k)))}`;
+}
+
+/** The ticks the picker opens with: the sum in use, else none. */
+export function sumStart(q: Question): string[] {
+  if (!isSum(q.current)) return [];
+  const known = new Set((q.sums ?? []).map((o) => o.value));
+  return q.current.filter((k) => known.has(k));
+}
+
+/**
+ * One tick. A ticked field comes off. A new field goes on, unless 5 are
+ * ticked. The list keeps the order of `sums`, so the same set is the same
+ * list, and the read cache of the sum check meets it again.
+ */
+export function toggleSum(q: Question, picked: readonly string[], key: string): string[] {
+  const on = new Set(picked);
+  if (on.has(key)) on.delete(key);
+  else if (on.size < SUM_MAX) on.add(key);
+  const order = (q.sums ?? []).map((o) => o.value);
+  return order.filter((k) => on.has(k));
+}
+
+/** A box is off limits: 5 are ticked, and it is not one of them. */
+export function sumBlocked(picked: readonly string[], key: string): boolean {
+  return !picked.includes(key) && picked.length >= SUM_MAX;
+}
+
+/** The set can be saved and checked: 2 to 5 different keys. */
+export function sumReady(keys: readonly string[]): boolean {
+  return keys.length >= SUM_MIN && keys.length <= SUM_MAX && new Set(keys).size === keys.length;
+}
+
+/** The line under the boxes, which says how many to tick. */
+export function sumHint(n: number): string {
+  if (n === 0) return "Tick 2 to 5 fields.";
+  if (n === 1) return "Tick one more field.";
+  if (n >= SUM_MAX) return `${SUM_MAX} fields are ticked. That is the most a sum takes.`;
+  return `${n} fields are ticked. You can tick up to ${SUM_MAX}.`;
+}
+
+/** What one box of the picker shows: the label, the share of values, and the examples. */
+export function sumFieldView(q: Question, o: QuestionOption): ChoiceView {
+  const fill = fillLabel(o.fill);
+  const samples = q.choices.find((c) => c.value === o.value)?.samples;
+  return { label: o.label, lines: fill ? [fill] : [], examples: examplesLine(samples) };
+}
+
+/** `GET /crm/questions/{id}/sum-check?fields=`. */
+export type SumCheck = {
+  id: string;
+  module: string;
+  fields: string[];
+  records: number;
+  covered: number;
+  overlap: number;
+  capped: boolean;
+  /** "These 3 fields cover 8,458 of 8,681 records (97%)." */
+  line: string;
+  pairs: Array<{ fields: string[]; labels: string[]; both: number; equal: number }>;
+  /** "A and B hold the same value on 90% of records. A sum counts it twice." */
+  warnings: string[];
+};
+
+/** The cache key of one sum check. It starts with `crm:`, so a write wakes it. */
+export function sumCheckKey(id: string, keys: readonly string[]): string {
+  return `crm:questions:sum:${id}:${keys.join(",")}`;
+}
+
+/** What the picker says about the ticked set. */
+export type SumCheckView =
+  | { state: "idle" }
+  | { state: "loading" }
+  | { state: "failed"; message: string }
+  | { state: "done"; line: string; warnings: string[] };
+
+export function sumCheckView(
+  ready: boolean,
+  check: SumCheck | undefined,
+  error: unknown,
+): SumCheckView {
+  if (!ready) return { state: "idle" };
+  if (check) return { state: "done", line: check.line, warnings: check.warnings };
+  if (error) return { state: "failed", message: questionError(error, SUM_CHECK_FAILED) };
+  return { state: "loading" };
+}
+
 
 // ── Errors ─────────────────────────────────────────────────────────────────
 

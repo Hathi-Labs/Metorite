@@ -124,4 +124,9 @@ def test_one_helper_writes_the_line() -> None:
     for name in ("crm_aggregate", "crm_list_records", "crm_list_module_records",
                  "crm_list_modules"):
         fn = getattr(T, name).__wrapped__
-        assert "_short_note(" in inspect.getsource(fn), name
+        # CRM-Q32-8: crm_aggregate builds its answer in `_aggregate_text`, so
+        # a re-read with a member's own field gets the note too.
+        body = inspect.getsource(fn) + (inspect.getsource(T._aggregate_text)
+                                        if name == "crm_aggregate" else "")
+        assert "_short_note(" in body, name
+    assert "_aggregate_text(" in inspect.getsource(T.crm_aggregate.__wrapped__)

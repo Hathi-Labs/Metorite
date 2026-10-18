@@ -37,9 +37,11 @@
 >
 > **Built 2026-10-18, merged as #1130, dark:** CRM-Q32, the open questions (§18.14). CRM-Q32-1 to CRM-Q32-6 are built, the screens and both halves of CRM-Q32-4 too. CRM-Q32-7 is not, because it waits for WS-61. The CRM asks the admin each question that Jev could not answer with confidence. Each answer becomes a fixed fact in the mapping plan. Every app reads it through the one read seam `org facts`. No migration, and no model call of its own.
 >
-> **Specified 2026-10-18, not built:** CRM-Q32-8, the chat tells each member with CRM access what is not clear and asks before it answers. An admin answers, and each other member proposes an answer that an admin confirms (owner direction 2026-10-18, two parts), and CRM-Q32-9b, the picker of a sum (§18.14.10). The merge order is in §18.14.10.
+> **Built 2026-10-18 on `crm-q32-8`, not merged:** CRM-Q32-8, the chat tells each member with CRM access what is not clear and asks before it answers. An admin answers, and each other member proposes an answer that an admin confirms (owner direction 2026-10-18, two parts). No migration. It ships behind `CRM_QUESTIONS_ORGS`. It merges after CRM-Q32-9a (#1138) and CRM-Q32-9b (#1139).
 >
-> **Built 2026-10-18 on `crm-q32-9a`, not merged:** CRM-Q32-9a, the backend of an amount as the sum of 2 to 5 fields (§18.14.10). No migration. The screens wait for CRM-Q32-9b, but a CRM admin of an org on `CRM_QUESTIONS_ORGS` can already store a sum through `PUT /crm/catalogue/{module}` or the answer route. Do not revert CRM-Q32-9a after that (§18.14.13).
+> **Built 2026-10-18 on `crm-q32-9b`, not merged:** CRM-Q32-9b, the picker of a sum (§18.14.10). The amount card offers "These fields add up to the amount", and the picker shows the coverage line and the warning of the sum check. "Your answers" shows a sum, with Change and "Let Metorite choose". Frontend only. No migration. CRM-Q32-8 adds the proposals of the members to the picker, each with Confirm.
+>
+> **Built 2026-10-18, merged as #1138:** CRM-Q32-9a, the backend of an amount as the sum of 2 to 5 fields (§18.14.10). No migration. The screens wait for CRM-Q32-9b, but a CRM admin of an org on `CRM_QUESTIONS_ORGS` can already store a sum through `PUT /crm/catalogue/{module}` or the answer route. Do not revert CRM-Q32-9a after that (§18.14.13).
 >
 > **Built later, not merged (Batch M, `crm-batch-m`):** CRM-Q17a-1b, a "still empty" check of a stale entity (2026-10-16, §18.9.6, no migration). CRM-Q17a-2, the screens of the fill rank (2026-10-16, no migration). CRM-Q18-1b, two deadlocks of the plan lock (2026-10-16, no migration). CRM-Q19, the executor and the 200-record preview (2026-10-16, no migration).
 >
@@ -5944,9 +5946,10 @@ change of the first, and runs the verification of both again.
 
 **Status (2026-10-18).** CRM-Q32-1 to CRM-Q32-6 were built on
 `crm-batch-q32` and merged as #1130, dark behind `CRM_QUESTIONS_ORGS`.
-CRM-Q32-8 (the chat asks before it answers) and CRM-Q32-9b (the picker of a
-sum) are specified 2026-10-18, not built. CRM-Q32-9a (the backend of a sum)
-is built 2026-10-18 on `crm-q32-9a`, not merged. The
+CRM-Q32-8 (the chat asks before it answers) is built 2026-10-18 on
+`crm-q32-8`, not merged. CRM-Q32-9b (the picker of a sum) is specified
+2026-10-18, not built. CRM-Q32-9a (the backend of a sum) is built 2026-10-18
+on `crm-q32-9a`, not merged. The
 spec audit gave CRM-Q32-8 NO-GO and CRM-Q32-9 GO-NARROWED, and its edits
 are in. A second owner direction of 2026-10-18 widens CRM-Q32-8 to each
 member with CRM access: an admin answers, and each other member proposes. They are verified
@@ -6515,9 +6518,9 @@ section.
 | CRM-Q32-5 | The org-facts seam, the CRM provider, `GET /org/facts`, the tool (with the `crm` family) and the CRM facts block | AGENT-SAFE | M | CRM-Q32-2 |
 | CRM-Q32-6 | The chat line | AGENT-SAFE | S | CRM-Q32-1 |
 | CRM-Q32-7 | The Knowledge page "How our CRM data is organised". ⚠️ NOT dispatchable: a stub | AGENT-SAFE to build, later | S | CRM-Q32-5, and a writer of a system page that WS-61 specifies in `knowledge_base.md` |
-| CRM-Q32-8 | The chat tells each member what is not clear and asks before it answers. An admin answers, and each other member proposes. `crm_answer_question` serves both (owner direction 2026-10-18, two parts) | AGENT-SAFE | L | #1133 (CRM-Q29 rounds 4 and 5), #1132 (merged), CRM-Q32-9a and `crm-questions-copy` |
+| CRM-Q32-8 | The chat tells each member what is not clear and asks before it answers. An admin answers, and each other member proposes. `crm_answer_question` serves both (owner direction 2026-10-18, two parts). ✅ Built 2026-10-18 on `crm-q32-8`, not merged | AGENT-SAFE | L | #1133 (CRM-Q29 rounds 4 and 5), #1132 (merged), CRM-Q32-9a and `crm-questions-copy` |
 | CRM-Q32-9a | The backend of an amount as the sum of 2 to 5 fields. ✅ Built 2026-10-18 on `crm-q32-9a`, not merged | AGENT-SAFE | M | This spec merged |
-| CRM-Q32-9b | The picker of a sum, and "Your answers" | AGENT-SAFE | S | CRM-Q32-9a and the branch `crm-questions-copy` |
+| CRM-Q32-9b | The picker of a sum, and "Your answers". ✅ Built 2026-10-18 on `crm-q32-9b`, not merged | AGENT-SAFE | S | CRM-Q32-9a and the branch `crm-questions-copy` |
 
 **The flips.** A name in `CRM_QUESTIONS_ORGS` spends nothing, so it is the
 grant `enforcement-flip`. The org needs `CRM_CATALOGUE_ORGS` too, which is
@@ -7034,6 +7037,32 @@ with CRM access gets a CLARIFY block (CRM-Q32-8)."
 
 **CRM-Q32-8 · Done when:**
 
+**Built 2026-10-18 on `crm-q32-8`, not merged.** Each item below has its test.
+The fences are `tests/unit/test_crm_questions_chat.py`,
+`tests/unit/test_crm_questions_chat_r8.py` (R8), `tests/unit/test_crm_agent.py`,
+`tests/unit/test_org_facts.py`, `tests/unit/test_crm_answer_check.py` and
+`components/crmQ32.test.ts`. Four notes from the build:
+
+- A chat card asks a `purpose`, a `key_field` or `revenue` only. `/reply`
+  gives 422 `not_in_chat` for a `slot` or a `stage_value`, for each caller.
+  Each of them changes what records mean, so it keeps the preview of the
+  CRM app (§18.14.6).
+- A Redis outage on `@default` gives 503 with `Retry-After`. A failed read
+  of a hold holds nothing, so the card shows again.
+- A revenue total of one line, with no group, now gets the line of the
+  default too. Before, only a grouped total got it.
+- Item 19 waits for round 4 of CRM-Q29 (#1133, not merged). The card is no
+  display call on this branch, so the check does not read it yet. The test
+  proves that each number of a label traces to the CLARIFY block.
+- The gate (fix round, 2026-10-18). `crm_answer_question` sends a pick only
+  after this run showed the card of that question. With no card channel
+  (a WhatsApp text chat) or no holder, it sends nothing. The chat then
+  states the default and names Open questions. So a member's pick in the
+  chat cannot change an answered part with no card first.
+- A run that does not hold `crm_answer_question` (a failed facts read, a
+  `no_egress` run) shows no card. The assembly of a streamed run tells the
+  holder (`mark_answer_tool`).
+
 1. The 422 `no_key_field` of an open part carries `question`, the id. A test
    proves it.
 2. `GET /crm/questions/ask` takes `ids` (at most 2), and returns only those
@@ -7277,6 +7306,11 @@ Migration: none. Waits for: this spec merged. Narrow reviewer: SQL, for
 `_amount` and the sum check.
 
 **CRM-Q32-9b · The picker of a sum. Done when:**
+
+**Built 2026-10-18 on `crm-q32-9b`, not merged.** Each item below has its test
+in `components/crmQ32.test.ts`, and a mutation of each rule fails it. The
+picker is `components/SumPicker.tsx`. The proposals of CRM-Q32-8 join the
+picker when CRM-Q32-8 is built.
 
 1. The card of an `amount` question offers the choice "These fields add up
    to the amount". It opens the picker of check boxes, as "When the card
