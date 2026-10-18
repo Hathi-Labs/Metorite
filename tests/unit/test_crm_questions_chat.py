@@ -439,9 +439,12 @@ async def test_two_options_with_one_label_record_nothing(late_redis) -> None:
     from gateway.routes.crm import questions as routes
 
     card = _crm_card()
-    card["questions"][0]["options"] = [{"label": "Same", "key": "IP"},
-                                       {"label": "Same", "key": "none"}]
-    assert not await routes.record_late_answer("org-a", "a@x.test", "questions", card, "Same")
+    # Both show the label that the server builds for IP, so only the count
+    # of the matches refuses it.
+    same = _SERVER_LABELS["IP"]
+    card["questions"][0]["options"] = [{"label": same, "key": "IP"},
+                                       {"label": same, "key": "none"}]
+    assert not await routes.record_late_answer("org-a", "a@x.test", "questions", card, same)
     assert late_redis.store == {}
 
 
