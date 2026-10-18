@@ -315,9 +315,10 @@ def _upsert_session(
                 "id": req.id,
                 "uid": user_id,
                 "agent_name": req.agent_name,
-                # The preview is the last reply, so it can hold a NUL too.
-                "title": storable(req.title),
-                "last_preview": storable(req.last_preview),
+                # The preview is the last reply, so it can hold a NUL too, and
+                # a SETUP marker of the model (WS-54 fix round 4, item 2).
+                "title": _storable_text(req.title),
+                "last_preview": _storable_text(req.last_preview),
                 "message_count": req.message_count,
             },
         )
@@ -426,10 +427,10 @@ def _patch_session(
     params: dict = {"id": session_id, "uid": user_id}
     if req.title is not None:
         sets.append("title = :title")
-        params["title"] = storable(req.title)
+        params["title"] = _storable_text(req.title)
     if req.last_preview is not None:
         sets.append("last_preview = :last_preview")
-        params["last_preview"] = storable(req.last_preview)
+        params["last_preview"] = _storable_text(req.last_preview)
     if req.message_count is not None:
         sets.append("message_count = :message_count")
         params["message_count"] = req.message_count
@@ -819,6 +820,28 @@ _MESSAGE_UPSERT_SQL = """
 """
 
 
+def _storable_text(value: str | None) -> str | None:
+    """A session title or preview, safe to store: no NUL, and no SETUP marker
+    of the model (WS-54 fix round 4, item 2). The browser sends the last reply
+    as the preview, and the native stream passes the marker on as it is."""
+    from acb_common.setup_markers import redact
+
+    if value is None:
+        return None
+    return storable(redact(value))
+
+
+def _without_setup_values(message: MessageRecord) -> MessageRecord:
+    """*message* with every SETUP marker replaced (WS-54 fix round 2, item 5)."""
+    from acb_common.setup_markers import redact_tree
+
+    return message.model_copy(update={
+        name: redact_tree(getattr(message, name))
+        for name in ("content", "tool_events", "progress_lines", "reasoning",
+                     "agent_state", "custom_events")
+    })
+
+
 def _upsert_messages(
     session_id: str,
     messages: list[MessageRecord],
@@ -850,6 +873,12 @@ def _upsert_messages(
     creates the agent row of a run before it opens the stream. A mint only
     inserts. When a row with that id exists, the mint changes nothing.
 
+    ⚠️ **No setup value is stored** (WS-54 fix round 2, item 5). Every text
+    field of every turn passes through ``acb_common.setup_markers``, so a
+    ``<<<SETUP:service:KEY=value>>>`` marker in a model answer leaves no
+    secret in ``chat_message``. This is the one write seam: the browser save,
+    the server fold and the mint all come through here.
+
     Only the server creates an agent row or a system row (S14). A client
     write of a new agent row or a new system row inserts nothing, and its id
     is in the return value. A client may still update an agent row that the
@@ -864,6 +893,7 @@ def _upsert_messages(
 
     Returns the ids whose write the SQL declined, in request order.
     """
+    messages = [_without_setup_values(m) for m in messages]
     from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 

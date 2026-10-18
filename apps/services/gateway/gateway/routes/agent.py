@@ -1384,15 +1384,78 @@ async def _org_github_token() -> str:
     WS-54 IN-7. A request for a customer reads the org connection only. It
     never reads the deployment ``GITHUB_TOKEN``, which is the operator's. With
     no connection the fetch goes out with no token, so it reads a public repo.
+
+    WS-54 GH-3 (§6.3): an ``app`` row gives ``""``. The fetch needs Contents
+    (read), and the App asks for none, so a public repo still works and a
+    private one does not. An org with a private agent repo keeps the Advanced
+    token.
     """
     org = current_tenant()
     if not org:
         return ""
     try:
-        return await github_connection.token_or_none(str(org)) or ""
+        return await github_connection.stored_token_or_none(str(org)) or ""
     except Exception as exc:
         _log.warning("agent.github_token_unreadable", error=type(exc).__name__)
         return ""
+
+
+#: Fix round 1, item 3: the words when an org on the GitHub App names a
+#: private agent repository. The App has no Contents permission (G-9).
+#: GitHub answers 404 to an unauthenticated read of a private repository AND of
+#: one that does not exist, so the words name both (fix round 2, item 6).
+PRIVATE_REPO_IN_APP_MODE = (
+    "This repository is private or does not exist. If it is private, add an "
+    "Advanced GitHub token in Integrations to read it."
+)
+
+_REPO_SLUG_RE = re.compile(r"\A[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}\Z")
+
+
+async def _github_app_without_token() -> bool:
+    """True when the org reads GitHub through the App only (no token row)."""
+    org = current_tenant()
+    if not org:
+        return False
+    try:
+        return github_connection.is_app_row(await github_connection.connection(str(org)))
+    except Exception as exc:
+        _log.warning("agent.github_mode_unreadable", error=type(exc).__name__)
+        return False
+
+
+async def _private_repo_refusal(slug: str) -> HTTPException | None:
+    """For an org on the App with no token: the refusal for a repository that
+    GitHub does not show without a token, or ``None`` (fix round 1, item 3).
+
+    raw.githubusercontent.com answers 404 for a private repository AND for a
+    public one with no ``config.json``. So an unauthenticated ``GET
+    /repos/{o}/{r}`` through the one GitHub door tells the two apart. A
+    public repository with no ``config.json`` keeps the ``maf`` default. Any
+    other case is a clear 422, never a silent ``maf`` registration.
+    """
+    from gateway.connections import github_app
+
+    if not _REPO_SLUG_RE.match(slug) or not await _github_app_without_token():
+        return None
+    try:
+        answer = await github_app.call("GET", f"/repos/{slug}")
+    except github_app.GitHubCallFailed:
+        return HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"GitHub did not answer for {slug!r}. Try again.",
+        )
+    body = answer.body if isinstance(answer.body, dict) else {}
+    if answer.status == 200 and body.get("private") is False:
+        return None
+    if answer.rate_limited():
+        return HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="GitHub is busy. Try again in a minute.",
+        )
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=PRIVATE_REPO_IN_APP_MODE,
+    )
 
 
 @router.get("/config", summary="Fetch config.json from a GitHub agent repo or local path")
@@ -1445,6 +1508,10 @@ async def get_agent_config(
                 except Exception:  # noqa: BLE001
                     raise HTTPException(status_code=422, detail="config.json is not valid JSON.")
 
+    if not token:
+        refusal = await _private_repo_refusal(slug)
+        if refusal is not None:
+            raise refusal
     raise HTTPException(
         status_code=404,
         detail=f"config.json not found in {slug!r} (tried main, master, HEAD).",
@@ -1916,6 +1983,11 @@ async def register_agent(
                 repo=repo_name,
             )
         elif last_status in (403, 404):
+            # Fix round 1, item 3: an org on the App reads no private repo.
+            # Refuse clearly, and never register it as `maf` with nothing.
+            refusal = None if gh_token else await _private_repo_refusal(repo_name)
+            if refusal is not None:
+                raise refusal
             _log.warning(
                 "agent.config_not_found_or_forbidden",
                 name=req.name,

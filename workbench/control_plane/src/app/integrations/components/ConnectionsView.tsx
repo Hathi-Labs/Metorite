@@ -24,6 +24,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useAccess } from "@/components/AccessProvider";
+import { GitHubAppReturn } from "@/components/GitHubAppConnect";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import FilterPills from "@/components/FilterPills";
 import { useToast } from "@/components/ui/Toast";
@@ -232,6 +233,8 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
           />
         </>
       )}
+      {/* WS-54 GH-3: GitHub sends the browser back here after the install. */}
+      <GitHubAppReturn onConnected={invalidateConnections} />
       {res.error && res.data === undefined ? (
         <p role="alert" className="border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">
           {res.error}

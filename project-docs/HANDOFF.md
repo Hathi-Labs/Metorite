@@ -5884,6 +5884,40 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/external_agent_access.md` §10.1 and §12.2 item 1
 - **Added:** 2026-10-18 · EA-13a fix round 1
 
+### H-357 · 🔴 A key that a chat saw must be rotated, and old rows scrubbed · [OWNER] · security
+- **Check:** ask each org whose chats set up a key, a GitHub token first.
+  Did it rotate that key after 2026-10-18? Then count the rows that still
+  hold a value, on production and on staging. In `chat_message`, test
+  `content`, `reasoning`, `tool_events`, `progress_lines`, `agent_state` and
+  `custom_events` for `<<<SETUP:` and for `ghp_`, `gho_`, `github_pat_` and
+  `ghs_`. Test `chat_session.last_preview` and `chat_session.title` too. Do
+  the same for `maf_agent_session.session_json` and `agent_run.trace`. If
+  every key is rotated and every count is 0, delete this entry.
+- **Why.** Before the merge of WS-54 Batch A, three stores kept the model's
+  `<<<SETUP:service:KEY=value>>>` marker as raw text. They are the native
+  session, the chat transcript and the run trace. Fix round 2
+  removes the marker on every write, and changes no row that exists. ⚠️ A
+  member who pastes a key as a plain chat message is stored as typed. The
+  text reaches `chat_message` (also the user rows), the run input, and
+  memory: Mem0 and the Graphiti `add_episode`. Nothing detects that. So
+  **rotation is the real remedy**, and the scrub only limits the copies.
+- **Do this:**
+  1. Ask each org to rotate each key that a chat saw.
+  2. Take a backup.
+  3. For each table, read each row that holds a value. Edit the text in
+     code: run `acb_common.setup_markers.redact_tree` on the decoded JSON of
+     each JSON column, and remove a pasted token by its exact value. Cast
+     the result back to `jsonb`, and check that it parses before the update.
+     ⚠️ Never run an in-place `regexp_replace` on a `::text` cast of a JSON
+     column. A pattern can eat a closing quote and break the row.
+  4. Check the user rows of `chat_message` too, not only the agent rows.
+  5. Search Mem0 and the Graphiti episodes of each such org for the same
+     values, and delete each memory or episode that holds one.
+  6. A production write needs the `deploy` grant and the backup evidence
+     (CLAUDE.md §3a rule 1).
+- **Authority:** `specs/github_integration.md` §7.6
+- **Added:** 2026-10-18 · WS-54 Batch A fix round 2, item 5. Widened in fix round 3.
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

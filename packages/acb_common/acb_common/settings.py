@@ -874,6 +874,30 @@ class Settings(BaseSettings):
     github_app_private_key_path: str = ""     # path to .pem file; never commit the key itself
     github_installation_id: str = ""          # org installation ID (visible in GitHub App settings)
 
+    # ── The Metorite GitHub App (WS-54 GH-1, github_integration.md §6, §14) ──
+    #
+    # Metorite owns one GitHub App for each environment. These are OPERATOR
+    # settings (D56). They live in /opt/acb/app/.env and in a key file on the
+    # box, and scripts/secrets.sh pushes them (entries `github-app` and
+    # `github-app-staging`). No customer row holds any of them. The names start
+    # with GITHUB_APP_, a platform prefix of `env_guard`, so no tenant write
+    # can set one. `github_app_id` and `github_app_private_key_path` above are
+    # the App's too.
+    #
+    # `github_app_enabled` is the switch of the whole feature, and it ships
+    # OFF. With it off the connect routes and `/webhooks/github` answer 404,
+    # and the reconcile poll starts no task. A flip on a box is the gate
+    # `enforcement-flip`. `connections/github_app.py` reads the key file once
+    # for each process. Fence: tests/unit/test_github_app_auth.py.
+    github_app_enabled: bool = False
+    github_app_slug: str = ""                 # the App's URL name, e.g. "metorite"
+    github_app_client_id: str = ""            # the JWT `iss`, and the OAuth client id
+    github_app_client_secret: str = ""        # the OAuth client secret of the App
+    github_app_webhook_secret: str = ""       # the HMAC key of X-Hub-Signature-256
+    # The origin of the workbench of this environment. The auto-link accepts
+    # only a task URL on this host, so a staging URL never links in production.
+    app_public_url: str = "https://app.metorite.com"
+
     github_org: str = "FracktalWorks"         # org that owns agent-* and skill-* repos
     # Persistent clone root for agent workspaces + generated artifacts.
     # MUST NOT live under /tmp: systemd-tmpfiles wipes /tmp on every reboot,

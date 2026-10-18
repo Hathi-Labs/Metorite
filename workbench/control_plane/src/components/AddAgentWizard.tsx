@@ -21,7 +21,8 @@ import Button from "@/components/ui/Button";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentEntry } from "@/app/api/agent/list/route";
 import type { IntegrationStatus } from "@/app/api/integrations/status/route";
-import GitHubDeviceConnect from "@/components/GitHubDeviceConnect";
+import GitHubAppConnect from "@/components/GitHubAppConnect";
+import { AGENT_REPO_APP_NOTE } from "@/lib/githubConnect";
 import ZohoInCrm from "@/components/ZohoInCrm";
 import { appOwnedTile } from "@/app/integrations/lib/connections";
 
@@ -523,10 +524,16 @@ export default function AddAgentWizard({
 
           {/* ── GitHub step ───────────────────────────────────────────────── */}
           {currentStep.kind === "github" && (
-            <GitHubDeviceConnect
-              integration={currentStep.integration}
-              onConfigured={handleGitHubConfigured}
-            />
+            // WS-54 GH-7: a clone needs a token, so the fold opens at once.
+            <div className="space-y-3">
+              {currentStep.integration.github_coverage?.auth === "app" ? (
+                // Fix round 1, item 3: the App reads no private agent repository.
+                <p className="rounded-lg border border-border bg-secondary/50 px-3 py-2 text-xs text-muted-foreground">
+                  {AGENT_REPO_APP_NOTE}
+                </p>
+              ) : null}
+              <GitHubAppConnect advancedOpen onConfigured={handleGitHubConfigured} />
+            </div>
           )}
 
           {/* ── Mandatory integration step ────────────────────────────────── */}

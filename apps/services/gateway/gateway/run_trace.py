@@ -162,10 +162,13 @@ def _persist_row(row: dict[str, Any], organization_id: str | None) -> None:
     from datetime import datetime
 
     from acb_common.pg_text import storable
+    from acb_common.setup_markers import redact_tree
     from acb_graph import tenant_session
     from sqlalchemy import text
 
-    row = storable(row)
+    # WS-54 fix round 2, item 5: the folded message of a run stores no
+    # <<<SETUP:...>>> value either.
+    row = redact_tree(storable(row))
 
     ended_at = None
     if row.get("ended_ms"):
