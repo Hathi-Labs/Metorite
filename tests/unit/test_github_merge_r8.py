@@ -76,6 +76,21 @@ Fix round 3 (2026-10-18), red when run:
 * **R3-1** a merge after a lost reopen runs the rule. R3-1-M1
   ``moved_into_terminal`` goes back to the TERMINAL check ->
   ``test_r3_1_a_merge_after_a_lost_reopen_moves_the_task``.
+
+Fix round 4 (2026-10-18), each one red when run:
+
+* **R4-1** a refused read of a merged reference runs nothing. R4-1-M1 the
+  state guard of ``_REFUSED_SQL`` dropped ->
+  ``test_r4_1_a_refused_merged_ref_marks_nothing``. R4-1-M2 ``on_unblocked``
+  runs for a reference that was not blocking ->
+  ``test_r4_1_on_unblocked_skips_a_ref_that_never_blocked``. The probe of the
+  verifier, end to end: ``test_r4_1_the_verifiers_probe_leaves_the_task_in_progress``.
+* **OWN-1** ``FOR UPDATE`` dropped from the CTE of ``_PR_UPDATE_SQL`` ->
+  ``test_own_1_a_read_during_a_merge_sees_the_committed_state``.
+* **OWN-3** a read keeps rank 0 at an equal stamp (no promotion to 2) ->
+  ``test_own_3_a_read_of_a_reopen_holds_against_a_redelivered_close``.
+* **R4-4** the lazy read fails closed. R4-4-M1 ``_app_installation`` answers
+  ``None`` on a lookup error -> ``test_r4_4_a_lookup_error_writes_no_pr_state``.
 """
 
 from __future__ import annotations
@@ -770,3 +785,182 @@ async def test_r3_1_a_merge_after_a_lost_reopen_moves_the_task(world) -> None:
     assert g.scalar(w.p, "SELECT state FROM pm_task_refs WHERE ref = :r",
                     r=f"{REPO}#821") == "merged"
     assert _category(w, task) == "done"
+
+
+# ── Fix round 4 ─────────────────────────────────────────────────────────────
+
+
+async def _lazy_read(w: Any, task: str) -> None:
+    from acb_auth import UserContext, UserRole, build_access
+    from gateway.routes import projects as projects_package
+
+    member = UserContext(email=EMAIL, role=UserRole.EMPLOYEE, organization_id=w.p.org_a,
+                         access=build_access(["feature:projects", "data:org:read"]))
+    resp = await g.call(w.p, member, [projects_package.router], "GET",
+                        f"/projects/tasks/{task}/refs", real_client=REAL_CLIENT)
+    assert resp.status_code == 200, resp.text
+
+
+def _stale(w: Any, number: int) -> None:
+    with w.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE pm_task_refs SET fetched_at = now() - interval '1 hour' "
+                       "WHERE ref = :r"), {"r": f"{REPO}#{number}"})
+
+
+def _gone_github(monkeypatch: Any) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "ghs_r4", "expires_at": "2099-01-01T00:00:00Z"})
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    g.patch_github(monkeypatch, handler, REAL_CLIENT)
+
+
+async def test_r4_1_the_verifiers_probe_leaves_the_task_in_progress(world, monkeypatch) -> None:
+    """Merged, Done, the agent moves the task back. Then the same pull request
+    answers 404 on two lazy reads, the second past the 1 h bound."""
+    w = world
+    task = _task(w)
+    _run(w, task)
+    _ref(w, task, 841)
+    await _close(w, 841, updated_at="2026-10-18T09:00:00Z")
+    assert _category(w, task) == "done"
+    _move_back(w, task)
+    _gone_github(monkeypatch)
+    _stale(w, 841)
+    await _lazy_read(w, task)
+    with w.p.admin_engine.begin() as c:  # an hour and more passes
+        c.execute(text("UPDATE pm_task_refs SET unreadable_since = now() - interval '2 hours' "
+                       "WHERE ref = :r AND unreadable_since IS NOT NULL"), {"r": f"{REPO}#841"})
+    _stale(w, 841)
+    await _lazy_read(w, task)
+    assert _category(w, task) == "in_progress"
+    assert len(_moves(w, task)) == 1
+
+
+async def test_r4_1_a_refused_merged_ref_marks_nothing(world) -> None:
+    from gateway import github_sync
+    from gateway.db import tenant_session
+
+    w = world
+    task = _task(w)
+    _ref(w, task, 842, "merged", unreadable_ago="2 hours")
+    async with tenant_engine_scope(g.app_dsn(w.p)), tenant_session(w.p.org_a) as db:
+        outcome = await github_sync.record_refusal(db, w.p.org_a, f"{REPO}#842")
+    assert outcome is None
+    assert g.scalar(w.p, "SELECT unblocked_at FROM pm_task_refs WHERE ref = :r",
+                    r=f"{REPO}#842") is None, "a merged row never crosses the bound"
+    fresh = _task(w)
+    _ref(w, fresh, 843, "merged")
+    async with tenant_engine_scope(g.app_dsn(w.p)), tenant_session(w.p.org_a) as db:
+        await github_sync.record_refusal(db, w.p.org_a, f"{REPO}#843")
+    assert g.scalar(w.p, "SELECT unreadable_since FROM pm_task_refs WHERE ref = :r",
+                    r=f"{REPO}#843") is None, "a merged row is never marked unreadable"
+
+
+async def test_r4_1_on_unblocked_skips_a_ref_that_never_blocked(world) -> None:
+    from gateway.db import tenant_session
+    from gateway.routes.projects import github_merge
+
+    w = world
+    task = _task(w)
+    _run(w, task)
+    _ref(w, task, 844, "merged")
+    async with tenant_engine_scope(g.app_dsn(w.p)), tenant_session(w.p.org_a) as db:
+        outcome = await github_merge.on_unblocked(db, w.p.org_a, f"{REPO}#844")
+    assert outcome.moved == []
+    assert _category(w, task) == "in_progress"
+
+
+async def test_own_1_a_read_during_a_merge_sees_the_committed_state(world) -> None:
+    """A webhook merge holds its transaction open. A read of the same pull
+    request at the same moment must wait for it, see ``merged`` as the old
+    state, and run no rule a second time."""
+    import asyncio
+
+    from gateway import github_sync
+    from gateway.db import tenant_session
+
+    w = world
+    task = _task(w)
+    _run(w, task)
+    _ref(w, task, 851)
+    stamp = "2026-10-18T11:00:00Z"
+    pull = {"number": 851, "title": "PR 851", "state": "closed", "merged": True,
+            "merged_at": stamp, "updated_at": stamp, "draft": False,
+            "merged_by": {"login": "octo"}, "head": {"ref": "agent/x", "sha": "d" * 40}}
+    first_wrote = asyncio.Event()
+    got: dict[str, Any] = {}
+
+    async def webhook() -> None:
+        async with tenant_session(w.p.org_a) as db:
+            _written, outcome = await github_sync.apply_pull_request(
+                db, w.p.org_a, f"{REPO}#851", pull, action="closed")
+            got["first"] = outcome
+            first_wrote.set()
+            await asyncio.sleep(0.5)  # the commit comes later
+
+    async def read() -> None:
+        await first_wrote.wait()
+        async with tenant_session(w.p.org_a) as db:
+            written, outcome = await github_sync.apply_pull_request(
+                db, w.p.org_a, f"{REPO}#851", pull)
+            got["second"] = (written, outcome)
+
+    async with tenant_engine_scope(g.app_dsn(w.p)):
+        await asyncio.gather(webhook(), read())
+    assert got["first"] is not None and got["first"].moved == [task]
+    written, outcome = got["second"]
+    assert written and written[0].old_state == "merged", "the read saw the committed merge"
+    assert outcome is None, "the rule ran a second time"
+
+
+async def test_own_3_a_read_of_a_reopen_holds_against_a_redelivered_close(world) -> None:
+    """Closed and reopened in one second, and the ``reopened`` event is lost.
+    A read sees ``open``. A redelivered ``closed`` of the same stamp must not
+    turn the row back."""
+    from gateway import github_sync
+    from gateway.db import tenant_session
+
+    w = world
+    task = _task(w)
+    _ref(w, task, 852)
+    same = "2026-10-18T12:30:00Z"
+    await _close(w, 852, merged=False, updated_at=same)
+    pull = {"number": 852, "title": "PR 852", "state": "open", "merged": False,
+            "merged_at": None, "updated_at": same, "draft": False,
+            "head": {"ref": "agent/x", "sha": "d" * 40}}
+    async with tenant_engine_scope(g.app_dsn(w.p)), tenant_session(w.p.org_a) as db:
+        await github_sync.apply_pull_request(db, w.p.org_a, f"{REPO}#852", pull)
+    state = "SELECT state FROM pm_task_refs WHERE ref = :r"
+    assert g.scalar(w.p, state, r=f"{REPO}#852") == "open"
+    await _close(w, 852, merged=False, updated_at=same)  # the redelivery
+    assert g.scalar(w.p, state, r=f"{REPO}#852") == "open"
+
+
+async def test_r4_4_a_lookup_error_writes_no_pr_state(world, monkeypatch) -> None:
+    """The GitHub row cannot be read, so the mode is unknown. The lazy read
+    writes no pull request state through TR-1, and answers the stored row."""
+    from gateway.connections import github as github_connection
+
+    w = world
+    task = _task(w)
+    _ref(w, task, 861)
+
+    async def broken(_org: str) -> Any:
+        raise RuntimeError("the connection read failed")
+
+    async def token(_org: str) -> str:
+        return "ghp_would_be_used_by_tr1"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "number": 861, "title": "PR 861", "state": "closed", "merged": True,
+            "merged_at": "2026-10-18T13:00:00Z", "updated_at": "2026-10-18T13:00:00Z"})
+
+    monkeypatch.setattr(github_connection, "connection", broken)
+    monkeypatch.setattr(github_connection, "token_or_none", token)
+    g.patch_github(monkeypatch, handler, REAL_CLIENT)
+    await _lazy_read(w, task)
+    assert g.scalar(w.p, "SELECT state FROM pm_task_refs WHERE ref = :r",
+                    r=f"{REPO}#861") == "open", "TR-1 wrote past the one write path"

@@ -184,15 +184,24 @@ _ATTEMPT_SQL = (
 #: A refused read: stamp it, keep the FIRST refusal time, and set
 #: ``unblocked_at`` ONCE, on the read that first finds the bound crossed
 #: (fix round 2, item 1). ``crossed`` names that read.
+#:
+#: ⚠️ **Only an open or draft row can block** (fix round 4, item 1). A row in
+#: ``merged`` or ``closed`` never blocked, so its refusal marks nothing and
+#: crosses nothing. Before the fix, a merged pull request that later answered
+#: 404 "crossed" the bound, and the rule moved the task to Done again after
+#: the agent had moved it back. Every refused row is still stamped.
 _REFUSED_SQL = (
     "UPDATE pm_task_refs SET fetched_at = now(), "
-    "unreadable_since = COALESCE(unreadable_since, now()), "
-    "unblocked_at = CASE WHEN unblocked_at IS NULL AND unreadable_since IS NOT NULL "
+    "unreadable_since = CASE WHEN state IN ('open', 'draft') "
+    "  THEN COALESCE(unreadable_since, now()) ELSE unreadable_since END, "
+    "unblocked_at = CASE WHEN state IN ('open', 'draft') AND unblocked_at IS NULL "
+    "  AND unreadable_since IS NOT NULL "
     "  AND unreadable_since <= now() - CAST(:bound AS interval) THEN now() "
     "  ELSE unblocked_at END "
     "WHERE organization_id = CAST(:org AS uuid) AND provider = 'github' "
     "AND kind = 'pull_request' AND ref = :ref "
-    "RETURNING task_id, unreadable_since, (unblocked_at = now()) AS crossed"
+    "RETURNING task_id, unreadable_since, "
+    "  (state IN ('open', 'draft') AND unblocked_at = now()) AS crossed"
 )
 
 

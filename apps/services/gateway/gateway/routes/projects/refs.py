@@ -286,11 +286,20 @@ async def _github_token() -> str | None:
 _FAILED = object()
 
 
+class _ConnectionUnreadable(Exception):
+    """The GitHub row of the org could not be read, so its mode is unknown."""
+
+
 async def _app_installation() -> tuple[str, int] | None:
-    """The bound org and its live App installation, or ``None``. Never raises.
+    """The bound org and its live App installation, or ``None`` for an org
+    that is not on the App.
 
     ``installation_of`` answers ``None`` while ``github_app_enabled`` is off,
     so the kill switch sends every read back to the token path (F5).
+
+    ⚠️ **It fails closed** (fix round 4, item 4). A lookup that raises is
+    :class:`_ConnectionUnreadable`, never ``None``. ``None`` would send an App
+    org's pull requests to the TR-1 UPDATE, past the one write path.
     """
     from gateway.connections import github as github_connection
     from gateway.db import current_tenant
@@ -302,7 +311,7 @@ async def _app_installation() -> tuple[str, int] | None:
         iid = github_connection.installation_of(await github_connection.connection(str(org)))
     except Exception as exc:
         _log.warning("projects.refs.connection_unreadable", error=type(exc).__name__)
-        return None
+        raise _ConnectionUnreadable from None
     return (str(org), iid) if iid is not None else None
 
 
@@ -418,7 +427,12 @@ async def refresh_from_github(
     # An org on the GitHub App reads its pull requests through the one write
     # path of the webhook (fix round 1, item 1). Its issues keep TR-1 below.
     pulls = [r for r in due if r["kind"] == "pull_request"]
-    app = await _app_installation() if pulls else None
+    try:
+        app = await _app_installation() if pulls else None
+    except _ConnectionUnreadable:
+        # The mode is unknown: write no pull request state through TR-1, and
+        # answer the stored values (fix round 4, item 4).
+        return rows
     if app is not None:
         await _refresh_pulls_as_app(app[0], app[1], pulls)
         rows = await _reload(task_id, rows)

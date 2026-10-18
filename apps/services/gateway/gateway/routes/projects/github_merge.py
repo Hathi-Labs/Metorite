@@ -198,6 +198,10 @@ async def on_unblocked(
         if only_tasks is not None and str(task.id) not in only_tasks:
             continue
         rows = (await db.execute(text(_PR_STATES_SQL), {"tid": str(task.id)})).fetchall()
+        # Fix round 4, item 1: only a reference that WAS blocking (open or
+        # draft) can unblock a task. A merged or closed one never blocked.
+        if not any(str(r.ref) == ref and r.state in ("open", "draft") for r in rows):
+            continue
         merged = next((r for r in rows if r.state == "merged"), None)
         if merged is None:
             continue
