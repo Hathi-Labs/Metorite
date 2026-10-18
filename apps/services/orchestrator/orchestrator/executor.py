@@ -6144,18 +6144,24 @@ async def run_agent_stream(
             )
             if raw_matches:
                 text = setup_token_re.sub("", text).strip()
-                vars_to_save = [{"key": k, "value": v.strip()} for _, k, v in raw_matches if v.strip()]
-                if vars_to_save:
+                # WS-54 fix round 1, item 8: GITHUB_TOKEN goes to the one
+                # writer of a pasted token, and the other keys to configure, in
+                # two requests. A refusal adds a line, so the agent claims no
+                # save that did not happen (orchestrator/setup_tokens.py).
+                if any(v.strip() for _, _k, v in raw_matches):
                     _GATEWAY_URL = settings.gateway_base_url if hasattr(settings, "gateway_base_url") else "http://127.0.0.1:8000"
                     _token = getattr(settings, "gateway_internal_token", "") or getattr(settings, "litellm_master_key", "")
                     try:
                         import httpx
-                        async with httpx.AsyncClient(timeout=5) as c:
-                            await c.post(
-                                f"{_GATEWAY_URL}/integrations/configure",
-                                json={"vars": vars_to_save},
-                                headers={"Authorization": f"Bearer {_token}"},
+
+                        from orchestrator.setup_tokens import save_setup_vars
+                        async with httpx.AsyncClient(timeout=10) as c:
+                            _setup_note = await save_setup_vars(
+                                c, _GATEWAY_URL, {"Authorization": f"Bearer {_token}"},
+                                raw_matches,
                             )
+                        if _setup_note:
+                            text = f"{text}\n\n{_setup_note}".strip()
                     except Exception:
                         pass
 
