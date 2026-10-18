@@ -5935,18 +5935,25 @@ line — never reclaim a number by deleting the other entry.
 - **Then (agent). ✅ Built 2026-10-18** on branch `ws61-staging-flag`. The
   script is `deploy/hostinger/staging/acb-staging-flag`, and its fence is
   `tests/unit/test_acb_staging_flag.py`. `deploy/hostinger/staging/README.md`
-  holds the install commands and the use. The script refuses unless
-  `/opt/acb/app/.env` says exactly `DEPLOY_ENV=staging`. It writes only an
-  allowlisted flag, never a secret, a host or an outbound switch. It makes a
-  backup first and keeps the inode, the owner `acb` and mode 600. Then it
-  restarts `acb-gateway`, or `acb-workbench` for a `NEXT_PUBLIC_` key.
-  ⚠️ The workbench reads `NEXT_PUBLIC_*` from `.env.local` at `next build`, so
-  that restart does not apply such a key. The script warns about it.
+  holds the install commands, the use and the exact names it may write. The
+  script refuses unless `/opt/acb/app/.env` says exactly `DEPLOY_ENV=staging`.
+  It writes only a name on its exact list, and it refuses each `NEXT_PUBLIC_*`
+  key. Root does no file work, because each read and write runs as `acb`. It
+  makes a backup first and keeps the newest 20. It records each key that it
+  sets in `/opt/acb/app/.staging-flags`, and the nightly refresh skips those
+  keys. Then it restarts `acb-gateway`.
 - **Then (owner, one time).** After that PR merges, run on the dev box as root:
   `install -o root -g root -m 755 /opt/acb/app/deploy/hostinger/staging/acb-staging-flag /usr/local/sbin/acb-staging-flag`
   and add `dev ALL=(root) NOPASSWD: /usr/local/sbin/acb-staging-flag` to a new
   file `/etc/sudoers.d/acb-staging-flag`, checked with `visudo -cf`. That
   grants one script and nothing else.
+- **Then (owner, optional, a separate step).** ⚠️ On srv1747539, `dev` and
+  `acb` are in group `docker`, and `/var/run/docker.sock` is `root:docker`
+  0660. That group is root-equivalent. So until the owner removes `dev` and
+  `acb` from `docker`, this sudoers line is a convenience, not a security
+  boundary. Removing them from `docker` also needs every agent workflow that
+  uses docker (the scratch Postgres ladder) to keep working. So decide it as
+  its own step.
 - **Production stays as it is.** Production flags already work through
   `ssh metorite` with sudo, under the dev-phase grant that ends on 2026-11-30.
   This entry adds a staging path only.
