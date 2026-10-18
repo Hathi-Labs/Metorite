@@ -277,17 +277,18 @@ clone cache.
    and no call with no card channel.
    WS-17 incident 2026-10-18: `NO_EGRESS_BY_MARK_KEY` beside `no_egress` says
    that the session mark ALONE set the flag. `asks_own_card()` names an
-   agent's own tool that asks the member's own card (the attribute
-   `ASKS_OWN_CARD_ATTR`, which the email assistant sets on each tool of its
-   `MAILBOX_WRITE_TOOLS`). `EgressGuardProvider`, `WithholdEgressTools` and
+   agent's own tool that asks the member's own card. The attribute is
+   `ASKS_OWN_CARD_ATTR`. The email assistant sets it on each tool of its
+   `MAILBOX_WRITE_TOOLS`. `EgressGuardProvider`, `WithholdEgressTools` and
    `RefuseEgressTools` take an optional `keep` picker. The orchestrator
    passes `asks_own_card` only for a mail agent's run whose flag the mark
    alone set. Everywhere else the attribute does nothing.
    The mark ends with the replay window. Its value is its time of write
-   (`t:<ms>`). A WhatsApp run carries `history_floor_ms`, the time of the
-   oldest row that it replays (`bot_run._history_floor_ms`). A mark whose
-   turn is older than the floor plus `MARK_TURN_SPAN_S` reads as clear for
-   the egress gate and the delegation readers. A web chat has no floor. A
+   (`t:<ms>`). A WhatsApp run carries `history_floor_ms`, the server time of
+   the oldest row that it replays (`bot_run._history_floor_ms`). Take the
+   floor plus `MARK_TURN_SPAN_S`. A mark older than that reads as clear for
+   the egress gate and the delegation readers. A WhatsApp run with writes on
+   has no floor, so its mark holds. A web chat has no floor. A
    mark with no time (`1`, an older build) never ends this way, and
    `run_holds_mail` ignores the window. Redis faults fail closed as before.
 5h. tool_annotations.py -- `annotate()` has NO default for `open_world`
@@ -320,8 +321,8 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    is unchanged. Fences: `tests/unit/test_wac_bot_run.py`,
    `tests/unit/test_wac_writes.py`.
    WS-17 incident 2026-10-18: `whatsapp_acts.tool_call` takes the call's
-   `home` (`agent:<name>` or `platform`), and a call with a home parks any
-   card with no rows. A `skill_projects` tool keeps the `ALLOWED_ACTS` rule
+   `home`, `agent:<name>` or `platform`. A call with a home parks any card
+   with no rows. A `skill_projects` tool keeps the `ALLOWED_ACTS` rule
    (D-WAC-4). `answers_cards()` is True in a WhatsApp run with writes on that
    parked nothing yet, and inside `confirming`. Then
    `confirmation_channel_open()` is True too. `untrusted_card()` marks the
