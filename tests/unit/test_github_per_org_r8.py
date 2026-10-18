@@ -39,6 +39,8 @@ each mutation red when run:
   ``test_item3_an_app_org_cannot_register_a_private_agent_repo``.
 * 3-M4 ``_private_repo_refusal`` answers ``None`` for a 404 ->
   ``test_item3_the_config_fetch_of_an_app_org_names_a_private_repo``.
+* R2-6-M1 (fix round 2) the words say "private" only ->
+  ``test_item3_the_config_fetch_of_an_app_org_names_a_private_repo``.
 """
 
 from __future__ import annotations
@@ -728,6 +730,8 @@ async def test_item3_the_config_fetch_of_an_app_org_names_a_private_repo(ns, app
             repo="octo/private-agent", user=_user(ADMIN_A, ns.org_a)))
     assert private.value.status_code == 422
     assert private.value.detail == agent.PRIVATE_REPO_IN_APP_MODE
+    # GitHub answers 404 for a private repo and for a missing one alike (R2-6).
+    assert "private or does not exist" in agent.PRIVATE_REPO_IN_APP_MODE
     with pytest.raises(HTTPException) as public:
         await _bound(ns, ns.org_a, lambda: agent.get_agent_config(
             repo="octo/public-agent", user=_user(ADMIN_A, ns.org_a)))

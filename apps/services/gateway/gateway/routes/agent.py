@@ -1402,8 +1402,11 @@ async def _org_github_token() -> str:
 
 #: Fix round 1, item 3: the words when an org on the GitHub App names a
 #: private agent repository. The App has no Contents permission (G-9).
+#: GitHub answers 404 to an unauthenticated read of a private repository AND of
+#: one that does not exist, so the words name both (fix round 2, item 6).
 PRIVATE_REPO_IN_APP_MODE = (
-    "This repository is private. Add an Advanced GitHub token in Integrations to read it."
+    "This repository is private or does not exist. If it is private, add an "
+    "Advanced GitHub token in Integrations to read it."
 )
 
 _REPO_SLUG_RE = re.compile(r"\A[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}\Z")
