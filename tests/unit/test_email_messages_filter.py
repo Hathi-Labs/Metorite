@@ -139,8 +139,10 @@ async def test_query_uses_websearch_tsquery_not_plainto():
     ).read_text(encoding="utf-8")
     body = migration.split("CREATE OR REPLACE FUNCTION public.email_message_search", 1)[1]
     assert body.count("websearch_to_tsquery('english', p_query)") == 2
-    assert body.count("m.account_id = ANY(p_accounts)") == 2
-    assert body.count("LIMIT v_limit") == 2
+    # Three paths: the ladder shape, the exact GIN path and the scoped path.
+    # Each one reads only the given mailboxes and stops at the cap.
+    assert body.count("m.account_id = ANY(p_accounts)") == 3
+    assert body.count("LIMIT v_limit") == 3
     assert "plainto_tsquery" not in body
 
 
