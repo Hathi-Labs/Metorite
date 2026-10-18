@@ -10,12 +10,20 @@
  *
  * The member's connections come from the Integrations client (`listMine`,
  * EA-4b). There is one reader of that list, not a second one here.
+ *
+ * **One task or many (WS-55 EA-13e, EA3-43).** The run panel gives one
+ * `taskId` and reads `onStarted`, as before. The board's menu and its bulk bar
+ * give `tasks`, at most `MAX_BULK_ASK`. Then Send starts one run for each task,
+ * each with its own idempotency key, and the dialog shows the result of each
+ * task on its own row. A 409 shows the server's text on that row, and the
+ * other tasks still go. No new route: it is the one start of EA-12d.
  */
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { listMine, type AgentConnection } from "@/app/integrations/lib/agents";
+import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
@@ -25,23 +33,39 @@ import { ProjectsApiError, agentRunsApi } from "../lib/api";
 import type { AgentStartResult } from "../lib/agentRuns";
 import {
   ASK_COPY,
+  type AskOutcome,
+  type AskTarget,
   CONNECT_AGENT_HREF,
+  MAX_BULK_ASK,
   MAX_INSTRUCTION,
   askableConnections,
+  bulkDescription,
+  bulkLimitText,
   connectionLabel,
+  outcomeLine,
   startFailure,
+  startMany,
   startPayload,
 } from "../lib/askAgent";
 
 interface Props {
   open: boolean;
-  taskId: string;
+  /** One task, from the run panel. Give this or `tasks`. */
+  taskId?: string;
+  /** One or more tasks, from the board (EA-13e). At most `MAX_BULK_ASK`. */
+  tasks?: readonly AskTarget[];
   onClose: () => void;
-  /** The run started. The panel shows it. */
-  onStarted: (result: AgentStartResult) => void;
+  /** The run started, for `taskId`. The panel shows it. */
+  onStarted?: (result: AgentStartResult) => void;
+  /** Every task of `tasks` was tried. The board reads its tasks again. */
+  onFinished?: (outcomes: AskOutcome[]) => void;
 }
 
-export function AskAgentDialog({ open, taskId, onClose, onStarted }: Props) {
+export function AskAgentDialog({ open, taskId, tasks, onClose, onStarted, onFinished }: Props) {
+  const targets: readonly AskTarget[] = tasks ?? (taskId ? [{ id: taskId }] : []);
+  const overLimit = targets.length > MAX_BULK_ASK;
+  /** The result of each task after a bulk Send. */
+  const [outcomes, setOutcomes] = useState<AskOutcome[] | null>(null);
   /** `null` while the list loads. */
   const [rows, setRows] = useState<AgentConnection[] | null>(null);
   const [listFailed, setListFailed] = useState(false);
@@ -59,6 +83,7 @@ export function AskAgentDialog({ open, taskId, onClose, onStarted }: Props) {
     setRows(null);
     setListFailed(false);
     setError(null);
+    setOutcomes(null);
     void listMine()
       .then((found) => {
         if (!live) return;
@@ -82,13 +107,24 @@ export function AskAgentDialog({ open, taskId, onClose, onStarted }: Props) {
   const payload = startPayload(connectionId, text);
 
   async function send() {
-    if (!payload || busy) return;
+    if (!payload || busy || overLimit) return;
     setBusy(true);
     setError(null);
+    if (tasks) {
+      try {
+        const done = await startMany(tasks, connectionId, text, agentRunsApi.start);
+        setOutcomes(done);
+        if (done.every((o) => o.ok)) setText("");
+        onFinished?.(done);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     try {
-      const result = await agentRunsApi.start(taskId, payload);
+      const result = await agentRunsApi.start(targets[0].id, payload);
       setText("");
-      onStarted(result);
+      onStarted?.(result);
     } catch (err) {
       const status = err instanceof ProjectsApiError ? err.status : undefined;
       setError(startFailure(status, err instanceof Error ? err.message : undefined));
@@ -107,7 +143,7 @@ export function AskAgentDialog({ open, taskId, onClose, onStarted }: Props) {
       title={ASK_COPY.title}
       icon="Bot"
       size="md"
-      description={ASK_COPY.description}
+      description={tasks ? bulkDescription(targets.length) : ASK_COPY.description}
     >
       <div className="space-y-3 p-3 text-xs" data-ask-agent-dialog="">
         {loading ? (
@@ -158,6 +194,12 @@ export function AskAgentDialog({ open, taskId, onClose, onStarted }: Props) {
           </>
         )}
 
+        {overLimit ? (
+          <p role="alert" data-ask-agent-limit="" className="text-destructive">
+            {bulkLimitText(targets.length)}
+          </p>
+        ) : null}
+
         {error ? (
           <p
             role="alert"
@@ -167,15 +209,48 @@ export function AskAgentDialog({ open, taskId, onClose, onStarted }: Props) {
           </p>
         ) : null}
 
+        {outcomes ? (
+          <div className="space-y-1" data-ask-agent-results="">
+            <p className="text-muted-foreground">{outcomeLine(outcomes)}</p>
+            <ul className="space-y-1">
+              {outcomes.map((outcome) => {
+                const target = targets.find((t) => t.id === outcome.taskId);
+                return (
+                  <li
+                    key={outcome.taskId}
+                    data-ask-agent-result={outcome.ok ? "sent" : "refused"}
+                    className="flex items-start gap-1.5"
+                  >
+                    <Icon
+                      name={outcome.ok ? "Check" : "CircleAlert"}
+                      size={12}
+                      className={`mt-0.5 shrink-0 ${outcome.ok ? "text-success" : "text-destructive"}`}
+                      aria-hidden
+                    />
+                    <span className="min-w-0">
+                      <span className="block truncate text-foreground">
+                        {target?.title?.trim() || "Task"}
+                      </span>
+                      <span className={outcome.ok ? "text-muted-foreground" : "text-destructive"}>
+                        {outcome.ok ? ASK_COPY.sentOne : outcome.error}
+                      </span>
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ) : null}
+
         <div className="flex justify-end gap-2">
           <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
-            Cancel
+            {outcomes ? ASK_COPY.done : "Cancel"}
           </Button>
-          {none || listFailed ? null : (
+          {none || listFailed || outcomes ? null : (
             <Button
               size="sm"
               icon="Send"
-              disabled={!payload || busy}
+              disabled={!payload || busy || overLimit}
               onClick={() => void send()}
             >
               {busy ? ASK_COPY.sending : ASK_COPY.send}

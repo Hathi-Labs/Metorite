@@ -55,7 +55,7 @@ import { accentForGroup, accentForStatus } from "../lib/accent";
 import type { StatusRow, TagRow,
   TaskTypeRow, TaskRow } from "../lib/api";
 import { projectsApi } from "../lib/api";
-import { WAITING_ON_ME_EMPTY } from "../lib/agentRuns";
+import { AGENT_WORK_EMPTY, WAITING_ON_ME_EMPTY } from "../lib/agentRuns";
 import {
   buildCellDropPatch,
   buildColumnDropUpdate,
@@ -120,6 +120,11 @@ interface Props {
    */
   waitingOnMe?: boolean;
   /**
+   * WS-55 EA-13e — "Agent work" is on. An empty column then says that no agent
+   * worked here, not "Drop here".
+   */
+  agentWork?: boolean;
+  /**
    * WS-55 EA-13d (EA3-50) — the person who looks at the board. An `awaiting`
    * pill reads "Needs you" to the run's member.
    */
@@ -168,6 +173,11 @@ interface Props {
   /** Open the merge card for one task. Absent = not offered. */
   onMergeTask?: (taskId: string) => void;
   /**
+   * WS-55 EA-13e (EA3-43) — open "Ask an agent" for one task. Absent = not
+   * offered, which is how the page withholds it while the agent routes are off.
+   */
+  onAskAgent?: (taskId: string) => void;
+  /**
    * File a task, and bring one back. Owner request, 2026-09-20.
    *
    * One prop for both directions: a surface that can file and cannot restore
@@ -206,6 +216,7 @@ export function TaskBoard({
   filters,
   onClearFilters,
   waitingOnMe = false,
+  agentWork = false,
   me,
   lanes,
   onToggleLane,
@@ -224,6 +235,7 @@ export function TaskBoard({
   onToggle,
   onMoveTask,
   onMergeTask,
+  onAskAgent,
   onExtendSelection,
   onSelect,
   onDrop,
@@ -571,6 +583,7 @@ export function TaskBoard({
     toggleSelect: (task, shift) => onToggle?.(task.id, shift ?? false),
     moveToProject: (task) => onMoveTask?.(task.id),
     mergeInto: (task) => onMergeTask?.(task.id),
+    askAgent: (task) => onAskAgent?.(task.id),
     setStatus: (task, statusId) => {
       if (task.status_id === statusId) return;
       onDrop(task, [], buildColumnDropUpdate("status", statusId));
@@ -609,6 +622,9 @@ export function TaskBoard({
     // error. On the Archived shelf the useful verbs are Restore and
     // Delete, and both are already there.
     canMerge: Boolean(onMergeTask) && !task.merged_into_task_id,
+    // An archived task takes no new run, and the gateway refuses it, so the
+    // entry drops rather than offering a click that ends in an error.
+    canAskAgent: Boolean(onAskAgent) && !task.archived_at,
     // Renaming needs somewhere to send the result. A board whose page does not
     // reload after a write would show the old title until the next poll, which
     // reads as the rename having failed.
@@ -997,7 +1013,9 @@ export function TaskBoard({
                     ? "Nothing archived in this lane"
                     : waitingOnMe
                       ? WAITING_ON_ME_EMPTY
-                      : droppable
+                      : agentWork
+                        ? AGENT_WORK_EMPTY
+                        : droppable
                         ? "Drop here"
                         : "Nothing here"
               }
@@ -1063,7 +1081,7 @@ export function TaskBoard({
                             empty={
                               cell.length > 0
                                 ? undefined
-                                : shelf || waitingOnMe
+                                : shelf || waitingOnMe || agentWork
                                   ? "—"
                                   : droppable
                                     ? "Drop here"

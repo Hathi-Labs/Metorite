@@ -187,6 +187,17 @@ def resolve_columns(
     return columns
 
 
+def _pr_cell(pr: Any) -> str:
+    """The ``pr`` column of one task (WS-55 EA-13d): the stored words, for
+    ``source``'s reason. The display vocabulary lives in the browser, and a
+    spreadsheet wants a value it can filter on, ``acme/widgets#12 open``.
+    :func:`export_tasks_csv` turns ``row["pr"]`` into this text before
+    :func:`_render` runs, so the column needs no branch there."""
+    if not isinstance(pr, dict) or not pr.get("number"):
+        return ""
+    return f"{pr.get('repo')}#{pr['number']} {pr.get('state')}"
+
+
 def _render(
     key: str,
     task: dict[str, Any],
@@ -231,14 +242,6 @@ def _render(
         return f"{int(counts.get('done') or 0)}/{total}" if total else ""
     if key == "blocked":
         return task.get("blocked_by_count") or ""
-    if key == "pr":
-        # WS-55 EA-13d. The stored words, for `source`'s reason: the display
-        # vocabulary lives in the browser, and a spreadsheet wants a value it
-        # can filter on, `acme/widgets#12 open`.
-        pr = task.get("pr") or {}
-        if not pr.get("number"):
-            return ""
-        return f"{pr.get('repo')}#{pr['number']} {pr.get('state')}"
     if key == "attachments":
         # The one column the file knows more than the screen: the table renders
         # "—" here because the LIST endpoint does not count attachments
@@ -415,6 +418,8 @@ async def export_tasks_csv(
         await attach_relation_counts(db, exported, vis)
         # EA-13d: the pull request column, one batched read like the two above.
         await attach_pr_chip(db, exported)
+        for task in exported:
+            task["pr"] = _pr_cell(task.get("pr"))
 
         ids = [str(r["id"]) for r in exported if r.get("id")]
         statuses: dict[str, str] = {}

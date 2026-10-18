@@ -492,8 +492,12 @@ VIEW_FILTER_KEYS: frozenset[str] = frozenset({
 #: "In progress" meaning the same thing. `category` is the only vocabulary two
 #: sets share, which makes it the only axis that stays legible across them, and
 #: the one every cross-project number in §9.12.7 will rest on.
+#:
+#: WS-55 EA-13e (EA3-43): ``agent`` groups by the agent state of a row. The
+#: client draws the lanes from ``agent_state``, and a drop between two agent
+#: lanes writes nothing, because a person does not set a run state.
 GROUP_BY: tuple[str, ...] = (
-    "status", "category", "assignee", "project", "importance", "tag", "none",
+    "status", "category", "assignee", "project", "importance", "tag", "agent", "none",
 )
 
 #: WS-27x — the field keys a view's `shown_fields` may name. Mirrors the
@@ -1016,7 +1020,8 @@ async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[s
     EA-13d and EA-13e ride the same call, because every route that hands a
     task row to the client already calls it, and the client merges the row
     over its own copy (a missing ``pr`` would erase the chip). So the call
-    also fills ``pr`` (:func:`attach_pr_chip`), one batched query.
+    also fills ``pr`` (:func:`attach_pr_chip`) and ``agent_worked``
+    (:func:`attach_agent_worked`), one batched query each.
     """
     for row in rows:
         row.update(agent_state=None, agent_client_via=None, agent_member_email=None,
@@ -1033,6 +1038,7 @@ async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[s
                            agent_member_email=hit.member_email,
                            agent_note=note[:AGENT_NOTE_MAX] or None)
     await attach_pr_chip(db, rows)
+    await attach_agent_worked(db, rows)
     return rows
 
 
@@ -1116,4 +1122,26 @@ async def attach_pr_chip(db: Any, rows: list[dict[str, Any]]) -> list[dict[str, 
         hit = by_task.get(str(row["id"]))
         if hit is not None:
             row["pr"] = _pr_chip(hit)
+    return rows
+
+
+#: The ``before`` of a read at this moment (see :func:`attach_agent_worked`).
+_READ_HORIZON = datetime(9999, 1, 1, tzinfo=UTC)
+
+
+async def attach_agent_worked(db: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fill each row's ``agent_worked`` through the ONE predicate of
+    ``agent_worked.py`` (EA-13e, EA3-49), read now. One query for the list."""
+    from gateway.routes.projects import agent_worked
+
+    for row in rows:
+        row["agent_worked"] = False
+    ids = [str(r["id"]) for r in rows if r.get("id")]
+    if not ids:
+        return rows
+    # "Now" is every row that exists: no row is created in the future, and a
+    # client clock that runs ahead of the database's cannot hide a fresh run.
+    worked = await agent_worked.worked_among(db, ids, _READ_HORIZON)
+    for row in rows:
+        row["agent_worked"] = str(row.get("id")) in worked
     return rows

@@ -13,8 +13,9 @@
 
 import { agentClaim, agentHost, type AgentConnection } from "@/app/integrations/lib/agents";
 
-import type { AgentRun, AgentStartBody } from "./agentRuns";
+import type { AgentRun, AgentStartBody, AgentStartResult } from "./agentRuns";
 import { isOpenRun, newIdempotencyKey } from "./agentRuns";
+import { ProjectsApiError } from "./api";
 
 /** Where a member connects an agent: the Integrations "AI agents" view (EA-4b). */
 export const CONNECT_AGENT_HREF = "/integrations?view=agents";
@@ -24,6 +25,14 @@ export const RUN_WRITE_SCOPE = "projects:write";
 
 /** The longest instruction. The gateway refuses a longer `body` (§12.1). */
 export const MAX_INSTRUCTION = 20_000;
+
+/**
+ * The most tasks that one "Ask an agent" may start (WS-55 EA-13e, EA3-43). The
+ * bulk bar refuses a 21st task, as the bulk edit of the gateway does for its
+ * own cap: twenty requests in a row is one person's ask, and a hundred is a
+ * queue that the agent would find at the start of its next session.
+ */
+export const MAX_BULK_ASK = 20;
 
 /** The words of the dialog, in one place. */
 export const ASK_COPY = {
@@ -41,7 +50,77 @@ export const ASK_COPY = {
   emptyHint: "Connect one in Integrations, then ask it here.",
   connect: "Connect an agent",
   listFailed: "Could not load your agents. Close this and try again.",
+  sentOne: "Request sent.",
+  done: "Done",
 } as const;
+
+/** The refusal of a selection past the cap. */
+export function bulkLimitText(count: number): string {
+  return `Select at most ${MAX_BULK_ASK} tasks. You selected ${count}.`;
+}
+
+/** The label of the dialog's description for a selection. */
+export function bulkDescription(count: number): string {
+  return count === 1
+    ? ASK_COPY.description
+    : `Your agent finds these ${count} requests at the start of its next session, then works on each task.`;
+}
+
+/** A task that the dialog asks about: its id, and its title for the result row. */
+export interface AskTarget {
+  id: string;
+  title?: string | null;
+}
+
+/** The result of one task of a bulk ask, for its own row. */
+export type AskOutcome =
+  | { taskId: string; ok: true; result: AgentStartResult }
+  | { taskId: string; ok: false; error: string };
+
+/**
+ * Start one run for each task, one request after another, each with its OWN
+ * idempotency key (EA-12d's rule, for each task). A refusal of one task stays
+ * on that task's row: a 409 shows the server's own text ("The agent has not
+ * picked up its last request yet"), and the other tasks still go.
+ *
+ * Refuses a selection past :data:`MAX_BULK_ASK` by sending NOTHING, so a bar
+ * that forgot to check the cap cannot send a 21st request.
+ */
+export async function startMany(
+  targets: readonly AskTarget[],
+  connectionId: string | null | undefined,
+  text: string,
+  start: (taskId: string, body: AgentStartBody) => Promise<AgentStartResult>,
+): Promise<AskOutcome[]> {
+  if (targets.length === 0 || targets.length > MAX_BULK_ASK) return [];
+  const outcomes: AskOutcome[] = [];
+  for (const target of targets) {
+    const payload = startPayload(connectionId, text);
+    if (!payload) {
+      outcomes.push({ taskId: target.id, ok: false, error: startFailure(422, undefined) });
+      continue;
+    }
+    try {
+      outcomes.push({ taskId: target.id, ok: true, result: await start(target.id, payload) });
+    } catch (err) {
+      const status = err instanceof ProjectsApiError ? err.status : undefined;
+      outcomes.push({
+        taskId: target.id,
+        ok: false,
+        error: startFailure(status, err instanceof Error ? err.message : undefined),
+      });
+    }
+  }
+  return outcomes;
+}
+
+/** "3 requests sent. 1 task needs a look." for the line above the rows. */
+export function outcomeLine(outcomes: readonly AskOutcome[]): string {
+  const sent = outcomes.filter((o) => o.ok).length;
+  const failed = outcomes.length - sent;
+  const requests = `${sent} request${sent === 1 ? "" : "s"} sent.`;
+  return failed === 0 ? requests : `${requests} ${failed} task${failed === 1 ? "" : "s"} need${failed === 1 ? "s" : ""} a look.`;
+}
 
 /**
  * The connections a member can ask: live rows that may write to Projects.

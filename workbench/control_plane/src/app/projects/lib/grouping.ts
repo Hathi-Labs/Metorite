@@ -14,6 +14,7 @@
 import { STATUS_CATEGORIES, categoryLabel } from "@/lib/statusCategory";
 import { personDisplayName } from "@/lib/personName";
 
+import { AGENT_LANES, agentLaneKey } from "./agentRuns";
 import type { StatusRow, TaskRow } from "./api";
 import { MATRIX_LEVELS, cellLabel, taskCell } from "./matrix";
 import {
@@ -29,6 +30,9 @@ export type GroupBy =
   | "project"
   | "importance"
   | "tag"
+  // WS-55 EA-13e (EA3-43): the agent state of a row, in the lanes of
+  // `agentRuns.AGENT_LANES`. A drop between two of them writes nothing.
+  | "agent"
   | "none";
 
 /** Mirrors the gateway's `filters.GROUP_BY`. */
@@ -39,6 +43,7 @@ export const GROUP_OPTIONS: GroupBy[] = [
   "project",
   "importance",
   "tag",
+  "agent",
   "none",
 ];
 
@@ -697,6 +702,22 @@ export function groupTasks(
         (t) => byId.get(t.status_id)?.category === category
       ),
     }));
+  }
+
+  // ── Agent state (WS-55 EA-13e, EA3-43) ──────────────────────────────────
+  //
+  // The lanes are the pill's states, in the order of a person's attention:
+  // what needs me, what I answered, what works, what waits, what is idle, what
+  // stops, what failed, and the tasks with no agent. Only the lanes that hold
+  // a task are drawn, as every axis but `status` does. ONE lane for each
+  // task: a task has one pill. Not a field a person writes, so the board
+  // refuses a drop onto it (`board.dropRefusal`).
+  if (by === "agent") {
+    return AGENT_LANES.map((lane) => ({
+      key: lane.key,
+      label: lane.label,
+      tasks: tasks.filter((t) => agentLaneKey(t.agent_state) === lane.key),
+    })).filter((group) => group.tasks.length > 0);
   }
 
   const buckets = new Map<string, TaskGroup>();

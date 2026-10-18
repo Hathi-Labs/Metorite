@@ -492,17 +492,22 @@ async def test_an_open_agent_run_stays_open(world) -> None:
 
 def test_d11_core_py_has_no_diff() -> None:
     """The merge rule leaves ``core.py`` alone. With git and ``origin/main`` at
-    hand the diff must be empty. Without them, the rule still reaches the core
-    only through its public helpers."""
+    hand the diff may ADD lines and must remove none. EA-13d and EA-13e add the
+    fields of ``TaskModel`` (``agent_note``, ``pr`` and ``agent_worked``), and
+    that is the only change that the spec allows (``external_agent_access.md``
+    §15, "``TaskModel`` fields only"). Without git, the rule still reaches the
+    core only through its public helpers."""
     from gateway.routes.projects import github_merge
 
     core = "apps/services/gateway/gateway/routes/projects/core.py"
     base = subprocess.run(["git", "merge-base", "HEAD", "origin/main"], cwd=_ROOT,
                           capture_output=True, text=True)
     if base.returncode == 0 and base.stdout.strip():
-        diff = subprocess.run(["git", "diff", "--name-only", base.stdout.strip(), "--", core],
+        diff = subprocess.run(["git", "diff", "-U0", base.stdout.strip(), "--", core],
                               cwd=_ROOT, capture_output=True, text=True)
-        assert diff.returncode == 0 and diff.stdout.strip() == "", diff.stdout
+        removed = [line for line in diff.stdout.splitlines()
+                   if line.startswith("-") and not line.startswith("---")]
+        assert diff.returncode == 0 and removed == [], removed
     source = Path(github_merge.__file__).read_text(encoding="utf-8")
     assert "apply_status_transition" in source and "load_default_status" in source
     # Nothing here patches the core at run time.

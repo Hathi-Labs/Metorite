@@ -105,6 +105,12 @@ export interface TaskMenuContext {
    * because they are different powers: filing is reversible and deleting is
    * not, and a surface may reasonably offer the first and not the second. */
   canDelete?: boolean;
+  /**
+   * WS-55 EA-13e (EA3-43). The surface can start a run for one of the member's
+   * agents: the agent routes are on, and the surface raised the dialog. Absent
+   * and the entry drops, as `canMerge` does.
+   */
+  canAskAgent?: boolean;
 }
 
 /**
@@ -222,6 +228,11 @@ export interface TaskMenuActions {
   /** Put this card's title into edit. Saving is the surface's business. */
   rename?(task: TaskRow): void;
   /**
+   * Open "Ask an agent" for this task (WS-55 EA-13e). It OPENS a dialog, it
+   * does not send: the member picks a connection and writes the instruction.
+   */
+  askAgent?(task: TaskRow): void;
+  /**
    * File the task out of every default list, board, calendar and search.
    *
    * **Offered on any status**, because archive is a shelf rather than an
@@ -324,6 +335,12 @@ export interface TaskMenuAction {
 /** Has somebody filed this task? */
 export const isArchived = (ctx: TaskMenuContext): boolean =>
   Boolean(ctx.task.archived_at);
+
+/**
+ * The acts that only Projects offers (`taskMenuVocabulary.ts` keeps the shared
+ * ones). They sit after every shared act. Fence: `taskMenuVocabulary.test.ts`.
+ */
+export const PROJECTS_ONLY_ACTS = ["askAgent"] as const;
 
 export const TASK_MENU_ACTIONS: readonly TaskMenuAction[] = [
   {
@@ -468,6 +485,16 @@ export const TASK_MENU_ACTIONS: readonly TaskMenuAction[] = [
     group: 5,
     when: (ctx) => Boolean(ctx.canDelete),
     run: (actions, ctx) => actions.deleteTask?.(ctx.task),
+  },
+  {
+    id: "task.askAgent",
+    // Local to Projects: My Tasks has no agent runs, so the word is not in the
+    // shared vocabulary (`@/lib/taskMenuVocabulary`).
+    label: () => "Ask an agent\u2026",
+    icon: "Bot",
+    group: 1,
+    when: (ctx) => Boolean(ctx.canAskAgent),
+    run: (actions, ctx) => actions.askAgent?.(ctx.task),
   },
 ];
 

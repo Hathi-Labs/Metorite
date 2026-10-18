@@ -756,3 +756,133 @@ test("the card shows the badge, one PR chip with its CI, and the note on hover",
   await expect(page.getByRole("button", { name: "Comment", exact: true })).toHaveCount(0);
   await expect(page.locator("[data-agent-run-panel]")).toHaveCount(0);
 });
+
+test("Agent work keeps the tasks that an agent worked on", async ({ page }) => {
+  test.setTimeout(120_000);
+  await boardStub(page);
+  const filter = page.getByRole("button", { name: "Agent work", exact: true });
+  await expect(filter).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(BOARD_B.title, { exact: true })).toHaveCount(1);
+  await filter.click();
+  await expect(filter).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByText(TASK.title, { exact: true }).first()).toBeVisible();
+  await expect(page.getByText(BOARD_B.title, { exact: true })).toHaveCount(0);
+});
+
+test("Agent work with no agent work says so, not Drop here", async ({ page }) => {
+  test.setTimeout(120_000);
+  await boardStub(page, { tasks: [BOARD_B] });
+  await page.getByRole("button", { name: "Agent work", exact: true }).click();
+  await expect(page.getByText("No agent work here").first()).toBeVisible();
+  await expect(page.getByText("Drop here")).toHaveCount(0);
+});
+
+test("the strip counts the project, and a count button sets its filter", async ({ page }) => {
+  test.setTimeout(120_000);
+  await boardStub(page);
+  const strip = page.locator("[data-agent-work-strip]");
+  await expect(strip).toBeVisible({ timeout: 15_000 });
+  await expect(strip.locator('[data-agent-count="working"]')).toContainText("1 Working");
+  await expect(strip.locator('[data-agent-count="review"]')).toContainText("1 In review");
+  // A zero count has nothing to show, so its button is off.
+  await expect(strip.locator('[data-agent-count="queued"]')).toBeDisabled();
+
+  await strip.locator('[data-agent-count="working"]').click();
+  await expect(strip.locator('[data-agent-count="working"]')).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByText("Fix the extruder", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText(TASK.title, { exact: true })).toHaveCount(0);
+  await expect(page.getByText(BOARD_B.title, { exact: true })).toHaveCount(0);
+  // A second press clears it.
+  await strip.locator('[data-agent-count="working"]').click();
+  await expect(page.getByText(BOARD_B.title, { exact: true })).toHaveCount(1);
+});
+
+test("the strip draws nothing while every count is zero", async ({ page }) => {
+  test.setTimeout(120_000);
+  await boardStub(page, {
+    summary: { queued: 0, working: 0, waiting_on_you: 0, in_review: 0, merged_this_week: 0 },
+  });
+  await expect(page.getByRole("button", { name: "Agent work", exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator("[data-agent-work-strip]")).toHaveCount(0);
+});
+
+test("group by agent state draws the lanes of the pill states", async ({ page }) => {
+  test.setTimeout(120_000);
+  await boardStub(page);
+  await page.getByRole("button", { name: "Group by", exact: true }).click();
+  await page.getByRole("option", { name: "Group by agent state" }).click();
+  // The refusal of a drop on these lanes is a pure rule: `agentOversight.test.ts`.
+  await expect(page.getByText("Needs you", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("No agent", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("Working", { exact: true }).first()).toBeVisible();
+  // A lane that holds no task is not drawn.
+  await expect(page.getByText("Queued", { exact: true })).toHaveCount(0);
+});
+
+test("Ask an agent on a card sends one start", async ({ page }) => {
+  test.setTimeout(120_000);
+  const { starts } = await boardStub(page);
+  const card = cardOf(page, BOARD_B.title);
+  await card.hover();
+  await card.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Ask an agent…" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.locator("[data-ask-agent-dialog]")).toBeVisible();
+  await dialog.getByRole("textbox").fill("Write the notes.");
+  await dialog.getByRole("button", { name: "Send to agent" }).click();
+  await expect(dialog.locator('[data-ask-agent-result="sent"]')).toHaveCount(1);
+  expect(starts).toHaveLength(1);
+  expect(starts[0].path).toBe("projects/tasks/t3/agent-runs");
+  expect(starts[0].body).toMatchObject({ connection_id: "c1", body: "Write the notes." });
+});
+
+test("the bulk bar asks for each selected task, with its own key, and a 409 shows on its row", async ({ page }) => {
+  test.setTimeout(120_000);
+  // The FIRST task answers 409, so a loop that stops at a refusal skips the second.
+  const { starts } = await boardStub(page, { conflict: [BOARD_B.id] });
+  for (const title of [BOARD_B.title, BOARD_C.title]) {
+    const card = cardOf(page, title);
+    await card.hover();
+    await card.getByRole("button", { name: "Select", exact: true }).click();
+  }
+  await page.locator("[data-bulk-ask-agent]").click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("textbox").fill("Look at both.");
+  await dialog.getByRole("button", { name: "Send to agent" }).click();
+  // One row for each task. The 409 shows the server's text on its own row.
+  await expect(dialog.locator("[data-ask-agent-result]")).toHaveCount(2);
+  await expect(dialog.locator('[data-ask-agent-result="refused"]')).toContainText(BOARD_B.title);
+  await expect(dialog.locator('[data-ask-agent-result="refused"]')).toContainText(START_409);
+  await expect(dialog.locator('[data-ask-agent-result="sent"]')).toContainText(BOARD_C.title);
+  expect(starts.map((s) => s.path)).toEqual([
+    "projects/tasks/t3/agent-runs",
+    "projects/tasks/t4/agent-runs",
+  ]);
+  const keys = starts.map((s) => s.body.idempotency_key);
+  expect(new Set(keys).size).toBe(2);
+});
+
+test("a 21st task is refused, and nothing is sent", async ({ page }) => {
+  test.setTimeout(150_000);
+  const many = Array.from({ length: 21 }, (_, i) => ({
+    ...TASK,
+    id: `m${i}`,
+    task_number: 100 + i,
+    title: `Bulk task ${i}`,
+    agent_state: null,
+    agent_worked: false,
+    pr: null,
+  }));
+  const { starts } = await boardStub(page, { tasks: many });
+  // The list draws the select-all box, so use it.
+  await page.getByRole("button", { name: "List", exact: true }).click();
+  await page.getByLabel("Select every task on this page").check();
+  await page.locator("[data-bulk-ask-agent]").click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.locator("[data-ask-agent-limit]")).toHaveText(
+    "Select at most 20 tasks. You selected 21.",
+  );
+  await dialog.getByRole("textbox").fill("Do them all.");
+  await expect(dialog.getByRole("button", { name: "Send to agent" })).toBeDisabled();
+  expect(starts).toHaveLength(0);
+});

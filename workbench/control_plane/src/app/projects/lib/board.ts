@@ -223,6 +223,9 @@ export function dropRefusal(
     // so a drop cannot promise the card lands in the level it was dropped on.
     importance:
       "A priority level is worked out from Important, Leveraged and the due date — set them on the task.",
+    // WS-55 EA-13e (EA3-43): a run state is the agent's and the run's, so a
+    // person does not set it by a drop.
+    agent: "An agent state comes from the agent's run — a drop cannot set it.",
   };
   const WRITABLE = new Set(["status", "category", "type", "none"]);
 

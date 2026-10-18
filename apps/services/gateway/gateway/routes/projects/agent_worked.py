@@ -52,6 +52,22 @@ _MCP_EXISTS = f"EXISTS (SELECT 1 FROM pm_activities aw_a WHERE {_MCP_WHERE})"
 #: The predicate, as one SQL boolean. Bind ``aw_task`` and ``aw_before``.
 AGENT_WORKED_SQL = f"({_RUN_EXISTS} OR {_MCP_EXISTS})"
 
+#: How the predicate names its task. ``_BATCH_SQL`` swaps this one text for
+#: the id column of a list, so the batched read below is the SAME boolean and
+#: no second copy of it (EA-13e, EA3-49).
+_TASK_PARAM = "CAST(:aw_task AS uuid)"
+
+#: The predicate over a LIST of task ids, one row for each id. Bind ``ids``
+#: (a ``uuid[]``) and ``aw_before``. ⚠️ Built from :data:`AGENT_WORKED_SQL`
+#: by replacing the task parameter. A change to either half of the rule moves
+#: this query with it.
+_BATCH_SQL = (
+    "SELECT t.id AS task_id, "
+    + AGENT_WORKED_SQL.replace(_TASK_PARAM, "t.id")
+    + " AS worked FROM unnest(CAST(:ids AS uuid[])) AS t(id)"
+)
+assert _TASK_PARAM in AGENT_WORKED_SQL and "aw_task" not in _BATCH_SQL
+
 #: Which row makes the predicate true: the newest run first, then the newest
 #: MCP act. ``kind`` is ``agent_run`` or ``mcp_act``.
 _REASON_SQL = (
@@ -100,4 +116,22 @@ async def is_agent_worked(db: Any, task_id: str, before: datetime) -> bool:
     return bool(row and row.worked)
 
 
-__all__ = ["AGENT_WORKED_SQL", "MCP_VIA_PREFIX", "AgentWork", "is_agent_worked", "params", "reason"]
+async def worked_among(db: Any, task_ids: list[str], before: datetime) -> set[str]:
+    """The ids of *task_ids* that are agent-worked at *before*: ONE query for
+    the whole list, through the same boolean as :func:`is_agent_worked`."""
+    ids = [str(i) for i in dict.fromkeys(task_ids) if i]
+    if not ids:
+        return set()
+    found = (await db.execute(text(_BATCH_SQL), {"ids": ids, "aw_before": before})).fetchall()
+    return {str(r.task_id) for r in found if r.worked}
+
+
+__all__ = [
+    "AGENT_WORKED_SQL",
+    "MCP_VIA_PREFIX",
+    "AgentWork",
+    "is_agent_worked",
+    "params",
+    "reason",
+    "worked_among",
+]

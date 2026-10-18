@@ -748,6 +748,9 @@ class TaskModel(BaseModel):
     #: merged_at, more}``, or ``None``. ``filters.attach_pr_chip`` fills it in
     #: the same call as the agent state, one batched query for the list.
     pr: dict | None = None
+    #: WS-55 EA-13e (EA3-49). True when the agent-worked rule of
+    #: ``agent_worked.py`` holds now. ``filters.attach_agent_worked`` fills it.
+    agent_worked: bool | None = None
 
     @field_validator("leveraged", mode="before")
     @classmethod

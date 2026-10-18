@@ -15,7 +15,7 @@
  * - M4 `pullRequestChip` drops the `+N` -> "the chip text for more".
  * - M5 `pullRequestChip` draws any URL as a link -> "only an https address".
  * - M6 `TaskMeta`'s `ChipLink` drops `stopPropagation` -> "the link keeps the click".
- * - M7 `isViewer` ignores case -> "Needs you reads to the run's member only".
+ * - M7 `isViewer` keeps the case of the viewer -> "Needs you reads to the run's member only".
  * - M8 `agentPillText` ignores `note` -> "the hover line".
  * - M9 `runIdentity` reads the host from the client's name -> "the run pill".
  * - M16 the `pr` chip class written outside `TaskMeta` -> "no chip colour class".

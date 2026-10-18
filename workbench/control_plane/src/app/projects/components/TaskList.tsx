@@ -50,7 +50,12 @@ import { accentForGroup, accentForStatus } from "../lib/accent";
 import type { StatusRow, TagRow,
   TaskTypeRow, TaskRow } from "../lib/api";
 import { projectsApi } from "../lib/api";
-import { WAITING_ON_ME_EMPTY, WAITING_ON_ME_HINT } from "../lib/agentRuns";
+import {
+  AGENT_WORK_EMPTY,
+  AGENT_WORK_HINT,
+  WAITING_ON_ME_EMPTY,
+  WAITING_ON_ME_HINT,
+} from "../lib/agentRuns";
 import { sortForView } from "../lib/board";
 import { tagColours, taskDeepLink, taskRef, typeFacts, visibleChips } from "../lib/card";
 import { clampCursor, stepCursor } from "../lib/cursor";
@@ -103,6 +108,8 @@ interface Props {
    * nothing waits on the member, not that the project has no tasks.
    */
   waitingOnMe?: boolean;
+  /** WS-55 EA-13e — "Agent work" is on. An empty list then says so. */
+  agentWork?: boolean;
   /** WS-55 EA-13d (EA3-50) — the viewer, so "Needs you" reads to the right person. */
   me?: string;
   statuses: StatusRow[];
@@ -144,6 +151,7 @@ export function TaskList({
   filters,
   onClearFilters,
   waitingOnMe = false,
+  agentWork = false,
   me,
   statuses,
   tags,
@@ -267,6 +275,10 @@ export function TaskList({
         hint={WAITING_ON_ME_HINT}
       />
     );
+  }
+
+  if (total === 0 && agentWork) {
+    return <EmptyState icon="Bot" message={AGENT_WORK_EMPTY} hint={AGENT_WORK_HINT} />;
   }
 
   if (total === 0) {

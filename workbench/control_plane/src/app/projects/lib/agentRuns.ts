@@ -718,7 +718,7 @@ export const WAITING_ON_ME_EMPTY = "Nothing waits on you";
 /** The hint under the list's empty state while the filter is on. */
 export const WAITING_ON_ME_HINT = "No agent waits for your answer on a task in this view.";
 
-/* ── The run pill (WS-55 EA-13d) ─────────────────────────────────────────── */
+/* ── The run pill and the board's oversight (WS-55 EA-13d and EA-13e) ────── */
 
 /**
  * The words of the run pill in the run panel's header (EA-13d, the item that
@@ -742,6 +742,136 @@ export function hostOfStamp(via?: string | null): string {
   const body = raw.startsWith("mcp:") ? raw.slice(4) : raw;
   return (body.match(/:/g) ?? []).length > 1 ? body : body.split(":")[0];
 }
+
+/** The five counts of `GET /projects/{id}/agent-summary` (EA-13e). */
+export interface AgentSummary {
+  queued: number;
+  working: number;
+  waiting_on_you: number;
+  in_review: number;
+  merged_this_week: number;
+}
+
+/** The count buttons of the strip. The focus is the filter that a button sets. */
+export type AgentFocus = "queued" | "working" | "waiting" | "review" | "merged";
+
+export const AGENT_STRIP: readonly {
+  focus: AgentFocus;
+  field: keyof AgentSummary;
+  label: string;
+  icon: string;
+  title: string;
+}[] = [
+  {
+    focus: "waiting",
+    field: "waiting_on_you",
+    label: "Waiting on you",
+    icon: "MessageCircleQuestion",
+    title: "Tasks where an agent waits for your answer",
+  },
+  {
+    focus: "working",
+    field: "working",
+    label: "Working",
+    icon: "Bot",
+    title: "Tasks that an agent works on now",
+  },
+  {
+    focus: "queued",
+    field: "queued",
+    label: "Queued",
+    icon: "CircleDashed",
+    title: "Tasks with a request that no agent has picked up",
+  },
+  {
+    focus: "review",
+    field: "in_review",
+    label: "In review",
+    icon: "GitPullRequest",
+    title: "Open tasks with an open or draft pull request",
+  },
+  {
+    focus: "merged",
+    field: "merged_this_week",
+    label: "Merged this week",
+    icon: "GitMerge",
+    title: "Pull requests merged in the last 7 days",
+  },
+];
+
+/** True when any count is not zero, which is when the strip draws. */
+export function stripVisible(summary?: AgentSummary | null): boolean {
+  return Boolean(summary) && AGENT_STRIP.some((item) => (summary?.[item.field] ?? 0) > 0);
+}
+
+/** The states that read as "working" on the strip and on the filter. */
+const WORKING_AGENT_STATES: readonly string[] = ["working", "answered", "stale"];
+
+/** The row facts that the oversight filters read. */
+export interface AgentOversightFacts extends AgentRowFacts {
+  agent_worked?: boolean | null;
+  completed_at?: string | null;
+  pr?: { state?: string | null; merged_at?: string | null } | null;
+}
+
+/**
+ * "Agent work" (EA3-49): the gateway's `agent_worked` flag, which reads the one
+ * predicate of `agent_worked.py`. The toggle filters the loaded rows, as
+ * "Waiting on me" does.
+ */
+export function isAgentWork(task: AgentOversightFacts): boolean {
+  return task.agent_worked === true;
+}
+
+/**
+ * The rows that a count button of the strip stands for. The strip counts over
+ * the whole project on the server, and the board shows the loaded rows, so the
+ * number and the rows agree except on a page not yet read.
+ */
+export function matchesAgentFocus(
+  task: AgentOversightFacts,
+  focus: AgentFocus,
+  me: string,
+  nowMs: number = Date.now(),
+): boolean {
+  switch (focus) {
+    case "waiting":
+      return isWaitingOnMe(task, me);
+    case "queued":
+      return task.agent_state === "queued";
+    case "working":
+      return WORKING_AGENT_STATES.includes(task.agent_state ?? "");
+    case "review":
+      return (task.pr?.state === "open" || task.pr?.state === "draft") && !task.completed_at;
+    case "merged": {
+      const at = Date.parse(task.pr?.merged_at ?? "");
+      return task.pr?.state === "merged" && !Number.isNaN(at) && nowMs - at <= 7 * 86_400_000;
+    }
+  }
+}
+
+/** The lanes of "Group by agent state" (EA3-43), in this order. */
+export const AGENT_LANES: readonly { key: string; label: string }[] = [
+  { key: "awaiting", label: "Needs you" },
+  { key: "answered", label: "Answered" },
+  { key: "working", label: "Working" },
+  { key: "queued", label: "Queued" },
+  { key: "stale", label: "Idle" },
+  { key: "stopping", label: "Stopping" },
+  { key: "failed", label: "Failed" },
+  { key: "none", label: "No agent" },
+];
+
+/** The lane key of a task row: its state, or `none`. An unknown state is `none`. */
+export function agentLaneKey(state?: string | null): string {
+  return state && AGENT_LANES.some((lane) => lane.key === state) ? state : "none";
+}
+
+/** What an empty board column, or an empty list, says while "Agent work" is on. */
+export const AGENT_WORK_EMPTY = "No agent work here";
+
+/** The hint under the list's empty state while "Agent work" is on. */
+export const AGENT_WORK_HINT = "No task in this view has an agent run or an act through an agent.";
 
 /* ── The archive request (EA-6g, EA3-33 and EA3-40) ──────────────────────── */
 

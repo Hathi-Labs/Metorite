@@ -11,6 +11,7 @@ import {
   type AgentState,
   type ArchiveApprovalBody,
   type ArchiveApprovalResult,
+  type AgentSummary,
   agentRunRows,
   normalizeRunDetail,
 } from "./agentRuns";
@@ -1265,6 +1266,11 @@ export interface TaskRow {
    * the task, with its CI. `lib/taskCard.pullRequestChip` draws it.
    */
   pr?: PullRequestFact | null;
+  /**
+   * WS-55 EA-13e (EA3-49) — an agent worked on this task, by the rule of
+   * `agent_worked.py`. The "Agent work" filter reads it.
+   */
+  agent_worked?: boolean | null;
 }
 
 export interface StatusRow {
@@ -2541,6 +2547,13 @@ export const agentRunsApi = {
       return false;
     }
   },
+
+  /**
+   * EA-13e (EA3-43). The five counts of the strip above the board, over the
+   * tasks of the project and its subprojects that the caller may see.
+   */
+  summary: (projectId: string) =>
+    call<AgentSummary>(`${encodeURIComponent(projectId)}/agent-summary`),
 };
 
 export interface NotificationRow {

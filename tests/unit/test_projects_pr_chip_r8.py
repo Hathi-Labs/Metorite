@@ -19,6 +19,7 @@ handed, so the batched queries run here against the real tables:
 * **P5** one list read makes one query for the chips, not one for each row.
 * **P6** the list route and the task route both carry ``pr``.
 * **P7** the run wire names the client: ``client_name`` and ``client_host``.
+* **P8** the CSV has a "Pull request" column when the view shows the field.
 
 R7, the mutations. Each one turns a test here red (run 2026-10-18, each after a
 commit, because ``git checkout`` restores HEAD):
@@ -44,6 +45,7 @@ commit, because ``git checkout`` restores HEAD):
 * **M11** ``attach_agent_state`` does not call ``attach_pr_chip``
   -> ``test_p6_the_list_route_and_the_task_route_carry_the_chip``.
 * **M12** ``client_name`` reads the host only -> ``test_p7_the_run_wire_names_the_client``.
+* **M13** the export does not attach ``pr`` -> ``test_p8_the_csv_has_a_pull_request_column``.
 """
 
 from __future__ import annotations
@@ -194,6 +196,20 @@ class TestThePullRequestChip:
             got = await call(w.a, "GET", f"/projects/tasks/{t}")
         assert got.status_code == 200, got.text
         assert got.json()["pr"]["number"] == 11
+
+
+class TestTheCsv:
+    async def test_p8_the_csv_has_a_pull_request_column(self, w):
+        t = _task(w)
+        b.ref(w.p, w.p.org_a, t, 12, "open")
+        b.ref(w.p, w.p.org_a, _task(w), 13, "merged", merged="now()")
+        async with b._session(w.p) as call:
+            got = await call(w.a, "GET", f"/projects/export/tasks.csv?project_id={w.proj['id']}"
+                                         "&include_subtree=true&shown_fields=pr")
+        assert got.status_code == 200, got.text
+        text = got.content.decode("utf-8-sig")
+        assert "Pull request" in text.splitlines()[0]
+        assert f"{b.REPO}#12 open" in text and f"{b.REPO}#13 merged" in text
 
 
 class TestTheHoverLine:
