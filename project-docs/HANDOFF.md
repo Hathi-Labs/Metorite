@@ -5656,21 +5656,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/knowledge_base.md` §6.4, `specs/email_app_master_plan.md`
 - **Added:** 2026-10-16 · WS-61 KB-3
 
-### H-330 · Two quick edits of a page embed the same chunks twice · [AGENT]
-- **Check:** `rg -n "FOR UPDATE SKIP LOCKED|shas" apps/services/gateway/gateway/kb_index/index.py`.
-  No hit in `select_pending` or `embed_pending` means this is open.
-- **Why.** Each page write schedules one `embed_pending` job. Two saves inside
-  one embed round trip schedule two jobs, and both select the same chunks
-  with a NULL embedding. The `content_sha` guard in `write_vectors` keeps the
-  data right, so only the spend doubles. It matters once `KNOWLEDGE_EMBED`
-  names an org.
-- **Do this:** pass the new shas from `reindex_page` to the job and embed
-  only those, or claim the rows in `select_pending` with a short
-  `FOR UPDATE SKIP LOCKED`. Add an R8 test with two concurrent jobs that
-  counts the door calls.
-- **Authority:** `specs/knowledge_base.md` §6.2 and §6.4
-- **Added:** 2026-10-16 · WS-61 KB-3 review
-
 ### H-331 · `test_fifteen_for_each_source` fails in the full unit run, and passes alone · [AGENT]
 - **Check:** in a CI log of the whole `tests/unit` run, search for
   `test_feed_handled.py::TestTheCap::test_fifteen_for_each_source FAILED`.
@@ -5917,6 +5902,48 @@ line — never reclaim a number by deleting the other entry.
      (CLAUDE.md §3a rule 1).
 - **Authority:** `specs/github_integration.md` §7.6
 - **Added:** 2026-10-18 · WS-54 Batch A fix round 2, item 5. Widened in fix round 3.
+
+### H-359 · Three staging file races that the acb-staging-flag review left · [AGENT] · security
+- **Check:** in `scripts/staging_refresh.sh`, the write of `$file.tmp` runs as
+  `acb` (through `setpriv` or `runuser`), and `acb-staging-flag` checks the pin
+  file before it writes `.env`. If both hold, delete this entry.
+- **Why.** The security review of H-358 on 2026-10-18 approved the script and
+  named three left-overs. First, `staging_refresh.sh:165-167` writes
+  `$file.tmp` as root inside `/opt/acb/app`, which `acb` can write. That is the
+  same symlink race that the script fixed. Second, when `.staging-flags` is a
+  symlink, `acb-staging-flag` writes `.env`, then refuses on the pin file. So
+  the flag changes with no log line, no restart and no pin, and the next
+  refresh reverts it. Third, the sudoers line lets `dev` flip
+  `enforcement-flip` switches after the dev-phase grant ends on 2026-11-30.
+- **Do this:** run the refresh's file work as `acb`, as `as_owner` does in
+  the script. In the script, read and check the pin file before the `.env`
+  write. Say in the README that the sudoers line outlives the grant, so the
+  owner decides on 2026-11-30 whether it stays.
+- **Authority:** `deploy/hostinger/staging/README.md`, HANDOFF H-358
+- **Added:** 2026-10-18 · H-358 security review
+
+### H-360 · Widen acb-staging-flag: NEXT_PUBLIC_ rebuilds, a production mode, and an unset that lasts · [AGENT]
+- **Check:** `deploy/hostinger/staging/acb-staging-flag` (or its successor) can set a
+  `NEXT_PUBLIC_*` flag on staging and start a rebuild, and can set a flag on
+  production with `--production --reason`. If both hold, delete this entry.
+- **Why.** On 2026-10-18 the owner asked that the dev box set flags on staging
+  and, when a task needs it, on production, and deploy to production. #1145's
+  tool covers nine named staging flags and nothing else. Today a production
+  flag is a hand edit over `ssh metorite`, which the box's auto-mode rules
+  allow (backup first, one flag line). A tool is safer than a hand edit.
+- **Reuse.** Closed PR #1146 (branch `acb-flag`) holds a design that passed two
+  review rounds and eight mutations: the switch-name patterns, a forced
+  re-apply in `acb-staging.slice` that waits for the deploy lock, a
+  `--production --reason` mode that refuses outbound switches, an absent
+  `DEPLOY_ENV` read as production (as `vps_pull.sh` reads it), and an `unset`
+  record that the nightly refresh honours. Port those into the existing tool.
+  Do not add a second tool.
+- **Already done (2026-10-18).** #1145's tool is installed: `/usr/local/sbin/acb-staging-flag`
+  and `/etc/sudoers.d/acb-staging-flag` (checked with `visudo`). Knowledge is on
+  in staging (`KNOWLEDGE_ENABLED=true`, `KNOWLEDGE_ORGS=*`). The box's
+  `~/.claude/settings.json` holds the owner-authorized `autoMode` rules.
+- **Authority:** owner, 2026-10-18. `specs/staging_and_daily_release.md`, CLAUDE.md §3a
+- **Added:** 2026-10-18
 
 # DONE — deleted, not archived
 

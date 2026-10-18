@@ -10,8 +10,9 @@ an item. So:
 
 * **No new data path.** No provider writes SQL, opens a connection or builds a
   visibility predicate. The task search, the email search, the directory and
-  the CRM's ``search_records`` already do that, and their R8 suites run them
-  on a real database (the CRM's is ``test_shell_search_crm_r8.py``).
+  the CRM's ``search_records`` and the Knowledge search already do that, and
+  their R8 suites run them on a real database (the CRM's is
+  ``test_shell_search_crm_r8.py``, the Knowledge one ``test_kb_search_r8.py``).
 * **The app's feature gate, again, here.** ⚠️ Each app checks its feature on
   its ROUTER (``require_feature_router("projects")`` and so on), not inside the
   search function. Called from here, the function would skip that gate. So
@@ -19,7 +20,8 @@ an item. So:
   and a member without the app gets no group at all. Fence:
   ``tests/unit/test_shell_search.py``, one negative case per provider. The
   CRM router has two more gates, the kill switch and the access rule, and
-  the CRM source applies both (WS-53 CRM-X2).
+  the CRM source applies both (WS-53 CRM-X2). The Knowledge source applies
+  the Knowledge kill switch, ``KNOWLEDGE_ENABLED`` and ``KNOWLEDGE_ORGS``.
 * **One app at a time.** The providers run one after another, never at once,
   because the pool budget is small (7 + 2 async sessions, Supavisor cap 15).
   Each has a time limit. A provider that fails, refuses or runs out of time is
@@ -62,11 +64,13 @@ def _item(kind: str, title: str, hint: str, href: str) -> dict[str, str]:
     return {"kind": kind, "title": (title or "").strip() or "(untitled)", "hint": hint, "href": href}
 
 
-#: The apps of the bar, in the bar's order. Artifacts, WhatsApp and Knowledge
-#: are sources of the registry, and they are not in the bar
-#: (``knowledge_base.md`` §20.3). Knowledge joins the bar with KB-12, not
-#: before (§20.7 KR-3).
-BAR_APPS: tuple[str, ...] = ("tasks", "email", "people", "crm")
+#: The apps of the bar, in the bar's order. Artifacts and WhatsApp are sources
+#: of the registry, and they are not in the bar (``knowledge_base.md`` §20.3).
+#: Knowledge joined the bar on 2026-10-18, when its pane went live (WS-61
+#: KB-12). Its source asks the lexical half only (``hybrid=False``), so a bar
+#: search calls no model and spends no credit. It comes last, so the four
+#: apps before it keep their share of ``TOTAL_BUDGET_S``.
+BAR_APPS: tuple[str, ...] = ("tasks", "email", "people", "crm", "knowledge")
 
 
 def _projected(key: str) -> Callable[[UserContext, str], Awaitable[list[dict[str, str]]]]:
@@ -96,6 +100,7 @@ SCOPE_APPS: dict[str, str] = {
     "/tasks": "tasks",
     "/people": "people",
     "/crm": "crm",
+    "/knowledge": "knowledge",
 }
 
 

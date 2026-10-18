@@ -2,7 +2,7 @@
 
 Spec: ``project-docs/specs/knowledge_base.md`` §13.
 
-This module is the ONE reader of the three settings below. Nothing else in the
+This module is the ONE reader of the four settings below. Nothing else in the
 gateway reads them.
 
 * ``KNOWLEDGE_ENABLED`` — the kill switch, default OFF.
@@ -12,6 +12,9 @@ gateway reads them.
 * ``KNOWLEDGE_EMBED`` (KB-3) — the organization ids whose chunks get a
   vector, in the same grammar. Empty, the default, means no organization:
   the index stays lexical and the embed door is never called.
+* ``KNOWLEDGE_EMBED_SWEEP`` (KB-3c) — the kill switch of the embed sweep,
+  default ON. The sweep does nothing for an org that ``KNOWLEDGE_EMBED``
+  does not name, so ON costs nothing until an org is named.
 
 :func:`require_knowledge_enabled` is the first router dependency in
 ``core.py``. It runs BEFORE ``require_feature_router("knowledge")``, so an
@@ -75,6 +78,20 @@ def knowledge_org_allowed(organization_id: str | None) -> bool:
 def knowledge_embed_orgs() -> frozenset[str]:
     """The organization ids whose chunks get a vector. Empty means none."""
     return _parse_orgs(str(get_settings().knowledge_embed or ""))
+
+
+def knowledge_embed_named() -> bool:
+    """True when the switch is on and ``KNOWLEDGE_EMBED`` names any org.
+
+    The sweep asks this before it reads the org list, so with no org named
+    it opens no session.
+    """
+    return knowledge_enabled() and bool(knowledge_embed_orgs())
+
+
+def knowledge_embed_sweep_enabled() -> bool:
+    """True when the embed sweep may start. Default ON (KB-3c)."""
+    return get_settings().knowledge_embed_sweep is not False
 
 
 def knowledge_embed_allowed(organization_id: str | None) -> bool:

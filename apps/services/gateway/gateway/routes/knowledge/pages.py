@@ -24,7 +24,9 @@ Each write also ends in the index (KB-3, §6.4). ``_written`` calls
 gets its chunks with a NULL vector, and a page in any other state loses its
 chunks. Then the route schedules ``embed_pending`` as a background task,
 which runs after the session closes, and only when ``KNOWLEDGE_EMBED`` names
-the org.
+the org. The job gets the shas that this write inserted, so it embeds each
+chunk once, and the acting member, which it binds for the embed door
+(KB-3c, H-330).
 """
 
 from __future__ import annotations
@@ -112,17 +114,20 @@ async def _written(
     """The end of each page write: one version, the index, the embed job.
 
     The chunks are written or deleted in this transaction. The embed job is
-    scheduled only for a published page of an org on ``KNOWLEDGE_EMBED``, and
-    it runs after the session closes.
+    scheduled only when this write inserted a chunk of a published page, for
+    an org on ``KNOWLEDGE_EMBED``. It runs after the session closes. It gets
+    the new shas only, and the member from the session, never from input.
     """
     version = await core.append_version(
         db, user, row, title=row.title, body_md=row.body_md, reason=reason,
     )
     org = core.org_of(user)
-    await kb_index.reindex_page(db, row, organization_id=org)
-    if (background is not None and row.state == "published"
+    reindexed = await kb_index.reindex_page(db, row, organization_id=org)
+    if (background is not None and reindexed.new_shas
             and flags.knowledge_embed_allowed(org)):
-        background.add_task(kb_index.embed_pending, org, str(row.id))
+        background.add_task(
+            kb_index.embed_pending, org, str(row.id), reindexed.new_shas, user.email,
+        )
     out = core.page_dict(row)
     out["version"] = version
     return out

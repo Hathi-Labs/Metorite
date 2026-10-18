@@ -178,6 +178,39 @@ def test_the_switch_merge(tmp_path: pathlib.Path) -> None:
     assert (env.stat().st_mode & 0o777) == 0o600
 
 
+def test_the_switch_merge_skips_a_key_that_acb_staging_flag_set(tmp_path: pathlib.Path) -> None:
+    """H-358 fix round 1. `acb-staging-flag set` names each key it writes in
+    `$app_dir/.staging-flags`. Step 6 must not copy production's value over
+    such a key, and must copy every other switch as before."""
+    imp = tmp_path / "import"
+    imp.mkdir()
+    (imp / "flags.env").write_text(
+        "root:CRM_ENABLED=false\nroot:TASKS_LENS=on\nroot:KNOWLEDGE_ENABLED=false\n"
+        "workbench:CRM_ENABLED=false\n", encoding="utf-8")
+    app = tmp_path / "app"
+    app.mkdir()
+    env = app / ".env"
+    env.write_text("CRM_ENABLED=true\nKNOWLEDGE_ENABLED=true\nTASKS_LENS=off\n", encoding="utf-8")
+    (app / ".staging-flags").write_text("CRM_ENABLED\nKNOWLEDGE_ENABLED\n", encoding="utf-8")
+    wb = app / ".env.local"
+    wb.write_text("CRM_ENABLED=true\n", encoding="utf-8")
+    body = _REFRESH.read_text(encoding="utf-8")
+    held = re.search(r"^held='[^']+'$", body, re.M).group(0)
+    switch = re.search(r"^switch='[^']+'$", body, re.M).group(0)
+    pinned = re.search(r"^pinned=.*$", body, re.M)
+    assert pinned and pinned.group(0) == 'pinned="$app_dir/.staging-flags"'
+    prog = "\n".join(["set -euo pipefail", f"import_dir={imp}", f"app_dir={app}", held, switch,
+                      pinned.group(0), _fn(_REFRESH, "apply_flags"),
+                      f"apply_flags root {env}", f"apply_flags workbench {wb}"])
+    res = subprocess.run(["bash", "-c", prog], capture_output=True, text=True, timeout=30)
+    assert res.returncode == 0, res.stderr
+    assert sorted(env.read_text(encoding="utf-8").splitlines()) == [
+        "CRM_ENABLED=true", "KNOWLEDGE_ENABLED=true", "TASKS_LENS=on"]
+    # The pin file speaks for the root .env only. The workbench file follows
+    # production as before.
+    assert wb.read_text(encoding="utf-8").splitlines() == ["CRM_ENABLED=false"]
+
+
 def test_set_kv_keeps_a_secret_and_the_mode(tmp_path: pathlib.Path) -> None:
     f = tmp_path / "e"
     f.write_text("KEY=old\nX=1\n", encoding="utf-8")

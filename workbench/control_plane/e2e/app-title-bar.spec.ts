@@ -180,7 +180,7 @@ const PAGES: Array<[string, string]> = [
   ["Appearance", "/settings/appearance"],
   // Live since 2026-10-13 (owner, WS-54).
   ["Integrations", "/integrations"],
-  // Preview since WS-61 KB-0. It renders by URL, so the census opens it.
+  // Live since 2026-10-18 (WS-61 KB-12). It was preview from KB-0.
   ["Knowledge", "/knowledge"],
   ["Teams", "/settings/groups"],
   ["Roles", "/settings/roles"],
