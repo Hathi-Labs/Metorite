@@ -37,7 +37,7 @@
 >
 > **Built 2026-10-18, merged as #1130, dark:** CRM-Q32, the open questions (§18.14). CRM-Q32-1 to CRM-Q32-6 are built, the screens and both halves of CRM-Q32-4 too. CRM-Q32-7 is not, because it waits for WS-61. The CRM asks the admin each question that Jev could not answer with confidence. Each answer becomes a fixed fact in the mapping plan. Every app reads it through the one read seam `org facts`. No migration, and no model call of its own.
 >
-> **Specified 2026-10-18, not built:** CRM-Q32-8, the chat asks a CRM admin an open question before it answers (owner direction 2026-10-18), and CRM-Q32-9, an amount as the sum of 2 to 5 fields (§18.14.10).
+> **Specified 2026-10-18, not built:** CRM-Q32-8, the chat asks a CRM admin an open question before it answers (owner direction 2026-10-18), and CRM-Q32-9a and CRM-Q32-9b, an amount as the sum of 2 to 5 fields (§18.14.10). The merge order is in §18.14.10.
 >
 > **Built later, not merged (Batch M, `crm-batch-m`):** CRM-Q17a-1b, a "still empty" check of a stale entity (2026-10-16, §18.9.6, no migration). CRM-Q17a-2, the screens of the fill rank (2026-10-16, no migration). CRM-Q18-1b, two deadlocks of the plan lock (2026-10-16, no migration). CRM-Q19, the executor and the 200-record preview (2026-10-16, no migration).
 >
@@ -1292,7 +1292,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q30** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. A founder question set for CRM insights: an eval of the assistant over CRM data. §18.11 | P1 |
 | **CRM-Q30b** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. The read tools say when Zoho holds more records than the connected Zoho user can read. §18.11 | P1 |
 | **CRM-Q31** | The CRM catalogue for the AI: the purpose of each module, its key fields by meaning, and its links. Code first, then the decide tier. Q31-1 to Q31-3 merged as #1122, dark. Q31-4 is absorbed into CRM-Q32 (§18.14). §18.13 | P0 |
-| **CRM-Q32** | Open questions: the CRM asks the admin each question that Jev could not answer with confidence. Each answer is a fixed fact in the plan, and every app reads it through `org facts`. Nine slices (Q32-1 to Q32-9). Q32-1 to Q32-6 merged as #1130, dark (2026-10-18). Q32-8 and Q32-9 are specified 2026-10-18, not built. §18.14 | P0 |
+| **CRM-Q32** | Open questions: the CRM asks the admin each question that Jev could not answer with confidence. Each answer is a fixed fact in the plan, and every app reads it through `org facts`. Ten slices (Q32-1 to Q32-9b). Q32-1 to Q32-6 merged as #1130, dark (2026-10-18). Q32-8, Q32-9a and Q32-9b are specified 2026-10-18, not built. §18.14 | P0 |
 | **CRM-Q20-3** | The overlay reaches the readers: `GET /crm/aggregate` and the AI tools first (Q20-3a), then the overlaid board with an "Unsorted" lane (Q20-3b). §18.13 | P1 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
@@ -5942,8 +5942,10 @@ change of the first, and runs the verification of both again.
 
 **Status (2026-10-18).** CRM-Q32-1 to CRM-Q32-6 were built on
 `crm-batch-q32` and merged as #1130, dark behind `CRM_QUESTIONS_ORGS`.
-CRM-Q32-8 (the chat asks before it answers) and CRM-Q32-9 (an amount as the
-sum of fields) are specified 2026-10-18, not built. They are verified
+CRM-Q32-8 (the chat asks before it answers) and CRM-Q32-9a and CRM-Q32-9b
+(an amount as the sum of fields) are specified 2026-10-18, not built. The
+spec audit gave CRM-Q32-8 NO-GO and CRM-Q32-9 GO-NARROWED, and its edits
+are in. They are verified
 against code at `origin/main` `9e8a03e0e`. The backend came first.
 Then CRM-Q32-3 built the screens, and the frontend half of CRM-Q32-4 built the
 "Needs you" item of Sync health. CRM-Q32-7 is not built, because it waits for
@@ -6503,8 +6505,9 @@ section.
 | CRM-Q32-5 | The org-facts seam, the CRM provider, `GET /org/facts`, the tool (with the `crm` family) and the CRM facts block | AGENT-SAFE | M | CRM-Q32-2 |
 | CRM-Q32-6 | The chat line | AGENT-SAFE | S | CRM-Q32-1 |
 | CRM-Q32-7 | The Knowledge page "How our CRM data is organised". ⚠️ NOT dispatchable: a stub | AGENT-SAFE to build, later | S | CRM-Q32-5, and a writer of a system page that WS-61 specifies in `knowledge_base.md` |
-| CRM-Q32-8 | The chat asks a CRM admin before it answers, and `crm_answer_question` (owner direction 2026-10-18) | AGENT-SAFE | M | CRM-Q29 fix rounds 4 and 5 merged |
-| CRM-Q32-9 | An amount can be the sum of 2 to 5 fields | AGENT-SAFE | M | — |
+| CRM-Q32-8 | The chat asks a CRM admin before it answers, and `crm_answer_question` (owner direction 2026-10-18) | AGENT-SAFE | M | #1133 (CRM-Q29 rounds 4 and 5), #1132 and CRM-Q32-9a |
+| CRM-Q32-9a | The backend of an amount as the sum of 2 to 5 fields | AGENT-SAFE | M | This spec merged |
+| CRM-Q32-9b | The picker of a sum, and "Your answers" | AGENT-SAFE | S | CRM-Q32-9a and the branch `crm-questions-copy` |
 
 **The flips.** A name in `CRM_QUESTIONS_ORGS` spends nothing, so it is the
 grant `enforcement-flip`. The org needs `CRM_CATALOGUE_ORGS` too, which is
@@ -6699,7 +6702,8 @@ AGENT-SAFE. Size: M. Migration: none. Narrow reviewer: tenancy.
    or `payment_in`, while `@org` has no admin answer. It gets the line of
    the default. A test proves both sides of each condition.
 3. A failed read adds no line. A test proves it.
-4. No tool asks a question in the chat, and no tool waits for an answer.
+4. No tool waits for an answer. Only a CRM admin gets an ASK block
+   (CRM-Q32-8, which amends this item on 2026-10-18).
 5. Each pinned parameter stays. `test_tool_schema_diet.py` stays green with
    no edit.
 
@@ -6724,7 +6728,8 @@ to build, later. Size: S. Migration: none.
 
 **CRM-Q32-8 · The chat asks before it answers (owner direction,
 2026-10-18).** This amends the rule of §18.14.5 "never blocks, never asks in
-the chat" for a CRM admin only. For each other member the rule stays.
+the chat" for a CRM admin only. For each other member the rule stays. It
+also amends item 4 of CRM-Q32-6 (below, "The fence of CRM-Q32-6").
 
 **Owner direction (2026-10-18, in chat).** When a question of a user depends
 on a field that nobody answered, the chat asks that question first. The CRM
@@ -6740,20 +6745,22 @@ change each answer in the CRM app if it was wrong.
 2. The gateway puts the id of the question in the detail of that 422, as
    `question`, beside `href`. The id of the revenue default is `revenue`.
 3. The tool reads `GET /crm/questions?ids=<id>` as the member. A new query
-   parameter `ids` takes at most 2 ids. A 200 means that the member is a
-   CRM admin. A 403 or a 404 means that the member cannot answer.
+   parameter `ids` takes at most 2 ids. With `all=1`, `ids` matches an
+   answered id too, for a change (below). Only a 200 means that the member
+   is a CRM admin. Each other answer (403, 404, and 409 in Native mode)
+   gives the default line of CRM-Q32-6.
 4. For an admin, the tool answer holds one ASK block. The block tells the
    model to ask first, and it holds the payload of `ask_questions`, ready to
-   send. It also names `crm_answer_question` and says to run the read again
-   after the answer.
+   send. It names `crm_answer_question` and says to run the read again after
+   the answer.
 5. The model shows the card. The admin picks an option.
 6. The model calls `crm_answer_question(question_id, choice)`. The tool calls
    `POST /crm/questions/{id}/answer`, the route of the settings section. So
    the admin guard, the org from the server, the one plan seam and the Undo
    all stay.
 7. The model calls the read again and gives the final answer. The answer
-   names the fact it used. An example is "Collection, sum of IP Basic
-   Amount (you set this field as the amount)".
+   names the fact it used. An example is "Collection, sum of IP Basic Amount
+   (you set this field as the amount)".
 
 **The card.**
 
@@ -6763,39 +6770,67 @@ change each answer in the CRM app if it was wrong.
 | `question` | The question as a full sentence: "Which field holds the amount of a payment in Collection?" |
 | The text under the question | Why the AI asks, and what the answer changes: the sentence of why (§18.14.3) |
 | `options` | Up to 3 choices of the question. Each label holds the field label, the fill and up to 2 masked samples, for example "IP Basic Amount (52% filled, such as 12400)". The best choice has `recommended: true` |
-| Two more options | "None of these" (`null`), and "Use the default", which answers at once with the default and writes nothing |
+| Two more options | "None of these" (`none`), and "Use the default" (`@default`) |
 | `multiSelect` | `false` |
 | `allowFreeformInput` | `false` |
 
-- The copy never names the internal model. It says "the AI". This rule
-  binds the screens of §18.14.9 too, so this slice changes "Jev" to "the
-  AI" in `lib/questions.ts`.
-- Some modules can sum several fields (CRM-Q32-9). Their key question adds
-  one line: "If the amount is a sum of fields, answer in CRM settings." It
-  names `href`. The chat card offers no sum, because a sum needs a list of
-  check boxes.
+- **The key of each option.** `ask_questions` cuts a label at
+  `OPTION_LABEL_MAX` (100, `ask_tools.py:157`), so a cut label maps to no
+  option. So the ASK block gives the key of each option beside its label.
+  The model sends the key, never the label.
+- **The words.** The copy never names the internal model. It says "the AI".
+  The branch `crm-questions-copy` removes each "Jev" from the screens of
+  §18.14.9 and adds their scan, so this slice does not touch them.
+- **A sum.** Some modules can sum several fields (CRM-Q32-9). Their key
+  question adds one line: "If the amount is a sum of fields, answer in CRM
+  settings." It names `href`. The chat card offers no sum, because a sum
+  needs a list of check boxes.
 
-**The limits.**
+**The limit of cards in one run.**
 
 - One card for each question in a run, and at most 2 cards before the final
-  answer. A ContextVar of the run in `crm_tools.py` keeps the ids asked, as
-  `ask_tools.cards_refused` keeps its flag (`ask_tools.py:56-80`). After the
-  limit, the tool gives the default line of CRM-Q32-6.
-- With no card channel (`cards_refused()`, `ask_tools.py:239`), the tool
-  gives the default line and no ASK block. A WhatsApp run is one example.
-- "Use the default" is always an option. The model then answers the founder
-  at once, with the default, and says so in one line.
-- The tool never waits. The model asks, and the run stops for the answer, as
-  `ask_questions` says. A member who does not answer still has the link.
+  answer.
+- **Why a ContextVar alone fails.** `copilot_agent._in_run_context`
+  (`copilot_agent.py:103-120`) runs each tool call in a fresh copy of the
+  run context. A `ContextVar.set()` in one tool call is lost before the
+  next call.
+- **The design.** The run boundary opens a fresh mutable holder for each
+  run, beside `refuse_cards_for_run` (`executor.py:4153`). A new
+  `crm_tools.open_asks_for_run()` sets a ContextVar to a new `CrmAsks`
+  object, with the set of ids asked. A copy of the context points at the
+  same object, so a tool changes it in place, and the next call sees it.
+- The default of the ContextVar is `None`. With `None`, the tool gives no
+  ASK block, only the default line. So a run that did not open the holder
+  never asks.
+- ⚠️ A mutable object as the module-level default of the ContextVar is
+  forbidden. It would be shared by each run and each org.
+- After the limit, the tool gives the default line.
+
+**With no card channel.** `cards_refused()` (`ask_tools.py:239`) gives the
+default line and no ASK block. A WhatsApp run is one example.
+
+**"Use the default" in the next run.** Path B2 of `ask_questions` sends the
+answer of the card as the next message, which is a new run. So the choice
+must survive the run, or the next run asks the same question again.
+
+- **Option A, recommended.** "Use the default" is an answer. The model
+  sends `@default` to `crm_answer_question`. The route writes nothing in the
+  plan. It holds the question for that member for `DEFAULT_HOLD_HOURS` (24),
+  in Redis through `acb_common.tenant_redis.get_tenant_redis` (R5 c). The
+  key holds the member and the question id.
+- While the hold lasts, `GET /crm/questions?ids=` marks the question
+  `held: true` for that member. The tool then gives the default line and no
+  ASK block.
+- **Option B.** The tool keeps the choice for the thread, with a TTL. It
+  needs a store of the thread in the tool, which does not exist.
+- Option A is recommended. The server keeps the state, the tool stays
+  stateless, and one fence proves it.
 
 **The number check.** The card is a display call, so the check of CRM-Q29
-reads its numbers. Fix round 4 of CRM-Q29 says so, and it is built on
-`crm-answer-check-r4`. Each number of an option label comes from the ASK
-block, which is a CRM read, so each number traces to a source.
-
-The coordinator reports that CRM-Q29 fix round 5 lets a choice label such
-as "Top 10" pass. Round 5 is not on `main` at `9e8a03e0e`. This slice waits
-for rounds 4 and 5 to merge.
+reads its numbers. Fix round 4 of CRM-Q29 says so. Each number of an option
+label comes from the ASK block, which is a CRM read, so each number traces
+to a source. Fix round 5 lets a choice label such as "Top 10" pass. Rounds 4
+and 5 merge as #1133.
 
 **A member who is not a CRM admin.** The chat never blocks. The tool gives
 the line of CRM-Q32-6. It names the default that it used. It adds "A CRM
@@ -6817,11 +6852,11 @@ admin can answer this in CRM settings, Open questions", with the link.
 
 **The tool.** `crm_answer_question(question_id: str, choice: str)`.
 
-- `choice` is the label of the option that the admin picked, or a field
-  key. The tool reads the question again and maps the label to its value.
-  The server holds the truth, so the model cannot invent a value.
-- "Use the default" writes nothing. The tool answers "Nothing changed. Use
-  the default." A label that no option has writes nothing either.
+- `choice` is the key of the option that the admin picked: a field key, a
+  purpose word, a revenue word, `none` or `@default`. The tool reads the
+  question again and checks the key against its options. The server holds
+  the truth, so the model cannot invent a value.
+- A key that no option has writes nothing.
 - It loads with the `crm` skill family, as `org_facts` does
   (`skill_families.py:202`). The gateway gates it by `CRM_QUESTIONS_ORGS`.
   The core floor of `test_tool_schema_diet.py` does not change, and the
@@ -6831,44 +6866,83 @@ admin can answer this in CRM settings, Open questions", with the link.
 - It makes no decide call. The question, the choices and the samples come
   from the read of CRM-Q32-1.
 
+**Withholding.** `crm_answer_question` is withheld wherever `org_facts` is:
+
+- `_facts_withheld` (#1132) withholds both tools on a box that lists at
+  least one org, for a run whose org is off the list.
+- `addendum._dark_tools` (`addendum.py:662`) names it.
+- The drop in `_add_crm_facts_block` (`_tool_injection.py:1524`) takes it
+  out with `org_facts`.
+- The `tool_scope` of `apps/agents/agent-orchestrator/config.json` and of
+  `apps/agents/agent-crm/config.json` names it.
+- `evals/trajectories/test_tool_scope_trajectory.py` adds it to
+  `INJECTABLE_PLATFORM_TOOLS`, and the ceiling of `agent-orchestrator` goes
+  from 23 to 24.
+
+**The fence of CRM-Q32-6.** The test
+`test_q32_no_tool_asks_in_the_chat_or_waits_for_an_answer`
+(`test_crm_agent.py:1690`) refuses five words in `crm_tools.py`:
+`ask_questions`, `ElicitationCard`, `elicit`, `wait_for` and `input(`. This
+slice changes the fence on purpose (R7). It stops refusing `ask_questions`,
+because the ASK block names it. It keeps refusing the other four, so no CRM
+tool waits.
+
+Item 4 of CRM-Q32-6 now reads: "No tool waits for an answer. Only a CRM
+admin gets an ASK block (CRM-Q32-8)."
+
 **CRM-Q32-8 · Done when:**
 
 1. The 422 `no_key_field` of an open part carries `question`, the id. A test
    proves it.
 2. `GET /crm/questions` takes `ids` (at most 2), and returns only those
-   questions. A third id gives 422.
+   questions. With `all=1`, `ids` matches an answered id too. A third id
+   gives 422.
 3. For a CRM admin, `crm_aggregate` gives the ASK block in both cases of
-   step 1 of the flow. The payload passes the schema of `ask_questions`.
-4. For a member who is not an admin, the tool gives the default line and no
-   ASK block. A test proves it with a 403.
+   step 1 of the flow. The payload passes the schema of `ask_questions`,
+   and it gives the key of each option.
+4. Each answer of `GET /crm/questions` other than a 200 (403, 404, 409)
+   gives the default line and no ASK block. A test proves each.
 5. With `cards_refused()`, the tool gives the default line. A test proves it.
 6. A run asks one question once, and at most 2 questions. A test calls the
-   tool three times in one run.
-7. `crm_answer_question` maps a label to its value, and writes through the
-   answer route. "Use the default" and an unknown label write nothing.
-8. The answer route accepts an answered `purpose`, `key_field` or `revenue`
+   tool three times in one run, through `carry_run_context`. So each call
+   runs in its own copy of the context. With no holder open, the tool gives
+   no ASK block.
+7. `crm_answer_question` checks the key against the options, and writes
+   through the answer route. A key that no option has writes nothing. In a
+   test, `ask_questions` cuts the label of an option at 100 characters. The
+   test sends the key of that option, and the answer still writes.
+8. `@default` writes nothing in the plan, and holds the question for that
+   member for 24 hours. A test proves that the next run gets the default
+   line, and that the question comes back after the hold.
+9. The answer route accepts an answered `purpose`, `key_field` or `revenue`
    id, and writes through `write_answer`. A test proves it, and Undo.
-9. R8: a member who is not an admin gets 403 through the tool, and nothing
-   changes. An admin of org B cannot answer a question of org A through the
-   tool. Each test reads the plan after the call.
-10. No user text of the card or of `lib/questions.ts` holds "Jev". A test
-    scans the copy.
-11. The number check passes a card with a fill and a sample in each label.
+10. R8: a member who is not an admin gets 403 through the tool, and nothing
+    changes. An admin of org B cannot answer a question of org A through the
+    tool. Each test reads the plan after the call.
+11. A Python scan of the card copy in `crm_tools.py` finds no "Jev".
+12. The number check passes a card with a fill and a sample in each label.
     `test_crm_answer_check.py` holds the case.
-12. `test_tool_schema_diet.py` pins the new tool. The core total stays under
+13. The tool is withheld as "Withholding" says. The trajectory eval and
+    `test_org_facts.py` prove it.
+14. `test_tool_schema_diet.py` pins the new tool. The core total stays under
     `CORE_SCHEMA_TOTAL_CEILING`, with no edit of the ceiling.
-13. No decide call: a test with a fake of `decide` counts 0 calls.
+15. The fence of CRM-Q32-6 changes as "The fence of CRM-Q32-6" says.
+16. No decide call: a test with a fake of `decide` counts 0 calls.
 
-Files: `acb_skills/crm_tools.py`, `acb_skills/skill_families.py`,
-`acb_skills/addendum.py` (one line: ask before a total that depends on an
-open question, for a CRM admin), `routes/crm/questions.py`,
-`routes/crm/field_sql.py`, `crm_sync/questions.py` and `lib/questions.ts`.
-The tests are `tests/unit/test_crm_agent.py`,
-`tests/unit/test_crm_questions_answer_r8.py`,
-`tests/unit/test_crm_answer_check.py`, `tests/unit/test_tool_schema_diet.py`
-and `components/crmQ32.test.ts`. Gate: AGENT-SAFE. Size: M. Migration: none.
-Waits for: CRM-Q29 fix rounds 4 and 5 merged. Narrow reviewer: tenancy and
-the chat contract.
+Files: `acb_skills/crm_tools.py`, `acb_skills/skill_families.py` and
+`orchestrator/executor.py` (the holder). Also `acb_skills/addendum.py`, with
+one line: a CRM admin gets the question before a total that depends on it.
+Also `orchestrator/_tool_injection.py`,
+`apps/agents/agent-orchestrator/config.json`,
+`apps/agents/agent-crm/config.json`, `routes/crm/questions.py`,
+`routes/crm/field_sql.py` and `crm_sync/questions.py`.
+
+The tests are `tests/unit/test_crm_agent.py`, `tests/unit/test_crm_questions_answer_r8.py`,
+`tests/unit/test_crm_answer_check.py`, `tests/unit/test_org_facts.py`,
+`tests/unit/test_tool_schema_diet.py` and
+`evals/trajectories/test_tool_scope_trajectory.py`. Gate: AGENT-SAFE.
+Size: M. Migration: none. Waits for: #1133 (CRM-Q29 rounds 4 and 5), #1132
+and CRM-Q32-9a. Narrow reviewer: tenancy and the chat contract.
 
 **CRM-Q32-9 · An amount can be the sum of several fields.**
 
@@ -6894,32 +6968,50 @@ amount, because a sum counts it twice. So the rule below measures coverage
 and equal values, not overlap.
 
 **The answer.** A `key_field` question of `amount` gains the choice "These
-fields add up to the amount". The admin ticks 2 to 5 currency fields of the
-module.
+fields add up to the amount". The admin ticks 2 to 5 fields of the module.
+Each must have the type `currency`, not `percent`.
 
 - **The store.** The catalogue item holds the part as a list of field keys:
   `"amount": ["Billing_Amount", "IP", "EB_Net_Amount"]`. Only `amount` takes
   a list. `item_problem` accepts a list of 2 to 5 distinct keys, and only
   with `by: admin`. Code and the pipeline never write a list.
-- **The read.** `catalogue.Field` gains `parts`, and `KeyField` of the wire
-  gains `parts`. `problem` checks each key of a list: a key that is gone, or
-  has another type, makes the whole part `stale`.
-- **The SQL, in the one seam.** `field_sql.FieldRef` gains `parts`. A new
-  `_amount(column, ref, prefix)` builds the number of `@amount`. For a list
-  it gives `CASE WHEN n0 IS NULL AND n1 IS NULL ... THEN NULL ELSE
-  COALESCE(n0, 0) + COALESCE(n1, 0) + ... END`. Each `n` is `_number` with
-  its own bound parameter (`agf_m0` to `agf_m4`). No key reaches the SQL
-  text, and no alias comes from user text.
+- **The composite part.** `catalogue.Field` and `field_sql.FieldRef` gain
+  `parts`. A list part has a key, a label and a type of its own. The key is
+  the keys joined with `+` (`Billing_Amount+IP+EB_Net_Amount`). The label is
+  the labels joined with " + ". The type is `currency`. `KeyField` of the
+  wire gains `parts`.
+- **The read.** Today `entry_of` calls `src.field(list)`, which returns
+  `None` with no error (`catalogue.py:709`). It learns a list. `problem`
+  checks each key of a list. A key that is gone, or is not `currency`,
+  makes the whole part `stale`.
+- **The keys.** `check_parts` and `_bad_field`
+  (`routes/crm/catalogue.py:392-402`) take a list, and each key must be
+  `currency`. `AnswerIn`, `UndoModel` and `CatalogueChangeIn`
+  (`catalogue.py:454`) take `str | list[str] | None`. Today each of them
+  takes a string only.
+- **The SQL, in the one seam.** A new `_amount(column, ref, prefix)` in
+  `field_sql.py` builds the number of `@amount`. For a list it gives
+  `CASE WHEN n_0 IS NULL AND n_1 IS NULL ... THEN NULL ELSE COALESCE(n_0, 0)
+  + COALESCE(n_1, 0) + ... END`. Each `n` is `_number` with its own bound
+  parameter, `{prefix}_{i}`. So the measure binds `agf_m_0` to `agf_m_4`.
+- **Why the separator.** `prefix + digit` collides. `agf_k1` plus `0` is
+  `agf_k10`, the key of filter 10, and `module_where` has no cap
+  (`field_sql.py:677-683`). The separator `_` makes each name unique. No key
+  reaches the SQL text, and no alias comes from user text.
 - **Who reads it.** `measure_sql`, the number filter of `@amount` and
   `overlay_weighted` all call `_amount`. So `sum_amount`, the overlay
   (`overlay_amount`) and the digest, which reads totals through the
   aggregate, read the sum with no change of their own.
+- **The key words.** `key_words` gives the composite `FieldRef` for
+  `@amount`. `used_keys` gives the list for `keys`. `group_by=@amount` with
+  a list gives 422 `composite_group` (recommended), because a sum has no
+  single value to group by.
 - **Null.** A record with no part set adds nothing, and `COUNT` does not
   count it. A record with one part set adds that part.
 - **The words.** The tool line says "sum of Rent Net Amount, IP Basic Amount
-  and EB Net Amount". The answer `keys` gives the list. The org-facts row
-  says "The amount of Collection is the sum of Rent Net Amount, IP Basic
-  Amount and EB Net Amount."
+  and EB Net Amount". The org-facts row comes from
+  `routes/crm/facts.py:101-103`. It says "The amount of Collection is the
+  sum of Rent Net Amount, IP Basic Amount and EB Net Amount."
 
 **When the card offers it.** The choice shows when the module has 2 or more
 currency fields, each with a fill of `SUM_FILL_FLOOR` (0.2) or more.
@@ -6927,59 +7019,85 @@ currency fields, each with a fill of `SUM_FILL_FLOOR` (0.2) or more.
 - The picker lists at most 12 of them, the most filled first, with the
   shared `Checkbox` of `src/components/ui/`. It ticks nothing at the start.
 - **The check of a ticked set.** `GET /crm/questions/{id}/sum-check?fields=`
-  runs ONE bounded statement over the first 10,000 records of the module by
-  id. It counts the records with any part set, and the records with 2 or
-  more parts set. For each pair of parts, it counts the records where both
-  are set and equal.
+  refuses an unknown key, or a key that is not `currency`, with 422 before
+  any SQL. Then it runs ONE bounded statement over the first 10,000 records
+  of the module by id. It counts the records with any part set, and the
+  records with 2 or more parts set. For each pair of parts, it counts the
+  records where both are set and equal.
 - The picker shows: "These 3 fields cover 8,458 of 8,681 records (97%)."
 - A pair can hold the same value on half or more of the records that set
-  both. Then the picker warns: "Rent Net Amount and Rent Total Amount hold the
-  same value on 90% of records. A sum counts it twice." The admin can still
-  save.
+  both. Then the picker warns: "Rent Net Amount and Rent Total Amount hold
+  the same value on 90% of records. A sum counts it twice." The admin can
+  still save.
 
 **Undo and "Your answers".** The value of an answer, of the PUT and of Undo
 takes a list too. Undo of a list sends `"@auto"`, or the earlier value, which
 can be a list. "Your answers" shows "Sum of 3 fields" with their labels, and
 Change opens the same picker.
 
-**CRM-Q32-9 · Done when:**
+**Two slices.** CRM-Q32-9b shares three frontend files with the branch
+`crm-questions-copy`, so the screens go in a slice of their own.
 
-1. `item_problem` accepts a list for `amount` only: 2 to 5 distinct keys,
-   with `by: admin`. Each of these gives a problem, and a test proves each.
-   The cases are a list of 1, a list of 6, a duplicate key, a list for
-   `date`, and a list with `by: ai`.
-2. `catalogue.build` reads a list into `Field.parts`. A gone key makes the
-   part `stale`. A test proves it.
+**CRM-Q32-9a · The backend of a sum. Done when:**
+
+1. For `amount` only, `item_problem` accepts a list of 2 to 5 distinct
+   keys, with `by: admin`. A test proves a problem for each bad case. Bad
+   cases: 1 key, 6 keys, a duplicate key, a list for `date`, `by: ai`.
+2. `catalogue.build` reads a list into `Field.parts`, with its key, label
+   and type. A gone key, or a key that is not `currency`, makes the part
+   `stale`. A test proves it.
 3. `field_sql._amount` is the one builder of the number of `@amount`.
    `measure_sql`, the `@amount` filter and `overlay_weighted` call it. A
    structural test proves that no other code wraps `@amount` in `_number`.
+   Each bound name has the form `{prefix}_{i}`. A test with 11 filters and
+   a list of 5 proves that no two names are equal.
 4. R8: on a seeded module, `sum_amount` of a list equals the sum of the
    parts. The rows mix numbers, numeric strings, blanks and missing keys. A
    row with no part set adds nothing and is not counted.
 5. R8: the overlay `sum_amount` and `weighted` read the list.
+   `group_by=@amount` with a list gives 422 `composite_group`.
 6. R8: a hostile key in a list gives 422 at the answer route, and never
    reaches the SQL text. The test sends `a'--`, `@amount` and a key of 300
    characters.
-7. The sum check is one statement, bounded at 10,000 records, with the org
-   in its predicate. A test counts the statements. It needs a CRM admin and
-   `questions_allowed`.
-8. The answer route, the PUT and Undo take a list. "Your answers" shows a
-   list and changes it.
-9. The tool line and the org-facts row name each part.
-10. The `visual-review` skill runs on the picker: light mode, compact
-    density, a changed accent, and 375 px.
+7. The sum check refuses a bad key with 422 before SQL. It is one
+   statement, bounded at 10,000 records, with the org in its predicate. A
+   test counts the statements. It needs a CRM admin and `questions_allowed`.
+8. The answer route, the PUT and Undo take a list: `AnswerIn`, `UndoModel`,
+   `CatalogueChangeIn`, `check_parts` and `_bad_field`. A test proves each.
+9. The tool line and the org-facts row (`routes/crm/facts.py`) name each
+   part. `key_words` and `used_keys` give the list.
 
 Files: `crm_sync/catalogue.py`, `crm_sync/questions.py`,
 `routes/crm/catalogue.py`, `routes/crm/questions.py`,
-`routes/crm/field_sql.py`, `org_facts.py`, `acb_skills/crm_tools.py`,
-`lib/questions.ts`, `lib/api.ts` and `components/OpenQuestions.tsx`. The
-tests are `tests/unit/test_crm_catalogue.py`,
+`routes/crm/field_sql.py`, `routes/crm/facts.py` and
+`acb_skills/crm_tools.py`. The tests are `tests/unit/test_crm_catalogue.py`,
 `tests/unit/test_crm_questions.py`,
 `tests/unit/test_crm_aggregate_fields_r8.py`,
-`tests/unit/test_crm_overlay_read_r8.py`,
-`tests/unit/test_crm_questions_answer_r8.py` and
-`components/crmQ32.test.ts`. Gate: AGENT-SAFE. Size: M. Migration: none.
-Waits for: nothing. Narrow reviewer: SQL, for `_amount` and the sum check.
+`tests/unit/test_crm_overlay_read_r8.py` and
+`tests/unit/test_crm_questions_answer_r8.py`. Gate: AGENT-SAFE. Size: M.
+Migration: none. Waits for: this spec merged. Narrow reviewer: SQL, for
+`_amount` and the sum check.
+
+**CRM-Q32-9b · The picker of a sum. Done when:**
+
+1. The card of an `amount` question offers the choice "These fields add up
+   to the amount". It opens the picker of check boxes, as "When the card
+   offers it" says.
+2. The picker shows the coverage line and the warning of equal values from
+   the sum check.
+3. "Your answers" shows a list as "Sum of 3 fields" with their labels, and
+   Change opens the picker. Undo sends a list back.
+4. `components/crmQ32.test.ts` covers the picker, the warning and Undo.
+5. The `visual-review` skill runs on the picker: light mode, compact
+   density, a changed accent, and 375 px.
+
+Files: `lib/questions.ts`, `lib/api.ts`, `components/OpenQuestions.tsx` and
+`components/crmQ32.test.ts`. Gate: AGENT-SAFE. Size: S. Migration: none.
+Waits for: CRM-Q32-9a and the branch `crm-questions-copy` merged.
+
+**The merge order.** #1133 (CRM-Q29 rounds 4 and 5), then #1132, then this
+spec, then CRM-Q32-9a, then `crm-questions-copy`, then CRM-Q32-9b, then
+CRM-Q32-8.
 
 #### 18.14.11 Owner calls
 
@@ -7007,7 +7125,7 @@ recommended answer below.
 - `uv run pytest tests/unit/test_crm_map_pipeline.py tests/unit/test_crm_map_pipeline_r8.py tests/unit/test_crm_map_plan_r8.py tests/unit/test_crm_map_suggest_r8.py -q`,
   with no test skipped.
 - `uv run pytest tests/unit/test_org_facts.py tests/unit/test_org_facts_r8.py tests/unit/test_crm_agent.py tests/unit/test_tool_schema_diet.py tests/unit/test_feed_rank.py tests/unit/test_feed_crm_kinds.py tests/unit/test_feed_crm_kinds_r8.py -q`
-- CRM-Q32-8 and CRM-Q32-9: `uv run pytest tests/unit/test_crm_agent.py tests/unit/test_crm_questions.py tests/unit/test_crm_questions_answer_r8.py tests/unit/test_crm_answer_check.py tests/unit/test_crm_catalogue.py tests/unit/test_crm_aggregate_fields_r8.py tests/unit/test_crm_overlay_read_r8.py tests/unit/test_tool_schema_diet.py -q`,
+- CRM-Q32-8 and CRM-Q32-9: `uv run pytest tests/unit/test_crm_agent.py tests/unit/test_crm_questions.py tests/unit/test_crm_questions_answer_r8.py tests/unit/test_crm_answer_check.py tests/unit/test_crm_catalogue.py tests/unit/test_crm_aggregate_fields_r8.py tests/unit/test_crm_overlay_read_r8.py tests/unit/test_tool_schema_diet.py tests/unit/test_org_facts.py evals/trajectories/test_tool_scope_trajectory.py -q`,
   with no test skipped.
 - `npx tsc --noEmit && npx vitest run src/app/crm src/components/ui` in
   `workbench/control_plane`.
@@ -7044,6 +7162,13 @@ change of the first, and runs the verification of both again.
   family, so the core floor stays. Follow-up: make it a core tool once WS-23
   pays for it by a cut of another core tool. Until then, an agent of
   another app cannot read org facts.
+- **A stored list meets old code (CRM-Q32-9).** Code from before CRM-Q32-9a
+  fails `item_problem` on a list. So `check_kinds` gives 422
+  `bad_catalogue` on each plan commit of that org
+  (`mapping_plans.py:445-450`), until the code rolls forward. The
+  mitigation is the release order. CRM-Q32-9a accepts a list one release
+  before CRM-Q32-9b lets an admin store one. So each box runs the new
+  backend before any list exists.
 
 ---
 
