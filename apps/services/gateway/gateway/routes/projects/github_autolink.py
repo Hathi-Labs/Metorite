@@ -154,6 +154,18 @@ _ELIGIBLE_SQL = (
     "WHERE t.organization_id = CAST(:org AS uuid) AND t.id = CAST(:id AS uuid)"
 )
 
+#: The newest ``link`` row of one (task, reference) pair. ``refs.insert_ref``
+#: writes ``ref_action = added`` and the DELETE route writes ``removed``, each
+#: with the provider, the kind and the ref in ``meta``. So the newest row says
+#: whether a person removed the link last (fix round 1, item 2).
+_LAST_LINK_ACT_SQL = (
+    "SELECT meta->>'ref_action' AS action FROM pm_activities "
+    "WHERE task_id = CAST(:tid AS uuid) AND type = 'link' "
+    "AND meta->>'provider' = :provider AND meta->>'kind' = :kind "
+    "AND meta->>'ref' = :ref "
+    "ORDER BY created_at DESC, seq DESC LIMIT 1"
+)
+
 #: Every task of the bound org whose id starts with the prefix. A range over
 #: the primary key, so the index serves it. Two rows means no link.
 _PREFIX_SQL = (
@@ -179,6 +191,23 @@ async def _resolve(db: Any, org: str, cand: Candidate) -> str | None:
     if row is None or row.archived_at is not None or row.personal_owner:
         return None
     return str(row.id)
+
+
+async def removed_by_a_person(db: Any, task_id: str, found: Any) -> bool:
+    """True when the newest ``link`` row of this pair is a removal (§10.3).
+
+    ⚠️ **The tombstone is the timeline row** (fix round 1, item 2). A person
+    who deletes a wrong link writes one ``link`` row with ``ref_action =
+    removed`` (``refs.delete_ref``), and nothing deletes that row. So the
+    auto-link of the next ``synchronize`` or ``edited`` skips the pair, and the
+    merge never closes the unrelated task. A person who adds the link again by
+    hand writes ``ref_action = added``, which is newer, and that clears it.
+    No migration and no second store: the row already exists.
+    """
+    row = (await db.execute(text(_LAST_LINK_ACT_SQL), {
+        "tid": task_id, "provider": found.provider, "kind": found.kind, "ref": found.ref,
+    })).first()
+    return row is not None and row.action == "removed"
 
 
 async def link_pull_request(
@@ -214,6 +243,9 @@ async def link_pull_request(
         task_id = await _resolve(db, org, cand)
         if task_id is None or task_id in linked:
             continue
+        if await removed_by_a_person(db, task_id, classified):
+            _log.info("github.autolink.removed_by_person", task_id=task_id)
+            continue
         row, made = await insert_ref(
             db, task_id, classified, title=None, via=GITHUB_VIA, by=GITHUB_ACTOR,
         )
@@ -230,5 +262,6 @@ __all__ = [
     "app_host",
     "candidates",
     "link_pull_request",
+    "removed_by_a_person",
     "trusted_source",
 ]

@@ -37,6 +37,13 @@ R7, the mutations. Each one turns a test here red (run 2026-10-18):
 * W-M11 ``len(rows) != 1`` becomes ``not rows`` -> the ``L4d`` rule.
 * W-M12 ``found[:MAX_LINKS]`` becomes ``found`` -> the ``L6`` rule.
 
+Fix round 1, item 2 (a removed link stays removed), each one red when run:
+
+* 2-M1 ``link_pull_request`` skips the tombstone check ->
+  ``test_item2_a_link_a_person_removed_stays_removed``.
+* 2-M2 ``removed_by_a_person`` reads the OLDEST row (``ORDER BY created_at``)
+  -> the same test (a hand add after the removal must clear it).
+
 Run (real Postgres, private Redis)::
 
     TENANT_LADDER_DATABASE_URL=... GITHUB_R8_REDIS_URL=redis://127.0.0.1:<port>/0 \\
@@ -513,3 +520,77 @@ async def test_an_edit_that_drops_the_url_keeps_the_link(world) -> None:
     await _post(w, "pull_request", _pr_payload(
         INSTALL_A, action="edited", body="no link now", updated_at="2026-10-18T11:00:00Z"))
     assert len(_refs_of(w.p, task)) == 1
+
+
+async def test_item2_a_link_a_person_removed_stays_removed(world) -> None:
+    """A person deletes a wrong auto-link. The next push does not bring it
+    back. A person who adds it again by hand clears the tombstone."""
+    from acb_auth import UserContext, UserRole, build_access
+    from gateway.routes import projects as projects_package
+
+    w = world
+    task = g.seed_task(w.p, w.p.org_a, EMAIL_A)
+    url = f"https://app.metorite.com/projects?task={task}"
+    await _post(w, "pull_request", _pr_payload(INSTALL_A, action="opened", body=url))
+    (ref_id,) = [str(r.id) for r in g.rows(
+        w.p, "SELECT id FROM pm_task_refs WHERE task_id = CAST(:t AS uuid)", t=task)]
+    member = UserContext(email=EMAIL_A, role=UserRole.EMPLOYEE, organization_id=w.p.org_a,
+                         access=build_access(["feature:projects", "data:org:read"]))
+
+    async def _person(method: str, path: str, body: Any = None) -> httpx.Response:
+        return await g.call(w.p, member, [projects_package.router], method, path, body=body,
+                            params={"refresh": "false"}, real_client=REAL_CLIENT)
+
+    resp = await _person("DELETE", f"/projects/tasks/{task}/refs/{ref_id}")
+    assert resp.status_code == 200, resp.text
+    await _post(w, "pull_request", _pr_payload(
+        INSTALL_A, action="synchronize", body=url, updated_at="2026-10-18T11:00:00Z"))
+    await _post(w, "pull_request", _pr_payload(
+        INSTALL_A, action="edited", body=url, updated_at="2026-10-18T12:00:00Z"))
+    assert _refs_of(w.p, task) == [], "a push must not bring a removed link back"
+    resp = await _person("POST", f"/projects/tasks/{task}/refs",
+                         {"url": f"https://github.com/{REPO}/pull/12"})
+    assert resp.status_code == 201, resp.text
+    (again,) = _refs_of(w.p, task)
+    assert again.via == "ui"
+    resp = await _person("DELETE", f"/projects/tasks/{task}/refs/{resp.json()['id']}")
+    assert resp.status_code == 200, resp.text
+    # The newest row is the removal again, so the auto-link still skips it.
+    await _post(w, "pull_request", _pr_payload(
+        INSTALL_A, action="synchronize", body=url, updated_at="2026-10-18T13:00:00Z"))
+    assert _refs_of(w.p, task) == []
+    # The tombstone is for this task only: another task named in the body links.
+    other = g.seed_task(w.p, w.p.org_a, EMAIL_A)
+    await _post(w, "pull_request", _pr_payload(
+        INSTALL_A, action="edited", updated_at="2026-10-18T14:00:00Z",
+        body=f"{url} https://app.metorite.com/projects?task={other}"))
+    assert len(_refs_of(w.p, other)) == 1 and _refs_of(w.p, task) == []
+
+
+async def test_item2_a_hand_add_after_a_removal_lets_the_auto_link_run(world) -> None:
+    """The newest row wins: after a removal and a hand add, the pair is live,
+    and an auto-link of it is a no-op on the row that is there."""
+    w = world
+    task = g.seed_task(w.p, w.p.org_a, EMAIL_A)
+    found = type("F", (), {"provider": "github", "kind": "pull_request",
+                           "ref": f"{REPO}#12"})()
+    from gateway.db import tenant_session
+    from gateway.routes.projects import github_autolink
+
+    def _act(action: str, ago: str) -> None:
+        with w.p.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO pm_activities (organization_id, task_id, type, created_by, meta, "
+                "body, created_at) VALUES (CAST(:o AS uuid), CAST(:t AS uuid), 'link', :b, "
+                "CAST(:m AS jsonb), 'seed', now() - CAST(:ago AS interval))"),
+                {"o": w.p.org_a, "t": task, "b": EMAIL_A, "ago": ago, "m": json.dumps({
+                    "ref_action": action, "provider": "github", "kind": "pull_request",
+                    "ref": f"{REPO}#12"})})
+
+    _act("added", "3 hours")
+    _act("removed", "2 hours")
+    async with tenant_engine_scope(g.app_dsn(w.p)), tenant_session(w.p.org_a) as db:
+        assert await github_autolink.removed_by_a_person(db, task, found) is True
+    _act("added", "1 hour")
+    async with tenant_engine_scope(g.app_dsn(w.p)), tenant_session(w.p.org_a) as db:
+        assert await github_autolink.removed_by_a_person(db, task, found) is False
