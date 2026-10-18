@@ -473,6 +473,10 @@ class TestTheLoop:
 # ── hermetic: the manual sync and the resync ────────────────────────────────
 
 
+#: A mailbox id the account_id reader takes (account_ref): a UUID.
+_BOX_ID = "a0000000-0000-4000-8000-000000000001"
+
+
 class TestTheManualSyncNeverWaits:
 
     async def test_a_busy_manual_sync_answers_409_at_once(self, cycle):
@@ -522,14 +526,14 @@ class TestTheManualSyncNeverWaits:
             yield _DB()
 
         monkeypatch.setattr(sync_mod, "_tenant_session", _session)
-        gate = cycle.park("acc-1")
-        holder = asyncio.create_task(sched._sync_account("acc-1"))
-        await _until(cycle.started["acc-1"])
+        gate = cycle.park(_BOX_ID)
+        holder = asyncio.create_task(sched._sync_account(_BOX_ID))
+        await _until(cycle.started[_BOX_ID])
         user = type("U", (), {"email": "owner@em-t4f.test"})()
         with pytest.raises(HTTPException) as err:
             # A bound, so a resync that waits fails here and hangs nothing.
             await asyncio.wait_for(sync_mod.resync_account(
-                "acc-1", BackgroundTasks(), purge=True, user=user), timeout=1)
+                _BOX_ID, BackgroundTasks(), purge=True, user=user), timeout=1)
         assert err.value.status_code == 409
         assert err.value.detail == sync_mod.FULL_SYNC_BUSY_DETAIL
         assert all(s.startswith("SELECT") for s in statements), (
@@ -555,7 +559,8 @@ class TestTheManualSyncNeverWaits:
 
         monkeypatch.setattr(sync_mod, "_tenant_session", _session)
         user = type("U", (), {"email": "owner@em-t4f.test"})()
-        await sync_mod.resync_account("acc-1", BackgroundTasks(), purge=True, user=user)
+        await sync_mod.resync_account(
+            _BOX_ID, BackgroundTasks(), purge=True, user=user)
         assert cycle.calls[0]["purge"] is True
         assert cycle.calls[0]["reset_cursor"] is True
         assert cycle.calls[0]["deep"] is True

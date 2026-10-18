@@ -95,8 +95,8 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
 REPO = Path(__file__).resolve().parents[2]
 ORG = "55555555-5555-5555-5555-555555555555"
 OTHER_ORG = "66666666-6666-6666-6666-666666666666"
-ACC = "acc-cap-1"
-OTHER_ACC = "acc-cap-2"
+ACC = "a0000000-0000-4000-8000-00000000ca01"
+OTHER_ACC = "a0000000-0000-4000-8000-00000000ca02"
 OWNER = "owner@acme-cap.example"
 #: A hang guard, never a budget (#947). A deadlock fails at it.
 HANG_S = 30.0

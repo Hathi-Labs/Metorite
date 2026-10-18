@@ -137,7 +137,7 @@ def _db(*, settings=None, drafts: bool = False, sent: list[str] | None = None,
             one = SimpleNamespace(
                 provider=provider,
                 auto_run=getattr(settings, "auto_run", None),
-                settings_row=None if settings is None else "acc-1")
+                settings_row=None if settings is None else "a0000000-0000-4000-8000-000000000001")
             return MagicMock(fetchone=MagicMock(return_value=one),
                              fetchall=MagicMock(return_value=[one]))
         if hits(s, "FROM email_rules"):
@@ -172,12 +172,12 @@ async def _get(db) -> dict:
     with patch.object(assistant_mod, "_tenant_session", bind_db(db)), \
             patch.object(assistant_mod, "_assert_account_owner", AsyncMock()):
         return await assistant_mod.get_assistant_settings(
-            account_id="acc-1", user=SimpleNamespace(email=_ME))
+            account_id="a0000000-0000-4000-8000-000000000001", user=SimpleNamespace(email=_ME))
 
 
 async def _put(db, body: dict) -> dict:
     """Run the REAL PUT handler over ``db``. The Needs Reply sync is a mock."""
-    req = AssistantSettingsModel.model_validate({"account_id": "acc-1", **body})
+    req = AssistantSettingsModel.model_validate({"account_id": "a0000000-0000-4000-8000-000000000001", **body})
     with patch.object(assistant_mod, "_tenant_session", bind_db(db)), \
             patch.object(assistant_mod, "_assert_account_owner", AsyncMock()), \
             patch.object(rules_mod, "sync_draft_reply_action",
@@ -193,7 +193,7 @@ async def _put(db, body: dict) -> dict:
 
 def test_live_reply_drafting_is_off_by_default() -> None:
     """The model default is what a PUT without the field stores."""
-    assert AssistantSettingsModel(account_id="acc-1").draft_replies is False
+    assert AssistantSettingsModel(account_id="a0000000-0000-4000-8000-000000000001").draft_replies is False
 
 
 def test_the_live_column_default_ends_up_off() -> None:
@@ -207,7 +207,7 @@ async def test_a_save_without_the_field_stores_false_and_adds_no_draft_action() 
     res = await _put(db, {})
     (_, insert), = _executed(db, "INSERT INTO email_assistant_settings")
     assert insert["dr"] is False
-    res["_sync"].assert_awaited_once_with(db, "acc-1", False)
+    res["_sync"].assert_awaited_once_with(db, "a0000000-0000-4000-8000-000000000001", False)
     assert res["draft_replies"] is False
 
 
@@ -229,7 +229,7 @@ async def test_the_get_for_a_new_mailbox_answers_the_shared_fixture() -> None:
     assert _FIXTURE["insights_enabled"] is False
     # Auto-run is OFF for a new GMAIL mailbox (WS-17 EM-G11c2, G2).
     assert _FIXTURE["auto_run"] is False
-    model = AssistantSettingsModel(account_id="a")
+    model = AssistantSettingsModel(account_id="a0000000-0000-4000-8000-00000000000a")
     assert body["draft_replies"] is model.draft_replies
     assert body["follow_up_auto_draft"] is model.follow_up_auto_draft
     assert body["insights_enabled"] is model.insights_enabled
@@ -296,7 +296,7 @@ async def _generate(db) -> None:
                          AsyncMock(return_value="Short and direct.")), \
             patch.dict(sys.modules, {"acb_memory": memory}):
         await assistant_mod.generate_writing_style(
-            account_id="acc-1", user=SimpleNamespace(email=_ME))
+            account_id="a0000000-0000-4000-8000-000000000001", user=SimpleNamespace(email=_ME))
 
 
 @pytest.mark.parametrize("drafts", [False, True], ids=["new", "legacy"])
@@ -374,7 +374,7 @@ async def test_the_agent_saving_another_field_keeps_drafting_off(monkeypatch) ->
     monkeypatch.setattr(agents, "_patch_settings", fake_patch_settings)
     # EM-G11c1 fix round 1: a new signature asks a card. The member says yes.
     monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", yes)
-    await agents.update_assistant_settings("acc-1", signature="— Me")
+    await agents.update_assistant_settings("a0000000-0000-4000-8000-000000000001", signature="— Me")
     assert len(sent) == 1
     assert sent[0]["signature"] == "— Me"
     assert sent[0]["draft_replies"] is False
@@ -395,7 +395,7 @@ async def test_the_agent_saving_another_field_keeps_drafting_off(monkeypatch) ->
 async def test_stored_draft_replies_is_off_unless_stored_true(row, expected) -> None:
     db = AsyncMock()
     db.execute.return_value = MagicMock(fetchone=MagicMock(return_value=row))
-    assert await rules_mod.stored_draft_replies(db, "acc-1") is expected
+    assert await rules_mod.stored_draft_replies(db, "a0000000-0000-4000-8000-000000000001") is expected
 
 
 # ── follow-up nudges: OFF ───────────────────────────────────────────────────
@@ -405,7 +405,7 @@ def test_follow_up_auto_draft_is_off_by_default() -> None:
     """Nudges threads by AGE, so it is the hundreds-at-once case, not the
     just-arrived one — and its scan was dead until #84, so the first working run
     on a long-configured account releases the whole window."""
-    assert AssistantSettingsModel(account_id="acc-1").follow_up_auto_draft is False
+    assert AssistantSettingsModel(account_id="a0000000-0000-4000-8000-000000000001").follow_up_auto_draft is False
 
 
 def test_the_follow_up_column_default_ends_up_off() -> None:
@@ -419,7 +419,7 @@ def test_the_get_follow_up_fallback_matches_the_model() -> None:
         src, re.DOTALL,
     )
     assert m, "could not find the GET fallback for follow_up_auto_draft"
-    assert m.group(1) == str(AssistantSettingsModel(account_id="a").follow_up_auto_draft)
+    assert m.group(1) == str(AssistantSettingsModel(account_id="a0000000-0000-4000-8000-00000000000a").follow_up_auto_draft)
 
 
 # ── no migration rewrites a user's stored choice ────────────────────────────

@@ -42,6 +42,7 @@ from gateway.routes.email.core import (
     _provider_for_message,
     _savepoint,
 )
+from gateway.routes.email.provider_errors import MESSAGE_GONE_DETAIL, is_message_gone
 from sqlalchemy import text
 
 
@@ -483,6 +484,10 @@ async def _notify_me(
         key=f"email:{account_id}:{message_id}:{rule_id}")
 
 
+#: The actions that call no mail provider. A 404 there is not a gone message.
+_NO_MAILBOX_ACTIONS = frozenset({"CALL_WEBHOOK", "NOTIFY_ME"})
+
+
 async def _apply_rule_actions(
     db: Any, provider: Any, message_id: str, provider_msg_id: str,
     actions: list[dict[str, Any]], email: dict[str, str] | None = None,
@@ -731,6 +736,17 @@ async def _apply_rule_actions(
                 continue
             done.append(t)
         except Exception as exc:
+            if t not in _NO_MAILBOX_ACTIONS and is_message_gone(exc):
+                # The provider has no such message: it moved or was deleted
+                # after the rule read it. Not a fault of the rule, so an info
+                # line. The History row still records the issue, so the run
+                # never reads as APPLIED and the auto-learn gate still sees it.
+                _log.info("email.rule_action_skipped", action=t,
+                          reason="message_gone")
+                if errors_out is not None:
+                    errors_out.append({"type": t or "?",
+                                       "error": MESSAGE_GONE_DETAIL})
+                continue
             # A refusal names the host and the reason, and never the path
             # or the query of the URL (EM-T13b-2).
             err = (f"webhook refused: {exc}"

@@ -307,7 +307,7 @@ def wired(monkeypatch):
     def _setup(rows: dict[str, dict[str, Any]], *, graph: Any = "ok",
                stop_raises: bool = False, decrypt_raises: bool = False,
                delete_fails: BaseException | None = None,
-               loops: tuple[str, ...] = ("acc-1",),
+               loops: tuple[str, ...] = ("a0000000-0000-4000-8000-000000000001",),
                fake_scheduler: bool = True,
                delete_gate: asyncio.Event | None = None,
                shared: Any = False):
@@ -385,11 +385,11 @@ def _order_violations(events: list[tuple[Any, ...]]) -> list[str]:
 class TestTheLoopStopsFirstWithNoSessionOpen:
 
     async def test_the_loop_stops_after_the_read_and_before_the_delete(self, wired):
-        ledger = wired({"acc-1": _row()})
-        result = await accounts.delete_account("acc-1", user=_user())
+        ledger = wired({"a0000000-0000-4000-8000-000000000001": _row()})
+        result = await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
         assert result is None
         assert _order_violations(ledger.events) == []
-        assert ledger.first("stop") == ("stop", 0, "acc-1")
+        assert ledger.first("stop") == ("stop", 0, "a0000000-0000-4000-8000-000000000001")
         assert ledger.first("delete")[1] == 1, "the DELETE ran outside a block"
         assert "restart" not in ledger.kinds(), "a good disconnect restarted the loop"
 
@@ -402,19 +402,19 @@ class TestTheLoopStopsFirstWithNoSessionOpen:
         assert any("DELETE ran before" in p for p in problems)
 
     async def test_each_phase_is_its_own_block(self, wired):
-        ledger = wired({"acc-1": _row()})
-        await accounts.delete_account("acc-1", user=_user())
+        ledger = wired({"a0000000-0000-4000-8000-000000000001": _row()})
+        await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
         opens = [e for e in ledger.events if e[0] == "open"]
         assert len(opens) == 2, "expected one block to read and one to delete"
         assert all(e[1] == 1 for e in opens), "a block opened inside another"
 
     async def test_a_failed_stop_still_deletes_and_is_logged(self, wired):
-        rows = {"acc-1": _row()}
+        rows = {"a0000000-0000-4000-8000-000000000001": _row()}
         ledger = wired(rows, stop_raises=True)
-        await accounts.delete_account("acc-1", user=_user())
-        assert "acc-1" not in rows
+        await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
+        assert "a0000000-0000-4000-8000-000000000001" not in rows
         assert ("warning", "email.disconnect.stop_sync_failed",
-                {"account_id": "acc-1", "error": "RuntimeError"}) in ledger.logs
+                {"account_id": "a0000000-0000-4000-8000-000000000001", "error": "RuntimeError"}) in ledger.logs
 
     def test_the_route_answers_204(self):
         routes = [r for r in accounts.router.routes
@@ -430,13 +430,13 @@ class TestTheLoopStopsFirstWithNoSessionOpen:
 class TestOwnershipComesBeforeTheStop:
 
     @pytest.mark.parametrize("rows", [
-        {"acc-1": _row(user_id=OTHER)},
+        {"a0000000-0000-4000-8000-000000000001": _row(user_id=OTHER)},
         {},
     ], ids=["another-members-mailbox", "no-such-mailbox"])
     async def test_a_non_owner_gets_404_and_stops_no_loop(self, wired, rows):
         ledger = wired(rows)
         with pytest.raises(HTTPException) as err:
-            await accounts.delete_account("acc-1", user=_user(OWNER))
+            await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user(OWNER))
         assert err.value.status_code == 404
         assert "stop" not in ledger.kinds(), "a non-owner stopped a sync loop"
         assert "delete" not in ledger.kinds()
@@ -469,8 +469,8 @@ def _real_outlook(status: int | None, seen: list[httpx.Request]) -> OutlookProvi
 class TestTheGraphSubscriptionIsDeleted:
 
     async def test_a_microsoft_row_with_a_subscription_gets_the_delete(self, wired):
-        ledger = wired({"acc-1": _row(sub="sub-abc")})
-        await accounts.delete_account("acc-1", user=_user())
+        ledger = wired({"a0000000-0000-4000-8000-000000000001": _row(sub="sub-abc")})
+        await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
         assert ledger.first("graph_delete") == ("graph_delete", 0, "sub-abc")
         assert ledger.first("decrypt") == ("decrypt", 0, "blob-em-t4f")
         build = ledger.first("build")
@@ -490,10 +490,10 @@ class TestTheGraphSubscriptionIsDeleted:
         self, wired, status, level, event,
     ):
         seen: list[httpx.Request] = []
-        rows = {"acc-1": _row(sub="sub-real")}
+        rows = {"a0000000-0000-4000-8000-000000000001": _row(sub="sub-real")}
         ledger = wired(rows, graph=_real_outlook(status, seen))
-        assert await accounts.delete_account("acc-1", user=_user()) is None
-        assert "acc-1" not in rows
+        assert await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user()) is None
+        assert "a0000000-0000-4000-8000-000000000001" not in rows
         assert [(r.method, r.url.path) for r in seen] == [
             ("DELETE", "/v1.0/subscriptions/sub-real")]
         graph_logs = [log for log in ledger.logs if "subscription" in log[1]]
@@ -504,8 +504,8 @@ class TestTheGraphSubscriptionIsDeleted:
 
     async def test_a_transport_error_of_the_real_provider_is_logged(self, wired):
         seen: list[httpx.Request] = []
-        ledger = wired({"acc-1": _row()}, graph=_real_outlook(None, seen))
-        assert await accounts.delete_account("acc-1", user=_user()) is None
+        ledger = wired({"a0000000-0000-4000-8000-000000000001": _row()}, graph=_real_outlook(None, seen))
+        assert await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user()) is None
         [failed] = [log for log in ledger.logs if "subscription" in log[1]]
         assert failed[:2] == ("warning", "email.disconnect.subscription_delete_failed")
         assert failed[2]["error"] == "ConnectError"
@@ -533,22 +533,22 @@ class TestTheGraphSubscriptionIsDeleted:
         self, wired, monkeypatch, graph, decrypt_raises, error,
     ):
         monkeypatch.setattr(teardown, "SUBSCRIPTION_DELETE_TIMEOUT_S", 0.05)
-        rows = {"acc-1": _row()}
+        rows = {"a0000000-0000-4000-8000-000000000001": _row()}
         ledger = wired(rows, graph=graph, decrypt_raises=decrypt_raises)
         started = time.monotonic()
-        result = await accounts.delete_account("acc-1", user=_user())
+        result = await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
         assert result is None
         assert time.monotonic() - started < 5, "the bound did not hold"
-        assert "acc-1" not in rows, "the mailbox was not deleted"
+        assert "a0000000-0000-4000-8000-000000000001" not in rows, "the mailbox was not deleted"
         warnings = [log for log in ledger.logs if log[0] == "warning"]
         assert [w[1] for w in warnings] == [
             "email.disconnect.subscription_delete_failed"]
         assert warnings[0][2]["error"] == error
-        assert warnings[0][2]["account_id"] == "acc-1"
+        assert warnings[0][2]["account_id"] == "a0000000-0000-4000-8000-000000000001"
 
     async def test_no_log_line_holds_a_token(self, wired):
-        ledger = wired({"acc-1": _row()}, graph="raise")
-        await accounts.delete_account("acc-1", user=_user())
+        ledger = wired({"a0000000-0000-4000-8000-000000000001": _row()}, graph="raise")
+        await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
         assert ledger.logs, "expected a log line"
         assert TOKEN not in repr(ledger.logs)
 
@@ -568,10 +568,10 @@ class TestNoGraphCallWithoutASubscription:
         ("imap", None),
     ], ids=["microsoft-no-sub", "microsoft-empty-sub", "gmail", "imap"])
     async def test_no_provider_is_built(self, wired, provider, sub):
-        rows = {"acc-1": _row(provider=provider, sub=sub)}
+        rows = {"a0000000-0000-4000-8000-000000000001": _row(provider=provider, sub=sub)}
         ledger = wired(rows)
-        await accounts.delete_account("acc-1", user=_user())
-        assert "acc-1" not in rows
+        await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
+        assert "a0000000-0000-4000-8000-000000000001" not in rows
         # EM-G11f1: a Gmail row decrypts its grant for the revoke. It still
         # builds no provider, because it has no filter and no subscription.
         kinds = (("build", "graph_delete") if provider == "gmail"
@@ -586,8 +586,8 @@ class TestNoGraphCallWithoutASubscription:
 class TestAFailedDeleteStartsTheLoopAgain:
 
     async def test_the_delete_runs_under_a_lock_timeout(self, wired):
-        ledger = wired({"acc-1": _row()})
-        await accounts.delete_account("acc-1", user=_user())
+        ledger = wired({"a0000000-0000-4000-8000-000000000001": _row()})
+        await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
         bound = ledger.first("lock_timeout")
         assert bound[1] == 1, "SET LOCAL ran outside the delete block"
         assert bound[2] == "SET LOCAL lock_timeout = '5s'"
@@ -595,35 +595,35 @@ class TestAFailedDeleteStartsTheLoopAgain:
         assert ledger.index("lock_timeout") > ledger.index("stop")
 
     async def test_a_lock_timeout_answers_409_and_restarts_the_loop(self, wired):
-        rows = {"acc-1": _row()}
+        rows = {"a0000000-0000-4000-8000-000000000001": _row()}
         ledger = wired(rows, delete_fails=_lock_timeout_error())
         with pytest.raises(HTTPException) as err:
-            await accounts.delete_account("acc-1", user=_user())
+            await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
         assert err.value.status_code == 409
         assert err.value.detail == accounts.DISCONNECT_BUSY_DETAIL
-        assert "acc-1" in rows, "a refused disconnect deleted the mailbox"
-        assert ledger.first("restart") == ("restart", 0, "acc-1", ROW_ORG), (
+        assert "a0000000-0000-4000-8000-000000000001" in rows, "a refused disconnect deleted the mailbox"
+        assert ledger.first("restart") == ("restart", 0, "a0000000-0000-4000-8000-000000000001", ROW_ORG), (
             "the loop must start again, with the org of the row and no block open")
         assert ledger.index("restart") > ledger.index("delete")
         assert "graph_delete" not in ledger.kinds()
         assert "email.disconnect.busy" in ledger.log_names()
 
     async def test_any_failed_delete_restarts_the_loop_and_raises(self, wired):
-        rows = {"acc-1": _row()}
+        rows = {"a0000000-0000-4000-8000-000000000001": _row()}
         ledger = wired(rows, delete_fails=RuntimeError("connection reset"))
         with pytest.raises(RuntimeError, match="connection reset"):
-            await accounts.delete_account("acc-1", user=_user())
-        assert "acc-1" in rows
-        assert ledger.first("restart") == ("restart", 0, "acc-1", ROW_ORG)
+            await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
+        assert "a0000000-0000-4000-8000-000000000001" in rows
+        assert ledger.first("restart") == ("restart", 0, "a0000000-0000-4000-8000-000000000001", ROW_ORG)
         assert "graph_delete" not in ledger.kinds()
 
     async def test_no_restart_when_no_loop_ran_before(self, wired):
         # Sync off, or EMAIL_SYNC_ENABLED off: a failed disconnect must not
         # start a loop that did not run.
-        rows = {"acc-1": _row()}
+        rows = {"a0000000-0000-4000-8000-000000000001": _row()}
         ledger = wired(rows, delete_fails=_lock_timeout_error(), loops=())
         with pytest.raises(HTTPException) as err:
-            await accounts.delete_account("acc-1", user=_user())
+            await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
         assert err.value.status_code == 409
         assert "restart" not in ledger.kinds()
 
@@ -648,21 +648,21 @@ class TestAFailedDeleteStartsTheLoopAgain:
         monkeypatch.setattr(sched, "_account_sync_loop", _sleeper)
         monkeypatch.setattr(sched, "_get_account_sync_interval", _interval)
         old = asyncio.create_task(asyncio.sleep(3600))
-        monkeypatch.setitem(sched._scheduler_tasks, "acc-1", old)
-        rows = {"acc-1": _row()}
+        monkeypatch.setitem(sched._scheduler_tasks, "a0000000-0000-4000-8000-000000000001", old)
+        rows = {"a0000000-0000-4000-8000-000000000001": _row()}
         wired(rows, delete_fails=RuntimeError("connection reset"),
               fake_scheduler=False)
         try:
             with pytest.raises(RuntimeError):
-                await accounts.delete_account("acc-1", user=_user())
+                await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
             await asyncio.sleep(0)
             assert old.cancelled(), "step 2 did not stop the old loop"
-            new = sched._scheduler_tasks.get("acc-1")
+            new = sched._scheduler_tasks.get("a0000000-0000-4000-8000-000000000001")
             assert new is not None and new is not old and not new.done(), (
                 "a failed DELETE left the mailbox with no running loop")
-            assert started == [("acc-1", 300, ROW_ORG)]
+            assert started == [("a0000000-0000-4000-8000-000000000001", 300, ROW_ORG)]
         finally:
-            await sched.remove_account_sync("acc-1")
+            await sched.remove_account_sync("a0000000-0000-4000-8000-000000000001")
             if not old.done():
                 old.cancel()
 
@@ -674,7 +674,7 @@ class TestAFailedDeleteStartsTheLoopAgain:
         the route a second time while the restart runs. The restart must
         still finish."""
         gate = asyncio.Event()
-        rows = {"acc-1": _row()}
+        rows = {"a0000000-0000-4000-8000-000000000001": _row()}
         ledger = wired(rows, delete_gate=gate)
         restart_began = asyncio.Event()
         restarted: list[str | None] = []
@@ -685,7 +685,7 @@ class TestAFailedDeleteStartsTheLoopAgain:
             restarted.append(organization_id)
 
         monkeypatch.setattr(sched, "refresh_account_sync", _slow_refresh)
-        route = asyncio.create_task(accounts.delete_account("acc-1", user=_user()))
+        route = asyncio.create_task(accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user()))
         while "delete" not in ledger.kinds():
             await asyncio.sleep(0)
         route.cancel()
@@ -697,7 +697,7 @@ class TestAFailedDeleteStartsTheLoopAgain:
             asyncio.gather(*accounts._RESTARTS), timeout=5)
         assert restarted == [ROW_ORG], (
             "the second cancel stopped the restart, so the mailbox has no loop")
-        assert "acc-1" in rows, "the cancelled DELETE removed the mailbox"
+        assert "a0000000-0000-4000-8000-000000000001" in rows, "the cancelled DELETE removed the mailbox"
         assert not accounts._RESTARTS, "a finished restart kept its task"
 
 

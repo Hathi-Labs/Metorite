@@ -342,8 +342,10 @@ async def test_a_cancel_during_the_delete_still_restarts_and_removes_no_filter(g
 
 
 async def test_the_grant_check_asks_with_the_deleted_address(gmail):
-    rows = {ACC.upper(): _row(provider="gmail", sub=None)}
-    rows[ACC.upper()]["email"] = "Box@Example.test"
+    # The path id is upper case. The account_id reader gives the canonical
+    # id to the route, so the store row is keyed by it.
+    rows = {ACC: _row(provider="gmail", sub=None)}
+    rows[ACC]["email"] = "Box@Example.test"
     g = gmail(rows)
     assert await accounts.delete_account(ACC.upper(), user=_user()) is None
     check = g.ledger.first("grant_check")
@@ -461,7 +463,7 @@ async def test_the_mailbox_redis_keys_go_and_no_other(gmail, monkeypatch):
         ("email-html", "row-1"),
     ) | _wire_keys(OTHER_ORG, ("email-llm", ACC, "2026-10-14"))
     fake = _FakeRedis(mine | kept)
-    rows = {ACC.upper(): _row(provider="microsoft", sub=None)}
+    rows = {ACC: _row(provider="microsoft", sub=None)}  # canonical, as above
     g = gmail(rows)
     monkeypatch.setattr(teardown, "_redis", lambda: fake)
     assert await accounts.delete_account(ACC.upper(), user=_user()) is None

@@ -22,6 +22,7 @@ from gateway.outbound_guard import (  # noqa: F401 — the old names (EM-T13b-2)
     _is_safe_external_url,
 )
 from gateway.routes.email.automation.identity import proven_own_send, sender_scope
+from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     CLEANUP_CATEGORIES,
     CONVERSATION_LABELS_LOWER,
@@ -103,6 +104,8 @@ async def list_senders(
     tail can still be cleaned up.
     """
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous")
         params: dict[str, Any] = {"uid": user.email or "anonymous",
                                   "limit": limit, "offset": offset}
         # With no account_id this is a read of more than one mailbox, so the
@@ -618,6 +621,8 @@ async def list_newsletters(
 ):
     """List newsletter dispositions for the user's accounts."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous")
         params: dict[str, Any] = {"uid": user.email or "anonymous"}
         scope = "account_id IN (SELECT id FROM email_accounts WHERE user_id = :uid"
         if account_id:
@@ -926,6 +931,8 @@ async def unsubscribe_target(
     that the send uses, because the sender of the list writes both (review
     round 1, P2)."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         link = await _stored_unsubscribe_link(db, account_id, email)
     kind = _unsubscribe_kind(link)
@@ -1255,6 +1262,8 @@ async def sender_categories(
 ):
     """List the category vocabulary + per-category sender counts."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         rows = (await db.execute(text(
             """SELECT category, COUNT(*) AS c FROM email_senders
@@ -1543,6 +1552,8 @@ async def list_cold_senders(
 ):
     """List cold-email verdicts (flagged + whitelisted) for an account."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         rows = (await db.execute(text(
             """SELECT from_email, status, reason, updated_at

@@ -14,6 +14,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException, Query
+from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.automation.identity import (
     SELF_ADDRESSES_SQL,
     resolve_self_addresses,
@@ -958,6 +959,8 @@ async def get_digest(
 ):
     """Generate an inbox digest for the account (day or week window)."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         days = 7 if period == "week" else 1
         cats = await _configured_categories(db, account_id)

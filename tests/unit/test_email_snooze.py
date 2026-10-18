@@ -43,7 +43,7 @@ def _capture_db():
 
 
 _OFF = {
-    "account_id": "a", "folder": "INBOX", "label": None, "uncategorized": False,
+    "account_id": "a0000000-0000-4000-8000-000000000001", "folder": "INBOX", "label": None, "uncategorized": False,
     "query": None, "thread_id": None, "received_after": None,
     "received_before": None, "is_read": None, "is_starred": None,
     "has_attachments": None, "importance": None, "from_email": None,

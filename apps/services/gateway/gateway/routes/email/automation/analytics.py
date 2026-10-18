@@ -25,6 +25,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, Query
+from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.automation.senders import DISPOSED_FOLDERS
 from gateway.routes.email.core import _account_scope, _tenant_session, router
 from sqlalchemy import text
@@ -61,6 +62,8 @@ async def analytics_overview(
     length immediately before it — a number with no trend is not actionable.
     """
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous")
         params: dict[str, Any] = {"uid": user.email or "anonymous", "days": days}
         scope = _account_scope(account_id, params)
         # _account_scope names the table `em`; these queries alias it `m`.

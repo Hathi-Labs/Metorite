@@ -44,6 +44,7 @@ from datetime import UTC, datetime
 from acb_auth import UserContext, get_current_user
 from email_ingestion import storage as ingest_storage
 from fastapi import Depends, HTTPException, Query
+from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     _assert_account_owner,
     _log,
@@ -133,6 +134,9 @@ async def preview_older_mail(
     It writes nothing (EM-T6c item 8), and it counts no draft (G1).
     ``_assert_account_owner`` answers 404 for a mailbox that the member does
     not own."""
+    account_id = await resolve_account_filter(
+        None, account_id, user.email or "anonymous", required=True,
+        bad_is_not_found=True)
     cutoff = _cutoff(before)
     account_id = _account_uuid(account_id)
     async with _tenant_session() as db:
@@ -171,6 +175,9 @@ async def remove_older_mail(
        limit and no gap is left (G4).
 
     No block calls ``commit()``, and no block calls the provider or Mem0."""
+    account_id = await resolve_account_filter(
+        None, account_id, user.email or "anonymous", required=True,
+        bad_is_not_found=True)
     cutoff = _cutoff(req.before)
     account_id = _account_uuid(account_id)
     owner = user.email or "anonymous"
