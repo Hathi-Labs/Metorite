@@ -1091,6 +1091,17 @@ def test_a_spec_nested_too_deep_never_raises(name: str, arguments: str) -> None:
     assert isinstance(display_text(name, arguments), str)
 
 
+def test_a_deep_python_spec_never_raises() -> None:
+    """A spec that arrives as data, nested deeper than the stack, gives no
+    text and no error."""
+    from acb_skills.answer_check import display_text
+
+    node: Any = "INR 99"
+    for _ in range(5000):
+        node = [node]
+    assert display_text("emit_generative_ui", {"ui": node}) == ""
+
+
 def test_the_retry_note_says_how_to_write_a_total_a_ratio_and_a_rank() -> None:
     from acb_common.number_check import check
 
