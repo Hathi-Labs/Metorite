@@ -42,7 +42,7 @@ import {
   removeAccount,
   signOutAll,
   signOutThis,
-  switchTo,
+  trySwitch,
   type Accounts,
   type OtherAccount,
 } from "@/lib/accountSwitch";
@@ -57,8 +57,14 @@ import { CHANGE_LAYOUT } from "@/lib/shell/shellPrefs";
  */
 export function useAccounts(withOrgs = false) {
   const [accounts, setAccounts] = useState<Accounts>(NO_ACCOUNTS);
+  // False until the first read answers. A caller that must not draw the
+  // "no accounts" shape first, and then jump, waits for it.
+  const [loaded, setLoaded] = useState(false);
+  // Answers the fresh list too, for a caller that must decide from it now.
   const reload = useCallback(async (orgs: boolean) => {
-    setAccounts(await fetchAccounts(orgs));
+    const fresh = await fetchAccounts(orgs);
+    setAccounts(fresh);
+    return fresh;
   }, []);
   useEffect(() => {
     let alive = true;
@@ -72,6 +78,7 @@ export function useAccounts(withOrgs = false) {
       const plain = await fetchAccounts(false);
       if (!alive) return;
       setAccounts(plain);
+      setLoaded(true);
       if (!withOrgs || plain.others.length === 0) return;
       const full = await fetchAccounts(true);
       if (alive) setAccounts(full);
@@ -80,26 +87,28 @@ export function useAccounts(withOrgs = false) {
       alive = false;
     };
   }, [withOrgs]);
-  return { accounts, reload };
+  return { accounts, reload, loaded };
 }
 
 /**
  * One tap to another account: the cover while the page reloads, and the
- * error when the account is no longer signed in. The menu and the phone's
- * organization block share it, so the two switch the same way.
+ * error when the account is no longer signed in. The menu, the phone's
+ * organization block and the chat's other-account notice share it, so all
+ * of them switch the same way.
  */
-function useSwitchAccount(onChanged: () => void, onCover?: (cover: Cover | null) => void) {
+export function useSwitchAccount(onChanged: () => void, onCover?: (cover: Cover | null) => void) {
   const [switching, setSwitching] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const pick = async (o: OtherAccount) => {
     setError(null);
     setSwitching(o.email);
     onCover?.({ email: o.email });
-    if (!(await switchTo(o.slot))) {
+    const failed = await trySwitch(o);
+    if (failed) {
       setSwitching(null);
       onCover?.(null);
-      setError(`${o.email} is no longer signed in here. Add it again.`);
-      onChanged();
+      setError(failed.error);
+      if (failed.gone) onChanged();
     }
   };
   return { switching, error, pick };
@@ -345,7 +354,7 @@ export function SidebarAccountFooter({
 }: {
   collapsed: boolean;
   accounts: Accounts;
-  reload: (withOrgs: boolean) => Promise<void>;
+  reload: (withOrgs: boolean) => Promise<unknown>;
   /** The shell nav's account rows (NS-2). With them, the foot always shows. */
   you?: readonly AccountLink[];
 }) {
