@@ -228,7 +228,7 @@ async def test_suggest_unions_sent_contacts_and_senders_ranked() -> None:
 
     with patch.object(C, "_tenant_session", bind_db(_DB())):
         out = await C.suggest_contacts(
-            q="Ayu", account_id="acc-1", limit=8,
+            q="Ayu", account_id="a0000000-0000-4000-8000-000000000001", limit=8,
             user=MagicMock(email="me@fracktal.in"))
 
     assert [(s.email, s.name) for s in out] == [("ayush@fracktal.in", "Ayush Sarkar")]
@@ -244,7 +244,7 @@ async def test_suggest_unions_sent_contacts_and_senders_ranked() -> None:
     # The user's own connected addresses are never suggested.
     assert "email_address" in sql and "NOT IN" in sql
     # Scoped to the caller's accounts (and optionally one of them).
-    assert "user_id = :uid" in sql and params["aid"] == "acc-1"
+    assert "user_id = :uid" in sql and params["aid"] == "a0000000-0000-4000-8000-000000000001"
 
 
 async def test_suggest_is_best_effort_on_failure() -> None:

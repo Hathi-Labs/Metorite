@@ -57,6 +57,7 @@ from gateway.routes.email.automation.rules import (
     proposes_only,
 )
 from gateway.routes.email.automation.senders import _maybe_block_cold
+from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     _assert_account_owner,
     _attachment_summaries,
@@ -256,6 +257,8 @@ async def rules_history(
     hidden, so History reflects the live mailbox. Pass ``include_deleted=true``
     to see the full immutable log."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous")
         params: dict[str, Any] = {"uid": user.email or "anonymous", "limit": limit}
         scope = ("er.account_id IN (SELECT id FROM email_accounts WHERE user_id = :uid")
         if account_id:
@@ -991,6 +994,8 @@ async def process_past_estimate(
     end_dt = _parse_iso_date(end_date, end_of_day=True)
     only_unread = not include_read
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
 
         async def _count(extra: str = "", unprocessed: bool = False) -> int:
@@ -1104,6 +1109,8 @@ async def process_past_status(
 
     Returns {"status": "idle"} when no run has happened (or it belongs to a
     different user)."""
+    account_id = await resolve_account_filter(
+        None, account_id, user.email or "anonymous", required=True)
     job = _PAST_JOBS.get(account_id)
     if not job or job.get("owner") != (user.email or "anonymous"):
         return {"status": "idle"}

@@ -5791,6 +5791,83 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `docs/multiplayer/memory-clearance.md`, `specs/knowledge_base.md` §6.5
 - **Added:** 2026-10-16 · WS-61 KB-4a review
 
+### H-352 · Email work holds a pool connection across provider and model calls · [AGENT] · finding
+- **Check:** in `apps/services/gateway/gateway/routes/email/automation/runner.py`,
+  find "Block W" in `_run_rules_job`. If `_apply_matches` still runs inside
+  that `async with _tenant_session()`, this is open. Also check
+  `_ensure_subscription` in `transport/sync.py`, and the hydrate in
+  `get_message` in `transport/messages.py`.
+- **Why.** Production logged a 503 from `QueuePool limit of size 7 overflow 2
+  reached` during sync. The gateway pool holds 9 connections. Block W of the
+  rules job holds one for each new mail across the Graph actions, the AI
+  draft of a REPLY rule and `_reconcile_thread_labels`. Its own comment says
+  "EM-T4 owns the model and provider I/O that stays inside". The subscription
+  renew holds one across three Graph calls. The `get_message` hydrate and the
+  `update_message` and `delete_message` pushes hold one across a provider
+  call. A few mailboxes that sync at once take the pool. The phases of
+  `email_ingestion.scheduler._sync_account` are short, and so is the sweep.
+  The route of the full body held one too. PR `email-route-errors` fixed it.
+- **Do this:** move the provider and model calls of Block W out of the block,
+  as the sweep does (provider first, then a short write block). Do the same
+  for `_ensure_subscription`. Do not change the pool size.
+- **Authority:** `specs/engineering_practice.md` §1.1, the EM-T4 notes in `runner.py`
+- **Added:** 2026-10-18 · email route errors (gateway log, 7 days)
+
+### H-353 · 🔴 The CRM overlay read applies no member visibility · [AGENT] · finding
+- **Check:** in `apps/services/gateway/gateway/routes/crm/aggregate.py`, read
+  `_read_overlay` and `overlay_where`. If the overlay query filters by the
+  `owner` parameter only, and applies none of the visibility that
+  `list_query` applies to a member, this is open.
+- **Why.** #1122 (CRM-Q20-3a) reads the module of an approved overlay in
+  place of a core entity. The review of #1126 found that this path checks
+  the tenant (FORCE RLS) and the `owner` filter, but not the visibility of
+  each record to the member. So a member can get totals over records that
+  the normal CRM path hides from them. No flag gates the path. It goes live
+  for an org when that org's overlay plan is approved. On 2026-10-18 no org
+  had one, because the DEWiN sync is paused.
+- **Do this:** before the first overlay plan is approved, give the overlay
+  query the same member visibility as `list_query`, grouped and ungrouped.
+  Add an R8 test where a member who cannot see a record gets a total
+  without it.
+- **Authority:** `specs/crm_platform.md` §18.13.5, R5
+- **Added:** 2026-10-18 · review of #1126
+
+### H-354 · A refusal looks wrong in two chat places · [AGENT] · finding
+- **Check:** (1) In `ProjectToolCards.tsx`, if `ProjectEvidenceBody` and
+  `InfoCard` still branch only on `status === "error"`, a refused Projects
+  read is red. (2) In `acb_common/tool_refusals.py`, if `is_refusal` reads
+  the result of every tool, this is open.
+- **Why.** Since #1126, a result that starts with `Refused:` streams as
+  `success: false`. A refused Projects WRITE shows a muted "Not done". A
+  refused READ or VIEW (`find_tasks` 404, `render_board`) shows red text and
+  the "Next:" line written for the model. Also, `fetch_page` and
+  `recall_notes` return raw text. A page or a note file whose text starts
+  with "Refused:" marks its step failed. Only the step label changes.
+- **Do this:** (1) show a refused read or view with the muted "Not done"
+  look, and hide the "Next:" line from the member. (2) run `is_refusal` only
+  for a tool that carries `WRAPPED_ATTR`.
+- **Authority:** `specs/projects_agent_parity.md` §3.4
+- **Added:** 2026-10-18 · review of #1126
+
+### H-355 · Email request bodies still pass a raw account id to SQL · [AGENT] · finding
+- **Check:** grep the request models under
+  `apps/services/gateway/gateway/routes/email/` for an `account_id` field.
+  If a route passes that field to SQL without `resolve_account_filter`,
+  this is open.
+- **Why.** #1128 sends every `account_id` in a query or a path through
+  `resolve_account_filter`. About 35 request models carry `account_id` in
+  the body, for example `POST /email/rules/run`, and still pass the raw
+  value. A value that is not a UUID there gives a 500. Two more items stay
+  from #1128. The attachment download still gives a 500 for a provider
+  fault. A revoked token now shows as a 503 "try again", because both
+  `authenticate()` methods return False for a revoked token and for a
+  throttled probe alike.
+- **Do this:** read each body `account_id` through `resolve_account_filter`,
+  and extend its route-walk fence to the body models. Make `authenticate()`
+  tell a revoked token (409, reconnect) from a throttled probe (429 or 503).
+- **Authority:** `specs/email_app_master_plan.md`, R7
+- **Added:** 2026-10-18 · PR #1128 and its review
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

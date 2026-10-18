@@ -1253,8 +1253,10 @@ async def test_the_full_body_route_keeps_the_tokens_of_a_refresh(monkeypatch):
                         lambda name, creds: _RefreshesOnItsCall())
     monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
 
+    # The route reads a UUID message id only (provider_errors PR).
     res = await messages_mod.get_full_body(
-        "msg-1", user=SimpleNamespace(email="u@em-t4c.test"))
+        "8b0c7a52-3f8e-4d1a-9c55-2a9a3b4c5d6e",
+        user=SimpleNamespace(email="u@em-t4c.test"))
 
     assert res["body_text"] == "b"
     assert db.credential_writes() == _KEPT

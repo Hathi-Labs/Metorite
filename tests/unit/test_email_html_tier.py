@@ -456,12 +456,14 @@ class TestTheRoute:
         await _html(org=None)
         assert h.redis.calls == [] and h.provider_calls == 2
 
-    async def test_a_failed_auth_is_401_and_caches_nothing(self, monkeypatch) -> None:
+    async def test_a_failed_auth_is_503_and_caches_nothing(self, monkeypatch) -> None:
+        """``authenticate()`` gives False for a throttled or a failed probe
+        too, so the answer is a 503 the caller may retry, not a 401."""
         h = _Harness(monkeypatch)
         h.auth_ok = False
         with pytest.raises(HTTPException) as err:
             await _html()
-        assert err.value.status_code == 401
+        assert err.value.status_code == 503
         assert h.redis.store == {}
 
     async def test_a_provider_fault_is_502_and_caches_nothing(self, monkeypatch) -> None:
@@ -748,7 +750,8 @@ async def _search(monkeypatch: pytest.MonkeyPatch, *, light: bool) -> dict[str, 
     monkeypatch.setattr(s, "_tenant_session", bind_db(SimpleNamespace(execute=_execute)))
     monkeypatch.setattr(s, "_also_in_by_message", _also_in)
     resp = await s.search_messages(
-        q=None, account_id="acc-1", folder=None, label=None, labels=None,
+        q=None, account_id="a0000000-0000-4000-8000-000000000001",
+        folder=None, label=None, labels=None,
         uncategorized=False, from_addr=None, to_addr=None, received_after=None,
         received_before=None, is_read=None, is_starred=None, has_attachments=None,
         sender_category=None, importance=None, hybrid=False, light=light,

@@ -44,6 +44,7 @@ from acb_auth import UserContext, get_current_user
 from email_ingestion import import_window
 from email_ingestion.llm_cap import automation_job
 from fastapi import BackgroundTasks, Depends, HTTPException, Query
+from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.automation.engine import (
     _load_rule_patterns,
     _pattern_hit,
@@ -1107,6 +1108,8 @@ async def cleanup_status(
     user: UserContext = Depends(get_current_user),
 ):
     """Progress of the most recent auto-categorize sweep on this account."""
+    account_id = await resolve_account_filter(
+        None, account_id, user.email or "anonymous", required=True)
     job = _SWEEP_JOBS.get(account_id)
     if not job or job.get("owner") != (user.email or "anonymous"):
         return {"status": "idle"}
@@ -1130,6 +1133,8 @@ async def uncategorized_overview(
     cannot reach zero teaches the user to ignore the badge.
     """
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         internal_domains = await _internal_domains(db, account_id)
         params = _cleanup_scope_params(account_id, internal_domains)

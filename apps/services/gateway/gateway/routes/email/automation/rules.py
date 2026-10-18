@@ -10,6 +10,7 @@ from uuid import uuid4
 from acb_auth import UserContext, get_current_user
 from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException, Query, status
+from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.automation.identity import resolve_self
 from gateway.routes.email.automation.senders import DISPOSED_FOLDERS
 from gateway.routes.email.core import (
@@ -202,6 +203,8 @@ async def list_rules(
 ):
     """List assistant rules (with actions) for an account."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         return {"rules": await _load_rules(db, account_id)}
 
@@ -369,6 +372,8 @@ async def install_preset_rules(
     """Install the default inbox-zero-style rule set (skips ones already present
     by name). Used by the UI's 'Add defaults' and the assistant's setup flow."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         # The account's provider decides whether cleanup categories become
         # folders (Outlook) or labels (Gmail) — inbox-zero parity.
@@ -398,6 +403,8 @@ async def reset_rules(
     genuinely gone with it, which is the expected meaning of 'reset'.
     """
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         provider = await _account_provider(db, account_id)
         # Snapshot the learned patterns keyed by their rule's NAME — the reseed
@@ -810,6 +817,8 @@ async def rule_policies(
     failing the screen — the local policies still render.
     """
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         cb_row = (await db.execute(text(
             "SELECT cold_email_blocker FROM email_assistant_settings "
@@ -1175,6 +1184,8 @@ async def list_rule_guidance(
     """Corrections that teach the classifier — the "improves the AI" half of the
     Learned Patterns screen."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         rows = (await db.execute(text(
             """SELECT g.id, g.rule_id, r.name AS rule_name, g.guidance,
@@ -1227,6 +1238,8 @@ async def delete_rule_guidance(
     rejected PATTERN, nothing re-infers guidance, so there is no verdict to
     remember and a leftover row would just be clutter the user cannot see."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         await db.execute(text(
             "DELETE FROM email_rule_guidance "
@@ -1478,6 +1491,8 @@ async def list_rule_patterns(
     explicitly-opened review screen.
     """
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         try:
             rows = (await db.execute(text(

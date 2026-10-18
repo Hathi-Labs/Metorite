@@ -53,6 +53,14 @@ logger = logging.getLogger(__name__)
 # but we never block a whole sync cycle on one throttled message.
 _MAX_RETRY_AFTER_SECS = 30.0
 
+#: The longest wait of the one retry of a read (``_graph_read``). A 429 that
+#: asks for more gets no retry: the route then answers 429 with the
+#: provider's own ``Retry-After``, and the caller tries again later. The
+#: retry is OFF unless the caller sets ``read_retry_429``, because some
+#: callers hold a database session across the read, and a wait there holds a
+#: pool slot (HANDOFF H-352). Fence: tests/unit/test_email_provider_errors.py.
+_READ_RETRY_MAX_WAIT_SECS = 5.0
+
 # Canonical keys that mean "system folder" (used to classify by display name on
 # personal/consumer accounts, which omit wellKnownName — see below).
 _CORE_CANONICAL = frozenset({"inbox", "sent", "drafts", "trash", "junk", "archive"})
@@ -711,6 +719,12 @@ class OutlookProvider(BaseEmailProvider):
         # check existence, so this turns the 3-Graph-call apply into 2. None =
         # not yet fetched; a set (possibly empty for MSA/403) = fetched.
         self._master_categories: set[str] | None = None
+        #: True lets ``_graph_read`` retry a short 429 once. Only a caller
+        #: that holds NO database session across the read may set it: the
+        #: full-body route does. A caller with a session open (the body
+        #: hydrate, the lazy hydrate of ``get_message``) keeps it False, so
+        #: a throttled read never sleeps on a pool slot (H-352).
+        self.read_retry_429 = False
         # True when the last ``list_folders`` skipped a failed ``childFolders``
         # read. The delta then keeps the links of the folders that the list
         # left out (WS-17 EM-T4d review round 1 F2).
@@ -767,6 +781,31 @@ class OutlookProvider(BaseEmailProvider):
                 continue
             return resp
         return resp
+
+    async def _graph_read(self, url: str, **kwargs: Any) -> httpx.Response:
+        """One Graph GET, with one bounded retry when the caller asks for it.
+
+        With ``read_retry_429`` False (the default) a 429 goes straight back.
+        With it True, a 429 waits for ``Retry-After`` (1 second with none) and
+        tries once more, but only when the wait is at most
+        :data:`_READ_RETRY_MAX_WAIT_SECS`. A longer wait gets no retry. The
+        answer of the last try goes back, and the caller calls
+        ``raise_for_status()``, so the route sees the 429 and its header.
+        ``_graph_send`` keeps its own longer bound for the label applies of
+        a sync.
+        """
+        client = await self._get_client()
+        resp = await client.get(url, **kwargs)
+        if resp.status_code != 429 or not self.read_retry_429:
+            return resp
+        try:
+            delay = float(resp.headers.get("Retry-After", "1") or 1)
+        except ValueError:
+            delay = 1.0
+        if delay > _READ_RETRY_MAX_WAIT_SECS:
+            return resp
+        await asyncio.sleep(max(delay, 0.0))
+        return await client.get(url, **kwargs)
 
     async def _master_category_names(self) -> set[str]:
         """Lower-cased master-category names for this account, fetched once and
@@ -1036,8 +1075,8 @@ class OutlookProvider(BaseEmailProvider):
         return messages, next_token
 
     async def get_message(self, provider_message_id: str) -> EmailMessage:
-        client = await self._get_client()
-        resp = await client.get(
+        # One bounded retry on a 429, when the caller asked (``_graph_read``).
+        resp = await self._graph_read(
             f"/me/messages/{provider_message_id}",
             params={"$expand": "attachments"},
         )
@@ -1052,8 +1091,7 @@ class OutlookProvider(BaseEmailProvider):
         body only, so this read selects ``id`` and ``body`` and expands
         nothing. Fence: ``tests/unit/test_email_html_tier.py``.
         """
-        client = await self._get_client()
-        resp = await client.get(
+        resp = await self._graph_read(
             f"/me/messages/{provider_message_id}",
             params={"$select": "id,body"},
         )

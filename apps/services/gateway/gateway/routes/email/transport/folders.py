@@ -8,6 +8,7 @@ from acb_auth import UserContext, get_current_user
 from email_ingestion import import_window
 from email_ingestion import storage as ingest_storage
 from fastapi import Depends, HTTPException
+from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     _tenant_session,
     _instantiate_provider,
@@ -61,6 +62,8 @@ async def list_folders(
     so the UI always shows the current folder structure.
     """
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         try:
             result = await db.execute(
                 text(
@@ -142,6 +145,8 @@ async def create_folder(
     exists (Outlook get-or-create, Gmail label create).
     """
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         try:
             row = (await db.execute(
                 text(
@@ -216,6 +221,8 @@ async def list_labels(
     categories, IMAP = none.
     """
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         try:
             result = await db.execute(
                 text(
@@ -278,6 +285,8 @@ async def set_label_color(
     master category). The colour is a canonical preset token; it round-trips to
     the real mailbox. No-op for providers without label colours (IMAP)."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         try:
             result = await db.execute(
                 text(
@@ -343,6 +352,8 @@ async def backfill_folder(
     from email_ingestion.providers.base import canonical_folder
 
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         try:
             result = await db.execute(
                 text(
