@@ -18,7 +18,7 @@
 --       the `websearch_to_tsquery` grammar.
 --
 -- Why:  incident 2026-10-18, `project-docs/specs/email_app_master_plan.md`
---       "Incident 2026-10-18: search speed", board WS-17. On WhatsApp seven of
+--       §18 "Incident 2026-10-18: search speed", board WS-17. On WhatsApp seven of
 --       twelve `query_inbox` calls of one member died on the 30 s statement
 --       timeout. Each one ran the COUNT(*) of `GET /email/messages` with a
 --       full-text match.
@@ -80,7 +80,7 @@
 -- calls the function ships in the same release, after this file applies.
 -- `idx_email_messages_fts_body` (72) and `idx_email_messages_fts` (17) stay.
 -- `/email/search` still ranks with the vector of 72. Their drop is a later
--- contract step (project-docs/HANDOFF.md).
+-- contract step (email_app_master_plan.md §18.6).
 --
 -- No new table, so R5 has nothing to key. Idempotent: `IF NOT EXISTS` and
 -- `CREATE OR REPLACE`.
