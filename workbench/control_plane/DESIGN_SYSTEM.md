@@ -612,6 +612,12 @@ What the row does for you:
   At rest the actions take no width, so the name gets that room. A row with
   no actions keeps its count. The count gives way from sight only, so it
   stays in the row's accessible name.
+- **`metaTone`.** The default, `muted`, is the quiet count above.
+  `attention` is a count of items that wait for the member, such as the open
+  questions of the CRM (WS-53 CRM-Q32-3). It draws in `--primary`, with the
+  shape and tone of the `primary` `Badge`, so it adds no token. It stays on
+  hover and on keyboard focus. The actions take only the place of a `muted`
+  count. Use `attention` only for a count that asks the member to act.
 - **The name.** It is one line at 13 px, regular for an item and medium for a
   `group`. A cut name shows whole in a dark tip after 400 ms, and only when it
   is cut.
@@ -645,7 +651,8 @@ in both modes, on the top layer above the phone drawer. It carries no
 
 Fences:
 
-- `src/components/ui/RailRow.test.ts` holds the markup and the two utilities.
+- `src/components/ui/RailRow.test.ts` holds the markup, the two utilities
+  and the two tones of `metaTone`.
 - `src/components/ui/OverflowTip.test.ts` holds the tip's reducer and surface.
 - `src/lib/railRows.test.ts` fails when a rail on its list stops drawing
   `RailRow`.

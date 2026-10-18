@@ -1,6 +1,7 @@
 """CRM · the catalogue for the AI (WS-53 CRM-Q31-1, ``crm_platform.md`` §18.13.4).
 
-    GET /crm/catalogue    one entry for each core entity and each mirrored module
+    GET /crm/catalogue           one entry for each core entity and each mirrored module
+    PUT /crm/catalogue/{module}  an admin changes a part (CRM-Q31-4, CRM-Q32-2)
 
 The catalogue tells the AI what each entity and module is for, which field of
 it holds the amount, the date, the status and the customer, and where its
@@ -45,9 +46,11 @@ from gateway.routes.crm.core import (
     from_jsonb,
     router,
 )
+from gateway.routes.crm.field_rules import _GUARDS
 from gateway.routes.crm.flags import catalogue_allowed
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 #: The code of the 404 that an org outside ``CRM_CATALOGUE_ORGS`` gets.
 CATALOGUE_OFF = "catalogue_off"
@@ -125,11 +128,25 @@ class CatalogueEntry(BaseModel):
     #: CRM-Q31-2 item 7: a core entity only. The label of each module whose
     #: purpose fits the entity and that holds records.
     alike: list[str] = Field(default_factory=list)
+    #: CRM-Q32 (§18.14.5): the ids of the open questions of this entry, only
+    #: while ``CRM_QUESTIONS_ORGS`` serves the org. ``None`` outside it. A
+    #: member learns that a question is open, and never its samples.
+    questions: list[str] | None = None
+
+
+class RevenueModel(BaseModel):
+    """The meaning of revenue, from the ``@org`` item (§18.14.4). ``None``
+    and ``None`` with no answer: a reader then uses billed, the default."""
+
+    value: str | None = None
+    by: str | None = None
 
 
 class CatalogueResponse(BaseModel):
     mode: str
     entries: list[CatalogueEntry]
+    #: CRM-Q32 (§18.14.5): the meaning of revenue.
+    revenue: RevenueModel = Field(default_factory=RevenueModel)
 
 
 def _off() -> HTTPException:
@@ -143,7 +160,7 @@ def _key_field(f: Any) -> KeyField:
     return KeyField(key=f.key, label=f.label, type=f.type, target=f.target)
 
 
-def _wire(entry: Any) -> CatalogueEntry:
+def _wire(entry: Any, questions: list[str] | None = None) -> CatalogueEntry:
     return CatalogueEntry(
         entity=entry.entity, module=entry.module, kind=entry.kind,
         label=entry.label, records=entry.records, purpose=entry.purpose,
@@ -156,6 +173,7 @@ def _wire(entry: Any) -> CatalogueEntry:
         owner=KeyField(key=OWNER[0], label=OWNER[1], type=OWNER[2]),
         links=[_key_field(f) for f in entry.links],
         open=list(entry.open), stale=list(entry.stale), alike=list(entry.alike),
+        questions=questions,
     )
 
 
@@ -332,6 +350,9 @@ async def get_catalogue(
     404 ``catalogue_off`` for an org outside ``CRM_CATALOGUE_ORGS``, in each
     mode. The body holds no record value and no owner email.
     """
+    from gateway.crm_sync import catalogue as cat
+    from gateway.routes.crm.flags import questions_allowed
+    from gateway.routes.crm.questions import module_question_ids
     from gateway.routes.crm.settings import _organization
 
     org = _organization(user)
@@ -339,10 +360,185 @@ async def get_catalogue(
         raise _off()
     async with _tenant_session() as db:
         mode, sources, roles, others = await _load(db, org)
+        # CRM-Q32 (§18.14.5): the open question ids of each entry, only while
+        # the org is on CRM_QUESTIONS_ORGS, and only in Mirror mode.
+        on = mode == "mirror" and questions_allowed(org)
+        ids = (await module_question_ids(db, org, (mode, sources, roles, others))
+               if on else {})
+    value, by = cat.revenue_of(cat.stored_items(others))
     return CatalogueResponse(
-        mode=mode, entries=[_wire(e) for e in _build(sources, roles, others)],
+        mode=mode,
+        entries=[_wire(e, list(ids.get(e.module, ())) if on else None)
+                 for e in _build(sources, roles, others)],
+        revenue=RevenueModel(value=value, by=by),
     )
 
 
-__all__ = ["CATALOGUE_OFF", "CatalogueEntry", "CatalogueResponse", "KeyField",
-           "core_sources", "entry_of", "get_catalogue"]
+# ── The corrections of CRM-Q31-4 (CRM-Q32-2, §18.14.6) ─────────────────────
+
+#: The value of a part that puts back the answer of the pipeline or of code.
+#: A Zoho API name cannot start with ``@``, so it never names a field.
+AUTO = "@auto"
+
+
+def bad_answer(message: str, part: str | None = None) -> HTTPException:
+    """The 422 of an answer that is not a choice, or a field of the wrong
+    type (§18.14.6, "Errors")."""
+    return HTTPException(status_code=422, detail={
+        "code": "bad_answer", "message": message, "part": part,
+    })
+
+
+def _bad_field(src: Any, part: str, value: Any) -> bool:
+    if not isinstance(value, str) or src is None or src.field(value) is None:
+        return True
+    from gateway.crm_sync import catalogue as cat
+
+    if cat.problem(src, part, value) is not None:
+        return True
+    return part == "parent" and not src.field(value).target
+
+
+def check_parts(module: str, parts: Mapping[str, Any], src: Any) -> None:
+    """422 ``bad_answer`` unless each value of *parts* is legal for *module*:
+    a purpose word, a field of the right type, ``null`` or ``"@auto"``, and
+    ``invoice`` or ``payment_in`` for ``revenue`` of ``@org``. *src* is the
+    catalogue source of the module (``None`` for ``@org``)."""
+    from gateway.crm_sync import catalogue as cat
+
+    legal = cat.parts_of(module)
+    for part, value in parts.items():
+        if part not in legal:
+            raise bad_answer(f"{module} takes no part {part}.", part)
+        if value == AUTO:
+            continue
+        if part == "revenue":
+            if value not in cat.REVENUE_VALUES:
+                raise bad_answer("Revenue is billed (invoice) or collected (payment_in).", part)
+        elif part == "purpose":
+            if value is not None and value not in cat.PURPOSES:
+                raise bad_answer("That is not a purpose of the catalogue.", part)
+        elif value is not None and _bad_field(src, part, value):
+            raise bad_answer(f"That field cannot hold the {part} of {module}.", part)
+
+
+async def write_answer(
+    db: Any, org: str, *, by: str, module: str, parts: Mapping[str, Any],
+) -> Any | None:
+    """THE writer of an answer and of a correction (§18.14.6): one door for
+    ``POST /crm/questions/{id}/answer`` and ``PUT /crm/catalogue/{module}``.
+
+    Each part takes a field or a purpose word, or ``null``, stored with
+    ``by: admin``. ``"@auto"`` puts the part back to the answer of the
+    pipeline, or of code (``mapping_plans.apply_catalogue`` with ``clear``).
+    One ``apply_catalogue`` call, so one plan version under the plan lock.
+    The caller checked the values (:func:`check_parts`). Returns the new
+    approved version, or ``None`` when nothing changed."""
+    from gateway.crm_sync import catalogue as cat
+    from gateway.routes.crm.mapping_plans import apply_catalogue
+
+    item: dict[str, Any] = {"kind": cat.KIND_CATALOGUE, "module": module, "by": {}}
+    clear: list[str] = []
+    for part, value in parts.items():
+        if value == AUTO:
+            clear.append(part)
+            continue
+        item[part] = value
+        item["by"][part] = "admin"
+    return await apply_catalogue(
+        db, [item] if item["by"] else [], by=by, org=org,
+        clear={module: clear} if clear else None,
+    )
+
+
+class CatalogueChangeIn(BaseModel):
+    """``PUT /crm/catalogue/{module}`` (CRM-Q31-4 item 4). Each part that
+    the body names takes a field API name or a purpose word, ``null``, or
+    ``"@auto"``. A part that the body leaves out does not change."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    purpose: str | None = None
+    amount: str | None = None
+    date: str | None = None
+    status: str | None = None
+    parent: str | None = None
+    revenue: str | None = None
+
+
+class CatalogueChangeOut(BaseModel):
+    module: str
+    #: The approved version of the plan after the change.
+    version: int | None = None
+    #: The entry of the module after the change. ``None`` for ``@org``.
+    entry: CatalogueEntry | None = None
+    revenue: RevenueModel = Field(default_factory=RevenueModel)
+
+
+async def _source_of(db: Any, org: str, module: str) -> Any:
+    """The catalogue source of *module*, or a 404 ``unknown_module``.
+    ``None`` for the org-level item ``@org``."""
+    from gateway.crm_sync import catalogue as cat
+
+    if module == cat.ORG_MODULE:
+        return None
+    _mode, sources, _roles, _others = await _load(db, org, only=module, count=False)
+    src = next((s for s in sources if s.module == module), None)
+    if src is None:
+        raise HTTPException(status_code=404, detail={
+            "code": "unknown_module", "message": "The catalogue has no entry of that name.",
+        })
+    return src
+
+
+@router.put("/catalogue/{module}", response_model=CatalogueChangeOut,
+            dependencies=_GUARDS)
+async def put_catalogue(
+    module: str, payload: CatalogueChangeIn, user: UserContext = Depends(get_current_user),
+) -> CatalogueChangeOut:
+    """An admin changes a part of the catalogue (CRM-Q31-4, §18.14.6).
+
+    The guards of the Field map, and ``questions_allowed`` (else 404
+    ``questions_off``). It writes through :func:`write_answer`, the writer
+    of the answer route. A field of the wrong type gives 422 ``bad_answer``.
+    The actor comes from ``UserContext`` only (R5, R11)."""
+    from gateway.crm_sync import catalogue as cat
+    from gateway.routes.crm.core import actor
+    from gateway.routes.crm.field_rules import _db_conflict, _organization, _require_mirror
+    from gateway.routes.crm.flags import questions_allowed
+    from gateway.routes.crm.mapping_plans import _approved
+    from gateway.routes.crm.questions import questions_off
+
+    org = _organization(user)
+    if not questions_allowed(org):
+        raise questions_off()
+    parts = {name: getattr(payload, name) for name in payload.model_fields_set}
+    if not parts:
+        raise bad_answer("Name at least one part to change.")
+    by = actor(user).lower()
+    try:
+        async with _tenant_session() as db:
+            await _require_mirror(db, org)
+            check_parts(module, parts, await _source_of(db, org, module))
+            row = await write_answer(db, org, by=by, module=module, parts=parts)
+            if row is None:
+                row = await _approved(db)
+            _mode, sources, roles, others = await _load(db, org)
+    except DBAPIError as exc:
+        conflict = _db_conflict(exc)
+        if conflict is not None:
+            raise conflict from exc
+        raise
+    entry = next((e for e in _build(sources, roles, others) if e.module == module), None)
+    value, by_word = cat.revenue_of(cat.stored_items(others))
+    return CatalogueChangeOut(
+        module=module, version=int(row.version) if row is not None else None,
+        entry=_wire(entry) if entry is not None else None,
+        revenue=RevenueModel(value=value, by=by_word),
+    )
+
+
+__all__ = ["AUTO", "CATALOGUE_OFF", "CatalogueChangeIn", "CatalogueChangeOut",
+           "CatalogueEntry", "CatalogueResponse", "KeyField", "RevenueModel",
+           "bad_answer", "check_parts", "core_sources", "entry_of", "get_catalogue",
+           "put_catalogue", "write_answer"]

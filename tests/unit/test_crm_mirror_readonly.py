@@ -101,6 +101,12 @@ _EXEMPT = {
     # Mirror mode only. `test_every_raw_write_to_a_guarded_table_is_guarded`
     # does not read this list, so a raw write to a record table there fails.
     "suggestions.py",
+    # CRM-Q32-2: the corrections of the catalogue and the answers of the open
+    # questions. They write `crm_mapping_plans` through `apply_catalogue`,
+    # `write_draft` and `commit`, and the cursor row `zoho:questions`, and no
+    # record table. They work in Mirror mode only. The raw-write fence below
+    # does not read this list either.
+    "catalogue.py", "questions.py",
 }
 
 

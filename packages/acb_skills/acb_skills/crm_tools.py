@@ -172,14 +172,17 @@ class _GatewayError(GatewayRefusal):
     read that a tool does not catch reaches the model as "Refused: ..."
     text (:func:`_read_tool`). ``detail`` is the SAFE detail of the route
     (``safe_detail``), so the overlay sentence that a tool relays is safe
-    too. A status of 0 (a test double) reads as no status."""
+    too. A status of 0 (a test double) reads as no status. ``href`` is the
+    link that the gateway put in the detail (CRM-Q32-6), passed on as it is."""
 
     def __init__(self, message: str, code: str | None = None, *,
                  detail: str = "", status: int = 0,
-                 fields: tuple[str, ...] = (), route: str = "") -> None:
+                 fields: tuple[str, ...] = (), route: str = "",
+                 href: str | None = None) -> None:
         super().__init__(message, status=status or None, detail=detail,
                          fields=fields, route=route)
         self.code = code
+        self.href = href
 
 
 # ── Transport ───────────────────────────────────────────────────────────────
@@ -242,6 +245,18 @@ def _detail_code(resp: Any) -> str | None:
     return str(code) if code else None
 
 
+def _detail_href(resp: Any) -> str | None:
+    """The ``detail.href`` of an answer, or ``None`` (CRM-Q32-6). The tool
+    passes the link on and builds none of its own."""
+    try:
+        body = resp.json()
+    except Exception:
+        return None
+    detail = body.get("detail") if isinstance(body, dict) else None
+    href = detail.get("href") if isinstance(detail, dict) else None
+    return str(href) if isinstance(href, str) and href.startswith("/") else None
+
+
 def _detail(resp: Any) -> str:
     try:
         body = resp.json()
@@ -281,7 +296,7 @@ async def _get(path: str, params: dict[str, Any] | None = None) -> Any:
     raise _GatewayError(
         f"CRM GET {path} failed ({status})" + (f": {detail}" if detail else ""),
         _detail_code(resp), detail=safe, status=status, fields=fields,
-        route=route_template(path),
+        route=route_template(path), href=_detail_href(resp),
     )
 
 
@@ -369,12 +384,16 @@ async def _overlay_status(slug: str, status: str | None) -> str | None:
 
 async def _aggregate_or_refusal(params: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
     """The answer of ``GET /crm/aggregate``, or the one sentence of a refusal
-    of the overlay (``overlay_*``, CRM-Q20-3a)."""
+    of the overlay (``overlay_*``, CRM-Q20-3a). CRM-Q32-6: a ``no_key_field``
+    whose part is an open question is the answer too, with the link that
+    the gateway gave."""
     try:
         return (await _get("/crm/aggregate", params) or {}), None
     except _GatewayError as exc:
         if (exc.code or "").startswith(_OVERLAY_CODE) and exc.detail:
             return {}, exc.detail
+        if exc.code == NO_KEY_FIELD and exc.href and exc.detail:
+            return {}, f"{exc.detail}\nOpen questions: {exc.href}"
         raise
 
 
@@ -1356,11 +1375,25 @@ async def crm_aggregate(
         # CRM-Q25b: the route took each month on the clock of the CRM zone.
         # A `date` bucket takes no zone, so the line would be false there.
         lines.append(f"Months count in the CRM time zone, {zone}.")
+    lines.extend(await _hint_lines(slug, measure, data, overlay))
+    return "\n".join(lines) + note
+
+
+async def _hint_lines(slug: str, measure: str, data: dict[str, Any],
+                      overlay: dict[str, Any] | None) -> list[str]:
+    """The hints after a total: the empty core line (CRM-Q31-2 item 7), and
+    the default of a revenue total (CRM-Q32-6 item 2a). Each read of a hint
+    that fails adds no line."""
+    out: list[str] = []
     if slug in ENTITY_LABELS and data.get("total") == 0 and not overlay:
         empty = await _empty_core_line(slug)
         if empty:
-            lines.append(empty)
-    return "\n".join(lines) + note
+            out.append(empty)
+    if measure == "sum_amount" and slug.startswith(MODULE_PREFIX) and questions_box_on():
+        default = await _revenue_default_line(slug[len(MODULE_PREFIX):])
+        if default:
+            out.append(default)
+    return out
 
 
 #: CRM-Q31-2 item 7: what the modules that fit an empty core entity hold.
@@ -1432,6 +1465,61 @@ async def crm_stage_dwell(days: int | None = None, page: int = 1) -> str:
 #: ``CRM_CATALOGUE_ORGS`` (CRM-Q31-1). The tool then answers as before.
 CATALOGUE_OFF = "catalogue_off"
 
+#: The ``detail.code`` of the aggregate when a key word has no key field
+#: (CRM-Q31-2). With an open question, the gateway adds ``href`` (CRM-Q32-6).
+NO_KEY_FIELD = "no_key_field"
+
+#: CRM-Q32-6 (``crm_platform.md`` §18.14.5): the words of a part that waits
+#: for a CRM admin. A tool never asks in the chat and never waits: it uses
+#: the default that its line names.
+OPEN_QUESTION = "an open question"
+#: The line of a revenue total while no CRM admin answered the meaning of
+#: revenue.
+REVENUE_DEFAULT_LINE = (
+    "This uses billed revenue, the default. A CRM admin can change it in Open questions."
+)
+#: The purposes of a revenue total.
+_REVENUE_PURPOSES = ("invoice", "payment_in")
+
+
+def questions_box_on() -> bool:
+    """True when this box serves the open questions to at least one org:
+    ``CRM_QUESTIONS_ORGS`` is not empty. With the list empty, no CRM-Q32 path
+    of a tool or a run sends a request or adds a word (the dark cost is 0).
+    The gateway still decides for each org."""
+    from acb_common import get_settings
+
+    return bool(str(getattr(get_settings(), "crm_questions_orgs", "") or "").strip())
+
+
+def _questions_on(entries: list[dict[str, Any]]) -> bool:
+    """True when the catalogue carries the open questions: an entry has a
+    ``questions`` list, which the gateway sends only for an org on
+    ``CRM_QUESTIONS_ORGS``. A member learns that a question is open, and
+    never its samples."""
+    return any(isinstance(e.get("questions"), list) for e in entries)
+
+
+async def _revenue_default_line(module: str) -> str | None:
+    """CRM-Q32-6 item 2a: the line of a revenue total, or ``None``. A revenue
+    total is ``sum_amount`` on a module whose purpose is ``invoice`` or
+    ``payment_in``, while no CRM admin answered the meaning of revenue. A
+    read that fails adds no line."""
+    try:
+        body = await _catalogue_body()
+    except Exception:  # advice only: the total above is the answer
+        return None
+    entries = [e for e in (body.get("entries") if isinstance(body, dict) else None) or []
+               if isinstance(e, dict)]
+    if not _questions_on(entries):
+        return None
+    entry = next((e for e in entries if e.get("kind") == "module"
+                  and e.get("module") == module), None)
+    revenue = body.get("revenue") if isinstance(body.get("revenue"), dict) else {}
+    if entry is None or entry.get("purpose") not in _REVENUE_PURPOSES:
+        return None
+    return None if revenue.get("by") == "admin" else REVENUE_DEFAULT_LINE
+
 #: What a line calls each key part of an entry.
 _PART_WORDS: dict[str, str] = {
     "amount": "Amount", "date": "Date", "status": "Status", "parent": "Customer",
@@ -1478,9 +1566,16 @@ def _entry_line(entry: dict[str, Any]) -> str:
     parts = [f"- {entry.get('label')} ({word}): {', '.join(head)}."]
     fields = entry.get("fields") or {}
     waiting = set(entry.get("open") or ())
+    # CRM-Q32-6: the parts that wait for a CRM admin, from `questions`.
+    asked = {str(q).rsplit(":", 1)[-1] for q in entry.get("questions") or []
+             if str(q).startswith("key:")}
+    if any(str(q).startswith("purpose:") for q in entry.get("questions") or []):
+        parts.append(f"Purpose: {OPEN_QUESTION}.")
     parent = fields.get("parent") if isinstance(fields.get("parent"), dict) else None
     for part, name in _PART_WORDS.items():
-        if part in fields:
+        if part in asked:
+            parts.append(f"{name}: {OPEN_QUESTION}.")
+        elif part in fields:
             found = fields[part]
             if not isinstance(found, dict):
                 parts.append(f"{name}: no single field.")
@@ -1499,9 +1594,14 @@ def _entry_line(entry: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
-def _money_block(entries: list[dict[str, Any]]) -> str | None:
+def _money_block(entries: list[dict[str, Any]],
+                 revenue: dict[str, Any] | None = None) -> str | None:
     """Where the money is, from the purposes, by code. Only an entry that
-    holds records counts. ``None`` when no entry holds money."""
+    holds records counts. ``None`` when no entry holds money.
+
+    CRM-Q32-6: while the catalogue carries the open questions, the block
+    names the basis of revenue: the answer of a CRM admin, else billed, the
+    default (§18.14.5)."""
     clauses = []
     for purpose, words in _MONEY_WORDS:
         labels = [str(e.get("label")) for e in entries
@@ -1511,7 +1611,17 @@ def _money_block(entries: list[dict[str, Any]]) -> str | None:
     if not clauses:
         return None
     rest = " ".join(c[0].upper() + c[1:] for c in clauses[1:])
-    return "Money: " + clauses[0] + (f" {rest}" if rest else "")
+    block = "Money: " + clauses[0] + (f" {rest}" if rest else "")
+    if _questions_on(entries) and any(e.get("purpose") in _REVENUE_PURPOSES
+                                      and int(e.get("records") or 0) > 0 for e in entries):
+        chosen = (revenue or {}).get("value") if (revenue or {}).get("by") == "admin" else None
+        if chosen == "payment_in":
+            block += " Revenue: Collected (a CRM admin chose it)."
+        elif chosen == "invoice":
+            block += " Revenue: Billed (a CRM admin chose it)."
+        else:
+            block += " Revenue: Billed (the default until a CRM admin answers)."
+    return block
 
 
 def _catalogue_answer(body: Any, page: int | None) -> str:
@@ -1524,7 +1634,8 @@ def _catalogue_answer(body: Any, page: int | None) -> str:
     lines.extend(_entry_line(e) for e in shown.items)
     if shown.line:
         lines.append(shown.line)
-    money = _money_block(entries)
+    revenue = body.get("revenue") if isinstance(body, dict) else None
+    money = _money_block(entries, revenue if isinstance(revenue, dict) else None)
     if money:
         lines.append(money)
     lines.append(CATALOGUE_TOTAL_HINT)

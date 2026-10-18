@@ -110,6 +110,22 @@ PART_TYPES: Mapping[str, tuple[str, ...]] = {
 #: CRM-Q31-3 writes it. This slice only reads it.
 KIND_CATALOGUE = "catalogue"
 
+#: CRM-Q32 (§18.14.4): the one org-level catalogue item. A Zoho API name
+#: cannot start with ``@``, so it never names a module, and :func:`build`
+#: makes no entry of it. Its one part is ``revenue``.
+ORG_MODULE = "@org"
+ORG_PARTS: tuple[str, ...] = ("revenue",)
+#: The words of ``revenue``: billed (the ``invoice`` modules) or collected
+#: (the ``payment_in`` modules). Billed is the default until an admin answers.
+REVENUE_VALUES: tuple[str, ...] = ("invoice", "payment_in")
+DEFAULT_REVENUE = "invoice"
+
+#: CRM-Q32 (§18.14.3): ``ranked`` keeps at most this many field keys or
+#: purpose words for each part that the pipeline closed as ``null``.
+RANK_LIMIT = 3
+#: The parts of a module item, in the order that a line shows them.
+MODULE_PARTS: tuple[str, ...] = ("purpose", "amount", "date", "status", "parent")
+
 #: The words of ``by``. ``role`` marks a purpose that an approved ``role``
 #: item gives.
 BY_WORDS: frozenset[str] = frozenset({"code", "ai", "admin"})
@@ -430,39 +446,105 @@ def without_catalogue(items: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]
     return [dict(i) for i in items if not is_catalogue(i)]
 
 
+def parts_of(module: Any) -> tuple[str, ...]:
+    """The parts that an item of *module* may hold: ``revenue`` for the
+    org-level item :data:`ORG_MODULE`, else the purpose and the key parts."""
+    return ORG_PARTS if module == ORG_MODULE else MODULE_PARTS
+
+
+def _rank_problem(ranked: Any, parts: Sequence[str]) -> bool:
+    """True when ``ranked`` is not a map of a part to at most
+    :data:`RANK_LIMIT` words (CRM-Q32-1 item 5)."""
+    if not isinstance(ranked, Mapping):
+        return True
+    for part, words in ranked.items():
+        if part not in parts or not isinstance(words, list) or len(words) > RANK_LIMIT:
+            return True
+        if not all(isinstance(w, str) and w for w in words):
+            return True
+    return False
+
+
 def item_problem(item: Mapping[str, Any]) -> str | None:
     """Rule 4 of the kinds for one ``catalogue`` item, or ``None`` when it
     is legal. ``purpose`` is a word of :data:`PURPOSES` or ``null``. Each key
     part is a field API name or ``null``. ``by`` names ``code``, ``ai`` or
-    ``admin`` for each part."""
+    ``admin`` for each part.
+
+    CRM-Q32 (§18.14.4): the item :data:`ORG_MODULE` holds only ``revenue``,
+    a word of :data:`REVENUE_VALUES`. ``ranked`` maps a part to at most
+    :data:`RANK_LIMIT` words."""
     module = item.get("module")
     if not isinstance(module, str) or not module:
         return "module"
-    if "purpose" in item and item["purpose"] is not None and item["purpose"] not in PURPOSES:
-        return "purpose"
-    for part in KEY_PARTS:
-        value = item.get(part)
-        if part in item and value is not None and (not isinstance(value, str) or not value):
-            return part
+    parts = parts_of(module)
+    if module == ORG_MODULE:
+        if any(part in item for part in MODULE_PARTS):
+            return "module"
+        if "revenue" in item and item["revenue"] not in REVENUE_VALUES:
+            return "revenue"
+    else:
+        if module.startswith("@"):
+            return "module"
+        if ("purpose" in item and item["purpose"] is not None
+                and item["purpose"] not in PURPOSES):
+            return "purpose"
+        for part in KEY_PARTS:
+            value = item.get(part)
+            if part in item and value is not None and (not isinstance(value, str) or not value):
+                return part
+        if "revenue" in item:
+            return "revenue"
     by = item.get("by", {})
     if not isinstance(by, Mapping):
         return "by"
     for part, word in by.items():
-        if part not in ("purpose", *KEY_PARTS) or word not in BY_WORDS:
+        if part not in parts or word not in BY_WORDS:
             return "by"
+    if "ranked" in item and _rank_problem(item["ranked"], parts):
+        return "ranked"
     return None
+
+
+def _ranks(item: Mapping[str, Any] | None) -> dict[str, list[str]]:
+    ranked = (item or {}).get("ranked")
+    if not isinstance(ranked, Mapping):
+        return {}
+    return {str(p): [str(w) for w in words][:RANK_LIMIT]
+            for p, words in ranked.items() if isinstance(words, list) and words}
+
+
+def _with_ranks(item: dict[str, Any], ranks: Mapping[str, list[str]]) -> dict[str, Any]:
+    """*item* with *ranks*, less the rank of each part with ``by: admin``. An
+    empty rank leaves the key out, so an item of before CRM-Q32 stays as it
+    was."""
+    by = item.get("by") if isinstance(item.get("by"), Mapping) else {}
+    kept = {p: list(w) for p, w in sorted(ranks.items()) if w and by.get(p) != "admin"}
+    item.pop("ranked", None)
+    if kept:
+        item["ranked"] = kept
+    return item
 
 
 def merge_item(old: Mapping[str, Any] | None, new: Mapping[str, Any]) -> dict[str, Any]:
     """*new* put over *old*, the item of the same module, part by part. A
     part of *old* with ``by: admin`` stays, unless *new* is the admin's too:
-    the pipeline never replaces the choice of an admin (§18.13.4)."""
+    the pipeline never replaces the choice of an admin (§18.13.4).
+
+    CRM-Q32-1 item 5: ``ranked`` rides with its part. A part that *new*
+    writes takes the rank of *new*, or none. The rank of a part with
+    ``by: admin`` drops."""
+    parts = parts_of(new.get("module") if new.get("module") is not None
+                     else (old or {}).get("module"))
     if old is None:
-        return {**dict(new), "by": dict(new.get("by") or {})}
+        out = {**dict(new), "by": dict(new.get("by") or {})}
+        return _with_ranks(out, _ranks(new))
     out = dict(old)
     by = dict(old.get("by") or {}) if isinstance(old.get("by"), Mapping) else {}
     new_by = new.get("by") if isinstance(new.get("by"), Mapping) else {}
-    for part in ("purpose", *KEY_PARTS):
+    ranks = _ranks(old)
+    new_ranks = _ranks(new)
+    for part in parts:
         if part not in new:
             continue
         word = new_by.get(part, "ai")
@@ -470,11 +552,60 @@ def merge_item(old: Mapping[str, Any] | None, new: Mapping[str, Any]) -> dict[st
             continue
         out[part] = new[part]
         by[part] = word
+        if part in new_ranks:
+            ranks[part] = new_ranks[part]
+        else:
+            ranks.pop(part, None)
     for key in ("profile_version",):
         if key in new:
             out[key] = new[key]
     out["by"] = by
-    return out
+    return _with_ranks(out, ranks)
+
+
+def clear_parts(
+    old: Mapping[str, Any] | None, parts: Iterable[str],
+    cached: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """*old* with each of *parts* put back to the answer of the pipeline
+    (CRM-Q32-2, the value ``"@auto"`` of §18.14.6).
+
+    *cached* is the merged item that the pipeline cached for the module
+    (``zoho:map_pipeline`` ``items``). A part that it holds comes back with
+    its value, its ``by`` (``ai``, or ``code`` for a part that code answered
+    on the sample) and its rank. A part that it does not hold leaves the
+    item, so code or a later question answers it. Returns ``None`` when the
+    item holds no part after it."""
+    out = dict(old or {})
+    by = dict(out.get("by") or {}) if isinstance(out.get("by"), Mapping) else {}
+    ranks = _ranks(out)
+    cached_by = (cached or {}).get("by") if isinstance((cached or {}).get("by"), Mapping) else {}
+    cached_ranks = _ranks(cached)
+    for part in parts:
+        out.pop(part, None)
+        by.pop(part, None)
+        ranks.pop(part, None)
+        if cached is not None and part in cached:
+            out[part] = cached[part]
+            word = cached_by.get(part)
+            by[part] = word if word in ("ai", "code") else "ai"
+            if part in cached_ranks:
+                ranks[part] = cached_ranks[part]
+    out["by"] = by
+    if not any(part in out for part in parts_of(out.get("module"))):
+        return None
+    return _with_ranks(out, ranks)
+
+
+def revenue_of(stored: Mapping[str, Mapping[str, Any]]) -> tuple[str | None, str | None]:
+    """The meaning of revenue that the org-level item holds, and its ``by``:
+    ``(None, None)`` with no answer (§18.14.4). A reader applies
+    :data:`DEFAULT_REVENUE` itself."""
+    item = stored.get(ORG_MODULE)
+    value = (item or {}).get("revenue")
+    if value not in REVENUE_VALUES:
+        return None, None
+    return str(value), _stored_by(item or {}, "revenue")
 
 
 # ── A stored catalogue item ──────────────────────────────────────────────────
@@ -618,14 +749,20 @@ __all__ = [
     "CORE_FITS",
     "CORE_KEY_COLUMNS",
     "CORE_PURPOSES",
+    "DEFAULT_REVENUE",
     "KEY_PARTS",
     "KIND_CATALOGUE",
+    "MODULE_PARTS",
     "MONEY_PURPOSES",
+    "ORG_MODULE",
+    "ORG_PARTS",
     "PART_MEANINGS",
     "PART_TYPES",
     "PURPOSES",
     "PURPOSE_MEANINGS",
     "PURPOSE_WORDS",
+    "RANK_LIMIT",
+    "REVENUE_VALUES",
     "SHADOW_KEYS",
     "SLOT_PURPOSES",
     "STANDARD_PURPOSES",
@@ -634,6 +771,7 @@ __all__ = [
     "Field",
     "Source",
     "build",
+    "clear_parts",
     "code_amount",
     "code_date",
     "code_parent",
@@ -644,8 +782,10 @@ __all__ = [
     "is_catalogue",
     "item_problem",
     "merge_item",
+    "parts_of",
     "problem",
     "purposes_of",
+    "revenue_of",
     "role_purposes",
     "singulars",
     "stored_items",

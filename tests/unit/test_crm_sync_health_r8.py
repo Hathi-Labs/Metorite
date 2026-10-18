@@ -64,7 +64,8 @@ async def test_the_health_route_has_the_contract_shape(q) -> None:
     assert set(body) == {
         "last_run", "last_success_at", "next_run_at", "entities", "modules",
         "history", "credits", "running", "holds",  # holds: CRM-Q16
-        "activities"}  # activities: CRM-Q24
+        "activities",  # activities: CRM-Q24
+        "open_questions"}  # open_questions: CRM-Q32-4, None outside the list
     assert set(body["activities"]) == {
         "parentless", "dropped", "waiting", "recovered_7d", "unkept"}
     assert set(body["last_run"]) == {

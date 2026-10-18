@@ -35,7 +35,7 @@
 >
 > **Built 2026-10-17, merged as #1122, dark (`crm-batch-ai`):** CRM-Q31-1 to CRM-Q31-3, the catalogue that tells the AI what each module is for, and CRM-Q20-3a, the overlay in the aggregate and the AI tools (§18.13). No migration. CRM-Q20-3b is specified, not built. CRM-Q32 absorbs CRM-Q31-4.
 >
-> **Specified 2026-10-17, not built:** CRM-Q32, the open questions (§18.14). The CRM asks the admin each question that Jev could not answer with confidence. Each answer becomes a fixed fact in the mapping plan. Every app reads it through the one read seam `org facts`. No migration, and no model call of its own.
+> **Built 2026-10-18 on `crm-batch-q32`, not merged, dark:** CRM-Q32, the open questions (§18.14). CRM-Q32-1 to CRM-Q32-6 are built, the screens and both halves of CRM-Q32-4 too. CRM-Q32-7 is not, because it waits for WS-61. The CRM asks the admin each question that Jev could not answer with confidence. Each answer becomes a fixed fact in the mapping plan. Every app reads it through the one read seam `org facts`. No migration, and no model call of its own.
 >
 > **Built later, not merged (Batch M, `crm-batch-m`):** CRM-Q17a-1b, a "still empty" check of a stale entity (2026-10-16, §18.9.6, no migration). CRM-Q17a-2, the screens of the fill rank (2026-10-16, no migration). CRM-Q18-1b, two deadlocks of the plan lock (2026-10-16, no migration). CRM-Q19, the executor and the 200-record preview (2026-10-16, no migration).
 >
@@ -1290,7 +1290,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q30** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. A founder question set for CRM insights: an eval of the assistant over CRM data. §18.11 | P1 |
 | **CRM-Q30b** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. The read tools say when Zoho holds more records than the connected Zoho user can read. §18.11 | P1 |
 | **CRM-Q31** | The CRM catalogue for the AI: the purpose of each module, its key fields by meaning, and its links. Code first, then the decide tier. Q31-1 to Q31-3 merged as #1122, dark. Q31-4 is absorbed into CRM-Q32 (§18.14). §18.13 | P0 |
-| **CRM-Q32** | Open questions: the CRM asks the admin each question that Jev could not answer with confidence. Each answer is a fixed fact in the plan, and every app reads it through `org facts`. Seven slices (Q32-1 to Q32-7). §18.14 | P0 |
+| **CRM-Q32** | Open questions: the CRM asks the admin each question that Jev could not answer with confidence. Each answer is a fixed fact in the plan, and every app reads it through `org facts`. Seven slices (Q32-1 to Q32-7). Q32-1 to Q32-6 are built on `crm-batch-q32`, not merged (2026-10-18). §18.14 | P0 |
 | **CRM-Q20-3** | The overlay reaches the readers: `GET /crm/aggregate` and the AI tools first (Q20-3a), then the overlaid board with an "Unsorted" lane (Q20-3b). §18.13 | P1 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
@@ -5938,9 +5938,13 @@ change of the first, and runs the verification of both again.
 
 ### 18.14 Open questions (CRM-Q32, 2026-10-17)
 
-**Status (2026-10-17).** Specified, not built. Verified against code at
-`origin/main` `c972551cb`, with CRM-Q31-1 to CRM-Q31-3 and CRM-Q20-3a merged
-as #1122, dark. CRM-Q32 absorbs CRM-Q31-4: a correction of the catalogue is
+**Status (2026-10-18).** Built on `crm-batch-q32`, not merged, and dark
+behind `CRM_QUESTIONS_ORGS`: CRM-Q32-1 to CRM-Q32-6. The backend came first.
+Then CRM-Q32-3 built the screens, and the frontend half of CRM-Q32-4 built the
+"Needs you" item of Sync health. CRM-Q32-7 is not built, because it waits for
+a writer of a system page (WS-61). Specified 2026-10-17, and verified
+against code at `origin/main` `c972551cb`, with CRM-Q31-1 to CRM-Q31-3 and
+CRM-Q20-3a merged as #1122, dark. CRM-Q32 absorbs CRM-Q31-4: a correction of the catalogue is
 the same act as an answer to a question. No slice needs a migration.
 
 **Bottom line.** The CRM shows the admin each question that Jev could not

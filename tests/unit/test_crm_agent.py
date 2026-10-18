@@ -1558,3 +1558,163 @@ async def test_the_reports_of_an_overlaid_slot(monkeypatch) -> None:
     assert "- Open: 3 records · INR 600" in out and "Total: 5 records · INR 900." in out
     funnel = await _T.crm_report("funnel")
     assert "is not available" in funnel and "crm_aggregate" in funnel
+
+
+# ── WS-53 CRM-Q32-6: the chat line of an open question ──────────────────────
+
+
+def _q32_gateway(monkeypatch, answer, *, box_on: bool = True) -> list[str]:
+    from acb_common import get_settings
+
+    from tests.unit.test_crm_catalogue import _gateway
+
+    monkeypatch.setattr(get_settings(), "crm_questions_orgs", "*" if box_on else "",
+                        raising=False)
+    return _gateway(monkeypatch, answer)
+
+
+def _q32_catalogue(*, questions_on: bool = True, revenue_by: str | None = None) -> dict:
+    def entry(module: str, label: str, purpose: str | None, records: int,
+              questions: list[str], **more: Any) -> dict:
+        out = {"entity": f"module:{module}", "module": module, "kind": "module",
+               "label": label, "records": records, "purpose": purpose, "fields": {},
+               "open": [], **more}
+        if questions_on:
+            out["questions"] = questions
+        return out
+
+    return {
+        "mode": "mirror",
+        "entries": [
+            entry("Invoices", "Invoices", "invoice", 30, [],
+                  fields={"amount": {"key": "Total", "label": "Total", "type": "currency"}}),
+            entry("Payment_Received", "Collection", "payment_in", 8,
+                  ["key:Payment_Received:amount", "key:Payment_Received:date"],
+                  open=["amount", "date"]),
+            entry("Towers", "Towers", None, 4, ["purpose:Towers"], open=["purpose"]),
+        ],
+        "revenue": {"value": "payment_in" if revenue_by else None, "by": revenue_by},
+    }
+
+
+async def test_q32_list_modules_writes_an_open_question_and_the_basis_of_revenue(
+    monkeypatch,
+) -> None:
+    """Item 1: each open part reads "an open question", and the money block
+    names the basis of revenue."""
+    _q32_gateway(monkeypatch, lambda p: (200, _q32_catalogue()) if p == "/crm/catalogue"
+                 else (200, []))
+    out = await _T.crm_list_modules()
+    assert ("- Collection (module:Payment_Received): payment_in, 8 records. "
+            "Amount: an open question. Date: an open question.") in out
+    assert "- Towers (module:Towers): 4 records. Purpose: an open question." in out
+    assert "Revenue: Billed (the default until a CRM admin answers)." in out
+    _q32_gateway(monkeypatch, lambda p: (200, _q32_catalogue(revenue_by="admin"))
+                 if p == "/crm/catalogue" else (200, []))
+    assert "Revenue: Collected (a CRM admin chose it)." in await _T.crm_list_modules()
+    # Outside CRM_QUESTIONS_ORGS the entries carry no `questions`: no line.
+    _q32_gateway(monkeypatch, lambda p: (200, _q32_catalogue(questions_on=False))
+                 if p == "/crm/catalogue" else (200, []))
+    out = await _T.crm_list_modules()
+    assert "open question" not in out and "Revenue:" not in out
+
+
+async def test_q32_a_no_key_field_with_an_open_question_passes_the_href_on(
+    monkeypatch,
+) -> None:
+    """Item 2: the gateway puts ``href`` in the 422 detail. The tool passes
+    it on and imports no link builder."""
+    detail = {"code": "no_key_field", "href": "/crm?tab=settings&section=questions",
+              "message": "module:Payment_Received has no key field for @amount. "
+                         "crm_list_modules names the key fields of each module. "
+                         "A CRM admin can answer this in CRM settings, Open questions."}
+
+    def answer(path: str) -> tuple[int, dict]:
+        if path.startswith("/crm/aggregate"):
+            return 422, {"detail": detail}
+        return 200, {}
+
+    _q32_gateway(monkeypatch, answer)
+    out = await _T.crm_aggregate("module:Payment_Received", measure="sum_amount",
+                                 group_field="@date", bucket="month")
+    assert out.splitlines() == [
+        detail["message"], "Open questions: /crm?tab=settings&section=questions"]
+    # With no href, the refusal reads as before (#1126: "Refused: ..."), and
+    # it names no Open questions.
+    bare = {k: v for k, v in detail.items() if k != "href"}
+    _q32_gateway(monkeypatch, lambda p: (422, {"detail": bare}))
+    out = await _T.crm_aggregate("module:Payment_Received", measure="sum_amount",
+                                 group_by="owner")
+    assert out.startswith("Refused:") and "Open questions:" not in out
+    source = inspect.getsource(_T)
+    assert "crm_settings_href" not in source and "section=questions" not in source
+
+
+def _q32_total(catalogue: Any) -> Any:
+    def answer(path: str) -> tuple[int, Any]:
+        if path.startswith("/crm/aggregate"):
+            return 200, {"groups": [{"key": "a", "label": "a", "value": 10}], "total": 10,
+                         "field": "Total", "field_type": "currency", "keys": {"@amount": "Total"}}
+        if path == "/crm/catalogue":
+            return catalogue if isinstance(catalogue, tuple) else (200, catalogue)
+        return 200, []
+    return answer
+
+
+@pytest.mark.parametrize(("module", "catalogue", "measure", "line"), [
+    # A revenue total of an invoice module, no admin answer: the line.
+    ("Invoices", _q32_catalogue(), "sum_amount", True),
+    # And of a payment_in module.
+    ("Payment_Received", _q32_catalogue(), "sum_amount", True),
+    # An admin answered the meaning of revenue: no line.
+    ("Invoices", _q32_catalogue(revenue_by="admin"), "sum_amount", False),
+    # A module that is no money of revenue: no line.
+    ("Towers", _q32_catalogue(), "sum_amount", False),
+    # Not a revenue total: no line.
+    ("Invoices", _q32_catalogue(), "count", False),
+    # Outside CRM_QUESTIONS_ORGS: no line.
+    ("Invoices", _q32_catalogue(questions_on=False), "sum_amount", False),
+    # Item 3: a failed read of the catalogue adds no line.
+    ("Invoices", (500, {"detail": "boom"}), "sum_amount", False),
+])
+async def test_q32_a_revenue_total_names_its_default(
+    monkeypatch, module: str, catalogue: Any, measure: str, line: bool,
+) -> None:
+    """Item 2a: both sides of each condition, and item 3."""
+    _q32_gateway(monkeypatch, _q32_total(catalogue))
+    out = await _T.crm_aggregate(f"module:{module}", measure=measure, group_by="owner")
+    assert (_T.REVENUE_DEFAULT_LINE in out) is line, out
+    assert not out.startswith("CRM GET")
+
+
+def test_q32_no_tool_asks_in_the_chat_or_waits_for_an_answer() -> None:
+    """Item 4: a CRM tool never asks a question and never waits."""
+    source = inspect.getsource(_T)
+    for word in ("ask_questions", "ElicitationCard", "elicit", "wait_for", "input("):
+        assert word not in source, word
+
+
+async def test_q32_a_dark_box_sends_no_catalogue_read_for_a_total(monkeypatch) -> None:
+    """Fix round: with CRM_QUESTIONS_ORGS empty, a sum_amount on a module
+    makes no extra GET /crm/catalogue (the dark cost is 0)."""
+    seen = _q32_gateway(monkeypatch, _q32_total(_q32_catalogue()), box_on=False)
+    out = await _T.crm_aggregate("module:Invoices", measure="sum_amount", group_by="owner")
+    assert _T.REVENUE_DEFAULT_LINE not in out
+    assert "/crm/catalogue" not in seen and any(p.startswith("/crm/aggregate") for p in seen)
+
+
+@pytest.mark.parametrize("box_on", [False, True])
+def test_q32_the_addendum_gains_no_word_on_a_dark_box(monkeypatch, box_on: bool) -> None:
+    """Fix round: the open-question line and org_facts render only on a box
+    that lists an org."""
+    from acb_common import get_settings
+    from acb_skills.addendum import render_injected_tools_addendum
+
+    monkeypatch.setattr(get_settings(), "crm_questions_orgs", "*" if box_on else "",
+                        raising=False)
+    scope = frozenset({"crm_aggregate", "crm_list_modules", "org_facts"})
+    for sub in (False, True):
+        text = render_injected_tools_addendum(is_sub_agent=sub, effective_scope=scope)
+        assert ("org_facts(" in text) is box_on
+        if not sub:
+            assert ("calls an open question" in text) is box_on

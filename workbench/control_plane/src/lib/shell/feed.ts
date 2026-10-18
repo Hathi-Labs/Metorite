@@ -921,6 +921,8 @@ export const FEED_KIND_LABELS: Readonly<Record<string, string>> = {
   agent_asks: "Waiting for your answer",
   // WS-53 CRM-Q28 item 14: the weekly CRM digest is ready in Reports.
   digest_ready: "Weekly digest",
+  // WS-53 CRM-Q32-4: new questions about the CRM data, for a CRM admin.
+  crm_open_questions: "Open questions",
 };
 
 /**

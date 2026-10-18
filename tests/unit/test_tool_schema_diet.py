@@ -126,6 +126,11 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     'install_dependency': {'params': {'packages': 'string'},
                            'required': ['packages']},
     'list_integrations': {'params': {}, 'required': []},
+    # WS-53 CRM-Q32-5 (crm_platform.md §18.14.4): the org-facts read. It
+    # loads with the `crm` family only, so the core floor and its total do
+    # not move. No member or org argument: the gateway binds them (R5).
+    'org_facts': {'params': {'app': 'string', 'offset': 'integer', 'query': 'string'},
+                  'required': []},
     # 2026-10-15, agent reads page part 2 (test_read_tool_paging.py): an
     # optional `offset` on list_workflows, query_history and recall_notes.
     # Each read every row into the context, with no page. A new optional

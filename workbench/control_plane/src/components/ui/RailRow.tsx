@@ -32,6 +32,10 @@
  *   `actions` on hover, on keyboard focus in the row, or while `pinned`. The
  *   actions take NO width at rest, which is the room the label gets back.
  *   `globals.css` (`rail-row-actions`, `rail-row-meta`) holds the swap.
+ *   `metaTone="attention"` draws the count in the tone of the `primary`
+ *   `Badge`, for a count of items that wait for the member (WS-53 CRM-Q32-3).
+ *   An attention count stays on hover and on focus. The actions take only
+ *   the place of a `muted` count.
  *
  * ## Touch
  *
@@ -61,6 +65,7 @@
 import { useRef } from "react";
 
 import { useViewMode } from "@/components/ViewModeProvider";
+import { BADGE_SHAPE, badgeTone } from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { useOverflowTip } from "@/components/ui/OverflowTip";
 
@@ -72,6 +77,22 @@ export const RAIL_INDENT_PX = 16;
 
 /** A level that groups (a space, a section head) or an item in it. */
 export type RailRowTier = "group" | "item";
+
+/**
+ * The tone of `meta`. `muted` is a quiet count that gives way to the
+ * actions. `attention` is a count of items that wait for the member: the
+ * tone of the `primary` `Badge`, and it stays on hover and on focus.
+ */
+export type RailRowMetaTone = "muted" | "attention";
+
+/** The classes of the trailing count, from its tone. Pure, so the test can read it. */
+export function railMetaClass(tone: RailRowMetaTone): string {
+  return tone === "attention"
+    ? // No `rail-row-meta`: that utility hides the count on hover. The
+      // `primary` Badge's own shape and tone, so no new token (§18.14.5).
+      `rail-row-count ${BADGE_SHAPE} ${badgeTone("primary")} ml-1 shrink-0 px-1.5 text-[11px] font-medium tabular-nums`
+    : "rail-row-meta shrink-0 text-[11px] tabular-nums text-muted-foreground";
+}
 
 /** A row that opens and closes, such as a tree node with children. */
 export interface RailRowExpand {
@@ -140,6 +161,11 @@ export interface RailRowProps {
   icon?: React.ReactNode;
   /** What the trailing zone shows at rest, such as a count. Muted. */
   meta?: React.ReactNode;
+  /**
+   * The tone of `meta`. Default `muted`. `attention` draws in `--primary`
+   * and stays visible on hover (WS-53 CRM-Q32-3).
+   */
+  metaTone?: RailRowMetaTone;
   /** The row's controls. Hidden at rest, shown on hover or focus. */
   actions?: React.ReactNode;
   /**
@@ -195,6 +221,7 @@ export function RailRow({
   tree = false,
   icon,
   meta,
+  metaTone = "muted",
   actions,
   phoneActions,
   pinned = false,
@@ -279,7 +306,8 @@ export function RailRow({
       data-rail-row=""
       data-pinned={held ? "" : undefined}
       // The count gives way only to actions that take its place. A row with
-      // no actions keeps its count on hover and on focus.
+      // no actions keeps its count on hover and on focus. An attention count
+      // never gives way, so it carries no `rail-row-meta`.
       data-has-actions={hoverActions ? "" : undefined}
       className={`${railRowClass({ selected, tier, touch: isMobile })} ${className}`}
     >
@@ -334,7 +362,7 @@ export function RailRow({
             {label}
           </span>
           {meta != null && meta !== false ? (
-            <span className="rail-row-meta shrink-0 text-[11px] tabular-nums text-muted-foreground">
+            <span className={railMetaClass(metaTone)} data-meta-tone={metaTone}>
               {meta}
             </span>
           ) : null}

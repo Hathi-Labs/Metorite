@@ -28,6 +28,10 @@
  * §20.4). Each child is a `RailRow` at depth 1, as a saved view is. While a
  * section is open, the child row takes the highlight from the settings row.
  *
+ * Since WS-53 CRM-Q32-3 (§18.14.5) the "CRM settings" row and the "Open
+ * questions" row show the open count of an admin, with `metaTone="attention"`.
+ * The page passes the count only to an admin, and the count hides at 0.
+ *
  * The page owns where the rail goes: a column beside the content on a
  * desktop, and the shell's drawer on a phone. This file draws the rows only.
  * Fence: `src/lib/railRows.test.ts`.
@@ -82,13 +86,18 @@ export type RailSettings = {
   /** The section on screen, or null on another tab. */
   active: SettingsSectionId | null;
   onSelect: (section: SettingsSectionId) => void;
+  /**
+   * CRM-Q32-3: the open questions of an admin. `null` or absent draws no
+   * count. The settings row and the "Open questions" row show it.
+   */
+  questions?: number | null;
 };
 
 /**
  * The child rows of the settings row: one `RailRow` at depth 1 for each
  * section. No hook, so the test can read its element tree.
  */
-export function SettingsSectionRows({ sections, active, onSelect }: RailSettings) {
+export function SettingsSectionRows({ sections, active, onSelect, questions = null }: RailSettings) {
   return (
     <>
       {sections.map((section) => {
@@ -101,6 +110,8 @@ export function SettingsSectionRows({ sections, active, onSelect }: RailSettings
             guides
             selected={selected}
             icon={<Icon name={section.icon} className="h-3.5 w-3.5 shrink-0" />}
+            meta={section.id === "questions" ? questions : null}
+            metaTone="attention"
             buttonProps={{ "aria-current": selected ? "page" : undefined }}
             onSelect={() => onSelect(section.id as SettingsSectionId)}
           />
@@ -234,6 +245,9 @@ export default function CrmRail({
         <RailRow
           label={view.label}
           selected={selected}
+          // CRM-Q32-3: the open questions of an admin, on the settings row.
+          meta={view.id === "settings" ? (settings?.questions ?? null) : null}
+          metaTone="attention"
           icon={<Icon name={view.icon} className="h-4 w-4 shrink-0" />}
           buttonProps={{ "aria-current": selected ? "page" : undefined }}
           onSelect={() => (module ? modules?.onSelect(module) : onSelect(view.id))}

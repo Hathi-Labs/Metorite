@@ -42,6 +42,7 @@
     "crm_stage_dwell",
     "crm_list_modules",
     "crm_list_module_records",
-    "crm_get_module_record"
+    "crm_get_module_record",
+    "org_facts"
   ]
 }
