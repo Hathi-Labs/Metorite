@@ -1,6 +1,6 @@
 # GitHub — a Metorite-owned GitHub App, webhooks, and pull requests on the task
 
-**Status: 🔨 GH-1 to GH-7 BUILT on branch `github-batch-a`, fix rounds 1 and 2 done, in review (2026-10-18).** GH-1 to GH-6 ship dark behind `github_app_enabled`. GH-7 goes live at the merge (§16). The migration is 282. GH-0 (register the two Apps) and GH-8 (go live) wait for the owner. §16.1 records each slice and the fix round.
+**Status: 🔨 GH-1 to GH-7 BUILT on branch `github-batch-a`, fix rounds 1 to 5 done, in review (2026-10-18).** GH-1 to GH-6 ship dark behind `github_app_enabled`. GH-7 goes live at the merge (§16). The migration is 282. GH-0 (register the two Apps) and GH-8 (go live) wait for the owner. §16.1 records each slice and the fix round.
 
 The owner decided G-1 to G-9 on 2026-10-18 (§3). No owner question is open (§20). **Verified against code on 2026-10-18 at `origin/main` `1625cca13`.** The GitHub facts in §4.2 were read on docs.github.com on 2026-10-18.
 
@@ -252,7 +252,8 @@ A webhook for a disconnected installation finds no org (§8.3), so it is dropped
 - **One writer.** `PUT /integrations/github/token` with `{token}`, behind `integrations:manage`. It calls `GET https://api.github.com/user` with the token, and refuses a token that GitHub refuses with 422. Then it stores the token through `save_token` (the device-token writer, renamed) as a `token` row. It does not call `_refuse_provider_key_without_byok`.
 - **A token replaces a live App only after a confirm** (fix round 1, item 3). The org has one `github` row, so a token row takes the place of the App row. Pull requests and checks then stop coming by webhook, and a merge no longer moves a task. So the route answers 409 `app_connected` while a live App row exists, unless the body holds `replace_app: true`. It asks GitHub nothing first. The card shows "Replace the Metorite App with this token?" and sends `replace_app` only after the admin confirms.
 - **The chat's setup token** (fix round 1, item 8). A chat agent writes `<<<SETUP:github:GITHUB_TOKEN=…>>>`. Before the fix, the executor and the chat BFF sent it to configure, which answers 422 for it. The agent still said that it saved the key. Now `orchestrator/setup_tokens.py` and `lib/setupTokens.ts` send `GITHUB_TOKEN` to this one writer, with its gates. The other keys go to configure in their own request, so a GitHub refusal does not drop them. A refusal adds one line to the answer, with no token in it. The chat sends no `replace_app`, so model output never replaces a live App. `GITHUB_TOKEN` stays in the guide's `env_vars`, because the chat setup still asks for it.
-- **The model's SETUP marker is never stored** (fix round 2, item 5, narrowed in fix round 3). Before the fix, the executor saved the native session before it removed the marker, and the chat transcript kept the raw answer. So a token sat in plain text. Now `acb_common.setup_markers` replaces each marker with `[setup value removed: <service> <key>]` on the write path of three stores. They are the native session body, `chat._upsert_messages` (the one seam of the browser save, the fold and the mint) and `run_trace._persist_row`. A marker that a cut stream never closed goes too, and a marker never reaches past the end of its own JSON string.
+- **The model's SETUP marker is never stored** (fix round 2, item 5, narrowed in fix round 3). Before the fix, the executor saved the native session before it removed the marker, and the chat transcript kept the raw answer. So a token sat in plain text. Now `acb_common.setup_markers` replaces each marker with `[setup value removed: <service> <key>]` on the write path of three stores. They are the native session body, `chat._upsert_messages` (the one seam of the browser save, the fold and the mint) and `run_trace._persist_row`. A marker that a cut stream never closed goes too.
+- **The whole value goes, and only decoded text is redacted** (fix round 5, item 1). The value of a marker runs to `>>>`, and quotes belong to it. So `<<<SETUP:github:GITHUB_TOKEN="ghp_…">>>` leaves no token. Round 3 stopped the value at a quote to protect serialized JSON, and the whole token then stayed. Now `redact` takes decoded text only. JSON is parsed, redacted with `redact_tree`, and serialized again, so it stays valid. A source fence refuses `redact(json.dumps(...))`.
 - ⚠️ **A member's own pasted secret is not detected.** Metorite stores a key that a member pastes as a plain chat message as typed. It goes to `chat_message`, to the run input, and to memory (Mem0 and the Graphiti `add_episode`). So the claim is narrow: the model's marker is never stored. The remedy for a key that a chat saw is to rotate it. HANDOFF H-357 asks the owner for the rotation, and for a one-off scrub of the rows that exist.
 - **The other writers go.** configure and `PUT /keys` answer 422 for `GITHUB_TOKEN` with "Connect GitHub in Integrations." `POST …/device/start` and `POST …/device/poll` answer 410, as `connect-cli` does.
 - **The UI.** The GitHub card in Integrations shows Connect GitHub. A fold named "Advanced: use a personal access token" holds the token field. `GitHubDeviceConnect.tsx` goes, and its four importers lose it. `GitHubAccountBadge.tsx` stops calling `connect-cli`.
@@ -336,6 +337,7 @@ GitHub can send events out of order, and can send one twice. Each handler holds 
 
 - A `pull_request` write needs `pull_request.updated_at >= pr_updated_at`, or `pr_updated_at IS NULL`. An older event writes nothing. **The same second writes too** (fix round 1, item 5). GitHub gives whole seconds, so an open and a merge in one second carry one stamp, and `>` dropped the close. A replay writes the same facts again, so `>=` is safe.
 - **The order inside one second** (fix round 2, item 3). `pr_rank` stores the rank of the last write. An open event is 0, and `merged` or `closed` is 1. `reopened` is 2, because a reopen follows a close. At an equal stamp, an event writes only when its rank is not lower than the row's. So a late `opened` cannot undo a merge. A close then a reopen in one second ends `open`, in either order of delivery. A read (the poll or the lazy read) gives the state at GitHub now. So at an equal stamp, a read always writes. A terminal row with no rank yet counts as rank 1.
+- **A merge is final** (fix round 5, item 3). GitHub never unmerges a pull request, so a row in `merged` takes only a `merged` write. A stale read or a late event of `closed` or `open` cannot turn it back. The probe PROBE5b shows the risk. A close, a reopen and a merge come in one second, and then a stale `closed` read. Without the guard, a later read counts the move INTO `merged` a second time. We chose the guard, and we did not accept the window.
 
   ⚠️ **A known window: a stale read at an equal stamp** (fix round 4, item 5). A read always wins at an equal stamp, and GitHub stamps whole seconds. GitHub can answer a read just BEFORE a change in the same second. That read can write the older state over a newer event. The next event of the pull request, or the next poll of an open row, repairs it. A read can see `open` over a terminal row of the same second. That read becomes rank 2, so a redelivered event of that second cannot undo it. The fence is `test_own_3_*`. The write takes `FOR UPDATE` in its CTE, so a read that runs during a webhook write waits for its commit. The fence is `test_own_1_*`.
 - **One write path.** `github_sync.apply_pull_request` writes the facts. The webhook, the poll (§11) and the lazy read of `GET /refs` (§11) all call it.
@@ -660,6 +662,32 @@ Three things stay safe. An org's token row keeps working with no action. `GITHUB
 | 5 | The model's SETUP marker never reaches a stored chat, session or run trace. A member's pasted secret is not detected. H-357 asks for a rotation and a scrub | GH-7 | §7.6 |
 | 6 | The private-repo refusal names a missing repo too | GH-3 | §6.3 |
 
+**Fix round 3 (2026-10-18).** The product re-review of round 2 found 3 P2. 4 new mutations, each red when run:
+
+| # | Fix | Slice | Section |
+|---|---|---|---|
+| 1 | A merge after a lost reopen runs §12: a move INTO `merged` counts from `closed` too | GH-5, GH-6 | §8.6 |
+| 2 | A failed checks read of the poll stamps `checks_fetched_at`, so unreadable rows do not starve an org | GH-5 | §11 |
+| 3 | The redaction claim is narrow, and H-357 makes rotation the remedy | GH-7 | §7.6 |
+
+**Fix round 4 (2026-10-18).** The independent verification of round 2 found 1 P1, 1 P2 and 3 more points. 10 new mutations, each red when run:
+
+| # | Fix | Slice | Section |
+|---|---|---|---|
+| 1 | A refused read of a merged or closed reference marks nothing and crosses nothing. `on_unblocked` skips a reference that never blocked | GH-5, GH-6 | §12.3 |
+| 2 | `chat_session.last_preview`, the title and `POST /memory/{scope}/add` store no marker | GH-7 | §7.6 |
+| 3 | Fences for `FOR UPDATE` in the CTE (OWN-1) and the rank promotion of a read (OWN-3) | GH-5 | §8.6 |
+| 4 | The lazy read fails closed when the GitHub row cannot be read | GH-5 | §11 |
+| 5 | The gateway `AGENTS.md` states the write order, and §8.6 records the stale-read window | — | §8.6 |
+
+**Fix round 5 (2026-10-18).** The re-verification of round 4 found 2 P2, both secrets in storage, and one point of R7. 6 new mutations, each red when run:
+
+| # | Fix | Slice | Section |
+|---|---|---|---|
+| 1 | `redact` takes the whole value, quotes too, and decoded text only | GH-7 | §7.6 |
+| 2 | Every write of Mem0 and Graphiti redacts, the run-end extraction included | GH-7 | §7.6, §17 |
+| 3 | A fence for the closed half of the transition, and a merge is final | GH-5, GH-6 | §8.6 |
+
 ## 17. Verification commands
 
 First run `eval "$(bash scripts/dev_db.sh --export)"`, or use a private ladder database. Never run two R8 runs at once. A new R8 suite starts with `pytestmark = _DB_GATE`, or `deploy.yml` errors.
@@ -675,7 +703,14 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/integra
 
 **Not built: a scrub of the exact value** (fix round 3, item 3). The executor takes a value from a marker. It does not yet remove that same value from the stored history of the turn or from the memory input. A member who pastes the value again in plain text is not covered either. H-357 holds the remedy: rotate the key.
 
-**Not built: a strip in the Tier 1 stream** (fix round 4, item 2). The native stream sends each text delta to the browser as the model writes it, and a marker can span two deltas. A strip there needs a buffer that holds back a part of a marker, so this round does not build it. The browser then shows the marker, and the stream relay keeps it in Redis for at most 1 hour. The durable stores redact it: `chat_message`, `chat_session.last_preview` and the title, the native session, the run trace and the Mem0 add (`/memory/{scope}/add`).
+**Not built: a strip in the Tier 1 stream** (fix round 4, item 2). The native stream sends each text delta to the browser as the model writes it, and a marker can span two deltas. A strip there needs a buffer that holds back a part of a marker, so this round does not build it. The browser then shows the marker, and the stream relay keeps it in Redis for at most 1 hour. These durable stores redact it, each on its one write path:
+
+- `chat_message`: `chat._upsert_messages`, for the browser save, the fold and the mint.
+- `chat_session.last_preview` and the title: the session upsert and the PATCH.
+- The native session: `native_session_store._session_body`.
+- The run trace: `run_trace._persist_row`.
+- Mem0: `MemoryClient.add`, the one write of Mem0 (fix round 5, item 2). It covers the run-end extraction of `routes/agent.py` and `main.py` (`add_memories_background`), the scoped helpers, and `POST /memory/{scope}/add`.
+- Graphiti: `GraphitiClient.add_episode`, the one write of an episode (fix round 5, item 2). It covers the run-end episode of `routes/agent.py` and `main.py`.
 
 Six vitest failures are known and come from CRLF line ends only: `layoutBoundary` (two), `railSessions`, `emailLink` and `reportsLiveOverview` (two). Any other failure is real. With `-rs`, a skipped R8 test shows its reason, and a skip is not a pass.
 
@@ -734,3 +769,5 @@ R9 does not apply. This spec adds no app. The Integrations app's manifest is in 
 - 2026-10-18 — Fix round 1 closes 4 P1, 5 P2 and 5 verifier points (§16.1). The new rules are in §6.3, §7.1, §7.3, §7.6, §8.5, §8.6, §9.1, §10.3, §11, §12.1 to §12.3, §13.1 and §15. GH-7 goes live at the merge, and §16 says why. A merge can start a published workflow (§12.3 step 7).
 - 2026-10-18 — Fix round 2 closes 1 P1, 3 P2, a security note and a wording note (§16.1). Merge-to-Done runs on a transition only, and a 403 never unblocks. `pr_rank` orders one second. The trailing checks read keeps the last mark, and the stores keep no SETUP marker of the model. Migration 282 gains `unblocked_at` and `pr_rank`.
 - 2026-10-18 — Fix round 3 closes 3 P2. A merge after a lost reopen runs §12 (a move INTO `merged` counts from `closed` too, §8.6). A failed checks read of the poll stamps `checks_fetched_at`, so unreadable rows do not starve an org (§11). §7.6 narrows the redaction claim: the model's marker is never stored, and a member's pasted secret is not detected.
+- 2026-10-18 — Fix round 4 closes 1 P1, 1 P2 and 3 more points. A refused read of a merged reference no longer runs §12 again (§12.3). The session preview and the memory route store no marker. The lazy read fails closed. New fences hold `FOR UPDATE` and the rank promotion of a read, and §8.6 records the stale-read window.
+- 2026-10-18 — Fix round 5 closes 2 P2 and one point of R7. `redact` takes the whole value of a marker, quotes too, on decoded text only (§7.6). Every write of Mem0 and Graphiti redacts (§17). A fence holds the closed half of the transition, and a merge is final (§8.6).
