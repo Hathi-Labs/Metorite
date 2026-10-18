@@ -25,6 +25,7 @@ rehearsal, with the seed of ``test_crm_questions_r8.py``.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import pytest
@@ -383,3 +384,197 @@ async def test_an_undo_of_a_dismissal_opens_the_question_again(q_env, app_engine
     assert cursor_state(p, p.org_a, "zoho:questions")["dismissed"] == {}
     again = await call(p, _user(p.org_a), "DELETE", f"{Q}/purpose:Towers/dismiss")
     assert again.status_code == 404
+
+
+# ── CRM-Q32-9a: an amount can be the sum of several fields ──────────────────
+#
+# crm_platform.md §18.14.10, items 6, 7 and 8. Collection (Fee_Receipts) has
+# two currency parts, Part_A and Part_B.
+
+AMOUNT_Q = "key:Fee_Receipts:amount"
+HOSTILE = ["a'--", "@amount", "x" * 300]
+
+
+class _Statements:
+    """Each statement that the driver gets, as text, while the block runs."""
+
+    def __init__(self) -> None:
+        self.seen: list[str] = []
+        self.params: list[Any] = []
+
+    def _record(self, _conn, _cursor, statement, parameters, *_args) -> None:
+        self.seen.append(statement)
+        self.params.append(parameters)
+
+    def __enter__(self) -> _Statements:
+        from sqlalchemy import event
+        from sqlalchemy.engine import Engine
+
+        event.listen(Engine, "before_cursor_execute", self._record)
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        from sqlalchemy import event
+        from sqlalchemy.engine import Engine
+
+        event.remove(Engine, "before_cursor_execute", self._record)
+
+    def reading_records(self) -> list[str]:
+        return [s for s in self.seen if "crm_module_records" in s]
+
+
+async def test_an_answer_of_a_sum_applies_at_once_and_undo_takes_it_back(
+    q_env, app_engine,
+) -> None:
+    """Item 8: the answer route takes a list, the catalogue reads it, and
+    Undo of the list sends "@auto"."""
+    p = q_env
+    seed_a(p)
+    before = len(versions(p, p.org_a))
+    body = (await call(p, _user(p.org_a), "GET", f"{Q}?limit=200")).json()
+    card = next(q for q in body["shown"] if q["id"] == AMOUNT_Q)
+    # The offer rule: Part_A and Part_B each fill 50% or more.
+    assert [s["value"] for s in card["sums"]] == ["Part_A", "Part_B"]
+    got = await answer(p, p.org_a, AMOUNT_Q, ["Part_A", "Part_B"])
+    assert got.status_code == 200, got.text
+    assert got.json()["line"] == "Totals of Collection now use the sum of Part A and Part B."
+    assert got.json()["undo"] == {"module": "Fee_Receipts", "part": "amount",
+                                  "value": "@auto", "question": None}
+    item = item_of(p, p.org_a, "Fee_Receipts")
+    assert (item["amount"], item["by"]["amount"]) == (["Part_A", "Part_B"], "admin")
+    assert len(versions(p, p.org_a)) == before + 1
+    assert AMOUNT_Q not in await open_ids(p, p.org_a)
+    cat = (await call(p, _user(p.org_a), "GET", "/crm/catalogue")).json()
+    entry = next(e for e in cat["entries"] if e["module"] == "Fee_Receipts")
+    assert entry["fields"]["amount"]["key"] == "Part_A+Part_B"
+    assert [f["key"] for f in entry["fields"]["amount"]["parts"]] == ["Part_A", "Part_B"]
+    done = (await call(p, _user(p.org_a), "GET", f"{Q}?all=1&limit=200")).json()
+    used = next(q for q in done["answered"] if q["id"] == AMOUNT_Q)
+    assert used["current"] == ["Part_A", "Part_B"]
+    undo = await call(p, _user(p.org_a), "PUT", "/crm/catalogue/Fee_Receipts",
+                      {"amount": "@auto"})
+    assert undo.status_code == 200, undo.text
+    assert "amount" not in (item_of(p, p.org_a, "Fee_Receipts") or {})
+    assert AMOUNT_Q in await open_ids(p, p.org_a)
+
+
+async def test_the_put_takes_a_sum_and_refuses_a_bad_one(q_env, app_engine) -> None:
+    """Item 8: PUT /crm/catalogue/{module} takes a list for amount only."""
+    p = q_env
+    seed_a(p)
+    put = await call(p, _user(p.org_a), "PUT", "/crm/catalogue/Fee_Receipts",
+                     {"amount": ["Part_B", "Part_A"]})
+    assert put.status_code == 200, put.text
+    assert put.json()["entry"]["fields"]["amount"]["key"] == "Part_B+Part_A"
+    before = versions(p, p.org_a)
+    for body in ({"amount": ["Part_A"]}, {"amount": ["Part_A", "Part_A"]},
+                 {"amount": ["Part_A", "Paid_On"]}, {"date": ["Paid_On", "Part_A"]},
+                 {"amount": ["Part_A", "Part_B", "Track", "Buyer", "Name", "Paid_On"]}):
+        got = await call(p, _user(p.org_a), "PUT", "/crm/catalogue/Fee_Receipts", body)
+        assert got.status_code == 422, (body, got.text)
+        assert got.json()["detail"]["code"] == "bad_answer", body
+    assert versions(p, p.org_a) == before
+
+
+async def test_a_hostile_key_in_a_sum_is_a_422_and_never_reaches_the_sql_text(
+    q_env, app_engine,
+) -> None:
+    """Item 6: each hostile key gives 422 at the answer route, the PUT and
+    the sum check, and no statement holds it."""
+    p = q_env
+    seed_a(p)
+    before = versions(p, p.org_a)
+    with _Statements() as sql:
+        for key in HOSTILE:
+            got = await answer(p, p.org_a, AMOUNT_Q, ["Part_A", key])
+            assert got.status_code == 422, (key, got.text)
+            put = await call(p, _user(p.org_a), "PUT", "/crm/catalogue/Fee_Receipts",
+                             {"amount": ["Part_A", key]})
+            assert put.status_code == 422, (key, put.text)
+            check = await call(p, _user(p.org_a), "GET",
+                               f"{Q}/{AMOUNT_Q}/sum-check?fields=Part_A&fields={key}")
+            assert check.status_code == 422, (key, check.text)
+    assert sql.seen, "the listener saw the statements"
+    for statement in sql.seen:
+        for key in HOSTILE:
+            assert key not in statement, (key, statement)
+    assert versions(p, p.org_a) == before
+
+
+async def test_the_sum_check_is_one_bounded_statement_with_the_org(q_env, app_engine) -> None:
+    """Item 7: the coverage of a ticked set, and a warning when a pair holds
+    the same value on half or more of the records that set both."""
+    p = q_env
+    seed_a(p)
+    seed_b(p)
+    path = f"{Q}/{AMOUNT_Q}/sum-check?fields=Part_A,Part_B"
+    with _Statements() as sql:
+        got = await call(p, _user(p.org_a), "GET", path)
+    assert got.status_code == 200, got.text
+    body = got.json()
+    assert (body["records"], body["covered"], body["overlap"], body["capped"]) == (
+        3, 3, 0, False)
+    assert body["line"] == "These 2 fields cover 3 of 3 records (100%)."
+    assert body["warnings"] == []
+    assert body["pairs"] == [{"fields": ["Part_A", "Part_B"], "labels": ["Part A", "Part B"],
+                              "both": 0, "equal": 0}]
+    (statement,) = sql.reading_records()
+    bound = sql.params[sql.seen.index(statement)]
+    assert re.search(r"organization_id = CAST\(\$\d+ AS uuid\)", statement), statement
+    assert re.search(r"ORDER BY id LIMIT \$\d+\) r$", statement), statement
+    assert "Part_" not in statement
+    values = list(bound.values()) if isinstance(bound, dict) else list(bound)
+    assert 10_000 in values and str(p.org_a) in {str(v) for v in values}
+    # Two rows set both parts to one value, and one row sets both to two.
+    with p.admin_engine.begin() as c:
+        for name, fields in (("R-4", {"Part_A": 50, "Part_B": "50"}),
+                             ("R-5", {"Part_A": 7, "Part_B": 7}),
+                             ("R-6", {"Part_A": 1, "Part_B": 2}),
+                             ("R-7", {"Track": "x"})):
+            c.execute(text(
+                "INSERT INTO crm_module_records (organization_id, module, ext_source, "
+                "ext_id, name, fields) VALUES (CAST(:o AS uuid), 'Fee_Receipts', 'zoho', "
+                ":e, :e, CAST(:f AS jsonb))"),
+                {"o": p.org_a, "e": name, "f": json.dumps({"Name": name, **fields})})
+    body = (await call(p, _user(p.org_a), "GET", path)).json()
+    assert (body["records"], body["covered"], body["overlap"]) == (7, 6, 3)
+    assert body["line"] == "These 2 fields cover 6 of 7 records (86%)."
+    assert body["warnings"] == [
+        "Part A and Part B hold the same value on 67% of records. A sum counts it twice."]
+
+
+async def test_the_sum_check_refuses_a_bad_set_before_any_record_is_read(
+    q_env, app_engine, monkeypatch,
+) -> None:
+    """Item 7: a bad shape is a 422 before any statement, and a key that is
+    not a currency field is a 422 before the read of a record. It needs a
+    CRM admin and questions_allowed, and org B cannot check org A."""
+    from acb_common import get_settings
+
+    p = q_env
+    seed_a(p)
+    seed_b(p)
+    with _Statements() as sql:
+        for fields in ("Part_A", "Part_A,Part_A", "Part_A,Part_B,A,B,C,D"):
+            got = await call(p, _user(p.org_a), "GET",
+                             f"{Q}/{AMOUNT_Q}/sum-check?fields={fields}")
+            assert got.status_code == 422, (fields, got.text)
+    assert sql.seen == [], "a bad shape runs no statement"
+    with _Statements() as sql:
+        for fields in ("Part_A,Paid_On", "Part_A,Gone", "Part_A,Track"):
+            got = await call(p, _user(p.org_a), "GET",
+                             f"{Q}/{AMOUNT_Q}/sum-check?fields={fields}")
+            assert got.status_code == 422, (fields, got.text)
+            assert got.json()["detail"]["code"] == "bad_answer"
+    assert sql.reading_records() == []
+    other = await call(p, _user(p.org_a), "GET", f"{Q}/key:Fee_Receipts:date/sum-check"
+                       "?fields=Part_A,Part_B")
+    assert other.status_code == 422, other.text
+    member = await call(p, _user(p.org_a, admin=False), "GET",
+                        f"{Q}/{AMOUNT_Q}/sum-check?fields=Part_A,Part_B")
+    assert member.status_code == 403, member.text
+    b = await call(p, _user(p.org_b), "GET", f"{Q}/{AMOUNT_Q}/sum-check?fields=Part_A,Part_B")
+    assert b.status_code == 404 and b.json()["detail"]["code"] == "unknown_module"
+    monkeypatch.setattr(get_settings(), "crm_questions_orgs", "", raising=False)
+    off = await call(p, _user(p.org_a), "GET", f"{Q}/{AMOUNT_Q}/sum-check?fields=Part_A,Part_B")
+    assert off.status_code == 404 and off.json()["detail"]["code"] == "questions_off"

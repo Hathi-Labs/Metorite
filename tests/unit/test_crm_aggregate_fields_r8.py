@@ -1148,3 +1148,150 @@ async def test_a_key_word_with_no_key_field_is_a_422(keyed, app_engine, monkeypa
     real = await _agg(keyed, a, entity="module:Invoices", measure="sum",
                       field="Grand_Total", group_by="owner")
     assert real["total"] == 1550.5 and real["keys"] == {}
+
+
+# ── 10. An amount can be the sum of several fields (WS-53 CRM-Q32-9a) ──────
+#
+# crm_platform.md §18.14.10, items 4 and 5. The admin stored the amount of
+# Collection as the sum of three currency fields. The rows mix numbers,
+# numeric strings, blanks, text and missing keys.
+
+_SUM_KEYS = ["Billing_Amount", "IP", "EB_Net_Amount"]
+
+_SUM_DEFS = [
+    ("Billing_Amount", "currency", None, False, False),
+    ("IP", "currency", None, False, False),
+    ("EB_Net_Amount", "currency", None, False, False),
+    ("Rate", "percent", None, False, False),
+]
+
+#: ``(ext id, owner, fields, the sum of the row or None)``.
+_SUM_ROWS: list[tuple[str, str, dict[str, Any], float | None]] = [
+    ("s1", "a@q329.test", {"Billing_Amount": 1000, "IP": 200}, 1200.0),
+    ("s2", "a@q329.test", {"Billing_Amount": "500.5", "IP": ""}, 500.5),
+    ("s3", "b@q329.test", {"EB_Net_Amount": 300}, 300.0),
+    ("s4", "b@q329.test", {"Rate": 5}, None),                       # no part set
+    ("s5", "b@q329.test", {"Billing_Amount": "abc", "IP": " 49.5 "}, 49.5),
+    ("s6", "a@q329.test", {"Billing_Amount": None, "EB_Net_Amount": 0}, 0.0),
+    ("s7", "a@q329.test", {}, None),                                # no part set
+]
+_SUM_TOTAL = 2050.0
+
+
+def _sum_plan(p: Any, org: str, amount: Any) -> None:
+    with p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM crm_mapping_plans WHERE organization_id = "
+                       "CAST(:o AS uuid)"), {"o": org})
+        c.execute(text(
+            "INSERT INTO crm_mapping_plans (organization_id, version, state, rules, "
+            "created_by, approved_by, approved_at) VALUES (CAST(:o AS uuid), 1, "
+            "'approved', CAST(:r AS jsonb), 'r8', 'r8', now())"),
+            {"o": org, "r": json.dumps([{
+                "kind": "catalogue", "module": "Payment_Received", "purpose": "payment_in",
+                "amount": amount, "by": {"purpose": "admin", "amount": "admin"}}])})
+
+
+@pytest.fixture
+def summed(mods, monkeypatch):
+    """Org A mirrors Payment_Received, and its amount is a sum. Org B holds a
+    record of the same module, with a large value."""
+    from acb_common import get_settings
+
+    a, b = mods.org_a, mods.org_b
+    monkeypatch.setattr(get_settings(), "crm_catalogue_orgs", a, raising=False)
+    with mods.admin_engine.begin() as c:
+        for org in (a, b):
+            c.execute(text(
+                "UPDATE crm_source_profiles SET profile = jsonb_set(profile, '{modules}', "
+                "(profile -> 'modules') || CAST(:m AS jsonb)) WHERE organization_id = "
+                "CAST(:o AS uuid)"), {"o": org, "m": json.dumps([_module("Payment_Received")])})
+        for ext, owner, fields, _sum in _SUM_ROWS:
+            _record(c, a, "Payment_Received", ext, owner, fields)
+        _record(c, b, "Payment_Received", "b1", "b@q329.test", {"Billing_Amount": 99999})
+    _defs(mods, a, "module:Payment_Received", _SUM_DEFS)
+    _defs(mods, b, "module:Payment_Received", _SUM_DEFS)
+    _sum_plan(mods, a, _SUM_KEYS)
+    yield mods
+    with mods.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM crm_mapping_plans WHERE organization_id IN "
+                       "(CAST(:a AS uuid), CAST(:b AS uuid))"), {"a": a, "b": b})
+
+
+async def test_sum_amount_of_a_sum_is_the_sum_of_its_parts(summed, app_engine) -> None:
+    """Item 4: the total equals the sum of the parts. A row with no part set
+    adds nothing and is not counted."""
+    a = summed.org_a
+    body = await _agg(summed, a, entity="module:Payment_Received", measure="sum_amount")
+    assert body["total"] == _SUM_TOTAL
+    assert body["values"] == len([r for r in _SUM_ROWS if r[3] is not None]) == 5
+    assert body["records"] == len(_SUM_ROWS)
+    assert (body["field"], body["field_type"]) == ("Billing_Amount+IP+EB_Net_Amount", "currency")
+    assert body["field_label"] == "Billing Amount + IP + EB Net Amount"
+    assert body["keys"] == {"@amount": _SUM_KEYS}
+    parts = [
+        (await _agg(summed, a, entity="module:Payment_Received", measure="sum",
+                    field=key))["total"] or 0.0
+        for key in _SUM_KEYS
+    ]
+    assert sum(parts) == _SUM_TOTAL
+    by_owner = await _agg(summed, a, entity="module:Payment_Received", measure="sum_amount",
+                          group_by="owner")
+    assert _values(by_owner) == {"a@q329.test": 1700.5, "b@q329.test": 349.5}
+    word = await _agg(summed, a, entity="module:Payment_Received", measure="avg",
+                      field="@amount")
+    assert word["total"] == _SUM_TOTAL / 5
+
+
+async def test_the_amount_filter_reads_the_sum(summed, app_engine) -> None:
+    """Item 4: the number filter of ``@amount`` reads the same sum."""
+    a = summed.org_a
+    for value, count in (("1200", 1), ("0", 1), ("49.5", 1), ("1000", 0)):
+        body = await _agg(summed, a, entity="module:Payment_Received",
+                          **{"field.@amount": value})
+        assert body["total"] == count, value
+
+
+async def test_a_sum_never_reaches_the_sql_text_and_has_no_group(summed, app_engine) -> None:
+    """Item 5: group_field=@amount with a sum gives 422 composite_group. No
+    key of a sum reaches the text of a statement."""
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    a = summed.org_a
+    res = await _call(summed, _admin(a), "GET", _path(
+        entity="module:Payment_Received", group_field="@amount"))
+    assert res.status_code == 422, res.text
+    assert res.json()["detail"]["code"] == "composite_group"
+    seen: list[str] = []
+
+    def _record_sql(_conn, _cursor, statement, *_args) -> None:
+        seen.append(statement)
+
+    event.listen(Engine, "before_cursor_execute", _record_sql)
+    try:
+        await _agg(summed, a, entity="module:Payment_Received", measure="sum_amount",
+                   **{"field.@amount": "1200"})
+    finally:
+        event.remove(Engine, "before_cursor_execute", _record_sql)
+    assert any("crm_module_records" in sql for sql in seen)
+    for sql in seen:
+        assert "@" not in sql, sql
+        for key in _SUM_KEYS:
+            assert key not in sql, (key, sql)
+
+
+async def test_a_stale_sum_is_no_key_word(summed, app_engine) -> None:
+    """Item 2 on a real read: a key that is gone makes the part stale, and
+    the amount has no key field until an admin answers again."""
+    a = summed.org_a
+    _sum_plan(summed, a, ["Billing_Amount", "Gone_Field"])
+    res = await _call(summed, _admin(a), "GET", _path(
+        entity="module:Payment_Received", measure="sum_amount"))
+    assert res.status_code == 422, res.text
+    assert res.json()["detail"]["code"] == "no_key_field"
+
+
+async def test_org_b_never_adds_to_the_sum_of_org_a(summed, app_engine) -> None:
+    body = await _agg(summed, summed.org_a, entity="module:Payment_Received",
+                      measure="sum_amount")
+    assert body["total"] == _SUM_TOTAL and "99999" not in json.dumps(body)
