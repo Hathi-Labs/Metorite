@@ -664,9 +664,12 @@ class TestFixRound5TrueShapes:
         assert not check(text, ROUND5_SOURCES).ok
 
     def test_a_bracket_share_needs_its_host(self) -> None:
-        # "(52%)" after a figure that is not 7.06 crore is no share of it.
-        text = "Pipeline (total ₹13.53 crore):\n- Proposal: ₹4.12 crore (52%)"
+        # "(52%)" is the share of 7.06 crore, not of 4.12 crore, the figure
+        # right before it. So it fails, though 7.06 crore is in the block.
+        text = ("Pipeline (total ₹13.53 crore):\n- Negotiation: ₹7.06 crore\n"
+                "- Proposal: ₹4.12 crore (52%)")
         assert not check(text, ROUND5_SOURCES).ok
+        assert check(text.replace("(52%)", "(30%)"), ROUND5_SOURCES).ok
 
 
 class TestFixRound5Parse:
