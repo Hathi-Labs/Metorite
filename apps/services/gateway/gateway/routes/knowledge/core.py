@@ -481,12 +481,21 @@ async def write_grants(
 
 # ── Pages ───────────────────────────────────────────────────────────────────
 
-def page_dict(row: Any, *, body: bool = True) -> dict[str, Any]:
+def page_dict(
+    row: Any, *, body: bool = True, position: int | None = None,
+) -> dict[str, Any]:
+    """The answer for one page.
+
+    ``position`` is the rank among the siblings the CALLER sees (KB-2e), and
+    the caller passes it. The stored ``kb_pages.position`` counts hidden
+    siblings too, so it never goes out: a gap in it would tell a member that
+    a hidden page sits there.
+    """
     out = {
         "id": str(row.id),
         "space_id": str(row.space_id),
         "parent_id": str(row.parent_id) if row.parent_id else None,
-        "position": row.position,
+        "position": position,
         "title": row.title,
         "state": row.state,
         "author_email": row.author_email,
@@ -538,6 +547,66 @@ async def has_children(db: Any, user: UserContext, page_id: str) -> bool:
              "AND parent_id = CAST(:pid AS uuid))"),
         {"org": org_of(user), "pid": page_id},
     )).scalar() is True
+
+
+async def sibling_rows(
+    db: Any, user: UserContext, space_id: str, parent_id: str | None,
+) -> list[Any]:
+    """Every page under *parent_id* in *space_id*, in each state (KB-2e).
+
+    An integrity read (listed in the visibility fence): the renumber of
+    ``pages._place`` writes 0 to n over ALL the siblings, so a sibling the
+    caller cannot see keeps its own place. Each row holds the id, the
+    position and the sort keys. Only ``pages._place`` reads them, to write
+    the positions. No row, no count and no stored position goes back to a
+    caller. The order is :func:`sibling_key`, the order the tree draws.
+    """
+    params: dict[str, Any] = {"org": org_of(user), "sid": space_id}
+    if parent_id is None:
+        under = "parent_id IS NULL"
+    else:
+        under = "parent_id = CAST(:parent AS uuid)"
+        params["parent"] = parent_id
+    rows = (await db.execute(
+        text("SELECT id, position, title, created_at FROM kb_pages "
+             "WHERE organization_id = CAST(:org AS uuid) "
+             f"AND space_id = CAST(:sid AS uuid) AND {under}"),
+        params,
+    )).fetchall()
+    return sorted(rows, key=sibling_key)
+
+
+async def next_position(
+    db: Any, user: UserContext, space_id: str, parent_id: str | None,
+) -> int:
+    """The place after the last sibling, for a new page (KB-2e).
+
+    An integrity read (listed in the visibility fence): a hidden sibling
+    counts, so the new page goes after it. The number is stored with the
+    page and never returned. Each answer gives the visible rank instead.
+    """
+    params: dict[str, Any] = {"org": org_of(user), "sid": space_id}
+    if parent_id is None:
+        under = "parent_id IS NULL"
+    else:
+        under = "parent_id = CAST(:parent AS uuid)"
+        params["parent"] = parent_id
+    return int((await db.execute(
+        text("SELECT COALESCE(MAX(position), -1) + 1 FROM kb_pages "
+             "WHERE organization_id = CAST(:org AS uuid) "
+             f"AND space_id = CAST(:sid AS uuid) AND {under}"),
+        params,
+    )).scalar())
+
+
+def sibling_key(row: Any) -> tuple[int, str, str, str]:
+    """The order of siblings, the same as ``compareSiblings`` in the client.
+
+    The client draws the tree in this order (``lib/tree.ts``), and the
+    position of a move counts in it. Python sorts here, not SQL, because a
+    collation can put two titles in another order than the browser does.
+    """
+    return (int(row.position), str(row.title).lower(), _iso(row.created_at) or "", str(row.id))
 
 
 #: The deepest tree :func:`ancestor_ids` walks. A deeper chain is refused.

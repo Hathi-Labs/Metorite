@@ -44,6 +44,21 @@ async def search_knowledge(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """The chunks of the visible published pages that match *q*, fused."""
+    return await search_pages(q=q, space=space, k=k, hybrid=hybrid, user=user)
+
+
+async def search_pages(
+    *, q: str, space: str | None, k: int, hybrid: bool, user: UserContext,
+    reviewed: bool = False,
+) -> dict[str, Any]:
+    """The body of :func:`search_knowledge`, for the route and one source.
+
+    *reviewed* is not a query parameter of the route (WS-61 CX-1,
+    ``company_context.md`` §4.2). Only the knowledge source of
+    ``GET /search/company`` sets it, with ``CONTEXT_RECENCY`` on. The fusion
+    then lowers a page past its review date in place of the age decay. Each
+    hit also carries ``review_at``. ``False`` gives the answer of KB-3.
+    """
     # The module is read at call time: `kb_index.query` imports this package.
     from gateway.kb_index import query as kb_query
 
@@ -61,6 +76,9 @@ async def search_knowledge(
     org = core.org_of(user)
     # Before the session (§6.4): no connection waits on the embed door.
     vector = await kb_query.embed_query(org, words) if hybrid else None
+    options = {"reviewed": True} if reviewed else {}
     async with core._tenant_session() as db:
-        answer = await kb_query.query(db, user, words, k=k, spaces=spaces, vector=vector)
+        answer = await kb_query.query(
+            db, user, words, k=k, spaces=spaces, vector=vector, **options,
+        )
     return {"query": words, "hits": answer["hits"], "degraded": answer["degraded"]}

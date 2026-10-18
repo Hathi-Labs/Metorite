@@ -5,6 +5,9 @@
 read seam. This spec owns what goes INTO the seam: the stamp, the recency
 rule, the digest, the connectors, their health and the sweep.
 
+**Built.** CX-1 BUILT 2026-10-18 (branch `ws61-cx1-recency`, no migration).
+It is dark behind `CONTEXT_RECENCY`. CX-1b to CX-7 are not built.
+
 **Read first.** `knowledge_base.md` §0, §6 and §20. `work_plan.md` D104 and
 D105. This spec changes neither decision. It adds the rules that make the
 answers of the seam current and findable.
@@ -573,7 +576,7 @@ Each ticket ships dark behind §11, on its own branch.
 
 | Ticket | What | Done when | Gate |
 |---|---|---|---|
-| **CX-1** | The stamp of §3 on every source (the task search returns `updated_at`, and the Knowledge read returns `review_at`), the decay of §4.1 in `company.py`, the review factor of §4.2 on the `GET /search/company` path only, the `after` filter of §4.5, the searched and skipped header and the stamp in the `search_company` output (§4.3), and grounding sentences 1 to 3. Behind `CONTEXT_RECENCY`. `/knowledge/search` and the command bar keep today's `fuse` | An older task with a higher rank and a newer task with a lower rank swap places when the flag turns on, so the fence proves the decay and not the existing tie-break. An old exact match still shows. A page past its review date ranks below a current page with the same text. `after` drops an older hit. The header names a skipped app. `test_shell_search.py` is unchanged and green. The flag off gives byte-identical output | AGENT-SAFE |
+| **CX-1** ✅ BUILT 2026-10-18 | The stamp of §3 on every source (the task search returns `updated_at`, and the Knowledge read returns `review_at`), the decay of §4.1 in `company.py`, the review factor of §4.2 on the `GET /search/company` path only, the `after` filter of §4.5, the searched and skipped header and the stamp in the `search_company` output (§4.3), and grounding sentences 1 to 3. Behind `CONTEXT_RECENCY`. `/knowledge/search` and the command bar keep today's `fuse` | An older task with a higher rank and a newer task with a lower rank swap places when the flag turns on, so the fence proves the decay and not the existing tie-break. An old exact match still shows. A page past its review date ranks below a current page with the same text. `after` drops an older hit. The header names a skipped app. `test_shell_search.py` is unchanged and green. The flag off gives byte-identical output | AGENT-SAFE |
 | **CX-1b** | The Knowledge lexical half asks for any of the words (§4.6), and supersession (§4.4): the `superseded_by` link, its factor, the banner and the page menu act | A question with one word that is not in the page still finds the page. An exact token still ranks its page first. A replaced page ranks below its replacement and shows the banner | AGENT-SAFE |
 | **CX-2** | The eval of §9: the seed, 40 questions, the hit@5 report, as an R8 suite | The suite prints hit@5 for the seam with `CONTEXT_RECENCY` off and on, and fails when "on" scores lower than "off" | AGENT-SAFE |
 | **CX-3** | Knowledge digests (replaces the text of KB-8). The digest pass in `kb_index/sweep.py`, the digest rows of §5.3, the atom check, the mask and the cost card of §5.2, the cap, on `tier-fast`, and the two-list fusion of §4.6 | A published page of 400 words gets its digest rows after 10 still minutes. A question in other words, which shares no word with the body, finds the page lexically. An atom whose quote is not in the page is dropped. A draft gets no digest. An edit writes a new digest and removes the old one. With the flag off, nothing calls the model | AGENT-SAFE to build. The flip: owner |

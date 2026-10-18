@@ -34,6 +34,7 @@ import {
 } from "@/lib/orgBranding";
 import SettingsHeader from "@/components/SettingsHeader";
 import OrgNameForm from "./OrgNameForm";
+import { OrgNumberFormat } from "@/components/NumberFormatSettings";
 import type { DarkStyle } from "@/lib/logoImage";
 import LogoEditor, { type LogoSave, type OwnDark, modeVars } from "./LogoEditor";
 
@@ -212,6 +213,7 @@ export default function BrandingTab() {
 
       <div className="flex flex-1 flex-col gap-4 overflow-y-auto p-4 sm:p-6">
         <OrgNameForm />
+        <OrgNumberFormat />
         <section className="max-w-2xl rounded-xl border border-border p-4 sm:p-5">
           <h2 className="text-sm font-semibold text-foreground">Logo</h2>
           <p className="mt-1 text-xs text-muted-foreground">

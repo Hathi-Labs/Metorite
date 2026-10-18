@@ -2039,6 +2039,135 @@ async def put_appearance(
 
 
 # ---------------------------------------------------------------------------
+# GET /settings/number-system    — the org's value, mine, and the resolved one
+# PUT /settings/number-system    — set the org's value (admin only)
+# PUT /settings/number-system/me — set or clear my own override
+#
+# Owner, 2026-10-19: lakh and crore by default, million and billion by
+# choice. Spec: `whatsapp_assistant_channel.md` §13.10. The org's value is
+# the `org_settings` key `number_system`. The member's override is
+# `user_settings.number_system` (migration 284), NULL for "use the
+# organization's setting". `acb_common.number_system.resolve` is the one rule.
+#
+# The tenant is the bound session's (`current_tenant`) and the member is the
+# session's address. Neither comes from the body (R5).
+# Fences: `tests/unit/test_number_system.py` and
+# `tests/unit/test_number_system_r8.py`.
+# ---------------------------------------------------------------------------
+
+
+class NumberSystemResponse(BaseModel):
+    """The org's value, the member's override, and what the member gets."""
+
+    org: Literal["indian", "international"] | None = None
+    member: Literal["indian", "international"] | None = None
+    resolved: Literal["indian", "international"] = "indian"
+    default: Literal["indian", "international"] = "indian"
+
+
+class OrgNumberSystemPut(BaseModel):
+    value: Literal["indian", "international"]
+
+
+class MemberNumberSystemPut(BaseModel):
+    #: None clears the override: the member then gets the org's value.
+    value: Literal["indian", "international"] | None = None
+
+
+async def _number_system(db: Any, uid: str) -> NumberSystemResponse:
+    from acb_common import number_system as ns
+    from sqlalchemy import text
+
+    row = (await db.execute(text(ns.READ_SQL), {"org": current_tenant(), "uid": uid})).first()
+    org = ns.clean(row[0]) if row is not None else None
+    member = ns.clean(row[1]) if row is not None else None
+    return NumberSystemResponse(org=org, member=member, resolved=ns.resolve(org, member),
+                                default=ns.DEFAULT)
+
+
+@router.get("/number-system", response_model=NumberSystemResponse)
+async def get_number_system(
+    user: UserContext = Depends(get_current_user),
+) -> NumberSystemResponse:
+    """The member's number system. Any signed-in member reads it: every chart
+    and the member's own settings need it."""
+    from gateway.db import tenant_session
+
+    if not current_tenant():
+        raise HTTPException(status_code=503, detail="no organization is bound")
+    try:
+        async with tenant_session() as db:
+            return await _number_system(db, user.email or "")
+    except Exception as exc:
+        _log.warning("settings.number_system.read_failed", error=type(exc).__name__)
+        raise HTTPException(status_code=503, detail="unavailable") from exc
+
+
+@router.put(
+    "/number-system",
+    response_model=NumberSystemResponse,
+    dependencies=[require_permission("admin:settings:manage")],
+)
+async def put_org_number_system(
+    body: OrgNumberSystemPut,
+    user: UserContext = Depends(get_current_user),
+) -> NumberSystemResponse:
+    """Set the org's number system. Admin-gated: it changes every member who
+    has no override of their own."""
+    from datetime import UTC, datetime
+
+    from acb_common import number_system as ns
+    from acb_common import save_org_setting
+
+    org = current_tenant()
+    save_org_setting(
+        ns.ORG_KEY,
+        {"value": body.value, "updatedBy": user.email or "",
+         "updatedAt": datetime.now(UTC).isoformat()},
+        updated_by=user.email or "",
+    )
+    ns.forget(org)
+    _log.info("settings.number_system.org_updated", value=body.value, by=user.email)
+    return await get_number_system(user)
+
+
+@router.put("/number-system/me", response_model=NumberSystemResponse)
+async def put_member_number_system(
+    body: MemberNumberSystemPut,
+    user: UserContext = Depends(get_current_user),
+) -> NumberSystemResponse:
+    """Set or clear the member's own override. No permission: it is the
+    member's own preference, like `/settings/appearance`'s personal half."""
+    from acb_common import number_system as ns
+    from gateway.db import tenant_session
+    from gateway.routes.tasks.settings import (
+        _BOUND_ORG,
+        _seed_from_work_schedule,
+        upsert_settings_sql,
+    )
+    from sqlalchemy import text
+
+    uid = user.email or ""
+    org = current_tenant()
+    if not uid or not org:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    async with tenant_session() as db:
+        found = (await db.execute(text(
+            f"SELECT 1 FROM user_settings WHERE organization_id = {_BOUND_ORG}"
+            " AND user_id = :uid"), {"uid": uid})).first()
+        # A new row carries the calendar seed, as every first settings save
+        # does (`routes/shell/prefs.py`), so the calendar keeps its hours.
+        seed = {} if found else await _seed_from_work_schedule(db, uid)
+        await db.execute(
+            text(upsert_settings_sql(["number_system", *seed], update=["number_system"])),
+            {"uid": uid, "number_system": body.value, **seed},
+        )
+    ns.forget(org)
+    _log.info("settings.number_system.member_updated", value=body.value or "org")
+    return await get_number_system(user)
+
+
+# ---------------------------------------------------------------------------
 # GET    /settings/branding — the organisation's logo, for the app shell
 # PUT    /settings/branding — replace it (admin only)
 # DELETE /settings/branding — remove it (admin only)
