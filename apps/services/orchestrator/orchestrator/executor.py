@@ -384,8 +384,9 @@ def act_tool(home: str | None, tool: str) -> Any:
     gateway's ``whatsapp_channel.acts`` holds this open while the call runs.
 
     * ``platform``: the platform tool of that name
-      (``_collect_injectable_platform_tools``), inside the permission gate, so
-      the untrusted-answer card asks again and the Confirm answers it.
+      (``_collect_injectable_platform_tools``), with no gate. Its one card is
+      the untrusted-answer card, and ``acts._run`` asks it before the call, so
+      the call runs only when that card matches (fix round 1).
     * ``agent:<name>``: that agent's OWN tool of that name, loaded through the
       one loader, inside the permission gate. Its own card asks again.
 
@@ -402,7 +403,7 @@ def act_tool(home: str | None, tool: str) -> Any:
     if home == HOME_PLATFORM:
         fn = next((f for f in _collect_injectable_platform_tools()
                    if getattr(f, "__name__", "") == tool), None)
-        yield _gate_injected_tool(fn) if fn is not None else None
+        yield fn
         return
     agent_name = (home or "")[len(HOME_AGENT_PREFIX):] if (home or "").startswith(
         HOME_AGENT_PREFIX) else ""

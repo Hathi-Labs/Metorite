@@ -68,6 +68,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from typing import TYPE_CHECKING, Any
 
 from acb_common import get_logger
+from acb_skills.whatsapp_acts import HOME_PLATFORM
 from gateway.db import tenant_session
 from sqlalchemy import text
 
@@ -378,6 +379,25 @@ def _act_context(req: RunRequest, act_id: str, home: str | None) -> Iterator[Non
         yield
 
 
+async def _platform_card_matches(tool: str, arguments: dict[str, Any], state: Any) -> bool:
+    """Ask the untrusted card of a platform act again, inside ``confirming``.
+
+    True only when the card was asked and it equals the stored card
+    (``state.used and state.matched``). The card comes from the one builder,
+    ``_tool_injection._untrusted_card``. A call that the card cannot show
+    whole, and a fault, give False, so the call never runs."""
+    try:
+        from acb_skills.ask_tools import request_confirmation
+
+        from orchestrator._tool_injection import _untrusted_card
+    except Exception:  # no builder in this process: nothing runs
+        return False
+    card = _untrusted_card(tool, arguments)
+    if card is not None:
+        await request_confirmation(*card)
+    return bool(state.used and state.matched)
+
+
 def _arguments(raw: Any) -> dict[str, Any] | None:
     value = json.loads(raw) if isinstance(raw, str) else raw
     return value if isinstance(value, dict) else None
@@ -415,6 +435,7 @@ async def _run(req: RunRequest, act_id: str, act: dict[str, Any]) -> str:
     out: str | None = None
     error: BaseException | None = None
     found = True
+    approved = True
     # The member the tools act as: the link's member, bound for this call
     # only (H-73). The "yes" answers one card and is reset on the way out.
     binding = _bind_memory_user_id(req.member_email)
@@ -424,12 +445,19 @@ async def _run(req: RunRequest, act_id: str, act: dict[str, Any]) -> str:
             if fn is None or arguments is None:
                 found = False
             else:
-                try:
-                    out = str(await asyncio.wait_for(fn(**arguments), timeout=ACT_TIMEOUT_S))
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:  # the record names the class only
-                    error = exc
+                if home == HOME_PLATFORM:
+                    # Fix round 1 (reviewer P2): the untrusted card of a
+                    # platform act is asked HERE, before the call, and the
+                    # call runs only when that card equals the stored card.
+                    approved = await _platform_card_matches(tool, arguments, state)
+                if approved:
+                    try:
+                        out = str(await asyncio.wait_for(
+                            fn(**arguments), timeout=ACT_TIMEOUT_S))
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:  # the record names the class only
+                        error = exc
     finally:
         _unbind_memory_user_id(binding)
     if not found:
@@ -437,6 +465,11 @@ async def _run(req: RunRequest, act_id: str, act: dict[str, Any]) -> str:
         _log.warning("whatsapp_channel.act.failed", act_id=act_id, code="unknown",
                      home=bool(home))
         return REPLY_FAILED
+    if not approved:
+        await _close(act_id, "running", "void", "changed")
+        _log.info("whatsapp_channel.act.voided", act_id=act_id, reason="changed",
+                  home=home)
+        return REPLY_CHANGED
 
     if state.used and not state.matched:
         await _close(act_id, "running", "void", "changed")

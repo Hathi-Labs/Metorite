@@ -298,6 +298,39 @@ async def test_a_call_too_long_for_the_card_is_refused_never_cut(monkeypatch) ->
         release_tenant(token)
 
 
+async def test_a_platform_confirm_runs_nothing_unless_its_card_matches(monkeypatch) -> None:
+    """Fix round 1, item 6 (reviewer P2). The Confirm of a platform act asks
+    its untrusted card BEFORE the call. A stored card that the call does not
+    build again, or arguments too long for the card, close the act ``void``,
+    and the tool never runs. The mark need not hold at the Confirm."""
+    import json
+
+    from acb_common.db import bind_tenant, release_tenant
+    from acb_skills.whatsapp_acts import HOME_PLATFORM, card_text
+    from gateway.routes.whatsapp_channel import acts
+    from orchestrator import _tool_injection as ti
+
+    _gated, calls = _platform_fetch(monkeypatch)
+    closed = _closes(monkeypatch)
+    title, detail, context = ti._untrusted_card("fetch_page", {"url": URL})
+    good = {"id": "a", "tool_name": "fetch_page", "arguments": {"url": URL},
+            "card_text": card_text(title, detail, context), "act_home": HOME_PLATFORM}
+    long_args = {"url": URL + "?pad=" + "x" * ti.UNTRUSTED_CARD_ARGS_MAX}
+    token = bind_tenant(ORG)
+    try:
+        for act in ({**good, "card_text": card_text(title, "another", context)},
+                    {**good, "arguments": {"url": URL + "/other"}},
+                    {**good, "arguments": long_args}):
+            assert await acts._run(_Req(), "act-x", act) == acts.REPLY_CHANGED
+            assert calls == [], "the tool ran with no matching card"
+            assert closed[-1] == ("running", "void", "changed")
+        assert await acts._run(_Req(), "act-y", good) == f"fetched: {URL}"
+        assert calls == [URL] and closed[-1] == ("running", "done", None)
+        assert json.loads(good["card_text"])[0].startswith("Run fetch_page?")
+    finally:
+        release_tenant(token)
+
+
 def _email_module(monkeypatch) -> tuple[Any, list[tuple[str, dict[str, Any]]]]:
     """The email assistant, with one mailbox and a recorded send."""
     from tests.unit._native_maf_harness import load_agent_module
