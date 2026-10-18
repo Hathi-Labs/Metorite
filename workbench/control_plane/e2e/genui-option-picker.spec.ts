@@ -236,6 +236,21 @@ async function expectFollowUpBelowCard(page: Page) {
   expect(followBox!.y, "the follow-up draws below the card").toBeGreaterThan(cardBox!.y);
 }
 
+/**
+ * An answered card folds at once to one line that says what happened (spec
+ * `projects_ai_chat.md` §29 rule 1). Check the line, then open the card to
+ * read its locked state.
+ */
+async function openAnswered(page: Page, outcome: string) {
+  const head = page.locator("[data-rollup-toggle]").filter({ hasText: outcome });
+  await expect(head).toBeVisible();
+  await expect(head).toHaveAttribute("aria-expanded", "false");
+  // The summary hides once the card opens, so find the toggle by its panel.
+  const panel = await head.getAttribute("aria-controls");
+  await head.click();
+  await expect(page.locator(`[data-rollup-toggle][aria-controls="${panel}"]`)).toHaveAttribute("aria-expanded", "true");
+}
+
 test.describe("A blocking option picker answers the click", () => {
   // The first visit compiles the page on a cold `next dev`, which can pass
   // the suite's 45 s default by itself (CI starts cold).
@@ -248,7 +263,9 @@ test.describe("A blocking option picker answers the click", () => {
     const option = page.getByRole("button", { name: /Forward with the PDF/ });
     await option.click();
 
-    // At once, before the run goes on: chosen, locked, and said so.
+    // At once, before the run goes on: folded to what was sent, and, open,
+    // chosen, locked, and said so.
+    await openAnswered(page, "Sent: Forward with the PDF");
     await expect(option).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByText("Sent", { exact: true })).toBeVisible();
     const other = page.getByRole("button", { name: /Send a link/ });
@@ -283,6 +300,7 @@ test.describe("A blocking option picker answers the click", () => {
     await page.getByRole("button", { name: /Send a link/ }).click();
     await page.getByRole("button", { name: "Confirm selection" }).click();
 
+    await openAnswered(page, "Sent: Forward with the PDF, Send a link");
     await expect(page.getByText("Sent", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: /Do nothing/ })).toBeDisabled();
     await expect.poll(async () => (await respondBodies(page)).at(-1)?.answer)
@@ -460,6 +478,7 @@ test.describe("Not now declines a card, and the run goes on", () => {
     await startTurn(page);
 
     await page.locator("[data-not-now]").click();
+    await openAnswered(page, "Not answered");
     await expect(page.getByText("Not answered · You can ask again later.")).toBeVisible();
     await expect(page.getByRole("button", { name: /Forward with the PDF/ })).toBeDisabled();
     await expect(page.locator("[data-not-now], [data-not-now-close]")).toHaveCount(0);
@@ -472,6 +491,7 @@ test.describe("Not now declines a card, and the run goes on", () => {
     await startTurn(page);
     await page.locator("[data-not-now]").click();
     await expect.poll(async () => (await respondBodies(page)).length).toBe(1);
+    await openAnswered(page, "Not answered");
     await expect(page.getByText("Not answered · You can ask again later.")).toBeVisible();
     // Give a wrong fallback the time it would need to send.
     await page.waitForTimeout(1500);

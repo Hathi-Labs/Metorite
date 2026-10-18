@@ -96,6 +96,13 @@ test.describe("The plan card reads first", () => {
       "important", "leveraged", "impact", "urgency", "effort",
     ]);
     expect(plan.project).toEqual({ name: "Personalization & Memory System", parent: "Metorite", description: "" });
+    // The answered card folds to one line that says what happened (spec
+    // §29 rule 1), and the focus goes to that line. Open, it shows "Sent".
+    const head = card(page).locator("[data-rollup-toggle]");
+    await expect(card(page).getByText("7 tasks sent for approval")).toBeVisible();
+    await expect(head).toHaveAttribute("aria-expanded", "false");
+    await expect(head).toBeFocused();
+    await head.click();
     await expect(card(page).getByText("Sent", { exact: true })).toBeVisible();
   });
 
@@ -133,6 +140,8 @@ test.describe("The plan card reads first", () => {
     // A plan card that parks the run sends Cancel as a decline (PR #1152), so
     // the run reads "the member cancelled the plan" and nothing is created.
     await expect.poll(async () => (await respondBodies(page)).at(-1)).toMatchObject({ declined: true, answer: "" });
+    await expect(card(page).getByText("cancelled, nothing created")).toBeVisible();
+    await card(page).locator("[data-rollup-toggle]").click();
     await expect(card(page).getByText("Nothing was created.")).toBeVisible();
   });
 
