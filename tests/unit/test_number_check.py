@@ -358,7 +358,10 @@ class TestDerivedFigures:
 
     def test_a_chain_of_three_fails(self) -> None:
         sources = ["100 open", "200 won", "400 lost"]
-        assert not check("100 open, 200 won and 400 lost: 700 deals.", sources).ok
+        # Round 6: a total with its parts after ":" is a sum of the parts, so
+        # this chain is only a chain without that shape.
+        assert not check("100 open, 200 won and 400 lost, so 700 deals in total.",
+                         sources).ok
         assert check("100 open and 200 won, 300 deals in total.", sources).ok
         assert not check("In all, 300 deals.", sources).ok
 
@@ -536,7 +539,7 @@ class TestFixRound4Derivation:
                      [WIN_LOSS]).ok
 
     def test_a_derived_figure_needs_a_word_of_derivation(self) -> None:
-        assert not check("Won 12 and lost 8: 20 deals.", [WIN_LOSS]).ok
+        assert not check("Won 12 and lost 8, 20 deals.", [WIN_LOSS]).ok
         assert check("We won 12 and lost 8, so 20 deals closed.", [WIN_LOSS]).ok
 
     def test_far_operands_of_a_long_list_take_no_part(self) -> None:
@@ -601,7 +604,7 @@ class TestFixRound4Limits:
     """Rule 9: these forms are known limits of §18.11.2, not figures."""
 
     @pytest.mark.parametrize("text", [
-        "Won to lost is 4:1.", "We closed 17/29 deals.", "The 7th deal.", "We hold #9.",
+        "Won to lost is 4:1.", "The 7th deal.", "We hold #9.",
     ])
     def test_the_form_is_a_known_limit(self, text: str) -> None:
         assert find_figures(text) == []
@@ -697,3 +700,103 @@ class TestFixRound5Parse:
         assert check("12 deals.", ["win rate 12%"]).ok
         # A data value has no unit, so it may stand for a percent.
         assert check("The win rate is 60%.", ['{"win_rate":60}']).ok
+
+
+# ── Fix round 6 (2026-10-18): parts, ratios, fractions, the lock ──────────
+
+WIN_LOSS_6 = (
+    "CRM report win-loss:\nSince 2026-07-20: won 20, lost 7, win rate 74.07%.\n"
+    "Won INR 135,300,000, lost INR 22,450,000."
+)
+STAGES_6 = (
+    "- Qualification: 12 records\n- Proposal: 8 records\n- Negotiation: 5 records\n"
+    "- Won: 20 records · INR 135,300,000\n- Lost: 7 records · INR 22,450,000"
+)
+
+
+class TestFixRound6Parts:
+    """P1 item 1: a total with its parts in brackets or as a list is a sum,
+    with no derive word. Item 2: three or more parts."""
+
+    @pytest.mark.parametrize(("source", "text"), [
+        (WIN_LOSS_6, "Closed deals: 27 (20 won, 7 lost)."),
+        (WIN_LOSS_6, "You closed 27 deals: 20 won and 7 lost."),
+        (WIN_LOSS_6, "Won (20) and Lost (7): 27 closed deals."),
+        (WIN_LOSS_6, "Won ₹13.53 crore and Lost ₹2.245 crore make ₹15.78 crore closed."),
+        (STAGES_6, "Open: 25 deals (12 + 8 + 5)."),
+        (STAGES_6, "Open deals: 25 (Qualification 12, Proposal 8, Negotiation 5)."),
+    ])
+    def test_a_total_with_its_parts_passes(self, source: str, text: str) -> None:
+        result = check(text, [source])
+        assert result.ok, [f.text for f in result.unmatched]
+
+    @pytest.mark.parametrize(("source", "text"), [
+        (WIN_LOSS_6, "Closed deals: 28 (20 won, 7 lost)."),
+        (WIN_LOSS_6, "You closed 26 deals: 20 won and 7 lost."),
+        (WIN_LOSS_6, "Won (20) and Lost (7): 28 closed deals."),
+        (WIN_LOSS_6, "Won ₹13.53 crore and Lost ₹2.245 crore make ₹16.78 crore closed."),
+        (STAGES_6, "Open: 26 deals (12 + 8 + 5)."),
+    ])
+    def test_a_wrong_total_still_fails(self, source: str, text: str) -> None:
+        assert not check(text, [source]).ok
+
+    def test_a_part_must_be_a_tool_figure(self) -> None:
+        book = Sources()
+        book.add_text("won 20", derive=True)
+        book.add_text("Is it 7?")  # the member's words
+        assert not check("Closed deals: 27 (20 won, 7 lost).", book).ok
+
+
+class TestFixRound6Ratio:
+    @pytest.mark.parametrize(("text", "ok"), [
+        ("Won ₹13.53 crore is 6x Lost ₹2.245 crore.", True),
+        ("Won ₹13.53 crore is 6 times Lost ₹2.245 crore.", True),
+        ("Won ₹13.53 crore is 8x Lost ₹2.245 crore.", False),
+        ("Won ₹13.53 crore is 4 times Lost ₹2.245 crore.", False),
+    ])
+    def test_a_ratio_of_two_cited_figures(self, text: str, ok: bool) -> None:
+        assert check(text, [WIN_LOSS_6]).ok is ok
+
+    def test_times_makes_a_ratio(self) -> None:
+        assert find_figures("Won is 6 times Lost.")[0].ratio
+        assert not find_figures("Won is 6 deals.")[0].ratio
+
+
+class TestFixRound6Fraction:
+    def test_both_numbers_of_a_fraction_are_read(self) -> None:
+        assert [f.text for f in find_figures("We closed 17/29 deals.")] == ["17", "29"]
+        assert find_figures("Since 07/2026 and FY 2025/26.") == []
+
+    @pytest.mark.parametrize(("text", "ok"), [
+        ("Won 20/27.", True), ("Won 25/40.", False), ("Won 20/40.", False),
+        ("Won 20/26.", False),
+    ])
+    def test_a_fraction_is_checked(self, text: str, ok: bool) -> None:
+        assert check(text, [WIN_LOSS_6]).ok is ok
+
+
+class TestFixRound6Lock:
+    def test_a_match_takes_the_lock_of_the_book(self) -> None:
+        """Item 5: ``matches`` sorts the book under its lock, so a worker
+        thread that adds a value never races the sort."""
+        import threading
+
+        book = Sources()
+        book.add_text("won 20", derive=True)
+        taken: list[bool] = []
+
+        class _Spy:
+            def __init__(self) -> None:
+                self._real = threading.Lock()
+
+            def __enter__(self) -> None:
+                taken.append(True)
+                self._real.acquire()
+
+            def __exit__(self, *_a: object) -> None:
+                self._real.release()
+
+        book._lock = _Spy()  # type: ignore[assignment]
+        taken.clear()
+        assert check("We won 20 deals.", book).ok
+        assert taken, "matches did not take the lock"

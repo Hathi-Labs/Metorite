@@ -249,7 +249,7 @@ def _as_mapping(arguments: Any) -> Any:
     if isinstance(arguments, str):
         try:
             return json.loads(arguments)
-        except ValueError:
+        except (ValueError, RecursionError):  # round 6: a deep text is text
             return arguments
     dump = getattr(arguments, "model_dump", None)
     if callable(dump):
@@ -340,7 +340,7 @@ def _shown_text(node: Any, key: str = "") -> list[str]:
         if stripped[:1] in "{[":
             try:
                 return _shown_text(json.loads(stripped), key)
-            except ValueError:
+            except (ValueError, RecursionError):
                 pass
         return [_shown_string(node)]
     return []
@@ -379,7 +379,7 @@ def _without_choices(node: Any, key: str = "") -> Any:
         if stripped[:1] in "{[":
             try:
                 return _without_choices(json.loads(stripped), key)
-            except ValueError:
+            except (ValueError, RecursionError):
                 pass
         if key.lower() in _OPTION_KEYS:
             return _drop_choices(node)
@@ -387,7 +387,17 @@ def _without_choices(node: Any, key: str = "") -> Any:
 
 
 def display_text(name: str, arguments: Any) -> str:
-    """The text that a display call shows the member, or "" (item 2)."""
+    """The text that a display call shows the member, or "" (item 2).
+
+    A spec nested too deep to walk gives its raw text, so the check still
+    reads its numbers and never raises (fix round 6)."""
+    try:
+        return _display_text(name, arguments)
+    except RecursionError:
+        return arguments if isinstance(arguments, str) else ""
+
+
+def _display_text(name: str, arguments: Any) -> str:
     if name not in DISPLAY_TOOLS:
         return ""
     data = _as_mapping(arguments)
@@ -502,6 +512,10 @@ def retry_note(result: CheckResult) -> str:
         "must state BOTH of those tool numbers in the same paragraph, next to "
         "the result, with a word such as total, net, gap, share, more or "
         "average. A percent in brackets right after a figure is its share. "
+        "A total may come with its parts: \"27 (20 won, 7 lost)\". A ratio "
+        "names both figures: \"₹13.53 crore is 6x ₹2.245 crore\". For a rank, "
+        "a limit or a count of items, cite the figure as the tool gave it. For "
+        "a share or a rate, state the whole and the part too. "
         "For anything more, call crm_aggregate with the right group or filter, "
         "or leave the number out. Write each figure in digits."
     )
@@ -596,8 +610,21 @@ class CheckAnswers(ChatMiddleware):
         self._mode = mode
         self._last_beat = 0.0
 
-    def _log(self, result: CheckResult, outcome: str) -> None:
+    def _safe_verdict(self, response: ChatResponse) -> tuple[str, CheckResult | None]:
+        """:meth:`_verdict`, but a check that raises gives ``pass`` and no
+        result: the answer goes out unchanged, and the log says why. A
+        failure of the check must never lose the member's turn (round 6)."""
+        try:
+            return self._verdict(response)
+        except Exception as exc:
+            _log.warning("answer_check.check_failed", mode=self._mode,
+                         error=type(exc).__name__)
+            return PASS, None
+
+    def _log(self, result: CheckResult | None, outcome: str) -> None:
         # The run id comes from the bound run context (``acb_common._log``).
+        if result is None:
+            return
         _log.info(
             "answer_check.checked", mode=self._mode,
             numbers=len(result.figures), mismatches=len(result.unmatched),
@@ -680,8 +707,8 @@ class CheckAnswers(ChatMiddleware):
     ) -> AsyncIterator[ChatResponseUpdate]:
         updates, response = await self._drain(stream)
         messages = list(context.messages)
-        verdict, result = self._verdict(response)
-        if verdict == PASS:
+        verdict, result = self._safe_verdict(response)
+        if verdict == PASS or result is None:
             self._log(result, "pass")
             for update in updates:
                 yield update
@@ -697,14 +724,16 @@ class CheckAnswers(ChatMiddleware):
             context.messages = self._retry_messages(messages, response, result)
             await call_next()
             retry_updates, second = await self._drain(context.result)
-            again, result2 = self._verdict(second)
-            if again != FAIL:
+            again, result2 = self._safe_verdict(second)
+            if again != FAIL or result2 is None:
                 self._log(result2, "retry_pass" if again == PASS else "retry_call")
                 kept = retry_updates if again == PASS else _strip_updates(retry_updates)
                 for update in kept:
                     yield update
                 return
-            result, response = result2, second
+            if result2 is not None:
+                result = result2
+            response = second
         self._log(result, "fallback")
         last = updates[-1] if updates else None
         yield ChatResponseUpdate(
@@ -720,8 +749,8 @@ class CheckAnswers(ChatMiddleware):
         self, context: Any, call_next: Callable[[], Any], response: ChatResponse,
     ) -> ChatResponse:
         messages = list(context.messages)
-        verdict, result = self._verdict(response)
-        if verdict == PASS:
+        verdict, result = self._safe_verdict(response)
+        if verdict == PASS or result is None:
             self._log(result, "pass")
             return response
         if verdict == STRIP:
@@ -733,14 +762,16 @@ class CheckAnswers(ChatMiddleware):
             context.messages = self._retry_messages(messages, response, result)
             await call_next()
             second = context.result
-            again, result2 = self._verdict(second)
-            if again == PASS:
+            again, result2 = self._safe_verdict(second)
+            if again == PASS or result2 is None:
                 self._log(result2, "retry_pass")
                 return second
             if again == STRIP:
                 self._log(result2, "retry_call")
                 return _without_text(second)
-            result, response = result2, second
+            if result2 is not None:
+                result = result2
+            response = second
         self._log(result, "fallback")
         return ChatResponse(
             messages=[Message("assistant", [fallback_text(self._ledger)])],

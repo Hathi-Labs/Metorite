@@ -1055,3 +1055,45 @@ async def test_q32_8_a_run_that_shows_the_card_needs_no_retry(stream: bool) -> N
     ], tools=[crm_aggregate, ask_questions])
     assert await _run(agent, stream=stream) == answer
     assert shown == [arguments["questions"]] and len(client.requests) == 3
+
+
+# ── Fix round 6 (2026-10-18): a failed check never loses the turn ─────────
+
+@STREAMS
+async def test_a_check_that_raises_lets_the_answer_through(stream: bool, monkeypatch) -> None:
+    """Item 3: in ``on`` mode a check that raises logs it and sends the
+    answer unchanged, with no retry and no fallback."""
+    warned: list[str] = []
+    monkeypatch.setattr(answer_check._log, "warning",
+                        lambda event, **kw: warned.append(event))
+
+    def _boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("the check broke")
+
+    monkeypatch.setattr(answer_check, "check", _boom)
+    answer = "Open deals hold ₹99 lakh."
+    agent, client = _agent([("call", "crm_aggregate", {"entity": "deals"}),
+                            ("text", answer)])
+    assert await _run(agent, stream=stream) == answer
+    assert len(client.requests) == 2
+    assert "answer_check.check_failed" in warned
+
+
+@pytest.mark.parametrize("arguments", [
+    "[" * 5000 + "]" * 5000,
+    json.dumps({"options": ["[" * 5000 + "]" * 5000]}),
+    '{"label": "' + "[" * 3000 + '"}',
+])
+@pytest.mark.parametrize("name", ["ask_questions", "emit_generative_ui"])
+def test_a_spec_nested_too_deep_never_raises(name: str, arguments: str) -> None:
+    from acb_skills.answer_check import display_text
+
+    assert isinstance(display_text(name, arguments), str)
+
+
+def test_the_retry_note_says_how_to_write_a_total_a_ratio_and_a_rank() -> None:
+    from acb_common.number_check import check
+
+    note = answer_check.retry_note(check("₹99 lakh", ["Open: INR 5,00,000"]))
+    for words in ("27 (20 won, 7 lost)", "6x", "rank", "state the whole"):
+        assert words in note, words
