@@ -970,6 +970,10 @@ class _DoorResult:
     def fetchone(self) -> Any:
         return self._rows[0] if self._rows else None
 
+    def first(self) -> Any:
+        """WS-53 CRM-Q33: the CRM half of the purge reads its cursor row."""
+        return self.fetchone()
+
     def scalar(self) -> Any:
         return self._scalar
 

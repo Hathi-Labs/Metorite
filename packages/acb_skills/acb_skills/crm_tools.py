@@ -2534,7 +2534,7 @@ RULE_NOT_MEMBER = (
 _RULE_GLUE = frozenset({"a", "an", "the", "of", "to", "in", "on", "and", "or", "is", "are",
                         "be", "for", "as", "at", "by", "it", "its", "this", "that"})
 #: The tokens of a rule: a number (with its decimals and a %), or a word.
-_RULE_TOKEN = re.compile(r"\d+(?:[.,]\d+)*%?|[a-z]+")
+_RULE_TOKEN = re.compile(r"[0-9]+(?:[.,][0-9]+)*%?|[a-z]+")
 
 
 #: "n't" with a straight or a curly apostrophe (code point 2019).
