@@ -51,6 +51,11 @@ Fix round 2, item 2 (a 403 is not a per-PR refusal):
 * R2-2-M1 ``REFUSED_STATUSES`` holds 403 again ->
   ``test_r2_2_a_403_never_unblocks_and_the_sibling_merge_waits``.
 * R2-2-M2 the poll treats a 403 as a refusal (``record_refusal``) -> the same test.
+
+Fix round 2, item 4 (the last mark of the trailing read):
+
+* R2-4-M1 no GETDEL after the lead goes ->
+  ``test_r2_4_a_mark_set_before_the_lead_goes_is_read``.
 """
 
 from __future__ import annotations
@@ -616,3 +621,47 @@ async def test_r2_2_a_403_never_unblocks_and_the_sibling_merge_waits(world) -> N
     assert g.scalar(w.p, "SELECT s.category FROM pm_tasks t JOIN pm_task_statuses s ON "
                          "s.id = t.status_id WHERE t.id = CAST(:t AS uuid)", t=task) \
         == "in_progress", "the open sibling still blocks merge-to-Done"
+
+
+# ── Fix round 2, item 4: a mark set while the lead goes ─────────────────────
+
+
+async def test_r2_4_a_mark_set_before_the_lead_goes_is_read(world, monkeypatch) -> None:
+    """A follower marks ``again`` after the leader's last GETDEL and before
+    its DELETE of the lead. The leader must still read once more, or a late
+    failing ``check_run`` shows as ``passing`` for ever."""
+    from acb_common import tenant_redis
+    from gateway import github_sync
+
+    w = world
+    ref = _ref(w, _task(w), 620, head=SHA_NEW, checks="pending")
+    w.gh.runs[SHA_NEW] = [{"status": "completed", "conclusion": "success"}]
+    w.gh.status[SHA_NEW] = {"state": "success", "statuses": [{"state": "success"}]}
+    real_get = tenant_redis.get_tenant_redis
+
+    class Racing:
+        """The tenant client, with a follower that marks during the DELETE."""
+
+        def __init__(self, inner: Any) -> None:
+            self.inner = inner
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self.inner, name)
+
+        async def delete(self, *keys: Any) -> Any:
+            if not injected:
+                injected.append(True)
+                # The late job: a failing run, and the mark it sets.
+                w.gh.runs[SHA_NEW] = [{"status": "completed", "conclusion": "failure"}]
+                await self.inner.set(self.inner.key("github", "checks", SHA_NEW, "again"),
+                                     "1", ex=60)
+            return await self.inner.delete(*keys)
+
+    injected: list[bool] = []
+    monkeypatch.setattr(tenant_redis, "get_tenant_redis",
+                        lambda **kw: Racing(real_get(**kw)))
+    async with tenant_engine_scope(g.app_dsn(w.p)):
+        reads = await github_sync.read_checks_joined(w.p.org_a, REPO, SHA_NEW)
+    assert injected, "the race was not set up"
+    assert reads == 2 and _check_reads(w) == 2, w.gh.requests
+    assert _row(w, ref).checks_state == "failing"

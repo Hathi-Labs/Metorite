@@ -574,6 +574,13 @@ async def _trail(org: str, repo: str, sha: str) -> int:
         finally:
             try:
                 await client.delete(lead)
+                # ⚠️ A mark set between the last GETDEL and the DELETE saw the
+                # lead still held, so its job stopped (fix round 2, item 4).
+                # Look once more AFTER the lead is gone. A mark set after the
+                # DELETE belongs to a job that leads by itself.
+                if await client.getdel(again):
+                    await read_checks(org, repo, sha)
+                    reads += 1
             except Exception as exc:  # the class only
                 _log.info("github.checks.join_release_failed", error=type(exc).__name__)
     return reads
