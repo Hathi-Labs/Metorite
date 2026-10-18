@@ -75,7 +75,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from acb_auth import agent_oauth
-from acb_common import get_logger
+from acb_common import get_logger, get_settings
 
 from agent_edge import cursor as cursor_mod
 from agent_edge import idempotency
@@ -1760,6 +1760,9 @@ GET_TASK_KEYS: tuple[str, ...] = (
     "type_id", "title", "description", "status", "assignees", "importance",
     "leveraged", "estimate_mins", "start_date", "due_at", "completed_at", "tags",
     "custom_fields", "created_by", "created_at", "archived_at", "version",
+    # EA-13f (EA3-46): what the agent writes into a pull request, so that
+    # GitHub links the pull request to the task (`github_integration.md` §10).
+    "url", "short_id",
 )
 SUBTASK_KEYS: tuple[str, ...] = (
     "id", "task_number", "title", "status_id", "status_name", "category", "due_at",
@@ -1793,6 +1796,7 @@ _TASK_SCHEMA = _object({
     "custom_fields": {"type": "object", "additionalProperties": _FIELD_VALUE_SCHEMA},
     "created_by": _NULLABLE_STRING, "created_at": _NULLABLE_STRING,
     "archived_at": _NULLABLE_STRING, "version": _NULLABLE_STRING,
+    "url": {"type": "string"}, "short_id": {"type": "string"},
 })
 _SUBTASK_SCHEMA = _object({
     "id": {"type": "string"}, "task_number": _NULLABLE_INTEGER, "title": _UNTRUSTED_SCHEMA,
@@ -1882,6 +1886,26 @@ def _custom_fields(value: Any) -> dict[str, Any]:
     return {k: field_value(v) for k, v in value.items() if _key(k) is not None}
 
 
+def task_url(task_id: str) -> str:
+    """The Metorite URL of a task, ``<app_public_url>/projects?task=<id>``.
+
+    The agent puts it in the description of a pull request, and GitHub then
+    links the pull request to the task (``github_integration.md`` §10.1). The
+    host is the host of ``app_public_url``, which the gateway matches too, so a
+    staging URL never links in production. The id is a UUID that the gateway
+    gave, so it needs no quoting.
+    """
+    base = str(get_settings().app_public_url or "").rstrip("/")
+    return f"{base}/projects?task={task_id}"
+
+
+def task_short_id(task_id: str) -> str:
+    """``mt-`` and the first eight hex characters of the task id, 11 characters
+    in all. It is the short form that ``github_autolink`` reads in a branch
+    name (``github_integration.md`` §10.2)."""
+    return "mt-" + str(task_id).replace("-", "").lower()[:8]
+
+
 def _task(row: Mapping[str, Any], names: Mapping[str, str]) -> dict[str, Any]:
     status_id = row.get("status_id")
     assignees = row.get("assignees")
@@ -1911,6 +1935,8 @@ def _task(row: Mapping[str, Any], names: Mapping[str, str]) -> dict[str, Any]:
         "created_at": _str_or_none(row.get("created_at")),
         "archived_at": _str_or_none(row.get("archived_at")),
         "version": _str_or_none(row.get("updated_at")),
+        "url": task_url(str(row.get("id"))),
+        "short_id": task_short_id(str(row.get("id"))),
     }
 
 
@@ -1987,7 +2013,10 @@ GET_TASK = Tool(
         " holds the open agent runs of the task, each with its state and any"
         " question that waits for an answer. A run with the state awaiting"
         " waits for a person, so do not start a second run for the same"
-        " work." + _UNTRUSTED_NOTE
+        " work. url is the address of the task in Metorite, and short_id is the"
+        " short form for a branch name. Put url in the description of each pull"
+        " request, and short_id in the branch name, so that the pull request"
+        " links itself to the task." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_READ,
     input_schema=_TASK_ID_INPUT,

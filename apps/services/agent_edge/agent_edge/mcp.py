@@ -98,10 +98,12 @@ _INSTRUCTIONS = (
 _ROUTINE_INSTRUCTIONS = (
     " To work on a task, read it with get_task and call claim_task. Report"
     " progress with add_comment, and call add_task_reference for each branch"
-    " and each pull request. When the pull request opens, call"
+    " and each pull request. Put the url that get_task gives in the"
+    " description of each pull request, and put the short_id in the branch"
+    " name. When the pull request opens, call"
     " set_task_status with a status of the category in_progress whose name"
-    " says review. Move the task to done only after the merge. The prompt"
-    " work_on_task gives the full steps."
+    " says review. Move the task to done only after the merge, and not when"
+    " GitHub already did. The prompt work_on_task gives the full steps."
 )
 
 #: The agent-run part (WS-55 EA-12, §12.1). It shows only while

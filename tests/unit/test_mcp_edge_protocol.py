@@ -45,6 +45,7 @@ import json
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qsl
@@ -65,6 +66,8 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
 from tests.unit._tenant_ladder import _LADDER_DIR, apply_ladder, tenant_engine_scope
+
+_ROOT_DIR = Path(__file__).resolve().parents[2]
 
 _SNAPSHOT = os.environ.get("_ACB_TENANT_LADDER_URL_AT_LAUNCH")
 _URL = (
@@ -1552,6 +1555,40 @@ class TestGetTask:
         for dropped in ("clickup", "lead", "time_spent_mins", "view_position", "merged_",
                         "source", "link_id", "progress", "blocked_by"):
             assert dropped not in flat, dropped
+
+    async def test_f1_the_task_has_a_url_and_a_short_id_for_the_pull_request(self, armed):
+        """EA-13f F1 (EA3-46). ``url`` has the host of ``app_public_url`` and
+        the path the gateway reads in a pull request description. ``short_id``
+        has 11 characters. Mutation: ``task_url`` reads a host from the request,
+        or ``task_short_id`` keeps 9 hex characters."""
+        from urllib.parse import urlsplit
+
+        task = _structured(await _tool("get_task", {"task_id": T_ONE}))["task"]
+        parts = urlsplit(task["url"])
+        assert parts.hostname == urlsplit(get_settings().app_public_url).hostname
+        assert parts.path == "/projects" and parse_qsl(parts.query) == [("task", T_ONE)]
+        assert task["short_id"] == "mt-" + T_ONE.replace("-", "")[:8]
+        assert len(task["short_id"]) == 11
+
+    async def test_f2_the_short_id_is_the_form_that_the_autolink_reads(self):
+        """EA-13f F2. ONE grammar: the cases file of GH-4 holds the short form,
+        and ``github_autolink`` parses the branch that holds our ``short_id``.
+        Mutation: ``task_short_id`` uses ``mt_`` or 7 characters."""
+        from gateway.routes.projects import github_autolink
+
+        cases = json.loads((_ROOT_DIR / "tests" / "fixtures"
+                            / "github_autolink_cases.json").read_text(encoding="utf-8"))
+        form = cases["short_form"]
+        short = tools.task_short_id(form["example_task"])
+        assert short.startswith(form["prefix"])
+        assert len(short) == len(form["prefix"]) + form["hex_chars"]
+        found = github_autolink.candidates("", f"feat/{short}-login-fix", "app.metorite.com")
+        assert [(c.kind, c.value) for c in found] == [("short", form["example_task"][:8])]
+        # The description route: the URL that get_task gives links by UUID.
+        url = tools.task_url(form["example_task"])
+        host = github_autolink.app_host(get_settings().app_public_url)
+        body = github_autolink.candidates(f"Fixes {url}", "", host)
+        assert [(c.kind, c.value) for c in body] == [("uuid", form["example_task"])]
 
     async def test_a_link_id_is_the_other_task(self, armed):
         link = _structured(await _tool("get_task", {"task_id": T_ONE}))["links"][0]
