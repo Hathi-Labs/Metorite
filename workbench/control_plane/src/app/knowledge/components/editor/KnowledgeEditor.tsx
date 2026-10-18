@@ -40,6 +40,7 @@ import { isInAppPath } from "@/lib/inAppLink";
 
 import { listPages } from "../../lib/api";
 import { matchBlocks, type BlockItem } from "../../lib/editor/blocks";
+import { createBodyWriter, type BodyWriter } from "../../lib/editor/bodyWriter";
 import { bodyAfterEdit, markdownWork, normaliseBody, parseBody, writeBody } from "../../lib/editor/markdown";
 import { loadPageChoices, matchPages, pageLinkHref, type PageChoice } from "../../lib/editor/pageLinks";
 import { knowledgeExtensions } from "../../lib/editor/schema";
@@ -222,6 +223,10 @@ export default function KnowledgeEditor({
     baseline: null,
   });
 
+  // ── The write: after a pause, or at once on a flush ─────────────────────
+  const editorRef = useRef<Editor | null>(null);
+  const writerRef = useRef<BodyWriter | null>(null);
+
   // ── The member's pages, for `[[` and the link control ──────────────────
   const [pages, setPages] = useState<PageChoice[] | null>(null);
   const [pagesLoading, setPagesLoading] = useState(false);
@@ -243,7 +248,6 @@ export default function KnowledgeEditor({
   const pageMenu = useSuggestionMenu<PageChoice>(pageRows);
 
   const [imageAt, setImageAt] = useState<Range | null>(null);
-  const editorRef = useRef<Editor | null>(null);
 
   const extensions = useMemo(
     () => [
@@ -277,13 +281,8 @@ export default function KnowledgeEditor({
             }
           : { class: "kb-editor cc-prose prose prose-sm max-w-none", "aria-label": label },
       },
-      onUpdate: () => {
-        // Cheap on purpose: no parse and no write on a key.
-        if (!pendingRef.current) onTouchedRef.current?.();
-        pendingRef.current = true;
-        if (timerRef.current) clearTimeout(timerRef.current);
-        timerRef.current = setTimeout(() => flushNowRef.current(), WRITE_AFTER_MS);
-      },
+      // Cheap on purpose: no parse and no write on a key (`bodyWriter.ts`).
+      onUpdate: () => writerRef.current?.touch(),
     },
     // A new editor for each mode. In edit mode the parent keys each session.
     [editable],
@@ -293,40 +292,31 @@ export default function KnowledgeEditor({
     editorRef.current = editor;
   }, [editor]);
 
-  // ── The write: after a pause, or at once on a flush ─────────────────────
-  const pendingRef = useRef(false);
-  // The body of the last silent flush, which no `onChange` has carried yet.
-  const lastRef = useRef<string | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const flushNowRef = useRef<(opts?: { silent?: boolean }) => string | null>(() => null);
   useEffect(() => {
-    flushNowRef.current = (opts) => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = null;
-      const e = editorRef.current;
-      if (!e || !pendingRef.current) return opts?.silent ? lastRef.current : null;
-      pendingRef.current = false;
-      const base = baselineRef.current;
-      if (base.baseline === null) {
-        base.baseline = base.opened === base.stored ? writeBody(initialDoc) : normaliseBody(base.stored);
-      }
-      const next = bodyAfterEdit(base.stored, base.baseline, writeBody(e.getJSON()));
-      lastRef.current = next;
-      if (!opts?.silent) onChangeRef.current?.(next);
-      return next;
-    };
-  });
-  useEffect(() => {
-    if (!flushRef) return;
-    flushRef.current = (opts) => flushNowRef.current(opts);
+    const writer = createBodyWriter({
+      delayMs: WRITE_AFTER_MS,
+      serialize: () => {
+        const e = editorRef.current;
+        if (!e) return null;
+        const base = baselineRef.current;
+        if (base.baseline === null) {
+          base.baseline = base.opened === base.stored ? writeBody(initialDoc) : normaliseBody(base.stored);
+        }
+        return bodyAfterEdit(base.stored, base.baseline, writeBody(e.getJSON()));
+      },
+      onChange: (next) => onChangeRef.current?.(next),
+      onTouched: () => onTouchedRef.current?.(),
+    });
+    writerRef.current = writer;
+    if (flushRef) flushRef.current = (opts) => writer.flush(opts);
     return () => {
-      // A remount (the 767 px frame swap) must not lose the last keys. A
-      // silent flush may have taken them already, so send that body too.
-      const body = flushNowRef.current() ?? lastRef.current;
-      if (body !== null) onChangeRef.current?.(body);
-      flushRef.current = null;
+      // A remount (the 767 px frame swap) must not lose the last keys.
+      writer.flush();
+      writer.dispose();
+      if (flushRef) flushRef.current = null;
+      writerRef.current = null;
     };
-  }, [flushRef]);
+  }, [flushRef, initialDoc]);
 
   // The e2e spec reads how much Markdown work the editor did.
   useEffect(() => {

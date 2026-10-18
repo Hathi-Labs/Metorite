@@ -788,14 +788,29 @@ test.describe("the block editor", () => {
     await setup(page);
     await mockKnowledge(page, { level: "write", pages: pageWith("| a | b |\n| --- | --- |\n| 1 | 2 |") });
     const body = await openEditor(page);
+    // The text of the cell that holds the caret, read from the editor's own
+    // state. ProseMirror reads a click's caret on the next `selectionchange`,
+    // so each step waits for the state, never for a fixed time.
+    const caretCell = () =>
+      body.evaluate((el) => {
+        const ed = (el as unknown as { editor: { state: { selection: { $from: { node: (d: number) => { type: { name: string }; textContent: string }; depth: number } } } } }).editor;
+        const $from = ed.state.selection.$from;
+        for (let d = $from.depth; d > 0; d--) {
+          const n = $from.node(d);
+          if (n.type.name === "tableCell" || n.type.name === "tableHeader") return n.textContent;
+        }
+        return null;
+      });
+    const editorHasFocus = () => body.evaluate((el) => document.activeElement === el);
     await body.locator("th", { hasText: "a" }).click();
-    // ProseMirror reads a click's caret on the next `selectionchange`. The
-    // table tools show once the caret is in the table.
-    await expect(page.getByRole("toolbar", { name: "Table" })).toBeVisible();
-    for (let i = 0; i < 3; i++) await page.keyboard.press("Tab");
-    await expect(body).toBeFocused();
+    await expect.poll(caretCell).toBe("a");
+    for (const next of ["b", "1", "2"]) {
+      await page.keyboard.press("Tab");
+      await expect.poll(caretCell).toBe(next);
+      await expect.poll(editorHasFocus).toBe(true);
+    }
     await page.keyboard.press("Tab");
-    await expect(body).not.toBeFocused();
+    await expect.poll(editorHasFocus).toBe(false);
     await expect(body.locator("tr")).toHaveCount(2);
   });
 
