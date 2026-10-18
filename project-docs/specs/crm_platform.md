@@ -6263,8 +6263,13 @@ prop, `metaTone: "muted" | "attention"`. It is the one rail primitive
 **A block in Sync health "Needs you".** `needsYou` (`lib/syncHealth.ts:418`)
 gains the kind `questions`. It gives one item, "<n> open questions about
 your data", with the action `answer`. The action opens the section.
-`GET /crm/sync/health` gains `open_questions`, the count of
-`questions.count_open`, so `needsYou` stays pure.
+`GET /crm/sync/health` gains `open_questions`, so `needsYou` stays pure.
+
+**Where the count comes from.** The count is the length of `seen` in the cursor row `zoho:questions`, so a
+poll builds no question. The questions step writes `seen` after each sync
+run. Each answer, dismissal, Undo of a dismissal and batch writes it again
+in its own transaction, so the count agrees with the rail at once. It is
+`null` before the first step (follow-up of 2026-10-18).
 
 **A card on My Day for the CRM admin.** A new kind
 `crm_open_questions` joins `CRM_KINDS` (`routes/shell/feed.py:695`) and
@@ -6518,8 +6523,9 @@ again at merge (R1).
 3. The body holds at most 3 samples for each choice, through
    `map_pipeline.masked`. A test seeds an email, a phone and a name. It
    proves that each reaches the body as its pattern class only.
-4. `questions.count_open(db, org)` gives the count, for Sync health and My
-   Day.
+4. `questions.count_open(db, org)` gives the count of a full read. Sync
+   health and My Day read `seen` of `zoho:questions` instead. Each answer
+   writes `seen` again (§18.14.5, follow-up of 2026-10-18).
 5. The pipeline writes `ranked` on each catalogue part that it closes as
    `null`, from the re-ask answer when there is one. `merge_item` carries
    `ranked` and drops the rank of a part with `by: admin`. `item_problem`

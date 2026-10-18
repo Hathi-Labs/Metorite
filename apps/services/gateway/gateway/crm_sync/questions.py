@@ -791,6 +791,15 @@ def step_state(state: Mapping[str, Any] | None, open_ids: Sequence[str], money: 
 CARD_HOURS = 24
 
 
+def seen_keys(open_questions: Sequence[Question]) -> dict[str, Any]:
+    """The keys that an answer, a dismissal, its Undo or a batch writes in
+    :data:`QUESTIONS_ROW`: ``seen`` and ``money`` of the open set NOW. It
+    sets no ``new_at``, so an answer never raises a My Day card (§18.14.5,
+    "No nag")."""
+    return {"seen": sorted({q.id for q in open_questions}),
+            "money": count_money(open_questions)}
+
+
 def open_count(state: Mapping[str, Any] | None) -> int | None:
     """The open count of the last questions step, from the state of
     :data:`QUESTIONS_ROW`, or ``None`` before the first step."""
@@ -894,6 +903,7 @@ __all__ = [
     "revenue_basis",
     "revenue_question",
     "sampled_modules",
+    "seen_keys",
     "shows_open",
     "slot_candidates",
     "slot_id",
