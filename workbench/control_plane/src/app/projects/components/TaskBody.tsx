@@ -54,7 +54,7 @@ import { useToast } from "@/components/ui/Toast";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
 import { TaskLinks } from "./TaskLinks";
 import { AgentRunPanel } from "./AgentRunPanel";
-import { agentKindLabel, clientName } from "../lib/agentRuns";
+import { activityAttribution, agentKindLabel, viaLabel } from "../lib/agentRuns";
 import { MarkdownBody } from "@/components/MarkdownMessage";
 import { taskRefResolverFor, type TaskRefResolver } from "@/lib/taskRefs";
 import { useEffect, useRef, useState } from "react";
@@ -249,8 +249,13 @@ function excerpt(body: string, max = 60): string {
  * ⚠️ **Shared by both lists on purpose.** A comment and a status change are
  * the same row in the same table (§3.8), and drawing them through two
  * components is how the byline in one drifts from the byline in the other.
+ *
+ * WS-55 EA-13b (spec §12.2 item 5, EA3-44). The timeline is honest: a row
+ * whose `meta.via` is an agent's stamp reads "Ravi through Claude Code", and
+ * a row of the GitHub App reads "GitHub". `activityAttribution` in
+ * `lib/agentRuns.ts` holds the rule. Exported for `TaskBody.test.ts`.
  */
-function Entry({
+export function Entry({
   activity,
   fields,
   personLabels,
@@ -265,6 +270,8 @@ function Entry({
   const who = activity.created_by ?? "";
   const agentKind = agentKindLabel(activity.meta?.agent_kind);
   const agentVia = typeof activity.meta?.via === "string" ? activity.meta.via : null;
+  const agentClient = viaLabel(agentVia);
+  const attribution = activityAttribution(activity);
   return (
     <div className="text-sm">
       <p className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -280,8 +287,8 @@ function Entry({
             size="xs"
             icon="Bot"
             title={
-              agentVia
-                ? `Written in an agent run of ${clientName(agentVia)}`
+              agentClient
+                ? `Written in an agent run of ${agentClient}`
                 : "Written in an agent run"
             }
           >
@@ -289,7 +296,8 @@ function Entry({
           </Badge>
         ) : null}
         <span className="min-w-0 truncate">
-          {who ? labelWith(personLabels)(who) : "system"}
+          {attribution.who ?? (who ? labelWith(personLabels)(who) : "system")}
+          {attribution.through ? ` ${attribution.through}` : ""}
           {activity.created_at
             ? ` · ${new Date(activity.created_at).toLocaleString()}`
             : ""}
@@ -310,7 +318,7 @@ function Entry({
         </div>
       ) : (
         <p className="whitespace-pre-wrap text-foreground">
-          {describeActivity(activity, fields)}
+          {attribution.reason ?? describeActivity(activity, fields)}
         </p>
       )}
     </div>

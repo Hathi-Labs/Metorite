@@ -537,7 +537,7 @@ class TestAddCommentOnARealDatabase:
         assert said["structuredContent"]["created_by"] == MEMBER
         [row] = _rows(live, "k4 note")
         assert row.created_by == MEMBER
-        assert (row.meta or {}).get("via") == VIA
+        assert (row.meta or {}).get("via") == w.R8_VIA
 
     async def test_k5_each_parent_refusal_has_its_text_and_frees_the_slot(self, live):
         task, other_task = live.task("k5"), live.task("k5 other")

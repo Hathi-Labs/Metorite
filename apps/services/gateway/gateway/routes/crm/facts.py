@@ -83,7 +83,8 @@ def revenue_fact(entries: Sequence[Any], stored: Mapping[str, Any], approved_at:
 
 def entry_facts(entry: Any, approved_at: Any) -> list[org_facts.Fact]:
     """The purpose and each answered key part of one entry. A part that
-    waits for a question, or that the AI left as null, is no fact."""
+    waits for a question, or that the AI left as null, is no fact. A sum
+    of fields (CRM-Q32-9) names each of its parts."""
     from gateway.crm_sync import catalogue as cat
     from gateway.crm_sync.questions import PURPOSE_LABELS
 
@@ -109,9 +110,14 @@ def entry_facts(entry: Any, approved_at: Any) -> list[org_facts.Fact]:
                                       f"{entry.label} has no single {PART_WORDS[part]}.",
                                       source, _when(source, approved_at)))
             continue
+        summed = getattr(found, "parts", ())
+        meaning = (
+            f"The {PART_WORDS[part]} of {entry.label} is the sum of "
+            f"{_names([p.label for p in summed])}." if summed
+            else f"The {PART_WORDS[part]} of {entry.label} is {found.label} ({found.key})."
+        )
         out.append(org_facts.fact(
-            APP, f"field:{entry.module}.{found.key}", part, found.key,
-            f"The {PART_WORDS[part]} of {entry.label} is {found.label} ({found.key}).",
+            APP, f"field:{entry.module}.{found.key}", part, found.key, meaning,
             source, _when(source, approved_at)))
     return out
 

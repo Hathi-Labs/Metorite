@@ -284,3 +284,65 @@ async def test_the_digest_of_an_overlaid_org_reads_the_lanes(ov, app_engine) -> 
     assert (count["unsorted"], count["from_module"]) == ("3", "Commercials")
     assert [r["label"] for r in amount["rows"]] == ["Proposal", "Open stage"]
     assert amount["unsorted"] == "INR 65"
+
+
+# ── CRM-Q32-9a: the overlay reads a sum (crm_platform.md §18.14.10, item 5) ──
+
+#: The admin stored the amount of Commercials as the sum of Value and Extra.
+AMOUNT_SUM = {"kind": "catalogue", "module": "Commercials", "amount": ["Value", "Extra"],
+              "by": {"amount": "admin"}}
+
+#: Extra on some rows: a number, a numeric string, nothing, and a blank.
+_EXTRA = {"c1": 10, "c2": "20", "c7": 1, "c4": ""}
+
+
+def _with_extra(p: Any, org: str) -> None:
+    _defs(p, org, "module:Commercials", [("Extra", "currency", None, False, False)])
+    with p.admin_engine.begin() as c:
+        for ext, value in _EXTRA.items():
+            c.execute(text(
+                "UPDATE crm_module_records SET fields = fields || CAST(:f AS jsonb) "
+                "WHERE organization_id = CAST(:o AS uuid) AND ext_id = :e"),
+                {"o": org, "e": ext, "f": json.dumps({"Extra": value})})
+
+
+async def test_the_overlay_sum_amount_and_weighted_read_a_sum(ov, app_engine) -> None:
+    """sum_amount and weighted of an overlaid slot read the sum of the
+    parts, through the one builder."""
+    a = ov.org_a
+    _with_extra(ov, a)
+    _plan(ov, a, [ROLE, PROBABILITY, CLOSE, STAGE, AMOUNT_SUM])
+    money = await _agg(ov, a, entity="deals", measure="sum_amount")
+    # 1065 of Value, and 10 + 20 + 1 of Extra.
+    assert (money["total"], money["records"]) == (1096.0, 7)
+    assert (money["field"], money["field_type"]) == ("Value+Extra", "currency")
+    weighted = await _agg(ov, a, entity="deals", measure="weighted")
+    # Proposal, Open and Weird are open: 110 x 50% + 220 x 25% + 6 x 50%.
+    assert weighted["total"] == 113.0
+    grouped = await _call(ov, _admin(a), "GET", _path(entity="deals", group_field="@amount"))
+    assert grouped.status_code == 422, grouped.text
+    assert grouped.json()["detail"]["code"] == "composite_group"
+
+
+async def test_the_digest_reads_a_sum_with_no_change_of_its_own(ov, app_engine) -> None:
+    """The digest reads its totals through the aggregate, so the sum
+    reaches it: the Unsorted lane holds 50 + 10 + 5 + 1."""
+    from datetime import date
+
+    from acb_common.db import bind_tenant, release_tenant
+    from gateway.crm_sync import digest
+
+    from tests.unit._tenant_ladder import tenant_engine_scope
+
+    _with_extra(ov, ov.org_a)
+    _plan(ov, ov.org_a, [ROLE, PROBABILITY, CLOSE, STAGE, AMOUNT_SUM])
+    week = digest.Week(start=date(2026, 10, 5), end=date(2026, 10, 11), zone="UTC",
+                       close_from=date(2026, 10, 1), close_to=date(2026, 12, 31))
+    token = bind_tenant(ov.org_a)
+    try:
+        async with tenant_engine_scope(ov.app_url.render_as_string(hide_password=False)):
+            numbers = await digest.gather(ov.org_a, week)
+    finally:
+        release_tenant(token)
+    amount = {p["key"]: p for p in numbers["parts"]}["open_amount_by_stage"]
+    assert amount["unsorted"] == "INR 66"

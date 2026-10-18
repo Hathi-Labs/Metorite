@@ -155,6 +155,11 @@ class TokenLookup:
     pinned_projects: tuple[str, ...] = ()
     include_personal: bool = False
     client_origin: str = ""
+    #: The CONNECTION's ``client_id`` (EA-13a). The edge stamps
+    #: ``agent_oauth.actor_via_for(client_origin, client_id=...)`` with it,
+    #: as branch 0 does with :attr:`LiveConnection.client_id`. ``client_id``
+    #: above is the token's own copy, and no stamp reads it.
+    connection_client_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -172,6 +177,9 @@ class LiveConnection:
     scopes: tuple[str, ...]
     pinned_projects: tuple[str, ...]
     include_personal: bool
+    #: ``agent_connection.client_id`` (EA-13a). Branch 0 stamps
+    #: ``agent_oauth.actor_via_for(client_origin, client_id=...)`` with it.
+    client_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -413,7 +421,7 @@ SELECT connection_id, organization_id, kind, client_id, resource, scope,
 #: one it was asked for, so branch 0 can compare the two.
 _CONNECTION_LIVE_SQL = """
 SELECT CAST(organization_id AS TEXT) AS organization_id,
-       member_email, client_origin, scopes,
+       member_email, client_origin, client_id, scopes,
        CAST(pinned_projects AS TEXT[]) AS pinned_projects, include_personal
   FROM agent_connection
  WHERE id = CAST(:connection_id AS UUID)
@@ -1300,6 +1308,7 @@ async def lookup_token(raw: str, *, kind: str = ACCESS) -> TokenLookup | None:
         pinned_projects=tuple(str(p) for p in live.pinned_projects or ()),
         include_personal=bool(live.include_personal),
         client_origin=live.client_origin or "",
+        connection_client_id=live.client_id or "",
     )
 
 
@@ -1363,4 +1372,5 @@ async def read_live_connection(
         scopes=tuple(row.scopes or ()),
         pinned_projects=tuple(str(p) for p in row.pinned_projects or ()),
         include_personal=bool(row.include_personal),
+        client_id=row.client_id or "",
     )

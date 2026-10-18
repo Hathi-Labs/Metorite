@@ -76,6 +76,13 @@ SAMPLE_LIMIT = 3
 #: The questions that the section shows first (§18.14.7).
 SHOWN = 5
 
+#: CRM-Q32-9 (§18.14.10): the card of an ``amount`` question offers "These
+#: fields add up to the amount" when 2 or more currency fields each fill at
+#: least this share of the records. The picker lists at most
+#: :data:`SUM_CHOICES` of them, the most filled first.
+SUM_FILL_FLOOR = 0.2
+SUM_CHOICES = 12
+
 #: The words of a stage value, in the order the card shows them.
 STAGE_WORDS: tuple[str, ...] = ("open", "won", "lost")
 STAGE_LABELS: Mapping[str, str] = {"open": "Open", "won": "Won", "lost": "Lost"}
@@ -147,7 +154,8 @@ class Question:
     other: bool = False
     module: str | None = None
     part: str | None = None
-    current: str | None = None
+    #: The answer in use. A sum (CRM-Q32-9) is the tuple of its keys.
+    current: str | tuple[str, ...] | None = None
     by: str | None = None
     count: int | None = None
     slot: str | None = None
@@ -157,6 +165,9 @@ class Question:
     hash: str | None = None
     #: Each choice of "Pick another", for ``purpose`` and ``key_field``.
     options: tuple[Choice, ...] = ()
+    #: CRM-Q32-9: the fields of the picker of a sum, on an ``amount``
+    #: question only (:func:`sum_fields`). Empty when the card offers none.
+    sums: tuple[Choice, ...] = ()
 
     def best(self) -> Choice | None:
         """Jev's best guess, or ``None``."""
@@ -413,6 +424,77 @@ def part_fields(src: Any, part: str) -> list[Any]:
             and not (part == "parent" and not f.target)]
 
 
+def sum_fields(src: Any) -> list[Any]:
+    """CRM-Q32-9: the fields that the picker of a sum lists. Each is a
+    ``currency`` field with a fill of :data:`SUM_FILL_FLOOR` or more, the
+    most filled first, at most :data:`SUM_CHOICES`. Empty when fewer than 2
+    fields pass, so the card offers no sum."""
+    found = [f for f in getattr(src, "fields", ())
+             if f.type in cat.SUM_TYPES and (_fill(src, f.key) or 0.0) >= SUM_FILL_FLOOR]
+    found.sort(key=lambda f: (-(_fill(src, f.key) or 0.0), f.key))
+    return found[:SUM_CHOICES] if len(found) >= cat.SUM_MIN else []
+
+
+def sum_problem(src: Any, keys: Any) -> bool:
+    """True unless *keys* is a list of 2 to 5 distinct keys, each a
+    ``currency`` field of *src* (CRM-Q32-9). The shape is checked first, so
+    a hostile key never reaches a read."""
+    if cat.sum_shape_problem(keys) or src is None:
+        return True
+    return cat.problem(src, cat.SUM_PART, keys) is not None
+
+
+def sum_choice(src: Any, keys: Sequence[str]) -> Choice:
+    """The choice of a sum, for the line of an answer: "the sum of A, B and
+    C". The caller checked *keys* (:func:`sum_problem`)."""
+    labels = [getattr(src.field(k), "label", k) for k in keys]
+    return Choice(value=cat.SUM_KEY_JOIN.join(keys), label=f"the sum of {names(labels)}")
+
+
+#: CRM-Q32-9: a pair of parts that holds the same value on this share or
+#: more of the records that set both gets a warning. A sum counts it twice.
+SUM_EQUAL_SHARE = 0.5
+
+
+@dataclass(frozen=True)
+class SumReport:
+    """The words of the sum check: the coverage line and each warning."""
+
+    line: str
+    warnings: tuple[str, ...] = ()
+
+
+def _percent(part: int, whole: int) -> int:
+    return round(100 * part / whole) if whole > 0 else 0
+
+
+def sum_report(labels: Sequence[str], records: int, covered: int,
+               pairs: Sequence[tuple[int, int, int, int]], *, capped: bool = False,
+               ) -> SumReport:
+    """The coverage line of a ticked set of *labels*, and a warning for each
+    pair ``(i, j, both, equal)`` whose parts are equal on
+    :data:`SUM_EQUAL_SHARE` or more of the records that set both. With
+    *capped*, the check read only the first records of the module."""
+    whole = f"the first {records:,}" if capped else f"{records:,}"
+    noun = "record" if records == 1 else "records"
+    line = (f"These {len(labels)} fields cover {covered:,} of {whole} {noun} "
+            f"({_percent(covered, records)}%).")
+    warnings = tuple(
+        f"{labels[i]} and {labels[j]} hold the same value on {_percent(equal, both)}% "
+        "of records. A sum counts it twice."
+        for i, j, both, equal in pairs
+        if both > 0 and equal >= SUM_EQUAL_SHARE * both
+    )
+    return SumReport(line=line, warnings=warnings)
+
+
+def names(labels: Sequence[str]) -> str:
+    """``A``, ``A and B`` or ``A, B and C``."""
+    if len(labels) < 2:
+        return "".join(labels)
+    return f"{', '.join(labels[:-1])} and {labels[-1]}"
+
+
 def candidates(src: Any, part: str) -> list[Any]:
     """The candidates of code, through ``map_pipeline.part_candidates``:
     the right type, a fill above 0, the most filled first."""
@@ -440,10 +522,12 @@ def key_choices(inputs: Inputs, src: Any, part: str) -> tuple[Choice, ...]:
 # ── The kinds ────────────────────────────────────────────────────────────────
 
 
-def _current_part(entry: Any, part: str) -> str | None:
+def _current_part(entry: Any, part: str) -> str | tuple[str, ...] | None:
     if part == "purpose":
         return entry.purpose
     found = entry.fields.get(part)
+    if found is not None and getattr(found, "parts", ()):
+        return tuple(p.key for p in found.parts)
     return found.key if found is not None else None
 
 
@@ -476,6 +560,8 @@ def _module_questions(inputs: Inputs, entry: Any, reasons: Mapping[str, str],
             module=entry.module, part=part, current=current, by=by, hash=digest,
             options=tuple(Choice(value=f.key, label=f.label, fill=_fill(src, f.key))
                           for f in part_fields(src, part)),
+            sums=tuple(Choice(value=f.key, label=f.label, fill=_fill(src, f.key))
+                       for f in sum_fields(src)) if part == cat.SUM_PART else (),
         ))
     return out
 
@@ -685,12 +771,19 @@ def with_samples(inputs: Inputs, samples: Mapping[str, Mapping[str, Sequence[str
 def answer_problem(q: Question, value: Any, src: Any = None) -> str | None:
     """Why *value* is not an answer of *q*, or ``None`` (§18.14.6,
     "Errors"). ``None`` is "None of these", legal for ``purpose``,
-    ``key_field`` and ``slot``."""
+    ``key_field`` and ``slot``. A list (CRM-Q32-9) answers only the
+    ``amount`` of a ``key_field``."""
+    if isinstance(value, list) and q.kind != KIND_KEY:
+        return "bad_answer"
     if q.kind == KIND_PURPOSE:
         return None if value is None or value in cat.PURPOSES else "bad_answer"
     if q.kind == KIND_KEY:
         if value is None:
             return None
+        if isinstance(value, list):
+            # CRM-Q32-9: only an amount takes a sum of currency fields.
+            legal = q.part == cat.SUM_PART and not sum_problem(src, value)
+            return None if legal else "bad_answer"
         if src is None or not isinstance(value, str) or not value or value.startswith("@"):
             return "bad_answer"
         legal = {f.key for f in part_fields(src, q.part or "")}
@@ -715,7 +808,8 @@ def answer_item(q: Question, value: Any) -> dict[str, Any]:
         return {"kind": cat.KIND_CATALOGUE, "module": q.module,
                 "purpose": value if value is not None else "other", "by": {"purpose": "admin"}}
     if q.kind == KIND_KEY:
-        return {"kind": cat.KIND_CATALOGUE, "module": q.module, str(q.part): value,
+        return {"kind": cat.KIND_CATALOGUE, "module": q.module,
+                str(q.part): list(value) if isinstance(value, list) else value,
                 "by": {str(q.part): "admin"}}
     raise ValueError(f"no catalogue item for {q.kind}")
 
@@ -849,8 +943,11 @@ def wire(q: Question) -> dict[str, Any]:
         "id": q.id, "kind": q.kind, "module": q.module, "label": q.label, "part": q.part,
         "reason": q.reason, "records": q.records, "money": q.money, "why": q.why,
         "choices": [choice(c) for c in q.choices], "none": q.none, "other": q.other,
-        "current": q.current, "by": q.by, "dismissible": q.hash is not None,
+        "current": list(q.current) if isinstance(q.current, tuple) else q.current,
+        "by": q.by, "dismissible": q.hash is not None,
     }
+    if q.sums:
+        body["sums"] = [{"value": c.value, "label": c.label, "fill": c.fill} for c in q.sums]
     if q.kind == KIND_STAGE:
         body.update(count=q.count, slot=q.slot, value=q.value, field=q.field)
     if q.kind == KIND_SLOT:
@@ -874,11 +971,15 @@ __all__ = [
     "REVENUE_ID",
     "SHOWN",
     "STAGE_WORDS",
+    "SUM_CHOICES",
+    "SUM_EQUAL_SHARE",
+    "SUM_FILL_FLOOR",
     "Choice",
     "Inputs",
     "Question",
     "SlotState",
     "StageState",
+    "SumReport",
     "answer_item",
     "answer_problem",
     "answered",
@@ -894,6 +995,7 @@ __all__ = [
     "key_id",
     "module_hash",
     "module_questions",
+    "names",
     "open_count",
     "options_hash",
     "part_fields",
@@ -911,6 +1013,10 @@ __all__ = [
     "stage_for",
     "stage_id",
     "step_state",
+    "sum_choice",
+    "sum_fields",
+    "sum_problem",
+    "sum_report",
     "value_hash",
     "why_key",
     "wire",
