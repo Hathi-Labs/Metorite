@@ -168,14 +168,39 @@ async def _reconcile_pr(org: str, installation: int, row: Any, result: TickResul
         await outcome.emit_all()
 
 
+#: A checks read that failed for a reason that is not a rate limit stamps
+#: ``checks_fetched_at`` (fix round 3, item 2), as a refused pull request read
+#: stamps ``fetched_at``. Else 50 rows of a repository that left the
+#: installation fill MAX_REFS on every tick, and the rest of the org waits.
+_CHECKS_STAMP_SQL = (
+    "UPDATE pm_task_refs SET checks_fetched_at = now() "
+    "WHERE organization_id = CAST(:org AS uuid) AND provider = 'github' "
+    "AND kind = 'pull_request' AND (id = CAST(:id AS uuid) OR head_sha = :sha)"
+)
+
+
+async def _stamp_checks(org: str, row: Any) -> None:
+    async with tenant_session(org) as db:
+        await db.execute(text(_CHECKS_STAMP_SQL), {
+            "org": org, "id": str(row.id), "sha": str(row.head_sha or "") or None})
+
+
 async def _reconcile_checks(org: str, installation: int, row: Any, result: TickResult) -> None:
     sha = str(row.head_sha or "")
     parsed = github_sync.split_ref(str(row.ref))
     if parsed is None:
+        await _stamp_checks(org, row)
         return
     result.checks_reads += 1
-    got = await github_sync.fetch_checks(installation, parsed[0], sha)
+    try:
+        got = await github_sync.fetch_checks(installation, parsed[0], sha)
+    except github_sync.RateLimited:
+        raise  # the tick stops, and the row is read at the next one
+    except github_app.GitHubCallFailed:
+        await _stamp_checks(org, row)
+        raise
     if got is None:
+        await _stamp_checks(org, row)
         return
     async with tenant_session(org) as db:
         await github_sync.write_checks(db, org, sha, got[0], got[1])

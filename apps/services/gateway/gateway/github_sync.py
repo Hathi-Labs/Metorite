@@ -239,12 +239,22 @@ async def write_pull_request(
 
 
 def moved_into_terminal(written: list[Any]) -> set[str]:
-    """The tasks whose reference this write moved INTO ``merged`` or
-    ``closed`` from a state that was not terminal. Pure."""
-    return {
-        str(r.task_id) for r in written
-        if r.state in TERMINAL and getattr(r, "old_state", None) not in TERMINAL
-    }
+    """The tasks whose reference this write moved to a state that runs §12.
+    Pure. Two moves count (§12.1):
+
+    * INTO ``merged`` from any other state, ``closed`` too (fix round 3,
+      item 1). A reopen that no one saw leaves the row ``closed``, and the
+      merge after it must still run the rule;
+    * INTO ``closed`` (no merge) from a state that is not terminal. A close
+      can finish a task whose other pull request merged earlier.
+    """
+    moved: set[str] = set()
+    for r in written:
+        old = getattr(r, "old_state", None)
+        if (r.state == "merged" and old != "merged") or (
+                r.state == "closed" and old not in TERMINAL):
+            moved.add(str(r.task_id))
+    return moved
 
 
 async def apply_pull_request(

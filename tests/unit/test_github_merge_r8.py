@@ -70,6 +70,12 @@ Fix round 2 (2026-10-18), each one red when run:
   ``reopened`` event -> ``test_r2_3_a_close_and_a_reopen_in_one_second_end_open``.
   R2-3-M2 an equal stamp writes with no rank compare -> the same test (the
   late ``closed`` of the second case).
+
+Fix round 3 (2026-10-18), red when run:
+
+* **R3-1** a merge after a lost reopen runs the rule. R3-1-M1
+  ``moved_into_terminal`` goes back to the TERMINAL check ->
+  ``test_r3_1_a_merge_after_a_lost_reopen_moves_the_task``.
 """
 
 from __future__ import annotations
@@ -743,3 +749,24 @@ async def test_r2_3_a_close_and_a_reopen_in_one_second_end_open(world) -> None:
     await _close(w, 813, updated_at=same)
     await _event(w, "opened", 813, updated_at=same)
     assert g.scalar(w.p, state, r=f"{REPO}#813") == "merged"
+
+
+# ── Fix round 3 ─────────────────────────────────────────────────────────────
+
+
+async def test_r3_1_a_merge_after_a_lost_reopen_moves_the_task(world) -> None:
+    """Open, then closed with no merge. The ``reopened`` delivery is lost.
+    Then the pull request merges: the row goes closed -> merged, and the
+    agent's task moves to Done."""
+    w = world
+    task = _task(w)
+    _run(w, task)
+    _ref(w, task, 821)
+    await _event(w, "opened", 821, updated_at="2026-10-18T08:00:00Z")
+    await _close(w, 821, merged=False, updated_at="2026-10-18T08:10:00Z")
+    assert _category(w, task) == "in_progress", "a lone close moves nothing"
+    # (the `reopened` of 08:20 never arrives)
+    await _close(w, 821, merged=True, updated_at="2026-10-18T08:30:00Z")
+    assert g.scalar(w.p, "SELECT state FROM pm_task_refs WHERE ref = :r",
+                    r=f"{REPO}#821") == "merged"
+    assert _category(w, task) == "done"

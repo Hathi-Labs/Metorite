@@ -56,6 +56,11 @@ Fix round 2, item 4 (the last mark of the trailing read):
 
 * R2-4-M1 no GETDEL after the lead goes ->
   ``test_r2_4_a_mark_set_before_the_lead_goes_is_read``.
+
+Fix round 3, item 2 (a failed checks read waits):
+
+* R3-2-M1 ``_reconcile_checks`` stamps nothing on a failure ->
+  ``test_r3_2_unreadable_checks_rows_do_not_starve_the_org``.
 """
 
 from __future__ import annotations
@@ -113,6 +118,7 @@ class FakeGitHub:
         self.tokens_gone = False
         self.token_asks = 0
         self.pull_status: dict[int, int] = {}
+        self.checks_status: dict[str, int] = {}
 
     async def handle(self, request: httpx.Request) -> httpx.Response:
         self.open_at_call.append(self.w.opened["n"])
@@ -135,6 +141,8 @@ class FakeGitHub:
             return httpx.Response(200, json=body) if body else httpx.Response(404, json={})
         if path.endswith("/check-runs"):
             sha = path.split("/")[-2]
+            if sha in self.checks_status:
+                return httpx.Response(self.checks_status[sha], json={})
             if self.on_checks is not None:
                 self.on_checks(sha)
             runs = self.runs.get(sha, [])
@@ -665,3 +673,35 @@ async def test_r2_4_a_mark_set_before_the_lead_goes_is_read(world, monkeypatch) 
     assert injected, "the race was not set up"
     assert reads == 2 and _check_reads(w) == 2, w.gh.requests
     assert _row(w, ref).checks_state == "failing"
+
+
+# ── Fix round 3, item 2: a failed checks read waits ─────────────────────────
+
+
+async def test_r3_2_unreadable_checks_rows_do_not_starve_the_org(world) -> None:
+    """60 pending rows whose checks GitHub refuses (a repository that left the
+    installation), and one healthy row behind them. The healthy row is read
+    within two ticks."""
+    from gateway import github_reconcile_loop
+
+    w = world
+    task = _task(w)
+    for n in range(700, 760):
+        sha = f"{n:040x}"
+        ref = _ref(w, task, n, head=sha, checks="pending", stale=False)
+        w.gh.checks_status[sha] = 404
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE pm_task_refs SET checks_fetched_at = now() - "
+                           "interval '2 hours' - make_interval(secs => :s) "
+                           "WHERE id = CAST(:i AS uuid)"), {"s": n, "i": ref})
+    healthy = _ref(w, task, 799, head=SHA_NEW, checks="pending", stale=False)
+    with w.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE pm_task_refs SET checks_fetched_at = now() - interval '1 hour' "
+                       "WHERE id = CAST(:i AS uuid)"), {"i": healthy})
+    w.gh.runs[SHA_NEW] = [{"status": "completed", "conclusion": "success"}]
+    w.gh.status[SHA_NEW] = {"state": "success", "statuses": [{"state": "success"}]}
+    async with tenant_engine_scope(g.app_dsn(w.p)):
+        first = await github_reconcile_loop.run_org(w.p.org_a, "tick-r3-a")
+        second = await github_reconcile_loop.run_org(w.p.org_a, "tick-r3-b")
+    assert first.claimed and second.claimed
+    assert _row(w, healthy).checks_state == "passing", (first, second)
