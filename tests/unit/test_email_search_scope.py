@@ -128,7 +128,12 @@ async def test_text_search_ranks_and_highlights():
     assert "websearch_to_tsquery('english', :q)" in sql
     assert "ts_rank_cd" in sql
     assert "ts_headline" in sql
-    assert "ORDER BY rank DESC, em.received_at DESC" in sql
+    # Only the newest RANK_WINDOW matches pay for ts_rank_cd, and they come
+    # first (incident 2026-10-18, fix round 1: 22 000 ranked hits took 52.8 s).
+    assert "ORDER BY (rw.id IS NOT NULL) DESC, rank DESC, em.received_at DESC" in sql
+    assert "CASE WHEN rw.id IS NOT NULL THEN ts_rank_cd(" in sql
+    assert "LIMIT :rank_window) rw ON rw.id = em.id" in sql
+    assert params["rank_window"] == 500
     assert params["q"] == "invoice"
 
 

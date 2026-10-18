@@ -83,6 +83,7 @@ from tests.unit._tenant_ladder import tenant_engine_scope
 # ``promoted`` and ``app_engine`` are fixtures, used by name, so the import is
 # load-bearing even though it reads as unused.
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
+    _APP_ROLE,
     _DB_GATE,
     app_engine,
     promoted,
@@ -456,6 +457,13 @@ class TestTheReadsOfMoreThanOneMailbox:
     """``email-keep-separate-reads`` and ``email-keep-separate-self``."""
 
     def _seed(self, p) -> SimpleNamespace:
+        # The text search calls email_message_search (migration 286), which
+        # grants EXECUTE to `acb_app` only. The rehearsal role has a
+        # suite-private name, so it gets the same grant here.
+        with p.admin_engine.begin() as c:
+            c.execute(text(
+                "GRANT EXECUTE ON FUNCTION public.email_message_search(text, uuid[], integer) "
+                f"TO {_APP_ROLE}"))
         tag = uuid.uuid4().hex[:8]
         s = SimpleNamespace(tag=tag, owner=f"member-{tag}@t8g1.test")
         org = p.org_b

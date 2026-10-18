@@ -3,9 +3,11 @@
 This is the dedicated search surface (``GET /email/search``), distinct from the
 folder-oriented ``/email/messages`` list:
 
-  • It searches the WHOLE message — subject + body_text + sender name + email —
-    over an FTS index whose expression matches the query exactly (migration 72),
-    so body matches are found via the GIN index, not a sequential scan.
+  • It searches the WHOLE message — subject + body_text + the sender + the To
+    and Cc recipients — through ``core.text_match_ids``. That calls the
+    SECURITY DEFINER ``email_message_search`` (migration 286), because under
+    RLS an inline ``to_tsvector`` match cannot use any index (incident
+    2026-10-18).
   • It ranks by relevance (``ts_rank_cd``), not just recency, so the best match
     surfaces first — with recency as the tie-break.
   • It searches ACROSS folders and (optionally) across all of the user's
@@ -48,14 +50,16 @@ from gateway.routes.email.core import (
     _row_to_message,
     folder_scope,
     router,
+    SEARCH_MATCH_CAP,
+    TEXT_MATCH_SQL,
+    text_match_ids,
 )
 from gateway.routes.email.transport.messages import _also_in_by_message
 from sqlalchemy import text
 
-# The tsvector expression — MUST stay byte-for-byte identical to the GIN index
-# in migration 72 (idx_email_messages_fts_body) so the planner uses the index
-# instead of recomputing per row. One constant, referenced everywhere it's
-# needed (WHERE match, rank, headline), so they can never drift apart.
+# The tsvector that RANKS a match (ts_rank_cd). It is NOT the match: the WHERE
+# goes through core.text_match_ids (migration 286), because under RLS no index
+# serves an inline to_tsvector. The rank runs only inside RANK_WINDOW.
 _FTS_VECTOR = (
     "to_tsvector('english', "
     "coalesce(em.subject,'') || ' ' || "
@@ -66,6 +70,13 @@ _FTS_VECTOR = (
 
 # What the highlighter runs over — subject + body only (sender is shown
 # separately on the card, no need to highlight it inside the snippet).
+#: How many of the newest matches get a relevance rank (fix round 1 of the
+#: incident of 2026-10-18). ``ts_rank_cd`` runs ``to_tsvector`` over the body,
+#: about 0.75 ms a mail, so a rank of 22 000 hits took 52.8 s. The newest
+#: RANK_WINDOW matches come first, ordered by rank. The rest follow, newest
+#: first, with rank 0. The window is fixed, so page N and page N+1 agree.
+RANK_WINDOW = 500
+
 _HEADLINE_SOURCE = (
     "coalesce(em.subject,'') || ' — ' || coalesce(em.body_text, em.snippet, '')"
 )
@@ -214,9 +225,14 @@ async def search_messages(
         # account_id still searches it (EM-T8g-1, D-EM-30).
         where = [_account_scope(account_id, params, pooled_only=True)]
         # Filters-only search: no text ⇒ no FTS predicate and nothing to rank.
+        # The match runs ONCE over the mailboxes of the member (incident
+        # 2026-10-18), and COUNT and the page share its ids.
+        truncated = False
         if text_q:
-            where.append(
-                f"{_FTS_VECTOR} @@ websearch_to_tsquery('english', :q)")
+            match_ids, truncated = await text_match_ids(
+                db, text_q, uid=uid, account_id=account_id, pooled_only=True)
+            where.append(TEXT_MATCH_SQL)
+            params["match_ids"] = match_ids
 
         # Search is the one place "all" spans sent mail too: the browse view
         # excludes it (All shows what arrived), but "what did I tell them?" is
@@ -260,8 +276,24 @@ async def search_messages(
         semantic_select = "0.0 AS sim"
         # Filters-only: nothing to rank against, so newest-first is the only
         # meaningful order (and hybrid re-ranking has no query to embed).
-        order_sql = ("rank DESC, em.received_at DESC" if text_q
-                     else "em.received_at DESC")
+        # The rank window: the newest RANK_WINDOW matches. Only they pay for
+        # ts_rank_cd, and they come first. `rw.id IS NULL` is a row after it.
+        win_sql = ""
+        rank_expr = "0.0"
+        if text_q:
+            params["rank_window"] = RANK_WINDOW
+            win_sql = (
+                "LEFT JOIN (SELECT em.id FROM email_messages em"
+                f" WHERE {where_sql}"
+                " ORDER BY em.received_at DESC NULLS LAST, em.id DESC"
+                " LIMIT :rank_window) rw ON rw.id = em.id")
+            rank_expr = (
+                "CASE WHEN rw.id IS NOT NULL THEN ts_rank_cd("
+                + _FTS_VECTOR + ", websearch_to_tsquery('english', :q))"
+                " ELSE 0.0 END")
+        order_sql = (
+            "(rw.id IS NOT NULL) DESC, rank DESC, em.received_at DESC"
+            if text_q else "em.received_at DESC")
         join_sql = ""
         if hybrid and text_q:
             qvec = None
@@ -281,8 +313,8 @@ async def search_messages(
                     "COALESCE(1 - (ee.embedding <=> CAST(:qvec AS vector)), 0)"
                     " AS sim")
                 order_sql = (
-                    "(LEAST(ts_rank_cd(" + _FTS_VECTOR +
-                    ", websearch_to_tsquery('english', :q)), 1.0) * 0.5"
+                    "(rw.id IS NOT NULL) DESC, (LEAST(" + rank_expr +
+                    ", 1.0) * 0.5"
                     " + COALESCE(1 - (ee.embedding <=> CAST(:qvec AS vector)),"
                     " 0) * 0.5) DESC, em.received_at DESC")
 
@@ -293,9 +325,7 @@ async def search_messages(
         # <mark> in it, which the list would render as a "match" snippet that
         # matched nothing. Emit an empty highlight instead so the card falls back
         # to its normal preview.
-        rank_select = (f"ts_rank_cd({_FTS_VECTOR},"
-                       " websearch_to_tsquery('english', :q)) AS rank"
-                       if text_q else "0.0 AS rank")
+        rank_select = f"{rank_expr} AS rank"
         headline_select = (
             f"""ts_headline('english', {_HEADLINE_SOURCE},
                     websearch_to_tsquery('english', :q),
@@ -325,6 +355,7 @@ async def search_messages(
                        {semantic_select},
                        {headline_select}
                   FROM email_messages em
+                  {win_sql}
                   {join_sql}
                  WHERE {where_sql}
                  ORDER BY {order_sql}
@@ -356,4 +387,8 @@ async def search_messages(
             "page_size": page_size,
             "query": text_q,
             "hybrid": bool(join_sql),
+            # True when the text matched more than SEARCH_MATCH_CAP mails, so
+            # only the newest ones were counted and listed.
+            "truncated": truncated,
+            "match_cap": SEARCH_MATCH_CAP,
         }
