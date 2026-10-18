@@ -2,9 +2,10 @@
 -- 282_github_app.sql — the columns, the index and the lookup of the Metorite
 -- GitHub App.
 --
--- What: (1) `pm_task_refs` gains eight nullable columns: `head_sha`,
+-- What: (1) `pm_task_refs` gains ten nullable columns: `head_sha`,
 --       `head_ref`, `checks_state`, `checks_summary`, `checks_fetched_at`,
---       `pr_updated_at`, `merged_at` and `unreadable_since`. (2) The CHECK of `pm_task_refs.via`
+--       `pr_updated_at`, `merged_at`, `unreadable_since`, `unblocked_at` and
+--       `pr_rank`. (2) The CHECK of `pm_task_refs.via`
 --       takes one more value, `github`. (3) Two indexes on `pm_task_refs` for
 --       the webhook reads. (4) One partial unique index on
 --       `integration_connections`, so one GitHub installation maps to one
@@ -63,7 +64,7 @@ SET lock_timeout = '5s';
 
 BEGIN;
 
--- ── 1. Eight columns on pm_task_refs (§9.1) ─────────────────────────────────
+-- ── 1. Ten columns on pm_task_refs (§9.1) ─────────────────────────────────
 
 ALTER TABLE pm_task_refs
     ADD COLUMN IF NOT EXISTS head_sha TEXT NULL
@@ -80,7 +81,11 @@ ALTER TABLE pm_task_refs
     ADD COLUMN IF NOT EXISTS checks_fetched_at TIMESTAMPTZ NULL,
     ADD COLUMN IF NOT EXISTS pr_updated_at TIMESTAMPTZ NULL,
     ADD COLUMN IF NOT EXISTS merged_at TIMESTAMPTZ NULL,
-    ADD COLUMN IF NOT EXISTS unreadable_since TIMESTAMPTZ NULL;
+    ADD COLUMN IF NOT EXISTS unreadable_since TIMESTAMPTZ NULL,
+    ADD COLUMN IF NOT EXISTS unblocked_at TIMESTAMPTZ NULL,
+    ADD COLUMN IF NOT EXISTS pr_rank SMALLINT NULL
+        CONSTRAINT pm_task_refs_pr_rank_known
+        CHECK (pr_rank IS NULL OR pr_rank BETWEEN 0 AND 2);
 
 COMMENT ON COLUMN pm_task_refs.head_sha IS
     'GH-2: the head commit of the pull request. The checks read writes only '
@@ -95,6 +100,12 @@ COMMENT ON COLUMN pm_task_refs.unreadable_since IS
     'GH-6: when an App read of this pull request was first refused (404, 410, '
     '403 or 301). A good read clears it. A ref refused for an hour stops '
     'blocking merge-to-Done (github_integration.md §12.3 step 4).';
+COMMENT ON COLUMN pm_task_refs.unblocked_at IS
+    'GH-6: when a refused read first found unreadable_since past the bound. '
+    'Set once, so the rule runs once for that crossing. A good read clears it.';
+COMMENT ON COLUMN pm_task_refs.pr_rank IS
+    'GH-5: the order of the last write inside one second of updated_at. 0 an '
+    'open event, 1 merged or closed, 2 reopened (github_integration.md §8.6).';
 
 
 -- ── 2. `via` takes `github` (§9.2) ──────────────────────────────────────────

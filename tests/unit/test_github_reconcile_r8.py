@@ -45,6 +45,12 @@ Fix round 1, item 7 (the checks reads of one head are joined):
   ``test_item7_the_trailing_read_catches_the_last_completed``.
 * 7-M3 ``checks_job`` calls ``read_checks`` and not the joined read ->
   ``test_item7_the_webhook_job_is_the_joined_read``.
+
+Fix round 2, item 2 (a 403 is not a per-PR refusal):
+
+* R2-2-M1 ``REFUSED_STATUSES`` holds 403 again ->
+  ``test_r2_2_a_403_never_unblocks_and_the_sibling_merge_waits``.
+* R2-2-M2 the poll treats a 403 as a refusal (``record_refusal``) -> the same test.
 """
 
 from __future__ import annotations
@@ -577,3 +583,36 @@ def test_item7_the_webhook_job_is_the_joined_read(monkeypatch) -> None:
     monkeypatch.setattr(github_sync, "read_checks_joined", _joined)
     asyncio.run(github_sync.checks_job("o", REPO, SHA_NEW)())
     assert seen == [("o", REPO, SHA_NEW, {"trailing_in_background": True})]
+
+
+# ── Fix round 2, item 2: a 403 keeps the reference blocking ────────────────
+
+
+async def test_r2_2_a_403_never_unblocks_and_the_sibling_merge_waits(world) -> None:
+    from gateway import github_reconcile_loop
+
+    w = world
+    task = _task(w)
+    with w.p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO pm_agent_runs (organization_id, task_id, member_email, client_via, "
+            "status, started_by, created_at) VALUES (CAST(:o AS uuid), CAST(:t AS uuid), :e, "
+            "'mcp:claude-code', 'completed', :e, now() - interval '1 day')"),
+            {"o": w.p.org_a, "t": task, "e": EMAIL})
+    blocked = _ref(w, task, 610)
+    with w.p.admin_engine.begin() as c:  # a 403 for two hours already
+        c.execute(text("UPDATE pm_task_refs SET fetched_at = now() - interval '2 hours' "
+                       "WHERE id = CAST(:i AS uuid)"), {"i": blocked})
+    w.gh.pull_status[610] = 403  # no rate-limit header: an IP allow list
+    _ref(w, task, 611)
+    w.gh.pulls[611] = _pull(611, state="closed", merged=True)
+    async with tenant_engine_scope(g.app_dsn(w.p)):
+        result = await github_reconcile_loop.run_org(w.p.org_a, "tick-r2-403")
+    assert result.pr_reads == 2
+    assert _unreadable(w, blocked) is None, "a 403 is never a per-PR refusal"
+    fetched = g.scalar(w.p, "SELECT fetched_at > now() - interval '1 minute' FROM "
+                            "pm_task_refs WHERE id = CAST(:i AS uuid)", i=blocked)
+    assert fetched is True, "the attempt is stamped, so the row waits"
+    assert g.scalar(w.p, "SELECT s.category FROM pm_tasks t JOIN pm_task_statuses s ON "
+                         "s.id = t.status_id WHERE t.id = CAST(:t AS uuid)", t=task) \
+        == "in_progress", "the open sibling still blocks merge-to-Done"

@@ -6,7 +6,7 @@ The migration is found by CONTENT (``_github_r8.migration``), never by number
 ``test_h3_rls_promotion_rehearsal``, as its NOSUPERUSER NOBYPASSRLS role where
 the rule is about the app.
 
-* **M1** the eight columns exist and are nullable.
+* **M1** the ten columns exist and are nullable.
 * **M2** ``via = 'github'`` inserts, and ``via = 'gitlab'`` fails.
 * **M3** a second live ``github`` row with the same installation id in another
   org fails, and a ``disconnected`` one passes.
@@ -24,7 +24,7 @@ R7, the mutations. Each one turns a test here red (run 2026-10-18):
   ``test_m4_the_lookup_returns_the_org_and_nothing_else``.
 * G4 remove ``SECURITY DEFINER`` -> ``test_m4_the_lookup_returns_the_org_and_nothing_else``.
 * G5 drop the ``anon`` revoke loop -> ``test_m4_only_the_app_role_may_run_the_lookup``.
-* G6 ``head_sha TEXT NOT NULL DEFAULT ''`` -> ``test_m1_the_eight_columns_are_nullable``.
+* G6 ``head_sha TEXT NOT NULL DEFAULT ''`` -> ``test_m1_the_ten_columns_are_nullable``.
 
 Run (real Postgres)::
 
@@ -55,11 +55,12 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
 
 pytestmark = _DB_GATE
 
-EIGHT = {
+TEN = {
     "head_sha": "text", "head_ref": "text", "checks_state": "text",
     "checks_summary": "jsonb", "checks_fetched_at": "timestamp with time zone",
     "pr_updated_at": "timestamp with time zone", "merged_at": "timestamp with time zone",
     "unreadable_since": "timestamp with time zone",
+    "unblocked_at": "timestamp with time zone", "pr_rank": "smallint",
 }
 
 
@@ -96,14 +97,14 @@ def _insert_ref_as_app(app_engine, org: str, task: str, via: str) -> None:  # no
 # ── M1 ──────────────────────────────────────────────────────────────────────
 
 
-def test_m1_the_eight_columns_are_nullable(p) -> None:
+def test_m1_the_ten_columns_are_nullable(p) -> None:
     cols = {
         r.column_name: (r.data_type, r.is_nullable, r.column_default)
         for r in g.rows(p,
                         "SELECT column_name, data_type, is_nullable, column_default "
                         "FROM information_schema.columns WHERE table_name = 'pm_task_refs'")
     }
-    for name, kind in EIGHT.items():
+    for name, kind in TEN.items():
         assert name in cols, f"{name} is missing"
         assert cols[name] == (kind, "YES", None), (name, cols[name])
 

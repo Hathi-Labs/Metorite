@@ -109,64 +109,112 @@ def _stamp(value: Any) -> datetime | None:
 #: One pull request's facts onto every reference of the org, and only when
 #: GitHub's ``updated_at`` is NOT OLDER than the row's (§8.6). A new head makes
 #: the CI state ``pending`` until the checks read writes. A good read clears
-#: ``unreadable_since``.
+#: the refusal markers.
 #:
-#: ⚠️ **The same second writes too** (fix round 1, item 5). GitHub's
-#: ``updated_at`` has whole seconds, so a pull request that opens and merges in
-#: one second sends two events with one stamp. ``<`` dropped the ``closed``
-#: event, and merge-to-Done never ran. A replay writes the same facts, so
-#: ``<=`` is safe. One tie-break stays: at the SAME second a row in ``merged``
-#: or ``closed`` never goes back to ``open`` or ``draft``, so a late ``opened``
-#: cannot undo a merge.
+#: ⚠️ **The same second** (fix round 1 item 5, fix round 2 item 3). GitHub's
+#: ``updated_at`` has whole seconds, so two events of one second carry one
+#: stamp. ``pr_rank`` settles their order: an open event is 0, a ``merged`` or
+#: ``closed`` one is 1, and a ``reopened`` one is 2, because a reopen follows a
+#: close. At an equal stamp an event writes only when its rank is not lower
+#: than the row's. So a late ``opened`` cannot undo a merge, and a close then
+#: a reopen in one second ends ``open``, in either order of delivery. A READ
+#: (the poll, the lazy read) is the state at GitHub now, so at an equal stamp
+#: it always writes. A row with no rank yet reads as 1 when it is terminal.
+#:
+#: ⚠️ **The old state comes back** (fix round 2, item 1). The CTE locks the
+#: rows and returns each one's state from BEFORE the write, so the caller runs
+#: merge-to-Done only for a row that moves INTO ``merged`` or ``closed``.
 _PR_UPDATE_SQL = (
-    "UPDATE pm_task_refs SET "
-    "title = COALESCE(CAST(:title AS text), title), state = CAST(:state AS text), "
+    "WITH old AS ("
+    "  SELECT id, state AS old_state FROM pm_task_refs "
+    "  WHERE organization_id = CAST(:org AS uuid) AND provider = 'github' "
+    "  AND kind = 'pull_request' AND ref = :ref FOR UPDATE) "
+    "UPDATE pm_task_refs r SET "
+    "title = COALESCE(CAST(:title AS text), r.title), state = CAST(:state AS text), "
     "checks_state = CASE WHEN CAST(:sha AS text) IS NOT NULL "
-    "  AND head_sha IS DISTINCT FROM CAST(:sha AS text) "
-    "  THEN 'pending' ELSE checks_state END, "
-    "head_sha = COALESCE(CAST(:sha AS text), head_sha), "
-    "head_ref = COALESCE(CAST(:head_ref AS text), head_ref), "
+    "  AND r.head_sha IS DISTINCT FROM CAST(:sha AS text) "
+    "  THEN 'pending' ELSE r.checks_state END, "
+    "head_sha = COALESCE(CAST(:sha AS text), r.head_sha), "
+    "head_ref = COALESCE(CAST(:head_ref AS text), r.head_ref), "
+    "pr_rank = CASE WHEN CAST(:is_read AS boolean) AND CAST(:rank AS smallint) = 0 "
+    "  AND r.pr_updated_at = CAST(:updated AS timestamptz) "
+    "  AND COALESCE(r.pr_rank, CASE WHEN r.state IN ('merged', 'closed') THEN 1 ELSE 0 END) >= 1 THEN CAST(2 AS smallint) "
+    "  ELSE CAST(:rank AS smallint) END, "
     "pr_updated_at = CAST(:updated AS timestamptz), "
     "merged_at = CAST(:merged AS timestamptz), "
-    "unreadable_since = NULL, "
+    "unreadable_since = NULL, unblocked_at = NULL, "
     "fetched_at = now(), updated_at = now() "
-    "WHERE organization_id = CAST(:org AS uuid) AND provider = 'github' "
-    "AND kind = 'pull_request' AND ref = :ref "
-    "AND (pr_updated_at IS NULL OR pr_updated_at < CAST(:updated AS timestamptz) "
-    "  OR (pr_updated_at = CAST(:updated AS timestamptz) "
-    "      AND NOT (state IN ('merged', 'closed') "
-    "               AND CAST(:state AS text) IN ('open', 'draft')))) "
-    "RETURNING id, task_id, state, head_sha"
+    "FROM old WHERE r.id = old.id "
+    "AND (r.pr_updated_at IS NULL OR r.pr_updated_at < CAST(:updated AS timestamptz) "
+    "  OR (r.pr_updated_at = CAST(:updated AS timestamptz) "
+    "      AND (CAST(:is_read AS boolean) "
+    "           OR CAST(:rank AS smallint) >= COALESCE(r.pr_rank, CASE WHEN r.state IN ('merged', 'closed') THEN 1 ELSE 0 END)))) "
+    "RETURNING r.id, r.task_id, r.state, r.head_sha, old.old_state"
 )
 
-#: The answers of a pull request read that mean "the App cannot read this":
-#: no access (404), gone (410), forbidden (403 with no rate limit), and a
-#: renamed repository (301, redirects are off). A 5xx is not one of them.
-REFUSED_STATUSES: frozenset[int] = frozenset({301, 403, 404, 410})
+#: The terminal states of a pull request reference.
+TERMINAL: frozenset[str] = frozenset({"merged", "closed"})
 
-#: A read that found nothing newer: stamp it, and clear the refusal marker.
+#: The answers of a pull request read that mean "this ONE pull request is out
+#: of reach": no access (404), gone (410), and a renamed repository (301,
+#: redirects are off). ⚠️ A 403 is NOT one of them (fix round 2, item 2). An
+#: IP allow list of the customer, or a secondary rate limit with no
+#: ``retry-after``, refuses EVERY pull request of the installation, and a
+#: sibling merge must not finish a task while its other pull request is open.
+#: A 403 raises :class:`PullRequestForbidden`, and the reference keeps
+#: blocking. A 5xx is not a refusal either.
+REFUSED_STATUSES: frozenset[int] = frozenset({301, 404, 410})
+
+#: A read that found nothing newer: stamp it, and clear the refusal markers.
 _READ_OK_SQL = (
-    "UPDATE pm_task_refs SET fetched_at = now(), unreadable_since = NULL "
+    "UPDATE pm_task_refs SET fetched_at = now(), unreadable_since = NULL, "
+    "unblocked_at = NULL "
     "WHERE organization_id = CAST(:org AS uuid) AND provider = 'github' "
     "AND kind = 'pull_request' AND ref = :ref"
 )
 
-#: A refused read: stamp it, and keep the FIRST refusal time.
+#: An attempt that told us nothing (a 403): stamp it only, so the row waits
+#: and does not hold a slot of every tick. The markers stay as they are.
+_ATTEMPT_SQL = (
+    "UPDATE pm_task_refs SET fetched_at = now() "
+    "WHERE organization_id = CAST(:org AS uuid) AND provider = 'github' "
+    "AND kind = 'pull_request' AND ref = :ref"
+)
+
+#: A refused read: stamp it, keep the FIRST refusal time, and set
+#: ``unblocked_at`` ONCE, on the read that first finds the bound crossed
+#: (fix round 2, item 1). ``crossed`` names that read.
 _REFUSED_SQL = (
     "UPDATE pm_task_refs SET fetched_at = now(), "
-    "unreadable_since = COALESCE(unreadable_since, now()) "
+    "unreadable_since = COALESCE(unreadable_since, now()), "
+    "unblocked_at = CASE WHEN unblocked_at IS NULL AND unreadable_since IS NOT NULL "
+    "  AND unreadable_since <= now() - CAST(:bound AS interval) THEN now() "
+    "  ELSE unblocked_at END "
     "WHERE organization_id = CAST(:org AS uuid) AND provider = 'github' "
     "AND kind = 'pull_request' AND ref = :ref "
-    "RETURNING unreadable_since"
+    "RETURNING task_id, unreadable_since, (unblocked_at = now()) AS crossed"
 )
 
 
+class PullRequestForbidden(Exception):
+    """GitHub answered 403 with no rate limit: not a per-PR refusal."""
+
+
+def event_rank(state: str | None, action: str | None) -> int:
+    """The order of an event inside one second (§8.6). Pure."""
+    if state in TERMINAL:
+        return 1
+    return 2 if action == "reopened" else 0
+
+
 async def write_pull_request(
-    db: Any, org: str, ref: str, pull_request: dict[str, Any],
+    db: Any, org: str, ref: str, pull_request: dict[str, Any], *, action: str | None = None,
 ) -> list[Any]:
     """Write one pull request's facts onto the org's references (§8.4).
 
-    Returns the rows it wrote, and none for an event older than the row.
+    *action* is the webhook's ``action``, and ``None`` for a READ (the poll,
+    the lazy read). Returns the rows it wrote, each with its ``old_state``,
+    and none for an event older than the row.
     """
     from gateway.routes.projects.refs import _clean_title, github_state
 
@@ -176,41 +224,59 @@ async def write_pull_request(
     head = _obj(pull_request.get("head"))
     sha = str(head.get("sha") or "").lower()
     head_ref = str(head.get("ref") or "")[:255] or None
+    state = github_state("pull_request", pull_request)
     return list((await db.execute(text(_PR_UPDATE_SQL), {
         "org": org, "ref": ref,
         "title": _clean_title(str(pull_request.get("title") or "")) or None,
-        "state": github_state("pull_request", pull_request),
+        "state": state,
         "sha": sha if _SHA_RE.match(sha) else None,
         "head_ref": head_ref,
         "updated": updated,
         "merged": _stamp(pull_request.get("merged_at")),
+        "rank": event_rank(state, action),
+        "is_read": action is None,
     })).fetchall())
 
 
+def moved_into_terminal(written: list[Any]) -> set[str]:
+    """The tasks whose reference this write moved INTO ``merged`` or
+    ``closed`` from a state that was not terminal. Pure."""
+    return {
+        str(r.task_id) for r in written
+        if r.state in TERMINAL and getattr(r, "old_state", None) not in TERMINAL
+    }
+
+
 async def apply_pull_request(
-    db: Any, org: str, ref: str, pull_request: dict[str, Any], *, delivery: str | None = None,
+    db: Any, org: str, ref: str, pull_request: dict[str, Any], *,
+    delivery: str | None = None, action: str | None = None,
 ) -> tuple[list[Any], Any]:
     """THE write path of a pull request's facts (fix round 1, item 1).
 
     The webhook, the poll and the lazy read of ``GET /refs`` all call it. It
-    writes the facts (:func:`write_pull_request`). When the write puts the
-    reference in ``merged`` or ``closed``, it runs merge-to-Done (§12) in the
-    same transaction. Returns ``(written rows, MergeOutcome or None)``. The
-    caller emits the outcome's events after its commit.
+    writes the facts (:func:`write_pull_request`), then runs merge-to-Done
+    (§12) in the same transaction, for the tasks whose reference the write
+    moved INTO ``merged`` or ``closed``. Returns ``(written rows,
+    MergeOutcome or None)``. The caller emits the events after its commit.
 
-    A read that writes nothing (an older answer) runs no rule, so a late
-    ``closed`` for a pull request that opened again moves nothing.
+    ⚠️ **A transition, not a state** (fix round 2, item 1). A read of a pull
+    request that is already ``merged`` writes too (§8.6), and the rule must
+    not run again. Else a task that an agent or a workflow moved back to In
+    progress went to Done again at every lazy read and every ``edited``
+    event, and a recurring task gained a successor each time.
     """
     from gateway.routes.projects import github_merge
 
-    written = await write_pull_request(db, org, ref, pull_request)
-    state = written[0].state if written else None
-    if state not in ("merged", "closed"):
+    written = await write_pull_request(db, org, ref, pull_request, action=action)
+    moved = moved_into_terminal(written)
+    if not moved:
         return written, None
+    state = written[0].state
     merged_at = _stamp(pull_request.get("merged_at")) if state == "merged" else None
     login = _obj(pull_request.get("merged_by")).get("login")
     outcome = await github_merge.on_merged(
         db, org, ref, merged_at, str(login) if login else None, delivery=delivery,
+        only_tasks=moved,
     )
     return written, outcome
 
@@ -220,21 +286,29 @@ async def record_read(db: Any, org: str, ref: str) -> None:
     await db.execute(text(_READ_OK_SQL), {"org": org, "ref": ref})
 
 
+async def record_attempt(db: Any, org: str, ref: str) -> None:
+    """A read that told nothing (a 403): stamp the row only."""
+    await db.execute(text(_ATTEMPT_SQL), {"org": org, "ref": ref})
+
+
 async def record_refusal(db: Any, org: str, ref: str) -> Any:
     """A read that GitHub refused (§12.3 step 4). Returns a ``MergeOutcome``
     or ``None``.
 
-    It stamps the row and keeps the FIRST refusal time. When that time is
-    older than ``github_merge.UNREADABLE_AFTER``, the reference stops
-    blocking, so this runs the rule again for each task that holds it.
+    It stamps the row and keeps the FIRST refusal time. The ONE read that
+    first finds that time older than ``github_merge.UNREADABLE_AFTER`` sets
+    ``unblocked_at`` and runs the rule again for the tasks of that row. A
+    later refused read runs nothing (fix round 2, item 1).
     """
     from gateway.routes.projects import github_merge
 
-    rows = (await db.execute(text(_REFUSED_SQL), {"org": org, "ref": ref})).fetchall()
-    since = min((r.unreadable_since for r in rows if r.unreadable_since), default=None)
-    if since is None or not github_merge.past_unreadable_bound(since):
+    rows = (await db.execute(text(_REFUSED_SQL), {
+        "org": org, "ref": ref, "bound": github_merge.UNREADABLE_AFTER,
+    })).fetchall()
+    crossed = {str(r.task_id) for r in rows if r.crossed}
+    if not crossed:
         return None
-    return await github_merge.on_unblocked(db, org, ref)
+    return await github_merge.on_unblocked(db, org, ref, only_tasks=crossed)
 
 
 # ── The reads ───────────────────────────────────────────────────────────────
@@ -262,6 +336,10 @@ async def read_pull_request(installation_id: int, repo: str, number: int) -> dic
         return answer.body
     if answer.status in REFUSED_STATUSES:
         return None
+    if answer.status == 403:
+        # Not a per-PR refusal (fix round 2, item 2): the reference keeps blocking.
+        _log.info("github.read.forbidden", status=403)
+        raise PullRequestForbidden
     # A 5xx or an odd answer is not a refusal: the next read tries again.
     raise github_app.GitHubCallFailed(f"status_{answer.status}")
 
@@ -513,8 +591,13 @@ __all__ = [
     "CHECK_PAGES",
     "CONCURRENCY",
     "REFUSED_STATUSES",
+    "TERMINAL",
+    "PullRequestForbidden",
     "RateLimited",
     "apply_pull_request",
+    "event_rank",
+    "moved_into_terminal",
+    "record_attempt",
     "checks_job",
     "fetch_checks",
     "fold_checks",

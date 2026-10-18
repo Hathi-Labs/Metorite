@@ -143,7 +143,14 @@ async def _reconcile_pr(org: str, installation: int, row: Any, result: TickResul
     repo, number = parsed
     result.pr_reads += 1
     # No session is open here: GitHub never holds a connection.
-    pull_request = await github_sync.read_pull_request(installation, repo, number)
+    try:
+        pull_request = await github_sync.read_pull_request(installation, repo, number)
+    except github_sync.PullRequestForbidden:
+        # A 403 is no per-PR refusal (fix round 2, item 2): stamp the attempt,
+        # so the row waits, and leave it blocking.
+        async with tenant_session(org) as db:
+            await github_sync.record_attempt(db, org, str(row.ref))
+        return
     async with tenant_session(org) as db:
         if pull_request is None:
             # GitHub refused the read. The row waits, and a refusal older than

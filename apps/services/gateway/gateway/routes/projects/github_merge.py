@@ -167,26 +167,36 @@ async def on_merged(
     merged_by: str | None,
     *,
     delivery: str | None = None,
+    only_tasks: set[str] | None = None,
 ) -> MergeOutcome:
     """Run the rule of §12.3 for the pull request *ref* (``owner/repo#N``).
 
     *merged_at* is ``None`` for a close without a merge. The function writes in
     the caller's transaction and returns the events to emit after its commit.
+    *only_tasks* holds the tasks whose reference just moved INTO a terminal
+    state (``github_sync.apply_pull_request``). Every other task is left alone.
     """
     outcome = MergeOutcome(org=org)
     tasks = (await db.execute(text(_TASKS_SQL), {"org": org, "ref": ref})).fetchall()
     for task in tasks:
+        if only_tasks is not None and str(task.id) not in only_tasks:
+            continue
         await _rule_for_task(db, task, ref, merged_at, merged_by, delivery, outcome)
     return outcome
 
 
-async def on_unblocked(db: Any, org: str, ref: str) -> MergeOutcome:
+async def on_unblocked(
+    db: Any, org: str, ref: str, *, only_tasks: set[str] | None = None,
+) -> MergeOutcome:
     """Run the rule again for each task that holds *ref*, which has stopped
     blocking (§12.3 step 4). The rule runs for the task's newest MERGED pull
-    request, so the timeline names the merge that finished the task."""
+    request, so the timeline names the merge that finished the task.
+    *only_tasks* holds the tasks whose row crossed the bound on THIS read."""
     outcome = MergeOutcome(org=org)
     tasks = (await db.execute(text(_TASKS_SQL), {"org": org, "ref": ref})).fetchall()
     for task in tasks:
+        if only_tasks is not None and str(task.id) not in only_tasks:
+            continue
         rows = (await db.execute(text(_PR_STATES_SQL), {"tid": str(task.id)})).fetchall()
         merged = next((r for r in rows if r.state == "merged"), None)
         if merged is None:

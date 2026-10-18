@@ -306,7 +306,7 @@ async def _on_pull_request(
     # that puts the reference in `merged` or `closed` runs GH-6 (§12) in this
     # transaction, and its events go out after the answer, so after the commit.
     _written, outcome = await github_sync.apply_pull_request(
-        db, org, ref, pull_request, delivery=delivery,
+        db, org, ref, pull_request, delivery=delivery, action=action,
     )
     jobs: list[Job] = [outcome.emit_all] if outcome is not None and outcome.events else []
     if action != "closed":

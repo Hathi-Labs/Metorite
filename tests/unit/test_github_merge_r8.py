@@ -59,6 +59,17 @@ Fix round 1 (2026-10-18). Each new rule and its mutation, each one red when run:
   ``test_f2_an_mcp_act_after_the_merge_does_not_count``.
 * **F3** ``AGENT_WORKED_SQL`` built from its own copy with no MCP half ->
   ``test_f3_the_boolean_and_the_reason_agree``.
+
+Fix round 2 (2026-10-18), each one red when run:
+
+* **R2-1** the rule runs only on a move INTO a terminal state. R2-1-M1
+  ``moved_into_terminal`` ignores ``old_state`` -> ``test_r2_1_a_terminal_reread_never_runs_the_rule_again``.
+  R2-1-M2 ``record_refusal`` runs ``on_unblocked`` on every refused read past
+  the bound (``crossed`` read as true) -> the same test.
+* **R2-3** the order inside one second. R2-3-M1 ``event_rank`` gives 0 to a
+  ``reopened`` event -> ``test_r2_3_a_close_and_a_reopen_in_one_second_end_open``.
+  R2-3-M2 an equal stamp writes with no rank compare -> the same test (the
+  late ``closed`` of the second case).
 """
 
 from __future__ import annotations
@@ -208,13 +219,13 @@ async def _close(
 
 async def _event(
     w: Any, action: str, number: int, *, merged: bool = True, delivery: str | None = None,
-    updated_at: str | None = None,
+    updated_at: str | None = None, closed_state: bool | None = None,
 ) -> httpx.Response:
     from fastapi import FastAPI
     from gateway.routes.github import webhook
 
     now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-    closed = action == "closed"
+    closed = action == "closed" or (closed_state is True)
     payload = {
         "action": action, "number": number, "installation": {"id": INSTALL},
         "repository": {"full_name": REPO},
@@ -628,3 +639,107 @@ async def test_item6_an_unreadable_ref_stops_blocking_after_the_bound(world, mon
     _ref(w, old, 409)
     await _close(w, 409)
     assert _category(w, old) == "done"
+
+
+# ── Fix round 2 ─────────────────────────────────────────────────────────────
+
+
+def _successors(w: Any, task: str) -> int:
+    return int(g.scalar(w.p, "SELECT count(*) FROM pm_tasks WHERE recurrence_id = ("
+                             "SELECT recurrence_id FROM pm_tasks WHERE id = CAST(:t AS uuid))",
+                        t=task))
+
+
+def _move_back(w: Any, task: str) -> None:
+    """The agent moves the task back to In progress after the merge."""
+    with w.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE pm_tasks SET status_id = CAST(:s AS uuid), completed_at = NULL "
+                       "WHERE id = CAST(:t AS uuid)"),
+                  {"s": w.lanes["in_progress"], "t": task})
+    _act(w, task, "status_change", EMAIL, "mcp:claude-code", "0 seconds")
+
+
+async def test_r2_1_a_terminal_reread_never_runs_the_rule_again(world, monkeypatch) -> None:
+    """Merged, Done, then the agent moves the task back. A lazy re-read, an
+    ``edited`` event and a refused read past the bound each leave it In
+    progress, and no new successor appears."""
+    from acb_auth import UserContext, UserRole, build_access
+    from gateway import github_sync
+    from gateway.db import tenant_session
+    from gateway.routes import projects as projects_package
+
+    w = world
+    task = _task(w, recurring=True)
+    _run(w, task)
+    _ref(w, task, 801)
+    _ref(w, task, 802, "open", unreadable_ago="3 hours")
+    with w.p.admin_engine.begin() as c:  # 802 crossed the bound on an earlier read
+        c.execute(text("UPDATE pm_task_refs SET unblocked_at = now() - interval '1 hour' "
+                       "WHERE ref = :r"), {"r": f"{REPO}#802"})
+    await _close(w, 801, updated_at="2026-10-18T09:00:00Z")
+    assert _category(w, task) == "done"
+    successors = _successors(w, task)
+    _move_back(w, task)
+
+    # 1. The lazy read of GET /refs reads the merged pull request again.
+    with w.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE pm_task_refs SET fetched_at = now() - interval '1 hour' "
+                       "WHERE ref = :r"), {"r": f"{REPO}#801"})
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "ghs_r2", "expires_at": "2099-01-01T00:00:00Z"})
+        if request.url.path == f"/repos/{REPO}/pulls/801":
+            return httpx.Response(200, json={
+                "number": 801, "title": "PR 801", "state": "closed", "merged": True,
+                "merged_at": "2026-10-18T09:00:00Z", "updated_at": "2026-10-18T09:30:00Z",
+                "draft": False, "merged_by": {"login": "octo"},
+                "head": {"ref": "agent/x", "sha": "d" * 40}})
+        return httpx.Response(404, json={})
+
+    g.patch_github(monkeypatch, handler, REAL_CLIENT)
+    member = UserContext(email=EMAIL, role=UserRole.EMPLOYEE, organization_id=w.p.org_a,
+                         access=build_access(["feature:projects", "data:org:read"]))
+    resp = await g.call(w.p, member, [projects_package.router], "GET",
+                        f"/projects/tasks/{task}/refs", real_client=REAL_CLIENT)
+    assert resp.status_code == 200, resp.text
+    assert g.scalar(w.p, "SELECT pr_updated_at = TIMESTAMPTZ '2026-10-18 09:30:00+00' "
+                         "FROM pm_task_refs WHERE ref = :r", r=f"{REPO}#801") is True,         "the re-read must WRITE, or the test proves nothing"
+    assert _category(w, task) == "in_progress", "the lazy re-read ran the rule again"
+
+    # 2. An `edited` event of the merged pull request.
+    await _event(w, "edited", 801, updated_at="2026-10-18T10:00:00Z", closed_state=True)
+    assert _category(w, task) == "in_progress", "an edited event ran the rule again"
+
+    # 3. A refused read past the bound, after the crossing was handled.
+    async with tenant_engine_scope(g.app_dsn(w.p)), tenant_session(w.p.org_a) as db:
+        outcome = await github_sync.record_refusal(db, w.p.org_a, f"{REPO}#802")
+    assert outcome is None
+    assert _category(w, task) == "in_progress", "a refused read ran the rule again"
+    assert _successors(w, task) == successors
+    assert len(_moves(w, task)) == 1
+
+
+async def test_r2_3_a_close_and_a_reopen_in_one_second_end_open(world) -> None:
+    w = world
+    task = _task(w)
+    same = "2026-10-18T12:00:00Z"
+    _ref(w, task, 811)
+    await _event(w, "opened", 811, updated_at=same)
+    await _close(w, 811, merged=False, updated_at=same)
+    await _event(w, "reopened", 811, updated_at=same)
+    state = "SELECT state FROM pm_task_refs WHERE ref = :r"
+    assert g.scalar(w.p, state, r=f"{REPO}#811") == "open", "close then reopen ends open"
+    # The other order of delivery: the reopen comes first, the close late.
+    other = _task(w)
+    _ref(w, other, 812)
+    await _event(w, "opened", 812, updated_at=same)
+    await _event(w, "reopened", 812, updated_at=same)
+    await _close(w, 812, merged=False, updated_at=same)
+    assert g.scalar(w.p, state, r=f"{REPO}#812") == "open", "a late close cannot undo a reopen"
+    # A merge, then a late `opened` of the same second, stays merged.
+    merged = _task(w)
+    _ref(w, merged, 813)
+    await _close(w, 813, updated_at=same)
+    await _event(w, "opened", 813, updated_at=same)
+    assert g.scalar(w.p, state, r=f"{REPO}#813") == "merged"
