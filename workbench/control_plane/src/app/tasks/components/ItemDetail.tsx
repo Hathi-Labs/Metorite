@@ -427,7 +427,7 @@ export function TaskDetail({
               task's facts) right below, so this strip names what it holds:
               the member's own planning. */}
           <SectionLabel icon={themedIcon("Tag")}>{lens ? "My planning" : "Details"}</SectionLabel>
-            <div className={`grid gap-2 ${focused ? "grid-cols-2" : "grid-cols-1"}`}>
+            <div className={`grid ${focused ? "grid-cols-2 gap-x-6 gap-y-1" : "grid-cols-1 gap-y-1"}`}>
               {/* Context */}
               <MetaEdit label="Context" icon={themedIcon("Tag")}
                 display={item.context
@@ -1241,34 +1241,38 @@ function MetaEdit({
 }) {
   const [open, setOpen] = useState(false);
 
+  // A ROW, the grammar of the shared body's `FieldCell` right below this
+  // strip (2026-10-19): the label on the left, the value on the right. Two
+  // looks a hand's width apart would read as two products.
+  const labelCell = (
+    <span className="flex h-8 w-24 shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+      <Icon className="h-3.5 w-3.5 shrink-0" />
+      <span className="truncate">{label}</span>
+    </span>
+  );
   if (!open) {
     return (
       <button
         type="button"
         onClick={() => setOpen(true)}
         aria-label={`Edit ${label}`}
-        className="tech-transition group min-w-0 rounded-md border border-border bg-card px-3 py-2 text-left hover:border-primary/40 hover:bg-secondary/30"
+        className="tech-transition group flex min-w-0 items-start gap-3 rounded-md px-1 py-1 text-left hover:bg-muted/30"
       >
-        <div className="flex items-center justify-between">
-          <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-            <Icon className="h-3 w-3" />
-            {label}
+        {labelCell}
+        <span className="flex min-h-8 min-w-0 flex-1 items-center gap-2 text-sm text-foreground">
+          <span className="min-w-0 flex-1">
+            {display ?? <span className="text-muted-foreground/60">—</span>}
           </span>
           <AppIcon name="Pencil" className="h-3 w-3 shrink-0 text-muted-foreground/50 transition-opacity reveal-on-hover" />
-        </div>
-        <div className="mt-0.5 text-sm text-foreground">
-          {display ?? <span className="text-muted-foreground/60">—</span>}
-        </div>
+        </span>
       </button>
     );
   }
   return (
-    <div className="min-w-0 rounded-md border border-primary/40 bg-card px-3 py-2">
-      <div className="flex items-center justify-between">
-        <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-          <Icon className="h-3 w-3" />
-          {label}
-        </span>
+    <div className="flex min-w-0 items-start gap-3 rounded-md bg-muted/30 px-1 py-1">
+      {labelCell}
+      <div className="flex min-h-8 min-w-0 flex-1 items-center gap-2">
+        <div className="min-w-0 flex-1">{children(() => setOpen(false))}</div>
         <button
           type="button"
           onClick={() => setOpen(false)}
@@ -1278,7 +1282,6 @@ function MetaEdit({
           <AppIcon name="X" className="h-3 w-3" />
         </button>
       </div>
-      <div className="mt-1.5">{children(() => setOpen(false))}</div>
     </div>
   );
 }
