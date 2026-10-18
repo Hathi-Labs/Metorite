@@ -468,20 +468,32 @@ function pageWith(body: string): KbPage[] {
   ];
 }
 
+/**
+ * Put the caret at the end of the body through the editor. A native
+ * Ctrl+End moves the browser's selection, and ProseMirror reads it on the
+ * next `selectionchange`, so a key pressed at once can land at the old place.
+ */
+async function caretAtEnd(page: Page) {
+  await page.locator(".ProseMirror[contenteditable='true']").evaluate((el) => {
+    (el as unknown as { editor: { commands: { focus: (at: string) => boolean } } }).editor.commands.focus("end");
+  });
+  // TipTap focuses on the next frame. A key typed before that is lost.
+  await expect(page.getByRole("textbox", { name: "Page body" })).toBeFocused();
+}
+
 /** Open page A in the editor, and put the caret at the end of its body. */
 async function openEditor(page: Page) {
   await page.goto("/knowledge/pages/kp-a");
   await page.getByRole("button", { name: "Edit", exact: true }).click({ timeout: 30_000 });
   const body = page.getByRole("textbox", { name: "Page body" });
   await expect(body).toBeVisible();
-  await body.click();
-  await page.keyboard.press("ControlOrMeta+End");
+  await caretAtEnd(page);
   return body;
 }
 
 /** Start a new empty paragraph at the end of the body. */
 async function newLine(page: Page) {
-  await page.keyboard.press("ControlOrMeta+End");
+  await caretAtEnd(page);
   await page.keyboard.press("Enter");
 }
 
@@ -541,6 +553,7 @@ test.describe("the block editor", () => {
     await page.keyboard.press("ControlOrMeta+a");
     await page.keyboard.press("Backspace");
     await page.keyboard.type("/Image");
+    await expect(menu.getByRole("option").first()).toHaveText("Image");
     await page.keyboard.press("Enter");
     const dialog = page.getByRole("dialog", { name: "Add an image" });
     await dialog.getByRole("textbox", { name: "Image address" }).fill("https://example.com/chart.png");
@@ -556,10 +569,10 @@ test.describe("the block editor", () => {
 
     // "Link to a page" opens the page picker.
     await page.getByRole("button", { name: "Edit", exact: true }).click();
-    await body.click();
-    await page.keyboard.press("ControlOrMeta+End");
+    await caretAtEnd(page);
     await page.keyboard.press("Enter");
     await page.keyboard.type("/Link to a page");
+    await expect(menu.getByRole("option").first()).toHaveText("Link to a page");
     await page.keyboard.press("Enter");
     await expect(page.getByRole("listbox", { name: "Pages" })).toBeVisible();
   });
@@ -684,7 +697,9 @@ test.describe("the block editor", () => {
     await page.keyboard.type("Ask the shop");
     await page.keyboard.press("Enter");
     await page.keyboard.press("Enter");
+    const blocks = page.getByRole("listbox", { name: "Blocks" });
     await page.keyboard.type("/Note callout");
+    await expect(blocks.getByRole("option").first()).toHaveText("Note callout");
     await page.keyboard.press("Enter");
     await page.keyboard.type("Refunds take five days.");
     // Enter on an empty line leaves the callout, as it leaves a quote.
@@ -695,6 +710,7 @@ test.describe("the block editor", () => {
     await page.keyboard.press("Enter");
     await page.keyboard.press("Enter");
     await page.keyboard.type("/Table");
+    await expect(blocks.getByRole("option").first()).toHaveText("Table");
     await page.keyboard.press("Enter");
     await page.keyboard.type("Item");
 
