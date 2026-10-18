@@ -1,6 +1,10 @@
 # WhatsApp assistant channel — a member chats with Metorite from their own WhatsApp
 
-**Status:** WAC-13 built (2026-10-15). When Metorite's AI path does not answer,
+**Status:** 🔨 §14.10 built, not merged (2026-10-18, branch
+`mail-handoff-refused`). Each card outside Projects now asks through the
+Confirm buttons, an email send too.
+
+WAC-13 built (2026-10-15). When Metorite's AI path does not answer,
 the bot says that Metorite is updating and holds the message. It answers the
 message when Metorite is back (§16).
 
@@ -1511,6 +1515,35 @@ prepares the first. The member asks for the next one after the Confirm.
 
 The events, meetings and reminders that are not task blocks are a separate
 proposal: `specs/calendar_events_reminders.md`.
+
+### 14.10 Every card asks on WhatsApp (WS-17 incident, 2026-10-18)
+
+🔨 Built on branch `mail-handoff-refused`, not merged. The owner rule of
+2026-10-18 is "WhatsApp should have full capability to do all activities". It
+amends the "Still refused" line of §14.4 for every card outside Projects. The
+design of record is `email_app_master_plan.md` §12.3.13.8, "Incident
+2026-10-18".
+
+- **What parks now.** Each card that a chat run asks, with no rows, parks for
+  the Confirm and Cancel buttons. The injection seam names where the Confirm
+  finds the function again. `agent:<name>` is an agent's own tool, for
+  example `send_email`. `platform` is a platform tool whose untrusted-answer
+  card parked, for example `fetch_page` in a marked thread.
+- **The record.** `whatsapp_pending_acts.act_home` holds that home. It is
+  nullable, and a CHECK keeps its three shapes. NULL is the act of WAC-4.
+- **Confirm.** `executor.act_tool` loads the agent through the one loader, or
+  takes the platform tool, and runs it inside the permission gate. The card
+  that the tool asks again must equal the stored card text, as in §14.3.
+- **What does not change.** D-WAC-4 still holds for Projects: a Projects act
+  that `ALLOWED_ACTS` does not name stays refused. Only the owner can amend
+  D-WAC-4. A rows card, a form and a question stay refused. One act waits for
+  each run.
+- **Still refused.** An MCP tool card, because its call needs the live server
+  session of the run.
+- **The rule text.** `SCOPE_RULE_WRITES` now says that each change that asks
+  for approval can wait for Confirm, an email send too.
+- **Fences.** `tests/unit/test_mail_handoff_incident.py` and the R8 test
+  `test_an_act_with_a_home_parks_and_reads_back_its_home`.
 
 ## 15. Amendment of 2026-10-15: WAC-12, a PDF document from WhatsApp
 

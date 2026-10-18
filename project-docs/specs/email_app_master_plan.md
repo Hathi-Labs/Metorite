@@ -31,6 +31,7 @@
 > 🔨 **AI-call attribution is BUILT on branch `ai-call-attribution` (2026-10-10).** Each email model call now names its feature on the usage report, as `email.rule_match`. A mailbox job names `email.automation`. Before, 97% of the email calls showed as "not attributed". It has no flag, because it changes metadata only. `customer_console.md` §4.3a owns the rule and lists the names.
 > 🔨 **§16 is BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** Each message has one action row, and the body adapts to dark mode. It also fixes a "Loading message…" that never ended. Review fix rounds 1 to 3 are in.
 > 📝 **§17 is SPECIFIED, not built (2026-10-12, D-EM-63, EM-T17).** One seam chooses the AI context of a conversation. The target goes in whole, every message gets an index line, and `decide` chooses the earlier bodies. No body is cut without a label. Each wait has a bound, so drafting never hangs. 🔨 **EM-T17 PR-A is built, not merged** (2026-10-12, branch `email-stall-pra`, no flag, no migration): the stream bounds, the `model_*` and `server_timeout` reasons, the heartbeat, the body-only fetch and `email.draft_timing`.
+> 🔨 **The incident fix of 2026-10-18 is BUILT on branch `mail-handoff-refused`, not merged.** A hand-off to the email assistant asks no untrusted card, and the delegated assistant keeps its own carded sends. The mark ends with the WhatsApp replay window, and each card asks through the WhatsApp Confirm buttons. One migration (`whatsapp_act_home`). §12.3.13.8, "Incident 2026-10-18".
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -14867,6 +14868,112 @@ was withheld. Now a fault gives an UNKNOWN state, not a mark.
   costs one card for each send, and it holds no send.
 - **The evals.** `tests/unit/_egress_mark_store.py` is the one in-memory store. `tests/conftest.py`
   and `evals/routing/harness.py` call it. The outage tests patch over it.
+
+**Incident 2026-10-18: an email hand-off refused for good on WhatsApp.** 🔨 Built, not
+merged (branch `mail-handoff-refused`). The owner asked over WhatsApp: "send a top-up mail to
+Payal Dave asking her to share information on priority". The assistant answered that mailbox
+search fails and that the send needs an approval it cannot take. Org `f01d029f`, thread
+`872ed34f`.
+
+- **Turn 1 marked the thread.** The orchestrator called `email_assistant` on Oct 17 at 16:11
+  UTC. The run marked the session, as the round of "A Redis blip" said.
+- **Each later email request was refused.** The specialist tool says `open_world`, so the gate
+  treated it as egress. On MARKED it answered `untrusted_answer_confirm`. A WhatsApp run has no
+  card channel, so `_untrusted_answer_card` refused five calls (`no_card_channel`).
+- **The send could not work either.** A delegated email assistant under a marked parent bound
+  `no_egress`, and the flag dropped `send_email`, `draft_reply` and `manage_inbox`. The log of
+  Oct 18 15:46 shows all three in `executor.egress_tools_withheld`.
+- **The mark never ends.** Its key is `(org, session)`, its TTL slides for 400 days, and a
+  WhatsApp member has one thread.
+
+The fix has six parts. Each part names its fence, and each of the three marked parts has a
+mutation that turns its fence red.
+
+1. **A hand-off asks no card on a known mark (mutation).** `is_delegation_tool` (the four
+   `DELEGATION_TOOLS` and each tool with `__delegates_to__`) now asks no untrusted card on
+   MARKED, as on UNKNOWN. The gate still reads the mark, so the process cache holds it. The run
+   that the hand-off starts then binds `no_egress`, and it holds no network tool. Fence:
+   `test_a_marked_orchestrator_hands_off_to_the_email_assistant_with_no_card`.
+2. **A delegated email assistant keeps its own carded writes (mutation).** Each run boundary
+   binds `no_egress_by_mark`. It is True only when the session mark ALONE set `no_egress`. A
+   covered run (H-236), a run under one, and a run that a mail agent delegates to stay hard. In
+   a mail agent's run with that key, the control keeps the agent's own tools that
+   `egress.asks_own_card` names. The email assistant marks each tool of its `MAILBOX_WRITE_TOOLS`.
+   Each one asks its own EM-G11c1 card. Every injected network tool, MCP server and store write
+   still leaves. Fences: `test_a_known_mark_binds_no_egress_and_keeps_the_mail_agents_own_send`
+   and `test_a_send_in_a_marked_chat_asks_one_card_its_own`. A known mark still drops the writes
+   of `crm-assistant` (`test_a_known_mark_still_drops_another_agents_writes`).
+3. **The mark ends with the replay window (mutation).** See "Why this rule" below. Fences:
+   `test_an_old_mark_beyond_the_replay_window_no_longer_holds_egress` and the real-Redis test.
+4. **A hand-off ends in time for the answer.** See "The timeouts" below. Fence:
+   `tests/unit/test_mail_handoff_incident.py`.
+5. **Every card asks on WhatsApp.** Owner rule of 2026-10-18: "WhatsApp should have full
+   capability to do all activities." The injection seam names the home of each call: an
+   agent's own tool (`agent:<name>`), or a platform tool whose untrusted card this is
+   (`platform`). The card parks for the Confirm buttons of WAC-4. The Confirm finds the same
+   function (`executor.act_tool`), runs it inside the gate, and its card answers the stored
+   card. Migration `whatsapp_act_home` adds the nullable column `act_home`. Fences:
+   `test_whatsapp_orchestrator_email_send_asks_a_whatsapp_confirm_and_sends_after_a_yes`, the
+   tests of `test_mail_handoff_incident.py`, and the R8 test of `test_wac_writes_r8.py`.
+6. **A fence for a new "no card here" answer.** `test_every_no_card_answer_names_its_whatsapp_behaviour`
+   scans the product code for each such text, and each one must name what a WhatsApp member
+   gets. `test_with_the_whatsapp_channel_bound_every_card_gate_asks` runs the gates.
+
+**Why this rule (part 3).** The mark exists because a relayed answer is in the model's context.
+So the mark must end when that answer can no longer reach the model.
+
+- **WhatsApp replays a fixed window.** `bot_run` replays the last `HISTORY_TURNS` (20) rows of
+  user and assistant text. Production has `MAF_NATIVE_SESSIONS` off, so no stored session
+  replays a tool result.
+- **The web chat has no such window.** Its client sends the visible thread, and only a token
+  budget cuts it. So a web run keeps the mark as before.
+- **The rule.** The mark now stores its time of write (`t:<ms>`). `bot_run` gives a WhatsApp run
+  the time of the oldest row that it replays, when the window is full (`history_floor_ms`). A
+  mark is out of reach when its time plus `MARK_TURN_SPAN_S` (15 minutes) is older than that
+  floor. The span covers the time from the mark to the reply row of its turn, which a run of at
+  most 4 minutes writes. Then the gate and the delegation readers read the mark as clear.
+- **Why not a TTL.** The window is a count of rows, not a time. A busy thread keeps the same
+  session, so no fixed TTL matches it.
+- **Why not a turn counter.** A retry or a held message would count twice, and the mark would
+  end early. A floor from the rows that the run really replays cannot end it early.
+- **What stays held.** A mark with no time (`1`, from an older build), a short thread, a run
+  with a stored session, and every web run. `run_holds_mail` ignores the window, so the memory
+  and trace holds stay. A Redis fault fails closed as before.
+
+**The timeouts (part 4), measured on the box.** Run `15949617` started at 15:46:31 UTC. The
+WhatsApp limit is 240 s (`RUN_TIMEOUT_S`), and the run failed at 15:50:31.
+
+- **The member was not silent.** "Still on it" went at 15:46:52, and the general failure text at
+  15:50:31. Meta reported both as read. The answer itself never came.
+- **The cause is the mail search, not a loop.** Two `call_agent` hand-offs took 101 s and 108 s.
+  Of 12 `query_inbox` calls, 7 failed after about 30 s each. The gateway log shows
+  `canceling statement due to statement timeout` in `list_messages`. The query was the
+  `COUNT(*)` with the full-text match "Sanjeev Goel Payal Dave" on a mailbox of at least 5000
+  messages. The child held the same read tools as a web run.
+- **The fix.** `agent_tools.delegation_timeout()` is the one budget of a hand-off. In a WhatsApp
+  run it ends 45 s before the run's deadline, and never under 10 s. `call_agent`,
+  `call_agents_parallel` and the orchestrator's specialist tools read it. The specialist tools
+  had no time limit at all before. The model reads why the hand-off stopped, and answers.
+- **The turn classifier.** From Oct 17 00:00 to Oct 18 16:00 UTC, `ai_route.turn_kind` asked
+  System 1 47 times. It timed out at 1.5 s 31 times (66 %). The 16 answers took 1264 ms on
+  average. Each delegated sub-run asks again. Not fixed here: the budget and the sub-run rule
+  belong to `ai_tier_routing.md`.
+- **Not fixed here: the search query.** The count needs a plan that uses the GIN index of
+  migration 72, or a stored `tsvector`. That needs an `EXPLAIN` on the box and a migration.
+
+**Residuals of the incident fix.**
+
+- **An MCP tool card on WhatsApp is still refused.** Its call needs the run's live server
+  session, so it cannot park. The box logged no MCP call on WhatsApp on Oct 17 or Oct 18.
+- **Projects acts outside `ALLOWED_ACTS` stay off WhatsApp.** D-WAC-4
+  (`whatsapp_assistant_channel.md` §14.4) still holds for them. The owner rule of 2026-10-18 asks
+  for full function, so the owner must amend D-WAC-4 to change this.
+- **One act for each run.** A second card in the same run still answers "a card cannot show
+  here", as WAC-4 decided.
+- **WhatsApp messages to contacts are drafts.** `agent-whatsapp-assistant` has no send tool by
+  design (`instructions.md`, the rule "You draft, the founder sends"). A send needs a tool on
+  `POST /whatsapp/chats/{chat_id}/send` with its own card. That card would then park like any
+  other. Not built.
 
 **Residual risks of the egress mark and mode (b).** Each one is known and accepted.
 
