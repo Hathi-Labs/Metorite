@@ -385,21 +385,35 @@ export const DISMISSED_LINE = "Metorite will not ask this again, unless your Zoh
 
 export const UNDONE_LINE = "Undone. The choice before is back.";
 
+/** The toast after the Undo of a dismissal. */
+export const ASKED_AGAIN_LINE = "Undone. The question is open again.";
+
+/** A 404 `not_dismissed`: nothing to undo. A quiet line, not an error. */
+export const NOT_DISMISSED_LINE = "Nothing to undo. The question is already open.";
+
+/** The 404 of an Undo of a dismissal that does not exist. */
+export function notDismissed(err: unknown): boolean {
+  return err instanceof CrmError && err.status === 404 && err.code === "not_dismissed";
+}
+
 /**
  * What the Undo of an answer sends (§18.14.6, the table). `put`: the PUT of
  * the catalogue with the part. `answer`: the answer route of the same id
- * with `"@auto"` (a `stage_value`). `null`: no Undo, because a slot goes
- * through the panel of the suggestion and "None of these" of a slot only
- * stops a question.
+ * with `"@auto"` (a `stage_value`). `undismiss`: the DELETE of the
+ * dismissal, for "None of these" on a slot. `null`: no Undo, because a slot
+ * module goes through the panel of the suggestion and its own Undo.
  *
  * An open question puts back the choice of Metorite (`"@auto"`). A part
  * that the admin chose before gets that choice back.
  */
 export type UndoCall =
   | { kind: "put"; module: string; parts: Partial<Record<CataloguePart, string | null>> }
-  | { kind: "answer"; id: string; value: string };
+  | { kind: "answer"; id: string; value: string }
+  | { kind: "undismiss"; id: string };
 
-export function undoOf(q: Question, done: AnswerDone): UndoCall | null {
+export function undoOf(q: Question, done: AnswerDone, value: string | null = null): UndoCall | null {
+  // "None of these" on a slot records a dismissal. Its Undo removes it.
+  if (q.kind === "slot" && value === null) return { kind: "undismiss", id: q.id };
   const u = done.undo;
   if (!u) return null;
   if (u.question) return { kind: "answer", id: u.question, value: u.value ?? AUTO };

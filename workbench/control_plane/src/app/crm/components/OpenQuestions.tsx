@@ -37,6 +37,7 @@ import {
   ANSWERS_KEY,
   ANSWERS_TAB,
   ANSWERS_UNREAD,
+  ASKED_AGAIN_LINE,
   BATCH_NOTE,
   BATCH_TITLE,
   BATCH_UNREAD,
@@ -45,6 +46,7 @@ import {
   NONE_LABEL,
   NOT_RELEVANT,
   NO_ANSWERS,
+  NOT_DISMISSED_LINE,
   NO_QUESTIONS,
   QUESTIONS_KEY,
   QUESTIONS_NOTE,
@@ -69,6 +71,7 @@ import {
   currentLabel,
   fillLabel,
   moreLabel,
+  notDismissed,
   openTabLabel,
   partWord,
   pickLabel,
@@ -571,10 +574,13 @@ export default function OpenQuestionsCard() {
     setBusy(key);
     try {
       if (call.kind === "put") await api.putCatalogue(call.module, call.parts);
+      else if (call.kind === "undismiss") await api.undismissQuestion(call.id);
       else await api.answerQuestion(call.id, call.value);
-      toast.show({ key, variant: "success", title: UNDONE_LINE });
+      toast.show({ key, variant: "success", title: call.kind === "undismiss" ? ASKED_AGAIN_LINE : UNDONE_LINE });
     } catch (err) {
-      fail(key, err, "Undo did not save.");
+      // A dismissal that is gone already: nothing to undo, and no error.
+      if (notDismissed(err)) toast.show({ key, variant: "success", title: NOT_DISMISSED_LINE });
+      else fail(key, err, "Undo did not save.");
     } finally {
       setBusy(null);
     }
@@ -586,7 +592,7 @@ export default function OpenQuestionsCard() {
     try {
       // A stage answer commits the plan, so it names the version it read.
       const done = await api.answerQuestion(q.id, value, q.kind === "stage_value" ? plan : null);
-      const undo = undoOf(q, done);
+      const undo = undoOf(q, done, value);
       toast.show({
         key,
         variant: "success",
@@ -605,7 +611,13 @@ export default function OpenQuestionsCard() {
     setBusy(q.id);
     try {
       await api.dismissQuestion(q.id);
-      toast.show({ key, variant: "success", title: DISMISSED_LINE });
+      const undo: UndoCall = { kind: "undismiss", id: q.id };
+      toast.show({
+        key,
+        variant: "success",
+        title: DISMISSED_LINE,
+        action: { label: UNDO_LABEL, onClick: () => void runUndo(key, undo) },
+      });
     } catch (err) {
       fail(key, err, "That did not save.");
     } finally {

@@ -16,6 +16,7 @@ import { CrmError } from "../lib/api";
 import {
   AUTO,
   LET_METORITE,
+  NOT_DISMISSED_LINE,
   NONE_PICK,
   NO_QUESTIONS,
   PLAN_MOVED,
@@ -37,6 +38,7 @@ import {
   correctionUndo,
   currentLabel,
   fillLabel,
+  notDismissed,
   openCount,
   pickToValue,
   pickValue,
@@ -480,7 +482,7 @@ describe("the batch of Jev's best guesses", () => {
   it("lists the dry run, one line for each question", () => {
     const items = [
       { id: KEY.id, label: "Collection", part: "amount", value: "IP_Amount", value_label: "IP Amount", line: "Totals of Collection now use IP Amount." },
-      { id: PURPOSE.id, label: "Visits", part: "purpose", value: "activity", value_label: "Activity", line: "Visits is now a activity module." },
+      { id: PURPOSE.id, label: "Visits", part: "purpose", value: "activity", value_label: "Activity", line: "Visits is now an activity module." },
     ];
     expect(batchLine(items[0])).toBe("Collection: amount, IP Amount");
     const html = renderToStaticMarkup(createElement(BatchBody, { items, failed: false }));
@@ -557,7 +559,31 @@ describe("an answer, its toast and its Undo", () => {
       id: STAGE.id,
       value: AUTO,
     });
-    expect(undoOf(SLOT, done({ kind: "slot" }))).toBeNull();
+    // A slot module goes through the panel of the suggestion, and its own Undo.
+    expect(undoOf(SLOT, done({ kind: "slot" }), "Commercials")).toBeNull();
+  });
+
+  it("undoes Not relevant and None of these on a slot through the DELETE of the dismissal", () => {
+    expect(undoOf(SLOT, done({ kind: "slot" }), null)).toEqual({ kind: "undismiss", id: SLOT.id });
+    const comp = read("./OpenQuestions.tsx");
+    // The toast of "Not relevant" carries Undo, and Undo removes the dismissal.
+    expect(comp).toMatch(
+      /await api\.dismissQuestion\(q\.id\);\s*const undo: UndoCall = \{ kind: "undismiss", id: q\.id \};[\s\S]{0,160}action: \{ label: UNDO_LABEL, onClick: \(\) => void runUndo\(key, undo\) \}/,
+    );
+    expect(comp).toContain('else if (call.kind === "undismiss") await api.undismissQuestion(call.id);');
+    // The answer toast passes the value, so a slot "None of these" gets its Undo.
+    expect(comp).toContain("const undo = undoOf(q, done, value);");
+  });
+
+  it("reads a 404 not_dismissed as nothing to undo, with a quiet line and no error", () => {
+    expect(notDismissed(new CrmError("x", 404, "not_dismissed"))).toBe(true);
+    expect(notDismissed(new CrmError("x", 404, "questions_off"))).toBe(false);
+    expect(notDismissed(new CrmError("x", 409, "not_dismissed"))).toBe(false);
+    const comp = read("./OpenQuestions.tsx");
+    expect(comp).toContain(
+      'if (notDismissed(err)) toast.show({ key, variant: "success", title: NOT_DISMISSED_LINE });',
+    );
+    expect(NOT_DISMISSED_LINE).not.toMatch(/fail|error|not save/i);
   });
 
   it("toasts each answer with Undo, and sends the version only for a stage", () => {
@@ -621,6 +647,7 @@ describe("the client of the questions (item 3)", () => {
       () => api.dismissQuestion(PURPOSE.id),
       () => api.acceptBest([KEY.id, PURPOSE.id], false, 41),
       () => api.putCatalogue("@org", { revenue: AUTO }),
+      () => api.undismissQuestion("slot:deal"),
     ];
     for (const write of writes) {
       put("crm:mode", { mode: "mirror" });
@@ -633,7 +660,9 @@ describe("the client of the questions (item 3)", () => {
       "POST /api/crm/questions/purpose%3AVisits/dismiss",
       "POST /api/crm/questions/accept-best",
       "PUT /api/crm/catalogue/%40org",
+      "DELETE /api/crm/questions/slot%3Adeal/dismiss",
     ]);
+    expect(sent[5].body).toBeNull();
     expect(sent[0].body).toEqual({ value: "won", version: 41 });
     expect(sent[1].body).toEqual({ value: null });
     expect(sent[3].body).toEqual({ ids: [KEY.id, PURPOSE.id], dry_run: false, version: 41 });

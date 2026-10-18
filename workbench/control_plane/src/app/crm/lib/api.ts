@@ -848,6 +848,18 @@ export function dismissQuestion(id: string): Promise<{ id: string; dismissed: bo
 }
 
 /**
+ * The Undo of "Not relevant" and of "None of these" on a slot: the question
+ * opens again. A 404 `not_dismissed` says that no dismissal exists.
+ */
+export function undismissQuestion(id: string): Promise<{ id: string; dismissed: boolean }> {
+  return writeAndWake(() =>
+    call<{ id: string; dismissed: boolean }>(`/questions/${encodeURIComponent(id)}/dismiss`, {
+      method: "DELETE",
+    }),
+  );
+}
+
+/**
  * Accept Jev's best guesses. A dry run writes nothing and wakes nothing. A
  * real run writes ONE plan version, and its Undo puts back each part.
  */
