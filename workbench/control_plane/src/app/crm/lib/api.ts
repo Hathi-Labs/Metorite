@@ -41,6 +41,7 @@ import type {
   QuestionsBody,
   SumCheck,
 } from "./questions";
+import type { BusinessRule, MyChoice, RuleScope, RulesBody } from "./rules";
 import type { RecordCounts, ResetThen } from "./setup";
 import type { ResetResult } from "./startOver";
 import type {
@@ -904,6 +905,54 @@ export function putCatalogue(
 export function sumCheck(id: string, keys: readonly string[]): Promise<SumCheck> {
   const query = new URLSearchParams({ fields: keys.join(",") });
   return call<SumCheck>(`/questions/${encodeURIComponent(id)}/sum-check?${query.toString()}`);
+}
+
+// ── The business rules, and a member's own choices (WS-53 CRM-Q33) ────────
+//
+// Each member with CRM access in Mirror mode, and dark behind
+// `CRM_ANSWER_FIRST_ORGS`: an org outside it gets 404 `rules_off`. Each
+// write wakes every CRM read.
+
+/** The org's rules and the caller's own. */
+export function listRules(): Promise<RulesBody> {
+  return call<RulesBody>("/rules");
+}
+
+/** Add a rule. `org` needs a CRM admin, else 403 `rule_admin_only`. */
+export function addRule(body: string, scope: RuleScope): Promise<BusinessRule> {
+  return writeAndWake(() =>
+    call<BusinessRule>("/rules", { method: "POST", body: JSON.stringify({ body, scope }) }),
+  );
+}
+
+/** Change the words of a rule. Its slug stays. */
+export function changeRule(id: string, body: string): Promise<BusinessRule> {
+  return writeAndWake(() =>
+    call<BusinessRule>(`/rules/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ body }),
+    }),
+  );
+}
+
+export function removeRule(id: string): Promise<{ id: string; removed: boolean }> {
+  return writeAndWake(() =>
+    call<{ id: string; removed: boolean }>(`/rules/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  );
+}
+
+/** The caller's own choices in the chat that wait for a CRM admin. */
+export function listMyChoices(): Promise<{ choices: MyChoice[] }> {
+  return call<{ choices: MyChoice[] }>("/questions/mine");
+}
+
+/** Clear the caller's own choice of one question. The org's answer does not change. */
+export function clearMyChoice(id: string): Promise<{ id: string; cleared: boolean }> {
+  return writeAndWake(() =>
+    call<{ id: string; cleared: boolean }>(`/questions/${encodeURIComponent(id)}/mine`, {
+      method: "DELETE",
+    }),
+  );
 }
 
 // ── The setup hub and the start over (WS-53 CRM-X0) ───────────────────────

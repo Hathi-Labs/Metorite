@@ -118,7 +118,9 @@ import {
   SUM_CHOICE_LABEL,
   SUM_CHOICE_LINE,
   SUM_PICK,
+  RULE_SUM_LINE,
   isSum,
+  suggestedSum,
   sumOffered,
   type AnswerValue,
 } from "../lib/questions";
@@ -218,7 +220,9 @@ function Choices({
   disabled: boolean;
 }) {
   const sum = sumOffered(q);
-  if (q.choices.length === 0 && !sum) return null;
+  // CRM-Q33: the sum that the business rules point at, as one choice.
+  const ruled = suggestedSum(q);
+  if (q.choices.length === 0 && !sum && !ruled) return null;
   const compact = q.kind === "stage_value";
   return (
     <ul
@@ -245,6 +249,22 @@ function Choices({
           </Button>
         </li>
       ))}
+      {ruled ? (
+        <li className="min-w-0 rounded-md border border-primary/40 sm:col-span-3">
+          <Button
+            variant="ghost"
+            size="none"
+            layout="flex w-full min-w-0 flex-col items-start gap-0.5"
+            className="px-3 py-2 text-left"
+            disabled={disabled}
+            loading={handlers.busy === q.id}
+            onClick={() => handlers.onAnswer(q, ruled.keys)}
+          >
+            <span className="text-xs font-medium text-foreground">{ruled.label}</span>
+            <span className="text-[11px] text-muted-foreground">{RULE_SUM_LINE}</span>
+          </Button>
+        </li>
+      ) : null}
       {sum ? (
         // CRM-Q32-9b: a choice of its own, a full row, that opens the picker of a sum.
         <li className="min-w-0 rounded-md border border-dashed border-border sm:col-span-3">

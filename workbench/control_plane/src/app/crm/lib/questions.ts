@@ -35,10 +35,18 @@ export type QuestionChoice = {
   records?: number | null;
   /** A `revenue` choice: the labels of its modules. */
   modules?: string[] | null;
+  /** CRM-Q33: what a money field holds, such as "Excludes GST" or "After TDS". */
+  evidence?: string[] | null;
 };
 
 /** One choice of "Pick another". */
-export type QuestionOption = { value: string; label: string; fill?: number | null };
+export type QuestionOption = {
+  value: string;
+  label: string;
+  fill?: number | null;
+  /** CRM-Q33: what a money field holds. */
+  evidence?: string[] | null;
+};
 
 /**
  * One answer that a member proposed in the chat (CRM-Q32-8). The server
@@ -84,6 +92,14 @@ export type Question = {
   field?: string | null;
   /** CRM-Q32-8: the answers that members proposed in the chat, oldest first. */
   proposals?: QuestionProposal[] | null;
+  /** CRM-Q33: the fields whose sum the business rules point at. */
+  suggested_sum?: string[] | null;
+  /**
+   * CRM-Q33: on a part that an admin set, who set it (a display name, or
+   * "A member", never an email) and when.
+   */
+  set_by?: string | null;
+  set_at?: string | null;
 };
 
 /** `GET /crm/questions`. */
@@ -490,7 +506,10 @@ export function choiceView(q: Question, c: QuestionChoice): ChoiceView {
     }
     default: {
       const fill = fillLabel(c.fill);
-      return { label: c.label, lines: fill ? [fill] : [], examples: examplesLine(c.samples) };
+      // CRM-Q33: what the field holds, from its arithmetic and its label.
+      const evidence = evidenceLine(c.evidence);
+      const lines = [fill, evidence].filter((l): l is string => l !== null);
+      return { label: c.label, lines, examples: examplesLine(c.samples) };
     }
   }
 }
@@ -739,10 +758,39 @@ export function undoOf(q: Question, done: AnswerDone, value: AnswerValue = null)
 // ── Your answers (the corrections of CRM-Q31-4) ────────────────────────────
 
 /** Who chose a part in use. */
-export function byLine(q: Question): string {
-  if (q.by === "admin") return "You chose";
+export function byLine(q: Question, now: Date = new Date()): string {
+  if (q.by === "admin") {
+    // CRM-Q33: who set it and when, by display name, never an email.
+    if (!q.set_by) return "You chose";
+    const when = q.set_at ? whenLabel(q.set_at, now) : "";
+    return when ? `Set by ${q.set_by} · ${when}` : `Set by ${q.set_by}`;
+  }
   if (q.current === null) return "Not set";
   return "Metorite chose";
+}
+
+// ── Answer first, clarify over time (CRM-Q33) ──────────────────────────────
+
+/** "Excludes GST · After TDS", or `null` with no evidence. */
+export function evidenceLine(evidence: string[] | null | undefined): string | null {
+  const words = (evidence ?? []).filter((w) => w.trim() !== "");
+  return words.length > 0 ? words.join(" · ") : null;
+}
+
+/** The words of the choice that the business rules point at. */
+export const RULE_SUM_LINE = "Your business rules point at these fields together.";
+
+/**
+ * The sum that the business rules point at, as one choice of the card:
+ * its keys and its label ("IP Basic Amount + Rent Basic Amount"). `null`
+ * with fewer than two fields, or on a question that is not an amount.
+ */
+export function suggestedSum(q: Question): { keys: string[]; label: string } | null {
+  const keys = q.suggested_sum ?? [];
+  if (q.kind !== "key_field" || q.part !== "amount" || keys.length < 2) return null;
+  const labelOf = (key: string) =>
+    q.choices.find((c) => c.value === key)?.label ?? q.options?.find((o) => o.value === key)?.label ?? key;
+  return { keys, label: `Use the sum: ${keys.map(labelOf).join(" + ")}` };
 }
 
 /** The label of the answer in use: a field, a purpose, Billed or "None". */
