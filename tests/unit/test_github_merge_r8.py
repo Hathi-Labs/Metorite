@@ -942,12 +942,13 @@ async def test_r4_4_a_lookup_error_writes_no_pr_state(world, monkeypatch) -> Non
     """The GitHub row cannot be read, so the mode is unknown. The lazy read
     writes no pull request state through TR-1, and answers the stored row."""
     from gateway.connections import github as github_connection
+    from gateway.connections import store as connection_store
 
     w = world
     task = _task(w)
     _ref(w, task, 861)
 
-    async def broken(_org: str) -> Any:
+    async def broken(*_a: Any, **_k: Any) -> Any:
         raise RuntimeError("the connection read failed")
 
     async def token(_org: str) -> str:
@@ -958,7 +959,7 @@ async def test_r4_4_a_lookup_error_writes_no_pr_state(world, monkeypatch) -> Non
             "number": 861, "title": "PR 861", "state": "closed", "merged": True,
             "merged_at": "2026-10-18T13:00:00Z", "updated_at": "2026-10-18T13:00:00Z"})
 
-    monkeypatch.setattr(github_connection, "connection", broken)
+    monkeypatch.setattr(connection_store, "get", broken)
     monkeypatch.setattr(github_connection, "token_or_none", token)
     g.patch_github(monkeypatch, handler, REAL_CLIENT)
     await _lazy_read(w, task)

@@ -302,16 +302,23 @@ async def _app_installation() -> tuple[str, int] | None:
     org's pull requests to the TR-1 UPDATE, past the one write path.
     """
     from gateway.connections import github as github_connection
-    from gateway.db import current_tenant
+    from gateway.connections import store as connection_store
+    from gateway.db import current_tenant, tenant_session
 
+    org = current_tenant()
+    if not org:
+        return None
     try:
-        org = current_tenant()
-        if not org:
-            return None
-        iid = github_connection.installation_of(await github_connection.connection(str(org)))
+        # The plain row read, with no move of an old provider_keys row: that
+        # move belongs to the token path, and its failure says nothing of the
+        # mode. An App org always has its row.
+        async with tenant_session(str(org)) as db:
+            row = await connection_store.get(
+                db, str(org), github_connection.PROVIDER, github_connection.OWNING_APP)
     except Exception as exc:
         _log.warning("projects.refs.connection_unreadable", error=type(exc).__name__)
         raise _ConnectionUnreadable from None
+    iid = github_connection.installation_of(row)
     return (str(org), iid) if iid is not None else None
 
 
