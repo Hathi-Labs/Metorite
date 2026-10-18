@@ -98,6 +98,9 @@ export interface PageWritten extends PageSummary {
   version: number;
 }
 
+/** The answer of a move. A move of the place only has no new version. */
+export type PageMoved = Omit<PageWritten, "version"> & { version?: number };
+
 /** `POST /knowledge/pages`. With no `space_id`, the page lands in `me`. */
 export interface PageCreateBody {
   space_id?: string;
@@ -110,6 +113,17 @@ export interface PageCreateBody {
 export interface PagePatchBody {
   title?: string;
   body_md?: string;
+}
+
+/**
+ * `POST /knowledge/pages/{id}/move` (WS-61 KB-2e). `position` is the 0-based
+ * place among the new siblings that the member sees. A move with only
+ * `position` writes no version. `parent_id: null` is the root of the space.
+ */
+export interface PageMoveBody {
+  space_id?: string;
+  parent_id?: string | null;
+  position?: number;
 }
 
 /** `POST /knowledge/pages/{id}/revert`. */

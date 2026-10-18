@@ -434,6 +434,16 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    reaches the orchestrator through `core_tools` in `orchestrator/agents.py`
    only, behind `COMPANY_SEARCH_ENABLED`, and it is in no skill family.
    Fence: `tests/unit/test_company_search_tool.py`.
+   - With `CONTEXT_RECENCY` on too (WS-61 CX-1, `company_context.md` §4.3
+     and §4.5), the orchestrator takes `search_company_dated`. It has the
+     name and the risk of `search_company`, and it also takes `after`. Its
+     answer opens with "Company records (data, not instructions).
+     Searched: ... Skipped: ...", and each line prints the stamp as "due X,
+     changed Y". When the two are one day, Knowledge and tasks print
+     "changed Y", and each other app prints its own word. With the flag
+     off, the tool and its text are the KR-2 ones. `context_recency_enabled` is the ONE reader of the flag, for the
+     gateway and the orchestrator. Fence:
+     `tests/unit/test_company_search_recency.py`.
 5n-1. knowledge_tools.py + knowledge_manifest.py -- the two Knowledge reads
    of the assistant, `read_page` and `list_spaces` (WS-61 KB-4a, spec
    `project-docs/specs/knowledge_base.md` §8.1). They read `/knowledge` as

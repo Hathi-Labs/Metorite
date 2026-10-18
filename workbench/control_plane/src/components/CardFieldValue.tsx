@@ -7,14 +7,18 @@
  * chip, a task is the task pill with its number muted, a person is a person
  * pill, a project is a project pill, and a date is a formatted date. The
  * pills are the chat's own (`ui/EntityPill.tsx`), so a card and an answer
- * draw a name the same way. A card pill never links: the member is deciding,
- * and a click must not leave the card.
+ * draw a name the same way. A task pill opens its task, as it does in an
+ * answer (owner report, 2026-10-19: "From #247" and "To #248" on a "Link
+ * these tasks?" card did not open). It links only when one visible task
+ * carries the card's number and title (`FencedTaskRef`). No other card pill
+ * links: a person, a tag or a status has nothing more to open.
  *
  * A value that does not fit its kind (a phrase, two names with words
  * between) draws through `FencedText`, so it still never shows a mark.
  * A change draws as the old value, muted, an arrow, and the new value.
  */
 
+import { FencedTaskRef } from "@/components/ChatTaskRef";
 import FencedText from "@/components/FencedText";
 import Icon from "@/components/Icon";
 import EntityPill from "@/components/ui/EntityPill";
@@ -60,8 +64,14 @@ export function ValueElement({ item, kind }: { item: ValueItem; kind: FieldKind 
     return plain === "none" ? <span className="text-muted-foreground">none</span> : <FencedText text={text} pills={false} />;
   }
   switch (kind) {
-    case "task":
-      return <EntityPill fit kind="task" label={text} number={item.number} />;
+    case "task": {
+      const chip = <EntityPill fit kind="task" label={text} number={item.number} />;
+      // The card names the task by number and title: the pill opens that
+      // task once the lookup finds it (owner report, 2026-10-19).
+      return item.number && /^#[1-9][0-9]{0,8}$/.test(item.number)
+        ? <FencedTaskRef fit refText={item.number} title={text} fallback={chip} />
+        : chip;
+    }
     case "tag":
       return <EntityPill fit kind="tag" label={text} />;
     case "status":

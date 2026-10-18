@@ -15,6 +15,7 @@ import { badgeTone } from "./Badge";
 import {
   RailRow,
   expandKey,
+  railFocusStep,
   railMetaClass,
   railRowClass,
   togglePress,
@@ -216,6 +217,21 @@ describe("the chevron takes the icon's slot", () => {
     expect(expandKey("ArrowLeft", true)).toBe(true);
     expect(expandKey("ArrowLeft", false)).toBe(false);
     expect(expandKey("Enter", false)).toBe(false);
+  });
+});
+
+describe("ArrowUp and ArrowDown move between the rows (KB-2e)", () => {
+  it("steps one row, and holds at each end", () => {
+    expect(railFocusStep("ArrowDown", 0, 3)).toBe(1);
+    expect(railFocusStep("ArrowDown", 2, 3)).toBe(2);
+    expect(railFocusStep("ArrowUp", 2, 3)).toBe(1);
+    expect(railFocusStep("ArrowUp", 0, 3)).toBe(0);
+  });
+
+  it("leaves any other key, and a row that is not in the list, alone", () => {
+    expect(railFocusStep("ArrowRight", 1, 3)).toBeNull();
+    expect(railFocusStep("ArrowDown", -1, 3)).toBeNull();
+    expect(railFocusStep("ArrowDown", 0, 0)).toBeNull();
   });
 });
 

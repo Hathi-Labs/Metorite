@@ -195,3 +195,83 @@ async def test_an_org_named_in_the_request_changes_nothing(
     _clean(answer, caplog)
     assert _ids(answer, "tasks") == {a["task"]}
     assert b["task"] not in str(answer)
+
+
+# ── WS-61 CX-1: recency on the real task search (company_context.md §4.1) ──
+
+HERON = f"heron{TAG}"
+
+
+@pytest.fixture
+def two_ages(two_orgs):
+    """Two more tasks in org A's project: an OLD one whose title starts with
+    the word (the search's rank 1), and a NEW one with the word only in its
+    description (rank 4). The search's date tie-break never reaches them."""
+    p, a = two_orgs["ns"], two_orgs["a"]
+    old, new = str(uuid.uuid4()), str(uuid.uuid4())
+    with p.admin_engine.begin() as c:
+        lane = c.execute(text(
+            "SELECT id FROM pm_task_statuses WHERE project_id = CAST(:p AS uuid)"),
+            {"p": a["project"]}).scalar_one()
+        for task, title, body, days, number in (
+                (old, f"{HERON} roadmap", "", 400, 2),
+                (new, "Quarterly notes", f"see the {HERON} draft", 1, 3)):
+            c.execute(text(
+                "INSERT INTO pm_tasks (id, organization_id, project_id, root_project_id, "
+                "status_id, title, description, source, created_by, task_number, "
+                "updated_at) VALUES (CAST(:t AS uuid), CAST(:o AS uuid), "
+                "CAST(:p AS uuid), CAST(:p AS uuid), CAST(:s AS uuid), :ti, :d, 'manual', "
+                ":me, :n, now() - make_interval(days => :days))"),
+                {"t": task, "o": p.org_a, "p": a["project"], "s": str(lane), "ti": title,
+                 "d": body, "me": A_MEMBER, "n": number, "days": days})
+    yield {"old": old, "new": new}
+    with p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM pm_tasks WHERE id IN (CAST(:a AS uuid), CAST(:b AS uuid))"),
+                  {"a": old, "b": new})
+
+
+def _task_ids(answer: dict) -> list[str]:
+    return [h["id"] for h in answer["hits"] if h["app"] == "tasks"]
+
+
+async def test_the_decay_swaps_an_older_better_ranked_task(
+    two_orgs, two_ages, app_engine, roomy, caplog, monkeypatch,  # noqa: F811
+) -> None:
+    from acb_common import get_settings
+
+    _assert_non_priv(app_engine)
+    p = two_orgs["ns"]
+    user = _member(A_MEMBER, p.org_a)
+    params = {"q": HERON, "apps": "tasks"}
+    with caplog.at_level(logging.INFO, logger="gateway.retrieval.company"):
+        off = await _ask(p, user, params)
+        monkeypatch.setattr(get_settings(), "context_recency", True, raising=False)
+        on = await _ask(p, user, params)
+    _clean(off, caplog)
+    _clean(on, caplog)
+    # Off: the app's own order, rank first. On: the decay moves the new task up.
+    assert _task_ids(off) == [two_ages["old"], two_ages["new"]]
+    assert "stamp" not in off["hits"][0] and "searched" not in off
+    assert _task_ids(on) == [two_ages["new"], two_ages["old"]]
+    # The stamp is the real `updated_at`, and the old match still shows.
+    stamps = {h["id"]: h["stamp"] for h in on["hits"] if h["app"] == "tasks"}
+    assert stamps[two_ages["old"]] and stamps[two_ages["new"]]
+    assert stamps[two_ages["old"]] < stamps[two_ages["new"]]
+    assert on["searched"] == ["tasks", "people"]
+
+
+async def test_after_drops_the_older_task(
+    two_orgs, two_ages, app_engine, roomy, caplog, monkeypatch,  # noqa: F811
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from acb_common import get_settings
+
+    p = two_orgs["ns"]
+    monkeypatch.setattr(get_settings(), "context_recency", True, raising=False)
+    since = (datetime.now(UTC) - timedelta(days=30)).date().isoformat()
+    with caplog.at_level(logging.INFO, logger="gateway.retrieval.company"):
+        answer = await _ask(p, _member(A_MEMBER, p.org_a),
+                            {"q": HERON, "apps": "tasks", "after": since})
+    _clean(answer, caplog)
+    assert _task_ids(answer) == [two_ages["new"]]
