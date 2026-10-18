@@ -245,6 +245,17 @@ async def test_the_tool_reads_the_route_as_the_member(monkeypatch) -> None:
     monkeypatch.setattr(tools, "_get", none_get)
     assert "No facts" in await tools.org_facts()
 
+    async def many_get(path, params=None):
+        return {"facts": [{"subject": f"s{i}", "key": "amount", "meaning": f"Fact {i}.",
+                           "set_by": "Jev"} for i in range(70)]}
+
+    monkeypatch.setattr(tools, "_get", many_get)
+    first = await tools.org_facts()
+    assert "Fact 59." in first and "Fact 60." not in first
+    assert "offset=60" in first.splitlines()[-1]
+    rest = await tools.org_facts(offset=60)
+    assert "Fact 60." in rest and "Fact 69." in rest and "Fact 59." not in rest
+
 
 # ── Item 5: the block, 12 lines at most ─────────────────────────────────────
 
@@ -265,6 +276,10 @@ def test_the_block_holds_twelve_lines_at_most_and_only_money_and_stages() -> Non
     assert lines[0].startswith(BLOCK_MARKER)
     assert lines[1] == "- Revenue means billed."
     assert "A purpose." not in block
+    # 22 facts, 10 shown: the last line names the rest, so none is lost.
+    assert lines[-1] == "- 12 more facts: call org_facts to read them."
+    exact = crm_facts_block([_row("amount", f"Amount {i}.") for i in range(11)])
+    assert len(exact.splitlines()) == 12 and "more facts" not in exact
     assert crm_facts_block([_row("purpose", "A purpose.")]) == ""
     assert crm_facts_block([]) == ""
 

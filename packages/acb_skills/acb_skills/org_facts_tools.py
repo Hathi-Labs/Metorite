@@ -21,12 +21,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from acb_common.paging import paged
+
 from acb_skills.crm_tools import _get, _read_tool
 
 #: The route of the seam.
 ORG_FACTS_PATH = "/org/facts"
 
-#: The most facts that one answer of the tool shows.
+#: The facts of one page of the tool.
 MAX_FACTS = 60
 
 #: The most lines of the CRM facts block, its heading included.
@@ -47,7 +49,7 @@ def _line(row: dict[str, Any]) -> str:
 
 
 @_read_tool
-async def org_facts(app: str = "crm", query: str | None = None) -> str:
+async def org_facts(app: str = "crm", query: str | None = None, offset: int = 0) -> str:
     """The fixed facts of the organization's data: what each CRM module is
     for, which field holds its amount, date, status and customer, each
     approved stage, and what revenue means. A CRM admin answered each fact,
@@ -60,10 +62,11 @@ async def org_facts(app: str = "crm", query: str | None = None) -> str:
     if not rows:
         return ("No facts of this organization match. A CRM admin answers the open "
                 "questions of the CRM in CRM settings.")
+    page = paged(rows, offset, MAX_FACTS, default=MAX_FACTS, noun="facts")
     lines = ["Facts of this organization (fixed answers):"]
-    lines.extend(_line(r) for r in rows[:MAX_FACTS])
-    if len(rows) > MAX_FACTS:
-        lines.append(f"{len(rows) - MAX_FACTS} more facts. Narrow the query to see them.")
+    lines.extend(_line(r) for r in page.items)
+    if page.line:
+        lines.append(page.line)
     return "\n".join(lines)
 
 
@@ -75,12 +78,19 @@ def _kept(row: dict[str, Any]) -> bool:
 def crm_facts_block(rows: list[Any]) -> str:
     """The CRM facts block: a heading, then the answered facts of the money
     modules, the meaning of revenue and the stages, in the order of the
-    gateway, at most :data:`BLOCK_LINES` lines in all. Empty with no fact."""
+    gateway, at most :data:`BLOCK_LINES` lines in all. When more facts are
+    there, the last line names how many, and ``org_facts`` reads them, so no
+    fact is lost in silence. Empty with no fact."""
     kept = [r for r in rows if isinstance(r, dict) and r.get("meaning") and _kept(r)]
     if not kept:
         return ""
+    room = BLOCK_LINES - 1
+    if len(kept) > room:
+        room -= 1  # one line names the rest
     lines = [f"{BLOCK_MARKER} (fixed answers of this organization; use them as given)"]
-    lines.extend(f"- {r['meaning']}" for r in kept[:BLOCK_LINES - 1])
+    lines.extend(f"- {r['meaning']}" for i, r in enumerate(kept) if i < room)
+    if len(kept) > room:
+        lines.append(f"- {len(kept) - room} more facts: call org_facts to read them.")
     return "\n".join(lines)
 
 
