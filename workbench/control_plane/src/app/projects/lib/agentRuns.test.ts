@@ -133,7 +133,8 @@ describe("the pill: state → text, by the table in §12.1", () => {
  * Mutations caught: a key of `CLIENT_LABELS` added, dropped or relabelled
  * (the map test); the host fallback returns the stamp body or title case
  * (N7, `mcp:evil.example:claude-code`); the legacy `mcp:claude.ai` reads
- * "Claude.ai" again (N6); `mcp:constructor` reads a property of Object.
+ * "Claude.ai" again (N6); `mcp:constructor` reads a property of Object;
+ * fix round 1 (T13): an IPv6 host stamp splits at its first colon.
  */
 describe("the client name: one case file with the gateway (EA-13a)", () => {
   const FILE = JSON.parse(
