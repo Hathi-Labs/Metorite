@@ -14,7 +14,7 @@ from typing import Any
 
 
 class RawRedis:
-    """``setex``, ``exists``, ``delete`` and ``scan_iter`` on raw names."""
+    """``setex``, ``exists``, ``getdel``, ``delete`` and ``scan_iter`` on raw names."""
 
     def __init__(self) -> None:
         self.store: dict[str, tuple[int, str]] = {}
@@ -32,6 +32,11 @@ class RawRedis:
     async def exists(self, *names: str) -> int:
         self._check()
         return sum(1 for n in names if n in self.store)
+
+    async def getdel(self, name: str) -> str | None:
+        self._check()
+        found = self.store.pop(name, None)
+        return found[1] if found is not None else None
 
     async def delete(self, *names: str) -> int:
         self._check()

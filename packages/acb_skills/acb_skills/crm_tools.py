@@ -1777,17 +1777,19 @@ def _card(q: dict[str, Any]) -> tuple[dict[str, Any], list[tuple[str, str]]]:
         if not isinstance(choice, dict) or not choice.get("value"):
             continue
         label = _card_label(choice)
-        option: dict[str, Any] = {"label": label, "recommended": bool(choice.get("best"))}
+        option: dict[str, Any] = {"label": label, "recommended": bool(choice.get("best")),
+                                  "key": str(choice["value"])}
         if revenue and str(choice["value"]) in _REVENUE_HINTS:
             option["description"] = _REVENUE_HINTS[str(choice["value"])]
         options.append(option)
         keys.append((label, str(choice["value"])))
     if q.get("none"):
-        options.append({"label": "None of these", "recommended": False})
+        options.append({"label": "None of these", "recommended": False, "key": NONE_KEY})
         keys.append(("None of these", NONE_KEY))
     default = ("Billed, until a CRM admin answers" if revenue
                else "Skip it for now. The total waits for a CRM admin")
-    options.append({"label": "Use the default", "description": default, "recommended": False})
+    options.append({"label": "Use the default", "description": default, "recommended": False,
+                    "key": DEFAULT_KEY})
     keys.append(("Use the default", DEFAULT_KEY))
     text = f"{q.get('question')}\n\n{q.get('why')}"
     if not q.get("can_answer"):
@@ -1795,6 +1797,9 @@ def _card(q: dict[str, Any]) -> tuple[dict[str, Any], list[tuple[str, str]]]:
     payload = {"questions": [{
         "header": str(q.get("header") or "CRM question"), "question": text,
         "multiSelect": False, "allowFreeformInput": False, "options": options,
+        # The id of the CRM question: the gateway reads it from the parked
+        # card when the member answers late (``crm_question_answered``).
+        "crm_question": str(q.get("id") or ""),
     }]}
     return payload, keys
 
@@ -1892,7 +1897,6 @@ async def _ask_first(question_id: str, default: str, slug: str, params: dict[str
             return await _aggregate_text(slug, again, page, chosen, handled)
     if q.get("held") or not _card_may_show(question_id):
         return f"{_not_clear(q)}\n{default}"
-    await _record_shown(question_id)
     return _clarify_block(q, href, default)
 
 
@@ -1932,7 +1936,6 @@ async def _ask_revenue(module: str, purpose: str) -> str:
                 "A CRM admin can confirm your choice for everyone.")
     if q.get("held") or not _card_may_show("revenue"):
         return f"{_not_clear(q)}\n{REVENUE_DEFAULT_LINE}"
-    await _record_shown("revenue")
     return _clarify_block(q, href, REVENUE_DEFAULT_LINE)
 
 
@@ -1946,12 +1949,13 @@ NO_CARD_PICK = (
 )
 
 
-#: The Redis namespace of a card that a run showed to a member (the late
-#: pick). The gateway clears it (``routes/crm/questions.SHOWN_NAMESPACE``,
-#: the same name) on the pick, on ``@default`` and on an admin's answer.
-SHOWN_NAMESPACE = "crm_question_shown"
-#: How long a shown card waits for a late pick.
-SHOWN_TTL_S = 24 * 3600
+#: The Redis namespace of a late answer of a member (security review of the
+#: late pick). The GATEWAY writes ``key(ANSWERED_NAMESPACE, question id,
+#: member)`` with the key of the option that the member picked, when the
+#: member answers a parked card late (``routes/crm/questions.
+#: record_late_answer``). The tool reads it once, with GETDEL. A CLARIFY
+#: block writes nothing, so a card that nobody answered opens no gate.
+ANSWERED_NAMESPACE = "crm_question_answered"
 
 
 def _run_org() -> str | None:
@@ -1967,57 +1971,32 @@ def _run_org() -> str | None:
     return str(org) if org else None
 
 
-def _shown_redis() -> Any:
+def _answer_redis() -> Any:
     """The tenant Redis client. A seam, so a test passes a fake client."""
     from acb_common.tenant_redis import get_tenant_redis
 
     return get_tenant_redis()
 
 
-def _shown_owner() -> tuple[str, str] | None:
-    """The org of the run and the member, or None when either is unknown."""
+async def _late_answer_matches(question_id: str, choice: str) -> bool:
+    """True when the member of this run answered the card of *question_id*
+    late, in this org, with the option *choice*. The record is read with
+    GETDEL, so it serves one pick, also a pick that does not match. A
+    Redis fault reads as False, so the gate fails closed."""
     org, member = _run_org(), _current_user_email().strip().lower()
-    return (org, member) if org and "@" in member else None
-
-
-async def _record_shown(question_id: str) -> bool:
-    """Record that this run showed *question_id* to its member, for
-    :data:`SHOWN_TTL_S`, so a pick that arrives in a later run passes the
-    gate (a card answered after the park window, or on the legacy path).
-    The key holds the org (the tenant prefix), the question and the member.
-    A failed write keeps the card: only a late pick is lost."""
-    owner = _shown_owner()
-    if owner is None:
+    if not org or "@" not in member:
         return False
-    org, member = owner
     try:
         from acb_common.tenant_redis import key, organization_scope
 
         with organization_scope(org):
-            await _shown_redis().setex(key(SHOWN_NAMESPACE, question_id, member),
-                                       SHOWN_TTL_S, "1")
-    except Exception as exc:  # the class only: no value reaches the log
-        _log_shown("crm.questions.shown_write_failed", exc)
-        return False
-    return True
-
-
-async def _shown_earlier(question_id: str) -> bool:
-    """True when an earlier run of this member, in this org, showed the card
-    of *question_id* in the last day. A Redis fault reads as False, so the
-    gate fails closed."""
-    owner = _shown_owner()
-    if owner is None:
-        return False
-    org, member = owner
-    try:
-        from acb_common.tenant_redis import key, organization_scope
-
-        with organization_scope(org):
-            return bool(await _shown_redis().exists(key(SHOWN_NAMESPACE, question_id, member)))
+            got = await _answer_redis().getdel(key(ANSWERED_NAMESPACE, question_id, member))
     except Exception as exc:
-        _log_shown("crm.questions.shown_read_failed", exc)
+        _log_shown("crm.questions.late_answer_read_failed", exc)
         return False
+    if isinstance(got, bytes):
+        got = got.decode("utf-8", "replace")
+    return isinstance(got, str) and bool(got) and got == choice
 
 
 def _log_shown(event: str, exc: BaseException) -> None:
@@ -2029,26 +2008,21 @@ def _log_shown(event: str, exc: BaseException) -> None:
         pass
 
 
-def _card_was_shown(question_id: str) -> bool:
-    """True when this run has a card channel and showed the card of
-    *question_id* (its CLARIFY block). A run with no card channel (a
-    WhatsApp text chat) and a run with no holder show none."""
+async def _pick_allowed(question_id: str, choice: str) -> bool:
+    """The gate of a pick (security review of the late pick).
+
+    Only a streamed chat run passes: it has a card channel and a holder
+    that holds this tool. A batch run (a workflow, a dispatch,
+    ``/agent/run/async``) has no human, and never passes. Then either this
+    run showed the card, or the member answered that card late, with this
+    very option, and the gateway recorded the act (one use). A CLARIFY that
+    nobody answered, a model step, or a text of a CRM record opens nothing."""
     from acb_skills.ask_tools import cards_refused
 
     asks = run_asks()
-    return not cards_refused() and asks is not None and asks.shown(question_id)
-
-
-async def _pick_allowed(question_id: str) -> bool:
-    """The gate of a pick: this run showed the card, or an earlier run of
-    this member showed it in the last day (the late pick). Never in a run
-    with no card channel, and never for a question that nobody showed this
-    member, so a model step or a text of a CRM record cannot answer."""
-    from acb_skills.ask_tools import cards_refused
-
-    if cards_refused():
+    if cards_refused() or asks is None or not asks.answer_tool:
         return False
-    return _card_was_shown(question_id) or await _shown_earlier(question_id)
+    return asks.shown(question_id) or await _late_answer_matches(question_id, choice)
 
 
 def _question_id(question_id: str) -> str:
@@ -2077,7 +2051,7 @@ async def crm_answer_question(question_id: str, choice: str) -> str:
     if not key or len(key) > 200:
         raise GatewayRefusal("Send the key of one option.", detail="choice is empty or too long.",
                              fields=("choice",))
-    if not await _pick_allowed(question):
+    if not await _pick_allowed(question, key):
         # The gate: a pick needs a card that this member was shown, in this
         # run or in a run of the last day, so no model step and no text of a
         # CRM record can answer for the member. Nothing is sent.
@@ -2445,5 +2419,5 @@ __all__ = [
     "CRM_CLOSED", "CRM_DETAIL_MAX", "CRM_OFF", "CRM_VOICE", "CRM_SHARED_ROOM", "CRM_TOOLS", "CRM_TOOL_NAMES", "MAX_ROWS",
     "SEARCH_NUMBERS", "SEARCH_OFF", "SHORT_READS_PATH", "crm_mode", *(fn.__name__ for fn in CRM_TOOLS),
     "CLARIFY", "CRM_QUESTION_TOOLS", "CrmAsks", "MAX_ASKS_PER_RUN", "crm_answer_question",
-    "NO_CARD_PICK", "SHOWN_NAMESPACE", "SHOWN_TTL_S", "mark_answer_tool", "open_asks_for_run", "release_asks", "run_asks",
+    "ANSWERED_NAMESPACE", "NO_CARD_PICK", "mark_answer_tool", "open_asks_for_run", "release_asks", "run_asks",
 ]

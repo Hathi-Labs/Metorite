@@ -87,7 +87,7 @@ def hold(monkeypatch) -> FakeHold:
 
     fake = FakeHold()
     monkeypatch.setattr(routes, "_redis", lambda: tenant_client(fake))
-    monkeypatch.setattr(tools, "_shown_redis", lambda: tenant_client(fake))
+    monkeypatch.setattr(tools, "_answer_redis", lambda: tenant_client(fake))
     return fake
 
 
@@ -646,82 +646,114 @@ async def test_the_chat_card_makes_no_decide_call(
     assert decide_calls == []
 
 
-# ── Follow-up: a late pick, through the record of a shown card ──────────────
+# ── Follow-up: a late pick, through the member's own late answer ────────────
 
 
-def _shown_key(org: str, qid: str, email: str) -> str:
-    return f"cc:{org}:crm_question_shown:{qid}:{email}"
+def _late_key(org: str, qid: str, email: str) -> str:
+    return f"cc:{org}:crm_question_answered:{qid}:{email}"
 
 
-async def _record(p: Any, monkeypatch: Any, org: str, user: Any, qid: str) -> None:
-    """A run of *org* that showed *user* the card of *qid*."""
+def _card_of(qid: str) -> dict:
+    """The stored payload of a parked CRM card of *qid*, as the row keeps it."""
+    return {"request_id": "r-late", "questions": [{
+        "header": "Collection: amount", "question": "Which field?", "crm_question": qid,
+        "options": [{"label": "Part A", "key": "Part_A"}, {"label": "Part B", "key": "Part_B"},
+                    {"label": "Use the default", "key": "@default"}]}]}
+
+
+async def _answered_late(p: Any, monkeypatch: Any, org: str, user: Any, qid: str,
+                         label: str) -> None:
+    """The member answered the parked card of *qid* late with *label*: what
+    ``routes/agent._late_answer_from_row`` records, with the session's org.
+    The tool of the next run then reads the run's org."""
     import acb_skills.crm_tools as tools
+    from gateway.routes.crm.questions import record_late_answer
 
+    assert await record_late_answer(org, user.email, "questions", _card_of(qid), label)
     monkeypatch.setattr(tools, "_run_org", lambda: org)
-    monkeypatch.setattr(tools, "_current_user_email", lambda: user.email)
-    assert await tools._record_shown(qid) is True
 
 
-async def test_a_late_pick_passes_and_its_record_clears(
+async def test_a_late_answer_lets_the_matching_pick_through_once(
     chat_env, app_engine, hold, monkeypatch, card_run,
 ) -> None:
-    """A card answered in a later run: a fresh holder that showed nothing.
-    The record of the shown card lets the pick through, and the reply
-    clears the record of that member."""
+    """A late answer of a real card: the next run (a fresh holder that
+    showed nothing) sends the pick of that option, once, to the real router.
+    A second pick fails, and so does a pick of another option."""
+    from acb_skills.crm_tools import NO_CARD_PICK
+
     p = chat_env
     seed_a(p)
     user = member(p.org_a)
-    await _record(p, monkeypatch, p.org_a, user, KEY)
-    assert _shown_key(p.org_a, KEY, user.email) in hold.store
+    await _answered_late(p, monkeypatch, p.org_a, user, KEY, "Part A")
+    assert hold.store[_late_key(p.org_a, KEY, user.email)][1] == "Part_A"
     assert card_run.asked == set()  # this run showed no card
-    (out,) = await _through_the_tool(p, user, monkeypatch, [(KEY, "Part_A")])
-    assert out.startswith("This uses Part A, as you chose.")
+    out, again = await _through_the_tool(p, user, monkeypatch, [(KEY, "Part_A"), (KEY, "Part_A")])
+    assert out.startswith("This uses Part A, as you chose.") and again == NO_CARD_PICK
     assert proposals(p, p.org_a)[KEY][0]["value"] == "Part_A"
-    assert _shown_key(p.org_a, KEY, user.email) not in hold.store
-    # The record is spent: a second late pick fails.
-    (again,) = await _through_the_tool(p, user, monkeypatch, [(KEY, "Part_B")])
-    from acb_skills.crm_tools import NO_CARD_PICK
+    assert _late_key(p.org_a, KEY, user.email) not in hold.store
+    # A late answer of Part A never lets the model send Part B.
+    await _answered_late(p, monkeypatch, p.org_a, user, KEY, "Part A")
+    (wrong,) = await _through_the_tool(p, user, monkeypatch, [(KEY, "Part_B")])
+    assert wrong == NO_CARD_PICK
+    assert [x["value"] for x in proposals(p, p.org_a)[KEY]] == ["Part_A"]
 
-    assert again == NO_CARD_PICK
 
-
-async def test_org_b_cannot_use_the_record_of_org_a(
+async def test_org_b_cannot_use_the_late_answer_of_org_a(
     chat_env, app_engine, hold, monkeypatch, card_run,
 ) -> None:
     """The record carries the tenant prefix of org A. The same member email
-    in a run of org B reads no record, and org B gets no proposal."""
+    in a run of org B reads nothing, and org B gets no proposal."""
+    import acb_skills.crm_tools as tools
     from acb_skills.crm_tools import NO_CARD_PICK
 
     p = chat_env
     seed_a(p)
     seed_b(p)
-    await _record(p, monkeypatch, p.org_a, member(p.org_a), "purpose:Ledgers")
-    await _record(p, monkeypatch, p.org_a, member(p.org_a), KEY)
-    import acb_skills.crm_tools as tools
-
+    await _answered_late(p, monkeypatch, p.org_a, member(p.org_a), "purpose:Ledgers",
+                         "Use the default")
     monkeypatch.setattr(tools, "_run_org", lambda: p.org_b)
     outs = await _through_the_tool(p, member(p.org_b), monkeypatch,
-                                   [("purpose:Ledgers", "payment_out"), (KEY, "Part_A")])
-    assert outs == [NO_CARD_PICK, NO_CARD_PICK]
-    assert proposals(p, p.org_b) == {} and proposals(p, p.org_a) == {}
+                                   [("purpose:Ledgers", "@default")])
+    assert outs == [NO_CARD_PICK]
+    assert proposals(p, p.org_b) == {} and hold.store != {}  # org A's record is untouched
 
 
-async def test_an_admin_answer_and_a_default_clear_the_records(
+async def test_a_batch_run_never_picks_with_a_late_answer(
+    chat_env, app_engine, hold, monkeypatch,
+) -> None:
+    """P1-a: a batch run opens no holder, so even the member's own late
+    answer lets nothing through, and the plan stays."""
+    import acb_skills.crm_tools as tools
+    from acb_skills.crm_tools import NO_CARD_PICK
+
+    p = chat_env
+    seed_a(p)
+    before = versions(p, p.org_a)
+    await _answered_late(p, monkeypatch, p.org_a, _user(p.org_a), KEY, "Part A")
+    token = tools._RUN_ASKS.set(None)
+    try:
+        outs = await _through_the_tool(p, _user(p.org_a), monkeypatch, [(KEY, "Part_A")])
+    finally:
+        tools._RUN_ASKS.reset(token)
+    assert outs == [NO_CARD_PICK] and versions(p, p.org_a) == before
+
+
+async def test_an_admin_answer_and_a_default_clear_the_late_answers(
     chat_env, app_engine, hold, monkeypatch, card_run,
 ) -> None:
     p = chat_env
     seed_a(p)
     one, two = member(p.org_a, 1), member(p.org_a, 2)
     for user in (one, two):
-        await _record(p, monkeypatch, p.org_a, user, KEY)
-    await _record(p, monkeypatch, p.org_a, one, "revenue")
-    # "@default" of member 2 clears its own record of revenue only.
-    await _record(p, monkeypatch, p.org_a, two, "revenue")
+        await _answered_late(p, monkeypatch, p.org_a, user, KEY, "Part A")
+    await _answered_late(p, monkeypatch, p.org_a, one, "revenue", "Use the default")
+    await _answered_late(p, monkeypatch, p.org_a, two, "revenue", "Use the default")
+    # "@default" of member 2 clears its own late answer of revenue only.
     assert (await reply(p, two, "revenue", "@default")).status_code == 200
-    assert _shown_key(p.org_a, "revenue", two.email) not in hold.store
-    assert _shown_key(p.org_a, "revenue", one.email) in hold.store
-    # An admin's answer closes the card of KEY for each member.
+    assert _late_key(p.org_a, "revenue", two.email) not in hold.store
+    assert _late_key(p.org_a, "revenue", one.email) in hold.store
+    # An admin's answer closes KEY for each member.
     got = await call(p, _user(p.org_a), "POST", f"{Q}/{KEY}/answer", {"value": "Part_A"})
     assert got.status_code == 200, got.text
-    assert not [k for k in hold.store if ":crm_question_shown:" + KEY + ":" in k]
-    assert _shown_key(p.org_a, "revenue", one.email) in hold.store
+    assert not [k for k in hold.store if ":crm_question_answered:" + KEY + ":" in k]
+    assert _late_key(p.org_a, "revenue", one.email) in hold.store

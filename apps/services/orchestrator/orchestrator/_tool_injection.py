@@ -1616,16 +1616,32 @@ def _facts_withheld() -> frozenset[str]:
     :func:`_add_crm_facts_block` takes the tool from the run. So the
     injected set of a box with no list stays byte-identical to the
     collection chain (``skills_registry.md`` rule 3,
-    ``test_skill_toggle_enforcement.py``)."""
+    ``test_skill_toggle_enforcement.py``).
+
+    On a listed org, a run with no holder of its CRM questions (a batch
+    run) loses ``crm_answer_question`` too: only a streamed chat run opens
+    the holder (``executor.run_agent_stream``)."""
     try:
-        from acb_skills.crm_tools import questions_box_on, questions_org_on
+        from acb_skills.crm_tools import (
+            CRM_QUESTION_TOOLS,
+            questions_box_on,
+            questions_org_on,
+            run_asks,
+        )
         from acb_skills.org_facts_tools import FACTS_GATED_TOOLS
     except ImportError:
         return frozenset()
-    if not questions_box_on() or questions_org_on(_run_org_or_none()):
+    if not questions_box_on():
         return frozenset()
-    # CRM-Q32-8: `crm_answer_question` is withheld wherever `org_facts` is.
-    return frozenset(fn.__name__ for fn in FACTS_GATED_TOOLS)
+    if not questions_org_on(_run_org_or_none()):
+        # CRM-Q32-8: `crm_answer_question` is withheld wherever `org_facts` is.
+        return frozenset(fn.__name__ for fn in FACTS_GATED_TOOLS)
+    if run_asks() is None:
+        # CRM-Q32-8, security review: a run with no holder of its questions
+        # (a batch run: a workflow, a dispatch, /agent/run/async) shows no
+        # card and has no human to pick, so it never holds the reply tool.
+        return frozenset(fn.__name__ for fn in CRM_QUESTION_TOOLS)
+    return frozenset()
 
 
 def _whatsapp_withheld() -> frozenset[str]:

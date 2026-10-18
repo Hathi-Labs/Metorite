@@ -547,7 +547,7 @@ async def put_catalogue(
     from gateway.routes.crm.field_rules import _db_conflict, _organization, _require_mirror
     from gateway.routes.crm.flags import questions_allowed
     from gateway.routes.crm.mapping_plans import _approved
-    from gateway.routes.crm.questions import after_admin_write, forget_shown, questions_off
+    from gateway.routes.crm.questions import after_admin_write, forget_late_answers, questions_off
 
     org = _organization(user)
     if not questions_allowed(org):
@@ -573,7 +573,7 @@ async def put_catalogue(
             raise conflict from exc
         raise
     # CRM-Q32-8: an admin write closes each card of these parts.
-    await forget_shown(org, part_question_ids(module, parts))
+    await forget_late_answers(org, part_question_ids(module, parts))
     entry = next((e for e in _build(sources, roles, others) if e.module == module), None)
     value, by_word = cat.revenue_of(cat.stored_items(others))
     return CatalogueChangeOut(

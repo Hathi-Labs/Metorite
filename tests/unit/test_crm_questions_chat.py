@@ -388,39 +388,112 @@ def test_the_run_boundary_opens_and_releases_the_holder() -> None:
     assert released < source.index("release_asks(_asks_token)") < released + 200
 
 
-def test_the_tool_and_the_gateway_name_one_record_of_a_shown_card() -> None:
-    """The tool writes the record of a shown card, and the gateway clears
-    it, so both read one namespace and one key shape (question, member)."""
+def test_the_tool_and_the_gateway_name_one_record_of_a_late_answer() -> None:
+    """The gateway writes the record of a late answer, and the tool reads it
+    once: one namespace, one key shape (question, member), and the value is
+    the key of the option. No CLARIFY block writes a record."""
     import acb_skills.crm_tools as tools
     from gateway.routes.crm import questions as routes
 
-    assert tools.SHOWN_NAMESPACE == routes.SHOWN_NAMESPACE == "crm_question_shown"
-    assert tools.SHOWN_TTL_S == 24 * 3600
+    assert tools.ANSWERED_NAMESPACE == routes.ANSWERED_NAMESPACE == "crm_question_answered"
+    assert routes.LATE_ANSWER_TTL_S == 30 * 60
     src = (REPO / "packages/acb_skills/acb_skills/crm_tools.py").read_text(encoding="utf-8")
-    assert "key(SHOWN_NAMESPACE, question_id, member)" in src
+    assert "getdel(key(ANSWERED_NAMESPACE, question_id, member))" in src
+    assert ".setex(" not in src and "crm_question_shown" not in src
     gw = (GATEWAY / "routes/crm/questions.py").read_text(encoding="utf-8")
-    assert "key(SHOWN_NAMESPACE, qid, member)" in gw
+    assert "key(ANSWERED_NAMESPACE, qid, member.strip().lower())" in gw
 
 
-async def test_a_fault_of_redis_never_fails_an_answer_that_committed(monkeypatch) -> None:
-    """The clear of a shown card runs after the commit. A fault of Redis, an
-    outage or any other, only logs, so the admin's answer stands."""
+def _crm_card(qid: str = "key:A:amount") -> dict:
+    return {"request_id": "r1", "questions": [{
+        "header": "Collection: amount", "question": "Which field?", "crm_question": qid,
+        "options": [{"label": "IP Basic Amount (52% filled)", "key": "IP"},
+                    {"label": "None of these", "key": "none"},
+                    {"label": "Use the default", "key": "@default"}]}]}
+
+
+@pytest.fixture
+def late_redis(monkeypatch):
     from gateway.routes.crm import questions as routes
-    from redis.exceptions import ConnectionError as RedisDown
 
     from tests.unit._crm_redis_fake import RawRedis, tenant_client
 
     raw = RawRedis()
     monkeypatch.setattr(routes, "_redis", lambda: tenant_client(raw))
+    return raw
+
+
+async def test_a_late_answer_records_the_option_that_the_member_picked(late_redis) -> None:
+    from gateway.routes.crm import questions as routes
+
+    assert await routes.record_late_answer(
+        "org-a", "Asha@X.test", "questions", _crm_card(), "IP Basic Amount (52% filled)")
+    assert late_redis.store == {
+        "cc:org-a:crm_question_answered:key:A:amount:asha@x.test": (1800, "IP")}
+
+
+@pytest.mark.parametrize(("kind", "payload", "answer"), [
+    # A label that no option has: typed text, or a forged answer.
+    ("questions", _crm_card(), "IP"),
+    # Another kind of card.
+    ("confirmation", _crm_card(), "None of these"),
+    # A card of no CRM question.
+    ("questions", {"questions": [{"header": "H", "question": "Q?",
+                                  "options": [{"label": "A", "key": "IP"}]}]}, "A"),
+    # A card of two questions.
+    ("questions", {"questions": [_crm_card()["questions"][0]] * 2}, "None of these"),
+    # A tag of the wrong shape.
+    ("questions", _crm_card("slot:deal"), "None of these"),
+    # A payload that the row cut (truncated).
+    ("questions", {"request_id": "r1", "question": "Q", "truncated": True}, "None of these"),
+])
+async def test_a_late_answer_records_nothing_unless_it_picked_an_option_of_a_crm_card(
+    late_redis, kind, payload, answer,
+) -> None:
+    from gateway.routes.crm import questions as routes
+
+    assert not await routes.record_late_answer("org-a", "asha@x.test", kind, payload, answer)
+    assert late_redis.store == {}
+
+
+async def test_a_late_answer_needs_an_org_and_a_member(late_redis) -> None:
+    from gateway.routes.crm import questions as routes
+
+    assert not await routes.record_late_answer("", "asha@x.test", "questions", _crm_card(),
+                                               "None of these")
+    assert not await routes.record_late_answer("org-a", "", "questions", _crm_card(),
+                                               "None of these")
+    assert late_redis.store == {}
+
+
+async def test_a_fault_of_redis_never_fails_an_answer_that_committed(late_redis) -> None:
+    """The clear of a late answer runs after the commit, and the record runs
+    beside the resend. A fault of Redis, an outage or any other, only logs."""
+    from gateway.routes.crm import questions as routes
+    from redis.exceptions import ConnectionError as RedisDown
+
+    raw = late_redis
     for fault in (RedisDown("down"), RuntimeError("Event loop is closed")):
         raw.fail = fault
-        await routes.forget_shown("org-a", ["revenue"])
-        await routes.forget_shown("org-a", ["revenue"], member="a@x.test")
+        await routes.forget_late_answers("org-a", ["revenue"])
+        await routes.forget_late_answers("org-a", ["revenue"], member="a@x.test")
+        assert not await routes.record_late_answer("org-a", "a@x.test", "questions",
+                                                   _crm_card(), "None of these")
     raw.fail = None
-    raw.store = {"cc:org-a:crm_question_shown:revenue:a@x.test": (1, "1"),
-                 "cc:org-a:crm_question_shown:revenue:b@x.test": (1, "1"),
-                 "cc:org-a:crm_question_shown:key:A:amount:a@x.test": (1, "1"),
-                 "cc:org-b:crm_question_shown:revenue:a@x.test": (1, "1")}
-    await routes.forget_shown("org-a", ["revenue"])
-    assert sorted(raw.store) == ["cc:org-a:crm_question_shown:key:A:amount:a@x.test",
-                                 "cc:org-b:crm_question_shown:revenue:a@x.test"]
+    raw.store = {"cc:org-a:crm_question_answered:revenue:a@x.test": (1, "invoice"),
+                 "cc:org-a:crm_question_answered:revenue:b@x.test": (1, "invoice"),
+                 "cc:org-a:crm_question_answered:key:A:amount:a@x.test": (1, "IP"),
+                 "cc:org-b:crm_question_answered:revenue:a@x.test": (1, "invoice")}
+    await routes.forget_late_answers("org-a", ["revenue"])
+    assert sorted(raw.store) == ["cc:org-a:crm_question_answered:key:A:amount:a@x.test",
+                                 "cc:org-b:crm_question_answered:revenue:a@x.test"]
+
+
+def test_the_late_answer_route_records_the_act_after_the_row_moves() -> None:
+    """The record is written only on the path where the member's own late
+    answer moved the row to answered, with the org and the member of the
+    session."""
+    src = (GATEWAY / "routes/agent.py").read_text(encoding="utf-8")
+    moved = src.index("    if moved is None:\n        return None, True\n")
+    call = src.index("await record_late_answer(org, me, ")
+    assert moved < call < src.index('"agent.pending_ask_answered_late"')
