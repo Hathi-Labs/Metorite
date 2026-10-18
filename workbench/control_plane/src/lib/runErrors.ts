@@ -206,6 +206,18 @@ export function otherAccountSwitchWords(account: string): RunErrorWords {
 }
 
 /**
+ * The other-account notice when that account is the active one now, such as
+ * after a switch in another tab (review of #1131). Nothing to switch, so the
+ * notice only informs, and tells the member to answer again.
+ */
+export const OTHER_ACCOUNT_ACTIVE_WORDS: RunErrorWords = {
+  title: "You can answer this question now",
+  body: "{account} is the active account now. Answer the question again.",
+  retry: false,
+  tone: "notice",
+};
+
+/**
  * The body of a notice, with `{account}` filled in from its `raw` text
  * (WS-51 S2). A body with no placeholder is returned as it is.
  */

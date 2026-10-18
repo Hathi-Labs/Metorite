@@ -5,13 +5,10 @@ import Icon from "@/components/Icon";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import Button from "@/components/ui/Button";
 import { dismissToolCard, useDismissedToolCards } from "@/lib/dismissedTools";
-import { SwitchingCover, useAccounts, useSwitchAccount } from "@/components/AccountSwitcher";
-import { slotFor, type OtherAccount } from "@/lib/accountSwitch";
 import {
   RUN_ERROR_WORDS,
   isInfoOnlyNotice,
   noticeBody,
-  otherAccountSwitchWords,
   type RunErrorView,
   type RunErrorWords,
 } from "@/lib/runErrors";
@@ -242,73 +239,6 @@ export default function ErrorCard({
   id?: string;
   dismissKey?: string;
 }) {
-  if (error.code === "answer_in_other_account") {
-    return <OtherAccountNotice error={error} id={id} dismissKey={dismissKey} />;
-  }
   const action = error.code === "too_many_runs" ? openActivity : onRetry;
   return <ErrorCardView error={error} onRetry={action} id={id} dismissKey={dismissKey} />;
-}
-
-/**
- * The other-account notice (WS-51 S2) as the thread mounts it. Owner call,
- * 2026-10-18: dismissing it left the member stuck, because only the other
- * account can answer the question.
- *
- * - This browser holds a slot for that account: a card with a "Switch to
- *   {account}" button. The button is the account menu's own switch
- *   (`useSwitchAccount`), with the same cover and the same full reload, and
- *   the card stays until the member acts.
- * - No slot, or the switcher flag is off: the info-only line, which a member
- *   may dismiss, and which says to sign in from the account menu.
- *
- * It draws nothing until the first read of the accounts answers, so the
- * line never jumps into a card.
- *
- * Fence: `otherAccountNotice.test.ts`.
- */
-function OtherAccountNotice({ error, id, dismissKey }: { error: RunErrorView; id?: string; dismissKey?: string }) {
-  const { accounts, reload, loaded } = useAccounts();
-  const { switching, pick } = useSwitchAccount(() => void reload(false));
-  if (!loaded) return null;
-  return (
-    <>
-      <OtherAccountNoticeView
-        error={error}
-        target={slotFor(accounts, error.raw)}
-        onSwitch={(o) => void pick(o)}
-        id={id}
-        dismissKey={dismissKey}
-      />
-      {switching && <SwitchingCover email={switching} />}
-    </>
-  );
-}
-
-/**
- * The other-account notice, given the slot to switch to (or none). Pure,
- * with no hook, so a test can read its tree and press its button. The
- * button names the address as the body does, from the notice's `raw`.
- */
-export function OtherAccountNoticeView({
-  error,
-  target,
-  onSwitch,
-  id,
-  dismissKey,
-}: {
-  error: RunErrorView;
-  target: OtherAccount | null;
-  onSwitch: (target: OtherAccount) => void;
-  id?: string;
-  dismissKey?: string;
-}) {
-  if (!target) return <ErrorCardView error={error} id={id} dismissKey={dismissKey} />;
-  return (
-    <ErrorCardView
-      error={error}
-      words={otherAccountSwitchWords(error.raw.trim() || target.email)}
-      onRetry={() => onSwitch(target)}
-      id={id}
-    />
-  );
 }

@@ -42,7 +42,7 @@ import {
   removeAccount,
   signOutAll,
   signOutThis,
-  switchTo,
+  trySwitch,
   type Accounts,
   type OtherAccount,
 } from "@/lib/accountSwitch";
@@ -60,8 +60,11 @@ export function useAccounts(withOrgs = false) {
   // False until the first read answers. A caller that must not draw the
   // "no accounts" shape first, and then jump, waits for it.
   const [loaded, setLoaded] = useState(false);
+  // Answers the fresh list too, for a caller that must decide from it now.
   const reload = useCallback(async (orgs: boolean) => {
-    setAccounts(await fetchAccounts(orgs));
+    const fresh = await fetchAccounts(orgs);
+    setAccounts(fresh);
+    return fresh;
   }, []);
   useEffect(() => {
     let alive = true;
@@ -100,11 +103,12 @@ export function useSwitchAccount(onChanged: () => void, onCover?: (cover: Cover 
     setError(null);
     setSwitching(o.email);
     onCover?.({ email: o.email });
-    if (!(await switchTo(o.slot))) {
+    const failed = await trySwitch(o);
+    if (failed) {
       setSwitching(null);
       onCover?.(null);
-      setError(`${o.email} is no longer signed in here. Add it again.`);
-      onChanged();
+      setError(failed.error);
+      if (failed.gone) onChanged();
     }
   };
   return { switching, error, pick };
@@ -350,7 +354,7 @@ export function SidebarAccountFooter({
 }: {
   collapsed: boolean;
   accounts: Accounts;
-  reload: (withOrgs: boolean) => Promise<void>;
+  reload: (withOrgs: boolean) => Promise<unknown>;
   /** The shell nav's account rows (NS-2). With them, the foot always shows. */
   you?: readonly AccountLink[];
 }) {
