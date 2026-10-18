@@ -59,6 +59,21 @@ Run::
   and the case-file test.
 * S11. ``A/agent_oauth.py`` ``CLIENT_LABELS``: drop ``claude.ai``.
   ``test_n6_a_legacy_row_reads_claude`` and the map test.
+
+Fix round 1 (the deploy window, the IPv6 host and the preferred run):
+
+* S12. ``A/deps.py`` branch 0: drop the legacy arm (``actor_via !=
+  expected_via``).
+  ``test_n4_for_one_release_branch_0_accepts_the_legacy_stamp_of_the_row``.
+* S13. ``A/deps.py`` branch 0: the scope takes the SIGNED stamp, not the new
+  one. ``test_a_call_signed_with_the_legacy_stamp_binds_the_new_stamp``.
+* S14. ``A/agent_oauth.py`` ``actor_via_for``: a slug on an IPv6 host.
+  ``test_an_ipv6_host_gets_no_slug_and_reads_whole``.
+* S15. ``A/agent_oauth.py`` ``client_label``: split an IPv6 body at its first
+  colon. ``test_an_ipv6_host_gets_no_slug_and_reads_whole`` and the
+  case-file test.
+* S16. ``G/agent_runs.py`` ``_OPEN_RUN_SQL``: no ``ORDER BY``.
+  ``test_with_a_legacy_and_a_new_open_run_the_read_takes_the_new_one``.
 """
 from __future__ import annotations
 
@@ -159,6 +174,15 @@ def test_a_client_id_at_another_host_keeps_the_host_stamp():
     stamp = agent_oauth.actor_via_for(
         "https://client.example", client_id="https://claude.ai/claude-code-client-metadata")
     assert stamp == "mcp:client.example"
+
+
+def test_an_ipv6_host_gets_no_slug_and_reads_whole():
+    """Fix round 1. An IPv6 host has colons of its own, so the stamp keeps
+    the host only, and the label reads the whole host back."""
+    stamp = agent_oauth.actor_via_for(
+        "https://[2001:db8::1]", client_id="https://[2001:db8::1]/tool-metadata")
+    assert stamp == "mcp:2001:db8::1"
+    assert agent_oauth.client_label(stamp) == "2001:db8::1"
 
 
 def test_the_client_id_is_a_keyword_with_no_default():
@@ -363,9 +387,57 @@ class TestTheStampOnARealDatabase:
         task = live.task(live.team, live.s.todo, "n4")
         path = f"/projects/tasks/{task}"
         assert (await _signed(live, "claude", "GET", path, NEW)).status_code == 200
-        for wrong in (LEGACY, "mcp:claude.ai:other", "mcp:evil.example:claude-code"):
+        for wrong in ("mcp:claude.ai:other", "mcp:evil.example:claude-code",
+                      "mcp:client.example", "mcp:client.example:meta"):
             r = await _signed(live, "claude", "GET", path, wrong)
             assert r.status_code == 401, (wrong, r.text)
+
+    async def test_n4_for_one_release_branch_0_accepts_the_legacy_stamp_of_the_row(
+            self, live):
+        """Fix round 1. The deploy restarts the gateway before the edge, and the
+        old edge signs the host stamp. Branch 0 accepts the host stamp OF THE
+        ROW for one release. The stamp of another row still gets 401."""
+        task = live.task(live.team, live.s.todo, "n4 legacy")
+        path = f"/projects/tasks/{task}"
+        assert (await _signed(live, "claude", "GET", path, LEGACY)).status_code == 200
+        # `write` is a connection of client.example. Its host stamp is not the
+        # host stamp of the Claude Code row.
+        assert (await _signed(live, "claude", "GET", path, "mcp:client.example")
+                ).status_code == 401
+
+    async def test_a_call_signed_with_the_legacy_stamp_binds_the_new_stamp(
+            self, live, runs_on):
+        """Fix round 1. The scope keeps the NEW stamp, so a run that an old
+        edge starts in the deploy window reads "Claude Code"."""
+        task = live.task(live.team, live.s.doing, "legacy signed start")
+        r = await _signed(live, "claude", "POST", f"/projects/tasks/{task}/agent-runs",
+                          LEGACY, body={"idempotency_key": "legacy-signed-1"})
+        assert r.status_code == 201, r.text
+        assert r.json()["run"]["client_via"] == NEW
+        assert [row.client_via for row in _runs(live, task)] == [NEW]
+
+    async def test_with_a_legacy_and_a_new_open_run_the_read_takes_the_new_one(
+            self, live, runs_on):
+        """Fix round 1. The deploy window can leave a legacy run and a new run
+        open on one connection. The open-run read takes the NEW one. Two
+        tasks, with the two rows in both orders of age and of insert, so the
+        read cannot pass by the order of a plan."""
+        for n, order in enumerate(((LEGACY, NEW), (NEW, LEGACY))):
+            task = live.task(live.team, live.s.doing, f"two open runs {n}")
+            made = {}
+            for age, via in zip(("2 minutes", "1 minute"), order, strict=True):
+                made[via] = str(live.seeder.one(
+                    "INSERT INTO pm_agent_runs (organization_id, task_id, member_email,"
+                    " connection_id, client_via, status, started_by, started_at,"
+                    " last_agent_activity_at, created_at) VALUES (CAST(:o AS uuid),"
+                    " CAST(:t AS uuid), :m, CAST(:c AS uuid), :v, 'in_progress', :v,"
+                    " now(), now(), now() - CAST(:age AS interval)) RETURNING id",
+                    o=live.org, t=task, m=MEMBER, c=live.c["claude"], v=via, age=age))
+            result = await tw._mcp(live, "claude", "start_agent_run", {
+                "task_id": task, "idempotency_key": f"two-open-{n}"})
+            assert result["isError"] is False, result
+            assert result["structuredContent"]["created"] is False
+            assert result["structuredContent"]["run"]["id"] == made[NEW], (n, order)
 
     async def test_n5_an_open_legacy_run_is_found_and_no_second_run_opens(
             self, live, runs_on):

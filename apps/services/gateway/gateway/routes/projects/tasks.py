@@ -1516,11 +1516,15 @@ async def claim_task(
     and the watcher key after it. So the claim adds no lock order that a
     member path does not already have, and it changes no member path.
 
-    **EA-13c (EA3-42).** Between the key and the row, an agent's claim
-    opens its run through ``agent_runs.open_run_for_claim`` while the runs
-    flag is on. A run writer takes the run before the task row, so the
-    order stays one order. The answer carries ``agent_run_id``, which is
-    None for a member and with the flag off.
+    **EA-13c (EA3-42).** Before the row lock, an agent's claim opens its
+    run through ``agent_runs.open_run_for_claim`` while the runs flag is on.
+    The one proven rule is the run BEFORE the task row: a run writer (a
+    member's start, the archive request) takes the run and then the row for
+    its comment, and O-M9 of ``test_mcp_edge_claim.py`` deadlocks when the
+    claim takes the row first. The run's place against the assignee key does
+    not matter, because no run writer takes an assignee key, so no cycle can
+    pass through the key. The answer carries ``agent_run_id``, which is None
+    for a member and with the flag off.
     """
     me = actor(user).strip().lower()
     async with _tenant_session() as db:
@@ -1556,10 +1560,11 @@ async def claim_task(
         added = await _insert_claim_assignees(db, task_id, wanted, by=actor(user))
 
         # 2b. EA-13c (EA3-42): an agent's claim opens its run while the runs
-        # flag is on, through the one run writer. After the key and BEFORE
-        # the row: each run writer takes the run, then the task row (its
-        # comment bumps the row), so the claim keeps that order. A refusal
-        # below rolls the run back with the claim. None for a member.
+        # flag is on, through the one run writer. BEFORE the row: a run writer
+        # takes the run, then the task row (its comment bumps the row), and
+        # the claim keeps that order (O-M9). Its place after the key does not
+        # matter: no run writer takes an assignee key. A refusal below rolls
+        # the run back with the claim. None for a member.
         from gateway.routes.projects import agent_runs
 
         run_id = await agent_runs.open_run_for_claim(db, task_id, user)

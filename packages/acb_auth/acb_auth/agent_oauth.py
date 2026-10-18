@@ -650,7 +650,9 @@ def actor_via_for(client_origin: str | None, *, client_id: str | None) -> str:
     except ValueError:
         host = ""
     host_ok = bool(host) and host.isascii()
-    slug = client_slug(client_id) if host_ok else ""
+    # An IPv6 host has colons of its own, so a slug after it could not be
+    # read back. Such a host keeps the host stamp (EA-13a fix round 1).
+    slug = client_slug(client_id) if host_ok and ":" not in host else ""
     if slug and ascii_host(urlsplit(client_id or "").hostname or "").lower() == host:
         stamp = f"mcp:{host}:{slug}"
         if ACTOR_VIA_PATTERN.fullmatch(stamp):
@@ -682,10 +684,13 @@ def client_label(via: str | None) -> str:
     A known stamp reads its label. Else the label of its host, else the host
     itself, so ``mcp:evil.example:claude-code`` reads ``evil.example``. An
     empty value reads ``"Agent"``.
+
+    A body with more than one colon is an IPv6 host stamp, because
+    :func:`actor_via_for` adds no slug to an IPv6 host. It reads whole.
     """
     raw = (via or "").strip().lower()
     body = raw.removeprefix("mcp:")
-    host = body.split(":", 1)[0]
+    host = body if body.count(":") > 1 else body.split(":", 1)[0]
     return CLIENT_LABELS.get(body) or CLIENT_LABELS.get(host) or host or "Agent"
 
 

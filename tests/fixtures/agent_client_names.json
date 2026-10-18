@@ -13,6 +13,7 @@
     {"via": "mcp:client.example", "label": "client.example", "why": "an unknown host stamp reads as its host"},
     {"via": "mcp:client.example:meta", "label": "client.example", "why": "an unknown client stamp reads as its host"},
     {"via": "mcp:0123456789abcdef", "label": "0123456789abcdef", "why": "the hash stamp reads as itself"},
+    {"via": "mcp:2001:db8::1", "label": "2001:db8::1", "why": "an IPv6 host stamp reads whole, because an IPv6 host gets no slug"},
     {"via": "", "label": "Agent", "why": "no stamp"},
     {"via": "mcp:", "label": "Agent", "why": "an empty stamp"}
   ]

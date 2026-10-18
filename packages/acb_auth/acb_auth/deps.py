@@ -741,12 +741,19 @@ async def _agent_user(request: Request) -> UserContext:
     # 5. Checked before the resolve, so a bad stamp binds no tenant. The stamp
     # is the one the connection's origin and client id give (EA-13a), and it
     # has the stamp's shape.
+    #
+    # ⚠️ EA-13a, for ONE release: the legacy host stamp of the same row is
+    # accepted too. The deploy restarts the gateway before the edge, and an
+    # old edge still signs the host stamp. Both values come from the stored
+    # row, and the HMAC covers the header, so no client chooses either one.
+    # The scope keeps the NEW stamp. HANDOFF holds the removal of this arm.
     expected_via = agent_oauth.actor_via_for(
         connection.client_origin, client_id=connection.client_id,
     )
+    legacy_via = agent_oauth.actor_via_for(connection.client_origin, client_id=None)
     if (
         not connection.client_origin
-        or actor_via != expected_via
+        or actor_via not in (expected_via, legacy_via)
         or not agent_oauth.ACTOR_VIA_PATTERN.fullmatch(expected_via)
     ):
         return _refuse_agent("actor_via", **ids)

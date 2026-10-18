@@ -1406,10 +1406,13 @@ async def open_run_for_claim(db: Any, task_id: str, user: UserContext) -> str | 
       ``created: false``. After a Stop and a terminal run, the next claim
       opens a new run.
 
-    ⚠️ The lock order. ``claim_task`` calls this after its assignee key and
-    BEFORE its row lock. Every run writer takes the run first and the task
-    row after it (a comment bumps the row), so the claim takes them in the
-    same order. ``test_mcp_edge_claim.py`` proves it with looped races.
+    ⚠️ The lock order. ``claim_task`` calls this BEFORE its row lock. A run
+    writer that comments (a member's start, the archive request) takes the
+    run first and the task row after it, so the claim takes them in the same
+    order. O-M9 of ``test_mcp_edge_claim.py`` deadlocks when the claim takes
+    the row first. The call also sits after the assignee key, but that place
+    is not a rule: no run writer takes an assignee key, so no cycle passes
+    through the key.
     """
     if getattr(user, "agent", None) is None or not agent_runs_enabled():
         return None

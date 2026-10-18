@@ -247,7 +247,9 @@ export function clientName(via?: string | null): string {
   // An own key only: `mcp:constructor` must not read a property of Object.
   const label = (key: string) =>
     Object.prototype.hasOwnProperty.call(CLIENT_LABELS, key) ? CLIENT_LABELS[key] : null;
-  const host = body.split(":")[0];
+  // A body with more than one colon is an IPv6 host stamp: the gateway adds
+  // no slug to an IPv6 host, so the whole body is the host.
+  const host = (body.match(/:/g) ?? []).length > 1 ? body : body.split(":")[0];
   return label(body) ?? label(host) ?? (host || "Agent");
 }
 
