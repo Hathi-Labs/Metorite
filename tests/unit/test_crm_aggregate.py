@@ -738,3 +738,60 @@ def test_eleven_filters_and_a_sum_of_five_bind_no_name_twice() -> None:
     # Each name in the text is bound. The zone is bound for a date range only.
     placeholders = set(re.findall(r":(agf_\w+)", where.sql))
     assert placeholders == set(where.params) - {fs.ZONE_PARAM}
+
+
+# ── CRM-Q32-9a fix round: a sum reads each row once, detoasted ─────────────
+
+
+def test_a_plain_field_keeps_its_sql_and_a_sum_reads_the_detoasted_row() -> None:
+    """Fix round P1: each ``fields -> :key`` on the stored row reads the
+    whole TOASTed jsonb again. A sum reads the one detoasted copy of
+    ``DETOAST_JOIN``. A plain field keeps the SQL text of before, so an org
+    with no sum runs the same statement."""
+    from gateway.routes.crm import field_sql as fs
+
+    scope, _keys = _sum_scope(5)
+    plain = fs.FieldRef(key="Grand_Total", type="currency", label="Grand Total")
+    measure = fs.measure_sql(scope, plain, "sum")
+    number = fs._number("fields", "agf_m_0")
+    assert (measure.value, measure.sum, measure.count, measure.source) == (
+        f"COALESCE(SUM({number}), 0)", f"SUM({number})", f"COUNT({number})", "")
+    where = fs.module_where(fs.FieldScope(column="fields", owner="module:X",
+                                          fields={"Grand_Total": plain}),
+                            "X", [("Grand_Total", "5")], zone="UTC")
+    assert where.source == "" and "agf_d" not in where.sql
+    summed = fs.measure_sql(scope, scope.fields["@amount"], "sum")
+    assert summed.source == fs.DETOAST_JOIN
+    # The stored column is read by no part: each `->` reads the copy.
+    assert not re.search(r"(?<![.\w])fields ->", summed.value)
+    assert f"{fs.DETOAST_COLUMN} ->" in summed.value
+    assert "OFFSET 0" in fs.DETOAST_JOIN and "CROSS JOIN LATERAL" in fs.DETOAST_JOIN
+    filtered = fs.module_where(scope, "Payment_Received", [("@amount", "150")], zone="UTC")
+    assert filtered.source == fs.DETOAST_JOIN
+    assert fs.from_source("", fs.DETOAST_JOIN, fs.DETOAST_JOIN) == fs.DETOAST_JOIN
+    assert fs.from_source("", "") == ""
+    weighted = fs.overlay_weighted(
+        scope, scope.fields["@amount"], fs.FieldRef(key="Win", type="percent", label="Win"),
+        fs.FieldRef(key="Stage", type="select", label="Stage"), ["Open"])
+    assert weighted.source == fs.DETOAST_JOIN
+
+
+def test_the_aggregate_puts_the_from_text_between_the_table_and_its_where() -> None:
+    """Both reads of ``aggregate.py`` name the FROM text of ``field_sql``."""
+    source = (_CRM / "aggregate.py").read_text(encoding="utf-8")
+    assert "FROM {table}{source}{where_sql}" in source
+    assert "FROM {MODULE_TABLE}{source}{where.sql}" in source
+    assert source.count("from_source(") >= 2
+
+
+def test_the_sum_check_reads_each_row_once_and_two_zeros_are_no_same_value() -> None:
+    """Fix round P1 and P2: one detoast under the LIMIT, and a pair of 0s is
+    no "same value", so a TDS and a bank charge of 0 give no warning."""
+    from gateway.routes.crm import field_sql as fs
+
+    refs = tuple(fs.FieldRef(key=k, type="currency", label=k) for k in ("TDS", "Bank"))
+    sql, params = fs.sum_check_sql(refs)
+    assert sql.count("|| CAST('{}' AS jsonb) AS agf_fields") == 1
+    assert not re.search(r"(?<![.\w])fields ->", sql)
+    assert "count(*) FILTER (WHERE n_0 = n_1 AND n_0 <> 0) AS equal_0_1" in sql
+    assert params == {"agf_s_0": "TDS", "agf_s_1": "Bank"}

@@ -253,6 +253,9 @@ class MeasureSql:
     sum: str
     count: str
     params: dict[str, Any]
+    #: CRM-Q32-9a fix round: the FROM text that the statement adds after the
+    #: table (:data:`DETOAST_JOIN`), or empty. Only a sum of fields has one.
+    source: str = ""
 
 
 @dataclass(frozen=True)
@@ -268,6 +271,30 @@ class GroupSql:
 class WhereSql:
     sql: str
     params: dict[str, Any]
+    #: The FROM text of a filter on a sum of fields (:data:`DETOAST_JOIN`).
+    source: str = ""
+
+
+#: CRM-Q32-9a fix round: the detoasted jsonb of a module record. Each
+#: ``fields -> :key`` on the stored row reads the whole TOASTed value again,
+#: and a sum of 5 parts reads it 40 times a row (7.1 s over 30,000 rows of
+#: 2.5 KB, measured). The LATERAL reads it ONCE for each row that passed
+#: the WHERE clause, and ``OFFSET 0`` stops the planner from folding it back
+#: in. The parts of a sum then read the copy in memory. A plain field keeps
+#: its SQL text, so the statement of an org with no sum does not change.
+DETOAST_ALIAS = "agf_d"
+DETOAST_COLUMN = f"{DETOAST_ALIAS}.agf_fields"
+DETOAST_JOIN = (
+    f" CROSS JOIN LATERAL (SELECT {MODULE_COLUMN} || CAST('{{}}' AS jsonb) "
+    f"AS agf_fields OFFSET 0) {DETOAST_ALIAS}"
+)
+
+
+def from_source(*sources: str) -> str:
+    """The FROM text that a statement adds after its table: the one
+    :data:`DETOAST_JOIN` when any part of the statement reads a sum, else
+    empty. A statement never joins it twice."""
+    return DETOAST_JOIN if any(sources) else ""
 
 
 def _options(raw: Any) -> dict[str, str]:
@@ -474,7 +501,7 @@ def _numbers(column: str, ref: FieldRef, prefix: str) -> list[tuple[str, dict[st
     return out
 
 
-def _amount(column: str, ref: FieldRef, prefix: str) -> tuple[str, dict[str, Any]]:
+def _amount(column: str, ref: FieldRef, prefix: str) -> tuple[str, dict[str, Any], str]:
     """THE builder of the number of a measure field, ``@amount`` with it
     (CRM-Q32-9). :func:`measure_sql`, the number filter of
     :func:`module_where` and :func:`overlay_weighted` call it, so
@@ -483,16 +510,22 @@ def _amount(column: str, ref: FieldRef, prefix: str) -> tuple[str, dict[str, Any
 
     A plain field is its guarded number. A sum of fields is NULL when no
     part is set, so ``COUNT`` does not count the record. Else it is the sum
-    of the parts that are set, each NULL part taken as 0."""
-    numbers = _numbers(column, ref, prefix)
+    of the parts that are set, each NULL part taken as 0.
+
+    Returns the SQL, the bound keys and the FROM text. A sum over the
+    module column reads :data:`DETOAST_COLUMN`, so its FROM text is
+    :data:`DETOAST_JOIN`. A plain field has no FROM text."""
+    summed = bool(ref.parts) and column == MODULE_COLUMN
+    numbers = _numbers(DETOAST_COLUMN if summed else column, ref, prefix)
     params: dict[str, Any] = {}
     for _sql, bound in numbers:
         params.update(bound)
     if len(numbers) == 1:
-        return numbers[0][0], params
+        return numbers[0][0], params, ""
     unset = " AND ".join(f"{n} IS NULL" for n, _b in numbers)
     total = " + ".join(f"COALESCE({n}, 0)" for n, _b in numbers)
-    return f"(CASE WHEN {unset} THEN NULL ELSE {total} END)", params
+    return (f"(CASE WHEN {unset} THEN NULL ELSE {total} END)", params,
+            DETOAST_JOIN if summed else "")
 
 
 def _date(column: str, p: str) -> str:
@@ -615,12 +648,13 @@ def _lookup_id(column: str, p: str) -> str:
 def measure_sql(scope: FieldScope, ref: FieldRef, measure: str) -> MeasureSql:
     """``measure`` of the field *ref*, with its sum and count of values. A
     sum of fields (CRM-Q32-9) reads through :func:`_amount`."""
-    number, params = _amount(scope.column, ref, _MEASURE_KEY)
+    number, params, source = _amount(scope.column, ref, _MEASURE_KEY)
     return MeasureSql(
         value=FIELD_MEASURES[measure].format(n=number),
         sum=f"SUM({number})",
         count=f"COUNT({number})",
         params=params,
+        source=source,
     )
 
 
@@ -684,13 +718,13 @@ def _split(scope: FieldScope, name: str) -> tuple[FieldRef, str | None]:
 
 
 def _filter(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: str,
-            value: str) -> tuple[str, Any, dict[str, Any]]:
-    """One filter clause, its bound value and its bound key."""
+            value: str) -> tuple[str, Any, dict[str, Any], str]:
+    """One filter clause, its bound value, its bound key and its FROM text."""
     clause, bound = _filter_value(scope, ref, end, k, v, value)
     if ref.type in MEASURE_TYPES and end is None:
-        number, keys = _amount(scope.column, ref, k)
-        return f"{number} = {clause}", bound, keys
-    return clause, bound, {k: ref.key}
+        number, keys, source = _amount(scope.column, ref, k)
+        return f"{number} = {clause}", bound, keys, source
+    return clause, bound, {k: ref.key}, ""
 
 
 def _filter_value(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: str,
@@ -756,14 +790,17 @@ def module_where(
     """
     clauses = [f"module = :{_MODULE}"]
     params: dict[str, Any] = {_MODULE: module, ZONE_PARAM: zone}
+    sources: list[str] = []
     for index, (name, value) in enumerate(pairs):
         ref, end = _split(scope, name)
         k, v = f"agf_k{index}", f"agf_v{index}"
-        clause, bound, keys = _filter(scope, ref, end, k, v, value)
+        clause, bound, keys, source = _filter(scope, ref, end, k, v, value)
         clauses.append(clause)
         params.update(keys)
         params[v] = bound
-    return WhereSql(sql=" WHERE " + " AND ".join(clauses), params=params)
+        sources.append(source)
+    return WhereSql(sql=" WHERE " + " AND ".join(clauses), params=params,
+                    source=from_source(*sources))
 
 
 # ── The overlay of an empty core slot (CRM-Q20-3a, §18.13.5) ────────────────
@@ -893,7 +930,7 @@ def overlay_where(
         clauses.append("coalesce(ext_modified_at, updated_at) < "
                        + day_start(f"CAST(:{_UPDATED_TO} AS date) + 1"))
         params[_UPDATED_TO] = _iso_date("updated_to", updated_to)
-    return WhereSql(sql=" AND ".join(clauses), params=params)
+    return WhereSql(sql=" AND ".join(clauses), params=params, source=where.source)
 
 
 def overlay_weighted(
@@ -905,13 +942,14 @@ def overlay_weighted(
     each value is bound. The amount reads through :func:`_amount`, so a sum
     of fields (CRM-Q32-9) weighs too."""
     column = scope.column
-    a, a_keys = _amount(column, amount, "agf_wa")
-    w, w_keys = _amount(column, probability, "agf_wp")
+    a, a_keys, a_source = _amount(column, amount, "agf_wa")
+    w, w_keys, w_source = _amount(column, probability, "agf_wp")
     weight = (f"(CASE WHEN {column} ->> :agf_ws = ANY(CAST(:agf_open AS text[])) "
               f"THEN {a} * {w} / 100.0 END)")
     return MeasureSql(
         value=f"COALESCE(SUM({weight}), 0)", sum=f"SUM({weight})", count=f"COUNT({weight})",
         params={**a_keys, **w_keys, "agf_ws": stage.key, "agf_open": list(open_values)},
+        source=from_source(a_source, w_source),
     )
 
 
@@ -975,9 +1013,14 @@ def sum_check_sql(refs: tuple[FieldRef, ...]) -> tuple[str, dict[str, Any]]:
     """The ONE statement of the sum check, and its bound keys. Each part is
     the guarded number of :func:`_numbers`, so a part is set when its value
     is a number or a numeric string. The org, the module and the limit are
-    bound by the caller. Each alias comes from an index, never from text."""
-    numbers = _numbers(MODULE_COLUMN, FieldRef(key="", type="currency", label="",
-                                               parts=tuple(refs)), _SUM_KEY)
+    bound by the caller. Each alias comes from an index, never from text.
+
+    The innermost select reads each row once, detoasted, under its LIMIT, so
+    the parts read a copy in memory (the rule of :data:`DETOAST_JOIN`). A
+    pair of parts that are both 0 is no "same value": a TDS and a bank
+    charge of 0 hold no money twice (fix round)."""
+    numbers = _numbers("agf_fields", FieldRef(key="", type="currency", label="",
+                                              parts=tuple(refs)), _SUM_KEY)
     params: dict[str, Any] = {}
     inner = []
     for i, (sql, bound) in enumerate(numbers):
@@ -995,11 +1038,13 @@ def sum_check_sql(refs: tuple[FieldRef, ...]) -> tuple[str, dict[str, Any]]:
         for j in range(i + 1, count):
             outer.append(f"count(*) FILTER (WHERE n_{i} IS NOT NULL AND n_{j} IS NOT NULL) "
                          f"AS both_{i}_{j}")
-            outer.append(f"count(*) FILTER (WHERE n_{i} = n_{j}) AS equal_{i}_{j}")
+            outer.append(f"count(*) FILTER (WHERE n_{i} = n_{j} AND n_{i} <> 0) "
+                         f"AS equal_{i}_{j}")
     sql = (
         f"SELECT {', '.join(outer)} FROM (SELECT {', '.join(inner)} "
+        f"FROM (SELECT {MODULE_COLUMN} || CAST('{{}}' AS jsonb) AS agf_fields "
         "FROM crm_module_records WHERE organization_id = CAST(:agf_org AS uuid) "
-        f"AND module = :{_MODULE} ORDER BY id LIMIT :agf_limit) r"
+        f"AND module = :{_MODULE} ORDER BY id LIMIT :agf_limit) d) r"
     )
     return sql, params
 
@@ -1029,6 +1074,8 @@ __all__ = [
     "CHOICES_MAX",
     "DATE_TYPES",
     "DEFAULT_ZONE",
+    "DETOAST_COLUMN",
+    "DETOAST_JOIN",
     "FIELD_MEASURES",
     "FIELD_PREFIX",
     "KEY_WORDS",
@@ -1050,6 +1097,7 @@ __all__ = [
     "crm_zone",
     "day_start",
     "field_pairs",
+    "from_source",
     "group_sql",
     "key_words",
     "measure_sql",
