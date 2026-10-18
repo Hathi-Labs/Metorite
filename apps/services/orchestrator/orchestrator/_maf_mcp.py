@@ -1249,9 +1249,13 @@ def card_text(server: str, tool: str, arguments: dict[str, Any],
 def _card_refusal(member_present: bool) -> tuple[str, str] | None:
     """Why this run cannot show a card, as ``(text, code)``, or None.
 
-    WhatsApp first: its profile parks only the acts of
-    ``whatsapp_acts.ALLOWED_ACTS``, and an MCP tool is not one, so it is
-    refused and never approved. Then a run with no member, and a run with no
+    WhatsApp first: an MCP call needs the run's live server session, so its
+    card cannot park for a Confirm, and it is refused and never approved.
+    This is the one card that a WhatsApp member still cannot answer (WS-17
+    incident 2026-10-18, ``email_app_master_plan.md`` 12.3.13.8, a residual
+    that ``tests/unit/test_mail_handoff_incident.py`` names). The
+    untrusted-answer card of ``_tool_injection`` does not come here on
+    WhatsApp. Then a run with no member, and a run with no
     channel that can show a card. A fault here refuses: it fails closed."""
     try:
         from acb_skills.ask_tools import cards_refused, confirmation_channel_open

@@ -215,14 +215,17 @@ _NO_CHANGE = (
     "You cannot change data from WhatsApp. When the member asks for a change, "
     "tell them to make it in the Metorite web app, and add a link button.\n"
 )
-#: The scope rule of a run with writes on (WAC-4, §14; WAC-4b). Adding a task
-#: and blocking time on the member's calendar are the changes allowed. Every
-#: other change, class C and class X among them, still goes to the web app
-#: with a link. Advisory, like ``SCOPE_RULE``: the card gate, not this text,
-#: is what keeps every other write out.
+#: The scope rule of a run with writes on (WAC-4, §14; WAC-4b). Since the WS-17
+#: incident of 2026-10-18 every change that asks the member's card can wait
+#: for Confirm here, an email send too (``whatsapp_acts``, the owner rule of
+#: 2026-10-18). The Projects acts outside ``ALLOWED_ACTS`` still go to the web
+#: app with a link (D-WAC-4). Advisory, like ``SCOPE_RULE``: the card gate,
+#: not this text, decides what can park.
 SCOPE_RULE_WRITES = SCOPE_RULE_NATIVE.replace(_NO_CHANGE, (
-    "You can make two kinds of change from WhatsApp: add a task, and block "
-    "time on the member's calendar. A calendar block is the scheduled time of "
+    "You can make changes from WhatsApp, as in the web app: add a task, block "
+    "time on the member's calendar, send or reply to an email through the "
+    "Email assistant, and any other change that asks for the member's "
+    "approval. A calendar block is the scheduled time of "
     "a task. To block time for something new (a meeting, a call, a visit), "
     "ask the Projects assistant to create a private task with block_start and "
     "block_end (create_personal_task). To block time for a task that exists, "
@@ -233,8 +236,8 @@ SCOPE_RULE_WRITES = SCOPE_RULE_NATIVE.replace(_NO_CHANGE, (
     "for their Confirm, add no buttons, and never say that it is done. One "
     "change waits at a time. When the member asks for several, prepare the "
     "first, and say that you do the next one when they ask after their "
-    "Confirm. For any other change, tell the member to make it in the "
-    "Metorite web app, and add a link button.\n"
+    "Confirm. If a change still cannot wait for Confirm here, tell the "
+    "member to make it in the Metorite web app, and add a link button.\n"
 ))
 
 #: What a run with documents on adds to its scope rule (WAC-12, §15).

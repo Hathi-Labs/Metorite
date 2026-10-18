@@ -32,9 +32,24 @@ stored card text holds them, so a Confirm after another project took that
 name gets "no". The member's summary does not change.
 
 **One act per run.** A second allowed card in the same run is refused. A rows
-card, a form and every tool outside :data:`ALLOWED_ACTS` stay refused (§14.4).
+card and a form stay refused (§14.4).
 
-Fences: ``tests/unit/test_wac_writes.py`` and ``tests/unit/test_wac_writes_r8.py``.
+**Every other card asks too** (WS-17 incident 2026-10-18, owner rule of
+2026-10-18: "WhatsApp should have full capability to do all activities").
+The injection seam names the HOME of each call (:attr:`ToolCall.home`), so
+the Confirm can find the same function again:
+
+* ``agent:<name>``: an agent's own tool, for example the email assistant's
+  ``send_email``. The Confirm loads that agent and runs its tool.
+* :data:`HOME_PLATFORM`: a platform tool whose UNTRUSTED-ANSWER card this is
+  (``_tool_injection._untrusted_answer_card``). Only that card sets it.
+
+A Projects tool keeps the module rule of :data:`ALLOWED_ACTS`, because
+D-WAC-4 (spec §14.4) keeps every other Projects act off WhatsApp. An MCP
+tool parks nothing: its call needs the run's live server session.
+
+Fences: ``tests/unit/test_wac_writes.py``, ``tests/unit/test_wac_writes_r8.py``
+and ``tests/unit/test_mail_handoff_incident.py``.
 """
 
 from __future__ import annotations
@@ -62,6 +77,16 @@ ALLOWED_ACTS: dict[str, str] = {
     "create_personal_task": "skill_projects.writes",
     "set_my_overlay": "skill_projects.writes",
 }
+
+#: The home of a platform tool's untrusted-answer card (WS-17 incident
+#: 2026-10-18). See the module docstring.
+HOME_PLATFORM = "platform"
+#: The prefix of the home of an agent's own tool.
+HOME_AGENT_PREFIX = "agent:"
+#: The packages whose acts follow the module rule of :data:`ALLOWED_ACTS`
+#: only (D-WAC-4, spec §14.4). The injection seam never gives their tools a
+#: home, so a Projects act that the list does not name stays refused.
+MODULE_RULED: tuple[str, ...] = ("skill_projects",)
 
 #: The two button titles. A tap arrives as its title (``inbound.tap_text``).
 CONFIRM = "Confirm"
@@ -93,6 +118,10 @@ class ToolCall:
     parked: bool = False
     #: The ids that the card binds and does not show (:func:`card_facts`).
     facts: dict[str, Any] | None = None
+    #: Where the Confirm finds the function again (WS-17 incident
+    #: 2026-10-18): ``agent:<name>``, :data:`HOME_PLATFORM`, or None for the
+    #: module rule of :data:`ALLOWED_ACTS`. Only the injection seam sets it.
+    home: str | None = None
 
 
 @dataclass(frozen=True)
@@ -106,6 +135,8 @@ class ParkedAct:
     title: str
     detail: str
     context: str
+    #: :attr:`ToolCall.home` of the call that parked it. None: the module rule.
+    home: str | None = None
 
 
 @dataclass
@@ -132,12 +163,13 @@ def _reset(var: ContextVar[Any], token: Any) -> None:
 
 @contextlib.contextmanager
 def tool_call(fn: Callable[..., Any], args: tuple[Any, ...],
-              kwargs: dict[str, Any]) -> Iterator[None]:
+              kwargs: dict[str, Any], home: str | None = None) -> Iterator[None]:
     """Name the tool call *fn* for the card gate. The injection seam opens it.
 
     It does nothing outside a WhatsApp run with writes on, so every other run
     is exactly as before. A nested call (a tool that an agent runs inside a
     ``call_agent``) opens its own, so the card gate sees the innermost call.
+    *home* is where the Confirm finds *fn* again (:attr:`ToolCall.home`).
     """
     run = current_run()
     if run is None or not run.writes:
@@ -147,6 +179,7 @@ def tool_call(fn: Callable[..., Any], args: tuple[Any, ...],
         name=str(getattr(fn, "__name__", "") or ""),
         module=str(getattr(fn, "__module__", "") or ""),
         arguments=None if args else dict(kwargs),
+        home=home,
     )
     token = _CALL.set(call)
     try:
@@ -191,14 +224,28 @@ def _stored_arguments(arguments: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
 
+def _parkable(call: ToolCall) -> bool:
+    """True when the Confirm can find the call's function again: an act of
+    :data:`ALLOWED_ACTS` by its module, or a call with a home. A tool of a
+    :data:`MODULE_RULED` package has the module rule only (D-WAC-4)."""
+    if ALLOWED_ACTS.get(call.name) == call.module:
+        return True
+    if call.module.split(".")[0] in MODULE_RULED:
+        return False
+    home = call.home or ""
+    return home == HOME_PLATFORM or (
+        home.startswith(HOME_AGENT_PREFIX) and len(home) > len(HOME_AGENT_PREFIX))
+
+
 def answer_card(title: str, detail: str, context: str,
                 rows: list[dict[str, Any]] | None) -> bool | None:
     """The WhatsApp profile's answer to a card, or None to leave it to the gate.
 
     * At Confirm (:func:`confirming`): True for the FIRST card when its text
       equals the stored text, else False. Every later card gets False.
-    * In a WhatsApp run with writes on, for an act of :data:`ALLOWED_ACTS`
-      with no rows: park it and answer False ("not yet"). One act a run.
+    * In a WhatsApp run with writes on, for a call that can park
+      (:func:`_parkable`) with no rows: park it and answer False ("not
+      yet"). One act a run.
     * Else None: ``refuse_cards`` denies, as it did before WAC-4.
 
     It never approves a card with rows.
@@ -215,15 +262,15 @@ def answer_card(title: str, detail: str, context: str,
     if run is None or not run.writes or rows is not None or run.parked is not None:
         return None
     call = _CALL.get()
-    if (call is None or call.arguments is None
-            or ALLOWED_ACTS.get(call.name) != call.module):
+    if call is None or call.arguments is None or not _parkable(call):
         return None
     arguments = _stored_arguments(call.arguments)
     if arguments is None:
         return None
+    home = None if ALLOWED_ACTS.get(call.name) == call.module else call.home
     run.parked = ParkedAct(tool=call.name, arguments=arguments,
                            card=card_text(title, detail, context, call.facts),
-                           title=title, detail=detail, context=context)
+                           title=title, detail=detail, context=context, home=home)
     call.parked = True
     return False
 
@@ -232,6 +279,34 @@ def parked_line() -> str | None:
     """:data:`PARKED_TEXT` when the running tool's card was just parked."""
     call = _CALL.get()
     return PARKED_TEXT if call is not None and call.parked else None
+
+
+def answers_cards() -> bool:
+    """True when the WhatsApp profile can answer a card here (WS-17 incident
+    2026-10-18): inside :func:`confirming`, or in a WhatsApp run with writes
+    on that has not parked its one act yet. Then a gate asks the card, and
+    never refuses it for a missing card channel."""
+    if _CONFIRMING.get() is not None:
+        return True
+    run = current_run()
+    return run is not None and bool(run.writes) and run.parked is None
+
+
+@contextlib.contextmanager
+def untrusted_card() -> Iterator[None]:
+    """Mark the running call's card as the untrusted-answer card of a
+    platform tool (:data:`HOME_PLATFORM`). Only
+    ``_tool_injection._untrusted_answer_card`` opens it, around that card. A
+    call that already has a home keeps it. The mark ends with the block."""
+    call = _CALL.get()
+    if call is None or call.home is not None:
+        yield
+        return
+    call.home = HOME_PLATFORM
+    try:
+        yield
+    finally:
+        call.home = None
 
 
 @contextlib.contextmanager

@@ -996,6 +996,10 @@ def _whatsapp_tool_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) 
     run with writes on, it does nothing. A fault gives no name, so the card
     is denied: it fails closed. ``AGENT_PERMISSION_MODE=approve_all`` skips
     the wrapper, and so no act can park.
+
+    WS-17 incident 2026-10-18: it also names the call's HOME
+    (:func:`_act_home`), so every card can park, and not only the Projects
+    acts of ``whatsapp_acts.ALLOWED_ACTS``.
     """
     import contextlib
 
@@ -1003,7 +1007,41 @@ def _whatsapp_tool_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) 
         from acb_skills.whatsapp_acts import tool_call
     except Exception:
         return contextlib.nullcontext()
-    return tool_call(fn, args, kwargs)
+    return tool_call(fn, args, kwargs, home=_act_home(fn))
+
+
+def _act_home(fn: Any) -> str | None:
+    """Where a WhatsApp Confirm finds *fn* again, or None (incident 2026-10-18).
+
+    ``agent:<name>`` for an agent's OWN tool: the agent of the run on this
+    frame, from its bound context. None for a platform tool, whose own card
+    keeps the module rule (``whatsapp_acts.ALLOWED_ACTS``, D-WAC-4). Its
+    untrusted-answer card marks itself (``whatsapp_acts.untrusted_card``).
+    None for a tool of a ``whatsapp_acts.MODULE_RULED`` package. A fault
+    gives None, so the card is refused: it fails closed."""
+    try:
+        from acb_skills.egress import _platform_owned
+        from acb_skills.whatsapp_acts import HOME_AGENT_PREFIX, MODULE_RULED
+        from acb_skills.write_artifact import artifact_context
+
+        name = str(getattr(fn, "__name__", "") or "")
+        module = str(getattr(fn, "__module__", "") or "")
+        if not name or module.split(".")[0] in MODULE_RULED or _platform_owned(fn, name):
+            return None
+        agent = str((artifact_context() or {}).get("agent_name") or "")
+    except Exception:
+        return None
+    return f"{HOME_AGENT_PREFIX}{agent}" if agent else None
+
+
+def _parked_line() -> str | None:
+    """``whatsapp_acts.parked_line``: the one line of a call whose card was
+    parked for the member's Confirm, or None. A fault gives None."""
+    try:
+        from acb_skills.whatsapp_acts import parked_line
+    except Exception:
+        return None
+    return parked_line()
 
 
 def _permission_gate(
@@ -1147,14 +1185,20 @@ def _gate_injected_tool(fn: Any) -> Any:
             allowed, reason = _gate(kwargs, marked)
             if not allowed:
                 return f"[blocked by permission policy: {reason}]"
-            if _after_untrusted_answer(
-                    reason, marked, delegation=delegates,
-            ) and not await _untrusted_answer_card(tool_name, kwargs):
-                return UNTRUSTED_ANSWER_REFUSED.format(tool=tool_name)
             # WS-47 WAC-4: name the call for the WhatsApp card gate. A no-op
-            # outside a WhatsApp run with writes on.
+            # outside a WhatsApp run with writes on. WS-17 incident
+            # 2026-10-18: the name covers the untrusted card too, so that
+            # card parks for the member's Confirm on WhatsApp. A parked call
+            # answers with the one line of ``whatsapp_acts.parked_line``,
+            # never with the tool's own "no card here" text.
             with _whatsapp_tool_call(fn, args, kwargs):
-                return _with_steer(await fn(*args, **kwargs))
+                if _after_untrusted_answer(
+                        reason, marked, delegation=delegates,
+                ) and not await _untrusted_answer_card(tool_name, kwargs):
+                    return _parked_line() or UNTRUSTED_ANSWER_REFUSED.format(
+                        tool=tool_name)
+                result = await fn(*args, **kwargs)
+                return _with_steer(_parked_line() or result)
         return _register_platform_wrapper(fn, _agated)
 
     @functools.wraps(fn)
@@ -1241,12 +1285,18 @@ def _untrusted_answer_card_refusal() -> str | None:
     Then the call is refused at once, and never parks for an hour on the
     relay. The member and the batch flag come from the run's bound context."""
     try:
+        from acb_skills.whatsapp_acts import answers_cards
         from acb_skills.write_artifact import artifact_context
 
         from orchestrator._maf_mcp import _card_refusal
 
         ctx = artifact_context()
         member_present = bool(ctx.get("member")) and ctx.get("batch_thread") is not True
+        # WS-17 incident 2026-10-18: a WhatsApp run with writes on asks the
+        # card through its Confirm buttons, and never refuses it for want
+        # of a card channel. A batch run and a run with no member still do.
+        if member_present and answers_cards():
+            return None
         refusal = _card_refusal(member_present)
     except Exception:  # fail closed: a fault refuses
         return "card_check_failed"
@@ -1265,14 +1315,18 @@ async def _untrusted_answer_card(tool_name: str, call_kwargs: dict[str, Any]) ->
         return False
     try:
         from acb_skills.ask_tools import request_confirmation
+        from acb_skills.whatsapp_acts import untrusted_card
 
         shown = json.dumps(call_kwargs or {}, ensure_ascii=False, default=str)[:600]
-        answer = await request_confirmation(
-            f"Run {tool_name}? It reaches outside Metorite",
-            "This chat read an answer from the email assistant, which reads "
-            "outside email. A mail could ask for this call.",
-            f"{tool_name} {shown}",
-        )
+        # On WhatsApp the card parks with the platform home, so the Confirm
+        # runs this gated tool again, and this card answers it.
+        with untrusted_card():
+            answer = await request_confirmation(
+                f"Run {tool_name}? It reaches outside Metorite",
+                "This chat read an answer from the email assistant, which reads "
+                "outside email. A mail could ask for this call.",
+                f"{tool_name} {shown}",
+            )
         return answer is True
     except asyncio.CancelledError:
         raise

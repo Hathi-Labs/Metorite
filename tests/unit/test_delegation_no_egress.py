@@ -1414,6 +1414,82 @@ def test_a_known_mark_binds_no_egress_and_keeps_the_mail_agents_own_send(
     assert sent, "the send never reached the host"
 
 
+@pytest.mark.parametrize("path", ["stream", "batch"])
+@pytest.mark.parametrize("marked", [False, True])
+def test_whatsapp_orchestrator_email_send_asks_a_whatsapp_confirm_and_sends_after_a_yes(
+    sandbox, monkeypatch, mark_store, marked: bool, path: str,  # noqa: F811
+) -> None:
+    """Fixes 2 and 5, end to end. WhatsApp: "send a top-up mail". The
+    orchestrator hands off to ``email_assistant``, and the child calls
+    ``send_email``. Its own card PARKS for the member's Confirm buttons, so
+    nothing is sent in the run, and no untrusted card shows. The Confirm runs
+    the stored call once, and the send reaches the host. ``marked`` is turn 2
+    of a thread that a known mark holds: the child is ``no_egress``, holds no
+    network tool, and still keeps its own send. ``batch`` is the path that
+    ``bot_run`` takes (``executor.run_agent``)."""
+    from acb_skills.ask_tools import refuse_cards
+    from acb_skills.whatsapp_acts import PARKED_TEXT
+    from acb_skills.whatsapp_ui import whatsapp_run
+    from gateway.routes.whatsapp_channel import acts
+
+    _register_every_annotation()
+    _stub_mailbox(monkeypatch)
+    thread = _marked_thread(mark_store) if marked else f"wa-{new_thread()}"
+    orch = _Model([_call("email_assistant", {"task": "Send a top-up mail to Payal"}),
+                   _say("It is ready for your Confirm.")])
+    email = _Model([
+        _call("send_email", {"to": ["payal@example.com"], "subject": "Top-up",
+                             "body": "Please share the priority list."}),
+        _say("Ready for the member's Confirm."),
+    ])
+    sent = _harness(monkeypatch, sandbox, {ORCH: orch, EMAIL: email})
+    with refuse_cards(), whatsapp_run(ORCH, writes=True, session_id=thread) as run:
+        if path == "stream":
+            _run_top(ORCH, ORG_B, thread=thread)
+        else:
+            from acb_common.db import bind_tenant, release_tenant
+
+            token = bind_tenant(ORG_B)
+            try:
+                asyncio.run(executor.run_agent(
+                    ORCH, {"mode": "chat", "message": "send a top-up mail to Payal",
+                           "_history_loader": list, "user_email": "member@example.com"},
+                    thread_id=thread, organization_id=ORG_B,
+                    session_user="member@example.com"))
+            finally:
+                release_tenant(token)
+    assert email.bodies, "the hand-off was refused"
+    child = _offered(email.bodies[0])
+    assert "send_email" in child
+    if marked:
+        assert not _NETWORK_TOOLS & child, sorted(_NETWORK_TOOLS & child)
+    assert _results(email.bodies[1])[-1] == PARKED_TEXT
+    assert run.parked is not None and run.parked.home == f"agent:{EMAIL}"
+    assert _UNTRUSTED_CARD not in run.parked.title, run.parked.title
+    assert sent == [], "the mail went before the Confirm"
+
+    closed: list[tuple[str, str]] = []
+
+    async def close(_act_id: str, frm: str, to: str, _code: Any) -> bool:
+        closed.append((frm, to))
+        return True
+
+    monkeypatch.setattr(acts, "_close", close)
+    req = types.SimpleNamespace(organization_id=ORG_B, member_email="member@example.com",
+                                chat_session_id=thread)
+    stored = {"tool_name": run.parked.tool, "arguments": run.parked.arguments,
+              "card_text": run.parked.card, "act_home": run.parked.home}
+    from acb_common.db import bind_tenant, release_tenant
+
+    token = bind_tenant(ORG_B)
+    try:
+        asyncio.run(acts._run(req, "act-1", stored))
+    finally:
+        release_tenant(token)
+    assert any("/email/send" in line for line in sent), sent
+    assert closed and closed[-1][0] == "running" and closed[-1][1] != "void", closed
+
+
 async def test_an_old_mark_beyond_the_replay_window_no_longer_holds_egress(
     monkeypatch, mark_store,
 ) -> None:

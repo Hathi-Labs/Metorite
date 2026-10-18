@@ -45,6 +45,12 @@ settles the act with the member's NEXT message, before any run.
   rename, a status edit) gets "no": nothing is written, and the act closes
   ``void``.
 
+  WS-17 incident 2026-10-18: an act with a HOME (``act_home``) runs the tool
+  that ``orchestrator.executor.act_tool`` finds again: an agent's own tool,
+  or a platform tool whose untrusted-answer card this was. It runs inside the
+  permission gate, with the thread, the member and the agent bound, so the
+  card that the run asked is the card that the Confirm answers.
+
 Every read and write runs in ``tenant_session()`` with the org that
 ``bot_run`` bound from the link row (R5, R11). Nothing here reads an org or
 an identity from the message.
@@ -56,8 +62,9 @@ Fences: ``tests/unit/test_wac_writes.py`` (database-free) and
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from typing import TYPE_CHECKING, Any
 
 from acb_common import get_logger
@@ -114,9 +121,9 @@ UPDATE whatsapp_pending_acts
 _PARK_SQL = """
 INSERT INTO whatsapp_pending_acts
        (organization_id, member_email, wa_id, chat_session_id, link_id,
-        tool_name, arguments, card_text, expires_at)
+        tool_name, arguments, card_text, act_home, expires_at)
 VALUES (CAST(:org AS uuid), :email, :wa, :sid, CAST(:link AS uuid),
-        :tool, CAST(:args AS jsonb), :card,
+        :tool, CAST(:args AS jsonb), :card, :home,
         now() + make_interval(secs => CAST(:ttl AS double precision)))
 RETURNING id::text
 """
@@ -126,7 +133,8 @@ RETURNING id::text
 #: the buttons went out.
 _LIVE_SQL = """
 SELECT a.id::text AS id, a.member_email, a.link_id::text AS link_id,
-       a.tool_name, a.arguments, a.card_text, a.expires_at > now() AS live,
+       a.tool_name, a.arguments, a.card_text, a.act_home,
+       a.expires_at > now() AS live,
        a.offered_at IS NOT NULL AS offered, a.offered_wamid,
        m.context_wamid AS tap_of,
        COALESCE(m.received_at > a.offered_at, false) AS after_offer
@@ -183,7 +191,7 @@ async def _store(req: RunRequest, act: ParkedAct, link_id: str) -> str:
             "org": req.organization_id, "email": req.member_email,
             "wa": req.wa_id, "sid": req.chat_session_id, "link": link_id,
             "tool": act.tool, "args": json.dumps(act.arguments, ensure_ascii=False),
-            "card": act.card, "ttl": ACT_TTL_S,
+            "card": act.card, "home": getattr(act, "home", None), "ttl": ACT_TTL_S,
         })).scalar_one())
 
 
@@ -324,6 +332,52 @@ def act_function(name: str) -> Callable[..., Awaitable[Any]] | None:
     return fn if callable(fn) else None
 
 
+#: The most characters of a tool's own text that go back to the member after
+#: a Confirm. A platform read (``fetch_page``) can answer a whole page.
+ACT_REPLY_MAX = 3500
+
+
+@contextlib.contextmanager
+def _act_callable(tool: str, home: str | None) -> Iterator[Any]:
+    """The function that the act runs, or None (WS-17 incident 2026-10-18).
+
+    No home: :func:`act_function`, the module rule of ``ALLOWED_ACTS``. A
+    home: ``orchestrator.executor.act_tool``, held open while the call runs.
+    A fault gives None, and the act fails closed."""
+    if not home:
+        yield act_function(tool)
+        return
+    try:
+        from orchestrator.executor import act_tool
+    except Exception:  # no executor in this process: nothing runs
+        yield None
+        return
+    with act_tool(home, tool) as fn:
+        yield fn
+
+
+@contextlib.contextmanager
+def _act_context(req: RunRequest, act_id: str, home: str | None) -> Iterator[None]:
+    """The run context of an act with a home: the thread, the member and the
+    agent of the stored call. The permission gate reads it, so the card that
+    the run asked is the card that the Confirm answers. All of it comes from
+    the bound link row and the stored act, never from the message."""
+    if not home:
+        yield
+        return
+    from acb_skills.whatsapp_acts import HOME_AGENT_PREFIX
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+    from gateway.routes.whatsapp_channel.bot_run import AGENT
+
+    agent = home[len(HOME_AGENT_PREFIX):] if home.startswith(HOME_AGENT_PREFIX) else AGENT
+    with artifact_context_scope():
+        bind_artifact_context(
+            session_id=req.chat_session_id, agent_name=agent, run_id=f"act-{act_id}",
+            member=req.member_email, no_egress=True, no_egress_by_mark=False,
+        )
+        yield
+
+
 def _arguments(raw: Any) -> dict[str, Any] | None:
     value = json.loads(raw) if isinstance(raw, str) else raw
     return value if isinstance(value, dict) else None
@@ -331,10 +385,11 @@ def _arguments(raw: Any) -> dict[str, Any] | None:
 
 def _member_text(tool_text: str) -> str:
     """The tool's own text, for the member: without its "Next:" lines, which
-    speak to the model."""
+    speak to the model, and at most :data:`ACT_REPLY_MAX` characters."""
     lines = [ln for ln in str(tool_text or "").splitlines()
              if not ln.strip().startswith("Next:")]
-    return "\n".join(lines).strip()
+    text = "\n".join(lines).strip()
+    return text if len(text) <= ACT_REPLY_MAX else text[:ACT_REPLY_MAX - 1] + "…"
 
 
 def _refusal(exc: BaseException) -> str | None:
@@ -354,28 +409,34 @@ async def _run(req: RunRequest, act_id: str, act: dict[str, Any]) -> str:
     from acb_skills.whatsapp_acts import confirming
 
     tool = str(act["tool_name"])
-    fn = act_function(tool)
+    home = act.get("act_home") or None
     arguments = _arguments(act["arguments"])
-    if fn is None or arguments is None:
-        await _close(act_id, "running", "failed", "unknown")
-        _log.warning("whatsapp_channel.act.failed", act_id=act_id, code="unknown")
-        return REPLY_FAILED
 
     out: str | None = None
     error: BaseException | None = None
+    found = True
     # The member the tools act as: the link's member, bound for this call
     # only (H-73). The "yes" answers one card and is reset on the way out.
     binding = _bind_memory_user_id(req.member_email)
     try:
-        with refuse_cards(), confirming(str(act["card_text"])) as state:
-            try:
-                out = str(await asyncio.wait_for(fn(**arguments), timeout=ACT_TIMEOUT_S))
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # the record names the class only
-                error = exc
+        with _act_callable(tool, home) as fn, _act_context(req, act_id, home), \
+                refuse_cards(), confirming(str(act["card_text"])) as state:
+            if fn is None or arguments is None:
+                found = False
+            else:
+                try:
+                    out = str(await asyncio.wait_for(fn(**arguments), timeout=ACT_TIMEOUT_S))
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # the record names the class only
+                    error = exc
     finally:
         _unbind_memory_user_id(binding)
+    if not found:
+        await _close(act_id, "running", "failed", "unknown")
+        _log.warning("whatsapp_channel.act.failed", act_id=act_id, code="unknown",
+                     home=bool(home))
+        return REPLY_FAILED
 
     if state.used and not state.matched:
         await _close(act_id, "running", "void", "changed")

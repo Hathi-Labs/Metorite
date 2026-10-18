@@ -278,6 +278,43 @@ async def test_park_claim_and_close_hold_on_the_real_table(granted) -> None:  # 
     assert states == {first: "void", second: "done"}
 
 
+async def test_an_act_with_a_home_parks_and_reads_back_its_home(granted) -> None:  # noqa: F811
+    """WS-17 incident 2026-10-18: ``act_home`` (the migration that adds it is
+    found by CONTENT, never by number). A parked act of an agent's own tool
+    stores its home, and the live read gives it back to the Confirm. An act
+    of WAC-4 stores NULL. A home of another shape is refused by the CHECK,
+    so a row can never name a module to import."""
+    import sqlalchemy.exc
+    from acb_skills.whatsapp_acts import ParkedAct, card_text
+    from gateway.routes.whatsapp_channel import acts
+
+    hits = [m for m in sorted((_ROOT / "infra" / "postgres").glob("*.sql"))
+            if "whatsapp_pending_acts_act_home_shape" in m.read_text(encoding="utf-8")]
+    assert len(hits) == 1, hits
+    p = granted
+    email, phone = _email(), _phone()
+    _seed_link(p.admin_engine, org=p.org_a, email=email, phone=phone)
+    sid = _seed_thread(p.admin_engine, org=p.org_a, email=email)
+    req = _req(p.org_a, email, phone, sid)
+    send = ParkedAct(tool="send_email", arguments={"to": ["a@example.com"], "body": "hi"},
+                     card=card_text("Send this email?", "d", "c"),
+                     title="Send this email?", detail="d", context="c",
+                     home="agent:email-assistant")
+
+    async with tenant_engine_scope(p.app_url.render_as_string(hide_password=False)):
+        await _bound(p.org_a, lambda: acts.park(req, send))
+        live = await _bound(p.org_a, lambda: acts._live_act(req))
+        assert live["tool_name"] == "send_email"
+        assert live["act_home"] == "agent:email-assistant"
+        await _bound(p.org_a, lambda: acts.park(req, _act()))
+        live = await _bound(p.org_a, lambda: acts._live_act(req))
+        assert live["tool_name"] == "create_task" and live["act_home"] is None
+        bad = ParkedAct(tool="send_email", arguments={}, card="c", title="t",
+                        detail="d", context="c", home="os.system")
+        with pytest.raises(sqlalchemy.exc.IntegrityError):
+            await _bound(p.org_a, lambda: acts.park(req, bad))
+
+
 async def test_an_expired_act_reads_as_not_live_and_cannot_be_claimed(granted) -> None:  # noqa: F811
     from gateway.routes.whatsapp_channel import acts
 

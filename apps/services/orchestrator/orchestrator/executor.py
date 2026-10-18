@@ -376,6 +376,69 @@ def run_was_no_egress(run_id: str | None) -> bool:
     return bool(run_id) and run_id in _NO_EGRESS_RUNS
 
 
+@contextlib.contextmanager
+def act_tool(home: str | None, tool: str) -> Any:
+    """The function that a stored WhatsApp act runs again at Confirm, or None.
+
+    WS-17 incident 2026-10-18 (``acb_skills.whatsapp_acts``, *home*). The
+    gateway's ``whatsapp_channel.acts`` holds this open while the call runs.
+
+    * ``platform``: the platform tool of that name
+      (``_collect_injectable_platform_tools``), inside the permission gate, so
+      the untrusted-answer card asks again and the Confirm answers it.
+    * ``agent:<name>``: that agent's OWN tool of that name, loaded through the
+      one loader, inside the permission gate. Its own card asks again.
+
+    Any other home, an agent that does not load, and a name that the agent
+    does not hold give None, and the act fails closed. The home and the name
+    come from the stored act, which only the server wrote."""
+    from acb_skills.whatsapp_acts import HOME_AGENT_PREFIX, HOME_PLATFORM
+
+    from orchestrator._tool_injection import (
+        _collect_injectable_platform_tools,
+        _own_tool_pools,
+    )
+
+    if home == HOME_PLATFORM:
+        fn = next((f for f in _collect_injectable_platform_tools()
+                   if getattr(f, "__name__", "") == tool), None)
+        yield _gate_injected_tool(fn) if fn is not None else None
+        return
+    agent_name = (home or "")[len(HOME_AGENT_PREFIX):] if (home or "").startswith(
+        HOME_AGENT_PREFIX) else ""
+    entry: dict[str, Any] | None = None
+    try:
+        from gateway.routes.agent import _AGENT_REGISTRY, _load_dynamic_agents
+
+        entry = next((e for e in _load_dynamic_agents() + _AGENT_REGISTRY
+                      if e.get("name") == agent_name), None)
+    except Exception:  # no registry: the act fails closed
+        entry = None
+    if not agent_name or entry is None:
+        yield None
+        return
+    try:
+        loaded_cm = load_agent(
+            agent_name, run_id=f"act-{uuid.uuid4()}",
+            repo_name=(entry.get("repo_name") or None),
+            local_path=entry.get("local_path"),
+        )
+    except Exception as exc:  # a load error: the act fails closed
+        _log.warning("executor.act_tool_load_failed", agent=agent_name,
+                     error_type=type(exc).__name__)
+        yield None
+        return
+    with loaded_cm as loaded:
+        found = None
+        for agent in loaded.build_agents():
+            for _label, pool in _own_tool_pools(agent):
+                for item in pool:
+                    if _tool_name(item) == tool:
+                        found = getattr(item, "func", item)
+                        break
+        yield _gate_injected_tool(found) if callable(found) else None
+
+
 def _opener_for_org(org: str | None):
     """Map an already-resolved tenant to the ``acb_graph`` session opener.
 

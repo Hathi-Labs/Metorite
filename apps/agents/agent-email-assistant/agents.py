@@ -75,8 +75,11 @@ async def _confirm_destructive(title: str, detail: str, context: str = "") -> bo
 
 
 #: EM-G11c1 (§12.3.13.6): the answer of each tool of ``MAILBOX_WRITE_TOOLS``
-#: when no card can show. A scheduled run, a batch run and a WhatsApp run
-#: have no card channel, so the card answers "no" at once. The member refused
+#: when no card can show. A scheduled run and a batch run have no card
+#: channel, so the card answers "no" at once. A WhatsApp run with writes on
+#: parks the card for the member's Confirm instead, and the injection seam
+#: answers the parked line in place of this text (WS-17 incident
+#: 2026-10-18, ``acb_skills.whatsapp_acts``). The member refused
 #: nothing, so the answer is never "Cancelled". It sends the member to the
 #: Chat app or the Email app, which both show the card (EM-G11c1b,
 #: §12.3.13.6b). It never names a chat as a place with no card.

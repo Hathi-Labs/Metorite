@@ -634,10 +634,18 @@ def confirmation_channel_open() -> bool:
     never approves a write. ``request_confirmation`` stays the one gate,
     and it fails closed, so a drift here can change a message or skip a
     write, and never adds one.
-    A run inside :func:`refuse_cards` has no channel (WS-47 WAC-3).
+    A run inside :func:`refuse_cards` has no channel (WS-47 WAC-3), unless
+    the WhatsApp profile answers its cards (``whatsapp_acts.answers_cards``,
+    WS-17 incident 2026-10-18). Then a tool asks its card, which parks for
+    the member's Confirm.
     """
     if cards_refused():
-        return False
+        try:
+            from acb_skills.whatsapp_acts import answers_cards
+
+            return answers_cards()
+        except Exception:  # fail closed: no channel
+            return False
     try:
         from orchestrator.executor import (
             _active_run_queue,

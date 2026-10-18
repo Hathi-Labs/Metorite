@@ -319,6 +319,14 @@ PARK one `create_task` for the member's Confirm. At that Confirm, it can
 answer "yes" once. Every fault there denies. The default is off, so a web run
    is unchanged. Fences: `tests/unit/test_wac_bot_run.py`,
    `tests/unit/test_wac_writes.py`.
+   WS-17 incident 2026-10-18: `whatsapp_acts.tool_call` takes the call's
+   `home` (`agent:<name>` or `platform`), and a call with a home parks any
+   card with no rows. A `skill_projects` tool keeps the `ALLOWED_ACTS` rule
+   (D-WAC-4). `answers_cards()` is True in a WhatsApp run with writes on that
+   parked nothing yet, and inside `confirming`. Then
+   `confirmation_channel_open()` is True too. `untrusted_card()` marks the
+   untrusted-answer card of a platform tool. Fence:
+   `tests/unit/test_mail_handoff_incident.py`.
 5k. agent_site.py -- the ONE builder of an agent install (WS-49 BH-7, spec
    `box_hardening.md` §5 BH-7). `loader._install_agent_deps` and
    `dep_tools.install_dependency` install into
