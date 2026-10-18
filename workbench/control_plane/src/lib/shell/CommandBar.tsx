@@ -53,7 +53,9 @@ interface FindGroup {
 
 /**
  * The icon of each kind of Find row. The CRM's four (WS-53 CRM-X2) are the
- * icons of their rows in the CRM rail (`app/crm/lib/views.ts`).
+ * icons of their rows in the CRM rail (`app/crm/lib/views.ts`). A Knowledge
+ * page (WS-61 KB-12) is a published page, so it takes the rail's icon of a
+ * published page (`app/knowledge/lib/labels.ts` `pageIcon`).
  */
 export const FIND_ICONS: Record<string, string> = {
   task: "CircleCheck",
@@ -63,6 +65,7 @@ export const FIND_ICONS: Record<string, string> = {
   deal: "Handshake",
   contact: "Contact",
   company: "Building2",
+  page: "FileText",
 };
 /** Tier 2 waits for a real pause on a sentence (§6.3: two words, 900 ms). */
 const INTENT_PAUSE_MS = 900;

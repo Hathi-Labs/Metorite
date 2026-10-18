@@ -107,19 +107,20 @@ match it exactly, and `nav.test.ts` is the fence that says so (§9 LS-1).
 | **Apps** | Projects | `/projects` | `feature:projects` | |
 | **Apps** | CRM | `/crm` | `feature:crm` | 🆕 **Live on 2026-10-11**, by owner decision in chat ("Promote CRM to live now"). `CRM_ENABLED` is on for each org. The Zoho mirror stays on for Fracktal only (`CRM_MIRROR_ORGS`). ⚠️ A member sees the CRM only when an admin opens it in CRM settings. Until then the member sees "The CRM is not open to you yet" |
 | **Apps** | People | `/people` | `feature:people` | 🆕 **Live on 2026-09-20**, by owner decision. Held back before because the directory could not load and had no rows. PR #306 repaired the BFF proxy and gave each new member a `people` row. H-124's roster sync seeds the members who predate it. ⚠️ `feature:people` is `is_default false`. A live pane is still dark to a member without the grant |
+| **Apps** | Knowledge | `/knowledge` | `feature:knowledge` | 🆕 **Live on 2026-10-18**, by owner decision in chat (H-21, WS-61 KB-12). The owner asked for Knowledge to be on for all orgs. `feature:knowledge` is `is_default true` and reaches every role except guest (migrations 207 and 270). ⚠️ The gateway answers only for an org on `KNOWLEDGE_ORGS`, which is `*` on production. For any other org the app shows its off state |
 | **AI Studio** | Chat | `/chat` | `feature:chat` | Section renamed from "Studio" |
 | **Admin** | Approvals | `/approvals` | `feature:approvals` | |
 | **Admin** | Organisation | `/settings/organization` | admin | Tabs: Members & roles · Seat assignments · Branding · **Requests** · **Email** (§6.2) |
 | **Admin** | Appearance | `/settings/appearance` | ungated | Personal preference; the org-wide default on the same page is gateway-authorized |
 | **Admin** | Integrations | `/integrations` | none (each view gates itself) | 🆕 **Live on 2026-10-13**, by owner decision in chat ("I still don't see the integrations app on my sidebar ... turn it on"). WS-54 built the org connections (IN-0 to IN-4, IN-7, IN-8a). ⚠️ **Open to every member since 2026-10-14 (D-EA-9, WS-55 EA-4b).** The pane has no `feature`, and `/integrations` is an exact entry of `ALWAYS_ALLOWED`. Each member sees the AI agents view. The org views still need `feature:integrations`, which is `is_default false`. The pane stays in Admin |
 
-**Fourteen** entries, four sections, in that order. The set held eight until 2026-08-24,
+**Fifteen** entries, four sections, in that order. The set held eight until 2026-08-24,
 nine until 2026-09-20, ten until 2026-10-02, eleven until 2026-10-05, ten until
-2026-10-08, eleven until 2026-10-11, twelve until 2026-10-13, and thirteen until later on
-2026-10-13. D54 added Calendar. The owner then promoted People, Email, WhatsApp, the CRM,
-Integrations and Artifacts. `nav.test.ts`'s count fence moved
-8 → 9 → 10 → 11 → 10 → 11 → 12 → 13 → 14 in the same pull request as each pane. That is
-what the fence is for.
+2026-10-08, eleven until 2026-10-11, twelve until 2026-10-13, thirteen until later on
+2026-10-13, and fourteen until 2026-10-18. D54 added Calendar. The owner then promoted
+People, Email, WhatsApp, the CRM, Integrations, Artifacts and Knowledge. `nav.test.ts`'s
+count fence moved 8 → 9 → 10 → 11 → 10 → 11 → 12 → 13 → 14 → 15 in the same pull
+request as each pane. That is what the fence is for.
 
 **My Access left the sidebar on 2026-10-05** (owner directive: "remove my access from
 the sidebar and fold it into the People's app"). It is the "My access" tab of the
@@ -148,7 +149,6 @@ answer rather than a diff:
 | Personal Center | Dashboard | `/dashboard` | Company-view-only today; the personal view is WS-15 |
 | Personal Center | Notes | `/notes` | WS-19 incomplete |
 | Personal Center | Memories | `/memory` | WS-9 — operator-grade surface, not customer-grade |
-| Apps | Knowledge | `/knowledge` | 🆕 Added 2026-10-15 by WS-61 KB-0. The page is a scaffold and has no content yet. `feature:knowledge` gates it, and that feature reaches every role except guest (migration 207). The owner promotes it at KB-12 (`knowledge_base.md` §17) |
 | Apps | Centers (six panes) | `/centers/<slug>` | **Withdrawn by D49**, not merely incomplete (§5) |
 | AI Studio | Workflows | `/workflows` | WS-11 incomplete |
 | AI Studio | App Workshop | `/build/apps` | Incomplete |
@@ -157,7 +157,7 @@ answer rather than a diff:
 | Admin | Agent Registry | `/agents` | Operator concern |
 | Admin | Live Activity | `/observability` | Operator concern |
 
-**The count is the fence.** `nav.test.ts` asserts that exactly the **fourteen** rows
+**The count is the fence.** `nav.test.ts` asserts that exactly the **fifteen** rows
 of the live table are `live`. A pane added without a launch status fails the suite.
 Promoting one is a deliberate edit that also updates the test.
 

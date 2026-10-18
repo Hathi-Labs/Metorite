@@ -28,7 +28,8 @@ describe("the sidebar holds places to work, by team", () => {
   it("for a fully granted admin: four groups, Organisation in Admin, and no page about the member", () => {
     expect(shape(shellSidebar(visibleSections(ALL, true)))).toEqual([
       ["personal", ["/tasks", "/calendar", "/email", "/whatsapp", "/artifacts"]],
-      ["across", ["/projects", "/crm", "/people"]],
+      // Knowledge since 2026-10-18 (WS-61 KB-12), when its pane went live.
+      ["across", ["/projects", "/crm", "/people", "/knowledge"]],
       ["studio", ["/chat"]],
       ["admin", ["/approvals", "/settings/organization", "/integrations"]],
     ]);
@@ -227,7 +228,8 @@ describe("All apps lists every app the member holds, never a preference", () => 
   it("for an admin: every held app, Organisation too, and no setting", () => {
     expect(shape(launcherGroups(visibleSections(ALL, true)))).toEqual([
       ["personal", ["/tasks", "/calendar", "/email", "/whatsapp", "/artifacts"]],
-      ["across", ["/projects", "/crm", "/people"]],
+      // Knowledge since 2026-10-18 (WS-61 KB-12), when its pane went live.
+      ["across", ["/projects", "/crm", "/people", "/knowledge"]],
       ["studio", ["/chat"]],
       ["admin", ["/approvals", "/settings/organization", "/integrations"]],
     ]);

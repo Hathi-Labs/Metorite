@@ -70,6 +70,10 @@ const LIVE_SET: ReadonlyArray<[string, string]> = [
   // rule: this line and `launch_surface.md` §2 move together or the suite
   // goes red.
   ["apps", "/people"],
+  // Added 2026-10-18 by owner decision in chat (WS-61 KB-12, H-21), taking
+  // the live set from FOURTEEN to FIFTEEN. Knowledge sits after People, in
+  // nav order.
+  ["apps", "/knowledge"],
   ["ai-studio", "/chat"],
   ["admin", "/approvals"],
   ["admin", "/settings/organization"],
@@ -126,7 +130,7 @@ describe("chromeless onboarding routes (CP-2c onboarding UX)", () => {
 });
 
 describe("the launch allowlist (LS-1)", () => {
-  it("ships exactly the fourteen panes launch_surface.md §2 names", () => {
+  it("ships exactly the fifteen panes launch_surface.md §2 names", () => {
     const live = panesWithSection()
       .filter(([, p]) => p.launch === "live")
       .map(([section, p]): [string, string] => [section, p.href]);

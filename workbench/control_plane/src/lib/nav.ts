@@ -394,12 +394,16 @@ export const NAV_SECTIONS: NavSection[] = [
         icon: "BookOpen",
         note: "Spaces, pages and connected folders",
         feature: "knowledge",
-        // `preview` from WS-61 KB-0 (`knowledge_base.md` §11). The route
-        // renders by URL, and the nav entry stays hidden. The owner promotes
-        // it at KB-12 (H-21). The pane carries no job, no keywords and no
-        // agent until then: `held_jobs` filters a job by feature and not by
-        // launch status, so a job here would reach every member.
-        launch: "preview",
+        // `live` since 2026-10-18 (WS-61 KB-12), by owner decision in chat
+        // (H-21), taking the live set from FOURTEEN to FIFTEEN. It was
+        // `preview` from KB-0. Its two jobs, "Write a page" and "Find in
+        // Knowledge", landed with the promotion (`lib/shell/registry.ts`).
+        // It has no agent: the orchestrator holds the Knowledge tools
+        // (`knowledge_base.md` §11).
+        //
+        // ⚠️ The gateway answers only for an org on `KNOWLEDGE_ORGS` (`*` on
+        // production). For any other org the app shows its off state.
+        launch: "live",
       },
       // The six Center landing pages, kept as `preview` so they remain
       // reachable with the flag on and by URL always (D49 / launch_surface.md

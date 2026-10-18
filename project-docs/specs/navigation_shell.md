@@ -959,6 +959,7 @@ manifest" section, and the spec-auditor refuses one without it.
 | My WhatsApp | personal | Reply on WhatsApp (a link) | — | — | — | — | None beyond the manifest |
 | Projects | across | New space | projects search | `pm_notifications` | Team pulse, At-risk work | `projects-assistant` | Its palette and bell move to the shell. `lib/chatDock.ts` becomes the dock's rule. Its tree groups by team (D22) |
 | People | people | Find a colleague (built). Request leave is a target | the directory | — | Out today | — | None beyond the manifest |
+| Knowledge | across | Find in Knowledge (a link) and Write a page (built 2026-10-18, WS-61 KB-12) | the Knowledge search, lexical only (`knowledge_base.md` §20.3) | — | — | — | None beyond the manifest. `knowledge_base.md` §11 owns the rest |
 | My Profile | personal | Update my profile | — | — | — | — | Move to the account menu |
 | My Access | personal | — | — | — | — | — | Done 2026-10-05: a People tab at `/people/access`. NS-2's account menu links to it |
 | Chat | studio | New chat | chat sessions | — | — | any | `/chat` stays. The dock shares its sessions |

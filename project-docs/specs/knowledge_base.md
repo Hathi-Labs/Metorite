@@ -54,6 +54,13 @@ returns `published_count`. Both the stream path and the batch path of
 WhatsApp read it, and a shared room gets no block. `GET /knowledge/pages/{id}`
 now returns `space_name` when the caller can open the space.
 
+**KB-12 is DONE, 2026-10-18** (PR #1144, no migration). The owner
+approved the promotion in chat (H-21) and asked for Knowledge on for all orgs.
+The pane is `live`, so the sidebar shows it under Apps to a member with
+`feature:knowledge`. The command bar has the jobs "Find in Knowledge" and
+"Write a page", and its search asks Knowledge as a fifth app. The gateway still
+answers only for an org on `KNOWLEDGE_ORGS`, which is `*` on production.
+
 **KB-3c is BUILT, 2026-10-18** (branch `ws61-kb3c`, no migration, dark
 behind `KNOWLEDGE_EMBED`). The owner asked on 2026-10-18 that the whole
 knowledge base be indexed, so that the assistant finds it for any question.
@@ -971,10 +978,10 @@ The index then answers "what did we ship in September".
 | `team` | `across` |
 | `blurb` | "What the company knows, written down" |
 | `feature` | `knowledge` |
-| `launch` | `preview` at KB-0, promoted by the owner (H-21) |
-| `keywords` | knowledge, wiki, handbook, docs, page, manual, policy, drive, dropbox, onedrive |
-| `jobs` | `write-page` "Write a page" → `/knowledge?do=new` (fields: `space`, `title`) · `find-knowledge` "Find in Knowledge" → `/knowledge/search?q=` (fields: `q`) · `connect-folder` "Connect a folder" → `/knowledge/sources?do=connect` (a link, `knowledge:manage` for org scope) |
-| `search` | `knowledge`, a source of `gateway/retrieval/sources.py` (KR-3), through `kb_index.query`. It joins the bar's `BAR_APPS` at KB-12 |
+| `launch` | `live` since 2026-10-18 (KB-12), by owner decision in chat (H-21). It was `preview` from KB-0 |
+| `keywords` | knowledge, wiki, handbook, docs, page, manual, policy, drive, dropbox, onedrive. `NavPane` has no keyword field, so KB-12 put the words of today on the two jobs (`words` in `registry.ts`). drive, dropbox and onedrive wait for KB-7 |
+| `jobs` | Built at KB-12: `find-knowledge` "Find in Knowledge" → `/knowledge/search` (a link, no fields) · `write-page` "Write a page" → `/knowledge?do=write-page` (no fields). The layout's `ShellJob` opens the New page form through the leave guard. The `?do=` value is the job id, as `doJob.tsx` requires. Not built: `connect-folder` "Connect a folder" → `/knowledge/sources?do=connect`, which waits for KB-7a. The fields `space`, `title` and `q` wait for a form that reads `fill.<name>` |
+| `search` | `knowledge`, a source of `gateway/retrieval/sources.py` (KR-3), through `kb_index.query`. In the bar's `BAR_APPS` since KB-12, last of five, and `SCOPE_APPS` maps `/knowledge` to it. The bar asks with `hybrid=False`, so it calls no model |
 | `needs` | none. The provider is feed-only |
 | `feedKinds` | `doc_needs_review`, `doc_shared_with_me`, `kb_gap`, `source_sync_failed` |
 | `cards` | `recently-published` "New in Knowledge" at the team and all-teams altitudes |
@@ -983,10 +990,10 @@ The index then answers "what did we ship in September".
 
 The app mounts no ⌘K listener, no palette, no bell and no assistant rail.
 `seams.test.ts` holds that. The page registers in `appBar.test.ts`
-`PREVIEW_BAR_HOME` while preview, and moves to `APP_BAR_HOME` at KB-12. It
+`APP_BAR_HOME` since KB-12. It was in `PREVIEW_BAR_HOME` while preview. It
 registers in `e2e/app-title-bar.spec.ts` `PAGES` and in its features mock.
 
-**The jobs land with KB-12, not before.** The gateway's `held_jobs`
+**The jobs landed with KB-12, not before.** The gateway's `held_jobs`
 (`routes/shell/intent.py`) filters a job by feature and not by launch
 status. So a job of a preview app would reach the tier-2 coordinator for
 every member. A preview pane carries its nav entry and no job.
@@ -1049,7 +1056,7 @@ The first migration adds, and nothing renames (R6).
 |---|---|---|---|
 | `KNOWLEDGE_ENABLED` | off | The routes answer. Off, every route is 404 | AGENT-SAFE to build, owner to flip for an org |
 | `KNOWLEDGE_ORGS` | empty | The organizations the routes serve. A star is every org | owner |
-| `NEXT_PUBLIC_KNOWLEDGE` | off | The pane renders when `launch` is `live` | with the promotion (H-21) |
+| ~~`NEXT_PUBLIC_KNOWLEDGE`~~ | — | Not built. KB-12 found no such flag in the code. The launch status of the pane is the one gate of the sidebar (`launch_surface.md` §3), so no second flag is needed | — |
 | `KNOWLEDGE_EMBED` | off | Chunks get a vector. Off, the index is lexical only | AGENT-SAFE. Spends `tier-embed` credits, so a flip for an org is the owner's |
 | `KNOWLEDGE_EMBED_SWEEP` | on | The embed sweep of §6.4 starts. It does nothing for an org that `KNOWLEDGE_EMBED` does not name. Off, the loop does not start | AGENT-SAFE. The spend follows `KNOWLEDGE_EMBED` |
 | `KNOWLEDGE_SOURCES` | empty | The providers a member can connect: `dropbox`, `onedrive`, `google_drive` | owner. `google_drive` waits on §7.4 |
@@ -1156,7 +1163,7 @@ its own branch, three or four in flight at most.
 | **KB-9** | The My Day provider and the four kinds, the reach classes, the cache bumps, and `kb_gaps` with its write on a Knowledge search with no hit (§8.4 door 3) | A page past review shows a card to its author. A twice-asked gap shows a card to a writer. `test_reach_plan.py` pins the classes | AGENT-SAFE. `MY_DAY_PROVIDERS`: MD-10's rule |
 | **KB-10** | `kb:read` on `/mcp`: the scope, the two tools, the route pairs, the second manifest in `test_mcp_edge_coverage.py` | Claude Desktop, connected with `kb:read`, searches and reads a page the member can see, and gets 404 on one they cannot | AGENT-SAFE. The scope amendment: owner |
 | **KB-11** | The narrowing adapter, "Make this a page" on a report, the Markdown export zip | A report becomes a page. An org exports its pages. `narrow_and_read` answers a question over 60 documents on `tier-decide` | AGENT-SAFE |
-| **KB-12** | Promotion to `live`: the launch table, `LIVE_SET`, `NEXT_PUBLIC_KNOWLEDGE` | The pane shows to every member with `feature:knowledge` | **OWNER-GATE** (H-21) |
+| **KB-12** ✅ DONE 2026-10-18, by owner decision in chat (H-21) | Promotion to `live`: the launch table, `LIVE_SET`, `APP_BAR_HOME`, the two jobs of §11 on both job lists, and Knowledge in the bar's `BAR_APPS` and `SCOPE_APPS`. `NEXT_PUBLIC_KNOWLEDGE` never existed, and §13 says so | The pane shows to every member with `feature:knowledge`. "Find in Knowledge" and "Write a page" answer in the command bar, and a Knowledge page answers in its search | **OWNER-GATE** (H-21), granted in chat on 2026-10-18 |
 
 The order is KB-0, KB-1, KB-2a, KB-3, KB-4, then KB-6 and KB-5 together,
 then KB-7a and KB-9, then the rest. KB-3 before KB-4, because the assistant
