@@ -1827,11 +1827,17 @@ def _keys(out: str) -> dict[str, str]:
     return dict(re.findall(r'^- "(.+)" -> (\S+)$', out, flags=re.M))
 
 
-async def _through_the_card(payload: dict) -> tuple[list[dict], str]:
+async def _through_the_card(payload: dict, *, responder: str | None = None,
+                            option: int = 0) -> tuple[list[dict], str]:
     """Send *payload* through the real ``ask_questions``, as the model would,
-    and answer the card with its first option. Returns the cleaned questions
-    of the card and the tool result. A payload that fails the schema of the
-    card never reaches the queue."""
+    and answer the card with one option. Returns the cleaned questions of
+    the card and the tool result. A payload that fails the schema of the
+    card never reaches the queue.
+
+    CRM-Q33 fix round 2: the answer goes through the real
+    ``executor.resolve_user_input``, as ``/agent/respond-input`` sends it,
+    so its dict holds ``wasFreeform`` and ``responder``. The responder is
+    the run's member unless *responder* names another member."""
     import asyncio
 
     from acb_skills.ask_tools import ask_questions
@@ -1843,8 +1849,11 @@ async def _through_the_card(payload: dict) -> tuple[list[dict], str]:
         task = asyncio.create_task(ask_questions(json.dumps(payload)))
         event = await asyncio.wait_for(queue.get(), 5)
         value = event["value"]
-        ex._pending_user_input[value["request_id"]].set_result(
-            {"answer": value["questions"][0]["options"][0]["label"]})
+        rid = value["request_id"]
+        ex._pending_user_input.park(rid, ex._pending_user_input[rid], "thread-card")
+        assert ex.resolve_user_input(
+            rid, value["questions"][0]["options"][option]["label"], False,
+            thread_id="thread-card", responder=responder or _T._current_user_email())
         return value["questions"], await asyncio.wait_for(task, 5)
     finally:
         ex._active_run_queue.reset(token)

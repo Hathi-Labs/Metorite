@@ -1066,7 +1066,7 @@ _USER_INPUT_TIMEOUT = int(os.environ.get("ASK_USER_TIMEOUT", "3600"))
 
 def resolve_user_input(
     request_id: str, answer: str, was_freeform: bool = True,
-    *, thread_id: str | None,
+    *, thread_id: str | None, responder: str | None = None,
 ) -> bool:
     """Resolve a pending ``ask_user`` request with the user's answer.
 
@@ -1090,6 +1090,10 @@ def resolve_user_input(
         )
         return False
     payload = {"answer": answer, "wasFreeform": was_freeform}
+    # WS-53 CRM-Q33 fix round 2: who answered, from the gateway's session. A
+    # CRM card counts a pick only of the run's own member.
+    if responder:
+        payload["responder"] = str(responder).strip().lower()
     try:
         loop = fut.get_loop()
     except Exception:
@@ -1129,6 +1133,7 @@ def _respond_input_applier(thread_id: str) -> Callable[[dict[str, Any]], bool]:
             str(command.get("answer", "")),
             bool(command.get("was_freeform", True)),
             thread_id=thread_id,
+            responder=str(command.get("responder") or "") or None,
         )
 
     return _apply

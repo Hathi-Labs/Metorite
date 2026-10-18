@@ -567,14 +567,86 @@ async def test_a_card_with_other_words_or_a_typed_answer_picks_nothing(
     shown = await _T.crm_propose_rule("All numbers net of GST", "org")
     card = _card_payload(shown)["questions"][0]
     other = {**card, "question": 'Save this business rule? "Report gross revenue"'}
-    _T.record_card_answer([other], {"answer": "Save the rule"})
+    # The dict that `executor.resolve_user_input` builds for respond-input.
+    me = _T._current_user_email()
+    _T.record_card_answer([other], await _resolved("Save the rule", me))
     _T.record_card_answer([{**card, "options": [{"label": "Yes", "key": "save"}]}],
-                          {"answer": "Yes"})
-    _T.record_card_answer([card], {"answer": "Save the rule", "was_freeform": True})
-    _T.record_card_answer([card, card], {"answer": "Save the rule"})
+                          await _resolved("Yes", me))
+    _T.record_card_answer([card], await _resolved("Save the rule", me, typed=True))
+    _T.record_card_answer([card, card], await _resolved("Save the rule", me))
     assert web_run.picked == {}
-    _T.record_card_answer([card], {"answer": "Save the rule"})
+    _T.record_card_answer([card], await _resolved("Save the rule", me))
     assert web_run.picked == {"rule:0123456789abcdef": "save"}
+
+
+async def _resolved(answer: str, responder: str, *, typed: bool = False) -> dict:
+    """The dict of a card answer, built by the real ``resolve_user_input``."""
+    import asyncio
+
+    from orchestrator import executor as ex
+
+    fut = asyncio.get_running_loop().create_future()
+    ex._pending_user_input.park("r-test", fut, "thread-test")
+    try:
+        assert ex.resolve_user_input("r-test", answer, typed, thread_id="thread-test",
+                                     responder=responder)
+        return await fut
+    finally:
+        ex._pending_user_input.pop("r-test", None)
+
+
+async def test_in_a_shared_room_another_contributor_s_click_is_no_pick(
+    monkeypatch, web_run,
+) -> None:
+    """Fix round 2: a click of another member of a shared room never
+    becomes the pick of the run's member (an admin's org-wide answer). It
+    is logged, and the reply tool asks to pick again."""
+    from tests.unit.test_crm_agent import _through_the_card
+
+    gw = _Gateway(monkeypatch, {
+        "/crm/rules/propose": (200, HELD),
+        "/crm/rules/pending/rule:0123456789abcdef": (200, {"result": "saved", "line": "S"}),
+    })
+    _member_words(monkeypatch, NET_RULE)
+    seen: list[tuple] = []
+    monkeypatch.setattr(_T, "_pick_mismatch", lambda asks, qid, why: (
+        seen.append((qid, why)), asks.mismatched.add(qid)))
+    shown = await _T.crm_propose_rule("All numbers net of GST", "org")
+    await _through_the_card(_card_payload(shown), responder="someone-else@x.test")
+    assert web_run.picked == {} and seen == [("rule:0123456789abcdef", "responder")]
+    out = await _T.crm_answer_question("rule:0123456789abcdef", "save")
+    assert out == _T.PICK_AGAIN and "please pick again" in out
+    assert gw.paths("POST") == ["/crm/rules/propose"]
+
+
+async def test_a_mismatched_pick_is_logged_and_the_member_is_asked_again(
+    monkeypatch, web_run,
+) -> None:
+    """Fix round 2: an answer that matches no label of the tool's own card
+    leaves a record (``crm.pick_mismatch``), and the tool tells the model
+    to say "I could not save that choice, please pick again"."""
+    from acb_common import get_logger  # noqa: F401 - the logger exists
+
+    _Gateway(monkeypatch, {"/crm/rules/propose": (200, HELD)})
+    _member_words(monkeypatch, NET_RULE)
+    logged: list[dict] = []
+
+    class _Log:
+        def warning(self, event, **kw):
+            logged.append({"event": event, **kw})
+
+    import acb_common
+
+    monkeypatch.setattr(acb_common, "get_logger", lambda name: _Log())
+    shown = await _T.crm_propose_rule("All numbers net of GST", "org")
+    card = _card_payload(shown)["questions"][0]
+    _T.record_card_answer([card], await _resolved("Something else", _T._current_user_email()))
+    assert logged == [{"event": "crm.pick_mismatch", "question_id": "rule:0123456789abcdef",
+                       "reason": "label"}]
+    out = await _T.crm_answer_question("rule:0123456789abcdef", "save")
+    assert "I could not save that choice, please pick again." in out
+    # Once said, the next call is the plain refusal, or the card again.
+    assert await _T.crm_answer_question("rule:0123456789abcdef", "save") != _T.PICK_AGAIN
 
 
 def _card_payload(out: str) -> dict:

@@ -3360,8 +3360,12 @@ async def respond_user_input(
         )
 
     # Fast path: the run is parked on THIS worker — resolve its Future inline.
+    # WS-53 CRM-Q33 fix round 2: the responder is the session's member, so a
+    # CRM card counts a pick only of the run's own member.
+    _responder = (getattr(user, "email", None) or "").strip().lower() or None
     delivered = resolve_user_input(
         req.request_id, req.answer, req.was_freeform, thread_id=req.thread_id,
+        responder=_responder,
     )
     # Cross-worker (P1-2): the run may be parked on another worker.  Relay the
     # answer over the control bus so the owning worker resolves its own Future.
@@ -3370,6 +3374,7 @@ async def respond_user_input(
         "request_id": req.request_id,
         "answer": req.answer,
         "was_freeform": req.was_freeform,
+        "responder": _responder,
     }
     if not delivered:
         from orchestrator.stream_relay import dispatch_control  # noqa: PLC0415

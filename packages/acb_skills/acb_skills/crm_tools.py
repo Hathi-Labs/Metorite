@@ -1706,6 +1706,10 @@ class CrmAsks:
     note_shown: bool = False
     note_tail: str = ""
     notes_done: bool = False
+    #: Fix round 2: the questions whose card answer did not match (other
+    #: words, another label, another member). The gate then asks the model
+    #: to say so, and to show the card again.
+    mismatched: set[str] = dataclasses.field(default_factory=set)
 
     def take(self, question_id: str) -> bool:
         """Count *question_id* as asked, and say whether a card may show:
@@ -1796,28 +1800,63 @@ def record_card_answer(cleaned: list[dict[str, Any]], result: Any) -> None:
     when this run's tool built that card: one question, the question text
     that the tool registered, and an answer that is exactly one of its
     labels, shown once. The key comes from the tool's own card. A typed
-    answer is no pick."""
+    answer is no pick.
+
+    Fix round 2: the dict is the one that ``executor.resolve_user_input``
+    builds: ``answer``, ``wasFreeform`` and ``responder``. The pick counts
+    only when the responder is the run's own member, so in a shared room a
+    click of another contributor never becomes this member's answer. Each
+    answer that does not match a card of this tool is logged as
+    ``crm.pick_mismatch``, and the gate then tells the model to say so."""
     from acb_skills.ask_tools import OPTION_LABEL_MAX, QUESTION_TEXT_MAX, clip_words
 
     asks = run_asks()
     if asks is None or not isinstance(cleaned, list) or len(cleaned) != 1:
         return
-    if not isinstance(result, dict) or result.get("was_freeform"):
-        return
     shown = cleaned[0]
     qid = shown.get("crm_question") if isinstance(shown, dict) else None
     want = asks.expected.get(str(qid)) if qid else None
-    if want is None:
+    if want is None or not isinstance(result, dict):
+        return
+    qid = str(qid)
+    if result.get("wasFreeform") is not False:
+        _pick_mismatch(asks, qid, "typed")
+        return
+    me = _current_user_email().strip().lower()
+    if not me or str(result.get("responder") or "").strip().lower() != me:
+        _pick_mismatch(asks, qid, "responder")
         return
     question, labels = want
     if clip_words(question, QUESTION_TEXT_MAX) != shown.get("question"):
+        _pick_mismatch(asks, qid, "question")
         return
     said = str(result.get("answer") or "").strip()
     seen = [str(o.get("label") or "") for o in shown.get("options") or [] if isinstance(o, dict)]
     keys = [key for label, key in labels.items() if clip_words(label, OPTION_LABEL_MAX) == said]
     if len(keys) != 1 or seen.count(said) != 1:
+        _pick_mismatch(asks, qid, "label")
         return
-    asks.picked[str(qid)] = keys[0]
+    asks.mismatched.discard(qid)
+    asks.picked[qid] = keys[0]
+
+
+def _pick_mismatch(asks: CrmAsks, qid: str, reason: str) -> None:
+    """Record and log an answer of a card of this tool that is no pick."""
+    asks.mismatched.add(qid)
+    asks.picked.pop(qid, None)
+    try:
+        from acb_common import get_logger
+
+        get_logger("crm.tools").warning("crm.pick_mismatch", question_id=qid, reason=reason)
+    except Exception:
+        pass
+
+
+#: What the reply tool answers after a card answer that did not match.
+PICK_AGAIN = (
+    "Nothing is saved: the choice on the card did not match the question. Tell the member: "
+    '"I could not save that choice, please pick again." Then show the card again.'
+)
 
 
 #: What the run adds when the answer left out the note of a total.
@@ -2457,6 +2496,12 @@ async def crm_answer_question(question_id: str, choice: str) -> str:
         # CRM-Q33 part 4: "use Rent Basic Amount instead" shows the card of
         # the question again (or, with no card, the gateway asks in text).
         # The member's own pick on it then goes through this same door.
+        asks = run_asks()
+        if asks is not None and question in asks.mismatched:
+            # Fix round 2: the member answered, and the answer did not match.
+            asks.mismatched.discard(question)
+            asks.asked.discard(question)
+            return PICK_AGAIN
         changed = await _change_in_chat(question)
         return changed or NO_CARD_PICK
     if question.startswith(RULE_PREFIX):
