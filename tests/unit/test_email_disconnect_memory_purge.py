@@ -294,8 +294,10 @@ class TestADisconnectPurgesTheMemoryOfTheMailbox:
         self, wired, mem0, path_id,  # noqa: F811
     ):
         # Postgres reads each of these forms as the same uuid, so the DELETE
-        # finds the row. The writers keyed Mem0 on the canonical form.
-        wired({path_id: _row()})
+        # finds the row. The writers keyed Mem0 on the canonical form. The
+        # route turns the path id into the canonical form before any read
+        # (``resolve_account_filter``), so the fake holds the canonical key.
+        wired({ACC: _row()})
         m = mem0(_seeded())
         assert await accounts.delete_account(path_id, user=_user()) is None
         await _drain()

@@ -15,6 +15,7 @@ from uuid import uuid4
 from acb_auth import UserContext, get_current_user, require_permission
 from email_ingestion.storage import storage_limit_bytes
 from fastapi import Depends, HTTPException, status
+from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     _account_scope,
     _default_label,
@@ -563,6 +564,8 @@ async def set_default_account(
     index (one default per user) is never violated, then sets it on this one.
     """
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         owner = user.email or "anonymous"
         # Verify ownership before mutating anything.
         owned = await db.execute(
@@ -685,6 +688,8 @@ async def delete_account(
 
     # ── 1. the ownership read: the plan of the mailbox, with its filter ids ─
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         plans = await read_teardown_plans(db, MailboxScope(account_id, owner))
     if not plans:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -855,6 +860,8 @@ async def update_account(
         )
     owner = user.email or "anonymous"
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         set_clauses = []
         params: dict[str, Any] = {"id": account_id, "user_id": owner}
 

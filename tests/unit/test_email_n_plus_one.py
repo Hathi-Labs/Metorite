@@ -387,6 +387,13 @@ async def test_list_accounts_with_no_account_reads_no_count(monkeypatch) -> None
 async def test_set_default_reads_one_grouped_count(monkeypatch) -> None:
     db = _three_accounts()
     monkeypatch.setattr(accounts, "_tenant_session", bind_db(db))
+
+    # The fake keys its mailboxes "acct-N". The account_id reader has its own
+    # fence (test_email_account_ref.py), so this count test passes it by.
+    async def _as_given(_db, raw, _owner, **_kw):
+        return raw
+
+    monkeypatch.setattr(accounts, "resolve_account_filter", _as_given)
     made = await accounts.set_default_account("acct-3", user=_me())
     assert made.unread_count == 5
     [(sql, params)] = [(s, p) for s, p in db.statements if "email_messages" in s]

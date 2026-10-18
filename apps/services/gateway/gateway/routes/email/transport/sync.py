@@ -16,6 +16,7 @@ from acb_common import get_settings
 from fastapi import BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from gateway.db import bind_tenant, current_tenant, release_tenant
+from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     _instantiate_provider,
     _log,
@@ -301,6 +302,8 @@ async def resync_account(
     use this when
     local data is corrupt or badly out of sync. Returns the sync result."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         own = (await db.execute(text(
             "SELECT id FROM email_accounts WHERE id = :id AND user_id = :uid"
         ), {"id": account_id, "uid": user.email or "anonymous"})).fetchone()

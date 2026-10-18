@@ -14,6 +14,7 @@ _KB_WORD_RE = re.compile(r"[a-z0-9]{2,}")
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query, status
+from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     _assert_account_owner,
     _tenant_session,
@@ -277,6 +278,8 @@ async def get_assistant_settings(
 ):
     """Get the assistant's About/signature/auto-run settings for an account."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         row = (await db.execute(text(
             """SELECT about, signature, auto_run, cold_email_blocker,
@@ -553,6 +556,8 @@ async def list_knowledge(
 ):
     """List the account's knowledge-base entries (used when drafting replies)."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         # Suggested entries (voice-profile candidates awaiting review) first,
         # so they surface for approval instead of sinking below the fold.
@@ -675,6 +680,8 @@ async def generate_writing_style(
 ):
     """Derive a writing-style guide from the account's recent sent mail + save it."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         rows = (await db.execute(text(
             """SELECT body_text FROM email_messages
@@ -747,6 +754,8 @@ async def list_learned_patterns(
 ):
     """Preferences the assistant has learned from the user's draft edits."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         rows = (await db.execute(text(
             """SELECT id, pattern, weight, kind, scope_type, scope_value

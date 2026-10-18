@@ -30,7 +30,7 @@ async def _run_search(**kw):
     db = AsyncMock()
     db.execute.side_effect = fake_execute
     args = dict(
-        q=None, account_id="acc-1", folder=None, label=None, labels=None,
+        q=None, account_id="a0000000-0000-4000-8000-000000000001", folder=None, label=None, labels=None,
         from_addr=None, to_addr=None, received_after=None, received_before=None,
         is_read=None, is_starred=None, has_attachments=None,
         sender_category=None, importance=None, hybrid=False,
@@ -251,7 +251,7 @@ async def _run_messages_list(folder: str) -> tuple[str, dict]:
     db.execute.side_effect = fake_execute
     with patch.object(m.transport.messages, "_tenant_session", bind_db(db)):
         await m.list_messages(
-            account_id="acc-1", folder=folder, label=None, query=None,
+            account_id="a0000000-0000-4000-8000-000000000001", folder=folder, label=None, query=None,
             thread_id=None, received_after=None, received_before=None,
             is_read=None, is_starred=None, has_attachments=None,
             importance=None, from_email=None, sender_category=None,
@@ -319,7 +319,7 @@ async def test_facet_chips_count_the_same_mail_the_list_shows():
     db.execute.side_effect = fake_execute
     with patch.object(m.transport.messages, "_tenant_session", bind_db(db)):
         await m.transport.messages.message_facets(
-            account_id="acc-1", folder="all",
+            account_id="a0000000-0000-4000-8000-000000000001", folder="all",
             user=SimpleNamespace(email="u@example.com"),
         )
     params: dict = {}
