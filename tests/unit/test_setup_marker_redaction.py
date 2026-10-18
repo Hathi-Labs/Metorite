@@ -19,6 +19,12 @@ R7, the mutations. Each one turns a test here red (run 2026-10-18):
   ``test_a_marker_is_removed_in_every_shape``.
 * R2-5-M4 ``run_trace._persist_row`` skips ``redact_tree`` ->
   ``test_an_errored_run_trace_holds_no_setup_value``.
+* R3-3-M1 (fix round 3) ``OPEN_MARKER_RE`` runs to the end of the line again ->
+  ``test_a_marker_inside_json_text_stays_inside_its_string``.
+* R3-3-M2 ``MARKER_RE`` may cross a double quote again -> the same test.
+
+⚠️ This file proves the MODEL's marker is never stored. A member's own pasted
+secret is not detected (spec §7.6, HANDOFF H-357).
 """
 
 from __future__ import annotations
@@ -140,3 +146,16 @@ def test_an_errored_run_trace_holds_no_setup_value(monkeypatch) -> None:
     )
     _persist_row(row, "org-a")
     assert session.writes and TOKEN not in json.dumps(session.writes, default=str)
+
+
+def test_a_marker_inside_json_text_stays_inside_its_string() -> None:
+    """A tool result or an agent state can hold JSON TEXT. An unclosed marker
+    in one string value must not eat the closing quote and the next field."""
+    cut = '{"a": "done <<<SETUP:github:GITHUB_TOKEN=%s", "b": 1, "c": "x>>>"}' % TOKEN
+    out = redact(cut)
+    assert TOKEN not in out
+    assert json.loads(out) == {"a": "done [setup value removed: github GITHUB_TOKEN]",
+                               "b": 1, "c": "x>>>"}
+    tree = redact_tree({"tool_events": [{"result": cut}], "agent_state": {"s": cut}})
+    for text in (tree["tool_events"][0]["result"], tree["agent_state"]["s"]):
+        assert json.loads(text)["b"] == 1 and TOKEN not in text

@@ -13,7 +13,13 @@ raw marker, so the secret sat in plain text in a session row and in a chat row.
 the service and the key and holds no value. :func:`redact_tree` does it in
 every string of a JSON-like value. Both stores call them on their write path,
 so every path (the batch run, the stream, the server fold, a browser save)
-stores no value.
+stores no value of a MARKER.
+
+⚠️ **What this does not cover** (fix round 3, item 3). It removes the
+model's marker only. A member who pastes ``ghp_…`` as a plain chat message is
+stored as typed: in ``chat_message``, in the run input and in memory. Nothing
+here detects a member's own pasted secret. The remedy for a leaked key is to
+rotate it (HANDOFF H-357).
 
 The replacement is not a marker, so a model that reads it back writes no
 new key from it. Fence: ``tests/unit/test_setup_marker_redaction.py``.
@@ -26,10 +32,15 @@ from typing import Any
 
 #: One marker, up to the first ``>>>`` on its line. It is wider than the
 #: shape that the callers read, on purpose: a value that holds a ``>`` is not
-#: saved by them, and it must not be stored either.
-MARKER_RE = re.compile(r"<<<SETUP:([^:>\n]{0,100}):?([A-Za-z0-9_]{0,100})[^\n]*?>>>")
-#: A marker that never closes (a stream cut short): removed to the end of its line.
-OPEN_MARKER_RE = re.compile(r"<<<SETUP:([^:>\n]{0,100}):?([A-Za-z0-9_]{0,100})[^\n]*")
+#: saved by them, and it must not be stored either. ⚠️ It stops at a double
+#: quote (fix round 3, item 3). A string can hold JSON text, for example a
+#: tool result, and a marker must never reach past the end of its JSON string
+#: into the next field.
+MARKER_RE = re.compile(r'<<<SETUP:([^:>\n"]{0,100}):?([A-Za-z0-9_]{0,100})[^\n"]*?>>>')
+#: A marker that never closes (a stream cut short). It is removed up to the
+#: first space, quote, backslash or angle bracket, so it stays inside its own
+#: JSON string value and never eats a closing quote (fix round 3, item 3).
+OPEN_MARKER_RE = re.compile(r'<<<SETUP:([^:>\n"]{0,100}):?([A-Za-z0-9_]{0,100})[^\s"\'\\<>]*')
 
 #: What a marker becomes. It holds no value and is not a marker.
 REPLACEMENT = "[setup value removed: {service} {key}]"
