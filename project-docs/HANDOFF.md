@@ -5938,6 +5938,11 @@ line — never reclaim a number by deleting the other entry.
   `DEPLOY_ENV` read as production (as `vps_pull.sh` reads it), and an `unset`
   record that the nightly refresh honours. Port those into the existing tool.
   Do not add a second tool.
+- **Reinstall for `CONTEXT_RECENCY` (2026-10-18).** WS-61 CX-1 added
+  `CONTEXT_RECENCY` to `ALLOWED_KEYS` in the repo copy. The installed copy is
+  root's, so it still refuses that key. Copy the repo file over
+  `/usr/local/sbin/acb-staging-flag` as root, then run
+  `sudo -n /usr/local/sbin/acb-staging-flag --list` as `dev`.
 - **Already done (2026-10-18).** #1145's tool is installed: `/usr/local/sbin/acb-staging-flag`
   and `/etc/sudoers.d/acb-staging-flag` (checked with `visudo`). Knowledge is on
   in staging (`KNOWLEDGE_ENABLED=true`, `KNOWLEDGE_ORGS=*`). The box's

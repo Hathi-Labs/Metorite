@@ -104,6 +104,7 @@ and streams chat responses as AG-UI events.
    - The verified member must equal the run's memory id, which the tools act as. In a shared room the memory id is `room:<thread>`, so the room gets no block.
    - `_KB_INDEX_CACHE` keeps the block for each org and member for 300 s, so two turns get the same bytes. The preamble reads only the cache.
    - Fences: `tests/unit/test_knowledge_index_block.py` and `evals/trajectories/test_knowledge_grounding_trajectory.py`.
+   - With `COMPANY_SEARCH_ENABLED` and `CONTEXT_RECENCY` both on (WS-61 CX-1, `project-docs/specs/company_context.md` §4.3), `_RECENCY_SWAP` adds grounding sentences 1 to 3 after the grounding paragraph. `build_orchestrator_agent` then takes `search_company_dated` in place of `search_company`. It reads the flag once, so the persona and the tool agree. With `CONTEXT_RECENCY` off, the persona and the tool are the KR-2 ones, byte for byte. Fence: `tests/unit/test_company_search_recency.py`.
 
 22. **A run that holds a CRM tool gets the number check** (WS-53 CRM-Q29, `project-docs/specs/crm_platform.md` §18.11.2).
    - `_tool_injection._apply_answer_check` runs at the end of `_inject_agent_tools`, after the H-236 step. So the stream run, the batch run and the sub-agent all get it.

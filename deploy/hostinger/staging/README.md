@@ -46,6 +46,7 @@ The names it may write:
 | `KNOWLEDGE_EMBED` | It spends `tier-embed` credits. The owner asked for embeddings on staging |
 | `KNOWLEDGE_EMBED_SWEEP` | The embed sweep of KB-3c, with the same reason |
 | `COMPANY_SEARCH_ENABLED` | Company retrieval for the assistant |
+| `CONTEXT_RECENCY` | Recency in company retrieval (WS-61 CX-1). It spends nothing |
 | `MY_DAY_PROVIDERS` | The gated My Day feed sources, which read only the database |
 | `ARTIFACT_REGISTRY_ENABLED` | The artifact registry hook and its read routes |
 | `CRM_ENABLED` | The CRM kill switch |
