@@ -727,11 +727,18 @@ def batch_joins(q: Question) -> bool:
     return q.kind in (KIND_PURPOSE, KIND_KEY) and q.best() is not None
 
 
+def article(word: str) -> str:
+    """"an" before a word that starts with a vowel sound, else "a". Each
+    purpose label starts with a letter whose sound its spelling gives."""
+    return "an" if word[:1].lower() in "aeiou" else "a"
+
+
 def applied_line(q: Question, choice: Choice) -> str:
     """What changes when *choice* answers *q*, for the dry run and the
     toast: "Totals of Collection now use IP Amount." """
     if q.kind == KIND_PURPOSE:
-        return f"{q.label} is now a {choice.label.lower()} module."
+        noun = choice.label.lower()
+        return f"{q.label} is now {article(noun)} {noun} module."
     if q.part == "amount":
         return f"Totals of {q.label} now use {choice.label}."
     if q.part == "date":
@@ -867,6 +874,7 @@ __all__ = [
     "answer_problem",
     "answered",
     "applied_line",
+    "article",
     "batch_joins",
     "build",
     "candidates",

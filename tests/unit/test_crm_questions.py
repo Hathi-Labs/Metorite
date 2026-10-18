@@ -614,3 +614,26 @@ async def test_a_failed_read_of_the_open_count_gives_none(monkeypatch) -> None:
     monkeypatch.setattr(runs, "read_cursors", state)
     assert await sync._open_questions(_Db(), "o-1") == 3
     assert qs.open_count(None) is None and qs.open_count({"seen": []}) == 0
+
+
+# ── Fix round item 7: "an" before a vowel sound ─────────────────────────────
+
+#: The article of each purpose label, written out by hand.
+_ARTICLES = {
+    "customer_company": "a", "customer_site": "a", "person": "a", "lead": "a",
+    "deal": "a", "contract": "a", "invoice": "an", "payment_in": "a",
+    "receivable": "a", "payment_out": "a", "product": "a", "asset": "an",
+    "vendor": "a", "partner": "a", "activity": "an", "reference": "a", "other": "an",
+}
+
+
+@pytest.mark.parametrize("word", cat.PURPOSES)
+def test_the_purpose_line_takes_the_right_article(word: str) -> None:
+    q = _by_id(qs.build(_inputs()))["purpose:Towers"]
+    choice = next(c for c in q.options if c.value == word)
+    noun = qs.PURPOSE_LABELS[word].lower()
+    assert qs.applied_line(q, choice) == f"Towers is now {_ARTICLES[word]} {noun} module."
+
+
+def test_each_purpose_has_its_article_written_out() -> None:
+    assert set(_ARTICLES) == set(cat.PURPOSES)
