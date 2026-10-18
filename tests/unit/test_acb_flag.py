@@ -14,6 +14,10 @@ import subprocess
 
 import pytest
 
+# On Windows, `bash` from Python resolves to WSL's, which cannot see a C:/
+# path. The tool runs on the Linux boxes, and CI runs this file on Linux.
+pytestmark = pytest.mark.skipif(os.name == "nt", reason="the box tools run on Linux; CI runs this")
+
 _ROOT = pathlib.Path(__file__).resolve().parents[2]
 _TOOL = _ROOT / "deploy/hostinger/acb-flag"
 _REFRESH = _ROOT / "scripts/staging_refresh.sh"
