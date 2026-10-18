@@ -952,3 +952,42 @@ async def test_the_win_loss_report_says_its_window(monkeypatch) -> None:
     text = await crm_tools.crm_report("win-loss")
     answer = "In the last 90 days we won 12 deals and lost 8, a 60% win rate."
     assert check(answer, [text]).ok
+
+
+# ── Fix round 5 (2026-10-18): a choice is no claim ────────────────────────
+
+def _ask(question: str, options: list[str]) -> tuple[str, dict[str, Any]]:
+    return ("ask_questions", {"questions": json.dumps([{
+        "header": "Next", "question": question,
+        "options": [{"label": o} for o in options]}])})
+
+
+@pytest.mark.parametrize("options", [
+    ["Last 30 days", "Last 90 days", "This quarter"],
+    ["Top 10", "Top 25", "All of them"],
+    ["Above ₹10 lakh", "Above ₹50 lakh"],
+    ["At least 5 deals", "More than ₹2 crore", "Within 7 days", "Up to 20%"],
+])
+def test_a_choice_in_an_option_label_is_not_checked(options: list[str]) -> None:
+    """P1-b: the chat asks clarifying questions as cards. A choice is no
+    claim, so the card goes out with no retry."""
+    assert _verdict("", [_ask("Which one should I use?", options)]) == "pass"
+
+
+@pytest.mark.parametrize(("question", "options"), [
+    ("Which stage?", ["Proposal (Rs 5.9 crore)", "Negotiation (Rs 8.7 crore)"]),
+    ("The pipeline is Rs 14.6 crore. Which window?", ["Last 30 days"]),
+    ("Which one?", ["Above ₹10 lakh, the ₹99 lakh deals"]),
+])
+def test_a_claim_in_a_question_card_is_still_checked(question: str,
+                                                      options: list[str]) -> None:
+    assert _verdict("", [_ask(question, options)]) == "fail"
+
+
+def test_the_retry_note_states_the_rule_of_the_check() -> None:
+    from acb_common.number_check import check
+
+    note = answer_check.retry_note(check("₹99 lakh", ["Open: INR 5,00,000"]))
+    for words in ("BOTH", "same paragraph", "total", "net", "share", "average",
+                  "in brackets"):
+        assert words in note, words

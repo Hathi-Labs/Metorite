@@ -527,10 +527,12 @@ class TestFixRound4Derivation:
     """Rule 4: the operands stand next to the derived figure in its sentence,
     and a word of derivation stands near it. Rule 5: two percents."""
 
-    def test_operands_in_another_sentence_fail(self) -> None:
-        text = "Won INR 1,84,00,000 and lost INR 97,50,000. The net is INR 86,50,000."
+    def test_operands_in_another_block_fail(self) -> None:
+        """Round 5: the window is the block (up to a blank line), not the
+        sentence. Operands after a blank line take no part."""
+        text = "Won INR 1,84,00,000 and lost INR 97,50,000.\n\nThe net is INR 86,50,000."
         assert not check(text, [WIN_LOSS]).ok
-        assert check("Won INR 1,84,00,000 and lost INR 97,50,000, a net of INR 86,50,000.",
+        assert check("Won INR 1,84,00,000 and lost INR 97,50,000. The net is INR 86,50,000.",
                      [WIN_LOSS]).ok
 
     def test_a_derived_figure_needs_a_word_of_derivation(self) -> None:
@@ -606,3 +608,89 @@ class TestFixRound4Limits:
 
     def test_a_multiplier_is_read(self) -> None:
         assert [f.text for f in find_figures("Proposal is 3x Negotiation.")] == ["3x"]
+
+
+# ── Fix round 5 (2026-10-18): true breakdowns, choices, ranges ────────────
+
+INVOICES = (
+    "Invoices (4):\n"
+    "- INV-2026-0042 · Acme Robotics · INR 4,12,000 · due 2026-10-30\n"
+    "- INV-2026-0043 · Bharat Tools · INR 2,75,500 · due 2026-11-05\n"
+    "- INV-2026-0044 · Kaveri Labs · INR 9,80,000 · due 2026-11-12\n"
+    "Total due: INR 17,82,750"
+)
+ROUND5_SOURCES = [PIPE, WIN_LOSS, INVOICES]
+
+
+class TestFixRound5TrueShapes:
+    """P1-a: the commonest true shapes of a breakdown pass."""
+
+    @pytest.mark.parametrize("text", [
+        # bullets with a bracket share under a total line
+        "Pipeline by stage (total ₹13.53 crore):\n- Qualification: ₹2.35 crore (17%)\n"
+        "- Proposal: ₹4.12 crore (30%)\n- Negotiation: ₹7.06 crore (52%)",
+        # a markdown table with a Share column, and its total row
+        "| Stage | Value | Share |\n|---|---|---|\n| Qualification | ₹2.35 crore | 17% |\n"
+        "| Proposal | ₹4.12 crore | 30% |\n| Negotiation | ₹7.06 crore | 52% |\n"
+        "| Total | ₹13.53 crore | 100% |",
+        "Negotiation accounts for 52% of pipeline value (₹7.06 Cr of ₹13.53 Cr).",
+        "Proposal and Negotiation hold ₹11.18 crore together (₹4.12 crore and ₹7.06 crore).",
+        "Won ₹1.84 crore and lost ₹97.5 lakh. The net is ₹86.5 lakh.",
+        "Qualification has 14 deals against 9 in Proposal, 56% more.",
+        "Negotiation is your biggest stage. It holds ₹7.06 crore of the ₹13.53 crore "
+        "pipeline. That is 52%.",
+        "- Proposal: ₹4.12 crore\n- Negotiation: ₹7.06 crore\nTogether they hold ₹11.18 crore.",
+        "Negotiation is 52% of the pipeline: ₹7.06 crore of ₹13.53 crore.",
+        "We won 12 of 20 closed deals, a 60% win rate.",
+        "The average won deal is ₹15.3 lakh (₹1.84 crore over 12 deals).",
+        "Acme and Bharat owe ₹6.88 lakh between them: ₹4.12 lakh and ₹2.76 lakh.",
+        "Negotiation is weighted at 75%: ₹5.3 crore of ₹7.06 crore.",
+    ])
+    def test_a_true_shape_passes(self, text: str) -> None:
+        result = check(text, ROUND5_SOURCES)
+        assert result.ok, [f.text for f in result.unmatched]
+
+    @pytest.mark.parametrize("text", [
+        "Pipeline by stage (total ₹13.53 crore):\n- Negotiation: ₹7.06 crore (58%)",
+        "| Stage | Value | Share |\n|---|---|---|\n| Negotiation | ₹7.06 crore | 58% |\n"
+        "| Total | ₹13.53 crore | 100% |",
+        "Proposal and Negotiation hold ₹11.5 crore together (₹4.12 crore and ₹7.06 crore).",
+        "The average won deal is ₹19.3 lakh (₹1.84 crore over 12 deals).",
+        "We won 12 of 21 closed deals, a 60% win rate.",
+        "Negotiation holds ₹7.06 crore.\n\nThat is 52% of the ₹13.53 crore pipeline... "
+        "and 58% of value.",
+    ])
+    def test_the_same_shape_with_a_wrong_figure_fails(self, text: str) -> None:
+        assert not check(text, ROUND5_SOURCES).ok
+
+    def test_a_bracket_share_needs_its_host(self) -> None:
+        # "(52%)" after a figure that is not 7.06 crore is no share of it.
+        text = "Pipeline (total ₹13.53 crore):\n- Proposal: ₹4.12 crore (52%)"
+        assert not check(text, ROUND5_SOURCES).ok
+
+
+class TestFixRound5Parse:
+    @pytest.mark.parametrize(("text", "values"), [
+        ("Open invoices run ₹3-25 lakh.", [Decimal(300000), Decimal(2500000)]),
+        ("Stages hold 5-17 deals.", [Decimal(5), Decimal(17)]),
+        ("Invoices run ₹1.15\u20139.9 lakh.", [Decimal("115000"), Decimal("990000")]),
+    ])
+    def test_both_ends_of_a_range_are_read(self, text: str, values: list[Decimal]) -> None:
+        assert [f.value for f in find_figures(text)] == values
+
+    def test_a_range_end_is_checked(self) -> None:
+        assert not check("Stages hold 5-17 deals.", [PIPE]).ok
+        assert check("Stages hold 5-14 deals.", [PIPE]).ok
+        assert find_figures("The 2025-26 plan.") == []
+
+    def test_a_scale_word_on_the_next_line_joins(self) -> None:
+        assert [f.value for f in find_figures("The pipeline is ₹14\ncrore.")] == [
+            Decimal(140000000)]
+        assert not check("The pipeline is ₹19\ncrore across stages.", [PIPE]).ok
+
+    def test_a_percent_never_quotes_a_plain_count(self) -> None:
+        assert not check("Lost deals are down 12%.", ["won 12"]).ok
+        assert check("Lost deals are down 12%.", ["won 12%"]).ok
+        assert check("12 deals.", ["win rate 12%"]).ok
+        # A data value has no unit, so it may stand for a percent.
+        assert check("The win rate is 60%.", ['{"win_rate":60}']).ok

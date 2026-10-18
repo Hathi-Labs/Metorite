@@ -64,7 +64,7 @@ from datetime import date
 from typing import Any
 
 from acb_common import get_logger
-from acb_common.number_check import CheckResult, Sources, check
+from acb_common.number_check import CheckResult, Sources, check, find_figures
 from acb_common.settings import crm_answer_check_mode
 from acb_common.tool_refusals import is_refusal
 from agent_framework import (
@@ -346,11 +346,53 @@ def _shown_text(node: Any, key: str = "") -> list[str]:
     return []
 
 
+#: A choice word right before a figure in an option of ``ask_questions``:
+#: "Last 90 days", "Top 10", "Above ₹10 lakh". The figure is a choice that
+#: the member makes, not a claim, so the check skips it (fix round 5). The
+#: ONE number check (``find_figures``) finds the figure. "Proposal (Rs 5.9
+#: crore)" has no choice word, and its figure is checked.
+_CHOICE_WORD = re.compile(
+    r"\b(?i:top|bottom|last|past|next|first|above|below|over|under|at\s+least|"
+    r"at\s+most|more\s+than|less\s+than|fewer\s+than|within|up\s+to)\s+$"
+)
+#: The keys of a question card that hold an option.
+_OPTION_KEYS = ("label", "option", "options", "choice", "choices")
+
+
+def _drop_choices(label: str) -> str:
+    """*label* with each figure after a choice word taken out."""
+    out = label
+    for figure in reversed(find_figures(label)):
+        if _CHOICE_WORD.search(label[:figure.start]):
+            out = out[:figure.start] + out[figure.end:]
+    return out
+
+
+def _without_choices(node: Any, key: str = "") -> Any:
+    """*node* with the choice figures of each option label taken out."""
+    if isinstance(node, Mapping):
+        return {k: _without_choices(v, str(k)) for k, v in node.items()}
+    if isinstance(node, (list, tuple)):
+        return [_without_choices(v, key) for v in node]
+    if isinstance(node, str):
+        stripped = node.strip()
+        if stripped[:1] in "{[":
+            try:
+                return _without_choices(json.loads(stripped), key)
+            except ValueError:
+                pass
+        if key.lower() in _OPTION_KEYS:
+            return _drop_choices(node)
+    return node
+
+
 def display_text(name: str, arguments: Any) -> str:
     """The text that a display call shows the member, or "" (item 2)."""
     if name not in DISPLAY_TOOLS:
         return ""
     data = _as_mapping(arguments)
+    if name == "ask_questions":
+        data = _without_choices(data)
     if name == "write_artifact":
         if not isinstance(data, Mapping):
             return ""
@@ -455,11 +497,13 @@ def retry_note(result: CheckResult) -> str:
         "A check of your answer found numbers that no tool result of this turn "
         f"holds: {named}. Write the answer again, with any card again. Copy "
         "each number from a tool result, or round it and keep its unit. You "
-        "may state the sum, the difference, the percent change or the percent "
-        "share of TWO tool numbers, and then you must also state both of those "
-        "numbers. For anything more, call crm_aggregate with "
-        "the right group or filter, or leave the number out. Write each figure "
-        "in digits."
+        "may state a number that you work out from TWO tool numbers: their sum, "
+        "their difference, a percent share or change, or an average. Then you "
+        "must state BOTH of those tool numbers in the same paragraph, next to "
+        "the result, with a word such as total, net, gap, share, more or "
+        "average. A percent in brackets right after a figure is its share. "
+        "For anything more, call crm_aggregate with the right group or filter, "
+        "or leave the number out. Write each figure in digits."
     )
 
 

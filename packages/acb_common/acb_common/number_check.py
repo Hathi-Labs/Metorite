@@ -79,8 +79,9 @@ _FIGURE = re.compile(
     # A scale stays on the line of its number: "12,10,000\nB: ..." is no
     # billion (fix round 3). A no-break space may come before it, and "m",
     # "mm" and "b" are a scale only after a currency sign (fix round 4).
-    r"(?:[ \t\u00a0\u202f]?(?P<scale>(?i:lakhs?|lacs?|crores?|cr|thousand|million|mn|"
-    r"billion|bn)|k|K|L|M|B|(?(cur)(?:mm|m|b)|(?!)))(?![A-Za-z0-9_]))?"
+    r"(?:(?:[ \t\u00a0\u202f]?\n?[ \t]*(?P<scale>(?i:lakhs?|lacs?|crores?|thousand|"
+    r"million|billion))|[ \t\u00a0\u202f]?(?P<scale2>(?i:cr|mn|bn)|k|K|L|M|B|"
+    r"(?(cur)(?:mm|m|b)|(?!))))(?![A-Za-z0-9_]))?"
     r"(?:\s?(?P<pct>%|(?i:per\s?cent)))?"
     rf"(?:\s?(?P<cur2>(?i:{_CURRENCY_AFTER}))(?![A-Za-z]))?"
     r"(?P<mult>[x\u00d7](?![A-Za-z0-9_]))?"
@@ -98,6 +99,20 @@ APPROX_SHARE = Decimal("0.10")
 #: The most room that "about" gives a percent: 1 point. So "nearly 66%" is
 #: no approximation of 60% (fix round 4).
 APPROX_PERCENT_POINTS = Decimal(1)
+
+#: A range with one unit for both ends: "₹3-25 lakh", "5-17 deals", or
+#: "₹1.15" and "9.9 lakh" with an en dash. The parser reads BOTH ends, each
+#: with the shared currency, scale and percent (fix round 5). A range of
+#: years is no range.
+_RANGE = re.compile(
+    r"(?<![\w.,/:#@-])"
+    rf"(?:(?P<cur>{_CURRENCY_BEFORE})\s?)?"
+    r"(?P<a>\d+(?:\.\d+)?)[ \t]?[-\u2013][ \t]?(?P<b>\d+(?:\.\d+)?)"
+    r"(?:[ \t\u00a0\u202f]?(?P<scale>(?i:lakhs?|lacs?|crores?|cr|thousand|million|mn|"
+    r"billion|bn)|k|K|L|M|B)(?![A-Za-z0-9_]))?"
+    r"(?:\s?(?P<pct>%))?"
+    r"(?!\w|\.\d|[-\u2013/]\d)"
+)
 
 #: A currency sign before digits that are glued to letters: "₹19.2xy". The
 #: parser cannot read it, so it keeps it as a figure that always fails. A
@@ -304,7 +319,7 @@ def _parse(text: str, *, skip_years: bool) -> list[Figure]:
             number = Decimal(raw)
         except InvalidOperation:
             continue
-        scale_token = m.group("scale")
+        scale_token = m.group("scale") or m.group("scale2")
         scale = _scale_of(scale_token)
         decimals = len(raw.split(".", 1)[1]) if "." in raw else 0
         if m.group("pct"):
@@ -335,6 +350,21 @@ def _parse(text: str, *, skip_years: bool) -> list[Figure]:
             approx=approx,
             short=short,
         ))
+    for r in _RANGE.finditer(scan):
+        a, b = r.group("a"), r.group("b")
+        if a.isdigit() and len(a) == 4 and 1900 <= int(a) <= 2100:
+            continue  # "2025-26" is a range of years
+        found = [f for f in found if not (r.start() <= f.start < r.end())]
+        scale = _scale_of(r.group("scale"))
+        kind = PERCENT if r.group("pct") else MONEY if r.group("cur") else PLAIN
+        for digits, start, end in ((a, r.start(), r.end("a")), (b, r.start("b"), r.end())):
+            decimals = len(digits.split(".", 1)[1]) if "." in digits else 0
+            short = scale != 1 and _significant(digits) < 2
+            found.append(Figure(
+                text=text[start:end].strip(), value=Decimal(digits) * scale, kind=kind,
+                unit=Decimal(1).scaleb(-decimals) * scale, exact=short,
+                start=start, end=end, short=short,
+            ))
     spans = [(f.start, f.end) for f in found]
     for g in _GLUED.finditer(scan):
         if any(start <= g.start() < end for start, end in spans):
@@ -358,7 +388,11 @@ def find_figures(text: str) -> list[Figure]:
 
 
 def _compatible(claim: str, source: str) -> bool:
-    """Money and percent never meet. A plain number meets either."""
+    """Money and percent never meet. A plain claim meets either kind of
+    source. A percent claim never meets a plain source, so "down 12%" is no
+    quote of a count of 12 (fix round 5)."""
+    if claim == PERCENT and source == PLAIN:
+        return False
     return {claim, source} != {MONEY, PERCENT}
 
 
@@ -521,6 +555,9 @@ class Sources:
             if take:
                 pooled[kind] = used + 1
             self.add_value(value, kind, derive=take)
+        for _at, digits in data:
+            # A data value has no unit: {"win_rate":60} may stand for 60%.
+            self.add_value(Decimal(digits), PERCENT)
 
     def pool(self, kind: str) -> list[Decimal]:
         """The values of the derive pool of *kind*, oldest first."""
@@ -626,31 +663,41 @@ _TARGET_POOLS: dict[str, tuple[str, ...]] = {
     PERCENT: (MONEY, PLAIN, PERCENT),
 }
 
-#: The end of a sentence: ".", "!", "?" or ";" before a space, or a new line.
-#: "Rs." and "vs." are no end (fix round 4).
-_SENTENCE_END = re.compile(r"(?<!\bRs)(?<!\bvs)(?<!\bNo)[.!?;](?=\s|$)|\n")
+#: The end of a block: a blank line. A paragraph, a list and a table are each
+#: ONE block, so a total in a heading line or a row of a table takes part
+#: (fix round 5). Round 4 ended a window at each sentence and each new line,
+#: and that failed the commonest true breakdowns.
+_BLOCK_END = re.compile(r"\n[ \t]*\n")
 
-#: A word that says a figure is derived (fix round 4). A derived figure needs
-#: one in its sentence, at most :data:`_WORD_BEFORE` characters before it or
-#: :data:`_WORD_AFTER` after it.
+#: A word that says a figure is derived (fix rounds 4 and 5). A derived
+#: figure needs one in its block, at most :data:`_WORD_BEFORE` characters
+#: before it or :data:`_WORD_AFTER` after it.
 _DERIVE_WORDS = re.compile(
     r"\b(?i:total|totals|sum|together|combined|altogether|in\s+all|plus|net|minus|"
-    r"gap|difference|differs?|change|changed|share|of|more\s+than|less\s+than|"
-    r"fewer\s+than|exceeds?|exceeded|over|under|up|down|points?|rest|remaining|so)\b"
+    r"gap|difference|differs?|change|changed|share|of|more|less|higher|lower|"
+    r"more\s+than|less\s+than|fewer\s+than|exceeds?|exceeded|over|under|up|down|"
+    r"points?|rest|remaining|so|between|that\s+is|this\s+is|which\s+is|"
+    r"average|avg|mean|per|each)\b"
 )
+#: A word that says a figure is a quotient: "the average deal is ₹15.3 lakh
+#: (₹1.84 crore over 12 deals)".
+_QUOTIENT_WORDS = re.compile(r"\b(?i:average|avg|mean|per|each|over)\b")
 _WORD_BEFORE = 48
-_WORD_AFTER = 16
+_WORD_AFTER = 24
 
-#: How many citing figures next to a derived figure give its operands: the
-#: nearest two before it and the nearest one after it, in its sentence. So a
-#: pair of far figures of a long list never gives a figure by chance.
-_NEAR_BEFORE = 2
-_NEAR_AFTER = 1
+#: How many citing figures on EACH side of a derived figure give its
+#: operands, in its block (fix round 5: two on each side). So a pair of far
+#: figures of a long list never gives a figure by chance.
+_NEAR = 2
+
+#: The text between a figure and a percent that is its share: "₹7.06 crore
+#: (52%)" or a table cell "| ₹7.06 crore | 52% |" (fix round 5).
+_HOST_GAP = re.compile(r"[ \t]*\([ \t]*|[ \t]*\|[ \t]*")
 
 
 @dataclass(frozen=True)
 class _Text:
-    """The sentences of the checked text, for the rule of a derived figure."""
+    """The blocks of the checked text, for the rule of a derived figure."""
 
     scan: str
     ends: tuple[int, ...]
@@ -658,68 +705,160 @@ class _Text:
     @classmethod
     def of(cls, text: str) -> _Text:
         scan = _blank(text or "")
-        return cls(scan, tuple(m.start() for m in _SENTENCE_END.finditer(scan)))
+        return cls(scan, tuple(m.start() for m in _BLOCK_END.finditer(scan)))
 
-    def sentence(self, at: int) -> int:
+    def block(self, at: int) -> int:
         return bisect.bisect_left(self.ends, at)
 
     def bounds(self, at: int) -> tuple[int, int]:
-        i = self.sentence(at)
+        i = self.block(at)
         start = self.ends[i - 1] + 1 if i > 0 else 0
         end = self.ends[i] if i < len(self.ends) else len(self.scan)
         return start, end
 
-    def has_word(self, figure: Figure) -> bool:
+    def has_word(self, figure: Figure, words: re.Pattern[str] = _DERIVE_WORDS) -> bool:
         start, end = self.bounds(figure.start)
         lo = max(start, figure.start - _WORD_BEFORE)
         hi = min(end, figure.end + _WORD_AFTER)
-        return bool(_DERIVE_WORDS.search(self.scan[lo:hi]))
+        return bool(words.search(self.scan[lo:hi]))
+
+    def host(self, figures: tuple[Figure, ...], index: int) -> int | None:
+        """The figure that a percent is the share of: the figure right before
+        it, with only "(" or a table cell bar between them."""
+        if index == 0 or figures[index].kind != PERCENT:
+            return None
+        before = figures[index - 1]
+        if _HOST_GAP.fullmatch(self.scan[before.end:figures[index].start]):
+            return index - 1
+        return None
 
 
 def _near_citers(entries: list[_Cited], index: int, figures: tuple[Figure, ...],
                  text: _Text) -> set[int]:
-    """The citing figures next to figure *index* in its sentence."""
-    here = text.sentence(figures[index].start)
+    """The citing figures next to figure *index* in its block: the nearest
+    :data:`_NEAR` before it and the nearest :data:`_NEAR` after it."""
+    here = text.block(figures[index].start)
     citers = sorted({by for _v, by, _s in entries
-                     if by != index and text.sentence(figures[by].start) == here})
-    before = [by for by in citers if by < index][-_NEAR_BEFORE:]
-    after = [by for by in citers if by > index][:_NEAR_AFTER]
+                     if by != index and text.block(figures[by].start) == here})
+    before = [by for by in citers if by < index][-_NEAR:]
+    after = [by for by in citers if by > index][:_NEAR]
     return {*before, *after}
+
+
+def _within(value: Decimal, target: Decimal, room: Decimal) -> bool:
+    return target - room <= value <= target + room
+
+
+def _pairs_give(entries: list[_Cited], target_kind: str, pool_kind: str,
+                target: Decimal, room: Decimal) -> bool:
+    """True when two entries of two different figures give *target*."""
+    if len(entries) < 2:
+        return False
+    values = [c[0] for c in entries]
+    for a, by, seq in entries:
+        for lo, hi in _ranges(target_kind, pool_kind, a, target, room):
+            start = bisect.bisect_left(values, lo)
+            end = bisect.bisect_right(values, hi)
+            if any(entries[j][1] != by and entries[j][2] != seq
+                   for j in range(start, end)):
+                return True
+    return False
+
+
+def _host_share(figures: tuple[Figure, ...], index: int, host: int,
+                cited: dict[str, list[_Cited]], text: _Text) -> bool:
+    """A percent right after a figure ("₹7.06 crore (52%)", a Share cell):
+    the share of that figure in a figure of the same block. No derive word
+    is needed. The host may be its own whole ("Total … 100%")."""
+    target, room = abs(figures[index].value), figures[index].strict_room
+    here = text.block(figures[index].start)
+    for kind in (MONEY, PLAIN):
+        entries = cited.get(kind, [])
+        hosts = [c[0] for c in entries if c[1] == host]
+        wholes = [c[0] for c in entries
+                  if c[1] != index and text.block(figures[c[1]].start) == here]
+        for a in hosts:
+            if any(b and _within(a * _HUNDRED / b, target, room) for b in wholes):
+                return True
+    return False
+
+
+def _quotient(figures: tuple[Figure, ...], index: int, cited: dict[str, list[_Cited]],
+              text: _Text) -> bool:
+    """A money figure over a count next to it: "₹1.84 crore over 12 deals"
+    gives an average of ₹15.3 lakh. It needs a word of a quotient."""
+    figure = figures[index]
+    if figure.kind == PERCENT or not text.has_word(figure, _QUOTIENT_WORDS):
+        return False
+    target, room = abs(figure.value), figure.strict_room
+    money = cited.get(MONEY, [])
+    counts = cited.get(PLAIN, [])
+    near_money = _near_citers(money, index, figures, text)
+    near_counts = _near_citers(counts, index, figures, text)
+    return any(b and by_a != by_b and _within(a / b, target, room)
+               for a, by_a, _s in money if by_a in near_money
+               for b, by_b, _t in counts if by_b in near_counts)
+
+
+def _share_base(figures: tuple[Figure, ...], index: int, cited: dict[str, list[_Cited]],
+                text: _Text) -> bool:
+    """The whole of a share that the text states: "we won 12 of 20 closed
+    deals, a 60% win rate" gives 20 from 12 and 60%."""
+    figure = figures[index]
+    if figure.kind == PERCENT:
+        return False
+    target, room = abs(figure.value), figure.strict_room
+    percents = cited.get(PERCENT, [])
+    near_percents = _near_citers(percents, index, figures, text)
+    for kind in _TARGET_POOLS[figure.kind]:
+        if kind == PERCENT:
+            continue
+        parts = cited.get(kind, [])
+        near_parts = _near_citers(parts, index, figures, text)
+        for a, by_a, _s in parts:
+            if by_a not in near_parts or a > target + room:
+                continue
+            for p, by_p, _t in percents:
+                if by_p in near_percents and by_p != by_a and p and _within(
+                        a * _HUNDRED / p, target, room):
+                    return True
+    return False
 
 
 def _derived(figures: tuple[Figure, ...], index: int, cited: dict[str, list[_Cited]],
              text: _Text) -> bool:
-    """True when two operands that two OTHER figures of the text cite give
-    figure *index*, at the room of its stated precision (round 3). The two
-    figures stand next to it in its sentence, and a word of derivation stands
-    near it (round 4)."""
+    """True when OTHER figures of the text that cite tool values give figure
+    *index*, at the room of its stated precision (round 3).
+
+    The operands stand next to it in its block, two on each side, and a word
+    of derivation stands near it (rounds 4 and 5). A percent right after a
+    figure is the share of that figure, with no word. A quotient and the whole
+    of a stated share are derived figures too (round 5).
+    """
     figure = figures[index]
-    if figure.unreadable or not text.has_word(figure):
+    if figure.unreadable:
+        return False
+    host = text.host(figures, index)
+    if host is not None and _host_share(figures, index, host, cited, text):
+        return True
+    if not text.has_word(figure):
         return False
     target, room = abs(figure.value), figure.strict_room
     for kind in _TARGET_POOLS[figure.kind]:
         near = _near_citers(cited.get(kind, []), index, figures, text)
         entries = [c for c in cited.get(kind, []) if c[1] in near]
-        if len(entries) < 2:
-            continue
-        values = [c[0] for c in entries]
-        for a, by, seq in entries:
-            for lo, hi in _ranges(figure.kind, kind, a, target, room):
-                start = bisect.bisect_left(values, lo)
-                end = bisect.bisect_right(values, hi)
-                if any(entries[j][1] != by and entries[j][2] != seq
-                       for j in range(start, end)):
-                    return True
-    return False
+        if _pairs_give(entries, figure.kind, kind, target, room):
+            return True
+    return _share_base(figures, index, cited, text) or _quotient(figures, index, cited, text)
 
 
 def check(text: str, sources: Sources | Iterable[str]) -> CheckResult:
     """Check each figure of *text* against *sources*.
 
     *sources* is a :class:`Sources`, or texts to read into one (each with
-    ``derive=True``). A figure passes when a source holds it, or when two
-    OTHER figures next to it in its sentence cite two pool values that give
-    it, and a word of derivation stands near it.
+    ``derive=True``). A figure passes when a source holds it, or when OTHER
+    figures next to it in its block cite tool values that give it, by a rule
+    of :func:`_derived`.
     """
     if not isinstance(sources, Sources):
         book = Sources()
