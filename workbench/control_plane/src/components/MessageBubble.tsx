@@ -24,6 +24,7 @@ import { answersFromTools } from "@/lib/askAnswers";
 import { genUiTarget } from "@/lib/askPin";
 import GenerativeUINode, { genUiRootOwnsHead } from "@/components/GenerativeUINode";
 import ErrorCard from "@/components/ChatErrorCard";
+import { OtherAccountNotice } from "@/components/OtherAccountNotice";
 import { DismissableCard } from "@/components/ToolCardShell";
 import { useDismissedToolCards, dismissToolCard, noticeDismissKey } from "@/lib/dismissedTools";
 import { openDoc, openGenUI } from "@/lib/sidePanelStore";
@@ -335,12 +336,23 @@ function MessageBubble({
   if (isSystem) {
     const content = message.content;
     if (content.startsWith("__ERROR__")) {
+      const runError = parseStoredRunError(content.slice(9));
+      // The other-account notice switches accounts (owner call, 2026-10-18).
+      if (runError.code === "answer_in_other_account") {
+        return (
+          <OtherAccountNotice
+            id={`error:${message.id}`}
+            dismissKey={noticeDismissKey(sessionId, message.id)}
+            error={runError}
+          />
+        );
+      }
       // Retry re-sends the member's last message (`lib/chatRetry.ts`).
       return (
         <ErrorCard
           id={`error:${message.id}`}
           dismissKey={noticeDismissKey(sessionId, message.id)}
-          error={parseStoredRunError(content.slice(9))}
+          error={runError}
           onRetry={onRetryMessage ? () => onRetryMessage(message) : undefined}
         />
       );
