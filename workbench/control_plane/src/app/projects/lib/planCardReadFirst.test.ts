@@ -14,7 +14,18 @@ import { describe, expect, it } from "vitest";
 
 import {
   type PlanRow,
+  CYCLE_BADGE,
   NO_PHASE,
+  NO_PHASE_KEY,
+  afterChoices,
+  afterOptions,
+  answeredPlan,
+  keptRows as keep,
+  planBlocked,
+  planCycle,
+  priorityLine,
+  wholeDays,
+  withAfter,
   PLAN_CANCEL,
   WORKDAY_MINS,
   blankRow,
@@ -350,5 +361,94 @@ describe("the submit payload is byte-identical to the old card's for the same ed
         '"owner":"ayush@x.io","effort_mins":240,"start":"2026-10-22","due":"2026-10-24","after":[],' +
         '"important":null,"leveraged":null,"impact":4,"urgency":3,"effort":2}]}',
     );
+  });
+});
+
+// ── Review of #1136 ─────────────────────────────────────────────────────────
+
+describe("Waits on cannot build a circle through an unticked row", () => {
+  const base = (key: string, after: string[] = []) =>
+    ({ key, title: key, owner: "a@x.io", effort_mins: 60, due: "2026-10-30", after });
+
+  it("replays the review's probe: untick, edit, tick again", () => {
+    let rs = planRowsFrom([base("t1"), base("t2", ["t1"]), base("t3")]);
+    let off = new Set(["t1"]);
+    const row = (k: string) => rs.find((r) => r.key === k)!;
+    const set = (k: string, after: string[]) => { rs = rs.map((r) => (r.key === k ? { ...r, after } : r)); };
+    // t1 is unticked. t2 still waits on it, so t2 is no choice for t1.
+    expect(afterChoices(row("t1"), rs, keep(rs, off)).map((r) => r.key)).toEqual(["t3"]);
+    set("t1", withAfter(row("t1"), keep(rs, off), "t3", true));
+    // t3: t1 waits on it, and t2 waits on t1. Neither is a choice now.
+    expect(afterChoices(row("t3"), rs, keep(rs, off)).map((r) => r.key)).toEqual([]);
+    // The old rule read only the ticked rows. It lost the link through the
+    // unticked t1, offered t2, and a tick made a circle: the defect.
+    expect(afterOptions(row("t3"), keep(rs, off)).map((r) => r.key)).toEqual(["t2"]);
+    off = new Set();
+    expect(planCycle(keep(rs, off)).size).toBe(0);
+    expect(planBlocked("P", keep(rs, off))).toBe("");
+  });
+
+  it("names a circle and holds the submit when one comes back", () => {
+    const rs = planRowsFrom([base("t1", ["t3"]), base("t2", ["t1"]), base("t3", ["t2"]), base("t4")]);
+    expect([...planCycle(rs)].sort()).toEqual(["t1", "t2", "t3"]);
+    expect(planBlocked("P", rs)).toContain("in a circle");
+    // An unticked row breaks the circle, so the rest can go.
+    expect(planCycle(keep(rs, new Set(["t2"]))).size).toBe(0);
+    expect(CYCLE_BADGE).toBe("Waits in a circle");
+  });
+});
+
+describe("Move dates takes whole days only", () => {
+  it("reads only a whole number", () => {
+    expect(wholeDays("2")).toBe(2);
+    expect(wholeDays(" -3 ")).toBe(-3);
+    for (const bad of ["1.5", "-1.5", "", "2x", "e"]) expect(wholeDays(bad)).toBeNull();
+  });
+
+  it("moves nothing by a half day", () => {
+    expect(withShift(rows(), new Set(["t1"]), 1.5)).toEqual(rows());
+    expect(withShift(rows(), new Set(["t1"]), -1.5)).toEqual(rows());
+  });
+});
+
+describe("a phase named like the no-phase group", () => {
+  it("stays its own group", () => {
+    const rs = rows().map((r, i) => ({ ...r, phase: i === 0 ? NO_PHASE : i === 1 ? "" : r.phase }));
+    const g = planGroups(rs)!;
+    const named = g.find((x) => x.key === `phase:${NO_PHASE}`)!;
+    const none = g.find((x) => x.key === NO_PHASE_KEY)!;
+    expect(named.rows.map((r) => r.key)).toEqual(["t1"]);
+    expect(none.rows.map((r) => r.key)).toEqual(["t2"]);
+    expect(g[g.length - 1].key).toBe(NO_PHASE_KEY);
+  });
+});
+
+describe("the priority score shows in the open row", () => {
+  it("says the score and that it is a sorting aid", () => {
+    // The server sends the score (forms.py _plan_row).
+    const [t1] = planRowsFrom([{ ...TASKS[0], priority: 24 }]);
+    expect(priorityLine(t1)).toBe("Priority 24 · a sorting aid");
+    expect(priorityLine({ ...t1, priority: null })).toBe("");
+  });
+});
+
+describe("an answered card draws as the member left it", () => {
+  it("reads a submit: the sent rows with their edits, the rest unticked", () => {
+    const sent = planSubmit({ name: "P" }, "Memory v2",
+      [{ ...rows()[0], owner: "sam@x.io" }, rows()[2], { ...blankRow(rows()), title: "Extra", due: "2026-11-01" }]);
+    const past = answeredPlan("Memory", rows(), `Review plan — ${JSON.stringify(sent)}`)!;
+    expect(past.done).toBe("sent");
+    expect(past.name).toBe("Memory v2");
+    expect(past.rows[0].owner).toBe("sam@x.io");
+    // The read-only fields stay: the phase and the marks of a sent row.
+    expect(past.rows[2].phase).toBe("Foundation");
+    expect(past.rows[2].marks).toEqual(["short of hours"]);
+    expect([...past.off].sort()).toEqual(["t2", "t4", "t5"]);
+    expect(past.rows.map((r) => r.key)).toContain("new1");
+  });
+
+  it("reads Cancel, and draws nothing new with no answer", () => {
+    expect(answeredPlan("M", rows(), PLAN_CANCEL)!.done).toBe("cancelled");
+    expect(answeredPlan("M", rows(), "")).toBeNull();
   });
 });

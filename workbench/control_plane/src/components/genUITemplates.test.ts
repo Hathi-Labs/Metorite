@@ -111,7 +111,7 @@ describe("the plan card's Waits on control", () => {
     const on = kept ? planRowsFrom(kept) : rows;
     return rows.map((r) =>
       renderToStaticMarkup(createElement(RowEditor, {
-        row: r, kept: on, ticked: true, ownersList: "o",
+        row: r, rows, kept: on, ticked: true, ownersList: "o",
         onTick: () => {}, onCell: () => {}, onClose: () => {},
       })),
     ).join("");
@@ -141,7 +141,9 @@ describe("the plan card's Waits on control", () => {
   });
 
   it("counts only the ticked rows: an unticked row is dropped (owner, 2026-10-18)", () => {
-    const html = editors([row("t2", ["t1", "t3"])], [row("t1"), row("t2", ["t1", "t3"])]);
+    // t3 is unticked. The editors draw every row, and t2 counts t1 only.
+    const all = [row("t1"), row("t2", ["t1", "t3"]), row("t3")];
+    const html = editors(all, all.slice(0, 2));
     expect(html.split('aria-label="Waits on (for t2)"')[1].split("</button>")[0]).toContain("· 1</span>");
   });
 
@@ -302,7 +304,7 @@ describe("the plan card with unassigned rows", () => {
   const editor = (r: unknown) => {
     const [one] = planRowsFrom([r]);
     return renderToStaticMarkup(createElement(RowEditor, {
-      row: one, kept: [one], ticked: true, ownersList: "o",
+      row: one, rows: [one], kept: [one], ticked: true, ownersList: "o",
       onTick: () => {}, onCell: () => {}, onClose: () => {},
     }));
   };

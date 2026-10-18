@@ -1751,12 +1751,21 @@ def _w1() -> str:
 
 
 def test_w1_never_asks_for_phases() -> None:
-    """§10.6 item 10. The owner declined phases (2026-09-24). Start dates and
-    `blocks` links carry the order, and sub-projects carry the grouping. The
-    word coming back into W1 is the design coming back."""
+    """§10.6 item 10. The owner declined phase TASKS (2026-09-24). Start
+    dates and `blocks` links carry the order, and sub-projects carry the
+    grouping. Since 2026-10-18 (§27) W1 names the optional `phase` LABEL,
+    which the card folds rows under and which makes no task. Any other
+    mention of a phase is the declined design coming back."""
     import re
 
-    assert not re.search(r"phase", _w1(), re.I), "W1 asks for phases again"
+    w1 = " ".join(_w1().split())
+    label = (
+        "To group tasks on the card, give each one the optional `phase` label. "
+        "A phase is a display label and never a task."
+    )
+    assert label in w1
+    assert "Do not group tasks under parent tasks." in w1
+    assert not re.search(r"phase", w1.replace(label, ""), re.I), "W1 asks for phases again"
 
 
 def test_w1_names_the_plan_inputs_s7d_added() -> None:

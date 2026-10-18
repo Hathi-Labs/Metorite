@@ -13,6 +13,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { TEMPLATE_REGISTRY } from "./genUITemplates";
+import { RowEditor } from "./PlanCardBody";
+import { planRowsFrom, planSubmit } from "@/app/projects/lib/planCard";
 
 const TASKS = [
   { key: "t1", title: "Build the memory store", owner: "ayush@x.io", effort_mins: 240,
@@ -121,6 +123,54 @@ describe("the plan card at rest", () => {
   it("cannot send with no chat to send to", () => {
     const html = card({ project: { name: "Memory" }, tasks: TASKS });
     expect(html).toMatch(/data-plan-submit="" disabled=""/);
+  });
+});
+
+// ── Review of #1136 ─────────────────────────────────────────────────────────
+
+describe("the open row and the answered card", () => {
+  const scored = { ...TASKS[0], impact: 4, urgency: 3, effort: 2, priority: 24 };
+
+  it("shows the priority score in the open row, never on the line at rest", () => {
+    const [row] = planRowsFrom([scored]);
+    const open = renderToStaticMarkup(createElement(RowEditor, {
+      row, rows: [row], kept: [row], ticked: true, ownersList: "o",
+      onTick: () => {}, onCell: () => {}, onClose: () => {},
+    }));
+    expect(open).toContain('title="Priority score, a sorting aid"');
+    expect(open).toContain("Priority 24 · a sorting aid");
+    expect(plan([scored])).not.toContain("Priority 24");
+  });
+
+  it("names a row on a circle and turns the button off", () => {
+    const html = plan([
+      { ...TASKS[0], after: ["t2"] }, { ...TASKS[1], after: ["t1"] },
+    ]);
+    expect(html.match(/>Waits in a circle<\/span>/g) ?? []).toHaveLength(2);
+    expect(html).toMatch(/data-plan-submit="" disabled=""/);
+  });
+
+  const answeredCard = (answered: string) =>
+    renderToStaticMarkup(createElement(() =>
+      TEMPLATE_REGISTRY.planCard(
+        { title: "Plan · Memory", project: { name: "Memory" }, tasks: TASKS },
+        { onAction: () => {}, answered },
+      )));
+
+  it("draws a submitted card locked after a reload, with the rows it left out unticked", () => {
+    const sent = planSubmit({ name: "Memory" }, "Memory", planRowsFrom(TASKS.slice(0, 3)));
+    const html = answeredCard(`Review plan — ${JSON.stringify(sent)}`);
+    expect(html).toContain('data-plan-done="sent"');
+    expect(html).not.toContain("data-plan-submit");
+    expect(html).not.toContain(">Edit several<");
+    expect(html.match(/data-plan-off=""/g) ?? []).toHaveLength(1);
+    for (const line of html.match(/<button data-plan-line[^>]*>/g) ?? []) expect(line).toContain('disabled=""');
+  });
+
+  it("draws a cancelled card locked after a reload", () => {
+    const html = answeredCard("Cancel");
+    expect(html).toContain('data-plan-done="cancelled"');
+    expect(html).toContain("Nothing was created.");
   });
 });
 

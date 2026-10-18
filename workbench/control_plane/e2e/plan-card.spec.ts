@@ -56,8 +56,11 @@ test.describe("The plan card reads first", () => {
     await line(page, "Build the memory store and write path").focus();
     await page.keyboard.press("Enter");
     await expect(card(page).getByRole("textbox", { name: "Task" })).toHaveValue("Build the memory store and write path");
+    // The priority score shows in the open row, with its tip.
+    await expect(card(page).locator("[data-plan-priority]")).toHaveText("Priority 24 · a sorting aid");
     await card(page).getByRole("button", { name: "Done", exact: true }).click();
     await expect(line(page, "Build the memory store and write path")).toBeFocused();
+    await expect(card(page).getByText("Priority 24")).toHaveCount(0);
   });
 
   test("the ticks count in the footer, and the answer keeps the old shape", async ({ page }) => {
@@ -131,9 +134,14 @@ test.describe("The plan card reads first", () => {
     await expect(card(page).getByText("Nothing was created.")).toBeVisible();
   });
 
-  test("the name renames in the summary line", async ({ page }) => {
+  test("the name renames in the summary line, and Escape reverts it", async ({ page }) => {
     await installPlanScenario(page);
     await startPlanTurn(page);
+    // Escape puts the old name back.
+    await card(page).locator("[data-plan-name]").click();
+    await card(page).getByRole("textbox", { name: "Project name" }).fill("Scrap this");
+    await page.keyboard.press("Escape");
+    await expect(card(page).locator("[data-plan-name]")).toContainText("Personalization & Memory System");
     await card(page).locator("[data-plan-name]").click();
     const name = card(page).getByRole("textbox", { name: "Project name" });
     await name.fill("Memory v1");

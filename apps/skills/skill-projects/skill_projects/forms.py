@@ -955,7 +955,8 @@ async def propose_plan(
     empty when the member gives no owner or asks for none, and do not ask.
     A start after the due date, an unknown key or a circle of blocks is
     refused before the card. impact, urgency and effort (1 to 5) make a
-    priority score the card shows and nothing stores. The card shows each
+    priority score the card shows in each task's open row and nothing
+    stores. The card shows each
     owner's skill fit and hours across the plan, and marks a row that lacks
     either. An unassigned row shows neither, and the member can give it an
     owner on the card. A mark warns and never blocks. risks is the three

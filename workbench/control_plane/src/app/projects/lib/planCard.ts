@@ -541,6 +541,10 @@ export function rowBadges(row: PlanRow): PlanBadge[] {
 }
 
 export interface PlanGroup {
+  /** The group's identity. A phase that the model names "Other tasks" is
+   *  still its own group: the rows with no phase use a sentinel key. */
+  key: string;
+  /** The label the fold shows. */
   phase: string;
   rows: PlanRow[];
 }
@@ -548,6 +552,9 @@ export interface PlanGroup {
 /** The label of the group for the rows that carry no phase, in a plan
  *  where other rows carry one. */
 export const NO_PHASE = "Other tasks";
+/** The key of that group. A phase key always starts with "phase:", so no
+ *  phase label can reach it. */
+export const NO_PHASE_KEY = "no-phase";
 
 /**
  * The rows under their phases, in the order each phase first shows, or
@@ -555,14 +562,16 @@ export const NO_PHASE = "Other tasks";
  */
 export function planGroups(rows: PlanRow[]): PlanGroup[] | null {
   if (!rows.some((r) => r.phase)) return null;
-  const groups = new Map<string, PlanRow[]>();
+  const groups = new Map<string, PlanGroup>();
   for (const r of rows) {
-    const phase = r.phase || NO_PHASE;
-    groups.set(phase, [...(groups.get(phase) ?? []), r]);
+    const key = r.phase ? `phase:${r.phase}` : NO_PHASE_KEY;
+    const g = groups.get(key) ?? { key, phase: r.phase || NO_PHASE, rows: [] };
+    g.rows.push(r);
+    groups.set(key, g);
   }
-  const out = [...groups.entries()].map(([phase, rs]) => ({ phase, rows: rs }));
+  const out = [...groups.values()];
   // The rows with no phase go last, whatever their place.
-  return [...out.filter((g) => g.phase !== NO_PHASE), ...out.filter((g) => g.phase === NO_PHASE)];
+  return [...out.filter((g) => g.key !== NO_PHASE_KEY), ...out.filter((g) => g.key === NO_PHASE_KEY)];
 }
 
 /** What a ticked row lacks before the plan can go, in two or three words,
@@ -589,9 +598,17 @@ export function withOwner(rows: PlanRow[], keys: ReadonlySet<string>, owner: str
 
 /** Bulk: move the start and the due date of every selected row together. */
 export function withShift(rows: PlanRow[], keys: ReadonlySet<string>, days: number): PlanRow[] {
-  if (!Number.isFinite(days) || days === 0) return rows;
-  const by = Math.round(days);
-  return rows.map((r) => (keys.has(r.key) ? { ...r, start: shiftDay(r.start, by), due: shiftDay(r.due, by) } : r));
+  // Whole days only. A half day has no date, and rounding moved +1.5 by 2
+  // but -1.5 by 1 (review of #1136).
+  if (!Number.isInteger(days) || days === 0) return rows;
+  return rows.map((r) => (keys.has(r.key) ? { ...r, start: shiftDay(r.start, days), due: shiftDay(r.due, days) } : r));
+}
+
+/** The bulk bar's day field, as whole days, or `null` when it holds
+ *  anything else ("1.5", "", "2x"). The Move button stays off on `null`. */
+export function wholeDays(text: string): number | null {
+  const t = text.trim();
+  return /^-?\d+$/.test(t) ? Number(t) : null;
 }
 
 /** The owners already on the plan, for the owner field's suggestions. */
@@ -615,3 +632,88 @@ export function toggled(set: ReadonlySet<string>, key: string, on: boolean): Set
 /** The answer Cancel sends. It is no submit (`forms._answer` reads only
  *  "<label> — <json>"), so the tool says "not submitted" and writes nothing. */
 export const PLAN_CANCEL = "Cancel";
+
+/**
+ * The rows `row` may wait on, as the card offers them (review of #1136).
+ * The cycle exclusion reads ALL the rows, ticked or not: an unticked row
+ * still carries its links, and comes back with them when it is ticked
+ * again. Only the ticked rows are offered as choices.
+ */
+export function afterChoices(row: PlanRow, rows: PlanRow[], kept: PlanRow[]): PlanRow[] {
+  const allowed = new Set(afterOptions(row, rows).map((r) => r.key));
+  return kept.filter((r) => allowed.has(r.key));
+}
+
+/**
+ * The ticked rows that sit on a circle of `after` links, or an empty set.
+ * Kahn's sort, as `forms._block_cycle` does: what cannot be removed is on a
+ * circle. The server refuses a circle and the member loses the edits, so
+ * the card names it on the row and holds the submit.
+ */
+export function planCycle(kept: PlanRow[]): Set<string> {
+  const keys = new Set(kept.map((r) => r.key));
+  const waiting = new Map(kept.map((r) => [r.key, new Set(r.after.filter((k) => keys.has(k)))]));
+  const ready = [...waiting].filter(([, b]) => b.size === 0).map(([k]) => k);
+  while (ready.length) {
+    const done = ready.pop() as string;
+    waiting.delete(done);
+    for (const [k, before] of waiting) {
+      if (before.delete(done) && before.size === 0) ready.push(k);
+    }
+  }
+  return new Set(waiting.keys());
+}
+
+/** The words of a ticked row on a circle. */
+export const CYCLE_BADGE = "Waits in a circle";
+
+/** Why the submit is off, or "": `planIncomplete`, then a circle. */
+export function planBlocked(name: string, kept: PlanRow[]): string {
+  const missing = planIncomplete(name, kept);
+  if (missing) return missing;
+  return planCycle(kept).size ? "Some tasks wait on each other in a circle. Fix Waits on." : "";
+}
+
+/** "Priority 12 · a sorting aid", or "" when the row has no score. The
+ *  open row shows it, so the line at rest stays short (review of #1136). */
+export function priorityLine(row: PlanRow): string {
+  return row.priority == null ? "" : `Priority ${row.priority} · a sorting aid`;
+}
+
+export interface AnsweredPlan {
+  done: "sent" | "cancelled";
+  name: string;
+  rows: PlanRow[];
+  off: Set<string>;
+}
+
+/**
+ * The card as the member left it, from the answer the run already got
+ * (`lib/askAnswers.ts`). A reload draws an answered card locked, as the
+ * option picker does. A submit names the rows it sent, so the rows it left
+ * out draw unticked. Each sent row keeps the card's own read-only fields
+ * (the fit, the marks, the phase) by its key. `null` with no answer.
+ */
+export function answeredPlan(name: string, rows: PlanRow[], answered: string): AnsweredPlan | null {
+  if (!answered) return null;
+  if (answered === PLAN_CANCEL || !answered.includes(" — ")) return { done: "cancelled", name, rows, off: new Set() };
+  let sent: { project?: { name?: unknown }; tasks?: unknown };
+  try {
+    sent = JSON.parse(answered.slice(answered.indexOf(" — ") + 3));
+  } catch {
+    return { done: "sent", name, rows, off: new Set() };
+  }
+  const got = planRowsFrom(sent.tasks);
+  const byKey = new Map(got.map((r) => [r.key, r]));
+  const merged = rows.map((r) => {
+    const g = byKey.get(r.key);
+    return g ? { ...r, title: g.title, owner: g.owner, effort_mins: g.effort_mins, start: g.start, due: g.due, after: g.after } : r;
+  });
+  const known = new Set(rows.map((r) => r.key));
+  return {
+    done: "sent",
+    name: typeof sent.project?.name === "string" ? sent.project.name : name,
+    rows: [...merged, ...got.filter((r) => !known.has(r.key))],
+    off: new Set(rows.filter((r) => !byKey.has(r.key)).map((r) => r.key)),
+  };
+}

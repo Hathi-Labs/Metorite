@@ -309,8 +309,9 @@ draw one template each. W4 and W5 stay instructions over the tools.
    a date. A task that lacks one of the four is not proposed.
    ⚠️ **Amended 2026-10-17 (§26).** The owner is optional. A task with no
    owner is an unassigned task, and the agent does not ask for one.
-4. Priority score is `impact × urgency × effort`, each 1 to 5, shown per task
-   and never stored. It is a sorting aid, not a field.
+4. Priority score is `impact × urgency × effort`, each 1 to 5, shown in each
+   task's open row and never stored. It is a sorting aid, not a field.
+   ⚠️ **Amended 2026-10-18 (§27).** The line at rest leaves it out.
 5. The agent names three ways the plan fails, before it asks for approval.
    That step was the satellite skill's inversion check, and it stays.
 6. On approval, `create_project` and `create_task` run as **one class B
@@ -6237,7 +6238,8 @@ that "the UI looks poor". The card drew a full form for each task. On
    groups the rows under it, and each group folds. The label is for display.
    The card never sends it, and the server never stores it or makes a task.
 6. **Marks are badges.** "Overloaded", "Skill gap", "Not in directory" and
-   "Unknown owner". The fit, the hours and the full mark show in the open row.
+   "Unknown owner". The fit, the hours, the full mark and the priority score
+   show in the open row.
    An unassigned row shows its owner chip as "Unassigned", in a neutral tone.
 7. **Edit several.** The member picks rows, then sets one owner or moves all
    their dates by the same count of days.

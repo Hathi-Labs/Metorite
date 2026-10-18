@@ -198,7 +198,7 @@ export const TEMPLATE_CATALOG: TemplateSpec[] = [
   },
   {
     name: "planCard",
-    summary: "An editable project plan (title, owner, effort, start, due, after per task, with a priority score; the owner's fit, hours and marks read-only) that submits the ticked rows back — pair with hitl. An empty owner is an unassigned task: no fit, no hours. A phase groups rows under a fold, and is never sent back.",
+    summary: "An editable project plan (title, owner, effort, start, due, after per task, with a priority score in the open row; the owner's fit, hours and marks read-only) that submits the ticked rows back — pair with hitl. An empty owner is an unassigned task: no fit, no hours. A phase groups rows under a fold, and is never sent back.",
     data: "{ title?, description?, submitLabel?, project:{ name, parent?, description? }, tasks:[{ key, title, owner?, effort_mins, start?, due, after?:[key], phase?, important?:bool, leveraged?:bool, impact?, urgency?, effort?, priority?, fit?, hours?, marks?:[string], warnings?:[string] }], capacity?, warnings?:[string], risks?:[string] }",
   },  {
     name: "chart",
@@ -1681,7 +1681,7 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
     <div data-plan-card="" className="@container min-w-0" style={CARD_BOX}>
       <TemplateHead icon="list-todo" title="Plan" gap={8} />
       <TemplateBody>
-        <PlanCardBody data={data} onAction={ctx?.onAction} />
+        <PlanCardBody data={data} onAction={ctx?.onAction} answered={ctx?.answered ?? ""} />
       </TemplateBody>
     </div>
   );

@@ -18,6 +18,7 @@ export const PLAN_TASKS = [
     key: "t1", title: "Build the memory store and write path", owner: "ayush@fracktal.in",
     effort_mins: 240, start: "2026-10-22", due: "2026-10-24", phase: "Foundation",
     fit: "Python, Postgres", hours: "fits, 6 h spare before the plan", marks: [], warnings: [],
+    impact: 4, urgency: 3, effort: 2, priority: 24,
   },
   {
     key: "t2", title: "Design the recall API", owner: "", effort_mins: 120,

@@ -39,7 +39,9 @@ import {
   UNASSIGNED_LABEL,
   PLAN_CANCEL,
   afterCount,
-  afterOptions,
+  CYCLE_BADGE,
+  afterChoices,
+  answeredPlan,
   blankRow,
   createLabel,
   effortIn,
@@ -56,18 +58,21 @@ import {
   planDay,
   planFacts,
   planGroups,
-  planIncomplete,
+  planBlocked,
+  planCycle,
   planOwners,
   planRowsFrom,
   planSubmitTicked,
   planSummary,
   planTimeline,
+  priorityLine,
   rowBadges,
   rowProblem,
   rowSpan,
   summaryParts,
   toggled,
   waitsOnName,
+  wholeDays,
   withAfter,
   withOwner,
   withShift,
@@ -90,27 +95,37 @@ const list = (v: unknown): string[] => (Array.isArray(v) ? v.map((x) => str(x)).
 /** The words a sent card shows: the option picker's word. */
 const SENT = "Sent";
 
-export default function PlanCardBody({ data, onAction }: {
+export default function PlanCardBody({ data, onAction, answered = "" }: {
   data: Data;
   onAction?: (message: string) => void;
+  /** The answer the run already got (`lib/askAnswers.ts`). A reload then
+   *  draws the card locked, as the member left it, as the option picker does. */
+  answered?: string;
 }) {
   const project = (data.project ?? {}) as Data;
-  const [name, setName] = useState(str(project.name));
+  // One read of the answer, at mount: the card as the member left it.
+  const [past] = useState(() => answeredPlan(str(project.name), planRowsFrom(data.tasks), answered));
+  const [name, setName] = useState(past?.name ?? str(project.name));
   const [naming, setNaming] = useState(false);
-  const [rows, setRows] = useState<PlanRow[]>(() => planRowsFrom(data.tasks));
-  const [off, setOff] = useState<Set<string>>(() => new Set());
+  const [nameBefore, setNameBefore] = useState("");
+  const [rows, setRows] = useState<PlanRow[]>(() => past?.rows ?? planRowsFrom(data.tasks));
+  const [off, setOff] = useState<Set<string>>(() => past?.off ?? new Set());
   const [open, setOpen] = useState<string | null>(null);
   const [bulk, setBulk] = useState(false);
   const [picked, setPicked] = useState<Set<string>>(() => new Set());
   const [bulkOwner, setBulkOwner] = useState("");
   const [bulkDays, setBulkDays] = useState("");
-  const [done, setDone] = useState<"" | "sent" | "cancelled">("");
+  const [clicked, setDone] = useState<"" | "sent" | "cancelled">("");
+  // An answer that lands after mount locks the card too.
+  const done = clicked || past?.done || (answered ? (answered === PLAN_CANCEL ? "cancelled" : "sent") : "");
   const root = useRef<HTMLDivElement | null>(null);
   const ownersList = useId();
 
   const year = new Date().getFullYear();
   const kept = keptRows(rows, off);
-  const blocked = planIncomplete(name, kept);
+  const blocked = planBlocked(name, kept);
+  const cycle = planCycle(kept);
+  const days = wholeDays(bulkDays);
   const groups = planGroups(rows);
   const timeline = planTimeline(kept);
   const parts = summaryParts(planSummary(kept), year);
@@ -164,6 +179,7 @@ export default function PlanCardBody({ data, onAction }: {
       <RowEditor
         key={r.key}
         row={r}
+        rows={rows}
         kept={kept}
         ticked={!off.has(r.key)}
         ownersList={ownersList}
@@ -180,6 +196,7 @@ export default function PlanCardBody({ data, onAction }: {
         locked={locked}
         bulk={bulk}
         picked={picked.has(r.key)}
+        cyclic={cycle.has(r.key)}
         onTick={(on) => setOff((s) => toggled(s, r.key, !on))}
         onOpen={() => (bulk ? setPicked((s) => toggled(s, r.key, !s.has(r.key))) : openRow(r.key))}
         onEdit={() => openRow(r.key)}
@@ -203,6 +220,8 @@ export default function PlanCardBody({ data, onAction }: {
               if (e.key === "Enter" || e.key === "Escape") {
                 e.preventDefault();
                 e.stopPropagation();
+                // Escape puts the name back as it was before the edit.
+                if (e.key === "Escape") setName(nameBefore);
                 endNaming();
               }
             }}
@@ -216,7 +235,7 @@ export default function PlanCardBody({ data, onAction }: {
             disabled={locked}
             data-plan-name=""
             aria-label={`Project name: ${name.trim() || "none"}. Rename`}
-            onClick={() => setNaming(true)}
+            onClick={() => { setNameBefore(name); setNaming(true); }}
           >
             <span className="min-w-0 break-words font-semibold text-foreground">{name.trim() || "Name the project"}</span>
             {!locked && <Icon name="Pencil" size={12} className="shrink-0" />}
@@ -288,12 +307,12 @@ export default function PlanCardBody({ data, onAction }: {
             </Button>
           </span>
           <span className="flex items-center gap-1">
-            <Input inputSize="sm" type="number" step={1} className="w-16" value={bulkDays}
+            <Input inputSize="sm" type="number" step={1} inputMode="numeric" className="w-16" value={bulkDays}
               aria-label="Days to move the picked tasks by" placeholder="0"
               onChange={(e) => setBulkDays(e.target.value)} />
             <span>days</span>
-            <Button variant="secondary" size="sm" disabled={picked.size === 0 || !Math.round(Number(bulkDays))}
-              onClick={() => setRows((p) => withShift(p, picked, Number(bulkDays)))}>
+            <Button variant="secondary" size="sm" disabled={picked.size === 0 || !days}
+              onClick={() => { if (days) setRows((p) => withShift(p, picked, days)); }}>
               Move dates
             </Button>
           </span>
@@ -311,7 +330,7 @@ export default function PlanCardBody({ data, onAction }: {
       {groups ? (
         <div className="flex flex-col gap-1">
           {groups.map((g) => (
-            <CollapsibleSection key={g.phase} label={g.phase} count={g.rows.length}>
+            <CollapsibleSection key={g.key} label={g.phase} count={g.rows.length}>
               <ul className="flex flex-col gap-1">{g.rows.map(drawRow)}</ul>
             </CollapsibleSection>
           ))}
@@ -379,13 +398,15 @@ export default function PlanCardBody({ data, onAction }: {
 }
 
 /** One task, read first: the tick, the line that opens it, and the pencil. */
-export function RowLine({ row, year, ticked, locked, bulk, picked, onTick, onOpen, onEdit }: {
+export function RowLine({ row, year, ticked, locked, bulk, picked, cyclic = false, onTick, onOpen, onEdit }: {
   row: PlanRow;
   year: number;
   ticked: boolean;
   locked: boolean;
   bulk: boolean;
   picked: boolean;
+  /** The row sits on a circle of Waits on links among the ticked rows. */
+  cyclic?: boolean;
   onTick: (on: boolean) => void;
   onOpen: () => void;
   onEdit: () => void;
@@ -395,7 +416,7 @@ export function RowLine({ row, year, ticked, locked, bulk, picked, onTick, onOpe
   const effort = effortLabel(row.effort_mins);
   const span = rowSpan(row, year);
   const badges = rowBadges(row);
-  const problem = ticked ? rowProblem(row) : "";
+  const problem = !ticked ? "" : rowProblem(row) || (cyclic ? CYCLE_BADGE : "");
   const who = nobody ? UNASSIGNED_LABEL : ownerLabel(row.owner);
   const said = [who, effort, span, ...badges.map((b) => b.label), problem].filter(Boolean).join(", ");
   const { attachLabel, onPointerEnter, onPointerLeave, tip } = useOverflowTip(title);
@@ -479,8 +500,10 @@ export function RowLine({ row, year, ticked, locked, bulk, picked, onTick, onOpe
 const FIELD_LABEL = "flex min-w-0 flex-col gap-0.5 text-[11px] text-muted-foreground";
 
 /** One task, open: its fields, its read-only fit and hours, and Waits on. */
-export function RowEditor({ row, kept, ticked, ownersList, onTick, onCell, onClose }: {
+export function RowEditor({ row, rows, kept, ticked, ownersList, onTick, onCell, onClose }: {
   row: PlanRow;
+  /** Every row, ticked or not: the cycle check reads them all. */
+  rows: PlanRow[];
   kept: PlanRow[];
   ticked: boolean;
   ownersList: string;
@@ -491,7 +514,8 @@ export function RowEditor({ row, kept, ticked, ownersList, onTick, onCell, onClo
   const [unit, setUnit] = useState<EffortUnit>(() => effortUnit(row.effort_mins));
   const [effortText, setEffortText] = useState(() => String(effortIn(row.effort_mins, effortUnit(row.effort_mins))));
   const title = row.title.trim() || "Untitled task";
-  const options = afterOptions(row, kept);
+  const options = afterChoices(row, rows, kept);
+  const priority = priorityLine(row);
   const facts = planFacts(row, kept);
   const others = kept.filter((r) => r.key !== row.key).length;
   return (
@@ -554,6 +578,11 @@ export function RowEditor({ row, kept, ticked, ownersList, onTick, onCell, onClo
             <Input inputSize="sm" type="date" value={row.due} onChange={(e) => onCell("due", e.target.value)} />
           </label>
         </div>
+        {priority && (
+          <div className="text-[11px] tabular-nums text-muted-foreground" title="Priority score, a sorting aid" data-plan-priority="">
+            {priority}
+          </div>
+        )}
         {facts.length > 0 && (
           <div className="break-words text-[11px] text-muted-foreground" data-plan-facts="">{facts.join(" · ")}</div>
         )}
