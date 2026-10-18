@@ -20219,7 +20219,7 @@ in a Filter. When the mailbox check is gone, three fences fail. When the cap is 
 
 - **Push the date bounds into `email_message_search`.** The cap of 20 000 comes before the
   folder, date, sender and read filters. So when a word is very common, a dated search reaches
-  only the newest 20 000 matches, and it can give 0 while older mail matches. The assistant
+  only the newest 20 000 matches. It can give 0 while older mail matches. The assistant
   says so, and it asks for a more specific word. With the dates in the function, a dated
   search reaches older mail.
 
