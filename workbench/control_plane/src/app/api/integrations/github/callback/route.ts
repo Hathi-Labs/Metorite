@@ -63,7 +63,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const forwarded = new URLSearchParams();
   for (const name of FORWARDED_PARAMS) {
     const value = req.nextUrl.searchParams.get(name);
-    if (value) forwarded.set(name, value);
+    // A `state` that GitHub sends goes on even when it is empty, so the
+    // gateway refuses it (fix round 1, item 9). Only an ABSENT state is the
+    // fallback of the pending connect.
+    if (value || (name === "state" && value !== null)) forwarded.set(name, value);
   }
   const qs = forwarded.toString();
   const upstream = `${GATEWAY_URL}/integrations/github/app/callback` + (qs ? `?${qs}` : "");

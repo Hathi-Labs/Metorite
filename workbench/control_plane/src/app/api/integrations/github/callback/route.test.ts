@@ -3,6 +3,7 @@
 // Mutations, red here (run 2026-10-18):
 //  B1 forward every query name -> "passes only the four names on".
 //  B2 pass any Location on -> "refuses a Location the gateway cannot send".
+//  B3 (fix round 1, item 9) drop an empty `state` -> "an empty state goes on, an absent one does not".
 import { readFileSync } from "node:fs";
 import { NextRequest, NextResponse } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -66,6 +67,15 @@ describe("the BFF GitHub App callback", () => {
     await callback("code=c&installation_id=1&setup_action=install&state=s&org=evil&member=x");
     const sent = new URL(calls[0].url).searchParams;
     expect([...sent.keys()].sort()).toEqual(["code", "installation_id", "setup_action", "state"]);
+  });
+
+  it("an empty state goes on, an absent one does not", async () => {
+    stubGateway(redirectTo(FAILED));
+    await callback("code=c&installation_id=1&state=");
+    expect(new URL(calls[0].url).searchParams.has("state")).toBe(true);
+    stubGateway(redirectTo(FAILED));
+    await callback("code=c&installation_id=1");
+    expect(new URL(calls[0].url).searchParams.has("state")).toBe(false);
   });
 
   it("passes on every code that the gateway callback can send", async () => {

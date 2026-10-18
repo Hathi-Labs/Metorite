@@ -39,6 +39,17 @@ R7, the mutations. Each one turns a test here red (run 2026-10-18):
 * C-M8 ``_org_github_token`` reads ``token_or_none`` -> ``test_c13_*``.
 * C-M9 drop ``require_permission`` from the callback -> ``test_c9_*``.
 
+Fix round 1, each one red when run:
+
+* 9-M1 ``_state_matches`` skips the nonce compare ->
+  ``test_item9_a_state_of_an_older_start_is_bad_state``.
+* 9-M2 an empty ``state`` counts as absent (``if state:``) ->
+  ``test_item9_a_state_that_github_sends_empty_is_bad_state``.
+* F4-M1 the start writes the pending key with ``nx=True`` again ->
+  ``test_f4_a_cancelled_confirm_does_not_expire_the_next_connect``.
+* F5-M3 ``installation_of`` ignores the flag ->
+  ``test_f5_the_flag_off_stops_every_app_reader_and_keeps_a_token_row``.
+
 Run (real Postgres, private Redis)::
 
     TENANT_LADDER_DATABASE_URL=... GITHUB_R8_REDIS_URL=redis://127.0.0.1:<port>/0 \\
@@ -540,3 +551,91 @@ async def test_the_account_card_reads_the_app_row(world) -> None:
     body = resp.json()
     assert (body["connected"], body["auth"], body["login"]) == (True, "app", f"acct-{INSTALL_ORG}")
     assert "token" not in json.dumps({k: v for k, v in body.items() if k.startswith("gh_")})
+
+
+# ── Fix round 1: the state nonce (item 9), the pending key (F4), the switch (F5)
+
+
+async def test_item9_a_state_of_an_older_start_is_bad_state(world) -> None:
+    """A state that verifies for this org and member, but of an OLDER start,
+    does not match the nonce of the pending connect."""
+    w = world
+    admin = g.user(ADMIN_A, w.p.org_a)
+    older = await _start(w, admin)
+    newer = await _start(w, admin)
+    assert older != newer
+    resp = await _callback(w, admin, code="CODE-ADMIN", installation_id=INSTALL_ORG,
+                           state=older)
+    assert _code_of(resp) == "bad_state"
+    assert w.gh.requests == []
+    await _start(w, admin)
+    state = await _start(w, admin)
+    resp = await _callback(w, admin, code="CODE-ADMIN", installation_id=INSTALL_ORG,
+                           state=state)
+    assert _code_of(resp) == "confirm"
+
+
+async def test_item9_a_state_that_github_sends_empty_is_bad_state(world) -> None:
+    w = world
+    admin = g.user(ADMIN_A, w.p.org_a)
+    await _start(w, admin)
+    resp = await _call(w, admin, "GET",
+                       f"/integrations/github/app/callback?code=CODE-ADMIN"
+                       f"&installation_id={INSTALL_ORG}&state=")
+    assert _code_of(resp) == "bad_state"
+
+
+async def test_f4_a_cancelled_confirm_does_not_expire_the_next_connect(world) -> None:
+    """The admin reached the confirm and pressed Cancel. The next Connect
+    starts clean, and its callback reaches the confirm again."""
+    w = world
+    admin = g.user(ADMIN_A, w.p.org_a)
+    state = await _start(w, admin)
+    resp = await _callback(w, admin, code="CODE-ADMIN", installation_id=INSTALL_ORG,
+                           state=state)
+    assert _code_of(resp) == "confirm"
+    # No confirm (the dialog was cancelled). Connect again.
+    state = await _start(w, admin)
+    resp = await _callback(w, admin, code="CODE-ADMIN", installation_id=INSTALL_ORG,
+                           state=state)
+    assert _code_of(resp) == "confirm"
+
+
+async def test_f5_the_flag_off_stops_every_app_reader_and_keeps_a_token_row(
+    world, monkeypatch,
+) -> None:
+    from acb_common import get_settings
+    from acb_common.db import bind_tenant, clear_tenant, release_tenant
+    from gateway.connections import github as github_connection
+    from gateway.db import tenant_session
+    from gateway.routes import integrations
+    from gateway.routes.projects import refs
+
+    from tests.unit._tenant_ladder import tenant_engine_scope
+
+    w = world
+    g.seed_github_row(w.p, w.p.org_a, INSTALL_ORG)
+    async with tenant_engine_scope(g.app_dsn(w.p)):
+        async with tenant_session(w.p.org_b) as db:
+            await github_connection.save_token(
+                db, w.p.org_b, access_token="ghp_TOKEN_ROW_OF_B", login="b",
+                scopes=("repo",), connected_by=ADMIN_B)
+    monkeypatch.setattr(get_settings(), "github_app_enabled", False)
+    scope = clear_tenant()
+    bind_tenant(w.p.org_a)
+    try:
+        async with tenant_engine_scope(g.app_dsn(w.p)):
+            assert await github_connection.token_or_none(w.p.org_a) is None
+            assert await integrations._github_connected() is False
+            result = await integrations._test_github(g.user(ADMIN_A, w.p.org_a))
+            started = await refs._refresh_checks([{
+                "provider": "github", "kind": "pull_request", "ref": "acme/w#1",
+                "head_sha": "a" * 40, "state": "open", "checks_state": None,
+                "checks_fetched_at": None}])
+            # A token row of another org keeps working.
+            assert await github_connection.token_or_none(w.p.org_b) == "ghp_TOKEN_ROW_OF_B"
+    finally:
+        release_tenant(scope)
+    assert result == {"ok": False, "detail": "The GitHub App is turned off on this server."}
+    assert started == 0
+    assert w.gh.token_requests == 0, "no installation token while the switch is off"

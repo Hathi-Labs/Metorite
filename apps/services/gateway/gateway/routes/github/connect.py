@@ -16,9 +16,11 @@ session's. Nothing in a query string or a body names either (R11).
 
 **The start** signs a state (purpose ``github_install``, the org, the member,
 ten minutes) and writes the PENDING CONNECT ``key("github", "connect",
-<member>)`` with ``SET NX EX 600`` through the tenant Redis wrapper. GitHub's
-docs do not promise that ``state`` comes back (U1), so the pending connect is
-what binds the callback (GH-E3).
+<member>)`` with ``SET EX 600`` through the tenant Redis wrapper. It holds the
+nonce of the state. GitHub's docs do not promise that ``state`` comes back
+(U1), so the pending connect is what binds the callback (GH-E3). ⚠️ A new
+start REPLACES a pending connect (fix round 1, F4). With ``NX`` a cancelled
+confirm left a ``confirm`` record, and the next Connect read ``expired``.
 
 **The callback** runs the checks of §7.3, in order. Each refusal redirects to
 ``/integrations?view=connections&github=<code>``:
@@ -27,8 +29,13 @@ what binds the callback (GH-E3).
    the BFF turns into ``forbidden``);
 2. the pending connect, taken with ``GETDEL``, else ``expired``. It trusts
    nothing in the query string;
-3. a state that is present must verify for this org and member, else
-   ``bad_state``;
+3. a state that GitHub SENDS (an empty one too) must verify for this org
+   and member, and its nonce must equal the nonce of the pending connect, in
+   constant time (``hmac.compare_digest``), else ``bad_state``. So a state of
+   an older start, or of another tab, is refused (fix round 1, item 9). A
+   callback with NO ``state`` is the fallback of §7.3 step 3: the pending
+   connect alone binds it, and the line ``github.connect.state_absent`` lets
+   GH-8 measure U1;
 4. ``setup_action=request`` writes nothing, and answers ``requested``;
 5. the code is exchanged for a USER token, held for this request only;
 6. ``GET /user/installations`` must list the installation, else ``not_yours``;
@@ -58,6 +65,7 @@ reach a log line, a redirect URL, the database or Redis. Fence:
 
 from __future__ import annotations
 
+import hmac
 import json
 import re
 from typing import Any
@@ -304,6 +312,17 @@ async def _verify_installation(
 # ── Routes ──────────────────────────────────────────────────────────────────
 
 
+def _state_matches(state: str, pending: dict[str, Any], org: str, member: str) -> bool:
+    """§7.3 step 3: the state verifies for this org and member, and its nonce
+    is the nonce of the pending connect, compared in constant time."""
+    payload = verify_state(state, purpose=STATE_PURPOSE) if state else None
+    if payload is None or payload["org"] != org or payload["member"] != member:
+        return False
+    sent = str(payload.get("nonce") or "")
+    held = str(pending.get("nonce") or "")
+    return bool(sent and held) and hmac.compare_digest(sent.encode(), held.encode())
+
+
 @router.post("/app/start", response_model=StartOut, dependencies=[_REQUIRE_MANAGE])
 async def start_github_app(user: UserContext = Depends(get_current_user)) -> StartOut:
     """The install URL of the App, with a signed state (§7.1)."""
@@ -322,9 +341,10 @@ async def start_github_app(user: UserContext = Depends(get_current_user)) -> Sta
     if opened is None:  # a state that this process just signed always opens
         raise HTTPException(status_code=503, detail="signing_unavailable")
     try:
-        # NX: a connect that is pending stays. Its callback still works, and
-        # the state of this start verifies too (same org, same member).
-        await _put_pending(org, member, {"stage": "start", "nonce": opened["nonce"]}, nx=True)
+        # A new start REPLACES a pending connect (F4): a cancelled confirm must
+        # not leave a record that turns the next Connect into `expired`. The
+        # older start's state no longer matches the nonce, so it is refused.
+        await _put_pending(org, member, {"stage": "start", "nonce": opened["nonce"]}, nx=False)
     except Exception as exc:  # the class only
         _log.warning("github.connect.pending_unavailable", error=type(exc).__name__)
         raise HTTPException(status_code=503, detail="pending_unavailable") from None
@@ -351,12 +371,13 @@ async def github_app_callback(
         return _back("unavailable")
     if pending is None or pending.get("stage") != "start":
         return _back("expired")
-    # 3. The state, when present.
-    if state:
-        payload = verify_state(state, purpose=STATE_PURPOSE)
-        if payload is None or payload["org"] != org or payload["member"] != member:
+    # 3. The state, when GitHub sends it (item 9). Absent is the U1 fallback.
+    if state is not None:
+        if not _state_matches(state, pending, org, member):
             _log.warning("github.connect.bad_state", actor=member)
             return _back("bad_state")
+    else:
+        _log.info("github.connect.state_absent", actor=member)
     # 4. An install request that an organization owner must approve.
     if setup_action == "request":
         return _back("requested")
