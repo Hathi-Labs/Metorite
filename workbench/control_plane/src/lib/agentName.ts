@@ -18,3 +18,14 @@ export function agentName(slug: string): string {
   const words = slug.replace(/[-_]+/g, " ").trim();
   return words ? words[0].toUpperCase() + words.slice(1) : slug;
 }
+
+/**
+ * An agent's slug in its one spelling: `projects_assistant`, the tool the
+ * orchestrator names for the agent, and `projects-assistant`, the agent,
+ * are both `projects-assistant`. `paneForDelegate` (the app switch) and
+ * `taskRefModeForTurn` (the task pills) read a hand-off through it, so the
+ * two never disagree about which agent a turn asked.
+ */
+export function agentSlug(name: string | null | undefined): string {
+  return String(name ?? "").trim().toLowerCase().replace(/_/g, "-");
+}

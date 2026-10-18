@@ -32,6 +32,7 @@
 
 import { useEffect, useRef, useSyncExternalStore } from "react";
 
+import { agentSlug } from "@/lib/agentName";
 import type { NavPane, NavSection } from "@/lib/nav";
 import { chatKey, type ChatSession } from "@/lib/sessions";
 import { onClear } from "@/lib/dataCache";
@@ -117,6 +118,17 @@ export function onPageChange(a: {
 }): "dock" | "close" | null {
   if (!a.open || a.phone || a.form !== "full") return null;
   return a.canDock ? "dock" : "close";
+}
+
+/**
+ * What the assistant does when a link inside its chat (a task pill) opens a
+ * page (review of PR #1156). On a phone the sheet covers the page, and
+ * `onPageChange` does nothing there, so the page would open unseen: the
+ * sheet closes, as it does for the chat's files. A desktop keeps the chat,
+ * and `onPageChange` docks a full view when the route changes.
+ */
+export function onChatLink(a: { phone: boolean }): "close" | null {
+  return a.phone ? "close" : null;
 }
 
 function subscribeWidth(listener: () => void): () => void {
@@ -515,7 +527,7 @@ export function paneAt(pathname: string | null | undefined, sections: readonly N
  * the member holds can match, because `sections` is their visible set.
  */
 export function paneForDelegate(name: string | null | undefined, sections: readonly NavSection[]): NavPane | null {
-  const want = String(name ?? "").trim().toLowerCase().replace(/_/g, "-");
+  const want = agentSlug(name);
   if (!want) return null;
   for (const s of sections) {
     for (const p of s.items) {

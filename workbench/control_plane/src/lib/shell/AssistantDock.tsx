@@ -49,6 +49,7 @@ import ArtifactSidebar, { type FileEntry } from "@/components/ArtifactSidebar";
 import ArtifactViewerModal from "@/components/ArtifactViewerModal";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
+import { PillNavigateContext } from "@/components/ui/EntityPill";
 import { Input } from "@/components/ui/Input";
 import { useToast } from "@/components/ui/Toast";
 import type { ArtifactEntry } from "@/hooks/useAgentChat";
@@ -98,6 +99,7 @@ import {
   consumeDraft,
   effectiveMode,
   focusAssistant,
+  onChatLink,
   onPageChange,
   openAssistant,
   paneAt,
@@ -482,6 +484,11 @@ function AssistantSurface({ phone }: { phone: boolean }) {
     if (act === "dock") setAssistantMode("dock");
     else if (act === "close") closeAssistant();
   }, [pathname]);
+  // A task pill in the chat opens its page. On a phone the sheet covers it,
+  // so the sheet closes first (`onChatLink`, review of PR #1156).
+  const beforePillNavigate = useCallback(() => {
+    if (onChatLink({ phone }) === "close") closeAssistant();
+  }, [phone]);
 
   // ── The app switch ──────────────────────────────────────────────────────
   const movedRef = useRef<Set<string>>(new Set());
@@ -711,6 +718,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
               // (Projects mounts it only with its own chat on, and the flag
               // turns that off). So a file card opens the chat's own viewer,
               // never a store that nothing draws (review of 2026-10-13).
+              <PillNavigateContext.Provider value={beforePillNavigate}>
               <SidePanelFitContext.Provider value={false}>
               <AgentChat
                 key={active.id}
@@ -736,6 +744,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
                 onAutoSendConsumed={consumeAsk}
               />
               </SidePanelFitContext.Provider>
+              </PillNavigateContext.Provider>
             ) : (
               <div className="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground" aria-busy="true">
                 <Icon name="Loader2" size={16} className="animate-spin" />

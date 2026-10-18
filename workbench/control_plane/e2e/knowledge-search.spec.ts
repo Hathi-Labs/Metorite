@@ -252,7 +252,7 @@ test.describe("a search never loses an edit in silence", () => {
     const kb = await mockKnowledge(page);
     await page.goto("/knowledge/pages/kp-refund");
     await page.getByRole("button", { name: "Edit", exact: true }).click({ timeout: 30_000 });
-    const body = page.getByRole("textbox", { name: "Page body in Markdown" });
+    const body = page.getByRole("textbox", { name: "Page body" });
     await body.fill("Typed text");
 
     const ask = page.getByRole("dialog", { name: "Discard your changes?" });
@@ -265,7 +265,7 @@ test.describe("a search never loses an edit in silence", () => {
       await expect(ask).toBeVisible();
       await ask.locator("[data-cancel]").filter({ hasText: "Keep editing" }).click();
       await expect(ask).toHaveCount(0);
-      await expect(body).toHaveValue("Typed text");
+      await expect(body).toHaveText("Typed text");
       await expect(page).toHaveURL(/\/knowledge\/pages\/kp-refund$/);
     }
 

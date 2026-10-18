@@ -3,20 +3,21 @@
 /**
  * One Knowledge page (WS-61 KB-2a, `knowledge_base.md` §4.2 and §11.1).
  *
- * The title, the state, the body as Markdown, and a strip with the author,
- * the review date and the versions. A member who can write edits the page in
- * a Markdown field with a Write and Preview switch, publishes a draft, makes
- * a sub-page, and reverts to an older version. Each act is one request, and
- * each one re-reads what is on screen, whatever the answer was.
+ * The title, the state, the body, and a strip with the author, the review
+ * date and the versions. A member who can write chooses Edit, and the same
+ * page becomes editable in place (KB-2b). The member also publishes a draft,
+ * makes a sub-page, and reverts to an older version. Each act is one
+ * request, and each one re-reads what is on screen, whatever the answer was.
  *
  * ⚠️ `can_write` comes from the gateway and every write control hides
  * without it. Hiding is a courtesy, never the boundary: the gateway refuses
  * a write from a reader with 403 (`core.can_write_page`).
  *
- * The preview is the chat's one renderer, `MarkdownBody`, with no entity
- * pills and no fences, inside `cc-prose prose`. No second renderer, and no
- * HTML sink (`htmlSinks.test.ts`). Each heading of the body moves one level
- * down first (`lib/markdown.ts`), so the app bar keeps the one `<h1>`.
+ * One renderer for a page (KB-2b, §21.4): the read view and the edit both
+ * draw through `KnowledgeEditor`, so what a member reads is what they edit.
+ * The body stays Markdown. A body heading draws one level down, so the app
+ * bar keeps the one `<h1>`. The editor makes no HTML sink
+ * (`htmlSinks.test.ts`), and each image goes through `MarkdownImage`.
  *
  * ⚠️ An edit is never lost in silence (fix round 1). The edit takes a
  * SNAPSHOT when it begins, and the save diffs against it, never against the
@@ -37,8 +38,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 
 import { useAccess } from "@/components/AccessProvider";
 import { EmptyState } from "@/components/EmptyState";
-import { MarkdownBody } from "@/components/MarkdownMessage";
-import Tabs from "@/components/Tabs";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
@@ -61,7 +60,6 @@ import {
   updatePage,
 } from "../lib/api";
 import { knowledgeAssistantFacts } from "../lib/assistantFacts";
-import { demoteHeadings } from "../lib/markdown";
 import {
   clearDraft,
   draftPatch,
@@ -75,8 +73,10 @@ import {
 } from "../lib/draft";
 import { dayLabel, publishBody, reasonLabel, stateLabel, stateTone, STATE_LABELS } from "../lib/labels";
 import { KNOWLEDGE_HOME, pageHref, spaceHref } from "../lib/links";
+import { flushLiveDraft, registerLiveDraft } from "../lib/liveDrafts";
 import { PAGE_NOT_FOUND_BODY, PAGE_NOT_FOUND_TITLE, pageRefusal, type PageRead } from "../lib/phase";
 import type { PageDetail, PageVersion } from "../lib/types";
+import KnowledgeEditor from "./editor/KnowledgeEditor";
 import { useKnowledge } from "./KnowledgeContext";
 import VersionList from "./VersionList";
 
@@ -89,11 +89,6 @@ async function readPage(id: string): Promise<PageRead<PageDetail>> {
     throw err;
   }
 }
-
-const EDIT_TABS = [
-  { id: "write", label: "Write", icon: "PenLine" },
-  { id: "preview", label: "Preview", icon: "Eye" },
-];
 
 /** The session store, or `null` on the server and in a blocked browser. */
 function sessionStore(): Storage | null {
@@ -127,7 +122,14 @@ export default function PageView({ pageId }: { pageId: string }) {
   useAssistantFacts(page ? knowledgeAssistantFacts({ page, spaceName: space?.name ?? null }) : null);
 
   const [editing, setEditing] = useState(false);
-  const [tab, setTab] = useState("write");
+  // Each edit session mounts a fresh editor, so a restored draft and a new
+  // edit never share an editor's undo history. A switch back from the
+  // Markdown field counts as a new session too, so the editor reads the
+  // field's text.
+  const [session, setSession] = useState(0);
+  // The Markdown field of KB-2a stays as the fallback (§16 Q7): a member can
+  // write the body as Markdown text at any time during an edit.
+  const [source, setSource] = useState(false);
   const [draft, setDraft] = useState<Draft>({ title: "", body_md: "" });
   const [snapshot, setSnapshot] = useState<EditSnapshot | null>(null);
   const [stale, setStale] = useState(false);
@@ -136,13 +138,30 @@ export default function PageView({ pageId }: { pageId: string }) {
   const [confirmPublish, setConfirmPublish] = useState(false);
   const [reverting, setReverting] = useState<PageVersion | null>(null);
   const [busy, setBusy] = useState(false);
+  // The editor writes its Markdown after a pause in the typing, so a key is
+  // cheap on a long page. `pending` marks the draft dirty from the first
+  // key, and `flushRef` writes the body at once before a save or a switch.
+  const [pending, setPending] = useState(false);
+  const flushRef = useRef<((opts?: { silent?: boolean }) => string | null) | null>(null);
+  const draftRef = useRef(draft);
+  useEffect(() => {
+    draftRef.current = draft;
+  });
+  // False from the moment an edit ends, so a late write of the editor that
+  // unmounts cannot put a discarded draft back in session storage.
+  const editingRef = useRef(false);
+  useEffect(() => {
+    editingRef.current = editing;
+  }, [editing]);
 
   const writable = Boolean(page?.can_write) && page?.state !== "archived";
 
   function startEdit(from: PageDetail, restored?: { snapshot: EditSnapshot; draft: Draft }) {
     setSnapshot(restored?.snapshot ?? snapshotOf(from));
     setDraft(restored?.draft ?? { title: from.title, body_md: from.body_md });
-    setTab("write");
+    setSession((n) => n + 1);
+    setSource(false);
+    setPending(false);
     setSaveError(null);
     setStale(false);
     setEditing(true);
@@ -150,6 +169,8 @@ export default function PageView({ pageId }: { pageId: string }) {
 
   /** Close the editor and drop the draft, the stored copy too. */
   function endEdit() {
+    editingRef.current = false;
+    setPending(false);
     const store = sessionStore();
     if (store && scope) clearDraft(store, scope, pageId);
     setEditing(false);
@@ -158,13 +179,51 @@ export default function PageView({ pageId }: { pageId: string }) {
     setSaveError(null);
   }
 
-  const dirty = editing && snapshot !== null && isDirty(snapshot, draft);
+  const dirty = editing && snapshot !== null && (pending || isDirty(snapshot, draft));
+
+  /** Keep the draft in session storage now, not in an effect, so a remount keeps it. */
+  function persistDraft(next: Draft) {
+    const store = sessionStore();
+    if (!store || !scope || !snapshot) return;
+    if (isDirty(snapshot, next)) writeDraft(store, scope, snapshot, next);
+    else clearDraft(store, scope, snapshot.pageId);
+  }
+
+  /** The editor wrote its body: after a pause, on a flush, or as it unmounts. */
+  function onEditorChange(body_md: string) {
+    if (!editingRef.current) return;
+    setPending(false);
+    if (draftRef.current.body_md === body_md) return;
+    const next = { ...draftRef.current, body_md };
+    draftRef.current = next;
+    setDraft(next);
+    persistDraft(next);
+  }
+
+  // The writer a new view of this page calls before it reads the stored
+  // draft. It touches session storage only.
+  useEffect(() => {
+    if (!editing) return;
+    return registerLiveDraft(pageId, () => {
+      const body = flushRef.current?.({ silent: true }) ?? null;
+      if (body !== null && editingRef.current) persistDraft({ ...draftRef.current, body_md: body });
+    });
+  });
+
+  /** The draft with the editor's newest body, written at once. */
+  function flushedDraft(): Draft {
+    const body = flushRef.current?.() ?? null;
+    return body === null ? draftRef.current : { ...draftRef.current, body_md: body };
+  }
 
   // A draft that waits in session storage comes back once, after the page
   // and the member are known. That covers the remount at 767px and Back.
   const [restoredFor, setRestoredFor] = useState<string | null>(null);
   if (page && scope && !editing && restoredFor !== page.id) {
     setRestoredFor(page.id);
+    // The old view of this page may still be on screen, with keys it has
+    // not written yet (the 767 px swap). It stores them first.
+    flushLiveDraft(page.id);
     const store = sessionStore();
     const stored = store ? readDraft(store, scope, page.id) : null;
     if (stored && page.can_write && page.state !== "archived") startEdit(page, stored);
@@ -187,6 +246,7 @@ export default function PageView({ pageId }: { pageId: string }) {
     if (!dirty) return;
     setLeaveGuard({ onDiscard: () => endEditRef.current() });
     const warn = (e: BeforeUnloadEvent) => {
+      flushRef.current?.();
       e.preventDefault();
       e.returnValue = "";
     };
@@ -243,7 +303,9 @@ export default function PageView({ pageId }: { pageId: string }) {
 
   async function save(anyway = false) {
     if (!page || !snapshot) return;
-    const patch = draftPatch(snapshot, draft);
+    // Write the editor's last keys first: the stale check and the patch
+    // read the newest body.
+    const patch = draftPatch(snapshot, flushedDraft());
     if (!patch) {
       endEdit();
       return;
@@ -305,6 +367,7 @@ export default function PageView({ pageId }: { pageId: string }) {
 
   const last = page.versions[0] ?? null;
   const patch = editing && snapshot ? draftPatch(snapshot, draft) : null;
+  const canSave = Boolean(patch) || pending;
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
@@ -325,9 +388,8 @@ export default function PageView({ pageId }: { pageId: string }) {
           ) : null}
 
           {editing ? (
-            // ⚠️ A `div`, not a `form`. The buttons of `Tabs` carry no
-            // `type`, so inside a form a click on Preview submitted it and
-            // saved the page (measured in `e2e/knowledge-pages.spec.ts`).
+            // ⚠️ A `div`, not a `form`. The editor's own buttons (the code
+            // language, the fold of a toggle) must never submit the page.
             <div className="mt-1 space-y-3">
               <Input
                 aria-label="Title"
@@ -336,8 +398,22 @@ export default function PageView({ pageId }: { pageId: string }) {
                 onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))}
                 className="w-full"
               />
-              <Tabs tabs={EDIT_TABS} activeTab={tab} onTabChange={setTab} variant="segmented" chrome="inline" />
-              {tab === "write" ? (
+              <div className="flex justify-end">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon="FileCode"
+                  selected={source}
+                  onClick={() => {
+                    if (!source) flushedDraft();
+                    setSource((v) => !v);
+                    setSession((n) => n + 1);
+                  }}
+                >
+                  Markdown
+                </Button>
+              </div>
+              {source ? (
                 <Textarea
                   aria-label="Page body in Markdown"
                   value={draft.body_md}
@@ -347,14 +423,19 @@ export default function PageView({ pageId }: { pageId: string }) {
                   className="w-full font-mono"
                 />
               ) : (
-                <div className="min-h-40 rounded-md border border-border bg-card p-4">
-                  {draft.body_md.trim() ? (
-                    <div className="cc-prose prose prose-sm max-w-none">
-                      <MarkdownBody content={demoteHeadings(draft.body_md)} />
-                    </div>
-                  ) : (
-                    <p className="text-sm text-muted-foreground">Nothing to preview yet.</p>
-                  )}
+                <div className="min-h-64 pt-1">
+                  <KnowledgeEditor
+                    key={`edit-${session}`}
+                    mode="edit"
+                    body={draft.body_md}
+                    storedBody={snapshot?.body_md ?? page.body_md}
+                    onChange={onEditorChange}
+                    onTouched={() => setPending(true)}
+                    flushRef={flushRef}
+                    pageId={page.id}
+                    spaces={spaces}
+                    label="Page body"
+                  />
                 </div>
               )}
               {stale ? (
@@ -387,8 +468,10 @@ export default function PageView({ pageId }: { pageId: string }) {
                   {saveError}
                 </p>
               ) : null}
-              <div className="flex flex-wrap items-center gap-2">
-                <Button size="sm" loading={saving} disabled={saving || !patch || !draft.title.trim()} onClick={() => void save()}>
+              {/* The save row stays in view at the foot of the scroller, so a
+                  long page does not hide Save below the body. */}
+              <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t border-border bg-background py-2">
+                <Button size="sm" loading={saving} disabled={saving || !canSave || !draft.title.trim()} onClick={() => void save()}>
                   Save changes
                 </Button>
                 <Button variant="secondary" size="sm" disabled={saving} onClick={() => requestLeave(endEdit)}>
@@ -438,9 +521,12 @@ export default function PageView({ pageId }: { pageId: string }) {
               ) : null}
               <div className="mt-5">
                 {page.body_md.trim() ? (
-                  <div className="cc-prose prose prose-sm max-w-none">
-                    <MarkdownBody content={demoteHeadings(page.body_md)} />
-                  </div>
+                  <KnowledgeEditor
+                    mode="read"
+                    body={page.body_md}
+                    label={`${page.title}, the page body`}
+                    onNavigate={(href) => router.push(href)}
+                  />
                 ) : (
                   <p className="text-sm text-muted-foreground">
                     This page is empty.{writable ? " Choose Edit to write it." : ""}
