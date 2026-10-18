@@ -83,7 +83,7 @@ describe("rule 1 — a card that waits folds to its outcome once answered", () =
     const html = renderToStaticMarkup(createElement(() => TEMPLATE_REGISTRY.formCard(
       { title: "When", fields: [{ name: "due", label: "Due", type: "text", value: "Monday" }] },
       { onAction: () => {}, answered: 'Save — {"due":"Friday"}' },
-    )));
+    ), null));
     expect(html).toContain('value="Friday"');
     expect(html).not.toContain('value="Monday"');
     expect(html).toMatch(/<input[^>]*disabled=""[^>]*value="Friday"|<input[^>]*value="Friday"[^>]*disabled=""/);
