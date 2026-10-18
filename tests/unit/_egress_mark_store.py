@@ -18,7 +18,7 @@ from typing import Any
 
 
 class MemoryMarkClient:
-    """An in-memory raw Redis client with the three calls the mark uses."""
+    """An in-memory raw Redis client with the four calls the mark uses."""
 
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
@@ -29,6 +29,9 @@ class MemoryMarkClient:
 
     async def exists(self, *names: str) -> int:
         return sum(1 for n in names if n in self.values)
+
+    async def get(self, name: str) -> str | None:
+        return self.values.get(name)
 
     async def expire(self, name: str, _seconds: int) -> bool:
         return name in self.values

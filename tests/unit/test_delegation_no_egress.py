@@ -148,6 +148,10 @@ class _MarkRedis:
         self._check()
         return sum(1 for k in keys if k in self.keys)
 
+    async def get(self, key: str) -> str | None:
+        self._check()
+        return self.keys.get(key)
+
     async def expire(self, key: str, _seconds: int) -> bool:
         self._check()
         return key in self.keys
@@ -1410,6 +1414,85 @@ def test_a_known_mark_binds_no_egress_and_keeps_the_mail_agents_own_send(
     assert sent, "the send never reached the host"
 
 
+async def test_an_old_mark_beyond_the_replay_window_no_longer_holds_egress(
+    monkeypatch, mark_store,
+) -> None:
+    """Fix 3. A WhatsApp run replays its last 20 rows, and ``bot_run`` gives
+    the run the time of the oldest one (``history_floor_ms``). A mark whose
+    turn is older than that floor no longer holds egress: ``fetch_page`` runs
+    with no card. A mark in the window, a mark with no time (an older
+    build's ``1``), a run with no floor and a web run all stay held. The
+    memory hold (``run_holds_mail``) ignores the window. Mutation: let the
+    mark ignore the window, and the first block is red."""
+    from acb_common.db import bind_tenant, release_tenant
+    from acb_skills.whatsapp_ui import whatsapp_run
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    async def fetch_page(url: str) -> str:
+        return f"fetched: {url}"
+
+    fetch_page.__tool_risk__ = {  # type: ignore[attr-defined]
+        "read_only": True, "destructive": False, "idempotent": False, "open_world": True}
+    cards: list[str] = []
+
+    async def no_card(tool_name: str, _kwargs: Any) -> bool:
+        cards.append(tool_name)
+        return False
+
+    monkeypatch.setattr(ti, "_untrusted_answer_card", no_card)
+    fetch = ti._gate_injected_tool(fetch_page)
+    now = eg._now_ms()
+    hour = 3600 * 1000
+    session = "wa-thread-1"
+    raw = f"cc:{ORG_B}:{eg.MARK_NAMESPACE}:{session}"
+
+    async def state(value: str, floor: int, *, wa: bool = True) -> str:
+        mark_store.keys[raw] = value
+        eg._MARKED_SESSIONS.clear()
+        with artifact_context_scope():
+            bind_artifact_context(run_id="r", session_id=session, member="m@example.com")
+            if not wa:
+                return await eg.session_mark_state()
+            with whatsapp_run("orchestrator", session_id=session, history_floor_ms=floor):
+                return await eg.session_mark_state()
+
+    token = bind_tenant(ORG_B)
+    try:
+        old = f"t:{now - 2 * hour}"
+        # Out of the window: clear, the sync reader too, and egress runs.
+        assert await state(old, now - hour) == eg.MARK_CLEAR
+        with artifact_context_scope():
+            bind_artifact_context(run_id="r", session_id=session, member="m@example.com")
+            with whatsapp_run("orchestrator", session_id=session, history_floor_ms=now - hour):
+                assert eg.read_untrusted_answer() is False
+                assert await fetch(url=_EVIL) == f"fetched: {_EVIL}"
+                assert cards == []
+                # The memory hold ignores the window.
+                assert await eg.run_holds_mail("orchestrator") is True
+        # Held: in the window, no floor, no time of write, a web run, and a
+        # floor of another thread.
+        assert await state(f"t:{now - 5 * 60 * 1000}", now - 10 * 60 * 1000) == eg.MARK_MARKED
+        assert await state(old, 0) == eg.MARK_MARKED
+        assert await state("1", now - hour) == eg.MARK_MARKED
+        assert await state(old, now - hour, wa=False) == eg.MARK_MARKED
+        mark_store.keys[raw] = old
+        eg._MARKED_SESSIONS.clear()
+        with artifact_context_scope():
+            bind_artifact_context(run_id="r", session_id=session, member="m@example.com")
+            with whatsapp_run("orchestrator", session_id="another", history_floor_ms=now):
+                assert await eg.session_mark_state() == eg.MARK_MARKED
+                assert "did not run" in await fetch(url=_EVIL)
+        # A new mark of this turn is in the window at once.
+        with artifact_context_scope():
+            bind_artifact_context(run_id="r", session_id=session, member="m@example.com")
+            with whatsapp_run("orchestrator", session_id=session, history_floor_ms=now - hour):
+                assert await eg.mark_untrusted_answer() is True
+                assert mark_store.keys[raw].startswith("t:")
+                assert await eg.session_mark_state() == eg.MARK_MARKED
+    finally:
+        release_tenant(token)
+
+
 async def test_the_call_time_guard_keeps_only_a_carded_own_tool() -> None:
     """The middleware pair takes *keep* (fix 2). With
     ``asks_own_card`` it keeps the email assistant's own carded send, and it
@@ -1660,6 +1743,18 @@ async def test_the_session_mark_on_a_real_redis(monkeypatch) -> None:
             bind_artifact_context(run_id="r3", session_id=f"{session}-other",
                                   member="b@example.com")
             assert await eg.session_is_marked() is False
+        # Incident 2026-10-18: the value is the time of write, and a WhatsApp
+        # run whose replay floor is past the turn reads the mark as clear.
+        assert str(await client.get(raw)).startswith("t:")
+        eg._MARKED_SESSIONS.clear()
+        from acb_skills.whatsapp_ui import whatsapp_run
+
+        with artifact_context_scope():
+            bind_artifact_context(run_id="r5", session_id=session, member="b@example.com")
+            later = eg._now_ms() + 2 * eg.MARK_TURN_SPAN_S * 1000
+            with whatsapp_run("orchestrator", session_id=session, history_floor_ms=later):
+                assert await eg.session_is_marked() is False
+            assert await eg.session_is_marked() is True  # a web run keeps it
     finally:
         release_tenant(token)
     token = bind_tenant(ORG_A)

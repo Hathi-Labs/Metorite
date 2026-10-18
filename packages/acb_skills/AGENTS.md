@@ -283,6 +283,13 @@ clone cache.
    `RefuseEgressTools` take an optional `keep` picker. The orchestrator
    passes `asks_own_card` only for a mail agent's run whose flag the mark
    alone set. Everywhere else the attribute does nothing.
+   The mark ends with the replay window. Its value is its time of write
+   (`t:<ms>`). A WhatsApp run carries `history_floor_ms`, the time of the
+   oldest row that it replays (`bot_run._history_floor_ms`). A mark whose
+   turn is older than the floor plus `MARK_TURN_SPAN_S` reads as clear for
+   the egress gate and the delegation readers. A web chat has no floor. A
+   mark with no time (`1`, an older build) never ends this way, and
+   `run_holds_mail` ignores the window. Redis faults fail closed as before.
 5h. tool_annotations.py -- `annotate()` has NO default for `open_world`
    (H-236). Every tool of every in-repo agent states it, and the WS43-F24
    fence reads the real registry to check. The risk block of the addendum is

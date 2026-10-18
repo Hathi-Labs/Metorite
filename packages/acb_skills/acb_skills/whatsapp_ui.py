@@ -178,6 +178,12 @@ class WhatsAppRun:
     #: Lays out a document layout as a PDF (WAC-12). ``bot_run`` gives it when
     #: ``WHATSAPP_DOCUMENTS`` is on, through ``gateway.pdf_render``. None: off.
     document: Callable[[dict[str, Any]], Awaitable[bytes]] | None = None
+    #: The chat session of the run's thread. ``bot_run`` gives it.
+    session_id: str | None = None
+    #: WS-17 incident 2026-10-18: the time (epoch ms) of the oldest row that
+    #: this run replays, when the window is full, else 0. ``bot_run`` gives it,
+    #: and ``acb_skills.egress`` ends an untrusted-answer mark older than it.
+    history_floor_ms: int = 0
 
 
 _RUN: ContextVar[WhatsAppRun | None] = ContextVar("whatsapp_run", default=None)
@@ -190,6 +196,8 @@ def whatsapp_run(agent: str, *,
                  notify: Callable[[str], Awaitable[bool]] | None = None,
                  writes: bool = False,
                  document: Callable[[dict[str, Any]], Awaitable[bytes]] | None = None,
+                 session_id: str | None = None,
+                 history_floor_ms: int = 0,
                  ) -> Iterator[WhatsAppRun]:
     """Open the WhatsApp profile for the run of *agent* in this context.
 
@@ -198,7 +206,8 @@ def whatsapp_run(agent: str, *,
     value it found. *writes* lets the run park one write (WAC-4).
     """
     run = WhatsAppRun(agent=agent, views=views, org=org, notify=notify,
-                      writes=writes, document=document)
+                      writes=writes, document=document, session_id=session_id,
+                      history_floor_ms=history_floor_ms)
     token = _RUN.set(run)
     try:
         yield run

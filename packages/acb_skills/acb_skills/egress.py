@@ -36,6 +36,7 @@ from __future__ import annotations
 import contextlib
 import sys
 import threading
+import time
 import weakref
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping
@@ -58,6 +59,7 @@ __all__ = [
     "MARK_MARKED",
     "MARK_NAMESPACE",
     "MARK_TTL_S",
+    "MARK_TURN_SPAN_S",
     "MARK_UNKNOWN",
     "MCP_LOADER_KEY",
     "NO_EGRESS_BY_MARK_KEY",
@@ -151,6 +153,13 @@ STORE_WRITES: frozenset[str] = frozenset({
 # (:data:`MARK_CACHE_MAX`). A sync reader misses a mark that this process
 # never saw or evicted, and §12.3.13.8 records that residual risk. Fences:
 # ``tests/unit/test_delegation_no_egress.py`` and ``test_untrusted_frame.py``.
+#
+# Incident 2026-10-18: the mark ends with the replay window. Its value is the
+# time of write (``t:<ms>``). A WhatsApp run replays a fixed window of rows,
+# and ``bot_run`` gives the run the time of the oldest one. A mark whose turn
+# is older than that floor reads as clear for the egress gate and for a
+# delegation (:func:`_mark_in_window`). A web chat has no floor, so its mark
+# holds as before. ``run_holds_mail`` ignores the window.
 
 #: Agents whose context holds text that a stranger wrote. The orchestrator
 #: reads the same set (``_tool_injection``), so one list names them.
@@ -166,6 +175,35 @@ MARK_TTL_S = 400 * 24 * 3600
 #: The bound of the process cache of marks (round 4).
 MARK_CACHE_MAX = 16384
 
+#: WS-17 incident 2026-10-18 (``email_app_master_plan.md`` 12.3.13.8, "The
+#: mark ends with the replay window"). The longest time from a mark's write to
+#: the reply row of the turn that wrote it. The mark is written while the turn
+#: runs, and a WhatsApp turn writes its reply at once after a run of at most
+#: ``bot_run.RUN_TIMEOUT_S`` (4 minutes). 15 minutes leaves a wide margin.
+MARK_TURN_SPAN_S = 15 * 60
+
+#: The value prefix of a mark that carries its time of write, in epoch
+#: milliseconds (``t:<ms>``). A mark of an older build holds ``1``: its time is
+#: unknown, so the window never ends it (fail closed).
+_MARK_TIME_PREFIX = "t:"
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _marked_at(value: Any) -> int | None:
+    """The time of write of a stored mark, or None when it is unknown."""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", "replace")
+    text = str(value or "")
+    if not text.startswith(_MARK_TIME_PREFIX):
+        return None
+    try:
+        return int(text[len(_MARK_TIME_PREFIX):])
+    except ValueError:
+        return None
+
 
 class _PositiveLRU:
     """The sessions this process saw marked: ``(org, session)``. It holds
@@ -174,17 +212,25 @@ class _PositiveLRU:
     An eviction never reads as "unmarked" to an async reader: a miss there
     asks Redis, and Redis keeps the mark. Each hit moves the session to the
     end, so a session that a run uses now is the last one to go. Hold
-    ``_MARKED_LOCK`` around each call."""
+    ``_MARKED_LOCK`` around each call. Each entry keeps the mark's time of
+    write (None: unknown), which the replay window reads."""
 
     def __init__(self, bound: int) -> None:
         self._bound = bound
-        self._items: OrderedDict[tuple[str, str], None] = OrderedDict()
+        self._items: OrderedDict[tuple[str, str], int | None] = OrderedDict()
 
-    def add(self, session: tuple[str, str]) -> None:
-        self._items[session] = None
+    def add(self, session: tuple[str, str], at: int | None = None) -> None:
+        self._items[session] = at
         self._items.move_to_end(session)
         while len(self._items) > self._bound:
             self._items.popitem(last=False)
+
+    def lookup(self, session: tuple[str, str]) -> tuple[bool, int | None]:
+        """``(hit, time of write)``. A hit moves the session to the end."""
+        if session not in self._items:
+            return False, None
+        self._items.move_to_end(session)
+        return True, self._items[session]
 
     def __contains__(self, session: object) -> bool:
         if session not in self._items:
@@ -256,6 +302,43 @@ def _card_can_show(ctx: Mapping[str, Any] | None) -> bool:
         return True
 
 
+def _replay_floor_ms(session: tuple[str, str]) -> int:
+    """The replay floor of the run on this frame for *session*, or 0.
+
+    WS-17 incident 2026-10-18. A WhatsApp run replays a fixed window of its
+    thread: the last ``bot_run.HISTORY_TURNS`` rows. ``bot_run`` gives the run
+    the time of the oldest row that it replays, when the window is full and
+    no stored session can replay more (``WhatsAppRun.history_floor_ms``). A
+    row older than the floor never reaches the model. 0 means no floor: a web
+    chat (its client sends the history), a short thread, or any other run.
+    The run is server-bound (``whatsapp_ui.current_run``), never input."""
+    try:
+        from acb_skills.whatsapp_ui import current_run
+
+        run = current_run()
+    except Exception:
+        return 0
+    if run is None or str(getattr(run, "session_id", "") or "") != session[1]:
+        return 0
+    try:
+        return max(0, int(getattr(run, "history_floor_ms", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _mark_in_window(session: tuple[str, str], at: int | None) -> bool:
+    """True while the turn that wrote the mark can still reach the model.
+
+    The mark exists because a relayed answer is in the context. Once the
+    whole turn that relayed it is older than the replay floor, it is gone,
+    and so is the reason for the mark. A mark with no time of write, and a
+    run with no floor, stay held (fail closed)."""
+    if at is None:
+        return True
+    floor = _replay_floor_ms(session)
+    return not (floor and at + MARK_TURN_SPAN_S * 1000 < floor)
+
+
 def get_tenant_redis() -> Any:
     """The tenant Redis client. A seam, so a test passes a fake client."""
     from acb_common.tenant_redis import get_tenant_redis as _client
@@ -276,8 +359,9 @@ async def mark_untrusted_answer(ctx: Mapping[str, Any] | None = None) -> bool:
     if session is None:
         _log.warning("egress.untrusted_answer_unmarked")
         return False
+    at = _now_ms()
     with _MARKED_LOCK:
-        _MARKED_SESSIONS.add(session)
+        _MARKED_SESSIONS.add(session, at)
     if _minted_session(ctx if ctx is not None else _bound_context()):
         _log.info("egress.untrusted_answer_marked", store="process")
         return True
@@ -286,8 +370,10 @@ async def mark_untrusted_answer(ctx: Mapping[str, Any] | None = None) -> bool:
         from acb_common.tenant_redis import key, organization_scope
 
         with organization_scope(org):
+            # The value is the time of write (incident 2026-10-18), so a
+            # reader can end the mark with the replay window.
             await get_tenant_redis().setex(
-                key(MARK_NAMESPACE, thread), MARK_TTL_S, "1")
+                key(MARK_NAMESPACE, thread), MARK_TTL_S, f"{_MARK_TIME_PREFIX}{at}")
     except Exception as exc:  # the class only: a value never reaches a log
         _log.warning("egress.untrusted_answer_mark_failed", error=type(exc).__name__)
         return False
@@ -338,6 +424,7 @@ def is_delegation_tool(tool: Any) -> bool:
 
 async def session_mark_state(
     ctx: Mapping[str, Any] | None = None, *, fail_closed: bool | None = None,
+    window: bool = True,
 ) -> str:
     """The mark of the chat session of the run on this frame.
 
@@ -349,13 +436,19 @@ async def session_mark_state(
 
     *fail_closed* overrides that choice for a fault: True reads a fault as
     unknown for every run. :func:`run_holds_mail` passes True, because a
-    store write and a trace body need no card to fail closed."""
+    store write and a trace body need no card to fail closed.
+
+    *window* (incident 2026-10-18): a mark whose turn is older than the
+    run's replay floor reads as clear (:func:`_mark_in_window`). Redis keeps
+    it, and its TTL does not slide. Only a WhatsApp run has a floor today.
+    :func:`run_holds_mail` passes False, so its holds never end this way."""
     session = _session_of(ctx)
     if session is None:
         return MARK_CLEAR
     with _MARKED_LOCK:
-        if session in _MARKED_SESSIONS:
-            return MARK_MARKED
+        hit, at = _MARKED_SESSIONS.lookup(session)
+    if hit and (not window or _mark_in_window(session, at)):
+        return MARK_MARKED
     if ctx is None:
         ctx = _bound_context()
     if _minted_session(ctx):
@@ -368,7 +461,14 @@ async def session_mark_state(
         with organization_scope(org):
             client = get_tenant_redis()
             mark = key(MARK_NAMESPACE, thread)
-            if not await client.exists(mark):
+            value = await client.get(mark)
+            if value is None:
+                return MARK_CLEAR
+            at = _marked_at(value)
+            if window and not _mark_in_window(session, at):
+                # Another process may hold a newer mark, so this reads Redis
+                # each time. The TTL does not slide for a mark out of reach.
+                _log.info("egress.untrusted_answer_out_of_window")
                 return MARK_CLEAR
             await client.expire(mark, MARK_TTL_S)
     except Exception as exc:
@@ -379,7 +479,7 @@ async def session_mark_state(
         # approve. A run with no card channel would lose each egress call.
         return MARK_UNKNOWN if unknown else MARK_CLEAR
     with _MARKED_LOCK:
-        _MARKED_SESSIONS.add(session)
+        _MARKED_SESSIONS.add(session, at)
     return MARK_MARKED
 
 
@@ -420,7 +520,7 @@ async def run_holds_mail(
     """
     if str(agent_name or "") in UNTRUSTED_INPUT_AGENTS:
         return True
-    return await session_mark_state(ctx, fail_closed=True) != MARK_CLEAR
+    return await session_mark_state(ctx, fail_closed=True, window=False) != MARK_CLEAR
 
 
 #: The answer of a :data:`STORE_WRITES` tool in a run that holds mail
@@ -440,7 +540,8 @@ def read_untrusted_answer(ctx: Mapping[str, Any] | None = None) -> bool:
     if session is None:
         return False
     with _MARKED_LOCK:
-        return session in _MARKED_SESSIONS
+        hit, at = _MARKED_SESSIONS.lookup(session)
+    return hit and _mark_in_window(session, at)
 
 #: The answer to a call that the control refuses. It names what is true of
 #: this run and claims nothing about the whole platform.

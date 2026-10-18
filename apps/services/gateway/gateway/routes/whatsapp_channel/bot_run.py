@@ -537,7 +537,7 @@ SELECT content FROM chat_message
 #: 200, so the reply to an older text is LATER than this turn and still
 #: belongs here, and the reply to a NEWER text does not (a retry).
 _HISTORY_SQL = f"""
-SELECT role, content FROM chat_message m
+SELECT role, content, timestamp_ms FROM chat_message m
  WHERE m.session_id = :sid
    AND m.id <> :mid
    AND m.role IN ('user', 'assistant')
@@ -837,9 +837,37 @@ async def _thread_turns(
             "sid": session_id, "mid": message_id,
             "ts": int(turn["timestamp_ms"]), "n": HISTORY_TURNS,
         })).mappings().all()
-    history = [{"role": str(r["role"]), "content": str(r["content"] or "")}
+    # Each turn keeps its row time, for the replay floor (`_history_floor_ms`).
+    # `build_payload` drops it, so the model never reads it.
+    history = [{"role": str(r["role"]), "content": str(r["content"] or ""),
+                "timestamp_ms": int(r["timestamp_ms"] or 0)}
                for r in reversed(rows)]
     return str(turn["content"] or ""), history
+
+
+def _history_floor_ms(history: list[dict[str, Any]]) -> int:
+    """The time of the oldest row that this run replays, or 0 (WS-17
+    incident 2026-10-18, ``email_app_master_plan.md`` 12.3.13.8).
+
+    The window is the last :data:`HISTORY_TURNS` rows. A thread with fewer
+    rows replays all of them, so nothing is out of reach and the floor is 0.
+    A stored MAF session (``MAF_NATIVE_SESSIONS``) can replay more than the
+    window, so the floor is 0 then too. ``acb_skills.egress`` ends an
+    untrusted-answer mark whose turn is older than the floor. 0 keeps every
+    mark, so each doubt fails closed."""
+    if len(history) < HISTORY_TURNS:
+        return 0
+    try:
+        from orchestrator.executor import _native_sessions_enabled
+
+        if _native_sessions_enabled():
+            return 0
+    except Exception:  # no executor here: no floor
+        return 0
+    stamps = [t.get("timestamp_ms") for t in history]
+    if not all(isinstance(ms, int) and ms > 0 for ms in stamps):
+        return 0
+    return min(stamps)  # type: ignore[type-var]
 
 
 # ── Before the 200 ──────────────────────────────────────────────────────────
@@ -1416,7 +1444,9 @@ def build_payload(message: str, history: list[dict[str, str]],
     WhatsApp profile (WAC-10a), and *writes* the rule of WAC-4. *documents*
     adds :data:`DOCUMENTS_RULE` (WAC-12).
     """
-    prior = [model_turn(m) for m in history]
+    # Role and text only: a row's time (``timestamp_ms``) never reaches the model.
+    prior = [{"role": t.get("role"), "content": t.get("content")}
+             for t in (model_turn(m) for m in history)]
     rule = (SCOPE_RULE_WRITES if native and writes
             else SCOPE_RULE_NATIVE if native else SCOPE_RULE)
     if native and documents:
@@ -1525,7 +1555,10 @@ async def _model_answer(req: RunRequest, message: str,
                 AGENT, org=req.organization_id,
                 views=views.runner(req.member_email, req.organization_id),
                 notify=_notifier(req), writes=writes,
-                document=_document_renderer(req) if documents else None)
+                document=_document_renderer(req) if documents else None,
+                # WS-17 incident 2026-10-18: the replay floor of this run.
+                session_id=req.chat_session_id,
+                history_floor_ms=_history_floor_ms(history))
                 if native else contextlib.nullcontext()) as wa_run:
             result = await _still_working(req, wa_run, asyncio.wait_for(
                 _executor()(
