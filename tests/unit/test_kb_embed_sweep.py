@@ -71,15 +71,27 @@ class Door:
         self.calls: list[list[str]] = []
         self.members: list[dict[str, Any]] = []
         self.answer = answer
+        #: Texts the door refuses for good, whatever the rest of the request.
+        self.refuse: set[str] = set()
 
     async def __call__(self, texts: list[str], **kw: Any) -> list[list[float] | None]:
         from acb_llm.routed import run_attribution
 
         self.calls.append(list(texts))
         self.members.append(run_attribution())
-        if self.answer == "none":
+        if self.answer == "none" or self.refuse & set(texts):
             return [None] * len(texts)
         return [[0.1] * embed_mod.EMBED_DIMS for _ in texts]
+
+
+class Clock:
+    """A stand-in for the ``time`` module of the sweep. Only ``monotonic``."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        return self.now
 
 
 class Store:
@@ -205,13 +217,50 @@ class TestTheBound:
         assert store.skips[-1] == [9], "the refused chunk was asked again at once"
         assert len(door.calls) == 1
 
-    def test_an_outage_parks_nothing(self, monkeypatch, wired):
+    def test_a_failing_page_does_not_block_a_later_page(self, monkeypatch, wired):
+        """KB-3c fix round 1 (P2). A page of two chunks that the door refuses
+        for good is the oldest, so it comes first in every tick. The page
+        after it must still get its vectors."""
         door, store, _ = wired
         _flags(monkeypatch, ORG)
-        door.answer = "none"
+        store.found = [_waiting(1, text="bad one"), _waiting(2, text="bad two"),
+                       _waiting(3, page="page-2", text="good")]
+        door.refuse = {"bad one"}
         result = _tick()
-        assert result.outages == 1 and store.written == []
-        assert sweep._waiting == {}, "an outage parked a chunk"
+        assert store.written == [(ORG, [3])], "the later page got no vector"
+        assert result.outages == 1 and result.written == 1
+
+    def test_an_outage_costs_at_most_two_calls_for_each_org(self, monkeypatch, wired):
+        door, store, _ = wired
+        _flags(monkeypatch, "*")
+        door.answer = "none"
+        store.found = [_waiting(i, page=f"page-{i // 2}", text=f"t{i}") for i in range(10)]
+        result = _tick()
+        assert len(door.calls) == 4, "two orgs, two calls each"
+        assert result.outages == 4 and store.written == []
+
+    def test_a_failing_page_waits_for_the_back_off_and_not_longer(self, monkeypatch, wired):
+        door, store, _ = wired
+        clock = Clock()
+        monkeypatch.setattr(sweep, "time", clock)
+        _flags(monkeypatch, ORG)
+        store.found = [_waiting(1, text="bad one"), _waiting(2, text="bad two"),
+                       _waiting(3, page="lonely", text="bad alone")]
+        door.refuse = {"bad one", "bad alone"}
+        _tick()
+        assert len(door.calls) == 2
+
+        clock.now += sweep.OUTAGE_BACKOFF_S - 1
+        _tick()
+        assert sorted(store.skips[-1]) == [1, 2, 3], "retried before the back-off"
+        assert len(door.calls) == 2
+
+        clock.now += 2
+        _tick()
+        assert store.skips[-1] == [3], "the single refused chunk keeps its hour"
+        assert door.calls[-1] == ["bad one", "bad two"], "not retried after the back-off"
+        assert sweep.OUTAGE_BACKOFF_S == 2 * sweep.TICK_SECONDS
+        assert sweep.RETRY_AFTER_S == 3600.0
 
 
 # ── A member is bound ───────────────────────────────────────────────────────
@@ -255,12 +304,48 @@ class TestTheMember:
         _tick()
         assert door.calls == []
 
-    def test_the_tick_does_not_leak_the_member(self, monkeypatch, wired):
-        from acb_common._log import get_run_context
-
+    def test_a_failed_identity_read_parks_nothing(self, monkeypatch, wired):
+        """KB-3c fix round 1 (P3-a). A failed read says nothing about the
+        member, so the page is tried again in the next tick, not in an hour."""
+        door, store, _ = wired
         _flags(monkeypatch, ORG)
+        calls = {"n": 0}
+
+        async def flaky(org: str, member: str) -> str | None:
+            calls["n"] += 1
+            if calls["n"] <= 2:  # the author and the editor of the first tick
+                raise RuntimeError("identity read failed")
+            return None
+
+        import gateway.my_day_loop as my_day_loop
+
+        monkeypatch.setattr(my_day_loop, "departed", flaky)
+        first = _tick()
+        assert door.calls == [] and sweep._waiting == {}, "a failed read parked a chunk"
+        assert first.no_member == 0
         _tick()
-        assert "user" not in get_run_context()
+        assert store.skips[-1] == []
+        assert sorted(i for _, ids in store.written for i in ids) == [1, 2, 3]
+
+    def test_each_page_and_each_org_reports_its_own_member(self, monkeypatch, wired):
+        """KB-3c fix round 1 (P3-b). The door reads the member of the run
+        context. Each page binds its own author, so the second page of an
+        org and the page of a second org never report the first author."""
+        door, store, _ = wired
+        _flags(monkeypatch, "*")
+        found = {
+            ORG: [_waiting(1, page="p-a", members=(AUTHOR,)),
+                  _waiting(2, page="p-b", members=(EDITOR,))],
+            OTHER: [_waiting(3, page="p-c", members=("third@kb3c.test",))],
+        }
+
+        async def select(org: str, limit: int, skip: list[int]) -> list[sweep.Waiting]:
+            return found[org]
+
+        monkeypatch.setattr(sweep, "select_waiting", select)
+        _tick()
+        assert [m["member"] for m in door.members] == [AUTHOR, EDITOR, "third@kb3c.test"]
+        assert all(m["member_proven"] is True for m in door.members)
 
 
 class TestTheJobMember:
