@@ -1,5 +1,5 @@
 -- ============================================================================
--- 283_whatsapp_act_home.sql — where a WhatsApp Confirm finds the parked tool.
+-- 285_whatsapp_act_home.sql — where a WhatsApp Confirm finds the parked tool.
 --
 -- What: `whatsapp_pending_acts.act_home`, a nullable TEXT. NULL is the act of
 --       WAC-4: a Projects tool that `whatsapp_acts.ALLOWED_ACTS` names by
