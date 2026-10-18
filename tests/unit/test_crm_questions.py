@@ -684,3 +684,87 @@ def test_seen_keys_hold_the_open_set_and_no_new_at() -> None:
     keys = qs.seen_keys(found)
     assert set(keys) == {"seen", "money"}
     assert keys["seen"] == sorted(q.id for q in found) and keys["money"] is True
+
+
+# ── CRM-Q32-9a: an amount can be the sum of several fields ──────────────────
+
+
+_SUM = ["IP_Amount", "Rent_Amount", "EB_Amount"]
+
+
+def test_the_amount_card_offers_a_sum_of_the_filled_currency_fields() -> None:
+    """The offer rule (§18.14.10): 2 or more currency fields, each filled
+    20% or more. The picker lists them, the most filled first, at most 12."""
+    by = _by_id(qs.build(_inputs()))
+    amount = by["key:Payment_Received:amount"]
+    assert [c.value for c in amount.sums] == ["IP_Amount", "EB_Amount", "Rent_Amount"]
+    assert [c.fill for c in amount.sums] == [0.52, 0.51, 0.5]
+    assert by["key:Payment_Received:date"].sums == ()
+    wire = qs.wire(amount)
+    assert wire["sums"][0] == {"value": "IP_Amount", "label": "IP Amount", "fill": 0.52}
+    assert "sums" not in qs.wire(by["key:Payment_Received:date"])
+
+
+def test_no_sum_with_one_filled_currency_field() -> None:
+    low = _module("Dues", "Dues", 40,
+                  [_f("Name", "text"), _f("Due", "currency"), _f("Fee", "currency"),
+                   _f("Rate", "percent"), _f("Paid_On", "date")],
+                  {"Due": 0.9, "Fee": 0.19, "Rate": 0.9, "Paid_On": 0.2})
+    assert qs.sum_fields(low) == []
+    many = _module("Big", "Big", 40, [_f(f"C{i:02d}", "currency") for i in range(15)],
+                   {f"C{i:02d}": 0.2 + i / 100 for i in range(15)})
+    picked = qs.sum_fields(many)
+    assert len(picked) == qs.SUM_CHOICES == 12
+    assert picked[0].key == "C14" and "C00" not in {f.key for f in picked}
+
+
+def test_a_sum_answers_an_amount_and_nothing_else() -> None:
+    by = _by_id(qs.build(_inputs(slots=EMPTY_DEALS, stages=(DEAL_STAGE,))))
+    amount, date = by["key:Payment_Received:amount"], by["key:Payment_Received:date"]
+    assert qs.answer_problem(amount, _SUM, COLLECTION) is None
+    assert qs.answer_problem(amount, ["IP_Amount", "Rent_Amount"], COLLECTION) is None
+    for bad in (["IP_Amount"], ["IP_Amount", "IP_Amount"], ["IP_Amount", "Gone"],
+                ["IP_Amount", "Date_of_Payment_Record"], ["IP_Amount", "a'--"],
+                ["IP_Amount", "@amount"], ["IP_Amount", "x" * 300], [*_SUM, "A", "B", "C"]):
+        assert qs.answer_problem(amount, bad, COLLECTION) == "bad_answer", bad
+    assert qs.answer_problem(date, _SUM, COLLECTION) == "bad_answer"
+    for qid in ("purpose:Towers", "slot:deal", "revenue", qs.stage_id("deal", "On Hold")):
+        assert qs.answer_problem(by[qid], _SUM, COLLECTION) == "bad_answer", qid
+    item = qs.answer_item(amount, _SUM)
+    assert item == {"kind": "catalogue", "module": "Payment_Received", "amount": _SUM,
+                    "by": {"amount": "admin"}}
+    assert cat.item_problem(item) is None
+    line = qs.applied_line(amount, qs.sum_choice(COLLECTION, _SUM))
+    assert line == "Totals of Collection now use the sum of IP Amount, Rent Amount and EB Amount."
+
+
+def test_a_sum_in_use_shows_its_keys_as_current() -> None:
+    items = [{"kind": "catalogue", "module": "Payment_Received", "amount": _SUM,
+              "by": {"amount": "admin"}}]
+    done = _by_id(qs.answered(_inputs(items)))
+    amount = done["key:Payment_Received:amount"]
+    assert (amount.current, amount.by) == (tuple(_SUM), "admin")
+    assert qs.wire(amount)["current"] == _SUM
+    assert "key:Payment_Received:amount" not in _ids(qs.build(_inputs(items)))
+
+
+def test_the_sum_check_line_and_its_warning() -> None:
+    """The coverage line, and a warning for a pair that holds the same value
+    on half or more of the records that set both. The admin can still save."""
+    labels = ["Rent Net Amount", "IP Basic Amount", "EB Net Amount"]
+    report = qs.sum_report(labels, 8681, 8458, [(0, 1, 4472, 12), (0, 2, 0, 0), (1, 2, 0, 0)])
+    assert report.line == "These 3 fields cover 8,458 of 8,681 records (97%)."
+    assert report.warnings == ()
+    twice = qs.sum_report(["Rent Net Amount", "Rent Total Amount"], 100, 90,
+                          [(0, 1, 50, 45)])
+    assert twice.warnings == (
+        "Rent Net Amount and Rent Total Amount hold the same value on 90% of records. "
+        "A sum counts it twice.",)
+    half = qs.sum_report(["A", "B"], 10, 10, [(0, 1, 10, 5)])
+    assert len(half.warnings) == 1
+    below = qs.sum_report(["A", "B"], 10, 10, [(0, 1, 10, 4)])
+    assert below.warnings == ()
+    capped = qs.sum_report(["A", "B"], 10_000, 9_000, [], capped=True)
+    assert capped.line == "These 2 fields cover 9,000 of the first 10,000 records (90%)."
+    empty = qs.sum_report(["A", "B"], 0, 0, [])
+    assert empty.line == "These 2 fields cover 0 of 0 records (0%)."

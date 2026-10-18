@@ -106,6 +106,19 @@ PART_TYPES: Mapping[str, tuple[str, ...]] = {
     "parent": ("lookup",),
 }
 
+#: CRM-Q32-9 (§18.14.10): ``amount`` can be the sum of 2 to 5 fields. Only
+#: the admin stores the list, and each key must be a ``currency`` field.
+SUM_PART = "amount"
+SUM_MIN = 2
+SUM_MAX = 5
+SUM_TYPES: tuple[str, ...] = ("currency",)
+#: The key of a sum is its keys joined with ``+``, and its label the labels
+#: joined with " + ". A Zoho API name holds no ``+``.
+SUM_KEY_JOIN = "+"
+SUM_LABEL_JOIN = " + "
+#: The longest key that a sum takes. A longer one is no field of Zoho.
+SUM_KEY_MAX = 200
+
 #: The kind of a catalogue item in ``crm_mapping_plans.rules`` (§18.13.4).
 #: CRM-Q31-3 writes it. This slice only reads it.
 KIND_CATALOGUE = "catalogue"
@@ -169,12 +182,41 @@ CORE_FITS: Mapping[str, frozenset[str]] = {
 @dataclass(frozen=True)
 class Field:
     """One field: its key, its label, its type and, for a lookup, the API
-    name of the module it points at."""
+    name of the module it points at.
+
+    CRM-Q32-9: a sum of fields (:func:`composite`) holds each field in
+    ``parts``. Its key is the keys joined with ``+``, its label the labels
+    joined with " + ", and its type ``currency``. A plain field has no part."""
 
     key: str
     label: str
     type: str
     target: str | None = None
+    parts: tuple[Field, ...] = ()
+
+
+def composite(fields: Sequence[Field]) -> Field:
+    """The one field of a sum of *fields* (CRM-Q32-9)."""
+    return Field(
+        key=SUM_KEY_JOIN.join(f.key for f in fields),
+        label=SUM_LABEL_JOIN.join(f.label for f in fields),
+        type=SUM_TYPES[0], parts=tuple(fields),
+    )
+
+
+def sum_shape_problem(value: Any) -> bool:
+    """True unless *value* is a list of :data:`SUM_MIN` to :data:`SUM_MAX`
+    distinct keys, each a string of 1 to :data:`SUM_KEY_MAX` characters that
+    does not start with ``@`` and holds no ``+``. It reads no field."""
+    if not isinstance(value, list) or not SUM_MIN <= len(value) <= SUM_MAX:
+        return True
+    if len(set(map(str, value))) != len(value):
+        return True
+    return not all(
+        isinstance(k, str) and 0 < len(k) <= SUM_KEY_MAX and not k.startswith("@")
+        and SUM_KEY_JOIN not in k
+        for k in value
+    )
 
 
 @dataclass(frozen=True)
@@ -465,11 +507,24 @@ def _rank_problem(ranked: Any, parts: Sequence[str]) -> bool:
     return False
 
 
+def _key_part_problem(item: Mapping[str, Any], part: str) -> bool:
+    """True when the key part *part* of *item* is not legal: a field API
+    name, ``null``, or (CRM-Q32-9) for ``amount`` only a list of 2 to 5
+    distinct keys that the admin stored."""
+    value = item.get(part)
+    if isinstance(value, list):
+        by = item.get("by")
+        word = by.get(part) if isinstance(by, Mapping) else None
+        return part != SUM_PART or word != "admin" or sum_shape_problem(value)
+    return part in item and value is not None and (not isinstance(value, str) or not value)
+
+
 def item_problem(item: Mapping[str, Any]) -> str | None:
     """Rule 4 of the kinds for one ``catalogue`` item, or ``None`` when it
     is legal. ``purpose`` is a word of :data:`PURPOSES` or ``null``. Each key
     part is a field API name or ``null``. ``by`` names ``code``, ``ai`` or
-    ``admin`` for each part.
+    ``admin`` for each part. CRM-Q32-9: ``amount`` can also be a list of 2 to
+    5 distinct keys, with ``by: admin`` only.
 
     CRM-Q32 (§18.14.4): the item :data:`ORG_MODULE` holds only ``revenue``,
     a word of :data:`REVENUE_VALUES`. ``ranked`` maps a part to at most
@@ -489,10 +544,9 @@ def item_problem(item: Mapping[str, Any]) -> str | None:
         if ("purpose" in item and item["purpose"] is not None
                 and item["purpose"] not in PURPOSES):
             return "purpose"
-        for part in KEY_PARTS:
-            value = item.get(part)
-            if part in item and value is not None and (not isinstance(value, str) or not value):
-                return part
+        bad = next((part for part in KEY_PARTS if _key_part_problem(item, part)), None)
+        if bad is not None:
+            return bad
         if "revenue" in item:
             return "revenue"
     by = item.get("by", {})
@@ -533,11 +587,22 @@ def merge_item(old: Mapping[str, Any] | None, new: Mapping[str, Any]) -> dict[st
 
     CRM-Q32-1 item 5: ``ranked`` rides with its part. A part that *new*
     writes takes the rank of *new*, or none. The rank of a part with
-    ``by: admin`` drops."""
+    ``by: admin`` drops.
+
+    CRM-Q32-9: a sum (a list of keys) rides only with ``by: admin``. A list
+    of another writer is left out, and the item keeps its own copy."""
     parts = parts_of(new.get("module") if new.get("module") is not None
                      else (old or {}).get("module"))
     if old is None:
+        new_by = new.get("by") if isinstance(new.get("by"), Mapping) else {}
         out = {**dict(new), "by": dict(new.get("by") or {})}
+        for part in parts:
+            if isinstance(out.get(part), list):
+                if new_by.get(part) != "admin":
+                    out.pop(part)
+                    out["by"].pop(part, None)
+                else:
+                    out[part] = list(out[part])
         return _with_ranks(out, _ranks(new))
     out = dict(old)
     by = dict(old.get("by") or {}) if isinstance(old.get("by"), Mapping) else {}
@@ -550,7 +615,10 @@ def merge_item(old: Mapping[str, Any] | None, new: Mapping[str, Any]) -> dict[st
         word = new_by.get(part, "ai")
         if by.get(part) == "admin" and word != "admin":
             continue
-        out[part] = new[part]
+        if isinstance(new[part], list) and word != "admin":
+            # CRM-Q32-9: code and the pipeline never write a sum.
+            continue
+        out[part] = list(new[part]) if isinstance(new[part], list) else new[part]
         by[part] = word
         if part in new_ranks:
             ranks[part] = new_ranks[part]
@@ -585,7 +653,9 @@ def clear_parts(
         out.pop(part, None)
         by.pop(part, None)
         ranks.pop(part, None)
-        if cached is not None and part in cached:
+        # CRM-Q32-9: the pipeline never writes a sum, so a cached list is no
+        # answer of the pipeline, and the part leaves the item.
+        if cached is not None and part in cached and not isinstance(cached[part], list):
             out[part] = cached[part]
             word = cached_by.get(part)
             by[part] = word if word in ("ai", "code") else "ai"
@@ -630,8 +700,22 @@ def _stored_by(item: Mapping[str, Any], part: str) -> str:
 
 def problem(src: Source, part: str, key: Any) -> str | None:
     """Why a stored key part is not legal now, or ``None``. A part names a
-    field of *src* of the right type (rule 4 of the kinds), or ``None``."""
+    field of *src* of the right type (rule 4 of the kinds), or ``None``.
+
+    CRM-Q32-9: a sum of ``amount`` is checked key by key. A key that is gone
+    gives ``gone``, and a key that is not ``currency`` gives ``type``. So
+    one bad key makes the whole part ``stale``."""
     if key is None:
+        return None
+    if isinstance(key, list):
+        if part != SUM_PART or sum_shape_problem(key):
+            return "type"
+        for one in key:
+            found = src.field(one)
+            if found is None:
+                return "gone"
+            if found.type not in SUM_TYPES:
+                return "type"
         return None
     found = src.field(key) if isinstance(key, str) else None
     if found is None:
@@ -639,6 +723,16 @@ def problem(src: Source, part: str, key: Any) -> str | None:
     if found.type not in PART_TYPES[part]:
         return "type"
     return None
+
+
+def resolve(src: Source, key: Any) -> Field | None:
+    """The field that a legal stored part names (:func:`problem` gave
+    ``None``): a field of *src*, the sum of a list (:func:`composite`), or
+    ``None``. Before CRM-Q32-9, a list gave ``None`` with no error."""
+    if isinstance(key, list):
+        found = [src.field(k) for k in key]
+        return composite([f for f in found if f is not None]) if all(found) else None
+    return src.field(key) if key is not None else None
 
 
 # ── The entry ────────────────────────────────────────────────────────────────
@@ -705,8 +799,7 @@ def entry_of(
         if item is not None and part in item:
             reason = problem(src, part, item.get(part))
             if reason is None:
-                key = item.get(part)
-                entry.fields[part] = src.field(key) if key is not None else None
+                entry.fields[part] = resolve(src, item.get(part))
                 entry.by[part] = _stored_by(item, part)
                 continue
             entry.stale.append(part)
@@ -766,6 +859,13 @@ __all__ = [
     "SHADOW_KEYS",
     "SLOT_PURPOSES",
     "STANDARD_PURPOSES",
+    "SUM_KEY_JOIN",
+    "SUM_KEY_MAX",
+    "SUM_LABEL_JOIN",
+    "SUM_MAX",
+    "SUM_MIN",
+    "SUM_PART",
+    "SUM_TYPES",
     "SYSTEM_TIMES",
     "Entry",
     "Field",
@@ -778,6 +878,7 @@ __all__ = [
     "code_parts",
     "code_purpose",
     "code_status",
+    "composite",
     "entry_of",
     "is_catalogue",
     "item_problem",
@@ -785,10 +886,12 @@ __all__ = [
     "parts_of",
     "problem",
     "purposes_of",
+    "resolve",
     "revenue_of",
     "role_purposes",
     "singulars",
     "stored_items",
+    "sum_shape_problem",
     "without_catalogue",
     "word_purpose",
 ]

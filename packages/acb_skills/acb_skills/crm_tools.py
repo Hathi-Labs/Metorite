@@ -1596,6 +1596,12 @@ def _entry_line(entry: dict[str, Any]) -> str:
             if not isinstance(found, dict):
                 parts.append(f"{name}: no single field.")
                 continue
+            summed = [p for p in found.get("parts") or [] if isinstance(p, dict)]
+            if summed:
+                # CRM-Q32-9: the amount is the sum of several fields.
+                parts.append(f"{name}: sum of {_names([str(p.get('label')) for p in summed])} "
+                             f"({' + '.join(str(p.get('key')) for p in summed)}).")
+                continue
             target = f" -> {found['target']}" if part == "parent" and found.get("target") else ""
             parts.append(f"{name} {found.get('label')} ({found.get('key')}{target}).")
         elif part in waiting:

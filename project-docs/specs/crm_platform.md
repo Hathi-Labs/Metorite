@@ -37,7 +37,9 @@
 >
 > **Built 2026-10-18, merged as #1130, dark:** CRM-Q32, the open questions (§18.14). CRM-Q32-1 to CRM-Q32-6 are built, the screens and both halves of CRM-Q32-4 too. CRM-Q32-7 is not, because it waits for WS-61. The CRM asks the admin each question that Jev could not answer with confidence. Each answer becomes a fixed fact in the mapping plan. Every app reads it through the one read seam `org facts`. No migration, and no model call of its own.
 >
-> **Specified 2026-10-18, not built:** CRM-Q32-8, the chat tells each member with CRM access what is not clear and asks before it answers. An admin answers, and each other member proposes an answer that an admin confirms (owner direction 2026-10-18, two parts), and CRM-Q32-9a and CRM-Q32-9b, an amount as the sum of 2 to 5 fields (§18.14.10). The merge order is in §18.14.10.
+> **Specified 2026-10-18, not built:** CRM-Q32-8, the chat tells each member with CRM access what is not clear and asks before it answers. An admin answers, and each other member proposes an answer that an admin confirms (owner direction 2026-10-18, two parts), and CRM-Q32-9b, the picker of a sum (§18.14.10). The merge order is in §18.14.10.
+>
+> **Built 2026-10-18 on `crm-q32-9a`, not merged:** CRM-Q32-9a, the backend of an amount as the sum of 2 to 5 fields (§18.14.10). No migration. The screens wait for CRM-Q32-9b, but a CRM admin of an org on `CRM_QUESTIONS_ORGS` can already store a sum through `PUT /crm/catalogue/{module}` or the answer route. Do not revert CRM-Q32-9a after that (§18.14.13).
 >
 > **Built later, not merged (Batch M, `crm-batch-m`):** CRM-Q17a-1b, a "still empty" check of a stale entity (2026-10-16, §18.9.6, no migration). CRM-Q17a-2, the screens of the fill rank (2026-10-16, no migration). CRM-Q18-1b, two deadlocks of the plan lock (2026-10-16, no migration). CRM-Q19, the executor and the 200-record preview (2026-10-16, no migration).
 >
@@ -5942,8 +5944,9 @@ change of the first, and runs the verification of both again.
 
 **Status (2026-10-18).** CRM-Q32-1 to CRM-Q32-6 were built on
 `crm-batch-q32` and merged as #1130, dark behind `CRM_QUESTIONS_ORGS`.
-CRM-Q32-8 (the chat asks before it answers) and CRM-Q32-9a and CRM-Q32-9b
-(an amount as the sum of fields) are specified 2026-10-18, not built. The
+CRM-Q32-8 (the chat asks before it answers) and CRM-Q32-9b (the picker of a
+sum) are specified 2026-10-18, not built. CRM-Q32-9a (the backend of a sum)
+is built 2026-10-18 on `crm-q32-9a`, not merged. The
 spec audit gave CRM-Q32-8 NO-GO and CRM-Q32-9 GO-NARROWED, and its edits
 are in. A second owner direction of 2026-10-18 widens CRM-Q32-8 to each
 member with CRM access: an admin answers, and each other member proposes. They are verified
@@ -6513,7 +6516,7 @@ section.
 | CRM-Q32-6 | The chat line | AGENT-SAFE | S | CRM-Q32-1 |
 | CRM-Q32-7 | The Knowledge page "How our CRM data is organised". ⚠️ NOT dispatchable: a stub | AGENT-SAFE to build, later | S | CRM-Q32-5, and a writer of a system page that WS-61 specifies in `knowledge_base.md` |
 | CRM-Q32-8 | The chat tells each member what is not clear and asks before it answers. An admin answers, and each other member proposes. `crm_answer_question` serves both (owner direction 2026-10-18, two parts) | AGENT-SAFE | L | #1133 (CRM-Q29 rounds 4 and 5), #1132 (merged), CRM-Q32-9a and `crm-questions-copy` |
-| CRM-Q32-9a | The backend of an amount as the sum of 2 to 5 fields | AGENT-SAFE | M | This spec merged |
+| CRM-Q32-9a | The backend of an amount as the sum of 2 to 5 fields. ✅ Built 2026-10-18 on `crm-q32-9a`, not merged | AGENT-SAFE | M | This spec merged |
 | CRM-Q32-9b | The picker of a sum, and "Your answers" | AGENT-SAFE | S | CRM-Q32-9a and the branch `crm-questions-copy` |
 
 **The flips.** A name in `CRM_QUESTIONS_ORGS` spends nothing, so it is the
@@ -7230,6 +7233,11 @@ Change opens the same picker.
 
 **CRM-Q32-9a · The backend of a sum. Done when:**
 
+**Built 2026-10-18 on `crm-q32-9a`, not merged.** Each item below has its test.
+Two notes. A sum check reads `GET /crm/questions/{id}/sum-check?fields=A,B`. The
+card of an `amount` question carries `sums`, the fields of the offer rule.
+`aggregate.py` changed one type only: `keys` takes a list.
+
 1. For `amount` only, `item_problem` accepts a list of 2 to 5 distinct
    keys, with `by: admin`. A test proves a problem for each bad case. Bad
    cases: 1 key, 6 keys, a duplicate key, a list for `date`, `by: ai`.
@@ -7357,8 +7365,15 @@ change of the first, and runs the verification of both again.
   `bad_catalogue` on each plan commit of that org
   (`mapping_plans.py:445-450`), until the code rolls forward. The
   mitigation is the release order. CRM-Q32-9a accepts a list one release
-  before CRM-Q32-9b lets an admin store one. So each box runs the new
-  backend before any list exists.
+  before CRM-Q32-9b gives the admin a screen to store one. So each box runs
+  the new backend before the screen exists.
+- **CRM-Q32-9a is one-way once a list is stored.** The API of CRM-Q32-9a
+  already stores a list: a CRM admin of an org on `CRM_QUESTIONS_ORGS` can
+  send one through `PUT /crm/catalogue/{module}` or the answer route. After
+  the first list is stored, do not revert CRM-Q32-9a. Code from before it
+  gives 422 `bad_catalogue` on each plan commit of that org. To go back,
+  first put each sum back with `"@auto"` or one field, then revert. No flag
+  guards this, on purpose (the SQL review of 2026-10-18).
 
 ---
 
