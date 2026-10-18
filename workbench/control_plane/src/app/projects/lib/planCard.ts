@@ -492,14 +492,34 @@ export interface PlanTimeline {
 
 /** The strip hides with fewer dated rows than this: two bars compare nothing. */
 export const TIMELINE_MIN_ROWS = 3;
-/** The tallest the strip grows, in px, before its rows get thinner. */
+/** The tallest the strip grows, in px. A longer plan gets thinner rows,
+ *  so the strip never passes it (review of #1160). */
 export const TIMELINE_MAX_PX = 96;
 const ROW_MAX_PX = 8;
-const ROW_MIN_PX = 3;
 
 /** The working days an effort fills, at least one. */
 function effortDays(mins: number): number {
   return Math.max(1, Math.ceil(mins / WORKDAY_MINS));
+}
+
+/** Saturday or Sunday, for a day number (1970-01-01 was a Thursday). */
+function isWeekend(day: number): boolean {
+  const weekday = (((day + 4) % 7) + 7) % 7; // 0 is Sunday
+  return weekday === 0 || weekday === 6;
+}
+
+/**
+ * The first day of `days` working days that end on `due`. The count skips
+ * Saturday and Sunday, as the 480-minute working day does (review of #1160).
+ * The due day itself always counts, whatever day it is.
+ */
+export function workingStart(due: number, days: number): number {
+  let start = due;
+  for (let left = days - 1; left > 0; ) {
+    start -= 1;
+    if (!isWeekend(start)) left -= 1;
+  }
+  return start;
 }
 
 /**
@@ -509,12 +529,14 @@ function effortDays(mins: number): number {
  * plan where every row had a mark turned all yellow. Now:
  *
  * - a bar spans the start to the due date. A row with no start works back
- *   from its due date by its effort, in working days, and draws faint. A row
+ *   from its due date by its effort, in working days with no Saturday or
+ *   Sunday (`workingStart`), and draws faint. A row
  *   with no start and no effort is a dot;
  * - the rows follow the card's order, under their phases (`planGroups`);
  * - a mark is a small marker at the bar's end, and only when some rows are
  *   unmarked;
- * - the height grows with the rows up to {@link TIMELINE_MAX_PX};
+ * - the height grows with the rows, and never passes {@link TIMELINE_MAX_PX}:
+ *   a long plan gets thinner rows;
  * - `null` when the strip says nothing: fewer than
  *   {@link TIMELINE_MIN_ROWS} dated rows, or every bar on the same days.
  *
@@ -529,7 +551,7 @@ export function planTimeline(rows: PlanRow[], year = new Date().getFullYear()): 
     const due = dayNumber(r.due);
     const set = dayNumber(r.start);
     if (Number.isFinite(set) && set <= due) return { r, start: set, due, derived: false, point: false };
-    if (r.effort_mins > 0) return { r, start: due - effortDays(r.effort_mins) + 1, due, derived: true, point: false };
+    if (r.effort_mins > 0) return { r, start: workingStart(due, effortDays(r.effort_mins)), due, derived: true, point: false };
     return { r, start: due, due, derived: false, point: true };
   });
   const first = Math.min(...spans.map((s) => s.start));
@@ -562,7 +584,8 @@ export function planTimeline(rows: PlanRow[], year = new Date().getFullYear()): 
       };
     }),
     weeks,
-    rowPx: Math.max(ROW_MIN_PX, Math.min(ROW_MAX_PX, Math.floor(TIMELINE_MAX_PX / dated.length))),
+    // Half-pixel steps, so the rows times their count never pass the cap.
+    rowPx: Math.max(0.5, Math.min(ROW_MAX_PX, Math.floor((TIMELINE_MAX_PX / dated.length) * 2) / 2)),
   };
 }
 

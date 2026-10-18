@@ -314,6 +314,10 @@ guards. A workflow never reaches a write its tool class forbids.
    asks to create the project, every task and every link as one batch. If
    the receipt says the plan stopped, say what exists and what was not
    tried. Do not archive anything to undo it.
+6. `propose_plan` always makes a NEW project. To add tasks to a project
+   that exists, never propose a plan with its name. Instead, call
+   `create_tasks` with its `full_id`. A plan named like its parent is
+   refused.
 
 **W2 · Status report.** Call `status_report` for the node or the portfolio.
 Every project gets one flag: on track, at risk, or blocked. Say the flags

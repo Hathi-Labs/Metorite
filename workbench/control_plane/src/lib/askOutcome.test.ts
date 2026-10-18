@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { askOutcome, OUTCOME_MAX } from "@/lib/askOutcome";
+import { askOutcome, OUTCOME_MAX, sentFormValues } from "@/lib/askOutcome";
 
 const template = (name: string, data: Record<string, unknown> = {}) => ({
   type: "template", props: { name, data }, request_id: "a".repeat(32),
@@ -43,5 +43,15 @@ describe("askOutcome", () => {
     expect(long.length).toBe(OUTCOME_MAX);
     expect(long.endsWith("…")).toBe(true);
     expect(askOutcome(template("optionPicker"), "Selected: «Ops»")).toBe("Sent: Ops");
+  });
+});
+
+describe("sentFormValues", () => {
+  it("reads the values a form sent, and nothing else", () => {
+    expect(sentFormValues('Save — {"due":"2026-11-02","notify":true}')).toEqual({ due: "2026-11-02", notify: true });
+    expect(sentFormValues("Save — [1,2]")).toBeNull();
+    expect(sentFormValues("Save — not json")).toBeNull();
+    expect(sentFormValues("__declined__")).toBeNull();
+    expect(sentFormValues(undefined)).toBeNull();
   });
 });

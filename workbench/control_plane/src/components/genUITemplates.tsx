@@ -57,6 +57,7 @@ import PlanCardBody from "@/components/PlanCardBody";
 import Badge from "@/components/ui/Badge";
 import RecommendedBadge, { RECOMMENDED_RING } from "@/components/RecommendedBadge";
 import { pickedFromAnswer } from "@/lib/askAnswers";
+import { sentFormValues } from "@/lib/askOutcome";
 import { Checkbox } from "@/components/ui/Checkbox";
 import GenUiText from "@/components/GenUiText";
 import { clipWords, plainTitle } from "@/lib/fencedText";
@@ -118,7 +119,7 @@ export interface TemplateSpec {
   /** Human-readable data shape, mirrored into GENUI_TEMPLATE_SHAPES (backend). */
   data: string;
   /**
-   * The card's family in the chat (spec `projects_ai_chat.md` §28): it says
+   * The card's family in the chat (spec `projects_ai_chat.md` §29): it says
    * where the card sits, whether it folds, and what happens after it is
    * answered. A template that the member fills in and sends WAITS. Every
    * other template is a RESULT. Fence: `chatCardPolicy.test.ts`.
@@ -940,11 +941,15 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
       init[name] = f.value ?? (str(f.type) === "toggle" || str(f.type) === "checkbox" ? false
         : str(f.type) === "slider" ? num(f.min, 0) : "");
     }
+    // A form with an answer shows the values it SENT, never its defaults
+    // (review of #1160), as the picker and the plan card do.
+    const sent = sentFormValues(ctx?.answered);
+    if (sent) for (const name of Object.keys(init)) if (name in sent) init[name] = sent[name];
     return init;
   });
   // An answer the run already got locks the form after a remount and a
   // reload, as the option picker does. Without it a reloaded form took a
-  // second submit (spec `projects_ai_chat.md` §28 rule 1).
+  // second submit (spec `projects_ai_chat.md` §29 rule 1).
   const [submitted, setSubmitted] = useState(() => !!ctx?.answered);
   const set = (name: string, v: unknown) => setValues((p) => ({ ...p, [name]: v }));
   const missing = fields.some((f) => {

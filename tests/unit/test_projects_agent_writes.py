@@ -2984,19 +2984,40 @@ async def test_a_plan_with_no_phase_draws_no_phase_key(monkeypatch) -> None:
     assert drawn[0]["props"]["data"]["description"] == "Under the top level (a new space)."
 
 
-async def test_the_plan_card_says_no_under_line_for_its_own_name(monkeypatch) -> None:
-    """The owner saw "Under Personalization & Memory System." on the plan for
-    that same project (2026-10-19). Mutation: draw the line whatever the
-    parent is called -> this test fails."""
+async def test_a_plan_named_like_its_parent_is_refused_and_names_create_tasks(monkeypatch) -> None:
+    """The owner's plan "Personalization & Memory System" came "Under
+    Personalization & Memory System." (review of #1160). propose_plan always
+    makes a NEW project, so it made a second one of that name inside the
+    first. Mutation: drop the name check -> this test fails, because a card
+    is drawn and the batch POSTs /projects/nodes."""
+    drawn = form_stub(monkeypatch, FORM_ANSWERS)
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    # The fake parent is called "Ops" (`responder`), and case and spaces do not count.
+    out = await skill_projects.propose_plan("  ops ", _json.dumps(PLAN_DEPS), parent_project_id=UUID)
+    assert out.startswith("Refused:")
+    assert "create_tasks with project_id" in out and UUID in out
+    assert "nothing was created" in out
+    assert drawn == [] and asked == [] and writes(calls) == []
+    assert not [c for c in calls if c["path"] == "/projects/plan/preview"]
+
+
+async def test_a_plan_with_its_own_name_under_a_parent_still_draws(monkeypatch) -> None:
     drawn = form_stub(monkeypatch)
     fake_gateway(monkeypatch, _plan_gateway())
-    # The fake parent is called "Ops" (`responder`).
-    await skill_projects.propose_plan(" ops ", _json.dumps(PLAN_DEPS), parent_project_id=UUID)
-    assert "description" not in drawn[0]["props"]["data"]
-    assert drawn[0]["props"]["data"]["project"]["parent"] == "Ops"
-    drawn.clear()
     await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS), parent_project_id=UUID)
     assert drawn[0]["props"]["data"]["description"] == "Under Ops."
+
+
+def test_w1_sends_an_existing_project_to_create_tasks() -> None:
+    """The model must never propose a new project to fill one that exists.
+    Mutation: drop the sentence from W1 -> this test fails."""
+    root = SKILL_DIR.parents[2]
+    text_ = (root / "agents/agent-projects/instructions.md").read_text(encoding="utf-8")
+    w1 = " ".join(text_.split("**W1 · Plan a project from a goal.**", 1)[1]
+                  .split("**W2", 1)[0].split())
+    assert "`propose_plan` always makes a NEW project" in w1
+    assert "call `create_tasks` with its `full_id`" in w1
 
 
 async def test_cancel_on_the_plan_card_writes_nothing(monkeypatch) -> None:

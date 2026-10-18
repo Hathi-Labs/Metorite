@@ -322,7 +322,7 @@ export function isEvidenceTool(name: string): boolean {
   return placementOf(name) === "evidence";
 }
 
-// ── The five card families (spec §28, owner 2026-10-19) ───────────────────
+// ── The five card families (spec §29, owner 2026-10-19) ───────────────────
 
 /**
  * The family of a card in the chat. It decides where the card sits, whether

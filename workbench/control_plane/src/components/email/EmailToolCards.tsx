@@ -493,7 +493,7 @@ export default function EmailToolCards({
     }
     // Agent-driven categorized board — grouped, interactive sections.
     // It is a RESULT: it folds, and it never closes, because it is the
-    // record of the answer (spec `projects_ai_chat.md` §28 rule 2).
+    // record of the answer (spec `projects_ai_chat.md` §29 rule 2).
     if (e.name === GROUPS_TOOL) {
       items.push(<EmailGroupsCard key={e.id} event={e} />);
       continue;

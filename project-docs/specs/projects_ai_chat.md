@@ -6232,7 +6232,7 @@ that "the UI looks poor". The card drew a full form for each task. On
    the effort in minutes, hours or days. Dates are short, day first.
 3. **A summary line.** The project name is its title, and a click renames
    it. Then the count of tasks, the owners, the span and the total effort.
-4. **A timeline strip.** It draws one bar for each ticked task. §28.2
+4. **A timeline strip.** It draws one bar for each ticked task. §29.2
    changes how it draws a mark (2026-10-19).
 5. **Phases fold.** A row can carry a `phase` label (amends §13.6). The card
    groups the rows under it, and each group folds. The label is for display.
@@ -6271,12 +6271,12 @@ that "the UI looks poor". The card drew a full form for each task. On
 | Other forms | `planCardBody.test.ts` "a form that is not a plan" |
 | Clicks, keys, 390 px | `e2e/plan-card.spec.ts` |
 
-## 28. One policy for the chat's cards (2026-10-19)
+## 29. One policy for the chat's cards (2026-10-19)
 
 **Status.** Built 2026-10-19, branch `chat-cards-placement`. It adds no flag.
 It binds every chat surface, because they all draw through `AgentChat`.
 
-### 28.1 The report
+### 29.1 The report
 
 The owner sent two screenshots of the new plan card (§27).
 
@@ -6290,26 +6290,33 @@ The owner sent two screenshots of the new plan card (§27).
 The owner then asked for one rule: where each card appears, and when the
 member can close it.
 
-### 28.2 The two artifacts, fixed
+### 29.2 The two artifacts, fixed
 
 1. **The timeline strip** (`planTimeline`, `TimelineStrip`). A bar spans the
    start to the due date. A task with no start works back from its due date
-   by its effort, in working days, and draws faint. A task with no start and
-   no effort is a dot. The rows follow the list's order, under their phases.
-   A mark is a small marker at the bar's end, and only when some rows have
-   no mark. The height grows with the rows and stops at 96 px. A hover names
+   by its effort, and draws faint. That count skips Saturday and Sunday.
+   A task with no start and no effort is a dot. The rows follow the
+   list's order, under their phases. A mark is a small marker at the bar's
+   end, and only when some rows have no mark. The height grows with the rows
+   and never goes past 96 px, so a long plan gets thinner rows. A hover names
    the task and its dates. The strip hides with fewer than three dated rows,
    or when every bar has the same days. The list stays the source of truth,
    so the strip is `aria-hidden`.
-2. **"Under X." when X is the plan itself.** The server sends no line in that
-   case (`forms.py` `_under_line`). This is the one place.
+2. **"Under X." when X is the plan itself.** The line was true. The model
+   called `propose_plan` with the name of the parent project, and
+   `propose_plan` always makes a NEW project. So the batch made a second
+   project of that name inside the first, with every task in it. Now
+   `propose_plan` refuses a plan named like its parent (`_plan_fills_parent`,
+   through the shared refusal seam). The refusal names the tool that adds
+   tasks to a project that exists: `create_tasks` with its `full_id`. W1 of
+   the agent instructions says the same.
 3. **The answered card.** A card that waited folds to one line once it has
    its answer (`lib/askOutcome.ts`). The line says what happened, for
    example "Plan · 19 tasks sent for approval".
 
 This amends §27.2 item 4. A marked task no longer draws in the warning tone.
 
-### 28.3 The audit: each card family today
+### 29.3 The audit: each card family today
 
 | Family | Where it appears | Fold or close | After an answer | After a reload |
 |---|---|---|---|---|
@@ -6325,7 +6332,7 @@ This amends §27.2 item 4. A marked task no longer draws in the warning tone.
 | To-do list | Pinned above the composer for the live reply, and a step row. | Its own toggle. | Not an ask. | A step row. |
 | Tool steps (`ThinkingContainer`) | The step area of the reply. | Each step folds, and the trail folds when the reply ends. | Not an ask. | From the saved events. |
 
-### 28.4 The policy
+### 29.4 The policy
 
 Every card is one of five families (`CardFamily` in `lib/chatPlacement.ts`).
 Each template in `TEMPLATE_CATALOG` names its family.
@@ -6338,24 +6345,25 @@ Each template in `TEMPLATE_CATALOG` names its family.
 2. **A result card** (a table, a board, a chart, a report, a timeline)
    appears at its place in the text. It folds, and it never closes, because
    it is the record of the answer. A body taller than 480 px opens cut, with
-   "Show all" (`clampShows`).
+   "Show all" (`clampShows`). A cut stays until the member presses "Show
+   all", and the cut never remounts the body of the card.
 3. **A receipt** (a write that happened) is a compact line after the text of
    the reply. It opens for detail.
 4. **A notice** is a slim line that the member dismisses (#1121).
 5. **Progress** (the to-do list and the tool steps) stays in the step area
    of the reply. It folds when the reply ends.
 
-### 28.5 What broke the policy, and the fix
+### 29.5 What broke the policy, and the fix
 
 | Break | Fix |
 |---|---|
 | An answered card folded to a bare title. With the focus in it, it stayed full size | `rollupOpen` folds an answered card at once (rule 1a). `RollupCard` shows `askOutcome` as the summary |
-| A form with an answer took a second submit after a reload | `FormCard` starts locked when it has an answer |
+| A form with an answer took a second submit after a reload | `FormCard` starts locked when it has an answer, and shows the values it sent |
 | A long result card had no cap | `RollupCard` `clamp` cuts it at 480 px, with "Show all" |
 | The email board and the Tasks day plan had a close | Both fold and never close |
-| The plan strip and the "Under X." line | §28.2 |
+| The plan strip, and a plan that made a second project inside its parent | §29.2 |
 
-### 28.6 Where this does not follow the recommendation, and why
+### 29.6 Where this does not follow the recommendation, and why
 
 - **A receipt stays after the text of the reply.** Each tool event carries
   its stamp. To use it, the turn must draw in stream order (`genUiFlow`).
@@ -6374,7 +6382,7 @@ Each template in `TEMPLATE_CATALOG` names its family.
 - **A question card that blocked a run goes away when the run ends.** A
   follow-up can keep it as a folded line, with a durable answered state.
 
-### 28.7 Fences (R7)
+### 29.7 Fences (R7)
 
 | Rule | Test |
 |---|---|
@@ -6383,7 +6391,8 @@ Each template in `TEMPLATE_CATALOG` names its family.
 | Rule 2: a result is in the text, cut past the cap, and has no close | `chatCardPolicy.test.ts` rule 2 |
 | Rules 3 to 5 | `chatCardPolicy.test.ts` rules 3, 4 and 5 |
 | The strip | `planCardReadFirst.test.ts` "the timeline strip", `planCardBody.test.ts` |
-| No "Under X." for the plan itself | `test_projects_agent_writes.py` `test_the_plan_card_says_no_under_line_for_its_own_name` |
+| A plan named like its parent is refused, and the refusal names `create_tasks` | `test_projects_agent_writes.py` `test_a_plan_named_like_its_parent_is_refused_and_names_create_tasks`, `test_w1_sends_an_existing_project_to_create_tasks` |
+| A cut holds, and neither the cut nor "Show all" remounts the body | `e2e/chat-card-clamp.spec.ts` |
 
-**Advisory.** No test reads the cut in a browser, because the measure needs
-a real layout. The visual review looked at it.
+**Advisory.** The cut runs in a browser only (`e2e/chat-card-clamp.spec.ts`).
+The node suite holds its pure rule.

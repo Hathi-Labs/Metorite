@@ -47,6 +47,7 @@ import {
   planSummary,
   planTimeline,
   planOutcome,
+  workingStart,
   TIMELINE_MAX_PX,
   TIMELINE_MIN_ROWS,
   rowBadges,
@@ -152,11 +153,21 @@ describe("the timeline strip (owner report, 2026-10-19)", () => {
     expect(t.bars[1]).toMatchObject({ key: "t2", left: 1 / days, width: 1 / days });
   });
 
-  it("works a row with no start back from its due date by its effort, and draws it faint", () => {
+  it("works a row with no start back from its due date by its effort, in working days, and draws it faint", () => {
     const t = planTimeline(rows(), 2026)!;
-    // t5: 720 minutes is 1.5 working days, so two days that end on 15 Nov.
-    expect(t.bars[4]).toMatchObject({ key: "t5", left: 23 / 25, width: 2 / 25, derived: true, point: false });
-    expect(t.bars[4].dates).toBe("14 Nov → 15 Nov (start from effort)");
+    // t5: 720 minutes is 1.5 working days, so two. It is due on Sunday 15 Nov,
+    // and the count skips Saturday 14 Nov, so the bar starts on Friday 13 Nov.
+    expect(t.bars[4]).toMatchObject({ key: "t5", left: 22 / 25, width: 3 / 25, derived: true, point: false });
+    expect(t.bars[4].dates).toBe("13 Nov → 15 Nov (start from effort)");
+  });
+
+  it("counts working days back across a weekend", () => {
+    const day = (iso: string) => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) / 86_400_000;
+    // Due Tuesday 27 Oct 2026, three working days: Fri 23, Mon 26, Tue 27.
+    expect(workingStart(day("2026-10-27"), 3)).toBe(day("2026-10-23"));
+    expect(workingStart(day("2026-10-27"), 1)).toBe(day("2026-10-27"));
+    // Due Wednesday 28 Oct, two days: Tue 27 and Wed 28, no weekend between.
+    expect(workingStart(day("2026-10-28"), 2)).toBe(day("2026-10-27"));
   });
 
   it("draws a row with no start and no effort as a dot, never a bar of a made-up length", () => {
@@ -195,6 +206,14 @@ describe("the timeline strip (owner report, 2026-10-19)", () => {
     const t = planTimeline(many, 2026)!;
     expect(t.rowPx).toBe(5);
     expect(t.bars.length * t.rowPx).toBeLessThanOrEqual(TIMELINE_MAX_PX);
+    // Past 32 rows the rows get thinner still, and the strip never passes the cap.
+    for (const n of [33, 48, 60, 120]) {
+      const long = planRowsFrom(Array.from({ length: n }, (_, i) => ({
+        key: `k${i}`, title: `Task ${i}`, owner: "a@b.io", effort_mins: 60,
+        due: `2026-12-${String((i % 28) + 1).padStart(2, "0")}` })));
+      const lt = planTimeline(long, 2026)!;
+      expect(lt.bars.length * lt.rowPx, String(n)).toBeLessThanOrEqual(TIMELINE_MAX_PX);
+    }
   });
 
   it("draws faint week lines on a span of two weeks or more", () => {

@@ -216,9 +216,27 @@ function RollupCardIn({
   const hasBody = filled || (rows ?? 0) > 0;
   const toggle = showRollupToggle({ pending, hasBody });
   const open = rollupOpen({ pending, answered, manual, newest, long, held });
-  // "Show all" on a long result card, for the page's life of this mount.
+  // A long result card opens cut (`clampShows`). The wrapper is ALWAYS in
+  // the tree when `clamp` is set, and only its style changes: a swap of
+  // element types remounted the card's body, so a sandbox reloaded and a
+  // table lost its sort (review of #1160). The measure is the wrapper's
+  // unclipped `scrollHeight`, and a cut stays until "Show all".
   const [all, setAll] = useState(false);
-  const cut = clampShows({ clamp, open, pending, heightPx: height, all });
+  const [cut, setCut] = useState(false);
+  const clampRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = clampRef.current;
+    if (!clamp || !el) return;
+    const read = () =>
+      setCut((was) => clampShows({ clamp, pending, all, wasCut: was, naturalPx: el.scrollHeight }));
+    read();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    for (const child of Array.from(el.children)) ro.observe(child);
+    return () => ro.disconnect();
+  }, [clamp, pending, all]);
+  const shownCut = cut && open;
 
   // An answer folds the card at once (rule 1a). The control the member
   // pressed is gone, so the focus goes to the header, which says what
@@ -229,7 +247,7 @@ function RollupCardIn({
       const root = rootRef.current;
       const at = document.activeElement;
       if (root && (at === null || at === document.body || root.contains(at))) {
-        root.querySelector<HTMLElement>("[aria-expanded]")?.focus();
+        root.querySelector<HTMLElement>("[aria-expanded]")?.focus({ preventScroll: true });
       }
     }
     wasAnswered.current = answered;
@@ -273,15 +291,16 @@ function RollupCardIn({
         bodyRef={setBody}
         animate={animate}
       >
-        {cut ? (
+        {clamp ? (
           <div
-            data-rollup-cut=""
-            className="overflow-hidden"
-            style={{
+            ref={clampRef}
+            data-rollup-cut={shownCut ? "on" : "off"}
+            className={shownCut ? "overflow-hidden" : undefined}
+            style={shownCut ? {
               maxHeight: CLAMP_PX,
               maskImage: "linear-gradient(to bottom, black calc(100% - 48px), transparent)",
               WebkitMaskImage: "linear-gradient(to bottom, black calc(100% - 48px), transparent)",
-            }}
+            } : undefined}
           >
             {children}
           </div>
@@ -289,7 +308,7 @@ function RollupCardIn({
           children
         )}
       </CollapsibleCard>
-      {cut && (
+      {shownCut && (
         <Button variant="ghost" size="sm" icon="ChevronDown" className="mt-0.5" data-rollup-show-all=""
           onClick={() => setAll(true)}>
           Show all

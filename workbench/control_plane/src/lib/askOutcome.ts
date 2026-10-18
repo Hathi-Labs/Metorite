@@ -5,7 +5,7 @@
  * folded to an empty "> Plan" header above the approval that followed, and
  * the owner could not tell what it was. A card that waited on the member
  * now folds, once it has its answer, to a line that says what happened
- * (spec `projects_ai_chat.md` §28, rule 1). The line is the summary of the
+ * (spec `projects_ai_chat.md` §29, rule 1). The line is the summary of the
  * card's fold (`RollupCard` `summary`), so the header reads
  * "Plan  19 tasks sent for approval".
  *
@@ -67,5 +67,22 @@ export function askOutcome(spec: unknown, answered: string | null | undefined): 
       return "Sent";
     default:
       return "Answered";
+  }
+}
+
+/**
+ * The values a form sent, from its answer "<label> — <json>", or null. A
+ * form locked after a reload shows them in place of its defaults (review of
+ * #1160). Anything but a JSON object is null.
+ */
+export function sentFormValues(answered: string | null | undefined): Record<string, unknown> | null {
+  if (!answered) return null;
+  const at = answered.indexOf(" — ");
+  if (at < 0) return null;
+  try {
+    const v: unknown = JSON.parse(answered.slice(at + 3));
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+  } catch {
+    return null;
   }
 }

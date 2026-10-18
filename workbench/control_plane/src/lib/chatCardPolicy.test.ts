@@ -1,5 +1,5 @@
 /**
- * The chat's card policy (spec `projects_ai_chat.md` §28, owner 2026-10-19).
+ * The chat's card policy (spec `projects_ai_chat.md` §29, owner 2026-10-19).
  *
  * The owner asked where the chat's generative-UI cards should appear, and
  * when they can close. Every card is one of five families, and each family
@@ -79,8 +79,14 @@ describe("rule 1 — a card that waits folds to its outcome once answered", () =
     expect(bubble).toMatch(/answered=\{answered !== undefined\} summary=\{askOutcome\(spec, answered\) \|\| undefined\}/);
   });
 
-  it("a form that has its answer stays locked after a remount", () => {
-    expect(source("../components/genUITemplates.tsx")).toContain("useState(() => !!ctx?.answered)");
+  it("a form that has its answer stays locked after a remount, and shows the values it sent", () => {
+    const html = renderToStaticMarkup(createElement(() => TEMPLATE_REGISTRY.formCard(
+      { title: "When", fields: [{ name: "due", label: "Due", type: "text", value: "Monday" }] },
+      { onAction: () => {}, answered: 'Save — {"due":"Friday"}' },
+    )));
+    expect(html).toContain('value="Friday"');
+    expect(html).not.toContain('value="Monday"');
+    expect(html).toMatch(/<input[^>]*disabled=""[^>]*value="Friday"|<input[^>]*value="Friday"[^>]*disabled=""/);
   });
 });
 
@@ -96,14 +102,31 @@ describe("rule 2 — a result card sits at its place in the text, folds, and nev
 
   it("opens cut past the cap, with Show all, and only a result card does", () => {
     const tall = CLAMP_PX + 1;
-    expect(clampShows({ clamp: true, open: true, pending: false, heightPx: tall, all: false })).toBe(true);
-    expect(clampShows({ clamp: true, open: true, pending: false, heightPx: CLAMP_PX, all: false })).toBe(false);
-    expect(clampShows({ clamp: true, open: true, pending: false, heightPx: tall, all: true })).toBe(false);
-    expect(clampShows({ clamp: true, open: false, pending: false, heightPx: tall, all: false })).toBe(false);
-    expect(clampShows({ clamp: true, open: true, pending: true, heightPx: tall, all: false })).toBe(false);
-    expect(clampShows({ clamp: false, open: true, pending: false, heightPx: tall, all: false })).toBe(false);
+    const base = { clamp: true, pending: false, all: false, wasCut: false };
+    expect(clampShows({ ...base, naturalPx: tall })).toBe(true);
+    expect(clampShows({ ...base, naturalPx: CLAMP_PX })).toBe(false);
+    expect(clampShows({ ...base, naturalPx: tall, all: true })).toBe(false);
+    expect(clampShows({ ...base, naturalPx: tall, pending: true })).toBe(false);
+    expect(clampShows({ ...base, naturalPx: tall, clamp: false })).toBe(false);
     // An unmeasured body never cuts.
-    expect(clampShows({ clamp: true, open: true, pending: false, heightPx: 0, all: false })).toBe(false);
+    expect(clampShows({ ...base, naturalPx: 0 })).toBe(false);
+  });
+
+  it("stays cut once cut, so a cut body that measures at the cap never loops (review of #1160)", () => {
+    const base = { clamp: true, pending: false, all: false };
+    // The cut body measures exactly the cap, or less with the padding left out.
+    expect(clampShows({ ...base, wasCut: true, naturalPx: CLAMP_PX })).toBe(true);
+    expect(clampShows({ ...base, wasCut: true, naturalPx: CLAMP_PX - 6 })).toBe(true);
+    // Only "Show all" uncuts it.
+    expect(clampShows({ ...base, wasCut: true, naturalPx: CLAMP_PX + 200, all: true })).toBe(false);
+  });
+
+  it("keeps one wrapper in the tree, so a cut never remounts the card's body", () => {
+    const card = source("../components/RollupCard.tsx");
+    // The wrapper's presence follows the `clamp` prop only, never the cut.
+    expect(card).toContain("{clamp ? (");
+    expect(card).not.toMatch(/\{cut \? \(/);
+    expect(card).toContain('data-rollup-cut={shownCut ? "on" : "off"}');
   });
 
   it("the chat cuts its result cards, and no result card carries a close", () => {

@@ -932,17 +932,30 @@ def _confirm_card(
     return card
 
 
-def _under_line(label: str, parent_label: str) -> str:
-    """The plan card's "Under X." line, or "" when X is the plan's own name.
+def _same_name(a: str, b: str) -> bool:
+    """Two project names that a member reads as one name."""
+    return " ".join(str(a).split()).casefold() == " ".join(str(b).split()).casefold()
 
-    The owner saw "Under Personalization & Memory System." on the plan for
-    that same project (2026-10-19). The line said nothing there, and it read
-    as a defect. So the card gets no line in that case.
+
+def _plan_fills_parent(label: str, parent_label: str, parent_id: str) -> str:
+    """The refusal for a plan named like its parent project (review of #1160).
+
+    The owner's plan "Personalization & Memory System" came "Under
+    Personalization & Memory System." ``propose_plan`` always POSTs a NEW
+    project, so the batch made a second project of that name inside the
+    first one, and put every task there. The model meant to fill the project
+    that exists. ``propose_plan`` cannot target an existing project, so the
+    refusal names the tool that can: ``create_tasks`` with its ``full_id``.
     """
-    def norm(v: str) -> str:
-        return " ".join(v.split()).casefold()
+    from .refusals import refusal_text
 
-    return "" if norm(label) == norm(parent_label) else f"Under {parent_label}."
+    return refusal_text(GatewayRefusal(
+        f"propose_plan makes a NEW project, and the plan is named like its parent "
+        f"{data(parent_label)}. It would make a second {data(label)} inside it, so "
+        "nothing was created. To add the tasks to the project that exists, call "
+        f"create_tasks with project_id {parent_id} and the same tasks. For a new "
+        "sub-project, give the plan its own name."
+    ))
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
@@ -988,6 +1001,8 @@ async def propose_plan(
     if parent_project_id.strip():
         parent_id, parent = await _node(parent_project_id)
         parent_label = _plain(parent.get("name"))
+        if _same_name(label, parent_label):
+            return _plan_fills_parent(label, parent_label, parent_id)
     soft, unresolved = await _soft_owners(rows)
     checks, warnings, capacity_line = _capacity(rows, await _preview(rows, soft), unresolved)
     values = await _ask(
@@ -995,8 +1010,7 @@ async def propose_plan(
             "planCard",
             {
                 "title": f"Plan · {label}",
-                # No "Under X." when X is the plan's own name (2026-10-19).
-                **({"description": under} if (under := _under_line(label, parent_label)) else {}),
+                "description": f"Under {parent_label}.",
                 "project": {
                     "name": label,
                     "parent": parent_label,

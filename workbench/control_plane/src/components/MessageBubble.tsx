@@ -636,7 +636,7 @@ function MessageBubble({
     const header = genUiRootOwnsHead(spec) ? "own" : "frame";
     const icon = header === "own" ? undefined : "LayoutTemplate";
     if (ask) {
-      // An answered card folds to one line that says what happened (§28
+      // An answered card folds to one line that says what happened (§29
       // rule 1, owner report 2026-10-19). It never folds to a bare title.
       return (
         <RollupCard key={i} id={target} title={title} icon={icon} header={header}
@@ -648,7 +648,7 @@ function MessageBubble({
         </RollupCard>
       );
     }
-    // A result card: a long one opens cut, with "Show all" (§28 rule 2).
+    // A result card: a long one opens cut, with "Show all" (§29 rule 2).
     return (
       <RollupCard key={i} id={target} title={title} icon={icon} header={header} clamp>
         <GenerativeUINode spec={spec} onAction={act} answered={answered} />

@@ -101,26 +101,29 @@ export function showRollupToggle({
 
 /**
  * The height a long RESULT card opens at, in CSS pixels (spec
- * `projects_ai_chat.md` §28, rule 2). Over it, the card draws cut, with a
+ * `projects_ai_chat.md` §29, rule 2). Over it, the card draws cut, with a
  * fade and a "Show all" under it. It sits above the 420 px that a table or
  * a timeline already scrolls inside, so a plain table never cuts.
  */
 export const CLAMP_PX = 480;
 
 /**
- * Does the card draw cut? Only a result card (`clamp`), only while it is
- * open and waits on nobody, only when its body is taller than
- * {@link CLAMP_PX}, and only until the member presses "Show all". A height
- * of 0 is "not measured", so nothing cuts before the first measure.
+ * Is the card cut? Only a result card (`clamp`) that waits on nobody, and
+ * only until the member presses "Show all". A cut STAYS: the cut body
+ * measures at the cap, and a rule that uncut it then grew it again, cut it
+ * again, and looped at frame rate (review of #1160). So the first measure
+ * over {@link CLAMP_PX} cuts, and only "Show all" uncuts. `naturalPx` is the
+ * unclipped height (`scrollHeight`). A height of 0 is "not measured".
  */
-export function clampShows({ clamp, open, pending, heightPx, all }: {
+export function clampShows({ clamp, pending, all, wasCut, naturalPx }: {
   clamp: boolean;
-  open: boolean;
   pending: boolean;
-  heightPx: number;
   all: boolean;
+  wasCut: boolean;
+  naturalPx: number;
 }): boolean {
-  return clamp && open && !pending && !all && heightPx > CLAMP_PX;
+  if (!clamp || pending || all) return false;
+  return wasCut || naturalPx > CLAMP_PX;
 }
 
 // ── The member's choices, for the page's life ──────────────────────────────
