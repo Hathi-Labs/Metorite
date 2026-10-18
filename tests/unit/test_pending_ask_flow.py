@@ -821,7 +821,7 @@ def crm_late(monkeypatch):
     raw = RawRedis()
     monkeypatch.setattr(crm_questions, "_redis", lambda: tenant_client(raw))
 
-    async def server_label(org, qid, key):
+    async def server_label(org, qid, key, member=None):
         # The server's own card of the question that `_ask_body` describes.
         import acb_skills.crm_tools as tools
 
