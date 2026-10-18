@@ -151,7 +151,7 @@ def test_an_errored_run_trace_holds_no_setup_value(monkeypatch) -> None:
 def test_a_marker_inside_json_text_stays_inside_its_string() -> None:
     """A tool result or an agent state can hold JSON TEXT. An unclosed marker
     in one string value must not eat the closing quote and the next field."""
-    cut = '{"a": "done <<<SETUP:github:GITHUB_TOKEN=%s", "b": 1, "c": "x>>>"}' % TOKEN
+    cut = '{"a": "done <<<SETUP:github:GITHUB_TOKEN=' + TOKEN + '", "b": 1, "c": "x>>>"}'
     out = redact(cut)
     assert TOKEN not in out
     assert json.loads(out) == {"a": "done [setup value removed: github GITHUB_TOKEN]",
