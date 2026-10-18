@@ -111,10 +111,13 @@ def test_delegation_paths_have_wallclock_timeouts():
     from acb_skills import agent_tools as at
 
     assert at._SUB_AGENT_TIMEOUT > 0
+    # WS-17 incident 2026-10-18: the bound is ``delegation_timeout()``, which
+    # is ``_SUB_AGENT_TIMEOUT`` outside a run with a deadline.
+    assert at.delegation_timeout() == at._SUB_AGENT_TIMEOUT
     for fn in (at.call_agent, at.call_agents_parallel):
         src = inspect.getsource(fn)
         assert "wait_for" in src, f"{fn.__name__} lacks a delegation timeout"
-        assert "_SUB_AGENT_TIMEOUT" in src
+        assert "delegation_timeout()" in src
 
 
 @pytest.mark.asyncio

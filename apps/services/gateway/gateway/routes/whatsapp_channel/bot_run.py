@@ -1558,7 +1558,10 @@ async def _model_answer(req: RunRequest, message: str,
                 document=_document_renderer(req) if documents else None,
                 # WS-17 incident 2026-10-18: the replay floor of this run.
                 session_id=req.chat_session_id,
-                history_floor_ms=_history_floor_ms(history))
+                history_floor_ms=_history_floor_ms(history),
+                # The run's own limit, so a delegation ends in time for the
+                # answer (``agent_tools.delegation_timeout``).
+                deadline=time.monotonic() + RUN_TIMEOUT_S)
                 if native else contextlib.nullcontext()) as wa_run:
             result = await _still_working(req, wa_run, asyncio.wait_for(
                 _executor()(

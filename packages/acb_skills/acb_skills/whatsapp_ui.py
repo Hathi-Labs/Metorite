@@ -184,6 +184,10 @@ class WhatsAppRun:
     #: this run replays, when the window is full, else 0. ``bot_run`` gives it,
     #: and ``acb_skills.egress`` ends an untrusted-answer mark older than it.
     history_floor_ms: int = 0
+    #: WS-17 incident 2026-10-18: the run's deadline on ``time.monotonic()``,
+    #: or None. ``bot_run`` gives it, and ``agent_tools.delegation_timeout``
+    #: keeps a delegation inside it.
+    deadline: float | None = None
 
 
 _RUN: ContextVar[WhatsAppRun | None] = ContextVar("whatsapp_run", default=None)
@@ -198,6 +202,7 @@ def whatsapp_run(agent: str, *,
                  document: Callable[[dict[str, Any]], Awaitable[bytes]] | None = None,
                  session_id: str | None = None,
                  history_floor_ms: int = 0,
+                 deadline: float | None = None,
                  ) -> Iterator[WhatsAppRun]:
     """Open the WhatsApp profile for the run of *agent* in this context.
 
@@ -207,7 +212,7 @@ def whatsapp_run(agent: str, *,
     """
     run = WhatsAppRun(agent=agent, views=views, org=org, notify=notify,
                       writes=writes, document=document, session_id=session_id,
-                      history_floor_ms=history_floor_ms)
+                      history_floor_ms=history_floor_ms, deadline=deadline)
     token = _RUN.set(run)
     try:
         yield run

@@ -493,15 +493,28 @@ def _load_specialist_agents_as_tools() -> list[Any]:
                 eq = _active_run_queue.get(None)
                 # Inherit the orchestrator's resolved tier for the specialist.
                 _pm = _active_run_model.get(None)
+                # WS-17 incident 2026-10-18: a specialist had no time limit
+                # at all. It now takes the one budget of every delegation,
+                # which a WhatsApp run's deadline caps.
+                from acb_skills.agent_tools import (
+                    delegation_timed_out,
+                    delegation_timeout,
+                )
+                budget = delegation_timeout()
                 if eq is not None:
                     try:
                         from orchestrator.executor import _run_sub_agent_streaming  # noqa: PLC0415
-                        return await _run_sub_agent_streaming(
+                        return await asyncio.wait_for(_run_sub_agent_streaming(
                             _n, task, run_id, eq, model=_pm,
-                        )
+                        ), timeout=budget)
+                    except TimeoutError:
+                        return delegation_timed_out(_n, budget)
                     except Exception as exc:  # noqa: BLE001
                         return f"Agent {_n!r} failed: {exc}"
-                return await delegate_to_agent(_n, task)
+                try:
+                    return await asyncio.wait_for(delegate_to_agent(_n, task), timeout=budget)
+                except TimeoutError:
+                    return delegation_timed_out(_n, budget)
 
             _specialist_fn.__name__ = _tool_name
             _specialist_fn.__doc__ = _description

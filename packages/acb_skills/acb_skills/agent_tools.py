@@ -53,6 +53,49 @@ _PARALLEL_MAX = 5
 # that streams slowly-but-not-idle otherwise holds the parent open forever.
 _SUB_AGENT_TIMEOUT = float(_os.environ.get("SUB_AGENT_TIMEOUT_SECONDS", "900"))
 
+#: WS-17 incident 2026-10-18 (``email_app_master_plan.md`` 12.3.13.8). A
+#: WhatsApp run has a hard limit (``bot_run.RUN_TIMEOUT_S``). Two hand-offs to
+#: the email assistant took 101 s and 108 s, and the run hit its limit while
+#: the orchestrator wrote its answer, so the member got the failure text. A
+#: delegation in such a run now ends this long before the run's deadline, so
+#: the calling agent still has time to answer with what it has.
+DELEGATION_RESERVE_S = 45.0
+#: The least time a delegation gets, however close the deadline is.
+DELEGATION_MIN_S = 10.0
+
+
+def delegation_timeout() -> float:
+    """The seconds that one delegation that starts now may take.
+
+    :data:`_SUB_AGENT_TIMEOUT`, or less in a run with a deadline: the time
+    left before the deadline of the WhatsApp run (``whatsapp_ui.current_run``,
+    set by ``bot_run``), less :data:`DELEGATION_RESERVE_S`, and never less
+    than :data:`DELEGATION_MIN_S`. Every delegation tool and the
+    orchestrator's specialist tools read it."""
+    import time as _time
+
+    try:
+        from acb_skills.whatsapp_ui import current_run
+
+        run = current_run()
+    except Exception:  # no WhatsApp profile here
+        run = None
+    deadline = getattr(run, "deadline", None) if run is not None else None
+    if not isinstance(deadline, (int, float)) or deadline <= 0:
+        return _SUB_AGENT_TIMEOUT
+    left = float(deadline) - _time.monotonic() - DELEGATION_RESERVE_S
+    return max(DELEGATION_MIN_S, min(_SUB_AGENT_TIMEOUT, left))
+
+
+def delegation_timed_out(agent_name: str, budget: float) -> str:
+    """The answer of a delegation that ran past *budget*."""
+    text = (f"Sub-task to {agent_name!r} timed out after {int(budget)}s "
+            "and was stopped.")
+    if budget < _SUB_AGENT_TIMEOUT:
+        text += (" The chat has a time limit. Answer the member now with what "
+                 "you have, and say which part did not finish.")
+    return text
+
 
 def _delegation_refusal(agent_name: str) -> str | None:
     """Reason this delegation must be refused, or None if allowed."""
@@ -117,6 +160,8 @@ async def call_agent(agent_name: str, message: str) -> str:
     refusal = _delegation_refusal(agent_name)
     if refusal:
         return refusal
+    # WS-17 incident 2026-10-18: the run's deadline caps the hand-off.
+    _budget = delegation_timeout()
 
     # Inherit the parent run's resolved tier so the sub-agent runs on the same
     # model the user chose for the parent, not its own config default.
@@ -151,13 +196,10 @@ async def call_agent(agent_name: str, message: str) -> str:
                         agent_name, message, run_id, event_queue,
                         model=_parent_model,
                     ),
-                    timeout=_SUB_AGENT_TIMEOUT,
+                    timeout=_budget,
                 ))
             except TimeoutError:
-                return (
-                    f"Sub-task to {agent_name!r} timed out after "
-                    f"{int(_SUB_AGENT_TIMEOUT)}s and was stopped."
-                )
+                return delegation_timed_out(agent_name, _budget)
             except Exception as exc:  # noqa: BLE001
                 return f"Sub-task to {agent_name!r} failed: {exc}"
 
@@ -175,13 +217,10 @@ async def call_agent(agent_name: str, message: str) -> str:
                             agent_name, message, run_id, None,
                             model=_parent_model,
                         ),
-                        timeout=_SUB_AGENT_TIMEOUT,
+                        timeout=_budget,
                     ))
                 except TimeoutError:
-                    return (
-                        f"Sub-task to {agent_name!r} timed out after "
-                        f"{int(_SUB_AGENT_TIMEOUT)}s and was stopped."
-                    )
+                    return delegation_timed_out(agent_name, _budget)
         except (ImportError, Exception):  # noqa: BLE001
             pass
 
@@ -195,7 +234,7 @@ async def call_agent(agent_name: str, message: str) -> str:
                     run_id=run_id,
                     model=_parent_model,
                 ),
-                timeout=_SUB_AGENT_TIMEOUT,
+                timeout=_budget,
             )
             text = result.get("result") or result.get("answer") or ""
             if isinstance(text, dict):
@@ -203,10 +242,7 @@ async def call_agent(agent_name: str, message: str) -> str:
             return await _answer_of(agent_name, str(text)) if text else (
                 f"({agent_name!r} returned an empty response)")
         except TimeoutError:
-            return (
-                f"Sub-task to {agent_name!r} timed out after "
-                f"{int(_SUB_AGENT_TIMEOUT)}s and was stopped."
-            )
+            return delegation_timed_out(agent_name, _budget)
         except Exception as exc:  # noqa: BLE001
             return f"Sub-task to {agent_name!r} failed: {exc}"
     finally:
@@ -355,6 +391,7 @@ async def call_agents_parallel(tasks: str) -> str:
         refusal = _delegation_refusal(agent_name)
         if refusal:
             return agent_name, refusal
+        _budget = delegation_timeout()  # WS-17 incident 2026-10-18
         _tok = _delegation_chain.set((*_delegation_chain.get(), agent_name))
         _held = contextlib.ExitStack()
         _held.enter_context(_delegate_held(await _session_marked()))
@@ -370,13 +407,11 @@ async def call_agents_parallel(tasks: str) -> str:
                         _run_sub_agent_streaming(
                             agent_name, message, run_id, _q,
                             model=_parent_model),
-                        timeout=_SUB_AGENT_TIMEOUT,
+                        timeout=_budget,
                     )
                     return agent_name, result
                 except TimeoutError:
-                    return agent_name, (
-                        f"Sub-task timed out after {int(_SUB_AGENT_TIMEOUT)}s "
-                        "and was stopped.")
+                    return agent_name, delegation_timed_out(agent_name, _budget)
                 except Exception as exc:  # noqa: BLE001
                     return agent_name, f"Sub-task failed: {exc}"
             # Fallback: no parent stream
@@ -389,16 +424,14 @@ async def call_agents_parallel(tasks: str) -> str:
                         run_id=run_id,
                         model=_parent_model,
                     ),
-                    timeout=_SUB_AGENT_TIMEOUT,
+                    timeout=_budget,
                 )
                 text = result.get("result") or result.get("answer") or ""
                 if isinstance(text, dict):
                     text = text.get("content", str(text))
                 return agent_name, str(text) if text else f"({agent_name!r} returned empty)"
             except TimeoutError:
-                return agent_name, (
-                    f"Sub-task timed out after {int(_SUB_AGENT_TIMEOUT)}s "
-                    "and was stopped.")
+                return agent_name, delegation_timed_out(agent_name, _budget)
             except Exception as exc:  # noqa: BLE001
                 return agent_name, f"Sub-task failed: {exc}"
         finally:

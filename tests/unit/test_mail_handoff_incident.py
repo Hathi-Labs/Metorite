@@ -52,3 +52,64 @@ def test_the_row_time_never_reaches_the_model() -> None:
         {"role": "user", "content": "t2"},
     ]
     assert payload["_history_loader"]() == payload["messages"]
+
+
+# ── Fix 4: a delegation ends in time for the answer ─────────────────────────
+
+
+def test_a_whatsapp_deadline_caps_each_delegation() -> None:
+    """Outside a run with a deadline, a delegation gets the long budget. In a
+    WhatsApp run it ends ``DELEGATION_RESERVE_S`` before the deadline, and
+    never gets less than ``DELEGATION_MIN_S``."""
+    import time
+
+    from acb_skills import agent_tools as at
+    from acb_skills.whatsapp_ui import whatsapp_run
+
+    assert at.delegation_timeout() == at._SUB_AGENT_TIMEOUT
+    with whatsapp_run("orchestrator", deadline=time.monotonic() + bot_run.RUN_TIMEOUT_S):
+        budget = at.delegation_timeout()
+        assert budget >= bot_run.RUN_TIMEOUT_S - at.DELEGATION_RESERVE_S - 2
+        assert budget <= bot_run.RUN_TIMEOUT_S - at.DELEGATION_RESERVE_S
+    with whatsapp_run("orchestrator", deadline=time.monotonic() + 5):
+        assert at.delegation_timeout() == at.DELEGATION_MIN_S
+    with whatsapp_run("orchestrator"):
+        assert at.delegation_timeout() == at._SUB_AGENT_TIMEOUT
+
+
+async def test_a_slow_hand_off_returns_in_time_for_the_answer(monkeypatch) -> None:
+    """Run 15949617: two hand-offs took 101 s and 108 s, and the WhatsApp run
+    hit its limit while the orchestrator wrote its answer. Now ``call_agent``
+    and a specialist tool stop a slow hand-off before the deadline, and the
+    model reads why, so it can still answer."""
+    import asyncio
+    import time
+
+    from acb_skills import agent_tools as at
+    from acb_skills.whatsapp_ui import whatsapp_run
+    from orchestrator import agents as orch_package
+    from orchestrator import executor
+
+    # ``orchestrator/agents.py`` loads as ``orchestrator._agents_module``,
+    # because the package ``orchestrator/agents/`` shadows its name.
+    orch_agents = orch_package._mod
+
+    async def hang(*_a: Any, **_k: Any) -> Any:
+        await asyncio.sleep(30)
+        raise AssertionError("the hand-off was not stopped")
+
+    monkeypatch.setattr(at, "DELEGATION_MIN_S", 0.2)
+    monkeypatch.setattr(executor, "run_agent", hang)
+    monkeypatch.setattr(orch_agents, "delegate_to_agent", hang)
+    import gateway.routes.agent as routes_agent
+
+    monkeypatch.setattr(routes_agent, "_load_dynamic_agents", lambda: [])
+    specialist = next(t for t in orch_agents._load_specialist_agents_as_tools()
+                      if t.name == "email_assistant")
+    for call in (lambda: at.call_agent("email-assistant", "send a top-up mail"),
+                 lambda: specialist.func(task="send a top-up mail")):
+        with whatsapp_run("orchestrator", deadline=time.monotonic() + at.DELEGATION_RESERVE_S):
+            started = time.monotonic()
+            out = await asyncio.wait_for(call(), 10)
+        assert time.monotonic() - started < 5, "the hand-off ran past its budget"
+        assert "timed out" in out and "time limit" in out, out
