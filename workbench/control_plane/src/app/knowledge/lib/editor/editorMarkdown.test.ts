@@ -10,6 +10,11 @@
  * The editor itself needs a DOM, and vitest here runs in node. So these
  * tests drive the one `MarkdownManager` the editor uses, and the schema the
  * editor builds from the same list (`knowledgeExtensions`).
+ *
+ * The editor reads Markdown with marked, which is looser than the specs. So
+ * each saved body is also read with a CommonMark and GFM reader
+ * (`gfmShape.ts`, micromark), and it must mean what the stored body meant.
+ * A case that the editor normalises on purpose names why in `gfmDiffers`.
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -24,6 +29,9 @@ import {
 } from "@tiptap/core";
 import { describe, expect, it } from "vitest";
 
+import { gfmShape } from "./gfmShape";
+import { codeSpanFence, decodeEntities, markdownTitle } from "./inline";
+import { isLoose, separateAdjacentLists } from "./lists";
 import { bodyAfterEdit, normaliseBody, parseBody, wrapInlineRuns, writeBody } from "./markdown";
 import {
   codeFence,
@@ -43,6 +51,8 @@ interface GoldenCase {
   saved: string;
   nodes: string[];
   marks: string[];
+  /** Set only when the editor normalises the shape on purpose: the reason. */
+  gfmDiffers?: string;
 }
 
 const GOLDEN = JSON.parse(
@@ -57,7 +67,7 @@ function shape(doc: JSONContent): { order: string[]; marks: string[]; text: stri
   const walk = (n: JSONContent) => {
     order.push(n.type ?? "?");
     for (const m of n.marks ?? []) marks.push(m.type);
-    if (n.text) text += n.text;
+    if (n.text) text += ` ${n.text} `;
     if (n.type === "htmlInline") text += String(n.attrs?.raw ?? "");
     if (n.type === "image") text += `[${n.attrs?.alt ?? ""}|${n.attrs?.src ?? ""}|${n.attrs?.title ?? ""}]`;
     if (n.type === "codeBlock") text += `{${n.attrs?.language ?? ""}}`;
@@ -67,7 +77,9 @@ function shape(doc: JSONContent): { order: string[]; marks: string[]; text: stri
     for (const c of n.content ?? []) walk(c);
   };
   walk(doc);
-  return { order, marks, text };
+  // The words count, and the white space between them does not: a soft
+  // break, leading spaces and two spaces all read as one space.
+  return { order, marks: marks.sort(), text: text.replace(/\s+/g, " ").trim() };
 }
 
 const typesOf = (doc: JSONContent) => {
@@ -94,6 +106,24 @@ describe("the golden set round-trips with no loss", () => {
     for (const mark of ["bold", "italic", "strike", "code", "link"]) expect(all.marks, mark).toContain(mark);
   });
 
+  it("holds each shape of the fix round", () => {
+    const names = new Set(GOLDEN.cases.map((c) => c.name));
+    for (const name of [
+      "image-in-link", "image-and-text-in-link", "empty-link", "entities-named-numeric", "code-span-backtick",
+      "link-destination-space", "link-title-quote", "ordered-child-indent", "ordered-ten",
+      "ordered-loose-continuation", "ordered-code", "setext-two-lines", "front-matter", "adjacent-lists",
+      "star-bullets-plus", "details-open", "ref-definitions", "task-in-ordered", "footnote",
+    ]) {
+      expect(names, name).toContain(name);
+    }
+    expect(names.size).toBe(GOLDEN.cases.length);
+    // Only these shapes are normalised on purpose. A new one needs a reason.
+    expect(GOLDEN.cases.filter((c) => c.gfmDiffers).map((c) => c.name).sort()).toEqual([
+      "code-in-table-backtick",
+      "mixed-task",
+    ]);
+  });
+
   for (const c of GOLDEN.cases) {
     describe(c.name, () => {
       it("writes the pinned body on the first save", () => {
@@ -109,6 +139,16 @@ describe("the golden set round-trips with no loss", () => {
         const after = parseBody(c.saved);
         expect(typesOf(before)).toEqual({ nodes: c.nodes, marks: c.marks });
         expect(shape(after)).toEqual(shape(before));
+      });
+
+      it("is read by CommonMark and GFM as the stored body was", () => {
+        if (c.gfmDiffers) {
+          expect(c.gfmDiffers).toMatch(/^Normalised\. /);
+          expect(gfmShape(c.saved)).not.toEqual(gfmShape(c.md));
+        } else {
+          expect(gfmShape(c.saved)).toEqual(gfmShape(c.md));
+        }
+        expect(gfmShape(normaliseBody(c.saved))).toEqual(gfmShape(c.saved));
       });
 
       it("parses to a document the editor's schema accepts", () => {
@@ -197,7 +237,8 @@ describe("the small rules", () => {
   });
 
   it("escapes a summary so it cannot end its own tag", () => {
-    expect(escapeSummary("5 < 6 & </summary>")).toBe("5 &lt; 6 &amp; &lt;/summary&gt;");
+    expect(escapeSummary("5 < 6 & </summary>")).toBe("5 < 6 & &lt;/summary>");
+    expect(escapeSummary("a &copy; b")).toBe("a &amp;copy; b");
     expect(unescapeSummary(escapeSummary("a < b & c > d"))).toBe("a < b & c > d");
   });
 
@@ -210,6 +251,53 @@ describe("the small rules", () => {
   it("wraps an inline node at the block level in a paragraph", () => {
     const doc = wrapInlineRuns({ type: "doc", content: [{ type: "image", attrs: { src: "/a.png" } }] });
     expect(doc.content?.[0]?.type).toBe("paragraph");
+  });
+});
+
+describe("the rules of the fix round", () => {
+  it("sizes a code span's fence to the backticks inside it", () => {
+    expect(codeSpanFence("plain")).toEqual({ fence: "`", pad: false });
+    expect(codeSpanFence("a`b")).toEqual({ fence: "``", pad: false });
+    expect(codeSpanFence("``")).toEqual({ fence: "```", pad: true });
+    expect(normaliseBody("`` a`b ``")).toBe("``a`b``");
+  });
+
+  it("decodes each entity, and leaves an unknown name as text", () => {
+    expect(decodeEntities("A&nbsp;B &copy; &#169; &#x2713; &nosuchname;")).toBe("A\u00a0B \u00a9 \u00a9 \u2713 &nosuchname;");
+    const doc = parseBody("a &mdash; b");
+    expect(JSON.stringify(doc)).toContain("a \u2014 b");
+    expect(JSON.stringify(parseBody("`&copy;`"))).toContain("&copy;");
+  });
+
+  it("escapes a quote inside a title", () => {
+    expect(markdownTitle('say "hi"')).toBe(' "say \\"hi\\""');
+    expect(markdownTitle(null)).toBe("");
+  });
+
+  it("gives the second of two lists of one family the next marker", () => {
+    const list = (type: string, attrs: Record<string, unknown> = {}) => ({
+      type,
+      attrs,
+      content: [{ type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: "x" }] }] }],
+    });
+    const doc = separateAdjacentLists({ type: "doc", content: [list("bulletList"), list("bulletList"), list("orderedList"), list("orderedList")] });
+    expect(doc.content?.map((n) => n.attrs?.bullet ?? n.attrs?.delimiter)).toEqual(["-", "*", ".", ")"]);
+    expect(writeBody(doc)).toBe("- x\n\n* x\n\n1. x\n\n1) x");
+  });
+
+  it("writes a list loose when an item holds a second paragraph", () => {
+    const item = (blocks: number) => ({
+      type: "listItem",
+      content: Array.from({ length: blocks }, () => ({ type: "paragraph", content: [{ type: "text", text: "p" }] })),
+    });
+    expect(isLoose({ type: "bulletList", content: [item(1), item(1)] })).toBe(false);
+    expect(isLoose({ type: "bulletList", content: [item(2), item(1)] })).toBe(true);
+    expect(isLoose({ type: "bulletList", attrs: { loose: true }, content: [item(1)] })).toBe(true);
+  });
+
+  it("indents a child by the width of its own marker", () => {
+    expect(normaliseBody("9. nine\n10. ten\n    - under ten")).toBe("9. nine\n10. ten\n    - under ten");
+    expect(normaliseBody("1. one\n   - under one")).toBe("1. one\n   - under one");
   });
 });
 

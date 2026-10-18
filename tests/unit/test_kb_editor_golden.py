@@ -8,7 +8,8 @@ writes (``saved``), and vitest holds the editor to them
 
 For each saved body:
 
-* every ``#`` heading outside a code fence is in a heading path, and
+* every ``#`` heading outside a code fence that heads text is in a heading
+  path, and
 * every other line with text is in a chunk, byte for byte.
 
 So no block that the editor writes is lost to the index, and the index reads
@@ -35,8 +36,13 @@ _FENCE = re.compile(r"^ {0,3}(```|~~~)")
 
 
 def _lines(saved: str) -> tuple[list[str], list[str]]:
-    """The heading texts and the other lines with text, outside or in fences."""
+    """The headings that head some text, and the other lines with text.
+
+    A heading with no text under it heads no chunk, so the chunker gives it
+    no heading path, and the test asks for none.
+    """
     headings: list[str] = []
+    pending: list[str] = []
     text: list[str] = []
     fence: str | None = None
     for line in saved.splitlines():
@@ -47,9 +53,11 @@ def _lines(saved: str) -> tuple[list[str], list[str]]:
             fence = None
         match = None if fence or opened else _HEADING.match(line)
         if match:
-            headings.append(match.group(2).strip())
+            pending.append(match.group(2).strip())
         elif line.strip():
             text.append(line.strip())
+            headings.extend(pending)
+            pending = []
     return headings, text
 
 

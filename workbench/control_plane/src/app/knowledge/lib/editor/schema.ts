@@ -10,17 +10,20 @@
 // - A callout is the GitHub alert syntax, `> [!NOTE]` and its four siblings.
 // - A toggle is `<details>` with a `<summary>`, the one HTML shape we write.
 // - Raw HTML that the editor cannot model stays as its own text, in an
-//   `htmlBlock` or an `htmlInline` node. It draws as code and writes back
-//   byte for byte, so a save never drops it in silence. ⚠️ No node here
-//   hands HTML to the browser's parser (`htmlSinks.test.ts`).
+//   `htmlBlock` or an `htmlInline` node. So do YAML front matter, a footnote
+//   and a link with no text. Each draws as code and writes back byte for
+//   byte, so a save never drops it in silence. ⚠️ No node here hands HTML
+//   to the browser's parser (`htmlSinks.test.ts`).
+// - Lists, links, code spans and entities follow `lists.ts` and `inline.ts`.
 // - A heading keeps its level in storage (`#` is level 1) and draws one
 //   level down (`displayHeadingLevel`), because the app bar holds the one
 //   `<h1>` (AGENTS.md rule 11).
 //
 // ⚠️ No extension here binds `Mod-k`. The shell owns ⌘K (D87), and
-// `editorSchema.test.ts` reads every shortcut of this list.
+// `editorMarkdown.test.ts` reads every shortcut of this list.
 
 import {
+  Extension,
   Node,
   mergeAttributes,
   type AnyExtension,
@@ -30,15 +33,32 @@ import {
   type MarkdownToken,
   type NodeViewRenderer,
 } from "@tiptap/core";
+import Code from "@tiptap/extension-code";
 import CodeBlock from "@tiptap/extension-code-block";
 import Heading from "@tiptap/extension-heading";
 import Image from "@tiptap/extension-image";
+import Link from "@tiptap/extension-link";
 import Paragraph from "@tiptap/extension-paragraph";
-import { TaskItem, TaskList } from "@tiptap/extension-list";
+import { BulletList, OrderedList, TaskItem, TaskList } from "@tiptap/extension-list";
 import { Table, TableKit } from "@tiptap/extension-table";
 import { Placeholder } from "@tiptap/extensions";
 import { TextSelection } from "@tiptap/pm/state";
 import StarterKit from "@tiptap/starter-kit";
+
+import {
+  FOOTNOTE_DEF,
+  FOOTNOTE_REF,
+  decodeEntities,
+  entityTokenizer,
+  escapeLineStart,
+  linkContent,
+  markdownDestination,
+  markdownTitle,
+  renderInline,
+} from "./inline";
+import { keepOrderedTaskBoxes, markerOf, renderList } from "./lists";
+
+export { escapeLineStart, markdownDestination } from "./inline";
 
 // ── Headings ────────────────────────────────────────────────────────────────
 
@@ -77,26 +97,20 @@ const KnowledgeHeading = Heading.extend({
       0,
     ];
   },
+  // An ATX heading is one line. A setext heading of two lines reads as one
+  // heading with a soft break, so the break writes as a space. A closing
+  // `#` that is text keeps its backslash, or CommonMark drops it.
+  renderMarkdown: (node, h) => {
+    const level = Math.min(Math.max(Number(node.attrs?.level) || 1, 1), 6);
+    const text = renderInline((node.content ?? []) as JSONContent[], h)
+      .replace(/(?: {2,}|\\)?\n[ \t]*/g, " ")
+      .trim()
+      .replace(/(^|\s)(#+)$/, "$1\\$2");
+    return text ? `${"#".repeat(level)} ${text}` : "";
+  },
 });
 
 // ── Paragraphs ──────────────────────────────────────────────────────────────
-
-/**
- * One line of a paragraph, made safe at its start. Text that begins with a
- * block marker (`# `, `- `, `1. `, a rule, a setext line or a fence) would
- * read back as a heading, a list, a rule or code. So the marker gets its
- * backslash, and leading spaces go, because four of them make code.
- */
-export function escapeLineStart(line: string): string {
-  const s = line.replace(/^[ \t]+/, "");
-  if (/^#{1,6}(?=[ \t]|$)/.test(s)) return `\\${s}`;
-  if (/^[-+](?=[ \t]|$)/.test(s)) return `\\${s}`;
-  if (/^(?:=+|-+)[ \t]*$/.test(s)) return `\\${s}`;
-  if (/^(?:`{3,}|~{3,})/.test(s)) return `\\${s}`;
-  const ordered = /^(\d{1,9})([.)])(?=[ \t]|$)/.exec(s);
-  if (ordered) return `${ordered[1]}\\${s.slice(ordered[1].length)}`;
-  return s;
-}
 
 const stockParagraph = Paragraph.config;
 
@@ -113,7 +127,12 @@ const KnowledgeParagraph = Paragraph.extend({
       : h.createNode("paragraph", {}, h.parseInline(tokens));
   },
   renderMarkdown: (node, h, ctx) => {
-    const out = stockParagraph.renderMarkdown ? stockParagraph.renderMarkdown(node, h, ctx) : "";
+    const content = (node.content ?? []) as JSONContent[];
+    const out = content.length
+      ? renderInline(content, h)
+      : stockParagraph.renderMarkdown
+        ? stockParagraph.renderMarkdown(node, h, ctx)
+        : "";
     // A line after a hard break starts a line too, so each line gets the
     // same check. Spaces at the end of a paragraph mean nothing in Markdown,
     // and a page link leaves one, so they go.
@@ -147,17 +166,45 @@ const KnowledgeCodeBlock = CodeBlock.extend({
   },
 });
 
+// ── Code spans and links ────────────────────────────────────────────────────
+
+/**
+ * A code span writes with the fence that `prepareCodeSpans` put on its
+ * mark (`inline.ts`), so a backtick inside it does not end it.
+ */
+const KnowledgeCode = Code.extend({
+  // The stock code mark shuts out every other mark, so `[`code`](u)` lost
+  // its link in the editor. Markdown allows a code span inside a link.
+  excludes: "",
+  renderMarkdown: (node: JSONContent, h: { renderChildren: (n: JSONContent[]) => string }) => {
+    const fence = typeof node.attrs?.fence === "string" ? node.attrs.fence : "`";
+    const pad = node.attrs?.pad ? " " : "";
+    return `${fence}${pad}${h.renderChildren((node.content ?? []) as JSONContent[])}${pad}${fence}`;
+  },
+});
+
+/**
+ * A link marks every inline node it holds, an image too. A link with no
+ * text stays as its own raw text. `renderInline` writes links: this
+ * `renderMarkdown` covers a caller that renders a link mark alone.
+ */
+const KnowledgeLink = Link.extend({
+  parseMarkdown: (token: MarkdownToken, h: MarkdownParseHelpers): MarkdownParseResult => {
+    const content = h.parseInline(token.tokens ?? []);
+    if (!content.length) return h.createNode("htmlInline", { raw: String(token.raw ?? "") });
+    return linkContent(content, token);
+  },
+  renderMarkdown: (node: JSONContent, h: { renderChildren: (n: JSONContent) => string }) => {
+    const href = String(node.attrs?.href ?? "");
+    return `[${h.renderChildren(node)}](${markdownDestination(href)}${markdownTitle(node.attrs?.title)})`;
+  },
+});
+
 // ── Images ──────────────────────────────────────────────────────────────────
 
 /** The alt text of an image, with the brackets that would end it escaped. */
 function imageAlt(alt: string): string {
   return alt.replace(/\\/g, "\\\\").replace(/([[\]])/g, "\\$1");
-}
-
-/** The destination of an image or a link: in `<…>` when a bare one breaks. */
-export function markdownDestination(src: string): string {
-  if (src === "" || /[\s<>()]/.test(src)) return `<${src.replace(/[<>]/g, (c) => encodeURIComponent(c))}>`;
-  return src;
 }
 
 /**
@@ -169,8 +216,7 @@ const KnowledgeImage = Image.extend({
   renderMarkdown: (node: JSONContent) => {
     const src = String(node.attrs?.src ?? "");
     const alt = imageAlt(String(node.attrs?.alt ?? ""));
-    const title = node.attrs?.title ? String(node.attrs.title).replace(/"/g, '\\"') : "";
-    return `![${alt}](${markdownDestination(src)}${title ? ` "${title}"` : ""})`;
+    return `![${alt}](${markdownDestination(src)}${markdownTitle(node.attrs?.title)})`;
   },
 }).configure({ inline: true, allowBase64: false });
 
@@ -229,7 +275,71 @@ function renderTable(node: JSONContent, h: { renderChildren: (n: JSONContent | J
 const KnowledgeTable = Table.extend({
   renderMarkdown: (node: JSONContent, h: { renderChildren: (n: JSONContent | JSONContent[]) => string }) =>
     renderTable(node, h),
+  // Tab moves to the next cell. In the last cell it moves on out of the
+  // editor, as Tab does on any page. The stock key added a row each time,
+  // so a keyboard user could never leave the table.
+  addKeyboardShortcuts() {
+    return {
+      ...this.parent?.(),
+      Tab: () => this.editor.commands.goToNextCell(),
+      "Shift-Tab": () => this.editor.commands.goToPreviousCell(),
+    };
+  },
 });
+
+// ── Lists ───────────────────────────────────────────────────────────────────
+
+/** The attributes that keep how a list was written (`lists.ts`). */
+const listAttrs = (key: "bullet" | "delimiter", fallback: string) => ({
+  [key]: { default: fallback, rendered: false, keepOnSplit: true },
+  loose: { default: false, rendered: false, keepOnSplit: true },
+});
+
+/** The stock parse of a list, with its marker and its looseness kept. */
+function keepListShape(
+  stock: ((t: MarkdownToken, h: MarkdownParseHelpers) => MarkdownParseResult) | undefined,
+  key: "bullet" | "delimiter",
+) {
+  return (token: MarkdownToken, h: MarkdownParseHelpers): MarkdownParseResult => {
+    const out = stock?.(token, h);
+    if (!out || Array.isArray(out) || "mark" in out) return out ?? [];
+    const family = key === "bullet" ? "bullet" : "ordered";
+    return { ...out, attrs: { ...(out.attrs ?? {}), [key]: markerOf(token.raw, family), loose: Boolean(token.loose) } };
+  };
+}
+
+const KnowledgeBulletList = BulletList.extend({
+  addAttributes() {
+    return { ...this.parent?.(), ...listAttrs("bullet", "-") };
+  },
+  parseMarkdown: keepListShape(BulletList.config.parseMarkdown, "bullet"),
+  renderMarkdown: (node: JSONContent, h) => renderList(node, h),
+});
+
+/**
+ * The stock ordered list brings its own tokenizer, which does not follow
+ * CommonMark: it knows no loose list and no child indent. This one never
+ * matches, so marked's own list rule reads the list.
+ */
+const KnowledgeOrderedList = OrderedList.extend({
+  addAttributes() {
+    return { ...this.parent?.(), ...listAttrs("delimiter", ".") };
+  },
+  markdownTokenizer: { name: "orderedList", level: "block", start: () => -1, tokenize: () => undefined },
+  parseMarkdown: (token: MarkdownToken, h: MarkdownParseHelpers) =>
+    keepListShape(OrderedList.config.parseMarkdown, "delimiter")(keepOrderedTaskBoxes(token), h),
+  renderMarkdown: (node: JSONContent, h) => renderList(node, h),
+});
+
+const KnowledgeTaskList = TaskList.extend({
+  addAttributes() {
+    return { ...this.parent?.(), ...listAttrs("bullet", "-") };
+  },
+  parseMarkdown: keepListShape(TaskList.config.parseMarkdown, "bullet"),
+  renderMarkdown: (node: JSONContent, h) => renderList(node, h),
+});
+
+
 
 // ── Callouts ────────────────────────────────────────────────────────────────
 
@@ -296,6 +406,9 @@ const Callout = Node.create({
         },
         renderHTML: (attrs: Record<string, unknown>) => ({ "data-callout": attrs.tone }),
       },
+      // The marker as the body wrote it (`[!note]` or `[!NOTE]`), so a save
+      // keeps its case. A change of tone writes the tone in capitals.
+      marker: { default: null, rendered: false },
     };
   },
 
@@ -316,7 +429,7 @@ const Callout = Node.create({
       setCalloutTone:
         (tone) =>
         ({ commands }) =>
-          commands.updateAttributes(this.name, { tone }),
+          commands.updateAttributes(this.name, { tone, marker: null }),
     };
   },
 
@@ -339,6 +452,7 @@ const Callout = Node.create({
         type: "callout",
         raw,
         tone: open[1].toLowerCase(),
+        marker: open[1],
         tokens: lexer.blockTokens(body.join("\n")),
       };
     },
@@ -347,7 +461,8 @@ const Callout = Node.create({
   parseMarkdown: (token, h) => {
     const children = (h.parseBlockChildren ?? h.parseChildren)(token.tokens ?? []);
     const content = children.length ? children : [h.createNode("paragraph", {}, [])];
-    return h.createNode("callout", { tone: isCalloutTone(token.tone) ? token.tone : "note" }, content);
+    const tone = isCalloutTone(token.tone) ? token.tone : "note";
+    return h.createNode("callout", { tone, marker: token.marker ?? null }, content);
   },
 
   renderMarkdown: (node, h) => {
@@ -355,28 +470,30 @@ const Callout = Node.create({
     const children = (node.content ?? []) as JSONContent[];
     const parts = children.map((child, i) => quoteLines(h.renderChild?.(child, i) ?? h.renderChildren([child])));
     const body = parts.length ? parts.join("\n>\n") : ">";
-    return `> [!${tone.toUpperCase()}]\n${body}`;
+    const kept = typeof node.attrs?.marker === "string" && node.attrs.marker.toLowerCase() === tone;
+    return `> [!${kept ? node.attrs?.marker : tone.toUpperCase()}]\n${body}`;
   },
 });
 
 // ── Toggles ─────────────────────────────────────────────────────────────────
 
-/** `&`, `<` and `>` as entities, so a summary cannot end its own tag. */
+/**
+ * A summary made safe as HTML text, with the least change: `<` before a
+ * tag, and `&` before an entity. So "5 < 6 & more" writes back as it was,
+ * and a summary still cannot end its own tag.
+ */
 export function escapeSummary(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-/** The reverse of `escapeSummary`, plus the quote entities. */
-export function unescapeSummary(text: string): string {
   return text
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, "&");
+    .replace(/&(?=#?[A-Za-z0-9]+;)/g, "&amp;")
+    .replace(/<(?=[A-Za-z/!?])/g, "&lt;");
 }
 
-const DETAILS_OPEN = /^ {0,3}<details(?:\s+open)?\s*>[ \t]*\n?[ \t]*<summary>([^\n]*?)<\/summary>[ \t]*(?:\n|$)/i;
+/** The text of a summary: each entity as its character. */
+export function unescapeSummary(text: string): string {
+  return decodeEntities(text);
+}
+
+const DETAILS_OPEN = /^ {0,3}<details(\s+open)?\s*>[ \t]*\n?[ \t]*<summary>([^\n]*?)<\/summary>[ \t]*(?:\n|$)/i;
 
 const Details = Node.create({
   name: "details",
@@ -384,6 +501,12 @@ const Details = Node.create({
   content: "detailsSummary detailsContent",
   defining: true,
   isolating: true,
+
+  addAttributes() {
+    // `<details open>`: the toggle starts open on the read view, and a save
+    // keeps the word.
+    return { open: { default: false, rendered: false } };
+  },
 
   parseHTML() {
     return [{ tag: "div[data-toggle]" }];
@@ -448,7 +571,8 @@ const Details = Node.create({
       return {
         type: "details",
         raw: src.slice(0, end),
-        summary: unescapeSummary(open[1].trim()),
+        summary: unescapeSummary(open[2].trim()),
+        open: Boolean(open[1]),
         tokens: body ? lexer.blockTokens(body) : [],
       };
     },
@@ -457,7 +581,7 @@ const Details = Node.create({
   parseMarkdown: (token, h) => {
     const summary = String(token.summary ?? "");
     const children = (h.parseBlockChildren ?? h.parseChildren)(token.tokens ?? []);
-    return h.createNode("details", {}, [
+    return h.createNode("details", { open: Boolean(token.open) }, [
       h.createNode("detailsSummary", {}, summary ? [h.createTextNode(summary)] : []),
       h.createNode("detailsContent", {}, children.length ? children : [h.createNode("paragraph", {}, [])]),
     ]);
@@ -470,7 +594,8 @@ const Details = Node.create({
       (child, i) => h.renderChild?.(child, i) ?? h.renderChildren([child]),
     );
     const body = blocks.join("\n\n").trim();
-    return `<details>\n<summary>${escapeSummary(summary)}</summary>\n\n${body}${body ? "\n\n" : ""}</details>`;
+    const tag = node.attrs?.open ? "<details open>" : "<details>";
+    return `${tag}\n<summary>${escapeSummary(summary)}</summary>\n\n${body}${body ? "\n\n" : ""}</details>`;
   },
 });
 
@@ -634,6 +759,79 @@ const HtmlInline = Node.create({
   renderMarkdown: (node) => String(node.attrs?.raw ?? ""),
 });
 
+// ── Front matter, footnotes and entities ────────────────────────────────────
+
+/**
+ * YAML front matter at the top of a body: `---`, a first line with a key
+ * (`title:`), more lines, then `---` or `...`. CommonMark reads it as a rule and a heading, so a save turned
+ * `title: x` into `## title: x`. `parseBody` takes it off first, and this
+ * node keeps it as text, byte for byte.
+ */
+export const FRONT_MATTER = /^---[ \t]*\n(?=[A-Za-z0-9_"'-][^\n]*:)(?:[^\n]*\n)*?(?:---|\.\.\.)[ \t]*(?:\n|$)/;
+
+const FrontMatter = Node.create({
+  name: "frontMatter",
+  group: "block",
+  content: "text*",
+  marks: "",
+  code: true,
+  defining: true,
+
+  parseHTML() {
+    return [{ tag: "pre[data-front-matter]", preserveWhitespace: "full" as const }];
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    return ["pre", mergeAttributes({ "data-front-matter": "", class: "kb-raw-html" }, HTMLAttributes), ["code", 0]];
+  },
+
+  renderMarkdown: (node) => ((node.content ?? []) as JSONContent[]).map((c) => c.text ?? "").join(""),
+});
+
+/**
+ * Footnotes, kept as raw text. GFM draws `[^1]` and `[^1]: …`, and marked
+ * does not know them, so the stock round trip escaped them into plain text.
+ */
+const FootnoteRef = Extension.create({
+  name: "kbFootnoteRef",
+  markdownTokenizer: {
+    name: "kbFootnoteRef",
+    level: "inline",
+    start: (src: string) => src.indexOf("[^"),
+    tokenize: (src: string) => {
+      const m = FOOTNOTE_REF.exec(src);
+      return m ? { type: "kbFootnoteRef", raw: m[0], text: m[0] } : undefined;
+    },
+  },
+  parseMarkdown: (token, h) => h.createNode("htmlInline", { raw: String(token.raw ?? "") }),
+});
+
+const FootnoteDef = Extension.create({
+  name: "kbFootnoteDef",
+  markdownTokenizer: {
+    name: "kbFootnoteDef",
+    level: "block",
+    start: (src: string) => {
+      const m = /\n\[\^[^\]\s]{1,100}\]:/.exec(src);
+      return m ? m.index + 1 : -1;
+    },
+    tokenize: (src: string) => {
+      const m = FOOTNOTE_DEF.exec(src);
+      if (!m) return undefined;
+      const end = /^\n?/.exec(src.slice(m[0].length))?.[0] ?? "";
+      return { type: "kbFootnoteDef", raw: m[0] + end, text: m[0] };
+    },
+  },
+  parseMarkdown: (token, h) => h.createNode("htmlBlock", {}, [h.createTextNode(String(token.text ?? ""))]),
+});
+
+/** An entity reads as its character (`inline.ts`). */
+const Entities = Extension.create({
+  name: "kbEntity",
+  markdownTokenizer: entityTokenizer,
+  parseMarkdown: (token, h) => h.createTextNode(String(token.text ?? "")),
+});
+
 // ── The list ────────────────────────────────────────────────────────────────
 
 /** The node views the component plugs in. Each one is optional. */
@@ -665,7 +863,7 @@ function withView<T extends AnyExtension>(ext: T, view: NodeViewRenderer | undef
  * - Table columns do not resize: Markdown keeps no width, so a save would
  *   drop it, and a member would see the width go.
  * - Links open on no click while a member edits. The read view decides
- *   where a click goes (`lib/editor/links.ts`).
+ *   where a click goes (`KnowledgeEditor`'s click handler).
  */
 export function knowledgeExtensions(opts: KnowledgeSchemaOptions = {}): AnyExtension[] {
   const views = opts.views ?? {};
@@ -674,22 +872,29 @@ export function knowledgeExtensions(opts: KnowledgeSchemaOptions = {}): AnyExten
       heading: false,
       paragraph: false,
       codeBlock: false,
+      code: false,
+      link: false,
+      bulletList: false,
+      orderedList: false,
       underline: false,
-      link: {
-        openOnClick: false,
-        autolink: true,
-        linkOnPaste: true,
-        defaultProtocol: "https",
-        HTMLAttributes: { rel: "noopener noreferrer nofollow", target: null },
-      },
     }),
+    KnowledgeCode,
+    KnowledgeLink.configure({
+      openOnClick: false,
+      autolink: true,
+      linkOnPaste: true,
+      defaultProtocol: "https",
+      HTMLAttributes: { rel: "noopener noreferrer nofollow", target: null },
+    }),
+    KnowledgeBulletList,
+    KnowledgeOrderedList,
     KnowledgeParagraph,
     KnowledgeHeading.configure({ levels: [...LEVELS] }),
     withView(KnowledgeCodeBlock, views.codeBlock),
     withView(KnowledgeImage, views.image),
     TableKit.configure({ table: false }),
     KnowledgeTable.configure({ resizable: false }),
-    TaskList,
+    KnowledgeTaskList,
     TaskItem.configure({ nested: true }),
     withView(Callout, views.callout),
     withView(Details, views.details),
@@ -697,6 +902,10 @@ export function knowledgeExtensions(opts: KnowledgeSchemaOptions = {}): AnyExten
     DetailsContent,
     HtmlBlock,
     HtmlInline,
+    FrontMatter,
+    FootnoteRef,
+    FootnoteDef,
+    Entities,
   ];
   if (opts.placeholder) {
     list.push(

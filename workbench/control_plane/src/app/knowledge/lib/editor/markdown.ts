@@ -17,7 +17,9 @@
 import type { JSONContent } from "@tiptap/core";
 import { MarkdownManager } from "@tiptap/markdown";
 
-import { knowledgeExtensions } from "./schema";
+import { prepareCodeSpans } from "./inline";
+import { separateAdjacentLists } from "./lists";
+import { FRONT_MATTER, knowledgeExtensions } from "./schema";
 
 let shared: MarkdownManager | null = null;
 
@@ -51,9 +53,15 @@ const INLINE_NODES = new Set(["text", "image", "htmlInline", "hardBreak"]);
  * paragraph, which writes the same Markdown.
  */
 export function wrapInlineRuns(node: JSONContent): JSONContent {
-  if (!node.content) return node;
+  if (!node.content) {
+    // An empty quote, item or cell needs one block. A `>` with no text gave
+    // a quote that the editor's schema refused.
+    const empty = BLOCK_CONTAINERS.has(node.type ?? "") && node.type !== "doc";
+    return empty ? { ...node, content: [{ type: "paragraph" }] } : node;
+  }
   const children = node.content.map(wrapInlineRuns);
   if (!BLOCK_CONTAINERS.has(node.type ?? "")) return { ...node, content: children };
+  if (!children.length && node.type !== "doc") return { ...node, content: [{ type: "paragraph" }] };
   const out: JSONContent[] = [];
   let run: JSONContent[] = [];
   const flush = () => {
@@ -71,10 +79,27 @@ export function wrapInlineRuns(node: JSONContent): JSONContent {
   return { ...node, content: out };
 }
 
-/** A body as the editor's document. An empty body is an empty document. */
+/**
+ * How much Markdown work the editor did: each parse and each write. The
+ * e2e spec reads it to prove that typing parses nothing (fix round, P1).
+ */
+export const markdownWork = { parses: 0, writes: 0 };
+
+/**
+ * A body as the editor's document. An empty body is an empty document.
+ * Front matter at the top comes off first, as one raw block.
+ */
 export function parseBody(md: string): JSONContent {
-  const doc = wrapInlineRuns(knowledgeMarkdown().parse(md));
-  return doc.content?.length ? doc : { type: "doc", content: [{ type: "paragraph" }] };
+  markdownWork.parses++;
+  const front = FRONT_MATTER.exec(md);
+  const rest = front ? md.slice(front[0].length) : md;
+  const doc = wrapInlineRuns(knowledgeMarkdown().parse(rest));
+  const content = [...(doc.content ?? [])];
+  if (front) {
+    const raw = front[0].replace(/\n$/, "");
+    content.unshift({ type: "frontMatter", content: [{ type: "text", text: raw }] });
+  }
+  return content.length ? { ...doc, content } : { type: "doc", content: [{ type: "paragraph" }] };
 }
 
 /**
@@ -83,7 +108,9 @@ export function parseBody(md: string): JSONContent {
  * type below it, and that paragraph is not content.
  */
 export function writeBody(doc: JSONContent): string {
-  return knowledgeMarkdown().serialize(doc).replace(/\s+$/, "");
+  markdownWork.writes++;
+  const ready = separateAdjacentLists(prepareCodeSpans(doc));
+  return knowledgeMarkdown().serialize(ready).replace(/\s+$/, "");
 }
 
 /** Parse and write once: the body a save of this body writes. */
