@@ -1070,7 +1070,7 @@ The first migration adds, and nothing renames (R6).
 | `KNOWLEDGE_SOURCES` | empty | The providers a member can connect: `dropbox`, `onedrive`, `google_drive` | owner. `google_drive` waits on §7.4 |
 | `KNOWLEDGE_SYNC_ENABLED` | off | The loop runs | AGENT-SAFE to build, owner to flip on the box |
 | `MY_DAY_PROVIDERS` | as WS-58 | `knowledge` joins the list | MD-10's rule |
-| `KNOWLEDGE_DISTILL` | off | KB-8 distills a chunk on `tier-cheap` before it embeds | owner, it spends credits |
+| `KNOWLEDGE_DISTILL` | off | CX-3 writes a digest for each published page on `tier-fast` (`company_context.md` §5) | owner, it spends credits |
 | `COMPANY_SEARCH_ENABLED` | off | The assistant gets `search_company` and loses the two legacy retrievers (§20.5) | Agent, under the dev-phase `enforcement-flip` grant. It spends no credit, sends nothing, and reads only what the member can already read. After the grant ends, the owner |
 
 ---
@@ -1154,7 +1154,7 @@ its own branch, three or four in flight at most.
 | **KB-1** ✅ BUILT 2026-10-15 | Migration 272 (check at merge): `kb_spaces`, `kb_space_grants`, `kb_pages`, `kb_page_versions` and `kb_links`, in the tenancy shape of `268_artifacts.sql`, with the generated-phase lines for them. `kb_page_files` waits for KB-2a, `kb_chunks` for KB-3, `kb_gaps` for KB-4, and the source tables for KB-7. `kb_page_files.artifact_id` carries no foreign key, because the artifact sweep deletes registry rows. The seed of `knowledge:manage` onto `admin` in every org, and in `provision_org_roles`, in the shape of 207 §2. A pure `normalize_grant_subject` in `acb_auth/permissions.py`, which `core.validate_grant_subject` wraps as the 422. `visible_pages_clause`, over the member's email, `org` and the groups of `_MY_GROUPS_SQL`, with no copy of the project grant SQL. The `company` space made lazily with an `org` read grant, the `me` space on the member's first write, and `team-*` only by `POST /knowledge/spaces`, each race-free by a partial unique index. The 4 space routes and 9 page routes, the 8 of §5.3 and `restore`, behind `require_feature_router("knowledge")`, `KNOWLEDGE_ENABLED` and `KNOWLEDGE_ORGS` (404 when off). The chat manifest and its coverage test move to KB-4, with the skill | R8 against a real database. Two orgs, two spaces, one grant each: the other org and the other space see nothing. `test_kb_visibility_one_seam.py` is red-first, then green. After the ladder, `admin` holds `knowledge:manage`, and `manager` and `member` do not. A new org holds it too. Two concurrent first writes make one `me` space | AGENT-SAFE |
 | **KB-2a** ✅ BUILT 2026-10-16 | Frontend only, with no gateway change and no migration. The BFF proxy `api/knowledge/[...path]`, the Spaces view (space cards, then the page tree in the rail and the page on the right), make a page and a sub-page, a Markdown editor with a Write and Preview switch (the chat's `MarkdownBody`, no second renderer), publish, the versions list and revert. Write controls hide when the member cannot write. `/knowledge` is the Spaces view and `/knowledge/pages/<id>` is the page. The off state comes from the first spaces read only. `useAssistantFacts` names the page. Not in KB-2a: files, move, archive, restore, reorder, a soft lock, an old version's body | On a local stack with `KNOWLEDGE_ENABLED` on, a member makes a page, edits it, publishes it, and reverts it to version 1. The versions list then shows create, edit, publish and revert. With the flag off, `/knowledge` shows the off state under its one `h1`. The visual review passes in light mode, compact density and a changed accent, at 1440, 1024, 768 and 390 px | AGENT-SAFE |
 | **KB-2c** | Files on a page: the `kb_page_files` migration, `POST /knowledge/pages/{id}/files` through the artifact registry, inline images, the Files rail entry. After AM-5 and H-322 | A member attaches an image, and it renders inline. After the sweep runs, the file is still there (H-322) | AGENT-SAFE |
-| **KB-2b** | The TipTap editor over the same Markdown, links as pills with `[[`, the "Knowledge about this" component | The body round-trips through Markdown with no loss for the supported marks. A task shows its linked pages | AGENT-SAFE |
+| **KB-2b** | Replaced on 2026-10-18 by §21.5, the block editor. The "Knowledge about this" component moves to KB-2d | See §21.5 | AGENT-SAFE |
 | **KB-3** ✅ BUILT 2026-10-16 | Backend only. Migration 273 (check at merge): `kb_chunks` with the generated `tsv` and a partial HNSW index. `gateway/kb_index/`: chunking, `embed()` with the zero-vector rule, `query()` with fusion, and the hook in `_written` that writes or deletes a page's chunks in its transaction, then embeds after the commit. `GET /knowledge/search`. The flag `KNOWLEDGE_EMBED` (default off). KR-3 ships on the same branch | A published page is found by an exact token, and by a paraphrase with a fixed fake embedder in the R8 suite. A draft is never found, and an archived page leaves the index. The embed door down returns the lexical half with `degraded`. `test_kb_one_index.py` holds, and the one-seam fence covers `kb_chunks` reads | AGENT-SAFE to build. The embed flip spends credits: owner |
 | **KB-3b** ✅ BUILT 2026-10-16 | The Search rail entry and view over `GET /knowledge/search`, results grouped by space with the heading path | A member finds a published page by a word in its body, and the hit opens the page at `/knowledge/pages/<id>` | AGENT-SAFE |
 | **KB-3c** ✅ BUILT 2026-10-18 | The whole index by meaning (owner request, 2026-10-18). `GET /search/company` asks Knowledge for the vector half when `KNOWLEDGE_EMBED` names the org, and the command bar stays lexical. The sweep `kb_index/sweep.py` and its kill switch `KNOWLEDGE_EMBED_SWEEP`. The embed job takes the new shas only and binds the acting member (H-330) | A page published before the flag gets vectors in one tick. `search_company` finds a paraphrase that shares no word with the page. The bar makes no embed call. Two concurrent saves embed each chunk once. The job and the sweep carry a member. With the flag off for an org, nothing calls the door | AGENT-SAFE to build. The flip of `KNOWLEDGE_EMBED` for an org: owner |
@@ -1167,7 +1167,7 @@ its own branch, three or four in flight at most.
 | **KB-7b** | The sync loop, changes, cursors, the run lock, `source_sync_failed` | A file edited at Dropbox re-indexes within 15 minutes with one embedding call. A revoked token sets `needs_reconnect` and never retries | AGENT-SAFE to build. The flip on the box: owner |
 | **KB-7c** | The OneDrive and SharePoint adapter on the Microsoft app the Email app uses | Same checks as 7a on a Microsoft 365 account | AGENT-SAFE. Org-wide `Sites.Read.All` consent: owner |
 | **KB-7d** | The Google Drive adapter on the one Google client, with the shared-grant rule of §7.4 | Same checks on a test user. Disconnecting Drive leaves Gmail connected, and the test proves it | AGENT-SAFE to build. The verification: owner (Q2) |
-| **KB-8** | Distillation on `tier-cheap` behind `KNOWLEDGE_DISTILL`, with `raw` kept | A distilled chunk re-embeds without a re-fetch. An eval of 30 questions shows the hit rate, before and after | AGENT-SAFE to build. The flip: owner |
+| **KB-8** | Replaced on 2026-10-18 by CX-3 of `company_context.md`: a digest per page on `tier-fast`, behind `KNOWLEDGE_DISTILL`, with `raw` kept. `tier-cheap` does not exist | See `company_context.md` §12 | AGENT-SAFE to build. The flip: owner |
 | **KB-9** | The My Day provider and the four kinds, the reach classes, the cache bumps, and `kb_gaps` with its write on a Knowledge search with no hit (§8.4 door 3) | A page past review shows a card to its author. A twice-asked gap shows a card to a writer. `test_reach_plan.py` pins the classes | AGENT-SAFE. `MY_DAY_PROVIDERS`: MD-10's rule |
 | **KB-10** | `kb:read` on `/mcp`: the scope, the two tools, the route pairs, the second manifest in `test_mcp_edge_coverage.py` | Claude Desktop, connected with `kb:read`, searches and reads a page the member can see, and gets 404 on one they cannot | AGENT-SAFE. The scope amendment: owner |
 | **KB-11** | The narrowing adapter, "Make this a page" on a report, the Markdown export zip | A report becomes a page. An org exports its pages. `narrow_and_read` answers a question over 60 documents on `tier-decide` | AGENT-SAFE |
@@ -1477,3 +1477,119 @@ isolation for tasks and people, and the other four sources rest on their
 apps' own R8 suites. With the flag on, the persona's citation rule also
 moves from `[entity:uuid]` to the `full_id` line. The legacy citation
 names tables that hold no rows.
+
+---
+
+## 21. The editor and the surface — what we take from Docmost (2026-10-18)
+
+**Owner directive, 2026-10-18.** The owner found the Knowledge surface too
+basic, and pointed at Docmost (`github.com/docmost/docmost`), an open-source
+wiki in the Notion and Confluence shape. The owner asked us to study its
+features and its experience, and to build what is good. This section is the
+result. It extends §11.1 and replaces the text of KB-2b.
+
+### 21.1 The licence rule — ideas only, never code
+
+Docmost core is AGPL-3.0. Its folders `apps/server/src/ee`,
+`apps/client/src/ee` and `packages/ee` carry a separate enterprise licence.
+Metorite is a closed SaaS. So **we take behaviour and layout, and we copy no
+file, no component and no stylesheet.** Each slice writes its own code on
+our own design system. A reviewer refuses a diff that carries Docmost
+source, its CSS class names, or its UI strings word for word.
+
+The editor library is TipTap, MIT, which Docmost also uses. The workbench
+already depends on TipTap 3 (`SignatureEditor.tsx`). The add-ons this
+section needs are MIT at the same version: `@tiptap/markdown`,
+`@tiptap/extension-list`, `@tiptap/extension-bubble-menu`,
+`@tiptap/suggestion` and `@tiptap/extension-drag-handle-react`. The table
+of contents extension is under the TipTap Pro licence, so we do not use it.
+The outline of §21.4 reads the headings itself.
+
+### 21.2 What Docmost does well
+
+The study read its client and server on 2026-10-18. These are the patterns
+that make it feel good, in our words.
+
+| Area | The pattern |
+|---|---|
+| Editing | The page is the editor. A member writes in place, with the look of the page they read. A `/` menu inserts blocks, with fuzzy match on names and synonyms. A small bubble menu over a selection gives the marks and the block type. Markdown shortcuts work as you type. A handle beside each block drags it |
+| Blocks | Headings, lists, task lists, quotes, code with a language picker and a copy button, tables with resizable columns, callouts in five tones, toggles, dividers, images |
+| Links | One picker for a URL or a page, with recent pages and live search. `@` finds a person or a page. A link to a page records a backlink |
+| Paste | Pasted Markdown becomes rich content. A pasted page address becomes a page link |
+| The tree | Each row shows a chevron, an icon and the title. A `+` and a `…` appear on hover or focus. Drag reorders a page or nests it under another. The tree answers the arrow keys |
+| Chrome | Breadcrumbs that fold the middle into `…`. A byline with the last editor and the time. An outline of the headings that follows the scroll. A copy-link anchor on each heading. A page menu: copy link, copy as Markdown, export, history, move, delete |
+| Home | Recently updated pages across spaces, and the pages I created, with good empty states |
+| History | A list of versions, a side-by-side read, a compare with the changes marked, and a restore |
+| Lifecycle | A trash with restore, and a banner on a deleted page |
+
+### 21.3 What we take, and what we leave
+
+| Pattern | Decision | Why |
+|---|---|---|
+| The page is the editor (WYSIWYG) | **Take** (KB-2b) | The biggest gap today. The Markdown field with a Preview tab makes a member think in syntax |
+| `/` menu, bubble menu, Markdown shortcuts, block handle | **Take** (KB-2b) | They are what makes the editor fast without a toolbar |
+| Callouts, toggles, task lists, code with language, tables | **Take** (KB-2b) | Manuals and policies need them |
+| Page link picker and `[[` | **Take** (KB-2b) | A link to a page is a Markdown link to `/knowledge/pages/<id>` |
+| Backlinks into `kb_links` | **Later** (KB-2h) | The gateway has no `kb_links` writer yet. It reads the links of the saved body, so the editor needs no change |
+| Tree hover actions, drag to reorder and nest, arrow keys | **Take** (KB-2e) | The tree is the app for most members |
+| Breadcrumbs, outline, heading anchors, byline, page menu | **Take** (KB-2d) | Low cost, high polish |
+| A page icon (an emoji) | **Take** (KB-2f) | It makes the tree and the search results readable at a glance |
+| Home: recently updated and created by me | **Take** (KB-2f) | The first screen then answers "what changed" |
+| Archived pages with restore | **Take** (KB-2d) | The routes exist since KB-1. Only the view is missing |
+| Version compare | **Later** (KB-2g) | Needs a read of an old version's body |
+| A `⌘K` search inside the app | **Leave** | The shell owns one command bar (D87). Knowledge answers in it since KB-12 |
+| Real-time co-editing | **Leave** for now | §19 keeps it for later. The stale-save check of KB-2a guards a save |
+| Inline comments, watch, notifications | **Later** | They need the notification seam of WS-59 |
+| Public share links | **Leave** | It publishes company data outside the tenant. An owner decision |
+| Templates, AI writing menu | **Leave** | Templates are enterprise there. The one assistant (D99) already edits text through the dock |
+| Embeds (iframes), diagrams, synced blocks, columns | **Leave** | An iframe is an XSS and privacy surface. The others add weight before demand |
+
+### 21.4 The design
+
+**One storage format: Markdown.** `body_md` stays the stored body. The
+chunker of §6.2, the assistant's `read_page`, the export and the version
+history all read Markdown. The editor parses Markdown on open and writes
+Markdown on save, through `@tiptap/markdown`. A construct the editor cannot
+model, such as raw HTML, stays as text, so a save never drops content in
+silence. A golden round-trip test holds the supported set.
+
+**Callouts** store as the GitHub alert syntax, `> [!NOTE]` and its four
+siblings: NOTE, TIP, IMPORTANT, WARNING and CAUTION. **Toggles** store as
+`<details>` with a `<summary>`, the one HTML shape the editor writes. The
+renderer reads it as text, never as an HTML sink.
+
+**One renderer for a page.** The page view draws the body with the editor
+itself, read-only. So what a member reads is exactly what they edit. The
+chat keeps `MarkdownBody` for its own messages. The editor makes no raw
+HTML sink, and `htmlSinks.test.ts` holds that.
+
+**Headings move one level down on screen.** The app bar holds the one `h1`,
+and the page title is an `h2`. A body heading of level *n* draws as level
+*n* + 1, as `lib/markdown.ts` does today. Storage keeps `#`.
+
+**Edit stays an act.** A writer chooses Edit, and the same page becomes
+editable in place. Save writes one version. An autosave would write a
+version for each pause, and a version is the unit of review and revert. The
+session draft, the leave guard and the stale-save check of KB-2a stay.
+
+**The outline** reads the headings of the body, indents them by level, and
+marks the heading in view. It sits in the right strip above the versions,
+and it hides when the page has fewer than two headings.
+
+**Every control comes from `src/components/ui/`.** The menus use the
+`@base-ui/react` substrate through our primitives. The editor's own
+styles live in `globals.css` under the one look. No Docmost class names.
+
+### 21.5 Tickets
+
+| Ticket | What | Done when | Gate |
+|---|---|---|---|
+| **KB-2b** (text replaced 2026-10-18) | The block editor: a shared `KnowledgeEditor` on TipTap 3 with `@tiptap/markdown`. The `/` menu, the bubble menu, Markdown shortcuts, the block drag handle, task lists, callouts, toggles, code with a language and a copy button, tables, dividers, images by URL. The page link picker on `[[` and in the link control, which writes `/knowledge/pages/<id>` links. The page view reads through the same editor, read-only. Frontend only | A golden set of Markdown bodies round-trips with no loss for the supported set. "No loss" means: parse and write once gives md′, and md′ parsed and written again gives md′ byte for byte, with every block and mark of the set kept. A save with no edit writes nothing. The `/` menu inserts each block of the set, the bubble menu sets each mark, the block handle moves a block, and `[[` inserts a page link. Every image draws through `MarkdownImage`, and `markdownImage.test.ts` scans the editor too. The editor binds no `Mod-k`. A member writes a page with a heading, a list, a callout, a table and a link to another page, saves it, and reads the same layout. The chunker indexes the saved body unchanged. The visual review passes in light mode, compact density and a changed accent, at 1440, 1024, 768 and 390 px | AGENT-SAFE |
+| **KB-2d** | Page chrome: breadcrumbs that fold the middle, the outline, heading anchors, the byline with the last editor and a word count, the page menu (copy link, copy as Markdown, download `.md`, history, move, archive), and an Archived view with restore | Each act works on a local stack. An archived page shows a banner with Restore | AGENT-SAFE |
+| **KB-2e** | The tree: a `+` and a `…` on hover and on focus, drag to reorder and to nest, the arrow keys. `POST /knowledge/pages/{id}/move` gains `position`, an integer: the 0-based place among the new siblings. The server renumbers the siblings 0 to n under a lock. A move that changes only `position` writes no version and does not change `updated_at`, because a place in the tree is not a change in substance (`company_context.md` §3). A move that changes the space or the parent keeps today's version | A drop between two pages keeps its place after a reload. A page cannot drop into its own subtree. A reader sees no handle, no `+` and no `…`. The `+` opens the New page form with the row as the parent. The `…` holds Copy link, New sub-page and Archive. ArrowUp and ArrowDown move the focus between visible rows, and ArrowRight and ArrowLeft open and close a row, as `RailRow` does today. A reorder adds no row to `kb_page_versions` | AGENT-SAFE |
+| **KB-2f** | A page icon: migration (check the number at merge) adding `kb_pages.icon`, nullable, set in `PATCH`, drawn in the tree, the breadcrumbs, the title and the search hits. The Knowledge home gains "Recently updated" and "Created by me" across the spaces the member can see | An icon set on a page shows in all four places. The home lists the last 20 visible pages, and a hidden page never appears | AGENT-SAFE |
+| **KB-2g** | Version compare: read an old version's body, show two versions with the changes marked, restore from the compare | A member compares version 2 with version 5 and restores version 2 | AGENT-SAFE |
+
+| **KB-2h** | Backlinks: the page write reads the page links of the saved body into `kb_links`, and the right strip lists the pages that link here | A page that links to another shows in that page's "Linked from" list. A link the member cannot see is not listed | AGENT-SAFE |
+
+The order is KB-2b and KB-2e in parallel, then KB-2d, then KB-2f, KB-2g and KB-2h.
