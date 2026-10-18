@@ -23,13 +23,30 @@ answers ``{query, hits, skipped}``. No chat model runs.
 * **Fusion by rank.** The scores of two apps do not compare, so the answer
   takes every app's first hit, then every app's second. An app named in
   ``apps`` goes first, in the order named.
+
+**Recency, behind ``CONTEXT_RECENCY``** (WS-61 CX-1, ``company_context.md``
+§3, §4.1, §4.2 and §4.5). The flag is read at each request. With it on:
+
+* each app's hits are sorted by :func:`score`, which lowers an old hit by
+  the half-life of its app, and never below :data:`FLOOR`. Then the apps
+  interleave as above;
+* Knowledge ranks a page past its review date lower (``reviewed``), in
+  place of an age decay;
+* ``after`` drops each hit stamped before it. Email and WhatsApp filter in
+  their own SQL as well;
+* each hit carries ``stamp``, and the answer names the apps it ``searched``.
+
+With it off, the route ignores ``after``, and the answer is the one of
+KR-1, byte for byte.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+import math
+from datetime import UTC, datetime
+from typing import Annotated, Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -50,6 +67,96 @@ MAX_CHARS = 300
 #: Hits for each app.
 DEFAULT_K = 5
 MAX_K = 10
+
+#: The constant of the rank term of :func:`score` (§4.1).
+RANK_K = 60
+#: The lowest share of its score that age leaves a hit (§4.1). An old exact
+#: match drops behind a new one, and stays in the list.
+FLOOR = 0.35
+#: The half-life of each app, in days (§4.1). An app with no entry does not
+#: decay: Knowledge ranks by review state (§4.2), and a person does not age.
+#: The eval of CX-2 may change these numbers, and nothing else may.
+TAU_DAYS: dict[str, float] = {
+    "email": 90.0,
+    "whatsapp": 60.0,
+    "tasks": 180.0,
+    "crm": 180.0,
+    "artifacts": 180.0,
+    "chat": 120.0,
+}
+
+
+def recency_enabled() -> bool:
+    """True when ``CONTEXT_RECENCY`` is on. Read at each request, default off.
+
+    The one reader is in ``acb_skills``, so the route, the tool and the
+    persona read one flag.
+    """
+    from acb_skills.company_search_tools import context_recency_enabled
+
+    return context_recency_enabled()
+
+
+def _instant(value: str | None) -> datetime | None:
+    """ISO text as an aware instant, or ``None``. A date is its midnight UTC."""
+    if not value:
+        return None
+    try:
+        when = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return when if when.tzinfo else when.replace(tzinfo=UTC)
+
+
+def _superseded(hit: Hit) -> float:
+    """The factor of a record that another record replaces (§4.4).
+
+    Always 1.0 here. CX-1b sets 0.5 for a superseded record.
+    """
+    return 1.0
+
+
+def score(hit: Hit, rank: int, now: datetime) -> float:
+    """The score of §4.1 for the hit at *rank* (from 1) of its own app.
+
+    ``1 / (60 + rank) * max(FLOOR, exp(-age / TAU)) * SUPERSEDED``, with the
+    age in days of the hit's ``stamp``. An app with no half-life, and a hit
+    with no stamp, take a decay of 1.0. Pure: *now* is the clock.
+    """
+    decay = 1.0
+    tau = TAU_DAYS.get(hit.app)
+    stamped = _instant(hit.stamp)
+    if tau and stamped is not None:
+        age = max(0.0, (now - stamped).total_seconds() / 86400.0)
+        decay = max(FLOOR, math.exp(-age / tau))
+    return 1.0 / (RANK_K + rank) * decay * _superseded(hit)
+
+
+def by_recency(hits: list[Hit], now: datetime) -> list[Hit]:
+    """One app's hits, sorted by :func:`score`. A tie keeps the app's order."""
+    scored = [(score(h, rank, now), rank, h) for rank, h in enumerate(hits, start=1)]
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [h for _s, _r, h in scored]
+
+
+def _after(value: str | None) -> datetime | None:
+    """``after`` as an aware instant. A bad value is a 422 (§4.5)."""
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        when = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(
+            status_code=422, detail="'after' is a date, for example 2026-10-01.",
+        ) from None
+    return when if when.tzinfo else when.replace(tzinfo=UTC)
+
+
+def _kept(hit: Hit, after: datetime) -> bool:
+    """False when the hit's stamp is before *after*. No stamp is kept."""
+    stamped = _instant(hit.stamp)
+    return stamped is None or stamped >= after
 
 
 def _order(apps: str | None) -> list[str]:
@@ -94,6 +201,8 @@ async def company_search(
     apps: str | None = Query(None, max_length=200),
     k: int = Query(DEFAULT_K, ge=1, le=MAX_K),
     user: UserContext = Depends(get_current_user),
+    # `Annotated`, so a direct call that leaves it out gets None, not `Query`.
+    after: Annotated[str | None, Query(max_length=40)] = None,
 ) -> dict[str, Any]:
     """Records that match the words, from every app this member holds."""
     if not user.email:
@@ -109,6 +218,10 @@ async def company_search(
     # the member has no such app. Each source checks the feature again.
     order = [key for key in _order(apps) if holds(user, REGISTRY[key].feature)]
     hybrid = _meaning_allowed(user)
+    recency = recency_enabled()
+    # Off, `after` is not read at all, as before CX-1.
+    since = _after(after) if recency else None
+    options: dict[str, Any] = {"after": since, "reviewed": True} if recency else {}
 
     found: dict[str, list[Hit]] = {}
     skipped: list[str] = []
@@ -121,7 +234,7 @@ async def company_search(
             continue
         try:
             hits = await asyncio.wait_for(
-                REGISTRY[key].find(user, words, per_app, hybrid=hybrid),
+                REGISTRY[key].find(user, words, per_app, hybrid=hybrid, **options),
                 min(SOURCE_TIMEOUT_S, left),
             )
         except HTTPException:
@@ -143,8 +256,19 @@ async def company_search(
             continue
         found[key] = list(hits)[:per_app]
 
+    if not recency:
+        return {
+            "query": words,
+            "hits": [h.as_dict() for h in _interleave(order, found)],
+            "skipped": skipped,
+        }
+    now = datetime.now(UTC)
+    for key, hits in found.items():
+        kept = [h for h in hits if since is None or _kept(h, since)]
+        found[key] = by_recency(kept, now)
     return {
         "query": words,
-        "hits": [h.as_dict() for h in _interleave(order, found)],
+        "hits": [h.as_dict(stamp=True) for h in _interleave(order, found)],
+        "searched": [key for key in order if key in found],
         "skipped": skipped,
     }

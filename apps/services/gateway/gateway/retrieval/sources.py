@@ -30,6 +30,18 @@ A **hit** has one shape for every consumer: ``app``, ``kind``, ``id``,
 ``title``, ``hint``, ``snippet``, ``when`` and ``href``. Code builds the
 link, never a model. The snippet comes from the app's own row, and it holds
 at most :data:`SNIPPET_CHARS` characters.
+
+**The stamp** (WS-61 CX-1, ``company_context.md`` §3). Each hit also
+carries ``stamp``, the date its record last changed, from the app's own row.
+``when`` keeps its meaning, such as the due date of a task. People have no
+stamp. ``Hit.as_dict`` emits ``stamp`` only when the consumer asks, so with
+``CONTEXT_RECENCY`` off the route's hit keeps its eight keys.
+
+**Two more options of ``find``** (CX-1, §4.2 and §4.5), each for a source
+that declares it, like ``meaning``. A source with ``dated=True`` takes
+``after`` and filters in its app's own SQL. A source with ``reviewed=True``
+takes ``reviewed`` and ranks a page past its review date lower. Only
+``GET /search/company`` passes them, and only with ``CONTEXT_RECENCY`` on.
 """
 
 from __future__ import annotations
@@ -62,17 +74,28 @@ class Hit:
     href: str
     snippet: str = ""
     when: str | None = None
+    #: The date the record last changed in substance, as ISO text (CX-1, §3).
+    stamp: str | None = None
 
-    def as_dict(self) -> dict[str, Any]:
-        return {
+    def as_dict(self, *, stamp: bool = False) -> dict[str, Any]:
+        """The hit for a consumer. *stamp* adds ``stamp`` as the ninth key.
+
+        ``GET /search/company`` asks for it with ``CONTEXT_RECENCY`` on. Off,
+        the dict is the one of KR-1, byte for byte.
+        """
+        out = {
             "app": self.app, "kind": self.kind, "id": self.id,
             "title": self.title, "hint": self.hint, "snippet": self.snippet,
             "when": self.when, "href": self.href,
         }
+        if stamp:
+            out["stamp"] = self.stamp
+        return out
 
 
 #: ``read(user, q, k)``. A source with ``meaning=True`` also takes
-#: ``hybrid=`` by name.
+#: ``hybrid=`` by name, one with ``dated=True`` takes ``after=`` and one with
+#: ``reviewed=True`` takes ``reviewed=``.
 Reader = Callable[..., Awaitable[list[Hit]]]
 
 
@@ -92,21 +115,36 @@ class Source:
     #: True when the app can also search by meaning. Its reader then takes
     #: ``hybrid``, and the consumer decides it (KB-3c).
     meaning: bool = False
+    #: True when the app's search takes a date. Its reader then takes
+    #: ``after``, and filters in the app's own SQL (CX-1, §4.5).
+    dated: bool = False
+    #: True when the app ranks by review state. Its reader then takes
+    #: ``reviewed`` (CX-1, §4.2).
+    reviewed: bool = False
 
     async def find(
         self, user: UserContext, q: str, k: int, *, hybrid: bool = False,
+        after: datetime | None = None, reviewed: bool = False,
     ) -> list[Hit]:
         """At most *k* hits for *q*, as *user*. No feature, no call and no hit.
 
         *hybrid* asks a source with ``meaning`` for the vector half too. It
         costs one embed call, so it is ``False`` unless the consumer asks.
-        A source without ``meaning`` ignores it.
+        *after* asks a source with ``dated`` for records stamped on or after
+        it. *reviewed* asks a source with ``reviewed`` for the review factor
+        of §4.2. A source ignores each option it does not declare, and the
+        reader gets an option only when the consumer sets it.
         """
         if not holds(user, self.feature):
             return []
+        options: dict[str, Any] = {}
         if self.meaning:
-            return (await self.read(user, q, k, hybrid=hybrid))[:k]
-        return (await self.read(user, q, k))[:k]
+            options["hybrid"] = hybrid
+        if self.dated and after is not None:
+            options["after"] = after
+        if self.reviewed and reviewed:
+            options["reviewed"] = True
+        return (await self.read(user, q, k, **options))[:k]
 
 
 # ── Small helpers, one rule each ────────────────────────────────────────────
@@ -151,6 +189,7 @@ async def _tasks(user: UserContext, q: str, k: int) -> list[Hit]:
             hint=f"Task · {r.get('project_name') or 'Projects'}",
             href=f"/projects?task={quote(str(r['id']))}",
             snippet=_clip(r.get("snippet")), when=_when(r.get("due_at")),
+            stamp=_when(r.get("updated_at")),
         )
         for r in (answer.get("rows") or [])[:k]
     ]
@@ -158,7 +197,9 @@ async def _tasks(user: UserContext, q: str, k: int) -> list[Hit]:
 
 # ── email ───────────────────────────────────────────────────────────────────
 
-async def _email(user: UserContext, q: str, k: int) -> list[Hit]:
+async def _email(
+    user: UserContext, q: str, k: int, *, after: datetime | None = None,
+) -> list[Hit]:
     from gateway.routes.email.transport.search import search_messages
 
     # ⚠️ Every parameter, by name. The route declares them with `Query(...)`
@@ -169,7 +210,8 @@ async def _email(user: UserContext, q: str, k: int) -> list[Hit]:
     answer = await search_messages(
         q=q, account_id=None, folder="all", label=None, labels=None,
         uncategorized=False, from_addr=None, to_addr=None,
-        received_after=None, received_before=None, is_read=None,
+        received_after=after.isoformat() if after is not None else None,
+        received_before=None, is_read=None,
         is_starred=None, has_attachments=None, sender_category=None,
         importance=None, hybrid=False, light=True, page=1, page_size=k,
         user=user,
@@ -185,6 +227,7 @@ async def _email(user: UserContext, q: str, k: int) -> list[Hit]:
             title=_title(row.get("subject") or "(no subject)"),
             hint=f"Email · from {who}", href=f"/email?email={quote(str(row['id']))}",
             snippet=_clip(text), when=_when(row.get("received_at")),
+            stamp=_when(row.get("received_at")),
         ))
     return out
 
@@ -283,6 +326,7 @@ async def _crm(user: UserContext, q: str, k: int) -> list[Hit]:
             hint=f"{noun} · {extra}" if extra else noun,
             href=crm_href(kind, row["id"]),
             snippet=_clip(extra), when=_when(row.get("last_activity_at")),
+            stamp=_when(row.get("last_activity_at")),
         ))
     return out
 
@@ -315,20 +359,23 @@ async def _artifacts(user: UserContext, q: str, k: int) -> list[Hit]:
             hint=f"Artifact · {row.get('kind') or 'file'}",
             href=f"/artifacts?session={quote(str(session))}" if session else "/artifacts",
             when=_when(row.get("last_activity_at")),
+            stamp=_when(row.get("last_activity_at")),
         ))
     return out
 
 
 # ── whatsapp ────────────────────────────────────────────────────────────────
 
-async def _whatsapp(user: UserContext, q: str, k: int) -> list[Hit]:
+async def _whatsapp(
+    user: UserContext, q: str, k: int, *, after: datetime | None = None,
+) -> list[Hit]:
     from gateway.routes.whatsapp.transport.messages import search_messages
 
     # ⚠️ Every parameter, by name: `limit` and `hybrid` are `Query(...)`
     # defaults. `hybrid` stays off for the reason of the email source.
     rows = await search_messages(
         q=q, account_id=None, limit=k, hybrid=False, websearch=False,
-        chat_id=None, contact=None, chat_kind=None, sent_after=None,
+        chat_id=None, contact=None, chat_kind=None, sent_after=after,
         sent_before=None, direction=None, has_media=None, user=user,
     )
     out = []
@@ -343,6 +390,7 @@ async def _whatsapp(user: UserContext, q: str, k: int) -> list[Hit]:
             href="/whatsapp",
             snippet=_clip(row.get("body_text") or row.get("transcript_text")),
             when=_when(row.get("sent_at")),
+            stamp=_when(row.get("sent_at")),
         ))
     return out
 
@@ -350,7 +398,7 @@ async def _whatsapp(user: UserContext, q: str, k: int) -> list[Hit]:
 # ── knowledge ───────────────────────────────────────────────────────────────
 
 async def _knowledge(
-    user: UserContext, q: str, k: int, *, hybrid: bool = False,
+    user: UserContext, q: str, k: int, *, hybrid: bool = False, reviewed: bool = False,
 ) -> list[Hit]:
     """The published Knowledge pages the member can see (WS-61 KR-3, §20.3).
 
@@ -363,14 +411,27 @@ async def _knowledge(
     for it when ``KNOWLEDGE_EMBED`` names the org: the route then embeds the
     words once, with its 0.8 s limit, and answers the lexical half when the
     door fails. The command bar never asks, so a keystroke costs no embed.
+
+    *reviewed* comes from ``GET /search/company`` with ``CONTEXT_RECENCY``
+    on (CX-1, ``company_context.md`` §4.2). The source then calls
+    ``search_pages``, the route's inner function, with the review factor in
+    place of the age decay. ``/knowledge/search`` and the command bar keep
+    today's ``fuse``.
     """
     from gateway.routes.knowledge import flags
-    from gateway.routes.knowledge.search import search_knowledge
+    from gateway.routes.knowledge import search as kb_search
 
     if not flags.knowledge_org_allowed(user.organization_id):
         return []
-    # ⚠️ Every parameter, by name: the route declares `Query(...)` defaults.
-    answer = await search_knowledge(q=q, space=None, k=k, hybrid=bool(hybrid), user=user)
+    if reviewed:
+        answer = await kb_search.search_pages(
+            q=q, space=None, k=k, hybrid=bool(hybrid), user=user, reviewed=True,
+        )
+    else:
+        # ⚠️ Every parameter, by name: the route declares `Query(...)` defaults.
+        answer = await kb_search.search_knowledge(
+            q=q, space=None, k=k, hybrid=bool(hybrid), user=user,
+        )
     out: list[Hit] = []
     seen: set[str] = set()
     for row in answer.get("hits") or []:
@@ -383,6 +444,7 @@ async def _knowledge(
             hint=f"Knowledge · {row.get('space_name') or 'Knowledge'}",
             href=f"/knowledge/pages/{quote(page_id)}",
             snippet=_clip(row.get("text")), when=_when(row.get("updated_at")),
+            stamp=_when(row.get("updated_at")),
         ))
     return out[:k]
 
@@ -392,11 +454,12 @@ REGISTRY: dict[str, Source] = {
     s.key: s
     for s in (
         Source("tasks", "projects", "Tasks", _tasks),
-        Source("email", "email", "Email", _email),
+        Source("email", "email", "Email", _email, dated=True),
         Source("people", "people", "People", _people),
         Source("crm", "crm", "CRM", _crm),
         Source("artifacts", "artifacts", "Artifacts", _artifacts),
-        Source("whatsapp", "whatsapp", "WhatsApp", _whatsapp),
-        Source("knowledge", "knowledge", "Knowledge", _knowledge, meaning=True),
+        Source("whatsapp", "whatsapp", "WhatsApp", _whatsapp, dated=True),
+        Source("knowledge", "knowledge", "Knowledge", _knowledge, meaning=True,
+               reviewed=True),
     )
 }

@@ -176,12 +176,33 @@ _COMPANY_SEARCH_SWAPS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _orchestrator_instructions(company_search: bool) -> str:
-    """The persona. Off, ``_PULL_INSTRUCTIONS`` itself. On, the three swaps."""
+# WS-61 CX-1 (company_context.md §4.3). With CONTEXT_RECENCY on too, the
+# grounding paragraph gains sentences 1 to 3, by one more exact swap. With it
+# off, the persona is the KR-2 one, byte for byte. Sentence 4 ships with CX-5.
+# Fence: tests/unit/test_company_search_recency.py.
+_RECENCY_SWAP: tuple[str, str] = (
+    _COMPANY_SEARCH_SWAPS[1][1],
+    _COMPANY_SEARCH_SWAPS[1][1]
+    + "   Search with the distinctive words of the question: a name, a number, a\n"
+    "   code. When a search finds nothing, try once more with other words.\n"
+    "   A snippet or a summary is a pointer. Open the record before you state\n"
+    "   an exact fact from it.\n"
+    "   When two records disagree, trust the newer one, and say which one you\n"
+    "   used.\n",
+)
+
+
+def _orchestrator_instructions(company_search: bool, recency: bool = False) -> str:
+    """The persona. Off, ``_PULL_INSTRUCTIONS`` itself. On, the three swaps.
+
+    *recency* (CX-1) adds the swap of :data:`_RECENCY_SWAP`, and only when
+    *company_search* is on too.
+    """
     if not company_search:
         return _PULL_INSTRUCTIONS
     text = _PULL_INSTRUCTIONS
-    for old, new in _COMPANY_SEARCH_SWAPS:
+    swaps = _COMPANY_SEARCH_SWAPS + ((_RECENCY_SWAP,) if recency else ())
+    for old, new in swaps:
         if text.count(old) != 1:
             # A persona edit moved a line the swap names. Fail loud at build,
             # never ship a half-swapped persona.
@@ -197,6 +218,15 @@ def _company_search_enabled() -> bool:
     except ImportError:  # pragma: no cover — acb_skills ships with the platform
         return False
     return company_search_enabled()
+
+
+def _context_recency_enabled() -> bool:
+    """The one reader of ``CONTEXT_RECENCY``, in ``acb_skills`` (CX-1)."""
+    try:
+        from acb_skills.company_search_tools import context_recency_enabled
+    except ImportError:  # pragma: no cover — acb_skills ships with the platform
+        return False
+    return context_recency_enabled()
 
 
 # ---------------------------------------------------------------------------
@@ -605,9 +635,12 @@ def build_orchestrator_agent(
 
     # WS-61 KR-2: read once, so the persona and the tool list agree.
     company_search = _company_search_enabled()
+    # WS-61 CX-1: read once too, so the persona and the tool agree. It acts
+    # only with company search on.
+    recency = company_search and _context_recency_enabled()
 
     # Build the instructions; append memory context when present.
-    instructions = _orchestrator_instructions(company_search)
+    instructions = _orchestrator_instructions(company_search, recency)
 
     # Memory tools — active read/write to Mem0 + Graphiti knowledge graph.
     # Gives the orchestrator the same memory capabilities that injected
@@ -632,10 +665,13 @@ def build_orchestrator_agent(
     # the ONE path of the tool: not config.json tool_scope, not the floor.
     # KB-4a: the two Knowledge reads join it on the same path, and only then.
     if company_search:
-        from acb_skills.company_search_tools import search_company
+        from acb_skills.company_search_tools import search_company, search_company_dated
         from acb_skills.knowledge_tools import list_spaces, read_page
 
-        retrieval_tools: list[Any] = [search_company, read_page, list_spaces]
+        # CX-1: with CONTEXT_RECENCY on, the tool of the same name that takes
+        # `after` and prints the stamp.
+        company_tool = search_company_dated if recency else search_company
+        retrieval_tools: list[Any] = [company_tool, read_page, list_spaces]
     else:
         retrieval_tools = [retrieve_entity_context, retrieve_sales_context]
     core_tools: list[Any] = [

@@ -12,6 +12,12 @@ fuses them:
    age decay from ``valid_from``, then at most :data:`PER_PAGE` chunks for
    each page, so one long page does not fill the list.
 
+**The review factor** (WS-61 CX-1, ``company_context.md`` §4.2). With
+``reviewed=True``, a published page takes :data:`REVIEW_PASSED` when its
+``review_at`` has passed, and 1.0 in every other case, in place of the age
+decay. Only ``GET /search/company`` asks for it, with ``CONTEXT_RECENCY``
+on. ``/knowledge/search`` and the command bar keep the age decay.
+
 **The vector comes first.** :func:`embed_query` runs BEFORE the caller opens
 a session, with a limit of :data:`QUERY_EMBED_TIMEOUT_S`, and only when
 ``KNOWLEDGE_EMBED`` names the org. A query with no vector returns the
@@ -49,6 +55,11 @@ RRF_K = 60
 
 #: The age decay: a score falls by this share for each year of age.
 AGE_WEIGHT = 0.1
+
+#: The factor of a published page whose ``review_at`` has passed
+#: (``company_context.md`` §4.2). A page with a later or no review date
+#: takes 1.0.
+REVIEW_PASSED = 0.7
 
 #: The most chunks of one page in an answer (§6.3).
 PER_PAGE = 2
@@ -95,6 +106,19 @@ def _age_years(valid_from: Any, today: date) -> float:
     return max(0, (today - valid_from).days) / 365.25
 
 
+def review_factor(review_at: Any, today: date) -> float:
+    """:data:`REVIEW_PASSED` when *review_at* is a day before *today*, else 1.0.
+
+    An empty review date is 1.0: the page is current until someone sets a
+    date and the date passes (``company_context.md`` §4.2).
+    """
+    if isinstance(review_at, datetime):
+        review_at = review_at.date()
+    if isinstance(review_at, date) and review_at < today:
+        return REVIEW_PASSED
+    return 1.0
+
+
 def fuse(
     lexical: Sequence[dict[str, Any]],
     semantic: Sequence[dict[str, Any]],
@@ -104,6 +128,7 @@ def fuse(
     rrf_k: int = RRF_K,
     per_page: int = PER_PAGE,
     age_weight: float = AGE_WEIGHT,
+    reviewed: bool = False,
 ) -> list[dict[str, Any]]:
     """Reciprocal rank fusion of two ranked lists, then the age decay and the cap.
 
@@ -111,6 +136,10 @@ def fuse(
     ``1 / (rrf_k + rank)`` in each list it is in, with the rank from 1. The
     sum falls by ``1 / (1 + age_weight * years)``. A tie goes to the lower
     ``chunk_id``, so the order is stable. Pure: no database, no clock.
+
+    *reviewed* (CX-1) puts :func:`review_factor` of the row's ``review_at``
+    in place of the age decay, for a page. A row of another kind keeps the
+    age decay, which is the rule of a source document (KB-7, §4.2).
     """
     scores: dict[Any, float] = {}
     rows: dict[Any, dict[str, Any]] = {}
@@ -120,6 +149,9 @@ def fuse(
             scores[cid] = scores.get(cid, 0.0) + 1.0 / (rrf_k + rank)
             rows.setdefault(cid, row)
     for cid, row in rows.items():
+        if reviewed and row.get("source_kind", "page") == "page":
+            scores[cid] *= review_factor(row.get("review_at"), today)
+            continue
         scores[cid] /= 1.0 + age_weight * _age_years(row.get("valid_from"), today)
     order = sorted(rows, key=lambda cid: (-scores[cid], cid))
     out: list[dict[str, Any]] = []
@@ -146,9 +178,10 @@ def _iso(value: Any) -> str | None:
     return value.isoformat() if value is not None else None
 
 
-def _hit(row: dict[str, Any]) -> dict[str, Any]:
+def _hit(row: dict[str, Any], *, reviewed: bool = False) -> dict[str, Any]:
+    """One hit. *reviewed* adds ``review_at`` (CX-1). Off, the KB-3 keys."""
     page_id = str(row["page_id"])
-    return {
+    hit = {
         "page_id": page_id,
         "space_id": str(row["space_id"]),
         "space_name": row["space_name"],
@@ -159,12 +192,16 @@ def _hit(row: dict[str, Any]) -> dict[str, Any]:
         "updated_at": _iso(row["updated_at"]),
         "href": f"/knowledge/pages/{page_id}",
     }
+    if reviewed:
+        hit["review_at"] = _iso(row.get("review_at"))
+    return hit
 
 
 #: The columns each half reads. ``p`` is the visible published page.
+#: ``p.review_at`` feeds the review factor of CX-1.
 _COLUMNS = (
     "c.id AS chunk_id, p.id AS page_id, p.space_id, s.name AS space_name, "
-    "p.title, c.heading_path, c.raw, c.valid_from, p.updated_at"
+    "p.title, c.heading_path, c.raw, c.valid_from, p.updated_at, p.review_at"
 )
 
 
@@ -178,12 +215,14 @@ async def query(
     *,
     vector: list[float] | None = None,
     today: date | None = None,
+    reviewed: bool = False,
 ) -> dict[str, Any]:
     """The fused hits for *q* over the member's visible published pages.
 
     *vector* is the result of :func:`embed_query`, made before *db* was
     opened. ``None`` gives the lexical half only, with ``degraded`` true.
-    It returns ``{"hits": [...], "degraded": bool}``.
+    *reviewed* applies the review factor of CX-1 in the fusion. It returns
+    ``{"hits": [...], "degraded": bool}``.
     """
     degraded = vector is None
     words = " ".join(str(q or "").split())
@@ -234,6 +273,6 @@ async def query(
 
     fused = fuse(
         [dict(r) for r in lexical], [dict(r) for r in semantic],
-        k=max(1, int(k)), today=today or date.today(),
+        k=max(1, int(k)), today=today or date.today(), reviewed=reviewed,
     )
-    return {"hits": [_hit(r) for r in fused], "degraded": degraded}
+    return {"hits": [_hit(r, reviewed=reviewed) for r in fused], "degraded": degraded}
