@@ -5961,6 +5961,25 @@ line — never reclaim a number by deleting the other entry.
   CLAUDE.md §3a (`enforcement-flip`)
 - **Added:** 2026-10-18 · WS-61, owner request
 
+### H-359 · Three staging file races that the acb-staging-flag review left · [AGENT] · security
+- **Check:** in `scripts/staging_refresh.sh`, the write of `$file.tmp` runs as
+  `acb` (through `setpriv` or `runuser`), and `acb-staging-flag` checks the pin
+  file before it writes `.env`. If both hold, delete this entry.
+- **Why.** The security review of H-358 on 2026-10-18 approved the script and
+  named three left-overs. First, `staging_refresh.sh:165-167` writes
+  `$file.tmp` as root inside `/opt/acb/app`, which `acb` can write. That is the
+  same symlink race that the script fixed. Second, when `.staging-flags` is a
+  symlink, `acb-staging-flag` writes `.env`, then refuses on the pin file. So
+  the flag changes with no log line, no restart and no pin, and the next
+  refresh reverts it. Third, the sudoers line lets `dev` flip
+  `enforcement-flip` switches after the dev-phase grant ends on 2026-11-30.
+- **Do this:** run the refresh's file work as `acb`, as `as_owner` does in
+  the script. In the script, read and check the pin file before the `.env`
+  write. Say in the README that the sudoers line outlives the grant, so the
+  owner decides on 2026-11-30 whether it stays.
+- **Authority:** `deploy/hostinger/staging/README.md`, HANDOFF H-358
+- **Added:** 2026-10-18 · H-358 security review
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
