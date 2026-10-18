@@ -80,6 +80,11 @@ export type SyncHealth = {
   holds?: Record<string, SyncHold>;
   /** CRM-Q24: the activities that the mirror does not hold. */
   activities?: HealthActivities;
+  /**
+   * CRM-Q32-4: the count of the open questions. `null` outside
+   * `CRM_QUESTIONS_ORGS`, and an older gateway sends no key.
+   */
+  open_questions?: number | null;
 };
 
 /**
@@ -373,8 +378,8 @@ export function largeSentence(label: string, count: number): string {
 
 // ── "Needs you" (CRM-Q17b item 8, spec section 18.9.6) ─────────────────────
 
-/** What the one button of a "Needs you" item does. */
-export type NeedsYouAction = "check-again" | "reconnect" | "sync-alone" | "hold";
+/** What the one button of a "Needs you" item does. `answer` opens Open questions (CRM-Q32-4). */
+export type NeedsYouAction = "check-again" | "reconnect" | "sync-alone" | "hold" | "answer";
 
 /** The words of each button. */
 export const NEEDS_YOU_ACTIONS: Record<NeedsYouAction, string> = {
@@ -384,6 +389,7 @@ export const NEEDS_YOU_ACTIONS: Record<NeedsYouAction, string> = {
   reconnect: "Connect again",
   "sync-alone": "Sync it on its own",
   hold: "Hold it",
+  answer: "Answer",
 };
 
 /**
@@ -400,7 +406,7 @@ export function unavailableAction(entity: HealthEntity): NeedsYouAction | null {
 
 export type NeedsYouItem = {
   key: string;
-  kind: "unavailable" | "held" | "large";
+  kind: "unavailable" | "held" | "large" | "questions";
   /** The name of the module, or null when the text starts with it. */
   name: string | null;
   text: string;
@@ -414,6 +420,11 @@ export type NeedsYouItem = {
  * first (`unavailableAction`), then a held module ("Sync it on its own"), then a
  * large module that nobody decided on ("Hold it"). A key shows once, by
  * that order.
+ *
+ * CRM-Q32-4 (§18.14.5): the open questions about the data give one more
+ * item, "<n> open questions about your data", with the action `answer`. The
+ * count comes from the answer (`open_questions`), so this stays pure. It
+ * shows only above 0, so an org outside `CRM_QUESTIONS_ORGS` gets none.
  */
 export function needsYou(health: SyncHealth | null | undefined): NeedsYouItem[] {
   if (!health) return [];
@@ -453,7 +464,25 @@ export function needsYou(health: SyncHealth | null | undefined): NeedsYouItem[] 
       action: "hold",
     });
   }
+  const open = openQuestionsOf(health);
+  if (open > 0) {
+    add({ key: QUESTIONS_KEY, kind: "questions", name: null, text: questionsSentence(open), action: "answer" });
+  }
   return items;
+}
+
+/** The key of the questions item. No entity key starts with `@`. */
+export const QUESTIONS_KEY = "@questions";
+
+/** The open questions of the answer, as a whole number. 0 when absent or not a count. */
+export function openQuestionsOf(health: SyncHealth | null | undefined): number {
+  const n = health?.open_questions;
+  return typeof n === "number" && Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+}
+
+/** "3 open questions about your data". */
+export function questionsSentence(n: number): string {
+  return `${n.toLocaleString("en-IN")} open ${n === 1 ? "question" : "questions"} about your data`;
 }
 
 // ── A short read and the activities left out (CRM-Q24, spec section 18.10) ──

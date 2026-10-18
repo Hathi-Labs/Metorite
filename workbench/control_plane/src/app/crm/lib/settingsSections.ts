@@ -15,6 +15,7 @@
 // imports this file to parse `?section=`. Fence: `components/crmC1.test.ts`.
 
 import type { CrmMode } from "./connect";
+import type { QuestionsGate } from "./questions";
 
 /** Who may open a section. */
 export type SectionAudience = "admin" | "member";
@@ -43,7 +44,8 @@ export interface SettingsSection {
  *
  * `field-mapping` shows in Mirror mode, and in Native mode for a studio
  * admin only (CRM-C6a, section 20.9). `suggestions` (CRM-Q20-2) shows to an
- * admin in Mirror mode only.
+ * admin in Mirror mode only. `questions` (CRM-Q32-3) shows to an admin in
+ * Mirror mode, and only while the read of the questions answered (`gate`).
  */
 export const SETTINGS_SECTIONS = [
   { id: "setup", label: "Setup and sync", icon: "Plug", audience: "admin", modes: ["native", "mirror"] },
@@ -60,6 +62,9 @@ export const SETTINGS_SECTIONS = [
     modes: ["native", "mirror"],
     studioIn: ["native"],
   },
+  // CRM-Q32-3: the questions that Jev could not answer, before Suggestions.
+  // `GET /crm/questions` decides whether it shows (`SectionContext.questions`).
+  { id: "questions", label: "Open questions", icon: "CircleHelp", audience: "admin", modes: ["mirror"] },
   // CRM-Q20-2: the suggestions of the mapping, and Undo of each one in use.
   { id: "suggestions", label: "Suggestions", icon: "Sparkles", audience: "admin", modes: ["mirror"] },
   { id: "sync-health", label: "Sync health", icon: "Activity", audience: "admin", modes: ["mirror"] },
@@ -70,8 +75,21 @@ export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]["id"];
 /**
  * What decides the sections a caller sees. `studioAdmin` is `studio_admin`
  * of the layout read (CRM-C6a). Absent, it is false.
+ *
+ * `questions` is the gate of the open questions (CRM-Q32-3, §18.14.5). The
+ * client learns `CRM_QUESTIONS_ORGS` from `GET /crm/questions`: a 404
+ * `questions_off` makes it `off`, and the section hides. Until the read
+ * answers it is `unknown`, and the section waits too, so the row never comes
+ * and goes. Absent, it is `unknown`. `openQuestions` is the open count: above
+ * 0, the section opens first.
  */
-export type SectionContext = { isAdmin: boolean; mode: CrmMode; studioAdmin?: boolean };
+export type SectionContext = {
+  isAdmin: boolean;
+  mode: CrmMode;
+  studioAdmin?: boolean;
+  questions?: QuestionsGate;
+  openQuestions?: number;
+};
 
 /** Is this a section id at all? An unknown `?section=` parses as `null`. */
 export function isSettingsSection(value: string | null | undefined): value is SettingsSectionId {
@@ -95,13 +113,21 @@ export function visibleSections(ctx: SectionContext): SettingsSection[] {
     (section: SettingsSection) =>
       (section.audience === "member" || ctx.isAdmin) &&
       (section.modes as readonly string[]).includes(mode) &&
-      (!(section.studioIn ?? []).includes(mode) || ctx.studioAdmin === true),
+      (!(section.studioIn ?? []).includes(mode) || ctx.studioAdmin === true) &&
+      (section.id !== "questions" || ctx.questions === "on"),
   );
 }
 
-/** The section that opens with no `?section=`: Setup for an admin, Deal stages for a member. */
+/**
+ * The section that opens with no `?section=`: Setup for an admin, Deal
+ * stages for a member. An admin with open questions gets Open questions
+ * first (CRM-Q32-3, §18.14.5).
+ */
 export function defaultSection(ctx: SectionContext): SettingsSectionId {
-  return ctx.isAdmin ? "setup" : "stages";
+  if (!ctx.isAdmin) return "stages";
+  const questions =
+    modeOf(ctx.mode) === "mirror" && ctx.questions === "on" && (ctx.openQuestions ?? 0) > 0;
+  return questions ? "questions" : "setup";
 }
 
 /** The section the page draws: the one asked for, or the default when the caller cannot open it. */
