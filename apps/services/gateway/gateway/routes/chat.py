@@ -819,6 +819,17 @@ _MESSAGE_UPSERT_SQL = """
 """
 
 
+def _without_setup_values(message: MessageRecord) -> MessageRecord:
+    """*message* with every SETUP marker replaced (WS-54 fix round 2, item 5)."""
+    from acb_common.setup_markers import redact_tree
+
+    return message.model_copy(update={
+        name: redact_tree(getattr(message, name))
+        for name in ("content", "tool_events", "progress_lines", "reasoning",
+                     "agent_state", "custom_events")
+    })
+
+
 def _upsert_messages(
     session_id: str,
     messages: list[MessageRecord],
@@ -850,6 +861,12 @@ def _upsert_messages(
     creates the agent row of a run before it opens the stream. A mint only
     inserts. When a row with that id exists, the mint changes nothing.
 
+    ⚠️ **No setup value is stored** (WS-54 fix round 2, item 5). Every text
+    field of every turn passes through ``acb_common.setup_markers``, so a
+    ``<<<SETUP:service:KEY=value>>>`` marker in a model answer leaves no
+    secret in ``chat_message``. This is the one write seam: the browser save,
+    the server fold and the mint all come through here.
+
     Only the server creates an agent row or a system row (S14). A client
     write of a new agent row or a new system row inserts nothing, and its id
     is in the return value. A client may still update an agent row that the
@@ -864,6 +881,7 @@ def _upsert_messages(
 
     Returns the ids whose write the SQL declined, in request order.
     """
+    messages = [_without_setup_values(m) for m in messages]
     from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 

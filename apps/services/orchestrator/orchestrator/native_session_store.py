@@ -64,6 +64,7 @@ from typing import Any
 
 from acb_common import get_logger, get_settings  # type: ignore[import-untyped, unused-ignore]
 from acb_common.pg_text import storable  # type: ignore[import-untyped, unused-ignore]
+from acb_common.setup_markers import redact_tree  # type: ignore[import-untyped, unused-ignore]
 from agent_framework import (
     AgentSession,
     CharacterEstimatorTokenizer,
@@ -581,7 +582,10 @@ async def _session_body(turn: SessionTurn, token_budget: int) -> tuple[str, int]
     messages = await compact_history(_history(turn.session), token_budget)
     stored = AgentSession(session_id=turn.session.session_id)
     stored.state[HISTORY_SOURCE_ID] = {"messages": messages}
-    body = storable(stored.to_dict())
+    # WS-54 fix round 2, item 5: a model answer can hold a
+    # <<<SETUP:service:KEY=value>>> marker with a secret in it. The session
+    # stores no value (acb_common.setup_markers).
+    body = redact_tree(storable(stored.to_dict()))
     return json.dumps(body, ensure_ascii=False), len(messages)
 
 
