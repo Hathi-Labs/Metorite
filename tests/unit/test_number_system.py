@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -276,3 +277,67 @@ async def test_a_kept_report_carries_numbering(monkeypatch: pytest.MonkeyPatch) 
                                            "labels": ["a"], "values": [1]}}]})
     assert out == {"ok": False, "error": "stop here"}
     assert seen["report"]["sections"][0]["visual"]["numbering"] == "international"
+
+
+# ── number-system-one-formatter: the Python twin agrees with the web ────────
+
+_CASES = json.loads(
+    (Path(__file__).resolve().parents[1] / "fixtures" / "number_format_cases.json")
+    .read_text(encoding="utf-8"))["cases"]
+
+
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: str(c["value"]))
+def test_the_python_twin_agrees_with_number_format_mjs(case: dict[str, Any]) -> None:
+    """``numberFormat.test.ts`` reads the same table."""
+    assert ns.compact_number(case["value"], "indian") == case["indian"]
+    assert ns.compact_number(case["value"], "international") == case["international"]
+
+
+def test_grouping_follows_the_system() -> None:
+    assert ns.group(123456789, "indian") == "12,34,56,789"
+    assert ns.group(123456789, "international") == "123,456,789"
+    assert ns.group(1350.5, "indian") == "1,350.5"
+
+
+# ── The old WhatsApp renderer (the fallback when the engine is off) ─────────
+
+NB = chr(0xA0)
+
+
+def test_the_old_renderer_writes_the_old_way_outside_a_system() -> None:
+    render = importlib.import_module("acb_skills.whatsapp_render")
+    assert render.fmt(1250000) == "1,250,000"
+    assert render.fmt(1250000, "₹") == "₹1,250,000"
+
+
+def test_the_old_renderer_writes_lakh_and_crore_in_the_indian_system() -> None:
+    render = importlib.import_module("acb_skills.whatsapp_render")
+    with render.numbering("indian"):
+        assert render.fmt(1250000) == f"12.5{NB}L"
+        assert render.fmt(13500000, "₹") == f"₹1.35{NB}Cr"
+        assert render.fmt(1.35e10) == f"1,350{NB}Cr"
+        assert render.fmt(85000) == "85,000"
+    assert render.fmt(1250000) == "1,250,000"
+
+
+def test_the_old_renderer_writes_million_in_the_international_system() -> None:
+    render = importlib.import_module("acb_skills.whatsapp_render")
+    with render.numbering("international"):
+        assert render.fmt(1250000) == "1.25M"
+        assert render.fmt(2.5e9, "₹") == "₹2.5B"
+        assert render.fmt(850000) == "850,000"
+
+
+@pytest.mark.parametrize(("system", "want", "never"), [
+    ("indian", f"1.35{NB}Cr", "13.5M"), ("international", "13.5M", f"{NB}Cr")])
+def test_a_fallback_chart_uses_the_stamped_system(
+    monkeypatch: pytest.MonkeyPatch, system: str, want: str, never: str,
+) -> None:
+    ui = importlib.import_module("acb_skills.whatsapp_ui")
+    drawn: list[str] = []
+    monkeypatch.setattr(ui, "_engine_png", lambda spec: None)
+    monkeypatch.setattr(ui, "_svg_image", lambda svg, rendition, caption: drawn.append(svg))
+    monkeypatch.setattr(wa, "run_numbering", lambda: system)
+    ui._chart({"type": "bar", "title": "Revenue", "labels": ["Q1", "Q2"],
+               "values": [13500000, 4000000], "numbering": "roman"})
+    assert want in drawn[0] and never not in drawn[0]

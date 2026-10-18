@@ -1255,7 +1255,13 @@ formatter is `src/lib/numberFormat.mjs`, and `kinds.mjs` writes every axis,
 label, tooltip, caption and donut total through it. The Indian system writes
 85K below a lakh, then 12.5 L from 1e5 and 1.35 Cr from 1e7. A value that
 rounds up into the next band moves up to it, so 99,999 is 1 L and never 100K.
-The CRM's short money (`compactMoney`) uses the same formatter.
+The CRM's short money (`compactMoney`) uses the same formatter. Each CRM
+screen gets the member's system from `useCompactMoney`, which shares one read
+of the setting for the whole page. The old SVG renderer
+(`whatsapp_render.fmt`) is the fallback when the engine is off or fails. It
+uses `acb_common.number_system.compact_number`, the Python twin of the
+formatter, with the spec's stamped `numbering`. Both test suites read one
+table of cases, `tests/fixtures/number_format_cases.json`.
 
 **The server writes `numbering`.** `emit_generative_ui`, the WhatsApp chart
 (`whatsapp_ui._chart`) and `make_report` stamp each chart with the run's

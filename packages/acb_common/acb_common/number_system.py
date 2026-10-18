@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Literal
 
 NumberSystem = Literal["indian", "international"]
@@ -86,6 +87,74 @@ def prompt_line(system: Any) -> str:
     """The one line of the chat's context for *system* (resolved again, so a
     bad value gives the default line)."""
     return PROMPT_LINES[resolve(None, system)]
+
+
+# ── The short number, the Python twin of numberFormat.mjs ───────────────────
+#
+# The web formats with `workbench/control_plane/src/lib/numberFormat.mjs`.
+# The old WhatsApp SVG renderer (`acb_skills.whatsapp_render`) is Python and
+# cannot call it, so this is its twin. ONE table of cases,
+# `tests/fixtures/number_format_cases.json`, is read by both test suites, so
+# the two cannot drift: `numberFormat.test.ts` and `test_number_system.py`.
+
+_NBSP = chr(0xA0)
+#: Each system's bands, largest first: (size, suffix). The last is the plain
+#: number below a thousand.
+_BANDS: dict[str, tuple[tuple[int, str], ...]] = {
+    "indian": ((10**7, f"{_NBSP}Cr"), (10**5, f"{_NBSP}L"), (10**3, "K"), (1, "")),
+    "international": ((10**9, "B"), (10**6, "M"), (10**3, "K"), (1, "")),
+}
+
+
+def _fixed(x: float, places: int) -> Decimal:
+    """*x* to *places* decimals as JavaScript's ``toFixed`` does it: on the
+    exact binary value, a tie to the larger."""
+    return Decimal(x).quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
+
+
+def _rounded(x: float, size: int) -> Decimal:
+    if size == 1:
+        return Decimal(int(x)) if float(x).is_integer() else _fixed(x, 2)
+    return _fixed(x, 2 if x < 10 else 1 if x < 100 else 0)
+
+
+def group(n: Decimal | float, system: Any) -> str:
+    """*n* (zero or more) with the system's digit grouping, and at most two
+    decimals with no trailing zero: 1,23,456 or 123,456."""
+    d = Decimal(n).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP).normalize()
+    whole, _, frac = f"{d:f}".partition(".")
+    if resolve(None, system) == "indian" and len(whole) > 3:
+        head, tail = whole[:-3], whole[-3:]
+        pairs = []
+        while len(head) > 2:
+            pairs.insert(0, head[-2:])
+            head = head[:-2]
+        whole = ",".join([head, *pairs, tail]) if head else ",".join([*pairs, tail])
+    elif len(whole) > 3:
+        whole = f"{int(whole):,}"
+    return f"{whole}.{frac}" if frac else whole
+
+
+def compact_number(value: float, system: Any) -> str:
+    """A short number: 1.2K, 85K, 12.5 L, 1.35 Cr (indian) or 1.2K, 85K,
+    12.5M, 1.35B (international). The rule of ``numberFormat.mjs``
+    ``compactNumber``: a value that rounds up into the next band moves up to
+    it, so 99,999 is "1 L". The sign is an ASCII "-"."""
+    bands = _BANDS[resolve(None, system)]
+    a = abs(float(value))
+    i = next((k for k, (size, _) in enumerate(bands) if a >= size), len(bands) - 1)
+    n = _rounded(a / bands[i][0], bands[i][0])
+    if i > 0 and n * bands[i][0] >= bands[i - 1][0]:
+        i -= 1
+        n = _rounded(a / bands[i][0], bands[i][0])
+    body = f"{group(n, system)}{bands[i][1]}"
+    return f"-{body}" if value < 0 and n != 0 else body
+
+
+def big_band(system: Any) -> int:
+    """The size where a system stops writing the whole number: a lakh, or a
+    million. Below it, ``acb_skills.whatsapp_render.fmt`` writes every digit."""
+    return 10**5 if resolve(None, system) == "indian" else 10**6
 
 
 # ── The chart stamp ─────────────────────────────────────────────────────────
@@ -196,9 +265,12 @@ __all__ = [
     "READ_SQL",
     "SYSTEMS",
     "NumberSystem",
+    "big_band",
     "cached",
     "clean",
+    "compact_number",
     "forget",
+    "group",
     "prompt_line",
     "remember",
     "resolve",

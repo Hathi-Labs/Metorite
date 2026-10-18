@@ -5,6 +5,9 @@
  * The band edges are the point. 99,999 is "1 L", never "100K": a value that
  * rounds up to the next band moves up to it.
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_NUMBER_SYSTEM, NUMBER_SYSTEMS, compactNumber, numberSystem } from "./numberFormat.mjs";
@@ -74,5 +77,22 @@ describe("compactNumber, international", () => {
 
   it("keeps a sign", () => {
     expect(f(-2_000_000)).toBe("-2M");
+  });
+});
+
+// The one table of cases that `acb_common.number_system.compact_number`, the
+// Python twin for the old WhatsApp renderer, also reads. A drift between the
+// two fails here or in `tests/unit/test_number_system.py`.
+describe("the shared case table", () => {
+  const table = JSON.parse(
+    readFileSync(join(__dirname, "..", "..", "..", "..", "tests", "fixtures", "number_format_cases.json"), "utf-8"),
+  ) as { cases: { value: number; indian: string; international: string }[] };
+
+  it("holds cases, and each one agrees", () => {
+    expect(table.cases.length).toBeGreaterThan(20);
+    for (const c of table.cases) {
+      expect([compactNumber(c.value, "indian"), compactNumber(c.value, "international")])
+        .toEqual([c.indian, c.international]);
+    }
   });
 });

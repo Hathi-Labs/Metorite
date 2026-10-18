@@ -522,12 +522,17 @@ def _chart(data: dict[str, Any]) -> OutMessage:
 
     from acb_skills.write_artifact import run_numbering
 
-    png = _engine_png(stamp_chart({**data, "type": kind}, run_numbering()))
+    spec = stamp_chart({**data, "type": kind}, run_numbering())
+    png = _engine_png(spec)
     if png is None and kind not in _OLD_KINDS:
         raise _Refused(f'chart "type" must be one of: {", ".join(_OLD_KINDS)}')
     rendition = _chart_rendition(kind, title, data) + (f"\n{caption}" if caption else "")
     if png is None:
-        return _svg_image(_old_chart_svg(kind, title, data), rendition, caption)
+        # The old renderer: the fallback when the engine is off or broken.
+        # It draws with the same stamped system as the engine would.
+        with render.numbering(spec["numbering"]):
+            svg = _old_chart_svg(kind, title, spec)
+        return _svg_image(svg, rendition, caption)
     return OutMessage("image", rendition, png=png, caption=caption or None)
 
 
