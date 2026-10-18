@@ -512,9 +512,10 @@ def _plan_row(i: int, item: Any) -> dict[str, Any] | str:
         "due": due,
         "after": _after_of(item.get("after")),
     }
-    phase = _clean(item.get("phase"))[:80]
+    phase = _clean(item.get("phase"))
     if phase:
-        row["phase"] = phase  # The card's group label. Display only.
+        # The card's group label. Display only, and the card cuts it to 80.
+        row["phase"] = phase
     start = _clean(item.get("start"))[:10]
     if start:
         try:
