@@ -616,14 +616,33 @@ async def test_two_steps_on_one_day_give_one_card_for_an_admin_only(
 
 
 async def test_sync_health_carries_the_open_count(q_env, app_engine, monkeypatch) -> None:
+    from datetime import UTC, datetime
+
     from acb_common import get_settings
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
 
     p = q_env
     seed_a(p)
-    full = (await call(p, _user(p.org_a), "GET", "/crm/questions")).json()
+    # Before the first questions step, the count is not known.
     health = await call(p, _user(p.org_a), "GET", "/crm/sync/health")
+    assert health.status_code == 200 and health.json()["open_questions"] is None
+    await step(p, p.org_a, datetime.now(UTC))
+    full = (await call(p, _user(p.org_a), "GET", "/crm/questions")).json()
+    # Fix round P2: the card reads ONE cursor row, and builds no question.
+    seen: list[str] = []
+
+    def _record(_conn, _cursor, statement, *_args) -> None:
+        seen.append(statement)
+
+    event.listen(Engine, "before_cursor_execute", _record)
+    try:
+        health = await call(p, _user(p.org_a), "GET", "/crm/sync/health")
+    finally:
+        event.remove(Engine, "before_cursor_execute", _record)
     assert health.status_code == 200, health.text
     assert health.json()["open_questions"] == full["open"] > 0
+    assert not [s for s in seen if "crm_field_defs" in s or "crm_mapping_plans" in s]
     monkeypatch.setattr(get_settings(), "crm_questions_orgs", "", raising=False)
     health = await call(p, _user(p.org_a), "GET", "/crm/sync/health")
     assert health.json()["open_questions"] is None
@@ -647,3 +666,27 @@ async def test_the_aggregate_422_of_an_open_key_part_names_open_questions(
     monkeypatch.setattr(get_settings(), "crm_questions_orgs", "", raising=False)
     got = await call(p, _user(p.org_a, admin=False), "GET", path)
     assert got.status_code == 422 and "href" not in got.json()["detail"]
+
+
+async def test_a_stage_value_with_a_blank_around_it_is_the_value(q_env, app_engine) -> None:
+    """Fix round: the values read trims each value as ``mapping.text_value``
+    (the executor) does, so " Won " is "Won", which has an entry."""
+    from gateway.crm_sync import questions as qs
+    from gateway.routes.crm.field_sql import value_counts
+
+    p = q_env
+    seed_a(p)
+    with p.admin_engine.begin() as c:
+        for i, status in enumerate([" Won ", "Won\t", "  ", {"x": 1}]):
+            c.execute(text(
+                "INSERT INTO crm_module_records (organization_id, module, ext_source, "
+                "ext_id, name, fields) VALUES (CAST(:o AS uuid), 'Commercials', 'zoho', "
+                ":e, :e, CAST(:f AS jsonb))"),
+                {"o": p.org_a, "e": f"trim-{i}", "f": json.dumps({"Status": status})})
+    got = await bound(p, p.org_a, lambda db: value_counts(
+        db, p.org_a, "Commercials", "Status", 500))
+    assert got == [("Won", 3), ("On Hold", 2)]
+    body = (await call(p, _user(p.org_a), "GET", "/crm/questions?limit=50")).json()
+    stages = [q["value"] for q in body["shown"] if q["kind"] == "stage_value"]
+    assert stages == ["On Hold"]
+    assert qs.stage_id("deal", " Won ") not in ids(body)

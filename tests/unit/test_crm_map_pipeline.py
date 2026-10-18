@@ -1505,3 +1505,28 @@ class TestQ32AnAdminPartIsNeverAsked:
             if item["module"] == "Payment_Received":
                 assert "amount" not in item
             assert item["module"] != "AMC_Contracts"
+
+
+class TestQ32FixTheViewKeepsTheAdmin:
+    async def test_an_admin_key_part_with_an_open_purpose_is_never_asked(self):
+        """Fix round P2: the purpose step puts a working item for the module.
+        The view of the run merges it OVER the approved item, part by part,
+        so the amount of the admin stays answered and is never asked."""
+        module = mp.ModuleShape(
+            api_name="Ledger_0", label="Ledger 0", singular="Ledger 0", records=50,
+            display_field=None, custom=True,
+            fields=tuple(mp.FieldShape(key=f"Part_{n}", label=f"Part {n}", type="currency")
+                         for n in range(3)))
+        slots = tuple(mp.SlotShape(slot=s, empty=False) for s in mp.executor.SLOTS)
+        admin = {"kind": "catalogue", "module": "Ledger_0", "amount": "Part_1",
+                 "by": {"amount": "admin"}}
+        inputs = mp.Inputs(1, (module,), slots, (admin,),
+                           fills={"Ledger_0": {f"Part_{n}": 0.6 for n in range(3)}})
+        asker = eval_run.ScriptedAsker({"p:Ledger 0": {"pick": "invoice", "p": 0.9}})
+        result = await mp.Pipeline(inputs, CAT_ON, mp.Cache(), _LedgerSource(), asker).run()
+        asked = _asked(asker)
+        assert "p.m0" in asked, "the purpose was open and asked"
+        assert "k.amount" not in asked
+        entry = _entry(result, "Ledger_0")
+        assert (entry.purpose, entry.fields["amount"].key, entry.by["amount"]) == (
+            "invoice", "Part_1", "admin")

@@ -274,8 +274,9 @@ def _now(inputs: Inputs) -> datetime:
 
 def shows_open(inputs: Inputs, entry: Any, part: str) -> bool:
     """True when the admin may answer *part* of *entry* while it waits in
-    ``open`` (§18.14.3, the gate): the mode is ``off`` or ``shadow``, or the
-    cache key of the part is parked."""
+    ``open`` (§18.14.3, the gate): the mode is ``off`` or ``shadow``, the
+    cache key of the part is parked, or the key is a cache hit whose item
+    lacks the part, so the AI never asks it."""
     if inputs.mode in ("off", "shadow"):
         return True
     if inputs.cache is None:
@@ -291,7 +292,14 @@ def shows_open(inputs: Inputs, entry: Any, part: str) -> bool:
     else:
         key = f"{mp.CATALOGUE_KEY}{entry.module}"
         digest = mp.catalogue_hash([src], inputs.mode, entry.purpose)
-    return bool(inputs.cache.parked(key, digest, _now(inputs)))
+    if inputs.cache.parked(key, digest, _now(inputs)):
+        return True
+    # Fix round P1: a cache hit whose item lacks the part asks nothing again
+    # (the pipeline keeps a hit and never re-asks it). So the AI never closes
+    # the part, and only the admin can answer it. This is the path of
+    # "@auto" on a part that the admin answered before the mode was `on`.
+    return bool(inputs.cache.hit(key, digest)) and not any(
+        part in item for item in inputs.cache.items.get(key, []))
 
 
 def part_reasons(entry: Any, gate: Callable[[str], bool]) -> dict[str, str]:
@@ -776,6 +784,13 @@ def step_state(state: Mapping[str, Any] | None, open_ids: Sequence[str], money: 
 CARD_HOURS = 24
 
 
+def open_count(state: Mapping[str, Any] | None) -> int | None:
+    """The open count of the last questions step, from the state of
+    :data:`QUESTIONS_ROW`, or ``None`` before the first step."""
+    seen = (state or {}).get("seen")
+    return len(seen) if isinstance(seen, list) else None
+
+
 def card_of(state: Mapping[str, Any] | None, now: datetime) -> dict[str, Any] | None:
     """The My Day card of the state of :data:`QUESTIONS_ROW`, or ``None``
     (§18.14.5): ``new_at`` is less than :data:`CARD_HOURS` old, and a
@@ -862,6 +877,7 @@ __all__ = [
     "key_id",
     "module_hash",
     "module_questions",
+    "open_count",
     "options_hash",
     "part_fields",
     "part_reasons",

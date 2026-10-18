@@ -579,3 +579,38 @@ def test_a_no_key_field_of_an_open_part_carries_the_href() -> None:
     with pytest.raises(HTTPException) as got:
         asked.ref("@date")
     assert "href" not in got.value.detail
+
+
+# ── Fix round: Sync health never fails on the open count ────────────────────
+
+
+async def test_a_failed_read_of_the_open_count_gives_none(monkeypatch) -> None:
+    import contextlib
+
+    from acb_common import get_settings
+    from gateway.crm_sync import runs
+    from gateway.routes.crm import sync
+
+    from tests.unit._crm_fakes import crm_switch_on
+
+    crm_switch_on(monkeypatch, "*")
+    monkeypatch.setattr(get_settings(), "crm_catalogue_orgs", "*", raising=False)
+    monkeypatch.setattr(get_settings(), "crm_questions_orgs", "*", raising=False)
+
+    class _Db:
+        @contextlib.asynccontextmanager
+        async def begin_nested(self):
+            yield self
+
+    async def broken(*_a, **_k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(runs, "read_cursors", broken)
+    assert await sync._open_questions(_Db(), "o-1") is None
+
+    async def state(*_a, **_k):
+        return {qs.QUESTIONS_ROW: type("Row", (), {"state": {"seen": ["a", "b", "c"]}})()}
+
+    monkeypatch.setattr(runs, "read_cursors", state)
+    assert await sync._open_questions(_Db(), "o-1") == 3
+    assert qs.open_count(None) is None and qs.open_count({"seen": []}) == 0

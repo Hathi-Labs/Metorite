@@ -643,3 +643,52 @@ async def test_q31_3_8_a_run_in_on_applies_the_catalogue_and_drafts_none(
     again = await _run(p.org_a)
     assert again.requests == 0 and len(p.fake.calls) == calls
     assert len(_versions(p, p.org_a)) == count
+
+
+# ── CRM-Q32 fix round P1: "@auto" never leaves a part with no question ──────
+
+
+async def test_q32_fix_auto_after_on_makes_the_part_a_question(mp_env, monkeypatch) -> None:
+    """The exact sequence: with the catalogue `off` the admin answers the
+    amount. The owner sets `on`, and the run asks only the open parts, so
+    the cache item lacks the amount. The admin picks "Let Metorite choose",
+    and the part leaves the plan. The next run is a cache hit and asks
+    nothing. So the part must show as an open question, with 0 decide
+    calls."""
+    from acb_common import get_settings
+    from gateway import decide_features as df
+
+    p, a, _b = mp_env
+    settings = get_settings()
+    monkeypatch.setattr(settings, "crm_catalogue_orgs", p.org_a, raising=False)
+    monkeypatch.setattr(settings, "crm_questions_orgs", p.org_a, raising=False)
+    await _imported(p, p.org_a, a)
+    _seed_module(p, p.org_a, "Commercials", "Commercials")
+    admin = _admin_of(p.org_a)
+    q = "/crm/questions"
+    got = await _req(admin, "POST", f"{q}/purpose:Commercials/answer", {"value": "deal"})
+    assert got.status_code == 200, got.text
+    got = await _req(admin, "POST", f"{q}/key:Commercials:amount/answer",
+                     {"value": "Probability"})
+    assert got.status_code == 200, got.text
+    # The owner sets the catalogue step `on`.
+    monkeypatch.setattr(settings, "decide_feature_modes",
+                        "crm.map_role=on,crm.map_target=on,crm.map_stage=on,"
+                        "crm.map_catalogue=on", raising=False)
+    df._parse_modes.cache_clear()
+    first = await _run(p.org_a)
+    assert first.reason == "done", first
+    cached = _cursor(p, p.org_a)["items"]["catalogue:Commercials"]
+    assert cached and not any("amount" in item for item in cached)
+    # "Let Metorite choose": the cache holds no amount, so the part leaves.
+    got = await _req(admin, "PUT", "/crm/catalogue/Commercials", {"amount": "@auto"})
+    assert got.status_code == 200, got.text
+    (item,) = [i for i in _in_use(p, p.org_a) if i["module"] == "Commercials"]
+    assert "amount" not in item
+    calls = len(p.fake.calls)
+    again = await _run(p.org_a)
+    assert again.requests == 0 and len(p.fake.calls) == calls, "a cache hit asks nothing"
+    body = (await _req(admin, "GET", f"{q}?limit=200")).json()
+    amount = [x for x in body["shown"] if x["id"] == "key:Commercials:amount"]
+    assert [x["reason"] for x in amount] == ["open"], body["shown"]
+    assert len(p.fake.calls) == calls, "the question read makes no decide call"

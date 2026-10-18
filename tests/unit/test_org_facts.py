@@ -315,14 +315,17 @@ async def test_a_box_with_the_list_empty_sends_no_request(monkeypatch) -> None:
     monkeypatch.setattr(get_settings(), "crm_questions_orgs", "", raising=False)
     reads: list[int] = []
 
-    async def block():
+    async def rows():
         reads.append(1)
-        return "## CRM facts (fixed)"
+        return [_row("revenue", "Revenue means billed.")]
 
-    monkeypatch.setattr(tools, "crm_facts_block_for_run", block)
+    monkeypatch.setattr(tools, "crm_facts_for_run", rows)
     agent = _MafAgent()
-    await ti._add_crm_facts_block([agent], frozenset({"crm_aggregate"}))
+    agent.default_options["tools"].append(tools.org_facts)
+    held = await ti._add_crm_facts_block([agent], frozenset({"crm_aggregate", "org_facts"}))
     assert reads == [] and agent.default_options["instructions"] == "Base prompt."
+    # The tool goes with the facts: a dark box keeps no org_facts.
+    assert held == {"crm_aggregate"} and agent.default_options["tools"] == []
 
 
 async def test_the_run_gets_the_block_only_with_a_crm_tool(monkeypatch, questions_on) -> None:
@@ -333,9 +336,9 @@ async def test_the_run_gets_the_block_only_with_a_crm_tool(monkeypatch, question
 
     async def block():
         reads.append(1)
-        return "## CRM facts (fixed)\n- Revenue means billed."
+        return [_row("revenue", "Revenue means billed.")]
 
-    monkeypatch.setattr(tools, "crm_facts_block_for_run", block)
+    monkeypatch.setattr(tools, "crm_facts_for_run", block)
     agents = [_MafAgent(), _OldAgent(), _CopilotAgent()]
     await ti._add_crm_facts_block(agents, frozenset({"web_search"}))
     assert reads == [] and agents[0].default_options["instructions"] == "Base prompt."
@@ -362,8 +365,10 @@ async def test_a_failed_read_adds_no_block(monkeypatch, questions_on) -> None:
 
     monkeypatch.setattr(tools, "_get", broken)
     agent = _MafAgent()
-    await ti._add_crm_facts_block([agent], frozenset({"crm_aggregate"}))
+    agent.default_options["tools"].append(tools.org_facts)
+    held = await ti._add_crm_facts_block([agent], frozenset({"crm_aggregate", "org_facts"}))
     assert agent.default_options["instructions"] == "Base prompt."
+    assert held == {"crm_aggregate"} and agent.default_options["tools"] == []
 
 
 # ── Item 7: a run of org A never carries the block of org B ─────────────────
@@ -401,6 +406,7 @@ async def test_a_run_of_org_a_never_carries_the_block_of_org_b(
     # No org reaches the read from the run, and nothing keeps a block.
     assert "org" not in inspect.signature(ti._add_crm_facts_block).parameters
     assert not inspect.signature(tools.crm_facts_block_for_run).parameters
+    assert not inspect.signature(tools.crm_facts_for_run).parameters
     source = inspect.getsource(tools)
     assert "lru_cache" not in source and "_CACHE" not in source
     assert inspect.getsource(crm_tools._headers).count("X-User-Email") == 1
@@ -417,3 +423,84 @@ def test_each_run_assembly_adds_the_block_after_the_injection() -> None:
 def test_the_seam_files_take_no_org_from_input(name: str) -> None:
     text = (GATEWAY / name).read_text(encoding="utf-8")
     assert "X-Organization" not in text and "organization_id: str = Query" not in text
+
+
+# ── Fix round P0: the two REAL agents get the tool and the block ────────────
+
+
+def _config(agent_dir: str) -> dict:
+    import json
+
+    return json.loads((REPO / "apps/agents" / agent_dir / "config.json").read_text(
+        encoding="utf-8"))
+
+
+def _pool_names(agents: list[Any]) -> set[str]:
+    import orchestrator._tool_injection as ti
+
+    return {ti._tool_name(t) for a in agents for _x, pool in ti._own_tool_pools(a)
+            for t in pool}
+
+
+def _instructions(agent: Any) -> str:
+    do = getattr(agent, "default_options", None)
+    if isinstance(do, dict):
+        return do.get("instructions") or ""
+    return getattr(agent, "instructions", "") or ""
+
+
+async def _assemble(agent_dir: str, *, listed: bool, monkeypatch) -> tuple[list, frozenset]:
+    """One run of *agent_dir* through the injection and the facts block, with
+    its real ``config.json``. The CRM Assistant is built from its own file.
+    The facts read answers a row for a listed org and none for another."""
+    import orchestrator._tool_injection as ti
+    from acb_skills import org_facts_tools as tools
+
+    async def rows():
+        return [_row("revenue", "Revenue means billed: the amount of Invoices.")] if listed else []
+
+    monkeypatch.setattr(tools, "crm_facts_for_run", rows)
+    cfg = _config(agent_dir)
+    if agent_dir == "agent-crm":
+        from tests.unit._crm_agent_fakes import load_agent_module
+
+        agents = load_agent_module("crm_assistant_q32_fix").build_agents()
+        ti._apply_own_tool_scope(agents, cfg.get("own_tool_scope") or None)
+    else:
+        agents = [_MafAgent()]
+    run_tools = ti._inject_agent_tools(
+        agents, tool_scope=cfg.get("tool_scope") or None, agent_name=cfg.get("name"),
+        agent_config=cfg, no_egress=False)
+    held = await ti._add_crm_facts_block(agents, run_tools)
+    return agents, held
+
+
+@pytest.mark.parametrize("agent_dir", ["agent-orchestrator", "agent-crm"])
+async def test_the_real_agents_get_the_tool_and_the_block_for_a_listed_org(
+    agent_dir: str, monkeypatch, questions_on,
+) -> None:
+    pytest.importorskip("agent_framework")
+    agents, held = await _assemble(agent_dir, listed=True, monkeypatch=monkeypatch)
+    assert "org_facts" in _pool_names(agents) and "org_facts" in held
+    assert any("Revenue means billed: the amount of Invoices." in _instructions(a)
+               for a in agents)
+
+
+@pytest.mark.parametrize("agent_dir", ["agent-orchestrator", "agent-crm"])
+async def test_the_real_agents_get_neither_for_an_org_off_the_list(
+    agent_dir: str, monkeypatch, questions_on,
+) -> None:
+    pytest.importorskip("agent_framework")
+    agents, held = await _assemble(agent_dir, listed=False, monkeypatch=monkeypatch)
+    assert "org_facts" not in _pool_names(agents) and "org_facts" not in held
+    assert not any("## CRM facts" in _instructions(a) for a in agents)
+
+
+def test_both_real_configs_name_the_tool() -> None:
+    """The scope gives tool_scope and the core floor, with no family expansion, so each
+    agent that reads the CRM names org_facts itself."""
+    import orchestrator._tool_injection as ti
+
+    for agent_dir in ("agent-orchestrator", "agent-crm"):
+        scope = ti._resolve_injected_scope(_config(agent_dir)["tool_scope"])
+        assert scope is not None and "org_facts" in scope, agent_dir

@@ -1433,7 +1433,8 @@ async def _run_sub_agent_streaming(
                 no_egress=_sub_no_egress,
             )
             # CRM-Q32-5: the CRM facts block, read as the member.
-            await _add_crm_facts_block(agents, _sub_run_tools, no_egress=_sub_no_egress)
+            _sub_run_tools = await _add_crm_facts_block(
+                agents, _sub_run_tools, no_egress=_sub_no_egress)
             _log_agent_tools_resolved(agent_name, agents, _sub_own_tools)
             if not agents:
                 return f"({agent_name!r} returned empty agent list)"
@@ -3054,7 +3055,7 @@ async def _assemble_batch_agents(
         _narrow_to_held(agents, held, agent_name)
         run_tools = frozenset(run_tools) & held
     # CRM-Q32-5: the CRM facts block, read as the member.
-    await _add_crm_facts_block(agents, run_tools, no_egress=no_egress)
+    run_tools = await _add_crm_facts_block(agents, run_tools, no_egress=no_egress)
     _log_agent_tools_resolved(agent_name, agents, own_tools)
     return agents, md_spec, frozenset(run_tools)
 
@@ -4309,7 +4310,8 @@ async def run_agent_stream(
                 no_egress=_stream_no_egress,  # H-236
             )  # inject call_agent / call_agent_background
             # CRM-Q32-5: the CRM facts block, read as the member.
-            await _add_crm_facts_block(agents, _run_tools, no_egress=_stream_no_egress)
+            _run_tools = await _add_crm_facts_block(
+                agents, _run_tools, no_egress=_stream_no_egress)
             _log_agent_tools_resolved(agent_name, agents, _own_tools)
             # Inject MCP servers from the registry into every agent at runtime.
             # H-236: an MCP server reaches outside the platform, so a

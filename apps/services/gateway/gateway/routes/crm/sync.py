@@ -34,6 +34,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user, require_permission
+from acb_common import get_logger
 from fastapi import Depends, HTTPException
 from gateway.connections import store
 from gateway.routes.crm.access import ADMIN_PERMISSION
@@ -662,14 +663,26 @@ async def get_sync_health(
 
 
 async def _open_questions(db: Any, org: str) -> int | None:
-    """``questions.count_open`` for the health card, or ``None`` outside
-    ``CRM_QUESTIONS_ORGS`` (CRM-Q32-4)."""
+    """The open count for the health card (CRM-Q32-4), or ``None``: outside
+    ``CRM_QUESTIONS_ORGS``, before the first questions step, or when the read
+    fails. Fix round P2: it reads ONE cursor row, ``zoho:questions``, as My
+    Day does (``seen`` of the last step), and builds no question. So a poll
+    of the card costs one statement, and the card never fails on it."""
+    from gateway.crm_sync import questions as qs
+    from gateway.crm_sync import runs
     from gateway.routes.crm.flags import questions_allowed
-    from gateway.routes.crm.questions import count_open
 
     if not questions_allowed(org):
         return None
-    return await count_open(db, org)
+    try:
+        # A savepoint, so a failed read leaves the session of the card whole.
+        async with db.begin_nested():
+            cursors = await runs.read_cursors(db, org, qs.QUESTIONS_ROW)
+    except Exception as exc:  # the count is advice: the health card answers anyway
+        get_logger("crm.sync").warning("crm.sync.open_questions_unread",
+                                       error_type=type(exc).__name__)
+        return None
+    return qs.open_count(getattr(cursors.get(qs.QUESTIONS_ROW), "state", None))
 
 
 @router.post(
