@@ -276,6 +276,26 @@ async def open_parts(db: Any, org: str | None, module: str) -> frozenset[str]:
     return frozenset(qid.rsplit(":", 1)[1] for qid in ids if qid.startswith("key:"))
 
 
+async def refresh_seen(db: Any, org: str) -> None:
+    """Write ``seen`` and ``money`` of ``zoho:questions`` again from the open
+    set of now, in the caller's transaction (follow-up of CRM-Q32-4). An
+    answer, a dismissal, its Undo and a batch call it after their write, so
+    the count of Sync health (``len(seen)``) agrees with the rail at once,
+    and not only after the next sync run. Before the first questions step
+    the row has no ``seen``, and this writes nothing: that step must still
+    see each id as new, for the first card of My Day."""
+    from gateway.crm_sync import runs
+
+    cursors = await runs.read_cursors(db, org, qs.QUESTIONS_ROW)
+    state = getattr(cursors.get(qs.QUESTIONS_ROW), "state", None)
+    if not isinstance((state or {}).get("seen"), list):
+        return
+    inputs = await load(db, org)
+    if inputs is None:
+        return
+    await runs.merge_cursor_keys(db, org, qs.QUESTIONS_ROW, qs.seen_keys(qs.build(inputs)))
+
+
 # ── The questions step and My Day (CRM-Q32-4, §18.14.5) ────────────────────
 
 
@@ -643,7 +663,9 @@ async def answer_question(
     try:
         async with _tenant_session() as db:
             await _require_mirror(db, org)
-            return await _answer(db, org, by, question_id, payload)
+            answered = await _answer(db, org, by, question_id, payload)
+            await refresh_seen(db, org)
+            return answered
     except DBAPIError as exc:
         conflict = _guard_db(exc)
         if conflict is not None:
@@ -677,6 +699,7 @@ async def dismiss_question(
             raise bad_answer("The meaning of revenue takes no dismissal. It has a default.")
         await runs.merge_cursor_entry(db, org, qs.QUESTIONS_ROW, "dismissed", q.id,
                                       {"schema": q.hash})
+        await refresh_seen(db, org)
     return DismissOut(id=q.id)
 
 
@@ -699,6 +722,8 @@ async def undo_dismiss_question(
         await _require_mirror(db, org)
         found = await runs.drop_cursor_entry(db, org, qs.QUESTIONS_ROW, "dismissed",
                                              question_id)
+        if found:
+            await refresh_seen(db, org)
     if not found:
         raise HTTPException(status_code=404, detail={
             "code": "not_dismissed", "message": "This question is not dismissed.",
@@ -783,6 +808,7 @@ async def accept_best(
             row = None
             if not payload.dry_run:
                 row = await apply_catalogue(db, items, by=by, org=org) or approved
+                await refresh_seen(db, org)
     except DBAPIError as exc:
         conflict = _guard_db(exc)
         if conflict is not None:
@@ -818,6 +844,7 @@ __all__ = [
     "questions_after_run",
     "questions_card",
     "questions_off",
+    "refresh_seen",
     "samples",
     "undo_dismiss_question",
 ]
