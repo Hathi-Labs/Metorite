@@ -687,35 +687,33 @@ test.describe("the block editor", () => {
     await page.keyboard.type("/Note callout");
     await page.keyboard.press("Enter");
     await page.keyboard.type("Refunds take five days.");
-    await page.keyboard.press("ControlOrMeta+End");
+    // Enter on an empty line leaves the callout, as it leaves a quote.
     await page.keyboard.press("Enter");
-    await page.keyboard.type("/Table");
-    await page.keyboard.press("Enter");
-    await page.keyboard.type("Item");
-    await page.keyboard.press("ControlOrMeta+End");
     await page.keyboard.press("Enter");
     await page.keyboard.type("Read [[Holi");
     await expect(page.getByRole("option", { name: /Holidays/ })).toBeVisible();
     await page.keyboard.press("Enter");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("/Table");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("Item");
 
-    const layout = async () =>
-      body.evaluate((root) =>
-        Array.from(root.children).map((el) => el.getAttribute("data-callout") ?? el.className.split(" ")[0] ?? el.tagName),
-      );
     const tags = async (root: import("@playwright/test").Locator) =>
       root.evaluate((el) => Array.from(el.querySelectorAll("h2,ul,li,.kb-callout,table,a")).map((n) => n.tagName + (n.getAttribute("href") ?? "")));
     const editTags = await tags(body);
     expect(editTags).toEqual(expect.arrayContaining(["H2", "UL", "LI", "DIV", "TABLE", "A/knowledge/pages/kp-b"]));
-    expect(await layout()).toBeTruthy();
 
     await page.getByRole("button", { name: "Save changes" }).click();
     await expect(page.getByRole("heading", { level: 2, name: "Refund policy" })).toBeVisible();
-    const saved = (kb.writes[0].body as { body_md: string }).body_md;
-    expect(saved).toContain("# Returns");
-    expect(saved).toContain("- Keep the receipt");
-    expect(saved).toContain("> [!NOTE]\n> Refunds take five days.");
-    expect(saved).toContain("| Item |");
-    expect(saved).toContain("[Holidays](/knowledge/pages/kp-b)");
+    expect(kb.writes[0].body).toEqual({
+      body_md: [
+        "# Returns",
+        "- Keep the receipt\n- Ask the shop",
+        "> [!NOTE]\n> Refunds take five days.",
+        "Read [Holidays](/knowledge/pages/kp-b)",
+        "| Item |  |  |\n| --- | --- | --- |\n|  |  |  |\n|  |  |  |",
+      ].join("\n\n"),
+    });
 
     // The read view draws the same blocks, in the same order, as the editor did.
     const read = page.locator("article .kb-editor");

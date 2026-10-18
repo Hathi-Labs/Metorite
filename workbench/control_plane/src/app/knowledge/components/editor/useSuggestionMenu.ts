@@ -12,7 +12,7 @@
  * The caret never leaves the editor. Up and Down move the active row, Enter
  * and Tab pick it, and Escape closes the menu.
  */
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Range } from "@tiptap/core";
 import type { SuggestionKeyDownProps, SuggestionProps } from "@tiptap/suggestion";
 
@@ -51,7 +51,9 @@ export function useSuggestionMenu<T>(rowsFor: (query: string) => readonly T[]): 
   const stateRef = useRef<MenuState | null>(null);
   const commandRef = useRef<((row: T) => void) | null>(null);
   const rowsForRef = useRef(rowsFor);
-  rowsForRef.current = rowsFor;
+  useLayoutEffect(() => {
+    rowsForRef.current = rowsFor;
+  }, [rowsFor]);
 
   const commit = useCallback((next: MenuState | null) => {
     stateRef.current = next;

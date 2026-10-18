@@ -58,50 +58,92 @@ interface MenuHandles {
   onSpecial: (item: BlockItem, editor: Editor, range: Range) => void;
 }
 
-/** The `/` menu and the `[[` picker, as one extension. */
-function menusExtension(handles: React.RefObject<MenuHandles | null>) {
-  return Extension.create({
-    name: "knowledgeMenus",
-    addProseMirrorPlugins() {
-      return [
-        Suggestion<BlockItem, BlockItem>({
-          editor: this.editor,
-          char: "/",
-          // Block names have spaces ("Heading 1", "Note callout").
-          allowSpaces: true,
-          pluginKey: new PluginKey("kbSlash"),
-          allow: ({ editor, range }) => editor.isEditable && !inCode(editor, range.from),
-          items: () => [],
-          command: ({ editor, range, props }) => {
-            if (props.kind === "insert") props.run?.(editor, range);
-            else handles.current?.onSpecial(props, editor, range);
-          },
-          render: () => handles.current!.slash(),
-        }),
-        Suggestion<PageChoice, PageChoice>({
-          editor: this.editor,
-          char: "[[",
-          allowSpaces: true,
-          pluginKey: new PluginKey("kbPageLink"),
-          allow: ({ editor, range }) => editor.isEditable && !inCode(editor, range.from),
-          items: () => [],
-          command: ({ editor, range, props }) => {
-            editor
-              .chain()
-              .focus()
-              .deleteRange(range)
-              .insertContent([
-                { type: "text", text: props.title, marks: [{ type: "link", attrs: { href: pageLinkHref(props.id) } }] },
-                { type: "text", text: " " },
-              ])
-              .run();
-          },
-          render: () => handles.current!.pages(),
-        }),
-      ];
-    },
-  });
+declare module "@tiptap/core" {
+  interface Storage {
+    knowledgeMenus: MenuStorage;
+  }
 }
+
+/**
+ * The `/` menu and the `[[` picker, as one extension. The component puts its
+ * menu handles in the extension's storage once the editor exists, and the
+ * plugins read them when a menu opens.
+ */
+type MenuRenderer = ReturnType<MenuHandles["slash"]> | ReturnType<MenuHandles["pages"]>;
+
+/**
+ * A renderer that finds the component's menu when each event comes.
+ * `@tiptap/suggestion` asks for the renderer when the editor starts, which
+ * is before the component has set its handles.
+ */
+function lateRenderer<P, K>(get: () => MenuRenderer | null) {
+  return {
+    onStart: (props: P) => (get()?.onStart as ((p: P) => void) | undefined)?.(props),
+    onUpdate: (props: P) => (get()?.onUpdate as ((p: P) => void) | undefined)?.(props),
+    onKeyDown: (props: K) => (get()?.onKeyDown as ((p: K) => boolean) | undefined)?.(props) ?? false,
+    onExit: () => get()?.onExit(),
+  };
+}
+
+interface MenuStorage {
+  handles: MenuHandles | null;
+  /** Called by the component after each render. */
+  setHandles: (handles: MenuHandles) => void;
+}
+
+const KnowledgeMenus = Extension.create<object, MenuStorage>({
+  name: "knowledgeMenus",
+  addStorage() {
+    return {
+      handles: null,
+      setHandles(this: MenuStorage, handles: MenuHandles) {
+        this.handles = handles;
+      },
+    };
+  },
+  addProseMirrorPlugins() {
+    // Read through the editor at call time, so the plugins see the handles
+    // that the component set on this editor's own storage.
+    const editor = this.editor;
+    const handles = () => editor.storage.knowledgeMenus.handles;
+    return [
+      Suggestion<BlockItem, BlockItem>({
+        editor: this.editor,
+        char: "/",
+        // Block names have spaces ("Heading 1", "Note callout").
+        allowSpaces: true,
+        pluginKey: new PluginKey("kbSlash"),
+        allow: ({ editor, range }) => editor.isEditable && !inCode(editor, range.from),
+        items: () => [],
+        command: ({ editor, range, props }) => {
+          if (props.kind === "insert") props.run?.(editor, range);
+          else handles()?.onSpecial(props, editor, range);
+        },
+        render: () => lateRenderer(() => handles()?.slash() ?? null),
+      }),
+      Suggestion<PageChoice, PageChoice>({
+        editor: this.editor,
+        char: "[[",
+        allowSpaces: true,
+        pluginKey: new PluginKey("kbPageLink"),
+        allow: ({ editor, range }) => editor.isEditable && !inCode(editor, range.from),
+        items: () => [],
+        command: ({ editor, range, props }) => {
+          editor
+            .chain()
+            .focus()
+            .deleteRange(range)
+            .insertContent([
+              { type: "text", text: props.title, marks: [{ type: "link", attrs: { href: pageLinkHref(props.id) } }] },
+              { type: "text", text: " " },
+            ])
+            .run();
+        },
+        render: () => lateRenderer(() => handles()?.pages() ?? null),
+      }),
+    ];
+  },
+});
 
 export interface KnowledgeEditorProps {
   /** Read: the stored body. Edit: the draft body when the editor opens. */
@@ -168,31 +210,6 @@ export default function KnowledgeEditor({
   const [imageAt, setImageAt] = useState<Range | null>(null);
   const editorRef = useRef<Editor | null>(null);
 
-  const handles = useRef<MenuHandles | null>(null);
-  useEffect(() => {
-    handles.current = {
-      slash: slash.render,
-      pages: () => {
-        const r = pageMenu.render();
-        return {
-          ...r,
-          onStart: (props) => {
-            loadPages();
-            r.onStart(props);
-          },
-        };
-      },
-      onSpecial: (item, editor, range) => {
-        if (item.kind === "image") {
-          editor.chain().focus().deleteRange(range).run();
-          setImageAt({ from: range.from, to: range.from });
-        } else if (item.kind === "pageLink") {
-          editor.chain().focus().deleteRange(range).insertContent("[[").run();
-        }
-      },
-    };
-  });
-
   const extensions = useMemo(
     () => [
       ...knowledgeExtensions({
@@ -204,7 +221,7 @@ export default function KnowledgeEditor({
           details: ReactNodeViewRenderer(DetailsView),
         },
       }),
-      menusExtension(handles),
+      KnowledgeMenus,
     ],
     [],
   );
@@ -237,6 +254,32 @@ export default function KnowledgeEditor({
   useEffect(() => {
     editorRef.current = editor;
   }, [editor]);
+
+  // The menus' handles, for the plugins of `KnowledgeMenus`.
+  useEffect(() => {
+    if (!editor) return;
+    editor.storage.knowledgeMenus.setHandles({
+      slash: slash.render,
+      pages: () => {
+        const r = pageMenu.render();
+        return {
+          ...r,
+          onStart: (props) => {
+            loadPages();
+            r.onStart(props);
+          },
+        };
+      },
+      onSpecial: (item, e, range) => {
+        if (item.kind === "image") {
+          e.chain().focus().deleteRange(range).run();
+          setImageAt({ from: range.from, to: range.from });
+        } else if (item.kind === "pageLink") {
+          e.chain().focus().deleteRange(range).insertContent("[[").run();
+        }
+      },
+    });
+  });
 
   // The read view follows the stored body: a save, a revert, a reload.
   const shown = useRef(body);

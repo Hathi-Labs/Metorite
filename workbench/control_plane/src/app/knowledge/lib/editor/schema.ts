@@ -115,11 +115,13 @@ const KnowledgeParagraph = Paragraph.extend({
   renderMarkdown: (node, h, ctx) => {
     const out = stockParagraph.renderMarkdown ? stockParagraph.renderMarkdown(node, h, ctx) : "";
     // A line after a hard break starts a line too, so each line gets the
-    // same check.
+    // same check. Spaces at the end of a paragraph mean nothing in Markdown,
+    // and a page link leaves one, so they go.
     return out
       .split("\n")
       .map((line) => escapeLineStart(line))
-      .join("\n");
+      .join("\n")
+      .replace(/[ \t]+$/, "");
   },
 });
 

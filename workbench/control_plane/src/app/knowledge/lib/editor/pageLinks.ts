@@ -76,3 +76,16 @@ export function linkedPageId(href: string | null | undefined): string | null {
   if (!href) return null;
   return pageIdOf(href.split(/[?#]/)[0]);
 }
+
+/** True when `text` reads as an address a member typed, not as page words. */
+export function looksLikeAddress(text: string): boolean {
+  const t = text.trim();
+  return /^(?:https?:\/\/|mailto:|\/|#)/i.test(t) || /^[\w-]+(\.[\w-]+)+(\/\S*)?$/.test(t);
+}
+
+/** The address a typed text links to: a bare domain gets `https://`. */
+export function addressOf(text: string): string {
+  const t = text.trim();
+  if (/^(?:[a-z][a-z0-9+.-]*:|\/|#)/i.test(t)) return t;
+  return `https://${t}`;
+}

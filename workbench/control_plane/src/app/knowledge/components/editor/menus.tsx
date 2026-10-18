@@ -21,7 +21,14 @@ import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
 
-import { matchPages, pageLinkHref, linkedPageId, type PageChoice } from "../../lib/editor/pageLinks";
+import {
+  addressOf,
+  linkedPageId,
+  looksLikeAddress,
+  matchPages,
+  pageLinkHref,
+  type PageChoice,
+} from "../../lib/editor/pageLinks";
 
 // ── The bubble menu ─────────────────────────────────────────────────────────
 
@@ -148,19 +155,6 @@ export function FormatBubble({
 }
 
 // ── The link control ────────────────────────────────────────────────────────
-
-/** True when `text` reads as an address a member typed, not as page words. */
-export function looksLikeAddress(text: string): boolean {
-  const t = text.trim();
-  return /^(?:https?:\/\/|mailto:|\/|#)/i.test(t) || /^[\w-]+(\.[\w-]+)+(\/\S*)?$/.test(t);
-}
-
-/** The address a typed text links to: a bare domain gets `https://`. */
-export function addressOf(text: string): string {
-  const t = text.trim();
-  if (/^(?:[a-z][a-z0-9+.-]*:|\/|#)/i.test(t)) return t;
-  return `https://${t}`;
-}
 
 /**
  * One field for an address or a page. Words that are not an address search
