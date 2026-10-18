@@ -3,20 +3,21 @@
 /**
  * One Knowledge page (WS-61 KB-2a, `knowledge_base.md` §4.2 and §11.1).
  *
- * The title, the state, the body as Markdown, and a strip with the author,
- * the review date and the versions. A member who can write edits the page in
- * a Markdown field with a Write and Preview switch, publishes a draft, makes
- * a sub-page, and reverts to an older version. Each act is one request, and
- * each one re-reads what is on screen, whatever the answer was.
+ * The title, the state, the body, and a strip with the author, the review
+ * date and the versions. A member who can write chooses Edit, and the same
+ * page becomes editable in place (KB-2b). The member also publishes a draft,
+ * makes a sub-page, and reverts to an older version. Each act is one
+ * request, and each one re-reads what is on screen, whatever the answer was.
  *
  * ⚠️ `can_write` comes from the gateway and every write control hides
  * without it. Hiding is a courtesy, never the boundary: the gateway refuses
  * a write from a reader with 403 (`core.can_write_page`).
  *
- * The preview is the chat's one renderer, `MarkdownBody`, with no entity
- * pills and no fences, inside `cc-prose prose`. No second renderer, and no
- * HTML sink (`htmlSinks.test.ts`). Each heading of the body moves one level
- * down first (`lib/markdown.ts`), so the app bar keeps the one `<h1>`.
+ * One renderer for a page (KB-2b, §21.4): the read view and the edit both
+ * draw through `KnowledgeEditor`, so what a member reads is what they edit.
+ * The body stays Markdown. A body heading draws one level down, so the app
+ * bar keeps the one `<h1>`. The editor makes no HTML sink
+ * (`htmlSinks.test.ts`), and each image goes through `MarkdownImage`.
  *
  * ⚠️ An edit is never lost in silence (fix round 1). The edit takes a
  * SNAPSHOT when it begins, and the save diffs against it, never against the
@@ -37,12 +38,10 @@ import { useRouter, useSearchParams } from "next/navigation";
 
 import { useAccess } from "@/components/AccessProvider";
 import { EmptyState } from "@/components/EmptyState";
-import { MarkdownBody } from "@/components/MarkdownMessage";
-import Tabs from "@/components/Tabs";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
-import { Input, Textarea } from "@/components/ui/Input";
+import { Input } from "@/components/ui/Input";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
 import { invalidate } from "@/lib/dataCache";
@@ -61,7 +60,6 @@ import {
   updatePage,
 } from "../lib/api";
 import { knowledgeAssistantFacts } from "../lib/assistantFacts";
-import { demoteHeadings } from "../lib/markdown";
 import {
   clearDraft,
   draftPatch,
@@ -77,6 +75,7 @@ import { dayLabel, publishBody, reasonLabel, stateLabel, stateTone, STATE_LABELS
 import { KNOWLEDGE_HOME, pageHref, spaceHref } from "../lib/links";
 import { PAGE_NOT_FOUND_BODY, PAGE_NOT_FOUND_TITLE, pageRefusal, type PageRead } from "../lib/phase";
 import type { PageDetail, PageVersion } from "../lib/types";
+import KnowledgeEditor from "./editor/KnowledgeEditor";
 import { useKnowledge } from "./KnowledgeContext";
 import VersionList from "./VersionList";
 
@@ -89,11 +88,6 @@ async function readPage(id: string): Promise<PageRead<PageDetail>> {
     throw err;
   }
 }
-
-const EDIT_TABS = [
-  { id: "write", label: "Write", icon: "PenLine" },
-  { id: "preview", label: "Preview", icon: "Eye" },
-];
 
 /** The session store, or `null` on the server and in a blocked browser. */
 function sessionStore(): Storage | null {
@@ -127,7 +121,9 @@ export default function PageView({ pageId }: { pageId: string }) {
   useAssistantFacts(page ? knowledgeAssistantFacts({ page, spaceName: space?.name ?? null }) : null);
 
   const [editing, setEditing] = useState(false);
-  const [tab, setTab] = useState("write");
+  // Each edit session mounts a fresh editor, so a restored draft and a new
+  // edit never share an editor's undo history.
+  const [session, setSession] = useState(0);
   const [draft, setDraft] = useState<Draft>({ title: "", body_md: "" });
   const [snapshot, setSnapshot] = useState<EditSnapshot | null>(null);
   const [stale, setStale] = useState(false);
@@ -142,7 +138,7 @@ export default function PageView({ pageId }: { pageId: string }) {
   function startEdit(from: PageDetail, restored?: { snapshot: EditSnapshot; draft: Draft }) {
     setSnapshot(restored?.snapshot ?? snapshotOf(from));
     setDraft(restored?.draft ?? { title: from.title, body_md: from.body_md });
-    setTab("write");
+    setSession((n) => n + 1);
     setSaveError(null);
     setStale(false);
     setEditing(true);
@@ -325,9 +321,8 @@ export default function PageView({ pageId }: { pageId: string }) {
           ) : null}
 
           {editing ? (
-            // ⚠️ A `div`, not a `form`. The buttons of `Tabs` carry no
-            // `type`, so inside a form a click on Preview submitted it and
-            // saved the page (measured in `e2e/knowledge-pages.spec.ts`).
+            // ⚠️ A `div`, not a `form`. The editor's own buttons (the code
+            // language, the fold of a toggle) must never submit the page.
             <div className="mt-1 space-y-3">
               <Input
                 aria-label="Title"
@@ -336,27 +331,18 @@ export default function PageView({ pageId }: { pageId: string }) {
                 onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))}
                 className="w-full"
               />
-              <Tabs tabs={EDIT_TABS} activeTab={tab} onTabChange={setTab} variant="segmented" chrome="inline" />
-              {tab === "write" ? (
-                <Textarea
-                  aria-label="Page body in Markdown"
-                  value={draft.body_md}
-                  rows={18}
-                  onChange={(e) => setDraft((d) => ({ ...d, body_md: e.target.value }))}
-                  placeholder="Write in Markdown. # for a heading, - for a list, **bold** for bold."
-                  className="w-full font-mono"
+              <div className="min-h-64 pt-1">
+                <KnowledgeEditor
+                  key={`edit-${session}`}
+                  mode="edit"
+                  body={draft.body_md}
+                  storedBody={snapshot?.body_md ?? page.body_md}
+                  onChange={(body_md) => setDraft((d) => (d.body_md === body_md ? d : { ...d, body_md }))}
+                  pageId={page.id}
+                  spaces={spaces}
+                  label="Page body"
                 />
-              ) : (
-                <div className="min-h-40 rounded-md border border-border bg-card p-4">
-                  {draft.body_md.trim() ? (
-                    <div className="cc-prose prose prose-sm max-w-none">
-                      <MarkdownBody content={demoteHeadings(draft.body_md)} />
-                    </div>
-                  ) : (
-                    <p className="text-sm text-muted-foreground">Nothing to preview yet.</p>
-                  )}
-                </div>
-              )}
+              </div>
               {stale ? (
                 <div
                   role="alert"
@@ -387,7 +373,9 @@ export default function PageView({ pageId }: { pageId: string }) {
                   {saveError}
                 </p>
               ) : null}
-              <div className="flex flex-wrap items-center gap-2">
+              {/* The save row stays in view at the foot of the scroller, so a
+                  long page does not hide Save below the body. */}
+              <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t border-border bg-background py-2">
                 <Button size="sm" loading={saving} disabled={saving || !patch || !draft.title.trim()} onClick={() => void save()}>
                   Save changes
                 </Button>
@@ -438,9 +426,12 @@ export default function PageView({ pageId }: { pageId: string }) {
               ) : null}
               <div className="mt-5">
                 {page.body_md.trim() ? (
-                  <div className="cc-prose prose prose-sm max-w-none">
-                    <MarkdownBody content={demoteHeadings(page.body_md)} />
-                  </div>
+                  <KnowledgeEditor
+                    mode="read"
+                    body={page.body_md}
+                    label={`${page.title}, the page body`}
+                    onNavigate={(href) => router.push(href)}
+                  />
                 ) : (
                   <p className="text-sm text-muted-foreground">
                     This page is empty.{writable ? " Choose Edit to write it." : ""}

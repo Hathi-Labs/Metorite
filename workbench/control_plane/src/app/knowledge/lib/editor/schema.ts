@@ -37,6 +37,7 @@ import Paragraph from "@tiptap/extension-paragraph";
 import { TaskItem, TaskList } from "@tiptap/extension-list";
 import { Table, TableKit } from "@tiptap/extension-table";
 import { Placeholder } from "@tiptap/extensions";
+import { TextSelection } from "@tiptap/pm/state";
 import StarterKit from "@tiptap/starter-kit";
 
 // ── Headings ────────────────────────────────────────────────────────────────
@@ -392,16 +393,29 @@ const Details = Node.create({
 
   addCommands() {
     return {
+      // The caret lands in the summary, so a member names the toggle first.
       insertToggle:
         () =>
-        ({ commands }) =>
-          commands.insertContent({
-            type: this.name,
-            content: [
-              { type: "detailsSummary" },
-              { type: "detailsContent", content: [{ type: "paragraph" }] },
-            ],
-          }),
+        ({ chain }) =>
+          chain()
+            .insertContent({
+              type: this.name,
+              content: [
+                { type: "detailsSummary" },
+                { type: "detailsContent", content: [{ type: "paragraph" }] },
+              ],
+            })
+            .command(({ tr }) => {
+              const $at = tr.selection.$from;
+              for (let d = $at.depth; d > 0; d--) {
+                if ($at.node(d).type.name === this.name) {
+                  tr.setSelection(TextSelection.create(tr.doc, $at.start(d) + 1));
+                  break;
+                }
+              }
+              return true;
+            })
+            .run(),
     };
   },
 

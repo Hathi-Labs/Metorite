@@ -77,9 +77,13 @@ export function parseBody(md: string): JSONContent {
   return doc.content?.length ? doc : { type: "doc", content: [{ type: "paragraph" }] };
 }
 
-/** The editor's document as a body. */
+/**
+ * The editor's document as a body. Trailing blank lines go: the editor adds
+ * an empty last paragraph after a final table or code block, so a member can
+ * type below it, and that paragraph is not content.
+ */
 export function writeBody(doc: JSONContent): string {
-  return knowledgeMarkdown().serialize(doc);
+  return knowledgeMarkdown().serialize(doc).replace(/\s+$/, "");
 }
 
 /** Parse and write once: the body a save of this body writes. */
