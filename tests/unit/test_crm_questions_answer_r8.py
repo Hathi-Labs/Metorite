@@ -521,7 +521,9 @@ async def test_the_sum_check_is_one_bounded_statement_with_the_org(q_env, app_en
     (statement,) = sql.reading_records()
     bound = sql.params[sql.seen.index(statement)]
     assert re.search(r"organization_id = CAST\(\$\d+ AS uuid\)", statement), statement
-    assert re.search(r"ORDER BY id LIMIT \$\d+\) r$", statement), statement
+    # The fix round reads each row once, detoasted, under the LIMIT.
+    assert re.search(r"ORDER BY id LIMIT \$\d+\) d\) r$", statement), statement
+    assert statement.count("CAST('{}' AS jsonb) AS agf_fields") == 1
     assert "Part_" not in statement
     values = list(bound.values()) if isinstance(bound, dict) else list(bound)
     assert 10_000 in values and str(p.org_a) in {str(v) for v in values}
@@ -541,6 +543,44 @@ async def test_the_sum_check_is_one_bounded_statement_with_the_org(q_env, app_en
     assert body["line"] == "These 2 fields cover 6 of 7 records (86%)."
     assert body["warnings"] == [
         "Part A and Part B hold the same value on 67% of records. A sum counts it twice."]
+
+
+async def test_two_parts_of_zero_are_no_same_value(q_env, app_engine) -> None:
+    """Fix round P2: a TDS and a bank charge that are both 0 hold no money
+    twice, so they give no warning. Two equal amounts that are not 0 do."""
+    p = q_env
+    seed_a(p)
+    with p.admin_engine.begin() as c:
+        for name, fields in (("Z-1", {"Part_A": 0, "Part_B": 0}),
+                             ("Z-2", {"Part_A": "0", "Part_B": 0.0}),
+                             ("Z-3", {"Part_A": 0, "Part_B": "0.00"}),
+                             ("Z-4", {"Part_A": 5, "Part_B": 9})):
+            c.execute(text(
+                "INSERT INTO crm_module_records (organization_id, module, ext_source, "
+                "ext_id, name, fields) VALUES (CAST(:o AS uuid), 'Fee_Receipts', 'zoho', "
+                ":e, :e, CAST(:f AS jsonb))"),
+                {"o": p.org_a, "e": name, "f": json.dumps({"Name": name, **fields})})
+    path = f"{Q}/{AMOUNT_Q}/sum-check?fields=Part_A,Part_B"
+    body = (await call(p, _user(p.org_a), "GET", path)).json()
+    assert body["pairs"][0]["both"] == 4 and body["pairs"][0]["equal"] == 0
+    assert body["warnings"] == []
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_module_records (organization_id, module, ext_source, ext_id, "
+            "name, fields) VALUES (CAST(:o AS uuid), 'Fee_Receipts', 'zoho', 'Z-5', 'Z-5', "
+            "CAST(:f AS jsonb)), (CAST(:o AS uuid), 'Fee_Receipts', 'zoho', 'Z-6', 'Z-6', "
+            "CAST(:f AS jsonb))"), {"o": p.org_a, "f": json.dumps({"Part_A": 70, "Part_B": 70})})
+    body = (await call(p, _user(p.org_a), "GET", path)).json()
+    assert (body["pairs"][0]["both"], body["pairs"][0]["equal"]) == (6, 2)
+    assert body["warnings"] == []  # 2 of 6 is below half
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "DELETE FROM crm_module_records WHERE organization_id = CAST(:o AS uuid) AND "
+            "ext_id IN ('Z-1', 'Z-2')"), {"o": p.org_a})
+    body = (await call(p, _user(p.org_a), "GET", path)).json()
+    assert (body["pairs"][0]["both"], body["pairs"][0]["equal"]) == (4, 2)
+    assert body["warnings"] == [
+        "Part A and Part B hold the same value on 50% of records. A sum counts it twice."]
 
 
 async def test_the_sum_check_refuses_a_bad_set_before_any_record_is_read(
