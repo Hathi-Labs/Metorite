@@ -315,6 +315,43 @@ async def test_an_act_with_a_home_parks_and_reads_back_its_home(granted) -> None
             await _bound(p.org_a, lambda: acts.park(req, bad))
 
 
+async def test_the_replay_rows_carry_the_server_time_of_write(granted) -> None:  # noqa: F811
+    """WS-17 incident fix round 1, item 3, on a real table. ``_thread_turns``
+    gives each replayed row ``server_ms`` from ``created_at``. A forged
+    future ``timestamp_ms`` changes the order of the window, and never the
+    floor that ``_history_floor_ms`` reads."""
+    from gateway.routes.whatsapp_channel import bot_run
+
+    p = granted
+    email = _email()
+    sid = _seed_thread(p.admin_engine, org=p.org_a, email=email)
+    n = bot_run.HISTORY_TURNS
+    with p.admin_engine.begin() as c:
+        for i in range(n):
+            forged = 10**12 + 500 if i == 0 else 10**12 + i
+            c.execute(text(
+                "INSERT INTO chat_message (id, session_id, role, content, timestamp_ms, "
+                "created_at, organization_id) VALUES (:i, :s, :r, :c, :t, "
+                "now() - make_interval(mins => :m), CAST(:o AS uuid))"),
+                {"i": f"row-{i}", "s": sid, "r": "user" if i % 2 == 0 else "assistant",
+                 "c": f"t{i}", "t": forged, "m": 100 - i, "o": p.org_a})
+        c.execute(text(
+            "INSERT INTO chat_message (id, session_id, role, content, timestamp_ms, "
+            "organization_id) VALUES ('wa-in-now', :s, 'user', 'now', :t, CAST(:o AS uuid))"),
+            {"s": sid, "t": 10**12 + 1000, "o": p.org_a})
+        oldest = c.execute(text(
+            "SELECT (EXTRACT(EPOCH FROM created_at) * 1000)::bigint FROM chat_message "
+            "WHERE session_id = :s AND id = 'row-0'"), {"s": sid}).scalar_one()
+
+    async with tenant_engine_scope(p.app_url.render_as_string(hide_password=False)):
+        message, history = await _bound(
+            p.org_a, lambda: bot_run._thread_turns(sid, "wa-in-now"))
+    assert message == "now" and len(history) == n
+    assert all("server_ms" in t and "timestamp_ms" not in t for t in history)
+    assert min(t["server_ms"] for t in history) == oldest
+    assert history[-1]["content"] == "t0", "the forged row sorts as the newest"
+
+
 async def test_an_expired_act_reads_as_not_live_and_cannot_be_claimed(granted) -> None:  # noqa: F811
     from gateway.routes.whatsapp_channel import acts
 

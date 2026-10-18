@@ -27,7 +27,7 @@ from gateway.routes.whatsapp_channel import bot_run
 
 def _rows(n: int, start: int = 1_000) -> list[dict[str, Any]]:
     return [{"role": "user" if i % 2 == 0 else "assistant", "content": f"t{i}",
-             "timestamp_ms": start + i} for i in range(n)]
+             "server_ms": start + i} for i in range(n)]
 
 
 def test_the_floor_is_the_oldest_replayed_row_of_a_full_window(monkeypatch) -> None:
@@ -43,6 +43,22 @@ def test_the_floor_is_the_oldest_replayed_row_of_a_full_window(monkeypatch) -> N
     assert bot_run._history_floor_ms([*full[:-1], {"role": "user", "content": "x"}]) == 0
     monkeypatch.setattr(executor, "_native_sessions_enabled", lambda: True)
     assert bot_run._history_floor_ms(full) == 0
+
+
+def test_a_forged_client_time_never_moves_the_floor(monkeypatch) -> None:
+    """Fix round 1, item 3. A web client sends ``timestamp_ms``, and a web
+    write can move it forward. The floor reads only the server's time of
+    write (``server_ms``, from ``created_at``), so a forged future
+    ``timestamp_ms`` on the oldest replayed row moves nothing. A floor from
+    ``timestamp_ms`` would move to the next row."""
+    from orchestrator import executor
+
+    monkeypatch.setattr(executor, "_native_sessions_enabled", lambda: False)
+    full = _rows(bot_run.HISTORY_TURNS)
+    full[0]["timestamp_ms"] = 10**15  # a forged time on the oldest row
+    for row in full[1:]:
+        row["timestamp_ms"] = row["server_ms"]
+    assert bot_run._history_floor_ms(full) == 1_000
 
 
 def test_the_row_time_never_reaches_the_model() -> None:

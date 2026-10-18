@@ -1522,14 +1522,16 @@ async def test_an_old_mark_beyond_the_replay_window_no_longer_holds_egress(
     session = "wa-thread-1"
     raw = f"cc:{ORG_B}:{eg.MARK_NAMESPACE}:{session}"
 
-    async def state(value: str, floor: int, *, wa: bool = True) -> str:
+    async def state(value: str, floor: int, *, wa: bool = True,
+                    writes: bool = False) -> str:
         mark_store.keys[raw] = value
         eg._MARKED_SESSIONS.clear()
         with artifact_context_scope():
             bind_artifact_context(run_id="r", session_id=session, member="m@example.com")
             if not wa:
                 return await eg.session_mark_state()
-            with whatsapp_run("orchestrator", session_id=session, history_floor_ms=floor):
+            with whatsapp_run("orchestrator", session_id=session, history_floor_ms=floor,
+                              writes=writes):
                 return await eg.session_mark_state()
 
     token = bind_tenant(ORG_B)
@@ -1551,6 +1553,9 @@ async def test_an_old_mark_beyond_the_replay_window_no_longer_holds_egress(
         assert await state(old, 0) == eg.MARK_MARKED
         assert await state("1", now - hour) == eg.MARK_MARKED
         assert await state(old, now - hour, wa=False) == eg.MARK_MARKED
+        # Fix round 1, item 4: with writes ON the Confirm buttons can ask, so
+        # the window never clears the mark. A held mark costs one tap there.
+        assert await state(old, now - hour, writes=True) == eg.MARK_MARKED
         mark_store.keys[raw] = old
         eg._MARKED_SESSIONS.clear()
         with artifact_context_scope():

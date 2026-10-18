@@ -14939,6 +14939,17 @@ So the mark must end when that answer can no longer reach the model.
 - **What stays held.** A mark with no time (`1`, from an older build), a short thread, a run
   with a stored session, and every web run. `run_holds_mail` ignores the window, so the memory
   and trace holds stay. A Redis fault fails closed as before.
+- **Server time only (fix round 1).** The floor reads `created_at` of each replayed row
+  (`server_ms`). It never reads `timestamp_ms`, because a web client sends that value and a
+  web write can move it forward. An upsert keeps `created_at`.
+- **Writes on: the mark holds (fix round 1, reviewer P2).** In a WhatsApp run with writes on,
+  the window clears nothing. There a held mark costs one tap on the Confirm buttons, and the
+  relayed text can live on in a later assistant row. The window applies only with writes off,
+  where a held mark refuses each egress call.
+- **Residual of the window.** With writes off, a mark clears when its turn leaves the window.
+  A later assistant row can still quote the relayed text, so that text can reach the model
+  with no mark. The model then holds a network tool with no card. Writes on closes this, so
+  turn on writes for each org that uses WhatsApp.
 
 **The timeouts (part 4), measured on the box.** Run `15949617` started at 15:46:31 UTC. The
 WhatsApp limit is 240 s (`RUN_TIMEOUT_S`), and the run failed at 15:50:31.

@@ -311,7 +311,13 @@ def _replay_floor_ms(session: tuple[str, str]) -> int:
     no stored session can replay more (``WhatsAppRun.history_floor_ms``). A
     row older than the floor never reaches the model. 0 means no floor: a web
     chat (its client sends the history), a short thread, or any other run.
-    The run is server-bound (``whatsapp_ui.current_run``), never input."""
+    The run is server-bound (``whatsapp_ui.current_run``), never input.
+
+    Fix round 1 (reviewer P2): a WhatsApp run with writes ON has no floor.
+    There a held mark costs one tap on the Confirm buttons, not a refusal,
+    and the relayed text can live on in later assistant rows. So the mark
+    holds. The floor applies only with writes off, where a held mark would
+    refuse each egress call."""
     try:
         from acb_skills.whatsapp_ui import current_run
 
@@ -320,6 +326,8 @@ def _replay_floor_ms(session: tuple[str, str]) -> int:
         return 0
     if run is None or str(getattr(run, "session_id", "") or "") != session[1]:
         return 0
+    if getattr(run, "writes", False):
+        return 0  # the Confirm buttons can ask: hold the mark
     try:
         return max(0, int(getattr(run, "history_floor_ms", 0) or 0))
     except (TypeError, ValueError):
