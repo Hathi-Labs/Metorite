@@ -1492,6 +1492,22 @@ def questions_box_on() -> bool:
     return bool(str(getattr(get_settings(), "crm_questions_orgs", "") or "").strip())
 
 
+def questions_org_on(org: Any) -> bool:
+    """True when ``CRM_QUESTIONS_ORGS`` lists *org*, the run's org from the
+    run boundary, or holds ``*``. The grammar of ``gateway.routes.crm.flags``
+    (ids with a comma between them, any case). A run here cannot import the
+    gateway, so this is the run side of ``flags.questions_allowed``: the
+    gateway still decides the CRM switch and the catalogue list itself. No
+    org gives False."""
+    from acb_common import get_settings
+
+    raw = str(getattr(get_settings(), "crm_questions_orgs", "") or "")
+    orgs = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    if not orgs or not org:
+        return False
+    return "*" in orgs or str(org).strip().lower() in orgs
+
+
 def _questions_on(entries: list[dict[str, Any]]) -> bool:
     """True when the catalogue carries the open questions: an entry has a
     ``questions`` list, which the gateway sends only for an org on

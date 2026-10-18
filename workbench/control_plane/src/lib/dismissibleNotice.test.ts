@@ -26,6 +26,9 @@ const SRC = fileURLToPath(new URL("..", import.meta.url));
 const read = (rel: string) => readFileSync(`${SRC}/${rel}`, "utf8").replace(/\r\n/g, "\n");
 
 const CODES = Object.keys(RUN_ERROR_WORDS) as RunErrorCode[];
+// `answer_in_other_account` is info-only in its BASE words, the ones drawn
+// when this browser holds no slot for that account. With a slot, the chat
+// draws a card with a Switch button instead (`otherAccountNotice.test.ts`).
 const INFO_ONLY: RunErrorCode[] = ["run_restarted", "run_restarted_steered", "answer_in_other_account"];
 const DISMISS = 'aria-label="Dismiss"';
 
@@ -123,7 +126,11 @@ describe("an info-only notice is a slim line with a Dismiss", () => {
     const m = await loadWith(memoryStorage());
     const html = renderNotice(m, "run_restarted_steered");
     expect(html).toMatch(/The assistant restarted<\/span>.*Your answer went into the current reply\.<\/span>/);
-    expect(renderNotice(m, "answer_in_other_account")).toContain("Switch to the account that asked to answer it.");
+    // With no slot to switch to (`otherAccountNotice.test.ts`), the line
+    // says how to get there.
+    expect(renderNotice(m, "answer_in_other_account")).toContain(
+      "Sign in to the account that asked from the account menu to answer it.",
+    );
   });
 });
 

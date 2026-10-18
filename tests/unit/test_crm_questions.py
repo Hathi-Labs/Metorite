@@ -637,3 +637,50 @@ def test_the_purpose_line_takes_the_right_article(word: str) -> None:
 
 def test_each_purpose_has_its_article_written_out() -> None:
     assert set(_ARTICLES) == set(cat.PURPOSES)
+
+
+# ── Follow-up: hermetic fences of the cache-hit rule and the drop SQL ───────
+
+
+def test_a_cache_hit_that_lacks_the_part_shows_it_in_on() -> None:
+    """The cache-hit rule of ``shows_open``, with no database: in ``on``, an
+    open part shows when its key is a cache hit and the cached item lacks
+    the part, because the pipeline never asks a hit again."""
+    entry = next(e for e in cat.build(SOURCES, {}, []) if e.module == "Invoices")
+    key = f"{mp.CATALOGUE_KEY}Invoices"
+    digest = mp.catalogue_hash([INVOICES], "on", entry.purpose)
+    lacking = mp.Cache(schema={key: digest},
+                       items={key: [{"kind": "catalogue", "module": "Invoices",
+                                     "date": None, "by": {"date": "ai"}}]})
+    ids = _ids(qs.build(_inputs(mode="on", cache=lacking)))
+    assert "key:Invoices:amount" in ids
+    # The cached item holds the part: the AI answered it, so no question.
+    holding = mp.Cache(schema={key: digest},
+                       items={key: [{"kind": "catalogue", "module": "Invoices",
+                                     "amount": None, "date": None,
+                                     "by": {"amount": "ai", "date": "ai"}}]})
+    assert "key:Invoices:amount" not in _ids(qs.build(_inputs(mode="on", cache=holding)))
+    # A hash that does not match is no hit: the AI asks it again.
+    stale = mp.Cache(schema={key: "an-older-hash"}, items=lacking.items)
+    assert "key:Invoices:amount" not in _ids(qs.build(_inputs(mode="on", cache=stale)))
+
+
+def test_the_drop_of_a_dismissal_names_its_org() -> None:
+    """``runs._DROP_ENTRY_SQL`` names the org in its predicate. RLS alone
+    would hide a removal of it, so the text holds the shape."""
+    import re
+
+    from gateway.crm_sync import runs
+
+    sql = " ".join(runs._DROP_ENTRY_SQL.split())
+    where = sql.split(" WHERE ", 1)[1]
+    assert re.search(r"organization_id = CAST\(:org AS uuid\)", where)
+    assert "module = :module" in where and "? CAST(:key AS text)" in where
+    assert sql.startswith("UPDATE crm_sync_cursors SET cursor_state")
+
+
+def test_seen_keys_hold_the_open_set_and_no_new_at() -> None:
+    found = qs.build(_inputs(slots=EMPTY_DEALS, stages=(DEAL_STAGE,)))
+    keys = qs.seen_keys(found)
+    assert set(keys) == {"seen", "money"}
+    assert keys["seen"] == sorted(q.id for q in found) and keys["money"] is True
