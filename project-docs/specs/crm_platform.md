@@ -7054,6 +7054,14 @@ The fences are `tests/unit/test_crm_questions_chat.py`,
 - Item 19 waits for round 4 of CRM-Q29 (#1133, not merged). The card is no
   display call on this branch, so the check does not read it yet. The test
   proves that each number of a label traces to the CLARIFY block.
+- The gate (fix round, 2026-10-18). `crm_answer_question` sends a pick only
+  after this run showed the card of that question. With no card channel
+  (a WhatsApp text chat) or no holder, it sends nothing. The chat then
+  states the default and names Open questions. So a member's pick in the
+  chat cannot change an answered part with no card first.
+- A run that does not hold `crm_answer_question` (a failed facts read, a
+  `no_egress` run) shows no card. The assembly of a streamed run tells the
+  holder (`mark_answer_tool`).
 
 1. The 422 `no_key_field` of an open part carries `question`, the id. A test
    proves it.
