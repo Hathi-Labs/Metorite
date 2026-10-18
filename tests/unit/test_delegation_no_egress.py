@@ -1396,6 +1396,54 @@ def test_a_known_mark_still_holds_the_delegated_send(
     assert sent == []
 
 
+# -- WS-17 incident 2026-10-18: a hand-off in a marked session -----------------
+#
+# ``email_app_master_plan.md`` 12.3.13.8, "Incident 2026-10-18". On WhatsApp the
+# orchestrator's ``email_assistant`` tool asked the untrusted card on every turn
+# after the first email turn, and a run with no card channel refused it. A
+# hand-off now asks no card on a known mark. Containment holds because the run
+# that it starts binds ``no_egress``: it is offered no network tool.
+
+#: The platform tools that reach the network. A ``no_egress`` run holds none.
+_NETWORK_TOOLS = frozenset({
+    "web_search", "fetch_page", "github_search", "github_repo_search",
+    "request_network_access", "install_dependency", "run_script", "code_task",
+})
+
+
+def _marked_thread(mark_store: _MarkRedis) -> str:
+    """A chat session that a known mark holds in the store."""
+    thread = f"chat-{new_thread()}"
+    mark_store.keys[f"cc:{ORG_B}:{eg.MARK_NAMESPACE}:{thread}"] = "1"
+    return thread
+
+
+def test_a_marked_orchestrator_hands_off_to_the_email_assistant_with_no_card(
+    sandbox, monkeypatch, mark_store,  # noqa: F811
+) -> None:
+    """Fix 1. The orchestrator calls its ``email_assistant`` specialist tool
+    in a marked session. The hand-off runs, and asks no untrusted card. The
+    child binds ``no_egress``, so it is offered no network tool and no MCP
+    tool. Mutation: give the delegation the card on MARKED again, and the
+    hand-off asks the card."""
+    _register_every_annotation()
+    titles = _open_card_channel(monkeypatch)
+    thread = _marked_thread(mark_store)
+    orch = _Model([_call("email_assistant", {"task": "Summarise my mail"}), _say("done")])
+    email = _Model([_say("You have one mail.")])
+    sent = _harness(monkeypatch, sandbox, {ORCH: orch, EMAIL: email})
+    _run_top(ORCH, ORG_B, thread=thread, cards=True)
+    assert "email_assistant" in _offered(orch.bodies[0]), "the fixture is wrong"
+    assert not any(_UNTRUSTED_CARD in t for t in titles), titles
+    assert email.bodies, "the hand-off did not run"
+    child = _offered(email.bodies[0])
+    assert {"query_inbox", "read_email"} <= child, "the fixture is wrong"
+    assert not _NETWORK_TOOLS & child, sorted(_NETWORK_TOOLS & child)
+    assert not any("mcp" in name for name in child), sorted(child)
+    assert "You have one mail." in _results(orch.bodies[1])[-1]
+    assert sent == []
+
+
 def test_redis_down_leaves_an_unmarked_batch_run_its_egress(
     sandbox, monkeypatch, mark_store,  # noqa: F811
 ) -> None:
@@ -1502,8 +1550,14 @@ async def test_redis_down_asks_no_card_for_a_specialist_delegation(
     ``whatsapp_assistant``) are open-world, so they pass the egress gate.
     With Redis down, the state is unknown. A specialist tool is a
     delegation, so it runs with no card. A plain egress tool asks the card,
-    and with no card channel it is refused. A KNOWN mark still asks the card
-    for the specialist tool too."""
+    and with no card channel it is refused.
+
+    Incident 2026-10-18: a KNOWN mark asks no card for the specialist tool
+    either. Before, it asked the card, and on WhatsApp each email request
+    of the thread was refused for good. The call still reads the mark, so
+    the process cache holds it, and the run that the tool starts binds
+    ``no_egress`` (``_delegated_no_egress``). The plain egress tool of the
+    same session still asks the card."""
     from acb_common.db import bind_tenant, release_tenant
     from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
 
@@ -1541,9 +1595,14 @@ async def test_redis_down_asks_no_card_for_a_specialist_delegation(
         mark_store.down = False
         mark_store.keys[f"cc:{ORG_B}:{eg.MARK_NAMESPACE}:chat-marked"] = "1"
         with artifact_context_scope():
-            bind_artifact_context(run_id="r2", session_id="chat-marked", member="m@example.com")
-            assert "did not run" in await call(specialist, task="send hi to Y")
-            assert cards == ["fetch_page", "whatsapp_assistant"], cards
+            ctx = {"run_id": "r2", "session_id": "chat-marked", "member": "m@example.com"}
+            bind_artifact_context(**ctx)
+            assert await call(specialist, task="send hi to Y") == "delegated: send hi to Y"
+            assert cards == ["fetch_page"], cards
+            assert eg.read_untrusted_answer(), "the delegation did not read the mark"
+            assert ti._delegated_no_egress(dict(ctx, agent_name=ORCH), CRM) is True
+            assert "did not run" in await call(fetch, url=_EVIL)
+            assert cards == ["fetch_page", "fetch_page"], cards
     finally:
         release_tenant(token)
 

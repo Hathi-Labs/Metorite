@@ -313,7 +313,9 @@ def is_delegation_tool(tool: Any) -> bool:
     :data:`DELEGATION_TOOLS`, or a specialist tool of the orchestrator, which
     carries ``__delegates_to__`` (``orchestrator.agents``). A delegation is
     not an egress act by itself, because each egress tool of the run it
-    starts has its own gate. So an UNKNOWN mark asks no card for it."""
+    starts has its own gate. So an UNKNOWN mark asks no card for it, and
+    since the incident of 2026-10-18 a KNOWN mark asks none either: the run
+    that it starts binds ``no_egress`` from the mark (§12.3.13.8)."""
     if getattr(tool, "__delegates_to__", None):
         return True
     return (tool if isinstance(tool, str) else tool_name(tool)) in DELEGATION_TOOLS

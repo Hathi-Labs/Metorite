@@ -939,6 +939,7 @@ def _permission_gate(
     tool_name: str, call_kwargs: dict[str, Any] | None, *, surface: str,
     facts: dict[str, Any] | None = None,
     after_untrusted_answer: bool = False,
+    delegation: bool = False,
 ) -> tuple[bool, str]:
     """Return (allowed, reason) for one tool call. Never raises. Logs EVERY decision.
 
@@ -964,6 +965,12 @@ def _permission_gate(
     are set after the argument mapping, so a tool argument cannot write them.
     A caller that needs a fail-closed answer must not trust ``gate_error``:
     the MCP gate shows a card for every code but ``mcp_read_only``.
+
+    *delegation* is True for a tool that starts another agent's run
+    (``acb_skills.egress.is_delegation_tool``). Such a call never gets the
+    fact ``after_untrusted_answer``, on a known mark too (incident
+    2026-10-18, ``email_app_master_plan.md`` 12.3.13.8). The run that it
+    starts binds ``no_egress`` from the mark, so it holds no network tool.
     """
     try:
         from acb_skills.permission_policy import (  # noqa: PLC0415
@@ -981,7 +988,7 @@ def _permission_gate(
         # pane run, and the untrusted card would be a second card.
         request["after_untrusted_answer"] = (
             bool(after_untrusted_answer) or read_untrusted_answer()
-        ) and not _run_reads_mail_itself()
+        ) and not _run_reads_mail_itself() and not delegation
         ok, code, _ = decide(request)
         mode = os.environ.get(
             "AGENT_PERMISSION_MODE", "enforce"
@@ -1014,12 +1021,14 @@ def _gate_injected_tool(fn: Any) -> Any:
     import inspect  # noqa: PLC0415
 
     tool_name = getattr(fn, "__name__", "tool")
+    # WS-17 incident 2026-10-18: a delegation never asks the untrusted card.
+    delegates = is_delegation_tool(fn)
 
     def _gate(
         call_kwargs: dict[str, Any] | None = None, marked: bool = False,
     ) -> tuple[bool, str]:
         return _permission_gate(tool_name, call_kwargs, surface="injected_tool",
-                                after_untrusted_answer=marked)
+                                after_untrusted_answer=marked, delegation=delegates)
 
     # Mid-run steer (docs/multiplayer/README.md §4.6): this wrapper is the one
     # tool boundary that exists on EVERY tier — the executor's Tier-2 shim never
@@ -1043,9 +1052,12 @@ def _gate_injected_tool(fn: Any) -> Any:
             # EM-G11d round 3: an egress call asks Redis whether this chat
             # session read an untrusted agent's answer, on any turn. A call
             # that reaches nothing asks nothing. An UNKNOWN state (a Redis
-            # fault) fails closed for an egress act, so it asks the card. A
-            # delegation is not one: each egress tool of the run that it
-            # starts asks its own card, so a blip never holds a send.
+            # fault) fails closed for an egress act, so it asks the card.
+            # A delegation asks no card, on UNKNOWN and on MARKED (incident
+            # 2026-10-18: each email request of a WhatsApp thread was refused
+            # for good). It still READS the state, so a known mark fills the
+            # process cache, and the run that it starts binds no_egress
+            # (``_delegated_no_egress``). So that run holds no network tool.
             # WS-17 EM-G11f3: a store write in a run that holds mail gives
             # the fixed refusal at once. It asks no card, because a hidden
             # store is not a copy that the member can see or delete. An
@@ -1060,13 +1072,13 @@ def _gate_injected_tool(fn: Any) -> Any:
             state = (await session_mark_state()
                      if _is_egress(fn) and not _run_reads_mail_itself()
                      else MARK_CLEAR)
-            marked = state == MARK_MARKED or (
-                state != MARK_CLEAR and not is_delegation_tool(fn))
+            marked = state != MARK_CLEAR and not delegates
             allowed, reason = _gate(kwargs, marked)
             if not allowed:
                 return f"[blocked by permission policy: {reason}]"
-            if _after_untrusted_answer(reason, marked) and not await _untrusted_answer_card(
-                    tool_name, kwargs):
+            if _after_untrusted_answer(
+                    reason, marked, delegation=delegates,
+            ) and not await _untrusted_answer_card(tool_name, kwargs):
                 return UNTRUSTED_ANSWER_REFUSED.format(tool=tool_name)
             # WS-47 WAC-4: name the call for the WhatsApp card gate. A no-op
             # outside a WhatsApp run with writes on.
@@ -1079,7 +1091,7 @@ def _gate_injected_tool(fn: Any) -> Any:
         allowed, reason = _gate(kwargs)
         if not allowed:
             return f"[blocked by permission policy: {reason}]"
-        if _after_untrusted_answer(reason):
+        if _after_untrusted_answer(reason, delegation=delegates):
             # A sync tool cannot wait for a card, so it is refused.
             return UNTRUSTED_ANSWER_REFUSED.format(tool=tool_name)
         return _with_steer(fn(*args, **kwargs))
@@ -1127,9 +1139,14 @@ UNTRUSTED_ANSWER_REFUSED = (
 )
 
 
-def _after_untrusted_answer(reason: str, marked: bool = False) -> bool:
+def _after_untrusted_answer(
+    reason: str, marked: bool = False, *, delegation: bool = False,
+) -> bool:
     """True when the decision was the untrusted-answer card. A gate fault in a
-    marked session counts too, so a bug never opens the control."""
+    marked session counts too, so a bug never opens the control. A
+    delegation is never held here: the run that it starts holds the mark."""
+    if delegation:
+        return False
     try:
         from acb_skills.permission_policy import UNTRUSTED_ANSWER_CONFIRM
     except ImportError:  # pragma: no cover

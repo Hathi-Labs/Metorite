@@ -267,8 +267,9 @@ clone cache.
    unknown. Unknown is a Redis fault in a run that can show a card. An
    egress tool gate reads `session_is_marked`, which FAILS CLOSED on
    unknown, so the call asks the card. A delegation (`is_delegation_tool`)
-   asks no card on unknown, and `call_agent` binds `no_egress` only on a
-   known mark (`session_is_known_marked`). So a blip never holds a send. A
+   asks no card on unknown or on a known mark (incident 2026-10-18). The
+   run that it starts binds `no_egress` only on a known mark
+   (`session_is_known_marked`). So a blip never holds a send. A
    batch session never asks Redis. `read_untrusted_answer` is the sync
    reader of the LRU only. Tests and the routing eval use the one in-memory
    store `tests/unit/_egress_mark_store.py`. Then `permission_policy.decide` answers
