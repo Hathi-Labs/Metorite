@@ -12,8 +12,9 @@ each case is written so a wrong build fails it:
   never called.
 * **No data path of its own.** No module of ``gateway/retrieval/`` imports
   ``sqlalchemy``, ``get_db`` or a session opener.
-* **No tenant from input.** The route takes ``q``, ``apps`` and ``k``, and
-  the member it passes on is the session's own object.
+* **No tenant from input.** The route takes ``q``, ``apps``, ``k`` and
+  ``after``, and the member it passes on is the session's own object.
+  ``after`` is a date (WS-61 CX-1, ``company_context.md`` §4.5).
 * **One source at a time**, and a failing source is named in ``skipped``.
 * **The command bar keeps its contract.** Five apps in its order, and an item
   of exactly four keys. Knowledge joined the bar at KB-12 (2026-10-18), when
@@ -405,9 +406,11 @@ class TestNoDataPathOfItsOwn:
 # ── No tenant from input ────────────────────────────────────────────────────
 
 class TestTheRouteTakesNoTenant:
-    def test_the_route_takes_the_words_the_apps_and_k_and_nothing_else(self):
+    def test_the_route_takes_the_words_the_apps_k_and_after_and_nothing_else(self):
+        # CX-1 added `after`, a date (company_context.md §4.5). It names no
+        # org and no member.
         params = inspect.signature(company.company_search).parameters
-        assert set(params) == {"q", "apps", "k", "user"}
+        assert set(params) == {"q", "apps", "k", "after", "user"}
         assert params["user"].default.dependency is get_current_user
 
     def test_an_org_or_a_member_in_the_request_changes_nothing(self, apps):

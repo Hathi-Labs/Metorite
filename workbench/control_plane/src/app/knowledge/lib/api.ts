@@ -12,6 +12,8 @@
 import type {
   PageCreateBody,
   PageDetail,
+  PageMoveBody,
+  PageMoved,
   PagePatchBody,
   PageRevertBody,
   PageSummary,
@@ -99,6 +101,28 @@ export function updatePage(id: string, body: PagePatchBody): Promise<PageWritten
 /** Publish a draft. */
 export function publishPage(id: string): Promise<PageWritten> {
   return call<PageWritten>(`/pages/${encodeURIComponent(id)}/publish`, { method: "POST" });
+}
+
+/** The body of a move. A place is a whole number from 0 (KB-2e). */
+export function moveBody(body: PageMoveBody): PageMoveBody {
+  const { position } = body;
+  if (position !== undefined && (!Number.isInteger(position) || position < 0)) {
+    throw new RangeError(`A place is a whole number from 0. Got ${position}.`);
+  }
+  return body;
+}
+
+/** Move a page to another parent, or to another place among its siblings. */
+export function movePage(id: string, body: PageMoveBody): Promise<PageMoved> {
+  return call<PageMoved>(`/pages/${encodeURIComponent(id)}/move`, {
+    method: "POST",
+    body: JSON.stringify(moveBody(body)),
+  });
+}
+
+/** Archive a page. The gateway asks for manage on the page's space. */
+export function archivePage(id: string): Promise<PageWritten> {
+  return call<PageWritten>(`/pages/${encodeURIComponent(id)}/archive`, { method: "POST" });
 }
 
 /** The body of a revert: the number of the version to write again. */
