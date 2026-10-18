@@ -28,7 +28,18 @@
  *    it, directly or through other rows. The server still refuses a cycle and
  *    a self-block, so this rule is a convenience and the server is the fence.
  *
- * There are no phases (owner, 2026-09-24).
+ * There are no phase TASKS (owner, 2026-09-24). Since the redesign of
+ * 2026-10-18, a row may carry a `phase` label. The card groups the rows
+ * under it and folds each group. The label is display only: the submit never
+ * sends it, and nothing stores it (`planGroups`).
+ *
+ * The redesign (owner, 2026-10-18) adds the read-first view. Each row is one
+ * line of text, and a click opens one row for editing. The rest of this file
+ * from "The read-first view" down holds its decisions: the effort in hours
+ * and days, the summary line, the timeline strip, the badges, the phases,
+ * the bulk edits and the ticked rows. The submit is still `planSubmit`, over
+ * the ticked rows only, so a row the member unticks leaves the payload the
+ * way a row the old card dropped did (golden test in `planCard.test.ts`).
  */
 
 export type PlanCell = "text" | "number" | "date";
@@ -54,13 +65,16 @@ export interface PlanRow {
   hours?: string;
   marks: string[];
   warnings: string[];
+  /** The group the card draws the row under, or "". Display only: the
+   *  submit never sends it (owner, 2026-10-18). */
+  phase: string;
 }
 
 /** The columns the member may edit, in order. Nothing else is an input. */
 export const PLAN_EDIT_COLS: ReadonlyArray<{ key: keyof PlanRow; label: string; type: PlanCell }> = [
   { key: "title", label: "Task", type: "text" },
   { key: "owner", label: "Owner", type: "text" },
-  { key: "effort_mins", label: "Effort (min)", type: "number" },
+  { key: "effort_mins", label: "Effort", type: "number" },
   { key: "start", label: "Start", type: "date" },
   { key: "due", label: "Due", type: "date" },
 ];
@@ -99,6 +113,7 @@ export function planRowFrom(raw: unknown, index: number): PlanRow {
     priority: r.priority == null ? null : whole(r.priority, 0),
     marks: strings(r.marks),
     warnings: strings(r.warnings),
+    phase: text(r.phase).trim().slice(0, 80),
   };
   if (r.fit != null) row.fit = text(r.fit);
   if (r.hours != null) row.hours = text(r.hours);
@@ -271,3 +286,332 @@ export function afterCount(row: PlanRow, rows: PlanRow[]): number {
 export function waitsOnName(row: PlanRow): string {
   return `Waits on (for ${row.title.trim() || "Untitled task"})`;
 }
+
+// ── The read-first view (owner, 2026-10-18) ─────────────────────────────────
+//
+// The owner said the card "feels intimidating and the UI looks poor", and
+// approved nine changes. Each row is one line of text, and a click opens one
+// row for editing. The decisions below are pure, so the node-env suite can
+// test them where the card cannot render.
+
+/**
+ * A working day, in minutes. The app's one convention: `ESTIMATE_PRESETS`
+ * in `TaskBody.tsx` ends on 480, "a working day" (D77).
+ */
+export const WORKDAY_MINS = 480;
+
+/** The unit an effort shows in, and edits in. */
+export type EffortUnit = "m" | "h" | "d";
+
+export const EFFORT_UNITS: ReadonlyArray<{ unit: EffortUnit; label: string; mins: number }> = [
+  { unit: "m", label: "min", mins: 1 },
+  { unit: "h", label: "hours", mins: 60 },
+  { unit: "d", label: "days", mins: WORKDAY_MINS },
+];
+
+/** Days when the effort is whole or half working days, and one day or
+ *  more. Hours when it is a whole or half hour. Minutes under an hour, or
+ *  when neither unit says it exactly. */
+export function effortUnit(mins: number): EffortUnit {
+  if (mins >= WORKDAY_MINS && mins % (WORKDAY_MINS / 2) === 0) return "d";
+  if (mins >= 60 && mins % 30 === 0) return "h";
+  return "m";
+}
+
+/** The effort in a unit, as the editor shows it: at most two decimals. */
+export function effortIn(mins: number, unit: EffortUnit): number {
+  const per = EFFORT_UNITS.find((u) => u.unit === unit)?.mins ?? 1;
+  return Math.round((mins / per) * 100) / 100;
+}
+
+/** A value in a unit, back to whole minutes, which is what the submit sends. */
+export function effortMins(value: number, unit: EffortUnit): number {
+  const per = EFFORT_UNITS.find((u) => u.unit === unit)?.mins ?? 1;
+  return Number.isFinite(value) ? Math.max(0, Math.round(value * per)) : 0;
+}
+
+/** `360` → "6h", `480` → "1d", `720` → "1.5d", `90` → "1h 30m", `45` → "45m". */
+export function effortLabel(mins: number): string {
+  if (!(mins > 0)) return "0m";
+  if (effortUnit(mins) === "d") return `${effortIn(mins, "d")}d`;
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m ? `${h}h ${m}m` : `${h}h`;
+}
+
+const MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(" ");
+
+/**
+ * "22 Oct", or "22 Oct 2027" for a date outside `year`. Day first, the
+ * app's date order (`formatCardDate`), so a reader in India and a reader in
+ * the US read the same day. Parsed by hand, never through `new Date()`: a
+ * floating date at midnight UTC names the wrong day west of Greenwich.
+ */
+export function planDay(iso: string, year: number): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!m) return iso;
+  const month = MONTHS[Number(m[2]) - 1];
+  if (!month) return iso;
+  const day = `${Number(m[3])} ${month}`;
+  return Number(m[1]) === year ? day : `${day} ${m[1]}`;
+}
+
+/** Days since 1970 for a YYYY-MM-DD, or NaN. Calendar arithmetic only. */
+function dayNumber(iso: string): number {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  return m ? Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / 86_400_000 : NaN;
+}
+
+function isoOf(day: number): string {
+  return new Date(day * 86_400_000).toISOString().slice(0, 10);
+}
+
+/** A row's start, or its due date when it states no start. */
+export function rowStart(row: PlanRow): string {
+  return row.start || row.due;
+}
+
+/** "22 Oct → 24 Oct", or one day when the row starts and ends on it. */
+export function rowSpan(row: PlanRow, year: number): string {
+  const from = rowStart(row);
+  if (!from) return "";
+  if (!row.due || from === row.due) return planDay(from, year);
+  return `${planDay(from, year)} → ${planDay(row.due, year)}`;
+}
+
+/** A short owner for the chip: the name part of an address, in words.
+ *  `priya.sharma@x.io` → "Priya Sharma". The whole owner is the chip's tip. */
+export function ownerLabel(owner: string): string {
+  const raw = owner.trim();
+  if (!raw.includes("@")) return raw;
+  return raw
+    .split("@")[0]
+    .split(/[._-]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+/** The rows the member left ticked, in the card's order. */
+export function keptRows(rows: PlanRow[], off: ReadonlySet<string>): PlanRow[] {
+  return rows.filter((r) => !off.has(r.key));
+}
+
+/** What the card sends back: `planSubmit` over the ticked rows only. An
+ *  unticked row leaves the payload as a dropped row did (rule 3). */
+export function planSubmitTicked(
+  project: Record<string, unknown>,
+  name: string,
+  rows: PlanRow[],
+  off: ReadonlySet<string>,
+): ReturnType<typeof planSubmit> {
+  return planSubmit(project, name, keptRows(rows, off));
+}
+
+/** The footer button: "Create 7 tasks". It counts the ticked rows. */
+export function createLabel(ticked: number): string {
+  return ticked === 1 ? "Create 1 task" : `Create ${ticked} tasks`;
+}
+
+/** The line under the footer button. One approval follows, and it creates
+ *  every ticked task (§26.2). Nothing is made before it. */
+export function footerNote(ticked: number): string {
+  if (ticked === 0) return "Tick at least one task to create it.";
+  const what = ticked === 1 ? "the task" : ticked === 2 ? "both tasks" : `all ${ticked} tasks`;
+  return `Next, one approval creates ${what}. Nothing is created before it. A badge warns and never blocks.`;
+}
+
+export interface PlanSummary {
+  tasks: number;
+  owners: number;
+  /** The first start and the last due date, or "" with no dated row. */
+  from: string;
+  to: string;
+  mins: number;
+}
+
+/** The facts of the summary line, over the ticked rows. */
+export function planSummary(rows: PlanRow[]): PlanSummary {
+  const owners = new Set(rows.filter((r) => !isUnassigned(r)).map((r) => r.owner.trim().toLowerCase()));
+  const starts = rows.map(rowStart).filter(Boolean).sort();
+  const dues = rows.map((r) => r.due).filter(Boolean).sort();
+  return {
+    tasks: rows.length,
+    owners: owners.size,
+    from: starts[0] ?? "",
+    to: dues[dues.length - 1] ?? "",
+    mins: rows.reduce((n, r) => n + (r.effort_mins > 0 ? r.effort_mins : 0), 0),
+  };
+}
+
+/** The summary line's parts after the name: "8 tasks", "3 owners",
+ *  "22 Oct → 15 Nov", "46h". */
+export function summaryParts(s: PlanSummary, year: number): string[] {
+  const span = !s.from || !s.to ? ""
+    : s.from === s.to ? planDay(s.from, year)
+    : `${planDay(s.from, year)} → ${planDay(s.to, year)}`;
+  return [
+    s.tasks === 1 ? "1 task" : `${s.tasks} tasks`,
+    s.owners === 0 ? "no owners" : s.owners === 1 ? "1 owner" : `${s.owners} owners`,
+    span,
+    s.mins > 0 ? effortLabel(s.mins) : "",
+  ].filter(Boolean);
+}
+
+export interface TimelineBar {
+  key: string;
+  title: string;
+  /** Where the bar starts and how wide it is, as shares of the plan's span. */
+  left: number;
+  width: number;
+  marked: boolean;
+  unassigned: boolean;
+}
+
+export interface PlanTimeline {
+  from: string;
+  to: string;
+  bars: TimelineBar[];
+}
+
+/** The strip under the summary: one bar per ticked row, from its start to
+ *  its due date, on the plan's own span. `null` with no dated row. */
+export function planTimeline(rows: PlanRow[]): PlanTimeline | null {
+  const dated = rows.filter((r) => Number.isFinite(dayNumber(r.due)));
+  if (dated.length === 0) return null;
+  const startOf = (r: PlanRow) => {
+    const s = dayNumber(rowStart(r));
+    const d = dayNumber(r.due);
+    return Number.isFinite(s) && s <= d ? s : d;
+  };
+  const first = Math.min(...dated.map(startOf));
+  const last = Math.max(...dated.map((r) => dayNumber(r.due)));
+  const days = last - first + 1;
+  return {
+    from: isoOf(first),
+    to: isoOf(last),
+    bars: dated.map((r) => {
+      const s = startOf(r);
+      return {
+        key: r.key,
+        title: r.title,
+        left: (s - first) / days,
+        width: (dayNumber(r.due) - s + 1) / days,
+        marked: isMarked(r),
+        unassigned: isUnassigned(r),
+      };
+    }),
+  };
+}
+
+export type PlanBadgeTone = "warning" | "neutral";
+
+export interface PlanBadge {
+  label: string;
+  tone: PlanBadgeTone;
+}
+
+/** The badge words for a server mark. A mark the map does not know shows
+ *  as itself, so no mark is ever lost. */
+export const MARK_BADGES: Readonly<Record<string, string>> = {
+  "short of hours": "Overloaded",
+  "no skill match": "Skill gap",
+  "not in the directory": "Not in directory",
+  "owner not resolved": "Unknown owner",
+};
+
+/** The small warning badges on a row's line. The full words of each mark
+ *  show when the row opens (`markLine`). A row with no owner gets none: its
+ *  owner chip already reads "Unassigned", in the neutral tone, because no
+ *  owner is a fact and not a warning (§26). A stale mark of an owner the
+ *  member cleared does not show either (`isMarked`). */
+export function rowBadges(row: PlanRow): PlanBadge[] {
+  if (!isMarked(row)) return [];
+  const seen = new Set<string>();
+  const out: PlanBadge[] = [];
+  for (const mark of row.marks) {
+    const label = MARK_BADGES[mark] ?? mark.charAt(0).toUpperCase() + mark.slice(1);
+    if (!seen.has(label)) {
+      seen.add(label);
+      out.push({ label, tone: "warning" });
+    }
+  }
+  return out;
+}
+
+export interface PlanGroup {
+  phase: string;
+  rows: PlanRow[];
+}
+
+/** The label of the group for the rows that carry no phase, in a plan
+ *  where other rows carry one. */
+export const NO_PHASE = "Other tasks";
+
+/**
+ * The rows under their phases, in the order each phase first shows, or
+ * `null` when no row carries a phase. Then the card draws one flat list.
+ */
+export function planGroups(rows: PlanRow[]): PlanGroup[] | null {
+  if (!rows.some((r) => r.phase)) return null;
+  const groups = new Map<string, PlanRow[]>();
+  for (const r of rows) {
+    const phase = r.phase || NO_PHASE;
+    groups.set(phase, [...(groups.get(phase) ?? []), r]);
+  }
+  const out = [...groups.entries()].map(([phase, rs]) => ({ phase, rows: rs }));
+  // The rows with no phase go last, whatever their place.
+  return [...out.filter((g) => g.phase !== NO_PHASE), ...out.filter((g) => g.phase === NO_PHASE)];
+}
+
+/** What a ticked row lacks before the plan can go, in two or three words,
+ *  or "". The same checks as `planIncomplete`, named on the row itself. */
+export function rowProblem(row: PlanRow): string {
+  if (!row.title.trim()) return "Needs a title";
+  if (!(row.effort_mins > 0)) return "Needs an effort";
+  if (!row.due.trim()) return "Needs a due date";
+  if (row.start && row.start > row.due) return "Starts after due";
+  return "";
+}
+
+/** A YYYY-MM-DD moved by whole days. An empty date stays empty. */
+export function shiftDay(iso: string, days: number): string {
+  if (!iso) return iso;
+  const n = dayNumber(iso);
+  return Number.isFinite(n) ? isoOf(n + days) : iso;
+}
+
+/** Bulk: one owner for every selected row. An empty owner unassigns them. */
+export function withOwner(rows: PlanRow[], keys: ReadonlySet<string>, owner: string): PlanRow[] {
+  return rows.map((r) => (keys.has(r.key) ? { ...r, owner } : r));
+}
+
+/** Bulk: move the start and the due date of every selected row together. */
+export function withShift(rows: PlanRow[], keys: ReadonlySet<string>, days: number): PlanRow[] {
+  if (!Number.isFinite(days) || days === 0) return rows;
+  const by = Math.round(days);
+  return rows.map((r) => (keys.has(r.key) ? { ...r, start: shiftDay(r.start, by), due: shiftDay(r.due, by) } : r));
+}
+
+/** The owners already on the plan, for the owner field's suggestions. */
+export function planOwners(rows: PlanRow[]): string[] {
+  const seen = new Map<string, string>();
+  for (const r of rows) {
+    const o = r.owner.trim();
+    if (o && !seen.has(o.toLowerCase())) seen.set(o.toLowerCase(), o);
+  }
+  return [...seen.values()];
+}
+
+/** A set with `key` in or out. */
+export function toggled(set: ReadonlySet<string>, key: string, on: boolean): Set<string> {
+  const next = new Set(set);
+  if (on) next.add(key);
+  else next.delete(key);
+  return next;
+}
+
+/** The answer Cancel sends. It is no submit (`forms._answer` reads only
+ *  "<label> — <json>"), so the tool says "not submitted" and writes nothing. */
+export const PLAN_CANCEL = "Cancel";

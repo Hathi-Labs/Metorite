@@ -2946,3 +2946,47 @@ def test_the_instructions_never_ask_for_an_owner_or_offer_a_file() -> None:
     assert "Leave `assignees` out when the member names nobody" in many
     doc = " ".join((F.propose_plan.__doc__ or "").split())
     assert "empty for an unassigned task" in doc and "do not ask" in doc
+
+
+# ── The plan card redesign (owner, 2026-10-18) ──────────────────────────────
+#
+# The card reads first and folds the rows under a phase. The phase is a label
+# for the card only. The member's Cancel is no submit.
+
+
+async def test_a_phase_reaches_the_card_and_never_a_write(monkeypatch) -> None:
+    """Mutation: send `phase` in the task POST body -> this test fails."""
+    phased = [{**PLAN_DEPS[0], "phase": "Build"}, {**PLAN_DEPS[1], "phase": "Build"},
+              {**PLAN_DEPS[2], "phase": "Finish"}]
+    # The card never sends the phase back (planCard.ts planSubmit).
+    drawn = form_stub(monkeypatch, _plan_submit(PLAN_DEPS))
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    await skill_projects.propose_plan("Frame", _json.dumps(phased))
+    card_rows = drawn[0]["props"]["data"]["tasks"]
+    assert [r.get("phase") for r in card_rows] == ["Build", "Build", "Finish"]
+    posts = [c for c in calls if c["method"] == "POST" and c["path"] == "/projects/tasks"]
+    assert len(posts) == 3
+    assert all("phase" not in c["json"] for c in posts)
+    preview = [c for c in calls if c["path"] == "/projects/plan/preview"]
+    assert all("phase" not in r for c in preview for r in c["json"]["rows"])
+
+
+async def test_a_plan_with_no_phase_draws_no_phase_key(monkeypatch) -> None:
+    """A row the model gives no phase keeps the shape it had before."""
+    drawn = form_stub(monkeypatch)
+    fake_gateway(monkeypatch, _plan_gateway())
+    await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
+    assert all("phase" not in r for r in drawn[0]["props"]["data"]["tasks"])
+    assert drawn[0]["props"]["data"]["description"] == "Under the top level (a new space)."
+
+
+async def test_cancel_on_the_plan_card_writes_nothing(monkeypatch) -> None:
+    """The card's Cancel sends "Cancel", which is no submit. Mutation: read
+    any answer as a submit -> this test fails."""
+    form_stub(monkeypatch, {"Plan": "Cancel"})
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    out = await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
+    assert out == F.NOT_SUBMITTED
+    assert asked == [] and writes(calls) == []

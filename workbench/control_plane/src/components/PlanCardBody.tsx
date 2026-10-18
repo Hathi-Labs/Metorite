@@ -1,0 +1,590 @@
+"use client";
+
+/**
+ * The body of the plan card: read first, edit on click (owner, 2026-10-18).
+ *
+ * The owner said the old card "feels intimidating and the UI looks poor". It
+ * drew a full form for every task: a Task field, then Owner, Effort (min),
+ * Start and Due fields. The owner approved nine changes, and this file draws
+ * them:
+ *
+ * 1. Each task is one line of text. A click on the line, or on its pencil,
+ *    opens that one row for editing. Enter opens it from the keyboard, and
+ *    focus goes back to the line when it closes.
+ * 2. The line holds the tick, the title, the owner chip, the effort in hours
+ *    or days, and the dates as short day names.
+ * 3. A summary line at the top. The project name in it is the title, and a
+ *    click renames it.
+ * 4. A timeline strip under the summary: one bar per ticked task.
+ * 5. Phases fold, when the rows carry a `phase`.
+ * 6. A mark is a small badge. The fit and the hours show when a row opens.
+ * 7. "Edit several": pick rows, then set one owner or move their dates.
+ * 8. One footer: "Create 7 tasks", counting the ticks, and Cancel.
+ * 9. The chat card's look, and a stacked card per task in a narrow column.
+ *
+ * ⚠️ **The submit does not change.** It is `planSubmit` over the ticked rows,
+ * with the same "<label> — <json>" answer, so the server, the confirmation
+ * card and the receipt see what the old card sent (golden test in
+ * `app/projects/lib/planCard.test.ts`). The decisions live in that module,
+ * because the node-env suite cannot render this file's clicks.
+ * `e2e/plan-card.spec.ts` drives the clicks in a real browser.
+ */
+
+import { useId, useRef, useState } from "react";
+
+import {
+  EFFORT_UNITS,
+  type EffortUnit,
+  type PlanRow,
+  UNASSIGNED_LABEL,
+  PLAN_CANCEL,
+  afterCount,
+  afterOptions,
+  blankRow,
+  createLabel,
+  effortIn,
+  effortLabel,
+  effortMins,
+  effortUnit,
+  footerNote,
+  isUnassigned,
+  isMarked,
+  keptRows,
+  markLine,
+  ownerLabel,
+  ownerSummary,
+  planDay,
+  planFacts,
+  planGroups,
+  planIncomplete,
+  planOwners,
+  planRowsFrom,
+  planSubmitTicked,
+  planSummary,
+  planTimeline,
+  rowBadges,
+  rowProblem,
+  rowSpan,
+  summaryParts,
+  toggled,
+  waitsOnName,
+  withAfter,
+  withOwner,
+  withShift,
+} from "@/app/projects/lib/planCard";
+import GenUiText from "@/components/GenUiText";
+import Icon from "@/components/Icon";
+import Badge from "@/components/ui/Badge";
+import Button from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
+import { CollapsibleSection } from "@/components/ui/Collapsible";
+import { Input } from "@/components/ui/Input";
+import { useOverflowTip } from "@/components/ui/OverflowTip";
+import { SelectButton } from "@/components/ui/SelectButton";
+
+type Data = Record<string, unknown>;
+
+const str = (v: unknown, f = ""): string => (typeof v === "string" ? v : v == null ? f : String(v));
+const list = (v: unknown): string[] => (Array.isArray(v) ? v.map((x) => str(x)).filter(Boolean) : []);
+
+/** The words a sent card shows: the option picker's word. */
+const SENT = "Sent";
+
+export default function PlanCardBody({ data, onAction }: {
+  data: Data;
+  onAction?: (message: string) => void;
+}) {
+  const project = (data.project ?? {}) as Data;
+  const [name, setName] = useState(str(project.name));
+  const [naming, setNaming] = useState(false);
+  const [rows, setRows] = useState<PlanRow[]>(() => planRowsFrom(data.tasks));
+  const [off, setOff] = useState<Set<string>>(() => new Set());
+  const [open, setOpen] = useState<string | null>(null);
+  const [bulk, setBulk] = useState(false);
+  const [picked, setPicked] = useState<Set<string>>(() => new Set());
+  const [bulkOwner, setBulkOwner] = useState("");
+  const [bulkDays, setBulkDays] = useState("");
+  const [done, setDone] = useState<"" | "sent" | "cancelled">("");
+  const root = useRef<HTMLDivElement | null>(null);
+  const ownersList = useId();
+
+  const year = new Date().getFullYear();
+  const kept = keptRows(rows, off);
+  const blocked = planIncomplete(name, kept);
+  const groups = planGroups(rows);
+  const timeline = planTimeline(kept);
+  const parts = summaryParts(planSummary(kept), year);
+  const owners = ownerSummary(kept);
+  const risks = list(data.risks);
+  const warnings = list(data.warnings);
+  const capacity = str(data.capacity);
+  const locked = done !== "";
+
+  /** Focus a control of this card after the render that draws it. */
+  const focusLater = (selector: string) =>
+    requestAnimationFrame(() => root.current?.querySelector<HTMLElement>(selector)?.focus());
+
+  const setCell = (key: string, field: keyof PlanRow, v: unknown) =>
+    setRows((p) => p.map((r) => (r.key === key ? { ...r, [field]: v } : r)));
+  const openRow = (key: string) => {
+    if (locked) return;
+    setOpen(key);
+  };
+  const closeRow = (key: string) => {
+    setOpen(null);
+    focusLater(`[data-plan-line="${CSS.escape(key)}"]`);
+  };
+  const add = () => {
+    const row = blankRow(rows);
+    setRows((p) => [...p, row]);
+    setOpen(row.key);
+  };
+  const submit = () => {
+    if (!onAction || locked || blocked) return;
+    setDone("sent");
+    setOpen(null);
+    setBulk(false);
+    const label = str(data.submitLabel ?? data.title, "Plan");
+    onAction(`${label} — ${JSON.stringify(planSubmitTicked(project, name, rows, off))}`);
+  };
+  const cancel = () => {
+    if (!onAction || locked) return;
+    setDone("cancelled");
+    setOpen(null);
+    setBulk(false);
+    onAction(PLAN_CANCEL);
+  };
+  const endNaming = () => {
+    setNaming(false);
+    focusLater("[data-plan-name]");
+  };
+
+  const drawRow = (r: PlanRow) =>
+    open === r.key && !locked ? (
+      <RowEditor
+        key={r.key}
+        row={r}
+        kept={kept}
+        ticked={!off.has(r.key)}
+        ownersList={ownersList}
+        onTick={(on) => setOff((s) => toggled(s, r.key, !on))}
+        onCell={(field, v) => setCell(r.key, field, v)}
+        onClose={() => closeRow(r.key)}
+      />
+    ) : (
+      <RowLine
+        key={r.key}
+        row={r}
+        year={year}
+        ticked={!off.has(r.key)}
+        locked={locked}
+        bulk={bulk}
+        picked={picked.has(r.key)}
+        onTick={(on) => setOff((s) => toggled(s, r.key, !on))}
+        onOpen={() => (bulk ? setPicked((s) => toggled(s, r.key, !s.has(r.key))) : openRow(r.key))}
+        onEdit={() => openRow(r.key)}
+      />
+    );
+
+  return (
+    <div ref={root} className="flex min-w-0 flex-col gap-2">
+      {/* 3 · the summary line: the name is the title, then the facts. */}
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5" data-plan-summary="">
+        {naming && !locked ? (
+          <Input
+            inputSize="sm"
+            value={name}
+            autoFocus
+            aria-label="Project name"
+            className="min-w-0 flex-1 basis-48"
+            onChange={(e) => setName(e.target.value)}
+            onBlur={endNaming}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                endNaming();
+              }
+            }}
+          />
+        ) : (
+          <Button
+            variant="text"
+            size="none"
+            layout="inline-flex min-w-0 items-center gap-1 text-left"
+            className="rounded px-0.5 text-sm"
+            disabled={locked}
+            data-plan-name=""
+            aria-label={`Project name: ${name.trim() || "none"}. Rename`}
+            onClick={() => setNaming(true)}
+          >
+            <span className="min-w-0 break-words font-semibold text-foreground">{name.trim() || "Name the project"}</span>
+            {!locked && <Icon name="Pencil" size={12} className="shrink-0" />}
+          </Button>
+        )}
+        {/* One unit, so a narrow column wraps it under the name whole. */}
+        <span className="text-[11px] tabular-nums text-muted-foreground" data-plan-facts-line="">
+          {parts.join(" · ")}
+        </span>
+      </div>
+      {data.description != null && str(data.description) && (
+        <div className="-mt-1.5 text-[11px] text-muted-foreground"><GenUiText text={str(data.description)} /></div>
+      )}
+
+      {/* 4 · the timeline strip. */}
+      {timeline && timeline.bars.length > 1 && (
+        <div
+          data-plan-timeline=""
+          role="img"
+          aria-label={`Timeline: ${timeline.bars.length} tasks, ${planDay(timeline.from, year)} to ${planDay(timeline.to, year)}`}
+        >
+          <div className="flex flex-col gap-[3px] rounded-md bg-secondary/60 px-1.5 py-1.5">
+            {timeline.bars.map((b) => (
+              <div key={b.key} className="relative h-1">
+                <div
+                  title={b.title}
+                  className={`absolute inset-y-0 rounded-full ${b.marked ? "bg-warning" : b.unassigned ? "bg-muted-foreground/40" : "bg-muted-foreground"}`}
+                  style={{ left: `${b.left * 100}%`, width: `max(${b.width * 100}%, 4px)` }}
+                />
+              </div>
+            ))}
+          </div>
+          <div className="mt-0.5 flex justify-between text-[10px] tabular-nums text-muted-foreground">
+            <span>{planDay(timeline.from, year)}</span>
+            <span>{planDay(timeline.to, year)}</span>
+          </div>
+        </div>
+      )}
+
+      {/* 7 · bulk edits. */}
+      {!locked && rows.length > 1 && (
+        <div className="flex min-w-0 items-center justify-between gap-2">
+          <span className="text-[11px] text-muted-foreground" data-plan-ticked="">
+            {kept.length} of {rows.length} ticked
+          </span>
+          <Button variant="ghost" size="sm" icon="ListChecks" selected={bulk}
+            onClick={() => { setBulk((b) => !b); setPicked(new Set()); setOpen(null); }}>
+            Edit several
+          </Button>
+        </div>
+      )}
+      {bulk && !locked && (
+        <div
+          role="group"
+          aria-label="Edit several tasks"
+          data-plan-bulk=""
+          className="flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-lg border border-border bg-secondary/40 px-2 py-1.5 text-[11px] text-muted-foreground"
+        >
+          <span aria-live="polite" className="text-foreground">
+            {picked.size === 0 ? "Click the tasks to pick them." : `${picked.size} picked`}
+          </span>
+          <span className="flex items-center gap-1">
+            <Input inputSize="sm" className="w-36" value={bulkOwner} list={ownersList}
+              placeholder={UNASSIGNED_LABEL} aria-label="Owner for the picked tasks"
+              onChange={(e) => setBulkOwner(e.target.value)} />
+            <Button variant="secondary" size="sm" disabled={picked.size === 0}
+              onClick={() => setRows((p) => withOwner(p, picked, bulkOwner.trim()))}>
+              Set owner
+            </Button>
+          </span>
+          <span className="flex items-center gap-1">
+            <Input inputSize="sm" type="number" step={1} className="w-16" value={bulkDays}
+              aria-label="Days to move the picked tasks by" placeholder="0"
+              onChange={(e) => setBulkDays(e.target.value)} />
+            <span>days</span>
+            <Button variant="secondary" size="sm" disabled={picked.size === 0 || !Math.round(Number(bulkDays))}
+              onClick={() => setRows((p) => withShift(p, picked, Number(bulkDays)))}>
+              Move dates
+            </Button>
+          </span>
+          <Button variant="ghost" size="sm" className="ml-auto"
+            onClick={() => { setBulk(false); setPicked(new Set()); }}>
+            Done
+          </Button>
+        </div>
+      )}
+      <datalist id={ownersList}>
+        {planOwners(rows).map((o) => <option key={o} value={o} />)}
+      </datalist>
+
+      {/* 1, 2, 5 · the rows, under their phases when they carry one. */}
+      {groups ? (
+        <div className="flex flex-col gap-1">
+          {groups.map((g) => (
+            <CollapsibleSection key={g.phase} label={g.phase} count={g.rows.length}>
+              <ul className="flex flex-col gap-1">{g.rows.map(drawRow)}</ul>
+            </CollapsibleSection>
+          ))}
+        </div>
+      ) : (
+        <ul className="flex flex-col gap-1">{rows.map(drawRow)}</ul>
+      )}
+      {!locked && (
+        <div>
+          <Button variant="ghost" size="sm" icon="Plus" onClick={add}>Add a task</Button>
+        </div>
+      )}
+
+      {(owners || capacity) && (
+        <div className="flex flex-col gap-0.5 text-[11px] text-muted-foreground">
+          {owners && <span data-plan-owners="">{owners}</span>}
+          {capacity && <span>{capacity}</span>}
+        </div>
+      )}
+      {warnings.length > 0 && (
+        <CollapsibleSection label="Order warnings" count={warnings.length}>
+          <ul className="flex flex-col gap-1 text-xs text-foreground">
+            {warnings.map((w, i) => (
+              <li key={i} className="flex min-w-0 items-start gap-1.5">
+                <Icon name="TriangleAlert" size={12} className="mt-0.5 shrink-0 text-warning" />
+                <span className="min-w-0 break-words"><GenUiText text={w} /></span>
+              </li>
+            ))}
+          </ul>
+        </CollapsibleSection>
+      )}
+      {risks.length > 0 && (
+        <CollapsibleSection label="How this plan fails" count={risks.length} defaultOpen={false}>
+          <ul className="ml-4 list-disc space-y-0.5 text-xs text-foreground marker:text-muted-foreground">
+            {risks.map((r, i) => <li key={i}><GenUiText text={r} /></li>)}
+          </ul>
+        </CollapsibleSection>
+      )}
+
+      {/* 8 · one footer. */}
+      {done ? (
+        <div role="status" className="flex flex-wrap items-center gap-2" data-plan-done={done}>
+          {done === "sent"
+            ? <Badge tone="success" icon="Check">{SENT}</Badge>
+            : <Badge tone="neutral" icon="X">Cancelled</Badge>}
+          <span className="text-[11px] text-muted-foreground">
+            {done === "sent" ? "A confirmation card follows." : "Nothing was created."}
+          </span>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-1 border-t border-border pt-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" icon="Check" onClick={submit} disabled={!onAction || !!blocked} data-plan-submit="">
+              {createLabel(kept.length)}
+            </Button>
+            <Button variant="secondary" size="sm" onClick={cancel} disabled={!onAction}>Cancel</Button>
+          </div>
+          <span className="text-[11px] text-muted-foreground" data-plan-note="">
+            {blocked && kept.length > 0 ? `${blocked} ` : ""}{footerNote(kept.length)}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One task, read first: the tick, the line that opens it, and the pencil. */
+export function RowLine({ row, year, ticked, locked, bulk, picked, onTick, onOpen, onEdit }: {
+  row: PlanRow;
+  year: number;
+  ticked: boolean;
+  locked: boolean;
+  bulk: boolean;
+  picked: boolean;
+  onTick: (on: boolean) => void;
+  onOpen: () => void;
+  onEdit: () => void;
+}) {
+  const title = row.title.trim() || "Untitled task";
+  const nobody = isUnassigned(row);
+  const effort = effortLabel(row.effort_mins);
+  const span = rowSpan(row, year);
+  const badges = rowBadges(row);
+  const problem = ticked ? rowProblem(row) : "";
+  const who = nobody ? UNASSIGNED_LABEL : ownerLabel(row.owner);
+  const said = [who, effort, span, ...badges.map((b) => b.label), problem].filter(Boolean).join(", ");
+  const { attachLabel, onPointerEnter, onPointerLeave, tip } = useOverflowTip(title);
+  return (
+    <li
+      data-plan-row={row.key}
+      data-plan-off={ticked ? undefined : ""}
+      className={`group/row flex min-w-0 items-start gap-2 rounded-lg border px-2 py-1.5 @[34rem]:rounded-md @[34rem]:border-transparent @[34rem]:px-1 @[34rem]:py-1 ${
+        picked ? "border-primary/40 bg-primary/10" : "border-border"
+      }`}
+    >
+      <Checkbox
+        size="sm"
+        className="mt-[3px]"
+        checked={ticked}
+        disabled={locked}
+        aria-label={`Create ${title}`}
+        onChange={(e) => onTick(e.target.checked)}
+      />
+      <Button
+        variant="text"
+        size="none"
+        layout="flex min-w-0 flex-1 text-left"
+        className="rounded"
+        disabled={locked}
+        data-plan-line={row.key}
+        aria-label={`${bulk ? "Pick" : "Edit"} ${title}: ${said}`}
+        aria-pressed={bulk ? picked : undefined}
+        onClick={onOpen}
+      >
+        {/* The title and its badges take the free width. The owner, the
+            effort and the dates have fixed widths in a wide column, so
+            they line up as columns down the plan. */}
+        <span className={`flex min-w-0 flex-1 flex-col gap-1 @[34rem]:flex-row @[34rem]:items-center @[34rem]:gap-3 ${ticked ? "" : "opacity-50"}`}>
+          <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-1 @[34rem]:flex-nowrap">
+            {/* Cut to one line in a wide column, with the whole title in the
+                house tip (`OverflowTip`, rule 12). It wraps in a narrow one. */}
+            <span ref={attachLabel} onPointerEnter={onPointerEnter} onPointerLeave={onPointerLeave}
+              className="min-w-0 break-words text-xs text-foreground @[34rem]:truncate">
+              {title}
+            </span>
+            {tip}
+            {badges.map((b) => (
+              <Badge key={b.label} tone={b.tone} icon="TriangleAlert" title={markLine(row)} className="shrink-0 font-normal">
+                {b.label}
+              </Badge>
+            ))}
+            {problem && <Badge tone="destructive" icon="CircleAlert" className="shrink-0 font-normal">{problem}</Badge>}
+          </span>
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] font-normal text-muted-foreground @[34rem]:shrink-0 @[34rem]:flex-nowrap">
+            <span className="@[34rem]:w-28">
+              <span
+                title={nobody ? undefined : row.owner}
+                data-plan-unassigned={nobody ? "" : undefined}
+                className={`inline-flex max-w-[7rem] items-center gap-1 rounded-md px-1.5 py-0.5 ${nobody ? "border border-dashed border-border" : "bg-secondary text-foreground"}`}
+              >
+                <Icon name={nobody ? "UserX" : "User"} size={11} className="shrink-0" />
+                <span className="truncate">{who}</span>
+              </span>
+            </span>
+            <span className="tabular-nums @[34rem]:w-10 @[34rem]:text-right">{effort}</span>
+            {span && <span className="tabular-nums @[34rem]:w-28">{span}</span>}
+          </span>
+        </span>
+      </Button>
+      {!locked && !bulk && (
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          icon="Pencil"
+          tabIndex={-1}
+          aria-label={`Edit ${title}`}
+          className={`shrink-0 @[34rem]:opacity-0 @[34rem]:group-hover/row:opacity-100`}
+          onClick={onEdit}
+        />
+      )}
+    </li>
+  );
+}
+
+const FIELD_LABEL = "flex min-w-0 flex-col gap-0.5 text-[11px] text-muted-foreground";
+
+/** One task, open: its fields, its read-only fit and hours, and Waits on. */
+export function RowEditor({ row, kept, ticked, ownersList, onTick, onCell, onClose }: {
+  row: PlanRow;
+  kept: PlanRow[];
+  ticked: boolean;
+  ownersList: string;
+  onTick: (on: boolean) => void;
+  onCell: (field: keyof PlanRow, v: unknown) => void;
+  onClose: () => void;
+}) {
+  const [unit, setUnit] = useState<EffortUnit>(() => effortUnit(row.effort_mins));
+  const [effortText, setEffortText] = useState(() => String(effortIn(row.effort_mins, effortUnit(row.effort_mins))));
+  const title = row.title.trim() || "Untitled task";
+  const options = afterOptions(row, kept);
+  const facts = planFacts(row, kept);
+  const others = kept.filter((r) => r.key !== row.key).length;
+  return (
+    <li
+      data-plan-row={row.key}
+      data-plan-open=""
+      className="rounded-lg border border-border bg-secondary/40 p-2"
+      onKeyDown={(e) => {
+        if (e.key !== "Escape") return;
+        // An open list (the effort unit) takes its own Escape first.
+        const at = e.target as HTMLElement;
+        if (at.closest('[role="listbox"], [role="option"], [aria-expanded="true"]')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        onClose();
+      }}
+    >
+      <div className="flex min-w-0 flex-col gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <Checkbox size="sm" checked={ticked} aria-label={`Create ${title}`} onChange={(e) => onTick(e.target.checked)} />
+          <Input inputSize="sm" value={row.title} autoFocus aria-label="Task" placeholder="What is the task?"
+            className="min-w-0 flex-1" onChange={(e) => onCell("title", e.target.value)} />
+        </div>
+        <div className={`grid grid-cols-2 gap-2 @[34rem]:grid-cols-4`}>
+          <label className={FIELD_LABEL}>
+            Owner
+            <Input inputSize="sm" value={row.owner} list={ownersList} placeholder={UNASSIGNED_LABEL}
+              onChange={(e) => onCell("owner", e.target.value)} />
+          </label>
+          <div className={FIELD_LABEL}>
+            <span id={`effort-${row.key}`}>Effort</span>
+            <div className="flex min-w-0 gap-1">
+              <Input inputSize="sm" type="number" min={0} step={unit === "m" ? 5 : 0.5} value={effortText}
+                aria-labelledby={`effort-${row.key}`} className="min-w-0 flex-1"
+                onChange={(e) => {
+                  setEffortText(e.target.value);
+                  const v = parseFloat(e.target.value);
+                  onCell("effort_mins", effortMins(Number.isFinite(v) ? v : 0, unit));
+                }} />
+              <SelectButton
+                label="Effort unit"
+                value={unit}
+                defaultValue={unit}
+                widthClass="w-20 shrink-0"
+                options={EFFORT_UNITS.map((u) => ({ value: u.unit, label: u.label }))}
+                onChange={(v) => {
+                  const next = v as EffortUnit;
+                  setUnit(next);
+                  setEffortText(String(effortIn(row.effort_mins, next)));
+                }}
+              />
+            </div>
+          </div>
+          <label className={FIELD_LABEL}>
+            Start
+            <Input inputSize="sm" type="date" value={row.start} onChange={(e) => onCell("start", e.target.value)} />
+          </label>
+          <label className={FIELD_LABEL}>
+            Due
+            <Input inputSize="sm" type="date" value={row.due} onChange={(e) => onCell("due", e.target.value)} />
+          </label>
+        </div>
+        {facts.length > 0 && (
+          <div className="break-words text-[11px] text-muted-foreground" data-plan-facts="">{facts.join(" · ")}</div>
+        )}
+        {isMarked(row) && (
+          <div className="flex items-start gap-1.5 rounded-md bg-warning/10 px-2 py-1 text-[11px] text-foreground">
+            <Icon name="TriangleAlert" size={12} className="mt-px shrink-0 text-warning" />
+            <span className="min-w-0 break-words">{markLine(row)}</span>
+          </div>
+        )}
+        {/* WS-27bm S10: what this row waits on. The list leaves out every
+            row that waits on this one, so a tick cannot make a cycle. */}
+        {options.length === 0 && others > 0 && (
+          <div className="text-[11px] text-muted-foreground">Waits on: none. Every other task waits on this one.</div>
+        )}
+        {options.length > 0 && (
+          <CollapsibleSection label="Waits on" count={afterCount(row, kept)} defaultOpen={false} ariaLabel={waitsOnName(row)}>
+            <div className="flex flex-col gap-1">
+              {options.map((o) => (
+                <label key={o.key} className="flex min-w-0 items-center gap-2 text-xs text-foreground">
+                  <Checkbox size="sm" checked={row.after.includes(o.key)}
+                    onChange={(e) => onCell("after", withAfter(row, kept, o.key, e.target.checked))} />
+                  <span className="break-words">{o.title.trim() || "Untitled task"}</span>
+                </label>
+              ))}
+            </div>
+          </CollapsibleSection>
+        )}
+        <div className="flex justify-end">
+          <Button variant="secondary" size="sm" onClick={onClose}>Done</Button>
+        </div>
+      </div>
+    </li>
+  );
+}
