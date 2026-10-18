@@ -5872,10 +5872,11 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** ask each org whose chats set up a key, a GitHub token first.
   Did it rotate that key after 2026-10-18? Then count the rows that still
   hold a value, on production and on staging. In `chat_message`, test
-  `content`, `reasoning`, `tool_events`, `agent_state` and `custom_events`
-  for `<<<SETUP:` and for `ghp_`, `gho_`, `github_pat_` and `ghs_`. Do the
-  same for `maf_agent_session.session_json` and `agent_run.trace`. If every
-  key is rotated and every count is 0, delete this entry.
+  `content`, `reasoning`, `tool_events`, `progress_lines`, `agent_state` and
+  `custom_events` for `<<<SETUP:` and for `ghp_`, `gho_`, `github_pat_` and
+  `ghs_`. Test `chat_session.last_preview` and `chat_session.title` too. Do
+  the same for `maf_agent_session.session_json` and `agent_run.trace`. If
+  every key is rotated and every count is 0, delete this entry.
 - **Why.** Before the merge of WS-54 Batch A, three stores kept the model's
   `<<<SETUP:service:KEY=value>>>` marker as raw text. They are the native
   session, the chat transcript and the run trace. Fix round 2
