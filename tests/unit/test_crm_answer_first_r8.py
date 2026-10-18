@@ -594,11 +594,12 @@ async def test_the_purge_takes_a_member_out_of_the_crm(af, app_engine) -> None:
     assert (await add_rule(p, m1, NET_RULE, "me")).status_code == 200
     assert (await add_rule(p, m2, "IP is our real earning.", "me")).status_code == 200
     assert (await add_rule(p, admin, "All amounts net of GST", "org")).status_code == 200
-    for who, value in ((m1, "IP"), (m2, "Rent")):
+    # The admin answers, then each member proposes a change of that part.
+    done = await call(p, admin, "POST", f"/crm/questions/{QID}/answer", {"value": "IP"})
+    assert done.status_code == 200, done.text
+    for who, value in ((m1, "Rent"), (m2, "EB_Total_Amount")):
         got = await call(p, who, "POST", f"/crm/questions/{QID}/reply", {"choice": value})
-        assert got.status_code == 200, got.text
-    assert (await call(p, admin, "POST", "/crm/questions/revenue/answer",
-                       {"value": "payment_in"})).status_code == 200
+        assert got.status_code == 200 and got.json()["result"] == "proposal", got.text
     rows = next(r for r in _PURGE_DELETES if r.table == "crm_business_rules")
 
     async def purge(email: str):
@@ -620,8 +621,8 @@ async def test_the_purge_takes_a_member_out_of_the_crm(af, app_engine) -> None:
     assert by == [(rules.FORMER_MEMBER, rules.FORMER_MEMBER)]
     state = cursor_state(p, p.org_a, "zoho:questions")
     assert [x["member"] for x in state["proposals"][QID]] == ["member2@crm-q33.test"]
-    assert state["answered_by"]["revenue"]["member"] == ""
-    assert state["answered_by"]["revenue"]["at"]
+    assert state["answered_by"][QID]["member"] == ""
+    assert state["answered_by"][QID]["at"]
     assert "admin@crm-q32-r8.test" not in json.dumps(state)
 
 
