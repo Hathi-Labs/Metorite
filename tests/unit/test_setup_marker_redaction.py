@@ -22,6 +22,12 @@ R7, the mutations. Each one turns a test here red (run 2026-10-18):
 * R3-3-M1 (fix round 3) ``OPEN_MARKER_RE`` runs to the end of the line again ->
   ``test_a_marker_inside_json_text_stays_inside_its_string``.
 * R3-3-M2 ``MARKER_RE`` may cross a double quote again -> the same test.
+* R4-2-M1 (fix round 4) the session upsert stores the preview with
+  ``storable`` only -> ``test_the_session_preview_holds_no_setup_value``.
+* R4-2-M2 the session PATCH stores the preview with ``storable`` only -> the
+  same test.
+* R4-2-M3 ``/memory/{scope}/add`` passes the raw messages to Mem0 ->
+  ``test_the_memory_add_holds_no_setup_value``.
 
 ⚠️ This file proves the MODEL's marker is never stored. A member's own pasted
 secret is not detected (spec §7.6, HANDOFF H-357).
@@ -84,6 +90,8 @@ class _Recording:
         self.writes.append(dict(params or {}))
 
         class _R:
+            rowcount = 1
+
             def first(self) -> Any:
                 return ((params or {}).get("id", "row"),)
 
@@ -159,3 +167,59 @@ def test_a_marker_inside_json_text_stays_inside_its_string() -> None:
     tree = redact_tree({"tool_events": [{"result": cut}], "agent_state": {"s": cut}})
     for text in (tree["tool_events"][0]["result"], tree["agent_state"]["s"]):
         assert json.loads(text)["b"] == 1 and TOKEN not in text
+
+
+def test_the_session_preview_holds_no_setup_value(monkeypatch) -> None:
+    """The browser sends the last reply as ``last_preview`` (AgentChat), on
+    the upsert and on the PATCH."""
+    import acb_graph
+    from gateway.routes.chat import (
+        SessionPatchRequest,
+        SessionUpsertRequest,
+        _patch_session,
+        _upsert_session,
+    )
+
+    session = _Recording()
+
+    @contextlib.contextmanager
+    def _tenant_session(_org: str | None):
+        yield session
+
+    monkeypatch.setattr(acb_graph, "tenant_session", _tenant_session)
+    _upsert_session("a@x.test", SessionUpsertRequest(
+        id="s-1", title=f"t {MARKER}", last_preview=f"Saved. {MARKER}"),
+        organization_id="org-a")
+    upserts = len(session.writes)
+    _patch_session("s-1", "a@x.test", SessionPatchRequest(
+        title=f"t {MARKER}", last_preview=f"Saved. {MARKER}"), organization_id="org-a")
+    assert upserts and len(session.writes) > upserts, "both writes ran"
+    for params in session.writes:
+        assert TOKEN not in json.dumps(params, default=str), params
+    previews = [w["last_preview"] for w in session.writes if w.get("last_preview")]
+    assert len(previews) >= 2 and all("setup value removed" in p for p in previews)
+
+
+async def test_the_memory_add_holds_no_setup_value(monkeypatch) -> None:
+    import asyncio
+
+    from gateway.routes import memory
+
+    seen: list[Any] = []
+
+    class _Mem0:
+        async def add(self, scope: str, messages: Any, agent_id: str = "") -> None:
+            seen.append(messages)
+
+    monkeypatch.setattr(memory, "_get_mem0", lambda: _Mem0())
+    monkeypatch.setattr(memory, "_authorize_scope", lambda *a, **k: None)
+    req = memory.AddRequest(messages=[
+        {"role": "assistant", "content": f"Saved. {MARKER}"},
+        {"role": "user", "content": "thanks"},
+    ])
+    out = await memory.add_memories("a@x.test", req, user=None)  # type: ignore[arg-type]
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert out["status"] == "queued"
+    assert seen and TOKEN not in json.dumps(seen)
+    assert seen[0][1] == {"role": "user", "content": "thanks"}

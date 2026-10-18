@@ -315,9 +315,10 @@ def _upsert_session(
                 "id": req.id,
                 "uid": user_id,
                 "agent_name": req.agent_name,
-                # The preview is the last reply, so it can hold a NUL too.
-                "title": storable(req.title),
-                "last_preview": storable(req.last_preview),
+                # The preview is the last reply, so it can hold a NUL too, and
+                # a SETUP marker of the model (WS-54 fix round 4, item 2).
+                "title": _storable_text(req.title),
+                "last_preview": _storable_text(req.last_preview),
                 "message_count": req.message_count,
             },
         )
@@ -426,10 +427,10 @@ def _patch_session(
     params: dict = {"id": session_id, "uid": user_id}
     if req.title is not None:
         sets.append("title = :title")
-        params["title"] = storable(req.title)
+        params["title"] = _storable_text(req.title)
     if req.last_preview is not None:
         sets.append("last_preview = :last_preview")
-        params["last_preview"] = storable(req.last_preview)
+        params["last_preview"] = _storable_text(req.last_preview)
     if req.message_count is not None:
         sets.append("message_count = :message_count")
         params["message_count"] = req.message_count
@@ -817,6 +818,17 @@ _MESSAGE_UPSERT_SQL = """
         END
     RETURNING id
 """
+
+
+def _storable_text(value: str | None) -> str | None:
+    """A session title or preview, safe to store: no NUL, and no SETUP marker
+    of the model (WS-54 fix round 4, item 2). The browser sends the last reply
+    as the preview, and the native stream passes the marker on as it is."""
+    from acb_common.setup_markers import redact
+
+    if value is None:
+        return None
+    return storable(redact(value))
 
 
 def _without_setup_values(message: MessageRecord) -> MessageRecord:
