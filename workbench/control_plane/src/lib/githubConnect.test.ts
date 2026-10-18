@@ -5,6 +5,8 @@
 //  U2 `isGitHubInstallUrl` drops the host check -> "only an install link on github.com".
 //  U3 `githubCardView` sets `warnsOfToken: false` for a token row -> "a token row warns".
 //  U4 a code is missing from `GITHUB_RETURN_CODES` -> "the codes mirror the gateway".
+//  U5 (fix round 1, item 3) `tokenReplacesApp` answers false for a live App row ->
+//     "a token save over a live App asks first".
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
@@ -18,9 +20,12 @@ import {
   isGitHubInstallUrl,
   parseGitHubReturn,
   refusalText,
+  AGENT_REPO_APP_NOTE,
+  replaceAppCopy,
   replaceTokenCopy,
   safeInstallationUrl,
   tokenProblem,
+  tokenReplacesApp,
   type GitHubAccount,
 } from "./githubConnect";
 
@@ -191,5 +196,25 @@ describe("the words", () => {
     expect(refusalText("other_org")).toBe(GITHUB_RETURN_TEXT.other_org.text);
     expect(refusalText("<b>boom</b>")).toBe(GITHUB_RETURN_TEXT.failed.text);
     expect(refusalText("cross_origin")).toContain("Open Integrations");
+  });
+});
+
+describe("a token over the App (fix round 1, item 3)", () => {
+  it("a token save over a live App asks first", () => {
+    expect(tokenReplacesApp(account({ auth: "app", status: "connected", connected: true }))).toBe(true);
+    expect(tokenReplacesApp(account({ auth: "app", status: "needs_reconnect", connected: false }))).toBe(true);
+    expect(tokenReplacesApp(account({ auth: "app", status: "disconnected", connected: false }))).toBe(false);
+    expect(tokenReplacesApp(account({ auth: "token", status: "connected", connected: true }))).toBe(false);
+    expect(tokenReplacesApp(null)).toBe(false);
+  });
+
+  it("the words say what stops, in plain sentences", () => {
+    const copy = replaceAppCopy();
+    expect(copy.body).toContain("webhook");
+    expect(copy.body).toContain("Done");
+    for (const text of [copy.title, copy.body, copy.note ?? "", AGENT_REPO_APP_NOTE]) {
+      expect(text).not.toContain(";");
+    }
+    expect(AGENT_REPO_APP_NOTE).toContain("replaces the App");
   });
 });

@@ -135,6 +135,32 @@ export function replaceTokenCopy(): DialogCopy {
   };
 }
 
+/** The dialog BEFORE a token replaces a live App connection (fix round 1,
+ *  item 3). The org holds one GitHub connection (G-6), so a token and the App
+ *  cannot both hold it. The gateway refuses the save with 409 until the admin
+ *  confirms here. */
+export function replaceAppCopy(): DialogCopy {
+  return {
+    title: "Replace the Metorite App with this token?",
+    body:
+      "Metorite then reads GitHub with the token only. Pull requests and checks stop coming in by " +
+      "webhook, and a merge no longer moves an agent's task to Done.",
+    note: "The Metorite App stays installed at GitHub. Connect GitHub again to go back to the App.",
+    confirmLabel: "Use the token",
+  };
+}
+
+/** True when a token save would replace a live App connection. */
+export function tokenReplacesApp(info: GitHubAccount | null): boolean {
+  return Boolean(info && info.auth === "app" && info.status !== "disconnected" && info.status !== "not_connected");
+}
+
+/** The note of the agent wizard's GitHub step when the org is on the App:
+ *  the App asks for no Contents permission (G-9). */
+export const AGENT_REPO_APP_NOTE =
+  "The Metorite App does not read private repositories. To install an agent from a private repository, " +
+  "add a token under Advanced. That token replaces the App. For a public repository, skip this step.";
+
 /** The connection facts that `GET /api/integrations/github/account` sends. */
 export interface GitHubAccount {
   connected: boolean;

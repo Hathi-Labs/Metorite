@@ -11,8 +11,10 @@
  *
  * 1. **Same origin only.** A PUT that another site sends gets 403, and the
  *    token goes nowhere.
- * 2. **Only `{token}` goes upstream.** No other field of the body is read, so
- *    a body cannot name an org or a member (R11).
+ * 2. **Only `{token}` goes upstream**, and `replace_app: true` when the body
+ *    holds exactly that (the admin's confirm that the token replaces the App,
+ *    fix round 1, item 3). No other field of the body is read, so a body
+ *    cannot name an org or a member (R11).
  * 3. **The token never comes back and is never logged.** The answer carries
  *    the status, the login and the scopes only.
  */
@@ -35,8 +37,11 @@ export async function PUT(req: NextRequest): Promise<NextResponse> {
   if (!sameOrigin(req)) return refuse("cross_origin", 403);
 
   let token: unknown;
+  let replaceApp = false;
   try {
-    token = ((await req.json()) as { token?: unknown } | null)?.token;
+    const parsed = (await req.json()) as { token?: unknown; replace_app?: unknown } | null;
+    token = parsed?.token;
+    replaceApp = parsed?.replace_app === true;
   } catch {
     return refuse("bad_body", 400);
   }
@@ -51,7 +56,7 @@ export async function PUT(req: NextRequest): Promise<NextResponse> {
       {
         method: "PUT",
         headers: { ...(await gatewayHeaders()), "Content-Type": "application/json" },
-        body: JSON.stringify({ token: token.trim() }),
+        body: JSON.stringify(replaceApp ? { token: token.trim(), replace_app: true } : { token: token.trim() }),
         redirect: "manual",
         cache: "no-store",
         signal: AbortSignal.timeout(20_000),

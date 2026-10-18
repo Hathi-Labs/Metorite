@@ -808,8 +808,18 @@ async def integration_status(
     for svc in services:
         guide = _SETUP_GUIDES.get(svc, {})
         configured = _is_configured(svc, settings)
+        github_coverage: dict[str, Any] | None = None
         if svc == "github":
             configured = await _github_connected()
+            # Fix round 1, item 3: "configured" is for each USE. The App reads
+            # pull requests and checks, but not a private agent repository
+            # (G-9). So the agent wizard asks: can this org read the agent's
+            # repository? Only a token row can.
+            github_coverage = {"pull_requests": configured}
+            if agent:
+                reach = await _github_agent_repo_reach()
+                github_coverage.update(reach)
+                configured = bool(reach["agent_repo"])
         app_owned = svc in APP_OWNED_SERVICES
         # The tile view reads the app's row. AGENT mode keeps the env check,
         # because the agent runtime still reads the operator env until IN-3.
@@ -877,6 +887,7 @@ async def integration_status(
                 "storage": storage,
                 "category": _GUIDE_CATEGORIES.get(svc, "custom"),
                 "is_custom": False,
+                **({"github_coverage": github_coverage} if github_coverage is not None else {}),
             }
         )
 
@@ -1625,11 +1636,36 @@ async def _github_connected() -> bool:
         return False
 
 
+async def _github_agent_repo_reach() -> dict[str, Any]:
+    """Can the bound org read a PRIVATE agent repository? (fix round 1, item 3)
+
+    ``{"auth": "app" | "token" | None, "agent_repo": bool}``. Only a ``token``
+    row can: the App asks for no Contents permission (G-9), and an org with no
+    connection reads public repositories only.
+    """
+    try:
+        org = current_tenant()
+        if not org:
+            return {"auth": None, "agent_repo": False}
+        row = await github_connection.connection(str(org))
+        if github_connection.is_app_row(row):
+            return {"auth": github_connection.AUTH_APP, "agent_repo": False}
+        token = await github_connection.stored_token_or_none(str(org))
+        auth = github_connection.AUTH_TOKEN if row is not None else None
+        return {"auth": auth, "agent_repo": bool(token)}
+    except Exception as exc:
+        _log.warning("github.reach_unreadable", error=type(exc).__name__)
+        return {"auth": None, "agent_repo": False}
+
+
 async def _test_github_app(row: Any, user: UserContext) -> dict[str, Any]:
     """Test an ``app`` row (GH-3). GitHub refuses ``GET /user`` for an
     installation token, so the test lists one repository of the installation."""
     from gateway.connections import github_app
 
+    if not github_app.app_enabled():
+        # The kill switch (F5): no token is made while the flag is off.
+        return {"ok": False, "detail": "The GitHub App is turned off on this server."}
     installation = github_connection.installation_of(row)
     if installation is None:
         return {"ok": False, "detail": github_connection.NOT_CONNECTED}

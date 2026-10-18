@@ -47,6 +47,12 @@ export interface IntegrationStatus {
   category?: string;
   /** True when this API was added by the user via AI discovery, not built-in. */
   is_custom?: boolean;
+  /**
+   * GitHub only (WS-54 fix round 1, item 3): what the connection reaches, for
+   * each use. The App reads pull requests, but not a private agent repository.
+   * `auth` and `agent_repo` come with an agent's status only.
+   */
+  github_coverage?: { pull_requests: boolean; auth?: "app" | "token" | null; agent_repo?: boolean };
 }
 
 export async function GET(req: NextRequest): Promise<NextResponse> {

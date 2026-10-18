@@ -451,11 +451,20 @@ MAX_TOKEN_CHARS = 255
 
 
 class TokenIn(BaseModel):
-    """``{token}``. No length rule here: a validation error would echo the
-    value in the 422, so the route checks the length itself."""
+    """``{token, replace_app?}``. No length rule here: a validation error would
+    echo the value in the 422, so the route checks the length itself.
+
+    ``replace_app`` is the admin's confirm that the token REPLACES a live App
+    connection (fix round 1, item 3). The org has one ``github`` row (G-6), so
+    a token and the App cannot both hold it."""
 
     model_config = ConfigDict(extra="forbid")
     token: str
+    replace_app: bool = False
+
+
+#: The 409 detail when a token would replace a live App with no confirm.
+APP_CONNECTED = "app_connected"
 
 
 class TokenOut(BaseModel):
@@ -478,6 +487,17 @@ async def put_github_token(
     from gateway.routes.integrations import _refuse_unsafe_env_writes, audit_integration
 
     _refuse_unsafe_env_writes([("GITHUB_TOKEN", token)], actor=member)
+    from gateway.connections import store as connection_store
+
+    if not payload.replace_app:
+        async with tenant_session(org) as db:
+            live = await connection_store.get(
+                db, org, github_connection.PROVIDER, github_connection.OWNING_APP)
+        if (github_connection.is_app_row(live) and live is not None
+                and live.status != connection_store.STATUS_DISCONNECTED):
+            # The token would replace the App: pull requests stop coming by
+            # webhook and a merge no longer moves a task. The card asks first.
+            raise HTTPException(status_code=409, detail=APP_CONNECTED)
     try:
         answer = await github_app.call("GET", "/user", auth=f"Bearer {token}")
     except github_app.GitHubCallFailed:
@@ -489,8 +509,6 @@ async def put_github_token(
         raise HTTPException(status_code=422, detail="GitHub refused this token.")
     scopes = github_connection.parse_scopes(answer.headers.get("x-oauth-scopes", ""))
     async with tenant_session(org) as db:
-        from gateway.connections import store as connection_store
-
         before = await connection_store.get(
             db, org, github_connection.PROVIDER, github_connection.OWNING_APP)
         await github_connection.save_token(

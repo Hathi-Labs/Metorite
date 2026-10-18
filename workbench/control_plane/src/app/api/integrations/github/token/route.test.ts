@@ -4,6 +4,8 @@
 //  T-M1 drop the `sameOrigin` refusal -> "a cross-site PUT gets 403".
 //  T-M2 forward the whole body -> "only the token goes upstream".
 //  T-M3 echo the body back -> "the token never comes back".
+//  T-M4 (fix round 1, item 3) forward `replace_app` as the body sends it ->
+//       "only a true replace_app goes upstream".
 import { readFileSync } from "node:fs";
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -63,6 +65,15 @@ describe("the BFF Advanced token", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe("http://gw.test/integrations/github/token");
     expect(calls[0].init?.method).toBe("PUT");
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ token: TOKEN });
+  });
+
+  it("only a true replace_app goes upstream", async () => {
+    stubGateway(ok());
+    await put({ token: TOKEN, replace_app: true });
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ token: TOKEN, replace_app: true });
+    stubGateway(ok());
+    await put({ token: TOKEN, replace_app: "yes" });
     expect(JSON.parse(String(calls[0].init?.body))).toEqual({ token: TOKEN });
   });
 

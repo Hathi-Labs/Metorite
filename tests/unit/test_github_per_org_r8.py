@@ -27,6 +27,18 @@ router, as the NON-privileged role of the phase-4 rehearsal:
 
 Hermetic fakes agree with any SQL they are handed, so none of this is proved
 without the database.
+
+Fix round 1, item 3 (the App does not read a private agent repository, G-9),
+each mutation red when run:
+
+* 3-M1 ``PUT /token`` skips the live-App check ->
+  ``test_a_token_takes_the_place_of_an_app_row_only_with_a_confirm``.
+* 3-M2 the agent status keeps ``configured = _github_connected()`` ->
+  ``test_item3_the_agent_status_is_for_each_use``.
+* 3-M3 ``register_agent`` skips the private-repo refusal ->
+  ``test_item3_an_app_org_cannot_register_a_private_agent_repo``.
+* 3-M4 ``_private_repo_refusal`` answers ``None`` for a 404 ->
+  ``test_item3_the_config_fetch_of_an_app_org_names_a_private_repo``.
 """
 
 from __future__ import annotations
@@ -99,6 +111,10 @@ class FakeGithub:
             return httpx.Response(401, json={"message": "Bad credentials"})
         if host == "raw.githubusercontent.com":
             return httpx.Response(404, json={})
+        if host == "api.github.com" and path == "/repos/octo/public-agent":
+            # Item 3: a public repository with no config.json.
+            return httpx.Response(200, json={"full_name": "octo/public-agent",
+                                             "private": False})
         return httpx.Response(404, json={})
 
     def sent_text(self) -> str:
@@ -615,7 +631,7 @@ async def test_the_token_route_needs_the_manage_right(ns, app_engine) -> None:  
     assert _rows(ns, ns.org_a) == [] and ns.github.requests == []
 
 
-async def test_a_token_takes_the_place_of_an_app_row(ns, app_engine) -> None:  # noqa: F811
+def _seed_app_row(ns: Any, org: str) -> None:
     import json
 
     with ns.admin_engine.begin() as c:
@@ -623,8 +639,21 @@ async def test_a_token_takes_the_place_of_an_app_row(ns, app_engine) -> None:  #
             "INSERT INTO integration_connections (organization_id, provider, owning_app, "
             "scope_kind, status, provider_meta) VALUES (CAST(:o AS uuid), 'github', "
             "'integrations', 'org', 'connected', CAST(:m AS jsonb))"),
-            {"o": ns.org_a, "m": json.dumps({"auth": "app", "installation_id": "424242"})})
+            {"o": org, "m": json.dumps({"auth": "app", "installation_id": "424242"})})
+
+
+async def test_a_token_takes_the_place_of_an_app_row_only_with_a_confirm(ns, app_engine) -> None:  # noqa: F811
+    """Item 3: the org has ONE github row (G-6), so a token REPLACES the App.
+    With no confirm the route answers 409, asks GitHub nothing, and keeps
+    the App. With ``replace_app`` the token takes its place."""
+    _seed_app_row(ns, ns.org_a)
     res = await _connect(ns, ns.org_a, ADMIN_A, "DEV-A")
+    assert res.status_code == 409 and res.json()["detail"] == "app_connected", res.text
+    assert ns.github.requests == [], "no GitHub call before the confirm"
+    (row,) = _rows(ns, ns.org_a)
+    assert row.provider_meta["auth"] == "app"
+    res = await _call(ns, _user(ADMIN_A, ns.org_a), "PUT", "/integrations/github/token",
+                      {"token": _BY_DEVICE["DEV-A"][0], "replace_app": True})
     assert res.status_code == 200, res.text
     (row,) = _rows(ns, ns.org_a)
     assert row.provider_meta["auth"] == "token"
@@ -650,3 +679,75 @@ def test_t5_no_source_file_reads_the_customer_client_id() -> None:
 
     assert "GITHUB_CLIENT_ID" not in integrations.BUILTIN_ENV_KEYS
     assert not hasattr(integrations, "_github_org_store")
+
+
+# ── Fix round 1, item 3: the App reads no private agent repository ──────────
+
+
+async def _bound(ns: Any, org: str, coro: Any) -> Any:
+    from acb_common.db import bind_tenant, clear_tenant, release_tenant
+
+    scope = clear_tenant()
+    bind_tenant(org)
+    try:
+        async with tenant_engine_scope(_app_dsn(ns)):
+            return await coro()
+    finally:
+        release_tenant(scope)
+
+
+async def test_item3_the_agent_status_is_for_each_use(ns, app_engine) -> None:  # noqa: F811
+    """An App org reads pull requests, and NOT a private agent repo. So the
+    agent wizard's GitHub step stays open for it, and closes for a token org."""
+    _seed_app_row(ns, ns.org_a)
+    await _connect(ns, ns.org_b, ADMIN_B, "DEV-B")
+    for org, email, want in ((ns.org_a, ADMIN_A, False), (ns.org_b, ADMIN_B, True)):
+        res = await _call(ns, _user(email, org), "GET", "/integrations/status",
+                          params={"agent": "task-manager"})
+        assert res.status_code == 200, res.text
+        (github,) = [r for r in res.json() if r["service"] == "github"]
+        assert github["configured"] is want, (org, github)
+        assert github["github_coverage"]["agent_repo"] is want
+    tile = await _call(ns, _user(ADMIN_A, ns.org_a), "GET", "/integrations/status")
+    (row,) = [r for r in tile.json() if r["service"] == "github"]
+    assert row["github_coverage"] == {"pull_requests": row["configured"]}
+
+
+async def test_item3_the_config_fetch_of_an_app_org_names_a_private_repo(ns, app_engine) -> None:  # noqa: F811
+    from fastapi import HTTPException
+    from gateway.routes import agent
+
+    _seed_app_row(ns, ns.org_a)
+    with pytest.raises(HTTPException) as private:
+        await _bound(ns, ns.org_a, lambda: agent.get_agent_config(
+            repo="octo/private-agent", user=_user(ADMIN_A, ns.org_a)))
+    assert private.value.status_code == 422
+    assert private.value.detail == agent.PRIVATE_REPO_IN_APP_MODE
+    with pytest.raises(HTTPException) as public:
+        await _bound(ns, ns.org_a, lambda: agent.get_agent_config(
+            repo="octo/public-agent", user=_user(ADMIN_A, ns.org_a)))
+    assert public.value.status_code == 404, "a public repo with no config.json is a 404"
+    repo_reads = [r for r in ns.github.requests if r.url.path.startswith("/repos/")]
+    assert repo_reads and all("authorization" not in r.headers for r in repo_reads)
+
+
+async def test_item3_an_app_org_cannot_register_a_private_agent_repo(ns, app_engine, monkeypatch) -> None:  # noqa: F811
+    """Never a silent ``maf`` registration with no integrations: a clear 422."""
+    from fastapi import BackgroundTasks, HTTPException
+    from gateway.routes import agent
+
+    saved: list[Any] = []
+    monkeypatch.setattr(agent, "_load_dynamic_agents", lambda: [])
+    monkeypatch.setattr(agent, "_save_dynamic_agents", saved.append)
+    _seed_app_row(ns, ns.org_a)
+    req = agent.RegisterAgentRequest(name="private-bot", repo_url="octo/private-agent")
+    with pytest.raises(HTTPException) as caught:
+        await _bound(ns, ns.org_a, lambda: agent.register_agent(
+            req, BackgroundTasks(), _user(ADMIN_A, ns.org_a)))
+    assert caught.value.status_code == 422
+    assert caught.value.detail == agent.PRIVATE_REPO_IN_APP_MODE
+    assert saved == []
+    public = agent.RegisterAgentRequest(name="public-bot", repo_url="octo/public-agent")
+    entry = await _bound(ns, ns.org_a, lambda: agent.register_agent(
+        public, BackgroundTasks(), _user(ADMIN_A, ns.org_a)))
+    assert entry["agent_runtime"] == "maf" and len(saved) == 1

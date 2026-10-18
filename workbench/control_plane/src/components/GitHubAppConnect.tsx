@@ -42,9 +42,11 @@ import {
   githubCardView,
   parseGitHubReturn,
   refusalText,
+  replaceAppCopy,
   replaceTokenCopy,
   safeInstallationUrl,
   tokenProblem,
+  tokenReplacesApp,
   type GitHubAccount,
 } from "@/lib/githubConnect";
 
@@ -95,6 +97,7 @@ export default function GitHubAppConnect({ onChange, onConfigured, advancedOpen 
   const [token, setToken] = useState("");
   const [savingToken, setSavingToken] = useState(false);
   const [tokenNote, setTokenNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [confirmingReplace, setConfirmingReplace] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -140,10 +143,15 @@ export default function GitHubAppConnect({ onChange, onConfigured, advancedOpen 
     }
   }
 
-  async function saveToken() {
+  async function saveToken(replaceApp = false) {
     const problem = tokenProblem(token);
     if (problem) {
       setTokenNote({ ok: false, text: problem });
+      return;
+    }
+    // Item 3: a token replaces a live App. Ask first, before any request.
+    if (!replaceApp && tokenReplacesApp(info)) {
+      setConfirmingReplace(true);
       return;
     }
     setSavingToken(true);
@@ -152,9 +160,14 @@ export default function GitHubAppConnect({ onChange, onConfigured, advancedOpen 
       const res = await fetch("/api/integrations/github/token", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: token.trim() }),
+        body: JSON.stringify(replaceApp ? { token: token.trim(), replace_app: true } : { token: token.trim() }),
       });
       const body = (await res.json().catch(() => null)) as { login?: string; detail?: string } | null;
+      if (res.status === 409 && body?.detail === "app_connected") {
+        // The App connected in another tab after this card read the account.
+        setConfirmingReplace(true);
+        return;
+      }
       if (!res.ok) {
         setTokenNote({ ok: false, text: body?.detail ?? "Metorite could not save the token." });
         return;
@@ -168,6 +181,7 @@ export default function GitHubAppConnect({ onChange, onConfigured, advancedOpen 
       setTokenNote({ ok: false, text: "Metorite could not save the token." });
     } finally {
       setSavingToken(false);
+      setConfirmingReplace(false);
     }
   }
 
@@ -299,6 +313,20 @@ export default function GitHubAppConnect({ onChange, onConfigured, advancedOpen 
         onConfirm={() => void goToGitHub()}
         onCancel={() => {
           if (!starting) setWarning(false);
+        }}
+      />
+      <ConfirmDialog
+        open={confirmingReplace}
+        title={replaceAppCopy().title}
+        body={replaceAppCopy().body}
+        note={replaceAppCopy().note}
+        confirmLabel={replaceAppCopy().confirmLabel}
+        confirmVariant="destructive"
+        icon="KeyRound"
+        busy={savingToken}
+        onConfirm={() => void saveToken(true)}
+        onCancel={() => {
+          if (!savingToken) setConfirmingReplace(false);
         }}
       />
       <ConfirmDialog
