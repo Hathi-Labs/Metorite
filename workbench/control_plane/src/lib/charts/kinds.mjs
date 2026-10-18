@@ -14,6 +14,7 @@
  * the real width, so the same chart fits a phone image and a chat bubble.
  */
 import { alpha, theme, tone } from "./theme.mjs";
+import { compactNumber, numberSystem } from "../numberFormat.mjs";
 
 export class ChartSpecError extends Error {}
 
@@ -97,10 +98,13 @@ function date(v, what) {
 
 /**
  * @typedef {{ mode?: "dark" | "light", scale?: number, footer?: boolean,
- *   font?: string, interactive?: boolean, animate?: boolean, maxHeight?: number }} Opts
+ *   font?: string, interactive?: boolean, animate?: boolean, maxHeight?: number,
+ *   numbering?: "indian" | "international" }} Opts
  * `font` is the page's own font list (the web chat, where next/font renames
  * Geist). `interactive` adds the tooltip a live chart shows on hover.
  * `maxHeight` is a card's height cap, in pixels (see {@link chartOption}).
+ * `numbering` is the viewer's number system. It wins over the spec's own
+ * `numbering` field, and with neither a chart draws in lakh and crore.
  */
 
 const DAY = 86400000;
@@ -109,13 +113,15 @@ const DAY = 86400000;
  * title is shorter by exactly the header it lacks (WAC-10g review). */
 const BODY = 610;
 
-/** Short numbers: 1.2k, 34k, 1.5M. */
-export function fmt(v) {
-  const a = Math.abs(v);
-  const out = a >= 1e6 ? `${(v / 1e6).toFixed(a >= 1e7 ? 0 : 1)}M`
-    : a >= 1e3 ? `${(v / 1e3).toFixed(a >= 1e4 ? 0 : 1)}k`
-      : Number.isInteger(v) ? `${v}` : `${+v.toFixed(2)}`;
-  return out.replace("-", "\u2212"); // one minus sign, the typographic one
+/**
+ * Short numbers in the chart's number system: 1.2K, 34K, 12.5 L, 1.35 Cr
+ * (indian, the default) or 1.2K, 34K, 1.5M, 1.35B (international). The one
+ * formatter is `lib/numberFormat.mjs`.
+ * @param {number} v
+ * @param {unknown} [numbering]
+ */
+export function fmt(v, numbering) {
+  return compactNumber(v, numbering).replace("-", "\u2212"); // one minus sign, the typographic one
 }
 
 /**
@@ -135,7 +141,11 @@ function ctx(spec, opts) {
   const k = opts.scale ?? 1;
   const u = (/** @type {number} */ n) => Math.round(n * k * 10) / 10;
   const unit = text(spec.unit ?? "", "unit", 8, false);
-  const label = (v) => `${fmt(v)}${unit}`;
+  // The viewer's own preference wins (the web chat passes it). A PNG has no
+  // viewer, so it reads the spec, which the server stamps (`numbering`).
+  const numbering = numberSystem(opts.numbering ?? spec.numbering);
+  const short = (/** @type {number} */ v) => fmt(v, numbering);
+  const label = (v) => `${short(v)}${unit}`;
   const axisText = { color: t.muted, fontFamily: t.font, fontSize: u(24) };
   const hasSub = Boolean(spec.subtitle);
   // A chart with no title (the chat's barChart template may omit it) starts
@@ -145,7 +155,7 @@ function ctx(spec, opts) {
   // width. The web chat caps the scale (`LiveChart`), so a wide chart is a
   // wider drawing, not a bigger picture.
   const wu = (opts.width ?? 1080) / k;
-  return { t, u, unit, label, axisText, top, k, wu };
+  return { t, u, unit, label, short, numbering, axisText, top, k, wu };
 }
 
 function base(spec, opts, c) {
@@ -176,7 +186,7 @@ const valueAxis = (c, extra = {}) => ({
   type: "value", splitNumber: 4,
   axisLine: { show: false }, axisTick: { show: false },
   splitLine: { lineStyle: { color: c.t.grid, width: c.u(2) } },
-  axisLabel: { ...c.axisText, margin: c.u(20), formatter: fmt },
+  axisLabel: { ...c.axisText, margin: c.u(20), formatter: c.short },
   ...extra,
 });
 
@@ -318,7 +328,7 @@ const BUILD = {
     if (totals.some((t) => t <= 0)) fail('"totals" must be above zero');
     const o = base(spec, opts, c);
     const pct = done.map((d, i) => Math.max(0, Math.min(100, (d / totals[i]) * 100)));
-    const caption = (i) => (spec.totals === undefined ? `${Math.round(pct[i])}%` : `${fmt(done[i])} of ${fmt(totals[i])}`);
+    const caption = (i) => (spec.totals === undefined ? `${Math.round(pct[i])}%` : `${c.short(done[i])} of ${c.short(totals[i])}`);
     if (ls.length <= 4) {
       // Activity rings: the first row is the outer ring.
       o.angleAxis = { max: 100, show: false, startAngle: 90 };

@@ -6,6 +6,8 @@
 // currency rather than assuming it — the assumption belongs in the data, not
 // in the formatter.
 
+import { compactNumber } from "@/lib/numberFormat.mjs";
+
 /**
  * ₹1,20,000 — the Indian digit grouping, not the western one.
  *
@@ -25,25 +27,25 @@ export function money(
 }
 
 /**
- * A lane header's total: ₹12.4L / ₹3.2Cr, because a kanban column is 220px
+ * A lane header's total: ₹12.4 L / ₹3.2 Cr, because a kanban column is 220px
  * wide and "₹1,24,00,000" wraps.
+ *
+ * The digits come from `compactNumber`, the product's ONE short-number
+ * formatter (`lib/numberFormat.mjs`), which the charts use too. `system`
+ * defaults to "indian", the default of every org. The CRM screens do not
+ * pass the member's preference yet.
  */
 export function compactMoney(
   amount: number | null | undefined,
-  currency = "INR"
+  currency = "INR",
+  system: "indian" | "international" = "indian",
 ): string {
   if (amount === null || amount === undefined || Number.isNaN(amount)) return "—";
   const symbol = currency === "INR" || !currency ? "₹" : `${currency} `;
-  const abs = Math.abs(amount);
+  // Whole rupees below a thousand, as before: a lane total is never ₹600.45.
+  const abs = Math.abs(amount) < 1e3 ? Math.round(Math.abs(amount)) : Math.abs(amount);
   const sign = amount < 0 ? "-" : "";
-  if (abs >= 1e7) return `${sign}${symbol}${trim(abs / 1e7)}Cr`;
-  if (abs >= 1e5) return `${sign}${symbol}${trim(abs / 1e5)}L`;
-  if (abs >= 1e3) return `${sign}${symbol}${trim(abs / 1e3)}K`;
-  return `${sign}${symbol}${Math.round(abs)}`;
-}
-
-function trim(value: number): string {
-  return value.toFixed(1).replace(/\.0$/, "");
+  return `${sign}${symbol}${compactNumber(abs, system)}`;
 }
 
 /**

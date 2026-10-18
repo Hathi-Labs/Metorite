@@ -114,8 +114,11 @@ describe("wac10f-every-kind-draws", () => {
     expect(f({ name: "Won", value: 12 })).toContain("<1%");
     expect(f({ name: "Leads", value: 10000 })).toContain("100%");
   });
-  it("writes short numbers", () => {
-    expect([fmt(999), fmt(1200), fmt(34000), fmt(1500000), fmt(2.345), fmt(-3)]).toEqual(["999", "1.2k", "34k", "1.5M", "2.35", "−3"]);
+  it("writes short numbers, in lakh and crore by default", () => {
+    expect([fmt(999), fmt(1200), fmt(34000), fmt(1250000), fmt(2.345), fmt(-3)])
+      .toEqual(["999", "1.2K", "34K", "12.5\u00a0L", "2.35", "\u22123"]);
+    expect([fmt(1200, "international"), fmt(34000, "international"), fmt(1500000, "international")])
+      .toEqual(["1.2K", "34K", "1.5M"]);
   });
 });
 
@@ -189,5 +192,70 @@ describe("the donut's centre", () => {
     expect(centre({ values: [18, 9], unit: "h" })).toEqual(["27h", "total"]);
     expect(centre({ values: [18, 9] })).toEqual(["27", "total"]);
     expect(centre({ values: [60, 40], center: "hours" })).toEqual(["100", "hours"]);
+  });
+});
+
+// Owner, 2026-10-19: lakh and crore by default, million and billion by
+// choice (whatsapp_assistant_channel.md §13.10). Every place a kind writes a
+// number goes through the chart's one formatter, so no "M" survives.
+describe("numbering: every number a chart writes follows it", () => {
+  const BIG = 13500000; // 1.35 Cr, or 13.5M
+  const texts = (o: unknown): string[] => {
+    const out: string[] = [];
+    const walk = (v: unknown) => {
+      if (typeof v === "string") out.push(v);
+      else if (Array.isArray(v)) v.forEach(walk);
+      else if (v && typeof v === "object") Object.values(v).forEach(walk);
+    };
+    walk(o);
+    return out;
+  };
+
+  it("an axis, a bar label, a line's end label and the tooltip", () => {
+    for (const type of ["bar", "line"] as const) {
+      const spec = { type, title: "t", labels: ["a", "b"], values: [BIG, 1] };
+      const indian = chartOption(spec, { interactive: true }).option;
+      const intl = chartOption({ ...spec, numbering: "international" }, { interactive: true }).option;
+      const axis = (o: typeof indian) => (type === "bar" ? o.yAxis : o.yAxis).axisLabel.formatter;
+      expect(axis(indian)(BIG)).toBe("1.35\u00a0Cr");
+      expect(axis(intl)(BIG)).toBe("13.5M");
+      const label = (o: typeof indian) => (type === "bar" ? o.series[0].label : o.series[0].endLabel).formatter;
+      expect(label(indian)({ value: BIG, dataIndex: 0 })).toBe("1.35\u00a0Cr");
+      expect(label(intl)({ value: BIG, dataIndex: 0 })).toBe("13.5M");
+      expect(indian.tooltip.valueFormatter(BIG)).toBe("1.35\u00a0Cr");
+      expect(intl.tooltip.valueFormatter(BIG)).toBe("13.5M");
+    }
+  });
+
+  it("a donut's total, a progress caption, a waterfall step and a funnel stage", () => {
+    const donut = (n?: string) => texts(chartOption({ type: "donut", title: "t", labels: ["a", "b"], values: [BIG, BIG], numbering: n }).option.graphic);
+    expect(donut()).toContain("2.7\u00a0Cr");
+    expect(donut("international")).toContain("27M");
+    const progress = (n?: string) => texts(chartOption({ type: "progress", title: "t", labels: ["a"], values: [250000], totals: [BIG], numbering: n }).option.graphic);
+    expect(progress()).toContain("2.5\u00a0L of 1.35\u00a0Cr");
+    expect(progress("international")).toContain("250K of 13.5M");
+    const funnel = (n?: string) => chartOption({ type: "funnel", title: "t", labels: ["a"], values: [BIG], numbering: n }).option.series[0].label.formatter({ name: "a", value: BIG });
+    expect(funnel()).toContain("1.35\u00a0Cr");
+    expect(funnel("international")).toContain("13.5M");
+  });
+
+  it("the axes of a scatter and a box plot", () => {
+    const scatter = chartOption({ type: "scatter", title: "t", groups: [{ name: "g", points: [[1, BIG]] }] }).option;
+    expect(scatter.yAxis.axisLabel.formatter(BIG)).toBe("1.35\u00a0Cr");
+    const box = chartOption({ type: "box", title: "t", groups: [{ name: "g", values: [1, 2, BIG] }], numbering: "international" }).option;
+    expect(box.yAxis.axisLabel.formatter(BIG)).toBe("13.5M");
+  });
+
+  it("the viewer's numbering wins over the spec's, and a bad value is the default", () => {
+    const spec = { type: "bar", title: "t", labels: ["a"], values: [BIG], numbering: "indian" };
+    expect(chartOption(spec, { numbering: "international" }).option.yAxis.axisLabel.formatter(BIG)).toBe("13.5M");
+    expect(chartOption({ ...spec, numbering: "roman" }).option.yAxis.axisLabel.formatter(BIG)).toBe("1.35\u00a0Cr");
+  });
+
+  it("a PNG reads the spec's numbering, which the server stamps", () => {
+    const one = renderPng({ type: "bar", title: "t", labels: ["a"], values: [BIG], numbering: "international" });
+    const two = renderPng({ type: "bar", title: "t", labels: ["a"], values: [BIG] });
+    expect([...one.subarray(0, 4)]).toEqual(PNG);
+    expect(Buffer.compare(one, two)).not.toBe(0);
   });
 });

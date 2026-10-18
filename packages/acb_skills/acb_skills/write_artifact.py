@@ -1351,6 +1351,26 @@ GENUI_TEMPLATES: frozenset[str] = frozenset({
 _GENUI_MAX_DEPTH = 20
 
 
+def run_numbering() -> str:
+    """The number system of the run on this frame, for a chart's
+    ``numbering`` (``whatsapp_assistant_channel.md`` §13.10).
+
+    The run's org and member come from the run boundary through
+    ``orchestrator.executor.run_number_system``, the one reader. Outside a
+    run, or on any fault, it is the default, "indian".
+    """
+    from acb_common.number_system import DEFAULT
+
+    try:
+        from orchestrator.executor import run_number_system
+    except ImportError:  # pragma: no cover - the skill runs in the gateway
+        return DEFAULT
+    try:
+        return run_number_system()
+    except Exception:  # a preference never costs the chart
+        return DEFAULT
+
+
 def genui_refusal(spec: dict) -> str | None:
     """Why the renderer cannot draw ``spec``, or ``None`` when it can.
 
@@ -1805,6 +1825,11 @@ async def emit_generative_ui(ui: str) -> dict:
     refusal = genui_refusal(spec)
     if refusal:
         return {"ok": False, "error": refusal}
+    # Every chart draws in the member's number system. The server writes
+    # `numbering` over any value the model wrote (§13.10).
+    from acb_common.number_system import stamp_ui
+
+    stamp_ui(spec, run_numbering())
 
     # Advisory lint for the custom-HTML tier — the sandbox swallows these errors
     # silently, so report them back with the emit result. Inline cards are not

@@ -540,6 +540,19 @@ class Settings(BaseSettings):
     # §13). Fence: tests/unit/test_company_search_tool.py.
     company_search_enabled: bool = False
 
+    # ── Recency in company retrieval (WS-61 CX-1, D106) ─────────────────────
+    #
+    # ON makes `GET /search/company` rank newer records first inside each app,
+    # put a `stamp` on each hit, apply the Knowledge review factor and take
+    # `after`. It also gives `search_company` its `after` argument and its
+    # header, and adds three grounding sentences to the persona that
+    # `company_search_enabled` turns on. OFF gives today's output byte for
+    # byte. The one reader is
+    # `acb_skills.company_search_tools.context_recency_enabled`. AGENT-SAFE:
+    # it spends nothing (company_context.md §11). Fence:
+    # tests/unit/test_company_search_recency.py.
+    context_recency: bool = False
+
     # ── The per-feature `decide` modes (WS-17 EM-T5, CP-13e) ────────────────
     #
     # `decide_feature_modes` holds `feature=mode` pairs with a comma between

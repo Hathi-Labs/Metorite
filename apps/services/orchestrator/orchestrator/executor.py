@@ -619,6 +619,56 @@ def _run_org_display_name() -> str:
     return name
 
 
+# ── The member's number system (whatsapp_assistant_channel.md §13.10) ────────
+
+
+def _read_number_system(org: str, member: str) -> str:
+    """The resolved system of *member* in *org*. One read. It never raises.
+
+    *org* is the run's tenant (:func:`_current_run_org`) and *member* the
+    run's verified member (:func:`_verified_run_member`), never request input
+    (R5). A failed read is the default, "indian".
+    """
+    from acb_common import number_system as ns
+
+    opener = _opener_for_org(org)
+    if opener is None:
+        return ns.DEFAULT
+    try:
+        from sqlalchemy import text
+
+        with opener() as session:
+            row = session.execute(text(ns.READ_SQL), {"org": org, "uid": member}).first()
+    except Exception:
+        return ns.DEFAULT
+    return ns.resolve(row[0], row[1]) if row else ns.DEFAULT
+
+
+def run_number_system() -> str:
+    """The number system of the run on this frame: the member's override,
+    then the org's value, then "indian".
+
+    The ONE reader of the run's preference. The per-turn context line
+    (:func:`_context_preamble_parts`) and the chart stamp
+    (``write_artifact.emit_generative_ui``, ``whatsapp_ui._chart``,
+    ``reports.make_report``) all call it. Cached for a minute per org and
+    member (``acb_common.number_system``), and a settings save drops the
+    cache, so a turn pays at most one read.
+    """
+    from acb_common import number_system as ns
+
+    org = _current_run_org()
+    if not org:
+        return ns.DEFAULT
+    member = _verified_run_member()
+    hit = ns.cached(org, member)
+    if hit is not None:
+        return hit
+    system = ns.resolve(None, _read_number_system(str(org), member))
+    ns.remember(org, member, system)
+    return system
+
+
 # ── WS-61 KB-4a: the Knowledge index block (knowledge_base.md §6.5) ─────────
 
 #: The one agent whose per-turn context carries the block.
@@ -7644,7 +7694,8 @@ def _context_preamble_parts(
     The run's organisation by name (:func:`_run_org_display_name`), the
     connected and missing integrations, the Knowledge index block of the
     orchestrator (:func:`_knowledge_index_block`, WS-61 KB-4a), then
-    ``memory_context``, then ``system_context`` (which carries the persona). :func:`_build_event_message`
+    ``memory_context``, then ``system_context`` (which carries the persona),
+    and last the member's number-system line (:func:`run_number_system`). :func:`_build_event_message`
     puts the history and the current turn after them. The structured path of
     WS-43t1 sends the same blocks through its per-run context provider
     (:func:`_run_context_text`). One builder, so the two paths cannot drift.
@@ -7688,6 +7739,16 @@ def _context_preamble_parts(
     system_ctx = event_payload.get("system_context") or ""
     if system_ctx:
         parts.append("## Current context\n" + system_ctx)
+
+    # The member's number system, one line (owner, 2026-10-19): lakh and
+    # crore by default. From the run boundary, never from the payload (R5).
+    # Last, so the blocks above keep their places. A run with no org (a
+    # webhook with no tenant) has no member preference, and gets no line.
+    # `whatsapp_assistant_channel.md` §13.10.
+    if _current_run_org():
+        from acb_common.number_system import prompt_line
+
+        parts.append(prompt_line(run_number_system()))
     return parts
 
 

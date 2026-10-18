@@ -43,7 +43,8 @@ import {
 import { cardLabel } from "../lib/cardLabel";
 import { isMirrored, type CrmMode } from "../lib/connect";
 import { isRetired } from "../lib/emptyStages";
-import { compactMoney, money, shortEmail, stageAgeLabel } from "../lib/format";
+import { money, shortEmail, stageAgeLabel } from "../lib/format";
+import { useCompactMoney } from "../lib/useCompactMoney";
 import { nextActivityChip } from "../lib/nextActivity";
 import type { Deal, Lead, Status } from "../lib/types";
 
@@ -222,20 +223,21 @@ export default function KanbanBoard({
 
 /** The money line under a deal lane's chip. */
 function LaneTotals({ lane }: { lane: BoardLane | LeadLane }) {
+  const compact = useCompactMoney();
   return (
     <span className="flex items-center gap-1">
       <Icon name="IndianRupee" className="w-3 h-3" />
       {/* The lane total covers the whole lane; the cards below are one page
           of it. A header that counted only what it returned would lie about
           the busy lane somebody is actually looking at. */}
-      <span>{compactMoney(lane.amount).replace("₹", "")}</span>
+      <span>{compact(lane.amount).replace("₹", "")}</span>
       {/* Weighted ₹ under the raw total (§5.1). Rendered only where it means
           something — a won lane's revenue is closed and a lost lane forecasts
           nothing, so the gateway sends 0 and printing "0 weighted" there would
           read as a bug. */}
       {lane.weighted > 0 && (
         <span title="Weighted by probability">
-          · {compactMoney(lane.weighted).replace("₹", "")} wtd
+          · {compact(lane.weighted).replace("₹", "")} wtd
         </span>
       )}
       {lane.rows.length < lane.count && (
