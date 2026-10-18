@@ -31,8 +31,17 @@ That is more than the longest request-time job, four requests of
 **Flat cost.** At most :data:`MAX_CHUNKS` chunks for each org in a tick. A
 chunk that the door refused, or a page with no member to bind, waits
 :data:`RETRY_AFTER_S` before the sweep takes it again, so one bad chunk
-cannot hold every tick. A request of two or more chunks with no vector at
-all is an outage: the org stops for this tick, and nothing waits.
+cannot hold every tick.
+
+**A page with no vector at all** (KB-3c fix round 1). The door answers
+``None`` for every text of a refusal, an outage, a count mismatch or a
+vector of the wrong size, and the sweep cannot tell them apart. So a page
+of two or more chunks with no vector waits :data:`OUTAGE_BACKOFF_S`, and
+the sweep goes on to the next page. After :data:`MAX_EMPTY_IN_A_ROW`
+groups in a row with no vector, the org stops for this tick. So a real
+outage costs at most two calls for each org in a tick, and one bad page
+never holds the pages after it. A failed identity read parks nothing: the
+page is tried again in the next tick.
 
 **The log.** One line for each tick: the org count, the chunk count, the
 vectors written. Never page text, never a member.
@@ -78,6 +87,13 @@ MIN_AGE_S = 120
 #: Seconds a refused chunk waits before the sweep takes it again.
 RETRY_AFTER_S = 3600.0
 
+#: Seconds a page of two or more chunks with no vector at all waits. It can
+#: be an outage, so the wait is short: two ticks.
+OUTAGE_BACKOFF_S = 2 * TICK_SECONDS
+
+#: Groups in a row with no vector that stop the org for this tick.
+MAX_EMPTY_IN_A_ROW = 2
+
 #: Seconds to wait for a tick in progress when the gateway stops.
 STOP_GRACE_SECONDS = 30.0
 
@@ -106,6 +122,7 @@ class TickResult:
     chunks: int = 0
     written: int = 0
     no_member: int = 0
+    unverified: int = 0
     refused: int = 0
     outages: int = 0
 
@@ -135,9 +152,13 @@ def _skipped(org: str, now: float) -> list[int]:
     return [cid for (o, cid) in _waiting if o == org]
 
 
-def _park(org: str, chunk_ids: list[int], now: float) -> None:
+def _park(org: str, chunk_ids: list[int], now: float, wait: float = RETRY_AFTER_S) -> None:
     for cid in chunk_ids:
-        _waiting[(org, cid)] = now + RETRY_AFTER_S
+        _waiting[(org, cid)] = now + wait
+
+
+class _Unverified(Exception):
+    """The identity read failed, so no member is proven or refused."""
 
 
 async def select_waiting(org: str, limit: int, skip: list[int]) -> list[Waiting]:
@@ -179,23 +200,31 @@ async def select_waiting(org: str, limit: int, skip: list[int]) -> list[Waiting]
     return out
 
 
-async def _payer(org: str, members: tuple[str, ...], known: dict[str, bool]) -> str | None:
+async def _payer(
+    org: str, members: tuple[str, ...], known: dict[str, bool | None],
+) -> str | None:
     """The first of *members* who is still active in *org*, or ``None``.
 
-    The one departed rule of the gateway (``my_day_loop.departed``). A failed
-    read proves nothing, so that member does not pay. *known* holds the
-    answers of this tick, so each member costs one read.
+    The one departed rule of the gateway (``my_day_loop.departed``). *known*
+    holds the answers of this tick, so each member costs one read. A failed
+    read proves nothing, so that member does not pay. When no member is
+    proven and a read failed, it raises :class:`_Unverified`, and the caller
+    parks nothing (fix round 1, P3-a).
     """
     from gateway import my_day_loop
 
+    failed = False
     for member in members:
         if member not in known:
             try:
                 known[member] = await my_day_loop.departed(org, member) is None
             except Exception:  # a failed read does not prove the member
-                known[member] = False
+                known[member] = None
         if known[member]:
             return member
+        failed = failed or known[member] is None
+    if failed:
+        raise _Unverified
     return None
 
 
@@ -213,12 +242,18 @@ async def run_org(org: str, result: TickResult) -> None:
     now = time.monotonic()
     found = await select_waiting(org, MAX_CHUNKS, _skipped(org, now))
     result.chunks += len(found)
-    known: dict[str, bool] = {}
+    known: dict[str, bool | None] = {}
+    empty_in_a_row = 0
     for group in _by_page(found).values():
         if _stopping.is_set():
             return
         ids = [w.pending.id for w in group]
-        member = await _payer(org, group[0].members, known)
+        try:
+            member = await _payer(org, group[0].members, known)
+        except _Unverified:
+            # A failed read says nothing about the member: try again next tick.
+            result.unverified += len(group)
+            continue
         if member is None:
             result.no_member += len(group)
             _park(org, ids, now)
@@ -227,10 +262,20 @@ async def run_org(org: str, result: TickResult) -> None:
         with job_member_scope(member, app=embed_door.DEFAULT_MODULE):
             vectors = await embed_door.embed([w.pending.text for w in group], org=org)
         vectors = (list(vectors) + [None] * len(group))[:len(group)]
-        if len(group) > 1 and not any(v is not None for v in vectors):
-            # The door is down. Nothing waits, and the next tick tries again.
-            result.outages += 1
-            return
+        if not any(v is not None for v in vectors):
+            empty_in_a_row += 1
+            if len(group) > 1:
+                # A refusal, an outage or a bad answer: they look the same.
+                # A short wait, then the next page.
+                result.outages += 1
+                _park(org, ids, now, OUTAGE_BACKOFF_S)
+            else:
+                result.refused += 1
+                _park(org, ids, now)
+            if empty_in_a_row >= MAX_EMPTY_IN_A_ROW:
+                return  # most likely an outage: stop this org for this tick
+            continue
+        empty_in_a_row = 0
         rows = [(w.pending, v) for w, v in zip(group, vectors, strict=True) if v is not None]
         lost = [w.pending.id for w, v in zip(group, vectors, strict=True) if v is None]
         if lost:
@@ -258,7 +303,8 @@ async def run_tick() -> TickResult:
             _log.warning("knowledge.embed_sweep.org_failed", error=type(exc).__name__)
     _log.info("knowledge.embed_sweep.tick", orgs=result.orgs, chunks=result.chunks,
               written=result.written, no_member=result.no_member,
-              refused=result.refused, outages=result.outages)
+              unverified=result.unverified, refused=result.refused,
+              outages=result.outages)
     return result
 
 
@@ -313,7 +359,9 @@ def loop_running() -> bool:
 
 __all__ = [
     "MAX_CHUNKS",
+    "MAX_EMPTY_IN_A_ROW",
     "MIN_AGE_S",
+    "OUTAGE_BACKOFF_S",
     "RETRY_AFTER_S",
     "TICK_SECONDS",
     "TickResult",

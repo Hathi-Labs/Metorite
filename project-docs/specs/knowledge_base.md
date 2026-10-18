@@ -606,9 +606,17 @@ member on one auth branch only.
 published page, older than 120 s. The age keeps it off a chunk that a job
 still holds, because the longest job takes 80 s. It embeds each page with no
 session open, as the page's author or its newest editor. That member must
-still be active in the org. A chunk that the door refused waits one hour. A
-batch with no vector at all is an outage, and nothing waits. Each tick logs
+still be active in the org. If the identity read fails, the page waits for
+the next tick. A chunk that the door refused waits one hour. Each tick logs
 one line of counts, and never page text.
+
+**A page with no vector at all.** The door gives no vector for a refusal,
+an outage, a count mismatch or a vector of the wrong size. The sweep cannot
+tell these apart. So a page of two or more chunks with no vector waits two
+ticks (240 s), and the sweep goes on to the next page. After two pages in a
+row with no vector, the org stops for that tick. So an outage costs at most
+two calls for each org in a tick, and one bad page does not hold the pages
+after it.
 
 **The usage row.** The Router writes one `usage_event` row for each request,
 with the tokens. The `(tier-embed, embed)` card is `absorbed` (D19.2), so the
@@ -1058,7 +1066,7 @@ The first migration adds, and nothing renames (R6).
 | `KNOWLEDGE_ORGS` | empty | The organizations the routes serve. A star is every org | owner |
 | ~~`NEXT_PUBLIC_KNOWLEDGE`~~ | — | Not built. KB-12 found no such flag in the code. The launch status of the pane is the one gate of the sidebar (`launch_surface.md` §3), so no second flag is needed | — |
 | `KNOWLEDGE_EMBED` | off | Chunks get a vector. Off, the index is lexical only | AGENT-SAFE. Spends `tier-embed` credits, so a flip for an org is the owner's |
-| `KNOWLEDGE_EMBED_SWEEP` | on | The embed sweep of §6.4 starts. It does nothing for an org that `KNOWLEDGE_EMBED` does not name. Off, the loop does not start | AGENT-SAFE. The spend follows `KNOWLEDGE_EMBED` |
+| `KNOWLEDGE_EMBED_SWEEP` | on | The embed sweep of §6.4 starts. It does nothing for an org that `KNOWLEDGE_EMBED` does not name. Off, the loop does not start. Then a chunk that the door refused once gets a vector only when its text changes, because the request-time job embeds only new shas | AGENT-SAFE. The spend follows `KNOWLEDGE_EMBED` |
 | `KNOWLEDGE_SOURCES` | empty | The providers a member can connect: `dropbox`, `onedrive`, `google_drive` | owner. `google_drive` waits on §7.4 |
 | `KNOWLEDGE_SYNC_ENABLED` | off | The loop runs | AGENT-SAFE to build, owner to flip on the box |
 | `MY_DAY_PROVIDERS` | as WS-58 | `knowledge` joins the list | MD-10's rule |
