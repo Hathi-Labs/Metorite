@@ -20,12 +20,13 @@ a write of the indexer, and it is not a read.
 The check is per statement, not per function. A function that calls the
 clause for one query and reads ``kb_pages`` raw in a second query fails.
 
-Integrity reads. Two reads look at pages the caller may not see, because a
+Integrity reads. Three reads look at pages the caller may not see, because a
 rule of the tree needs them: the children of a page (a move to another space
 refuses a page with children) and the ancestors of a page (a move refuses a
-cycle). A third and a fourth read the chunks that wait for a vector, for the
-embed job and the embed sweep, which apply no member's clause. None returns a
-page or a chunk to a caller. Each is
+cycle). A third reads all the siblings of a page, because a move renumbers
+them 0 to n (KB-2e). A fourth and a fifth read the chunks that wait for a
+vector, for the embed job and the embed sweep, which apply no member's
+clause. None returns a page or a chunk to a caller. Each is
 listed in ``_INTEGRITY_READS`` with its reason, and the list fails when it
 goes stale.
 """
@@ -68,6 +69,11 @@ _INTEGRITY_READS: dict[tuple[str, str], str] = {
         "A move refuses a parent that is the page or one of its descendants. "
         "The walk passes through pages the caller may not see. It returns ids "
         "for a membership test and never a row."
+    ),
+    ("core.py", "sibling_rows"): (
+        "A move renumbers ALL the siblings 0 to n (KB-2e), so a sibling the "
+        "caller cannot see keeps its place. It returns ids and sort keys to "
+        "pages._place, which writes positions, and never a row to a caller."
     ),
     ("index.py", "select_pending"): (
         "The embed job of KB-3 reads the chunks of one page, already loaded "

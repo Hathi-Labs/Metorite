@@ -540,6 +540,42 @@ async def has_children(db: Any, user: UserContext, page_id: str) -> bool:
     )).scalar() is True
 
 
+async def sibling_rows(
+    db: Any, user: UserContext, space_id: str, parent_id: str | None,
+) -> list[Any]:
+    """Every page under *parent_id* in *space_id*, in each state (KB-2e).
+
+    An integrity read (listed in the visibility fence): the renumber of
+    ``pages._place`` writes 0 to n over ALL the siblings, so a sibling the
+    caller cannot see keeps its own place. Each row holds the id, the
+    position and the sort keys, and no row goes back to a caller. The order
+    is :func:`sibling_key`, the order the tree draws.
+    """
+    params: dict[str, Any] = {"org": org_of(user), "sid": space_id}
+    if parent_id is None:
+        under = "parent_id IS NULL"
+    else:
+        under = "parent_id = CAST(:parent AS uuid)"
+        params["parent"] = parent_id
+    rows = (await db.execute(
+        text("SELECT id, position, title, created_at FROM kb_pages "
+             "WHERE organization_id = CAST(:org AS uuid) "
+             f"AND space_id = CAST(:sid AS uuid) AND {under}"),
+        params,
+    )).fetchall()
+    return sorted(rows, key=sibling_key)
+
+
+def sibling_key(row: Any) -> tuple[int, str, str, str]:
+    """The order of siblings, the same as ``compareSiblings`` in the client.
+
+    The client draws the tree in this order (``lib/tree.ts``), and the
+    position of a move counts in it. Python sorts here, not SQL, because a
+    collation can put two titles in another order than the browser does.
+    """
+    return (int(row.position), str(row.title).lower(), _iso(row.created_at) or "", str(row.id))
+
+
 #: The deepest tree :func:`ancestor_ids` walks. A deeper chain is refused.
 MAX_DEPTH = 64
 

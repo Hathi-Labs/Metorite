@@ -548,6 +548,158 @@ async def test_a_move_refuses_a_cycle(ns, app_engine) -> None:  # noqa: F811
                         {"parent_id": top["id"]})).status_code == 422
 
 
+# ── KB-2e: the place of a page in the tree ─────────────────────────────────
+
+def _tree_rows(p: Any, space: str) -> list[tuple[str, int]]:
+    """``(title, position)`` of each page in *space*, in the order of the tree."""
+    with p.admin_engine.connect() as c:
+        rows = c.execute(text(
+            "SELECT title, position FROM kb_pages WHERE space_id = CAST(:s AS uuid) "
+            "ORDER BY parent_id NULLS FIRST, position, lower(title)"), {"s": space}).all()
+    return [(r.title, r.position) for r in rows]
+
+
+def _versions_and_stamp(p: Any, pid: str) -> tuple[int, Any]:
+    with p.admin_engine.connect() as c:
+        count = c.execute(text(
+            "SELECT count(*) FROM kb_page_versions WHERE page_id = CAST(:p AS uuid)"),
+            {"p": pid}).scalar()
+        stamp = c.execute(text(
+            "SELECT updated_at FROM kb_pages WHERE id = CAST(:p AS uuid)"), {"p": pid}).scalar()
+    return int(count), stamp
+
+
+async def test_a_new_page_goes_last_and_a_reorder_writes_no_version(ns, app_engine) -> None:  # noqa: F811
+    """The KB-2e done-when: a drop keeps its place after a reload, and a
+    reorder adds no row to ``kb_page_versions`` and keeps ``updated_at``."""
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    writer_email = _address("writer")
+    writer = _principal(writer_email, ns.org_a)
+    space = await _space(ns, admin, "Tree", [{"subject": writer_email, "level": "write"}])
+    ids = {}
+    for title in ("Charlie", "Alpha", "Bravo"):
+        ids[title] = await _published(ns, writer, space, title)
+    # A create puts the page last, so the order is the order of creation.
+    assert _tree_rows(ns, space) == [("Charlie", 0), ("Alpha", 1), ("Bravo", 2)]
+
+    before = _versions_and_stamp(ns, ids["Bravo"])
+    moved = await _ok(ns, writer, "POST", f"/knowledge/pages/{ids['Bravo']}/move",
+                      {"position": 0})
+    assert moved["position"] == 0 and "version" not in moved
+    assert _tree_rows(ns, space) == [("Bravo", 0), ("Charlie", 1), ("Alpha", 2)]
+    # No version and no new `updated_at`, on the page or on a sibling.
+    assert _versions_and_stamp(ns, ids["Bravo"]) == before
+    # A drop between two pages: Bravo goes between Charlie and Alpha.
+    await _ok(ns, writer, "POST", f"/knowledge/pages/{ids['Bravo']}/move", {"position": 1})
+    listed = await _ok(ns, writer, "GET", f"/knowledge/pages?space={space}")
+    assert [r["title"] for r in listed["pages"]] == ["Charlie", "Bravo", "Alpha"]
+    assert _versions_and_stamp(ns, ids["Bravo"]) == before
+    # A place past the end is the end.
+    await _ok(ns, writer, "POST", f"/knowledge/pages/{ids['Charlie']}/move", {"position": 99})
+    assert _tree_rows(ns, space) == [("Bravo", 0), ("Alpha", 1), ("Charlie", 2)]
+    # The same space and the same parent with no place is still nothing.
+    same = await _call(ns, writer, "POST", f"/knowledge/pages/{ids['Alpha']}/move",
+                       {"space_id": space})
+    assert same.status_code == 422
+    assert (await _call(ns, writer, "POST", f"/knowledge/pages/{ids['Alpha']}/move",
+                        {"position": -1})).status_code == 422
+
+
+async def test_a_nest_with_a_place_writes_the_move_version(ns, app_engine) -> None:  # noqa: F811
+    """A move to another parent keeps today's version, and goes to its place."""
+    _assert_non_priv(app_engine)
+    member = _principal(_address("m"), ns.org_a)
+    top = await _ok(ns, member, "POST", "/knowledge/pages", {"title": "Top"}, status=201)
+    space = top["space_id"]
+    first = await _ok(ns, member, "POST", "/knowledge/pages",
+                      {"title": "First", "parent_id": top["id"]}, status=201)
+    second = await _ok(ns, member, "POST", "/knowledge/pages",
+                       {"title": "Second", "parent_id": top["id"]}, status=201)
+    assert (first["position"], second["position"]) == (0, 1)
+    loose = await _ok(ns, member, "POST", "/knowledge/pages", {"title": "Loose"}, status=201)
+    moved = await _ok(ns, member, "POST", f"/knowledge/pages/{loose['id']}/move",
+                      {"parent_id": top["id"], "position": 1})
+    assert moved["version"] == 2 and moved["position"] == 1
+    children = [r for r in (await _ok(ns, member, "GET", f"/knowledge/pages?space={space}"))["pages"]
+                if r["parent_id"] == top["id"]]
+    assert [(r["title"], r["position"]) for r in children] == [
+        ("First", 0), ("Loose", 1), ("Second", 2)]
+    # With no place, a nest puts the page last.
+    other = await _ok(ns, member, "POST", "/knowledge/pages", {"title": "Other"}, status=201)
+    moved = await _ok(ns, member, "POST", f"/knowledge/pages/{other['id']}/move",
+                      {"parent_id": top["id"]})
+    assert moved["position"] == 3
+    # A page still cannot go into its own subtree, with a place or without one.
+    refused = await _call(ns, member, "POST", f"/knowledge/pages/{top['id']}/move",
+                          {"parent_id": first["id"], "position": 0})
+    assert refused.status_code == 422
+
+
+async def test_a_reader_cannot_reorder(ns, app_engine) -> None:  # noqa: F811
+    """A reader sees no handle, and the gateway refuses the move as well."""
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    writer_email, reader_email = _address("writer"), _address("reader")
+    writer = _principal(writer_email, ns.org_a)
+    reader = _principal(reader_email, ns.org_a)
+    space = await _space(ns, admin, "Read", [
+        {"subject": writer_email, "level": "write"},
+        {"subject": reader_email, "level": "read"},
+    ])
+    await _published(ns, writer, space, "One")
+    two = await _published(ns, writer, space, "Two")
+    refused = await _call(ns, reader, "POST", f"/knowledge/pages/{two}/move", {"position": 0})
+    assert refused.status_code == 403
+    assert _tree_rows(ns, space) == [("One", 0), ("Two", 1)]
+
+
+async def test_a_hidden_sibling_keeps_its_place(ns, app_engine) -> None:  # noqa: F811
+    """The place counts among the siblings the caller sees. A draft of another
+    writer stays where it was, and every sibling gets 0 to n."""
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    one_email, two_email = _address("one"), _address("two")
+    one = _principal(one_email, ns.org_a)
+    two = _principal(two_email, ns.org_a)
+    space = await _space(ns, admin, "Shared", [
+        {"subject": one_email, "level": "write"},
+        {"subject": two_email, "level": "write"},
+    ])
+    a = await _published(ns, one, space, "A")
+    await _ok(ns, two, "POST", "/knowledge/pages",
+              {"space_id": space, "title": "Hidden"}, status=201)
+    await _published(ns, one, space, "B")
+    # `one` sees A, B. A to place 1 is "after B" for `one`.
+    await _ok(ns, one, "POST", f"/knowledge/pages/{a}/move", {"position": 1})
+    assert _tree_rows(ns, space) == [("Hidden", 0), ("B", 1), ("A", 2)]
+    seen = await _ok(ns, one, "GET", f"/knowledge/pages?space={space}")
+    assert [r["title"] for r in seen["pages"]] == ["B", "A"]
+    # A to place 0 is "before B": the page goes in just before B.
+    await _ok(ns, one, "POST", f"/knowledge/pages/{a}/move", {"position": 0})
+    assert _tree_rows(ns, space) == [("Hidden", 0), ("A", 1), ("B", 2)]
+
+
+async def test_concurrent_reorders_leave_one_order(ns, app_engine) -> None:  # noqa: F811
+    """The tree lock: moves at once in one space end in 0 to n, each place once."""
+    _assert_non_priv(app_engine)
+    member = _principal(_address("m"), ns.org_a)
+    made = []
+    for title in ("P0", "P1", "P2", "P3", "P4", "P5"):
+        made.append(await _ok(ns, member, "POST", "/knowledge/pages", {"title": title},
+                              status=201))
+    space = made[0]["space_id"]
+    responses = await _calls(ns, member, [
+        ("POST", f"/knowledge/pages/{made[5]['id']}/move", {"position": 0}),
+        ("POST", f"/knowledge/pages/{made[0]['id']}/move", {"position": 5}),
+        ("POST", f"/knowledge/pages/{made[3]['id']}/move", {"position": 1}),
+        ("POST", f"/knowledge/pages/{made[2]['id']}/move", {"position": 4}),
+    ])
+    assert [r.status_code for r in responses] == [200, 200, 200, 200]
+    places = sorted(position for _title, position in _tree_rows(ns, space))
+    assert places == [0, 1, 2, 3, 4, 5]
+
+
 # ── Fix round 1 ─────────────────────────────────────────────────────────────
 
 async def _me_space(p: Any, user: Any) -> str:

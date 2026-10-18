@@ -12,6 +12,10 @@ import { stubApi } from "./visual/harness";
  * order. The other tests hold the first-open phase (404 is off, 403 is no
  * feature, a page 404 is "not found" and never off) and the read-only member.
  *
+ * The tree (KB-2e): a drop keeps its place after a reload, a page cannot
+ * drop into its own subtree, a reader sees no drag, no `+` and no `…`, the
+ * `+` and the `…` act on the row, and the arrow keys walk the rows.
+ *
  * The real gateway half is `tests/unit/test_kb_pages_r8.py`.
  */
 
@@ -39,8 +43,10 @@ type KbPage = {
   parent_id: string | null;
   title: string;
   body_md: string;
-  state: "draft" | "published";
+  state: "draft" | "published" | "archived";
   versions: Version[];
+  /** The place among the siblings (KB-2e). Absent is 0. */
+  position?: number;
 };
 
 interface MockOpts {
@@ -63,7 +69,7 @@ async function mockKnowledge(page: Page, opts: MockOpts) {
     id: p.id,
     space_id: p.space_id,
     parent_id: p.parent_id,
-    position: 0,
+    position: p.position ?? 0,
     title: p.title,
     state: p.state,
     author_email: "asha@example.com",
@@ -128,7 +134,9 @@ async function mockKnowledge(page: Page, opts: MockOpts) {
     }
     if (path === "pages" && method === "GET") {
       const space = url.searchParams.get("space");
-      return route.fulfill(json(200, { pages: [...pages.values()].filter((p) => p.space_id === space).map(summary) }));
+      return route.fulfill(json(200, {
+        pages: [...pages.values()].filter((p) => p.space_id === space && p.state !== "archived").map(summary),
+      }));
     }
     if (path === "pages" && method === "POST") {
       const spaceId = body.space_id ?? ME_ID;
@@ -140,7 +148,7 @@ async function mockKnowledge(page: Page, opts: MockOpts) {
       pages.set(made.id, made);
       return route.fulfill(json(201, written(made)));
     }
-    const m = /^pages\/([^/]+)(?:\/(publish|revert))?$/.exec(path);
+    const m = /^pages\/([^/]+)(?:\/(publish|revert|move|archive))?$/.exec(path);
     const found = m ? pages.get(decodeURIComponent(m[1])) : undefined;
     if (!m || !found) return route.fulfill(json(404, { detail: "Not found" }));
     if (method === "GET") return route.fulfill(json(200, detail(found)));
@@ -154,6 +162,25 @@ async function mockKnowledge(page: Page, opts: MockOpts) {
     if (m[2] === "publish") {
       found.state = "published";
       version(found, "publish");
+      return route.fulfill(json(200, written(found)));
+    }
+    if (m[2] === "move") {
+      // The gateway's rule (`pages._place`): the page goes to its place among
+      // the new siblings, and they get 0 to n. Only a new parent writes a version.
+      const parent = body && "parent_id" in body ? body.parent_id : found.parent_id;
+      const siblings = [...pages.values()]
+        .filter((p) => p.space_id === found.space_id && p.parent_id === parent && p.id !== found.id)
+        .sort((a, b) => (a.position ?? 0) - (b.position ?? 0) || a.title.localeCompare(b.title));
+      siblings.splice(Math.min(body?.position ?? siblings.length, siblings.length), 0, found);
+      const moved = parent !== found.parent_id;
+      found.parent_id = parent;
+      siblings.forEach((p, i) => (p.position = i));
+      if (moved) version(found, "move");
+      return route.fulfill(json(200, summary(found)));
+    }
+    if (m[2] === "archive") {
+      found.state = "archived";
+      version(found, "archive");
       return route.fulfill(json(200, written(found)));
     }
     if (m[2] === "revert") {
@@ -281,7 +308,8 @@ test.describe("Knowledge spaces and pages", () => {
         state: "published", versions: [{ version: 1, title: "Handbook", body_md: "Hi", reason: "create" }] }],
     });
     await page.goto("/knowledge/pages/kp-root");
-    await page.getByRole("button", { name: "New sub-page" }).click();
+    // Exact: the rail's row now has its own "New sub-page under Handbook" (KB-2e).
+    await page.getByRole("button", { name: "New sub-page", exact: true }).click();
     const dialog = page.getByRole("dialog");
     await expect(dialog).toContainText("Under Handbook in Company");
     await dialog.getByRole("textbox").fill("Leave");
@@ -360,7 +388,7 @@ test.describe("an edit is never lost in silence", () => {
     const kb = await mockKnowledge(page, { level: "write", pages: twoPages() });
     const body = await startTyping(page);
     const rail = page.getByRole("navigation", { name: "Knowledge spaces" });
-    await rail.getByRole("button", { name: "Holidays" }).click();
+    await rail.getByRole("button", { name: "Holidays", exact: true }).click();
     const ask = page.getByRole("dialog", { name: "Discard your changes?" });
     await expect(ask).toBeVisible();
     await ask.locator("[data-cancel]").filter({ hasText: "Keep editing" }).click();
@@ -368,7 +396,7 @@ test.describe("an edit is never lost in silence", () => {
     await expect(page).toHaveURL(/\/knowledge\/pages\/kp-a$/);
 
     // Discard leaves, and writes nothing.
-    await rail.getByRole("button", { name: "Holidays" }).click();
+    await rail.getByRole("button", { name: "Holidays", exact: true }).click();
     await page.getByRole("dialog", { name: "Discard your changes?" }).getByRole("button", { name: "Discard" }).click();
     await expect(page.getByRole("heading", { level: 2, name: "Holidays" })).toBeVisible();
     expect(kb.writes).toEqual([]);
@@ -450,5 +478,183 @@ test.describe("a save never overwrites a newer version in silence", () => {
     await expect(page.locator(".cc-prose")).toContainText("Their body");
     await expect(page.getByRole("textbox", { name: "Page body in Markdown" })).toHaveCount(0);
     expect(kb.writes).toEqual([]);
+  });
+});
+
+// ── The tree (WS-61 KB-2e) ─────────────────────────────────────────────────
+
+function treePage(id: string, title: string, parent: string | null, position: number): KbPage {
+  return { id, space_id: SPACE_ID, parent_id: parent, title, body_md: "Text.", state: "published", position,
+    versions: [{ version: 1, title, body_md: "Text.", reason: "create" }] };
+}
+
+/** Handbook (with Leave under it), Refund policy, Travel, at the root of Company. */
+function treePages(): KbPage[] {
+  return [
+    treePage("kp-h", "Handbook", null, 0),
+    treePage("kp-l", "Leave", "kp-h", 0),
+    treePage("kp-r", "Refund policy", null, 1),
+    treePage("kp-t", "Travel", null, 2),
+  ];
+}
+
+/** The page ids of the rail's rows, top to bottom. */
+async function railOrder(page: Page): Promise<string[]> {
+  return page
+    .getByRole("navigation", { name: "Knowledge spaces" })
+    .locator("[data-page-id]")
+    .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-page-id") ?? ""));
+}
+
+function row(page: Page, id: string) {
+  return page.getByRole("navigation", { name: "Knowledge spaces" }).locator(`[data-page-id="${id}"]`);
+}
+
+test.describe("the tree (KB-2e)", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+  });
+
+  test("a drop between two pages keeps its place after a reload", async ({ page }) => {
+    await setup(page);
+    const kb = await mockKnowledge(page, { level: "write", pages: treePages() });
+    await page.goto(`/knowledge?space=${SPACE_ID}`);
+    await expect(row(page, "kp-t")).toBeVisible({ timeout: 30_000 });
+    expect(await railOrder(page)).toEqual(["kp-h", "kp-r", "kp-t"]);
+
+    // Travel onto the top edge of Refund policy: between Handbook and Refund policy.
+    await row(page, "kp-t").dragTo(row(page, "kp-r"), { targetPosition: { x: 40, y: 2 } });
+    await expect.poll(() => kb.writes.length).toBe(1);
+    expect(kb.writes[0]).toEqual({ method: "POST", path: "pages/kp-t/move", body: { position: 1 } });
+    await expect.poll(() => railOrder(page)).toEqual(["kp-h", "kp-t", "kp-r"]);
+
+    await page.reload();
+    await expect(row(page, "kp-t")).toBeVisible({ timeout: 30_000 });
+    expect(await railOrder(page)).toEqual(["kp-h", "kp-t", "kp-r"]);
+    // A reorder writes no version.
+    expect(kb.pages.get("kp-t")?.versions.map((v) => v.reason)).toEqual(["create"]);
+  });
+
+  test("a drop on the middle of a row nests the page under it", async ({ page }) => {
+    await setup(page);
+    const kb = await mockKnowledge(page, { level: "write", pages: treePages() });
+    await page.goto(`/knowledge?space=${SPACE_ID}`);
+    await expect(row(page, "kp-t")).toBeVisible({ timeout: 30_000 });
+    await row(page, "kp-t").dragTo(row(page, "kp-r"));
+    await expect.poll(() => kb.writes.length).toBe(1);
+    expect(kb.writes[0].body).toEqual({ parent_id: "kp-r", position: 0 });
+    // The new parent opens, so the page stays in sight.
+    await expect.poll(() => railOrder(page)).toEqual(["kp-h", "kp-r", "kp-t"]);
+    await expect(page.getByRole("button", { name: "Collapse Refund policy" })).toBeVisible();
+  });
+
+  test("a page cannot drop into its own subtree", async ({ page }) => {
+    await setup(page);
+    const kb = await mockKnowledge(page, { level: "write", pages: treePages() });
+    await page.goto("/knowledge/pages/kp-l");
+    await expect(row(page, "kp-l")).toBeVisible({ timeout: 30_000 });
+    await row(page, "kp-h").dragTo(row(page, "kp-l"));
+    await row(page, "kp-h").dragTo(row(page, "kp-h"));
+    // Give a refused drop the time a real one takes to reach the BFF.
+    await page.waitForTimeout(500);
+    expect(kb.writes).toEqual([]);
+    expect(await railOrder(page)).toEqual(["kp-h", "kp-l", "kp-r", "kp-t"]);
+  });
+
+  test("a reader sees no handle, no + and no …", async ({ page }) => {
+    await setup(page);
+    await mockKnowledge(page, { level: "read", pages: treePages() });
+    await page.goto(`/knowledge?space=${SPACE_ID}`);
+    await expect(row(page, "kp-t")).toBeVisible({ timeout: 30_000 });
+    await row(page, "kp-r").hover();
+    const rail = page.getByRole("navigation", { name: "Knowledge spaces" });
+    await expect(rail.locator('[data-page-id][draggable="true"]')).toHaveCount(0);
+    await expect(rail.getByRole("button", { name: /^Actions for / })).toHaveCount(0);
+    await expect(rail.getByRole("button", { name: /^New sub-page under / })).toHaveCount(0);
+  });
+
+  test("the + opens the New page form with the row as the parent", async ({ page }) => {
+    await setup(page);
+    const kb = await mockKnowledge(page, { level: "write", pages: treePages() });
+    await page.goto(`/knowledge?space=${SPACE_ID}`);
+    await expect(row(page, "kp-r")).toBeVisible({ timeout: 30_000 });
+    await row(page, "kp-r").hover();
+    await page.getByRole("button", { name: "New sub-page under Refund policy" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toContainText("Under Refund policy in Company");
+    await dialog.getByRole("textbox").fill("Exceptions");
+    await dialog.getByRole("button", { name: "Create page" }).click();
+    await expect(page.getByRole("textbox", { name: "Page body in Markdown" })).toBeVisible({ timeout: 15_000 });
+    expect(kb.writes[0].body).toEqual({ space_id: SPACE_ID, parent_id: "kp-r", title: "Exceptions" });
+  });
+
+  test("the … holds Copy link, New sub-page and Archive", async ({ page, context }) => {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await setup(page);
+    const kb = await mockKnowledge(page, { level: "manage", pages: treePages() });
+    await page.goto(`/knowledge?space=${SPACE_ID}`);
+    await expect(row(page, "kp-t")).toBeVisible({ timeout: 30_000 });
+
+    const openMenu = async () => {
+      await row(page, "kp-t").hover();
+      await page.getByRole("button", { name: "Actions for Travel" }).click();
+      return page.getByRole("menu");
+    };
+    let menu = await openMenu();
+    await expect(menu.getByRole("menuitem")).toHaveText(["Copy link", "New sub-page", "Archive"]);
+    await menu.getByRole("menuitem", { name: "Copy link" }).click();
+    await expect(page.getByText("Link copied")).toBeVisible();
+    const copied = await page.evaluate(() => navigator.clipboard.readText());
+    expect(copied).toMatch(/\/knowledge\/pages\/kp-t$/);
+
+    menu = await openMenu();
+    await menu.getByRole("menuitem", { name: "Archive" }).click();
+    const ask = page.getByRole("dialog", { name: "Archive this page?" });
+    await expect(ask).toContainText("Travel");
+    await ask.getByRole("button", { name: "Archive page" }).click();
+    await expect(row(page, "kp-t")).toHaveCount(0);
+    expect(kb.writes.map((w) => `${w.method} ${w.path}`)).toEqual(["POST pages/kp-t/archive"]);
+  });
+
+  test("a writer without manage gets no Archive", async ({ page }) => {
+    await setup(page);
+    await mockKnowledge(page, { level: "write", pages: treePages() });
+    await page.goto(`/knowledge?space=${SPACE_ID}`);
+    await expect(row(page, "kp-t")).toBeVisible({ timeout: 30_000 });
+    await row(page, "kp-t").hover();
+    await page.getByRole("button", { name: "Actions for Travel" }).click();
+    await expect(page.getByRole("menu").getByRole("menuitem")).toHaveText(["Copy link", "New sub-page"]);
+  });
+
+  test("the arrow keys walk the rows, and open and close a row", async ({ page }) => {
+    await setup(page);
+    await mockKnowledge(page, { level: "read", pages: treePages() });
+    await page.goto(`/knowledge?space=${SPACE_ID}`);
+    await expect(row(page, "kp-h")).toBeVisible({ timeout: 30_000 });
+    const label = (id: string) => row(page, id).locator("[data-rail-label]");
+
+    await label("kp-h").focus();
+    await page.keyboard.press("ArrowDown");
+    await expect(label("kp-r")).toBeFocused();
+    await page.keyboard.press("ArrowDown");
+    await expect(label("kp-t")).toBeFocused();
+    // The end holds.
+    await page.keyboard.press("ArrowDown");
+    await expect(label("kp-t")).toBeFocused();
+    await page.keyboard.press("ArrowUp");
+    await page.keyboard.press("ArrowUp");
+    await expect(label("kp-h")).toBeFocused();
+
+    // ArrowRight opens Handbook, and ArrowDown then reaches Leave under it.
+    await page.keyboard.press("ArrowRight");
+    await expect(row(page, "kp-l")).toBeVisible();
+    await page.keyboard.press("ArrowDown");
+    await expect(label("kp-l")).toBeFocused();
+    await page.keyboard.press("ArrowUp");
+    await page.keyboard.press("ArrowLeft");
+    await expect(row(page, "kp-l")).toHaveCount(0);
+    // Up from the first page reaches the space row above it.
+    await page.keyboard.press("ArrowUp");
+    await expect(page.getByRole("navigation", { name: "Knowledge spaces" }).getByRole("button", { name: /^Company/ }).first()).toBeFocused();
   });
 });
