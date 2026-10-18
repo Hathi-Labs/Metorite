@@ -41,7 +41,7 @@ import { EmptyState } from "@/components/EmptyState";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
-import { Input } from "@/components/ui/Input";
+import { Input, Textarea } from "@/components/ui/Input";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
 import { invalidate } from "@/lib/dataCache";
@@ -122,8 +122,13 @@ export default function PageView({ pageId }: { pageId: string }) {
 
   const [editing, setEditing] = useState(false);
   // Each edit session mounts a fresh editor, so a restored draft and a new
-  // edit never share an editor's undo history.
+  // edit never share an editor's undo history. A switch back from the
+  // Markdown field counts as a new session too, so the editor reads the
+  // field's text.
   const [session, setSession] = useState(0);
+  // The Markdown field of KB-2a stays as the fallback (§16 Q7): a member can
+  // write the body as Markdown text at any time during an edit.
+  const [source, setSource] = useState(false);
   const [draft, setDraft] = useState<Draft>({ title: "", body_md: "" });
   const [snapshot, setSnapshot] = useState<EditSnapshot | null>(null);
   const [stale, setStale] = useState(false);
@@ -139,6 +144,7 @@ export default function PageView({ pageId }: { pageId: string }) {
     setSnapshot(restored?.snapshot ?? snapshotOf(from));
     setDraft(restored?.draft ?? { title: from.title, body_md: from.body_md });
     setSession((n) => n + 1);
+    setSource(false);
     setSaveError(null);
     setStale(false);
     setEditing(true);
@@ -331,18 +337,43 @@ export default function PageView({ pageId }: { pageId: string }) {
                 onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))}
                 className="w-full"
               />
-              <div className="min-h-64 pt-1">
-                <KnowledgeEditor
-                  key={`edit-${session}`}
-                  mode="edit"
-                  body={draft.body_md}
-                  storedBody={snapshot?.body_md ?? page.body_md}
-                  onChange={(body_md) => setDraft((d) => (d.body_md === body_md ? d : { ...d, body_md }))}
-                  pageId={page.id}
-                  spaces={spaces}
-                  label="Page body"
-                />
+              <div className="flex justify-end">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon="FileCode"
+                  selected={source}
+                  onClick={() => {
+                    setSource((v) => !v);
+                    setSession((n) => n + 1);
+                  }}
+                >
+                  Markdown
+                </Button>
               </div>
+              {source ? (
+                <Textarea
+                  aria-label="Page body in Markdown"
+                  value={draft.body_md}
+                  rows={18}
+                  onChange={(e) => setDraft((d) => ({ ...d, body_md: e.target.value }))}
+                  placeholder="Write in Markdown. # for a heading, - for a list, **bold** for bold."
+                  className="w-full font-mono"
+                />
+              ) : (
+                <div className="min-h-64 pt-1">
+                  <KnowledgeEditor
+                    key={`edit-${session}`}
+                    mode="edit"
+                    body={draft.body_md}
+                    storedBody={snapshot?.body_md ?? page.body_md}
+                    onChange={(body_md) => setDraft((d) => (d.body_md === body_md ? d : { ...d, body_md }))}
+                    pageId={page.id}
+                    spaces={spaces}
+                    label="Page body"
+                  />
+                </div>
+              )}
               {stale ? (
                 <div
                   role="alert"

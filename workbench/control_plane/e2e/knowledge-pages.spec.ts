@@ -725,6 +725,23 @@ test.describe("the block editor", () => {
     expect(h1).toEqual(["Knowledge"]);
   });
 
+  test("the Markdown field stays as the fallback (§16 Q7)", async ({ page }) => {
+    await setup(page);
+    const kb = await mockKnowledge(page, { level: "write", pages: pageWith("Start.") });
+    await openEditor(page);
+    await page.getByRole("button", { name: "Markdown", exact: true }).click();
+    const field = page.getByRole("textbox", { name: "Page body in Markdown" });
+    await expect(field).toHaveValue("Start.");
+    await field.fill("# From Markdown\n\n> [!TIP]\n> Typed as text.");
+    await page.getByRole("button", { name: "Markdown", exact: true }).click();
+    const body = page.getByRole("textbox", { name: "Page body" });
+    await expect(body.locator("h2[data-md-level='1']", { hasText: "From Markdown" })).toBeVisible();
+    await expect(body.locator(".kb-callout[data-callout='tip']")).toBeVisible();
+    await page.getByRole("button", { name: "Save changes" }).click();
+    await expect.poll(() => kb.writes.length).toBe(1);
+    expect(kb.writes[0].body).toEqual({ body_md: "# From Markdown\n\n> [!TIP]\n> Typed as text." });
+  });
+
   test("a remote image in a page loads only on a click", async ({ page }) => {
     await setup(page);
     await mockKnowledge(page, { level: "write", pages: pageWith("![A chart](https://example.com/chart.png)") });
