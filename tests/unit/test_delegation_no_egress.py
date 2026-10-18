@@ -1708,6 +1708,85 @@ def test_a_marked_orchestrator_hands_off_to_the_email_assistant_with_no_card(
     assert sent == []
 
 
+@pytest.mark.parametrize("marked", [False, True])
+def test_a_marked_hand_off_strips_the_network_tools_of_a_child_that_holds_them(
+    sandbox, monkeypatch, mark_store, marked: bool,  # noqa: F811
+) -> None:
+    """Fix 1, the containment half (fix round 1). The email assistant opts out
+    of the web tools anyway, so its run proves nothing. crm-assistant holds
+    them. Through the orchestrator's ``crm_assistant`` specialist tool, an
+    unmarked session gives the child ``web_search`` and ``fetch_page``. A
+    marked one asks no card for the hand-off, and the child holds neither,
+    because the mark binds ``no_egress``."""
+    _register_every_annotation()
+    titles = _open_card_channel(monkeypatch)
+    thread = _marked_thread(mark_store) if marked else f"chat-{new_thread()}"
+    orch = _Model([_call("crm_assistant", {"task": "Log a call on lead Y"}), _say("done")])
+    crm = _Model([_say("ok")])
+    _harness(monkeypatch, sandbox, {ORCH: orch, CRM: crm})
+    _run_top(ORCH, ORG_B, thread=thread, cards=True)
+    assert "crm_assistant" in _offered(orch.bodies[0]), "the fixture is wrong"
+    assert crm.bodies, "the hand-off did not run"
+    child = _offered(crm.bodies[0])
+    assert "search_crm" in child, "the fixture is wrong"
+    assert not any(_UNTRUSTED_CARD in t for t in titles), titles
+    if marked:
+        assert not _NETWORK_TOOLS & child, sorted(_NETWORK_TOOLS & child)
+    else:
+        assert {"web_search", "fetch_page"} <= child, sorted(child)
+
+
+def test_only_the_mail_agent_keeps_a_carded_own_tool_under_a_mark() -> None:
+    """Fix 2 applies to the mail agent only (fix round 1, mutation A). A
+    tool that says ``__asks_own_card__`` stays in a ``no_egress`` run of
+    ``email-assistant`` whose flag the mark alone set. The same tool leaves
+    the run of any other agent, and leaves an email run with a hard flag."""
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    async def send_it(to: str) -> str:
+        return to
+
+    send_it.__tool_risk__ = {  # type: ignore[attr-defined]
+        "read_only": False, "destructive": True, "idempotent": False, "open_world": True}
+    send_it.__asks_own_card__ = True  # type: ignore[attr-defined]
+    for agent, by_mark, kept in ((EMAIL, True, True), (CRM, True, False),
+                                 (ORCH, True, False), (PA, True, False),
+                                 (EMAIL, False, False)):
+        holder = types.SimpleNamespace(tools=[send_it])
+        with artifact_context_scope():
+            bind_artifact_context(agent_name=agent, run_id="r", no_egress=True,
+                                  no_egress_by_mark=by_mark)
+            ti._apply_no_egress([holder], agent)
+        assert (send_it in holder.tools) is kept, (agent, by_mark)
+
+
+def test_a_covered_grandparent_keeps_the_grandchilds_send_away(
+    sandbox, monkeypatch, mark_store, _no_process,  # noqa: F811
+) -> None:
+    """Fix 2 never softens H-236 (fix round 1, mutation E). A covered
+    Projects run (org A) in a marked session calls the orchestrator, which
+    holds ``call_agent`` and calls the email assistant. The covered flag is
+    hard at each hop, so the grandchild does NOT keep ``send_email``."""
+    _register_every_annotation()
+    _open_card_channel(monkeypatch)
+    thread = f"chat-{new_thread()}"
+    mark_store.keys[f"cc:{ORG_A}:{eg.MARK_NAMESPACE}:{thread}"] = "1"
+    pa = _Model([_call("call_agent", {"agent_name": ORCH, "message": "Ask email to send"}),
+                 _say("done")])
+    orch = _Model([_call("call_agent", {"agent_name": EMAIL, "message": "Send the rows to Y"}),
+                   _say("done")])
+    email = _Model([_say("ok")])
+    sent = _harness(monkeypatch, sandbox, {PA: pa, ORCH: orch, EMAIL: email})
+    _run_top(PA, ORG_A, thread=thread)
+    assert orch.bodies and "call_agent" in _offered(orch.bodies[0]), "the fixture is wrong"
+    assert email.bodies, "the grandchild never ran"
+    child = _offered(email.bodies[0])
+    assert "query_inbox" in child, "the fixture is wrong"
+    assert "send_email" not in child, "a covered chain kept the grandchild's send"
+    assert not _egress_in(email.bodies[0]), _egress_in(email.bodies[0])
+    assert sent == [] and _no_process == []
+
+
 def test_a_send_in_a_marked_chat_asks_one_card_its_own(
     sandbox, monkeypatch, mark_store,  # noqa: F811
 ) -> None:
