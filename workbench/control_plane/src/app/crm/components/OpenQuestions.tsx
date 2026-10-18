@@ -354,7 +354,8 @@ export function YourAnswersView({
                     label={`Change the ${part} of ${group.label}`}
                     value={pickValue(q)}
                     options={answerPicks(q)}
-                    widthClass="w-48"
+                    // A line of its own on a phone, so the answer in use keeps its room.
+                    widthClass="w-full sm:w-48"
                     filterAbove={8}
                     disabled={handlers.busy !== null}
                     onChange={(pick) => handlers.onChange(q, pick)}
