@@ -516,7 +516,13 @@ def _chart(data: dict[str, Any]) -> OutMessage:
     kind = str(data.get("type") or "bar").strip().lower()
     title = _text(data, "title", limit=80)
     caption = _text(data, "caption", limit=CAPTION_MAX, required=False)
-    png = _engine_png({**data, "type": kind})
+    # The member's number system, written by the server over any value the
+    # model wrote (whatsapp_assistant_channel.md §13.10).
+    from acb_common.number_system import stamp_chart
+
+    from acb_skills.write_artifact import run_numbering
+
+    png = _engine_png(stamp_chart({**data, "type": kind}, run_numbering()))
     if png is None and kind not in _OLD_KINDS:
         raise _Refused(f'chart "type" must be one of: {", ".join(_OLD_KINDS)}')
     rendition = _chart_rendition(kind, title, data) + (f"\n{caption}" if caption else "")

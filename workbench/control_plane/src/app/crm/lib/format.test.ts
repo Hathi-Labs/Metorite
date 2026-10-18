@@ -36,18 +36,23 @@ describe("money", () => {
 
 describe("compactMoney", () => {
   it("uses lakh and crore, because a lane header is 220px wide", () => {
-    expect(compactMoney(1240000)).toBe("₹12.4L");
-    expect(compactMoney(32000000)).toBe("₹3.2Cr");
+    expect(compactMoney(1240000)).toBe("₹12.4\u00a0L");
+    expect(compactMoney(32000000)).toBe("₹3.2\u00a0Cr");
     expect(compactMoney(45000)).toBe("₹45K");
     expect(compactMoney(600)).toBe("₹600");
   });
 
-  it("drops a trailing .0 so ₹12L does not read as ₹12.0L", () => {
-    expect(compactMoney(1200000)).toBe("₹12L");
+  it("drops a trailing .0 so ₹12 L does not read as ₹12.0 L", () => {
+    expect(compactMoney(1200000)).toBe("₹12\u00a0L");
   });
 
   it("keeps the sign on a negative", () => {
-    expect(compactMoney(-1200000)).toBe("-₹12L");
+    expect(compactMoney(-1200000)).toBe("-₹12\u00a0L");
+  });
+
+  it("draws through the one formatter, so an international org reads millions", () => {
+    expect(compactMoney(1240000, "INR", "international")).toBe("₹1.24M");
+    expect(compactMoney(600.4)).toBe("₹600");
   });
 });
 
