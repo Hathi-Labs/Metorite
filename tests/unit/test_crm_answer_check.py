@@ -1133,7 +1133,8 @@ def test_the_caveat_names_at_most_five_figures_in_plain_words() -> None:
     result = check("We have 91, 92, 93, 94, 95, 96 and 97 deals, and 91 again.",
                    ["Open: INR 5,00,000"])
     note = answer_check.caveat_text(result)
-    assert note == CAVEAT_NOTE.format("91, 92, 93, 94, 95")
+    # Seven figures fail, so the note names five and counts the rest.
+    assert note == CAVEAT_NOTE.format("91, 92, 93, 94, 95 and 2 more")
     for word in ("CRM-Q29", "answer_check", "check failed", "tool", "source"):
         assert word not in note
 

@@ -534,7 +534,12 @@ def caveat_text(result: CheckResult) -> str:
     for figure in result.unmatched:
         if figure.text not in named:
             named.append(figure.text)
-    return f"\n\n{CAVEAT_LEAD} {', '.join(named[:CAVEAT_FIGURES])}. {CAVEAT_TAIL}"
+    shown = ", ".join(named[:CAVEAT_FIGURES])
+    # Say how many more failed, or the member trusts the figures not named.
+    extra = len(named) - CAVEAT_FIGURES
+    if extra > 0:
+        shown += f" and {extra} more"
+    return f"\n\n{CAVEAT_LEAD} {shown}. {CAVEAT_TAIL}"
 
 
 def fallback_text(ledger: RunLedger) -> str:
