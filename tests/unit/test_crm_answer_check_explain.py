@@ -341,7 +341,8 @@ def test_a_large_share_of_failed_figures_names_none(ledger: RunLedger) -> None:
 
 
 def test_an_empty_group_that_the_answer_states_becomes_one_question(ledger: RunLedger) -> None:
-    text = "Untagged rent is ₹9.60 crore, and Alpha rent is ₹92.1 lakh. A plan of ₹1.11 lakh."
+    text = ("Alpha rent is ₹92.1 lakh. Untagged rent is ₹9.60 crore, so plan to tag "
+            "₹1.11 lakh of it.")
     kind, note = note_text(ledger.check(text), ledger)
     assert kind == NOTE_QUESTION
     assert note == ('\n\nIn Collections, 69% of the sum of Rent Amount has no Region. '
@@ -353,6 +354,15 @@ def test_an_empty_group_that_the_answer_does_not_state_asks_nothing(ledger: RunL
     kind, _note = note_text(ledger.check("Rent is ₹13.99 crore, and a target of ₹4.10 lakh."),
                             ledger)
     assert kind == NOTE_NAMED
+
+
+def test_an_empty_group_beside_an_unrelated_failure_asks_nothing(ledger: RunLedger) -> None:
+    """The record count fails in its own sentence. The empty group is
+    stated in another one, so it is no cause, and the count gets its
+    reason."""
+    text = "There are 8,682 records. Untagged rent is ₹9.60 crore and Alpha ₹92.1 lakh."
+    kind, note = note_text(ledger.check(text), ledger)
+    assert (kind, note) == (NOTE_NAMED, "\n\n" + NOTE_NEAR.format(figure="8,682", near="8,681"))
 
 
 def test_an_open_crm_question_of_the_run_is_the_question() -> None:
@@ -465,7 +475,48 @@ def test_a_note_that_raises_sends_the_answer_unchanged(ledger: RunLedger,
     assert out.text == text
 
 
-# ── 7. Generic for every org ────────────────────────────────────────────────
+# ── 7. The replay script ────────────────────────────────────────────────────
+
+def test_the_replay_counts_the_last_check_of_each_run() -> None:
+    from scripts.crm_answer_check_replay import journal_kinds, kind_from_counts, parse_journal
+
+    lines = [
+        "\x1b[2mT\x1b[0m [info] answer_check.checked mismatches=14 mode=on numbers=15 "
+        "outcome=retry run_id=a",
+        "answer_check.checked mismatches=49 mode=on numbers=65 outcome=caveat run_id=a",
+        "answer_check.checked mismatches=0 mode=shadow numbers=4 outcome=shadow_pass run_id=b",
+        "answer_check.checked mismatches=1 mode=shadow numbers=9 outcome=shadow_mismatch "
+        "note=explained run_id=c",
+        "executor.answer_check_on mode=on run_id=a",
+    ]
+    runs = parse_journal(lines)
+    assert sorted(runs) == ["a", "b", "c"] and runs["a"]["numbers"] == "65"
+    assert dict(journal_kinds(runs)) == {"how": 1, "none": 1, "explained": 1}
+    assert [kind_from_counts(n, m) for n, m in ((5, 0), (9, 1), (9, 3), (12, 3))] == [
+        "none", "named", "how", "named"]
+
+
+def test_the_replay_runs_a_stored_answer_through_round_8() -> None:
+    from scripts.crm_answer_check_replay import case_kind, cases_from_rows
+
+    tools = [{"name": "crm_list_module_records", "args": {},
+              "result": "Collections: showing 25 of 8,681 records."}]
+    tools += [{"name": "crm_aggregate", "args": ARGS, "result": text} for text in RESULTS]
+    rows = [
+        {"session_id": "s", "role": "user", "content": "By region?", "tool_events": []},
+        # The stored answer still holds the note of round 7, and the replay
+        # takes it off before the check.
+        {"session_id": "s", "role": "assistant", "tool_events": tools,
+         "content": owner_answer() + "\n\nI could not check these figures against the "
+                                     "CRM data: 959.8. Please verify them."},
+        {"session_id": "t", "role": "assistant", "content": "Hi.", "tool_events": []},
+    ]
+    cases = cases_from_rows(rows)
+    assert cases[0]["member_message"] == "By region?"
+    assert [case_kind(case) for case in cases] == [NOTE_NONE, "not_armed"]
+
+
+# ── 8. Generic for every org ────────────────────────────────────────────────
 
 def test_the_round_8_product_code_names_no_word_of_one_org() -> None:
     from tests.unit.test_crm_answer_consistency import ORG_WORDS

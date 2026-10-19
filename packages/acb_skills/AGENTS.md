@@ -430,7 +430,8 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    More than 3 failed figures, or 2 or more that are over 30 percent of
    the figures, get "How I got these numbers", one line for each CRM read
    from the head line that the server wrote (`read_line`). An empty group
-   of a grouped total (`empty_group`) whose value the answer states, or an
+   of a grouped total (`empty_group`) whose value the answer states in the
+   sentence of a failed figure, or an
    open CRM question of the run, gives ONE question. Else each failed
    figure, 3 at most, gets a reason and an action. `many_failed` is the
    one rule of "many". The log line names the KIND of the note (`note=`),

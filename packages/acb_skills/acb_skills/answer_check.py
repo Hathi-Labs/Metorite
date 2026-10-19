@@ -55,6 +55,7 @@ No log line holds a number or a text. Fence: ``tests/unit/test_crm_answer_check.
 from __future__ import annotations
 
 import asyncio
+import bisect
 import functools
 import json
 import re
@@ -721,16 +722,29 @@ def _named(figure: Figure, book: Sources) -> str:
     return NOTE_MISSING.format(figure=figure.text)
 
 
+#: The end of a sentence or of a line, for the question of an empty group.
+_SENTENCE_END = re.compile(r"[.!?](?=\s|$)|\n")
+
+
+def _sentence_of(text: str) -> Callable[[int], int]:
+    ends = [m.start() for m in _SENTENCE_END.finditer(text)]
+    return lambda at: bisect.bisect_left(ends, at)
+
+
 def _question(ledger: RunLedger, result: CheckResult) -> str | None:
     """ONE question about an ambiguity that the check can see, or None. An
     open CRM question of the run comes first. Then the largest empty group
-    of a grouped total whose value the answer states."""
+    of a grouped total whose value the answer states in the sentence (or
+    the table row) of a failed figure."""
     if ledger.open_question:
         return QUESTION_OPEN
-    # The answer must state the value of the empty group itself, so the
-    # question is about records that the answer counts, not a guess.
+    # The answer must state the value of the empty group next to a failed
+    # figure, so the question is about the failure, not a guess.
+    sentence = _sentence_of(result.text)
+    failed = {sentence(f.start) for f in result.unmatched}
     stated = [gap for gap in ledger.gaps
-              if any(abs(abs(f.value) - gap[4]) <= f.room for f in result.figures)]
+              if any(abs(abs(f.value) - gap[4]) <= f.room and sentence(f.start) in failed
+                     for f in result.figures)]
     if not stated:
         return None
     module, measure, group, share, _value = max(stated, key=lambda gap: gap[3])

@@ -4863,7 +4863,8 @@ ships and its replay shows under 1 in 20.
      and adds "How I got these numbers": one line for each CRM read, from
      the head line that the server wrote, with its filters. An empty group
      that holds a tenth of its total or more, and whose value the answer
-     states, gives ONE question: "In Deals, 69% of the sum of Amount has no
+     states in the sentence or the table row of a failed figure, gives ONE
+     question: "In Deals, 69% of the sum of Amount has no
      Region. Should I show those records as their own group, "No Region",
      or group them by another field?" An open CRM question of the run gives
      a line that points to it. One to three failed figures each get a

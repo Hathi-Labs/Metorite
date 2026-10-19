@@ -270,6 +270,8 @@ class CheckResult:
 
     figures: tuple[Figure, ...]
     unmatched: tuple[Figure, ...]
+    #: The checked text, so a note can find the sentence of a figure.
+    text: str = ""
 
     @property
     def ok(self) -> bool:
@@ -1044,7 +1046,7 @@ def _all_sum(cited: dict[str, list[_Cited]], figures: tuple[Figure, ...], total:
         if found is None:
             return False
         acc += found[0]
-        if found[1]:
+        if found[1] and figures[index].unit <= total.unit:
             room += figures[index].strict_room
     return _within(acc, abs(total.value), room)
 
@@ -1164,8 +1166,11 @@ def _derived(figures: tuple[Figure, ...], index: int, cited: dict[str, list[_Cit
         near = _near_citers(cited.get(kind, []), index, figures, text)
         entries = [c for c in cited.get(kind, []) if c[1] in near]
         # A stated value that the text derived is rounded, so the two
-        # largest of its rooms add to the room of the result (round 8).
-        slack = sum(sorted((figures[by].strict_room for _v, by, seq in entries if seq < 0),
+        # largest of its rooms add to the room of the result (round 8). Only
+        # an operand as precise as the result counts: a count never takes
+        # the room of a sum in crore.
+        slack = sum(sorted((figures[by].strict_room for _v, by, seq in entries
+                            if seq < 0 and figures[by].unit <= figure.unit),
                            reverse=True)[:2])
         if _pairs_give(entries, figure.kind, kind, target, figure.strict_room + slack):
             return True
@@ -1491,7 +1496,8 @@ def check(text: str, sources: Sources | Iterable[str]) -> CheckResult:
             done = set(derived)
             pending = [i for i in pending if i not in done]
             _add_stated(cited, figures, derived)
-    return CheckResult(figures=figures, unmatched=tuple(figures[i] for i in pending))
+    return CheckResult(figures=figures, unmatched=tuple(figures[i] for i in pending),
+                       text=text or "")
 
 
 #: The most failed figures that the chat note explains one by one. Past
@@ -1510,6 +1516,9 @@ def arithmetic(result: CheckResult, figure: Figure) -> tuple[Figure, str, Figure
     passed = [f for f in result.figures
               if f.start not in failed and not f.unreadable and _same_kind(figure, f)]
     target = abs(figure.value)
+    # An operand must be as precise as the figure, or its room hides the
+    # figure: "8,681 is 32.1 less 32.1" in lakh is no reason.
+    passed = [f for f in passed if f.unit <= figure.unit]
     for i, a in enumerate(passed):
         for b in passed[i + 1:]:
             room = figure.strict_room + a.strict_room + b.strict_room
