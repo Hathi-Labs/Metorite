@@ -406,7 +406,10 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    option of `ask_questions`, a figure after a choice word ("Last 90 days",
    "Top 10", "Above ₹10 lakh") is a choice, and the check skips it. In
    `on` mode a check that raises logs `answer_check.check_failed` and sends
-   the answer unchanged, so a failed check never loses the turn. A
+   the answer unchanged, so a failed check never loses the turn. An
+   answer that still fails after its one retry goes out with
+   `caveat_text`, a short note that names at most 5 figures. The fallback
+   is only for an answer with no text (fix round 7). A
    result of `MODEL_WRITTEN_TOOLS` (a delegation, `code_task`, a script) is
    no source. A result over `RECORD_INLINE_CHARS` is read on a thread. A
    passed check makes no model request. While it holds, it puts
