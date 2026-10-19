@@ -3011,6 +3011,64 @@ async def test_a_plan_with_no_phase_draws_no_phase_key(monkeypatch) -> None:
     assert drawn[0]["props"]["data"]["description"] == "Under the top level (a new space)."
 
 
+async def test_a_plan_named_like_its_parent_is_refused_and_names_create_tasks(monkeypatch) -> None:
+    """The owner's plan "Personalization & Memory System" came "Under
+    Personalization & Memory System." (review of #1160). propose_plan always
+    makes a NEW project, so it made a second one of that name inside the
+    first. Mutation: drop the name check -> this test fails, because a card
+    is drawn and the batch POSTs /projects/nodes."""
+    drawn = form_stub(monkeypatch, FORM_ANSWERS)
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    # The fake parent is called "Ops" (`responder`), and case and spaces do not count.
+    out = await skill_projects.propose_plan("  ops ", _json.dumps(PLAN_DEPS), parent_project_id=UUID)
+    assert out.startswith("Refused:")
+    assert "create_tasks with project_id" in out and UUID in out
+    assert "nothing was created" in out
+    assert drawn == [] and asked == [] and writes(calls) == []
+    assert not [c for c in calls if c["path"] == "/projects/plan/preview"]
+    # The next step is complete: the key mapping, the keys to leave out, and
+    # the second call for the links (review of #1160).
+    for words in ("owner becomes assignees", "effort_mins becomes estimate_mins",
+                  "Leave out key, after and phase", "link_tasks_batch", "type blocks"):
+        assert words in out, words
+
+
+async def test_a_folder_named_like_the_plan_is_a_fair_parent(monkeypatch) -> None:
+    """A folder holds projects, and create_tasks refuses a folder, so a plan
+    named like its folder draws its card. Mutation: drop the kind check ->
+    this test fails."""
+    drawn = form_stub(monkeypatch)
+
+    def folder(call: dict) -> Any:
+        if call["method"] == "GET" and call["path"].startswith(f"/projects/nodes/{UUID}"):
+            return {"id": UUID, "name": "Ops", "kind": "folder", "status": "active", "lead": None}
+        return _plan_gateway()(call)
+
+    fake_gateway(monkeypatch, folder)
+    out = await skill_projects.propose_plan("Ops", _json.dumps(PLAN_DEPS), parent_project_id=UUID)
+    assert not str(out).startswith("Refused:")
+    assert drawn and drawn[0]["props"]["data"]["description"] == "Under Ops."
+
+
+async def test_a_plan_with_its_own_name_under_a_parent_still_draws(monkeypatch) -> None:
+    drawn = form_stub(monkeypatch)
+    fake_gateway(monkeypatch, _plan_gateway())
+    await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS), parent_project_id=UUID)
+    assert drawn[0]["props"]["data"]["description"] == "Under Ops."
+
+
+def test_w1_sends_an_existing_project_to_create_tasks() -> None:
+    """The model must never propose a new project to fill one that exists.
+    Mutation: drop the sentence from W1 -> this test fails."""
+    root = SKILL_DIR.parents[2]
+    text_ = (root / "agents/agent-projects/instructions.md").read_text(encoding="utf-8")
+    w1 = " ".join(text_.split("**W1 · Plan a project from a goal.**", 1)[1]
+                  .split("**W2", 1)[0].split())
+    assert "`propose_plan` always makes a NEW project" in w1
+    assert "call `create_tasks` with its `full_id`" in w1
+
+
 async def test_cancel_on_the_plan_card_writes_nothing(monkeypatch) -> None:
     """The card's Cancel sends "Cancel", which is no submit. Mutation: read
     any answer as a submit -> this test fails."""

@@ -50,7 +50,10 @@ import {
   CollapsibleCardBody,
   CollapsibleCardHeader,
 } from "@/components/ui/Collapsible";
+import Button from "@/components/ui/Button";
 import {
+  CLAMP_PX,
+  clampShows,
   isLong,
   manualStateOf,
   rollupOpen,
@@ -85,6 +88,18 @@ export interface RollupCardProps {
   summary?: string;
   /** The card waits on the member. */
   pending?: boolean;
+  /**
+   * The card waited, and it has its answer now. It folds to its header,
+   * and `summary` says what happened (`lib/cardRollup.ts` rule 1a,
+   * `lib/askOutcome.ts`).
+   */
+  answered?: boolean;
+  /**
+   * A RESULT card: a long body opens cut at {@link CLAMP_PX}, with a
+   * "Show all" under it (`lib/cardRollup.ts` `clampShows`). A card that
+   * waits, or a receipt, never sets it.
+   */
+  clamp?: boolean;
   /** The card's `data-chat-ask` target. It waits while `lib/askPin.ts` says so. */
   askTarget?: string;
   /**
@@ -129,6 +144,8 @@ function RollupCardIn({
   rows,
   summary,
   pending: pendingProp = false,
+  answered = false,
+  clamp = false,
   askTarget,
   header = "frame",
   className,
@@ -198,7 +215,44 @@ function RollupCardIn({
   // Every card with a body may fold by hand (owner feedback, 2026-10-11).
   const hasBody = filled || (rows ?? 0) > 0;
   const toggle = showRollupToggle({ pending, hasBody });
-  const open = rollupOpen({ pending, manual, newest, long, held });
+  const open = rollupOpen({ pending, answered, manual, newest, long, held });
+  // A long result card opens cut (`clampShows`). The wrapper is ALWAYS in
+  // the tree when `clamp` is set, and only its style changes: a swap of
+  // element types remounted the card's body, so a sandbox reloaded and a
+  // table lost its sort (review of #1160). The measure is the wrapper's
+  // unclipped `scrollHeight`. A cut ends on "Show all", or when the content
+  // shrinks to `UNCUT_PX` (`clampShows` has the rule and its gap).
+  const [all, setAll] = useState(false);
+  const [cut, setCut] = useState(false);
+  const clampRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = clampRef.current;
+    if (!clamp || !el) return;
+    const read = () =>
+      setCut((was) => clampShows({ clamp, pending, all, wasCut: was, naturalPx: el.scrollHeight }));
+    read();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    for (const child of Array.from(el.children)) ro.observe(child);
+    return () => ro.disconnect();
+  }, [clamp, pending, all]);
+  const shownCut = cut && open;
+
+  // An answer folds the card at once (rule 1a). The control the member
+  // pressed is gone, so the focus goes to the header, which says what
+  // happened, and never drops to the page.
+  const wasAnswered = useRef(answered);
+  useEffect(() => {
+    if (answered && !wasAnswered.current) {
+      const root = rootRef.current;
+      const at = document.activeElement;
+      if (root && (at === null || at === document.body || root.contains(at))) {
+        root.querySelector<HTMLElement>("[aria-expanded]")?.focus({ preventScroll: true });
+      }
+    }
+    wasAnswered.current = answered;
+  }, [answered]);
   // What the member sees now, for the focus to hold. Read in a handler only.
   const openRef = useRef(open);
   useLayoutEffect(() => {
@@ -238,8 +292,29 @@ function RollupCardIn({
         bodyRef={setBody}
         animate={animate}
       >
-        {children}
+        {clamp ? (
+          <div
+            ref={clampRef}
+            data-rollup-cut={shownCut ? "on" : "off"}
+            className={shownCut ? "overflow-hidden" : undefined}
+            style={shownCut ? {
+              maxHeight: CLAMP_PX,
+              maskImage: "linear-gradient(to bottom, black calc(100% - 48px), transparent)",
+              WebkitMaskImage: "linear-gradient(to bottom, black calc(100% - 48px), transparent)",
+            } : undefined}
+          >
+            {children}
+          </div>
+        ) : (
+          children
+        )}
       </CollapsibleCard>
+      {shownCut && (
+        <Button variant="ghost" size="sm" icon="ChevronDown" className="mt-0.5" data-rollup-show-all=""
+          onClick={() => setAll(true)}>
+          Show all
+        </Button>
+      )}
     </div>
   );
 }
