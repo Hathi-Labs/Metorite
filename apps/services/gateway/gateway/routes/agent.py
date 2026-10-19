@@ -47,7 +47,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from gateway.connections import github as github_connection
 from gateway.db import TenantUnbound, current_tenant
 from gateway.room_stream import publish_room_event
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool, model_validator
 
 _log = get_logger("gateway.agent")
 
@@ -568,6 +568,17 @@ class UserInputResponseRequest(BaseModel):
     # Thread the parked run belongs to — used to relay the answer to whichever
     # worker owns the run when it's not parked on THIS worker (P1-2).
     thread_id: str | None = None
+    # The member's "Not now" (owner request, 2026-10-18). A JSON boolean
+    # only: ``"yes"`` or ``1`` is refused, never read as a decline. A decline
+    # carries no answer (:meth:`_a_decline_has_no_answer`).
+    declined: StrictBool = False
+
+    @model_validator(mode="after")
+    def _a_decline_has_no_answer(self) -> UserInputResponseRequest:
+        """A decline with words in it is malformed: is it an answer or not?"""
+        if self.declined and self.answer.strip():
+            raise ValueError("A declined card carries no answer.")
+        return self
 
 
 class WebhookEvent(BaseModel):
@@ -3316,6 +3327,67 @@ async def _late_answer_from_row(
     return resend, True
 
 
+async def _late_decline_from_row(
+    req: UserInputResponseRequest, user: UserContext,
+) -> bool:
+    """Close the durable row of a card no run waits on. True when closed.
+
+    The member's "Not now" (owner request, 2026-10-18) on a card whose run
+    parked or died. It starts no run. It closes the row, so the chat draws
+    the card no more and My Day drops it. The same rules as a late answer
+    (:func:`_late_answer_from_row`): the caller's own tenant (R5e), the
+    thread that asked, and only the member who was asked (review of #813).
+    The move is one statement, so a second decline or answer finds nothing.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from orchestrator import pending_ask  # noqa: PLC0415
+
+    if not pending_ask.durable_asks_enabled():
+        return False
+    org = (getattr(user, "organization_id", None) or "").strip()
+    if not org or not req.thread_id:
+        return False
+    try:
+        row = await asyncio.to_thread(pending_ask.read_ask, org, req.request_id)
+    except Exception:  # noqa: BLE001 — the 409 still answers
+        _log.warning("agent.pending_ask_read_failed", exc_info=True)
+        return False
+    if row is None or str(row.get("thread_id") or "") != req.thread_id:
+        return False
+    me = (getattr(user, "email", "") or "").strip().lower()
+    if not me or str(row.get("actor_email") or "") != me:
+        return False
+    if str(row.get("state") or "") == "open":
+        # The same liveness rule as a late answer
+        # (``chat_recovery.card_answer_from_ask``). An open row of a LIVE run
+        # still has a run that waits, so the row stays open, and the member
+        # can try again. A dead run is closed and saved first.
+        from orchestrator.run_liveness import run_liveness  # noqa: PLC0415
+
+        liveness = await run_liveness(req.thread_id)
+        if liveness == "dead":
+            from gateway.chat_recovery import recover_dead_run  # noqa: PLC0415
+
+            await recover_dead_run(req.thread_id, why="card_decline_undelivered")
+        elif liveness != "idle":
+            return False
+    try:
+        moved = await asyncio.to_thread(
+            pending_ask.move_ask, org, req.request_id,
+            to="closed", from_states=pending_ask.WAITING,
+        )
+    except Exception:  # noqa: BLE001
+        _log.warning("agent.pending_ask_decline_failed", exc_info=True)
+        return False
+    if moved is None:
+        return False
+    from gateway.routes.shell import cache as feed_cache
+
+    await feed_cache.bump_member_safe(org, me)
+    return True
+
+
 @router.post(
     "/respond-input",
     summary="Answer a native ask_user prompt for a running agent",
@@ -3363,9 +3435,11 @@ async def respond_user_input(
     # WS-53 CRM-Q33 fix round 2: the responder is the session's member, so a
     # CRM card counts a pick only of the run's own member.
     _responder = (getattr(user, "email", None) or "").strip().lower() or None
+    # A decline ("Not now", owner request 2026-10-18) resolves it too, so
+    # the run RESUMES and reads the decline as its tool result.
     delivered = resolve_user_input(
         req.request_id, req.answer, req.was_freeform, thread_id=req.thread_id,
-        responder=_responder,
+        responder=_responder, declined=req.declined,
     )
     # Cross-worker (P1-2): the run may be parked on another worker.  Relay the
     # answer over the control bus so the owning worker resolves its own Future.
@@ -3376,10 +3450,28 @@ async def respond_user_input(
         "was_freeform": req.was_freeform,
         "responder": _responder,
     }
+    if req.declined:
+        # Only on a decline, so an answer's command is exactly as before.
+        _command["declined"] = True
     if not delivered:
         from orchestrator.stream_relay import dispatch_control  # noqa: PLC0415
 
         delivered = await dispatch_control(req.thread_id, _command)
+    if not delivered and req.declined:
+        # No run waits on this card. A decline starts no new run: the member
+        # chose to do something else. A card with a durable row closes, so
+        # it never draws again. Anything else is the plain 409.
+        if await _late_decline_from_row(req, user):
+            _log.info(
+                "agent.pending_ask_declined_late",
+                request_id=req.request_id[:12], thread_id=req.thread_id[:12],
+            )
+            return {"ok": True, "declined": True}
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No pending question matches that request_id "
+            "(the run may have already finished).",
+        )
     if not delivered:
         # ── A card answer across a restart (incident 2026-10-09) ─────────────
         # The run that asked may have died with its process. Then a bare 409
@@ -3427,8 +3519,11 @@ async def respond_user_input(
             detail="No pending question matches that request_id "
             "(the run may have already finished).",
         )
-    _log.info("agent.user_input_resolved", request_id=req.request_id[:12])
-    return {"ok": True}
+    _log.info(
+        "agent.user_input_resolved", request_id=req.request_id[:12],
+        declined=req.declined,
+    )
+    return {"ok": True, "declined": True} if req.declined else {"ok": True}
 
 
 @router.get(

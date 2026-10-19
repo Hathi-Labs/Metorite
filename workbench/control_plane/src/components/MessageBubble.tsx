@@ -117,6 +117,7 @@ function MessageBubble({
   sessionId,
   onChoice,
   onHitlRespond,
+  onHitlDecline,
   askAnswers,
   onFileOpen,
   onEditLast,
@@ -135,6 +136,9 @@ function MessageBubble({
    *  answers resume the parked run via /agent/respond-input instead of being
    *  sent as a new chat message. Falls back to onChoice when absent. */
   onHitlRespond?: (requestId: string, answer: string) => void;
+  /** "Not now" on a blocking generative-UI card (`lib/declineAnswer.ts`).
+   *  Only a card with a `request_id` parks a run, so only it gets one. */
+  onHitlDecline?: (requestId: string) => void;
   /** The answers this session sent to blocking cards, by `request_id`
    *  (`lib/askAnswers.ts`). A card that has one stays locked on a remount. */
   askAnswers?: ReadonlyMap<string, string>;
@@ -611,6 +615,7 @@ function MessageBubble({
     const answered = requestId
       ? (askAnswers?.get(requestId) ?? toolAnswers.get(requestId))
       : undefined;
+    const decline = requestId && onHitlDecline ? () => onHitlDecline(requestId) : undefined;
     // An element that needs the member is marked, so the pin above
     // the composer can find it and scroll to it (§24 rule 1).
     const ask = genUiPlacement(spec) === "ask";
@@ -651,14 +656,14 @@ function MessageBubble({
         <RollupCard key={i} id={target} title={title} icon={icon} header={header}
           askTarget={answered === undefined ? target : undefined}>
           <div {...askAttr} className="min-w-0 outline-none">
-            <GenerativeUINode spec={spec} onAction={act} answered={answered} />
+            <GenerativeUINode spec={spec} onAction={act} answered={answered} onDecline={decline} />
           </div>
         </RollupCard>
       );
     }
     return (
       <RollupCard key={i} id={target} title={title} icon={icon} header={header}>
-        <GenerativeUINode spec={spec} onAction={act} answered={answered} />
+        <GenerativeUINode spec={spec} onAction={act} answered={answered} onDecline={decline} />
       </RollupCard>
     );
   };
@@ -827,6 +832,7 @@ export default React.memo(MessageBubble, (a, b) =>
   // render when the card arrived, with a stale `submitText` inside it, so a
   // 409 fallback could queue the answer behind a run that had ended.
   a.onHitlRespond === b.onHitlRespond &&
+  a.onHitlDecline === b.onHitlDecline &&
   a.askAnswers === b.askAnswers &&
   a.onEditLast === b.onEditLast &&
   a.onRetryMessage === b.onRetryMessage &&

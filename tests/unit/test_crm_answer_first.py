@@ -579,7 +579,8 @@ async def test_a_card_with_other_words_or_a_typed_answer_picks_nothing(
     assert web_run.picked == {"rule:0123456789abcdef": "save"}
 
 
-async def _resolved(answer: str, responder: str, *, typed: bool = False) -> dict:
+async def _resolved(answer: str, responder: str, *, typed: bool = False,
+                    declined: bool = False) -> dict:
     """The dict of a card answer, built by the real ``resolve_user_input``."""
     import asyncio
 
@@ -589,10 +590,36 @@ async def _resolved(answer: str, responder: str, *, typed: bool = False) -> dict
     ex._pending_user_input.park("r-test", fut, "thread-test")
     try:
         assert ex.resolve_user_input("r-test", answer, typed, thread_id="thread-test",
-                                     responder=responder)
+                                     responder=responder, declined=declined)
         return await fut
     finally:
         ex._pending_user_input.pop("r-test", None)
+
+
+async def test_a_decline_keeps_the_default_only_on_a_card_that_offers_it(
+    monkeypatch, web_run,
+) -> None:
+    """Merge with #1152: "Not now" tells the model to send ``@default``. The
+    run member's own decline on a card that offers the default is that
+    pick. Another member's decline, or a card with no default, picks
+    nothing, and a decline is never a mismatch."""
+    from acb_skills.ask_tools import _record_crm_pick
+
+    me = "member@x.test"
+    monkeypatch.setattr(_T, "_current_user_email", lambda: me)
+    card = {"crm_question": "revenue", "question": "Which field is the revenue?",
+            "options": [{"label": "Amount", "key": "Amount"},
+                        {"label": _T.KEEP_LABEL, "key": _T.DEFAULT_KEY}]}
+    bare = {"crm_question": "purpose:Deals", "question": "What are Deals for?",
+            "options": [{"label": "Sales", "key": "sales"}]}
+    web_run.expected["revenue"] = (card["question"],
+                                   {"Amount": "Amount", _T.KEEP_LABEL: _T.DEFAULT_KEY})
+    web_run.expected["purpose:Deals"] = (bare["question"], {"Sales": "sales"})
+    _record_crm_pick([card], await _resolved("", "someone-else@x.test", declined=True))
+    _record_crm_pick([bare], await _resolved("", me, declined=True))
+    assert web_run.picked == {} and web_run.mismatched == {"revenue"}
+    _record_crm_pick([card], await _resolved("", me, declined=True))
+    assert web_run.picked == {"revenue": _T.DEFAULT_KEY} and web_run.mismatched == set()
 
 
 async def test_in_a_shared_room_another_contributor_s_click_is_no_pick(

@@ -6,9 +6,11 @@
  * ## One composition, two hosts (WS-39 S6e, my_tasks_cutover.md §4.8 point 3)
  *
  * A member who opens a task in Projects and the same task in My Tasks must
- * meet the same fields in the same order: lane, priority, assignees, due
- * date, description, tags, custom fields, links and subtasks, files, and the
- * discussion (comments and the activity timeline). Until S6e those were two
+ * meet the same fields in the same order: the ADD toolbar (subtask, link,
+ * attach, watch), then lane, priority, assignees, due date, tags, start,
+ * estimate, time spent and repeats as Details rows, then the description,
+ * custom fields, subtasks, links, files, and the discussion (comments and
+ * the activity timeline). Tags moved up on 2026-10-19. Until S6e those were two
  * compositions — `TaskPanel` here and a ClickUp-era `ItemDetail` there — and
  * "the same fields" was a claim nobody could keep by hand.
  *
@@ -192,47 +194,49 @@ export function resolveStatus(task: TaskRow, statuses: StatusRow[]) {
 const SECTION_COLUMN = "flex flex-col gap-4 px-3 py-3";
 
 /**
- * A grid of short field cells inside one section: two across when the host is
+ * The Details list: one property per row, two rows across when the host is
  * wide, one when it is not.
  *
- * `items-start` matters. Without it the grid stretches both cells to the
- * taller one, and an Assignees cell holding three chips would pad the Due
- * cell beside it to the same height.
+ * `items-start` matters. Without it the grid stretches both rows to the
+ * taller one, and an Assignees row holding three chips would pad the Due
+ * row beside it to the same height.
  */
 const PAIRED_FIELDS = (twoColumn: boolean): string =>
   twoColumn
-    ? "grid grid-cols-2 items-start gap-2"
-    : "grid grid-cols-1 gap-2";
+    ? "grid grid-cols-2 items-start gap-x-6 gap-y-1"
+    : "grid grid-cols-1 gap-y-1";
 
 /**
- * One labelled cell in the details block — the chrome `ItemDetail`'s
- * `MetaEdit` draws in its closed state, without the click-to-edit flip: the
- * controls here are live, and hiding them behind a click would be an
- * interaction change, not a composition one.
+ * One property ROW of the Details list: the label on the left, the live
+ * control on the right.
  *
- * `trailing` is the right-hand slot of the label row (an accent dot, a count).
+ * ⚠️ **A row, not a bordered card (owner, 2026-10-19).** Each field was a
+ * card with an uppercase label above its control, so nine fields filled the
+ * first screen of the side panel. Description and Tags sat below the fold,
+ * and the owner could not find where to add a tag. A row is half the height.
+ * It is the property list every tracker the owner compared draws: Linear,
+ * Plane, Jira. The label is sentence case, like the section headings above it
+ * (`Collapsible.tsx` filed the uppercase here as the wrong side).
+ *
  */
 export function FieldCell({
   label,
   icon,
-  trailing,
   children,
 }: {
   label: string;
   icon: string;
-  trailing?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
-    <div className="min-w-0 rounded-md border border-border bg-card px-3 py-2">
-      <div className="flex items-center justify-between gap-2">
-        <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-          <Icon name={icon} className="h-3 w-3" />
-          {label}
-        </span>
-        {trailing}
+    <div className="flex min-w-0 items-start gap-3 rounded-md px-1 py-1 hover:bg-muted/30">
+      <span className="flex h-8 w-24 shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+        <Icon name={icon} className="h-3.5 w-3.5 shrink-0" />
+        <span className="truncate">{label}</span>
+      </span>
+      <div className="flex min-h-8 min-w-0 flex-1 items-center gap-2 text-sm text-foreground">
+        <div className="min-w-0 flex-1">{children}</div>
       </div>
-      <div className="mt-1.5 text-sm text-foreground">{children}</div>
     </div>
   );
 }
@@ -394,6 +398,27 @@ export function TaskBody({
     onOpenChange: (open: boolean) => setSectionOpen(section, open),
   });
 
+  // The fields the ADD toolbar puts the cursor in.
+  const subtaskBox = useRef<HTMLInputElement | null>(null);
+  const linkBox = useRef<HTMLInputElement | null>(null);
+
+  /**
+   * Open a section and put the cursor in its field. A folded section mounts
+   * its content after React commits the open, so the focus waits two frames:
+   * one for the commit, one for the panel to lay out.
+   */
+  function reach(section: FoldableSection, field: { current: HTMLInputElement | null }) {
+    setSectionOpen(section, true);
+    window.requestAnimationFrame(() =>
+      window.requestAnimationFrame(() => {
+        const box = field.current;
+        if (!box) return;
+        box.scrollIntoView({ block: "center" });
+        box.focus({ preventScroll: true });
+      }),
+    );
+  }
+
   /**
    * ⚠️ **TWO streams, read separately, and that is the whole point.** Owner
    * request, 2026-09-21: the comments were "getting muddled up with the
@@ -413,6 +438,10 @@ export function TaskBody({
   const commentText = useRef("");
   const [notDelivered, setNotDelivered] = useState<string | null>(null);
   const commentBox = useRef<HTMLTextAreaElement | null>(null);
+  // The composer is one line until the member writes: focus, a draft or a
+  // reply opens it.
+  const [composing, setComposing] = useState(false);
+  const composerOpen = composing || comment.trim() !== "" || replyTo !== null;
   const [assignee, setAssignee] = useState("");
   const [subtask, setSubtask] = useState("");
   // Bumped when this body adds a subtask, so the relations block re-reads.
@@ -445,7 +474,6 @@ export function TaskBody({
   // Agents are excluded: an agent cannot receive a notification (migration
   // 152's CHECK), so offering to mention one would promise nothing.
   const mentionable = assignees.filter((who) => !who.startsWith("agent:"));
-  const { tone: statusTone } = resolveStatus(task, statuses);
 
   useEffect(() => {
     let live = true;
@@ -863,25 +891,81 @@ export function TaskBody({
         {above}
 
         <div className={SECTION_COLUMN}>
+          {/* The ADD row (owner, 2026-10-19: "all the main, commonly used
+              features easily accessible"). Each button reaches a section
+              further down: it opens the section when it is folded, and puts
+              the cursor in its field. Watch sits here too, because it is an
+              act on the task and not a fact about it. */}
+          <div
+            role="group"
+            aria-label="Add to this task"
+            className="flex flex-wrap items-center gap-1"
+          >
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="ListPlus"
+              disabled={busy}
+              onClick={() => reach("links", subtaskBox)}
+            >
+              Subtask
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="Link"
+              onClick={() => reach("refs", linkBox)}
+            >
+              Link
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="Paperclip"
+              loading={uploading.length > 0}
+              disabled={busy}
+              onClick={() => {
+                setSectionOpen("files", true);
+                filePicker.current?.click();
+              }}
+            >
+              Attach
+            </Button>
+            {/* D77 — watching is the member's own notification choice on
+                the SHARED task, so it lives in the body both apps host.
+                Hidden until the state is known. */}
+            {watching !== null ? (
+              <Button
+                className="ml-auto"
+                variant={watching ? "secondary" : "ghost"}
+                size="sm"
+                icon={watching ? "BellRing" : "Bell"}
+                aria-pressed={watching}
+                title={
+                  watching
+                    ? "Watching — click to stop being notified about this task"
+                    : "Watch — get notified about this task"
+                }
+                onClick={() => void toggleWatch()}
+              >
+                {watching ? "Watching" : "Watch"}
+              </Button>
+            ) : null}
+          </div>
+
           <CollapsibleSection
             label="Details"
             icon="SlidersHorizontal"
             {...fold("details")}
           >
-            {/* Status beside Priority, Assignees beside Due. No responsive
-                variant on purpose: the HOST's width stop decides, never the
-                viewport - see the width note in this file's header. */}
+            {/* The most used facts first: Status, Priority, Assignees, Due
+                and Tags. No responsive variant on purpose: the HOST's width
+                stop decides, never the viewport - see the width note in
+                this file's header. */}
             <div className={PAIRED_FIELDS(twoColumn)}>
-              <FieldCell
-                label="Status"
-                icon="CircleDot"
-                trailing={
-                  <span
-                    className={`h-2 w-2 shrink-0 rounded-full ${statusTone.dot}`}
-                    aria-hidden
-                  />
-                }
-              >
+              {/* No accent dot: the header's status chip carries the colour
+                  a hand's width above this row. */}
+              <FieldCell label="Status" icon="CircleDot">
                 <SelectButton
                   label="Status"
                   // Above My Tasks' TaskFocusModal (`z-[80]`), which draws
@@ -901,21 +985,21 @@ export function TaskBody({
                   date. This body is drawn by Projects AND My Tasks, so the
                   control is in the same place in both. The level is computed
                   and never stored. */}
-              <FieldCell
-                label="Priority"
-                icon="Flag"
-                trailing={
-                  <PriorityBadge
-                    item={matrixOf(task)}
-                    urgentWindowHours={urgentWindowHours}
-                  />
-                }
-              >
+              {/* The level badge rides at the end of the toggles' own row.
+                  As a trailing slot it took a third of the row's width, and
+                  each toggle wrapped onto its own line. */}
+              <FieldCell label="Priority" icon="Flag">
                 <WeightToggles
                   item={matrixOf(task)}
                   urgentWindowHours={urgentWindowHours}
                   size="sm"
                   showDeepWork={false}
+                  after={
+                    <PriorityBadge
+                      item={matrixOf(task)}
+                      urgentWindowHours={urgentWindowHours}
+                    />
+                  }
                   onChange={(flags) => {
                     const payload: Record<string, unknown> = {};
                     if (flags.important !== undefined) {
@@ -929,22 +1013,7 @@ export function TaskBody({
                 />
               </FieldCell>
 
-              <FieldCell
-                label="Assignees"
-                icon="Users"
-                trailing={
-                  assignees.length ? (
-                    <span
-                      className="text-[10px] text-muted-foreground"
-                      title={`${assignees.length} assignee${
-                        assignees.length === 1 ? "" : "s"
-                      }`}
-                    >
-                      {assignees.length}
-                    </span>
-                  ) : null
-                }
-              >
+              <FieldCell label="Assignees" icon="Users">
                 <AssigneeChips
                   assignees={assignees}
                   disabled={busy}
@@ -958,6 +1027,8 @@ export function TaskBody({
                     THIS task. Only this panel passes it. */}
                 <AssigneePicker
                   value={assignee}
+                  // Reads like the Tags row below it: an "Add …" field.
+                  placeholder="Add a person or agent…"
                   disabled={busy}
                   due={task.due_at ?? null}
                   taskId={task.id}
@@ -988,6 +1059,23 @@ export function TaskBody({
                       due_at: e.target.value ? dueInstantForDay(e.target.value) : null,
                     })
                   }
+                />
+              </FieldCell>
+
+              {/* Owner, 2026-10-19: Tags sat in a "Properties" section below
+                  the description, folded by many, and the owner could not
+                  find it. It is a Details row now, beside the other facts
+                  a member sets most. */}
+              <FieldCell label="Tags" icon="Tag">
+                <TagPicker
+                  compact
+                  value={task.tags ?? []}
+                  registry={tags}
+                  disabled={busy}
+                  onCreate={(name, color) =>
+                    projectsApi.createTag(task.project_id, { name, color })
+                  }
+                  onChange={(next) => void patch({ tags: next })}
                 />
               </FieldCell>
 
@@ -1024,36 +1112,18 @@ export function TaskBody({
               {/* D77 — read-only: every member's timed blocks, summed. One
                   member's actuals are theirs; the total is the work's. */}
               <FieldCell label="Time spent" icon="Hourglass">
-                <span className="text-sm text-foreground">
-                  {spent === null
-                    ? "…"
-                    : spent > 0
-                      ? durationLabel(spent)
-                      : "Nothing timed yet"}
+                <span
+                  className={
+                    spent ? "text-sm text-foreground" : "text-sm text-muted-foreground"
+                  }
+                >
+                  {spent === null ? "…" : spent > 0 ? durationLabel(spent) : "None yet"}
                 </span>
               </FieldCell>
 
-              {/* D77 — watching is the member's own notification choice on
-                  the SHARED task, so it lives in the body both apps host.
-                  Hidden until the state is known. */}
-              {watching !== null ? (
-                <FieldCell label="Watch" icon={watching ? "BellRing" : "Bell"}>
-                  <Button
-                    variant={watching ? "secondary" : "ghost"}
-                    size="sm"
-                    icon={watching ? "BellOff" : "Bell"}
-                    aria-pressed={watching}
-                    title={
-                      watching
-                        ? "Watching — click to stop being notified about this task"
-                        : "Watch — get notified about this task"
-                    }
-                    onClick={() => void toggleWatch()}
-                  >
-                    {watching ? "Watching" : "Watch"}
-                  </Button>
-                </FieldCell>
-              ) : null}
+              <FieldCell label="Repeats" icon="Repeat">
+                <RepeatEditor taskId={task.id} bare />
+              </FieldCell>
             </div>
           </CollapsibleSection>
 
@@ -1117,35 +1187,9 @@ export function TaskBody({
             )}
           </CollapsibleSection>
 
-          {/* Tags and recurrence draw their own small labels, so they are
-              sub-fields of one section rather than two sections whose
-              headings would compete with the ones those components render. */}
-          <CollapsibleSection
-            label="Properties"
-            icon="Tag"
-            {...fold("properties")}
-          >
-            {/* Tags beside Repeats when there is room. Both are short, and
-                stacked they left the widest stop looking half-used. */}
-            <div
-              className={
-                twoColumn
-                  ? "grid grid-cols-2 items-start gap-4"
-                  : "flex flex-col gap-3"
-              }
-            >
-              <TagPicker
-                value={task.tags ?? []}
-                registry={tags}
-                disabled={busy}
-                onCreate={(name, color) =>
-                  projectsApi.createTag(task.project_id, { name, color })
-                }
-                onChange={(next) => void patch({ tags: next })}
-              />
-              <RepeatEditor taskId={task.id} />
-            </div>
-          </CollapsibleSection>
+          {/* Tags and Repeats were a "Properties" section here until
+              2026-10-19. They are Details rows now, and the fold id is gone
+              from `sectionFold.ts`, so a member who folded it loses nothing. */}
         </div>
 
         {/* Custom fields bring their own section chrome, so they sit OUTSIDE
@@ -1174,6 +1218,7 @@ export function TaskBody({
                 />
               ) : null}
               <Input
+                ref={subtaskBox}
                 icon="Plus"
                 value={subtask}
                 disabled={busy}
@@ -1202,7 +1247,12 @@ export function TaskBody({
             keepMounted
             {...fold("refs")}
           >
-            <TaskLinks key={task.id} taskId={task.id} onCount={setLinkCount} />
+            <TaskLinks
+              key={task.id}
+              taskId={task.id}
+              onCount={setLinkCount}
+              inputRef={linkBox}
+            />
           </CollapsibleSection>
 
           <CollapsibleSection
@@ -1287,21 +1337,6 @@ export function TaskBody({
                 <p className="text-xs text-muted-foreground">Nothing attached.</p>
               ) : null}
             </div>
-            {/* The picker is a Button, not a bare file input (S5). The input
-                stays in the tree, hidden, because it is the only way to
-                raise the OS file dialog. Fenced by conformance rule 7. */}
-            <input
-              ref={filePicker}
-              type="file"
-              multiple
-              className="hidden"
-              tabIndex={-1}
-              aria-hidden
-              onChange={(e) => {
-                void uploadFiles(e.target.files);
-                e.target.value = "";
-              }}
-            />
             <Button
               className="mt-2"
               variant="secondary"
@@ -1460,6 +1495,13 @@ export function TaskBody({
       {/* ⚠️ The composer belongs to the COMMENTS list, and is hidden with it. */}
       <div
         className="shrink-0 border-t border-border bg-card p-3"
+        // ⚠️ On the CONTAINER, not the field. Tab from the field to a
+        // mention button blurs the field, and a field-level blur unmounted
+        // the row that held the next focus, so focus fell to <body>.
+        onFocus={() => setComposing(true)}
+        onBlur={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setComposing(false);
+        }}
         hidden={stream !== "comments"}
         onDragOver={inline.allowDrop}
         onDrop={(e) => inline.dropInto(e)}
@@ -1484,9 +1526,12 @@ export function TaskBody({
             />
           </div>
         ) : null}
+        {/* ⚠️ ONE line until the member writes (owner, 2026-10-19). Three
+            rows, a mention row and a full-width button were pinned under
+            every task, a fifth of the panel's height before anybody had
+            anything to say. Focus, a draft or a reply opens it. */}
         <Textarea
           ref={commentBox}
-          inputSize="lg"
           value={comment}
           onChange={(e) => writeComment(e.target.value)}
           onPaste={(e) => inline.pasteInto(e, commentTarget)}
@@ -1494,36 +1539,59 @@ export function TaskBody({
           onDrop={(e) => inline.dropInto(e, commentTarget)}
           placeholder={replyTo ? "Write a reply…" : "Add a comment…"}
           aria-label={replyTo ? "Write a reply" : "Add a comment"}
-          rows={3}
+          rows={composerOpen ? 3 : 1}
         />
-        {mentionable.length ? (
-          <div className="mt-1.5 flex flex-wrap items-center gap-1">
-            <span className="text-[10px] text-muted-foreground">Mention</span>
+        {composerOpen ? (
+          <div className="mt-2 flex flex-wrap items-center gap-1">
+            {mentionable.length ? (
+              <span className="text-[11px] text-muted-foreground">Mention</span>
+            ) : null}
             {mentionable.map((who) => (
               <Button
                 key={who}
-                variant="secondary"
+                variant="ghost"
                 size="sm"
+                // The click must land before the field's blur closes this row.
+                onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
                 onClick={() => mention(who)}
               >
                 @{who.split("@")[0]}
               </Button>
             ))}
+            <Button
+              className="ml-auto"
+              size="sm"
+              icon={replyTo ? "CornerDownRight" : "MessageSquare"}
+              onClick={addComment}
+              // TR-4: not while an image in the text is still going up.
+              disabled={busy || !comment.trim() || inline.waiting(comment)}
+            >
+              {replyTo ? "Reply" : "Comment"}
+            </Button>
           </div>
         ) : null}
         {notDelivered ? (
           <p className="mt-1 text-[11px] text-muted-foreground">{notDelivered}</p>
         ) : null}
-        <Button
-          className="mt-2 w-full"
-          icon={replyTo ? "CornerDownRight" : "MessageSquare"}
-          onClick={addComment}
-          // TR-4: not while an image in the text is still going up.
-          disabled={busy || !comment.trim() || inline.waiting(comment)}
-        >
-          {replyTo ? "Reply" : "Comment"}
-        </Button>
       </div>
+      {/* The picker is a Button, not a bare file input (S5). The input
+          stays in the tree, hidden, because it is the only way to raise the
+          OS file dialog. Fenced by conformance rule 7.
+          ⚠️ At the ROOT, never inside the Files section. A folded section
+          unmounts its content, so the toolbar's Attach found no input and
+          raised no dialog (verifier, 2026-10-19). */}
+      <input
+        ref={filePicker}
+        type="file"
+        multiple
+        className="hidden"
+        tabIndex={-1}
+        aria-hidden
+        onChange={(e) => {
+          void uploadFiles(e.target.files);
+          e.target.value = "";
+        }}
+      />
       {/* The viewer is mounted at the root rather than inside the Files
           section, so it is not clipped by the scroll container. */}
       <AttachmentViewer

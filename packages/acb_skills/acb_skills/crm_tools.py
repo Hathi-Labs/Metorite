@@ -1830,6 +1830,14 @@ def record_card_answer(cleaned: list[dict[str, Any]], result: Any) -> None:
     if clip_words(question, QUESTION_TEXT_MAX) != shown.get("question"):
         _pick_mismatch(asks, qid, "question")
         return
+    if result.get("declined") is True:
+        # "Not now" (#1152): the decline text tells the model to send the
+        # default. The member's own decline on a card that offers it is
+        # that pick. A card with no default records nothing.
+        if DEFAULT_KEY in labels.values():
+            asks.mismatched.discard(qid)
+            asks.picked[qid] = DEFAULT_KEY
+        return
     said = str(result.get("answer") or "").strip()
     seen = [str(o.get("label") or "") for o in shown.get("options") or [] if isinstance(o, dict)]
     keys = [key for label, key in labels.items() if clip_words(label, OPTION_LABEL_MAX) == said]

@@ -397,3 +397,39 @@ describe("H-273: the receipt of a batch of new tags or types", () => {
     expect(classifyActionResult(none, "done", "create_tags")).toBe("refused");
   });
 });
+
+describe("the one-card batches of writes.py (2026-10-18)", () => {
+  const ID2 = "00000000-0000-4000-8000-000000000002";
+  const NL = String.fromCharCode(10);
+  const filed = [
+    "Moved 1 of 3 tasks. 1 could not move. 1 was unticked.",
+    "- #11 «Fix the login» · unassigned · in «Website»",
+    `  full_id: ${ID2}`,
+    "The 1 task listed above moved. Do not move them again. To retry a row that was not moved, fix it and call file_tasks with that row only.",
+    "not moved: row 2 #12 «Order the nozzle»: needs «Cost centre»",
+    "left out: row 3 #13 «Book the freight», unticked on the card.",
+  ].join(NL);
+
+  // Mutation caught: drop a batch from BATCH_TOOLS, and its receipt draws no rows.
+  it("draws both batches through the batch card", () => {
+    expect(BATCH_TOOLS.get("file_tasks")?.rows).toBe("task");
+    expect(BATCH_TOOLS.get("link_tasks_batch")?.rows).toBe("task");
+    expect(parseTaskRows(filed).map((r) => r.number)).toEqual(["#11"]);
+  });
+
+  // Mutation caught: the line for the model shows to the member.
+  it("keeps the rows that did not move and drops the line for the model", () => {
+    expect(batchNotes(filed).map(unfenced)).toEqual([
+      "not moved: row 2 #12 Order the nozzle: needs Cost centre",
+      "left out: row 3 #13 Book the freight, unticked on the card.",
+    ]);
+    const linked = [
+      "Made 1 link:",
+      "- #247 «Design» · blocks #248 «Print»",
+      `  full_id: ${ID2}`,
+      "The 1 link listed above exist. Do not link them again. To retry a row that was not linked, fix it and call link_tasks_batch with that row only.",
+    ].join(NL);
+    expect(batchNotes(linked)).toEqual([]);
+    expect(classifyActionResult(linked, "done", "link_tasks_batch")).toBe("done");
+  });
+});

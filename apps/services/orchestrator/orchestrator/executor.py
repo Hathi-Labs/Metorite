@@ -1066,7 +1066,7 @@ _USER_INPUT_TIMEOUT = int(os.environ.get("ASK_USER_TIMEOUT", "3600"))
 
 def resolve_user_input(
     request_id: str, answer: str, was_freeform: bool = True,
-    *, thread_id: str | None, responder: str | None = None,
+    *, thread_id: str | None, responder: str | None = None, declined: bool = False,
 ) -> bool:
     """Resolve a pending ``ask_user`` request with the user's answer.
 
@@ -1077,6 +1077,11 @@ def resolve_user_input(
     thread that owns the request (:class:`_PendingUserInput`). A missing
     thread, an unknown owner or another thread resolves nothing. The route
     checks ``can_send`` in that thread's room first.
+
+    *declined* is the member's "Not now" (owner request, 2026-10-18). The
+    Future resolves with ``{"answer": "", "declined": True}`` and the run
+    goes on: each parking site reads it with ``ask_tools.is_declined``. The
+    key goes only on a decline, so every answer is exactly as before.
     """
     fut = _pending_user_input.get(request_id)
     if fut is None or fut.done():
@@ -1089,7 +1094,9 @@ def resolve_user_input(
             has_owner=bool(owner),
         )
         return False
-    payload = {"answer": answer, "wasFreeform": was_freeform}
+    payload: dict[str, Any] = {"answer": answer, "wasFreeform": was_freeform}
+    if declined:
+        payload = {"answer": "", "wasFreeform": False, "declined": True}
     # WS-53 CRM-Q33 fix round 2: who answered, from the gateway's session. A
     # CRM card counts a pick only of the run's own member.
     if responder:
@@ -1134,6 +1141,8 @@ def _respond_input_applier(thread_id: str) -> Callable[[dict[str, Any]], bool]:
             bool(command.get("was_freeform", True)),
             thread_id=thread_id,
             responder=str(command.get("responder") or "") or None,
+            # Only a JSON true declines, never a truthy string.
+            declined=command.get("declined") is True,
         )
 
     return _apply
@@ -1184,12 +1193,12 @@ async def wait_user_future(
                 # Shield: a slice timeout must not cancel the shared future —
                 # the next slice keeps waiting on it.
                 result = await asyncio.wait_for(asyncio.shield(fut), timeout=wait)
-                answer = str((result or {}).get("answer", "") or "")
+                answer = _settled_answer(result)
                 return result
             except asyncio.TimeoutError:
                 if fut.done():
                     result = fut.result()
-                    answer = str((result or {}).get("answer", "") or "")
+                    answer = _settled_answer(result)
                     return result
                 if (
                     park_at is not None and rid and tid
@@ -1208,6 +1217,18 @@ async def wait_user_future(
         if rid:
             with contextlib.suppress(BaseException):
                 await asyncio.shield(pending_ask.settle(rid, answer=answer))
+
+
+def _settled_answer(result: Any) -> str | None:
+    """The answer a durable row keeps, or None to close it unanswered.
+
+    A "Not now" (owner request, 2026-10-18) closes the row: the member gave
+    no answer, and a closed row never draws its card again. The table has no
+    state for a decline, and a new state would need a migration.
+    """
+    if isinstance(result, dict) and result.get("declined") is True:
+        return None
+    return str((result or {}).get("answer", "") or "")
 
 
 def _request_id_of(fut: Any) -> str | None:
@@ -1284,6 +1305,17 @@ def _make_user_input_handler(thread_id: str) -> Any:
             result = {"answer": "", "wasFreeform": True}
         finally:
             _pending_user_input.pop(request_id, None)
+
+        # The member's "Not now" (owner request, 2026-10-18): the SDK hands
+        # the answer to the model as the member's words, so the answer IS
+        # the decline text. The run goes on.
+        if isinstance(result, dict) and result.get("declined") is True:
+            try:
+                from acb_skills.ask_tools import declined_text
+            except Exception:  # noqa: BLE001 — the platform package is absent
+                return {"answer": "The member chose not to answer this question now.",
+                        "wasFreeform": True}
+            return {"answer": declined_text(), "wasFreeform": True}
 
         return {
             "answer": str(result.get("answer", "")),
@@ -5481,8 +5513,16 @@ async def run_agent_stream(
                                     # WS-53 CRM-Q32-8: the id of a CRM
                                     # question card, as the tool keeps it.
                                     from acb_skills.ask_tools import (
+                                        card_default as _card_default,
+                                    )
+                                    from acb_skills.ask_tools import (
                                         crm_card_tag as _crm_tag,
                                     )
+                                    # The stated default, as the tool keeps
+                                    # it. The card draws it, so a "Not now"
+                                    # names only what the member saw.
+                                    if _card_default(_q):
+                                        _entry["default"] = _card_default(_q)
                                     if _crm_tag(_q):
                                         _entry["crm_question"] = _crm_tag(_q)
                                     _valid.append(_entry)

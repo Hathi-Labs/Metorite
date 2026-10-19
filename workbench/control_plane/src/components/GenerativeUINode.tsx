@@ -119,12 +119,14 @@ export function GenUiMarkdown({ content }: { content: string }) {
 export { GenUiText };
 
 function Node({
-  node, onAction, answered, depth = 0,
+  node, onAction, answered, onDecline, depth = 0,
 }: {
   node: GenUINode;
   onAction?: (action: string) => void;
   /** The answer this card already got (`lib/askAnswers.ts`), or nothing. */
   answered?: string;
+  /** "Not now" of a blocking card (`lib/declineAnswer.ts`), or nothing. */
+  onDecline?: () => void;
   depth?: number;
 }): React.ReactElement | null {
   // The chat card this tree draws in, if it folds (`components/RollupCard`).
@@ -141,7 +143,9 @@ function Node({
   const kids = Array.isArray(node.children) ? node.children : [];
 
   const renderKids = () =>
-    kids.map((k, i) => <Node key={i} node={k} onAction={onAction} answered={answered} depth={depth + 1} />);
+    kids.map((k, i) => (
+      <Node key={i} node={k} onAction={onAction} answered={answered} onDecline={onDecline} depth={depth + 1} />
+    ));
 
   switch (type) {
     case "card": {
@@ -374,7 +378,7 @@ function Node({
       // onAction channel buttons use, so their submits flow back to the agent.
       const name = s(props.name);
       const data = props.data;
-      return renderTemplate(name, data, { onAction, answered });
+      return renderTemplate(name, data, { onAction, answered, onDecline });
     }
 
     case "html": {
@@ -460,12 +464,15 @@ export function genUiRootOwnsHead(spec: unknown): boolean {
  * Accepts either a single node or `{ root: node }` / `{ view: node }` wrappers.
  */
 export default function GenerativeUINode({
-  spec, onAction, answered,
+  spec, onAction, answered, onDecline,
 }: {
   spec: unknown;
   onAction?: (action: string) => void;
   /** The answer a blocking card already got, so a remount keeps it locked. */
   answered?: string;
+  /** "Not now" of a blocking card (`lib/declineAnswer.ts`). The host passes
+   *  it only for a card that parks a run. */
+  onDecline?: () => void;
 }): React.ReactElement | null {
   const root =
     spec && typeof spec === "object"
@@ -474,5 +481,5 @@ export default function GenerativeUINode({
         ?? spec)
       : spec;
   if (!root || typeof root !== "object") return null;
-  return <Node node={root as GenUINode} onAction={onAction} answered={answered} />;
+  return <Node node={root as GenUINode} onAction={onAction} answered={answered} onDecline={onDecline} />;
 }

@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 
 import { answersFromTools, pickedFromAnswer } from "./askAnswers";
 import { withCustomEvent } from "./chatStream";
+import { DECLINED_ANSWER } from "./declineAnswer";
 
 const RID = "0123456789abcdef0123456789abcdef";
 
@@ -58,5 +59,27 @@ describe("a card before the first text is stamped 0", () => {
     ]);
     const two = { ...m, segments: [{ id: "s1", text: "a" }, { id: "s2", text: "b" }] };
     expect(withCustomEvent(two, "generative_ui", {}).customEvents?.[0].segmentCutoff).toBe(2);
+  });
+});
+
+// "Not now" (owner request, 2026-10-18): a declined card records
+// `declined: true` and no response. After a reload it reads as declined, so
+// it draws "Not answered" and never live buttons again.
+// Mutations caught: the reader drops the decline, reads it only in one of
+// the two shapes, or reads a form value named "declined" as a decline.
+describe("answersFromTools: a declined card", () => {
+  it("reads a decline as declined, in JSON and in a Python repr", () => {
+    const json = answersFromTools([{ name: "emit_generative_ui",
+      result: JSON.stringify({ ok: true, declined: true, response: null, note: "x", request_id: RID }) }]);
+    expect(json.get(RID)).toBe(DECLINED_ANSWER);
+    const repr = answersFromTools([{ name: "emit_generative_ui",
+      result: `{'ok': True, 'declined': True, 'response': None, 'note': 'The member chose not to answer this card now.', 'request_id': '${RID}'}` }]);
+    expect(repr.get(RID)).toBe(DECLINED_ANSWER);
+  });
+
+  it("never reads a form value named declined as a decline", () => {
+    const got = answersFromTools([{ name: "emit_generative_ui",
+      result: `{'ok': True, 'response': 'Form — {"declined": true}', 'request_id': '${RID}'}` }]);
+    expect(got.get(RID)).toBe('Form — {"declined": true}');
   });
 });

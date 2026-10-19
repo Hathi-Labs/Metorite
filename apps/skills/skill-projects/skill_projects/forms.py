@@ -118,14 +118,41 @@ def _answer(response: Any) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-async def _ask(spec: dict[str, Any]) -> dict[str, Any] | None:
+def declined_form() -> str:
+    """What a tool says when the member pressed "Not now" (or the plan
+    card's Cancel) on its form: nothing changed, and the decline text of
+    ``ask_tools`` (owner request, 2026-10-18)."""
+    try:
+        from acb_skills.ask_tools import declined_text
+    except Exception:  # pragma: no cover — platform package absent in isolation
+        return NOT_SUBMITTED
+    return f"{NOT_SUBMITTED} {declined_text(what='form')}"
+
+
+def declined_plan() -> str:
+    """What ``propose_plan`` says when the member pressed the plan card's
+    Cancel: a cancel, not a "not now" (review of #1152). Nothing was made,
+    and the plan is not proposed again unless the member asks."""
+    return (
+        f"{NOT_SUBMITTED} The member cancelled the plan. Nothing was created. "
+        "Do not propose this plan again unless the member asks for it."
+    )
+
+
+async def _ask(spec: dict[str, Any], *, declined: Any = None) -> dict[str, Any] | str:
+    """The values the member submitted, or the tool's reply when there are
+    none: :data:`NOT_SUBMITTED`, or for a "Not now" *declined*'s text
+    (:func:`declined_form` when the caller names none)."""
     result = await _emit({**spec, "hitl": True})
     if not result.get("ok"):
         raise GatewayRefusal(
             "The form could not be drawn (no chat surface to draw into). "
             "Pass the changes as arguments to update_task or update_project instead."
         )
-    return _answer(result.get("response"))
+    if result.get("declined") is True:
+        return (declined or declined_form)()
+    values = _answer(result.get("response"))
+    return NOT_SUBMITTED if values is None else values
 
 
 def _clean(value: Any) -> str:
@@ -218,8 +245,8 @@ async def edit_task(task_id: str) -> str:
             },
         )
     )
-    if values is None:
-        return NOT_SUBMITTED
+    if isinstance(values, str):
+        return values
     changes = _task_changes(task, values, current)
     if isinstance(changes, str):
         return changes
@@ -404,8 +431,8 @@ async def edit_project(project_id: str) -> str:
             },
         )
     )
-    if values is None:
-        return NOT_SUBMITTED
+    if isinstance(values, str):
+        return values
     changes: dict[str, Any] = {}
     name = _clean(values.get("name"))
     if name and name != _clean(node.get("name")):
@@ -996,10 +1023,11 @@ async def propose_plan(
                 "risks": [r.strip() for r in str(risks or "").splitlines() if r.strip()][:5],
                 "submitLabel": "Review plan",
             },
-        )
+        ),
+        declined=declined_plan,
     )
-    if values is None:
-        return NOT_SUBMITTED
+    if isinstance(values, str):
+        return values
     final = _submitted_rows(values.get("tasks"), rows)
     if isinstance(final, str):
         return final
