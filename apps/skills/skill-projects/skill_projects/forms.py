@@ -978,10 +978,15 @@ def _plan_fills_parent(label: str, parent_label: str, parent_id: str) -> str:
 
     return refusal_text(GatewayRefusal(
         f"propose_plan makes a NEW project, and the plan is named like its parent "
-        f"{data(parent_label)}. It would make a second {data(label)} inside it, so "
-        "nothing was created. To add the tasks to the project that exists, call "
-        f"create_tasks with project_id {parent_id} and the same tasks. For a new "
-        "sub-project, give the plan its own name."
+        f"project {data(parent_label)}. It would make a second {data(label)} inside "
+        "it, so nothing was created. To add the tasks to the project that exists, "
+        f"call create_tasks with project_id {parent_id}. Map each plan task to a "
+        "create_tasks row: title stays title, owner becomes assignees, effort_mins "
+        "becomes estimate_mins, and start and due stay. Leave out key, after and "
+        "phase, because create_tasks refuses them. Then make each waits-on link in "
+        "a second call, link_tasks_batch (link_tasks for 1 or 2), with type blocks "
+        "and the task ids from the receipt. For a new sub-project, give the plan "
+        "its own name."
     ))
 
 
@@ -1028,7 +1033,9 @@ async def propose_plan(
     if parent_project_id.strip():
         parent_id, parent = await _node(parent_project_id)
         parent_label = _plain(parent.get("name"))
-        if _same_name(label, parent_label):
+        # Only a PROJECT: a folder named like the plan is a fair place for a
+        # new project, and create_tasks refuses a folder (review of #1160).
+        if parent.get("kind", "project") == "project" and _same_name(label, parent_label):
             return _plan_fills_parent(label, parent_label, parent_id)
     soft, unresolved = await _soft_owners(rows)
     checks, warnings, capacity_line = _capacity(rows, await _preview(rows, soft), unresolved)

@@ -3027,6 +3027,28 @@ async def test_a_plan_named_like_its_parent_is_refused_and_names_create_tasks(mo
     assert "nothing was created" in out
     assert drawn == [] and asked == [] and writes(calls) == []
     assert not [c for c in calls if c["path"] == "/projects/plan/preview"]
+    # The next step is complete: the key mapping, the keys to leave out, and
+    # the second call for the links (review of #1160).
+    for words in ("owner becomes assignees", "effort_mins becomes estimate_mins",
+                  "Leave out key, after and phase", "link_tasks_batch", "type blocks"):
+        assert words in out, words
+
+
+async def test_a_folder_named_like_the_plan_is_a_fair_parent(monkeypatch) -> None:
+    """A folder holds projects, and create_tasks refuses a folder, so a plan
+    named like its folder draws its card. Mutation: drop the kind check ->
+    this test fails."""
+    drawn = form_stub(monkeypatch)
+
+    def folder(call: dict) -> Any:
+        if call["method"] == "GET" and call["path"].startswith(f"/projects/nodes/{UUID}"):
+            return {"id": UUID, "name": "Ops", "kind": "folder", "status": "active", "lead": None}
+        return _plan_gateway()(call)
+
+    fake_gateway(monkeypatch, folder)
+    out = await skill_projects.propose_plan("Ops", _json.dumps(PLAN_DEPS), parent_project_id=UUID)
+    assert not str(out).startswith("Refused:")
+    assert drawn and drawn[0]["props"]["data"]["description"] == "Under Ops."
 
 
 async def test_a_plan_with_its_own_name_under_a_parent_still_draws(monkeypatch) -> None:
