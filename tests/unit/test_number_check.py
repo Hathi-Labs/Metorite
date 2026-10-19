@@ -358,8 +358,11 @@ class TestDerivedFigures:
 
     def test_a_chain_of_three_fails(self) -> None:
         sources = ["100 open", "200 won", "400 lost"]
-        assert not check("100 open, 200 won and 400 lost: 700 deals.", sources).ok
-        assert check("100 open and 200 won: 300 deals.", sources).ok
+        # Round 6: a total with its parts after ":" is a sum of the parts, so
+        # this chain is only a chain without that shape.
+        assert not check("100 open, 200 won and 400 lost, so 700 deals in total.",
+                         sources).ok
+        assert check("100 open and 200 won, 300 deals in total.", sources).ok
         assert not check("In all, 300 deals.", sources).ok
 
     def test_the_member_s_words_take_no_part(self) -> None:
@@ -479,3 +482,384 @@ class TestFixRound3Sources:
         top.add_text("over ₹7 lakh")
         assert check("Over ₹7 lakh: INR 12,34,567 and INR 5,00,000, ₹17.3 lakh.", top).ok
         assert not check("Over ₹7 lakh.", base).ok
+
+
+# ── Fix round 4 (2026-10-17): the adversarial review of round 3 ───────────
+
+PIPE = (
+    "CRM report pipeline:\n"
+    "- Qualification: 14 deals · INR 23,450,000 · weighted INR 4,690,000\n"
+    "- Proposal: 9 deals · INR 41,200,000 · weighted INR 20,600,000\n"
+    "- Negotiation: 5 deals · INR 70,623,000 · weighted INR 52,967,250\n"
+    "Total: 28 deals · INR 135,273,000 · weighted INR 78,257,250"
+)
+WIN_LOSS = (
+    "CRM report win-loss:\n"
+    "In the last 90 days, since 2026-07-19: won 12, lost 8, win rate 60.0%.\n"
+    "Won INR 18,400,000, lost INR 9,750,000."
+)
+
+
+class TestFixRound4Scale:
+    """Rule 2: a scale after a currency sign, a no-break space, and a glued
+    figure that never disappears."""
+
+    @pytest.mark.parametrize(("text", "value"), [
+        ("₹19.2m", Decimal("19200000")), ("$4.5b", Decimal("4500000000")),
+        ("$3mm", Decimal("3000000")), ("₹12\u00a0crore", Decimal("120000000")),
+        ("₹12\u202flakh", Decimal("1200000")),
+    ])
+    def test_the_scale_reads(self, text: str, value: Decimal) -> None:
+        figures = find_figures(f"The pipeline is {text} now.")
+        assert [f.value for f in figures] == [value]
+
+    def test_a_lower_case_scale_needs_a_currency_sign(self) -> None:
+        assert [f.text for f in find_figures("Walk 5 m to the 12 b block.")] == ["5", "12"]
+
+    @pytest.mark.parametrize("text", ["₹19.2xy", "INR 5,00,000abc", "$4.5bnz"])
+    def test_a_glued_figure_is_kept_and_fails(self, text: str) -> None:
+        result = check(f"The pipeline is {text} now.", [PIPE])
+        assert [f.text for f in result.unmatched] == [text]
+        assert result.unmatched[0].unreadable
+
+    def test_a_glued_figure_is_no_source(self) -> None:
+        assert not check("₹19.2 is the figure.", ["Total ₹19.2xy"]).ok
+
+
+class TestFixRound4Derivation:
+    """Rule 4: the operands stand next to the derived figure in its sentence,
+    and a word of derivation stands near it. Rule 5: two percents."""
+
+    def test_operands_in_another_block_fail(self) -> None:
+        """Round 5: the window is the block (up to a blank line), not the
+        sentence. Operands after a blank line take no part."""
+        text = "Won INR 1,84,00,000 and lost INR 97,50,000.\n\nThe net is INR 86,50,000."
+        assert not check(text, [WIN_LOSS]).ok
+        assert check("Won INR 1,84,00,000 and lost INR 97,50,000. The net is INR 86,50,000.",
+                     [WIN_LOSS]).ok
+
+    def test_a_derived_figure_needs_a_word_of_derivation(self) -> None:
+        assert not check("Won 12 and lost 8, 20 deals.", [WIN_LOSS]).ok
+        assert check("We won 12 and lost 8, so 20 deals closed.", [WIN_LOSS]).ok
+
+    def test_far_operands_of_a_long_list_take_no_part(self) -> None:
+        # 14 + 5 = 19, but 9 stands between them and the figure.
+        text = "Qualification has 14 deals, Negotiation 5 and Proposal 9, so 19 are stalled."
+        assert not check(text, [PIPE]).ok
+        text = "Qualification has 14 deals and Negotiation 5, so 19 are in the two stages."
+        assert check(text, [PIPE]).ok
+
+    def test_a_share_with_one_operand_after_it_passes(self) -> None:
+        text = "Negotiation holds ₹7.06 crore, 52% of the ₹13.53 crore pipeline."
+        assert check(text, [PIPE]).ok
+
+    def test_a_gap_of_two_percents_passes(self) -> None:
+        tool = "Win rate this quarter: 45%. Last quarter: 35.2%."
+        assert check("The win rate is 45% against 35.2%, a gap of 9.8 points.", [tool]).ok
+        assert check("The win rate is 45% against 35.2%, up 9.8% in all.", [tool]).ok
+        assert not check("The win rate is 45% against 35.2%, a gap of 8.8 points.", [tool]).ok
+
+    def test_a_percent_pool_gives_no_share(self) -> None:
+        tool = "Win rate this quarter: 45%. Last quarter: 30%."
+        # 45 / 30 is 150 percent, but a percent of a percent is no rule.
+        assert not check("The win rate is 45% against 30%, a change of 150%.", [tool]).ok
+
+
+class TestFixRound4Approx:
+    def test_about_gives_a_percent_one_point_at_most(self) -> None:
+        assert not check("nearly 66% win rate", [WIN_LOSS]).ok
+        assert check("nearly 61% win rate", [WIN_LOSS]).ok
+        assert check("about 59% win rate", [WIN_LOSS]).ok
+
+
+class TestFixRound4Sources:
+    def test_a_csv_row_is_a_source(self) -> None:
+        assert check("Target is 1234567.", ["region,1234567,88"]).ok
+        assert check("Target is 88.", ["region,1234567,88"]).ok
+        assert check("Target is 1234567.", ["2026-10-01,Acme,1234567"]).ok
+
+    def test_compact_json_is_a_source(self) -> None:
+        assert check("Target is 1234567.", ['{"target":1234567}']).ok
+        assert check("Target is 12.5.", ['{"a":{"b":12.5}}']).ok
+
+    def test_a_grouped_number_in_prose_gives_no_parts(self) -> None:
+        # "1,234,567" in prose is ONE value, never 234 and 567.
+        assert not check("We had 234 deals.", ["Total: INR 1,234,567."]).ok
+        assert not check("We had 234 deals.", ["Total,1,234,567 INR"]).ok
+
+    def test_a_large_result_costs_one_sort(self) -> None:
+        """A value waits in a list, and the book sorts once before its next
+        match. An insert for each value cost 31 s for 100,000 figures."""
+        text = "\n".join(f"- row: {1000 + i} and {i}.{i % 100:02d}" for i in range(50_000))
+        book = Sources()
+        book.add_text(text, derive=True)
+        assert book._values == [] and len(book._pending) == 100_000
+        book.settle()
+        assert book._pending == [] and book._values == sorted(book._values)
+        assert check("The row holds 41234.", book).ok
+        assert len(book) == 100_000
+
+
+class TestFixRound4Limits:
+    """Rule 9: these forms are known limits of §18.11.2, not figures."""
+
+    @pytest.mark.parametrize("text", [
+        "Won to lost is 4:1.", "The 7th deal.", "We hold #9.",
+    ])
+    def test_the_form_is_a_known_limit(self, text: str) -> None:
+        assert find_figures(text) == []
+
+    def test_a_multiplier_is_read(self) -> None:
+        assert [f.text for f in find_figures("Proposal is 3x Negotiation.")] == ["3x"]
+
+
+# ── Fix round 5 (2026-10-18): true breakdowns, choices, ranges ────────────
+
+INVOICES = (
+    "Invoices (4):\n"
+    "- INV-2026-0042 · Acme Robotics · INR 4,12,000 · due 2026-10-30\n"
+    "- INV-2026-0043 · Bharat Tools · INR 2,75,500 · due 2026-11-05\n"
+    "- INV-2026-0044 · Kaveri Labs · INR 9,80,000 · due 2026-11-12\n"
+    "Total due: INR 17,82,750"
+)
+ROUND5_SOURCES = [PIPE, WIN_LOSS, INVOICES]
+
+
+class TestFixRound5TrueShapes:
+    """P1-a: the commonest true shapes of a breakdown pass."""
+
+    @pytest.mark.parametrize("text", [
+        # bullets with a bracket share under a total line
+        "Pipeline by stage (total ₹13.53 crore):\n- Qualification: ₹2.35 crore (17%)\n"
+        "- Proposal: ₹4.12 crore (30%)\n- Negotiation: ₹7.06 crore (52%)",
+        # a markdown table with a Share column, and its total row
+        "| Stage | Value | Share |\n|---|---|---|\n| Qualification | ₹2.35 crore | 17% |\n"
+        "| Proposal | ₹4.12 crore | 30% |\n| Negotiation | ₹7.06 crore | 52% |\n"
+        "| Total | ₹13.53 crore | 100% |",
+        "Negotiation accounts for 52% of pipeline value (₹7.06 Cr of ₹13.53 Cr).",
+        "Proposal and Negotiation hold ₹11.18 crore together (₹4.12 crore and ₹7.06 crore).",
+        "Won ₹1.84 crore and lost ₹97.5 lakh. The net is ₹86.5 lakh.",
+        "Qualification has 14 deals against 9 in Proposal, 56% more.",
+        "Negotiation is your biggest stage. It holds ₹7.06 crore of the ₹13.53 crore "
+        "pipeline. That is 52%.",
+        "- Proposal: ₹4.12 crore\n- Negotiation: ₹7.06 crore\nTogether they hold ₹11.18 crore.",
+        "Negotiation is 52% of the pipeline: ₹7.06 crore of ₹13.53 crore.",
+        "We won 12 of 20 closed deals, a 60% win rate.",
+        "The average won deal is ₹15.3 lakh (₹1.84 crore over 12 deals).",
+        "Acme and Bharat owe ₹6.88 lakh between them: ₹4.12 lakh and ₹2.76 lakh.",
+        "Negotiation is weighted at 75%: ₹5.3 crore of ₹7.06 crore.",
+    ])
+    def test_a_true_shape_passes(self, text: str) -> None:
+        result = check(text, ROUND5_SOURCES)
+        assert result.ok, [f.text for f in result.unmatched]
+
+    @pytest.mark.parametrize("text", [
+        "Pipeline by stage (total ₹13.53 crore):\n- Negotiation: ₹7.06 crore (58%)",
+        "| Stage | Value | Share |\n|---|---|---|\n| Negotiation | ₹7.06 crore | 58% |\n"
+        "| Total | ₹13.53 crore | 100% |",
+        "Proposal and Negotiation hold ₹11.5 crore together (₹4.12 crore and ₹7.06 crore).",
+        "The average won deal is ₹19.3 lakh (₹1.84 crore over 12 deals).",
+        "We won 12 of 21 closed deals, a 60% win rate.",
+        "Negotiation holds ₹7.06 crore.\n\nThat is 52% of the ₹13.53 crore pipeline... "
+        "and 58% of value.",
+    ])
+    def test_the_same_shape_with_a_wrong_figure_fails(self, text: str) -> None:
+        assert not check(text, ROUND5_SOURCES).ok
+
+    def test_a_bracket_share_needs_its_host(self) -> None:
+        # "(52%)" is the share of 7.06 crore, not of 4.12 crore, the figure
+        # right before it. So it fails, though 7.06 crore is in the block.
+        text = ("Pipeline (total ₹13.53 crore):\n- Negotiation: ₹7.06 crore\n"
+                "- Proposal: ₹4.12 crore (52%)")
+        assert not check(text, ROUND5_SOURCES).ok
+        assert check(text.replace("(52%)", "(30%)"), ROUND5_SOURCES).ok
+
+
+class TestFixRound5Parse:
+    @pytest.mark.parametrize(("text", "values"), [
+        ("Open invoices run ₹3-25 lakh.", [Decimal(300000), Decimal(2500000)]),
+        ("Stages hold 5-17 deals.", [Decimal(5), Decimal(17)]),
+        ("Invoices run ₹1.15\u20139.9 lakh.", [Decimal("115000"), Decimal("990000")]),
+    ])
+    def test_both_ends_of_a_range_are_read(self, text: str, values: list[Decimal]) -> None:
+        assert [f.value for f in find_figures(text)] == values
+
+    def test_a_range_end_is_checked(self) -> None:
+        assert not check("Stages hold 5-17 deals.", [PIPE]).ok
+        assert check("Stages hold 5-14 deals.", [PIPE]).ok
+        assert find_figures("The 2025-26 plan.") == []
+
+    def test_a_scale_word_on_the_next_line_joins(self) -> None:
+        assert [f.value for f in find_figures("The pipeline is ₹14\ncrore.")] == [
+            Decimal(140000000)]
+        assert not check("The pipeline is ₹19\ncrore across stages.", [PIPE]).ok
+
+    def test_a_percent_never_quotes_a_plain_count(self) -> None:
+        assert not check("Lost deals are down 12%.", ["won 12"]).ok
+        assert check("Lost deals are down 12%.", ["won 12%"]).ok
+        assert check("12 deals.", ["win rate 12%"]).ok
+        # A data value has no unit, so it may stand for a percent.
+        assert check("The win rate is 60%.", ['{"win_rate":60}']).ok
+
+
+# ── Fix round 6 (2026-10-18): parts, ratios, fractions, the lock ──────────
+
+WIN_LOSS_6 = (
+    "CRM report win-loss:\nSince 2026-07-20: won 20, lost 7, win rate 74.07%.\n"
+    "Won INR 135,300,000, lost INR 22,450,000."
+)
+STAGES_6 = (
+    "- Qualification: 12 records\n- Proposal: 8 records\n- Negotiation: 5 records\n"
+    "- Won: 20 records · INR 135,300,000\n- Lost: 7 records · INR 22,450,000"
+)
+
+
+class TestFixRound6Parts:
+    """P1 item 1: a total with its parts in brackets or as a list is a sum,
+    with no derive word. Item 2: three or more parts."""
+
+    @pytest.mark.parametrize(("source", "text"), [
+        (WIN_LOSS_6, "Closed deals: 27 (20 won, 7 lost)."),
+        (WIN_LOSS_6, "You closed 27 deals: 20 won and 7 lost."),
+        (WIN_LOSS_6, "Won (20) and Lost (7): 27 closed deals."),
+        (WIN_LOSS_6, "Won ₹13.53 crore and Lost ₹2.245 crore make ₹15.78 crore closed."),
+        (STAGES_6, "Open: 25 deals (12 + 8 + 5)."),
+        (STAGES_6, "Open deals: 25 (Qualification 12, Proposal 8, Negotiation 5)."),
+    ])
+    def test_a_total_with_its_parts_passes(self, source: str, text: str) -> None:
+        result = check(text, [source])
+        assert result.ok, [f.text for f in result.unmatched]
+
+    @pytest.mark.parametrize(("source", "text"), [
+        (WIN_LOSS_6, "Closed deals: 28 (20 won, 7 lost)."),
+        (WIN_LOSS_6, "You closed 26 deals: 20 won and 7 lost."),
+        (WIN_LOSS_6, "Won (20) and Lost (7): 28 closed deals."),
+        (WIN_LOSS_6, "Won ₹13.53 crore and Lost ₹2.245 crore make ₹16.78 crore closed."),
+        (STAGES_6, "Open: 26 deals (12 + 8 + 5)."),
+    ])
+    def test_a_wrong_total_still_fails(self, source: str, text: str) -> None:
+        assert not check(text, [source]).ok
+
+    def test_a_part_must_be_a_tool_figure(self) -> None:
+        book = Sources()
+        book.add_text("won 20", derive=True)
+        book.add_text("Is it 7?")  # the member's words
+        assert not check("Closed deals: 27 (20 won, 7 lost).", book).ok
+
+
+class TestFixRound6Ratio:
+    @pytest.mark.parametrize(("text", "ok"), [
+        ("Won ₹13.53 crore is 6x Lost ₹2.245 crore.", True),
+        ("Won ₹13.53 crore is 6 times Lost ₹2.245 crore.", True),
+        ("Won ₹13.53 crore is 8x Lost ₹2.245 crore.", False),
+        ("Won ₹13.53 crore is 4 times Lost ₹2.245 crore.", False),
+    ])
+    def test_a_ratio_of_two_cited_figures(self, text: str, ok: bool) -> None:
+        assert check(text, [WIN_LOSS_6]).ok is ok
+
+    def test_times_makes_a_ratio(self) -> None:
+        assert find_figures("Won is 6 times Lost.")[0].ratio
+        assert not find_figures("Won is 6 deals.")[0].ratio
+
+
+class TestFixRound6Fraction:
+    def test_both_numbers_of_a_fraction_are_read(self) -> None:
+        assert [f.text for f in find_figures("We closed 17/29 deals.")] == ["17", "29"]
+        assert find_figures("Since 07/2026 and FY 2025/26.") == []
+
+    @pytest.mark.parametrize(("text", "ok"), [
+        ("Won 20/27.", True), ("Won 25/40.", False), ("Won 20/40.", False),
+        ("Won 20/26.", False),
+    ])
+    def test_a_fraction_is_checked(self, text: str, ok: bool) -> None:
+        assert check(text, [WIN_LOSS_6]).ok is ok
+
+
+class TestFixRound6Lock:
+    def test_a_match_takes_the_lock_of_the_book(self) -> None:
+        """Item 5: ``matches`` sorts the book under its lock, so a worker
+        thread that adds a value never races the sort."""
+        import threading
+
+        book = Sources()
+        book.add_text("won 20", derive=True)
+        taken: list[bool] = []
+
+        class _Spy:
+            def __init__(self) -> None:
+                self._real = threading.Lock()
+
+            def __enter__(self) -> None:
+                taken.append(True)
+                self._real.acquire()
+
+            def __exit__(self, *_a: object) -> None:
+                self._real.release()
+
+        book._lock = _Spy()  # type: ignore[assignment]
+        taken.clear()
+        assert check("We won 20 deals.", book).ok
+        assert taken, "matches did not take the lock"
+
+
+# ── Fix round 7 (2026-10-19): the review of round 6 ───────────────────────
+
+WIN_LOSS_7 = (
+    "CRM report win-loss:\nSince 2026-07-20: won 20, lost 7, win rate 74.07%.\n"
+    "Closed with no date: 3.\n- Lost reason Price: 4 deals\n- Lost reason Timing: 3 deals"
+)
+PIPE_7 = (
+    "- Qualification: 12 records · INR 1,84,00,000\n- Proposal: 8 records · INR 59,00,000\n"
+    "- Negotiation: 5 records · INR 70,600,000\nTotal: 52 records"
+)
+
+
+class TestFixRound7Fractions:
+    """Item 1: a date and a set phrase are no fraction. Item 3: the whole of a
+    fraction needs the rest on the same line of a tool result."""
+
+    @pytest.mark.parametrize("text", [
+        "Follow up by 15/11.", "Call on 3/11.", "Support is 24/7.", "Split 50/50.",
+    ])
+    def test_a_date_or_a_set_phrase_is_no_fraction(self, text: str) -> None:
+        assert find_figures(text) == []
+        assert check(text, [PIPE_7]).ok
+
+    @pytest.mark.parametrize(("text", "ok"), [
+        ("Won 20/27.", True), ("Won 25/40.", False), ("Won 20/23.", False),
+        ("Won 20/24.", False), ("Won 20/40.", False),
+    ])
+    def test_the_whole_of_a_fraction(self, text: str, ok: bool) -> None:
+        assert check(text, [WIN_LOSS_7]).ok is ok
+
+
+class TestFixRound7Parts:
+    """Item 2: the total is the sum of EVERY listed part. Item 4: counts and
+    money, interleaved, each add up on their own."""
+
+    @pytest.mark.parametrize("text", [
+        "Open value: ₹2.4 crore (₹1.84 crore, ₹0.59 crore, ₹7.06 crore).",
+        "Open: 20 (12, 8, 5).",
+        "Open: 25 deals, ₹9.6 crore (Qualification 12 · ₹1.84 Cr, Proposal 8 · "
+        "₹0.59 Cr, Negotiation 5 · ₹7.06 Cr).",
+        "Open: 26 deals, ₹9.49 crore (Qualification 12 · ₹1.84 Cr, Proposal 8 · "
+        "₹0.59 Cr, Negotiation 5 · ₹7.06 Cr).",
+    ])
+    def test_a_total_of_only_some_parts_fails(self, text: str) -> None:
+        assert not check(text, [PIPE_7]).ok
+
+    @pytest.mark.parametrize("text", [
+        "Open value: ₹9.49 crore (₹1.84 crore, ₹0.59 crore, ₹7.06 crore).",
+        "Open: 25 (12, 8, 5).",
+        "Open: 25 deals, ₹9.49 crore (Qualification 12 · ₹1.84 Cr, Proposal 8 · "
+        "₹0.59 Cr, Negotiation 5 · ₹7.06 Cr).",
+    ])
+    def test_a_total_of_all_its_parts_passes(self, text: str) -> None:
+        result = check(text, [PIPE_7])
+        assert result.ok, [f.text for f in result.unmatched]
+
+    def test_a_ratio_is_no_quote_of_a_count(self) -> None:
+        # "5x" is not the count 5 of Negotiation: 13.53 / 2.245 is 6.
+        tool = PIPE_7 + "\nWon: INR 135,300,000\nLost: INR 22,450,000"
+        assert not check("Won ₹13.53 crore is 5x Lost ₹2.245 crore.", [tool]).ok
+        assert check("Won ₹13.53 crore is 6x Lost ₹2.245 crore.", [tool]).ok

@@ -1226,6 +1226,10 @@ async def crm_report(kind: str, page: int = 1, make_report: bool = False) -> str
             for o in data.get("owners") or []
         ]
     shown = _page_of(lines, page, "lines")
+    # CRM-Q29 fix round 4: an answer states the window ("in the last 90
+    # days"), so the result says it, and the number check finds it.
+    head = ([f"The window is the last {int(data['window_days'])} days."]
+            if report in ("win-loss", "owners") and data.get("window_days") else [])
     tail = [shown.line] if shown.line else []
     if report == "owners" and int(data.get("omitted") or 0):
         # The route keeps the biggest owners and counts the rest.
@@ -1235,7 +1239,8 @@ async def crm_report(kind: str, page: int = 1, make_report: bool = False) -> str
     outcome = await by_code(lambda: _crm_report_spec(report, data), make_report,
                             tool="crm_report",
                             say="Say in one or two lines what the report shows.")
-    return f"CRM report {report}:\n" + "\n".join([*shown.items, *tail, *outcome.lines])
+    return f"CRM report {report}:\n" + "\n".join(
+        [*head, *shown.items, *tail, *outcome.lines])
 
 
 def _no_deals(report: str, data: dict[str, Any]) -> bool:
