@@ -39,6 +39,8 @@
 >
 > **Built 2026-10-18 on `crm-q33-answer-first`, not merged, dark:** CRM-Q33, answer first and clarify over time (§18.15). A total that depends on an open question answers on the best assumption, with a note of how, and asks one question after it. Business rules, a WhatsApp answer by number, a change in the chat, and the evidence of GST and TDS. Migration 283 adds `crm_business_rules`. It ships behind `CRM_ANSWER_FIRST_ORGS`, which is empty.
 >
+> **Built 2026-10-19 on `crm-answer-consistency`, PR open, not merged:** §18.16, CRM answers are consistent and fast. Today's date reaches each chat run. The card of a follow-up question never holds a run. A run has a budget of CRM reads. The org's own word for a figure maps to one field each time. The chat asks first only when two fields give totals that differ by more than 5%. A text filter counts each spelling of a value. No migration, and no new flag.
+>
 > **Built 2026-10-18 on `crm-q32-8`, not merged:** CRM-Q32-8, the chat tells each member with CRM access what is not clear and asks before it answers. An admin answers, and each other member proposes an answer that an admin confirms (owner direction 2026-10-18, two parts). No migration. It ships behind `CRM_QUESTIONS_ORGS`. It merges after CRM-Q32-9a (#1138) and CRM-Q32-9b (#1139).
 >
 > **Built 2026-10-18 on `crm-q32-9b`, not merged:** CRM-Q32-9b, the picker of a sum (§18.14.10). The amount card offers "These fields add up to the amount", and the picker shows the coverage line and the warning of the sum check. "Your answers" shows a sum, with Change and "Let Metorite choose". Frontend only. No migration. CRM-Q32-8 adds the proposals of the members to the picker, each with Confirm.
@@ -7901,6 +7903,190 @@ Fences: `tests/unit/test_crm_answer_first.py`,
 `tests/unit/test_crm_answer_first_fix1.py` and
 `tests/unit/test_crm_answer_first_r8.py`. Six mutations, one for each rule,
 each fail a test.
+
+### 18.16 CRM answers are consistent and fast (2026-10-19)
+
+**Status (2026-10-19).** Built on `crm-answer-consistency` as one batch, PR
+open, not merged. No migration and no new flag. The term questions and the
+alias facts reach only an org on `CRM_QUESTIONS_ORGS`. The WhatsApp
+question needs `CRM_ANSWER_FIRST_ORGS`, as CRM-Q33 part 2 does.
+
+**The incident (production, web chat, 2026-10-19).** A member asked twice
+for the total of one fee for one region "for the month of September". The
+chat gave two different answers, and both were wrong.
+
+- The first run took 890 s and made 48 tool calls. It filtered on a field
+  that the member did not name, and it summed a sparse field.
+- The second run was fast, used the right field, and read the year before.
+
+**The cause of the 890 s.** The gateway log gives each time in UTC. The
+run wrote the answer at 11:04:51 UTC. Then `ask_questions` waited 419 s
+for the member's click on the follow-up card of CRM-Q33. The wait ran from
+11:04:52 UTC to 11:11:51 UTC. The run did two more rounds after the click.
+
+Before the answer, 22 model rounds of reads took 337 seconds. They made 24
+`crm_aggregate` calls and 10 `crm_list_fields` calls, 4 of them in one
+round for one module. They also made 9 `crm_get_module_record` and 7
+`crm_list_module_records` calls.
+
+**Owner directives (2026-10-19, in chat).**
+
+- "Generic, for every future org." No org's name, field, word or value
+  goes in product code, prompts or guidance. Each comes from the org's own
+  catalogue, labels, values and facts at run time.
+- "Ask when the AI is genuinely unsure." The confidence rule of part 4
+  takes the place of "always answer first" for a word of the member.
+
+#### 18.16.1 Part 1: today's date in each chat run
+
+- `acb_common.today.today_line` gives one line: "Today is Monday, 19
+  October 2026 (Asia/Kolkata)."
+- `executor._context_preamble_parts` adds it last. That builder serves the
+  web stream and the batch path of WhatsApp, so both channels get it.
+- Metorite keeps no zone for an org, so each org reads `Asia/Kolkata` until
+  an org zone exists.
+- The CRM guidance gains `addendum.CRM_PERIOD_LINE`. A month or a quarter
+  with no year is the most recent one that has started. The answer names
+  the year. This rule decides the year, so a month with no year is never a
+  question.
+
+#### 18.16.2 Part 2: a follow-up card never holds the run
+
+- `CrmAsks.follow_ups` records each card that the tool offered AFTER an
+  answer (`_follow_up`).
+- For such a card, `ask_questions` passes `park_after` of 2 s
+  (`FOLLOW_UP_PARK_SECONDS`) to `executor.wait_user_future`. The run parks
+  and ends, and the member's later pick takes the late path of CRM-Q32-8.
+- The run adds the missing note of the answer before the card. A parked
+  run never reaches the add before RUN_FINISHED.
+- A refused early park tries once more at the normal window
+  (`CHAT_ASK_PARK_SECONDS`). A card that asks BEFORE the answer still
+  waits. With `CHAT_DURABLE_ASKS` off, the wait is as before, because no
+  late path exists.
+
+#### 18.16.3 Part 3: a cache and a budget of reads
+
+- The holder of the run (`CrmAsks` on the web, `TextAsks` on WhatsApp)
+  keeps `RunReads`.
+- A second `crm_list_fields` of one module and one page reads nothing. It
+  answers the first list and the line `FIELDS_CACHED_NOTE`.
+- The budget: 8 `crm_aggregate` calls (`AGGREGATE_BUDGET`) and 20 CRM reads
+  of all the read tools together (`READ_BUDGET`). A read past it reads
+  nothing and answers "Answer with what you have, and state the
+  assumption".
+- A run with no holder (a batch run off the answer-first list) has no
+  cache and no budget, as before.
+
+#### 18.16.4 Part 4: the org's own word for a figure
+
+- `crm_aggregate` takes `term`, the member's own word for a figure, on a
+  module. The tool reads `GET /crm/terms/resolve` first.
+- `crm_sync/terms.candidates` gives the money fields of the module that
+  match the term. A field matches when its label or key holds each word of
+  the term that is not a general word of money. The most filled field comes
+  first, and at most 3 come back. A field with a tax part in its name drops
+  while another one is left. So does a field that the arithmetic marks as
+  including GST.
+- Who decides, in this order:
+  1. An admin's answer of the term question.
+  2. A business rule that names the term and one field.
+  3. The member's own pick.
+  4. Another member's pick, which is the proposed org answer.
+  5. The one field that matches.
+
+**The confidence rule.** With nothing that decides, the tool reads the
+total of each of the first 2 fields, with the call's filters.
+
+| Case | When | What the chat does |
+|---|---|---|
+| Clear | One field decides, or the totals are within 5% of each other (`CLOSE_SHARE`), or the member kept the best guess | Answer first, with "How I got this", each filter, and the total of one other field |
+| Unsure | The totals differ by more than 5%, and nothing decides | Ask FIRST, one question, with the total of each option |
+
+- On the web the question is a card (`ASK FIRST`). On WhatsApp the gateway
+  asks it in numbered text, with each total (`text_asks.with_figures`).
+- The pick goes through `questions.reply_as`. An admin's pick is the org
+  answer. Each other member's pick is the member's own preference, and the
+  proposed org answer, so the next member is not asked.
+- The question carries the totals, so the pick needs no other read.
+  WhatsApp answers the pick with its total.
+- One question in a turn. A run that asked a question gives the best guess
+  for each other word.
+- The question lives in the CRM-Q32 store as the kind `term`, with the id
+  `term:<Module>:<slug>`. The terms that the chat met, and the admin's
+  answers, live in the cursor row `zoho:questions` (no migration).
+- The facts provider gives each word as the subject `term:<word>`, and the
+  CRM facts block keeps it.
+
+#### 18.16.5 Part 5: the amount pick prefers the field that excludes GST
+
+- `catalogue.amount_evidence_fields` weighs the currency fields filled 50%
+  or more that hold no tax part. A total "with tax" stays, so the
+  arithmetic can compare it with the amount.
+- At each sync, `map_pipeline._ex_gst_amounts` reads the evidence of GST
+  (`field_sql.gst_check`) and picks the most filled field that excludes
+  GST. It writes the pick with `by: code`, at 0 tokens.
+- An admin's amount is never replaced, and a sum of fields stays.
+- **The real case.** The approved plan of the incident's org already held
+  the fully filled ex-GST amount (version 2, by the AI, 2026-10-18). So the
+  sparse sum of the first run came from the model's own field choice and
+  filter, and parts 4 and 7 fix it. Part 5 holds the rule for each org.
+
+#### 18.16.6 Part 6: each spelling of a value
+
+- A filter on a text or a select field of a module matches in any case.
+- `field_sql.text_matches` reads the distinct values of the field, and
+  `terms.value_matches` counts each spelling of the value and each short
+  form of it.
+- A short form counts only when it starts ONE longer value and holds 3
+  letters or more. The initials of a value of 2 words or more count too. A
+  code of 4 letters or less that a member asks for reads the value that it
+  stands for.
+- The aggregate gives `matched`, and the tool names each counted value.
+- An alias set of 2 values or more is kept as the org's value-alias fact,
+  subject `value:<Module>.<key>`, in `zoho:questions`.
+
+#### 18.16.7 Part 7: never a filter that nobody asked for
+
+- `addendum.CRM_FILTER_LINE`: filter only on what the question names, and
+  state each filter in "How I got this".
+- `crm_tools.filters_line` writes each filter of a module total, with the
+  values that each one counted.
+
+#### 18.16.8 Done when
+
+| # | Criterion | Fence (R7) |
+|---|---|---|
+| 1 | Each channel gets the date line, and the guidance holds the period rule | `test_a_web_turn_carries_the_date_line_last`, `test_a_whatsapp_turn_carries_the_date_line`, `test_the_crm_guidance_holds_the_period_the_filter_and_the_term_lines` |
+| 2 | A follow-up card parks the run at once, and a card before an answer waits | `test_ask_questions_parks_a_follow_up_and_waits_on_a_clarify`, `test_an_early_park_ends_the_wait_at_once`, `test_a_refused_early_park_waits_for_the_normal_window` |
+| 3 | The run keeps the field list, and the budget stops the reads | `test_a_second_field_list_of_one_module_reads_nothing`, `test_the_ninth_aggregate_answers_the_budget_line`, `test_the_total_budget_stops_every_read` |
+| 4 | Unsure: the chat asks first with two totals. A rule: the chat answers first | `test_the_replay_with_no_rule_asks_first_with_the_two_totals` (R8), `test_the_replay_with_the_rule_answers_79_42_lakh_for_sep_2026` (R8), `test_a_member_s_pick_answers_them_and_the_next_member_is_not_asked` (R8) |
+| 5 | The amount pick prefers the ex-GST field, and never moves an admin's | `test_the_sync_moves_a_sparse_ai_amount_to_the_ex_gst_field`, `test_the_sync_never_replaces_an_admin_amount`, `test_the_evidence_moves_the_sparse_amount_to_the_ex_gst_field` (R8) |
+| 6 | A filter counts each spelling and names them | `test_a_value_counts_its_case_and_its_one_short_form`, `test_a_text_filter_counts_each_spelling_and_seeds_the_alias_fact` (R8) |
+| 7 | The tool states each filter | `test_the_filter_line_states_each_filter_and_its_counted_values` |
+| 8 | No word of one org in product code | `test_no_added_line_of_product_code_names_a_word_of_one_org`, `test_the_new_product_files_name_no_word_of_one_org` |
+
+The acceptance replay is a fake model's script of 2 CRM calls:
+`crm_list_modules`, then `crm_aggregate` with `term`. Its fixture is the
+incident's shape with synthetic values, in
+`tests/unit/test_crm_answer_consistency_r8.py`.
+
+#### 18.16.9 Verification
+
+- Start a private ladder database, as `engineering_practice.md` §1.1 says.
+- `uv run pytest tests/unit/test_crm_answer_consistency.py tests/unit/test_crm_answer_consistency_r8.py -q`,
+  with no test skipped.
+- `npx tsc --noEmit && npx vitest run src/app/crm` in
+  `workbench/control_plane`.
+
+#### 18.16.10 Not done in this batch
+
+- Metorite keeps no zone for an org. Each org reads `Asia/Kolkata`.
+- An admin cannot yet edit or remove a value alias.
+- The overlay path of a core entity keeps its case-sensitive filter.
+- A batch run off `CRM_ANSWER_FIRST_ORGS` opens no holder, so it has no
+  read budget.
+- No mutation tests and no adversarial review ran, by the owner's
+  direction. HANDOFF lists the hardening.
 
 ---
 

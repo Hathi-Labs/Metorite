@@ -106,6 +106,37 @@ def question_options(q: Mapping[str, Any]) -> list[tuple[str, str]]:
     return out
 
 
+#: The shape of a figure that a run hands over with a term question (§18.16
+#: part 4): "₹79.4 lakh", "₹1.35 crore", "₹99,000" or "no value". Anything
+#: else is dropped, so no text of a run reaches the member through it.
+_FIGURE = re.compile(r"^(₹[0-9][0-9,]*(\.[0-9]+)?( lakh| crore)?|no value)$")
+
+
+def figures_of(ask: Mapping[str, Any]) -> dict[str, str]:
+    """The figures that a run handed over with its question, by option key,
+    or none. Each figure must have the shape of :data:`_FIGURE`."""
+    raw = ask.get("figures") if isinstance(ask, Mapping) else None
+    if not isinstance(raw, Mapping):
+        return {}
+    return {str(k): str(v) for k, v in raw.items()
+            if isinstance(k, str) and isinstance(v, str) and _FIGURE.match(v)}
+
+
+def with_figures(options: Sequence[tuple[str, str]],
+                 figures: Mapping[str, str]) -> list[tuple[str, str]]:
+    """*options* with the total of each one that has a figure: "Fees (54%
+    filled, ₹79.4 lakh)". The bare label before " (" still matches."""
+    out = []
+    for key, label in options:
+        fig = figures.get(key)
+        if fig and label.endswith(")") and " (" in label:
+            label = f"{label[:-1]}, total {fig})"
+        elif fig:
+            label = f"{label} (total {fig})"
+        out.append((key, label))
+    return out
+
+
 def _or_list(numbers: Sequence[str]) -> str:
     if len(numbers) < 2:
         return "".join(numbers)
@@ -217,7 +248,7 @@ async def _question(org: str, member: str, question_id: str, user: Any) -> dict 
         held=False, steer=steer).model_dump()
 
 
-async def offer(org: str, member: str, channel: str, ask: Mapping[str, str]) -> str | None:
+async def offer(org: str, member: str, channel: str, ask: Mapping[str, Any]) -> str | None:
     """The text of the one follow-up of a run of a channel with no cards,
     or None. It stores the pending ask of the member. The org and the member
     come from the channel's link row, never from the message (R5, R11)."""
@@ -239,7 +270,8 @@ async def offer(org: str, member: str, channel: str, ask: Mapping[str, str]) -> 
             q = await _question(org, member, ident, user)
             if q is None:
                 return None
-            options = question_options(q)
+            figures = figures_of(ask)
+            options = with_figures(question_options(q), figures)
             if not options:
                 return None
             text_, stored = question_text(q, options), [[k, v] for k, v in options]
@@ -252,7 +284,8 @@ async def offer(org: str, member: str, channel: str, ask: Mapping[str, str]) -> 
             return None
         with organization_scope(org):
             await _redis().setex(_key(member, channel), TTL_S, json.dumps(
-                {"kind": kind, "id": ident, "options": stored}))
+                {"kind": kind, "id": ident, "options": stored,
+                 **({"figures": figures} if kind == KIND_QUESTION and figures else {})}))
     except Exception as exc:  # a follow-up never fails the answer
         _log.warning("crm.text_asks.offer_failed", organization_id=org, kind=kind,
                      error_type=type(exc).__name__)
@@ -318,6 +351,10 @@ async def settle(org: str, member: str, channel: str, message: str) -> str | Non
                      error_type=type(exc).__name__)
         return REPLY_FAILED
     _log.info("crm.text_asks.settled", organization_id=org, result=out.result)
+    figure = figures_of(pending).get(picked)
+    if figure:
+        # §18.16 part 4: the question carried the total, so the pick answers.
+        return f"Thanks. {out.line} The total is {figure}, for the period that you asked."
     return f"Thanks. {out.line} Ask me again, and I use it."
 
 
