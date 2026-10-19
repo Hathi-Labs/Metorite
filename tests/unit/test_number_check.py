@@ -596,11 +596,12 @@ class TestFixRound4Sources:
         text = "\n".join(f"- row: {1000 + i} and {i}.{i % 100:02d}" for i in range(50_000))
         book = Sources()
         book.add_text(text, derive=True)
-        assert book._values == [] and len(book._pending) == 100_000
+        # 100,000 figures, and the count of the lines of the list (round 8).
+        assert book._values == [] and len(book._pending) == 100_001
         book.settle()
         assert book._pending == [] and book._values == sorted(book._values)
         assert check("The row holds 41234.", book).ok
-        assert len(book) == 100_000
+        assert len(book) == 100_001
 
 
 class TestFixRound4Limits:
