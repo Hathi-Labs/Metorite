@@ -76,6 +76,12 @@ writer drags a page in the tree to reorder it or to nest it. The move takes
 A move of the place only writes no version. A writer's row shows a `+` and
 a `…`, a reader's row shows neither, and the arrow keys walk the rows.
 
+**KB-2b is BUILT, 2026-10-18** (PR #1159, frontend only, no migration).
+The page is the editor: one TipTap editor draws the read view and the edit
+view, over the same Markdown body. **D107 and §21.7 are added,
+2026-10-19.** Docmost core code may be ported, and the plan to match
+Docmost is in §21.7. Wave 1 is KB-2d, KB-2f, KB-2g and KB-2i.
+
 **§20 (D105, 2026-10-15)** adds company
 retrieval across every app. **KR-1 and KR-2 are BUILT, 2026-10-15**
 (PR #1069, no migration). `gateway/retrieval/` holds the registry
@@ -1222,6 +1228,17 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/nav.tes
   src/lib/shell/seams.test.ts src/lib/shell/appBar.test.ts src/app/knowledge
 npx playwright test e2e/knowledge-pages.spec.ts      # KB-2a
 npx playwright test e2e/knowledge-search.spec.ts     # KB-3b
+
+# Wave 1 of §21.7 (KB-2d, KB-2f, KB-2g, KB-2i)
+uv run pytest tests/unit/test_third_party_notices.py -q
+uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_kb_visibility_one_seam.py \
+  tests/unit/test_knowledge_chat_coverage.py tests/unit/test_kb_flags.py -q
+uv run pytest tests/unit/test_kb_editor_golden.py tests/unit/test_kb_chunk.py -q
+# With a real database (KB-2f and KB-2g). A skip is not a pass.
+uv run pytest tests/unit/test_kb_pages_r8.py tests/unit/test_kb_search_r8.py -q -rs
+cd workbench/control_plane && npx vitest run src/app/knowledge \
+  src/components/markdownImage.test.ts src/lib/htmlSinks.test.ts \
+  src/lib/railRows.test.ts src/lib/theme/conformance.test.ts
 ```
 
 A merged slice updates this header (R4), and the board row, in the same
@@ -1500,13 +1517,16 @@ result. It extends §11.1 and replaces the text of KB-2b.
 wrote that the product will release under AGPL-3.0, so code from Docmost may
 be taken when it is needed. `work_plan.md` D107 records it.
 
-Docmost core is AGPL-3.0. Three folders carry a separate enterprise licence:
-`apps/server/src/ee`, `apps/client/src/ee` and `packages/ee`. The rule has
-five parts.
+Docmost core is AGPL-3.0. Four folders carry a separate enterprise licence:
+`apps/server/src/ee`, `apps/client/src/ee`, `packages/ee` and
+`packages/base-formula`. The rule has five parts.
 
 1. **Core only.** A builder may port code from core. A builder never ports
-   a file from the three enterprise folders, and never reads them as a
+   a file from the four enterprise folders, and never reads them as a
    source for a re-write. Each enterprise feature is built from the spec.
+   Some core files carry an upstream MIT notice, for example
+   `search-and-replace`, the footnotes and `recreate-transform`. A port
+   keeps that notice.
 2. **A header on each ported file.** The first lines name the source:
    `Adapted from Docmost (AGPL-3.0), <path in the Docmost repo>`. The
    marker text is `Adapted from Docmost`.
@@ -1522,7 +1542,9 @@ five parts.
    AGPL-3.0 section 13 gives each user who talks to modified AGPL code over
    a network the right to the Corresponding Source. That duty starts with
    the first release that serves ported code. HANDOFF H-361 asks the owner
-   to set the date of the licence change.
+   to set the date of the licence change. Until the owner answers, a pull
+   request that holds a ported file is built, reviewed and opened, and it
+   does not merge. A slice written from the spec merges as usual.
 
 The editor library is TipTap, MIT, and the workbench already depends on
 TipTap 3. The table of contents extension of TipTap is under the Pro
@@ -1611,14 +1633,14 @@ styles live in `globals.css` under the one look. No Docmost class names.
 | Ticket | What | Done when | Gate |
 |---|---|---|---|
 | **KB-2b** (text replaced 2026-10-18) ✅ BUILT 2026-10-18 (branch `ws61-kb2b-editor`) | The block editor: a shared `KnowledgeEditor` on TipTap 3 with `@tiptap/markdown`. The `/` menu, the bubble menu, Markdown shortcuts, the block drag handle, task lists, callouts, toggles, code with a language and a copy button, tables, dividers, images by URL. The page link picker on `[[` and in the link control, which writes `/knowledge/pages/<id>` links. The page view reads through the same editor, read-only. Frontend only | A golden set of Markdown bodies round-trips with no loss for the supported set. "No loss" means: parse and write once gives md′, and md′ parsed and written again gives md′ byte for byte, with every block and mark of the set kept. A save with no edit writes nothing. The `/` menu inserts each block of the set, the bubble menu sets each mark, the block handle moves a block, and `[[` inserts a page link. Every image draws through `MarkdownImage`, and `markdownImage.test.ts` scans the editor too. The editor binds no `Mod-k`. A member writes a page with a heading, a list, a callout, a table and a link to another page, saves it, and reads the same layout. The chunker indexes the saved body unchanged. The visual review passes in light mode, compact density and a changed accent, at 1440, 1024, 768 and 390 px | AGENT-SAFE |
-| **KB-2d** | Page chrome: breadcrumbs that fold the middle, the outline, heading anchors, the byline with the last editor and a word count, the page menu (copy link, copy as Markdown, download `.md`, history, move, archive), and an Archived view with restore | Each act works on a local stack. An archived page shows a banner with Restore | AGENT-SAFE |
+| **KB-2d** | Superseded on 2026-10-19 by the row of §21.7 | See §21.7 | AGENT-SAFE |
 | **KB-2e** ✅ BUILT 2026-10-18 | The tree: a `+` and a `…` on hover and on focus, drag to reorder and to nest, the arrow keys. `POST /knowledge/pages/{id}/move` gains `position`, an integer: the 0-based place among the new siblings. The server renumbers the siblings 0 to n under a lock. A move that changes only `position` writes no version and does not change `updated_at`, because a place in the tree is not a change in substance (`company_context.md` §3). A move that changes the space or the parent keeps today's version | A drop between two pages keeps its place after a reload. A page cannot drop into its own subtree. A reader sees no handle, no `+` and no `…`. The `+` opens the New page form with the row as the parent. The `…` holds Copy link, New sub-page and Archive. Archive shows only for a member with manage on the space, because the gateway refuses it otherwise. ArrowUp and ArrowDown move the focus between visible rows, and ArrowRight and ArrowLeft open and close a row, as `RailRow` does today. A reorder adds no row to `kb_page_versions` | AGENT-SAFE |
-| **KB-2f** | A page icon: migration (check the number at merge) adding `kb_pages.icon`, nullable, set in `PATCH`, drawn in the tree, the breadcrumbs, the title and the search hits. The Knowledge home gains "Recently updated" and "Created by me" across the spaces the member can see | An icon set on a page shows in all four places. The home lists the last 20 visible pages, and a hidden page never appears | AGENT-SAFE |
-| **KB-2g** | Version compare: read an old version's body, show two versions with the changes marked, restore from the compare | A member compares version 2 with version 5 and restores version 2 | AGENT-SAFE |
+| **KB-2f** | Superseded on 2026-10-19 by the row of §21.7 | See §21.7 | AGENT-SAFE |
+| **KB-2g** | Superseded on 2026-10-19 by the row of §21.7 | See §21.7 | AGENT-SAFE |
 
 | **KB-2h** | Backlinks: the page write reads the page links of the saved body into `kb_links`, and the right strip lists the pages that link here | A page that links to another shows in that page's "Linked from" list. A link the member cannot see is not listed | AGENT-SAFE |
 
-The order is KB-2b and KB-2e in parallel, then KB-2d, then KB-2f, KB-2g and KB-2h.
+The order of the remaining slices is in §21.7.
 
 ### 21.6 KB-2b as built (2026-10-18)
 
@@ -1701,10 +1723,57 @@ proves the round trip, as §21.5 requires.
 
 | Ticket | What | Done when | Gate |
 |---|---|---|---|
-| **KB-2d** | Page chrome. Breadcrumbs that fold the middle into a `…` popover (all crumbs on a phone). A byline "Edited by X, 3 min ago" with a contributors popover. A right panel with the tabs Outline and Details: the outline follows the scroll and marks the heading in view, and Details shows author, last editor, word and character counts, review date and state. A copy-link anchor on each heading. A page menu: Copy link, Copy as Markdown, Download as `.md`, Full width (kept for the member), Move (a space and parent picker over the existing move route), Archive and Restore, Print. An Archived view with Restore, and a banner on an archived page. The "Page history" entry opens KB-2g when it exists | Each act works on a local stack, with an e2e test for each. The outline hides on a page with fewer than two headings. A reader sees no Move, Archive or Restore. The visual review passes | AGENT-SAFE |
-| **KB-2f** | Icon, favourites and home. A migration (check the number at merge): `kb_pages.icon` text, nullable, and `kb_favorites` with FORCE RLS. Routes to set the icon, and to add, remove and list favourites. An emoji picker on the icon in the title and in the tree. The icon shows in the tree, the breadcrumbs, the title, search hits and the home lists. A star in the page menu and the tree menu. Knowledge home with the tabs Recently updated (across the spaces the member sees, with Load more), Favourites and Created by me, each with an empty state. A space switcher at the top of the rail, a searchable list | An icon set on a page shows in all five places. A hidden page never appears on the home. A second org sees none of the favourites (R8). The R8 suite runs with no skip | AGENT-SAFE |
-| **KB-2g** | Page history. `GET /knowledge/pages/{id}/versions/{n}` answers one version with its body, under the page's visibility and the history floor. A history modal: a list with date and author, a read-only view of the chosen version, a compare of two versions with additions and deletions marked inline, a "Highlight changes" switch and change counts, and Restore with a confirm (the existing revert route) | A member compares version 2 with version 5 and restores version 2. A member who cannot read the page gets 404 on a version. A version before the history floor of a moved page is refused. R8 proves both | AGENT-SAFE |
-| **KB-2i** | Editor, first set. Port from `packages/editor-ext`: table handles and menu (add row and column on each side, delete, header row and column, merge and split, cell colour, alignment, drag a column or a row), text colour and highlight, superscript and subscript, text alignment, indent, the `:` emoji picker, a status badge, a date, columns of 2 to 5, a subpages block (Manual, A to Z and Recent order), a page break, footnotes. Find and replace in the page with `Mod-F` (the editor binds no `Mod-K`). The title flow: Enter in the title moves the text after the caret into the first paragraph, and the arrow keys move between the title and the body | A golden case for each new block round-trips as a fixed point and keeps its CommonMark meaning where it has one. An e2e test inserts each block from the `/` menu. Find and replace marks, steps and replaces. The rules of KB-2b still hold: no HTML sink, every image through `MarkdownImage`, and a save with no edit writes nothing | AGENT-SAFE |
+| **KB-2d** | Page chrome, frontend only, no gateway change. Breadcrumbs that fold the middle into a `…` popover (all crumbs on a phone). A byline "Edited by X, 3 min ago" with a contributors popover, from `versions`. A right panel with the tabs Outline and Details: the outline follows the scroll and marks the heading in view, and Details shows author, last editor, word and character counts, review date and state. A copy-link anchor on each heading. A page menu built as an item array, so KB-2f and KB-2g each add one item: Copy link, Copy as Markdown, Download as `.md`, Full width (kept in the browser, because a per-member store needs a migration), Move (a space and parent picker over the existing move route), Archive and Restore (the restore route exists, and `api.ts` gains `restorePage` and a `state` argument on `listPages`), Print. An Archived view of `GET /pages?state=archived`, which only a manager sees, with Restore, and a banner on an archived page. No "Page history" entry until KB-2g merges | Each act works on a local stack, with an e2e test for each. The outline hides on a page with fewer than two headings. A reader sees no Move, Archive or Restore. The visual review passes in light mode, compact density and a changed accent, at 1440, 1024, 768 and 390 px. `tests/unit/test_third_party_notices.py` stays green | AGENT-SAFE |
+| **KB-2f** | Icon, favourites and home. **Migration 287** (check the number at merge, R1): `ALTER TABLE kb_pages ADD COLUMN IF NOT EXISTS icon TEXT` with a CHECK of at most 16 characters, and `kb_favorites (organization_id, member_email, page_id)` with the primary key on those three, the tenancy shape of `268_artifacts.sql` and the guarded ENABLE and FORCE RLS block of `272_knowledge_pages.sql`, the four generated phases from `scripts/gen_tenant_migration.py`, and the table in `test_tenant_coverage.py`. `icon` is one emoji. It is not the icon name of `kb_spaces.icon`. `member_email` comes from `core.viewer_email(user)`, never from input. Routes, each with a class in `knowledge_manifest.py`: `PATCH /knowledge/pages/{id}` takes `icon`, `POST` and `DELETE /knowledge/pages/{id}/favorite`, and `GET /knowledge/favorites` and `GET /knowledge/recent`. **A change of the icon writes no version and does not change `updated_at`**, as a change of the place does not (KB-2e). Recently updated lists what `visible_pages_clause` shows: published pages, and the member's own drafts. It excludes archived pages. It orders by `updated_at DESC, id DESC` with a keyset cursor. Favourites join `kb_pages` under the same clause, so a page that becomes hidden drops out. An emoji picker, built once for KB-2f and used by KB-2i, from emoji data only and drawn with `OptionList`. The icon shows in the tree, the breadcrumbs, the title, search hits and the home lists. A star in the page menu and the tree menu. Knowledge home with the tabs Recently updated (with Load more), Favourites and Created by me, each with an empty state. A space switcher at the top of the rail, a searchable list | An icon set on a page shows in all five places. A hidden page never appears on the home or in favourites. A second org sees none of the favourites. The one-seam fence holds each read of `kb_favorites` to a join of `kb_pages` (R7). The R8 suite runs with no skip. New R8 tests live in a new file | AGENT-SAFE |
+| **KB-2g** | Page history. `GET /knowledge/pages/{id}/versions/{n}` in a new `routes/knowledge/history.py`. It calls `core.load_page`, then the history floor, answers 404 under the floor as `revert_page` does, and reads `version, title, body_md, author_email, reason, via, created_at` from `kb_page_versions`. It has a class A row in `knowledge_manifest.py`. The one-seam fence does not see `kb_page_versions`, so the R8 test for a version of a hidden page is the fence. A history modal: a list with date and author, a read-only view of the chosen version, a compare of two versions with additions and deletions marked inline, a "Highlight changes" switch and change counts, and Restore with a confirm over the existing revert route. The compare is a word diff of the two Markdown bodies. A builder may port `recreate-transform` only under D107 part 5. | A member compares version 2 with version 5 and restores version 2. A member who cannot read the page gets 404 on a version. A version before the history floor of a moved page is refused. R8 proves both, in a new test file | AGENT-SAFE |
+| **KB-2i** | Editor, first set. Port from `packages/editor-ext`, core files only. Table handles and menu: add and delete rows and columns on each side, the header row, alignment, and drag of a column or a row. Footnotes as a node that keeps `[^n]` byte for byte. Find and replace in the page on `Mod-F`. The `:` emoji insert, using the picker of KB-2f. The title flow: Enter in the title moves the text after the caret into the first paragraph, and the arrow keys move between the title and the body. These need no new stored form. **Then, with a stored form (see the rules after this table):** text colour, highlight, superscript and subscript, text alignment, a status badge, a date, columns of 2 to 5, a subpages block (Manual, A to Z and Recent order), a page break, and the table features that GFM cannot hold (merge, split, a header column, a cell colour). Indent is not built, because lists already nest | A golden case for each block and mark round-trips as a fixed point, and keeps its CommonMark meaning where it has one. An e2e test inserts each block from the `/` menu. Find and replace marks, steps and replaces. The rules of KB-2b hold: no HTML sink, every image through `MarkdownImage`, no `Mod-K`, and a save with no edit writes nothing. No `@mantine/*`, `@tabler/icons-react` or `@slidoapp/emoji-mart*` dependency. Each ported file has the header and a line in `THIRD_PARTY_NOTICES.md` | AGENT-SAFE to build. The merge waits on H-361 (D107 part 5) |
+
+#### The stored form of a block or a mark with no Markdown syntax
+
+The editor writes and reads these exact shapes. Any other HTML stays raw
+text, as in KB-2b. A fragment that holds Markdown has a blank line after
+its opening tag and before its closing tag, so the inner Markdown stays
+Markdown for every reader.
+
+| Item | Stored as |
+|---|---|
+| Text colour | `<span data-color="#2563eb">text</span>` |
+| Highlight | `<mark data-color="#fde68a">text</mark>` |
+| Superscript, subscript | `<sup>text</sup>`, `<sub>text</sub>` |
+| Text alignment | `<p data-align="center">text</p>`, and `<h2 data-align="right">text</h2>` for a heading |
+| Status badge | `<span data-type="status" data-color="green">Done</span>` |
+| Date | `<time data-type="date" datetime="2026-10-19">19 Oct 2026</time>`. Docmost core has no date node, so this is built from the spec |
+| Columns | `<div data-type="columns" data-count="2">` holding one `<div data-type="column">` for each column |
+| Subpages | `<div data-type="subpages" data-order="manual"></div>` |
+| Page break | `<div data-type="page-break"></div>` |
+| A table with a merged cell, a header column or a cell colour | one `<table>` block of HTML, because GFM has no form for them. A table that GFM can hold stays GFM |
+
+**The chunker.** `kb_index/chunk.py` strips the tags of a fragment with a
+`data-type` attribute, and of the colour, highlight, `sup` and `sub`
+fragments above, and keeps their text. It strips nothing else, so the
+`content_sha` of every stored `<details>` toggle does not change. The fence
+`tests/unit/test_kb_editor_golden.py` says that every text line is indexed
+byte for byte. It is amended to say that for every line outside these
+fragments. For a line inside one, the text must be indexed with the tags
+removed. `read_page` shows the stored body, as it does today.
+
+#### Build rules for wave 1
+
+Four builders work at once, so they keep out of each other's files.
+
+- **Hot files:** `PageView.tsx`, `layout.tsx`, `KnowledgeRail.tsx`,
+  `schema.ts`, `api.ts`, `types.ts` and `globals.css`. A builder edits a
+  hot file only at the mount point of its own component, and puts new code
+  in new files. New R8 tests go in new files, not in `test_kb_pages_r8.py`.
+- **KB-2d** owns the layout of `PageView`. **KB-2f** touches the icon and
+  the star. **KB-2g** touches the history item and the `VersionList`
+  mount. **KB-2i** touches the title, and otherwise stays under
+  `lib/editor/` and `components/editor/`.
+- **One emoji picker.** KB-2f builds it, and KB-2i uses it.
+- **Merge order** follows readiness, with KB-2f first when it is ready,
+  because it claims migration 287. Each branch merges `origin/main` before
+  its pull request, never a rebase.
+- Restore `package-lock.json` from `main` before adding a dependency.
 
 #### Wave 2 — specified now, dispatched when wave 1 lands
 

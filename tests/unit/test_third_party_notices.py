@@ -16,7 +16,12 @@ NOTICES = ROOT / "THIRD_PARTY_NOTICES.md"
 MARKER = "Adapted from Docmost"
 HEAD_LINES = 30
 EXTS = {".ts", ".tsx", ".js", ".mjs", ".css", ".py", ".sql"}
-ENTERPRISE = ("apps/server/src/ee", "apps/client/src/ee", "packages/ee")
+ENTERPRISE = (
+    "apps/server/src/ee",
+    "apps/client/src/ee",
+    "packages/ee",
+    "packages/base-formula",
+)
 SELF = "tests/unit/test_third_party_notices.py"
 BLOCK = re.compile(
     r"<!-- PORTED-FILES-START -->(.*?)<!-- PORTED-FILES-END -->", re.S
@@ -61,7 +66,8 @@ def _marked() -> list[str]:
 def test_the_notice_file_exists_and_names_the_licence():
     text = NOTICES.read_text(encoding="utf-8")
     assert "AGPL-3.0" in text
-    assert "apps/server/src/ee" in text
+    for folder in ENTERPRISE:
+        assert folder in text, f"The notice file must name {folder}"
 
 
 def test_every_marked_file_is_listed():
