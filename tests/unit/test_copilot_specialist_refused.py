@@ -276,13 +276,13 @@ def test_the_orchestrator_offers_no_copilot_agent_but_app_builder(monkeypatch) -
 
     _load_specialist_agents_as_tools = orchestrator_agents._load_specialist_agents_as_tools
     monkeypatch.setattr(agent_routes, "_load_dynamic_agents", lambda: [
-        {"name": "agent-sales-assistant", "description": "Sales.",
-         "agent_runtime": "github-copilot", "repo_name": "acme/agent-sales-assistant"},
+        {"name": "acme-copilot-agent", "description": "An outside repo agent.",
+         "agent_runtime": "github-copilot", "repo_name": "acme/acme-copilot-agent"},
     ])
     copilot = {e["name"] for e in agent_routes._AGENT_REGISTRY
                if loader.is_copilot_runtime_label(e.get("agent_runtime"))}
     assert {"task-manager", "app-builder"} <= copilot, "the fixture assumes both are held"
-    refused = (copilot | {"agent-sales-assistant"}) - loader.COPILOT_SPECIALIST_ALLOWED
+    refused = (copilot | {"acme-copilot-agent"}) - loader.COPILOT_SPECIALIST_ALLOWED
 
     tools = {t.name for t in _load_specialist_agents_as_tools()}
     assert {"projects_assistant", "app_builder"} <= tools, tools
@@ -314,7 +314,7 @@ def test_app_builder_passes_the_refusal() -> None:
     assert loader.may_delegate_to("app-builder", "github-copilot")
 
 
-@pytest.mark.parametrize("name", ["task-manager", "metorite", "agent-sales-assistant"])
+@pytest.mark.parametrize("name", ["task-manager", "metorite", "acme-copilot-agent"])
 def test_every_other_copilot_agent_is_refused(name: str) -> None:
     assert not loader.may_delegate_to(name, "github-copilot")
     with pytest.raises(loader.AgentRuntimeUnsupported):

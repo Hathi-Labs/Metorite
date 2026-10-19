@@ -109,7 +109,7 @@ class AgentRuntimeUnsupported(AgentLoadError):
 #: Owner call, 2026-10-19 (review of PR #1161): app-builder stays a main-chat
 #: specialist until it is ported to MAF (WS-43h, then WS-43j). Delete its name
 #: in the PR that ports it. Every other Copilot agent is refused: task-manager,
-#: the root metorite agent and agent-sales-assistant. A new name needs an owner
+#: the root metorite agent and any repo agent on that runtime. A new name needs an owner
 #: call and a test. Fence: ``tests/unit/test_copilot_specialist_refused.py``
 #: (``test_the_allow_list_holds_app_builder_only``).
 COPILOT_SPECIALIST_ALLOWED: frozenset[str] = frozenset({"app-builder"})
