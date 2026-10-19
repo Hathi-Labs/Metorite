@@ -350,6 +350,8 @@ export function size(): number {
 
 /** Who the cached rows belong to. `null` before anyone has signed in. */
 let boundIdentity: string | null = null;
+/** The organization the cached rows belong to, once the access read named it. */
+let boundOrg: string | null = null;
 
 /**
  * ⚠️ THE TENANCY GUARD. Bind the cache to the signed-in member.
@@ -369,16 +371,40 @@ let boundIdentity: string | null = null;
  * how the browser works, not a guarantee this code may rest on — one
  * `signOut({ redirect: false })` anywhere turns it into a leak.
  *
+ * ⚠️ THE ORGANIZATION IS PART OF THE IDENTITY (WS-53, 2026-10-19). One member
+ * can see two organizations in one tab. A cache bound to the email alone then
+ * served org A's answers in org B. In production, a CRM gate that was off for
+ * org A (a cached 404) hid the open questions of org B. So `org` binds too, and
+ * a change of org empties the cache as a change of member does.
+ *
+ * `org` is `null` or absent while the access read has not answered, or when it
+ * failed. An unknown org is no change: it neither empties the cache nor
+ * forgets the last org that was known. So a first page load does not empty
+ * the cache twice, and an outage of the access read does not either.
+ *
  * Returns whether the identity actually changed, so a caller can log it.
  */
-export function bindIdentity(id: string | null): boolean {
-  if (id === boundIdentity) return false;
-  boundIdentity = id;
-  clearAll();
-  return true;
+export function bindIdentity(id: string | null, org?: string | null): boolean {
+  const known = org || null;
+  if (id !== boundIdentity) {
+    boundIdentity = id;
+    boundOrg = known;
+    clearAll();
+    return true;
+  }
+  if (known === null || known === boundOrg) return false;
+  const changed = boundOrg !== null;
+  boundOrg = known;
+  if (changed) clearAll();
+  return changed;
 }
 
 /** Who the cache currently believes it is holding rows for. For the fence. */
 export function identity(): string | null {
   return boundIdentity;
+}
+
+/** The organization the cache believes it holds rows for. For the fence. */
+export function boundOrganization(): string | null {
+  return boundOrg;
 }
