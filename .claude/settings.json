@@ -66,6 +66,16 @@
       "mcp__hostinger-dns__DNS_resetDNSRecordsV1"
     ]
   },
+  "_env_note": [
+    "Owner directive 2026-10-19: Sonnet does the work, Opus takes the hard cases.",
+    "CLAUDE_CODE_SUBAGENT_MODEL is the LOWEST-ranked choice: a per-call `model`",
+    "and an agent file's `model:` both beat it. So diff-reviewer stays Opus, and",
+    "a dispatch that passes model: \"opus\" gets Opus. It does not move the built-in",
+    "Explore and Plan agents. Policy: CLAUDE.md §4. Fence: tests/unit/test_agent_model_routing.py."
+  ],
+  "env": {
+    "CLAUDE_CODE_SUBAGENT_MODEL": "sonnet"
+  },
   "hooks": {
     "SessionStart": [
       {
