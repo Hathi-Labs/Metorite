@@ -5969,6 +5969,8 @@ line — never reclaim a number by deleting the other entry.
      budget covers it.
   7. Add an org zone, and read it in `acb_common.today`.
 - **Authority:** `specs/crm_platform.md` §18.16.10, owner 2026-10-19
+- **Added:** 2026-10-19
+
 ### H-363 · 🔴 The operator's GitHub token sits in each agent clone's remote URL · [AGENT] · finding
 - **Check:** read `loader._refresh_remote_auth` in `packages/acb_skills/acb_skills/loader.py`.
   If it still writes the token into the remote URL of the clone, this is open.
