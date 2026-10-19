@@ -105,9 +105,28 @@ class AgentRuntimeUnsupported(AgentLoadError):
     """
 
 
+#: The ONLY Copilot agents that may still run as a specialist of another run.
+#: Owner call, 2026-10-19 (review of PR #1161): app-builder stays a main-chat
+#: specialist until it is ported to MAF (WS-43h, then WS-43j). Delete its name
+#: in the PR that ports it. Every other Copilot agent is refused: task-manager,
+#: the root metorite agent and agent-sales-assistant. A new name needs an owner
+#: call and a test. Fence: ``tests/unit/test_copilot_specialist_refused.py``
+#: (``test_the_allow_list_holds_app_builder_only``).
+COPILOT_SPECIALIST_ALLOWED: frozenset[str] = frozenset({"app-builder"})
+
+
 def is_copilot_runtime_label(label: Any) -> bool:
     """True when *label* (a registry ``agent_runtime``) names the Copilot runtime."""
     return isinstance(label, str) and label.strip().lower() in COPILOT_RUNTIME_LABELS
+
+
+def may_delegate_to(agent_name: str, label: Any) -> bool:
+    """True when a run may name *agent_name* as a specialist, by its label.
+
+    The orchestrator's specialist tools and the registry block read this, so
+    they offer the same agents that :func:`refuse_copilot_specialist` lets run.
+    """
+    return agent_name in COPILOT_SPECIALIST_ALLOWED or not is_copilot_runtime_label(label)
 
 
 def refuse_copilot_specialist(
@@ -125,8 +144,11 @@ def refuse_copilot_specialist(
     *label* is the registry ``agent_runtime``, read before the load, so a
     labelled agent is refused with no clone and no import. *built* is the
     ``build_agents()`` result, which finds a Copilot object whatever its label
-    says. Fence: ``tests/unit/test_copilot_specialist_refused.py``.
+    says. An agent of :data:`COPILOT_SPECIALIST_ALLOWED` passes (owner call,
+    2026-10-19). Fence: ``tests/unit/test_copilot_specialist_refused.py``.
     """
+    if agent_name in COPILOT_SPECIALIST_ALLOWED:
+        return
     if not (is_copilot_runtime_label(label)
             or any(is_copilot_agent(a) for a in (built or []))):
         return

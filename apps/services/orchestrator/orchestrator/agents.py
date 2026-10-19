@@ -457,17 +457,18 @@ def _load_specialist_agents_as_tools() -> list[Any]:
 
     settings = get_settings()
     skip_names = {"orchestrator", "strategy"}  # avoid circular delegation
-    from acb_skills.loader import is_copilot_runtime_label
+    from acb_skills.loader import may_delegate_to
 
     for entry in all_agents:
         name: str = entry.get("name", "")
         description: str = entry.get("description", "")
         if not name or name in skip_names or not description:
             continue
-        if is_copilot_runtime_label(entry.get("agent_runtime")):
+        if not may_delegate_to(name, entry.get("agent_runtime")):
             # D84, D92: a Copilot agent does not run as a specialist
             # (loader.refuse_copilot_specialist), so the model is not offered
-            # it. It returns here when its port labels it "maf" (WS-8i, WS-43h).
+            # it. It returns here when its port labels it "maf" (WS-8i).
+            # app-builder stays, by owner call (loader.COPILOT_SPECIALIST_ALLOWED).
             _log.info(
                 "orchestrator.specialist_tool_skipped",
                 agent=name, reason="copilot_runtime",

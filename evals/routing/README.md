@@ -81,7 +81,8 @@ dock sends: `persona + "\n\n" + surfaceContext`, as `system_context`.
 | `crm-assistant` | C1 to C4 | CRM, My Email and Projects |
 | `whatsapp-assistant` | W1 to W3 | My WhatsApp and My Email |
 | `apis-config` | I1 | Integrations |
-| The orchestrator itself | N1 to N3, B1 | Chat, My Day and People |
+| `app-builder` | B1 | Chat |
+| The orchestrator itself | N1 to N3 | Chat, My Day and People |
 | Ask the member first | A1 to A3 | My Day, Chat and Artifacts |
 
 Six cases are cross-app: the member is in one app and asks about another.
@@ -89,10 +90,12 @@ An `asks` case expects no specialist. The right act there is to ask one short
 question with `ask_questions`, as the persona says.
 
 Projects, My Tasks and Calendar are one task store (D52, D53, D54), so
-T1 to T4 expect `projects-assistant`. `task-manager` and `app-builder`
-run on the retired Copilot SDK runtime. The orchestrator does not hold
-them as tools, and the executor refuses a delegation to them (D84, D92).
-So no case expects them, and a live pane that names one needs no case.
+T1 to T4 expect `projects-assistant`. `task-manager` runs on the retired
+Copilot SDK runtime. The orchestrator does not hold it as a tool, and the
+executor refuses a delegation to it (D84, D92). A live pane that names it
+needs no case. `app-builder` is the one exception (owner, 2026-10-19), so B1
+expects it. Its sub-run starts the Copilot CLI, which a hermetic run cannot
+start, so B1 gets the catalog check only.
 
 ## Run it with no model
 

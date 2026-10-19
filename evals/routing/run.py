@@ -173,9 +173,10 @@ def runtime_of(agent: str) -> str:
 def drivable(case: Case) -> bool:
     """A script can drive the case: no specialist, or a MAF one.
 
-    A Copilot SDK agent (``task-manager``, ``app-builder``) is no specialist
-    (D84, D92), so no case expects one today. If a case did, its sub-run would
-    be refused, and the case gets the catalog checks only.
+    A Copilot SDK specialist (``app-builder``, the one that
+    ``loader.COPILOT_SPECIALIST_ALLOWED`` keeps) runs its sub-run in the
+    Copilot CLI, a process a hermetic run cannot start. Its case gets the
+    catalog checks only. Every other Copilot agent is no specialist.
     """
     return case.expected is None or runtime_of(case.expected) == "maf"
 

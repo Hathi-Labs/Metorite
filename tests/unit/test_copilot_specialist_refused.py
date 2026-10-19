@@ -25,6 +25,8 @@ Paths:
    top-level run. No self-mutation follows.
 4. The orchestrator offers no Copilot agent: no specialist tool, and no line
    of the registry block.
+5. The one exception, by owner call of 2026-10-19: app-builder stays a
+   specialist until it is ported (``loader.COPILOT_SPECIALIST_ALLOWED``).
 
 Hermetic: no SQL, no network, no model. R8 binds nothing here.
 
@@ -39,7 +41,11 @@ Mutations this suite catches (R7), each run red by hand:
 * the batch path drops the delegation check ->
   ``test_a_delegated_batch_run_is_refused_and_never_self_mutates``;
 * ``_load_specialist_agents_as_tools`` or ``_build_registry_block`` lists a
-  Copilot agent -> ``test_the_orchestrator_offers_no_copilot_agent``.
+  refused Copilot agent, or drops app-builder ->
+  ``test_the_orchestrator_offers_no_copilot_agent_but_app_builder``;
+* the allow-list check is dropped, or a name joins it ->
+  ``test_app_builder_delegated_from_the_main_chat_still_runs`` and
+  ``test_the_allow_list_holds_app_builder_only``.
 """
 from __future__ import annotations
 
@@ -264,19 +270,23 @@ def test_a_top_level_batch_run_is_not_refused(monkeypatch, stubs) -> None:
 # ── 4. The orchestrator offers no Copilot agent ─────────────────────────────
 
 
-def test_the_orchestrator_offers_no_copilot_agent(monkeypatch) -> None:
+def test_the_orchestrator_offers_no_copilot_agent_but_app_builder(monkeypatch) -> None:
     import orchestrator._tool_injection as ti
     from orchestrator.agents import _mod as orchestrator_agents
 
     _load_specialist_agents_as_tools = orchestrator_agents._load_specialist_agents_as_tools
-    monkeypatch.setattr(agent_routes, "_load_dynamic_agents", lambda: [])
+    monkeypatch.setattr(agent_routes, "_load_dynamic_agents", lambda: [
+        {"name": "agent-sales-assistant", "description": "Sales.",
+         "agent_runtime": "github-copilot", "repo_name": "acme/agent-sales-assistant"},
+    ])
     copilot = {e["name"] for e in agent_routes._AGENT_REGISTRY
                if loader.is_copilot_runtime_label(e.get("agent_runtime"))}
-    assert "task-manager" in copilot, "the fixture assumes task-manager is still held"
+    assert {"task-manager", "app-builder"} <= copilot, "the fixture assumes both are held"
+    refused = (copilot | {"agent-sales-assistant"}) - loader.COPILOT_SPECIALIST_ALLOWED
 
     tools = {t.name for t in _load_specialist_agents_as_tools()}
-    assert "projects_assistant" in tools
-    assert not {n.replace("-", "_") for n in copilot} & tools, tools
+    assert {"projects_assistant", "app_builder"} <= tools, tools
+    assert not {n.replace("-", "_") for n in refused} & tools, tools
 
     ti._build_registry_block.cache_clear()
     try:
@@ -284,5 +294,55 @@ def test_the_orchestrator_offers_no_copilot_agent(monkeypatch) -> None:
     finally:
         ti._build_registry_block.cache_clear()
     assert "'projects-assistant'" in block
-    for name in copilot:
+    assert "'app-builder'" in block
+    for name in refused:
         assert f"'{name}'" not in block, block
+
+
+# ── 5. The owner's one exception: app-builder (2026-10-19) ──────────────────
+
+
+def test_the_allow_list_holds_app_builder_only() -> None:
+    """A second name needs an owner call AND a test. This assertion fails the
+    moment a name joins without one. Delete app-builder when it is ported."""
+    assert loader.COPILOT_SPECIALIST_ALLOWED == frozenset({"app-builder"})
+
+
+def test_app_builder_passes_the_refusal() -> None:
+    loader.refuse_copilot_specialist("app-builder", label="github-copilot")
+    loader.refuse_copilot_specialist("app-builder", label="maf", built=[_Copilot()])
+    assert loader.may_delegate_to("app-builder", "github-copilot")
+
+
+@pytest.mark.parametrize("name", ["task-manager", "metorite", "agent-sales-assistant"])
+def test_every_other_copilot_agent_is_refused(name: str) -> None:
+    assert not loader.may_delegate_to(name, "github-copilot")
+    with pytest.raises(loader.AgentRuntimeUnsupported):
+        loader.refuse_copilot_specialist(name, label="github-copilot")
+    with pytest.raises(loader.AgentRuntimeUnsupported):
+        loader.refuse_copilot_specialist(name, label="maf", built=[_Copilot()])
+
+
+def test_app_builder_delegated_from_the_main_chat_still_runs(monkeypatch, stubs) -> None:
+    """The streamed delegation reaches the loader for app-builder (the loader
+    stops it here with a sentinel), and refuses task-manager before it."""
+    monkeypatch.setattr(agent_routes, "_load_dynamic_agents", lambda: [])
+
+    class _Ctx:
+        def __enter__(self) -> Any:
+            stubs.count += 1
+            raise executor.RunWorkspaceRefused("LOADED")
+
+        def __exit__(self, *_a: Any) -> bool:
+            return False
+
+    monkeypatch.setattr(executor, "load_agent", lambda *a, **k: _Ctx())
+    text = _as_parent(lambda: executor._run_sub_agent_streaming(
+        "app-builder", "build me an app", "r-sub", event_queue=asyncio.Queue(),
+    ))
+    assert "LOADED" in text and stubs.count == 1, text
+
+    text = _as_parent(lambda: executor._run_sub_agent_streaming(
+        "task-manager", "file my inbox", "r-sub-2", event_queue=asyncio.Queue(),
+    ))
+    assert loader.COPILOT_SPECIALIST_TEXT in text and stubs.count == 1, text

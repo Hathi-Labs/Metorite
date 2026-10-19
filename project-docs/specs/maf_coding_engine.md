@@ -4556,7 +4556,9 @@ would hide the loss of the Copilot CLI's own shell and file tools.
    the object after the build. The two delegation paths are
    `_run_sub_agent_streaming` and a batch run with a parent context. The
    caller gets the error text as the answer of the sub-task. The
-   orchestrator does not list a Copilot agent as a specialist. Why: on
+   orchestrator does not list a Copilot agent as a specialist.
+   `app-builder` is the one exception until its port (owner call,
+   2026-10-19, `loader.COPILOT_SPECIALIST_ALLOWED`). Why: on
    2026-10-18 production delegated inbox work to `task-manager`, and the
    sub-run started the Copilot CLI. Fence:
    `tests/unit/test_copilot_specialist_refused.py`.

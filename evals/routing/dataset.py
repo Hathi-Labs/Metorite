@@ -151,9 +151,9 @@ CASES: tuple[Case, ...] = (
     Case("I1", "Help me set up the API key for our SendGrid account.",
          "/integrations", "apis-config"),
     Case("B1", "Build me a small app that tracks visitor sign-ins at the front desk.",
-         "/chat", None,
-         note="app-builder runs on the retired Copilot runtime, so it is no "
-              "specialist (D84, D92). The orchestrator answers itself"),
+         "/chat", "app-builder",
+         note="App Workshop is a preview pane, so the page does not move. "
+              "app-builder is the one Copilot specialist left (owner, 2026-10-19)"),
 
     # ── orchestrator answers itself ────────────────────────────────────────
     Case("N1", "What can you do?", "/chat", None),
