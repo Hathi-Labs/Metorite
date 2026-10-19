@@ -97,9 +97,9 @@ def crm_routing_line(rows: list[Any]) -> str:
     return f"{CRM_ROUTING_LINE} Its CRM modules: {', '.join(names)}."
 
 #: The keys of a fact that the block keeps: the business rules (CRM-Q33),
-#: the key parts of a money module, the meaning of revenue and each stage
-#: value.
-_BLOCK_KEYS = ("rule", "revenue", "amount", "date", "status", "parent")
+#: the key parts of a money module, the meaning of revenue, the org's own
+#: words and value aliases (WS-53 §18.16), and each stage value.
+_BLOCK_KEYS = ("rule", "revenue", "amount", "date", "status", "parent", "term", "alias")
 
 
 def _line(row: dict[str, Any]) -> str:

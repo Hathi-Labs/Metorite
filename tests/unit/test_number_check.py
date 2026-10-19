@@ -198,6 +198,9 @@ _OTHER_PARSERS = {
         "parse_amount reads ONE amount from a quote, and refuses a scaled one (D-EM-41)",
     "apps/services/gateway/gateway/routes/notes/copilot_policy.py":
         "_NUMERIC says only whether a text holds a number",
+    "apps/services/gateway/gateway/routes/crm/text_asks.py":
+        "_FIGURE checks the shape of a figure that the server built for an option label "
+        "(WS-53 §18.16 part 4). It reads no answer and checks no source",
 }
 
 
