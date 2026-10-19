@@ -187,6 +187,13 @@ FALLBACK_LEAD = (
 FALLBACK_FIGURES = "These are the CRM figures as the tools gave them:"
 FALLBACK_NONE = "Ask again, or ask for one figure at a time."
 
+#: The caveat after an answer that still failed the check (fix round 7, owner
+#: direction: give the number with a caveat, never lose the answer). Plain
+#: words, no internal names, at most :data:`CAVEAT_FIGURES` figures.
+CAVEAT_LEAD = "I could not check these figures against the CRM data:"
+CAVEAT_TAIL = "Please verify them before you rely on them."
+CAVEAT_FIGURES = 5
+
 _ISO_DAY = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
 _TAG = re.compile(r"<[^>]*>")
 _SCRIPT = re.compile(r"<(script|style)\b.*?</\1\s*>", re.I | re.S)
@@ -521,6 +528,15 @@ def retry_note(result: CheckResult) -> str:
     )
 
 
+def caveat_text(result: CheckResult) -> str:
+    """The note after an answer whose figures the check could not match."""
+    named: list[str] = []
+    for figure in result.unmatched:
+        if figure.text not in named:
+            named.append(figure.text)
+    return f"\n\n{CAVEAT_LEAD} {', '.join(named[:CAVEAT_FIGURES])}. {CAVEAT_TAIL}"
+
+
 def fallback_text(ledger: RunLedger) -> str:
     """What the member reads when the answer failed the check (item 7)."""
     shown = [(t, x) for t, x in ledger.results if t in FALLBACK_TOOLS and x.strip()]
@@ -731,11 +747,22 @@ class CheckAnswers(ChatMiddleware):
                 for update in kept:
                     yield update
                 return
-            if result2 is not None:
-                result = result2
-            response = second
-        self._log(result, "fallback")
+            result, response, updates = result2, second, retry_updates
         last = updates[-1] if updates else None
+        if (response.text or "").strip():
+            # Round 7: the answer goes out, with a caveat that names the
+            # figures the check could not match. It is never replaced.
+            self._log(result, "caveat")
+            for update in updates:
+                yield update
+            yield ChatResponseUpdate(
+                contents=[Content.from_text(caveat_text(result))], role="assistant",
+                response_id=getattr(last, "response_id", None) or response.response_id,
+                message_id=getattr(last, "message_id", None),
+                model=getattr(last, "model", None), finish_reason="stop",
+            )
+            return
+        self._log(result, "fallback")
         yield ChatResponseUpdate(
             contents=[Content.from_text(fallback_text(self._ledger))],
             role="assistant",
@@ -769,9 +796,10 @@ class CheckAnswers(ChatMiddleware):
             if again == STRIP:
                 self._log(result2, "retry_call")
                 return _without_text(second)
-            if result2 is not None:
-                result = result2
-            response = second
+            result, response = result2, second
+        if (response.text or "").strip():
+            self._log(result, "caveat")
+            return _with_caveat(response, caveat_text(result))
         self._log(result, "fallback")
         return ChatResponse(
             messages=[Message("assistant", [fallback_text(self._ledger)])],
@@ -783,6 +811,31 @@ class CheckAnswers(ChatMiddleware):
 def _role(message: Any) -> str:
     role = getattr(message, "role", "")
     return str(getattr(role, "value", role) or "")
+
+
+def _with_caveat(response: ChatResponse, caveat: str) -> ChatResponse:
+    """*response* with *caveat* after the text of its last message that has
+    text. Its tool calls and the rest stay (fix round 7)."""
+    messages = list(response.messages)
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        contents = list(m.contents or ())
+        last = next((j for j in range(len(contents) - 1, -1, -1)
+                     if getattr(contents[j], "type", "") == "text"), None)
+        if last is None:
+            continue
+        # The caveat joins the last text itself, so no space comes between.
+        contents[last] = Content.from_text((contents[last].text or "") + caveat)
+        messages[i] = Message(
+            _role(m) or "assistant", contents,
+            author_name=getattr(m, "author_name", None),
+            message_id=getattr(m, "message_id", None),
+        )
+        break
+    return ChatResponse(
+        messages=messages, response_id=response.response_id, model=response.model,
+        finish_reason=response.finish_reason, usage_details=response.usage_details,
+    )
 
 
 def _without_text(response: ChatResponse) -> ChatResponse:
@@ -847,6 +900,7 @@ __all__ = [
     "RunLedger",
     "answer_check_mode",
     "argument_sources",
+    "caveat_text",
     "display_text",
     "fallback_text",
     "holds_crm_tool",

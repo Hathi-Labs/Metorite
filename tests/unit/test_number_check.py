@@ -800,3 +800,66 @@ class TestFixRound6Lock:
         taken.clear()
         assert check("We won 20 deals.", book).ok
         assert taken, "matches did not take the lock"
+
+
+# ── Fix round 7 (2026-10-19): the review of round 6 ───────────────────────
+
+WIN_LOSS_7 = (
+    "CRM report win-loss:\nSince 2026-07-20: won 20, lost 7, win rate 74.07%.\n"
+    "Closed with no date: 3.\n- Lost reason Price: 4 deals\n- Lost reason Timing: 3 deals"
+)
+PIPE_7 = (
+    "- Qualification: 12 records · INR 1,84,00,000\n- Proposal: 8 records · INR 59,00,000\n"
+    "- Negotiation: 5 records · INR 70,600,000\nTotal: 52 records"
+)
+
+
+class TestFixRound7Fractions:
+    """Item 1: a date and a set phrase are no fraction. Item 3: the whole of a
+    fraction needs the rest on the same line of a tool result."""
+
+    @pytest.mark.parametrize("text", [
+        "Follow up by 15/11.", "Call on 3/11.", "Support is 24/7.", "Split 50/50.",
+    ])
+    def test_a_date_or_a_set_phrase_is_no_fraction(self, text: str) -> None:
+        assert find_figures(text) == []
+        assert check(text, [PIPE_7]).ok
+
+    @pytest.mark.parametrize(("text", "ok"), [
+        ("Won 20/27.", True), ("Won 25/40.", False), ("Won 20/23.", False),
+        ("Won 20/24.", False), ("Won 20/40.", False),
+    ])
+    def test_the_whole_of_a_fraction(self, text: str, ok: bool) -> None:
+        assert check(text, [WIN_LOSS_7]).ok is ok
+
+
+class TestFixRound7Parts:
+    """Item 2: the total is the sum of EVERY listed part. Item 4: counts and
+    money, interleaved, each add up on their own."""
+
+    @pytest.mark.parametrize("text", [
+        "Open value: ₹2.4 crore (₹1.84 crore, ₹0.59 crore, ₹7.06 crore).",
+        "Open: 20 (12, 8, 5).",
+        "Open: 25 deals, ₹9.6 crore (Qualification 12 · ₹1.84 Cr, Proposal 8 · "
+        "₹0.59 Cr, Negotiation 5 · ₹7.06 Cr).",
+        "Open: 26 deals, ₹9.49 crore (Qualification 12 · ₹1.84 Cr, Proposal 8 · "
+        "₹0.59 Cr, Negotiation 5 · ₹7.06 Cr).",
+    ])
+    def test_a_total_of_only_some_parts_fails(self, text: str) -> None:
+        assert not check(text, [PIPE_7]).ok
+
+    @pytest.mark.parametrize("text", [
+        "Open value: ₹9.49 crore (₹1.84 crore, ₹0.59 crore, ₹7.06 crore).",
+        "Open: 25 (12, 8, 5).",
+        "Open: 25 deals, ₹9.49 crore (Qualification 12 · ₹1.84 Cr, Proposal 8 · "
+        "₹0.59 Cr, Negotiation 5 · ₹7.06 Cr).",
+    ])
+    def test_a_total_of_all_its_parts_passes(self, text: str) -> None:
+        result = check(text, [PIPE_7])
+        assert result.ok, [f.text for f in result.unmatched]
+
+    def test_a_ratio_is_no_quote_of_a_count(self) -> None:
+        # "5x" is not the count 5 of Negotiation: 13.53 / 2.245 is 6.
+        tool = PIPE_7 + "\nWon: INR 135,300,000\nLost: INR 22,450,000"
+        assert not check("Won ₹13.53 crore is 5x Lost ₹2.245 crore.", [tool]).ok
+        assert check("Won ₹13.53 crore is 6x Lost ₹2.245 crore.", [tool]).ok

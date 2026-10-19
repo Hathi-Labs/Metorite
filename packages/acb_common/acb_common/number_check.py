@@ -120,6 +120,10 @@ _RANGE = re.compile(
 _FRACTION = re.compile(
     r"(?<![\w.,/:#@-])(?P<a>\d{1,6})/(?P<b>\d{1,6})(?![\w/]|\.\d)"
 )
+#: A slash token that is a set phrase, not a fraction (fix round 7).
+_SET_SLASHES = frozenset({
+    "24/7", "50/50", "60/40", "70/30", "80/20", "90/10", "365/24", "20/20",
+})
 #: "6 times" after a figure makes it a ratio, as "6x" does.
 _TIMES_AFTER = re.compile(r"[ \t]+(?i:times)\b")
 
@@ -324,6 +328,11 @@ def _fractions(scan: str, found: list[Figure]) -> list[Figure]:
         a, b = r.group("a"), r.group("b")
         if any(len(n) == 4 and 1900 <= int(n) <= 2100 for n in (a, b)):
             continue  # "2025/26", "07/2026": a year
+        if f"{int(a)}/{int(b)}" in _SET_SLASHES:
+            continue  # "24/7", "50/50": a set phrase (round 7)
+        x, y = int(a), int(b)
+        if (1 <= x <= 31 and 1 <= y <= 12) or (1 <= x <= 12 and 1 <= y <= 31):
+            continue  # "15/11", "3/11": a day and a month (round 7)
         found = [f for f in found if not (r.start() <= f.start < r.end())]
         found.append(Figure(text=a, value=Decimal(a), kind=PLAIN, unit=Decimal(1),
                             exact=False, start=r.start("a"), end=r.end("a")))
@@ -440,6 +449,8 @@ MAX_DERIVE_PER_TEXT = 200
 _POOL_KINDS = (MONEY, PLAIN, PERCENT)
 
 _HUNDRED = Decimal(100)
+#: The most lines of tool results that a book keeps for :meth:`Sources.siblings`.
+MAX_LINES = 5000
 
 #: A value of compact JSON (``{"target":1234567}``) and of a CSV row
 #: (``region,1234567,88``). The figure parse skips both, because a number
@@ -548,6 +559,9 @@ class Sources:
     _kinds: list[str] = field(default_factory=list)
     _pending: list[tuple[Decimal, str]] = field(default_factory=list)
     _pools: dict[str, _Pool] = field(default_factory=dict)
+    #: The counts of each line of a derive text, newest last (fix round 7).
+    _lines: deque[tuple[Decimal, ...]] = field(
+        default_factory=lambda: deque(maxlen=MAX_LINES))
     _base: Sources | None = None
     #: Guards ``_pending``, ``_values`` and the pools: a worker thread may add
     #: while the event loop matches (fix round 6).
@@ -582,6 +596,8 @@ class Sources:
         A figure that the parser cannot read is no source."""
         pooled: dict[str, int] = {}
         figures = [f for f in _parse(text, skip_years=False) if not f.unreadable]
+        if derive:
+            self._add_lines(text or "", figures)
         data = _data_values(text or "", [(f.start, f.end) for f in figures])
         values = [(f.value, f.kind) for f in figures] + [(Decimal(v), PLAIN) for _at, v in data]
         for value, kind in values:
@@ -593,6 +609,30 @@ class Sources:
         for _at, digits in data:
             # A data value has no unit: {"win_rate":60} may stand for 60%.
             self.add_value(Decimal(digits), PERCENT)
+
+    def _add_lines(self, text: str, figures: list[Figure]) -> None:
+        """Keep the counts of each line of *text*: "won 20, lost 7"."""
+        lines: dict[int, list[Decimal]] = {}
+        for figure in figures:
+            if figure.kind == PLAIN:
+                lines.setdefault(text.count("\n", 0, figure.start), []).append(
+                    abs(figure.value))
+        with self._lock:
+            self._lines.extend(tuple(v) for v in lines.values() if len(v) >= 2)
+
+    def siblings(self, a: Decimal, b: Decimal) -> bool:
+        """True when one line of a tool result holds the counts *a* and *b*
+        (two of them when they are equal)."""
+        for book in self._books():
+            with book._lock:
+                lines = list(book._lines)
+            for line in lines:
+                if a == b:
+                    if line.count(a) >= 2:
+                        return True
+                elif a in line and b in line:
+                    return True
+        return False
 
     def pool(self, kind: str) -> list[Decimal]:
         """The values of the derive pool of *kind*, oldest first."""
@@ -646,8 +686,9 @@ class Sources:
         """True when a source value rounds to *figure* at its precision, or
         lies near it after "about". A derived figure is no match here.
         :func:`check` decides it, because it needs the text. A figure that
-        the parser cannot read never matches."""
-        if figure.unreadable:
+        the parser cannot read never matches. A ratio ("5x") is never a
+        quote of a count 5: only the ratio rule passes it (fix round 7)."""
+        if figure.unreadable or figure.ratio:
             return False
         target = abs(figure.value)
         room = figure.room
@@ -876,9 +917,6 @@ def _share_base(figures: tuple[Figure, ...], index: int, cited: dict[str, list[_
     return False
 
 
-#: The text between a total and its first part: "27 (20 won", "27 deals: 20
-#: won", "25 deals (12 + 8". A "(" or a ":" with no end of a sentence.
-_PARTS_AFTER = re.compile(r"[^\n.;!?()]{0,40}?[(:][^\n.;!?()]{0,20}")
 #: The text between the last part and its total: "(7): 27", "lost 7 make 27".
 _PARTS_BEFORE = re.compile(
     r"[^\n.;!?(]{0,24}?(?::|=|\b(?i:make|makes|made|give|gives|in\s+all|together)\b)"
@@ -888,6 +926,11 @@ _PARTS_BEFORE = re.compile(
 _PARTS_BETWEEN = re.compile(r"[^\n.;!?:]{0,30}")
 #: The most parts of one total.
 _MAX_PARTS = 8
+#: The end of a sentence or of a line, where a group of parts ends.
+_GROUP_END = re.compile(r"[.;!?](?=\s|$)|\n")
+#: How far after a total its "(" or ":" may stand: "27 (", "25 deals,
+#: ₹9.49 crore (", "You closed 27 deals: ".
+_GROUP_REACH = 60
 
 
 def _part_value(cited: dict[str, list[_Cited]], index: int,
@@ -904,52 +947,74 @@ def _part_value(cited: dict[str, list[_Cited]], index: int,
     return min(values, key=lambda v: abs(v - abs(figure.value)))
 
 
-def _run_sums(cited: dict[str, list[_Cited]], figures: tuple[Figure, ...], total: Figure,
-              parts: list[int]) -> bool:
-    """True when the first two or more *parts* add up to *total*."""
-    target, room = abs(total.value), total.strict_room
+def _same_kind(total: Figure, part: Figure) -> bool:
+    """A count adds to a count and money to money (fix round 7)."""
+    return part.kind != PERCENT and (part.kind == MONEY) == (total.kind == MONEY)
+
+
+def _all_sum(cited: dict[str, list[_Cited]], figures: tuple[Figure, ...], total: Figure,
+             parts: list[int]) -> bool:
+    """True when EVERY listed part is a tool figure and they add up to *total*
+    (fix round 7: not any first two of them). Two parts at least."""
+    if not 2 <= len(parts) <= _MAX_PARTS:
+        return False
     acc = Decimal(0)
-    for n, index in enumerate(parts[:_MAX_PARTS], start=1):
-        part = figures[index]
-        if total.kind == MONEY and part.kind != MONEY:
-            return False
-        value = _part_value(cited, index, part)
+    for index in parts:
+        value = _part_value(cited, index, figures[index])
         if value is None:
             return False
         acc += value
-        if n >= 2 and _within(acc, target, room):
-            return True
-    return False
+    return _within(acc, abs(total.value), total.strict_room)
+
+
+def _group_after(figures: tuple[Figure, ...], index: int, text: _Text) -> list[int]:
+    """The parts of the group that follows a total: the figures of its kind
+    inside the next "( … )", or after the next ":" to the end of the
+    sentence. One other figure (a sibling total) may stand between them:
+    "Open: 25 deals, ₹9.49 crore (Qualification 12 · ₹1.84 Cr, …)"."""
+    total = figures[index]
+    scan = text.scan
+    stop = _GROUP_END.search(scan, total.end)
+    end = stop.start() if stop else len(scan)
+    head = scan[total.end:min(end, total.end + _GROUP_REACH)]
+    opener = re.search(r"[(:]", head)
+    if opener is None:
+        return []
+    at = total.end + opener.start()
+    between = [j for j in range(index + 1, len(figures)) if figures[j].start < at]
+    if len(between) > 1:
+        return []
+    if scan[at] == "(":
+        close = scan.find(")", at)
+        end = close if close != -1 else end
+    return [j for j in range(index + 1, len(figures))
+            if at < figures[j].start < end and _same_kind(total, figures[j])]
 
 
 def _parts_sum(figures: tuple[Figure, ...], index: int, cited: dict[str, list[_Cited]],
                text: _Text) -> bool:
-    """A total with its parts in brackets or as a list, each part a source
+    """A total with its parts in brackets or after a colon, each part a tool
     figure: "27 (20 won, 7 lost)", "27 deals: 20 won and 7 lost", "Won (20)
     and Lost (7): 27", "₹13.53 crore and ₹2.245 crore make ₹15.78 crore".
-    No derive word is needed (fix round 6)."""
+    No derive word is needed (fix round 6). The total is the sum of ALL the
+    parts of its kind in the group (fix round 7)."""
     total = figures[index]
     if total.kind == PERCENT:
         return False
+    if _all_sum(cited, figures, total, _group_after(figures, index, text)):
+        return True
     here = text.block(total.start)
     scan = text.scan
-    after: list[int] = []
-    for j in range(index + 1, len(figures)):
-        gap = scan[(figures[after[-1]] if after else total).end:figures[j].start]
-        pattern = _PARTS_BETWEEN if after else _PARTS_AFTER
-        if text.block(figures[j].start) != here or not pattern.fullmatch(gap):
-            break
-        after.append(j)
-    if len(after) >= 2 and _run_sums(cited, figures, total, after):
-        return True
     before: list[int] = []
     for j in range(index - 1, -1, -1):
         gap = scan[figures[j].end:(figures[before[-1]] if before else total).start]
         pattern = _PARTS_BETWEEN if before else _PARTS_BEFORE
         if text.block(figures[j].start) != here or not pattern.fullmatch(gap):
             break
+        if not _same_kind(total, figures[j]):
+            break
         before.append(j)
-    return len(before) >= 2 and _run_sums(cited, figures, total, before)
+    return _all_sum(cited, figures, total, before)
 
 
 def _ratio(figures: tuple[Figure, ...], index: int, cited: dict[str, list[_Cited]],
@@ -972,14 +1037,15 @@ def _ratio(figures: tuple[Figure, ...], index: int, cited: dict[str, list[_Cited
 
 
 def _fraction_whole(figure: Figure, sources: Sources) -> bool:
-    """The second number of a fraction ("Won 20/27") passes when it is the
-    first number plus ANOTHER source value: 20 won and 7 lost make 27. The
-    rest may not be the first number again, so "20/40" fails (round 6)."""
+    """The second number of a fraction ("Won 20/27") passes when the first
+    number and the rest are two counts of ONE line of a tool result: "won
+    20, lost 7" makes 27 (fix round 7). A rest that is only some value of
+    the book is no reason, so "20/23" fails beside "Closed: 3". The second
+    number may also be a source figure itself (a direct match)."""
     if figure.numerator is None:
         return False
-    rest = Figure(text="", value=figure.value - figure.numerator, kind=PLAIN,
-                  unit=figure.unit, exact=False, start=0, end=0)
-    return rest.value > 0 and rest.value != figure.numerator and sources.matches(rest)
+    rest = figure.value - figure.numerator
+    return rest > 0 and sources.siblings(figure.numerator, rest)
 
 
 def _derived(figures: tuple[Figure, ...], index: int, cited: dict[str, list[_Cited]],

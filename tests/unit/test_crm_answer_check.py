@@ -34,6 +34,8 @@ from typing import Any
 import pytest
 from acb_skills import answer_check
 from acb_skills.answer_check import (
+    CAVEAT_LEAD,
+    CAVEAT_TAIL,
     FALLBACK_LEAD,
     ON,
     SHADOW,
@@ -54,6 +56,9 @@ from agent_framework import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
+
+#: The caveat of round 7, with the failed figures in place of ``{}``.
+CAVEAT_NOTE = "\n\n" + CAVEAT_LEAD + " {}. " + CAVEAT_TAIL
 
 CRM_RESULT = (
     "Deals, sum_amount by status:\n"
@@ -204,14 +209,17 @@ async def test_an_invented_total_is_caught(stream: bool) -> None:
 
 
 @STREAMS
-async def test_two_failures_give_the_fallback(stream: bool) -> None:
+async def test_two_failures_deliver_the_answer_with_a_caveat(stream: bool) -> None:
+    """Round 7 (owner direction): the retried answer still fails, so it goes
+    out with a caveat that names its figures. It is never replaced."""
+    second = "Open deals hold ₹14 lakh."
     agent, client = _agent([("call", "crm_aggregate", {"entity": "deals"}),
                             ("text", "Open deals hold ₹13.5 lakh."),
-                            ("text", "Open deals hold ₹14 lakh.")])
+                            ("text", second)])
     out = await _run(agent, stream=stream)
-    assert out.startswith(FALLBACK_LEAD)
-    assert CRM_RESULT in out
-    assert "13.5" not in out and "₹14 lakh" not in out
+    assert out.startswith(second)
+    assert out == second + CAVEAT_NOTE.format("₹14 lakh")
+    assert FALLBACK_LEAD not in out and "13.5" not in out
     assert len(client.requests) == 3  # one extra request at most
 
 
@@ -239,7 +247,7 @@ async def test_the_model_s_own_text_is_never_a_source(stream: bool) -> None:
 @STREAMS
 async def test_the_run_has_one_retry_in_all(stream: bool) -> None:
     """Item 12: the retry is per run, not per request. A later failure of
-    the same run goes straight to the fallback."""
+    the same run goes out at once, with a caveat (round 7)."""
     agent, client = _agent([
         ("call", "crm_aggregate", {"entity": "deals"}),
         ("text", "Open deals hold ₹13.5 lakh."),
@@ -247,8 +255,8 @@ async def test_the_run_has_one_retry_in_all(stream: bool) -> None:
         ("text", "Open deals hold ₹15 lakh."),
     ])
     out = await _run(agent, stream=stream)
-    assert FALLBACK_LEAD in out
-    assert "₹15 lakh" not in out
+    assert FALLBACK_LEAD not in out
+    assert out.endswith("Open deals hold ₹15 lakh." + CAVEAT_NOTE.format("₹15 lakh"))
     assert len(client.requests) == 4
 
 
@@ -452,16 +460,20 @@ async def test_a_bad_card_with_clean_text_is_never_shipped(stream: bool) -> None
 
 
 @STREAMS
-async def test_a_bad_card_with_bad_text_gives_the_fallback(stream: bool) -> None:
+async def test_a_bad_card_with_bad_text_goes_out_with_a_caveat(stream: bool) -> None:
+    """Round 7: after the one retry, the answer and its card go out, and the
+    caveat names the figures that the check could not match."""
     agent, client = _agent([
         ("call", "crm_aggregate", {"entity": "deals"}),
         ("both", "Open and won hold ₹18.3 lakh.", "emit_generative_ui", _card(1834567)),
         ("both", "Still ₹18.3 lakh.", "emit_generative_ui", _card(1834567)),
+        ("text", "Done."),
     ])
     out = await _run(agent, stream=stream)
-    assert CARDS == []
-    assert out.startswith(FALLBACK_LEAD)
-    assert len(client.requests) == 3
+    assert [_card(1834567)["ui"]] == CARDS     # the retried card, once
+    assert out.startswith("Still ₹18.3 lakh." + CAVEAT_NOTE.format("₹18.3 lakh, 1834567"))
+    assert FALLBACK_LEAD not in out
+    assert len(client.requests) == 4
 
 
 def test_the_shown_text_of_a_card_skips_layout_and_code() -> None:
@@ -757,12 +769,15 @@ async def test_a_failed_text_beside_a_shared_file_is_not_stripped(stream: bool) 
     agent, client = _agent([
         ("call", "crm_aggregate", {"entity": "deals"}),
         ("both", "Open deals hold ₹99 lakh.", "share_artifact", {"path": "outputs/a.pdf"}),
-        ("both", "Open deals hold ₹99 lakh.", "share_artifact", {"path": "outputs/a.pdf"}),
+        ("both", "Open deals hold ₹98 lakh.", "share_artifact", {"path": "outputs/a.pdf"}),
+        ("text", "Done."),
     ], tools=[crm_aggregate, share_artifact])
     out = await _run(agent, stream=stream)
-    assert ELEMENTS == []
-    assert out.startswith(FALLBACK_LEAD)
-    assert len(client.requests) == 3
+    # The first step fails and is retried, so its file is never shown. The
+    # retried step goes out with its file and a caveat (round 7).
+    assert ELEMENTS == [("file", "outputs/a.pdf")]
+    assert out.startswith("Open deals hold ₹98 lakh." + CAVEAT_NOTE.format("₹98 lakh"))
+    assert len(client.requests) == 4
 
 
 @pytest.mark.parametrize("label", [
@@ -1108,3 +1123,36 @@ def test_the_retry_note_says_how_to_write_a_total_a_ratio_and_a_rank() -> None:
     note = answer_check.retry_note(check("₹99 lakh", ["Open: INR 5,00,000"]))
     for words in ("27 (20 won, 7 lost)", "6x", "rank", "state the whole"):
         assert words in note, words
+
+
+# ── Fix round 7 (2026-10-19): an answer is never replaced ─────────────────
+
+def test_the_caveat_names_at_most_five_figures_in_plain_words() -> None:
+    from acb_common.number_check import check
+
+    result = check("We have 91, 92, 93, 94, 95, 96 and 97 deals, and 91 again.",
+                   ["Open: INR 5,00,000"])
+    note = answer_check.caveat_text(result)
+    assert note == CAVEAT_NOTE.format("91, 92, 93, 94, 95")
+    for word in ("CRM-Q29", "answer_check", "check failed", "tool", "source"):
+        assert word not in note
+
+
+def test_an_answer_with_no_text_still_gets_the_fallback() -> None:
+    """``fallback_text`` stays only for an answer with no text."""
+    from acb_skills.answer_check import CheckAnswers
+
+    ledger = RunLedger()
+    ledger.record("crm_aggregate", CRM_RESULT)
+    ledger.retried = True
+    middleware = CheckAnswers(ledger, ON)
+    card = ChatResponse(messages=[Message("assistant", [Content.from_function_call(
+        "c1", "emit_generative_ui", arguments=json.dumps(_card(1834567)))])])
+
+    class _Context:
+        messages: tuple[Any, ...] = ()
+
+    import asyncio
+
+    out = asyncio.run(middleware._checked(_Context(), lambda: None, card))
+    assert out.text.startswith(FALLBACK_LEAD)
