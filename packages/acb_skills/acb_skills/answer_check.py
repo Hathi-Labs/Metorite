@@ -29,11 +29,14 @@ which holds the earlier answers of the model.
 **The behaviour on a mismatch (item 7).** The first failed answer of a run
 gets ONE more model request, which names each number that matched no source.
 The check reads that answer too. A second failure, or a failure after the run
-used its retry, gives :func:`fallback_text`: a line that says so, and the
-figures of the CRM tools as they came. The failed draft and a failed card
-never go out. A failed step that calls only tools that show nothing loses its
-text and keeps its tool calls. So a run makes one extra model request at
-most, and a passed check makes none.
+used its retry, sends the answer with a note of :func:`note_text` (round 8).
+The note never lists raw figures alone: a sum or a difference of two figures
+of the answer gets one sentence, many failed figures get "How I got these
+numbers" from the run's CRM reads, an ambiguity that the check can see gets
+ONE question, and one to three failed figures each get a reason. An answer
+with no text gets :func:`fallback_text`. A failed step that calls only tools
+that show nothing loses its text and keeps its tool calls. So a run makes one
+extra model request at most, and a passed check makes none.
 
 **The hold and the watchdog (item 10).** While it holds a response, the check
 puts a :data:`HOLD_EVENT` on the run queue at most each

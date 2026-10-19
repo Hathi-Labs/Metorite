@@ -88,7 +88,7 @@
 > `crm-q28-digest`, migration 281). CRM-Q29, the number check of each CRM
 > answer, with two fix rounds, dark (`CRM_ANSWER_CHECK` is `off`, branch
 > `crm-answer-check`, no migration). CRM-Q29 fix round 3 is merged as #1120.
-> Fix rounds 4 to 7 are built on `crm-answer-check-r4` (PR #1133), not merged. CRM-Q30, a founder question set for CRM
+> Fix rounds 4 to 7 are merged as #1133. Fix round 8, a note that explains, asks one question or says how, is built 2026-10-20 on `crm-check-explain`, PR open, not merged. CRM-Q30, a founder question set for CRM
 > insights, and CRM-Q30b, the read tools say when Zoho holds more (branch
 > `crm-founder-evals`, no migration). See §18.11.
 >
@@ -1298,7 +1298,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q26** | Labels on notes, on the decide tier, in shadow. §18.11 | P1 |
 | **CRM-Q27** | 🔨 built 2026-10-16 on `crm-batch-i`, merged (#1111), dark. Search of note text by meaning. §18.11 | P2 |
 | **CRM-Q28** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-q28-digest`, migration 281), not merged, dark. A weekly digest on the powerful tier. §18.11 | P2 |
-| **CRM-Q29** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-answer-check`, with two fix rounds), merged as #1116, dark. Fix round 3 merged as #1120. Fix rounds 4 to 7 built 2026-10-17 to 2026-10-19 on `crm-answer-check-r4` (PR #1133), not merged. The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
+| **CRM-Q29** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-answer-check`, with two fix rounds), merged as #1116, dark. Fix round 3 merged as #1120. Fix rounds 4 to 7 merged as #1133. Fix round 8 built 2026-10-20 on `crm-check-explain`, PR open, not merged. The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
 | **CRM-Q30** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. A founder question set for CRM insights: an eval of the assistant over CRM data. §18.11 | P1 |
 | **CRM-Q30b** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. The read tools say when Zoho holds more records than the connected Zoho user can read. §18.11 | P1 |
 | **CRM-Q31** | The CRM catalogue for the AI: the purpose of each module, its key fields by meaning, and its links. Code first, then the decide tier. Q31-1 to Q31-3 merged as #1122, dark. Q31-4 is absorbed into CRM-Q32 (§18.14). §18.13 | P0 |
@@ -3723,7 +3723,7 @@ merged (#1100, migration 278), dark. CRM-Q25b, CRM-Q25c and CRM-Q27
 dark, `CRM_ANSWER_CHECK` is `off`, no migration), CRM-Q30 and CRM-Q30b (no
 migration): built on 2026-10-17 in the batch branch `crm-batch-i2`, and
 merged as #1116. CRM-Q29 fix round 3: merged as #1120. CRM-Q29 fix round
-4 to 7: built on 2026-10-17 to 2026-10-19 on `crm-answer-check-r4`, not merged. CRM-Q28 uses the one number check of
+4 to 7: merged as #1133. CRM-Q29 fix round 8: built on 2026-10-20 on `crm-check-explain`, not merged. CRM-Q28 uses the one number check of
 CRM-Q29. Verified against
 code at `origin/main` `a8ef53c93`.
 
@@ -4586,9 +4586,10 @@ and `uv run python scripts/affected_tests.py --base origin/main`.
 
 **Built as (2026-10-17).** Branch `crm-answer-check`, with two fix rounds,
 merged in Batch I2 (#1116). Fix round 3 is merged as #1120. Fix rounds 4
-to 7 are built on 2026-10-17 to 2026-10-19 on the branch
-`crm-answer-check-r4` (PR #1133), not merged. No migration, dark
-(`CRM_ANSWER_CHECK` is `off`).
+to 7 are merged as #1133. Fix round 8 is built on 2026-10-20 on the branch
+`crm-check-explain`, not merged. No migration. The owner set
+`CRM_ANSWER_CHECK` to `shadow` on production on 2026-10-20, until round 8
+ships and its replay shows under 1 in 20.
 
 - **The shared API, for CRM-Q28 item 9.** `acb_common.number_check` gives
   `find_figures(text) -> list[Figure]`, `Sources()` with `add_text(text)` and
@@ -4827,6 +4828,69 @@ to 7 are built on 2026-10-17 to 2026-10-19 on the branch
   caveat. Invented figures of p5, p8 and p9 (39): 13 passed with round 6,
   10 pass now. Each of the 10 is true arithmetic of true tool figures under
   a false label, a day and a month, or a ratio that rounds.
+- **Fix round 8 (2026-10-20, owner, after a true answer in production got a
+  confusing note).** A web answer about one module added three sums, took
+  one from another, and showed a table in lakh with no unit. The note named
+  "₹10.62 crore, ₹32.92 crore, ₹22.30 crore, 959.8, 592.6 and 41 more".
+  `tests/unit/test_crm_answer_check_explain.py` rebuilds the run, and the
+  check of round 7 fails the same figures in the same order. Four causes,
+  each with a fence:
+  1. **A derived figure was no operand.** "₹32.92 crore" passed as a sum of
+     three tool figures. So "the other ₹10.62 crore (₹32.92 crore less
+     ₹22.30 crore)" failed, and each figure that stated a sum again failed
+     too. Now a derived figure of three significant digits or more is an
+     operand of the next pass (three passes at most), and a figure that
+     states it again passes. "other" is a derive word. A money figure takes
+     the plain pool too, because a module total has no currency sign.
+  2. **A table cell had no unit.** A bare number of a markdown table takes
+     the unit of its column: from its header cell ("Amount (₹ lakh)"), from
+     the line above the table ("in crore"), or from the scale, lakh or
+     crore, at which the column matches the tool values and not as it
+     stands. The whole column takes one scale. A column of row totals takes
+     the scale of the other columns. A count column keeps its counts.
+  3. **A row total had no rule.** A cell that is the sum of the other cells
+     of its row with the same unit derives, and so does a cell of a "Total"
+     row that adds up its column.
+  4. **A count of groups had no source.** The count of the lines of a list
+     of three lines or more, and that count less its empty groups, are
+     sources. So "the 11 tagged regions" passes beside 12 groups with one
+     "(none)".
+  5. **The note.** It never lists raw figures alone (`note_text`). A failed
+     figure that is the sum or the difference of two figures of the answer
+     gets one sentence: "₹4.80 crore is ₹13.99 crore less ₹9.19 crore."
+     More than 3 failed figures, or 2 or more that are over 30 percent of
+     the figures, are a limit of the check. The note then names no figure,
+     and adds "How I got these numbers": one line for each CRM read, from
+     the head line that the server wrote, with its filters. An empty group
+     that holds a tenth of its total or more, and whose value the answer
+     states, gives ONE question: "In Deals, 69% of the sum of Amount has no
+     Region. Should I show those records as their own group, "No Region",
+     or group them by another field?" An open CRM question of the run gives
+     a line that points to it. One to three failed figures each get a
+     reason and an action: "I could not find ₹4.10 lakh in the CRM results.
+     It may be my own calculation. Ask me how I got it, or check it in the
+     CRM." A figure within 10 percent of a CRM figure names it as the
+     nearest, and a percent asks which figures it compares.
+  6. **The log** names the kind of the note (`note=none`, `explained`,
+     `named`, `how` or `question`), in `shadow` too. It never holds a figure
+     or a text. `scripts/crm_answer_check_replay.py` counts the kinds of the
+     journal and replays stored answers offline.
+- **The measured rate (fix round 8).** The rebuilt run: 61 figures, 46
+  failed with round 7, 0 fail now, in four forms of the unit. Probes p1 to
+  p11 of the round 5 review give the same output before and after, so no
+  invented figure passes that failed before. The journal of the gateway
+  for the 7 days to 2026-10-20 holds 15 armed runs. With the counts of
+  round 7 alone, 5 final answers fail (33 percent), 4 with a named note
+  and 1 with "How I got these numbers". That is an upper bound, because a
+  count cannot show what round 8 passes. The rebuild of one of the 5 now
+  gets no note. A replay of the stored answers needs the chat
+  rows of the runs, which only an operator reads. Until that replay shows
+  under 1 in 20, `CRM_ANSWER_CHECK` stays `shadow`.
+- **Not done in round 8.** The question of an empty group is text in the
+  note. It does not go through the CRM-Q32 store, the card on the web or
+  `text_asks` on WhatsApp yet, because no question kind holds a group field
+  with no value, and the spec records no decision of what its answer
+  changes.
 - **Mutations.** 13 mutations in the build, 12 more in fix round 1, 9 in
   fix round 2, 21 in fix round 3, 21 in fix round 4, 15 in fix round 5,
   11 in fix round 6 and 9 in fix round 7, one or more for each fix. The suites

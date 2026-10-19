@@ -424,9 +424,18 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    "Top 10", "Above ₹10 lakh") is a choice, and the check skips it. In
    `on` mode a check that raises logs `answer_check.check_failed` and sends
    the answer unchanged, so a failed check never loses the turn. An
-   answer that still fails after its one retry goes out with
-   `caveat_text`, a short note that names at most 5 figures. The fallback
-   is only for an answer with no text (fix round 7). A
+   answer that still fails after its one retry goes out with the note of
+   `note_text` (fix round 8). The note never lists raw figures alone. A
+   sum or a difference of two figures of the answer gets one sentence.
+   More than 3 failed figures, or 2 or more that are over 30 percent of
+   the figures, get "How I got these numbers", one line for each CRM read
+   from the head line that the server wrote (`read_line`). An empty group
+   of a grouped total (`empty_group`) whose value the answer states, or an
+   open CRM question of the run, gives ONE question. Else each failed
+   figure, 3 at most, gets a reason and an action. `many_failed` is the
+   one rule of "many". The log line names the KIND of the note (`note=`),
+   in `shadow` too, and `scripts/crm_answer_check_replay.py` counts it.
+   The fallback is only for an answer with no text (fix round 7). A
    result of `MODEL_WRITTEN_TOOLS` (a delegation, `code_task`, a script) is
    no source. A result over `RECORD_INLINE_CHARS` is read on a thread. A
    passed check makes no model request. While it holds, it puts
@@ -435,9 +444,10 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    `CRM_ANSWER_CHECK` is `acb_common.settings.crm_answer_check_mode`. The
    one seam that attaches the provider is
    `orchestrator._tool_injection._apply_answer_check`. The log line
-   `answer_check.checked` holds counts only. Fences:
-   `tests/unit/test_crm_answer_check.py` and
-   `tests/unit/test_crm_answer_check_executor.py`.
+   `answer_check.checked` holds counts and the kind of a note only. Fences:
+   `tests/unit/test_crm_answer_check.py`,
+   `tests/unit/test_crm_answer_check_executor.py` and
+   `tests/unit/test_crm_answer_check_explain.py`.
 5m. untrusted.py -- the ONE frame for text that a stranger wrote (WS-17
    EM-G11d, UMCC, spec `email_app_master_plan.md` §12.3.13.8). Make one
    `UntrustedFrame` for each model call. `wrap(label, text)` puts the text

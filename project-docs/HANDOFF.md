@@ -145,6 +145,23 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-365 · Replay the CRM answer check on stored answers, then decide `on` · [OWNER]
+- **Check:** on the production box, `grep -E '^CRM_ANSWER_CHECK=' /opt/acb/app/.env`
+  reads `shadow`, and no replay result is in the round 8 PR. Then this is open.
+- **Why:** WS-53 CRM-Q29 round 8 changed the note and the check. The journal
+  holds counts only, so it gives an upper bound and no true rate. The true rate
+  needs the stored answers of the armed runs, and those rows hold the chat of
+  another org. An agent does not read them.
+- **Do this (owner):** run `uv run python scripts/crm_answer_check_replay.py
+  --print-sql`. Export those rows of the thread ids of the journal to a JSON
+  lines file off the repo. Then run the script with `--rows <file>`. Set `on`
+  only when "any note" is under 5 percent.
+- **Then (agent):** the hardening list of the PR. Send the question of an
+  empty group through the CRM-Q32 store, the web card and `text_asks`. Then
+  measure the invented-figure rate of the table units with a seeded corpus.
+- **Authority:** `specs/crm_platform.md` §18.11.2, CRM-Q29 fix round 8
+- **Added:** 2026-10-20 · `crm-check-explain`
+
 ### H-294 · BH-6 moved the root units to /usr/local/lib/acb, and the runbooks still name the checkout · [AGENT]
 - **Check:** run `rg -n "opt/acb/app/scripts/backup_db.sh|compose -f infra/docker-compose.yml" deploy/hostinger/README.md project-docs/specs/backup_and_restore.md README.md project-docs/specs/development_and_delivery_framework.md`. A hit means this is open.
 - **Why.** WS-49 BH-6 runs `acb-backup`, `acb-health-watchdog` and `acb.service` from the root

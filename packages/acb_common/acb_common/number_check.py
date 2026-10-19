@@ -30,7 +30,14 @@ tool figures. It passes only when the same text also cites BOTH operands,
 each as a figure of its own. It gets the room of its stated precision and no
 more: "about" gives room only to a figure that a source holds.
 
-Fence: ``tests/unit/test_number_check.py``.
+**Tables and chains** (round 8). A bare number of a markdown table takes the
+unit of its column (:func:`_table_layout`). A cell that adds up its row, or
+its column in a "Total" row, derives. A figure that a rule derived is an
+operand of the next pass, so "₹32.92 crore less ₹22.30 crore" can give a
+third figure when the text showed both sums.
+
+Fences: ``tests/unit/test_number_check.py`` and
+``tests/unit/test_crm_answer_check_explain.py``.
 """
 
 from __future__ import annotations
