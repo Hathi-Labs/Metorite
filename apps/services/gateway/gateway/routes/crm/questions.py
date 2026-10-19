@@ -353,8 +353,18 @@ async def questions_after_run(org: str, *, now: datetime | None = None) -> int |
             state = getattr(cursors.get(qs.QUESTIONS_ROW), "state", None)
             keys = qs.step_state(state, [q.id for q in found], qs.count_money(found), moment)
             await runs.merge_cursor_keys(db, org, qs.QUESTIONS_ROW, keys)
+        # Warm the GST evidence in its own session, after the cursor commits,
+        # so a slow check never holds the cursor row and a read stays fast.
+        warmed = 0
+        try:
+            async with _tenant_session(org) as db:
+                warmed = await warm_evidence(db, org, inputs, found)
+        except Exception as exc:
+            _log.warning("crm.questions.evidence_warm_failed", organization_id=org,
+                         error_type=type(exc).__name__)
         _log.info("crm.questions.step", organization_id=org, open=len(found),
-                  new=int(keys.get("new") or 0), money=bool(keys["money"]))
+                  new=int(keys.get("new") or 0), money=bool(keys["money"]),
+                  evidence_warmed=warmed)
         return len(found)
     except Exception as exc:  # the step never breaks the sync loop
         _log.warning("crm.questions.step_failed", organization_id=org,
@@ -1489,7 +1499,95 @@ class Steering:
 STEER_MODULES = 5
 
 
+#: The GST evidence of a module, cached in tenant Redis (hotfix 2026-10-20).
+#: ``gst_check`` took about 50 s for DEWiN's modules, and every read of the
+#: open questions ran it, so the page gave up (Open (0), "Could not load").
+#: The evidence changes only when the data syncs, so a read uses the cache,
+#: and the questions step after a sync warms it (:func:`warm_evidence`).
+EVIDENCE_NAMESPACE = "crm_gst_evidence"
+EVIDENCE_TTL_S = 24 * 3600
+#: The questions step warms a module again when less than this is left.
+EVIDENCE_REFRESH_S = 12 * 3600
+
+
+async def _cached_evidence(org: str, module: str) -> tuple[dict[str, tuple[str, ...]] | None, int]:
+    """The cached evidence of *module* and its seconds left, or (None, 0).
+    A Redis fault reads as a miss."""
+    import json
+
+    from acb_common.tenant_redis import key, organization_scope
+
+    try:
+        with organization_scope(org):
+            redis = _redis()
+            name = key(EVIDENCE_NAMESPACE, module)
+            raw = await redis.get(name)
+            if raw is None:
+                return None, 0
+            left = int(await redis.ttl(name) or 0)
+        data = json.loads(raw)
+        return {str(k): tuple(str(x) for x in v) for k, v in data.items()}, left
+    except Exception:
+        return None, 0
+
+
+async def _store_evidence(org: str, module: str, ev: dict[str, tuple[str, ...]]) -> None:
+    import json
+
+    from acb_common.tenant_redis import key, organization_scope
+
+    try:
+        with organization_scope(org):
+            await _redis().setex(key(EVIDENCE_NAMESPACE, module), EVIDENCE_TTL_S,
+                                 json.dumps({k: list(v) for k, v in ev.items()}))
+    except Exception as exc:
+        _log.warning("crm.questions.evidence_store_failed", organization_id=org,
+                     error_type=type(exc).__name__)
+
+
 async def module_evidence(db: Any, org: str, src: Any) -> dict[str, tuple[str, ...]]:
+    """The evidence of the module *src*: the cache, else one fresh check,
+    which then fills the cache."""
+    module = str(src.module)
+    cached, _left = await _cached_evidence(org, module)
+    if cached is not None:
+        return cached
+    ev = await _gst_evidence(db, org, src)
+    await _store_evidence(org, module, ev)
+    return ev
+
+
+async def warm_evidence(db: Any, org: str, inputs: qs.Inputs,
+                        questions: Sequence[qs.Question]) -> int:
+    """Fill the evidence cache of each module of an amount question, at most
+    :data:`STEER_MODULES`, when its entry is missing or older than half its
+    life. Runs in the questions step, so a read finds it warm. Returns the
+    count of modules it checked."""
+    from gateway.routes.crm.flags import answer_first_allowed
+
+    if not answer_first_allowed(org):
+        return 0
+    done: set[str] = set()
+    checked = 0
+    for q in questions:
+        module = q.module or ""
+        if q.kind != qs.KIND_KEY or q.part != "amount" or module in done:
+            continue
+        if len(done) >= STEER_MODULES:
+            break
+        src = inputs.sources.get(module)
+        if src is None or getattr(src, "kind", None) != "module":
+            continue
+        done.add(module)
+        cached, left = await _cached_evidence(org, module)
+        if cached is not None and left > EVIDENCE_REFRESH_S:
+            continue
+        await _store_evidence(org, module, await _gst_evidence(db, org, src))
+        checked += 1
+    return checked
+
+
+async def _gst_evidence(db: Any, org: str, src: Any) -> dict[str, tuple[str, ...]]:
     """The evidence of each money field of the module *src* (CRM-Q33 part
     5): ONE bounded statement through ``field_sql.gst_check``, read in the
     caller's tenant session, then the words of the labels."""
