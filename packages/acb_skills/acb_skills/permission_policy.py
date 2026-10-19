@@ -688,7 +688,8 @@ def _shell_withheld_result() -> Any:
 
 #: The text the model reads when the push gate refuses a push.
 AGENT_PUSH_WITHHELD_REASON = (
-    "Only an admin of the platform operator's organization may push agent "
+    "Only an admin of the first-party organization or of a platform "
+    "operator organization may push agent "
     "code. Do not push, and do not try another way. Your commit stays local, "
     "and it is queued for a reviewer on the Agents page. Tell the member this "
     "in plain words"

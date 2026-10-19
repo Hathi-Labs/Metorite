@@ -8,8 +8,10 @@ its remote URL, so the push used the operator's credentials, and it skipped
 the reviewer that #1167 puts on ``/agent/mutations/*``.
 
 The rule is one rule, in one place: ``acb_auth.agent_operator``. The member
-holds ``agents:manage`` AND the member's org is in ``AGENT_REGISTRY_ORGS``.
-Three server-side controls read it:
+holds ``agents:manage`` AND the member's org is not empty AND it is the
+first-party org OR it is in ``AGENT_REGISTRY_ORGS``. The queue's gate
+(``gateway.routes.agent._require_mutation_reviewer``) and the push gate both
+call it. Three server-side controls read the push gate:
 
 1. the Copilot permission guard refuses a ``git push`` shell request of a run
    that did not bind ``agent_push_allowed=True``;
@@ -35,6 +37,7 @@ from typing import Any
 import acb_auth
 import acb_common
 import pytest
+from acb_auth import agent_operator
 from acb_auth.agent_operator import (
     AGENT_COMMIT_REVIEW_PERMISSION,
     is_registry_operator_org,
@@ -45,24 +48,48 @@ from acb_auth.permissions import EffectiveAccess, build_access
 
 OP_ORG = "aaaaaaaa-0000-4000-8000-000000000001"     # in AGENT_REGISTRY_ORGS
 CUST_ORG = "bbbbbbbb-0000-4000-8000-000000000002"   # a customer org
+FP_ORG = "cccccccc-0000-4000-8000-000000000003"     # first_party, NOT listed
 OP_ADMIN = "admin@operator.example"                  # agents:manage, OP_ORG
 OP_EMPLOYEE = "employee@operator.example"            # no agents:manage
 CUST_OWNER = "owner@customer.example"                # '*' in a customer org
+FP_ADMIN = "admin@fracktal.example"                  # agents:manage, FP_ORG
+FP_EMPLOYEE = "employee@fracktal.example"            # no agents:manage
 
 _ACCESS: dict[str, EffectiveAccess] = {
     OP_ADMIN: build_access(["agents:manage", "agents:run:*"], roles=["admin"]),
     OP_EMPLOYEE: build_access(["agents:run:*"], roles=["employee"]),
     CUST_OWNER: build_access(["*"], roles=["owner"]),
+    FP_ADMIN: build_access(["agents:manage", "agents:run:*"], roles=["admin"]),
+    FP_EMPLOYEE: build_access(["agents:run:*"], roles=["employee"]),
 }
 
 
 @pytest.fixture()
-def operator_settings(monkeypatch) -> None:
-    """``AGENT_REGISTRY_ORGS`` names the operator org only."""
+def first_party_reads(monkeypatch) -> list[Any]:
+    """Stub the ONE first_party read. Only FP_ORG is first-party.
+
+    Each call is logged, so a test can show which org was read, and that an
+    empty org never reaches the read (it would answer for a sole org).
+    """
+    calls: list[Any] = []
+
+    async def _read(org: str | None) -> bool | None:
+        calls.append(org)
+        if org == FP_ORG:
+            return True
+        return False if org in (OP_ORG, CUST_ORG) else None
+    monkeypatch.setattr(agent_operator, "read_first_party", _read)
+    return calls
+
+
+@pytest.fixture()
+def operator_settings(monkeypatch, first_party_reads) -> list[Any]:
+    """``AGENT_REGISTRY_ORGS`` names the operator org only, not FP_ORG."""
     monkeypatch.setattr(
         acb_common, "get_settings",
         lambda: SimpleNamespace(agent_registry_orgs=OP_ORG.upper()),
     )
+    return first_party_reads
 
 
 # ── 1. The one rule ─────────────────────────────────────────────────────────
@@ -81,21 +108,74 @@ def test_the_setting_parses_and_fails_closed() -> None:
     assert not is_registry_operator_org(None, raw="*")
 
 
+def _may(org: str | None, has: Any) -> bool:
+    return asyncio.run(may_review_agent_commits(org, has))
+
+
 @pytest.mark.parametrize("member, org, allowed", [
     (OP_ADMIN, OP_ORG, True),
+    (FP_ADMIN, FP_ORG, True),         # first-party, NOT in the registry list
+    (FP_EMPLOYEE, FP_ORG, False),     # first-party, no agents:manage
     (OP_EMPLOYEE, OP_ORG, False),     # the operator org, no agents:manage
     (CUST_OWNER, CUST_ORG, False),    # '*' in a customer org is not enough
     (OP_ADMIN, CUST_ORG, False),      # the right permission, the wrong org
+    (OP_ADMIN, "dddddddd-0000-4000-8000-000000000004", False),  # no row
     (OP_ADMIN, None, False),
+    (OP_ADMIN, "", False),
+    (OP_ADMIN, "   ", False),
 ])
 def test_the_rule_needs_both_halves(operator_settings, member, org, allowed) -> None:
-    assert may_review_agent_commits(org, _ACCESS[member].has) is allowed
+    assert _may(org, _ACCESS[member].has) is allowed
+
+
+@pytest.mark.parametrize("org", [None, "", "   "])
+def test_an_empty_org_never_reaches_the_sole_org_read(operator_settings, org) -> None:
+    """``read_first_party(None)`` answers for a sole org. It must never run here."""
+    assert _may(org, _ACCESS[FP_ADMIN].has) is False
+    assert operator_settings == []
+
+
+def test_an_operator_org_needs_no_first_party_read(operator_settings) -> None:
+    assert _may(OP_ORG, _ACCESS[OP_ADMIN].has) is True
+    assert operator_settings == []
+
+
+def test_a_member_without_the_permission_causes_no_org_read(operator_settings) -> None:
+    assert _may(FP_ORG, _ACCESS[FP_EMPLOYEE].has) is False
+    assert operator_settings == []
+
+
+def test_the_first_party_read_is_given_the_org_itself(operator_settings) -> None:
+    assert _may(FP_ORG, _ACCESS[FP_ADMIN].has) is True
+    assert operator_settings == [FP_ORG]
+
+
+def test_a_failed_first_party_read_reads_as_no(monkeypatch, operator_settings) -> None:
+    async def _boom(_org: str | None) -> bool | None:
+        raise RuntimeError("database down")
+    monkeypatch.setattr(agent_operator, "read_first_party", _boom)
+    assert _may(FP_ORG, _ACCESS[FP_ADMIN].has) is False
 
 
 def test_a_permission_check_that_raises_reads_as_no(operator_settings) -> None:
     def _boom(_p: str) -> bool:
         raise RuntimeError("resolver down")
-    assert may_review_agent_commits(OP_ORG, _boom) is False
+    assert _may(OP_ORG, _boom) is False
+
+
+def test_mutation_reads_first_party_through_the_one_query(monkeypatch) -> None:
+    """One query: ``orchestrator.mutation._read_first_party`` delegates to it."""
+    from orchestrator import mutation
+
+    seen: list[Any] = []
+
+    async def _read(org: str | None) -> bool | None:
+        seen.append(org)
+        return True
+    monkeypatch.setattr(agent_operator, "read_first_party", _read)
+    assert asyncio.run(mutation._read_first_party(FP_ORG)) is True
+    assert seen == [FP_ORG]
+    assert "SELECT first_party" not in inspect.getsource(mutation)
 
 
 def test_the_gateway_reads_the_same_parse(monkeypatch) -> None:
@@ -146,6 +226,8 @@ def test_the_decision_takes_no_argument_from_the_request() -> None:
 
 @pytest.mark.parametrize("member, org, verified, allowed", [
     (OP_ADMIN, OP_ORG, "1", True),
+    (FP_ADMIN, FP_ORG, "1", True),    # the owner's case: first-party, unlisted
+    (FP_EMPLOYEE, FP_ORG, "1", False),
     (OP_EMPLOYEE, OP_ORG, "1", False),
     (CUST_OWNER, CUST_ORG, "1", False),
     (OP_ADMIN, CUST_ORG, "1", False),
@@ -370,7 +452,8 @@ def repo(tmp_path) -> tuple[Path, str, str, str]:
     return r, base, head, str(r)
 
 
-def _detect(monkeypatch, repo_dir: str, since: str, *, gate: tuple[bool, str]):
+def _detect(monkeypatch, repo_dir: str, since: str, *, gate: tuple[bool, str] | None):
+    """``gate=None`` keeps the real ``_agent_push_allowed`` (the run binding)."""
     """Run the detector with every commit on the remote. Returns the rows."""
     import orchestrator.executor as executor
     import orchestrator.mutation as mutation
@@ -395,7 +478,8 @@ def _detect(monkeypatch, repo_dir: str, since: str, *, gate: tuple[bool, str]):
     monkeypatch.setattr(executor, "_host_git_ok", lambda p: bool(p))
     monkeypatch.setattr(executor, "_commit_on_remote", _on_remote)
     monkeypatch.setattr(executor, "_graph_session_opener", lambda tid: None)
-    monkeypatch.setattr(executor, "_agent_push_allowed", _gate)
+    if gate is not None:
+        monkeypatch.setattr(executor, "_agent_push_allowed", _gate)
     monkeypatch.setattr(executor, "record", audits.append)
     monkeypatch.setattr(mutation, "_register_pending_commit", _register)
     monkeypatch.setattr(mutation, "_git_diff", _diff)
@@ -426,6 +510,26 @@ def test_a_reviewer_push_is_approved_as_before(monkeypatch, repo) -> None:
     assert by_sha[head]["reviewed_by"] == "chat:autopush"
     actions = [getattr(a, "action", "") for a in audits]
     assert "agent_push_without_reviewer" not in actions
+
+
+@pytest.mark.parametrize("member, org, approved", [
+    (FP_ADMIN, FP_ORG, True),         # the owner: first-party, unlisted
+    (FP_EMPLOYEE, FP_ORG, False),
+    (CUST_OWNER, CUST_ORG, False),    # a customer admin, not listed
+])
+def test_the_real_rule_decides_the_record(
+    monkeypatch, repo, run_binding, member, org, approved,
+) -> None:
+    """No stub on the decision: the run binding and the one rule decide."""
+    import orchestrator.executor as executor
+
+    _r, base, head, repo_dir = repo
+    run_binding(member, org)
+    assert asyncio.run(executor._agent_push_binding(False)) is approved
+    rows, _audits, _asked = _detect(monkeypatch, repo_dir, base, gate=None)
+    row = {r["commit_sha"]: r for r in rows}[head]
+    assert row["status"] == ("approved" if approved else "pending")
+    assert row["reviewed_by"] == ("chat:autopush" if approved else None)
 
 
 def test_a_pushed_commit_from_before_the_run_keeps_its_record(monkeypatch, repo) -> None:

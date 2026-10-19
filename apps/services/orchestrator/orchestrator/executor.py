@@ -2048,8 +2048,8 @@ async def _agent_push_allowed() -> tuple[bool, str]:
 
     The rule of the self-mutation queue's reviewer, in its one implementation
     (``acb_auth.agent_operator.may_review_agent_commits``): ``agents:manage``
-    in an org of ``AGENT_REGISTRY_ORGS``. The member and the org come from the
-    run binding only, never from the payload (R5), as in
+    in the first-party org or in an org of ``AGENT_REGISTRY_ORGS``. The member
+    and the org come from the run binding only, never from the payload (R5), as in
     :func:`_first_party_admin_runs`. Every failure answers no.
 
     The run binds the answer as ``agent_push_allowed``. The Copilot permission
@@ -2074,8 +2074,11 @@ async def _agent_push_allowed() -> tuple[bool, str]:
         return False, f"the access check failed: {str(exc)[:120]}"
     if not access.is_active:
         return False, "not an active member"
-    if not may_review_agent_commits(org, access.has):
-        return False, "not a reviewer of agent code (agents:manage in AGENT_REGISTRY_ORGS)"
+    if not await may_review_agent_commits(org, access.has):
+        return False, (
+            "not a reviewer of agent code (agents:manage in the first-party "
+            "org or an AGENT_REGISTRY_ORGS org)"
+        )
     return True, ""
 
 
