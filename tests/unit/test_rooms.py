@@ -1629,14 +1629,18 @@ def test_the_reply_sorts_after_its_prompt_when_the_browser_clock_is_fast(
     clean,
 ) -> None:
     """Fix round 1, P2. The prompt carries the browser clock T. The server
-    clock is two seconds behind, so the mint stamps less than T. The first
-    checkpoint arrives later and moves the time forward."""
+    clock is a minute behind, so the mint stamps less than T. The first
+    checkpoint arrives later and moves the time forward.
+
+    The gap was two seconds, and the mint reads the real clock after two
+    database writes. A stalled CI runner took longer than that, so the mint
+    stamped past T. A minute keeps the order whatever the runner does."""
     import time
 
     from gateway.routes.chat import MessageRecord, _get_messages
 
     sid = _seed_session(_ALICE, (_BOB, "member"))
-    t = int(time.time() * 1000) + 2000
+    t = int(time.time() * 1000) + 60_000
     _save_as(sid, _ALICE, [
         MessageRecord(id="q1", role="user", content="the prompt", timestamp=t),
     ])
@@ -1664,31 +1668,44 @@ def test_the_reply_sorts_after_its_prompt_when_the_browser_clock_is_fast(
 
 def test_a_slow_mint_does_not_hold_the_stream(monkeypatch) -> None:
     """Fix round 1, P3. The run waits ``_MINT_TIMEOUT_S`` at most, then logs
-    ``agent.mint_failed`` with the reason ``timeout`` and goes on."""
+    ``agent.mint_failed`` with the reason ``timeout`` and goes on.
+
+    An order, not a stopwatch (``test_no_new_clock_flakes``): the mint holds
+    until the test releases it, so the bounded call can only return by its
+    timeout. ``hang_s`` only stops a broken bound from hanging the run."""
     import asyncio
-    import time
+    import threading
 
     import structlog
     from gateway.routes import agent
 
+    hang_s = 30.0
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
     def _slow(*_a, **_k):
-        time.sleep(1.5)
+        entered.set()
+        release.wait(hang_s)
+        finished.set()
 
     monkeypatch.setattr(agent, "_mint_run_row", _slow)
     monkeypatch.setattr(agent, "_MINT_TIMEOUT_S", 0.1)
-    async def _timed() -> float:
-        # Timed inside the loop: asyncio.run waits for the worker thread at
-        # shutdown, and a live server loop does not.
-        start = time.monotonic()
-        await agent._mint_run_row_bounded(
-            "t1", "m1", member=_ALICE, agent_name="projects-assistant",
-            organization_id=_ORG,
-        )
-        return time.monotonic() - start
+
+    async def _bounded() -> bool:
+        try:
+            await agent._mint_run_row_bounded(
+                "t1", "m1", member=_ALICE, agent_name="projects-assistant",
+                organization_id=_ORG,
+            )
+            # Read inside the loop: asyncio.run waits for the worker thread
+            # at shutdown, and a live server loop does not.
+            return finished.is_set()
+        finally:
+            release.set()
 
     with structlog.testing.capture_logs() as caps:
-        elapsed = asyncio.run(_timed())
-    assert elapsed < 1.0
+        mint_finished_first = asyncio.run(_bounded())
+    assert entered.is_set(), "the mint ran"
+    assert not mint_finished_first, "the run went on before the mint ended"
     failed = [c for c in caps if c.get("event") == "agent.mint_failed"]
     assert failed and failed[0].get("reason") == "timeout"
 
