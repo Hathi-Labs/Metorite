@@ -217,6 +217,10 @@ def _task(w: Any) -> str:
                        category="in_progress")
 
 
+#: ⚠️ ``merged_at`` is a FIXED time. A run seeded as ``now() - interval`` stops
+#: being "before the merge" once the clock passes it, and the K5 tests then
+#: fail on every branch (they did, from 2026-10-19 10:00 UTC). So seed each run
+#: at a fixed time before this one.
 def _pull(number: int, *, state: str = "open", merged: bool = False, sha: str = SHA_OLD,
           updated: str = "2026-10-18T10:00:00Z") -> dict:
     return {"number": number, "title": f"PR {number}", "state": state, "merged": merged,
@@ -370,7 +374,7 @@ async def test_k5_a_poll_that_finds_merged_calls_on_merged_once(world, monkeypat
         c.execute(text(
             "INSERT INTO pm_agent_runs (organization_id, task_id, member_email, client_via, "
             "status, started_by, created_at) VALUES (CAST(:o AS uuid), CAST(:t AS uuid), :e, "
-            "'mcp:claude-code', 'completed', :e, now() - interval '1 day')"),
+            "'mcp:claude-code', 'completed', :e, TIMESTAMPTZ '2026-10-17 10:00:00+00')"),
             {"o": w.p.org_a, "t": task, "e": EMAIL})
     _ref(w, task, 5)
     w.gh.pulls[5] = _pull(5, state="closed", merged=True)
@@ -511,7 +515,7 @@ async def test_item6_a_refusal_past_the_bound_runs_the_rule_again(world) -> None
         c.execute(text(
             "INSERT INTO pm_agent_runs (organization_id, task_id, member_email, client_via, "
             "status, started_by, created_at) VALUES (CAST(:o AS uuid), CAST(:t AS uuid), :e, "
-            "'mcp:claude-code', 'completed', :e, now() - interval '1 day')"),
+            "'mcp:claude-code', 'completed', :e, TIMESTAMPTZ '2026-10-17 10:00:00+00')"),
             {"o": w.p.org_a, "t": task, "e": EMAIL})
     _ref(w, task, 502, state="merged", stale=False)
     blocker = _ref(w, task, 503)
@@ -610,7 +614,7 @@ async def test_r2_2_a_403_never_unblocks_and_the_sibling_merge_waits(world) -> N
         c.execute(text(
             "INSERT INTO pm_agent_runs (organization_id, task_id, member_email, client_via, "
             "status, started_by, created_at) VALUES (CAST(:o AS uuid), CAST(:t AS uuid), :e, "
-            "'mcp:claude-code', 'completed', :e, now() - interval '1 day')"),
+            "'mcp:claude-code', 'completed', :e, TIMESTAMPTZ '2026-10-17 10:00:00+00')"),
             {"o": w.p.org_a, "t": task, "e": EMAIL})
     blocked = _ref(w, task, 610)
     with w.p.admin_engine.begin() as c:  # a 403 for two hours already
