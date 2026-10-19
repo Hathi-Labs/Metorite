@@ -414,6 +414,10 @@ Rules that make it work:
   memory and calendar suites deselected.
 - `uv run pytest …` is the runner. Frontend: `npx tsc --noEmit && npx vitest run`
   in `workbench/control_plane`.
+- **Run the whole pr-check suite on this PC before you push:**
+  `bash scripts/ci_local.sh`. It runs in the preset `metorite-ci` WSL2
+  distro, so no job installs anything first. It tests the COMMIT, so commit
+  first. Setup and isolation: `engineering_practice.md` §7a.
 - **Do not run all of `tests/unit/` locally.** It takes about 50 minutes.
   Run `uv run python scripts/affected_tests.py --run`, which picks the tests
   your diff can affect and prints the `vitest related` command for frontend

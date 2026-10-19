@@ -70,6 +70,27 @@ nothing; the thing nobody wrote down costs a session.
 - **Authority:** `specs/staging_and_daily_release.md` §5.10 and §5.11
 - **Added:** 2026-10-16 · WS-38 staging session
 
+### H-361 · Two-speed delivery: the agent half needs the owner's hand · [OWNER]
+- **Check:** `grep -n STE_LINT_BLOCK .claude/hooks/ste-lint.mjs` finds a line,
+  and `grep -n "Build or harden" .claude/commands/next-ticket.md` finds a line.
+  If both do, delete this entry.
+- **Why:** the owner asked on 2026-10-19 for development first and guardrails
+  when a feature is done. The CI half shipped (`specs/engineering_practice.md`
+  §7a). The auto-mode classifier refused the agent half as self-modification,
+  and that refusal is correct: an agent does not loosen its own rules.
+- **Do this (owner):** make three edits, or tell an agent the exact words to
+  write.
+  1. `.claude/hooks/ste-lint.mjs`, `--hook` mode: on an error, exit 0 and
+     report it as `additionalContext`, unless `STE_LINT_BLOCK=1`. Then exit 2
+     as today. Update the exit-code cases in `ste-lint.test.mjs` to set
+     `STE_LINT_BLOCK=1`, and add one case for the advisory default.
+  2. `.claude/commands/next-ticket.md` step 1b: a STANDARD slice runs the
+     verifier only while the feature is in build. Add a step 1c, "Build or
+     harden", that points at §7a.
+  3. `CLAUDE.md` §4: one bullet that names §7a and the `harden` label.
+- **Authority:** `specs/engineering_practice.md` §7a
+- **Added:** 2026-10-19 · CI speed-up session
+
 ### H-283 · Prove the first `credit_draw` row on production · [AGENT]
 - **Check:** on the box, query the Console database:
   `SELECT count(*), max(created_at) FROM credit_draw;`. A count above zero
