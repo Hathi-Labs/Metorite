@@ -681,6 +681,12 @@ EGRESS_WITHHELD_REASON = (
     "A run that another agent called during a sandboxed turn may not send "
     "data off the platform, H-236"
 )
+#: The same, when the chat session read email from outside senders (EM-G11d).
+#: It names no other app as a way on, because the hold binds every app.
+EGRESS_WITHHELD_MAIL_REASON = (
+    "This conversation read email from outside senders, so no assistant in "
+    "any app may send data off the platform from it, EM-G11d"
+)
 
 #: The request kinds that a ``no_egress`` run may still make.
 _NO_EGRESS_KINDS = frozenset({"read", "write", "custom-tool"})
@@ -720,9 +726,13 @@ def is_egress_request(request: Any, tools: Any = None) -> bool:
 def _egress_withheld_result() -> Any:
     """The SDK refusal for an H-236 request. No person can approve it."""
     from copilot.generated.rpc import PermissionDecisionReject
+
+    from acb_skills.egress import hold_is_for_mail
+
+    reason = EGRESS_WITHHELD_MAIL_REASON if hold_is_for_mail() else EGRESS_WITHHELD_REASON
     return PermissionDecisionReject(
         feedback=(
-            "Blocked by Metorite: " + EGRESS_WITHHELD_REASON + ". Read and "
+            "Blocked by Metorite: " + reason + ". Read and "
             "compute with your own tools, and give the answer back."
         ),
     )

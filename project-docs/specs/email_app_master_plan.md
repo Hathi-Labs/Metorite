@@ -14905,6 +14905,107 @@ before any send, because a model draft is never sent by itself.
 5. **The fallback text of the `read_thread` card.** When the card cannot fetch the thread, it
    shows the raw result with its note and its marker lines.
 
+###### 12.3.13.8.1 The no_egress tool audit (2026-10-19)
+
+**Result.** In a held run, the email assistant can again save a reply draft, make a label,
+archive, move, and save a rule that stays in the mailbox. A send, a forward, a send of a draft
+and an unsubscribe stay withheld. The rule of H-236 did not change (`maf_coding_engine.md`
+§16.3). Only the classification of each tool changed.
+
+**The report.** The owner asked the main chat for a reply to an email. The chat wrote the text,
+signed it "[your name]", and said that it could not save it in Drafts. It also said "ask again
+from the Email app". The gateway log of run `7d2b2a32` showed why. The session read the answer
+of `email-assistant`, so EM-G11d marked it. Each later run of `email-assistant` in that session
+bound `no_egress`, and that run withheld `draft_reply`. The same hold binds a run in the Email
+app, so the advice of the chat was false.
+
+**A held run.** A run that binds `no_egress` is a held run. Two causes set it: a covered
+Projects run above it (H-236), or a chat session that read stranger mail (EM-G11d). A held run
+keeps only the delegation tools, the sandbox tools and the tools that say `open_world=False`.
+
+**The three classes.** The audit sorts each tool by what its code does, not by its name.
+
+- **(A) It stays in the member's own space.** It writes only to Metorite data that the member
+  can change, or to the member's own mailbox. It names no new outside recipient, and it opens
+  no standing outbound path. It says `open_world=False`, so a held run keeps it. Each write
+  still asks its card (EM-G11c1).
+- **(B) It sends, or it opens an outbound path.** It sends to a third party, or it makes a
+  later automatic send possible. It says `open_world=True`, so a held run does not get it.
+- **(C) It writes a store that a later run reads.** It stays withheld (`egress.STORE_WRITES`).
+
+**The rule tools have an (A) part and a (B) part.** We did not split them into two tools. Each
+rule tool keeps `open_world=False`, and it refuses the (B) part at call time in a held run. The
+reader is `egress.no_egress_for_this_run`, which fails closed. The call-time refusal of the guard
+(`RefuseEgressTools`) reads only the tool name, so it cannot see an argument or a stored rule.
+
+**The email assistant.**
+
+| Tool | Class | Why |
+|---|---|---|
+| `draft_reply` | A | The route addresses the sender of the mail (`to=[email["from"]]`), and the drafter writes the body. The model chooses neither. The draft stays in Drafts, and the member sends it. |
+| `create_label` | A | It makes a label in the member's own mailbox. |
+| `manage_inbox` | A | Archive, trash, read, unread, star, unstar, move and label. The bulk route accepts only those acts. |
+| `digest` | A | The route sends the digest to the mailbox's own address (`sess.owner_email`). |
+| `install_default_rules` | A | Each preset labels, moves, archives or drafts a reply to the sender. |
+| `create_rule`, `update_rule`, `create_rules_from_prompt` | A, with a held part | A held run refuses a rule that forwards, calls a webhook, drafts to an address that it names, or drafts a text that the model wrote (`_held_in_no_egress`). |
+| `learn_rule_pattern` | A, with a held part | A held run refuses an "always match" pattern on a rule that sends out. A "never match" pattern only narrows the rule. |
+| `run_rules` | A, with a held part | A run applies each rule that is on. A held run refuses it while a rule that sends out is on, or when it cannot read the rules. A preview runs. |
+| `resolve_execution` | A, with a held part | A held run refuses to approve a pending run that sends out, or one whose full actions it cannot read. Reject and undo run. |
+| `send_email`, `forward_email`, `send_draft` | B | Each one sends mail to a recipient that the model names. |
+| `unsubscribe_sender` | B | It sends a mail, or it calls a URL that the stranger's mail gave. |
+| `update_assistant_settings` | B | It sets the signature, the text about the member and auto-run. Each later reply carries that text out. |
+| `save_knowledge` | C | The knowledge base feeds each later reply. |
+
+**The other agents.** No other (A) tool was withheld. The fence pins each withheld set.
+
+| Agent | Withheld in a held run | Class |
+|---|---|---|
+| `crm-assistant` | `create_lead`, `update_deal_status`, `log_activity`, `convert_lead` | B. Per D-CRM-9, an agent write queues for the live Zoho tenant, and Zoho can run its own workflows on it. |
+| `task-manager` | `my_tasks_delegate` | B. An assigned agent starts a run of its own, and that run has no hold. |
+| `orchestrator` | Each specialist tool, `spawn_copilot_agent` | B. Each one starts a run that the hold does not reach. |
+| Each agent | `web_search`, `fetch_page`, `run_workflow`, `code_task`, `run_script`, `install_dependency`, `github_search`, `github_repo_search`, `decide` | B. A query or a URL can carry data out, and a workflow node can call a URL. |
+| Each agent | `save_memory`, `save_episode`, `save_agent_memory`, `save_org_memory`, `save_note` | C. |
+
+`projects-assistant`, `whatsapp-assistant`, `app-builder` and `apis-config` lose only the
+platform tools of the last two rows. `draft_whatsapp_reply` already says `open_world=False`.
+
+**What the model reads.** Two texts changed, because the old ones were not true.
+
+1. A held run starts with a note (`egress.EGRESS_HOLD_NOTE`, from `EgressGuardProvider`). The
+   note says which kind of act is held, and why. It says that the hold binds every app. It
+   names the two true ways on: the member does it by hand, or asks in a new conversation that
+   has not read outside email. It tells the model never to send the member to another app.
+2. The answer to a held call (`egress.egress_held_answer`) has the same terms. The text for a
+   covered Projects run stays as it was. The Copilot guard uses the same choice of reason.
+
+**The member's name.** The per-turn context of `email-assistant` and `orchestrator` now names
+the member (`executor._member_name_line`). The name comes from `app_user.display_name` for the
+run's tenant and its verified member, never from the payload (R5). The line forbids a
+placeholder such as "[your name]". It also says that the mailbox adds its own signature at save
+and at send.
+
+**Residual risks.** The owner accepts these risks, or a slice after this one closes them.
+
+1. **A saved draft is one click from a send.** In a held run, `draft_reply` can save a reply to
+   the sender of any mail of the member. A member who sends without reading sends what the
+   drafter wrote. The drafter reads the context of the company, and its consults bind `no_egress`.
+2. **A label name and a folder name reach the provider.** The model chooses the name. Only the
+   member's own mailbox holds it.
+3. **An inward rule acts later, with no hold.** A held run can save a rule that labels or drafts
+   a reply to each later sender. That rule runs in the background. Its drafts still wait for
+   the member.
+
+**Proposal for the owner (not built): a card for a (B) act in a held run.** Today a held run
+never gets a (B) tool. The proposal is one card for each (B) call. The card shows each exact
+recipient or the full URL, and the full text that goes out. The member approves or refuses it,
+as for an outward rule today (EM-T13a). The risks are three. A member who approves cards by
+habit approves a steered send. A long text or a hidden character can hide data, so the card
+must show all of it plainly. A delegated run must reach the member's card channel. The owner
+decides if a held run gets this card. Until then, (B) stays withheld.
+
+Fence: `tests/unit/test_no_egress_tool_audit.py` (the pinned set of each agent, the held parts,
+the texts, the name line) and `EXPECTED_OPEN_WORLD` in `tests/unit/test_delegation_no_egress.py`.
+
 ##### 12.3.13.9 EM-G11f1 and EM-G11f2 — deletion (PR-G7, PR-G8)
 
 **EM-G11f1 scope (PR-G7).**

@@ -39,6 +39,17 @@ def _load():
 
 agents = _load()
 
+
+@pytest.fixture(autouse=True)
+def _open_run() -> None:
+    """An open run, as the executor binds for each chat turn. With no run
+    context, a rule tool holds its outward part, because H-236 fails closed.
+    The held run has its own fence: ``test_no_egress_tool_audit.py``."""
+    from acb_skills.write_artifact import bind_artifact_context
+
+    bind_artifact_context(no_egress=False)
+
+
 BOX = "acc-1"
 FORWARD_RULE = {
     "id": "r-fwd", "account_id": BOX, "name": "Fwd", "enabled": False,
