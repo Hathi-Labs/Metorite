@@ -51,9 +51,12 @@ No log line holds a number or a text. Fence: ``tests/unit/test_crm_answer_check.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import re
 import sys
+import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -61,7 +64,7 @@ from datetime import date
 from typing import Any
 
 from acb_common import get_logger
-from acb_common.number_check import CheckResult, Sources, check
+from acb_common.number_check import CheckResult, Sources, check, find_figures
 from acb_common.settings import crm_answer_check_mode
 from acb_common.tool_refusals import is_refusal
 from agent_framework import (
@@ -107,19 +110,38 @@ FALLBACK_TOOLS: frozenset[str] = frozenset({
 })
 
 #: The tools whose ARGUMENTS the member reads: a card, a report, a document,
-#: a text file and a WhatsApp element (``whatsapp_ui``, fix round 3). The
-#: check reads their shown text as it reads the answer.
+#: a text file, a WhatsApp element (``whatsapp_ui``, fix round 3), and the
+#: question and confirmation cards (``ask_questions``,
+#: ``request_confirmation``, fix round 4). The check reads their shown text
+#: as it reads the answer.
 DISPLAY_TOOLS: frozenset[str] = frozenset({
     "emit_generative_ui", "make_report", "make_document", "write_artifact",
-    "whatsapp_ui",
+    "whatsapp_ui", "ask_questions", "request_confirmation",
 })
 
-#: Each tool that shows the member something: the display tools, and
-#: ``share_artifact``, which shows a file that another tool made. Its
-#: arguments hold only a path, so the check cannot read the numbers of the
-#: file (a stated limit, spec §18.11.2). A failed step that calls one of
-#: these is never stripped and sent. It fails (fix round 3).
-SHOWN_TOOLS: frozenset[str] = DISPLAY_TOOLS | frozenset({"share_artifact"})
+#: The memory reads. They show nothing and send nothing.
+RECALL_TOOLS: frozenset[str] = frozenset({
+    "remember", "recall_timeline", "recall_agent", "recall_org", "recall_notes",
+})
+
+#: The ONLY tools that a failed step may call and still go out without its
+#: text (fix round 4). Each one shows the member nothing and sends nothing:
+#: the CRM reads and the memory reads. A failed step that calls any other
+#: tool fails, so a card, a file, a message or a tool that this list does
+#: not know never ships beside a failed text. A new quiet tool joins here.
+QUIET_TOOLS: frozenset[str] = ARM_TOOLS | RECALL_TOOLS
+
+#: A tool result that a model wrote, or a script that a model wrote printed.
+#: It is no source (fix round 4): ``code_task`` runs a coding agent, as a
+#: delegation does, and the others print what the model's own code prints.
+#: So a number that only such a result holds fails the check.
+MODEL_WRITTEN_TOOLS: frozenset[str] = DELEGATION_TOOLS | frozenset({
+    "code_task", "run_script", "run_command", "code_task_run_command",
+})
+
+#: A result longer than this many characters is read on a worker thread, so
+#: a result with 100,000 figures does not hold the event loop (fix round 4).
+RECORD_INLINE_CHARS = 20_000
 
 #: ``write_artifact`` shows text only for these files. A script is code.
 TEXT_FILE_SUFFIXES: tuple[str, ...] = (".md", ".txt", ".html", ".htm", ".csv")
@@ -164,6 +186,13 @@ FALLBACK_LEAD = (
 )
 FALLBACK_FIGURES = "These are the CRM figures as the tools gave them:"
 FALLBACK_NONE = "Ask again, or ask for one figure at a time."
+
+#: The caveat after an answer that still failed the check (fix round 7, owner
+#: direction: give the number with a caveat, never lose the answer). Plain
+#: words, no internal names, at most :data:`CAVEAT_FIGURES` figures.
+CAVEAT_LEAD = "I could not check these figures against the CRM data:"
+CAVEAT_TAIL = "Please verify them before you rely on them."
+CAVEAT_FIGURES = 5
 
 _ISO_DAY = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
 _TAG = re.compile(r"<[^>]*>")
@@ -227,7 +256,7 @@ def _as_mapping(arguments: Any) -> Any:
     if isinstance(arguments, str):
         try:
             return json.loads(arguments)
-        except ValueError:
+        except (ValueError, RecursionError):  # round 6: a deep text is text
             return arguments
     dump = getattr(arguments, "model_dump", None)
     if callable(dump):
@@ -318,17 +347,69 @@ def _shown_text(node: Any, key: str = "") -> list[str]:
         if stripped[:1] in "{[":
             try:
                 return _shown_text(json.loads(stripped), key)
-            except ValueError:
+            except (ValueError, RecursionError):
                 pass
         return [_shown_string(node)]
     return []
 
 
+#: A choice word right before a figure in an option of ``ask_questions``:
+#: "Last 90 days", "Top 10", "Above ₹10 lakh". The figure is a choice that
+#: the member makes, not a claim, so the check skips it (fix round 5). The
+#: ONE number check (``find_figures``) finds the figure. "Proposal (Rs 5.9
+#: crore)" has no choice word, and its figure is checked.
+_CHOICE_WORD = re.compile(
+    r"\b(?i:top|bottom|last|past|next|first|above|below|over|under|at\s+least|"
+    r"at\s+most|more\s+than|less\s+than|fewer\s+than|within|up\s+to)\s+$"
+)
+#: The keys of a question card that hold an option.
+_OPTION_KEYS = ("label", "option", "options", "choice", "choices")
+
+
+def _drop_choices(label: str) -> str:
+    """*label* with each figure after a choice word taken out."""
+    out = label
+    for figure in reversed(find_figures(label)):
+        if _CHOICE_WORD.search(label[:figure.start]):
+            out = out[:figure.start] + out[figure.end:]
+    return out
+
+
+def _without_choices(node: Any, key: str = "") -> Any:
+    """*node* with the choice figures of each option label taken out."""
+    if isinstance(node, Mapping):
+        return {k: _without_choices(v, str(k)) for k, v in node.items()}
+    if isinstance(node, (list, tuple)):
+        return [_without_choices(v, key) for v in node]
+    if isinstance(node, str):
+        stripped = node.strip()
+        if stripped[:1] in "{[":
+            try:
+                return _without_choices(json.loads(stripped), key)
+            except (ValueError, RecursionError):
+                pass
+        if key.lower() in _OPTION_KEYS:
+            return _drop_choices(node)
+    return node
+
+
 def display_text(name: str, arguments: Any) -> str:
-    """The text that a display call shows the member, or "" (item 2)."""
+    """The text that a display call shows the member, or "" (item 2).
+
+    A spec nested too deep to walk gives its raw text, so the check still
+    reads its numbers and never raises (fix round 6)."""
+    try:
+        return _display_text(name, arguments)
+    except RecursionError:
+        return arguments if isinstance(arguments, str) else ""
+
+
+def _display_text(name: str, arguments: Any) -> str:
     if name not in DISPLAY_TOOLS:
         return ""
     data = _as_mapping(arguments)
+    if name == "ask_questions":
+        data = _without_choices(data)
     if name == "write_artifact":
         if not isinstance(data, Mapping):
             return ""
@@ -372,13 +453,16 @@ class RunLedger:
     book: Sources = field(default_factory=Sources)
     armed: bool = False
     retried: bool = False
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False,
+                                  compare=False)
 
     def record(self, tool: str, text: str, *, arguments: Any = None,
                delegated: bool = False) -> None:
         """Keep one tool result. A CRM result arms the check.
 
-        A delegated answer (*delegated*) is text that a model wrote, so it
-        is no source. The arguments of a CRM call are sources. Only a tool
+        A delegated answer (*delegated*) or a result of
+        :data:`MODEL_WRITTEN_TOOLS` is text that a model wrote, so it is no
+        source. The arguments of a CRM call are sources. Only a tool
         result takes part in a derived figure (a sum, a difference or a
         percent of two), and ``acb_common.number_check`` caps the share of
         each result in that pool.
@@ -388,15 +472,17 @@ class RunLedger:
             # knows that a long result was cut.
             self.results.append((tool, text[:FALLBACK_CHARS + 1]))
             del self.results[:-FALLBACK_RESULTS]
-        # A refusal ("Refused: ...") holds a status code and the route's
-        # words, never a figure of the data, so it is no source.
-        if not delegated and tool not in DELEGATION_TOOLS and not is_refusal(text):
-            self.book.add_text(text, derive=True)
-        if tool in ARM_TOOLS:
-            self.armed = True
-            if arguments is not None:
-                for value in argument_sources(arguments):
-                    self.book.add_text(value)
+        with self._lock:
+            # A refusal ("Refused: ...") holds a status code and the route's
+            # words, never a figure of the data, so it is no source.
+            if not delegated and tool not in MODEL_WRITTEN_TOOLS and not is_refusal(text):
+                self.book.add_text(text, derive=True)
+            if tool in ARM_TOOLS:
+                self.armed = True
+                if arguments is not None:
+                    for value in argument_sources(arguments):
+                        self.book.add_text(value)
+            self.book.settle()
 
     def sources(self) -> Sources:
         """Each source of the run (item 4), the member's words included.
@@ -428,12 +514,32 @@ def retry_note(result: CheckResult) -> str:
         "A check of your answer found numbers that no tool result of this turn "
         f"holds: {named}. Write the answer again, with any card again. Copy "
         "each number from a tool result, or round it and keep its unit. You "
-        "may state the sum, the difference, the percent change or the percent "
-        "share of TWO tool numbers, and then you must also state both of those "
-        "numbers. For anything more, call crm_aggregate with "
-        "the right group or filter, or leave the number out. Write each figure "
-        "in digits."
+        "may state a number that you work out from TWO tool numbers: their sum, "
+        "their difference, a percent share or change, or an average. Then you "
+        "must state BOTH of those tool numbers in the same paragraph, next to "
+        "the result, with a word such as total, net, gap, share, more or "
+        "average. A percent in brackets right after a figure is its share. "
+        "A total may come with its parts: \"27 (20 won, 7 lost)\". A ratio "
+        "names both figures: \"₹13.53 crore is 6x ₹2.245 crore\". For a rank, "
+        "a limit or a count of items, cite the figure as the tool gave it. For "
+        "a share or a rate, state the whole and the part too. "
+        "For anything more, call crm_aggregate with the right group or filter, "
+        "or leave the number out. Write each figure in digits."
     )
+
+
+def caveat_text(result: CheckResult) -> str:
+    """The note after an answer whose figures the check could not match."""
+    named: list[str] = []
+    for figure in result.unmatched:
+        if figure.text not in named:
+            named.append(figure.text)
+    shown = ", ".join(named[:CAVEAT_FIGURES])
+    # Say how many more failed, or the member trusts the figures not named.
+    extra = len(named) - CAVEAT_FIGURES
+    if extra > 0:
+        shown += f" and {extra} more"
+    return f"\n\n{CAVEAT_LEAD} {shown}. {CAVEAT_TAIL}"
 
 
 def fallback_text(ledger: RunLedger) -> str:
@@ -464,11 +570,16 @@ class RecordToolResults(FunctionMiddleware):
         function = getattr(context, "function", None)
         name = tool_name(function) if function is not None else ""
         try:
-            self._ledger.record(
-                name, _result_text(getattr(context, "result", None)),
+            text = _result_text(getattr(context, "result", None))
+            record = functools.partial(
+                self._ledger.record, name, text,
                 arguments=getattr(context, "arguments", None),
                 delegated=function is not None and is_delegation_tool(function),
             )
+            if len(text) > RECORD_INLINE_CHARS:
+                await asyncio.to_thread(record)
+            else:
+                record()
         except Exception as exc:  # the record never breaks a tool call
             _log.warning("answer_check.record_failed", tool=name, error=type(exc).__name__)
 
@@ -520,8 +631,21 @@ class CheckAnswers(ChatMiddleware):
         self._mode = mode
         self._last_beat = 0.0
 
-    def _log(self, result: CheckResult, outcome: str) -> None:
+    def _safe_verdict(self, response: ChatResponse) -> tuple[str, CheckResult | None]:
+        """:meth:`_verdict`, but a check that raises gives ``pass`` and no
+        result: the answer goes out unchanged, and the log says why. A
+        failure of the check must never lose the member's turn (round 6)."""
+        try:
+            return self._verdict(response)
+        except Exception as exc:
+            _log.warning("answer_check.check_failed", mode=self._mode,
+                         error=type(exc).__name__)
+            return PASS, None
+
+    def _log(self, result: CheckResult | None, outcome: str) -> None:
         # The run id comes from the bound run context (``acb_common._log``).
+        if result is None:
+            return
         _log.info(
             "answer_check.checked", mode=self._mode,
             numbers=len(result.figures), mismatches=len(result.unmatched),
@@ -533,8 +657,8 @@ class CheckAnswers(ChatMiddleware):
 
         A display call shows its arguments to the member, so a failed card
         fails the whole answer, and never ships. ``strip`` is only for a
-        step whose calls show the member nothing (no :data:`SHOWN_TOOLS`
-        call). A failed step that shows something fails (fix round 3).
+        step whose calls are ALL in :data:`QUIET_TOOLS`. Any other call
+        makes a failed step fail (fix round 4).
         """
         book = self._ledger.sources()
         card = _card_text(response)
@@ -542,8 +666,8 @@ class CheckAnswers(ChatMiddleware):
         if result.ok:
             return PASS, result
         calls = _calls(response)
-        shown = any(str(getattr(c, "name", "") or "") in SHOWN_TOOLS for c in calls)
-        return (STRIP if calls and not shown else FAIL), result
+        quiet = all(str(getattr(c, "name", "") or "") in QUIET_TOOLS for c in calls)
+        return (STRIP if calls and quiet else FAIL), result
 
     async def _drain(self, stream: ResponseStream) -> tuple[list[ChatResponseUpdate], ChatResponse]:
         """Read the whole of *stream*, with a sign of life as it goes."""
@@ -604,8 +728,8 @@ class CheckAnswers(ChatMiddleware):
     ) -> AsyncIterator[ChatResponseUpdate]:
         updates, response = await self._drain(stream)
         messages = list(context.messages)
-        verdict, result = self._verdict(response)
-        if verdict == PASS:
+        verdict, result = self._safe_verdict(response)
+        if verdict == PASS or result is None:
             self._log(result, "pass")
             for update in updates:
                 yield update
@@ -621,16 +745,29 @@ class CheckAnswers(ChatMiddleware):
             context.messages = self._retry_messages(messages, response, result)
             await call_next()
             retry_updates, second = await self._drain(context.result)
-            again, result2 = self._verdict(second)
-            if again != FAIL:
+            again, result2 = self._safe_verdict(second)
+            if again != FAIL or result2 is None:
                 self._log(result2, "retry_pass" if again == PASS else "retry_call")
                 kept = retry_updates if again == PASS else _strip_updates(retry_updates)
                 for update in kept:
                     yield update
                 return
-            result, response = result2, second
-        self._log(result, "fallback")
+            result, response, updates = result2, second, retry_updates
         last = updates[-1] if updates else None
+        if (response.text or "").strip():
+            # Round 7: the answer goes out, with a caveat that names the
+            # figures the check could not match. It is never replaced.
+            self._log(result, "caveat")
+            for update in updates:
+                yield update
+            yield ChatResponseUpdate(
+                contents=[Content.from_text(caveat_text(result))], role="assistant",
+                response_id=getattr(last, "response_id", None) or response.response_id,
+                message_id=getattr(last, "message_id", None),
+                model=getattr(last, "model", None), finish_reason="stop",
+            )
+            return
+        self._log(result, "fallback")
         yield ChatResponseUpdate(
             contents=[Content.from_text(fallback_text(self._ledger))],
             role="assistant",
@@ -644,8 +781,8 @@ class CheckAnswers(ChatMiddleware):
         self, context: Any, call_next: Callable[[], Any], response: ChatResponse,
     ) -> ChatResponse:
         messages = list(context.messages)
-        verdict, result = self._verdict(response)
-        if verdict == PASS:
+        verdict, result = self._safe_verdict(response)
+        if verdict == PASS or result is None:
             self._log(result, "pass")
             return response
         if verdict == STRIP:
@@ -657,14 +794,17 @@ class CheckAnswers(ChatMiddleware):
             context.messages = self._retry_messages(messages, response, result)
             await call_next()
             second = context.result
-            again, result2 = self._verdict(second)
-            if again == PASS:
+            again, result2 = self._safe_verdict(second)
+            if again == PASS or result2 is None:
                 self._log(result2, "retry_pass")
                 return second
             if again == STRIP:
                 self._log(result2, "retry_call")
                 return _without_text(second)
             result, response = result2, second
+        if (response.text or "").strip():
+            self._log(result, "caveat")
+            return _with_caveat(response, caveat_text(result))
         self._log(result, "fallback")
         return ChatResponse(
             messages=[Message("assistant", [fallback_text(self._ledger)])],
@@ -676,6 +816,31 @@ class CheckAnswers(ChatMiddleware):
 def _role(message: Any) -> str:
     role = getattr(message, "role", "")
     return str(getattr(role, "value", role) or "")
+
+
+def _with_caveat(response: ChatResponse, caveat: str) -> ChatResponse:
+    """*response* with *caveat* after the text of its last message that has
+    text. Its tool calls and the rest stay (fix round 7)."""
+    messages = list(response.messages)
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        contents = list(m.contents or ())
+        last = next((j for j in range(len(contents) - 1, -1, -1)
+                     if getattr(contents[j], "type", "") == "text"), None)
+        if last is None:
+            continue
+        # The caveat joins the last text itself, so no space comes between.
+        contents[last] = Content.from_text((contents[last].text or "") + caveat)
+        messages[i] = Message(
+            _role(m) or "assistant", contents,
+            author_name=getattr(m, "author_name", None),
+            message_id=getattr(m, "message_id", None),
+        )
+        break
+    return ChatResponse(
+        messages=messages, response_id=response.response_id, model=response.model,
+        finish_reason=response.finish_reason, usage_details=response.usage_details,
+    )
 
 
 def _without_text(response: ChatResponse) -> ChatResponse:
@@ -720,10 +885,30 @@ class AnswerCheckProvider(ContextProvider):
 
 
 __all__ = [
-    "ARM_TOOLS", "CRM_ASSISTANT_READS", "DISPLAY_TOOLS", "FALLBACK_TOOLS",
-    "HEARTBEAT_S", "HOLD_EVENT", "MEMBER_MESSAGE", "MODES", "OFF", "ON", "SHADOW",
-    "SHOWN_TOOLS",
-    "AnswerCheckProvider", "CheckAnswers", "RecordToolResults", "RunLedger",
-    "answer_check_mode", "argument_sources", "display_text", "fallback_text",
-    "holds_crm_tool", "member_words", "retry_note",
+    "ARM_TOOLS",
+    "CRM_ASSISTANT_READS",
+    "DISPLAY_TOOLS",
+    "FALLBACK_TOOLS",
+    "HEARTBEAT_S",
+    "HOLD_EVENT",
+    "MEMBER_MESSAGE",
+    "MODEL_WRITTEN_TOOLS",
+    "MODES",
+    "OFF",
+    "ON",
+    "QUIET_TOOLS",
+    "RECALL_TOOLS",
+    "SHADOW",
+    "AnswerCheckProvider",
+    "CheckAnswers",
+    "RecordToolResults",
+    "RunLedger",
+    "answer_check_mode",
+    "argument_sources",
+    "caveat_text",
+    "display_text",
+    "fallback_text",
+    "holds_crm_tool",
+    "member_words",
+    "retry_note",
 ]

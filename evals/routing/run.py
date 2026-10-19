@@ -12,8 +12,8 @@ things against REAL code:
 1. **The catalog** (:func:`catalog_problems`), for every case. Each expected
    agent is in the real registry, has an in-repo factory, and is a tool of
    the real orchestrator agent. Each app is a live pane of ``nav.ts``. Each
-   specialist the orchestrator holds, and each live pane with an agent, has a
-   case. The port of ``surfaceContext`` matches ``assistant.ts``.
+   specialist the orchestrator holds, and each live pane whose agent it
+   holds, has a case. The port of ``surfaceContext`` matches ``assistant.ts``.
 2. **The delegation** (:func:`run_scripted`), for one case of each expected
    answer. A scripted model makes the orchestrator call the expected agent,
    through the real ``run_agent_stream``. The run must reach that agent's
@@ -133,10 +133,17 @@ def _coverage_problems(cases: list[Case], reg: dict[str, dict[str, Any]],
         if name != ORCHESTRATOR and specialist_tool(name) in tools and name not in asked_for:
             out.append(f"the orchestrator holds {name!r}, and no case expects it")
     pairs = {(c.app, c.expected) for c in cases}
+    # A pane agent that the orchestrator does not hold as a tool is no
+    # specialist: a Copilot agent runs only as its own app's agent (D84, D92,
+    # ``loader.refuse_copilot_specialist``). No case can expect it.
     for pane in shell.live_panes().values():
-        if pane.agent and (pane.href, pane.agent) not in pairs:
+        if (pane.agent and specialist_tool(pane.agent) in tools
+                and (pane.href, pane.agent) not in pairs):
             out.append(f"the live app {pane.href} names {pane.agent!r}, and no case asks it there")
     for agent, hrefs in shell.also_serves().items():
+        if specialist_tool(agent) not in tools:
+            out.append(f"ALSO_SERVES names {agent!r}, and the orchestrator holds no tool for it")
+            continue
         out.extend(f"ALSO_SERVES sends {href} to {agent!r}, and no case asks it there"
                    for href in hrefs if (href, agent) not in pairs)
     if not any(c.expected is None and not c.asks for c in cases):
@@ -166,9 +173,10 @@ def runtime_of(agent: str) -> str:
 def drivable(case: Case) -> bool:
     """A script can drive the case: no specialist, or a MAF one.
 
-    A Copilot SDK specialist (``task-manager``, ``app-builder``) runs its
-    sub-run in the Copilot CLI, a process a hermetic run cannot start. Its
-    cases get the catalog checks only.
+    A Copilot SDK specialist (``app-builder``, the one that
+    ``loader.COPILOT_SPECIALIST_ALLOWED`` keeps) runs its sub-run in the
+    Copilot CLI, a process a hermetic run cannot start. Its case gets the
+    catalog checks only. Every other Copilot agent is no specialist.
     """
     return case.expected is None or runtime_of(case.expected) == "maf"
 
