@@ -1109,7 +1109,23 @@ still waited. The stream loops now keep the card events of the run in
 flight (`noteCardEvent` in `lib/chatStore.ts`), and a chat that mounts
 draws them again.
 
-A send, a `done` and a Stop clear the log. If a remount then
+A card redraws as WAITING only when nothing settles it
+(`planCardRedraw` in `lib/cardReplay.ts`). These settle a card:
+
+- An answer or a decline that this tab sent (`noteCardAnswered`). The
+  redraw shows that answer.
+- A `confirmation_resolved` event.
+- For a question, a later run event that proves the run moved on. A run
+  that waits on its question sends nothing until it has an answer.
+- A real list of pending asks from the server that does not hold the card
+  (`cardsToSettle`). A failed read settles nothing.
+
+A refused answer of a redrawn card never turns into a steer, so an answer
+never reaches the agent twice.
+
+Every end of a run clears the log: a `done`, a failure, a Stop, and a run
+that the server stopped listing. A new run key clears it too. A new run
+also starts with no attach backoff of the old run. If a remount then
 learns that the run ended while away, its cards are finalized. Fence:
 `e2e/email-pane-confirm-card.spec.ts`.
 
