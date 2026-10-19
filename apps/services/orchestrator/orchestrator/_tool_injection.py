@@ -1341,12 +1341,16 @@ def _build_registry_block() -> str:
     """
     agent_lines: list[str] = []
     try:
+        from acb_skills.loader import may_delegate_to
         from gateway.routes.agent import _AGENT_REGISTRY  # noqa: PLC0415
         from gateway.routes.agent import _load_dynamic_agents
         all_agents = _load_dynamic_agents() + _AGENT_REGISTRY
         for a in all_agents:
             name = a.get("name", "")
-            if name:
+            # D84, D92: a Copilot agent does not run as a specialist
+            # (loader.refuse_copilot_specialist), so no run is told to call it.
+            # app-builder stays, by owner call (loader.COPILOT_SPECIALIST_ALLOWED).
+            if name and may_delegate_to(name, a.get("agent_runtime")):
                 agent_lines.append(_registry_line(name, a.get("description", "")))
     except Exception:  # noqa: BLE001
         pass

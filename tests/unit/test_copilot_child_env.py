@@ -19,9 +19,10 @@ The paths:
    builds a client with no env. ``orchestrator.copilot_agent`` binds a guard on
    the CLASS (fix round 1), so a plain agent, as ``apps/agents/*/agents.py``
    builds it, gets ``copilot_env()`` on every path: ``async with``, the batch
-   run ``_run_with_maf_agent`` (``POST /agent/run``, workflows, the email
-   consult, the self-anneal retries) and the sub-agent block of
-   ``_run_sub_agent_streaming`` (``call_agent``).
+   run ``_run_with_maf_agent`` (``POST /agent/run``, workflows, the
+   self-anneal retries). The sub-agent block of ``_run_sub_agent_streaming``
+   (``call_agent``) starts no Copilot child since 2026-10-19: it refuses a
+   delegated Copilot agent (D84, D92), and the test proves no child starts.
 5. No token: the client gets no ``github_token``, so the CLI keeps its
    logged-in user, and its env is still clean (BH-D3).
 
@@ -212,9 +213,15 @@ async def test_plain_agent_through_the_batch_run(stub: tuple[str, Path]) -> None
 async def test_plain_agent_through_the_sub_agent_block(
     stub: tuple[str, Path], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """``_run_sub_agent_streaming`` (``call_agent``): its Copilot branch runs
-    ``async with agent:`` on the loaded plain agent."""
+    """``_run_sub_agent_streaming`` (``call_agent``) starts no Copilot child.
+
+    A delegated Copilot agent is refused before its CLI starts (D84, D92,
+    ``loader.refuse_copilot_specialist``), by its label or, as here, by its
+    shape under a "maf" label. Until 2026-10-19 this branch ran
+    ``async with agent:`` on the plain agent, and the test proved its env
+    clean. Now no child starts at all."""
     import gateway.routes.agent as agent_routes
+    from acb_skills.loader import COPILOT_SPECIALIST_TEXT
     from orchestrator import executor
 
     cli, out = stub
@@ -236,7 +243,7 @@ async def test_plain_agent_through_the_sub_agent_block(
 
     monkeypatch.setattr(
         agent_routes, "_load_dynamic_agents",
-        lambda: [{"name": "bh1", "agent_runtime": "github-copilot"}],
+        lambda: [{"name": "bh1", "agent_runtime": "maf"}],
     )
     monkeypatch.setattr(executor, "load_agent", fake_load)
     monkeypatch.setattr(executor, "_assert_may_run_agent", allowed)
@@ -253,7 +260,8 @@ async def test_plain_agent_through_the_sub_agent_block(
             executor._run_sub_agent_streaming("bh1", "hi", "bh1-run"), 60
         )
     assert "failed" in answer, answer
-    _assert_clean(_child_env(out))
+    assert COPILOT_SPECIALIST_TEXT in answer, answer
+    assert not out.exists(), "a delegated Copilot agent started the CLI"
 
 
 def test_the_orchestrator_package_installs_the_guard() -> None:

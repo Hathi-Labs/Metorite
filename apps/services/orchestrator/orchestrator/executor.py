@@ -50,6 +50,7 @@ from acb_skills.loader import (
     AgentRuntimeUnsupported,
     is_copilot_agent,
     load_agent,
+    refuse_copilot_specialist,
 )
 
 # Max self-anneal retries before giving up and falling back to LLM recovery.
@@ -1477,6 +1478,9 @@ async def _run_sub_agent_streaming(
         # §15.4: a first-party-admin-only agent, delegated to by anyone else,
         # is refused as absent. The member is the PARENT run's (run binding).
         await _assert_may_run_agent(agent_name)
+        # D84, D92: a delegated run never takes the retired Copilot runtime.
+        # The label refuses before the load, so no clone and no import run.
+        refuse_copilot_specialist(agent_name, label=_runtime)
         with load_agent(agent_name, run_id=run_id, repo_name=_repo_name, local_path=_local_path) as loaded:
             mandatory = loaded.config.get("integrations", [])
             optional = loaded.config.get("optional_integrations", [])
@@ -1486,6 +1490,9 @@ async def _run_sub_agent_streaming(
             # Scope this sub-agent's creds to its run; restored in the finally.
             _integration_env_token = _bind_run_credentials(integrations)
             agents = loaded.build_agents()
+            # The object, whatever its label says (WS-43n): a Copilot agent
+            # does not run as a specialist. The caller gets the error text.
+            refuse_copilot_specialist(agent_name, built=agents)
             # Honour .github/agents/<name>.agent.md instructions for sub-agents
             # too, so a delegated Copilot SDK agent keeps its authored identity.
             _agent_md_spec = _apply_agent_md_overrides(
@@ -3394,6 +3401,7 @@ async def _run_agent_inner(
         # Checks dynamic agents (agents.json) first, then falls back to static registry.
         _registry_repo_name: str | None = None
         _registry_local_path: str | None = None
+        _registry_runtime: str | None = None
         try:
             from gateway.routes.agent import _AGENT_REGISTRY
             from gateway.routes.agent import _load_dynamic_agents
@@ -3407,6 +3415,7 @@ async def _run_agent_inner(
                 # or just "repo". Pass the full slug — load_agent splits when needed.
                 _registry_repo_name = raw_repo if raw_repo else None
                 _registry_local_path = _registry_entry.get("local_path")
+                _registry_runtime = _registry_entry.get("agent_runtime")
         except ImportError:
             pass
         _anneal_inputs = _BatchRunInputs(
@@ -3416,6 +3425,12 @@ async def _run_agent_inner(
         # §15.4: refused as absent unless a first-party admin runs it. An
         # AgentLoadError, so no self-anneal and no self-mutation follow.
         await _assert_may_run_agent(agent_name)
+        # D84, D92: a DELEGATED batch run (a parent context is bound, H-201
+        # P2-c) never takes the retired Copilot runtime. The label refuses
+        # before the load, and the object after the build (below).
+        # AgentRuntimeUnsupported: no self-anneal and no self-mutation.
+        if _parent_ctx:
+            refuse_copilot_specialist(agent_name, label=_registry_runtime)
         # WS-61 KB-4a: the orchestrator's Knowledge index block, as the
         # stream path reads it. The WhatsApp channel runs this path.
         await _prime_knowledge_index(agent_name)
@@ -3525,6 +3540,8 @@ async def _run_agent_inner(
             # repo agent that declares no runtime is labelled "maf" (§15.5).
             if not _is_copilot_agent and any(is_copilot_agent(a) for a in agents):
                 _is_copilot_agent = True
+            if _parent_ctx:
+                refuse_copilot_specialist(agent_name, built=agents)
 
             # Set write_artifact context + ensure visible workspace dirs exist.
             # H-201 (§21.16): the context is THIS run's own ContextVar value.

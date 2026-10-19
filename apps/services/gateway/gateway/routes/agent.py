@@ -625,6 +625,11 @@ _AGENT_REGISTRY: list[dict] = [
         # tool output of the turn before. The Copilot session keeps them,
         # and Tier 1 sends earlier turns as text only. Flip this label and
         # the factory together, and only after H-215.
+        # While it says "github-copilot", task-manager is the agent of the
+        # My Tasks rail only. It is no specialist of another run: the
+        # orchestrator does not list it, and a delegation to it is refused
+        # (D84, D92, loader.refuse_copilot_specialist). Task and project
+        # work of the main chat goes to projects-assistant (D52 to D54).
         "agent_runtime": "github-copilot",
         "local_path": "apps/agents/agent-task-manager",
         "integrations": [],
@@ -654,7 +659,7 @@ _AGENT_REGISTRY: list[dict] = [
         "name": "email-assistant",
         "description": (
             "Email Assistant — checks the inbox, categorizes mail, and drafts "
-            "context-aware replies, handing off to the sales and task-manager "
+            "context-aware replies, handing off to the sales and projects "
             "agents and reading memory when an email needs their context."
         ),
         "tags": ["email", "gmail", "outlook", "drafting", "apps"],
@@ -813,11 +818,12 @@ def _normalize_runtime(val: object) -> str | None:
     """
     if not isinstance(val, str):
         return None
+    from acb_skills.loader import COPILOT_RUNTIME_LABELS
+
     v = val.strip().lower()
     if v == "maf":
         return "maf"
-    if v in ("github-copilot", "github_copilot", "githubcopilot",
-             "copilot", "copilot-sdk"):
+    if v in COPILOT_RUNTIME_LABELS:
         return "github-copilot"
     return None
 

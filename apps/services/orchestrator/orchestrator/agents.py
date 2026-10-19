@@ -74,7 +74,9 @@ RETRIEVAL TOOLS (use for broad company data questions):
 - search_timeline: time-stamped facts about entities (deal stage changes, action history)
 
 SPECIALIST AGENT TOOLS (use when the request is clearly in one agent's domain):
-- Each registered agent appears as a tool named after it (e.g. crm_assistant, task_manager).
+- Each registered agent appears as a tool named after it (e.g. crm_assistant, projects_assistant).
+- Tasks, projects, the member's own task inbox, triage and calendar blocks are
+  ONE task store. Send that work to projects_assistant.
 - Call the specialist tool, then answer from its reply. Its reply is your
   evidence, not your answer: never relay it whole.
 - Keep each in-app link in the response verbatim, for example
@@ -391,14 +393,16 @@ async def delegate_to_agent(agent_name: str, message: str) -> str:
 
     When to delegate (examples):
     - CRM records, pipeline and deal questions → "crm-assistant"
-    - Task management, sprint status, workload queries → "task-manager"
+    - Tasks, projects, the member's own task inbox and its triage, workload,
+      status and calendar blocks → "projects-assistant". Projects, My Tasks
+      and Calendar are one task store (D52, D53, D54).
 
     Do NOT delegate:
     - Broad company data questions that span multiple agents (use your own retrieval tools)
     - Questions you can already answer from the entity graph
 
     Args:
-        agent_name: Exact registered name, e.g. "crm-assistant", "task-manager".
+        agent_name: Exact registered name, e.g. "crm-assistant", "projects-assistant".
         message:    The user's full request, reworded if needed to be self-contained.
 
     Returns:
@@ -483,11 +487,22 @@ def _load_specialist_agents_as_tools() -> list[Any]:
 
     settings = get_settings()
     skip_names = {"orchestrator", "strategy"}  # avoid circular delegation
+    from acb_skills.loader import may_delegate_to
 
     for entry in all_agents:
         name: str = entry.get("name", "")
         description: str = entry.get("description", "")
         if not name or name in skip_names or not description:
+            continue
+        if not may_delegate_to(name, entry.get("agent_runtime")):
+            # D84, D92: a Copilot agent does not run as a specialist
+            # (loader.refuse_copilot_specialist), so the model is not offered
+            # it. It returns here when its port labels it "maf" (WS-8i).
+            # app-builder stays, by owner call (loader.COPILOT_SPECIALIST_ALLOWED).
+            _log.info(
+                "orchestrator.specialist_tool_skipped",
+                agent=name, reason="copilot_runtime",
+            )
             continue
         try:
             # Enrich the tool description with tags and integrations from config

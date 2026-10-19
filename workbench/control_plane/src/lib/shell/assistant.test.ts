@@ -351,9 +351,10 @@ describe("the app switch (owner, 2026-10-12)", () => {
     ).toBeNull();
   });
 
-  it("stays in Calendar when the My Tasks specialist moves the member's time", () => {
-    expect(switchTarget({ name: "task_manager", pathname: "/calendar", sections: SECTIONS, done: new Set() })).toBeNull();
-    expect(switchTarget({ name: "task_manager", pathname: "/crm", sections: SECTIONS, done: new Set() })?.href).toBe("/tasks");
+  it("stays in My Tasks and Calendar when the Projects specialist does their work", () => {
+    expect(switchTarget({ name: "projects_assistant", pathname: "/calendar", sections: SECTIONS, done: new Set() })).toBeNull();
+    expect(switchTarget({ name: "projects_assistant", pathname: "/tasks", sections: SECTIONS, done: new Set() })).toBeNull();
+    expect(switchTarget({ name: "projects_assistant", pathname: "/crm", sections: SECTIONS, done: new Set() })?.href).toBe("/projects");
   });
 
   it("never moves to an app the member does not hold", () => {

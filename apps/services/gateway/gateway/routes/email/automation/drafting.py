@@ -1394,6 +1394,14 @@ async def _llm_compose_assist(
     return body
 
 
+#: The agents that a draft may consult. Tasks and projects go to
+#: projects-assistant: Projects, My Tasks and Calendar are one task store
+#: (D52, D53, D54), and task-manager runs on the retired Copilot runtime, so a
+#: consult of it is refused (D84, D92, ``loader.refuse_copilot_specialist``).
+#: Fence: ``tests/unit/test_task_routing_projects.py``.
+_CONSULT_AGENTS: tuple[str, ...] = ("crm-assistant", "projects-assistant")
+
+
 async def _draft_consult_plan(
     email: dict[str, str],
     on_activity: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
@@ -1408,7 +1416,8 @@ async def _draft_consult_plan(
     consult — a consult costs a 10-18s agent round-trip, so the default answer
     is an empty list, not "might help".
 
-    Returns [{"agent": "crm-assistant"|"task-manager", "question": "..."}], capped at 2.
+    Returns [{"agent": "crm-assistant"|"projects-assistant", "question": "..."}],
+    capped at 2. ``_CONSULT_AGENTS`` names the two.
     """
     try:
         # EM-G11d (UMCC): the email sits in one block of a new frame. The
@@ -1424,7 +1433,7 @@ async def _draft_consult_plan(
             "support/technical | other.\n"
             "Step 2 — decide consults. Available agents:\n"
             "- crm-assistant: CRM — leads, deals, pipeline, contacts, account status.\n"
-            "- task-manager: projects, tasks, deadlines, delivery status (ClickUp).\n"
+            "- projects-assistant: projects, tasks, deadlines, delivery status.\n"
             "Consult an agent ONLY when the reply must state facts that the "
             "email thread itself does not contain AND that agent's system "
             "holds them — e.g. the sender asks for an order/quote/project "
@@ -1454,7 +1463,7 @@ async def _draft_consult_plan(
         consult = data.get("consult", []) if isinstance(data, dict) else []
         out = []
         for c in consult:
-            if isinstance(c, dict) and c.get("agent") in ("crm-assistant", "task-manager") \
+            if isinstance(c, dict) and c.get("agent") in _CONSULT_AGENTS \
                     and c.get("question"):
                 out.append({"agent": c["agent"], "question": str(c["question"])})
         out = out[:2]
@@ -1707,7 +1716,7 @@ async def _emit_activity(
       {"kind": "stage",    "id": "context|memory|draft", "status": "start|done",
        "detail": "human summary"}
       {"kind": "qualify",  "emailKind": "scheduling", "consults": 0}
-      {"kind": "consult",  "agent": "task-manager", "question": "...",
+      {"kind": "consult",  "agent": "projects-assistant", "question": "...",
        "status": "start|done|failed", "detail": "..."}
     """
     if on_activity is None:

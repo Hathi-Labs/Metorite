@@ -177,7 +177,7 @@ just paste it into chat.
 1. Read the email (given as context, or `read_email`).
 2. **`draft_reply(email_id, account_id, save=true)`** — the orchestrating
    drafter: it pulls in your memory of the sender, the thread, the user's writing
-   style + signature, and hands off to a specialist (sales / task-manager) for
+   style + signature, and hands off to a specialist (sales / projects) for
    deal/project mail, then writes the reply AND creates the provider draft.
    The tool shows the user a card before it saves, so do not ask in text
    first. Always `save=true` (`save=false` leaves Drafts empty — almost never
