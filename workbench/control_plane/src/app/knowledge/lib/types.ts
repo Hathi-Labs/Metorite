@@ -35,6 +35,9 @@ export interface PageSummary {
   parent_id: string | null;
   position: number;
   title: string;
+  /** One emoji, or `null` (KB-2f). Not the icon name of a space. Absent
+   *  only in a test fixture written before KB-2f. */
+  icon?: string | null;
   state: PageState;
   author_email: string;
   reviewers: string[];
@@ -146,6 +149,8 @@ export interface SearchHit {
   score: number;
   updated_at: string | null;
   href: string;
+  /** The page icon (KB-2f), or `null`. */
+  icon?: string | null;
 }
 
 /** `GET /knowledge/search`. `query` is the words the gateway searched. */

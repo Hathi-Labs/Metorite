@@ -77,6 +77,8 @@ import { flushLiveDraft, registerLiveDraft } from "../lib/liveDrafts";
 import { PAGE_NOT_FOUND_BODY, PAGE_NOT_FOUND_TITLE, pageRefusal, type PageRead } from "../lib/phase";
 import type { PageDetail, PageVersion } from "../lib/types";
 import KnowledgeEditor from "./editor/KnowledgeEditor";
+import { FavoriteStar } from "./Favorites";
+import { PageIconControl } from "./PageIcon";
 import { useKnowledge } from "./KnowledgeContext";
 import VersionList from "./VersionList";
 
@@ -484,7 +486,12 @@ export default function PageView({ pageId }: { pageId: string }) {
             </div>
           ) : (
             <>
-              <h2 className="mt-1 break-words text-xl font-semibold text-foreground">{page.title}</h2>
+              {/* KB-2f: the page icon and the star, around the title. */}
+              <div className="group mt-1 flex items-center gap-2">
+                <PageIconControl page={page} editable={writable} />
+                <h2 className="min-w-0 flex-1 break-words text-xl font-semibold text-foreground">{page.title}</h2>
+                <FavoriteStar page={page} />
+              </div>
               <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                 <Badge tone={stateTone(page.state)} icon={STATE_LABELS[page.state]?.icon}>
                   {stateLabel(page.state)}
