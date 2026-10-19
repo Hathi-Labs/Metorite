@@ -61,10 +61,23 @@ import time
 from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal
 from typing import Any
 
 from acb_common import get_logger
-from acb_common.number_check import CheckResult, Sources, check, find_figures
+from acb_common.number_check import (
+    EMPTY_LABELS,
+    MAX_EXPLAIN,
+    MONEY,
+    PERCENT,
+    CheckResult,
+    Figure,
+    Sources,
+    arithmetic,
+    check,
+    find_figures,
+    group_indian,
+)
 from acb_common.settings import crm_answer_check_mode
 from acb_common.tool_refusals import is_refusal
 from agent_framework import (
@@ -187,14 +200,63 @@ FALLBACK_LEAD = (
 FALLBACK_FIGURES = "These are the CRM figures as the tools gave them:"
 FALLBACK_NONE = "Ask again, or ask for one figure at a time."
 
-#: The caveat after an answer that still failed the check (fix round 7, owner
-#: direction: give the number with a caveat, never lose the answer). Plain
-#: words, no internal names, at most :data:`CAVEAT_FIGURES` figures.
-CAVEAT_LEAD = "I could not check these figures against the CRM data:"
-CAVEAT_TAIL = "Please verify them before you rely on them."
-CAVEAT_FIGURES = 5
+# ── The note after an answer that still failed the check ───────────────────
+# Round 7 (owner direction): give the number with a note, never lose the
+# answer. Round 8 (owner, 2026-10-20): the note never lists raw figures
+# alone. Plain words, no internal names, money in lakh and crore.
+
+#: The most failed figures that the note names, each with a reason.
+NAMED_MAX = 3
+#: More failed figures than this share of all figures is a limit of the
+#: check, not of the answer. The note then names no figure.
+MANY_SHARE = 0.3
+#: The share rule counts only for an answer with this many figures or more.
+#: In a short answer one failed figure of three is a real doubt.
+MANY_MIN_FIGURES = 10
+NOTE_MISSING = ("I could not find {figure} in the CRM results. It may be my own "
+                "calculation. Ask me how I got it, or check it in the CRM.")
+NOTE_NEAR = ("I could not find {figure} in the CRM results. The nearest CRM figure is "
+             "{near}, so I may have rounded it wrongly. Check it in the CRM before you "
+             "rely on it.")
+NOTE_PERCENT = ("I could not work out {figure} from the CRM results. Ask me which "
+                "figures it compares.")
+NOTE_SUM = "{figure} is {a} {word} {b}."
+HOW_HEAD = "How I got these numbers:"
+HOW_TAIL = ("Each figure in the answer comes from these CRM results, or from a sum or "
+            "a difference of them. Ask me about any figure, and I will show the steps.")
+HOW_NONE = ("I could not check many figures of this answer one by one. Ask me about "
+            "any figure, and I will show how I got it.")
+QUESTION_EMPTY = ("In {module}, {share}% of the {measure} has no {group}. Should I show "
+                  'those records as their own group, "No {group}", or group them by '
+                  "another field?")
+QUESTION_OPEN = ("Some of these figures depend on a question that is still open. Your "
+                 "answer to it can change them.")
+#: The least share of a total that an empty group must hold before the
+#: note asks about it.
+EMPTY_SHARE = 0.10
+#: The CRM reads that "How I got these numbers" names, and how many.
+HOW_TOOLS: frozenset[str] = FALLBACK_TOOLS
+MAX_READS = 6
+#: The kinds of a note, for the log. The log never holds the note itself.
+NOTE_NONE = "none"
+NOTE_EXPLAINED = "explained"
+NOTE_NAMED = "named"
+NOTE_HOW = "how"
+NOTE_QUESTION = "question"
 
 _ISO_DAY = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
+#: The head line of a grouped CRM total: "Collections, sum of Amount by Region:".
+_GROUPED_HEAD = re.compile(r"^(?P<what>[^\n]+?) by (?P<group>[^:\n]+):[ \t]*$")
+_LIST_ROW = re.compile(r"^[ \t]*[-*\u2022][ \t]+(?P<label>[^:\n]{0,120}):[ \t]*(?P<value>.+)$")
+#: The marks of a CRM question that is still open (CRM-Q32-8, CRM-Q33).
+_OPEN_MARK = re.compile(r"\bCLARIFY\b|\bASK FIRST\b|^Not clear:", re.M)
+#: The filters of a core CRM read, in plain words.
+_FILTER_WORDS: dict[str, str] = {
+    "status": "status is", "owner": "owner is", "q": "text matches",
+    "created_from": "created from", "created_to": "created to",
+    "updated_from": "updated from", "updated_to": "updated to",
+    "close_from": "closing from", "close_to": "closing to",
+}
 _TAG = re.compile(r"<[^>]*>")
 _SCRIPT = re.compile(r"<(script|style)\b.*?</\1\s*>", re.I | re.S)
 #: The shape of code, not a word of prose. "An expected return of ₹5 lakh"
@@ -453,6 +515,14 @@ class RunLedger:
     book: Sources = field(default_factory=Sources)
     armed: bool = False
     retried: bool = False
+    #: Round 8: each CRM read of the run in plain words, for "How I got
+    #: these numbers". From the head line that the server wrote.
+    reads: list[str] = field(default_factory=list)
+    #: Round 8: each empty group of a grouped total, as (module, measure,
+    #: group, share of the total in percent, value of the group).
+    gaps: list[tuple[str, str, str, int, Decimal]] = field(default_factory=list)
+    #: Round 8: a CRM read of the run holds a question that is still open.
+    open_question: bool = False
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False,
                                   compare=False)
 
@@ -483,6 +553,21 @@ class RunLedger:
                     for value in argument_sources(arguments):
                         self.book.add_text(value)
             self.book.settle()
+        if tool in ARM_TOOLS and not is_refusal(text):
+            self._note_read(tool, text, arguments)
+
+    def _note_read(self, tool: str, text: str, arguments: Any) -> None:
+        """Keep what the note of round 8 needs from one CRM read: its line
+        of "How I got these numbers", its empty group, an open question."""
+        if _OPEN_MARK.search(text):
+            self.open_question = True
+        if tool in HOW_TOOLS:
+            line = read_line(text, arguments, tool)
+            if line and line not in self.reads and len(self.reads) < MAX_READS:
+                self.reads.append(line)
+        gap = empty_group(text)
+        if gap is not None:
+            self.gaps.append(gap)
 
     def sources(self) -> Sources:
         """Each source of the run (item 4), the member's words included.
@@ -528,18 +613,182 @@ def retry_note(result: CheckResult) -> str:
     )
 
 
-def caveat_text(result: CheckResult) -> str:
-    """The note after an answer whose figures the check could not match."""
-    named: list[str] = []
+#: What "How I got these numbers" calls a read that has no head line.
+_READ_WORDS: dict[str, str] = {
+    "crm_stage_dwell": "The days that deals stay in each stage",
+    "get_pipeline": "The deal pipeline",
+}
+#: The words of a measure key in the head line of a total.
+_MEASURE_WORDS = ((re.compile(r"\bsum_amount\b"), "sum of the amount"),
+                  (re.compile(r"\bweighted\b(?! amount)"), "weighted amount"))
+
+
+def _head(tool: str, text: str, arguments: Any) -> str | None:
+    """The plain words of what one read counted, with no figure."""
+    if tool in _READ_WORDS:
+        return _READ_WORDS[tool]
+    if tool == "crm_report":
+        data = _as_mapping(arguments)
+        kind = str(data.get("kind") or "").replace("-", " and ") if isinstance(
+            data, Mapping) else ""
+        return f"The {kind} report of deals".replace("  ", " ")
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if not lines or lines[0][:1] in "-*":
+        return None
+    head = lines[0].split(": ", 1)[0].rstrip(":").strip()
+    for pattern, words in _MEASURE_WORDS:
+        head = pattern.sub(words, head)
+    return head.replace("_", " ") or None
+
+
+def read_line(text: str, arguments: Any = None, tool: str = "crm_aggregate") -> str | None:
+    """One CRM read in plain words: the head line that the server wrote,
+    without its figure, then its filters. "Collections, sum of Amount by
+    Region. No filter." Each label comes from the server, never a key, and
+    a key word of a measure ("sum_amount") reads as words."""
+    head = _head(tool, text, arguments)
+    if not head:
+        return None
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    filters = next((line for line in lines if line.startswith("Filters:")), "")
+    if not filters:
+        words = _filter_words(arguments)
+        filters = f"Filters: {words}." if words else "No filter."
+    return f"{head}. {filters}"
+
+
+def _filter_words(arguments: Any) -> str:
+    data = _as_mapping(arguments)
+    if not isinstance(data, Mapping):
+        return ""
+    parts = [f"{words} {data[key]}" for key, words in _FILTER_WORDS.items()
+             if data.get(key) not in (None, "")]
+    return "; ".join(parts)
+
+
+def empty_group(text: str) -> tuple[str, str, str, int, Decimal] | None:
+    """The empty group of a grouped CRM total, when it holds at least
+    :data:`EMPTY_SHARE` of the total: (module, measure, group, share in
+    percent, value). "(none)" is the label of the server for a record with
+    no value in the group field."""
+    lines = (text or "").splitlines()
+    head = _GROUPED_HEAD.match(lines[0].strip()) if lines else None
+    if head is None:
+        return None
+    empty = total = None
+    for line in lines[1:]:
+        row = _LIST_ROW.match(line)
+        if row and row.group("label").strip().lower() in EMPTY_LABELS:
+            found = find_figures(row.group("value"))
+            empty = abs(found[0].value) if found else empty
+        elif line.strip().startswith("Total:"):
+            found = find_figures(line.strip()[len("Total:"):])
+            total = abs(found[0].value) if found else total
+    if not empty or not total:
+        return None
+    share = float(empty / total)
+    if share < EMPTY_SHARE:
+        return None
+    module, _, measure = head.group("what").partition(", ")
+    return (module.strip(), measure.strip() or "total", head.group("group").strip(),
+            round(share * 100), empty)
+
+
+def _money_words(value: Any) -> str:
+    """Rupees in the one Indian form of the CRM tools (``crm_tools``)."""
+    from acb_skills.crm_tools import lakh_crore
+
+    return lakh_crore(float(value))
+
+
+def _near_words(figure: Figure, near: Any) -> str:
+    if figure.kind == MONEY:
+        return _money_words(near)
+    whole = int(near)
+    return group_indian(whole) if near == whole else f"{float(near):,.2f}"
+
+
+def _named(figure: Figure, book: Sources) -> str:
+    """One failed figure, with a reason in plain words and an action."""
+    if figure.kind == PERCENT:
+        return NOTE_PERCENT.format(figure=figure.text)
+    near = book.nearest(figure)
+    if near is not None:
+        return NOTE_NEAR.format(figure=figure.text, near=_near_words(figure, near))
+    return NOTE_MISSING.format(figure=figure.text)
+
+
+def _question(ledger: RunLedger, result: CheckResult) -> str | None:
+    """ONE question about an ambiguity that the check can see, or None. An
+    open CRM question of the run comes first. Then the largest empty group
+    of a grouped total whose value the answer states."""
+    if ledger.open_question:
+        return QUESTION_OPEN
+    # The answer must state the value of the empty group itself, so the
+    # question is about records that the answer counts, not a guess.
+    stated = [gap for gap in ledger.gaps
+              if any(abs(abs(f.value) - gap[4]) <= f.room for f in result.figures)]
+    if not stated:
+        return None
+    module, measure, group, share, _value = max(stated, key=lambda gap: gap[3])
+    return QUESTION_EMPTY.format(module=module, share=share, measure=measure, group=group)
+
+
+def _how(ledger: RunLedger) -> str:
+    if not ledger.reads:
+        return HOW_NONE
+    return "\n".join([HOW_HEAD, *(f"- {line}" for line in ledger.reads), HOW_TAIL])
+
+
+def note_text(result: CheckResult, ledger: RunLedger) -> tuple[str, str]:
+    """The kind of the note and its text, after an answer that still failed
+    the check (round 8). The text starts with a blank line, or is empty.
+
+    * A failed figure that is the sum or the difference of two figures of
+      the answer gets one sentence that says so, and no warning.
+    * More than :data:`NAMED_MAX` failed figures, or more than
+      :data:`MANY_SHARE` of all figures: a limit of the check. The note
+      names no figure, and says how the answer read the CRM.
+    * An ambiguity that the check can see becomes ONE question.
+    * Else each failed figure, :data:`NAMED_MAX` at most, gets a reason in
+      plain words and an action.
+    """
+    failed: list[Figure] = []
     for figure in result.unmatched:
-        if figure.text not in named:
-            named.append(figure.text)
-    shown = ", ".join(named[:CAVEAT_FIGURES])
-    # Say how many more failed, or the member trusts the figures not named.
-    extra = len(named) - CAVEAT_FIGURES
-    if extra > 0:
-        shown += f" and {extra} more"
-    return f"\n\n{CAVEAT_LEAD} {shown}. {CAVEAT_TAIL}"
+        if figure.text not in {f.text for f in failed}:
+            failed.append(figure)
+    if not failed:
+        return NOTE_NONE, ""
+    too_many = len(failed) > MAX_EXPLAIN
+    explained: list[str] = []
+    rest: list[Figure] = []
+    for figure in failed:
+        found = None if too_many else arithmetic(result, figure)
+        if found is None:
+            rest.append(figure)
+        else:
+            a, word, b = found
+            explained.append(NOTE_SUM.format(figure=figure.text, a=a.text, word=word, b=b.text))
+    figures = len(result.figures)
+    many = len(rest) > NAMED_MAX or (figures >= MANY_MIN_FIGURES
+                                     and len(rest) > MANY_SHARE * figures)
+    parts: list[str] = [] if many else explained[:NAMED_MAX]
+    kind = NOTE_EXPLAINED if parts else NOTE_NONE
+    if rest:
+        question = _question(ledger, result)
+        if question:
+            parts.append(question)
+            kind = NOTE_QUESTION
+        if many:
+            parts.append(_how(ledger))
+            kind = kind if question else NOTE_HOW
+        elif not question:
+            book = ledger.sources()
+            parts.append("\n".join(_named(f, book) for f in rest[:NAMED_MAX]))
+            kind = NOTE_NAMED
+    if not parts:
+        return NOTE_NONE, ""
+    return kind, "\n\n" + "\n\n".join(parts)
 
 
 def fallback_text(ledger: RunLedger) -> str:
@@ -642,15 +891,26 @@ class CheckAnswers(ChatMiddleware):
                          error=type(exc).__name__)
             return PASS, None
 
-    def _log(self, result: CheckResult | None, outcome: str) -> None:
+    def _log(self, result: CheckResult | None, outcome: str, note: str | None = None) -> None:
         # The run id comes from the bound run context (``acb_common._log``).
+        # ``note`` is the KIND of the note of round 8, never its text.
         if result is None:
             return
+        extra = {"note": note} if note is not None else {}
         _log.info(
             "answer_check.checked", mode=self._mode,
             numbers=len(result.figures), mismatches=len(result.unmatched),
-            outcome=outcome,
+            outcome=outcome, **extra,
         )
+
+    def _note(self, result: CheckResult) -> tuple[str, str]:
+        """:func:`note_text`, but a note that raises gives no note: the
+        answer still goes out (round 6)."""
+        try:
+            return note_text(result, self._ledger)
+        except Exception as exc:
+            _log.warning("answer_check.note_failed", error=type(exc).__name__)
+            return NOTE_NONE, ""
 
     def _verdict(self, response: ChatResponse) -> tuple[str, CheckResult]:
         """``pass``, ``strip`` (the text failed, the calls may go) or ``fail``.
@@ -705,7 +965,11 @@ class CheckAnswers(ChatMiddleware):
         def _look(response: ChatResponse) -> ChatResponse:
             try:
                 verdict, result = self._verdict(response)
-                self._log(result, "shadow_pass" if verdict == PASS else "shadow_mismatch")
+                if verdict == PASS:
+                    self._log(result, "shadow_pass")
+                else:
+                    # The kind of note that ``on`` would add, for the replay.
+                    self._log(result, "shadow_mismatch", self._note(result)[0])
             except Exception as exc:
                 _log.warning("answer_check.shadow_failed", error=type(exc).__name__)
             return response
@@ -755,13 +1019,16 @@ class CheckAnswers(ChatMiddleware):
             result, response, updates = result2, second, retry_updates
         last = updates[-1] if updates else None
         if (response.text or "").strip():
-            # Round 7: the answer goes out, with a caveat that names the
-            # figures the check could not match. It is never replaced.
-            self._log(result, "caveat")
+            # Round 7: the answer goes out, and it is never replaced. Round
+            # 8: the note explains, asks or says how, in plain words.
+            kind, note = self._note(result)
+            self._log(result, "caveat", kind)
             for update in updates:
                 yield update
+            if not note:
+                return
             yield ChatResponseUpdate(
-                contents=[Content.from_text(caveat_text(result))], role="assistant",
+                contents=[Content.from_text(note)], role="assistant",
                 response_id=getattr(last, "response_id", None) or response.response_id,
                 message_id=getattr(last, "message_id", None),
                 model=getattr(last, "model", None), finish_reason="stop",
@@ -803,8 +1070,9 @@ class CheckAnswers(ChatMiddleware):
                 return _without_text(second)
             result, response = result2, second
         if (response.text or "").strip():
-            self._log(result, "caveat")
-            return _with_caveat(response, caveat_text(result))
+            kind, note = self._note(result)
+            self._log(result, "caveat", kind)
+            return _with_caveat(response, note) if note else response
         self._log(result, "fallback")
         return ChatResponse(
             messages=[Message("assistant", [fallback_text(self._ledger)])],
@@ -905,10 +1173,12 @@ __all__ = [
     "RunLedger",
     "answer_check_mode",
     "argument_sources",
-    "caveat_text",
     "display_text",
+    "empty_group",
     "fallback_text",
     "holds_crm_tool",
     "member_words",
+    "note_text",
+    "read_line",
     "retry_note",
 ]

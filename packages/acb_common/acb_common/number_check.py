@@ -807,9 +807,12 @@ def _ranges(target_kind: str, pool_kind: str, a: Decimal, target: Decimal,
     return out
 
 
-#: The pools that can give a derived figure of each kind.
+#: The pools that can give a derived figure of each kind. A money figure
+#: takes the plain pool too (round 8): a module total prints its amount
+#: field with no currency sign, so a sum of rupees can reach the pool as a
+#: plain number.
 _TARGET_POOLS: dict[str, tuple[str, ...]] = {
-    MONEY: (MONEY,),
+    MONEY: (MONEY, PLAIN),
     PLAIN: (MONEY, PLAIN, PERCENT),
     PERCENT: (MONEY, PLAIN, PERCENT),
 }
@@ -1484,6 +1487,33 @@ def check(text: str, sources: Sources | Iterable[str]) -> CheckResult:
     return CheckResult(figures=figures, unmatched=tuple(figures[i] for i in pending))
 
 
+#: The most failed figures that the chat note explains one by one. Past
+#: it, the note names no figure (round 8).
+MAX_EXPLAIN = 12
+
+
+def arithmetic(result: CheckResult, figure: Figure) -> tuple[Figure, str, Figure] | None:
+    """Two OTHER figures of the text that passed, whose sum or difference
+    gives *figure*: ``(a, "plus", b)`` or ``(a, "less", b)``. Each one of
+    the three states a rounded value, so their rooms add up. ``None`` when
+    no pair gives it. The chat note says so in words (round 8)."""
+    if figure.unreadable or figure.kind == PERCENT:
+        return None
+    failed = {f.start for f in result.unmatched}
+    passed = [f for f in result.figures
+              if f.start not in failed and not f.unreadable and _same_kind(figure, f)]
+    target = abs(figure.value)
+    for i, a in enumerate(passed):
+        for b in passed[i + 1:]:
+            room = figure.strict_room + a.strict_room + b.strict_room
+            big, small = (a, b) if abs(a.value) >= abs(b.value) else (b, a)
+            if _within(abs(big.value) + abs(small.value), target, room):
+                return big, "plus", small
+            if _within(abs(big.value) - abs(small.value), target, room):
+                return big, "less", small
+    return None
+
+
 def group_indian(whole: int) -> str:
     """*whole* with Indian grouping: 1234567 -> ``12,34,567``."""
     sign = "-" if whole < 0 else ""
@@ -1517,6 +1547,7 @@ def format_figure(value: Decimal | int | float, kind: str = PLAIN, *, decimals: 
 
 
 __all__ = [
-    "MONEY", "PERCENT", "PLAIN", "CheckResult", "Figure", "Sources", "check",
-    "find_figures", "format_figure", "group_indian",
+    "EMPTY_LABELS", "MAX_EXPLAIN", "MONEY", "PERCENT", "PLAIN", "CheckResult", "Figure",
+    "Sources", "arithmetic", "check", "find_figures", "format_figure", "group_indian",
+    "list_counts",
 ]
