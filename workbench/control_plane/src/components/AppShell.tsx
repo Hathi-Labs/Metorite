@@ -115,7 +115,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerContent, setDrawerContent] = useState<ReactNode>(null);
   const pathname = usePathname();
-  const { loading: accessLoading } = useAccess();
+  const { access, loading: accessLoading } = useAccess();
 
   /**
    * ⚠️ Bind the read cache to whoever is signed in.
@@ -132,9 +132,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
    */
   const { data: cacheSession } = useSession();
   const signedInAs = cacheSession?.user?.email ?? null;
+  // ⚠️ The organization binds too (WS-53, 2026-10-19). An email alone let a
+  // cached answer of org A, such as a CRM gate that was off, hide org B's
+  // section in the same tab. An unknown org (the access read has not
+  // answered) changes nothing, so the first load does not empty it twice.
+  const cacheOrg = access.organization?.id ?? null;
   useEffect(() => {
-    bindIdentity(signedInAs);
-  }, [signedInAs]);
+    bindIdentity(signedInAs, cacheOrg);
+  }, [signedInAs, cacheOrg]);
   // ⚠️ A switch (or a sign-in as someone else) in ANOTHER tab changes the
   // cookie under this one. This reloads the tab, so it never writes as an
   // account it does not show (`lib/accountSwitch.ts`).

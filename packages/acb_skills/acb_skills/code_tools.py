@@ -242,6 +242,21 @@ async def run_script(path: str, args: str = "") -> str:
         cmd = ["bash", str(target)]
     else:
         return f"run_script failed: unsupported script type {suffix!r} (py|sh)."
+    # A push of agent code needs the operator's reviewer (2026-10-19). The
+    # Copilot permission guard reads the command; a script hides it, so read
+    # the script text too. Fence: test_chat_autopush_reviewer_gate.py.
+    from acb_skills.permission_policy import (
+        AGENT_PUSH_WITHHELD_REASON,
+        agent_push_allowed_for_this_run,
+        is_git_push_text,
+    )
+    if not agent_push_allowed_for_this_run():
+        try:
+            script_text = target.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            script_text = ""
+        if is_git_push_text(script_text):
+            return f"run_script blocked: {AGENT_PUSH_WITHHELD_REASON}."
     try:
         cmd += shlex.split(args or "")
     except ValueError as exc:

@@ -6,6 +6,7 @@ import {
   FRESH_MS,
   MAX_ENTRIES,
   bindIdentity,
+  boundOrganization,
   cacheKey,
   clearAll,
   guardedPut,
@@ -446,6 +447,35 @@ describe("⚠️ bindIdentity — the tenancy guard", () => {
   it("reports who it is holding rows for", () => {
     bindIdentity("who@example.com");
     expect(identity()).toBe("who@example.com");
+  });
+
+  // WS-53, 2026-10-19: one member saw two orgs in one tab, and org A's cached
+  // answers showed in org B.
+  it("EMPTIES the cache when the org changes and the member does not", () => {
+    bindIdentity("admin@example.com", "org-a");
+    put("crm:questions", { rows: ["org A's questions"] });
+    expect(bindIdentity("admin@example.com", "org-b")).toBe(true);
+    expect(peek("crm:questions")).toBeUndefined();
+    expect(boundOrganization()).toBe("org-b");
+  });
+
+  it("does not empty the cache when the org first becomes known", () => {
+    // The first load: the session answers before the access read does.
+    bindIdentity("first-load@example.com");
+    put("crm:questions", 1);
+    expect(bindIdentity("first-load@example.com", "org-a")).toBe(false);
+    expect(peek("crm:questions")?.data).toBe(1);
+  });
+
+  it("an unknown org changes nothing, and does not forget the last known org", () => {
+    bindIdentity("outage@example.com", "org-a");
+    put("crm:questions", 1);
+    // The access read failed, so the org is unknown for a moment.
+    expect(bindIdentity("outage@example.com", null)).toBe(false);
+    expect(peek("crm:questions")?.data).toBe(1);
+    // It comes back naming another org: that is a change.
+    expect(bindIdentity("outage@example.com", "org-b")).toBe(true);
+    expect(size()).toBe(0);
   });
 });
 
