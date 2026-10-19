@@ -740,8 +740,9 @@ async def _agent_user(request: Request) -> UserContext:
 
     # 5. Checked before the resolve, so a bad stamp binds no tenant. The stamp
     # is the one the connection's origin and client id give (EA-13a), and it
-    # has the stamp's shape. The legacy host stamp `mcp:<host>` of the row
-    # gets the 401 too (H-356 closed the window of EA-13a fix round 1).
+    # has the stamp's shape. When the row's client id gives a slug, its legacy
+    # host stamp `mcp:<host>` gets the 401 too (H-356 closed the window of
+    # EA-13a fix round 1).
     expected_via = agent_oauth.actor_via_for(
         connection.client_origin, client_id=connection.client_id,
     )
