@@ -8099,7 +8099,9 @@ def _context_preamble_parts(
     # because no run knew the date. Last, so each block above keeps its place.
     from acb_common.today import today_line
 
-    parts.append(today_line())
+    line = today_line()
+    if line:
+        parts.append(line)
     return parts
 
 

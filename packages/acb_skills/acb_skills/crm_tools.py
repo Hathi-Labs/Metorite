@@ -2643,7 +2643,9 @@ async def _term_answer(slug: str, params: dict[str, Any], page: int | None, term
     measure = _term_measure(str(params.get("measure") or ""))
     again = {**params, "field": chosen["key"], "measure": measure}
     figure = await _aggregate_text(slug, again, page)
-    others = [c for c in cands if c.get("key") != chosen.get("key")][:1]
+    # The one alternative the note names: the first candidate that is not chosen.
+    alt = next((c for c in cands if c.get("key") != chosen.get("key")), None)
+    others = [alt] if alt is not None else []
     for other in others:
         if other["key"] not in read:
             read[other["key"]] = await _term_read(params, other["key"])
@@ -2719,7 +2721,13 @@ async def _term_total(slug: str, params: dict[str, Any], page: int | None, term:
         chosen = next((c for c in cands if c["key"] == decided), cands[0])
         return await _term_answer(slug, params, page, word, chosen,
                                   str(body.get("why") or "it decides"), read, cands)
-    top = cands[:TERM_TOTALS]
+    # The best TERM_TOTALS candidates, by rank. Each one costs one aggregate,
+    # so the read budget bounds them; they are options, not rows.
+    top: list[dict[str, Any]] = []
+    for c in cands:
+        if len(top) == TERM_TOTALS:
+            break
+        top.append(c)
     for c in top:
         read[c["key"]] = await _term_read(params, c["key"])
     if body.get("held"):
