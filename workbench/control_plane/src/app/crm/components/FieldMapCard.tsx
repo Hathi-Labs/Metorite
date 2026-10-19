@@ -386,8 +386,14 @@ export function FieldMapCardView({
   handlers,
   plan,
   planHandlers,
+  errors,
+  onRetry,
 }: {
   maps: Record<EntitySlug, FieldMap | null>;
+  /** The text of a failed read, per entity. */
+  errors?: Partial<Record<EntitySlug, string>>;
+  /** Read the failed maps again. */
+  onRetry?: () => void;
   handlers: FieldMapHandlers;
   /** CRM-Q18-2. Without it the card draws no plan part. */
   plan?: PlanView;
@@ -397,30 +403,49 @@ export function FieldMapCardView({
     <Card title={FIELD_MAP_TITLE} note={FIELD_MAP_NOTE}>
       {plan && planHandlers && <PlanPanel view={plan} handlers={planHandlers} />}
       <div className="divide-y divide-border/60">
-        {FIELD_ENTITIES.map(({ slug, label }) => {
+        {FIELD_ENTITIES.map(({ slug, label }, index) => {
           const map = maps[slug];
+          const error = errors?.[slug];
           return (
             <div key={slug} aria-label={label} className="px-4 py-3">
-              <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                {label}
-              </h3>
-              {map === null ? (
-                <p className="pt-2 text-xs text-muted-foreground">Loading.</p>
-              ) : map.fields.length === 0 ? (
-                <p className="pt-2 text-xs text-muted-foreground">{NO_FIELDS}</p>
-              ) : (
-                <ul className="divide-y divide-border/40">
-                  {map.fields.map((field) => (
-                    <FieldRow
-                      key={field.key}
-                      entity={slug}
-                      field={field}
-                      rule={ruleFor(map, field.key)}
-                      handlers={handlers}
-                    />
-                  ))}
-                </ul>
-              )}
+              <CollapsibleSection
+                label={label}
+                count={map ? map.fields.length : null}
+                defaultOpen={index === 0}
+                keepMounted
+              >
+                {error && !map ? (
+                  <div className="flex flex-wrap items-center gap-3 pt-2">
+                    <p className="text-xs text-destructive">
+                      Could not load the {label.toLowerCase()} fields: {error}. Try again.
+                    </p>
+                    {onRetry && (
+                      <Button size="sm" variant="secondary" onClick={onRetry}>
+                        Try again
+                      </Button>
+                    )}
+                  </div>
+                ) : map === null ? (
+                  <div className="space-y-2 pt-2" aria-label={`Loading ${label}`}>
+                    <Skeleton className="h-4 w-40" />
+                    <Skeleton className="h-4 w-56" />
+                  </div>
+                ) : map.fields.length === 0 ? (
+                  <p className="pt-2 text-xs text-muted-foreground">{NO_FIELDS}</p>
+                ) : (
+                  <ul className="divide-y divide-border/40">
+                    {map.fields.map((field) => (
+                      <FieldRow
+                        key={field.key}
+                        entity={slug}
+                        field={field}
+                        rule={ruleFor(map, field.key)}
+                        handlers={handlers}
+                      />
+                    ))}
+                  </ul>
+                )}
+              </CollapsibleSection>
             </div>
           );
         })}
@@ -429,11 +454,15 @@ export function FieldMapCardView({
   );
 }
 
-function useFieldMap(entity: EntitySlug): FieldMap | null {
+type FieldMapRead = { map: FieldMap | null; error: string | null; retry: () => void };
+
+/** One entity's map. A failed read gives `error`, so the card can say so. */
+function useFieldMap(entity: EntitySlug): FieldMapRead {
   const res = useCachedResource<FieldMap | null>(`${KEY_PREFIX}${entity}`, () =>
-    api.getFieldMap(entity).catch(() => null),
+    api.getFieldMap(entity),
   );
-  return res.data ?? null;
+  const map = res.data ?? null;
+  return { map, error: map ? null : res.error, retry: res.refresh };
 }
 
 const PLANS_KEY = `${KEY_PREFIX}plans`;
@@ -469,10 +498,21 @@ const PLAN_CALLS: PlanCalls = {
 export default function FieldMapCard() {
   const toast = useToast();
   const [busy, setBusy] = useState<string | null>(null);
-  const leads = useFieldMap("leads");
-  const contacts = useFieldMap("contacts");
-  const organizations = useFieldMap("organizations");
-  const deals = useFieldMap("deals");
+  const reads = {
+    leads: useFieldMap("leads"),
+    contacts: useFieldMap("contacts"),
+    organizations: useFieldMap("organizations"),
+    deals: useFieldMap("deals"),
+  };
+  const leads = reads.leads.map;
+  const contacts = reads.contacts.map;
+  const organizations = reads.organizations.map;
+  const deals = reads.deals.map;
+  const errors: Partial<Record<EntitySlug, string>> = {};
+  for (const [slug, r] of Object.entries(reads)) {
+    if (r.error) errors[slug as EntitySlug] = r.error;
+  }
+  const retryAll = () => Object.values(reads).forEach((r) => r.error && r.retry());
 
   // CRM-Q18-2: the plan.
   const plans = useCachedResource<PlanList>(PLANS_KEY, () => api.listMappingPlans());
@@ -596,6 +636,8 @@ export default function FieldMapCard() {
     <>
       <FieldMapCardView
         maps={{ leads, contacts, organizations, deals }}
+        errors={errors}
+        onRetry={retryAll}
         handlers={handlers}
         plan={plan}
         planHandlers={planHandlers}

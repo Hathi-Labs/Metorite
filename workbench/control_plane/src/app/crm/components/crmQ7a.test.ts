@@ -123,7 +123,7 @@ describe("the words of the card", () => {
     // still holds `confidence: 0.62`, and the line leaves it out.
     expect(leadMap().rules[1].confidence).toBe(0.62);
     expect(ruleLine(leadMap().rules[1])).toBe(
-      "Proposed by the assistant · The labels name an industry.",
+      "Proposed by the AI · The labels name an industry.",
     );
     expect(ruleLine(rule())).toBe("Picked by an admin");
   });
