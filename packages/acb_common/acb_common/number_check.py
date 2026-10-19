@@ -611,12 +611,15 @@ class Sources:
             self.add_value(Decimal(digits), PERCENT)
 
     def _add_lines(self, text: str, figures: list[Figure]) -> None:
-        """Keep the counts of each line of *text*: "won 20, lost 7"."""
+        """Keep the counts of each line of *text*: "won 20, lost 7". The line
+        of a figure comes from a bisect of the line starts, so a text of
+        100,000 figures costs one pass, not one count each."""
+        starts = [0, *(m.end() for m in re.finditer("\n", text))]
         lines: dict[int, list[Decimal]] = {}
         for figure in figures:
             if figure.kind == PLAIN:
-                lines.setdefault(text.count("\n", 0, figure.start), []).append(
-                    abs(figure.value))
+                line = bisect.bisect_right(starts, figure.start) - 1
+                lines.setdefault(line, []).append(abs(figure.value))
         with self._lock:
             self._lines.extend(tuple(v) for v in lines.values() if len(v) >= 2)
 
