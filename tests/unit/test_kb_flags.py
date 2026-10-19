@@ -25,7 +25,7 @@ from gateway.routes.knowledge import flags as kb_flags
 ORG = "11111111-1111-1111-1111-111111111111"
 OTHER = "22222222-2222-2222-2222-222222222222"
 
-#: Each route of KB-1 and KB-3, with a body that passes validation where one
+#: Each route of KB-1, KB-2g and KB-3, with a body that passes validation where one
 #: is needed.
 CALLS: list[tuple[str, str, dict[str, Any] | None]] = [
     ("GET", "/knowledge/spaces", None),
@@ -41,6 +41,7 @@ CALLS: list[tuple[str, str, dict[str, Any] | None]] = [
     ("POST", f"/knowledge/pages/{OTHER}/archive", None),
     ("POST", f"/knowledge/pages/{OTHER}/restore", None),
     ("POST", f"/knowledge/pages/{OTHER}/revert", {"version": 1}),
+    ("GET", f"/knowledge/pages/{OTHER}/versions/2", None),
     ("GET", "/knowledge/search?q=refund+window", None),
 ]
 
@@ -82,13 +83,18 @@ def test_the_settings_default_is_off_and_empty() -> None:
     assert fields["knowledge_embed"].default == ""
 
 
-def test_the_router_carries_all_fourteen_routes() -> None:
+def _template(path: str) -> str:
+    """The route template of a concrete path in ``CALLS``."""
+    out = path.split("?")[0].replace(
+        OTHER, "{page_id}" if "/pages/" in path else "{space_id}")
+    return out.replace("/versions/2", "/versions/{version}")
+
+
+def test_the_router_carries_every_route() -> None:
     found = {
         (sorted(r.methods)[0], r.path) for r in kb_package.router.routes
     }
-    assert found == {(m, p.split("?")[0].replace(
-        OTHER, "{page_id}" if "/pages/" in p else "{space_id}"))
-                     for m, p, _ in CALLS}
+    assert found == {(m, _template(p)) for m, p, _ in CALLS}
 
 
 def test_switch_off_answers_404_on_each_route(monkeypatch: pytest.MonkeyPatch) -> None:
