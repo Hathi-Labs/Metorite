@@ -6823,25 +6823,16 @@ async def _run_with_maf_agent(
             from agent_framework._types import \
                 Message as _Message
 
-            # Fold the integrations preamble into the leading system context so
-            # the assembler carries it as one system message (it emits a single
-            # leading system block).
-            system_parts: list[str] = []
-            system_context = event_payload.get("system_context") or ""
-            if system_context.strip():
-                system_parts.append(system_context.strip())
-            integration_warnings: dict[str, str] = event_payload.get("integration_warnings", {})
-            if integrations:
-                system_parts.append(
-                    "Connected integrations: " + ", ".join(sorted(integrations.keys())) + "."
-                )
-            if integration_warnings:
-                missing = ", ".join(sorted(integration_warnings.keys()))
-                system_parts.append(
-                    f"Missing integrations (not yet configured): {missing}. "
-                    "If the user task requires one of these, ask them to provide the credential. "
-                    "When they do, output: <<<SETUP:service_name:ENV_VAR_NAME=value>>>"
-                )
+            # The per-turn context blocks go in as the one leading system
+            # message (the assembler emits a single leading system block).
+            # WS-47 parity (2026-10-19): the SAME builder as the web stream
+            # path (`_context_preamble_parts`), so a WhatsApp run gets the
+            # org name, the Knowledge index, the memory and the number-system
+            # line too. This path built only the system context and the
+            # integrations, so those four blocks never reached a WhatsApp run.
+            # Fence: tests/unit/test_wac_channel_parity.py.
+            system_parts = _context_preamble_parts(
+                event_payload, integrations, agent_name)
 
             _model = _active_run_model.get() or ""
             assembled = assemble_run_context(

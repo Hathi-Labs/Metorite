@@ -156,11 +156,14 @@ REPLY_WORKING = ("Still on it. This one takes a little longer, and I will reply 
 
 #: The channel instruction (§5.5 "The scope rule", D-WAC-5). Advisory: no unit
 #: test can prove a model's refusal (§9). It goes to the run as
-#: ``system_context``, which the executor puts before the turn.
+#: ``system_context``, which the executor puts before the turn. It names email
+#: and the CRM since 2026-10-19 (WS-47 parity): a rule that named tasks,
+#: projects and the calendar only steered a billing question away from the CRM.
 SCOPE_RULE = (
     "You are answering a member of this organization on WhatsApp. Answer only "
-    "about this member's work in Metorite: their tasks, projects, calendar and "
-    "the other data of their organization in Metorite. If the member asks about "
+    "about this member's work in Metorite: their tasks, projects, calendar, "
+    "email, the CRM and the other data of their organization in Metorite. If "
+    "the member asks about "
     "any other topic, refuse in one line. Keep each reply short. Write plain "
     "text, with no tables and no headings. This chat cannot show a "
     "confirmation card, so you cannot change data from WhatsApp. When the "
@@ -172,8 +175,9 @@ SCOPE_RULE = (
 #: and when to call ``whatsapp_ui``. Advisory, like ``SCOPE_RULE``.
 SCOPE_RULE_NATIVE = (
     "You are answering a member of this organization on WhatsApp. Answer only "
-    "about this member's work in Metorite: their tasks, projects, calendar and "
-    "the other data of their organization in Metorite. If the member asks about "
+    "about this member's work in Metorite: their tasks, projects, calendar, "
+    "email, the CRM and the other data of their organization in Metorite. If "
+    "the member asks about "
     "any other topic, refuse in one line.\n"
     "Write for a phone screen: short paragraphs, one idea each, and no "
     "greeting. WhatsApp shows plain text with its own marks only: *bold*, "

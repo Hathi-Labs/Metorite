@@ -6229,6 +6229,11 @@ of its app as rows of one shape:
   of `GET /crm/mode` (`_tool_injection.py:1456-1490`). This amends
   "How the catalogue reaches the model" of §18.13.4 for answered facts
   only. The rest of the catalogue stays in `crm_list_modules`.
+  *(Amended 2026-10-19, WS-47 parity.)* The block holds 13 lines at most.
+  Its second line, `CRM_ROUTING_LINE`, sends business figures (billing,
+  invoices, collections, payments, circles, sites, revenue and amounts) to
+  the CRM tools. It says that `search_company` finds documents, not CRM
+  records. The facts keep their 11 lines.
 
 **3. People see the facts in Knowledge.** When Knowledge is on for the org,
 the CRM writes one read-only page, "How our CRM data is organised", in the
