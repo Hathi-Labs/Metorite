@@ -228,15 +228,18 @@ def _minted_session(ctx: Mapping[str, Any] | None) -> bool:
 
 
 def _card_can_show(ctx: Mapping[str, Any] | None) -> bool:
-    """True when the run can show the member's card: a member, no batch run
-    and no WhatsApp run. Only such a run fails closed on a Redis fault."""
+    """True when the run can ask the member: a member, no batch run, and no
+    WhatsApp run, or a WhatsApp run that asks with its Confirm and Cancel
+    buttons (WS-47 WAC-P4, ``whatsapp_acts.answer_egress``). Only such a run
+    fails closed on a Redis fault."""
     ctx = ctx or {}
     if not ctx.get("member") or ctx.get("batch_thread") is True:
         return False
     try:
         from acb_skills.whatsapp_ui import current_run
 
-        return current_run() is None
+        run = current_run()
+        return run is None or bool(getattr(run, "writes", False))
     except Exception:
         return True
 
@@ -424,6 +427,160 @@ def read_untrusted_answer(ctx: Mapping[str, Any] | None = None) -> bool:
         return False
     with _MARKED_LOCK:
         return session in _MARKED_SESSIONS
+
+
+# ── The member's view of one egress call (WS-47 WAC-P4 review, P1-1) ────────
+#
+# The member says yes to an egress call after an untrusted answer: on the web
+# with a card, on WhatsApp with the Confirm button. Both showed the first 600
+# characters of the call's JSON, in the order the model chose. A long body
+# first hid ``to`` and the attachments, so a member could approve a mail to
+# an attacker. The ONE builder below puts what the member must see first and
+# in full, whatever the order of the arguments. Code decides the order.
+# Fence: ``tests/unit/test_wac_untrusted_confirm.py``.
+
+#: The fields that a member always sees in full: the recipients and the
+#: subject, in this order, at any depth of the arguments.
+#: A destination of another egress tool counts too (review round 2): a URL,
+#: a phone or a channel that sorted after a long body hid the place the call
+#: goes to, for example a ``fetch_page`` URL with a padded login part.
+CALL_KEY_FIELDS: tuple[str, ...] = (
+    "to", "cc", "bcc", "reply_to", "recipients", "email", "phone",
+    "participants", "channel", "url", "uri", "endpoint", "webhook_url", "subject",
+)
+#: The fields that hold attachments. Each one shows by its name.
+CALL_ATTACHMENT_FIELDS: tuple[str, ...] = ("attachments", "attachment", "files")
+#: The most characters of the other arguments (the body) that the view shows.
+CALL_OTHER_CHARS = 600
+#: How deep the builder looks for a key field.
+_CALL_DEPTH = 6
+
+
+def _shown(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    import json
+
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _with_host(text: str) -> str:
+    """*text*, with the host it calls first when it is a URL. A login part
+    (``user@``) can pad a URL so that a cut view hides the real host."""
+    if "://" not in text:
+        return text
+    from urllib.parse import urlsplit
+
+    try:
+        host = urlsplit(text.strip()).hostname
+    except ValueError:
+        host = None
+    return f"[host: {host or 'unknown'}] {text}"
+
+
+def _destination(value: Any) -> str:
+    """The text of one key field, with the host of each URL in it first."""
+    if isinstance(value, str):
+        return _with_host(value)
+    if isinstance(value, list | tuple) and all(isinstance(v, str) for v in value):
+        return ", ".join(_with_host(v) for v in value)
+    return _shown(value)
+
+
+def _attachment_names(value: Any) -> list[str]:
+    items = value if isinstance(value, list | tuple) else [value]
+    names: list[str] = []
+    for item in items:
+        if isinstance(item, Mapping):
+            name = (item.get("name") or item.get("filename") or item.get("file_name")
+                    or item.get("path") or item.get("id"))
+            names.append(_shown(name if name is not None else item))
+        else:
+            names.append(_shown(item))
+    return names
+
+
+def _split_call(value: Any, path: str, depth: int,
+                keys: list[tuple[str, str]], rest: dict[str, Any]) -> None:
+    """Move each key field and attachment field of *value* into *keys*, as
+    ``(path, text)``, and the rest into *rest*. A call nested past
+    :data:`_CALL_DEPTH` stays whole in *rest*, and its key fields count as
+    unseen (:func:`egress_call_view` refuses it)."""
+    if not isinstance(value, Mapping) or depth > _CALL_DEPTH:
+        rest[path or "(value)"] = value
+        return
+    for name in sorted(value, key=str):
+        inner = value[name]
+        where = f"{path}.{name}" if path else str(name)
+        low = str(name).lower()
+        if low in CALL_KEY_FIELDS:
+            keys.append((where, _destination(inner)))
+        elif low in CALL_ATTACHMENT_FIELDS:
+            keys.append((where, ", ".join(_attachment_names(inner))))
+        elif isinstance(inner, Mapping):
+            _split_call(inner, where, depth + 1, keys, rest)
+        else:
+            rest[where] = inner
+
+
+def _key_rank(path: str) -> tuple[int, str]:
+    leaf = path.rsplit(".", 1)[-1].lower()
+    order = (*CALL_KEY_FIELDS, *CALL_ATTACHMENT_FIELDS)
+    return (order.index(leaf) if leaf in order else len(order), path)
+
+
+def _hides_a_key_field(value: Any, depth: int = 0, hidden: bool = False) -> bool:
+    """True when a key field sits where the builder does not look: deeper
+    than :data:`_CALL_DEPTH`, or inside a list. The walk stops at 32 levels,
+    and a value deeper than that counts as hidden."""
+    if depth > 32:
+        return True
+    if isinstance(value, list | tuple):
+        return any(_hides_a_key_field(v, depth + 1, True) for v in value)
+    if not isinstance(value, Mapping):
+        return False
+    hidden = hidden or depth > _CALL_DEPTH
+    if hidden and any(str(k).lower() in (*CALL_KEY_FIELDS, *CALL_ATTACHMENT_FIELDS)
+                      for k in value):
+        return True
+    return any(_hides_a_key_field(v, depth + 1, hidden) for v in value.values())
+
+
+def egress_call_view(tool: str, arguments: Mapping[str, Any] | None,
+                     limit: int) -> str | None:
+    """What the member reads before they approve ONE egress call, or None.
+
+    The tool name first. Then each recipient field, the subject and each
+    attachment name, in full and in a fixed order (:data:`CALL_KEY_FIELDS`,
+    :data:`CALL_ATTACHMENT_FIELDS`). Then the other arguments as JSON in key
+    order, cut with "…" to :data:`CALL_OTHER_CHARS` and to *limit*.
+
+    None when the tool name and the key fields alone do not fit in *limit*,
+    or when a key field sits too deep to show. The caller then asks no yes:
+    the member could not see what the yes approves."""
+    import json
+
+    keys: list[tuple[str, str]] = []
+    rest: dict[str, Any] = {}
+    args = dict(arguments or {})
+    if _hides_a_key_field(args):
+        return None
+    _split_call(args, "", 0, keys, rest)
+    lines = [f"Tool: {tool}"]
+    lines.extend(f"{path}: {text}" for path, text in sorted(keys, key=lambda k: _key_rank(k[0])))
+    head = "\n".join(lines)
+    if len(head) > limit:
+        return None
+    if not rest:
+        return head
+    other = json.dumps(rest, ensure_ascii=False, sort_keys=True, default=str)
+    room = min(CALL_OTHER_CHARS, limit - len(head) - len("\nOther: "))
+    if room < 2:
+        return None  # the member could not see that the call holds more
+    if len(other) > room:
+        other = other[: room - 1] + "…"
+    return f"{head}\nOther: {other}"
+
 
 #: The answer to a call that the control refuses. It names what is true of
 #: this run and claims nothing about the whole platform.
