@@ -698,9 +698,12 @@ AGENT_PUSH_WITHHELD_REASON = (
 #: ``git ... push`` or ``git ... send-pack``, with any global options between
 #: (``-C <dir>``, ``-c <key=value>``, ``--no-pager``). A word such as "push"
 #: inside a commit message does not match, because only options may come
-#: between ``git`` and the verb.
+#: between ``git`` and the verb. A path to the binary (``/usr/bin/git``,
+#: ``./git``, ``C:\...\git.exe``) and a shell escape (``\git``) count as git
+#: too (review of #1168), so ``/`` and ``\`` may come before it, and ``.exe``
+#: may follow it.
 _GIT_PUSH_RE = re.compile(
-    r"(?:^|[\s;&|(`'\"$])git"
+    r"(?:^|[\s;&|(`'\"$/\\])git(?:\.exe)?"
     r"(?:\s+(?:-[Cc]\s+(?:\"[^\"]*\"|'[^']*'|\S+)|--?[\w-]+(?:=\S+)?))*"
     r"\s+(?:push|send-pack)\b",
     re.IGNORECASE,

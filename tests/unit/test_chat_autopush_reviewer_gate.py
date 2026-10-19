@@ -331,6 +331,12 @@ _PUSH = "git push --no-verify origin HEAD"
     "git -c core.hooksPath=/dev/null push origin HEAD",
     "cd repo; git push",
     "GIT_TERMINAL_PROMPT=0 git push",
+    # Review of #1168: a path to the binary, or a shell escape, is still git.
+    "/usr/bin/git push origin HEAD",
+    "cd repo && ./git push",
+    "\\git push origin HEAD",
+    "C:\\Program Files\\Git\\bin\\git.exe push",
+    "git.exe push origin HEAD",
 ])
 def test_a_member_who_is_not_a_reviewer_cannot_push(command: str) -> None:
     from acb_skills import permission_policy as pp
