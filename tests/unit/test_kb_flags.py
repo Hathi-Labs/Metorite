@@ -25,7 +25,7 @@ from gateway.routes.knowledge import flags as kb_flags
 ORG = "11111111-1111-1111-1111-111111111111"
 OTHER = "22222222-2222-2222-2222-222222222222"
 
-#: Each route of KB-1 and KB-3, with a body that passes validation where one
+#: Each route of KB-1, KB-3 and KB-2f, with a body that passes validation where one
 #: is needed.
 CALLS: list[tuple[str, str, dict[str, Any] | None]] = [
     ("GET", "/knowledge/spaces", None),
@@ -42,6 +42,11 @@ CALLS: list[tuple[str, str, dict[str, Any] | None]] = [
     ("POST", f"/knowledge/pages/{OTHER}/restore", None),
     ("POST", f"/knowledge/pages/{OTHER}/revert", {"version": 1}),
     ("GET", "/knowledge/search?q=refund+window", None),
+    # KB-2f: the home lists and the favourites.
+    ("GET", "/knowledge/recent", None),
+    ("GET", "/knowledge/favorites", None),
+    ("POST", f"/knowledge/pages/{OTHER}/favorite", None),
+    ("DELETE", f"/knowledge/pages/{OTHER}/favorite", None),
 ]
 
 
@@ -82,7 +87,7 @@ def test_the_settings_default_is_off_and_empty() -> None:
     assert fields["knowledge_embed"].default == ""
 
 
-def test_the_router_carries_all_fourteen_routes() -> None:
+def test_the_router_carries_every_route() -> None:
     found = {
         (sorted(r.methods)[0], r.path) for r in kb_package.router.routes
     }

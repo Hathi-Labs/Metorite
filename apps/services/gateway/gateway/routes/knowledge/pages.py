@@ -5,7 +5,7 @@ Spec: ``project-docs/specs/knowledge_base.md`` §4.2, §5.3 and §5.4.
     GET  /knowledge/pages?space=&parent=&q=&state=   the tree or a list
     GET  /knowledge/pages/{id}                        one page, its versions, its links
     POST /knowledge/pages                             make a draft
-    PATCH /knowledge/pages/{id}                       edit, one version
+    PATCH /knowledge/pages/{id}                       edit, one version (the icon alone: none)
     POST /knowledge/pages/{id}/publish                publish
     POST /knowledge/pages/{id}/move                   change the space, the parent or the place
     POST /knowledge/pages/{id}/archive                archive (manage on the space)
@@ -49,7 +49,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from fastapi import BackgroundTasks, Depends, HTTPException, Query
 from gateway.kb_index import index as kb_index
-from gateway.routes.knowledge import core, flags
+from gateway.routes.knowledge import core, flags, icon
 from gateway.routes.knowledge.core import router
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -82,6 +82,8 @@ class PagePatch(BaseModel):
     body_md: str | None = Field(None, max_length=MAX_BODY)
     reviewers: list[str] | None = Field(None, max_length=core.MAX_REVIEWERS)
     review_at: datetime | None = None
+    #: One emoji, or empty or null to clear it (KB-2f, ``icon.clean_icon``).
+    icon: str | None = Field(None, max_length=64)
 
 
 class PageMove(BaseModel):
@@ -403,10 +405,15 @@ async def update_page(
     background: BackgroundTasks,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Edit the title, the body, the reviewers or the review date. One version."""
+    """Edit the title, the body, the reviewers, the review date or the icon.
+
+    One version. A change of only the icon writes no version, keeps
+    ``updated_at`` and does not reindex (KB-2f, ``icon.write_icon``).
+    """
     given = body.model_fields_set
     if not given:
         raise HTTPException(status_code=422, detail="Nothing to change.")
+    new_icon = icon.clean_icon(body.icon) if "icon" in given else None
     async with core._tenant_session() as db:
         page = await core.load_page(db, user, page_id, lock=True)
         if page is None:
@@ -417,8 +424,16 @@ async def update_page(
         level = await core.space_level(db, user, space)
         if not core.can_write_page(level):
             raise core.forbidden("Editing this page needs a write grant on its space.")
+        if given == {"icon"}:
+            # KB-2f: an icon is not a change in substance. No version, no
+            # `updated_at`, no index, as a move of the place only (KB-2e).
+            row = await icon.write_icon(db, user, str(page.id), new_icon)
+            return core.page_dict(row, position=await _rank(db, user, row))
         sets: list[str] = []
         params: dict[str, Any] = {}
+        if "icon" in given:
+            sets.append("icon = :icon")
+            params["icon"] = new_icon
         if "title" in given and body.title is not None:
             sets.append("title = :title")
             params["title"] = _title(body.title)

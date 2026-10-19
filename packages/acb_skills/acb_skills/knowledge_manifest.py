@@ -79,6 +79,12 @@ _GRANT_REASON = (
     "and a person applies it in the app."
 )
 
+#: KB-2f: a favourite is a personal shortcut of the Knowledge app.
+_FAVORITE_REASON = (
+    "A favourite is the member's own shortcut in the Knowledge app, not "
+    "company knowledge. The member stars a page in the app."
+)
+
 MANIFEST: tuple[Route, ...] = (
     # ── Spaces ──
     Route("GET", "/knowledge/spaces", "list_spaces", "A"),
@@ -95,6 +101,12 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/knowledge/pages/{page_id}/archive", "", "C", planned="KB-5"),
     Route("POST", "/knowledge/pages/{page_id}/restore", "", "C", planned="KB-5"),
     Route("POST", "/knowledge/pages/{page_id}/revert", "", "B", planned="KB-5"),
+    # ── Home and favourites (KB-2f, §21.7) ── A favourite is the member's
+    # own shortcut in the app, so the chat neither reads nor writes it.
+    Route("GET", "/knowledge/recent", "", "A", planned="KB-5"),
+    Route("GET", "/knowledge/favorites", "", "X", reason=_FAVORITE_REASON),
+    Route("POST", "/knowledge/pages/{page_id}/favorite", "", "X", reason=_FAVORITE_REASON),
+    Route("DELETE", "/knowledge/pages/{page_id}/favorite", "", "X", reason=_FAVORITE_REASON),
     # ── Search ── `search_company` already asks Knowledge (§20). The
     # Knowledge-only tool waits (§8.1, `search_knowledge` is deferred).
     Route("GET", "/knowledge/search", "", "A", planned="search_knowledge, deferred (§8.1)"),

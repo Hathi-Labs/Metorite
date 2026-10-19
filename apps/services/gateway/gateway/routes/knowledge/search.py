@@ -7,7 +7,9 @@ Spec: ``project-docs/specs/knowledge_base.md`` §6.3.
 It answers ``{query, hits, degraded}``. Each hit is one chunk of a published
 page the caller can see: ``page_id``, ``space_id``, ``space_name``,
 ``title``, ``heading_path``, ``text`` (at most 400 characters), ``score``,
-``updated_at`` and ``href``. The route sits on the Knowledge router, so it
+``updated_at``, ``href`` and ``icon`` (the page icon of KB-2f, or None). The
+company retrieval maps each hit to its own ``Hit`` and never reads ``icon``.
+The route sits on the Knowledge router, so it
 answers 404 unless ``KNOWLEDGE_ENABLED`` and ``KNOWLEDGE_ORGS`` allow the
 caller's org, then 403 without ``feature:knowledge``.
 
