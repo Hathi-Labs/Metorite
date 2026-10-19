@@ -2685,7 +2685,7 @@ def _ask_first_block(q: dict[str, Any], term: str, figures: dict[str, str]) -> s
         *(f'- "{label}" -> {key}' for label, key in keys),
         "4. Then give the total of the picked option from the list above, with the "
         "filters. No other read is needed.",
-        f'If the member picks "{KEEP_LABEL}", give the first total and say that it is '
+        "If the member picks the last option, give the first total and say that it is "
         "an assumption.",
     ]
     if not q.get("can_answer"):

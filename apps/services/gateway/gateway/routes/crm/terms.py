@@ -133,6 +133,7 @@ async def resolve_term(
     from gateway.routes.crm.modules import _require_module, mirrored_modules
     from gateway.routes.crm.questions import (
         _ask_model,
+        chat_card_questions,
         held_ids,
         load_for_terms,
         term_pickers,
@@ -167,11 +168,14 @@ async def resolve_term(
                 await runs.merge_cursor_entry(db, org, qs.QUESTIONS_ROW, terms.TERMS_BUCKET,
                                               qid, dict(asked))
             inputs = replace(inputs, terms={**inputs.terms, qid: asked})
-            q = qs.term_question(inputs, qid)
-            if q is not None:
-                ask = _ask_model(q, inputs, member=member,
+            # The card as `/crm/questions/ask` builds it, with the same
+            # steering, so the late check of a pick sees the same labels.
+            inputs, picked, steer = await chat_card_questions(db, org, inputs, [qid], False,
+                                                              member)
+            if picked:
+                ask = _ask_model(picked[0], inputs, member=member,
                                  admin=user.has_permission(ADMIN_PERMISSION),
-                                 held=False).model_dump()
+                                 held=False, steer=steer).model_dump()
     held = bool(ask) and member and qid in await held_ids(org, member, [qid])
     entry = next((e for e in inputs.entries if e.module == module), None)
     labels = {c.key: c.label for c in cands}
