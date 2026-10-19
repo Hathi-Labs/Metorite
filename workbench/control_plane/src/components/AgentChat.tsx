@@ -49,7 +49,8 @@ import {
   type PendingConfirmation,
 } from "@/lib/confirmationQueue";
 import { sendRespondInputResult } from "@/lib/respondInput";
-import { cardsToRestore, fetchPendingAsks } from "@/lib/pendingAsks";
+import { cardsToRestore, cardsToSettle, fetchPendingAsksOrNull } from "@/lib/pendingAsks";
+import { planCardRedraw } from "@/lib/cardReplay";
 import { identity as boundIdentity } from "@/lib/dataCache";
 import { useChatOpen, useThreadNeedsInput } from "@/hooks/useActiveSessions";
 import { CONTINUE_TEXT, interruptedTurn } from "@/lib/chatRecovery";
@@ -69,7 +70,7 @@ import TodoPanel from "@/components/TodoPanel";
 import ContextRing from "@/components/ContextRing";
 import RunStatusRow, { useSteadyRunView } from "@/components/RunStatusRow";
 import { isLivePhase, isRunActiveForUi } from "@/lib/runStatus";
-import { dispatchRun, getCardLog, getSessionState } from "@/lib/chatStore";
+import { dispatchRun, getCardLog, getSessionState, noteCardAnswered } from "@/lib/chatStore";
 import { PHONE_MAX_WIDTH, composerCap, composerHeight, offerExpand } from "@/lib/composerHeight";
 import { PROJECTS_AGENT } from "@/lib/projectsAgent";
 import { saveConversationOnUnmount } from "@/lib/chatMemorySave";
@@ -1120,9 +1121,39 @@ export default function AgentChat({
   // #1171). The run still waits on them, and the stream that read them may
   // still read the run, so no replay comes. The queue keys each card by its
   // request id, so a card never draws twice.
+  //
+  // A card redraws as WAITING only when nothing says it is settled
+  // (`planCardRedraw`, review of #1171, P1). An answered card draws as
+  // answered, with the answer. A question the run moved past draws nothing:
+  // another tab answered it. And where the server keeps pending asks, a card
+  // it does not list settles (the effect below).
+  const redrawnRef = useRef<{ all: Set<string>; waiting: Set<string> }>({ all: new Set(), waiting: new Set() });
   useEffect(() => {
-    for (const e of getCardLog(sessionId)) {
-      hitlRef.current.onCustomEvent?.({ name: e.name, value: e.value, threadId: sessionId });
+    const all = new Set<string>();
+    const waiting = new Set<string>();
+    redrawnRef.current = { all, waiting };
+    const emit = (name: string, value: unknown) =>
+      hitlRef.current.onCustomEvent?.({ name, value, threadId: sessionId });
+    for (const c of planCardRedraw(getCardLog(sessionId))) {
+      if (c.kind === "confirmation") {
+        all.add(c.requestId);
+        emit("confirmation_requested", c.value);
+        if (c.waiting) waiting.add(c.requestId);
+        else emit(CONFIRMATION_RESOLVED, { request_id: c.requestId, ...(c.answer ? { answer: c.answer } : {}) });
+        continue;
+      }
+      // Settled elsewhere, with no answer of this tab to show: nothing waits.
+      if (!c.waiting && c.answer === undefined && !c.declined) continue;
+      all.add(c.requestId);
+      if (c.waiting) waiting.add(c.requestId);
+      emit(c.kind === "elicitation" ? "elicitation_requested" : "user_input_requested", c.value);
+      if (c.waiting) continue;
+      const settled = { answered: c.declined ? undefined : c.answer, declined: c.declined || undefined };
+      if (c.kind === "elicitation") {
+        setElicitation((prev) => (prev?.requestId === c.requestId ? { ...prev, ...settled } : prev));
+      } else {
+        setUserInput((prev) => (prev?.requestId === c.requestId ? { ...prev, ...settled } : prev));
+      }
     }
   }, [sessionId]);
 
@@ -1143,10 +1174,18 @@ export default function AgentChat({
     if (!sessionId || !threadNeedsInput) return;
     let stale = false;
     const forSession = sessionId;
-    void fetchPendingAsks(forSession).then((asks) => {
+    void fetchPendingAsksOrNull(forSession).then((asks) => {
       if (stale || sessionIdRef.current !== forSession) return;
-      for (const card of cardsToRestore(asks)) {
+      for (const card of cardsToRestore(asks ?? [])) {
         hitlRef.current.onCustomEvent?.({ name: card.name, value: card.value, threadId: forSession });
+      }
+      // The server is the authority on what waits: a card redrawn from the
+      // log as waiting that its real list does not hold settles.
+      for (const id of cardsToSettle(asks, redrawnRef.current.waiting)) {
+        redrawnRef.current.waiting.delete(id);
+        dispatchConfirmation({ type: "resolved", requestId: id });
+        setElicitation((prev) => (prev?.requestId === id && prev.answered === undefined ? null : prev));
+        setUserInput((prev) => (prev?.requestId === id && prev.answered === undefined ? null : prev));
       }
     });
     return () => { stale = true; };
@@ -1818,6 +1857,7 @@ export default function AgentChat({
       return;
     }
     dispatchConfirmation({ type: "answering", key: card.key });
+    noteCardAnswered(sessionId, card.requestId, answer);
     postRespondInput(
       { request_id: card.requestId, answer, was_freeform: false },
       () => dispatchConfirmation(settleAnswer(card, "retry")),
@@ -1863,6 +1903,7 @@ export default function AgentChat({
             onDecline={elicitation.requestId ? () => {
               const card = elicitation;
               setElicitation({ ...card, declined: true });
+              noteCardAnswered(sessionId, card.requestId!, "", true);
               postRespondInput(declineBody(card.requestId!), () => setElicitation(card));
             } : undefined}
             onSubmit={(answers: ElicitationAnswers) => {
@@ -1871,7 +1912,9 @@ export default function AgentChat({
                 const { answer, wasFreeform } = blockingAnswer(elicitation.questions, answers);
                 const card = elicitation;
                 const reqId = card.requestId!;
-                setElicitation({ ...card, answered: answerSummary(card.questions, answers) });
+                const summary = answerSummary(card.questions, answers);
+                setElicitation({ ...card, answered: summary });
+                noteCardAnswered(sessionId, reqId, summary);
                 postRespondInput(
                   { request_id: reqId, answer, was_freeform: wasFreeform },
                   () => setElicitation(card),
@@ -1882,7 +1925,10 @@ export default function AgentChat({
                   (outcome) => {
                     if (outcome === "ok") return;
                     setElicitation((prev) => (prev?.requestId === reqId ? null : prev));
-                    if (outcome === "drop") submitText(answer);
+                    // A card redrawn from the log may be one the run already
+                    // took an answer for: a refusal then is no lost answer,
+                    // and a steer would send it twice (review of #1171, P1).
+                    if (outcome === "drop" && !redrawnRef.current.all.has(reqId)) submitText(answer);
                   },
                 );
               } else {
@@ -1911,19 +1957,21 @@ export default function AgentChat({
             onDecline={() => {
               const card = userInput;
               setUserInput({ ...card, declined: true });
+              noteCardAnswered(sessionId, card.requestId, "", true);
               postRespondInput(declineBody(card.requestId), () => setUserInput(card));
             }}
             onSubmit={(answers: ElicitationAnswers) => {
               const { answer, wasFreeform } = userInputAnswer(answers);
               const card = userInput;
               setUserInput({ ...card, answered: answer });
+              noteCardAnswered(sessionId, card.requestId, answer);
               postRespondInput(
                 { request_id: card.requestId, answer, was_freeform: wasFreeform },
                 () => setUserInput(card),
                 (outcome) => {
                   if (outcome === "ok") return;
                   setUserInput((prev) => (prev?.requestId === card.requestId ? null : prev));
-                  if (outcome === "drop" && answer) submitText(answer);
+                  if (outcome === "drop" && answer && !redrawnRef.current.all.has(card.requestId)) submitText(answer);
                 },
               );
             }}

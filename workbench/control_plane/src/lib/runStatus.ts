@@ -413,10 +413,15 @@ function reduceServer(
         startedAt: parseTime(run.startedAt) ?? at,
         // The old run's streaming reply, if any, is not this run's.
         staleTail: other,
+        // The old run's failed re-attaches say nothing about this one
+        // (review of #1171, P2): it may attach at once.
+        attachFails: 0,
+        attachedAt: 0,
       }
       : {};
     const startedAt = isNew ? fresh.startedAt! : s.startedAt ?? parseTime(run.startedAt) ?? at;
-    const canAttach = !streamOpen && at - s.attachedAt >= attachGapMs(s.attachFails);
+    const since = isNew ? 0 : s.attachedAt;
+    const canAttach = !streamOpen && at - since >= attachGapMs(isNew ? 0 : s.attachFails);
     if (run.state === "needs_input") {
       if (run.live === false) {
         // No run runs. The card waits, and an answer starts a new run.

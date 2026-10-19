@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import {
-  ASKING, R2_HEAD, R2_PROMPT, R2_REPLY, REPLY, composerRow, expectWorking, install, openChat, setSrv, srv,
+  ASKING, ASK_NEXT, R2_HEAD, R2_PROMPT, R2_REPLY, REPLY, composerRow, expectWorking, install, openChat, setSrv, srv,
   startRun,
 } from "./chat-run-status-fixture";
 
@@ -287,6 +287,41 @@ test.describe("One predictable run status (§4.10)", () => {
     // Exactly one reply bubble for the run.
     await expect(head).toHaveCount(1);
     await expect(page.locator("[data-rollup-turn]").filter({ hasText: REPLY })).toHaveCount(1);
+  });
+
+  test("(m) a question answered, then a chat switch mid-run: it draws as answered, with no second answer and no steer", async ({ page }) => {
+    // Review of #1171, P1: the log drew the answered question again as
+    // waiting, and a second answer reached the agent as a steer.
+    await install(page, { ask: true });
+    const box = await openChat(page);
+    await box.fill("Plan the release");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    // The card waits: the row says so, not "working".
+    await expect(composerRow(page)).toHaveAttribute("data-run-tone", "waiting", { timeout: 15_000 });
+    await expect(page.getByText("Which project should I use?").first()).toBeVisible({ timeout: 15_000 });
+    await page.getByRole("button", { name: "Apollo" }).click();
+    await page.getByRole("button", { name: "Submit", exact: true }).click();
+    await expect(page.getByText(ASK_NEXT).first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator('[data-elicitation-card="answered"]')).toHaveCount(1);
+    // Away and back, while the run goes on.
+    const running = page.locator('[data-session-dot="running"]').first();
+    await expect(running).toBeVisible();
+    await page.getByRole("button", { name: /New conversation/ }).click();
+    await page.getByRole("button", { name: /General-purpose AI company brain/i }).click();
+    await page.waitForTimeout(800);
+    await page.locator('[data-session-dot="running"]').first().click();
+    await expect(page.getByText(ASK_NEXT).first()).toBeVisible({ timeout: 15_000 });
+    // The question is answered, with its answer, and nothing waits.
+    await expect(page.locator('[data-elicitation-card="answered"]')).toHaveCount(1);
+    await expect(page.locator('[data-elicitation-card="open"]')).toHaveCount(0);
+    await expect(page.locator('[data-elicitation-card="answered"]')).toContainText("Apollo");
+    await expect(composerRow(page)).not.toHaveAttribute("data-run-tone", "waiting");
+    await page.waitForTimeout(1_500);
+    // One answer reached respond-input, and nothing steered the run.
+    const answers = await page.evaluate(() => (window as unknown as { __answers?: unknown[] }).__answers ?? []);
+    expect(answers).toHaveLength(1);
+    const calls = await page.evaluate(() => (window as unknown as { __calls: string[] }).__calls);
+    expect(calls.filter((c) => c === "send")).toHaveLength(1);
   });
 
   test("(g) a run state shorter than 400 ms flashes no row and no thinking container", async ({ page }) => {

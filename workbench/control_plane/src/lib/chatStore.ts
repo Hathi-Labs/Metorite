@@ -13,6 +13,7 @@
  */
 
 import { IDLE_RUN, reduceRun, type RunEvent, type RunStatus } from "@/lib/runStatus";
+import { CARD_ANSWERED, type CardLogEntry } from "@/lib/cardReplay";
 
 // ── ChatMessage type (co-located here to avoid circular imports) ────────────
 
@@ -223,7 +224,15 @@ export const CARD_EVENTS: ReadonlySet<string> = new Set([
   "user_input_requested",
 ]);
 const CARD_LOG_MAX = 50;
-const _cardLog = new Map<string, { name: string; value: unknown }[]>();
+const _cardLog = new Map<string, CardLogEntry[]>();
+
+/** The stream events that prove a run moved on: a run that waits on its
+ *  question sends none of them until it has an answer. A heartbeat, a
+ *  progress line or a tool's arguments do not count. */
+const MOVE_EVENTS: ReadonlySet<string> = new Set([
+  "delta", "reasoning", "message_start", "tool_start", "tool_end",
+  "sub_agent_delta", "sub_agent_tool_start", "sub_agent_tool_end", "done",
+]);
 
 /** Keep a card event of the run in flight. Other events are ignored. */
 export function noteCardEvent(threadId: string, name: string, value: unknown): void {
@@ -234,13 +243,36 @@ export function noteCardEvent(threadId: string, name: string, value: unknown): v
   _cardLog.set(threadId, log);
 }
 
+/** The member answered a card here: the redraw shows the answer at once,
+ *  and never draws the card as waiting (review of #1171, P1). */
+export function noteCardAnswered(
+  threadId: string, requestId: string, answer: string, declined = false,
+): void {
+  if (!requestId) return;
+  const log = _cardLog.get(threadId) ?? [];
+  log.push({ name: CARD_ANSWERED, value: { request_id: requestId, answer, ...(declined ? { declined } : {}) } });
+  if (log.length > CARD_LOG_MAX) log.splice(0, log.length - CARD_LOG_MAX);
+  _cardLog.set(threadId, log);
+}
+
+/** A stream event of type `type` arrived. If it proves the run moved on, a
+ *  question asked before it is answered: it never redraws as waiting. */
+export function noteRunMoved(threadId: string, type: string): void {
+  if (!MOVE_EVENTS.has(type)) return;
+  const log = _cardLog.get(threadId);
+  if (!log) return;
+  for (const e of log) {
+    if (!e.moved && (e.name === "elicitation_requested" || e.name === "user_input_requested")) e.moved = true;
+  }
+}
+
 /** A new run, or the end of one: no card of it waits any more. */
 export function clearCardLog(threadId: string): void {
   _cardLog.delete(threadId);
 }
 
 /** The card events of the run in flight, oldest first. */
-export function getCardLog(threadId: string): readonly { name: string; value: unknown }[] {
+export function getCardLog(threadId: string): readonly CardLogEntry[] {
   return _cardLog.get(threadId) ?? [];
 }
 

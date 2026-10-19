@@ -91,7 +91,10 @@ describe("the cards of the run in flight (CI regression of #1171)", () => {
     expect(hook.match(/noteCardEvent\(threadId, evtName, evt\.value \?\? evt\.data\)/g)?.length).toBe(2);
     expect(hook.match(/clearCardLog\(threadId\)/g)?.length).toBeGreaterThanOrEqual(4);
     const chat = readFileSync(fileURLToPath(new URL("../components/AgentChat.tsx", import.meta.url)), "utf8");
-    expect(chat).toMatch(/for \(const e of getCardLog\(sessionId\)\) \{\s*hitlRef\.current\.onCustomEvent/);
+    expect(chat).toContain("for (const c of planCardRedraw(getCardLog(sessionId))) {");
+    // A refused answer of a redrawn card never steers the run (review of #1171).
+    expect(chat.match(/!redrawnRef\.current\.all\.has\(/g)?.length).toBe(2);
+    expect(chat.match(/noteCardAnswered\(sessionId,/g)?.length).toBe(5);
   });
 });
 

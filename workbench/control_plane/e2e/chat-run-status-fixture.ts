@@ -29,6 +29,11 @@ export type Srv = {
   shiftAfterLists: number;
   shiftMs: number;
   lists: number;
+  /** The run asks a question (ask_user) after its first words, waits for the
+   *  answer through respond-input, then goes on. */
+  ask: boolean;
+  /** The answer reached respond-input. */
+  answered: boolean;
   userId?: string;
   replyId?: string;
 };
@@ -38,16 +43,19 @@ export const REPLY = "Here is the full tree of destinations.";
 export const R2_PROMPT = "Asked from the phone: list the open orders";
 export const R2_HEAD = "Reading the open orders now.";
 export const R2_REPLY = "There are four open orders.";
+/** The question of an asking run, and the words after its answer. */
+export const ASK_ID = "q".repeat(32);
+export const ASK_NEXT = "Thanks, I will use Apollo.";
 export const ASKING = /Asking /;
 
 export async function install(page: Page, initial: Partial<Srv> = {}) {
-  await page.addInitScript(({ initial, reply, R2_PROMPT, R2_HEAD, R2_REPLY }) => {
+  await page.addInitScript(({ initial, reply, R2_PROMPT, R2_HEAD, R2_REPLY, ASK_ID, ASK_NEXT }) => {
     // The first load only: a reload keeps the chat and the "server".
     if (!sessionStorage.getItem("__inited")) {
       window.localStorage.clear();
       sessionStorage.setItem("__inited", "1");
       sessionStorage.setItem("__srv", JSON.stringify({
-        threadId: null, state: "none", live: true, startedAt: 0, endsAt: 0, cutAfterMs: 0, r2At: 0, noRunId: false, shiftAfterLists: 0, shiftMs: 0, lists: 0, ...initial,
+        threadId: null, state: "none", live: true, startedAt: 0, endsAt: 0, cutAfterMs: 0, r2At: 0, noRunId: false, shiftAfterLists: 0, shiftMs: 0, lists: 0, ask: false, answered: false, ...initial,
       }));
     }
     const w = window as unknown as Record<string, unknown>;
@@ -93,6 +101,19 @@ export async function install(page: Page, initial: Partial<Srv> = {}) {
     const runStream = (signal?: AbortSignal | null) => new ReadableStream<Uint8Array>({
       async start(controller) {
         for (const e of head()) controller.enqueue(frame(e));
+        if (read().ask) {
+          // ask_user parks the run on a Future: nothing comes until the answer.
+          controller.enqueue(frame({ type: "custom", name: "user_input_requested", value: {
+            request_id: ASK_ID, question: "Which project should I use?", choices: ["Apollo", "Gemini"], allowFreeform: false,
+          } }));
+          while (!read().answered && active()) {
+            if (signal?.aborted) { controller.error(new DOMException("The operation was aborted.", "AbortError")); return; }
+            await new Promise((r) => setTimeout(r, 100));
+          }
+          // The run goes on: the ask tool ends, and the next words stream.
+          controller.enqueue(frame({ type: "message_start", messageId: "m-ask" }));
+          controller.enqueue(frame({ type: "delta", content: ASK_NEXT, messageId: "m-ask" }));
+        }
         const opened = Date.now();
         const cut = read().cutAfterMs;
         // Silent until the run ends, or until the "proxy" cuts it.
@@ -125,6 +146,15 @@ export async function install(page: Page, initial: Partial<Srv> = {}) {
         }] : []);
       }
       if (url.includes("/api/chat/pending-asks")) return json([]);
+      if (url.includes("/api/agent/respond-input")) {
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        const w2 = window as unknown as { __answers?: unknown[] };
+        (w2.__answers ??= []).push(body);
+        // The second answer to one question: no question waits on that id.
+        if (read().answered) return json({ detail: "no question waits on that id" }, 409);
+        write({ answered: true });
+        return json({ ok: true });
+      }
       if (url.includes("/api/auth/me")) {
         return json({
           email: "dev@e2e.test", user_id: "dev", authenticated: true, is_active: true,
@@ -192,7 +222,7 @@ export async function install(page: Page, initial: Partial<Srv> = {}) {
       }
       return orig(input, init);
     };
-  }, { initial, reply: REPLY, R2_PROMPT, R2_HEAD, R2_REPLY });
+  }, { initial, reply: REPLY, R2_PROMPT, R2_HEAD, R2_REPLY, ASK_ID, ASK_NEXT });
   await page.route("**/api/agent/list", (r) => r.fulfill({ json: [] }));
   await page.route("**/api/models/all", (r) => r.fulfill({ json: { models: [], source: "mock" } }));
   await page.route(/.*\/api\/integrations\/status.*/, (r) => r.fulfill({ json: [] }));

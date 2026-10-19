@@ -25,6 +25,7 @@ import {
   setSessionAgent,
   dispatchRun,
   noteCardEvent,
+  noteRunMoved,
   clearCardLog,
   getCardLog,
 } from "@/lib/chatStore";
@@ -758,6 +759,8 @@ export function useAgentChat({
                 throw new ChatRunError(String(evt.content ?? "Stream error"), evt.code, evt.ref);
             }
             // The step after this event, for the one run state.
+            // An event that proves the run moved on settles its question.
+            noteRunMoved(threadId, String(evt.type ?? ""));
             if (evt.type !== "done" && ownsStream(threadId, assistantId, streamToken)) {
               const tail = getSessionState(threadId).messages;
               let m: ChatMessage | undefined;
@@ -1269,6 +1272,7 @@ export function useAgentChat({
                 }));
                 break;
             }
+            noteRunMoved(threadId, String(evt.type ?? ""));
             if (evt.type !== "done" && evt.type !== "error") noteEvent();
         }
       } finally {
@@ -1446,7 +1450,19 @@ export function useAgentChat({
         emitAgentEvent("onRunFinalized", { runId: "", threadId });
       }
     }
+    // Every end of a run clears the log: a `done`, a failure, a Stop, and a
+    // run the server stopped listing (review of #1171, P2). A later mount at
+    // rest then redraws no stale card. The card on screen now stays: a cut
+    // stream's answer still goes by the restart path.
+    if (resting) clearCardLog(threadId);
   }, [runPhase, threadId]);
+  // A new run (another run key) has none of the old run's cards.
+  const runKeyNow = sessionState.run.runKey;
+  const runKeyRef = useRef<string | null>(runKeyNow);
+  useEffect(() => {
+    if (runKeyRef.current && runKeyNow && runKeyNow !== runKeyRef.current) clearCardLog(threadId);
+    runKeyRef.current = runKeyNow;
+  }, [runKeyNow, threadId]);
   // The server lists a live run that no stream reads: attach to it.
   const wantAttach = sessionState.run.attach;
   useEffect(() => {

@@ -620,3 +620,16 @@ describe("a re-attach that streams nothing backs off (no loop with no live run)"
     expect(reduceRun(s, ev(T0 + 30)).attachFails).toBe(0);
   });
 });
+
+describe("a new run starts with no backoff of the old one (review of #1171, P2)", () => {
+  it("attachFails and the attach time reset on a new run key", () => {
+    const r1: ServerRun = { state: "running", live: true, runId: "run-1" };
+    let s = reduceRun(working(), server(T0 + 1_000, r1, true));
+    for (let i = 0; i < 4; i++) s = reduceRun(s, { type: "attach_failed", at: T0 + 2_000 + i });
+    expect(s.attachFails).toBe(4);
+    const r2 = reduceRun(s, server(T0 + 3_000, { state: "running", live: true, runId: "run-2" }));
+    expect(r2.attachFails).toBe(0);
+    expect(r2.attach).toBe(true);
+  });
+});
+
