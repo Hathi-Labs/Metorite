@@ -5883,22 +5883,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/email_app_master_plan.md`, R7
 - **Added:** 2026-10-18 · PR #1128 and its review
 
-### H-356 · Remove the legacy arms of the EA-13a client stamp · [AGENT]
-- **Check:** `grep -n "legacy_via" packages/acb_auth/acb_auth/deps.py` and
-  `grep -n ":legacy" apps/services/gateway/gateway/routes/projects/agent_runs.py`.
-  When both find nothing, delete this entry.
-- **Why.** EA-13a changed the stamp from `mcp:<host>` to `mcp:<host>:<slug>`.
-  For one release, branch 0 accepts the legacy host stamp of the same row,
-  because the deploy restarts the gateway before the edge. The open-run read
-  of `agent_runs.py` (`_OPEN_RUN_SQL`) also matches a legacy run of the same
-  connection. Both arms are only for the deploy of EA-13a.
-- **Do this:** wait for the next production release after EA-13a. Then
-  remove both arms. Remove their tests in `test_agent_client_stamp.py`: N4
-  legacy, N5 and the two-run read. Refresh the branch-0 digests in the same
-  commit, and get the review of §10.1.
-- **Authority:** `specs/external_agent_access.md` §10.1 and §12.2 item 1
-- **Added:** 2026-10-18 · EA-13a fix round 1
-
 ### H-357 · 🔴 A key that a chat saw must be rotated, and old rows scrubbed · [OWNER] · security
 - **Check:** ask each org whose chats set up a key, a GitHub token first.
   Did it rotate that key after 2026-10-18? Then count the rows that still

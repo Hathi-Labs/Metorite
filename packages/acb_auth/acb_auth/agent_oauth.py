@@ -639,8 +639,9 @@ def actor_via_for(client_origin: str | None, *, client_id: str | None) -> str:
     gives ``""``, which matches no pattern, so branch 0 refuses it (step 7).
 
     *client_id* is keyword-only and has no default, so a caller names it.
-    ``client_id=None`` gives the legacy host stamp, which the open-run read
-    of ``routes/projects/agent_runs.py`` matches for one release.
+    ``client_id=None`` gives the legacy host stamp. Branch 0 and the open-run
+    read of ``routes/projects/agent_runs.py`` refuse it (H-356). Only the
+    label of an old row reads it, through :data:`CLIENT_LABELS`.
     """
     origin = (client_origin or "").strip()
     if not origin:
