@@ -272,6 +272,27 @@ _MEMORY = tuple(SKILL_FAMILIES["memory"]["tools"])
 #: The twelve CRM read tools (WS-53 CRM-C7) — one family, one section.
 _CRM = tuple(SKILL_FAMILIES["crm"]["tools"])
 
+#: WS-53 §18.16 part 1: a period with no year. The per-turn context gives
+#: today's date (``acb_common.today``), so the model can name the year.
+CRM_PERIOD_LINE = (
+    "A month or a quarter named with no year is the most recent one that has started, by "
+    "today's date. The answer always names the year."
+)
+#: WS-53 §18.16 part 7: never a filter that the member did not ask for. A
+#: run of 2026-10-19 added a filter of its own and answered for 19 of 309
+#: records.
+CRM_FILTER_LINE = (
+    "Filter only on what the question names. In \"How I got this\", state every filter of "
+    "a total, with the values that each filter counted."
+)
+#: WS-53 §18.16 part 4: the member's own word goes to the server, which maps
+#: it to the same field each time.
+CRM_TERM_LINE = (
+    "For a total, pass the member's own word for the figure as term, such as "
+    "term=\"service fees\". The server maps that word to one field the same way each time, "
+    "and names the field and one other figure."
+)
+
 #: The kinds that ``read_attachment`` reads, from the ONE sentence that
 #: lists them (``attachment_text.SUPPORTED_SENTENCE``), so a new kind needs
 #: no edit here.
@@ -398,9 +419,10 @@ Workflow: need a new capability → ``code_task``; repeat a known job → ``run_
 """),
     Section("crm", _CRM, """### CRM (read only)
 - **crm_list_records / crm_get_record / crm_list_fields / crm_list_pipelines / crm_deal_contacts / crm_list_owners** — Read the company CRM as the member you act for. A record shows each custom field under its label.
-- **crm_aggregate(entity, group_by? | group_field?, measure?, field?, bucket?)** and **crm_report(kind)** — The server computes every count, sum, average and weighted forecast, also over a module as entity ``module:<api_name>``; report the numbers as given. The group is optional: give no group_by and no group_field for one total over every record that the filters match. You may state the sum, the difference, the percent change or the percent share of TWO tool figures (for example received minus paid), and then also state both of those figures. Anything more, such as a total of three figures, comes from another crm_aggregate call with the right group or filter. Write each figure in digits, because a check can compare each number of your answer with the tool results. **crm_stage_dwell(days?)** gives the days in each deal stage and the deals past their limit.
+- **crm_aggregate(entity, group_by? | group_field?, measure?, field?, term?, bucket?)** and **crm_report(kind)** — The server computes every count, sum, average and weighted forecast, also over a module as entity ``module:<api_name>``; report the numbers as given. The group is optional: give no group_by and no group_field for one total over every record that the filters match. You may state the sum, the difference, the percent change or the percent share of TWO tool figures (for example received minus paid), and then also state both of those figures. Anything more, such as a total of three figures, comes from another crm_aggregate call with the right group or filter. Write each figure in digits, because a check can compare each number of your answer with the tool results. **crm_stage_dwell(days?)** gives the days in each deal stage and the deals past their limit.
 - **crm_list_modules / crm_list_module_records / crm_get_module_record** — The other mirrored Zoho modules.
 Before a total over a module, call crm_list_modules. Name the module and the fields that each number comes from.
+""" + "\n".join((CRM_PERIOD_LINE, CRM_FILTER_LINE, CRM_TERM_LINE)) + """
 A tool that answers that the CRM is off, or not open to the member, is the answer: say so and stop.
 A tool answer that starts with "Refused:" gives the server's words and a "Next:" line. Fix the one argument it names, and call the tool once more. Never write a tool call as text.
 """),
@@ -563,7 +585,8 @@ COMPACT_SECTIONS: tuple[Section, ...] = (
     Section("crm", _CRM, (
         "crm_list_records/crm_get_record/crm_aggregate/crm_report/"
         "crm_stage_dwell/... — read the CRM as the member; the server "
-        "computes every number"
+        "computes every number; a month with no year is the latest started one; filter "
+        "only on what the member named; pass the member's word as term"
     )),
     Section("crm", ("crm_search_notes",), (
         "crm_search_notes(query,limit?) — CRM notes by meaning; a number "
