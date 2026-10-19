@@ -834,7 +834,7 @@ select optgroup {
   -webkit-box-decoration-break: clone;
 }
 .kb-diff-node-added { outline: 2px solid var(--success); outline-offset: 2px; border-radius: 4px; }
-.kb-diff-current { box-shadow: 0 0 0 2px var(--ring); }
+.kb-diff-current { box-shadow: 0 0 0 2px var(--primary); }
 
 /* Task lists: the box, then the item's own blocks. */
 .kb-editor ul[data-type="taskList"] { list-style: none; padding-left: 0.25em; }
