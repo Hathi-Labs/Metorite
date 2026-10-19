@@ -45,6 +45,8 @@
 >
 > **Built 2026-10-18 on `crm-q32-9b`, not merged:** CRM-Q32-9b, the picker of a sum (§18.14.10). The amount card offers "These fields add up to the amount", and the picker shows the coverage line and the warning of the sum check. "Your answers" shows a sum, with Change and "Let Metorite choose". Frontend only. No migration. CRM-Q32-8 adds the proposals of the members to the picker, each with Confirm.
 >
+> **Built 2026-10-19, not merged:** CRM-Q32-10, "Re-run AI analysis" on demand (§18.14.14). An admin starts the analysis of a sync run now, through the same steps and caps. The same change binds the read cache to the org of the session. No migration and no new flag.
+>
 > **Built 2026-10-18, merged as #1138:** CRM-Q32-9a, the backend of an amount as the sum of 2 to 5 fields (§18.14.10). No migration. The screens wait for CRM-Q32-9b, but a CRM admin of an org on `CRM_QUESTIONS_ORGS` can already store a sum through `PUT /crm/catalogue/{module}` or the answer route. Do not revert CRM-Q32-9a after that (§18.14.13).
 >
 > **Built later, not merged (Batch M, `crm-batch-m`):** CRM-Q17a-1b, a "still empty" check of a stale entity (2026-10-16, §18.9.6, no migration). CRM-Q17a-2, the screens of the fill rank (2026-10-16, no migration). CRM-Q18-1b, two deadlocks of the plan lock (2026-10-16, no migration). CRM-Q19, the executor and the 200-record preview (2026-10-16, no migration).
@@ -7612,6 +7614,45 @@ change of the first, and runs the verification of both again.
   gives 422 `bad_catalogue` on each plan commit of that org. To go back,
   first put each sum back with `"@auto"` or one field, then revert. No flag
   guards this, on purpose (the SQL review of 2026-10-18).
+
+#### 18.14.14 Re-run the analysis on demand (CRM-Q32-10, 2026-10-19)
+
+**Owner request, 2026-10-19:** "Would it be possible to rerun the analysis on
+demand?" Built 2026-10-19. No migration and no new flag.
+
+**What the admin sees.** The Open questions and Suggestions sections show a
+"Re-run AI analysis" button. A press shows "Analysing…" and a progress line.
+At the end, the page reads every CRM key again and shows the result in a toast.
+The button hides when no step of the analysis can run for the org.
+
+**What runs.** `POST /crm/analysis/rerun` calls
+`crm_sync/scheduler.start_analysis`. It starts the same steps as the end of a
+sync run: `start_mapping`, `start_labels`, and `start_questions` after the
+mapping. There is no second pipeline. So each cap, each cost limit, each
+`crm.map_*` mode and the payer rule still bind. The pipeline never replaces a
+part with `by: admin`.
+
+**One at a time.** A second press while an analysis runs returns that run with
+`started: false`. A step that a sync run started is waited for, and is not
+started twice. `GET /crm/analysis/status` returns the last run of the gateway
+process and `allowed`.
+
+**Guards.** The guards of the Field map apply: the CRM switch, `CRM_MIRROR`,
+`admin:access:manage` and Mirror mode. The org comes from the session (R5,
+R11). With no step to run, the route returns 404 `analysis_off`.
+
+**The read cache fix of the same change.** `lib/dataCache.ts` now binds the
+member and the org of the session (`bindIdentity(member, org)`). A
+change of org empties the cache. Before this fix, a cached 404 `questions_off`
+of org A hid the Open questions of org B in the same tab.
+
+**Fences:** `tests/unit/test_crm_analysis_rerun.py`,
+`tests/unit/test_crm_analysis_rerun_r8.py` (R8),
+`src/app/crm/components/crmQ32_10.test.ts` and `src/lib/dataCache.test.ts`.
+
+**Known limit.** The pipeline keeps a hash of the schema of each key. When the
+data did not change, a re-run asks the AI nothing and rebuilds the questions
+from the stored answers.
 
 ### 18.15 Answer first, clarify over time (CRM-Q33, 2026-10-18)
 

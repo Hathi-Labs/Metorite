@@ -163,15 +163,19 @@ export function SuggestionsCardView({
   list,
   failed = false,
   handlers,
+  tools,
 }: {
   /** `GET /crm/mapping/suggestions`, or `null` while it loads. */
   list: SuggestionList | null;
   failed?: boolean;
   handlers: SuggestionsHandlers;
+  /** CRM-Q32-10: the "Re-run AI analysis" button, at the top of the card. */
+  tools?: React.ReactNode;
 }) {
   const label = (slot: Suggestion["slot"]) => handlers.listLabel(SLOT_SLUG[slot]);
   return (
     <Card title={SUGGESTIONS_TITLE} note={SUGGESTIONS_NOTE}>
+      {tools ? <div className="border-b border-border/60 px-4 py-3">{tools}</div> : null}
       {list === null ? (
         <div className="px-4 py-3">
           {failed ? (
