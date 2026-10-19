@@ -84,6 +84,9 @@ _EXEMPT = {
     # CRM-Z5: starts a sync run. Its records go through upsert_from_source,
     # the one bypass, and never through a route.
     "sync.py",
+    # Re-run AI analysis: starts the mapping, labels and questions steps that
+    # end a sync run. It writes no record table, and works in Mirror mode only.
+    "analysis.py",
     # CRM-Q8: saved views. A view is a member's saved list, not a CRM record, so
     # it works in Mirror mode. It writes `crm_views` and no record table.
     "views.py",
