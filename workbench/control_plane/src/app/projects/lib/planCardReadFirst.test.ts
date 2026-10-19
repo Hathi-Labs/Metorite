@@ -48,6 +48,9 @@ import {
   planTimeline,
   planOutcome,
   workingStart,
+  barInset,
+  EFFORT_DAYS_MAX,
+  TIMELINE_MIN_ROW_PX,
   TIMELINE_MAX_PX,
   TIMELINE_MIN_ROWS,
   rowBadges,
@@ -206,14 +209,42 @@ describe("the timeline strip (owner report, 2026-10-19)", () => {
     const t = planTimeline(many, 2026)!;
     expect(t.rowPx).toBe(5);
     expect(t.bars.length * t.rowPx).toBeLessThanOrEqual(TIMELINE_MAX_PX);
-    // Past 32 rows the rows get thinner still, and the strip never passes the cap.
-    for (const n of [33, 48, 60, 120]) {
-      const long = planRowsFrom(Array.from({ length: n }, (_, i) => ({
-        key: `k${i}`, title: `Task ${i}`, owner: "a@b.io", effort_mins: 60,
-        due: `2026-12-${String((i % 28) + 1).padStart(2, "0")}` })));
-      const lt = planTimeline(long, 2026)!;
-      expect(lt.bars.length * lt.rowPx, String(n)).toBeLessThanOrEqual(TIMELINE_MAX_PX);
-    }
+  });
+
+  const plan = (n: number) => planRowsFrom(Array.from({ length: n }, (_, i) => ({
+    key: `k${i}`, title: `Task ${i}`, owner: "a@b.io", effort_mins: 60,
+    due: `2026-12-${String((i % 28) + 1).padStart(2, "0")}` })));
+
+  it("draws no strip when its rows would be thinner than 3 px: a grey box of dots says nothing", () => {
+    // 96 px over 40 or 50 rows is 2 px or less (MAX_BATCH is 50).
+    expect(planTimeline(plan(40), 2026)).toBeNull();
+    expect(planTimeline(plan(50), 2026)).toBeNull();
+    expect(planTimeline(plan(33), 2026)).toBeNull();
+    const t = planTimeline(plan(32), 2026)!;
+    expect(t.rowPx).toBe(TIMELINE_MIN_ROW_PX);
+  });
+
+  it("gives every bar a height at 30 rows, because the inset grows with the row", () => {
+    const t = planTimeline(plan(30), 2026)!;
+    expect(t.rowPx).toBe(3);
+    expect(t.bars.length * t.rowPx).toBeLessThanOrEqual(TIMELINE_MAX_PX);
+    for (const px of [3, 3.5, 4, 5, 8]) expect(px - 2 * barInset(px), String(px)).toBeGreaterThan(0);
+    expect(barInset(3)).toBe(0);
+    expect(barInset(8)).toBe(1);
+  });
+
+  it("caps an absurd effort, so the strip never loops over millions of days", () => {
+    const rows = planRowsFrom([
+      { key: "a", title: "A", owner: "a@b.io", effort_mins: 1e12, due: "2026-11-02" },
+      { key: "b", title: "B", owner: "a@b.io", effort_mins: 60, start: "2026-10-01", due: "2026-10-02" },
+      { key: "c", title: "C", owner: "a@b.io", effort_mins: 60, due: "2026-10-05" },
+    ]);
+    const t = planTimeline(rows, 2026)!;
+    // Two working years: 520 working days are 104 weeks, so 726 calendar days back.
+    const span = (Date.UTC(2026, 10, 2) - Date.UTC(+t.from.slice(0, 4), +t.from.slice(5, 7) - 1, +t.from.slice(8, 10))) / 86_400_000;
+    expect(span).toBeLessThanOrEqual(EFFORT_DAYS_MAX / 5 * 7);
+    // A span past a year draws no week lines.
+    expect(t.weeks).toEqual([]);
   });
 
   it("draws faint week lines on a span of two weeks or more", () => {

@@ -499,7 +499,24 @@ const ROW_MAX_PX = 8;
 
 /** The working days an effort fills, at least one. */
 function effortDays(mins: number): number {
-  return Math.max(1, Math.ceil(mins / WORKDAY_MINS));
+  // Capped at two working years, so an absurd effort draws a long bar and
+  // never a loop over millions of days (review of #1160).
+  return Math.min(EFFORT_DAYS_MAX, Math.max(1, Math.ceil(mins / WORKDAY_MINS)));
+}
+
+/** The most working days a derived bar spans: two working years. */
+export const EFFORT_DAYS_MAX = 520;
+
+/** The thinnest row the strip draws, in px. A plan with more dated rows
+ *  than fit at this height draws no strip, because rows thinner than this
+ *  read as a grey box of dots (review of #1160). The list stays the source
+ *  of truth. */
+export const TIMELINE_MIN_ROW_PX = 3;
+
+/** The space above and below a bar inside its row, in px. It grows with the
+ *  row, so a 3 px row still draws a 3 px bar. */
+export function barInset(rowPx: number): number {
+  return Math.floor(rowPx / 5);
 }
 
 /** Saturday or Sunday, for a day number (1970-01-01 was a Thursday). */
@@ -514,8 +531,13 @@ function isWeekend(day: number): boolean {
  * The due day itself always counts, whatever day it is.
  */
 export function workingStart(due: number, days: number): number {
-  let start = due;
-  for (let left = days - 1; left > 0; ) {
+  let left = Math.max(0, Math.floor(days) - 1);
+  // Any seven days hold five working days, so whole weeks go by arithmetic,
+  // and the loop below runs at most a few steps.
+  const weeks = Math.floor(left / 5);
+  let start = due - weeks * 7;
+  left -= weeks * 5;
+  while (left > 0) {
     start -= 1;
     if (!isWeekend(start)) left -= 1;
   }
@@ -536,7 +558,8 @@ export function workingStart(due: number, days: number): number {
  * - a mark is a small marker at the bar's end, and only when some rows are
  *   unmarked;
  * - the height grows with the rows, and never passes {@link TIMELINE_MAX_PX}:
- *   a long plan gets thinner rows;
+ *   a long plan gets thinner rows, and a plan whose rows would be thinner
+ *   than {@link TIMELINE_MIN_ROW_PX} draws no strip;
  * - `null` when the strip says nothing: fewer than
  *   {@link TIMELINE_MIN_ROWS} dated rows, or every bar on the same days.
  *
@@ -547,6 +570,9 @@ export function planTimeline(rows: PlanRow[], year = new Date().getFullYear()): 
   const ordered = planGroups(rows)?.flatMap((g) => g.rows) ?? rows;
   const dated = ordered.filter((r) => Number.isFinite(dayNumber(r.due)));
   if (dated.length < TIMELINE_MIN_ROWS) return null;
+  // Half-pixel steps, so the rows times their count never pass the cap.
+  const rowPx = Math.min(ROW_MAX_PX, Math.floor((TIMELINE_MAX_PX / dated.length) * 2) / 2);
+  if (rowPx < TIMELINE_MIN_ROW_PX) return null;
   const spans = dated.map((r) => {
     const due = dayNumber(r.due);
     const set = dayNumber(r.start);
@@ -561,9 +587,12 @@ export function planTimeline(rows: PlanRow[], year = new Date().getFullYear()): 
   const days = last - first + 1;
   const allMarked = dated.every(isMarked);
   const weeks: number[] = [];
-  if (days >= 14) {
+  // Week lines between two weeks and a year. Longer spans draw none, so a
+  // far date never makes thousands of lines.
+  if (days >= 14 && days <= 366) {
     // 1970-01-01 was a Thursday, so a Monday is a day number n with (n + 3) % 7 === 0.
-    for (let d = first + 1; d <= last; d++) if ((d + 3) % 7 === 0) weeks.push((d - first) / days);
+    const monday = first + 1 + ((((4 - (first + 1)) % 7) + 7) % 7);
+    for (let d = monday; d <= last; d += 7) weeks.push((d - first) / days);
   }
   return {
     from: isoOf(first),
@@ -584,8 +613,7 @@ export function planTimeline(rows: PlanRow[], year = new Date().getFullYear()): 
       };
     }),
     weeks,
-    // Half-pixel steps, so the rows times their count never pass the cap.
-    rowPx: Math.max(0.5, Math.min(ROW_MAX_PX, Math.floor((TIMELINE_MAX_PX / dated.length) * 2) / 2)),
+    rowPx,
   };
 }
 

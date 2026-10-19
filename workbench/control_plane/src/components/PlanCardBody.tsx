@@ -37,6 +37,7 @@ import {
   type EffortUnit,
   type PlanRow,
   type PlanTimeline,
+  barInset,
   UNASSIGNED_LABEL,
   PLAN_CANCEL,
   afterCount,
@@ -395,6 +396,7 @@ export function TimelineStrip({ timeline, year }: { timeline: PlanTimeline; year
   const [hover, setHover] = useState<string | null>(null);
   const bar = timeline.bars.find((b) => b.key === hover);
   const faint = timeline.bars.some((b) => b.derived);
+  const inset = barInset(timeline.rowPx);
   // Short, so it fits beside the two dates at 390 px. A touch screen has
   // no hover, and the list under the strip carries every date in words.
   const hint = faint ? "Faint bar: no start date, length from effort" : "";
@@ -423,8 +425,8 @@ export function TimelineStrip({ timeline, year }: { timeline: PlanTimeline; year
               />
             ) : (
               <span
-                className={`absolute inset-y-[1px] rounded-full ${b.derived ? "bg-muted-foreground/35" : "bg-muted-foreground/80"}`}
-                style={{ left: `${b.left * 100}%`, width: `max(${b.width * 100}%, 3px)` }}
+                className={`absolute rounded-full ${b.derived ? "bg-muted-foreground/35" : "bg-muted-foreground/80"}`}
+                style={{ top: inset, bottom: inset, left: `${b.left * 100}%`, width: `max(${b.width * 100}%, 3px)` }}
               />
             )}
             {b.marked && (
