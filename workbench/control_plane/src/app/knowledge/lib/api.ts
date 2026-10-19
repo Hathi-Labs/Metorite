@@ -21,6 +21,7 @@ import type {
   SearchAnswer,
   Space,
 } from "./types";
+import type { PageVersionBody } from "./history";
 
 export class KnowledgeError extends Error {
   status: number;
@@ -139,6 +140,17 @@ export function revertPage(id: string, version: number): Promise<PageWritten> {
     method: "POST",
     body: JSON.stringify(revertBody(version)),
   });
+}
+
+/**
+ * One version of a page, with its title and body (KB-2g). The gateway
+ * answers 404 for a page the member cannot see and under the history floor.
+ */
+export function getVersion(pageId: string, n: number): Promise<PageVersionBody> {
+  if (!Number.isInteger(n) || n < 1) {
+    return Promise.reject(new RangeError(`A version is a whole number from 1. Got ${n}.`));
+  }
+  return call<PageVersionBody>(`/pages/${encodeURIComponent(pageId)}/versions/${n}`);
 }
 
 /** The hits of one search. The view asks for the most the gateway gives. */

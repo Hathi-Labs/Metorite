@@ -77,6 +77,7 @@ import { flushLiveDraft, registerLiveDraft } from "../lib/liveDrafts";
 import { PAGE_NOT_FOUND_BODY, PAGE_NOT_FOUND_TITLE, pageRefusal, type PageRead } from "../lib/phase";
 import type { PageDetail, PageVersion } from "../lib/types";
 import KnowledgeEditor from "./editor/KnowledgeEditor";
+import PageHistory from "./history/PageHistory";
 import { useKnowledge } from "./KnowledgeContext";
 import VersionList from "./VersionList";
 
@@ -137,6 +138,8 @@ export default function PageView({ pageId }: { pageId: string }) {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [confirmPublish, setConfirmPublish] = useState(false);
   const [reverting, setReverting] = useState<PageVersion | null>(null);
+  // KB-2g: the history modal, open at one version or at the newest (null).
+  const [history, setHistory] = useState<{ at: number | null } | null>(null);
   const [busy, setBusy] = useState(false);
   // The editor writes its Markdown after a pause in the typing, so a key is
   // cheap on a long page. `pending` marks the draft dirty from the first
@@ -554,12 +557,29 @@ export default function PageView({ pageId }: { pageId: string }) {
             </div>
           </dl>
           <section>
-            <h3 className="mb-1 text-xs font-medium text-foreground">Versions</h3>
-            <VersionList versions={page.versions} canRevert={writable && !editing} onRevert={setReverting} />
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <h3 className="text-xs font-medium text-foreground">Versions</h3>
+              <Button variant="ghost" size="sm" icon="History" onClick={() => setHistory({ at: null })}>
+                Page history
+              </Button>
+            </div>
+            <VersionList
+              versions={page.versions}
+              canRevert={writable && !editing}
+              onRevert={setReverting}
+              onOpen={(v) => setHistory({ at: v.version })}
+            />
           </section>
         </aside>
       </div>
 
+      <PageHistory
+        open={history !== null}
+        onClose={() => setHistory(null)}
+        page={page}
+        canRestore={writable && !editing}
+        initialVersion={history?.at ?? null}
+      />
       <ConfirmDialog
         open={confirmPublish}
         title="Publish this page?"

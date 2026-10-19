@@ -30,7 +30,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { Extension, type Editor, type Range } from "@tiptap/core";
+import type { Node as PMNode } from "@tiptap/pm/model";
 import { PluginKey } from "@tiptap/pm/state";
+import type { DecorationSet } from "@tiptap/pm/view";
 import { EditorContent, ReactNodeViewRenderer, useEditor } from "@tiptap/react";
 import Suggestion from "@tiptap/suggestion";
 
@@ -188,6 +190,11 @@ export interface KnowledgeEditorProps {
   label: string;
   /** Read: a click on a link to a page of this app. */
   onNavigate?: (href: string) => void;
+  /**
+   * Read: marks drawn over the body, such as the changes of a compare
+   * (KB-2g, `lib/historyDiff.ts`). The editor draws them and stores nothing.
+   */
+  decorate?: ((doc: PMNode) => DecorationSet | null) | null;
 }
 
 export default function KnowledgeEditor({
@@ -201,10 +208,12 @@ export default function KnowledgeEditor({
   spaces,
   label,
   onNavigate,
+  decorate,
 }: KnowledgeEditorProps) {
   const editable = mode === "edit";
   const onChangeRef = useRef(onChange);
   const onTouchedRef = useRef(onTouched);
+  const decorateRef = useRef(decorate);
   useEffect(() => {
     onChangeRef.current = onChange;
     onTouchedRef.current = onTouched;
@@ -280,6 +289,7 @@ export default function KnowledgeEditor({
               "aria-label": label,
             }
           : { class: "kb-editor cc-prose prose prose-sm max-w-none", "aria-label": label },
+        decorations: (state) => decorateRef.current?.(state.doc) ?? null,
       },
       // Cheap on purpose: no parse and no write on a key (`bodyWriter.ts`).
       onUpdate: () => writerRef.current?.touch(),
@@ -291,6 +301,12 @@ export default function KnowledgeEditor({
   useEffect(() => {
     editorRef.current = editor;
   }, [editor]);
+
+  // New marks redraw at once: an empty transaction asks the view again.
+  useEffect(() => {
+    decorateRef.current = decorate;
+    if (editor && !editor.isDestroyed) editor.view.dispatch(editor.state.tr.setMeta("kbDecorate", true));
+  }, [editor, decorate]);
 
   useEffect(() => {
     const writer = createBodyWriter({
