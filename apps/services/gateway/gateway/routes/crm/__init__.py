@@ -63,6 +63,11 @@ the one approve, and ``field_rules.py`` calls it too.
 the approve, the Undo and the dismiss of one slot. It has the guards of the
 Field map, and it approves through ``mapping_plans.commit``.
 
+``analysis.py`` is WS-53 CRM-Q32-10 — ``POST /crm/analysis/rerun`` and
+``GET /crm/analysis/status``. An admin runs the steps of the end of a sync
+run now, through ``crm_sync/scheduler.start_analysis``. It has the guards of
+the Field map.
+
 ``reports.py`` is WS-26g — the four read-only ``/crm/reports/*`` blocks
 (forecast by stage, funnel, win/loss, owner leaderboard) over
 ``crm_status_changes`` and ``crm_deals``. It writes nothing and adds no
@@ -132,6 +137,7 @@ gets 404 ``rules_off``.
 from gateway.routes.crm import activities as _activities  # noqa: F401
 from gateway.routes.crm import admin as _admin  # noqa: F401
 from gateway.routes.crm import aggregate as _aggregate  # noqa: F401
+from gateway.routes.crm import analysis as _analysis  # noqa: F401
 from gateway.routes.crm import catalogue as _catalogue  # noqa: F401
 from gateway.routes.crm import connection as _connection  # noqa: F401
 from gateway.routes.crm import convert_mapping as _convert_mapping  # noqa: F401
