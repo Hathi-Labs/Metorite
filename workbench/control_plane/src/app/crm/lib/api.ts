@@ -24,7 +24,7 @@ import type {
   PlanList,
 } from "./fieldMap";
 import type { CrmOwner } from "./filterBar";
-import type { SavedView, SavedViewBody } from "./savedViews";
+import type { SavedView, SavedViewBody, ViewEntity } from "./savedViews";
 import type { SyncHealth, SyncHold } from "./syncHealth";
 import type { SourceLabels } from "./views";
 import type {
@@ -996,8 +996,8 @@ export async function downloadAllRecords(
 
 // ── Saved views (CRM-Q8) ──────────────────────────────────────────────────
 
-export function listViews(entity: EntitySlug): Promise<SavedView[]> {
-  return call<SavedView[]>(`/views?entity=${entity}`);
+export function listViews(entity: ViewEntity): Promise<SavedView[]> {
+  return call<SavedView[]>(`/views?entity=${encodeURIComponent(entity)}`);
 }
 
 export function createView(body: SavedViewBody): Promise<SavedView> {

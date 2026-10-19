@@ -21,6 +21,8 @@ import {
 import FieldValue from "./FieldValue";
 import FieldsCard, { FieldsCardView } from "./FieldsCard";
 import FieldsPanel from "./FieldsPanel";
+import type { ViewActions } from "../lib/useViewActions";
+import CrmViewBar from "./CrmViewBar";
 import RecordList from "./RecordList";
 
 const noop = () => undefined;
@@ -301,9 +303,21 @@ describe("the list", () => {
   };
   const defs = [def("tier", "select", { label: "Tier" }), def("hid", "text", { label: "Hid", visible: false })];
 
-  it("offers the chooser when fields exist, and none without", () => {
-    expect(renderToStaticMarkup(createElement(RecordList, { ...props, fieldDefs: defs }))).toContain("Columns");
-    expect(renderToStaticMarkup(createElement(RecordList, props))).not.toContain("Columns");
+  it("offers the chooser button in row 1 when fields exist, and none without", () => {
+    // CRM-U8: the Columns band left the list. The toolbar owns the button, and
+    // the page hides it when no field can be a column.
+    const actions = {
+      views: [], active: null, dirty: "blank", busy: false, columns: null,
+      setColumns: noop, select: noop, save: async () => undefined,
+      update: async () => undefined, reset: noop, rename: async () => undefined,
+      toggleShare: async () => undefined, remove: async () => undefined,
+      deleteCopy: () => ({ title: "", body: "" }),
+    } as unknown as ViewActions;
+    const bar = (onColumns: (() => void) | null) =>
+      renderToStaticMarkup(createElement(CrmViewBar, { allLabel: "All deals", actions, isAdmin: false, onColumns }));
+    expect(bar(noop)).toContain("Columns");
+    expect(bar(null)).not.toContain("Columns");
+    expect(renderToStaticMarkup(createElement(RecordList, { ...props, fieldDefs: defs }))).not.toContain("Columns");
   });
 
   it("shows no custom column until the member picks one", () => {
