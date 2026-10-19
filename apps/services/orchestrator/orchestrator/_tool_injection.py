@@ -1065,9 +1065,10 @@ def _gate_injected_tool(fn: Any) -> Any:
             allowed, reason = _gate(kwargs, marked)
             if not allowed:
                 return f"[blocked by permission policy: {reason}]"
-            if _after_untrusted_answer(reason, marked) and not await _untrusted_answer_card(
-                    tool_name, kwargs):
-                return UNTRUSTED_ANSWER_REFUSED.format(tool=tool_name)
+            if _after_untrusted_answer(reason, marked):
+                held = await _untrusted_answer_hold(tool_name, kwargs)
+                if held is not None:
+                    return held
             # WS-47 WAC-4: name the call for the WhatsApp card gate. A no-op
             # outside a WhatsApp run with writes on.
             with _whatsapp_tool_call(fn, args, kwargs):
@@ -1080,10 +1081,71 @@ def _gate_injected_tool(fn: Any) -> Any:
         if not allowed:
             return f"[blocked by permission policy: {reason}]"
         if _after_untrusted_answer(reason):
-            # A sync tool cannot wait for a card, so it is refused.
-            return UNTRUSTED_ANSWER_REFUSED.format(tool=tool_name)
+            # A sync tool cannot wait for a card, so it is refused. A
+            # WhatsApp run waits for no card (WS-47 WAC-P4): it parks the
+            # call, or runs the call that the member confirmed.
+            held = _untrusted_answer_hold_sync(tool_name, kwargs)
+            if held is not None:
+                return held
         return _with_steer(fn(*args, **kwargs))
     return _register_platform_wrapper(fn, _sgated)
+
+
+#: The answers of :func:`_whatsapp_untrusted_answer` (``whatsapp_acts``).
+_WA_APPROVED = "approved"
+_WA_PARKED = "parked"
+
+
+async def _untrusted_answer_hold(tool_name: str, call_kwargs: dict[str, Any]) -> str | None:
+    """Why an egress call after an untrusted answer does not run, or None.
+
+    WS-47 WAC-P4: a WhatsApp run asks with its Confirm buttons where the web
+    asks with a card. The call that the member confirmed runs (None). A
+    call that now waits for the buttons answers the parked text. Every other
+    run asks the card (:func:`_untrusted_answer_card`), and a no refuses."""
+    verdict = _whatsapp_untrusted_answer(tool_name, call_kwargs)
+    if verdict == _WA_APPROVED:
+        return None
+    if verdict == _WA_PARKED:
+        return _whatsapp_parked_text()
+    if await _untrusted_answer_card(tool_name, call_kwargs):
+        return None
+    return UNTRUSTED_ANSWER_REFUSED.format(tool=tool_name)
+
+
+def _untrusted_answer_hold_sync(tool_name: str, call_kwargs: dict[str, Any]) -> str | None:
+    """:func:`_untrusted_answer_hold` for a sync tool, which cannot wait for
+    a card: only the WhatsApp answer can let it run."""
+    verdict = _whatsapp_untrusted_answer(tool_name, call_kwargs)
+    if verdict == _WA_APPROVED:
+        return None
+    if verdict == _WA_PARKED:
+        return _whatsapp_parked_text()
+    return UNTRUSTED_ANSWER_REFUSED.format(tool=tool_name)
+
+
+def _whatsapp_untrusted_answer(tool_name: str, call_kwargs: dict[str, Any]) -> str | None:
+    """The WhatsApp form of the untrusted-answer card (WS-47 WAC-P4).
+
+    ``whatsapp_acts.answer_egress``: "approved" for the one call that the
+    member confirmed, "parked" for a call that now waits for the Confirm
+    buttons, else None, and the caller refuses as before. Outside a
+    WhatsApp run it is None at once. A fault is None, so it fails closed."""
+    try:
+        from acb_skills.whatsapp_acts import answer_egress
+
+        verdict = answer_egress(tool_name, call_kwargs)
+    except Exception:  # fail closed: the card path refuses
+        return None
+    if verdict is not None:
+        _log.info("permission.untrusted_answer_whatsapp", tool=tool_name, outcome=verdict)
+    return verdict
+
+
+def _whatsapp_parked_text() -> str:
+    from acb_skills.whatsapp_acts import EGRESS_PARKED_TEXT
+
+    return EGRESS_PARKED_TEXT
 
 
 def _run_reads_mail_itself() -> bool:

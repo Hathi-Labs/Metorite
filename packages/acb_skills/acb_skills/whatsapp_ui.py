@@ -201,6 +201,11 @@ class WhatsAppRun:
     #: Lays out a document layout as a PDF (WAC-12). ``bot_run`` gives it when
     #: ``WHATSAPP_DOCUMENTS`` is on, through ``gateway.pdf_render``. None: off.
     document: Callable[[dict[str, Any]], Awaitable[bytes]] | None = None
+    #: The thread of this run, and the replay horizon of its untrusted-answer
+    #: mark in ms (WS-47 WAC-P4, ``acb_skills.egress``). ``bot_run`` gives
+    #: both from its own thread read. None: the mark is read as before.
+    replay_session: str | None = None
+    replay_clear_before_ms: int | None = None
 
 
 _RUN: ContextVar[WhatsAppRun | None] = ContextVar("whatsapp_run", default=None)
@@ -213,15 +218,20 @@ def whatsapp_run(agent: str, *,
                  notify: Callable[[str], Awaitable[bool]] | None = None,
                  writes: bool = False,
                  document: Callable[[dict[str, Any]], Awaitable[bytes]] | None = None,
+                 replay_session: str | None = None,
+                 replay_clear_before_ms: int | None = None,
                  ) -> Iterator[WhatsAppRun]:
     """Open the WhatsApp profile for the run of *agent* in this context.
 
     Like ``refuse_cards``: a nested ``run_agent`` and each task the run starts
     copy the context, so they see the profile too. Closing it restores the
-    value it found. *writes* lets the run park one write (WAC-4).
+    value it found. *writes* lets the run park one write (WAC-4), and one
+    egress call after an untrusted answer (WAC-P4).
     """
     run = WhatsAppRun(agent=agent, views=views, org=org, notify=notify,
-                      writes=writes, document=document)
+                      writes=writes, document=document,
+                      replay_session=replay_session,
+                      replay_clear_before_ms=replay_clear_before_ms)
     token = _RUN.set(run)
     try:
         yield run

@@ -18,7 +18,8 @@ from typing import Any
 
 
 class MemoryMarkClient:
-    """An in-memory raw Redis client with the three calls the mark uses."""
+    """An in-memory raw Redis client with the four calls the mark uses. A
+    WhatsApp run reads the value with ``get`` (WS-47 WAC-P4)."""
 
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
@@ -26,6 +27,9 @@ class MemoryMarkClient:
     async def setex(self, name: str, _seconds: int, value: str) -> bool:
         self.values[name] = value
         return True
+
+    async def get(self, name: str) -> str | None:
+        return self.values.get(name)
 
     async def exists(self, *names: str) -> int:
         return sum(1 for n in names if n in self.values)

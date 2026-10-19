@@ -36,6 +36,7 @@ from __future__ import annotations
 import contextlib
 import sys
 import threading
+import time
 import weakref
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping
@@ -78,6 +79,7 @@ __all__ = [
     "session_is_marked",
     "session_mark_state",
     "tool_name",
+    "whatsapp_mark_value",
 ]
 
 #: The artifact-context key. ``True`` means this run holds no egress tool.
@@ -159,17 +161,24 @@ class _PositiveLRU:
     An eviction never reads as "unmarked" to an async reader: a miss there
     asks Redis, and Redis keeps the mark. Each hit moves the session to the
     end, so a session that a run uses now is the last one to go. Hold
-    ``_MARKED_LOCK`` around each call."""
+    ``_MARKED_LOCK`` around each call.
+
+    Each entry keeps the time of a WhatsApp mark in ms (WS-47 WAC-P4), or
+    None for a mark that never ends by replay (:func:`whatsapp_mark_value`)."""
 
     def __init__(self, bound: int) -> None:
         self._bound = bound
-        self._items: OrderedDict[tuple[str, str], None] = OrderedDict()
+        self._items: OrderedDict[tuple[str, str], int | None] = OrderedDict()
 
-    def add(self, session: tuple[str, str]) -> None:
-        self._items[session] = None
+    def add(self, session: tuple[str, str], at: int | None = None) -> None:
+        self._items[session] = at
         self._items.move_to_end(session)
         while len(self._items) > self._bound:
             self._items.popitem(last=False)
+
+    def time_of(self, session: tuple[str, str]) -> int | None:
+        """The WhatsApp time of the entry, or None (no entry, or a sticky one)."""
+        return self._items.get(session)
 
     def __contains__(self, session: object) -> bool:
         if session not in self._items:
@@ -228,15 +237,18 @@ def _minted_session(ctx: Mapping[str, Any] | None) -> bool:
 
 
 def _card_can_show(ctx: Mapping[str, Any] | None) -> bool:
-    """True when the run can show the member's card: a member, no batch run
-    and no WhatsApp run. Only such a run fails closed on a Redis fault."""
+    """True when the run can ask the member: a member, no batch run, and no
+    WhatsApp run, or a WhatsApp run that asks with its Confirm and Cancel
+    buttons (WS-47 WAC-P4, ``whatsapp_acts.answer_egress``). Only such a run
+    fails closed on a Redis fault."""
     ctx = ctx or {}
     if not ctx.get("member") or ctx.get("batch_thread") is True:
         return False
     try:
         from acb_skills.whatsapp_ui import current_run
 
-        return current_run() is None
+        run = current_run()
+        return run is None or bool(getattr(run, "writes", False))
     except Exception:
         return True
 
@@ -261,23 +273,130 @@ async def mark_untrusted_answer(ctx: Mapping[str, Any] | None = None) -> bool:
     if session is None:
         _log.warning("egress.untrusted_answer_unmarked")
         return False
+    # WS-47 WAC-P4: a mark that a WhatsApp run sets carries its time, so a
+    # later WhatsApp run can read it as clear once its turn left the replay.
+    at = _now_ms() if _in_whatsapp_run() else None
     with _MARKED_LOCK:
-        _MARKED_SESSIONS.add(session)
+        _MARKED_SESSIONS.add(session, at)
     if _minted_session(ctx if ctx is not None else _bound_context()):
         _log.info("egress.untrusted_answer_marked", store="process")
         return True
     org, thread = session
+    value: str | None = "1"
     try:
         from acb_common.tenant_redis import key, organization_scope
 
         with organization_scope(org):
-            await get_tenant_redis().setex(
-                key(MARK_NAMESPACE, thread), MARK_TTL_S, "1")
+            client = get_tenant_redis()
+            mark = key(MARK_NAMESPACE, thread)
+            if at is not None:
+                value = await _whatsapp_value(client, mark, at)
+            if value is None:
+                # A mark that never ends by replay stays one: slide it only.
+                await client.expire(mark, MARK_TTL_S)
+            else:
+                await client.setex(mark, MARK_TTL_S, value)
     except Exception as exc:  # the class only: a value never reaches a log
         _log.warning("egress.untrusted_answer_mark_failed", error=type(exc).__name__)
         return False
+    if value is None:
+        with _MARKED_LOCK:
+            _MARKED_SESSIONS.add(session, None)
     _log.info("egress.untrusted_answer_marked")
     return True
+
+
+# ── WS-47 WAC-P4: a WhatsApp mark ends when its turn leaves the replay ──────
+#
+# A WhatsApp thread never ends while the member writes in it, so a mark of
+# 400 days held every later egress call of the thread. A WhatsApp run replays
+# only the last turns of its thread (``bot_run.HISTORY_TURNS``), and the
+# batch path keeps no other copy of a turn. So a mark that a WhatsApp run
+# sets holds its time (:func:`whatsapp_mark_value`). ``bot_run`` gives each
+# run a horizon (``WhatsAppRun.replay_clear_before_ms``): the newest time
+# that its replay left out, less the longest time from a mark to its reply.
+# A WhatsApp mark older than the horizon has left the replay, and the
+# WhatsApp run of THAT thread reads it as clear. Every other run, and a mark
+# that any other run set, is as before.
+#
+# Residual risk, recorded on purpose: a later reply can restate what the
+# untrusted answer said, and that reply stays in the replay after the mark
+# ends. Fence: ``tests/unit/test_wac_untrusted_confirm.py``.
+
+#: The prefix of the value of a WhatsApp mark. The rest is its time in ms.
+_WA_PREFIX = "wa:"
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _in_whatsapp_run() -> bool:
+    try:
+        from acb_skills.whatsapp_ui import current_run
+
+        return current_run() is not None
+    except Exception:
+        return False
+
+
+def whatsapp_mark_value(at: int) -> str:
+    """The Redis value of a mark that a WhatsApp run set at *at* (ms)."""
+    return f"{_WA_PREFIX}{int(at)}"
+
+
+def _mark_time(raw: Any) -> int | None:
+    """The time of a WhatsApp mark value, or None for any other value."""
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", "replace")
+    text = str(raw or "")
+    if not text.startswith(_WA_PREFIX):
+        return None
+    try:
+        return int(text[len(_WA_PREFIX):])
+    except ValueError:
+        return None
+
+
+async def _whatsapp_value(client: Any, mark: Any, at: int) -> str | None:
+    """The value that a WhatsApp run writes, or None to keep a sticky mark.
+
+    A mark that another run set never ends by replay, so a WhatsApp mark
+    never replaces it. A read that fails writes the WhatsApp value."""
+    try:
+        raw = await client.get(mark)
+    except Exception:
+        raw = None
+    if raw is not None and _mark_time(raw) is None:
+        return None
+    return whatsapp_mark_value(at)
+
+
+def _replay_horizon(session: tuple[str, str]) -> int | None:
+    """The replay horizon of the WhatsApp run of *session*, in ms, or None.
+
+    None outside a WhatsApp run, for a run of another thread or org, and
+    when ``bot_run`` gave no horizon. The run object is the server's own
+    (``bot_run`` opens it from the link row), never a request field."""
+    try:
+        from acb_skills.whatsapp_ui import current_run
+
+        run = current_run()
+    except Exception:
+        return None
+    if run is None:
+        return None
+    clear_before = getattr(run, "replay_clear_before_ms", None)
+    if not clear_before or getattr(run, "replay_session", None) != session[1]:
+        return None
+    if str(getattr(run, "org", "") or "") != session[0]:
+        return None
+    return int(clear_before)
+
+
+def _left_replay(at: int | None, horizon: int | None) -> bool:
+    """True when a WhatsApp mark of time *at* has left the replay."""
+    return at is not None and horizon is not None and at < horizon
 
 
 async def mark_untrusted_session(
@@ -336,25 +455,48 @@ async def session_mark_state(
     session = _session_of(ctx)
     if session is None:
         return MARK_CLEAR
+    # WS-47 WAC-P4: the WhatsApp run of this thread may read an old mark as
+    # clear. Redis decides that, never the process cache alone.
+    horizon = _replay_horizon(session)
     with _MARKED_LOCK:
-        if session in _MARKED_SESSIONS:
+        cached = session in _MARKED_SESSIONS
+        known = _MARKED_SESSIONS.time_of(session) if cached else None
+        # A cached mark of no known time asks Redis when a horizon applies:
+        # another reader may have cached a WhatsApp mark without its time.
+        if cached and (horizon is None or (known is not None
+                                           and not _left_replay(known, horizon))):
             return MARK_MARKED
     if ctx is None:
         ctx = _bound_context()
     if _minted_session(ctx):
         # A batch run minted this session, so only this process can mark it.
-        return MARK_CLEAR
+        return MARK_MARKED if cached else MARK_CLEAR
     org, thread = session
+    at: int | None = None
     try:
         from acb_common.tenant_redis import key, organization_scope
 
         with organization_scope(org):
             client = get_tenant_redis()
             mark = key(MARK_NAMESPACE, thread)
-            if not await client.exists(mark):
-                return MARK_CLEAR
+            if horizon is None:
+                if not await client.exists(mark):
+                    return MARK_CLEAR
+            else:
+                raw = await client.get(mark)
+                if raw is None:
+                    return MARK_CLEAR
+                at = _mark_time(raw)
+                if _left_replay(at, horizon):
+                    with _MARKED_LOCK:
+                        _MARKED_SESSIONS.add(session, at)
+                    _log.info("egress.untrusted_answer_left_replay")
+                    return MARK_CLEAR
             await client.expire(mark, MARK_TTL_S)
     except Exception as exc:
+        if cached:
+            # The cache holds the mark, and Redis did not say that it left.
+            return MARK_MARKED
         unknown = _card_can_show(ctx) if fail_closed is None else bool(fail_closed)
         _log.warning("egress.untrusted_answer_read_failed",
                      error=type(exc).__name__, fail_closed=unknown)
@@ -362,7 +504,8 @@ async def session_mark_state(
         # approve. A run with no card channel would lose each egress call.
         return MARK_UNKNOWN if unknown else MARK_CLEAR
     with _MARKED_LOCK:
-        _MARKED_SESSIONS.add(session)
+        # EXISTS reads no time, so the cache keeps the time it knew.
+        _MARKED_SESSIONS.add(session, at if horizon is not None else known)
     return MARK_MARKED
 
 
@@ -418,12 +561,15 @@ MAIL_STORE_WRITE_REFUSED = (
 def read_untrusted_answer(ctx: Mapping[str, Any] | None = None) -> bool:
     """The sync reader: True when this process saw the session of the run on
     this frame marked. The Copilot guard and a sync tool read it, because
-    they cannot wait for Redis."""
+    they cannot wait for Redis. In the WhatsApp run of the thread, a mark
+    whose known time left the replay reads False (WS-47 WAC-P4)."""
     session = _session_of(ctx)
     if session is None:
         return False
+    horizon = _replay_horizon(session)
     with _MARKED_LOCK:
-        return session in _MARKED_SESSIONS
+        return session in _MARKED_SESSIONS and not _left_replay(
+            _MARKED_SESSIONS.time_of(session), horizon)
 
 #: The answer to a call that the control refuses. It names what is true of
 #: this run and claims nothing about the whole platform.

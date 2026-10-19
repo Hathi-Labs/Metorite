@@ -148,6 +148,10 @@ class _MarkRedis:
         self._check()
         return sum(1 for k in keys if k in self.keys)
 
+    async def get(self, key: str) -> str | None:
+        self._check()
+        return self.keys.get(key)
+
     async def expire(self, key: str, _seconds: int) -> bool:
         self._check()
         return key in self.keys
