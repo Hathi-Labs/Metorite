@@ -43,6 +43,27 @@ Owner decision, 2026-10-16. Say the tier and the reason in one line.
   Verifier only. Skip the reviewer. One repair round.
 If you are not sure, take the higher tier. The verifier is never skipped.
 
+**1c — Pick the model for each dispatch.** Owner directive, 2026-10-19:
+Sonnet does the work, and Opus is for the hard cases. The agent files default
+to Sonnet. Pass `model: "opus"` on the Agent call only where this table says
+so. Say the models in the same line as the tier.
+
+| Role | LOW | STANDARD | HIGH |
+|---|---|---|---|
+| `spec-auditor` | sonnet | sonnet | sonnet |
+| `ws-implementer` | sonnet | sonnet | **opus** |
+| `ws-verifier` | sonnet | sonnet | **opus** |
+| `diff-reviewer` | skipped | **opus** | **opus** |
+
+Two escalations override the table:
+- **A repair round after a FAIL on the same finding**: dispatch the next
+  `ws-implementer` with `model: "opus"`. Sonnet already missed it once.
+- **A slice that crosses three or more services, or a concurrency, cache or
+  ordering bug**: take `opus` for the implementer, at any tier.
+
+Use `model: "haiku"` for a pure lookup with no judgement (find a file, list
+callers, count rows). Never use haiku to build, verify or review.
+
 **2 — Audit.** Dispatch `spec-auditor` on that WS.
 - `NO-GO` → stop the cycle. If the blocker is documentation, that *is* the next
   ticket: report it as such and offer to run a §5-style remediation instead.

@@ -89,12 +89,13 @@ EXPECTED_OPEN_WORLD = frozenset({
     "run_workflow",
     # the orchestrator (agents.py)
     "spawn_copilot_agent", "delegate_to_agent",
-    # email-assistant: sends, forward or reply rules and their runs, the
-    # knowledge that feeds replies, and the writes to the mail provider
-    "send_email", "forward_email", "send_draft", "unsubscribe_sender", "digest", "create_rule",
-    "update_rule", "run_rules", "learn_rule_pattern", "create_rules_from_prompt",
-    "install_default_rules", "update_assistant_settings", "resolve_execution",
-    "save_knowledge", "manage_inbox", "create_label", "draft_reply",
+    # email-assistant: the sends, an unsubscribe, the settings and the
+    # knowledge that feeds replies. The audit of 2026-10-19 moved the writes
+    # inside the member's own mailbox, the digest to self and the rule tools
+    # to open_world=False. Each rule tool refuses its outward part in a held
+    # run (test_no_egress_tool_audit.py).
+    "send_email", "forward_email", "send_draft", "unsubscribe_sender",
+    "update_assistant_settings", "save_knowledge",
     # crm-assistant: writes that queue for the live Zoho tenant (D-CRM-9)
     "create_lead", "update_deal_status", "log_activity", "convert_lead",
     # task-manager (skill_my_tasks)

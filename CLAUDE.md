@@ -327,6 +327,20 @@ Rules that make it work:
 
 - **The verifier is never the implementer**, and re-derives facts from the code
   rather than trusting the write-up.
+- **Sonnet does the work. Opus takes the hard cases.** Owner directive,
+  2026-10-19. This binds every dispatch: the Agent tool, `/next-ticket` and a
+  Workflow stage. `settings.json` sets `CLAUDE_CODE_SUBAGENT_MODEL=sonnet`, and
+  the agent files in `.claude/agents/` say their own model. Pass
+  `model: "opus"` only for one of these:
+  - Adversarial review. `diff-reviewer` is Opus by its file.
+  - A HIGH-tier slice: tenancy, RLS, auth, identity, a migration, money,
+    credits, secrets, a member or role write, or the deploy path.
+  - A second try after Sonnet failed on the same finding.
+  - A hard problem: three or more services, or a concurrency, cache or
+    ordering bug.
+
+  Use `haiku` for a lookup with no judgement. `/next-ticket` step 1c holds the
+  table per role. Fence: `tests/unit/test_agent_model_routing.py`.
 - **The reviewer hunts for the case where this is wrong.** An agent asked "is
   this correct?" says yes.
 - **Re-verify every anchor at dispatch** (file paths, line numbers, migration

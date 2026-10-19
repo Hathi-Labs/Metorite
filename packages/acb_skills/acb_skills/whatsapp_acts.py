@@ -41,12 +41,13 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 from collections.abc import Callable, Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
-from acb_skills.whatsapp_ui import OutMessage, current_run
+from acb_skills.whatsapp_ui import BODY_MAX, OutMessage, current_run
 
 #: The acts that may go by button: the tool name, and the module that
 #: defines it. A tool of the same name in another module is not the act.
@@ -285,3 +286,155 @@ def confirm_buttons(act_id: str | None = None) -> OutMessage:
 def is_word(message: str, word: str) -> bool:
     """True when *message* is exactly *word*, in any case, trimmed (§14.3)."""
     return " ".join(str(message or "").split()).casefold() == word.casefold()
+
+
+# ── WAC-P4: the Confirm of one egress call after an untrusted answer ────────
+#
+# Spec §17.3 (WAC-P4). After the email assistant answers once, the thread is
+# marked (``acb_skills.egress``, EM-G11d), and each later egress call needs
+# the member's yes. The web chat asks with a card. A WhatsApp run cannot
+# wait for a card, so the call PARKS as an act, exactly as a WAC-4 write
+# does, and the member's Confirm button answers it:
+#
+# 1. **Ask.** ``_tool_injection._gate_injected_tool`` calls
+#    :func:`answer_egress` where the web asks its card. In a WhatsApp run
+#    with writes on, the call parks (one act a run), and the tool returns
+#    :data:`EGRESS_PARKED_TEXT`. Nothing reaches outside.
+# 2. **Confirm.** ``whatsapp_channel/acts.settle`` checks the act exactly as
+#    a WAC-4 act: the phone, the thread, the link row, the button message
+#    and the 10 minutes. It then gives ``bot_run`` an ``Approved``, and
+#    ``bot_run`` runs the model again inside :func:`approving`.
+# 3. **The one yes.** In that run, :func:`answer_egress` approves the FIRST
+#    call whose tool and arguments equal the stored act. Any other call
+#    parks again, so the member sees its own summary. The yes ends with the
+#    run, and a call from a run with no WhatsApp profile is never approved.
+#
+# A run with no member and no channel (a batch or a scheduled run) has no
+# WhatsApp profile, so its call is refused as before.
+
+#: The tool name of a WAC-P4 act starts with this. ``acts.act_function``
+#: never runs such an act: the Confirm runs the model again instead.
+EGRESS_ACT_PREFIX = "egress__"
+
+#: The two answers of :func:`answer_egress` that are not None.
+EGRESS_APPROVED = "approved"
+EGRESS_PARKED = "parked"
+
+#: What a parked egress call tells the model.
+EGRESS_PARKED_TEXT = (
+    "Not done yet. This chat read an answer from the email assistant, so a "
+    "call that reaches outside Metorite waits for the member's Confirm. After "
+    "your reply, Metorite sends the member a summary with Confirm and Cancel "
+    "buttons. Tell the member in one line that it waits for their Confirm. "
+    "Add no buttons of your own, do not say that it ran, and stop."
+)
+
+#: What an egress call tells the model when the member could not see it
+#: whole on WhatsApp (review P1-1): its recipients and attachments do not fit.
+EGRESS_TOO_LONG = "too_long"
+EGRESS_TOO_LONG_TEXT = (
+    "{tool} did not run. This chat read an answer from the email assistant, so "
+    "the member must approve this call, and its recipients and attachments are "
+    "too long to show on WhatsApp. Tell the member to make this change in the "
+    "Metorite web app. Do not ask again for the same call."
+)
+
+#: The card of a parked egress call, as the web card says it.
+EGRESS_TITLE = "Run {tool}? It reaches outside Metorite"
+EGRESS_DETAIL = ("This chat read an answer from the email assistant, which reads "
+                 "mail from outside. A mail could ask for this call.")
+#: The most characters of the call's view on WhatsApp: the body limit of an
+#: interactive message. The view comes from ``egress.egress_call_view``, the
+#: one builder that the web card uses too. The stored card text binds ALL
+#: the arguments.
+EGRESS_VIEW_CHARS = BODY_MAX
+
+#: The tool name shape of ``whatsapp_pending_acts`` (migration 242).
+_ACT_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+@dataclass
+class Approving:
+    """The yes for ONE egress call at Confirm (:func:`approving`)."""
+
+    card: str
+    used: bool = False
+    closed: bool = False
+
+
+_APPROVING: ContextVar[Approving | None] = ContextVar("whatsapp_approving", default=None)
+
+
+def egress_act_name(tool: str) -> str | None:
+    """The stored tool name of an egress act of *tool*, or None when the
+    table cannot hold it (the call is then refused, as before)."""
+    name = f"{EGRESS_ACT_PREFIX}{tool}"
+    return name if _ACT_NAME.match(name) else None
+
+
+def is_egress_act(name: str) -> bool:
+    """True for the stored tool name of a WAC-P4 act."""
+    return str(name or "").startswith(EGRESS_ACT_PREFIX)
+
+
+def egress_tool(name: str) -> str:
+    """The tool of a stored egress act name."""
+    return str(name)[len(EGRESS_ACT_PREFIX):] if is_egress_act(name) else str(name)
+
+
+def egress_card_text(tool: str, arguments: dict[str, Any]) -> str:
+    """The one text that a Confirm must match: the tool and ALL its arguments."""
+    return json.dumps(["egress", str(tool), arguments], ensure_ascii=False,
+                      sort_keys=True, default=str)
+
+
+def answer_egress(tool: str, arguments: dict[str, Any] | None) -> str | None:
+    """The WhatsApp answer to the untrusted-answer card of one egress call.
+
+    * :data:`EGRESS_APPROVED`: inside :func:`approving`, in a WhatsApp run,
+      for the first call whose tool and arguments equal the stored act.
+    * :data:`EGRESS_PARKED`: in a WhatsApp run with writes on and no act
+      parked yet. The call is stored on the run, and it does not run.
+    * :data:`EGRESS_TOO_LONG`: the same run, but the recipients and the
+      attachments do not fit in one WhatsApp view. Nothing parks.
+    * None: no WhatsApp form. The caller refuses, as before WAC-P4.
+    """
+    run = current_run()
+    if run is None:
+        return None
+    stored = _stored_arguments(dict(arguments or {}))
+    state = _APPROVING.get()
+    if (state is not None and not state.used and not state.closed
+            and stored is not None and egress_card_text(tool, stored) == state.card):
+        state.used = True
+        return EGRESS_APPROVED
+    name = egress_act_name(str(tool or ""))
+    if not run.writes or run.parked is not None or stored is None or name is None:
+        return None
+    from acb_skills.egress import egress_call_view
+
+    # Review P1-1: the recipients, the subject and the attachments come
+    # first and whole. A model's argument order never hides them.
+    view = egress_call_view(tool, stored, EGRESS_VIEW_CHARS)
+    if view is None:
+        return EGRESS_TOO_LONG
+    run.parked = ParkedAct(tool=name, arguments=stored,
+                           card=egress_card_text(tool, stored),
+                           title=EGRESS_TITLE.format(tool=tool),
+                           detail=EGRESS_DETAIL, context=view)
+    return EGRESS_PARKED
+
+
+@contextlib.contextmanager
+def approving(card: str) -> Iterator[Approving]:
+    """Approve ONE egress call whose card text is *card* (WAC-P4 Confirm).
+
+    The yes closes on the way out, so a task of the run that outlives it can
+    never use it."""
+    state = Approving(card=card)
+    token = _APPROVING.set(state)
+    try:
+        yield state
+    finally:
+        state.closed = True
+        _reset(_APPROVING, token)

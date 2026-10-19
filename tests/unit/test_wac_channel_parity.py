@@ -48,13 +48,10 @@ QUESTION = "What is the IP billing for the Mumbai circle for September?"
 
 #: The open defects of channel parity, each with its ticket in spec §17.3.
 #: The fence names them, so a fix shows here as a failing ratchet, and the
-#: entry goes in the same change.
-KNOWN_GAPS: dict[str, str] = {
-    "memory_context": "WAC-P2: the web route pre-reads Mem0, room, prefs, agent and "
-                      "org memory into the turn. bot_run does not. remember() works",
-    "mcp_servers": "WAC-P3: the web stream injects the org's MCP servers. The batch "
-                   "path does not",
-}
+#: entry goes in the same change. WAC-P2 (the memory pre-read) and WAC-P3
+#: (the MCP servers) closed on 2026-10-19. A gap that opens again fails
+#: :func:`test_each_gap_is_open_exactly_when_it_is_listed`.
+KNOWN_GAPS: dict[str, str] = {}
 
 
 def _orchestrator_scope() -> list[str]:
@@ -301,15 +298,188 @@ async def test_a_whatsapp_turn_carries_every_context_block_of_a_web_turn(
     assert bot_run.SCOPE_RULE_NATIVE in system
 
 
-def test_the_known_gaps_are_still_open() -> None:
-    """A ratchet. When a gap closes, this fails: delete its entry and its
-    row in spec §17.3 in the same change."""
+def _reaches(module: Any, root: str, target: str, depth: int = 4) -> bool:
+    """True when *root*, a function of *module*, calls *target*, itself or
+    through the functions of *module* that it calls, *depth* calls deep.
+
+    The ratchet follows the call wherever it lives. The first ratchet read
+    the source of ``_run_agent_inner`` alone, so an injection in the batch
+    assembly that it calls (``_assemble_batch_agents``) read as missing."""
+    import ast
     import inspect
 
+    tree = ast.parse(inspect.getsource(module))
+    calls: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            calls[node.name] = {
+                c.func.id if isinstance(c.func, ast.Name) else c.func.attr
+                for c in ast.walk(node) if isinstance(c, ast.Call)
+                and isinstance(c.func, ast.Name | ast.Attribute)}
+    seen, layer = {root}, {root}
+    for _ in range(depth):
+        if any(target in calls.get(name, set()) for name in layer):
+            return True
+        layer = {c for name in layer for c in calls.get(name, set())
+                 if c in calls and c not in seen}
+        seen |= layer
+    return False
+
+
+def _memory_gap_open() -> bool:
+    """WAC-P2: a WhatsApp run reads no member memory into its turn."""
+    from gateway.routes.whatsapp_channel import bot_run
+
+    payload = bot_run.build_payload(QUESTION, [], MEMBER, native=True,
+                                    memory_context="## Memory\n- x")
+    return ("memory_context" not in payload
+            or not _reaches(bot_run, "_answer", "memory_preread"))
+
+
+def _mcp_gap_open() -> bool:
+    """WAC-P3: the batch path, which a WhatsApp run takes, adds no MCP server."""
+    import orchestrator.executor as executor
+
+    return not _reaches(executor, "_run_agent_inner", "_inject_mcp_servers")
+
+
+#: Each known gap's check: True while the gap is open.
+_GAP_CHECKS = {"memory_context": _memory_gap_open, "mcp_servers": _mcp_gap_open}
+
+
+def test_each_gap_is_open_exactly_when_it_is_listed() -> None:
+    """A ratchet both ways. A gap that closes fails until its entry leaves
+    :data:`KNOWN_GAPS` (and its row leaves spec §17.3). A closed gap that
+    opens again fails until it is listed again, with its ticket."""
+    assert set(KNOWN_GAPS) <= set(_GAP_CHECKS)
+    for name, check in _GAP_CHECKS.items():
+        assert check() == (name in KNOWN_GAPS), name
+
+
+def test_the_ratchet_follows_a_call_through_the_functions_it_calls() -> None:
+    import orchestrator.executor as executor
+
+    assert _reaches(executor, "_assemble_batch_agents", "_inject_mcp_servers", depth=1)
+    assert _reaches(executor, "_run_agent_inner", "_inject_mcp_servers")
+    assert not _reaches(executor, "_run_agent_inner", "no_such_call_anywhere")
+
+
+# ── 4. WAC-P2: the member's memory ──────────────────────────────────────────
+
+
+async def test_a_whatsapp_turn_carries_the_members_memory_as_a_web_turn_does(
+    bound_run: dict[str, str],
+) -> None:
+    """The block reaches the system message through the ONE preamble
+    builder, exactly as the web route's ``memory_context`` does."""
     import orchestrator.executor as executor
     from gateway.routes.whatsapp_channel import bot_run
 
-    payload = bot_run.build_payload(QUESTION, [], MEMBER, native=True)
-    assert "memory_context" in KNOWN_GAPS and "memory_context" not in payload
-    batch = inspect.getsource(executor._run_agent_inner)
-    assert "mcp_servers" in KNOWN_GAPS and "_inject_mcp_servers(" not in batch
+    block = "## Memory from past conversations\n- Prefers totals in lakh."
+    payload = bot_run.build_payload(QUESTION, [], MEMBER, native=True,
+                                    memory_context=block)
+    system = await _whatsapp_system_message(payload)
+    web = executor._context_preamble_parts(
+        {"memory_context": block, "system_context": "Web persona."},
+        {"zoho": {}}, "orchestrator")
+    memory_part = next(p for p in web if block in p)
+    assert memory_part in system
+
+
+async def test_the_memory_pre_read_is_the_link_members_in_the_link_org_and_none_in_a_room(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from acb_common.db import bind_tenant, release_tenant
+    from gateway.routes.whatsapp_channel import bot_run
+
+    reads: list[tuple[str | None, str, str, str, bool]] = []
+
+    async def _read(*, user_id: str, agent_name: str, thread_id: str,
+                    message: str, shared: bool = False, clearance: Any = None) -> str:
+        from acb_common.db import current_tenant
+
+        reads.append((current_tenant(), user_id, thread_id, message, shared))
+        return "## Memory\n- a fact"
+
+    import gateway.memory_preread as memory_preread
+
+    monkeypatch.setattr(memory_preread, "memory_preread", _read)
+    req = bot_run.RunRequest("m1", ORG, MEMBER, "919990000001", "wamid.1", "thread-1")
+    token = bind_tenant(ORG)
+    try:
+        solo = await bot_run._memory_preread(req, QUESTION, shared=False)
+        room = await bot_run._memory_preread(req, QUESTION, shared=True)
+    finally:
+        release_tenant(token)
+    assert solo == "## Memory\n- a fact" and room == ""
+    assert reads == [(ORG, MEMBER, "thread-1", QUESTION, False)], "a room read memory"
+
+
+async def test_a_memory_fault_costs_the_block_and_never_the_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gateway.routes.whatsapp_channel import bot_run
+
+    async def _boom(**_kw: Any) -> str:
+        raise RuntimeError("mem0 is down")
+
+    import gateway.memory_preread as memory_preread
+
+    monkeypatch.setattr(memory_preread, "memory_preread", _boom)
+    req = bot_run.RunRequest("m1", ORG, MEMBER, "919990000001", "wamid.1", "thread-1")
+    assert await bot_run._memory_preread(req, QUESTION, shared=False) == ""
+
+
+# ── 5. WAC-P3: the org's MCP servers ────────────────────────────────────────
+
+
+async def test_the_batch_assembly_injects_the_mcp_servers_as_the_stream_path_does(
+    crm_org: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same four values as ``run_agent_stream``: the org stamp, the
+    run's access lookup, the card rule and the list the run closes."""
+    import orchestrator.executor as executor
+
+    seen: list[dict[str, Any]] = []
+
+    async def _inject(agent: Any, agent_name: str, **kw: Any) -> None:
+        seen.append({"agent": agent, "name": agent_name, **kw})
+
+    monkeypatch.setattr(executor, "_inject_mcp_servers", _inject)
+
+    class _Loaded:
+        config = {"tool_scope": _orchestrator_scope()}
+        agent_dir = "."
+
+        def build_agents(self) -> list[Any]:
+            return [_Orchestrator()]
+
+    def authorizer(name: str) -> bool:
+        return True
+
+    mcp = executor._BatchMcp(organization_id=ORG, is_authorized=authorizer,
+                             member_present=True)
+    agents, _md, _tools = await executor._assemble_batch_agents(
+        _Loaded(), agent_name="orchestrator", no_egress=False, mcp=mcp)
+    assert [(s["agent"], s["name"]) for s in seen] == [(agents[0], "orchestrator")]
+    (call,) = seen
+    assert call["organization_id"] == ORG and call["is_authorized"] is authorizer
+    assert call["member_present"] is True and call["opened"] is mcp.opened
+
+    # H-236: a no_egress run gets none, and a retry (no mcp) gets none.
+    seen.clear()
+    await executor._assemble_batch_agents(_Loaded(), agent_name="orchestrator",
+                                          no_egress=True, mcp=mcp)
+    await executor._assemble_batch_agents(_Loaded(), agent_name="orchestrator",
+                                          no_egress=False)
+    assert seen == []
+
+
+def test_the_batch_run_closes_what_it_opened_and_only_a_top_level_chat_run_opens() -> None:
+    import inspect
+
+    import orchestrator.executor as executor
+
+    src = inspect.getsource(executor._run_agent_inner)
+    assert "_close_mcp_tools(_batch_mcp.opened)" in src
+    assert 'not _parent_ctx.get("run_id") and not _batch_thread' in src

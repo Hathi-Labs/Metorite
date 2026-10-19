@@ -248,13 +248,15 @@ def rig(monkeypatch: pytest.MonkeyPatch):
         yield _Session(state["row"])
 
     import acb_audit
-    from orchestrator import mutation
+    from acb_auth import agent_operator
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
     monkeypatch.setattr(agent_routes, "_git_exec", _fake_git_exec)
     monkeypatch.setattr(agent_routes, "_git_push_with_rebase", _fake_push)
     monkeypatch.setattr(agent_routes, "_member_graph_session", _fake_session)
-    monkeypatch.setattr(mutation, "_read_first_party", _fake_first_party)
+    # The ONE read of first_party, which the shared rule calls. The queue's gate
+    # reaches it through acb_auth.agent_operator.may_review_agent_commits.
+    monkeypatch.setattr(agent_operator, "read_first_party", _fake_first_party)
     monkeypatch.setattr(acb_audit, "record", lambda ev: state["audit"].append(ev))
 
     app = FastAPI()

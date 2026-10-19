@@ -1668,12 +1668,21 @@ def test_a_slow_mint_does_not_hold_the_stream(monkeypatch) -> None:
     import asyncio
     import time
 
-    import structlog
     from gateway.routes import agent
 
     def _slow(*_a, **_k):
         time.sleep(1.5)
 
+    # Record the module logger's calls. structlog.testing.capture_logs saw
+    # nothing once an earlier test had cached the logger, so the release
+    # gate (one process, every test) failed on 2026-10-19.
+    caps: list[dict] = []
+
+    class _Recorder:
+        def __getattr__(self, level):
+            return lambda event, **kw: caps.append({"event": event, "level": level, **kw})
+
+    monkeypatch.setattr(agent, "_log", _Recorder())
     monkeypatch.setattr(agent, "_mint_run_row", _slow)
     monkeypatch.setattr(agent, "_MINT_TIMEOUT_S", 0.1)
     async def _timed() -> float:
@@ -1686,8 +1695,7 @@ def test_a_slow_mint_does_not_hold_the_stream(monkeypatch) -> None:
         )
         return time.monotonic() - start
 
-    with structlog.testing.capture_logs() as caps:
-        elapsed = asyncio.run(_timed())
+    elapsed = asyncio.run(_timed())
     assert elapsed < 1.0
     failed = [c for c in caps if c.get("event") == "agent.mint_failed"]
     assert failed and failed[0].get("reason") == "timeout"
