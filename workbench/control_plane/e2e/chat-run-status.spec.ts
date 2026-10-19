@@ -324,6 +324,38 @@ test.describe("One predictable run status (§4.10)", () => {
     expect(calls.filter((c) => c === "send")).toHaveLength(1);
   });
 
+  test("(n) two parallel delegations: one asks while the other streams, a chat switch, the card still waits", async ({ page }) => {
+    // Review of #1171: the sibling's sub-agent events marked the waiting
+    // question as answered, and after the remount no card showed.
+    await install(page, { ask: true, parallel: true });
+    const box = await openChat(page);
+    await box.fill("Plan the release");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(page.getByText("Which project should I use?").first()).toBeVisible({ timeout: 15_000 });
+    // B streams on while A waits.
+    await expect(page.locator('[data-elicitation-card="open"]')).toHaveCount(1);
+    await page.waitForTimeout(1_000);
+    // Away and back, while the question waits.
+    await page.getByRole("button", { name: /New conversation/ }).click();
+    await page.getByRole("button", { name: /General-purpose AI company brain/i }).click();
+    await page.waitForTimeout(800);
+    await page.locator('[data-session-dot="running"]').first().click();
+    // The card still waits, and the row says so.
+    await expect(page.locator('[data-elicitation-card="open"]')).toHaveCount(1, { timeout: 15_000 });
+    await expect(page.getByText("Which project should I use?").first()).toBeVisible();
+    await expect(composerRow(page)).toHaveAttribute("data-run-tone", "waiting", { timeout: 15_000 });
+    // One answer, and the run goes on.
+    await page.getByRole("button", { name: "Apollo" }).click();
+    await page.getByRole("button", { name: "Submit", exact: true }).click();
+    await expect(page.getByText(ASK_NEXT).first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator('[data-elicitation-card="answered"]')).toHaveCount(1);
+    await page.waitForTimeout(1_000);
+    const answers = await page.evaluate(() => (window as unknown as { __answers?: unknown[] }).__answers ?? []);
+    expect(answers).toHaveLength(1);
+    const calls = await page.evaluate(() => (window as unknown as { __calls: string[] }).__calls);
+    expect(calls.filter((c) => c === "send")).toHaveLength(1);
+  });
+
   test("(g) a run state shorter than 400 ms flashes no row and no thinking container", async ({ page }) => {
     await install(page);
     const box = await openChat(page);

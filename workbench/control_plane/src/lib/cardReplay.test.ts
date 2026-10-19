@@ -60,19 +60,50 @@ describe("planCardRedraw", () => {
 });
 
 describe("the log marks a question as moved by a real event only", () => {
-  it("a delta or a tool end moves it, a heartbeat or a progress line does not", () => {
+  it("model output moves it, a heartbeat or a progress line does not", () => {
     const t = "t-moved";
     clearCardLog(t);
     noteCardEvent(t, "user_input_requested", { request_id: "q1" });
     noteRunMoved(t, "progress");
     noteRunMoved(t, "tool_args");
     expect(getCardLog(t)[0].moved).toBeFalsy();
-    noteRunMoved(t, "tool_end");
+    noteRunMoved(t, "delta");
     expect(getCardLog(t)[0].moved).toBe(true);
     // An answer goes into the log too.
     noteCardAnswered(t, "q1", "Apollo");
     expect(planCardRedraw(getCardLog(t))[0]).toMatchObject({ waiting: false, answer: "Apollo" });
     clearCardLog(t);
+  });
+});
+
+describe("parallel tools never settle a waiting question (review of #1171)", () => {
+  // The tools of one model turn run concurrently. Agent A asks and waits;
+  // agent B, and a sibling top-level tool, go on streaming meanwhile.
+  const SIBLING_EVENTS = [
+    "sub_agent_delta", "sub_agent_tool_start", "sub_agent_tool_end", "sub_agent_error",
+    "tool_start", "tool_args", "tool_partial", "tool_end", "progress", "todos", "state", "state_delta",
+    "custom",
+  ];
+
+  it("a question that waits while siblings stream still redraws as waiting", () => {
+    const t = "t-parallel";
+    clearCardLog(t);
+    noteCardEvent(t, "user_input_requested", { request_id: "q1" });
+    noteCardEvent(t, "elicitation_requested", { request_id: "q2", questions: [] });
+    for (const type of SIBLING_EVENTS) noteRunMoved(t, type);
+    const plan = planCardRedraw(getCardLog(t));
+    expect(plan.map((c) => [c.requestId, c.waiting])).toEqual([["q1", true], ["q2", true]]);
+    clearCardLog(t);
+  });
+
+  it("only model output, which comes after the gather, moves it", () => {
+    for (const type of ["delta", "reasoning", "message_start", "done"]) {
+      const t = `t-out-${type}`;
+      noteCardEvent(t, "user_input_requested", { request_id: "q1" });
+      noteRunMoved(t, type);
+      expect(planCardRedraw(getCardLog(t))[0].waiting, type).toBe(false);
+      clearCardLog(t);
+    }
   });
 });
 

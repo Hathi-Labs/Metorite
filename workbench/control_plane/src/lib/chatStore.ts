@@ -226,12 +226,28 @@ export const CARD_EVENTS: ReadonlySet<string> = new Set([
 const CARD_LOG_MAX = 50;
 const _cardLog = new Map<string, CardLogEntry[]>();
 
-/** The stream events that prove a run moved on: a run that waits on its
- *  question sends none of them until it has an answer. A heartbeat, a
- *  progress line or a tool's arguments do not count. */
+/**
+ * The stream events that prove a run moved past its question. THE RULE:
+ * when in doubt, redraw as waiting. A stale waiting card costs one harmless
+ * 4xx, because a refused answer of a redrawn card never steers. A hidden
+ * waiting card blocks the run until its question times out.
+ *
+ * The tools of one model turn run CONCURRENTLY (MAF's
+ * `allow_concurrent_invocation`, one `asyncio.gather`). While the asking
+ * tool waits, its siblings go on. So none of these counts:
+ *
+ * - `sub_agent_*`: a parallel delegation streams them (review of #1171).
+ * - `tool_start`, `tool_end`: the executor's tool shim emits a start and a
+ *   result for each tool as it runs, inside the gather
+ *   (`orchestrator/executor.py`, the Tier 2 `_shim`). A sibling's result can
+ *   come while the question waits.
+ * - `progress`, `tool_args`, `tool_partial`, a heartbeat, a card event.
+ *
+ * What counts is model output, which comes only after the gather: a text
+ * delta, a text message start, reasoning, and the run's `done`.
+ */
 const MOVE_EVENTS: ReadonlySet<string> = new Set([
-  "delta", "reasoning", "message_start", "tool_start", "tool_end",
-  "sub_agent_delta", "sub_agent_tool_start", "sub_agent_tool_end", "done",
+  "delta", "reasoning", "message_start", "done",
 ]);
 
 /** Keep a card event of the run in flight. Other events are ignored. */

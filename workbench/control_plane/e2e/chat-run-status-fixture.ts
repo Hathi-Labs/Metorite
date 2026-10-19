@@ -34,6 +34,9 @@ export type Srv = {
   ask: boolean;
   /** The answer reached respond-input. */
   answered: boolean;
+  /** Two delegations run in parallel: agent A asks, and agent B streams on
+   *  (its text, its tools, and a sibling tool's result) while A waits. */
+  parallel: boolean;
   userId?: string;
   replyId?: string;
 };
@@ -55,7 +58,7 @@ export async function install(page: Page, initial: Partial<Srv> = {}) {
       window.localStorage.clear();
       sessionStorage.setItem("__inited", "1");
       sessionStorage.setItem("__srv", JSON.stringify({
-        threadId: null, state: "none", live: true, startedAt: 0, endsAt: 0, cutAfterMs: 0, r2At: 0, noRunId: false, shiftAfterLists: 0, shiftMs: 0, lists: 0, ask: false, answered: false, ...initial,
+        threadId: null, state: "none", live: true, startedAt: 0, endsAt: 0, cutAfterMs: 0, r2At: 0, noRunId: false, shiftAfterLists: 0, shiftMs: 0, lists: 0, ask: false, answered: false, parallel: false, ...initial,
       }));
     }
     const w = window as unknown as Record<string, unknown>;
@@ -103,9 +106,21 @@ export async function install(page: Page, initial: Partial<Srv> = {}) {
         for (const e of head()) controller.enqueue(frame(e));
         if (read().ask) {
           // ask_user parks the run on a Future: nothing comes until the answer.
+          if (read().parallel) {
+            // The model turn called two agents at once. A asks, B works on.
+            controller.enqueue(frame({ type: "tool_start", id: "t-b", name: "call_agent", args: {} }));
+            controller.enqueue(frame({ type: "tool_args", id: "t-b", args: { agent: "email-assistant", message: "Count the open orders" } }));
+          }
           controller.enqueue(frame({ type: "custom", name: "user_input_requested", value: {
             request_id: ASK_ID, question: "Which project should I use?", choices: ["Apollo", "Gemini"], allowFreeform: false,
           } }));
+          if (read().parallel) {
+            await new Promise((r) => setTimeout(r, 300));
+            controller.enqueue(frame({ type: "sub_agent_tool_start", agentName: "email-assistant", id: "b-1", name: "search_email" }));
+            controller.enqueue(frame({ type: "sub_agent_delta", agentName: "email-assistant", runId: "b", delta: "Counting the open orders. " }));
+            controller.enqueue(frame({ type: "sub_agent_tool_end", agentName: "email-assistant", id: "b-1", result: "4", success: true }));
+            controller.enqueue(frame({ type: "tool_end", id: "t-b", name: "call_agent", args: { agent: "email-assistant" }, result: "4 open orders", success: true }));
+          }
           while (!read().answered && active()) {
             if (signal?.aborted) { controller.error(new DOMException("The operation was aborted.", "AbortError")); return; }
             await new Promise((r) => setTimeout(r, 100));
