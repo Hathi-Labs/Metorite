@@ -9,6 +9,7 @@ import type { AnyExtension, NodeViewRenderer } from "@tiptap/core";
 
 import { Highlight } from "./highlight";
 import { Subscript, Superscript } from "./supSub";
+import { KbTextAlign } from "./textAlign";
 import { TextColor } from "./textColor";
 
 /** The node views of the stored forms. The component passes them, and the test passes none. */
@@ -21,5 +22,5 @@ export interface StoredFormViews {
 
 /** The extensions of the stored forms, in registration order. */
 export function storedFormExtensions(_views: StoredFormViews = {}): AnyExtension[] {
-  return [TextColor, Highlight, Superscript, Subscript];
+  return [TextColor, Highlight, Superscript, Subscript, KbTextAlign];
 }

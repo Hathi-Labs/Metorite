@@ -58,6 +58,7 @@ import {
 } from "./inline";
 import { keepOrderedTaskBoxes, markerOf, renderList } from "./lists";
 import { storedFormExtensions, type StoredFormViews } from "./storedForms";
+import { withAlign } from "./textAlign";
 
 export { escapeLineStart, markdownDestination } from "./inline";
 
@@ -889,8 +890,8 @@ export function knowledgeExtensions(opts: KnowledgeSchemaOptions = {}): AnyExten
     }),
     KnowledgeBulletList,
     KnowledgeOrderedList,
-    KnowledgeParagraph,
-    KnowledgeHeading.configure({ levels: [...LEVELS] }),
+    withAlign(KnowledgeParagraph),
+    withAlign(KnowledgeHeading).configure({ levels: [...LEVELS] }),
     withView(KnowledgeCodeBlock, views.codeBlock),
     withView(KnowledgeImage, views.image),
     TableKit.configure({ table: false }),

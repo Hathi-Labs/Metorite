@@ -998,6 +998,9 @@ select optgroup {
 .kb-highlight[data-color="teal"] { --kb-mark: var(--cat-6); }
 .kb-highlight[data-color="pink"] { --kb-mark: var(--cat-7); }
 .kb-highlight[data-color="yellow"] { --kb-mark: var(--cat-12); }
+.kb-editor [data-align="center"] { text-align: center; }
+.kb-editor [data-align="right"] { text-align: right; }
+.kb-editor [data-align="justify"] { text-align: justify; }
 /* KB-2p stored forms: end */
 
 @keyframes chat-shimmer {

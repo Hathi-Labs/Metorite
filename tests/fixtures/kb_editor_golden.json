@@ -1822,6 +1822,59 @@
         "text"
       ],
       "marks": []
+    },
+    {
+      "name": "kb2p-align-paragraph",
+      "md": "<p data-align=\"center\">A centred line with **bold** and a [link](https://example.com).</p>\n\n<p data-align=\"right\">Right.</p>\n\n<p data-align=\"justify\">Justified text.</p>\n\nPlain left text.",
+      "saved": "<p data-align=\"center\">A centred line with **bold** and a [link](https://example.com).</p>\n\n<p data-align=\"right\">Right.</p>\n\n<p data-align=\"justify\">Justified text.</p>\n\nPlain left text.",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "bold",
+        "link"
+      ]
+    },
+    {
+      "name": "kb2p-align-heading",
+      "md": "<h2 data-align=\"right\">Right heading</h2>\n\n<h1 data-align=\"center\">Centred *title*</h1>\n\nText under it.",
+      "saved": "<h2 data-align=\"right\">Right heading</h2>\n\n<h1 data-align=\"center\">Centred *title*</h1>\n\nText under it.",
+      "nodes": [
+        "doc",
+        "heading",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "italic"
+      ]
+    },
+    {
+      "name": "kb2p-align-nested",
+      "md": "- <p data-align=\"center\">centred item</p>\n- plain item\n\n> [!NOTE]\n> <p data-align=\"right\">right in a note</p>",
+      "saved": "- <p data-align=\"center\">centred item</p>\n- plain item\n\n> [!NOTE]\n> <p data-align=\"right\">right in a note</p>",
+      "nodes": [
+        "bulletList",
+        "callout",
+        "doc",
+        "listItem",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "kb2p-align-raw-shapes",
+      "md": "<p data-align=\"left\">left is no stored form</p>\n\n<p align=\"center\">old align</p>\n\n<p data-align=\"center\" class=\"x\">extra</p>",
+      "saved": "<p data-align=\"left\">left is no stored form</p>\n\n<p align=\"center\">old align</p>\n\n<p data-align=\"center\" class=\"x\">extra</p>",
+      "nodes": [
+        "doc",
+        "htmlBlock",
+        "text"
+      ],
+      "marks": []
     }
   ]
 }

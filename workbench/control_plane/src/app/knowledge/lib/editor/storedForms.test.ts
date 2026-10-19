@@ -41,6 +41,7 @@ function inventory(doc: JSONContent): string[] {
   const out: string[] = [];
   const walk = (n: JSONContent) => {
     out.push(n.type ?? "?");
+    if (n.attrs?.align && (n.type === "paragraph" || n.type === "heading")) out.push(`align:${n.attrs.align}`);
     for (const m of n.marks ?? []) out.push(`${m.type}:${JSON.stringify(m.attrs ?? {})}`);
     for (const c of n.content ?? []) walk(c);
   };
@@ -52,6 +53,13 @@ describe("the golden set holds each stored form", () => {
   it("has a case for each mark of KB-2p", () => {
     const marks = all((c) => c.marks);
     for (const mark of ["textColor", "highlight", "superscript", "subscript"]) expect(marks, mark).toContain(mark);
+  });
+
+  it("has a case for each alignment, on a paragraph and on a heading", () => {
+    const aligned = GOLDEN.cases.flatMap((c) => inventory(parseBody(c.saved)).filter((t) => t.startsWith("align:")));
+    expect(new Set(aligned)).toEqual(new Set(["align:center", "align:right", "align:justify"]));
+    const heading = parseBody('<h2 data-align="right">R</h2>').content?.[0];
+    expect(heading).toMatchObject({ type: "heading", attrs: { level: 2, align: "right" } });
   });
 
   it("keeps each KB-2p case a fixed point that the first save does not change", () => {
