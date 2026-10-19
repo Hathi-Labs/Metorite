@@ -5963,6 +5963,27 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** owner, 2026-10-18. `specs/staging_and_daily_release.md`, CLAUDE.md §3a
 - **Added:** 2026-10-18
 
+### H-364 · Harden the CRM consistency batch of §18.16 · [AGENT] · security
+- **Check:** each item below has its own test or review record, or a later
+  entry owns it. If all hold, delete this entry.
+- **Why.** The owner asked to ship §18.16 fast on 2026-10-19, and to
+  harden it later. No adversarial review and no mutation test ran.
+- **Do this:**
+  1. Run a mutation round on `crm_sync/terms.py`, `crm_tools._term_total`
+     and the early park of `executor.wait_user_future`.
+  2. Review `GET /crm/terms/resolve`. It writes the asked term on a GET.
+     Bound the count of asked terms of one org.
+  3. Review `aggregate._seed_aliases`. It writes the alias fact on a GET.
+     Bound the count of alias sets, and let an admin remove a set.
+  4. Check that a figure of a WhatsApp option comes only from the tool
+     (`text_asks.figures_of` takes a shape, not a source).
+  5. Check the late pick of a term card across a parked run.
+  6. Give a batch run off `CRM_ANSWER_FIRST_ORGS` a holder, so the read
+     budget covers it.
+  7. Add an org zone, and read it in `acb_common.today`.
+- **Authority:** `specs/crm_platform.md` §18.16.10, owner 2026-10-19
+- **Added:** 2026-10-19
+
 ### H-363 · 🔴 The operator's GitHub token sits in each agent clone's remote URL · [AGENT] · finding
 - **Check:** read `loader._refresh_remote_auth` in `packages/acb_skills/acb_skills/loader.py`.
   If it still writes the token into the remote URL of the clone, this is open.

@@ -1247,6 +1247,7 @@ async def wait_user_future(
     timeout: float,
     thread_id: str | None = None,
     slice_seconds: float = 60.0,
+    park_after: float | None = None,
 ) -> dict[str, Any]:
     """Await a parked HITL future, heartbeating the relay while waiting.
 
@@ -1265,6 +1266,13 @@ async def wait_user_future(
     ``CHAT_ASK_PARK_SECONDS`` with no answer it PARKS the run: the row stays
     open as ``parked``, the run ends, and this raises ``CancelledError``.
     Fence: ``tests/unit/test_pending_ask_flow.py``.
+
+    WS-53 §18.16 part 2: *park_after* parks sooner. The follow-up card of a
+    CRM answer (``crm_tools.follow_up_park_after``) comes AFTER the answer,
+    so the run has nothing left to wait for. Run b38bcd38 (2026-10-19) held
+    the run 419 s on that card. A refused early park tries again at the
+    normal window, so a card is never lost. With ``CHAT_DURABLE_ASKS`` off
+    there is no late path, and the wait is as before.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -1273,7 +1281,10 @@ async def wait_user_future(
 
     durable = pending_ask.durable_asks_enabled()
     rid = _request_id_of(fut) if durable else None
-    park_at = loop.time() + pending_ask.park_after_seconds() if rid else None
+    normal = pending_ask.park_after_seconds()
+    early = park_after is not None and park_after < normal
+    window = park_after if early else normal
+    park_at = loop.time() + window if rid else None
     answer: str | None = None
     try:
         while True:
@@ -1301,6 +1312,11 @@ async def wait_user_future(
                     park_at = None  # one attempt; a refusal keeps waiting
                     if await pending_ask.park(rid, tid, fut):
                         raise asyncio.CancelledError
+                    if early:
+                        # §18.16 part 2: the early park found no row yet.
+                        # Try once more at the normal window.
+                        early = False
+                        park_at = loop.time() + max(0.0, normal - window)
                 if tid:
                     try:
                         from orchestrator.stream_relay import touch_active
@@ -8014,7 +8030,9 @@ def _context_preamble_parts(
     connected and missing integrations, the Knowledge index block of the
     orchestrator (:func:`_knowledge_index_block`, WS-61 KB-4a), then
     ``memory_context``, then ``system_context`` (which carries the persona),
-    then the member's name line (:func:`_member_name_line`), and last the member's number-system line (:func:`run_number_system`). :func:`_build_event_message`
+    then the member's name line (:func:`_member_name_line`), the member's
+    number-system line (:func:`run_number_system`), and last today's date
+    (``acb_common.today.today_line``). :func:`_build_event_message`
     puts the history and the current turn after them. The structured path of
     WS-43t1 sends the same blocks through its per-run context provider
     (:func:`_run_context_text`). One builder, so the two paths cannot drift.
@@ -8076,6 +8094,14 @@ def _context_preamble_parts(
         from acb_common.number_system import prompt_line
 
         parts.append(prompt_line(run_number_system()))
+    # WS-53 §18.16 part 1: today's date, weekday and zone, on both channels.
+    # Two runs of 2026-10-19 read a month with no year as two different years
+    # because no run knew the date. Last, so each block above keeps its place.
+    from acb_common.today import today_line
+
+    line = today_line()
+    if line:
+        parts.append(line)
     return parts
 
 
