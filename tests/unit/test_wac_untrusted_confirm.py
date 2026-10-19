@@ -32,6 +32,7 @@ R7 fences named here:
 * ``wacp4-mark-sticky``: a WhatsApp mark never ends while the thread lives,
   as on the web (review P1-2).
 """
+# ruff: noqa: F811 - `env` and `world` are fixtures that a test names
 from __future__ import annotations
 
 from typing import Any
@@ -455,7 +456,7 @@ async def test_a_mark_whose_turn_left_the_replay_still_parks_the_call(env: _Env)
     for i in range(30):
         env.world.store.threads[sid].append(
             {"id": f"old-{i}", "role": ("user", "assistant")[i % 2], "content": "ok"})
-    assert 30 > bot_run.HISTORY_TURNS
+    assert bot_run.HISTORY_TURNS < 30
     env.world.agent.mark = False
     env.world.agent.script.append({"url": URL})
     await _post_and_run(_message(ASK))

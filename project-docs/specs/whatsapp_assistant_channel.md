@@ -1942,6 +1942,14 @@ act, and the member's Confirm button answers it.
    `whatsapp_acts.answer_egress` before it asks the web card. In a WhatsApp
    run with writes on, the call parks, one act a run. The tool returns
    `EGRESS_PARKED_TEXT`, and the call reaches nothing.
+   The member's summary comes from `egress.egress_call_view` (review P1-1).
+   It shows the tool name first. Then it shows each recipient field (`to`,
+   `cc`, `bcc`, `reply_to`), the subject and each attachment name, in full.
+   Then it shows the other arguments, cut with "…". Code sets this order,
+   and the order of the model's arguments changes nothing. When the key
+   fields do not fit in the body limit of an interactive message (1024
+   characters), nothing parks. The tool then tells the model to send the
+   member to the web app.
 2. **The record.** The act is a row of `whatsapp_pending_acts`. Its tool name
    is `egress__<tool>`, and its card text is the JSON of the tool and ALL its
    arguments. The change adds no migration.
@@ -1959,22 +1967,17 @@ A run with no WhatsApp profile cannot use a yes. A batch run, a scheduled
 run and a WhatsApp run with writes off still refuse, as before. The switch
 is `WHATSAPP_ASSISTANT_WRITES` for the org. This change adds no flag.
 
-**The mark ends when its turn leaves the replay.** A WhatsApp thread never
-ends while the member writes in it, and the batch path keeps no other copy of
-a turn.
+**The mark is sticky, as on the web (review P1-2).** A WhatsApp run reads
+the untrusted-answer mark exactly as a web run does, and the mark ends only
+with its TTL. The first build ended the mark when its turn left the 20-turn
+replay. A later reply can repeat what the email assistant said, so that end
+let a steered call run with no Confirm. The cost of a sticky mark is one tap
+for each egress call, and the call still works through the Confirm above.
 
-- A mark that a WhatsApp run sets holds its time (`wa:<ms>`). A mark that
-  another run sets keeps the old value, `1`, and it never ends by replay. A
-  WhatsApp mark never replaces it.
-- `bot_run._replay_horizon` reads the newest row that the replay of this
-  turn leaves out (`_DROPPED_SQL`, the rows and order of `_HISTORY_SQL`). It
-  subtracts `MARK_TO_REPLY_MS`, the longest time from a mark to its reply.
-- The WhatsApp run of THAT thread reads an older WhatsApp mark as clear.
-  Redis decides, and the process cache alone never does.
-- ⚠️ **Residual risk, recorded on purpose.** A later reply can restate what
-  the email assistant said. That reply stays in the replay after the mark
-  ends. Strict tracking would mark each later reply too, and then no thread
-  would ever end its mark.
+**The web card uses the same view.** `_tool_injection._untrusted_answer_card`
+builds its context with `egress.egress_call_view`, with the card's limit of
+4000 characters. A call whose key fields do not fit gets no card, and so a
+no.
 
 **The CRM routing line, and the number system.**
 
@@ -1994,9 +1997,9 @@ a turn.
 | Another phone, another org, a stale tap and an expired act approve nothing | the same file, `wacp4-bound` |
 | A room settles no act | the same file, `wacp4-room` |
 | A batch run and a run with writes off still refuse | the same file, `wacp4-batch-refuses` |
-| A WhatsApp mark ends when its turn left the replay, in that thread only | the same file, `wacp4-mark-replay` |
+| Every recipient, the subject and each attachment show first, on WhatsApp and on the web card. Key fields that do not fit ask no yes | the same file, `wacp4-view` |
+| A mark whose turn left the replay still parks the call | the same file, `wacp4-mark-sticky` |
 | The act and its claim hold on the real table under FORCE RLS (R8) | `tests/unit/test_wac_writes_r8.py` |
-| The horizon reads the real thread as the app role (R8) | `tests/unit/test_wac_bot_run_r8.py` |
 | The memory and the MCP servers reach a WhatsApp run | `tests/unit/test_wac_channel_parity.py` |
 | Each org reads its own module names | `tests/unit/test_org_facts.py` |
 | A mixed-case settings row reads and saves in place (R8) | `tests/unit/test_number_system_r8.py` |
