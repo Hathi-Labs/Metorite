@@ -45,6 +45,13 @@ settles the act with the member's NEXT message, before any run.
   rename, a status edit) gets "no": nothing is written, and the act closes
   ``void``.
 
+* **WAC-P4, one egress call after an untrusted answer** (spec §17.3). Its
+  act name starts with ``whatsapp_acts.EGRESS_ACT_PREFIX``. Its Confirm
+  passes every check above, then :func:`settle` gives :class:`Approved` and
+  runs no tool. ``bot_run`` runs the model again inside
+  ``whatsapp_acts.approving``, so that ONE call, with those arguments, gets
+  the yes, and then calls :func:`finish`.
+
 Every read and write runs in ``tenant_session()`` with the org that
 ``bot_run`` bound from the link row (R5, R11). Nothing here reads an org or
 an identity from the message.
@@ -58,9 +65,11 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from acb_common import get_logger
+from acb_skills.whatsapp_acts import egress_tool, is_egress_act
 from gateway.db import tenant_session
 from sqlalchemy import text
 
@@ -263,11 +272,12 @@ async def offered(act_id: str, out_wamid: str) -> None:
 # ── Settle ──────────────────────────────────────────────────────────────────
 
 
-async def settle(req: RunRequest, message: str) -> str | None:
+async def settle(req: RunRequest, message: str) -> str | Approved | None:
     """The reply to a Confirm or a Cancel of a pending act, or None.
 
     None: no pending act, or any other message, which voids the act and
-    runs as a normal message (§14.3 item 4).
+    runs as a normal message (§14.3 item 4). :class:`Approved`: the Confirm
+    of a WAC-P4 act passed every check, and ``bot_run`` runs the model.
     """
     from acb_skills.whatsapp_acts import CANCEL, CONFIRM, is_word
 
@@ -306,7 +316,67 @@ async def settle(req: RunRequest, message: str) -> str | None:
         # Another message took it, or it expired a moment ago. Nothing more.
         _log.info("whatsapp_channel.act.not_claimed", act_id=act_id)
         return REPLY_EXPIRED
+    if is_egress_act(str(act["tool_name"])):
+        # WAC-P4: the member said yes to ONE egress call. The model runs
+        # again, and only that call, with those arguments, gets the yes.
+        arguments = _arguments(act["arguments"])
+        if arguments is None:
+            await _close(act_id, "running", "failed", "unknown")
+            _log.warning("whatsapp_channel.act.failed", act_id=act_id, code="unknown")
+            return REPLY_FAILED
+        tool = egress_tool(str(act["tool_name"]))
+        _log.info("whatsapp_channel.act.approved", act_id=act_id, tool=tool,
+                  organization_id=req.organization_id)
+        return Approved(act_id=act_id, tool=tool, arguments=arguments,
+                        card=str(act["card_text"]))
     return await _run(req, act_id, act)
+
+
+# ── WAC-P4: the Confirm of one egress call ──────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Approved:
+    """A claimed WAC-P4 act: the member said yes to this ONE egress call.
+
+    ``bot_run`` runs the model again inside ``whatsapp_acts.approving`` with
+    :attr:`card`, then calls :func:`finish`."""
+
+    act_id: str
+    tool: str
+    arguments: dict[str, Any]
+    card: str
+
+
+#: The model's turn at Confirm. The member's own text is "Confirm", and the
+#: model never saw its parked call, so code names the call and its arguments.
+APPROVED_TURN = (
+    "{message}\n\n[Metorite: the member tapped Confirm for one call. Make this "
+    "call once now, with exactly these arguments, then answer the member's "
+    "earlier question.]\n{tool} {arguments}"
+)
+
+
+def approved_message(message: str, approved: Approved) -> str:
+    """The model's turn at the Confirm of *approved*."""
+    return APPROVED_TURN.format(
+        message=message, tool=approved.tool,
+        arguments=json.dumps(approved.arguments, ensure_ascii=False, sort_keys=True))
+
+
+async def finish(approved: Approved, used: bool) -> None:
+    """Close the act of *approved* after its run. Never raises.
+
+    ``done`` when the run made the confirmed call. Else ``void`` with
+    ``unused``: the model made another call, or none, and nothing ran."""
+    to, code = ("done", None) if used else ("void", "unused")
+    try:
+        await _close(approved.act_id, "running", to, code)
+    except Exception as exc:  # the record names the class only
+        _log.warning("whatsapp_channel.act.finish_failed", act_id=approved.act_id,
+                     error_type=type(exc).__name__)
+        return
+    _log.info("whatsapp_channel.act.finished", act_id=approved.act_id, used=used)
 
 
 def _answers_this_card(act: dict[str, Any]) -> bool:

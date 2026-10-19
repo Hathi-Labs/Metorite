@@ -45,13 +45,37 @@ ORG_KEY = "number_system"
 #: tenant the caller's session binds (the request's, or the run's), and the
 #: SQL names it beside RLS, not instead of it. ``:uid`` is the session's
 #: address. Neither is ever a request field (R5). A missing row reads as NULL.
+#:
+#: WS-47 follow-up of #1154: the member matches in any case. The settings
+#: route writes a NEW row in lower case (:func:`member_key`), and the run
+#: reads its member in lower case, but an older row can hold the address as
+#: the session gave it. When two rows match, the one with a value wins, and
+#: then the lower-case row.
 READ_SQL = (
     "SELECT "
     "(SELECT value FROM org_settings "
     " WHERE organization_id = CAST(:org AS uuid) AND key = 'number_system') AS org_value, "
     "(SELECT number_system FROM user_settings "
-    " WHERE organization_id = CAST(:org AS uuid) AND user_id = :uid) AS member_value"
+    " WHERE organization_id = CAST(:org AS uuid) AND lower(user_id) = lower(:uid) "
+    " ORDER BY (number_system IS NULL), (user_id <> lower(user_id)) "
+    " LIMIT 1) AS member_value"
 )
+
+#: The member's existing settings row in the bound org, in any case: the
+#: one that :data:`READ_SQL` reads first. The settings route writes that row,
+#: so a save never adds a second row for one member.
+ROW_SQL = (
+    "SELECT user_id FROM user_settings "
+    " WHERE organization_id = CAST(:org AS uuid) AND lower(user_id) = lower(:uid) "
+    " ORDER BY (number_system IS NULL), (user_id <> lower(user_id)) "
+    " LIMIT 1"
+)
+
+
+def member_key(email: str | None) -> str:
+    """The ``user_settings.user_id`` of a NEW row: the address in lower
+    case, as the run reads its member (``executor._verified_run_member``)."""
+    return str(email or "").strip().lower()
 
 #: The one line of the chat's per-turn context, for each system.
 PROMPT_LINES: dict[str, str] = {

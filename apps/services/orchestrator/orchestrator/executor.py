@@ -3112,9 +3112,27 @@ class _BatchRunInputs:
     integrations: frozenset[str] | None = None
 
 
+@dataclasses.dataclass
+class _BatchMcp:
+    """What the MCP servers of a batch run need (WS-47 WAC-P3).
+
+    The stream path injects the org's MCP servers with these same four
+    values (``run_agent_stream``). *organization_id* is the caller's
+    server-side stamp, never the payload (R11). *is_authorized* is the run's
+    one access lookup (``_integration_authorizer``). *member_present* is
+    True only when a member can answer a card. *opened* collects each tool
+    and client, and the run closes them in its ``finally``."""
+
+    organization_id: str | None
+    is_authorized: Any
+    member_present: bool
+    opened: list[Any] = dataclasses.field(default_factory=list)
+
+
 async def _assemble_batch_agents(
     loaded: Any, *, agent_name: str, no_egress: bool,
     held: frozenset[str] | None = None,
+    mcp: _BatchMcp | None = None,
 ) -> tuple[list[Any], Any, frozenset[str]]:
     """Build and arm the agents of a batch run.
 
@@ -3128,6 +3146,11 @@ async def _assemble_batch_agents(
     H-236 answer. *held* is the first attempt's tool names
     (:class:`_BatchRunInputs`). A retry passes it, and the agents then lose
     each tool outside it. Access is an intersection, never a union.
+
+    *mcp* (WS-47 WAC-P3) gives each agent the org's MCP servers, as the
+    stream path does, with the same org, access lookup and card rule. A
+    ``no_egress`` run gets none (H-236). A retry passes no *mcp*, so it
+    holds no server: a retry only narrows.
     """
     agents = loaded.build_agents()
     # Honour .github/agents/<name>.agent.md (instructions override).
@@ -3151,6 +3174,18 @@ async def _assemble_batch_agents(
     # CRM-Q32-5: the CRM facts block, read as the member.
     run_tools = await _add_crm_facts_block(agents, run_tools, no_egress=no_egress)
     _log_agent_tools_resolved(agent_name, agents, own_tools)
+    # WS-47 WAC-P3: the org's MCP servers, exactly as the stream path adds
+    # them. H-236: an MCP server reaches outside, so a no_egress run gets
+    # none. H-299: a tool that can change data waits for a member's card,
+    # and a run that cannot show one refuses it (`_maf_mcp`).
+    for _a in agents if mcp is not None and not no_egress else []:
+        await _inject_mcp_servers(
+            _a, agent_name,
+            organization_id=mcp.organization_id,
+            is_authorized=mcp.is_authorized,
+            opened=mcp.opened,
+            member_present=mcp.member_present,
+        )
     return agents, md_spec, frozenset(run_tools)
 
 
@@ -3389,6 +3424,8 @@ async def _run_agent_inner(
     # What the first attempt used. The self-anneal retry rebuilds from it, so
     # a retry can only narrow the tools of this run.
     _anneal_inputs = _BatchRunInputs()
+    # WS-47 WAC-P3: the MCP servers that this run opens. The finally closes them.
+    _batch_mcp: _BatchMcp | None = None
     try:
         _effective_agent_dir: str | None = None
         # The dir the git helpers, the self-anneal and the self-mutation use.
@@ -3511,9 +3548,12 @@ async def _run_agent_inner(
             # user at tool-call time rather than blocking the entire run.
             mandatory_integrations: list[str] = loaded.config.get("integrations", [])
             optional_integrations: list[str] = loaded.config.get("optional_integrations", [])
+            # One access lookup for the run, as on the stream path. The
+            # integrations and the MCP servers (WAC-P3) read the same answer.
+            _authorizer = await _integration_authorizer(event_payload, thread_id)
             integrations, integration_warnings = build_integrations(
                 mandatory_integrations, optional_integrations, settings,
-                is_authorized=await _integration_authorizer(event_payload, thread_id),
+                is_authorized=_authorizer,
             )
             # The retry gets these credential names and no others.
             _anneal_inputs = dataclasses.replace(
@@ -3527,10 +3567,21 @@ async def _run_agent_inner(
                     unavailable=list(integration_warnings.keys()),
                 )
 
+            # WS-47 WAC-P3: a top-level run of a chat thread (a WhatsApp
+            # run) gets the org's MCP servers, as the stream path gives
+            # them. A delegated run and a run with no chat get none, as on
+            # the stream path, where only the top-level run injects them.
+            if not _parent_ctx.get("run_id") and not _batch_thread:
+                _batch_mcp = _BatchMcp(
+                    organization_id=organization_id,
+                    is_authorized=_authorizer,
+                    member_present=_authorizer is not None,
+                )
             # The one batch assembly. The self-anneal retry calls it too.
             agents, _batch_md_spec, _run_tools = await _assemble_batch_agents(
                 loaded, agent_name=agent_name,
                 no_egress=_no_egress,  # H-236: from the parent's binding
+                mcp=_batch_mcp,
             )
             # The retry narrows to what this attempt holds (never a union).
             _anneal_inputs = dataclasses.replace(
@@ -3901,6 +3952,10 @@ async def _run_agent_inner(
         # run's org — a superseded same-thread run must not clobber a newer one.
         # H-201 part 3: and only an entry this run SET (_owned_org).
         _guarded_pop_run_org(thread_id, _owned_org)
+        # WS-47 WAC-P3: close each MCP tool and client this run opened, as
+        # the stream path does. It never raises.
+        if _batch_mcp is not None:
+            await _close_mcp_tools(_batch_mcp.opened)
         if _tenant_token is not None:
             try:
                 from acb_common.db import release_tenant
@@ -6844,9 +6899,11 @@ async def _run_with_maf_agent(
             # message (the assembler emits a single leading system block).
             # WS-47 parity (2026-10-19): the SAME builder as the web stream
             # path (`_context_preamble_parts`), so a WhatsApp run gets the
-            # org name, the Knowledge index, the memory and the number-system
-            # line too. This path built only the system context and the
-            # integrations, so those four blocks never reached a WhatsApp run.
+            # org name, the Knowledge index and the number-system line too.
+            # This path built only the system context and the integrations.
+            # The memory block comes from the caller's `memory_context`, and
+            # a caller that pre-read none gets none: the web route and
+            # `bot_run` (WAC-P2) call `gateway.memory_preread` for it.
             # Fence: tests/unit/test_wac_channel_parity.py.
             system_parts = _context_preamble_parts(
                 event_payload, integrations, agent_name)

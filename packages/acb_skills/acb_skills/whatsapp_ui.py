@@ -218,7 +218,8 @@ def whatsapp_run(agent: str, *,
 
     Like ``refuse_cards``: a nested ``run_agent`` and each task the run starts
     copy the context, so they see the profile too. Closing it restores the
-    value it found. *writes* lets the run park one write (WAC-4).
+    value it found. *writes* lets the run park one write (WAC-4), and one
+    egress call after an untrusted answer (WAC-P4).
     """
     run = WhatsAppRun(agent=agent, views=views, org=org, notify=notify,
                       writes=writes, document=document)
