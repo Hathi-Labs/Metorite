@@ -67,6 +67,9 @@ import {
 import { DECLINED_ANSWER, declineBody } from "@/lib/declineAnswer";
 import TodoPanel from "@/components/TodoPanel";
 import ContextRing from "@/components/ContextRing";
+import RunStatusRow, { useSteadyRunView } from "@/components/RunStatusRow";
+import { isLivePhase } from "@/lib/runStatus";
+import { dispatchRun, getSessionState } from "@/lib/chatStore";
 import { PHONE_MAX_WIDTH, composerCap, composerHeight, offerExpand } from "@/lib/composerHeight";
 import { PROJECTS_AGENT } from "@/lib/projectsAgent";
 import { saveConversationOnUnmount } from "@/lib/chatMemorySave";
@@ -541,8 +544,8 @@ export default function AgentChat({
   const restoreCappedRef = useRef<(text: string) => void>(() => {});
   const restoreCappedText = useCallback((text: string) => restoreCappedRef.current(text), []);
   const {
-    messages, isLoading, error, sendMessage, steerMessage, stopGeneration, setMessages, recovering,
-    runStatus, outage, retryHeld,
+    messages, isLoading, error, sendMessage, steerMessage, stopGeneration, setMessages,
+    outage, retryHeld, run,
   } = useAgentChat({
     agentName: currentAgentName,
     threadId: sessionId,
@@ -621,10 +624,24 @@ export default function AgentChat({
         (m) => !(m.role === "system" && m.content?.startsWith("__ERROR__")),
       ));
       if (remote.length === 0) return;
-      const local = messages;
+      // The store NOW, not the render that started this load: that render
+      // held no messages yet, so every load replaced the thread, and a reply
+      // that had re-attached meanwhile vanished (owner report, 2026-10-19:
+      // "a thinking container for a fleeting moment before it disappears").
+      const cur = getSessionState(sessionId);
+      const local = cur.messages;
+      // The reply of a live run is the stream's own: the saved row lags it.
+      const liveId = isLivePhase(cur.run.phase) ? cur.run.messageId : null;
+      const mine = liveId ? local.find((m) => m.id === liveId) : undefined;
+      const withLive = (rows: ChatMessage[]): ChatMessage[] => {
+        if (!mine) return rows;
+        return rows.some((m) => m.id === mine.id)
+          ? rows.map((m) => (m.id === mine.id ? mine : m))
+          : [...rows, mine];
+      };
       // Quick check: more messages → definitely use DB.
       if (remote.length > local.length) {
-        setMessages(remote as ChatMessage[]);
+        setMessages(withLive(remote as ChatMessage[]));
         return;
       }
       // Same count but maybe richer content?  Compare total content length,
@@ -644,7 +661,7 @@ export default function AgentChat({
         remoteToolCount > localToolCount ||
         remoteCustomCount > localCustomCount
       ) {
-        setMessages(remote as ChatMessage[]);
+        setMessages(withLive(remote as ChatMessage[]));
       }
     }).catch(() => {}).finally(() => {
       if (!cancelled) setLoadingHistory(false);
@@ -706,50 +723,31 @@ export default function AgentChat({
     setSendKeys(sendShortcut(nav.userAgentData?.platform || nav.platform || ""));
   }, []);
 
-  // A run is "active" whenever the agent is streaming, recovering after a page
-  // reload, or the server run is still going.  The Stop control must appear in
-  // ALL of these — gating only on isLoading hid Stop during recovery (isLoading
-  // is false then), which is why the Stop button sometimes never showed up and
-  // appeared to vanish when the input was cleared (it fell back to the idle
-  // Send button, which greys out without text).
-  const isRunActive =
-    isLoading || recovering || (!!runStatus && runStatus !== "idle");
+  // A run is "active" while the ONE run state says it may still run
+  // (`lib/runStatus.ts`, owner report 2026-10-19): starting, working, waiting
+  // for the member, or finishing while the server answers. The server is the
+  // source of truth, so a long silent tool call, a delegation, a reload and a
+  // stream the proxy cut all keep it active until the run really ends. The
+  // composer's Stop, the placeholder, the header dot and the status row all
+  // read this one value. No indicator decides on its own.
+  const isRunActive = isLivePhase(run.phase);
+  const runView = useSteadyRunView(run);
 
-  // ── Live working message (rotates at the bottom of the chat) ──────────
-  // Mirrors VS Code Copilot / Claude: the "thinking" indicator is always
-  // visible at the bottom of the output, not buried inside the thinking
-  // container where it disappears when the container is collapsed.
-  const _WM = [
-    "Working on it", "Thinking it through", "Processing",
-    "Crunching the details", "Pulling the data", "Putting it together",
-  ];
-  const _FM = ["Bribing the hamster", "Reticulating splines", "Summoning Clippy"];
-  const [liveWorkingMsg, setLiveWorkingMsg] = useState<string>(() =>
-    Math.random() < 1 / 12 ? _FM[Math.floor(Math.random() * _FM.length)] : _WM[Math.floor(Math.random() * _WM.length)]
-  );
-  useEffect(() => {
-    if (!isRunActive) return;
-    const t = setInterval(() => {
-      const pool = Math.random() < 1 / 12 ? _FM : _WM;
-      setLiveWorkingMsg(pool[Math.floor(Math.random() * pool.length)]);
-    }, 3000);
-    return () => clearInterval(t);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isRunActive]);
-
-  // The step in flight, in words ("Running a script in the sandbox"), for the
-  // live indicator while a tool runs. `lib/toolSteps.ts` is the one
-  // vocabulary, so this line and the trail above it never disagree.
-  const liveToolName = useMemo(() => {
+  // The reply's own bubble shows the run while it streams (the thinking
+  // container). The thread's status row stands in for it while no live
+  // bubble shows the run: after a reload before the stream re-attaches,
+  // and while the run state checks a stream that ended with no terminal
+  // event. One state, so the two never disagree.
+  const liveBubble = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
       if (isSteered(m)) continue; // a steer sits below the reply it joins
-      if (m.role !== "assistant" || !m.streaming) break;
-      const running = m.toolEvents?.find((t) => t.status === "running");
-      if (running) return describeToolStep(running).label;
+      return m.role === "assistant" && !!m.streaming && !!m.isThinkingActive;
     }
-    return null;
+    return false;
   }, [messages]);
+  const threadRunView =
+    runView && !liveBubble && (runView.tone === "working" || runView.tone === "finishing") ? runView : null;
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // ── The composer's height (owner request, 2026-10-09) ─────────────────────
@@ -1952,6 +1950,12 @@ export default function AgentChat({
       : new Set([...answeredAsks, ...cardAskAnswers.keys()]),
   };
   const waiting = pendingAsk(askSources);
+  // A card that waits on the member is the run's "waiting for you"
+  // (`lib/runStatus.ts`). The run state, not the card, decides the status.
+  const cardWaits = !!waiting;
+  useEffect(() => {
+    dispatchRun(sessionId, { type: "card", at: Date.now(), open: cardWaits });
+  }, [sessionId, cardWaits]);
 
   // The transcript's cards, for the roll-up (`lib/cardRollup.ts`): which one
   // is the newest, and which ones wait. Keyed on the targets' text, so the
@@ -2014,11 +2018,11 @@ export default function AgentChat({
           where the host provides its own toolbar). */}
       {!compact && (
       <div className="flex items-center gap-2 h-9 px-4 border-b border-border bg-card/40 shrink-0">
-        <div className={`w-2 h-2 rounded-full shrink-0 ${isLoading ? "bg-warning animate-pulse" : "bg-success"}`} />
+        <div className={`w-2 h-2 rounded-full shrink-0 ${isRunActive ? "bg-warning motion-safe:animate-pulse" : "bg-success"}`} />
         <AgentAvatar libraryId={agentAvatars[currentAgentName]} size={20} fallback={null} />
         <span className="text-xs font-medium text-foreground truncate">{currentAgentLabel}</span>
-        {isLoading && (
-          <span className="hidden sm:inline text-[10px] text-warning animate-pulse">thinking…</span>
+        {isRunActive && (
+          <span className="hidden sm:inline text-[10px] text-warning">working…</span>
         )}
         {agentRuntime === "github-copilot" && currentAgentEntry?.repo_url && (
           <a href={currentAgentEntry.repo_url} target="_blank" rel="noopener noreferrer"
@@ -2069,33 +2073,10 @@ export default function AgentChat({
 
         <RollupContext.Provider value={rollupScope}>
         <div ref={contentRef} className="max-w-3xl mx-auto space-y-5">
-          {/* Stream recovery / agent status indicator */}
-          {recovering || runStatus === "running" ? (
-            <div role="status" aria-live="polite" className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-[12px] text-primary/90 flex items-center gap-2">
-              <span className={[
-                "w-2.5 h-2.5 rounded-full shrink-0",
-                runStatus === "running" ? "bg-success motion-safe:animate-pulse" : "bg-primary motion-safe:animate-pulse",
-              ].join(" ")} />
-              <span className="font-medium">
-                {runStatus === "running" ? "Agent running…" : "Reconnecting…"}
-              </span>
-              <span className="text-primary/60">
-                {runStatus === "running"
-                  ? "The agent is still working. Content will appear as it's produced."
-                  : runStatus === "recovering"
-                    ? "Recovering your stream from the server"
-                    : "Checking agent status…"}
-              </span>
-            </div>
-          ) : !isLoading && messages.length > 0 && (() => {
-            const last = messages[messages.length - 1];
-            const wasInterrupted = isInterruptedReply(last) && !!last?.content;
-            return wasInterrupted ? (
-              <div className="rounded-lg border border-warning/20 bg-warning/5 px-3 py-2 text-[11px] text-warning">
-                ⚡ Stream was interrupted. Messages are saved — you can continue chatting below.
-              </div>
-            ) : null;
-          })()}
+          {/* The old "Agent running… / Reconnecting…" banner sat at the TOP of
+              the thread and read its own flags. The one run state draws the
+              status now: in the thread where the reply will appear (below),
+              and above the composer. */}
           {/* One indicator only: skeleton bubbles in the shape of a thread,
               with one caption. It used to stack a spinner, two lines of text
               and the bubbles, centred in half the viewport, beside a second
@@ -2212,6 +2193,14 @@ export default function AgentChat({
             );
           })}
 
+          {/* The run works and no live bubble shows it: the status stands
+              where the reply will appear. */}
+          {threadRunView && (
+            <div className="chat-fade-in">
+              <RunStatusRow view={threadRunView} placement="thread" />
+            </div>
+          )}
+
           {/* Fallback: a HITL prompt arrived before any assistant bubble exists
               (rare — e.g. a tool asks before any text streamed). Render at the
               list tail so the card is never lost. */}
@@ -2280,18 +2269,8 @@ export default function AgentChat({
             and took its bottom from the message. */}
         <div className="max-w-3xl mx-auto mb-1.5 flex min-h-5 items-center gap-2 text-[11px] text-muted-foreground">
           <div className="flex min-w-0 flex-1 items-center gap-2">
-            {isRunActive ? (
-              <span className="flex min-w-0 items-center gap-2 chat-fade-in">
-                <Icon name="LoaderCircle" className="text-primary animate-spin shrink-0" size={12} strokeWidth={1.5} />
-                <span className="italic truncate">
-                  {liveToolName ? `${liveToolName}…` : `${liveWorkingMsg}…`}
-                </span>
-                <span className="flex items-center gap-0.5 shrink-0" aria-hidden="true">
-                  <span className="chat-typing-dot" />
-                  <span className="chat-typing-dot" />
-                  <span className="chat-typing-dot" />
-                </span>
-              </span>
+            {runView ? (
+              <RunStatusRow view={runView} placement="composer" />
             ) : !compact ? (
               <span className="hidden sm:inline text-[10px]">
                 <kbd className="text-muted-foreground">{sendKeys}</kbd> send · <kbd className="text-muted-foreground">⏎</kbd> new line
@@ -2327,7 +2306,6 @@ export default function AgentChat({
               compacting={compacting}
               onCompact={handleCompact}
               modelId={modelPlan.covered ? undefined : currentModel}
-              isLoading={isLoading}
             />
           </span>
         </div>

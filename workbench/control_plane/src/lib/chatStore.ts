@@ -12,6 +12,8 @@
  *   );
  */
 
+import { IDLE_RUN, reduceRun, type RunEvent, type RunStatus } from "@/lib/runStatus";
+
 // ── ChatMessage type (co-located here to avoid circular imports) ────────────
 
 export type ToolEventStatus = "running" | "done" | "error";
@@ -145,12 +147,17 @@ export interface SessionStreamState {
   /** Counts the Stops of this thread. A steer answer that comes back after a
    *  Stop owes no follow-up (round 2 of the review of #920). */
   stopEpoch?: number;
+  /** The ONE run state of this chat (`lib/runStatus.ts`). Every indicator
+   *  of an open chat reads it: the status row, the composer's Stop, the
+   *  header dot and the placeholder. Written only through `dispatchRun`. */
+  run: RunStatus;
 }
 
 function _defaultState(): SessionStreamState {
   return {
     messages: [], isLoading: false, error: null, abortController: null, recovering: false,
     lastEventId: null, runStatus: "idle", outage: false, pendingSends: [], pendingResume: [],
+    run: IDLE_RUN,
   };
 }
 
@@ -185,6 +192,17 @@ export function setSessionState(
     _invalidActiveIdsCache();
     _globalListeners.forEach((l) => l());
   }
+}
+
+/**
+ * Feed one event to the thread's run state (`lib/runStatus.ts`). An event
+ * that changes nothing notifies nobody. Returns the state after it.
+ */
+export function dispatchRun(id: string, event: RunEvent): RunStatus {
+  const prev = getSessionState(id);
+  const next = reduceRun(prev.run ?? IDLE_RUN, event);
+  if (next !== prev.run) setSessionState(id, (p) => ({ ...p, run: next }));
+  return next;
 }
 
 export function subscribeSession(id: string, listener: () => void): () => void {

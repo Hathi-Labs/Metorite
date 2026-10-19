@@ -15,6 +15,7 @@ ask of the same day. **Verified against code on 2026-10-10**, at `origin/main`
 | S7 — browser push for "needs your answer" and "finished" | Spec only. D-2 is decided: opt-in per member |
 | The run cap — 5 live runs per member (D-3) | **BUILT** 2026-10-10, branch `ws51-run-cap-and-todos`, no flag |
 | §4.9 — a message sent during a run always steers it | **BUILT** 2026-10-12, branch `composer-always-steer`, no flag |
+| §4.10 — one run status in the open chat | **BUILT** 2026-10-19, branch `chat-run-status`, no flag |
 | D-1 — a separate run worker | **OWNER-GATE** |
 
 **This spec owns** how a member sees and resumes an assistant run that they
@@ -984,6 +985,131 @@ older turn.
   `_route_incoming_turn`. The steer stays stored, and the next message
   replays it.
 
+### §4.10 — one run status in the open chat (BUILT 2026-10-19)
+
+**The owner's report (2026-10-19, production).** "I have no idea if the
+agent is working in the background or not … if an agent session is running,
+it must appropriately show in the chatbox. Sometimes I just see a thinking
+container for a fleeting moment before it disappears."
+
+**The rule.** The server is the source of truth. A run is live while
+`GET /chat/active-sessions` lists it. ONE client state holds the run of each
+chat, and every indicator reads it. No indicator decides on its own.
+
+**What caused the symptoms.** Before this slice, eight places each decided
+"a run is active". The table names each one and how it disagreed.
+
+| Source | What it read | How it failed |
+|---|---|---|
+| The live stream in `useAgentChat` | A close of the stream | The BFF reads the gateway with a 310 s budget. The ids of the live stream are `local-*`, so the BFF cannot reattach. A run longer than 310 s lost its stream, and the chat read the clean close as "done". This is the owner's screenshot. |
+| The reattach loop in `useAgentChat` | One read of the run list at mount | It ran once. A stream that ended later never got a reattach. It kept its controller when the replay came back empty, so Stop stayed forever. |
+| The reattach cursor | `lastEventId` | It replayed only the tail into a message that it had emptied. A second return to the page lost the start of the reply. |
+| The history load in `AgentChat` | The `messages` of its first render | That render held no messages, so each load replaced the thread. A reply that had reattached went away: the "fleeting" thinking container. |
+| The recovery poll | A reply that ends in a full stop | It called a run done when its text ended in a full stop. After 45 s it marked a live run "interrupted". |
+| The top banner and the composer row | `recovering` and `runStatus` | Each read its own flag. The banner sat at the top of the thread. |
+| The Stop of the composer and the header dot | `isLoading` | Both went idle with the stream. |
+| The context ring ("19%") | `isLoading` | It pulsed with the stream, so it looked like run progress. It is the context window in use. |
+
+**The state.** `src/lib/runStatus.ts` holds the reducer.
+`SessionStreamState.run` in `lib/chatStore.ts` keeps it per thread, and
+`dispatchRun` is the only writer.
+
+| Phase | When | What the member sees |
+|---|---|---|
+| `idle` | No run | The key hint, and Send |
+| `starting` | This tab sent a turn, and no event came yet | "Starting" at once, and Stop |
+| `working` | A stream event came, or the server lists the run | The step and the time, for example "Asking Projects assistant · 1m 12s", and Stop |
+| `waiting_for_you` | A card waits, and the run waits on it | "Waiting for your answer", in the warning tone, and Stop |
+| `parked` | A card waits, and no run runs (`live: false`) | "Paused. Answer the card to go on", and Send |
+| `finishing` | A stream ended with no terminal event | "Checking the run". The chat asks the server at once |
+| `done` | A terminal event came, or the server no longer lists the run | "Done" and the time, for 5 s |
+| `failed` | The turn failed | The error card in the thread |
+| `stopped` | The member pressed Stop | "Stopped", for 5 s |
+
+**The transitions.**
+
+1. A send gives `starting`. The first stream event gives `working`.
+2. A stream that ends with a terminal event gives `done`. A stream that
+   ends without one gives `finishing`. The close alone never gives `done`.
+3. From `finishing`, a server list that names the run gives `working` and a
+   reattach. A list that does not name it gives `done`. With no answer for
+   20 s, the run settles.
+4. A list that names a run with no stream on it asks for a reattach. Two
+   reattaches are at least 5 s apart.
+5. An open stream with no event, that the server no longer lists, gives
+   `finishing` after 15 s.
+6. A run with no stream that the server has not confirmed for 60 s
+   settles. Nothing stays "working" forever.
+7. A list from before a Stop or a terminal event is lag. The state ignores
+   it for 10 s. The state also ignores a list from before the phase began.
+8. The list can lag a new run by up to 10 s. An open stream is the
+   authority then.
+
+**When the chat asks the server.** The chat asks on mount and on each poll
+of the shared poller. That poller runs every 5 s in a visible tab and every
+30 s in a hidden tab. The chat also asks on a return to the tab, when a
+stream ends, and when a run ends or stops. While a run shows, the chat asks
+for the step of the run (`?steps=1`).
+
+**The reattach.** `attach` in `useAgentChat` is the one way into a live run.
+A reload, a return to the page, a switch back to a chat, a second tab and a
+cut stream all use it.
+
+- It never starts beside a stream that already reads the thread.
+- It replays the WHOLE run, with no cursor. The gateway resets the stream
+  for each run.
+- It replays into the message of the run. That is the message this tab saw,
+  else a reply saved mid-stream, else the saved row on the server. Only with
+  none of these does it add a placeholder, with no thinking flag.
+- The replay builds into a shadow copy. The copy replaces the message only
+  when it has caught up, so the message never goes blank.
+- It gives up the loading state on every exit.
+
+**The status row.** `components/RunStatusRow.tsx` draws the state in two
+places. One is above the composer. The other is in the thread where the
+reply will appear, while no live bubble shows the run. A change shorter
+than 400 ms never shows or hides the row (`steadyPresence`). A send by the
+member shows at once.
+
+Every surface uses the one chat, `AgentChat`. That is `/chat`, the
+assistant dock and its full view, and the phone sheet. It is also the
+Projects, Tasks, Email and CRM rails. So every surface draws the same row.
+
+**The gateway.** Each row of `GET /chat/active-sessions` now carries `live`,
+which says that a run runs for the thread. A `needs_input` row with
+`live: false` is parked. An older gateway sends no `live`, and the client
+reads that as live.
+
+**The context ring.** The "19%" ring is the context window in use. It is not
+run progress. Its spoken name and its title say so ("Context window 19%
+full"), and it no longer pulses with a run.
+
+**The dot of the session list.** The dot reads the list of the server and
+the open streams of this tab (`useActiveSessions`). The open chat reconciles
+with the same list, so the two agree. When a run ends or stops, the chat
+asks for the list again at once, so the dot clears with "Done".
+
+**Fences (R7).**
+
+- `src/lib/runStatus.test.ts` tests each transition and a reload into each
+  state. It also tests a silent delegation of ten minutes, a server that
+  says done during a run, and the no-flash rule.
+- `src/lib/liveRuns.test.ts` tests the poll listener and its start time. A
+  partial poll is not heard. A refresh in flight polls once more.
+- `tests/unit/test_pending_ask_flow.py` tests the `live` field.
+- `e2e/chat-run-status.spec.ts` tests a silent tool call, a cut stream, a
+  reload and a move to another app. It also tests a switch of chat, a run
+  that ends while away, the three waiting states and no flash.
+
+**Known limits.**
+
+- The BFF still cuts a live stream at 310 s. The client reattaches, so the
+  member sees no gap. A BFF reattach with `local-*` ids needs the gateway to
+  skip what it already sent. That is a separate change.
+- After a full reload, a run that ended while the page was away reads as
+  `idle`, not `done`, because no tab saw it run. The reply shows from the
+  saved row.
+
 ---
 
 ## 5. Deferred — owner decisions
@@ -1024,6 +1150,8 @@ An agent must refuse D-1 by name until the owner decides.
 | `workbench/control_plane/src/lib/chatTurnFailure.ts` | The capped turn leaves the thread with one notice (D-3) |
 | `workbench/control_plane/src/lib/chatSteer.ts` | A send during a run steers it: the one control, the steer send, the follow-up rule (§4.9) |
 | `apps/services/orchestrator/orchestrator/steer.py` | `return_unconsumed`, `has_pending_steers`, `without_replayed` (§4.9) |
+| `workbench/control_plane/src/lib/runStatus.ts` | The one run state: the reducer, the step, the view and the no-flash rule (§4.10) |
+| `workbench/control_plane/src/components/RunStatusRow.tsx` | The status row and `useSteadyRunView` (§4.10) |
 
 ---
 
@@ -1048,4 +1176,12 @@ For §4.9, from `workbench/control_plane`, then from the repo root:
 npx vitest run src/lib/chatSteer.test.ts src/components/chatEditComposer.test.ts
 npx playwright test e2e/chat-steer.spec.ts --project=ci
 uv run pytest tests/unit/test_steer_routing.py tests/unit/test_steer_follow_up.py
+```
+
+For §4.10, from `workbench/control_plane`, then from the repo root:
+
+```bash
+npx vitest run src/lib/runStatus.test.ts src/lib/liveRuns.test.ts src/lib/chatStore.test.ts
+npx playwright test e2e/chat-run-status.spec.ts --project=ci
+uv run pytest tests/unit/test_pending_ask_flow.py
 ```

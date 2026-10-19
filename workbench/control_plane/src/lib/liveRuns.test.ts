@@ -23,7 +23,9 @@ import {
   getLiveRuns,
   liveRunsDegradedAt,
   pollIntervalMs,
+  refreshLiveRuns,
   subscribeLiveRuns,
+  subscribeLiveRunsPolls,
 } from "./liveRuns";
 import { RUNS_PARTIAL_HEADER } from "./activeSessionsPath";
 import { bindIdentity } from "./dataCache";
@@ -322,6 +324,54 @@ describe("a hidden tab polls slower", () => {
     await flush();
     expect(fetchMock.mock.calls.length).toBe(before + 1);
     expect(pollIntervalMs()).toBe(VISIBLE_MS);
+    off();
+  });
+});
+
+describe("the run state hears every complete poll (§4.10)", () => {
+  it("passes the poll's START time, also when the list did not change", async () => {
+    payload = [{ threadId: "t1", agentName: "orchestrator", state: "needs_input", live: false }];
+    const heard: number[] = [];
+    const off = subscribeLiveRuns(() => {});
+    const offPolls = subscribeLiveRunsPolls((at) => heard.push(at));
+    const before = Date.now();
+    await flush();
+    expect(heard).toHaveLength(1);
+    expect(heard[0]).toBeGreaterThanOrEqual(before);
+    expect(getLiveRuns()[0].live).toBe(false);
+    await vi.advanceTimersByTimeAsync(VISIBLE_MS);
+    await flush();
+    // Same list, so no publish, but the poll is still heard.
+    expect(heard).toHaveLength(2);
+    offPolls();
+    off();
+  });
+
+  it("does not hear a failed or partial poll", async () => {
+    const heard: number[] = [];
+    fetchMock.mockImplementation(async () => ({
+      ok: true, headers: { get: (h: string) => (h === RUNS_PARTIAL_HEADER ? "1" : null) }, json: async () => [],
+    }));
+    const off = subscribeLiveRuns(() => {});
+    const offPolls = subscribeLiveRunsPolls((at) => heard.push(at));
+    await flush();
+    expect(heard).toHaveLength(0);
+    offPolls();
+    off();
+  });
+
+  it("a refresh during a poll in flight runs one more poll after it", async () => {
+    let release: () => void = () => {};
+    fetchMock.mockImplementationOnce(() => new Promise((r) => { release = () => r({ ok: true, json: async () => [] }); }));
+    const off = subscribeLiveRuns(() => {});
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    refreshLiveRuns();
+    refreshLiveRuns();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    release();
+    await flush();
+    await flush();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     off();
   });
 });

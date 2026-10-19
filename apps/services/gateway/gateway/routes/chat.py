@@ -1453,6 +1453,11 @@ async def list_active_sessions(
     when the caller may see its chat. With ``CHAT_DURABLE_ASKS`` OFF every row
     is ``running``. ``askKind`` names the card.
 
+    **§4.10: ``live``.** Each row says whether a run runs for the thread. A
+    ``needs_input`` row with ``live: false`` is parked: no run waits on the
+    card, and an answer starts a new run. The open chat draws "waiting for
+    you" and "parked" differently from it.
+
     **WS-51 S3: ``lastStep``.** With ``?steps=1`` a running row carries the
     run's latest step, for example "Search tasks" or "Writing a reply", read
     from the tail of its own stream (``stream_relay.latest_step``). The step is
@@ -1501,10 +1506,14 @@ async def list_active_sessions(
     ids = list(dict.fromkeys([*by_tid, *asks]))
 
     def _state(tid: str) -> dict:
+        # ``live``: a run runs for the thread. A ``needs_input`` row with no
+        # live run is a PARKED question: an answer starts a new run (owner
+        # report 2026-10-19, ``chat_run_continuity.md`` §4.10).
+        live = tid in by_tid
         ask = asks.get(tid)
         if ask is None:
-            return {"state": "running", "askKind": None}
-        return {"state": "needs_input", "askKind": ask.get("kind")}
+            return {"state": "running", "askKind": None, "live": live}
+        return {"state": "needs_input", "askKind": ask.get("kind"), "live": live}
 
     def _own_unknown(tid: str) -> dict:
         return {
