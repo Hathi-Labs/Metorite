@@ -171,10 +171,24 @@ for (const [name, text, tier, expect] of CASES) {
 }
 
 // --- the PostToolUse contract -------------------------------------------------
-// A bad markdown Write must come back as exit 2, because that is the only exit
-// code Claude Code shows to the agent. Exit 1 would be logged and ignored.
-const hook = (payload) =>
-  spawnSync(process.execPath, [LINT, '--hook'], { input: JSON.stringify(payload), encoding: 'utf8' })
+// In the hardening pass (STE_LINT_BLOCK=1) a bad markdown Write must come back
+// as exit 2, because that is the only exit code Claude Code shows to the agent.
+// Exit 1 would be logged and ignored. The cases below run in that mode.
+const hook = (payload, block = '1') =>
+  spawnSync(process.execPath, [LINT, '--hook'], {
+    input: JSON.stringify(payload),
+    encoding: 'utf8',
+    env: { ...process.env, STE_LINT_BLOCK: block },
+  })
+
+// In build mode (the default) the same error is advisory: exit 0, and the
+// finding reaches the agent as additionalContext.
+{
+  const res = hook({ tool_name: 'Write', tool_input: { file_path: 'docs/x.md', content: 'Utilize it.' } }, '')
+  const ok = res.status === 0 && /advisory/.test(res.stdout) && /hardening pass/.test(res.stdout)
+  if (!ok) failed++
+  console.log(`${ok ? 'ok  ' : 'FAIL'}  ${'build mode reports, does not block'.padEnd(38)} exit=${res.status}`)
+}
 
 const HOOK_CASES = [
   ['write bad markdown blocks', { tool_name: 'Write', tool_input: { file_path: 'docs/x.md', content: 'Utilize it.' } }, 2],
