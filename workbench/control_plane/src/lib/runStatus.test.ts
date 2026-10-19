@@ -11,6 +11,8 @@ import { describe, expect, it } from "vitest";
 import type { ChatMessage } from "@/lib/chatStore";
 import {
   ATTACH_GAP_MS,
+  ATTACH_MAX_GAP_MS,
+  attachGapMs,
   DONE_HOLD_MS,
   FINISH_MAX_MS,
   FLASH_MS,
@@ -596,5 +598,25 @@ describe("a listed run with another identity is a new run, in every phase", () =
     expect(runKeyOf({ startedAt: R1_AT })).toBe(`at:${R1_AT}`);
     expect(runKeyOf({ state: "needs_input" })).toBeNull();
     expect(runKeyOf(null)).toBeNull();
+  });
+});
+
+// ── CI regression of #1171 ──────────────────────────────────────────────────
+
+describe("a re-attach that streams nothing backs off (no loop with no live run)", () => {
+  it("doubles the wait after each failure, up to the cap, and a stream event resets it", () => {
+    expect(attachGapMs(0)).toBe(ATTACH_GAP_MS);
+    expect(attachGapMs(1)).toBe(ATTACH_GAP_MS * 2);
+    expect(attachGapMs(20)).toBe(ATTACH_MAX_GAP_MS);
+    let s = reduceRun(IDLE_RUN, server(T0, RUNNING));
+    expect(s.attach).toBe(true);
+    s = run(s, { type: "attach", at: T0 + 10, messageId: "x" }, { type: "attach_failed", at: T0 + 20 });
+    expect(s.attachFails).toBe(1);
+    expect(s.attach).toBe(false);
+    // 5 s is not enough after one failure: the wait is 10 s.
+    expect(reduceRun(s, server(T0 + 20 + ATTACH_GAP_MS, RUNNING)).attach).toBe(false);
+    expect(reduceRun(s, server(T0 + 20 + 2 * ATTACH_GAP_MS, RUNNING)).attach).toBe(true);
+    // A stream that brings an event resets the count.
+    expect(reduceRun(s, ev(T0 + 30)).attachFails).toBe(0);
   });
 });

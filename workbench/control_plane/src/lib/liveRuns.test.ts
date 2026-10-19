@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  AGAIN_GAP_MS,
   HIDDEN_MS,
   LAST_STEP_MAX,
   VISIBLE_MS,
@@ -370,7 +371,7 @@ describe("the run state hears every complete poll (§4.10)", () => {
     off();
   });
 
-  it("a refresh during an older poll in flight runs one more poll after it", async () => {
+  it("a refresh during an older poll in flight runs one more poll after it, never back to back", async () => {
     let release: () => void = () => {};
     fetchMock.mockImplementationOnce(() => new Promise((r) => { release = () => r({ ok: true, json: async () => [] }); }));
     const off = subscribeLiveRuns(() => {});
@@ -381,6 +382,10 @@ describe("the run state hears every complete poll (§4.10)", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     release();
     await flush();
+    await flush();
+    // Not at once: a slow server under load meets no chain of polls.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(AGAIN_GAP_MS);
     await flush();
     expect(fetchMock).toHaveBeenCalledTimes(2);
     off();

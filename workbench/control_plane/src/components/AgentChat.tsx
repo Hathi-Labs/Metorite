@@ -69,7 +69,7 @@ import TodoPanel from "@/components/TodoPanel";
 import ContextRing from "@/components/ContextRing";
 import RunStatusRow, { useSteadyRunView } from "@/components/RunStatusRow";
 import { isLivePhase, isRunActiveForUi } from "@/lib/runStatus";
-import { dispatchRun, getSessionState } from "@/lib/chatStore";
+import { dispatchRun, getCardLog, getSessionState } from "@/lib/chatStore";
 import { PHONE_MAX_WIDTH, composerCap, composerHeight, offerExpand } from "@/lib/composerHeight";
 import { PROJECTS_AGENT } from "@/lib/projectsAgent";
 import { saveConversationOnUnmount } from "@/lib/chatMemorySave";
@@ -1114,6 +1114,17 @@ export default function AgentChat({
 
   const hitlRef = useRef(hitlSubscriber);
   useEffect(() => { hitlRef.current = hitlSubscriber; });
+
+  // A chat that mounts again (the Email pane, a rail, the dock) draws the
+  // cards of the run in flight again (`getCardLog`, CI regression of
+  // #1171). The run still waits on them, and the stream that read them may
+  // still read the run, so no replay comes. The queue keys each card by its
+  // request id, so a card never draws twice.
+  useEffect(() => {
+    for (const e of getCardLog(sessionId)) {
+      hitlRef.current.onCustomEvent?.({ name: e.name, value: e.value, threadId: sessionId });
+    }
+  }, [sessionId]);
 
   // ── A durable "needs input" (WS-51 S2, `lib/pendingAsks.ts`) ─────────
   // The cards of this chat that still wait on the server: a run that parked,

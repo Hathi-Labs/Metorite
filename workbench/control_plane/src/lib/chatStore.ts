@@ -205,6 +205,45 @@ export function dispatchRun(id: string, event: RunEvent): RunStatus {
   return next;
 }
 
+// ── The cards of the run in flight (CI regression of #1171) ─────────────────
+//
+// A card the run waits on arrives once, as a stream event, and lives in the
+// component state of `AgentChat`. A chat that unmounts and mounts again (the
+// Email pane closed and opened, a rail, the dock) lost it while the run
+// still waited. The old reconnect replayed the whole stream to get it back,
+// beside a live stream that still read the run. Now the stream loops keep
+// the card events of the run in flight here, and a chat that mounts draws
+// them again (`AgentChat`). Only the card events: no side effect replays.
+
+/** The card events a chat draws again on mount. */
+export const CARD_EVENTS: ReadonlySet<string> = new Set([
+  "confirmation_requested",
+  "confirmation_resolved",
+  "elicitation_requested",
+  "user_input_requested",
+]);
+const CARD_LOG_MAX = 50;
+const _cardLog = new Map<string, { name: string; value: unknown }[]>();
+
+/** Keep a card event of the run in flight. Other events are ignored. */
+export function noteCardEvent(threadId: string, name: string, value: unknown): void {
+  if (!CARD_EVENTS.has(name)) return;
+  const log = _cardLog.get(threadId) ?? [];
+  log.push({ name, value });
+  if (log.length > CARD_LOG_MAX) log.splice(0, log.length - CARD_LOG_MAX);
+  _cardLog.set(threadId, log);
+}
+
+/** A new run, or the end of one: no card of it waits any more. */
+export function clearCardLog(threadId: string): void {
+  _cardLog.delete(threadId);
+}
+
+/** The card events of the run in flight, oldest first. */
+export function getCardLog(threadId: string): readonly { name: string; value: unknown }[] {
+  return _cardLog.get(threadId) ?? [];
+}
+
 export function subscribeSession(id: string, listener: () => void): () => void {
   if (!_listeners.has(id)) _listeners.set(id, new Set());
   _listeners.get(id)!.add(listener);

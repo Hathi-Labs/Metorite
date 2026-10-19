@@ -70,6 +70,13 @@ export const STOP_HOLD_MS = 10_000;
 export const DONE_HOLD_MS = 10_000;
 /** Two re-attaches are at least this far apart. */
 export const ATTACH_GAP_MS = 5_000;
+/** The longest wait between re-attaches that stream nothing. */
+export const ATTACH_MAX_GAP_MS = 60_000;
+
+/** The wait before the next re-attach, after `fails` that streamed nothing. */
+export function attachGapMs(fails: number): number {
+  return Math.min(ATTACH_MAX_GAP_MS, ATTACH_GAP_MS * 2 ** Math.max(0, Math.min(fails, 10)));
+}
 /** How long "Done" and "Stopped" stay in the status row. */
 export const RESTING_SHOW_MS = 5_000;
 /** A row that would show or hide for less than this never draws. */
@@ -117,6 +124,9 @@ export interface RunStatus {
   attachedAt: number;
   /** A blocking card waits on the member in this chat. */
   cardOpen: boolean;
+  /** Re-attaches in a row that streamed nothing. Each one doubles the wait
+   *  before the next, up to `ATTACH_MAX_GAP_MS`. */
+  attachFails: number;
   /**
    * The server's identity of the run: its run id when the row has one, else
    * its start time (re-review of #1171). A listed run with ANOTHER identity
@@ -153,6 +163,7 @@ export const IDLE_RUN: RunStatus = Object.freeze({
   attach: false,
   attachedAt: 0,
   cardOpen: false,
+  attachFails: 0,
   runKey: null,
   staleTail: false,
   checking: false,
@@ -188,6 +199,9 @@ export type RunEvent =
   /** A re-attach could not start (another one held the thread, or a send
    *  took it). The next server list asks again. */
   | { type: "attach_skipped"; at: number }
+  /** A re-attach got no stream (refused, or no run to replay). The next one
+   *  waits longer, so a run that cannot replay is never asked in a loop. */
+  | { type: "attach_failed"; at: number }
   /** The chat mounted over a state kept in the store, with no stream that
    *  reads it: show "checking" until the server answers. */
   | { type: "remount"; at: number; streamOpen: boolean }
@@ -284,6 +298,7 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
         return s.seq === 0 ? { ...s, seq: 1 } : s;
       }
       return to(s, phase, e.at, {
+        attachFails: 0,
         step: e.step,
         seq: s.seq + 1,
         lastEventAt: e.at,
@@ -324,6 +339,9 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
       // `attachedAt` stays, so the next list asks again at once.
       return s.attach ? { ...s, attach: false } : s;
 
+    case "attach_failed":
+      return { ...s, attach: false, attachFails: s.attachFails + 1, attachedAt: e.at };
+
     case "remount": {
       if (e.streamOpen) return s;
       // No stream reads now, so a re-attach may start at once. And no kept
@@ -336,7 +354,7 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
       // A live phase kept from before an unmount is not known to be live.
       // "Checking" until the server answers.
       if (!(s.phase === "working" || s.phase === "starting" || s.phase === "waiting_for_you" || s.phase === "finishing")) return base;
-      return to(base, "finishing", e.at, { attach: false, checking: true });
+      return to(base, "finishing", e.at, { attach: false, checking: true, attachFails: 0 });
     }
 
     case "card": {
@@ -398,7 +416,7 @@ function reduceServer(
       }
       : {};
     const startedAt = isNew ? fresh.startedAt! : s.startedAt ?? parseTime(run.startedAt) ?? at;
-    const canAttach = !streamOpen && at - s.attachedAt >= ATTACH_GAP_MS;
+    const canAttach = !streamOpen && at - s.attachedAt >= attachGapMs(s.attachFails);
     if (run.state === "needs_input") {
       if (run.live === false) {
         // No run runs. The card waits, and an answer starts a new run.

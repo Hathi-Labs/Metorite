@@ -15,7 +15,10 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
+  clearCardLog,
   getActiveSessionIds,
+  getCardLog,
+  noteCardEvent,
   getSessionAgent,
   getSessionState,
   releaseLoading,
@@ -68,6 +71,27 @@ describe("the reattach loop releases on every exit that streams nothing", () => 
   it("a steered (202) or refused reconnect releases before it returns", () => {
     expect(hook).toMatch(/res\.status === 202\) \{ releaseLoading\(threadId, abortCtrl\); return; \}/);
     expect(hook).toMatch(/!res\.ok \|\| !res\.body\) \{ releaseLoading\(threadId, abortCtrl\); return; \}/);
+  });
+});
+
+describe("the cards of the run in flight (CI regression of #1171)", () => {
+  it("keeps only card events, in order, and a clear forgets them", () => {
+    noteCardEvent("t-cards", "confirmation_requested", { request_id: "r1" });
+    noteCardEvent("t-cards", "frontend_tool", { name: "x" });
+    noteCardEvent("t-cards", "artifact_created", { path: "a" });
+    noteCardEvent("t-cards", "confirmation_resolved", { request_id: "r1", answer: "APPROVE" });
+    expect(getCardLog("t-cards").map((e) => e.name)).toEqual(["confirmation_requested", "confirmation_resolved"]);
+    expect(getCardLog("other")).toEqual([]);
+    clearCardLog("t-cards");
+    expect(getCardLog("t-cards")).toEqual([]);
+  });
+
+  it("the stream loops note each card, and a send, a done and a Stop clear the log", () => {
+    const hook = readFileSync(fileURLToPath(new URL("../hooks/useAgentChat.ts", import.meta.url)), "utf8");
+    expect(hook.match(/noteCardEvent\(threadId, evtName, evt\.value \?\? evt\.data\)/g)?.length).toBe(2);
+    expect(hook.match(/clearCardLog\(threadId\)/g)?.length).toBeGreaterThanOrEqual(4);
+    const chat = readFileSync(fileURLToPath(new URL("../components/AgentChat.tsx", import.meta.url)), "utf8");
+    expect(chat).toMatch(/for \(const e of getCardLog\(sessionId\)\) \{\s*hitlRef\.current\.onCustomEvent/);
   });
 });
 

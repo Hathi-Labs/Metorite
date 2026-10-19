@@ -24,6 +24,9 @@ import {
   releaseLoading,
   setSessionAgent,
   dispatchRun,
+  noteCardEvent,
+  clearCardLog,
+  getCardLog,
 } from "@/lib/chatStore";
 import {
   getLiveRuns,
@@ -463,8 +466,10 @@ export function useAgentChat({
         return { ...prev, messages, isLoading: true, error: null, abortController: controller };
       });
 
-      // The one run state: a run starts (`lib/runStatus.ts`).
+      // The one run state: a run starts (`lib/runStatus.ts`). A card of an
+      // earlier run waits no more.
       dispatchRun(threadId, { type: "send", at: Date.now(), messageId: assistantId });
+      clearCardLog(threadId);
 
       // Emit run started event for subscribers
       emitAgentEvent("onRunStarted", { runId: assistantId, threadId });
@@ -709,6 +714,7 @@ export function useAgentChat({
                 break;
               case "done":
                 sawDone = true;
+                clearCardLog(threadId);
                 upd((m) => applyStreamEvent(m, evt, fold));
                 emitAgentEvent("onRunFinalized", { runId: String(evt.run_id ?? ""), threadId });
                 break;
@@ -723,6 +729,8 @@ export function useAgentChat({
                 break;
               case "custom": {
                 const evtName = String(evt.name ?? "");
+                // A chat that mounts again draws the card of the run again.
+                noteCardEvent(threadId, evtName, evt.value ?? evt.data);
                 emitAgentEvent("onCustomEvent", { name: evtName, value: evt.value ?? evt.data, threadId });
                 if ((evtName === "artifact_created" || evtName === "artifact_updated") && onArtifactRef.current) {
                   const data = (evt.value ?? evt.data) as Record<string, unknown> | undefined;
@@ -1220,6 +1228,8 @@ export function useAgentChat({
                 // ElicitationCard via the subscriber and are NOT stored as
                 // displayable customEvents (no duplicate "Interactive view").
                 const evtName = String(evt.name ?? "");
+                // A chat that mounts again draws the card of the run again.
+                noteCardEvent(threadId, evtName, evt.value ?? evt.data);
                 emitAgentEvent("onCustomEvent", { name: evtName, value: evt.value ?? evt.data, threadId });
                 if ((evtName === "artifact_created" || evtName === "artifact_updated") && onArtifactRef.current) {
                   const data = (evt.value ?? evt.data) as Record<string, unknown> | undefined;
@@ -1238,6 +1248,7 @@ export function useAgentChat({
               }
               case "done":
                 terminal = true;
+                clearCardLog(threadId);
                 // Restore a trailing answer folded into the timeline (turn ended
                 // on a tool call) and mark the message settled — the shared
                 // reducer does the un-fold + streaming:false in one update.
@@ -1298,8 +1309,10 @@ export function useAgentChat({
         }));
         // The run state hears how the stream ended. With no terminal event
         // the server answers whether the run goes on.
+        // No stream: the next attach waits longer (`attach_failed`), so a run
+        // that cannot replay is never asked in a loop.
         if (streamed) dispatchRun(threadId, { type: "stream_end", at: Date.now(), terminal });
-        else refreshLiveRuns();
+        else dispatchRun(threadId, { type: "attach_failed", at: Date.now() });
       }
     }
   }, [threadId]);
@@ -1396,6 +1409,10 @@ export function useAgentChat({
   }, [threadId]);
 
   const runPhase = sessionState.run.phase;
+  // A remount's "checking" was seen, so the cards on screen came from the log.
+  const wasCheckingRef = useRef(false);
+  const checkingNow = sessionState.run.checking;
+  useEffect(() => { if (checkingNow) wasCheckingRef.current = true; }, [checkingNow]);
   const runShows = isLivePhase(runPhase) || runPhase === "parked";
   // The clock: a stale state settles (`STALE_MS`, `FINISH_MAX_MS`).
   useEffect(() => {
@@ -1415,7 +1432,21 @@ export function useAgentChat({
   // once and not up to one poll later.
   useEffect(() => {
     if (runPhase === "finishing" || runPhase === "done" || runPhase === "stopped") refreshLiveRuns();
-  }, [runPhase]);
+    // A remount drew the cards of the run again from the log. If the server
+    // then says the run ended while the chat was away, those cards wait no
+    // more: the run is finalized here, as its `done` would have done. A cut
+    // stream with NO remount keeps its card, so an answer still goes
+    // (the restart path, `chat-card-restart.spec.ts`).
+    const resting = runPhase === "done" || runPhase === "stopped" || runPhase === "failed" || runPhase === "idle";
+    if (runPhase === "working" || runPhase === "waiting_for_you") wasCheckingRef.current = false;
+    if (resting && wasCheckingRef.current) {
+      wasCheckingRef.current = false;
+      if (getCardLog(threadId).length > 0) {
+        clearCardLog(threadId);
+        emitAgentEvent("onRunFinalized", { runId: "", threadId });
+      }
+    }
+  }, [runPhase, threadId]);
   // The server lists a live run that no stream reads: attach to it.
   const wantAttach = sessionState.run.attach;
   useEffect(() => {
@@ -1454,6 +1485,7 @@ export function useAgentChat({
     }));
     cancelFollowUp(threadId);
     dispatchRun(threadId, { type: "stop", at: Date.now() });
+    clearCardLog(threadId);
     return settled;
   }, [threadId]);
 

@@ -88,6 +88,8 @@ let _again = false;
 let _inflightAt = 0;
 /** A poll this young answers an ask made during it: no second request. */
 const FRESH_MS = 250;
+/** The least wait before a poll that an ask during a poll owes. */
+export const AGAIN_GAP_MS = 1_000;
 /** Bumped when the member changes. A poll that started under an older
  *  generation belongs to the member who asked, and publishes nothing. */
 let _generation = 0;
@@ -195,8 +197,10 @@ async function _poll(): Promise<void> {
     _inflight = false;
     if (complete) _pollListeners.forEach((l) => l(startedAt));
     if (_again) {
+      // One more poll, but never back to back: a slow server under load
+      // must not meet a chain of polls (CI hang of #1171).
       _again = false;
-      void _poll();
+      _schedule(AGAIN_GAP_MS);
     } else {
       _schedule(pollIntervalMs());
     }
