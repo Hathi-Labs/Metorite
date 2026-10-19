@@ -33,10 +33,10 @@ import {
   wantLiveSteps,
   type LiveRun,
 } from "@/lib/liveRuns";
-import { RUNS_PARTIAL_HEADER } from "@/lib/activeSessionsPath";
-import { isLivePhase, type RunStatus } from "@/lib/runStatus";
+import { isLivePhase, serverHoldsRun, type RunStatus } from "@/lib/runStatus";
 import { stepOfMessage } from "@/lib/runStep";
 import { fetchMessagesFromDb } from "@/lib/sessions";
+import { planReplay } from "@/lib/runReplay";
 import type { ChatMessage, ToolEvent } from "@/lib/chatStore";
 import { activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
 import { emitAgentEvent } from "@/lib/agentEvents";
@@ -78,17 +78,6 @@ export type { ChatMessage, ToolEvent };
 
 // The threads with a re-attach in flight, so two never race (one per tab).
 const _attaching = new Set<string>();
-
-/** The reply row of the run in flight: the last assistant row after the
- *  member's last turn, or null. Exported for its test. */
-export function runRowOf(messages: readonly ChatMessage[]): ChatMessage | null {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m.role === "user") return null;
-    if (m.role === "assistant") return m;
-  }
-  return null;
-}
 
 // HITL control events drive the inline ElicitationCard / ConfirmationCard — they
 // are interaction signals, not data to display in the generic "Interactive view"
@@ -984,36 +973,55 @@ export function useAgentChat({
   const attach = useCallback(async (abortCtrl: AbortController, isCancelled: () => boolean) => {
     const st0 = getSessionState(threadId);
     // A stream already reads this thread: the live loop goes on, and a
-    // replay beside it would only rebuild what it draws.
-    if (st0.abortController || _attaching.has(threadId)) return;
+    // replay beside it would only rebuild what it draws. Another attach may
+    // hold the thread too. Either way the run state hears it, so the next
+    // server list asks again (review of #1171, P2).
+    if (st0.abortController || _attaching.has(threadId)) {
+      dispatchRun(threadId, { type: "attach_skipped", at: Date.now() });
+      return;
+    }
     _attaching.add(threadId);
     attachCtrlsRef.current.add(abortCtrl);
+    const release = () => {
+      _attaching.delete(threadId);
+      attachCtrlsRef.current.delete(abortCtrl);
+    };
 
     // The message to replay into: the one this tab saw the run stream into,
     // else a reply saved mid-stream, else the run's own saved row, else a
-    // new placeholder.
+    // new placeholder. A run that the server names while this chat rests
+    // is a NEW run (another tab, a phone, a room member): the run state
+    // holds no message for it, and a finished reply is never its target
+    // (review of #1171, P1).
     const last = st0.messages[st0.messages.length - 1];
     const known = st0.run.messageId
       ? st0.messages.find((m) => m.id === st0.run.messageId && m.role === "assistant")
       : undefined;
     let target = known ?? (isInterruptedReply(last) ? last : undefined);
     if (!target) {
-      // After a reload the browser may hold only the member's turn. The
-      // server saved the run's reply row under ITS id (the checkpoints of
-      // `api/agent/chat/route.ts`). Replay into that row, so the thread
-      // never draws the run twice and the saved row never splits in two.
-      const saved = await fetchMessagesFromDb(threadId).catch(() => []);
-      const row = runRowOf(saved as ChatMessage[]);
-      if (row && !isCancelled()) {
-        target = { ...(row as ChatMessage), streaming: true };
-        setSessionState(threadId, (prev) => (prev.messages.some((m) => m.id === row.id)
-          ? prev
-          : { ...prev, messages: [...prev.messages, target!] }));
+      // The server saved the run's rows under THEIR ids: the member's turn
+      // at run start (WS-51 S4), and the reply at each checkpoint of
+      // `api/agent/chat/route.ts`. A run started elsewhere draws its prompt
+      // here, and the replay goes into its own row, never a second one.
+      const saved = ((await fetchMessagesFromDb(threadId).catch(() => [])) as ChatMessage[])
+        .filter((m) => !isSuperseded(threadId, m.id) && !(m.role === "system" && m.content?.startsWith("__ERROR__")));
+      if (!isCancelled()) {
+        const plan = planReplay(saved, getSessionState(threadId).messages);
+        if (plan.target) target = plan.target;
+        setSessionState(threadId, (prev) => {
+          const add = planReplay(saved, prev.messages);
+          const t = add.target && !prev.messages.some((m) => m.id === add.target!.id) ? [add.target] : [];
+          const rows = [...add.missing, ...t];
+          return rows.length ? { ...prev, messages: [...prev.messages, ...rows] } : prev;
+        });
       }
     }
-    if (isCancelled()) {
-      _attaching.delete(threadId);
-      attachCtrlsRef.current.delete(abortCtrl);
+    if (isCancelled()) { release(); return; }
+    // A send may have started while this read the server. It owns the
+    // thread, its controller and its Stop.
+    if (getSessionState(threadId).abortController) {
+      release();
+      dispatchRun(threadId, { type: "attach_skipped", at: Date.now() });
       return;
     }
     const lastId = target?.id ?? nanoid();
@@ -1276,13 +1284,17 @@ export function useAgentChat({
     }
   }, [threadId]);
 
-  // ── On mount: read the server once, and attach to a live run ─────────
-  // A reload, a return to the page and a session switch all land here.
-  // The status shows the server's answer as soon as it arrives, and the
-  // stream re-attaches at once.
+  // ── On mount: hear the server once ────────────────────────────────────
+  // A reload, a return to the page and a session switch all land here. A
+  // live phase kept in the store from before, with no stream now, shows
+  // "checking" until the server answers (`remount`, review of #1171). The
+  // answer is the next complete poll of the one shared poller, which the
+  // reconcile effect below asks for: no second request. A live run then
+  // re-attaches through the run state's `attach` flag.
   useEffect(() => {
     const abortCtrl = new AbortController();
     let cancelled = false;
+    dispatchRun(threadId, { type: "remount", at: Date.now(), streamOpen: !!getSessionState(threadId).abortController });
 
     (async () => {
       const state = getSessionState(threadId);
@@ -1292,29 +1304,21 @@ export function useAgentChat({
       // showed "Reconnecting…" and a Stop button on every reopen.
       const localInterrupted = isInterruptedReply(last);
 
-      // Server truth: is an agent actually running for this thread?
-      const askedAt = Date.now();
-      let row: LiveRun | null = null;
-      let complete = false;
-      try {
-        const r = await fetch("/api/chat/active-sessions", { signal: abortCtrl.signal });
-        if (r.ok) {
-          const arr = (await r.json()) as LiveRun[];
-          if (Array.isArray(arr)) {
-            row = arr.find((s) => s && s.threadId === threadId) ?? null;
-            complete = !r.headers?.get?.(RUNS_PARTIAL_HEADER);
-          }
-        }
-      } catch { /* server unreachable — rely on local heuristic */ }
+      // Server truth: is an agent actually running for this thread? No
+      // answer within 6 s reads as "unknown", and polling recovers.
+      const row = await new Promise<LiveRun | null | undefined>((resolve) => {
+        let off: () => void = () => {};
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const done = (v: LiveRun | null | undefined) => {
+          off();
+          if (timer) clearTimeout(timer);
+          resolve(v);
+        };
+        off = subscribeLiveRunsPolls(() => done(getLiveRuns().find((r) => r.threadId === threadId) ?? null));
+        timer = setTimeout(() => done(undefined), 6_000);
+        abortCtrl.signal.addEventListener("abort", () => done(undefined));
+      });
       if (cancelled) return;
-
-      // The one run state hears the server at once (`lib/runStatus.ts`).
-      if (complete || row) {
-        dispatchRun(threadId, {
-          type: "server", at: askedAt, run: row,
-          streamOpen: !!getSessionState(threadId).abortController,
-        });
-      }
       // A parked question has no run to attach to: its card comes back
       // from the server (WS-51 S2).
       const serverActive = !!row && (row.state !== "needs_input" || row.live !== false);
@@ -1324,14 +1328,10 @@ export function useAgentChat({
         runStatus: serverActive ? "running" : localInterrupted ? "recovering" : "idle",
       }));
 
-      if (serverActive) {
-        await attach(abortCtrl, () => cancelled);
-        return;
-      }
       // ── Non-active interruption: let polling recover from Postgres ──
       // The server runs nothing, but the last local message was cut mid-
       // stream. Polling fetches the settled content from Postgres.
-      if (localInterrupted) {
+      if (!serverActive && localInterrupted) {
         setSessionState(threadId, (prev) => ({ ...prev, recovering: true, runStatus: "recovering" }));
       }
     })();
@@ -1485,7 +1485,7 @@ export function useAgentChat({
       const cur = getSessionState(threadId);
       // The server still lists the run: a long silent step is no stale
       // recovery, and the reply must not be marked interrupted.
-      if (isLivePhase(cur.run.phase) && Date.now() - cur.run.serverSeenAt < 15_000) {
+      if (serverHoldsRun(cur.run, Date.now())) {
         recoveryStartedAt = 0;
         return;
       }
@@ -1717,7 +1717,12 @@ export function useAgentChat({
         // Clear recovering if the server message looks settled (ends with
         // punctuation) or we've been in recovery for >45s.
         const curRecovering = getSessionState(threadId).recovering;
-        if (curRecovering) {
+        // While the server lists the run as live, neither a full stop nor
+        // the 45 s clock ends the recovery: the run goes on (review of
+        // #1171, P2). The run state settles it when the server lets go.
+        if (curRecovering && serverHoldsRun(getSessionState(threadId).run, Date.now())) {
+          recoveryStartedAt = Date.now();
+        } else if (curRecovering) {
           // Track when recovery first started.
           if (!recoveryStartedAt) recoveryStartedAt = Date.now();
           const recoveryAge = Date.now() - recoveryStartedAt;

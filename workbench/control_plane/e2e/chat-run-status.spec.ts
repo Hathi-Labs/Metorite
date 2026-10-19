@@ -1,7 +1,8 @@
 import { expect, test } from "@playwright/test";
 
 import {
-  ASKING, REPLY, composerRow, expectWorking, install, openChat, setSrv, srv, startRun,
+  ASKING, R2_HEAD, R2_PROMPT, R2_REPLY, REPLY, composerRow, expectWorking, install, openChat, setSrv, srv,
+  startRun,
 } from "./chat-run-status-fixture";
 
 /**
@@ -140,6 +141,65 @@ test.describe("One predictable run status (§4.10)", () => {
     await expect(page.locator('[data-chat-primary="stop"]')).toHaveCount(0);
 
     expect(new Set([working, waiting, parked]).size).toBe(3);
+  });
+
+  test("(h) a run started elsewhere gets its own bubble, and the last reply stays as it was", async ({ page }) => {
+    // Review of #1171, P1: R2 replayed into R1's finished reply and
+    // overwrote it, and R2's prompt never showed.
+    await install(page);
+    await startRun(page);
+    await setSrv(page, { endsAt: Date.now() });
+    const r1 = page.locator("[data-rollup-turn]").filter({ hasText: REPLY });
+    await expect(r1).toHaveCount(1, { timeout: 10_000 });
+    // R1's words. (The step trail may fold by itself, so the test reads the
+    // answer, not the whole bubble.)
+    const r1Words = ["Let me get the rest of the tree.", REPLY];
+    // Past the run state's hold after a terminal event (DONE_HOLD_MS).
+    await page.waitForTimeout(11_000);
+    await setSrv(page, { state: "running", endsAt: 0, r2At: Date.now() });
+    // The poll names R2. Its prompt and its own reply bubble show.
+    await expect(page.getByText(R2_PROMPT).first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(R2_HEAD).first()).toBeVisible({ timeout: 15_000 });
+    await expect(composerRow(page)).toHaveAttribute("data-run-tone", "working");
+    // R1's reply is untouched, and R2 is not inside it.
+    await expect(r1).toHaveCount(1);
+    for (const w of r1Words) await expect(r1).toContainText(w);
+    await expect(r1).not.toContainText(R2_HEAD);
+    // R2's words sit in a bubble of their own, after its prompt.
+    await expect(page.locator("[data-rollup-turn]").filter({ hasText: R2_HEAD })).toHaveCount(1);
+    // R2 ends in its own bubble.
+    await setSrv(page, { endsAt: Date.now() });
+    await expect(page.getByText(R2_REPLY).first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(REPLY)).toHaveCount(1);
+    for (const w of r1Words) await expect(r1).toContainText(w);
+    await expect(r1).not.toContainText(R2_REPLY);
+  });
+
+  test("(i) coming back to a chat draws no stale 'working' before the server answers", async ({ page }) => {
+    // Review of #1171, P2: the row drew the kept "working" and Stop at once.
+    await install(page);
+    await startRun(page);
+    // A reload: the stream is now a re-attach, which a chat switch aborts.
+    await page.reload();
+    await expectWorking(page, 30_000);
+    // Keep the chat's row, to come back to it after its dot has gone.
+    const rowHandle = await page.locator('[data-session-dot="running"]').first()
+      .evaluateHandle((el) => el.closest('button,[role="button"],a,li') ?? el);
+    // The run ends while the member is in another chat of the same page.
+    await page.getByRole("button", { name: /New conversation/ }).click();
+    await page.getByRole("button", { name: /General-purpose AI company brain/i }).click();
+    await setSrv(page, { endsAt: Date.now() });
+    await page.waitForTimeout(500);
+    await page.evaluate(() => {
+      const w = window as unknown as { __seen: { working: number } };
+      w.__seen.working = 0;
+    });
+    await rowHandle.asElement()!.click();
+    await expect(page.getByText(REPLY).first()).toBeVisible({ timeout: 15_000 });
+    await page.waitForTimeout(1_000);
+    const seen = await page.evaluate(() => (window as unknown as { __seen: { working: number } }).__seen.working);
+    expect(seen, "a stale working row drew").toBe(0);
+    await expect(page.locator('[data-chat-primary="stop"]')).toHaveCount(0);
   });
 
   test("(g) a run state shorter than 400 ms flashes no row and no thinking container", async ({ page }) => {

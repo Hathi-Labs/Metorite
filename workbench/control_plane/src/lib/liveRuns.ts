@@ -78,6 +78,10 @@ let _onVisibility: (() => void) | null = null;
 const _pollListeners = new Set<(at: number) => void>();
 /** A poll was asked for while one was in flight: run one more after it. */
 let _again = false;
+/** When the poll in flight started, epoch ms. */
+let _inflightAt = 0;
+/** A poll this young answers an ask made during it: no second request. */
+const FRESH_MS = 250;
 /** Bumped when the member changes. A poll that started under an older
  *  generation belongs to the member who asked, and publishes nothing. */
 let _generation = 0;
@@ -142,10 +146,12 @@ async function _poll(): Promise<void> {
   if (_listeners.size === 0) return;
   // One request at a time. A visibility change during a slow request must
   // not start a second one beside it.
-  if (_inflight) { _again = true; return; }
+  // A poll that started a moment ago answers this ask too.
+  if (_inflight) { if (Date.now() - _inflightAt > FRESH_MS) _again = true; return; }
   _inflight = true;
   const generation = _generation;
   const startedAt = Date.now();
+  _inflightAt = startedAt;
   let complete = false;
   try {
     const res = await fetch(pollUrl(), { signal: AbortSignal.timeout(TIMEOUT_MS) });

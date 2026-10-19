@@ -1005,7 +1005,7 @@ chat, and every indicator reads it. No indicator decides on its own.
 | The reattach loop in `useAgentChat` | One read of the run list at mount | It ran once. A stream that ended later never got a reattach. It kept its controller when the replay came back empty, so Stop stayed forever. |
 | The reattach cursor | `lastEventId` | It replayed only the tail into a message that it had emptied. A second return to the page lost the start of the reply. |
 | The history load in `AgentChat` | The `messages` of its first render | That render held no messages, so each load replaced the thread. A reply that had reattached went away: the "fleeting" thinking container. |
-| The recovery poll | A reply that ends in a full stop | It called a run done when its text ended in a full stop. After 45 s it marked a live run "interrupted". |
+| The recovery poll | A reply that ends in a full stop | It called a run done when its text ended in a full stop. After 45 s it marked a live run "interrupted". Now `serverHoldsRun` guards both exits: while the server listed the run in the last 15 s, the poll keeps the recovery. |
 | The top banner and the composer row | `recovering` and `runStatus` | Each read its own flag. The banner sat at the top of the thread. |
 | The Stop of the composer and the header dot | `isLoading` | Both went idle with the stream. |
 | The context ring ("19%") | `isLoading` | It pulsed with the stream, so it looked like run progress. It is the context window in use. |
@@ -1022,7 +1022,7 @@ chat, and every indicator reads it. No indicator decides on its own.
 | `waiting_for_you` | A card waits, and the run waits on it | "Waiting for your answer", in the warning tone, and Stop |
 | `parked` | A card waits, and no run runs (`live: false`) | "Paused. Answer the card to go on", and Send |
 | `finishing` | A stream ended with no terminal event | "Checking the run". The chat asks the server at once |
-| `done` | A terminal event came, or the server no longer lists the run | "Done" and the time, for 5 s |
+| `done` | A terminal event came, or the server no longer lists the run | "Done" for 5 s. The time shows only when the terminal event gave the real end |
 | `failed` | The turn failed | The error card in the thread |
 | `stopped` | The member pressed Stop | "Stopped", for 5 s |
 
@@ -1044,10 +1044,22 @@ chat, and every indicator reads it. No indicator decides on its own.
    it for 10 s. The state also ignores a list from before the phase began.
 8. The list can lag a new run by up to 10 s. An open stream is the
    authority then.
+9. A list that names a run while the chat rests (`idle`, `done`, `failed`
+   or `stopped`) names a NEW run. Another tab, a phone or a room member
+   started it. The state keeps no message, step or start of the last run,
+   so the new run gets its own bubble.
+10. A chat that mounts over a live phase kept in the store, with no stream
+    that reads it, goes to `finishing` ("checking") until the server
+    answers. The row draws nothing at once on a mount, except for a send.
+11. An attach that cannot start (another attach holds the thread, or a send
+    took it) gives `attach_skipped`. The next server list asks again.
 
 **When the chat asks the server.** The chat asks on mount and on each poll
 of the shared poller. That poller runs every 5 s in a visible tab and every
-30 s in a hidden tab. The chat also asks on a return to the tab, when a
+30 s in a hidden tab.
+
+The mount sends no request of its own. It waits for the next complete poll.
+An ask during a poll that started less than 250 ms ago shares that poll. The chat also asks on a return to the tab, when a
 stream ends, and when a run ends or stops. While a run shows, the chat asks
 for the step of the run (`?steps=1`).
 
@@ -1061,6 +1073,12 @@ cut stream all use it.
 - It replays into the message of the run. That is the message this tab saw,
   else a reply saved mid-stream, else the saved row on the server. Only with
   none of these does it add a placeholder, with no thinking flag.
+- A reply that the chat holds as finished is never a target. It belongs to
+  an earlier run (`planReplay` in `lib/runReplay.ts`).
+- It first draws the saved rows that the chat lacks and that are newer than
+  what shows. That is the prompt of a run started elsewhere.
+- After its read of the server, it checks for a send again. A send that
+  started in that time keeps its controller and its Stop.
 - The replay builds into a shadow copy. The copy replaces the message only
   when it has caught up, so the message never goes blank.
 - It gives up the loading state on every exit.

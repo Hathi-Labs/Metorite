@@ -57,7 +57,11 @@ export function useSteadyRunView(run: RunStatus): RunView | null {
   const [now, setNow] = useState(() => Date.now());
   const target = runView(run, now);
   const want = !!target;
-  const [shown, setShown] = useState(want);
+  const immediate = run.phase === "starting";
+  // A mount draws nothing at once, except the member's own send: a state
+  // kept in the store is not yet the server's answer, and it waits
+  // FLASH_MS like any other (review of #1171).
+  const [shown, setShown] = useState(want && immediate);
   // The last words, so the row keeps them during its hide delay.
   const [last, setLast] = useState<RunView | null>(target);
   const key = target ? `${target.tone}|${runViewText(target)}` : "";
@@ -76,7 +80,6 @@ export function useSteadyRunView(run: RunStatus): RunView | null {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
-  const immediate = run.phase === "starting";
   useEffect(() => {
     const r = steadyPresence(shown, want, 0, Date.now(), immediate);
     if (r.shown !== shown) {

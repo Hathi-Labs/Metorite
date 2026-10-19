@@ -50,6 +50,9 @@ export function isLivePhase(p: RunPhase): boolean {
 
 // ── The timings ────────────────────────────────────────────────────────────
 
+/** A server list this recent that named the run proves it live. */
+export const SERVER_FRESH_MS = 15_000;
+
 /** A new run may be missing from the server list for this long. */
 export const START_GRACE_MS = 10_000;
 /** An open stream that the server no longer lists, and that brought no
@@ -71,6 +74,15 @@ export const ATTACH_GAP_MS = 5_000;
 export const RESTING_SHOW_MS = 5_000;
 /** A row that would show or hide for less than this never draws. */
 export const FLASH_MS = 400;
+
+/**
+ * The server listed this run as live a moment ago. The Postgres recovery
+ * poll must not end such a run on a full stop or on its 45 s clock, and
+ * the stale recovery must not mark it interrupted (review of #1171).
+ */
+export function serverHoldsRun(s: RunStatus, now: number): boolean {
+  return isLivePhase(s.phase) && s.serverSeenAt > 0 && now - s.serverSeenAt < SERVER_FRESH_MS;
+}
 
 // ── The state ──────────────────────────────────────────────────────────────
 
@@ -146,6 +158,12 @@ export type RunEvent =
   | { type: "abandon"; at: number }
   /** The member pressed Stop. */
   | { type: "stop"; at: number }
+  /** A re-attach could not start (another one held the thread, or a send
+   *  took it). The next server list asks again. */
+  | { type: "attach_skipped"; at: number }
+  /** The chat mounted over a state kept in the store, with no stream that
+   *  reads it: show "checking" until the server answers. */
+  | { type: "remount"; at: number; streamOpen: boolean }
   /** A blocking card opened or closed in this chat. */
   | { type: "card"; at: number; open: boolean }
   /** A complete server list, taken at `at`. `run` is this thread's row. */
@@ -243,6 +261,20 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
     case "stop":
       return to(s, "stopped", e.at, { step: null, stoppedAt: e.at, attach: false, cardOpen: false });
 
+    case "attach_skipped":
+      // `attachedAt` stays, so the next list asks again at once.
+      return s.attach ? { ...s, attach: false } : s;
+
+    case "remount": {
+      if (e.streamOpen) return s;
+      // No stream reads now, so a re-attach may start at once.
+      const base = s.attachedAt === 0 ? s : { ...s, attachedAt: 0 };
+      // A live phase kept from before an unmount is not known to be live.
+      // "Checking" until the server answers.
+      if (!(s.phase === "working" || s.phase === "starting" || s.phase === "waiting_for_you")) return base;
+      return to(base, "finishing", e.at, { attach: false });
+    }
+
     case "card": {
       if (s.cardOpen === e.open) return s;
       if (e.open && (s.phase === "working" || s.phase === "starting" || s.phase === "finishing")) {
@@ -273,25 +305,31 @@ function reduceServer(
     if (s.phase === "stopped" && at - s.stoppedAt < STOP_HOLD_MS) return s;
     if ((s.phase === "done" || s.phase === "failed") && at - s.terminalAt < DONE_HOLD_MS) return s;
     const seen = { serverSeenAt: Math.max(s.serverSeenAt, at), serverGoneAt: 0 };
-    const startedAt = s.startedAt ?? parseTime(run.startedAt) ?? at;
     const resting = !isLivePhase(s.phase) && s.phase !== "parked";
+    // A list that names a run while this chat rests names a NEW run: one
+    // started in another tab, on a phone, or by a room member. It gets its
+    // own bubble, so nothing of the last run (its reply, its step, its
+    // start) carries over (review of #1171, P1).
+    const fresh: Partial<RunStatus> = resting
+      ? { messageId: null, step: null, seq: 0, terminalAt: 0, cardOpen: false, startedAt: parseTime(run.startedAt) ?? at }
+      : {};
+    const startedAt = resting ? fresh.startedAt! : s.startedAt ?? parseTime(run.startedAt) ?? at;
     const canAttach = !streamOpen && at - s.attachedAt >= ATTACH_GAP_MS;
     if (run.state === "needs_input") {
       if (run.live === false) {
         // No run runs. The card waits, and an answer starts a new run.
-        return to(s, "parked", at, { ...seen, step: null, attach: false, startedAt });
+        return to(s, "parked", at, { ...fresh, ...seen, step: null, attach: false, startedAt });
       }
-      return to(s, "waiting_for_you", at, { ...seen, step: null, startedAt, attach: canAttach });
+      return to(s, "waiting_for_you", at, { ...fresh, ...seen, step: null, startedAt, attach: canAttach });
     }
     const step = run.lastStep?.trim() || (resting ? null : s.step);
     const phase: RunPhase = s.phase === "waiting_for_you" && s.cardOpen ? "waiting_for_you" : "working";
     const next = to(s, phase, at, {
+      ...fresh,
       ...seen,
       // The stream's own step is fresher than the list's while it reads.
       step: streamOpen && !resting && s.step ? s.step : step,
-      startedAt: resting ? parseTime(run.startedAt) ?? at : startedAt,
-      seq: resting ? 0 : s.seq,
-      terminalAt: resting ? 0 : s.terminalAt,
+      startedAt,
       attach: canAttach,
     });
     return sameRun(s, next) ? s : next;
@@ -319,7 +357,8 @@ function sameRun(a: RunStatus, b: RunStatus): boolean {
   return (
     a.phase === b.phase && a.step === b.step && a.startedAt === b.startedAt &&
     a.serverSeenAt === b.serverSeenAt && a.serverGoneAt === b.serverGoneAt &&
-    a.attach === b.attach && a.seq === b.seq && a.terminalAt === b.terminalAt
+    a.attach === b.attach && a.seq === b.seq && a.terminalAt === b.terminalAt &&
+    a.messageId === b.messageId && a.cardOpen === b.cardOpen
   );
 }
 
@@ -372,8 +411,15 @@ export function runView(s: RunStatus, now: number): RunView | null {
     case "finishing":
       return { tone: "finishing", label: "Checking the run", elapsed };
     case "done":
-      if (now - s.changedAt >= RESTING_SHOW_MS || s.startedAt === null) return null;
-      return { tone: "done", label: "Done", elapsed: formatElapsed(s.changedAt - s.startedAt) };
+      if (now - s.changedAt >= RESTING_SHOW_MS) return null;
+      // The time counts to the run's real end, its terminal event. A run
+      // that settled because the server stopped listing it has no known
+      // end, so it shows no time (review of #1171, P2).
+      return {
+        tone: "done",
+        label: "Done",
+        elapsed: s.terminalAt > 0 && s.startedAt !== null ? formatElapsed(s.terminalAt - s.startedAt) : null,
+      };
     case "stopped":
       if (now - s.changedAt >= RESTING_SHOW_MS) return null;
       return { tone: "stopped", label: "Stopped", elapsed: null };

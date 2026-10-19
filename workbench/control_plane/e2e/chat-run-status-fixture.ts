@@ -18,19 +18,29 @@ export type Srv = {
   /** The stream closes on its own after this many ms, with no terminal
    *  event (the proxy's budget). 0: never. */
   cutAfterMs: number;
+  /** A second run that started ELSEWHERE (another tab, a phone, a room
+   *  member) at this time, epoch ms. 0: none. Its prompt is saved on the
+   *  server, and this page never sent it. */
+  r2At: number;
+  userId?: string;
+  replyId?: string;
 };
 
 export const REPLY = "Here is the full tree of destinations.";
+/** The run started elsewhere: its prompt, its first words and its answer. */
+export const R2_PROMPT = "Asked from the phone: list the open orders";
+export const R2_HEAD = "Reading the open orders now.";
+export const R2_REPLY = "There are four open orders.";
 export const ASKING = /Asking /;
 
 export async function install(page: Page, initial: Partial<Srv> = {}) {
-  await page.addInitScript(({ initial, reply }) => {
+  await page.addInitScript(({ initial, reply, R2_PROMPT, R2_HEAD, R2_REPLY }) => {
     // The first load only: a reload keeps the chat and the "server".
     if (!sessionStorage.getItem("__inited")) {
       window.localStorage.clear();
       sessionStorage.setItem("__inited", "1");
       sessionStorage.setItem("__srv", JSON.stringify({
-        threadId: null, state: "none", live: true, startedAt: 0, endsAt: 0, cutAfterMs: 0, ...initial,
+        threadId: null, state: "none", live: true, startedAt: 0, endsAt: 0, cutAfterMs: 0, r2At: 0, ...initial,
       }));
     }
     const w = window as unknown as Record<string, unknown>;
@@ -58,23 +68,24 @@ export async function install(page: Page, initial: Partial<Srv> = {}) {
     const frame = (e: unknown) => enc.encode(`data: ${JSON.stringify(e)}\n\n`);
     const json = (body: unknown, status = 200) =>
       new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-    const head = [
+    const r2 = () => !!read().r2At;
+    const head = () => [
       { type: "message_start", messageId: "m-1" },
-      { type: "delta", content: "Let me get the rest of the tree.", messageId: "m-1" },
+      { type: "delta", content: r2() ? R2_HEAD : "Let me get the rest of the tree.", messageId: "m-1" },
       { type: "message_end", messageId: "m-1" },
       { type: "tool_start", id: "t1", name: "call_agent", args: {} },
       { type: "tool_args", id: "t1", args: { agent: "projects-assistant", message: "List the tree" } },
     ];
-    const tail = [
+    const tail = () => [
       { type: "tool_end", id: "t1", name: "call_agent", args: { agent: "projects-assistant" }, result: "ok", success: true },
       { type: "message_start", messageId: "m-2" },
-      { type: "delta", content: reply, messageId: "m-2" },
+      { type: "delta", content: r2() ? R2_REPLY : reply, messageId: "m-2" },
       { type: "message_end", messageId: "m-2" },
       { type: "done" },
     ];
     const runStream = (signal?: AbortSignal | null) => new ReadableStream<Uint8Array>({
       async start(controller) {
-        for (const e of head) controller.enqueue(frame(e));
+        for (const e of head()) controller.enqueue(frame(e));
         const opened = Date.now();
         const cut = read().cutAfterMs;
         // Silent until the run ends, or until the "proxy" cuts it.
@@ -84,7 +95,7 @@ export async function install(page: Page, initial: Partial<Srv> = {}) {
           await new Promise((r) => setTimeout(r, 100));
         }
         if (read().state === "needs_input") { controller.close(); return; }
-        for (const e of tail) controller.enqueue(frame(e));
+        for (const e of tail()) controller.enqueue(frame(e));
         write({ state: "none" });
         controller.close();
       },
@@ -97,7 +108,7 @@ export async function install(page: Page, initial: Partial<Srv> = {}) {
         const s = read();
         return json(active() ? [{
           threadId: s.threadId, agentName: "orchestrator", title: "Plan the release",
-          startedAt: new Date(s.startedAt).toISOString(), state: s.state, live: s.live,
+          startedAt: new Date(s.r2At || s.startedAt).toISOString(), state: s.state, live: s.live,
           askKind: s.state === "needs_input" ? "questions" : null,
           lastStep: s.state === "running" ? "Asking Projects assistant" : null,
         }] : []);
@@ -121,6 +132,14 @@ export async function install(page: Page, initial: Partial<Srv> = {}) {
         // The gateway saves the reply at the run's end (its fold), so a page
         // that comes back after the end reads it from the server.
         const s = read();
+        if (method === "GET" && url.includes("/messages") && s.threadId && url.includes(s.threadId) && s.r2At) {
+          // The run started elsewhere saved its prompt at run start (WS-51 S4).
+          return json([
+            { id: s.userId, role: "user", content: "Plan the release", timestamp: s.startedAt },
+            { id: s.replyId, role: "assistant", content: reply, timestamp: s.startedAt + 1, toolEvents: [] },
+            { id: "u-r2", role: "user", content: R2_PROMPT, timestamp: s.r2At },
+          ]);
+        }
         if (method === "GET" && url.includes("/messages") && s.threadId && url.includes(s.threadId) && s.endsAt && !active()) {
           return json([
             { id: s.userId, role: "user", content: "Plan the release", timestamp: s.startedAt },
@@ -138,7 +157,7 @@ export async function install(page: Page, initial: Partial<Srv> = {}) {
           if (!active()) {
             // The run ended while the page was away: the replay is whole.
             return new Response(new ReadableStream<Uint8Array>({
-              start(c) { for (const e of [...head, ...tail]) c.enqueue(frame(e)); c.close(); },
+              start(c) { for (const e of [...head(), ...tail()]) c.enqueue(frame(e)); c.close(); },
             }), { status: 200, headers: { "content-type": "text/event-stream" } });
           }
           return new Response(runStream(init?.signal), { status: 200, headers: { "content-type": "text/event-stream" } });
@@ -154,7 +173,7 @@ export async function install(page: Page, initial: Partial<Srv> = {}) {
       }
       return orig(input, init);
     };
-  }, { initial, reply: REPLY });
+  }, { initial, reply: REPLY, R2_PROMPT, R2_HEAD, R2_REPLY });
   await page.route("**/api/agent/list", (r) => r.fulfill({ json: [] }));
   await page.route("**/api/models/all", (r) => r.fulfill({ json: { models: [], source: "mock" } }));
   await page.route(/.*\/api\/integrations\/status.*/, (r) => r.fulfill({ json: [] }));

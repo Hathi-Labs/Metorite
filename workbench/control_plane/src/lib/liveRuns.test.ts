@@ -360,11 +360,21 @@ describe("the run state hears every complete poll (§4.10)", () => {
     off();
   });
 
-  it("a refresh during a poll in flight runs one more poll after it", async () => {
+  it("a refresh at the start of a poll reuses it: one request on mount", async () => {
+    const off = subscribeLiveRuns(() => {});
+    refreshLiveRuns();
+    await flush();
+    await flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    off();
+  });
+
+  it("a refresh during an older poll in flight runs one more poll after it", async () => {
     let release: () => void = () => {};
     fetchMock.mockImplementationOnce(() => new Promise((r) => { release = () => r({ ok: true, json: async () => [] }); }));
     const off = subscribeLiveRuns(() => {});
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(Date.now() + 1_000);
     refreshLiveRuns();
     refreshLiveRuns();
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -381,8 +391,6 @@ describe("no surface polls the run list on its own", () => {
   const SRC = fileURLToPath(new URL("..", import.meta.url));
   const ALLOWED = new Set([
     "lib/liveRuns.ts",
-    // One read on mount, to decide whether to reattach. Not a loop.
-    "hooks/useAgentChat.ts",
   ]);
 
   function walk(dir: string): string[] {
