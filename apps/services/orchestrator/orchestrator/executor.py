@@ -1597,6 +1597,12 @@ async def _run_sub_agent_streaming(
                 host_shell_refused=_host_shell_refused(
                     agent_name, getattr(loaded, "config", None),
                 ),
+                # The push gate (2026-10-19): may this member push agent
+                # code? From the run binding. Fence:
+                # test_chat_autopush_reviewer_gate.py.
+                agent_push_allowed=await _agent_push_binding(
+                    _host_shell_refused(agent_name, getattr(loaded, "config", None)),
+                ),
                 # H-236: set from the parent's binding, never cleared here.
                 # The batch run of a MAF sub-agent reads it as its parent.
                 no_egress=_sub_no_egress,
@@ -2035,6 +2041,57 @@ async def _first_party_admin_runs() -> tuple[bool, str]:
     if not (access.is_active and access.has(_FIRST_PARTY_ADMIN_PERMISSION)):
         return False, "not an admin of the first-party organization"
     return True, ""
+
+
+async def _agent_push_allowed() -> tuple[bool, str]:
+    """May the member of this run push agent code? ``(allowed, why)``.
+
+    The rule of the self-mutation queue's reviewer, in its one implementation
+    (``acb_auth.agent_operator.may_review_agent_commits``): ``agents:manage``
+    in an org of ``AGENT_REGISTRY_ORGS``. The member and the org come from the
+    run binding only, never from the payload (R5), as in
+    :func:`_first_party_admin_runs`. Every failure answers no.
+
+    The run binds the answer as ``agent_push_allowed``. The Copilot permission
+    guard and ``run_script`` read it, and :func:`_detect_agent_commits` asks it
+    again before it records a pushed commit as approved.
+    Fence: ``tests/unit/test_chat_autopush_reviewer_gate.py``.
+    """
+    from acb_common import get_run_context
+
+    ctx = get_run_context()
+    member = str(ctx.get("user") or "").strip()
+    if not member or ctx.get("member_verified") != "1":
+        return False, "no verified member"
+    org = _current_run_org()
+    if not org:
+        return False, "no organization"
+    try:
+        from acb_auth import resolve_access
+        from acb_auth.agent_operator import may_review_agent_commits
+        access = await resolve_access(member)
+    except Exception as exc:
+        return False, f"the access check failed: {str(exc)[:120]}"
+    if not access.is_active:
+        return False, "not an active member"
+    if not may_review_agent_commits(org, access.has):
+        return False, "not a reviewer of agent code (agents:manage in AGENT_REGISTRY_ORGS)"
+    return True, ""
+
+
+async def _agent_push_binding(host_shell_refused: bool) -> bool:
+    """The ``agent_push_allowed`` value that a run boundary binds.
+
+    A run whose host shell is refused cannot run git, so it binds ``False``
+    and skips the access read.
+    """
+    if host_shell_refused:
+        return False
+    try:
+        allowed, _why = await _agent_push_allowed()
+    except Exception:
+        return False
+    return allowed
 
 
 async def _assert_may_run_agent(agent_name: str) -> None:
@@ -2523,8 +2580,10 @@ async def _install_push_guard(agent_dir: str) -> None:
     Installs two hooks (idempotent — skips if already present):
 
     1. **pre-push**: Rejects all direct pushes.  The human-approval gateway
-       endpoint handles the push, or the operator may tell the agent to
-       ``git push --no-verify`` from chat to bypass this hook explicitly.
+       endpoint handles the push. A reviewer of agent code (the rule of
+       ``acb_auth.agent_operator``) may also tell the agent to push from chat
+       with ``--no-verify``. For every other member the permission guard
+       refuses that push (``agent_push_allowed``).
 
     2. **post-commit**: Appends the new commit SHA to ``.git/cc-commits-queue``.
        The post-run commit scanner reads this file to detect commits made
@@ -2550,7 +2609,7 @@ async def _install_push_guard(agent_dir: str) -> None:
             pre_push.write_text(
                 "#!/bin/sh\n"
                 "echo 'Direct push blocked: commits are queued for human approval'\n"
-                "echo 'Approve via the Metorite Control Plane inbox, or tell the agent you approve and it will push with --no-verify.'\n"
+                "echo 'Approve via the Metorite Control Plane inbox. Only a reviewer of agent code may tell the agent to push.'\n"
                 "exit 1\n",
                 encoding="utf-8",
             )
@@ -2649,6 +2708,9 @@ async def _detect_agent_commits(
             pass
 
         all_lines: list[str] = []
+        # The commits that THIS run made (phase 0 and phase 1). Only one of
+        # them can be a push of this run, so only these take the push gate.
+        _this_run_shas: set[str] = set()
 
         # ── Phase 0: queue-file scan (post-commit hook) ─────────────────
         # The post-commit hook appends each new SHA to this file.  We read
@@ -2691,6 +2753,7 @@ async def _detect_agent_commits(
                             except Exception:
                                 msg = sha[:12]
                             all_lines.append(f"{sha}|{msg}")
+                            _this_run_shas.add(sha)
                 # Truncate so SHAs are not re-registered on next scan.
                 queue_file.write_text("", encoding="utf-8")
             except Exception as exc:
@@ -2715,6 +2778,9 @@ async def _detect_agent_commits(
                 phase1 = stdout_bytes.decode(errors="replace").strip()
                 if phase1:
                     all_lines.extend(phase1.splitlines())
+                    _this_run_shas.update(
+                        ln.split("|", 1)[0].strip() for ln in phase1.splitlines()
+                    )
                     _log.info(
                         "executor.commits_since_sha",
                         agent=agent_name, count=len(phase1.splitlines()),
@@ -2797,6 +2863,10 @@ async def _detect_agent_commits(
             "initial: seeded from local source",
         )
 
+        # The push gate's answer, asked once per pass and only for a pushed
+        # commit of this run: ``(allowed, why)`` of ``_agent_push_allowed``.
+        _push_gate: tuple[bool, str] | None = None
+
         for raw_line in all_lines:
             parts = raw_line.split("|", 1)
             commit_sha = parts[0].strip()
@@ -2821,10 +2891,43 @@ async def _detect_agent_commits(
             diff_text = await _git_diff(agent_dir, commit_sha)
 
             # If the agent already pushed this commit (the user told it to
-            # "commit and push" in chat, so it ran `git push --no-verify`), it's
-            # on origin — record it as already-approved instead of queuing it for
-            # a redundant Control-Plane approval.
+            # "commit and push" in chat), it is on origin. It is recorded as
+            # approved ONLY when the member of this run passes the reviewer
+            # rule of the queue (2026-10-19). Otherwise it stays pending for a
+            # reviewer, and an audit line names the push that got past the
+            # permission guard. A pushed commit that this run did not make (a
+            # catch-up of an earlier run, or of a pull) keeps the earlier
+            # record. Fence: tests/unit/test_chat_autopush_reviewer_gate.py.
             pushed = await _commit_on_remote(agent_dir, commit_sha)
+            approved = pushed
+            if pushed and commit_sha in _this_run_shas:
+                if _push_gate is None:
+                    try:
+                        _push_gate = await _agent_push_allowed()
+                    except Exception as exc:
+                        _push_gate = (
+                            False, f"the push check failed: {str(exc)[:120]}",
+                        )
+                approved = _push_gate[0]
+                if not approved:
+                    _log.warning(
+                        "executor.agent_push_without_reviewer",
+                        agent=agent_name, run_id=run_id,
+                        commit_sha=commit_sha[:12], reason=_push_gate[1],
+                    )
+                    record(
+                        AuditEvent(
+                            actor=f"agent:{agent_name}",
+                            action="agent_push_without_reviewer",
+                            target=f"agent:{agent_name}",
+                            payload={
+                                "run_id": run_id,
+                                "commit_sha": commit_sha[:12],
+                                "reason": _push_gate[1],
+                            },
+                            organization_id=_RUN_ORG.get(thread_id),
+                        )
+                    )
 
             await _register_pending_commit(
                 agent_name=agent_name,
@@ -2834,8 +2937,8 @@ async def _detect_agent_commits(
                 commit_message=commit_message,
                 diff_text=diff_text,
                 test_summary="(agent self-improvement — no test run)",
-                status="approved" if pushed else "pending",
-                reviewed_by="chat:autopush" if pushed else None,
+                status="approved" if approved else "pending",
+                reviewed_by="chat:autopush" if approved else None,
                 # WS-29 slice 4: the tenant opener resolved on the event-loop
                 # frame above (flag OFF → get_session; ON+org → tenant_session;
                 # ON+no-org → None → the write fails closed + logs).
@@ -3566,6 +3669,12 @@ async def _run_agent_inner(
                 )),
                 host_shell_refused=_host_shell_refused(
                     agent_name, loaded.config,
+                ),
+                # The push gate (2026-10-19): may this member push agent
+                # code? From the run binding. Fence:
+                # test_chat_autopush_reviewer_gate.py.
+                agent_push_allowed=await _agent_push_binding(
+                    _host_shell_refused(agent_name, loaded.config),
                 ),
                 # H-236: a delegated run of a covered parent sends nothing
                 # off the platform. Its own delegations inherit this.
@@ -4531,6 +4640,12 @@ async def run_agent_stream(
                 )),
                 host_shell_refused=_host_shell_refused(
                     agent_name, loaded.config,
+                ),
+                # The push gate (2026-10-19): may this member push agent
+                # code? From the run binding. Fence:
+                # test_chat_autopush_reviewer_gate.py.
+                agent_push_allowed=await _agent_push_binding(
+                    _host_shell_refused(agent_name, loaded.config),
                 ),
                 # H-236: False for a top-level run. A covered run does not
                 # bind True for itself: its delegations compute it from

@@ -1705,8 +1705,11 @@ async def list_agents(
 
 
 def _registry_orgs() -> frozenset[str]:
-    raw = str(get_settings().agent_registry_orgs or "")
-    return frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
+    # The one parse of AGENT_REGISTRY_ORGS. The chat push gate of the executor
+    # reads the same rule (``acb_auth.agent_operator``).
+    from acb_auth.agent_operator import registry_operator_orgs  # noqa: PLC0415
+
+    return registry_operator_orgs(str(get_settings().agent_registry_orgs or ""))
 
 
 async def _require_registry_operator(
