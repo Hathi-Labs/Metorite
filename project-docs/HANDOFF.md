@@ -5931,10 +5931,26 @@ line — never reclaim a number by deleting the other entry.
   gives each user of a network service the right to the Corresponding Source
   of the modified AGPL code. That duty starts with the first release that
   carries a ported file. The repo has no `LICENSE` today.
-- **Decide.** The date of the licence change, and whether a release with
-  ported code waits for it. Ask counsel about the build tooling and the
-  parts of the repo that join the ported code.
+- **Decide.** The date of the licence change. On 2026-10-19 the owner ruled
+  that ported code may merge to staging, and that production waits for the
+  owner's test (D107 part 5). The licence date still binds the production
+  release. Ask counsel about the build tooling and the parts of the repo
+  that join the ported code.
 - **Authority:** owner, 2026-10-19. `specs/knowledge_base.md` §21.1
+- **Added:** 2026-10-19
+
+### H-362 · Clear RELEASE_HOLD when the owner approves the Knowledge release · [AGENT]
+- **Check:** `gh variable list` shows no `RELEASE_HOLD`. If it shows none,
+  delete this entry.
+- **Why.** On 2026-10-19 the owner asked for staging first for the Docmost
+  parity work (D107 part 5). The agent set `RELEASE_HOLD=1`, which skips the
+  scheduled production release. It also holds every other merge on `main`
+  until the variable is cleared, so do not leave it set.
+- **Do.** When the owner says production may go, run
+  `gh variable delete RELEASE_HOLD`. The next 21:30 UTC release then
+  carries `main`. For an earlier release, dispatch the workflow with a
+  reason, and report the SHA that `GET /version` serves.
+- **Authority:** owner, 2026-10-19. `specs/staging_and_daily_release.md` §4.3
 - **Added:** 2026-10-19
 
 ### H-360 · Widen acb-staging-flag: NEXT_PUBLIC_ rebuilds, a production mode, and an unset that lasts · [AGENT]

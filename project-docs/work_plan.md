@@ -5403,9 +5403,14 @@ replaces the rule of §21.1 of 2026-10-18, "ideas only, never code".
 4. **The repo licence is not changed here.** The owner sets its date
    (HANDOFF H-361). AGPL-3.0 section 13 binds from the first release that
    serves ported code.
-5. **A pull request with a ported file waits.** Until the owner answers
-   H-361, the agent builds and reviews it, opens it, and does not merge it.
-   A slice written from the spec merges as usual.
+5. **Staging first, then production on the owner's word.** The owner
+   answered on 2026-10-19: "Merge to staging first. Get everything working
+   on staging first. I'll test it out and then we'll do it on production."
+   A pull request with a ported file merges after its review, and staging
+   carries it. Production does not move until the owner has tested staging
+   and says so. The agent holds the nightly release with `RELEASE_HOLD=1`
+   meanwhile (HANDOFF H-362). The licence date of H-361 stays open and binds
+   the production release.
 
 **The owner may overrule it.** It changes no price. It changes the licence
 position of the repo, which is why part 4 names the owner.
