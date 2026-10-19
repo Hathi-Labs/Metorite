@@ -35,6 +35,7 @@ import pytest
 from acb_skills import answer_check
 from acb_skills.answer_check import (
     FALLBACK_LEAD,
+    HOW_HEAD,
     HOW_NONE,
     NOTE_MISSING,
     ON,
@@ -473,7 +474,10 @@ async def test_a_bad_card_with_bad_text_goes_out_with_a_caveat(stream: bool) -> 
     ])
     out = await _run(agent, stream=stream)
     assert [_card(1834567)["ui"]] == CARDS     # the retried card, once
-    assert out.startswith("Still ₹18.3 lakh." + missing("₹18.3 lakh", "1834567"))
+    # Both figures of the answer fail, so the note names none of them and
+    # says how the answer read the CRM (round 8).
+    assert out.startswith("Still ₹18.3 lakh.\n\n" + HOW_HEAD + "\n- Deals, sum of the amount")
+    assert "1834567" not in out.split(HOW_HEAD, 1)[1]
     assert FALLBACK_LEAD not in out
     assert len(client.requests) == 4
 

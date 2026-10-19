@@ -1170,7 +1170,7 @@ def _derived(figures: tuple[Figure, ...], index: int, cited: dict[str, list[_Cit
 #: A row of a markdown table, and a cell of the rule under its header.
 _TABLE_LINE = re.compile(r"^[ \t]*\|.*\|[ \t]*$")
 _TABLE_RULE_CELL = re.compile(r"[ \t]*:?-{2,}:?[ \t]*")
-#: A unit word of a header or a caption: "Rent (₹ lakh)", "in crore".
+#: A unit word of a header or a caption: "Amount (₹ lakh)", "in crore".
 _UNIT_WORD = re.compile(
     r"(?<![A-Za-z])(?P<w>(?i:lakhs?|lacs?|crores?|thousands?|millions?|billions?)"
     r"|Cr|cr|Mn|mn|Bn|bn)(?![A-Za-z])"
@@ -1327,7 +1327,7 @@ def _table_layout(text: str, figures: tuple[Figure, ...],
     """*figures* with each bare number of a table cell in the unit of its
     column, and the layout of each table (round 8).
 
-    The unit of a column comes from its header cell ("Rent (₹ lakh)"), or
+    The unit of a column comes from its header cell ("Amount (₹ lakh)"), or
     from the line above the table ("Amounts (in crore):"). A column with no
     unit takes lakh or crore when its numbers match the tool values at that
     scale and not as they stand, and the WHOLE column takes it. A column
@@ -1376,7 +1376,7 @@ def _table_layout(text: str, figures: tuple[Figure, ...],
 def _table_sum(figures: tuple[Figure, ...], index: int, cited: dict[str, list[_Cited]],
                layout: _Layout) -> bool:
     """A cell that is the sum of the other cells of its row with the same
-    unit ("| Region | Rent | IP | Net |"), or, in a row labelled "Total",
+    unit ("| Region | Billed | Paid | Net |"), or, in a row labelled "Total",
     the sum of the other cells of its column (round 8)."""
     where = layout.where.get(index)
     if where is None or figures[index].kind == PERCENT:

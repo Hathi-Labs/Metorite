@@ -210,9 +210,9 @@ NAMED_MAX = 3
 #: More failed figures than this share of all figures is a limit of the
 #: check, not of the answer. The note then names no figure.
 MANY_SHARE = 0.3
-#: The share rule counts only for an answer with this many figures or more.
-#: In a short answer one failed figure of three is a real doubt.
-MANY_MIN_FIGURES = 10
+#: The share rule needs this many failed figures at least. One failed
+#: figure of three is a real doubt about that figure, so it gets its reason.
+MANY_MIN_FAILED = 2
 NOTE_MISSING = ("I could not find {figure} in the CRM results. It may be my own "
                 "calculation. Ask me how I got it, or check it in the CRM.")
 NOTE_NEAR = ("I could not find {figure} in the CRM results. The nearest CRM figure is "
@@ -245,7 +245,7 @@ NOTE_HOW = "how"
 NOTE_QUESTION = "question"
 
 _ISO_DAY = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
-#: The head line of a grouped CRM total: "Collections, sum of Amount by Region:".
+#: The head line of a grouped CRM total: "Deals, sum of Amount by Region:".
 _GROUPED_HEAD = re.compile(r"^(?P<what>[^\n]+?) by (?P<group>[^:\n]+):[ \t]*$")
 _LIST_ROW = re.compile(r"^[ \t]*[-*\u2022][ \t]+(?P<label>[^:\n]{0,120}):[ \t]*(?P<value>.+)$")
 #: The marks of a CRM question that is still open (CRM-Q32-8, CRM-Q33).
@@ -643,7 +643,7 @@ def _head(tool: str, text: str, arguments: Any) -> str | None:
 
 def read_line(text: str, arguments: Any = None, tool: str = "crm_aggregate") -> str | None:
     """One CRM read in plain words: the head line that the server wrote,
-    without its figure, then its filters. "Collections, sum of Amount by
+    without its figure, then its filters. "Deals, sum of Amount by
     Region. No filter." Each label comes from the server, never a key, and
     a key word of a measure ("sum_amount") reads as words."""
     head = _head(tool, text, arguments)
@@ -740,6 +740,13 @@ def _how(ledger: RunLedger) -> str:
     return "\n".join([HOW_HEAD, *(f"- {line}" for line in ledger.reads), HOW_TAIL])
 
 
+def many_failed(failed: int, figures: int) -> bool:
+    """True when *failed* of *figures* is a limit of the check, not of the
+    answer: more than :data:`NAMED_MAX`, or more than :data:`MANY_SHARE` of
+    the figures when :data:`MANY_MIN_FAILED` or more failed."""
+    return failed > NAMED_MAX or (failed >= MANY_MIN_FAILED and failed > MANY_SHARE * figures)
+
+
 def note_text(result: CheckResult, ledger: RunLedger) -> tuple[str, str]:
     """The kind of the note and its text, after an answer that still failed
     the check (round 8). The text starts with a blank line, or is empty.
@@ -769,9 +776,7 @@ def note_text(result: CheckResult, ledger: RunLedger) -> tuple[str, str]:
         else:
             a, word, b = found
             explained.append(NOTE_SUM.format(figure=figure.text, a=a.text, word=word, b=b.text))
-    figures = len(result.figures)
-    many = len(rest) > NAMED_MAX or (figures >= MANY_MIN_FIGURES
-                                     and len(rest) > MANY_SHARE * figures)
+    many = many_failed(len(rest), len(result.figures))
     parts: list[str] = [] if many else explained[:NAMED_MAX]
     kind = NOTE_EXPLAINED if parts else NOTE_NONE
     if rest:
@@ -1177,6 +1182,7 @@ __all__ = [
     "empty_group",
     "fallback_text",
     "holds_crm_tool",
+    "many_failed",
     "member_words",
     "note_text",
     "read_line",
