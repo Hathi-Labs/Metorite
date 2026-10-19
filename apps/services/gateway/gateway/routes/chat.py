@@ -1453,6 +1453,9 @@ async def list_active_sessions(
     when the caller may see its chat. With ``CHAT_DURABLE_ASKS`` OFF every row
     is ``running``. ``askKind`` names the card.
 
+    **§4.10: ``runId``.** Each row carries the run's own id, or None. It is
+    stable for the whole run, and the open chat keys the run by it.
+
     **§4.10: ``live``.** Each row says whether a run runs for the thread. A
     ``needs_input`` row with ``live: false`` is parked: no run waits on the
     card, and an answer starts a new run. The open chat draws "waiting for
@@ -1510,10 +1513,14 @@ async def list_active_sessions(
         # live run is a PARKED question: an answer starts a new run (owner
         # report 2026-10-19, ``chat_run_continuity.md`` §4.10).
         live = tid in by_tid
+        # ``runId``: the run's own id, written once per run in the index. The
+        # browser keys a run by it, so a re-register never reads as a new
+        # run (re-review of #1171). Only for a row this route already lists.
+        run_id = (by_tid.get(tid) or {}).get("runId") or None
         ask = asks.get(tid)
         if ask is None:
-            return {"state": "running", "askKind": None, "live": live}
-        return {"state": "needs_input", "askKind": ask.get("kind"), "live": live}
+            return {"state": "running", "askKind": None, "live": live, "runId": run_id}
+        return {"state": "needs_input", "askKind": ask.get("kind"), "live": live, "runId": run_id}
 
     def _own_unknown(tid: str) -> dict:
         return {

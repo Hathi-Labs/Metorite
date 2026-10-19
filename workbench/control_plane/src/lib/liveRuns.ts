@@ -45,6 +45,12 @@ export type LiveRun = {
    */
   live?: boolean;
   /**
+   * The run's own id, stable for the whole run (re-review of #1171). The open
+   * chat keys the run by it (`runKeyOf` in `lib/runStatus.ts`). Absent from an
+   * older gateway, and on a parked question.
+   */
+  runId?: string;
+  /**
    * The run's latest step, such as "Search tasks" (WS-51 S3). Plain text that
    * the server caps at 60 characters. The panel draws it as text, never HTML.
    */
@@ -133,7 +139,7 @@ function _publish(runs: readonly LiveRun[]): void {
   // Same contents → same reference, so a subscriber that puts the list in a
   // dependency array does not loop (React #185, see useActiveSessions).
   const key = runs
-    .map((r) => `${r.threadId}:${r.agentName}:${r.title ?? ""}:${r.state ?? "running"}:${r.live === false ? "parked" : ""}:${r.startedAt ?? ""}:${r.lastStep ?? ""}`)
+    .map((r) => `${r.threadId}:${r.agentName}:${r.title ?? ""}:${r.state ?? "running"}:${r.live === false ? "parked" : ""}:${r.runId ?? ""}:${r.startedAt ?? ""}:${r.lastStep ?? ""}`)
     .sort()
     .join("\n");
   if (key === _key) return;
@@ -175,6 +181,7 @@ async function _poll(): Promise<void> {
               state: d.state === "needs_input" ? ("needs_input" as const) : ("running" as const),
               askKind: typeof d.askKind === "string" ? d.askKind : null,
               ...(typeof d.live === "boolean" ? { live: d.live } : {}),
+              ...(typeof d.runId === "string" && d.runId ? { runId: d.runId } : {}),
               lastStep: _step(d.lastStep),
             })),
         );

@@ -372,8 +372,14 @@ function reduceServer(
     const key = runKeyOf(run);
     // ANOTHER identity than the run this chat knows is a new run, in every
     // phase (re-review of #1171): another tab, a phone or a room member
-    // started it while this chat was away or idle.
-    const other = key !== null && s.runKey !== null && key !== s.runKey;
+    // started it while this chat was away or idle. Two keys compare only in
+    // kind: a run id with a run id, a start time with a start time.
+    // Defence in depth: a start time can move once early in a run (an old
+    // gateway registers the run twice), so while this tab's stream reads the
+    // run, a changed start time with no run id is the SAME run.
+    const other = key !== null && s.runKey !== null && key !== s.runKey &&
+      key.slice(0, 3) === s.runKey.slice(0, 3) &&
+      !(streamOpen && key.startsWith("at:"));
     const same = key !== null && key === s.runKey;
     if (!other && (s.phase === "done" || s.phase === "failed") && at - s.terminalAt < DONE_HOLD_MS) return s;
     const seen = { serverSeenAt: Math.max(s.serverSeenAt, at), serverGoneAt: 0, runKey: key ?? s.runKey };

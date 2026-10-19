@@ -563,6 +563,34 @@ describe("a listed run with another identity is a new run, in every phase", () =
     expect(reduceRun(s, { type: "attach", at: T0 + 61_100, messageId: "r2" }).staleTail).toBe(false);
   });
 
+  it("a start time that moves mid-run, with no run id, is the same run while the stream reads", () => {
+    // An older gateway registers each run twice, and the second register
+    // writes a new startedAt (re-review of #1171).
+    const moved: ServerRun = { state: "running", live: true, startedAt: new Date(T0 + 400).toISOString() };
+    const s = reduceRun(watching(), server(T0 + 6_000, moved, true));
+    expect(s.phase).toBe("working");
+    expect(s.messageId).toBe("a1");
+    expect(s.staleTail).toBe(false);
+    // The key follows the moved time, so a later list compares with it.
+    expect(s.runKey).toBe(runKeyOf(moved));
+    expect(reduceRun(s, server(T0 + 11_000, moved, true)).messageId).toBe("a1");
+  });
+
+  it("a run id is stable, and an id and a start time never compare", () => {
+    const withId: ServerRun = { ...r1, runId: "run-1" };
+    const a = reduceRun(working(), server(T0 + 1_000, withId, true));
+    expect(a.runKey).toBe("id:run-1");
+    // The start time moves, the id does not: the same run, stream or not.
+    const movedId: ServerRun = { ...withId, startedAt: new Date(T0 + 400).toISOString() };
+    const b = run(a, { type: "stream_end", at: T0 + 2_000, terminal: false }, server(T0 + 2_100, movedId));
+    expect(b.messageId).toBe("a1");
+    expect(b.staleTail).toBe(false);
+    // A row of an older gateway (start time only) is no proof of a new run.
+    expect(reduceRun(a, server(T0 + 3_000, r2)).staleTail).toBe(false);
+    // Another run id is a new run, also while a stream reads.
+    expect(reduceRun(a, server(T0 + 3_000, { ...r2, runId: "run-2" }, true)).staleTail).toBe(true);
+  });
+
   it("runKeyOf prefers the run id, then the start time", () => {
     expect(runKeyOf({ runId: "r-9", startedAt: R1_AT })).toBe("id:r-9");
     expect(runKeyOf({ startedAt: R1_AT })).toBe(`at:${R1_AT}`);

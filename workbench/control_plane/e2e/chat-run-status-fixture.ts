@@ -22,6 +22,13 @@ export type Srv = {
    *  member) at this time, epoch ms. 0: none. Its prompt is saved on the
    *  server, and this page never sent it. */
   r2At: number;
+  /** An older gateway: no `runId` on a row. */
+  noRunId: boolean;
+  /** The second register of an older gateway: after this many lists, the
+   *  row's startedAt moves by `shiftMs`. 0: never. */
+  shiftAfterLists: number;
+  shiftMs: number;
+  lists: number;
   userId?: string;
   replyId?: string;
 };
@@ -40,7 +47,7 @@ export async function install(page: Page, initial: Partial<Srv> = {}) {
       window.localStorage.clear();
       sessionStorage.setItem("__inited", "1");
       sessionStorage.setItem("__srv", JSON.stringify({
-        threadId: null, state: "none", live: true, startedAt: 0, endsAt: 0, cutAfterMs: 0, r2At: 0, ...initial,
+        threadId: null, state: "none", live: true, startedAt: 0, endsAt: 0, cutAfterMs: 0, r2At: 0, noRunId: false, shiftAfterLists: 0, shiftMs: 0, lists: 0, ...initial,
       }));
     }
     const w = window as unknown as Record<string, unknown>;
@@ -107,9 +114,12 @@ export async function install(page: Page, initial: Partial<Srv> = {}) {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.includes("/api/chat/active-sessions")) {
         const s = read();
+        if (active()) write({ lists: (s.lists || 0) + 1 });
+        const shift = s.shiftAfterLists && (s.lists || 0) >= s.shiftAfterLists ? s.shiftMs : 0;
         return json(active() ? [{
           threadId: s.threadId, agentName: "orchestrator", title: "Plan the release",
-          startedAt: new Date(s.r2At || s.startedAt).toISOString(), state: s.state, live: s.live,
+          startedAt: new Date((s.r2At || s.startedAt) + shift).toISOString(), state: s.state, live: s.live,
+          ...(s.noRunId ? {} : { runId: s.r2At ? "run-2" : "run-1" }),
           askKind: s.state === "needs_input" ? "questions" : null,
           lastStep: s.state === "running" ? "Asking Projects assistant" : null,
         }] : []);

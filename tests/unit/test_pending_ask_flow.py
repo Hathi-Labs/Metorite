@@ -484,8 +484,9 @@ def test_needs_input_survives_a_restart(flag_on, ask_db, liveness, monkeypatch):
     assert rows == [{
         "threadId": "t-restart", "agentName": "orchestrator", "title": "a chat",
         "startedAt": None, "state": "needs_input", "askKind": "questions",
-        # §4.10: no run runs, so the question is parked.
+        # §4.10: no run runs, so the question is parked, and has no run id.
         "live": False,
+        "runId": None,
         # WS-51 S3: a question has no live step.
         "lastStep": None,
     }]

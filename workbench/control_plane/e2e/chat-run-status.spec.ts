@@ -265,6 +265,30 @@ test.describe("One predictable run status (§4.10)", () => {
     await expect(page.getByText("working…")).toHaveCount(0);
   });
 
+  test("(l) a start time that moves between two lists, then a proxy cut, draws ONE bubble", async ({ page }) => {
+    // Re-review of #1171: an older gateway registers each run twice, and the
+    // second register moves startedAt. With no run id, a list in that gap
+    // read the member's own run as a new one. After the proxy cut, the
+    // re-attach then replayed the whole run into a second bubble.
+    await install(page, { noRunId: true, shiftAfterLists: 2, shiftMs: 750, cutAfterMs: 14_000 });
+    await startRun(page);
+    // Two lists with the first start time, then the moved one, all while
+    // the stream reads. Then the "proxy" cuts the stream, and the chat
+    // re-attaches.
+    await expect.poll(async () => (await srv(page)).lists, { timeout: 30_000 }).toBeGreaterThanOrEqual(3);
+    await expect.poll(async () => (await page.evaluate(() => (window as unknown as { __calls: string[] }).__calls))
+      .filter((c) => c === "reconnect").length, { timeout: 30_000 }).toBeGreaterThanOrEqual(1);
+    await expectWorking(page, 10_000);
+    const head = page.locator("[data-rollup-turn]").filter({ hasText: "Let me get the rest of the tree." });
+    await expect(head).toHaveCount(1);
+    await setSrv(page, { endsAt: Date.now(), cutAfterMs: 0 });
+    await expect(page.getByText(REPLY).first()).toBeVisible({ timeout: 15_000 });
+    await page.waitForTimeout(1_500);
+    // Exactly one reply bubble for the run.
+    await expect(head).toHaveCount(1);
+    await expect(page.locator("[data-rollup-turn]").filter({ hasText: REPLY })).toHaveCount(1);
+  });
+
   test("(g) a run state shorter than 400 ms flashes no row and no thinking container", async ({ page }) => {
     await install(page);
     const box = await openChat(page);

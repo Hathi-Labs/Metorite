@@ -339,6 +339,7 @@ describe("the run state hears every complete poll (§4.10)", () => {
     expect(heard).toHaveLength(1);
     expect(heard[0]).toBeGreaterThanOrEqual(before);
     expect(getLiveRuns()[0].live).toBe(false);
+    expect(getLiveRuns()[0].runId).toBeUndefined();
     await vi.advanceTimersByTimeAsync(VISIBLE_MS);
     await flush();
     // Same list, so no publish, but the poll is still heard.
@@ -382,6 +383,22 @@ describe("the run state hears every complete poll (§4.10)", () => {
     await flush();
     await flush();
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    off();
+  });
+});
+
+describe("the run id (re-review of #1171)", () => {
+  it("parses runId, and a changed id is a changed list", async () => {
+    payload = [{ threadId: "t1", agentName: "orchestrator", runId: "run-1" }];
+    let heard = 0;
+    const off = subscribeLiveRuns(() => { heard += 1; });
+    await flush();
+    expect(getLiveRuns()[0].runId).toBe("run-1");
+    payload = [{ threadId: "t1", agentName: "orchestrator", runId: "run-2" }];
+    await vi.advanceTimersByTimeAsync(VISIBLE_MS);
+    await flush();
+    expect(getLiveRuns()[0].runId).toBe("run-2");
+    expect(heard).toBe(2);
     off();
   });
 });
