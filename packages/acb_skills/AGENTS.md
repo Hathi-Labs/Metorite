@@ -400,8 +400,18 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    fails the answer and never ships. A failed answer gets ONE retry for each run, and
    then `fallback_text`, which shows the results of `FALLBACK_TOOLS` and
    never the draft. A failed step whose calls show nothing loses its text.
-   A failed step with a `SHOWN_TOOLS` call (a display tool or
-   `share_artifact`) fails. A
+   A failed step goes out without its text only when each call is in
+   `QUIET_TOOLS` (the CRM reads and the memory reads). Any other call fails
+   it. `ask_questions` and `request_confirmation` are display tools. In an
+   option of `ask_questions`, a figure after a choice word ("Last 90 days",
+   "Top 10", "Above ₹10 lakh") is a choice, and the check skips it. In
+   `on` mode a check that raises logs `answer_check.check_failed` and sends
+   the answer unchanged, so a failed check never loses the turn. An
+   answer that still fails after its one retry goes out with
+   `caveat_text`, a short note that names at most 5 figures. The fallback
+   is only for an answer with no text (fix round 7). A
+   result of `MODEL_WRITTEN_TOOLS` (a delegation, `code_task`, a script) is
+   no source. A result over `RECORD_INLINE_CHARS` is read on a thread. A
    passed check makes no model request. While it holds, it puts
    `HOLD_EVENT` on the run queue at most each `HEARTBEAT_S`, only on a model
    update, so the idle watchdog sees life. The one reader of

@@ -10,6 +10,11 @@
  * 1. A card that WAITS on the member never folds: a pending approval, a
  *    question form, an `ask_user` prompt, a plan to edit. It draws no toggle.
  *    `lib/askPin.ts` decides what waits, and this file asks it.
+ * 1a. A card that waited and has its ANSWER folds to its header, which
+ *    then carries the outcome in one line (`lib/askOutcome.ts`, owner
+ *    report 2026-10-19). It folds at once, even while the focus is inside
+ *    it: the control the member pressed is gone, and the card says what
+ *    happened. `RollupCard` moves the focus to the header.
  * 2. A manual open or close wins until the member toggles the card again.
  *    The choice lives for the page's life, keyed by the card's id, so a
  *    re-render or a reconnect replay keeps it. A reload forgets it.
@@ -42,6 +47,8 @@ export type ManualState = "open" | "closed";
 export interface RollupInputs {
   /** The card waits on the member (rule 1). */
   pending: boolean;
+  /** The card waited, and it has its answer now (rule 1a). */
+  answered?: boolean;
   /** What the member chose by hand, if anything (rule 2). */
   manual?: ManualState;
   /** The card is the newest in the transcript (rule 3). */
@@ -63,10 +70,11 @@ export interface RollupInputs {
   held?: boolean;
 }
 
-/** Is the card open? The four rules, in order. */
-export function rollupOpen({ pending, manual, newest, long, held }: RollupInputs): boolean {
+/** Is the card open? The rules, in order. */
+export function rollupOpen({ pending, answered, manual, newest, long, held }: RollupInputs): boolean {
   if (pending) return true;
   if (manual) return manual === "open";
+  if (answered) return false;
   if (held !== undefined) return held;
   if (newest) return true;
   return !long;
@@ -87,6 +95,48 @@ export function showRollupToggle({
   hasBody,
 }: Pick<RollupInputs, "pending"> & { hasBody: boolean }): boolean {
   return hasBody && !pending;
+}
+
+// ── A long result opens cut, with "Show all" ───────────────────────────────
+
+/**
+ * The height a long RESULT card opens at, in CSS pixels (spec
+ * `projects_ai_chat.md` §29, rule 2). Over it, the card draws cut, with a
+ * fade and a "Show all" under it. It sits above the 420 px that a table or
+ * a timeline already scrolls inside, so a plain table never cuts.
+ */
+export const CLAMP_PX = 480;
+
+/**
+ * A cut card uncuts by itself only when its content is this short: 48 px
+ * under {@link CLAMP_PX}, the height of the fade. The gap keeps a body near
+ * the cap from cutting and uncutting in turn.
+ */
+export const UNCUT_PX = CLAMP_PX - 48;
+
+/**
+ * Is the card cut? Only a result card (`clamp`) that waits on nobody.
+ * `naturalPx` is the unclipped height (`scrollHeight`), and 0 is "not
+ * measured".
+ *
+ * - The first measure over {@link CLAMP_PX} cuts.
+ * - A cut stays while the content is taller than {@link UNCUT_PX}. The
+ *   first rule uncut a body that measured at the cap, and it then grew,
+ *   cut and uncut at frame rate (review of #1160).
+ * - A cut ends when the content shrinks to {@link UNCUT_PX} or less, so a
+ *   fade and "Show all" never sit over a card with nothing hidden.
+ * - "Show all" ends it for good.
+ */
+export function clampShows({ clamp, pending, all, wasCut, naturalPx }: {
+  clamp: boolean;
+  pending: boolean;
+  all: boolean;
+  wasCut: boolean;
+  naturalPx: number;
+}): boolean {
+  if (!clamp || pending || all) return false;
+  if (wasCut) return naturalPx === 0 || naturalPx > UNCUT_PX;
+  return naturalPx > CLAMP_PX;
 }
 
 // ── The member's choices, for the page's life ──────────────────────────────

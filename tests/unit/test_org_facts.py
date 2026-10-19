@@ -286,24 +286,43 @@ def _row(key: str, meaning: str) -> dict:
     return {"key": key, "meaning": meaning, "subject": "s"}
 
 
-def test_the_block_holds_twelve_lines_at_most_and_only_money_and_stages() -> None:
-    from acb_skills.org_facts_tools import BLOCK_LINES, BLOCK_MARKER, crm_facts_block
+def test_the_block_holds_thirteen_lines_at_most_and_only_money_and_stages() -> None:
+    from acb_skills.org_facts_tools import (
+        BLOCK_LINES,
+        BLOCK_MARKER,
+        CRM_ROUTING_LINE,
+        crm_facts_block,
+    )
 
     rows = [_row("revenue", "Revenue means billed."), _row("purpose", "A purpose."),
             *[_row("amount", f"Amount {i}.") for i in range(20)],
             _row("stage:Won", "In X, Won means Won.")]
     block = crm_facts_block(rows)
     lines = block.splitlines()
-    assert BLOCK_LINES == 12 and len(lines) == 12
+    assert BLOCK_LINES == 13 and len(lines) == 13
     assert lines[0].startswith(BLOCK_MARKER)
-    assert lines[1] == "- Revenue means billed."
+    # WS-47 parity: the routing line comes second, before any fact.
+    assert lines[1] == CRM_ROUTING_LINE
+    assert lines[2] == "- Revenue means billed."
     assert "A purpose." not in block
     # 22 facts, 10 shown: the last line names the rest, so none is lost.
     assert lines[-1] == "- 12 more facts: call org_facts to read them."
     exact = crm_facts_block([_row("amount", f"Amount {i}.") for i in range(11)])
-    assert len(exact.splitlines()) == 12 and "more facts" not in exact
+    assert len(exact.splitlines()) == 13 and "more facts" not in exact
     assert crm_facts_block([_row("purpose", "A purpose.")]) == ""
     assert crm_facts_block([]) == ""
+
+
+def test_the_routing_line_sends_business_figures_to_the_crm() -> None:
+    """WS-47 parity (2026-10-19). A WhatsApp run answered a billing question
+    from document search, because the persona sends a company question to
+    search_company first. The line names the figures and the tools."""
+    from acb_skills.org_facts_tools import CRM_ROUTING_LINE
+
+    for word in ("billing", "invoices", "collections", "payments", "circles",
+                 "sites", "revenue", "amounts", "crm_aggregate", "search_company"):
+        assert word in CRM_ROUTING_LINE, word
+    assert "documents, not CRM records" in CRM_ROUTING_LINE
 
 
 class _MafAgent:

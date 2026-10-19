@@ -116,7 +116,7 @@ def test_a_missing_agent_contributes_nothing(monkeypatch) -> None:
         raise RuntimeError("no such agent")
 
     monkeypatch.setattr("acb_skills.call_agent", boom, raising=False)
-    label, body = asyncio.run(cc._ask_agent("tasks", "task-manager", "q"))
+    label, body = asyncio.run(cc._ask_agent("tasks", "projects-assistant", "q"))
     assert (label, body) == ("tasks", "")
 
 
@@ -146,7 +146,9 @@ def test_no_attendees_means_no_agent_fan_out() -> None:
 
 def test_agent_queries_ask_the_registered_agents() -> None:
     agents = {agent for _label, agent, _p in cc._AGENT_QUERIES}
-    assert "task-manager" in agents
+    # One task store (D52 to D54). task-manager is no specialist (D84, D92).
+    assert agents == {"projects-assistant"}
+    assert {agent for _label, agent in cc._CONSULT_AGENTS} == {"projects-assistant"}
     for _label, _agent, prompt in cc._AGENT_QUERIES:
         assert "{people}" in prompt, "query must be scoped to the attendees"
         assert "NONE" in prompt, "must define the empty answer"
