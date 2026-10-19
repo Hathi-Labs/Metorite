@@ -77,7 +77,9 @@ def _module_names(rows: list[Any]) -> list[str]:
         found = _PURPOSE_MEANING.match(str(row.get("meaning") or ""))
         if found is None:
             continue
-        name = " ".join(found.group("label").split())[:ROUTING_NAME_CHARS]
+        # One label cut to its length, a text and not a list of rows.
+        label = " ".join(found.group("label").split())
+        name = f"{label[:ROUTING_NAME_CHARS]}"
         if name and name not in names:
             names.append(name)
         if len(names) >= ROUTING_MODULES:
