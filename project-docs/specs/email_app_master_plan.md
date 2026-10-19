@@ -14908,16 +14908,19 @@ before any send, because a model draft is never sent by itself.
 ###### 12.3.13.8.1 The no_egress tool audit (2026-10-19)
 
 **Result.** In a held run, the email assistant can again save a reply draft, make a label,
-archive, move, and save a rule that stays in the mailbox. A send, a forward, a send of a draft
+archive and move mail. It can also save a rule that stays in the mailbox. A send, a forward, a send of a draft
 and an unsubscribe stay withheld. The rule of H-236 did not change (`maf_coding_engine.md`
 §16.3). Only the classification of each tool changed.
 
 **The report.** The owner asked the main chat for a reply to an email. The chat wrote the text,
 signed it "[your name]", and said that it could not save it in Drafts. It also said "ask again
-from the Email app". The gateway log of run `7d2b2a32` showed why. The session read the answer
-of `email-assistant`, so EM-G11d marked it. Each later run of `email-assistant` in that session
-bound `no_egress`, and that run withheld `draft_reply`. The same hold binds a run in the Email
-app, so the advice of the chat was false.
+from the Email app".
+
+The gateway log of run `7d2b2a32` showed why. The session read the answer of `email-assistant`,
+so EM-G11d marked it. Each later run of `email-assistant` in that session bound `no_egress`, and
+that run withheld `draft_reply`. The log shows the same list withheld in a run with `app=email`.
+So the advice of the chat was a guess that the run could not check. A top-level chat of the
+Email app is not held (below), but a run that it calls can be.
 
 **A held run.** A run that binds `no_egress` is a held run. Two causes set it: a covered
 Projects run above it (H-236), or a chat session that read stranger mail (EM-G11d). A held run
@@ -14947,7 +14950,7 @@ reader is `egress.no_egress_for_this_run`, which fails closed. The call-time ref
 | `manage_inbox` | A | Archive, trash, read, unread, star, unstar, move and label. The bulk route accepts only those acts. |
 | `digest` | A | The route sends the digest to the mailbox's own address (`sess.owner_email`). |
 | `install_default_rules` | A | Each preset labels, moves, archives or drafts a reply to the sender. |
-| `create_rule`, `update_rule`, `create_rules_from_prompt` | A, with a held part | A held run refuses a rule that forwards, calls a webhook, drafts to an address that it names, or drafts a text that the model wrote (`_held_in_no_egress`). |
+| `create_rule`, `update_rule`, `create_rules_from_prompt` | A, with a held part | A held run refuses a rule that forwards, calls a webhook or drafts to an address that it names. It also refuses a draft action that fills any field outside an allowlist (`id`, `type`, `delay_minutes`): a subject, a body, a label or a file (`_held_in_no_egress`). It refuses a change that widens such a rule. A pause asks the card. |
 | `learn_rule_pattern` | A, with a held part | A held run refuses an "always match" pattern on a rule that sends out. A "never match" pattern only narrows the rule. |
 | `run_rules` | A, with a held part | A run applies each rule that is on. A held run refuses it while a rule that sends out is on, or when it cannot read the rules. A preview runs. |
 | `resolve_execution` | A, with a held part | A held run refuses to approve a pending run that sends out, or one whose full actions it cannot read. Reject and undo run. |
@@ -14971,12 +14974,24 @@ platform tools of the last two rows. `draft_whatsapp_reply` already says `open_w
 
 **What the model reads.** Two texts changed, because the old ones were not true.
 
-1. A held run starts with a note (`egress.EGRESS_HOLD_NOTE`, from `EgressGuardProvider`). The
-   note says which kind of act is held, and why. It says that the hold binds every app. It
-   names the two true ways on: the member does it by hand, or asks in a new conversation that
-   has not read outside email. It tells the model never to send the member to another app.
+1. A held run starts with a note, from `EgressGuardProvider`. Each cause has its own note:
+   `egress.EGRESS_HOLD_NOTE_MAIL` and `egress.EGRESS_HOLD_NOTE_SANDBOX`. The mail note gives
+   the cause: another assistant called this run, and the conversation read outside email. It
+   names the two true ways on. The member does it by hand, or asks in a new conversation that
+   read no outside email. It tells the model not to say that another app can or cannot do it.
 2. The answer to a held call (`egress.egress_held_answer`) has the same terms. The text for a
    covered Projects run stays as it was. The Copilot guard uses the same choice of reason.
+
+**Only a called run is held.** A chat in the Email app is a top-level run of
+`email-assistant` (`EmailAssistantChat.tsx`), and `_tool_injection._run_no_egress` does not
+hold it. So no text says that the hold binds the Email app, or every app (security review of
+#1173). The first version of these texts said so, and that claim was as false as the claim of
+the report.
+
+**The card of a draft rule.** In every run, the rule card lists each filled field of each
+draft action in full, under its rule (`_draft_field_lines`). Before, the card said only
+"drafts a reply", and it hid a subject that went to each later sender. A rule that the card
+cannot show whole asks no card and saves nothing (`_RULE_CARD_TOO_LONG`).
 
 **The member's name.** The per-turn context of `email-assistant` and `orchestrator` now names
 the member (`executor._member_name_line`). The name comes from `app_user.display_name` for the
@@ -14991,9 +15006,9 @@ and at send.
    drafter wrote. The drafter reads the context of the company, and its consults bind `no_egress`.
 2. **A label name and a folder name reach the provider.** The model chooses the name. Only the
    member's own mailbox holds it.
-3. **An inward rule acts later, with no hold.** A held run can save a rule that labels or drafts
-   a reply to each later sender. That rule runs in the background. Its drafts still wait for
-   the member.
+3. **An inward rule acts later, with no hold.** A held run can save a rule that labels. It can
+   also save a rule that lets the drafter reply to each later sender. That rule runs later.
+   Its drafts still wait for the member. The model chooses no field of such a draft.
 
 **How this composes with WAC-P4 (#1169).** WAC-P4 asks the member to confirm each egress call
 after an untrusted answer: a card on the web, the Confirm button on WhatsApp. It picks a call
@@ -15013,10 +15028,15 @@ Fence: `test_wac_p4_still_asks_for_each_send_and_not_for_an_in_space_tool` in
 held run never gets a (B) tool. The proposal adds no second approval path. A held run would keep
 its (B) tools, and each (B) call would ask the WAC-P4 confirm, with the view of
 `egress.egress_call_view`. That view shows each recipient, each URL host and each attachment in
-full, and then the body. The risks are three. A member who approves cards by habit approves a
-steered send. A body longer than the view can hide data, so a held run would need the full
-text on the card. A delegated run must reach the member's card channel. The owner decides if
-a held run gets this confirm. Until then, (B) stays withheld.
+full, and then the body.
+
+The risks are three:
+
+1. A member who approves cards by habit approves a steered send.
+2. A body longer than the view can hide data. A held run would need the full text on the card.
+3. A delegated run must reach the member's card channel.
+
+The owner decides if a held run gets this confirm. Until then, (B) stays withheld.
 
 Fence: `tests/unit/test_no_egress_tool_audit.py` (the pinned set of each agent, the held parts,
 the texts, the name line) and `EXPECTED_OPEN_WORLD` in `tests/unit/test_delegation_no_egress.py`.
