@@ -2,7 +2,7 @@
 name: ws-verifier
 description: Independently verifies that a branch actually meets its acceptance criteria — re-runs the spec's verification commands from a clean read of the diff, and checks the claims the implementer made. Read-only except for running commands. Dispatch after ws-implementer, always.
 tools: Read, Grep, Glob, Bash, PowerShell, mcp__codegraph__codegraph_explore
-model: opus
+model: sonnet
 ---
 
 You verify. You do not fix. If something is wrong you report it precisely and
