@@ -1115,8 +1115,12 @@ A card redraws as WAITING only when nothing settles it
 - An answer or a decline that this tab sent (`noteCardAnswered`). The
   redraw shows that answer.
 - A `confirmation_resolved` event.
-- For a question, a later run event that proves the run moved on. A run
-  that waits on its question sends nothing until it has an answer.
+- For a question, later model output: a text delta, a text message start,
+  reasoning or `done`. The tools of one model turn run at the same time, so
+  a parallel tool or delegation streams while the question waits. Its
+  `tool_*` and `sub_agent_*` events never settle the question. When in
+  doubt, the card redraws as waiting. A stale waiting card costs one
+  harmless 4xx. A hidden one blocks the run.
 - A real list of pending asks from the server that does not hold the card
   (`cardsToSettle`). A failed read settles nothing.
 
