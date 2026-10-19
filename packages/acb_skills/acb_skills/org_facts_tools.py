@@ -19,6 +19,7 @@ Fences: ``tests/unit/test_org_facts.py`` and ``tests/unit/test_org_facts_r8.py``
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from acb_common.paging import paged
@@ -45,13 +46,55 @@ BLOCK_MARKER = "## CRM facts"
 #: The persona's rule 1 sends a company question to ``search_company`` first,
 #: and that search finds documents. A WhatsApp member asked for the IP billing
 #: of a circle, got "the company records hold nothing", and the CRM had it.
+#: The words are general (WS-47 follow-up): "circles" and "sites" are one
+#: org's words. Each org's own module names follow, from its catalogue
+#: (:func:`crm_routing_line`).
 CRM_ROUTING_LINE = (
     "Business figures live in the CRM: billing, invoices, collections, payments, "
-    "circles, sites, revenue and amounts. Read them with the CRM tools: "
+    "revenue and amounts. Read them with the CRM tools: "
     "crm_list_modules, then crm_aggregate for a total. search_company finds "
     "documents, not CRM records, so an empty search never means that the CRM "
     "holds nothing."
 )
+
+#: The most module names that the routing line names, and the longest name.
+ROUTING_MODULES = 8
+ROUTING_NAME_CHARS = 40
+
+#: The meaning of a purpose fact (``gateway/routes/crm/facts.entry_facts``):
+#: "<module label> holds <purpose> records."
+_PURPOSE_MEANING = re.compile(r"^(?P<label>.+?) holds .+ records\.$")
+
+
+def _module_names(rows: list[Any]) -> list[str]:
+    """The org's own CRM module names, from the purpose facts of its
+    catalogue, in the gateway's order, each once. A name is cut to one line
+    of :data:`ROUTING_NAME_CHARS` characters."""
+    names: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("key") != "purpose":
+            continue
+        found = _PURPOSE_MEANING.match(str(row.get("meaning") or ""))
+        if found is None:
+            continue
+        # One label cut to its length, a text and not a list of rows.
+        label = " ".join(found.group("label").split())
+        name = f"{label[:ROUTING_NAME_CHARS]}"
+        if name and name not in names:
+            names.append(name)
+        if len(names) >= ROUTING_MODULES:
+            break
+    return names
+
+
+def crm_routing_line(rows: list[Any]) -> str:
+    """:data:`CRM_ROUTING_LINE`, then this org's own module names, on ONE
+    line, so each org reads its own words: "Its CRM modules: Invoices,
+    Circles." With no purpose fact, the general line alone."""
+    names = _module_names(rows)
+    if not names:
+        return CRM_ROUTING_LINE
+    return f"{CRM_ROUTING_LINE} Its CRM modules: {', '.join(names)}."
 
 #: The keys of a fact that the block keeps: the business rules (CRM-Q33),
 #: the key parts of a money module, the meaning of revenue, the org's own
@@ -105,7 +148,7 @@ def crm_facts_block(rows: list[Any]) -> str:
     if len(kept) > room:
         room -= 1  # one line names the rest
     lines = [f"{BLOCK_MARKER} (fixed answers of this organization; use them as given)",
-             CRM_ROUTING_LINE]
+             crm_routing_line(rows)]
     lines.extend(f"- {r['meaning']}" for i, r in enumerate(kept) if i < room)
     if len(kept) > room:
         lines.append(f"- {len(kept) - room} more facts: call org_facts to read them.")
@@ -149,5 +192,6 @@ __all__ = [
     "crm_facts_block",
     "crm_facts_block_for_run",
     "crm_facts_for_run",
+    "crm_routing_line",
     "org_facts",
 ]

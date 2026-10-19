@@ -235,6 +235,15 @@ def bot(granted, monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(factory, "build_provider", lambda _n, _c: _Provider())
 
+    # WS-47 WAC-P2: no Mem0 or graph store here. The memory pre-read has its
+    # own fences (test_wac_channel_parity.py), so it reads nothing.
+    import gateway.memory_preread as memory_preread
+
+    async def _no_memory(**_kw: Any) -> str:
+        return ""
+
+    monkeypatch.setattr(memory_preread, "memory_preread", _no_memory)
+
     eng = create_engine(granted.app_url, poolclass=NullPool, future=True)
     graph_factory = sessionmaker(bind=eng, expire_on_commit=False, future=True)
     monkeypatch.setattr(graph_db, "_session_factory", lambda: graph_factory)

@@ -1711,8 +1711,11 @@ async def list_agents(
 
 
 def _registry_orgs() -> frozenset[str]:
-    raw = str(get_settings().agent_registry_orgs or "")
-    return frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
+    # The one parse of AGENT_REGISTRY_ORGS. The chat push gate of the executor
+    # reads the same rule (``acb_auth.agent_operator``).
+    from acb_auth.agent_operator import registry_operator_orgs  # noqa: PLC0415
+
+    return registry_operator_orgs(str(get_settings().agent_registry_orgs or ""))
 
 
 async def _require_registry_operator(
@@ -1760,22 +1763,19 @@ async def _require_mutation_reviewer(
     so the registry check alone locked out everyone who can see a row.
 
     The org comes from the server-side ``UserContext``, never from the request.
-    ``first_party`` comes from ``_read_first_party``, the one read of that flag.
     A missing org, a missing row or a failed read is a 403 (fail closed).
-    """
-    org = str(user.organization_id or "").strip()
-    if org:
-        allowed = _registry_orgs()
-        if "*" in allowed or org.lower() in allowed:
-            return
-        try:
-            from orchestrator.mutation import _read_first_party  # noqa: PLC0415
 
-            # Never call it with no org: it then answers for a sole org.
-            if await _read_first_party(org) is True:
-                return
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("mutation.reviewer_check_failed", error=str(exc)[:200])
+    The rule itself is ``acb_auth.agent_operator.may_review_agent_commits``,
+    the ONE implementation, with the one read of ``first_party``. The chat push
+    gate of the executor calls it too, so the queue and a push from chat cannot
+    drift. It never reads ``first_party`` for an empty org, which would answer
+    for a sole org. Fences: ``tests/unit/test_mutation_queue_operator_only.py``
+    and ``tests/unit/test_chat_autopush_reviewer_gate.py``.
+    """
+    from acb_auth.agent_operator import may_review_agent_commits  # noqa: PLC0415
+
+    if await may_review_agent_commits(user.organization_id, user.has_permission):
+        return
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN, detail=_MUTATION_REVIEWER_DENIED,
     )
@@ -2941,103 +2941,29 @@ async def run_agent_stream_endpoint(
     # — otherwise Mem0's per-query semantic search returns a different block
     # every turn and defeats cross-turn prompt caching on the memory portion.
     _mem_thread_id = req.thread_id or f"{agent_name}:{run_id}"
-    try:
-        from acb_memory import (  # noqa: PLC0415
-            get_memory_context,
-            get_scoped_context,
-            get_session_memory,
-            scope_key,
-            search_entity_timeline,
+    # WS-47 WAC-P2: ONE builder of the block, which the WhatsApp run calls too.
+    from gateway.memory_preread import memory_preread  # noqa: PLC0415
+
+    user_msg = (
+        req.payload.get("message")
+        or req.payload.get("user_query")
+        or ""
+    )
+    memory_context = await memory_preread(
+        user_id=user_id,
+        agent_name=agent_name,
+        thread_id=_mem_thread_id,
+        message=str(user_msg),
+        shared=_room_is_shared,
+        clearance=_clearance,
+    )
+    if memory_context:
+        req.payload["memory_context"] = memory_context
+        _log.debug(
+            "agent.memory_enriched",
+            agent=agent_name,
+            user=user_id[:20],
         )
-        user_msg = (
-            req.payload.get("message")
-            or req.payload.get("user_query")
-            or ""
-        )
-        # Agent + org memory are NOT user-scoped, so they load even for an
-        # anonymous user; the per-user Mem0/Graphiti blocks stay gated on a
-        # real user_id.
-        if user_msg:
-            _has_user = user_id != "anonymous" and not _room_is_shared
-
-            async def _build_memory_block() -> str:
-                parts: list[str] = []
-                # Mem0: this user's private episodic facts. Never in a room —
-                # not the owner's, not the typer's. The scope key is simply not
-                # passed, so there is no retrieval to leak (memory-clearance.md
-                # §3.3: a boundary, not a request in a system prompt).
-                if _has_user:
-                    mem_ctx = await get_memory_context(user_id, user_msg)
-                    if mem_ctx:
-                        parts.append("## Memory from past conversations\n" + mem_ctx)
-                # What this room has established. Replaces the personal
-                # compartment rather than adding to it: shared work is
-                # remembered where everyone in the room can see it.
-                if _clearance.room:
-                    room_ctx = await get_scoped_context(
-                        _clearance.room, user_msg, header="Room memory",
-                    )
-                    if room_ctx:
-                        parts.append(
-                            "## What this room has established\n" + room_ctx
-                        )
-                # How the person being answered likes to work. Safe to carry
-                # into a room: they are in it, and preferences describe them
-                # rather than disclosing what they told the agent in private.
-                if _clearance.prefs:
-                    prefs_ctx = await get_scoped_context(
-                        _clearance.prefs, user_msg, header="Preferences",
-                    )
-                    if prefs_ctx:
-                        parts.append("## How to answer this person\n" + prefs_ctx)
-                # Agent memory: shared across every user of this agent
-                agent_ctx = await get_scoped_context(
-                    scope_key(agent=agent_name), user_msg, header="Agent memory"
-                )
-                if agent_ctx:
-                    parts.append("## This agent's shared memory\n" + agent_ctx)
-                # Org memory: organisation-wide, shared by every agent + user
-                org_ctx = await get_scoped_context(
-                    scope_key(org=True), user_msg, header="Organisation memory"
-                )
-                if org_ctx:
-                    parts.append("## Organisation-wide memory\n" + org_ctx)
-                # Graphiti: time-aware facts about entities in the query
-                if _has_user:
-                    graph_ctx = await search_entity_timeline(user_msg[:80], user_msg)
-                    if graph_ctx:
-                        parts.append(
-                            "## Timeline facts from knowledge graph\n" + graph_ctx
-                        )
-                return "\n\n".join(parts)
-
-            _redis = None
-            try:
-                from orchestrator.stream_relay import (  # noqa: PLC0415
-                    _get_client,
-                )
-                _redis = await _get_client()
-            except Exception:  # noqa: BLE001 — no Redis → fetch fresh each turn
-                _redis = None
-
-            memory_context = await get_session_memory(
-                redis=_redis,
-                thread_id=_mem_thread_id,
-                build=_build_memory_block,
-                # Without this a thread cached while solo would keep serving
-                # the owner's private block to the room for the rest of the
-                # TTL, undoing the read rule above.
-                clearance=_clearance.fingerprint,
-            )
-            if memory_context:
-                req.payload["memory_context"] = memory_context
-                _log.debug(
-                    "agent.memory_enriched",
-                    agent=agent_name,
-                    user=user_id[:20],
-                )
-    except ImportError:
-        pass
 
     # ── Memory extraction: save conversation facts after the run completes ──
     # NOTE: Mem0 episodic extraction is handled by the Next.js route
