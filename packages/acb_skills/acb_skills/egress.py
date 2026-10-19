@@ -441,7 +441,13 @@ def read_untrusted_answer(ctx: Mapping[str, Any] | None = None) -> bool:
 
 #: The fields that a member always sees in full: the recipients and the
 #: subject, in this order, at any depth of the arguments.
-CALL_KEY_FIELDS: tuple[str, ...] = ("to", "cc", "bcc", "reply_to", "subject")
+#: A destination of another egress tool counts too (review round 2): a URL,
+#: a phone or a channel that sorted after a long body hid the place the call
+#: goes to, for example a ``fetch_page`` URL with a padded login part.
+CALL_KEY_FIELDS: tuple[str, ...] = (
+    "to", "cc", "bcc", "reply_to", "recipients", "email", "phone",
+    "participants", "channel", "url", "uri", "endpoint", "webhook_url", "subject",
+)
 #: The fields that hold attachments. Each one shows by its name.
 CALL_ATTACHMENT_FIELDS: tuple[str, ...] = ("attachments", "attachment", "files")
 #: The most characters of the other arguments (the body) that the view shows.
@@ -456,6 +462,29 @@ def _shown(value: Any) -> str:
     import json
 
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _with_host(text: str) -> str:
+    """*text*, with the host it calls first when it is a URL. A login part
+    (``user@``) can pad a URL so that a cut view hides the real host."""
+    if "://" not in text:
+        return text
+    from urllib.parse import urlsplit
+
+    try:
+        host = urlsplit(text.strip()).hostname
+    except ValueError:
+        host = None
+    return f"[host: {host or 'unknown'}] {text}"
+
+
+def _destination(value: Any) -> str:
+    """The text of one key field, with the host of each URL in it first."""
+    if isinstance(value, str):
+        return _with_host(value)
+    if isinstance(value, list | tuple) and all(isinstance(v, str) for v in value):
+        return ", ".join(_with_host(v) for v in value)
+    return _shown(value)
 
 
 def _attachment_names(value: Any) -> list[str]:
@@ -485,7 +514,7 @@ def _split_call(value: Any, path: str, depth: int,
         where = f"{path}.{name}" if path else str(name)
         low = str(name).lower()
         if low in CALL_KEY_FIELDS:
-            keys.append((where, _shown(inner)))
+            keys.append((where, _destination(inner)))
         elif low in CALL_ATTACHMENT_FIELDS:
             keys.append((where, ", ".join(_attachment_names(inner))))
         elif isinstance(inner, Mapping):

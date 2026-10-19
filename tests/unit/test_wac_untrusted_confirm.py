@@ -407,6 +407,23 @@ def test_the_order_of_the_arguments_never_changes_the_view() -> None:
         "send_email", flipped, 1024)
 
 
+def test_the_host_of_a_padded_url_and_other_destinations_show_first() -> None:
+    """Review round 2: a ``fetch_page`` URL padded with a login part hid the
+    host it calls, and a phone or a webhook sorted after a long body."""
+    from acb_skills.egress import egress_call_view
+
+    padded = "https://app.metorite.com." + "reports." * 30 + "Q3@evil.example/x"
+    view = egress_call_view("fetch_page", {"body": "y" * 900, "url": padded}, 4000) or ""
+    assert "[host: evil.example]" in view
+    assert view.index("evil.example") < view.index("yyy")
+    for name, value in (("phone", "+15550001111"), ("webhook_url", "https://hook.evil.example/a"),
+                        ("recipients", ["a@evil.example"]), ("channel", "#leak")):
+        shown = egress_call_view("send", {"aaa": "z" * 900, name: value}, 1024) or ""
+        needle = "evil.example" if "evil" in str(value) else str(value)
+        assert needle in shown, (name, shown[:120])
+        assert shown.index(needle) < shown.index("zzz")
+
+
 def test_a_nested_recipient_shows_and_one_in_a_list_asks_no_yes() -> None:
     from acb_skills.egress import egress_call_view
 
