@@ -20,4 +20,6 @@ Code that Metorite took from other projects, and the licence of each.
 Each line is `path in this repo` and `path in Docmost`.
 
 <!-- PORTED-FILES-START -->
+- `workbench/control_plane/src/app/knowledge/lib/editor/footnotes.ts` <- `packages/editor-ext/src/lib/footnotes`
+- `workbench/control_plane/src/app/knowledge/lib/editor/tables.ts` <- `apps/client/src/features/editor/components/table/handle/hooks/use-table-clear.ts`
 <!-- PORTED-FILES-END -->
