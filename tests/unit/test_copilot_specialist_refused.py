@@ -305,7 +305,7 @@ def test_the_orchestrator_offers_no_copilot_agent_but_app_builder(monkeypatch) -
 def test_the_allow_list_holds_app_builder_only() -> None:
     """A second name needs an owner call AND a test. This assertion fails the
     moment a name joins without one. Delete app-builder when it is ported."""
-    assert loader.COPILOT_SPECIALIST_ALLOWED == frozenset({"app-builder"})
+    assert frozenset({"app-builder"}) == loader.COPILOT_SPECIALIST_ALLOWED
 
 
 def test_app_builder_passes_the_refusal() -> None:
