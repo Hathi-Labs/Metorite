@@ -64,9 +64,15 @@ def test_a_star_admits_every_organization_but_not_a_missing_one(registry_orgs) -
 
 
 def _gated(route: APIRoute) -> bool:
-    return any(
-        getattr(dep, "call", None) is agent_routes._require_registry_operator
-        for dep in route.dependant.dependencies
+    calls = [getattr(dep, "call", None) for dep in route.dependant.dependencies]
+    if agent_routes._require_registry_operator in calls:
+        return True
+    # The self-mutation queue, and only it, takes its own org check: a
+    # first-party org or a registry org (2026-10-19). Fence:
+    # tests/unit/test_mutation_queue_operator_only.py.
+    return (
+        route.path.startswith("/agent/mutations")
+        and agent_routes._require_mutation_reviewer in calls
     )
 
 
@@ -133,8 +139,9 @@ _NOT_REGISTRY_WRITERS = {
     ("POST", "/agent/respond-input"),
     # ⚠️ The self-mutation review queue WAS listed here until 2026-10-19, as
     # "require_internal_auth, a fixed repo". Every BFF call carries that token,
-    # so any member could approve a push. The queue now carries the operator
-    # gate. Fence: tests/unit/test_mutation_queue_operator_only.py.
+    # so any member could approve a push. The queue now carries
+    # `_require_mutation_reviewer`, which `_gated` accepts for that prefix
+    # only. Fence: tests/unit/test_mutation_queue_operator_only.py.
     # An inbound event that starts a run of a registered agent.
     ("POST", "/agent/webhook/{source}"),
 }

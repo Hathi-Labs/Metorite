@@ -1727,10 +1727,51 @@ async def _require_registry_operator(
         return
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
-        detail=(
-            "Only the platform operator can change the agent registry "
-            "or review its self-mutation commits."
-        ),
+        detail="Only the platform operator can change the agent registry.",
+    )
+
+
+#: The 403 detail of the self-mutation queue, for an org that may not review.
+_MUTATION_REVIEWER_DENIED = (
+    "Only an admin of the first-party organization or of a platform operator "
+    "organization can review the self-mutation commits of an agent."
+)
+
+
+async def _require_mutation_reviewer(
+    user: UserContext = Depends(get_current_user),
+) -> None:
+    """Only a first-party org or an operator org reviews self-mutation commits.
+
+    The org passes when it is ``organization.first_party`` or it is in
+    ``AGENT_REGISTRY_ORGS``. ``require_permission("agents:manage")`` runs
+    first on each route, so the caller is also an owner or an admin.
+
+    Why ``first_party`` and not only the registry list: self-mutation writes
+    ``pending_commit`` rows only for a first-party org (MT-0b,
+    ``orchestrator.mutation._self_mutation_permitted``), and RLS keeps each row
+    in its org. On production the first-party org is not in the registry list,
+    so the registry check alone locked out everyone who can see a row.
+
+    The org comes from the server-side ``UserContext``, never from the request.
+    ``first_party`` comes from ``_read_first_party``, the one read of that flag.
+    A missing org, a missing row or a failed read is a 403 (fail closed).
+    """
+    org = str(user.organization_id or "").strip()
+    if org:
+        allowed = _registry_orgs()
+        if "*" in allowed or org.lower() in allowed:
+            return
+        try:
+            from orchestrator.mutation import _read_first_party  # noqa: PLC0415
+
+            # Never call it with no org: it then answers for a sole org.
+            if await _read_first_party(org) is True:
+                return
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("mutation.reviewer_check_failed", error=str(exc)[:200])
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN, detail=_MUTATION_REVIEWER_DENIED,
     )
 
 
@@ -1744,14 +1785,13 @@ async def _require_registry_operator(
 #: or opens a monorepo PR with the operator's credentials. Reject and remutate
 #: reset the shared clone, and delete removes the row with no trace.
 #:
-#: The queue acts on the deployment-wide clone, as ``/{name}/pull`` does, so it
-#: takes the same two checks: an org admin (``agents:manage``, owner and admin
-#: only, migration 130) of a platform operator org (``AGENT_REGISTRY_ORGS``).
+#: Two checks, in order: an org admin (``agents:manage``, owner and admin only,
+#: migration 130), then an org that may review (``_require_mutation_reviewer``).
 #: The reads take it too, because a diff is the source of a shared agent.
 #: Fence: ``tests/unit/test_mutation_queue_operator_only.py``.
 _MUTATION_QUEUE_GATE = [
     require_permission("agents:manage"),
-    Depends(_require_registry_operator),
+    Depends(_require_mutation_reviewer),
 ]
 
 
