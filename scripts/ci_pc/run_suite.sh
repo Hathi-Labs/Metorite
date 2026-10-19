@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # Run the pr-check suite in the preset `metorite-ci` distro, all jobs at once.
 #
-#   bash scripts/ci_pc/run_suite.sh [--e2e] [--no-e2e]
+#   bash scripts/ci_pc/run_suite.sh [--e2e] [--no-e2e] [--shards N]
+#
+# SHARDS. pr-check splits the unit suite 6 ways, one runner each. This PC can
+# run more at once, so the default here is 12 when the distro has 16 or more
+# cores (6 below that). The split is the same pytest-split by measured time,
+# only finer. Measured 2026-10-20: 6 shards on 8 cores took about 16 minutes
+# each. Each shard is a pod of two Postgres containers and one job, about
+# 2 GB, so 12 shards need about 24 GB of the distro's memory.
 #
 # You do not call this by hand. `scripts/ci_local.sh` (from Windows) sends the
 # commit here, checks it out, and runs this file FROM THAT COMMIT.
@@ -24,20 +31,23 @@ cd "$(dirname "$0")/../.."
 export PATH="$HOME/.local/bin:$PATH"
 
 E2E=auto
-for a in "$@"; do
-  case "$a" in
-    --e2e) E2E=yes ;;
-    --no-e2e) E2E=no ;;
-    *) echo "unknown option: $a" >&2; exit 2 ;;
+SHARDS=$(( $(nproc) >= 16 ? 12 : 6 ))
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --e2e) E2E=yes; shift ;;
+    --no-e2e) E2E=no; shift ;;
+    --shards) SHARDS="$2"; shift 2 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
+[ "$SHARDS" -ge 1 ] 2>/dev/null || { echo "--shards needs a number" >&2; exit 2; }
 
 SHA="$(git rev-parse --short HEAD)"
 TAG="$(date +%H%M%S)"
 RUN="$HOME/runs/$(date +%Y%m%d-%H%M%S)-$SHA"
 mkdir -p "$RUN"
 T0=$(date +%s)
-echo "local CI for $SHA. Logs: $RUN"
+echo "local CI for $SHA, $SHARDS unit shards. Logs: $RUN"
 
 # ── The job image: rebuilt only when its Dockerfile changes ────────────────
 IMAGE="metorite-ci-job:$(sha256sum scripts/ci_pc/Dockerfile | cut -c1-12)-$(id -u)-$(id -g)"
@@ -91,7 +101,7 @@ job() {
 }
 
 # ── Services, in pods, on the ports pr-check uses ─────────────────────────
-for i in 1 2 3 4 5 6; do
+for i in $(seq 1 "$SHARDS"); do
   pg "ci-cc-$i-$TAG" postgres:16 5433 cc cc cc_platform || exit 1
   pg "ci-tn-$i-$TAG" pgvector/pgvector:pg16 5434 acb acb acb_tenant "ci-cc-$i-$TAG" || exit 1
 done
@@ -100,8 +110,8 @@ pg "ci-backup-$TAG" postgres:16 5432 postgres rehearsal postgres || exit 1
 
 # ── Jobs ──────────────────────────────────────────────────────────────────
 rm -rf junit
-for i in 1 2 3 4 5 6; do
-  job "shard-$i" "ci-cc-$i-$TAG" test --ctx matrix.shard=$i
+for i in $(seq 1 "$SHARDS"); do
+  job "shard-$i" "ci-cc-$i-$TAG" test --ctx matrix.shard=$i "--replace=--splits 6=>--splits $SHARDS"
 done
 job lint "" lint
 job migrations "ci-ladder-$TAG" migrations
@@ -128,7 +138,7 @@ wait
 
 # The guard reads every shard's junit, so it runs after them.
 shards_ok=success
-for i in 1 2 3 4 5 6; do [ "$(cut -d' ' -f1 "$RUN/shard-$i.rc")" = 0 ] || shards_ok=failure; done
+for i in $(seq 1 "$SHARDS"); do [ "$(cut -d' ' -f1 "$RUN/shard-$i.rc")" = 0 ] || shards_ok=failure; done
 job unit-tests "" unit-tests --ctx "needs.test.result=$shards_ok"
 wait
 
