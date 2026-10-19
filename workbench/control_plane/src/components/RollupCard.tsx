@@ -220,7 +220,8 @@ function RollupCardIn({
   // the tree when `clamp` is set, and only its style changes: a swap of
   // element types remounted the card's body, so a sandbox reloaded and a
   // table lost its sort (review of #1160). The measure is the wrapper's
-  // unclipped `scrollHeight`, and a cut stays until "Show all".
+  // unclipped `scrollHeight`. A cut ends on "Show all", or when the content
+  // shrinks to `UNCUT_PX` (`clampShows` has the rule and its gap).
   const [all, setAll] = useState(false);
   const [cut, setCut] = useState(false);
   const clampRef = useRef<HTMLDivElement>(null);

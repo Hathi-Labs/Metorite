@@ -21,7 +21,7 @@ import { describe, expect, it } from "vitest";
 
 import RollupCard, { RollupContext } from "@/components/RollupCard";
 import { TEMPLATE_CATALOG, TEMPLATE_REGISTRY } from "@/components/genUITemplates";
-import { CLAMP_PX, RollupRegistry, clampShows, rollupOpen } from "@/lib/cardRollup";
+import { CLAMP_PX, RollupRegistry, UNCUT_PX, clampShows, rollupOpen } from "@/lib/cardRollup";
 import {
   ASK_TEMPLATES,
   CARD_FAMILIES,
@@ -117,8 +117,19 @@ describe("rule 2 — a result card sits at its place in the text, folds, and nev
     // The cut body measures exactly the cap, or less with the padding left out.
     expect(clampShows({ ...base, wasCut: true, naturalPx: CLAMP_PX })).toBe(true);
     expect(clampShows({ ...base, wasCut: true, naturalPx: CLAMP_PX - 6 })).toBe(true);
-    // Only "Show all" uncuts it.
+    // "Show all" uncuts it.
     expect(clampShows({ ...base, wasCut: true, naturalPx: CLAMP_PX + 200, all: true })).toBe(false);
+  });
+
+  it("uncuts when the content shrinks under the fade, and only then, so it cannot loop", () => {
+    const base = { clamp: true, pending: false, all: false, wasCut: true };
+    expect(clampShows({ ...base, naturalPx: UNCUT_PX + 1 })).toBe(true);
+    expect(clampShows({ ...base, naturalPx: UNCUT_PX })).toBe(false);
+    expect(clampShows({ ...base, naturalPx: 120 })).toBe(false);
+    // An uncut body at that height does not cut again.
+    expect(clampShows({ ...base, wasCut: false, naturalPx: UNCUT_PX })).toBe(false);
+    // A lost measure keeps the cut.
+    expect(clampShows({ ...base, naturalPx: 0 })).toBe(true);
   });
 
   it("keeps one wrapper in the tree, so a cut never remounts the card's body", () => {

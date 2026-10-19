@@ -108,12 +108,24 @@ export function showRollupToggle({
 export const CLAMP_PX = 480;
 
 /**
- * Is the card cut? Only a result card (`clamp`) that waits on nobody, and
- * only until the member presses "Show all". A cut STAYS: the cut body
- * measures at the cap, and a rule that uncut it then grew it again, cut it
- * again, and looped at frame rate (review of #1160). So the first measure
- * over {@link CLAMP_PX} cuts, and only "Show all" uncuts. `naturalPx` is the
- * unclipped height (`scrollHeight`). A height of 0 is "not measured".
+ * A cut card uncuts by itself only when its content is this short: 48 px
+ * under {@link CLAMP_PX}, the height of the fade. The gap keeps a body near
+ * the cap from cutting and uncutting in turn.
+ */
+export const UNCUT_PX = CLAMP_PX - 48;
+
+/**
+ * Is the card cut? Only a result card (`clamp`) that waits on nobody.
+ * `naturalPx` is the unclipped height (`scrollHeight`), and 0 is "not
+ * measured".
+ *
+ * - The first measure over {@link CLAMP_PX} cuts.
+ * - A cut stays while the content is taller than {@link UNCUT_PX}. The
+ *   first rule uncut a body that measured at the cap, and it then grew,
+ *   cut and uncut at frame rate (review of #1160).
+ * - A cut ends when the content shrinks to {@link UNCUT_PX} or less, so a
+ *   fade and "Show all" never sit over a card with nothing hidden.
+ * - "Show all" ends it for good.
  */
 export function clampShows({ clamp, pending, all, wasCut, naturalPx }: {
   clamp: boolean;
@@ -123,7 +135,8 @@ export function clampShows({ clamp, pending, all, wasCut, naturalPx }: {
   naturalPx: number;
 }): boolean {
   if (!clamp || pending || all) return false;
-  return wasCut || naturalPx > CLAMP_PX;
+  if (wasCut) return naturalPx === 0 || naturalPx > UNCUT_PX;
+  return naturalPx > CLAMP_PX;
 }
 
 // ── The member's choices, for the page's life ──────────────────────────────

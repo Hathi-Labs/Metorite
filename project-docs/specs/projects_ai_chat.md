@@ -6483,7 +6483,9 @@ member can close it.
    list's order, under their phases. A mark is a small marker at the bar's
    end, and only when some rows have no mark. The height grows with the rows
    and never goes past 96 px, so a long plan gets thinner rows. A hover names
-   the task and its dates. The strip hides with fewer than three dated rows,
+   the task and its dates. A plan with more than 32 dated rows draws no
+   strip, because its rows would be thinner than 3 px. The strip also hides
+   with fewer than three dated rows,
    or when every bar has the same days. The list stays the source of truth,
    so the strip is `aria-hidden`.
 2. **"Under X." when X is the plan itself.** The line was true. The model
@@ -6491,8 +6493,10 @@ member can close it.
    `propose_plan` always makes a NEW project. So the batch made a second
    project of that name inside the first, with every task in it. Now
    `propose_plan` refuses a plan named like its parent (`_plan_fills_parent`,
-   through the shared refusal seam). The refusal names the tool that adds
-   tasks to a project that exists: `create_tasks` with its `full_id`. W1 of
+   through the shared refusal seam). A folder of that name is a fair parent,
+   so only a project parent refuses. The refusal names the tool that adds
+   tasks to a project that exists: `create_tasks` with its `full_id`. It
+   also maps the keys, and it names `link_tasks_batch` for the links. W1 of
    the agent instructions says the same.
 3. **The answered card.** A card that waited folds to one line once it has
    its answer (`lib/askOutcome.ts`). The line says what happened, for
@@ -6529,8 +6533,9 @@ Each template in `TEMPLATE_CATALOG` names its family.
 2. **A result card** (a table, a board, a chart, a report, a timeline)
    appears at its place in the text. It folds, and it never closes, because
    it is the record of the answer. A body taller than 480 px opens cut, with
-   "Show all" (`clampShows`). A cut stays until the member presses "Show
-   all", and the cut never remounts the body of the card.
+   "Show all" (`clampShows`). The cut ends when the member presses "Show
+   all", or when the content shrinks to 432 px or less. The cut never
+   remounts the body of the card.
 3. **A receipt** (a write that happened) is a compact line after the text of
    the reply. It opens for detail.
 4. **A notice** is a slim line that the member dismisses (#1121).
