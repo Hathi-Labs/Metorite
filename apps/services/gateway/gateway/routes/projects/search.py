@@ -173,8 +173,8 @@ SELECT t.id, t.title, t.task_number, t.project_id, t.status_id, t.due_at,
  LIMIT :cap
 )
 SELECT h.id, h.title, h.task_number, h.project_id, h.status_id, h.due_at,
-       h.completed_at, h.parent_task_id, h.project_name, h.status_name,
-       h.category, h.rank,
+       h.completed_at, h.parent_task_id, h.updated_at, h.project_name,
+       h.status_name, h.category, h.rank,
        greatest(n.at - :snippet_lead, 1) AS snippet_from,
        CASE WHEN n.at IS NOT NULL
             THEN substr(h.description, greatest(n.at - :snippet_lead, 1),
@@ -436,6 +436,9 @@ async def search_tasks(
                 "category": r.category,
                 "due_at": wire(r.due_at),
                 "completed_at": wire(r.completed_at),
+                # WS-61 CX-1: the stamp of company retrieval
+                # (company_context.md §3), the date the task last changed.
+                "updated_at": wire(getattr(r, "updated_at", None)),
                 "rank": int(r.rank),
                 "parent_task_id": (
                     str(r.parent_task_id)

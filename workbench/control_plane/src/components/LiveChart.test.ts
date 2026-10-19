@@ -73,7 +73,8 @@ describe("wac10g-review", () => {
   it("keys the drawn chart by the spec's content, so a streamed token never redraws it", () => {
     expect(src).toMatch(/const specKey = JSON\.stringify\(spec\)/);
     // `maxHeight` is a number, so it keys by value too (report fix round 2).
-    expect(src).toMatch(/\[specKey, width, mode, maxHeight\]/);
+    // `numbering` is a string, the member's number system (§13.10).
+    expect(src).toMatch(/\[specKey, width, mode, maxHeight, numbering\]/);
     expect(src).not.toMatch(/\[spec, /);
   });
   it("sets no px font size: the type scale follows the member's density", () => {

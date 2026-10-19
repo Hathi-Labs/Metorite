@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -136,6 +137,9 @@ class Choice:
     best: bool = False
     records: int | None = None
     modules: tuple[str, ...] = ()
+    #: CRM-Q33 part 5: the words of the evidence of a money field, such as
+    #: ``excludes_gst`` (:data:`EVIDENCE_WORDS`).
+    evidence: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -168,6 +172,9 @@ class Question:
     #: CRM-Q32-9: the fields of the picker of a sum, on an ``amount``
     #: question only (:func:`sum_fields`). Empty when the card offers none.
     sums: tuple[Choice, ...] = ()
+    #: CRM-Q33 part 5: the fields whose sum the business rules point at, on
+    #: an ``amount`` question (:func:`steered`). Empty with no such rule.
+    suggested_sum: tuple[str, ...] = ()
 
     def best(self) -> Choice | None:
         """Jev's best guess, or ``None``."""
@@ -1128,6 +1135,9 @@ def wire(q: Question) -> dict[str, Any]:
         if q.kind == KIND_KEY:
             out["fill"] = c.fill
             out["samples"] = list(c.samples)
+            if c.evidence:
+                # CRM-Q33 part 5: "Includes GST", "Excludes GST", "After TDS".
+                out["evidence"] = evidence_labels(c.evidence)
         if q.kind == KIND_SLOT:
             out["records"] = c.records
             out["samples"] = list(c.samples)
@@ -1150,8 +1160,284 @@ def wire(q: Question) -> dict[str, Any]:
         body["slot"] = q.slot
     if q.other:
         body["options"] = [{"value": c.value, "label": c.label, **(
-            {"fill": c.fill} if q.kind == KIND_KEY else {})} for c in q.options]
+            {"fill": c.fill} if q.kind == KIND_KEY else {}), **(
+            {"evidence": evidence_labels(c.evidence)} if c.evidence else {})}
+            for c in q.options]
+    if q.suggested_sum:
+        body["suggested_sum"] = list(q.suggested_sum)
     return body
+
+
+# ── Answer first, clarify over time (CRM-Q33, §18.15) ───────────────────────
+#
+# Owner direction, 2026-10-18. A total that depends on an open question never
+# blocks: the chat answers with the AI's best assumption, says how it got the
+# number, and asks ONE natural question after it. The pieces below are pure:
+# the evidence of GST and TDS of each money field (part 5), what a business
+# rule says (part 3), and the assumption of an answer (part 1). The route
+# reads the counts in SQL (``field_sql.gst_check``) and calls them.
+
+#: The evidence words of a money field, and what a card shows for each.
+GST_INCLUDES = "includes_gst"
+GST_EXCLUDES = "excludes_gst"
+TDS_AFTER = "after_tds"
+GST_ONLY = "gst_amount"
+EVIDENCE_WORDS: Mapping[str, str] = {
+    GST_INCLUDES: "Includes GST", GST_EXCLUDES: "Excludes GST", TDS_AFTER: "After TDS",
+    GST_ONLY: "The GST alone",
+}
+
+#: The rate that a field with GST holds over its basic field (18%).
+GST_RATE = 1.18
+#: The share of the records that set both fields, on which a relation must
+#: hold to count, and the fewest such records.
+EVIDENCE_SHARE = 0.9
+EVIDENCE_MIN_ROWS = 5
+#: The most money fields that one check reads, and the most GST and TDS
+#: fields beside them. One statement holds at most 6 x 5 x 3 x 4 relations.
+EVIDENCE_FIELDS = 6
+SIBLING_FIELDS = 3
+
+_GST_WORD = re.compile(r"\bgst\b", re.IGNORECASE)
+_WITH_GST = re.compile(r"\+\s*gst|\bincl\w*\.?\s+(of\s+)?gst|\bwith\s+gst", re.IGNORECASE)
+_BASIC_WORD = re.compile(r"\bbasic\b", re.IGNORECASE)
+_NET_WORD = re.compile(r"\bnet\b", re.IGNORECASE)
+_TDS_WORD = re.compile(r"\btds\b", re.IGNORECASE)
+
+#: The words of a business rule that asks for amounts net of GST.
+_NET_OF_GST = re.compile(
+    r"\b(net|exclusive|excluding|exclude|excludes|ex)\s+(of\s+)?gst\b"
+    r"|\bwithout\s+gst\b|\bbefore\s+gst\b|\bgst\s+(excluded|exclusive)\b",
+    re.IGNORECASE,
+)
+
+
+def evidence_labels(words: Sequence[str]) -> list[str]:
+    """What a card shows for *words*, in a fixed order."""
+    return [EVIDENCE_WORDS[w] for w in EVIDENCE_WORDS if w in words]
+
+
+def net_of_gst_rule(rules: Sequence[str]) -> str | None:
+    """The first rule of *rules* that asks for amounts net of GST, or None."""
+    return next((r for r in rules if _NET_OF_GST.search(str(r or ""))), None)
+
+
+def _money_fields(src: Any) -> list[Any]:
+    return [f for f in getattr(src, "fields", ()) if f.type in cat.PART_TYPES[cat.SUM_PART]
+            and f.type != "percent"]
+
+
+def gst_siblings(src: Any) -> tuple[list[Any], list[Any]]:
+    """The fields of *src* that hold the GST alone, and the fields of TDS,
+    by their labels, the most filled first, at most :data:`SIBLING_FIELDS`
+    of each. "IP GST" holds the GST alone. "IP (Basic + GST)" holds an
+    amount with GST, so it is no sibling."""
+    def by_fill(f: Any) -> tuple[float, str]:
+        return (-(_fill(src, f.key) or 0.0), f.key)
+
+    money = _money_fields(src)
+    gst = sorted((f for f in money if _GST_WORD.search(f.label) and not _WITH_GST.search(f.label)
+                  and not _BASIC_WORD.search(f.label)), key=by_fill)
+    tds = sorted((f for f in money if _TDS_WORD.search(f.label)), key=by_fill)
+    return gst[:SIBLING_FIELDS], tds[:SIBLING_FIELDS]
+
+
+def evidence_candidates(src: Any) -> list[Any]:
+    """The money fields whose evidence one check reads: each currency or
+    number field that is no GST or TDS sibling, the most filled first, at
+    most :data:`EVIDENCE_FIELDS`."""
+    gst, tds = gst_siblings(src)
+    taken = {f.key for f in (*gst, *tds)}
+    found = [f for f in _money_fields(src) if f.key not in taken and (_fill(src, f.key) or 0) > 0]
+    found.sort(key=lambda f: (-(_fill(src, f.key) or 0.0), f.key))
+    return found[:EVIDENCE_FIELDS]
+
+
+@dataclass(frozen=True)
+class Relation:
+    """One relation that the check counts. ``ratio``: ``field`` is ``basic``
+    times :data:`GST_RATE`. ``sum``: ``field`` is ``basic`` plus ``gst``,
+    less ``tds`` when it is set."""
+
+    kind: str
+    field: str
+    basic: str
+    gst: str | None = None
+    tds: str | None = None
+
+
+def relations(cands: Sequence[Any], gst: Sequence[Any], tds: Sequence[Any]) -> list[Relation]:
+    """Each relation of one check, in a fixed order, so the SQL and the
+    reading agree on each index."""
+    keys = [f.key for f in cands]
+    out: list[Relation] = []
+    for f in keys:
+        for b in keys:
+            if b == f:
+                continue
+            out.append(Relation("ratio", f, b))
+            for g in gst:
+                out.append(Relation("sum", f, b, g.key))
+                for t in tds:
+                    out.append(Relation("sum", f, b, g.key, t.key))
+    return out
+
+
+@dataclass(frozen=True)
+class RelationCount:
+    """What the check counted for one relation: the records where it can
+    hold (``rows``), the records where it holds (``held``), and for a sum
+    with TDS, the held records whose TDS is not 0 (``tds_rows``)."""
+
+    rows: int
+    held: int
+    tds_rows: int = 0
+
+
+def _holds(c: RelationCount) -> bool:
+    return c.rows >= EVIDENCE_MIN_ROWS and c.held >= EVIDENCE_SHARE * c.rows
+
+
+def label_evidence(label: str) -> tuple[str, ...]:
+    """The evidence that a label alone gives: "+ GST" includes GST, "Basic"
+    excludes it, "Net" is after TDS, and a label of the GST alone."""
+    out: list[str] = []
+    if _WITH_GST.search(label):
+        out.append(GST_INCLUDES)
+    elif _BASIC_WORD.search(label):
+        out.append(GST_EXCLUDES)
+    elif _GST_WORD.search(label):
+        out.append(GST_ONLY)
+    if _NET_WORD.search(label) and GST_ONLY not in out:
+        out.append(TDS_AFTER)
+    return tuple(out)
+
+
+def money_evidence(src: Any, rels: Sequence[Relation],
+                   counts: Sequence[RelationCount]) -> dict[str, tuple[str, ...]]:
+    """The evidence of each money field of *src*: the arithmetic of
+    :func:`relations` first, then the words of its label (CRM-Q33 part 5).
+
+    A field that is its basic times 1.18, or its basic plus a GST field, on
+    90% or more of the records that set both, includes GST, and that basic
+    excludes it. A sum that holds with a TDS field that is not 0 is after
+    TDS. A field with no arithmetic takes the words of its label."""
+    found: dict[str, set[str]] = {}
+    for rel, count in zip(rels, counts, strict=False):
+        if not _holds(count):
+            continue
+        found.setdefault(rel.field, set()).add(GST_INCLUDES)
+        found.setdefault(rel.basic, set()).add(GST_EXCLUDES)
+        if rel.tds is not None and count.tds_rows > 0:
+            found[rel.field].add(TDS_AFTER)
+    out: dict[str, tuple[str, ...]] = {}
+    for f in _money_fields(src):
+        words = found.get(f.key)
+        if words and GST_INCLUDES in words:
+            words.discard(GST_EXCLUDES)
+        if not words:
+            words = set(label_evidence(f.label))
+        elif _NET_WORD.search(f.label) and GST_INCLUDES in words:
+            # "Rent Net Amount" holds GST and is net of a deduction.
+            words.add(TDS_AFTER)
+        if words:
+            out[f.key] = tuple(w for w in EVIDENCE_WORDS if w in words)
+    return out
+
+
+def steered(q: Question, src: Any, evidence: Mapping[str, Sequence[str]],
+            rule: str | None, inputs: Inputs | None = None) -> Question:
+    """*q* with the evidence on each money choice and option (CRM-Q33 part
+    5). With a rule that asks for amounts net of GST, the fields that
+    exclude GST come first, the first of them is the recommendation, and
+    no field with GST stays on the short list. When two or more of them
+    each fill :data:`SUM_FILL_FLOOR` and none fills 90%, their sum is the
+    suggestion: DEWiN's Collection splits each payment into parts."""
+    if q.kind != KIND_KEY or q.part != cat.SUM_PART or src is None:
+        return q
+
+    def ev(c: Choice) -> Choice:
+        return replace(c, evidence=tuple(evidence.get(c.value, ())))
+
+    choices = [ev(c) for c in q.choices]
+    options = tuple(ev(c) for c in q.options)
+    suggested: tuple[str, ...] = ()
+    if rule is not None:
+        ex = [f for f in part_fields(src, cat.SUM_PART)
+              if GST_EXCLUDES in evidence.get(f.key, ()) and (_fill(src, f.key) or 0) > 0]
+        ex.sort(key=lambda f: (-(_fill(src, f.key) or 0.0), f.key))
+        if ex:
+            shown = inputs or Inputs(entries=(), sources={})
+            lead = [ev(_field_choice(shown, src, f)) for f in ex]
+            lead = [next((c for c in choices if c.value == x.value), x) for x in lead]
+            keys = {c.value for c in lead}
+            rest = [c for c in choices if c.value not in keys
+                    and GST_INCLUDES not in c.evidence and GST_ONLY not in c.evidence]
+            # Each field that excludes GST joins the short list, so the card
+            # offers all of them (the DEWiN case has three).
+            picked = [*lead, *rest][:max(CHOICE_LIMIT, len(lead))][:cat.SUM_MAX]
+            choices = [replace(c, best=(i == 0)) for i, c in enumerate(picked)]
+            wide = [f for f in ex if (_fill(src, f.key) or 0) >= SUM_FILL_FLOOR]
+            if (len(wide) >= cat.SUM_MIN
+                    and not any((_fill(src, f.key) or 0) >= EVIDENCE_SHARE for f in wide)
+                    and all(f.type in cat.SUM_TYPES for f in wide)):
+                suggested = tuple(f.key for f in wide[:cat.SUM_MAX])
+    return replace(q, choices=tuple(choices), options=options, suggested_sum=suggested)
+
+
+def _lower_first(word: str) -> str:
+    """*word* with its first letter in lower case: "Excludes GST" reads
+    "excludes GST" inside a sentence, and GST keeps its capitals."""
+    return word[:1].lower() + word[1:]
+
+
+def _how(label: str, words: Sequence[str]) -> str:
+    shown = [_lower_first(EVIDENCE_WORDS[w]) for w in EVIDENCE_WORDS if w in words]
+    return f"{label} ({', '.join(shown)})" if shown else label
+
+
+def assumption_of(q: Question, rule: str | None,
+                  evidence: Mapping[str, Sequence[str]] | None = None,
+                  before: Question | None = None) -> dict[str, Any] | None:
+    """The best assumption of an answer that depends on the open question
+    *q* (CRM-Q33 part 1), or None when the question has no field to use.
+
+    The order: the sum that a business rule points at, the recommended
+    choice, then the most filled choice. The alternative is the AI's own
+    recommendation of *before* (the question before a rule moved it), else
+    the first other choice, for one more total when it is cheap. Each label
+    carries its evidence, so the chat says what the number includes.
+    ``fields`` are real field keys, which the aggregate reads as one field
+    or as one sum."""
+    ev = evidence or {}
+    if q.kind == KIND_REVENUE:
+        return {"fields": [], "value": cat.DEFAULT_REVENUE, "label": "billed revenue",
+                "how": "the amounts that you billed",
+                "why": "revenue means what you billed, the default", "alternative": None}
+    if q.kind != KIND_KEY or not q.choices:
+        return None
+    earlier = before.choices if before is not None else ()
+    labels = {c.value: c.label for c in (*earlier, *q.choices, *q.options)}
+    best = q.best()
+    if q.suggested_sum:
+        fields = list(q.suggested_sum)
+        why = f'the business rule "{rule}"' if rule else "the fields that exclude GST"
+    elif best is not None:
+        fields = [best.value]
+        why = (f'the business rule "{rule}"' if rule
+               else "the field that the AI found most likely")
+    else:
+        fields = [q.choices[0].value]
+        why = "the field with the most values"
+    how = " + ".join(_how(labels.get(k, k), ev.get(k, ())) for k in fields)
+    label = names([labels.get(k, k) for k in fields])
+    ai_best = before.best() if before is not None else None
+    alt = (ai_best if ai_best is not None and ai_best.value not in fields
+           else next((c for c in q.choices if c.value not in fields), None))
+    alternative = ({"field": alt.value, "label": alt.label,
+                    "how": _how(alt.label, ev.get(alt.value, ()))} if alt is not None else None)
+    return {"fields": fields, "label": label, "how": how, "why": why,
+            "alternative": alternative}
 
 
 __all__ = [
@@ -1161,6 +1447,10 @@ __all__ = [
     "CHAT_KINDS",
     "CHOICE_LIMIT",
     "DEFAULT_KEY",
+    "EVIDENCE_WORDS",
+    "GST_EXCLUDES",
+    "GST_INCLUDES",
+    "GST_ONLY",
     "KINDS",
     "KIND_KEY",
     "KIND_PURPOSE",
@@ -1178,9 +1468,12 @@ __all__ = [
     "SUM_CHOICES",
     "SUM_EQUAL_SHARE",
     "SUM_FILL_FLOOR",
+    "TDS_AFTER",
     "Choice",
     "Inputs",
     "Question",
+    "Relation",
+    "RelationCount",
     "SlotState",
     "StageState",
     "SumReport",
@@ -1191,6 +1484,7 @@ __all__ = [
     "article",
     "ask_header",
     "ask_sentence",
+    "assumption_of",
     "batch_joins",
     "build",
     "candidates",
@@ -1200,12 +1494,18 @@ __all__ = [
     "dismissed",
     "dismissed_of",
     "equals_current",
+    "evidence_candidates",
+    "evidence_labels",
+    "gst_siblings",
     "key_id",
+    "label_evidence",
     "live_proposals",
     "module_hash",
     "module_questions",
+    "money_evidence",
     "my_proposal",
     "names",
+    "net_of_gst_rule",
     "open_count",
     "options_hash",
     "override_of",
@@ -1215,6 +1515,7 @@ __all__ = [
     "proposals_of",
     "purpose_id",
     "rank",
+    "relations",
     "revenue_basis",
     "revenue_question",
     "sampled_modules",
@@ -1225,6 +1526,7 @@ __all__ = [
     "slots_hash",
     "stage_for",
     "stage_id",
+    "steered",
     "step_state",
     "sum_choice",
     "sum_fields",

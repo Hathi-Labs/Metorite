@@ -12,6 +12,8 @@
  *   2. The rail of `RailRow`s: Search, Spaces, each space, and the open
  *      space's page tree (`components/KnowledgeRail.tsx`). On a phone it
  *      opens in the shell's drawer from the title, as the CRM's views do.
+ *      A row's `+` and its New sub-page open the one New page form here,
+ *      and its Archive asks here first (KB-2e).
  *   3. The first-open phase, decided by the FIRST `GET /knowledge/spaces` and
  *      by nothing else (`lib/phase.ts`). A 404 is the off state, and a 403
  *      is "no feature". A 404 on one page is never "off".
@@ -32,6 +34,7 @@ import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { SkeletonRows } from "@/components/ui/Skeleton";
+import { useToast } from "@/components/ui/Toast";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { invalidate } from "@/lib/dataCache";
 import { railClass, useRailFold } from "@/lib/railFold";
@@ -44,11 +47,11 @@ import {
   type NewPageAsk,
   type PageFocus,
 } from "./components/KnowledgeContext";
-import KnowledgeRail from "./components/KnowledgeRail";
+import KnowledgeRail, { type SubPageParent } from "./components/KnowledgeRail";
 import NewPageDialog from "./components/NewPageDialog";
-import { KNOWLEDGE_CACHE, SPACES_KEY, listSpaces } from "./lib/api";
-import type { Space } from "./lib/types";
-import { KNOWLEDGE_HOME, KNOWLEDGE_SEARCH, pageHref, pageIdOf } from "./lib/links";
+import { KNOWLEDGE_CACHE, KnowledgeError, SPACES_KEY, archivePage, listSpaces } from "./lib/api";
+import type { PageSummary, Space } from "./lib/types";
+import { KNOWLEDGE_HOME, KNOWLEDGE_SEARCH, pageHref, pageIdOf, spaceHref } from "./lib/links";
 import {
   KNOWLEDGE_OFF_TITLE,
   LOAD_FAILED_BODY,
@@ -169,6 +172,9 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
 
   const [focus, setFocus] = useState<PageFocus | null>(null);
   const [ask, setAsk] = useState<NewPageAsk | null>(null);
+  const [archiving, setArchiving] = useState<PageSummary | null>(null);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const toast = useToast();
 
   const pageId = pageIdOf(pathname);
   const atHomePath = pathname === KNOWLEDGE_HOME;
@@ -211,12 +217,45 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
     [spaces, setPageFocus, openNewPage, setLeaveGuard, leaveGuarded, requestLeave],
   );
 
+  // A row's `+` and New sub-page (KB-2e). The form opens through the guard.
+  const newSubPage = useCallback(
+    (parent: SubPageParent) => requestLeave(() => openNewPage({ parent })),
+    [requestLeave, openNewPage],
+  );
+
+  // A row's Archive, after the member confirms. The gateway asks for manage.
+  const archive = useCallback(async () => {
+    const target = archiving;
+    if (!target) return;
+    setArchiveBusy(true);
+    try {
+      await archivePage(target.id);
+      setArchiving(null);
+      invalidate(KNOWLEDGE_CACHE);
+      toast.show({ key: `kb-archive:${target.id}`, title: `Archived ${target.title}` });
+      // The open page left the tree, so the space opens in its place.
+      if (target.id === pageId) go(spaceHref(target.space_id));
+    } catch (err) {
+      const reason = err instanceof KnowledgeError ? err.message : String(err);
+      setArchiving(null);
+      toast.show({
+        key: `kb-archive:${target.id}`,
+        variant: "error",
+        title: "Could not archive the page",
+        description: reason,
+      });
+    } finally {
+      setArchiveBusy(false);
+    }
+  }, [archiving, go, pageId, toast]);
+
   const railProps = {
     spaces,
     selectedSpaceId,
     selectedPageId: pageId,
     atHome: atHomePath && !spaceParam,
     atSearch,
+    onArchive: setArchiving,
   };
 
   const title = isMobile ? (
@@ -230,6 +269,14 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
               onNavigate={(href) => {
                 closeDrawer();
                 go(href);
+              }}
+              onNewSubPage={(parent) => {
+                closeDrawer();
+                newSubPage(parent);
+              }}
+              onArchive={(page) => {
+                closeDrawer();
+                setArchiving(page);
               }}
             />
           </nav>,
@@ -282,7 +329,7 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
               aria-label="Knowledge spaces"
               className={`w-60 shrink-0 overflow-y-auto border-r border-border bg-card p-2 ${railClass(rail.settled)}`}
             >
-              <KnowledgeRail {...railProps} onNavigate={go} />
+              <KnowledgeRail {...railProps} onNavigate={go} onNewSubPage={newSubPage} />
             </nav>
           ) : null}
           <main className="flex min-w-0 flex-1 flex-col overflow-hidden">{children}</main>
@@ -305,6 +352,20 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
           guard.current = null;
           held?.act();
         }}
+      />
+      <ConfirmDialog
+        open={archiving !== null}
+        title="Archive this page?"
+        subject={archiving?.title ?? null}
+        body="The page leaves the tree for each member. Its sub-pages stay in the space. A manager of the space can restore it."
+        confirmLabel="Archive page"
+        cancelLabel="Keep the page"
+        confirmVariant="destructive"
+        defaultFocus="cancel"
+        icon="Archive"
+        busy={archiveBusy}
+        onCancel={() => setArchiving(null)}
+        onConfirm={() => void archive()}
       />
       <NewPageDialog
         ask={ask}

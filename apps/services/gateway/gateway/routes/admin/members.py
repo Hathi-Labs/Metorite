@@ -717,6 +717,10 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # sign-in bumps a row the Requests tab never renders (it shows `pending`
     # only) — the invisible lockout §6 exists to end.
     _PersonRows("sign_in_requests", "access_request", "lower(email) = :email"),
+    # WS-53 CRM-Q33: the member's own business rules of the CRM. An org rule
+    # stays, and `purge_crm_member` takes the address off it.
+    _PersonRows("crm_member_rules", "crm_business_rules",
+                "scope = 'member' AND lower(member_email) = :email"),
     # The identity itself. LAST.
     _PersonRows("member_record", "app_user", "id = CAST(:uid AS uuid)"),
 )
@@ -885,6 +889,21 @@ async def purge_member(
                        mailboxes=mailboxes)
 
 
+async def purge_crm_member(db: Any, org_id: str, email: str) -> None:
+    """The CRM half of a purge (WS-53 CRM-Q33 fix round 1). The address
+    leaves each org rule (``rules.scrub_member``), and the cursor row of the
+    questions (``questions.purge_member_state``): the member's proposals go,
+    and the record of who set an answer keeps no address. Then the member's
+    CRM keys leave tenant Redis (``questions.forget_member_keys``), best
+    effort. The SQL runs in the caller's transaction."""
+    from gateway.routes.crm import questions as crm_questions
+    from gateway.routes.crm import rules as crm_rules
+
+    await crm_rules.scrub_member(db, str(org_id), email)
+    await crm_questions.purge_member_state(db, str(org_id), email)
+    await crm_questions.forget_member_keys(str(org_id), email)
+
+
 async def purge_member_rows(
     db: Any,
     org_id: str,
@@ -954,6 +973,10 @@ async def purge_member_rows(
         await db.execute(
             text(rows.delete_sql), _purge_params(rows, uid=uid, email=addr)
         )
+
+    # WS-53 CRM-Q33: the member's address in the CRM state that no delete
+    # above reaches, in this transaction, and the member's CRM keys.
+    await purge_crm_member(db, org_id, addr)
 
     # Before the commit, on its own connection — see the admin route's
     # docstring.

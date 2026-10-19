@@ -105,6 +105,11 @@ Ten rules on top of the three above. Each one exists because it was broken:
    layout and draws it as the email, as a Markdown file and as the HTML the
    gateway lays out as a PDF. `app/projects/lib/reportFiles.ts` is the one
    download path. Fences: `reportEmail.test.ts` and `reportFiles.test.ts`.
+   **`src/lib/numberFormat.mjs` is the one short-number formatter** (owner,
+   2026-10-19). It writes 12.5 L and 1.35 Cr by default, and 12.5M and 1.35B
+   for a member who chose the international system. The charts and the CRM's
+   `compactMoney` use it. Do not write a second "k/M" formatter. Fence:
+   `src/lib/numberFormat.test.ts`.
    **A report section draws with its Analytics panel** (WS-27bn R2b).
    `app/projects/lib/reportPanels.ts` maps a section to the panel's props
    and computes nothing. `Stat` in `AnalyticsPanels.tsx` is the one tile.

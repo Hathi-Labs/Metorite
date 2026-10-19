@@ -14,7 +14,7 @@ from typing import Any
 
 
 class RawRedis:
-    """``setex``, ``exists``, ``getdel``, ``delete`` and ``scan_iter`` on raw names."""
+    """``setex``, ``get``, ``exists``, ``getdel``, ``delete`` and ``scan_iter`` on raw names."""
 
     def __init__(self) -> None:
         self.store: dict[str, tuple[int, str]] = {}
@@ -28,6 +28,12 @@ class RawRedis:
         self._check()
         self.store[name] = (int(seconds), str(value))
         return True
+
+    async def get(self, name: str) -> str | None:
+        """CRM-Q33: the read of a held rule, which leaves it in place."""
+        self._check()
+        found = self.store.get(name)
+        return found[1] if found is not None else None
 
     async def exists(self, *names: str) -> int:
         self._check()

@@ -15,6 +15,7 @@ import { useMode } from "@/lib/theme/surfaces";
 import { resolveHue } from "@/lib/statusAccent";
 import { TYPE } from "@/lib/typeScale";
 import { ChartSpecError, chartOption } from "@/lib/charts/kinds.mjs";
+import { type NumberSystem, useNumberSystem } from "@/lib/numberSystem";
 
 type Spec = Record<string, unknown>;
 type Built = { option: unknown; height: number; fits: boolean } | { error: string };
@@ -65,11 +66,18 @@ export function webScale(width: number): number {
  * height, with every graphic placed from it. A chart that grows by its rows
  * (`fits: false`) keeps its height, and its box scrolls. Nothing is cut, and
  * no caption leaves its row.
+ *
+ * `numbering` is the member's number system (§13.10 of the WhatsApp spec).
+ * It wins over the spec's own `numbering`, which the server stamped when it
+ * made the chart. Until the member's preference loads it is undefined, and
+ * the chart draws with the spec's value.
  */
-export function buildChart(spec: Spec, width: number, mode: "dark" | "light", font?: string, maxHeight?: number): Built {
+export function buildChart(
+  spec: Spec, width: number, mode: "dark" | "light", font?: string, maxHeight?: number, numbering?: NumberSystem,
+): Built {
   try {
     const { option, height, fits } = chartOption(withHues(spec), {
-      width, scale: webScale(width), mode, font, footer: false, animate: true, interactive: true, maxHeight,
+      width, scale: webScale(width), mode, font, footer: false, animate: true, interactive: true, maxHeight, numbering,
     });
     return { option, height, fits };
   } catch (err) {
@@ -107,6 +115,7 @@ export default function LiveChart({ spec, bare = false, maxHeight, label }: {
 }) {
   const box = useRef<HTMLDivElement>(null);
   const mode = useMode();
+  const numbering = useNumberSystem();
   const [width, setWidth] = useState(0);
 
   useEffect(() => {
@@ -122,8 +131,8 @@ export default function LiveChart({ spec, bare = false, maxHeight, label }: {
   // identity redrew the chart from zero on every token (WAC-10g review).
   const specKey = JSON.stringify(spec);
   const built = useMemo(
-    () => (width > 0 ? buildChart(JSON.parse(specKey) as Spec, width, mode, pageFont(), maxHeight) : null),
-    [specKey, width, mode, maxHeight],
+    () => (width > 0 ? buildChart(JSON.parse(specKey) as Spec, width, mode, pageFont(), maxHeight, numbering) : null),
+    [specKey, width, mode, maxHeight, numbering],
   );
 
   useEffect(() => {

@@ -247,6 +247,8 @@ class _FakeDB:
             "projects": 3, "tasks": 14, "handed_over": 3, "sealed": 11,
         }
         self.seal_previews: list[str] = []
+        #: WS-53 CRM-Q33: each statement of the CRM half of a purge, in order.
+        self.crm_purge: list[str] = []
         #: Audit calls, in order, as ``(action, target)``. Ordered because the
         #: purge must record BEFORE it commits, and a set cannot show that.
         self.audit: list[tuple[str, str]] = []
@@ -813,6 +815,17 @@ class _FakeDB:
         ):
             self.seal_previews.append(str(p.get("who") or "").lower())
             return _Rows([dict(self.seal_preview)])
+
+        # ── WS-53 CRM-Q33: the CRM half of a purge ─────────────────────────
+        #
+        # This fake models the identity plane and has no CRM. It records each
+        # statement of the CRM half (the scrub of the org rules, and the lock
+        # and the rewrite of `zoho:questions`), so a test can assert that the
+        # purge reaches it. What each statement does to real rows is proven
+        # on a real Postgres in `test_crm_answer_first_r8.py` (R8).
+        if "crm_business_rules" in s or "crm_sync_cursors" in s:
+            self.crm_purge.append(s)
+            return _Rows([], rowcount=0)
 
         raise AssertionError(f"unhandled SQL in fake: {s}")
 

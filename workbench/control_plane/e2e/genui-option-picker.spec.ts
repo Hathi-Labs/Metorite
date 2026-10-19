@@ -402,3 +402,79 @@ test.describe("A card of two questions says why Submit is off", () => {
     expect((await respondBodies(page)).at(-1)?.request_id).toBe("req-plan-1");
   });
 });
+
+// Owner request, 2026-10-18: "if I don't want to answer a question for some
+// reason, I should be allowed to turn off the card." Not now sends the
+// decline (`lib/declineAnswer.ts`), the run goes on, and the card locks as
+// "Not answered". A decline never goes out as a chat message.
+test.describe("Not now declines a card, and the run goes on", () => {
+  test.describe.configure({ timeout: 120_000 });
+
+  test("the question card: Not now sends the decline, locks the card, and the run resumes", async ({ page }) => {
+    await installScenario(page, { ask: "question", respondStatus: 200 });
+    await startTurn(page);
+
+    const card = page.locator('[data-elicitation-card="open"]');
+    await expect(card.locator("[data-not-now-close]")).toHaveAttribute("aria-label", "Not now");
+    await card.locator("[data-not-now]").click();
+
+    const done = page.locator('[data-elicitation-card="declined"]');
+    await expect(done).toBeVisible();
+    await expect(done.locator("[data-rollup-title]")).toHaveText("Not answered");
+    await expect(done).toContainText("You can ask again later.");
+    await expect(done.getByRole("button", { name: "Submit", exact: true })).toHaveCount(0);
+    await expect(done.locator("[data-not-now], [data-not-now-close]")).toHaveCount(0);
+    await expect(done.getByRole("button", { name: /Send a link/ })).toBeDisabled();
+
+    await expect.poll(async () => (await respondBodies(page)).length).toBe(1);
+    expect((await respondBodies(page))[0]).toMatchObject({ request_id: "req-forward-1", answer: "", declined: true });
+    await expect(page.getByRole("paragraph").filter({ hasText: FOLLOW_UP })).toBeVisible({ timeout: 10_000 });
+    expect((await chatBodies(page)).length, "a decline is no chat message").toBe(1);
+  });
+
+  test("the X in the title row is the same decline", async ({ page }) => {
+    await installScenario(page, { ask: "question", respondStatus: 200 });
+    await startTurn(page);
+    await page.locator("[data-not-now-close]").click();
+    await expect(page.locator('[data-elicitation-card="declined"]')).toBeVisible();
+    await expect.poll(async () => (await respondBodies(page)).at(-1)?.declined).toBe(true);
+  });
+
+  test("Submit and Not now cannot both fire", async ({ page }) => {
+    await installScenario(page, { ask: "question", respondStatus: 200 });
+    await startTurn(page);
+    const card = page.locator('[data-elicitation-card="open"]');
+    await card.getByRole("button", { name: /Forward with the PDF/ }).click();
+    await card.getByRole("button", { name: "Submit", exact: true }).click();
+    // The answered card draws no Not now, so the second exit is gone.
+    await expect(page.locator('[data-elicitation-card="answered"]')).toBeVisible();
+    await expect(page.locator("[data-not-now], [data-not-now-close]")).toHaveCount(0);
+    await expect(page.getByRole("paragraph").filter({ hasText: FOLLOW_UP })).toBeVisible({ timeout: 10_000 });
+    const sent = await respondBodies(page);
+    expect(sent.length).toBe(1);
+    expect(sent[0].declined).toBeUndefined();
+  });
+
+  test("the option picker: Not now sends the decline and the card reads Not answered", async ({ page }) => {
+    await installScenario(page, { ask: "picker", respondStatus: 200 });
+    await startTurn(page);
+
+    await page.locator("[data-not-now]").click();
+    await expect(page.getByText("Not answered · You can ask again later.")).toBeVisible();
+    await expect(page.getByRole("button", { name: /Forward with the PDF/ })).toBeDisabled();
+    await expect(page.locator("[data-not-now], [data-not-now-close]")).toHaveCount(0);
+    await expect.poll(async () => (await respondBodies(page)).at(-1)).toMatchObject({ answer: "", declined: true });
+    await expect(page.getByRole("paragraph").filter({ hasText: FOLLOW_UP })).toBeVisible({ timeout: 10_000 });
+  });
+
+  test("a stale card (409) stays declined and sends nothing as a message", async ({ page }) => {
+    await installScenario(page, { ask: "picker", respondStatus: 409 });
+    await startTurn(page);
+    await page.locator("[data-not-now]").click();
+    await expect.poll(async () => (await respondBodies(page)).length).toBe(1);
+    await expect(page.getByText("Not answered · You can ask again later.")).toBeVisible();
+    // Give a wrong fallback the time it would need to send.
+    await page.waitForTimeout(1500);
+    expect((await chatBodies(page)).length).toBe(1);
+  });
+});

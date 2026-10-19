@@ -44,6 +44,16 @@
  * - A question with `required: false` never blocks Submit, and it shows
  *   "Optional".
  *
+ * ## Not now (owner request, 2026-10-18)
+ *
+ * The member may decline the card. "Not now" beside Submit, and the X in
+ * the title row, send the decline (`lib/declineAnswer.ts`), and the run goes
+ * on without an answer. The card then locks, and its title row reads "Not
+ * answered · You can ask again later." It never draws as an error. Submit
+ * and Not now share one gate (`cardExit`), so only the first one fires. The
+ * controls come from `components/NotNow.tsx`, the one control of every card
+ * that parks a run. A card with no `onDecline` draws neither.
+ *
  * A question, a header and an option draw through `GenUiText`, so a «mark»
  * never reaches the member (AGENTS.md rule 4).
  *
@@ -52,20 +62,24 @@
  * and `e2e/genui-option-picker.spec.ts`.
  */
 
-import { useCallback, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import GenUiText from "@/components/GenUiText";
 import Icon from "@/components/Icon";
+import { NotNowButton, NotNowClose } from "@/components/NotNow";
 import RecommendedBadge from "@/components/RecommendedBadge";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
 import { Textarea } from "@/components/ui/Input";
+import { cardExit, DECLINED_TITLE, declinedNoteFor } from "@/lib/declineAnswer";
 import { plainTitle } from "@/lib/fencedText";
 import {
+  IF_YOU_SKIP,
   collectAnswers,
   isAnswered as hasAnswer,
+  statedDefault,
   submitBlockedReason,
   unansweredQuestions,
   type ElicitationAnswers,
@@ -80,6 +94,8 @@ export const QUESTION_ICON = "MessageCircleQuestion";
 export const ANSWERED_ICON = "CircleCheck";
 /** The title of an answered card. The answer follows it on the row. */
 export const ANSWERED_TITLE = "Answered";
+/** The icon of a declined card ("Not now"). */
+export const DECLINED_ICON = "CircleMinus";
 /** The line beside Submit. */
 export const SUBMIT_HINT = "The assistant waits for your answer.";
 /** The mark of a question that still blocks Submit. */
@@ -101,6 +117,13 @@ interface ElicitationCardProps {
    * card then takes no click, draws no Submit, and may fold.
    */
   answered?: string;
+  /**
+   * The member's "Not now". With it, the card draws "Not now" beside
+   * Submit and an X in its title row. A card with no handler has neither.
+   */
+  onDecline?: () => void;
+  /** The member declined the card: it locks and reads "Not answered". */
+  declined?: boolean;
   /** The roll-up's id: stable for the card's life (its request id). */
   id?: string;
   /**
@@ -121,6 +144,8 @@ export default function ElicitationCard({
   onSubmit,
   disabled = false,
   answered,
+  onDecline,
+  declined = false,
   id,
   hint = SUBMIT_HINT,
   title: openTitle,
@@ -129,7 +154,15 @@ export default function ElicitationCard({
   const [freeformTexts, setFreeformTexts] = useState<Record<string, string>>({});
   const uid = useId();
   const isAnswered = answered !== undefined;
-  const locked = disabled || isAnswered;
+  // Answered or declined: the card waits no more.
+  const closed = isAnswered || declined;
+  const locked = disabled || closed;
+  // Submit and Not now: only the first one fires (`cardExit`). A card the
+  // chat opens again after a failed send (a retry) gets a fresh gate.
+  const exit = useRef(cardExit());
+  useEffect(() => {
+    if (!closed) exit.current = cardExit();
+  }, [closed]);
 
   const toggleOption = useCallback(
     (header: string, label: string, multi: boolean) => {
@@ -157,28 +190,46 @@ export default function ElicitationCard({
   const reasonId = `${uid}-blocked`;
   const handleSubmit = () => {
     if (locked || !canSubmit) return;
-    onSubmit(collectAnswers(questions, answers, freeformTexts));
+    exit.current.submit(() => onSubmit(collectAnswers(questions, answers, freeformTexts)));
+  };
+  const handleDecline = () => {
+    if (locked || !onDecline) return;
+    exit.current.decline(onDecline);
   };
 
   if (questions.length === 0) return null;
   const many = questions.length > 1;
-  const title = isAnswered ? ANSWERED_TITLE : (openTitle ?? questionsTitle(questions.length));
+  const title = declined
+    ? DECLINED_TITLE
+    : isAnswered ? ANSWERED_TITLE : (openTitle ?? questionsTitle(questions.length));
+  const declinedNote = declinedNoteFor(questions.map(statedDefault));
+  const aside = declined ? declinedNote : answered ? plainTitle(answered) : undefined;
+  const canDecline = !!onDecline && !closed;
 
   return (
     <RollupCard
       id={id ?? "ask:questions"}
       title={title}
-      icon={isAnswered ? ANSWERED_ICON : QUESTION_ICON}
+      icon={declined ? DECLINED_ICON : isAnswered ? ANSWERED_ICON : QUESTION_ICON}
       header="own"
-      pending={!isAnswered}
-      summary={answered || undefined}
+      pending={!closed}
+      summary={declined ? declinedNote : (answered || undefined)}
     >
       <section
         aria-label={title}
-        data-elicitation-card={isAnswered ? "answered" : "open"}
+        data-elicitation-card={declined ? "declined" : isAnswered ? "answered" : "open"}
         className={CARD_FRAME_CLASS}
       >
-        <RollupHeader aside={answered ? plainTitle(answered) : undefined} />
+        {canDecline ? (
+          <div className="flex min-w-0 items-center gap-1.5">
+            <div className="min-w-0 flex-1">
+              <RollupHeader aside={aside} />
+            </div>
+            <NotNowClose onClick={handleDecline} disabled={disabled} />
+          </div>
+        ) : (
+          <RollupHeader aside={aside} />
+        )}
         <RollupBody className="space-y-2.5 pt-1.5">
           {questions.map((q, qi) => {
             const hasOptions = !!q.options && q.options.length > 0;
@@ -187,7 +238,7 @@ export default function ElicitationCard({
             const ft = freeformTexts[q.header] ?? "";
             const qid = `${uid}-q${qi}`;
             const optional = q.required === false;
-            const blocks = !isAnswered && touched && unanswered.includes(q);
+            const blocks = !closed && touched && unanswered.includes(q);
             return (
               <div
                 key={qi}
@@ -199,7 +250,7 @@ export default function ElicitationCard({
                 {many && (
                   <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-medium text-muted-foreground">
                     <GenUiText text={q.header} />
-                    {optional && !isAnswered && <span className="font-normal">· {OPTIONAL_MARK}</span>}
+                    {optional && !closed && <span className="font-normal">· {OPTIONAL_MARK}</span>}
                     {blocks && (
                       <Badge tone="warning" size="xs">
                         {NEEDS_ANSWER}
@@ -214,6 +265,13 @@ export default function ElicitationCard({
                 >
                   <GenUiText text={q.question} />
                 </p>
+                {/* A stated default shows, so a "Not now" never uses a
+                    default the member did not see (review of #1152). */}
+                {!isAnswered && statedDefault(q) && (
+                  <p data-elicitation-default="" className="break-words text-[11px] text-muted-foreground">
+                    {IF_YOU_SKIP}: {plainTitle(statedDefault(q))}
+                  </p>
+                )}
 
                 {hasOptions && (
                   <div className="flex flex-col gap-0.5">
@@ -254,7 +312,7 @@ export default function ElicitationCard({
                   </div>
                 )}
 
-                {q.allowFreeformInput !== false && !isAnswered && (
+                {q.allowFreeformInput !== false && !closed && (
                   <Textarea
                     value={ft}
                     onChange={(e) => setFreeformTexts((prev) => ({ ...prev, [q.header]: e.target.value }))}
@@ -270,7 +328,7 @@ export default function ElicitationCard({
             );
           })}
 
-          {!isAnswered && (
+          {!closed && (
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 size="sm"
@@ -282,6 +340,7 @@ export default function ElicitationCard({
               >
                 Submit
               </Button>
+              {canDecline && <NotNowButton onClick={handleDecline} disabled={disabled} />}
               {/* Always mounted, so a screen reader hears it change. */}
               <span
                 id={reasonId}

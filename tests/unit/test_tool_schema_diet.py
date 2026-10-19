@@ -112,6 +112,12 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     # member or org argument: the gateway binds them and decides (R5).
     'crm_answer_question': {'params': {'choice': 'string', 'question_id': 'string'},
                             'required': ['choice', 'question_id']},
+    # WS-53 CRM-Q33 (crm_platform.md §18.15): a business rule from the chat,
+    # held for the member's confirm. It loads with the `crm` family only, with
+    # org_facts, so the core floor and its total do not move. No member or
+    # org argument: the gateway binds them (R5).
+    'crm_propose_rule': {'params': {'scope': 'string', 'text': 'string'},
+                         'required': ['text']},
     # WS-31 CP-13d (D75). One question per call. The schema has NO member
     # field on purpose: the member never comes from a tool argument.
     'decide': {'params': {'context': 'string', 'kind': 'string',

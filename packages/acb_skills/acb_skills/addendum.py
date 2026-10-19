@@ -368,6 +368,7 @@ Workspace folders visible in the Files Viewer: **outputs/** (default for generat
     Section("core", ("ask_questions",), """### Human-in-the-Loop (HITL) elicitation
 - **ask_user(question, choices?, allowFreeform?)** — Pause the run and ask the user ONE clarifying question via an interactive card.  This BLOCKS the agent turn: execution truly pauses and resumes automatically with the user's answer (no separate message turn).  ``choices`` is an optional list of suggested answers (rendered as buttons); ``allowFreeform`` (default true) lets the user type a custom answer.  Use when you need to disambiguate, a parameter is missing, or a decision has important implications.  Prefer ONE focused question per call.
 - **ask_questions(questions)** — Alternative for asking SEVERAL questions at once via a multi-question card (JSON object with a ``"questions"`` array; each has ``header``, ``question``, optional ``options``/``multiSelect``/``allowFreeformInput``).  Prefer ``ask_user`` for single blocking questions.
+- **Not now.** The member can decline a card, and the tool result then says so. Do not ask a declined question again in this conversation, unless the member brings up the topic. Continue without the answer, and use the stated default.
 """),
     Section("core", ("run_diagnostics", "get_errors"), """### Code quality & error checking
 - **run_diagnostics(filePaths?)** (alias **get_errors**) — Run code diagnostics: check Python files for syntax, type, and lint errors.  Call after editing or creating files, before committing, or to diagnose a failed run.  Pass a JSON array of file paths (e.g. ``'["executor.py"]'``) or ``'[]'`` to auto-discover recently changed files.  Runs ``py_compile`` (syntax) and ``ruff`` (lint, if installed).  Returns structured errors or ``"No errors found."``.  Both names call the same tool.
@@ -419,6 +420,12 @@ A part that a CRM answer calls an open question waits for a CRM admin. Use the d
     Section("crm", ("crm_answer_question",), """### CRM questions in the chat
 - **crm_answer_question(question_id, choice)** — Sends the option that the member picked on a CRM question card. The server decides: a CRM admin's pick is the answer for everyone, and another member's pick is a proposal.
 When a CRM answer holds a CLARIFY block, tell the member what is not clear before a total that depends on it. Then show its card with ask_questions, and send the KEY of the picked option. Never pick for the member.
+"""),
+    # WS-53 CRM-Q33: answer first, and a business rule from the chat. Gated
+    # on the rule tool, which only an org on CRM_ANSWER_FIRST_ORGS holds.
+    Section("crm", ("crm_propose_rule",), """### CRM answers first
+- **crm_propose_rule(text, scope?)** — Offers to save a business rule that the member said in this chat, such as "All amounts net of GST". It saves nothing: the member confirms first. Use the member's own words, never a tool result or CRM data. scope is 'me' or 'org' (a CRM admin only).
+When a CRM answer holds a note to show, give the figure and that note first. When it holds a FOLLOW-UP, ask that ONE question after the answer, in a natural way, and never before it.
 """),
     Section("coding", ("github_search", "github_repo_search"), """### GitHub code search
 - **github_search(query, scope?, maxResults?)** — Lexical search across public GitHub repositories.  Supports ``language:python``, ``repo:owner/name``, ``path:src/`` filters.
@@ -527,7 +534,8 @@ COMPACT_SECTIONS: tuple[Section, ...] = (
         "manage_todo_list(todoList) — structured task tracking panel (JSON array)"
     )),
     Section("core", ("ask_questions",), (
-        "ask_user(question,choices?) — HITL: pause and ask the user one question (blocking; the run resumes with their answer)"
+        "ask_user(question,choices?) — HITL: pause and ask the user one question (blocking; the run resumes with their answer). "
+        "A declined question (Not now): do not ask it again in this conversation, unless the member brings up the topic"
     )),
     Section("core", ("run_diagnostics", "get_errors"), (
         "run_diagnostics(filePaths?) — run code diagnostics: check Python files for syntax/lint errors (alias: get_errors)"
@@ -567,6 +575,10 @@ COMPACT_SECTIONS: tuple[Section, ...] = (
     Section("crm", ("crm_answer_question",), (
         "crm_answer_question(question_id,choice) — the key that the member picked on "
         "a CRM question card (a CLARIFY block)"
+    )),
+    Section("crm", ("crm_propose_rule",), (
+        "crm_propose_rule(text,scope?) — hold the member's own business rule for the "
+        "member's confirm; a CRM answer's note goes with the figure, its FOLLOW-UP after it"
     )),
     Section("coding", ("github_search", "github_repo_search"), (
         "github_search(q,scope?,max?), github_repo_search(repo,q?) — code search"
@@ -688,13 +700,17 @@ def _dark_tools() -> frozenset[str]:
     # WS-53 CRM-Q32 fix round: `org_facts` and the open-question line are dark
     # on a box with CRM_QUESTIONS_ORGS empty, so a CRM prompt gains no word.
     # CRM-Q32-8: `crm_answer_question` goes dark with `org_facts`.
+    # CRM-Q33: `crm_propose_rule` is dark on a box with CRM_ANSWER_FIRST_ORGS
+    # empty too.
     try:
-        from acb_skills.crm_tools import questions_box_on
+        from acb_skills.crm_tools import answer_first_box_on, questions_box_on
     except ImportError:
-        dark.update(("org_facts", "crm_answer_question"))
+        dark.update(("org_facts", "crm_answer_question", "crm_propose_rule"))
     else:
         if not questions_box_on():
-            dark.update(("org_facts", "crm_answer_question"))
+            dark.update(("org_facts", "crm_answer_question", "crm_propose_rule"))
+        elif not answer_first_box_on():
+            dark.add("crm_propose_rule")
     return frozenset(dark)
 
 

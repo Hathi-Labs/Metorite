@@ -620,6 +620,56 @@ def _run_org_display_name() -> str:
     return name
 
 
+# ── The member's number system (whatsapp_assistant_channel.md §13.10) ────────
+
+
+def _read_number_system(org: str, member: str) -> str:
+    """The resolved system of *member* in *org*. One read. It never raises.
+
+    *org* is the run's tenant (:func:`_current_run_org`) and *member* the
+    run's verified member (:func:`_verified_run_member`), never request input
+    (R5). A failed read is the default, "indian".
+    """
+    from acb_common import number_system as ns
+
+    opener = _opener_for_org(org)
+    if opener is None:
+        return ns.DEFAULT
+    try:
+        from sqlalchemy import text
+
+        with opener() as session:
+            row = session.execute(text(ns.READ_SQL), {"org": org, "uid": member}).first()
+    except Exception:
+        return ns.DEFAULT
+    return ns.resolve(row[0], row[1]) if row else ns.DEFAULT
+
+
+def run_number_system() -> str:
+    """The number system of the run on this frame: the member's override,
+    then the org's value, then "indian".
+
+    The ONE reader of the run's preference. The per-turn context line
+    (:func:`_context_preamble_parts`) and the chart stamp
+    (``write_artifact.emit_generative_ui``, ``whatsapp_ui._chart``,
+    ``reports.make_report``) all call it. Cached for a minute per org and
+    member (``acb_common.number_system``), and a settings save drops the
+    cache, so a turn pays at most one read.
+    """
+    from acb_common import number_system as ns
+
+    org = _current_run_org()
+    if not org:
+        return ns.DEFAULT
+    member = _verified_run_member()
+    hit = ns.cached(org, member)
+    if hit is not None:
+        return hit
+    system = ns.resolve(None, _read_number_system(str(org), member))
+    ns.remember(org, member, system)
+    return system
+
+
 # ── WS-61 KB-4a: the Knowledge index block (knowledge_base.md §6.5) ─────────
 
 #: The one agent whose per-turn context carries the block.
@@ -1017,7 +1067,7 @@ _USER_INPUT_TIMEOUT = int(os.environ.get("ASK_USER_TIMEOUT", "3600"))
 
 def resolve_user_input(
     request_id: str, answer: str, was_freeform: bool = True,
-    *, thread_id: str | None,
+    *, thread_id: str | None, responder: str | None = None, declined: bool = False,
 ) -> bool:
     """Resolve a pending ``ask_user`` request with the user's answer.
 
@@ -1028,6 +1078,11 @@ def resolve_user_input(
     thread that owns the request (:class:`_PendingUserInput`). A missing
     thread, an unknown owner or another thread resolves nothing. The route
     checks ``can_send`` in that thread's room first.
+
+    *declined* is the member's "Not now" (owner request, 2026-10-18). The
+    Future resolves with ``{"answer": "", "declined": True}`` and the run
+    goes on: each parking site reads it with ``ask_tools.is_declined``. The
+    key goes only on a decline, so every answer is exactly as before.
     """
     fut = _pending_user_input.get(request_id)
     if fut is None or fut.done():
@@ -1040,7 +1095,13 @@ def resolve_user_input(
             has_owner=bool(owner),
         )
         return False
-    payload = {"answer": answer, "wasFreeform": was_freeform}
+    payload: dict[str, Any] = {"answer": answer, "wasFreeform": was_freeform}
+    if declined:
+        payload = {"answer": "", "wasFreeform": False, "declined": True}
+    # WS-53 CRM-Q33 fix round 2: who answered, from the gateway's session. A
+    # CRM card counts a pick only of the run's own member.
+    if responder:
+        payload["responder"] = str(responder).strip().lower()
     try:
         loop = fut.get_loop()
     except Exception:
@@ -1080,6 +1141,9 @@ def _respond_input_applier(thread_id: str) -> Callable[[dict[str, Any]], bool]:
             str(command.get("answer", "")),
             bool(command.get("was_freeform", True)),
             thread_id=thread_id,
+            responder=str(command.get("responder") or "") or None,
+            # Only a JSON true declines, never a truthy string.
+            declined=command.get("declined") is True,
         )
 
     return _apply
@@ -1130,12 +1194,12 @@ async def wait_user_future(
                 # Shield: a slice timeout must not cancel the shared future —
                 # the next slice keeps waiting on it.
                 result = await asyncio.wait_for(asyncio.shield(fut), timeout=wait)
-                answer = str((result or {}).get("answer", "") or "")
+                answer = _settled_answer(result)
                 return result
             except asyncio.TimeoutError:
                 if fut.done():
                     result = fut.result()
-                    answer = str((result or {}).get("answer", "") or "")
+                    answer = _settled_answer(result)
                     return result
                 if (
                     park_at is not None and rid and tid
@@ -1154,6 +1218,18 @@ async def wait_user_future(
         if rid:
             with contextlib.suppress(BaseException):
                 await asyncio.shield(pending_ask.settle(rid, answer=answer))
+
+
+def _settled_answer(result: Any) -> str | None:
+    """The answer a durable row keeps, or None to close it unanswered.
+
+    A "Not now" (owner request, 2026-10-18) closes the row: the member gave
+    no answer, and a closed row never draws its card again. The table has no
+    state for a decline, and a new state would need a migration.
+    """
+    if isinstance(result, dict) and result.get("declined") is True:
+        return None
+    return str((result or {}).get("answer", "") or "")
 
 
 def _request_id_of(fut: Any) -> str | None:
@@ -1230,6 +1306,17 @@ def _make_user_input_handler(thread_id: str) -> Any:
             result = {"answer": "", "wasFreeform": True}
         finally:
             _pending_user_input.pop(request_id, None)
+
+        # The member's "Not now" (owner request, 2026-10-18): the SDK hands
+        # the answer to the model as the member's words, so the answer IS
+        # the decline text. The run goes on.
+        if isinstance(result, dict) and result.get("declined") is True:
+            try:
+                from acb_skills.ask_tools import declined_text
+            except Exception:  # noqa: BLE001 — the platform package is absent
+                return {"answer": "The member chose not to answer this question now.",
+                        "wasFreeform": True}
+            return {"answer": declined_text(), "wasFreeform": True}
 
         return {
             "answer": str(result.get("answer", "")),
@@ -3924,6 +4011,32 @@ def _redacted_fallback_error(exc: BaseException) -> str:
     return text[:_FALLBACK_ERROR_CHARS]
 
 
+def _observe_crm_note(payload: dict[str, Any]) -> None:
+    """Show one event to ``crm_tools.observe_event`` (WS-53 CRM-Q33 fix
+    round 1). A run that made no CRM note returns at once. Never raises."""
+    try:
+        from acb_skills.crm_tools import observe_event
+    except ImportError:
+        return
+    with contextlib.suppress(Exception):
+        observe_event(payload)
+
+
+def _crm_note_events() -> list[dict[str, Any]]:
+    """The message that adds the "How I got this" note of a CRM total when
+    the answer left it out (WS-53 CRM-Q33 fix round 1). It goes just before
+    RUN_FINISHED, through ``_sse``, so the relay keeps it and the persisted
+    message holds it. Empty in each other run. Never raises."""
+    try:
+        from acb_skills.crm_tools import missing_note_events
+    except ImportError:
+        return []
+    try:
+        return missing_note_events()
+    except Exception:  # the note is advice: a run never fails on it
+        return []
+
+
 def _sse(payload: dict[str, Any]) -> str:
     """Return a single SSE frame as a string.
 
@@ -3946,6 +4059,8 @@ def _sse(payload: dict[str, Any]) -> str:
         _thread_seq = f"#{_n}"
     _local_id = f"local-{int(_time.time() * 1000)}-{_sse_seq}{_thread_seq}"
     payload["_stream_id"] = _local_id
+    # WS-53 CRM-Q33: the run watches its own text for the note of a CRM total.
+    _observe_crm_note(payload)
 
     line = f"data: {json.dumps(payload)}\n\n"
 
@@ -5059,6 +5174,10 @@ async def run_agent_stream(
                         # session, and before RUN_FINISHED, so a quick next
                         # turn finds it. The save never fails the run.
                         await _finish_native_session(_session_turn)
+                        # WS-53 CRM-Q33: the note of a CRM total that the
+                        # answer left out goes in before the end.
+                        for _note_ev in _crm_note_events():
+                            yield _sse(_note_ev)
                         # A loop trip already emitted its terminal RUN_ERROR
                         # inline — don't follow it with a RUN_FINISHED that
                         # would make the client render the run as successful.
@@ -5411,8 +5530,16 @@ async def run_agent_stream(
                                     # WS-53 CRM-Q32-8: the id of a CRM
                                     # question card, as the tool keeps it.
                                     from acb_skills.ask_tools import (
+                                        card_default as _card_default,
+                                    )
+                                    from acb_skills.ask_tools import (
                                         crm_card_tag as _crm_tag,
                                     )
+                                    # The stated default, as the tool keeps
+                                    # it. The card draws it, so a "Not now"
+                                    # names only what the member saw.
+                                    if _card_default(_q):
+                                        _entry["default"] = _card_default(_q)
                                     if _crm_tag(_q):
                                         _entry["crm_question"] = _crm_tag(_q)
                                     _valid.append(_entry)
@@ -5755,6 +5882,9 @@ async def run_agent_stream(
                     # Tool work happened: fall through to RUN_FINISHED +
                     # commit detection so the run records as 'completed' and
                     # the folded tool cards are preserved.
+                # WS-53 CRM-Q33: the note of a CRM total, when left out.
+                for _note_ev in _crm_note_events():
+                    yield _sse(_note_ev)
                 yield _sse({"type": "RUN_FINISHED", "runId": run_id, "threadId": thread_id})
 
                 await _detect_agent_commits(
@@ -6212,6 +6342,9 @@ async def run_agent_stream(
                 yield _sse(_t2_ev)
                 if _t2_ev.get("type") == "TEXT_MESSAGE_CONTENT":
                     await asyncio.sleep(0)  # yield event loop so SSE flushes
+            # WS-53 CRM-Q33: the note of a CRM total, when left out.
+            for _note_ev in _crm_note_events():
+                yield _sse(_note_ev)
             # RUN_FINISHED must be emitted INSIDE the try block — the finally
             # below resets the relay contextvar and marks the thread inactive,
             # so a later yield would never reach Redis (reconnecting clients
@@ -7621,7 +7754,8 @@ def _context_preamble_parts(
     The run's organisation by name (:func:`_run_org_display_name`), the
     connected and missing integrations, the Knowledge index block of the
     orchestrator (:func:`_knowledge_index_block`, WS-61 KB-4a), then
-    ``memory_context``, then ``system_context`` (which carries the persona). :func:`_build_event_message`
+    ``memory_context``, then ``system_context`` (which carries the persona),
+    and last the member's number-system line (:func:`run_number_system`). :func:`_build_event_message`
     puts the history and the current turn after them. The structured path of
     WS-43t1 sends the same blocks through its per-run context provider
     (:func:`_run_context_text`). One builder, so the two paths cannot drift.
@@ -7665,6 +7799,16 @@ def _context_preamble_parts(
     system_ctx = event_payload.get("system_context") or ""
     if system_ctx:
         parts.append("## Current context\n" + system_ctx)
+
+    # The member's number system, one line (owner, 2026-10-19): lakh and
+    # crore by default. From the run boundary, never from the payload (R5).
+    # Last, so the blocks above keep their places. A run with no org (a
+    # webhook with no tenant) has no member preference, and gets no line.
+    # `whatsapp_assistant_channel.md` §13.10.
+    if _current_run_org():
+        from acb_common.number_system import prompt_line
+
+        parts.append(prompt_line(run_number_system()))
     return parts
 
 

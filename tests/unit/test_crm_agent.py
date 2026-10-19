@@ -1827,11 +1827,17 @@ def _keys(out: str) -> dict[str, str]:
     return dict(re.findall(r'^- "(.+)" -> (\S+)$', out, flags=re.M))
 
 
-async def _through_the_card(payload: dict) -> tuple[list[dict], str]:
+async def _through_the_card(payload: dict, *, responder: str | None = None,
+                            option: int = 0) -> tuple[list[dict], str]:
     """Send *payload* through the real ``ask_questions``, as the model would,
-    and answer the card with its first option. Returns the cleaned questions
-    of the card and the tool result. A payload that fails the schema of the
-    card never reaches the queue."""
+    and answer the card with one option. Returns the cleaned questions of
+    the card and the tool result. A payload that fails the schema of the
+    card never reaches the queue.
+
+    CRM-Q33 fix round 2: the answer goes through the real
+    ``executor.resolve_user_input``, as ``/agent/respond-input`` sends it,
+    so its dict holds ``wasFreeform`` and ``responder``. The responder is
+    the run's member unless *responder* names another member."""
     import asyncio
 
     from acb_skills.ask_tools import ask_questions
@@ -1843,8 +1849,11 @@ async def _through_the_card(payload: dict) -> tuple[list[dict], str]:
         task = asyncio.create_task(ask_questions(json.dumps(payload)))
         event = await asyncio.wait_for(queue.get(), 5)
         value = event["value"]
-        ex._pending_user_input[value["request_id"]].set_result(
-            {"answer": value["questions"][0]["options"][0]["label"]})
+        rid = value["request_id"]
+        ex._pending_user_input.park(rid, ex._pending_user_input[rid], "thread-card")
+        assert ex.resolve_user_input(
+            rid, value["questions"][0]["options"][option]["label"], False,
+            thread_id="thread-card", responder=responder or _T._current_user_email())
         return value["questions"], await asyncio.wait_for(task, 5)
     finally:
         ex._active_run_queue.reset(token)
@@ -2080,7 +2089,9 @@ async def test_q32_8_a_change_on_an_answered_part_waits_for_an_admin(
 ) -> None:
     """Item 17d, the tool side: the reply on a part in use keeps the org
     fact and says that the change waits."""
-    run_asks.asked.add("key:Payment_Received:amount")  # the card was shown
+    # The member picked IP on the card (CRM-Q33 fix round 1: a pick, never
+    # a card that was only shown, opens the gate).
+    run_asks.picked["key:Payment_Received:amount"] = "IP"
     _Gateway(monkeypatch, {"/crm/questions/key:Payment_Received:amount/reply": (200, {
         "id": "key:Payment_Received:amount", "kind": "key_field", "result": "proposal",
         "value": "IP", "label": "IP Basic Amount",
@@ -2093,7 +2104,7 @@ async def test_q32_8_a_change_on_an_answered_part_waits_for_an_admin(
 async def test_q32_8_an_admin_reply_names_the_undo(monkeypatch, run_asks) -> None:
     """Item 9, the tool side: an admin's answer is saved for everyone, and
     the tool names where Undo is."""
-    run_asks.asked.add("revenue")  # the card was shown
+    run_asks.picked["revenue"] = "payment_in"  # the member picked Collected
     _Gateway(monkeypatch, {"/crm/questions/revenue/reply": (200, {
         "id": "revenue", "kind": "revenue", "result": "answer", "value": "payment_in",
         "label": "Collected", "line": "Revenue: Collected, for everyone.",
@@ -2154,10 +2165,17 @@ async def test_q32_8_a_pick_needs_the_card_of_this_run(monkeypatch, run_asks, ad
     run_asks.asked.add("revenue")
     await _T.crm_answer_question("key:Payment_Received:amount", "IP")
     assert gw.paths("POST") == []
-    # After the card of this question, the pick is sent.
-    assert "CLARIFY" in await _T.crm_aggregate("module:Payment_Received", measure="sum_amount")
+    # CRM-Q33 fix round 1 (P0): a card that was only SHOWN opens nothing.
+    out = await _T.crm_aggregate("module:Payment_Received", measure="sum_amount")
+    assert "CLARIFY" in out
+    await _T.crm_answer_question("key:Payment_Received:amount", "IP")
+    assert gw.paths("POST") == []
+    # The member's own click on that card is the pick, once.
+    await _through_the_card(_payload(out))
     await _T.crm_answer_question("key:Payment_Received:amount", "IP")
     assert gw.paths("POST") == ["/crm/questions/key:Payment_Received:amount/reply"]
+    assert await _T.crm_answer_question("key:Payment_Received:amount", "IP") == _T.NO_CARD_PICK
+    assert len(gw.paths("POST")) == 1
 
 
 async def test_q32_8_a_run_with_no_card_channel_or_no_holder_sends_no_pick(

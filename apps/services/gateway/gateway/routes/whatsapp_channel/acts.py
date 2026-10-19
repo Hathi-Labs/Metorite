@@ -195,6 +195,18 @@ async def _live_act(req: RunRequest) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
 
 
+async def has_pending(req: RunRequest) -> bool:
+    """True when the phone holds a pending act in this thread (WS-53 CRM-Q33
+    fix round 1): the act's Confirm owns the next message, so no CRM pending
+    ask settles on it. A failed read reads as pending, the safe side."""
+    try:
+        return await _live_act(req) is not None
+    except Exception as exc:  # the record names the class only
+        _log.warning("whatsapp_channel.act.pending_read_failed",
+                     error_type=type(exc).__name__)
+        return True
+
+
 async def _claim(act_id: str) -> bool:
     async with tenant_session() as db:
         return (await db.execute(text(_CLAIM_SQL), {"id": act_id})).first() is not None

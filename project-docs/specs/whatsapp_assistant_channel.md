@@ -1,6 +1,10 @@
 # WhatsApp assistant channel — a member chats with Metorite from their own WhatsApp
 
-**Status:** WAC-13 built (2026-10-15). When Metorite's AI path does not answer,
+**Status:** WAC-10h built (2026-10-19, owner directive): charts and the AI's
+words use lakh and crore by default. An org or a member may choose million and
+billion (§13.10).
+
+WAC-13 built (2026-10-15). When Metorite's AI path does not answer,
 the bot says that Metorite is updating and holds the message. It answers the
 message when Metorite is back (§16).
 
@@ -1224,6 +1228,69 @@ page as markup. Rich text draws it as text.
 | G3 | The browser registry holds every series and component that a kind uses | `LiveChart.test.ts` `wac10g-every-kind-loads` |
 | G4 | Every live tooltip is rich text | `charts.test.ts` "a live tooltip draws text, never HTML" |
 | G5 | The template catalog, the registry, the shapes and the docstring name `chart` | `tests/unit/test_genui_catalog_lockstep.py` |
+
+### 13.10 WAC-10h: Indian numbering by default (owner, 2026-10-19)
+
+The owner wrote: "When I ask for graphs and numbers, you use the million
+convention, which is not standard in India. Use the user's preferences, and
+keep it in the organizational memory." The owner left the design to us. This
+section is that design, and it is built.
+
+**One preference, two values.** A number system is `indian` (thousand, lakh,
+crore) or `international` (thousand, million, billion). The org's value is the
+`org_settings` key `number_system`, and an admin sets it. A member's override
+is `user_settings.number_system` (migration 284), and NULL means "use the
+organization's setting". The default is `indian` for every org.
+`acb_common.number_system.resolve` is the one rule: the member's override
+wins, then the org's value, then the default.
+
+**Routes.** `routes/settings.py` adds three. `GET /settings/number-system`
+gives the org's value, the member's value and the resolved one, to any member.
+`PUT /settings/number-system` sets the org's value and needs
+`admin:settings:manage`. `PUT /settings/number-system/me` sets or clears the
+member's own override. The tenant and the member come from the session (R5).
+
+**Charts.** A chart spec takes an optional field `numbering`. The one
+formatter is `src/lib/numberFormat.mjs`, and `kinds.mjs` writes every axis,
+label, tooltip, caption and donut total through it. The Indian system writes
+85K below a lakh, then 12.5 L from 1e5 and 1.35 Cr from 1e7. A value that
+rounds up into the next band moves up to it, so 99,999 is 1 L and never 100K.
+The CRM's short money (`compactMoney`) uses the same formatter. Each CRM
+screen gets the member's system from `useCompactMoney`, which shares one read
+of the setting for the whole page. The old SVG renderer
+(`whatsapp_render.fmt`) is the fallback when the engine is off or fails. It
+uses `acb_common.number_system.compact_number`, the Python twin of the
+formatter, with the spec's stamped `numbering`. Both test suites read one
+table of cases, `tests/fixtures/number_format_cases.json`.
+
+**The server writes `numbering`.** `emit_generative_ui`, the WhatsApp chart
+(`whatsapp_ui._chart`) and `make_report` stamp each chart with the run's
+resolved system. The stamp replaces any value that the model wrote, so a
+model cannot get it wrong. `executor.run_number_system` is the one reader of
+the run's preference. A PNG draws with the spec's value. In the web chat
+`LiveChart` passes the viewer's own resolved system, and that value wins.
+
+**The chat's words.** The per-turn context of a run with an org ends with one
+line from the resolved system. For `indian` it reads "Write amounts in lakh
+and crore (₹45.3 lakh, ₹1.35 crore), never million or billion." The line
+reaches the web chat and WhatsApp alike. The org-facts seam loads with the CRM
+family only, so the preference is not an org fact.
+
+**Settings.** Settings, Organisation, Branding gets "Number format" with two
+choices. Appearance, Your appearance gets the same select and "Use the
+organization's setting". Both use `SelectButton`.
+
+**Acceptance (WAC-10h).**
+
+| # | Check | Fence |
+|---|---|---|
+| N1 | The member's override wins, then the org's value, then `indian` | `tests/unit/test_number_system.py` `number-system-member-wins` |
+| N2 | A chart that the server builds carries `numbering`, over the model's value | `tests/unit/test_number_system.py` `number-system-stamped-by-the-server` |
+| N3 | The chat's context holds the one line of the resolved system | `tests/unit/test_number_system.py` `number-system-prompt-line` |
+| N4 | The band edges at 1e5 and 1e7, negatives, decimals and the international path | `src/lib/numberFormat.test.ts` |
+| N5 | Each kind of chart writes every number in the system that `numbering` names | `src/lib/charts/charts.test.ts` "numbering" |
+| N6 | Migration 284, and the round trip: org default, org set, member override | `tests/unit/test_number_system_r8.py` |
+| N7 | The two selects, and their saves | `src/lib/numberSystem.test.ts` |
 
 ## 14. Amendment of 2026-10-11: WAC-4, a confirmed write from WhatsApp
 

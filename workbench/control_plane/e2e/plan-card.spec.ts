@@ -130,7 +130,9 @@ test.describe("The plan card reads first", () => {
     await expect(line(page, "Design the recall API")).toBeVisible();
 
     await card(page).getByRole("button", { name: "Cancel", exact: true }).click();
-    await expect.poll(async () => (await respondBodies(page)).at(-1)?.answer).toBe("Cancel");
+    // A plan card that parks the run sends Cancel as a decline (PR #1152), so
+    // the run reads "the member cancelled the plan" and nothing is created.
+    await expect.poll(async () => (await respondBodies(page)).at(-1)).toMatchObject({ declined: true, answer: "" });
     await expect(card(page).getByText("Nothing was created.")).toBeVisible();
   });
 

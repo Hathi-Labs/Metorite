@@ -27,6 +27,7 @@
  */
 
 import { useRouter } from "next/navigation";
+import { createContext, useContext } from "react";
 
 import { ControlLink } from "@/components/ControlLink";
 import Icon from "@/components/Icon";
@@ -193,13 +194,27 @@ function toneOf(props: EntityPillProps, linked: boolean): string {
   return linked ? LINKED_TONE : badgeTone("neutral");
 }
 
+/**
+ * What a surface does just before a pill inside it navigates (review of PR
+ * #1156). The phone's assistant is a full-screen sheet: a pill that pushes
+ * the route opens the task UNDER the sheet, and the tap looks dead. So the
+ * dock provides `closeAssistant` here on a phone, as its own file links do.
+ * One provider for every pill in the sheet, never a handler per call site.
+ * Absent: nothing runs first.
+ */
+export const PillNavigateContext = createContext<((href: string) => void) | null>(null);
+
 /** The linked pill. Its own component, so only a link asks for the router. */
 function LinkedPill(props: EntityPillProps & { href: string }) {
   const router = useRouter();
+  const before = useContext(PillNavigateContext);
   return (
     <ControlLink
       href={props.href}
-      onActivate={() => router.push(props.href)}
+      onActivate={() => {
+        before?.(props.href);
+        router.push(props.href);
+      }}
       aria-label={pillLinkName(props.kind, props.label, props.number, props.statusName)}
       title={tooltip(props)}
       className={`${BADGE_BASE} ${toneOf(props, true)} ${SHAPE} ${widthOf(props.fit)} no-underline`}

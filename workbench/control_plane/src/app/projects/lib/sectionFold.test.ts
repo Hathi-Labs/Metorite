@@ -109,9 +109,12 @@ describe("the stored value is the FOLDED set", () => {
 
 describe("isFoldable", () => {
   it("knows the six sections and nothing else", () => {
-    for (const id of ["details", "description", "properties", "links", "files", "activity"]) {
+    for (const id of ["details", "description", "links", "refs", "files", "activity"]) {
       expect(isFoldable(id)).toBe(true);
     }
+    // Owner, 2026-10-19: Tags hid in a folded "Properties" section. The
+    // section is gone, so a member's stored fold of it must not survive.
+    expect(isFoldable("properties")).toBe(false);
     for (const id of ["", "Files", null, undefined, 7]) {
       expect(isFoldable(id)).toBe(false);
     }

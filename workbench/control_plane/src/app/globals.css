@@ -447,14 +447,16 @@ body {
    was a raw input wearing the PLATFORM's paint: a faint outline in dark, a
    solid black square in light. */
 .cc-checkbox:checked,
-.cc-checkbox:indeterminate {
+.cc-checkbox:indeterminate,
+.kb-editor ul[data-type="taskList"] input[type="checkbox"]:checked {
   -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
   -webkit-mask-position: center;
   mask-position: center;
 }
 .cc-checkbox:checked::after,
-.cc-checkbox:indeterminate::after {
+.cc-checkbox:indeterminate::after,
+.kb-editor ul[data-type="taskList"] input[type="checkbox"]:checked::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -466,10 +468,12 @@ body {
   -webkit-mask-size: 80% 80%;
   mask-size: 80% 80%;
 }
-.cc-checkbox {
+.cc-checkbox,
+.kb-editor ul[data-type="taskList"] input[type="checkbox"] {
   position: relative;
 }
-.cc-checkbox:checked::after {
+.cc-checkbox:checked::after,
+.kb-editor ul[data-type="taskList"] input[type="checkbox"]:checked::after {
   -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
   mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
 }
@@ -761,6 +765,208 @@ select optgroup {
   float: left;
   height: 0;
   pointer-events: none;
+}
+
+/* ── The Knowledge block editor (WS-61 KB-2b, knowledge_base.md §21.4) ───
+   One renderer for a page: the read view and the edit both draw the body
+   through `KnowledgeEditor`. The body sits in `cc-prose prose`, so it reads
+   like any Markdown in the app. These rules cover what the typography
+   plugin does not know: callouts, toggles, task lists, the code bar, raw
+   HTML kept as text, the drag handle and the bubble menus. Every colour is
+   a token, so light mode, density and accent all reach it. */
+.kb-editor-shell { position: relative; }
+.kb-editor { outline: none; }
+.kb-editor-shell.is-editing .kb-editor { min-height: 16rem; padding-bottom: 2rem; }
+/* The body shows where the keys go while a member edits: a quiet ring
+   from the ring token, on the shell, so the text does not move. */
+.kb-editor-shell.is-editing {
+  margin: -0.25rem -0.5rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: calc(var(--radius) - 4px);
+}
+.kb-editor-shell.is-editing:focus-within {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ring) 30%, transparent);
+}
+/* The same rhythm as the chat's Markdown (`MarkdownBody`): compact
+   headings under the page title, and tight lists. */
+.kb-editor :where(h2, h3, h4, h5, h6) { color: var(--foreground); font-weight: 600; line-height: 1.35; }
+.kb-editor :where(h2) { font-size: 1.15em; margin: 1.5em 0 0.5em; }
+.kb-editor :where(h3) { font-size: 1.05em; margin: 1.25em 0 0.4em; }
+.kb-editor :where(h4, h5, h6) { font-size: 1em; margin: 1em 0 0.35em; }
+.kb-editor > :first-child { margin-top: 0; }
+.kb-editor :where(ul, ol) { margin: 0.5em 0; }
+.kb-editor :where(li) { margin: 0.15em 0; }
+.kb-editor :where(li > p) { margin: 0; }
+.kb-editor :where(hr) { margin: 1.5em 0; }
+.kb-editor :where(blockquote) { font-style: normal; color: var(--muted-foreground); }
+.kb-editor :where(blockquote p)::before,
+.kb-editor :where(blockquote p)::after { content: none; }
+.kb-editor p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--muted-foreground);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+.kb-editor .ProseMirror-selectednode { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: calc(var(--radius) - 6px); }
+.kb-editor-shell .ProseMirror-dropcursor,
+.kb-editor + .ProseMirror-dropcursor { background: var(--primary); }
+.kb-editor .ProseMirror-gapcursor::after { border-top-color: var(--foreground); }
+
+/* Task lists: the box, then the item's own blocks. */
+.kb-editor ul[data-type="taskList"] { list-style: none; padding-left: 0.25em; }
+.kb-editor ul[data-type="taskList"] li { display: flex; align-items: flex-start; gap: 0.5em; padding-left: 0; }
+.kb-editor ul[data-type="taskList"] li::marker { content: none; }
+.kb-editor ul[data-type="taskList"] li > label { flex-shrink: 0; display: flex; align-items: center; height: 1.7em; margin: 0; user-select: none; }
+.kb-editor ul[data-type="taskList"] li > div > p { margin: 0; }
+.kb-editor ul[data-type="taskList"] li > div { flex: 1 1 auto; min-width: 0; }
+/* The task box wears the shared checkbox look (`Checkbox.tsx` and
+   `.cc-checkbox` above), because TipTap draws its own input. */
+.kb-editor ul[data-type="taskList"] input[type="checkbox"] {
+  appearance: none;
+  flex-shrink: 0;
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  background: var(--background);
+  cursor: pointer;
+}
+.kb-editor ul[data-type="taskList"] input[type="checkbox"]:checked { border-color: var(--primary); background: var(--primary); }
+.kb-editor ul[data-type="taskList"] input[type="checkbox"]:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.kb-editor ul[data-type="taskList"] input[type="checkbox"]:disabled { cursor: default; }
+.kb-editor ul[data-type="taskList"] li[data-checked="true"] > div { color: var(--muted-foreground); text-decoration: line-through; }
+
+/* Callouts: a tinted panel with the tone's glyph and name. */
+.kb-callout {
+  --kb-tone: var(--info);
+  margin: 1em 0;
+  border: 1px solid color-mix(in srgb, var(--kb-tone) 35%, var(--border));
+  border-left-width: 3px;
+  border-left-color: var(--kb-tone);
+  border-radius: calc(var(--radius) - 4px);
+  background: color-mix(in srgb, var(--kb-tone) 8%, var(--card));
+  padding: 0.5em 0.875em;
+}
+.kb-callout[data-callout="tip"] { --kb-tone: var(--success); }
+.kb-callout[data-callout="important"] { --kb-tone: var(--violet); }
+.kb-callout[data-callout="warning"] { --kb-tone: var(--warning); }
+.kb-callout[data-callout="caution"] { --kb-tone: var(--destructive); }
+.kb-callout-head { display: flex; align-items: center; gap: 0.5em; min-height: 1.75em; user-select: none; }
+.kb-callout-icon { color: var(--kb-tone); }
+.kb-callout-label { font-size: 0.8125em; font-weight: 600; color: var(--kb-tone); }
+.kb-callout-body > :first-child,
+.kb-callout-body > div > :first-child { margin-top: 0.25em; }
+.kb-callout-body > :last-child,
+.kb-callout-body > div > :last-child { margin-bottom: 0.25em; }
+
+/* Toggles: a fold button, the summary, and the body under it. */
+.kb-toggle { display: flex; align-items: flex-start; gap: 0.25em; margin: 0.75em 0; }
+.kb-toggle-fold { flex-shrink: 0; padding-top: 0.125em; }
+.kb-toggle-inner { flex: 1 1 auto; min-width: 0; }
+.kb-toggle-summary { font-weight: 600; color: var(--foreground); padding: 0.125em 0; }
+.kb-toggle-summary:has(> br.ProseMirror-trailingBreak:only-child)::before {
+  content: "Toggle title";
+  color: var(--muted-foreground);
+  font-weight: 400;
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+.kb-toggle[data-open="false"] .kb-toggle-content { display: none; }
+.kb-toggle-content > :first-child { margin-top: 0.25em; }
+
+/* Code: a bar with the language and Copy, then the code. */
+.kb-code {
+  margin: 1em 0;
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--background);
+  overflow: hidden;
+}
+.kb-code-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5em;
+  padding: 0.25em 0.5em;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  background: color-mix(in srgb, var(--secondary) 80%, transparent);
+  user-select: none;
+}
+.kb-code pre { margin: 0; border-radius: 0; background: transparent; padding: 0.875em 1em; }
+.kb-code pre code { font-size: 0.85em; color: var(--foreground); }
+
+/* Raw HTML the editor keeps as text. It reads as code, never as HTML. */
+.kb-editor pre.kb-raw-html {
+  background: var(--muted);
+  color: var(--muted-foreground);
+  border: 1px dashed var(--border);
+  font-size: 0.8em;
+  white-space: pre-wrap;
+}
+.kb-editor code.kb-raw-html { color: var(--muted-foreground); }
+
+/* Images draw through MarkdownImage, which gates a remote one. */
+.kb-image-wrap { display: inline-block; max-width: 100%; }
+.kb-image { max-width: 100%; height: auto; border-radius: calc(var(--radius) - 4px); }
+
+/* Tables keep the prose look, with a cell outline while editing. */
+.kb-editor .tableWrapper {
+  margin: 1em 0;
+  overflow-x: auto;
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  border-radius: calc(var(--radius) - 4px);
+}
+.kb-editor table { table-layout: auto; width: 100%; margin: 0; border-collapse: collapse; }
+.kb-editor :where(th) {
+  background: color-mix(in srgb, var(--secondary) 60%, transparent);
+  color: var(--muted-foreground);
+  font-size: 0.85em;
+  font-weight: 600;
+  text-align: left;
+}
+.kb-editor :where(th, td) { padding: 0.4em 0.75em; vertical-align: top; }
+.kb-editor :where(td) { border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+/* While a member edits, a table leaves room above it for its tools, so they
+   never cover the block above. */
+.kb-editor-shell.is-editing .kb-editor .tableWrapper { margin-top: 2.75rem; }
+.kb-editor-shell.is-editing .kb-editor :where(td, th) { position: relative; border: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.kb-editor-shell.is-editing .kb-editor .selectedCell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  pointer-events: none;
+}
+.kb-editor :where(td, th) > p { margin: 0; }
+
+/* The block handle: a grip in the gutter, left of the block. A phone has
+   no pointer to drag with and no gutter, so the handle is not drawn there. */
+.kb-drag-handle { display: flex; align-items: center; justify-content: center; }
+@media (max-width: 640px) {
+  .kb-drag-handle { display: none; }
+}
+.kb-drag-grip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.5rem;
+  border-radius: calc(var(--radius) - 6px);
+  color: var(--muted-foreground);
+  cursor: grab;
+}
+.kb-drag-grip:hover { background: var(--secondary); color: var(--foreground); }
+
+/* The bubble menus float over the text, on the popover surface. */
+.kb-bubble {
+  z-index: 60;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--popover);
+  padding: 0.25rem;
 }
 
 @keyframes chat-shimmer {

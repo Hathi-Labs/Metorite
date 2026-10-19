@@ -138,6 +138,8 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   add_task_ref: { icon: "Link2", label: "Reference added" },
   remove_task_ref: { icon: "Unlink", label: "Reference removed" },
   move_task: { icon: "MoveRight", label: "Task moved" },
+  file_tasks: { icon: "MoveRight", label: "Tasks filed" },
+  link_tasks_batch: { icon: "Link", label: "Tasks linked" },
   watch: { icon: "Eye", label: "Watching changed" },
   complete: { icon: "CheckCircle2", label: "Task done" },
   defer: { icon: "CalendarClock", label: "Deferred" },
@@ -780,7 +782,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   return (
     <RollupCard id={`tool:${e.id}`} title={heading} icon={icon} summary={unfenced(detail).split(NL)[0]} header="own">
     <div className={`rounded-lg border px-2.5 py-2 ${tone}`}>
-      <RollupHeader aside={aside ? <FencedText text={aside} pills={false} /> : undefined} />
+      <RollupHeader aside={aside ? <FencedText text={aside} pills={false} links={false} /> : undefined} />
       <RollupBody>
         {tasks.length > 0 ? (
           <>
@@ -840,6 +842,12 @@ export const BATCH_TOOLS: ReadonlyMap<string, BatchKind> = new Map<string, Batch
   // `  tag_id: <uuid>` for each word it added.
   ["create_tags", { rows: "tag", maybe: "Tags may have been added" }],
   ["create_types", { rows: "type", maybe: "Types may have been added" }],
+  // 2026-10-18: `writes.py` `_file_receipt` prints each task moved as a
+  // task row, and a `not moved:` or `left out:` line for each one that was not.
+  ["file_tasks", { rows: "task", maybe: "Tasks may have been moved" }],
+  // 2026-10-19: `writes.py` `link_tasks_batch` prints each link made as the
+  // row of its first task, with the link in the row's facts.
+  ["link_tasks_batch", { rows: "task", maybe: "Links may have been made" }],
 ]);
 
 const NL = "\n";
@@ -896,6 +904,8 @@ export function batchNotes(result: string): string[] {
     }
     if (/^\s*full_id:/i.test(line) || !line.trim()) continue;
     if (/listed above exist\. Never create them again/.test(line)) continue;
+    // The same line of the two batches of `writes.py` (`_batch_receipt`).
+    if (/listed above (?:moved|exist)\. Do not (?:move|link) them again/.test(line)) continue;
     kept.push(line);
   }
   return forPeopleFenced(kept.join(NL)).split(NL).filter((l) => l.trim());
@@ -1007,7 +1017,7 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
       header="own"
     >
     <div className={`rounded-lg border px-2.5 py-2 ${toneFor(outcome, e.name)}`}>
-      <RollupHeader aside={aside ? <FencedText text={aside} pills={false} /> : undefined} />
+      <RollupHeader aside={aside ? <FencedText text={aside} pills={false} links={false} /> : undefined} />
       <RollupBody>
           {head && !aside && (outcome !== "done" || rows.length === 0) && (
             <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap">
@@ -1016,8 +1026,8 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
           )}
           {rows.length > 0 && (
             <div className={`mt-1 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin ${LIST_ROWS_BOX}`}>
-              {tasks.map((r) => (
-                <TaskRowView key={r.id} row={r} />
+              {tasks.map((r, i) => (
+                <TaskRowView key={`${r.id}-${i}`} row={r} />
               ))}
               {words.map((r) => (
                 <VocabRowView key={r.id} row={r} />

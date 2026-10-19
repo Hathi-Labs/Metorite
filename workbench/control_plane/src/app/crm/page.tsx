@@ -72,6 +72,7 @@ import { openModuleRecord, selectModule } from "./lib/urlState";
 import { useCoreStates, useModules, useOverlays, useSourceLabels } from "./lib/useCrmMode";
 import { SlotSuggestionArea, useSuggestions } from "./components/Suggestions";
 import OpenQuestionsCard, { useQuestions } from "./components/OpenQuestions";
+import BusinessRulesCard, { useRules } from "./components/BusinessRules";
 import { openCount, railCount } from "./lib/questions";
 import { suggestionFor } from "./lib/suggestions";
 import * as api from "./lib/api";
@@ -122,7 +123,7 @@ import {
   resolvePipeline,
   showPicker,
 } from "./lib/pipelines";
-import { compactMoney } from "./lib/format";
+import { useCompactMoney } from "./lib/useCompactMoney";
 import { setRefusalSink, useCrmStore } from "./lib/store";
 import type { EntitySlug, Lead, Status } from "./lib/types";
 import {
@@ -191,6 +192,7 @@ type MirrorContext = {
 
 function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   const toast = useToast();
+  const compact = useCompactMoney();
   const searchParams = useSearchParams();
   const view = useMemo(
     () => parseView(searchParams.toString()),
@@ -699,6 +701,9 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   // `questions_off` hides all three.
   const questions = useQuestions(ctx.isAdmin && ctx.mode === "mirror");
   const questionsOpen = openCount(questions.read);
+  // CRM-Q33: the business rules of each member in Mirror mode. A 404
+  // `rules_off` hides the section.
+  const rules = useRules(ctx.mode === "mirror");
   const sectionCtx = useMemo(
     () => ({
       isAdmin: ctx.isAdmin,
@@ -706,14 +711,16 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
       studioAdmin,
       questions: questions.gate,
       openQuestions: questionsOpen,
+      rules: rules.gate,
     }),
-    [ctx.isAdmin, ctx.mode, studioAdmin, questions.gate, questionsOpen],
+    [ctx.isAdmin, ctx.mode, studioAdmin, questions.gate, questionsOpen, rules.gate],
   );
   const settingsSection = shownSection(view.section, sectionCtx);
   // The default section reads the open count, so a bare settings URL waits
   // for the read of the questions too.
   const sectionTrusted =
-    !accessLoading && !accessStale && !ctx.modeReadFailed && questions.gate !== "unknown";
+    !accessLoading && !accessStale && !ctx.modeReadFailed && questions.gate !== "unknown" &&
+    rules.gate !== "unknown";
   useEffect(() => {
     const redirect = sectionRedirect(view, sectionCtx, sectionTrusted);
     if (redirect) replaceView(viewHref({ ...view, section: redirect }));
@@ -728,7 +735,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
         // "₹4.2Cr in the pipeline" is what is on the table and "₹1.6Cr
         // weighted" is what the forecast believes, and a line that showed
         // only one of them would be answering a different question.
-        `${totals.count} open deals · ${compactMoney(totals.amount)} in the pipeline · ${compactMoney(totals.weighted)} weighted`
+        `${totals.count} open deals · ${compact(totals.amount)} in the pipeline · ${compact(totals.weighted)} weighted`
       : boardOn
         ? `${leadCount} leads by status`
         : view.tab === "settings"
@@ -1129,6 +1136,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               }
               access={ctx.isAdmin ? <AccessSection /> : undefined}
               questions={questions.gate === "on" ? <OpenQuestionsCard /> : undefined}
+              rules={rules.gate === "on" ? <BusinessRulesCard /> : undefined}
               pipelines={pipelines}
               showAdminCards={ctx.isAdmin}
               dealStatuses={store.dealStatuses}

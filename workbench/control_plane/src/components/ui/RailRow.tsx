@@ -51,7 +51,8 @@
  *
  * On a row that can open, ArrowRight opens it and ArrowLeft closes it, from
  * the label or from the toggle. Enter and Space on the toggle switch it, as
- * on any button.
+ * on any button. A rail that puts `moveRailFocus` on its list also moves the
+ * focus to the row above or below with ArrowUp and ArrowDown (WS-61 KB-2e).
  *
  * ## What stays with the caller
  *
@@ -109,6 +110,41 @@ export function expandKey(key: string, expanded: boolean): boolean {
   if (key === "ArrowRight") return !expanded;
   if (key === "ArrowLeft") return expanded;
   return false;
+}
+
+/**
+ * Where ArrowUp and ArrowDown move the focus in a rail (WS-61 KB-2e). `at`
+ * is the place of the focused row among the rows on screen. It returns the
+ * next place, or `null` for any other key and for a row that is not in the
+ * list. The ends hold, and the focus does not wrap.
+ */
+export function railFocusStep(key: string, at: number, count: number): number | null {
+  if (at < 0 || at >= count) return null;
+  if (key === "ArrowDown") return Math.min(at + 1, count - 1);
+  if (key === "ArrowUp") return Math.max(at - 1, 0);
+  return null;
+}
+
+/**
+ * The `onKeyDown` of an element that holds a rail's rows. ArrowUp and
+ * ArrowDown move the focus to the label of the row above or below. A rail
+ * opts in by putting it on its list. Only a key from a row's label or its
+ * expand toggle counts, so a field or a menu inside the rail keeps its keys.
+ * A closed branch draws no rows, so each row on screen is a visible row.
+ */
+export function moveRailFocus(event: React.KeyboardEvent<HTMLElement>): void {
+  if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+  const from = event.target as HTMLElement;
+  if (!from.matches?.("[data-rail-label], [data-rail-toggle]")) return;
+  const row = from.closest("[data-rail-row]");
+  const labels = [
+    ...event.currentTarget.querySelectorAll<HTMLElement>("[data-rail-row] > [data-rail-label]"),
+  ].filter((label) => label.getClientRects().length > 0);
+  const at = labels.findIndex((label) => label.parentElement === row);
+  const next = railFocusStep(event.key, at, labels.length);
+  if (next === null) return;
+  event.preventDefault();
+  labels[next].focus();
 }
 
 /** How long a recorded press stays the cause of a click, in ms. */
