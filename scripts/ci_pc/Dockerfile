@@ -22,9 +22,15 @@ RUN apt-get update -qq \
  && apt-get install -y -qq postgresql-client-16 nodejs docker-ce-cli >/dev/null \
  && npx -y playwright@1 install-deps chromium >/dev/null \
  && rm -rf /var/lib/apt/lists/*
-# The distro's `ci` user is uid 1000. The same uid owns the mounted files.
-RUN (id -u ubuntu >/dev/null 2>&1 && userdel -r ubuntu) || true \
- && useradd -m -u 1000 -s /bin/bash ci
+# The job must run as the uid and gid that own the mounted /home/ci. They are
+# NOT a constant: Ubuntu's image already holds `ubuntu` at 1000, so the
+# distro's `ci` came out as 1001:1002 (measured 2026-10-19), and a guessed
+# 1000 could not read a single file. run_suite.sh passes `id -u` and `id -g`.
+ARG CI_UID
+ARG CI_GID
+RUN test -n "$CI_UID" && test -n "$CI_GID"
+RUN if id -u ubuntu >/dev/null 2>&1; then userdel -r ubuntu; fi
+RUN groupadd -g "$CI_GID" ci && useradd -m -u "$CI_UID" -g "$CI_GID" -s /bin/bash ci
 USER ci
 ENV HOME=/home/ci PATH=/home/ci/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     UV_NO_SYNC=1 CI=true

@@ -40,7 +40,8 @@ for img in postgres:16 pgvector/pgvector:pg16 caddy:2.11.4; do docker pull -q "$
 
 if [ -f scripts/ci_pc/Dockerfile ]; then
   echo "== the job image (each job runs in it, on a private network)"
-  docker build -q -t "metorite-ci-job:$(sha256sum scripts/ci_pc/Dockerfile | cut -c1-12)" scripts/ci_pc >/dev/null
+  docker build -q --build-arg CI_UID="$(id -u)" --build-arg CI_GID="$(id -g)" \
+    -t "metorite-ci-job:$(sha256sum scripts/ci_pc/Dockerfile | cut -c1-12)-$(id -u)-$(id -g)" scripts/ci_pc >/dev/null
 fi
 
 echo "bootstrap: OK. Run from Windows: bash scripts/ci_local.sh"

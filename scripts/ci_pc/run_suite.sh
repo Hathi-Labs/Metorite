@@ -40,10 +40,11 @@ T0=$(date +%s)
 echo "local CI for $SHA. Logs: $RUN"
 
 # ── The job image: rebuilt only when its Dockerfile changes ────────────────
-IMAGE="metorite-ci-job:$(sha256sum scripts/ci_pc/Dockerfile | cut -c1-12)"
+IMAGE="metorite-ci-job:$(sha256sum scripts/ci_pc/Dockerfile | cut -c1-12)-$(id -u)-$(id -g)"
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "building $IMAGE (once per Dockerfile change)"
-  docker build -q -t "$IMAGE" scripts/ci_pc >/dev/null || { echo "image build failed"; exit 1; }
+  docker build -q --build-arg CI_UID="$(id -u)" --build-arg CI_GID="$(id -g)" -t "$IMAGE" scripts/ci_pc >/dev/null \
+    || { echo "image build failed"; exit 1; }
 fi
 
 # ── Dependencies: only when a lockfile moved ──────────────────────────────
