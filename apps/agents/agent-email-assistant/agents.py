@@ -2428,27 +2428,42 @@ async def delete_rule(account_id: str, rule_id: str) -> str:
     return f"Deleted rule {rule_id}."
 
 
+def _rule_must_show(rule: dict[str, Any]) -> bool:
+    """True for a rule that a run card may never leave out: one that sends
+    email out, or one whose draft action fills a field (a subject, a body, a
+    label, a file), which the card shows (:func:`_draft_field_lines`)."""
+    actions = rule.get("actions")
+    return _has_outward_action(actions) or bool(_draft_field_lines(actions))
+
+
 def _run_rules_listing(rules: list[dict[str, Any]]) -> str | None:
     """The ``context`` of a rule run card, or None when it cannot be honest.
 
     Round 2: each rule that sends email out comes first, and the card never
     cuts one. None when those alone do not fit. The other rules follow until
-    the card is full, and a last line counts the rest, so no cut is silent."""
-    outward = [r for r in rules if _has_outward_action(r.get("actions"))]
-    inward = [r for r in rules if not _has_outward_action(r.get("actions"))]
-    lines = _rule_lines(outward).split("\n") if outward else []
+    the card is full, and a last line counts the rest, so no cut is silent.
+
+    Re-review of #1173: a rule can take more than one line now, so the card
+    adds each rule as one block, never cuts inside a block, and counts
+    RULES. A rule whose draft fills a field must show, as an outward rule
+    must (:func:`_rule_must_show`). When those do not fit, the card is None,
+    and the run asks nothing and runs nothing."""
+    first = [r for r in rules if _rule_must_show(r)]
+    rest = [r for r in rules if not _rule_must_show(r)]
+    lines = _rule_lines(first).split("\n") if first else []
     if len("\n".join(lines)) > _CARD_CONTEXT_LIMIT:
         return None
     # Keep room for the last line, which is at most about 60 characters.
     budget = _CARD_CONTEXT_LIMIT - 80
     shown = 0
-    for line in _rule_lines(inward).split("\n") if inward else []:
-        if len("\n".join([*lines, line])) > budget:
+    for rule in rest:
+        block = _rule_lines([rule]).split("\n")
+        if len("\n".join([*lines, *block])) > budget:
             break
-        lines.append(line)
+        lines.extend(block)
         shown += 1
-    if shown < len(inward):
-        lines.append(f"+{len(inward) - shown} more rules that send no email out")
+    if shown < len(rest):
+        lines.append(f"+{len(rest) - shown} more rules that send no email out")
     return "\n".join(lines)
 
 
@@ -2507,8 +2522,9 @@ async def run_rules(
         listing = _run_rules_listing(rules)
         if listing is None:
             return (
-                "Nothing changed. Too many rules that send email out are on to "
-                "show on one card. Run them from the rules screen of the Email app."
+                "Nothing changed. Too many rules that send email out, or that "
+                "write a draft text, are on to show on one card. Run them from "
+                "the rules screen of the Email app."
             )
         refusal = await _card_refusal(
             f"Apply the rules to {what} in {box}?",
@@ -4567,6 +4583,26 @@ async def _pattern_row(
     return None
 
 
+async def _rule_by_id(rule_id: str) -> dict[str, Any] | None:
+    """The saved rule with *rule_id* in any mailbox of the member, or None.
+    A read that fails returns None, so a caller that holds fails closed."""
+    if not rule_id:
+        return None
+    try:
+        accounts = await _accounts()
+    except Exception:
+        return None
+    for a in accounts:
+        try:
+            rules = (await _get("/email/rules", {"account_id": a["id"]})).get("rules", [])
+        except Exception:
+            continue
+        for rule in rules or []:
+            if isinstance(rule, dict) and str(rule.get("id")) == rule_id:
+                return rule
+    return None
+
+
 @_annotate_risk(open_world=False)
 async def forget_pattern(pattern_id: str, kind: str = "draft") -> str:
     """Forget a learned pattern by id. ``kind`` selects which store it's from:
@@ -4584,6 +4620,14 @@ async def forget_pattern(pattern_id: str, kind: str = "draft") -> str:
             f"of yours has the id {pattern_id}. Call list_patterns for the id."
         )
     row, box = found
+    # Re-review of #1173: a "never match" pin narrows its rule, so to forget
+    # it widens the rule. A held run refuses that for a rule that it may not
+    # save, and also when it cannot read the rule.
+    if is_rule and row.get("exclude") and _egress_held():
+        rule = await _rule_by_id(str(row.get("rule_id") or ""))
+        if rule is None or _held_in_no_egress(rule.get("actions")):
+            return _egress_held_answer(
+                "Forgetting a pin that keeps mail out of a rule that sends mail out")
     if is_rule:
         verb = "never match" if row.get("exclude") else "always match"
         shown = (f"{_card_name(row.get('pattern_type'))} "

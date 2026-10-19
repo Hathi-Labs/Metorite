@@ -209,6 +209,8 @@ class _Gateway:
         self.rules: list[dict[str, Any]] = [LABEL_RULE]
         self.history: list[dict[str, Any]] = []
         self.specs: list[dict[str, Any]] = []
+        self.patterns: list[dict[str, Any]] = []
+        self.deletes: list[str] = []
 
     @property
     def writes(self) -> list[str]:
@@ -228,6 +230,8 @@ def gw(monkeypatch) -> _Gateway:
             return {"rules": [json.loads(json.dumps(r)) for r in g.rules]}
         if path == "/email/rules/history":
             return {"history": g.history}
+        if path == "/email/rules/patterns":
+            return {"patterns": g.patterns}
         if path.startswith("/email/messages/"):
             return {"account_id": BOX, "subject": "PCB order",
                     "from_address": {"email": "kiran@jlc.test"}}
@@ -250,6 +254,10 @@ def gw(monkeypatch) -> _Gateway:
         g.patches.append((path, body))
         return {}
 
+    async def fake_delete(path):
+        g.deletes.append(path)
+        return {}
+
     async def card(**kw):
         g.cards.append(kw)
         return True
@@ -257,6 +265,7 @@ def gw(monkeypatch) -> _Gateway:
     monkeypatch.setattr(agents, "_get", fake_get)
     monkeypatch.setattr(agents, "_post", fake_post)
     monkeypatch.setattr(agents, "_patch", fake_patch)
+    monkeypatch.setattr(agents, "_delete", fake_delete)
     monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", card)
     monkeypatch.setattr("acb_skills.ask_tools.confirmation_channel_open", lambda: True)
     return g
@@ -477,6 +486,80 @@ async def test_an_open_pause_asks_no_card(gw) -> None:
     bind_artifact_context(no_egress=False)
     out = await agents.update_rule(BOX, "r-lbl", enabled=False)
     assert gw.cards == [] and out.startswith("Rule 'Bank' is now disabled"), out
+
+
+def _draft_rule(i: int, chars: int) -> dict[str, Any]:
+    return {"id": f"r-d{i}", "account_id": BOX, "name": f"Draft {i}", "enabled": True,
+            "actions": [{"type": "REPLY", "subject": f"S{i} " + "s" * chars,
+                         "content": f"B{i} " + "b" * chars}]}
+
+
+def _label_rule(i: int) -> dict[str, Any]:
+    return {"id": f"r-l{i}", "account_id": BOX, "name": f"Label {i} " + "x" * 60,
+            "enabled": True, "instructions": "y" * 100,
+            "actions": [{"type": "LABEL", "label": f"L{i}"}]}
+
+
+async def test_a_rule_run_that_cannot_show_each_draft_rule_runs_nothing(gw) -> None:
+    """Re-review of #1173, the probe: 10 REPLY rules, each with a subject and
+    a body of 300 characters. The card showed 6 of them, with no "more" line,
+    and the run applied all 10."""
+    from acb_skills.write_artifact import bind_artifact_context
+
+    bind_artifact_context(no_egress=False)
+    gw.rules = [_draft_rule(i, 300) for i in range(10)]
+    out = await agents.run_rules(BOX, dry_run=False)
+    assert out.startswith("Nothing changed."), out
+    assert gw.cards == [] and "/email/rules/run" not in gw.writes
+
+
+def test_the_run_card_shows_each_rule_whole_and_counts_rules() -> None:
+    """Each rule is one block. A draft rule that fills a field always shows,
+    with its field lines, and the last line counts the RULES left out."""
+    drafts = [_draft_rule(i, 40) for i in range(3)]
+    labels = [_label_rule(i) for i in range(60)]
+    listing = agents._run_rules_listing(labels + drafts)
+    assert listing is not None and len(listing) <= agents._CARD_CONTEXT_LIMIT
+    lines = listing.splitlines()
+    for i in range(3):
+        at = lines.index(next(x for x in lines if x.startswith(f'- rule "Draft {i}"')))
+        assert lines[at + 1].startswith("  - reply draft content: B"), lines[at + 1]
+        assert lines[at + 2].startswith("  - reply draft subject: S"), lines[at + 2]
+    shown = sum(1 for x in lines if x.startswith('- rule "Label'))
+    assert 0 < shown < 60
+    assert lines[-1] == f"+{60 - shown} more rules that send no email out"
+
+
+def _pin(exclude: bool, rule_id: str) -> dict[str, Any]:
+    return {"id": "p-1", "pattern_type": "sender", "value": "a@b.test",
+            "exclude": exclude, "rule_id": rule_id, "rule_name": "x"}
+
+
+async def test_a_held_run_cannot_forget_a_pin_that_narrows_a_forward_rule(gw, held) -> None:
+    """Re-review of #1173: to forget a "never match" pin widens its rule."""
+    gw.rules = [LABEL_RULE, FORWARD_RULE]
+    gw.patterns = [_pin(True, "r-fwd")]
+    out = await agents.forget_pattern("p-1", kind="rule")
+    assert out.startswith("Nothing changed.") and "off in this run" in out, out
+    assert gw.cards == [] and gw.deletes == []
+    gw.patterns = [_pin(True, "r-gone")]
+    unread = await agents.forget_pattern("p-1", kind="rule")
+    assert "off in this run" in unread, "a rule it cannot read is held"
+    for pin in (_pin(False, "r-fwd"), _pin(True, "r-lbl")):
+        gw.patterns = [pin]
+        ok = await agents.forget_pattern("p-1", kind="rule")
+        assert ok.startswith("Forgot rule pattern"), (pin, ok)
+    assert gw.deletes == ["/email/rules/patterns/p-1"] * 2
+
+
+async def test_an_open_run_forgets_a_pin_after_its_card(gw) -> None:
+    from acb_skills.write_artifact import bind_artifact_context
+
+    bind_artifact_context(no_egress=False)
+    gw.rules = [FORWARD_RULE]
+    gw.patterns = [_pin(True, "r-fwd")]
+    out = await agents.forget_pattern("p-1", kind="rule")
+    assert out.startswith("Forgot rule pattern") and len(gw.cards) == 1, out
 
 
 # ── 4. The truthful answer and the note at the top of a held run ─────────────
