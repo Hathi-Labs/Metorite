@@ -5950,6 +5950,22 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** owner, 2026-10-18. `specs/staging_and_daily_release.md`, CLAUDE.md §3a
 - **Added:** 2026-10-18
 
+### H-363 · 🔴 The operator's GitHub token sits in each agent clone's remote URL · [AGENT] · finding
+- **Check:** read `loader._refresh_remote_auth` in `packages/acb_skills/acb_skills/loader.py`.
+  If it still writes the token into the remote URL of the clone, this is open.
+- **Why.** #1168 stops a member who is not a reviewer from running `git push`. But
+  the token is plain text in `.git/config` of the clone. A run with a host shell
+  can read it, then push with another command or call the GitHub API directly.
+  The record step of #1168 then marks the commit pending, but the push already
+  happened. A regex cannot close this path. Only the absence of the token can.
+- **Do this:** take the token out of the remote URL. Give it to `git` only through
+  a credential helper that the gateway controls, and only for a push that the
+  reviewer rule allows (`acb_auth.agent_operator.may_review_agent_commits`).
+  Keep clones and pulls working for a read-only token. Add a fence that reads
+  each clone's `.git/config` and fails on any token.
+- **Authority:** review of #1168, H-236, D85
+- **Added:** 2026-10-19
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

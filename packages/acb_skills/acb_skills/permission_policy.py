@@ -667,6 +667,97 @@ def _shell_withheld_result() -> Any:
     )
 
 
+# ── A push of agent code needs the operator's reviewer (2026-10-19) ──────────
+# An agent's clone holds the operator's GITHUB_TOKEN in its remote URL. A push
+# from a chat run used to need only the member's words "commit and push": the
+# addendum told the model to run ``git push --no-verify``, and the executor
+# then recorded the commit as approved by ``chat:autopush``. So the push
+# skipped the reviewer of the self-mutation queue.
+#
+# Now the run decides once, at its boundary, from the member and the org of
+# the run binding (never the request): the executor binds ``agent_push_allowed``
+# from ``acb_auth.agent_operator.may_review_agent_commits``, the rule of the
+# queue. This guard refuses a git push of every other run, in every mode. A
+# context with no key refuses, so it fails closed. The commit stays local, and
+# ``_detect_agent_commits`` queues it for a reviewer.
+#
+# The command match is a regex, so a hidden push (a script, an alias) can pass
+# it. ``run_script`` checks the script text too, and ``_detect_agent_commits``
+# records a push that got past both as pending, never as approved.
+# Fence: tests/unit/test_chat_autopush_reviewer_gate.py.
+
+#: The text the model reads when the push gate refuses a push.
+AGENT_PUSH_WITHHELD_REASON = (
+    "Only an admin of the first-party organization or of a platform "
+    "operator organization may push agent "
+    "code. Do not push, and do not try another way. Your commit stays local, "
+    "and it is queued for a reviewer on the Agents page. Tell the member this "
+    "in plain words"
+)
+
+#: ``git ... push`` or ``git ... send-pack``, with any global options between
+#: (``-C <dir>``, ``-c <key=value>``, ``--no-pager``). A word such as "push"
+#: inside a commit message does not match, because only options may come
+#: between ``git`` and the verb. A path to the binary (``/usr/bin/git``,
+#: ``./git``, ``C:\...\git.exe``) and a shell escape (``\git``) count as git
+#: too (review of #1168), so ``/`` and ``\`` may come before it, and ``.exe``
+#: may follow it.
+_GIT_PUSH_RE = re.compile(
+    r"(?:^|[\s;&|(`'\"$/\\])git(?:\.exe)?"
+    r"(?:\s+(?:-[Cc]\s+(?:\"[^\"]*\"|'[^']*'|\S+)|--?[\w-]+(?:=\S+)?))*"
+    r"\s+(?:push|send-pack)\b",
+    re.IGNORECASE,
+)
+
+
+def is_git_push_text(text: str) -> bool:
+    """True when *text* (a command, or a script) runs ``git push``."""
+    return bool(text) and _GIT_PUSH_RE.search(str(text)) is not None
+
+
+def _command_texts(request: Any) -> list[str]:
+    """Every command text that a shell request carries."""
+    out: list[str] = []
+    for name in ("full_command_text", "commands", "command_segments"):
+        value = _field(request, name)
+        if not value:
+            continue
+        if isinstance(value, (list, tuple)):
+            out.extend(str(v) for v in value if v)
+        else:
+            out.append(str(value))
+    return out
+
+
+def is_git_push_request(request: Any) -> bool:
+    """True when *request* is a shell request that runs ``git push``."""
+    if not is_shell_request(request):
+        return False
+    return any(is_git_push_text(t) for t in _command_texts(request))
+
+
+def agent_push_allowed_for_this_run() -> bool:
+    """True only when the run on this frame bound ``agent_push_allowed=True``.
+
+    The executor binds it from the member and the org of the run binding. A
+    frame with no run context, or a context with no such key, reads as not
+    allowed.
+    """
+    try:
+        from acb_skills.write_artifact import artifact_context
+        return artifact_context().get("agent_push_allowed") is True
+    except Exception:
+        return False
+
+
+def _agent_push_withheld_result() -> Any:
+    """The SDK refusal for a push that the member may not make."""
+    from copilot.generated.rpc import PermissionDecisionReject
+    return PermissionDecisionReject(
+        feedback="Blocked by Metorite: " + AGENT_PUSH_WITHHELD_REASON + ".",
+    )
+
+
 # ── H-236: no egress in a run that a covered run delegated to ────────────────
 # The executor binds ``no_egress`` into the artifact context of every run that
 # a covered run delegates to (``acb_skills.egress``). A Copilot sub-agent then
@@ -787,6 +878,18 @@ def guard_shared_agent_shell(handler: Any, *, tools: Any = None) -> Any:
                 surface="copilot_shell",
             )
             return _shell_withheld_result()
+        if is_git_push_request(request) and not agent_push_allowed_for_this_run():
+            command = " ".join(_command_texts(request))
+            _log.warning(
+                "permission.decision",
+                mode=_mode(),
+                approved=False,
+                would_deny=True,
+                reason="agent_push_needs_reviewer",
+                detail=command[:200],
+                surface="copilot_shell",
+            )
+            return _agent_push_withheld_result()
         return handler(request, invocation)
 
     _guarded.__cc_d85_guard__ = True  # type: ignore[attr-defined]

@@ -304,6 +304,27 @@ async def test_an_open_run_still_asks_the_forward_card(gw) -> None:
                                    forward_to="out@fracktal.test")
     assert out.startswith("Created rule"), out
     assert len(gw.cards) == 1
+    # EM-T13a: the card lists the target in full, so the member sees where
+    # the rule sends mail before it saves.
+    assert "out@fracktal.test" in gw.cards[0]["context"]
+
+
+def test_wac_p4_still_asks_for_each_send_and_not_for_an_in_space_tool() -> None:
+    """WAC-P4 (#1169) confirms each egress call after an untrusted answer,
+    and it picks the call with ``is_egress_tool``. A send stays in its set.
+    A tool that this audit moved asks its own card instead (EM-G11c1)."""
+    import types
+
+    from acb_skills import permission_policy as pp
+
+    agents.build_agents()  # registers the annotations of the email tools
+    call = types.SimpleNamespace()
+    for name in ("send_email", "forward_email", "send_draft", "unsubscribe_sender",
+                 "fetch_page"):
+        assert pp._reaches_out(call, name, None) is True, name
+    for name in ("draft_reply", "create_label", "manage_inbox", "create_rule"):
+        assert pp._reaches_out(call, name, None) is False, name
+        assert name in agents.MAILBOX_WRITE_TOOLS, f"{name} must ask its own card"
 
 
 async def test_a_held_update_that_adds_a_forward_is_refused(gw, held) -> None:

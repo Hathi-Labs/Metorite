@@ -14995,13 +14995,28 @@ and at send.
    a reply to each later sender. That rule runs in the background. Its drafts still wait for
    the member.
 
-**Proposal for the owner (not built): a card for a (B) act in a held run.** Today a held run
-never gets a (B) tool. The proposal is one card for each (B) call. The card shows each exact
-recipient or the full URL, and the full text that goes out. The member approves or refuses it,
-as for an outward rule today (EM-T13a). The risks are three. A member who approves cards by
-habit approves a steered send. A long text or a hidden character can hide data, so the card
-must show all of it plainly. A delegated run must reach the member's card channel. The owner
-decides if a held run gets this card. Until then, (B) stays withheld.
+**How this composes with WAC-P4 (#1169).** WAC-P4 asks the member to confirm each egress call
+after an untrusted answer: a card on the web, the Confirm button on WhatsApp. It picks a call
+with `is_egress_tool` (`permission_policy._reaches_out`). So a tool that this audit moved to
+`open_world=False` no longer asks that confirm. No act loses its confirm, for three reasons:
+
+1. Each write of a moved tool asks its own EM-G11c1 card first. A run with no card channel, as
+   on WhatsApp, saves nothing.
+2. The outward part of a rule tool asks the EM-T13a card in a run that is not held. That card
+   lists each address and each URL in full. A held run refuses the part.
+3. A send, a forward and an unsubscribe stay egress tools, so WAC-P4 still asks for each one.
+
+Fence: `test_wac_p4_still_asks_for_each_send_and_not_for_an_in_space_tool` in
+`tests/unit/test_no_egress_tool_audit.py`.
+
+**Proposal for the owner (not built): the WAC-P4 confirm for a (B) act in a held run.** Today a
+held run never gets a (B) tool. The proposal adds no second approval path. A held run would keep
+its (B) tools, and each (B) call would ask the WAC-P4 confirm, with the view of
+`egress.egress_call_view`. That view shows each recipient, each URL host and each attachment in
+full, and then the body. The risks are three. A member who approves cards by habit approves a
+steered send. A body longer than the view can hide data, so a held run would need the full
+text on the card. A delegated run must reach the member's card channel. The owner decides if
+a held run gets this confirm. Until then, (B) stays withheld.
 
 Fence: `tests/unit/test_no_egress_tool_audit.py` (the pinned set of each agent, the held parts,
 the texts, the name line) and `EXPECTED_OPEN_WORLD` in `tests/unit/test_delegation_no_egress.py`.

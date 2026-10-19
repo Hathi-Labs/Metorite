@@ -52,6 +52,8 @@ import {
   reportMeta,
 } from "@/lib/report";
 import { resolveIcon } from "@/lib/icons";
+import { groupedNumber } from "@/lib/numberFormat.mjs";
+import { useNumberSystem } from "@/lib/numberSystem";
 import { hasMoreToTheRight } from "@/lib/scrollCue";
 import PlanCardBody from "@/components/PlanCardBody";
 import Badge from "@/components/ui/Badge";
@@ -504,6 +506,9 @@ function StatTile({ s, dense = false }: { s: Data; dense?: boolean }) {
   const target = tileNumber(s.value);
   const animated = useCountUp(target ?? 0);
   const decimals = target === null ? 0 : (String(target).split(".")[1]?.length ?? 0);
+  // The member's number system (lakh and crore by default), through the ONE
+  // formatter. The browser's locale grouped it before (WS-47 follow-up).
+  const numbering = useNumberSystem();
   return (
     <div data-stat-tile={dense ? "dense" : ""} style={{
       flex: 1, minWidth: dense ? 0 : 110, padding: dense ? "6px 8px" : 12, borderRadius: dense ? 8 : 12,
@@ -519,7 +524,7 @@ function StatTile({ s, dense = false }: { s: Data; dense?: boolean }) {
       <div style={{ fontSize: dense ? TYPE.base : TYPE["2xl"], fontWeight: 600, color: "var(--foreground)", fontVariantNumeric: "tabular-nums",
         ...(dense ? { overflowWrap: "anywhere" as const } : {}) }}>
         {target !== null
-          ? animated.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
+          ? groupedNumber(animated, numbering, decimals)
           : str(s.value)}
         {s.unit != null && str(s.unit) !== "" && <span style={{ fontSize: TYPE.sm, color: "var(--muted-foreground)" }}> {str(s.unit)}</span>}
       </div>
