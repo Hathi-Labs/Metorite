@@ -1494,22 +1494,40 @@ wiki in the Notion and Confluence shape. The owner asked us to study its
 features and its experience, and to build what is good. This section is the
 result. It extends §11.1 and replaces the text of KB-2b.
 
-### 21.1 The licence rule — ideas only, never code
+### 21.1 The licence rule — Docmost core may be ported (D107, 2026-10-19)
 
-Docmost core is AGPL-3.0. Its folders `apps/server/src/ee`,
-`apps/client/src/ee` and `packages/ee` carry a separate enterprise licence.
-Metorite is a closed SaaS. So **we take behaviour and layout, and we copy no
-file, no component and no stylesheet.** Each slice writes its own code on
-our own design system. A reviewer refuses a diff that carries Docmost
-source, its CSS class names, or its UI strings word for word.
+**This rule replaced "ideas only, never code" on 2026-10-19.** The owner
+wrote that the product will release under AGPL-3.0, so code from Docmost may
+be taken when it is needed. `work_plan.md` D107 records it.
 
-The editor library is TipTap, MIT, which Docmost also uses. The workbench
-already depends on TipTap 3 (`SignatureEditor.tsx`). The add-ons this
-section needs are MIT at the same version: `@tiptap/markdown`,
-`@tiptap/extension-list`, `@tiptap/extension-bubble-menu`,
-`@tiptap/suggestion` and `@tiptap/extension-drag-handle-react`. The table
-of contents extension is under the TipTap Pro licence, so we do not use it.
-The outline of §21.4 reads the headings itself.
+Docmost core is AGPL-3.0. Three folders carry a separate enterprise licence:
+`apps/server/src/ee`, `apps/client/src/ee` and `packages/ee`. The rule has
+five parts.
+
+1. **Core only.** A builder may port code from core. A builder never ports
+   a file from the three enterprise folders, and never reads them as a
+   source for a re-write. Each enterprise feature is built from the spec.
+2. **A header on each ported file.** The first lines name the source:
+   `Adapted from Docmost (AGPL-3.0), <path in the Docmost repo>`. The
+   marker text is `Adapted from Docmost`.
+3. **A line in `THIRD_PARTY_NOTICES.md`**, in the same pull request. The
+   test `tests/unit/test_third_party_notices.py` fails when a file with the
+   marker is not listed, when a listed file is gone, and when a listed
+   path is under an enterprise folder.
+4. **Our look and our seams stay.** A port keeps what Docmost does and how
+   it behaves. It takes our components from `src/components/ui/`, our tokens
+   from `globals.css`, our API client and our access rules. No Mantine
+   dependency enters the workbench. `DESIGN_SYSTEM.md` binds.
+5. **The repo licence is the owner's call.** D107 does not change it.
+   AGPL-3.0 section 13 gives each user who talks to modified AGPL code over
+   a network the right to the Corresponding Source. That duty starts with
+   the first release that serves ported code. HANDOFF H-361 asks the owner
+   to set the date of the licence change.
+
+The editor library is TipTap, MIT, and the workbench already depends on
+TipTap 3. The table of contents extension of TipTap is under the Pro
+licence, so we do not use it. The outline of §21.4 reads the headings
+itself.
 
 ### 21.2 What Docmost does well
 
@@ -1529,6 +1547,8 @@ that make it feel good, in our words.
 | Lifecycle | A trash with restore, and a banner on a deleted page |
 
 ### 21.3 What we take, and what we leave
+
+**The directive of 2026-10-19 overrides this table where they differ.** Section 21.7 holds the plan. Rows below that say "Leave" or "Later" for a feature that §21.7 builds are out of date.
 
 | Pattern | Decision | Why |
 |---|---|---|
@@ -1649,3 +1669,70 @@ The order is KB-2b and KB-2e in parallel, then KB-2d, then KB-2f, KB-2g and KB-2
   draw it. A keyboard move of a block is a later slice. Table columns do not
   resize, because Markdown keeps no width. Tab in the last cell of a table
   leaves the editor.
+
+### 21.7 Parity with Docmost — the plan of 2026-10-19
+
+**Owner directive, 2026-10-19.** "Do what is needed to get the UI/UX
+systems as similar to Docmost as soon as possible." With §21.1, a builder
+may port Docmost core code.
+
+**What similar means.** The same features, the same layout and the same
+interactions. The look stays Metorite's one look (§21.1 part 4). A page
+that a Docmost user opens must feel known, and a Metorite member must not
+see a second design.
+
+**What is already built.** The block editor with its `/` menu, bubble menu,
+drag handle, callouts, toggles, code blocks, tables and `[[` links (KB-2b),
+the page tree with drag, `+`, `…` and keys (KB-2e), and the search view
+(KB-3b).
+
+**No flag.** The Knowledge pane is live. A flag would keep two designs, so
+each slice below replaces its view and ships as KB-2b did. A slice that
+adds a table adds it dark, behind R6.
+
+**Storage rule for blocks with no Markdown form.** `body_md` stays the one
+stored body. A block that has no Markdown syntax (columns, a status badge,
+a date, a subpages list) stores as one HTML fragment with `data-type`
+attributes. The editor parses the fragment back into the block. The
+chunker strips the tags and keeps the text. A golden case for each block
+proves the round trip, as §21.5 requires.
+
+#### Wave 1 — four slices in parallel
+
+| Ticket | What | Done when | Gate |
+|---|---|---|---|
+| **KB-2d** | Page chrome. Breadcrumbs that fold the middle into a `…` popover (all crumbs on a phone). A byline "Edited by X, 3 min ago" with a contributors popover. A right panel with the tabs Outline and Details: the outline follows the scroll and marks the heading in view, and Details shows author, last editor, word and character counts, review date and state. A copy-link anchor on each heading. A page menu: Copy link, Copy as Markdown, Download as `.md`, Full width (kept for the member), Move (a space and parent picker over the existing move route), Archive and Restore, Print. An Archived view with Restore, and a banner on an archived page. The "Page history" entry opens KB-2g when it exists | Each act works on a local stack, with an e2e test for each. The outline hides on a page with fewer than two headings. A reader sees no Move, Archive or Restore. The visual review passes | AGENT-SAFE |
+| **KB-2f** | Icon, favourites and home. A migration (check the number at merge): `kb_pages.icon` text, nullable, and `kb_favorites` with FORCE RLS. Routes to set the icon, and to add, remove and list favourites. An emoji picker on the icon in the title and in the tree. The icon shows in the tree, the breadcrumbs, the title, search hits and the home lists. A star in the page menu and the tree menu. Knowledge home with the tabs Recently updated (across the spaces the member sees, with Load more), Favourites and Created by me, each with an empty state. A space switcher at the top of the rail, a searchable list | An icon set on a page shows in all five places. A hidden page never appears on the home. A second org sees none of the favourites (R8). The R8 suite runs with no skip | AGENT-SAFE |
+| **KB-2g** | Page history. `GET /knowledge/pages/{id}/versions/{n}` answers one version with its body, under the page's visibility and the history floor. A history modal: a list with date and author, a read-only view of the chosen version, a compare of two versions with additions and deletions marked inline, a "Highlight changes" switch and change counts, and Restore with a confirm (the existing revert route) | A member compares version 2 with version 5 and restores version 2. A member who cannot read the page gets 404 on a version. A version before the history floor of a moved page is refused. R8 proves both | AGENT-SAFE |
+| **KB-2i** | Editor, first set. Port from `packages/editor-ext`: table handles and menu (add row and column on each side, delete, header row and column, merge and split, cell colour, alignment, drag a column or a row), text colour and highlight, superscript and subscript, text alignment, indent, the `:` emoji picker, a status badge, a date, columns of 2 to 5, a subpages block (Manual, A to Z and Recent order), a page break, footnotes. Find and replace in the page with `Mod-F` (the editor binds no `Mod-K`). The title flow: Enter in the title moves the text after the caret into the first paragraph, and the arrow keys move between the title and the body | A golden case for each new block round-trips as a fixed point and keeps its CommonMark meaning where it has one. An e2e test inserts each block from the `/` menu. Find and replace marks, steps and replaces. The rules of KB-2b still hold: no HTML sink, every image through `MarkdownImage`, and a save with no edit writes nothing | AGENT-SAFE |
+
+#### Wave 2 — specified now, dispatched when wave 1 lands
+
+| Ticket | What |
+|---|---|
+| **KB-2j** | Editor, second set: math with KaTeX, mermaid diagrams as code blocks with a live preview, image resize, align, caption and lightbox, and embeds from an allowlist of providers (YouTube, Vimeo, Loom, Figma and the like) in a sandboxed iframe, with `frame-src` in the CSP |
+| **KB-2h and KB-2k** | Backlinks written to `kb_links` from the saved body, and a "Linked from" list. `@` mentions of a person or a page, a hover preview on a page link, and "Create page" from a `[[` with no match |
+| **KB-3d** | Search view like the Docmost spotlight: chips for Space, Creator, Date and Title only, matched words marked in each snippet, and a match bar on the opened page |
+| **KB-2m** | Import of Markdown and HTML files and of a Notion zip, with folders becoming parents. Export of a page or a space as Markdown or HTML, with sub-pages and attachments, as a zip |
+| **KB-2o** | Labels on pages, a labels list and a page of the pages with one label |
+| **KB-2c** | Files: attachments, video, audio and PDF blocks, and draw.io and Excalidraw blocks that save as attachments. After AM-5 and H-322 |
+
+#### What stays with the owner
+
+These Docmost features change the product, so no builder starts them.
+
+- **Real-time co-editing and autosave** (Yjs, a websocket server, presence
+  carets). Our Save writes one version, and a published page is live at
+  once. Autosave on a published page would publish half-written text, so it
+  needs a rule first. §19 keeps this for later.
+- **Public share links and public spaces.** They publish company data
+  outside the tenant.
+- **Inline comments.** The anchor in a Markdown body needs a design.
+- **Watch and notifications, and presentation mode.** Both wait on the
+  notification seam of WS-59.
+- **AI writing menu and templates.** They are enterprise features in
+  Docmost, so §21.1 part 1 bars a port. The one assistant of D99 already
+  edits text.
+
+The order is KB-2d, KB-2f, KB-2g and KB-2i in parallel, then wave 2.
+

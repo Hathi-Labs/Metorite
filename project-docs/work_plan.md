@@ -5383,6 +5383,30 @@ extends D105 and changes neither D104 nor D105.
 **The owner may overrule it.** It is an engineering shape under the owner's
 directive. Each flag that spends credits stays the owner's flip.
 
+### D107 — Docmost core code may be ported, and the product will release under AGPL (2026-10-19)
+
+Owner directive, 2026-10-19, in chat: "We will also eventually release
+under AGPL, so you can take code from Docmost if needed. Do what is needed
+get the UI/UX systems as similar to Docmost as soon as possible." Board:
+**WS-61**. Owning spec: **`specs/knowledge_base.md` §21.1 and §21.7**. It
+replaces the rule of §21.1 of 2026-10-18, "ideas only, never code".
+
+1. **Core only.** A builder may port code from Docmost core (AGPL-3.0).
+   Nothing comes from `apps/server/src/ee`, `apps/client/src/ee` or
+   `packages/ee`. Those carry a separate licence.
+2. **A header and a notice line.** Each ported file names Docmost in its
+   first lines, and `THIRD_PARTY_NOTICES.md` lists it. A test fails when
+   they disagree.
+3. **Our look stays.** Parity means the features, the layout and the
+   interactions. It does not mean Mantine, and it does not mean a second
+   palette. D-rule of `DESIGN_SYSTEM.md` binds.
+4. **The repo licence is not changed here.** The owner sets its date
+   (HANDOFF H-361). AGPL-3.0 section 13 binds from the first release that
+   serves ported code.
+
+**The owner may overrule it.** It changes no price. It changes the licence
+position of the repo, which is why part 4 names the owner.
+
 ---
 
 ## 4. Single-owner registry (who owns duplicated work)

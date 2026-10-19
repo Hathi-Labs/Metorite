@@ -5922,6 +5922,21 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `deploy/hostinger/staging/README.md`, HANDOFF H-358
 - **Added:** 2026-10-18 · H-358 security review
 
+### H-361 · Set the date the repo takes AGPL-3.0, as ported Docmost code ships · [OWNER]
+- **Check:** the repo root holds a `LICENSE` file that names AGPL-3.0, or the
+  owner has written the date in `work_plan.md` D107. If either holds, delete
+  this entry.
+- **Why.** On 2026-10-19 the owner said the product will release under AGPL
+  and that builders may port Docmost core code (D107). AGPL-3.0 section 13
+  gives each user of a network service the right to the Corresponding Source
+  of the modified AGPL code. That duty starts with the first release that
+  carries a ported file. The repo has no `LICENSE` today.
+- **Decide.** The date of the licence change, and whether a release with
+  ported code waits for it. Ask counsel about the build tooling and the
+  parts of the repo that join the ported code.
+- **Authority:** owner, 2026-10-19. `specs/knowledge_base.md` §21.1
+- **Added:** 2026-10-19
+
 ### H-360 · Widen acb-staging-flag: NEXT_PUBLIC_ rebuilds, a production mode, and an unset that lasts · [AGENT]
 - **Check:** `deploy/hostinger/staging/acb-staging-flag` (or its successor) can set a
   `NEXT_PUBLIC_*` flag on staging and start a rebuild, and can set a flag on
