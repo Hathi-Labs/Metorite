@@ -64,9 +64,15 @@ def test_a_star_admits_every_organization_but_not_a_missing_one(registry_orgs) -
 
 
 def _gated(route: APIRoute) -> bool:
-    return any(
-        getattr(dep, "call", None) is agent_routes._require_registry_operator
-        for dep in route.dependant.dependencies
+    calls = [getattr(dep, "call", None) for dep in route.dependant.dependencies]
+    if agent_routes._require_registry_operator in calls:
+        return True
+    # The self-mutation queue, and only it, takes its own org check: a
+    # first-party org or a registry org (2026-10-19). Fence:
+    # tests/unit/test_mutation_queue_operator_only.py.
+    return (
+        route.path.startswith("/agent/mutations")
+        and agent_routes._require_mutation_reviewer in calls
     )
 
 
@@ -117,8 +123,9 @@ def test_every_route_that_needs_agents_manage_to_write_is_gated() -> None:
         writers.append(route.path)
         if not _gated(route):
             bare.append(f"{sorted(route.methods)} {route.path}")
-    # Never vacuous: the walk must see the four writers it guards.
-    assert len(writers) >= 4, writers
+    # Never vacuous: the walk must see the four registry writers and the five
+    # writers of the self-mutation queue.
+    assert len(writers) >= 9, writers
     assert not bare, bare
 
 
@@ -130,12 +137,11 @@ _NOT_REGISTRY_WRITERS = {
     ("POST", "/agent/run"), ("POST", "/agent/run/async"),
     ("POST", "/agent/run/stream"), ("POST", "/agent/run/{thread_id}/cancel"),
     ("POST", "/agent/respond-input"),
-    # The self-mutation review queue. require_internal_auth, a fixed repo.
-    ("POST", "/agent/mutations/pending/{commit_id}/approve"),
-    ("POST", "/agent/mutations/pending/{commit_id}/reject"),
-    ("POST", "/agent/mutations/pending/{commit_id}/remutate"),
-    ("DELETE", "/agent/mutations/pending/{commit_id}"),
-    ("DELETE", "/agent/mutations/audit/{run_id}"),
+    # ⚠️ The self-mutation review queue WAS listed here until 2026-10-19, as
+    # "require_internal_auth, a fixed repo". Every BFF call carries that token,
+    # so any member could approve a push. The queue now carries
+    # `_require_mutation_reviewer`, which `_gated` accepts for that prefix
+    # only. Fence: tests/unit/test_mutation_queue_operator_only.py.
     # An inbound event that starts a run of a registered agent.
     ("POST", "/agent/webhook/{source}"),
 }

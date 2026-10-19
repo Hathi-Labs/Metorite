@@ -1731,6 +1731,70 @@ async def _require_registry_operator(
     )
 
 
+#: The 403 detail of the self-mutation queue, for an org that may not review.
+_MUTATION_REVIEWER_DENIED = (
+    "Only an admin of the first-party organization or of a platform operator "
+    "organization can review the self-mutation commits of an agent."
+)
+
+
+async def _require_mutation_reviewer(
+    user: UserContext = Depends(get_current_user),
+) -> None:
+    """Only a first-party org or an operator org reviews self-mutation commits.
+
+    The org passes when it is ``organization.first_party`` or it is in
+    ``AGENT_REGISTRY_ORGS``. ``require_permission("agents:manage")`` runs
+    first on each route, so the caller is also an owner or an admin.
+
+    Why ``first_party`` and not only the registry list: self-mutation writes
+    ``pending_commit`` rows only for a first-party org (MT-0b,
+    ``orchestrator.mutation._self_mutation_permitted``), and RLS keeps each row
+    in its org. On production the first-party org is not in the registry list,
+    so the registry check alone locked out everyone who can see a row.
+
+    The org comes from the server-side ``UserContext``, never from the request.
+    ``first_party`` comes from ``_read_first_party``, the one read of that flag.
+    A missing org, a missing row or a failed read is a 403 (fail closed).
+    """
+    org = str(user.organization_id or "").strip()
+    if org:
+        allowed = _registry_orgs()
+        if "*" in allowed or org.lower() in allowed:
+            return
+        try:
+            from orchestrator.mutation import _read_first_party  # noqa: PLC0415
+
+            # Never call it with no org: it then answers for a sole org.
+            if await _read_first_party(org) is True:
+                return
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("mutation.reviewer_check_failed", error=str(exc)[:200])
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN, detail=_MUTATION_REVIEWER_DENIED,
+    )
+
+
+#: The gate of the self-mutation review queue (2026-10-19). Every route under
+#: ``/agent/mutations`` carries it, reads included.
+#:
+#: Before this, the eight routes checked only that the caller was signed in.
+#: ``require_internal_auth`` proves the Next.js server sent the call, and every
+#: BFF call carries that token. So any member of the org that owns a row, an
+#: ``employee`` included, could approve it, which pushes to the agent's remote
+#: or opens a monorepo PR with the operator's credentials. Reject and remutate
+#: reset the shared clone, and delete removes the row with no trace.
+#:
+#: Two checks, in order: an org admin (``agents:manage``, owner and admin only,
+#: migration 130), then an org that may review (``_require_mutation_reviewer``).
+#: The reads take it too, because a diff is the source of a shared agent.
+#: Fence: ``tests/unit/test_mutation_queue_operator_only.py``.
+_MUTATION_QUEUE_GATE = [
+    require_permission("agents:manage"),
+    Depends(_require_mutation_reviewer),
+]
+
+
 @router.post("/{name}/pull", summary="Pull latest commits for an agent's local clone", dependencies=[require_permission("agents:manage"), Depends(_require_registry_operator)])
 async def pull_agent(
     name: str,
@@ -3937,7 +4001,7 @@ async def get_run_status(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.get("/mutations")
+@router.get("/mutations", dependencies=_MUTATION_QUEUE_GATE)
 async def list_mutations(
     limit: int = 50,
     user: UserContext = Depends(get_current_user),
@@ -4043,7 +4107,7 @@ async def list_mutations(
 # Pending commit HITL endpoints (commit-gate flow — M2.7)
 # ---------------------------------------------------------------------------
 
-@router.get("/mutations/pending")
+@router.get("/mutations/pending", dependencies=_MUTATION_QUEUE_GATE)
 async def list_pending_commits(
     limit: int = 50,
     user: UserContext = Depends(get_current_user),
@@ -4089,7 +4153,9 @@ async def list_pending_commits(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.get("/mutations/pending/{commit_id}/diff")
+@router.get(
+    "/mutations/pending/{commit_id}/diff", dependencies=_MUTATION_QUEUE_GATE,
+)
 async def get_pending_commit_diff(
     commit_id: str,
     user: UserContext = Depends(get_current_user),
@@ -4127,7 +4193,7 @@ async def get_pending_commit_diff(
 
 @router.post(
     "/mutations/pending/{commit_id}/approve", status_code=200,
-    dependencies=[Depends(require_internal_auth)],
+    dependencies=[Depends(require_internal_auth), *_MUTATION_QUEUE_GATE],
 )
 async def approve_pending_commit(
     commit_id: str,
@@ -4411,7 +4477,7 @@ async def approve_pending_commit(
 
 @router.post(
     "/mutations/pending/{commit_id}/reject", status_code=200,
-    dependencies=[Depends(require_internal_auth)],
+    dependencies=[Depends(require_internal_auth), *_MUTATION_QUEUE_GATE],
 )
 async def reject_pending_commit(
     commit_id: str,
@@ -4500,7 +4566,7 @@ async def reject_pending_commit(
 
 @router.post(
     "/mutations/pending/{commit_id}/remutate", status_code=200,
-    dependencies=[Depends(require_internal_auth)],
+    dependencies=[Depends(require_internal_auth), *_MUTATION_QUEUE_GATE],
 )
 async def remutate_pending_commit(
     commit_id: str,
@@ -4602,7 +4668,7 @@ async def remutate_pending_commit(
 
 @router.delete(
     "/mutations/pending/{commit_id}", status_code=200,
-    dependencies=[Depends(require_internal_auth)],
+    dependencies=[Depends(require_internal_auth), *_MUTATION_QUEUE_GATE],
 )
 async def delete_pending_commit(
     commit_id: str,
@@ -4626,6 +4692,20 @@ async def delete_pending_commit(
             sess.commit()
 
         _log.info("mutation.commit_deleted", commit_id=commit_id, rows=deleted, by=reviewer)
+        if deleted:
+            # The row is gone, so the audit line is the only record that it
+            # existed and of who removed it.
+            from acb_audit import AuditEvent, record  # noqa: PLC0415
+
+            record(
+                AuditEvent(
+                    actor=f"human:{reviewer}",
+                    action="mutation_commit_deleted",
+                    target=f"pending_commit:{commit_id}",
+                    payload={"pending_commit_id": commit_id, "rows_deleted": deleted},
+                    organization_id=user.organization_id,
+                )
+            )
         return {"deleted": commit_id, "rows_deleted": deleted}
 
     except TenantUnbound:
@@ -4636,7 +4716,7 @@ async def delete_pending_commit(
 
 @router.delete(
     "/mutations/audit/{run_id}", status_code=200,
-    dependencies=[Depends(require_internal_auth)],
+    dependencies=[Depends(require_internal_auth), *_MUTATION_QUEUE_GATE],
 )
 async def dismiss_mutation_event(
     run_id: str,
@@ -4664,6 +4744,20 @@ async def dismiss_mutation_event(
             sess.commit()
 
         _log.info("mutation.audit_dismissed", run_id=run_id, rows=deleted, by=reviewer)
+        if deleted:
+            # This route deletes audit rows. A human actor writes this one, so
+            # the route never matches it and a later dismiss cannot erase it.
+            from acb_audit import AuditEvent, record  # noqa: PLC0415
+
+            record(
+                AuditEvent(
+                    actor=f"human:{reviewer}",
+                    action="mutation_audit_dismissed",
+                    target=f"run:{run_id}",
+                    payload={"run_id": run_id, "rows_deleted": deleted},
+                    organization_id=user.organization_id,
+                )
+            )
         return {"dismissed": run_id, "rows_deleted": deleted}
 
     except TenantUnbound:
