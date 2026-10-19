@@ -40,10 +40,14 @@ sha="$(git rev-parse "$ref")"
 # travels as a git bundle on stdin: the distro has no mount of C: on purpose.
 git fetch -q origin main
 w bash -lc 'cd ~/metorite && git fetch -q origin'
-tmp="$(mktemp)"; trap 'rm -f "$tmp"' EXIT
-if git bundle create -q "$tmp" "$sha" --not origin/main 2>/dev/null; then
+if ! git merge-base --is-ancestor "$sha" origin/main; then
+  # A bundle carries REFS, not bare commits, so name the commit for a moment.
+  tmp="$(mktemp)"
+  trap 'rm -f "$tmp"; git update-ref -d refs/ci-local/head 2>/dev/null' EXIT
+  git update-ref refs/ci-local/head "$sha"
+  git bundle create -q "$tmp" refs/ci-local/head --not origin/main
   w bash -c 'cat > ~/inbox.bundle' < "$tmp"
-  w bash -lc 'cd ~/metorite && git fetch -q ~/inbox.bundle 2>/dev/null; true'
+  w bash -lc 'cd ~/metorite && git fetch -q ~/inbox.bundle refs/ci-local/head'
 fi
 
 # Check out the commit, then run ITS copy of run_suite.sh. One run at a time.
