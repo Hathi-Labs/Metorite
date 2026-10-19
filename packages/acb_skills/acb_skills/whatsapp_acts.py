@@ -47,7 +47,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
-from acb_skills.whatsapp_ui import OutMessage, current_run
+from acb_skills.whatsapp_ui import BODY_MAX, OutMessage, current_run
 
 #: The acts that may go by button: the tool name, and the module that
 #: defines it. A tool of the same name in another module is not the act.
@@ -329,13 +329,25 @@ EGRESS_PARKED_TEXT = (
     "Add no buttons of your own, do not say that it ran, and stop."
 )
 
+#: What an egress call tells the model when the member could not see it
+#: whole on WhatsApp (review P1-1): its recipients and attachments do not fit.
+EGRESS_TOO_LONG = "too_long"
+EGRESS_TOO_LONG_TEXT = (
+    "{tool} did not run. This chat read an answer from the email assistant, so "
+    "the member must approve this call, and its recipients and attachments are "
+    "too long to show on WhatsApp. Tell the member to make this change in the "
+    "Metorite web app. Do not ask again for the same call."
+)
+
 #: The card of a parked egress call, as the web card says it.
 EGRESS_TITLE = "Run {tool}? It reaches outside Metorite"
 EGRESS_DETAIL = ("This chat read an answer from the email assistant, which reads "
                  "mail from outside. A mail could ask for this call.")
-#: The most characters of the arguments that the summary shows. The web card
-#: shows the same. The stored card text binds them all.
-EGRESS_SHOWN_CHARS = 600
+#: The most characters of the call's view on WhatsApp: the body limit of an
+#: interactive message. The view comes from ``egress.egress_call_view``, the
+#: one builder that the web card uses too. The stored card text binds ALL
+#: the arguments.
+EGRESS_VIEW_CHARS = BODY_MAX
 
 #: The tool name shape of ``whatsapp_pending_acts`` (migration 242).
 _ACT_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -383,6 +395,8 @@ def answer_egress(tool: str, arguments: dict[str, Any] | None) -> str | None:
       for the first call whose tool and arguments equal the stored act.
     * :data:`EGRESS_PARKED`: in a WhatsApp run with writes on and no act
       parked yet. The call is stored on the run, and it does not run.
+    * :data:`EGRESS_TOO_LONG`: the same run, but the recipients and the
+      attachments do not fit in one WhatsApp view. Nothing parks.
     * None: no WhatsApp form. The caller refuses, as before WAC-P4.
     """
     run = current_run()
@@ -397,11 +411,17 @@ def answer_egress(tool: str, arguments: dict[str, Any] | None) -> str | None:
     name = egress_act_name(str(tool or ""))
     if not run.writes or run.parked is not None or stored is None or name is None:
         return None
-    shown = json.dumps(stored, ensure_ascii=False, default=str)[:EGRESS_SHOWN_CHARS]
+    from acb_skills.egress import egress_call_view
+
+    # Review P1-1: the recipients, the subject and the attachments come
+    # first and whole. A model's argument order never hides them.
+    view = egress_call_view(tool, stored, EGRESS_VIEW_CHARS)
+    if view is None:
+        return EGRESS_TOO_LONG
     run.parked = ParkedAct(tool=name, arguments=stored,
                            card=egress_card_text(tool, stored),
                            title=EGRESS_TITLE.format(tool=tool),
-                           detail=EGRESS_DETAIL, context=f"{tool} {shown}")
+                           detail=EGRESS_DETAIL, context=view)
     return EGRESS_PARKED
 
 

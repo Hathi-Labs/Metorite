@@ -82,16 +82,10 @@ class _Store:
         #: The threads that became a shared room on the web.
         self.shared: set[str] = set()
         self._order = 0
-        #: WS-47 WAC-P4: the replay horizon that ``_replay_horizon`` gives.
-        self.horizon: int | None = None
         #: WS-47 WAC-P2: each member's memory block, and each pre-read made:
         #: (bound org, member, thread, message).
         self.memory: dict[str, str] = {}
         self.memory_reads: list[tuple[str | None, str, str, str]] = []
-
-    async def replay_horizon(self, session_id: str, message_id: str) -> int | None:
-        assert current_tenant(), "an unbound read"
-        return self.horizon
 
     async def memory_preread(self, *, user_id: str, agent_name: str, thread_id: str,
                              message: str, shared: bool = False,
@@ -333,7 +327,6 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
     monkeypatch.setattr(bot_run, "_stored_reply", st.stored_reply)
     monkeypatch.setattr(bot_run, "_waiting", st.waiting)
     monkeypatch.setattr(bot_run, "_thread_shared", st.thread_shared)
-    monkeypatch.setattr(bot_run, "_replay_horizon", st.replay_horizon)
     import gateway.memory_preread as memory_preread
 
     monkeypatch.setattr(memory_preread, "memory_preread", st.memory_preread)

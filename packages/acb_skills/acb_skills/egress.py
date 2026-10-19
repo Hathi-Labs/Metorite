@@ -36,7 +36,6 @@ from __future__ import annotations
 import contextlib
 import sys
 import threading
-import time
 import weakref
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping
@@ -79,7 +78,6 @@ __all__ = [
     "session_is_marked",
     "session_mark_state",
     "tool_name",
-    "whatsapp_mark_value",
 ]
 
 #: The artifact-context key. ``True`` means this run holds no egress tool.
@@ -161,24 +159,17 @@ class _PositiveLRU:
     An eviction never reads as "unmarked" to an async reader: a miss there
     asks Redis, and Redis keeps the mark. Each hit moves the session to the
     end, so a session that a run uses now is the last one to go. Hold
-    ``_MARKED_LOCK`` around each call.
-
-    Each entry keeps the time of a WhatsApp mark in ms (WS-47 WAC-P4), or
-    None for a mark that never ends by replay (:func:`whatsapp_mark_value`)."""
+    ``_MARKED_LOCK`` around each call."""
 
     def __init__(self, bound: int) -> None:
         self._bound = bound
-        self._items: OrderedDict[tuple[str, str], int | None] = OrderedDict()
+        self._items: OrderedDict[tuple[str, str], None] = OrderedDict()
 
-    def add(self, session: tuple[str, str], at: int | None = None) -> None:
-        self._items[session] = at
+    def add(self, session: tuple[str, str]) -> None:
+        self._items[session] = None
         self._items.move_to_end(session)
         while len(self._items) > self._bound:
             self._items.popitem(last=False)
-
-    def time_of(self, session: tuple[str, str]) -> int | None:
-        """The WhatsApp time of the entry, or None (no entry, or a sticky one)."""
-        return self._items.get(session)
 
     def __contains__(self, session: object) -> bool:
         if session not in self._items:
@@ -273,130 +264,23 @@ async def mark_untrusted_answer(ctx: Mapping[str, Any] | None = None) -> bool:
     if session is None:
         _log.warning("egress.untrusted_answer_unmarked")
         return False
-    # WS-47 WAC-P4: a mark that a WhatsApp run sets carries its time, so a
-    # later WhatsApp run can read it as clear once its turn left the replay.
-    at = _now_ms() if _in_whatsapp_run() else None
     with _MARKED_LOCK:
-        _MARKED_SESSIONS.add(session, at)
+        _MARKED_SESSIONS.add(session)
     if _minted_session(ctx if ctx is not None else _bound_context()):
         _log.info("egress.untrusted_answer_marked", store="process")
         return True
     org, thread = session
-    value: str | None = "1"
     try:
         from acb_common.tenant_redis import key, organization_scope
 
         with organization_scope(org):
-            client = get_tenant_redis()
-            mark = key(MARK_NAMESPACE, thread)
-            if at is not None:
-                value = await _whatsapp_value(client, mark, at)
-            if value is None:
-                # A mark that never ends by replay stays one: slide it only.
-                await client.expire(mark, MARK_TTL_S)
-            else:
-                await client.setex(mark, MARK_TTL_S, value)
+            await get_tenant_redis().setex(
+                key(MARK_NAMESPACE, thread), MARK_TTL_S, "1")
     except Exception as exc:  # the class only: a value never reaches a log
         _log.warning("egress.untrusted_answer_mark_failed", error=type(exc).__name__)
         return False
-    if value is None:
-        with _MARKED_LOCK:
-            _MARKED_SESSIONS.add(session, None)
     _log.info("egress.untrusted_answer_marked")
     return True
-
-
-# ── WS-47 WAC-P4: a WhatsApp mark ends when its turn leaves the replay ──────
-#
-# A WhatsApp thread never ends while the member writes in it, so a mark of
-# 400 days held every later egress call of the thread. A WhatsApp run replays
-# only the last turns of its thread (``bot_run.HISTORY_TURNS``), and the
-# batch path keeps no other copy of a turn. So a mark that a WhatsApp run
-# sets holds its time (:func:`whatsapp_mark_value`). ``bot_run`` gives each
-# run a horizon (``WhatsAppRun.replay_clear_before_ms``): the newest time
-# that its replay left out, less the longest time from a mark to its reply.
-# A WhatsApp mark older than the horizon has left the replay, and the
-# WhatsApp run of THAT thread reads it as clear. Every other run, and a mark
-# that any other run set, is as before.
-#
-# Residual risk, recorded on purpose: a later reply can restate what the
-# untrusted answer said, and that reply stays in the replay after the mark
-# ends. Fence: ``tests/unit/test_wac_untrusted_confirm.py``.
-
-#: The prefix of the value of a WhatsApp mark. The rest is its time in ms.
-_WA_PREFIX = "wa:"
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
-
-
-def _in_whatsapp_run() -> bool:
-    try:
-        from acb_skills.whatsapp_ui import current_run
-
-        return current_run() is not None
-    except Exception:
-        return False
-
-
-def whatsapp_mark_value(at: int) -> str:
-    """The Redis value of a mark that a WhatsApp run set at *at* (ms)."""
-    return f"{_WA_PREFIX}{int(at)}"
-
-
-def _mark_time(raw: Any) -> int | None:
-    """The time of a WhatsApp mark value, or None for any other value."""
-    if isinstance(raw, bytes):
-        raw = raw.decode("utf-8", "replace")
-    text = str(raw or "")
-    if not text.startswith(_WA_PREFIX):
-        return None
-    try:
-        return int(text[len(_WA_PREFIX):])
-    except ValueError:
-        return None
-
-
-async def _whatsapp_value(client: Any, mark: Any, at: int) -> str | None:
-    """The value that a WhatsApp run writes, or None to keep a sticky mark.
-
-    A mark that another run set never ends by replay, so a WhatsApp mark
-    never replaces it. A read that fails writes the WhatsApp value."""
-    try:
-        raw = await client.get(mark)
-    except Exception:
-        raw = None
-    if raw is not None and _mark_time(raw) is None:
-        return None
-    return whatsapp_mark_value(at)
-
-
-def _replay_horizon(session: tuple[str, str]) -> int | None:
-    """The replay horizon of the WhatsApp run of *session*, in ms, or None.
-
-    None outside a WhatsApp run, for a run of another thread or org, and
-    when ``bot_run`` gave no horizon. The run object is the server's own
-    (``bot_run`` opens it from the link row), never a request field."""
-    try:
-        from acb_skills.whatsapp_ui import current_run
-
-        run = current_run()
-    except Exception:
-        return None
-    if run is None:
-        return None
-    clear_before = getattr(run, "replay_clear_before_ms", None)
-    if not clear_before or getattr(run, "replay_session", None) != session[1]:
-        return None
-    if str(getattr(run, "org", "") or "") != session[0]:
-        return None
-    return int(clear_before)
-
-
-def _left_replay(at: int | None, horizon: int | None) -> bool:
-    """True when a WhatsApp mark of time *at* has left the replay."""
-    return at is not None and horizon is not None and at < horizon
 
 
 async def mark_untrusted_session(
@@ -455,48 +339,25 @@ async def session_mark_state(
     session = _session_of(ctx)
     if session is None:
         return MARK_CLEAR
-    # WS-47 WAC-P4: the WhatsApp run of this thread may read an old mark as
-    # clear. Redis decides that, never the process cache alone.
-    horizon = _replay_horizon(session)
     with _MARKED_LOCK:
-        cached = session in _MARKED_SESSIONS
-        known = _MARKED_SESSIONS.time_of(session) if cached else None
-        # A cached mark of no known time asks Redis when a horizon applies:
-        # another reader may have cached a WhatsApp mark without its time.
-        if cached and (horizon is None or (known is not None
-                                           and not _left_replay(known, horizon))):
+        if session in _MARKED_SESSIONS:
             return MARK_MARKED
     if ctx is None:
         ctx = _bound_context()
     if _minted_session(ctx):
         # A batch run minted this session, so only this process can mark it.
-        return MARK_MARKED if cached else MARK_CLEAR
+        return MARK_CLEAR
     org, thread = session
-    at: int | None = None
     try:
         from acb_common.tenant_redis import key, organization_scope
 
         with organization_scope(org):
             client = get_tenant_redis()
             mark = key(MARK_NAMESPACE, thread)
-            if horizon is None:
-                if not await client.exists(mark):
-                    return MARK_CLEAR
-            else:
-                raw = await client.get(mark)
-                if raw is None:
-                    return MARK_CLEAR
-                at = _mark_time(raw)
-                if _left_replay(at, horizon):
-                    with _MARKED_LOCK:
-                        _MARKED_SESSIONS.add(session, at)
-                    _log.info("egress.untrusted_answer_left_replay")
-                    return MARK_CLEAR
+            if not await client.exists(mark):
+                return MARK_CLEAR
             await client.expire(mark, MARK_TTL_S)
     except Exception as exc:
-        if cached:
-            # The cache holds the mark, and Redis did not say that it left.
-            return MARK_MARKED
         unknown = _card_can_show(ctx) if fail_closed is None else bool(fail_closed)
         _log.warning("egress.untrusted_answer_read_failed",
                      error=type(exc).__name__, fail_closed=unknown)
@@ -504,8 +365,7 @@ async def session_mark_state(
         # approve. A run with no card channel would lose each egress call.
         return MARK_UNKNOWN if unknown else MARK_CLEAR
     with _MARKED_LOCK:
-        # EXISTS reads no time, so the cache keeps the time it knew.
-        _MARKED_SESSIONS.add(session, at if horizon is not None else known)
+        _MARKED_SESSIONS.add(session)
     return MARK_MARKED
 
 
@@ -561,15 +421,137 @@ MAIL_STORE_WRITE_REFUSED = (
 def read_untrusted_answer(ctx: Mapping[str, Any] | None = None) -> bool:
     """The sync reader: True when this process saw the session of the run on
     this frame marked. The Copilot guard and a sync tool read it, because
-    they cannot wait for Redis. In the WhatsApp run of the thread, a mark
-    whose known time left the replay reads False (WS-47 WAC-P4)."""
+    they cannot wait for Redis."""
     session = _session_of(ctx)
     if session is None:
         return False
-    horizon = _replay_horizon(session)
     with _MARKED_LOCK:
-        return session in _MARKED_SESSIONS and not _left_replay(
-            _MARKED_SESSIONS.time_of(session), horizon)
+        return session in _MARKED_SESSIONS
+
+
+# ── The member's view of one egress call (WS-47 WAC-P4 review, P1-1) ────────
+#
+# The member says yes to an egress call after an untrusted answer: on the web
+# with a card, on WhatsApp with the Confirm button. Both showed the first 600
+# characters of the call's JSON, in the order the model chose. A long body
+# first hid ``to`` and the attachments, so a member could approve a mail to
+# an attacker. The ONE builder below puts what the member must see first and
+# in full, whatever the order of the arguments. Code decides the order.
+# Fence: ``tests/unit/test_wac_untrusted_confirm.py``.
+
+#: The fields that a member always sees in full: the recipients and the
+#: subject, in this order, at any depth of the arguments.
+CALL_KEY_FIELDS: tuple[str, ...] = ("to", "cc", "bcc", "reply_to", "subject")
+#: The fields that hold attachments. Each one shows by its name.
+CALL_ATTACHMENT_FIELDS: tuple[str, ...] = ("attachments", "attachment", "files")
+#: The most characters of the other arguments (the body) that the view shows.
+CALL_OTHER_CHARS = 600
+#: How deep the builder looks for a key field.
+_CALL_DEPTH = 6
+
+
+def _shown(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    import json
+
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _attachment_names(value: Any) -> list[str]:
+    items = value if isinstance(value, list | tuple) else [value]
+    names: list[str] = []
+    for item in items:
+        if isinstance(item, Mapping):
+            name = (item.get("name") or item.get("filename") or item.get("file_name")
+                    or item.get("path") or item.get("id"))
+            names.append(_shown(name if name is not None else item))
+        else:
+            names.append(_shown(item))
+    return names
+
+
+def _split_call(value: Any, path: str, depth: int,
+                keys: list[tuple[str, str]], rest: dict[str, Any]) -> None:
+    """Move each key field and attachment field of *value* into *keys*, as
+    ``(path, text)``, and the rest into *rest*. A call nested past
+    :data:`_CALL_DEPTH` stays whole in *rest*, and its key fields count as
+    unseen (:func:`egress_call_view` refuses it)."""
+    if not isinstance(value, Mapping) or depth > _CALL_DEPTH:
+        rest[path or "(value)"] = value
+        return
+    for name in sorted(value, key=str):
+        inner = value[name]
+        where = f"{path}.{name}" if path else str(name)
+        low = str(name).lower()
+        if low in CALL_KEY_FIELDS:
+            keys.append((where, _shown(inner)))
+        elif low in CALL_ATTACHMENT_FIELDS:
+            keys.append((where, ", ".join(_attachment_names(inner))))
+        elif isinstance(inner, Mapping):
+            _split_call(inner, where, depth + 1, keys, rest)
+        else:
+            rest[where] = inner
+
+
+def _key_rank(path: str) -> tuple[int, str]:
+    leaf = path.rsplit(".", 1)[-1].lower()
+    order = (*CALL_KEY_FIELDS, *CALL_ATTACHMENT_FIELDS)
+    return (order.index(leaf) if leaf in order else len(order), path)
+
+
+def _hides_a_key_field(value: Any, depth: int = 0, hidden: bool = False) -> bool:
+    """True when a key field sits where the builder does not look: deeper
+    than :data:`_CALL_DEPTH`, or inside a list. The walk stops at 32 levels,
+    and a value deeper than that counts as hidden."""
+    if depth > 32:
+        return True
+    if isinstance(value, list | tuple):
+        return any(_hides_a_key_field(v, depth + 1, True) for v in value)
+    if not isinstance(value, Mapping):
+        return False
+    hidden = hidden or depth > _CALL_DEPTH
+    if hidden and any(str(k).lower() in (*CALL_KEY_FIELDS, *CALL_ATTACHMENT_FIELDS)
+                      for k in value):
+        return True
+    return any(_hides_a_key_field(v, depth + 1, hidden) for v in value.values())
+
+
+def egress_call_view(tool: str, arguments: Mapping[str, Any] | None,
+                     limit: int) -> str | None:
+    """What the member reads before they approve ONE egress call, or None.
+
+    The tool name first. Then each recipient field, the subject and each
+    attachment name, in full and in a fixed order (:data:`CALL_KEY_FIELDS`,
+    :data:`CALL_ATTACHMENT_FIELDS`). Then the other arguments as JSON in key
+    order, cut with "…" to :data:`CALL_OTHER_CHARS` and to *limit*.
+
+    None when the tool name and the key fields alone do not fit in *limit*,
+    or when a key field sits too deep to show. The caller then asks no yes:
+    the member could not see what the yes approves."""
+    import json
+
+    keys: list[tuple[str, str]] = []
+    rest: dict[str, Any] = {}
+    args = dict(arguments or {})
+    if _hides_a_key_field(args):
+        return None
+    _split_call(args, "", 0, keys, rest)
+    lines = [f"Tool: {tool}"]
+    lines.extend(f"{path}: {text}" for path, text in sorted(keys, key=lambda k: _key_rank(k[0])))
+    head = "\n".join(lines)
+    if len(head) > limit:
+        return None
+    if not rest:
+        return head
+    other = json.dumps(rest, ensure_ascii=False, sort_keys=True, default=str)
+    room = min(CALL_OTHER_CHARS, limit - len(head) - len("\nOther: "))
+    if room < 2:
+        return None  # the member could not see that the call holds more
+    if len(other) > room:
+        other = other[: room - 1] + "…"
+    return f"{head}\nOther: {other}"
+
 
 #: The answer to a call that the control refuses. It names what is true of
 #: this run and claims nothing about the whole platform.

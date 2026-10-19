@@ -26,12 +26,14 @@ R7 fences named here:
   approve nothing.
 * ``wacp4-room``: a room settles no act.
 * ``wacp4-batch-refuses``: a run with no member and no channel still refuses.
-* ``wacp4-mark-replay``: a WhatsApp mark ends when its turn left the replay,
-  and only in the WhatsApp run of that thread.
+* ``wacp4-view``: the member sees every recipient, the subject and each
+  attachment of the call, first and whole, on WhatsApp and on the web card.
+  A call whose key fields do not fit asks no yes (review P1-1).
+* ``wacp4-mark-sticky``: a WhatsApp mark never ends while the thread lives,
+  as on the web (review P1-2).
 """
 from __future__ import annotations
 
-import time
 from typing import Any
 
 import orchestrator._tool_injection as ti
@@ -351,98 +353,121 @@ async def test_with_writes_off_the_call_is_refused_as_before(
     assert env.acts.rows == {} and env.prov.buttons == []
 
 
-# ── wacp4-mark-replay ───────────────────────────────────────────────────────
+# ── wacp4-view (review P1-1) ────────────────────────────────────────────────
 
-SESSION = "wa-thread-replay"
-
-
-async def _mark_in(*, whatsapp: bool) -> int:
-    """Mark SESSION of ORG_A, in a WhatsApp run or not. Returns the time."""
-    before = int(time.time() * 1000)
-    with artifact_context_scope():
-        bind_artifact_context(session_id=SESSION, agent_name="orchestrator",
-                              run_id="r0", member=MEMBER)
-        if whatsapp:
-            with wui.whatsapp_run("orchestrator", org=ORG_A, writes=True):
-                assert await egress.mark_untrusted_answer()
-        else:
-            assert await egress.mark_untrusted_answer()
-    return before
+#: A model put a long body FIRST. The first 600 characters of the JSON were
+#: the body alone, so "to" and the attachment never showed.
+_MAIL = {"body": "Hi team, the quarterly summary follows. " * 18,
+         "subject": "Q3", "to": "attacker@evil.example",
+         "cc": ["boss@fracktal.in"], "attachments": [{"name": "q3_financials.xlsx"}]}
+_KEYS = ("attacker@evil.example", "boss@fracktal.in", "q3_financials.xlsx", "Q3")
 
 
-async def _state(*, horizon: int | None, session: str = SESSION,
-                 whatsapp: bool = True) -> tuple[str, bool]:
-    with artifact_context_scope():
-        bind_artifact_context(session_id=SESSION, agent_name="orchestrator",
-                              run_id="r1", member=MEMBER)
-        if not whatsapp:
-            return await egress.session_mark_state(), egress.read_untrusted_answer()
-        with wui.whatsapp_run("orchestrator", org=ORG_A, writes=True,
-                              replay_session=session, replay_clear_before_ms=horizon):
-            return await egress.session_mark_state(), egress.read_untrusted_answer()
+async def _web_card_context(monkeypatch: pytest.MonkeyPatch, args: dict[str, Any]) -> str | None:
+    """The context of the web card that the seam asks, or None when it asks none."""
+    from acb_skills import ask_tools
+
+    asked: list[str] = []
+
+    async def _confirm(title: str, detail: str, context: str = "", **_kw: Any) -> bool:
+        asked.append(context)
+        return False
+
+    monkeypatch.setattr(ti, "_untrusted_answer_card_refusal", lambda: None)
+    monkeypatch.setattr(ask_tools, "request_confirmation", _confirm)
+    assert await ti._untrusted_answer_card("send_email", args) is False
+    return asked[0] if asked else None
 
 
-@pytest.fixture()
-def bound() -> Any:
-    token = bind_tenant(ORG_A)
-    yield
-    release_tenant(token)
-
-
-LATER = 10**15  # a horizon after any mark of this test
-
-
-async def test_a_whatsapp_mark_reads_clear_once_its_turn_left_the_replay(bound: Any) -> None:
-    at = await _mark_in(whatsapp=True)
-    assert await _state(horizon=None) == (egress.MARK_MARKED, True)
-    assert await _state(horizon=at - 1) == (egress.MARK_MARKED, True)
-    assert await _state(horizon=LATER) == (egress.MARK_CLEAR, False)
-    # Redis decides, not the cache alone: an empty cache reads the same.
-    egress._MARKED_SESSIONS.clear()
-    assert (await _state(horizon=LATER))[0] == egress.MARK_CLEAR
-    egress._MARKED_SESSIONS.clear()
-    assert (await _state(horizon=at - 1))[0] == egress.MARK_MARKED
-
-
-async def test_the_horizon_of_another_thread_or_no_whatsapp_run_clears_nothing(
-    bound: Any,
+async def test_every_recipient_and_attachment_shows_first_on_whatsapp_and_the_web(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    await _mark_in(whatsapp=True)
-    assert (await _state(horizon=LATER, session="another-thread"))[0] == egress.MARK_MARKED
-    assert (await _state(horizon=LATER, whatsapp=False))[0] == egress.MARK_MARKED
+    assert len(_MAIL["body"]) > 700
+    with wui.whatsapp_run("orchestrator", org=ORG_A, writes=True) as run:
+        assert wacts.answer_egress("send_email", dict(_MAIL)) == wacts.EGRESS_PARKED
+    summary = wacts.summary(run.parked)
+    web = await _web_card_context(monkeypatch, dict(_MAIL))
+    for text in (summary, web):
+        assert text is not None
+        for value in _KEYS:
+            assert value in text, (value, text[:200])
+        # The key fields come before the body, and the body is cut.
+        assert text.index("attacker@evil.example") < text.index("quarterly summary")
+        assert "…" in text
+    assert len(run.parked.context) <= wacts.EGRESS_VIEW_CHARS
+    assert "attacker@evil.example" in run.parked.card
 
 
-async def test_a_mark_that_another_run_set_never_ends_by_replay(bound: Any) -> None:
-    """A web run's mark has no time. A later WhatsApp mark keeps it sticky."""
-    await _mark_in(whatsapp=False)
-    assert (await _state(horizon=LATER))[0] == egress.MARK_MARKED
-    await _mark_in(whatsapp=True)
-    egress._MARKED_SESSIONS.clear()
-    assert (await _state(horizon=LATER))[0] == egress.MARK_MARKED
+def test_the_order_of_the_arguments_never_changes_the_view() -> None:
+    from acb_skills.egress import egress_call_view
+
+    flipped = dict(reversed(list(_MAIL.items())))
+    assert egress_call_view("send_email", _MAIL, 1024) == egress_call_view(
+        "send_email", flipped, 1024)
 
 
-async def test_a_new_whatsapp_mark_in_the_replay_holds_again(bound: Any) -> None:
-    first = await _mark_in(whatsapp=True)
-    assert (await _state(horizon=first + 1))[0] == egress.MARK_CLEAR
-    second = await _mark_in(whatsapp=True)
-    assert (await _state(horizon=second - 1))[0] == egress.MARK_MARKED
+def test_a_nested_recipient_shows_and_one_in_a_list_asks_no_yes() -> None:
+    from acb_skills.egress import egress_call_view
+
+    nested = {"message": {"body": "x" * 900, "to": "a@evil.example"}}
+    assert "message.to: a@evil.example" in (egress_call_view("send", nested, 1024) or "")
+    listed = {"messages": [{"body": "x", "to": "a@evil.example"}]}
+    assert egress_call_view("send", listed, 1024) is None
 
 
-async def test_after_the_replay_moved_on_the_call_runs_with_no_confirm(env: _Env) -> None:
-    """End to end: the turn that marked the thread left the replay of a
-    later run (``bot_run._replay_horizon``), so its call needs no Confirm."""
+async def test_recipients_too_long_for_the_channel_ask_no_yes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    many = {"body": "Hi", "to": [f"person{i}@example.com" for i in range(60)]}
+    with wui.whatsapp_run("orchestrator", org=ORG_A, writes=True) as run:
+        assert wacts.answer_egress("send_email", many) == wacts.EGRESS_TOO_LONG
+    assert run.parked is None
+    held = ti._untrusted_answer_hold_sync("send_email", many)
+    assert held is not None and "did not run" in held
+    huge = {"to": [f"person{i}@example.com" for i in range(300)]}
+    assert await _web_card_context(monkeypatch, huge) is None
+
+
+async def test_a_too_long_call_on_whatsapp_tells_the_member_to_use_the_web_app(
+    env: _Env,
+) -> None:
+    many = {"url": URL, "to": [f"person{i}@example.com" for i in range(60)]}
+    await _ask(env, many)
+
+    assert REACHED == []
+    (out,) = env.world.agent.outputs
+    assert out == wacts.EGRESS_TOO_LONG_TEXT.format(tool="fetch_page")
+    assert "web app" in out
+    assert env.acts.rows == {} and env.prov.buttons == []
+
+
+# ── wacp4-mark-sticky (review P1-2) ─────────────────────────────────────────
+
+
+async def test_a_mark_whose_turn_left_the_replay_still_parks_the_call(env: _Env) -> None:
+    """Decision of review P1-2: a WhatsApp mark is sticky, as on the web.
+    The member pays one tap for each egress call, and the call still works
+    through the Confirm. Here the marking turn is 30 rows behind, far past
+    the replay of :data:`bot_run.HISTORY_TURNS`."""
     env.world.agent = _EgressAgent(None)
     await _post_and_run(_message("Read my mail"))
+    (sid,) = env.world.store.threads
+    for i in range(30):
+        env.world.store.threads[sid].append(
+            {"id": f"old-{i}", "role": ("user", "assistant")[i % 2], "content": "ok"})
+    assert 30 > bot_run.HISTORY_TURNS
     env.world.agent.mark = False
     env.world.agent.script.append({"url": URL})
-    env.world.store.horizon = LATER
     await _post_and_run(_message(ASK))
 
-    assert REACHED == [{"url": URL}]
-    assert env.acts.rows == {}
+    assert REACHED == [], "an old mark let the call reach out with no Confirm"
+    assert env.world.agent.outputs[-1] == wacts.EGRESS_PARKED_TEXT
+    assert _act(env)["state"] == "pending"
 
 
-def test_the_horizon_bound_covers_the_longest_run() -> None:
-    """A mark comes before its run's reply by at most the run's time limit,
-    so the horizon is the newest dropped row less more than that."""
-    assert bot_run.MARK_TO_REPLY_MS > bot_run.RUN_TIMEOUT_S * 1000
+def test_no_code_reads_a_replay_horizon_for_the_mark() -> None:
+    import inspect
+
+    src = inspect.getsource(egress) + inspect.getsource(bot_run) + inspect.getsource(wui)
+    for word in ("replay_horizon", "replay_clear_before", "_left_replay"):
+        assert word not in src, word

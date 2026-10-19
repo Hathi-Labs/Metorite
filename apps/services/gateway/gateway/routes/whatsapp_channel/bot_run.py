@@ -540,8 +540,8 @@ SELECT content FROM chat_message
 #: answers, not by its own time: a newer text's turn was written before the
 #: 200, so the reply to an older text is LATER than this turn and still
 #: belongs here, and the reply to a NEWER text does not (a retry).
-_HISTORY_ROWS = f"""
-  FROM chat_message m
+_HISTORY_SQL = f"""
+SELECT role, content FROM chat_message m
  WHERE m.session_id = :sid
    AND m.id <> :mid
    AND m.role IN ('user', 'assistant')
@@ -556,14 +556,8 @@ _HISTORY_ROWS = f"""
    )
    AND NOT EXISTS (SELECT 1 FROM chat_session s WHERE s.id = :sid AND {_ROOM_SQL})
  ORDER BY timestamp_ms DESC, id DESC
+ LIMIT :n
 """
-
-_HISTORY_SQL = f"SELECT role, content {_HISTORY_ROWS} LIMIT :n"
-
-#: WS-47 WAC-P4: the newest row that the replay of this turn leaves out, by
-#: the same rows and the same order as :data:`_HISTORY_SQL`. No row: the
-#: replay holds the whole thread.
-_DROPPED_SQL = f"SELECT m.timestamp_ms {_HISTORY_ROWS} OFFSET :n LIMIT 1"
 
 _EXPIRE_SQL = """
 UPDATE whatsapp_bot_messages
@@ -850,39 +844,6 @@ async def _thread_turns(
     history = [{"role": str(r["role"]), "content": str(r["content"] or "")}
                for r in reversed(rows)]
     return str(turn["content"] or ""), history
-
-
-#: WS-47 WAC-P4: the longest time from an untrusted-answer mark to the reply
-#: of its run, in ms. A run ends within :data:`RUN_TIMEOUT_S`, and its reply
-#: is written after the parts are built, so 10 minutes more is a wide bound.
-MARK_TO_REPLY_MS = (RUN_TIMEOUT_S + 10 * 60) * 1000
-
-
-async def _replay_horizon(session_id: str, message_id: str) -> int | None:
-    """The untrusted-answer horizon of this turn's run, in ms, or None.
-
-    A WhatsApp mark older than it has left the replay: the newest row that
-    the replay leaves out is newer than the reply of the run that set the
-    mark (``acb_skills.egress``). None when the replay holds the whole
-    thread, or the read failed. Then the mark is read as before."""
-    try:
-        async with tenant_session() as db:
-            turn = (await db.execute(
-                text(_TURN_SQL), {"sid": session_id, "mid": message_id},
-            )).mappings().first()
-            if turn is None:
-                return None
-            dropped = (await db.execute(text(_DROPPED_SQL), {
-                "sid": session_id, "mid": message_id,
-                "ts": int(turn["timestamp_ms"]), "n": HISTORY_TURNS,
-            })).first()
-    except Exception as exc:  # the safe side: the mark holds
-        _log.warning("whatsapp_channel.run.horizon_failed",
-                     error_type=type(exc).__name__)
-        return None
-    if dropped is None or dropped[0] is None:
-        return None
-    return int(dropped[0]) - MARK_TO_REPLY_MS
 
 
 # ── Before the 200 ──────────────────────────────────────────────────────────
@@ -1692,10 +1653,6 @@ async def _model_answer(req: RunRequest, message: str,
                             native=native, writes=writes, documents=documents,
                             memory_context=await _memory_preread(req, message,
                                                                  shared=shared))
-    # WAC-P4: the untrusted-answer mark of this thread ends when the turn
-    # that set it has left this run's replay.
-    horizon = (await _replay_horizon(req.chat_session_id, turn_id(req.wamid))
-               if native else None)
     if native:
         await _show_typing(req)
     _WAITING_ON_MODEL[req.message_id] = req
@@ -1710,9 +1667,7 @@ async def _model_answer(req: RunRequest, message: str,
                 AGENT, org=req.organization_id,
                 views=views.runner(req.member_email, req.organization_id),
                 notify=_notifier(req), writes=writes,
-                document=_document_renderer(req) if documents else None,
-                replay_session=req.chat_session_id,
-                replay_clear_before_ms=horizon)
+                document=_document_renderer(req) if documents else None)
                 if native else contextlib.nullcontext()) as wa_run:
             result = await _still_working(req, wa_run, asyncio.wait_for(
                 _executor()(

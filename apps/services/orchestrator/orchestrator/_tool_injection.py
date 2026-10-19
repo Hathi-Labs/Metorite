@@ -1094,6 +1094,23 @@ def _gate_injected_tool(fn: Any) -> Any:
 #: The answers of :func:`_whatsapp_untrusted_answer` (``whatsapp_acts``).
 _WA_APPROVED = "approved"
 _WA_PARKED = "parked"
+_WA_TOO_LONG = "too_long"
+
+#: The most characters of the call's view on the web card: the context limit
+#: of ``ask_tools.request_confirmation``. Review P1-1.
+WEB_CALL_VIEW_CHARS = 4000
+
+
+def _whatsapp_hold_text(verdict: str | None, tool_name: str) -> str | None:
+    """The tool's answer for a WhatsApp verdict that holds the call, or None
+    when the verdict does not hold it (approved, or no WhatsApp form)."""
+    if verdict == _WA_PARKED:
+        return _whatsapp_parked_text()
+    if verdict == _WA_TOO_LONG:
+        from acb_skills.whatsapp_acts import EGRESS_TOO_LONG_TEXT
+
+        return EGRESS_TOO_LONG_TEXT.format(tool=tool_name)
+    return None
 
 
 async def _untrusted_answer_hold(tool_name: str, call_kwargs: dict[str, Any]) -> str | None:
@@ -1106,8 +1123,9 @@ async def _untrusted_answer_hold(tool_name: str, call_kwargs: dict[str, Any]) ->
     verdict = _whatsapp_untrusted_answer(tool_name, call_kwargs)
     if verdict == _WA_APPROVED:
         return None
-    if verdict == _WA_PARKED:
-        return _whatsapp_parked_text()
+    held = _whatsapp_hold_text(verdict, tool_name)
+    if held is not None:
+        return held
     if await _untrusted_answer_card(tool_name, call_kwargs):
         return None
     return UNTRUSTED_ANSWER_REFUSED.format(tool=tool_name)
@@ -1119,9 +1137,8 @@ def _untrusted_answer_hold_sync(tool_name: str, call_kwargs: dict[str, Any]) -> 
     verdict = _whatsapp_untrusted_answer(tool_name, call_kwargs)
     if verdict == _WA_APPROVED:
         return None
-    if verdict == _WA_PARKED:
-        return _whatsapp_parked_text()
-    return UNTRUSTED_ANSWER_REFUSED.format(tool=tool_name)
+    return (_whatsapp_hold_text(verdict, tool_name)
+            or UNTRUSTED_ANSWER_REFUSED.format(tool=tool_name))
 
 
 def _whatsapp_untrusted_answer(tool_name: str, call_kwargs: dict[str, Any]) -> str | None:
@@ -1224,22 +1241,30 @@ def _untrusted_answer_card_refusal() -> str | None:
 async def _untrusted_answer_card(tool_name: str, call_kwargs: dict[str, Any]) -> bool:
     """The member's card for one egress call after an untrusted answer. True
     only when the member approved it. A run that cannot show a card, and a
-    fault, are a no at once (round 3)."""
-    import json
+    fault, are a no at once (round 3).
 
+    WS-47 review P1-1: the card shows the call through
+    ``egress.egress_call_view``, the one builder that WhatsApp uses too. The
+    recipients, the subject and the attachments come first and whole. A call
+    whose key fields do not fit gets no card, and so a no."""
     refusal = _untrusted_answer_card_refusal()
     if refusal is not None:
         _log.info("permission.untrusted_answer_refused", tool=tool_name, outcome=refusal)
         return False
     try:
         from acb_skills.ask_tools import request_confirmation
+        from acb_skills.egress import egress_call_view
 
-        shown = json.dumps(call_kwargs or {}, ensure_ascii=False, default=str)[:600]
+        view = egress_call_view(tool_name, call_kwargs, WEB_CALL_VIEW_CHARS)
+        if view is None:
+            _log.info("permission.untrusted_answer_refused", tool=tool_name,
+                      outcome="view_too_long")
+            return False
         answer = await request_confirmation(
             f"Run {tool_name}? It reaches outside Metorite",
             "This chat read an answer from the email assistant, which reads "
             "outside email. A mail could ask for this call.",
-            f"{tool_name} {shown}",
+            view,
         )
         return answer is True
     except asyncio.CancelledError:
