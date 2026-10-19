@@ -341,6 +341,12 @@ Rules that make it work:
 
   Use `haiku` for a lookup with no judgement. `/next-ticket` step 1c holds the
   table per role. Fence: `tests/unit/test_agent_model_routing.py`.
+- **Build first. Harden when the feature works.** Owner directive,
+  2026-10-19. In build, only the product tests and the SAFETY fences block.
+  The PROCESS fences and STE lint warn, and the loop is implement then
+  verify. One `harden` PR per feature runs the full review and makes them
+  block. A HIGH-tier slice keeps the full loop. Contract:
+  `engineering_practice.md` §7a. Lists: `tests/fences.json`.
 - **The reviewer hunts for the case where this is wrong.** An agent asked "is
   this correct?" says yes.
 - **Re-verify every anchor at dispatch** (file paths, line numbers, migration

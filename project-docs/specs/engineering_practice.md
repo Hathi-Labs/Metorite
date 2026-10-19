@@ -379,10 +379,10 @@ them. A real bug in the PR caused 9. Each red run cost about 30 minutes.
   money, and the deploy and CI path.
 - The PROCESS fences are advisory. They guard naming, docs, registries, the
   design system and source-string pins. CI shows a warning and goes on.
-- STE lint is advisory. ⏳ The hook change waits on the owner (HANDOFF
-  H-361). Until then the hook still blocks.
-- The agent loop is implement, then verify. ⏳ `next-ticket.md` carries this
-  rule after H-361. The adversarial review, the
+- STE lint is advisory. The hook reports an error and goes on. The
+  hardening pass sets `STE_LINT_BLOCK=1`, and then it blocks.
+- The agent loop is implement, then verify (`/next-ticket` step 1d). The
+  adversarial review, the
   visual review, the board row, the spec header (R4) and new fence tests (R7)
   wait for the hardening pass.
 - A HIGH-tier slice keeps the full loop: tenancy, RLS, auth, identity, a
