@@ -70,6 +70,19 @@ nothing; the thing nobody wrote down costs a session.
 - **Authority:** `specs/staging_and_daily_release.md` §5.10 and §5.11
 - **Added:** 2026-10-16 · WS-38 staging session
 
+### H-361 · Raise the WSL2 CPU cap, so local CI runs in about 10 minutes · [OWNER]
+- **Check:** `grep -E "^processors=" ~/.wslconfig` on the owner's PC reads 16
+  or more. If it does, delete this entry.
+- **Why:** local CI (`bash scripts/ci_local.sh`) passed in 17.7 minutes on
+  2026-10-19. Each of the six shards took about 16 minutes, because
+  `.wslconfig` caps ALL of WSL2 at 8 processors and 16 GB. The PC has 28
+  cores and 64 GB.
+- **Do this (owner):** in `C:\Users\<you>\.wslconfig`, set `processors=20`
+  and `memory=32GB`. Then run `wsl --shutdown` at a quiet moment, because it
+  stops Docker Desktop and every WSL window for a few seconds.
+- **Authority:** `specs/engineering_practice.md` §7a
+- **Added:** 2026-10-19 · CI speed-up session
+
 ### H-283 · Prove the first `credit_draw` row on production · [AGENT]
 - **Check:** on the box, query the Console database:
   `SELECT count(*), max(created_at) FROM credit_draw;`. A count above zero
