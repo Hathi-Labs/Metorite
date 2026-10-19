@@ -57,7 +57,7 @@ Fences: ``tests/unit/test_crm_questions.py`` and
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -389,12 +389,16 @@ class QuestionChoiceModel(BaseModel):
     records: int | None = None
     #: A ``revenue`` choice: the labels of its modules.
     modules: list[str] | None = None
+    #: CRM-Q33 part 5: "Includes GST", "Excludes GST", "After TDS".
+    evidence: list[str] | None = None
 
 
 class QuestionOptionModel(BaseModel):
     value: str
     label: str
     fill: float | None = None
+    #: CRM-Q33 part 5: the evidence of a money field.
+    evidence: list[str] | None = None
 
 
 class ProposalModel(BaseModel):
@@ -444,6 +448,12 @@ class QuestionModel(BaseModel):
     #: CRM-Q32-8: the proposals of the members, newest last. A proposal that
     #: equals the answer in use is left out.
     proposals: list[ProposalModel] = Field(default_factory=list)
+    #: CRM-Q33 part 5: the fields whose sum a business rule points at.
+    suggested_sum: list[str] = Field(default_factory=list)
+    #: CRM-Q33 part 4: on a part in use that an admin set, who set it, by
+    #: display name ("A member" with no name, never an email), and when.
+    set_by: str | None = None
+    set_at: str | None = None
 
 
 class QuestionsModel(BaseModel):
@@ -459,8 +469,122 @@ class QuestionsModel(BaseModel):
     plan: int | None = None
 
 
-def _model(q: qs.Question, proposals: Sequence[ProposalModel] = ()) -> QuestionModel:
-    return QuestionModel(**qs.wire(q), proposals=list(proposals))
+def _model(q: qs.Question, proposals: Sequence[ProposalModel] = (),
+           who: tuple[str, str] | None = None) -> QuestionModel:
+    return QuestionModel(**qs.wire(q), proposals=list(proposals),
+                         set_by=who[0] if who else None, set_at=who[1] if who else None)
+
+
+#: CRM-Q33 part 4: the bucket of ``zoho:questions`` that records who wrote
+#: the answer in use of each question, and when: question id → ``{"member",
+#: "at"}``. Each admin write records it. Only this module reads it.
+ANSWERED_BY = "answered_by"
+
+
+async def record_answered(db: Any, org: str, question_ids: Sequence[str], member: str) -> None:
+    """Record that *member* wrote the answer of each of *question_ids* now,
+    in the caller's transaction, after the plan lock (the lock order). The
+    member comes from ``UserContext`` only (R5, R11). Dark: an org outside
+    ``CRM_ANSWER_FIRST_ORGS`` records nothing."""
+    from gateway.crm_sync import runs
+    from gateway.routes.crm.flags import answer_first_allowed
+
+    if not answer_first_allowed(org):
+        return
+    at = datetime.now(UTC).isoformat()
+    who = (member or "").strip().lower()
+    for qid in dict.fromkeys(str(i) for i in question_ids if i):
+        await runs.merge_cursor_entry(db, org, qs.QUESTIONS_ROW, ANSWERED_BY, qid,
+                                      {"member": who, "at": at})
+
+
+async def purge_member_state(db: Any, org: str, email: str) -> int:
+    """The member purge of ``zoho:questions`` (CRM-Q33 fix round 1, P2), in
+    the caller's transaction: the member's own proposals go, and the record
+    of who set an answer keeps its time and loses the address. Returns the
+    count of entries that changed. It locks the cursor row first."""
+    from gateway.crm_sync import runs
+
+    me = (email or "").strip().lower()
+    if "@" not in me:
+        return 0
+    state = await runs.lock_cursor(db, org, qs.QUESTIONS_ROW)
+    changed = 0
+    for qid, entries in qs.proposals_of(state).items():
+        kept = [p for p in entries if p["member"] != me]
+        if len(kept) == len(entries):
+            continue
+        changed += len(entries) - len(kept)
+        if kept:
+            await runs.merge_cursor_entry(db, org, qs.QUESTIONS_ROW, qs.PROPOSALS, qid, kept)
+        else:
+            await runs.drop_cursor_entry(db, org, qs.QUESTIONS_ROW, qs.PROPOSALS, qid)
+    raw = state.get(ANSWERED_BY) if isinstance(state, Mapping) else None
+    for qid, entry in (raw.items() if isinstance(raw, Mapping) else ()):
+        if isinstance(entry, Mapping) and str(entry.get("member") or "").lower() == me:
+            changed += 1
+            await runs.merge_cursor_entry(db, org, qs.QUESTIONS_ROW, ANSWERED_BY, str(qid),
+                                          {"member": "", "at": str(entry.get("at") or "")})
+    return changed
+
+
+async def forget_member_keys(org: str, email: str) -> int:
+    """The member purge of the CRM keys in tenant Redis (CRM-Q33 fix round
+    1, P2): a held rule, a pending WhatsApp ask, a late pick and a hold of
+    the member. Returns the count of keys removed. A Redis fault only logs:
+    each key expires in a day at most."""
+    from acb_common.tenant_redis import key, match, organization_scope
+    from gateway.routes.crm.rules import PENDING_NAMESPACE
+    from gateway.routes.crm.text_asks import NAMESPACE as TEXT_ASK_NAMESPACE
+
+    me = (email or "").strip().lower()
+    if "@" not in me:
+        return 0
+    removed = 0
+    try:
+        with organization_scope(org):
+            redis = _redis()
+            # The member is the first part of these keys.
+            for ns in (PENDING_NAMESPACE, TEXT_ASK_NAMESPACE, HOLD_NAMESPACE):
+                head = key(ns, me).value + ":"
+                async for raw in redis.scan_iter(match(ns, me)):
+                    name = raw.decode() if isinstance(raw, bytes) else str(raw)
+                    if name.startswith(head) and name[len(head):]:
+                        removed += int(await redis.delete(key(ns, me, name[len(head):])) or 0)
+            # A late pick ends with the member.
+            head = key(ANSWERED_NAMESPACE, "x").value[:-1]
+            async for raw in redis.scan_iter(match(ANSWERED_NAMESPACE)):
+                name = raw.decode() if isinstance(raw, bytes) else str(raw)
+                rest = name[len(head):] if name.startswith(head) else ""
+                qid, _sep, who = rest.rpartition(":")
+                if qid and who == me:
+                    removed += int(await redis.delete(key(ANSWERED_NAMESPACE, qid, me)) or 0)
+    except Exception as exc:
+        _log.warning("crm.questions.purge_keys_failed", organization_id=org,
+                     error_type=type(exc).__name__)
+    return removed
+
+
+async def _answered_wire(db: Any, org: str, questions: Sequence[qs.Question],
+                         ) -> dict[str, tuple[str, str]]:
+    """Who set each admin answer of *questions*, by display name, and when.
+    One read of the cursor row and one read of the directory."""
+    from gateway.crm_sync import runs
+    from gateway.routes.people.core import names_of
+
+    wanted = {q.id for q in questions if q.by == "admin"}
+    if not wanted:
+        return {}
+    cursors = await runs.read_cursors(db, org, qs.QUESTIONS_ROW)
+    state = getattr(cursors.get(qs.QUESTIONS_ROW), "state", None) or {}
+    raw = state.get(ANSWERED_BY) if isinstance(state, Mapping) else None
+    found = {qid: e for qid, e in (raw.items() if isinstance(raw, Mapping) else ())
+             if qid in wanted and isinstance(e, Mapping) and isinstance(e.get("member"), str)}
+    if not found:
+        return {}
+    names = await names_of(db, {str(e["member"]) for e in found.values()})
+    return {qid: (names.get(str(e["member"]).lower()) or qs.A_MEMBER, str(e.get("at") or ""))
+            for qid, e in found.items()}
 
 
 async def _proposals_wire(db: Any, inputs: qs.Inputs, questions: Sequence[qs.Question],
@@ -512,10 +636,15 @@ async def list_questions(
         found = qs.build(inputs)
         extra = qs.answered(inputs) if everything else []
         proposals = await _proposals_wire(db, inputs, [*found[:limit], *extra])
+        # CRM-Q33: the evidence of GST on each money choice, and the steer of
+        # the business rules (an org on CRM_ANSWER_FIRST_ORGS only).
+        steer = await steering(db, org, _member(user), inputs, found[:limit])
+        shown = steer.apply(found[:limit], inputs) if steer is not None else found[:limit]
+        who = await _answered_wire(db, org, extra) if steer is not None else {}
     return QuestionsModel(
         open=len(found), more=max(0, len(found) - limit),
-        shown=[_model(q, proposals.get(q.id, ())) for q in found[:limit]],
-        answered=[_model(q, proposals.get(q.id, ())) for q in extra],
+        shown=[_model(q, proposals.get(q.id, ())) for q in shown],
+        answered=[_model(q, proposals.get(q.id, ()), who.get(q.id)) for q in extra],
         plan=int(approved.version) if approved is not None else None,
     )
 
@@ -744,6 +873,8 @@ async def answer_question(
             # CRM-Q32-8: an admin write of a part clears its proposals. The
             # plan lock is held, so the cursor row comes second.
             await clear_proposals(db, org, [question_id])
+            # CRM-Q33 part 4: who wrote it, and when.
+            await record_answered(db, org, [question_id], by)
     except DBAPIError as exc:
         conflict = _guard_db(exc)
         if conflict is not None:
@@ -893,6 +1024,7 @@ async def accept_best(
                 row = await apply_catalogue(db, items, by=by, org=org) or approved
                 await refresh_seen(db, org)
                 await clear_proposals(db, org, [q.id for q, _best in guesses])
+                await record_answered(db, org, [q.id for q, _best in guesses], by)
     except DBAPIError as exc:
         conflict = _guard_db(exc)
         if conflict is not None:
@@ -959,11 +1091,13 @@ def _card_option_key(payload: Any, answer: str) -> tuple[str, str, str] | None:
     return (qid, key, said) if key else None
 
 
-async def _server_label(org: str, question_id: str, option: str) -> str | None:
+async def _server_label(org: str, question_id: str, option: str,
+                        member: str | None = None) -> str | None:
     """The label that the server's own card of *question_id* shows for the
     option *option* now, or None: the question as ``/ask`` reads it, with
-    its masked samples, through ``crm_tools.card_option_label``. One tenant
-    session of *org*, which the caller took from the session (R5)."""
+    its masked samples and (CRM-Q33) the same steering for *member*, through
+    ``crm_tools.card_option_label``. One tenant session of *org*, which the
+    caller took from the session (R5)."""
     from acb_common.db import bind_tenant, release_tenant
     from acb_skills.crm_tools import card_option_label
 
@@ -973,17 +1107,50 @@ async def _server_label(org: str, question_id: str, option: str) -> str | None:
             inputs = await load(db, org, full=False)
             if inputs is None:
                 return None
-            q = _chat_questions(inputs, True).get(question_id)
-            if q is None:
+            inputs, picked, steer = await chat_card_questions(db, org, inputs, [question_id],
+                                                              True, member)
+            if not picked:
                 return None
-            inputs = await samples(db, org, inputs, [q])
-            q = _chat_questions(inputs, True).get(question_id)
-            if q is None:
-                return None
+            q = picked[0]
     finally:
         release_tenant(token)
-    wire = _ask_model(q, inputs, member="", admin=False, held=False).model_dump()
+    wire = _ask_model(q, inputs, member="", admin=False, held=False, steer=steer).model_dump()
     return card_option_label(wire, option)
+
+
+async def _rule_label(org: str, member: str, qid: str, option: str,
+                      shown: Any = None) -> str | None:
+    """The label of the option *option* of the confirm card of a held rule
+    (CRM-Q33 part 3), or None when *member* holds no such rule. Fix round 1:
+    the card must show the exact words that the server holds, as the server
+    builds them, so a member never confirms other words."""
+    from acb_skills.ask_tools import QUESTION_TEXT_MAX, clip_words
+    from gateway.routes.crm.rules import (
+        OPTION_LABELS,
+        RULE_ID_PREFIX,
+        confirm_question,
+        pending_rule,
+    )
+
+    token = qid[len(RULE_ID_PREFIX):]
+    if option not in OPTION_LABELS:
+        return None
+    held = await pending_rule(org, member.strip().lower(), token)
+    if held is None:
+        return None
+    question, why = confirm_question(held["body"], held["scope"])
+    if clip_words(f"{question}\n\n{why}", QUESTION_TEXT_MAX) != shown:
+        return None
+    return OPTION_LABELS[option]
+
+
+def _shown_question(payload: Any) -> str | None:
+    """The question text of the one question of a stored card, or None."""
+    found = payload.get("questions") if isinstance(payload, Mapping) else None
+    if not isinstance(found, list) or len(found) != 1 or not isinstance(found[0], Mapping):
+        return None
+    text_ = found[0].get("question")
+    return text_ if isinstance(text_, str) else None
 
 
 async def record_late_answer(org: str, member: str, kind: str, payload: Any,
@@ -1008,7 +1175,9 @@ async def record_late_answer(org: str, member: str, kind: str, payload: Any,
     # the same label for it: a forged card ("Yes, continue" over the key
     # payment_in) records nothing.
     try:
-        expected = await _server_label(org, qid, option)
+        expected = (await _rule_label(org, member, qid, option, _shown_question(payload))
+                    if qid.startswith("rule:")
+                    else await _server_label(org, qid, option, member.strip().lower()))
     except Exception as exc:
         _log.warning("crm.questions.late_answer_check_failed", organization_id=org,
                      error_type=type(exc).__name__)
@@ -1082,12 +1251,16 @@ async def clear_proposals(db: Any, org: str, question_ids: Sequence[str]) -> Non
             await runs.drop_cursor_entry(db, org, qs.QUESTIONS_ROW, qs.PROPOSALS, qid)
 
 
-async def after_admin_write(db: Any, org: str, question_ids: Sequence[str]) -> None:
+async def after_admin_write(db: Any, org: str, question_ids: Sequence[str],
+                            by: str | None = None) -> None:
     """The step of each admin write of a part that another module makes
     (the catalogue PUT): it clears what the members proposed for those
     questions. Only this module and ``crm_sync/questions.py`` know the
-    proposals, and a scan fences it (CRM-Q32-8 fix round)."""
+    proposals, and a scan fences it (CRM-Q32-8 fix round). With *by*, it
+    records who wrote them and when (CRM-Q33 part 4)."""
     await clear_proposals(db, org, question_ids)
+    if by:
+        await record_answered(db, org, question_ids, by)
 
 
 def _member(user: UserContext) -> str:
@@ -1180,6 +1353,24 @@ class AskChoiceModel(BaseModel):
     fill: float | None = None
     #: Masked samples, never a raw value of a person.
     samples: list[str] = Field(default_factory=list)
+    #: CRM-Q33 part 5: "Includes GST", "Excludes GST", "After TDS".
+    evidence: list[str] = Field(default_factory=list)
+
+
+class AssumeModel(BaseModel):
+    """CRM-Q33 part 1: the best assumption of an answer that depends on an
+    open question. ``fields`` are real field keys. Two or more read as ONE
+    sum (``field=A+B+C`` of the aggregate). ``how`` names each field and
+    what it includes, and ``why`` says what the assumption rests on."""
+
+    fields: list[str]
+    label: str
+    how: str
+    why: str
+    #: One other field and its words, for one more total when it is cheap.
+    alternative: dict[str, str] | None = None
+    #: A revenue assumption: the meaning it takes.
+    value: str | None = None
 
 
 class MyProposalModel(BaseModel):
@@ -1220,6 +1411,13 @@ class AskQuestionModel(BaseModel):
     #: An ``amount`` that could be a sum of fields (CRM-Q32-9): a CRM admin
     #: sets a sum in CRM settings.
     sums: bool = False
+    #: CRM-Q33: the org answers first (``CRM_ANSWER_FIRST_ORGS``). The tool
+    #: then gives the figure on :attr:`assume`, with how it got it, and asks
+    #: one question after it, never before.
+    answer_first: bool = False
+    assume: AssumeModel | None = None
+    #: The fields whose sum a business rule points at (part 5).
+    suggested_sum: list[str] = Field(default_factory=list)
 
 
 class AskOut(BaseModel):
@@ -1229,17 +1427,19 @@ class AskOut(BaseModel):
 
 
 def _ask_model(q: qs.Question, inputs: qs.Inputs, *, member: str, admin: bool,
-               held: bool) -> AskQuestionModel:
+               held: bool, steer: Steering | None = None) -> AskQuestionModel:
     mine = qs.my_proposal(inputs.proposals.get(q.id, ()), member)
     if mine is not None and qs.equals_current(q, mine["value"]):
         mine = None
     open_q = q.reason != qs.REASON_ANSWERED
     current = list(q.current) if isinstance(q.current, tuple) else q.current
+    assume = steer.assume(q) if steer is not None and open_q else None
     return AskQuestionModel(
         id=q.id, kind=q.kind, module=q.module, label=q.label, part=q.part, reason=q.reason,
         question=qs.ask_sentence(q), header=qs.ask_header(q), why=q.why,
         choices=[AskChoiceModel(value=c.value, label=c.label, best=c.best, fill=c.fill,
-                                samples=list(c.samples)) for c in q.choices],
+                                samples=list(c.samples), evidence=qs.evidence_labels(c.evidence))
+                 for c in q.choices],
         none=q.none, current=current,
         current_label=(qs.value_label(q, q.current) if not open_q
                        and not isinstance(q.current, tuple) else None),
@@ -1249,7 +1449,104 @@ def _ask_model(q: qs.Question, inputs: qs.Inputs, *, member: str, admin: bool,
         override=(qs.override_of(q, mine["value"], _purposes(inputs))
                   if mine is not None and open_q else None),
         sums=bool(q.sums),
+        answer_first=steer is not None,
+        assume=AssumeModel(**assume) if assume is not None else None,
+        suggested_sum=list(q.suggested_sum),
     )
+
+
+# ── Answer first, and the evidence of GST (CRM-Q33, §18.15) ─────────────────
+
+
+@dataclass
+class Steering:
+    """What CRM-Q33 adds to the questions of one read, for an org on
+    ``CRM_ANSWER_FIRST_ORGS``: the business rule that asks for amounts net
+    of GST, if any, and the evidence of each money field of each amount
+    question (one bounded statement for each module). Pure after it is read."""
+
+    rule: str | None = None
+    evidence: dict[str, dict[str, tuple[str, ...]]] = field(default_factory=dict)
+    before: dict[str, qs.Question] = field(default_factory=dict)
+    sources: dict[str, Any] = field(default_factory=dict)
+
+    def apply(self, questions: Sequence[qs.Question],
+              inputs: qs.Inputs | None = None) -> list[qs.Question]:
+        out = []
+        for q in questions:
+            src = self.sources.get(q.module or "")
+            ev = self.evidence.get(q.module or "", {})
+            self.before.setdefault(q.id, q)
+            out.append(qs.steered(q, src, ev, self.rule, inputs))
+        return out
+
+    def assume(self, q: qs.Question) -> dict[str, Any] | None:
+        return qs.assumption_of(q, self.rule, self.evidence.get(q.module or "", {}),
+                                self.before.get(q.id))
+
+
+#: The most modules whose evidence one read checks (one statement each).
+STEER_MODULES = 5
+
+
+async def module_evidence(db: Any, org: str, src: Any) -> dict[str, tuple[str, ...]]:
+    """The evidence of each money field of the module *src* (CRM-Q33 part
+    5): ONE bounded statement through ``field_sql.gst_check``, read in the
+    caller's tenant session, then the words of the labels."""
+    from gateway.routes.crm import field_sql
+
+    cands = qs.evidence_candidates(src)
+    gst, tds = qs.gst_siblings(src)
+    rels = qs.relations(cands, gst, tds)
+    keys = list(dict.fromkeys(k for r in rels for k in (r.field, r.basic, r.gst, r.tds) if k))
+    counted = await field_sql.gst_check(db, org, str(src.module), keys, rels) if rels else []
+    return qs.money_evidence(src, rels, [qs.RelationCount(*c) for c in counted])
+
+
+async def steering(db: Any, org: str, member: str | None, inputs: qs.Inputs,
+                   questions: Sequence[qs.Question]) -> Steering | None:
+    """The steering of *questions* for *member*, or None outside
+    ``CRM_ANSWER_FIRST_ORGS``. It reads the org's rules and the member's own
+    (``rules.rules_for``), and the evidence of each module of an amount
+    question, at most :data:`STEER_MODULES` modules."""
+    from gateway.routes.crm.flags import answer_first_allowed
+    from gateway.routes.crm.rules import rules_for
+
+    if not answer_first_allowed(org):
+        return None
+    rules = await rules_for(db, org, member)
+    out = Steering(rule=qs.net_of_gst_rule([r.body for r in rules]))
+    for q in questions:
+        module = q.module or ""
+        if (q.kind != qs.KIND_KEY or q.part != "amount" or module in out.evidence
+                or len(out.evidence) >= STEER_MODULES):
+            continue
+        src = inputs.sources.get(module)
+        if src is None or getattr(src, "kind", None) != "module":
+            continue
+        out.sources[module] = src
+        out.evidence[module] = await module_evidence(db, org, src)
+    return out
+
+
+async def chat_card_questions(db: Any, org: str, inputs: qs.Inputs, ids: Sequence[str],
+                              everything: bool, member: str | None,
+                              ) -> tuple[qs.Inputs, list[qs.Question], Steering | None]:
+    """The questions of a chat card, with their samples, as ``/ask`` gives
+    them and as the check of a late pick rebuilds them: the same steering,
+    so a label of a card and the server's own label agree."""
+    found = _chat_questions(inputs, everything)
+    picked = [found[i] for i in ids if i in found]
+    if not picked:
+        return inputs, [], None
+    steer = await steering(db, org, member, inputs, picked)
+    first = steer.apply(picked, inputs) if steer is not None else picked
+    inputs = await samples(db, org, inputs, first)
+    found = _chat_questions(inputs, everything)
+    picked = [found[q.id] for q in picked if q.id in found]
+    if steer is not None:
+        picked = steer.apply(picked, inputs)
+    return inputs, picked, steer
 
 
 @router.get("/questions/ask", response_model=AskOut, dependencies=_CHAT_GUARDS)
@@ -1277,15 +1574,12 @@ async def ask_questions_read(
         inputs = await load(db, org, full=False, proposals=True)
         if inputs is None:
             return AskOut(questions=[], href=crm_settings_href("questions"))
-        found = _chat_questions(inputs, everything)
-        picked = [found[i] for i in wanted if i in found]
-        if picked:
-            inputs = await samples(db, org, inputs, picked)
-            found = _chat_questions(inputs, everything)
-            picked = [found[q.id] for q in picked]
+        inputs, picked, steer = await chat_card_questions(db, org, inputs, wanted, everything,
+                                                          member)
     holds = await held_ids(org, member, [q.id for q in picked]) if picked else set()
     return AskOut(
-        questions=[_ask_model(q, inputs, member=member, admin=admin, held=q.id in holds)
+        questions=[_ask_model(q, inputs, member=member, admin=admin, held=q.id in holds,
+                              steer=steer)
                    for q in picked],
         href=crm_settings_href("questions"),
     )
@@ -1352,6 +1646,7 @@ async def _admin_reply(db: Any, org: str, by: str, q: qs.Question, value: str | 
         done = await _answer(db, org, by, q.id, AnswerIn(value=value))
         await refresh_seen(db, org)
         await clear_proposals(db, org, [q.id])
+        await record_answered(db, org, [q.id], by)
         line = done.line or f"{q.label}: {label}, for everyone."
         return ReplyOut(id=q.id, kind=q.kind, result="answer", value=value, label=label,
                         line=line, undo=done.undo, version=done.version)
@@ -1365,6 +1660,7 @@ async def _admin_reply(db: Any, org: str, by: str, q: qs.Question, value: str | 
     row = await write_answer(db, org, by=by, module=module, parts={part: value})
     await refresh_seen(db, org)
     await clear_proposals(db, org, [q.id])
+    await record_answered(db, org, [q.id], by)
     return ReplyOut(id=q.id, kind=q.kind, result="answer", value=value, label=label,
                     line=f"{q.label}: {label}, for everyone.",
                     undo=UndoModel(module=module, part=part, value=before),
@@ -1418,12 +1714,41 @@ async def reply_question(
     ``@auto`` gives 422 for each caller: Undo stays on ``/answer`` and on
     the PUT. A key that no option has gives 422 and writes nothing. The org
     comes from the session and the member from ``UserContext`` (R5, R11)."""
+    return await reply_as(user, question_id, payload.choice)
+
+
+async def chat_admits(user: Any) -> bool:
+    """True when the CRM admits *user* to a chat reply, with the checks of
+    the guards of ``/reply``, as functions: the CRM switch and its list,
+    the mirror and its list, ``feature:crm`` and the CRM access rule. The
+    WhatsApp path calls it, because it has no request (CRM-Q33 part 2)."""
+    from gateway.routes.crm.flags import crm_mirror_allowed
+
+    if not crm_mirror_allowed(getattr(user, "organization_id", None)):
+        return False
+    if not user.has_permission("feature:crm"):
+        return False
+    try:
+        await access.require_crm_access(user)
+    except HTTPException:
+        return False
+    return True
+
+
+async def reply_as(user: Any, question_id: str, raw_choice: str) -> ReplyOut:
+    """THE reply of a member's pick (CRM-Q32-8), for the web route and for
+    a WhatsApp reply that the gateway matched (CRM-Q33 part 2), so both
+    follow one rule: an admin's pick is the org fact, and each other
+    member's pick is a proposal. The caller ran the guards of the route.
+    The org comes from the session and the member from ``UserContext``."""
     from gateway.routes.crm.core import actor
 
     org = _organization(user)
     if not questions_allowed(org):
         raise questions_off()
-    choice = payload.choice.strip()
+    choice = str(raw_choice or "").strip()
+    if not choice or len(choice) > 200:
+        raise _bad_choice()
     if choice == qs.AUTO:
         raise HTTPException(status_code=422, detail={
             "code": "no_undo_here",
@@ -1463,6 +1788,96 @@ async def reply_question(
     # answer closes it for each member, because the question is answered.
     await forget_late_answers(org, [q.id], member=None if out.result == "answer" else member)
     return out
+
+
+# ── A member's own choices, and their clear (CRM-Q33 part 4) ────────────────
+
+
+class MyChoiceModel(BaseModel):
+    """One question that the caller chose an answer for in the chat. It
+    names no other member."""
+
+    id: str
+    question: str
+    value: str | None = None
+    label: str
+    at: str
+
+
+class MyChoicesOut(BaseModel):
+    choices: list[MyChoiceModel]
+
+
+@router.get("/questions/mine", response_model=MyChoicesOut, dependencies=_CHAT_GUARDS)
+async def my_choices(user: UserContext = Depends(get_current_user)) -> MyChoicesOut:
+    """The caller's own choices in the chat that wait for a CRM admin (the
+    proposals of CRM-Q32-8). Each member with CRM access reads their own,
+    and never the choice of another member. Dark: 404 ``questions_off``
+    off ``CRM_ANSWER_FIRST_ORGS``."""
+    from gateway.routes.crm.flags import answer_first_allowed
+
+    org = _organization(user)
+    if not answer_first_allowed(org):
+        raise questions_off()
+    member = _member(user)
+    async with _tenant_session() as db:
+        await _require_mirror(db, org)
+        inputs = await load(db, org, full=False, proposals=True)
+        if inputs is None:
+            return MyChoicesOut(choices=[])
+        found = _chat_questions(inputs, True)
+    out = []
+    for qid, entries in sorted(inputs.proposals.items()):
+        mine = qs.my_proposal(entries, member)
+        q = found.get(qid)
+        if mine is None or q is None:
+            continue
+        out.append(MyChoiceModel(id=qid, question=qs.ask_sentence(q), value=mine["value"],
+                                 label=qs.value_label(q, mine["value"]), at=mine["at"]))
+    return MyChoicesOut(choices=out)
+
+
+@router.delete("/questions/{question_id}/mine", dependencies=_CHAT_GUARDS)
+async def clear_my_choice(question_id: str,
+                          user: UserContext = Depends(get_current_user)) -> dict:
+    """Clear the caller's own choice of one question: the proposal, and the
+    hold of "keep this for now". The answer of the org does not change. It
+    locks the cursor row first, as the reply of a member does. Dark: 404
+    ``questions_off`` off ``CRM_ANSWER_FIRST_ORGS``."""
+    from gateway.crm_sync import runs
+    from gateway.routes.crm.flags import answer_first_allowed
+
+    org = _organization(user)
+    if not answer_first_allowed(org):
+        raise questions_off()
+    member = _member(user)
+    async with _tenant_session() as db:
+        await _require_mirror(db, org)
+        state = await runs.lock_cursor(db, org, qs.QUESTIONS_ROW)
+        entries = qs.proposals_of(state).get(question_id, [])
+        kept = [p for p in entries if p["member"] != member]
+        found = len(kept) != len(entries)
+        if found:
+            if kept:
+                await runs.merge_cursor_entry(db, org, qs.QUESTIONS_ROW, qs.PROPOSALS,
+                                              question_id, kept)
+            else:
+                await runs.drop_cursor_entry(db, org, qs.QUESTIONS_ROW, qs.PROPOSALS,
+                                             question_id)
+    await unhold(org, member, question_id)
+    await forget_late_answers(org, [question_id], member=member)
+    return {"id": question_id, "cleared": found}
+
+
+async def unhold(org: str, member: str, question_id: str) -> None:
+    """Drop the hold of *question_id* for *member*. A Redis fault only logs."""
+    from acb_common.tenant_redis import OUTAGE_ERRORS, organization_scope
+
+    try:
+        with organization_scope(org):
+            await _redis().delete(_hold_key(member, question_id))
+    except OUTAGE_ERRORS:
+        _log.warning("crm.questions.unhold_failed", organization_id=org)
 
 
 # ── The check of a sum (CRM-Q32-9, §18.14.10) ───────────────────────────────
@@ -1555,44 +1970,61 @@ async def sum_check(
 
 
 __all__ = [
+    "ANSWERED_BY",
     "ANSWERED_NAMESPACE",
     "ASK_IDS_MAX",
     "DEFAULT_HOLD_HOURS",
     "QUESTIONS_OFF",
+    "STEER_MODULES",
     "AcceptBestIn",
     "AcceptBestOut",
     "AnswerIn",
     "AnswerOut",
     "AskOut",
     "AskQuestionModel",
+    "AssumeModel",
+    "MyChoiceModel",
+    "MyChoicesOut",
     "ProposalModel",
     "QuestionModel",
     "QuestionsModel",
     "ReplyIn",
     "ReplyOut",
+    "Steering",
     "SumCheckOut",
     "SumPairModel",
     "accept_best",
     "after_admin_write",
     "answer_question",
     "ask_questions_read",
+    "chat_admits",
+    "chat_card_questions",
+    "clear_my_choice",
     "clear_proposals",
     "count_open",
     "dismiss_question",
     "forget_late_answers",
+    "forget_member_keys",
     "held_ids",
     "hold",
     "list_questions",
     "load",
+    "module_evidence",
     "module_question_ids",
+    "my_choices",
     "open_parts",
+    "purge_member_state",
     "questions_after_run",
     "questions_card",
     "questions_off",
+    "record_answered",
     "record_late_answer",
     "refresh_seen",
+    "reply_as",
     "reply_question",
     "samples",
+    "steering",
     "sum_check",
     "undo_dismiss_question",
+    "unhold",
 ]

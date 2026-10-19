@@ -107,6 +107,10 @@ _EXEMPT = {
     # record table. They work in Mirror mode only. The raw-write fence below
     # does not read this list either.
     "catalogue.py", "questions.py",
+    # CRM-Q33: the business rules. They write `crm_business_rules`, a member's
+    # or the org's own words, and no record table. They work in Mirror mode
+    # only. The raw-write fence below does not read this list either.
+    "rules.py",
 }
 
 

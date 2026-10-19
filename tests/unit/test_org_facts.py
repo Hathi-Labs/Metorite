@@ -463,6 +463,8 @@ def _config(agent_dir: str) -> dict:
 #: The tools that go together (CRM-Q32-8, "Withholding"): org_facts and the
 #: reply of a CRM question card.
 GATED = ("org_facts", "crm_answer_question")
+#: CRM-Q33: the rule tool goes with them, and needs CRM_ANSWER_FIRST_ORGS too.
+RULE_TOOL = "crm_propose_rule"
 
 
 @pytest.fixture(autouse=True)
@@ -487,11 +489,13 @@ def test_a_batch_run_never_holds_the_reply_tool(monkeypatch) -> None:
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "crm_questions_orgs", "org-a", raising=False)
+    monkeypatch.setattr(get_settings(), "crm_answer_first_orgs", "org-a", raising=False)
     monkeypatch.setattr(ti, "_run_org_or_none", lambda: "org-a")
     assert ti._facts_withheld() == frozenset()
     token = crm._RUN_ASKS.set(None)
     try:
-        assert ti._facts_withheld() == frozenset({"crm_answer_question"})
+        # CRM-Q33: the rule tool needs a holder too.
+        assert ti._facts_withheld() == frozenset({"crm_answer_question", "crm_propose_rule"})
         cfg = _config("agent-orchestrator")
         scope = ti._resolve_injected_scope(cfg["tool_scope"], withheld=ti._facts_withheld())
         assert scope is not None and "org_facts" in scope
@@ -508,12 +512,13 @@ def test_the_reply_tool_is_withheld_wherever_org_facts_is(monkeypatch) -> None:
     from acb_skills import org_facts_tools
     from acb_skills.addendum import _dark_tools
 
-    assert {fn.__name__ for fn in org_facts_tools.FACTS_GATED_TOOLS} == set(GATED)
+    assert {fn.__name__ for fn in org_facts_tools.FACTS_GATED_TOOLS} == {*GATED, RULE_TOOL}
     monkeypatch.setattr(get_settings(), "crm_questions_orgs", "other-org", raising=False)
     monkeypatch.setattr(ti, "_run_org_or_none", lambda: "org-a")
-    assert ti._facts_withheld() == frozenset(GATED)
+    assert ti._facts_withheld() == frozenset({*GATED, RULE_TOOL})
     monkeypatch.setattr(ti, "_run_org_or_none", lambda: "other-org")
-    assert ti._facts_withheld() == frozenset()
+    # CRM-Q33: off CRM_ANSWER_FIRST_ORGS, only the rule tool is withheld.
+    assert ti._facts_withheld() == frozenset({RULE_TOOL})
     monkeypatch.setattr(get_settings(), "crm_questions_orgs", "", raising=False)
     assert set(GATED) <= _dark_tools()
     monkeypatch.setattr(get_settings(), "crm_questions_orgs", "*", raising=False)

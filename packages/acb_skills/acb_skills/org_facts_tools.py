@@ -23,7 +23,7 @@ from typing import Any
 
 from acb_common.paging import paged
 
-from acb_skills.crm_tools import CRM_QUESTION_TOOLS, _get, _read_tool
+from acb_skills.crm_tools import CRM_QUESTION_TOOLS, CRM_RULE_TOOLS, _get, _read_tool
 
 #: The route of the seam.
 ORG_FACTS_PATH = "/org/facts"
@@ -38,9 +38,10 @@ BLOCK_LINES = 12
 #: run adds nothing.
 BLOCK_MARKER = "## CRM facts"
 
-#: The keys of a fact that the block keeps: the key parts of a money module,
-#: the meaning of revenue and each stage value.
-_BLOCK_KEYS = ("revenue", "amount", "date", "status", "parent")
+#: The keys of a fact that the block keeps: the business rules (CRM-Q33),
+#: the key parts of a money module, the meaning of revenue and each stage
+#: value.
+_BLOCK_KEYS = ("rule", "revenue", "amount", "date", "status", "parent")
 
 
 def _line(row: dict[str, Any]) -> str:
@@ -114,11 +115,12 @@ async def crm_facts_block_for_run() -> str:
 ORG_FACTS_TOOLS = (org_facts,)
 
 #: The tools that go with the facts (WS-53 CRM-Q32-8): ``org_facts`` and
-#: ``crm_answer_question``. The run assembly injects them together, and
-#: withholds them together (``_facts_withheld`` and the drop of
-#: ``_add_crm_facts_block``), so a run of an org off ``CRM_QUESTIONS_ORGS``
-#: holds neither.
-FACTS_GATED_TOOLS = (*ORG_FACTS_TOOLS, *CRM_QUESTION_TOOLS)
+#: ``crm_answer_question``, and since CRM-Q33 ``crm_propose_rule``. The run
+#: assembly injects them together, and withholds them together
+#: (``_facts_withheld`` and the drop of ``_add_crm_facts_block``), so a run
+#: of an org off ``CRM_QUESTIONS_ORGS`` holds none. ``crm_propose_rule``
+#: also needs ``CRM_ANSWER_FIRST_ORGS``.
+FACTS_GATED_TOOLS = (*ORG_FACTS_TOOLS, *CRM_QUESTION_TOOLS, *CRM_RULE_TOOLS)
 
 __all__ = [
     "BLOCK_LINES",

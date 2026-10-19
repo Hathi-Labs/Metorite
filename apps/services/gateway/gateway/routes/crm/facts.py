@@ -154,6 +154,25 @@ def plan_facts(others: Sequence[Mapping[str, Any]], labels: Mapping[str, str],
     return out
 
 
+async def rule_facts(db: Any, org: str, user: Any) -> list[org_facts.Fact]:
+    """The business rules of the org and of the caller (CRM-Q33 part 3), as
+    subject ``rule:<slug>``. An org rule comes from an admin, and a member's
+    own rule reads as ``set_by: you``. Empty outside
+    ``CRM_ANSWER_FIRST_ORGS``. A member never reads another member's rule."""
+    from gateway.routes.crm.rules import SCOPE_ORG, rules_for
+
+    member = (getattr(user, "email", None) or "").strip().lower()
+    out: list[org_facts.Fact] = []
+    for rule in await rules_for(db, org, member or None):
+        mine = rule.scope != SCOPE_ORG
+        out.append(org_facts.fact(
+            APP, f"rule:{rule.slug}", "rule", rule.body,
+            (f"Your business rule: {rule.body}" if mine
+             else f"Business rule of the organization: {rule.body}"),
+            "member" if mine else "admin"))
+    return out
+
+
 def _ordered(entries: Sequence[Any]) -> list[Any]:
     """The money entries first, then the rest, the most records first. An
     entry with no record and no answer of the admin gives no fact."""
@@ -184,6 +203,9 @@ async def crm_facts(db: Any, user: Any) -> list[org_facts.Fact]:
     row = (await db.execute(text(_APPROVED_AT_SQL), {"org": org})).first()
     approved_at = row.approved_at if row is not None else None
     out: list[org_facts.Fact] = []
+    # CRM-Q33: the business rules first, because they steer each answer.
+    # The org's rules, and the caller's own, never another member's.
+    out.extend(await rule_facts(db, org, user))
     revenue = revenue_fact(entries, cat.stored_items(others), approved_at)
     if revenue is not None:
         out.append(revenue)
@@ -196,4 +218,4 @@ async def crm_facts(db: Any, user: Any) -> list[org_facts.Fact]:
 org_facts.register(APP, crm_facts)
 
 
-__all__ = ["APP", "crm_facts", "entry_facts", "plan_facts", "revenue_fact"]
+__all__ = ["APP", "crm_facts", "entry_facts", "plan_facts", "revenue_fact", "rule_facts"]

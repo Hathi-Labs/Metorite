@@ -60,6 +60,10 @@ INJECTABLE_PLATFORM_TOOLS = {
     # with org_facts: withheld where org_facts is (_facts_withheld, the drop
     # of _add_crm_facts_block and addendum._dark_tools).
     "crm_answer_question",
+    # WS-53 CRM-Q33 (2026-10-18): a business rule from the chat, held for the
+    # member's confirm. Withheld where org_facts is, and off
+    # CRM_ANSWER_FIRST_ORGS (_facts_withheld, addendum._dark_tools).
+    "crm_propose_rule",
 }
 
 # The agents this item scopes, with a per-agent leanness ceiling.
@@ -77,7 +81,10 @@ SCOPED_AGENTS = {
     # listed org, so it holds org_facts. An unlisted org's run drops it.
     # 24 since CRM-Q32-8 (2026-10-18): the chat asks before it answers, so it
     # holds crm_answer_question. An unlisted org's run drops it too.
-    "agent-orchestrator": 24,
+    # 25 since CRM-Q33 (2026-10-18): the chat answers first and keeps a
+    # business rule that the member says, so it holds crm_propose_rule. A run
+    # of an org off CRM_ANSWER_FIRST_ORGS drops it.
+    "agent-orchestrator": 25,
 }
 
 

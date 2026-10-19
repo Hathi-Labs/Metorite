@@ -31,7 +31,8 @@
     "make_report",
     "call_agent",
     "org_facts",
-    "crm_answer_question"
+    "crm_answer_question",
+    "crm_propose_rule"
   ],
   "own_tool_scope": [
     "search_crm",

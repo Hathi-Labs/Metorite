@@ -314,6 +314,17 @@ class Settings(BaseSettings):
     # flip on a box is gate `enforcement-flip`. Fence:
     # tests/unit/test_crm_questions.py.
     crm_questions_orgs: str = ""
+    # `crm_answer_first_orgs` (WS-53 CRM-Q33, 2026-10-18) lists the
+    # organization ids whose chat answers first and clarifies over time
+    # (`crm_platform.md` §18.15), in the grammar of `crm_orgs`. Default empty
+    # means NO organization (fail closed). An org needs a place on
+    # `crm_questions_orgs` too. Off the list, the chat asks before it answers
+    # (CRM-Q32-8), and the business rules, the WhatsApp question and the
+    # evidence of GST stay off. The one reader is
+    # `gateway.routes.crm.flags`. A name in the list spends nothing, so a
+    # flip on a box is gate `enforcement-flip`. Fence:
+    # tests/unit/test_crm_answer_first.py.
+    crm_answer_first_orgs: str = ""
     # `crm_digest_orgs` (WS-53 CRM-Q28, 2026-10-17) lists the organization
     # ids that get the weekly CRM digest on the powerful tier
     # (`crm_platform.md` §18.11.2), in the grammar of `crm_orgs`. Default

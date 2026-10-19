@@ -6,7 +6,7 @@
 --
 -- ENABLE + FORCE ROW LEVEL SECURITY + the policy. Instant — no scan. ⚠️ AND IT IS A CLIFF: the moment this applies, any connection that has not bound app.tenant_id reads ZERO ROWS. That is the fail-closed property working (§0.1). MT-1c must be deployed AND VERIFIED first, or the product goes dark.
 --
--- Tables in this phase: 179
+-- Tables in this phase: 180
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -1304,5 +1304,12 @@ ALTER TABLE crm_digests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE crm_digests FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS crm_digests_tenant_isolation ON crm_digests;
 CREATE POLICY crm_digests_tenant_isolation ON crm_digests
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE crm_business_rules ENABLE ROW LEVEL SECURITY;
+ALTER TABLE crm_business_rules FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS crm_business_rules_tenant_isolation ON crm_business_rules;
+CREATE POLICY crm_business_rules_tenant_isolation ON crm_business_rules
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

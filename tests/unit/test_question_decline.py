@@ -318,7 +318,7 @@ def test_the_control_bus_carries_the_decline():
     seen: list[dict] = []
     real = executor.resolve_user_input
 
-    def _spy(rid, answer, was_freeform=True, *, thread_id, declined=False):
+    def _spy(rid, answer, was_freeform=True, *, thread_id, declined=False, responder=None):
         seen.append({"rid": rid, "answer": answer, "declined": declined, "thread": thread_id})
         return True
 
@@ -431,7 +431,8 @@ def _post(client, body: dict):
 def test_the_route_relays_the_decline_to_the_parked_run(monkeypatch, fake_redis):
     calls: list[dict] = []
 
-    def _resolve(rid, answer, was_freeform=True, *, thread_id, declined=False):
+    def _resolve(rid, answer, was_freeform=True, *, thread_id, declined=False,
+                 responder=None):
         calls.append({"rid": rid, "answer": answer, "declined": declined, "thread": thread_id})
         return True
 

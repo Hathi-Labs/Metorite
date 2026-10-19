@@ -885,7 +885,8 @@ def test_respond_input_answers_only_for_the_thread_that_asked(graph_as_app, monk
     assert codes[:3] == [422, 403, 409]
     # Alice, in the room that asked, answers it.
     assert codes[3] == 200
-    assert answer == {"answer": "yes", "wasFreeform": True}
+    # WS-53 CRM-Q33 fix round 2: the answer names its responder, the session's member.
+    assert answer == {"answer": "yes", "wasFreeform": True, "responder": "alice@s15-a.test"}
 
 
 def test_the_relay_applier_answers_only_for_its_own_channel() -> None:

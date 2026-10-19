@@ -144,6 +144,7 @@ export default function PipelineSettings({
   studioAdmin = false,
   section,
   questions,
+  rules,
 }: {
   /**
    * The settings section on screen (CRM-C1). Only its cards draw. With no
@@ -159,6 +160,11 @@ export default function PipelineSettings({
    * `questions_off` hides it (§18.14.5).
    */
   questions?: React.ReactNode;
+  /**
+   * Business rules (CRM-Q33), Mirror mode only, for each member. The page
+   * passes it only while `GET /crm/rules` says the section is on.
+   */
+  rules?: React.ReactNode;
   /**
    * `studio_admin` of the layout (CRM-C6a). In Native mode it draws the
    * lead-conversion mapping. The page gives the same value to the sections.
@@ -204,6 +210,8 @@ export default function PipelineSettings({
     <div className="flex-1 space-y-6 overflow-y-auto p-4 sm:p-6">
       {show("setup") && setup}
       {show("access") && access}
+      {/* CRM-Q33: the business rules, for each member in Mirror mode. */}
+      {readOnly && show("rules") && rules}
       {readOnly && showAdminCards ? (
         <>
           {show("stages") && (

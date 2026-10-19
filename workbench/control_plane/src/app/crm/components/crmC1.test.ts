@@ -254,9 +254,10 @@ describe("a missing, unknown or hidden section", () => {
   it("is sent there by one effect in the page, through replaceView, once the reads settle", () => {
     const page = read("../page.tsx");
     // CRM-Q32-3: the default section reads the open count, so the rewrite
-    // waits for the read of the questions too.
+    // waits for the read of the questions too. CRM-Q33: and for the read of
+    // the business rules, whose section a link can name.
     expect(page).toMatch(
-      /const sectionTrusted =\s*!accessLoading && !accessStale && !ctx\.modeReadFailed && questions\.gate !== "unknown";/,
+      /const sectionTrusted =\s*!accessLoading && !accessStale && !ctx\.modeReadFailed && questions\.gate !== "unknown" &&\s*rules\.gate !== "unknown";/,
     );
     expect(page).toMatch(
       /const redirect = sectionRedirect\(view, sectionCtx, sectionTrusted\);\s*if \(redirect\) replaceView\(viewHref\(\{ \.\.\.view, section: redirect \}\)\);/,
