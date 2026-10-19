@@ -46,6 +46,12 @@ from acb_auth.agent_operator import (
 )
 from acb_auth.permissions import EffectiveAccess, build_access
 
+# Resolved by name as a fixture (R8 test below). The import is load-bearing.
+from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
+    _DB_GATE,
+    promoted,
+)
+
 OP_ORG = "aaaaaaaa-0000-4000-8000-000000000001"     # in AGENT_REGISTRY_ORGS
 CUST_ORG = "bbbbbbbb-0000-4000-8000-000000000002"   # a customer org
 FP_ORG = "cccccccc-0000-4000-8000-000000000003"     # first_party, NOT listed
@@ -550,3 +556,52 @@ def test_the_addendum_no_longer_promises_an_approval() -> None:
     src = inspect.getsource(addendum)
     assert "Metorite checks this, not you" in src
     assert "the user does not need to approve it again" not in src
+
+
+# ── 7. R8: the one first_party read against a real, RLS-promoted Postgres ──
+
+@_DB_GATE
+def test_the_rule_reads_first_party_from_postgres(
+    promoted, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+) -> None:
+    """The moved read, as the non-privileged app role, through both callers."""
+    import uuid
+
+    from acb_common import db as acb_db
+    from orchestrator import mutation
+    from sqlalchemy import text
+
+    with promoted.admin_engine.begin() as c:
+        c.execute(text("UPDATE organization SET first_party = (id = CAST(:a AS uuid)) "
+                       "WHERE id IN (CAST(:a AS uuid), CAST(:b AS uuid))"),
+                  {"a": promoted.org_a, "b": promoted.org_b})
+
+    monkeypatch.setenv("DATABASE_URL", promoted.app_url.render_as_string(hide_password=False))
+    monkeypatch.setattr(acb_db, "_ENGINE", None)
+    monkeypatch.setattr(acb_db, "_SESSION_FACTORY", None)
+    monkeypatch.setattr(
+        acb_common, "get_settings", lambda: SimpleNamespace(agent_registry_orgs=""),
+    )
+    admin = _ACCESS[FP_ADMIN].has
+    unknown = str(uuid.uuid4())
+
+    async def _outcomes() -> dict[str, Any]:
+        try:
+            return {
+                "read_a": await agent_operator.read_first_party(promoted.org_a),
+                "read_b": await agent_operator.read_first_party(promoted.org_b),
+                "read_unknown": await agent_operator.read_first_party(unknown),
+                "mutation_a": await mutation._read_first_party(promoted.org_a),
+                "rule_a": await may_review_agent_commits(promoted.org_a, admin),
+                "rule_b": await may_review_agent_commits(promoted.org_b, admin),
+                "rule_unknown": await may_review_agent_commits(unknown, admin),
+                "rule_empty": await may_review_agent_commits("", admin),
+            }
+        finally:
+            if acb_db._ENGINE is not None:
+                await acb_db._ENGINE.dispose()
+
+    assert asyncio.run(_outcomes()) == {
+        "read_a": True, "read_b": False, "read_unknown": None, "mutation_a": True,
+        "rule_a": True, "rule_b": False, "rule_unknown": False, "rule_empty": False,
+    }
