@@ -1071,7 +1071,8 @@ of the shared poller. That poller runs every 5 s in a visible tab and every
 30 s in a hidden tab.
 
 The mount sends no request of its own. It waits for the next complete poll.
-An ask during a poll that started less than 250 ms ago shares that poll. The chat also asks on a return to the tab, when a
+An ask during a poll that started less than 250 ms ago shares that poll. An
+older poll owes one more poll, 1 s after it ends, never back to back. The chat also asks on a return to the tab, when a
 stream ends, and when a run ends or stops. While a run shows, the chat asks
 for the step of the run (`?steps=1`).
 
@@ -1097,6 +1098,20 @@ cut stream all use it.
 - The replay builds into a shadow copy. The copy replaces the message only
   when it has caught up, so the message never goes blank.
 - It gives up the loading state on every exit.
+- A re-attach that gets no stream doubles the wait before the next one, up
+  to 60 s (`attach_failed`). So a listed run that cannot replay is never
+  asked in a loop. A stream event sets the wait back to 5 s.
+
+**The card of a run in flight.** A card that a run waits on comes once, as
+a stream event, and lives in the state of `AgentChat`. A chat that unmounts
+and mounts again (the Email pane, a rail, the dock) lost it while the run
+still waited. The stream loops now keep the card events of the run in
+flight (`noteCardEvent` in `lib/chatStore.ts`), and a chat that mounts
+draws them again.
+
+A send, a `done` and a Stop clear the log. If a remount then
+learns that the run ended while away, its cards are finalized. Fence:
+`e2e/email-pane-confirm-card.spec.ts`.
 
 **The status row.** `components/RunStatusRow.tsx` draws the state in two
 places. One is above the composer. The other is in the thread where the
