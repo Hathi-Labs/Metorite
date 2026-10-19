@@ -218,9 +218,19 @@ def test_a_wrong_difference_of_two_derived_figures_fails(ledger: RunLedger) -> N
 def test_a_restated_figure_needs_three_digits() -> None:
     """Only a figure of three significant digits states a derived value
     again, so a table of short rates cannot pass itself by chance."""
-    from acb_common.number_check import RESTATE_DIGITS
+    book = Sources()
+    book.add_text("- A: 100,000\n- B: 50,000\n- C: 70,000", derive=True)
+    head = "A and B total ₹1.50 lakh: A ₹1.00 lakh and B ₹0.50 lakh."
+    assert check(head, book).ok
+    assert check(head + " Again: ₹1.50 lakh.", book).ok
+    assert [f.text for f in check(head + " Again: ₹1.5 lakh.", book).unmatched] == ["₹1.5 lakh"]
 
-    assert RESTATE_DIGITS == 3
+
+def test_a_difference_of_two_module_totals_passes(ledger: RunLedger) -> None:
+    """A module total has no currency sign, so its value is plain. A money
+    figure still derives from it (round 8)."""
+    assert ledger.check("Rent is ₹13.99 crore and fees ₹9.19 crore, a gap of ₹4.80 crore.").ok
+    assert not ledger.check("Rent is ₹13.99 crore and fees ₹9.19 crore, a gap of ₹4.90 crore.").ok
 
 
 # ── 3. A table in lakh or crore ─────────────────────────────────────────────
@@ -292,6 +302,19 @@ def test_a_sum_that_the_answer_does_not_explain_gets_one_sentence(ledger: RunLed
     result = ledger.check("Rent is ₹13.99 crore and fees are ₹9.19 crore. Plan for ₹4.80 crore.")
     assert note_text(result, ledger) == (
         "explained", "\n\n₹4.80 crore is ₹13.99 crore less ₹9.19 crore.")
+
+
+def test_an_explanation_needs_operands_as_precise_as_the_figure() -> None:
+    """With no list read, the record count fails. Two table cells in lakh
+    ("32.1" each) differ by 0, and their room of ₹5,000 must not make
+    "8,681 is 32.1 less 32.1" a reason."""
+    book = RunLedger()
+    for text in RESULTS:
+        book.record("crm_aggregate", text, arguments=ARGS)
+    result = book.check(owner_answer())
+    assert [f.text for f in result.unmatched] == ["8,681"]
+    assert note_text(result, book) == (NOTE_NAMED,
+                                       "\n\n" + NOTE_MISSING.format(figure="8,681"))
 
 
 def test_a_few_failed_figures_each_get_a_reason(ledger: RunLedger) -> None:
