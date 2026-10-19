@@ -30,7 +30,14 @@ tool figures. It passes only when the same text also cites BOTH operands,
 each as a figure of its own. It gets the room of its stated precision and no
 more: "about" gives room only to a figure that a source holds.
 
-Fence: ``tests/unit/test_number_check.py``.
+**Tables and chains** (round 8). A bare number of a markdown table takes the
+unit of its column (:func:`_table_layout`). A cell that adds up its row, or
+its column in a "Total" row, derives. A figure that a rule derived is an
+operand of the next pass, so "₹32.92 crore less ₹22.30 crore" can give a
+third figure when the text showed both sums.
+
+Fences: ``tests/unit/test_number_check.py`` and
+``tests/unit/test_crm_answer_check_explain.py``.
 """
 
 from __future__ import annotations
@@ -40,8 +47,9 @@ import re
 import threading
 from collections import deque
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from itertools import pairwise
 
 #: The three kinds of a figure.
 PLAIN = "plain"
@@ -262,6 +270,8 @@ class CheckResult:
 
     figures: tuple[Figure, ...]
     unmatched: tuple[Figure, ...]
+    #: The checked text, so a note can find the sentence of a figure.
+    text: str = ""
 
     @property
     def ok(self) -> bool:
@@ -490,6 +500,41 @@ def _data_values(text: str, spans: list[tuple[int, int]]) -> list[tuple[int, str
     return out
 
 
+#: One line of a list that a tool prints: "- North: 12,34,567".
+_LIST_LINE = re.compile(r"^[ \t]*[-*•][ \t]+(?P<label>[^:\n]{0,120}):[ \t]*\S")
+#: The labels of a group with no value. ``(none)`` is the label of the
+#: aggregate route. The others are common spellings of the same thing.
+EMPTY_LABELS: frozenset[str] = frozenset({
+    "(none)", "(blank)", "(empty)", "(no value)", "none", "blank", "empty", "no value",
+    "-", "—",
+})
+
+
+#: The fewest lines of a list whose count is a source. A list of two is too
+#: short: "2" would then match each small count of an answer.
+MIN_LIST_LINES = 3
+
+
+def list_counts(text: str) -> list[int]:
+    """The count of the lines of each list of three lines or more in *text*,
+    and that count less its empty groups: 12 groups with one ``(none)`` give
+    12 and 11. "The 11 tagged regions" then has a source (round 8)."""
+    out: list[int] = []
+    run = empty = 0
+    for line in [*(text or "").splitlines(), ""]:
+        m = _LIST_LINE.match(line)
+        if m:
+            run += 1
+            empty += m.group("label").strip().lower() in EMPTY_LABELS
+            continue
+        if run >= MIN_LIST_LINES:
+            out.append(run)
+            if empty:
+                out.append(run - empty)
+        run = empty = 0
+    return out
+
+
 class _Pool:
     """The values of one kind that take part in a derived figure.
 
@@ -593,11 +638,14 @@ class Sources:
         """Add each number in *text*. A year counts here, as a source. With
         *derive*, the first :data:`MAX_DERIVE_PER_TEXT` figures of each kind
         also go into the derive pool. A JSON value and a CSV field count too.
-        A figure that the parser cannot read is no source."""
+        A figure that the parser cannot read is no source. With *derive*, the
+        count of the lines of each list is a source too (round 8)."""
         pooled: dict[str, int] = {}
         figures = [f for f in _parse(text, skip_years=False) if not f.unreadable]
         if derive:
             self._add_lines(text or "", figures)
+            for count in list_counts(text or ""):
+                self.add_value(count, PLAIN)
         data = _data_values(text or "", [(f.start, f.end) for f in figures])
         values = [(f.value, f.kind) for f in figures] + [(Decimal(v), PLAIN) for _at, v in data]
         for value, kind in values:
@@ -703,6 +751,23 @@ class Sources:
                 return True
         return False
 
+    def nearest(self, figure: Figure, share: Decimal = APPROX_SHARE) -> Decimal | None:
+        """The source value nearest to *figure* of a kind that it can quote,
+        within *share* of it, or ``None``. The note of a failed figure uses
+        it to say "close to" (round 8). It is never a match."""
+        target = abs(figure.value)
+        room = target * share
+        best: Decimal | None = None
+        for book in self._books():
+            values, kinds = book._snapshot()
+            lo = bisect.bisect_left(values, target - room)
+            hi = bisect.bisect_right(values, target + room)
+            for i in range(lo, hi):
+                if _compatible(figure.kind, kinds[i]) and (
+                        best is None or abs(values[i] - target) < abs(best - target)):
+                    best = values[i]
+        return best
+
     def _cited(self, figures: tuple[Figure, ...]) -> dict[str, list[_Cited]]:
         """Each pool entry that a figure of the text states at the room of
         its stated precision (no room for "about"), sorted by value. Only a
@@ -751,9 +816,12 @@ def _ranges(target_kind: str, pool_kind: str, a: Decimal, target: Decimal,
     return out
 
 
-#: The pools that can give a derived figure of each kind.
+#: The pools that can give a derived figure of each kind. A money figure
+#: takes the plain pool too (round 8): a module total prints its amount
+#: field with no currency sign, so a sum of rupees can reach the pool as a
+#: plain number.
 _TARGET_POOLS: dict[str, tuple[str, ...]] = {
-    MONEY: (MONEY,),
+    MONEY: (MONEY, PLAIN),
     PLAIN: (MONEY, PLAIN, PERCENT),
     PERCENT: (MONEY, PLAIN, PERCENT),
 }
@@ -771,7 +839,7 @@ _DERIVE_WORDS = re.compile(
     r"\b(?i:total|totals|sum|together|combined|altogether|in\s+all|plus|net|minus|"
     r"gap|difference|differs?|change|changed|share|of|more|less|higher|lower|"
     r"more\s+than|less\s+than|fewer\s+than|exceeds?|exceeded|over|under|up|down|"
-    r"points?|rest|remaining|so|between|that\s+is|this\s+is|which\s+is|"
+    r"points?|rest|remaining|other|so|between|that\s+is|this\s+is|which\s+is|"
     r"average|avg|mean|per|each|make|makes|made)\b"
 )
 #: A word that says a figure is a quotient: "the average deal is ₹15.3 lakh
@@ -936,18 +1004,26 @@ _GROUP_END = re.compile(r"[.;!?](?=\s|$)|\n")
 _GROUP_REACH = 60
 
 
-def _part_value(cited: dict[str, list[_Cited]], index: int,
-                figure: Figure) -> Decimal | None:
-    """The tool figure that part *index* states: the derive pool entry that
-    it cites, nearest to its stated value. The member's words and a tool
-    argument are no part, as they take no part in a pair (round 3)."""
+def _part(cited: dict[str, list[_Cited]], index: int,
+          figure: Figure) -> tuple[Decimal, bool] | None:
+    """The tool figure that part *index* states, and True when it is the
+    stated value of a figure that the text derived (round 8). The nearest
+    entry that it cites wins. The member's words and a tool argument are no
+    part, as they take no part in a pair (round 3)."""
     if figure.unreadable or figure.kind == PERCENT:
         return None
-    values = [v for kind in (MONEY, PLAIN) for v, by, _s in cited.get(kind, [])
-              if by == index and _compatible(figure.kind, kind)]
-    if not values:
+    entries = [(v, seq < 0) for kind in (MONEY, PLAIN) for v, by, seq in cited.get(kind, [])
+               if by == index and _compatible(figure.kind, kind)]
+    if not entries:
         return None
-    return min(values, key=lambda v: abs(v - abs(figure.value)))
+    return min(entries, key=lambda e: abs(e[0] - abs(figure.value)))
+
+
+def _part_value(cited: dict[str, list[_Cited]], index: int,
+                figure: Figure) -> Decimal | None:
+    """The value of :func:`_part`, or ``None``."""
+    found = _part(cited, index, figure)
+    return found[0] if found is not None else None
 
 
 def _same_kind(total: Figure, part: Figure) -> bool:
@@ -956,18 +1032,23 @@ def _same_kind(total: Figure, part: Figure) -> bool:
 
 
 def _all_sum(cited: dict[str, list[_Cited]], figures: tuple[Figure, ...], total: Figure,
-             parts: list[int]) -> bool:
+             parts: list[int], max_parts: int = _MAX_PARTS) -> bool:
     """True when EVERY listed part is a tool figure and they add up to *total*
-    (fix round 7: not any first two of them). Two parts at least."""
-    if not 2 <= len(parts) <= _MAX_PARTS:
+    (fix round 7: not any first two of them). Two parts at least. A part
+    that the text derived states a rounded value, so its own room adds to
+    the room of the total (round 8)."""
+    if not 2 <= len(parts) <= max_parts:
         return False
     acc = Decimal(0)
+    room = total.strict_room
     for index in parts:
-        value = _part_value(cited, index, figures[index])
-        if value is None:
+        found = _part(cited, index, figures[index])
+        if found is None:
             return False
-        acc += value
-    return _within(acc, abs(total.value), total.strict_room)
+        acc += found[0]
+        if found[1] and figures[index].unit <= total.unit:
+            room += figures[index].strict_room
+    return _within(acc, abs(total.value), room)
 
 
 def _group_after(figures: tuple[Figure, ...], index: int, text: _Text) -> list[int]:
@@ -1052,14 +1133,17 @@ def _fraction_whole(figure: Figure, sources: Sources) -> bool:
 
 
 def _derived(figures: tuple[Figure, ...], index: int, cited: dict[str, list[_Cited]],
-             text: _Text, sources: Sources | None = None) -> bool:
+             text: _Text, sources: Sources | None = None,
+             layout: _Layout | None = None) -> bool:
     """True when OTHER figures of the text that cite tool values give figure
     *index*, at the room of its stated precision (round 3).
 
     The operands stand next to it in its block, two on each side, and a word
     of derivation stands near it (rounds 4 and 5). A percent right after a
     figure is the share of that figure, with no word. A quotient and the whole
-    of a stated share are derived figures too (round 5).
+    of a stated share are derived figures too (round 5). A cell of a table
+    that is the sum of its row, or of its column in a total row, is derived
+    (round 8).
     """
     figure = figures[index]
     if figure.unreadable:
@@ -1069,19 +1153,318 @@ def _derived(figures: tuple[Figure, ...], index: int, cited: dict[str, list[_Cit
         return True
     if _parts_sum(figures, index, cited, text):
         return True
+    if layout is not None and _table_sum(figures, index, cited, layout):
+        return True
     if sources is not None and _fraction_whole(figure, sources):
         return True
     if _ratio(figures, index, cited, text):
         return True
     if not text.has_word(figure):
         return False
-    target, room = abs(figure.value), figure.strict_room
+    target = abs(figure.value)
     for kind in _TARGET_POOLS[figure.kind]:
         near = _near_citers(cited.get(kind, []), index, figures, text)
         entries = [c for c in cited.get(kind, []) if c[1] in near]
-        if _pairs_give(entries, figure.kind, kind, target, room):
+        # A stated value that the text derived is rounded, so the two
+        # largest of its rooms add to the room of the result (round 8). Only
+        # an operand as precise as the result counts: a count never takes
+        # the room of a sum in crore.
+        slack = sum(sorted((figures[by].strict_room for _v, by, seq in entries
+                            if seq < 0 and figures[by].unit <= figure.unit),
+                           reverse=True)[:2])
+        if _pairs_give(entries, figure.kind, kind, target, figure.strict_room + slack):
             return True
     return _share_base(figures, index, cited, text) or _quotient(figures, index, cited, text)
+
+
+# ── Tables (round 8) ────────────────────────────────────────────────────────
+
+#: A row of a markdown table, and a cell of the rule under its header.
+_TABLE_LINE = re.compile(r"^[ \t]*\|.*\|[ \t]*$")
+_TABLE_RULE_CELL = re.compile(r"[ \t]*:?-{2,}:?[ \t]*")
+#: A unit word of a header or a caption: "Amount (₹ lakh)", "in crore".
+_UNIT_WORD = re.compile(
+    r"(?<![A-Za-z])(?P<w>(?i:lakhs?|lacs?|crores?|thousands?|millions?|billions?)"
+    r"|Cr|cr|Mn|mn|Bn|bn)(?![A-Za-z])"
+)
+_UNIT_CURRENCY = re.compile(r"₹|\bRs\b\.?|\bINR\b")
+#: The label of a row that totals its column.
+_TOTAL_LABEL = re.compile(r"^\W*(?i:grand\s+total|total|net|overall|all|sum|altogether)\b")
+#: The two scales that a table with no unit may use: lakh and crore.
+_TABLE_SCALES = (Decimal(10) ** 5, Decimal(10) ** 7)
+#: The most cells of a column that one total row adds up.
+_MAX_COLUMN_PARTS = 60
+#: A bare number: digits only, with no unit, no sign and no word.
+_BARE = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+@dataclass(frozen=True)
+class _Table:
+    """One markdown table: the text of each header cell, the line above it,
+    the label of each body row, and the span of each body cell."""
+
+    header: tuple[str, ...]
+    caption: str
+    labels: tuple[str, ...]
+    rows: tuple[tuple[tuple[int, int], ...], ...]
+
+
+@dataclass
+class _Layout:
+    """Where each figure of a table stands: figure index -> (table, row,
+    column), and the scale that each column uses."""
+
+    tables: list[_Table]
+    where: dict[int, tuple[int, int, int]] = field(default_factory=dict)
+    scale: dict[tuple[int, int], Decimal] = field(default_factory=dict)
+
+
+def _cells(line: str, at: int) -> list[tuple[int, int]]:
+    """The span of each cell of a table line that starts at offset *at*."""
+    bars = [i for i, ch in enumerate(line) if ch == "|" and (i == 0 or line[i - 1] != "\\")]
+    return [(at + a + 1, at + b) for a, b in pairwise(bars)]
+
+
+def _is_rule(line: str) -> bool:
+    """True when *line* is the rule under a header: "|---|:--:|"."""
+    cells = _cells(line, 0)
+    return bool(cells) and all(_TABLE_RULE_CELL.fullmatch(line[a:b]) for a, b in cells)
+
+
+def _tables(text: str) -> list[_Table]:
+    """Each markdown table of *text*: a header line, a rule line, body lines."""
+    lines: list[tuple[int, str]] = []
+    at = 0
+    for line in (text or "").split("\n"):
+        lines.append((at, line))
+        at += len(line) + 1
+    out: list[_Table] = []
+    i = 0
+    while i + 1 < len(lines):
+        start, line = lines[i]
+        rule = lines[i + 1][1]
+        if not (_TABLE_LINE.match(line) and _TABLE_LINE.match(rule) and _is_rule(rule)):
+            i += 1
+            continue
+        j = i + 2
+        while j < len(lines) and _TABLE_LINE.match(lines[j][1]):
+            j += 1
+        caption = ""
+        k, blanks = i - 1, 0
+        while k >= 0 and blanks <= 1:
+            if lines[k][1].strip():
+                if not _TABLE_LINE.match(lines[k][1]):
+                    caption = lines[k][1]
+                break
+            blanks += 1
+            k -= 1
+        rows = tuple(tuple(_cells(body, off)) for off, body in lines[i + 2:j])
+        labels = tuple(text[r[0][0]:r[0][1]].strip() if r else "" for r in rows)
+        header = tuple(text[a:b] for a, b in _cells(line, start))
+        out.append(_Table(header=header, caption=caption, labels=labels, rows=rows))
+        i = j
+    return out
+
+
+def _unit_of(words: str) -> tuple[Decimal | None, bool]:
+    """The scale and the currency that a header cell or a caption names,
+    such as "(₹ lakh)". A scale word inside a figure ("₹32.92 crore") names
+    no unit, so each figure is blanked first."""
+    blanked = words
+    for f in reversed(find_figures(words)):
+        blanked = blanked[:f.start] + " " * (f.end - f.start) + blanked[f.end:]
+    money = bool(_UNIT_CURRENCY.search(blanked))
+    m = _UNIT_WORD.search(blanked)
+    if m is None:
+        return (Decimal(1) if money else None), money
+    word = m.group("w").lower()
+    scale = _scale_of(word)
+    if scale == 1 and word.endswith("s"):
+        scale = _scale_of(word[:-1])
+    return (scale if scale != 1 else None), money
+
+
+def _scaled(figure: Figure, scale: Decimal, money: bool) -> Figure:
+    """*figure*, a bare number of a table cell, in the unit of its column."""
+    digits = figure.text.replace(",", "")
+    short = scale != 1 and _significant(digits) < 2
+    return replace(
+        figure, value=figure.value * scale, unit=figure.unit * scale,
+        kind=MONEY if money else figure.kind, short=short,
+        exact=short and not figure.approx,
+    )
+
+
+def _is_bare(figure: Figure) -> bool:
+    return (figure.kind == PLAIN and not figure.ratio and figure.numerator is None
+            and not figure.unreadable and bool(_BARE.fullmatch(figure.text)))
+
+
+def _column_scale(cells: list[int], figures: tuple[Figure, ...], sources: Sources,
+                  given: Decimal | None, money: bool) -> Decimal | None:
+    """The scale of one column of bare numbers, or ``None`` when its numbers
+    match no tool value at any scale. *given* is the unit of the caption.
+    A count column keeps its numbers as they stand."""
+
+    def hits(scale: Decimal) -> int:
+        return sum(sources.matches(_scaled(figures[i], scale, money)) for i in cells)
+
+    at_one = hits(Decimal(1))
+    options = (given,) if given is not None else _TABLE_SCALES
+    best = max(options, key=hits)
+    count = hits(best)
+    if given is not None and count >= at_one:
+        return given
+    if given is None and count > at_one and count >= min(2, len(cells)):
+        return best
+    return None if at_one == 0 else Decimal(1)
+
+
+def _locate(tables: list[_Table],
+            figures: tuple[Figure, ...]) -> dict[int, tuple[int, int, int]]:
+    """Figure index -> (table, row, column) for each figure of a body cell."""
+    cells = sorted((a, b, t, r, c) for t, table in enumerate(tables)
+                   for r, row in enumerate(table.rows) for c, (a, b) in enumerate(row))
+    starts = [cell[0] for cell in cells]
+    where: dict[int, tuple[int, int, int]] = {}
+    for index, figure in enumerate(figures):
+        k = bisect.bisect_right(starts, figure.start) - 1
+        if k >= 0 and cells[k][0] <= figure.start < cells[k][1]:
+            where[index] = cells[k][2:]
+    return where
+
+
+def _table_layout(text: str, figures: tuple[Figure, ...],
+                  sources: Sources) -> tuple[tuple[Figure, ...], _Layout | None]:
+    """*figures* with each bare number of a table cell in the unit of its
+    column, and the layout of each table (round 8).
+
+    The unit of a column comes from its header cell ("Amount (₹ lakh)"), or
+    from the line above the table ("Amounts (in crore):"). A column with no
+    unit takes lakh or crore when its numbers match the tool values at that
+    scale and not as they stand, and the WHOLE column takes it. A column
+    whose numbers match no tool value at any scale (a column of row totals)
+    takes the scale that the other columns of its table took.
+    """
+    tables = _tables(text)
+    if not tables:
+        return figures, None
+    layout = _Layout(tables=tables, where=_locate(tables, figures))
+    out = list(figures)
+    for t, table in enumerate(tables):
+        cap_scale, cap_money = _unit_of(table.caption)
+        columns: dict[int, list[int]] = {}
+        for index, (tt, _r, c) in layout.where.items():
+            if tt == t and _is_bare(figures[index]):
+                columns.setdefault(c, []).append(index)
+        chosen: dict[int, tuple[Decimal, bool]] = {}
+        open_columns: list[tuple[int, bool]] = []
+        for c, cells in columns.items():
+            head_scale, head_money = (_unit_of(table.header[c]) if c < len(table.header)
+                                      else (None, False))
+            money = head_money or cap_money
+            if head_scale is not None:
+                chosen[c] = (head_scale, money)
+                continue
+            scale = _column_scale(cells, figures, sources, cap_scale, money)
+            if scale is None:
+                open_columns.append((c, money))
+            else:
+                chosen[c] = (scale, money)
+        taken = [s for s, _m in chosen.values() if s != 1]
+        if taken:
+            common = max(set(taken), key=taken.count)
+            for c, money in open_columns:
+                chosen[c] = (common, money)
+        for c, (scale, money) in chosen.items():
+            layout.scale[(t, c)] = scale
+            if scale == 1 and not money:
+                continue
+            for index in columns.get(c, []):
+                out[index] = _scaled(figures[index], scale, money)
+    return tuple(out), layout
+
+
+def _table_sum(figures: tuple[Figure, ...], index: int, cited: dict[str, list[_Cited]],
+               layout: _Layout) -> bool:
+    """A cell that is the sum of the other cells of its row with the same
+    unit ("| Region | Billed | Paid | Net |"), or, in a row labelled "Total",
+    the sum of the other cells of its column (round 8)."""
+    where = layout.where.get(index)
+    if where is None or figures[index].kind == PERCENT:
+        return False
+    t, r, c = where
+    target = figures[index]
+    unit = layout.scale.get((t, c), Decimal(1))
+    labels = layout.tables[t].labels
+    row = [j for j, (tt, rr, cc) in layout.where.items()
+           if tt == t and rr == r and j != index
+           and layout.scale.get((t, cc), Decimal(1)) == unit and _same_kind(target, figures[j])]
+    if _all_sum(cited, figures, target, row):
+        return True
+    if r >= len(labels) or not _TOTAL_LABEL.match(labels[r]):
+        return False
+    column = [j for j, (tt, rr, cc) in layout.where.items()
+              if tt == t and cc == c and rr != r and not _TOTAL_LABEL.match(labels[rr])
+              and _same_kind(target, figures[j])]
+    return _all_sum(cited, figures, target, column, _MAX_COLUMN_PARTS)
+
+
+# ── A figure that the text derived is an operand too (round 8) ─────────────
+
+def _pool_of(kind: str) -> str:
+    return kind if kind in _POOL_KINDS else PLAIN
+
+
+def _add_stated(cited: dict[str, list[_Cited]], figures: tuple[Figure, ...],
+                derived: Iterable[int]) -> None:
+    """Make the stated value of each derived figure an operand: the figure
+    itself cites it, and so does each other figure of the text that states
+    the same value. So "₹32.92 crore less ₹22.30 crore" can give the other
+    ₹10.62 crore when both are sums that the text showed. The entry id is
+    negative, so it never meets a pool entry.
+
+    Only a figure of :data:`RESTATE_DIGITS` significant digits or more
+    is an operand, or states a derived value again. "₹8.5 lakh" in a table
+    of rates would else pass other rates of the table by chance."""
+    for d in derived:
+        stated = figures[d]
+        if _digits_of(stated) < RESTATE_DIGITS:
+            continue
+        value, pool = abs(stated.value), _pool_of(stated.kind)
+        entries = cited.setdefault(pool, [])
+        for j, other in enumerate(figures):
+            if other.unreadable or not _compatible(other.kind, stated.kind):
+                continue
+            if (other.kind == PERCENT) != (stated.kind == PERCENT):
+                continue
+            if j == d or (_digits_of(other) >= RESTATE_DIGITS
+                          and _within(abs(other.value), value, other.strict_room)):
+                entries.append((value, j, -(d + 1)))
+        entries.sort()
+
+
+#: The fewest significant digits of a figure that states a derived value
+#: again: "₹32.92 crore" has 4 and "₹8.5 lakh" has 2.
+RESTATE_DIGITS = 3
+_DIGITS = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def _digits_of(figure: Figure) -> int:
+    """The count of significant digits that *figure* states."""
+    m = _DIGITS.search(figure.text)
+    return _significant(m.group(0).replace(",", "")) if m else 0
+
+
+def _restated(cited: dict[str, list[_Cited]], index: int) -> bool:
+    """True when figure *index* states again a value that the text derived."""
+    return any(by == index and seq < 0 for entries in cited.values()
+               for _v, by, seq in entries)
+
+
+#: The most passes of the derive rules. A pass can only use figures that an
+#: earlier pass derived, so a chain is three steps long at most.
+_DERIVE_PASSES = 3
 
 
 def check(text: str, sources: Sources | Iterable[str]) -> CheckResult:
@@ -1090,26 +1473,61 @@ def check(text: str, sources: Sources | Iterable[str]) -> CheckResult:
     *sources* is a :class:`Sources`, or texts to read into one (each with
     ``derive=True``). A figure passes when a source holds it, or when OTHER
     figures next to it in its block cite tool values that give it, by a rule
-    of :func:`_derived`.
+    of :func:`_derived`. A bare number of a table takes the unit of its
+    column first. A figure that a rule derived is an operand of the next
+    pass, and a figure that states it again passes (round 8).
     """
     if not isinstance(sources, Sources):
         book = Sources()
         for source in sources:
             book.add_text(source, derive=True)
         sources = book
-    figures = tuple(find_figures(text))
-    unmatched: list[Figure] = []
-    cited: dict[str, list[_Cited]] | None = None
-    shape: _Text | None = None
-    for index, figure in enumerate(figures):
-        if sources.matches(figure):
-            continue
-        if cited is None or shape is None:
-            cited = sources._cited(figures)
-            shape = _Text.of(text)
-        if not _derived(figures, index, cited, shape, sources):
-            unmatched.append(figure)
-    return CheckResult(figures=figures, unmatched=tuple(unmatched))
+    figures, layout = _table_layout(text, tuple(find_figures(text)), sources)
+    pending = [i for i, figure in enumerate(figures) if not sources.matches(figure)]
+    if pending:
+        cited = sources._cited(figures)
+        shape = _Text.of(text)
+        for _pass in range(_DERIVE_PASSES):
+            derived = [i for i in pending
+                       if _restated(cited, i)
+                       or _derived(figures, i, cited, shape, sources, layout)]
+            if not derived:
+                break
+            done = set(derived)
+            pending = [i for i in pending if i not in done]
+            _add_stated(cited, figures, derived)
+    return CheckResult(figures=figures, unmatched=tuple(figures[i] for i in pending),
+                       text=text or "")
+
+
+#: The most failed figures that the chat note explains one by one. Past
+#: it, the note names no figure (round 8).
+MAX_EXPLAIN = 12
+
+
+def arithmetic(result: CheckResult, figure: Figure) -> tuple[Figure, str, Figure] | None:
+    """Two OTHER figures of the text that passed, whose sum or difference
+    gives *figure*: ``(a, "plus", b)`` or ``(a, "less", b)``. Each one of
+    the three states a rounded value, so their rooms add up. ``None`` when
+    no pair gives it. The chat note says so in words (round 8)."""
+    if figure.unreadable or figure.kind == PERCENT:
+        return None
+    failed = {f.start for f in result.unmatched}
+    passed = [f for f in result.figures
+              if f.start not in failed and not f.unreadable and _same_kind(figure, f)]
+    target = abs(figure.value)
+    # An operand must be as precise as the figure, or its room hides the
+    # figure: "8,681 is 32.1 less 32.1" in lakh is no reason.
+    passed = [f for f in passed if f.unit <= figure.unit]
+    for i, a in enumerate(passed):
+        for b in passed[i + 1:]:
+            room = figure.strict_room + a.strict_room + b.strict_room
+            big, small = (a, b) if abs(a.value) >= abs(b.value) else (b, a)
+            if _within(abs(big.value) + abs(small.value), target, room):
+                return big, "plus", small
+            if _within(abs(big.value) - abs(small.value), target, room):
+                return big, "less", small
+    return None
 
 
 def group_indian(whole: int) -> str:
@@ -1145,6 +1563,7 @@ def format_figure(value: Decimal | int | float, kind: str = PLAIN, *, decimals: 
 
 
 __all__ = [
-    "MONEY", "PERCENT", "PLAIN", "CheckResult", "Figure", "Sources", "check",
-    "find_figures", "format_figure", "group_indian",
+    "EMPTY_LABELS", "MAX_EXPLAIN", "MONEY", "PERCENT", "PLAIN", "CheckResult", "Figure",
+    "Sources", "arithmetic", "check", "find_figures", "format_figure", "group_indian",
+    "list_counts",
 ]

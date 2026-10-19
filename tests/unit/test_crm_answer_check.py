@@ -34,9 +34,10 @@ from typing import Any
 import pytest
 from acb_skills import answer_check
 from acb_skills.answer_check import (
-    CAVEAT_LEAD,
-    CAVEAT_TAIL,
     FALLBACK_LEAD,
+    HOW_HEAD,
+    HOW_NONE,
+    NOTE_MISSING,
     ON,
     SHADOW,
     AnswerCheckProvider,
@@ -57,8 +58,10 @@ from agent_framework import (
 
 ROOT = Path(__file__).resolve().parents[2]
 
-#: The caveat of round 7, with the failed figures in place of ``{}``.
-CAVEAT_NOTE = "\n\n" + CAVEAT_LEAD + " {}. " + CAVEAT_TAIL
+def missing(*figures: str) -> str:
+    """The note of round 8 for figures that no CRM result holds, each with
+    its reason and its action."""
+    return "\n\n" + "\n".join(NOTE_MISSING.format(figure=f) for f in figures)
 
 CRM_RESULT = (
     "Deals, sum_amount by status:\n"
@@ -218,7 +221,7 @@ async def test_two_failures_deliver_the_answer_with_a_caveat(stream: bool) -> No
                             ("text", second)])
     out = await _run(agent, stream=stream)
     assert out.startswith(second)
-    assert out == second + CAVEAT_NOTE.format("₹14 lakh")
+    assert out == second + missing("₹14 lakh")
     assert FALLBACK_LEAD not in out and "13.5" not in out
     assert len(client.requests) == 3  # one extra request at most
 
@@ -256,7 +259,7 @@ async def test_the_run_has_one_retry_in_all(stream: bool) -> None:
     ])
     out = await _run(agent, stream=stream)
     assert FALLBACK_LEAD not in out
-    assert out.endswith("Open deals hold ₹15 lakh." + CAVEAT_NOTE.format("₹15 lakh"))
+    assert out.endswith("Open deals hold ₹15 lakh." + missing("₹15 lakh"))
     assert len(client.requests) == 4
 
 
@@ -471,7 +474,10 @@ async def test_a_bad_card_with_bad_text_goes_out_with_a_caveat(stream: bool) -> 
     ])
     out = await _run(agent, stream=stream)
     assert [_card(1834567)["ui"]] == CARDS     # the retried card, once
-    assert out.startswith("Still ₹18.3 lakh." + CAVEAT_NOTE.format("₹18.3 lakh, 1834567"))
+    # Both figures of the answer fail, so the note names none of them and
+    # says how the answer read the CRM (round 8).
+    assert out.startswith("Still ₹18.3 lakh.\n\n" + HOW_HEAD + "\n- Deals, sum of the amount")
+    assert "1834567" not in out.split(HOW_HEAD, 1)[1]
     assert FALLBACK_LEAD not in out
     assert len(client.requests) == 4
 
@@ -776,7 +782,7 @@ async def test_a_failed_text_beside_a_shared_file_is_not_stripped(stream: bool) 
     # The first step fails and is retried, so its file is never shown. The
     # retried step goes out with its file and a caveat (round 7).
     assert ELEMENTS == [("file", "outputs/a.pdf")]
-    assert out.startswith("Open deals hold ₹98 lakh." + CAVEAT_NOTE.format("₹98 lakh"))
+    assert out.startswith("Open deals hold ₹98 lakh." + missing("₹98 lakh"))
     assert len(client.requests) == 4
 
 
@@ -1127,15 +1133,16 @@ def test_the_retry_note_says_how_to_write_a_total_a_ratio_and_a_rank() -> None:
 
 # ── Fix round 7 (2026-10-19): an answer is never replaced ─────────────────
 
-def test_the_caveat_names_at_most_five_figures_in_plain_words() -> None:
+def test_many_failed_figures_name_no_figure_in_plain_words() -> None:
+    """Round 8: seven failed figures are a limit of the check, so the note
+    names none of them (it used to list five raw figures)."""
     from acb_common.number_check import check
 
     result = check("We have 91, 92, 93, 94, 95, 96 and 97 deals, and 91 again.",
                    ["Open: INR 5,00,000"])
-    note = answer_check.caveat_text(result)
-    # Seven figures fail, so the note names five and counts the rest.
-    assert note == CAVEAT_NOTE.format("91, 92, 93, 94, 95 and 2 more")
-    for word in ("CRM-Q29", "answer_check", "check failed", "tool", "source"):
+    kind, note = answer_check.note_text(result, RunLedger())
+    assert (kind, note) == ("how", "\n\n" + HOW_NONE)
+    for word in ("91", "CRM-Q29", "answer_check", "check failed", "tool", "source"):
         assert word not in note
 
 

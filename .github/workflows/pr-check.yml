@@ -49,9 +49,66 @@ permissions:
   contents: read
 
 jobs:
+  # ── Which parts of the tree this PR touches (2026-10-19) ─────────────────
+  #
+  # A job that does not touch its area is SKIPPED by `if:`. GitHub counts a
+  # skipped job as satisfied, so a required check still passes (see the note
+  # at the top). A backend PR then frees 4 of the Free plan's 20 runners: the
+  # operator console and the three e2e shards. Measured 15-19 Oct: a shard
+  # waited up to 22 minutes for a runner.
+  #
+  # `frontend` gates ONLY the e2e shards: the browser suite stubs `/api/**`
+  # and reads nothing outside workbench/control_plane. The Frontend unit job
+  # reads the whole repo, so it always runs.
+  #
+  # ⚠️ Fail OPEN: when the diff cannot be read, every area reads `true`. And
+  # when this whole job fails, each job that needs it RUNS: its `if:` asks
+  # `needs.changes.result != 'success'`. Without that, a failed `changes`
+  # would skip every required check below, and a skip counts as a pass.
+  # `!cancelled()`, NOT `always()`: `always()` still starts these jobs after a
+  # newer push cancelled the run, and they then hold runners for nothing.
+  # Fence: tests/unit/test_fence_lists.py.
+  changes:
+    name: "Changed areas"
+    runs-on: ubuntu-latest
+    outputs:
+      frontend: ${{ steps.diff.outputs.frontend }}
+      operator: ${{ steps.diff.outputs.operator }}
+      database: ${{ steps.diff.outputs.database }}
+      caddy: ${{ steps.diff.outputs.caddy }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -u
+          if files="$(git diff --name-only "$BASE"...HEAD 2>/dev/null)" && [ -n "$files" ]; then :; else
+            echo "cannot read the diff, so every area runs"
+            for a in frontend operator database caddy; do echo "$a=true" >> "$GITHUB_OUTPUT"; done
+            exit 0
+          fi
+          echo "$files"
+          # A change to CI itself runs everything.
+          all=false; echo "$files" | grep -qE '^\.github/' && all=true
+          hit() { $all && echo true || { echo "$files" | grep -qE "$1" && echo true || echo false; }; }
+          {
+            echo "frontend=$(hit '^workbench/control_plane/')"
+            echo "operator=$(hit '^workbench/operator_console/')"
+            echo "database=$(hit '^(infra/|scripts/|deploy/)')"
+            echo "caddy=$(hit '^deploy/hostinger/caddy/')"
+          } | tee -a "$GITHUB_OUTPUT"
+
   lint:
     name: "Lint"
     runs-on: ubuntu-latest
+    # `pull-requests: read` lets ci_advisory.sh read the PR's labels.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v5
 
@@ -98,6 +155,31 @@ jobs:
       # than trusted. R7 — the rule names its fence.
       - name: session-handoff queue injection (blocking)
         run: node .claude/hooks/session-handoff.test.mjs
+
+      # ── The process fences (two-speed CI, 2026-10-19) ─────────────────────
+      #
+      # These tests read files as text and guard consistency: naming, docs,
+      # registries, wording, lockstep. They ran inside the 12-27 minute unit
+      # shards with `-x`, so an agent met them one at a time, about 30
+      # minutes a round. Of 70 red runs on 15-19 Oct, 29 were a fence and 9
+      # were a real bug.
+      #
+      # They are ADVISORY while a feature is in build: a warning, and the job
+      # goes on. Label the PR `harden` for the hardening pass, and they block.
+      # The shards skip them (`pytest-ignore`).
+      #
+      # The SAFETY fences are not here. They stay in the shards, blocking, as
+      # before: without a database half of them skip, so a second copy here
+      # would cost about 4 minutes and prove less.
+      # Lists: tests/fences.json. Contract: engineering_practice.md §7a.
+      #
+      # The label is read LIVE, not from the event: a rerun replays the event
+      # of the first run, so a label added later would not count.
+      - name: Process fences (advisory in build, blocking with the `harden` label)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: bash scripts/ci_advisory.sh "process fence" -- uv run python scripts/fences.py run process
 
       # Non-blocking report: the FULL ruff check (all configured rules incl. the
       # ~1.3k-finding style backlog + C901 complexity hotspots). This is the
@@ -155,9 +237,9 @@ jobs:
   test:
     name: "Unit tests (shard ${{ matrix.shard }}/6)"
     runs-on: ubuntu-latest
-    # `fail-fast: false`: each shard stops at its own first failure (`-x`),
-    # and one run then reports the first failure of EVERY shard. Fail-fast
-    # cancelled the other five and hid their failures until the next round.
+    # `fail-fast: false`: one run reports the failures of EVERY shard.
+    # Fail-fast cancelled the other five and hid their failures until the
+    # next round.
     strategy:
       fail-fast: false
       matrix:
@@ -279,9 +361,17 @@ jobs:
       # `-o junit_family=xunit1` puts the FILE on each test case, which the
       # guard in `unit-tests` reads. The report also carries the timings that
       # refresh `.test_durations`.
+      #
+      # Two-speed CI (2026-10-19):
+      #   * No `-x`. One run reports EVERY failure, not one a round.
+      #   * `--reruns 1`. A timing flake costs a second try, not a 30-minute
+      #     round. 18 of 70 red runs on 15-19 Oct were flakes or infra.
+      #   * The process fences run in the Lint job. They are skipped here, or
+      #     they would still block.
       - name: Run unit tests (this shard)
         run: |
-          uv run python -m pytest tests/unit/ -x -v -rs \
+          uv run python -m pytest tests/unit/ -v -rs --reruns 1 \
+            $(python3 scripts/fences.py pytest-ignore) \
             --splits 6 --group ${{ matrix.shard }} \
             --splitting-algorithm duration_based_chunks \
             -o junit_family=xunit1 --junitxml=junit/shard-${{ matrix.shard }}.xml
@@ -426,6 +516,10 @@ jobs:
   backup-restore:
     name: "Backup/restore rehearsal"
     runs-on: ubuntu-latest
+    # Its scripts live under scripts/, and the schema under infra/. A PR
+    # that touches neither cannot change the result (2026-10-19).
+    needs: changes
+    if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.database == 'true')"
     services:
       postgres:
         image: postgres:16
@@ -488,6 +582,10 @@ jobs:
   migrations:
     name: "Migration ladder replay"
     runs-on: ubuntu-latest
+    # The ladder is infra/, and its appliers are under scripts/. The R1
+    # number guard runs in the shards and in push-check on every PR anyway.
+    needs: changes
+    if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.database == 'true')"
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -584,6 +682,12 @@ jobs:
   frontend:
     name: "Frontend (typecheck + unit tests)"
     runs-on: ubuntu-latest
+    # ⚠️ NOT filtered by path. Its unit tests read files across the whole
+    # repo (apps/, tests/fixtures/, project-docs/), so no path is safe to skip.
+    # `pull-requests: read` lets ci_advisory.sh read the PR's labels.
+    permissions:
+      contents: read
+      pull-requests: read
     defaults:
       run:
         working-directory: workbench/control_plane
@@ -602,8 +706,20 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit -p tsconfig.json
 
+      # Two-speed CI (2026-10-19): the process fences (design-system regexes,
+      # nav parity, ratchets) are skipped here and run in the advisory step
+      # below. Lists: tests/fences.json.
       - name: Unit tests
-        run: npm test
+        run: npx vitest run $(python3 ../../scripts/fences.py vitest-exclude control_plane)
+
+      - name: Process fences (advisory in build, blocking with the `harden` label)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          files="$(python3 ../../scripts/fences.py vitest control_plane process)"
+          [ -n "$files" ] || { echo "no process fences listed"; exit 0; }
+          bash ../../scripts/ci_advisory.sh "frontend process fence" -- npx vitest run $files
 
   # The operator console had tests but NO CI running them — a fence that never
   # runs is advisory by accident (R7). Same shape as the workbench job; its
@@ -612,6 +728,11 @@ jobs:
   frontend-operator:
     name: "Operator console (typecheck + unit tests)"
     runs-on: ubuntu-latest
+    needs: changes
+    if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.operator == 'true')"
+    permissions:
+      contents: read
+      pull-requests: read
     defaults:
       run:
         working-directory: workbench/operator_console
@@ -631,7 +752,16 @@ jobs:
         run: npx tsc --noEmit -p tsconfig.json
 
       - name: Unit tests
-        run: npm test
+        run: npx vitest run $(python3 ../../scripts/fences.py vitest-exclude operator_console)
+
+      - name: Process fences (advisory in build, blocking with the `harden` label)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          files="$(python3 ../../scripts/fences.py vitest operator_console process)"
+          [ -n "$files" ] || { echo "no process fences listed"; exit 0; }
+          bash ../../scripts/ci_advisory.sh "operator console process fence" -- npx vitest run $files
 
   # ── H-27: the browser suite finally has a job ──────────────────────────────
   #
@@ -679,7 +809,11 @@ jobs:
     # runs the suite.
     #
     # Fence: `workbench/control_plane/src/lib/e2eGate.test.ts`.
-    if: github.event_name != 'push'
+    #
+    # 2026-10-19: and only when the PR touches the control plane. A skipped
+    # e2e frees three runners for the other PRs.
+    needs: changes
+    if: "!cancelled() && github.event_name != 'push' && (needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true')"
     # A hung dev server must cost minutes, not the runner's six-hour default.
     #
     # 🔴 THE CAP WAS THE FAULT, NOT THE CODE. It was 20 minutes, set when the
@@ -740,6 +874,8 @@ jobs:
     name: "Caddy config (validate)"
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    needs: changes
+    if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.caddy == 'true')"
     # H-60: the deploy installs deploy/hostinger/caddy/Caddyfile on the box by
     # itself. The apply validates it there and refuses a bad file, but then the
     # deploy is red AFTER the merge. This job refuses it BEFORE the merge.

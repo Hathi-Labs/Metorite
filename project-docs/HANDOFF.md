@@ -70,6 +70,19 @@ nothing; the thing nobody wrote down costs a session.
 - **Authority:** `specs/staging_and_daily_release.md` §5.10 and §5.11
 - **Added:** 2026-10-16 · WS-38 staging session
 
+### H-361 · Raise the WSL2 CPU cap, so local CI runs in about 10 minutes · [OWNER]
+- **Check:** `grep -E "^processors=" ~/.wslconfig` on the owner's PC reads 16
+  or more. If it does, delete this entry.
+- **Why:** local CI (`bash scripts/ci_local.sh`) passed in 17.7 minutes on
+  2026-10-19. Each of the six shards took about 16 minutes, because
+  `.wslconfig` caps ALL of WSL2 at 8 processors and 16 GB. The PC has 28
+  cores and 64 GB.
+- **Do this (owner):** in `C:\Users\<you>\.wslconfig`, set `processors=20`
+  and `memory=32GB`. Then run `wsl --shutdown` at a quiet moment, because it
+  stops Docker Desktop and every WSL window for a few seconds.
+- **Authority:** `specs/engineering_practice.md` §7a
+- **Added:** 2026-10-19 · CI speed-up session
+
 ### H-283 · Prove the first `credit_draw` row on production · [AGENT]
 - **Check:** on the box, query the Console database:
   `SELECT count(*), max(created_at) FROM credit_draw;`. A count above zero
@@ -144,6 +157,23 @@ line — never reclaim a number by deleting the other entry.
 ---
 
 # OPEN
+
+### H-365 · Replay the CRM answer check on stored answers, then decide `on` · [OWNER]
+- **Check:** on the production box, `grep -E '^CRM_ANSWER_CHECK=' /opt/acb/app/.env`
+  reads `shadow`, and no replay result is in the round 8 PR. Then this is open.
+- **Why:** WS-53 CRM-Q29 round 8 changed the note and the check. The journal
+  holds counts only, so it gives an upper bound and no true rate. The true rate
+  needs the stored answers of the armed runs, and those rows hold the chat of
+  another org. An agent does not read them.
+- **Do this (owner):** run `uv run python scripts/crm_answer_check_replay.py
+  --print-sql`. Export those rows of the thread ids of the journal to a JSON
+  lines file off the repo. Then run the script with `--rows <file>`. Set `on`
+  only when "any note" is under 5 percent.
+- **Then (agent):** the hardening list of the PR. Send the question of an
+  empty group through the CRM-Q32 store, the web card and `text_asks`. Then
+  measure the invented-figure rate of the table units with a seeded corpus.
+- **Authority:** `specs/crm_platform.md` §18.11.2, CRM-Q29 fix round 8
+- **Added:** 2026-10-20 · `crm-check-explain`
 
 ### H-294 · BH-6 moved the root units to /usr/local/lib/acb, and the runbooks still name the checkout · [AGENT]
 - **Check:** run `rg -n "opt/acb/app/scripts/backup_db.sh|compose -f infra/docker-compose.yml" deploy/hostinger/README.md project-docs/specs/backup_and_restore.md README.md project-docs/specs/development_and_delivery_framework.md`. A hit means this is open.

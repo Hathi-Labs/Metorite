@@ -72,11 +72,17 @@ describe("the browser gate CI runs", () => {
     expect(step).not.toMatch(/continue-on-error:\s*true/);
   });
 
-  it("skips only its push copy, and still runs on every pull_request", () => {
+  it("skips its push copy, and a PR that does not touch the control plane", () => {
     // The push copy duplicates the PR run and adds no fence at the merge
     // button, because a conflicted PR cannot merge. `!= 'push'` and not
     // `== 'pull_request'`, so a trigger added later still runs the suite.
-    expect(jobs().e2e).toMatch(/^ {4}if: github\.event_name != 'push'$/m);
+    // Since 2026-10-19 it also skips a PR that touches nothing under
+    // workbench/control_plane: the suite stubs `/api/**` and reads nothing
+    // outside the app. The `changes` job fails open: a failed `changes` job
+    // RUNS the suite, and a cancelled run does not start it.
+    expect(jobs().e2e).toMatch(
+      /^ {4}if: "!cancelled\(\) && github\.event_name != 'push' && \(needs\.changes\.result != 'success' \|\| needs\.changes\.outputs\.frontend == 'true'\)"$/m,
+    );
   });
 
   it("has no push trigger, so no push run can twin a required check", () => {

@@ -364,6 +364,65 @@ A change is done when **all** of these hold — not when CI is green:
    wrong four times in one day.
 6. The owning spec's status header is updated in the same PR (R4).
 
+## 7a. Two-speed delivery: build first, harden when the feature is done
+
+Owner directive, 2026-10-19. The guardrails cost more time than they saved.
+We measured 70 red CI runs on 15-19 October. A process fence caused 29 of
+them. A real bug in the PR caused 9. Each red run cost about 30 minutes.
+
+**A feature now moves at two speeds.**
+
+**1. Build.** One PR or many, until the feature works.
+
+- The product tests block.
+- The SAFETY fences block. They guard tenancy, auth, secrets, migrations,
+  money, and the deploy and CI path.
+- The PROCESS fences are advisory. They guard naming, docs, registries, the
+  design system and source-string pins. CI shows a warning and goes on.
+- STE lint is advisory. The hook reports an error and goes on. The
+  hardening pass sets `STE_LINT_BLOCK=1`, and then it blocks.
+- The agent loop is implement, then verify (`/next-ticket` step 1d). The
+  adversarial review, the
+  visual review, the board row, the spec header (R4) and new fence tests (R7)
+  wait for the hardening pass.
+- A HIGH-tier slice keeps the full loop: tenancy, RLS, auth, identity, a
+  migration, money, credits, secrets, a member or role write, or the deploy
+  path.
+
+**2. Harden.** One PR when the feature works, labelled `harden`.
+
+- The process fences block. Run `bash scripts/prepush.sh --harden` first.
+- Run `diff-reviewer` on the WHOLE feature diff, not on each slice.
+- Write the fence tests that R7 asks for, and the items for this feature in
+  `project-docs/hardening_backlog.md`.
+- Update the board row and the spec header.
+
+**What never relaxes:** plan-guard, the safety fences, the R8 database
+suites, the migration ladder replay, and the R1 migration-number guard. We
+cannot roll back production, and every customer shares one database.
+
+**The lists.** `tests/fences.json` sorts each static fence into `safety` or
+`process`. A fence is `safety` when its failure would reach production or a
+customer: a 404, a 422, a wrong write, a leak. A fence is `process` when it
+guards naming, docs, registries, wording, the look or lockstep. A new static
+fence goes into one list in the PR that adds it. If you are not sure, choose
+`safety`. Fence: `tests/unit/test_fence_lists.py`.
+
+**Before you push.** `bash scripts/prepush.sh` runs the fences and the
+affected tests in a few minutes.
+
+**The whole suite, on this PC.** `bash scripts/ci_local.sh` runs every
+pr-check job in the `metorite-ci` WSL2 distro. The distro is preset, so a run
+spends its time on tests, not on installs. The jobs come from
+`.github/workflows/pr-check.yml` through `scripts/ci_pc/steps.py`, so the two
+cannot drift. Set it up once with `bash scripts/ci_pc/setup.sh`.
+
+- It tests a COMMIT. Commit first.
+- The distro cannot read the Windows drives and cannot start a Windows
+  program. The code reaches it through `git`, never through a mount.
+- It is not the merge gate. pr-check on GitHub is.
+- Fence: `tests/unit/test_ci_pc.py`.
+
 ## 8. What to fix before customer #1 — in order
 
 These are named here so they are not rediscovered; each belongs to an existing

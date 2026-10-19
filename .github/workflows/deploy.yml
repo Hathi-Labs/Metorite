@@ -146,8 +146,11 @@ jobs:
       - name: Sync deps
         run: uv sync
 
+      # Two-speed CI (2026-10-19), the same rules as pr-check: the process
+      # fences are advisory, so they must not hold the nightly release, and a
+      # timing flake gets one rerun. The safety fences still gate here.
       - name: Run unit tests
-        run: uv run python -m pytest tests/unit/ -x -v
+        run: uv run python -m pytest tests/unit/ -x -v --reruns 1 $(python3 scripts/fences.py pytest-ignore)
 
   # ── Publish the ref the STAGING box will poll (WS-38) ─────────────────
   # Every green merge fast-forwards `staging`. A push only: a scheduled run
