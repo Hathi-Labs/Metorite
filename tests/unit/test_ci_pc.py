@@ -39,8 +39,8 @@ _RUN_SUITE = (_ROOT / "scripts/ci_pc/run_suite.sh").read_text(encoding="utf-8")
 
 
 def _named_jobs() -> set[str]:
-    # `job <label> <pr-check job> ...` in run_suite.sh
-    return set(re.findall(r"^\s*job \S+ ([a-z][\w-]*)", _RUN_SUITE, re.M))
+    # `job <label> <pod> <pr-check job> ...` in run_suite.sh
+    return set(re.findall(r"^\s*job \S+ \S+ ([a-z][\w-]*)", _RUN_SUITE, re.M))
 
 
 def test_run_suite_names_only_jobs_that_exist():
@@ -84,6 +84,15 @@ def test_an_override_beats_the_job_env():
     out = steps.render("test", _CTX, {"TENANT_LADDER_DATABASE_URL": "postgresql://x@127.0.0.1:6701/t"})
     assert "6701" in out
     assert "5434" not in out.split("== Run unit tests")[1]
+
+
+def test_no_job_can_reach_the_dev_stack_on_this_pc():
+    # Every WSL2 distro shares one network, and Docker Desktop publishes the
+    # dev stack's Postgres on *:5432 there. The first local run reached it.
+    # So no service publishes a port, and every job runs in a container.
+    assert not re.search(r"docker run[^\n]*\s-p\s", _RUN_SUITE)
+    assert '"$IMAGE" bash "$RUN/$label.sh"' in _RUN_SUITE
+    assert "--network \"container:$pod\"" in _RUN_SUITE
 
 
 def test_the_distro_is_locked_down():

@@ -26,7 +26,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-w() { MSYS_NO_PATHCONV=1 wsl.exe -d "$DISTRO" -- "$@"; }
+# `-e`, not `--`: `--` hands the command to a shell first, and that shell
+# expands every `$` meant for the command inside the distro.
+w() { MSYS_NO_PATHCONV=1 wsl.exe -d "$DISTRO" -e "$@"; }
 if ! wsl.exe -l -q 2>/dev/null | tr -d '\0\r' | grep -qx "$DISTRO"; then
   echo "No $DISTRO distro. Run once: bash scripts/ci_pc/setup.sh" >&2
   exit 2
