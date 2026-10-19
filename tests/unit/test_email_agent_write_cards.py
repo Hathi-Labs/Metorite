@@ -43,6 +43,17 @@ def _load():
 
 agents = _load()
 
+
+@pytest.fixture(autouse=True)
+def _open_run() -> None:
+    """An open run, as the executor binds for each chat turn. With no run
+    context, a rule tool holds its outward part, because H-236 fails closed.
+    The held run has its own fence: ``test_no_egress_tool_audit.py``."""
+    from acb_skills.write_artifact import bind_artifact_context
+
+    bind_artifact_context(no_egress=False)
+
+
 BOX = "acc-1"
 BOX_TEXT = "Work · jane@acme.test"
 MSG = "0b0b0b0b-0000-4000-8000-00000000000b"

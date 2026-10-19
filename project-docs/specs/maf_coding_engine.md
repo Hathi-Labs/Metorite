@@ -5046,6 +5046,15 @@ decision inside D86, after review: the control fails closed.
   `agents.json`. `annotate()` has no default for `open_world`. An agent's own
   tool carries its annotation on the function. So a tool of another repo
   that only shares a name with one of ours still fails closed.
+- **The audit of 2026-10-19 sorts each tool by what it does.** The owner
+  reported that the chat refused to save a reply draft. The rule did not
+  change. The annotation of 11 email tools changed to `open_world=False`,
+  because they act only in the member's own mailbox. Each rule tool refuses
+  its outward part at call time in a held run. A held run also gets a note
+  that says what it holds, and why. The table and the residual risks are in
+  `email_app_master_plan.md` §12.3.13.8.1. Fence:
+  `tests/unit/test_no_egress_tool_audit.py`, which pins the withheld set of
+  each in-repo agent.
 - **The flag is decided once, at the start of each run.** Each run boundary
   computes it before anything can fail, and binds it at once:
   `_tool_injection._run_no_egress`. It is set when the parent was

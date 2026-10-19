@@ -620,6 +620,99 @@ def _run_org_display_name() -> str:
     return name
 
 
+# ── The member's own name (owner report of 2026-10-19) ──────────────────────
+
+#: The agents whose per-turn context names the member. Each one writes mail
+#: that the member signs. The email assistant signed a draft "[your name]",
+#: because no context named the member.
+_MEMBER_NAME_AGENTS = frozenset({"email-assistant", "orchestrator"})
+#: The member's display name by ``(org, member)``, with the time it was read.
+_MEMBER_NAME_CACHE: dict[tuple[str, str], tuple[float, str]] = {}
+_MEMBER_NAME_TTL_SECONDS = 600.0
+_MEMBER_NAME_CACHE_MAX = 4096
+#: The same read as ``gateway.reach.whatsapp._NAME_SQL``: the member's display
+#: name in this org. The orchestrator cannot import a gateway module.
+_MEMBER_NAME_SQL = (
+    "SELECT NULLIF(btrim(display_name), '') FROM app_user "
+    "WHERE organization_id = CAST(:org AS uuid) AND lower(email) = lower(:m) "
+    "LIMIT 1"
+)
+
+
+def _read_member_display_name(org: str, member: str) -> str:
+    """``app_user.display_name`` of *member* in *org*, or ``""``. One read.
+
+    *org* is the run's tenant and *member* the run's verified member, both
+    from the run boundary and never from the payload (R5). It never raises.
+    The name is the member's own words, so it is folded to one short line
+    (:func:`_clean_org_name`) before it reaches a prompt.
+    """
+    opener = _opener_for_org(org)
+    if opener is None:
+        return ""
+    try:
+        from sqlalchemy import text  # noqa: PLC0415
+
+        with opener() as session:
+            row = session.execute(
+                text(_MEMBER_NAME_SQL), {"org": org, "m": member},
+            ).first()
+    except Exception:  # noqa: BLE001
+        return ""
+    return _clean_org_name(str(row[0] or "")) if row and row[0] else ""
+
+
+def _run_member_display_name() -> str:
+    """The display name of the run's verified member, or ``""``. Cached per
+    org and member for ``_MEMBER_NAME_TTL_SECONDS``, so a turn pays at most
+    one read."""
+    import time  # noqa: PLC0415
+
+    org = _current_run_org()
+    member = _verified_run_member()
+    if not (org and member):
+        return ""
+    key = (str(org), member)
+    now = time.monotonic()
+    hit = _MEMBER_NAME_CACHE.get(key)
+    if hit and now - hit[0] < _MEMBER_NAME_TTL_SECONDS:
+        return hit[1]
+    name = _read_member_display_name(str(org), member)
+    _MEMBER_NAME_CACHE.pop(key, None)
+    _MEMBER_NAME_CACHE[key] = (now, name)
+    while len(_MEMBER_NAME_CACHE) > _MEMBER_NAME_CACHE_MAX:
+        _MEMBER_NAME_CACHE.pop(next(iter(_MEMBER_NAME_CACHE)))
+    return name
+
+
+#: The two lines of :func:`_member_name_line`. A placeholder in a draft is
+#: the bug of the owner report, so each line forbids one by example.
+MEMBER_NAME_LINE = (
+    "The member: {name}. When you write an email or a message for the member, "
+    "sign it with this name. Never write a placeholder such as [your name]. A "
+    "mailbox that has a signature adds it when the mail is saved or sent, so "
+    "do not write a signature block."
+)
+MEMBER_NO_NAME_LINE = (
+    "The member has no display name in Metorite. When you write an email for "
+    "the member, end with a plain close and no name. Never write a placeholder "
+    "such as [your name]."
+)
+
+
+def _member_name_line(agent_name: str) -> str:
+    """The per-turn line that names the member, or ``""``.
+
+    Only for :data:`_MEMBER_NAME_AGENTS`, and only for a run with a verified
+    member (:func:`_verified_run_member`), so a webhook or a batch run with no
+    member gets no line. Fence: ``tests/unit/test_no_egress_tool_audit.py``.
+    """
+    if agent_name not in _MEMBER_NAME_AGENTS or not _verified_run_member():
+        return ""
+    name = _run_member_display_name()
+    return MEMBER_NAME_LINE.format(name=name) if name else MEMBER_NO_NAME_LINE
+
+
 # ── The member's number system (whatsapp_assistant_channel.md §13.10) ────────
 
 
@@ -7921,7 +8014,7 @@ def _context_preamble_parts(
     connected and missing integrations, the Knowledge index block of the
     orchestrator (:func:`_knowledge_index_block`, WS-61 KB-4a), then
     ``memory_context``, then ``system_context`` (which carries the persona),
-    and last the member's number-system line (:func:`run_number_system`). :func:`_build_event_message`
+    then the member's name line (:func:`_member_name_line`), and last the member's number-system line (:func:`run_number_system`). :func:`_build_event_message`
     puts the history and the current turn after them. The structured path of
     WS-43t1 sends the same blocks through its per-run context provider
     (:func:`_run_context_text`). One builder, so the two paths cannot drift.
@@ -7965,6 +8058,14 @@ def _context_preamble_parts(
     system_ctx = event_payload.get("system_context") or ""
     if system_ctx:
         parts.append("## Current context\n" + system_ctx)
+
+    # The member's own name, for an agent that writes mail the member signs
+    # (owner report of 2026-10-19). From the run boundary, never the payload.
+    # After the current context and before the number-system line, so every
+    # block above keeps its place.
+    member_line = _member_name_line(agent_name)
+    if member_line:
+        parts.append(member_line)
 
     # The member's number system, one line (owner, 2026-10-19): lakh and
     # crore by default. From the run boundary, never from the payload (R5).
