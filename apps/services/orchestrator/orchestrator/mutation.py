@@ -256,43 +256,20 @@ async def _auto_push_commit(agent_dir: str, commit_sha: str) -> bool:
 #: whole mechanism without touching data.
 _SELF_MUTATION_DISABLED_ENV = "SELF_MUTATION_DISABLED"
 
-_SQL_FIRST_PARTY_BY_ID = """
-SELECT first_party FROM organization WHERE id = :org_id
-"""
-#: Untenanted resolution. Deliberately requires the org to be the ONLY one: on a
-#: single-tenant box this is the operator's org and behaviour is unchanged, and
-#: the moment a second organization exists it returns no row and the gate fails
-#: closed. A "pick the default org" fallback would keep answering true forever,
-#: which is the failure this ticket exists to prevent.
-_SQL_SOLE_ORG_FIRST_PARTY = """
-SELECT first_party FROM organization
- WHERE (SELECT count(*) FROM organization) = 1
-"""
-
-
 async def _read_first_party(organization_id: str | None) -> bool | None:
-    """``organization.first_party`` for *organization_id*. The ONE read of it.
+    """``organization.first_party`` for *organization_id*.
 
     MT-0b's self-mutation gate and the root-agent gate (D85, §15.4,
-    ``executor._assert_may_run_agent``) both call it, so "is this org ours"
-    has one query. With no *organization_id* it answers only on a box with
-    exactly one organization. Returns ``None`` when no row resolves. It
-    raises on a database failure, and each caller decides that means no.
+    ``executor._assert_may_run_agent``) both call it. It calls
+    ``acb_auth.agent_operator.read_first_party``, the ONE read of the flag,
+    which the reviewer rule of agent commits uses too. With no
+    *organization_id* it answers only on a box with exactly one organization.
+    Returns ``None`` when no row resolves. It raises on a database failure,
+    and each caller decides that means no.
     """
-    from acb_common.db import get_db
-    from sqlalchemy import text
+    from acb_auth import agent_operator
 
-    session = await get_db()
-    try:
-        if organization_id:
-            row = (await session.execute(
-                text(_SQL_FIRST_PARTY_BY_ID), {"org_id": organization_id},
-            )).first()
-        else:
-            row = (await session.execute(text(_SQL_SOLE_ORG_FIRST_PARTY))).first()
-    finally:
-        await session.close()
-    return None if row is None else bool(row[0])
+    return await agent_operator.read_first_party(organization_id)
 
 
 async def _self_mutation_permitted(
