@@ -1841,11 +1841,12 @@ _OUTWARD_RULE_FIELDS = ("to_address", "cc_address", "bcc_address", "url")
 #: The act that a held run refuses in each rule tool (the audit of 2026-10-19).
 _HELD_RULE_ACT = (
     "A rule that forwards mail, calls a webhook, drafts to an address that it "
-    "names, or drafts a text that the assistant wrote"
+    "names, or puts a subject, a body or a file that the assistant chose in a "
+    "draft"
 )
 _HELD_RULE_STILL_WORKS = (
-    " A rule that only labels, moves, archives, or drafts a reply to the "
-    "sender still works here."
+    " A rule that only labels, moves, archives, or lets the drafter write a "
+    "reply to the sender still works here."
 )
 
 
@@ -1868,15 +1869,45 @@ def _has_outward_action(actions: Any) -> bool:
     )
 
 
+#: The draft actions of the rule engine (``actions.py``). Each one writes a
+#: draft to the sender of each later mail that matches.
+_DRAFT_RULE_TYPES = frozenset({"REPLY", "DRAFT_EMAIL"})
+#: The fields of a draft action that hold no text of the model, by an
+#: ALLOWLIST (security review of #1173, P1). ``RuleActionModel`` in
+#: ``rules.py`` forbids an unknown key, and it also has ``subject``,
+#: ``content``, ``label``, the addresses, ``url``, ``attachments``,
+#: ``label_ai`` and ``content_manual``. A subject such as "Re: OTP 482910"
+#: carries data to each later sender as surely as a body does. So a held run
+#: holds a draft action that fills ANY field outside this set, a field that a
+#: later schema adds included.
+_HELD_DRAFT_SAFE_FIELDS = frozenset({"id", "type", "delay_minutes"})
+
+
+def _filled(value: Any) -> bool:
+    """True for a value that says something: not None, "", False, 0 or empty."""
+    if isinstance(value, str):
+        return bool(value.strip())
+    return bool(value)
+
+
+def _draft_carries_model_text(action: dict[str, Any]) -> bool:
+    """True when a draft action fills a field outside the allowlist."""
+    return any(
+        _filled(value) for key, value in action.items()
+        if key not in _HELD_DRAFT_SAFE_FIELDS
+    )
+
+
 def _held_in_no_egress(actions: Any) -> bool:
     """True when a held run may not save a rule with these actions.
 
     An outward action (:func:`_is_outward_action`), and also a REPLY or a
-    DRAFT_EMAIL with a ``content`` template. Such a draft carries text that
-    the model chose to each later sender. ``draft_reply`` stays in a held run
+    DRAFT_EMAIL that fills any field outside :data:`_HELD_DRAFT_SAFE_FIELDS`:
+    a subject, a body, a label, an attachment. Such a draft carries what the
+    model chose to each later sender. ``draft_reply`` stays in a held run
     because the model chooses neither the text nor the recipient, so a rule
-    draft keeps the same terms: the drafter writes it, or the rule is held.
-    A value that is not a list fails closed."""
+    draft keeps the same terms: the drafter writes all of it, or the rule is
+    held. A value that is not a list fails closed."""
     if actions is None:
         return False
     if not isinstance(actions, list):
@@ -1884,7 +1915,7 @@ def _held_in_no_egress(actions: Any) -> bool:
     for a in actions:
         if not isinstance(a, dict) or _is_outward_action(a):
             return True
-        if a.get("type") in ("REPLY", "DRAFT_EMAIL") and str(a.get("content") or "").strip():
+        if a.get("type") in _DRAFT_RULE_TYPES and _draft_carries_model_text(a):
             return True
     return False
 
@@ -2145,9 +2176,39 @@ def _rule_acts(actions: Any) -> str:
     return " and ".join(words) or "does nothing"
 
 
+def _draft_field_lines(actions: Any) -> list[str]:
+    """One line for each filled field of each draft action, in full.
+
+    Security review of #1173, P1: the card named a draft rule "drafts a
+    reply", and it hid the subject that went to each later sender. So the
+    card shows each field that a draft action fills, outside the allowlist
+    (:data:`_HELD_DRAFT_SAFE_FIELDS`), in every run. The text is folded to
+    one line (:func:`_card_text`), and a caller refuses a card that it cannot
+    show whole (:func:`_rule_card_fits`)."""
+    lines: list[str] = []
+    for a in actions or []:
+        if not isinstance(a, dict) or a.get("type") not in _DRAFT_RULE_TYPES:
+            continue
+        kind = "draft email" if a.get("type") == "DRAFT_EMAIL" else "reply draft"
+        for key in sorted(a, key=str):
+            value = a[key]
+            if key in _HELD_DRAFT_SAFE_FIELDS or not _filled(value):
+                continue
+            if key == "attachments" and isinstance(value, list):
+                shown = ", ".join(
+                    _card_text((v.get("name") or v.get("path") or v.get("artifact_id"))
+                               if isinstance(v, dict) else v, 200)
+                    for v in value)
+            else:
+                shown = _card_text(value, _CARD_CONTEXT_LIMIT)
+            lines.append(f"  - {kind} {_card_name(key)}: {shown}")
+    return lines
+
+
 def _rule_lines(rules: list[dict[str, Any]]) -> str:
     """The ``context`` of an inward rule card: each rule, what it matches and
-    what it does, one line each."""
+    what it does, one line each. Under each rule, each filled field of each
+    draft action, in full (:func:`_draft_field_lines`)."""
     lines: list[str] = []
     for rule in rules:
         conds = [
@@ -2159,7 +2220,59 @@ def _rule_lines(rules: list[dict[str, Any]]) -> str:
             f"{_rule_acts(rule.get('actions'))}"
             + (f" ({'; '.join(conds)})" if conds else "")
         )
+        lines.extend(_draft_field_lines(rule.get("actions")))
     return "\n".join(lines)
+
+
+#: The answer of a rule tool whose card cannot show the rule whole.
+_RULE_CARD_TOO_LONG = (
+    "Not saved. The text of this rule is too long to show on one card, so "
+    "the user could not see what it saves. Ask the user for a shorter subject "
+    "or body."
+)
+
+
+def _rule_card_fits(listing: str) -> bool:
+    """True when the card can show *listing* whole. ``request_confirmation``
+    cuts ``context`` at :data:`_CARD_CONTEXT_LIMIT` with no marker."""
+    return len(listing) <= _CARD_CONTEXT_LIMIT
+
+
+async def _inward_rule_card(
+    title: str, detail: str, cancelled: str, rules: list[dict[str, Any]],
+    *, widens: bool = False,
+) -> str | None:
+    """The card of a rule that sends nothing out, with each rule listed whole
+    (:func:`_rule_lines`). None when the member approves. A list that the card
+    cannot show whole asks no card, and saves nothing. *widens* says that the
+    change widens a saved rule, and then a held run refuses a rule that it may
+    not save (:func:`_held_widening_refusal`)."""
+    for rule in rules if widens else []:
+        held = _held_widening_refusal(rule, widens)
+        if held:
+            return held
+    listing = _rule_lines(rules)
+    if not _rule_card_fits(listing):
+        return _RULE_CARD_TOO_LONG
+    return await _card_refusal(title, detail, cancelled, listing)
+
+
+def _pause_asks_no_card(enabled: bool | None, widens: bool) -> bool:
+    """True for a change that only pauses a rule in a run that is not held.
+
+    EM-G11c1: a pause turns a write off, so it asks no card. Security review
+    of #1173, P2: in a held run it asks the card, because a mail can ask the
+    model to pause the rule that warns the member (a NOTIFY_ME alert)."""
+    return enabled is False and not widens and not _egress_held()
+
+
+def _held_widening_refusal(rule: dict[str, Any], widens: bool) -> str | None:
+    """Security review of #1173, P1: a wider condition or a re-enable of a
+    rule that a held run may not save sends what it carries to more senders.
+    A held run refuses it, as it refuses a new one. Else None."""
+    if widens and _held_in_no_egress(rule.get("actions")) and _egress_held():
+        return _egress_held_answer(_HELD_RULE_ACT) + _HELD_RULE_STILL_WORKS
+    return None
 
 
 @_annotate_risk(open_world=False)
@@ -2281,10 +2394,10 @@ async def create_rule(
         return refusal
     if not _has_outward_action(actions):
         box = await _named(account_id)
-        refusal = await _card_refusal(
+        refusal = await _inward_rule_card(
             f'Save the rule "{_card_name(name)}" that {_rule_acts(actions)}?',
             f"Mailbox: {box}. The rule acts on each new email that matches.",
-            cancelled, _rule_lines([rule]),
+            cancelled, [rule],
         )
         if refusal:
             return refusal
@@ -2387,7 +2500,7 @@ async def run_rules(
         # The audit of 2026-10-19: a run of the rules applies each rule that
         # is on, so one rule that sends out makes the whole run outward. A
         # held run refuses it, and also when it could not read the rules.
-        if (not read_ok or any(_has_outward_action(r.get("actions")) for r in rules)) \
+        if (not read_ok or any(_held_in_no_egress(r.get("actions")) for r in rules)) \
                 and _egress_held():
             return _egress_held_answer(
                 "A run of the rules, while a rule that sends mail out is on,")
@@ -2490,8 +2603,10 @@ async def update_rule(
         added_outward = _is_outward_action(action)
         rule.setdefault("actions", []).append(action)
     # EM-G11c1: each change asks a card, except a pause of the rule, which
-    # turns a write off. One call shows one card.
-    pause_only = enabled is False and not widens
+    # turns a write off. One call shows one card. Security review of #1173,
+    # P2: in a held run a pause asks the card too, because a mail can ask the
+    # model to pause a rule that warns the member (a NOTIFY_ME alert).
+    pause_only = _pause_asks_no_card(enabled, widens)
     cancelled = f"Cancelled — the rule '{rule.get('name')}' was not changed."
     carded = False
     if added_outward or (was_outward and widens):
@@ -2502,12 +2617,12 @@ async def update_rule(
             return refusal
         carded = True
     elif not pause_only:
-        refusal = await _card_refusal(
+        refusal = await _inward_rule_card(
             f'Change the rule "{_card_name(rule.get("name") or rule_id)}"?',
             f"Mailbox: {await _named(account_id)}. After the change the rule "
             f"{_rule_acts(rule.get('actions'))}"
             + (", and it is on." if rule.get("enabled") else ", and it is off."),
-            cancelled, _rule_lines([rule]),
+            cancelled, [rule], widens=widens,
         )
         if refusal:
             return refusal
@@ -2577,7 +2692,7 @@ async def learn_rule_pattern(
     # The audit of 2026-10-19: an "always match" pattern on a rule that sends
     # mail out sends more mail out. A held run refuses it, and also when it
     # cannot read the rule. A "never match" pattern only narrows the rule.
-    if not exclude and (rule is None or _has_outward_action(rule.get("actions"))) \
+    if not exclude and (rule is None or _held_in_no_egress(rule.get("actions"))) \
             and _egress_held():
         return _egress_held_answer(
             "A pattern that widens a rule that sends mail out")
@@ -4247,7 +4362,7 @@ async def resolve_execution(execution_id: str, decision: str) -> str:
     # address of a draft action, so a held run needs the full actions to
     # approve, and refuses when one of them sends out. Reject and undo send
     # nothing.
-    if d == "approve" and (not full or _has_outward_action(full)) and _egress_held():
+    if d == "approve" and (not full or _held_in_no_egress(full)) and _egress_held():
         return _egress_held_answer(
             "Approving a rule run that sends mail out, or whose actions it cannot read,")
     hooks = [a for a in actions if a.get("type") == "CALL_WEBHOOK"]

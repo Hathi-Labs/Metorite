@@ -772,11 +772,12 @@ EGRESS_WITHHELD_REASON = (
     "A run that another agent called during a sandboxed turn may not send "
     "data off the platform, H-236"
 )
-#: The same, when the chat session read email from outside senders (EM-G11d).
-#: It names no other app as a way on, because the hold binds every app.
+#: The same, when the run works for a conversation that read email from
+#: outside senders (EM-G11d). It names no other app, because a run cannot
+#: tell what another app may do (security review of #1173, P2).
 EGRESS_WITHHELD_MAIL_REASON = (
-    "This conversation read email from outside senders, so no assistant in "
-    "any app may send data off the platform from it, EM-G11d"
+    "This run works for a conversation that read email from outside "
+    "senders, so it may not send data off the platform, EM-G11d"
 )
 
 #: The request kinds that a ``no_egress`` run may still make.
