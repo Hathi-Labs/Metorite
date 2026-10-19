@@ -1763,22 +1763,19 @@ async def _require_mutation_reviewer(
     so the registry check alone locked out everyone who can see a row.
 
     The org comes from the server-side ``UserContext``, never from the request.
-    ``first_party`` comes from ``_read_first_party``, the one read of that flag.
     A missing org, a missing row or a failed read is a 403 (fail closed).
-    """
-    org = str(user.organization_id or "").strip()
-    if org:
-        allowed = _registry_orgs()
-        if "*" in allowed or org.lower() in allowed:
-            return
-        try:
-            from orchestrator.mutation import _read_first_party  # noqa: PLC0415
 
-            # Never call it with no org: it then answers for a sole org.
-            if await _read_first_party(org) is True:
-                return
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("mutation.reviewer_check_failed", error=str(exc)[:200])
+    The rule itself is ``acb_auth.agent_operator.may_review_agent_commits``,
+    the ONE implementation, with the one read of ``first_party``. The chat push
+    gate of the executor calls it too, so the queue and a push from chat cannot
+    drift. It never reads ``first_party`` for an empty org, which would answer
+    for a sole org. Fences: ``tests/unit/test_mutation_queue_operator_only.py``
+    and ``tests/unit/test_chat_autopush_reviewer_gate.py``.
+    """
+    from acb_auth.agent_operator import may_review_agent_commits  # noqa: PLC0415
+
+    if await may_review_agent_commits(user.organization_id, user.has_permission):
+        return
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN, detail=_MUTATION_REVIEWER_DENIED,
     )

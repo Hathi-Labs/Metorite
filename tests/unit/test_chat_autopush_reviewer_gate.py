@@ -184,6 +184,31 @@ def test_mutation_reads_first_party_through_the_one_query(monkeypatch) -> None:
     assert "SELECT first_party" not in inspect.getsource(mutation)
 
 
+def test_the_queue_gate_and_the_push_gate_call_the_same_rule(monkeypatch) -> None:
+    """One rule: both gates call ``may_review_agent_commits``, and nothing else."""
+    import gateway.routes.agent as agent_routes
+    import orchestrator.executor as executor
+
+    queue_src = inspect.getsource(agent_routes._require_mutation_reviewer)
+    push_src = inspect.getsource(executor._agent_push_allowed)
+    for src in (queue_src, push_src):
+        assert "may_review_agent_commits" in src
+        assert "_read_first_party" not in src.split('"""')[-1]
+        assert "_registry_orgs" not in src.split('"""')[-1]
+
+    seen: list[Any] = []
+
+    async def _rule(org: str | None, has: Any) -> bool:
+        seen.append(org)
+        return False
+    monkeypatch.setattr(agent_operator, "may_review_agent_commits", _rule)
+    user = SimpleNamespace(organization_id=FP_ORG, has_permission=lambda p: True)
+    with pytest.raises(Exception) as exc:
+        asyncio.run(agent_routes._require_mutation_reviewer(user))
+    assert getattr(exc.value, "status_code", None) == 403
+    assert seen == [FP_ORG]
+
+
 def test_the_gateway_reads_the_same_parse(monkeypatch) -> None:
     """One parse of AGENT_REGISTRY_ORGS: the queue's gate delegates to it."""
     import gateway.routes.agent as agent_routes
