@@ -23,6 +23,7 @@ import pytest
 from orchestrator import sandbox_broker as sb
 
 from tests.unit._sandbox_broker_fakes import (
+    HANG_S,
     FakeDocker,
     bound_run,
     configure_env,
@@ -756,7 +757,9 @@ async def test_a_late_removal_never_kills_a_new_container_of_the_same_name(
     clock.now += 10_000
     docker.block_rm = asyncio.Event()
     reaper = asyncio.create_task(broker.reap_once())
-    await asyncio.sleep(0.05)
+    # The reaper drops its victims before its first rm. A fixed sleep of 50 ms
+    # raced a stalled runner: the acquire came first and reused the old t2.
+    await until(docker.removals, "the reaper's rm must be in flight")
     with bound_run(ORG_A, thread="t2"):
         fresh = await broker.acquire()
     docker.block_rm.set()
@@ -875,13 +878,12 @@ async def test_the_background_reaper_runs_without_a_manual_call(
     )
     await broker.release(handle)
     clock.now += 200
-    for _ in range(200):
-        if handle.removed:
-            break
-        await asyncio.sleep(0.02)
-    assert handle.removed, "the background reaper did not stop the idle container"
+    # The reaper sleeps a real second (the floor). A poll of 4 s in all raced
+    # a stalled runner, so this waits for the step under the hang guard.
+    await until(lambda: handle.removed,
+                "the background reaper did not stop the idle container")
     assert docker.removals() == [handle.container_id]
-    await asyncio.wait_for(broker._reaper, timeout=2)  # it ends when none lives
+    await asyncio.wait_for(broker._reaper, timeout=HANG_S)  # it ends when none lives
 
 
 # ── the review note: the sweep never raises ──────────────────────────────────

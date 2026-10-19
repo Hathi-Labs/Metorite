@@ -171,7 +171,9 @@ ELLIPSIS = "…"
 _CRM_QUESTION = _re.compile(
     r"^(revenue|purpose:[A-Za-z][A-Za-z0-9_]{0,99}"
     r"|key:[A-Za-z][A-Za-z0-9_]{0,99}:(amount|date|status|parent)"
-    r"|rule:[0-9a-f]{16})$"
+    r"|rule:[0-9a-f]{16}"
+    # WS-53 §18.16 part 4: the question of a term.
+    r"|term:[A-Za-z][A-Za-z0-9_]{0,99}:[a-z0-9-]{1,40})$"
 )
 #: The shape of the key of an option of a CRM question card.
 _CARD_KEY = _re.compile(r"^[@A-Za-z0-9_]{1,100}$")
@@ -390,6 +392,19 @@ def answer_text(result: Any, questions: Any = None) -> str:
     return f"User response: {answer}"
 
 
+def _crm_follow_up(cleaned: list[dict]) -> tuple[float | None, list[dict]]:
+    """The early park of a CRM follow-up card, and the events of the note
+    that the answer left out (WS-53 §18.16 part 2). ``(None, [])`` for each
+    other card. Never raises: a card is never lost to a CRM fault."""
+    try:
+        from acb_skills.crm_tools import follow_up_park_after, missing_note_events
+
+        park = follow_up_park_after(cleaned)
+        return (park, missing_note_events()) if park is not None else (None, [])
+    except Exception:  # noqa: BLE001
+        return None, []
+
+
 async def ask_questions(questions: str) -> str:
     """Ask the user one or more clarifying questions before proceeding.
 
@@ -529,6 +544,11 @@ async def ask_questions(questions: str) -> str:
     except Exception:  # noqa: BLE001
         queue = None
 
+    # WS-53 §18.16 part 2: the follow-up card of a CRM answer comes AFTER
+    # the answer, so it never holds the run. The wait parks the run at once,
+    # and the member's later pick takes the late path of CRM-Q32-8.
+    _park_after, _notes = _crm_follow_up(cleaned)
+
     if queue is not None:
         # ── Path A: blocking Future (MAF Tier 2) ─────────────────────
         import asyncio as _asyncio
@@ -539,6 +559,10 @@ async def ask_questions(questions: str) -> str:
         _fut: "_asyncio.Future[dict[str, object]]" = _loop.create_future()
         _pending_user_input[_request_id] = _fut
 
+        for _note in _notes:
+            # The note of the answer goes before the card, because a parked
+            # run never reaches the add before RUN_FINISHED.
+            await queue.put(_note)
         await queue.put({
             "type": "CUSTOM",
             "name": "elicitation_requested",
@@ -549,7 +573,7 @@ async def ask_questions(questions: str) -> str:
             # Heartbeating wait (audit R3): touches the relay ACTIVE flag
             # between 60s slices so a long park doesn't lapse the stream.
             from orchestrator.executor import wait_user_future  # noqa: PLC0415
-            _result = await wait_user_future(_fut, 3600)
+            _result = await wait_user_future(_fut, 3600, park_after=_park_after)
         except _asyncio.TimeoutError:
             _pending_user_input.pop(_request_id, None)
             return "User did not respond in time."
@@ -604,7 +628,7 @@ async def ask_questions(questions: str) -> str:
                     from orchestrator.executor import (  # noqa: PLC0415
                         wait_user_future,
                     )
-                    _result = await wait_user_future(_fut, 3600)
+                    _result = await wait_user_future(_fut, 3600, park_after=_park_after)
                 except _asyncio.TimeoutError:
                     return "User did not respond in time."
                 _record_crm_pick(cleaned, _result)
@@ -647,13 +671,16 @@ async def ask_questions(questions: str) -> str:
                 },
             })
             _line = f"data: {_payload}\n\n"
+            for _note in _notes:
+                await _push_sse_to_stream(_tid, f"data: {_json.dumps(_note)}\n\n")
             await _push_sse_to_stream(_tid, _line)
 
             try:
                 from orchestrator.executor import (  # noqa: PLC0415
                     wait_user_future,
                 )
-                _result = await wait_user_future(_fut, 3600, thread_id=_tid)
+                _result = await wait_user_future(_fut, 3600, thread_id=_tid,
+                                                 park_after=_park_after)
             except _asyncio.TimeoutError:
                 _pending_user_input.pop(_request_id, None)
                 return "User did not respond in time."

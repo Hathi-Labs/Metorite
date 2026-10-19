@@ -198,6 +198,10 @@ async def load(db: Any, org: str, *, now: datetime | None = None,
     def state(row: str) -> Any:
         return getattr(cursors.get(row), "state", None)
 
+    from gateway.crm_sync.terms import term_state
+
+    term_buckets = term_state(state(qs.QUESTIONS_ROW))
+
     inputs = qs.Inputs(
         entries=entries, sources={s.module: s for s in sources},
         stored=cat.stored_items(others), mode=mp.modes_now()[mp.FEATURE_CATALOGUE],
@@ -207,6 +211,8 @@ async def load(db: Any, org: str, *, now: datetime | None = None,
         # reads that show them (the admin list and the card of /ask). The
         # count, the catalogue and the 422 of the aggregate never get them.
         proposals=qs.proposals_of(state(qs.QUESTIONS_ROW)) if proposals else {},
+        # §18.16 part 4: the terms that the chat asked, and their answers.
+        terms=term_buckets.asked, term_answers=term_buckets.answers,
     )
     if not full:
         return inputs
@@ -830,6 +836,8 @@ async def _answer(db: Any, org: str, by: str, question_id: str, payload: AnswerI
         raise bad_answer("That is not an answer of this question.", q.part)
     if q.kind == qs.KIND_SLOT:
         return await _answer_slot(db, org, by, q, payload.value)
+    if q.kind == qs.KIND_TERM:
+        return await write_term_answer(db, org, q, payload.value)
     if q.kind == qs.KIND_STAGE:
         row, _stage = await _commit_stage(
             db, org, by, approved, str(q.slot), q.module,
@@ -847,6 +855,42 @@ async def _answer(db: Any, org: str, by: str, question_id: str, payload: AnswerI
         line=_answer_line(q, payload.value, inputs.sources.get(module)), module=module,
         undo=UndoModel(module=module, part=part, value=AUTO),
     )
+
+
+async def load_for_terms(db: Any, org: str) -> qs.Inputs | None:
+    """The inputs of a term read (§18.16 part 4): the catalogue, the asked
+    terms, and the members' own picks. Only this module and
+    ``crm_sync/questions.py`` read the picks of a member (the fence of
+    CRM-Q32-8), so ``routes/crm/terms.py`` reads them here."""
+    return await load(db, org, full=False, proposals=True)
+
+
+def term_pickers(inputs: qs.Inputs, question_id: str,
+                 member: str) -> tuple[str | None, list[str]]:
+    """The field that *member* picked for the term *question_id*, and the
+    fields that each other member picked, oldest first."""
+    entries = inputs.proposals.get(question_id, [])
+    mine = qs.my_proposal(entries, member) if member else None
+    others = [str(p.get("value")) for p in entries
+              if str(p.get("member") or "") != member and p.get("value")]
+    return (mine or {}).get("value"), others
+
+
+async def write_term_answer(db: Any, org: str, q: qs.Question, value: Any) -> AnswerOut:
+    """An admin's answer of a term (§18.16 part 4): the field that the word
+    means, for everyone, in ``zoho:questions`` under ``term_answers``. The
+    caller checked the value against the question. It writes no plan."""
+    from gateway.crm_sync import runs
+    from gateway.crm_sync.terms import TERM_ANSWERS_BUCKET
+
+    if not isinstance(value, str) or value not in {c.value for c in q.choices}:
+        raise _bad_choice()
+    await runs.lock_cursor(db, org, qs.QUESTIONS_ROW)
+    await runs.merge_cursor_entry(db, org, qs.QUESTIONS_ROW, TERM_ANSWERS_BUCKET, q.id,
+                                  {"field": value})
+    label = qs.value_label(q, value)
+    return AnswerOut(id=q.id, kind=q.kind, module=q.module,
+                     line=f'"{q.value}" in {q.label} now reads {label}, for everyone.')
 
 
 def _guard_db(exc: DBAPIError) -> HTTPException | None:
@@ -1500,7 +1544,7 @@ STEER_MODULES = 5
 
 
 #: The GST evidence of a module, cached in tenant Redis (hotfix 2026-10-20).
-#: ``gst_check`` took about 50 s for DEWiN's modules, and every read of the
+#: ``gst_check`` took about 50 s for one org's modules, and every read of the
 #: open questions ran it, so the page gave up (Open (0), "Could not load").
 #: The evidence changes only when the data syncs, so a read uses the cache,
 #: and the questions step after a sync warms it (:func:`warm_evidence`).
@@ -1545,9 +1589,13 @@ async def _store_evidence(org: str, module: str, ev: dict[str, tuple[str, ...]])
                      error_type=type(exc).__name__)
 
 
-async def module_evidence(db: Any, org: str, src: Any) -> dict[str, tuple[str, ...]]:
+async def module_evidence(db: Any, org: str, src: Any,
+                          cands: Sequence[Any] | None = None) -> dict[str, tuple[str, ...]]:
     """The evidence of the module *src*: the cache, else one fresh check,
-    which then fills the cache."""
+    which then fills the cache. Own *cands* (the amount pick, §18.16 part 5)
+    weigh other fields, so they skip the per-module cache."""
+    if cands is not None:
+        return await _gst_evidence(db, org, src, cands)
     module = str(src.module)
     cached, _left = await _cached_evidence(org, module)
     if cached is not None:
@@ -1587,13 +1635,16 @@ async def warm_evidence(db: Any, org: str, inputs: qs.Inputs,
     return checked
 
 
-async def _gst_evidence(db: Any, org: str, src: Any) -> dict[str, tuple[str, ...]]:
+async def _gst_evidence(db: Any, org: str, src: Any,
+                        cands: Sequence[Any] | None = None) -> dict[str, tuple[str, ...]]:
     """The evidence of each money field of the module *src* (CRM-Q33 part
     5): ONE bounded statement through ``field_sql.gst_check``, read in the
-    caller's tenant session, then the words of the labels."""
+    caller's tenant session, then the words of the labels. *cands* are the
+    fields to weigh (§18.16 part 5 gives its own), else
+    ``evidence_candidates``."""
     from gateway.routes.crm import field_sql
 
-    cands = qs.evidence_candidates(src)
+    cands = list(cands) if cands is not None else qs.evidence_candidates(src)
     gst, tds = qs.gst_siblings(src)
     rels = qs.relations(cands, gst, tds)
     keys = list(dict.fromkeys(k for r in rels for k in (r.field, r.basic, r.gst, r.tds) if k))
@@ -1721,7 +1772,7 @@ def _chat_kind(question_id: str) -> None:
     """422 for a question that a chat card does not answer: a ``slot`` or a
     ``stage_value`` changes what records mean, so it goes through the
     preview of the CRM app (§18.14.6)."""
-    if question_id == qs.REVENUE_ID or question_id.startswith(("purpose:", "key:")):
+    if question_id == qs.REVENUE_ID or question_id.startswith(("purpose:", "key:", "term:")):
         return
     raise HTTPException(status_code=422, detail={
         "code": "not_in_chat",
@@ -1740,6 +1791,15 @@ async def _admin_reply(db: Any, org: str, by: str, q: qs.Question, value: str | 
     from gateway.routes.crm.mapping_plans import lock_plan
 
     label = qs.value_label(q, value)
+    if q.kind == qs.KIND_TERM:
+        # §18.16 part 4: a term answer is no part of the plan. It needs no
+        # plan lock, and it is the same write for an open and an answered
+        # term.
+        done = await write_term_answer(db, org, q, value)
+        await clear_proposals(db, org, [q.id])
+        await record_answered(db, org, [q.id], by)
+        return ReplyOut(id=q.id, kind=q.kind, result="answer", value=value, label=label,
+                        line=done.line or f'"{q.value}": {label}, for everyone.')
     if q.reason != qs.REASON_ANSWERED:
         done = await _answer(db, org, by, q.id, AnswerIn(value=value))
         await refresh_seen(db, org)
