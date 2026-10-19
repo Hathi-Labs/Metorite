@@ -1049,6 +1049,9 @@ chat, and every indicator reads it. No indicator decides on its own.
    identity is a new run in every phase. Another tab, a phone or a room
    member started it. The new run gets its own bubble. It keeps no
    message, step, start or card of the old run.
+    Two keys compare only in kind: a run id with a run id, a start time
+    with a start time. While a stream of this tab reads the run, a moved
+    start time with no run id is the same run.
 10. A list that names a run while the chat rests (`idle`, `done`, `failed`
     or `stopped`) also names a new run, unless its identity is the same.
 11. The first server row after a send binds the identity of that send's
@@ -1105,8 +1108,16 @@ Every surface uses the one chat, `AgentChat`. That is `/chat`, the
 assistant dock and its full view, and the phone sheet. It is also the
 Projects, Tasks, Email and CRM rails. So every surface draws the same row.
 
-**The gateway.** Each row of `GET /chat/active-sessions` now carries `live`,
-which says that a run runs for the thread. A `needs_input` row with
+**The run id.** The live-run index writes `runId` once per run, at the
+first register in `run_detached`. The executor registers the same run
+again with `keep_run_facts`. That keeps `startedAt` and `runId`, and it
+replaces only the token, so the executor's `finally` removes its own entry.
+Before, the second register wrote a new `startedAt`, and the key of the
+run moved once early in every run. Fence:
+`tests/unit/test_active_sessions_tenant.py`.
+
+**The gateway.** Each row of `GET /chat/active-sessions` now carries `live`
+and `runId`. The `live` field says that a run runs for the thread. A `needs_input` row with
 `live: false` is parked. An older gateway sends no `live`, and the client
 reads that as live.
 
