@@ -43,7 +43,8 @@ _FENCE = re.compile(r"^ {0,3}(```|~~~)")
 # The tags of the KB-2p stored forms, written out again here so that the
 # test does not trust the chunker's own pattern.
 _FORM_OPEN = re.compile(
-    r'<span data-color="[^"<>]+">|<mark data-color="[^"<>]+">|<sup>|<sub>'
+    r'<span data-color="(?:[a-z]+|#[0-9a-fA-F]{3,6})">'
+    r'|<mark data-color="(?:[a-z]+|#[0-9a-fA-F]{3,6})">|<sup>|<sub>'
     r'|<span data-type="status" data-color="[a-z]+">'
     r'|<time data-type="date" datetime="[0-9-]+">'
     r'|<div data-type="[a-z-]+"(?: data-[a-z]+="[^"<>]+")*>(?:</div>)?'

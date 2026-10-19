@@ -57,6 +57,7 @@ import {
   renderInline,
 } from "./inline";
 import { keepOrderedTaskBoxes, markerOf, renderList } from "./lists";
+import { storedFormExtensions, type StoredFormViews } from "./storedForms";
 
 export { escapeLineStart, markdownDestination } from "./inline";
 
@@ -835,7 +836,7 @@ const Entities = Extension.create({
 // ── The list ────────────────────────────────────────────────────────────────
 
 /** The node views the component plugs in. Each one is optional. */
-export interface KnowledgeViews {
+export interface KnowledgeViews extends StoredFormViews {
   image?: NodeViewRenderer;
   codeBlock?: NodeViewRenderer;
   callout?: NodeViewRenderer;
@@ -906,6 +907,8 @@ export function knowledgeExtensions(opts: KnowledgeSchemaOptions = {}): AnyExten
     FootnoteRef,
     FootnoteDef,
     Entities,
+    // KB-2p: after the raw HTML nodes, so each exact shape wins (`storedForms.ts`).
+    ...storedFormExtensions(views),
   ];
   if (opts.placeholder) {
     list.push(

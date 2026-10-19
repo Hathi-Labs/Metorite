@@ -969,6 +969,37 @@ select optgroup {
   padding: 0.25rem;
 }
 
+/* ── KB-2p: the stored forms (knowledge_base.md §21.7) ──────────────────────
+   A colour name of `lib/editor/colors.ts` maps to a slot of the categorical
+   ramp, which clears AA on the card in both modes. A hex value from another
+   tool comes as a checked inline style instead. Never rename a name. */
+.kb-text-color[data-color="gray"] { color: var(--muted-foreground); }
+.kb-text-color[data-color="blue"] { color: var(--cat-1); }
+.kb-text-color[data-color="orange"] { color: var(--cat-2); }
+.kb-text-color[data-color="green"] { color: var(--cat-3); }
+.kb-text-color[data-color="purple"] { color: var(--cat-4); }
+.kb-text-color[data-color="red"] { color: var(--cat-5); }
+.kb-text-color[data-color="teal"] { color: var(--cat-6); }
+.kb-text-color[data-color="pink"] { color: var(--cat-7); }
+.kb-text-color[data-color="yellow"] { color: var(--cat-12); }
+.kb-highlight {
+  --kb-mark: var(--cat-12);
+  background: color-mix(in srgb, var(--kb-mark) 28%, transparent);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 0.1em;
+}
+.kb-highlight[data-color="gray"] { --kb-mark: var(--muted-foreground); }
+.kb-highlight[data-color="blue"] { --kb-mark: var(--cat-1); }
+.kb-highlight[data-color="orange"] { --kb-mark: var(--cat-2); }
+.kb-highlight[data-color="green"] { --kb-mark: var(--cat-3); }
+.kb-highlight[data-color="purple"] { --kb-mark: var(--cat-4); }
+.kb-highlight[data-color="red"] { --kb-mark: var(--cat-5); }
+.kb-highlight[data-color="teal"] { --kb-mark: var(--cat-6); }
+.kb-highlight[data-color="pink"] { --kb-mark: var(--cat-7); }
+.kb-highlight[data-color="yellow"] { --kb-mark: var(--cat-12); }
+/* KB-2p stored forms: end */
+
 @keyframes chat-shimmer {
   0%   { background-position: 200% 0; }
   100% { background-position: -200% 0; }

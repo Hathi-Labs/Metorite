@@ -1723,6 +1723,105 @@
         "text"
       ],
       "marks": []
+    },
+    {
+      "name": "kb2p-text-color",
+      "md": "A <span data-color=\"blue\">blue **bold**</span> word, and <span data-color=\"gray\">gray</span>.",
+      "saved": "A <span data-color=\"blue\">blue **bold**</span> word, and <span data-color=\"gray\">gray</span>.",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "bold",
+        "textColor"
+      ]
+    },
+    {
+      "name": "kb2p-text-color-hex",
+      "md": "<span data-color=\"#2563eb\">Blue from a hex</span> and <span data-color=\"#E00\">red</span>.",
+      "saved": "<span data-color=\"#2563eb\">Blue from a hex</span> and <span data-color=\"#E00\">red</span>.",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "textColor"
+      ]
+    },
+    {
+      "name": "kb2p-highlight",
+      "md": "A <mark data-color=\"yellow\">marked *word*</mark> here.",
+      "saved": "A <mark data-color=\"yellow\">marked *word*</mark> here.",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "highlight",
+        "italic"
+      ]
+    },
+    {
+      "name": "kb2p-highlight-hex",
+      "md": "A <mark data-color=\"#fde68a\">hex highlight</mark> here.",
+      "saved": "A <mark data-color=\"#fde68a\">hex highlight</mark> here.",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "highlight"
+      ]
+    },
+    {
+      "name": "kb2p-sup-sub",
+      "md": "E = mc<sup>2</sup> and H<sub>2</sub>O, see note[<sup>1</sup>](#n1).",
+      "saved": "E = mc<sup>2</sup> and H<sub>2</sub>O, see note[<sup>1</sup>](#n1).",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "link",
+        "subscript",
+        "superscript"
+      ]
+    },
+    {
+      "name": "kb2p-marks-nested",
+      "md": "<span data-color=\"red\">red <mark data-color=\"green\">and green</mark></span> end\n\n- item <sup>1</sup>\n- <span data-color=\"teal\">teal item</span>\n\n> [!TIP]\n> a <mark data-color=\"pink\">pink</mark> tip",
+      "saved": "<span data-color=\"red\">red <mark data-color=\"green\">and green</mark></span> end\n\n- item <sup>1</sup>\n- <span data-color=\"teal\">teal item</span>\n\n> [!TIP]\n> a <mark data-color=\"pink\">pink</mark> tip",
+      "nodes": [
+        "bulletList",
+        "callout",
+        "doc",
+        "listItem",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "highlight",
+        "superscript",
+        "textColor"
+      ]
+    },
+    {
+      "name": "kb2p-marks-raw-shapes",
+      "md": "<span data-color=\"url(x)\">not a colour</span>, <mark>bare</mark>, <span class=\"c\">raw</span> and <sup class=\"x\">raw</sup>.",
+      "saved": "<span data-color=\"url(x)\">not a colour</span>, <mark>bare</mark>, <span class=\"c\">raw</span> and <sup class=\"x\">raw</sup>.",
+      "nodes": [
+        "doc",
+        "htmlInline",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
     }
   ]
 }
