@@ -363,7 +363,7 @@ class TestTheExclusionCannotGoStale:
                 ))
             }
         assert cascading == {
-            "crm_activities", "crm_auto_lead_cursors", "crm_companies",
+            "crm_activities", "crm_auto_lead_cursors", "crm_business_rules", "crm_companies",
             "crm_contacts", "crm_convert_mappings", "crm_deal_contacts", "crm_deal_statuses",
             "crm_deals", "crm_digests", "crm_field_defs", "crm_field_fill", "crm_field_rules",
             "crm_field_sections",

@@ -308,8 +308,9 @@ def test_a_docstring_and_another_word_pass() -> None:
 
 def test_only_the_two_showing_reads_load_the_proposals() -> None:
     """``load`` fills ``Inputs.proposals`` only on request. Only the admin
-    list and the read of a card ask for them, so the count, the catalogue
-    and the 422 of the aggregate never hold a member's choice."""
+    list, the read of a card and (CRM-Q33 part 4) the member's own list of
+    choices ask for them, so the count, the catalogue and the 422 of the
+    aggregate never hold a member's choice."""
     import inspect
 
     from gateway.routes.crm import questions as routes
@@ -324,7 +325,7 @@ def test_only_the_two_showing_reads_load_the_proposals() -> None:
             if (isinstance(call, ast.Call) and getattr(call.func, "id", None) == "load"
                     and any(k.arg == "proposals" for k in call.keywords)):
                 askers.add(fn.name)
-    assert askers == {"list_questions", "ask_questions_read"}
+    assert askers == {"list_questions", "ask_questions_read", "my_choices"}
 
 
 async def test_the_aggregate_path_gets_no_proposals(monkeypatch) -> None:
@@ -426,7 +427,7 @@ def late_redis(monkeypatch):
     raw = RawRedis()
     monkeypatch.setattr(routes, "_redis", lambda: tenant_client(raw))
 
-    async def server_label(org, qid, key):
+    async def server_label(org, qid, key, member=None):
         return _SERVER_LABELS.get(key) if qid == "key:A:amount" else None
 
     monkeypatch.setattr(routes, "_server_label", server_label)
@@ -464,7 +465,7 @@ async def test_a_card_label_that_the_server_would_not_show_records_nothing(late_
 async def test_a_failed_label_check_records_nothing(late_redis, monkeypatch) -> None:
     from gateway.routes.crm import questions as routes
 
-    async def broken(org, qid, key):
+    async def broken(org, qid, key, member=None):
         raise RuntimeError("db down")
 
     monkeypatch.setattr(routes, "_server_label", broken)

@@ -3432,11 +3432,14 @@ async def respond_user_input(
         )
 
     # Fast path: the run is parked on THIS worker — resolve its Future inline.
+    # WS-53 CRM-Q33 fix round 2: the responder is the session's member, so a
+    # CRM card counts a pick only of the run's own member.
+    _responder = (getattr(user, "email", None) or "").strip().lower() or None
     # A decline ("Not now", owner request 2026-10-18) resolves it too, so
     # the run RESUMES and reads the decline as its tool result.
     delivered = resolve_user_input(
         req.request_id, req.answer, req.was_freeform, thread_id=req.thread_id,
-        declined=req.declined,
+        responder=_responder, declined=req.declined,
     )
     # Cross-worker (P1-2): the run may be parked on another worker.  Relay the
     # answer over the control bus so the owning worker resolves its own Future.
@@ -3445,6 +3448,7 @@ async def respond_user_input(
         "request_id": req.request_id,
         "answer": req.answer,
         "was_freeform": req.was_freeform,
+        "responder": _responder,
     }
     if req.declined:
         # Only on a decline, so an answer's command is exactly as before.

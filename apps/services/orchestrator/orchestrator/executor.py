@@ -1066,7 +1066,7 @@ _USER_INPUT_TIMEOUT = int(os.environ.get("ASK_USER_TIMEOUT", "3600"))
 
 def resolve_user_input(
     request_id: str, answer: str, was_freeform: bool = True,
-    *, thread_id: str | None, declined: bool = False,
+    *, thread_id: str | None, responder: str | None = None, declined: bool = False,
 ) -> bool:
     """Resolve a pending ``ask_user`` request with the user's answer.
 
@@ -1097,6 +1097,10 @@ def resolve_user_input(
     payload: dict[str, Any] = {"answer": answer, "wasFreeform": was_freeform}
     if declined:
         payload = {"answer": "", "wasFreeform": False, "declined": True}
+    # WS-53 CRM-Q33 fix round 2: who answered, from the gateway's session. A
+    # CRM card counts a pick only of the run's own member.
+    if responder:
+        payload["responder"] = str(responder).strip().lower()
     try:
         loop = fut.get_loop()
     except Exception:
@@ -1136,6 +1140,7 @@ def _respond_input_applier(thread_id: str) -> Callable[[dict[str, Any]], bool]:
             str(command.get("answer", "")),
             bool(command.get("was_freeform", True)),
             thread_id=thread_id,
+            responder=str(command.get("responder") or "") or None,
             # Only a JSON true declines, never a truthy string.
             declined=command.get("declined") is True,
         )
@@ -3989,6 +3994,32 @@ def _redacted_fallback_error(exc: BaseException) -> str:
     return text[:_FALLBACK_ERROR_CHARS]
 
 
+def _observe_crm_note(payload: dict[str, Any]) -> None:
+    """Show one event to ``crm_tools.observe_event`` (WS-53 CRM-Q33 fix
+    round 1). A run that made no CRM note returns at once. Never raises."""
+    try:
+        from acb_skills.crm_tools import observe_event
+    except ImportError:
+        return
+    with contextlib.suppress(Exception):
+        observe_event(payload)
+
+
+def _crm_note_events() -> list[dict[str, Any]]:
+    """The message that adds the "How I got this" note of a CRM total when
+    the answer left it out (WS-53 CRM-Q33 fix round 1). It goes just before
+    RUN_FINISHED, through ``_sse``, so the relay keeps it and the persisted
+    message holds it. Empty in each other run. Never raises."""
+    try:
+        from acb_skills.crm_tools import missing_note_events
+    except ImportError:
+        return []
+    try:
+        return missing_note_events()
+    except Exception:  # the note is advice: a run never fails on it
+        return []
+
+
 def _sse(payload: dict[str, Any]) -> str:
     """Return a single SSE frame as a string.
 
@@ -4011,6 +4042,8 @@ def _sse(payload: dict[str, Any]) -> str:
         _thread_seq = f"#{_n}"
     _local_id = f"local-{int(_time.time() * 1000)}-{_sse_seq}{_thread_seq}"
     payload["_stream_id"] = _local_id
+    # WS-53 CRM-Q33: the run watches its own text for the note of a CRM total.
+    _observe_crm_note(payload)
 
     line = f"data: {json.dumps(payload)}\n\n"
 
@@ -5124,6 +5157,10 @@ async def run_agent_stream(
                         # session, and before RUN_FINISHED, so a quick next
                         # turn finds it. The save never fails the run.
                         await _finish_native_session(_session_turn)
+                        # WS-53 CRM-Q33: the note of a CRM total that the
+                        # answer left out goes in before the end.
+                        for _note_ev in _crm_note_events():
+                            yield _sse(_note_ev)
                         # A loop trip already emitted its terminal RUN_ERROR
                         # inline — don't follow it with a RUN_FINISHED that
                         # would make the client render the run as successful.
@@ -5828,6 +5865,9 @@ async def run_agent_stream(
                     # Tool work happened: fall through to RUN_FINISHED +
                     # commit detection so the run records as 'completed' and
                     # the folded tool cards are preserved.
+                # WS-53 CRM-Q33: the note of a CRM total, when left out.
+                for _note_ev in _crm_note_events():
+                    yield _sse(_note_ev)
                 yield _sse({"type": "RUN_FINISHED", "runId": run_id, "threadId": thread_id})
 
                 await _detect_agent_commits(
@@ -6285,6 +6325,9 @@ async def run_agent_stream(
                 yield _sse(_t2_ev)
                 if _t2_ev.get("type") == "TEXT_MESSAGE_CONTENT":
                     await asyncio.sleep(0)  # yield event loop so SSE flushes
+            # WS-53 CRM-Q33: the note of a CRM total, when left out.
+            for _note_ev in _crm_note_events():
+                yield _sse(_note_ev)
             # RUN_FINISHED must be emitted INSIDE the try block — the finally
             # below resets the relay contextvar and marks the thread inactive,
             # so a later yield would never reach Redis (reconnecting clients

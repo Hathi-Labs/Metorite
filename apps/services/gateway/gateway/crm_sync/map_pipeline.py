@@ -469,6 +469,9 @@ class Inputs:
     #: module with no fill row is absent (rule 10).
     core: tuple[Any, ...] = ()
     fills: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+    #: CRM-Q33 part 3: the org's business rules (never a member's), for the
+    #: questions of the key parts. Empty off ``CRM_ANSWER_FIRST_ORGS``.
+    rules: tuple[str, ...] = ()
 
     def module(self, api_name: str) -> ModuleShape | None:
         return next((m for m in self.modules if m.api_name == api_name), None)
@@ -1703,9 +1706,12 @@ class _CatalogueAsk:
         return out
 
     @staticmethod
-    def _part_questions(detail: ModuleShape, parts: Sequence[str],
+    def _part_questions(detail: ModuleShape, parts: Sequence[str], rules: Sequence[str] = (),
                         ) -> tuple[dict[str, FieldShape], dict[str, Any]]:
-        """The field refs and the questions of the key *parts* of one module."""
+        """The field refs and the questions of the key *parts* of one module.
+        CRM-Q33: the org's business rules go with each question as the
+        corrections of the user (``decide_features.instructions``), so "net of
+        GST" steers the pick. With no rule, each question is as before."""
         from acb_llm import ChoiceQuestion
 
         refs: dict[str, FieldShape] = {}
@@ -1729,7 +1735,7 @@ class _CatalogueAsk:
                 instructions=df.instructions(
                     f"Which field of state.fields holds the {part} "
                     f"({cat.PART_MEANINGS[part]}) of the records of state.module?",
-                    _PART_GUIDANCE),
+                    _PART_GUIDANCE, rules),
                 criteria=df.clip_choice(criteria))
         return refs, questions
 
@@ -1738,7 +1744,7 @@ class _CatalogueAsk:
         """Ask the key *parts* of one money entry, in one request. Returns
         part → field key (``None`` when no answer was sure), and part → the
         ref of each field, for the shadow."""
-        refs, questions = self._part_questions(detail, parts)
+        refs, questions = self._part_questions(detail, parts, self.p.inputs.rules)
         if not questions:
             return {}, {}
 
@@ -2133,10 +2139,16 @@ async def load(db: Any, org: str, modes: Mapping[str, str]) -> tuple[Inputs, Cac
     dismissed = dismissed_of(getattr(cursors.get(DISMISSED_ROW), "state", None))
     core: tuple[Any, ...] = ()
     fills: dict[str, dict[str, float]] = {}
+    rules: tuple[str, ...] = ()
     if modes.get(FEATURE_CATALOGUE, "off") != "off":
         core, fills = await _catalogue_inputs(db, org, [m.api_name for m in modules])
+        # CRM-Q33 part 3: the org's business rules reach the key part
+        # questions. Empty off CRM_ANSWER_FIRST_ORGS (no read there).
+        from gateway.routes.crm.rules import org_rule_texts
+
+        rules = tuple(df.clip_fact(r, 300) for r in await org_rule_texts(db, org))
     return Inputs(int(latest.version), modules, tuple(slots), approved, dismissed,
-                  core=core, fills=fills), cache
+                  core=core, fills=fills, rules=rules), cache
 
 
 async def _catalogue_inputs(

@@ -37,6 +37,8 @@
 >
 > **Built 2026-10-18, merged as #1130, dark:** CRM-Q32, the open questions (§18.14). CRM-Q32-1 to CRM-Q32-6 are built, the screens and both halves of CRM-Q32-4 too. CRM-Q32-7 is not, because it waits for WS-61. The CRM asks the admin each question that Jev could not answer with confidence. Each answer becomes a fixed fact in the mapping plan. Every app reads it through the one read seam `org facts`. No migration, and no model call of its own.
 >
+> **Built 2026-10-18 on `crm-q33-answer-first`, not merged, dark:** CRM-Q33, answer first and clarify over time (§18.15). A total that depends on an open question answers on the best assumption, with a note of how, and asks one question after it. Business rules, a WhatsApp answer by number, a change in the chat, and the evidence of GST and TDS. Migration 283 adds `crm_business_rules`. It ships behind `CRM_ANSWER_FIRST_ORGS`, which is empty.
+>
 > **Built 2026-10-18 on `crm-q32-8`, not merged:** CRM-Q32-8, the chat tells each member with CRM access what is not clear and asks before it answers. An admin answers, and each other member proposes an answer that an admin confirms (owner direction 2026-10-18, two parts). No migration. It ships behind `CRM_QUESTIONS_ORGS`. It merges after CRM-Q32-9a (#1138) and CRM-Q32-9b (#1139).
 >
 > **Built 2026-10-18 on `crm-q32-9b`, not merged:** CRM-Q32-9b, the picker of a sum (§18.14.10). The amount card offers "These fields add up to the amount", and the picker shows the coverage line and the warning of the sum check. "Your answers" shows a sum, with Change and "Let Metorite choose". Frontend only. No migration. CRM-Q32-8 adds the proposals of the members to the picker, each with Confirm.
@@ -1297,6 +1299,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q30b** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. The read tools say when Zoho holds more records than the connected Zoho user can read. §18.11 | P1 |
 | **CRM-Q31** | The CRM catalogue for the AI: the purpose of each module, its key fields by meaning, and its links. Code first, then the decide tier. Q31-1 to Q31-3 merged as #1122, dark. Q31-4 is absorbed into CRM-Q32 (§18.14). §18.13 | P0 |
 | **CRM-Q32** | Open questions: the CRM asks the admin each question that Jev could not answer with confidence. Each answer is a fixed fact in the plan, and every app reads it through `org facts`. Ten slices (Q32-1 to Q32-9b). Q32-1 to Q32-6 merged as #1130, dark (2026-10-18). Q32-8, Q32-9a and Q32-9b are specified 2026-10-18, not built. §18.14 | P0 |
+| **CRM-Q33** | 🔨 built 2026-10-18 on `crm-q33-answer-first`, not merged, dark behind `CRM_ANSWER_FIRST_ORGS`. Answer first, clarify over time: the figure on the best assumption with a note, one question after it, business rules (migration 283), a WhatsApp answer by number, and the evidence of GST. §18.15 | P0 |
 | **CRM-Q20-3** | The overlay reaches the readers: `GET /crm/aggregate` and the AI tools first (Q20-3a), then the overlaid board with an "Unsorted" lane (Q20-3b). §18.13 | P1 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
@@ -7417,6 +7420,256 @@ change of the first, and runs the verification of both again.
   gives 422 `bad_catalogue` on each plan commit of that org. To go back,
   first put each sum back with `"@auto"` or one field, then revert. No flag
   guards this, on purpose (the SQL review of 2026-10-18).
+
+### 18.15 Answer first, clarify over time (CRM-Q33, 2026-10-18)
+
+**Status (2026-10-18).** Built on `crm-q33-answer-first` as one batch, not
+merged. It is dark behind the new org list `CRM_ANSWER_FIRST_ORGS`, which
+ships empty. One migration, 283 (`crm_business_rules`). The spec audit gave
+GO-NARROWED to the six parts below.
+
+This section amends the flow of
+CRM-Q32-8 (§18.14.10) for an org on the list only. An org off the list keeps
+CRM-Q32-8 as it is.
+
+**Owner direction (2026-10-18, in chat).** "Even when the open questions
+have not been answered, the AI chat should start working using the AI's
+best assumptions while having a natural conversation. Over time, it should
+make the clarifications." "Where the CRM agent answers using ambiguous
+fields, give the data with the caveats about how you arrived at those
+numbers."
+
+"Store their answers as preferences. Gather the answers both from
+WhatsApp and from direct chat." "Be able to remap in case a user gave an
+incorrect answer."
+
+**Bottom line.** A total that depends on an open question never blocks. The
+chat gives the figure on the best assumption, says how it got the figure,
+and then asks one question after the answer. A member's own words become a
+business rule only after the member confirms them. A WhatsApp member answers
+by number, and code, never the model, matches the reply.
+
+**The real case (DEWiN, production, read only).** Collection is the module
+`Payment_Received`. Each record is "IP & Rent" or "EB" (`Payment_Type`). The
+AI recommended Rent Net Amount (`Billing_Amount`, which is rent plus GST less
+TDS).
+
+The admin of DEWiN wrote: "All numbers I want to see should be net of
+GST. Electricity and property rent are pass-through. IP is my real earning."
+The correct fields are `IP` (IP Basic Amount), `Rent` (Rent Basic Amount) and
+`EB_Total_Amount` (EB Basic Amount), and their sum is the amount.
+
+`IP_Total_Amount` is "IP (Basic + GST)", and `Any_other_Deduction` is "IP
+GST". The fixtures of both test suites use this shape with synthetic values.
+
+#### 18.15.1 Part 1: answer first
+
+- `GET /crm/questions/ask` gives `answer_first`, `assume` and
+  `suggested_sum` to an org on the list. `assume` holds the field keys, the
+  words of how (each label with its evidence), the words of why, and one
+  alternative field.
+- The server picks the assumption in this order. A member's own proposal
+  comes first, as the override of CRM-Q32-8. Then the sum that a rule points
+  at, then the recommended choice, then the most filled choice.
+- `crm_aggregate` reads the total on the assumption. Two or more fields
+  read as ONE sum in one aggregate: `field=IP+Rent+EB_Total_Amount`.
+  `FieldScope.ref` builds the composite of CRM-Q32-9 from 2 to 5 currency
+  fields of the module, and refuses each other key.
+- The tool answer holds the figure, then a note. The note starts with "SHOW
+  THIS NOTE". It says "How I got this", "This assumes", and the figure of
+  the alternative, which costs one more read. Each figure of the note reads
+  in lakh and crore ("₹45.3 lakh", "₹1.35 crore"), never million. Then it
+  holds ONE follow-up.
+- On the web, the follow-up is the card of CRM-Q32-8, after the answer. Its
+  last option is "Keep this for now", which holds the question for 24 hours.
+  The card gate and the late pick of CRM-Q32-8 stay as they are.
+- One answer asks one question at most. The question of the total takes it
+  first, so a revenue line inside the same answer gives its note only.
+
+#### 18.15.2 Part 2: WhatsApp
+
+- WhatsApp has no card. The WhatsApp run of an org on the list opens a
+  holder of its one follow-up (`crm_tools.open_text_asks`). The tool only
+  names the question in the holder, and never writes the options.
+- After the run, `bot_run` calls `routes/crm/text_asks.offer`. The server
+  builds the question again, with the same steer, and numbers its options
+  ("Reply 1, 2, 3 or 4").
+- The server keeps a pending ask in tenant Redis for 24 hours. The key holds
+  the org (the tenant prefix), the member and the channel. The value holds
+  the question id, and the key and the label of each option that it built.
+- The member's next message reaches `text_asks.settle` before any model run.
+  Code matches a number, or the exact label of an option. The pick goes
+  through `questions.reply_as`, the door of the web pick, so an admin answers
+  and each other member proposes.
+- A reply that matches nothing goes to the chat as normal. The ask is used
+  up either way (GETDEL). A question id or an option never comes from the
+  text alone.
+- A WhatsApp run of an org on the list holds `crm_answer_question`, because
+  the holder is open. There it only names a question for the gateway to ask,
+  because `cards_refused` closes the gate of a pick.
+
+#### 18.15.3 Part 3: business rules
+
+**The decision: a tenant table of its own.** A rule is short free text, such
+as "All amounts net of GST". A member who is not an admin writes a rule for
+themselves. The mapping plan is the admin's store, with versions, one lock
+and `by: admin` on each part. A member's rule in the plan would break that
+authority, and each rule would make a plan version.
+
+So migration 283 adds
+`crm_business_rules`, tenant-scoped with FORCE row level security, expand
+only (R6). Migration number 283 was free on `origin/main` (282, #1142) and on
+each open branch on 2026-10-18 (R1). Check it again at merge.
+
+- `routes/crm/rules.py` is the one writer. A CRM admin adds, changes and
+  removes an org rule. Each member with CRM access does so for their own
+  rules, and never reads another member's rule.
+- The CRM start over keeps the rules (`RESET_KEEPS`), because a rule
+  describes the business and not the old Zoho account.
+- The tool `crm_propose_rule(text, scope)` saves NOTHING. It holds the rule
+  in tenant Redis for 24 hours, for the member's confirm. On the web, the
+  confirm is a card (`crm_question` of the form `rule:<token>`), and its pick
+  goes through the card gate of `crm_answer_question`. On WhatsApp, the
+  confirm is "Reply YES to save" through the pending ask of part 2.
+- The confirm reads the words from the server's hold, never from the
+  request. A rule from tool results or CRM data is never held. At least 3
+  in 4 of its words must be the member's own words of the run.
+- The org-facts provider gives each rule as subject `rule:<slug>`. So each
+  rule reaches the CRM facts block of a chat run. The org's rules also reach
+  the questions of the key parts of the mapping pipeline, as the corrections
+  of the user.
+- A rule that asks for amounts net of GST steers part 5.
+
+#### 18.15.4 Part 4: remap
+
+What CRM-Q32 gives already: "Your answers" changes each part in use, with
+"Let Metorite choose" to clear it. What CRM-Q33 adds:
+
+- Each part that an admin set shows who set it and when: "Set by Asha Rao ·
+  3 hours ago". Each admin write records it under `answered_by` of
+  `zoho:questions`. The name comes from the member directory, or "A member",
+  never an email.
+- An amount card offers the sum that the rules point at as one choice. On
+  DEWiN it reads "Use the sum: IP Basic Amount + Rent Basic Amount + EB Basic
+  Amount".
+- A section "Business rules" in CRM settings, for each member in Mirror
+  mode, adds, changes and removes rules. It also lists the member's own
+  choices in the chat, each with Clear (`GET /crm/questions/mine` and
+  `DELETE /crm/questions/{id}/mine`).
+- In the chat, "use Rent Basic Amount instead" calls `crm_answer_question`.
+  With no card shown in this run, it saves nothing and shows the card of the
+  question again. The member's own pick on that card then goes through the
+  same door.
+
+#### 18.15.5 Part 5: the evidence of GST and TDS
+
+- `field_sql.gst_check` is ONE bounded statement over the first 10,000
+  records of the module. It checks each pair of money fields for the ratio
+  1.18, and each field for basic plus GST, less TDS when TDS is set.
+- A relation counts when it holds on 90% or more of at least 5 records that
+  set its fields. A field with no relation takes the words of its label:
+  "+ GST", "Basic" and "Net".
+- The card shows "Includes GST", "Excludes GST", "After TDS" or "The GST
+  alone" on each money option.
+- With a rule net of GST, the fields that exclude GST lead the short list,
+  and the first is the recommendation. No field with GST stays on the short
+  list. When two or more of them each fill 20% and none fills 90%, their sum
+  is `suggested_sum`.
+- On DEWiN's fixture, the card lists IP, Rent and EB Basic Amount, and the
+  recommendation is their sum.
+
+#### 18.15.6 Part 6: copy
+
+The note, the question and each line say "the AI" and plain words. No text
+that a member reads names the internal engine, a tier or a decide call.
+
+#### 18.15.7 Done when
+
+| # | Criterion | Fence (R7) |
+|---|---|---|
+| 1 | A total that depends on an open question answers first, with the note and one follow-up after it | `test_crm_answer_first.py::test_the_answer_comes_first_with_its_note_and_one_question_after`, and the R8 case over the real router `test_the_chat_answers_dewin_first_with_the_note_and_one_question` |
+| 2 | Off the list, CRM-Q32-8 stays | `test_off_the_list_the_chat_still_asks_first`, `test_off_the_list_nothing_of_q33_shows` (R8) |
+| 3 | One question for each answer, none while held | `test_a_second_total_in_one_run_asks_no_second_time`, `test_a_held_question_gives_the_figure_and_the_note_and_no_question`, `test_a_revenue_total_notes_the_default_and_takes_the_one_question` |
+| 4 | A sum of the assumption reads in one aggregate, and a bad key is 422 | `test_the_assumed_sum_reads_in_one_aggregate_and_is_the_sum_of_the_parts` (R8) |
+| 5 | WhatsApp: the tool names the question, and the gateway asks it and matches the reply | `test_whatsapp_names_one_question_for_the_gateway_and_writes_none`, `test_a_whatsapp_reply_records_a_member_s_proposal_and_writes_no_plan` (R8), `test_a_whatsapp_reply_of_an_admin_writes_the_answer` (R8) |
+| 6 | A forged option of a reply records nothing | `test_a_reply_picks_an_option_only_by_its_number_or_its_label` |
+| 7 | A reply with no pending ask goes to the chat | `test_a_reply_with_no_pending_ask_goes_to_the_chat` |
+| 8 | The pending ask of another org, or another member, is never read | `test_the_pending_ask_of_another_org_is_never_read`, `test_the_pending_ask_of_another_member_is_never_read`, `test_a_pending_ask_of_org_a_is_never_settled_in_org_b` (R8) |
+| 9 | A rule from tool data is never held, and a rule needs the confirm | `test_a_rule_from_tool_data_is_never_even_held`, `test_the_confirm_goes_through_the_card_gate`, `test_a_held_rule_saves_nothing_until_the_member_confirms_it` (R8), `test_a_whatsapp_yes_saves_the_held_rule_and_nothing_else_does` (R8) |
+| 10 | The authority and the tenancy of the rules | `test_the_authority_and_the_privacy_of_the_rules` (R8) |
+| 11 | Rules reach the org facts of each member, and never another member's | `test_the_rules_reach_the_org_facts_of_each_member` (R8) |
+| 12 | Who set an answer, and a member's own choice and its clear | `test_an_admin_answer_shows_who_set_it_and_when`, `test_a_member_lists_and_clears_only_their_own_choice` (R8), `components/crmQ33.test.ts` |
+| 13 | The evidence of DEWiN, and the steer of a rule net of GST | `test_the_evidence_of_each_money_field_of_dewin`, `test_with_a_net_of_gst_rule_the_three_ex_gst_fields_lead_and_their_sum`, `test_dewin_with_net_of_gst_recommends_the_sum_of_the_three_ex_gst_fields` (R8) |
+| 14 | No member-facing text names the engine | `test_no_user_facing_text_of_q33_names_the_engine`, `components/crmQ33.test.ts` ("Jev", "tier", "decide") |
+| 15 | The migration: found by content, FORCE row level security, its checks | `test_the_migration_is_found_by_content_and_forces_row_level_security` (R8), `test_tenant_coverage.py`, `test_crm_reset_r8.py` |
+| 16 | The schema test pins the rule tool, and the run assembly withholds it off the list and in a batch run | `test_tool_schema_diet.py`, `test_org_facts.py`, `evals/trajectories/test_tool_scope_trajectory.py` (ceiling 25) |
+
+#### 18.15.8 The flip, and what is not done
+
+**The flip.** A name in `CRM_ANSWER_FIRST_ORGS` spends no model call, so it
+is the grant `enforcement-flip`. The org needs `CRM_QUESTIONS_ORGS` and
+`CRM_CATALOGUE_ORGS` too. Apply migration 283 before the flip.
+
+**Not done in this batch.**
+
+- A new rule does not ask the mapping pipeline again. The cache key of a
+  module does not hold the rules, so the next re-ask of that module reads
+  them.
+- A member's purge does not remove the member's own rules yet.
+- A late pick of a rule card in a later run passes the gate only while the
+  hold lasts. A hold from a WhatsApp run has no web card.
+- Only "net of GST" steers the recommendation. Other rules reach the AI as
+  text and the facts block.
+- The number format of the org (lakh and crore, or million) is another
+  builder's work, on the branch `number-system`. This batch writes only the
+  figures of its own note in lakh and crore.
+
+#### 18.15.9 Verification
+
+- `bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"`
+- `uv run pytest tests/unit/test_crm_answer_first.py tests/unit/test_crm_answer_first_r8.py tests/unit/test_crm_questions.py tests/unit/test_crm_questions_chat.py tests/unit/test_crm_questions_r8.py tests/unit/test_crm_questions_chat_r8.py tests/unit/test_crm_agent.py tests/unit/test_org_facts.py tests/unit/test_org_facts_r8.py tests/unit/test_crm_reset_r8.py tests/unit/test_tool_schema_diet.py tests/unit/test_skill_toggle_enforcement.py tests/unit/test_org_access_enforcement.py evals/trajectories/test_tool_scope_trajectory.py -q`,
+  with no test skipped.
+- `npx tsc --noEmit && npx vitest run src/app/crm src/components/ui` in
+  `workbench/control_plane`.
+
+#### 18.15.10 Fix round 1 (the security review of #1151, 2026-10-19)
+
+The review returned NOT-READY with two P0s. Both are closed, with the P1,
+the two P2s and the note.
+
+- **P0: a pick needs the member's click.** A card that was only shown
+  opened the gate of a pick before. So the model could hold a rule and send
+  "save" with no click. Now the tool registers each card that it builds
+  from the server's read. `ask_questions` hands the gateway's answer of the
+  member's click to `crm_tools.record_card_answer`. The pick counts only
+  for that card, its exact question text and one of its labels, and the
+  gate takes the key once (`CrmAsks.use_pick`). A typed answer is no pick.
+- **The rule card shows the stored words.** The server builds the question
+  of a rule card from the held row. A card with other words records no
+  pick, live or late (`questions._rule_label`).
+- **P1: every word of a rule.** `member_said` needs each word, number and
+  negation of the rule in the member's own words of the run. Only glue
+  words such as "the" and "of" may differ.
+- **P2: a parked act owns the next WhatsApp message.** While an act is
+  pending, the CRM's pending ask does not settle. A run that parked an act,
+  or whose reply asks its own numbered choice, offers no CRM question and
+  drops an earlier one.
+- **P2: the purge reaches the CRM.** The member's own rules go
+  (`_PURGE_DELETES`). An org rule keeps no address of the member. In
+  `zoho:questions` the member's proposals go, and the record of who set an
+  answer keeps its time and loses the address. The member's CRM keys leave
+  tenant Redis. A fence fails when a new table keyed by a member email is
+  not in the purge.
+- **The note goes in when the model leaves it out.** The tool registers
+  each note in the holder of the run. On the web, `executor._sse` watches
+  the text, and `executor._crm_note_events` adds the note before
+  RUN_FINISHED. On WhatsApp, `bot_run` adds it to the reply.
+  `answer_check.py` does not change.
+
+Fences: `tests/unit/test_crm_answer_first.py`,
+`tests/unit/test_crm_answer_first_fix1.py` and
+`tests/unit/test_crm_answer_first_r8.py`. Six mutations, one for each rule,
+each fail a test.
 
 ---
 

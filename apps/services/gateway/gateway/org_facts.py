@@ -33,11 +33,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-#: The words of ``source``: who gave the fact.
-SOURCES: tuple[str, ...] = ("code", "ai", "admin")
+#: The words of ``source``: who gave the fact. ``member`` (CRM-Q33) is a
+#: business rule that one member wrote for themselves, which only that
+#: member reads.
+SOURCES: tuple[str, ...] = ("code", "ai", "admin", "member")
 
 #: ``source`` → ``set_by``. A role, never an email: an agent reads it.
-SET_BY: dict[str, str] = {"code": "Metorite", "ai": "Jev", "admin": "admin"}
+SET_BY: dict[str, str] = {"code": "Metorite", "ai": "Jev", "admin": "admin", "member": "you"}
 
 #: The modules that register a provider when they are imported. A reader
 #: imports them first, so the registry never depends on an import order.

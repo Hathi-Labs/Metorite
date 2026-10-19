@@ -16,6 +16,7 @@
 
 import type { CrmMode } from "./connect";
 import type { QuestionsGate } from "./questions";
+import type { RulesGate } from "./rules";
 
 /** Who may open a section. */
 export type SectionAudience = "admin" | "member";
@@ -65,6 +66,9 @@ export const SETTINGS_SECTIONS = [
   // CRM-Q32-3: the questions that Jev could not answer, before Suggestions.
   // `GET /crm/questions` decides whether it shows (`SectionContext.questions`).
   { id: "questions", label: "Open questions", icon: "CircleHelp", audience: "admin", modes: ["mirror"] },
+  // CRM-Q33: the business rules of the org and of each member. Each member
+  // with CRM access sees it, while `GET /crm/rules` answers (`SectionContext.rules`).
+  { id: "rules", label: "Business rules", icon: "ScrollText", audience: "member", modes: ["mirror"] },
   // CRM-Q20-2: the suggestions of the mapping, and Undo of each one in use.
   { id: "suggestions", label: "Suggestions", icon: "Sparkles", audience: "admin", modes: ["mirror"] },
   { id: "sync-health", label: "Sync health", icon: "Activity", audience: "admin", modes: ["mirror"] },
@@ -89,6 +93,8 @@ export type SectionContext = {
   studioAdmin?: boolean;
   questions?: QuestionsGate;
   openQuestions?: number;
+  /** CRM-Q33: the gate of the business rules, from `GET /crm/rules`. Absent, it is `unknown`. */
+  rules?: RulesGate;
 };
 
 /** Is this a section id at all? An unknown `?section=` parses as `null`. */
@@ -114,7 +120,8 @@ export function visibleSections(ctx: SectionContext): SettingsSection[] {
       (section.audience === "member" || ctx.isAdmin) &&
       (section.modes as readonly string[]).includes(mode) &&
       (!(section.studioIn ?? []).includes(mode) || ctx.studioAdmin === true) &&
-      (section.id !== "questions" || ctx.questions === "on"),
+      (section.id !== "questions" || ctx.questions === "on") &&
+      (section.id !== "rules" || ctx.rules === "on"),
   );
 }
 

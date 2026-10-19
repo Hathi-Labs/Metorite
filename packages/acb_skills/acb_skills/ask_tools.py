@@ -166,10 +166,12 @@ _CUT_MARKS = " ,;:.-" + chr(0x2013) + chr(0x2014)
 ELLIPSIS = "…"
 
 
-#: The shape of the id of a CRM question on a card (``crm_tools``).
+#: The shape of the id of a CRM question on a card (``crm_tools``). WS-53
+#: CRM-Q33: ``rule:<token>`` is the confirm of a held business rule.
 _CRM_QUESTION = _re.compile(
     r"^(revenue|purpose:[A-Za-z][A-Za-z0-9_]{0,99}"
-    r"|key:[A-Za-z][A-Za-z0-9_]{0,99}:(amount|date|status|parent))$"
+    r"|key:[A-Za-z][A-Za-z0-9_]{0,99}:(amount|date|status|parent)"
+    r"|rule:[0-9a-f]{16})$"
 )
 #: The shape of the key of an option of a CRM question card.
 _CARD_KEY = _re.compile(r"^[@A-Za-z0-9_]{1,100}$")
@@ -212,6 +214,26 @@ def clip_words(text: str, limit: int) -> str:
         cut = cut[:space]
     cut = cut.rstrip(_CUT_MARKS)
     return f"{cut}{ELLIPSIS}"
+
+
+def _record_crm_pick(cleaned: list[dict], result: Any) -> None:
+    """WS-53 CRM-Q33 fix round 1 (P0): hand the member's answer of a CRM
+    question card to ``crm_tools.record_card_answer``. The answer is the
+    gateway's, from the member's click, never the model's. Any fault records
+    nothing, so a pick then saves nothing."""
+    if not any(crm_card_tag(q) for q in cleaned):
+        return
+    # An empty answer is no pick. A decline ("Not now") goes on, so a
+    # CRM card that offers the default can keep it (record_card_answer).
+    if not is_declined(result) and not str(
+            (result or {}).get("answer", "") if isinstance(result, dict) else "").strip():
+        return
+    try:
+        from acb_skills.crm_tools import record_card_answer
+
+        record_card_answer(cleaned, result)
+    except Exception:  # noqa: BLE001 - a pick that is not recorded saves nothing
+        return
 
 
 # ── "Not now": the member declines a card (owner request, 2026-10-18) ────────
@@ -532,6 +554,7 @@ async def ask_questions(questions: str) -> str:
             _pending_user_input.pop(_request_id, None)
             return "User did not respond in time."
 
+        _record_crm_pick(cleaned, _result)
         return answer_text(_result, cleaned)
 
     # ── Path B: Copilot SDK / standalone ──────────────────────────────
@@ -584,6 +607,7 @@ async def ask_questions(questions: str) -> str:
                     _result = await wait_user_future(_fut, 3600)
                 except _asyncio.TimeoutError:
                     return "User did not respond in time."
+                _record_crm_pick(cleaned, _result)
                 return answer_text(_result, cleaned)
     except Exception:  # noqa: BLE001
         pass
@@ -636,6 +660,7 @@ async def ask_questions(questions: str) -> str:
             finally:
                 _pending_user_input.pop(_request_id, None)
 
+            _record_crm_pick(cleaned, _result)
             return answer_text(_result, cleaned)
     except Exception:  # noqa: BLE001
         pass

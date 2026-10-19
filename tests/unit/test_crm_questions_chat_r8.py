@@ -415,7 +415,9 @@ async def test_a_member_never_writes_the_plan_through_the_tool(
     p = chat_env
     seed_a(p)
     before = versions(p, p.org_a)
+    # CRM-Q33 fix round 1: the member's own click on each card is the pick.
     card_run.asked.update({KEY, "revenue"})
+    card_run.picked.update({KEY: "Part_A", "revenue": "@auto"})
     out, refused = await _through_the_tool(p, member(p.org_a), monkeypatch,
                                            [(KEY, "Part_A"), ("revenue", "@auto")])
     assert out.startswith("This uses Part A, as you chose.")
@@ -447,7 +449,11 @@ async def test_no_pick_is_written_without_the_card_of_this_run(
         assert await _through_the_tool(p, user, monkeypatch, [(KEY, "Part_B")]) == [NO_CARD_PICK]
     assert versions(p, p.org_a) == before and approved(p, p.org_a) == plan_before
     assert proposals(p, p.org_a) == {} and hold.store == {}
-    # After the card of this run, the same call writes.
+    # CRM-Q33 fix round 1 (P0): a card that was only SHOWN writes nothing.
+    assert await _through_the_tool(p, user, monkeypatch, [(KEY, "Part_B")]) == [NO_CARD_PICK]
+    assert versions(p, p.org_a) == before and proposals(p, p.org_a) == {}
+    # After the member's own click on the card of this run, the call writes.
+    card_run.picked[KEY] = "Part_B"
     (done,) = await _through_the_tool(p, user, monkeypatch, [(KEY, "Part_B")])
     assert done != NO_CARD_PICK
     if admin:

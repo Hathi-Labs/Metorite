@@ -565,7 +565,7 @@ async def put_catalogue(
                 row = await _approved(db)
             # CRM-Q32-8: an admin write of a part closes what waits on it in
             # the questions, after the plan lock of the writer (the lock order).
-            await after_admin_write(db, org, part_question_ids(module, parts))
+            await after_admin_write(db, org, part_question_ids(module, parts), by)
             _mode, sources, roles, others = await _load(db, org)
     except DBAPIError as exc:
         conflict = _db_conflict(exc)
