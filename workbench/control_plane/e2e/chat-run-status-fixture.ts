@@ -90,7 +90,8 @@ export async function install(page: Page, initial: Partial<Srv> = {}) {
         const cut = read().cutAfterMs;
         // Silent until the run ends, or until the "proxy" cuts it.
         while (active()) {
-          if (signal?.aborted) return;
+          // An aborted fetch errors its body, as a browser's does.
+          if (signal?.aborted) { controller.error(new DOMException("The operation was aborted.", "AbortError")); return; }
           if (cut && Date.now() - opened >= cut) { controller.close(); return; }
           await new Promise((r) => setTimeout(r, 100));
         }
@@ -138,6 +139,14 @@ export async function install(page: Page, initial: Partial<Srv> = {}) {
             { id: s.userId, role: "user", content: "Plan the release", timestamp: s.startedAt },
             { id: s.replyId, role: "assistant", content: reply, timestamp: s.startedAt + 1, toolEvents: [] },
             { id: "u-r2", role: "user", content: R2_PROMPT, timestamp: s.r2At },
+          ]);
+        }
+        // Mid-run, the server holds the turn (WS-51 S4) and the reply's last
+        // checkpoint, under their own ids, as the gateway does.
+        if (method === "GET" && url.includes("/messages") && s.threadId && url.includes(s.threadId) && active() && s.replyId) {
+          return json([
+            { id: s.userId, role: "user", content: "Plan the release", timestamp: s.startedAt },
+            { id: s.replyId, role: "assistant", content: "Let me get the rest of the tree.", timestamp: s.startedAt + 1, toolEvents: [] },
           ]);
         }
         if (method === "GET" && url.includes("/messages") && s.threadId && url.includes(s.threadId) && s.endsAt && !active()) {

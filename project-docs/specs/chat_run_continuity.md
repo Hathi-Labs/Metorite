@@ -1044,15 +1044,24 @@ chat, and every indicator reads it. No indicator decides on its own.
    it for 10 s. The state also ignores a list from before the phase began.
 8. The list can lag a new run by up to 10 s. An open stream is the
    authority then.
-9. A list that names a run while the chat rests (`idle`, `done`, `failed`
-   or `stopped`) names a NEW run. Another tab, a phone or a room member
-   started it. The state keeps no message, step or start of the last run,
-   so the new run gets its own bubble.
-10. A chat that mounts over a live phase kept in the store, with no stream
+9. The state keys a run by its server identity (`runKeyOf`). That is the
+   run id of the row, else its start time. A listed run with ANOTHER
+   identity is a new run in every phase. Another tab, a phone or a room
+   member started it. The new run gets its own bubble. It keeps no
+   message, step, start or card of the old run.
+10. A list that names a run while the chat rests (`idle`, `done`, `failed`
+    or `stopped`) also names a new run, unless its identity is the same.
+11. The first server row after a send binds the identity of that send's
+    run. A list from before the send binds nothing.
+12. A chat that mounts over a live phase kept in the store, with no stream
     that reads it, goes to `finishing` ("checking") until the server
-    answers. The row draws nothing at once on a mount, except for a send.
-11. An attach that cannot start (another attach holds the thread, or a send
-    took it) gives `attach_skipped`. The next server list asks again.
+    answers. The mount trusts no kept message, step or count. While it
+    checks, the composer offers no Stop and no "working…"
+    (`isRunActiveForUi`). The row draws nothing at once on a mount, except
+    for a send.
+13. An attach that cannot start (another attach holds the thread, or a send
+    took it) gives `attach_skipped`. The next server list asks again. An
+    aborted attach never holds the thread.
 
 **When the chat asks the server.** The chat asks on mount and on each poll
 of the shared poller. That poller runs every 5 s in a visible tab and every
@@ -1073,8 +1082,11 @@ cut stream all use it.
 - It replays into the message of the run. That is the message this tab saw,
   else a reply saved mid-stream, else the saved row on the server. Only with
   none of these does it add a placeholder, with no thinking flag.
-- A reply that the chat holds as finished is never a target. It belongs to
-  an earlier run (`planReplay` in `lib/runReplay.ts`).
+- A reply of an old run is never a target (`planReplay` and `rejectFor` in
+  `lib/runReplay.ts`). That is the reply of the last run that ended in this
+  chat. When the server named a run with another identity, it is every
+  reply that the chat holds. The attach first settles a reply that the old
+  run left marked as streaming.
 - It first draws the saved rows that the chat lacks and that are newer than
   what shows. That is the prompt of a run started elsewhere.
 - After its read of the server, it checks for a send again. A send that

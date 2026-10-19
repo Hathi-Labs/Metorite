@@ -68,7 +68,7 @@ import { DECLINED_ANSWER, declineBody } from "@/lib/declineAnswer";
 import TodoPanel from "@/components/TodoPanel";
 import ContextRing from "@/components/ContextRing";
 import RunStatusRow, { useSteadyRunView } from "@/components/RunStatusRow";
-import { isLivePhase } from "@/lib/runStatus";
+import { isLivePhase, isRunActiveForUi } from "@/lib/runStatus";
 import { dispatchRun, getSessionState } from "@/lib/chatStore";
 import { PHONE_MAX_WIDTH, composerCap, composerHeight, offerExpand } from "@/lib/composerHeight";
 import { PROJECTS_AGENT } from "@/lib/projectsAgent";
@@ -730,7 +730,9 @@ export default function AgentChat({
   // stream the proxy cut all keep it active until the run really ends. The
   // composer's Stop, the placeholder, the header dot and the status row all
   // read this one value. No indicator decides on its own.
-  const isRunActive = isLivePhase(run.phase);
+  // A remount's "checking" offers no Stop and no "working…" until the
+  // server lists the run (`isRunActiveForUi`, re-review of #1171).
+  const isRunActive = isRunActiveForUi(run);
   const runView = useSteadyRunView(run);
 
   // The reply's own bubble shows the run while it streams (the thinking

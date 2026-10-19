@@ -23,8 +23,10 @@ import {
   STOP_HOLD_MS,
   formatElapsed,
   isLivePhase,
+  isRunActiveForUi,
   reduceRun,
   runView,
+  runKeyOf,
   runViewText,
   serverHoldsRun,
   steadyPresence,
@@ -32,7 +34,7 @@ import {
   type RunStatus,
   type ServerRun,
 } from "./runStatus";
-import { planReplay, runRowOf } from "./runReplay";
+import { planReplay, rejectFor, runRowOf } from "./runReplay";
 import { THINKING_STEP, WRITING_STEP, stepOfMessage } from "./runStep";
 
 const T0 = 1_760_000_000_000;
@@ -351,7 +353,7 @@ describe("a run started elsewhere after this chat's run ended (P1)", () => {
     expect(reduceRun(working(), server(T0 + 1_000, RUNNING, true)).messageId).toBe("a1");
   });
 
-  it("the replay never targets a finished reply, and draws the new prompt first", () => {
+  it("the replay never targets an old run's reply, and draws the new prompt first", () => {
     const shown: ChatMessage[] = [
       { id: "u1", role: "user", content: "Plan", timestamp: T0 },
       { id: "r1", role: "assistant", content: "R1 answer", timestamp: T0 + 1 },
@@ -360,18 +362,31 @@ describe("a run started elsewhere after this chat's run ended (P1)", () => {
       ...shown,
       { id: "u2", role: "user", content: "From the phone", timestamp: T0 + 100 },
     ];
-    expect(planReplay(saved, shown)).toEqual({ target: null, missing: [saved[2]] });
+    // R1 ended in this chat: its reply is rejected by `doneMessageId`.
+    const done = rejectFor(shown, "r1", false);
+    expect(planReplay(saved, shown, done)).toEqual({ target: null, missing: [saved[2]] });
     // Even with no new prompt saved yet, R1's reply is no target.
-    expect(planReplay(shown, shown).target).toBeNull();
+    expect(planReplay(shown, shown, done).target).toBeNull();
+    // A run with ANOTHER identity rejects every reply this chat holds.
+    expect(planReplay(shown, shown, rejectFor(shown, null, true)).target).toBeNull();
     // The new run's own checkpoint row is the target.
     const r2: ChatMessage = { id: "r2", role: "assistant", content: "So far", timestamp: T0 + 101 };
-    const plan = planReplay([...saved, r2], shown);
+    const plan = planReplay([...saved, r2], shown, rejectFor(shown, "r1", true));
     expect(plan.target?.id).toBe("r2");
     expect(plan.target?.streaming).toBe(true);
     expect(plan.missing.map((m) => m.id)).toEqual(["u2"]);
-    // A reply saved mid-stream that this chat holds as streaming is the run's.
-    const midway: ChatMessage[] = [shown[0], { ...shown[1], streaming: true }];
-    expect(planReplay(shown, midway).target?.id).toBe("r1");
+    // After a reload, the run's saved row (no `streaming` flag) is its own
+    // target: no second bubble for the same run.
+    expect(planReplay(shown, shown, rejectFor(shown, null, false)).target?.id).toBe("r1");
+  });
+
+  it("the reply of a run that ends here is remembered as done", () => {
+    const d = reduceRun(working(), { type: "stream_end", at: T0 + 5_000, terminal: true });
+    expect(d.doneMessageId).toBe("a1");
+    expect(reduceRun(working(), { type: "stop", at: T0 + 1 }).doneMessageId).toBe("a1");
+    // A new send keeps it, and binds its own message.
+    const next = reduceRun(d, send(T0 + 20_000));
+    expect(next.doneMessageId).toBe("a1");
   });
 
   it("runRowOf stops at the member's last turn", () => {
@@ -399,10 +414,18 @@ describe("a chat that mounts over a kept state (P2)", () => {
     expect(runView(m, T0 + 2_000)?.tone).toBe("finishing");
     // A re-attach may start at once: the aborted one no longer counts.
     expect(m.attachedAt).toBe(0);
+    // A remount trusts no kept target, step or count (re-review of #1171).
+    expect(m.messageId).toBeNull();
+    expect(m.step).toBeNull();
+    expect(m.seq).toBe(0);
+    // "Checking" offers no Stop until the server lists the run.
+    expect(m.checking).toBe(true);
+    expect(isRunActiveForUi(m)).toBe(false);
     const back = reduceRun(m, server(T0 + 2_100, RUNNING));
     expect(back.phase).toBe("working");
     expect(back.attach).toBe(true);
-    expect(back.messageId).toBe("a1");
+    expect(back.checking).toBe(false);
+    expect(isRunActiveForUi(back)).toBe(true);
     // The run ended while away.
     expect(reduceRun(m, server(T0 + 2_100, null)).phase).toBe("done");
   });
@@ -456,5 +479,94 @@ describe("the recovery poll defers to the server (P2)", () => {
     expect(hook).not.toMatch(/fetch\("\/api\/chat\/active-sessions"/);
     expect(hook).toContain('dispatchRun(threadId, { type: "remount"');
     expect(row).toContain("useState(want && immediate)");
+  });
+});
+
+// ── Re-review of #1171: the run's identity ─────────────────────────────────
+
+describe("a listed run with another identity is a new run, in every phase", () => {
+  const R1_AT = new Date(T0).toISOString();
+  const R2_AT = new Date(T0 + 60_000).toISOString();
+  const r1: ServerRun = { state: "running", live: true, startedAt: R1_AT };
+  const r2: ServerRun = { state: "running", live: true, startedAt: R2_AT, lastStep: "Search orders" };
+  // This chat watches R1: its identity is bound from the first row.
+  const watching = () => run(working(), server(T0 + 1_000, r1, true));
+
+  const expectNewRun = (s: RunStatus) => {
+    expect(s.phase).toBe("working");
+    expect(s.messageId).toBeNull();
+    expect(s.seq).toBe(0);
+    expect(s.terminalAt).toBe(0);
+    expect(s.cardOpen).toBe(false);
+    expect(s.step).toBe("Search orders");
+    expect(s.startedAt).toBe(T0 + 60_000);
+    expect(s.runKey).toBe(runKeyOf(r2));
+    // The old run's streaming reply is not this run's.
+    expect(s.staleTail).toBe(true);
+    expect(s.attach).toBe(true);
+  };
+
+  it("binds the identity of this tab's own run from the first row after the send", () => {
+    const w = watching();
+    expect(w.runKey).toBe(`at:${R1_AT}`);
+    expect(w.messageId).toBe("a1");
+    // A list from before the send cannot hold its run, so it binds nothing.
+    const s = reduceRun(IDLE_RUN, send(T0 + 5_000));
+    expect(reduceRun(s, server(T0 + 4_000, r1, true))).toBe(s);
+    expect(reduceRun(s, server(T0 + 5_100, r2, true)).runKey).toBe(runKeyOf(r2));
+  });
+
+  it("working", () => {
+    const w = run(watching(), { type: "stream_end", at: T0 + 2_000, terminal: false }, server(T0 + 2_100, r1));
+    expect(w.phase).toBe("working");
+    expectNewRun(reduceRun(w, server(T0 + 61_000, r2)));
+  });
+
+  it("finishing (a remount that kept R1)", () => {
+    const f = reduceRun(watching(), { type: "remount", at: T0 + 30_000, streamOpen: false });
+    expect(f.phase).toBe("finishing");
+    expectNewRun(reduceRun(f, server(T0 + 61_000, r2)));
+  });
+
+  it("waiting_for_you", () => {
+    const w = run(watching(), { type: "card", at: T0 + 2_000, open: true },
+      { type: "stream_end", at: T0 + 3_000, terminal: false });
+    expect(w.cardOpen).toBe(true);
+    expectNewRun(reduceRun(w, server(T0 + 61_000, r2)));
+  });
+
+  it("parked", () => {
+    const p = reduceRun(watching(), server(T0 + 30_000, { state: "needs_input", live: false }));
+    expect(p.phase).toBe("parked");
+    expect(p.runKey).toBe(`at:${R1_AT}`);
+    expectNewRun(reduceRun(p, server(T0 + 61_000, r2)));
+  });
+
+  it("done, even inside the hold after a terminal event", () => {
+    const d = reduceRun(watching(), { type: "stream_end", at: T0 + 59_000, terminal: true });
+    expectNewRun(reduceRun(d, server(T0 + 61_000, r2)));
+  });
+
+  it("the SAME identity is the same run: its message stays", () => {
+    const w = reduceRun(watching(), { type: "stream_end", at: T0 + 2_000, terminal: false });
+    const back = reduceRun(w, server(T0 + 2_100, r1));
+    expect(back.messageId).toBe("a1");
+    expect(back.staleTail).toBe(false);
+    // A run settled early that the server still lists, long after.
+    const settledEarly = reduceRun(w, server(T0 + 2_100, null));
+    expect(settledEarly.phase).toBe("done");
+    expect(reduceRun(settledEarly, server(T0 + 30_000, r1)).staleTail).toBe(false);
+  });
+
+  it("the attach clears the stale mark", () => {
+    const s = reduceRun(watching(), server(T0 + 61_000, r2));
+    expect(reduceRun(s, { type: "attach", at: T0 + 61_100, messageId: "r2" }).staleTail).toBe(false);
+  });
+
+  it("runKeyOf prefers the run id, then the start time", () => {
+    expect(runKeyOf({ runId: "r-9", startedAt: R1_AT })).toBe("id:r-9");
+    expect(runKeyOf({ startedAt: R1_AT })).toBe(`at:${R1_AT}`);
+    expect(runKeyOf({ state: "needs_input" })).toBeNull();
+    expect(runKeyOf(null)).toBeNull();
   });
 });

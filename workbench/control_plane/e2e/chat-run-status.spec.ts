@@ -202,6 +202,69 @@ test.describe("One predictable run status (§4.10)", () => {
     await expect(page.locator('[data-chat-primary="stop"]')).toHaveCount(0);
   });
 
+  test("(j) reload, switch away, R1 ends and R2 starts elsewhere, then come back", async ({ page }) => {
+    // Re-review of #1171: the kept target of R1 took R2's replay.
+    await install(page);
+    await startRun(page);
+    await page.reload();
+    await expectWorking(page, 30_000);
+    // R1's bubble: its words so far, or its final words once the server's
+    // saved row merges in. Never R2's.
+    const r1 = page.locator("[data-rollup-turn]").filter({ hasText: /Let me get the rest of the tree\.|Here is the full tree/ });
+    await expect(r1).toHaveCount(1, { timeout: 15_000 });
+    // Away: another chat of the same page aborts the re-attach.
+    await page.getByRole("button", { name: /New conversation/ }).click();
+    await page.getByRole("button", { name: /General-purpose AI company brain/i }).click();
+    await page.waitForTimeout(500);
+    // R1 ends, and a phone starts R2 in the same chat.
+    await setSrv(page, { endsAt: Date.now() });
+    await page.waitForTimeout(500);
+    await setSrv(page, { state: "running", endsAt: 0, r2At: Date.now() });
+    await page.evaluate(() => {
+      (window as unknown as { __seen: { working: number } }).__seen.working = 0;
+    });
+    // After the reload the chat's row carries its title. Its bubble is not
+    // on screen now, so the title is the only match.
+    await page.getByText("Plan the release", { exact: true }).first().click();
+    // R2's prompt shows, and R2 streams into a bubble of its own.
+    await expect(page.getByText(R2_PROMPT).first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(R2_HEAD).first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator("[data-rollup-turn]").filter({ hasText: R2_HEAD })).toHaveCount(1);
+    await expect(r1).toHaveCount(1);
+    await expect(r1).not.toContainText(R2_HEAD);
+    await setSrv(page, { endsAt: Date.now() });
+    await expect(page.getByText(R2_REPLY).first()).toBeVisible({ timeout: 15_000 });
+    await expect(r1).not.toContainText(R2_REPLY);
+    await expect(page.locator("[data-rollup-turn]").filter({ hasText: R2_REPLY })).toHaveCount(1);
+  });
+
+  test("(k) on a return, no Stop and no 'working…' before the server lists the run", async ({ page }) => {
+    // Re-review nit: a remount's "checking" offered Stop for one poll.
+    await install(page);
+    await startRun(page);
+    await page.reload();
+    await expectWorking(page, 30_000);
+    await page.getByRole("button", { name: /New conversation/ }).click();
+    await page.getByRole("button", { name: /General-purpose AI company brain/i }).click();
+    await page.waitForTimeout(500);
+    // Record whether Stop ever draws while the run is not listed.
+    await setSrv(page, { endsAt: Date.now() });
+    await page.evaluate(() => {
+      const w = window as unknown as { __stopSeen: number };
+      w.__stopSeen = 0;
+      new MutationObserver(() => {
+        if (document.querySelector('[data-chat-primary="stop"]')) w.__stopSeen++;
+      }).observe(document, { subtree: true, childList: true, attributes: true });
+    });
+    // After the reload the chat's row carries its title. Its bubble is not
+    // on screen now, so the title is the only match.
+    await page.getByText("Plan the release", { exact: true }).first().click();
+    await expect(page.getByRole("textbox", { name: /^Message / })).toBeVisible();
+    await page.waitForTimeout(6_000);
+    expect(await page.evaluate(() => (window as unknown as { __stopSeen: number }).__stopSeen)).toBe(0);
+    await expect(page.getByText("working…")).toHaveCount(0);
+  });
+
   test("(g) a run state shorter than 400 ms flashes no row and no thinking container", async ({ page }) => {
     await install(page);
     const box = await openChat(page);

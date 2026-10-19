@@ -96,6 +96,9 @@ export interface RunStatus {
   changedAt: number;
   /** The assistant message the run streams into, when this tab knows it. */
   messageId: string | null;
+  /** The reply of the last run that ended in this chat. A later run never
+   *  replays into it. */
+  doneMessageId: string | null;
   /** Stream events read in this run. */
   seq: number;
   /** The last stream event, epoch ms. */
@@ -114,6 +117,24 @@ export interface RunStatus {
   attachedAt: number;
   /** A blocking card waits on the member in this chat. */
   cardOpen: boolean;
+  /**
+   * The server's identity of the run: its run id when the row has one, else
+   * its start time (re-review of #1171). A listed run with ANOTHER identity
+   * is a new run in every phase. Null until a server row names it.
+   */
+  runKey: string | null;
+  /**
+   * The server named a run that is NOT the one this chat streamed. A reply
+   * the chat still holds as streaming belongs to the old run, so the attach
+   * settles it and never replays into it.
+   */
+  staleTail: boolean;
+  /**
+   * A mount found a live phase kept in the store, with no stream. The run is
+   * not known to be live: the row says "checking", and the composer offers
+   * no Stop until the server lists the run.
+   */
+  checking: boolean;
 }
 
 export const IDLE_RUN: RunStatus = Object.freeze({
@@ -122,6 +143,7 @@ export const IDLE_RUN: RunStatus = Object.freeze({
   startedAt: null,
   changedAt: 0,
   messageId: null,
+  doneMessageId: null,
   seq: 0,
   lastEventAt: 0,
   serverSeenAt: 0,
@@ -131,6 +153,9 @@ export const IDLE_RUN: RunStatus = Object.freeze({
   attach: false,
   attachedAt: 0,
   cardOpen: false,
+  runKey: null,
+  staleTail: false,
+  checking: false,
 }) as RunStatus;
 
 /** One server row, as `lib/liveRuns.ts` reads it. */
@@ -141,6 +166,8 @@ export interface ServerRun {
   live?: boolean;
   lastStep?: string | null;
   startedAt?: string | null;
+  /** The run's id, from a gateway that sends one. */
+  runId?: string | null;
 }
 
 export type RunEvent =
@@ -172,13 +199,35 @@ export type RunEvent =
   | { type: "tick"; at: number; streamOpen: boolean };
 
 function to(s: RunStatus, phase: RunPhase, at: number, extra: Partial<RunStatus> = {}): RunStatus {
-  return { ...s, ...extra, phase, changedAt: phase === s.phase ? s.changedAt : at };
+  const next = { ...s, ...extra, phase, changedAt: phase === s.phase ? s.changedAt : at };
+  // "Checking" lasts only while a remount waits in `finishing`.
+  if (phase !== "finishing" && next.checking) next.checking = false;
+  return next;
+}
+
+/** The server's identity of a run: its id, else its start time, else null. */
+export function runKeyOf(run: ServerRun | null | undefined): string | null {
+  if (!run) return null;
+  const id = typeof run.runId === "string" ? run.runId.trim() : "";
+  if (id) return `id:${id}`;
+  const t = typeof run.startedAt === "string" ? run.startedAt.trim() : "";
+  return t ? `at:${t}` : null;
+}
+
+/**
+ * What a composer may offer: Stop and "working…" (owner nit on #1171). A
+ * remount's "checking" offers neither until the server lists the run.
+ */
+export function isRunActiveForUi(s: RunStatus): boolean {
+  return isLivePhase(s.phase) && !s.checking;
 }
 
 /** The end a run settles into: `done` when anything of it arrived. */
 function settled(s: RunStatus, at: number): RunStatus {
-  const seen = s.seq > 0 || s.serverSeenAt > 0 || s.phase === "working" || s.phase === "waiting_for_you";
-  return to(s, seen ? "done" : "idle", at, { step: null, attach: false, serverGoneAt: 0 });
+  const seen = s.seq > 0 || s.serverSeenAt > 0 || s.checking || s.phase === "working" || s.phase === "waiting_for_you";
+  return to(s, seen ? "done" : "idle", at, {
+    step: null, attach: false, serverGoneAt: 0, doneMessageId: s.messageId ?? s.doneMessageId,
+  });
 }
 
 function parseTime(v: string | null | undefined): number | null {
@@ -204,6 +253,9 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
         lastEventAt: e.at,
         attachedAt: e.at,
         cardOpen: s.cardOpen,
+        doneMessageId: s.doneMessageId,
+        // The new run's identity binds from the first server row after it.
+        runKey: null,
       };
 
     case "attach": {
@@ -219,6 +271,7 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
         step: live ? s.step : null,
         seq: live ? s.seq : 0,
         terminalAt: 0,
+        staleTail: false,
       });
     }
 
@@ -243,7 +296,9 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
     case "stream_end":
       if (e.terminal) {
         if (!isLivePhase(s.phase) && s.phase !== "parked") return { ...s, terminalAt: e.at, attach: false };
-        return to(s, "done", e.at, { step: null, terminalAt: e.at, attach: false, cardOpen: false });
+        return to(s, "done", e.at, {
+          step: null, terminalAt: e.at, attach: false, cardOpen: false, doneMessageId: s.messageId ?? s.doneMessageId,
+        });
       }
       // No terminal event: the proxy's budget, a restart, a lost network.
       // The run may go on. The server answers that, not the closed stream.
@@ -251,7 +306,9 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
       return to(s, "finishing", e.at, { attach: false });
 
     case "failed":
-      return to(s, "failed", e.at, { step: null, terminalAt: e.at, attach: false });
+      return to(s, "failed", e.at, {
+        step: null, terminalAt: e.at, attach: false, doneMessageId: s.messageId ?? s.doneMessageId,
+      });
 
     case "abandon":
       // A send the server never took: no run, and nothing to report.
@@ -259,7 +316,9 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
       return to(s, "idle", e.at, { step: null, attach: false, startedAt: null });
 
     case "stop":
-      return to(s, "stopped", e.at, { step: null, stoppedAt: e.at, attach: false, cardOpen: false });
+      return to(s, "stopped", e.at, {
+        step: null, stoppedAt: e.at, attach: false, cardOpen: false, doneMessageId: s.messageId ?? s.doneMessageId,
+      });
 
     case "attach_skipped":
       // `attachedAt` stays, so the next list asks again at once.
@@ -267,12 +326,17 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
 
     case "remount": {
       if (e.streamOpen) return s;
-      // No stream reads now, so a re-attach may start at once.
-      const base = s.attachedAt === 0 ? s : { ...s, attachedAt: 0 };
+      // No stream reads now, so a re-attach may start at once. And no kept
+      // target is trusted: the run may have ended, and another may have
+      // started, while the chat was away (re-review of #1171). The attach
+      // finds the target again, by the server's rows.
+      const base = s.attachedAt === 0 && s.messageId === null && s.seq === 0 && s.step === null
+        ? s
+        : { ...s, attachedAt: 0, messageId: null, seq: 0, step: null };
       // A live phase kept from before an unmount is not known to be live.
       // "Checking" until the server answers.
-      if (!(s.phase === "working" || s.phase === "starting" || s.phase === "waiting_for_you")) return base;
-      return to(base, "finishing", e.at, { attach: false });
+      if (!(s.phase === "working" || s.phase === "starting" || s.phase === "waiting_for_you" || s.phase === "finishing")) return base;
+      return to(base, "finishing", e.at, { attach: false, checking: true });
     }
 
     case "card": {
@@ -303,17 +367,31 @@ function reduceServer(
     // A list from before a Stop or a terminal event lags it. Only a list
     // taken well after names a NEW run.
     if (s.phase === "stopped" && at - s.stoppedAt < STOP_HOLD_MS) return s;
-    if ((s.phase === "done" || s.phase === "failed") && at - s.terminalAt < DONE_HOLD_MS) return s;
-    const seen = { serverSeenAt: Math.max(s.serverSeenAt, at), serverGoneAt: 0 };
+    // A list from before this tab's send cannot hold its run.
+    if (s.phase === "starting" && s.startedAt !== null && at < s.startedAt) return s;
+    const key = runKeyOf(run);
+    // ANOTHER identity than the run this chat knows is a new run, in every
+    // phase (re-review of #1171): another tab, a phone or a room member
+    // started it while this chat was away or idle.
+    const other = key !== null && s.runKey !== null && key !== s.runKey;
+    const same = key !== null && key === s.runKey;
+    if (!other && (s.phase === "done" || s.phase === "failed") && at - s.terminalAt < DONE_HOLD_MS) return s;
+    const seen = { serverSeenAt: Math.max(s.serverSeenAt, at), serverGoneAt: 0, runKey: key ?? s.runKey };
     const resting = !isLivePhase(s.phase) && s.phase !== "parked";
-    // A list that names a run while this chat rests names a NEW run: one
-    // started in another tab, on a phone, or by a room member. It gets its
-    // own bubble, so nothing of the last run (its reply, its step, its
-    // start) carries over (review of #1171, P1).
-    const fresh: Partial<RunStatus> = resting
-      ? { messageId: null, step: null, seq: 0, terminalAt: 0, cardOpen: false, startedAt: parseTime(run.startedAt) ?? at }
+    // A list that names a run while this chat rests names a NEW run too,
+    // unless its identity says it is the same one (review of #1171, P1).
+    // A new run gets its own bubble: nothing of the last run (its reply, its
+    // step, its start) carries over.
+    const isNew = other || (resting && !same);
+    const fresh: Partial<RunStatus> = isNew
+      ? {
+        messageId: null, step: null, seq: 0, terminalAt: 0, cardOpen: false,
+        startedAt: parseTime(run.startedAt) ?? at,
+        // The old run's streaming reply, if any, is not this run's.
+        staleTail: other,
+      }
       : {};
-    const startedAt = resting ? fresh.startedAt! : s.startedAt ?? parseTime(run.startedAt) ?? at;
+    const startedAt = isNew ? fresh.startedAt! : s.startedAt ?? parseTime(run.startedAt) ?? at;
     const canAttach = !streamOpen && at - s.attachedAt >= ATTACH_GAP_MS;
     if (run.state === "needs_input") {
       if (run.live === false) {
@@ -322,13 +400,13 @@ function reduceServer(
       }
       return to(s, "waiting_for_you", at, { ...fresh, ...seen, step: null, startedAt, attach: canAttach });
     }
-    const step = run.lastStep?.trim() || (resting ? null : s.step);
-    const phase: RunPhase = s.phase === "waiting_for_you" && s.cardOpen ? "waiting_for_you" : "working";
+    const step = run.lastStep?.trim() || (isNew ? null : s.step);
+    const phase: RunPhase = !isNew && s.phase === "waiting_for_you" && s.cardOpen ? "waiting_for_you" : "working";
     const next = to(s, phase, at, {
       ...fresh,
       ...seen,
       // The stream's own step is fresher than the list's while it reads.
-      step: streamOpen && !resting && s.step ? s.step : step,
+      step: streamOpen && !isNew && s.step ? s.step : step,
       startedAt,
       attach: canAttach,
     });
@@ -358,7 +436,8 @@ function sameRun(a: RunStatus, b: RunStatus): boolean {
     a.phase === b.phase && a.step === b.step && a.startedAt === b.startedAt &&
     a.serverSeenAt === b.serverSeenAt && a.serverGoneAt === b.serverGoneAt &&
     a.attach === b.attach && a.seq === b.seq && a.terminalAt === b.terminalAt &&
-    a.messageId === b.messageId && a.cardOpen === b.cardOpen
+    a.messageId === b.messageId && a.cardOpen === b.cardOpen &&
+    a.runKey === b.runKey && a.staleTail === b.staleTail && a.checking === b.checking
   );
 }
 

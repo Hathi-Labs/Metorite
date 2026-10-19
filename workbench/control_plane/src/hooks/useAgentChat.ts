@@ -36,7 +36,7 @@ import {
 import { isLivePhase, serverHoldsRun, type RunStatus } from "@/lib/runStatus";
 import { stepOfMessage } from "@/lib/runStep";
 import { fetchMessagesFromDb } from "@/lib/sessions";
-import { planReplay } from "@/lib/runReplay";
+import { planReplay, rejectFor } from "@/lib/runReplay";
 import type { ChatMessage, ToolEvent } from "@/lib/chatStore";
 import { activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
 import { emitAgentEvent } from "@/lib/agentEvents";
@@ -76,8 +76,14 @@ import { isQuietArtifact } from "@/lib/artifactCards";
 // Re-export types for backward compatibility with AgentChat.tsx imports.
 export type { ChatMessage, ToolEvent };
 
-// The threads with a re-attach in flight, so two never race (one per tab).
-const _attaching = new Set<string>();
+// The re-attach in flight per thread, by its controller, so two never race
+// (one per tab). An entry whose controller was aborted is free: an aborted
+// read may never settle, and it must not block every later attach.
+const _attaching = new Map<string, AbortController>();
+const attachBusy = (threadId: string): boolean => {
+  const c = _attaching.get(threadId);
+  return !!c && !c.signal.aborted;
+};
 
 // HITL control events drive the inline ElicitationCard / ConfirmationCard — they
 // are interaction signals, not data to display in the generic "Interactive view"
@@ -976,14 +982,14 @@ export function useAgentChat({
     // replay beside it would only rebuild what it draws. Another attach may
     // hold the thread too. Either way the run state hears it, so the next
     // server list asks again (review of #1171, P2).
-    if (st0.abortController || _attaching.has(threadId)) {
+    if (st0.abortController || attachBusy(threadId)) {
       dispatchRun(threadId, { type: "attach_skipped", at: Date.now() });
       return;
     }
-    _attaching.add(threadId);
+    _attaching.set(threadId, abortCtrl);
     attachCtrlsRef.current.add(abortCtrl);
     const release = () => {
-      _attaching.delete(threadId);
+      if (_attaching.get(threadId) === abortCtrl) _attaching.delete(threadId);
       attachCtrlsRef.current.delete(abortCtrl);
     };
 
@@ -997,7 +1003,19 @@ export function useAgentChat({
     const known = st0.run.messageId
       ? st0.messages.find((m) => m.id === st0.run.messageId && m.role === "assistant")
       : undefined;
-    let target = known ?? (isInterruptedReply(last) ? last : undefined);
+    // The server named ANOTHER run than the one this chat streamed (its
+    // identity differs, re-review of #1171). A reply still marked streaming
+    // is the old run's: it settles, and the new run never replays into it.
+    const stale = st0.run.staleTail;
+    if (stale) {
+      setSessionState(threadId, (prev) => ({
+        ...prev,
+        messages: prev.messages.map((m) => (m.role === "assistant" && m.streaming
+          ? { ...m, streaming: false, isThinkingActive: false }
+          : m)),
+      }));
+    }
+    let target = known ?? (!stale && isInterruptedReply(last) ? last : undefined);
     if (!target) {
       // The server saved the run's rows under THEIR ids: the member's turn
       // at run start (WS-51 S4), and the reply at each checkpoint of
@@ -1006,10 +1024,12 @@ export function useAgentChat({
       const saved = ((await fetchMessagesFromDb(threadId).catch(() => [])) as ChatMessage[])
         .filter((m) => !isSuperseded(threadId, m.id) && !(m.role === "system" && m.content?.startsWith("__ERROR__")));
       if (!isCancelled()) {
-        const plan = planReplay(saved, getSessionState(threadId).messages);
+        const reject = (shown: ChatMessage[]) => rejectFor(shown, st0.run.doneMessageId, stale);
+        const now = getSessionState(threadId).messages;
+        const plan = planReplay(saved, now, reject(now));
         if (plan.target) target = plan.target;
         setSessionState(threadId, (prev) => {
-          const add = planReplay(saved, prev.messages);
+          const add = planReplay(saved, prev.messages, reject(prev.messages));
           const t = add.target && !prev.messages.some((m) => m.id === add.target!.id) ? [add.target] : [];
           const rows = [...add.missing, ...t];
           return rows.length ? { ...prev, messages: [...prev.messages, ...rows] } : prev;
@@ -1253,7 +1273,7 @@ export function useAgentChat({
     } catch {
       // Reconnect failed (network error, timeout, etc.) — polling handles it.
     } finally {
-      _attaching.delete(threadId);
+      if (_attaching.get(threadId) === abortCtrl) _attaching.delete(threadId);
       attachCtrlsRef.current.delete(abortCtrl);
       // Release replay ownership iff we still hold it (a newer loop that
       // superseded us keeps its own claim).
