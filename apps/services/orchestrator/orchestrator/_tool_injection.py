@@ -1527,7 +1527,8 @@ async def _add_crm_facts_block(
 ) -> frozenset[str]:
     """Add the CRM facts block to a run that holds a CRM tool (WS-53
     CRM-Q32-5, ``crm_platform.md`` §18.14.4): the answered facts of the money
-    modules and of the stages, at most 12 lines, at the END of the prompt,
+    modules and of the stages, at most 13 lines with the CRM routing line
+    (``org_facts_tools.CRM_ROUTING_LINE``), at the END of the prompt,
     so the stable prefix stays byte-stable.
 
     It reads ``GET /org/facts?app=crm`` as the run's member

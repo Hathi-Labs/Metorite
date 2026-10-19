@@ -1,6 +1,11 @@
 # WhatsApp assistant channel — a member chats with Metorite from their own WhatsApp
 
-**Status:** WAC-10h built (2026-10-19, owner directive): charts and the AI's
+**Status:** WAC-P1 built (2026-10-19, owner directive): channel parity. A
+WhatsApp run now gets each context block and each CRM line of a web run. A
+DEWiN billing question had gone to document search, not to the CRM (§17).
+WAC-P2 to WAC-P5 are open (§17.3).
+
+WAC-10h built (2026-10-19, owner directive): charts and the AI's
 words use lakh and crore by default. An org or a member may choose million and
 billion (§13.10).
 
@@ -737,6 +742,8 @@ Every ticket ships dark behind `WHATSAPP_ASSISTANT_ENABLED` (default OFF) and
 | **WAC-10g** ✅ built 2026-10-11 | The same charts live in the web chat (§13.9): a `chart` template with a tooltip and a legend, and `barChart` through the same engine | AGENT-SAFE | §13.9, G1 to G5. Fence: `src/components/LiveChart.test.ts` |
 | **WAC-13** ✅ built 2026-10-15 | "Metorite is updating" (§16): a message that meets a restart or an outage of the AI path waits, the member hears so once, and the bot answers it when Metorite is back | AGENT-SAFE | §16.6, U1 to U7. Fences: `tests/unit/test_wac_updating.py`, `tests/unit/test_wac_bot_run_r8.py` |
 | **WAC-12** ✅ live 2026-10-15 | A PDF document from WhatsApp (§15): a deck or a report, laid out from the org's own data, sent as a file that the member can forward | AGENT-SAFE. Ships dark behind `WHATSAPP_DOCUMENTS` | §15.6, D1 to D8. Fences: `tests/unit/test_wac_documents.py`, `tests/unit/test_pdf_render.py` |
+| **WAC-P1** ✅ built 2026-10-19 | Channel parity (§17): the batch path gets the per-turn blocks of the web path, the CRM facts block routes business figures to the CRM, and `WHATSAPP_FORMS` maps each delivery tool | AGENT-SAFE | §17.4, P1 to P5. Fence: `tests/unit/test_wac_channel_parity.py` |
+| **WAC-P2 to WAC-P5** | The open parity defects of §17.3: pre-read memory, MCP servers, the card after an untrusted answer, and a file that is not a PDF | AGENT-SAFE to build. WAC-P2 needs a tenancy review, and WAC-P4 a security review | §17.3 |
 | **WAC-10b** (was WAC-10) | Native UI, part 1 (§5.11): the org switcher. §12 built the rest | AGENT-SAFE | "What is due today?" returns a list message, and a tap on a row returns that task. A member of two orgs switches orgs with the list, and the next answer comes from the new org. A row id for an org the sender has no link to changes nothing |
 | **WAC-11** | Native UI, part 2: the "New task" Flow and its endpoint (§5.11) | AGENT-SAFE to build, **OWNER-GATE** for the endpoint key on the box | The Flow opens from a button, lists the member's own projects, and its submit writes exactly one task in the current org. A Flow token from another phone writes nothing |
 
@@ -774,6 +781,7 @@ manual step, and its evidence is the reply on the phone plus the run log line.
 | A link code is single-use and expires | Tests for reuse and expiry (WAC-1, WAC-2) |
 | The bot path fails closed with no app secret | A test with `WHATSAPP_APP_SECRET` unset (WAC-2) |
 | No class C or class X act runs from WhatsApp | A structural test over every class C tool, with writes on (WAC-4, W5) |
+| A WhatsApp run gets each tool, context block and prompt line of a web run, except the delivery tools of `WHATSAPP_FORMS` and the open gaps of §17.3 | `tests/unit/test_wac_channel_parity.py` (WAC-P1, §17.4) |
 | The bot refuses open-domain questions | **Advisory.** The instruction text carries the rule, and an eval case checks it. No unit test can prove a model's refusal |
 
 ---
@@ -865,7 +873,10 @@ things for each agent of the run:
    discipline block.
    ⚠️ **The rule (owner, 2026-10-10):** the channel changes delivery, never
    function. A tool that does something (search, diagnose, build, configure,
-   delegate) stays on WhatsApp, because a member may need it there. The
+   delegate) stays on WhatsApp, because a member may need it there. The rule
+   covers each context block and each line of guidance too (owner,
+   2026-10-19, §17). `WHATSAPP_FORMS` gives each withheld tool its WhatsApp
+   form. The
    fence asserts that `web_search`, `get_errors`, `app_builder` and
    `spawn_copilot_agent` stay. The D85 shell block still applies on top.
    We measured the real `orchestrator` on 2026-10-10. A web run sends 39
@@ -1785,3 +1796,106 @@ each one:
 | U5 | A later answer never closes a held message. Only the first hold gives back the try, so a message that fails each time ends after 3 tries with the general text once | `test_wac_updating.py`, R8 |
 | U6 | A held message past 24 hours expires with no send. An org that the sweep skips gets the plain text and no hold | R8, `test_wac_updating.py` |
 | U7 | At shutdown, a run that waits on the model sends `REPLY_UPDATING_HOLD` with its org bound, and the shutdown stays bounded | `test_wac_updating.py` |
+
+---
+
+## 17. Amendment of 2026-10-19: channel parity (WAC-P1)
+
+**The owner's ask (2026-10-19).** Make the WhatsApp chat and the web chat
+of Metorite the same in function. Respect what each one can show (AG-UI).
+
+**The rule, restated.** A channel changes delivery, never function (owner,
+2026-10-10). A WhatsApp run loses only the web DELIVERY tools and the web
+prompt blocks that go with them. Each delivery tool has a WhatsApp form, or
+"none" with a reason, in `whatsapp_ui.WHATSAPP_FORMS`. Everything else that
+reaches a web run reaches a WhatsApp run: each tool, each context block and
+each line of routing guidance.
+
+### 17.1 The defect (production, 2026-10-18)
+
+A DEWiN member asked on WhatsApp for the IP billing of the Mumbai circle for
+September. Run `9a78eeab` held `crm_aggregate` (48 tools) and the CRM facts
+block (26 facts). It called `search_company` twice and answered "the company
+records hold nothing". The answer was a `crm_aggregate` on the Invoices
+module.
+
+Look at 4 days of logs for the orchestrator of this org. On the web
+it made about 250 CRM calls and 8 `search_company` calls. On WhatsApp it made
+6 CRM calls and 51 `search_company` calls.
+
+**The CRM reads were in both tool sets.** The WhatsApp run logged the CRM
+facts block, and only a run that holds a CRM tool gets it. A web run holds 58
+tools and a WhatsApp run 48. The 10 withheld delivery tools are 10 of the 11
+web-only tools, and `whatsapp_ui` is the one WhatsApp-only tool. The 11th is
+most likely `crm_answer_question` (§17.2). The causes were in the prompt:
+
+1. **The batch path dropped four context blocks.** `bot_run` runs the batch
+   executor. Its `_run_with_maf_agent` built the system message from the
+   scope rule and the integrations only. The web run got four more:
+   the org name, the Knowledge index, the memory and the number-system line
+   of §13.10. A WhatsApp run got none of them. The fix calls the one builder
+   of the web path, `_context_preamble_parts`.
+2. **No line sent business figures to the CRM.** The persona's rule 1 sends
+   a company question to `search_company` first. That search finds
+   documents. The WhatsApp scope rule named tasks, projects and the calendar
+   only. The fix adds `CRM_ROUTING_LINE` as the second line of the CRM facts
+   block. The scope rule now names email and the CRM too. Only an org whose
+   CRM holds answered facts gets the block. So the line never sends an org
+   with no CRM to the CRM.
+
+### 17.2 The parity table
+
+| Element | Web chat | WhatsApp | Status |
+|---|---|---|---|
+| CRM reads and `org_facts` | Held | Held | Parity. Fenced |
+| `crm_answer_question`, the reply to a CRM question | Held, for the card | Held on `CRM_ANSWER_FIRST_ORGS` only, for the text follow-up | Delivery. The form ships dark with CRM-Q33 |
+| Core tools, specialists, `search_company`, memory tools | Held | Held | Parity. Fenced |
+| CRM facts block and its routing line | In the prompt | In the prompt | Parity. The routing line is new |
+| Org name, Knowledge index, number-system line | Per-turn context | Per-turn context | Fixed 2026-10-19. Fenced |
+| House voice | Yes | Yes | Parity |
+| Answer check (CRM-Q29) | Yes | Yes | Parity. The mode reads the held tools, never the channel |
+| Model tier (`ai_route`) | Yes | Yes | Parity |
+| Business rules and member preferences (CRM-Q33) | Through the CRM tools and the facts | The same | Parity |
+| CRM-Q33 note "How I got this" | A stream event | `bot_run` adds it to the reply | Parity, in each form |
+| CRM-Q33 follow-up question | A question card | Numbered text that the gateway matches (`text_asks`) | Delivery |
+| Date and time line | None | None | Parity. Neither run carries one |
+| Pre-read memory (Mem0, room, preferences, agent, org) | The chat route adds it | None. `remember()` works | Open: WAC-P2 |
+| The org's MCP servers | Added to the run | None | Open: WAC-P3 |
+| Generative UI card | `emit_generative_ui` | `whatsapp_ui` PNG kinds, buttons, list and link | Delivery. Built (§12, §13) |
+| Question or choice card | `ask_questions` | Buttons or a list, and a tap returns as text | Delivery. Built (§12.4) |
+| Confirm card for a WhatsApp act | A card | Confirm and Cancel buttons that code builds | Delivery. Built (WAC-4, §14) |
+| Confirm card after an untrusted answer | A card | None: the call is refused | Open: WAC-P4 |
+| Chart | A live chart | A PNG from the chart engine | Delivery. Built (§13.8) |
+| Table | A card | A PNG, or a monospace block for a few short rows | Delivery. Built |
+| Stat dashboard | A card | Stats tiles as a PNG | Delivery. Built (§13) |
+| Report or deck | A PDF card | A PDF document | Delivery. Built (WAC-12, §15) |
+| Another file (CSV, image, zip) | A download card | None | Open: WAC-P5 |
+| A page of the app | A link | A link button to `app.metorite.com` | Delivery. Built |
+| Todo panel | A panel | None. A long job sends a "working" line first | Delivery |
+| Background run | Posts into the thread | None. One reply a message | Delivery |
+| An upload (image, document) | `read_attachment` | None. The bot reads text and taps | Open: WAC-5 |
+
+### 17.3 The open defects
+
+| Id | Defect | Size |
+|---|---|---|
+| WAC-P2 | The web chat route reads the memory blocks into the turn. `bot_run` does not. Move the block builder out of `routes/agent.py` into one function, and call it from `bot_run` as the link's member, in the link's org | M. It touches the memory clearance, so it needs a tenancy review |
+| WAC-P3 | The batch path adds no MCP server. A read tool of the org's MCP server works on the web only | M. The batch path must open and close each server, as the stream path does |
+| WAC-P4 | After the email assistant answers once, the thread is marked for 400 days (EM-G11d). Each later egress call then needs the member's card, the email assistant itself included. WhatsApp shows no card, so the call is refused (`no_card_channel`). The model then says "the email search failed". This org saw it 6 times in 4 days | M. A WhatsApp form of that card, as a WAC-4 act with Confirm and Cancel. It is a security control, so it needs a security review |
+| WAC-P5 | A file that is not a PDF has no WhatsApp form | S to M. Send it as a WhatsApp document, with a size cap |
+
+### 17.4 Acceptance (WAC-P1) and the fence
+
+| # | Done when |
+|---|---|
+| P1 | A WhatsApp run of a CRM member holds `crm_aggregate`, `org_facts` and the CRM facts block with its routing line |
+| P2 | A member with no CRM fact holds no `org_facts` and no block on either channel. An org with the `crm` skill off holds no CRM read on either channel |
+| P3 | The tools of a WhatsApp run differ from a web run only by `WITHHELD_TOOLS` and `whatsapp_ui`. Each withheld tool has its form in `WHATSAPP_FORMS` |
+| P4 | The prompts differ only by the UI directive, the output discipline block and the attachment rule. Each one belongs to a withheld tool |
+| P5 | A WhatsApp turn carries each per-turn block of a web turn: the org name, the Knowledge index, the integrations and the number-system line |
+
+Fence (R7): `tests/unit/test_wac_channel_parity.py`, rule
+`wac-channel-parity`. A tool, a context block or a prompt line that reaches
+one channel and not the other fails it. The exceptions are the delivery tools
+of `WHATSAPP_FORMS` and the open defects of `KNOWN_GAPS`. A ratchet test fails
+when a gap closes, so its entry and its row in §17.3 leave in the same change.
