@@ -17,6 +17,14 @@ A chunk's ``content_sha`` is the hash of its heading path and its text. The
 indexer keeps a row whose sha is still there, and so a one-word edit costs
 one embedding call, not thirty. Two parts of one page with the same sha are
 one chunk.
+
+The stored forms of KB-2p (``knowledge_base.md`` §21.7) are HTML fragments
+in the Markdown body: a text colour, a highlight, ``sup`` and ``sub``, a
+status badge, a date, and the ``data-type`` blocks (columns, subpages, a
+page break). :func:`strip_stored_forms` takes their tags off before the
+split and keeps their text. It strips nothing else, so a ``<details>``
+toggle, an aligned paragraph, an HTML table and every other raw HTML keep
+their bytes and their ``content_sha``.
 """
 
 from __future__ import annotations
@@ -86,6 +94,180 @@ def content_sha(heading_path: str | None, raw: str) -> str:
     """The hash of a chunk: its heading path and its text."""
     payload = f"{heading_path or ''}\n{raw}".encode("utf-8", "replace")
     return hashlib.sha256(payload).hexdigest()
+
+
+# ── The stored forms of KB-2p ───────────────────────────────────────────────
+
+#: A colour value the editor writes: a name of its list, or a hex colour.
+_COLOR = r'(?:[a-z]{3,10}|#[0-9a-fA-F]{6}|#[0-9a-fA-F]{3})'
+
+#: The inline open tags of the stored forms, each one exact (§21.7).
+_INLINE_OPEN = re.compile(
+    r'<span data-color="' + _COLOR + r'">'
+    r'|<mark data-color="' + _COLOR + r'">'
+    r'|<sup>|<sub>'
+    r'|<span data-type="status" data-color="[a-z]{3,10}">'
+    r'|<time data-type="date" datetime="\d{4}-\d{2}-\d{2}">'
+)
+
+#: Any open or close tag of the four inline names. A raw tag of one of these
+#: names still counts, so that its close tag pairs with it and not with ours.
+_INLINE_TAG = re.compile(r"<(/?)(span|mark|sup|sub|time)\b[^<>]*>", re.I)
+
+#: The quote marks and the indent before a block in a callout, a quote or a
+#: list item, then the rest of the line.
+_PREFIX = re.compile(r"^((?:[ \t]*>)*[ \t]*)(.*)$")
+
+#: The block forms on one line: a subpages list and a page break.
+_BLOCK_LINE = re.compile(
+    r'(?:<div data-type="subpages" data-order="(?:manual|title|recent)"></div>'
+    r'|<div data-type="page-break"></div>)[ \t]*'
+)
+
+#: The open line of columns or of one column, and a close line.
+_DIV_OPEN = re.compile(r'<div data-type="(?:columns" data-count="[2-5]|column)">[ \t]*')
+_DIV_CLOSE = re.compile(r"</div>[ \t]*")
+_DIV_TAG = re.compile(r"<(/?)div\b[^<>]*>", re.I)
+_CODE_RUN = re.compile(r"`+")
+
+
+def _bare(line: str) -> str:
+    """A line with its block tag taken off: the quote marks stay."""
+    match = _PREFIX.match(line)
+    return match.group(1).rstrip() if match else ""
+
+
+def _rest(line: str) -> str:
+    """A line after its quote marks and its indent."""
+    match = _PREFIX.match(line)
+    return match.group(2) if match else line
+
+
+def _code_spans(text: str) -> list[tuple[int, int]]:
+    """The ``(start, end)`` of each code span in *text*, as CommonMark reads them."""
+    spans: list[tuple[int, int]] = []
+    pos = 0
+    while True:
+        opened = _CODE_RUN.search(text, pos)
+        if not opened:
+            return spans
+        fence = opened.group(0)
+        close = re.compile(r"(?<!`)" + fence + r"(?!`)").search(text, opened.end())
+        if not close:
+            pos = opened.end()
+            continue
+        spans.append((opened.start(), close.end()))
+        pos = close.end()
+
+
+def _strip_inline(text: str) -> str:
+    """The inline stored forms of one paragraph, without their tags.
+
+    Each tag pairs with the close tag of its own name, past any raw tag of
+    that name. Only a pair whose open tag is an exact stored form loses its
+    tags. A tag inside a code span is code, and it stays.
+    """
+    if "<" not in text:
+        return text
+    spans = _code_spans(text)
+    stacks: dict[str, list[tuple[int, int, bool]]] = {}
+    cut: list[tuple[int, int]] = []
+    for m in _INLINE_TAG.finditer(text):
+        if any(start <= m.start() < end for start, end in spans):
+            continue
+        name = m.group(2).lower()
+        stack = stacks.setdefault(name, [])
+        if not m.group(1):
+            stack.append((m.start(), m.end(), bool(_INLINE_OPEN.fullmatch(m.group(0)))))
+        elif stack:
+            start, end, ours = stack.pop()
+            if ours:
+                cut.extend([(start, end), (m.start(), m.end())])
+    if not cut:
+        return text
+    out: list[str] = []
+    pos = 0
+    for start, end in sorted(cut):
+        out.append(text[pos:start])
+        pos = end
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def _fenced_lines(lines: list[str]) -> list[bool]:
+    """For each line: True when it is a fence line or inside a code fence."""
+    fenced = [False] * len(lines)
+    fence: str | None = None
+    for i, line in enumerate(lines):
+        opened = _FENCE.match(line)
+        if fence is None and opened:
+            fence = opened.group(1)
+            fenced[i] = True
+        elif fence is not None:
+            fenced[i] = True
+            if line.strip().startswith(fence):
+                fence = None
+    return fenced
+
+
+def _strip_blocks(lines: list[str], fenced: list[bool]) -> None:
+    """Empty the tag lines of the block forms, in place.
+
+    A ``<div>`` line pushes and a ``</div>`` line pops. A pair whose open
+    line is a stored form loses the tags of both lines, and the quote marks
+    in front stay. A raw ``<div>`` pushes a mark of its own, so its close
+    tag pairs with it.
+    """
+    stack: list[int | None] = []
+    for i, line in enumerate(lines):
+        rest = "" if fenced[i] else _rest(line)
+        if _BLOCK_LINE.fullmatch(rest):
+            lines[i] = _bare(line)
+        elif _DIV_OPEN.fullmatch(rest):
+            stack.append(i)
+        elif _DIV_CLOSE.fullmatch(rest):
+            opened_at = stack.pop() if stack else None
+            if opened_at is not None:
+                lines[opened_at] = _bare(lines[opened_at])
+                lines[i] = _bare(line)
+        elif rest.lower().startswith(("<div", "</div")):
+            for tag in _DIV_TAG.finditer(rest):
+                if not tag.group(1):
+                    stack.append(None)
+                elif stack:
+                    stack.pop()
+
+
+def strip_stored_forms(body_md: str) -> str:
+    """The body with the tags of each KB-2p stored form taken off.
+
+    The text stays, and so do the lines: a block tag's line becomes empty,
+    so it parts paragraphs as a blank line does. Code fences and code spans
+    are code, and stay byte for byte. Nothing else changes.
+    """
+    if "<" not in (body_md or ""):
+        return body_md or ""
+    lines = body_md.splitlines()
+    fenced = _fenced_lines(lines)
+    _strip_blocks(lines, fenced)
+
+    # Inline forms, one paragraph at a time.
+    out: list[str] = []
+    para: list[str] = []
+
+    def flush() -> None:
+        if para:
+            out.extend(_strip_inline("\n".join(para)).split("\n"))
+            para.clear()
+
+    for i, line in enumerate(lines):
+        if fenced[i] or not line.strip():
+            flush()
+            out.append(line)
+        else:
+            para.append(line)
+    flush()
+    return "\n".join(out)
 
 
 # ── Parsing ─────────────────────────────────────────────────────────────────
@@ -242,7 +424,7 @@ def chunk_page(
         out.append(Chunk(ordinal=len(out), heading_path=heading_path, raw=raw,
                          content_sha=sha, metadata=metadata))
 
-    for section in _sections(title, body_md):
+    for section in _sections(title, strip_stored_forms(body_md)):
         paragraphs: list[str] = []
         for kind, lines in _blocks(section.lines):
             if kind == "table":
