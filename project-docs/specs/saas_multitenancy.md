@@ -2567,6 +2567,59 @@ keeps metadata and a pointer; meeting media (already filesystem-backed at
 `95_note_taker.sql:56`) moves to the same store. *Worth doing in any tenancy model — a
 BYTEA column is the wrong home for file content in any topology.*
 
+**Inventory of 2026-10-20 — where file bytes live today.** Owner ask of
+2026-10-20: "if we are improperly using Postgres and should be instead using
+object storage, just note that in our documentation so that we can pick that
+up later." This inventory widens the scope of MT-1g. It is read from `main` at
+`945a782e6`. Nothing here is built.
+
+**The rule this ticket applies.** Postgres keeps rows that a query reads: ids,
+metadata, text that search or an agent reads, and a pointer. Object storage
+keeps file bytes that no SQL predicate reads: uploads, generated files, media
+and bundles. The local disk of the box is a cache, never the only copy.
+
+| Class | Store | What it holds | Bound | Where |
+|---|---|---|---|---|
+| **A. File bytes in Postgres** | `agent_blob.content` (BYTEA, the only app BYTEA column) | Agent `inputs/`, `outputs/` and `agent-data/` files, every artifact of WS-60 | Upload 25 MB. `write_artifact` has no cap | `71_agent_blob_store.sql:30`. Read at each run start by `rehydrate_workspace` (`executor.py`), and by `workspace._faultin_from_store` |
+| **B. Disk is the only copy** | `attachments.path` | Task and project files, and résumés | 15 MB a file, 10 MB a task | `data/gtd_attachments` (`52_gtd_attachments.sql:53`) |
+| | `meeting_recording.artifact_path` | Meeting audio | 300 MB a recording | `data/notes_media` (`95_note_taker.sql:56`) |
+| | Project imports | Uploaded import files | 50 MB | `data/project_imports` (`projects/imports.py`). **Not in the off-box backup list** |
+| | Custom App binaries | Binary files of an app workspace (`app_files` keeps text only) | — | `apps_root()`. **Not in the off-box backup list** |
+| | Package zips | Derived zips of a chat's files | 50 MB | Disk only by owner decision, 2026-10-11. A zip can be rebuilt, so it stays out of scope |
+| **C. Large text, stays in Postgres for now** | `email_messages.body_html`, `body_text` | Whole mail bodies | 2 MB and 500 KB | The largest store measured: 124 MB of HTML in 314 MB on 2026-10-07. Search reads the text, so the text stays. The HTML is a candidate. `email_ingestion/html_tier.py` already fetches it from the provider behind `EMAIL_HTML_FROM_PROVIDER` |
+| | `kb_page_versions.body_md` | A full copy of a page for each version | A page is at most 1,000,000 characters. The version count has no bound | Text that history reads. A version cap or a move of old bodies is a later choice |
+| | `app_versions.bundle_html`, `app_files.content` | Published bundles and draft text files of Custom Apps | 5 MB and 2 MB | Candidates once the store exists |
+| **D. Columns that nothing writes** | `wa_media.storage_path`, `email_attachments.storage_path` | Placeholders for "a local or object path once downloaded" | — | WhatsApp media is fetched from Meta and dropped. Mail attachments are fetched from the provider and cached in Redis. These columns are where the store's key goes when a copy is kept |
+
+**What exists to build on.** No app code holds an S3 client today (`boto3`
+comes only through `litellm`). The off-box backup already writes to the
+private Supabase Storage bucket `metorite-backups` through its S3 endpoint
+with `rclone` (HANDOFF H-123, `backup_and_restore.md`). So the natural store is
+Supabase Storage through the S3 protocol, with one bucket for each
+environment. That choice is a recommendation, not a decision.
+
+**The shape to build.** One seam, `acb_common.object_store`, with `put`, `get`,
+`delete` and a short-lived signed URL. Keys are `<organization_id>/<app>/<id>`,
+taken from the bound tenant and never from request input (R5). Each table keeps
+its metadata row and gains a key column, added nullable (R6). A reader tries the
+store, then the old place, until a backfill has moved every row. No second
+store is allowed beside it.
+
+**Order, by risk.**
+
+1. **Class B first.** A file there has one copy, on one box. A disk loss loses
+   it, and two of the five places are not in the off-box backup.
+2. **Class A next.** `agent_blob` holds 2.4 MB today (2026-10-15), but every
+   artifact of WS-60 lands there, and a run start reads every byte of its
+   workspace. Move it before the WS-60 quota (`artifact_management.md` §7.5)
+   lets a member hold gigabytes.
+3. **Class C last, row by row,** once the seam has run for a while.
+
+**New work writes to the store from day one.** The files of Knowledge
+(`knowledge_base.md` KB-2c) and any new upload path must not add a BYTEA
+column or a disk-only path. Until the seam exists, such a slice waits for it,
+or it builds the seam as its first step.
+
 #### MT-1h · Partitioning + per-tenant logical backup · 🟢 AGENT-SAFE
 **Owner:** §1.6
 

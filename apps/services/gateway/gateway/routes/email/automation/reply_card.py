@@ -28,7 +28,7 @@ from email.utils import parseaddr
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from acb_skills.reply_card import clean_reply_body
+from acb_skills.reply_card import MAX_REPLY_BODY, clean_reply_body
 from fastapi import BackgroundTasks, Depends, HTTPException
 from gateway.routes.email.automation.drafting import (
     DraftReplyRequest,
@@ -50,7 +50,7 @@ from gateway.routes.email.transport.send import (
     _as_uuid,
     send_email,
 )
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 
 #: The longest excerpt of the original mail on the card.
@@ -74,12 +74,20 @@ REPLY_CARD_NOT_FOUND = "Message not found"
 
 
 class ReplyCardRequest(BaseModel):
-    """The mail to answer. No recipient and no body: the server derives
-    both (EM-CR)."""
+    """The mail to answer. No recipient: the server derives it (EM-CR).
+
+    ``draft`` is the text that the member and the assistant agreed in the
+    chat. It only fills the card, which shows it in full for the member to
+    edit. The send still takes the body that the MEMBER submitted, so the
+    text of ``draft`` never leaves on its own (``ReplyCardActRequest``)."""
 
     model_config = ConfigDict(extra="forbid")
 
     message_id: str
+    draft: str = Field(default="", max_length=MAX_REPLY_BODY)
+    #: With no ``draft``: the member's steer for the drafter ("say yes to
+    #: Friday"). The card still shows the result in full.
+    instruction: str = Field(default="", max_length=2000)
 
 
 class ReplyCardActRequest(BaseModel):
@@ -238,17 +246,23 @@ class _Mail:
         """What the card must say and never hide (review of #1191, P2 and P1d):
         a Reply that goes to another address than the sender, and the text
         that the send adds after the card."""
-        out: list[str] = []
-        sender = self.sender.lower()
-        if self.reply_to and sender and [a.lower() for a in self.reply_to] != [sender]:
-            out.append(f"Reply goes to {', '.join(self.reply_to)}, not to the sender "
-                       f"{self.sender}.")
+        out = self.reply_to_notices()
         if self.signature.strip():
             out.append("When it goes, your mailbox signature is added below the "
                        "text if the text does not hold it.")
         if self.provider == "microsoft":
             out.append("Outlook adds the email you answer below your reply.")
         return out
+
+    def reply_to_notices(self) -> list[str]:
+        """The line that says a Reply goes to another address than the sender.
+        A Reply-To can send a reply to a stranger, so each card that shows
+        such a reply says it (review of #1191, P2)."""
+        sender = self.sender.lower()
+        if self.reply_to and sender and [a.lower() for a in self.reply_to] != [sender]:
+            return [f"Reply goes to {', '.join(self.reply_to)}, not to the sender "
+                    f"{self.sender}."]
+        return []
 
     def recipients(self, reply_all: bool) -> tuple[list[str], list[str]]:
         return derive_reply_recipients(
@@ -262,6 +276,43 @@ async def _load_mail(message_id: str, owner: str) -> _Mail:
         me = await resolve_self(db, str(row.account_id))
         reply_to = await _read_reply_to(db, owner, row)
     return _Mail(row, me, reply_to)
+
+
+async def reply_recipients(
+    message_id: str, owner: str, *, reply_all: bool = False,
+) -> tuple[list[str], list[str]]:
+    """To and Cc of a reply to *message_id*, by :func:`derive_reply_recipients`.
+
+    Each path that addresses a reply uses it: the reply card, a reply draft
+    that ``/email/draft-reply`` or ``/email/drafts/save`` saves, and a reply
+    that ``send_email`` sends. Before, those took the sender alone, so a
+    reply ignored Reply-To and a nudge on a mail the member sent went to the
+    member."""
+    to, cc, _notices = await reply_recipients_with_notices(
+        message_id, owner, reply_all=reply_all)
+    return to, cc
+
+
+async def reply_recipients_with_notices(
+    message_id: str, owner: str, *, reply_all: bool = False,
+) -> tuple[list[str], list[str], list[str]]:
+    """:func:`reply_recipients` and the Reply-To line that a card must show."""
+    mail = await _load_mail(message_id, owner)
+    to, cc = mail.recipients(reply_all)
+    return to, cc, mail.reply_to_notices()
+
+
+@router.get("/reply-recipients")
+async def reply_recipients_route(
+    message_id: str,
+    reply_all: bool = False,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Who a reply to this mail goes to, and the Reply-To line that the send
+    card must show (review round 1, P2-a). A read: it writes nothing."""
+    to, cc, notices = await reply_recipients_with_notices(
+        message_id, user.email or "anonymous", reply_all=reply_all)
+    return {"to": to, "cc": cc, "notices": notices}
 
 
 @router.post("/reply-card")
@@ -280,17 +331,25 @@ async def reply_card(
     all_to, all_cc = mail.recipients(True)
     if not reply_to:
         raise HTTPException(status_code=422, detail="This mail has no one to reply to.")
-    drafted = await draft_reply_smart(
-        DraftReplyRequest(account_id=mail.account_id, message_id=req.message_id,
-                          create_draft=False),
-        user,
-    )
+    # The chat agreed a text with the member: the card shows that text, and
+    # the drafter does not write a second, different one.
+    agreed = clean_reply_body(strip_placeholder_lines(req.draft))
+    drafted: dict[str, Any] | None = None
+    if not agreed.strip():
+        drafted = await draft_reply_smart(
+            DraftReplyRequest(account_id=mail.account_id, message_id=req.message_id,
+                              create_draft=False, instruction=req.instruction),
+            user,
+        )
     # Review of #1191, P1: no hidden character and no long blank run reaches
     # the card, so the card shows each character that the send can carry.
-    body = clean_reply_body(strip_placeholder_lines(str((drafted or {}).get("draft") or "")))
+    body = agreed if agreed.strip() else clean_reply_body(
+        strip_placeholder_lines(str((drafted or {}).get("draft") or "")))
     return {
         "message_id": str(_as_uuid(req.message_id) or req.message_id),
-        "notices": mail.notices(),
+        # A file the drafter did not read is named, so the member checks the
+        # reply against it (``draft_files``).
+        "notices": [*mail.notices(), *[str(n) for n in (drafted or {}).get("notices") or []]],
         "account_id": mail.account_id,
         "mailbox": mail.mailbox,
         "subject": _reply_subject(mail.subject),

@@ -5961,6 +5961,67 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `deploy/hostinger/staging/README.md`, HANDOFF H-358
 - **Added:** 2026-10-18 · H-358 security review
 
+### H-370 · Set the date the repo takes AGPL-3.0, as ported Docmost code ships · [OWNER]
+- **Check:** the repo root holds a `LICENSE` file that names AGPL-3.0, or the
+  owner has written the date in `work_plan.md` D107. If either holds, delete
+  this entry.
+- **Why.** On 2026-10-19 the owner said the product will release under AGPL
+  and that builders may port Docmost core code (D107). AGPL-3.0 section 13
+  gives each user of a network service the right to the Corresponding Source
+  of the modified AGPL code. That duty starts with the first release that
+  carries a ported file. The repo has no `LICENSE` today.
+- **Decide.** The date of the licence change. On 2026-10-19 the owner ruled
+  that ported code may merge to staging, and that production waits for the
+  owner's test (D107 part 5). The licence date still binds the production
+  release. Ask counsel about the build tooling and the parts of the repo
+  that join the ported code.
+- **Authority:** owner, 2026-10-19. `specs/knowledge_base.md` §21.1
+- **Added:** 2026-10-19
+
+### H-371 · Finish the Docmost parity work of WS-61 (D107, wave 1 of §21.7) · [AGENT]
+- **Check:** `knowledge_base.md` §21.7 shows each wave 1 row as BUILT
+  (KB-2d, KB-2f, KB-2g, KB-2i, KB-2p), and PR #1163 is merged. If both hold,
+  delete this entry.
+- **Why.** On 2026-10-19 the owner asked for the UI to match Docmost as soon
+  as possible, allowed ports of Docmost core code, and ruled: merge to
+  staging first, the owner tests, then production (D107 part 5). Five
+  builders started. None had pushed a slice when the session closed.
+- **State, 2026-10-20.**
+  - **PR #1163** (branch `ws61-docmost-parity`) holds D107, §21.1 and §21.7,
+    `THIRD_PARTY_NOTICES.md` and its test. CI was pending. Merge it first.
+    Another session merged `main` into it and renumbered the licence entry
+    to H-370.
+  - **Builder worktrees** (all `/home/dev/wt-<branch>`): `ws61-kb2d-chrome`,
+    `ws61-kb2f-icons` and `ws61-kb2g-history` hold no pushed commit.
+    `ws61-kb2i-editor-a` holds 2 local commits and uncommitted files.
+    `ws61-kb2p-editor-b` holds 2 local commits and uncommitted files. Read
+    `git log` and `git status` there before you start again. Do not delete
+    them.
+  - **Rules for the builders:** the brief of each is its §21.7 row, the
+    stored-form table and the "Build rules for wave 1" list. Keep out of
+    the hot files. Port core code only, with the `Adapted from Docmost`
+    header and a line in `THIRD_PARTY_NOTICES.md`.
+  - **Release hold.** `RELEASE_HOLD=1` is set. See H-362.
+  - **Migration number.** KB-2f must take the next free number when it
+    builds (R1). 287 and 288 are on `main`, so 289 or later.
+  - **Next after wave 1:** wave 2 of §21.7, then CX-1b and KB-4b.
+- **Authority:** owner, 2026-10-19. `specs/knowledge_base.md` §21.7
+- **Added:** 2026-10-20
+
+### H-362 · Clear RELEASE_HOLD when the owner approves the Knowledge release · [AGENT]
+- **Check:** `gh variable list` shows no `RELEASE_HOLD`. If it shows none,
+  delete this entry.
+- **Why.** On 2026-10-19 the owner asked for staging first for the Docmost
+  parity work (D107 part 5). The agent set `RELEASE_HOLD=1`, which skips the
+  scheduled production release. It also holds every other merge on `main`
+  until the variable is cleared, so do not leave it set.
+- **Do.** When the owner says production may go, run
+  `gh variable delete RELEASE_HOLD`. The next 21:30 UTC release then
+  carries `main`. For an earlier release, dispatch the workflow with a
+  reason, and report the SHA that `GET /version` serves.
+- **Authority:** owner, 2026-10-19. `specs/staging_and_daily_release.md` §4.3
+- **Added:** 2026-10-19
+
 ### H-360 · Widen acb-staging-flag: NEXT_PUBLIC_ rebuilds, a production mode, and an unset that lasts · [AGENT]
 - **Check:** `deploy/hostinger/staging/acb-staging-flag` (or its successor) can set a
   `NEXT_PUBLIC_*` flag on staging and start a rebuild, and can set a flag on
@@ -6072,6 +6133,24 @@ line — never reclaim a number by deleting the other entry.
   owner to try the phone flow on dev.metorite.com.
 - **Authority:** `specs/chat_first_surface.md` §5 and §9
 - **Added:** 2026-10-20 · WS-62 design session
+
+### H-372 · Move file bytes out of Postgres and off the box's disk (MT-1g) · [AGENT] · data
+- **Check:** `git grep -l "object_store" origin/main -- packages/acb_common`
+  prints a file, and `git grep -n "BYTEA" origin/main -- infra/postgres/*.sql`
+  shows `agent_blob.content` dropped or unused. If both hold, delete this entry.
+- **Why:** the owner asked on 2026-10-20 that every place Metorite stores file
+  bytes in Postgres, or keeps the only copy on the box's disk, be written down
+  to pick up later. `saas_multitenancy.md` MT-1g holds the inventory of that
+  day. Task files, meeting audio, project imports and Custom App binaries exist
+  only on one disk, and two of them are outside the off-box backup.
+- **Do this:** build the seam `acb_common.object_store` on the Supabase
+  Storage S3 endpoint that the backup already uses. Then move class B, then
+  `agent_blob`, as the MT-1g inventory orders them. Each move adds a nullable
+  key column, reads the store first and the old place second, and backfills.
+- **Owner input:** confirm Supabase Storage as the store, and one bucket for
+  each environment. The inventory names it as a recommendation only.
+- **Authority:** `specs/saas_multitenancy.md` MT-1g · `specs/backup_and_restore.md`
+- **Added:** 2026-10-20 · artifacts session
 
 # DONE — deleted, not archived
 

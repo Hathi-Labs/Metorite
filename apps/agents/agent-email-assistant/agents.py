@@ -1667,9 +1667,18 @@ async def manage_inbox(
 
 
 @_annotate_risk(open_world=False)
-async def draft_reply(email_id: str, account_id: str, save: bool = False) -> str:
+async def draft_reply(
+    email_id: str, account_id: str, save: bool = False, instruction: str = "",
+) -> str:
     """Draft a context-aware reply to an email. Set save=true to also create a
-    provider draft in the user's Drafts folder, after a card. The draft is
+    provider draft in the user's Drafts folder, after a card.
+
+    ``instruction`` carries what the member wants the reply to say, in the
+    member's words ("accept, but move it to Friday", "shorter"). Always pass
+    it when the member said anything about the content, or the drafter
+    writes from the email alone. To save or send a text that you and the
+    member already agreed, use ``compose_reply`` with ``draft``: this tool
+    writes a new text. The draft is
     always made in the mailbox that received the email, whatever
     ``account_id`` says. Where no card can show, the tool saves nothing and
     returns the draft, which the user saves or sends in the Email app."""
@@ -1710,12 +1719,20 @@ async def draft_reply(email_id: str, account_id: str, save: bool = False) -> str
             return refusal
     res = await _post(
         "/email/draft-reply",
-        {"account_id": account_id, "message_id": email_id, "create_draft": save},
+        {"account_id": account_id, "message_id": email_id, "create_draft": save,
+         **({"instruction": instruction} if (instruction or "").strip() else {})},
     )
     note = unsaved or (" (saved to Drafts)" if res.get("created") else "")
     # The first line names the mailbox. The chat card reads "(mailbox <id>)"
     # from it, so its Save and Send use the mailbox of the mail (EM-T8a).
     sender = await _mailbox_name(account_id) or str(account_id)
+    # The files go in the first line too, because the card edits the rest.
+    # The member then knows which file the draft used, and which it did not.
+    read = [str(n) for n in res.get("files_read") or [] if n]
+    if read:
+        note += f" (used the files: {', '.join(read)})"
+    for line in res.get("notices") or []:
+        note += f" ({' '.join(str(line).split())})"
     return (
         f"Draft from {sender} (mailbox {account_id}){note}:\n\n"
         f"{res.get('draft', '')}"
@@ -1747,6 +1764,25 @@ async def draft_reply(email_id: str, account_id: str, save: bool = False) -> str
 
 #: The answer of a reply card that the member discarded.
 _REPLY_DISCARDED = "Reply discarded and cancelled. Nothing was sent or saved."
+
+#: The answer of a send card that the member wrote over in the chat
+#: (``ask_tools.REVISED``). Their words follow this result.
+_CARD_REVISED = (
+    "The member wrote in the chat while the card was open, so the card is "
+    "closed. Nothing was sent or saved. Read the member's words below. If "
+    "they change this mail, change it, keep every part they did not ask to "
+    "change, and show a new card with the new text. If they ask about "
+    "something else, answer that first, then ask whether to show the card "
+    "again.")
+
+
+def _revised(answer: Any) -> bool:
+    """True when the member wrote over the card (``ask_tools.REVISED``)."""
+    try:
+        from acb_skills.ask_tools import REVISED
+    except ImportError:  # an older platform: no card closes on a steer
+        return False
+    return answer is REVISED
 
 
 def _addr_text(addrs: Any) -> str:
@@ -1790,7 +1826,10 @@ def _reply_title(form: dict[str, Any], reply_all: bool) -> str:
 
 
 @_annotate_risk(destructive=True, open_world=True, card_bound_reply=True)
-async def compose_reply(email_id: str, account_id: str, reply_all: bool = False) -> str:
+async def compose_reply(
+    email_id: str, account_id: str, reply_all: bool = False, draft: str = "",
+    instruction: str = "",
+) -> str:
     """Reply to one email in the chat. The tool drafts the reply and shows the
     member ONE card: the email it answers, who gets the reply, a Reply or
     Reply all toggle, the text to edit, and Send, Save to Drafts and Discard.
@@ -1800,9 +1839,17 @@ async def compose_reply(email_id: str, account_id: str, reply_all: bool = False)
     Set ``reply_all=true`` when the member asked to answer everyone on the
     email. The member can change it on the card. The reply always goes from
     the mailbox that received the email, whatever ``account_id`` says. You
-    choose no recipient and write no text here: the server derives the
-    recipients, and the member edits the text. Where no card can show, the
-    tool drafts, saves and sends nothing."""
+    choose no recipient: the server derives the recipients.
+
+    ``draft`` is the reply text that you and the member already agreed in
+    the chat, or that the request to you contains. Pass it WORD FOR WORD,
+    with its greeting and sign-off. The card then shows that text, and not
+    a new one. Leave ``draft`` empty only when no text exists yet, and the
+    server then writes one from the email. Then put what the member wants the
+    reply to say in ``instruction``, in the member's words ("accept, but move
+    it to Friday"), so the server's text follows it. The card shows the text in full,
+    and the member edits it: nothing leaves until the member presses Send.
+    Where no card can show, the tool drafts, saves and sends nothing."""
     _ = account_id  # the mailbox of the email acts (§11.3 rule 1)
     try:
         from acb_skills import ask_tools
@@ -1810,7 +1857,12 @@ async def compose_reply(email_id: str, account_id: str, reply_all: bool = False)
         return _NO_CARD_CHANNEL
     if not ask_tools.reply_card_channel_open():
         return _NO_CARD_CHANNEL
-    prep = await _post("/email/reply-card", {"message_id": email_id})
+    steer: dict[str, str] = {}
+    if (draft or "").strip():
+        steer["draft"] = draft
+    elif (instruction or "").strip():
+        steer["instruction"] = instruction
+    prep = await _post("/email/reply-card", {"message_id": email_id, **steer})
     form = _reply_form(prep, reply_all)
     answer = await ask_tools.request_confirmation(
         title=_reply_title(form, reply_all),
@@ -1818,6 +1870,8 @@ async def compose_reply(email_id: str, account_id: str, reply_all: bool = False)
             f"From {form['mailbox']} · {form['subject'] or '(no subject)'}", 300),
         reply=form,
     )
+    if answer is ask_tools.REVISED:
+        return _CARD_REVISED
     if not isinstance(answer, ask_tools.ReplyAnswer):
         return _REPLY_DISCARDED if _card_channel_open() else _NO_CARD_CHANNEL
     member = _current_user_email().strip().lower()
@@ -3629,18 +3683,40 @@ def _card_detail(
     return f"{detail}{prefix}{listed}"
 
 
-def _reply_fill(
-    orig: dict[str, Any], to: list[str], subject: str | None,
-) -> tuple[list[str], str | None]:
-    """Fill the missing recipient and subject of a reply from the original."""
+async def _reply_fill(
+    orig: dict[str, Any], email_id: str, to: list[str], cc: list[str],
+    subject: str | None, reply_all: bool,
+) -> tuple[list[str], list[str], str | None, list[str]]:
+    """Fill the missing recipients and subject of a reply from the original.
+
+    The server derives To and Cc by the one rule of the reply card: Reply-To
+    wins, a mail the member sent goes back to its To, and Reply all adds each
+    To and Cc. Before, To was the sender alone, so "nudge Ravi on the quote I
+    sent" went to the member. A fault falls back to the sender.
+
+    The last item is the line that the card must show when the reply goes to
+    a Reply-To, not to the sender: a phishing mail can name a stranger there."""
+    notices: list[str] = []
     if not to:
-        addr = (orig.get("from_address", {}) or {}).get("email", "")
-        if addr:
-            to = [addr]
+        try:
+            got = await _get("/email/reply-recipients",
+                             {"message_id": email_id,
+                              "reply_all": "true" if reply_all else "false"}) or {}
+        except Exception:  # noqa: BLE001 - fall back to the sender
+            got = {}
+        to = [str(a) for a in got.get("to") or [] if a]
+        notices = [" ".join(str(n).split()) for n in got.get("notices") or [] if n]
+        seen = {a.lower() for a in to} | {a.lower() for a in cc}
+        cc = [*cc, *(a for a in (str(x) for x in got.get("cc") or [] if x)
+                     if a.lower() not in seen)]
+        if not to:
+            addr = (orig.get("from_address", {}) or {}).get("email", "")
+            if addr:
+                to = [addr]
     if not subject:
         s = orig.get("subject", "") or ""
         subject = s if s.lower().startswith("re:") else f"Re: {s}"
-    return to, subject
+    return to, cc, subject, notices
 
 
 async def _refuse_reply_mailbox(email_id: str, own: str, named: str) -> str:
@@ -3671,6 +3747,7 @@ async def send_email(
     bcc: list[str] | None = None,
     reply_to_email_id: str | None = None,
     attachments: list[str] | None = None,
+    reply_all: bool = False,
 ) -> str:
     """Send an email immediately — a new message OR a reply. Outward-facing —
     ALWAYS confirm the recipients and body with the user before calling this.
@@ -3702,13 +3779,19 @@ async def send_email(
         subject: subject line — derived as 'Re: …' for a reply if omitted.
         cc / bcc: optional carbon-copy recipients.
         reply_to_email_id: local id of a message this is a reply to (threads it,
-            and derives to/subject when those are omitted).
+            and derives to/subject when those are omitted). The server derives
+            the recipients as the reply card does: Reply-To first, and the To
+            of a mail the member sent.
+        reply_all: with ``reply_to_email_id`` and no ``to``, also reply to
+            each To and Cc of the original. Your ``cc`` adds to that list.
         attachments: workspace artifact paths to attach, e.g.
             ``"outputs/file.pdf"`` (a file you made with write_artifact). Only
             a file in your own workspace can be attached. Use list_artifacts
             to see what's available; write_artifact to create one first.
     """
     to = list(to or [])
+    cc = list(cc or [])
+    reply_notices: list[str] = []
     # Reply mode: the mailbox of the original sends (MB-4). A named mailbox
     # that differs is refused before any card (EM-T8e-2). Then fill the
     # missing recipient and subject from the original message.
@@ -3719,7 +3802,8 @@ async def send_email(
         if own and account_id and own != str(account_id):
             return await _refuse_reply_mailbox(reply_to_email_id, own, str(account_id))
         account_id = own or account_id
-        to, subject = _reply_fill(orig, to, subject)
+        to, cc, subject, reply_notices = await _reply_fill(
+            orig, reply_to_email_id, to, cc, subject, reply_all)
     if not to:
         return "Not sent. No recipient — pass `to`, or `reply_to_email_id` to reply."
     subject = subject or ""
@@ -3756,7 +3840,7 @@ async def send_email(
     # "Send cancelled" instead of a silent send.
     from acb_skills.ask_tools import request_confirmation  # noqa: PLC0415
     verb = "reply" if reply_to_email_id else "email"
-    if not await request_confirmation(
+    approved = await request_confirmation(
         title=f"Send this {verb}?",
         # A mail body can ask the model to add a hidden recipient or a file.
         # Each target sits in ``context``, which no subject and no file name
@@ -3773,10 +3857,14 @@ async def send_email(
                 # A workspace path keeps its extension when it is long.
                 files=[(_card_file_name(r.get("path", ""), _CARD_PATH_LIMIT), "")
                        for r in refs] if refs else None,
-            ),
+            ) + "".join(f"\n{n}" for n in reply_notices),
             body,
         ),
-    ):
+        close_on_steer=True,
+    )
+    if not approved:
+        if _revised(approved):
+            return _CARD_REVISED
         if not _card_channel_open():
             return _NO_CARD_CHANNEL
         return f"Send cancelled — the {verb} was not sent."
@@ -3899,7 +3987,7 @@ async def forward_email(
     shown_files = _forward_files(carried)
 
     from acb_skills.ask_tools import request_confirmation
-    if not await request_confirmation(
+    approved = await request_confirmation(
         title="Forward this email?",
         # Each target and each file in ``context``, which the cut of
         # ``detail`` never reaches. ``detail`` keeps the short form, with the
@@ -3908,7 +3996,11 @@ async def forward_email(
         context=_card_context(
             _card_head(sender, to=to, cc=cc, bcc=bcc, files=_forward_file_pairs(carried)),
             note),
-    ):
+        close_on_steer=True,
+    )
+    if not approved:
+        if _revised(approved):
+            return _CARD_REVISED
         if not _card_channel_open():
             return _NO_CARD_CHANNEL
         return "Forward cancelled. The email was not forwarded."
@@ -4025,13 +4117,41 @@ def _draft_card(
     return detail, ("" if len(context) > _CARD_CONTEXT_LIMIT else context)
 
 
+def _with_draft_text(context: str, body: Any, preview: Any = None) -> str:
+    """The card context with the text of the draft under the recipients.
+
+    The member approves a send, so the card shows what the mail says, not
+    only where it goes. A long text is cut, and the card says so. The
+    recipients come first and are never cut."""
+    from acb_skills.ask_tools import clip_words  # noqa: PLC0415
+    from acb_skills.reply_card import clean_reply_body  # noqa: PLC0415
+
+    # No hidden character reaches the card (review of #1191, P1).
+    text = clean_reply_body(str(body or "")).strip()
+    if not text:
+        start = clean_reply_body(str(preview or "")).strip()
+        if start:
+            # Only the preview is stored. Say so, or the card looks whole.
+            return (context + "\n\nThe start of the draft:\n" + clip_words(start, 1000)
+                    + "\n[… only the start is shown. Open the draft in the Email "
+                    "app to read it all.]")
+        return context + "\n\nThe draft has no text."
+    head = context + "\n\nThe text of the draft:\n"
+    room = _CARD_CONTEXT_LIMIT - len(head)
+    if len(text) <= room:
+        return head + text
+    tail = "\n[… the rest is cut here. Open the draft in the Email app to read it all.]"
+    return head + clip_words(text, max(0, room - len(tail))).rstrip() + tail
+
+
 @_annotate_risk(destructive=True, open_world=True)
 async def send_draft(account_id: str, draft_id: str) -> str:
     """Send an existing draft natively (Drafts → Sent, no duplicate). Shows a
     confirmation card before sending.
 
-    The card names each To, Cc and Bcc address of the draft. The send fails,
-    and sends nothing, when the draft changed after the card."""
+    The card names each To, Cc and Bcc address of the draft, and shows its
+    text. The send fails, and sends nothing, when the recipients changed
+    after the card."""
     from acb_skills.ask_tools import request_confirmation  # noqa: PLC0415
     sender = await _mailbox_name(account_id)
     if sender is None:
@@ -4069,6 +4189,7 @@ async def send_draft(account_id: str, draft_id: str) -> str:
             "Not sent. The draft has too many recipients to show on one card. "
             "Send it from the Email app."
         )
+    context = _with_draft_text(context, draft.get("body_text"), draft.get("snippet"))
     if not await request_confirmation(
         title="Send this draft?", detail=detail, context=context,
     ):
