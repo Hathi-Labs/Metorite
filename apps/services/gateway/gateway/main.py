@@ -177,6 +177,16 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # the Files/Artifacts viewers until they happen to run again.  This restores
     # them on startup so their workspace is browsable without a manual pull.
     async def _warm_clone_agents() -> None:
+        # H-363: scrub every clone FIRST. An older loader wrote the token into
+        # each clone's remote URL, and a clone keeps it until it loads again.
+        # This takes it out of every clone before any run starts, and it logs
+        # an error for a config that still holds one. It never logs a value.
+        try:
+            from acb_skills.loader import scrub_clone_credentials
+
+            await _asyncio.to_thread(scrub_clone_credentials, settings)
+        except Exception as exc:
+            _log.warning("gateway.clone_scrub_failed", error=str(exc)[:200])
         try:
             from acb_skills.loader import _install_agent_deps, load_agent
 
@@ -207,6 +217,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 except Exception:
                     continue
                 if _ws is not None:
+                    # H-363: pin the clone's repo from the registry, so a
+                    # push or a credentialed read after this restart goes to
+                    # the agent's own repo.
+                    try:
+                        from gateway.routes.agent import _pin_registry_clone
+
+                        _pin_registry_clone(name, _ws)
+                    except Exception:
+                        pass
                     # Already cloned — ensure its declared deps are installed
                     # into agent-site (WS-49 BH-7; idempotent, a no-op when
                     # unchanged), so its tools work before the next run.

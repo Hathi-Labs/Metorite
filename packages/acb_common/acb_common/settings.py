@@ -891,7 +891,12 @@ class Settings(BaseSettings):
     # git pull on each event (no full re-clone per run).
 
     # -- Auth: PAT (simple, use for dev / small teams) --
-    github_token: str = ""                    # PAT with `repo` scope; used in clone URL + remote set-url
+    # H-363: no token is ever written into a clone URL. acb_common.git_credentials
+    # gives a token to ONE git process at a time, through a credential helper.
+    github_token: str = ""                    # PAT with `repo` scope; the PUSH credential (gated)
+    # A read-only token for clone, fetch and ls-remote of private agent and
+    # skill repos. Blank falls back to github_token. A public repo needs none.
+    github_read_token: str = ""
 
     # -- OAuth App (used by Control Plane Device Flow UI only) --
     # Register at: github.com/settings/applications/new  (Callback URL: http://localhost)
