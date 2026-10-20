@@ -879,6 +879,12 @@ def clean_reply_form(form: dict | None) -> dict | None:
     if not message_id or len(message_id) > 200:
         raise ValueError("a reply form names the email it answers")
     notices = form.get("notices") if isinstance(form.get("notices"), list) else []
+    if len(notices) > 4:
+        raise ValueError("a reply form has at most four notices")
+    body = clean_reply_body(str(form.get("body") or ""))
+    if len(body) > MAX_REPLY_BODY:
+        # Never cut: the card must show each character that the send carries.
+        raise ValueError("a reply draft is too long for the card")
     return {
         "message_id": message_id,
         "mailbox": _clip_line(form.get("mailbox")),
@@ -891,10 +897,10 @@ def clean_reply_form(form: dict | None) -> dict | None:
         },
         "recipients": {"reply": reply, "reply_all": reply_all},
         "reply_all": form.get("reply_all") is True,
-        "body": clean_reply_body(str(form.get("body") or ""))[:MAX_REPLY_BODY],
+        "body": body,
         "note": _clip_line(form.get("note")),
         # A notice names addresses, so it is never cut: an over-long one fails.
-        "notices": [_whole_line(n) for n in notices[:4] if str(n or "").strip()],
+        "notices": [_whole_line(n) for n in notices if str(n or "").strip()],
     }
 
 
