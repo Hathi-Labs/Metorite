@@ -11585,3 +11585,27 @@ Fences (R7):
 - `test_crm_migration.py::test_the_lead_probability_migration_is_expand_only`.
 - `test_crm_routes.py::test_a_lead_status_carries_a_win_chance` and
   `test_crm_pipeline.py::test_a_lead_win_chance_keeps_the_won_lost_clamp`.
+
+### 20.14 CRM-U10: the CRM's tabs in the phone's bottom bar
+
+Owner, 2026-10-20: the phone had no way to move across the whole CRM from the
+bottom bar. It held only "Menu". A member had to tap the title, find a row in
+the drawer, and tap again.
+
+1. **The bar names three lists and "More".** The tabs are Deals, Leads and
+   Contacts, in that order. The source can turn a list off. If that list holds
+   no record, the next list takes its place, such as Companies. The labels are
+   the source's labels.
+2. **"More" opens the whole rail.** It opens the same drawer as the title. The
+   drawer holds Companies, the generic modules, Reports and CRM settings.
+3. **"More" lights for any view that has no tab,** such as Reports, settings
+   or a module. It shows the open-questions count of an admin.
+4. **The page owns the list.** The page emits `cc-crm-nav` with the tabs, the
+   active tab and the count. It emits `null` when it unmounts. `AppShell`
+   draws what it gets, so the shell knows no CRM rule. A tap goes back as
+   `cc-mobile-nav` with `crm:<id>`, and the page answers through `chooseView`.
+5. **A tab is the current page for a screen reader.** `TaskTab` sets
+   `aria-current="page"` on the active tab.
+
+Fences (R7): `crmU10.test.ts` holds the tab rule, the wire and the three
+source fences. It checks that `AppShell` draws only what the page emits.
