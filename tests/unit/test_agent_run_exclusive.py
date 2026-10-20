@@ -27,9 +27,9 @@ test red. ``G`` is ``gateway/routes/projects/agent_runs.py``, ``F`` is
   ``test_x3_two_clients_of_one_member``, ``test_x4_a_member_start_is_refused``.
 * X2. ``G`` ``_gate_task``: drop the own-run read at the top.
   ``test_x2_the_same_member_and_client_get_their_own_run_back``.
-* X3. ``F`` ``lease_expired``: compare with ``>=`` and a lease of zero, so
-  every holder reads stale. ``test_x5_a_stale_holder_loses_the_task``
-  stays green, and ``test_x6_a_heartbeat_keeps_the_task`` goes red.
+* X3. ``F`` ``lease_expired``: return ``True`` always, so every holder reads
+  stale. ``test_x6_a_heartbeat_keeps_the_task``,
+  ``test_x1_two_members_claim_one_task`` and the hermetic lease tests go red.
 * X4. ``G`` ``_take_over``: no ``last_activity_at = :seen`` guard.
   ``test_x7_a_takeover_never_hits_a_run_that_just_moved``.
 * X5. ``F`` ``agent_run_hold_s``: no factor for ``awaiting``.
@@ -200,8 +200,8 @@ from tests.unit.test_mcp_edge_claim import (  # noqa: E402,F401
     redis_fake,
 )
 from tests.unit.test_mcp_edge_writes import (  # noqa: E402
-    _tool,
     _text,
+    _tool,
 )
 
 RUN_ID = "11111111-2222-4333-8444-555555555555"
@@ -215,7 +215,7 @@ _HELD = {
 
 
 class TestTheEdge:
-    async def test_the_edge_maps_task_held_to_one_fixed_text(self, edge):
+    async def test_the_edge_maps_task_held_to_one_fixed_text(self, edge):  # noqa: F811
         """X11. The 409 of the claim and of the start gives ONE text. The
         message and the holder of the gateway never reach the agent."""
         body = {"detail": {"error": "task_held", "message": "SECRET Alice", "held_by": {}}}
@@ -227,12 +227,12 @@ class TestTheEdge:
         assert "pick another task" in tools.TEXT_TASK_HELD.lower()
         assert "do not claim or start this task again" in tools.TEXT_TASK_HELD.lower()
 
-    async def test_a_409_that_is_not_task_held_keeps_its_own_text(self, edge):
+    async def test_a_409_that_is_not_task_held_keeps_its_own_text(self, edge):  # noqa: F811
         edge.gateway.answers[("POST", CLAIM_PATH)] = (409, {"detail": "something else"})
         result = await _tool("claim_task", _claim_args())
         assert _text(result) != tools.TEXT_TASK_HELD
 
-    async def test_release_task_posts_the_run_and_reports_released(self, edge, monkeypatch):
+    async def test_release_task_posts_the_run_and_reports_released(self, edge, monkeypatch):  # noqa: F811
         from acb_common import get_settings
 
         monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
@@ -244,7 +244,7 @@ class TestTheEdge:
         assert result["structuredContent"]["released"] is True
         assert result["structuredContent"]["run"]["status"] == "released"
 
-    async def test_release_task_has_a_text_for_a_run_of_another_client(self, edge, monkeypatch):
+    async def test_release_task_has_a_text_for_a_run_of_another_client(self, edge, monkeypatch):  # noqa: F811
         from acb_common import get_settings
 
         monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
@@ -253,7 +253,7 @@ class TestTheEdge:
         result = await _tool("release_task", {"run_id": RUN_ID})
         assert _text(result) == tools.TEXT_RELEASE_FORBIDDEN
 
-    async def test_release_task_is_hidden_while_the_runs_flag_is_off(self, edge, monkeypatch):
+    async def test_release_task_is_hidden_while_the_runs_flag_is_off(self, edge, monkeypatch):  # noqa: F811
         from acb_common import get_settings
 
         monkeypatch.setattr(get_settings(), "agent_runs_enabled", False)
@@ -554,8 +554,8 @@ class TestOneAiForEachTask:
             run = (await _claim(call, w.alice, task)).json()["agent_run_id"]
         _age(w, task, 3 * 3600)
         from acb_common.db import bind_tenant, clear_tenant, release_tenant
-
         from gateway.routes.projects.core import _tenant_session
+
         from tests.unit._tenant_ladder import tenant_engine_scope
 
         scope = clear_tenant()
@@ -723,9 +723,9 @@ class TestOneAiForEachTask:
     async def test_x15_the_migration_closes_duplicates_and_builds_the_index(self, w):
         """Old code could open two runs on one task. The migration keeps the
         newest and moves the rest to ``abandoned``, so the index builds."""
-        path = [p for p in _MIGRATIONS.glob("[0-9]*_*.sql")
-                if "pm_agent_runs_one_open_per_task" in p.read_text(encoding="utf-8")
-                and "CREATE UNIQUE INDEX" in p.read_text(encoding="utf-8")][0]
+        path = next(p for p in _MIGRATIONS.glob("[0-9]*_*.sql")
+                    if "pm_agent_runs_one_open_per_task" in p.read_text(encoding="utf-8")
+                    and "CREATE UNIQUE INDEX" in p.read_text(encoding="utf-8"))
         task = _fresh(w)
         other = _fresh(w)
         with w.p.admin_engine.begin() as c:
@@ -768,10 +768,11 @@ class TestOneAiForEachTask:
         assert _count(w.p, "SELECT count(*) FROM pg_indexes WHERE indexname = "
                            "'pm_agent_runs_one_open_per_task'") == 1
         # The index now refuses a second open run on the task.
-        with pytest.raises(Exception, match="pm_agent_runs_one_open_per_task"):
-            with w.p.admin_engine.begin() as c:
-                c.execute(text(
-                    "INSERT INTO pm_agent_runs (organization_id, task_id, member_email, "
-                    "client_via, status, started_by) VALUES (CAST(:o AS uuid), "
-                    "CAST(:t AS uuid), :m, :v, 'created', :m)"),
-                    {"o": w.org, "t": task, "m": CAROL, "v": VIA})
+        with pytest.raises(Exception, match="pm_agent_runs_one_open_per_task"), (
+            w.p.admin_engine.begin()
+        ) as c:
+            c.execute(text(
+                "INSERT INTO pm_agent_runs (organization_id, task_id, member_email, "
+                "client_via, status, started_by) VALUES (CAST(:o AS uuid), "
+                "CAST(:t AS uuid), :m, :v, 'created', :m)"),
+                {"o": w.org, "t": task, "m": CAROL, "v": VIA})
