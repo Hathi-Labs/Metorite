@@ -8,10 +8,14 @@
  * The specialists are its tools (`multi_agent_orchestration.md` §5.1). The
  * member keeps sessions, not agents.
  *
- * **Two forms, one element.** `dock` is a panel at the right of the page.
- * `full` covers the page column, with the session list. `AssistantDock.tsx`
- * renders ONE element and changes its shape, so a running reply survives a
- * switch. Below `DOCK_MIN_VIEWPORT`, and on a phone, only `full` exists.
+ * **Two forms on a desktop, one element.** `dock` is a panel at the right of
+ * the page. `full` covers the page column, with the session list.
+ * `AssistantDock.tsx` renders ONE element and changes its shape, so a running
+ * reply survives a switch. Below `DOCK_MIN_VIEWPORT` the panel floats.
+ *
+ * **Two forms on a phone** (`chat_first_surface.md` §4.1, CF-1). `full` is
+ * the sheet. `peek` is a strip above the bottom nav, with the flag
+ * `NEXT_PUBLIC_CHAT_FIRST` on. A desktop never draws `peek` (D-CF-1).
  *
  * **The context.** An app publishes FACTS with `useAssistantFacts`: the open
  * record, the view. Facts are data, never instructions, and the member never
@@ -35,8 +39,9 @@ import { useEffect, useRef, useSyncExternalStore } from "react";
 import { agentSlug } from "@/lib/agentName";
 import { inAppPathname } from "@/lib/inAppLink";
 import type { NavPane, NavSection } from "@/lib/nav";
-import { chatKey, type ChatSession } from "@/lib/sessions";
+import { chatKey, truncateAtWord, type ChatSession } from "@/lib/sessions";
 import { onClear } from "@/lib/dataCache";
+import { isLivePhase, type RunPhase } from "@/lib/runStatus";
 
 // ── The agent ────────────────────────────────────────────────────────────────
 
@@ -71,7 +76,11 @@ export const CHAT_FIRST_PERSONA_LINE =
 
 // ── The forms ────────────────────────────────────────────────────────────────
 
-export type AssistantMode = "dock" | "full";
+/**
+ * `dock` and `full` exist on a desktop. `full` and `peek` exist on a phone.
+ * `effectiveMode` decides which one draws.
+ */
+export type AssistantMode = "dock" | "full" | "peek";
 
 /** The side panel's width: default, and the two ends of the drag. */
 export const DOCK_DEFAULT = 400;
@@ -91,13 +100,15 @@ export function clampDockWidth(width: number): number {
 }
 
 /**
- * The form that draws. A phone has room for one thing, so it is always the
- * full sheet. Every desktop draws the form the member asked for: the side
- * panel unless they asked for the full view. The width never decides it.
+ * The form that draws. A phone draws the full sheet, or the peek strip when
+ * the member asked for it. Every desktop draws the form the member asked
+ * for: the side panel unless they asked for the full view. The width never
+ * decides it. A desktop never draws the strip (D-CF-1). A `peek` that
+ * reaches a desktop, from a phone turned wide, draws the side panel.
  */
 export function effectiveMode(mode: AssistantMode, _viewportWidth: number, isMobile: boolean): AssistantMode {
-  if (isMobile) return "full";
-  return mode;
+  if (isMobile) return mode === "peek" ? "peek" : "full";
+  return mode === "peek" ? "dock" : mode;
 }
 
 /** Whether the side panel floats over the page: a desktop narrower than the floor. */
@@ -132,12 +143,69 @@ export function onPageChange(a: {
 /**
  * What the assistant does when a link inside its chat (a task pill) opens a
  * page (review of PR #1156). On a phone the sheet covers the page, and
- * `onPageChange` does nothing there, so the page would open unseen: the
- * sheet closes, as it does for the chat's files. A desktop keeps the chat,
- * and `onPageChange` docks a full view when the route changes.
+ * `onPageChange` does nothing there, so the page would open unseen.
+ *
+ * - `peek`: with the chat-first flag on, the sheet drops to the strip. The
+ *   page shows, and the chat is one tap away (CF-1). A delegation that moves
+ *   the page uses this answer too.
+ * - `close`: with the flag off, the sheet closes, as it does for the chat's
+ *   files.
+ * - null: a desktop keeps the chat, and `onPageChange` docks a full view
+ *   when the route changes.
  */
-export function onChatLink(a: { phone: boolean }): "close" | null {
-  return a.phone ? "close" : null;
+export function onChatLink(a: { phone: boolean; chatFirst: boolean }): "peek" | "close" | null {
+  if (!a.phone) return null;
+  return a.chatFirst ? "peek" : "close";
+}
+
+/**
+ * Whether the strip goes back up to the sheet by itself (CF-1). It goes up
+ * when a card waits for the member (`needs input`, WS-51 S2) and the strip
+ * shows. A card that nobody sees is a run that never ends. Nothing else
+ * raises the sheet without a tap.
+ *
+ * The caller asks this only when the wait BEGINS. A member who drops a
+ * waiting chat to the strip asked for the strip, so it stays.
+ */
+export function raiseOnNeed(a: { phone: boolean; form: AssistantMode; needsInput: boolean }): "full" | null {
+  return a.phone && a.form === "peek" && a.needsInput ? "full" : null;
+}
+
+/** The longest line the strip shows, in characters, before it cuts at a word. */
+export const STRIP_TEXT_MAX = 80;
+
+/** Markdown marks and fence marks, out of one line of plain words. */
+function plainLine(text: string): string {
+  return text
+    .replace(/^\s*(?:#+|>|[-+*]|\d+\.)\s+/gm, "")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\*\*|__|[*`~«»]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Whether the strip shows the run's status, by the run's phase. A live run
+ * does, and so does a parked one, because its card waits on the member. A
+ * run that ended does not: "Done" and "Stopped" give way to the reply at
+ * once (fix round on PR #1198).
+ */
+export function stripShowsRun(phase: RunPhase): boolean {
+  return isLivePhase(phase) || phase === "parked";
+}
+
+/**
+ * The one line of the peek strip (CF-1). While a run goes on, it is the run
+ * status row's own text, so the strip and the chat say the same thing
+ * (`chat_run_continuity.md` §4.10). Else it is the last assistant reply,
+ * cut at a whole word. Else the assistant's name.
+ */
+export function stripText(a: { phase: RunPhase; statusText: string | null | undefined; lastPreview: string | null | undefined }): string {
+  const status = a.statusText?.trim();
+  if (stripShowsRun(a.phase) && status) return status;
+  const last = plainLine(a.lastPreview ?? "");
+  if (last) return truncateAtWord(last, STRIP_TEXT_MAX);
+  return ASSISTANT_NAME;
 }
 
 /**
@@ -152,8 +220,10 @@ export function onChatLink(a: { phone: boolean }): "close" | null {
  *   `/connect`, `/signup`, `/settings` or a pane they lack (review of #1197).
  * - `dock`: a desktop full view becomes the side panel, so the page shows
  *   beside the chat.
- * - `close`: a phone's sheet covers the page, so it gives way (`onChatLink`).
- *   CF-1 turns this into the peek strip.
+ * - `close`: a phone's sheet covers the page, so it gives way (`onChatLink`),
+ *   with the chat-first flag off.
+ * - `peek`: with the flag on, the sheet drops to the peek strip (CF-1), so
+ *   the page shows and the chat stays one tap away.
  *
  * `pane` is the pane the path opens, for the toast's label. Null for the root.
  */
@@ -164,10 +234,11 @@ export function navigateAct(a: {
   path: string | undefined;
   sections: readonly NavSection[];
   phone: boolean;
+  chatFirst: boolean;
   form: AssistantMode;
   canDock: boolean;
-}): { push: boolean; dock: boolean; close: boolean; pane: NavPane | null } {
-  const none = { push: false, dock: false, close: false, pane: null };
+}): { push: boolean; dock: boolean; close: boolean; peek: boolean; pane: NavPane | null } {
+  const none = { push: false, dock: false, close: false, peek: false, pane: null };
   if (!a.open || !a.threadId || a.threadId !== a.activeId) return none;
   const pathname = inAppPathname(a.path);
   if (pathname === null) return none;
@@ -181,7 +252,8 @@ export function navigateAct(a: {
   return {
     push: true,
     dock: !a.phone && a.form === "full" && a.canDock,
-    close: onChatLink({ phone: a.phone }) === "close",
+    close: onChatLink({ phone: a.phone, chatFirst: a.chatFirst }) === "close",
+    peek: onChatLink({ phone: a.phone, chatFirst: a.chatFirst }) === "peek",
     pane,
   };
 }
@@ -294,6 +366,35 @@ function withPrefs(s: AssistantState): AssistantState {
   return { ...s, ...readPrefs() };
 }
 
+/** What an open asks for. */
+export interface OpenOptions {
+  text?: string;
+  draft?: string;
+  sessionId?: string | null;
+  mode?: AssistantMode;
+  fresh?: boolean;
+}
+
+/**
+ * The form an open gives the assistant.
+ *
+ * - An asked `mode` wins.
+ * - An open from closed is the side panel (owner, 2026-10-14).
+ * - An open while it is open keeps its form, with one exception. On a phone
+ *   the strip goes up to the sheet when the open asks for something: words,
+ *   a draft, a chat, or a new chat (fix round on PR #1198). A run toast's
+ *   "Open" and a card's "Open" must show the chat they name. A plain open
+ *   asks for nothing, so the strip stays.
+ */
+export function modeOnOpen(a: { phone: boolean; open: boolean; current: AssistantMode; opts: OpenOptions }): AssistantMode {
+  const { opts } = a;
+  if (opts.mode) return opts.mode;
+  if (!a.open) return "dock";
+  const asks = Boolean(opts.text?.trim() || opts.draft?.trim() || opts.sessionId !== undefined || opts.fresh);
+  if (a.phone && a.current === "peek" && asks) return "full";
+  return a.current;
+}
+
 /**
  * Open the assistant. With `text`, the words go to the chat as the member's
  * turn. With `draft`, they wait in the composer for the member to send. With
@@ -302,20 +403,17 @@ function withPrefs(s: AssistantState): AssistantState {
  * The form: an open from closed is the side panel, unless `mode` asks for the
  * full view. An open while it is open keeps the form it has.
  */
-export function openAssistant(opts: {
-  text?: string;
-  draft?: string;
-  sessionId?: string | null;
-  mode?: AssistantMode;
-  fresh?: boolean;
-} = {}): void {
+export function openAssistant(opts: OpenOptions = {}): void {
   const base = withPrefs(_state);
   const text = opts.text?.trim();
   const draft = opts.draft?.trim();
+  // Only a phone stores `peek` (the handle, the chevron, and `onChatLink` on
+  // a phone), so a stored `peek` is the phone. The store reads no viewport.
+  const phone = base.mode === "peek";
   _set({
     ...base,
     open: true,
-    mode: opts.mode ?? (base.open ? base.mode : "dock"),
+    mode: modeOnOpen({ phone, open: base.open, current: base.mode, opts }),
     sessionId: opts.sessionId !== undefined ? opts.sessionId : base.sessionId,
     ask: text ? { seq: ++_askSeq, text, join: base.open } : base.ask,
     draft: draft ? { seq: ++_askSeq, text: draft } : base.draft,

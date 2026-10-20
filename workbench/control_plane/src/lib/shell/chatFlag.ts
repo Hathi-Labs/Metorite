@@ -52,12 +52,20 @@ export function shellChatOn(): boolean {
 }
 
 /**
- * Whether the chat-first surface is on (WS-62, `chat_first_surface.md` §7,
- * flag `NEXT_PUBLIC_CHAT_FIRST`). It needs the one assistant (`shellChatOn`),
- * because every piece of it lives in that assistant: the page the chat
- * opens (CF-3), the peek strip (CF-1) and the phone that opens on the chat
- * (CF-2). Turning it on in production is owner-only (§9.1).
+ * Whether the chat-first surface is on in this browser
+ * (`chat_first_surface.md` §7, flag `NEXT_PUBLIC_CHAT_FIRST`, default off).
+ * CF-1 is its first piece: the peek strip on a phone.
+ *
+ * It needs `shellChatOn()`, because every piece of it hangs on the one
+ * assistant. The dev override is `cc-shell-chat-first`, as for the other
+ * flags. The key keeps the shell prefix. A key that starts with "cc-" and
+ * then "chat" reads as a chat cache key with no namespace (the grep fence in
+ * `railSessions.test.ts`).
+ *
+ * Turning it on in production is owner-only (`navigation_shell.md` §13.1).
+ * An agent may turn it on in staging.
  */
 export function chatFirstOn(): boolean {
+  // The literal member expression, the one form Next inlines (publicFlags.test.ts).
   return shellChatOn() && flag(process.env.NEXT_PUBLIC_CHAT_FIRST, "cc-shell-chat-first");
 }

@@ -2,8 +2,8 @@
 # Run pr-check on THIS PC, in the preset `metorite-ci` WSL distro. From Windows.
 #
 #   bash scripts/ci_local.sh              # the commit at HEAD
-#   bash scripts/ci_local.sh --e2e        # also the browser suite (auto when
-#                                         # the branch touches control_plane)
+#   bash scripts/ci_local.sh --e2e        # also the browser suite, after the
+#                                         # unit phase (about 20 more minutes)
 #   bash scripts/ci_local.sh --ref <ref>  # another commit
 #
 # Why: GitHub builds every job from scratch (2-4 minutes of `uv sync`,
