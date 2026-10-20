@@ -81,6 +81,7 @@ import { SubtaskPromptHost } from "@/app/tasks/components/SubtaskPromptHost";
 // The note-taker's live recording dock — same shell-level pattern, so an
 // in-progress meeting recording follows the user across every app (spec §5.2).
 import { LiveDock } from "@/app/notes/components/LiveDock";
+import { navDetail, type PhoneNav } from "@/app/crm/lib/phoneNav";
 import { RecordingDock } from "@/app/notes/components/RecordingDock";
 // ---------------------------------------------------------------------------
 // Mobile drawer context — lets child pages inject content into the hamburger
@@ -115,7 +116,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerContent, setDrawerContent] = useState<ReactNode>(null);
   const pathname = usePathname();
-  const { loading: accessLoading } = useAccess();
+  const { access, loading: accessLoading } = useAccess();
 
   /**
    * ⚠️ Bind the read cache to whoever is signed in.
@@ -132,9 +133,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
    */
   const { data: cacheSession } = useSession();
   const signedInAs = cacheSession?.user?.email ?? null;
+  // ⚠️ The organization binds too (WS-53, 2026-10-19). An email alone let a
+  // cached answer of org A, such as a CRM gate that was off, hide org B's
+  // section in the same tab. An unknown org (the access read has not
+  // answered) changes nothing, so the first load does not empty it twice.
+  const cacheOrg = access.organization?.id ?? null;
   useEffect(() => {
-    bindIdentity(signedInAs);
-  }, [signedInAs]);
+    bindIdentity(signedInAs, cacheOrg);
+  }, [signedInAs, cacheOrg]);
   // ⚠️ A switch (or a sign-in as someone else) in ANOTHER tab changes the
   // cookie under this one. This reloads the tab, so it never writes as an
   // account it does not show (`lib/accountSwitch.ts`).
@@ -703,6 +709,16 @@ function MobileBottomNavInner({
   // stay in the page's own title row: the bell is self-anchored and has no
   // external open control, so a tab could not raise it.
   const isProjectsPage = pathname?.startsWith("/projects") ?? false;
+  // CRM (CRM-U10): the page names the lists of the bar and the one on screen,
+  // because it knows the mode, the source's labels and the rows Zoho turned
+  // off. It emits `cc-crm-nav`, and `null` when it unmounts.
+  const isCrmPage = pathname?.startsWith("/crm") ?? false;
+  const [crmNav, setCrmNav] = useState<PhoneNav | null>(null);
+  useEffect(() => {
+    const h = (e: Event) => setCrmNav((e as CustomEvent<PhoneNav | null>).detail ?? null);
+    window.addEventListener("cc-crm-nav", h);
+    return () => window.removeEventListener("cc-crm-nav", h);
+  }, []);
 
   // Tasks: the bottom bar reflects which My Tasks section you're in. The page emits
   // `cc-tasks-section` whenever the active view changes.
@@ -829,6 +845,26 @@ function MobileBottomNavInner({
             />
           </>
         )}
+        {isCrmPage && crmNav && (
+          <>
+            {crmNav.tabs.map((tab) => (
+              <TaskTab
+                key={tab.id}
+                active={crmNav.active === tab.id}
+                onClick={() => dispatchNav(navDetail(tab.id))}
+                icon={themedIcon(tab.icon)}
+                label={tab.label}
+              />
+            ))}
+            <TaskTab
+              active={crmNav.active === "more"}
+              onClick={() => dispatchNav(navDetail("more"))}
+              icon={themedIcon("LayoutGrid")}
+              label="More"
+              badge={crmNav.badge}
+            />
+          </>
+        )}
         {isNotesPage && (
           <>
             <TaskTab
@@ -940,16 +976,20 @@ function TaskTab({
   icon: Icon,
   label,
   accent,
+  badge,
 }: {
   active?: boolean;
   onClick: () => void;
   icon: ThemedIcon;
   label: string;
   accent?: boolean;
+  /** A count that waits for the member, drawn on the icon. */
+  badge?: number | null;
 }) {
   return (
     <button
       onClick={onClick}
+      aria-current={active ? "page" : undefined}
       className={`flex flex-1 min-w-0 flex-col items-center gap-0.5 rounded-lg px-1 py-1 transition-colors ${
         accent
           ? "text-primary"
@@ -958,7 +998,12 @@ function TaskTab({
             : "text-muted-foreground hover:text-foreground"
       }`}
     >
-      <Icon size={20} strokeWidth={active || accent ? 2.4 : 2} />
+      <span className="relative">
+        <Icon size={20} strokeWidth={active || accent ? 2.4 : 2} />
+        {badge ? (
+          <NavBadge count={badge} tone="info" label={`${badge} waiting`} placement="tab" />
+        ) : null}
+      </span>
       <span className="text-[10px] font-medium leading-none">{label}</span>
     </button>
   );

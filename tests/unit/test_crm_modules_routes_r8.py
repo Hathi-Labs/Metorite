@@ -370,3 +370,53 @@ async def test_the_record_list_searches_sorts_and_pages(ns) -> None:
     assert second.json()["total"] == 3
     refused = await _get(ns, a, "/crm/modules/Products/records?sort=fields")
     assert refused.status_code == 422
+
+
+# ── The field filters (CRM-U9) ───────────────────────────────────────────────
+
+
+async def test_the_record_list_filters_by_field_owner_and_updated_day(ns) -> None:
+    """``custom.<key>``, ``owner`` and ``updated_*`` narrow a module list.
+
+    Fence for CRM-U9. A key with no definition is ignored. A bad day is 422.
+    """
+    a = ns.org_a
+    _seed_org(ns, a, mode="mirror", modules=PROFILE_A)
+    _field_def(ns, a, "Products", "Colour", "select", position=1)
+    _field_def(ns, a, "Products", "Tags", "multiselect", position=2)
+    _field_def(ns, a, "Products", "Active", "boolean", position=3)
+    _record(ns, a, "Products", "p1", "Red one",
+            {"Colour": "Red", "Tags": ["x", "y"], "Active": True},
+            modified="2026-10-01")
+    _record(ns, a, "Products", "p2", "Blue one",
+            {"Colour": "Blue", "Tags": ["y"], "Active": False},
+            modified="2026-10-05")
+    _record(ns, a, "Products", "p3", "Green one",
+            {"Colour": "Green", "Tags": [], "Active": True},
+            modified="2026-10-09")
+    base = "/crm/modules/Products/records?sort=name&dir=asc"
+
+    async def names(query: str) -> list[str]:
+        res = await _get(ns, a, f"{base}&{query}")
+        assert res.status_code == 200, res.text
+        return [r["name"] for r in res.json()["rows"]]
+
+    assert await names("custom.Colour=Red") == ["Red one"]
+    assert await names("custom.Colour.in=Red,Blue") == ["Blue one", "Red one"]
+    assert await names("custom.Tags.in=x") == ["Red one"]
+    assert await names("custom.Active=true") == ["Green one", "Red one"]
+    assert await names("updated_from=2026-10-04&updated_to=2026-10-06") == ["Blue one"]
+    assert await names("owner=me") == ["Blue one", "Green one", "Red one"]
+    assert await names("owner=nobody@crm-q6b-r8.test") == []
+    # An unknown key is ignored. A SQL fragment is only a name that is not known.
+    assert len(await names("custom.Nope=1")) == 3
+    assert len(await names("custom.Colour'%3B--=1")) == 3
+    bad = await _get(ns, a, f"{base}&updated_from=yesterday")
+    assert bad.status_code == 422
+    # Org B reads none of it, with the same filter.
+    _seed_org(ns, ns.org_b, mode="mirror", modules=PROFILE_A)
+    _field_def(ns, ns.org_b, "Products", "Colour", "select")
+    _record(ns, ns.org_b, "Products", "p1", "B red", {"Colour": "Red"})
+    other = await _get(ns, ns.org_b, f"{base}&custom.Colour=Red")
+    assert [r["name"] for r in other.json()["rows"]] == ["B red"]
+    assert "Red one" not in other.text

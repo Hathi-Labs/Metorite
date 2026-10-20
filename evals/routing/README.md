@@ -53,6 +53,9 @@ and a delegation loads two. `harness.py` is a harness for many agents. It reuses
 - Scripted: the model of each agent. Each other host HTTP send fails the run.
 - Live: the specialists. A stand-in records the agent and the message, and
   answers with a fixed line. No specialist runs, writes or spends.
+- The panes the member holds, for `show_in_app` (WS-62 CF-3). The stand-in
+  holds every pane. The real read is `acb_auth.resolve_access`. The harness
+  also turns `CHAT_FIRST_TOOLS` on, because production ships the tool dark.
 
 Two reads still try the database: the member's access and the tier
 overrides. With no database, as in CI, each one fails closed and logs a
@@ -67,19 +70,19 @@ dock sends: `persona + "\n\n" + surfaceContext`, as `system_context`.
 
 | File | What it holds |
 |---|---|
-| `dataset.py` | 27 member questions. Each one has an id, the words, the app, the facts of the page and the expected specialist |
+| `dataset.py` | 30 member questions. Each one has an id, the words, the app, the facts of the page and the expected specialist, or the page it opens |
 | `shell.py` | The persona, the pane labels and `ALSO_SERVES`, read from the shell. The port of `surfaceContext` |
 | `harness.py` | The harness that drives the real orchestrator run and records where it delegated |
 | `run.py` | The runner: the catalog checks, the scripted delegation and the live sweep |
 
-## The 27 questions
+## The 30 questions
 
 | Expected | Cases | Asked from |
 |---|---|---|
-| `projects-assistant` | P1 to P4 | Projects, and My Day |
+| The orchestrator opens a page (`show_in_app`, WS-62 CF-3) | S1 to S3 | My Day, My Tasks and Projects |
+| `projects-assistant` | P1 to P4, T1 to T4 | Projects, My Day, My Tasks, Calendar and CRM |
 | `email-assistant` | E1 to E4 | My Email, Projects and CRM |
 | `crm-assistant` | C1 to C4 | CRM, My Email and Projects |
-| `task-manager` | T1 to T4 | My Tasks, Calendar and CRM |
 | `whatsapp-assistant` | W1 to W3 | My WhatsApp and My Email |
 | `apis-config` | I1 | Integrations |
 | `app-builder` | B1 | Chat |
@@ -90,9 +93,13 @@ Six cases are cross-app: the member is in one app and asks about another.
 An `asks` case expects no specialist. The right act there is to ask one short
 question with `ask_questions`, as the persona says.
 
-Five cases get the catalog check only: T1 to T4 and B1. Their specialists
-run on the Copilot SDK, and the sub-run starts the Copilot CLI, which a
-hermetic run cannot start.
+Projects, My Tasks and Calendar are one task store (D52, D53, D54), so
+T1 to T4 expect `projects-assistant`. `task-manager` runs on the retired
+Copilot SDK runtime. The orchestrator does not hold it as a tool, and the
+executor refuses a delegation to it (D84, D92). A live pane that names it
+needs no case. `app-builder` is the one exception (owner, 2026-10-19), so B1
+expects it. Its sub-run starts the Copilot CLI, which a hermetic run cannot
+start, so B1 gets the catalog check only.
 
 ## Run it with no model
 

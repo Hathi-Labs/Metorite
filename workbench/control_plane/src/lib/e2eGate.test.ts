@@ -72,11 +72,17 @@ describe("the browser gate CI runs", () => {
     expect(step).not.toMatch(/continue-on-error:\s*true/);
   });
 
-  it("skips only its push copy, and still runs on every pull_request", () => {
+  it("skips its push copy, and a PR that does not touch the control plane", () => {
     // The push copy duplicates the PR run and adds no fence at the merge
     // button, because a conflicted PR cannot merge. `!= 'push'` and not
     // `== 'pull_request'`, so a trigger added later still runs the suite.
-    expect(jobs().e2e).toMatch(/^ {4}if: github\.event_name != 'push'$/m);
+    // Since 2026-10-19 it also skips a PR that touches nothing under
+    // workbench/control_plane: the suite stubs `/api/**` and reads nothing
+    // outside the app. The `changes` job fails open: a failed `changes` job
+    // RUNS the suite, and a cancelled run does not start it.
+    expect(jobs().e2e).toMatch(
+      /^ {4}if: "!cancelled\(\) && github\.event_name != 'push' && \(needs\.changes\.result != 'success' \|\| needs\.changes\.outputs\.frontend == 'true'\)"$/m,
+    );
   });
 
   it("has no push trigger, so no push run can twin a required check", () => {
@@ -101,6 +107,35 @@ describe("the browser gate CI runs", () => {
     expect(job.slice(0, job.indexOf("secret-scan:"))).toMatch(
       /if:\s*failure\(\)[\s\S]*upload-artifact/
     );
+  });
+});
+
+describe("the dev server of the browser suite", () => {
+  const read = (rel: string) => readFileSync(HERE(rel), "utf8");
+
+  it("writes no Turbopack disk cache, and says so in both files", () => {
+    // 🔴 Three runs of shard 1 stalled in 2026-10-18 and 2026-10-19: the dev
+    // server stopped answering at test 53. The cache cost 5.7 GB of disk and
+    // ran a compaction beside the tests. A cold CI run gains nothing from it.
+    expect(read("../../playwright.config.ts")).toMatch(/E2E_NO_TURBOPACK_CACHE:\s*"1"/);
+    expect(read("../../next.config.ts")).toMatch(
+      /turbopackFileSystemCacheForDev:\s*process\.env\.E2E_NO_TURBOPACK_CACHE\s*!==\s*"1"/,
+    );
+  });
+
+  it("has a watchdog that ends a run whose server stops answering", () => {
+    expect(WORKFLOW).toMatch(/scripts\/e2e_watchdog\.sh http:\/\/127\.0\.0\.1:3101\/chat/);
+    expect(WORKFLOW).toMatch(/wait "\$pw"/);
+  });
+
+  it("arms the watchdog only after the server first answers", () => {
+    // Playwright starts the server, and a cold compile of /chat can take up to
+    // 180 s. A watchdog that counts misses from its first probe ends a healthy
+    // run after one minute (review of #1187).
+    const dog = read("../../../../scripts/e2e_watchdog.sh");
+    expect(dog).toMatch(/armed=0/);
+    expect(dog).toMatch(/armed=1/);
+    expect(dog).toMatch(/elif \[ "\$armed" -eq 1 \]/);
   });
 });
 

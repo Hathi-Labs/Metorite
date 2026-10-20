@@ -383,6 +383,23 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    empty answer or a 404.
    Fences: `tests/unit/test_crm_agent.py`, `tests/unit/test_skills_registry.py`
    and `tests/unit/test_reports_by_code.py`.
+   WS-53 §18.16 (spec `project-docs/specs/crm_platform.md` §18.16):
+   - `RunReads` lives in the run's holder (`CrmAsks` or `TextAsks`).
+     `_read_tool` wraps each read in `_budgeted`, so a second
+     `crm_list_fields` of one module reads nothing. Past 8 aggregates or 20
+     reads, a read answers `BUDGET_LINE` and reads nothing.
+   - `crm_aggregate(term=)` reads `GET /crm/terms/resolve`, then the total of
+     each of the first 2 fields. The confidence rule: a decided or close
+     term answers first, and an unsure term asks FIRST with each total
+     (`_ask_first_block` on the web, `TEXT_ASK_FIRST` on WhatsApp).
+     `CLOSE_SHARE` equals `gateway.crm_sync.terms.CLOSE_SHARE`.
+   - `_follow_up` marks each card that comes after an answer
+     (`CrmAsks.follow_ups`), and `ask_tools.ask_questions` parks the run on
+     it after `FOLLOW_UP_PARK_SECONDS`.
+   - `filters_line` states each filter of a module total, with the values
+     that it counted. No word of one org goes in this code.
+   Fences: `tests/unit/test_crm_answer_consistency.py` and
+   `tests/unit/test_crm_answer_consistency_r8.py`.
 5l-2. org_facts_tools.py -- the tool `org_facts(app, query)` and the CRM facts block (WS-53 CRM-Q32-5, spec `project-docs/specs/crm_platform.md` §18.14.4). The tool reads `GET /org/facts` as the run's member, with the transport of `crm_tools.py`, and it loads with the `crm` skill family only, so the core floor does not change. `crm_facts_block` builds the block of a run: the answered facts of the money modules, the meaning of revenue and the stages, at most 12 lines. `orchestrator._tool_injection._add_crm_facts_block` reads it as the member and adds it at the END of the prompt of a run that holds a CRM tool. A box with `CRM_QUESTIONS_ORGS` empty sends no request. A run that reads no fact row loses `org_facts` too, and the orchestrator and the CRM Assistant name the tool in their `tool_scope`. With the list empty, the addendum renders neither the `org_facts` section nor the open-question line (`addendum._dark_tools`), and a revenue total reads no catalogue (`crm_tools.questions_box_on`). CRM-Q32-6: `crm_list_modules` writes "an open question" on each open part, and `crm_aggregate` passes on the `href` of a 422 `no_key_field` and adds the line of the default of a revenue total. CRM-Q32-8: a total that depends on an open question reads `GET /crm/questions/ask` as the member and gives a CLARIFY block: what is not clear, why, and the payload of `ask_questions` with the key of each option. A run asks each question once and at most 2, through ONE `CrmAsks` object that `executor.run_agent_stream` opens with `crm_tools.open_asks_for_run()` beside `refuse_cards_for_run`. The default of its ContextVar is `None`, so a run with no holder gives no card. `crm_answer_question` posts the key to `POST /crm/questions/{id}/reply`, the one POST of `crm_tools.py`, and goes with `org_facts` (`FACTS_GATED_TOOLS`). It sends a pick only after this run showed the card of that question (`CrmAsks.shown`), and never with no card channel. A run that does not hold the tool shows no card (`mark_answer_tool`, from `_add_crm_facts_block(mark_run=True)`). No CRM tool waits for an answer. CRM-Q33: for an org on `CRM_ANSWER_FIRST_ORGS`, the read gives `answer_first` and `assume`, and `crm_aggregate` answers first. It reads the total on the assumption, gives a note of how, and asks one question after the answer. A WhatsApp run names that question in `TextAsks` (`open_text_asks`), and the gateway asks it in text. `crm_propose_rule` holds a rule of the member's own words for the confirm, and saves nothing. It goes with `org_facts`, and only an org on the list holds it. A pick counts only when the member clicked it: `ask_tools` hands the gateway's answer to `crm_tools.record_card_answer`, and the gate takes that key once. A card that was only shown opens nothing. Fences: `tests/unit/test_org_facts.py`, `tests/unit/test_org_facts_r8.py`, `tests/unit/test_crm_agent.py` and `tests/unit/test_crm_answer_first.py`.
 5l-1. answer_check.py -- the number check of a chat answer that read a CRM
    tool (WS-53 CRM-Q29, spec `project-docs/specs/crm_platform.md` §18.11.2).
@@ -400,17 +417,38 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    fails the answer and never ships. A failed answer gets ONE retry for each run, and
    then `fallback_text`, which shows the results of `FALLBACK_TOOLS` and
    never the draft. A failed step whose calls show nothing loses its text.
-   A failed step with a `SHOWN_TOOLS` call (a display tool or
-   `share_artifact`) fails. A
+   A failed step goes out without its text only when each call is in
+   `QUIET_TOOLS` (the CRM reads and the memory reads). Any other call fails
+   it. `ask_questions` and `request_confirmation` are display tools. In an
+   option of `ask_questions`, a figure after a choice word ("Last 90 days",
+   "Top 10", "Above ₹10 lakh") is a choice, and the check skips it. In
+   `on` mode a check that raises logs `answer_check.check_failed` and sends
+   the answer unchanged, so a failed check never loses the turn. An
+   answer that still fails after its one retry goes out with the note of
+   `note_text` (fix round 8). The note never lists raw figures alone. A
+   sum or a difference of two figures of the answer gets one sentence.
+   More than 3 failed figures, or 2 or more that are over 30 percent of
+   the figures, get "How I got these numbers", one line for each CRM read
+   from the head line that the server wrote (`read_line`). An empty group
+   of a grouped total (`empty_group`) whose value the answer states in the
+   sentence of a failed figure, or an
+   open CRM question of the run, gives ONE question. Else each failed
+   figure, 3 at most, gets a reason and an action. `many_failed` is the
+   one rule of "many". The log line names the KIND of the note (`note=`),
+   in `shadow` too, and `scripts/crm_answer_check_replay.py` counts it.
+   The fallback is only for an answer with no text (fix round 7). A
+   result of `MODEL_WRITTEN_TOOLS` (a delegation, `code_task`, a script) is
+   no source. A result over `RECORD_INLINE_CHARS` is read on a thread. A
    passed check makes no model request. While it holds, it puts
    `HOLD_EVENT` on the run queue at most each `HEARTBEAT_S`, only on a model
    update, so the idle watchdog sees life. The one reader of
    `CRM_ANSWER_CHECK` is `acb_common.settings.crm_answer_check_mode`. The
    one seam that attaches the provider is
    `orchestrator._tool_injection._apply_answer_check`. The log line
-   `answer_check.checked` holds counts only. Fences:
-   `tests/unit/test_crm_answer_check.py` and
-   `tests/unit/test_crm_answer_check_executor.py`.
+   `answer_check.checked` holds counts and the kind of a note only. Fences:
+   `tests/unit/test_crm_answer_check.py`,
+   `tests/unit/test_crm_answer_check_executor.py` and
+   `tests/unit/test_crm_answer_check_explain.py`.
 5m. untrusted.py -- the ONE frame for text that a stranger wrote (WS-17
    EM-G11d, UMCC, spec `email_app_master_plan.md` §12.3.13.8). Make one
    `UntrustedFrame` for each model call. `wrap(label, text)` puts the text

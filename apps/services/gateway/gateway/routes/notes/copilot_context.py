@@ -61,7 +61,10 @@ _AGENT_TIMEOUT_S = 45.0
 _AGENT_QUERIES: tuple[tuple[str, str, str], ...] = (
     (
         "tasks",
-        "task-manager",
+        # Tasks go to projects-assistant: one task store (D52, D53, D54), and
+        # task-manager runs on the retired Copilot runtime, so a delegation to
+        # it is refused (D84, D92, loader.refuse_copilot_specialist).
+        "projects-assistant",
         "List up to 4 open tasks involving {people}, one per line, as "
         "'title — status'. If there are none, reply exactly: NONE.",
     ),
@@ -259,7 +262,7 @@ async def _system_context(people: list[str]) -> dict[str, str]:
 #: meeting needs terse, immediately-usable answers, not summaries.
 _CONSULT_AGENTS: tuple[tuple[str, str], ...] = (
     # No CRM row, for the reason given at ``_AGENT_QUERIES`` (CRM-C7).
-    ("tasks", "task-manager"),
+    ("tasks", "projects-assistant"),
 )
 
 _CONSULT_PROMPT = (

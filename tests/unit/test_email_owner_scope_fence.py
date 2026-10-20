@@ -68,6 +68,16 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
         "Reads the in-process _SWEEP_JOBS registry, and answers idle unless "
         "the job's owner is the caller. No table read."
     ),
+    "reply_card": (
+        "A thin wrapper. _load_mail reads the mail with REPLY_ROW_SQL, whose "
+        "join holds ea.user_id = :uid, and draft_reply_smart calls "
+        "_assert_account_owner (EM-CR)."
+    ),
+    "reply_card_act": (
+        "A thin wrapper. _load_mail reads the mail with REPLY_ROW_SQL, whose "
+        "join holds ea.user_id = :uid, and _save_draft opens provider_session "
+        "for the caller (EM-CR)."
+    ),
     "compose_assist": (
         "A thin wrapper. _compose_assist_run calls _assert_account_owner "
         "before it reads the account."

@@ -3,8 +3,9 @@
 # installs THIS file, not ./Caddyfile, on a box whose .env says
 # DEPLOY_ENV=staging. The production file stays the default.
 #
-# ⚠️ Two hosts and no more: the staging gateway and the staging workbench. No
-# marketing apex, no operator console, no MCP edge. A staging box that claimed
+# ⚠️ Three hosts and no more: the staging gateway, the staging workbench and the
+# owner's Claude account switcher (below). No marketing apex, no operator
+# console, no MCP edge. A staging box that claimed
 # a production name would ask Let's Encrypt for that name's certificate and
 # could answer for it.
 #
@@ -73,4 +74,16 @@ dev.metorite.com {
 			status 503
 		}
 	}
+}
+
+# --- Claude account switcher (owner tool, not product) ---
+# A page on this box that makes one saved Claude login the live one for the
+# Claude Code sessions here. It is a systemd user unit of `dev` on loopback
+# :4777, and it signs the owner in by an e-mailed code. The block holds ONE
+# directive on purpose: no `header_up`, so no identity header can reach it.
+# Fence: tests/unit/test_deploy_env.py
+# test_the_account_switcher_block_only_proxies_to_loopback.
+accounts.dev.metorite.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:4777
 }

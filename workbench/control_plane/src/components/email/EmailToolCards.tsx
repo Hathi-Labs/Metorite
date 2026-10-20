@@ -492,12 +492,10 @@ export default function EmailToolCards({
       continue;
     }
     // Agent-driven categorized board — grouped, interactive sections.
+    // It is a RESULT: it folds, and it never closes, because it is the
+    // record of the answer (spec `projects_ai_chat.md` §29 rule 2).
     if (e.name === GROUPS_TOOL) {
-      items.push(
-        <DismissableCard key={e.id} onDismiss={() => dismissToolCard(e.id)}>
-          <EmailGroupsCard event={e} />
-        </DismissableCard>,
-      );
+      items.push(<EmailGroupsCard key={e.id} event={e} />);
       continue;
     }
     // Editable learned-pattern list (delete per row) — own chrome.

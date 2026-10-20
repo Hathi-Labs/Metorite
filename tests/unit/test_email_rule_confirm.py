@@ -39,6 +39,17 @@ def _load():
 
 agents = _load()
 
+
+@pytest.fixture(autouse=True)
+def _open_run() -> None:
+    """An open run, as the executor binds for each chat turn. With no run
+    context, a rule tool holds its outward part, because H-236 fails closed.
+    The held run has its own fence: ``test_no_egress_tool_audit.py``."""
+    from acb_skills.write_artifact import bind_artifact_context
+
+    bind_artifact_context(no_egress=False)
+
+
 BOX = "acc-1"
 FORWARD_RULE = {
     "id": "r-fwd", "account_id": BOX, "name": "Fwd", "enabled": False,
@@ -514,8 +525,11 @@ async def test_an_inward_prompt_batch_asks_one_plain_card(gw: Gateway) -> None:
     await agents.create_rules_from_prompt(BOX, prompt="label and draft")
     [card] = gw.cards
     assert card["title"].startswith("Save 2 rules in ")
+    # Security review of #1173, P1: the card shows each filled field of a
+    # draft action in full, under its rule.
     assert card["context"].splitlines() == [
-        '- rule "Bank": labels "F"', '- rule "Thanks": drafts an email']
+        '- rule "Bank": labels "F"', '- rule "Thanks": drafts an email',
+        "  - draft email content: Hi"]
     assert [p for p, _ in gw.saves] == ["/email/rules/batch"]
 
 

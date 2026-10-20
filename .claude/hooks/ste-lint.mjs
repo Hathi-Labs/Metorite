@@ -587,6 +587,24 @@ async function main() {
     const errors = findings.filter((f) => f.severity === 'error')
     const warns = findings.filter((f) => f.severity === 'warning')
 
+    // Two-speed delivery (owner directive, 2026-10-19): while a feature is in
+    // build, an error is ADVISORY. The agent sees it and goes on. The hardening
+    // pass sets STE_LINT_BLOCK=1, and then an error is exit 2 and forces the
+    // rewrite. Contract: project-docs/specs/engineering_practice.md §7a.
+    if (errors.length && process.env.STE_LINT_BLOCK !== '1') {
+      process.stdout.write(
+        JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PostToolUse',
+            additionalContext:
+              `STE (${tier}) advisory, ${errors.length} error${errors.length === 1 ? '' : 's'} on ${file} ` +
+              `(fix at the hardening pass, not now): ` +
+              errors.slice(0, 6).map((f) => `${f.rule} — ${f.message}`).join('; '),
+          },
+        }),
+      )
+      process.exit(0)
+    }
     if (errors.length) {
       process.stderr.write(
         `STE (${tier}) — ${errors.length} error${errors.length === 1 ? '' : 's'} in the text just written to ${file}:\n` +

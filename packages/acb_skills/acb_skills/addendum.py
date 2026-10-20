@@ -272,6 +272,27 @@ _MEMORY = tuple(SKILL_FAMILIES["memory"]["tools"])
 #: The twelve CRM read tools (WS-53 CRM-C7) — one family, one section.
 _CRM = tuple(SKILL_FAMILIES["crm"]["tools"])
 
+#: WS-53 §18.16 part 1: a period with no year. The per-turn context gives
+#: today's date (``acb_common.today``), so the model can name the year.
+CRM_PERIOD_LINE = (
+    "A month or a quarter named with no year is the most recent one that has started, by "
+    "today's date. The answer always names the year."
+)
+#: WS-53 §18.16 part 7: never a filter that the member did not ask for. A
+#: run of 2026-10-19 added a filter of its own and answered for 19 of 309
+#: records.
+CRM_FILTER_LINE = (
+    "Filter only on what the question names. In \"How I got this\", state every filter of "
+    "a total, with the values that each filter counted."
+)
+#: WS-53 §18.16 part 4: the member's own word goes to the server, which maps
+#: it to the same field each time.
+CRM_TERM_LINE = (
+    "For a total, pass the member's own word for the figure as term, such as "
+    "term=\"service fees\". The server maps that word to one field the same way each time, "
+    "and names the field and one other figure."
+)
+
 #: The kinds that ``read_attachment`` reads, from the ONE sentence that
 #: lists them (``attachment_text.SUPPORTED_SENTENCE``), so a new kind needs
 #: no edit here.
@@ -398,9 +419,10 @@ Workflow: need a new capability → ``code_task``; repeat a known job → ``run_
 """),
     Section("crm", _CRM, """### CRM (read only)
 - **crm_list_records / crm_get_record / crm_list_fields / crm_list_pipelines / crm_deal_contacts / crm_list_owners** — Read the company CRM as the member you act for. A record shows each custom field under its label.
-- **crm_aggregate(entity, group_by? | group_field?, measure?, field?, bucket?)** and **crm_report(kind)** — The server computes every count, sum, average and weighted forecast, also over a module as entity ``module:<api_name>``; report the numbers as given. The group is optional: give no group_by and no group_field for one total over every record that the filters match. You may state the sum, the difference, the percent change or the percent share of TWO tool figures (for example received minus paid), and then also state both of those figures. Anything more, such as a total of three figures, comes from another crm_aggregate call with the right group or filter. Write each figure in digits, because a check can compare each number of your answer with the tool results. **crm_stage_dwell(days?)** gives the days in each deal stage and the deals past their limit.
+- **crm_aggregate(entity, group_by? | group_field?, measure?, field?, term?, bucket?)** and **crm_report(kind)** — The server computes every count, sum, average and weighted forecast, also over a module as entity ``module:<api_name>``; report the numbers as given. The group is optional: give no group_by and no group_field for one total over every record that the filters match. You may state the sum, the difference, the percent change or the percent share of TWO tool figures (for example received minus paid), and then also state both of those figures. Anything more, such as a total of three figures, comes from another crm_aggregate call with the right group or filter. Write each figure in digits, because a check can compare each number of your answer with the tool results. **crm_stage_dwell(days?)** gives the days in each deal stage and the deals past their limit.
 - **crm_list_modules / crm_list_module_records / crm_get_module_record** — The other mirrored Zoho modules.
 Before a total over a module, call crm_list_modules. Name the module and the fields that each number comes from.
+""" + "\n".join((CRM_PERIOD_LINE, CRM_FILTER_LINE, CRM_TERM_LINE)) + """
 A tool that answers that the CRM is off, or not open to the member, is the answer: say so and stop.
 A tool answer that starts with "Refused:" gives the server's words and a "Next:" line. Fix the one argument it names, and call the tool once more. Never write a tool call as text.
 """),
@@ -447,7 +469,7 @@ the real requirement, not the card's presence.
 ### Self-improvement & committing
 To persist changes to your own repo: `git add -A`, then `git commit -m "feat: ..."`, then print `COMMIT_SHA: <git rev-parse HEAD>`. Never amend; one commit per task.
 - **By default, do NOT push** — direct pushes are blocked and the commit queues for human approval in the Control Plane inbox.
-- **If the user explicitly tells you to push (e.g. "commit and push") in this conversation**, then after committing run `git push --no-verify origin HEAD`. The `--no-verify` flag is required to bypass the approval hook. That commit is then recorded as already-approved — the user does not need to approve it again on the Agents page.
+- **If the user explicitly tells you to push (e.g. "commit and push") in this conversation**, then after committing run `git push --no-verify origin HEAD` as its own command. Your shell holds no GitHub credential, so that command itself fails with an authentication error. That is expected: it tells Metorite that you want a push. Only an admin of the first-party organization or of a platform operator organization may push agent code, and Metorite checks this, not you. If the member may push, Metorite pushes the commits of this turn when the turn ends, and it records them as already approved. Metorite then adds one line to your answer that says whether it pushed. Do not say that the push happened before that line: a turn that fails or stops pushes nothing. If Metorite refuses the push, do not try another way: the commit stays local and is queued for a reviewer on the Agents page, so tell the user that in plain words.
 
 ### Design language — load on demand
 Named `emit_generative_ui` templates are already on-brand (supply data only), and the `--cc-*` CSS tokens above cover simple custom HTML. For anything HEAVIER — a full-page HTML or Markdown **report**, or a bespoke custom-HTML `emit_generative_ui` card — call **`load_design_system()`** FIRST — it returns the core guide (palette, type, spacing, motion, surface choice); ask for a section (`"blocks"`, `"charts"`) rather than `"all"` when you need a block reference. Don't guess the styling for a report. For a **React** artifact call **`load_artifact_kit()`** instead — it lists the prebuilt `@cc/ui` components (stat tiles, bar/donut/trend charts, data tables, timelines, decision boxes, buttons that submit back to you) in a few hundred tokens; then `load_artifact_kit("Stat,Table")` for the exact props of just the ones you use. Importing them is far cheaper and more reliable than hand-writing the markup.
@@ -563,7 +585,8 @@ COMPACT_SECTIONS: tuple[Section, ...] = (
     Section("crm", _CRM, (
         "crm_list_records/crm_get_record/crm_aggregate/crm_report/"
         "crm_stage_dwell/... — read the CRM as the member; the server "
-        "computes every number"
+        "computes every number; a month with no year is the latest started one; filter "
+        "only on what the member named; pass the member's word as term"
     )),
     Section("crm", ("crm_search_notes",), (
         "crm_search_notes(query,limit?) — CRM notes by meaning; a number "

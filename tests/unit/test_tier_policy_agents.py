@@ -579,6 +579,10 @@ class TestSubAgents:
     ) -> None:
         executor = pytest.importorskip("orchestrator.executor")
         routes_agent = pytest.importorskip("gateway.routes.agent")
+        # Since 2026-10-19 a delegated Copilot agent is refused before it runs
+        # (D84, D92, test_copilot_specialist_refused.py). The Copilot sub-agent
+        # branch stays as a second layer, so this test switches the refusal off.
+        monkeypatch.setattr(executor, "refuse_copilot_specialist", lambda *_a, **_k: None)
         for flag, parent, kind, expected in (
             ("task-manager", "tier-fast", "code", "tier-powerful"),
             ("task-manager", "tier-powerful", "chat", "tier-balanced"),

@@ -20,6 +20,7 @@ and is recorded in the spec. The fence is the bound below.
 from __future__ import annotations
 
 import random
+import re
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -28,6 +29,11 @@ from acb_common.number_check import check
 
 #: The aim of round 3: fewer than 10 percent of invented figures pass.
 MAX_PASS_RATE = 0.10
+#: The aim of round 4, with k cited figures in the sentence: under 5 percent.
+MAX_PASS_RATE_K = 0.05
+#: The counts of cited figures of the round 4 corpus (the shape of the
+#: reviewer's probe4: a stage breakdown, not two figures).
+CITED = (4, 6, 10)
 
 LAKH = 100_000
 CRORE = 10_000_000
@@ -96,19 +102,19 @@ def _draw(rng: random.Random, form: str) -> tuple[str, Decimal, Decimal, bool]:
         return f"₹{x} lakh", Decimal(x * LAKH), Decimal(LAKH) / 2, False
     if form == "one decimal lakh":
         x = Decimal(rng.randint(100, 3000)) / 10
-        return f"₹{x} lakh", x * LAKH, Decimal(LAKH) / 20, False
+        return f"₹{x:.1f} lakh", x * LAKH, Decimal(LAKH) / 20, False
     if form == "about lakh":
         x = Decimal(rng.randint(100, 3000)) / 10
-        return f"about ₹{x} lakh", x * LAKH, Decimal(LAKH) / 20, True
+        return f"about ₹{x:.1f} lakh", x * LAKH, Decimal(LAKH) / 20, True
     if form == "one decimal crore":
         x = Decimal(rng.randint(10, 30)) / 10
-        return f"₹{x} crore", x * CRORE, Decimal(CRORE) / 20, False
+        return f"₹{x:.1f} crore", x * CRORE, Decimal(CRORE) / 20, False
     if form == "whole percent":
         x = rng.randint(1, 300)
         return f"{x}%", Decimal(x), Decimal("0.5"), False
     if form == "one decimal percent":
         x = Decimal(rng.randint(10, 3000)) / 10
-        return f"{x}%", x, Decimal("0.05"), False
+        return f"{x:.1f}%", x, Decimal("0.05"), False
     x = rng.randint(1, 800)
     return f"{x} deals", Decimal(x), Decimal("0.5"), False
 
@@ -173,3 +179,55 @@ def test_the_cited_operands_of_each_case_pass(groups: int) -> None:
     for case in invented_cases(groups=groups):
         head = case.answer.rsplit(", so the gap is", 1)[0] + "."
         assert check(head, list(case.sources)).ok, head
+
+
+def cited_cases(k: int, n: int = 200, seed: int = 7, groups: int = 12) -> list[Case]:
+    """Round 4: *n* answers that each cite *k* true figures in ONE sentence
+    and then state one invented figure after "so the gap is".
+
+    The oracle: an invented figure is no direct source value, and no sum,
+    difference or percent of the two figures right before it. Those two are
+    the operands that the rule of round 4 lets a derived figure use.
+    """
+    rng = random.Random(seed)
+    forms = _forms()
+    cases: list[Case] = []
+    while len(cases) < n:
+        form, kind = rng.choice(forms)
+        money_text, money = _money_result(rng, groups)
+        count_text, counts = _count_result(rng)
+        pool = counts if kind == "count" else money
+        cited = rng.sample(pool[:-1], min(k, len(pool) - 1))
+        text, value, room, approx = _draw(rng, form)
+        direct = [Decimal(v) for v in (*money, *counts)]
+        direct_room = max(room, value * Decimal("0.10")) if approx else room
+        if _near(value, direct, direct_room):
+            continue
+        if _near(value, _pair_values(cited[-2], cited[-1]), room):
+            continue
+        if kind == "count":
+            cite = ", ".join(f"{c} deals in stage {chr(65 + i)}" for i, c in enumerate(cited))
+        else:
+            cite = ", ".join(f"owner {chr(65 + i)} holds INR {c:,}" for i, c in enumerate(cited))
+        answer = f"Of the pipeline, {cite}, so the gap is {text}."
+        cases.append(Case(answer, (money_text, count_text), form))
+    return cases
+
+
+@pytest.mark.parametrize("k", CITED)
+def test_invented_figures_beside_many_cited_figures_fail(k: int) -> None:
+    """The fence of round 4, rule 4: with k cited figures in the sentence,
+    fewer than 5 percent of invented figures pass."""
+    cases = cited_cases(k)
+    rate = pass_rate(cases)
+    assert rate < MAX_PASS_RATE_K, f"k={k}: {rate:.1%} of {len(cases)} passed"
+
+
+def test_a_one_decimal_form_states_its_decimal() -> None:
+    """The precision fix of round 4: "₹10.0 lakh", never "₹10 lakh"."""
+    rng = random.Random(1)
+    for form in ("one decimal lakh", "about lakh", "one decimal crore",
+                 "one decimal percent"):
+        for _ in range(50):
+            text, *_rest = _draw(rng, form)
+            assert re.search(r"\d\.\d(?!\d)", text), text

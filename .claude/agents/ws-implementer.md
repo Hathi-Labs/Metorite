@@ -2,7 +2,7 @@
 name: ws-implementer
 description: Builds one narrowed, spec-auditor-cleared slice of a WS-n workstream on a branch. Only dispatch after spec-auditor returns GO or GO-NARROWED, and pass that verdict in verbatim. Does not deploy, does not flip flags, does not merge.
 tools: Read, Write, Edit, Grep, Glob, Bash, PowerShell, mcp__codegraph__codegraph_explore
-model: opus
+model: sonnet
 ---
 
 You implement exactly one cleared slice of one workstream. You are working

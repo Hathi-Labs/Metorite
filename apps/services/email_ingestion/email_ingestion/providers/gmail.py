@@ -1363,6 +1363,23 @@ class GmailProvider(BaseEmailProvider):
         await self._fill_attachment_bodies(client, raw)
         return self._parse_gmail_message(raw)
 
+    async def get_reply_to(
+        self, provider_message_id: str, *,
+        folder: str | None = None, message_id: str | None = None,
+    ) -> list[str]:
+        """The Reply-To of one message, from its metadata (EM-CR). One read of
+        the one header, with no body. A Gmail id is unique in the mailbox, so
+        *folder* and *message_id* change nothing."""
+        client = await self._get_client()
+        resp = await client.get(
+            f"/users/me/messages/{provider_message_id}",
+            params={"format": "metadata", "metadataHeaders": "Reply-To"},
+        )
+        resp.raise_for_status()
+        headers = self._parse_headers(
+            ((resp.json() or {}).get("payload") or {}).get("headers") or [])
+        return [a for _n, a in getaddresses([headers.get("reply-to", "")]) if "@" in a]
+
     async def _fill_attachment_bodies(
         self, client: httpx.AsyncClient, raw: dict[str, Any],
     ) -> None:

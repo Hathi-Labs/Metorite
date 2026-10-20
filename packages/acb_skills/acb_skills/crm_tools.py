@@ -289,7 +289,8 @@ def _detail_href(resp: Any) -> str | None:
 _QUESTION_ID = re.compile(
     r"^(revenue|purpose:[A-Za-z][A-Za-z0-9_]{0,99}"
     r"|key:[A-Za-z][A-Za-z0-9_]{0,99}:(amount|date|status|parent)"
-    r"|rule:[0-9a-f]{16})$"
+    r"|rule:[0-9a-f]{16}"
+    r"|term:[A-Za-z][A-Za-z0-9_]{0,99}:[a-z0-9-]{1,40})$"
 )
 
 
@@ -379,6 +380,102 @@ async def crm_mode() -> str | None:
     return str(mode) if mode else None
 
 
+# ── The reads of one run: a cache and a budget (§18.16 part 3) ──────────────
+#
+# A production run of 2026-10-19 made 48 tool calls in 890 s: 24
+# crm_aggregate, 10 crm_list_fields (4 of them in one step, for the same
+# module), 9 crm_get_module_record and 7 crm_list_module_records. Each call
+# costs a model round. The run's holder now keeps the field list of each
+# module, and stops the reads at a budget with one plain instruction.
+
+#: The most ``crm_aggregate`` calls of one run before the budget line.
+AGGREGATE_BUDGET = 8
+#: The most CRM reads of one run, of all the read tools together.
+READ_BUDGET = 20
+#: What a read past the budget answers. It reads nothing.
+BUDGET_LINE = (
+    "BUDGET: this answer read the CRM {n} times already, and no more reads are open. "
+    "Answer with what you have, and state the assumption that the answer makes."
+)
+#: What a second ``crm_list_fields`` of one module in one run adds.
+FIELDS_CACHED_NOTE = "(The same list as the earlier crm_list_fields call of this answer.)"
+
+#: The tools that the budget counts. The pick and the rule tools are no read.
+_BUDGETED = frozenset({
+    "crm_list_records", "crm_get_record", "crm_list_fields", "crm_list_pipelines",
+    "crm_deal_contacts", "crm_list_owners", "crm_report", "crm_aggregate",
+    "crm_stage_dwell", "crm_list_modules", "crm_list_module_records",
+    "crm_get_module_record", "crm_search_notes",
+})
+
+
+@dataclasses.dataclass
+class RunReads:
+    """The CRM reads of ONE run (§18.16 part 3). It lives in the run's
+    holder (:class:`CrmAsks` on the web, :class:`TextAsks` on WhatsApp), so
+    a run with no holder has no cache and no budget, as before."""
+
+    aggregates: int = 0
+    total: int = 0
+    #: ``(entity slug, page)`` → the answer of ``crm_list_fields``.
+    fields: dict[tuple[str, int], str] = dataclasses.field(default_factory=dict)
+
+    def spend(self, tool: str) -> str | None:
+        """Count one read of *tool*. The budget line when the read is past
+        the budget, else None."""
+        if tool == "crm_aggregate" and self.aggregates >= AGGREGATE_BUDGET:
+            return BUDGET_LINE.format(n=self.total)
+        if self.total >= READ_BUDGET:
+            return BUDGET_LINE.format(n=self.total)
+        self.total += 1
+        if tool == "crm_aggregate":
+            self.aggregates += 1
+        return None
+
+
+def _run_reads() -> RunReads | None:
+    """The reads of this run, or None when the run opened no holder."""
+    asks = run_asks()
+    if asks is not None:
+        return asks.reads
+    texts = run_text_asks()
+    return texts.reads if texts is not None else None
+
+
+def _fields_key(args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[str, int] | None:
+    """The cache key of one ``crm_list_fields`` call, or None for a bad
+    entity (the tool then gives its own refusal)."""
+    entity = kwargs.get("entity", args[0] if args else "")
+    page = kwargs.get("page", args[1] if len(args) > 1 else 1)
+    try:
+        return _entity_slug(str(entity), allow_module=True), _page(page)
+    except Exception:
+        return None
+
+
+def _budgeted(name: str, fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
+    """*fn* with the cache of the field list and the budget of the run."""
+    if name not in _BUDGETED:
+        return fn
+
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> str:
+        reads = _run_reads()
+        if reads is None:
+            return await fn(*args, **kwargs)
+        key = _fields_key(args, kwargs) if name == "crm_list_fields" else None
+        if key is not None and key in reads.fields:
+            return f"{reads.fields[key]}\n{FIELDS_CACHED_NOTE}"
+        over = reads.spend(name)
+        if over is not None:
+            return over
+        out = await fn(*args, **kwargs)
+        if key is not None and isinstance(out, str) and not out.startswith("Refused"):
+            reads.fields[key] = out
+        return out
+    return wrapper
+
+
 def _answers_refusals(
     fn: Callable[..., Awaitable[str]],
 ) -> Callable[..., Awaitable[str]]:
@@ -404,7 +501,7 @@ def _read_tool(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str
     name with no entry there is a KeyError at import, never a tool with no
     ``open_world`` (H-236).
     """
-    wrapped = refusals_as_text(_answers_refusals(fn), CRM_VOICE)
+    wrapped = _budgeted(fn.__name__, refusals_as_text(_answers_refusals(fn), CRM_VOICE))
     wrapped.__tool_risk__ = TOOL_ANNOTATIONS[fn.__name__]  # type: ignore[attr-defined]
     return wrapped
 
@@ -1226,6 +1323,10 @@ async def crm_report(kind: str, page: int = 1, make_report: bool = False) -> str
             for o in data.get("owners") or []
         ]
     shown = _page_of(lines, page, "lines")
+    # CRM-Q29 fix round 4: an answer states the window ("in the last 90
+    # days"), so the result says it, and the number check finds it.
+    head = ([f"The window is the last {int(data['window_days'])} days."]
+            if report in ("win-loss", "owners") and data.get("window_days") else [])
     tail = [shown.line] if shown.line else []
     if report == "owners" and int(data.get("omitted") or 0):
         # The route keeps the biggest owners and counts the rest.
@@ -1235,7 +1336,8 @@ async def crm_report(kind: str, page: int = 1, make_report: bool = False) -> str
     outcome = await by_code(lambda: _crm_report_spec(report, data), make_report,
                             tool="crm_report",
                             say="Say in one or two lines what the report shows.")
-    return f"CRM report {report}:\n" + "\n".join([*shown.items, *tail, *outcome.lines])
+    return f"CRM report {report}:\n" + "\n".join(
+        [*head, *shown.items, *tail, *outcome.lines])
 
 
 def _no_deals(report: str, data: dict[str, Any]) -> bool:
@@ -1356,6 +1458,7 @@ async def crm_aggregate(
     close_to: str | None = None,
     custom: dict[str, str] | None = None,
     field_filters: dict[str, str] | None = None,
+    term: str | None = None,
     page: int = 1,
 ) -> str:
     """Count, sum or average CRM records, as one total or by one group. The
@@ -1377,7 +1480,11 @@ async def crm_aggregate(
     {'key.from': date, 'key.to': date} for a date field.
     On a module, 'sum_amount' sums its amount, and field, group_field and
     field_filters also take the key words '@amount', '@date', '@status' and
-    '@parent' (crm_list_modules names the key fields)."""
+    '@parent' (crm_list_modules names the key fields). On a module, term is
+    the member's own word for the figure (for example 'service fees'): the
+    server maps it to one field the same way each time, and give no field
+    with it. When two fields give different totals, the answer says to ask
+    the member first, with both totals."""
     slug = _entity_slug(entity, allow_module=True)
     params = _filters(
         q=q, status=status, owner=owner, pipeline_id=pipeline_id,
@@ -1395,6 +1502,8 @@ async def crm_aggregate(
         entity=slug, group_by=group_by, measure=measure, field=field,
         group_field=group_field, bucket=bucket,
     )
+    if term and str(term).strip():
+        return await _term_total(slug, params, page, str(term).strip())
     return await _aggregate_text(slug, params, page)
 
 
@@ -1436,6 +1545,8 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
     what = _measure_words(measure, field, data)
     plural = f"{ENTITY_LABELS[slug]}s" if slug in ENTITY_LABELS else _entity_label(slug)
     note = await _short_note(frozenset({slug}))
+    # §18.16 part 7: each filter, and the values that it counted.
+    filters = [line for line in (filters_line(params, data),) if line]
     overlay = data.get("overlay") if isinstance(data.get("overlay"), dict) else None
     mine = [chosen] if chosen else []
     if not group_by and not group_field:
@@ -1443,7 +1554,7 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
         head = _one_total(f"{plural}, {what}", data, field or data.get("field"),
                           measure, fmt)
         lines = await _total_tail(head, slug, data, overlay)
-        lines.extend([*mine, *await _revenue_lines(slug, measure, box)])
+        lines.extend([*filters, *mine, *await _revenue_lines(slug, measure, box)])
         return "\n".join(lines) + note
     grouped = data.get("group_field_label") or group_field
     by = group_by or f"{grouped}" + (f" ({bucket})" if bucket else "")
@@ -1472,7 +1583,7 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
         # A `date` bucket takes no zone, so the line would be false there.
         lines.append(f"Months count in the CRM time zone, {zone}.")
     lines.extend(await _hint_lines(slug, data, overlay))
-    lines.extend([*mine, *await _revenue_lines(slug, measure, box)])
+    lines.extend([*filters, *mine, *await _revenue_lines(slug, measure, box)])
     return "\n".join(lines) + note
 
 
@@ -1710,6 +1821,12 @@ class CrmAsks:
     #: words, another label, another member). The gate then asks the model
     #: to say so, and to show the card again.
     mismatched: set[str] = dataclasses.field(default_factory=set)
+    #: §18.16 part 2: the questions whose card THIS tool offered as the
+    #: follow-up AFTER an answer (CRM-Q33). Such a card never holds the run
+    #: (:func:`follow_up_park_after`).
+    follow_ups: set[str] = dataclasses.field(default_factory=set)
+    #: §18.16 part 3: the reads of this run, for the cache and the budget.
+    reads: RunReads = dataclasses.field(default_factory=lambda: RunReads())
 
     def take(self, question_id: str) -> bool:
         """Count *question_id* as asked, and say whether a card may show:
@@ -1927,6 +2044,8 @@ def _not_clear_of_id(question_id: str) -> str:
     if question_id == "revenue":
         return "Not clear: whether revenue means what you billed or what you collected."
     parts = question_id.split(":")
+    if parts[0] == "term" and len(parts) == 3:
+        return f"Not clear: which field of module:{parts[1]} the word means."
     if parts[0] == "key" and len(parts) == 3:
         word = "customer link" if parts[2] == "parent" else parts[2]
         return f"Not clear: which field holds the {word} of module:{parts[1]}."
@@ -2198,6 +2317,8 @@ class TextAsks:
     ask: dict[str, str] | None = None
     #: The notes of "How I got this" of this run (CRM-Q33 fix round 1).
     notes: list[str] = dataclasses.field(default_factory=list)
+    #: §18.16 part 3: the reads of this run, for the cache and the budget.
+    reads: RunReads = dataclasses.field(default_factory=lambda: RunReads())
 
     def take(self, kind: str, ident: str) -> bool:
         """Name the one follow-up of this run. True for the first, and for
@@ -2272,6 +2393,11 @@ def _follow_up(q: dict[str, Any], href: str | None, box: dict[str, bool] | None)
     if _card_may_show(qid):
         if box is not None:
             box["used"] = True
+        asks = run_asks()
+        if asks is not None:
+            # §18.16 part 2: this card comes AFTER the answer, so it never
+            # holds the run (:func:`follow_up_park_after`).
+            asks.follow_ups.add(qid)
         return _after_block(q, href)
     texts = run_text_asks()
     if texts is not None and texts.take("question", qid):
@@ -2279,6 +2405,28 @@ def _follow_up(q: dict[str, Any], href: str | None, box: dict[str, bool] | None)
             box["used"] = True
         return TEXT_ASK_LINE
     return ""
+
+
+#: §18.16 part 2: the seconds that a follow-up card waits before its run
+#: parks. The answer streamed already, so the run has nothing to wait for.
+#: Two seconds lets the durable row of the card land first.
+FOLLOW_UP_PARK_SECONDS = 2.0
+
+
+def follow_up_park_after(cleaned: list[dict[str, Any]]) -> float | None:
+    """:data:`FOLLOW_UP_PARK_SECONDS` when *cleaned* (the card as
+    ``ask_questions`` shows it) is the ONE follow-up card that this run's
+    tool offered after an answer, else None. ``ask_questions`` passes it to
+    ``executor.wait_user_future``, so the run parks and ends, and the
+    member's later pick takes the late path of CRM-Q32-8 (a new run, and the
+    gate reads the pick once). A CLARIFY card of CRM-Q32-8 asks BEFORE the
+    answer, so it still waits."""
+    asks = run_asks()
+    if asks is None or not isinstance(cleaned, list) or len(cleaned) != 1:
+        return None
+    shown = cleaned[0]
+    qid = shown.get("crm_question") if isinstance(shown, dict) else None
+    return FOLLOW_UP_PARK_SECONDS if qid and str(qid) in asks.follow_ups else None
 
 
 def lakh_crore(value: float) -> str:
@@ -2381,6 +2529,227 @@ async def _ask_revenue(module: str, purpose: str,
     if q.get("held") or not _card_may_show("revenue"):
         return f"{_not_clear(q)}\n{REVENUE_DEFAULT_LINE}"
     return _clarify_block(q, href, REVENUE_DEFAULT_LINE)
+
+
+# ── The member's own word for a figure (§18.16 part 4) ──────────────────────
+#
+# Owner directive, 2026-10-19: one word maps to one field the same way each
+# time, and the AI asks only when it is genuinely unsure. The server decides
+# who picks the field (``GET /crm/terms/resolve``). The tool reads a total
+# for each choice, so a question carries real figures and the pick needs no
+# other read.
+
+#: The share within which the totals of two fields read as one answer. The
+#: same number as ``gateway.crm_sync.terms.CLOSE_SHARE``, and a test holds
+#: the two equal.
+CLOSE_SHARE = 0.05
+#: The most choices whose total one term reads.
+TERM_TOTALS = 2
+#: The marker of a question that comes BEFORE the answer.
+ASK_FIRST = "ASK FIRST"
+#: What a WhatsApp run says when the gateway asks the term after the reply.
+TEXT_ASK_FIRST = (
+    f"{ASK_FIRST}: Metorite asks the member one question after your reply, with numbered "
+    "options and the total of each. Write ONE short line that you need one detail first. "
+    "Give no total, and do not write the question yourself."
+)
+
+
+def _term_measure(measure: str) -> str:
+    """The measure of a term: a sum, unless the call asked for an average, a
+    least or a greatest value."""
+    return measure if measure in ("avg", "min", "max") else "sum"
+
+
+def _close(totals: list[Any]) -> bool:
+    """True when each total is within :data:`CLOSE_SHARE` of the largest."""
+    found = [abs(float(t)) for t in totals if isinstance(t, (int, float))]
+    if len(found) < 2:
+        return True
+    top = max(found)
+    return top == 0 or (top - min(found)) <= CLOSE_SHARE * top
+
+
+def _term_figure(data: dict[str, Any]) -> str:
+    total = data.get("total") if isinstance(data, dict) else None
+    return lakh_crore(float(total)) if isinstance(total, (int, float)) else "no value"
+
+
+def _range_words(name: str, ends: dict[str, str]) -> str:
+    start, stop = ends.get(".from"), ends.get(".to")
+    if start and stop:
+        return f"{name} from {start} to {stop}"
+    return f"{name} from {start}" if start else f"{name} up to {stop}"
+
+
+def filters_line(params: dict[str, Any], data: dict[str, Any] | None) -> str:
+    """"Filters: Region is North (counted North, NORTH and NTH); Date from
+    2026-09-01 to 2026-09-30." for the field filters of a module total, or
+    empty (§18.16 part 7). The counted values come from ``matched`` of the
+    answer, so the member sees each variant that the total holds."""
+    matched = (data or {}).get("matched") if isinstance(data, dict) else None
+    matched = matched if isinstance(matched, dict) else {}
+    plain: list[str] = []
+    ranges: dict[str, dict[str, str]] = {}
+    for name, value in params.items():
+        if not name.startswith("field.") or value is None:
+            continue
+        key = name[len("field."):]
+        end = next((e for e in (".from", ".to") if key.endswith(e)), None)
+        if end is not None:
+            ranges.setdefault(key[: -len(end)], {})[end] = str(value)
+            continue
+        counted = [str(v) for v in matched.get(key) or []]
+        line = f"{key} is {value}"
+        if len(counted) > 1 or (counted and counted != [str(value)]):
+            line += f" (counted {_names(counted)})"
+        plain.append(line)
+    parts = plain + [_range_words(k, ends) for k, ends in ranges.items()]
+    return f"Filters: {'; '.join(parts)}." if parts else ""
+
+
+async def _term_read(params: dict[str, Any], key: str) -> dict[str, Any]:
+    """One total of the term on the field *key*, with the call's filters. A
+    refusal gives an empty answer."""
+    again = {**params, "field": key, "measure": _term_measure(str(params.get("measure") or ""))}
+    try:
+        data, refusal, _question = await _aggregate_or_refusal(again)
+    except _GatewayError:
+        return {}
+    return data if refusal is None and isinstance(data, dict) else {}
+
+
+def _term_note(term: str, chosen: dict[str, Any], why: str, params: dict[str, Any],
+               data: dict[str, Any], others: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
+    """The plain note of a term total: the field, why, each filter, and the
+    total of each other choice that the tool read."""
+    note = (f'{NOTE_HEAD}: "{term}" reads {chosen.get("label")} ({chosen.get("key")}), '
+            f"because {why}.")
+    filters = filters_line(params, data)
+    if filters:
+        note += f" {filters}"
+    for other, total in others:
+        if total:
+            note += (f" With {other.get('label')} instead, the total is "
+                     f"{_term_figure(total)}.")
+    return note
+
+
+async def _term_answer(slug: str, params: dict[str, Any], page: int | None, term: str,
+                       chosen: dict[str, Any], why: str,
+                       read: dict[str, dict[str, Any]], cands: list[dict[str, Any]]) -> str:
+    """The figure on the chosen field, then the note to show. *read* holds
+    the totals that the tool read already, by key."""
+    measure = _term_measure(str(params.get("measure") or ""))
+    again = {**params, "field": chosen["key"], "measure": measure}
+    figure = await _aggregate_text(slug, again, page)
+    # The one alternative the note names: the first candidate that is not chosen.
+    alt = next((c for c in cands if c.get("key") != chosen.get("key")), None)
+    others = [alt] if alt is not None else []
+    for other in others:
+        if other["key"] not in read:
+            read[other["key"]] = await _term_read(params, other["key"])
+    data = read.get(chosen["key"]) or await _term_read(params, chosen["key"])
+    plain = _term_note(term, chosen, why, params, data,
+                       [(o, read.get(o["key"]) or {}) for o in others])
+    _register_note(plain)
+    return f"{figure}\n{SHOW_NOTE}: {plain}"
+
+
+def _one_question_open() -> bool:
+    """True while this run asked no question yet: one question a turn."""
+    asks = run_asks()
+    texts = run_text_asks()
+    return not (asks is not None and asks.asked) and not (texts is not None and texts.ask)
+
+
+def _ask_first_block(q: dict[str, Any], term: str, figures: dict[str, str]) -> str:
+    """The question BEFORE the answer, with the total of each option, so the
+    pick needs no other read (owner directive, 2026-10-19)."""
+    import json
+
+    payload, keys = _card(q)
+    for option in payload["questions"][0]["options"]:
+        if option.get("key") in figures:
+            option["description"] = f"Total: {figures[option['key']]}"
+    qid = str(q.get("id"))
+    _expect(qid, payload, keys)
+    totals = [f"- {label}: {figures[key]}" for label, key in keys if key in figures]
+    lines = [
+        f'{ASK_FIRST}: "{term}" can mean more than one field, and their totals differ by '
+        f"more than {round(CLOSE_SHARE * 100)}%. Ask the member before you give a total.",
+        "The totals, read already:", *totals,
+        f'1. Say in one short sentence that "{term}" can mean two different figures.',
+        "2. Call ask_questions with this payload, as it is:",
+        json.dumps(payload, ensure_ascii=False),
+        f'3. Send the KEY of the option that the member picks: '
+        f'crm_answer_question(question_id="{qid}", choice="<key>"). The keys:',
+        *(f'- "{label}" -> {key}' for label, key in keys),
+        "4. Then give the total of the picked option from the list above, with the "
+        "filters. No other read is needed.",
+        "If the member picks the last option, give the first total and say that it is "
+        "an assumption.",
+    ]
+    if not q.get("can_answer"):
+        lines.append("The member is not a CRM admin. The pick is the member's own choice, "
+                     "and a CRM admin can confirm it for everyone.")
+    return "\n".join(lines)
+
+
+async def _term_total(slug: str, params: dict[str, Any], page: int | None, term: str) -> str:
+    """A total of the member's own word *term* (§18.16 part 4), by the
+    confidence rule:
+
+    * Clear: one field decides (an admin, a rule, a pick, the one match),
+      or the totals of the fields are within :data:`CLOSE_SHARE`. Then the
+      answer comes first, with the note and one other total.
+    * Unsure: the totals differ, and nothing decides. Then the member is
+      asked FIRST, once, with the total of each option. On the web it is a
+      card, and on WhatsApp the gateway asks in numbered text.
+    """
+    if not slug.startswith(MODULE_PREFIX):
+        return "term goes with a module entity: 'module:<api_name>'. Use field on a record type."
+    body = await _get("/crm/terms/resolve", {"entity": slug, "term": term}) or {}
+    cands = [c for c in body.get("candidates") or [] if isinstance(c, dict) and c.get("key")]
+    word = str(body.get("word") or term)
+    if not cands:
+        return (f'No money field of {_entity_label(slug)} matches "{word}". Call '
+                f'crm_list_fields("{slug}"), and give the field that the member means.')
+    read: dict[str, dict[str, Any]] = {}
+    decided = body.get("field")
+    if decided and body.get("by"):
+        chosen = next((c for c in cands if c["key"] == decided), cands[0])
+        return await _term_answer(slug, params, page, word, chosen,
+                                  str(body.get("why") or "it decides"), read, cands)
+    # The best TERM_TOTALS candidates, by rank. Each one costs one aggregate,
+    # so the read budget bounds them; they are options, not rows.
+    top: list[dict[str, Any]] = []
+    for c in cands:
+        if len(top) == TERM_TOTALS:
+            break
+        top.append(c)
+    for c in top:
+        read[c["key"]] = await _term_read(params, c["key"])
+    if body.get("held"):
+        why = "you kept the best guess for now"
+    elif _close([read[c["key"]].get("total") for c in top]):
+        why = (f"the matching fields give totals within {round(CLOSE_SHARE * 100)}% of each "
+               "other, and it holds the most values")
+    else:
+        why = ""
+    q = body.get("ask") if isinstance(body.get("ask"), dict) else None
+    if not why and q is not None and _one_question_open():
+        figures = {c["key"]: _term_figure(read[c["key"]]) for c in top}
+        if _card_may_show(str(q.get("id"))):
+            return _ask_first_block(q, word, figures)
+        texts = run_text_asks()
+        if texts is not None and texts.take("question", str(q.get("id"))):
+            texts.ask = {**(texts.ask or {}), "figures": figures}
+            totals = "\n".join(f"- {c['label']}: {figures[c['key']]}" for c in top)
+            return f"{TEXT_ASK_FIRST}\nThe totals, for you only:\n{totals}"
+    if not why:
+        why = "it holds the most values, and no one chose a field yet"
+    return await _term_answer(slug, params, page, word, cands[0], why, read, cands)
 
 
 #: What ``crm_answer_question`` answers when this run showed no card of the
@@ -2522,6 +2891,10 @@ async def crm_answer_question(question_id: str, choice: str) -> str:
     body = await _post(f"/crm/questions/{question}/reply", {"choice": key}) or {}
     result = str(body.get("result") or "")
     line = str(body.get("line") or "")
+    if question.startswith(TERM_ID_PREFIX) and result in ("answer", "proposal", "kept"):
+        # §18.16 part 4: the question carried the total of each option.
+        return (f"{line}\nGive the total of the picked option from the list of the "
+                "question, with the filters. No other read is needed.")
     if result == "answer":
         return (f"Saved for everyone: {line}\nTo undo it, a CRM admin can change it in CRM "
                 "settings, Your answers.\nCall the read again, and give the final answer. "
@@ -2575,6 +2948,8 @@ CRM_QUESTION_TOOLS: tuple[Callable[..., Awaitable[str]], ...] = (crm_answer_ques
 
 #: The prefix of the id of a held rule on a card.
 RULE_PREFIX = "rule:"
+#: The prefix of the id of a term question (§18.16 part 4).
+TERM_ID_PREFIX = "term:"
 
 #: What the tool answers when the words of a rule are not the member's.
 RULE_NOT_MEMBER = (

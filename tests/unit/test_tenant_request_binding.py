@@ -1100,9 +1100,14 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: deploy restarts the gateway before the edge. The scope keeps the new stamp.
 #: HANDOFF holds the removal. The pins before it were 3.12 ``781888b3…5dbbb29``
 #: and 3.13 ``17748943…ad2a1c44``.
+#:
+#: H-356 (2026-10-20) removes that legacy arm, so branch 0 refuses the host
+#: stamp again. The AST is the one of EA-13a before fix round 1, so the pins
+#: are the same values as before that round. The pins of the legacy arm were
+#: 3.12 ``5987a23f…c6a0876e`` and 3.13 ``8d9596ed…5afd4e3c``.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
-    (3, 12): "5987a23fd2de8cfe7185103986808c7e78d77d6a26b50dbf33b785e8c6a0876e",
-    (3, 13): "8d9596ed5a97db08541cdefe8b1c0673f39ebaed2ccd199cfb1f627f5afd4e3c",
+    (3, 12): "781888b3124bd8e6eb9b5aabc83a69f3af67aa22e5664efa077a855885dbbb29",
+    (3, 13): "17748943ef887e1c2efb9f99b127573e5b5a89dc875b4731ad7909d7ad2a1c44",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see

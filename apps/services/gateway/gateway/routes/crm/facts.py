@@ -173,6 +173,51 @@ async def rule_facts(db: Any, org: str, user: Any) -> list[org_facts.Fact]:
     return out
 
 
+#: The most term facts and value-alias facts of one read (§18.16).
+TERM_FACTS = 12
+ALIAS_FACTS = 12
+
+
+def term_facts(state: Mapping[str, Any] | None, entries: Sequence[Any],
+               sources: Mapping[str, Any]) -> list[org_facts.Fact]:
+    """The org's own words for its figures (§18.16 part 4), as subject
+    ``term:<word>``: each term that the chat met, with the field that an
+    admin set, or the fields that it may mean. And each value alias that a
+    filter seeded (part 6), as subject ``value:<Module>.<key>``. They come
+    from ``zoho:questions``, so no read of a record runs here."""
+    from gateway.crm_sync import terms
+
+    found = terms.term_state(state)
+    labels = {e.module: e.label for e in entries}
+    out: list[org_facts.Fact] = []
+    for qid, asked in sorted(found.asked.items())[:TERM_FACTS]:
+        module, word = asked["module"], asked["word"]
+        src = sources.get(module)
+        if src is None:
+            continue
+        cands = terms.candidates(src.fields, src.fills, word)
+        names = {c.key: c.label for c in cands}
+        label = labels.get(module, module)
+        answer = found.answers.get(qid)
+        if answer in names:
+            out.append(org_facts.fact(
+                APP, f"term:{word}", "term", answer,
+                f'"{word}" in {label} means {names[answer]} ({answer}).', "admin"))
+        elif cands:
+            out.append(org_facts.fact(
+                APP, f"term:{word}", "term", None,
+                f'"{word}" in {label} may mean {_names([c.label for c in cands])}. Pass it '
+                "to crm_aggregate as term, which picks one the same way each time.", "code"))
+    for head, value, values in terms.alias_lines(state)[:ALIAS_FACTS]:
+        module, _sep, key = head.partition(".")
+        others = [v for v in values if v != value]
+        out.append(org_facts.fact(
+            APP, f"value:{head}", "alias", value,
+            f'In {labels.get(module, module)}, {key} "{value}" also reads as {_names(others)}.',
+            "code"))
+    return out
+
+
 def _ordered(entries: Sequence[Any]) -> list[Any]:
     """The money entries first, then the rest, the most records first. An
     entry with no record and no answer of the admin gives no fact."""
@@ -212,10 +257,18 @@ async def crm_facts(db: Any, user: Any) -> list[org_facts.Fact]:
     for entry in _ordered(entries):
         out.extend(entry_facts(entry, approved_at))
     out.extend(plan_facts(others, {e.module: e.label for e in entries}, approved_at))
+    # WS-53 §18.16: the org's own words and its value aliases, last.
+    from gateway.crm_sync import runs
+    from gateway.crm_sync.questions import QUESTIONS_ROW
+
+    cursors = await runs.read_cursors(db, org, QUESTIONS_ROW)
+    state = getattr(cursors.get(QUESTIONS_ROW), "state", None)
+    out.extend(term_facts(state, entries, {src.module: src for src in sources}))
     return out
 
 
 org_facts.register(APP, crm_facts)
 
 
-__all__ = ["APP", "crm_facts", "entry_facts", "plan_facts", "revenue_fact", "rule_facts"]
+__all__ = ["APP", "crm_facts", "entry_facts", "plan_facts", "revenue_fact", "rule_facts",
+           "term_facts"]
