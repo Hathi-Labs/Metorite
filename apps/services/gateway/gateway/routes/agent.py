@@ -1669,6 +1669,7 @@ async def list_agents(
         clone_path = repos_root / a["name"]
         if not (clone_path / ".git").is_dir():
             continue
+        _pin_registry_clone(a["name"], clone_path)  # H-363
         behind = await _git_behind_count(str(clone_path))
         if behind > 0:
             a["behind_by"] = behind
@@ -1845,7 +1846,10 @@ async def pull_agent(
     except Exception:  # noqa: BLE001
         pass
 
-    # Pull latest
+    # Pull latest. H-363: pin the clone from the registry first, so the
+    # read credential goes to the agent's own repo, never to a rewritten
+    # origin.
+    _pin_registry_clone(agent_name, clone_path)
     pull_info: dict[str, Any] = {"strategy": "skipped"}
     try:
         from acb_skills.loader import _pull_latest  # noqa: PLC0415
@@ -4217,6 +4221,10 @@ async def approve_pending_commit(
         reviewer = getattr(user, "sub", None) or getattr(user, "email", "unknown")
         new_sha: str | None = None
         if has_remote:
+            # H-363: the push goes to the repo that the REGISTRY names for
+            # this agent. The seam refuses a clone with no pin, so a clone
+            # whose origin a run rewrote cannot take the operator's token.
+            _pin_registry_clone(row.agent_name, clone_dir)
             # Push.  If the fast-forward fails, rebase and retry.
             push_ok, new_sha = await _git_push_with_rebase(clone_dir, commit_sha)
             if not push_ok:
@@ -4702,6 +4710,36 @@ async def dismiss_mutation_event(
 # ---------------------------------------------------------------------------
 # Git helpers for the approve endpoint
 # ---------------------------------------------------------------------------
+
+def _pin_registry_clone(agent_name: str | None, clone_dir: str | Path) -> bool:
+    """Pin *clone_dir* to the repo that the registry names for *agent_name* (H-363).
+
+    The seam pushes only to a pinned repo, and reads an unpinned clone with
+    no credential, because a run can rewrite the clone's ``origin``. After a
+    gateway restart no clone is pinned until its agent loads, so each route
+    that fetches or pushes pins the clone first, from the REGISTRY. An agent
+    with no registry entry, or a ``local_path`` agent with no repo, gets no
+    pin, so it gets no credential. True when it pinned.
+    """
+    from acb_common import git_credentials as git_auth  # noqa: PLC0415
+
+    if not agent_name:
+        return False
+    try:
+        entries = _load_dynamic_agents() + list(_AGENT_REGISTRY)
+    except Exception:  # noqa: BLE001
+        entries = list(_AGENT_REGISTRY)
+    entry = next((e for e in entries if e.get("name") == agent_name), None)
+    if entry is None or (entry.get("local_path") and not entry.get("repo_name")):
+        return False
+    from acb_skills.loader import agent_remote  # noqa: PLC0415
+
+    remote = agent_remote(agent_name, entry.get("repo_name"))
+    if remote is None:
+        return False
+    git_auth.pin_remote(clone_dir, remote)
+    return True
+
 
 async def _git_behind_count(clone_dir: str) -> int:
     """Return how many commits the local clone is behind origin/HEAD.

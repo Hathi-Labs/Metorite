@@ -197,7 +197,19 @@ def _auto_push_enabled() -> bool:
     )
 
 
-async def _auto_push_commit(agent_dir: str, commit_sha: str) -> bool:
+def _pin_from_registry(agent_name: str | None, agent_dir: str) -> None:
+    """Pin the clone's repo from the registry (H-363). Best effort."""
+    try:
+        from gateway.routes.agent import _pin_registry_clone  # noqa: PLC0415
+
+        _pin_registry_clone(agent_name, agent_dir)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def _auto_push_commit(
+    agent_dir: str, commit_sha: str, agent_name: str | None = None,
+) -> bool:
     """Push the staged commit to origin/HEAD from the local clone.
 
     Returns True on success.  A simple non-rebasing push is used here;
@@ -217,6 +229,7 @@ async def _auto_push_commit(agent_dir: str, commit_sha: str) -> bool:
 
         from acb_common import git_credentials as git_auth  # noqa: PLC0415
 
+        _pin_from_registry(agent_name, agent_dir)
         branch = await asyncio.to_thread(git_auth.current_branch, agent_dir)
         if not branch:
             _log.warning("mutation.auto_push_no_branch", agent_dir=agent_dir)
@@ -472,7 +485,7 @@ async def attempt_self_mutation(
     if commit_staged and commit_sha and agent_dir:
         if _tests_passed(test_summary) and _auto_push_enabled():
             # Tests green AND operator opted into auto-push → push immediately.
-            auto_pushed = await _auto_push_commit(agent_dir, commit_sha)
+            auto_pushed = await _auto_push_commit(agent_dir, commit_sha, agent_name)
 
         commit_status = "approved" if auto_pushed else ("eval_failed" if not _tests_passed(test_summary) else "pending")
         pending_commit_id = await _register_pending_commit(
@@ -801,6 +814,7 @@ async def _stash_pull_before_mutation(
     # the clone never holds the read credential.
     from acb_common import git_credentials as git_auth  # noqa: PLC0415
 
+    _pin_from_registry(agent_name, agent_dir)
     fetched = await asyncio.to_thread(git_auth.fetch, agent_dir, timeout=30)
     rc, stderr = fetched.returncode, fetched.stderr
     if rc != 0:

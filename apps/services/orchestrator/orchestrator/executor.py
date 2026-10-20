@@ -2708,6 +2708,14 @@ async def _push_reviewed_run(agent_name: str, agent_dir: str, run_id: str) -> bo
         return False
     from acb_common import git_credentials as git_auth
 
+    if git_auth.pinned_remote(agent_dir) is None:
+        # A sub-agent's clone, or a restart: pin it from the registry. The
+        # seam refuses a push with no pin.
+        try:
+            from gateway.routes.agent import _pin_registry_clone
+            _pin_registry_clone(agent_name, agent_dir)
+        except Exception:
+            pass
     branch = await asyncio.to_thread(git_auth.current_branch, agent_dir)
     if not branch:
         _log.warning("executor.agent_push_no_branch", agent=agent_name, run_id=run_id)

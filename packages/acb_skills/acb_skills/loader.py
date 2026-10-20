@@ -405,6 +405,26 @@ def _refresh_remote_auth(
     _run_git(["remote", "set-url", "origin", url], cwd=repo_dir)
 
 
+def agent_remote(
+    agent_name: str, repo_name: str | None = None, settings: Any = None,
+) -> git_auth.GitHubRemote | None:
+    """The GitHub repo of *agent_name*, resolved as :func:`load_agent` does.
+
+    ``repo_name`` is the registry's. An ``org/repo`` slug names its own org.
+    It reads the registry and the settings, never the clone. ``None`` for a
+    name that is not a GitHub name.
+    """
+    settings = settings or get_settings()
+    org: str = getattr(settings, "github_org", "FracktalWorks")
+    repo = repo_name or f"agent-{agent_name}"
+    if repo_name and "/" in repo_name:
+        org, repo = repo_name.split("/", 1)
+    try:
+        return git_auth.GitHubRemote(org, repo.removesuffix(".git"))
+    except ValueError:
+        return None
+
+
 def scrub_clone_credentials(
     settings: Any = None, *, home: Path | None = None,
 ) -> list[str]:

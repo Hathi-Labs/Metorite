@@ -217,6 +217,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 except Exception:
                     continue
                 if _ws is not None:
+                    # H-363: pin the clone's repo from the registry, so a
+                    # push or a credentialed read after this restart goes to
+                    # the agent's own repo.
+                    try:
+                        from gateway.routes.agent import _pin_registry_clone
+
+                        _pin_registry_clone(name, _ws)
+                    except Exception:
+                        pass
                     # Already cloned — ensure its declared deps are installed
                     # into agent-site (WS-49 BH-7; idempotent, a no-op when
                     # unchanged), so its tools work before the next run.

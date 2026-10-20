@@ -287,6 +287,7 @@ def test_only_the_network_process_holds_the_credential(
     clone = root / "x"
     _git(root, "clone", "-q", str(origin), str(clone))
     _git(clone, "remote", "set-url", "origin", GH_URL)
+    gc.pin_remote(clone, gc.GitHubRemote(OWNER, REPO))  # as the loader does
     assert gc.fetch(clone).ok
     cred = _credentialed(fake_github)
     assert len(cred) == 1 and "fetch" in cred[0]["argv"]
@@ -296,6 +297,34 @@ def test_only_the_network_process_holds_the_credential(
     for call in fake_github:
         if call not in cred:
             assert gc.CREDENTIAL_ENV not in call["extra"]
+
+
+def test_the_credentialed_fetch_starts_no_git_in_the_clone(
+    tmp_path: Path, home: Path, tokens: dict, origin: Path, fake_github: list,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rule 3: git lists an alternate's refs with a child IN the clone.
+
+    That child reads the clone's config with the credential in its env.
+    ``GIT_TRACE`` shows each child that git starts.
+    """
+    root = tmp_path / "repos"
+    root.mkdir()
+    clone = root / "x"
+    _git(root, "clone", "-q", str(origin), str(clone))
+    _git(clone, "remote", "set-url", "origin", GH_URL)
+    gc.pin_remote(clone, gc.GitHubRemote(OWNER, REPO))
+    trace = tmp_path / "trace.txt"
+    monkeypatch.setitem(gc._PLAIN_EXTRA, "GIT_TRACE", str(trace))
+    seed = tmp_path / "seed"
+    _commit(seed, "upstream-2")
+    _git(seed, "push", "-q", str(origin), "main:main")
+    assert gc.fetch(clone).ok
+    lines = trace.read_text(encoding="utf-8", errors="replace").splitlines()
+    clone_git = (clone / ".git").resolve().as_posix().lower()
+    starts = [ln for ln in lines if "run_command:" in ln and "for-each-ref" in ln
+              and clone_git in ln.replace("\\", "/").lower()]
+    assert not starts, "a credentialed git started a child in the clone:\n" + "\n".join(starts)
 
 
 # ── 3. The helper ────────────────────────────────────────────────────────────
@@ -363,6 +392,8 @@ def agent_clone(tmp_path: Path, home: Path, origin: Path) -> tuple[Path, str, st
     clone = root / "x"
     _git(root, "clone", "-q", str(origin), str(clone))
     _git(clone, "remote", "set-url", "origin", GH_URL)
+    # The loader pins each clone's repo when it loads the agent.
+    gc.pin_remote(clone, gc.GitHubRemote(OWNER, REPO))
     base = _git(clone, "rev-parse", "HEAD")
     head = _commit(clone, "agent-change")
     return clone, base, head
@@ -481,6 +512,50 @@ def test_a_reviewer_push_goes_to_the_pinned_repo_not_to_origin(
     assert len(pushes) == 1 and GH_URL in pushes[0]["argv"]
     assert all(other not in a for c in fake_github for a in c["argv"])
     assert _git(origin, "rev-parse", "main") == head
+
+
+def test_a_clone_with_no_record_gets_no_credential(
+    monkeypatch: pytest.MonkeyPatch, tokens: dict, origin: Path, fake_github: list,
+    agent_clone: tuple[Path, str, str],
+) -> None:
+    """After a restart no clone is pinned. Its agent-writable origin gets nothing.
+
+    A reviewer asked to push, and the registry has no entry for the agent.
+    The push is refused, and a fetch reads with NO credential.
+    """
+    import gateway.routes.agent as agent_routes
+    from acb_skills import permission_policy as pp
+
+    clone, base, _head = agent_clone
+    monkeypatch.setattr(gc, "_PINNED", {})
+    monkeypatch.setattr(agent_routes, "_load_dynamic_agents", lambda: [])
+    with _run_scope("run-unpinned", push_allowed=True):
+        assert pp.note_agent_push_request() is True
+    _detect(monkeypatch, clone, base, "run-unpinned", (True, ""))
+    assert _credentialed(fake_github) == [], "an unpinned clone got the credential"
+    assert _git(origin, "rev-parse", "main") == base
+    assert gc.fetch(clone).ok, "a read of an unpinned clone must still work"
+    assert _credentialed(fake_github) == []
+
+
+def test_the_routes_pin_a_clone_from_the_registry(
+    monkeypatch: pytest.MonkeyPatch, agent_clone: tuple[Path, str, str],
+) -> None:
+    import gateway.routes.agent as agent_routes
+
+    clone, _base, _head = agent_clone
+    monkeypatch.setattr(gc, "_PINNED", {})
+    entries = [
+        {"name": "x", "repo_name": f"{OWNER}/{REPO}"},
+        {"name": "local", "local_path": "C:/dev/local"},
+    ]
+    monkeypatch.setattr(agent_routes, "_load_dynamic_agents", lambda: entries)
+    _git(clone, "remote", "set-url", "origin", "https://github.com/FracktalWorks/Metorite.git")
+    assert agent_routes._pin_registry_clone("x", clone) is True
+    assert gc.pinned_remote(clone) == gc.GitHubRemote(OWNER, REPO), "the pin read origin"
+    assert agent_routes._pin_registry_clone("local", clone.parent / "local") is False
+    assert agent_routes._pin_registry_clone("nobody", clone.parent / "nobody") is False
+    assert gc.pinned_remote(clone.parent / "nobody") is None
 
 
 def test_no_push_request_means_no_push(
