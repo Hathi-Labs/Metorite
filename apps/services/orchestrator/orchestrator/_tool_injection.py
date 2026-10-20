@@ -1065,7 +1065,7 @@ def _gate_injected_tool(fn: Any) -> Any:
             allowed, reason = _gate(kwargs, marked)
             if not allowed:
                 return f"[blocked by permission policy: {reason}]"
-            if _after_untrusted_answer(reason, marked):
+            if _after_untrusted_answer(reason, marked) and not _handoff_child_held(fn):
                 held = await _untrusted_answer_hold(tool_name, kwargs)
                 if held is not None:
                     return held
@@ -1080,7 +1080,7 @@ def _gate_injected_tool(fn: Any) -> Any:
         allowed, reason = _gate(kwargs)
         if not allowed:
             return f"[blocked by permission policy: {reason}]"
-        if _after_untrusted_answer(reason):
+        if _after_untrusted_answer(reason) and not _handoff_child_held(fn):
             # A sync tool cannot wait for a card, so it is refused. A
             # WhatsApp run waits for no card (WS-47 WAC-P4): it parks the
             # call, or runs the call that the member confirmed.
@@ -1204,6 +1204,39 @@ UNTRUSTED_ANSWER_REFUSED = (
     "approval, and the member did not approve it. Do not ask again for the "
     "same call. Answer with what you have."
 )
+
+
+def _handoff_child_held(fn: Any) -> bool:
+    """True when *fn* hands work to a specialist whose run will be held (EM-CR).
+
+    The owner asked on 2026-10-20 that the agent may read an email with no
+    permission prompt. The untrusted-answer card on a hand-off guarded
+    nothing in a marked session: the run that the hand-off starts binds
+    ``no_egress`` there (:func:`_delegated_no_egress`), so it holds no send,
+    and each write of it asks its own card. So a hand-off whose child will be
+    held asks no card.
+
+    The answer comes from :func:`_run_no_egress`, the ONE function that the
+    executor binds the child's flag with (``_run_sub_agent_streaming`` and
+    the batch run), with the same context, so the two cannot disagree. Only
+    a specialist tool of the orchestrator (``__delegates_to__``) qualifies.
+    A direct egress tool, such as ``fetch_page``, still asks its card, and so
+    does a hand-off whose child would NOT be held. A fault reads False, so
+    the card asks. Fence: ``tests/unit/test_delegation_no_egress.py``.
+    """
+    child = getattr(fn, "__delegates_to__", None)
+    if not isinstance(child, str) or not child:
+        return False
+    try:
+        from acb_skills.write_artifact import artifact_context
+
+        held = _run_no_egress(child, artifact_context())
+    except Exception:  # fail closed: the card asks
+        return False
+    if held:
+        _log.info("permission.untrusted_answer_skipped", tool=getattr(fn, "__name__", ""),
+                  reason="child_held")
+    return bool(held)
 
 
 def _after_untrusted_answer(reason: str, marked: bool = False) -> bool:

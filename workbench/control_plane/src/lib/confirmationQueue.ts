@@ -29,6 +29,8 @@
  * environment. Fence: `src/lib/confirmationQueue.test.ts`.
  */
 
+import { replyFromEvent, type ReplyForm } from "@/lib/replyCard";
+
 /** The event a closed card arrives as. The server owns the name
  *  (`CONFIRMATION_RESOLVED` in `ask_tools.py`), and
  *  `tests/unit/test_chat_hardening.py` checks the two agree. */
@@ -57,6 +59,11 @@ export interface PendingConfirmation {
   rows?: ConfirmationRow[];
   /** The card's text fences member values in «marks» (`ask_tools` `fenced`). */
   fenced?: boolean;
+  /**
+   * EM-CR: the reply form of a reply card (`lib/replyCard.ts`). `null` is a
+   * form the card could not read: it then offers Discard only.
+   */
+  reply?: ReplyForm | null;
 }
 
 /**
@@ -261,6 +268,7 @@ export function cardFromEvent(value: unknown): PendingConfirmation | null {
     // ticked and Approve stays off. A plain APPROVE would be refused anyway.
     ...(v.rows !== undefined ? { rows: rowsFromEvent(v.rows) ?? [] } : {}),
     ...(v.fenced === true ? { fenced: true } : {}),
+    ...(v.reply !== undefined ? { reply: replyFromEvent(v.reply) } : {}),
   };
 }
 

@@ -3458,6 +3458,19 @@ async def respond_user_input(
         from orchestrator.stream_relay import dispatch_control  # noqa: PLC0415
 
         delivered = await dispatch_control(req.thread_id, _command)
+    if delivered and not req.declined:
+        # EM-CR (email_app_master_plan.md §18, review of #1191): the record of
+        # a reply card's answer, only AFTER the thread that owns the card took
+        # it, so a request id seen from another room records nothing (H-201).
+        # The key names that thread. Only a reply answer is recorded, with this
+        # caller's own tenant and email. The act waits for the record
+        # (``reply_card.take_reply_answer``), and sends only with it.
+        from acb_skills.reply_card import record_reply_answer  # noqa: PLC0415
+
+        await record_reply_answer(
+            getattr(user, "organization_id", None), req.request_id, _responder or "",
+            req.answer, req.thread_id,
+        )
     if not delivered and req.declined:
         # No run waits on this card. A decline starts no new run: the member
         # chose to do something else. A card with a durable row closes, so
