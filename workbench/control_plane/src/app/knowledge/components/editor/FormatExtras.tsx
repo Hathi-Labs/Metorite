@@ -75,7 +75,7 @@ export default function FormatExtras({ editor }: { editor: Editor }) {
   return (
     <>
       <span className="mx-1 h-5 w-px bg-border" aria-hidden />
-      <span className="relative inline-flex">
+      <span className="kb-panel-anchor relative inline-flex">
         <Button
           variant="ghost"
           size="icon-sm"
@@ -125,7 +125,7 @@ export default function FormatExtras({ editor }: { editor: Editor }) {
         selected={Boolean(state?.sub)}
         onClick={() => editor.chain().focus().toggleSubscript().run()}
       />
-      <span className="relative inline-flex">
+      <span className="kb-panel-anchor relative inline-flex">
         <Button
           variant="ghost"
           size="icon-sm"
@@ -166,7 +166,7 @@ function ColorPanel({
   onHighlight: (value: string | null) => void;
 }) {
   return (
-    <span className="kb-bubble-panel kb-color-panel">
+    <span className="kb-bubble-panel kb-bubble-panel-end kb-color-panel">
       <span className="kb-color-heading">Text colour</span>
       <span role="group" aria-label="Text colour" className="kb-color-grid">
         <Swatch label="Default text colour" selected={!color} onClick={() => onColor(null)}>

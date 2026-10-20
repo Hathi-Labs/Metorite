@@ -1004,6 +1004,15 @@ select optgroup {
   padding: 0.25rem;
   box-shadow: 0 4px 12px color-mix(in srgb, var(--foreground) 12%, transparent);
 }
+/* KB-2p adds buttons to the bubble, so on a phone its row wraps. */
+.kb-bubble { max-width: calc(100vw - 1rem); }
+/* A panel under the last button of a bar hangs from its right edge. */
+.kb-bubble-panel-end { left: auto; right: 0; }
+/* A phone wraps the bubble's row, so a panel hangs from the whole bubble. */
+@media (max-width: 640px) {
+  .kb-panel-anchor { position: static; }
+  .kb-bubble-panel, .kb-bubble-panel-end { left: 0; right: auto; max-width: calc(100vw - 2rem); }
+}
 .kb-color-panel { display: flex; flex-direction: column; gap: 0.25rem; width: max-content; }
 .kb-color-heading { padding: 0.125rem 0.25rem 0; font-size: 0.6875rem; font-weight: 600; color: var(--muted-foreground); }
 .kb-color-grid { display: grid; grid-template-columns: repeat(5, auto); gap: 0.125rem; }
@@ -1031,6 +1040,9 @@ select optgroup {
 .kb-columns[data-count="3"] { --kb-cols: 3; }
 .kb-columns[data-count="4"] { --kb-cols: 4; }
 .kb-columns[data-count="5"] { --kb-cols: 5; }
+/* The React node view puts the columns in one more element. It takes no box,
+   so each column is a cell of the grid. */
+.kb-columns-grid > [data-node-view-content-react] { display: contents; }
 .kb-column { min-width: 0; }
 .kb-column > :first-child { margin-top: 0; }
 .kb-column > :last-child { margin-bottom: 0; }

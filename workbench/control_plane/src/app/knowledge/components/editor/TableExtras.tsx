@@ -67,7 +67,7 @@ function CellActs({ editor, merge }: { editor: Editor; merge: boolean }) {
         title="Turn the header column on or off"
         onClick={() => editor.chain().focus().toggleHeaderColumn().run()}
       />
-      <span className="relative inline-flex">
+      <span className="kb-panel-anchor relative inline-flex">
         <Button
           variant="ghost"
           size="icon-sm"
@@ -80,7 +80,7 @@ function CellActs({ editor, merge }: { editor: Editor; merge: boolean }) {
           onClick={() => setColours((o) => !o)}
         />
         {colours ? (
-          <span role="group" aria-label="Cell colour" className="kb-bubble-panel kb-color-grid">
+          <span role="group" aria-label="Cell colour" className="kb-bubble-panel kb-bubble-panel-end kb-color-grid">
             <Button
               variant="ghost"
               size="icon-sm"
