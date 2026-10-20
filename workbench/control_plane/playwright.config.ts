@@ -29,6 +29,12 @@ export default defineConfig({
     // next.config — deliberately NOT taken: it relaxes a dev-server safety
     // default across the whole app to solve a test-only addressing problem.
     baseURL: "http://localhost:3101",
+    // A page.goto that waits on a stalled server must fail in one minute with
+    // its own message. Without this it waits for the whole test timeout, which
+    // is 2 minutes in the assistant specs. A cold compile of one route takes
+    // far less than a minute (measured 2026-10-20: 50 s for a test that opens
+    // every page).
+    navigationTimeout: 60_000,
     headless: true,
     viewport: { width: 1280, height: 800 },
     trace: "on-first-retry",
@@ -154,6 +160,11 @@ export default defineConfig({
     // so it fails when the SHELL is broken, not merely when the process is up.
     url: "http://127.0.0.1:3101/chat",
     reuseExistingServer: false,
+    // Under CI the server's own log goes to the job log. Playwright drops it
+    // by default. A stalled server then leaves no trace of its last work
+    // (the stall of 2026-10-18 and 2026-10-19 left none).
+    stdout: process.env.CI ? "pipe" : "ignore",
+    stderr: "pipe",
     // Dev compiles the route on first request, which is slower than serving a
     // prebuilt one — this is a cold Next.js compile, not a hang.
     timeout: 180_000,
@@ -162,6 +173,12 @@ export default defineConfig({
     // spec that reloads a page then times out. The specs stub what they need
     // and expect a refusal to fail at once, so the retry is off here.
     // Fence: `src/lib/gatewayFetch.test.ts`.
-    env: { GATEWAY_RETRY_DEADLINE_MS: "0" },
+    //
+    // E2E_NO_TURBOPACK_CACHE: the dev server writes no Turbopack disk cache
+    // here (`next.config.ts`). Each run starts from nothing, so the cache
+    // gives no speed. It cost 5.7 GB of disk and a background compaction
+    // that ran beside the tests (measured 2026-10-20, 67 tests). It also ran
+    // out of disk and failed with a Turbopack FATAL error on a full disk.
+    env: { GATEWAY_RETRY_DEADLINE_MS: "0", E2E_NO_TURBOPACK_CACHE: "1" },
   },
 });
