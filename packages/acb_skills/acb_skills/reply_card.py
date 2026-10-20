@@ -181,8 +181,8 @@ def _kept_join(raw: str, i: int, out: list[str]) -> bool:
     prev = out[-1] if out else ""
     nxt = raw[i + 1] if i + 1 < len(raw) else ""
     if ch in _PRESENTATION:
-        if prev in _PRESENTATION:  # never two in a row
-            return False
+        # Never two in a row: a selector is not a pictograph, so a second one
+        # after it is not kept (fence: the two-vs16 probe).
         return _is_pictograph(prev) or (prev in _KEYCAP_BASES and nxt == _KEYCAP)
     if ch == _ZWJ:
         before = out[-2] if prev in _PRESENTATION and len(out) > 1 else prev

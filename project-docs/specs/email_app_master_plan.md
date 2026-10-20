@@ -20403,3 +20403,19 @@ The review of #1191 found four holes. Each fix has a fence in
    thread that owns the card took it, and the key names that thread. The act waits up to
    3 seconds for the record. The answer names the email (`message_id`), so a record of
    one card cannot act on another email.
+
+**Round 2 of item 1 (re-review, 2026-10-20).** The first rule removed category C only. A
+mail could still hide data in variation selectors after a letter ("emoji smuggling"), in
+the Hangul and Braille blank fillers, or in other code points of Unicode
+`Default_Ignorable_Code_Point`. Now one rule, `is_invisible_char`, reads
+`INVISIBLE_CODE_POINTS` in `acb_skills/reply_card.py`. That list holds each code point of
+that property in Unicode 15.1, plus U+2800, and a test holds it to the property of the
+`regex` package. The email agent's card text (`_card_text`) reads the same rule.
+
+- One presentation selector (VS15 or VS16) stays only right after a real pictograph, or in
+  a keycap. A joiner stays only between two real pictographs.
+- The act refuses a tag character, a variation selector 17 to 256, a stray selector, a
+  bidi control, and a run of more than four combining marks on one letter.
+- The backstop is the mark run, not a share of marks. A share of marks would refuse fully
+  vowelled Arabic, which has more marks than letters. Hindi, Tamil, Thai, Arabic and
+  Vietnamese text, flags, joined families, skin tones and keycaps stay unchanged.
