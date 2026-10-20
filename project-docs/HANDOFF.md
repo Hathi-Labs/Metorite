@@ -5978,6 +5978,37 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** owner, 2026-10-19. `specs/knowledge_base.md` §21.1
 - **Added:** 2026-10-19
 
+### H-363 · Finish the Docmost parity work of WS-61 (D107, wave 1 of §21.7) · [AGENT]
+- **Check:** `knowledge_base.md` §21.7 shows each wave 1 row as BUILT
+  (KB-2d, KB-2f, KB-2g, KB-2i, KB-2p), and PR #1163 is merged. If both hold,
+  delete this entry.
+- **Why.** On 2026-10-19 the owner asked for the UI to match Docmost as soon
+  as possible, allowed ports of Docmost core code, and ruled: merge to
+  staging first, the owner tests, then production (D107 part 5). Five
+  builders started. None had pushed a slice when the session closed.
+- **State, 2026-10-20.**
+  - **PR #1163** (branch `ws61-docmost-parity`) holds D107, §21.1 and §21.7,
+    `THIRD_PARTY_NOTICES.md` and its test. CI was pending. Merge it first.
+    Another session merged `main` into it and renumbered the licence entry
+    to H-370.
+  - **Builder worktrees** (all `/home/dev/wt-<branch>`): `ws61-kb2d-chrome`,
+    `ws61-kb2f-icons` and `ws61-kb2g-history` hold no pushed commit.
+    `ws61-kb2i-editor-a` holds 2 local commits and uncommitted files.
+    `ws61-kb2p-editor-b` holds 2 local commits and uncommitted files. Read
+    `git log` and `git status` there before you start again. Do not delete
+    them.
+  - **Rules for the builders:** the brief of each is its §21.7 row, the
+    stored-form table and the "Build rules for wave 1" list. Keep out of
+    the hot files. Port core code only, with the `Adapted from Docmost`
+    header and a line in `THIRD_PARTY_NOTICES.md`.
+  - **The stale index.** In `/home/dev/wt-ws61-docmost-parity` the index is
+    stale: 333 staged files reverse recent `main` merges. They are not
+    work. Make a fresh checkout and leave that one alone.
+  - **Release hold.** `RELEASE_HOLD=1` is set. See H-362.
+  - **Next after wave 1:** wave 2 of §21.7, then CX-1b and KB-4b.
+- **Authority:** owner, 2026-10-19. `specs/knowledge_base.md` §21.7
+- **Added:** 2026-10-20
+
 ### H-362 · Clear RELEASE_HOLD when the owner approves the Knowledge release · [AGENT]
 - **Check:** `gh variable list` shows no `RELEASE_HOLD`. If it shows none,
   delete this entry.
