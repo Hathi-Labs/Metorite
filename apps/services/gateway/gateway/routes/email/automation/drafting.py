@@ -30,6 +30,13 @@ from gateway.routes.email.automation.assistant import (
     _learned_text,
     _load_assistant_about,
 )
+from gateway.routes.email.automation.draft_files import (
+    NO_LIMIT_RULE,
+    UNREAD_IMAGE,
+    DraftFiles,
+    load_draft_files,
+    strip_limit_claims,
+)
 from gateway.routes.email.automation.identity import (
     resolve_org_domains,
     resolve_self,
@@ -66,7 +73,7 @@ from gateway.routes.email.transport.send import (
     load_artifact_attachments,
     reply_row_match,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 
@@ -979,6 +986,33 @@ def _draft_direction_note(email: dict[str, str], to_line: str, cc_line: str) -> 
     return (" ".join(bits) + "\n") if bits else ""
 
 
+def _files_prompt(files: Any, frame: UntrustedFrame) -> tuple[str, list[tuple[str, str]]]:
+    """The FILES block of the prompt, and the images that go with it.
+
+    The text of a file is data that a stranger wrote, so it sits in the
+    frame. A file that the drafter did not read is named once, so the model
+    knows it exists and does not guess what it says."""
+    if not isinstance(files, DraftFiles):
+        return "", []
+    parts: list[str] = []
+    for name, body, cut in files.texts:
+        tail = "\n[The rest of this file is not shown.]" if cut else ""
+        parts.append(f"File: {name}\n{body}{tail}")
+    block = ""
+    if parts:
+        block += ("\nThe text of the files attached to this email:\n"
+                  f"{frame.wrap('FILES', chr(10).join(parts))}\n")
+    if files.images:
+        block += ("The images attached to this email are given with this "
+                  "message: " + ", ".join(n for n, _u in files.images) + ".\n")
+    if files.unread:
+        block += ("Files attached to this email whose content you were not "
+                  "given: " + ", ".join(n for n, _w in files.unread) + ". Do not "
+                  "guess what they say, and do not say that you could not read "
+                  "them.\n")
+    return block, list(files.images)
+
+
 async def _llm_draft_reply(
     email: dict[str, str], about: str, signature: str,
     instructions: str = "", context: str = "", user_email: str = "",
@@ -1055,6 +1089,11 @@ async def _llm_draft_reply(
             "can see; if a needed detail is genuinely absent, ask for that detail "
             "by name (e.g. 'what's your availability this week?') without "
             "referencing any truncation.\n"
+            f"{NO_LIMIT_RULE}"
+            "- When a FILES block is given, it holds the text of the files "
+            "attached to the email. Use it where it answers the email, and "
+            "name the file you take a fact from. An image given with the email "
+            "is one of its files: use what it shows.\n"
             "- Never use placeholders for names (e.g. [Your Name], [Name]). "
             f"{sig_rule}\n"
             # EM-G11d (UMCC): only the tags that Metorite writes in the User
@@ -1171,10 +1210,28 @@ async def _llm_draft_reply(
             "account:\n"
             f"{frame.wrap('LATEST MESSAGE', (email.get('body', '') or '')[:_DRAFT_BODY_MAX_CHARS])}\n"
         )
+        files = email.get("_files")
+        if on_delta is not None and isinstance(files, DraftFiles) and files.images:
+            # The streamed call goes to litellm with no Router hop, so no
+            # model is chosen for the images (review round 1, P1-c). They
+            # are named as not read instead.
+            files.unread.extend((n, UNREAD_IMAGE) for n, _u in files.images)
+            files.images = []
+        files_block, images = _files_prompt(files, frame)
+        user_prompt += files_block
         if instructions:
             user_prompt += f"\nExtra instructions: {instructions}\n"
+        user_content: Any = user_prompt
+        vision_extra: dict[str, Any] = {}
+        if images:
+            # The Router picks a model that reads images for a declared
+            # vision task (D-AI-2). ``draft_files.images_on`` sent none
+            # unless the Router serves this call.
+            user_content = [{"type": "text", "text": user_prompt}] + [
+                {"type": "image_url", "image_url": {"url": url}} for _n, url in images]
+            vision_extra = {"task": "vision"}
         _messages = [{"role": "system", "content": sys_prompt + "\n\n" + voice_prompt("email")},
-                     {"role": "user", "content": user_prompt}]
+                     {"role": "user", "content": user_content}]
         # Generous output budget — a full reply body (greeting + paragraphs +
         # context) must never be truncated mid-sentence.
         if on_delta is not None:
@@ -1187,17 +1244,24 @@ async def _llm_draft_reply(
                     model=model,
                     messages=_messages, temperature=0.3, max_tokens=3000,
                     feature="email.draft",
-                    on_delta=on_delta,
+                    on_delta=on_delta, **vision_extra,
                 )
         else:
             async with llm_slot():
                 resp, _used = await acompletion_with_fallback(
                     model=model,
                     messages=_messages, temperature=0.3, max_tokens=3000,
-                    feature="email.draft",
+                    feature="email.draft", **vision_extra,
                 )
             raw = resp.choices[0].message.content or ""
         body = _clean_draft_body(raw.strip())
+        # The prompt forbids "I could not open your file", and this removes
+        # what a model writes anyway. It runs on the drafter's text only.
+        body, claimed = strip_limit_claims(body)
+        if claimed:
+            _log.info("email.draft_limit_claim_removed", count=len(claimed))
+            if isinstance(files, DraftFiles):
+                files.removed.extend(claimed)
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.llm_draft_failed", error=str(exc)[:200],
                      interactive=interactive_fallback)
@@ -1287,6 +1351,7 @@ async def _llm_compose_assist(
             "- Write in the owner's first-person voice. Never greet or address the "
             "owner by name; if a greeting fits, address the RECIPIENT.\n"
             f"{mode_rule}"
+            f"{NO_LIMIT_RULE}"
             "- Plain text only (markdown links allowed); separate paragraphs with "
             "blank lines; match the language of the draft/thread; be clear and "
             "professional, not a single terse line.\n"
@@ -1375,6 +1440,11 @@ async def _llm_compose_assist(
                 )
             raw = resp.choices[0].message.content or ""
         body = _clean_draft_body(raw.strip())
+        if not improving:
+            # A new draft is the model's own text, so a claim that it could
+            # not open a file goes. A text the owner wrote keeps every
+            # sentence: "your file did not open" can be the owner's fact.
+            body, _claimed = strip_limit_claims(body)
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.compose_assist_failed", error=str(exc)[:200])
         if isinstance(exc, StreamTimeout):
@@ -2172,6 +2242,26 @@ class DraftReplyRequest(BaseModel):
     message_id: str
     create_draft: bool = False  # also save a provider draft (lands in Drafts)
     follow_up: bool = False  # draft a nudge for my own unanswered email instead
+    # The member's steer for this one draft, from the chat ("say yes to
+    # Friday", "keep it short"). It reaches the drafter as extra instructions.
+    instruction: str = Field(default="", max_length=2000)
+
+
+async def _reply_to_list(message_id: str, owner: str, fallback: str) -> list[str]:
+    """The To of a reply draft, by the one rule (``reply_card.reply_recipients``).
+
+    Reply-To wins over the sender, and a mail the member sent is answered to
+    its To. A fault falls back to *fallback*, the sender, as before."""
+    try:
+        from gateway.routes.email.automation.reply_card import (  # noqa: PLC0415
+            reply_recipients,
+        )
+        to, _cc = await reply_recipients(message_id, owner)
+        if to:
+            return to
+    except Exception as exc:  # noqa: BLE001 - a draft still saves
+        _log.warning("email.reply_draft_recipients_failed", error=type(exc).__name__)
+    return [fallback] if fallback else []
 
 
 @router.post("/draft-reply")
@@ -2188,6 +2278,10 @@ async def draft_reply_smart(
             db, req.account_id, req.message_id, user.email or "anonymous")
         if email is None:
             raise HTTPException(status_code=404, detail="Message not found")
+        # The files of the mail: their text, and the images when a model
+        # that reads them serves the call (``draft_files``).
+        files = await load_draft_files(db, req.message_id, user)
+        email["_files"] = files
         # Rank the KB by relevance to THIS message, not recency (3.5).
         about, signature = await _load_assistant_about(
             db, req.account_id,
@@ -2200,14 +2294,15 @@ async def draft_reply_smart(
             email, about, signature, user.email or "",
             max_agents=1, agent_timeout=18.0, follow_up=req.follow_up,
             model=EMAIL_TASK_TIERS["compose"], account_id=req.account_id,
-            interactive_fallback=True,
+            interactive_fallback=True, extra_instructions=req.instruction,
         )
 
         # Confidence gate (defense-in-depth): if the drafter declined, never
         # persist or surface a literal "NO_DRAFT" body. (Sync requests default to
         # ALL_EMAILS so this rarely fires, but keeps the gate consistent.)
         if _is_no_draft(draft):
-            return {"draft": "", "created": False, "skipped": "low_confidence"}
+            return {"draft": "", "created": False, "skipped": "low_confidence",
+                    "files_read": files.read_names(), "notices": files.notices()}
 
         # The signature lives IN the draft body, so the provider draft shows it
         # upstream (Gmail/Outlook) too — it used to be added only at send time,
@@ -2224,6 +2319,8 @@ async def draft_reply_smart(
 
         created = False
         if req.create_draft:
+            reply_to = await _reply_to_list(
+                req.message_id, user.email or "anonymous", email["from"])
             try:
                 async with provider_session(
                     db, user.email or "anonymous",
@@ -2236,7 +2333,7 @@ async def draft_reply_smart(
                             else f"Re: {email['subject']}"
                         )
                         provider_id = await sess.provider.create_draft(
-                            to=[email["from"]],
+                            to=reply_to,
                             subject=re_subject,
                             body_text=draft,
                             reply_to_message_id=sess.provider_message_id,
@@ -2257,7 +2354,10 @@ async def draft_reply_smart(
                                     db, sess.account_id, provider_id,
                                     thread_id=email["thread_id"] or None,
                                     owner_email=email.get("self") or "",
-                                    to_email=email["from"],
+                                    to_email=(reply_to or [email["from"]])[0],
+                                    # Each To, or the signed send rebuilds the
+                                    # draft with the first one only (F2).
+                                    to_addresses=reply_to or None,
                                     subject=re_subject, body=draft,
                                 )
                         except Exception as exc:
@@ -2267,7 +2367,8 @@ async def draft_reply_smart(
             except Exception as exc:  # noqa: BLE001
                 _log.warning("email.draft_reply_create_failed", error=str(exc)[:160])
 
-        return {"draft": draft, "created": created}
+        return {"draft": draft, "created": created,
+                "files_read": files.read_names(), "notices": files.notices()}
 
 
 class ComposeAssistRequest(BaseModel):
@@ -2281,6 +2382,11 @@ class ComposeAssistRequest(BaseModel):
     message_id: str | None = None   # reply/forward: pulls thread context
     to: list[str] | None = None     # new email: recipient(s) for context
     subject: str = ""
+
+
+#: The seconds that "Draft with AI" may spend on the files of a mail. The
+#: member waits at the composer, so it is shorter than the reply card's.
+COMPOSE_FILES_BUDGET_S = 8.0
 
 
 class _ComposeStep:
@@ -2437,6 +2543,21 @@ async def _compose_assist_run(
     # the COMPOSE tier. Our code chooses it, and no stored choice changes it
     # (D-EM-61).
     ctx = step.context()
+    # A new reply reads the files of the mail, as /draft-reply does
+    # (``draft_files``). The read has its own short budget, because the member
+    # waits at the composer. Improve-in-place works on the owner's own words.
+    if (ctx is not None and req.mode == "reply" and req.message_id
+            and not strip_signature_text(step.signature or "", req.body or "").strip()):
+        try:
+            # No session stays open over the provider fetch (PR-A1): the
+            # loader lists the files in a short session of its own. No
+            # images: the composer streams, and a streamed call has no
+            # Router hop to choose a model that reads them (P1-c).
+            ctx["_files"] = await load_draft_files(
+                None, req.message_id, user, budget_s=COMPOSE_FILES_BUDGET_S,
+                vision=False)
+        except Exception as exc:  # a draft goes on without the files
+            _log.warning("email.compose_files_failed", error=type(exc).__name__)
     result, store_thread = await _compose_draft(
         req, user_email, ctx, step.about or "", step.signature or "",
         sender=step.sender(ctx), model=EMAIL_TASK_TIERS["compose"],
@@ -3427,6 +3548,8 @@ async def save_draft(
             raise HTTPException(status_code=404, detail="Message not found")
         frm = row.from_address if isinstance(row.from_address, dict) \
             else json.loads(row.from_address or "{}")
+        reply_to = await _reply_to_list(
+            req.message_id, user.email or "anonymous", frm.get("email", ""))
         # Signature-in-body (idempotent): the saved draft shows it upstream too.
         body = append_signature_text(
             await _account_signature(db, req.account_id), req.body)
@@ -3440,9 +3563,9 @@ async def save_draft(
             re_subject = (
                 subject if subject.lower().startswith("re:") else f"Re: {subject}"
             )
-            to_email = frm.get("email", "")
+            to_email = (reply_to or [frm.get("email", "")])[0]
             provider_id = await sess.provider.create_draft(
-                to=[to_email],
+                to=reply_to or [to_email],
                 subject=re_subject,
                 body_text=body,
                 reply_to_message_id=sess.provider_message_id,
@@ -3454,5 +3577,6 @@ async def save_draft(
                 db, req.account_id, provider_id, thread_id=row.thread_id,
                 owner_email=(await resolve_self(db, req.account_id)).address,
                 to_email=to_email, subject=re_subject, body=body,
+                to_addresses=reply_to or None,
             )
         return {"created": True, "id": local_id}
