@@ -4123,6 +4123,7 @@ def _with_draft_text(context: str, body: Any, preview: Any = None) -> str:
     The member approves a send, so the card shows what the mail says, not
     only where it goes. A long text is cut, and the card says so. The
     recipients come first and are never cut."""
+    from acb_skills.ask_tools import clip_words  # noqa: PLC0415
     from acb_skills.reply_card import clean_reply_body  # noqa: PLC0415
 
     # No hidden character reaches the card (review of #1191, P1).
@@ -4131,7 +4132,7 @@ def _with_draft_text(context: str, body: Any, preview: Any = None) -> str:
         start = clean_reply_body(str(preview or "")).strip()
         if start:
             # Only the preview is stored. Say so, or the card looks whole.
-            return (context + "\n\nThe start of the draft:\n" + start[:1000]
+            return (context + "\n\nThe start of the draft:\n" + clip_words(start, 1000)
                     + "\n[… only the start is shown. Open the draft in the Email "
                     "app to read it all.]")
         return context + "\n\nThe draft has no text."
@@ -4140,7 +4141,7 @@ def _with_draft_text(context: str, body: Any, preview: Any = None) -> str:
     if len(text) <= room:
         return head + text
     tail = "\n[… the rest is cut here. Open the draft in the Email app to read it all.]"
-    return head + text[: max(0, room - len(tail))].rstrip() + tail
+    return head + clip_words(text, max(0, room - len(tail))).rstrip() + tail
 
 
 @_annotate_risk(destructive=True, open_world=True)

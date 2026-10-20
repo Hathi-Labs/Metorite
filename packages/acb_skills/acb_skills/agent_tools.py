@@ -106,10 +106,6 @@ async def call_agent(agent_name: str, message: str) -> str:
         message:    The full request to send to the agent, written as a
                     self-contained task. Include all context needed — the
                     sub-agent does not share your conversation history.
-                    When you and the member agreed the text of an email
-                    reply, put that text in the message WORD FOR WORD, and
-                    tell the agent to use it as is. A summary makes the
-                    agent write a different reply.
 
     Returns:
         The agent's response text.
