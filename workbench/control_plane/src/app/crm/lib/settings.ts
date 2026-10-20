@@ -167,7 +167,7 @@ export type StatusDraft = {
   name: string;
   type: StatusType;
   color?: string;
-  /** The win chance in percent. Both kinds carry it since migration 285. */
+  /** The win chance in percent. Both kinds carry it since migration 288. */
   probability?: number | null;
   /** Deal statuses only (WS-26h) — entry requirements. */
   required_fields?: string[];
@@ -309,7 +309,7 @@ export function overlayPatch(
 /**
  * "Reset to Zoho" on a row: the Metorite probability and colour go, so the
  * Zoho values apply again. `hidden` and `max_dwell_days` stay. Both kinds
- * carry a probability since migration 285.
+ * carry a probability since migration 288.
  */
 export function resetToSource(kind: StatusKind): Record<string, null> {
   void kind;

@@ -25,7 +25,7 @@ export type Status = {
   position: number;
   type: StatusType;
   is_default: boolean;
-  /** The win chance in percent. Both kinds carry it since migration 285. */
+  /** The win chance in percent. Both kinds carry it since migration 288. */
   probability?: number | null;
   /**
    * Deal statuses only (WS-26h) — the deal columns a deal must carry before it

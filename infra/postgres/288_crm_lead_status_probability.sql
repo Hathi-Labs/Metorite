@@ -1,5 +1,5 @@
 -- ============================================================================
--- 285_crm_lead_status_probability.sql — a win chance on a lead status
+-- 288_crm_lead_status_probability.sql — a win chance on a lead status
 -- ============================================================================
 -- Spec: project-docs/specs/crm_platform.md §20 (CRM-U6) · R5 · R6.
 -- Owner, 2026-10-20: "Set a conversion probability for each stage."

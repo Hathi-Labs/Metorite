@@ -863,7 +863,7 @@ def _effective_columns(table: str, *, deal: bool) -> str:
         "ELSE s.position END AS position",
         "COALESCE(s.ui_color, s.color) AS color",
     ]
-    # Both kinds carry a win chance since migration 285 (CRM-U6).
+    # Both kinds carry a win chance since migration 288 (CRM-U6).
     columns += [
         "s.ui_probability", "s.probability AS source_probability",
         "COALESCE(s.ui_probability, s.probability) AS probability",

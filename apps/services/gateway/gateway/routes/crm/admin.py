@@ -78,7 +78,7 @@ class StatusIn(BaseModel):
     position: int | None = None
     type: str | None = None
     is_default: bool | None = None
-    #: Both kinds since migration 285. The chance, in percent, of a win.
+    #: Both kinds since migration 288. The chance, in percent, of a win.
     probability: int | None = None
     #: Deal statuses only (WS-26h) — see :data:`core.STAGE_REQUIREABLE_FIELDS`.
     required_fields: list[str] | None = None
@@ -89,7 +89,7 @@ class StatusIn(BaseModel):
     #: CRM-C3, Mirror mode only: the overlay. ``null`` clears it, so the source
     #: value applies again. A Native admin edits the source column instead.
     ui_position: int | None = None
-    #: Both kinds since migration 285.
+    #: Both kinds since migration 288.
     ui_probability: int | None = None
     ui_color: str | None = None
 
@@ -318,7 +318,7 @@ def _validate_status(
     # Both run BEFORE the clamp's early return below: a PATCH naming neither
     # `type` nor `probability` is not a forecast decision, but it can still
     # carry a bad `required_fields` or a 0-day rot threshold. They are deal
-    # only. The clamp below binds both kinds (migration 285, CRM-U6).
+    # only. The clamp below binds both kinds (migration 288, CRM-U6).
     if kind == "deal":
         _validate_required_fields(values)
         _validate_max_dwell_days(values)

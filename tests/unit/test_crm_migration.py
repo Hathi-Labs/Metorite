@@ -796,7 +796,7 @@ def test_the_defaulted_not_null_map_matches_the_migration(
             _declared_not_null_defaults(bare, table)
             | _altered_not_null_defaults(discipline_bare, table)
             | _overlay_added(overlay_bare, table, not_null_default=True)
-            # Migration 285 (CRM-U6): `probability` on the lead statuses.
+            # Migration 288 (CRM-U6): `probability` on the lead statuses.
             | _overlay_added(_lead_probability_bare(), table, not_null_default=True)
         ) - _PLATFORM_STAMPED
         assert declared == set(declared_map), (
@@ -860,7 +860,7 @@ def _overlay_migration() -> Path:
         path for path in sorted(MIGRATIONS.glob("*.sql"))
         if path.name != "schema.generated.sql"
         and "ADD COLUMN IF NOT EXISTS ui_probability" in path.read_text(encoding="utf-8")
-        # Migration 285 adds the same column to the lead table. It is not the overlay.
+        # Migration 288 adds the same column to the lead table. It is not the overlay.
         and "ADD COLUMN IF NOT EXISTS ext_id" in path.read_text(encoding="utf-8")
     ]
     assert len(found) == 1, (
@@ -1038,7 +1038,7 @@ def _declared_columns(bare: str, table: str) -> set[str]:
 
 
 def _lead_probability_bare() -> str:
-    path = MIGRATIONS / "285_crm_lead_status_probability.sql"
+    path = MIGRATIONS / "288_crm_lead_status_probability.sql"
     return "\n".join(
         re.sub(r"--.*$", "", line)
         for line in path.read_text(encoding="utf-8").splitlines()
@@ -1046,7 +1046,7 @@ def _lead_probability_bare() -> str:
 
 
 def _lead_probability_added() -> set[str]:
-    """The columns migration 285 (CRM-U6) adds to ``crm_lead_statuses``."""
+    """The columns migration 288 (CRM-U6) adds to ``crm_lead_statuses``."""
     return _overlay_added(_lead_probability_bare(), "crm_lead_statuses")
 
 

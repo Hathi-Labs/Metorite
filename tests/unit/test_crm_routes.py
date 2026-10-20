@@ -937,7 +937,7 @@ async def test_a_new_lane_is_appended_not_prepended(db: FakeCrmDB) -> None:
 
 
 async def test_a_lead_status_carries_a_win_chance(db: FakeCrmDB) -> None:
-    """CRM-U6, migration 285: the lead statuses have a probability column now."""
+    """CRM-U6, migration 288: the lead statuses have a probability column now."""
     created = await crm_admin.create_status(
         "lead", crm_admin.StatusIn(name="Pilot", probability=50), USER,
     )
@@ -1197,7 +1197,7 @@ async def test_a_lead_status_never_reaches_the_probability_clamp(
     db: FakeCrmDB,
 ) -> None:
     """CRM-U6: a lead status meets the same won=100 and lost=0 clamp as a deal
-    stage (D-CRM-10). Migration 285 gave it the column."""
+    stage (D-CRM-10). Migration 288 gave it the column."""
     created = await crm_admin.create_status(
         "lead", crm_admin.StatusIn(name="Qualified", type="won", probability=100), USER,
     )

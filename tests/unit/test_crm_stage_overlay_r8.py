@@ -293,7 +293,7 @@ async def test_a_mirror_admin_sets_each_overlay_column_and_a_source_field_is_409
     assert (row.probability, row.color) == (10, "gray")  # the source is untouched
     lead_row = _lead_rows(c3.p, c3.org_a)["Fresh"]
     assert (lead_row.hidden, lead_row.ui_position, lead_row.ui_color) == (True, 2, "teal")
-    # CRM-U6, migration 285: a lead status takes the probability overlay too.
+    # CRM-U6, migration 288: a lead status takes the probability overlay too.
     assert lead_row.ui_probability == 25 and lead_row.probability == 0
 
     # The wire carries the effective value and the source value.
@@ -692,7 +692,7 @@ def test_the_overlay_migration_is_found_by_content() -> None:
         p.name for p in sorted(_MIGRATIONS.glob("*.sql"))
         if p.name != "schema.generated.sql"
         and "ADD COLUMN IF NOT EXISTS ui_probability" in p.read_text(encoding="utf-8")
-        # Migration 285 adds the same column to the lead table. It is not the overlay.
+        # Migration 288 adds the same column to the lead table. It is not the overlay.
         and "ADD COLUMN IF NOT EXISTS ext_id" in p.read_text(encoding="utf-8")
     ]
     assert len(found) == 1, found

@@ -11531,7 +11531,7 @@ Owner, 2026-10-20: the board order and the win chance are two settings.
 1. **The order never follows the probability.** An admin sets the order of
    the boards. A stage at 90% can sit before a stage at 10%. Mirror mode
    without an admin order uses the source position, then the pipeline place.
-2. **Every stage has a win chance.** Migration 285 adds `probability` and
+2. **Every stage has a win chance.** Migration 288 adds `probability` and
    `ui_probability` to `crm_lead_statuses`. A won status holds 100 and a lost
    status holds 0, for both kinds (D-CRM-10).
 3. **The lane header shows a stat block.** A deal lane shows the total and

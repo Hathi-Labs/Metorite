@@ -683,7 +683,7 @@ async def test_a_lead_status_refuses_both_deal_only_columns(
 
 
 async def test_a_lead_status_takes_a_win_chance(db: FakeCrmDB) -> None:
-    """CRM-U6, migration 285: a lead status carries `probability` like a deal
+    """CRM-U6, migration 288: a lead status carries `probability` like a deal
     stage does. It is no longer a deal-only field."""
     stages = _lead_pipeline(db)
 

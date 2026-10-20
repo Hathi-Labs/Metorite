@@ -89,7 +89,13 @@ import type {
   StatusType,
 } from "../lib/types";
 
-const STATUS_TYPES: StatusType[] = ["open", "ongoing", "on_hold", "won", "lost"];
+const STATUS_TYPES: StatusType[] = [
+  "open",
+  "ongoing",
+  "on_hold",
+  "won",
+  "lost",
+];
 
 /**
  * The draft of one row, kept in the CRM store under `key` (CRM-C1 review).
@@ -98,13 +104,17 @@ const STATUS_TYPES: StatusType[] = ["open", "ongoing", "on_hold", "won", "lost"]
  */
 function useSettingsDraft<T>(
   key: string,
-  served: T
+  served: T,
 ): [T, (next: T) => void, () => void] {
   const stored = useCrmStore((state) => state.settingsDrafts[key]);
   const setDraft = useCrmStore((state) => state.setSettingsDraft);
   return [
     draftOf(stored, served),
-    (next: T) => setDraft(key, Object.is(next, served) ? null : { base: served, value: next }),
+    (next: T) =>
+      setDraft(
+        key,
+        Object.is(next, served) ? null : { base: served, value: next },
+      ),
     // A saved draft leaves the store. Kept, it would come back when another
     // admin sets the served value back to its base, and a Save would then
     // overwrite their newer value (CRM-C1 re-review).
@@ -126,14 +136,21 @@ const TYPE_OPTIONS: SelectOption[] = STATUS_TYPES.map((type) => ({
  * the same. A hidden stage has no lane unless it holds records, so it is not
  * drawn here.
  */
-function OrderStrip({ kind, statuses }: { kind: StatusKind; statuses: Status[] }) {
+function OrderStrip({
+  kind,
+  statuses,
+}: {
+  kind: StatusKind;
+  statuses: Status[];
+}) {
   const shown = statuses
     .map((status, index) => ({ status, index }))
     .filter(({ status }) => !status.hidden)
     .sort((a, b) =>
       kind === "deal"
-        ? laneGroup(a.status.type) - laneGroup(b.status.type) || a.index - b.index
-        : a.index - b.index
+        ? laneGroup(a.status.type) - laneGroup(b.status.type) ||
+          a.index - b.index
+        : a.index - b.index,
     )
     .map(({ status }) => status);
   if (shown.length === 0) return null;
@@ -145,9 +162,16 @@ function OrderStrip({ kind, statuses }: { kind: StatusKind; statuses: Status[] }
       {shown.map((status, index) => (
         <li key={status.id} className="flex items-center gap-1">
           {index > 0 && (
-            <Icon name="ChevronRight" className="w-3 h-3 text-muted-foreground" />
+            <Icon
+              name="ChevronRight"
+              className="w-3 h-3 text-muted-foreground"
+            />
           )}
-          <Badge tone="neutral" size="xs" title={`${status.name}: ${status.probability ?? 0}% win chance`}>
+          <Badge
+            tone="neutral"
+            size="xs"
+            title={`${status.name}: ${status.probability ?? 0}% win chance`}
+          >
             {status.name}
             <span className="text-muted-foreground tabular-nums">
               {" "}
@@ -210,7 +234,9 @@ function pinnedReason(type: StatusType): string | undefined {
  * for no Metorite colour. Zoho has no stage colour, so with none the board
  * colours the lane by its type.
  */
-function overlayColorOptions(stored: string | null | undefined): SelectOption[] {
+function overlayColorOptions(
+  stored: string | null | undefined,
+): SelectOption[] {
   return [{ value: "", label: "by type" }, ...colorOptions(stored)];
 }
 
@@ -275,16 +301,16 @@ export default function PipelineSettings({
   onSaveStatus: (
     kind: StatusKind,
     statusId: string | null,
-    body: Record<string, unknown>
+    body: Record<string, unknown>,
   ) => Promise<boolean>;
   onRemoveStatus: (kind: StatusKind, statusId: string) => Promise<boolean>;
   onReorderStatuses: (
     kind: StatusKind,
-    patches: PositionPatch[]
+    patches: PositionPatch[],
   ) => Promise<void>;
   onSaveLostReason: (
     reasonId: string | null,
-    body: Record<string, unknown>
+    body: Record<string, unknown>,
   ) => Promise<boolean>;
   onRemoveLostReason: (reasonId: string) => Promise<boolean>;
   onReorderLostReasons: (patches: PositionPatch[]) => Promise<void>;
@@ -337,7 +363,11 @@ export default function PipelineSettings({
             />
           )}
           {show("lost-reasons") && (
-            <MirrorReasonGrid reasons={lostReasons} saving={saving} onSave={onSaveLostReason} />
+            <MirrorReasonGrid
+              reasons={lostReasons}
+              saving={saving}
+              onSave={onSaveLostReason}
+            />
           )}
         </>
       ) : readOnly ? (
@@ -350,7 +380,10 @@ export default function PipelineSettings({
             />
           )}
           {show("lead-statuses") && (
-            <Card title="Lead statuses" note="Lead Status values come from Zoho.">
+            <Card
+              title="Lead statuses"
+              note="Lead Status values come from Zoho."
+            >
               <NameList names={leadStatuses.map((x) => x.name)} />
             </Card>
           )}
@@ -413,7 +446,9 @@ export default function PipelineSettings({
               does not draw them. */}
           {readOnly && show("field-mapping") && <FieldMapCard />}
           {/* CRM-C6a: the lead-conversion mapping, Native mode, a studio admin. */}
-          {!readOnly && studioAdmin && show("field-mapping") && <ConvertMappingCard />}
+          {!readOnly && studioAdmin && show("field-mapping") && (
+            <ConvertMappingCard />
+          )}
           {/* CRM-Q32-3: the open questions, Mirror mode only, before Suggestions. */}
           {readOnly && show("questions") && questions}
           {/* CRM-Q20-2: the suggestions of the mapping, Mirror mode only. */}
@@ -445,7 +480,7 @@ function StatusGrid({
   onSave: (
     kind: StatusKind,
     statusId: string | null,
-    body: Record<string, unknown>
+    body: Record<string, unknown>,
   ) => Promise<boolean>;
   onRemove: (kind: StatusKind, statusId: string) => Promise<boolean>;
   onReorder: (kind: StatusKind, patches: PositionPatch[]) => Promise<void>;
@@ -493,7 +528,10 @@ function StatusGrid({
       return;
     }
     setError(null);
-    const body: Record<string, unknown> = { name: newName.trim(), type: "open" };
+    const body: Record<string, unknown> = {
+      name: newName.trim(),
+      type: "open",
+    };
     if (await onSave(kind, null, body)) {
       setNewName("");
       setAdding(false);
@@ -608,18 +646,22 @@ function StatusRow({
   // and a row that kept showing what was typed after the server answered
   // something else is the stale-row-reads-as-success lie in miniature. The
   // draft lives in the store, so a section change keeps it (CRM-C1).
-  const [draft, setDraft, clearDraft] = useSettingsDraft(`status:${kind}:${status.id}`, status);
+  const [draft, setDraft, clearDraft] = useSettingsDraft(
+    `status:${kind}:${status.id}`,
+    status,
+  );
   // CRM-C2: the dot shows the colour the board shows, so it reads the mode.
   const mode = useCrmModeValue();
   const [invalid, setInvalid] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const pinned = CLAMPED_PROBABILITY[draft.type];
-  const ruleCount = (draft.required_fields ?? []).length + (draft.max_dwell_days ? 1 : 0);
+  const ruleCount =
+    (draft.required_fields ?? []).length + (draft.max_dwell_days ? 1 : 0);
 
   const patch = changedFields(
     status as unknown as Record<string, unknown>,
-    draft as unknown as Record<string, unknown>
+    draft as unknown as Record<string, unknown>,
   );
   const dirty = Object.keys(patch).length > 0;
 
@@ -633,7 +675,7 @@ function StatusRow({
         required_fields: draft.required_fields,
         max_dwell_days: draft.max_dwell_days,
       },
-      kind
+      kind,
     );
     setInvalid(message);
     if (message) return;
@@ -654,14 +696,24 @@ function StatusRow({
       >
         <Icon name="GripVertical" className="w-4 h-4" />
       </span>
-      <MoveButtons name={status.name} index={index} count={count} disabled={saving} onMove={onMove} />
-      <span className={`w-2 h-2 shrink-0 rounded-full ${stageAccent(draft, mode).dot}`} />
+      <MoveButtons
+        name={status.name}
+        index={index}
+        count={count}
+        disabled={saving}
+        onMove={onMove}
+      />
+      <span
+        className={`w-2 h-2 shrink-0 rounded-full ${stageAccent(draft, mode).dot}`}
+      />
 
       <Input
         inputSize="sm"
         value={draft.name}
         onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-        className="min-w-32 flex-1"
+        // Narrow enough that a deal row with Rules and Delete holds one
+        // line at 1440 (seen in the browser rig). The name still grows.
+        className="min-w-24 flex-1"
       />
 
       <SelectButton
@@ -670,7 +722,7 @@ function StatusRow({
         options={colorOptions(draft.color)}
         defaultValue="gray"
         onChange={(color) => setDraft({ ...draft, color })}
-        widthClass="w-24"
+        widthClass="w-20"
       />
 
       <SelectButton
@@ -806,7 +858,7 @@ function StatusRow({
                       required_fields: REQUIREABLE_FIELDS.filter((name) =>
                         name === field
                           ? !on
-                          : (draft.required_fields ?? []).includes(name)
+                          : (draft.required_fields ?? []).includes(name),
                       ),
                     })
                   }
@@ -844,9 +896,7 @@ function StatusRow({
         </div>
       )}
 
-      {invalid && (
-        <p className="w-full text-xs text-destructive">{invalid}</p>
-      )}
+      {invalid && <p className="w-full text-xs text-destructive">{invalid}</p>}
     </div>
   );
 }
@@ -904,7 +954,7 @@ export function MirrorStatusGrid({
   onSave: (
     kind: StatusKind,
     statusId: string | null,
-    body: Record<string, unknown>
+    body: Record<string, unknown>,
   ) => Promise<boolean>;
   onOrder: (kind: StatusKind, ids: string[]) => Promise<boolean>;
   onResetOrder: (kind: StatusKind) => Promise<boolean>;
@@ -934,7 +984,10 @@ export function MirrorStatusGrid({
   }
 
   return (
-    <section className="rounded-xl border border-border bg-card/40" aria-label={title}>
+    <section
+      className="rounded-xl border border-border bg-card/40"
+      aria-label={title}
+    >
       <header className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-semibold text-foreground">{title}</h2>
@@ -1011,14 +1064,17 @@ function MirrorStatusRow({
   onSave: (body: Record<string, unknown>) => Promise<boolean>;
 }) {
   // In the store, as in `StatusRow`, so a section change keeps it (CRM-C1).
-  const [draft, setDraft, clearDraft] = useSettingsDraft(`overlay:${kind}:${status.id}`, status);
+  const [draft, setDraft, clearDraft] = useSettingsDraft(
+    `overlay:${kind}:${status.id}`,
+    status,
+  );
   const [invalid, setInvalid] = useState<string | null>(null);
   const [rulesOpen, setRulesOpen] = useState(false);
   const pinned = CLAMPED_PROBABILITY[status.type];
   const patch = overlayPatch(
     kind,
     status as unknown as Record<string, unknown>,
-    draft as unknown as Record<string, unknown>
+    draft as unknown as Record<string, unknown>,
   );
   const dirty = Object.keys(patch).length > 0;
   const gone = Boolean(status.source_gone_at);
@@ -1041,13 +1097,24 @@ function MirrorStatusRow({
       >
         <Icon name="GripVertical" className="w-4 h-4" />
       </span>
-      <MoveButtons name={status.name} index={index} count={count} disabled={saving} onMove={onMove} />
+      <MoveButtons
+        name={status.name}
+        index={index}
+        count={count}
+        disabled={saving}
+        onMove={onMove}
+      />
       <span
         className={`w-2 h-2 shrink-0 rounded-full ${stageAccent(draft, "mirror").dot}`}
       />
-      <span className="min-w-32 flex-1 truncate text-sm text-foreground">{status.name}</span>
+      <span className="min-w-32 flex-1 truncate text-sm text-foreground">
+        {status.name}
+      </span>
       {gone && (
-        <Badge tone="warning" title="The Zoho picklist no longer lists this value. Its records keep it.">
+        <Badge
+          tone="warning"
+          title="The Zoho picklist no longer lists this value. Its records keep it."
+        >
           Removed in Zoho
         </Badge>
       )}
@@ -1059,7 +1126,9 @@ function MirrorStatusRow({
         Win chance
         {kind === "deal" && (
           <>
-            <span title="The probability in Zoho">Zoho {status.source_probability ?? 0}%</span>
+            <span title="The probability in Zoho">
+              Zoho {status.source_probability ?? 0}%
+            </span>
             <span aria-hidden>·</span>
             Metorite
           </>
@@ -1075,7 +1144,8 @@ function MirrorStatusRow({
           onChange={(e) =>
             setDraft({
               ...draft,
-              ui_probability: e.target.value === "" ? null : Number(e.target.value),
+              ui_probability:
+                e.target.value === "" ? null : Number(e.target.value),
             })
           }
           className="w-16"
@@ -1129,7 +1199,10 @@ function MirrorStatusRow({
         size="sm"
         variant="ghost"
         icon="RotateCcw"
-        disabled={!hasOverlay(kind, status as unknown as Record<string, unknown>) || saving}
+        disabled={
+          !hasOverlay(kind, status as unknown as Record<string, unknown>) ||
+          saving
+        }
         onClick={() => void onSave(resetToSource(kind))}
       >
         Reset to Zoho
@@ -1151,7 +1224,8 @@ function MirrorStatusRow({
               onChange={(e) =>
                 setDraft({
                   ...draft,
-                  max_dwell_days: e.target.value === "" ? null : Number(e.target.value),
+                  max_dwell_days:
+                    e.target.value === "" ? null : Number(e.target.value),
                 })
               }
               className="w-16"
@@ -1175,7 +1249,10 @@ export function MirrorReasonGrid({
 }: {
   reasons: LostReason[];
   saving: boolean;
-  onSave: (reasonId: string | null, body: Record<string, unknown>) => Promise<boolean>;
+  onSave: (
+    reasonId: string | null,
+    body: Record<string, unknown>,
+  ) => Promise<boolean>;
 }) {
   return (
     <Card
@@ -1222,7 +1299,7 @@ function ReasonGrid({
   saving: boolean;
   onSave: (
     reasonId: string | null,
-    body: Record<string, unknown>
+    body: Record<string, unknown>,
   ) => Promise<boolean>;
   onRemove: (reasonId: string) => Promise<boolean>;
   onReorder: (patches: PositionPatch[]) => Promise<void>;
@@ -1339,7 +1416,10 @@ function ReasonRow({
   onRemove: () => Promise<boolean>;
 }) {
   // In the store, as in `StatusRow`, so a section change keeps it (CRM-C1).
-  const [label, setLabel, clearDraft] = useSettingsDraft(`reason:${reason.id}`, reason.label);
+  const [label, setLabel, clearDraft] = useSettingsDraft(
+    `reason:${reason.id}`,
+    reason.label,
+  );
   const [invalid, setInvalid] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
 

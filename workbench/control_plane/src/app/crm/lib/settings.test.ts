@@ -264,7 +264,7 @@ describe("validateStatusDraft", () => {
   });
 
   it("applies the won=100 and lost=0 clamp to a lead status too (CRM-U6)", () => {
-    // Migration 285 gave `crm_lead_statuses` a win chance, with the same rule.
+    // Migration 288 gave `crm_lead_statuses` a win chance, with the same rule.
     expect(
       validateStatusDraft({ name: "Qualified", type: "won", probability: 40 }, "lead")
     ).toContain("Set probability to 100");
