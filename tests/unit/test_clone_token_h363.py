@@ -107,6 +107,9 @@ def fake_github(origin: Path, monkeypatch: pytest.MonkeyPatch) -> list[dict[str,
     """
     calls: list[dict[str, Any]] = []
     real = gc._run
+    # The repo's URL, with or without userinfo, so a URL that carries a token
+    # still reaches the stand-in (and a mutation that puts it there shows).
+    ours = re.compile(r"https://(?:[^@/\s]+@)?github\.com/" + OWNER + "/" + REPO + r"\.git")
 
     def _run(argv: Any, *, cwd: Any, extra: Any = None, timeout: float = 60,
              stdin: Any = None) -> gc.GitResult:
@@ -121,10 +124,12 @@ def fake_github(origin: Path, monkeypatch: pytest.MonkeyPatch) -> list[dict[str,
             if a == "-c" and i + 1 < len(argv) and argv[i + 1] == "protocol.allow=never":
                 skip = True
                 continue
-            mapped.append(str(origin) if a == GH_URL else a)
+            mapped.append(str(origin) if ours.fullmatch(a) else a)
         result = real(mapped, cwd=cwd, extra=extra, timeout=timeout, stdin=stdin)
-        if result.ok and "clone" in argv and GH_URL in argv:
-            real(["remote", "set-url", "origin", GH_URL], cwd=Path(argv[-1]))
+        url = next((a for a in argv if ours.fullmatch(a)), None)
+        if result.ok and "clone" in argv and url:
+            # A real clone records the URL it was given.
+            real(["remote", "set-url", "origin", url], cwd=Path(argv[-1]))
         return result
 
     monkeypatch.setattr(gc, "_run", _run)
