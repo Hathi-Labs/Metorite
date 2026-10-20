@@ -5978,7 +5978,7 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** owner, 2026-10-19. `specs/knowledge_base.md` §21.1
 - **Added:** 2026-10-19
 
-### H-363 · Finish the Docmost parity work of WS-61 (D107, wave 1 of §21.7) · [AGENT]
+### H-371 · Finish the Docmost parity work of WS-61 (D107, wave 1 of §21.7) · [AGENT]
 - **Check:** `knowledge_base.md` §21.7 shows each wave 1 row as BUILT
   (KB-2d, KB-2f, KB-2g, KB-2i, KB-2p), and PR #1163 is merged. If both hold,
   delete this entry.
@@ -6005,6 +6005,8 @@ line — never reclaim a number by deleting the other entry.
     stale: 333 staged files reverse recent `main` merges. They are not
     work. Make a fresh checkout and leave that one alone.
   - **Release hold.** `RELEASE_HOLD=1` is set. See H-362.
+  - **Migration number.** KB-2f must take the next free number when it
+    builds (R1). 287 and 288 are on `main`, so 289 or later.
   - **Next after wave 1:** wave 2 of §21.7, then CX-1b and KB-4b.
 - **Authority:** owner, 2026-10-19. `specs/knowledge_base.md` §21.7
 - **Added:** 2026-10-20
