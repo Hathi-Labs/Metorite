@@ -30,6 +30,12 @@ from gateway.routes.email.automation.assistant import (
     _learned_text,
     _load_assistant_about,
 )
+from gateway.routes.email.automation.draft_files import (
+    NO_LIMIT_RULE,
+    DraftFiles,
+    load_draft_files,
+    strip_limit_claims,
+)
 from gateway.routes.email.automation.identity import (
     resolve_org_domains,
     resolve_self,
@@ -979,6 +985,33 @@ def _draft_direction_note(email: dict[str, str], to_line: str, cc_line: str) -> 
     return (" ".join(bits) + "\n") if bits else ""
 
 
+def _files_prompt(files: Any, frame: UntrustedFrame) -> tuple[str, list[tuple[str, str]]]:
+    """The FILES block of the prompt, and the images that go with it.
+
+    The text of a file is data that a stranger wrote, so it sits in the
+    frame. A file that the drafter did not read is named once, so the model
+    knows it exists and does not guess what it says."""
+    if not isinstance(files, DraftFiles):
+        return "", []
+    parts: list[str] = []
+    for name, body, cut in files.texts:
+        tail = "\n[The rest of this file is not shown.]" if cut else ""
+        parts.append(f"File: {name}\n{body}{tail}")
+    block = ""
+    if parts:
+        block += ("\nThe text of the files attached to this email:\n"
+                  f"{frame.wrap('FILES', chr(10).join(parts))}\n")
+    if files.images:
+        block += ("The images attached to this email are given with this "
+                  "message: " + ", ".join(n for n, _u in files.images) + ".\n")
+    if files.unread:
+        block += ("Files attached to this email whose content you were not "
+                  "given: " + ", ".join(n for n, _w in files.unread) + ". Do not "
+                  "guess what they say, and do not say that you could not read "
+                  "them.\n")
+    return block, list(files.images)
+
+
 async def _llm_draft_reply(
     email: dict[str, str], about: str, signature: str,
     instructions: str = "", context: str = "", user_email: str = "",
@@ -1055,6 +1088,11 @@ async def _llm_draft_reply(
             "can see; if a needed detail is genuinely absent, ask for that detail "
             "by name (e.g. 'what's your availability this week?') without "
             "referencing any truncation.\n"
+            f"{NO_LIMIT_RULE}"
+            "- When a FILES block is given, it holds the text of the files "
+            "attached to the email. Use it where it answers the email, and "
+            "name the file you take a fact from. An image given with the email "
+            "is one of its files: use what it shows.\n"
             "- Never use placeholders for names (e.g. [Your Name], [Name]). "
             f"{sig_rule}\n"
             # EM-G11d (UMCC): only the tags that Metorite writes in the User
@@ -1171,10 +1209,22 @@ async def _llm_draft_reply(
             "account:\n"
             f"{frame.wrap('LATEST MESSAGE', (email.get('body', '') or '')[:_DRAFT_BODY_MAX_CHARS])}\n"
         )
+        files = email.get("_files")
+        files_block, images = _files_prompt(files, frame)
+        user_prompt += files_block
         if instructions:
             user_prompt += f"\nExtra instructions: {instructions}\n"
+        user_content: Any = user_prompt
+        vision_extra: dict[str, Any] = {}
+        if images:
+            # The Router picks a model that reads images for a declared
+            # vision task (D-AI-2). ``draft_files.images_on`` sent none
+            # unless the Router serves this call.
+            user_content = [{"type": "text", "text": user_prompt}] + [
+                {"type": "image_url", "image_url": {"url": url}} for _n, url in images]
+            vision_extra = {"task": "vision"}
         _messages = [{"role": "system", "content": sys_prompt + "\n\n" + voice_prompt("email")},
-                     {"role": "user", "content": user_prompt}]
+                     {"role": "user", "content": user_content}]
         # Generous output budget — a full reply body (greeting + paragraphs +
         # context) must never be truncated mid-sentence.
         if on_delta is not None:
@@ -1187,17 +1237,22 @@ async def _llm_draft_reply(
                     model=model,
                     messages=_messages, temperature=0.3, max_tokens=3000,
                     feature="email.draft",
-                    on_delta=on_delta,
+                    on_delta=on_delta, **vision_extra,
                 )
         else:
             async with llm_slot():
                 resp, _used = await acompletion_with_fallback(
                     model=model,
                     messages=_messages, temperature=0.3, max_tokens=3000,
-                    feature="email.draft",
+                    feature="email.draft", **vision_extra,
                 )
             raw = resp.choices[0].message.content or ""
         body = _clean_draft_body(raw.strip())
+        # The prompt forbids "I could not open your file", and this removes
+        # what a model writes anyway. It runs on the drafter's text only.
+        body, claimed = strip_limit_claims(body)
+        if claimed:
+            _log.info("email.draft_limit_claim_removed", count=len(claimed))
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.llm_draft_failed", error=str(exc)[:200],
                      interactive=interactive_fallback)
@@ -1287,6 +1342,7 @@ async def _llm_compose_assist(
             "- Write in the owner's first-person voice. Never greet or address the "
             "owner by name; if a greeting fits, address the RECIPIENT.\n"
             f"{mode_rule}"
+            f"{NO_LIMIT_RULE}"
             "- Plain text only (markdown links allowed); separate paragraphs with "
             "blank lines; match the language of the draft/thread; be clear and "
             "professional, not a single terse line.\n"
@@ -1375,6 +1431,11 @@ async def _llm_compose_assist(
                 )
             raw = resp.choices[0].message.content or ""
         body = _clean_draft_body(raw.strip())
+        if not improving:
+            # A new draft is the model's own text, so a claim that it could
+            # not open a file goes. A text the owner wrote keeps every
+            # sentence: "your file did not open" can be the owner's fact.
+            body, _claimed = strip_limit_claims(body)
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.compose_assist_failed", error=str(exc)[:200])
         if isinstance(exc, StreamTimeout):
@@ -2208,6 +2269,10 @@ async def draft_reply_smart(
             db, req.account_id, req.message_id, user.email or "anonymous")
         if email is None:
             raise HTTPException(status_code=404, detail="Message not found")
+        # The files of the mail: their text, and the images when a model
+        # that reads them serves the call (``draft_files``).
+        files = await load_draft_files(db, req.message_id, user)
+        email["_files"] = files
         # Rank the KB by relevance to THIS message, not recency (3.5).
         about, signature = await _load_assistant_about(
             db, req.account_id,
@@ -2227,7 +2292,8 @@ async def draft_reply_smart(
         # persist or surface a literal "NO_DRAFT" body. (Sync requests default to
         # ALL_EMAILS so this rarely fires, but keeps the gate consistent.)
         if _is_no_draft(draft):
-            return {"draft": "", "created": False, "skipped": "low_confidence"}
+            return {"draft": "", "created": False, "skipped": "low_confidence",
+                    "files_read": files.read_names(), "notices": files.notices()}
 
         # The signature lives IN the draft body, so the provider draft shows it
         # upstream (Gmail/Outlook) too — it used to be added only at send time,
@@ -2289,7 +2355,8 @@ async def draft_reply_smart(
             except Exception as exc:  # noqa: BLE001
                 _log.warning("email.draft_reply_create_failed", error=str(exc)[:160])
 
-        return {"draft": draft, "created": created}
+        return {"draft": draft, "created": created,
+                "files_read": files.read_names(), "notices": files.notices()}
 
 
 class ComposeAssistRequest(BaseModel):

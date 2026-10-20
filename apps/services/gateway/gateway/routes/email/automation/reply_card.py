@@ -330,7 +330,9 @@ async def reply_card(
         strip_placeholder_lines(str((drafted or {}).get("draft") or "")))
     return {
         "message_id": str(_as_uuid(req.message_id) or req.message_id),
-        "notices": mail.notices(),
+        # A file the drafter did not read is named, so the member checks the
+        # reply against it (``draft_files``).
+        "notices": [*mail.notices(), *[str(n) for n in (drafted or {}).get("notices") or []]],
         "account_id": mail.account_id,
         "mailbox": mail.mailbox,
         "subject": _reply_subject(mail.subject),

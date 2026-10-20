@@ -1726,6 +1726,13 @@ async def draft_reply(
     # The first line names the mailbox. The chat card reads "(mailbox <id>)"
     # from it, so its Save and Send use the mailbox of the mail (EM-T8a).
     sender = await _mailbox_name(account_id) or str(account_id)
+    # The files go in the first line too, because the card edits the rest.
+    # The member then knows which file the draft used, and which it did not.
+    read = [str(n) for n in res.get("files_read") or [] if n]
+    if read:
+        note += f" (used the files: {', '.join(read)})"
+    for line in res.get("notices") or []:
+        note += f" ({' '.join(str(line).split())})"
     return (
         f"Draft from {sender} (mailbox {account_id}){note}:\n\n"
         f"{res.get('draft', '')}"
