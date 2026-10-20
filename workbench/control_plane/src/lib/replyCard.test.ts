@@ -26,6 +26,8 @@ import {
   replyAnswer,
   replyFromEvent,
   replyHint,
+  replySummary,
+  lineCount,
 } from "@/lib/replyCard";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
@@ -36,6 +38,8 @@ const EVENT = {
   detail: "From Work · jane@acme.test · Re: Quote",
   request_id: "rid-1",
   reply: {
+    message_id: "0b0b0b0b-0000-4000-8000-00000000000b",
+    notices: ["Reply goes to desk@contoso.test, not to the sender kim@contoso.test."],
     mailbox: "Work · jane@acme.test",
     subject: "Re: Quote",
     original: { from: "Kim <kim@contoso.test>", subject: "Quote", received: "2026-10-19T09:00:00Z", excerpt: "Can you confirm?" },
@@ -59,6 +63,17 @@ describe("the reply form of the event", () => {
     });
     expect(form.replyAll).toBe(false);
     expect(form.body).toBe("Hi Kim,\n\nYes.");
+  });
+
+  it("is no form when it names no email", () => {
+    expect(replyFromEvent({ ...EVENT.reply, message_id: "" })).toBeNull();
+    expect(replyFromEvent({ ...EVENT.reply, message_id: undefined })).toBeNull();
+  });
+
+  it("keeps each notice of the server whole", () => {
+    expect(replyFromEvent(EVENT.reply)!.notices).toEqual([
+      "Reply goes to desk@contoso.test, not to the sender kim@contoso.test.",
+    ]);
   });
 
   it("is no form when a list has no recipient or is not a list", () => {
@@ -97,6 +112,7 @@ describe("the answer of Send and Save to Drafts", () => {
         body: "  Edited\n\n",
         to: ["kim@contoso.test", "lee@contoso.test"],
         cc: ["ops@contoso.test"],
+        message_id: "0b0b0b0b-0000-4000-8000-00000000000b",
       },
     });
   });
@@ -105,7 +121,7 @@ describe("the answer of Send and Save to Drafts", () => {
     const a = replyAnswer(form, { action: "save", replyAll: false, body: "Hi" })!;
     const body = JSON.parse(a.slice("APPROVE ".length));
     expect(Object.keys(body)).toEqual(["reply"]);
-    expect(Object.keys(body.reply).sort()).toEqual(["action", "body", "cc", "reply_all", "to"]);
+    expect(Object.keys(body.reply).sort()).toEqual(["action", "body", "cc", "message_id", "reply_all", "to"]);
   });
 
   it("sends nothing for an empty or a long body", () => {
@@ -120,6 +136,29 @@ describe("the answer of Send and Save to Drafts", () => {
     expect(hint).toContain("Save to Drafts");
     expect(hint).toContain("Discard");
     expect(hint).not.toMatch(/jev/i);
+  });
+});
+
+describe("nothing on the card hides (security review of #1191)", () => {
+  const form = replyFromEvent(EVENT.reply)!;
+
+  it("the summary names each address the reply goes to, in full", () => {
+    expect(replySummary(form, false)).toBe("Reply to kim@contoso.test");
+    expect(replySummary(form, true)).toBe("Reply to kim@contoso.test, lee@contoso.test");
+  });
+
+  it("counts the lines of the body", () => {
+    expect(lineCount("a\nb\n\nc")).toBe(4);
+  });
+
+  it("the text box grows to the whole text, and the card draws each notice", () => {
+    const src = read("components/ReplyCardForm.tsx");
+    expect(src).toMatch(/el\.style\.height = `\$\{el\.scrollHeight/);
+    expect(src).toContain("rows={Math.max(4, lines)}");
+    expect(src).toContain("resize-none overflow-hidden");
+    expect(src).not.toMatch(/max-h-|overflow-y-auto/);
+    expect(src).toContain("form.notices.map");
+    expect(src).toContain("data-reply-lines");
   });
 });
 

@@ -218,6 +218,7 @@ REPLY_CARD: dict[str, Any] = {
     "recipients": {"reply": {"to": ["kim@contoso.test"], "cc": []},
                    "reply_all": {"to": ["kim@contoso.test"], "cc": []}},
     "body": "Hi Kim,\n\nConfirmed.",
+    "message_id": MSG, "notices": [],
 }
 
 
@@ -233,7 +234,8 @@ def reply_answer_for(kw: dict[str, Any]) -> Any:
     rec = form["recipients"]["reply_all" if form.get("reply_all") else "reply"]
     text = "APPROVE " + _json.dumps({"reply": {
         "action": "send", "reply_all": bool(form.get("reply_all")),
-        "body": form.get("body") or "Hi", "to": rec["to"], "cc": rec["cc"]}})
+        "body": form.get("body") or "Hi", "to": rec["to"], "cc": rec["cc"],
+        "message_id": form["message_id"]}})
     return ReplyAnswer("rid-1", text, parse_reply_answer(text), "")
 
 

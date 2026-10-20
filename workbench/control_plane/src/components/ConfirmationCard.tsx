@@ -365,6 +365,9 @@ export default function ConfirmationCard({
       </div>
 
       <RollupBody className="space-y-2 pt-1.5">
+        {/* A reply card draws its own summary: who gets the reply NOW, as the
+            member toggles Reply and Reply all (review of #1191). */}
+        {!isReply && (
         <div className="min-w-0">
           <p className="break-words text-xs font-medium leading-relaxed text-foreground">
             <CardText text={summary} fenced={fenced} />
@@ -375,9 +378,11 @@ export default function ConfirmationCard({
             </p>
           )}
         </div>
+        )}
       {isReply && (
         <ReplyCardForm
           form={reply}
+          detail={detail}
           armed={armed}
           disabled={disabled}
           onAnswer={(answer) => onReply?.(answer)}

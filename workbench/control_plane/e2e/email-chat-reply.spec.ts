@@ -24,7 +24,11 @@ const RID = "5b1d0c2e8f6a4e0f9a3b7c1d2e4f6a8b";
 const DESCRIPTION =
   "Kim Lee wrote about the quote for June. She asks you to confirm the price by Friday.";
 
+const MAIL_ID = "0b0b0b0b-0000-4000-8000-00000000000b";
+
 const REPLY_FORM = {
+  message_id: MAIL_ID,
+  notices: ["Outlook adds the email you answer below your reply."],
   mailbox: "Work · jane@acme.test",
   subject: "Re: Quote for June",
   original: {
@@ -186,13 +190,22 @@ test.describe("the reply card in the main chat", () => {
     const to = card.locator('[data-reply-recipients="to"]');
     await expect(to).toHaveText(/kim@contoso\.test$/);
     await expect(card.locator('[data-reply-recipients="cc"]')).toHaveCount(0);
+    // The summary names who the reply goes to, and the card says what the send adds.
+    const summary = card.locator("[data-reply-summary]");
+    await expect(summary).toHaveText("Reply to kim@contoso.test");
+    await expect(card.locator("[data-reply-notice]")).toHaveText(REPLY_FORM.notices[0]);
     // Reply all: the server's second list, in full.
     await card.locator('[data-reply-mode="reply-all"]').click();
+    await expect(summary).toHaveText("Reply to kim@contoso.test, lee@contoso.test");
     await expect(to).toContainText("kim@contoso.test, lee@contoso.test");
     await expect(card.locator('[data-reply-recipients="cc"]')).toContainText("ops@contoso.test");
     const box = card.getByRole("textbox", { name: "Reply text" });
     await expect(box).toHaveValue(REPLY_FORM.body);
     await box.fill("Hi all,\n\nConfirmed for June.\n\nJane");
+    // The box holds the whole text: no inner scroll hides a line.
+    const fits = await box.evaluate((el) => el.scrollHeight <= el.clientHeight + 2);
+    expect(fits).toBe(true);
+    await expect(card.locator("[data-reply-lines]")).toContainText("5 lines");
     await card.locator("[data-reply-send]").click();
 
     await expect.poll(() => answers(page)).toHaveLength(1);
@@ -204,6 +217,7 @@ test.describe("the reply card in the main chat", () => {
       body: "Hi all,\n\nConfirmed for June.\n\nJane",
       to: ["kim@contoso.test", "lee@contoso.test"],
       cc: ["ops@contoso.test"],
+      message_id: MAIL_ID,
     });
     await expect(card).toHaveCount(0);
     await expect(page.getByText(RESULTS.send).first()).toBeVisible({ timeout: 15_000 });
@@ -223,6 +237,7 @@ test.describe("the reply card in the main chat", () => {
       body: REPLY_FORM.body,
       to: ["kim@contoso.test"],
       cc: [],
+      message_id: MAIL_ID,
     });
     await expect(page.getByText(RESULTS.save).first()).toBeVisible({ timeout: 15_000 });
     expect(await emailCalls(page)).toEqual([]);

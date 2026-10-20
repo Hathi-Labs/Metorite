@@ -857,11 +857,15 @@ def clean_reply_form(form: dict | None) -> dict | None:
     shows them in full and never edits them. A form with no Reply recipient
     is a programming error of the calling tool, so it raises ``ValueError``
     before any card is drawn. The body is the draft, up to
-    ``reply_card.MAX_REPLY_BODY``.
+    ``reply_card.MAX_REPLY_BODY``, cleaned of each hidden character
+    (``reply_card.clean_reply_body``), so the card shows all of it.
+    ``message_id`` names the email, and the answer echoes it. Each
+    ``notices`` line says what the card must not hide: a Reply-To that is
+    not the sender, and the text that the send adds.
     """
     if form is None:
         return None
-    from acb_skills.reply_card import MAX_REPLY_BODY
+    from acb_skills.reply_card import MAX_REPLY_BODY, clean_reply_body
 
     if not isinstance(form, dict):
         raise ValueError("reply is a dict")
@@ -871,7 +875,12 @@ def clean_reply_form(form: dict | None) -> dict | None:
     if not reply["to"] or not reply_all["to"]:
         raise ValueError("a reply form needs a recipient")
     original = form.get("original") if isinstance(form.get("original"), dict) else {}
+    message_id = " ".join(str(form.get("message_id") or "").split())
+    if not message_id or len(message_id) > 200:
+        raise ValueError("a reply form names the email it answers")
+    notices = form.get("notices") if isinstance(form.get("notices"), list) else []
     return {
+        "message_id": message_id,
         "mailbox": _clip_line(form.get("mailbox")),
         "subject": _clip_line(form.get("subject")),
         "original": {
@@ -882,9 +891,20 @@ def clean_reply_form(form: dict | None) -> dict | None:
         },
         "recipients": {"reply": reply, "reply_all": reply_all},
         "reply_all": form.get("reply_all") is True,
-        "body": str(form.get("body") or "")[:MAX_REPLY_BODY],
+        "body": clean_reply_body(str(form.get("body") or ""))[:MAX_REPLY_BODY],
         "note": _clip_line(form.get("note")),
+        # A notice names addresses, so it is never cut: an over-long one fails.
+        "notices": [_whole_line(n) for n in notices[:4] if str(n or "").strip()],
     }
+
+
+def _whole_line(value: Any) -> str:
+    """One notice line, whole. A line that does not fit is a programming error
+    of the calling tool, because a cut line could hide an address."""
+    line = " ".join(str(value or "").split())
+    if len(line) > 1000:
+        raise ValueError("a reply form notice is too long")
+    return line
 
 
 class ReplyAnswer:
@@ -896,13 +916,16 @@ class ReplyAnswer:
     session email of the member who answered.
     """
 
-    __slots__ = ("answer", "choice", "request_id", "responder")
+    __slots__ = ("answer", "choice", "request_id", "responder", "thread_id")
 
-    def __init__(self, request_id: str, answer: str, choice: Any, responder: str) -> None:
+    def __init__(self, request_id: str, answer: str, choice: Any, responder: str,
+                 thread_id: str = "") -> None:
         self.request_id = request_id
         self.answer = answer
         self.choice = choice
         self.responder = responder
+        #: The thread that owns the card: the key of the gateway's record.
+        self.thread_id = thread_id
 
 
 def _was_parked(request_id: str) -> bool:
@@ -1088,6 +1111,9 @@ async def request_confirmation(
         return {"type": "CUSTOM", "name": "confirmation_requested", "value": value}
 
     _replied: list[ReplyAnswer] = []
+    #: The thread that owns each card of this call (EM-CR): the key of the
+    #: gateway's record of a reply answer.
+    _card_thread: dict[str, str] = {}
 
     def _verdict(result: dict, rid: str = "") -> tuple[str, frozenset[str] | None]:
         """The card's closing answer, and the ticked ids of a rows card."""
@@ -1102,7 +1128,8 @@ async def request_confirmation(
             if choice is None:
                 return "REJECT", None
             _replied.append(ReplyAnswer(rid, raw, choice,
-                                        str(result.get("responder") or "")))
+                                        str(result.get("responder") or ""),
+                                        _card_thread.get(rid, "")))
             return "APPROVE", None
         if _rows is None:
             return ("APPROVE" if said.upper() == "APPROVE" else "REJECT"), None
@@ -1164,6 +1191,8 @@ async def request_confirmation(
         _rid = _uuid.uuid4().hex
         _fut = _asyncio.get_running_loop().create_future()
         _pending_user_input[_rid] = _fut
+        _card_thread[_rid] = str(getattr(_pending_user_input, "owner_of", lambda _r: "")(_rid)
+                                 or "")
         await queue.put(_event(_rid))
         return await _block_on(_fut, _rid, _pending_user_input, queue.put)
 
@@ -1188,6 +1217,7 @@ async def request_confirmation(
             _rid = _uuid.uuid4().hex
             _fut = _asyncio.get_running_loop().create_future()
             _pending_user_input[_rid] = _fut
+            _card_thread[_rid] = str(_tid)
             _line = f"data: {_json.dumps(_event(_rid))}\n\n"
             await _push_sse_to_stream(_tid, _line)
 

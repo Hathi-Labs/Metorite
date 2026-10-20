@@ -28,6 +28,7 @@ from email.utils import parseaddr
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_skills.reply_card import clean_reply_body
 from fastapi import BackgroundTasks, Depends, HTTPException
 from gateway.routes.email.automation.drafting import (
     DraftReplyRequest,
@@ -60,7 +61,10 @@ EXCERPT_CHARS = 600
 REPLY_ROW_SQL = (
     "SELECT em.id::text AS id, em.account_id::text AS account_id, "
     "em.provider_message_id, em.thread_id, em.subject, em.from_address, "
-    "em.to_addresses, em.cc_addresses, em.received_at, em.snippet, em.body_text "
+    "em.to_addresses, em.cc_addresses, em.received_at, em.snippet, em.body_text, "
+    "em.folder, em.internet_message_id, ea.provider, "
+    "(SELECT s.signature FROM email_assistant_settings s "
+    " WHERE s.account_id = em.account_id) AS signature "
     "FROM email_messages em JOIN email_accounts ea ON ea.id = em.account_id "
     "WHERE em.id = CAST(:mid AS uuid) AND ea.user_id = :uid"
 )
@@ -81,6 +85,9 @@ class ReplyCardRequest(BaseModel):
 class ReplyCardActRequest(BaseModel):
     """What the member chose, as the card answer that the browser posted.
 
+    ``card_thread_id`` is the thread that owns the card, which keys the record
+    that respond-input wrote (review of #1191).
+
     ``extra="forbid"``: a ``to``, a ``cc``, a ``bcc``, a ``body`` or an
     ``attachments`` field is a 422, so no caller can add one. Fence:
     ``tests/unit/test_email_chat_reply.py``."""
@@ -89,6 +96,7 @@ class ReplyCardActRequest(BaseModel):
 
     message_id: str
     card_request_id: str
+    card_thread_id: str
     answer: str
 
 
@@ -178,17 +186,24 @@ async def _reply_row(db: Any, message_id: str, owner: str) -> Any:
     return row
 
 
-async def _read_reply_to(db: Any, owner: str, message_id: str) -> list[str]:
+async def _read_reply_to(db: Any, owner: str, row: Any) -> list[str]:
     """The Reply-To of the mail, from its provider. A fault names none, so
     the reply goes to the sender, as before this card existed. The act route
-    reads it again, and refuses when the answer changed."""
+    reads it again, and refuses when the answer changed.
+
+    The stored folder and Message-ID go with the read: an IMAP UID is unique
+    in one folder only, so the provider checks that the message it read is
+    this one (review of #1191). IMAP keeps the Message-ID as the thread id."""
     try:
         async with provider_session(
-            db, owner, message_id=message_id, require_auth=False,
+            db, owner, message_id=str(row.id), require_auth=False,
         ) as sess:
             if not sess.authed:
                 return []
-            return list(await sess.provider.get_reply_to(sess.provider_message_id))
+            return list(await sess.provider.get_reply_to(
+                sess.provider_message_id, folder=getattr(row, "folder", None),
+                message_id=(getattr(row, "internet_message_id", None)
+                            or getattr(row, "thread_id", None))))
     except Exception as exc:  # noqa: BLE001 - the class only
         _log.warning("email.reply_card_reply_to_failed", error=type(exc).__name__)
         return []
@@ -216,6 +231,24 @@ class _Mail:
             row.received_at, "isoformat", None) else str(row.received_at or "")
         body = strip_for_reading(row.body_text or "") or row.snippet or ""
         self.excerpt = " ".join(body.split())[:EXCERPT_CHARS]
+        self.provider = str(getattr(row, "provider", "") or "")
+        self.signature = str(getattr(row, "signature", "") or "")
+
+    def notices(self) -> list[str]:
+        """What the card must say and never hide (review of #1191, P2 and P1d):
+        a Reply that goes to another address than the sender, and the text
+        that the send adds after the card."""
+        out: list[str] = []
+        sender = self.sender.lower()
+        if self.reply_to and sender and [a.lower() for a in self.reply_to] != [sender]:
+            out.append(f"Reply goes to {', '.join(self.reply_to)}, not to the sender "
+                       f"{self.sender}.")
+        if self.signature.strip():
+            out.append("When it goes, your mailbox signature is added below the "
+                       "text if the text does not hold it.")
+        if self.provider == "microsoft":
+            out.append("Outlook adds the email you answer below your reply.")
+        return out
 
     def recipients(self, reply_all: bool) -> tuple[list[str], list[str]]:
         return derive_reply_recipients(
@@ -227,7 +260,7 @@ async def _load_mail(message_id: str, owner: str) -> _Mail:
     async with _tenant_session() as db:
         row = await _reply_row(db, message_id, owner)
         me = await resolve_self(db, str(row.account_id))
-        reply_to = await _read_reply_to(db, owner, str(row.id))
+        reply_to = await _read_reply_to(db, owner, row)
     return _Mail(row, me, reply_to)
 
 
@@ -252,8 +285,12 @@ async def reply_card(
                           create_draft=False),
         user,
     )
-    body = strip_placeholder_lines(str((drafted or {}).get("draft") or ""))
+    # Review of #1191, P1: no hidden character and no long blank run reaches
+    # the card, so the card shows each character that the send can carry.
+    body = clean_reply_body(strip_placeholder_lines(str((drafted or {}).get("draft") or "")))
     return {
+        "message_id": str(_as_uuid(req.message_id) or req.message_id),
+        "notices": mail.notices(),
         "account_id": mail.account_id,
         "mailbox": mail.mailbox,
         "subject": _reply_subject(mail.subject),
@@ -289,11 +326,16 @@ async def reply_card_act(
     (``reply_card.take_reply_answer``), and it is taken once. The To and Cc
     are derived again here, and they must equal the lists the card showed.
     Each refusal sends and saves nothing."""
-    from acb_skills.reply_card import parse_reply_answer, take_reply_answer
+    from acb_skills.reply_card import (
+        parse_reply_answer,
+        reply_body_refusal,
+        take_reply_answer,
+    )
 
     owner = (user.email or "").strip().lower()
     org = getattr(user, "organization_id", None)
-    if not owner or not await take_reply_answer(org, req.card_request_id, owner, req.answer):
+    if not owner or not await take_reply_answer(
+            org, req.card_request_id, owner, req.answer, req.card_thread_id):
         _log.warning("email.reply_card_answer_refused", reason="no_record")
         raise HTTPException(
             status_code=409,
@@ -302,6 +344,20 @@ async def reply_card_act(
     choice = parse_reply_answer(req.answer)
     if choice is None:
         raise HTTPException(status_code=422, detail="The card answer is not a reply.")
+    if _as_uuid(choice.message_id) is None or _as_uuid(choice.message_id) != _as_uuid(
+            req.message_id):
+        _log.warning("email.reply_card_answer_refused", reason="another_email")
+        raise HTTPException(
+            status_code=409,
+            detail="This card answers another email, so nothing was sent or saved.")
+    refusal = reply_body_refusal(choice.body)
+    if refusal:
+        _log.warning("email.reply_card_answer_refused", reason="hidden_text")
+        raise HTTPException(status_code=422, detail=refusal)
+    # The same cleaning as the draft of the card: what leaves is what was visible.
+    body = clean_reply_body(choice.body)
+    if not body:
+        raise HTTPException(status_code=422, detail="The reply text is empty.")
     mail = await _load_mail(req.message_id, user.email or owner)
     to, cc = mail.recipients(choice.reply_all)
     if not to or not _same(to, choice.to) or not _same(cc, choice.cc):
@@ -316,14 +372,14 @@ async def reply_card_act(
         res = await send_email(
             SendEmailRequest(
                 account_id=mail.account_id, to=to, cc=cc or None, subject=subject,
-                body_text=choice.body, reply_to_message_id=req.message_id,
+                body_text=body, reply_to_message_id=req.message_id,
             ),
             background, user,
         )
         _log.info("email.reply_card_sent", reply_all=choice.reply_all)
         return {"ok": True, "action": "send", "to": to, "cc": cc, "mailbox": mail.mailbox,
                 "id": (res or {}).get("id")}
-    draft_id = await _save_draft(mail, user.email or owner, to, cc, subject, choice.body)
+    draft_id = await _save_draft(mail, user.email or owner, to, cc, subject, body)
     _log.info("email.reply_card_saved", reply_all=choice.reply_all)
     return {"ok": True, "action": "save", "to": to, "cc": cc, "mailbox": mail.mailbox,
             "draft_id": draft_id}

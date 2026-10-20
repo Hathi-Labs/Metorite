@@ -1758,6 +1758,8 @@ def _reply_form(prep: dict[str, Any], reply_all: bool) -> dict[str, Any]:
     rec = prep.get("recipients") or {}
     body = str(prep.get("body") or "")
     return {
+        "message_id": prep.get("message_id") or "",
+        "notices": list(prep.get("notices") or []),
         "mailbox": prep.get("mailbox") or "",
         "subject": prep.get("subject") or "",
         "original": prep.get("original") or {},
@@ -1767,6 +1769,24 @@ def _reply_form(prep: dict[str, Any], reply_all: bool) -> dict[str, Any]:
         "note": ("" if body.strip() else
                  "The assistant did not write a draft for this mail. Write the reply below."),
     }
+
+
+#: The longest card title that ``request_confirmation`` keeps whole.
+_REPLY_TITLE_MAX = 120
+
+
+def _reply_title(form: dict[str, Any], reply_all: bool) -> str:
+    """The card title: who the reply goes TO, as the server derived it.
+
+    Security review of #1191, P2: the title named the sender, and a Reply-To
+    can send the reply elsewhere. An address is never cut: a title that does
+    not fit counts the recipients, and the card lists each one in full."""
+    rec = (form.get("recipients") or {}).get("reply_all" if reply_all else "reply") or {}
+    to = [str(a) for a in rec.get("to") or [] if a]
+    title = f"Reply to {', '.join(to)}?"
+    if to and len(title) <= _REPLY_TITLE_MAX:
+        return title
+    return f"Reply to {len(to)} recipients?" if len(to) != 1 else "Reply to 1 recipient?"
 
 
 @_annotate_risk(destructive=True, open_world=True, card_bound_reply=True)
@@ -1792,10 +1812,8 @@ async def compose_reply(email_id: str, account_id: str, reply_all: bool = False)
         return _NO_CARD_CHANNEL
     prep = await _post("/email/reply-card", {"message_id": email_id})
     form = _reply_form(prep, reply_all)
-    original = form["original"] if isinstance(form["original"], dict) else {}
-    sender = _card_text(original.get("from") or "the sender", 120)
     answer = await ask_tools.request_confirmation(
-        title=f"Reply to {sender}?",
+        title=_reply_title(form, reply_all),
         detail=_card_text(
             f"From {form['mailbox']} · {form['subject'] or '(no subject)'}", 300),
         reply=form,
@@ -1809,6 +1827,7 @@ async def compose_reply(email_id: str, account_id: str, reply_all: bool = False)
     res = await _post("/email/reply-card/act", {
         "message_id": email_id,
         "card_request_id": answer.request_id,
+        "card_thread_id": answer.thread_id,
         "answer": answer.answer,
     })
     to, cc = _addr_text(res.get("to")), _addr_text(res.get("cc"))

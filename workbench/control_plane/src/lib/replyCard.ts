@@ -34,6 +34,13 @@ export interface ReplyRecipients {
 }
 
 export interface ReplyForm {
+  /** The email the reply answers. The answer names it, so it acts on no other. */
+  messageId: string;
+  /**
+   * Lines the card must show and never hide: a Reply-To that is not the
+   * sender, and the text the send adds after the card (review of #1191).
+   */
+  notices: string[];
   /** The sending mailbox, as "label · address". */
   mailbox: string;
   /** The subject of the reply ("Re: …"). */
@@ -88,7 +95,12 @@ export function replyFromEvent(value: unknown): ReplyForm | null {
   const replyAll = recipients(rec.reply_all);
   if (!reply || !replyAll) return null;
   const o = v.original && typeof v.original === "object" ? (v.original as Record<string, unknown>) : {};
+  const messageId = typeof v.message_id === "string" ? v.message_id.trim() : "";
+  if (!messageId) return null;
+  const notices = Array.isArray(v.notices) ? v.notices.filter((n): n is string => typeof n === "string" && !!n.trim()) : [];
   return {
+    messageId,
+    notices,
     mailbox: text(v.mailbox),
     subject: text(v.subject),
     original: {
@@ -140,6 +152,7 @@ export function replyAnswer(
     body: choice.body,
     to: shown.to,
     cc: shown.cc,
+    message_id: form.messageId,
   };
   return `${REPLY_ANSWER_PREFIX}${JSON.stringify({ reply })}` as ReplyApproval;
 }
@@ -150,6 +163,16 @@ export function receivedText(iso: string, locale?: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
   return d.toLocaleString(locale, { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+}
+
+/** The lines of a body, as the card counts them. */
+export function lineCount(body: string): number {
+  return body.split("\n").length;
+}
+
+/** The summary of the card: who gets the reply now, each address in full. */
+export function replySummary(form: ReplyForm, replyAll: boolean): string {
+  return `Reply to ${recipientsFor(form, replyAll).to.join(", ")}`;
 }
 
 /** What the buttons do, in one line under them. */
