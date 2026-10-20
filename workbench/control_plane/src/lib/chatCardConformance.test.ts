@@ -67,6 +67,7 @@ const CHAT_CARDS: Record<string, { seam: true } | { exempt: string }> = {
   "components/tasks/TaskToolCards.tsx": { seam: true },
   "components/email/EmailToolCards.tsx": { seam: true },
   "components/ConfirmationQueue.tsx": { exempt: "it draws ConfirmationCard, one at a time, and no row of its own" },
+  "components/ReplyCardForm.tsx": { exempt: "the body of a reply card, under the confirmation card's RollupHeader" },
   "components/ArtifactCard.tsx": { exempt: "a file card is one row: its name, its size and its buttons. Nothing folds" },
   "components/crm/CrmEvidence.tsx": { exempt: "a read's body, drawn inside its step of the trail, which is its title" },
   "components/Readout.tsx": { exempt: "the body of a read card, under the card's own header" },

@@ -806,6 +806,92 @@ def ticked_rows(answer: str, offered: frozenset[str]) -> frozenset[str] | None:
     return ticked
 
 
+# ── The reply form of a confirmation card (EM-CR, email_app_master_plan §18) ──
+#
+# ``request_confirmation(..., reply=form)`` draws the ONE confirmation card with
+# a reply form in its body: the mail it answers, the recipients the gateway
+# derived for Reply and for Reply all, a toggle, the editable body, and Send,
+# Save to Drafts and Discard. Its answer is ``acb_skills.reply_card``'s
+# ``APPROVE {"reply": {...}}``. A client that does not know the form draws a
+# plain card, and its plain ``APPROVE`` is no reply answer, so nothing acts.
+
+#: The longest text of one field of the form, but the body.
+_REPLY_FIELD_MAX = 500
+#: The longest excerpt of the mail the card answers.
+_REPLY_EXCERPT_MAX = 1200
+
+
+def _clip_line(value: Any, limit: int = _REPLY_FIELD_MAX) -> str:
+    return " ".join(str(value or "").split())[:limit]
+
+
+def _clean_recipients(value: Any) -> dict[str, list[str]]:
+    from acb_skills.reply_card import MAX_REPLY_RECIPIENTS
+
+    v = value if isinstance(value, dict) else {}
+    out: dict[str, list[str]] = {}
+    for name in ("to", "cc"):
+        items = v.get(name) if isinstance(v.get(name), list) else []
+        out[name] = [_clip_line(a, 320) for a in items[:MAX_REPLY_RECIPIENTS]
+                     if _clip_line(a, 320)]
+    return out
+
+
+def clean_reply_form(form: dict | None) -> dict | None:
+    """The reply form of a card, checked and clipped, or None for no form.
+
+    The recipients are the gateway's, for Reply and for Reply all. The card
+    shows them in full and never edits them. A form with no Reply recipient
+    is a programming error of the calling tool, so it raises ``ValueError``
+    before any card is drawn. The body is the draft, up to
+    ``reply_card.MAX_REPLY_BODY``.
+    """
+    if form is None:
+        return None
+    from acb_skills.reply_card import MAX_REPLY_BODY
+
+    if not isinstance(form, dict):
+        raise ValueError("reply is a dict")
+    recipients = form.get("recipients") if isinstance(form.get("recipients"), dict) else {}
+    reply = _clean_recipients(recipients.get("reply"))
+    reply_all = _clean_recipients(recipients.get("reply_all"))
+    if not reply["to"] or not reply_all["to"]:
+        raise ValueError("a reply form needs a recipient")
+    original = form.get("original") if isinstance(form.get("original"), dict) else {}
+    return {
+        "mailbox": _clip_line(form.get("mailbox")),
+        "subject": _clip_line(form.get("subject")),
+        "original": {
+            "from": _clip_line(original.get("from")),
+            "subject": _clip_line(original.get("subject")),
+            "received": _clip_line(original.get("received"), 64),
+            "excerpt": str(original.get("excerpt") or "").strip()[:_REPLY_EXCERPT_MAX],
+        },
+        "recipients": {"reply": reply, "reply_all": reply_all},
+        "reply_all": form.get("reply_all") is True,
+        "body": str(form.get("body") or "")[:MAX_REPLY_BODY],
+        "note": _clip_line(form.get("note")),
+    }
+
+
+class ReplyAnswer:
+    """The member's answer to a reply card: the exact text, and its parse.
+
+    ``answer`` is what the member's browser posted. The tool hands it to the
+    gateway unchanged, and the gateway checks it against its own record
+    (``reply_card.take_reply_answer``). ``responder`` is the gateway's
+    session email of the member who answered.
+    """
+
+    __slots__ = ("answer", "choice", "request_id", "responder")
+
+    def __init__(self, request_id: str, answer: str, choice: Any, responder: str) -> None:
+        self.request_id = request_id
+        self.answer = answer
+        self.choice = choice
+        self.responder = responder
+
+
 def _was_parked(request_id: str) -> bool:
     """True when the run parked this card (WS-51 S2). It must stay open."""
     try:
@@ -851,6 +937,27 @@ def confirmation_channel_open() -> bool:
         return False
 
 
+def _whatsapp_run() -> bool:
+    """True for a run of the WhatsApp channel, which draws no card. A fault
+    reads True, so a reply form fails closed (EM-CR)."""
+    try:
+        from acb_skills.whatsapp_ui import current_run
+    except ImportError:
+        return False
+    try:
+        return current_run() is not None
+    except Exception:
+        return True
+
+
+def reply_card_channel_open() -> bool:
+    """True when this run can show the reply card (EM-CR): a card channel
+    (:func:`confirmation_channel_open`) and no WhatsApp run. The reply tool
+    asks it BEFORE it drafts, so a run with no card drafts, saves and sends
+    nothing."""
+    return confirmation_channel_open() and not _whatsapp_run()
+
+
 def _whatsapp_answer(title: str, detail: str, context: str,
                      rows: list[dict] | None) -> bool | frozenset[str] | None:
     """``acb_skills.whatsapp_acts.answer_card``, or None (WS-47 WAC-4).
@@ -874,7 +981,8 @@ async def request_confirmation(
     non_interactive_default: str = "deny",
     rows: list[dict] | None = None,
     fenced: bool | None = None,
-) -> bool | frozenset[str]:
+    reply: dict | None = None,
+) -> bool | frozenset[str] | ReplyAnswer | None:
     """Emit a HITL confirmation card and BLOCK until the user approves/rejects.
 
     Renders a ``ConfirmationCard`` inline in the chat with Approve / Reject
@@ -903,6 +1011,11 @@ async def request_confirmation(
             flag the client draws the text exactly as sent, so an email body
             that holds a real « » keeps it. ``None`` leaves the event as it
             was.
+        reply: optional reply form (:func:`clean_reply_form`, EM-CR). The
+            card draws the form, and its Approve carries the member's choice
+            and body. Neither ``rows`` nor the WhatsApp profile goes with it:
+            a run with no card, a WhatsApp run included, gets ``None`` at
+            once, whatever ``non_interactive_default`` says.
 
     Returns:
         With no ``rows``: ``True`` if the user approved, ``False`` if they
@@ -919,11 +1032,22 @@ async def request_confirmation(
         One exception comes first (WS-47 WAC-4): the WhatsApp profile parks
         an allowed act and answers False, or answers the Confirm of a parked
         act (``acb_skills.whatsapp_acts.answer_card``).
+
+        With ``reply``: a :class:`ReplyAnswer` when the member pressed Send
+        or Save to Drafts, and ``None`` for Discard, a timeout, an answer
+        that is not a reply answer, and a run with no card.
     """
     _title = str(title or "Confirm action").strip()[:120]
     _detail = str(detail or "").strip()[:500]
     _context = str(context or "").strip()[:4000]
     _rows = clean_card_rows(rows)
+    _reply = clean_reply_form(reply)
+    if _reply is not None:
+        if _rows is not None:
+            raise ValueError("a card has rows or a reply form, never both")
+        # No WhatsApp profile and no default: a reply needs the card.
+        if cards_refused() or _whatsapp_run():
+            return None
     # WS-47 WAC-4: the WhatsApp profile answers first. It parks an allowed
     # act ("not yet"), or answers the Confirm of a parked one. None leaves
     # the card to the gate below. It never approves a card with rows.
@@ -944,19 +1068,35 @@ async def request_confirmation(
         }
         if _rows is not None:
             value["rows"] = _rows
+        if _reply is not None:
+            value["reply"] = _reply
         if fenced is not None:
             value["fenced"] = bool(fenced)
         return {"type": "CUSTOM", "name": "confirmation_requested", "value": value}
 
-    def _verdict(result: dict) -> tuple[str, frozenset[str] | None]:
+    _replied: list[ReplyAnswer] = []
+
+    def _verdict(result: dict, rid: str = "") -> tuple[str, frozenset[str] | None]:
         """The card's closing answer, and the ticked ids of a rows card."""
         said = str(result.get("answer", "")).strip()
+        if _reply is not None:
+            from acb_skills.reply_card import parse_reply_answer
+
+            # The exact text, not the stripped one: the gateway's record holds
+            # the digest of what the browser posted.
+            raw = str(result.get("answer", ""))
+            choice = parse_reply_answer(raw)
+            if choice is None:
+                return "REJECT", None
+            _replied.append(ReplyAnswer(rid, raw, choice,
+                                        str(result.get("responder") or "")))
+            return "APPROVE", None
         if _rows is None:
             return ("APPROVE" if said.upper() == "APPROVE" else "REJECT"), None
         ticked = ticked_rows(said, _offered)
         return ("APPROVE" if ticked else "REJECT"), ticked
 
-    async def _block_on(_fut, _rid, _pending, _publish) -> bool | frozenset[str]:
+    async def _block_on(_fut, _rid, _pending, _publish) -> bool | frozenset[str] | ReplyAnswer | None:
         """Park on the answer, then say on the stream that the card is closed.
 
         A model can call card-gated tools in parallel, so one stream can carry
@@ -975,7 +1115,7 @@ async def request_confirmation(
         try:
             from orchestrator.executor import wait_user_future  # noqa: PLC0415
             _result = await wait_user_future(_fut, 3600)
-            _answer, _ticked = _verdict(_result)
+            _answer, _ticked = _verdict(_result, _rid)
         except _asyncio.CancelledError:
             _answer = "CANCELLED"
             raise
@@ -989,6 +1129,8 @@ async def request_confirmation(
             with _contextlib.suppress(Exception):
                 if not _was_parked(_rid):
                     await _publish(_resolved_event(_rid, _answer))
+        if _reply is not None:
+            return _replied[0] if _answer == "APPROVE" and _replied else None
         if _rows is not None:
             return _ticked or frozenset()
         return _answer == "APPROVE"
@@ -1044,7 +1186,10 @@ async def request_confirmation(
         pass
 
     # No delivery channel (non-interactive run) — fail CLOSED unless the
-    # caller explicitly opted a reversible action into auto-approval.
+    # caller explicitly opted a reversible action into auto-approval. A reply
+    # form never auto-approves: there is no body the member submitted.
+    if _reply is not None:
+        return None
     approved = str(non_interactive_default).strip().lower() == "approve"
     if _rows is not None:
         return frozenset(r["id"] for r in _rows if r["checked"]) if approved else frozenset()

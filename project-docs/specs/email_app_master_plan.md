@@ -20262,3 +20262,120 @@ than the base finds. After each merge, check the box: the deployed SHA, and one
 None blocks the build. `shadow` and `on` of `email.context_select` are gate
 `enforcement-flip`, while fence C5 holds. If a later change puts a body into the state, the
 flip waits for the owner answer to D-EM-62 open (a).
+
+## 18. Reply in the chat: one card, then done (2026-10-20)
+
+**Work id: EM-CR.** Owner request of 2026-10-20. The owner wrote: "All future app workflows
+should be executable entirely through the chat interface, without requiring the UI."
+
+### 18.1 The chat-first rule
+
+Each act of an app can complete in the chat. The member asks, the assistant answers, one
+card collects the decision, and the act then completes. The member opens no app to finish
+it. A card is the only permission, so the assistant never asks in text and then shows a
+card for the same act. A read asks no permission. A write or a send asks one card.
+
+### 18.2 The flow
+
+1. The member asks about an email. The assistant reads it with no card. It says who sent
+   the email, what it says, and what it asks of the member, and by when.
+2. If the member only asked to read, the assistant ends with one offer: "Want me to draft a
+   reply?". It shows no card.
+3. The member asks to reply, or says yes. The assistant says the gist of the reply in one or
+   two lines. Then `compose_reply` shows ONE reply card.
+4. The card shows the email it answers (the sender, the subject, the time and an excerpt),
+   the recipients, a Reply or Reply all toggle, the text to edit, and three buttons: Send,
+   Save to Drafts and Discard.
+5. The member chooses. The tool does what the member chose, and the chat says "Sent to
+   ...", "Saved in Drafts ..." or "Reply discarded ...".
+
+**A change from the request.** The owner listed "ask permission to draft" and "a card that
+shows the draft" as two steps. They are one card here. A draft that only shows in the
+chat writes nothing, so it needs no permission. The card shows the draft, and it is the
+permission to save or to send it. Two prompts for one act would ask twice.
+
+**Why the card describes the email too.** The email assistant runs as a delegated batch
+run, so its text reaches the chat after its last tool ends. That is after the card. So the
+card shows what it answers, in the sender's own words, and the text of the assistant comes
+after the card.
+
+### 18.3 No card for a read
+
+The orchestrator asked the untrusted-answer card on a hand-off to the email assistant in a
+chat that had read mail (WS-47 WAC-P4). That card guarded nothing. In such a chat the run
+of the hand-off binds `no_egress` (H-236), so it holds no send, and each of its writes
+asks its own card.
+
+`_handoff_child_held` in `orchestrator/_tool_injection.py` skips the card for a hand-off
+whose child run will be held. It asks `_run_no_egress`, the one function that the executor
+binds the child with, so the two cannot disagree. A direct egress tool, such as
+`fetch_page`, still asks its card. So does a hand-off whose child would not be held. The
+first hand-off of a fresh chat asks nothing, as before.
+
+### 18.4 The reply card
+
+- **The one card.** The card is the confirmation card of `request_confirmation`, with a
+  `reply` form. No second card mechanism exists. `ConfirmationCard` draws the form through
+  `ReplyCardForm`. Each surface that mounts `AgentChat` draws it: `/chat`, the dock, the
+  rails, the phone sheet and the Email pane. A delegated call shows its card on the
+  stream of the parent, as the send card did.
+- **Why this seam.** The confirmation card already parks the run, closes on
+  `confirmation_resolved`, replays after a remount, refuses in a run with no card, and
+  keeps a WhatsApp run out. A generative-UI template has none of those, and the model can
+  draw any template.
+- **The answer.** Send and Save to Drafts answer `APPROVE {"reply": {...}}`, with exactly
+  the keys `action`, `reply_all`, `body`, `to` and `cc`. `to` and `cc` are the lists the
+  card showed. Discard answers `REJECT`. `acb_skills/reply_card.py` and
+  `lib/replyCard.ts` hold the shape, and a test holds the two in step.
+- **The draft.** `POST /email/reply-card` drafts with the one drafter
+  (`draft_reply_smart`, with `create_draft` off). It takes out each placeholder line with
+  `strip_placeholder_lines`, the one placeholder rule.
+
+### 18.5 A send in a held run, and its limits
+
+A chat that read outside mail holds its runs (H-236), so `send_email` is withheld. The
+owner wants confirm-then-done in such a chat too. So `compose_reply` may send there, and
+only because of four limits. The gateway enforces each one.
+
+1. **The model names no recipient.** `derive_reply_recipients` in
+   `gateway/routes/email/automation/reply_card.py` derives To and Cc from the original
+   email and the Reply all choice of the member. Reply goes to the Reply-To, else to the
+   sender. Reply all adds each To and Cc of the email. Each list leaves out each mailbox
+   address of the member. The act route derives them again, and refuses when they differ
+   from the lists the card showed.
+2. **The body is the body the member posted.** `POST /agent/respond-input` records a digest
+   of a reply answer, keyed by the card and bound to the member, before the run goes on.
+   `POST /email/reply-card/act` sends only an answer whose digest matches that record, and
+   it takes the record once (`GETDEL`). The act request has no recipient field and no body
+   field of its own, and an extra field is a 422.
+3. **No file, no forward, no new recipient.** Those stay with `send_email` and
+   `forward_email`, and a held run holds neither.
+4. **No card, no act.** A WhatsApp run, a batch run and a scheduled run draft, save and send
+   nothing. The tool says so.
+
+`acb_skills.egress.CARD_BOUND_REPLY_TOOLS` pins the parameters of `compose_reply`:
+`email_id`, `account_id` and `reply_all`. The tool also carries the annotation
+`card_bound_reply`. A held run keeps the tool only while both hold. A new parameter makes
+it an egress tool again.
+
+### 18.6 Fences
+
+| Rule | Fence |
+|---|---|
+| The hand-off card asks only for a child that is not held | `tests/unit/test_delegation_no_egress.py` |
+| The recipients, the record of the answer, the act route, the parameter pin, no card | `tests/unit/test_email_chat_reply.py` |
+| The real SQL of both routes, under FORCE RLS | `TestReplyCardRealSql` in the same file (R8) |
+| The card, its answer and the one renderer | `src/lib/replyCard.test.ts` |
+| The flow in the main chat | `e2e/email-chat-reply.spec.ts` |
+| A card before each write | `tests/unit/test_email_agent_write_cards.py` |
+
+### 18.7 Open items
+
+- **IMAP reads the Reply-To in INBOX only**, as `get_message` does. A reply to a mail in
+  another IMAP folder goes to the sender.
+- **A failed answer post loses the edits.** The card comes back after a network fault with
+  the draft of the tool, not the text the member typed.
+- **A card that a restart parks** answers as a chat message after the restart, as each
+  parked card does. The model then shows a new card. Nothing acts on the old answer.
+- **The durable ask row holds the draft**, as the send card's row holds its body. The row
+  expires with the other asks.

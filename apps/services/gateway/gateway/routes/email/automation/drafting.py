@@ -1496,6 +1496,20 @@ _PLACEHOLDER_LINE_RE = re.compile(
 )
 
 
+def strip_placeholder_lines(body: str) -> str:
+    """*body* with no placeholder-only line (``[Your Name]``), trimmed.
+
+    The ONE placeholder rule. :func:`_clean_draft_body` uses it, and so does
+    the reply card of the chat (EM-CR), whose draft carries the signature and
+    so must not lose a quoted tail."""
+    kept = [
+        ln for ln in (body or "").splitlines()
+        if not _PLACEHOLDER_LINE_RE.match(ln)
+    ]
+    # Collapse the trailing blank run left behind by a removed placeholder.
+    return "\n".join(kept).strip()
+
+
 def _clean_draft_body(body: str) -> str:
     """Strip placeholder-only lines (e.g. "[Your Name]") and any quoted trailing
     conversation from a drafted reply, so neither reaches the user's mailbox. The
@@ -1508,12 +1522,7 @@ def _clean_draft_body(body: str) -> str:
     reattaches it, so a model-authored one is a duplicate — and it also drags the
     signature below the thread at send time. ``split_quoted_text`` returns the
     body untouched unless it can find a boundary with real content above it."""
-    kept = [
-        ln for ln in (body or "").splitlines()
-        if not _PLACEHOLDER_LINE_RE.match(ln)
-    ]
-    # Collapse the trailing blank run left behind by a removed placeholder.
-    cleaned = "\n".join(kept).strip()
+    cleaned = strip_placeholder_lines(body)
     main, quoted = split_quoted_text(cleaned)
     if quoted:
         _log.info("email.draft_quote_stripped", chars=len(quoted))

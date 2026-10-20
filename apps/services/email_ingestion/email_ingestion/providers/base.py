@@ -583,6 +583,17 @@ class BaseEmailProvider(ABC):
         """Get full email message including body."""
         ...
 
+    async def get_reply_to(self, provider_message_id: str) -> list[str]:
+        """The Reply-To addresses of one message, or ``[]`` when it names none.
+
+        The reply card of the chat (EM-CR, ``email_app_master_plan.md`` §18)
+        sends a reply to the Reply-To when the mail has one, as a mail app
+        does. The sync stores no Reply-To, so the card asks the provider for
+        the one message it answers. The default names none, and the reply
+        goes to the sender. Gmail, Outlook and IMAP read the one header.
+        """
+        return []
+
     async def get_message_body(self, provider_message_id: str) -> EmailMessage:
         """The message, for a caller that reads its body only.
 

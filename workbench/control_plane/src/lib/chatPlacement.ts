@@ -251,6 +251,8 @@ const WRITE: readonly string[] = [
   "move_to_folder",
   "create_label",
   "send_email",
+  // EM-CR: the reply card. Its card waits in the flow, and its receipt is a write.
+  "compose_reply",
   "forward_email",
   "send_reply",
   "send_draft",

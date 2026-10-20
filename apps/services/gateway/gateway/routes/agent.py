@@ -3431,6 +3431,17 @@ async def respond_user_input(
     # WS-53 CRM-Q33 fix round 2: the responder is the session's member, so a
     # CRM card counts a pick only of the run's own member.
     _responder = (getattr(user, "email", None) or "").strip().lower() or None
+    # EM-CR (email_app_master_plan.md §18): the record of a reply card's
+    # answer, BEFORE the run resumes, so its act finds it. Only a reply
+    # answer is recorded, with this caller's own tenant and email. The
+    # gateway sends a reply only with this record (``reply_card.take_reply_answer``).
+    if not req.declined:
+        from acb_skills.reply_card import record_reply_answer  # noqa: PLC0415
+
+        await record_reply_answer(
+            getattr(user, "organization_id", None), req.request_id, _responder or "",
+            req.answer,
+        )
     # A decline ("Not now", owner request 2026-10-18) resolves it too, so
     # the run RESUMES and reads the decline as its tool result.
     delivered = resolve_user_input(

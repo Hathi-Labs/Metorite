@@ -29,7 +29,7 @@ import smtplib
 from datetime import datetime, timezone
 from email.header import decode_header
 from email.mime.text import MIMEText
-from email.utils import parsedate_to_datetime
+from email.utils import getaddresses, parsedate_to_datetime
 from typing import Any
 
 from .base import (
@@ -239,6 +239,27 @@ class IMAPProvider(BaseEmailProvider):
             if not messages:
                 raise ValueError(f"Message not found: {provider_message_id}")
             return messages[0]
+
+        return await asyncio.to_thread(_get)
+
+    async def get_reply_to(self, provider_message_id: str) -> list[str]:
+        """The Reply-To of one message (EM-CR): one header, read with
+        ``BODY.PEEK`` so the mail stays unread. It reads INBOX, as
+        :meth:`get_message` does."""
+        imap = await self._get_imap()
+
+        def _get() -> list[str]:
+            s, _ = imap.select("INBOX", readonly=True)
+            if s != "OK":
+                raise ValueError("Cannot select INBOX")
+            s, data = imap.uid(
+                "FETCH", provider_message_id, "(BODY.PEEK[HEADER.FIELDS (REPLY-TO)])")
+            if s != "OK" or not data:
+                return []
+            raw = b"".join(part[1] for part in data
+                           if isinstance(part, tuple) and isinstance(part[1], bytes))
+            header = email_lib.message_from_bytes(raw).get("Reply-To", "") if raw else ""
+            return [a for _n, a in getaddresses([str(header or "")]) if "@" in a]
 
         return await asyncio.to_thread(_get)
 
