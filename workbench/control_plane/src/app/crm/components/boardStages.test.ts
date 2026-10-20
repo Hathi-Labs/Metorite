@@ -280,11 +280,15 @@ describe("the board draws what the page hands it", () => {
 describe("the page wires the toggle through the shared Button", () => {
   const page = readFileSync(join(__dirname, "..", "page.tsx"), "utf-8");
 
-  it("draws the toggle in the title-bar tools with Button and its selected state", () => {
+  it("draws the toggle in Board options (row 1) with Button and its selected state", () => {
+    // CRM-U8: the toggle left the app bar for the toolbar's "Board options".
     const tools = page.slice(page.indexOf("const tools = ("), page.indexOf("return (", page.indexOf("const tools = (")));
-    expect(tools).toMatch(/<Button[^>]*?\n?[\s\S]*?aria-label="Show empty stages"/);
-    expect(tools).toContain("selected={showEmpty}");
-    expect(tools).toContain("writeShowEmpty(memberScope, next)");
+    expect(tools).not.toContain("Empty stages");
+    expect(page).toMatch(/board=\{\s*dealBoard/);
+    expect(page).toContain("writeShowEmpty(memberScope, next)");
+    const bar = readFileSync(join(__dirname, "CrmViewBar.tsx"), "utf-8");
+    expect(bar).toContain("selected={board.showEmpty}");
+    expect(bar).toContain("Empty stages");
   });
 
   it("hands the Deals board the visible lanes, and the Leads board its own", () => {
