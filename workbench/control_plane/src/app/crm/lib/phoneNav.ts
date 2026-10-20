@@ -9,16 +9,26 @@
 // as `cc-crm-nav`, and `AppShell` draws it. The page owns the list because
 // it knows the mode, the source's labels and which rows Zoho turned off.
 
-import type { RailEntry } from "./views";
+import { isEntity } from "./urlState";
+import type { CrmModule } from "./modules";
+import type { CoreStates, RailEntry } from "./views";
 
-/** The lists that fill the bar, in the order of the spec's "most opened". */
-const PRIMARY: readonly string[] = ["deals", "leads", "contacts", "organizations"];
+/** The core lists, in the order they win a slot. */
+const PRIMARY: readonly string[] = [
+  "deals",
+  "leads",
+  "contacts",
+  "organizations",
+];
 
 /** How many lists the bar names. The fourth slot is "More". */
 export const PHONE_TABS = 3;
 
 /** The id of the "More" tab. It is not a view. */
 export const MORE_TAB = "more";
+
+/** The id of a tab that opens a generic module. */
+export const MODULE_TAB = "module:";
 
 export type PhoneTab = { id: string; label: string; icon: string };
 
@@ -31,24 +41,88 @@ export type PhoneNav = {
   badge: number | null;
 };
 
+/** The view on screen: its tab, and the module when the tab is `module`. */
+export type PhoneView = { tab: string; module?: string | null };
+
+/** The tab id of a generic module. */
+export function moduleTabId(module: string): string {
+  return `${MODULE_TAB}${module}`;
+}
+
+/** The module in a tab id, or null for a core list. */
+export function moduleOfTab(id: string): string | null {
+  return id.startsWith(MODULE_TAB) ? id.slice(MODULE_TAB.length) : null;
+}
+
+type Candidate = PhoneTab & { holds: boolean; count: number; rank: number };
+
 /**
- * The tabs for the rows the rail draws. A row that the source turned off
- * and that holds no record is already gone from `entries`, so it gets no
- * tab. With fewer than three lists, the bar is shorter and "More" stays.
+ * The tabs for the rows the rail draws. Three slots go to the lists that hold
+ * data, so an org that lives in custom modules sees them and not three empty
+ * built-in lists:
+ *
+ * 1. the core lists that hold records, in the order Deals, Leads, Contacts,
+ *    Companies. With no state from the source, a core list counts as full.
+ * 2. then the generic modules, the biggest first.
+ * 3. then the core lists that hold nothing, if a slot is left.
+ *
+ * A core list that a module plays keeps the label of the list and opens the
+ * module, as its rail row does (CRM-Q20-2). A list that the source turned off
+ * and that holds no record is already gone from `entries`.
  */
 export function phoneNav(
   entries: readonly RailEntry[],
-  current: string,
+  current: PhoneView,
   badge: number | null,
+  modules?: readonly CrmModule[] | null,
+  states?: CoreStates | null,
 ): PhoneNav {
-  const rows = new Map<string, PhoneTab>();
+  const countOf = (name: string) =>
+    modules?.find((m) => m.api_name === name)?.count ?? 0;
+  const core: Candidate[] = [];
+  const mods: Candidate[] = [];
   for (const entry of entries) {
-    if (entry.kind !== "view") continue;
+    if (entry.kind === "module") {
+      const { module, label, icon, count } = entry.row;
+      mods.push({
+        id: moduleTabId(module),
+        label,
+        icon,
+        holds: count > 0,
+        count,
+        rank: 0,
+      });
+      continue;
+    }
     const { id, label, icon } = entry.view;
-    rows.set(id, { id, label, icon });
+    if (!PRIMARY.includes(id)) continue;
+    const played = entry.module;
+    const holds = played
+      ? countOf(played) > 0
+      : isEntity(id)
+        ? (states?.[id]?.records ?? true)
+        : true;
+    core.push({
+      id: played ? moduleTabId(played) : id,
+      label,
+      icon,
+      holds,
+      count: 0,
+      rank: PRIMARY.indexOf(id),
+    });
   }
-  const tabs = PRIMARY.flatMap((id) => rows.get(id) ?? []).slice(0, PHONE_TABS);
-  const active = tabs.some((t) => t.id === current) ? current : MORE_TAB;
+  const byRank = (a: Candidate, b: Candidate) => a.rank - b.rank;
+  const full = core.filter((c) => c.holds).sort(byRank);
+  const empty = core.filter((c) => !c.holds).sort(byRank);
+  const biggest = mods.filter((m) => m.holds).sort((a, b) => b.count - a.count);
+  const tabs = [...full, ...biggest, ...empty]
+    .slice(0, PHONE_TABS)
+    .map(({ id, label, icon }) => ({ id, label, icon }));
+  const onScreen =
+    current.tab === "module" && current.module
+      ? moduleTabId(current.module)
+      : current.tab;
+  const active = tabs.some((t) => t.id === onScreen) ? onScreen : MORE_TAB;
   return { tabs, active, badge: badge && badge > 0 ? badge : null };
 }
 
