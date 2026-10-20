@@ -6134,6 +6134,24 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/chat_first_surface.md` §5 and §9
 - **Added:** 2026-10-20 · WS-62 design session
 
+### H-372 · Move file bytes out of Postgres and off the box's disk (MT-1g) · [AGENT] · data
+- **Check:** `git grep -l "object_store" origin/main -- packages/acb_common`
+  prints a file, and `git grep -n "BYTEA" origin/main -- infra/postgres/*.sql`
+  shows `agent_blob.content` dropped or unused. If both hold, delete this entry.
+- **Why:** the owner asked on 2026-10-20 that every place Metorite stores file
+  bytes in Postgres, or keeps the only copy on the box's disk, be written down
+  to pick up later. `saas_multitenancy.md` MT-1g holds the inventory of that
+  day. Task files, meeting audio, project imports and Custom App binaries exist
+  only on one disk, and two of them are outside the off-box backup.
+- **Do this:** build the seam `acb_common.object_store` on the Supabase
+  Storage S3 endpoint that the backup already uses. Then move class B, then
+  `agent_blob`, as the MT-1g inventory orders them. Each move adds a nullable
+  key column, reads the store first and the old place second, and backfills.
+- **Owner input:** confirm Supabase Storage as the store, and one bucket for
+  each environment. The inventory names it as a recommendation only.
+- **Authority:** `specs/saas_multitenancy.md` MT-1g · `specs/backup_and_restore.md`
+- **Added:** 2026-10-20 · artifacts session
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
