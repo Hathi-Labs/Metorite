@@ -3,12 +3,20 @@
 #
 #   bash scripts/ci_pc/run_suite.sh [--e2e] [--no-e2e] [--shards N]
 #
-# SHARDS. pr-check splits the unit suite 6 ways, one runner each. This PC can
-# run more at once, so the default here is 12 when the distro has 16 or more
-# cores (6 below that). The split is the same pytest-split by measured time,
-# only finer. Measured 2026-10-20: 6 shards on 8 cores took about 16 minutes
-# each. Each shard is a pod of two Postgres containers and one job, about
-# 2 GB, so 12 shards need about 24 GB of the distro's memory.
+# SHARDS. pr-check splits the unit suite 6 ways, one runner each. Here the
+# count comes from FREE MEMORY, not from cores.
+#
+# 🔴 2026-10-20: 12 shards (picked from 20 cores) plus e2e and the dev stack
+# ran the WSL2 VM out of its 32 GB. The VM stopped answering
+# (HCS_E_CONNECTION_TIMEOUT), git died with "Bus error", and Docker Desktop
+# hung, for every session on the PC. A shard is a pytest process and two
+# Postgres servers whose data sits in RAM (tmpfs), about 2.5 GB. So:
+#   * SHARDS = (MemAvailable - 10 GB) / 2.5 GB, from 2 to 12, and at most
+#     half the cores. 10 GB stays for e2e, the other jobs and the dev stack;
+#   * every container has a hard memory cap, so a runaway job is killed
+#     and reported FAIL instead of freezing the VM.
+# Measured: 6 shards took 17.6 min and 12 took 17.0. One 10-minute test file
+# (test_crm_field_studio_r8.py) is the floor, so more shards buy little.
 #
 # You do not call this by hand. `scripts/ci_local.sh` (from Windows) sends the
 # commit here, checks it out, and runs this file FROM THAT COMMIT.
@@ -31,7 +39,18 @@ cd "$(dirname "$0")/../.."
 export PATH="$HOME/.local/bin:$PATH"
 
 E2E=auto
-SHARDS=$(( $(nproc) >= 16 ? 12 : 6 ))
+avail_gb=$(awk '/^MemAvailable:/ {print int($2 / 1048576)}' /proc/meminfo)
+# Below 8 GB free, even 2 shards plus the other jobs could stall the VM that
+# Docker Desktop and every distro share. Refuse, and say why.
+if [ "$avail_gb" -lt 8 ]; then
+  echo "local CI: the WSL VM has only ${avail_gb} GB free. Something else holds it." >&2
+  echo "Wait for it, or check with: bash scripts/ci_pc/doctor.sh (from Windows)" >&2
+  exit 3
+fi
+SHARDS=$(( (avail_gb - 10) * 2 / 5 ))
+[ "$SHARDS" -gt $(( $(nproc) / 2 )) ] && SHARDS=$(( $(nproc) / 2 ))
+[ "$SHARDS" -gt 12 ] && SHARDS=12
+[ "$SHARDS" -lt 2 ] && SHARDS=2
 while [ $# -gt 0 ]; do
   case "$1" in
     --e2e) E2E=yes; shift ;;
@@ -47,7 +66,9 @@ TAG="$(date +%H%M%S)"
 RUN="$HOME/runs/$(date +%Y%m%d-%H%M%S)-$SHA"
 mkdir -p "$RUN"
 T0=$(date +%s)
-echo "local CI for $SHA, $SHARDS unit shards. Logs: $RUN"
+echo "local CI for $SHA, $SHARDS unit shards (${avail_gb} GB free). Logs: $RUN"
+# Keep the last 10 runs. Their logs and reports grew the distro's disk.
+ls -dt "$HOME"/runs/*/ 2>/dev/null | tail -n +11 | xargs -r rm -rf
 
 # ── The job image: rebuilt only when its Dockerfile changes ────────────────
 IMAGE="metorite-ci-job:$(sha256sum scripts/ci_pc/Dockerfile | cut -c1-12)-$(id -u)-$(id -g)"
@@ -78,8 +99,10 @@ trap cleanup EXIT
 # The first Postgres of a pod owns the network. The next one joins it.
 pg() {
   local net=() ; [ -n "${7:-}" ] && net=(--network "container:$7")
+  # Capped: the data is in RAM, so an uncapped server can grow until the VM
+  # stops. A ladder database is well under 1 GB.
   docker run -d --name "$1" "${net[@]}" -e POSTGRES_USER="$4" -e POSTGRES_PASSWORD="$5" -e POSTGRES_DB="$6" \
-    --tmpfs /var/lib/postgresql/data "$2" -c port="$3" >/dev/null || return 1
+    --memory 1536m --tmpfs /var/lib/postgresql/data:size=1g "$2" -c port="$3" >/dev/null || return 1
   CONTAINERS+=("$1")
   for _ in $(seq 1 60); do docker exec "$1" pg_isready -q -p "$3" >/dev/null 2>&1 && return 0; sleep 1; done
   echo "Postgres $1 did not start"; return 1
@@ -93,7 +116,7 @@ job() {
   local net=(); [ -n "$pod" ] && net=(--network "container:$pod")
   (
     s=$(date +%s)
-    docker run --rm --name "ci-job-$label-$TAG" "${net[@]}" \
+    docker run --rm --name "ci-job-$label-$TAG" "${net[@]}" --memory 4g --memory-swap 4g \
       -v "$HOME:$HOME" -v /var/run/docker.sock:/var/run/docker.sock --group-add "$DOCKER_GID" \
       "$IMAGE" bash "$RUN/$label.sh" > "$RUN/$label.log" 2>&1
     echo "$? $(( $(date +%s) - s ))" > "$RUN/$label.rc"
@@ -131,7 +154,7 @@ if [ "$E2E" = yes ]; then
   # fight over `.next`. CI=true (set in the image) turns on the one retry.
   printf 'cd workbench/control_plane && npx playwright test --project=ci\n' > "$RUN/e2e.sh"
   ( s=$(date +%s)
-    docker run --rm --name "ci-job-e2e-$TAG" -v "$HOME:$HOME" "$IMAGE" bash "$RUN/e2e.sh" > "$RUN/e2e.log" 2>&1
+    docker run --rm --name "ci-job-e2e-$TAG" --memory 6g --memory-swap 6g -v "$HOME:$HOME" "$IMAGE" bash "$RUN/e2e.sh" > "$RUN/e2e.log" 2>&1
     echo "$? $(( $(date +%s) - s ))" > "$RUN/e2e.rc" ) &
 fi
 wait

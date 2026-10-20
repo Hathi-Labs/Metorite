@@ -855,7 +855,13 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Browser suite
-        run: npx playwright test --project=ci --shard=${{ matrix.shard }}/3
+        # The watchdog ends a run whose dev server stops answering. See the
+        # header of scripts/e2e_watchdog.sh. The run's exit code passes through.
+        run: |
+          npx playwright test --project=ci --shard=${{ matrix.shard }}/3 &
+          pw=$!
+          bash ../../scripts/e2e_watchdog.sh http://127.0.0.1:3101/chat "$pw" &
+          wait "$pw"
 
       # ⚠️ Without this a red run is a wall of text and no screenshot, and an
       # undiagnosable gate is one somebody deletes. The report carries the

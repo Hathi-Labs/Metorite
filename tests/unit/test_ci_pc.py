@@ -109,6 +109,56 @@ def test_no_job_can_reach_the_dev_stack_on_this_pc():
     assert "--network \"container:$pod\"" in _RUN_SUITE
 
 
+def test_no_container_can_run_the_vm_out_of_memory():
+    # 2026-10-20: 12 uncapped shards ran the shared WSL2 VM out of memory, and
+    # WSL, git and Docker Desktop hung for every session on the PC.
+    # Join `\`-continued lines first, so a cap on the next line counts.
+    joined = re.sub(r"\\\r?\n", " ", _RUN_SUITE)
+    runs = [line for line in joined.splitlines() if "docker run " in line]
+    assert runs, "the regex found no docker run; it is wrong, not the file"
+    for cmd in runs:
+        assert "--memory " in cmd, f"an uncapped container: {cmd[:80]}"
+    assert "--tmpfs /var/lib/postgresql/data:size=" in _RUN_SUITE
+    # The shard count follows free memory, never the core count alone.
+    assert "MemAvailable" in _RUN_SUITE
+
+
+def test_a_bare_ci_local_call_passes_no_empty_argument():
+    # `printf ' %q'` with no arguments prints `''`, and run_suite.sh refused
+    # it: every `bash scripts/ci_local.sh` with no options failed at once.
+    text = (_ROOT / "scripts/ci_local.sh").read_text(encoding="utf-8")
+    assert '[ ${#pass[@]} -gt 0 ] && args="$(printf' in text
+
+
+def test_run_suite_refuses_a_starved_vm():
+    assert re.search(r'if \[ "\$avail_gb" -lt 8 \]; then', _RUN_SUITE)
+
+
+_DOCTOR = (_ROOT / "scripts/ci_pc/doctor.sh").read_text(encoding="utf-8")
+
+
+def test_every_doctor_probe_has_a_timeout():
+    # A doctor that hangs on the thing it checks is no use on the day it
+    # matters. Every wsl.exe and docker call goes through `timeout`.
+    for line in _DOCTOR.splitlines():
+        code = line.split("#", 1)[0]
+        for tool in ("wsl.exe ", "docker info", "docker ps", "docker start"):
+            if tool in code:
+                assert "timeout " in code, f"no timeout: {line.strip()}"
+
+
+def test_the_doctor_repairs_in_the_order_that_worked():
+    # 2026-10-20: `wsl --shutdown` did not stop the stuck VM. The WSL service
+    # restart (UAC) did. Docker Desktop then needed its OWN distro
+    # terminated, and the containers without a restart policy needed a start.
+    body = _DOCTOR.split("restart_wsl() {")[1]
+    assert body.index("wsl.exe --shutdown") < body.index("Start-Service WSLService")
+    assert "wsl.exe --terminate docker-desktop" in _DOCTOR
+    assert "restore_containers" in _DOCTOR.split('if restart_docker_desktop; then')[1].split("\n")[0]
+    # It changes nothing without --fix.
+    assert 'FIX=false; [ "${1:-}" = "--fix" ] && FIX=true' in _DOCTOR
+
+
 def test_the_distro_is_locked_down():
     prov = (_ROOT / "scripts/ci_pc/provision.sh").read_text(encoding="utf-8")
     conf = prov.split("cat > /etc/wsl.conf <<'CONF'")[1].split("CONF")[0]

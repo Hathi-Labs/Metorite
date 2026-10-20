@@ -29,9 +29,19 @@ done
 # `-e`, not `--`: `--` hands the command to a shell first, and that shell
 # expands every `$` meant for the command inside the distro.
 w() { MSYS_NO_PATHCONV=1 wsl.exe -d "$DISTRO" -e "$@"; }
-if ! wsl.exe -l -q 2>/dev/null | tr -d '\0\r' | grep -qx "$DISTRO"; then
-  echo "No $DISTRO distro. Run once: bash scripts/ci_pc/setup.sh" >&2
+if ! timeout 25 wsl.exe -l -q 2>/dev/null | tr -d '\0\r' | grep -qx "$DISTRO"; then
+  echo "No $DISTRO distro, or WSL does not answer." >&2
+  echo "Check with: bash scripts/ci_pc/doctor.sh   (first time: bash scripts/ci_pc/setup.sh)" >&2
   exit 2
+fi
+# Fail in a minute, not hang for an hour, when the shared WSL VM is stuck.
+if ! timeout 60 wsl.exe -d "$DISTRO" -e true >/dev/null 2>&1; then
+  echo "The $DISTRO distro does not answer. Run: bash scripts/ci_pc/doctor.sh" >&2
+  exit 3
+fi
+# One run at a time on this PC. Say so, instead of a silent wait.
+if ! w bash -c 'exec 9>~/.ci.lock; flock -n 9' 2>/dev/null; then
+  echo "Another local CI run (another session) holds the PC. This run waits for it, at most 1 hour."
 fi
 
 sha="$(git rev-parse "$ref")"
@@ -53,7 +63,11 @@ if ! git merge-base --is-ancestor "$sha" origin/main; then
 fi
 
 # Check out the commit, then run ITS copy of run_suite.sh. One run at a time.
-args="$(printf ' %q' "${pass[@]+"${pass[@]}"}")"
+# Only when there ARE options: `printf ' %q'` with no arguments prints `''`,
+# and run_suite.sh refuses it, so every bare `ci_local.sh` failed at once
+# (reported by a peer session, 2026-10-20).
+args=""
+[ ${#pass[@]} -gt 0 ] && args="$(printf ' %q' "${pass[@]}")"
 w bash -lc "set -e; exec 9>~/.ci.lock; flock -w 3600 9; cd ~/metorite
   git -c advice.detachedHead=false checkout -q -f $sha
   git clean -fdxq -e .venv -e node_modules -e .next
