@@ -33,7 +33,6 @@ import asyncio
 import hashlib
 import hmac
 import json
-import re
 import unicodedata
 from dataclasses import dataclass
 from typing import Any
@@ -43,6 +42,8 @@ from acb_common import get_logger
 _log = get_logger("acb_skills.reply_card")
 
 __all__ = [
+    "INVISIBLE_CODE_POINTS",
+    "MAX_MARK_RUN",
     "MAX_REPLY_ANSWER",
     "MAX_REPLY_BODY",
     "MAX_REPLY_RECIPIENTS",
@@ -53,6 +54,7 @@ __all__ = [
     "REPLY_ANSWER_PREFIX",
     "ReplyChoice",
     "clean_reply_body",
+    "is_invisible_char",
     "looks_like_reply_answer",
     "parse_reply_answer",
     "record_reply_answer",
@@ -98,53 +100,117 @@ TAKE_WAIT_S = 3.0
 _TAKE_STEP_S = 0.1
 
 
-# ── Hidden text (security review of #1191, P1) ───────────────────────────────
+# ── Hidden text (security review of #1191, P1, rounds 1 and 2) ────────────────
 #
 # The drafter reads the knowledge base, sent mail, the calendar and the
 # thread. A mail can steer it to hide member data in text that a member does
-# not see: Unicode tag characters, zero-width characters, bidi controls, or
+# not see: Unicode tag characters, zero-width characters, bidi controls,
+# variation selectors after a letter ("emoji smuggling"), blank fillers, or
 # data after many blank lines. So the body of a reply card is cleaned BEFORE
 # the card shows it, and the member's body is checked and cleaned again
-# before the send. What leaves is what the card showed.
+# before the send. What leaves is what the card showed. The email agent's
+# card text (``_card_text``) reads the same rule (:func:`is_invisible_char`).
 
-#: Unicode tag characters, which draw nothing and can carry a whole text.
-_TAG_CHARS = re.compile("[\U000E0000-\U000E007F]")
-#: The bidi controls, which reorder what the member reads.
-_BIDI_CONTROLS = frozenset(
-    "؜‎‏‪‫‬‭‮⁦⁧⁨⁩")
-_ZWJ = "‍"
+#: Each code point a reader cannot see, as inclusive ranges. THE one list.
+#:
+#: Source: Unicode 15.1, ``DerivedCoreProperties.txt``, the property
+#: ``Default_Ignorable_Code_Point``, plus U+2800 BRAILLE PATTERN BLANK, a
+#: blank filler that the property leaves out. The standard library has no
+#: table of the property. ``tests/unit/test_email_chat_reply.py`` holds this
+#: list to ``\p{Default_Ignorable_Code_Point}`` of the ``regex`` package where
+#: the test environment has it, so a newer Unicode cannot leave a hole.
+INVISIBLE_CODE_POINTS: tuple[tuple[int, int], ...] = (
+    (0x00AD, 0x00AD),    # SOFT HYPHEN
+    (0x034F, 0x034F),    # COMBINING GRAPHEME JOINER
+    (0x061C, 0x061C),    # ARABIC LETTER MARK
+    (0x115F, 0x1160),    # HANGUL CHOSEONG and JUNGSEONG FILLER
+    (0x17B4, 0x17B5),    # KHMER VOWEL INHERENT AQ and AA
+    (0x180B, 0x180F),    # MONGOLIAN FREE VARIATION SELECTORS, VOWEL SEPARATOR
+    (0x200B, 0x200F),    # ZERO WIDTH SPACE to RIGHT-TO-LEFT MARK
+    (0x202A, 0x202E),    # the bidi embeddings and overrides
+    (0x2060, 0x206F),    # WORD JOINER to NOMINAL DIGIT SHAPES, the isolates
+    (0x2800, 0x2800),    # BRAILLE PATTERN BLANK (a blank filler, not in the property)
+    (0x3164, 0x3164),    # HANGUL FILLER
+    (0xFE00, 0xFE0F),    # VARIATION SELECTORS 1-16
+    (0xFEFF, 0xFEFF),    # ZERO WIDTH NO-BREAK SPACE
+    (0xFFA0, 0xFFA0),    # HALFWIDTH HANGUL FILLER
+    (0xFFF0, 0xFFF8),    # unassigned specials
+    (0x1BCA0, 0x1BCA3),  # SHORTHAND FORMAT CONTROLS
+    (0x1D173, 0x1D17A),  # MUSICAL SYMBOL BEGIN BEAM to END PHRASE
+    (0xE0000, 0xE0FFF),  # the tags and VARIATION SELECTORS 17-256
+)
+
+_ZWJ = "\u200d"
+#: The two emoji presentation selectors. Each may follow ONE pictograph.
+_PRESENTATION = frozenset("\ufe0e\ufe0f")
+#: COMBINING ENCLOSING KEYCAP, the end of a keycap emoji such as 1, VS16, keycap.
+_KEYCAP = "\u20e3"
+_KEYCAP_BASES = frozenset("0123456789#*")
 _KEEP = frozenset("\n\t")
+#: The line and paragraph separators break a line, as a new line does.
+_LINE_BREAKS = frozenset("\u2028\u2029")
+#: The most combining marks one letter carries in real text. Hindi, Tamil,
+#: Thai and fully vowelled Arabic use three at most. A longer run is refused.
+MAX_MARK_RUN = 4
+
+
+def _in_ranges(cp: int) -> bool:
+    return any(lo <= cp <= hi for lo, hi in INVISIBLE_CODE_POINTS)
+
+
+def is_invisible_char(ch: str) -> bool:
+    """True for a character that a reader cannot see: a code point of
+    :data:`INVISIBLE_CODE_POINTS`, or of Unicode category C. A new line and a
+    tab are not, and neither is a space. THE one test of hidden text."""
+    if ch in _KEEP:
+        return False
+    return _in_ranges(ord(ch)) or unicodedata.category(ch).startswith("C")
 
 
 def _is_pictograph(ch: str) -> bool:
-    return bool(ch) and (unicodedata.category(ch) in ("So", "Sk") or ord(ch) >= 0x1F000)
+    """A real pictograph: a visible symbol (category So) or an emoji skin
+    tone. A blank filler (U+2800) is not one."""
+    if not ch or is_invisible_char(ch):
+        return False
+    return unicodedata.category(ch) == "So" or 0x1F3FB <= ord(ch) <= 0x1F3FF
+
+
+def _kept_join(raw: str, i: int, out: list[str]) -> bool:
+    """True when the joiner or selector at *raw[i]* joins a real emoji."""
+    ch = raw[i]
+    prev = out[-1] if out else ""
+    nxt = raw[i + 1] if i + 1 < len(raw) else ""
+    if ch in _PRESENTATION:
+        if prev in _PRESENTATION:  # never two in a row
+            return False
+        return _is_pictograph(prev) or (prev in _KEYCAP_BASES and nxt == _KEYCAP)
+    if ch == _ZWJ:
+        before = out[-2] if prev in _PRESENTATION and len(out) > 1 else prev
+        return _is_pictograph(before) and _is_pictograph(nxt)
+    return False
 
 
 def clean_reply_body(text: str) -> str:
     """*text* as the member can see it, and nothing more. THE one cleaning.
 
-    * Each character of Unicode category C (control, format, surrogate,
-      private, unset) leaves, but a new line and a tab. A zero-width joiner
-      stays only between two pictographs, where it joins an emoji.
-    * The spaces at the end of a line leave, so a line of spaces is a blank
-      line.
+    * Each invisible character leaves (:func:`is_invisible_char`), but a new
+      line and a tab. A zero-width joiner stays only between two real
+      pictographs, and one presentation selector (VS15 or VS16) stays only
+      right after a real pictograph, or in a keycap.
+    * A line separator is a new line. The spaces at the end of a line leave,
+      so a line of spaces is a blank line.
     * A run of blank lines is one blank line, and the text is trimmed.
     """
     raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
     out: list[str] = []
     for i, ch in enumerate(raw):
-        if ch in _KEEP:
-            out.append(ch)
-            continue
-        if ch == _ZWJ:
-            before = raw[i - 1] if i else ""
-            after = raw[i + 1] if i + 1 < len(raw) else ""
-            if _is_pictograph(before) and _is_pictograph(after):
+        if ch in _LINE_BREAKS:
+            out.append("\n")
+        elif ch in _PRESENTATION or ch == _ZWJ:
+            if _kept_join(raw, i, out):
                 out.append(ch)
-            continue
-        if unicodedata.category(ch).startswith("C"):
-            continue
-        out.append(ch)
+        elif not is_invisible_char(ch):
+            out.append(ch)
     kept: list[str] = []
     for line in "".join(out).split("\n"):
         line = line.rstrip()
@@ -154,18 +220,49 @@ def clean_reply_body(text: str) -> str:
     return "\n".join(kept).strip()
 
 
+#: The bidi controls, which reorder what the member reads.
+_BIDI_CONTROLS = frozenset(
+    "\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
+
+
+def _long_mark_run(text: str) -> bool:
+    run = 0
+    for ch in text:
+        if unicodedata.category(ch) in ("Mn", "Me"):
+            run += 1
+            if run > MAX_MARK_RUN:
+                return True
+        else:
+            run = 0
+    return False
+
+
 def reply_body_refusal(text: str) -> str | None:
     """Why the member's body may not go, or None.
 
-    A tag character or a bidi control in a submitted body is refused, never
-    cleaned in silence: it changes what a reader sees, and a member does not
-    type one. Each other hidden character is cleaned
+    A body is refused, never cleaned in silence, when it holds a character
+    that carries hidden data or changes what a reader sees: a tag character
+    or a variation selector 17-256 (U+E0000 to U+E0FFF), a bidi control, a
+    variation selector that does not follow a real pictograph, or a run of
+    more than :data:`MAX_MARK_RUN` combining marks on one letter. A member
+    does not type one. Each other hidden character is cleaned
     (:func:`clean_reply_body`), so a typed emoji keeps its joiner."""
     raw = str(text or "")
-    if _TAG_CHARS.search(raw) or any(ch in _BIDI_CONTROLS for ch in raw):
-        return ("The reply text holds hidden characters that change what the reader "
-                "sees, so nothing was sent or saved. Ask for the reply again.")
+    out: list[str] = []
+    for i, ch in enumerate(raw):
+        cp = ord(ch)
+        if 0xE0000 <= cp <= 0xE0FFF or ch in _BIDI_CONTROLS:
+            return _HIDDEN_REFUSAL
+        if 0xFE00 <= cp <= 0xFE0F and not (ch in _PRESENTATION and _kept_join(raw, i, out)):
+            return _HIDDEN_REFUSAL
+        out.append(ch)
+    if _long_mark_run(clean_reply_body(raw)):
+        return _HIDDEN_REFUSAL
     return None
+
+
+_HIDDEN_REFUSAL = ("The reply text holds hidden characters that change what the reader "
+                   "sees, so nothing was sent or saved. Ask for the reply again.")
 
 
 @dataclass(frozen=True)

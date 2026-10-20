@@ -985,3 +985,135 @@ async def test_an_imap_uid_collision_reads_the_right_folder_or_names_none(imap) 
     assert await imap.get_reply_to("42", folder="archive", message_id=None) == []
     assert await imap.get_reply_to("42", folder="no-such-folder",
                                    message_id="<archive-42@x.test>") == []
+
+
+# ── 9. Security re-review of #1191: every invisible character ────────────────
+
+NL = chr(10)
+
+
+def _smuggle(text: str) -> str:
+    """The published "emoji smuggling" method: one variation selector per byte,
+    after a letter. Bytes 0-15 take U+FE00-FE0F, bytes 16-255 U+E0100-E01EF."""
+    out = ""
+    for b in text.encode("utf-8"):
+        out += chr(0xFE00 + b) if b < 16 else chr(0xE0100 + b - 16)
+    return out
+
+
+#: The reviewer's probe set. Each one is invisible and carries data.
+PROBES = {
+    "variation-selectors": "Thanks" + _smuggle("OTP 482913"),
+    "cgj": "Thanks" + chr(0x034F) * 6,
+    "hangul-fillers": "Thanks" + chr(0x3164) + chr(0x115F) + chr(0x1160) + chr(0xFFA0),
+    "khmer-inherent": "Thanks" + chr(0x17B4) + chr(0x17B5),
+    "braille-blank": "Thanks" + chr(0x2800) * 8,
+    "mongolian-fvs": "Thanks" + chr(0x180B) + chr(0x180E),
+    "word-joiner": "Thanks" + chr(0x2060) + chr(0x2063),
+    "shorthand": "Thanks" + chr(0x1BCA0) + chr(0x1BCA3),
+    "musical": "Thanks" + chr(0x1D173) + chr(0x1D17A),
+    "soft-hyphen": "Thanks" + chr(0x00AD),
+    "vs-after-blank": "Thanks" + chr(0x2800) + chr(0xFE0F),
+    "two-vs16": chr(0x2764) + chr(0xFE0F) + chr(0xFE0F),
+}
+
+#: Real text that needs combining marks or joiners, and must stay whole.
+REAL = {
+    "hindi": "नमस्ते, कृपया शुक्रवार तक पुष्टि करें।",
+    "tamil": "வணக்கம், வெள்ளிக்கிழமைக்குள் உறுதிப்படுத்தவும்.",
+    "thai": "สวัสดีครับ กรุณายืนยันภายในวันศุกร์",
+    "arabic": "مرحبا، يرجى التأكيد قبل يوم الجمعة.",
+    "arabic-vowelled": "بِسْمِ ٱللَّٰهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ مُحَمَّدٌ",
+    "vietnamese": "Xin chào, vui lòng xác nhận trước thứ Sáu.",
+    "flags": chr(0x1F1EE) + chr(0x1F1F3) + " " + chr(0x1F1EF) + chr(0x1F1F5),
+    "zwj-family": chr(0x1F468) + chr(0x200D) + chr(0x1F469) + chr(0x200D) + chr(0x1F467),
+    "heart-vs16": chr(0x2764) + chr(0xFE0F) + " thanks",
+    "heart-on-fire": chr(0x2764) + chr(0xFE0F) + chr(0x200D) + chr(0x1F525),
+    "skin-tone-zwj": chr(0x1F469) + chr(0x1F3FD) + chr(0x200D) + chr(0x1F4BB),
+    "keycap": "1" + chr(0xFE0F) + chr(0x20E3) + " first",
+}
+
+
+def _visible(text: str) -> bool:
+    return not any(rcard.is_invisible_char(c) for c in text
+                   if c not in (chr(0x200D), chr(0xFE0E), chr(0xFE0F)))
+
+
+@pytest.mark.parametrize("name", sorted(PROBES))
+def test_each_probe_comes_out_clean(name: str) -> None:
+    out = rcard.clean_reply_body(PROBES[name])
+    assert _visible(out), [hex(ord(c)) for c in out]
+    assert out in ("Thanks", chr(0x2764) + chr(0xFE0F)), [hex(ord(c)) for c in out]
+
+
+@pytest.mark.parametrize("name", sorted(REAL))
+def test_real_text_and_real_emoji_stay_unchanged(name: str) -> None:
+    assert rcard.clean_reply_body(REAL[name]) == REAL[name]
+    assert rcard.reply_body_refusal(REAL[name]) is None
+
+
+@pytest.mark.parametrize("name", ["variation-selectors", "vs-after-blank", "two-vs16"])
+def test_the_act_refuses_a_stray_variation_selector(name: str) -> None:
+    assert rcard.reply_body_refusal(PROBES[name]) is not None
+
+
+def test_a_long_run_of_marks_is_refused_and_real_marks_are_not() -> None:
+    assert rcard.reply_body_refusal("a" + chr(0x0301) * 5) is not None
+    assert rcard.reply_body_refusal("a" + chr(0x0301) * 2) is None
+
+
+async def test_the_probe_set_is_clean_at_the_card_route(monkeypatch) -> None:
+    body = NL.join(PROBES.values())
+
+    async def load_mail(message_id: str, owner: str) -> Any:
+        return _mail()
+
+    async def drafter(req: Any, user: Any) -> dict[str, Any]:
+        return {"draft": body, "created": False}
+
+    monkeypatch.setattr(rc, "_load_mail", load_mail)
+    monkeypatch.setattr(rc, "draft_reply_smart", drafter)
+    out = await rc.reply_card(rc.ReplyCardRequest(message_id=MAIL), USER)
+    assert _visible(out["body"])
+    assert out["body"] == rcard.clean_reply_body(body)
+    assert "OTP" not in out["body"] and chr(0xE0100) not in out["body"]
+
+
+@pytest.mark.parametrize("name", sorted(PROBES))
+async def test_each_probe_is_refused_or_cleaned_at_the_act(
+    monkeypatch, redis, name: str,
+) -> None:
+    from fastapi import HTTPException
+
+    routes = _Routes(monkeypatch, _mail())
+    text = _answer(body=PROBES[name])
+    await _record(ORG, "rid-1", MEMBER, text)
+    try:
+        await _act(text)
+    except HTTPException as err:
+        assert err.status_code == 422
+        assert routes.sent == []
+        return
+    [sent] = routes.sent
+    assert _visible(sent.body_text) and sent.body_text in ("Thanks", chr(0x2764) + chr(0xFE0F))
+
+
+def test_the_one_rule_covers_default_ignorable_code_point() -> None:
+    """``INVISIBLE_CODE_POINTS`` holds every Default_Ignorable_Code_Point that
+    the ``regex`` package knows, so a new Unicode version cannot leave a hole
+    in the hand list. The list also holds the blank filler U+2800."""
+    regex = pytest.importorskip("regex")
+    pattern = regex.compile(r"\p{Default_Ignorable_Code_Point}")
+    missing = [hex(cp) for cp in range(0x110000)
+               if pattern.match(chr(cp)) and not rcard.is_invisible_char(chr(cp))]
+    assert missing == []
+    assert rcard.is_invisible_char(chr(0x2800))
+
+
+def test_the_email_agent_card_text_reads_the_same_rule() -> None:
+    for probe in PROBES.values():
+        shown = agents._card_text(probe, 500)
+        assert _visible(shown), [hex(ord(c)) for c in shown]
+    assert agents._is_hidden_char(chr(0x3164)) and agents._is_hidden_char(chr(0xE0101))
+    src = (REPO / "apps/agents/agent-email-assistant/agents.py").read_text(encoding="utf-8")
+    assert "from acb_skills.reply_card import is_invisible_char" in src

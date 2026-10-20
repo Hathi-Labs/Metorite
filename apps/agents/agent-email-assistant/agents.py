@@ -2050,17 +2050,29 @@ _CARD_DETAIL_LIMIT = 500
 _CARD_CONTEXT_LIMIT = 4000
 
 
+def _is_invisible(ch: str) -> bool:
+    """THE one test of hidden text, ``acb_skills.reply_card.is_invisible_char``
+    (security review of #1191): category C, each Default_Ignorable_Code_Point
+    and the blank fillers. An older platform falls back to category C."""
+    try:
+        from acb_skills.reply_card import is_invisible_char
+    except ImportError:
+        return unicodedata.category(ch)[0] == "C"
+    return is_invisible_char(ch)
+
+
 def _is_hidden_char(ch: str) -> bool:
-    return ch.isspace() or unicodedata.category(ch)[0] == "C"
+    return ch.isspace() or _is_invisible(ch)
 
 
 def _card_text(value: Any, limit: int) -> str:
-    """Text that the card shows: each control or format character out, and
-    each run of whitespace as one space, so nothing can hide in the text."""
+    """Text that the card shows: each invisible character out, and each run
+    of whitespace as one space, so nothing can hide in the text. The reply
+    card reads the same rule (``reply_card.clean_reply_body``)."""
     kept = "".join(
         " " if ch.isspace() else ch
         for ch in str(value)
-        if ch.isspace() or unicodedata.category(ch)[0] != "C"
+        if ch.isspace() or not _is_invisible(ch)
     )
     return " ".join(kept.split())[:limit]
 
