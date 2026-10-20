@@ -30,7 +30,7 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 import AgentChat from "@/components/AgentChat";
 import ChatSendButton from "@/components/ChatSendButton";
 import MessageBubble from "@/components/MessageBubble";
-import { getSessionState, setSessionState, type ChatMessage } from "@/lib/chatStore";
+import { dispatchRun, getSessionState, setSessionState, type ChatMessage } from "@/lib/chatStore";
 import { editableLastUserId, lastUserMessageId, supersededIds } from "@/lib/chatEdit";
 import {
   STEERED,
@@ -72,6 +72,9 @@ function liveThread(): { threadId: string; controller: AbortController; streamin
     abortController: controller,
     messages: [{ id: "u1", role: "user", content: "Plan the release", timestamp: 1 }, streaming],
   }));
+  // A live run is one the run state calls live (`lib/runStatus.ts`, §4.10).
+  dispatchRun(threadId, { type: "send", at: Date.now(), messageId: "a1" });
+  dispatchRun(threadId, { type: "event", at: Date.now(), step: "Writing the reply" });
   return { threadId, controller, streaming };
 }
 
