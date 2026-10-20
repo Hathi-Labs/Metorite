@@ -156,7 +156,7 @@ export type SuggestionsHandlers = {
 
 /**
  * Settings → Suggestions (WS-53 CRM-Q20-2): each open suggestion, with
- * Preview and "Not now", and each list that a Zoho module shows now, with
+ * Preview and "Dismiss", and each list that a Zoho module shows now, with
  * Undo. It holds no state and no hook, so a test reads its element tree.
  */
 export function SuggestionsCardView({

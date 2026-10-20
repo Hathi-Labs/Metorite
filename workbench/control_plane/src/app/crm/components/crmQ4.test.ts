@@ -192,7 +192,7 @@ describe("the Fields card", () => {
   it("lists label, type, source, the hidden flag and the options in Mirror mode", () => {
     const html = renderToStaticMarkup(createElement(FieldsCardView, { byEntity, readOnly: true }));
     expect(html).toContain("Fields come from Zoho.");
-    expect(html).not.toContain("Field editing comes later.");
+    expect(html).not.toContain("Only a studio admin can edit fields.");
     expect(html).toContain("Tier");
     expect(html).toContain("select");
     expect(html).toContain("Zoho");
@@ -201,9 +201,9 @@ describe("the Fields card", () => {
     expect(html).toContain("Metorite");
   });
 
-  it("lists the same in Native mode and says that editing comes later", () => {
+  it("lists the same in Native mode and says that only a studio admin edits", () => {
     const html = renderToStaticMarkup(createElement(FieldsCardView, { byEntity, readOnly: false }));
-    expect(html).toContain("Field editing comes later.");
+    expect(html).toContain("Only a studio admin can edit fields.");
     expect(html).not.toContain("Fields come from Zoho.");
     expect(html).toContain("Tier");
     expect(html).not.toContain("<input");
