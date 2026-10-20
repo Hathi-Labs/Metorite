@@ -15,6 +15,10 @@ url="${1:?url}"
 pid="${2:?pid}"
 fails=0
 beat=0
+# The watchdog arms only after the first answer. Playwright starts the dev
+# server itself, and its first compile of /chat can take up to the webServer
+# timeout (180 s). A miss before that is a cold start, not a stall.
+armed=0
 
 snapshot() {
   echo "--- watchdog $(date -u +%H:%M:%S) ---"
@@ -27,9 +31,10 @@ while kill -0 "$pid" 2>/dev/null; do
   sleep 20
   beat=$((beat + 1))
   if curl -s -o /dev/null -m 15 "$url"; then
+    armed=1
     fails=0
     [ $((beat % 15)) -eq 0 ] && snapshot
-  else
+  elif [ "$armed" -eq 1 ]; then
     fails=$((fails + 1))
     echo "::warning::The dev server did not answer $url in 15 s ($fails of 3)."
     snapshot

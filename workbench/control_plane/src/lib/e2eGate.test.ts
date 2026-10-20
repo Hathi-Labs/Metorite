@@ -127,6 +127,16 @@ describe("the dev server of the browser suite", () => {
     expect(WORKFLOW).toMatch(/scripts\/e2e_watchdog\.sh http:\/\/127\.0\.0\.1:3101\/chat/);
     expect(WORKFLOW).toMatch(/wait "\$pw"/);
   });
+
+  it("arms the watchdog only after the server first answers", () => {
+    // Playwright starts the server, and a cold compile of /chat can take up to
+    // 180 s. A watchdog that counts misses from its first probe ends a healthy
+    // run after one minute (review of #1187).
+    const dog = read("../../../../scripts/e2e_watchdog.sh");
+    expect(dog).toMatch(/armed=0/);
+    expect(dog).toMatch(/armed=1/);
+    expect(dog).toMatch(/elif \[ "\$armed" -eq 1 \]/);
+  });
 });
 
 describe("the quarantine register", () => {
