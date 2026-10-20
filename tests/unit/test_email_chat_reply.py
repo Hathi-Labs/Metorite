@@ -26,6 +26,7 @@ import importlib.util
 import inspect
 import json
 import types
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -1012,6 +1013,7 @@ PROBES = {
     "word-joiner": "Thanks" + chr(0x2060) + chr(0x2063),
     "shorthand": "Thanks" + chr(0x1BCA0) + chr(0x1BCA3),
     "musical": "Thanks" + chr(0x1D173) + chr(0x1D17A),
+    "null-notehead": "Thanks" + chr(0x1D159) * 4,
     "soft-hyphen": "Thanks" + chr(0x00AD),
     "vs-after-blank": "Thanks" + chr(0x2800) + chr(0xFE0F),
     "two-vs16": chr(0x2764) + chr(0xFE0F) + chr(0xFE0F),
@@ -1108,6 +1110,46 @@ def test_the_one_rule_covers_default_ignorable_code_point() -> None:
                if pattern.match(chr(cp)) and not rcard.is_invisible_char(chr(cp))]
     assert missing == []
     assert rcard.is_invisible_char(chr(0x2800))
+
+
+# ── 10. Review of #1191, P2: a space that only looks like a space ─────────────
+#
+# A body can swap some plain spaces for NBSP, an em space or an ideographic
+# space and hide a few bits per word. Each Zs character is a plain space.
+
+#: Every Unicode Zs code point but U+0020 (Unicode 15.1).
+LOOKALIKE_SPACES = [0x00A0, 0x1680, *range(0x2000, 0x200B), 0x202F, 0x205F, 0x3000]
+
+
+def test_a_lookalike_space_comes_out_as_a_plain_space() -> None:
+    body = "Hi" + chr(0x00A0) + "Kim," + chr(0x2003) + "yes" + chr(0x3000) + "please."
+    out = rcard.clean_reply_body(body)
+    assert out.encode("utf-8") == b"Hi Kim, yes please."
+
+
+@pytest.mark.parametrize("cp", LOOKALIKE_SPACES)
+def test_each_zs_code_point_is_a_plain_space(cp: int) -> None:
+    assert rcard.is_lookalike_space(chr(cp))
+    assert rcard.clean_reply_body("a" + chr(cp) + "b") == "a b"
+    assert not rcard.is_lookalike_space(" ")
+
+
+def test_the_null_notehead_leaves() -> None:
+    assert rcard.clean_reply_body("Thanks" + chr(0x1D159) + "Kim") == "ThanksKim"
+    assert rcard.is_invisible_char(chr(0x1D159))
+
+
+def test_a_plain_body_is_unchanged() -> None:
+    body = "Hi Kim,\n\nYes, see you Friday.\nThanks,\nJane"
+    assert rcard.clean_reply_body(body) == body
+
+
+@pytest.mark.parametrize("name", ["hindi", "tamil", "zwj-family", "heart-on-fire", "keycap"])
+def test_real_text_with_lookalike_spaces_keeps_every_other_character(name: str) -> None:
+    body = REAL[name].replace(" ", chr(0x00A0)) + chr(0x2009) + "ok"
+    out = rcard.clean_reply_body(body)
+    assert [c for c in out if c != " "] == [c for c in body if not rcard.is_lookalike_space(c)]
+    assert all(c == " " for c in out if unicodedata.category(c) == "Zs")
 
 
 def test_the_email_agent_card_text_reads_the_same_rule() -> None:

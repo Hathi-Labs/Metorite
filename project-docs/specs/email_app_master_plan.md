@@ -20416,6 +20416,8 @@ that property in Unicode 15.1, plus U+2800, and a test holds it to the property 
   a keycap. A joiner stays only between two real pictographs.
 - The act refuses a tag character, a variation selector 17 to 256, a stray selector, a
   bidi control, and a run of more than four combining marks on one letter.
+- A space that only looks like a space (category Zs: NBSP, U+2000 to U+200A, U+202F, U+205F,
+  U+3000) changes to a plain space. The blank notehead U+1D159 leaves (P2 of the review).
 - The backstop is the mark run, not a share of marks. A share of marks would refuse fully
   vowelled Arabic, which has more marks than letters. Hindi, Tamil, Thai, Arabic and
   Vietnamese text, flags, joined families, skin tones and keycaps stay unchanged.
