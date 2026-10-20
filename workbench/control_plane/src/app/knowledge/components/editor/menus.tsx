@@ -300,12 +300,16 @@ export function LinkPanel({
 
 // ── The table tools ─────────────────────────────────────────────────────────
 
+// The table tools of Docmost's table menu (KB-2i, §21.7). A header column,
+// a merge and a cell colour have no GFM form, so they are KB-2p's.
 const TABLE_ACTS = [
-  { label: "Add a row below", icon: "BetweenHorizontalEnd", run: (e: Editor) => e.chain().focus().addRowAfter().run() },
-  { label: "Remove this row", icon: "Rows3", run: (e: Editor) => e.chain().focus().deleteRow().run() },
-  { label: "Add a column after", icon: "BetweenVerticalEnd", run: (e: Editor) => e.chain().focus().addColumnAfter().run() },
-  { label: "Remove this column", icon: "Columns3", run: (e: Editor) => e.chain().focus().deleteColumn().run() },
-  { label: "Turn the header row on or off", icon: "PanelTop", run: (e: Editor) => e.chain().focus().toggleHeaderRow().run() },
+  { label: "Add column left", icon: "BetweenVerticalStart", run: (e: Editor) => e.chain().focus().addColumnBefore().run() },
+  { label: "Add column right", icon: "BetweenVerticalEnd", run: (e: Editor) => e.chain().focus().addColumnAfter().run() },
+  { label: "Delete column", icon: "Columns3", run: (e: Editor) => e.chain().focus().deleteColumn().run() },
+  { label: "Add row above", icon: "BetweenHorizontalStart", run: (e: Editor) => e.chain().focus().addRowBefore().run() },
+  { label: "Add row below", icon: "BetweenHorizontalEnd", run: (e: Editor) => e.chain().focus().addRowAfter().run() },
+  { label: "Delete row", icon: "Rows3", run: (e: Editor) => e.chain().focus().deleteRow().run() },
+  { label: "Header row", icon: "PanelTop", run: (e: Editor) => e.chain().focus().toggleHeaderRow().run() },
 ] as const;
 
 /** The table around the selection, as drawn, or `null`. */
@@ -317,33 +321,49 @@ function tableAtSelection(editor: Editor): HTMLElement | null {
 
 /** The table tools, over the table while the caret is in it. */
 export function TableTools({ editor, scrollTarget }: { editor: Editor; scrollTarget?: HTMLElement | Window }) {
+  // The header row is on when the first cell of the table is a header.
+  const header = useEditorState({
+    editor,
+    selector: ({ editor: e }) => {
+      const { $from } = e.state.selection;
+      for (let d = $from.depth; d > 0; d--) {
+        const node = $from.node(d);
+        if (node.type.name === "table") return node.firstChild?.firstChild?.type.name === "tableHeader";
+      }
+      return false;
+    },
+  });
   return (
     <BubbleMenu
       editor={editor}
       pluginKey="kbTable"
       shouldShow={({ editor: e, from, to }) => e.isEditable && e.isActive("table") && from === to}
-      // The tools hang over the table, not over the caret, so they never
-      // hide the header row. They hide when the table scrolls out of view.
+      // The tools hang under the table, as in Docmost, so they never hide
+      // a row or the grips above it. They hide when the table scrolls out
+      // of view.
       getReferencedVirtualElement={() => {
         const table = tableAtSelection(editor);
         return table ? { getBoundingClientRect: () => table.getBoundingClientRect() } : null;
       }}
-      options={{ placement: "top-start", hide: true, shift: { padding: 8 }, scrollTarget }}
+      options={{ placement: "bottom", offset: 8, hide: true, shift: { padding: 8 }, scrollTarget }}
       className="kb-bubble shadow-md"
       role="toolbar"
       aria-label="Table"
     >
       <div className="flex items-center gap-0.5" onMouseDown={(e) => e.preventDefault()}>
-        {TABLE_ACTS.map((a) => (
-          <Button
-            key={a.label}
-            variant="ghost"
-            size="icon-sm"
-            icon={a.icon}
-            aria-label={a.label}
-            title={a.label}
-            onClick={() => a.run(editor)}
-          />
+        {TABLE_ACTS.map((a, i) => (
+          <span key={a.label} className="contents">
+            {i === 3 || i === 6 ? <span className="mx-1 h-5 w-px bg-border" aria-hidden /> : null}
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              icon={a.icon}
+              aria-label={a.label}
+              title={a.label}
+              selected={a.label === "Header row" ? Boolean(header) : undefined}
+              onClick={() => a.run(editor)}
+            />
+          </span>
         ))}
         <span className="mx-1 h-5 w-px bg-border" aria-hidden />
         <Button

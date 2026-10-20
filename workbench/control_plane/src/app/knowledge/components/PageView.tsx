@@ -41,7 +41,7 @@ import { EmptyState } from "@/components/EmptyState";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
-import { Input, Textarea } from "@/components/ui/Input";
+import { Textarea } from "@/components/ui/Input";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
 import { invalidate } from "@/lib/dataCache";
@@ -77,6 +77,7 @@ import { flushLiveDraft, registerLiveDraft } from "../lib/liveDrafts";
 import { PAGE_NOT_FOUND_BODY, PAGE_NOT_FOUND_TITLE, pageRefusal, type PageRead } from "../lib/phase";
 import type { PageDetail, PageVersion } from "../lib/types";
 import KnowledgeEditor from "./editor/KnowledgeEditor";
+import { TitleField, useTitleLink } from "./editor/TitleField";
 import { useKnowledge } from "./KnowledgeContext";
 import VersionList from "./VersionList";
 
@@ -143,6 +144,8 @@ export default function PageView({ pageId }: { pageId: string }) {
   // key, and `flushRef` writes the body at once before a save or a switch.
   const [pending, setPending] = useState(false);
   const flushRef = useRef<((opts?: { silent?: boolean }) => string | null) | null>(null);
+  // The title flow joins the title field to the body (KB-2i).
+  const titleLink = useTitleLink();
   const draftRef = useRef(draft);
   useEffect(() => {
     draftRef.current = draft;
@@ -391,12 +394,10 @@ export default function PageView({ pageId }: { pageId: string }) {
             // ⚠️ A `div`, not a `form`. The editor's own buttons (the code
             // language, the fold of a toggle) must never submit the page.
             <div className="mt-1 space-y-3">
-              <Input
-                aria-label="Title"
+              <TitleField
                 value={draft.title}
-                maxLength={300}
-                onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))}
-                className="w-full"
+                onChange={(title) => setDraft((d) => ({ ...d, title }))}
+                link={titleLink}
               />
               <div className="flex justify-end">
                 <Button
@@ -435,6 +436,7 @@ export default function PageView({ pageId }: { pageId: string }) {
                     pageId={page.id}
                     spaces={spaces}
                     label="Page body"
+                    titleLink={titleLink}
                   />
                 </div>
               )}

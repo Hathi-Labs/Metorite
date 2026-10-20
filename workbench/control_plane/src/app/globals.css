@@ -929,9 +929,10 @@ select optgroup {
 }
 .kb-editor :where(th, td) { padding: 0.4em 0.75em; vertical-align: top; }
 .kb-editor :where(td) { border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
-/* While a member edits, a table leaves room above it for its tools, so they
-   never cover the block above. */
-.kb-editor-shell.is-editing .kb-editor .tableWrapper { margin-top: 2.75rem; }
+/* While a member edits, a table leaves room under it for its tools (KB-2i:
+   they hang under the table, as in Docmost), so they never cover the block
+   below, and room above it for the column grips. */
+.kb-editor-shell.is-editing .kb-editor .tableWrapper { margin-top: 1.25rem; margin-bottom: 3rem; }
 .kb-editor-shell.is-editing .kb-editor :where(td, th) { position: relative; border: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
 .kb-editor-shell.is-editing .kb-editor .selectedCell::after {
   content: "";
@@ -967,6 +968,109 @@ select optgroup {
   border-radius: calc(var(--radius) - 2px);
   background: var(--popover);
   padding: 0.25rem;
+}
+
+/* ── KB-2i (knowledge_base.md §21.7): table grips, footnotes, find ──────── */
+/* A grip above a column and left of a row. It sits on the cell's edge, on
+   the card surface, so the table line does not run through it. */
+.kb-table-handle {
+  position: absolute;
+  z-index: 20;
+  transform: translate(-50%, -50%);
+  border-radius: calc(var(--radius) - 6px);
+  background: var(--card);
+}
+.kb-table-handle.is-col { width: 1.75rem; height: 1rem; }
+.kb-table-handle.is-row { width: 1rem; height: 1.75rem; }
+.kb-table-handle .cc-control { cursor: grab; }
+.kb-table-handle .cc-control:active { cursor: grabbing; }
+@media (max-width: 640px) {
+  .kb-table-handle { display: none; }
+}
+@media print {
+  .kb-table-handle { display: none; }
+}
+/* The copy of a row or column under the pointer, and the line where it lands. */
+.kb-table-drag-preview {
+  position: fixed;
+  z-index: 70;
+  pointer-events: none;
+  opacity: 0.85;
+  border: 1px solid var(--primary);
+  border-radius: calc(var(--radius) - 6px);
+  background: var(--card);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--foreground) 12%, transparent);
+}
+.kb-table-drag-preview table { width: 100%; margin: 0; border-collapse: collapse; }
+.kb-table-drop-line {
+  position: fixed;
+  z-index: 71;
+  pointer-events: none;
+  background: var(--primary);
+  border-radius: 1px;
+}
+
+/* Footnotes: the mark draws its number, and a note draws it in a gutter.
+   The number comes from a decoration (`--kb-fn-label`, `footnotes.ts`). */
+.kb-footnote-ref {
+  color: var(--primary);
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0 1px;
+}
+.kb-footnote-ref::after { content: var(--kb-fn-label, "?"); }
+.kb-footnote {
+  display: flex;
+  gap: 0.5em;
+  font-size: 0.875em;
+  color: var(--muted-foreground);
+  margin: 0.25em 0;
+}
+.kb-footnote:not(.kb-footnote + .kb-footnote) {
+  margin-top: 2rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+.kb-footnote-label {
+  flex-shrink: 0;
+  min-width: 1.25em;
+  font-weight: 600;
+  color: var(--foreground);
+  user-select: none;
+}
+.kb-footnote-label::before { content: var(--kb-fn-label, "?") "."; }
+.kb-footnote-body { flex: 1 1 auto; min-width: 0; }
+.kb-footnote-body > :first-child { margin-top: 0; }
+.kb-footnote-body > :last-child { margin-bottom: 0; }
+
+/* Find in the page: a bar at the top right of the body that stays in view,
+   and a mark on each match. The match in focus takes the primary tint. */
+.kb-find-anchor {
+  position: sticky;
+  top: 0.5rem;
+  z-index: 30;
+  height: 0;
+}
+.kb-find {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: min(26rem, 100%);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--popover);
+  padding: 0.25rem;
+}
+@media print {
+  .kb-find-anchor { display: none; }
+}
+.kb-editor .kb-find-match {
+  background: color-mix(in srgb, var(--warning) 35%, transparent);
+  border-radius: 2px;
+}
+.kb-editor .kb-find-match-current {
+  background: color-mix(in srgb, var(--primary) 40%, transparent);
+  outline: 1px solid var(--primary);
 }
 
 @keyframes chat-shimmer {

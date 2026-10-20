@@ -114,11 +114,17 @@ function notesOf(doc: PMNode, label: string): Array<{ pos: number; node: PMNode 
   return out.reverse();
 }
 
-/** Append an empty note of `label` at the end of the document. */
+/**
+ * Append an empty note of `label` at the end of the document. The editor
+ * keeps an empty paragraph last, so a member can type below a block. The
+ * note goes before it, or the save would hold a blank line between notes.
+ */
 function appendNote(tr: Transaction, state: EditorState, label: string): number {
   const def = state.schema.nodes[DEF];
   const paragraph = state.schema.nodes.paragraph;
-  const at = tr.doc.content.size;
+  const last = tr.doc.lastChild;
+  const trailing = last && last.type === paragraph && last.content.size === 0 && tr.doc.childCount > 1;
+  const at = tr.doc.content.size - (trailing ? last.nodeSize : 0);
   tr.insert(at, def.create({ label }, paragraph.create()));
   return at;
 }
@@ -351,6 +357,28 @@ export const FootnoteDefinition = Node.create({
       ["span", { class: "kb-footnote-label", contenteditable: "false", "aria-hidden": "true" }],
       ["div", { class: "kb-footnote-body" }, 0],
     ];
+  },
+
+  addKeyboardShortcuts() {
+    return {
+      // Enter on an empty last line of a note leaves the note, as it leaves
+      // a list. The line moves out below the note, with the caret in it.
+      Enter: ({ editor }) => {
+        const { $from, empty } = editor.state.selection;
+        if (!empty || $from.depth < 2 || $from.parent.type.name !== "paragraph" || $from.parent.content.size) return false;
+        const note = $from.node(-1);
+        if (note.type.name !== this.name || note.childCount < 2 || $from.index(-1) !== note.childCount - 1) return false;
+        const lineStart = $from.before();
+        const noteEnd = $from.after(-1);
+        const { tr } = editor.state;
+        tr.delete(lineStart, $from.after());
+        const out = tr.mapping.map(noteEnd);
+        tr.insert(out, editor.schema.nodes.paragraph.create());
+        tr.setSelection(TextSelection.create(tr.doc, out + 1));
+        editor.view.dispatch(tr.scrollIntoView());
+        return true;
+      },
+    };
   },
 
   markdownTokenizer: {
