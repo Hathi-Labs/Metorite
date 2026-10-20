@@ -75,7 +75,18 @@ def test_a_new_key_carries_the_bound_tenant_and_a_random_id(org_a) -> None:
     key = store.new_key("tasks", suffix=".pdf")
     assert re.fullmatch(rf"{ORG_A}/tasks/[0-9a-f]{{32}}\.pdf", key)
     assert store.new_key("tasks") != store.new_key("tasks")
+    # A bound tenant wins, and an explicit organization that differs is refused.
+    with pytest.raises(store.ObjectKeyRefused, match="differs"):
+        store.new_key("notes", organization_id=ORG_B)
+    assert store.new_key("notes", organization_id=ORG_A).startswith(f"{ORG_A}/notes/")
+
+
+def test_a_job_with_no_bound_tenant_names_its_organization() -> None:
     assert store.new_key("notes", organization_id=ORG_B).startswith(f"{ORG_B}/notes/")
+    theirs = f"{ORG_B}/notes/{uuid.uuid4().hex}"
+    assert store.check_key(theirs, organization_id=ORG_B) == theirs
+    with pytest.raises(store.ObjectKeyRefused, match="another organization"):
+        store.check_key(theirs, organization_id=ORG_A)
 
 
 def test_a_key_needs_a_tenant() -> None:
@@ -85,13 +96,13 @@ def test_a_key_needs_a_tenant() -> None:
         store.check_key(f"{ORG_A}/tasks/{uuid.uuid4().hex}")
 
 
-@pytest.mark.parametrize("app", ["", "T", "Tasks", "tasks/x", "../x", "a" * 40, "1tasks"])
+@pytest.mark.parametrize("app", ["", "T", "Tasks", "tasks/x", "../x", "a" * 40, "1tasks", "tasks\n"])
 def test_a_bad_app_slug_is_refused(org_a, app: str) -> None:
     with pytest.raises(store.ObjectKeyRefused):
         store.new_key(app)
 
 
-@pytest.mark.parametrize("suffix", ["pdf", ".PDF", "./x", ".a/b", "." + "x" * 13])
+@pytest.mark.parametrize("suffix", ["pdf", ".PDF", "./x", ".a/b", "." + "x" * 13, ".pdf\n"])
 def test_a_bad_suffix_is_refused(org_a, suffix: str) -> None:
     with pytest.raises(store.ObjectKeyRefused):
         store.new_key("tasks", suffix=suffix)
@@ -100,12 +111,13 @@ def test_a_bad_suffix_is_refused(org_a, suffix: str) -> None:
 def test_a_key_of_another_organization_is_refused(org_a) -> None:
     mine = store.new_key("tasks")
     assert store.check_key(mine) == mine
-    theirs = store.new_key("tasks", organization_id=ORG_B)
+    theirs = f"{ORG_B}/tasks/{uuid.uuid4().hex}"
     with pytest.raises(store.ObjectKeyRefused, match="another organization"):
         store.check_key(theirs)
-    # A job may name its tenant explicitly, and then reads that tenant only.
-    assert store.check_key(theirs, organization_id=ORG_B) == theirs
-    with pytest.raises(store.ObjectKeyRefused):
+    # A caller cannot widen the bound tenant by naming the key's organization.
+    with pytest.raises(store.ObjectKeyRefused, match="differs"):
+        store.check_key(theirs, organization_id=ORG_B)
+    with pytest.raises(store.ObjectKeyRefused, match="differs"):
         store.check_key(mine, organization_id=ORG_B)
 
 
@@ -121,6 +133,8 @@ def test_a_key_of_another_organization_is_refused(org_a) -> None:
         f"/{ORG_A}/tasks/" + "a" * 32,
         f"{ORG_A.upper()}/tasks/" + "a" * 32,
         f"{ORG_A}/tasks/" + "a" * 32 + ".PDF",
+        f"{ORG_A}/tasks/" + "a" * 32 + "\n",
+        f"{ORG_A}/tasks\n/" + "a" * 32,
     ],
 )
 def test_a_malformed_key_is_refused(org_a, key: str) -> None:
@@ -132,7 +146,7 @@ async def test_every_read_checks_the_tenant_before_any_call(cfg, org_a, monkeypa
     """A foreign key fails before the store is asked, so nothing leaks."""
     called: list[str] = []
     monkeypatch.setattr(store._CREDS, "client", lambda: called.append("client"))
-    theirs = store.new_key("tasks", organization_id=ORG_B)
+    theirs = f"{ORG_B}/tasks/{uuid.uuid4().hex}"
     with pytest.raises(store.ObjectKeyRefused):
         await store.get_bytes(theirs)
     with pytest.raises(store.ObjectKeyRefused):
@@ -140,8 +154,7 @@ async def test_every_read_checks_the_tenant_before_any_call(cfg, org_a, monkeypa
     with pytest.raises(store.ObjectKeyRefused):
         await store.delete(theirs)
     with pytest.raises(store.ObjectKeyRefused):
-        async for _ in store.iter_chunks(theirs):
-            pass
+        await store.iter_chunks(theirs)  # refused at the call, before any status
     assert called == []
 
 
@@ -160,6 +173,10 @@ async def test_every_call_is_refused_with_the_flag_off(cfg, org_a, monkeypatch) 
         await store.head(key)
     with pytest.raises(store.ObjectStoreDisabled):
         await store.delete(key)
+    with pytest.raises(store.ObjectStoreDisabled):
+        await store.iter_chunks(key)
+    with pytest.raises(store.ObjectStoreDisabled):
+        await store.put_file("tasks", Path(__file__))
 
 
 def test_the_store_is_off_without_an_endpoint_or_a_bucket(cfg, monkeypatch) -> None:
@@ -171,9 +188,26 @@ def test_the_store_is_off_without_an_endpoint_or_a_bucket(cfg, monkeypatch) -> N
     assert store.enabled() is False
 
 
-def test_a_supabase_endpoint_refuses_a_plain_key_pair(cfg, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://abcd.storage.supabase.co/storage/v1/s3",
+        "https://ABCD.STORAGE.SUPABASE.CO/storage/v1/s3",
+        "https://abcd.storage.supabase.co./storage/v1/s3",
+        "https://abcd.supabase.in/storage/v1/s3",
+    ],
+)
+def test_a_supabase_endpoint_refuses_a_plain_key_pair(cfg, monkeypatch, endpoint: str) -> None:
     """D108 part 3: a Supabase S3 key opens every bucket, the backups too."""
-    monkeypatch.setattr(cfg, "object_store_endpoint", "https://abcd.storage.supabase.co/storage/v1/s3")
+    monkeypatch.setattr(cfg, "object_store_endpoint", endpoint)
+    with pytest.raises(store.ObjectStoreDisabled, match="files user"):
+        store._CREDS.client()
+
+
+def test_a_supabase_url_without_the_files_user_refuses_a_key_pair(cfg, monkeypatch) -> None:
+    """A custom domain hides the Supabase host, so the URL setting decides too."""
+    monkeypatch.setattr(cfg, "object_store_endpoint", "https://files.example.com/s3")
+    monkeypatch.setattr(cfg, "object_store_supabase_url", "https://abcd.supabase.co")
     with pytest.raises(store.ObjectStoreDisabled, match="files user"):
         store._CREDS.client()
 
@@ -224,6 +258,16 @@ def test_the_jwt_is_renewed_before_it_expires(cfg, monkeypatch) -> None:
     assert second._request_signer._credentials.get_frozen_credentials().token == "jwt-2"
 
 
+@pytest.mark.parametrize(("ttl", "kept"), [(3600, 2700), (600, 300), (60, 30)])
+def test_a_jwt_is_kept_for_at_most_its_life_less_the_margin(cfg, monkeypatch, ttl: int, kept: int) -> None:
+    """A long part upload must not outlive its token (review, 2026-10-20)."""
+    _supabase(cfg, monkeypatch, expires_in=ttl)
+    clock = [1000.0]
+    monkeypatch.setattr(store.time, "monotonic", lambda: clock[0])
+    store._CREDS.client()
+    assert store._CREDS._token_until == pytest.approx(1000.0 + kept)
+
+
 def test_a_failed_sign_in_names_no_secret(cfg, monkeypatch) -> None:
     _supabase(cfg, monkeypatch)
 
@@ -254,19 +298,65 @@ async def test_a_put_over_the_cap_is_refused(cfg, org_a, monkeypatch, tmp_path) 
 
 # ── The fence: one seam ─────────────────────────────────────────────────────
 
-_S3_CLIENT = re.compile(r"^\s*(?:import|from)\s+(?:boto3|botocore|aioboto3|aiobotocore|minio|s3fs)\b", re.MULTILINE)
+_S3_MODULES = {"boto3", "botocore", "aioboto3", "aiobotocore", "minio", "s3fs", "smart_open"}
+_S3_PACKAGES = re.compile(r'"(@aws-sdk/client-s3|@aws-sdk/lib-storage|@supabase/storage-js|minio|aws-sdk)"\s*:')
+_SKIP_PARTS = {"node_modules", ".venv", "__pycache__", ".next", "tests"}
+
+
+def _s3_imports(source: str) -> list[str]:
+    """Every way a module can load an S3 client: import, from-import,
+    ``__import__("x")`` and ``importlib.import_module("x")``."""
+    import ast
+
+    found: list[str] = []
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return found
+    for node in ast.walk(tree):
+        names: list[str] = []
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            names = [node.module]
+        elif isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant):
+            fn = node.func
+            called = fn.id if isinstance(fn, ast.Name) else fn.attr if isinstance(fn, ast.Attribute) else ""
+            if called in ("__import__", "import_module") and isinstance(node.args[0].value, str):
+                names = [node.args[0].value]
+        found += [n for n in names if n.split(".")[0] in _S3_MODULES]
+    return found
+
+
+def test_the_fence_sees_every_import_form() -> None:
+    for src in (
+        "import os, boto3",
+        "import json; import boto3",
+        "def f():\n    import botocore.config",
+        "from boto3.session import Session",
+        "__import__('boto3')",
+        "import importlib\nimportlib.import_module('aiobotocore.session')",
+    ):
+        assert _s3_imports(src), src
+    assert _s3_imports("import json\nfrom acb_common import object_store") == []
 
 
 def test_no_module_but_the_seam_imports_an_s3_client() -> None:
     """D108 part 2. A second S3 client is a second seam, and it would skip
     the tenant check. Tests may use one to set up a bucket."""
     offenders: list[str] = []
-    for root in ("packages", "apps", "scripts", "workbench"):
-        for py in (_REPO / root).rglob("*.py"):
-            if py == _SEAM or any(part in ("node_modules", ".venv", "__pycache__") for part in py.parts):
-                continue
-            if _S3_CLIENT.search(py.read_text(encoding="utf-8", errors="ignore")):
-                offenders.append(str(py.relative_to(_REPO)))
+    for py in _REPO.rglob("*.py"):
+        rel = py.relative_to(_REPO)
+        if py == _SEAM or _SKIP_PARTS.intersection(rel.parts) or rel.parts[0].startswith("."):
+            continue
+        if _s3_imports(py.read_text(encoding="utf-8", errors="ignore")):
+            offenders.append(str(rel))
+    for pkg in _REPO.rglob("package.json"):
+        rel = pkg.relative_to(_REPO)
+        if _SKIP_PARTS.intersection(rel.parts):
+            continue
+        if _S3_PACKAGES.search(pkg.read_text(encoding="utf-8", errors="ignore")):
+            offenders.append(str(rel))
     assert offenders == []
 
 
@@ -299,14 +389,16 @@ class TestRoundTrip:
         assert await store.head(put.key) is None
         with pytest.raises(store.ObjectNotFound):
             await store.get_bytes(put.key)
+        with pytest.raises(store.ObjectNotFound):
+            await store.iter_chunks(put.key)  # a 404 at the call, before any status
         await store.delete(put.key)  # a second delete is not an error
 
     async def test_a_ranged_stream_and_the_get_cap(self, org_a) -> None:
         data = bytes(range(256)) * 4096  # 1 MiB
         put = await store.put_bytes("notes", data, suffix=".bin")
-        chunks = [c async for c in store.iter_chunks(put.key, chunk_size=64 * 1024)]
+        chunks = [c async for c in await store.iter_chunks(put.key, chunk_size=64 * 1024)]
         assert b"".join(chunks) == data and len(chunks) == 16
-        part = b"".join([c async for c in store.iter_chunks(put.key, byte_range=(10, 19))])
+        part = b"".join([c async for c in await store.iter_chunks(put.key, byte_range=(10, 19))])
         assert part == data[10:20]
         with pytest.raises(store.ObjectTooLarge):
             await store.get_bytes(put.key, max_bytes=1000)
@@ -317,7 +409,7 @@ class TestRoundTrip:
         big.write_bytes(os.urandom(9 * 1024 * 1024))  # over boto3's 8 MiB part threshold
         put = await store.put_file("notes", big, content_type="audio/webm", suffix=".webm")
         assert put.size == big.stat().st_size
-        got = b"".join([c async for c in store.iter_chunks(put.key)])
+        got = b"".join([c async for c in await store.iter_chunks(put.key)])
         assert got == big.read_bytes()
         await store.delete(put.key)
 
@@ -327,6 +419,8 @@ class TestRoundTrip:
         try:
             with pytest.raises(store.ObjectKeyRefused):
                 await store.get_bytes(put.key)
+            with pytest.raises(store.ObjectKeyRefused):
+                await store.iter_chunks(put.key)
         finally:
             release_tenant(token)
         await store.delete(put.key)

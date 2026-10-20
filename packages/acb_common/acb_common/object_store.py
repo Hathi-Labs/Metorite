@@ -9,9 +9,12 @@ is a cache, never the only copy.
 
 **Keys.** Every object lives at ``<organization_id>/<app>/<object id>``. The
 seam makes the key from the tenant bound to the caller's context
-(``acb_common.db.current_tenant``), or from an ``organization_id`` a job
-passes in explicitly. It never takes a tenant from request input (R5). A
-caller stores the returned key in its own row.
+(``acb_common.db.current_tenant``). A job with no bound tenant may pass
+``organization_id`` explicitly. When a tenant is bound, an explicit
+``organization_id`` must equal it, or the call is refused, because a key
+holds its organization and a careless caller would copy it from there. The
+seam never takes a tenant from request input (R5). A caller stores the
+returned key in its own row.
 
 **Isolation.** One app credential can read every tenant's objects, so the
 store cannot do what FORCE RLS does for a table. This seam does it: every
@@ -27,17 +30,17 @@ not the caller's (:class:`ObjectKeyRefused`). The check is the isolation.
   Storage policies limit the files user to its own bucket. The JWT is cached
   and renewed five minutes before it expires.
 * **A key pair** (a local MinIO, the tests). Only the two key fields. The
-  seam refuses this mode on a ``*.supabase.co`` endpoint, because a Supabase
-  S3 access key opens every bucket of the project, the backups too (D108
-  part 3, H-271).
+  seam refuses this mode on a Supabase endpoint, and whenever
+  ``object_store_supabase_url`` is set, because a Supabase S3 access key opens
+  every bucket of the project, the backups too (D108 part 3, H-271).
 
 **The flag.** ``OBJECT_STORE_ENABLED``, default off. :func:`enabled` says
 whether a caller may use the store. Each call raises
 :class:`ObjectStoreDisabled` when it is off, so no caller writes by accident.
 
-**Async.** boto3 is synchronous. Each call runs in a worker thread, and the
-tenant is read on the caller's frame first, because a ContextVar does not
-cross ``asyncio.to_thread``.
+**Async.** boto3 is synchronous. Each call runs in a worker thread. The key
+check runs on the caller's frame before the thread starts, so a refused key
+never reaches the store.
 
 No other module may import an S3 client. The fence greps the tree.
 """
@@ -90,7 +93,10 @@ _KEY_RE = re.compile(
 
 _GET_BYTES_MAX = 64 * 1024 * 1024
 _CHUNK = 1024 * 1024
-_TOKEN_MARGIN_SECS = 300
+# Renew the JWT when less than this is left, or half its life for a short one.
+# botocore freezes the credentials of a call, so the token of a long part
+# upload must outlive the upload: 900 s holds 512 MB at about 0.6 MB/s.
+_TOKEN_MARGIN_SECS = 900
 
 
 class ObjectStoreError(RuntimeError):
@@ -136,27 +142,35 @@ def enabled() -> bool:
     )
 
 
-def _tenant(organization_id: str | None) -> str:
-    """The organization of this call: the explicit one, else the bound one.
+def _norm_org(value: object) -> str:
+    org = str(value).strip().lower()
+    if not re.fullmatch(_ORG_RE, org):
+        raise ObjectKeyRefused("the organization id is not a UUID")
+    return org
 
-    Read it on the caller's frame, never in the worker thread. With neither,
-    the call is refused, as ``tenant_session`` refuses.
+
+def _tenant(organization_id: str | None) -> str:
+    """The organization of this call.
+
+    The bound tenant wins. An explicit *organization_id* is for a job with no
+    bound tenant. When both are present they must be equal, or the call is
+    refused (review, 2026-10-20): the key check is the only isolation of the
+    store, so it must not take its answer from the caller. With neither, the
+    call is refused, as ``tenant_session`` refuses.
     """
-    org = organization_id
-    if not org:
-        try:
-            from acb_common.db import current_tenant
-        except ImportError:  # pragma: no cover
-            current_tenant = None  # type: ignore[assignment]
-        org = current_tenant() if current_tenant else None
+    try:
+        from acb_common.db import current_tenant
+    except ImportError:  # pragma: no cover
+        current_tenant = None  # type: ignore[assignment]
+    bound = current_tenant() if current_tenant else None
+    if bound and organization_id and _norm_org(organization_id) != _norm_org(bound):
+        raise ObjectKeyRefused("organization_id differs from the bound tenant")
+    org = bound or organization_id
     if not org:
         from acb_common.db import TenantUnbound
 
         raise TenantUnbound("the object store needs a tenant: bind one, or pass organization_id")
-    org = str(org).strip().lower()
-    if not re.fullmatch(_ORG_RE, org):
-        raise ObjectKeyRefused("the organization id is not a UUID")
-    return org
+    return _norm_org(org)
 
 
 def new_key(app: str, *, suffix: str = "", organization_id: str | None = None) -> str:
@@ -166,9 +180,9 @@ def new_key(app: str, *, suffix: str = "", organization_id: str | None = None) -
     optional lower-case extension such as ``.pdf``. The object id is random,
     so a file name from a member never becomes a key.
     """
-    if not _APP_RE.match(app or ""):
+    if not _APP_RE.fullmatch(app or ""):
         raise ObjectKeyRefused(f"app slug {app!r} is not allowed")
-    if suffix and not _SUFFIX_RE.match(suffix):
+    if suffix and not _SUFFIX_RE.fullmatch(suffix):
         raise ObjectKeyRefused("the suffix must look like '.pdf'")
     return f"{_tenant(organization_id)}/{app}/{uuid.uuid4().hex}{suffix}"
 
@@ -179,7 +193,7 @@ def check_key(key: str, *, organization_id: str | None = None) -> str:
     Raises :class:`ObjectKeyRefused` otherwise. This is the isolation of the
     store, so every read, head and delete calls it first.
     """
-    m = _KEY_RE.match(key or "")
+    m = _KEY_RE.fullmatch(key or "")
     if m is None:
         raise ObjectKeyRefused("the key is not an object store key")
     if m.group("org") != _tenant(organization_id):
@@ -207,8 +221,9 @@ class _Credentials:
 
     @staticmethod
     def _refuse_project_key(s: Any) -> None:
-        host = urllib.parse.urlparse(s.object_store_endpoint).hostname or ""
-        if host.endswith(".supabase.co") and not _Credentials._supabase_mode(s):
+        host = (urllib.parse.urlparse(s.object_store_endpoint).hostname or "").rstrip(".").lower()
+        supabase_host = host.endswith((".supabase.co", ".supabase.in"))
+        if (supabase_host or s.object_store_supabase_url) and not _Credentials._supabase_mode(s):
             raise ObjectStoreDisabled(
                 "a Supabase endpoint needs the files user (D108). A project-wide S3 key is refused."
             )
@@ -234,7 +249,7 @@ class _Credentials:
             raise ObjectStoreError("the files user got no token")
         ttl = float(payload.get("expires_in") or 3600)
         self._token = token
-        self._token_until = now + max(60.0, ttl - _TOKEN_MARGIN_SECS)
+        self._token_until = now + max(0.0, ttl - min(_TOKEN_MARGIN_SECS, ttl / 2))
         return token
 
     def client(self) -> Any:
@@ -405,14 +420,24 @@ async def iter_chunks(
     key: str, *, organization_id: str | None = None, chunk_size: int = _CHUNK,
     byte_range: tuple[int, int] | None = None,
 ) -> AsyncIterator[bytes]:
-    """Stream the object at *key* in chunks. *byte_range* is inclusive.
+    """Open the object at *key* and return an iterator of its chunks.
 
-    The tenant check runs on the caller's frame, before the first chunk.
+    *byte_range* is inclusive. Await this call itself: the flag, the tenant
+    check and the open all run here, so a route turns a refusal or a missing
+    object into a 403 or a 404 before it sends a status (review, 2026-10-20).
+    Then iterate the result::
+
+        chunks = await iter_chunks(key)
+        return StreamingResponse(chunks)
     """
     if not enabled():
         raise ObjectStoreDisabled("the object store is off")
     check_key(key, organization_id=organization_id)
     body = await asyncio.to_thread(_sync_open, key, byte_range)
+    return _stream(body, chunk_size)
+
+
+async def _stream(body: Any, chunk_size: int) -> AsyncIterator[bytes]:
     try:
         while True:
             block = await asyncio.to_thread(body.read, chunk_size)

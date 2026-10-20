@@ -5440,8 +5440,12 @@ quota of `artifact_management.md` §13 Q3. Board: **WS-29** (MT-1g) and
 4. **The order of the moves is MT-1g's.** Files with one copy on the box's
    disk move first, then `agent_blob`, then large text, one table at a time.
    New upload paths write to the store from the day the seam is on.
-5. **Artifact quota: 5 GB for each member, and 5 GB × seats for each
-   organization, pooled.** A write past either limit is refused with a
+   **The files bucket gets its own backup before `agent_blob` moves.** Those
+   bytes then leave the nightly `pg_dump`, and the files user can delete. So
+   MT-1g-2 adds a nightly copy of the files bucket to the off-box backup,
+   written by the insert-only backup writer of BH-4.
+5. **Artifact quota: 5 GB for each member, and 5 GB × `seats_purchased`
+   for each organization, pooled.** A membership row is not a seat (D32.5). A write past either limit is refused with a
    reason, and a delete always works. This answers §13 Q3. The organization
    number becomes a plan fact when WS-31 holds one.
 
