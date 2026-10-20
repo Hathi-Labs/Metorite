@@ -555,6 +555,9 @@ def test_a_clone_with_no_record_gets_no_credential(
     assert _git(origin, "rev-parse", "main") == base
     assert gc.fetch(clone).ok, "a read of an unpinned clone must still work"
     assert _credentialed(fake_github) == []
+    # The seam itself refuses, whatever its caller checked first.
+    refused = gc.push(clone, src="HEAD", branch="main", credential=FAKE)
+    assert refused.returncode == 3 and _credentialed(fake_github) == []
 
 
 def test_the_routes_pin_a_clone_from_the_registry(
