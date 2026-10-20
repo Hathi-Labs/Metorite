@@ -108,13 +108,17 @@ export function isMoving(phase: PanelPhase): boolean {
   return phase === "opening" || phase === "closing";
 }
 
-/** The form a panel draws in, for its motion: which token and which property. */
-export type PanelForm = "dock" | "full" | "sheet";
+/**
+ * The form a panel draws in, for its motion: which token and which property.
+ * `peek` is the phone's strip above the bottom nav (CF-1). It moves on the
+ * sheet's short tokens.
+ */
+export type PanelForm = "dock" | "full" | "sheet" | "peek";
 
 /** How long a form's open or close takes. */
 export function formDurationMs(form: PanelForm): number {
   if (form === "full") return PANEL_MOTION.expandMs;
-  if (form === "sheet") return PANEL_MOTION.sheetMs;
+  if (form === "sheet" || form === "peek") return PANEL_MOTION.sheetMs;
   return PANEL_MOTION.durationMs;
 }
 
