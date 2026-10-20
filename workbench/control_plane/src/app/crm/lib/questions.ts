@@ -421,7 +421,7 @@ export function questionCopy(q: Question): QuestionCopy {
       const word = q.value ?? "";
       return {
         question: `When someone says "${word}", which field of ${q.label} do they mean?`,
-        why: `"${word}" matches more than one field, and the fields give different totals. The chat asked a member until you answer.`,
+        why: `"${word}" matches more than one field, and the fields give different totals. A member asked the chat about this term. Your answer tells the chat how to read it.`,
         changes: `Every answer that uses "${word}" reads the field you choose, for everyone.`,
       };
     }

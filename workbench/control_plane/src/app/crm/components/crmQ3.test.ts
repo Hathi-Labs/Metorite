@@ -399,7 +399,7 @@ describe("the access section reads groups late", () => {
     expect(src.match(/api\.listGroups\(\)/g)).toHaveLength(1);
     expect(src).toMatch(/const needGroups = !settings\.loading && wantsGroups\(access\);/);
     expect(src).toMatch(/if \(!needGroups\) return;[\s\S]*api\.listGroups\(\)/);
-    expect(src).toMatch(/\}, \[needGroups\]\);/);
+    expect(src).toMatch(/\}, \[needGroups, groupsTry\]\);/);
   });
 });
 
