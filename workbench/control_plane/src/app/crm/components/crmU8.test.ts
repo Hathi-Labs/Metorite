@@ -108,11 +108,11 @@ describe("the + Filter field list", () => {
     expect(groupFields(filterFields("deals", custom), "zzz")).toEqual([]);
   });
 
-  it("a module list has no field filter, so it has no + Filter list", () => {
+  it("a module list offers + Filter too (CRM-U9, see crmU9.test.ts)", () => {
     const html = renderToStaticMarkup(
       createElement(ModuleList, moduleProps()),
     );
-    expect(html).not.toContain(">Filter<");
+    expect(html).toContain(">Filter<");
   });
 });
 
