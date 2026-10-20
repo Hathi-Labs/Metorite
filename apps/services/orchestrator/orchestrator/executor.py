@@ -4660,6 +4660,9 @@ async def run_agent_stream(
                 await _relay_register_live(
                     thread_id, organization_id=organization_id,
                     actor=session_user, token=run_id,
+                    # The SAME run: keep the startedAt and runId that
+                    # run_detached wrote. Only the token changes.
+                    run_id=run_id, keep_run_facts=True,
                 )
 
         # Fresh per-thread emit ordinal for this run (P1-5): the stream was just
