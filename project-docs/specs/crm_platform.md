@@ -11523,3 +11523,34 @@ unbuilt after CRM-C1 to CRM-C7. It writes no contract.
 12. **CRM-Q11, CRM-Q12 and CRM-Q13.**
 13. **Blueprints, approvals, territories and lead scoring (new).** Last,
     because they matter most to large sales teams.
+
+### 20.12 CRM-U6: stage order, win chance and the lane stat block
+
+Owner, 2026-10-20: the board order and the win chance are two settings.
+
+1. **The order never follows the probability.** An admin sets the order of
+   the boards. A stage at 90% can sit before a stage at 10%. Mirror mode
+   without an admin order uses the source position, then the pipeline place.
+2. **Every stage has a win chance.** Migration 285 adds `probability` and
+   `ui_probability` to `crm_lead_statuses`. A won status holds 100 and a lost
+   status holds 0, for both kinds (D-CRM-10).
+3. **The lane header shows a stat block.** A deal lane shows the total and
+   the weighted total with the win chance. A won lane says "booked, not
+   forecast". A lost lane says "no forecast". An on-hold lane says "on hold".
+4. **A lead lane shows the count and the expected conversions.** The
+   expected number is count x win chance / 100, with one decimal.
+5. **Settings.** Each row has Up and Down buttons and a plain type label.
+   It also has a "Win chance" box and a labelled Save and Cancel. Delete asks
+   first. The rules of a deal stage fold behind a "Rules" toggle. A strip at
+   the top of each grid shows the stages in board order.
+
+Fences (R7):
+
+- `board.test.ts`: "sorts by the source position in Mirror mode with no admin
+  order, not by probability", and the `expectedLeads` and `dealForecastLine` cases.
+- `boardStages.test.ts`: "the lane stat block (CRM-U6)".
+- `crmU6.test.ts`: the strip, the Up and Down buttons, the disabled win chance,
+  and "keeps the probability out of orderLanes".
+- `test_crm_migration.py::test_the_lead_probability_migration_is_expand_only`.
+- `test_crm_routes.py::test_a_lead_status_carries_a_win_chance` and
+  `test_crm_pipeline.py::test_a_lead_win_chance_keeps_the_won_lost_clamp`.

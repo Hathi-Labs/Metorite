@@ -682,6 +682,36 @@ async def test_a_lead_status_refuses_both_deal_only_columns(
     assert "deal-only" in str(exc.value.detail)
 
 
+async def test_a_lead_status_takes_a_win_chance(db: FakeCrmDB) -> None:
+    """CRM-U6, migration 285: a lead status carries `probability` like a deal
+    stage does. It is no longer a deal-only field."""
+    stages = _lead_pipeline(db)
+
+    result = await crm_admin.patch_status(
+        "lead", str(stages["Contacted"].id), crm_admin.StatusIn(probability=25), USER,
+    )
+
+    assert result.probability == 25
+
+
+@pytest.mark.parametrize(
+    ("stage", "chance"), [("Qualified", 40), ("Lost", 10), ("New", 101)],
+)
+async def test_a_lead_win_chance_keeps_the_won_lost_clamp(
+    db: FakeCrmDB, stage: str, chance: int,
+) -> None:
+    """CRM-U6: won leads forecast 100, lost leads 0, and 0-100 bounds the rest.
+    It is the same rule as the deal stages (D-CRM-10)."""
+    stages = _lead_pipeline(db)
+
+    with pytest.raises(HTTPException) as exc:
+        await crm_admin.patch_status(
+            "lead", str(stages[stage].id), crm_admin.StatusIn(probability=chance), USER,
+        )
+
+    assert exc.value.status_code == 422
+
+
 async def test_a_position_only_patch_is_still_not_a_forecast_decision(
     db: FakeCrmDB,
 ) -> None:

@@ -214,7 +214,8 @@ def _deal_rows(p: Any, org: str) -> dict[str, Any]:
 
 def _lead_rows(p: Any, org: str) -> dict[str, Any]:
     return {r.name: r for r in _q(
-        p, "SELECT id, name, position, hidden, ui_position, ui_color, ext_id, "
+        p, "SELECT id, name, position, probability, hidden, ui_position, "
+           "ui_probability, ui_color, ext_id, "
            "source_gone_at FROM crm_lead_statuses "
            "WHERE organization_id = CAST(:o AS uuid)", o=org)}
 
@@ -279,7 +280,8 @@ async def test_a_mirror_admin_sets_each_overlay_column_and_a_source_field_is_409
                  {"ui_color": "violet"}, {"max_dwell_days": 7}):
         r = await _req(admin, "PATCH", f"/crm/statuses/deal/{deal.id}", body)
         assert r.status_code == 200, (body, r.text)
-    for body in ({"hidden": True}, {"ui_position": 2}, {"ui_color": "teal"}):
+    for body in ({"hidden": True}, {"ui_position": 2}, {"ui_probability": 25},
+                 {"ui_color": "teal"}):
         r = await _req(admin, "PATCH", f"/crm/statuses/lead/{lead.id}", body)
         assert r.status_code == 200, (body, r.text)
     r = await _req(admin, "PATCH", f"/crm/lost-reasons/{lost}", {"hidden": True})
@@ -291,6 +293,8 @@ async def test_a_mirror_admin_sets_each_overlay_column_and_a_source_field_is_409
     assert (row.probability, row.color) == (10, "gray")  # the source is untouched
     lead_row = _lead_rows(c3.p, c3.org_a)["Fresh"]
     assert (lead_row.hidden, lead_row.ui_position, lead_row.ui_color) == (True, 2, "teal")
+    # CRM-U6, migration 285: a lead status takes the probability overlay too.
+    assert lead_row.ui_probability == 25 and lead_row.probability == 0
 
     # The wire carries the effective value and the source value.
     wire = (await _req(admin, "PATCH", f"/crm/statuses/deal/{deal.id}", {})).json()
@@ -304,7 +308,7 @@ async def test_a_mirror_admin_sets_each_overlay_column_and_a_source_field_is_409
         (f"/crm/statuses/deal/{deal.id}", {"name": "X"}),
         (f"/crm/statuses/deal/{deal.id}", {"probability": 50}),
         (f"/crm/statuses/deal/{deal.id}", {"ui_probability": 20, "color": "red"}),
-        (f"/crm/statuses/lead/{lead.id}", {"ui_probability": 5}),
+        (f"/crm/statuses/lead/{lead.id}", {"probability": 5}),
         (f"/crm/lost-reasons/{lost}", {"label": "Z"}),
     ):
         r = await _req(admin, "PATCH", path, body)
@@ -688,6 +692,8 @@ def test_the_overlay_migration_is_found_by_content() -> None:
         p.name for p in sorted(_MIGRATIONS.glob("*.sql"))
         if p.name != "schema.generated.sql"
         and "ADD COLUMN IF NOT EXISTS ui_probability" in p.read_text(encoding="utf-8")
+        # Migration 285 adds the same column to the lead table. It is not the overlay.
+        and "ADD COLUMN IF NOT EXISTS ext_id" in p.read_text(encoding="utf-8")
     ]
     assert len(found) == 1, found
 

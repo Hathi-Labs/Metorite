@@ -76,32 +76,40 @@ const FRACKTAL: PipelineLane[] = [
 
 const names = (lanes: readonly { status: Status }[]) => lanes.map((l) => l.status.name);
 
-describe("orderLanes in Mirror mode — open stages by probability", () => {
-  it("puts open stages by probability, then on hold, then won, then lost at the far end", () => {
+describe("orderLanes in Mirror mode - the source order, never the probability", () => {
+  it("puts open stages by source position, then on hold, then won, then lost", () => {
     expect(names(orderLanes(FRACKTAL, "mirror"))).toEqual([
-      // Open, by probability. A tie goes to the pipeline place, and a stage
-      // with no place comes after the stated places.
-      "New Deal",
+      // Open and ongoing, by the source position. The win chance plays no part.
       "New Lead",
+      "New Deal",
       "Discovery Meeting",
       "Qualified",
-      "Discovery Meeting Done",
       "Sample parts",
       "Proposal",
       "Negotiation/Review",
-      "Negotiation / Tendering",
       "Confirmation and Advance",
-      "Delivered & Installed",
+      "Discovery Meeting Done",
+      "Negotiation / Tendering",
       "Order Received",
+      "Delivered & Installed",
       // On hold is its own group, whatever its probability.
       "Parked",
-      // Won, by place.
       "Closed Won",
       "Payment Complete",
-      // Lost, by place. Closed Lost and Re-Evaluate close the board.
+      // Lost closes the board.
       "Re-Evaluate",
       "Closed Lost",
     ]);
+  });
+
+  it("keeps a high win chance before a low one when the source says so", () => {
+    const lanes = [lane("Low", "open", 5, null, 0, 2), lane("High", "open", 90, null, 0, 1)];
+    expect(names(orderLanes(lanes, "mirror"))).toEqual(["High", "Low"]);
+  });
+
+  it("uses the pipeline place only to break a tie of source position", () => {
+    const lanes = [lane("B", "open", 10, 2, 0, 5), lane("A", "open", 90, 1, 0, 5)];
+    expect(names(orderLanes(lanes, "mirror"))).toEqual(["A", "B"]);
   });
 
   it("breaks a tie with no pipeline place by the global position", () => {
@@ -153,8 +161,8 @@ describe("orderLanes in Native mode — the admin's stage order", () => {
       lane("Brand new", "open", 0, 3, 0, 4),
     ];
     expect(names(orderLanes(lanes, "native"))).toEqual(["Qualify", "Proposal", "Brand new", "Won"]);
-    // The same stage leads a Mirror board, because there probability decides.
-    expect(names(orderLanes(lanes, "mirror"))[0]).toBe("Brand new");
+    // A Mirror board keeps the same place. The win chance never reorders it.
+    expect(names(orderLanes(lanes, "mirror"))).toEqual(["Qualify", "Proposal", "Brand new", "Won"]);
   });
 
   it("treats a mode not yet known as Native", () => {
@@ -290,5 +298,45 @@ describe("the page wires the toggle through the shared Button", () => {
   it("hands the Deals board the visible lanes, and the Leads board its own", () => {
     expect(page).toContain("const dealLanes = visibleLanes(orderLanes(store.lanes, ctx.mode), showEmpty)");
     expect(page).toContain('lanes={view.tab === "leads" ? store.leadLanes : dealLanes}');
+  });
+});
+
+describe("the lane stat block (CRM-U6)", () => {
+  const props = { loading: false, onMove: () => {}, onOpen: () => {} };
+  const withStatus = (name: string, type: StatusType, probability: number, amount: number, weighted: number) => {
+    const made = lane(name, type, probability, null, 2, 10);
+    return { ...made, amount, weighted };
+  };
+
+  it("draws a total and a labelled weighted figure on every deal lane, zero included", () => {
+    const html = renderToStaticMarkup(
+      createElement(KanbanBoard, {
+        ...props,
+        lanes: [
+          withStatus("Proposal", "open", 10, 10300000, 1030000),
+          withStatus("Empty", "open", 0, 0, 0),
+          withStatus("Done", "won", 100, 500000, 0),
+          withStatus("Gone", "lost", 0, 500000, 0),
+          withStatus("Parked", "on_hold", 5, 500000, 0),
+        ] as BoardLane[],
+      })
+    );
+    // The money format may use a no-break space, so the match allows any space.
+    expect(html).toMatch(/1\.03\sCr\stotal/);
+    expect(html).toContain("weighted · 10%");
+    expect(html).toContain("₹0 total");
+    expect(html).toContain("₹0 weighted · 0%");
+    expect(html).toContain("booked, not forecast");
+    expect(html).toContain("no forecast");
+    expect(html).toContain("on hold");
+  });
+
+  it("draws the count and the expected conversions on a lead lane", () => {
+    const made = lane("Contacted", "ongoing", 25, null, 14, 10);
+    const html = renderToStaticMarkup(
+      createElement(KanbanBoard, { ...props, entity: "leads", lanes: [made] as never })
+    );
+    expect(html).toContain("14 leads");
+    expect(html).toContain("~3.5 expected · 25%");
   });
 });

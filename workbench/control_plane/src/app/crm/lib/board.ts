@@ -71,6 +71,11 @@ const LANE_GROUP: Record<StatusType, number> = {
   lost: 3,
 };
 
+/** The board group of a stage type: open work, on hold, won, then lost. */
+export function laneGroup(type: StatusType): number {
+  return LANE_GROUP[type] ?? 0;
+}
+
 /** Two pipeline places. A missing place sorts after every stated place. */
 function comparePlaces(
   a: number | null | undefined,
@@ -108,15 +113,17 @@ function compareAdminOrder(a: Status, b: Status): number {
  * won, then lost at the far end. A hidden stage, and one that Zoho no longer
  * lists, goes to the end of its group (CRM-C3).
  *
+ * **The order never follows the probability** (owner rule, 2026-10-20). The
+ * board order and the win chance are two separate settings. A stage at 90%
+ * can sit before a stage at 10%. `board.test.ts` fences this.
+ *
  * - **Mirror mode, after an admin order** (`admin_order`). The admin order
  *   key of `compareAdminOrder`, in each group. The pipeline place does not
  *   apply: a pipeline is an ordered subset of the one stage list.
- * - **Mirror mode, no admin order.** Inside the open group, the effective
- *   `probability` from low to high. A tie, and every other group, goes to the
- *   place in the chosen pipeline, then to the global `position`.
+ * - **Mirror mode, no admin order.** The source `position`, then the place in
+ *   the chosen pipeline.
  * - **Native mode, and a mode not yet known.** The admin's stage order, the
- *   global `position`, then the pipeline place. Probability never reorders a
- *   Native board: a new Native stage has probability 0 and would jump first.
+ *   global `position`, then the pipeline place.
  *
  * A stage with no pipeline place (no pipeline chosen, or a stage that only
  * holds deals) sorts after the stated places of its tie. The stage editor in
@@ -137,14 +144,12 @@ export function orderLanes<T extends Pick<PipelineLane, "status" | "pipeline_pos
       const key = compareAdminOrder(a.status, b.status);
       if (key !== 0) return key;
     } else if (mirror) {
-      if ((LANE_GROUP[a.status.type] ?? 0) === 0) {
-        const odds = (a.status.probability ?? 0) - (b.status.probability ?? 0);
-        if (odds !== 0) return odds;
-      }
+      const source =
+        (a.status.source_position ?? a.status.position) -
+        (b.status.source_position ?? b.status.position);
+      if (source !== 0) return source;
       const inPipeline = comparePlaces(a.pipeline_position, b.pipeline_position);
       if (inPipeline !== 0) return inPipeline;
-      const global = a.status.position - b.status.position;
-      if (global !== 0) return global;
     } else {
       const global = a.status.position - b.status.position;
       if (global !== 0) return global;
@@ -211,6 +216,60 @@ export function toLeadLanes(
       };
     });
   return visibleLanes(lanes, true);
+}
+
+/**
+ * The leads a lane expects to convert: count x win chance / 100.
+ *
+ * A lead has no amount, so the lane header shows this in place of a weighted
+ * total. The count is the whole lane, as the gateway counts it. The result
+ * keeps its fraction, and the header rounds it to one decimal.
+ */
+export function expectedLeads(lane: Pick<LeadLane, "count" | "status">): number {
+  const chance = Math.min(100, Math.max(0, lane.status.probability ?? 0));
+  return (lane.count * chance) / 100;
+}
+
+/**
+ * The expected leads as the lane header writes them: one decimal, and a whole
+ * number with no ".0". `3.5` reads "3.5". `4` reads "4". `0` reads "0".
+ */
+export function formatExpected(value: number): string {
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+
+/**
+ * The second figure of a deal lane header. An open lane shows the weighted
+ * total and its win chance. A closed or parked lane says why it has no
+ * forecast, so a zero never reads as a bug.
+ */
+export function dealForecastLine(
+  status: Pick<Status, "type" | "probability">,
+  weightedText: string
+): string {
+  switch (status.type) {
+    case "won":
+      return "booked, not forecast";
+    case "lost":
+      return "no forecast";
+    case "on_hold":
+      return "on hold";
+    default:
+      return `${weightedText} weighted \u00b7 ${status.probability ?? 0}%`;
+  }
+}
+
+/** The second line of a lead lane header: the count, then the expected wins. */
+export function leadForecastLines(lane: Pick<LeadLane, "count" | "status">): {
+  count: string;
+  expected: string;
+} {
+  const chance = lane.status.probability ?? 0;
+  return {
+    count: `${lane.count} ${lane.count === 1 ? "lead" : "leads"}`,
+    expected: `${chance === 0 ? "0" : `~${formatExpected(expectedLeads(lane))}`} expected \u00b7 ${chance}%`,
+  };
 }
 
 /** The leads board as it should look the instant a card is dropped. */

@@ -220,8 +220,8 @@ describe("the Mirror editor", () => {
 
   it("resets the probability and the colour, and keeps hide and the rot threshold", () => {
     expect(resetToSource("deal")).toEqual({ ui_probability: null, ui_color: null });
-    // A lead status has no probability, and the gateway refuses that field.
-    expect(resetToSource("lead")).toEqual({ ui_color: null });
+    // A lead status carries a win chance too since migration 285 (CRM-U6).
+    expect(resetToSource("lead")).toEqual({ ui_probability: null, ui_color: null });
     expect("hidden" in resetToSource("deal")).toBe(false);
     expect("max_dwell_days" in resetToSource("deal")).toBe(false);
     expect(hasOverlay("deal", qualify as unknown as Record<string, unknown>)).toBe(true);

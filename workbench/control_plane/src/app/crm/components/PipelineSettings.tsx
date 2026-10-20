@@ -50,6 +50,7 @@ import { Input } from "@/components/ui/Input";
 import SelectButton, { type SelectOption } from "@/components/ui/SelectButton";
 import { useState } from "react";
 import {
+  laneGroup,
   REQUIREABLE_FIELD_LABELS,
   REQUIREABLE_FIELDS,
   stageAccent,
@@ -58,6 +59,7 @@ import { colorOptions } from "../lib/colorOptions";
 import { useCrmModeValue } from "../lib/modeContext";
 import { showPicker } from "../lib/pipelines";
 import {
+  CLAMPED_PROBABILITY,
   changedFields,
   draftOf,
   hasOverlay,
@@ -65,6 +67,7 @@ import {
   overlayPatch,
   reorder,
   resetToSource,
+  STATUS_TYPE_LABELS,
   validateLostReasonDraft,
   validateOverlayProbability,
   validateStatusDraft,
@@ -113,8 +116,94 @@ function useSettingsDraft<T>(
  *  colour picker is `colorOptions` (`lib/colorOptions.ts`). */
 const TYPE_OPTIONS: SelectOption[] = STATUS_TYPES.map((type) => ({
   value: type,
-  label: type,
+  label: STATUS_TYPE_LABELS[type],
 }));
+
+/**
+ * The stages in board order, as small chips with their win chance (CRM-U6).
+ * It re-renders from the rows of the grid, so a move shows here at once. The
+ * deal board draws open work, then on hold, won and lost, and the strip does
+ * the same. A hidden stage has no lane unless it holds records, so it is not
+ * drawn here.
+ */
+function OrderStrip({ kind, statuses }: { kind: StatusKind; statuses: Status[] }) {
+  const shown = statuses
+    .map((status, index) => ({ status, index }))
+    .filter(({ status }) => !status.hidden)
+    .sort((a, b) =>
+      kind === "deal"
+        ? laneGroup(a.status.type) - laneGroup(b.status.type) || a.index - b.index
+        : a.index - b.index
+    )
+    .map(({ status }) => status);
+  if (shown.length === 0) return null;
+  return (
+    <ol
+      aria-label="Board order"
+      className="flex flex-wrap items-center gap-1 border-b border-border px-4 py-2"
+    >
+      {shown.map((status, index) => (
+        <li key={status.id} className="flex items-center gap-1">
+          {index > 0 && (
+            <Icon name="ChevronRight" className="w-3 h-3 text-muted-foreground" />
+          )}
+          <Badge tone="neutral" size="xs" title={`${status.name}: ${status.probability ?? 0}% win chance`}>
+            {status.name}
+            <span className="text-muted-foreground tabular-nums">
+              {" "}
+              {status.probability ?? 0}%
+            </span>
+          </Badge>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/** Up and Down for one row. They write the same order as a drag does. */
+function MoveButtons({
+  name,
+  index,
+  count,
+  disabled,
+  onMove,
+}: {
+  name: string;
+  index: number;
+  count: number;
+  disabled: boolean;
+  onMove: (to: number) => void;
+}) {
+  return (
+    <span className="flex items-center">
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        icon="ChevronUp"
+        aria-label="Move up"
+        title={`Move ${name} up`}
+        disabled={disabled || index === 0}
+        onClick={() => onMove(index - 1)}
+      />
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        icon="ChevronDown"
+        aria-label="Move down"
+        title={`Move ${name} down`}
+        disabled={disabled || index === count - 1}
+        onClick={() => onMove(index + 1)}
+      />
+    </span>
+  );
+}
+
+/** Why a won or a lost stage has a fixed win chance (D-CRM-10). */
+function pinnedReason(type: StatusType): string | undefined {
+  const pinned = CLAMPED_PROBABILITY[type];
+  if (pinned === undefined) return undefined;
+  return `A ${STATUS_TYPE_LABELS[type].toLowerCase()} stage always forecasts ${pinned}%. The type decides this.`;
+}
 
 /**
  * The colour of a Mirror row (CRM-C3, item 16): `colorOptions`, and "by type"
@@ -239,7 +328,7 @@ export default function PipelineSettings({
             <MirrorStatusGrid
               kind="lead"
               title="Lead statuses"
-              blurb="Zoho owns the Lead Status values. The Metorite order, colour and hide stay in Metorite."
+              blurb="Zoho owns the Lead Status values. The Metorite order, win chance, colour and hide stay in Metorite."
               statuses={leadStatuses}
               saving={saving}
               onSave={onSaveStatus}
@@ -284,7 +373,7 @@ export default function PipelineSettings({
               <StatusGrid
                 kind="deal"
                 title="Deal stages"
-                blurb="Lane order, colour and the win probability the forecast reads. A won stage always forecasts 100%, a lost stage 0%. The type is what closes a deal, and the probability is what the pipeline number believes."
+                blurb="Board order, colour and the win chance the forecast reads. The order and the win chance are separate settings. A won stage always forecasts 100%, a lost stage 0%. The type closes a deal. The win chance feeds the pipeline number."
                 statuses={dealStatuses}
                 saving={saving}
                 onSave={onSaveStatus}
@@ -297,7 +386,7 @@ export default function PipelineSettings({
             <StatusGrid
               kind="lead"
               title="Lead statuses"
-              blurb="The funnel before a deal exists. No probability: a lead forecasts nothing until it converts."
+              blurb="The funnel before a deal exists. The win chance tells the board how many leads in a status you expect to convert. It does not move the money forecast."
               statuses={leadStatuses}
               saving={saving}
               onSave={onSaveStatus}
@@ -378,20 +467,25 @@ function StatusGrid({
     setRows(statuses);
   }
 
-  async function drop(to: number) {
-    if (dragging === null) return;
-    const plan = reorder(rows, dragging, to);
-    setDragging(null);
+  async function moveTo(from: number, to: number) {
+    const plan = reorder(rows, from, to);
     if (plan.patches.length === 0) return;
     setRows(plan.items);
     await onReorder(kind, plan.patches);
+  }
+
+  async function drop(to: number) {
+    if (dragging === null) return;
+    const from = dragging;
+    setDragging(null);
+    await moveTo(from, to);
   }
 
   async function add() {
     const draft = {
       name: newName,
       type: "open" as StatusType,
-      probability: kind === "deal" ? 0 : null,
+      probability: 0,
     };
     const invalid = validateStatusDraft(draft, kind);
     if (invalid) {
@@ -446,6 +540,7 @@ function StatusGrid({
           {error}
         </p>
       )}
+      <OrderStrip kind={kind} statuses={rows} />
 
       <ul>
         {rows.map((status, index) => (
@@ -462,6 +557,9 @@ function StatusGrid({
               kind={kind}
               status={status}
               saving={saving}
+              index={index}
+              count={rows.length}
+              onMove={(to) => void moveTo(index, to)}
               onDragStart={(e) => {
                 e.dataTransfer.setData("text/plain", status.id);
                 e.dataTransfer.effectAllowed = "move";
@@ -487,6 +585,9 @@ function StatusRow({
   kind,
   status,
   saving,
+  index,
+  count,
+  onMove,
   onDragStart,
   onDragEnd,
   onSave,
@@ -495,6 +596,9 @@ function StatusRow({
   kind: StatusKind;
   status: Status;
   saving: boolean;
+  index: number;
+  count: number;
+  onMove: (to: number) => void;
   onDragStart: (e: React.DragEvent<HTMLElement>) => void;
   onDragEnd: () => void;
   onSave: (body: Record<string, unknown>) => Promise<boolean>;
@@ -508,6 +612,10 @@ function StatusRow({
   // CRM-C2: the dot shows the colour the board shows, so it reads the mode.
   const mode = useCrmModeValue();
   const [invalid, setInvalid] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const pinned = CLAMPED_PROBABILITY[draft.type];
+  const ruleCount = (draft.required_fields ?? []).length + (draft.max_dwell_days ? 1 : 0);
 
   const patch = changedFields(
     status as unknown as Record<string, unknown>,
@@ -546,6 +654,7 @@ function StatusRow({
       >
         <Icon name="GripVertical" className="w-4 h-4" />
       </span>
+      <MoveButtons name={status.name} index={index} count={count} disabled={saving} onMove={onMove} />
       <span className={`w-2 h-2 shrink-0 rounded-full ${stageAccent(draft, mode).dot}`} />
 
       <Input
@@ -569,27 +678,39 @@ function StatusRow({
         value={draft.type}
         options={TYPE_OPTIONS}
         defaultValue="open"
-        onChange={(type) => setDraft({ ...draft, type: type as StatusType })}
-        widthClass="w-24"
+        onChange={(type) => {
+          // A won or lost type fixes the win chance, so the draft follows it
+          // and the server never sees a contradiction.
+          const fixed = CLAMPED_PROBABILITY[type as StatusType];
+          setDraft({
+            ...draft,
+            type: type as StatusType,
+            ...(fixed !== undefined ? { probability: fixed } : {}),
+          });
+        }}
+        widthClass="w-28"
       />
 
-      {kind === "deal" && (
-        <label className="flex items-center gap-1 text-xs text-muted-foreground">
-          <Input
-            inputSize="sm"
-            type="number"
-            min={0}
-            max={100}
-            value={draft.probability ?? 0}
-            onChange={(e) =>
-              setDraft({ ...draft, probability: Number(e.target.value) })
-            }
-            className="w-16"
-            aria-label="Probability"
-          />
-          %
-        </label>
-      )}
+      <label
+        className="flex items-center gap-1 text-xs text-muted-foreground"
+        title={pinnedReason(draft.type)}
+      >
+        Win chance
+        <Input
+          inputSize="sm"
+          type="number"
+          min={0}
+          max={100}
+          value={pinned ?? draft.probability ?? 0}
+          disabled={pinned !== undefined}
+          onChange={(e) =>
+            setDraft({ ...draft, probability: Number(e.target.value) })
+          }
+          className="w-16"
+          aria-label="Win chance"
+        />
+        %
+      </label>
 
       <label
         className="flex items-center gap-1 text-xs text-muted-foreground"
@@ -608,27 +729,58 @@ function StatusRow({
         onChange={(hidden) => setDraft({ ...draft, hidden })}
       />
 
-      <Button
-        size="icon-sm"
-        variant="ghost"
-        icon="Check"
-        aria-label="Save"
-        disabled={!dirty || saving}
-        onClick={() => void save()}
-      />
+      <Button size="sm" disabled={!dirty || saving} onClick={() => void save()}>
+        Save
+      </Button>
+      {dirty && (
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={saving}
+          onClick={() => {
+            clearDraft();
+            setInvalid(null);
+          }}
+        >
+          Cancel
+        </Button>
+      )}
+      {kind === "deal" && (
+        <Button
+          size="sm"
+          variant="ghost"
+          aria-expanded={rulesOpen}
+          onClick={() => setRulesOpen((open) => !open)}
+        >
+          {ruleCount > 0 ? `Rules (${ruleCount})` : "Rules"}
+        </Button>
+      )}
       <Button
         size="icon-sm"
         variant="ghost"
         icon="Trash2"
         aria-label="Delete"
         disabled={saving}
-        onClick={() => void onRemove()}
+        onClick={() => setConfirming(true)}
+      />
+      <ConfirmDialog
+        open={confirming}
+        title={`Delete \u201c${status.name}\u201d?`}
+        body="The stage leaves the settings and the board. The server refuses the delete while any record is still in it."
+        confirmLabel="Delete"
+        busy={saving}
+        onCancel={() => setConfirming(false)}
+        onConfirm={async () => {
+          setConfirming(false);
+          await onRemove();
+        }}
       />
 
       {/* WS-26h — on its own line, because it is a sentence rather than a
           field: the lane above says what this stage IS, and this says what it
-          demands and how long it tolerates a deal sitting in it. */}
-      {kind === "deal" && (
+          demands and how long it tolerates a deal sitting in it. CRM-U6: it
+          folds behind "Rules", so the grid reads one line per stage. */}
+      {kind === "deal" && rulesOpen && (
         <div className="flex w-full flex-wrap items-center gap-3 pl-6">
           <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
             Requires
@@ -767,13 +919,18 @@ export function MirrorStatusGrid({
   }
   const ordered = statuses.some((status) => status.admin_order);
 
-  async function drop(to: number) {
-    if (dragging === null) return;
-    const ids = orderAfterDrop(rows, dragging, to);
-    setDragging(null);
+  async function moveTo(from: number, to: number) {
+    const ids = orderAfterDrop(rows, from, to);
     if (!ids) return;
     setRows(ids.map((id) => rows.find((row) => row.id === id)!));
     await onOrder(kind, ids);
+  }
+
+  async function drop(to: number) {
+    if (dragging === null) return;
+    const from = dragging;
+    setDragging(null);
+    await moveTo(from, to);
   }
 
   return (
@@ -793,6 +950,7 @@ export function MirrorStatusGrid({
           Reset order to Zoho
         </Button>
       </header>
+      <OrderStrip kind={kind} statuses={rows} />
       <ul>
         {rows.map((status, index) => (
           <li
@@ -808,6 +966,9 @@ export function MirrorStatusGrid({
               kind={kind}
               status={status}
               saving={saving}
+              index={index}
+              count={rows.length}
+              onMove={(to) => void moveTo(index, to)}
               onDragStart={(e) => {
                 e.dataTransfer.setData("text/plain", status.id);
                 e.dataTransfer.effectAllowed = "move";
@@ -832,6 +993,9 @@ function MirrorStatusRow({
   kind,
   status,
   saving,
+  index,
+  count,
+  onMove,
   onDragStart,
   onDragEnd,
   onSave,
@@ -839,6 +1003,9 @@ function MirrorStatusRow({
   kind: StatusKind;
   status: Status;
   saving: boolean;
+  index: number;
+  count: number;
+  onMove: (to: number) => void;
   onDragStart: (e: React.DragEvent<HTMLElement>) => void;
   onDragEnd: () => void;
   onSave: (body: Record<string, unknown>) => Promise<boolean>;
@@ -846,6 +1013,8 @@ function MirrorStatusRow({
   // In the store, as in `StatusRow`, so a section change keeps it (CRM-C1).
   const [draft, setDraft, clearDraft] = useSettingsDraft(`overlay:${kind}:${status.id}`, status);
   const [invalid, setInvalid] = useState<string | null>(null);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const pinned = CLAMPED_PROBABILITY[status.type];
   const patch = overlayPatch(
     kind,
     status as unknown as Record<string, unknown>,
@@ -872,6 +1041,7 @@ function MirrorStatusRow({
       >
         <Icon name="GripVertical" className="w-4 h-4" />
       </span>
+      <MoveButtons name={status.name} index={index} count={count} disabled={saving} onMove={onMove} />
       <span
         className={`w-2 h-2 shrink-0 rounded-full ${stageAccent(draft, "mirror").dot}`}
       />
@@ -882,30 +1052,37 @@ function MirrorStatusRow({
         </Badge>
       )}
 
-      {kind === "deal" && (
-        <label className="flex items-center gap-1 text-xs text-muted-foreground">
-          <span title="The probability in Zoho">Zoho {status.source_probability ?? 0}%</span>
-          <span aria-hidden>·</span>
-          Metorite
-          <Input
-            inputSize="sm"
-            type="number"
-            min={0}
-            max={100}
-            value={draft.ui_probability ?? ""}
-            placeholder={String(status.source_probability ?? 0)}
-            onChange={(e) =>
-              setDraft({
-                ...draft,
-                ui_probability: e.target.value === "" ? null : Number(e.target.value),
-              })
-            }
-            className="w-16"
-            aria-label="Metorite probability"
-          />
-          %
-        </label>
-      )}
+      <label
+        className="flex items-center gap-1 text-xs text-muted-foreground"
+        title={pinnedReason(status.type)}
+      >
+        Win chance
+        {kind === "deal" && (
+          <>
+            <span title="The probability in Zoho">Zoho {status.source_probability ?? 0}%</span>
+            <span aria-hidden>·</span>
+            Metorite
+          </>
+        )}
+        <Input
+          inputSize="sm"
+          type="number"
+          min={0}
+          max={100}
+          value={pinned ?? draft.ui_probability ?? ""}
+          disabled={pinned !== undefined}
+          placeholder={String(status.source_probability ?? 0)}
+          onChange={(e) =>
+            setDraft({
+              ...draft,
+              ui_probability: e.target.value === "" ? null : Number(e.target.value),
+            })
+          }
+          className="w-16"
+          aria-label="Metorite probability"
+        />
+        %
+      </label>
 
       <SelectButton
         label="Colour"
@@ -922,38 +1099,32 @@ function MirrorStatusRow({
       />
 
       {kind === "deal" && (
-        <label
-          className="flex items-center gap-1 text-xs text-muted-foreground"
-          title="Days in this stage before a card's age badge warns. Empty = never rots."
+        <Button
+          size="sm"
+          variant="ghost"
+          aria-expanded={rulesOpen}
+          onClick={() => setRulesOpen((open) => !open)}
         >
-          rots after
-          <Input
-            inputSize="sm"
-            type="number"
-            min={1}
-            max={32767}
-            value={draft.max_dwell_days ?? ""}
-            onChange={(e) =>
-              setDraft({
-                ...draft,
-                max_dwell_days: e.target.value === "" ? null : Number(e.target.value),
-              })
-            }
-            className="w-16"
-            aria-label="Rot threshold in days"
-          />
-          days
-        </label>
+          {draft.max_dwell_days ? "Rules (1)" : "Rules"}
+        </Button>
       )}
 
-      <Button
-        size="icon-sm"
-        variant="ghost"
-        icon="Check"
-        aria-label="Save"
-        disabled={!dirty || saving}
-        onClick={() => void save()}
-      />
+      <Button size="sm" disabled={!dirty || saving} onClick={() => void save()}>
+        Save
+      </Button>
+      {dirty && (
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={saving}
+          onClick={() => {
+            clearDraft();
+            setInvalid(null);
+          }}
+        >
+          Cancel
+        </Button>
+      )}
       <Button
         size="sm"
         variant="ghost"
@@ -963,6 +1134,33 @@ function MirrorStatusRow({
       >
         Reset to Zoho
       </Button>
+
+      {kind === "deal" && rulesOpen && (
+        <div className="flex w-full flex-wrap items-center gap-3 pl-6">
+          <label
+            className="flex items-center gap-1 text-xs text-muted-foreground"
+            title="Days in this stage before a card's age badge warns. Empty = never rots."
+          >
+            rots after
+            <Input
+              inputSize="sm"
+              type="number"
+              min={1}
+              max={32767}
+              value={draft.max_dwell_days ?? ""}
+              onChange={(e) =>
+                setDraft({
+                  ...draft,
+                  max_dwell_days: e.target.value === "" ? null : Number(e.target.value),
+                })
+              }
+              className="w-16"
+              aria-label="Rot threshold in days"
+            />
+            days
+          </label>
+        </div>
+      )}
 
       {invalid && <p className="w-full text-xs text-destructive">{invalid}</p>}
     </div>

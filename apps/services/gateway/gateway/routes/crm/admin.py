@@ -78,7 +78,7 @@ class StatusIn(BaseModel):
     position: int | None = None
     type: str | None = None
     is_default: bool | None = None
-    #: Deal statuses only; ignored (and rejected) for lead statuses.
+    #: Both kinds since migration 285. The chance, in percent, of a win.
     probability: int | None = None
     #: Deal statuses only (WS-26h) — see :data:`core.STAGE_REQUIREABLE_FIELDS`.
     required_fields: list[str] | None = None
@@ -89,7 +89,7 @@ class StatusIn(BaseModel):
     #: CRM-C3, Mirror mode only: the overlay. ``null`` clears it, so the source
     #: value applies again. A Native admin edits the source column instead.
     ui_position: int | None = None
-    #: Deal statuses only.
+    #: Both kinds since migration 285.
     ui_probability: int | None = None
     ui_color: str | None = None
 
@@ -142,7 +142,7 @@ CLAMPED_FIELDS: frozenset[str] = frozenset({"type", "probability"})
 #: derives the same set from the two CREATE TABLE bodies plus the WS-26h ALTER
 #: and fails if this one drifts from it.
 DEAL_ONLY_FIELDS: frozenset[str] = frozenset({
-    "probability", "required_fields", "max_dwell_days", "ui_probability",
+    "required_fields", "max_dwell_days",
 })
 
 #: The overlay fields that only Mirror mode takes (CRM-C3, §20.6 item 3). A
@@ -315,13 +315,13 @@ def _validate_status(
                     " deal-only."
                 ),
             )
-    if kind != "deal":
-        return
     # Both run BEFORE the clamp's early return below: a PATCH naming neither
     # `type` nor `probability` is not a forecast decision, but it can still
-    # carry a bad `required_fields` or a 0-day rot threshold.
-    _validate_required_fields(values)
-    _validate_max_dwell_days(values)
+    # carry a bad `required_fields` or a 0-day rot threshold. They are deal
+    # only. The clamp below binds both kinds (migration 285, CRM-U6).
+    if kind == "deal":
+        _validate_required_fields(values)
+        _validate_max_dwell_days(values)
     # ⚠️ **The clamp judges a TRANSITION, not a resting state.** It fires only
     # when the payload itself names `type` or `probability`; a PATCH that
     # touches neither is not a forecast decision and cannot be refused on

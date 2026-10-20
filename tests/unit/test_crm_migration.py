@@ -796,6 +796,8 @@ def test_the_defaulted_not_null_map_matches_the_migration(
             _declared_not_null_defaults(bare, table)
             | _altered_not_null_defaults(discipline_bare, table)
             | _overlay_added(overlay_bare, table, not_null_default=True)
+            # Migration 285 (CRM-U6): `probability` on the lead statuses.
+            | _overlay_added(_lead_probability_bare(), table, not_null_default=True)
         ) - _PLATFORM_STAMPED
         assert declared == set(declared_map), (
             f"{table}: the migration declares NOT NULL DEFAULT on "
@@ -858,6 +860,8 @@ def _overlay_migration() -> Path:
         path for path in sorted(MIGRATIONS.glob("*.sql"))
         if path.name != "schema.generated.sql"
         and "ADD COLUMN IF NOT EXISTS ui_probability" in path.read_text(encoding="utf-8")
+        # Migration 285 adds the same column to the lead table. It is not the overlay.
+        and "ADD COLUMN IF NOT EXISTS ext_id" in path.read_text(encoding="utf-8")
     ]
     assert len(found) == 1, (
         f"expected exactly one migration adding ui_probability, found "
@@ -1033,6 +1037,31 @@ def _declared_columns(bare: str, table: str) -> set[str]:
     return set(_COLUMN_RE.findall(body))
 
 
+def _lead_probability_bare() -> str:
+    path = MIGRATIONS / "285_crm_lead_status_probability.sql"
+    return "\n".join(
+        re.sub(r"--.*$", "", line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+    )
+
+
+def _lead_probability_added() -> set[str]:
+    """The columns migration 285 (CRM-U6) adds to ``crm_lead_statuses``."""
+    return _overlay_added(_lead_probability_bare(), "crm_lead_statuses")
+
+
+def test_the_lead_probability_migration_is_expand_only() -> None:
+    """R6, CRM-U6 - two columns, one NOT NULL with a default, nothing dropped."""
+    bare = _lead_probability_bare()
+    assert _lead_probability_added() == {"probability", "ui_probability"}
+    assert _overlay_added(bare, "crm_lead_statuses", not_null_default=True) == {"probability"}
+    assert not re.search(r"\b(DROP\s+COLUMN|RENAME)\b", bare, re.I)
+    # The one data statement sets a won status to 100 (D-CRM-10).
+    updates = re.findall(r"UPDATE\s+\w+\s+SET[^;]*", bare, re.I)
+    assert len(updates) == 1 and "type = 'won'" in updates[0]
+    assert "BETWEEN 0 AND 100" in bare
+
+
 def test_the_deal_only_field_set_matches_the_schema(
     bare: str, discipline_bare: str, overlay_bare: str,
 ) -> None:
@@ -1056,7 +1085,7 @@ def test_the_deal_only_field_set_matches_the_schema(
     } | _overlay_added(overlay_bare, "crm_deal_statuses")
     lead = _declared_columns(bare, "crm_lead_statuses") | _overlay_added(
         overlay_bare, "crm_lead_statuses",
-    )
+    ) | _lead_probability_added()
     # Intersected with the payload model: a deal-only column no request body
     # can name needs no refusal, because no request can offer it.
     expected = (deal - lead) & set(StatusIn.model_fields)
