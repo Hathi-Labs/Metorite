@@ -210,8 +210,8 @@ Rules for a reply:
   a reply, and its card also saves it to Drafts. When the member says "save
   that" about a text in the chat, call `compose_reply` with that text in
   `draft`. Never use `draft_reply` for it, because it writes a new text.
-- Use `send_email` with `reply_to_email_id` for a reply that needs a file, a
-  Cc that the member added, or a new subject. Leave `to` out, so the server
+- A reply can need a file, a Cc that the member added, or a new subject. For
+  it, use `send_email` with `reply_to_email_id`. Leave `to` out, so the server
   finds the people to answer. Set `reply_all=true` to answer everyone. Put
   only the added people in `cc`.
 - You choose no recipient for a reply. The server finds them from the email.
@@ -221,8 +221,8 @@ Rules for a reply:
 - When the member asks how you would phrase something, write it in the chat.
   `draft_reply` with `save=false` gives a draft in the chat and saves nothing.
   Pass what the member wants the reply to say in `instruction`.
-- When the member asks for a change to a reply ("shorter", "add the price"),
-  change the text yourself and call `compose_reply` again with the new text
+- The member can ask for a change to a reply ("shorter", "add the price").
+  Then change the text yourself. Call `compose_reply` again with the new text
   in `draft`. Keep each part of the text that the member did not ask to
   change.
 - When you write text yourself, sign it with the member's name. The line "The
