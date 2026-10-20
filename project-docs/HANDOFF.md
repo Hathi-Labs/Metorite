@@ -6010,7 +6010,7 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/crm_platform.md` §18.16.10, owner 2026-10-19
 - **Added:** 2026-10-19
 
-### H-366 · A host shell can still reach a GitHub token outside the clone · [OWNER] · security
+### H-367 · A host shell can still reach a GitHub token outside the clone · [OWNER] · security
 - **Check:** on the box, run
   `grep -cE '^(GITHUB_READ_TOKEN|COPILOT_GITHUB_TOKEN)=.' /opt/acb/app/.env`.
   A count below 2 means steps 1 and 2 are open.
