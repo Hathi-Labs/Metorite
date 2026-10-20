@@ -2177,6 +2177,23 @@ class DraftReplyRequest(BaseModel):
     instruction: str = Field(default="", max_length=2000)
 
 
+async def _reply_to_list(message_id: str, owner: str, fallback: str) -> list[str]:
+    """The To of a reply draft, by the one rule (``reply_card.reply_recipients``).
+
+    Reply-To wins over the sender, and a mail the member sent is answered to
+    its To. A fault falls back to *fallback*, the sender, as before."""
+    try:
+        from gateway.routes.email.automation.reply_card import (  # noqa: PLC0415
+            reply_recipients,
+        )
+        to, _cc = await reply_recipients(message_id, owner)
+        if to:
+            return to
+    except Exception as exc:  # noqa: BLE001 - a draft still saves
+        _log.warning("email.reply_draft_recipients_failed", error=type(exc).__name__)
+    return [fallback] if fallback else []
+
+
 @router.post("/draft-reply")
 async def draft_reply_smart(
     req: DraftReplyRequest,
@@ -2227,6 +2244,8 @@ async def draft_reply_smart(
 
         created = False
         if req.create_draft:
+            reply_to = await _reply_to_list(
+                req.message_id, user.email or "anonymous", email["from"])
             try:
                 async with provider_session(
                     db, user.email or "anonymous",
@@ -2239,7 +2258,7 @@ async def draft_reply_smart(
                             else f"Re: {email['subject']}"
                         )
                         provider_id = await sess.provider.create_draft(
-                            to=[email["from"]],
+                            to=reply_to,
                             subject=re_subject,
                             body_text=draft,
                             reply_to_message_id=sess.provider_message_id,
@@ -2260,7 +2279,7 @@ async def draft_reply_smart(
                                     db, sess.account_id, provider_id,
                                     thread_id=email["thread_id"] or None,
                                     owner_email=email.get("self") or "",
-                                    to_email=email["from"],
+                                    to_email=(reply_to or [email["from"]])[0],
                                     subject=re_subject, body=draft,
                                 )
                         except Exception as exc:
@@ -3430,6 +3449,8 @@ async def save_draft(
             raise HTTPException(status_code=404, detail="Message not found")
         frm = row.from_address if isinstance(row.from_address, dict) \
             else json.loads(row.from_address or "{}")
+        reply_to = await _reply_to_list(
+            req.message_id, user.email or "anonymous", frm.get("email", ""))
         # Signature-in-body (idempotent): the saved draft shows it upstream too.
         body = append_signature_text(
             await _account_signature(db, req.account_id), req.body)
@@ -3443,9 +3464,9 @@ async def save_draft(
             re_subject = (
                 subject if subject.lower().startswith("re:") else f"Re: {subject}"
             )
-            to_email = frm.get("email", "")
+            to_email = (reply_to or [frm.get("email", "")])[0]
             provider_id = await sess.provider.create_draft(
-                to=[to_email],
+                to=reply_to or [to_email],
                 subject=re_subject,
                 body_text=body,
                 reply_to_message_id=sess.provider_message_id,

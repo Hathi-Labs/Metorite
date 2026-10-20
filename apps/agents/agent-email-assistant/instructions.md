@@ -19,7 +19,8 @@ Each tool documents itself in its own description — this file is the *how* and
   `list_labels`, `create_label`.
 - **Reply** — `compose_reply` shows the member one reply card. The member
   sends it, saves it to Drafts or discards it there.
-- **Send** — `send_email` (a new mail, or a reply with a file), `send_draft`,
+- **Send** — `send_email` (a new mail, or a reply with a file, an added Cc
+  or a new subject), `send_draft`,
   and `draft_reply` (text in the chat only). Attach a file from your own
   workspace. Find it with `list_artifacts`, or make it with `write_artifact`.
 - **Forward** — `forward_email` sends an email and its files to new people.
@@ -206,7 +207,13 @@ draft a reply?". Show no card.
 Rules for a reply:
 
 - Never save or send a reply with no card. `compose_reply` is the way to send
-  a reply. Use `send_email` only to attach a file or to write a new email.
+  a reply, and its card also saves it to Drafts. When the member says "save
+  that" about a text in the chat, call `compose_reply` with that text in
+  `draft`. Never use `draft_reply` for it, because it writes a new text.
+- Use `send_email` with `reply_to_email_id` for a reply that needs a file, a
+  Cc that the member added, or a new subject. Leave `to` out, so the server
+  finds the people to answer. Set `reply_all=true` to answer everyone. Put
+  only the added people in `cc`.
 - You choose no recipient for a reply. The server finds them from the email.
 - When `compose_reply` answers "Nothing changed. This needs your approval on a
   card", this run cannot show the card. Tell the member to ask for the reply in

@@ -272,6 +272,32 @@ async def _load_mail(message_id: str, owner: str) -> _Mail:
     return _Mail(row, me, reply_to)
 
 
+async def reply_recipients(
+    message_id: str, owner: str, *, reply_all: bool = False,
+) -> tuple[list[str], list[str]]:
+    """To and Cc of a reply to *message_id*, by :func:`derive_reply_recipients`.
+
+    Each path that addresses a reply uses it: the reply card, a reply draft
+    that ``/email/draft-reply`` or ``/email/drafts/save`` saves, and a reply
+    that ``send_email`` sends. Before, those took the sender alone, so a
+    reply ignored Reply-To and a nudge on a mail the member sent went to the
+    member."""
+    mail = await _load_mail(message_id, owner)
+    return mail.recipients(reply_all)
+
+
+@router.get("/reply-recipients")
+async def reply_recipients_route(
+    message_id: str,
+    reply_all: bool = False,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Who a reply to this mail goes to. A read: it writes nothing."""
+    to, cc = await reply_recipients(message_id, user.email or "anonymous",
+                                    reply_all=reply_all)
+    return {"to": to, "cc": cc}
+
+
 @router.post("/reply-card")
 async def reply_card(
     req: ReplyCardRequest,

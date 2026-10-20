@@ -1198,3 +1198,33 @@ def test_the_email_agent_card_text_reads_the_same_rule() -> None:
     assert agents._is_hidden_char(chr(0x3164)) and agents._is_hidden_char(chr(0xE0101))
     src = (REPO / "apps/agents/agent-email-assistant/agents.py").read_text(encoding="utf-8")
     assert "from acb_skills.reply_card import is_invisible_char" in src
+
+
+# ── A saved reply draft is addressed by the one rule ─────────────────────────
+#
+# ``/email/draft-reply`` and ``/email/drafts/save`` addressed the draft to the
+# sender alone. They now take To from ``reply_card.reply_recipients``, and a
+# fault falls back to the sender. Mutation: return ``[fallback]`` always.
+
+
+async def test_a_saved_draft_takes_the_derived_to(monkeypatch) -> None:
+    from gateway.routes.email.automation import drafting
+
+    async def derived(message_id: str, owner: str, *, reply_all: bool = False):
+        assert (message_id, owner, reply_all) == (MAIL, MEMBER, False)
+        return ["kim@contoso.test"], []
+
+    monkeypatch.setattr(rc, "reply_recipients", derived)
+    assert await drafting._reply_to_list(MAIL, MEMBER, "me@fracktal.test") == [
+        "kim@contoso.test"]
+
+
+async def test_a_saved_draft_falls_back_to_the_sender(monkeypatch) -> None:
+    from gateway.routes.email.automation import drafting
+
+    async def broken(message_id: str, owner: str, *, reply_all: bool = False):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(rc, "reply_recipients", broken)
+    assert await drafting._reply_to_list(MAIL, MEMBER, "kim@contoso.test") == [
+        "kim@contoso.test"]

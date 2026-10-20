@@ -3676,18 +3676,35 @@ def _card_detail(
     return f"{detail}{prefix}{listed}"
 
 
-def _reply_fill(
-    orig: dict[str, Any], to: list[str], subject: str | None,
-) -> tuple[list[str], str | None]:
-    """Fill the missing recipient and subject of a reply from the original."""
+async def _reply_fill(
+    orig: dict[str, Any], email_id: str, to: list[str], cc: list[str],
+    subject: str | None, reply_all: bool,
+) -> tuple[list[str], list[str], str | None]:
+    """Fill the missing recipients and subject of a reply from the original.
+
+    The server derives To and Cc by the one rule of the reply card: Reply-To
+    wins, a mail the member sent goes back to its To, and Reply all adds each
+    To and Cc. Before, To was the sender alone, so "nudge Ravi on the quote I
+    sent" went to the member. A fault falls back to the sender."""
     if not to:
-        addr = (orig.get("from_address", {}) or {}).get("email", "")
-        if addr:
-            to = [addr]
+        try:
+            got = await _get("/email/reply-recipients",
+                             {"message_id": email_id,
+                              "reply_all": "true" if reply_all else "false"}) or {}
+        except Exception:  # noqa: BLE001 - fall back to the sender
+            got = {}
+        to = [str(a) for a in got.get("to") or [] if a]
+        seen = {a.lower() for a in to} | {a.lower() for a in cc}
+        cc = [*cc, *(a for a in (str(x) for x in got.get("cc") or [] if x)
+                     if a.lower() not in seen)]
+        if not to:
+            addr = (orig.get("from_address", {}) or {}).get("email", "")
+            if addr:
+                to = [addr]
     if not subject:
         s = orig.get("subject", "") or ""
         subject = s if s.lower().startswith("re:") else f"Re: {s}"
-    return to, subject
+    return to, cc, subject
 
 
 async def _refuse_reply_mailbox(email_id: str, own: str, named: str) -> str:
@@ -3718,6 +3735,7 @@ async def send_email(
     bcc: list[str] | None = None,
     reply_to_email_id: str | None = None,
     attachments: list[str] | None = None,
+    reply_all: bool = False,
 ) -> str:
     """Send an email immediately — a new message OR a reply. Outward-facing —
     ALWAYS confirm the recipients and body with the user before calling this.
@@ -3749,13 +3767,18 @@ async def send_email(
         subject: subject line — derived as 'Re: …' for a reply if omitted.
         cc / bcc: optional carbon-copy recipients.
         reply_to_email_id: local id of a message this is a reply to (threads it,
-            and derives to/subject when those are omitted).
+            and derives to/subject when those are omitted). The server derives
+            the recipients as the reply card does: Reply-To first, and the To
+            of a mail the member sent.
+        reply_all: with ``reply_to_email_id`` and no ``to``, also reply to
+            each To and Cc of the original. Your ``cc`` adds to that list.
         attachments: workspace artifact paths to attach, e.g.
             ``"outputs/file.pdf"`` (a file you made with write_artifact). Only
             a file in your own workspace can be attached. Use list_artifacts
             to see what's available; write_artifact to create one first.
     """
     to = list(to or [])
+    cc = list(cc or [])
     # Reply mode: the mailbox of the original sends (MB-4). A named mailbox
     # that differs is refused before any card (EM-T8e-2). Then fill the
     # missing recipient and subject from the original message.
@@ -3766,7 +3789,8 @@ async def send_email(
         if own and account_id and own != str(account_id):
             return await _refuse_reply_mailbox(reply_to_email_id, own, str(account_id))
         account_id = own or account_id
-        to, subject = _reply_fill(orig, to, subject)
+        to, cc, subject = await _reply_fill(
+            orig, reply_to_email_id, to, cc, subject, reply_all)
     if not to:
         return "Not sent. No recipient — pass `to`, or `reply_to_email_id` to reply."
     subject = subject or ""
