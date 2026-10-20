@@ -6001,9 +6001,6 @@ line — never reclaim a number by deleting the other entry.
     stored-form table and the "Build rules for wave 1" list. Keep out of
     the hot files. Port core code only, with the `Adapted from Docmost`
     header and a line in `THIRD_PARTY_NOTICES.md`.
-  - **The stale index.** In `/home/dev/wt-ws61-docmost-parity` the index is
-    stale: 333 staged files reverse recent `main` merges. They are not
-    work. Make a fresh checkout and leave that one alone.
   - **Release hold.** `RELEASE_HOLD=1` is set. See H-362.
   - **Migration number.** KB-2f must take the next free number when it
     builds (R1). 287 and 288 are on `main`, so 289 or later.
