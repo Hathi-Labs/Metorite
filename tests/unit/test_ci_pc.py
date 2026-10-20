@@ -112,8 +112,9 @@ def test_no_job_can_reach_the_dev_stack_on_this_pc():
 def test_no_container_can_run_the_vm_out_of_memory():
     # 2026-10-20: 12 uncapped shards ran the shared WSL2 VM out of memory, and
     # WSL, git and Docker Desktop hung for every session on the PC.
-    # `\r?`: a Windows checkout carries CRLF, and the continuation must join.
-    runs = re.findall(r"docker run [^\n]*(?:\\\r?\n[^\n]*)*", _RUN_SUITE)
+    # Join `\`-continued lines first, so a cap on the next line counts.
+    joined = re.sub(r"\\\r?\n", " ", _RUN_SUITE)
+    runs = [line for line in joined.splitlines() if "docker run " in line]
     assert runs, "the regex found no docker run; it is wrong, not the file"
     for cmd in runs:
         assert "--memory " in cmd, f"an uncapped container: {cmd[:80]}"
