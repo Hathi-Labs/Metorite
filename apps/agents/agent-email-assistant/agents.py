@@ -1758,6 +1758,25 @@ async def draft_reply(
 #: The answer of a reply card that the member discarded.
 _REPLY_DISCARDED = "Reply discarded and cancelled. Nothing was sent or saved."
 
+#: The answer of a send card that the member wrote over in the chat
+#: (``ask_tools.REVISED``). Their words follow this result.
+_CARD_REVISED = (
+    "The member wrote in the chat while the card was open, so the card is "
+    "closed. Nothing was sent or saved. Read the member's words below. If "
+    "they change this mail, change it, keep every part they did not ask to "
+    "change, and show a new card with the new text. If they ask about "
+    "something else, answer that first, then ask whether to show the card "
+    "again.")
+
+
+def _revised(answer: Any) -> bool:
+    """True when the member wrote over the card (``ask_tools.REVISED``)."""
+    try:
+        from acb_skills.ask_tools import REVISED
+    except ImportError:  # an older platform: no card closes on a steer
+        return False
+    return answer is REVISED
+
 
 def _addr_text(addrs: Any) -> str:
     return ", ".join(str(a) for a in (addrs or []) if a)
@@ -1844,6 +1863,8 @@ async def compose_reply(
             f"From {form['mailbox']} · {form['subject'] or '(no subject)'}", 300),
         reply=form,
     )
+    if answer is ask_tools.REVISED:
+        return _CARD_REVISED
     if not isinstance(answer, ask_tools.ReplyAnswer):
         return _REPLY_DISCARDED if _card_channel_open() else _NO_CARD_CHANNEL
     member = _current_user_email().strip().lower()
@@ -3782,7 +3803,7 @@ async def send_email(
     # "Send cancelled" instead of a silent send.
     from acb_skills.ask_tools import request_confirmation  # noqa: PLC0415
     verb = "reply" if reply_to_email_id else "email"
-    if not await request_confirmation(
+    approved = await request_confirmation(
         title=f"Send this {verb}?",
         # A mail body can ask the model to add a hidden recipient or a file.
         # Each target sits in ``context``, which no subject and no file name
@@ -3802,7 +3823,11 @@ async def send_email(
             ),
             body,
         ),
-    ):
+        close_on_steer=True,
+    )
+    if not approved:
+        if _revised(approved):
+            return _CARD_REVISED
         if not _card_channel_open():
             return _NO_CARD_CHANNEL
         return f"Send cancelled — the {verb} was not sent."
@@ -3925,7 +3950,7 @@ async def forward_email(
     shown_files = _forward_files(carried)
 
     from acb_skills.ask_tools import request_confirmation
-    if not await request_confirmation(
+    approved = await request_confirmation(
         title="Forward this email?",
         # Each target and each file in ``context``, which the cut of
         # ``detail`` never reaches. ``detail`` keeps the short form, with the
@@ -3934,7 +3959,11 @@ async def forward_email(
         context=_card_context(
             _card_head(sender, to=to, cc=cc, bcc=bcc, files=_forward_file_pairs(carried)),
             note),
-    ):
+        close_on_steer=True,
+    )
+    if not approved:
+        if _revised(approved):
+            return _CARD_REVISED
         if not _card_channel_open():
             return _NO_CARD_CHANNEL
         return "Forward cancelled. The email was not forwarded."

@@ -510,6 +510,16 @@ def has_guidance(thread_id: str) -> bool:
     return bool(_PENDING_GUIDANCE.get(thread_id))
 
 
+def guidance_marks(thread_id: str) -> frozenset[int]:
+    """One mark for each note waiting for *thread_id*, without taking any.
+
+    A card that waits compares two reads of this to see that a NEW steer came
+    (``ask_tools.request_confirmation``). A note that was there before the
+    card is not new, so it never closes the card.
+    """
+    return frozenset(id(e) for e in _PENDING_GUIDANCE.get(thread_id or "", []))
+
+
 def clear_guidance(thread_id: str) -> None:
     """Run-boundary cleanup so a note never leaks into an unrelated later run.
 

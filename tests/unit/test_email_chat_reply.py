@@ -643,6 +643,17 @@ async def test_no_card_channel_drafts_saves_and_sends_nothing(monkeypatch, gw) -
     assert gw.posts == []
 
 
+async def test_a_member_who_writes_over_the_card_gets_a_revise(monkeypatch, gw) -> None:
+    """The member asked for a change while the card waited (``ask_tools.REVISED``).
+    The tool sends nothing, and it tells the model to show a new card."""
+    from acb_skills.ask_tools import REVISED
+
+    _card_answer(monkeypatch, lambda kw: REVISED)
+    out = await agents.compose_reply(MAIL, BOX)
+    assert out == agents._CARD_REVISED
+    assert [p for p, _ in gw.posts] == ["/email/reply-card"]
+
+
 async def test_no_card_on_whatsapp(monkeypatch, gw) -> None:
     import acb_skills.whatsapp_ui as wa
 

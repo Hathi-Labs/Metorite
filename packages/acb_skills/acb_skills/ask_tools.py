@@ -913,6 +913,61 @@ def _whole_line(value: Any) -> str:
     return line
 
 
+class _Revised:
+    """The member wrote in the chat while the card waited (:data:`REVISED`)."""
+
+    __slots__ = ()
+
+    def __bool__(self) -> bool:  # no approval, for each caller that tests truth
+        return False
+
+    def __repr__(self) -> str:
+        return "REVISED"
+
+
+#: What :func:`request_confirmation` gives when ``close_on_steer`` is on and
+#: the member wrote in the chat while the card waited. It is falsy, so a
+#: caller that only asks "approved?" reads it as no. The member's words reach
+#: the model on the tool's result (``orchestrator.steer.decorate_tool_result``),
+#: so the agent can change the mail and show a new card. Without this, the
+#: words waited behind the card, and the card kept the old text.
+REVISED = _Revised()
+
+#: The closing answer of a card that a steer closed.
+REVISED_ANSWER = "REVISED"
+
+#: How often a waiting card looks for a new steer, in seconds.
+_STEER_POLL_S = 0.5
+
+
+def _steer_marks(thread_id: str) -> frozenset[int] | None:
+    """The waiting steer notes of *thread_id*, or None with no steer seam."""
+    if not thread_id:
+        return None
+    try:
+        from orchestrator.steer import guidance_marks  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 - no orchestrator: nothing can steer
+        return None
+    return guidance_marks(thread_id)
+
+
+async def _close_on_new_steer(fut: Any, thread_id: str, before: frozenset[int]) -> None:
+    """Answer *fut* as revised when a NEW steer for *thread_id* arrives.
+
+    The card closes as the member writes, and the run goes on. Only a note
+    that is not in *before* counts, so a note that waited before the card
+    cannot close each new card at once. The caller reads *before* before the
+    card can reach the member, so a fast answer is never in it."""
+    import asyncio as _asyncio
+
+    while not fut.done():
+        await _asyncio.sleep(_STEER_POLL_S)
+        now = _steer_marks(thread_id) or frozenset()
+        if (now - before) and not fut.done():
+            fut.set_result({"answer": REVISED_ANSWER, "revised": True})
+            return
+
+
 class ReplyAnswer:
     """The member's answer to a reply card: the exact text, and its parse.
 
@@ -1024,7 +1079,8 @@ async def request_confirmation(
     rows: list[dict] | None = None,
     fenced: bool | None = None,
     reply: dict | None = None,
-) -> bool | frozenset[str] | ReplyAnswer | None:
+    close_on_steer: bool | None = None,
+) -> bool | frozenset[str] | ReplyAnswer | _Revised | None:
     """Emit a HITL confirmation card and BLOCK until the user approves/rejects.
 
     Renders a ``ConfirmationCard`` inline in the chat with Approve / Reject
@@ -1058,6 +1114,10 @@ async def request_confirmation(
             and body. Neither ``rows`` nor the WhatsApp profile goes with it:
             a run with no card, a WhatsApp run included, gets ``None`` at
             once, whatever ``non_interactive_default`` says.
+        close_on_steer: close the card when the member writes in the chat
+            while it waits, and give :data:`REVISED`. On by default for a
+            reply form. A send card turns it on, so "make it shorter" changes
+            the mail instead of waiting behind the old card.
 
     Returns:
         With no ``rows``: ``True`` if the user approved, ``False`` if they
@@ -1100,6 +1160,7 @@ async def request_confirmation(
         # A deny, never an approve: a channel with no card is no consent.
         return frozenset() if _rows is not None else False
     _offered = frozenset(r["id"] for r in _rows or [])
+    _steer_closes = (_reply is not None) if close_on_steer is None else bool(close_on_steer)
 
     def _event(request_id: str) -> dict:
         value = {
@@ -1124,6 +1185,8 @@ async def request_confirmation(
     def _verdict(result: dict, rid: str = "") -> tuple[str, frozenset[str] | None]:
         """The card's closing answer, and the ticked ids of a rows card."""
         said = str(result.get("answer", "")).strip()
+        if result.get("revised") is True:
+            return REVISED_ANSWER, None
         if _reply is not None:
             from acb_skills.reply_card import parse_reply_answer
 
@@ -1142,7 +1205,20 @@ async def request_confirmation(
         ticked = ticked_rows(said, _offered)
         return ("APPROVE" if ticked else "REJECT"), ticked
 
-    async def _block_on(_fut, _rid, _pending, _publish) -> bool | frozenset[str] | ReplyAnswer | None:
+    def _steer_baseline() -> tuple[str, frozenset[int]] | None:
+        """The thread and its waiting notes, read BEFORE the card is sent."""
+        if not _steer_closes:
+            return None
+        try:
+            from orchestrator.executor import resolve_relay_thread_id  # noqa: PLC0415
+            tid = resolve_relay_thread_id() or ""
+        except Exception:  # noqa: BLE001
+            return None
+        marks = _steer_marks(tid)
+        return None if marks is None else (tid, marks)
+
+    async def _block_on(_fut, _rid, _pending, _publish,
+                        _baseline=None) -> bool | frozenset[str] | ReplyAnswer | _Revised | None:
         """Park on the answer, then say on the stream that the card is closed.
 
         A model can call card-gated tools in parallel, so one stream can carry
@@ -1158,6 +1234,9 @@ async def request_confirmation(
         # Any other failure is no approval, so it closes the card as a REJECT.
         _answer = "REJECT"
         _ticked: frozenset[str] | None = None
+        _watch = None
+        if _baseline is not None:
+            _watch = _asyncio.ensure_future(_close_on_new_steer(_fut, *_baseline))
         try:
             from orchestrator.executor import wait_user_future  # noqa: PLC0415
             _result = await wait_user_future(_fut, 3600)
@@ -1168,6 +1247,8 @@ async def request_confirmation(
         except TimeoutError:
             _answer = "TIMEOUT"
         finally:
+            if _watch is not None:
+                _watch.cancel()
             _pending.pop(_rid, None)
             # Best effort: the run's end clears a blocking card too. A PARKED
             # card (WS-51 S2) is not closed: it stays open for a late answer,
@@ -1175,6 +1256,8 @@ async def request_confirmation(
             with _contextlib.suppress(Exception):
                 if not _was_parked(_rid):
                     await _publish(_resolved_event(_rid, _answer))
+        if _answer == REVISED_ANSWER:
+            return frozenset() if _rows is not None else REVISED
         if _reply is not None:
             return _replied[0] if _answer == "APPROVE" and _replied else None
         if _rows is not None:
@@ -1199,8 +1282,9 @@ async def request_confirmation(
         _pending_user_input[_rid] = _fut
         _card_thread[_rid] = str(getattr(_pending_user_input, "owner_of", lambda _r: "")(_rid)
                                  or "")
+        _base = _steer_baseline()
         await queue.put(_event(_rid))
-        return await _block_on(_fut, _rid, _pending_user_input, queue.put)
+        return await _block_on(_fut, _rid, _pending_user_input, queue.put, _base)
 
     # ── Path C: Redis relay (blocking on BOTH Copilot-SDK and native MAF) ──
     # resolve_relay_thread_id survives the Copilot SDK thread hop that resets the
@@ -1225,12 +1309,13 @@ async def request_confirmation(
             _pending_user_input[_rid] = _fut
             _card_thread[_rid] = str(_tid)
             _line = f"data: {_json.dumps(_event(_rid))}\n\n"
+            _base = _steer_baseline()
             await _push_sse_to_stream(_tid, _line)
 
             async def _publish(ev: dict, _t: str = _tid) -> None:
                 await _push_sse_to_stream(_t, f"data: {_json.dumps(ev)}\n\n")
 
-            return await _block_on(_fut, _rid, _pending_user_input, _publish)
+            return await _block_on(_fut, _rid, _pending_user_input, _publish, _base)
     except Exception:  # noqa: BLE001
         pass
 
