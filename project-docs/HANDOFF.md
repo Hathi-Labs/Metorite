@@ -5912,6 +5912,22 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/email_app_master_plan.md`, R7
 - **Added:** 2026-10-18 · PR #1128 and its review
 
+### H-367 · No R8 test drives a connection with no slug through branch 0 · [AGENT]
+- **Check:** `grep -n "slugless\|no_slug" tests/unit/test_agent_client_stamp.py`.
+  When an R8 test there signs a call for a DCR connection row and gets 200,
+  delete this entry.
+- **Why.** For a row whose client id gives no slug, the stamp is
+  `mcp:<host>`. The edge and branch 0 must both compute that same value. Until
+  H-356 the legacy arm hid a drift between them. Now a drift gives every DCR
+  client a 401, and no R8 test would catch it. N3 does not touch the database,
+  and the edge-test world uses a client id that gives a slug.
+- **Do this:** add an R8 test in `test_agent_client_stamp.py`. Use a DCR
+  connection row, sign through the real edge client, and check that the call
+  gets 200. Name the mutation (branch 0 computes the stamp with
+  `client_id=None` dropped, or with a forced slug) and show it goes red.
+- **Authority:** `specs/external_agent_access.md` §10.1 step 5, R7
+- **Added:** 2026-10-20 · PR #1184 review, P3
+
 ### H-357 · 🔴 A key that a chat saw must be rotated, and old rows scrubbed · [OWNER] · security
 - **Check:** ask each org whose chats set up a key, a GitHub token first.
   Did it rotate that key after 2026-10-18? Then count the rows that still
