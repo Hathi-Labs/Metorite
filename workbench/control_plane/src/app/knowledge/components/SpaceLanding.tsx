@@ -6,6 +6,7 @@
  * The name, the purpose, what the member may do, and the top pages of the
  * space. The whole tree is in the rail. A member who can write in the space
  * makes the first page from the empty state. A reader sees no write control.
+ * A manager of the space gets the way to its archived pages (KB-2d).
  */
 
 import Link from "next/link";
@@ -14,13 +15,14 @@ import { useRouter } from "next/navigation";
 import { EmptyState } from "@/components/EmptyState";
 import Icon from "@/components/Icon";
 import Badge from "@/components/ui/Badge";
+import Button from "@/components/ui/Button";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { relativeTime } from "@/lib/taskCard";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { listPages, pagesKey } from "../lib/api";
 import { LEVEL_LABELS, canWriteIn, pageCount, pageIcon, spaceIcon, stateLabel, stateTone } from "../lib/labels";
-import { KNOWLEDGE_HOME, pageHref } from "../lib/links";
+import { KNOWLEDGE_HOME, archivedHref, pageHref } from "../lib/links";
 import { buildTree } from "../lib/tree";
 import type { PageSummary } from "../lib/types";
 import { useKnowledge } from "./KnowledgeContext";
@@ -62,6 +64,12 @@ export default function SpaceLanding({ spaceId }: { spaceId: string }) {
               <Badge>{LEVEL_LABELS[space.level] ?? space.level}</Badge>
             </p>
           </div>
+          {space.level === "manage" ? (
+            // KB-2d: only a manager restores, so only a manager sees the archive.
+            <Button variant="ghost" size="sm" icon="Archive" href={archivedHref(space.id)} className="shrink-0">
+              Archived pages
+            </Button>
+          ) : null}
         </header>
 
         <section className="mt-5" aria-label={`Pages in ${space.name}`}>

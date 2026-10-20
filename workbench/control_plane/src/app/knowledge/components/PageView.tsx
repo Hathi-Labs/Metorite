@@ -33,7 +33,6 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { useAccess } from "@/components/AccessProvider";
@@ -47,7 +46,6 @@ import { useToast } from "@/components/ui/Toast";
 import { invalidate } from "@/lib/dataCache";
 import { useAssistantFacts } from "@/lib/shell/assistant";
 import { chatScope } from "@/lib/sessions";
-import { relativeTime } from "@/lib/taskCard";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import {
@@ -71,13 +69,21 @@ import {
   type Draft,
   type EditSnapshot,
 } from "../lib/draft";
-import { dayLabel, publishBody, reasonLabel, stateLabel, stateTone, STATE_LABELS } from "../lib/labels";
-import { KNOWLEDGE_HOME, pageHref, spaceHref } from "../lib/links";
+import { useFullWidth } from "../lib/fullWidth";
+import { publishBody, stateLabel, stateTone, STATE_LABELS } from "../lib/labels";
+import { KNOWLEDGE_HOME, pageHref } from "../lib/links";
 import { flushLiveDraft, registerLiveDraft } from "../lib/liveDrafts";
 import { PAGE_NOT_FOUND_BODY, PAGE_NOT_FOUND_TITLE, pageRefusal, type PageRead } from "../lib/phase";
 import type { PageDetail, PageVersion } from "../lib/types";
+import ArchivedBanner from "./ArchivedBanner";
 import KnowledgeEditor from "./editor/KnowledgeEditor";
+import HeadingAnchors from "./HeadingAnchors";
 import { useKnowledge } from "./KnowledgeContext";
+import PageBreadcrumbs from "./PageBreadcrumbs";
+import PageByline from "./PageByline";
+import PageMenu from "./PageMenu";
+import PageSidePanel from "./PageSidePanel";
+import { usePageHeadings } from "./usePageHeadings";
 import VersionList from "./VersionList";
 
 async function readPage(id: string): Promise<PageRead<PageDetail>> {
@@ -270,6 +276,14 @@ export default function PageView({ pageId }: { pageId: string }) {
     if (askEdit && page) router.replace(pageHref(pageId));
   }, [askEdit, page, pageId, router]);
 
+  // The page chrome (KB-2d): the scroller, its sticky row and the body that
+  // the editor drew. Callback refs, so the outline reads each new element.
+  const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null);
+  const [stickyEl, setStickyEl] = useState<HTMLDivElement | null>(null);
+  const [bodyEl, setBodyEl] = useState<HTMLDivElement | null>(null);
+  const outline = usePageHeadings({ body: bodyEl, scroller: scrollerEl, stickyTop: stickyEl });
+  const [fullWidth] = useFullWidth();
+
   if (read.loading) {
     return (
       <div className="mx-auto w-full max-w-3xl p-6">
@@ -365,26 +379,39 @@ export default function PageView({ pageId }: { pageId: string }) {
     }
   }
 
-  const last = page.versions[0] ?? null;
+  /** A crumb's way out of the page, through the leave guard. True: the guard holds it. */
+  function goGuarded(href: string): boolean {
+    if (!leaveGuarded()) return false;
+    requestLeave(() => router.push(href));
+    return true;
+  }
+
   const patch = editing && snapshot ? draftPatch(snapshot, draft) : null;
   const canSave = Boolean(patch) || pending;
 
+  const width = fullWidth ? "max-w-none" : "max-w-6xl";
+
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-5 sm:px-6 xl:flex-row xl:items-start">
+    <div
+      ref={setScrollerEl}
+      data-page-scroller=""
+      data-full-width={fullWidth ? "" : undefined}
+      className="min-h-0 flex-1 overflow-y-auto"
+    >
+      {/* The chrome row (KB-2d): the breadcrumbs and the page menu. It stays
+          at the top of the scroller, as the page scrolls under it. */}
+      <div ref={setStickyEl} className="sticky top-0 z-20 border-b border-border bg-background">
+        <div className={`mx-auto flex w-full ${width} items-center gap-2 px-4 py-1.5 sm:px-6`}>
+          <PageBreadcrumbs page={page} space={space} onGo={goGuarded} />
+          <PageMenu page={page} spaces={spaces} editing={editing} printBody={bodyEl} />
+        </div>
+      </div>
+      <div className={`mx-auto flex w-full ${width} flex-col gap-6 px-4 py-5 sm:px-6 xl:flex-row xl:items-start`}>
         <article className="min-w-0 flex-1" aria-label={page.title}>
-          {space ? (
-            <Link
-              href={spaceHref(space.id)}
-              onClick={(e) => {
-                if (!leaveGuarded()) return;
-                e.preventDefault();
-                requestLeave(() => router.push(spaceHref(space.id)));
-              }}
-              className="cc-link text-xs text-muted-foreground hover:text-foreground"
-            >
-              {space.name}
-            </Link>
+          {page.state === "archived" ? (
+            <div className="mb-4">
+              <ArchivedBanner page={page} />
+            </div>
           ) : null}
 
           {editing ? (
@@ -423,7 +450,7 @@ export default function PageView({ pageId }: { pageId: string }) {
                   className="w-full font-mono"
                 />
               ) : (
-                <div className="min-h-64 pt-1">
+                <div ref={setBodyEl} className="min-h-64 pt-1">
                   <KnowledgeEditor
                     key={`edit-${session}`}
                     mode="edit"
@@ -484,18 +511,13 @@ export default function PageView({ pageId }: { pageId: string }) {
             </div>
           ) : (
             <>
-              <h2 className="mt-1 break-words text-xl font-semibold text-foreground">{page.title}</h2>
+              <h2 className="break-words text-xl font-semibold text-foreground">{page.title}</h2>
               <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                 <Badge tone={stateTone(page.state)} icon={STATE_LABELS[page.state]?.icon}>
                   {stateLabel(page.state)}
                 </Badge>
                 {page.can_write ? null : <Badge icon="Eye">Read only</Badge>}
-                {last ? (
-                  <span>
-                    {reasonLabel(last.reason)} by {last.author_email}
-                    {last.created_at ? `, ${relativeTime(last.created_at) || "now"}` : ""}
-                  </span>
-                ) : null}
+                <PageByline versions={page.versions} />
               </div>
               {writable ? (
                 <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -521,12 +543,16 @@ export default function PageView({ pageId }: { pageId: string }) {
               ) : null}
               <div className="mt-5">
                 {page.body_md.trim() ? (
-                  <KnowledgeEditor
-                    mode="read"
-                    body={page.body_md}
-                    label={`${page.title}, the page body`}
-                    onNavigate={(href) => router.push(href)}
-                  />
+                  <HeadingAnchors pageId={page.id} headings={outline.headings} elements={outline.elements}>
+                    <div ref={setBodyEl}>
+                      <KnowledgeEditor
+                        mode="read"
+                        body={page.body_md}
+                        label={`${page.title}, the page body`}
+                        onNavigate={(href) => router.push(href)}
+                      />
+                    </div>
+                  </HeadingAnchors>
                 ) : (
                   <p className="text-sm text-muted-foreground">
                     This page is empty.{writable ? " Choose Edit to write it." : ""}
@@ -538,21 +564,16 @@ export default function PageView({ pageId }: { pageId: string }) {
         </article>
 
         <aside
-          className="w-full shrink-0 space-y-4 border-t border-border pt-4 xl:w-64 xl:border-l xl:border-t-0 xl:pl-4 xl:pt-0"
+          className="w-full shrink-0 space-y-5 border-t border-border pt-4 xl:sticky xl:top-14 xl:max-h-[calc(100vh-9rem)] xl:w-64 xl:overflow-y-auto xl:border-l xl:border-t-0 xl:pl-4 xl:pt-0"
           aria-label="About this page"
         >
-          <dl className="space-y-2 text-xs">
-            <div>
-              <dt className="text-muted-foreground">Author</dt>
-              <dd className="truncate text-foreground">{page.author_email}</dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground">Review date</dt>
-              <dd className="text-foreground">
-                {page.review_at ? dayLabel(page.review_at) : "Set when the page is published"}
-              </dd>
-            </div>
-          </dl>
+          <PageSidePanel
+            page={page}
+            headings={outline.headings}
+            active={outline.active}
+            stats={outline.stats}
+            onJump={(i) => outline.jump(i, { smooth: true })}
+          />
           <section>
             <h3 className="mb-1 text-xs font-medium text-foreground">Versions</h3>
             <VersionList versions={page.versions} canRevert={writable && !editing} onRevert={setReverting} />

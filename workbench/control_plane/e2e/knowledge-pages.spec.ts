@@ -412,7 +412,8 @@ test.describe("an edit is never lost in silence", () => {
     const body = await startTyping(page);
     const ask = page.getByRole("dialog", { name: "Discard your changes?" });
     for (const open of [
-      () => page.locator("article").getByRole("link", { name: "Company" }).click(),
+      // The space is the first crumb of the breadcrumbs since KB-2d.
+      () => page.getByRole("navigation", { name: "Breadcrumbs" }).getByRole("link", { name: "Company" }).click(),
       () => page.getByRole("button", { name: "New page" }).first().click(),
       () => page.getByRole("button", { name: "Cancel", exact: true }).click(),
     ]) {
