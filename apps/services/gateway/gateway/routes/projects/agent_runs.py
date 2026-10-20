@@ -981,9 +981,11 @@ _INSERT_RUN_SQL = (
 #: The ONE open-run read of EA12-6: the open run of a task for a member and a
 #: client stamp. The start, the archive request and the claim read it.
 #:
-#: It matches the stamp of the caller only. An open run under the legacy host
-#: stamp ``mcp:<host>`` is not found (H-356 closed the window of EA-13a fix
-#: round 1, spec §12.2 item 1).
+#: It matches the stamp of the caller only. When the connection's client id
+#: gives a slug, an open run under its legacy host stamp ``mcp:<host>`` is not
+#: found (H-356 closed the window of EA-13a fix round 1, spec §12.2 item 1).
+#: When it gives no slug, ``mcp:<host>`` is the caller's own stamp, so the
+#: read finds that run.
 _OPEN_RUN_SQL = (
     f"{_RUN_SELECT} WHERE r.task_id = CAST(:tid AS uuid) AND r.member_email = :me "
     "   AND r.status = ANY(:open) AND r.client_via = :via "
