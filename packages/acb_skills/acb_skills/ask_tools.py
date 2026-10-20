@@ -822,18 +822,31 @@ _REPLY_EXCERPT_MAX = 1200
 
 
 def _clip_line(value: Any, limit: int = _REPLY_FIELD_MAX) -> str:
-    return " ".join(str(value or "").split())[:limit]
+    """One line of the form, cut at a word with an ellipsis (:func:`clip_words`)."""
+    return clip_words(" ".join(str(value or "").split()), limit)
+
+
+#: The longest address the form takes. A longer one is refused, never cut.
+_REPLY_ADDRESS_MAX = 320
 
 
 def _clean_recipients(value: Any) -> dict[str, list[str]]:
+    """The To and Cc lists of one choice. An address is never cut and a list
+    is never shortened, because the card must show each recipient in full.
+    A list that is too long, or an address that is too long, raises
+    ``ValueError`` before any card is drawn."""
     from acb_skills.reply_card import MAX_REPLY_RECIPIENTS
 
     v = value if isinstance(value, dict) else {}
     out: dict[str, list[str]] = {}
     for name in ("to", "cc"):
         items = v.get(name) if isinstance(v.get(name), list) else []
-        out[name] = [_clip_line(a, 320) for a in items[:MAX_REPLY_RECIPIENTS]
-                     if _clip_line(a, 320)]
+        if len(items) > MAX_REPLY_RECIPIENTS:
+            raise ValueError("a reply form names too many recipients")
+        clean = [" ".join(str(a or "").split()) for a in items]
+        if any(len(a) > _REPLY_ADDRESS_MAX for a in clean):
+            raise ValueError("a reply form names an address that is too long")
+        out[name] = [a for a in clean if a]
     return out
 
 
