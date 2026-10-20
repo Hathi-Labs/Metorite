@@ -356,6 +356,10 @@ async def _patch(path: str, body: dict[str, Any]) -> Any:
     return (await _request("PATCH", path, json=body)).json()
 
 
+async def _put(path: str, body: dict[str, Any]) -> Any:
+    return (await _request("PUT", path, timeout=60.0, json=body)).json()
+
+
 async def _delete(path: str) -> Any:
     resp = await _request("DELETE", path)
     # DELETEs commonly return 204 with no body.
@@ -3885,6 +3889,33 @@ def _size_text(size: Any) -> str:
     return f"{n / (1024 * 1024):.1f} MB"
 
 
+def _chosen_files(
+    mail_files: list[dict[str, Any]], wanted: list[str],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """The files of the mail that *wanted* names, by id or by file name (the
+    case does not count), and each name that matched no file."""
+    chosen: list[dict[str, Any]] = []
+    unknown: list[str] = []
+    for w in wanted:
+        key = str(w).strip()
+        by_id = [a for a in mail_files if str(a.get("id") or "") == key]
+        by_name = [a for a in mail_files
+                   if str(a.get("filename") or "").strip().lower() == key.lower()]
+        hits = by_id or by_name
+        if len(hits) > 1:
+            # Two files share the name: never pick one in silence (P3).
+            ids = ", ".join(str(a.get("id")) for a in hits)
+            unknown.append(f"{key} (more than one file has this name. Name it "
+                           f"by its attachment_id: {ids})")
+            continue
+        hit = hits[0] if hits else None
+        if hit is None:
+            unknown.append(key)
+        elif hit not in chosen:
+            chosen.append(hit)
+    return chosen, unknown
+
+
 def _forward_files(files: list[dict[str, Any]]) -> list[str]:
     """The files of a forward, for its card: each name on one line, because
     a sender chooses each name, with its size."""
@@ -3937,6 +3968,7 @@ async def forward_email(
     note: str | None = None,
     include_attachments: bool = True,
     account_id: str | None = None,
+    files: list[str] | None = None,
 ) -> str:
     """Forward an email to new people, WITH its original files (a PDF, a sheet).
 
@@ -3957,6 +3989,8 @@ async def forward_email(
         include_attachments: carry every file of the email (the default).
             Set false to forward the text only.
         account_id: the mailbox that holds the email, or leave it out.
+        files: forward ONLY these files of the email, each named by its
+            file name or its attachment_id from read_email ("only the PDF").
     """
     mid = _canonical_id(email_id)
     if mid is None:
@@ -3981,8 +4015,17 @@ async def forward_email(
             f"Not forwarded. No connected mailbox has the id {box}. Call "
             "list_accounts and ask the user which mailbox to forward from."
         )
-    files = [a for a in (orig.get("attachments") or []) if isinstance(a, dict)]
-    carried = files if include_attachments else []
+    mail_files = [a for a in (orig.get("attachments") or []) if isinstance(a, dict)]
+    chosen_ids: list[str] | None = None
+    if files:
+        carried, unknown = _chosen_files(mail_files, files)
+        if unknown:
+            names = ", ".join(_card_file_name(a.get("filename") or "file") for a in mail_files)
+            return (f"Not forwarded. The email has no file {', '.join(unknown)!s}. "
+                    f"Its files: {names or 'none'}.")
+        chosen_ids = [str(a.get("id")) for a in carried]
+    else:
+        carried = mail_files if include_attachments else []
     subject = _card_text(orig.get("subject") or "(no subject)", 120)
     shown_files = _forward_files(carried)
 
@@ -4010,6 +4053,8 @@ async def forward_email(
         "include_attachments": bool(include_attachments),
         "account_id": box,
     }
+    if chosen_ids is not None:
+        payload["attachment_ids"] = chosen_ids
     if cc:
         payload["cc"] = cc
     if bcc:
@@ -4209,6 +4254,266 @@ async def send_draft(account_id: str, draft_id: str) -> str:
             "draft again, and ask the user before you send it."
         )
     return "Draft sent."
+
+
+# ── The chat as the member's assistant: the tools that were missing ─────────
+#
+# Owner, 2026-10-20: "via chat we should be able to accomplish all the use
+# cases of operating our email". Each gateway route below already served the
+# Email app, and the chat had no tool for it. Each write asks the member's
+# card first, as every mailbox write does (EM-G11c1).
+
+
+async def _draft_row(account_id: str, draft_id: str) -> tuple[dict[str, Any] | None, str]:
+    """The draft row, or ``(None, why)``. The checks of ``send_draft``."""
+    sender = await _mailbox_name(account_id)
+    if sender is None:
+        return None, (f"No connected mailbox has the id {account_id}. Call "
+                      "list_accounts and use the mailbox that holds the draft.")
+    try:
+        draft = await _get(f"/email/messages/{draft_id}") or {}
+    except GatewayError as exc:
+        if exc.status != 404:
+            raise
+        draft = {}
+    if not isinstance(draft, dict) or not draft:
+        return None, f"No draft of this member has the id {draft_id}."
+    if str(draft.get("account_id") or "") != str(account_id):
+        return None, (f"The message {draft_id} is not in the mailbox {sender}. "
+                      "Use the mailbox that holds it.")
+    if str(draft.get("folder") or "").lower() not in _DRAFT_FOLDERS:
+        return None, f"The message {draft_id} is not a draft."
+    return draft, sender
+
+
+@_annotate_risk(open_world=False, destructive=False)
+async def edit_draft(
+    account_id: str,
+    draft_id: str,
+    body: str | None = None,
+    subject: str | None = None,
+    to: list[str] | None = None,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+) -> str:
+    """Change a draft that is in Drafts: its text, its subject or its
+    recipients. Pass only what changes. Each part that you leave out stays
+    as it is. ``body`` is the WHOLE new text: read the draft first with
+    read_email, change what the member asked, and keep the rest word for
+    word. ``to``, ``cc`` and ``bcc`` each replace that whole list.
+
+    Shows the member the changed draft on a card. Sends nothing: send it
+    after with send_draft, which shows its own card."""
+    draft, sender = await _draft_row(account_id, draft_id)
+    if draft is None:
+        return f"Nothing changed. {sender}"
+    lists = {key: _draft_list(draft.get(column)) for key, _, column in _DRAFT_FIELDS}
+    for key, given in (("to", to), ("cc", cc), ("bcc", bcc)):
+        if given is not None:
+            lists[key] = [str(a).strip() for a in given if str(a).strip()]
+    if to is not None and not lists["to"]:
+        return "Nothing changed. Give one To at least, or leave `to` out."
+    if any(len(a) > _TARGET_LIMIT for v in lists.values() for a in v):
+        return f"Nothing changed. An address is longer than {_TARGET_LIMIT} characters."
+    new_subject = (draft.get("subject") or "") if subject is None else subject
+    keep_body = body is None
+    if keep_body:
+        # The text stays as it is (review round 1, P1). An Outlook draft keeps
+        # its body untouched, HTML and quoted thread included: the save sends
+        # no body. A Gmail save rebuilds the whole message, so it sends the
+        # whole text from the provider, never the stored copy, which can be
+        # cut, and ``keep_html`` keeps its HTML.
+        try:
+            full = await _get(f"/email/messages/{draft_id}/full-body") or {}
+        except GatewayError:
+            full = {}
+        text = str(full.get("body_text") or "")
+    else:
+        text = body
+    detail, context = _draft_card(sender, new_subject, lists)
+    if not context:
+        return "Nothing changed. The draft has too many recipients for one card."
+    if keep_body:
+        context += "\n\nThe text of the draft stays as it is."
+    else:
+        context = _with_draft_text(context, text)
+    refusal = await _card_refusal(
+        "Save these changes to the draft?",
+        detail + " · Nothing is sent.",
+        "Cancelled. The draft did not change.",
+        context,
+    )
+    if refusal:
+        return refusal
+    try:
+        res = await _put("/email/drafts", {
+            "account_id": account_id, "draft_id": draft_id,
+            "to": lists["to"], "cc": lists["cc"], "bcc": lists["bcc"],
+            "subject": new_subject, "body": text,
+            "keep_html": keep_body, "keep_body": keep_body,
+        }) or {}
+    except GatewayError as exc:
+        if exc.status not in (409, 422):
+            raise
+        return (f"Nothing changed. {exc}. Read the draft with read_email, and "
+                "pass its whole text, with the change, in body.")
+    lost = (" Its formatting and its images could not be kept, so it now "
+            "holds the text only.") if res.get("html") == "lost" else ""
+    return f"The draft is saved in {sender}. Nothing was sent.{lost}"
+
+
+def _snooze_time(until: str) -> tuple[Any, str]:
+    """``(datetime, "")`` for a valid snooze time, else ``(None, why)``."""
+    from datetime import datetime, timezone
+
+    raw = (until or "").strip()
+    try:
+        when = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None, (f"{raw!r} is not a time. Give it as ISO 8601 with the "
+                      "member's offset, for example 2026-10-27T09:00:00+05:30.")
+    if when.tzinfo is None:
+        return None, ("The time has no offset, so it could be off by hours. Give "
+                      "it with the member's offset, for example +05:30. Ask the "
+                      "member for their time zone if you do not know it.")
+    if when <= datetime.now(timezone.utc):
+        return None, "That time has passed. Give a time in the future."
+    return when, ""
+
+
+@_annotate_risk(open_world=False, destructive=False)
+async def snooze_email(email_id: str, until: str = "") -> str:
+    """Snooze a conversation: it leaves the inbox and comes back at
+    ``until``. Use it for "remind me about this tomorrow at 9" or "snooze
+    till Monday". ``until`` is ISO 8601 WITH the member's offset, for example
+    ``2026-10-27T09:00:00+05:30``. An empty ``until`` brings the
+    conversation back now. Shows a card first."""
+    mid = _canonical_id(email_id)
+    if mid is None:
+        return f"Nothing changed. {email_id!r} is not the id of an email."
+    orig = await _get(f"/email/messages/{mid}", {"mark_read": "false"}) or {}
+    what = _card_text(orig.get("subject") or "(no subject)", 120)
+    if (until or "").strip():
+        when, why = _snooze_time(until)
+        if when is None:
+            return f"Nothing changed. {why}"
+        stamp = when.strftime("%a %d %b %Y, %H:%M (%z)")
+        title, detail = f"Snooze until {stamp}?", (
+            f"The conversation “{what}” leaves the inbox and comes back "
+            f"at {stamp}.")
+        body = {"until": when.isoformat()}
+        done = f"Snoozed “{what}” until {stamp}."
+    else:
+        title, detail = "Bring this conversation back now?", (
+            f"“{what}” comes back to the inbox now.")
+        body = {"until": None}
+        done = f"“{what}” is back in the inbox."
+    refusal = await _card_refusal(title, detail, "Cancelled. Nothing changed.")
+    if refusal:
+        return refusal
+    await _post(f"/email/messages/{mid}/snooze", body)
+    return done
+
+
+@_annotate_risk(open_world=False)
+async def find_contact(name: str, account_id: str | None = None) -> str:
+    """Find the email address of a person by name, or by part of a name or
+    an address. Use it before send_email when the member names a person
+    ("email Priya") and gives no address. It searches the people the member
+    wrote to, the contacts and the senders. When it finds more than one,
+    ask the member which one. Never guess an address."""
+    q = " ".join(str(name or "").split())
+    if not q:
+        return "Give a name to look for."
+    params: dict[str, Any] = {"q": q, "limit": 8}
+    if account_id:
+        params["account_id"] = account_id
+    rows = await _get("/email/contacts/suggest", params) or []
+    found = [r for r in rows if isinstance(r, dict) and r.get("email")]
+    if not found:
+        return (f"No person matches {q!r} in the mail of this member. Ask the "
+                "member for the address.")
+    lines = []
+    for r in found:
+        who = _card_text(r.get("name") or "", 80)
+        addr = _card_text(r.get("email"), _TARGET_LIMIT)
+        lines.append(f"- {who} <{addr}>" if who else f"- {addr}")
+    lead = ("One person matches" if len(found) == 1 else
+            f"{len(found)} people match. Ask the member which one")
+    return f"{lead} {q!r}:\n" + "\n".join(lines)
+
+
+#: What a bulk act may do, and its verb on the card.
+_BULK_VERBS = {
+    "archive": "Archive", "trash": "Move to Trash", "read": "Mark as read",
+    "unread": "Mark as unread", "star": "Star", "unstar": "Unstar",
+}
+
+
+@_annotate_risk(destructive=True, open_world=False)
+async def bulk_manage_inbox(
+    action: str,
+    sender_email: str | None = None,
+    folder: str | None = None,
+    older_than_days: int | None = None,
+    only_read: bool = False,
+    account_id: str | None = None,
+) -> str:
+    """Act on ALL mail that matches a filter, with no list of ids and no
+    cap: "mark everything from news@acme.com as read", "archive the read
+    mail in Promotions older than 30 days". Use manage_inbox for a few
+    emails that you can name.
+
+    Args:
+        action: archive | trash | read | unread | star | unstar
+        sender_email: only mail from this address.
+        folder: only mail in this folder, for example "inbox".
+        older_than_days: only mail older than this many days.
+        only_read: only mail that is already read.
+        account_id: one mailbox. Leave it out for every pooled mailbox.
+
+    Give one filter at least. The tool counts the mail first and shows the
+    count on a card. Nothing changes on a "no"."""
+    if action not in _BULK_VERBS:
+        return f"Nothing changed. action must be one of: {', '.join(_BULK_VERBS)}."
+    filters: dict[str, Any] = {}
+    if (sender_email or "").strip():
+        filters["sender_email"] = sender_email.strip()
+    if (folder or "").strip():
+        filters["folder"] = folder.strip()
+    if older_than_days:
+        filters["older_than_days"] = max(1, int(older_than_days))
+    if only_read:
+        filters["only_read"] = True
+    if not filters:
+        return ("Nothing changed. Give one filter at least: a sender, a "
+                "folder, an age or only_read. A bulk act on every mail is refused.")
+    if account_id:
+        filters["account_id"] = account_id
+    count = await _post("/email/messages/bulk", {"action": action, "dry_run": True, **filters})
+    n = int((count or {}).get("matched") or 0)
+    if not n:
+        return "Nothing matches that filter that is not already in that state."
+    where = []
+    if "sender_email" in filters:
+        where.append(f"from {_card_text(filters['sender_email'], _TARGET_LIMIT)}")
+    if "folder" in filters:
+        where.append(f"in the folder '{_card_name(filters['folder'])}'")
+    if "older_than_days" in filters:
+        where.append(f"older than {filters['older_than_days']} days")
+    if only_read:
+        where.append("already read")
+    box = f" in {await _named(account_id)}" if account_id else " in your pooled mailboxes"
+    refusal = await _card_refusal(
+        f"{_BULK_VERBS[action]} about {n} emails?",
+        f"Each email {', '.join(where)}{box}. The count can change if new mail "
+        "comes before the act runs.",
+        "Cancelled. Nothing changed.",
+    )
+    if refusal:
+        return refusal
+    res = await _post("/email/messages/bulk", {"action": action, **filters})
+    return f"{_BULK_VERBS[action]}: {int((res or {}).get('affected') or 0)} emails changed."
 
 
 # ── Knowledge base (edit/remove) ─────────────────────────────────────────────
@@ -5103,6 +5408,11 @@ _TOOLS = [
     send_email,
     forward_email,
     send_draft,
+    edit_draft,
+    # Owner, 2026-10-20: the assistant tools that were missing.
+    snooze_email,
+    find_contact,
+    bulk_manage_inbox,
     # Attachments / artifacts
     list_artifacts,
     # Senders / categorization
@@ -5168,6 +5478,8 @@ MAILBOX_WRITE_TOOLS: frozenset[str] = frozenset({
     "forget_pattern",
     # EM-CR (§18): the reply card. Its card is the reply form.
     "compose_reply",
+    # Owner, 2026-10-20: the assistant tools that were missing.
+    "edit_draft", "snooze_email", "bulk_manage_inbox",
 })
 
 #: The registered tools that call a gateway POST and still ask no card, with

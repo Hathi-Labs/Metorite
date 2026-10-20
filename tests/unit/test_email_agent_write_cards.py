@@ -73,7 +73,9 @@ READ_POSTS = {
     "/email/rules/test": "a dry run of the rules on one email",
 }
 #: A POST whose body says it is a dry run.
-DRY_RUN_POSTS = ("/email/cleanup/auto-categorize", "/email/rules/run")
+DRY_RUN_POSTS = ("/email/cleanup/auto-categorize", "/email/rules/run",
+                 # bulk_manage_inbox counts the mail first (owner, 2026-10-20).
+                 "/email/messages/bulk")
 
 
 def _is_write(method: str, path: str, body: Any) -> bool:
@@ -186,6 +188,8 @@ class Gateway:
         return {}
 
     def _answer_write(self, path: str, body: Any) -> Any:
+        if path == "/email/messages/bulk" and isinstance(body, dict) and body.get("dry_run"):
+            return {"matched": 5, "affected": 0}
         if path == "/email/reply-card":
             return REPLY_CARD
         if path == "/email/reply-card/act":
@@ -300,6 +304,10 @@ WRITE_CASES: dict[str, dict[str, Any]] = {
     "generate_writing_style": {"account_id": BOX},
     "forget_pattern": {"pattern_id": "p1"},
     "compose_reply": {"email_id": MSG, "account_id": BOX},
+    # Owner, 2026-10-20: the assistant tools that were missing.
+    "edit_draft": {"account_id": BOX, "draft_id": "d1", "body": "Hi Kim,\n\nNew text."},
+    "snooze_email": {"email_id": MSG, "until": "2099-01-05T09:00:00+05:30"},
+    "bulk_manage_inbox": {"action": "read", "sender_email": "news@list.test"},
 }
 REGISTRY = sorted(agents.MAILBOX_WRITE_TOOLS)
 

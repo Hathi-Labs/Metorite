@@ -3079,6 +3079,12 @@ class DraftUpsertRequest(BaseModel):
     # save keeps the HTML of the draft. The gateway takes it from the row, or
     # from Gmail. Only a Gmail mailbox reads the flag (D-G3a-f7-5).
     keep_html: bool = False
+    # The chat changes only the recipients or the subject of a draft
+    # (``edit_draft``, owner 2026-10-20). An Outlook draft then keeps its body
+    # as it is, HTML and quoted thread included: the PATCH carries no body.
+    # A Gmail save rebuilds the whole message, so it still needs ``body``,
+    # and ``keep_html`` keeps its HTML. Only an update by ``draft_id`` reads it.
+    keep_body: bool = False
 
 
 #: The ``html`` key of the answer of a Gmail save (EM-G3a-f7, D-G3a-f7-2,
@@ -3198,13 +3204,21 @@ async def upsert_draft(
 
             if req.draft_id:
                 drow = (await db.execute(text(
-                    "SELECT provider_message_id, thread_id, subject"
+                    "SELECT provider_message_id, thread_id, subject, body_text"
                     " FROM email_messages"
                     " WHERE id = :id AND account_id = :aid"
                     " AND LOWER(folder) IN ('drafts', 'draft')"
                 ), {"id": req.draft_id, "aid": req.account_id})).fetchone()
                 if not drow:
                     raise HTTPException(status_code=404, detail="Draft not found")
+                keep_body = req.keep_body and not gmail
+                if req.keep_body and gmail and not (req.body or "").strip():
+                    raise HTTPException(
+                        status_code=422,
+                        detail="A Gmail draft is saved whole, so it needs its text.")
+                if keep_body:
+                    # The provider keeps the body. The row keeps its own copy.
+                    body = drow.body_text or ""
                 thread_id = drow.thread_id
                 subject = subject or (drow.subject or "")
                 html_kw: dict[str, str] = {}
@@ -3218,12 +3232,19 @@ async def upsert_draft(
                           _mail_too_large()):
                         provider_id = await provider.update_draft(
                             drow.provider_message_id, to=to or None,
-                            subject=subject or None, body_text=body,
+                            subject=subject or None,
+                            body_text=None if keep_body else body,
                             thread_id=thread_id or None,
                             cc=cc, bcc=bcc, attachments=atts or None,
                             **html_kw,
                         )
                 except NotImplementedError:
+                    if keep_body:
+                        # A fresh draft needs a body, and this one keeps its own.
+                        raise HTTPException(
+                            status_code=409,
+                            detail="This mailbox cannot change a draft without its text.",
+                        ) from None
                     # No in-place update primitive → fresh draft, drop the old.
                     provider_id = await provider.create_draft(
                         to=to, subject=subject, body_text=body,
