@@ -63,6 +63,9 @@ from acb_skills.untrusted import UntrustedFrame
 #   or a request to a URL from the mail), and the settings (a signature, the
 #   text about the member, auto-run).
 # * (C) ``True``: the knowledge base, a store that feeds each later reply.
+# * (D) ``True`` and ``card_bound_reply``: ``compose_reply`` (EM-CR, §18). It
+#   sends, and a held run keeps it only because of its card and its pinned
+#   parameters (``acb_skills.egress.CARD_BOUND_REPLY_TOOLS``).
 try:
     from acb_skills.tool_annotations import annotate as _annotate_risk
 except ImportError:  # older platform without the annotations registry
@@ -1719,6 +1722,122 @@ async def draft_reply(email_id: str, account_id: str, save: bool = False) -> str
     )
 
 
+# ── The reply card: one reply, confirmed and done in the chat (EM-CR) ────────
+#
+# ``email_app_master_plan.md`` §18, owner request of 2026-10-20: "the entire
+# interaction to occur within the chat". ``compose_reply`` shows ONE card, the
+# confirmation card with a reply form (``ask_tools.request_confirmation``).
+# The member sends, saves or discards there, and the tool then does it.
+#
+# It may send in a held run (H-236), and only because of four limits. The
+# gateway enforces each one (``gateway/routes/email/automation/reply_card.py``):
+#
+# 1. The model names no recipient. The gateway derives To and Cc from the
+#    original mail and the Reply all choice that the MEMBER set on the card.
+# 2. The body that leaves is the one the member submitted. The gateway sends
+#    it only when its record of the card answer matches, once.
+# 3. No file, no forward, no new recipient: ``send_email`` and
+#    ``forward_email`` keep those, and a held run holds neither.
+# 4. With no card (WhatsApp, a batch or scheduled run) it drafts, saves and
+#    sends nothing.
+#
+# ``acb_skills.egress.CARD_BOUND_REPLY_TOOLS`` pins its parameters. A new
+# parameter makes it an egress tool again. Fence:
+# ``tests/unit/test_email_chat_reply.py``.
+
+#: The answer of a reply card that the member discarded.
+_REPLY_DISCARDED = "Reply discarded and cancelled. Nothing was sent or saved."
+
+
+def _addr_text(addrs: Any) -> str:
+    return ", ".join(str(a) for a in (addrs or []) if a)
+
+
+def _reply_form(prep: dict[str, Any], reply_all: bool) -> dict[str, Any]:
+    """The card's reply form, from the gateway's ``/email/reply-card``."""
+    rec = prep.get("recipients") or {}
+    body = str(prep.get("body") or "")
+    return {
+        "message_id": prep.get("message_id") or "",
+        "notices": list(prep.get("notices") or []),
+        "mailbox": prep.get("mailbox") or "",
+        "subject": prep.get("subject") or "",
+        "original": prep.get("original") or {},
+        "recipients": {"reply": rec.get("reply") or {}, "reply_all": rec.get("reply_all") or {}},
+        "reply_all": bool(reply_all),
+        "body": body,
+        "note": ("" if body.strip() else
+                 "The assistant did not write a draft for this mail. Write the reply below."),
+    }
+
+
+#: The longest card title that ``request_confirmation`` keeps whole.
+_REPLY_TITLE_MAX = 120
+
+
+def _reply_title(form: dict[str, Any], reply_all: bool) -> str:
+    """The card title: who the reply goes TO, as the server derived it.
+
+    Security review of #1191, P2: the title named the sender, and a Reply-To
+    can send the reply elsewhere. An address is never cut: a title that does
+    not fit counts the recipients, and the card lists each one in full."""
+    rec = (form.get("recipients") or {}).get("reply_all" if reply_all else "reply") or {}
+    to = [str(a) for a in rec.get("to") or [] if a]
+    title = f"Reply to {', '.join(to)}?"
+    if to and len(title) <= _REPLY_TITLE_MAX:
+        return title
+    return f"Reply to {len(to)} recipients?" if len(to) != 1 else "Reply to 1 recipient?"
+
+
+@_annotate_risk(destructive=True, open_world=True, card_bound_reply=True)
+async def compose_reply(email_id: str, account_id: str, reply_all: bool = False) -> str:
+    """Reply to one email in the chat. The tool drafts the reply and shows the
+    member ONE card: the email it answers, who gets the reply, a Reply or
+    Reply all toggle, the text to edit, and Send, Save to Drafts and Discard.
+    The member decides on the card, and the tool then does it and returns
+    what happened. The card is the question, so do not ask in text first.
+
+    Set ``reply_all=true`` when the member asked to answer everyone on the
+    email. The member can change it on the card. The reply always goes from
+    the mailbox that received the email, whatever ``account_id`` says. You
+    choose no recipient and write no text here: the server derives the
+    recipients, and the member edits the text. Where no card can show, the
+    tool drafts, saves and sends nothing."""
+    _ = account_id  # the mailbox of the email acts (§11.3 rule 1)
+    try:
+        from acb_skills import ask_tools
+    except ImportError:  # an older platform with no reply card
+        return _NO_CARD_CHANNEL
+    if not ask_tools.reply_card_channel_open():
+        return _NO_CARD_CHANNEL
+    prep = await _post("/email/reply-card", {"message_id": email_id})
+    form = _reply_form(prep, reply_all)
+    answer = await ask_tools.request_confirmation(
+        title=_reply_title(form, reply_all),
+        detail=_card_text(
+            f"From {form['mailbox']} · {form['subject'] or '(no subject)'}", 300),
+        reply=form,
+    )
+    if not isinstance(answer, ask_tools.ReplyAnswer):
+        return _REPLY_DISCARDED if _card_channel_open() else _NO_CARD_CHANNEL
+    member = _current_user_email().strip().lower()
+    if answer.responder and member and answer.responder.strip().lower() != member:
+        return ("Nothing was sent or saved. Another member answered this card, "
+                "and only the member who asked can send this reply.")
+    res = await _post("/email/reply-card/act", {
+        "message_id": email_id,
+        "card_request_id": answer.request_id,
+        "card_thread_id": answer.thread_id,
+        "answer": answer.answer,
+    })
+    to, cc = _addr_text(res.get("to")), _addr_text(res.get("cc"))
+    copy = f", with a copy to {cc}" if cc else ""
+    box = res.get("mailbox") or form["mailbox"]
+    if res.get("action") == "send":
+        return f"Sent to {to}{copy}, from {box}."
+    return f"Saved in Drafts of {box}, to {to}{copy}. Nothing was sent."
+
+
 # ── Sender categorization tools ──────────────────────────────────────────────
 
 @_annotate_risk(open_world=False)
@@ -1931,17 +2050,29 @@ _CARD_DETAIL_LIMIT = 500
 _CARD_CONTEXT_LIMIT = 4000
 
 
+def _is_invisible(ch: str) -> bool:
+    """THE one test of hidden text, ``acb_skills.reply_card.is_invisible_char``
+    (security review of #1191): category C, each Default_Ignorable_Code_Point
+    and the blank fillers. An older platform falls back to category C."""
+    try:
+        from acb_skills.reply_card import is_invisible_char
+    except ImportError:
+        return unicodedata.category(ch)[0] == "C"
+    return is_invisible_char(ch)
+
+
 def _is_hidden_char(ch: str) -> bool:
-    return ch.isspace() or unicodedata.category(ch)[0] == "C"
+    return ch.isspace() or _is_invisible(ch)
 
 
 def _card_text(value: Any, limit: int) -> str:
-    """Text that the card shows: each control or format character out, and
-    each run of whitespace as one space, so nothing can hide in the text."""
+    """Text that the card shows: each invisible character out, and each run
+    of whitespace as one space, so nothing can hide in the text. The reply
+    card reads the same rule (``reply_card.clean_reply_body``)."""
     kept = "".join(
         " " if ch.isspace() else ch
         for ch in str(value)
-        if ch.isspace() or unicodedata.category(ch)[0] != "C"
+        if ch.isspace() or not _is_invisible(ch)
     )
     return " ".join(kept.split())[:limit]
 
@@ -4847,6 +4978,7 @@ _TOOLS = [
     create_label,
     # Drafting / sending
     draft_reply,
+    compose_reply,
     send_email,
     forward_email,
     send_draft,
@@ -4913,6 +5045,8 @@ MAILBOX_WRITE_TOOLS: frozenset[str] = frozenset({
     # Sorted by the EM-G11c1 audit: each changes what the assistant does later.
     "save_knowledge", "delete_knowledge", "generate_writing_style",
     "forget_pattern",
+    # EM-CR (§18): the reply card. Its card is the reply form.
+    "compose_reply",
 })
 
 #: The registered tools that call a gateway POST and still ask no card, with

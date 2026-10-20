@@ -26,10 +26,12 @@ import {
   type PendingConfirmation,
   type RowsApproval,
 } from "@/lib/confirmationQueue";
+import type { ReplyApproval } from "@/lib/replyCard";
 
-/** A plain answer, or an Approve that names the ticked rows of a card with
- *  rows (WS-46 P13 one-card). Both go in ONE respond-input. */
-export type ConfirmationAnswer = "APPROVE" | "REJECT" | RowsApproval;
+/** A plain answer, an Approve that names the ticked rows of a card with
+ *  rows (WS-46 P13 one-card), or the Send or Save of a reply card (EM-CR).
+ *  Each goes in ONE respond-input. */
+export type ConfirmationAnswer = "APPROVE" | "REJECT" | RowsApproval | ReplyApproval;
 
 interface ConfirmationQueueProps {
   cards: PendingConfirmation[];
@@ -102,6 +104,8 @@ export default function ConfirmationQueue({ cards, onAnswer, initialIndex = 0 }:
         if (view.approved) onAnswer(view.approved.card, view.approved.answer);
       }}
       onReject={() => onAnswer(card, "REJECT")}
+      // EM-CR: a reply card answers with the member's choice and body.
+      {...(card.reply !== undefined ? { reply: card.reply, onReply: (a: ReplyApproval) => onAnswer(card, a) } : {})}
     />
   );
 }

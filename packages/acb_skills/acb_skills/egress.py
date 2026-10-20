@@ -49,6 +49,8 @@ from acb_skills.tool_guard import RefuseTools, WithholdTools, tool_name
 _log = get_logger("acb_skills.egress")
 
 __all__ = [
+    "CARD_BOUND_KEY",
+    "CARD_BOUND_REPLY_TOOLS",
     "DELEGATION_TOOLS",
     "EGRESS_HELD_MAIL_ANSWER",
     "EGRESS_HOLD_NOTE_MAIL",
@@ -73,6 +75,7 @@ __all__ = [
     "egress_tool_names",
     "has_explicit_open_world",
     "hold_is_for_mail",
+    "is_card_bound_reply",
     "is_delegation_tool",
     "is_egress_tool",
     "mark_untrusted_answer",
@@ -814,6 +817,62 @@ def has_explicit_open_world(item: Any) -> bool:
     return isinstance(hints, Mapping) and isinstance(hints.get("open_world"), bool)
 
 
+#: The sends that may stay in a held run (EM-CR, ``email_app_master_plan.md``
+#: §18), each with its parameters, EXACTLY. The owner asked on 2026-10-20 for
+#: a reply that the member confirms in the chat and that then completes, also
+#: in a chat that read outside mail. Such a tool sends ONE reply, and only
+#: after its card:
+#:
+#: * the gateway derives To and Cc from the original mail and the Reply or
+#:   Reply all choice that the MEMBER set on the card. The model names no
+#:   recipient;
+#: * the body is the one the member submitted on the card. The gateway sends
+#:   it only when its own record of the card answer matches
+#:   (``reply_card.take_reply_answer``);
+#: * it takes no file, no forward and no new recipient. Those stay with
+#:   ``send_email`` and ``forward_email``, which a held run does not hold.
+#:
+#: A recipient, a body or a file parameter breaks the pin, and the tool is an
+#: egress tool again. Fence: ``tests/unit/test_email_chat_reply.py``.
+CARD_BOUND_REPLY_TOOLS: Mapping[str, frozenset[str]] = {
+    "compose_reply": frozenset({"email_id", "account_id", "reply_all"}),
+}
+#: The annotation key of such a tool (``tool_annotations.annotate``).
+CARD_BOUND_KEY = "card_bound_reply"
+
+
+def _tool_params(item: Any) -> frozenset[str] | None:
+    """The parameter names of the callable under *item*, or None."""
+    import inspect
+
+    fn = getattr(item, "func", item)
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return None
+    return frozenset(params)
+
+
+def is_card_bound_reply(item: Any) -> bool:
+    """True for a send that may stay in a held run (:data:`CARD_BOUND_REPLY_TOOLS`).
+
+    Three tests, and each one fails closed: the name is on the list, the
+    tool's own annotation says :data:`CARD_BOUND_KEY`, and the callable's
+    parameters are the pinned set, no more and no fewer. A bare name reads
+    the registry, as :func:`is_egress_tool` does for a bare name.
+    """
+    name = item if isinstance(item, str) else tool_name(item)
+    allowed = CARD_BOUND_REPLY_TOOLS.get(name)
+    if allowed is None:
+        return False
+    hints = _risk_of(None if isinstance(item, str) else item, name)
+    if not (isinstance(hints, Mapping) and hints.get(CARD_BOUND_KEY) is True):
+        return False
+    if isinstance(item, str):
+        return True
+    return _tool_params(item) == allowed
+
+
 def is_egress_tool(item: Any) -> bool:
     """True unless *item* may stay in a ``no_egress`` run (H-236). Fails closed.
 
@@ -822,7 +881,8 @@ def is_egress_tool(item: Any) -> bool:
     repo that borrows a delegation name is judged like any other tool. An MCP
     tool, a store write, and a tool with no explicit ``open_world=False`` may
     not stay. A bare name reads the registry, so only a caller that resolved
-    the tool object first may pass one (the Copilot guard does).
+    the tool object first may pass one (the Copilot guard does). The one
+    send that may stay is a card-bound reply (:func:`is_card_bound_reply`).
     """
     if not isinstance(item, str) and _from_mcp(item):
         return True
@@ -831,6 +891,8 @@ def is_egress_tool(item: Any) -> bool:
         return False
     if not name or name in STORE_WRITES:
         return True
+    if is_card_bound_reply(item):
+        return False
     hints = _risk_of(None if isinstance(item, str) else item, name)
     return not (isinstance(hints, Mapping) and hints.get("open_world") is False)
 

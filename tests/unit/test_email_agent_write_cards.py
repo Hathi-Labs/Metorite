@@ -84,6 +84,10 @@ def _is_write(method: str, path: str, body: Any) -> bool:
     if (method == "POST" and path == "/email/draft-reply"
             and isinstance(body, dict) and body.get("create_draft") is False):
         return False  # a draft that only shows in the chat: no provider write
+    if method == "POST" and path == "/email/reply-card":
+        # EM-CR: the reply card's draft, made with create_draft off, and the
+        # recipients the server derives. No provider write.
+        return False
     dry_run = isinstance(body, dict) and body.get("dry_run") is True
     return not (method == "POST" and path in DRY_RUN_POSTS and dry_run)
 
@@ -182,6 +186,11 @@ class Gateway:
         return {}
 
     def _answer_write(self, path: str, body: Any) -> Any:
+        if path == "/email/reply-card":
+            return REPLY_CARD
+        if path == "/email/reply-card/act":
+            return {"ok": True, "action": "send", "to": ["kim@contoso.test"], "cc": [],
+                    "mailbox": BOX_TEXT}
         if path == "/email/messages/summaries":
             return {"summaries": [
                 {"id": i, "from": "Kim", "subject": f"Offer {n}"}
@@ -201,6 +210,35 @@ class Gateway:
                 "reversed": [], "messages_synced": 1}
 
 
+#: What ``POST /email/reply-card`` answers (EM-CR).
+REPLY_CARD: dict[str, Any] = {
+    "account_id": BOX, "mailbox": BOX_TEXT, "subject": "Re: Hi",
+    "original": {"from": "Kim <kim@contoso.test>", "subject": "Hi",
+                 "received": "2026-10-19T09:00:00+00:00", "excerpt": "Can you confirm?"},
+    "recipients": {"reply": {"to": ["kim@contoso.test"], "cc": []},
+                   "reply_all": {"to": ["kim@contoso.test"], "cc": []}},
+    "body": "Hi Kim,\n\nConfirmed.",
+    "message_id": MSG, "notices": [],
+}
+
+
+def reply_answer_for(kw: dict[str, Any]) -> Any:
+    """The member's Send on a reply card, as ``request_confirmation`` returns
+    it: the exact text that the browser posted, and its parse."""
+    import json as _json
+
+    from acb_skills.ask_tools import ReplyAnswer
+    from acb_skills.reply_card import parse_reply_answer
+
+    form = kw["reply"]
+    rec = form["recipients"]["reply_all" if form.get("reply_all") else "reply"]
+    text = "APPROVE " + _json.dumps({"reply": {
+        "action": "send", "reply_all": bool(form.get("reply_all")),
+        "body": form.get("body") or "Hi", "to": rec["to"], "cc": rec["cc"],
+        "message_id": form["message_id"]}})
+    return ReplyAnswer("rid-1", text, parse_reply_answer(text), "")
+
+
 def _recording_request(g: Gateway) -> Any:
     async def fake_request(method: str, path: str, **kwargs: Any) -> _Resp:
         body = kwargs.get("json")
@@ -217,8 +255,11 @@ def gw(monkeypatch: pytest.MonkeyPatch) -> Gateway:
 
     fake_request = _recording_request(g)
 
-    async def card(**kw: Any) -> bool:
+    async def card(**kw: Any) -> Any:
         g.cards.append(kw)
+        if kw.get("reply") is not None:
+            # EM-CR: a reply card answers with the member's choice, or None.
+            return reply_answer_for(kw) if g.answer else None
         return g.answer
 
     monkeypatch.setattr(agents, "_request", fake_request)
@@ -258,6 +299,7 @@ WRITE_CASES: dict[str, dict[str, Any]] = {
     "delete_knowledge": {"account_id": BOX, "knowledge_id": "k1"},
     "generate_writing_style": {"account_id": BOX},
     "forget_pattern": {"pattern_id": "p1"},
+    "compose_reply": {"email_id": MSG, "account_id": BOX},
 }
 REGISTRY = sorted(agents.MAILBOX_WRITE_TOOLS)
 
