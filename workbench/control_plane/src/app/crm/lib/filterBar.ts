@@ -7,7 +7,7 @@ import { coalesce } from "@/lib/useCachedResource";
 
 import { isDateValue, toWire } from "./fieldLayout";
 import type { FieldDef } from "./fields";
-import { fieldOptions, fillOf, pickable } from "./fields";
+import { fieldOptions, pickable } from "./fields";
 import type { EntitySlug } from "./types";
 import { RANGE_KEYS, type CrmView, type RangeKey } from "./urlState";
 
@@ -241,65 +241,6 @@ export function setRange(view: CrmView, key: RangeKey, value: string): CrmView {
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) ranges[key] = value;
   else delete ranges[key];
   return { ...view, ranges };
-}
-
-// ── The fold of the bar (WS-53 CRM-Q17b item 5) ─────────────────────────────
-//
-// Leads drew 22 filter controls for DEWiN (section 18.9.2). The bar now shows
-// Owner and the fullest picklists at rest, and every other filter sits
-// behind one button, "Filters (n)". `n` counts the filters behind the button
-// that are in force, so a narrowed list never hides why.
-
-/** The most picklist filters that the bar shows at rest (CRM-Q17b item 5). */
-export const SHOWN_FILTERS = 3;
-
-/**
- * The custom filters at rest, and the ones behind "Filters". At rest: the
- * picklists with the highest fill, at most `SHOWN_FILTERS`. A tie, and a
- * field with no fill number, keep the order of the bar. Each other filter,
- * in the order of the bar, waits behind the button.
- */
-export function splitFilters(filters: readonly CustomFilter[]): {
-  shown: CustomFilter[];
-  more: CustomFilter[];
-} {
-  const picked = new Set(
-    filters
-      .map((filter, index) => ({ filter, index }))
-      .filter(({ filter }) => filter.kind === "options")
-      .sort((a, b) => fillOf(b.filter.def) - fillOf(a.filter.def) || a.index - b.index)
-      .slice(0, SHOWN_FILTERS)
-      .map(({ filter }) => filter),
-  );
-  return {
-    shown: filters.filter((f) => picked.has(f)),
-    more: filters.filter((f) => !picked.has(f)),
-  };
-}
-
-/** The filters behind the button that are in force: the source, the ranges and `more`. */
-export function hiddenActiveCount(view: CrmView, more: readonly CustomFilter[]): number {
-  return (
-    (view.source ? 1 : 0) +
-    RANGE_KEYS.filter((k) => view.ranges[k]).length +
-    more.filter(({ def }) => (view.custom[def.key] ?? []).length > 0).length
-  );
-}
-
-/**
- * Whether the second row is open after the count of hidden filters in force
- * moved from `before` to `now` (fix round 1, item 4). A saved view or a link
- * can bring a hidden filter after the bar mounted, and the member must see
- * it, so the row opens when the count leaves 0. Every other move keeps the
- * choice of the member.
- */
-export function moreOpenAfter(open: boolean, before: number, now: number): boolean {
-  return before === 0 && now > 0 ? true : open;
-}
-
-/** The label of the button: "Filters", or "Filters (2)" with two in force. */
-export function moreFiltersLabel(active: number): string {
-  return active > 0 ? `Filters (${active})` : "Filters";
 }
 
 /** How many of the bar's filters are in force. */

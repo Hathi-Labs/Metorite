@@ -11524,7 +11524,26 @@ unbuilt after CRM-C1 to CRM-C7. It writes no contract.
 13. **Blueprints, approvals, territories and lead scoring (new).** Last,
     because they matter most to large sales teams.
 
-### 20.12 CRM-U6: stage order, win chance and the lane stat block
+### 20.12 CRM-U8: the two-row toolbar and saved views
+
+*(2026-10-20, owner: the filters are "a little too overloaded". Built.)*
+
+Every list and board has two rows under the app bar. The old stage pills, the second filter row and the Columns band are gone.
+The app bar keeps Refresh and New only.
+
+- **Row 1, which view.** Chips: "All deals" (the default), the private views, then the shared views. At the right end: the pipeline, the List and Board switch, Board options, Columns and Export.
+- **Row 2, what is filtered.** Search, Stage (Status on leads), Owner, one chip for each filter in force, "+ Filter", Clear, and the count. The board has no search, no Stage and no count.
+- **"+ Filter".** One panel lists every field in groups (Dates, Picklists, Numbers, Text, Other). A picklist shows how full it is, and the fullest comes first. A chip reopens its editor.
+- **The dirty rule.** One rule serves every list (`dirtyState`). The default view with a filter, a sort or columns set shows "+ Save view". A saved view that differs shows "Update view" and "Reset". "Update view" needs edit rights.
+- **The chip menu.** A right click, or the "View options" button, opens Rename, Share or Make private (admin) and Delete. The rail no longer nests views.
+- **Columns.** A saved view keeps its columns on the view. The default view keeps them in the browser.
+- **Module lists.** A generic module list has the same two rows. Its scope key is `module:<api_name>`. Migration 287 widens the `crm_views` check, and `views.py` accepts the key. The gateway filters a module list by search and sort only. So a module view saves those two, and the list has no "+ Filter" and no Export.
+- **Phone.** Row 1 scrolls. Row 2 is Search and one "Filters (n)" button that opens a sheet.
+- **The shared seam.** `src/lib/savedViews/` holds the model, `orderViews`, `dirtyState` and the hook. `src/components/ViewChips.tsx` draws row 1. Projects (`pm_views`) is the next user.
+
+**Fences (R7).** `src/lib/savedViews/index.test.ts` holds the order, the dirty rule and the chip list. `crmU8.test.ts` holds the field groups, the fill order, the filter chips, the module key and the app bar. `tests/unit/test_crm_views_entity.py` holds the server key and the migration check. `crmQ8.test.ts` holds the rail without nested views.
+
+### 20.13 CRM-U6: stage order, win chance and the lane stat block
 
 Owner, 2026-10-20: the board order and the win chance are two settings.
 
