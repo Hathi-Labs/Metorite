@@ -74,9 +74,11 @@ __all__ = [
     "GitResult",
     "clone",
     "clone_remote",
+    "config_is_clean",
     "current_branch",
     "fetch",
     "find_clone_secrets",
+    "git_lines",
     "parse_github_remote",
     "pin_remote",
     "pinned_remote",
@@ -442,6 +444,8 @@ def _read_target(
     """The repo and the credential of a read (rule 7)."""
     pinned = remote or pinned_remote(clone_dir)
     if pinned is not None:
+        if cred and not _clean_for_credential(clone_dir):
+            return pinned, None
         return pinned, cred
     origin = clone_remote(clone_dir)
     if origin is not None and cred:
@@ -579,6 +583,8 @@ def push(
         _log.warning("git_credentials.push_refused_no_record", clone=clone_dir.name)
         return GitResult(3, "", "no record of this clone's repo, so no push (H-363)")
     remote = pinned
+    if remote is not None and not _clean_for_credential(clone_dir):
+        return GitResult(4, "", "the clone's config cannot be read or still holds a secret, so no push")
     if remote is None:
         result = _run(["push", "--no-verify", "origin", target], cwd=clone_dir, timeout=timeout)
     else:
@@ -737,17 +743,63 @@ def find_clone_secrets(clone_root: Path | str, tokens: Sequence[str] = ()) -> li
         return found
     for clone_dir in dirs:
         config = clone_dir / ".git" / "config"
-        try:
-            text = config.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        low = text.lower()
-        if (
-            re.search(r"https?://[^@/\s]+@", text, re.IGNORECASE)
-            or _TOKEN_SHAPES.search(text)
-            or "extraheader" in low
-            or re.search(r"^\s*\[credential", low, re.MULTILINE)
-            or any(t and t in text for t in tokens)
-        ):
+        if config.is_file() and not config_is_clean(clone_dir, tokens):
             found.append(str(config))
     return found
+
+
+def _text_holds_secret(text: str, tokens: Sequence[str]) -> bool:
+    low = text.lower()
+    return bool(
+        re.search(r"https?://[^@/\s]+@", text, re.IGNORECASE)
+        or _TOKEN_SHAPES.search(text)
+        or "extraheader" in low
+        or re.search(r"^\s*\[credential", low, re.MULTILINE)
+        or any(t and t in text for t in tokens)
+    )
+
+
+def config_is_clean(clone_dir: Path | str, tokens: Sequence[str] = ()) -> bool:
+    """True only when git can parse the clone's config AND it holds no secret.
+
+    A config that git cannot parse is NOT clean: the scrub cannot read it,
+    so it cannot prove that the file holds no token (fail closed).
+    """
+    git = _git_dir(Path(clone_dir))
+    if git is None or not (git / "config").is_file():
+        return False
+    config = git / "config"
+    try:
+        text = config.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    with _workspace() as tmp:
+        parsed = _run(
+            ["config", "--file", str(config), "--list"],
+            cwd=tmp, extra=_isolated_extra(tmp, None), timeout=10,
+        )
+    return parsed.ok and not _text_holds_secret(text, tokens)
+
+
+def _known_tokens() -> list[str]:
+    return [t for t in (_setting("github_token"), _setting("github_read_token")) if t]
+
+
+def _clean_for_credential(clone_dir: Path) -> bool:
+    """Scrub the clone, then check it. False: no credential for this clone."""
+    scrub_clone(clone_dir)
+    if config_is_clean(clone_dir, _known_tokens()):
+        return True
+    _log.error("git_credentials.clone_config_not_clean", clone=clone_dir.name)
+    return False
+
+
+def git_lines(clone_dir: Path | str, argv: Sequence[str], *, timeout: float = 15) -> list[str] | None:
+    """The stdout lines of a LOCAL git command in the clone, or ``None``.
+
+    It holds no credential. For ``rev-list`` and ``merge-base`` checks.
+    """
+    result = _run(list(argv), cwd=clone_dir, timeout=timeout)
+    if not result.ok:
+        return None
+    return [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]

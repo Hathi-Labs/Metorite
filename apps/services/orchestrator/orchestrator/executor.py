@@ -1665,6 +1665,12 @@ async def _run_sub_agent_streaming(
                 ),
                 organization_id=_resolve_sub_agent_org(),
             )
+            # H-363: the sub-run's git dir and HEAD before it, for the
+            # end-of-turn push step.
+            _sub_git_dir = _git_dir_for(
+                loaded.agent_dir, _sub_agent_dir, _sub_store_instance,
+            )
+            _sub_base_head = await _get_current_head(_sub_git_dir) if _sub_git_dir else ""
             # WS-43n: the label OR the object. A repo agent registered after
             # WS-43n gets "maf" when its config.json declares nothing, so the
             # label alone no longer finds every Copilot object (§15.5).
@@ -1874,6 +1880,13 @@ async def _run_sub_agent_streaming(
             # Anthropic multi-agent research: sub-agents explore with 10k+
             # tokens but the parent only needs a 1-2k summary.  Cap here to
             # prevent single sub-agent calls from bloating the orchestrator.
+            # H-363: the one end-of-turn push step. The parent reads the text.
+            _sub_push = await _settle_agent_push(
+                agent_name, _sub_git_dir, run_id,
+                since_sha=_sub_base_head or None,
+            )
+            if _sub_push:
+                text_parts.append(_sub_push)
             raw_result = "\n".join(text_parts)
             if not raw_result:
                 return f"({agent_name!r} returned an empty response)"
@@ -1902,8 +1915,12 @@ async def _run_sub_agent_streaming(
             "runId": run_id,
             "error": str(exc),
         })
-        return f"Sub-task to {agent_name!r} failed: {exc}"
+        _sub_drop = _drop_agent_push(run_id, "the sub-task failed")
+        return f"Sub-task to {agent_name!r} failed: {exc}" + (
+            f"\n{_sub_drop}" if _sub_drop else ""
+        )
     finally:
+        _drop_agent_push(run_id, "the sub-task did not finish")
         try:
             from acb_common import publish_activity
             publish_activity(
@@ -2693,19 +2710,29 @@ async def _commit_on_remote(agent_dir: str, commit_sha: str) -> bool:
         return False
 
 
-async def _push_reviewed_run(agent_name: str, agent_dir: str, run_id: str) -> bool:
-    """Push HEAD of *agent_dir* to its branch on origin, as the gateway (H-363).
+async def _push_reviewed_run(
+    agent_name: str, agent_dir: str, run_id: str, *, since_sha: str | None,
+) -> tuple[bool, str]:
+    """Push THIS turn's commits of *agent_dir*, as the gateway (H-363).
 
-    The ONLY caller is :func:`_detect_agent_commits`, after
+    The ONLY caller is :func:`_settle_agent_push`, after
     :func:`_agent_push_allowed` said yes for this run. The credential is the
     push token, and it reaches one git process in a gateway temp dir
     (``acb_common.git_credentials.push``). The agent's shell never sees it.
-    It pushes the current branch, as ``git push origin HEAD`` did. A
-    detached HEAD, a sandbox dir or a failed push pushes nothing, and the
-    commit stays pending for a reviewer. True on a push.
+
+    The clone is shared, so it pushes only what this turn made:
+
+    * the turn's window is ``since_sha..HEAD``, and ``since_sha`` must still
+      be an ancestor of HEAD (no rewrite during the turn);
+    * every commit that would go out (``HEAD`` minus the remote branch,
+      after a fresh fetch) must be in that window. An earlier pending commit
+      of another run, or a SHA planted in ``.git/cc-commits-queue``, makes
+      it refuse, and a reviewer approves those on the Agents page.
+
+    Returns ``(pushed, text)``. The text is for the member, with no secret.
     """
-    if not _host_git_ok(agent_dir):
-        return False
+    if not agent_dir or not _host_git_ok(agent_dir):
+        return False, "this turn has no workspace that Metorite may push from"
     from acb_common import git_credentials as git_auth
 
     if git_auth.pinned_remote(agent_dir) is None:
@@ -2716,25 +2743,155 @@ async def _push_reviewed_run(agent_name: str, agent_dir: str, run_id: str) -> bo
             _pin_registry_clone(agent_name, agent_dir)
         except Exception:
             pass
+    if git_auth.pinned_remote(agent_dir) is None:
+        return False, "Metorite has no record of this agent's repository"
     branch = await asyncio.to_thread(git_auth.current_branch, agent_dir)
     if not branch:
-        _log.warning("executor.agent_push_no_branch", agent=agent_name, run_id=run_id)
-        return False
+        return False, "the workspace is not on a branch"
+    if not since_sha:
+        return False, "Metorite could not tell which commits this turn made"
+
+    def _lines(*argv: str) -> list[str] | None:
+        return git_auth.git_lines(agent_dir, list(argv))
+
+    head_lines = await asyncio.to_thread(_lines, "rev-parse", "--verify", "-q", "HEAD")
+    if not head_lines:
+        return False, "the workspace has no commit"
+    head = head_lines[0]
+    rewritten = await asyncio.to_thread(
+        git_auth.git_lines, agent_dir, ["merge-base", "--is-ancestor", since_sha, head],
+    )
+    if rewritten is None:
+        return False, "the branch was rewritten during this turn"
+    window = await asyncio.to_thread(_lines, "rev-list", f"{since_sha}..{head}")
+    if not window:
+        return False, "this turn made no commit"
+    fetched = await asyncio.to_thread(git_auth.fetch, agent_dir)
+    if not fetched.ok:
+        return False, "Metorite could not read the remote branch"
+    tracking = f"refs/remotes/origin/{branch}"
+    has_tip = await asyncio.to_thread(_lines, "rev-parse", "--verify", "-q", tracking)
+    outgoing = await asyncio.to_thread(
+        _lines, "rev-list", head, *(["^" + tracking] if has_tip else ["--not", "--remotes=origin"]),
+    )
+    if outgoing is None:
+        return False, "Metorite could not list the commits to push"
+    if not outgoing:
+        return True, f"the commits of this turn are already on {branch}"
+    foreign = [sha for sha in outgoing if sha not in set(window)]
+    if foreign:
+        _log.warning(
+            "executor.agent_push_foreign_commits",
+            agent=agent_name, run_id=run_id, count=len(foreign),
+        )
+        return False, (
+            f"{len(foreign)} earlier commit(s) that this turn did not make would go "
+            "out too. A reviewer must approve them on the Agents page first"
+        )
     result = await asyncio.to_thread(
         functools.partial(
-            git_auth.push, agent_dir, src="HEAD", branch=branch,
+            git_auth.push, agent_dir, src=head, branch=branch,
             credential=git_auth.push_token(),
         ),
     )
     if result.ok:
         _log.info("executor.agent_push_done", agent=agent_name, run_id=run_id, branch=branch)
-    else:
+        return True, f"{len(outgoing)} commit(s) to {branch}"
+    _log.warning(
+        "executor.agent_push_failed",
+        agent=agent_name, run_id=run_id, branch=branch,
+        stderr=result.stderr.strip()[:300],
+    )
+    return False, "GitHub refused the push"
+
+
+#: The text of a chat push that did not happen, for the member.
+_NO_PUSH_TAIL = (
+    " Your commit stays local, and it waits for a reviewer on the Agents page."
+)
+
+
+async def _settle_agent_push(
+    agent_name: str,
+    agent_dir: str | None,
+    run_id: str,
+    *,
+    since_sha: str | None,
+    thread_id: str | None = None,
+) -> str | None:
+    """THE one end-of-turn step of a chat push (H-363). Every path calls it.
+
+    The run's shell holds no GitHub credential, so its own ``git push``
+    failed. When the run asked for a push
+    (``permission_policy.note_agent_push_request``), this asks the reviewer
+    rule again, from the run binding, and on a yes pushes this turn's
+    commits through :func:`_push_reviewed_run`. A run whose member is not a
+    reviewer gets no credential and no push.
+
+    Each run boundary calls it once, before its RUN_FINISHED (native MAF,
+    Copilot, Tier 2, batch, sub-agent). Returns the text for the member's
+    chat, or ``None`` when the run asked for no push.
+    Fence: ``tests/unit/test_clone_token_h363.py``.
+    """
+    try:
+        from acb_skills.permission_policy import take_agent_push_request
+        if not take_agent_push_request(run_id):
+            return None
+    except Exception:
+        return None
+    try:
+        allowed, why = await _agent_push_allowed()
+    except Exception as exc:
+        allowed, why = False, f"the push check failed: {str(exc)[:120]}"
+    if not allowed:
         _log.warning(
-            "executor.agent_push_failed",
-            agent=agent_name, run_id=run_id, branch=branch,
-            stderr=result.stderr.strip()[:300],
+            "executor.agent_push_request_refused",
+            agent=agent_name, run_id=run_id, reason=why,
         )
-    return result.ok
+        with contextlib.suppress(Exception):
+            record(AuditEvent(
+                actor=f"agent:{agent_name}", action="agent_push_request_refused",
+                target=f"agent:{agent_name}", payload={"run_id": run_id, "reason": why},
+                organization_id=_RUN_ORG.get(thread_id),
+            ))
+        return (
+            "Metorite did not push: only an admin of the first-party organization "
+            "or of a platform operator organization may push agent code."
+            + _NO_PUSH_TAIL
+        )
+    try:
+        pushed, text = await _push_reviewed_run(
+            agent_name, agent_dir or "", run_id, since_sha=since_sha,
+        )
+    except Exception as exc:
+        _log.warning("executor.agent_push_error", agent=agent_name, error=str(exc)[:200])
+        pushed, text = False, "the push failed"
+    if pushed:
+        return f"Metorite pushed this turn's commits: {text}."
+    return f"Metorite did not push: {text}." + _NO_PUSH_TAIL
+
+
+def _drop_agent_push(run_id: str, why: str) -> str | None:
+    """Drop the push request of a turn that did not finish. No push happens.
+
+    A turn that fails or is cancelled pushes nothing. Returns the text for
+    the member when a request was pending, so a path that can still answer
+    says so in the chat. The ``finally`` of each run boundary calls it too,
+    for a cancel, where no answer can go out.
+    """
+    try:
+        from acb_skills.permission_policy import take_agent_push_request
+        if not take_agent_push_request(run_id):
+            return None
+    except Exception:
+        return None
+    _log.warning("executor.agent_push_dropped", run_id=run_id, reason=why)
+    return f"Metorite did not push, because {why}." + _NO_PUSH_TAIL
+
+
+def _push_note_events(note: str | None) -> list[dict[str, Any]]:
+    """The chat events of a push note: one text message, or none."""
+    return list(_text_message_events("\n\n" + note)) if note else []
 
 
 async def _install_push_guard(agent_dir: str) -> None:
@@ -2846,14 +3003,6 @@ async def _detect_agent_commits(
     #   * flag ON + NO tenant    → None → fail closed: the read falls back to an
     #                              empty dedup set, the writes SKIP + log.
     _pc_open = _graph_session_opener(thread_id)
-
-    # H-363: did this run ask for a push? Taken once, first, so a run with
-    # nothing new to record leaves no request behind.
-    try:
-        from acb_skills.permission_policy import take_agent_push_request
-        _asked_push = take_agent_push_request(run_id)
-    except Exception:
-        _asked_push = False
 
     try:
         # ── Load existing commit SHAs for dedup ─────────────────────────
@@ -3037,24 +3186,6 @@ async def _detect_agent_commits(
         # The push gate's answer, asked once per pass and only for a pushed
         # commit of this run: ``(allowed, why)`` of ``_agent_push_allowed``.
         _push_gate: tuple[bool, str] | None = None
-
-        # H-363: the shell of the run holds no GitHub credential, so its own
-        # ``git push`` failed. When the run asked for a push, the GATEWAY
-        # pushes here, and only after the reviewer rule says yes again, from
-        # the run binding. A run whose member is not a reviewer gets no
-        # credential and no push. Fence: tests/unit/test_clone_token_h363.py.
-        if _asked_push and _this_run_shas:
-            try:
-                _push_gate = await _agent_push_allowed()
-            except Exception as exc:
-                _push_gate = (False, f"the push check failed: {str(exc)[:120]}")
-            if _push_gate[0]:
-                await _push_reviewed_run(agent_name, agent_dir, run_id)
-            else:
-                _log.warning(
-                    "executor.agent_push_request_refused",
-                    agent=agent_name, run_id=run_id, reason=_push_gate[1],
-                )
 
         for raw_line in all_lines:
             parts = raw_line.split("|", 1)
@@ -4083,6 +4214,14 @@ async def _run_agent_inner(
                 _registry_runtime = _e.get("agent_runtime", "maf")
         except Exception:
             pass
+        # H-363: the one end-of-turn push step. A batch run has no chat, so
+        # the text goes to the log.
+        _push_text = await _settle_agent_push(
+            agent_name, _git_dir, run_id,
+            since_sha=_head_before or None, thread_id=thread_id,
+        )
+        if _push_text:
+            _log.info("executor.agent_push_result", agent=agent_name, text=_push_text)
         await _detect_agent_commits(
             agent_name, _git_dir, run_id,
             since_sha=_head_before if _head_before else None,
@@ -4236,6 +4375,8 @@ async def _run_agent_inner(
         ) from exc
 
     finally:
+        # H-363: a batch turn that failed pushes nothing. Drop its request.
+        _drop_agent_push(run_id, "the turn did not finish")
         # Drop this batch run's tenant record and release the async binding, so a
         # tenant left bound is never inherited by whatever runs next on this task
         # (WS-29 acb_graph slice 6a — mirrors run_agent_stream's finally).
@@ -4849,6 +4990,9 @@ async def run_agent_stream(
             _git_dir = _git_dir_for(
                 loaded.agent_dir, _effective_ws, _store_instance,
             )
+            # H-363: the HEAD before this turn, for every tier. The end-of-turn
+            # push step pushes only the commits after it.
+            _run_base_head = await _get_current_head(_git_dir) if _git_dir else ""
             # H-201 (§21.16): a shared run's partition is its tenant key,
             # o:<org>, which exists only now. Stamp it, so the logs and the
             # presence snapshot show where this run works.
@@ -5515,6 +5659,10 @@ async def run_agent_stream(
                             "executor.native_maf_stream_idle_timeout",
                             agent=agent_name, idle_seconds=_native_idle_after,
                         )
+                        for _push_ev in _push_note_events(
+                            _drop_agent_push(run_id, "the turn stopped"),
+                        ):
+                            yield _sse(_push_ev)
                         yield _sse(run_error_event(
                             run_id=run_id, code="timeout",
                             where="native_maf_idle",
@@ -5533,6 +5681,12 @@ async def run_agent_stream(
                         # answer left out goes in before the end.
                         for _note_ev in _crm_note_events():
                             yield _sse(_note_ev)
+                        # H-363: the one end-of-turn push step.
+                        for _push_ev in _push_note_events(await _settle_agent_push(
+                            agent_name, _git_dir, run_id,
+                            since_sha=_run_base_head or None, thread_id=thread_id,
+                        )):
+                            yield _sse(_push_ev)
                         # A loop trip already emitted its terminal RUN_ERROR
                         # inline — don't follow it with a RUN_FINISHED that
                         # would make the client render the run as successful.
@@ -6240,6 +6394,12 @@ async def run_agent_stream(
                 # WS-53 CRM-Q33: the note of a CRM total, when left out.
                 for _note_ev in _crm_note_events():
                     yield _sse(_note_ev)
+                # H-363: the one end-of-turn push step.
+                for _push_ev in _push_note_events(await _settle_agent_push(
+                    agent_name, _git_dir, run_id,
+                    since_sha=_run_base_head or None, thread_id=thread_id,
+                )):
+                    yield _sse(_push_ev)
                 yield _sse({"type": "RUN_FINISHED", "runId": run_id, "threadId": thread_id})
 
                 await _detect_agent_commits(
@@ -6700,6 +6860,12 @@ async def run_agent_stream(
             # WS-53 CRM-Q33: the note of a CRM total, when left out.
             for _note_ev in _crm_note_events():
                 yield _sse(_note_ev)
+            # H-363: the one end-of-turn push step.
+            for _push_ev in _push_note_events(await _settle_agent_push(
+                agent_name, _git_dir, run_id,
+                since_sha=_run_base_head or None, thread_id=thread_id,
+            )):
+                yield _sse(_push_ev)
             # RUN_FINISHED must be emitted INSIDE the try block — the finally
             # below resets the relay contextvar and marks the thread inactive,
             # so a later yield would never reach Redis (reconnecting clients
@@ -6712,9 +6878,14 @@ async def run_agent_stream(
         # The code names the failure for the member's chat, and the ref
         # finds this log line (owner report, 2026-10-08). Before, `code` was
         # the class name and the member read the raw repr.
+        for _push_ev in _push_note_events(_drop_agent_push(run_id, "the turn failed")):
+            yield _sse(_push_ev)
         yield _sse(run_error_event(exc, run_id=run_id, where="run_agent_stream"))
         return
     finally:
+        # H-363: a turn that was cancelled, or stopped on any other path,
+        # pushes nothing. The request goes, and the log says so.
+        _drop_agent_push(run_id, "the turn did not finish")
         try:
             # ── Live activity feed (E2): agent activation END ────────────────────
             # Clears this run from the "running now" panel and stamps duration +

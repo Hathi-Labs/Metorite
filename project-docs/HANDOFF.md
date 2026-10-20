@@ -6033,8 +6033,12 @@ line — never reclaim a number by deleting the other entry.
      with `scripts/secrets.sh`.
   2. [OWNER] Make a token with the Copilot permission only, and push it as
      `COPILOT_GITHUB_TOKEN` in the same way.
-  3. After 1 and 2, `GITHUB_TOKEN` is the push token only. The gateway gives
-     it to a reviewer's push (`acb_common/git_credentials.py`, rule 5).
+  3. After 1 and 2, the gateway uses `GITHUB_TOKEN` for a gated push only
+     (`acb_common/git_credentials.py`, rule 5). Path 3 still reaches it, so
+     this entry stays open until H-271 or BH-5 closes that path.
+- **The mutation container is closed.** It gets `COPILOT_GITHUB_TOKEN` only,
+  by name, and never `GITHUB_TOKEN` (`mutation._copilot_only_token`). With no
+  Copilot-only token and no `GATEWAY_API_KEY`, it does not start.
 - **Authority:** H-363 · `specs/box_hardening.md` §5 BH-1 · H-271
 - **Added:** 2026-10-20 · H-363
 

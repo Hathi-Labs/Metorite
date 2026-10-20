@@ -433,10 +433,23 @@ def _detect(monkeypatch: pytest.MonkeyPatch, clone: Path, since: str, run_id: st
     monkeypatch.setattr(executor, "record", lambda *_a, **_k: None)
     monkeypatch.setattr(mutation, "_register_pending_commit", _register)
     monkeypatch.setattr(mutation, "_git_diff", _diff)
-    asyncio.run(executor._detect_agent_commits(
-        "x", str(clone), run_id, since_sha=since, thread_id="t-h363",
-    ))
+    async def _end_of_turn() -> None:
+        # As every run boundary does: the one push step, then the scan.
+        notes.append(await executor._settle_agent_push(
+            "x", str(clone), run_id, since_sha=since, thread_id="t-h363",
+        ))
+        await executor._detect_agent_commits(
+            "x", str(clone), run_id, since_sha=since, thread_id="t-h363",
+        )
+
+    notes: list[Any] = []
+    asyncio.run(_end_of_turn())
+    _NOTES[run_id] = notes[0]
     return rows
+
+
+#: The member-visible push text of each driven run, by run id.
+_NOTES: dict[str, Any] = {}
 
 
 _PUSH = {"kind": "shell", "full_command_text": "git push --no-verify origin HEAD"}
@@ -483,9 +496,15 @@ def test_a_reviewer_push_gets_the_credential_in_one_process(
     with _run_scope("run-yes", push_allowed=True):
         assert pp.note_agent_push_request() is True
     rows = _detect(monkeypatch, clone, base, "run-yes", (True, ""))
-    cred = _credentialed(fake_github)
-    assert len(cred) == 1 and "push" in cred[0]["argv"]
+    # One push process holds the push credential. The fresh fetch before it
+    # (to read the remote tip) holds the read credential, in its own process.
+    cred = [c for c in _credentialed(fake_github) if "push" in c["argv"]]
+    assert len(cred) == 1
     assert cred[0]["extra"][gc.CREDENTIAL_ENV] == FAKE
+    assert all(
+        "push" in c["argv"] or "fetch" in c["argv"] for c in _credentialed(fake_github)
+    )
+    assert "Metorite pushed" in _NOTES["run-yes"]
     assert all(FAKE not in a for c in fake_github for a in c["argv"])
     assert _git(origin, "rev-parse", "main") == head, "the reviewer's push did not land"
     row = {r["commit_sha"]: r for r in rows}[head]
@@ -556,6 +575,52 @@ def test_the_routes_pin_a_clone_from_the_registry(
     assert agent_routes._pin_registry_clone("local", clone.parent / "local") is False
     assert agent_routes._pin_registry_clone("nobody", clone.parent / "nobody") is False
     assert gc.pinned_remote(clone.parent / "nobody") is None
+
+
+def test_a_push_never_carries_a_commit_of_another_run(
+    monkeypatch: pytest.MonkeyPatch, tokens: dict, origin: Path, fake_github: list,
+    agent_clone: tuple[Path, str, str],
+) -> None:
+    """The clone is shared. A pending commit from before this turn stays out.
+
+    ``agent_clone`` made one commit that is not on the remote. This turn
+    starts AFTER it and makes one more. A push of HEAD would carry both, so
+    the step refuses, and the member reads why.
+    """
+    from acb_skills import permission_policy as pp
+
+    clone, base, earlier = agent_clone
+    mine = _commit(clone, "this-turn")
+    # A SHA planted in the hook queue does not widen the window either.
+    (clone / ".git" / "cc-commits-queue").write_text(earlier + "\n", encoding="utf-8")
+    with _run_scope("run-mixed", push_allowed=True):
+        assert pp.note_agent_push_request() is True
+    _detect(monkeypatch, clone, earlier, "run-mixed", (True, ""))
+    assert not [c for c in _credentialed(fake_github) if "push" in c["argv"]]
+    assert _git(origin, "rev-parse", "main") == base
+    assert "did not push" in _NOTES["run-mixed"] and "earlier commit" in _NOTES["run-mixed"]
+    assert mine != earlier
+
+
+def test_a_clone_whose_config_is_not_clean_gets_no_credential(
+    tokens: dict, origin: Path, fake_github: list, agent_clone: tuple[Path, str, str],
+) -> None:
+    """A secret the scrub cannot remove (here, a token in a comment) fails closed."""
+    clone, _base, head = agent_clone
+    with (clone / ".git" / "config").open("a", encoding="utf-8") as f:
+        f.write(f"# left by hand: {FAKE}\n")
+    pushed = gc.push(clone, src=head, branch="main", credential=FAKE)
+    assert pushed.returncode == 4 and "still holds a secret" in pushed.stderr
+    gc.fetch(clone)
+    assert _credentialed(fake_github) == [], "an unclean clone got the credential"
+    assert _git(origin, "rev-parse", "main") != head
+
+
+def test_a_config_that_git_cannot_parse_is_not_clean(agent_clone: tuple[Path, str, str]) -> None:
+    clone, _base, _head = agent_clone
+    (clone / ".git" / "config").write_text("[remote \"origin\"\n\turl = x\n", encoding="utf-8")
+    assert gc.config_is_clean(clone) is False
+    assert gc.find_clone_secrets(clone.parent) == [str(clone / ".git" / "config")]
 
 
 def test_no_push_request_means_no_push(
@@ -641,3 +706,245 @@ def test_the_seam_redacts_a_token_in_git_output() -> None:
     assert gc.url_has_secret("git@github.com:o/r.git") is False
     assert gc.parse_github_remote("https://evil.example/o/r.git") is None
     assert gc.parse_github_remote("ext::sh -c x") is None
+
+
+# ── 7. Every stream path runs the one push step (review P0) ──────────────────
+
+
+class _Resp:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.messages: list[Any] = []
+
+
+class _BatchAgent:
+    """No ``run(stream=True)`` iterator, so the stream takes its Tier 2 path."""
+
+    def __init__(self, run_id: str) -> None:
+        self.name = "test-agent"
+        self.tools: list[Any] = []
+        self.default_options: dict[str, Any] = {}
+        self._run_id = run_id
+
+    async def run(self, *_a: Any, **_k: Any) -> _Resp:
+        from acb_skills import permission_policy as pp
+
+        pp._PUSH_REQUESTS[self._run_id] = None  # the shell asked for a push
+        return _Resp("done, and pushed")
+
+    async def __aenter__(self) -> "_BatchAgent":
+        return self
+
+    async def __aexit__(self, *_a: Any) -> bool:
+        return False
+
+
+class _NativeAgent(_BatchAgent):
+    """``run(stream=True)`` yields updates, so the stream takes native MAF."""
+
+    def run(self, *_a: Any, **_k: Any) -> Any:  # type: ignore[override]
+        return self._stream()
+
+    async def _stream(self) -> Any:
+        from acb_skills import permission_policy as pp
+
+        pp._PUSH_REQUESTS[self._run_id] = None
+        yield SimpleNamespace(
+            role="assistant", message_id="m1",
+            contents=[SimpleNamespace(type="text", text="done, and pushed")],
+        )
+
+
+def _stream_turn(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, agent: Any,
+                 run_id: str, gate: tuple[bool, str]) -> tuple[list[dict], list[Any]]:
+    import json
+
+    executor = pytest.importorskip("orchestrator.executor")
+    from acb_common import get_settings
+    from acb_common.db import bind_tenant, release_tenant
+
+    class _Loaded:
+        agent_dir = tmp_path
+        agent_name = "test-agent"
+        config: dict[str, Any] = {}
+
+        def build_agents(self) -> list[Any]:
+            return [agent]
+
+    class _Ctx:
+        def __enter__(self) -> _Loaded:
+            return _Loaded()
+
+        def __exit__(self, *_a: Any) -> bool:
+            return False
+
+    pushes: list[Any] = []
+
+    async def _gate() -> tuple[bool, str]:
+        return gate
+
+    async def _push(name: str, agent_dir: str, rid: str, *, since_sha: Any) -> tuple[bool, str]:
+        pushes.append((name, rid))
+        return True, "1 commit(s) to main"
+
+    monkeypatch.setattr(get_settings(), "agents_clone_dir", str(tmp_path / "agents"))
+    monkeypatch.setattr(executor, "load_agent", lambda *a, **k: _Ctx())
+    monkeypatch.setattr(executor, "build_integrations", lambda *a, **k: ({}, {}))
+    monkeypatch.setattr(executor, "_agent_push_allowed", _gate)
+    monkeypatch.setattr(executor, "_push_reviewed_run", _push)
+    monkeypatch.setattr(executor, "record", lambda *_a, **_k: None)
+    token = bind_tenant("org-h363-stream")
+    try:
+        async def _collect() -> list[str]:
+            return [line async for line in executor.run_agent_stream(
+                "test-agent-unregistered", {"message": "commit and push"}, run_id=run_id,
+            )]
+        lines = asyncio.run(_collect())
+    finally:
+        release_tenant(token)
+    events: list[dict] = []
+    for line in lines:
+        for part in line.split("\n"):
+            part = part.strip()
+            body = part[5:].strip() if part.startswith("data:") else ""
+            if body and body != "[DONE]":
+                with contextlib.suppress(ValueError):
+                    events.append(json.loads(body))
+    return events, pushes
+
+
+def _chat_text(events: list[dict]) -> str:
+    return "".join(str(e.get("delta") or "") for e in events
+                   if e.get("type") == "TEXT_MESSAGE_CONTENT")
+
+
+@pytest.mark.filterwarnings("ignore:coroutine .*run.* was never awaited:RuntimeWarning")
+@pytest.mark.parametrize("shape", ["native", "tier2"])
+@pytest.mark.parametrize("reviewer", [True, False])
+def test_every_stream_path_settles_a_push_request(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, shape: str, reviewer: bool,
+) -> None:
+    """One native MAF turn and one Tier 2 turn, each with a push request.
+
+    A reviewer's request reaches the gated push, and the chat says so. A
+    non-reviewer's does not, and the chat says no push happened. Either way
+    the request is gone after the turn.
+    """
+    from acb_skills import permission_policy as pp
+
+    run_id = f"run-stream-{shape}-{reviewer}"
+    agent = _NativeAgent(run_id) if shape == "native" else _BatchAgent(run_id)
+    events, pushes = _stream_turn(
+        monkeypatch, tmp_path, agent, run_id, (reviewer, "" if reviewer else "not a reviewer"),
+    )
+    types = [e.get("type") for e in events]
+    assert "RUN_FINISHED" in types, types
+    text = _chat_text(events)
+    if reviewer:
+        assert pushes == [("test-agent-unregistered", run_id)], "the gated push did not run"
+        assert "Metorite pushed" in text
+    else:
+        assert pushes == [], "a non-reviewer reached the push"
+        assert "Metorite did not push" in text
+    # The note lands BEFORE the end of the turn, where the member reads it.
+    last_text = max(i for i, t in enumerate(types) if t == "TEXT_MESSAGE_CONTENT")
+    assert last_text < types.index("RUN_FINISHED")
+    assert pp.take_agent_push_request(run_id) is False
+
+
+@pytest.mark.filterwarnings("ignore:coroutine .*run.* was never awaited:RuntimeWarning")
+def test_a_failed_turn_drops_the_request_and_pushes_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    from acb_skills import permission_policy as pp
+
+    run_id = "run-stream-fails"
+
+    class _Fails(_BatchAgent):
+        async def run(self, *_a: Any, **_k: Any) -> _Resp:
+            pp._PUSH_REQUESTS[self._run_id] = None
+            raise RuntimeError("boom after the push request")
+
+    _events, pushes = _stream_turn(monkeypatch, tmp_path, _Fails(run_id), run_id, (True, ""))
+    assert pushes == []
+    assert pp.take_agent_push_request(run_id) is False
+
+
+def test_every_run_boundary_calls_the_one_push_step() -> None:
+    """A source check: each boundary settles, and none pushes on its own."""
+    import inspect
+
+    executor = pytest.importorskip("orchestrator.executor")
+    src = inspect.getsource(executor)
+    # native MAF, Copilot, Tier 2, batch and sub-agent.
+    assert src.count("await _settle_agent_push(") >= 5
+    assert src.count("await _push_reviewed_run(") == 1, "only the one step pushes"
+    for boundary in ("run_agent_stream", "_run_agent_inner", "_run_sub_agent_streaming"):
+        body = inspect.getsource(getattr(executor, boundary))
+        assert "_settle_agent_push(" in body, boundary
+        assert "_drop_agent_push(" in body, boundary
+
+
+# ── 8. The mutation container never gets the push token (review P1) ─────────
+
+
+def test_the_mutation_container_never_gets_the_push_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mutation = pytest.importorskip("orchestrator.mutation")
+    for name in ("COPILOT_GITHUB_TOKEN", "GITHUB_COPILOT_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", FAKE)
+    spawned: list[dict[str, Any]] = []
+
+    class _Proc:
+        returncode = 1
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b"", b"no docker here"
+
+    async def _exec(*argv: Any, **kw: Any) -> _Proc:
+        spawned.append({"argv": [str(a) for a in argv], "env": dict(kw.get("env") or {})})
+        return _Proc()
+
+    async def _no_pull(*_a: Any, **_k: Any) -> None:
+        return None
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
+    monkeypatch.setattr(mutation, "_stash_pull_before_mutation", _no_pull)
+    monkeypatch.setattr(mutation, "_build_mutation_prompt", lambda _t: "fix it")
+
+    def _run(settings: Any) -> None:
+        asyncio.run(mutation._run_mutation_sandbox(
+            "x", "run-m", "run-m", {"local_clone_dir": None}, settings,
+        ))
+
+    base = {"llm_api_key": "", "litellm_master_key": "", "mutation_timeout_seconds": 5}
+    # 1. Only the push token is set: the container does not start at all.
+    _run(SimpleNamespace(github_token=FAKE, **base))
+    assert spawned == [], "the container started with no Copilot-only token"
+    # 2. The operator copied the push token into the Copilot name: refused too.
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", FAKE)
+    _run(SimpleNamespace(github_token=FAKE, **base))
+    assert spawned == []
+    # 3. A Copilot-only token: it goes by NAME in argv, by value in env only.
+    copilot_only = "ghu_H363copilotONLYcopilotONLY0123"
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", copilot_only)
+    _run(SimpleNamespace(github_token=FAKE, **base))
+    assert len(spawned) == 1
+    argv, env = spawned[0]["argv"], spawned[0]["env"]
+    assert all(FAKE not in a and copilot_only not in a for a in argv), "a token in argv"
+    assert FAKE not in env.values(), "the push token reached the container env"
+    assert env.get("COPILOT_GITHUB_TOKEN") == copilot_only
+    assert "COPILOT_GITHUB_TOKEN" in argv and "GATEWAY_API_KEY" in argv
+
+
+def test_mutation_source_passes_no_github_token_to_a_container() -> None:
+    import inspect
+
+    mutation = pytest.importorskip("orchestrator.mutation")
+    src = inspect.getsource(mutation._run_mutation_sandbox)
+    assert "github_token" not in src.replace("``github_token``", ""), (
+        "_run_mutation_sandbox reads github_token again"
+    )
+    assert not re.search(r'"-e",\s*f"[A-Z_]*(TOKEN|KEY)[A-Z_]*=', src), "a secret value in argv"

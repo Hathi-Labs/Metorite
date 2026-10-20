@@ -40,7 +40,7 @@ from typing import Any
 
 from acb_audit import AuditEvent, record
 from acb_common import get_logger, get_settings
-from acb_common.child_env import child_env, docker_env
+from acb_common.child_env import DOCKER_NAMES, child_env, docker_env, env_values
 
 _log = get_logger("orchestrator.mutation")
 
@@ -873,6 +873,26 @@ async def _stash_pull_before_mutation(
     _log.info("mutation.clone_synced", agent=agent_name)
 
 
+def _copilot_only_token(settings: Any) -> str | None:
+    """The Copilot token of the mutation container, or ``None`` (H-363).
+
+    Only ``COPILOT_GITHUB_TOKEN`` or ``GITHUB_COPILOT_TOKEN``, which the
+    operator sets to a token with the Copilot permission only. NEVER
+    ``GITHUB_TOKEN``: that is the push token, and the container runs code
+    that a model wrote. A value equal to ``github_token`` is refused too, so
+    an operator who copied the push token into the Copilot name gets no
+    token in the container.
+    """
+    push = str(getattr(settings, "github_token", "") or "").strip()
+    for name in ("COPILOT_GITHUB_TOKEN", "GITHUB_COPILOT_TOKEN"):
+        value = (os.environ.get(name) or "").strip()
+        if value and value != push:
+            return value
+        if value and value == push:
+            _log.warning("mutation.copilot_token_is_the_push_token", name=name)
+    return None
+
+
 async def _run_mutation_sandbox(
     agent_name: str,
     run_id: str,
@@ -894,7 +914,11 @@ async def _run_mutation_sandbox(
     """
     import asyncio
 
-    github_token: str | None = getattr(settings, "github_token", None) or None
+    # H-363: the container runs model-authored code with the clone mounted,
+    # so it NEVER gets ``github_token``, the repo-scope push token. It gets a
+    # Copilot-only token when the operator set one (_copilot_only_token),
+    # and no token at all otherwise. Fence: tests/unit/test_clone_token_h363.py.
+    copilot_token: str | None = _copilot_only_token(settings)
     # The LLM API key, NEVER the identity token. This value crosses a process
     # boundary into a container running model-authored code, delivered as an
     # env var — the single worst place to put a credential that grants full
@@ -916,12 +940,12 @@ async def _run_mutation_sandbox(
         _log.warning("mutation.sandbox_dir_refused", agent=agent_name, run_id=run_id)
         return False, "", "", "", None
 
-    if not github_token and not gateway_key:
+    if not copilot_token and not gateway_key:
         _log.warning(
             "mutation.sandbox_not_configured",
             agent=agent_name,
             run_id=run_id,
-            hint="Set GITHUB_TOKEN to enable live self-mutation.",
+            hint="Set GATEWAY_API_KEY or a Copilot-only COPILOT_GITHUB_TOKEN.",
         )
         _log.info(
             "mutation.manual_prompt",
@@ -971,8 +995,11 @@ async def _run_mutation_sandbox(
         "--pids-limit", str(pids_limit),
         "-e", f"MUTATION_PROMPT={prompt}",
         "-e", f"MUTATION_TELEMETRY_JSON={json.dumps(telemetry)}",
-        "-e", f"COPILOT_GITHUB_TOKEN={github_token or ''}",
-        "-e", f"GATEWAY_API_KEY={gateway_key or ''}",
+        # H-363: the two secrets go by NAME. ``docker run -e NAME`` reads the
+        # value from the docker CLI's own env, so no value is in argv, which
+        # every user of the box can read in /proc/<pid>/cmdline.
+        "-e", "COPILOT_GITHUB_TOKEN",
+        "-e", "GATEWAY_API_KEY",
         "-e", f"GATEWAY_BASE_URL={gateway_url}",
         "-e", f"GATEWAY_MODEL={mutation_model}",
         "-e", f"{ROUTER_HEADERS_ENV}={json.dumps(_router_headers())}",
@@ -989,7 +1016,11 @@ async def _run_mutation_sandbox(
             *docker_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=docker_env(),
+            env=child_env(extra={
+                **env_values(*DOCKER_NAMES),
+                "COPILOT_GITHUB_TOKEN": copilot_token or "",
+                "GATEWAY_API_KEY": gateway_key or "",
+            }),
         )
         try:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
