@@ -438,6 +438,11 @@ Rules that make it work:
   `bash scripts/ci_local.sh`. It runs in the preset `metorite-ci` WSL2
   distro, so no job installs anything first. It tests the COMMIT, so commit
   first. Setup and isolation: `engineering_practice.md` §7a.
+  ⚠️ **When WSL or Docker hangs** (`HCS_E_CONNECTION_TIMEOUT`, Docker
+  answers 500), run `bash scripts/ci_pc/doctor.sh`. It reports in about 20
+  seconds. `--fix` repairs it in a known order, and it restarts SHARED
+  things, so use it only when the report says they are broken. Do not fall
+  back to GitHub-only CI in silence: say the doctor's result.
 - **Do not run all of `tests/unit/` locally.** It takes about 50 minutes.
   Run `uv run python scripts/affected_tests.py --run`, which picks the tests
   your diff can affect and prints the `vitest related` command for frontend
