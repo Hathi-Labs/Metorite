@@ -5679,14 +5679,14 @@ async def run_agent_stream(
                         await _finish_native_session(_session_turn)
                         # WS-53 CRM-Q33: the note of a CRM total that the
                         # answer left out goes in before the end.
-                        for _note_ev in _crm_note_events():
-                            yield _sse(_note_ev)
                         # H-363: the one end-of-turn push step.
                         for _push_ev in _push_note_events(await _settle_agent_push(
                             agent_name, _git_dir, run_id,
                             since_sha=_run_base_head or None, thread_id=thread_id,
                         )):
                             yield _sse(_push_ev)
+                        for _note_ev in _crm_note_events():
+                            yield _sse(_note_ev)
                         # A loop trip already emitted its terminal RUN_ERROR
                         # inline — don't follow it with a RUN_FINISHED that
                         # would make the client render the run as successful.
@@ -6392,14 +6392,14 @@ async def run_agent_stream(
                     # commit detection so the run records as 'completed' and
                     # the folded tool cards are preserved.
                 # WS-53 CRM-Q33: the note of a CRM total, when left out.
-                for _note_ev in _crm_note_events():
-                    yield _sse(_note_ev)
                 # H-363: the one end-of-turn push step.
                 for _push_ev in _push_note_events(await _settle_agent_push(
                     agent_name, _git_dir, run_id,
                     since_sha=_run_base_head or None, thread_id=thread_id,
                 )):
                     yield _sse(_push_ev)
+                for _note_ev in _crm_note_events():
+                    yield _sse(_note_ev)
                 yield _sse({"type": "RUN_FINISHED", "runId": run_id, "threadId": thread_id})
 
                 await _detect_agent_commits(
@@ -6858,14 +6858,14 @@ async def run_agent_stream(
                 if _t2_ev.get("type") == "TEXT_MESSAGE_CONTENT":
                     await asyncio.sleep(0)  # yield event loop so SSE flushes
             # WS-53 CRM-Q33: the note of a CRM total, when left out.
-            for _note_ev in _crm_note_events():
-                yield _sse(_note_ev)
             # H-363: the one end-of-turn push step.
             for _push_ev in _push_note_events(await _settle_agent_push(
                 agent_name, _git_dir, run_id,
                 since_sha=_run_base_head or None, thread_id=thread_id,
             )):
                 yield _sse(_push_ev)
+            for _note_ev in _crm_note_events():
+                yield _sse(_note_ev)
             # RUN_FINISHED must be emitted INSIDE the try block — the finally
             # below resets the relay contextvar and marks the thread inactive,
             # so a later yield would never reach Redis (reconnecting clients
