@@ -18,7 +18,11 @@ import { getSchema, type JSONContent } from "@tiptap/core";
 import { describe, expect, it } from "vitest";
 
 import { HIGHLIGHT_COLORS, TEXT_COLORS, hexStyle, isHexColor, isHighlightColor, isTextColor } from "./colors";
+import { readColumns, writeColumns } from "./columns";
+import { dateLabel, isIsoDate, readDate, todayIso, writeDate } from "./date";
 import { escapeHtmlText, escapeInlineText, findClose, unescapeInlineText } from "./htmlFragment";
+import { readStatus, writeStatus } from "./status";
+import { sortSubpages, writeSubpages } from "./subpages";
 import { normaliseBody, parseBody } from "./markdown";
 import { knowledgeExtensions } from "./schema";
 
@@ -53,6 +57,11 @@ describe("the golden set holds each stored form", () => {
   it("has a case for each mark of KB-2p", () => {
     const marks = all((c) => c.marks);
     for (const mark of ["textColor", "highlight", "superscript", "subscript"]) expect(marks, mark).toContain(mark);
+  });
+
+  it("has a case for each block of KB-2p", () => {
+    const nodes = all((c) => c.nodes);
+    for (const node of ["status", "kbDate", "columns", "column", "subpages", "pageBreak"]) expect(nodes, node).toContain(node);
   });
 
   it("has a case for each alignment, on a paragraph and on a heading", () => {
@@ -136,5 +145,61 @@ describe("the text of a fragment", () => {
   it("escapes only what would end the text, and reads it back", () => {
     expect(escapeHtmlText("5 < 6 & </span> &copy;")).toBe("5 < 6 & &lt;/span> &amp;copy;");
     expect(unescapeInlineText(escapeInlineText("a *b* [c] </x> &amp;"))).toBe("a *b* [c] </x> &amp;");
+  });
+});
+
+describe("the inline blocks", () => {
+  it("reads and writes a status, and refuses a colour off the list", () => {
+    expect(readStatus('<span data-type="status" data-color="green">Done</span> x')).toEqual({
+      raw: '<span data-type="status" data-color="green">Done</span>',
+      color: "green",
+      text: "Done",
+    });
+    expect(readStatus('<span data-type="status" data-color="teal">X</span>')).toBeNull();
+    expect(writeStatus("a*b <c>", "red")).toBe('<span data-type="status" data-color="red">a\\*b &lt;c></span>');
+    expect(writeStatus("x", "nope")).toBe('<span data-type="status" data-color="gray">x</span>');
+  });
+
+  it("reads a real day only, and labels a pick the same in every locale", () => {
+    expect(isIsoDate("2026-10-19")).toBe(true);
+    expect(isIsoDate("2026-02-30")).toBe(false);
+    expect(isIsoDate("2026-1-5")).toBe(false);
+    expect(dateLabel("2026-10-19")).toBe("19 Oct 2026");
+    expect(todayIso(new Date(2026, 0, 5))).toBe("2026-01-05");
+    expect(readDate('<time data-type="date" datetime="2026-10-19">Monday</time>')?.label).toBe("Monday");
+    expect(readDate('<time data-type="date" datetime="2026-10-19"></time>')).toBeNull();
+    expect(writeDate("2026-10-19", "")).toBe('<time data-type="date" datetime="2026-10-19">19 Oct 2026</time>');
+  });
+});
+
+describe("the block forms", () => {
+  it("reads columns whose count matches, past a fence and a raw div", () => {
+    const md = writeColumns(["A", "```\n</div>\n```", '<div align="center">\nx\n</div>']);
+    expect(readColumns(md)?.bodies).toEqual(["A", "```\n</div>\n```", '<div align="center">\nx\n</div>']);
+    expect(readColumns(md.replace('data-count="3"', 'data-count="2"'))).toBeNull();
+    expect(readColumns('<div data-type="columns" data-count="2">\n\n<div data-type="column">\n\nA\n\n</div>')).toBeNull();
+  });
+
+  it("writes an empty column with no body", () => {
+    expect(writeColumns(["", "B"])).toBe(
+      '<div data-type="columns" data-count="2">\n\n<div data-type="column">\n\n</div>\n\n<div data-type="column">\n\nB\n\n</div>\n\n</div>',
+    );
+  });
+
+  it("orders the sub-pages by the tree, by title or by the last edit", () => {
+    const rows = [
+      { id: "a", title: "beta", position: 1, updated_at: "2026-10-01" },
+      { id: "b", title: "Alpha", position: 2, updated_at: "2026-10-09" },
+      { id: "c", title: "gamma", position: 0, updated_at: null },
+    ];
+    expect(sortSubpages(rows, "manual").map((r) => r.id)).toEqual(["c", "a", "b"]);
+    expect(sortSubpages(rows, "title").map((r) => r.id)).toEqual(["b", "a", "c"]);
+    expect(sortSubpages(rows, "recent").map((r) => r.id)).toEqual(["b", "a", "c"]);
+    expect(writeSubpages("bogus")).toBe('<div data-type="subpages" data-order="manual"></div>');
+  });
+
+  it("keeps a page break, subpages and columns out of a GFM paragraph", () => {
+    const doc = parseBody('Text\n<div data-type="page-break"></div>');
+    expect(doc.content?.map((n) => n.type)).toEqual(["paragraph", "pageBreak"]);
   });
 });

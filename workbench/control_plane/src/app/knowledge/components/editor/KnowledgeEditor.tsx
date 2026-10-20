@@ -47,6 +47,7 @@ import { knowledgeExtensions } from "../../lib/editor/schema";
 import type { Space } from "../../lib/types";
 import { FormatBubble, ImageDialog, TableTools, scrollParent } from "./menus";
 import { CalloutView, CodeBlockView, DetailsView, ImageView } from "./nodeViews";
+import { storedFormViews } from "./storedFormViews";
 import { useSuggestionMenu, type SuggestionMenu } from "./useSuggestionMenu";
 
 /**
@@ -258,6 +259,7 @@ export default function KnowledgeEditor({
           codeBlock: ReactNodeViewRenderer(CodeBlockView),
           callout: ReactNodeViewRenderer(CalloutView),
           details: ReactNodeViewRenderer(DetailsView),
+          ...storedFormViews(),
         },
       }),
       KnowledgeMenus,

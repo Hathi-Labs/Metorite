@@ -7,7 +7,12 @@
 
 import type { AnyExtension, NodeViewRenderer } from "@tiptap/core";
 
+import { Column, createColumns } from "./columns";
+import { createDate } from "./date";
 import { Highlight } from "./highlight";
+import { PageBreak } from "./pageBreak";
+import { createStatus } from "./status";
+import { createSubpages } from "./subpages";
 import { Subscript, Superscript } from "./supSub";
 import { KbTextAlign } from "./textAlign";
 import { TextColor } from "./textColor";
@@ -21,6 +26,18 @@ export interface StoredFormViews {
 }
 
 /** The extensions of the stored forms, in registration order. */
-export function storedFormExtensions(_views: StoredFormViews = {}): AnyExtension[] {
-  return [TextColor, Highlight, Superscript, Subscript, KbTextAlign];
+export function storedFormExtensions(views: StoredFormViews = {}): AnyExtension[] {
+  return [
+    TextColor,
+    Highlight,
+    Superscript,
+    Subscript,
+    KbTextAlign,
+    createStatus(views.status),
+    createDate(views.date),
+    createColumns(views.columns),
+    Column,
+    createSubpages(views.subpages),
+    PageBreak,
+  ];
 }
