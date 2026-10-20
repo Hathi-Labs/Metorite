@@ -196,9 +196,11 @@ describe("the default columns are the fields with the highest fill (item 2)", ()
   });
 
   it("is wired in the page: a view with nothing saved hands null to the list", () => {
-    const page = source("page.tsx");
-    expect(page).toContain("draftOfView ?? activeSaved?.columns ?? null");
-    expect(page).not.toContain("activeSaved?.columns ?? []");
+    // CRM-U8: the rule moved into the controller both lists share.
+    const hook = source("lib/useViewActions.ts");
+    expect(hook).toContain("draftOfView ?? active.columns ?? null");
+    expect(hook).not.toContain("active.columns ?? []");
+    expect(source("page.tsx")).toContain("columnKeys={activeSaved ? viewActions.columns : undefined}");
   });
 });
 

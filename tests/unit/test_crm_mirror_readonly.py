@@ -639,7 +639,7 @@ _OVERLAY = {
     "crm_deal_statuses": frozenset({
         "hidden", "ui_position", "ui_probability", "ui_color", "max_dwell_days",
     }),
-    "crm_lead_statuses": frozenset({"hidden", "ui_position", "ui_color"}),
+    "crm_lead_statuses": frozenset({"hidden", "ui_position", "ui_probability", "ui_color"}),
     "crm_lost_reasons": frozenset({"hidden"}),
 }
 

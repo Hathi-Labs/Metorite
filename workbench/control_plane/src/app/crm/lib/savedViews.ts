@@ -12,8 +12,11 @@
 // divergence check (`viewDiverges`) reads those two functions and holds no
 // second opinion about what a view is.
 
+import { canEditView, stableJson, type SavedView as BaseView } from "@/lib/savedViews";
+
 import { MAX_COLUMNS } from "./fields";
 import {
+  DEFAULT_VIEW,
   RANGE_KEYS,
   defaultLayout,
   hasBoard,
@@ -35,26 +38,37 @@ export type SavedFilters = {
 
 export type SavedSort = { key: string; dir: "asc" | "desc" };
 
+/**
+ * What a view is scoped to: one of the four lists, or a generic module list
+ * (`module:Products`, CRM-U8). The key is the scope of the shared seam
+ * (`src/lib/savedViews`).
+ */
+export type ViewEntity = EntitySlug | `module:${string}`;
+
+/** The scope of a generic module list. */
+export function moduleScope(module: string): ViewEntity {
+  return `module:${module}`;
+}
+
+/** The module that a scope names, or null for one of the four lists. */
+export function moduleOfScope(scope: string | null | undefined): string | null {
+  return scope && scope.startsWith("module:") ? scope.slice("module:".length) : null;
+}
+
 /** One row of `GET /crm/views`. */
-export type SavedView = {
-  id: string;
-  entity: EntitySlug;
-  name: string;
+export type SavedView = BaseView & {
+  entity: ViewEntity;
   owner_email: string;
-  shared: boolean;
   layout: CrmLayout;
   filters: SavedFilters;
   sort: SavedSort | null;
   columns: string[] | null;
   pipeline_id: string | null;
-  position: number;
-  /** True when the caller made the view. */
-  mine: boolean;
 };
 
 /** The body of a create. A patch sends a part of it. */
 export type SavedViewBody = {
-  entity: EntitySlug;
+  entity: ViewEntity;
   name: string;
   layout: CrmLayout;
   filters: SavedFilters;
@@ -113,14 +127,29 @@ export function captureView(
 /** The `CrmView` that a saved view opens. It carries `viewId`, so the URL names it. */
 export function applyView(saved: SavedView): CrmView {
   const f = saved.filters ?? {};
+  const module = moduleOfScope(saved.entity);
+  if (module) {
+    // A module list takes a search, a sort and columns. It has no filters.
+    return {
+      ...DEFAULT_VIEW,
+      tab: "module",
+      module,
+      layout: defaultLayout("module"),
+      q: f.q ?? "",
+      sort: saved.sort?.key ?? null,
+      dir: saved.sort?.dir === "asc" ? "asc" : "desc",
+      viewId: saved.id,
+    };
+  }
+  const entity = saved.entity as EntitySlug;
   const ranges: Partial<Record<RangeKey, string>> = {};
   for (const key of RANGE_KEYS) {
     const value = f[key];
     if (typeof value === "string") ranges[key] = value;
   }
   return {
-    tab: saved.entity,
-    layout: hasBoard(saved.entity) ? saved.layout : defaultLayout(saved.entity),
+    tab: entity,
+    layout: hasBoard(entity) ? saved.layout : defaultLayout(entity),
     pipelineId: saved.pipeline_id,
     record: null,
     q: f.q ?? "",
@@ -134,17 +163,6 @@ export function applyView(saved: SavedView): CrmView {
     custom: { ...(f.custom ?? {}) },
     viewId: saved.id,
   };
-}
-
-function stable(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
-  if (value && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, v]) => v !== undefined)
-      .sort(([a], [b]) => a.localeCompare(b));
-    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stable(v)}`).join(",")}}`;
-  }
-  return JSON.stringify(value ?? null);
 }
 
 /**
@@ -163,18 +181,18 @@ export function stateOf(saved: SavedView): ViewState {
 
 /** Has the screen moved away from the saved view? Compared on the stored shape. */
 export function viewDiverges(saved: SavedView, current: ViewState): boolean {
-  return stable(stateOf(saved)) !== stable(current);
+  return stableJson(stateOf(saved)) !== stableJson(current);
 }
 
-/** May this caller change or delete the view? The server decides; this hides the controls. */
-export function canEditView(saved: SavedView, isAdmin: boolean): boolean {
-  return saved.mine || isAdmin;
-}
+export { canEditView };
 
-/** The views in the rail order: shared ones last, each group by position. */
-export function railViews(views: SavedView[] | null | undefined): SavedView[] {
-  return [...(views ?? [])].sort(
-    (a, b) => Number(a.shared) - Number(b.shared) || a.position - b.position,
+/**
+ * Does the screen hold nothing a view would keep? No filter, no sort, and no
+ * columns picked. The default view with a blank state shows no save control.
+ */
+export function isBlankState(state: ViewState): boolean {
+  return (
+    Object.keys(state.filters).length === 0 && state.sort === null && state.columns === null
   );
 }
 
