@@ -86,6 +86,20 @@ def test_an_override_beats_the_job_env():
     assert "5434" not in out.split("== Run unit tests")[1]
 
 
+def test_the_local_shard_count_rewrites_the_split_that_pr_check_names():
+    # run_suite.sh splits finer than pr-check on a PC with more cores. It
+    # swaps the literal `--splits 6`, so that text must stay in pr-check.
+    out = steps.render("test", _CTX, {}, {"--splits 6": "--splits 12"})
+    assert "--splits 12 --group 1" in out
+    assert '"--replace=--splits 6=>--splits $SHARDS"' in _RUN_SUITE
+
+
+def test_a_replacement_that_matches_nothing_is_an_error():
+    # A silent miss would run 12 groups of a 6-way split: half the suite twice.
+    with pytest.raises(SystemExit, match="not found"):
+        steps.render("test", _CTX, {}, {"--splits 9": "--splits 12"})
+
+
 def test_no_job_can_reach_the_dev_stack_on_this_pc():
     # Every WSL2 distro shares one network, and Docker Desktop publishes the
     # dev stack's Postgres on *:5432 there. The first local run reached it.
