@@ -343,6 +343,9 @@ class BulkActionRequest(BaseModel):
     folder: str | None = None
     older_than_days: int | None = None
     only_read: bool | None = None
+    #: Count the mail that the act would change, and change nothing. The
+    #: chat's ``bulk_manage_inbox`` shows the count on its card first.
+    dry_run: bool = False
 
 
 _BULK_DB_UPDATE = {
@@ -440,6 +443,11 @@ async def bulk_action(
         if req.action == "archive":
             clauses.append(_NOT_DISPOSED)
         where_sql = " AND ".join(clauses)
+        if req.dry_run:
+            matched = (await db.execute(text(
+                f"SELECT COUNT(*) FROM email_messages em WHERE {where_sql}"
+            ), params)).scalar()
+            return {"matched": int(matched or 0), "affected": 0}
 
         # One set-based UPDATE, RETURNING the provider ids we need to reconcile.
         # Doing it in a single statement (rather than SELECT-then-UPDATE-by-id)
