@@ -786,16 +786,19 @@ def _stream_turn(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, agent: Any,
     async def _gate() -> tuple[bool, str]:
         return gate
 
-    async def _push(name: str, agent_dir: str, rid: str, *, since_sha: Any) -> tuple[bool, str]:
+    async def _push(name: str, agent_dir: str, rid: str, *, since_sha: Any) -> tuple[Any, ...]:
         pushes.append((name, rid))
-        return True, "1 commit(s) to main"
+        return True, "1 commit(s) to main", {
+            "repo": f"{OWNER}/{REPO}", "branch": "main", "shas": ["a" * 40],
+        }
 
     monkeypatch.setattr(get_settings(), "agents_clone_dir", str(tmp_path / "agents"))
     monkeypatch.setattr(executor, "load_agent", lambda *a, **k: _Ctx())
     monkeypatch.setattr(executor, "build_integrations", lambda *a, **k: ({}, {}))
     monkeypatch.setattr(executor, "_agent_push_allowed", _gate)
     monkeypatch.setattr(executor, "_push_reviewed_run", _push)
-    monkeypatch.setattr(executor, "record", lambda *_a, **_k: None)
+    _AUDITS.clear()
+    monkeypatch.setattr(executor, "record", lambda event, *_a, **_k: _AUDITS.append(event))
     token = bind_tenant("org-h363-stream")
     try:
         async def _collect() -> list[str]:
@@ -814,6 +817,10 @@ def _stream_turn(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, agent: Any,
                 with contextlib.suppress(ValueError):
                     events.append(json.loads(body))
     return events, pushes
+
+
+#: The audit events of the last driven stream turn.
+_AUDITS: list[Any] = []
 
 
 def _chat_text(events: list[dict]) -> str:
@@ -843,12 +850,21 @@ def test_every_stream_path_settles_a_push_request(
     types = [e.get("type") for e in events]
     assert "RUN_FINISHED" in types, types
     text = _chat_text(events)
+    pushed_rows = [a for a in _AUDITS if getattr(a, "action", "") == "agent_push_by_reviewer"]
     if reviewer:
         assert pushes == [("test-agent-unregistered", run_id)], "the gated push did not run"
         assert "Metorite pushed" in text
+        # The one audit row of the push, on this path too (review round 3).
+        assert len(pushed_rows) == 1, [getattr(a, "action", "") for a in _AUDITS]
+        payload = pushed_rows[0].payload
+        assert payload["run_id"] == run_id and payload["repo"] == f"{OWNER}/{REPO}"
+        assert payload["branch"] == "main" and payload["shas"] == ["a" * 40]
+        assert "member" in payload and payload["reviewed_by"] == "chat:autopush"
+        assert pushed_rows[0].organization_id == "org-h363-stream"
     else:
         assert pushes == [], "a non-reviewer reached the push"
         assert "Metorite did not push" in text
+        assert pushed_rows == []
     # The note lands BEFORE the end of the turn, where the member reads it.
     last_text = max(i for i, t in enumerate(types) if t == "TEXT_MESSAGE_CONTENT")
     assert last_text < types.index("RUN_FINISHED")

@@ -6036,6 +6036,18 @@ line — never reclaim a number by deleting the other entry.
   3. After 1 and 2, the gateway uses `GITHUB_TOKEN` for a gated push only
      (`acb_common/git_credentials.py`, rule 5). Path 3 still reaches it, so
      this entry stays open until H-271 or BH-5 closes that path.
+- **A reviewer's push can carry a commit of a concurrent run.** The scenario:
+  a reviewer's turn starts on a shared clone at HEAD `A`. During the turn, a
+  second run of the same agent commits `B` in the same clone. The reviewer's
+  turn commits `C` and asks for a push. At the end of the turn, the push step
+  sees `A..C`, which holds `B` and `C`, and it pushes both. So `B` goes out
+  with no reviewer. The push step cannot tell the two runs apart. The
+  post-commit hook writes only `git rev-parse HEAD` to `.git/cc-commits-queue`,
+  with no run id, and any shell of any run can write that file. To close it,
+  tag each commit with its run, from a source that a run cannot forge (for
+  example, the gateway makes the commit, or a per-run work tree), and refuse
+  any commit in the window that does not carry this run's tag. A partial
+  fix that reads the queue file would trust a file that a run can write.
 - **The mutation container is closed.** It gets `COPILOT_GITHUB_TOKEN` only,
   by name, and never `GITHUB_TOKEN` (`mutation._copilot_only_token`). With no
   Copilot-only token and no `GATEWAY_API_KEY`, it does not start.

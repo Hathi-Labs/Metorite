@@ -2712,7 +2712,7 @@ async def _commit_on_remote(agent_dir: str, commit_sha: str) -> bool:
 
 async def _push_reviewed_run(
     agent_name: str, agent_dir: str, run_id: str, *, since_sha: str | None,
-) -> tuple[bool, str]:
+) -> tuple[Any, ...]:
     """Push THIS turn's commits of *agent_dir*, as the gateway (H-363).
 
     The ONLY caller is :func:`_settle_agent_push`, after
@@ -2729,7 +2729,10 @@ async def _push_reviewed_run(
       of another run, or a SHA planted in ``.git/cc-commits-queue``, makes
       it refuse, and a reviewer approves those on the Agents page.
 
-    Returns ``(pushed, text)``. The text is for the member, with no secret.
+    Returns ``(pushed, text)``, and on a push ``(True, text, details)``.
+    The text is for the member, with no secret. *details* holds the repo,
+    the branch and the SHAs that went out, for the audit row of
+    :func:`_settle_agent_push`.
     """
     if not agent_dir or not _host_git_ok(agent_dir):
         return False, "this turn has no workspace that Metorite may push from"
@@ -2776,8 +2779,14 @@ async def _push_reviewed_run(
     )
     if outgoing is None:
         return False, "Metorite could not list the commits to push"
+    remote = git_auth.pinned_remote(agent_dir)
+    details = {
+        "repo": f"{remote.owner}/{remote.repo}" if remote else "",
+        "branch": branch,
+        "shas": list(outgoing or [])[:50],
+    }
     if not outgoing:
-        return True, f"the commits of this turn are already on {branch}"
+        return True, f"the commits of this turn are already on {branch}", details
     foreign = [sha for sha in outgoing if sha not in set(window)]
     if foreign:
         _log.warning(
@@ -2796,7 +2805,7 @@ async def _push_reviewed_run(
     )
     if result.ok:
         _log.info("executor.agent_push_done", agent=agent_name, run_id=run_id, branch=branch)
-        return True, f"{len(outgoing)} commit(s) to {branch}"
+        return True, f"{len(outgoing)} commit(s) to {branch}", details
     _log.warning(
         "executor.agent_push_failed",
         agent=agent_name, run_id=run_id, branch=branch,
@@ -2859,16 +2868,50 @@ async def _settle_agent_push(
             "or of a platform operator organization may push agent code."
             + _NO_PUSH_TAIL
         )
+    details: dict[str, Any] = {}
     try:
-        pushed, text = await _push_reviewed_run(
+        pushed, text, *rest = await _push_reviewed_run(
             agent_name, agent_dir or "", run_id, since_sha=since_sha,
         )
+        details = dict(rest[0] or {}) if rest else {}
     except Exception as exc:
         _log.warning("executor.agent_push_error", agent=agent_name, error=str(exc)[:200])
         pushed, text = False, "the push failed"
     if pushed:
+        # The ONE audit row of a reviewer's chat push, on every run path
+        # (native MAF, Copilot, Tier 2, batch, sub-agent): who, which org,
+        # which repo and branch, and the SHAs that went out.
+        _audit_agent_push(agent_name, run_id, thread_id, details)
         return f"Metorite pushed this turn's commits: {text}."
     return f"Metorite did not push: {text}." + _NO_PUSH_TAIL
+
+
+def _audit_agent_push(
+    agent_name: str, run_id: str, thread_id: str | None, details: dict[str, Any],
+) -> None:
+    """Record a push that a reviewer's chat turn made (H-363). Never raises."""
+    try:
+        from acb_common import get_run_context
+
+        member = str(get_run_context().get("user") or "")
+        org = _RUN_ORG.get(thread_id) if thread_id else None
+        org = org or _current_run_org()
+        record(AuditEvent(
+            actor=f"agent:{agent_name}",
+            action="agent_push_by_reviewer",
+            target=f"agent:{agent_name}",
+            payload={
+                "run_id": run_id,
+                "member": member,
+                "repo": str(details.get("repo") or ""),
+                "branch": str(details.get("branch") or ""),
+                "shas": [str(x)[:40] for x in details.get("shas") or []],
+                "reviewed_by": "chat:autopush",
+            },
+            organization_id=org,
+        ))
+    except Exception as exc:
+        _log.warning("executor.agent_push_audit_failed", agent=agent_name, error=str(exc)[:200])
 
 
 def _drop_agent_push(run_id: str, why: str) -> str | None:
