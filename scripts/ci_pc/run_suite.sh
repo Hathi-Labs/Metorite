@@ -141,6 +141,9 @@ shards_ok=success
 for i in $(seq 1 "$SHARDS"); do [ "$(cut -d' ' -f1 "$RUN/shard-$i.rc")" = 0 ] || shards_ok=failure; done
 job unit-tests "" unit-tests --ctx "needs.test.result=$shards_ok"
 wait
+# Keep this run's reports with its logs. The next run cleans the checkout,
+# and the reports are where the slow tests show (per-test time).
+cp -r junit "$RUN/junit" 2>/dev/null || true
 
 # ── Summary ───────────────────────────────────────────────────────────────
 ADVISORY=" secret-scan "   # continue-on-error in pr-check
