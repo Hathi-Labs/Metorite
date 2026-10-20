@@ -61,6 +61,7 @@ export default function HistoryView({
   highlight,
   current,
   onCompare,
+  onNavigate,
 }: {
   pageId: string;
   /** The version on show: the newer side of a compare. */
@@ -72,6 +73,8 @@ export default function HistoryView({
   current: number;
   /** The compare once both sides have loaded, and null while there is none. */
   onCompare: (compare: Compare | null) => void;
+  /** A click on a link to a page of this app. */
+  onNavigate: (href: string) => void;
 }) {
   const shown = useVersion(pageId, version);
   const older = useVersion(pageId, against);
@@ -152,11 +155,13 @@ export default function HistoryView({
       <div className="mt-5">
         {body.body_md.trim() || (decorate && result?.removedWords) ? (
           <KnowledgeEditor
-            key={`${body.version}`}
+            // A new pair is a new editor, so no mark of the last compare stays.
+            key={`${body.version}:${against ?? "none"}`}
             mode="read"
             body={body.body_md}
             label={`Version ${body.version} of ${body.title}, the page body`}
             decorate={decorate}
+            onNavigate={onNavigate}
           />
         ) : (
           <p className="text-sm text-muted-foreground">This version is empty.</p>

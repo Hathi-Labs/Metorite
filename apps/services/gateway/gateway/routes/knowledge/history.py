@@ -29,7 +29,7 @@ from __future__ import annotations
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends
+from fastapi import Depends, Path
 from gateway.routes.knowledge import core, pages
 from gateway.routes.knowledge.core import router
 from sqlalchemy import text
@@ -38,7 +38,9 @@ from sqlalchemy import text
 @router.get("/pages/{page_id}/versions/{version}")
 async def get_version(
     page_id: str,
-    version: int,
+    # The column is int4. A bigger number answers 422 here, never 500 from
+    # the driver.
+    version: int = Path(..., ge=1, le=core.MAX_VERSION),
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """One version of a page the caller can see. 404 under the history floor."""

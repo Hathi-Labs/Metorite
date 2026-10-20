@@ -3,7 +3,8 @@
 // The history modal draws the newer version through the page's own read-only
 // editor, and marks what changed since the older one in place. This file
 // holds the pure half: the words of a document, the word diff of two
-// documents, and the decorations that mark it.
+// documents, and the decorations that mark it. The idea of marks in place
+// comes from the page history of Docmost. No code of Docmost is copied here.
 //
 // The diff runs on the words of the two bodies AFTER the Markdown parse, so a
 // `#`, a `**` or a `|` is not a word. A word keeps its marks in its key, so a
@@ -52,7 +53,22 @@ function atomText(node: PMNode): string {
   if (name === "image") return `[Image: ${String(node.attrs.alt || node.attrs.src || "")}]`;
   if (name === "htmlInline") return String(node.attrs.raw ?? "");
   if (name === "horizontalRule") return "[Divider]";
-  return `[${name}]`;
+  // A node with no words of its own. Its type name is not text for a member.
+  return "[Item]";
+}
+
+/**
+ * A short hash of a removed run (FNV-1a, 32 bits), for the key of its widget.
+ * ProseMirror keeps the DOM of a widget whose key is equal, so the key must
+ * change when the words change.
+ */
+function textHash(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36);
 }
 
 /** The words of a document, in order, with a break at the start of each block. */
@@ -237,7 +253,7 @@ export function compareDecorations(doc: PMNode, compare: Compare, current = 0): 
             del.textContent = text;
             return del;
           },
-          { side: -1, key: `kb-diff-${index}-${now ? "on" : "off"}-${text.length}` },
+          { side: -1, key: `kb-diff-${index}-${now ? "on" : "off"}-${text.length}-${textHash(text)}` },
         ),
       );
     }

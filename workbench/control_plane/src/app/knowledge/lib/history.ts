@@ -50,6 +50,23 @@ export function previousVersion(versions: readonly PageVersion[], n: number): nu
   return versions[at + 1]?.version ?? null;
 }
 
+/** The value of the phone's "Compare with" field for the version before. */
+export const PREVIOUS_VERSION = "previous";
+
+/**
+ * The phone's two fields after a change of either: the version on show, and
+ * "Compare with". The newer of the two is on show, as `comparePair` orders a
+ * compare on the desktop. "Compare with" goes back to the version before when
+ * it names the version on show, or names no version.
+ */
+export function phoneFields(shown: number, against: string): { active: number; against: string } {
+  if (against === PREVIOUS_VERSION) return { active: shown, against };
+  const other = Number(against);
+  const pair = Number.isInteger(other) ? comparePair([shown, other]) : null;
+  if (!pair) return { active: shown, against: PREVIOUS_VERSION };
+  return { active: pair.newer, against: String(pair.older) };
+}
+
 /** Pick or unpick a version for a compare. A third pick is refused. */
 export function togglePick(picked: readonly number[], n: number): number[] {
   if (picked.includes(n)) return picked.filter((p) => p !== n);

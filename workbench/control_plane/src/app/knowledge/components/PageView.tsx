@@ -579,6 +579,7 @@ export default function PageView({ pageId }: { pageId: string }) {
         page={page}
         canRestore={writable && !editing}
         initialVersion={history?.at ?? null}
+        onNavigate={(href) => router.push(href)}
       />
       <ConfirmDialog
         open={confirmPublish}

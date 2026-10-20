@@ -97,9 +97,9 @@ async def test_a_member_compares_two_versions_and_restores_one(ns, app_engine) -
     # A reader of the space reads the history too. A read needs no write.
     assert (await _ok(ns, reader, "GET", _version_path(pid, 2)))["body_md"] == (
         "Refunds take seven days.")
-    # A number past the newest version, and version 0, are not there.
+    # A number past the newest version is not there. Version 0 is not a number.
     assert await _version_status(ns, writer, pid, 6) == 404
-    assert await _version_status(ns, writer, pid, 0) == 404
+    assert await _version_status(ns, writer, pid, 0) == 422
 
     # Restore version 2: the revert route writes it again as version 6.
     restored = await _ok(ns, writer, "POST", f"/knowledge/pages/{pid}/revert",
@@ -189,3 +189,30 @@ async def test_a_version_under_the_floor_of_a_moved_page_is_refused(ns, app_engi
     assert first["body_md"] == "private salary notes"
     # The writer of the old space sees the page no more at all.
     assert await _version_status(ns, writer, pid, 3) == 404
+
+
+async def test_a_version_past_int4_is_refused_not_a_500(ns, app_engine) -> None:  # noqa: F811
+    """A number past the int4 column refuses at the route, never in asyncpg.
+
+    Before the bound, 2147483648 reached ``kb_page_versions.version`` as a
+    bind and the read and the revert both answered 500.
+    """
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    writer_email = _address("writer")
+    writer = _principal(writer_email, ns.org_a)
+    space = await _space(ns, admin, "Wiki", [{"subject": writer_email, "level": "write"}])
+    page = await _ok(ns, writer, "POST", "/knowledge/pages",
+                     {"space_id": space, "title": "Refunds", "body_md": "one"},
+                     status=201)
+    pid = page["id"]
+    too_big = 2_147_483_648
+    assert await _version_status(ns, writer, pid, too_big) == 422
+    assert await _version_status(ns, writer, pid, -1) == 422
+    # The top of int4 is a valid number, and no such version exists.
+    assert await _version_status(ns, writer, pid, 2_147_483_647) == 404
+    revert = await _call(ns, writer, "POST", f"/knowledge/pages/{pid}/revert",
+                         {"version": too_big})
+    assert revert.status_code == 422
+    # Not vacuous: the page and its version 1 are there.
+    assert await _version_status(ns, writer, pid, 1) == 200

@@ -4,12 +4,21 @@
  * read, the pick of a compare, the word diff, and the marks it makes.
  */
 import { getSchema } from "@tiptap/core";
+import { Schema } from "@tiptap/pm/model";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { KnowledgeError, getVersion } from "./api";
 import { parseBody } from "./editor/markdown";
 import { knowledgeExtensions } from "./editor/schema";
-import { comparePair, previousVersion, togglePick, versionDate, versionKey } from "./history";
+import {
+  PREVIOUS_VERSION,
+  comparePair,
+  phoneFields,
+  previousVersion,
+  togglePick,
+  versionDate,
+  versionKey,
+} from "./history";
 import { changeCount, compareDecorations, compareDocs, wordCounts, wordsOf } from "./historyDiff";
 import type { PageVersion } from "./types";
 import { diffKeys } from "./wordDiff";
@@ -176,5 +185,56 @@ describe("the compare of two bodies", () => {
       class: "kb-diff-added kb-diff-current",
       "data-diff-index": "1",
     });
+  });
+
+  it("gives a removed run a new widget key when its words change", () => {
+    // v1 "seven", v2 "three", v3 "ten". "seven" and "three" have one length,
+    // so a key of index and length alone let ProseMirror keep the old <del>.
+    const v1 = doc("Refunds take seven days.");
+    const v2 = doc("Refunds take three days.");
+    const v3 = doc("Refunds take ten days.");
+    const widget = (older: typeof v1) =>
+      compareDecorations(v3, compareDocs(older, v3), 1)
+        .find()
+        .find((d) => d.from === d.to) as unknown as { spec: { key: string }; type: { eq(o: unknown): boolean } };
+    const withV2 = widget(v2);
+    const withV1 = widget(v1);
+    expect(withV2.spec.key).not.toBe(withV1.spec.key);
+    // ProseMirror reuses the DOM of a widget when `eq` says true.
+    expect(withV2.type.eq(withV1.type)).toBe(false);
+    expect(widget(v1).type.eq(withV1.type)).toBe(true);
+  });
+
+  it("shows a neutral label for a removed node it has no words for", () => {
+    const custom = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        paragraph: { group: "block", content: "inline*" },
+        text: { group: "inline" },
+        mention: { group: "inline", inline: true, atom: true, attrs: { id: { default: "u1" } } },
+      },
+    });
+    const p = (...inline: Parameters<typeof custom.node>[2][]) =>
+      custom.node("doc", null, [custom.node("paragraph", null, inline.flat() as never)]);
+    const withMention = p([custom.text("Ask "), custom.node("mention"), custom.text(" today")] as never);
+    const without = p([custom.text("Ask  today")] as never);
+    const c = compareDocs(withMention, without);
+    expect(c.changes).toHaveLength(1);
+    expect(c.changes[0].removed).toBe("[Item]");
+  });
+});
+
+describe("the phone's two fields", () => {
+  it("orders a pick of Compare with, so the newer version is on show", () => {
+    // Version v2, then Compare with v5: v5 reads, marked against v2.
+    expect(phoneFields(2, "5")).toEqual({ active: 5, against: "2" });
+    expect(phoneFields(5, "2")).toEqual({ active: 5, against: "2" });
+  });
+
+  it("goes back to the version before when Compare with names the version on show", () => {
+    // Compare with v3, then Version v3: no compare of a version with itself.
+    expect(phoneFields(3, "3")).toEqual({ active: 3, against: PREVIOUS_VERSION });
+    expect(phoneFields(4, PREVIOUS_VERSION)).toEqual({ active: 4, against: PREVIOUS_VERSION });
+    expect(phoneFields(4, "not a number")).toEqual({ active: 4, against: PREVIOUS_VERSION });
   });
 });

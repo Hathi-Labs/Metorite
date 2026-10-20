@@ -92,7 +92,7 @@ class PageMove(BaseModel):
 
 
 class PageRevert(BaseModel):
-    version: int = Field(..., ge=1)
+    version: int = Field(..., ge=1, le=core.MAX_VERSION)
 
 
 def _title(value: str) -> str:

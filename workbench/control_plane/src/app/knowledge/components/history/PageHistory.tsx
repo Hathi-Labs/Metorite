@@ -31,14 +31,20 @@ import { useToast } from "@/components/ui/Toast";
 import { invalidate } from "@/lib/dataCache";
 
 import { KNOWLEDGE_CACHE, KnowledgeError, revertPage } from "../../lib/api";
-import { authorName, comparePair, previousVersion, togglePick, versionDate, type ComparePair } from "../../lib/history";
+import {
+  PREVIOUS_VERSION as PREVIOUS,
+  authorName,
+  comparePair,
+  phoneFields,
+  previousVersion,
+  togglePick,
+  versionDate,
+  type ComparePair,
+} from "../../lib/history";
 import { changeCount, wordCounts, type Compare } from "../../lib/historyDiff";
 import type { PageDetail } from "../../lib/types";
 import HistoryList from "./HistoryList";
 import HistoryView from "./HistoryView";
-
-/** The value of the phone's "Compare with" field for the version before. */
-const PREVIOUS = "previous";
 
 export default function PageHistory({
   open,
@@ -46,6 +52,7 @@ export default function PageHistory({
   page,
   canRestore,
   initialVersion = null,
+  onNavigate,
 }: {
   open: boolean;
   onClose: () => void;
@@ -54,6 +61,8 @@ export default function PageHistory({
   canRestore: boolean;
   /** The version to show first. The newest when absent. */
   initialVersion?: number | null;
+  /** A click on a link to a page of this app, in an old version. The modal closes first. */
+  onNavigate: (href: string) => void;
 }) {
   const toast = useToast();
   const versions = page.versions;
@@ -113,9 +122,20 @@ export default function PageHistory({
     setCurrent((c) => ((((c || 1) - 1 + by) % total) + total) % total + 1);
   }
 
+  // The list on the desktop shows no "Compare with", so a pick there reads
+  // the version against the one before it.
   function select(n: number) {
     setPair(null);
     setActive(n);
+    setAgainst(PREVIOUS);
+  }
+
+  // The phone's two fields. The newer version is on show, as on the desktop.
+  function pickPhone(version: number, compareWith: string) {
+    const next = phoneFields(version, compareWith);
+    setPair(null);
+    setActive(next.active);
+    setAgainst(next.against);
   }
 
   function startCompare(n: number) {
@@ -240,7 +260,7 @@ export default function PageHistory({
                   label: `v${v.version} · ${versionDate(v.created_at)}`,
                   hint: authorName(v.author_email),
                 }))}
-                onChange={(value) => select(Number(value))}
+                onChange={(value) => pickPhone(Number(value), pair ? String(pair.older) : against)}
               />
             </div>
             <div className="min-w-0 flex-1 basis-40">
@@ -256,10 +276,7 @@ export default function PageHistory({
                     .filter((v) => v.version !== shown)
                     .map((v) => ({ value: String(v.version), label: `v${v.version} · ${versionDate(v.created_at)}` })),
                 ]}
-                onChange={(value) => {
-                  setPair(null);
-                  setAgainst(value);
-                }}
+                onChange={(value) => shown !== null && pickPhone(shown, value)}
               />
             </div>
           </div>
@@ -291,6 +308,10 @@ export default function PageHistory({
                   highlight={highlight}
                   current={current}
                   onCompare={setCompare}
+                  onNavigate={(href) => {
+                    onClose();
+                    onNavigate(href);
+                  }}
                 />
               )}
             </div>

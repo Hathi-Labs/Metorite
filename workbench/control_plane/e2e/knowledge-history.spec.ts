@@ -10,7 +10,9 @@ import { PAGE_ID, mockHistory, openHistory, setupHistory } from "./knowledgeHist
  * sees the words that changed marked in place, turns the marks off and on,
  * and restores version 2. The restore posts to the revert route, and the
  * page then reads the body of version 2. A reader sees no Restore. A version
- * the gateway refuses with 404 says so in words.
+ * the gateway refuses with 404 says so in words. A compare that reuses two
+ * versions already read marks the right words. A link in an old version
+ * opens its page. On a phone, the two fields keep the newer version on show.
  *
  * The real gateway half is `tests/unit/test_kb_history_r8.py`.
  */
@@ -100,5 +102,72 @@ test.describe("page history", () => {
     await expect(dialog.getByRole("button", { name: /^Compare with/ })).toBeVisible();
     await expect(dialog.getByRole("list", { name: "Versions" })).toBeHidden();
     await expect(dialog.locator(".kb-diff-added").first()).toBeVisible();
+  });
+
+  test("a compare of two versions already read marks the words of that compare", async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setupHistory(page);
+    await mockHistory(page);
+    const dialog = await openHistory(page);
+    const rows = dialog.getByRole("list", { name: "Versions" }).getByRole("listitem");
+
+    // Version 5 reads against version 4: "eight" went out.
+    await expect(dialog.locator(".kb-diff-removed")).toHaveText(["eight"]);
+    // Version 3 reads against version 2: "seven" went out. Now both are read.
+    await rows.nth(2).getByRole("button").first().click();
+    await expect(dialog.locator(".kb-diff-removed")).toHaveText(["seven"]);
+    await rows.nth(0).getByRole("button").first().click();
+    await expect(dialog.locator(".kb-diff-removed")).toHaveText(["eight"]);
+
+    // Version 5 with version 2, both from the cache. "seven" went out, not "eight".
+    await dialog.getByRole("button", { name: "Compare version 5 with another" }).click();
+    await dialog.getByRole("checkbox", { name: /Pick version 2/ }).check();
+    await dialog.getByRole("button", { name: "Compare", exact: true }).click();
+    await expect(dialog.getByText(/Comparing version 5 .* with version 2/)).toBeVisible();
+    await expect(dialog.locator(".kb-diff-removed")).toHaveText(["seven"]);
+  });
+
+  test("a link to a page in an old version closes the history and opens the page", async ({ page }) => {
+    test.setTimeout(90_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setupHistory(page);
+    await mockHistory(page);
+    const dialog = await openHistory(page);
+    await dialog.getByRole("list", { name: "Versions" }).getByRole("listitem").last().getByRole("button").first().click();
+    await dialog.getByRole("link", { name: "the desk page" }).click();
+    await expect(page.getByRole("dialog", { name: "Page history" })).toBeHidden();
+    await expect(page).toHaveURL(/\/knowledge\/pages\/kp-desk$/);
+  });
+
+  test("on a phone, Compare with keeps the newer version on show", async ({ page }) => {
+    test.setTimeout(90_000);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await setupHistory(page);
+    await mockHistory(page);
+    await page.goto(`/knowledge/pages/${PAGE_ID}`);
+    await page.getByRole("button", { name: "Page history", exact: true }).click({ timeout: 30_000 });
+    const dialog = page.getByRole("dialog", { name: "Page history" });
+    const versionField = dialog.getByRole("button", { name: /^Version/ });
+    const compareField = dialog.getByRole("button", { name: /^Compare with/ });
+
+    // Version 2, then Compare with version 5: version 5 reads, against version 2.
+    await versionField.click();
+    await page.getByRole("option", { name: /^v2 / }).click();
+    await compareField.click();
+    await page.getByRole("option", { name: /^v5 / }).click();
+    await expect(versionField).toContainText("v5");
+    await expect(compareField).toContainText("v2");
+    await expect(dialog.locator(".kb-diff-removed")).toHaveText(["seven"]);
+    await expect(dialog.locator(".kb-diff-added")).toHaveText(["ten", "Keep the receipt."]);
+
+    // Compare with version 3, then Version 3: the version before, not "No changes".
+    await compareField.click();
+    await page.getByRole("option", { name: /^v3 / }).click();
+    await versionField.click();
+    await page.getByRole("option", { name: /^v3 / }).click();
+    await expect(compareField).toContainText("The version before");
+    await expect(dialog.getByText("No changes")).toHaveCount(0);
+    await expect(dialog.locator(".kb-diff-removed")).toHaveText(["seven"]);
   });
 });

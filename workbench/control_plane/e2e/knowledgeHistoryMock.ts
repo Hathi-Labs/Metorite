@@ -27,11 +27,21 @@ function member() {
 
 type Version = { version: number; title: string; body_md: string; reason: string; author: string; at: string };
 
-/** Five versions. Version 2 says "seven days", version 5 says "ten days". */
+/**
+ * Five versions. Version 2 says "seven days", version 5 says "ten days".
+ * Version 1 links to another page of the app.
+ */
 function fiveVersions(): Version[] {
   const at = (h: number) => `2026-10-1${h}T09:30:00Z`;
   return [
-    { version: 1, title: "Refunds", body_md: "Draft.", reason: "create", author: "asha@example.com", at: at(1) },
+    {
+      version: 1,
+      title: "Refunds",
+      body_md: "Draft. See [the desk page](/knowledge/pages/kp-desk).",
+      reason: "create",
+      author: "asha@example.com",
+      at: at(1),
+    },
     {
       version: 2,
       title: "Refund policy",
