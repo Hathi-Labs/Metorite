@@ -8,10 +8,14 @@
  * The specialists are its tools (`multi_agent_orchestration.md` §5.1). The
  * member keeps sessions, not agents.
  *
- * **Two forms, one element.** `dock` is a panel at the right of the page.
- * `full` covers the page column, with the session list. `AssistantDock.tsx`
- * renders ONE element and changes its shape, so a running reply survives a
- * switch. Below `DOCK_MIN_VIEWPORT`, and on a phone, only `full` exists.
+ * **Two forms on a desktop, one element.** `dock` is a panel at the right of
+ * the page. `full` covers the page column, with the session list.
+ * `AssistantDock.tsx` renders ONE element and changes its shape, so a running
+ * reply survives a switch. Below `DOCK_MIN_VIEWPORT` the panel floats.
+ *
+ * **Two forms on a phone** (`chat_first_surface.md` §4.1, CF-1). `full` is
+ * the sheet. `peek` is a strip above the bottom nav, with the flag
+ * `NEXT_PUBLIC_CHAT_FIRST` on. A desktop never draws `peek` (D-CF-1).
  *
  * **The context.** An app publishes FACTS with `useAssistantFacts`: the open
  * record, the view. Facts are data, never instructions, and the member never
@@ -34,7 +38,7 @@ import { useEffect, useRef, useSyncExternalStore } from "react";
 
 import { agentSlug } from "@/lib/agentName";
 import type { NavPane, NavSection } from "@/lib/nav";
-import { chatKey, type ChatSession } from "@/lib/sessions";
+import { chatKey, truncateAtWord, type ChatSession } from "@/lib/sessions";
 import { onClear } from "@/lib/dataCache";
 
 // ── The agent ────────────────────────────────────────────────────────────────
@@ -62,7 +66,11 @@ export const ASSISTANT_PERSONA = [
 
 // ── The forms ────────────────────────────────────────────────────────────────
 
-export type AssistantMode = "dock" | "full";
+/**
+ * `dock` and `full` exist on a desktop. `full` and `peek` exist on a phone.
+ * `effectiveMode` decides which one draws.
+ */
+export type AssistantMode = "dock" | "full" | "peek";
 
 /** The side panel's width: default, and the two ends of the drag. */
 export const DOCK_DEFAULT = 400;
@@ -82,13 +90,15 @@ export function clampDockWidth(width: number): number {
 }
 
 /**
- * The form that draws. A phone has room for one thing, so it is always the
- * full sheet. Every desktop draws the form the member asked for: the side
- * panel unless they asked for the full view. The width never decides it.
+ * The form that draws. A phone draws the full sheet, or the peek strip when
+ * the member asked for it. Every desktop draws the form the member asked
+ * for: the side panel unless they asked for the full view. The width never
+ * decides it. A desktop never draws the strip (D-CF-1). A `peek` that
+ * reaches a desktop, from a phone turned wide, draws the side panel.
  */
 export function effectiveMode(mode: AssistantMode, _viewportWidth: number, isMobile: boolean): AssistantMode {
-  if (isMobile) return "full";
-  return mode;
+  if (isMobile) return mode === "peek" ? "peek" : "full";
+  return mode === "peek" ? "dock" : mode;
 }
 
 /** Whether the side panel floats over the page: a desktop narrower than the floor. */
@@ -123,12 +133,59 @@ export function onPageChange(a: {
 /**
  * What the assistant does when a link inside its chat (a task pill) opens a
  * page (review of PR #1156). On a phone the sheet covers the page, and
- * `onPageChange` does nothing there, so the page would open unseen: the
- * sheet closes, as it does for the chat's files. A desktop keeps the chat,
- * and `onPageChange` docks a full view when the route changes.
+ * `onPageChange` does nothing there, so the page would open unseen.
+ *
+ * - `peek`: with the chat-first flag on, the sheet drops to the strip. The
+ *   page shows, and the chat is one tap away (CF-1). A delegation that moves
+ *   the page uses this answer too.
+ * - `close`: with the flag off, the sheet closes, as it does for the chat's
+ *   files.
+ * - null: a desktop keeps the chat, and `onPageChange` docks a full view
+ *   when the route changes.
  */
-export function onChatLink(a: { phone: boolean }): "close" | null {
-  return a.phone ? "close" : null;
+export function onChatLink(a: { phone: boolean; chatFirst: boolean }): "peek" | "close" | null {
+  if (!a.phone) return null;
+  return a.chatFirst ? "peek" : "close";
+}
+
+/**
+ * Whether the strip goes back up to the sheet by itself (CF-1). It goes up
+ * when a card waits for the member (`needs input`, WS-51 S2) and the strip
+ * shows. A card that nobody sees is a run that never ends. Nothing else
+ * raises the sheet without a tap.
+ *
+ * The caller asks this only when the wait BEGINS. A member who drops a
+ * waiting chat to the strip asked for the strip, so it stays.
+ */
+export function raiseOnNeed(a: { phone: boolean; form: AssistantMode; needsInput: boolean }): "full" | null {
+  return a.phone && a.form === "peek" && a.needsInput ? "full" : null;
+}
+
+/** The longest line the strip shows, in characters, before it cuts at a word. */
+export const STRIP_TEXT_MAX = 80;
+
+/** Markdown marks and fence marks, out of one line of plain words. */
+function plainLine(text: string): string {
+  return text
+    .replace(/^\s*(?:#+|>|[-+*]|\d+\.)\s+/gm, "")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\*\*|__|[*`~«»]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * The one line of the peek strip (CF-1). While a run goes on, it is the run
+ * status row's own text, so the strip and the chat say the same thing
+ * (`chat_run_continuity.md` §4.10). Else it is the last assistant reply,
+ * cut at a whole word. Else the assistant's name.
+ */
+export function stripText(a: { running: boolean; statusText: string | null | undefined; lastPreview: string | null | undefined }): string {
+  const status = a.statusText?.trim();
+  if (a.running && status) return status;
+  const last = plainLine(a.lastPreview ?? "");
+  if (last) return truncateAtWord(last, STRIP_TEXT_MAX);
+  return ASSISTANT_NAME;
 }
 
 function subscribeWidth(listener: () => void): () => void {

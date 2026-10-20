@@ -689,6 +689,35 @@ select optgroup {
 :root[data-agent-pill] .pb-nav {
   padding-bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px) + 3rem);
 }
+
+/* ── The assistant's peek strip on a phone (CF-1, `lib/shell/AssistantDock.tsx`) ──
+   A 56 px row on the fixed bottom nav. It takes the place the agent pill
+   takes. While it shows, `AssistantDock` sets `data-assistant-peek` on
+   <html>, and the toasts and the page's last row move up by the strip's
+   height (3.5rem). Only the phone draws the strip, so the attribute is the
+   gate, not a width.
+   ⚠️ The box starts at the screen's foot and runs UNDER the nav (z-50 over
+   z-40). The row sits on top of the nav's clearance (3.5rem and the inset,
+   as `.pb-nav` reserves it). The nav's real height comes from its content
+   and is less than 3.5rem (measured 49 px at 390 px wide), so a box that
+   started at 3.5rem left a gap where the page showed through. */
+.assistant-peek-bottom {
+  bottom: 0;
+  height: calc(3.5rem + 3.5rem + env(safe-area-inset-bottom, 0px));
+  padding-bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px));
+}
+/* The sheet's body stays laid out under the strip, hidden and inert, so the
+   chat keeps its scroll and its draft. Its height is the sheet's. */
+.assistant-peek-body {
+  top: 3.5rem;
+  height: 100dvh;
+}
+:root[data-assistant-peek] .toast-viewport-bottom {
+  bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px) + 4rem);
+}
+:root[data-assistant-peek] .pb-nav {
+  padding-bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px) + 3.5rem);
+}
 /* The thin progress line. It slides only when the member allows motion. With
    reduced motion it is a still third of the line. */
 @keyframes agent-pill-progress {
@@ -1106,6 +1135,11 @@ select optgroup {
   opacity: 0;
   transform: translateY(-2px);
 }
+/* The peek strip tucks under the bottom nav when it closes. */
+.assistant-panel[data-panel-form="peek"] {
+  opacity: 0;
+  transform: translateY(100%);
+}
 .assistant-panel[data-shown] {
   opacity: 1;
   transform: none;
@@ -1120,6 +1154,23 @@ select optgroup {
   transition:
     opacity var(--sheet-duration) var(--sheet-easing),
     transform var(--sheet-duration) var(--sheet-easing);
+}
+.assistant-panel[data-moving][data-panel-form="peek"] {
+  transition:
+    opacity var(--sheet-duration) var(--sheet-easing),
+    transform var(--sheet-duration) var(--sheet-easing);
+}
+/* The sheet drops to the strip while it is open, so no phase moves. The
+   strip rises from the nav as it appears, on the sheet's tokens. With
+   reduced motion it shows at once. */
+@keyframes assistant-peek-rise {
+  from { opacity: 0; transform: translateY(100%); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .assistant-panel[data-panel-form="peek"][data-shown]:not([data-moving]) {
+    animation: assistant-peek-rise var(--sheet-duration) var(--sheet-easing);
+  }
 }
 .assistant-panel[data-panel-phase="closed"] {
   visibility: hidden;

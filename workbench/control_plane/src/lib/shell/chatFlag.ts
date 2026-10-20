@@ -50,3 +50,19 @@ export function shellChatOn(): boolean {
     flag(process.env.NEXT_PUBLIC_SHELL_NAV, "cc-shell-nav")
   );
 }
+
+/**
+ * Whether the chat-first surface is on in this browser
+ * (`chat_first_surface.md` §7, flag `NEXT_PUBLIC_CHAT_FIRST`, default off).
+ * CF-1 is its first piece: the peek strip on a phone.
+ *
+ * It needs `shellChatOn()`, because every piece of it hangs on the one
+ * assistant. The dev override is `cc-chat-first`, as for the other flags.
+ *
+ * Turning it on in production is owner-only (`navigation_shell.md` §13.1).
+ * An agent may turn it on in staging.
+ */
+export function chatFirstOn(): boolean {
+  // The literal member expression, the one form Next inlines (publicFlags.test.ts).
+  return shellChatOn() && flag(process.env.NEXT_PUBLIC_CHAT_FIRST, "cc-chat-first");
+}

@@ -23,6 +23,7 @@ import {
   DOCK_MIN,
   DOCK_MIN_VIEWPORT,
   STALE_CHAT_MS,
+  STRIP_TEXT_MAX,
   __resetAssistantForTests,
   assistantState,
   barMayJoin,
@@ -35,18 +36,21 @@ import {
   dataText,
   dockFloats,
   effectiveMode,
+  onChatLink,
   onPageChange,
   openAssistant,
   paneAt,
   paneForDelegate,
   publishAssistantFacts,
+  raiseOnNeed,
   setAssistantMode,
   setDockWidth,
   startsFresh,
+  stripText,
   surfaceContext,
   switchTarget,
 } from "./assistant";
-import { shellChatOn } from "./chatFlag";
+import { chatFirstOn, shellChatOn } from "./chatFlag";
 import { shellSidebar } from "./shellNav";
 
 const SRC = fileURLToPath(new URL("../..", import.meta.url));
@@ -443,5 +447,145 @@ describe("the source keeps the flag's two sides apart", () => {
     const reconnect = hook.indexOf("updLast((m) => applySubAgentEvent(m, evt));");
     expect(reconnect).toBeGreaterThan(0);
     expect(hook.lastIndexOf('emitAgentEvent("onDelegate"')).toBeLessThan(reconnect);
+  });
+});
+
+describe("the peek strip, a third size on a phone (CF-1, chat_first_surface.md §4.1)", () => {
+  it("a phone draws the strip when asked, and the sheet for anything else", () => {
+    expect(effectiveMode("peek", 390, true)).toBe("peek");
+    expect(effectiveMode("full", 390, true)).toBe("full");
+    expect(effectiveMode("dock", 390, true)).toBe("full");
+  });
+
+  it("a desktop never draws the strip, and its two forms are unchanged (D-CF-1)", () => {
+    expect(effectiveMode("peek", 1440, false)).toBe("dock");
+    expect(effectiveMode("peek", DOCK_MIN_VIEWPORT - 1, false)).toBe("dock");
+    expect(effectiveMode("dock", 1440, false)).toBe("dock");
+    expect(effectiveMode("full", 1440, false)).toBe("full");
+  });
+
+  it("a pill link drops the sheet to the strip with the flag on, and closes it with the flag off", () => {
+    expect(onChatLink({ phone: true, chatFirst: true })).toBe("peek");
+    expect(onChatLink({ phone: true, chatFirst: false })).toBe("close");
+    expect(onChatLink({ phone: false, chatFirst: true })).toBeNull();
+    expect(onChatLink({ phone: false, chatFirst: false })).toBeNull();
+  });
+
+  it("a card that waits raises the strip to the sheet, and nothing else does", () => {
+    expect(raiseOnNeed({ phone: true, form: "peek", needsInput: true })).toBe("full");
+    expect(raiseOnNeed({ phone: true, form: "peek", needsInput: false })).toBeNull();
+    expect(raiseOnNeed({ phone: true, form: "full", needsInput: true })).toBeNull();
+    expect(raiseOnNeed({ phone: false, form: "peek", needsInput: true })).toBeNull();
+    expect(raiseOnNeed({ phone: false, form: "dock", needsInput: true })).toBeNull();
+  });
+
+  it("the dock raises only on a wait that BEGINS under the strip", () => {
+    const src = read("lib/shell/AssistantDock.tsx");
+    expect(src).toContain("const began = needsInput && !wasNeeding.current;");
+    expect(src).toContain('if (began && raiseOnNeed({ phone: true, form: "peek", needsInput }) === "full") onRaise();');
+    // The two existing sources: this tab's run state, and the one shared poller.
+    expect(src).toContain("const serverNeeds = useThreadNeedsInput(threadId || null);");
+    expect(src).toContain('run.phase === "waiting_for_you" || run.phase === "parked"');
+  });
+
+  it("the strip's line is the run status while a run goes on", () => {
+    expect(stripText({ running: true, statusText: "Asking Projects assistant · 12s", lastPreview: "Old words." })).toBe(
+      "Asking Projects assistant · 12s",
+    );
+    // A run with no status text yet falls back to the last reply.
+    expect(stripText({ running: true, statusText: "  ", lastPreview: "The due date is Friday." })).toBe(
+      "The due date is Friday.",
+    );
+    // A status row that has gone quiet is not a run.
+    expect(stripText({ running: false, statusText: "Done · 4s", lastPreview: "The due date is Friday." })).toBe(
+      "The due date is Friday.",
+    );
+  });
+
+  it("while idle, the line is the last reply, as plain words, cut at a whole word", () => {
+    expect(
+      stripText({ running: false, statusText: null, lastPreview: "**Done.** I moved «Plan the release» to [the board](/projects)." }),
+    ).toBe("Done. I moved Plan the release to the board.");
+    expect(stripText({ running: false, statusText: null, lastPreview: "## Plan\n- step_one is `ready`" })).toBe(
+      "Plan step_one is ready",
+    );
+    const long = "The release plan has five steps and each one names an owner a due date and the project it belongs to.";
+    const line = stripText({ running: false, statusText: null, lastPreview: long });
+    expect(line.endsWith("\u2026")).toBe(true);
+    expect(line.length).toBeLessThanOrEqual(STRIP_TEXT_MAX + 1);
+    // A whole word: the cut never splits one.
+    expect(long.startsWith(line.slice(0, -1))).toBe(true);
+    expect(long.charAt(line.length - 1)).toBe(" ");
+  });
+
+  it("with no reply yet, the line is the assistant's name", () => {
+    expect(stripText({ running: false, statusText: null, lastPreview: undefined })).toBe("Metorite");
+    expect(stripText({ running: false, statusText: null, lastPreview: "   " })).toBe("Metorite");
+  });
+
+  it("a page change under the strip leaves it alone", () => {
+    expect(onPageChange({ open: true, form: "peek", canDock: false, phone: true })).toBeNull();
+  });
+
+  it("every open from closed is still the side panel, after a strip", () => {
+    openAssistant({ mode: "full" });
+    setAssistantMode("peek");
+    expect(assistantState().mode).toBe("peek");
+    closeAssistant();
+    openAssistant();
+    expect(assistantState().mode).toBe("dock");
+  });
+});
+
+describe("the chat-first flag needs the one assistant (chat_first_surface.md §7)", () => {
+  const KEYS = ["NEXT_PUBLIC_CHAT_FIRST", "NEXT_PUBLIC_SHELL_CHAT", "NEXT_PUBLIC_SHELL_BAR", "NEXT_PUBLIC_SHELL_NAV"] as const;
+  const set = (on: Partial<Record<(typeof KEYS)[number], boolean>>) => {
+    for (const k of KEYS) {
+      if (on[k]) process.env[k] = "1";
+      else delete process.env[k];
+    }
+  };
+  afterEach(() => set({}));
+
+  it("is off by default, on with the assistant, and off without it", () => {
+    expect(chatFirstOn()).toBe(false);
+    set({ NEXT_PUBLIC_SHELL_CHAT: true, NEXT_PUBLIC_SHELL_BAR: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(chatFirstOn()).toBe(false);
+    set({ NEXT_PUBLIC_CHAT_FIRST: true, NEXT_PUBLIC_SHELL_CHAT: true, NEXT_PUBLIC_SHELL_BAR: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(chatFirstOn()).toBe(true);
+    set({ NEXT_PUBLIC_CHAT_FIRST: true, NEXT_PUBLIC_SHELL_BAR: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(chatFirstOn()).toBe(false);
+  });
+});
+
+describe("the strip in the dock's source: phone only, flag only", () => {
+  const dock = () => read("lib/shell/AssistantDock.tsx");
+
+  it("flag off: no handle, no minimize button, and no way to reach the strip", () => {
+    const src = dock();
+    expect(src).toContain("const [chatFirst] = useState(() => chatFirstOn());");
+    expect(src).toContain('const strip = phone && form === "peek";');
+    expect(src).toContain("{phone && chatFirst ? <SheetHandle onPeek={toPeek} /> : null}");
+    expect(src).toMatch(/\{phone && chatFirst \? \(\s*<Button[\s\S]{0,120}?icon="ChevronDown"\s*aria-label="Show as a strip"/);
+    // Every way into the strip: the flag-gated handle and chevron (`toPeek`),
+    // the pill rule's "peek", and the delegation rule's "peek".
+    expect((src.match(/setAssistantMode\("peek"\)/g) ?? []).length).toBe(3);
+    expect(src).toContain('if (act === "peek") setAssistantMode("peek");');
+    expect(src).toContain('if (onChatLink({ phone: live.phone, chatFirst: live.chatFirst }) === "peek") setAssistantMode("peek");');
+  });
+
+  it("the strip is the same element: the body wrapper is there in every form", () => {
+    const src = dock();
+    expect(src).toContain("data-panel-form={motionForm}");
+    expect(src).toContain('const motionForm: PanelForm = phone ? (form === "peek" ? "peek" : "sheet") : form;');
+    expect(src).toMatch(/<div\s+data-assistant-body=""\s+inert=\{strip\}/);
+  });
+
+  it("the page's last row and the toasts move up while the strip shows", () => {
+    expect(dock()).toContain('document.documentElement.setAttribute(PEEK_ATTR, "");');
+    const css = read("app/globals.css");
+    expect(css).toContain(":root[data-assistant-peek] .pb-nav {");
+    expect(css).toContain(":root[data-assistant-peek] .toast-viewport-bottom {");
+    expect(css).toContain('.assistant-panel[data-moving][data-panel-form="peek"]');
   });
 });
