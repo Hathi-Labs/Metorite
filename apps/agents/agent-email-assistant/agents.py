@@ -3898,9 +3898,17 @@ def _chosen_files(
     unknown: list[str] = []
     for w in wanted:
         key = str(w).strip()
-        hit = next((a for a in mail_files if str(a.get("id") or "") == key), None) or next(
-            (a for a in mail_files
-             if str(a.get("filename") or "").strip().lower() == key.lower()), None)
+        by_id = [a for a in mail_files if str(a.get("id") or "") == key]
+        by_name = [a for a in mail_files
+                   if str(a.get("filename") or "").strip().lower() == key.lower()]
+        hits = by_id or by_name
+        if len(hits) > 1:
+            # Two files share the name: never pick one in silence (P3).
+            ids = ", ".join(str(a.get("id")) for a in hits)
+            unknown.append(f"{key} (more than one file has this name. Name it "
+                           f"by its attachment_id: {ids})")
+            continue
+        hit = hits[0] if hits else None
         if hit is None:
             unknown.append(key)
         elif hit not in chosen:
@@ -4303,31 +4311,32 @@ async def edit_draft(
     for key, given in (("to", to), ("cc", cc), ("bcc", bcc)):
         if given is not None:
             lists[key] = [str(a).strip() for a in given if str(a).strip()]
-    if not lists["to"]:
-        return "Nothing changed. A draft needs one To at least."
+    if to is not None and not lists["to"]:
+        return "Nothing changed. Give one To at least, or leave `to` out."
     if any(len(a) > _TARGET_LIMIT for v in lists.values() for a in v):
         return f"Nothing changed. An address is longer than {_TARGET_LIMIT} characters."
     new_subject = (draft.get("subject") or "") if subject is None else subject
-    if body is None:
-        # The stored text can be cut (long mail is capped in local storage),
-        # and a save writes the whole draft. So the text that stays comes
-        # from the provider, whole, or the tool changes nothing.
+    keep_body = body is None
+    if keep_body:
+        # The text stays as it is (review round 1, P1). An Outlook draft keeps
+        # its body untouched, HTML and quoted thread included: the save sends
+        # no body. A Gmail save rebuilds the whole message, so it sends the
+        # whole text from the provider, never the stored copy, which can be
+        # cut, and ``keep_html`` keeps its HTML.
         try:
             full = await _get(f"/email/messages/{draft_id}/full-body") or {}
         except GatewayError:
             full = {}
         text = str(full.get("body_text") or "")
-        if not text.strip() and (draft.get("body_text") or "").strip():
-            return ("Nothing changed. I could not read the whole text of the "
-                    "draft, so a save could cut it. Pass the whole text in body.")
-        keep_html = True
     else:
         text = body
-        keep_html = False
     detail, context = _draft_card(sender, new_subject, lists)
     if not context:
         return "Nothing changed. The draft has too many recipients for one card."
-    context = _with_draft_text(context, text)
+    if keep_body:
+        context += "\n\nThe text of the draft stays as it is."
+    else:
+        context = _with_draft_text(context, text)
     refusal = await _card_refusal(
         "Save these changes to the draft?",
         detail + " · Nothing is sent.",
@@ -4336,12 +4345,21 @@ async def edit_draft(
     )
     if refusal:
         return refusal
-    await _put("/email/drafts", {
-        "account_id": account_id, "draft_id": draft_id,
-        "to": lists["to"], "cc": lists["cc"], "bcc": lists["bcc"],
-        "subject": new_subject, "body": text, "keep_html": keep_html,
-    })
-    return f"The draft is saved in {sender}. Nothing was sent."
+    try:
+        res = await _put("/email/drafts", {
+            "account_id": account_id, "draft_id": draft_id,
+            "to": lists["to"], "cc": lists["cc"], "bcc": lists["bcc"],
+            "subject": new_subject, "body": text,
+            "keep_html": keep_body, "keep_body": keep_body,
+        }) or {}
+    except GatewayError as exc:
+        if exc.status not in (409, 422):
+            raise
+        return (f"Nothing changed. {exc}. Read the draft with read_email, and "
+                "pass its whole text, with the change, in body.")
+    lost = (" Its formatting and its images could not be kept, so it now "
+            "holds the text only.") if res.get("html") == "lost" else ""
+    return f"The draft is saved in {sender}. Nothing was sent.{lost}"
 
 
 def _snooze_time(until: str) -> tuple[Any, str]:

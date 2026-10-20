@@ -9,10 +9,12 @@ Email app already uses, and each write asks the member's card first
 
 Each rule names the mutation that turns it red (R7):
 
-1. **edit_draft keeps what it was not told to change**, and keeps the whole
-   text: with no ``body`` it reads the text from the provider, and it changes
-   nothing when it cannot. Mutation: write the stored, cut text back ->
-   ``test_edit_draft_refuses_when_it_cannot_read_the_whole_text``.
+0. **Each tool reaches a run**: ``own_tool_scope`` names it. Mutation: drop
+   a name -> ``test_each_new_tool_is_in_scope``.
+1. **edit_draft keeps what it was not told to change.** With no ``body`` the
+   save asks the route to keep the body (an Outlook HTML draft keeps its
+   HTML), and a Gmail save gets the whole text from the provider. Mutation:
+   send the stored, cut text -> ``test_edit_draft_keeps_the_body_it_cannot_read``.
 2. **snooze_email takes a time with an offset in the future only.**
    Mutation: accept a naive time -> ``test_a_snooze_time_needs_an_offset``.
 3. **find_contact never guesses**: more than one match says to ask.
@@ -28,6 +30,7 @@ from __future__ import annotations
 import importlib.util
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -146,18 +149,47 @@ async def test_edit_draft_changes_the_text_and_keeps_the_rest(gw: _Gw) -> None:
     assert "Nothing was sent" in out
 
 
-async def test_edit_draft_adds_a_cc_and_reads_the_whole_text(gw: _Gw) -> None:
+def test_each_new_tool_is_in_scope() -> None:
+    """``own_tool_scope`` drops each tool that it does not name (review P0)."""
+    import json
+
+    config = json.loads((_AGENT.parent / "config.json").read_text(encoding="utf-8"))
+    for name in ("edit_draft", "snooze_email", "find_contact", "bulk_manage_inbox"):
+        assert name in config["own_tool_scope"], name
+        assert getattr(agents, name) in agents._TOOLS, name
+
+
+async def test_edit_draft_adds_a_cc_and_keeps_the_body(gw: _Gw) -> None:
     gw.full_body = {"body_text": "Hi Ravi,\n\nThe quote is attached.\n\n" + "x" * 9000}
     await agents.edit_draft(BOX, "d1", cc=["kim@contoso.test", "priya@fracktal.test"])
+    [card] = gw.cards
+    assert "The text of the draft stays as it is." in card["context"]
     [(_, _, body)] = gw.writes
     assert body["cc"] == ["kim@contoso.test", "priya@fracktal.test"]
-    assert body["body"] == gw.full_body["body_text"] and body["keep_html"] is True
+    assert body["body"] == gw.full_body["body_text"]
+    assert body["keep_body"] is True and body["keep_html"] is True
 
 
-async def test_edit_draft_refuses_when_it_cannot_read_the_whole_text(gw: _Gw) -> None:
+async def test_edit_draft_keeps_the_body_it_cannot_read(gw: _Gw) -> None:
+    """An Outlook HTML draft gives no text. The save sends none, and the route
+    keeps the body (review P1)."""
     gw.full_body = {}
     out = await agents.edit_draft(BOX, "d1", subject="New subject")
-    assert out.startswith("Nothing changed.") and gw.writes == [] and gw.cards == []
+    [(_, _, body)] = gw.writes
+    assert body["body"] == "" and body["keep_body"] is True
+    assert body["subject"] == "New subject"
+    assert body["body"] != gw.draft["body_text"]
+    assert "Nothing was sent." in out
+
+
+async def test_edit_draft_says_when_the_formatting_is_lost(gw: _Gw, monkeypatch) -> None:
+    async def put(path, body):
+        gw.writes.append(("PUT", path, body))
+        return {"id": "d1", "html": "lost"}
+
+    monkeypatch.setattr(agents, "_put", put)
+    out = await agents.edit_draft(BOX, "d1", body="Hi")
+    assert "formatting and its images could not be kept" in out
 
 
 async def test_edit_draft_says_no_and_writes_nothing(gw: _Gw) -> None:
@@ -226,6 +258,13 @@ async def test_a_forward_sends_only_the_named_files(gw: _Gw) -> None:
     assert "spec.pdf" in card["context"] and "photo.jpg" not in card["context"]
     [(_, path, body)] = gw.writes
     assert path == "/email/forward" and body["attachment_ids"] == ["f1"]
+
+
+async def test_two_files_of_one_name_are_never_chosen_in_silence(gw: _Gw) -> None:
+    gw.mail["attachments"].append({"id": "f3", "filename": "spec.pdf", "size_bytes": 10})
+    out = await agents.forward_email(MSG, ["lee@contoso.test"], files=["spec.pdf"])
+    assert out.startswith("Not forwarded.") and "f1, f3" in out
+    assert gw.writes == []
 
 
 async def test_an_unknown_file_forwards_nothing(gw: _Gw) -> None:
@@ -327,3 +366,70 @@ class TestTheBulkCountOnARealDatabase:
             _purge(p.admin_engine, f"%-{tag}@t8g1.test")
 
 
+
+
+# ── The route keeps the body of an Outlook draft (review P1) ─────────────────
+
+
+@pytest.mark.parametrize(("gmail", "sent_body"), [(False, None), (True, "Hi Ravi,")])
+async def test_the_route_keeps_the_body_when_asked(monkeypatch, gmail, sent_body) -> None:
+    from contextlib import asynccontextmanager
+
+    from gateway.routes.email.automation import drafting as dr
+
+    drow = SimpleNamespace(provider_message_id="pm1", thread_id="t1",
+                           subject="Re: Quote", body_text="<stored copy>")
+
+    class _Db:
+        async def execute(self, *a, **kw):
+            return SimpleNamespace(fetchone=lambda: drow)
+
+    @asynccontextmanager
+    async def session():
+        yield _Db()
+
+    updates: list[dict[str, Any]] = []
+
+    class _Provider:
+        async def update_draft(self, pmid, **kw):
+            updates.append(kw)
+            return "pm1"
+
+    provider = _Provider()
+
+    @asynccontextmanager
+    async def provider_session(*a, **kw):
+        yield SimpleNamespace(provider=provider, owner_email="dana@fracktal.test")
+
+    upserts: list[dict[str, Any]] = []
+
+    async def upsert(*a, **kw):
+        upserts.append(kw)
+        return "d1"
+
+    async def nothing(*a, **kw):
+        return ""
+
+    async def html(*a, **kw):
+        return "<p>Hi</p>", dr.HTML_KEPT
+
+    async def fetch(db, local_id):
+        return {"id": local_id}
+
+    monkeypatch.setattr(dr, "_tenant_session", session)
+    monkeypatch.setattr(dr, "_assert_account_owner", nothing)
+    monkeypatch.setattr(dr, "_account_signature", nothing)
+    monkeypatch.setattr(dr, "provider_session", provider_session)
+    monkeypatch.setattr(dr, "_upsert_local_draft", upsert)
+    monkeypatch.setattr(dr, "_html_to_keep", html)
+    monkeypatch.setattr(dr, "_fetch_message_dict", fetch)
+    monkeypatch.setattr(dr, "_is_gmail", lambda p: gmail)
+    req = dr.DraftUpsertRequest(
+        account_id=BOX, draft_id="b0000000-0000-4000-8000-0000000000d1",
+        to=["ravi@contoso.test"], cc=["priya@fracktal.test"], subject="New",
+        body="Hi Ravi," if gmail else "", keep_html=True, keep_body=True)
+    await dr.upsert_draft(req, SimpleNamespace(email="dana@fracktal.test"))
+    [kw] = updates
+    assert kw["body_text"] == sent_body
+    if not gmail:
+        assert upserts[0]["body"] == "<stored copy>"
