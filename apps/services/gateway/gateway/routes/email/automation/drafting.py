@@ -32,6 +32,7 @@ from gateway.routes.email.automation.assistant import (
 )
 from gateway.routes.email.automation.draft_files import (
     NO_LIMIT_RULE,
+    UNREAD_IMAGE,
     DraftFiles,
     load_draft_files,
     strip_limit_claims,
@@ -1210,6 +1211,12 @@ async def _llm_draft_reply(
             f"{frame.wrap('LATEST MESSAGE', (email.get('body', '') or '')[:_DRAFT_BODY_MAX_CHARS])}\n"
         )
         files = email.get("_files")
+        if on_delta is not None and isinstance(files, DraftFiles) and files.images:
+            # The streamed call goes to litellm with no Router hop, so no
+            # model is chosen for the images (review round 1, P1-c). They
+            # are named as not read instead.
+            files.unread.extend((n, UNREAD_IMAGE) for n, _u in files.images)
+            files.images = []
         files_block, images = _files_prompt(files, frame)
         user_prompt += files_block
         if instructions:
@@ -1253,6 +1260,8 @@ async def _llm_draft_reply(
         body, claimed = strip_limit_claims(body)
         if claimed:
             _log.info("email.draft_limit_claim_removed", count=len(claimed))
+            if isinstance(files, DraftFiles):
+                files.removed.extend(claimed)
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.llm_draft_failed", error=str(exc)[:200],
                      interactive=interactive_fallback)
@@ -2346,6 +2355,9 @@ async def draft_reply_smart(
                                     thread_id=email["thread_id"] or None,
                                     owner_email=email.get("self") or "",
                                     to_email=(reply_to or [email["from"]])[0],
+                                    # Each To, or the signed send rebuilds the
+                                    # draft with the first one only (F2).
+                                    to_addresses=reply_to or None,
                                     subject=re_subject, body=draft,
                                 )
                         except Exception as exc:
@@ -2537,9 +2549,13 @@ async def _compose_assist_run(
     if (ctx is not None and req.mode == "reply" and req.message_id
             and not strip_signature_text(step.signature or "", req.body or "").strip()):
         try:
-            async with _tenant_session() as db:
-                ctx["_files"] = await load_draft_files(
-                    db, req.message_id, user, budget_s=COMPOSE_FILES_BUDGET_S)
+            # No session stays open over the provider fetch (PR-A1): the
+            # loader lists the files in a short session of its own. No
+            # images: the composer streams, and a streamed call has no
+            # Router hop to choose a model that reads them (P1-c).
+            ctx["_files"] = await load_draft_files(
+                None, req.message_id, user, budget_s=COMPOSE_FILES_BUDGET_S,
+                vision=False)
         except Exception as exc:  # a draft goes on without the files
             _log.warning("email.compose_files_failed", error=type(exc).__name__)
     result, store_thread = await _compose_draft(
@@ -3561,5 +3577,6 @@ async def save_draft(
                 db, req.account_id, provider_id, thread_id=row.thread_id,
                 owner_email=(await resolve_self(db, req.account_id)).address,
                 to_email=to_email, subject=re_subject, body=body,
+                to_addresses=reply_to or None,
             )
         return {"created": True, "id": local_id}

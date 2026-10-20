@@ -43,8 +43,9 @@ MAX_FILES = 6
 MAX_FILE_CHARS = 10_000
 #: The characters of all files together.
 MAX_TOTAL_CHARS = 30_000
-#: The seconds that all reads of one draft may take.
-READ_BUDGET_S = 12.0
+#: The seconds that all reads of one draft may take. The reply card waits
+#: for them, then for the drafter, inside the 60 s of ``compose_reply``.
+READ_BUDGET_S = 10.0
 #: An image smaller than this is a logo or an icon in a signature.
 MIN_IMAGE_BYTES = 20 * 1024
 #: The largest image that goes to the model.
@@ -75,6 +76,9 @@ class DraftFiles:
     images: list[tuple[str, str]] = field(default_factory=list)
     #: ``(file name, why)`` for each file that the drafter did not read.
     unread: list[tuple[str, str]] = field(default_factory=list)
+    #: Each sentence that :func:`strip_limit_claims` took out of the draft.
+    #: The card names it, so the member sees what changed (review round 1).
+    removed: list[str] = field(default_factory=list)
 
     def read_names(self) -> list[str]:
         return [n for n, _t, _c in self.texts] + [n for n, _u in self.images]
@@ -87,6 +91,10 @@ class DraftFiles:
             names = ", ".join(f"{n} ({why})" for n, why in self.unread)
             out.append(f"The assistant did not read {names}. Check the reply "
                        "against it before you send.")
+        if self.removed:
+            said = " ".join(" ".join(r.split()) for r in self.removed)[:400]
+            out.append(f'The assistant took out a line that said a file could not '
+                       f'be opened: "{said}"')
         return out
 
 
@@ -170,11 +178,24 @@ async def load_draft_files(
 ) -> DraftFiles:
     """Read the files of *message_id* for the drafter, within *budget_s*.
 
-    With no *user* (a rule draft runs with no member session) nothing is
-    read, and each file is named as not read. Never raises: a draft writes
-    whatever happens here."""
+    With no *db*, the list of files is read in a short session of its own,
+    and the reads then run with no session open: a caller that keeps no
+    session over a provider call (``_compose_assist_run``, EM-T17 PR-A1)
+    passes ``None``. With no *user* (a rule draft runs with no member
+    session) nothing is read, and each file is named as not read. Never
+    raises: a draft writes whatever happens here."""
     out = DraftFiles()
-    rows = await _list_files(db, message_id)
+    if db is None:
+        from gateway.routes.email.core import _tenant_session  # noqa: PLC0415
+
+        try:
+            async with _tenant_session() as own:
+                rows = await _list_files(own, message_id)
+        except Exception as exc:  # noqa: BLE001 - a draft still writes
+            _log.warning("email.draft_files_list_failed", error=type(exc).__name__)
+            return out
+    else:
+        rows = await _list_files(db, message_id)
     if not rows:
         return out
     see_images = images_on() if vision is None else vision
@@ -252,10 +273,13 @@ NO_LIMIT_RULE = (
     "guessing what the file says.\n"
 )
 
-# "I cannot open the file", in its many forms: a claim of the reader, then
-# what it could not do, then the file. "The image you mentioned was not
-# attached" is NOT here: the drafter knows the list of files, so that can be
-# true, and asking for a file the sender forgot is a fair reply.
+# "I cannot open the file", in its many forms. Each pattern needs the reader
+# in the first person ("I", "we", "for me", "on our end"), and a verb that
+# acts ON a file, a few words before it. A business fact that names a file
+# stays: "we were unable to process the invoice because the PDF has no PO
+# number", "the drawing won't open in SolidWorks 2019" (review round 1, P1-b).
+# "The image you mentioned was not attached" is NOT here either: the drafter
+# knows the list of files, so that can be true.
 _CANT = (
     r"(?:can(?:no|')t|could(?:n't| not)|unable to|not able to|"
     r"(?:was|were|have|has|had)(?:n't| not) (?:been )?able to|"
@@ -263,31 +287,37 @@ _CANT = (
     r"failed to)"
 )
 _VERB = (r"(?:open(?:ing)?|read(?:ing)?|view(?:ing)?|see(?:ing)?|access(?:ing)?|"
-         r"download(?:ing)?|load(?:ing)?|display(?:ing)?|render(?:ing)?|"
-         r"retriev(?:e|ing)|process(?:ing)?|extract(?:ing)?)")
+         r"download(?:ing)?|load(?:ing)?|display(?:ing)?|render(?:ing)?)")
 _OBJ = (r"(?:attach\w*|files?|images?|pictures?|photos?|pdfs?|documents?|"
         r"screenshots?|links?|spreadsheets?|enclosures?|scans?)")
-# "The PDF did not come through", "the file will not open".
+#: At most three words between the verb and the file: "open the attached
+#: image", never "see the PO in the PDF".
+_ON_FILE = rf"{_VERB}(?:\s+[\w'-]+){{0,3}}?\s+{_OBJ}\b"
+_ME = r"(?:\bI\b|\bI'm\b|\bwe\b|\bwe're\b)"
+_MY_END = r"(?:for me|for us|on my end|on our end|on my side|on our side|my end|our end)"
 _FAIL = (r"(?:did(?:n't| not) come through|(?:is|was)(?:n't| not) coming through|"
          r"(?:won't|wouldn't|doesn't|does not|did not|didn't|will not|would not) "
-         r"(?:open|load|display)|"
-         r"(?:is|was|seems?|appears?)(?: to be)? (?:corrupt(?:ed)?|unreadable))")
+         r"(?:open|load|display))")
 _LIMIT_RE = _re.compile(
-    rf"\b{_CANT}\b.*\b{_VERB}\b.*\b{_OBJ}\b|\b{_OBJ}\b.*\b{_CANT}\b.*\b{_VERB}\b"
-    rf"|\b{_OBJ}\b.*\b{_FAIL}\b|\b{_FAIL}\b.*\b{_OBJ}\b",
-    _re.IGNORECASE | _re.DOTALL,
+    rf"{_ME}[^.!?]*?\b{_CANT}\s+{_ON_FILE}"
+    rf"|\b{_OBJ}\b[^.!?]*?\b{_FAIL}\b[^.!?]*?\b{_MY_END}\b",
+    _re.IGNORECASE,
 )
+#: "Your email seems to be cut off". The mail itself, a short span, no comma:
+#: "the shipment was incomplete" stays.
 _CUT_RE = _re.compile(
-    r"\b(?:email|e-mail|mail|message|note|text)\b.*\b(?:cut off|got cut|truncated|"
-    r"incomplete|garbled|ended abruptly|ends abruptly|came through partially)\b",
-    _re.IGNORECASE | _re.DOTALL,
+    r"\b(?:your|the|this) (?:email|e-mail|mail|message|note)\b[^,.;!?]{0,30}?"
+    r"\b(?:seems?|appears?|looks?|got|was|is|has been)\b[^,.;!?]{0,20}?"
+    r"\b(?:cut off|truncated|incomplete|garbled|ended abruptly|ends abruptly)\b",
+    _re.IGNORECASE,
 )
-_AI_RE = _re.compile(r"\bas an ai\b|\bi(?:'m| am) an ai\b|\blanguage model\b", _re.IGNORECASE)
+_AI_RE = _re.compile(r"\bas an ai\b|\bi(?:'m| am) an ai\b|\bas an? (?:large )?language model\b",
+                     _re.IGNORECASE)
 #: The ask that follows a claim: "Could you resend it?". It goes with the
 #: claim, and only right after one.
 _RESEND_RE = _re.compile(
-    r"\b(?:re-?send|send (?:it|them|this|that|the \w+)(?: \w+)? again|"
-    r"share the rest|send the rest|another copy|re-?attach|try (?:attaching|sending) again)\b",
+    r"\b(?:re-?send|send (?:it|them) (?:over )?again|re-?attach|"
+    r"(?:share|send) the rest(?: of (?:your|the) (?:email|message))?)\b",
     _re.IGNORECASE,
 )
 _SENTENCE_RE = _re.compile(r"(?<=[.!?])\s+")

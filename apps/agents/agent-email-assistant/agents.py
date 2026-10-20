@@ -3686,13 +3686,17 @@ def _card_detail(
 async def _reply_fill(
     orig: dict[str, Any], email_id: str, to: list[str], cc: list[str],
     subject: str | None, reply_all: bool,
-) -> tuple[list[str], list[str], str | None]:
+) -> tuple[list[str], list[str], str | None, list[str]]:
     """Fill the missing recipients and subject of a reply from the original.
 
     The server derives To and Cc by the one rule of the reply card: Reply-To
     wins, a mail the member sent goes back to its To, and Reply all adds each
     To and Cc. Before, To was the sender alone, so "nudge Ravi on the quote I
-    sent" went to the member. A fault falls back to the sender."""
+    sent" went to the member. A fault falls back to the sender.
+
+    The last item is the line that the card must show when the reply goes to
+    a Reply-To, not to the sender: a phishing mail can name a stranger there."""
+    notices: list[str] = []
     if not to:
         try:
             got = await _get("/email/reply-recipients",
@@ -3701,6 +3705,7 @@ async def _reply_fill(
         except Exception:  # noqa: BLE001 - fall back to the sender
             got = {}
         to = [str(a) for a in got.get("to") or [] if a]
+        notices = [" ".join(str(n).split()) for n in got.get("notices") or [] if n]
         seen = {a.lower() for a in to} | {a.lower() for a in cc}
         cc = [*cc, *(a for a in (str(x) for x in got.get("cc") or [] if x)
                      if a.lower() not in seen)]
@@ -3711,7 +3716,7 @@ async def _reply_fill(
     if not subject:
         s = orig.get("subject", "") or ""
         subject = s if s.lower().startswith("re:") else f"Re: {s}"
-    return to, cc, subject
+    return to, cc, subject, notices
 
 
 async def _refuse_reply_mailbox(email_id: str, own: str, named: str) -> str:
@@ -3786,6 +3791,7 @@ async def send_email(
     """
     to = list(to or [])
     cc = list(cc or [])
+    reply_notices: list[str] = []
     # Reply mode: the mailbox of the original sends (MB-4). A named mailbox
     # that differs is refused before any card (EM-T8e-2). Then fill the
     # missing recipient and subject from the original message.
@@ -3796,7 +3802,7 @@ async def send_email(
         if own and account_id and own != str(account_id):
             return await _refuse_reply_mailbox(reply_to_email_id, own, str(account_id))
         account_id = own or account_id
-        to, cc, subject = await _reply_fill(
+        to, cc, subject, reply_notices = await _reply_fill(
             orig, reply_to_email_id, to, cc, subject, reply_all)
     if not to:
         return "Not sent. No recipient — pass `to`, or `reply_to_email_id` to reply."
@@ -3851,7 +3857,7 @@ async def send_email(
                 # A workspace path keeps its extension when it is long.
                 files=[(_card_file_name(r.get("path", ""), _CARD_PATH_LIMIT), "")
                        for r in refs] if refs else None,
-            ),
+            ) + "".join(f"\n{n}" for n in reply_notices),
             body,
         ),
         close_on_steer=True,
@@ -4111,7 +4117,7 @@ def _draft_card(
     return detail, ("" if len(context) > _CARD_CONTEXT_LIMIT else context)
 
 
-def _with_draft_text(context: str, body: Any) -> str:
+def _with_draft_text(context: str, body: Any, preview: Any = None) -> str:
     """The card context with the text of the draft under the recipients.
 
     The member approves a send, so the card shows what the mail says, not
@@ -4122,6 +4128,12 @@ def _with_draft_text(context: str, body: Any) -> str:
     # No hidden character reaches the card (review of #1191, P1).
     text = clean_reply_body(str(body or "")).strip()
     if not text:
+        start = clean_reply_body(str(preview or "")).strip()
+        if start:
+            # Only the preview is stored. Say so, or the card looks whole.
+            return (context + "\n\nThe start of the draft:\n" + start[:1000]
+                    + "\n[… only the start is shown. Open the draft in the Email "
+                    "app to read it all.]")
         return context + "\n\nThe draft has no text."
     head = context + "\n\nThe text of the draft:\n"
     room = _CARD_CONTEXT_LIMIT - len(head)
@@ -4176,7 +4188,7 @@ async def send_draft(account_id: str, draft_id: str) -> str:
             "Not sent. The draft has too many recipients to show on one card. "
             "Send it from the Email app."
         )
-    context = _with_draft_text(context, draft.get("body_text") or draft.get("snippet"))
+    context = _with_draft_text(context, draft.get("body_text"), draft.get("snippet"))
     if not await request_confirmation(
         title="Send this draft?", detail=detail, context=context,
     ):

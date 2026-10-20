@@ -988,3 +988,23 @@ async def test_reply_all_keeps_the_cc_and_adds_the_members(monkeypatch, gw: Gate
     assert payload["cc"] == ["priya@fracktal.test", "ops@contoso.test"]
     [card] = gw.cards
     assert "ops@contoso.test" in card["context"]
+
+
+async def test_a_reply_to_a_reply_to_says_so_on_the_card(monkeypatch, gw: Gateway) -> None:
+    """A phishing mail names a stranger in Reply-To. The card says that the
+    reply goes there, not to the sender (review round 1, P2-a)."""
+    line = "Reply goes to attacker@x.test, not to the sender ceo@corp.test."
+    _reply_gateway(monkeypatch, gw, {"to": ["attacker@x.test"], "cc": [], "notices": [line]})
+    await agents.send_email(body="See the file.", reply_to_email_id="m-sent")
+    [card] = gw.cards
+    assert line in card["context"]
+    assert card["context"].index(line) < card["context"].index("See the file.")
+
+
+async def test_a_draft_with_only_a_preview_says_it_is_cut(gw: Gateway) -> None:
+    gw.draft["body_text"] = ""
+    gw.draft["snippet"] = "Hi Ravi, the quote"
+    await agents.send_draft(BOX, "d1")
+    [card] = gw.cards
+    assert "The start of the draft:\nHi Ravi, the quote" in card["context"]
+    assert card["context"].endswith("Open the draft in the Email app to read it all.]")

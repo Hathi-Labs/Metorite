@@ -103,3 +103,15 @@ def test_a_plain_card_ignores_a_steer():
 def test_revised_is_no_approval():
     assert not at.REVISED
     assert at.REVISED is not True and at.REVISED is not None
+
+
+def test_a_mark_is_a_number_never_an_address():
+    """CPython gives a freed address to a new object, so a mark by ``id()``
+    could make a new note look old (review round 1, P3)."""
+    _clean()
+    steer.buffer_guidance(THREAD, "jane", "one")
+    first = steer.guidance_marks(THREAD)
+    steer.drain_guidance(THREAD)
+    steer.buffer_guidance(THREAD, "jane", "two")
+    assert steer.guidance_marks(THREAD).isdisjoint(first)
+    _clean()

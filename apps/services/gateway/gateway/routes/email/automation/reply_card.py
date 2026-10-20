@@ -246,17 +246,23 @@ class _Mail:
         """What the card must say and never hide (review of #1191, P2 and P1d):
         a Reply that goes to another address than the sender, and the text
         that the send adds after the card."""
-        out: list[str] = []
-        sender = self.sender.lower()
-        if self.reply_to and sender and [a.lower() for a in self.reply_to] != [sender]:
-            out.append(f"Reply goes to {', '.join(self.reply_to)}, not to the sender "
-                       f"{self.sender}.")
+        out = self.reply_to_notices()
         if self.signature.strip():
             out.append("When it goes, your mailbox signature is added below the "
                        "text if the text does not hold it.")
         if self.provider == "microsoft":
             out.append("Outlook adds the email you answer below your reply.")
         return out
+
+    def reply_to_notices(self) -> list[str]:
+        """The line that says a Reply goes to another address than the sender.
+        A Reply-To can send a reply to a stranger, so each card that shows
+        such a reply says it (review of #1191, P2)."""
+        sender = self.sender.lower()
+        if self.reply_to and sender and [a.lower() for a in self.reply_to] != [sender]:
+            return [f"Reply goes to {', '.join(self.reply_to)}, not to the sender "
+                    f"{self.sender}."]
+        return []
 
     def recipients(self, reply_all: bool) -> tuple[list[str], list[str]]:
         return derive_reply_recipients(
@@ -282,8 +288,18 @@ async def reply_recipients(
     that ``send_email`` sends. Before, those took the sender alone, so a
     reply ignored Reply-To and a nudge on a mail the member sent went to the
     member."""
+    to, cc, _notices = await reply_recipients_with_notices(
+        message_id, owner, reply_all=reply_all)
+    return to, cc
+
+
+async def reply_recipients_with_notices(
+    message_id: str, owner: str, *, reply_all: bool = False,
+) -> tuple[list[str], list[str], list[str]]:
+    """:func:`reply_recipients` and the Reply-To line that a card must show."""
     mail = await _load_mail(message_id, owner)
-    return mail.recipients(reply_all)
+    to, cc = mail.recipients(reply_all)
+    return to, cc, mail.reply_to_notices()
 
 
 @router.get("/reply-recipients")
@@ -292,10 +308,11 @@ async def reply_recipients_route(
     reply_all: bool = False,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Who a reply to this mail goes to. A read: it writes nothing."""
-    to, cc = await reply_recipients(message_id, user.email or "anonymous",
-                                    reply_all=reply_all)
-    return {"to": to, "cc": cc}
+    """Who a reply to this mail goes to, and the Reply-To line that the send
+    card must show (review round 1, P2-a). A read: it writes nothing."""
+    to, cc, notices = await reply_recipients_with_notices(
+        message_id, user.email or "anonymous", reply_all=reply_all)
+    return {"to": to, "cc": cc, "notices": notices}
 
 
 @router.post("/reply-card")
