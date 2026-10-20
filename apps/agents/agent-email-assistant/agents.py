@@ -1790,7 +1790,9 @@ def _reply_title(form: dict[str, Any], reply_all: bool) -> str:
 
 
 @_annotate_risk(destructive=True, open_world=True, card_bound_reply=True)
-async def compose_reply(email_id: str, account_id: str, reply_all: bool = False) -> str:
+async def compose_reply(
+    email_id: str, account_id: str, reply_all: bool = False, draft: str = "",
+) -> str:
     """Reply to one email in the chat. The tool drafts the reply and shows the
     member ONE card: the email it answers, who gets the reply, a Reply or
     Reply all toggle, the text to edit, and Send, Save to Drafts and Discard.
@@ -1800,9 +1802,15 @@ async def compose_reply(email_id: str, account_id: str, reply_all: bool = False)
     Set ``reply_all=true`` when the member asked to answer everyone on the
     email. The member can change it on the card. The reply always goes from
     the mailbox that received the email, whatever ``account_id`` says. You
-    choose no recipient and write no text here: the server derives the
-    recipients, and the member edits the text. Where no card can show, the
-    tool drafts, saves and sends nothing."""
+    choose no recipient: the server derives the recipients.
+
+    ``draft`` is the reply text that you and the member already agreed in
+    the chat, or that the request to you contains. Pass it WORD FOR WORD,
+    with its greeting and sign-off. The card then shows that text, and not
+    a new one. Leave ``draft`` empty only when no text exists yet, and the
+    server then writes one from the email. The card shows the text in full,
+    and the member edits it: nothing leaves until the member presses Send.
+    Where no card can show, the tool drafts, saves and sends nothing."""
     _ = account_id  # the mailbox of the email acts (§11.3 rule 1)
     try:
         from acb_skills import ask_tools
@@ -1810,7 +1818,8 @@ async def compose_reply(email_id: str, account_id: str, reply_all: bool = False)
         return _NO_CARD_CHANNEL
     if not ask_tools.reply_card_channel_open():
         return _NO_CARD_CHANNEL
-    prep = await _post("/email/reply-card", {"message_id": email_id})
+    prep = await _post("/email/reply-card", {
+        "message_id": email_id, **({"draft": draft} if (draft or "").strip() else {})})
     form = _reply_form(prep, reply_all)
     answer = await ask_tools.request_confirmation(
         title=_reply_title(form, reply_all),

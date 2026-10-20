@@ -12,8 +12,9 @@ What this file fences (R7). Each rule names the test that fails:
 2. The body that leaves is the body the member posted. The gateway sends an
    answer only when the record that ``/agent/respond-input`` wrote matches,
    once. ``test_the_act_*``, ``test_a_model_*``.
-3. ``compose_reply`` names no recipient, no body and no file, and the held
-   run keeps it only while its parameters are the pinned set.
+3. ``compose_reply`` names no recipient and no file. Its ``draft`` only
+   fills the card, and the held run keeps the tool only while its
+   parameters are the pinned set.
    ``test_the_parameter_fence_*``, ``test_a_held_run_*``.
 4. With no card, the tool drafts, saves and sends nothing.
    ``test_no_card_*``.
@@ -455,7 +456,7 @@ async def test_the_card_route_drafts_with_the_one_drafter_and_strips_placeholder
 
 def test_the_parameter_fence_pins_compose_reply() -> None:
     params = list(inspect.signature(agents.compose_reply).parameters)
-    assert params == ["email_id", "account_id", "reply_all"]
+    assert params == ["email_id", "account_id", "reply_all", "draft"]
     assert frozenset(params) == eg.CARD_BOUND_REPLY_TOOLS["compose_reply"]
     assert agents.compose_reply.__tool_risk__ == {
         "read_only": False, "destructive": True, "idempotent": False,
@@ -466,7 +467,7 @@ def _variant(extra: str) -> Any:
     """``compose_reply`` with one more parameter, as a careless change adds."""
     ns: dict[str, Any] = {}
     exec(  # noqa: S102 - a fixed test source
-        f"async def compose_reply(email_id, account_id, reply_all=False, {extra}=None):\n"
+        f"async def compose_reply(email_id, account_id, reply_all=False, draft='', {extra}=None):\n"
         "    return ''\n", ns)
     fn = ns["compose_reply"]
     fn.__tool_risk__ = dict(agents.compose_reply.__tool_risk__)
@@ -574,6 +575,33 @@ async def test_compose_reply_sends_the_members_answer_and_nothing_of_its_own(
     assert act == ("/email/reply-card/act", {
         "message_id": MAIL, "card_request_id": "rid-7", "card_thread_id": "th-7",
         "answer": _answer(body="Edited by Jane.")})
+
+
+async def test_compose_reply_passes_the_agreed_text_to_the_card(monkeypatch, gw) -> None:
+    """The chat agreed a text. The card route gets it, and no drafter runs."""
+    _card_answer(monkeypatch, lambda kw: _member_send(kw, body="x"))
+    agreed = "Dear Dr Ravikanth,\n\nThree BQs, please."
+    await agents.compose_reply(MAIL, BOX, draft=agreed)
+    assert gw.posts[0] == ("/email/reply-card", {"message_id": MAIL, "draft": agreed})
+    # The act still carries no body of its own.
+    assert "draft" not in gw.posts[1][1]
+
+
+async def test_the_card_route_shows_the_agreed_text_and_skips_the_drafter(
+    monkeypatch,
+) -> None:
+    async def load_mail(message_id: str, owner: str) -> Any:
+        return _mail()
+
+    async def drafter(req: Any, user: Any) -> dict[str, Any]:
+        raise AssertionError("the drafter must not run when the chat agreed a text")
+
+    monkeypatch.setattr(rc, "_load_mail", load_mail)
+    monkeypatch.setattr(rc, "draft_reply_smart", drafter)
+    out = await rc.reply_card(
+        rc.ReplyCardRequest(message_id=MAIL, draft="Hi Kim,\n\nAgreed.\n\n[Your Name]"),
+        USER)
+    assert out["body"] == "Hi Kim,\n\nAgreed."
 
 
 async def test_compose_reply_saves_and_says_so(monkeypatch, gw) -> None:

@@ -28,7 +28,7 @@ from email.utils import parseaddr
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from acb_skills.reply_card import clean_reply_body
+from acb_skills.reply_card import MAX_REPLY_BODY, clean_reply_body
 from fastapi import BackgroundTasks, Depends, HTTPException
 from gateway.routes.email.automation.drafting import (
     DraftReplyRequest,
@@ -50,7 +50,7 @@ from gateway.routes.email.transport.send import (
     _as_uuid,
     send_email,
 )
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 
 #: The longest excerpt of the original mail on the card.
@@ -74,12 +74,17 @@ REPLY_CARD_NOT_FOUND = "Message not found"
 
 
 class ReplyCardRequest(BaseModel):
-    """The mail to answer. No recipient and no body: the server derives
-    both (EM-CR)."""
+    """The mail to answer. No recipient: the server derives it (EM-CR).
+
+    ``draft`` is the text that the member and the assistant agreed in the
+    chat. It only fills the card, which shows it in full for the member to
+    edit. The send still takes the body that the MEMBER submitted, so the
+    text of ``draft`` never leaves on its own (``ReplyCardActRequest``)."""
 
     model_config = ConfigDict(extra="forbid")
 
     message_id: str
+    draft: str = Field(default="", max_length=MAX_REPLY_BODY)
 
 
 class ReplyCardActRequest(BaseModel):
@@ -280,14 +285,20 @@ async def reply_card(
     all_to, all_cc = mail.recipients(True)
     if not reply_to:
         raise HTTPException(status_code=422, detail="This mail has no one to reply to.")
-    drafted = await draft_reply_smart(
-        DraftReplyRequest(account_id=mail.account_id, message_id=req.message_id,
-                          create_draft=False),
-        user,
-    )
+    # The chat agreed a text with the member: the card shows that text, and
+    # the drafter does not write a second, different one.
+    agreed = clean_reply_body(strip_placeholder_lines(req.draft))
+    drafted: dict[str, Any] | None = None
+    if not agreed.strip():
+        drafted = await draft_reply_smart(
+            DraftReplyRequest(account_id=mail.account_id, message_id=req.message_id,
+                              create_draft=False),
+            user,
+        )
     # Review of #1191, P1: no hidden character and no long blank run reaches
     # the card, so the card shows each character that the send can carry.
-    body = clean_reply_body(strip_placeholder_lines(str((drafted or {}).get("draft") or "")))
+    body = agreed if agreed.strip() else clean_reply_body(
+        strip_placeholder_lines(str((drafted or {}).get("draft") or "")))
     return {
         "message_id": str(_as_uuid(req.message_id) or req.message_id),
         "notices": mail.notices(),

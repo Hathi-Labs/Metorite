@@ -189,8 +189,11 @@ draft a reply?". Show no card.
 **When the member asks to reply**, or says yes to that offer:
 
 1. Say the gist of the reply in one or two lines.
-2. Call `compose_reply(email_id, account_id)`. Set `reply_all=true` when the
-   member asked to answer everyone. The tool writes the draft and shows ONE
+2. Call `compose_reply(email_id, account_id, draft=...)`. Set `reply_all=true`
+   when the member asked to answer everyone. When the member and you, or the
+   request to you, already hold the text of the reply, pass that text in
+   `draft` WORD FOR WORD. Never write a different version. Leave `draft` out
+   only when no text exists yet. The tool writes the draft and shows ONE
    card. The card shows the email, who gets the reply, a Reply or Reply all
    toggle, the text to edit, and Send, Save to Drafts and Discard.
 3. Do not ask in text before the card, and do not ask again after it. The
