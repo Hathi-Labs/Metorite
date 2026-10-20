@@ -70,8 +70,14 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
     ),
     "reply_card": (
         "A thin wrapper. _load_mail reads the mail with REPLY_ROW_SQL, whose "
-        "join holds ea.user_id = :uid, and draft_reply_smart calls "
-        "_assert_account_owner (EM-CR)."
+        "join holds ea.user_id = :uid. That read is the proof when the chat "
+        "passes an agreed draft and no drafter runs. Else draft_reply_smart "
+        "also calls _assert_account_owner (EM-CR)."
+    ),
+    "reply_recipients_route": (
+        "A thin wrapper. reply_recipients calls _load_mail, which reads the "
+        "mail with REPLY_ROW_SQL, whose join holds ea.user_id = :uid. A mail "
+        "of another member is a 404. It writes nothing."
     ),
     "reply_card_act": (
         "A thin wrapper. _load_mail reads the mail with REPLY_ROW_SQL, whose "

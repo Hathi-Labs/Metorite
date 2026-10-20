@@ -895,6 +895,16 @@ class Settings(BaseSettings):
     email_insights: bool = False
     email_insights_orgs: str = ""
 
+    # ── A reply draft reads the images of a mail (owner, 2026-10-20) ────────
+    #
+    # False is the default: the drafter names an image as not read, and never
+    # writes that it could not open it. True sends the images of a mail to the
+    # model with `task: "vision"`, but only when the AI Router serves the call,
+    # because only the Router picks a model that reads images (D-AI-2). Turn it
+    # on when a tier reads images. The one reader is `draft_files.images_on()`.
+    # Fence: tests/unit/test_email_draft_files.py.
+    email_draft_reads_images: bool = False
+
     # Dynamic Agent Loader (v2 — ADR-013)
     # Repos are cloned ONCE into agents_clone_dir/repos/ and refreshed with
     # git pull on each event (no full re-clone per run).

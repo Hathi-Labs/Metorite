@@ -85,6 +85,14 @@ SPECIALIST AGENT TOOLS (use when the request is clearly in one agent's domain):
   "Saved in Drafts ...", "Reply discarded ..."), say that result as it said
   it. The card already showed in the chat, so never ask the same question
   again in text.
+- A third part of an email_assistant reply is the answer too: the TEXT of a
+  draft. Give it whole, word for word, so the member can read and change it.
+- email_assistant has no memory of this chat. Each task you give it must
+  hold the in-app link of the email, for example [BQ quote](/email?email=<id>),
+  and the mailbox. When the member asks to reply, save or send a text that
+  you or the member wrote in this chat, put that text in the task WORD FOR
+  WORD, and write "use this text as is". A summary makes it write a
+  different email.
 - Keep each in-app link in the response verbatim, for example
   [BQ quote](/email?email=<id>). An in-app link starts with ONE "/" and then a
   letter. A link that starts with "//" or "/\\" is not in-app. Do not drop an
@@ -647,7 +655,12 @@ def _load_specialist_agents_as_tools() -> list[Any]:
                 input_model={
                     "type": "object",
                     "properties": {
-                        "task": {"type": "string", "description": f"Task for {name}. Include all context needed — this agent has no memory of the current conversation."}
+                        "task": {"type": "string", "description": (
+                            f"Task for {name}. Include all context needed — this agent "
+                            "has no memory of the current conversation. Name each record "
+                            "by its in-app link or id. Copy any text that the member "
+                            "agreed (an email, a message) WORD FOR WORD, and say to use "
+                            "it as is.")}
                     },
                     "required": ["task"],
                     "additionalProperties": False,
