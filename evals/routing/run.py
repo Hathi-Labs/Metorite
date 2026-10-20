@@ -12,8 +12,8 @@ things against REAL code:
 1. **The catalog** (:func:`catalog_problems`), for every case. Each expected
    agent is in the real registry, has an in-repo factory, and is a tool of
    the real orchestrator agent. Each app is a live pane of ``nav.ts``. Each
-   specialist the orchestrator holds, and each live pane with an agent, has a
-   case. The port of ``surfaceContext`` matches ``assistant.ts``.
+   specialist the orchestrator holds, and each live pane whose agent it
+   holds, has a case. The port of ``surfaceContext`` matches ``assistant.ts``.
 2. **The delegation** (:func:`run_scripted`), for one case of each expected
    answer. A scripted model makes the orchestrator call the expected agent,
    through the real ``run_agent_stream``. The run must reach that agent's
@@ -106,6 +106,17 @@ def _case_problems(c: Case, reg: dict[str, dict[str, Any]], tools: frozenset[str
         out.append(f"{c.id}: no words")
     if c.asks and c.expected is not None:
         out.append(f"{c.id}: a case that asks first names no specialist")
+    if c.opens is not None:
+        # WS-62 CF-3: the path must pass the server's own check, and the
+        # orchestrator opens it itself.
+        from orchestrator.in_app_path import is_in_app_path, pane_of
+
+        if not is_in_app_path(c.opens) or pane_of(c.opens) is None:
+            out.append(f"{c.id}: {c.opens!r} is not a page of this app")
+        if c.expected is not None or c.asks:
+            out.append(f"{c.id}: a case that opens a page names no specialist and asks nothing")
+        if "show_in_app" not in tools:
+            out.append(f"{c.id}: the orchestrator holds no tool 'show_in_app'")
     if c.app is not None and c.app not in shell.live_panes():
         where = "a preview pane" if c.app in {p.href for p in shell.panes()} else "no pane of nav.ts"
         out.append(f"{c.id}: the app {c.app!r} is {where}, not a live pane")
@@ -133,14 +144,23 @@ def _coverage_problems(cases: list[Case], reg: dict[str, dict[str, Any]],
         if name != ORCHESTRATOR and specialist_tool(name) in tools and name not in asked_for:
             out.append(f"the orchestrator holds {name!r}, and no case expects it")
     pairs = {(c.app, c.expected) for c in cases}
+    # A pane agent that the orchestrator does not hold as a tool is no
+    # specialist: a Copilot agent runs only as its own app's agent (D84, D92,
+    # ``loader.refuse_copilot_specialist``). No case can expect it.
     for pane in shell.live_panes().values():
-        if pane.agent and (pane.href, pane.agent) not in pairs:
+        if (pane.agent and specialist_tool(pane.agent) in tools
+                and (pane.href, pane.agent) not in pairs):
             out.append(f"the live app {pane.href} names {pane.agent!r}, and no case asks it there")
     for agent, hrefs in shell.also_serves().items():
+        if specialist_tool(agent) not in tools:
+            out.append(f"ALSO_SERVES names {agent!r}, and the orchestrator holds no tool for it")
+            continue
         out.extend(f"ALSO_SERVES sends {href} to {agent!r}, and no case asks it there"
                    for href in hrefs if (href, agent) not in pairs)
-    if not any(c.expected is None and not c.asks for c in cases):
+    if not any(c.expected is None and not c.asks and c.opens is None for c in cases):
         out.append("no case expects the orchestrator to answer itself")
+    if not any(c.opens for c in cases):
+        out.append("no case expects the orchestrator to open a page (show_in_app)")
     if not any(c.asks for c in cases):
         out.append("no case expects the orchestrator to ask first")
     return out
@@ -166,9 +186,10 @@ def runtime_of(agent: str) -> str:
 def drivable(case: Case) -> bool:
     """A script can drive the case: no specialist, or a MAF one.
 
-    A Copilot SDK specialist (``task-manager``, ``app-builder``) runs its
-    sub-run in the Copilot CLI, a process a hermetic run cannot start. Its
-    cases get the catalog checks only.
+    A Copilot SDK specialist (``app-builder``, the one that
+    ``loader.COPILOT_SPECIALIST_ALLOWED`` keeps) runs its sub-run in the
+    Copilot CLI, a process a hermetic run cannot start. Its case gets the
+    catalog checks only. Every other Copilot agent is no specialist.
     """
     return case.expected is None or runtime_of(case.expected) == "maf"
 
@@ -176,9 +197,9 @@ def drivable(case: Case) -> bool:
 def representative(cases: Iterable[Case]) -> list[Case]:
     """The first drivable case of each expected answer, in set order."""
     out: list[Case] = []
-    keys: set[tuple[str | None, bool]] = set()
+    keys: set[tuple[str | None, bool, bool]] = set()
     for c in cases:
-        key = (c.expected, c.asks)
+        key = (c.expected, c.asks, c.opens is not None)
         if key not in keys and drivable(c):
             keys.add(key)
             out.append(c)
@@ -197,6 +218,13 @@ def script_for(case: Case, form: str) -> dict[str, ReplyModel]:
         return {ORCHESTRATOR: ReplyModel([tool_turn("ask_questions",
                                                     {"questions": json.dumps(question)}),
                                           text_turn("Tell me which one, and I will do it.")])}
+    if case.opens is not None:
+        # WS-62 CF-3: the orchestrator opens the page, then says what the
+        # member will see, in one sentence.
+        return {ORCHESTRATOR: ReplyModel([
+            tool_turn("show_in_app", {"path": case.opens, "why": f"Here it is: {case.words}"}),
+            text_turn("You see it now, on the right."),
+        ])}
     if case.expected is None:
         return {ORCHESTRATOR: ReplyModel([text_turn("I can help with your apps.")])}
     agent = case.expected
@@ -232,6 +260,7 @@ def check_scripted(case: Case, record: RunRecord, models: dict[str, ReplyModel],
         return [*out, "the orchestrator's model got no request"]
     out.extend(_offer_problems(case, orch))
     out.extend(_delegate_problems(case, record, models, harness.loaded[loaded_before:]))
+    out.extend(_open_problems(case, record))
     if case.asks and not any(a.get("answered") for a in record.asked):
         out.append("expected a question card for the member, and none was answered")
     if not case.asks and record.asked:
@@ -249,6 +278,8 @@ def _offer_problems(case: Case, orch: ReplyModel) -> list[str]:
     want = set(REQUIRED_TOOLS)
     if case.expected:
         want.add(specialist_tool(case.expected))
+    if case.opens is not None:
+        want.add("show_in_app")
     missing = sorted(want - offered)
     if missing:
         out.append(f"the orchestrator was not offered {', '.join(missing)}")
@@ -259,6 +290,24 @@ def _offer_problems(case: Case, orch: ReplyModel) -> list[str]:
         if not orch.saw(text):
             out.append(f"the orchestrator's model did not see {what}")
     return out
+
+
+def _open_problems(case: Case, record: RunRecord) -> list[str]:
+    """The ``navigate`` events of the run, against ``case.opens`` (WS-62 CF-3).
+
+    A case that opens a page must send exactly ONE ``CUSTOM`` event
+    ``navigate`` with that path, in the parent's own stream. Every other case
+    must send none: a page that moves under a member who asked a question
+    is the failure §4.4 names.
+    """
+    paths = [str((e.get("value") or {}).get("path"))
+             for e in record.events
+             if e.get("type") == "CUSTOM" and e.get("name") == "navigate"]
+    if case.opens is None:
+        return [f"expected no page to open, and it opened {paths}"] if paths else []
+    if paths != [case.opens]:
+        return [f"expected one navigate event for {case.opens!r}, and it sent {paths}"]
+    return []
 
 
 def _delegate_problems(case: Case, record: RunRecord, models: dict[str, ReplyModel],
@@ -336,8 +385,9 @@ def _print_scripted(problems: list[str], results: list[Result], cases: list[Case
     for r in results:
         status = "pass" if r.passed else "FAIL"
         got = ", ".join(r.record.routed) if r.record and r.record.routed else "-"
-        print(f"  {status}  {r.case.id:<3} {r.form:<10} expected "
-              f"{r.case.expected or ('ask' if r.case.asks else 'itself'):<20} routed {got}")
+        want = r.case.expected or ("ask" if r.case.asks else
+                                   f"opens {r.case.opens}" if r.case.opens else "itself")
+        print(f"  {status}  {r.case.id:<3} {r.form:<10} expected {want:<20} routed {got}")
         for p in r.problems:
             print(f"        {p}")
     rest = [c for c in cases if c.id not in driven]

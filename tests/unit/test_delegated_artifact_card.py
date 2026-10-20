@@ -525,6 +525,10 @@ def test_a_copilot_sub_agent_delivers_to_the_chat_too(sandbox, monkeypatch, no_d
         "name": "copilot-writer", "agent_runtime": "github-copilot",
         "repo_name": None, "local_path": None,
     }])
+    # Since 2026-10-19 a delegated Copilot agent is refused before it runs
+    # (D84, D92, test_copilot_specialist_refused.py). The Copilot sub-agent
+    # branch stays as a second layer, so this test switches the refusal off.
+    monkeypatch.setattr(executor, "refuse_copilot_specialist", lambda *_a, **_k: None)
     cards = _cards(monkeypatch)
     t = new_thread()
     token = bind_tenant(ORG_A)

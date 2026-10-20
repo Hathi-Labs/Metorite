@@ -70,6 +70,19 @@ nothing; the thing nobody wrote down costs a session.
 - **Authority:** `specs/staging_and_daily_release.md` §5.10 and §5.11
 - **Added:** 2026-10-16 · WS-38 staging session
 
+### H-361 · Raise the WSL2 CPU cap, so local CI runs in about 10 minutes · [OWNER]
+- **Check:** `grep -E "^processors=" ~/.wslconfig` on the owner's PC reads 16
+  or more. If it does, delete this entry.
+- **Why:** local CI (`bash scripts/ci_local.sh`) passed in 17.7 minutes on
+  2026-10-19. Each of the six shards took about 16 minutes, because
+  `.wslconfig` caps ALL of WSL2 at 8 processors and 16 GB. The PC has 28
+  cores and 64 GB.
+- **Do this (owner):** in `C:\Users\<you>\.wslconfig`, set `processors=20`
+  and `memory=32GB`. Then run `wsl --shutdown` at a quiet moment, because it
+  stops Docker Desktop and every WSL window for a few seconds.
+- **Authority:** `specs/engineering_practice.md` §7a
+- **Added:** 2026-10-19 · CI speed-up session
+
 ### H-283 · Prove the first `credit_draw` row on production · [AGENT]
 - **Check:** on the box, query the Console database:
   `SELECT count(*), max(created_at) FROM credit_draw;`. A count above zero
@@ -144,6 +157,52 @@ line — never reclaim a number by deleting the other entry.
 ---
 
 # OPEN
+
+### H-366 · Harden the CRM UX batch of 2026-10-20 (CRM-U6 to U9) · [AGENT] · security
+- **Check:** `git log --oneline origin/main | grep -c "harden.*CRM-U[6-9]"` is 0. Then this is open.
+- **Why:** owner rule of 2026-10-19, build first and harden later. Four PRs
+  shipped on product tests only. They are #1181 (settings polish), #1180
+  (two-row toolbar and view chips, migration 287) and #1182 (lane stat block
+  and lead win chance, migration 288). The fourth is CRM-U9, the module field
+  filters. No diff-reviewer pass ran on any of them.
+- **Do this:** one PR labelled `harden`. Run diff-reviewer over the four
+  diffs. Then close these known gaps:
+  1. A stale `cf.<key>` chip on a module list stays visible and narrows
+     nothing. Run `pruneFilters` on module lists, as the core lists do.
+  2. The lane total adds amounts across currencies under one rupee icon.
+     Show "N in USD, not added".
+  3. The field-map retry re-reads every failed entity. The error text puts
+     the raw error string inside the sentence.
+  4. A bare `?view=<id>` link to a module view does not resolve, because a
+     module link needs its tab in the URL.
+  5. Module lists have no Export. The export route names the four lists.
+  6. The dead exports of `lib/savedViews.ts` (`activeSavedView`, `deleteCopy`,
+     `viewDiverges`) and the stale comments "v1 has no saved-views table" in
+     `page.tsx` and `urlState.ts`.
+  7. Projects onto the shared view seam (`src/lib/savedViews/`,
+     `src/components/ViewChips.tsx`) when its board is next touched.
+  8. `scripts/ci_local.sh` with no flags exits 2 ("unknown option:"), because
+     an empty flag list becomes one empty argument. Build `args` only when the
+     list has an item.
+- **Authority:** `specs/crm_platform.md` §20.12 and §20.13, review artifact of 2026-10-20
+- **Added:** 2026-10-20 · `crm-module-filters`
+
+### H-365 · Replay the CRM answer check on stored answers, then decide `on` · [OWNER]
+- **Check:** on the production box, `grep -E '^CRM_ANSWER_CHECK=' /opt/acb/app/.env`
+  reads `shadow`, and no replay result is in the round 8 PR. Then this is open.
+- **Why:** WS-53 CRM-Q29 round 8 changed the note and the check. The journal
+  holds counts only, so it gives an upper bound and no true rate. The true rate
+  needs the stored answers of the armed runs, and those rows hold the chat of
+  another org. An agent does not read them.
+- **Do this (owner):** run `uv run python scripts/crm_answer_check_replay.py
+  --print-sql`. Export those rows of the thread ids of the journal to a JSON
+  lines file off the repo. Then run the script with `--rows <file>`. Set `on`
+  only when "any note" is under 5 percent.
+- **Then (agent):** the hardening list of the PR. Send the question of an
+  empty group through the CRM-Q32 store, the web card and `text_asks`. Then
+  measure the invented-figure rate of the table units with a seeded corpus.
+- **Authority:** `specs/crm_platform.md` §18.11.2, CRM-Q29 fix round 8
+- **Added:** 2026-10-20 · `crm-check-explain`
 
 ### H-294 · BH-6 moved the root units to /usr/local/lib/acb, and the runbooks still name the checkout · [AGENT]
 - **Check:** run `rg -n "opt/acb/app/scripts/backup_db.sh|compose -f infra/docker-compose.yml" deploy/hostinger/README.md project-docs/specs/backup_and_restore.md README.md project-docs/specs/development_and_delivery_framework.md`. A hit means this is open.
@@ -1203,26 +1262,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_ai_chat.md` §22.9 (fix round 3, the
   residuals) · D12
 - **Added:** 2026-10-05 · the round 3 review of PR #616 (approved with nits).
-
-### H-218 · Take the GitHub token out of each clone's remote URL · [AGENT]
-- **Check:** `rg -n 'x-token:\{token\}@github.com' packages/acb_skills/acb_skills/loader.py`.
-  A hit means this is open.
-- **What happens.** `_build_github_url` (`loader.py:75-79`) puts
-  `GITHUB_TOKEN` in the clone URL, so the token lands in each clone's
-  `.git/config`. The token has `repo` scope (`loader.py:16`). The mutation
-  container mounts the clone at `/workspace/repo`, and it has a network. So
-  code that the model writes in that container can read the token and send
-  it out.
-- **Do.**
-  1. Clone and pull with a credential helper or `GIT_ASKPASS` that reads the
-     token from the environment. Then `.git/config` holds a URL with no
-     token.
-  2. Rewrite the remote URL of each existing clone once, in the loader.
-  3. Add the token probe of `specs/maf_coding_engine.md` WS-43l.
-- ⚠️ **A wrong fix stops every pull of a private agent repo.** Test a pull of
-  a private repo on a dev box before the merge.
-- **Authority:** `specs/maf_coding_engine.md` §15.3 and §7.1 rule 5
-- **Added:** 2026-10-03 · the D84 spec session
 
 ### H-214 · Add a plan-guard rule `ws43-sandbox-flip` for the three WS-43 flags · [OWNER]
 - **Check:** `rg -n "ws43-sandbox-flip|MAF_CODING_SCOPE|SANDBOX_EGRESS_ENABLED|MAF_NATIVE_SESSIONS" .claude/hooks/plan-guard.mjs`.
@@ -5853,21 +5892,21 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/email_app_master_plan.md`, R7
 - **Added:** 2026-10-18 · PR #1128 and its review
 
-### H-356 · Remove the legacy arms of the EA-13a client stamp · [AGENT]
-- **Check:** `grep -n "legacy_via" packages/acb_auth/acb_auth/deps.py` and
-  `grep -n ":legacy" apps/services/gateway/gateway/routes/projects/agent_runs.py`.
-  When both find nothing, delete this entry.
-- **Why.** EA-13a changed the stamp from `mcp:<host>` to `mcp:<host>:<slug>`.
-  For one release, branch 0 accepts the legacy host stamp of the same row,
-  because the deploy restarts the gateway before the edge. The open-run read
-  of `agent_runs.py` (`_OPEN_RUN_SQL`) also matches a legacy run of the same
-  connection. Both arms are only for the deploy of EA-13a.
-- **Do this:** wait for the next production release after EA-13a. Then
-  remove both arms. Remove their tests in `test_agent_client_stamp.py`: N4
-  legacy, N5 and the two-run read. Refresh the branch-0 digests in the same
-  commit, and get the review of §10.1.
-- **Authority:** `specs/external_agent_access.md` §10.1 and §12.2 item 1
-- **Added:** 2026-10-18 · EA-13a fix round 1
+### H-367 · No R8 test drives a connection with no slug through branch 0 · [AGENT]
+- **Check:** `grep -n "slugless\|no_slug" tests/unit/test_agent_client_stamp.py`.
+  When an R8 test there signs a call for a DCR connection row and gets 200,
+  delete this entry.
+- **Why.** For a row whose client id gives no slug, the stamp is
+  `mcp:<host>`. The edge and branch 0 must both compute that same value. Until
+  H-356 the legacy arm hid a drift between them. Now a drift gives every DCR
+  client a 401, and no R8 test would catch it. N3 does not touch the database,
+  and the edge-test world uses a client id that gives a slug.
+- **Do this:** add an R8 test in `test_agent_client_stamp.py`. Use a DCR
+  connection row, sign through the real edge client, and check that the call
+  gets 200. Name the mutation (branch 0 computes the stamp with
+  `client_id=None` dropped, or with a forced slug) and show it goes red.
+- **Authority:** `specs/external_agent_access.md` §10.1 step 5, R7
+- **Added:** 2026-10-20 · PR #1184 review, P3
 
 ### H-357 · 🔴 A key that a chat saw must be rotated, and old rows scrubbed · [OWNER] · security
 - **Check:** ask each org whose chats set up a key, a GitHub token first.
@@ -5949,6 +5988,90 @@ line — never reclaim a number by deleting the other entry.
   `~/.claude/settings.json` holds the owner-authorized `autoMode` rules.
 - **Authority:** owner, 2026-10-18. `specs/staging_and_daily_release.md`, CLAUDE.md §3a
 - **Added:** 2026-10-18
+
+### H-364 · Harden the CRM consistency batch of §18.16 · [AGENT] · security
+- **Check:** each item below has its own test or review record, or a later
+  entry owns it. If all hold, delete this entry.
+- **Why.** The owner asked to ship §18.16 fast on 2026-10-19, and to
+  harden it later. No adversarial review and no mutation test ran.
+- **Do this:**
+  1. Run a mutation round on `crm_sync/terms.py`, `crm_tools._term_total`
+     and the early park of `executor.wait_user_future`.
+  2. Review `GET /crm/terms/resolve`. It writes the asked term on a GET.
+     Bound the count of asked terms of one org.
+  3. Review `aggregate._seed_aliases`. It writes the alias fact on a GET.
+     Bound the count of alias sets, and let an admin remove a set.
+  4. Check that a figure of a WhatsApp option comes only from the tool
+     (`text_asks.figures_of` takes a shape, not a source).
+  5. Check the late pick of a term card across a parked run.
+  6. Give a batch run off `CRM_ANSWER_FIRST_ORGS` a holder, so the read
+     budget covers it.
+  7. Add an org zone, and read it in `acb_common.today`.
+- **Authority:** `specs/crm_platform.md` §18.16.10, owner 2026-10-19
+- **Added:** 2026-10-19
+
+### H-368 · A host shell can still reach a GitHub token outside the clone · [OWNER] · security
+- **Check:** on the box, run
+  `grep -cE '^(GITHUB_READ_TOKEN|COPILOT_GITHUB_TOKEN)=.' /opt/acb/app/.env`.
+  A count below 2 means steps 1 and 2 are open.
+- **Why.** H-363 took the token out of each clone's `.git/config`, and out of
+  the env of every agent child. Three paths stay. They are not in the clone,
+  so H-363 could not close them.
+  1. A read falls back to `GITHUB_TOKEN`, which has `repo` scope, when
+     `GITHUB_READ_TOKEN` is not set. The read runs in a gateway temp dir,
+     but the token in that one process can push.
+  2. The Copilot CLI holds `COPILOT_SDK_AUTH_TOKEN`. The SDK reads
+     `COPILOT_GITHUB_TOKEN` first, then `GITHUB_TOKEN`. So with no
+     `COPILOT_GITHUB_TOKEN`, a shell under the CLI can read the `repo` token
+     (the BH-1 residual in `specs/box_hardening.md` §5).
+  3. A host shell runs as `acb`. It can read `/opt/acb/app/.env` and
+     `/proc/<gateway pid>/environ`. H-271, H-225 and BH-5 own that path.
+- **Do this:**
+  1. [OWNER] Make a fine-grained token with read access to the agent and
+     skill repos only. An agent adds `GITHUB_READ_TOKEN` to `allowed_keys`
+     of the `app-env` entry in `deploy/secrets/manifest.json`, and pushes it
+     with `scripts/secrets.sh`.
+  2. [OWNER] Make a token with the Copilot permission only, and push it as
+     `COPILOT_GITHUB_TOKEN` in the same way.
+  3. After 1 and 2, the gateway uses `GITHUB_TOKEN` for a gated push only
+     (`acb_common/git_credentials.py`, rule 5). Path 3 still reaches it, so
+     this entry stays open until H-271 or BH-5 closes that path.
+- **A reviewer's push can carry a commit of a concurrent run.** The scenario:
+  a reviewer's turn starts on a shared clone at HEAD `A`. During the turn, a
+  second run of the same agent commits `B` in the same clone. The reviewer's
+  turn commits `C` and asks for a push. At the end of the turn, the push step
+  sees `A..C`, which holds `B` and `C`, and it pushes both. So `B` goes out
+  with no reviewer. The push step cannot tell the two runs apart. The
+  post-commit hook writes only `git rev-parse HEAD` to `.git/cc-commits-queue`,
+  with no run id, and any shell of any run can write that file. To close it,
+  tag each commit with its run, from a source that a run cannot forge (for
+  example, the gateway makes the commit, or a per-run work tree), and refuse
+  any commit in the window that does not carry this run's tag. A partial
+  fix that reads the queue file would trust a file that a run can write.
+- **The mutation container is closed.** It gets `COPILOT_GITHUB_TOKEN` only,
+  by name, and never `GITHUB_TOKEN` (`mutation._copilot_only_token`). With no
+  Copilot-only token and no `GATEWAY_API_KEY`, it does not start.
+- **Authority:** H-363 · `specs/box_hardening.md` §5 BH-1 · H-271
+- **Added:** 2026-10-20 · H-363
+
+### H-369 · Accept, amend or refuse D-CF-1 to D-CF-7, the chat-first proposals · [OWNER] · product
+- **Check:** `grep -c "Decided: owner" project-docs/specs/chat_first_surface.md`
+  returns 1 or more. If it does, delete this entry.
+- **Why:** the owner asked on 2026-10-20 for a chat-first design, with the
+  phone first. `specs/chat_first_surface.md` §5 proposes seven decisions,
+  each with a default. An agent builds to the defaults, dark, behind
+  `NEXT_PUBLIC_CHAT_FIRST`. The owner's answer changes the shape before the
+  flag goes on.
+- **Do this (owner):** read §5 of the spec. For each row, say "accept",
+  "amend" with the new default, or "refuse". The two that change the most
+  are D-CF-1 (no peek strip on a desktop) and D-CF-3 (the phone opens on the
+  chat once per browser session, never on a deep link).
+- **Then (agent):** write the answers into §5 with "Decided: owner,
+  <date>", mint the D number in `work_plan.md` §3, and update CF-1 and CF-2
+  if D-CF-1 or D-CF-2 changed. Then turn the flag on in staging and ask the
+  owner to try the phone flow on dev.metorite.com.
+- **Authority:** `specs/chat_first_surface.md` §5 and §9
+- **Added:** 2026-10-20 · WS-62 design session
 
 # DONE — deleted, not archived
 

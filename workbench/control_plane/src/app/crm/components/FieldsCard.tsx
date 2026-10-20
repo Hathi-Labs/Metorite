@@ -34,7 +34,7 @@ export const FIELD_ENTITIES: { slug: EntitySlug; label: string }[] = [
 ];
 
 export const FIELDS_MIRROR_NOTE = "Fields come from Zoho. Edit fields in Zoho.";
-export const FIELDS_NATIVE_NOTE = "Field editing comes later.";
+export const FIELDS_NATIVE_NOTE = "Only a studio admin can edit fields.";
 
 const SOURCE_LABEL: Record<FieldDef["source"], string> = {
   zoho: "Zoho",

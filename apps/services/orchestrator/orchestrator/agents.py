@@ -74,9 +74,17 @@ RETRIEVAL TOOLS (use for broad company data questions):
 - search_timeline: time-stamped facts about entities (deal stage changes, action history)
 
 SPECIALIST AGENT TOOLS (use when the request is clearly in one agent's domain):
-- Each registered agent appears as a tool named after it (e.g. crm_assistant, task_manager).
+- Each registered agent appears as a tool named after it (e.g. crm_assistant, projects_assistant).
+- Tasks, projects, the member's own task inbox, triage and calendar blocks are
+  ONE task store. Send that work to projects_assistant.
 - Call the specialist tool, then answer from its reply. Its reply is your
   evidence, not your answer: never relay it whole.
+- Two parts of an email_assistant reply ARE the answer, so keep them. When
+  it describes an email, give that in a few lines: who sent it, what it asks
+  of the member, and by when. When it reports a reply card ("Sent to ...",
+  "Saved in Drafts ...", "Reply discarded ..."), say that result as it said
+  it. The card already showed in the chat, so never ask the same question
+  again in text.
 - Keep each in-app link in the response verbatim, for example
   [BQ quote](/email?email=<id>). An in-app link starts with ONE "/" and then a
   letter. A link that starts with "//" or "/\\" is not in-app. Do not drop an
@@ -297,6 +305,77 @@ async def search_timeline(entity_name: str, query: str) -> str:
     return await search_entity_timeline(entity_name, query)
 
 
+# WS-62 CF-3 (chat_first_surface.md §4.4). The one tool that moves the page.
+# Only the orchestrator holds it (§9.2 Q3), so the page moves once and from
+# one place. read_only: it changes no data, it only tells the client where to
+# look. open_world=False: nothing leaves the platform.
+# Fence: tests/unit/test_show_in_app.py.
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def show_in_app(path: str, why: str) -> dict:
+    """Open a page of the app for the member, and say why in one sentence.
+
+    Use it when the member asks to see a page, a list or a record. The
+    page opens beside the chat. Then tell the member what they will see, in
+    one sentence. Call it at most once per reply.
+
+    Args:
+        path: An in-app path. It starts with one "/" and names a pane:
+            /projects, /projects?project=<id>, /projects?task=<id>, /tasks,
+            /calendar, /email, /email?email=<id>, /crm, /people, /knowledge,
+            /notes, /artifacts, /whatsapp, /dashboard, /chat. Never a full
+            URL, and never another site.
+        why: One short sentence the member reads, such as "Here is the
+            board for Website relaunch."
+
+    Returns:
+        ``{"opened": path}`` when the page opens. ``{"error": reason}`` when
+        it does not: a bad path, a pane the member does not hold, or a
+        second call in the same reply. Then say so in words and move on.
+    """
+    from orchestrator import in_app_path as _iap
+    from orchestrator.executor import resolve_run_queue
+
+    path = str(path or "").strip()
+    why = str(why or "").strip()
+    # Review of #1197, P2: a specialist that holds call_agent can call the
+    # orchestrator, and that nested run sees the parent's queue. Only the
+    # member's own run, the one with no ancestor, moves the page.
+    try:
+        from acb_skills.agent_tools import _delegation_chain
+
+        nested = bool(_delegation_chain.get())
+    except ImportError:  # pragma: no cover — acb_skills ships with the platform
+        nested = False
+    if nested:
+        return {"error": "only the member's own assistant opens a page"}
+    if not _iap.is_in_app_path(path):
+        return {"error": "not a path inside this app"}
+    # The queue IS the run's state: one queue per turn, made by the run
+    # frame. MAF runs each tool call in a COPY of the context
+    # (agent_framework/_tools.py, copy_context().run(create_task)), so a
+    # ContextVar set here never reaches the next call. A mark on the queue
+    # does, and it dies with the turn. No module state is needed.
+    queue = resolve_run_queue()
+    if queue is None:
+        return {"error": "no page to open from here"}
+    if getattr(queue, "_show_in_app_done", False):
+        return {"error": "already opened a page this turn"}
+    reason = _iap.refusal(path, await _iap.member_features())
+    if reason is not None:
+        return {"error": reason}
+    queue._show_in_app_done = True  # type: ignore[attr-defined]
+    # The same channel artifact_created uses. The client's live loop acts on
+    # it, and the replay loop does not (useAgentChat.ts).
+    await queue.put({
+        "type": "CUSTOM",
+        "name": "navigate",
+        "value": {"path": path, "why": why},
+    })
+    # The note makes the model hedge: a closed assistant, or another chat
+    # in front, moves nothing on the client.
+    return {"opened": path, "note": "the page opens only while the member watches this chat"}
+
+
 # H-236: open_world, because the container it starts has a network and a
 # GitHub token, and it pushes. A run that a covered Projects run delegates
 # to does not get it (``acb_skills.egress``).
@@ -391,14 +470,16 @@ async def delegate_to_agent(agent_name: str, message: str) -> str:
 
     When to delegate (examples):
     - CRM records, pipeline and deal questions → "crm-assistant"
-    - Task management, sprint status, workload queries → "task-manager"
+    - Tasks, projects, the member's own task inbox and its triage, workload,
+      status and calendar blocks → "projects-assistant". Projects, My Tasks
+      and Calendar are one task store (D52, D53, D54).
 
     Do NOT delegate:
     - Broad company data questions that span multiple agents (use your own retrieval tools)
     - Questions you can already answer from the entity graph
 
     Args:
-        agent_name: Exact registered name, e.g. "crm-assistant", "task-manager".
+        agent_name: Exact registered name, e.g. "crm-assistant", "projects-assistant".
         message:    The user's full request, reworded if needed to be self-contained.
 
     Returns:
@@ -483,11 +564,22 @@ def _load_specialist_agents_as_tools() -> list[Any]:
 
     settings = get_settings()
     skip_names = {"orchestrator", "strategy"}  # avoid circular delegation
+    from acb_skills.loader import may_delegate_to
 
     for entry in all_agents:
         name: str = entry.get("name", "")
         description: str = entry.get("description", "")
         if not name or name in skip_names or not description:
+            continue
+        if not may_delegate_to(name, entry.get("agent_runtime")):
+            # D84, D92: a Copilot agent does not run as a specialist
+            # (loader.refuse_copilot_specialist), so the model is not offered
+            # it. It returns here when its port labels it "maf" (WS-8i).
+            # app-builder stays, by owner call (loader.COPILOT_SPECIALIST_ALLOWED).
+            _log.info(
+                "orchestrator.specialist_tool_skipped",
+                agent=name, reason="copilot_runtime",
+            )
             continue
         try:
             # Enrich the tool description with tags and integrations from config
@@ -674,9 +766,15 @@ def build_orchestrator_agent(
         retrieval_tools: list[Any] = [company_tool, read_page, list_spaces]
     else:
         retrieval_tools = [retrieve_entity_context, retrieve_sales_context]
+    # WS-62 CF-3: the orchestrator's own, never a specialist's (§9.2 Q3).
+    # Dark until CHAT_FIRST_TOOLS is on (review of #1197, P1). Fence:
+    # tests/unit/test_show_in_app.py, test_company_search_tool.py.
+    from orchestrator.in_app_path import chat_first_tools_enabled
+    page_tools: list[Any] = [show_in_app] if chat_first_tools_enabled() else []
     core_tools: list[Any] = [
         *retrieval_tools,
         search_timeline,
+        *page_tools,
         spawn_copilot_agent,
         delegate_to_agent,
         *_memory_tools,
@@ -787,6 +885,7 @@ __all__ = [
     "retrieve_entity_context",
     "retrieve_sales_context",
     "search_timeline",
+    "show_in_app",
     "spawn_copilot_agent",
     "delegate_to_agent",
 ]

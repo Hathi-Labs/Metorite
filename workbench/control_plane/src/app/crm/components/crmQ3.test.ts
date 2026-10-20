@@ -116,11 +116,13 @@ describe("the list or board switch", () => {
     expect(html.match(/aria-pressed="true"/g)).toHaveLength(1);
   });
 
-  it("is the shared control, drawn in the title bar tools for Deals and Leads only", () => {
+  it("is the shared control, drawn in row 1 of the toolbar for Deals and Leads only", () => {
+    // CRM-U8: the switch left the app bar. The page hands it to `CrmViewBar`.
     const page = read("../page.tsx");
-    expect(page).toMatch(/from "@\/components\/ModeSwitch"/);
-    expect(page).toMatch(/hasBoard\(view\.tab\) && \(/);
-    expect(page).toMatch(/onPick=\{\(next\) => go\(selectLayout\(view, next\)\)\}/);
+    const bar = read("./CrmViewBar.tsx");
+    expect(bar).toMatch(/from "@\/components\/ModeSwitch"/);
+    expect(page).toMatch(/hasBoard\(view\.tab\)\s*\?/);
+    expect(page).toMatch(/onPick: \(next\) => go\(selectLayout\(view, next\)\)/);
   });
 });
 
@@ -399,7 +401,7 @@ describe("the access section reads groups late", () => {
     expect(src.match(/api\.listGroups\(\)/g)).toHaveLength(1);
     expect(src).toMatch(/const needGroups = !settings\.loading && wantsGroups\(access\);/);
     expect(src).toMatch(/if \(!needGroups\) return;[\s\S]*api\.listGroups\(\)/);
-    expect(src).toMatch(/\}, \[needGroups\]\);/);
+    expect(src).toMatch(/\}, \[needGroups, groupsTry\]\);/);
   });
 });
 

@@ -18,6 +18,7 @@ POST /agent/webhook/{source}
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import hmac
 import json
@@ -625,6 +626,11 @@ _AGENT_REGISTRY: list[dict] = [
         # tool output of the turn before. The Copilot session keeps them,
         # and Tier 1 sends earlier turns as text only. Flip this label and
         # the factory together, and only after H-215.
+        # While it says "github-copilot", task-manager is the agent of the
+        # My Tasks rail only. It is no specialist of another run: the
+        # orchestrator does not list it, and a delegation to it is refused
+        # (D84, D92, loader.refuse_copilot_specialist). Task and project
+        # work of the main chat goes to projects-assistant (D52 to D54).
         "agent_runtime": "github-copilot",
         "local_path": "apps/agents/agent-task-manager",
         "integrations": [],
@@ -654,7 +660,7 @@ _AGENT_REGISTRY: list[dict] = [
         "name": "email-assistant",
         "description": (
             "Email Assistant — checks the inbox, categorizes mail, and drafts "
-            "context-aware replies, handing off to the sales and task-manager "
+            "context-aware replies, handing off to the sales and projects "
             "agents and reading memory when an email needs their context."
         ),
         "tags": ["email", "gmail", "outlook", "drafting", "apps"],
@@ -813,11 +819,12 @@ def _normalize_runtime(val: object) -> str | None:
     """
     if not isinstance(val, str):
         return None
+    from acb_skills.loader import COPILOT_RUNTIME_LABELS
+
     v = val.strip().lower()
     if v == "maf":
         return "maf"
-    if v in ("github-copilot", "github_copilot", "githubcopilot",
-             "copilot", "copilot-sdk"):
+    if v in COPILOT_RUNTIME_LABELS:
         return "github-copilot"
     return None
 
@@ -1662,6 +1669,7 @@ async def list_agents(
         clone_path = repos_root / a["name"]
         if not (clone_path / ".git").is_dir():
             continue
+        _pin_registry_clone(a["name"], clone_path)  # H-363
         behind = await _git_behind_count(str(clone_path))
         if behind > 0:
             a["behind_by"] = behind
@@ -1705,8 +1713,11 @@ async def list_agents(
 
 
 def _registry_orgs() -> frozenset[str]:
-    raw = str(get_settings().agent_registry_orgs or "")
-    return frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
+    # The one parse of AGENT_REGISTRY_ORGS. The chat push gate of the executor
+    # reads the same rule (``acb_auth.agent_operator``).
+    from acb_auth.agent_operator import registry_operator_orgs  # noqa: PLC0415
+
+    return registry_operator_orgs(str(get_settings().agent_registry_orgs or ""))
 
 
 async def _require_registry_operator(
@@ -1729,6 +1740,67 @@ async def _require_registry_operator(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="Only the platform operator can change the agent registry.",
     )
+
+
+#: The 403 detail of the self-mutation queue, for an org that may not review.
+_MUTATION_REVIEWER_DENIED = (
+    "Only an admin of the first-party organization or of a platform operator "
+    "organization can review the self-mutation commits of an agent."
+)
+
+
+async def _require_mutation_reviewer(
+    user: UserContext = Depends(get_current_user),
+) -> None:
+    """Only a first-party org or an operator org reviews self-mutation commits.
+
+    The org passes when it is ``organization.first_party`` or it is in
+    ``AGENT_REGISTRY_ORGS``. ``require_permission("agents:manage")`` runs
+    first on each route, so the caller is also an owner or an admin.
+
+    Why ``first_party`` and not only the registry list: self-mutation writes
+    ``pending_commit`` rows only for a first-party org (MT-0b,
+    ``orchestrator.mutation._self_mutation_permitted``), and RLS keeps each row
+    in its org. On production the first-party org is not in the registry list,
+    so the registry check alone locked out everyone who can see a row.
+
+    The org comes from the server-side ``UserContext``, never from the request.
+    A missing org, a missing row or a failed read is a 403 (fail closed).
+
+    The rule itself is ``acb_auth.agent_operator.may_review_agent_commits``,
+    the ONE implementation, with the one read of ``first_party``. The chat push
+    gate of the executor calls it too, so the queue and a push from chat cannot
+    drift. It never reads ``first_party`` for an empty org, which would answer
+    for a sole org. Fences: ``tests/unit/test_mutation_queue_operator_only.py``
+    and ``tests/unit/test_chat_autopush_reviewer_gate.py``.
+    """
+    from acb_auth.agent_operator import may_review_agent_commits  # noqa: PLC0415
+
+    if await may_review_agent_commits(user.organization_id, user.has_permission):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN, detail=_MUTATION_REVIEWER_DENIED,
+    )
+
+
+#: The gate of the self-mutation review queue (2026-10-19). Every route under
+#: ``/agent/mutations`` carries it, reads included.
+#:
+#: Before this, the eight routes checked only that the caller was signed in.
+#: ``require_internal_auth`` proves the Next.js server sent the call, and every
+#: BFF call carries that token. So any member of the org that owns a row, an
+#: ``employee`` included, could approve it, which pushes to the agent's remote
+#: or opens a monorepo PR with the operator's credentials. Reject and remutate
+#: reset the shared clone, and delete removes the row with no trace.
+#:
+#: Two checks, in order: an org admin (``agents:manage``, owner and admin only,
+#: migration 130), then an org that may review (``_require_mutation_reviewer``).
+#: The reads take it too, because a diff is the source of a shared agent.
+#: Fence: ``tests/unit/test_mutation_queue_operator_only.py``.
+_MUTATION_QUEUE_GATE = [
+    require_permission("agents:manage"),
+    Depends(_require_mutation_reviewer),
+]
 
 
 @router.post("/{name}/pull", summary="Pull latest commits for an agent's local clone", dependencies=[require_permission("agents:manage"), Depends(_require_registry_operator)])
@@ -1774,7 +1846,10 @@ async def pull_agent(
     except Exception:  # noqa: BLE001
         pass
 
-    # Pull latest
+    # Pull latest. H-363: pin the clone from the registry first, so the
+    # read credential goes to the agent's own repo, never to a rewritten
+    # origin.
+    _pin_registry_clone(agent_name, clone_path)
     pull_info: dict[str, Any] = {"strategy": "skipped"}
     try:
         from acb_skills.loader import _pull_latest  # noqa: PLC0415
@@ -2871,103 +2946,29 @@ async def run_agent_stream_endpoint(
     # — otherwise Mem0's per-query semantic search returns a different block
     # every turn and defeats cross-turn prompt caching on the memory portion.
     _mem_thread_id = req.thread_id or f"{agent_name}:{run_id}"
-    try:
-        from acb_memory import (  # noqa: PLC0415
-            get_memory_context,
-            get_scoped_context,
-            get_session_memory,
-            scope_key,
-            search_entity_timeline,
+    # WS-47 WAC-P2: ONE builder of the block, which the WhatsApp run calls too.
+    from gateway.memory_preread import memory_preread  # noqa: PLC0415
+
+    user_msg = (
+        req.payload.get("message")
+        or req.payload.get("user_query")
+        or ""
+    )
+    memory_context = await memory_preread(
+        user_id=user_id,
+        agent_name=agent_name,
+        thread_id=_mem_thread_id,
+        message=str(user_msg),
+        shared=_room_is_shared,
+        clearance=_clearance,
+    )
+    if memory_context:
+        req.payload["memory_context"] = memory_context
+        _log.debug(
+            "agent.memory_enriched",
+            agent=agent_name,
+            user=user_id[:20],
         )
-        user_msg = (
-            req.payload.get("message")
-            or req.payload.get("user_query")
-            or ""
-        )
-        # Agent + org memory are NOT user-scoped, so they load even for an
-        # anonymous user; the per-user Mem0/Graphiti blocks stay gated on a
-        # real user_id.
-        if user_msg:
-            _has_user = user_id != "anonymous" and not _room_is_shared
-
-            async def _build_memory_block() -> str:
-                parts: list[str] = []
-                # Mem0: this user's private episodic facts. Never in a room —
-                # not the owner's, not the typer's. The scope key is simply not
-                # passed, so there is no retrieval to leak (memory-clearance.md
-                # §3.3: a boundary, not a request in a system prompt).
-                if _has_user:
-                    mem_ctx = await get_memory_context(user_id, user_msg)
-                    if mem_ctx:
-                        parts.append("## Memory from past conversations\n" + mem_ctx)
-                # What this room has established. Replaces the personal
-                # compartment rather than adding to it: shared work is
-                # remembered where everyone in the room can see it.
-                if _clearance.room:
-                    room_ctx = await get_scoped_context(
-                        _clearance.room, user_msg, header="Room memory",
-                    )
-                    if room_ctx:
-                        parts.append(
-                            "## What this room has established\n" + room_ctx
-                        )
-                # How the person being answered likes to work. Safe to carry
-                # into a room: they are in it, and preferences describe them
-                # rather than disclosing what they told the agent in private.
-                if _clearance.prefs:
-                    prefs_ctx = await get_scoped_context(
-                        _clearance.prefs, user_msg, header="Preferences",
-                    )
-                    if prefs_ctx:
-                        parts.append("## How to answer this person\n" + prefs_ctx)
-                # Agent memory: shared across every user of this agent
-                agent_ctx = await get_scoped_context(
-                    scope_key(agent=agent_name), user_msg, header="Agent memory"
-                )
-                if agent_ctx:
-                    parts.append("## This agent's shared memory\n" + agent_ctx)
-                # Org memory: organisation-wide, shared by every agent + user
-                org_ctx = await get_scoped_context(
-                    scope_key(org=True), user_msg, header="Organisation memory"
-                )
-                if org_ctx:
-                    parts.append("## Organisation-wide memory\n" + org_ctx)
-                # Graphiti: time-aware facts about entities in the query
-                if _has_user:
-                    graph_ctx = await search_entity_timeline(user_msg[:80], user_msg)
-                    if graph_ctx:
-                        parts.append(
-                            "## Timeline facts from knowledge graph\n" + graph_ctx
-                        )
-                return "\n\n".join(parts)
-
-            _redis = None
-            try:
-                from orchestrator.stream_relay import (  # noqa: PLC0415
-                    _get_client,
-                )
-                _redis = await _get_client()
-            except Exception:  # noqa: BLE001 — no Redis → fetch fresh each turn
-                _redis = None
-
-            memory_context = await get_session_memory(
-                redis=_redis,
-                thread_id=_mem_thread_id,
-                build=_build_memory_block,
-                # Without this a thread cached while solo would keep serving
-                # the owner's private block to the room for the rest of the
-                # TTL, undoing the read rule above.
-                clearance=_clearance.fingerprint,
-            )
-            if memory_context:
-                req.payload["memory_context"] = memory_context
-                _log.debug(
-                    "agent.memory_enriched",
-                    agent=agent_name,
-                    user=user_id[:20],
-                )
-    except ImportError:
-        pass
 
     # ── Memory extraction: save conversation facts after the run completes ──
     # NOTE: Mem0 episodic extraction is handled by the Next.js route
@@ -3457,6 +3458,19 @@ async def respond_user_input(
         from orchestrator.stream_relay import dispatch_control  # noqa: PLC0415
 
         delivered = await dispatch_control(req.thread_id, _command)
+    if delivered and not req.declined:
+        # EM-CR (email_app_master_plan.md §18, review of #1191): the record of
+        # a reply card's answer, only AFTER the thread that owns the card took
+        # it, so a request id seen from another room records nothing (H-201).
+        # The key names that thread. Only a reply answer is recorded, with this
+        # caller's own tenant and email. The act waits for the record
+        # (``reply_card.take_reply_answer``), and sends only with it.
+        from acb_skills.reply_card import record_reply_answer  # noqa: PLC0415
+
+        await record_reply_answer(
+            getattr(user, "organization_id", None), req.request_id, _responder or "",
+            req.answer, req.thread_id,
+        )
     if not delivered and req.declined:
         # No run waits on this card. A decline starts no new run: the member
         # chose to do something else. A card with a durable row closes, so
@@ -3937,7 +3951,7 @@ async def get_run_status(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.get("/mutations")
+@router.get("/mutations", dependencies=_MUTATION_QUEUE_GATE)
 async def list_mutations(
     limit: int = 50,
     user: UserContext = Depends(get_current_user),
@@ -4043,7 +4057,7 @@ async def list_mutations(
 # Pending commit HITL endpoints (commit-gate flow — M2.7)
 # ---------------------------------------------------------------------------
 
-@router.get("/mutations/pending")
+@router.get("/mutations/pending", dependencies=_MUTATION_QUEUE_GATE)
 async def list_pending_commits(
     limit: int = 50,
     user: UserContext = Depends(get_current_user),
@@ -4089,7 +4103,9 @@ async def list_pending_commits(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.get("/mutations/pending/{commit_id}/diff")
+@router.get(
+    "/mutations/pending/{commit_id}/diff", dependencies=_MUTATION_QUEUE_GATE,
+)
 async def get_pending_commit_diff(
     commit_id: str,
     user: UserContext = Depends(get_current_user),
@@ -4127,7 +4143,7 @@ async def get_pending_commit_diff(
 
 @router.post(
     "/mutations/pending/{commit_id}/approve", status_code=200,
-    dependencies=[Depends(require_internal_auth)],
+    dependencies=[Depends(require_internal_auth), *_MUTATION_QUEUE_GATE],
 )
 async def approve_pending_commit(
     commit_id: str,
@@ -4218,6 +4234,10 @@ async def approve_pending_commit(
         reviewer = getattr(user, "sub", None) or getattr(user, "email", "unknown")
         new_sha: str | None = None
         if has_remote:
+            # H-363: the push goes to the repo that the REGISTRY names for
+            # this agent. The seam refuses a clone with no pin, so a clone
+            # whose origin a run rewrote cannot take the operator's token.
+            _pin_registry_clone(row.agent_name, clone_dir)
             # Push.  If the fast-forward fails, rebase and retry.
             push_ok, new_sha = await _git_push_with_rebase(clone_dir, commit_sha)
             if not push_ok:
@@ -4411,7 +4431,7 @@ async def approve_pending_commit(
 
 @router.post(
     "/mutations/pending/{commit_id}/reject", status_code=200,
-    dependencies=[Depends(require_internal_auth)],
+    dependencies=[Depends(require_internal_auth), *_MUTATION_QUEUE_GATE],
 )
 async def reject_pending_commit(
     commit_id: str,
@@ -4500,7 +4520,7 @@ async def reject_pending_commit(
 
 @router.post(
     "/mutations/pending/{commit_id}/remutate", status_code=200,
-    dependencies=[Depends(require_internal_auth)],
+    dependencies=[Depends(require_internal_auth), *_MUTATION_QUEUE_GATE],
 )
 async def remutate_pending_commit(
     commit_id: str,
@@ -4602,7 +4622,7 @@ async def remutate_pending_commit(
 
 @router.delete(
     "/mutations/pending/{commit_id}", status_code=200,
-    dependencies=[Depends(require_internal_auth)],
+    dependencies=[Depends(require_internal_auth), *_MUTATION_QUEUE_GATE],
 )
 async def delete_pending_commit(
     commit_id: str,
@@ -4626,6 +4646,20 @@ async def delete_pending_commit(
             sess.commit()
 
         _log.info("mutation.commit_deleted", commit_id=commit_id, rows=deleted, by=reviewer)
+        if deleted:
+            # The row is gone, so the audit line is the only record that it
+            # existed and of who removed it.
+            from acb_audit import AuditEvent, record  # noqa: PLC0415
+
+            record(
+                AuditEvent(
+                    actor=f"human:{reviewer}",
+                    action="mutation_commit_deleted",
+                    target=f"pending_commit:{commit_id}",
+                    payload={"pending_commit_id": commit_id, "rows_deleted": deleted},
+                    organization_id=user.organization_id,
+                )
+            )
         return {"deleted": commit_id, "rows_deleted": deleted}
 
     except TenantUnbound:
@@ -4636,7 +4670,7 @@ async def delete_pending_commit(
 
 @router.delete(
     "/mutations/audit/{run_id}", status_code=200,
-    dependencies=[Depends(require_internal_auth)],
+    dependencies=[Depends(require_internal_auth), *_MUTATION_QUEUE_GATE],
 )
 async def dismiss_mutation_event(
     run_id: str,
@@ -4664,6 +4698,20 @@ async def dismiss_mutation_event(
             sess.commit()
 
         _log.info("mutation.audit_dismissed", run_id=run_id, rows=deleted, by=reviewer)
+        if deleted:
+            # This route deletes audit rows. A human actor writes this one, so
+            # the route never matches it and a later dismiss cannot erase it.
+            from acb_audit import AuditEvent, record  # noqa: PLC0415
+
+            record(
+                AuditEvent(
+                    actor=f"human:{reviewer}",
+                    action="mutation_audit_dismissed",
+                    target=f"run:{run_id}",
+                    payload={"run_id": run_id, "rows_deleted": deleted},
+                    organization_id=user.organization_id,
+                )
+            )
         return {"dismissed": run_id, "rows_deleted": deleted}
 
     except TenantUnbound:
@@ -4675,6 +4723,36 @@ async def dismiss_mutation_event(
 # ---------------------------------------------------------------------------
 # Git helpers for the approve endpoint
 # ---------------------------------------------------------------------------
+
+def _pin_registry_clone(agent_name: str | None, clone_dir: str | Path) -> bool:
+    """Pin *clone_dir* to the repo that the registry names for *agent_name* (H-363).
+
+    The seam pushes only to a pinned repo, and reads an unpinned clone with
+    no credential, because a run can rewrite the clone's ``origin``. After a
+    gateway restart no clone is pinned until its agent loads, so each route
+    that fetches or pushes pins the clone first, from the REGISTRY. An agent
+    with no registry entry, or a ``local_path`` agent with no repo, gets no
+    pin, so it gets no credential. True when it pinned.
+    """
+    from acb_common import git_credentials as git_auth  # noqa: PLC0415
+
+    if not agent_name:
+        return False
+    try:
+        entries = _load_dynamic_agents() + list(_AGENT_REGISTRY)
+    except Exception:  # noqa: BLE001
+        entries = list(_AGENT_REGISTRY)
+    entry = next((e for e in entries if e.get("name") == agent_name), None)
+    if entry is None or (entry.get("local_path") and not entry.get("repo_name")):
+        return False
+    from acb_skills.loader import agent_remote  # noqa: PLC0415
+
+    remote = agent_remote(agent_name, entry.get("repo_name"))
+    if remote is None:
+        return False
+    git_auth.pin_remote(clone_dir, remote)
+    return True
+
 
 async def _git_behind_count(clone_dir: str) -> int:
     """Return how many commits the local clone is behind origin/HEAD.
@@ -4692,16 +4770,17 @@ async def _git_behind_count(clone_dir: str) -> int:
     if rc != 0:
         return 0
 
-    # Fetch latest (short timeout — non-blocking for the UI)
+    # Fetch latest (short timeout — non-blocking for the UI). H-363: through
+    # the credential seam, so the clone never holds the read credential.
     try:
-        fetch_proc = await asyncio.create_subprocess_exec(
-            "git", "fetch", "origin",
-            cwd=clone_dir,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-            env=child_env(),
+        from acb_common import git_credentials as git_auth  # noqa: PLC0415
+
+        fetched = await asyncio.wait_for(
+            asyncio.to_thread(functools.partial(git_auth.fetch, clone_dir, timeout=5)),
+            timeout=8,
         )
-        await asyncio.wait_for(fetch_proc.communicate(), timeout=5)
+        if not fetched.ok:
+            return 0
     except (TimeoutError, Exception):
         return 0  # fetch timed out — return 0, don't block the response
 
@@ -4754,53 +4833,47 @@ async def _git_push_with_rebase(
     """
     import asyncio  # noqa: PLC0415
 
-    # Discover the remote's default branch (HEAD branch from
-    # `git remote show origin`).  Falls back to "master" then "main".
+    # H-363: every network step goes through the credential seam. The clone
+    # holds no token. The push credential reaches ONE git process, in a
+    # gateway temp dir, and only here: the caller is the approve route, which
+    # ``_require_mutation_reviewer`` gates. ``--no-verify`` is in the seam,
+    # because the pre-push hook blocks agent pushes.
+    from acb_common import git_credentials as git_auth  # noqa: PLC0415
+
+    # Discover the remote's default branch (the remote HEAD).  Falls back to
+    # "master", as before.
     remote_branch = "master"
     try:
-        rb_proc = await asyncio.create_subprocess_exec(
-            "git", "remote", "show", "origin",
-            cwd=clone_dir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            env=child_env(),
+        found = await asyncio.wait_for(
+            asyncio.to_thread(git_auth.remote_default_branch, clone_dir), timeout=20,
         )
-        rb_out, _ = await asyncio.wait_for(rb_proc.communicate(), timeout=15)
-        for line in rb_out.decode(errors="replace").splitlines():
-            line = line.strip()
-            if line.startswith("HEAD branch:"):
-                remote_branch = line.split("HEAD branch:", 1)[1].strip()
-                break
+        if found:
+            remote_branch = found
     except Exception:  # noqa: BLE001
         pass
 
-    # Push <commit_sha>:<remote_branch> (or HEAD if no specific sha given)
-    push_src = commit_sha if commit_sha else "HEAD"
-    push_target = f"{push_src}:{remote_branch}"
+    async def _push(src: str) -> git_auth.GitResult:
+        return await asyncio.wait_for(
+            asyncio.to_thread(functools.partial(
+                git_auth.push, clone_dir, src=src, branch=remote_branch,
+                credential=git_auth.push_token(),
+            )),
+            timeout=90,
+        )
 
-    # First attempt — fast-forward.
-    # --no-verify bypasses the pre-push hook (which blocks agent pushes
-    # but also accidentally blocks the legitimate approval push).
-    proc = await asyncio.create_subprocess_exec(
-        "git", "push", "--no-verify", "origin", push_target,
-        cwd=clone_dir,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=child_env(),
-    )
-    _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=60)
-    if proc.returncode == 0:
+    # Push <commit_sha> (or HEAD if no specific sha given) — fast-forward.
+    pushed = await _push(commit_sha if commit_sha else "HEAD")
+    if pushed.ok:
         return True, commit_sha  # SHA unchanged on clean fast-forward
 
-    stderr = stderr_bytes.decode(errors="replace")
     _log.warning(
         "mutation.push_rejected",
-        remote_branch=remote_branch, reason=stderr[:300],
+        remote_branch=remote_branch, reason=pushed.stderr[:300],
     )
 
     # Fetch + rebase on top of the remote branch, then retry.
-    fetch_rc = await _git_exec(clone_dir, ["fetch", "origin"])
-    if fetch_rc != 0:
+    fetched = await asyncio.to_thread(git_auth.fetch, clone_dir)
+    if not fetched.ok:
         return False, None
 
     # ── Stash uncommitted changes so rebase has a clean tree ──────────
@@ -4878,18 +4951,8 @@ async def _git_push_with_rebase(
         pass
 
     # Push the new HEAD (which includes our rebased commit)
-    new_head = new_sha if new_sha else "HEAD"
-    push_target_retry = f"{new_head}:{remote_branch}"
-
-    retry_proc = await asyncio.create_subprocess_exec(
-        "git", "push", "--no-verify", "origin", push_target_retry,
-        cwd=clone_dir,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-        env=child_env(),
-    )
-    await asyncio.wait_for(retry_proc.communicate(), timeout=60)
-    success = retry_proc.returncode == 0
+    retried = await _push(new_sha if new_sha else "HEAD")
+    success = retried.ok
     return success, new_sha if success else None
 
 

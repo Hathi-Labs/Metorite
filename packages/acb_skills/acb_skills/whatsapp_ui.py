@@ -79,7 +79,35 @@ WITHHELD_TOOLS: frozenset[str] = frozenset({
     # the web chat's PDF card. WhatsApp sends the same PDF as a file through
     # whatsapp_ui kind "document" (WAC-12), so the function stays.
     "make_document",
+    # WS-62 CF-3: the web chat moves the page. A phone on WhatsApp has no
+    # page to move (owner rule 2026-10-10: a channel strips delivery tools).
+    "show_in_app",
 })
+
+#: The WhatsApp form of each web delivery tool (WS-47 parity, 2026-10-19).
+#: The AG-UI map: what a WhatsApp member gets where the web chat shows the
+#: tool's element, or "none" with the reason. ``WITHHELD_TOOLS`` is exactly
+#: its keys, and ``tests/unit/test_wac_channel_parity.py`` fails when a tool,
+#: a context block or a prompt line reaches one channel and not the other
+#: outside this map. Spec ``whatsapp_assistant_channel.md`` §17.
+WHATSAPP_FORMS: dict[str, str] = {
+    "emit_generative_ui": "whatsapp_ui: chart, table, stats, board, timeline, agenda "
+                          "and gantt as a PNG, and buttons, list and link",
+    "ask_questions": "whatsapp_ui buttons or list, and a tap returns as text. A CRM "
+                     "question goes as numbered text (CRM-Q33 text_asks)",
+    "manage_todo_list": "none: WhatsApp has no panel. A long job sends whatsapp_ui "
+                        "kind working first",
+    "load_design_system": "none: whatsapp_ui draws in the one look",
+    "load_artifact_kit": "none: whatsapp_ui draws in the one look",
+    "write_artifact": "none: no file card. A PDF goes as whatsapp_ui kind document",
+    "share_artifact": "whatsapp_ui kind link to a page of app.metorite.com",
+    "read_attachment": "none: the bot reads text and taps only. Media is WAC-5",
+    "call_agent_background": "none: one reply a message. A long job sends whatsapp_ui "
+                             "kind working first",
+    "make_document": "whatsapp_ui kind document, the same PDF (WAC-12)",
+    "show_in_app": "none: WhatsApp has no page to open. The assistant says where the "
+                   "record is in words, or sends whatsapp_ui kind link",
+}
 
 #: The most elements one reply sends. More reads as spam on a phone.
 MAX_MESSAGES = 3
@@ -195,7 +223,8 @@ def whatsapp_run(agent: str, *,
 
     Like ``refuse_cards``: a nested ``run_agent`` and each task the run starts
     copy the context, so they see the profile too. Closing it restores the
-    value it found. *writes* lets the run park one write (WAC-4).
+    value it found. *writes* lets the run park one write (WAC-4), and one
+    egress call after an untrusted answer (WAC-P4).
     """
     run = WhatsAppRun(agent=agent, views=views, org=org, notify=notify,
                       writes=writes, document=document)

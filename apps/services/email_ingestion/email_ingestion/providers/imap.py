@@ -24,12 +24,13 @@ from __future__ import annotations
 import asyncio
 import email as email_lib
 import imaplib
+import logging
 import re
 import smtplib
 from datetime import datetime, timezone
 from email.header import decode_header
 from email.mime.text import MIMEText
-from email.utils import parsedate_to_datetime
+from email.utils import getaddresses, parsedate_to_datetime
 from typing import Any
 
 from .base import (
@@ -42,6 +43,8 @@ from .base import (
     canonical_folder,
     find_unsubscribe_link_in_html,
 )
+
+_log = logging.getLogger(__name__)
 
 
 class IMAPProvider(BaseEmailProvider):
@@ -241,6 +244,66 @@ class IMAPProvider(BaseEmailProvider):
             return messages[0]
 
         return await asyncio.to_thread(_get)
+
+    async def get_reply_to(
+        self, provider_message_id: str, *,
+        folder: str | None = None, message_id: str | None = None,
+    ) -> list[str]:
+        """The Reply-To of one message (EM-CR), read with ``BODY.PEEK`` so the
+        mail stays unread.
+
+        An IMAP UID is unique in ONE folder only (security review of #1191).
+        So the read selects the folder of the stored row, and it fetches the
+        Message-ID with the Reply-To. It names no Reply-To, and the reply goes
+        to the sender, when the folder is unknown, when the stored Message-ID
+        is unknown, or when the message it read has another Message-ID."""
+        wanted = (message_id or "").strip()
+        mailbox = await self._imap_mailbox_of(folder)
+        if not mailbox or not wanted:
+            _log.warning("imap.reply_to_skipped reason=%s",
+                         "no_folder" if not mailbox else "no_message_id")
+            return []
+        imap = await self._get_imap()
+
+        def _get() -> list[str]:
+            s, _ = imap.select(f'"{mailbox}"', readonly=True)
+            if s != "OK":
+                return []
+            s, data = imap.uid(
+                "FETCH", provider_message_id,
+                "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID REPLY-TO)])")
+            if s != "OK" or not data:
+                return []
+            raw = b"".join(part[1] for part in data
+                           if isinstance(part, tuple) and isinstance(part[1], bytes))
+            if not raw:
+                return []
+            headers = email_lib.message_from_bytes(raw)
+            if str(headers.get("Message-ID", "") or "").strip() != wanted:
+                _log.warning("imap.reply_to_skipped reason=%s", "another_message")
+                return []
+            header = headers.get("Reply-To", "")
+            return [a for _n, a in getaddresses([str(header or "")]) if "@" in a]
+
+        return await asyncio.to_thread(_get)
+
+    async def _imap_mailbox_of(self, folder: str | None) -> str | None:
+        """The IMAP mailbox name of a stored canonical folder, or None.
+
+        The sync stores the canonical key of a folder (``canonical_folder``),
+        so a mailbox other than INBOX is found by its listing."""
+        canon = (folder or "").strip()
+        if not canon:
+            return None
+        if canonical_folder(canon) == canonical_folder("INBOX"):
+            return "INBOX"
+        try:
+            for f in await self.list_folders():
+                if canonical_folder(f.name) == canonical_folder(canon):
+                    return f.provider_folder_id or f.name
+        except Exception:  # noqa: BLE001 - an unknown folder names no Reply-To
+            return None
+        return None
 
     async def send_message(
         self,

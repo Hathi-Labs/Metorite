@@ -286,24 +286,80 @@ def _row(key: str, meaning: str) -> dict:
     return {"key": key, "meaning": meaning, "subject": "s"}
 
 
-def test_the_block_holds_twelve_lines_at_most_and_only_money_and_stages() -> None:
-    from acb_skills.org_facts_tools import BLOCK_LINES, BLOCK_MARKER, crm_facts_block
+def test_the_block_holds_thirteen_lines_at_most_and_only_money_and_stages() -> None:
+    from acb_skills.org_facts_tools import (
+        BLOCK_LINES,
+        BLOCK_MARKER,
+        CRM_ROUTING_LINE,
+        crm_facts_block,
+    )
 
     rows = [_row("revenue", "Revenue means billed."), _row("purpose", "A purpose."),
             *[_row("amount", f"Amount {i}.") for i in range(20)],
             _row("stage:Won", "In X, Won means Won.")]
     block = crm_facts_block(rows)
     lines = block.splitlines()
-    assert BLOCK_LINES == 12 and len(lines) == 12
+    assert BLOCK_LINES == 13 and len(lines) == 13
     assert lines[0].startswith(BLOCK_MARKER)
-    assert lines[1] == "- Revenue means billed."
+    # WS-47 parity: the routing line comes second, before any fact.
+    assert lines[1] == CRM_ROUTING_LINE
+    assert lines[2] == "- Revenue means billed."
     assert "A purpose." not in block
     # 22 facts, 10 shown: the last line names the rest, so none is lost.
     assert lines[-1] == "- 12 more facts: call org_facts to read them."
     exact = crm_facts_block([_row("amount", f"Amount {i}.") for i in range(11)])
-    assert len(exact.splitlines()) == 12 and "more facts" not in exact
+    assert len(exact.splitlines()) == 13 and "more facts" not in exact
     assert crm_facts_block([_row("purpose", "A purpose.")]) == ""
     assert crm_facts_block([]) == ""
+
+
+def test_the_routing_line_sends_business_figures_to_the_crm() -> None:
+    """WS-47 parity (2026-10-19). A WhatsApp run answered a billing question
+    from document search, because the persona sends a company question to
+    search_company first. The line names the figures and the tools."""
+    from acb_skills.org_facts_tools import CRM_ROUTING_LINE
+
+    for word in ("billing", "invoices", "collections", "payments",
+                 "revenue", "amounts", "crm_aggregate", "search_company"):
+        assert word in CRM_ROUTING_LINE, word
+    assert "documents, not CRM records" in CRM_ROUTING_LINE
+    # WS-47 follow-up: the general line names no one org's words.
+    for word in ("circles", "sites"):
+        assert word not in CRM_ROUTING_LINE.lower(), word
+
+
+def test_each_org_reads_its_own_module_names_in_the_routing_line() -> None:
+    """WS-47 follow-up (2026-10-19). The words of the line come from the
+    org's own catalogue: the module labels of its purpose facts, once each,
+    on the ONE routing line, so the block keeps its 13 lines."""
+    from acb_skills.org_facts_tools import (
+        BLOCK_LINES,
+        CRM_ROUTING_LINE,
+        ROUTING_MODULES,
+        crm_facts_block,
+        crm_routing_line,
+    )
+
+    dewin = [_row("purpose", "Circles holds region records."),
+             _row("purpose", "IP Billing holds invoice records."),
+             _row("purpose", "IP Billing holds invoice records."),
+             _row("amount", "The amount of IP Billing is Grand Total.")]
+    other = [_row("purpose", "Sales Orders holds order records.")]
+    line = crm_routing_line(dewin)
+    assert line == f"{CRM_ROUTING_LINE} Its CRM modules: Circles, IP Billing."
+    assert crm_routing_line(other).endswith("Its CRM modules: Sales Orders.")
+    assert "Circles" not in crm_routing_line(other)
+    # No purpose fact: the general line alone.
+    assert crm_routing_line([_row("amount", "Amount.")]) == CRM_ROUTING_LINE
+    # The block carries it as its second line, and the count holds.
+    block = crm_facts_block(dewin + [_row("amount", f"Amount {i}.") for i in range(20)])
+    lines = block.splitlines()
+    assert lines[1] == line and len(lines) == BLOCK_LINES
+    # A long catalogue names at most ROUTING_MODULES modules, each cut short.
+    many = [_row("purpose", f"{i:02d}{'M' * 60} holds x records.") for i in range(20)]
+    named = crm_routing_line(many).split("Its CRM modules: ", 1)[1].rstrip(".")
+    assert len(named.split(", ")) == ROUTING_MODULES
+    assert all(len(n) <= 40 for n in named.split(", "))
 
 
 class _MafAgent:

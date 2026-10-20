@@ -58,17 +58,43 @@ export async function fetchPendingAsks(
   threadId: string,
   fetchFn: typeof fetch = fetch,
 ): Promise<PendingAsk[]> {
+  return (await fetchPendingAsksOrNull(threadId, fetchFn)) ?? [];
+}
+
+/**
+ * The same list, or null when the server did not answer. A caller that
+ * settles a card the list leaves out must tell "no card waits" from "no
+ * answer" (review of #1171): only a real list settles anything.
+ */
+export async function fetchPendingAsksOrNull(
+  threadId: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<PendingAsk[] | null> {
   try {
     const res = await fetchFn(`/api/chat/pending-asks?threadId=${encodeURIComponent(threadId)}`, {
       cache: "no-store",
     });
-    if (!res.ok) return [];
+    if (!res.ok) return null;
     const data = (await res.json()) as unknown;
-    if (!Array.isArray(data)) return [];
+    if (!Array.isArray(data)) return null;
     return data.map(asAsk).filter((a): a is PendingAsk => a !== null);
   } catch {
-    return [];
+    return null;
   }
+}
+
+/**
+ * The redrawn cards to settle: the ones that still draw as waiting and that
+ * the server's real list does not hold as pending. With no list (null),
+ * nothing settles.
+ */
+export function cardsToSettle(
+  asks: readonly PendingAsk[] | null,
+  waitingRedrawn: ReadonlySet<string>,
+): string[] {
+  if (!asks) return [];
+  const listed = new Set(asks.map((a) => a.requestId));
+  return [...waitingRedrawn].filter((id) => !listed.has(id));
 }
 
 /**
