@@ -175,7 +175,7 @@ export async function setupHome(page: Page, opts: HomeMockOpts) {
     if (method === "GET") {
       return route.fulfill(json(200, {
         ...summary(found),
-        body_md: `# ${found.title}\n\nThe text of the page.`,
+        body_md: "## Scope\n\nThe text of the page.",
         origin: null,
         level: opts.level,
         can_write: writable,
