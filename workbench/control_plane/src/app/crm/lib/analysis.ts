@@ -89,7 +89,7 @@ export function rerunError(err: unknown): string {
   if (err instanceof CrmError) {
     if (err.status === 403) return "Only a CRM admin can re-run the analysis.";
     if (err.status === 404) return "The AI analysis is not on for your organization.";
-    if (err.status === 409) return "The analysis is for a CRM that mirrors Zoho.";
+    if (err.status === 409) return "The analysis is for a CRM that syncs from Zoho.";
   }
   return "The analysis did not start. Try again.";
 }

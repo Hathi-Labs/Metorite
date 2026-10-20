@@ -72,9 +72,9 @@ export type FieldAction = "approve" | "reject" | "pick";
 export const FIELD_MAP_TITLE = "Field mapping";
 export const FIELD_MAP_NOTE =
   "Pick the column that a Zoho field fills. A pick goes into a draft. After you approve the draft, the next sync applies it. The value also stays with the record.";
-export const NO_FIELDS = "No Zoho field goes to custom.";
+export const NO_FIELDS = "No Zoho field is waiting for a custom column. Sync again to check.";
 export const NO_TARGET = "No column can take this field.";
-export const STALE_SENTENCE = "Zoho changed this field. Decide again.";
+export const STALE_SENTENCE = "Zoho changed this field. Approve or reject the mapping again.";
 
 const STATUS_LABEL: Record<FieldRuleStatus, string> = {
   proposed: "Proposed",
@@ -149,7 +149,7 @@ export function waitingCount(maps: Array<FieldMap | null>): number {
  * proposer wrote shows who proposed it and its reason only.
  */
 export function ruleLine(rule: FieldRule): string {
-  const who = rule.proposed_by === "ai" ? "Proposed by the assistant" : "Picked by an admin";
+  const who = rule.proposed_by === "ai" ? "Proposed by the AI" : "Picked by an admin";
   return [who, rule.reason].filter(Boolean).join(" · ");
 }
 
