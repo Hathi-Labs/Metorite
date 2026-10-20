@@ -38,7 +38,7 @@ set -u
 cd "$(dirname "$0")/../.."
 export PATH="$HOME/.local/bin:$PATH"
 
-E2E=auto
+E2E=no   # opt-in with --e2e: see "The browser suite" below
 avail_gb=$(awk '/^MemAvailable:/ {print int($2 / 1048576)}' /proc/meminfo)
 # Below 8 GB free, even 2 shards plus the other jobs could stall the VM that
 # Docker Desktop and every distro share. Refuse, and say why.
@@ -146,17 +146,6 @@ job secret-scan "" secret-scan --ctx "github.event.pull_request.base.sha=$(git m
 # and its `$PWD` mount must be a path the Docker engine sees (it is: /home/ci).
 job caddy "" caddy
 
-if [ "$E2E" = auto ]; then
-  git diff --quiet "$(git merge-base origin/main HEAD)" HEAD -- workbench/control_plane && E2E=no || E2E=yes
-fi
-if [ "$E2E" = yes ]; then
-  # One process, not three shards: three `next dev` servers in one app folder
-  # fight over `.next`. CI=true (set in the image) turns on the one retry.
-  printf 'cd workbench/control_plane && npx playwright test --project=ci\n' > "$RUN/e2e.sh"
-  ( s=$(date +%s)
-    docker run --rm --name "ci-job-e2e-$TAG" --memory 6g --memory-swap 6g -v "$HOME:$HOME" "$IMAGE" bash "$RUN/e2e.sh" > "$RUN/e2e.log" 2>&1
-    echo "$? $(( $(date +%s) - s ))" > "$RUN/e2e.rc" ) &
-fi
 wait
 
 # The guard reads every shard's junit, so it runs after them.
@@ -164,6 +153,29 @@ shards_ok=success
 for i in $(seq 1 "$SHARDS"); do [ "$(cut -d' ' -f1 "$RUN/shard-$i.rc")" = 0 ] || shards_ok=failure; done
 job unit-tests "" unit-tests --ctx "needs.test.result=$shards_ok"
 wait
+
+# ── The browser suite: opt-in, AFTER the unit phase, in three parts ────────
+#
+# 🔴 2026-10-20: one `next dev` for the whole suite grew past its 6 GB cap
+# (kernel log: "Killed process next-server ... anon-rss 5.5 GB"). Every test
+# after that read ERR_CONNECTION_REFUSED: 409 of 482 "failed" in four runs
+# that passed on GitHub. GitHub splits the suite three ways, each on its own
+# 16 GB runner. So here:
+#   * three parts, one after the other. Each part starts a FRESH dev server
+#     and stops it, so the memory never piles up. Three at once would fight
+#     over one `.next` folder;
+#   * after the unit phase, so the two never compete for memory;
+#   * opt-in (`--e2e`). It adds about 20 minutes, and GitHub runs it on
+#     every PR that touches workbench/control_plane.
+if [ "$E2E" = yes ]; then
+  printf '%s\n' 'cd workbench/control_plane' 'rc=0' \
+    'for p in 1 2 3; do echo "== part $p of 3"; npx playwright test --project=ci --shard=$p/3 || rc=1; done' \
+    'exit $rc' > "$RUN/e2e.sh"
+  s=$(date +%s)
+  docker run --rm --name "ci-job-e2e-$TAG" --memory 10g --memory-swap 10g -v "$HOME:$HOME" "$IMAGE" \
+    bash "$RUN/e2e.sh" > "$RUN/e2e.log" 2>&1
+  echo "$? $(( $(date +%s) - s ))" > "$RUN/e2e.rc"
+fi
 # Keep this run's reports with its logs. The next run cleans the checkout,
 # and the reports are where the slow tests show (per-test time).
 cp -r junit "$RUN/junit" 2>/dev/null || true
@@ -180,7 +192,11 @@ for f in "$RUN"/*.rc; do
   fi
   printf '%-18s %-8s %s\n' "$name" "$res" "$secs"
   if [ "$res" = FAIL ]; then
-    grep -hE "^FAILED |^ERROR |::error::" "$RUN/$name.log" 2>/dev/null | cut -c1-160 | head -4 | sed "s/^/    /"
+    # pytest -v prints the verdict at the END of a line ("... FAILED [ 40%]").
+    # A test NAME can hold the word ("pg_restore FAILED in ..."), so match
+    # the verdict only where pytest puts it. Skip the RERUN lines.
+    grep -hE " (FAILED|ERROR)( \[ *[0-9]+%\])?$|::error::|^ +[0-9]+ failed$" "$RUN/$name.log" 2>/dev/null \
+      | grep -v RERUN | cut -c1-160 | head -4 | sed "s/^/    /"
   fi
   # Advisory steps inside a job (process fences) print ::warning:: and pass.
   grep -h "^::warning::" "$RUN/$name.log" 2>/dev/null | cut -c1-160 | head -2 | sed "s/^/    /"
