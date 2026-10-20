@@ -14,7 +14,7 @@ import { bylineOf, contributorsOf } from "./byline";
 import { parseFullWidth } from "./fullWidth";
 import { archivedHref, headingHref } from "./links";
 import { TOP_LEVEL, hasChildren, moveRequest, parentChoices } from "./movePlan";
-import { activeHeadingIndex, showsOutline, slugOf, textStats, withSlugs } from "./outline";
+import { activeHeadingIndex, formatCount, showsOutline, slugOf, textStats, withSlugs } from "./outline";
 import { PAGE_MENU, markdownFileName, pageMarkdown, pageMenuItems, type PageMenuState } from "./pageMenu";
 import type { PageSummary, PageVersion } from "./types";
 
@@ -116,6 +116,7 @@ describe("the outline", () => {
       words: 6,
       characters: "Scope We refund within 30 days.".length,
     });
+    expect(formatCount(1204)).toBe("1,204");
   });
 });
 

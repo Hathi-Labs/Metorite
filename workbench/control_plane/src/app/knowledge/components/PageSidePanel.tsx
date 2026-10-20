@@ -19,7 +19,7 @@ import Badge from "@/components/ui/Badge";
 
 import { bylineOf } from "../lib/byline";
 import { dayLabel, stateLabel, stateTone, STATE_LABELS } from "../lib/labels";
-import { countLabel, showsOutline, type OutlineHeading, type TextStats } from "../lib/outline";
+import { formatCount, showsOutline, type OutlineHeading, type TextStats } from "../lib/outline";
 import type { PageDetail } from "../lib/types";
 
 type PanelTab = "outline" | "details";
@@ -89,8 +89,8 @@ export default function PageSidePanel({
           <Fact label="Last edited by">
             {lastEditor ? <PersonName email={lastEditor} className="block" /> : "Nobody yet"}
           </Fact>
-          <Fact label="Words">{countLabel(stats.words, "word", "words")}</Fact>
-          <Fact label="Characters">{countLabel(stats.characters, "character", "characters")}</Fact>
+          <Fact label="Words">{formatCount(stats.words)}</Fact>
+          <Fact label="Characters">{formatCount(stats.characters)}</Fact>
           <Fact label="Review date">{page.review_at ? dayLabel(page.review_at) : "Set when the page is published"}</Fact>
           <Fact label="State">
             <Badge tone={stateTone(page.state)} icon={STATE_LABELS[page.state]?.icon}>

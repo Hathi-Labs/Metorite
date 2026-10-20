@@ -98,7 +98,7 @@ export function textStats(blocks: readonly string[]): TextStats {
   };
 }
 
-/** "1 word", "1,204 words". */
-export function countLabel(n: number, one: string, many: string): string {
-  return `${n.toLocaleString("en-US")} ${n === 1 ? one : many}`;
+/** A count with a thousands mark: "1,204". */
+export function formatCount(n: number): string {
+  return n.toLocaleString("en-US");
 }

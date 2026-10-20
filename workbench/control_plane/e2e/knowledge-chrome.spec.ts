@@ -70,8 +70,7 @@ test.describe("Knowledge page chrome", () => {
     await open(page, "kp-r");
     const byline = page.locator("[data-page-byline]");
     await expect(byline).toContainText("Edited by");
-    await expect(byline).toContainText("meera");
-    await expect(byline).toContainText("3m ago");
+    await expect(byline).toContainText("meera, 3m ago");
     await byline.getByRole("button", { name: "3 contributors" }).click();
     const list = page.getByRole("dialog", { name: "Contributors to this page" });
     await expect(list.getByRole("listitem")).toHaveCount(3);
@@ -104,10 +103,12 @@ test.describe("Knowledge page chrome", () => {
     await open(page, "kp-r");
     await page.getByRole("tab", { name: "Details" }).click();
     const aside = page.getByRole("complementary", { name: "About this page" });
-    await expect(aside.getByText("Author")).toBeVisible();
-    await expect(aside.getByText("Last edited by")).toBeVisible();
-    await expect(aside.getByText(/^\d[\d,]* words$/)).toBeVisible();
-    await expect(aside.getByText(/^\d[\d,]* characters$/)).toBeVisible();
+    const fact = (label: string) => aside.locator("dl > div").filter({ has: page.getByText(label, { exact: true }) });
+    await expect(fact("Author")).toContainText("asha");
+    await expect(fact("Last edited by")).toContainText("meera");
+    // The body holds 3 headings and 8 paragraphs of 6 lines of 10 words.
+    await expect(fact("Words").locator("dd")).toHaveText("487");
+    await expect(fact("Characters").locator("dd")).toHaveText(/^\d{1,2},\d{3}$/);
     await expect(aside.getByText("14 Apr 2027")).toBeVisible();
     await expect(aside.getByText("Published", { exact: true })).toBeVisible();
   });
@@ -261,8 +262,12 @@ test.describe("Knowledge page chrome", () => {
     await signIn(page);
     const kb = await mockKnowledge(page, { levels: { [COMPANY]: "manage" }, pages: chromePages() });
     await page.goto(`/knowledge?space=${COMPANY}`);
-    await page.getByRole("link", { name: "Archived pages" }).click({ timeout: 30_000 });
-    await expect(page).toHaveURL(/\/knowledge\?space=ks-company&view=archived$/);
+    await expect(page.getByRole("heading", { level: 2, name: "Company" })).toBeVisible({ timeout: 30_000 });
+    // A click before the app has hydrated is lost on the dev server, so retry it.
+    await expect(async () => {
+      await page.getByRole("link", { name: "Archived pages" }).click();
+      await expect(page).toHaveURL(/\/knowledge\?space=ks-company&view=archived$/, { timeout: 3_000 });
+    }).toPass({ timeout: 30_000 });
     await expect(page.getByRole("heading", { level: 2, name: "Archived pages" })).toBeVisible({ timeout: 30_000 });
     const row = page.locator('[data-archived-page="kp-old"]');
     await expect(row).toContainText("Old process");

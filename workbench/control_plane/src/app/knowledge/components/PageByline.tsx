@@ -29,8 +29,8 @@ export default function PageByline({ versions }: { versions: readonly PageVersio
 
   return (
     <span className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5" data-page-byline="">
-      <span className="flex min-w-0 items-center gap-1">
-        <span className="shrink-0">{byline.verb} by</span>
+      <span className="flex min-w-0 items-center">
+        <span className="mr-1 shrink-0">{byline.verb} by</span>
         <PersonName email={byline.email} className="min-w-0 max-w-40 text-foreground" />
         {byline.at ? <span className="shrink-0">, {relativeTime(byline.at) || "now"}</span> : null}
       </span>
