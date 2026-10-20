@@ -71,9 +71,10 @@ const GROUP_OF_KIND: Record<CustomFilterKind, FilterGroup> = {
  * the groups of `FILTER_GROUPS`, and in a group the fullest custom field
  * first. A field with no fill number comes after the ones that have one and
  * keeps the order of the layout. Leads add Converted. Each entity adds Source.
+ * A generic module (`null`, CRM-U9) has Updated and its own fields, and no Source.
  */
 export function filterFields(
-  entity: EntitySlug,
+  entity: EntitySlug | null,
   custom: readonly CustomFilter[],
   mirror = false,
 ): FilterField[] {
@@ -100,7 +101,9 @@ export function filterFields(
       def: filter.def,
     }));
   out.push(...fromDefs);
-  out.push({ id: "source", label: "Source", group: "Other", kind: "source", fill: null });
+  if (entity !== null) {
+    out.push({ id: "source", label: "Source", group: "Other", kind: "source", fill: null });
+  }
   if (entity === "leads") {
     out.push({ id: "converted", label: "Converted", group: "Other", kind: "converted", fill: null });
   }

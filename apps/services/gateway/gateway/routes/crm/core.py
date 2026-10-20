@@ -1208,6 +1208,41 @@ class ExtraFilterInput:
     custom: tuple[tuple[str, str], ...] = ()
 
 
+def custom_value_clauses(
+    column: str, grouped: dict[tuple[str, bool], list[str]],
+) -> tuple[list[str], dict[str, Any]]:
+    """The SQL of the custom field filters, over the JSONB *column*.
+
+    *grouped* maps ``(key, is_in)`` to the chosen values. *column* is a literal
+    of the caller (``custom`` or ``fields``). Every key and value is a bound
+    parameter (``ck<n>``, ``cv<n>``). One seam for the four core lists and the
+    module lists (CRM-U9).
+    """
+    clauses: list[str] = []
+    bound: dict[str, Any] = {}
+    for index, ((key, is_in), values) in enumerate(grouped.items()):
+        bound[f"ck{index}"] = key
+        if is_in or len(values) > 1:
+            # A multiselect field holds a JSON array (`["Red","Blue"]`),
+            # and `->>` would give its text. The array arm matches when
+            # any chosen option is in the array. Every value is bound.
+            clauses.append(
+                f"({column} ->> :ck{index} = ANY(CAST(:cv{index} AS text[])) "
+                f"OR (jsonb_typeof({column} -> :ck{index}) = 'array' "
+                f"AND jsonb_exists_any({column} -> :ck{index}, "
+                f"CAST(:cv{index} AS text[]))))"
+            )
+            bound[f"cv{index}"] = values
+        else:
+            clauses.append(
+                f"({column} ->> :ck{index} = :cv{index} "
+                f"OR (jsonb_typeof({column} -> :ck{index}) = 'array' "
+                f"AND jsonb_exists({column} -> :ck{index}, :cv{index})))"
+            )
+            bound[f"cv{index}"] = values[0]
+    return clauses, bound
+
+
 async def extra_filters(
     db: Any, entity: Entity, given: ExtraFilterInput,
 ) -> tuple[tuple[str, ...], dict[str, Any]]:
@@ -1309,26 +1344,9 @@ async def extra_filters(
                     status_code=422,
                     detail=f"'{name}' is not a custom field of {entity.slug}.",
                 )
-        for index, ((key, is_in), values) in enumerate(grouped.items()):
-            bound[f"ck{index}"] = key
-            if is_in or len(values) > 1:
-                # A multiselect field holds a JSON array (`["Red","Blue"]`),
-                # and `->>` would give its text. The array arm matches when
-                # any chosen option is in the array. Every value is bound.
-                clauses.append(
-                    f"(custom ->> :ck{index} = ANY(CAST(:cv{index} AS text[])) "
-                    f"OR (jsonb_typeof(custom -> :ck{index}) = 'array' "
-                    f"AND jsonb_exists_any(custom -> :ck{index}, "
-                    f"CAST(:cv{index} AS text[]))))"
-                )
-                bound[f"cv{index}"] = values
-            else:
-                clauses.append(
-                    f"(custom ->> :ck{index} = :cv{index} "
-                    f"OR (jsonb_typeof(custom -> :ck{index}) = 'array' "
-                    f"AND jsonb_exists(custom -> :ck{index}, :cv{index})))"
-                )
-                bound[f"cv{index}"] = values[0]
+        more, more_bound = custom_value_clauses("custom", grouped)
+        clauses.extend(more)
+        bound.update(more_bound)
     return tuple(clauses), bound
 
 
