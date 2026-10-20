@@ -21,6 +21,8 @@ import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
 
+import FormatExtras from "./FormatExtras";
+
 import {
   LINK_REFUSED,
   addressOf,
@@ -164,6 +166,7 @@ export function FormatBubble({
               }
             />
           ))}
+          <FormatExtras editor={editor} />
         </div>
       )}
     </BubbleMenu>
