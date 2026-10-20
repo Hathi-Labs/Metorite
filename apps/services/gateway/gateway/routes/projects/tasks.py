@@ -98,6 +98,7 @@ from gateway.routes.projects.filters import (
     attach_parent_context,
     attach_relation_counts,
     build_task_filters,
+    unheld_clause,
 )
 from gateway.routes.projects.landing import (
     completion_correction,
@@ -350,6 +351,10 @@ async def list_tasks(
     # rows AND the total leave subtasks out. Applied in SQL for the reason
     # every filter is: paging happens there.
     top_level: bool = False,
+    # WS-55 EA-14a. Only tasks that no open agent run holds. A run whose lease
+    # ended does not hold. It is NOT in `build_task_filters`, so a saved view
+    # cannot pin it: who holds a task changes by the hour.
+    unheld: bool = False,
 ) -> ListResponse:
     """The one task-list endpoint every surface reads through.
 
@@ -415,6 +420,8 @@ async def list_tasks(
         params.update(extra_params)
         if not include_triage:
             clauses.append(triage_exclusion_clause())
+        if unheld:
+            clauses.append(unheld_clause())
 
         where = " WHERE " + " AND ".join(clauses)
         total = (await db.execute(

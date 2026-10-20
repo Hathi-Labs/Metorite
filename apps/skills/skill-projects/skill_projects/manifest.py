@@ -455,6 +455,9 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/tasks/{task_id}/agent-runs", "start_agent_run", "B"),
     Route("POST", "/projects/agent-runs/{run_id}/activities", "post_agent_activity", "B"),
     Route("POST", "/projects/agent-runs/{run_id}/finish", "finish_agent_run", "B"),
+    # WS-55 EA-14a. The holder, the run's member, an assignee or an admin gives
+    # a task up. The task keeps its status and its assignees, so class B.
+    Route("POST", "/projects/agent-runs/{run_id}/release", "release_agent_run", "B"),
     # WS-55 EA-6g (EA3-40). An outside agent ASKS to archive over MCP: the
     # request writes a question and archives nothing, so it is class B. The
     # run's member answers on the task. The approval archives, so it is
@@ -502,6 +505,9 @@ PLANNED: dict[str, str] = {
     "start_agent_run": "WS-55 EA-12e, in-product chat parity",
     "post_agent_activity": "WS-55 EA-12e, in-product chat parity",
     "finish_agent_run": "WS-55 EA-12e, in-product chat parity",
+    # WS-55 EA-14a. A person releases a run from the card. The chat gets the
+    # tool with the other run tools in EA-12e.
+    "release_agent_run": "WS-55 EA-12e, in-product chat parity",
     # WS-55 EA-13e (2026-10-18) added the summary route for the board strip.
     "agent_summary": "WS-55, in-product chat parity, after EA-12e",
     # WS-55 EA-6b (2026-10-15) added the claim route for an outside agent.
@@ -1035,6 +1041,10 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "tags_all": "Every tag rather than any tag. task_dataset takes tags_all.",
         "view_id": "The hand-arranged order of a saved view, which only the board reads.",
         "top_level": "The board's subtask toggle. Each row the chat reads names its parent.",
+        "unheld": (
+            "WS-55 EA-14a: an outside agent skips a task that another agent holds. "
+            "The chat does not claim tasks, and no screen sends it."
+        ),
     },
     ("POST", "/projects/tasks/{task_id}/claim"): {
         "If-Match": (

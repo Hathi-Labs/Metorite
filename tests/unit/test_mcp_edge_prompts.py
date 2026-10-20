@@ -562,5 +562,5 @@ class TestTheChecks:
             named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", text))
             unknown = named - set(tools.TOOLS) - {"task_id", "needs_agent",
                                                  "expected_version", "in_progress", "short_id",
-                                                 "untrusted_text"}
+                                                 "untrusted_text", "held_by", "run_id"}
             assert not unknown, unknown

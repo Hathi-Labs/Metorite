@@ -416,28 +416,26 @@ class TestTheStampOnARealDatabase:
         assert r.json()["run"]["client_via"] == NEW
         assert [row.client_via for row in _runs(live, task)] == [NEW]
 
-    async def test_with_a_legacy_and_a_new_open_run_the_read_takes_the_new_one(
+    async def test_a_legacy_and_a_new_open_run_cannot_both_exist_on_one_task(
             self, live, runs_on):
-        """Fix round 1. The deploy window can leave a legacy run and a new run
-        open on one connection. The open-run read takes the NEW one. Two
-        tasks, with the two rows in both orders of age and of insert, so the
-        read cannot pass by the order of a plan."""
-        for n, order in enumerate(((LEGACY, NEW), (NEW, LEGACY))):
-            task = live.task(live.team, live.s.doing, f"two open runs {n}")
-            made = {}
-            for age, via in zip(("2 minutes", "1 minute"), order, strict=True):
-                made[via] = str(live.seeder.one(
-                    "INSERT INTO pm_agent_runs (organization_id, task_id, member_email,"
-                    " connection_id, client_via, status, started_by, started_at,"
-                    " last_agent_activity_at, created_at) VALUES (CAST(:o AS uuid),"
-                    " CAST(:t AS uuid), :m, CAST(:c AS uuid), :v, 'in_progress', :v,"
-                    " now(), now(), now() - CAST(:age AS interval)) RETURNING id",
-                    o=live.org, t=task, m=MEMBER, c=live.c["claude"], v=via, age=age))
-            result = await tw._mcp(live, "claude", "start_agent_run", {
-                "task_id": task, "idempotency_key": f"two-open-{n}"})
-            assert result["isError"] is False, result
-            assert result["structuredContent"]["created"] is False
-            assert result["structuredContent"]["run"]["id"] == made[NEW], (n, order)
+        """Fix round 1 was about a deploy window that left a legacy run and a
+        new run open on one task. EA-14a (migration 289) allows ONE open run
+        for each task, so the window cannot leave two. The index refuses the
+        second insert, and the start finds the first run."""
+        task = live.task(live.team, live.s.doing, "two open runs")
+        legacy = _legacy_run(live, task, live.c["claude"])
+        with pytest.raises(Exception, match="pm_agent_runs_one_open_per_task"):
+            live.seeder.one(
+                "INSERT INTO pm_agent_runs (organization_id, task_id, member_email,"
+                " connection_id, client_via, status, started_by, started_at,"
+                " last_agent_activity_at) VALUES (CAST(:o AS uuid),"
+                " CAST(:t AS uuid), :m, CAST(:c AS uuid), :v, 'in_progress', :v,"
+                " now(), now()) RETURNING id",
+                o=live.org, t=task, m=MEMBER, c=live.c["claude"], v=NEW)
+        result = await tw._mcp(live, "claude", "start_agent_run", {
+            "task_id": task, "idempotency_key": "two-open-1"})
+        assert result["isError"] is False, result
+        assert result["structuredContent"]["run"]["id"] == legacy
 
     async def test_n5_an_open_legacy_run_is_found_and_no_second_run_opens(
             self, live, runs_on):
@@ -453,16 +451,18 @@ class TestTheStampOnARealDatabase:
 
     async def test_a_legacy_run_of_another_connection_is_not_found(self, live, runs_on):
         """The legacy arm matches the SAME connection only. A legacy run of a
-        second Claude Code connection is that connection's run."""
+        second Claude Code connection is that connection's run. EA-14a: that
+        run still HOLDS the task, so the first connection's start is refused
+        with ``task_held`` and no second run opens."""
+        from agent_edge import tools
+
         task = live.task(live.team, live.s.doing, "n5 other")
         legacy = _legacy_run(live, task, live.c["claude2"])
         result = await tw._mcp(live, "claude", "start_agent_run", {
             "task_id": task, "idempotency_key": "n5-start-2"})
-        assert result["isError"] is False, result
-        body = result["structuredContent"]
-        assert body["created"] is True and body["run"]["id"] != legacy
-        runs = _runs(live, task)
-        assert sorted(r.client_via for r in runs) == sorted([LEGACY, NEW])
+        assert result["isError"] is True, result
+        assert result["content"][0]["text"] == tools.TEXT_TASK_HELD
+        assert [str(r.id) for r in _runs(live, task)] == [legacy]
 
     async def test_a_member_start_stamps_the_connections_slug(self, live, runs_on):
         """A member names the connection. The run's stamp is the one that

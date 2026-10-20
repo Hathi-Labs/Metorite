@@ -20,11 +20,12 @@ people work around for months instead of reporting.
 from __future__ import annotations
 
 import re
+import os
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
-from gateway.routes.projects.core import task_visibility_clause
+from gateway.routes.projects.core import task_visibility_clause, wire
 from sqlalchemy import text
 
 #: `pm_task_statuses.category`. Mirrored from the CHECK the migrations leave in
@@ -923,6 +924,41 @@ AGENT_RUN_OPEN_STATUSES: tuple[str, ...] = ("created", "in_progress", "awaiting"
 #: Seconds with no activity before an `in_progress` run reads `stale`.
 AGENT_RUN_STALE_AFTER_S = 300
 
+# ── WS-55 EA-14a: one AI for each task, and the lease ──────────────────────
+
+#: A task has at most ONE open run. A run keeps the task while its last
+#: activity is newer than the lease. After that, the next claim takes over.
+AGENT_RUN_LEASE_DEFAULT_S = 7200
+#: An `awaiting` run waits for a person, not for the agent. It keeps the task
+#: this many leases, so a question that waits one night does not lose the task.
+AGENT_RUN_QUESTION_LEASE_FACTOR = 3
+#: The environment variable that overrides the lease, in seconds.
+AGENT_RUN_LEASE_ENV = "AGENT_RUN_LEASE_SECONDS"
+
+
+def agent_run_lease_s() -> int:
+    """The lease in seconds. The default is two hours. A value that is not a
+    whole number above zero reads as the default."""
+    raw = os.environ.get(AGENT_RUN_LEASE_ENV, "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return AGENT_RUN_LEASE_DEFAULT_S
+    return value if value > 0 else AGENT_RUN_LEASE_DEFAULT_S
+
+
+def agent_run_hold_s(status: str) -> int:
+    """How long a run in *status* keeps its task with no activity."""
+    factor = AGENT_RUN_QUESTION_LEASE_FACTOR if status == "awaiting" else 1
+    return agent_run_lease_s() * factor
+
+
+def lease_expired(status: str, idle_s: float) -> bool:
+    """True when a run in *status* idle for *idle_s* seconds no longer keeps
+    its task. The ONE Python rule of the lease. The ``unheld`` filter reads
+    the same constants in SQL (:func:`unheld_clause`)."""
+    return idle_s > agent_run_hold_s(status)
+
 #: The derived state of one run, in SQL, over the alias ``r``. ONE copy:
 #: ``agent_runs.py`` reads it for each run, and :func:`attach_agent_state`
 #: reads it for the pill. The database ``now()`` decides ``stale`` (EA12-10).
@@ -961,6 +997,26 @@ _AGENT_NOTE_SQL = (
 AGENT_NOTE_MAX = 140
 
 
+def unheld_clause() -> str:
+    """The fragment of the ``unheld`` filter, over the task alias ``t``.
+
+    A task is unheld when no open run keeps it. A run whose lease ended does
+    not keep it, because the next claim takes the task over. The lease is
+    read when the clause is built, never at import, so the environment
+    override works in a running process.
+    """
+    open_list = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
+    lease = agent_run_lease_s()
+    hold = lease * AGENT_RUN_QUESTION_LEASE_FACTOR
+    return (
+        "NOT EXISTS (SELECT 1 FROM pm_agent_runs h"
+        " WHERE h.task_id = t.id"
+        f"   AND h.status IN ({open_list})"
+        f"   AND h.last_activity_at >= now() - (CASE WHEN h.status = 'awaiting'"
+        f"        THEN {hold} ELSE {lease} END) * interval '1 second')"
+    )
+
+
 def agent_state_sql(task_filter: str) -> str:
     """The pill query over the tasks that *task_filter* selects (alias ``r``).
 
@@ -981,7 +1037,12 @@ def agent_state_sql(task_filter: str) -> str:
     """
     return f"""
 SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state,
-       r.client_via, r.member_email, r.status AS run_status, {_AGENT_NOTE_SQL} AS note
+       r.client_via, r.member_email, r.status AS run_status, {_AGENT_NOTE_SQL} AS note,
+       COALESCE(r.started_at, r.created_at) AS held_since,
+       r.last_activity_at AS held_last,
+       EXTRACT(EPOCH FROM (clock_timestamp() - r.last_activity_at)) AS idle_s,
+       (SELECT u.display_name FROM app_user u
+         WHERE lower(u.email) = lower(r.member_email) LIMIT 1) AS member_name
   FROM pm_agent_runs r
  WHERE {task_filter}
    AND (r.status IN ({_OPEN_LIST})
@@ -1008,6 +1069,23 @@ def agent_runs_enabled() -> bool:
     return agent_oauth.runs_enabled()
 
 
+def held_by_of(hit: Any) -> dict[str, Any]:
+    """The ``held_by`` of a task: who keeps it, through which client, since
+    when, and whether the lease ended (EA-14a). ``stale`` here is the LEASE
+    (hours). It is not the idle pill state of five minutes."""
+    from acb_auth import agent_oauth
+
+    return {
+        "member": hit.member_email,
+        "member_name": hit.member_name or hit.member_email,
+        "client_via": hit.client_via,
+        "client_name": agent_oauth.client_label(hit.client_via),
+        "since": wire(hit.held_since),
+        "last_activity_at": wire(hit.held_last),
+        "stale": lease_expired(hit.run_status, float(hit.idle_s)),
+    }
+
+
 async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Fill each row's ``agent_state``, ``agent_client_via``,
     ``agent_member_email`` and ``agent_note``, mutating and returning the list.
@@ -1025,7 +1103,7 @@ async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[s
     """
     for row in rows:
         row.update(agent_state=None, agent_client_via=None, agent_member_email=None,
-                   agent_note=None)
+                   agent_note=None, held_by=None)
     ids = [str(r["id"]) for r in rows if r.get("id")]
     if ids and agent_runs_enabled():
         found = (await db.execute(text(_AGENT_STATE_SQL), {"ids": ids})).fetchall()
@@ -1037,6 +1115,8 @@ async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[s
                 row.update(agent_state=hit.state, agent_client_via=hit.client_via,
                            agent_member_email=hit.member_email,
                            agent_note=note[:AGENT_NOTE_MAX] or None)
+                if hit.run_status in AGENT_RUN_OPEN_STATUSES:
+                    row["held_by"] = held_by_of(hit)
     await attach_pr_chip(db, rows)
     await attach_agent_worked(db, rows)
     return rows
