@@ -456,7 +456,7 @@ async def test_the_card_route_drafts_with_the_one_drafter_and_strips_placeholder
 
 def test_the_parameter_fence_pins_compose_reply() -> None:
     params = list(inspect.signature(agents.compose_reply).parameters)
-    assert params == ["email_id", "account_id", "reply_all", "draft"]
+    assert params == ["email_id", "account_id", "reply_all", "draft", "instruction"]
     assert frozenset(params) == eg.CARD_BOUND_REPLY_TOOLS["compose_reply"]
     assert agents.compose_reply.__tool_risk__ == {
         "read_only": False, "destructive": True, "idempotent": False,
@@ -467,7 +467,7 @@ def _variant(extra: str) -> Any:
     """``compose_reply`` with one more parameter, as a careless change adds."""
     ns: dict[str, Any] = {}
     exec(  # noqa: S102 - a fixed test source
-        f"async def compose_reply(email_id, account_id, reply_all=False, draft='', {extra}=None):\n"
+        f"async def compose_reply(email_id, account_id, reply_all=False, draft='', instruction='', {extra}=None):\n"
         "    return ''\n", ns)
     fn = ns["compose_reply"]
     fn.__tool_risk__ = dict(agents.compose_reply.__tool_risk__)

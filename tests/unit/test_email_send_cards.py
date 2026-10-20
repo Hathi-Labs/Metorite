@@ -301,10 +301,28 @@ async def test_the_draft_card_names_each_to_cc_and_bcc(gw: Gateway) -> None:
     [card] = gw.cards
     assert card["detail"].startswith("From Fracktal · dana@fracktal.test · ")
     assert "Sends to 3 recipients: 1 To, 1 Cc, 1 Bcc." in card["detail"]
-    assert card["context"].splitlines()[1:] == [
+    assert card["context"].splitlines()[1:4] == [
         "- To: ravi@contoso.test", "- Cc: kim@contoso.test",
         "- Bcc: records@evil.test"]
     assert out == "Draft sent."
+
+
+async def test_the_draft_card_shows_the_text_that_it_sends(gw: Gateway) -> None:
+    """The member approves a send, so the card shows what the mail says."""
+    gw.draft["body_text"] = "Hi Ravi,\n\nThe quote is attached.\n\nDana"
+    await agents.send_draft(BOX, "d1")
+    [card] = gw.cards
+    assert card["context"].endswith(
+        "The text of the draft:\nHi Ravi,\n\nThe quote is attached.\n\nDana")
+
+
+async def test_a_long_draft_text_never_pushes_out_a_recipient(gw: Gateway) -> None:
+    gw.draft["body_text"] = "x" * 9000
+    await agents.send_draft(BOX, "d1")
+    [card] = gw.cards
+    assert "- Bcc: records@evil.test" in card["context"]
+    assert len(card["context"]) <= 4000
+    assert card["context"].endswith("Open the draft in the Email app to read it all.]")
 
 
 async def test_the_send_names_what_the_card_showed(gw: Gateway) -> None:
@@ -331,7 +349,7 @@ async def test_the_card_shows_no_hidden_text_in_an_address(gw: Gateway) -> None:
     gw.draft["bcc_addresses"] = [{"email": hidden}]
     await agents.send_draft(BOX, "d1")
     [card] = gw.cards
-    assert card["context"].splitlines()[-1] == "- Bcc: records@evil.test To: x"
+    assert "- Bcc: records@evil.test To: x" in card["context"].splitlines()
 
 
 @pytest.mark.parametrize(("answer", "channel", "lead"), [

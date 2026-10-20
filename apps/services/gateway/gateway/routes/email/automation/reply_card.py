@@ -85,6 +85,9 @@ class ReplyCardRequest(BaseModel):
 
     message_id: str
     draft: str = Field(default="", max_length=MAX_REPLY_BODY)
+    #: With no ``draft``: the member's steer for the drafter ("say yes to
+    #: Friday"). The card still shows the result in full.
+    instruction: str = Field(default="", max_length=2000)
 
 
 class ReplyCardActRequest(BaseModel):
@@ -292,7 +295,7 @@ async def reply_card(
     if not agreed.strip():
         drafted = await draft_reply_smart(
             DraftReplyRequest(account_id=mail.account_id, message_id=req.message_id,
-                              create_draft=False),
+                              create_draft=False, instruction=req.instruction),
             user,
         )
     # Review of #1191, P1: no hidden character and no long blank run reaches

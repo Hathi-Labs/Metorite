@@ -181,11 +181,14 @@ def test_the_in_space_email_tools_stay_and_the_sends_go(_hermetic) -> None:
 
 
 # ── 2. draft_reply names no recipient and writes no text of the model ────────
+#
+# ``instruction`` is the member's steer for the server's drafter. It is not a
+# body: the drafter writes the text, and nothing it writes leaves the mailbox.
 
 
 def test_draft_reply_takes_no_recipient_and_no_body() -> None:
     assert list(inspect.signature(agents.draft_reply).parameters) == [
-        "email_id", "account_id", "save"]
+        "email_id", "account_id", "save", "instruction"]
     from gateway.routes.email.automation.drafting import DraftReplyRequest
 
     fields = set(DraftReplyRequest.model_fields)

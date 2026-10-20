@@ -1667,9 +1667,18 @@ async def manage_inbox(
 
 
 @_annotate_risk(open_world=False)
-async def draft_reply(email_id: str, account_id: str, save: bool = False) -> str:
+async def draft_reply(
+    email_id: str, account_id: str, save: bool = False, instruction: str = "",
+) -> str:
     """Draft a context-aware reply to an email. Set save=true to also create a
-    provider draft in the user's Drafts folder, after a card. The draft is
+    provider draft in the user's Drafts folder, after a card.
+
+    ``instruction`` carries what the member wants the reply to say, in the
+    member's words ("accept, but move it to Friday", "shorter"). Always pass
+    it when the member said anything about the content, or the drafter
+    writes from the email alone. To save or send a text that you and the
+    member already agreed, use ``compose_reply`` with ``draft``: this tool
+    writes a new text. The draft is
     always made in the mailbox that received the email, whatever
     ``account_id`` says. Where no card can show, the tool saves nothing and
     returns the draft, which the user saves or sends in the Email app."""
@@ -1710,7 +1719,8 @@ async def draft_reply(email_id: str, account_id: str, save: bool = False) -> str
             return refusal
     res = await _post(
         "/email/draft-reply",
-        {"account_id": account_id, "message_id": email_id, "create_draft": save},
+        {"account_id": account_id, "message_id": email_id, "create_draft": save,
+         **({"instruction": instruction} if (instruction or "").strip() else {})},
     )
     note = unsaved or (" (saved to Drafts)" if res.get("created") else "")
     # The first line names the mailbox. The chat card reads "(mailbox <id>)"
@@ -1792,6 +1802,7 @@ def _reply_title(form: dict[str, Any], reply_all: bool) -> str:
 @_annotate_risk(destructive=True, open_world=True, card_bound_reply=True)
 async def compose_reply(
     email_id: str, account_id: str, reply_all: bool = False, draft: str = "",
+    instruction: str = "",
 ) -> str:
     """Reply to one email in the chat. The tool drafts the reply and shows the
     member ONE card: the email it answers, who gets the reply, a Reply or
@@ -1808,7 +1819,9 @@ async def compose_reply(
     the chat, or that the request to you contains. Pass it WORD FOR WORD,
     with its greeting and sign-off. The card then shows that text, and not
     a new one. Leave ``draft`` empty only when no text exists yet, and the
-    server then writes one from the email. The card shows the text in full,
+    server then writes one from the email. Then put what the member wants the
+    reply to say in ``instruction``, in the member's words ("accept, but move
+    it to Friday"), so the server's text follows it. The card shows the text in full,
     and the member edits it: nothing leaves until the member presses Send.
     Where no card can show, the tool drafts, saves and sends nothing."""
     _ = account_id  # the mailbox of the email acts (§11.3 rule 1)
@@ -1818,8 +1831,12 @@ async def compose_reply(
         return _NO_CARD_CHANNEL
     if not ask_tools.reply_card_channel_open():
         return _NO_CARD_CHANNEL
-    prep = await _post("/email/reply-card", {
-        "message_id": email_id, **({"draft": draft} if (draft or "").strip() else {})})
+    steer: dict[str, str] = {}
+    if (draft or "").strip():
+        steer["draft"] = draft
+    elif (instruction or "").strip():
+        steer["instruction"] = instruction
+    prep = await _post("/email/reply-card", {"message_id": email_id, **steer})
     form = _reply_form(prep, reply_all)
     answer = await ask_tools.request_confirmation(
         title=_reply_title(form, reply_all),
@@ -4034,13 +4051,34 @@ def _draft_card(
     return detail, ("" if len(context) > _CARD_CONTEXT_LIMIT else context)
 
 
+def _with_draft_text(context: str, body: Any) -> str:
+    """The card context with the text of the draft under the recipients.
+
+    The member approves a send, so the card shows what the mail says, not
+    only where it goes. A long text is cut, and the card says so. The
+    recipients come first and are never cut."""
+    from acb_skills.reply_card import clean_reply_body  # noqa: PLC0415
+
+    # No hidden character reaches the card (review of #1191, P1).
+    text = clean_reply_body(str(body or "")).strip()
+    if not text:
+        return context + "\n\nThe draft has no text."
+    head = context + "\n\nThe text of the draft:\n"
+    room = _CARD_CONTEXT_LIMIT - len(head)
+    if len(text) <= room:
+        return head + text
+    tail = "\n[… the rest is cut here. Open the draft in the Email app to read it all.]"
+    return head + text[: max(0, room - len(tail))].rstrip() + tail
+
+
 @_annotate_risk(destructive=True, open_world=True)
 async def send_draft(account_id: str, draft_id: str) -> str:
     """Send an existing draft natively (Drafts → Sent, no duplicate). Shows a
     confirmation card before sending.
 
-    The card names each To, Cc and Bcc address of the draft. The send fails,
-    and sends nothing, when the draft changed after the card."""
+    The card names each To, Cc and Bcc address of the draft, and shows its
+    text. The send fails, and sends nothing, when the recipients changed
+    after the card."""
     from acb_skills.ask_tools import request_confirmation  # noqa: PLC0415
     sender = await _mailbox_name(account_id)
     if sender is None:
@@ -4078,6 +4116,7 @@ async def send_draft(account_id: str, draft_id: str) -> str:
             "Not sent. The draft has too many recipients to show on one card. "
             "Send it from the Email app."
         )
+    context = _with_draft_text(context, draft.get("body_text") or draft.get("snippet"))
     if not await request_confirmation(
         title="Send this draft?", detail=detail, context=context,
     ):

@@ -66,7 +66,7 @@ from gateway.routes.email.transport.send import (
     load_artifact_attachments,
     reply_row_match,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 
@@ -2172,6 +2172,9 @@ class DraftReplyRequest(BaseModel):
     message_id: str
     create_draft: bool = False  # also save a provider draft (lands in Drafts)
     follow_up: bool = False  # draft a nudge for my own unanswered email instead
+    # The member's steer for this one draft, from the chat ("say yes to
+    # Friday", "keep it short"). It reaches the drafter as extra instructions.
+    instruction: str = Field(default="", max_length=2000)
 
 
 @router.post("/draft-reply")
@@ -2200,7 +2203,7 @@ async def draft_reply_smart(
             email, about, signature, user.email or "",
             max_agents=1, agent_timeout=18.0, follow_up=req.follow_up,
             model=EMAIL_TASK_TIERS["compose"], account_id=req.account_id,
-            interactive_fallback=True,
+            interactive_fallback=True, extra_instructions=req.instruction,
         )
 
         # Confidence gate (defense-in-depth): if the drafter declined, never

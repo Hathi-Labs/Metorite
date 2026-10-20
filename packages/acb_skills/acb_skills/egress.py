@@ -830,15 +830,17 @@ def has_explicit_open_world(item: Any) -> bool:
 #:   it only when its own record of the card answer matches
 #:   (``reply_card.take_reply_answer``);
 #: * it takes no file, no forward and no new recipient. Those stay with
-#:   ``send_email`` and ``forward_email``, which a held run does not hold.
+#:   ``send_email`` and ``forward_email``, which a held run does not hold;
+#: * ``draft`` and ``instruction`` only shape the text on the card. The
+#:   member sees it in full and edits it, and what leaves is the text the
+#:   member submitted.
 #:
-#: * ``draft`` only fills the card. The member sees it in full and edits it,
-#:   and what leaves is the text the member submitted, not ``draft``.
-#:
-#: A recipient or a file parameter breaks the pin, and so does any other
-#: parameter than these four, and the tool is an egress tool again. Fence: ``tests/unit/test_email_chat_reply.py``.
+#: Any parameter outside the pinned five, a recipient or a file above all,
+#: breaks the pin, and the tool is an egress tool again. Fence:
+#: ``tests/unit/test_email_chat_reply.py``.
 CARD_BOUND_REPLY_TOOLS: Mapping[str, frozenset[str]] = {
-    "compose_reply": frozenset({"email_id", "account_id", "reply_all", "draft"}),
+    "compose_reply": frozenset(
+        {"email_id", "account_id", "reply_all", "draft", "instruction"}),
 }
 #: The annotation key of such a tool (``tool_annotations.annotate``).
 CARD_BOUND_KEY = "card_bound_reply"
