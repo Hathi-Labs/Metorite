@@ -109,6 +109,27 @@ def test_no_job_can_reach_the_dev_stack_on_this_pc():
     assert "--network \"container:$pod\"" in _RUN_SUITE
 
 
+def test_no_container_can_run_the_vm_out_of_memory():
+    # 2026-10-20: 12 uncapped shards ran the shared WSL2 VM out of memory, and
+    # WSL, git and Docker Desktop hung for every session on the PC.
+    # Join `\`-continued lines first, so a cap on the next line counts.
+    joined = re.sub(r"\\\r?\n", " ", _RUN_SUITE)
+    runs = [line for line in joined.splitlines() if "docker run " in line]
+    assert runs, "the regex found no docker run; it is wrong, not the file"
+    for cmd in runs:
+        assert "--memory " in cmd, f"an uncapped container: {cmd[:80]}"
+    assert "--tmpfs /var/lib/postgresql/data:size=" in _RUN_SUITE
+    # The shard count follows free memory, never the core count alone.
+    assert "MemAvailable" in _RUN_SUITE
+
+
+def test_a_bare_ci_local_call_passes_no_empty_argument():
+    # `printf ' %q'` with no arguments prints `''`, and run_suite.sh refused
+    # it: every `bash scripts/ci_local.sh` with no options failed at once.
+    text = (_ROOT / "scripts/ci_local.sh").read_text(encoding="utf-8")
+    assert '[ ${#pass[@]} -gt 0 ] && args="$(printf' in text
+
+
 def test_the_distro_is_locked_down():
     prov = (_ROOT / "scripts/ci_pc/provision.sh").read_text(encoding="utf-8")
     conf = prov.split("cat > /etc/wsl.conf <<'CONF'")[1].split("CONF")[0]

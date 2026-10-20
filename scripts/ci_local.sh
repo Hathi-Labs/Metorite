@@ -53,7 +53,11 @@ if ! git merge-base --is-ancestor "$sha" origin/main; then
 fi
 
 # Check out the commit, then run ITS copy of run_suite.sh. One run at a time.
-args="$(printf ' %q' "${pass[@]+"${pass[@]}"}")"
+# Only when there ARE options: `printf ' %q'` with no arguments prints `''`,
+# and run_suite.sh refuses it, so every bare `ci_local.sh` failed at once
+# (reported by a peer session, 2026-10-20).
+args=""
+[ ${#pass[@]} -gt 0 ] && args="$(printf ' %q' "${pass[@]}")"
 w bash -lc "set -e; exec 9>~/.ci.lock; flock -w 3600 9; cd ~/metorite
   git -c advice.detachedHead=false checkout -q -f $sha
   git clean -fdxq -e .venv -e node_modules -e .next
