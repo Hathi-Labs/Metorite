@@ -105,6 +105,13 @@ const HITL_CONTROL_EVENTS = new Set([
   "frontend_tool",
 ]);
 
+/**
+ * The server opened a page (`show_in_app`, WS-62 CF-3). The live loop emits
+ * `onNavigate` for it, the dock moves the page, and the event draws nothing
+ * in the transcript. The replay loop never emits it: a refresh moves no page.
+ */
+const NAVIGATE_EVENT = "navigate";
+
 /** The `cardAnswer` field of a chat request: the answered card that the
  *  turn carries (`lib/cardAnswer.ts`), or nothing. Exported for its test. */
 export function cardAnswerField(m: Pick<ChatMessage, "customEvents">): { cardAnswer?: unknown } {
@@ -743,13 +750,23 @@ export function useAgentChat({
                     quiet: isQuietArtifact(data),
                   });
                 }
+                // WS-62 CF-3: the page moves on the LIVE loop only. The
+                // reconnect loop below has no such line, on purpose.
+                if (evtName === NAVIGATE_EVENT) {
+                  const data = (evt.value ?? evt.data) as Record<string, unknown> | undefined;
+                  emitAgentEvent("onNavigate", {
+                    path: String(data?.path ?? ""),
+                    why: String(data?.why ?? ""),
+                    threadId,
+                  });
+                }
                 // HITL control events (ask_questions / ask_user / confirm) are
                 // rendered by the inline ElicitationCard — they are NOT data to
                 // display.  Storing them in customEvents made them surface in the
                 // generic "Interactive view" AG-UI panel too, a duplicate that
                 // never cleared after the user answered.  Skip persisting them;
                 // the asking already shows in the thinking stream as a tool call.
-                if (!HITL_CONTROL_EVENTS.has(evtName)) {
+                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== NAVIGATE_EVENT) {
                   upd((m) => withCustomEvent(m, evtName, evt.value ?? evt.data));
                 }
                 break;
@@ -1244,7 +1261,9 @@ export function useAgentChat({
                     quiet: isQuietArtifact(data),
                   });
                 }
-                if (!HITL_CONTROL_EVENTS.has(evtName)) {
+                // A replayed `navigate` moves no page (WS-62 CF-3 done-when 6),
+                // and it draws nothing either.
+                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== NAVIGATE_EVENT) {
                   updLast((m) => withCustomEvent(m, evtName, evt.value ?? evt.data));
                 }
                 break;

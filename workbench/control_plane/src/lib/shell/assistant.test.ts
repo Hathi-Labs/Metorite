@@ -18,6 +18,7 @@ import { bindChatScope } from "@/lib/sessions";
 import {
   ASSISTANT_AGENT,
   ASSISTANT_PERSONA,
+  CHAT_FIRST_PERSONA_LINE,
   DOCK_DEFAULT,
   DOCK_MAX,
   DOCK_MIN,
@@ -36,6 +37,7 @@ import {
   dataText,
   dockFloats,
   effectiveMode,
+  navigateAct,
   modeOnOpen,
   onChatLink,
   onPageChange,
@@ -369,6 +371,121 @@ describe("the app switch (owner, 2026-10-12)", () => {
   });
 });
 
+describe("the chat opens a page: show_in_app (WS-62 CF-3)", () => {
+  const live = {
+    open: true, threadId: "t1", activeId: "t1", path: "/projects?task=42", sections: SECTIONS,
+    phone: false, chatFirst: true, form: "dock" as const, canDock: true,
+  };
+  const projects = paneAt("/projects", SECTIONS);
+  const none = { push: false, dock: false, close: false, peek: false, pane: null };
+
+  it("the page line is dark: it is not in ASSISTANT_PERSONA, and the dock joins it behind chatFirstOn", () => {
+    expect(ASSISTANT_PERSONA).not.toContain("show_in_app");
+    expect(CHAT_FIRST_PERSONA_LINE).toContain("call show_in_app with its path");
+    expect(CHAT_FIRST_PERSONA_LINE).toContain("Then say what they will see, in one sentence.");
+    const dock = read("lib/shell/AssistantDock.tsx");
+    expect(dock).toContain("const personaText = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;");
+    expect(dock).toMatch(/onNavigate: \(\{ path, why, threadId \}\) => \{\s*\/\/[^\n]*\n\s*if \(!chatFirstOn\(\)\) return;/);
+  });
+
+  it("a desktop pushes the route and keeps the panel", () => {
+    expect(navigateAct(live)).toEqual({ push: true, dock: false, close: false, peek: false, pane: projects });
+  });
+
+  it("a desktop full view becomes the panel, so the page shows", () => {
+    expect(navigateAct({ ...live, form: "full" })).toEqual({ push: true, dock: true, close: false, peek: false, pane: projects });
+    expect(navigateAct({ ...live, form: "full", canDock: false })).toEqual({ push: true, dock: false, close: false, peek: false, pane: projects });
+  });
+
+  it("a phone pushes the route and the sheet drops to the peek strip (CF-1)", () => {
+    expect(navigateAct({ ...live, phone: true, form: "full", canDock: false })).toEqual({ push: true, dock: false, close: false, peek: true, pane: projects });
+  });
+
+  it("a phone with the flag off closes the sheet instead", () => {
+    expect(navigateAct({ ...live, phone: true, chatFirst: false, form: "full", canDock: false })).toEqual({ push: true, dock: false, close: true, peek: false, pane: projects });
+  });
+
+  it("moves nothing while the assistant is closed, or for another chat", () => {
+    expect(navigateAct({ ...live, open: false })).toEqual(none);
+    expect(navigateAct({ ...live, threadId: "other" })).toEqual(none);
+    expect(navigateAct({ ...live, threadId: undefined })).toEqual(none);
+    expect(navigateAct({ ...live, activeId: null })).toEqual(none);
+  });
+
+  it("checks the path again, and refuses one that leaves the app", () => {
+    for (const path of ["https://evil.example", "//evil.example", "/\\evil.example", "/api/x", "", undefined]) {
+      expect(navigateAct({ ...live, path }), String(path)).toEqual(none);
+    }
+    expect(navigateAct({ ...live, path: "/tasks#today" }).push).toBe(true);
+  });
+
+  it("refuses a dot segment that walks out of the pane (review of #1197, P0)", () => {
+    for (const path of ["/projects/../crm", "/projects/../../settings/organization", "/projects/%2e%2e/crm",
+      "/projects/../centers/sales", "/projects/../api/x", "/people/me/../../crm", "/projects/%252e%252e/crm"]) {
+      expect(navigateAct({ ...live, path }), path).toEqual(none);
+    }
+  });
+
+  it("the allowlist is the control: no pane, no move, except the root", () => {
+    for (const path of ["/connect/authorize", "/signup", "/settings/appearance", "/settings/organization", "/_next/x", "/centers/sales", "/nowhere"]) {
+      expect(navigateAct({ ...live, path }), path).toEqual(none);
+    }
+    expect(navigateAct({ ...live, path: "/" })).toEqual({ push: true, dock: false, close: false, peek: false, pane: null });
+    expect(navigateAct({ ...live, path: "/people/me" }).pane?.href).toBe("/people/me");
+  });
+
+  it("never moves to a pane the member does not hold", () => {
+    const noProjects = visibleSections(ALL.filter((f) => f !== "projects"), true);
+    expect(navigateAct({ ...live, sections: noProjects })).toEqual(none);
+    expect(navigateAct({ ...live, sections: noProjects, path: "/email" }).push).toBe(true);
+  });
+
+  it("the live loop emits onNavigate once, and the replay loop never does", () => {
+    const hook = read("hooks/useAgentChat.ts");
+    expect((hook.match(/emitAgentEvent\("onNavigate"/g) ?? []).length).toBe(1);
+    const reconnect = hook.indexOf("updLast((m) => applySubAgentEvent(m, evt));");
+    expect(reconnect).toBeGreaterThan(0);
+    expect(hook.indexOf('emitAgentEvent("onNavigate"')).toBeLessThan(reconnect);
+    // The event draws nothing in the transcript, on both loops.
+    expect((hook.match(/evtName !== NAVIGATE_EVENT/g) ?? []).length).toBe(2);
+  });
+
+  it("the dock acts through navigateAct, pushes the route and offers Go back", () => {
+    const dock = read("lib/shell/AssistantDock.tsx");
+    expect(dock).toMatch(/onNavigate: \(\{ path, why, threadId \}\) => \{[\s\S]{0,400}?navigateAct\(/);
+    expect(dock).toMatch(/if \(!act\.push \|\| !path\) return;\s*const back = live\.pathname \?\? "\/";\s*router\.push\(path\);/);
+    expect(dock).toMatch(/if \(act\.dock\) setAssistantMode\("dock"\);/);
+    expect(dock).toMatch(/if \(act\.close\) \{[\s\S]{0,200}?closeAssistant\(\);/);
+    expect(dock).toMatch(/title: label \? `Opened \$\{label\}` : "Opened a page"/);
+  });
+});
+
+describe("the chat-first flag needs the one assistant (WS-62, review of #1197 P1)", () => {
+  const KEYS = ["NEXT_PUBLIC_CHAT_FIRST", "NEXT_PUBLIC_SHELL_CHAT", "NEXT_PUBLIC_SHELL_BAR", "NEXT_PUBLIC_SHELL_NAV"] as const;
+  const set = (on: Partial<Record<(typeof KEYS)[number], boolean>>) => {
+    for (const k of KEYS) {
+      if (on[k]) process.env[k] = "1";
+      else delete process.env[k];
+    }
+  };
+  afterEach(() => set({}));
+
+  it("is on with the four, and off without its own flag or without the assistant", () => {
+    set({ NEXT_PUBLIC_CHAT_FIRST: true, NEXT_PUBLIC_SHELL_CHAT: true, NEXT_PUBLIC_SHELL_BAR: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(chatFirstOn()).toBe(true);
+    set({ NEXT_PUBLIC_SHELL_CHAT: true, NEXT_PUBLIC_SHELL_BAR: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(chatFirstOn()).toBe(false);
+    set({ NEXT_PUBLIC_CHAT_FIRST: true, NEXT_PUBLIC_SHELL_BAR: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(chatFirstOn()).toBe(false);
+    set({});
+    expect(chatFirstOn()).toBe(false);
+  });
+
+  it("its dev override key is the one CF-1 writes too", () => {
+    expect(read("lib/shell/chatFlag.ts")).toContain('flag(process.env.NEXT_PUBLIC_CHAT_FIRST, "cc-shell-chat-first")');
+  });
+});
+
 describe("Chat leaves the sidebar with the flag on, and only then", () => {
   const hrefs = (on: boolean) => shellSidebar(SECTIONS, undefined, on).flatMap((s) => s.items.map((p) => p.href));
 
@@ -634,8 +751,10 @@ describe("the strip in the dock's source: phone only, flag only", () => {
     expect(src).toContain("{phone && chatFirst ? <SheetHandle onPeek={toPeek} /> : null}");
     expect(src).toMatch(/\{phone && chatFirst \? \(\s*<Button[\s\S]{0,120}?icon="ChevronDown"\s*aria-label="Show as a strip"/);
     // Every way into the strip: the flag-gated handle and chevron (`toPeek`),
-    // the pill rule's "peek", and the delegation rule's "peek".
-    expect((src.match(/setAssistantMode\("peek"\)/g) ?? []).length).toBe(3);
+    // the pill rule's "peek", the delegation rule's "peek", and the
+    // navigate rule's "peek" (CF-3, `show_in_app`). All four read the flag.
+    expect((src.match(/setAssistantMode\("peek"\)/g) ?? []).length).toBe(4);
+    expect(src).toContain('if (act.peek) {');
     expect(src).toContain('if (act === "peek") setAssistantMode("peek");');
     expect(src).toContain('if (onChatLink({ phone: live.phone, chatFirst: live.chatFirst }) === "peek") setAssistantMode("peek");');
   });

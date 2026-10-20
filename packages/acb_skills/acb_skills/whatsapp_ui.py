@@ -79,6 +79,9 @@ WITHHELD_TOOLS: frozenset[str] = frozenset({
     # the web chat's PDF card. WhatsApp sends the same PDF as a file through
     # whatsapp_ui kind "document" (WAC-12), so the function stays.
     "make_document",
+    # WS-62 CF-3: the web chat moves the page. A phone on WhatsApp has no
+    # page to move (owner rule 2026-10-10: a channel strips delivery tools).
+    "show_in_app",
 })
 
 #: The WhatsApp form of each web delivery tool (WS-47 parity, 2026-10-19).
@@ -102,6 +105,8 @@ WHATSAPP_FORMS: dict[str, str] = {
     "call_agent_background": "none: one reply a message. A long job sends whatsapp_ui "
                              "kind working first",
     "make_document": "whatsapp_ui kind document, the same PDF (WAC-12)",
+    "show_in_app": "none: WhatsApp has no page to open. The assistant says where the "
+                   "record is in words, or sends whatsapp_ui kind link",
 }
 
 #: The most elements one reply sends. More reads as spam on a phone.

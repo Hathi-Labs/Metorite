@@ -53,6 +53,9 @@ and a delegation loads two. `harness.py` is a harness for many agents. It reuses
 - Scripted: the model of each agent. Each other host HTTP send fails the run.
 - Live: the specialists. A stand-in records the agent and the message, and
   answers with a fixed line. No specialist runs, writes or spends.
+- The panes the member holds, for `show_in_app` (WS-62 CF-3). The stand-in
+  holds every pane. The real read is `acb_auth.resolve_access`. The harness
+  also turns `CHAT_FIRST_TOOLS` on, because production ships the tool dark.
 
 Two reads still try the database: the member's access and the tier
 overrides. With no database, as in CI, each one fails closed and logs a
@@ -67,15 +70,16 @@ dock sends: `persona + "\n\n" + surfaceContext`, as `system_context`.
 
 | File | What it holds |
 |---|---|
-| `dataset.py` | 27 member questions. Each one has an id, the words, the app, the facts of the page and the expected specialist |
+| `dataset.py` | 30 member questions. Each one has an id, the words, the app, the facts of the page and the expected specialist, or the page it opens |
 | `shell.py` | The persona, the pane labels and `ALSO_SERVES`, read from the shell. The port of `surfaceContext` |
 | `harness.py` | The harness that drives the real orchestrator run and records where it delegated |
 | `run.py` | The runner: the catalog checks, the scripted delegation and the live sweep |
 
-## The 27 questions
+## The 30 questions
 
 | Expected | Cases | Asked from |
 |---|---|---|
+| The orchestrator opens a page (`show_in_app`, WS-62 CF-3) | S1 to S3 | My Day, My Tasks and Projects |
 | `projects-assistant` | P1 to P4, T1 to T4 | Projects, My Day, My Tasks, Calendar and CRM |
 | `email-assistant` | E1 to E4 | My Email, Projects and CRM |
 | `crm-assistant` | C1 to C4 | CRM, My Email and Projects |

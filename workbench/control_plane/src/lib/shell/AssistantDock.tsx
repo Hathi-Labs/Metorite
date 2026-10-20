@@ -98,11 +98,13 @@ import {
   type ChatSession,
 } from "@/lib/sessions";
 
+import { chatFirstOn } from "./chatFlag";
 import {
   dockFloats,
   ASSISTANT_AGENT,
   ASSISTANT_NAME,
   ASSISTANT_PERSONA,
+  CHAT_FIRST_PERSONA_LINE,
   DOCK_MAX,
   DOCK_MIN,
   closeAssistant,
@@ -110,6 +112,7 @@ import {
   consumeDraft,
   effectiveMode,
   focusAssistant,
+  navigateAct,
   onChatLink,
   onPageChange,
   openAssistant,
@@ -127,7 +130,6 @@ import {
   useViewportWidth,
   type AssistantMode,
 } from "./assistant";
-import { chatFirstOn } from "./chatFlag";
 import { chatFilesHref, mergeFileEntry, sessionTitle } from "./chatHistory";
 import { SessionPicker } from "./SessionPicker";
 
@@ -558,7 +560,9 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const active = chat.active;
   const agent = active?.agentName ?? ASSISTANT_AGENT;
   const context = surfaceContext(here, facts);
-  const persona = agent === ASSISTANT_AGENT ? `${ASSISTANT_PERSONA}\n\n${context}` : context;
+  // WS-62 CF-3: the page line joins only with the chat-first flag on.
+  const personaText = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;
+  const persona = agent === ASSISTANT_AGENT ? `${personaText}\n\n${context}` : context;
 
   // A new chat's files start empty.
   useEffect(() => {
@@ -693,6 +697,40 @@ function AssistantSurface({ phone }: { phone: boolean }) {
         variant: "success",
         title: `Opened ${target.label}`,
         description: `${ASSISTANT_NAME} is working in ${target.label}.`,
+        action: { label: "Go back", onClick: () => router.push(back) },
+      });
+    },
+    // WS-62 CF-3: the run opened a page with show_in_app. Once per turn is
+    // the server's rule. The client checks the path again and acts.
+    onNavigate: ({ path, why, threadId }) => {
+      // Dark until the chat-first flag is on (review of #1197, P1).
+      if (!chatFirstOn()) return;
+      const live = liveRef.current;
+      const act = navigateAct({
+        open: live.open, threadId, activeId: live.activeId, path, sections: live.sections,
+        phone, chatFirst: live.chatFirst, form: live.form, canDock: live.canDock,
+      });
+      if (!act.push || !path) return;
+      const back = live.pathname ?? "/";
+      router.push(path);
+      if (act.dock) setAssistantMode("dock");
+      if (act.peek) {
+        // The sheet drops to the peek strip, so the page shows and the
+        // chat stays one tap away (CF-1). The strip shows the reply.
+        setAssistantMode("peek");
+        return;
+      }
+      if (act.close) {
+        // With the flag off a phone has no strip, so the sheet gives way.
+        closeAssistant();
+        return;
+      }
+      const label = act.pane?.label;
+      toast.show({
+        key: `assistant-open-${path}`,
+        variant: "success",
+        title: label ? `Opened ${label}` : "Opened a page",
+        description: why || undefined,
         action: { label: "Go back", onClick: () => router.push(back) },
       });
     },

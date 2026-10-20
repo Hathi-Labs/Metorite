@@ -37,6 +37,7 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
 
 import { agentSlug } from "@/lib/agentName";
+import { inAppPathname } from "@/lib/inAppLink";
 import type { NavPane, NavSection } from "@/lib/nav";
 import { chatKey, truncateAtWord, type ChatSession } from "@/lib/sessions";
 import { onClear } from "@/lib/dataCache";
@@ -64,6 +65,14 @@ export const ASSISTANT_PERSONA = [
   "When you cannot tell which record, project, task or mailbox the member means, ask one short question with ask_questions before you act. Do not guess.",
   "Confirm before an action that changes data. Be concise and direct.",
 ].join(" ");
+
+/**
+ * The line that joins the persona when the chat-first surface is on
+ * (WS-62 CF-3, `chat_first_surface.md` §4.4, flag `chatFirstOn`). The dock
+ * joins it, so `ASSISTANT_PERSONA` stays what every other build sends.
+ */
+export const CHAT_FIRST_PERSONA_LINE =
+  "When the member asks to see a page, a list or a record, call show_in_app with its path. Then say what they will see, in one sentence.";
 
 // ── The forms ────────────────────────────────────────────────────────────────
 
@@ -197,6 +206,56 @@ export function stripText(a: { phase: RunPhase; statusText: string | null | unde
   const last = plainLine(a.lastPreview ?? "");
   if (last) return truncateAtWord(last, STRIP_TEXT_MAX);
   return ASSISTANT_NAME;
+}
+
+/**
+ * What the assistant does when the live run opens a page with `show_in_app`
+ * (WS-62 CF-3, `chat_first_surface.md` §4.4). The server sends ONE `navigate`
+ * event per turn, and the client only acts.
+ *
+ * - `push`: the route moves. Only while the member watches that chat, as for
+ *   a delegation, and only to a path inside the app (`inAppPathname`, checked
+ *   again here) whose pane the member holds (`paneAt` over `sections`, their
+ *   visible set), or the root. A closed assistant moves nothing, and so does
+ *   `/connect`, `/signup`, `/settings` or a pane they lack (review of #1197).
+ * - `dock`: a desktop full view becomes the side panel, so the page shows
+ *   beside the chat.
+ * - `close`: a phone's sheet covers the page, so it gives way (`onChatLink`),
+ *   with the chat-first flag off.
+ * - `peek`: with the flag on, the sheet drops to the peek strip (CF-1), so
+ *   the page shows and the chat stays one tap away.
+ *
+ * `pane` is the pane the path opens, for the toast's label. Null for the root.
+ */
+export function navigateAct(a: {
+  open: boolean;
+  threadId: string | undefined;
+  activeId: string | null | undefined;
+  path: string | undefined;
+  sections: readonly NavSection[];
+  phone: boolean;
+  chatFirst: boolean;
+  form: AssistantMode;
+  canDock: boolean;
+}): { push: boolean; dock: boolean; close: boolean; peek: boolean; pane: NavPane | null } {
+  const none = { push: false, dock: false, close: false, peek: false, pane: null };
+  if (!a.open || !a.threadId || a.threadId !== a.activeId) return none;
+  const pathname = inAppPathname(a.path);
+  if (pathname === null) return none;
+  const pane = paneAt(pathname, a.sections);
+  if (pathname !== "/") {
+    // The allowlist is the control, as `PANES` is on the server: a LIVE pane
+    // the member holds, and never an admin page or a settings page.
+    if (!pane || pane.launch !== "live" || pane.adminOnly) return none;
+    if (pathname === "/settings" || pathname.startsWith("/settings/")) return none;
+  }
+  return {
+    push: true,
+    dock: !a.phone && a.form === "full" && a.canDock,
+    close: onChatLink({ phone: a.phone, chatFirst: a.chatFirst }) === "close",
+    peek: onChatLink({ phone: a.phone, chatFirst: a.chatFirst }) === "peek",
+    pane,
+  };
 }
 
 function subscribeWidth(listener: () => void): () => void {
