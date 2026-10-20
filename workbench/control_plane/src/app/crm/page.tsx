@@ -158,7 +158,7 @@ import {
 } from "./lib/settingsSections";
 import { convertSkippedNote } from "./lib/convertMapping";
 import { emptyListLine, landing, landingPlan, railEntries, viewLabel, type Landing } from "./lib/views";
-import { MORE_TAB, phoneNav, readNavDetail } from "./lib/phoneNav";
+import { MORE_TAB, moduleOfTab, phoneNav, readNavDetail } from "./lib/phoneNav";
 
 /** Which URL parameter opens a record of each collection. */
 const PARAM_FOR: Record<EntitySlug, SheetParam> = {
@@ -741,9 +741,15 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   const navBadge = questions.gate === "on" ? railCount(questionsOpen) : null;
   useEffect(() => {
     if (!isMobile) return;
-    const detail = phoneNav(railEntries(modules, labels, overlays, coreStates), view.tab, navBadge);
+    const detail = phoneNav(
+      railEntries(modules, labels, overlays, coreStates),
+      { tab: view.tab, module: view.module },
+      navBadge,
+      modules,
+      coreStates
+    );
     window.dispatchEvent(new CustomEvent("cc-crm-nav", { detail }));
-  }, [isMobile, modules, labels, overlays, coreStates, view.tab, navBadge]);
+  }, [isMobile, modules, labels, overlays, coreStates, view.tab, view.module, navBadge]);
   useEffect(
     () => () => {
       window.dispatchEvent(new CustomEvent("cc-crm-nav", { detail: null }));
@@ -754,7 +760,9 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   // the listener stays one for the life of the page.
   const tabTap = useRef<(id: string) => void>(() => {});
   tabTap.current = (id: string) => {
+    const module = moduleOfTab(id);
     if (id === MORE_TAB) openViews();
+    else if (module) railModules.onSelect(module);
     else chooseView(id as CrmView["tab"]);
   };
   useEffect(() => {

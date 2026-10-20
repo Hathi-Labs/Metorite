@@ -11592,9 +11592,12 @@ Owner, 2026-10-20: the phone had no way to move across the whole CRM from the
 bottom bar. It held only "Menu". A member had to tap the title, find a row in
 the drawer, and tap again.
 
-1. **The bar names three lists and "More".** The tabs are Deals, Leads and
-   Contacts, in that order. The source can turn a list off. If that list holds
-   no record, the next list takes its place, such as Companies. The labels are
+1. **The bar names three lists and "More".** Three slots go to the lists that
+   hold data. First come the built-in lists that hold records, in the order
+   Deals, Leads, Contacts, Companies. Then come the custom modules, the
+   biggest first. The built-in lists that hold nothing come last. So an org
+   that lives in custom modules sees them in the bar. A built-in list that a
+   module plays keeps the list's label and opens the module. The labels are
    the source's labels.
 2. **"More" opens the whole rail.** It opens the same drawer as the title. The
    drawer holds Companies, the generic modules, Reports and CRM settings.
