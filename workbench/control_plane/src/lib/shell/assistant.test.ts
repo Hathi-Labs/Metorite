@@ -36,6 +36,7 @@ import {
   dataText,
   dockFloats,
   effectiveMode,
+  modeOnOpen,
   onChatLink,
   onPageChange,
   openAssistant,
@@ -46,6 +47,7 @@ import {
   setAssistantMode,
   setDockWidth,
   startsFresh,
+  stripShowsRun,
   stripText,
   surfaceContext,
   switchTarget,
@@ -489,28 +491,51 @@ describe("the peek strip, a third size on a phone (CF-1, chat_first_surface.md �
   });
 
   it("the strip's line is the run status while a run goes on", () => {
-    expect(stripText({ running: true, statusText: "Asking Projects assistant · 12s", lastPreview: "Old words." })).toBe(
+    expect(stripText({ phase: "working", statusText: "Asking Projects assistant · 12s", lastPreview: "Old words." })).toBe(
       "Asking Projects assistant · 12s",
     );
+    expect(stripText({ phase: "waiting_for_you", statusText: "Waiting for your answer", lastPreview: "Old words." })).toBe(
+      "Waiting for your answer",
+    );
+    // A parked card still waits on the member, so the strip says so.
+    expect(stripText({ phase: "parked", statusText: "Paused. Answer the card to go on", lastPreview: "Old words." })).toBe(
+      "Paused. Answer the card to go on",
+    );
     // A run with no status text yet falls back to the last reply.
-    expect(stripText({ running: true, statusText: "  ", lastPreview: "The due date is Friday." })).toBe(
+    expect(stripText({ phase: "starting", statusText: "  ", lastPreview: "The due date is Friday." })).toBe(
       "The due date is Friday.",
     );
-    // A status row that has gone quiet is not a run.
-    expect(stripText({ running: false, statusText: "Done · 4s", lastPreview: "The due date is Friday." })).toBe(
-      "The due date is Friday.",
+  });
+
+  it("a run that ended gives way to the last reply at once, never \"Done · 0s\" (fix round on PR #1198)", () => {
+    // The status row still shows "Done" for a few seconds. The strip does not.
+    for (const [phase, status] of [["done", "Done · 0s"], ["stopped", "Stopped"], ["failed", null], ["idle", null]] as const) {
+      expect(stripText({ phase, statusText: status, lastPreview: "The due date is Friday." }), phase).toBe(
+        "The due date is Friday.",
+      );
+    }
+    expect(stripShowsRun("done")).toBe(false);
+    expect(stripShowsRun("stopped")).toBe(false);
+    expect(stripShowsRun("idle")).toBe(false);
+    expect(stripShowsRun("failed")).toBe(false);
+    for (const phase of ["starting", "working", "waiting_for_you", "finishing", "parked"] as const) {
+      expect(stripShowsRun(phase), phase).toBe(true);
+    }
+    // The dock feeds the phase, not "the row shows".
+    expect(read("lib/shell/AssistantDock.tsx")).toContain(
+      "const line = stripText({ phase: run.phase, statusText: view ? runViewText(view) : null, lastPreview });",
     );
   });
 
   it("while idle, the line is the last reply, as plain words, cut at a whole word", () => {
     expect(
-      stripText({ running: false, statusText: null, lastPreview: "**Done.** I moved «Plan the release» to [the board](/projects)." }),
+      stripText({ phase: "idle", statusText: null, lastPreview: "**Done.** I moved «Plan the release» to [the board](/projects)." }),
     ).toBe("Done. I moved Plan the release to the board.");
-    expect(stripText({ running: false, statusText: null, lastPreview: "## Plan\n- step_one is `ready`" })).toBe(
+    expect(stripText({ phase: "idle", statusText: null, lastPreview: "## Plan\n- step_one is `ready`" })).toBe(
       "Plan step_one is ready",
     );
     const long = "The release plan has five steps and each one names an owner a due date and the project it belongs to.";
-    const line = stripText({ running: false, statusText: null, lastPreview: long });
+    const line = stripText({ phase: "idle", statusText: null, lastPreview: long });
     expect(line.endsWith("\u2026")).toBe(true);
     expect(line.length).toBeLessThanOrEqual(STRIP_TEXT_MAX + 1);
     // A whole word: the cut never splits one.
@@ -519,12 +544,53 @@ describe("the peek strip, a third size on a phone (CF-1, chat_first_surface.md �
   });
 
   it("with no reply yet, the line is the assistant's name", () => {
-    expect(stripText({ running: false, statusText: null, lastPreview: undefined })).toBe("Metorite");
-    expect(stripText({ running: false, statusText: null, lastPreview: "   " })).toBe("Metorite");
+    expect(stripText({ phase: "idle", statusText: null, lastPreview: undefined })).toBe("Metorite");
+    expect(stripText({ phase: "idle", statusText: null, lastPreview: "   " })).toBe("Metorite");
   });
 
   it("a page change under the strip leaves it alone", () => {
     expect(onPageChange({ open: true, form: "peek", canDock: false, phone: true })).toBeNull();
+  });
+
+  it("an open that asks for something raises the strip to the sheet (fix round on PR #1198)", () => {
+    const peek = { phone: true, open: true, current: "peek" as const };
+    // A run toast's or a card's "Open", words, a draft, a new chat, the Ask tab.
+    expect(modeOnOpen({ ...peek, opts: { sessionId: "t-1" } })).toBe("full");
+    expect(modeOnOpen({ ...peek, opts: { sessionId: null } })).toBe("full");
+    expect(modeOnOpen({ ...peek, opts: { text: "what is due" } })).toBe("full");
+    expect(modeOnOpen({ ...peek, opts: { draft: "a draft" } })).toBe("full");
+    expect(modeOnOpen({ ...peek, opts: { fresh: true } })).toBe("full");
+    expect(modeOnOpen({ ...peek, opts: { mode: "full" } })).toBe("full");
+    // A plain open asks for nothing, so the strip stays. Blank words are nothing.
+    expect(modeOnOpen({ ...peek, opts: {} })).toBe("peek");
+    expect(modeOnOpen({ ...peek, opts: { text: "   ", draft: "" } })).toBe("peek");
+  });
+
+  it("the desktop rule is unchanged: closed opens the side panel, open keeps its form", () => {
+    const desk = { phone: false } as const;
+    expect(modeOnOpen({ ...desk, open: false, current: "full", opts: {} })).toBe("dock");
+    expect(modeOnOpen({ ...desk, open: false, current: "full", opts: { sessionId: "t-1" } })).toBe("dock");
+    expect(modeOnOpen({ ...desk, open: false, current: "dock", opts: { mode: "full" } })).toBe("full");
+    expect(modeOnOpen({ ...desk, open: true, current: "full", opts: { sessionId: "t-1" } })).toBe("full");
+    expect(modeOnOpen({ ...desk, open: true, current: "dock", opts: { text: "hi" } })).toBe("dock");
+    // A phone sheet that is already full stays full.
+    expect(modeOnOpen({ phone: true, open: true, current: "full", opts: { sessionId: "t-1" } })).toBe("full");
+    // A phone from closed is the side panel in the store, which a phone draws as the sheet.
+    expect(modeOnOpen({ phone: true, open: false, current: "peek", opts: {} })).toBe("dock");
+  });
+
+  it("the store raises the strip on an open that names a chat, and keeps it on a plain open", () => {
+    openAssistant({ mode: "full" });
+    setAssistantMode("peek");
+    openAssistant();
+    expect(assistantState().mode).toBe("peek");
+    openAssistant({ sessionId: "t-2" });
+    expect(assistantState().mode).toBe("full");
+    expect(assistantState().sessionId).toBe("t-2");
+    setAssistantMode("peek");
+    openAssistant({ draft: "check this" });
+    expect(assistantState().mode).toBe("full");
+    closeAssistant();
   });
 
   it("every open from closed is still the side panel, after a strip", () => {

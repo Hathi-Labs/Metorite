@@ -40,6 +40,7 @@ import { agentSlug } from "@/lib/agentName";
 import type { NavPane, NavSection } from "@/lib/nav";
 import { chatKey, truncateAtWord, type ChatSession } from "@/lib/sessions";
 import { onClear } from "@/lib/dataCache";
+import { isLivePhase, type RunPhase } from "@/lib/runStatus";
 
 // ── The agent ────────────────────────────────────────────────────────────────
 
@@ -175,14 +176,24 @@ function plainLine(text: string): string {
 }
 
 /**
+ * Whether the strip shows the run's status, by the run's phase. A live run
+ * does, and so does a parked one, because its card waits on the member. A
+ * run that ended does not: "Done" and "Stopped" give way to the reply at
+ * once (fix round on PR #1198).
+ */
+export function stripShowsRun(phase: RunPhase): boolean {
+  return isLivePhase(phase) || phase === "parked";
+}
+
+/**
  * The one line of the peek strip (CF-1). While a run goes on, it is the run
  * status row's own text, so the strip and the chat say the same thing
  * (`chat_run_continuity.md` §4.10). Else it is the last assistant reply,
  * cut at a whole word. Else the assistant's name.
  */
-export function stripText(a: { running: boolean; statusText: string | null | undefined; lastPreview: string | null | undefined }): string {
+export function stripText(a: { phase: RunPhase; statusText: string | null | undefined; lastPreview: string | null | undefined }): string {
   const status = a.statusText?.trim();
-  if (a.running && status) return status;
+  if (stripShowsRun(a.phase) && status) return status;
   const last = plainLine(a.lastPreview ?? "");
   if (last) return truncateAtWord(last, STRIP_TEXT_MAX);
   return ASSISTANT_NAME;
@@ -296,6 +307,35 @@ function withPrefs(s: AssistantState): AssistantState {
   return { ...s, ...readPrefs() };
 }
 
+/** What an open asks for. */
+export interface OpenOptions {
+  text?: string;
+  draft?: string;
+  sessionId?: string | null;
+  mode?: AssistantMode;
+  fresh?: boolean;
+}
+
+/**
+ * The form an open gives the assistant.
+ *
+ * - An asked `mode` wins.
+ * - An open from closed is the side panel (owner, 2026-10-14).
+ * - An open while it is open keeps its form, with one exception. On a phone
+ *   the strip goes up to the sheet when the open asks for something: words,
+ *   a draft, a chat, or a new chat (fix round on PR #1198). A run toast's
+ *   "Open" and a card's "Open" must show the chat they name. A plain open
+ *   asks for nothing, so the strip stays.
+ */
+export function modeOnOpen(a: { phone: boolean; open: boolean; current: AssistantMode; opts: OpenOptions }): AssistantMode {
+  const { opts } = a;
+  if (opts.mode) return opts.mode;
+  if (!a.open) return "dock";
+  const asks = Boolean(opts.text?.trim() || opts.draft?.trim() || opts.sessionId !== undefined || opts.fresh);
+  if (a.phone && a.current === "peek" && asks) return "full";
+  return a.current;
+}
+
 /**
  * Open the assistant. With `text`, the words go to the chat as the member's
  * turn. With `draft`, they wait in the composer for the member to send. With
@@ -304,20 +344,17 @@ function withPrefs(s: AssistantState): AssistantState {
  * The form: an open from closed is the side panel, unless `mode` asks for the
  * full view. An open while it is open keeps the form it has.
  */
-export function openAssistant(opts: {
-  text?: string;
-  draft?: string;
-  sessionId?: string | null;
-  mode?: AssistantMode;
-  fresh?: boolean;
-} = {}): void {
+export function openAssistant(opts: OpenOptions = {}): void {
   const base = withPrefs(_state);
   const text = opts.text?.trim();
   const draft = opts.draft?.trim();
+  // Only a phone stores `peek` (the handle, the chevron, and `onChatLink` on
+  // a phone), so a stored `peek` is the phone. The store reads no viewport.
+  const phone = base.mode === "peek";
   _set({
     ...base,
     open: true,
-    mode: opts.mode ?? (base.open ? base.mode : "dock"),
+    mode: modeOnOpen({ phone, open: base.open, current: base.mode, opts }),
     sessionId: opts.sessionId !== undefined ? opts.sessionId : base.sessionId,
     ask: text ? { seq: ++_askSeq, text, join: base.open } : base.ask,
     draft: draft ? { seq: ++_askSeq, text: draft } : base.draft,

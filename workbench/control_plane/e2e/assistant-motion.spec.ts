@@ -323,8 +323,11 @@ test.describe("the assistant opens, closes and goes full screen as one element",
     await pill.click();
     await expectStrip(page, 844);
     await expect(page).toHaveURL(/\/projects\?task=/, { timeout: 60_000 });
-    // The strip says the last reply, as plain words.
-    await expect(panel(page).locator("[data-assistant-strip-text]")).toContainText("Next up is #171 Plan the release.");
+    // The strip says the last reply, as plain words, at once. The run just
+    // ended, and the status row's "Done" never reaches the strip.
+    await expect(panel(page).locator("[data-assistant-strip-text]")).toHaveText("Next up is #171 Plan the release.", {
+      timeout: 2_000,
+    });
     expect(await chatKept(page)).toBe(true);
     // The way back up, and the X from the sheet.
     await panel(page).getByRole("button", { name: "Open the chat" }).click();

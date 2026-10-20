@@ -408,7 +408,7 @@ function PeekStrip({
   // The status row's own view, with its no-flash rule, so the strip and the
   // chat say the same thing at the same moment.
   const view = useSteadyRunView(run);
-  const line = stripText({ running: Boolean(view), statusText: view ? runViewText(view) : null, lastPreview });
+  const line = stripText({ phase: run.phase, statusText: view ? runViewText(view) : null, lastPreview });
 
   // A card that waits for the member raises the sheet (WS-51 S2). The run
   // state of this tab and the server's shared list are the two existing
@@ -779,6 +779,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
       }}
     >
       {st.open && form === "dock" && !phone ? <ResizeEdge width={st.width} /> : null}
+      {/* Follow-up: the notes RecordingDock sits at this same height above the nav, and nobody has looked at the two together. */}
       {strip ? (
         <PeekStrip threadId={chat.activeId} lastPreview={active?.lastPreview} onOpen={fromPeek} onRaise={raise} />
       ) : null}
