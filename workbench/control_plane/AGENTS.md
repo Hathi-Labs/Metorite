@@ -366,7 +366,8 @@ Ten rules on top of the three above. Each one exists because it was broken:
    ⚠️ **The cache is memory-only, and bound to the signed-in member.** Keys are
    request paths, and a path says nothing about who asked — so two members on
    one browser share every key. `bindIdentity` (called in `AppShell`) empties it
-   when the member changes. Never persist it to `localStorage`,
+   when the member changes, or when the org of the session changes (WS-53,
+   2026-10-19). An unknown org changes nothing. Never persist it to `localStorage`,
    `sessionStorage` or IndexedDB: that puts one member's tenant rows on the
    device for whoever opens the browser next, below the gateway, where no
    row-level security reaches.

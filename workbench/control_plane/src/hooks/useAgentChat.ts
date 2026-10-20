@@ -23,7 +23,24 @@ import {
   releaseStreamOwnership,
   releaseLoading,
   setSessionAgent,
+  dispatchRun,
+  noteCardEvent,
+  noteRunMoved,
+  clearCardLog,
+  getCardLog,
 } from "@/lib/chatStore";
+import {
+  getLiveRuns,
+  refreshLiveRuns,
+  subscribeLiveRuns,
+  subscribeLiveRunsPolls,
+  wantLiveSteps,
+  type LiveRun,
+} from "@/lib/liveRuns";
+import { isLivePhase, serverHoldsRun, type RunStatus } from "@/lib/runStatus";
+import { stepOfMessage } from "@/lib/runStep";
+import { fetchMessagesFromDb } from "@/lib/sessions";
+import { planReplay, rejectFor } from "@/lib/runReplay";
 import type { ChatMessage, ToolEvent } from "@/lib/chatStore";
 import { activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
 import { emitAgentEvent } from "@/lib/agentEvents";
@@ -63,6 +80,15 @@ import { isQuietArtifact } from "@/lib/artifactCards";
 // Re-export types for backward compatibility with AgentChat.tsx imports.
 export type { ChatMessage, ToolEvent };
 
+// The re-attach in flight per thread, by its controller, so two never race
+// (one per tab). An entry whose controller was aborted is free: an aborted
+// read may never settle, and it must not block every later attach.
+const _attaching = new Map<string, AbortController>();
+const attachBusy = (threadId: string): boolean => {
+  const c = _attaching.get(threadId);
+  return !!c && !c.signal.aborted;
+};
+
 // HITL control events drive the inline ElicitationCard / ConfirmationCard — they
 // are interaction signals, not data to display in the generic "Interactive view"
 // AG-UI panel.  Keep them out of message.customEvents so they don't render twice
@@ -78,6 +104,13 @@ const HITL_CONTROL_EVENTS = new Set([
   // off the message so it neither draws a raw-JSON fold nor is saved.
   "frontend_tool",
 ]);
+
+/**
+ * The server opened a page (`show_in_app`, WS-62 CF-3). The live loop emits
+ * `onNavigate` for it, the dock moves the page, and the event draws nothing
+ * in the transcript. The replay loop never emits it: a refresh moves no page.
+ */
+const NAVIGATE_EVENT = "navigate";
 
 /** The `cardAnswer` field of a chat request: the answered card that the
  *  turn carries (`lib/cardAnswer.ts`), or nothing. Exported for its test. */
@@ -202,6 +235,8 @@ interface UseAgentChatReturn {
   outage: boolean;
   /** The "Metorite is updating" notice's Retry: try the held sends now. */
   retryHeld: () => void;
+  /** The ONE run state (`lib/runStatus.ts`). Every run indicator reads it. */
+  run: RunStatus;
 }
 
 // nanoid, foldForToolStart, unfoldTrailingAnswer and the per-event message
@@ -439,6 +474,11 @@ export function useAgentChat({
         return { ...prev, messages, isLoading: true, error: null, abortController: controller };
       });
 
+      // The one run state: a run starts (`lib/runStatus.ts`). A card of an
+      // earlier run waits no more.
+      dispatchRun(threadId, { type: "send", at: Date.now(), messageId: assistantId });
+      clearCardLog(threadId);
+
       // Emit run started event for subscribers
       emitAgentEvent("onRunStarted", { runId: assistantId, threadId });
 
@@ -452,6 +492,13 @@ export function useAgentChat({
       // An app update held the send again. The server never took it, so the
       // turn stays unconfirmed until the held send goes out.
       let heldAgain = false;
+      // How the run state hears this loop's end (`lib/runStatus.ts`): a
+      // stream was read, a terminal event came, the turn failed, or the
+      // gateway steered the words into a run already going.
+      let streamRead = false;
+      let sawDone = false;
+      let runFailed = false;
+      let steeredLive = false;
       // The server answered with anything but the run cap, so the chat may
       // save the turn now. The finally does it too, for every other path.
       const confirmTurn = () => {
@@ -598,6 +645,7 @@ export function useAgentChat({
           // with a growing wait (review of #920, `lib/chatSteer.ts`).
           // A follow-up's answer settles it: wait and ask again for a run
           // still going, or stop for "stopped" and "nothing_pending".
+          steeredLive = !!outcome.steered;
           if (outcome.steered) owedAfterSteer(threadId, stopEpochAtSend);
           else if (followUp) settleFollowUpAnswer(threadId, outcome.reason);
           // The server folded the words into a live run, or ran nothing.
@@ -638,6 +686,7 @@ export function useAgentChat({
 
         // Drain the SSE stream via the shared reader; the owner check stops it
         // once a reconnect supersedes this message.
+        streamRead = true;
         for await (const evt of readSSEEvents(
           res.body, threadId, () => ownsStream(threadId, assistantId, streamToken),
         )) {
@@ -672,6 +721,8 @@ export function useAgentChat({
                 emitAgentEvent("onDelegate", { name: String(evt.agentName ?? ""), threadId });
                 break;
               case "done":
+                sawDone = true;
+                clearCardLog(threadId);
                 upd((m) => applyStreamEvent(m, evt, fold));
                 emitAgentEvent("onRunFinalized", { runId: String(evt.run_id ?? ""), threadId });
                 break;
@@ -686,6 +737,8 @@ export function useAgentChat({
                 break;
               case "custom": {
                 const evtName = String(evt.name ?? "");
+                // A chat that mounts again draws the card of the run again.
+                noteCardEvent(threadId, evtName, evt.value ?? evt.data);
                 emitAgentEvent("onCustomEvent", { name: evtName, value: evt.value ?? evt.data, threadId });
                 if ((evtName === "artifact_created" || evtName === "artifact_updated") && onArtifactRef.current) {
                   const data = (evt.value ?? evt.data) as Record<string, unknown> | undefined;
@@ -697,13 +750,23 @@ export function useAgentChat({
                     quiet: isQuietArtifact(data),
                   });
                 }
+                // WS-62 CF-3: the page moves on the LIVE loop only. The
+                // reconnect loop below has no such line, on purpose.
+                if (evtName === NAVIGATE_EVENT) {
+                  const data = (evt.value ?? evt.data) as Record<string, unknown> | undefined;
+                  emitAgentEvent("onNavigate", {
+                    path: String(data?.path ?? ""),
+                    why: String(data?.why ?? ""),
+                    threadId,
+                  });
+                }
                 // HITL control events (ask_questions / ask_user / confirm) are
                 // rendered by the inline ElicitationCard — they are NOT data to
                 // display.  Storing them in customEvents made them surface in the
                 // generic "Interactive view" AG-UI panel too, a duplicate that
                 // never cleared after the user answered.  Skip persisting them;
                 // the asking already shows in the thinking stream as a tool call.
-                if (!HITL_CONTROL_EVENTS.has(evtName)) {
+                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== NAVIGATE_EVENT) {
                   upd((m) => withCustomEvent(m, evtName, evt.value ?? evt.data));
                 }
                 break;
@@ -711,6 +774,15 @@ export function useAgentChat({
               case "error":
                 // The code and the ref ride out of the loop with the raw text.
                 throw new ChatRunError(String(evt.content ?? "Stream error"), evt.code, evt.ref);
+            }
+            // The step after this event, for the one run state.
+            // An event that proves the run moved on settles its question.
+            noteRunMoved(threadId, String(evt.type ?? ""));
+            if (evt.type !== "done" && ownsStream(threadId, assistantId, streamToken)) {
+              const tail = getSessionState(threadId).messages;
+              let m: ChatMessage | undefined;
+              for (let i = tail.length - 1; i >= 0; i--) if (tail[i].id === assistantId) { m = tail[i]; break; }
+              dispatchRun(threadId, { type: "event", at: Date.now(), step: stepOfMessage(m) });
             }
         }
 
@@ -819,6 +891,7 @@ export function useAgentChat({
         });
         capped = outcome === "capped";
         settleSend("refused");
+        runFailed = outcome === "error";
         if (outcome === "error") emitAgentEvent("onError", { error: rawErr, threadId });
       } finally {
         if (!capped && !heldAgain) confirmTurn();
@@ -837,6 +910,15 @@ export function useAgentChat({
         const currentController = getSessionState(threadId).abortController;
         if (stillOwner && (currentController === controller || currentController === null)) {
           setSessionState(threadId, (prev) => ({ ...prev, isLoading: false, abortController: null }));
+          // The one run state hears how the loop ended. A stream that closed
+          // with no terminal event is NOT done: the proxy's 310 s budget cut
+          // the owner's long delegated run that way, and the chat went idle
+          // while it ran. `finishing` asks the server (`lib/runStatus.ts`).
+          const at = Date.now();
+          if (runFailed) dispatchRun(threadId, { type: "failed", at });
+          else if (sawDone) dispatchRun(threadId, { type: "stream_end", at, terminal: true });
+          else if (streamRead || steeredLive) dispatchRun(threadId, { type: "stream_end", at, terminal: false });
+          else dispatchRun(threadId, { type: "abandon", at });
         }
       }
     },
@@ -909,216 +991,231 @@ export function useAgentChat({
     setSessionState(threadId, (prev) => ({ ...prev, messages: [], error: null }));
   }, [threadId]);
 
-  // ── Recover after refresh / reconnect ──────────────────────────────
-  // On mount, reconnect to a live agent run when EITHER:
-  //   a) the last local message looks interrupted (mid-stream refresh), OR
-  //   b) the server says an agent is still running for this thread
-  //      (covers refresh-during-thinking, where the empty assistant
-  //      placeholder was never persisted so no local evidence exists).
-  // If the reconnect endpoint is unavailable or the stream has expired,
-  // we fall back to the existing Postgres polling recovery path.
-  useEffect(() => {
-    const abortCtrl = new AbortController();
-    let reconnected = false;
-    let cancelled = false;
+  // ── Attach to a live run (owner report, 2026-10-19) ──────────────────
+  // One way in for every case that finds a run with no stream reading it:
+  // a reload, a return to the page, a switch back to this chat, a second
+  // tab, and a stream that ended with no terminal event while the run went
+  // on (the proxy's 310 s budget, a restart, a lost network). The server's
+  // list decides that a run is live (`lib/runStatus.ts`). This replays the
+  // whole run from its first event and follows it live.
+  //
+  // The replay builds into a SHADOW copy of the message, and the copy
+  // replaces the message only once it has caught up. The old loop blanked
+  // the message first, so a reload showed an empty thinking container for a
+  // moment, and a replay that came back empty left it blank.
+  const attachCtrlsRef = useRef(new Set<AbortController>());
+  const attach = useCallback(async (abortCtrl: AbortController, isCancelled: () => boolean) => {
+    const st0 = getSessionState(threadId);
+    // A stream already reads this thread: the live loop goes on, and a
+    // replay beside it would only rebuild what it draws. Another attach may
+    // hold the thread too. Either way the run state hears it, so the next
+    // server list asks again (review of #1171, P2).
+    if (st0.abortController || attachBusy(threadId)) {
+      dispatchRun(threadId, { type: "attach_skipped", at: Date.now() });
+      return;
+    }
+    _attaching.set(threadId, abortCtrl);
+    attachCtrlsRef.current.add(abortCtrl);
+    const release = () => {
+      if (_attaching.get(threadId) === abortCtrl) _attaching.delete(threadId);
+      attachCtrlsRef.current.delete(abortCtrl);
+    };
 
-    (async () => {
-      const state = getSessionState(threadId);
-      const last = state.messages[state.messages.length - 1];
-      // Only the saved `streaming` flag starts a recovery. A punctuation guess
-      // used to, and a finished reply that ends in a list, table or card then
-      // showed "Reconnecting…" and a Stop button on every reopen.
-      const localInterrupted = isInterruptedReply(last);
-
-      // Server truth: is an agent actually running for this thread?
-      let serverActive = false;
-      try {
-        const r = await fetch("/api/chat/active-sessions", { signal: abortCtrl.signal });
-        if (r.ok) {
-          const arr = (await r.json()) as { threadId?: string }[];
-          serverActive = Array.isArray(arr) && arr.some((s) => s.threadId === threadId);
-        }
-      } catch { /* server unreachable — rely on local heuristic */ }
-
-      // Surface the agent's run status so the UI can show a meaningful
-      // indicator — not just a generic "Reconnecting…" spinner.
-      if (!cancelled) {
-        setSessionState(threadId, (prev) => ({
-          ...prev,
-          runStatus: serverActive ? "running" : localInterrupted ? "recovering" : "idle",
-        }));
-      }
-
-      if (cancelled) return;
-      if (!localInterrupted && !serverActive) return;
-
-      // ── Non-active interruption: let polling recover from Postgres ──
-      // If the server is not actively running (agent finished) but the
-      // last local message looks interrupted (e.g. ends mid-code-block
-      // without terminal punctuation), DON'T try to reconnect — it would
-      // reset the perfectly-valid local content and leave an empty
-      // placeholder while waiting for a Redis stream that already expired.
-      // Just set recovering=true so the polling loop fetches the settled
-      // content from Postgres at 1.5s intervals.
-      if (!serverActive) {
-        if (localInterrupted && !cancelled) {
-          setSessionState(threadId, (prev) => ({
-            ...prev,
-            recovering: true,
-            runStatus: "recovering",
-          }));
-        }
-        return;
-      }
-
-      // ── Surface loading state so the stop button appears ──────────
-      // When an agent is still running on the server, the user needs a
-      // way to abort it.  Store the abort controller so stopGeneration()
-      // can tear down the reconnect SSE + polling.
+    // The message to replay into: the one this tab saw the run stream into,
+    // else a reply saved mid-stream, else the run's own saved row, else a
+    // new placeholder. A run that the server names while this chat rests
+    // is a NEW run (another tab, a phone, a room member): the run state
+    // holds no message for it, and a finished reply is never its target
+    // (review of #1171, P1).
+    const last = st0.messages[st0.messages.length - 1];
+    const known = st0.run.messageId
+      ? st0.messages.find((m) => m.id === st0.run.messageId && m.role === "assistant")
+      : undefined;
+    // The server named ANOTHER run than the one this chat streamed (its
+    // identity differs, re-review of #1171). A reply still marked streaming
+    // is the old run's: it settles, and the new run never replays into it.
+    const stale = st0.run.staleTail;
+    if (stale) {
       setSessionState(threadId, (prev) => ({
         ...prev,
-        isLoading: true,
-        abortController: abortCtrl,
+        messages: prev.messages.map((m) => (m.role === "assistant" && m.streaming
+          ? { ...m, streaming: false, isThinkingActive: false }
+          : m)),
       }));
-
-      // Ensure there's an assistant message to stream the replay into.
-      let lastId: string;
-      let lastContent: string;
-      if (localInterrupted && last) {
-        lastId = last.id;
-        lastContent = last.content || "";
-        // Clear stale streaming flags and show "Reconnecting…".
-        setSessionState(threadId, (prev) => ({
-          ...prev,
-          error: null,
-          recovering: true,
-          runStatus: "recovering",
-          isLoading: true,
-          abortController: abortCtrl,
-          messages: prev.messages.map((m) =>
-            m.id === lastId
-              ? {
-                  ...m,
-                  streaming: false,
-                  isThinkingActive: false,
-                  // A turn restored from the local cache may predate the
-                  // stamp. The run being replayed is this agent's.
-                  ...(m.authorEmail ? {} : agentAuthor(agentNameRef.current)),
-                }
-              : m
-          ),
-        }));
-      } else {
-        // Agent is running but no assistant message survived the refresh
-        // (it was an empty thinking placeholder) — create a fresh one.
-        lastId = nanoid();
-        lastContent = "";
-        const placeholder: ChatMessage = {
-          id: lastId, role: "assistant", content: "", timestamp: Date.now(),
-          streaming: true, toolEvents: [], progressLines: [], isThinkingActive: true,
-          ...agentAuthor(agentNameRef.current),
-        };
-        setSessionState(threadId, (prev) => ({
-          ...prev,
-          error: null,
-          recovering: true,
-          runStatus: "running",
-          isLoading: true,
-          abortController: abortCtrl,
-          messages: [...prev.messages, placeholder],
-        }));
-      }
-
-      // ── Attempt live SSE reconnection ────────────────────────────────
-      // Ownership token for the message we replay into — claimed once we commit
-      // to streaming (after res.ok) so any still-running live loop for the same
-      // message stops writing and we rebuild it without doubling the text.
-      let reconToken: string | null = null;
-      try {
-        const curState = getSessionState(threadId);
-        const res = await fetch("/api/agent/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: abortCtrl.signal,
-          body: JSON.stringify({
-            agentName: agentNameRef.current,
-            message: lastContent || "(reconnect)",
-            messages: activeContextSlice(curState.messages)
-              .filter((m, idx) => m.role !== "system" || (idx === 0 && isCompactionCheckpoint(m)))
-              .map((m) => ({ role: m.role, content: m.content })),
-            threadId,
-            mode: modeRef.current,
-            ...chatModelField(modelRef.current),
-            context: systemContextRef.current ?? undefined,
-            thinkMode: thinkModeRef.current ?? "auto",
-            assistantMessageId: lastId,
-            lastEventId: curState.lastEventId ?? undefined,
-            reconnect: true,
-          }),
+    }
+    let target = known ?? (!stale && isInterruptedReply(last) ? last : undefined);
+    if (!target) {
+      // The server saved the run's rows under THEIR ids: the member's turn
+      // at run start (WS-51 S4), and the reply at each checkpoint of
+      // `api/agent/chat/route.ts`. A run started elsewhere draws its prompt
+      // here, and the replay goes into its own row, never a second one.
+      const saved = ((await fetchMessagesFromDb(threadId).catch(() => [])) as ChatMessage[])
+        .filter((m) => !isSuperseded(threadId, m.id) && !(m.role === "system" && m.content?.startsWith("__ERROR__")));
+      if (!isCancelled()) {
+        const reject = (shown: ChatMessage[]) => rejectFor(shown, st0.run.doneMessageId, stale);
+        const now = getSessionState(threadId).messages;
+        const plan = planReplay(saved, now, reject(now));
+        if (plan.target) target = plan.target;
+        setSessionState(threadId, (prev) => {
+          const add = planReplay(saved, prev.messages, reject(prev.messages));
+          const t = add.target && !prev.messages.some((m) => m.id === add.target!.id) ? [add.target] : [];
+          const rows = [...add.missing, ...t];
+          return rows.length ? { ...prev, messages: [...prev.messages, ...rows] } : prev;
         });
+      }
+    }
+    if (isCancelled()) { release(); return; }
+    // A send may have started while this read the server. It owns the
+    // thread, its controller and its Stop.
+    if (getSessionState(threadId).abortController) {
+      release();
+      dispatchRun(threadId, { type: "attach_skipped", at: Date.now() });
+      return;
+    }
+    const lastId = target?.id ?? nanoid();
+    const lastContent = target?.content || "";
+    const placeholder = !target;
+    // No thinking flag yet: the status row says the run works, and the
+    // bubble draws once the replay brings something.
+    const fresh: ChatMessage = {
+      id: lastId, role: "assistant", content: "", timestamp: Date.now(),
+      streaming: true, toolEvents: [], progressLines: [], isThinkingActive: false,
+      ...agentAuthor(agentNameRef.current),
+    };
+    setSessionState(threadId, (prev) => ({
+      ...prev,
+      error: null,
+      isLoading: true,
+      abortController: abortCtrl,
+      messages: placeholder
+        ? [...prev.messages, fresh]
+        : prev.messages.map((m) => (m.id === lastId && !m.authorEmail
+          // A turn restored from the local cache may predate the stamp.
+          ? { ...m, ...agentAuthor(agentNameRef.current) }
+          : m)),
+    }));
+    dispatchRun(threadId, { type: "attach", at: Date.now(), messageId: lastId });
 
-        // A reconnect that got steered (someone else's run took the thread
-        // while we were away) has nothing to replay into — the running turn
-        // owns the answer and polling will pick it up. §4.6.
-        // Either way this loop streams nothing, so it gives up the loading
-        // state it took above. Polling merges only while no controller is
-        // set, so a kept controller froze the chat and the run badge (WS-51).
-        if (res.status === 202) { releaseLoading(threadId, abortCtrl); return; }
-        if (!res.ok || !res.body) { releaseLoading(threadId, abortCtrl); return; }  // Fall back to polling.
+    let reconToken: string | null = null;
+    let terminal = false;
+    let streamed = false;
+    try {
+      const curState = getSessionState(threadId);
+      const res = await fetch("/api/agent/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: abortCtrl.signal,
+        body: JSON.stringify({
+          agentName: agentNameRef.current,
+          message: lastContent || "(reconnect)",
+          messages: activeContextSlice(curState.messages)
+            .filter((m, idx) => m.role !== "system" || (idx === 0 && isCompactionCheckpoint(m)))
+            .map((m) => ({ role: m.role, content: m.content })),
+          threadId,
+          mode: modeRef.current,
+          ...chatModelField(modelRef.current),
+          context: systemContextRef.current ?? undefined,
+          thinkMode: thinkModeRef.current ?? "auto",
+          assistantMessageId: lastId,
+          // No cursor: the replay is the WHOLE run (the stream is reset per
+          // run), because the message is rebuilt from nothing. A cursor
+          // replayed only the tail into the rebuilt message, and a second
+          // return to the page lost the reply's start.
+          reconnect: true,
+        }),
+      });
 
-        // Take exclusive ownership of the replay target before resetting it.
-        // Any live loop still writing this message now loses ownership and
-        // stops, so its deltas don't interleave with the replayed ones.
-        reconToken = nanoid();
-        claimStreamOwnership(threadId, lastId, reconToken);
+      // A reconnect that got steered (someone else's run took the thread
+      // while we were away) has nothing to replay into — the running turn
+      // owns the answer and polling will pick it up. §4.6.
+      // Either way this loop streams nothing, so it gives up the loading
+      // state it took above. Polling merges only while no controller is
+      // set, so a kept controller froze the chat and the run badge (WS-51).
+      if (res.status === 202) { releaseLoading(threadId, abortCtrl); return; }
+      if (!res.ok || !res.body) { releaseLoading(threadId, abortCtrl); return; }  // Fall back to polling.
 
-        // ── Reset the interrupted message before replay ─────────────────
-        // The reconnect replays ALL events from the Redis stream (since
-        // lastEventId is null — initial SSE frames don't carry stream IDs).
-        // If we don't clear the existing partial content, replayed deltas
-        // get appended on top of what's already there, doubling text,
-        // reasoning blocks, and tool events.
+      reconToken = nanoid();
+      claimStreamOwnership(threadId, lastId, reconToken);
+      streamed = true;
+
+      // The shadow: the message rebuilt from the replay. Every replayed
+      // event lands here until it has caught up with what shows.
+      const base = getSessionState(threadId).messages.find((m) => m.id === lastId);
+      let shadow: ChatMessage | null = base ? {
+        ...base,
+        content: "",
+        toolEvents: [],
+        reasoningBlocks: [],
+        // Reset segments too (Phase 3b): the delta reducer APPENDS to a
+        // segment by id, so a kept one would double its text.
+        segments: [],
+        progressLines: [],
+        customEvents: [],
+        isThinkingActive: true,
+        streaming: true,
+      } : null;
+      const hasBody = (m: ChatMessage | null | undefined) =>
+        !!m && (!!m.content.trim() || (m.toolEvents?.length ?? 0) > 0 || (m.reasoningBlocks?.length ?? 0) > 0);
+      const caughtUp = (sh: ChatMessage, cur: ChatMessage | undefined) =>
+        !cur ||
+        (sh.content.length >= cur.content.length &&
+          (sh.toolEvents?.length ?? 0) >= (cur.toolEvents?.length ?? 0) &&
+          (sh.reasoningBlocks?.length ?? 0) >= (cur.reasoningBlocks?.length ?? 0));
+      const commit = () => {
+        if (!shadow) return;
+        const sh = shadow;
+        shadow = null;
+        setSessionState(threadId, (prev) => ({
+          ...prev,
+          messages: prev.messages.map((m) => {
+            if (m.id !== lastId) return m;
+            // A card the replay did not bring stays: each list only grows.
+            const keep = (m.customEvents?.length ?? 0) > (sh.customEvents?.length ?? 0);
+            return keep ? { ...sh, customEvents: m.customEvents } : sh;
+          }),
+        }));
+      };
+      // A replay that stops short of what shows still commits once it has
+      // brought something, so the live events after it draw.
+      let commitTimer: ReturnType<typeof setTimeout> | null = null;
+      const armCommit = () => {
+        if (commitTimer || !shadow) return;
+        commitTimer = setTimeout(() => {
+          commitTimer = null;
+          if (hasBody(shadow) && reconToken && ownsStream(threadId, lastId, reconToken)) commit();
+          else armCommit();
+        }, 1_500);
+      };
+
+      // Per-stream fold cursor (mirror of the live loop).
+      const fold: StreamFold = { foldedAnswerIdx: -1 };
+
+      // Update helper: applies changes ONLY to the specific message we're
+      // replaying into (matched by lastId), through the shadow until it has
+      // caught up.
+      const updLast = (fn: (m: ChatMessage) => ChatMessage) => {
+        // No-op once a newer loop has claimed this message (see ownsStream).
+        if (!reconToken || !ownsStream(threadId, lastId, reconToken)) return;
+        if (shadow) {
+          shadow = fn(shadow);
+          const cur = getSessionState(threadId).messages.find((m) => m.id === lastId);
+          if (caughtUp(shadow, cur)) commit();
+          else armCommit();
+          return;
+        }
         setSessionState(threadId, (prev) => ({
           ...prev,
           messages: prev.messages.map((m) =>
-            m.id === lastId
-              ? {
-                  ...m,
-                  content: "",
-                  toolEvents: [],
-                  reasoningBlocks: [],
-                  // Reset segments too (Phase 3b): the replay re-streams from
-                  // 0-0, and the delta reducer APPENDS to an existing segment by
-                  // id — leaving stale segments here would double their text.
-                  segments: [],
-                  progressLines: [],
-                  isThinkingActive: true,
-                  streaming: true,
-                }
-              : m
+            m.id === lastId ? fn({ ...m, isThinkingActive: m.streaming ? true : m.isThinkingActive }) : m
           ),
         }));
+      };
+      const noteEvent = () => {
+        const m = shadow ?? getSessionState(threadId).messages.find((x) => x.id === lastId);
+        dispatchRun(threadId, { type: "event", at: Date.now(), step: stepOfMessage(m) });
+      };
 
-        // Per-stream fold cursor (mirror of the live loop).
-        const fold: StreamFold = { foldedAnswerIdx: -1 };
-
-        // Update helper: applies changes ONLY to the specific message we're
-        // replaying into (matched by lastId).  Previous messages — even those
-        // without terminal punctuation — must never be modified by replayed
-        // delta events; only the reset target message should accumulate content.
-        const updLast = (fn: (m: ChatMessage) => ChatMessage) => {
-          // No-op once a newer loop has claimed this message (see ownsStream).
-          if (!reconToken || !ownsStream(threadId, lastId, reconToken)) return;
-          setSessionState(threadId, (prev) => ({
-            ...prev,
-            messages: prev.messages.map((m) =>
-              m.id === lastId ? fn(m) : m
-            ),
-          }));
-        };
-
-        // Drain the replay stream via the shared reader; the owner check stops
-        // it once a newer loop supersedes this message.
+      try {
         for await (const evt of readSSEEvents(
           res.body, threadId, () => !!reconToken && ownsStream(threadId, lastId, reconToken),
         )) {
@@ -1151,6 +1248,8 @@ export function useAgentChat({
                 // ElicitationCard via the subscriber and are NOT stored as
                 // displayable customEvents (no duplicate "Interactive view").
                 const evtName = String(evt.name ?? "");
+                // A chat that mounts again draws the card of the run again.
+                noteCardEvent(threadId, evtName, evt.value ?? evt.data);
                 emitAgentEvent("onCustomEvent", { name: evtName, value: evt.value ?? evt.data, threadId });
                 if ((evtName === "artifact_created" || evtName === "artifact_updated") && onArtifactRef.current) {
                   const data = (evt.value ?? evt.data) as Record<string, unknown> | undefined;
@@ -1162,38 +1261,21 @@ export function useAgentChat({
                     quiet: isQuietArtifact(data),
                   });
                 }
-                if (!HITL_CONTROL_EVENTS.has(evtName)) {
+                // A replayed `navigate` moves no page (WS-62 CF-3 done-when 6),
+                // and it draws nothing either.
+                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== NAVIGATE_EVENT) {
                   updLast((m) => withCustomEvent(m, evtName, evt.value ?? evt.data));
                 }
                 break;
               }
-              case "done": {
-                reconnected = true;
+              case "done":
+                terminal = true;
+                clearCardLog(threadId);
                 // Restore a trailing answer folded into the timeline (turn ended
                 // on a tool call) and mark the message settled — the shared
                 // reducer does the un-fold + streaming:false in one update.
                 updLast((m) => applyStreamEvent(m, evt, fold));
-                // Check if we actually recovered content.  When the Redis
-                // stream has expired, the reconnect endpoint returns only a
-                // synthetic RUN_FINISHED with no prior delta/tool events —
-                // the recovered message will be empty.  In that case keep
-                // recovering=true so the polling effect fills in content
-                // from Postgres.
-                const cur = getSessionState(threadId);
-                const recoveredMsg = cur.messages.find((m) => m.id === lastId);
-                const hasRecoveredContent =
-                  (recoveredMsg?.content?.trim() ?? "") ||
-                  (recoveredMsg?.toolEvents?.length ?? 0) > 0 ||
-                  (recoveredMsg?.reasoningBlocks?.length ?? 0) > 0;
-                setSessionState(threadId, (prev) => ({
-                  ...prev,
-                  recovering: hasRecoveredContent ? false : prev.recovering,
-                  runStatus: hasRecoveredContent ? "idle" : "recovering",
-                  isLoading: hasRecoveredContent ? false : prev.isLoading,
-                  abortController: hasRecoveredContent ? null : prev.abortController,
-                }));
                 break;
-              }
               case "error":
                 // The agent emitted an error during its run (e.g. Copilot
                 // SDK "Load failed" during model warmup).  Don't abort the
@@ -1209,47 +1291,104 @@ export function useAgentChat({
                 }));
                 break;
             }
-        }
-
-        // If we got here without a "done" event, the stream ended cleanly.
-        if (!reconnected) {
-          const cur2 = getSessionState(threadId);
-          const recoveredMsg2 = cur2.messages.find((m) => m.id === lastId);
-          const hasContent =
-            (recoveredMsg2?.content?.trim() ?? "") ||
-            (recoveredMsg2?.toolEvents?.length ?? 0) > 0 ||
-            (recoveredMsg2?.reasoningBlocks?.length ?? 0) > 0;
-          updLast((m) => ({ ...m, streaming: false, isThinkingActive: false }));
-          setSessionState(threadId, (prev) => ({
-            ...prev,
-            recovering: hasContent ? false : prev.recovering,
-            runStatus: hasContent ? "idle" : "recovering",
-            isLoading: hasContent ? false : prev.isLoading,
-            abortController: hasContent ? null : prev.abortController,
-          }));
-        }
-      } catch {
-        // Reconnect failed (network error, timeout, etc.) — polling handles it.
-        // Clear loading state so the stop button doesn't linger.
-        if (!cancelled) {
-          setSessionState(threadId, (prev) => ({
-            ...prev,
-            isLoading: false,
-            abortController: null,
-          }));
+            noteRunMoved(threadId, String(evt.type ?? ""));
+            if (evt.type !== "done" && evt.type !== "error") noteEvent();
         }
       } finally {
-        // Release replay ownership iff we still hold it (a newer loop that
-        // superseded us keeps its own claim).
-        if (reconToken) releaseStreamOwnership(threadId, lastId, reconToken);
-        // If we never reconnected, make sure recovering is set for polling.
-        if (!reconnected && !cancelled) {
-          setSessionState(threadId, (prev) =>
-            prev.recovering
-              ? prev
-              : { ...prev, recovering: true, runStatus: "recovering" }
-          );
+        if (commitTimer) clearTimeout(commitTimer);
+        // The replay came back with something: it is the message now. An
+        // empty one (the stream expired) keeps what shows, and polling
+        // fills it from the saved row.
+        if (shadow && hasBody(shadow)) commit();
+        else shadow = null;
+      }
+      if (!terminal) updLast((m) => ({ ...m, streaming: false, isThinkingActive: false }));
+      else updLast((m) => applyStreamEvent(m, { type: "done" }, fold));
+    } catch {
+      // Reconnect failed (network error, timeout, etc.) — polling handles it.
+    } finally {
+      if (_attaching.get(threadId) === abortCtrl) _attaching.delete(threadId);
+      attachCtrlsRef.current.delete(abortCtrl);
+      // Release replay ownership iff we still hold it (a newer loop that
+      // superseded us keeps its own claim).
+      if (reconToken) releaseStreamOwnership(threadId, lastId, reconToken);
+      if (!isCancelled()) {
+        const after = getSessionState(threadId).messages.find((m) => m.id === lastId);
+        const recovered = !!after && (
+          !!after.content.trim() || (after.toolEvents?.length ?? 0) > 0 || (after.reasoningBlocks?.length ?? 0) > 0
+        );
+        // A placeholder that got nothing goes: no empty bubble stays.
+        if (placeholder && !recovered) {
+          setSessionState(threadId, (prev) => ({ ...prev, messages: prev.messages.filter((m) => m.id !== lastId) }));
         }
+        // This loop gives up its loading state on EVERY exit. A kept
+        // controller froze the polling merge and showed Stop forever.
+        releaseLoading(threadId, abortCtrl);
+        setSessionState(threadId, (prev) => ({
+          ...prev,
+          // Nothing came back: polling fills the reply from the saved row.
+          recovering: !recovered,
+          runStatus: recovered ? "idle" : "recovering",
+        }));
+        // The run state hears how the stream ended. With no terminal event
+        // the server answers whether the run goes on.
+        // No stream: the next attach waits longer (`attach_failed`), so a run
+        // that cannot replay is never asked in a loop.
+        if (streamed) dispatchRun(threadId, { type: "stream_end", at: Date.now(), terminal });
+        else dispatchRun(threadId, { type: "attach_failed", at: Date.now() });
+      }
+    }
+  }, [threadId]);
+
+  // ── On mount: hear the server once ────────────────────────────────────
+  // A reload, a return to the page and a session switch all land here. A
+  // live phase kept in the store from before, with no stream now, shows
+  // "checking" until the server answers (`remount`, review of #1171). The
+  // answer is the next complete poll of the one shared poller, which the
+  // reconcile effect below asks for: no second request. A live run then
+  // re-attaches through the run state's `attach` flag.
+  useEffect(() => {
+    const abortCtrl = new AbortController();
+    let cancelled = false;
+    dispatchRun(threadId, { type: "remount", at: Date.now(), streamOpen: !!getSessionState(threadId).abortController });
+
+    (async () => {
+      const state = getSessionState(threadId);
+      const last = state.messages[state.messages.length - 1];
+      // Only the saved `streaming` flag starts a recovery. A punctuation guess
+      // used to, and a finished reply that ends in a list, table or card then
+      // showed "Reconnecting…" and a Stop button on every reopen.
+      const localInterrupted = isInterruptedReply(last);
+
+      // Server truth: is an agent actually running for this thread? No
+      // answer within 6 s reads as "unknown", and polling recovers.
+      const row = await new Promise<LiveRun | null | undefined>((resolve) => {
+        let off: () => void = () => {};
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const done = (v: LiveRun | null | undefined) => {
+          off();
+          if (timer) clearTimeout(timer);
+          resolve(v);
+        };
+        off = subscribeLiveRunsPolls(() => done(getLiveRuns().find((r) => r.threadId === threadId) ?? null));
+        timer = setTimeout(() => done(undefined), 6_000);
+        abortCtrl.signal.addEventListener("abort", () => done(undefined));
+      });
+      if (cancelled) return;
+      // A parked question has no run to attach to: its card comes back
+      // from the server (WS-51 S2).
+      const serverActive = !!row && (row.state !== "needs_input" || row.live !== false);
+
+      setSessionState(threadId, (prev) => ({
+        ...prev,
+        runStatus: serverActive ? "running" : localInterrupted ? "recovering" : "idle",
+      }));
+
+      // ── Non-active interruption: let polling recover from Postgres ──
+      // The server runs nothing, but the last local message was cut mid-
+      // stream. Polling fetches the settled content from Postgres.
+      if (!serverActive && localInterrupted) {
+        setSessionState(threadId, (prev) => ({ ...prev, recovering: true, runStatus: "recovering" }));
       }
     })();
 
@@ -1262,6 +1401,94 @@ export function useAgentChat({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId]);
+
+  // ── The one run state: reconcile with the server ──────────────────────
+  // The chat hears every complete poll of the shared run list
+  // (`lib/liveRuns.ts`) and feeds it to `lib/runStatus.ts`. That is how a
+  // run finished while the page was away ends as "done", how a run the
+  // stream lost goes on showing, and how nothing stays "working" forever.
+  useEffect(() => {
+    const keepAlive = subscribeLiveRuns(() => {});
+    const offPolls = subscribeLiveRunsPolls((at) => {
+      const row = getLiveRuns().find((r) => r.threadId === threadId) ?? null;
+      dispatchRun(threadId, {
+        type: "server", at, run: row,
+        streamOpen: !!getSessionState(threadId).abortController,
+      });
+    });
+    refreshLiveRuns();
+    const ctrls = attachCtrlsRef.current;
+    return () => {
+      offPolls();
+      keepAlive();
+      // A re-attach this chat started ends with it. The run goes on, and
+      // the next mount attaches again.
+      for (const c of [...ctrls]) {
+        c.abort();
+        releaseLoading(threadId, c);
+      }
+      ctrls.clear();
+    };
+  }, [threadId]);
+
+  const runPhase = sessionState.run.phase;
+  // A remount's "checking" was seen, so the cards on screen came from the log.
+  const wasCheckingRef = useRef(false);
+  const checkingNow = sessionState.run.checking;
+  useEffect(() => { if (checkingNow) wasCheckingRef.current = true; }, [checkingNow]);
+  const runShows = isLivePhase(runPhase) || runPhase === "parked";
+  // The clock: a stale state settles (`STALE_MS`, `FINISH_MAX_MS`).
+  useEffect(() => {
+    if (!runShows) return;
+    const t = setInterval(() => {
+      dispatchRun(threadId, {
+        type: "tick", at: Date.now(), streamOpen: !!getSessionState(threadId).abortController,
+      });
+    }, 2_000);
+    return () => clearInterval(t);
+  }, [threadId, runShows]);
+  // The run's step from the server, while it shows (WS-51 S3): after a
+  // reload it names the step before the stream re-attaches.
+  useEffect(() => (runShows ? wantLiveSteps() : undefined), [runShows]);
+  // A stream ended with no terminal event: ask the server now. A run that
+  // ended or stopped asks too, so the list's dot and the nav badge follow at
+  // once and not up to one poll later.
+  useEffect(() => {
+    if (runPhase === "finishing" || runPhase === "done" || runPhase === "stopped") refreshLiveRuns();
+    // A remount drew the cards of the run again from the log. If the server
+    // then says the run ended while the chat was away, those cards wait no
+    // more: the run is finalized here, as its `done` would have done. A cut
+    // stream with NO remount keeps its card, so an answer still goes
+    // (the restart path, `chat-card-restart.spec.ts`).
+    const resting = runPhase === "done" || runPhase === "stopped" || runPhase === "failed" || runPhase === "idle";
+    if (runPhase === "working" || runPhase === "waiting_for_you") wasCheckingRef.current = false;
+    if (resting && wasCheckingRef.current) {
+      wasCheckingRef.current = false;
+      if (getCardLog(threadId).length > 0) {
+        clearCardLog(threadId);
+        emitAgentEvent("onRunFinalized", { runId: "", threadId });
+      }
+    }
+    // Every end of a run clears the log: a `done`, a failure, a Stop, and a
+    // run the server stopped listing (review of #1171, P2). A later mount at
+    // rest then redraws no stale card. The card on screen now stays: a cut
+    // stream's answer still goes by the restart path.
+    if (resting) clearCardLog(threadId);
+  }, [runPhase, threadId]);
+  // A new run (another run key) has none of the old run's cards.
+  const runKeyNow = sessionState.run.runKey;
+  const runKeyRef = useRef<string | null>(runKeyNow);
+  useEffect(() => {
+    if (runKeyRef.current && runKeyNow && runKeyNow !== runKeyRef.current) clearCardLog(threadId);
+    runKeyRef.current = runKeyNow;
+  }, [runKeyNow, threadId]);
+  // The server lists a live run that no stream reads: attach to it.
+  const wantAttach = sessionState.run.attach;
+  useEffect(() => {
+    if (!wantAttach) return;
+    const ctrl = new AbortController();
+    void attach(ctrl, () => ctrl.signal.aborted);
+  }, [wantAttach, attach]);
 
   const stopGeneration = useCallback((): Promise<void> => {
     const current = getSessionState(threadId);
@@ -1292,6 +1519,8 @@ export function useAgentChat({
       stopEpoch: (prev.stopEpoch ?? 0) + 1,
     }));
     cancelFollowUp(threadId);
+    dispatchRun(threadId, { type: "stop", at: Date.now() });
+    clearCardLog(threadId);
     return settled;
   }, [threadId]);
 
@@ -1341,6 +1570,12 @@ export function useAgentChat({
     // gets the interrupted notice, with Continue.
     const settleStale = () => {
       const cur = getSessionState(threadId);
+      // The server still lists the run: a long silent step is no stale
+      // recovery, and the reply must not be marked interrupted.
+      if (serverHoldsRun(cur.run, Date.now())) {
+        recoveryStartedAt = 0;
+        return;
+      }
       if (!cur.recovering && cur.runStatus === "idle") { recoveryStartedAt = 0; return; }
       if (!recoveryStartedAt) recoveryStartedAt = Date.now();
       if (!isStaleRecovery({
@@ -1569,7 +1804,12 @@ export function useAgentChat({
         // Clear recovering if the server message looks settled (ends with
         // punctuation) or we've been in recovery for >45s.
         const curRecovering = getSessionState(threadId).recovering;
-        if (curRecovering) {
+        // While the server lists the run as live, neither a full stop nor
+        // the 45 s clock ends the recovery: the run goes on (review of
+        // #1171, P2). The run state settles it when the server lets go.
+        if (curRecovering && serverHoldsRun(getSessionState(threadId).run, Date.now())) {
+          recoveryStartedAt = Date.now();
+        } else if (curRecovering) {
           // Track when recovery first started.
           if (!recoveryStartedAt) recoveryStartedAt = Date.now();
           const recoveryAge = Date.now() - recoveryStartedAt;
@@ -1607,6 +1847,6 @@ export function useAgentChat({
 
   return {
     messages, isLoading, error, sendMessage, steerMessage, clearMessages, stopGeneration, setMessages,
-    recovering, runStatus, outage, retryHeld,
+    recovering, runStatus, outage, retryHeld, run: sessionState.run,
   };
 }

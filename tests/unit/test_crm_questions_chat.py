@@ -310,7 +310,9 @@ def test_only_the_two_showing_reads_load_the_proposals() -> None:
     """``load`` fills ``Inputs.proposals`` only on request. Only the admin
     list, the read of a card and (CRM-Q33 part 4) the member's own list of
     choices ask for them, so the count, the catalogue and the 422 of the
-    aggregate never hold a member's choice."""
+    aggregate never hold a member's choice. WS-53 §18.16 part 4 adds the
+    term read (``load_for_terms``): a member's pick of a term is that
+    member's own preference, and the proposed org answer."""
     import inspect
 
     from gateway.routes.crm import questions as routes
@@ -325,7 +327,7 @@ def test_only_the_two_showing_reads_load_the_proposals() -> None:
             if (isinstance(call, ast.Call) and getattr(call.func, "id", None) == "load"
                     and any(k.arg == "proposals" for k in call.keywords)):
                 askers.add(fn.name)
-    assert askers == {"list_questions", "ask_questions_read", "my_choices"}
+    assert askers == {"list_questions", "ask_questions_read", "my_choices", "load_for_terms"}
 
 
 async def test_the_aggregate_path_gets_no_proposals(monkeypatch) -> None:

@@ -12,9 +12,14 @@ Design change from original v2:
     4. ``LoadedAgent.cleanup()`` removes only the sys.path injection and the
        in-memory module; the local clone is preserved for the next event.
 
-Authentication — private repos (ADR-020):
-  Primary:  ``GITHUB_TOKEN`` (PAT with ``repo`` scope) embedded in the clone
-            URL and refreshed before every pull via ``git remote set-url``.
+Authentication — private repos (ADR-020, H-363):
+  A clone's remote URL holds NO token. ``acb_common.git_credentials`` gives
+  the credential to one git process at a time, through an inline credential
+  helper, from a gateway bare repo that no agent can write. A read uses
+  ``GITHUB_READ_TOKEN``, else ``GITHUB_TOKEN``. Before each pull the loader
+  scrubs the clone's config (:func:`_refresh_remote_auth`), so a clone that an
+  older loader made loses its token on its next load. The gateway also scrubs
+  every clone at startup (:func:`scrub_clone_credentials`).
   Upgrade path (not yet active):  GitHub App (``GITHUB_APP_ID`` +
             ``GITHUB_APP_PRIVATE_KEY_PATH``) — short-lived installation tokens,
             scoped to the org.  Swap ``_get_auth_token()`` when ready.
@@ -42,6 +47,7 @@ from pathlib import Path
 from typing import Any
 
 from acb_common import get_logger, get_settings
+from acb_common import git_credentials as git_auth
 from acb_common.child_env import child_env
 
 from acb_skills import agent_site
@@ -80,13 +86,82 @@ COPILOT_AGENTS_SUPPORTED = True
 _copilot_deprecation_logged: set[str] = set()
 _copilot_deprecation_lock = threading.Lock()
 
+#: Each spelling of the Copilot runtime that a registry entry or a
+#: ``config.json`` can carry. ``gateway.routes.agent._normalize_runtime`` reads
+#: this set too, so the two cannot disagree.
+COPILOT_RUNTIME_LABELS: frozenset[str] = frozenset({
+    "github-copilot", "github_copilot", "githubcopilot", "copilot", "copilot-sdk",
+})
+
+#: The text that a delegation to a Copilot agent gets (D84, D92). The
+#: orchestrator reads it as the answer of the sub-task, so it says what to do.
+COPILOT_SPECIALIST_TEXT = (
+    "It runs on the GitHub Copilot SDK runtime, which Metorite retired "
+    "(D84, D92), so it does not run as a specialist. Use another registered "
+    "agent, or answer with your own tools."
+)
+
 
 class AgentRuntimeUnsupported(AgentLoadError):
-    """Raised when an agent builds a Copilot SDK agent after WS-43r.
+    """Raised when an agent builds a Copilot SDK agent after WS-43r, and when
+    a run delegates to a Copilot agent (:func:`refuse_copilot_specialist`).
 
     An ``AgentLoadError``, so every caller answers it as it answers an agent
     that does not load.
     """
+
+
+#: The ONLY Copilot agents that may still run as a specialist of another run.
+#: Owner call, 2026-10-19 (review of PR #1161): app-builder stays a main-chat
+#: specialist until it is ported to MAF (WS-43h, then WS-43j). Delete its name
+#: in the PR that ports it. Every other Copilot agent is refused: task-manager,
+#: the root metorite agent and any repo agent on that runtime. A new name needs an owner
+#: call and a test. Fence: ``tests/unit/test_copilot_specialist_refused.py``
+#: (``test_the_allow_list_holds_app_builder_only``).
+COPILOT_SPECIALIST_ALLOWED: frozenset[str] = frozenset({"app-builder"})
+
+
+def is_copilot_runtime_label(label: Any) -> bool:
+    """True when *label* (a registry ``agent_runtime``) names the Copilot runtime."""
+    return isinstance(label, str) and label.strip().lower() in COPILOT_RUNTIME_LABELS
+
+
+def may_delegate_to(agent_name: str, label: Any) -> bool:
+    """True when a run may name *agent_name* as a specialist, by its label.
+
+    The orchestrator's specialist tools and the registry block read this, so
+    they offer the same agents that :func:`refuse_copilot_specialist` lets run.
+    """
+    return agent_name in COPILOT_SPECIALIST_ALLOWED or not is_copilot_runtime_label(label)
+
+
+def refuse_copilot_specialist(
+    agent_name: str, *, label: Any = None, built: list[Any] | None = None,
+) -> None:
+    """Refuse a DELEGATED run of a Copilot agent (D84, D92).
+
+    A Copilot agent still runs as the agent of its own app until its port
+    (WS-8i, WS-43h) or the WS-43r switch. As a specialist of another run it
+    does not: the sub-run would start the Copilot CLI on the retired runtime.
+    The caller (``call_agent``, ``call_agents_parallel``, a specialist tool,
+    ``delegate_to_agent``) gets the error as the answer of the sub-task, and
+    the orchestrator falls back to another agent or its own tools.
+
+    *label* is the registry ``agent_runtime``, read before the load, so a
+    labelled agent is refused with no clone and no import. *built* is the
+    ``build_agents()`` result, which finds a Copilot object whatever its label
+    says. An agent of :data:`COPILOT_SPECIALIST_ALLOWED` passes (owner call,
+    2026-10-19). Fence: ``tests/unit/test_copilot_specialist_refused.py``.
+    """
+    if agent_name in COPILOT_SPECIALIST_ALLOWED:
+        return
+    if not (is_copilot_runtime_label(label)
+            or any(is_copilot_agent(a) for a in (built or []))):
+        return
+    _log.warning("loader.copilot_specialist_refused", agent=agent_name)
+    raise AgentRuntimeUnsupported(
+        f"Agent {agent_name!r} cannot run as a specialist. " + COPILOT_SPECIALIST_TEXT
+    )
 
 
 def is_copilot_agent(agent: Any) -> bool:
@@ -146,25 +221,29 @@ def _get_repo_lock(repo_name: str) -> threading.Lock:
 # Git helpers
 # ---------------------------------------------------------------------------
 
-def _build_github_url(org: str, repo: str, token: str | None) -> str:
-    """Return an authenticated (or public) GitHub HTTPS clone URL."""
-    if token:
-        return f"https://x-token:{token}@github.com/{org}/{repo}.git"
-    return f"https://github.com/{org}/{repo}.git"
+def _build_github_url(org: str, repo: str, token: str | None = None) -> str:
+    """The GitHub HTTPS URL of *org*/*repo*. It NEVER holds a token (H-363).
+
+    *token* is kept for old callers and ignored: the credential reaches git
+    through ``acb_common.git_credentials`` only.
+    """
+    del token
+    return git_auth.public_url(org, repo)
 
 
-# The names every git clone and pull adds to ``acb_common.child_env``'s
-# allowlist (WS-49 BH-1). They suppress credential popups and GUI password
-# prompts (GIT_TERMINAL_PROMPT=0, GCM_INTERACTIVE=never) so the process fails
-# fast rather than hanging waiting for user input.
+# The names every local git command of the loader adds to
+# ``acb_common.child_env``'s allowlist (WS-49 BH-1). They suppress credential
+# popups and GUI password prompts (GIT_TERMINAL_PROMPT=0, GCM_INTERACTIVE=never)
+# so the process fails fast rather than hanging waiting for user input.
 # PYTHONUTF8=1 + PYTHONIOENCODING=utf-8: ensure child Python processes use
 # UTF-8 on Windows (avoids cp1252 UnicodeEncodeError for scripts with emoji/
 # non-ASCII output — e.g. zoho_crm.py's pipeline summary headers).
+# H-363: no GCM_CREDENTIAL_STORE. It told Git Credential Manager to keep a
+# credential in a PLAINTEXT file. No credential is stored, by any helper.
 _GIT_EXTRA: dict[str, str] = {
     "GIT_TERMINAL_PROMPT": "0",
     "GIT_ASKPASS": "echo",
     "GCM_INTERACTIVE": "never",
-    "GCM_CREDENTIAL_STORE": "plaintext",
     "PYTHONUTF8": "1",
     "PYTHONIOENCODING": "utf-8",
 }
@@ -193,26 +272,38 @@ def _run_git(args: list[str], *, cwd: Path, timeout: int = 60) -> subprocess.Com
 
 
 def _clone_repo(url: str, dest: Path) -> None:
-    """Full clone of *url* into *dest*.  Raises :class:`AgentLoadError` on failure."""
+    """Full clone of *url* into *dest*.  Raises :class:`AgentLoadError` on failure.
+
+    A GitHub URL goes through ``acb_common.git_credentials.clone`` (H-363):
+    the read credential reaches that one git process through the helper, and
+    the new ``.git/config`` holds the public URL only. Any other URL (a local
+    path on a dev box or in a test) is cloned plainly, with no credential.
+    """
     # Remove a stale/partial directory that has no .git — git clone refuses to
     # clone into a non-empty directory, leaving agents in a broken state.
     if dest.exists() and not (dest / ".git").exists():
         import shutil
         shutil.rmtree(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    result = subprocess.run(
-        ["git", "clone", url, str(dest)],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=_git_env(),
-        timeout=120,
-    )
-    if result.returncode != 0:
-        raise AgentLoadError(
-            f"git clone failed for {url.split('@')[-1]!r}:\n{result.stderr.strip()}"
+    remote = git_auth.parse_github_remote(url)
+    if remote is not None:
+        cloned = git_auth.clone(remote, dest, timeout=120)
+        returncode, stderr = cloned.returncode, cloned.stderr
+        shown = remote.url
+    else:
+        result = subprocess.run(
+            ["git", "clone", "--", git_auth.strip_url_secret(url), str(dest)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=_git_env(),
+            timeout=120,
         )
+        returncode, stderr = result.returncode, git_auth.redact(result.stderr)
+        shown = git_auth.strip_url_secret(url)
+    if returncode != 0:
+        raise AgentLoadError(f"git clone failed for {shown!r}:\n{stderr.strip()}")
     # If the checked-out working tree is empty (e.g. the default branch is an
     # empty placeholder while all code lives on another branch), try to checkout
     # the first remote branch that has actual files.
@@ -295,10 +386,76 @@ def _configure_bot_identity(repo_dir: Path, settings: Any) -> None:
     _run_git(["config", "user.email", bot_email], cwd=repo_dir)
 
 
-def _refresh_remote_auth(repo_dir: Path, org: str, repo_name: str, token: str | None) -> None:
-    """Update the remote URL so short-lived or rotated tokens stay current."""
-    url = _build_github_url(org, repo_name, token)
+def _refresh_remote_auth(
+    repo_dir: Path, org: str, repo_name: str, token: str | None = None,
+) -> None:
+    """Point ``origin`` at the PUBLIC URL, and scrub every secret (H-363).
+
+    This ran before every pull, and it used to WRITE the token into the
+    remote URL. Now it does the opposite: it sets ``origin`` to the URL with
+    no userinfo, and :func:`acb_common.git_credentials.scrub_clone` removes
+    any credential helper, extra header or token URL that an older loader or
+    a run left in ``.git/config``. *token* is ignored. The pull gets its
+    credential from the helper, in one gateway process.
+    """
+    del token
+    for line in git_auth.scrub_clone(repo_dir):
+        _log.warning("loader.clone_credential_scrubbed", repo=repo_dir.name, what=line)
+    url = _build_github_url(org, repo_name)
     _run_git(["remote", "set-url", "origin", url], cwd=repo_dir)
+
+
+def agent_remote(
+    agent_name: str, repo_name: str | None = None, settings: Any = None,
+) -> git_auth.GitHubRemote | None:
+    """The GitHub repo of *agent_name*, resolved as :func:`load_agent` does.
+
+    ``repo_name`` is the registry's. An ``org/repo`` slug names its own org.
+    It reads the registry and the settings, never the clone. ``None`` for a
+    name that is not a GitHub name.
+    """
+    settings = settings or get_settings()
+    org: str = getattr(settings, "github_org", "FracktalWorks")
+    repo = repo_name or f"agent-{agent_name}"
+    if repo_name and "/" in repo_name:
+        org, repo = repo_name.split("/", 1)
+    try:
+        return git_auth.GitHubRemote(org, repo.removesuffix(".git"))
+    except ValueError:
+        return None
+
+
+def scrub_clone_credentials(
+    settings: Any = None, *, home: Path | None = None,
+) -> list[str]:
+    """Scrub every agent clone and the credential stores. Return what went.
+
+    The gateway runs it once at startup (``gateway.main``), so a clone that
+    an older loader made loses its token before any run starts, also when
+    its agent does not load again. Then it checks each ``.git/config`` again,
+    and logs an error for any file that still holds a secret. It never logs
+    a value. ``home`` is for the fence.
+    """
+    settings = settings or get_settings()
+    root = Path(getattr(settings, "agents_clone_dir", "/tmp/acb_agents")) / "repos"
+    tokens = [
+        str(getattr(settings, name, "") or "").strip()
+        for name in ("github_token", "github_read_token", "mutation_pr_token")
+    ]
+    tokens = [t for t in tokens if t]
+    report: list[str] = []
+    try:
+        clones = sorted(p for p in root.iterdir() if (p / ".git").is_dir())
+    except OSError:
+        clones = []
+    for clone_dir in clones:
+        report.extend(f"{clone_dir.name}: {line}" for line in git_auth.scrub_clone(clone_dir))
+    report.extend(git_auth.scrub_credential_stores(home=home, tokens=tokens))
+    for line in report:
+        _log.warning("loader.clone_credential_scrubbed", what=line)
+    for path in git_auth.find_clone_secrets(root, tokens):
+        _log.error("loader.clone_credential_left", path=path)
+    return report
 
 
 def _resolve_rebase_conflicts(repo_dir: Path) -> bool:
@@ -594,8 +751,23 @@ def _pull_latest(repo_dir: Path) -> dict[str, Any]:
         "conflicts_resolved_by_llm": False,
     }
 
+    # ── Fetch origin (H-363) ──────────────────────────────────────────
+    # The fetch is the ONE network step, and it goes through the credential
+    # seam: the read credential lives in one gateway process, never in the
+    # clone. A ``git pull`` here would run the network step inside the
+    # clone, with its config, so the steps below are local.
+    fetch_result = git_auth.fetch(repo_dir, timeout=30)
+    if not fetch_result.ok:
+        _log.warning(
+            "loader.pull_fetch_failed",
+            repo=repo_dir.name,
+            stderr=fetch_result.stderr.strip()[:200],
+            hint="Using cached clone.",
+        )
+        return result_info
+
     # Step 1 — fast-forward (best case: no divergence)
-    result = _run_git(["pull", "--ff-only"], cwd=repo_dir, timeout=30)
+    result = _run_git(["merge", "--ff-only", "@{upstream}"], cwd=repo_dir, timeout=30)
     if result.returncode == 0:
         result_info["strategy"] = "fast-forward"
         return result_info
@@ -606,17 +778,6 @@ def _pull_latest(repo_dir: Path) -> dict[str, Any]:
         stderr=result.stderr.strip()[:200],
         hint="Checking for local-only commits before falling back.",
     )
-
-    # ── Fetch origin so we can compare HEAD positions ──────────────────
-    fetch_result = _run_git(["fetch", "origin"], cwd=repo_dir, timeout=30)
-    if fetch_result.returncode != 0:
-        _log.warning(
-            "loader.pull_fetch_failed",
-            repo=repo_dir.name,
-            stderr=fetch_result.stderr.strip()[:200],
-            hint="Using cached clone.",
-        )
-        return result_info
 
     # ── Detect local-only (unpushed) commits ───────────────────────────
     # git rev-list origin/HEAD..HEAD lists commits we have that origin doesn't.
@@ -1084,14 +1245,21 @@ def _ensure_repo(
     lock = _get_repo_lock(local_name)
     with lock:
         clone_dir = cache_root / local_name
+        # H-363: record the repo from the registry, in gateway memory. A push
+        # goes to this repo, never to an ``origin`` that a run rewrote.
+        try:
+            git_auth.pin_remote(clone_dir, git_auth.GitHubRemote(org, repo_name))
+        except ValueError:
+            pass
         if clone_dir.exists() and (clone_dir / ".git").exists():
-            # Already cloned — refresh auth token in remote URL, then pull
-            _refresh_remote_auth(clone_dir, org, repo_name, token)
+            # Already cloned — scrub any token from the clone's config and
+            # set the public URL (H-363), then pull through the seam.
+            _refresh_remote_auth(clone_dir, org, repo_name)
             _pull_latest(clone_dir)
         else:
-            # First use — full clone
+            # First use — full clone. The URL holds no token (H-363).
             _log.info("loader.clone_new", repo=repo_name, org=org, local=local_name)
-            url = _build_github_url(org, repo_name, token)
+            url = _build_github_url(org, repo_name)
             _clone_repo(url, clone_dir)
             _configure_bot_identity(clone_dir, settings)
             _install_push_guard(clone_dir)
@@ -1625,6 +1793,62 @@ class LoadedAgent:
         self.cleanup()
 
 
+def _attach_skill_repos(
+    skill_repos: list[str],
+    *,
+    agent_name: str,
+    org: str,
+    token: str | None,
+    cache_root: Path,
+    settings: Any,
+) -> list[str]:
+    """Make each skill of ``config.json`` importable. Return the paths it put
+    on ``sys.path``.
+
+    A skill that the gateway's venv already provides (a workspace member such
+    as ``skill-projects`` or ``skill-my-tasks``) is used from the venv. The
+    loader does not clone it, and it puts no path before the venv. A clone of
+    ``{org}/{skill}`` would only shadow the monorepo's copy with an older
+    one, and with no valid token every load logged a failed clone
+    (production, 2026-10-18).
+
+    Any other skill is cloned or pulled as before: a skill of a repo agent
+    that the venv does not hold still needs its repo. A failed clone logs a
+    warning and the agent still loads.
+    Fence: ``tests/unit/test_loader_venv_skills.py``.
+    """
+    injected: list[str] = []
+    for skill_repo_name in skill_repos:
+        provided = agent_site.venv_version(skill_repo_name)
+        if provided is not None:
+            _log.info(
+                "loader.skill_provided_by_venv",
+                skill=skill_repo_name, agent=agent_name, version=provided,
+            )
+            continue
+        try:
+            skill_dir = _ensure_repo(
+                skill_repo_name,
+                org=org,
+                token=token,
+                cache_root=cache_root,
+                settings=settings,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "loader.skill_clone_failed",
+                skill=skill_repo_name,
+                agent=agent_name,
+                error=str(exc),
+            )
+            continue
+        skill_src = skill_dir / "src"
+        skill_path = str(skill_src if skill_src.exists() else skill_dir)
+        sys.path.insert(0, skill_path)
+        injected.append(skill_path)
+    return injected
+
+
 def load_agent(
     agent_name: str,
     *,
@@ -1697,28 +1921,10 @@ def load_agent(
             except Exception as exc:  # noqa: BLE001
                 _log.warning("loader.config_parse_error", agent=agent_name, error=str(exc))
 
-        injected_paths: list[str] = []
-        for skill_repo_name in skill_repos:
-            try:
-                skill_dir = _ensure_repo(
-                    skill_repo_name,
-                    org=org,
-                    token=token,
-                    cache_root=cache_root,
-                    settings=settings,
-                )
-            except Exception as exc:  # noqa: BLE001
-                _log.warning(
-                    "loader.skill_clone_failed",
-                    skill=skill_repo_name,
-                    agent=agent_name,
-                    error=str(exc),
-                )
-                continue
-            skill_src = skill_dir / "src"
-            skill_path = str(skill_src if skill_src.exists() else skill_dir)
-            sys.path.insert(0, skill_path)
-            injected_paths.append(skill_path)
+        injected_paths = _attach_skill_repos(
+            skill_repos, agent_name=agent_name, org=org, token=token,
+            cache_root=cache_root, settings=settings,
+        )
 
         agent_path = str(agent_dir)
         sys.path.insert(0, agent_path)
@@ -1771,30 +1977,11 @@ def load_agent(
         except Exception as exc:  # noqa: BLE001
             _log.warning("loader.config_parse_error", agent=agent_name, error=str(exc))
 
-    injected_paths: list[str] = []
-
     # Ensure each skill repo is present and up-to-date
-    for skill_repo_name in skill_repos:
-        try:
-            skill_dir = _ensure_repo(
-                skill_repo_name,
-                org=org,
-                token=token,
-                cache_root=cache_root,
-                settings=settings,
-            )
-        except Exception as exc:  # noqa: BLE001
-            _log.warning(
-                "loader.skill_clone_failed",
-                skill=skill_repo_name,
-                agent=agent_name,
-                error=str(exc),
-            )
-            continue
-        skill_src = skill_dir / "src"
-        skill_path = str(skill_src if skill_src.exists() else skill_dir)
-        sys.path.insert(0, skill_path)
-        injected_paths.append(skill_path)
+    injected_paths = _attach_skill_repos(
+        skill_repos, agent_name=agent_name, org=org, token=token,
+        cache_root=cache_root, settings=settings,
+    )
 
     # Inject agent repo path
     agent_path = str(agent_dir)

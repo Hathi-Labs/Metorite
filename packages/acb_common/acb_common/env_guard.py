@@ -136,6 +136,8 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     "LOG_LEVEL", "LOG", "LLM_USAGE_AUDIT", "PROJECTS_IMPORT",
     "AGENTS_CLONE_DIR", "GITHUB_INSTALLATION_ID", "GITHUB_ORG",
     "GITHUB_BOT_NAME", "GITHUB_BOT_EMAIL", "GITHUB_PAT",
+    # H-363: the read credential of the agent clones. Only the operator sets it.
+    "GITHUB_READ_TOKEN",
     "ENABLE_INSTRUMENTATION", "CI",
     # WS-45 (D90): the agents that the tier policy covers. It moves what an
     # organization pays, so only the operator writes it (ai_tier_routing.md).

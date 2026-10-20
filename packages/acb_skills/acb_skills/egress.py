@@ -49,7 +49,12 @@ from acb_skills.tool_guard import RefuseTools, WithholdTools, tool_name
 _log = get_logger("acb_skills.egress")
 
 __all__ = [
+    "CARD_BOUND_KEY",
+    "CARD_BOUND_REPLY_TOOLS",
     "DELEGATION_TOOLS",
+    "EGRESS_HELD_MAIL_ANSWER",
+    "EGRESS_HOLD_NOTE_MAIL",
+    "EGRESS_HOLD_NOTE_SANDBOX",
     "EGRESS_WITHHELD_ANSWER",
     "MAIL_STORE_WRITE_REFUSED",
     "MARK_CACHE_MAX",
@@ -65,8 +70,12 @@ __all__ = [
     "EgressGuardProvider",
     "RefuseEgressTools",
     "WithholdEgressTools",
+    "egress_held_answer",
+    "egress_hold_note",
     "egress_tool_names",
     "has_explicit_open_world",
+    "hold_is_for_mail",
+    "is_card_bound_reply",
     "is_delegation_tool",
     "is_egress_tool",
     "mark_untrusted_answer",
@@ -228,15 +237,18 @@ def _minted_session(ctx: Mapping[str, Any] | None) -> bool:
 
 
 def _card_can_show(ctx: Mapping[str, Any] | None) -> bool:
-    """True when the run can show the member's card: a member, no batch run
-    and no WhatsApp run. Only such a run fails closed on a Redis fault."""
+    """True when the run can ask the member: a member, no batch run, and no
+    WhatsApp run, or a WhatsApp run that asks with its Confirm and Cancel
+    buttons (WS-47 WAC-P4, ``whatsapp_acts.answer_egress``). Only such a run
+    fails closed on a Redis fault."""
     ctx = ctx or {}
     if not ctx.get("member") or ctx.get("batch_thread") is True:
         return False
     try:
         from acb_skills.whatsapp_ui import current_run
 
-        return current_run() is None
+        run = current_run()
+        return run is None or bool(getattr(run, "writes", False))
     except Exception:
         return True
 
@@ -425,13 +437,240 @@ def read_untrusted_answer(ctx: Mapping[str, Any] | None = None) -> bool:
     with _MARKED_LOCK:
         return session in _MARKED_SESSIONS
 
-#: The answer to a call that the control refuses. It names what is true of
-#: this run and claims nothing about the whole platform.
+
+# ── The member's view of one egress call (WS-47 WAC-P4 review, P1-1) ────────
+#
+# The member says yes to an egress call after an untrusted answer: on the web
+# with a card, on WhatsApp with the Confirm button. Both showed the first 600
+# characters of the call's JSON, in the order the model chose. A long body
+# first hid ``to`` and the attachments, so a member could approve a mail to
+# an attacker. The ONE builder below puts what the member must see first and
+# in full, whatever the order of the arguments. Code decides the order.
+# Fence: ``tests/unit/test_wac_untrusted_confirm.py``.
+
+#: The fields that a member always sees in full: the recipients and the
+#: subject, in this order, at any depth of the arguments.
+#: A destination of another egress tool counts too (review round 2): a URL,
+#: a phone or a channel that sorted after a long body hid the place the call
+#: goes to, for example a ``fetch_page`` URL with a padded login part.
+CALL_KEY_FIELDS: tuple[str, ...] = (
+    "to", "cc", "bcc", "reply_to", "recipients", "email", "phone",
+    "participants", "channel", "url", "uri", "endpoint", "webhook_url", "subject",
+)
+#: The fields that hold attachments. Each one shows by its name.
+CALL_ATTACHMENT_FIELDS: tuple[str, ...] = ("attachments", "attachment", "files")
+#: The most characters of the other arguments (the body) that the view shows.
+CALL_OTHER_CHARS = 600
+#: How deep the builder looks for a key field.
+_CALL_DEPTH = 6
+
+
+def _shown(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    import json
+
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _with_host(text: str) -> str:
+    """*text*, with the host it calls first when it is a URL. A login part
+    (``user@``) can pad a URL so that a cut view hides the real host."""
+    if "://" not in text:
+        return text
+    from urllib.parse import urlsplit
+
+    try:
+        host = urlsplit(text.strip()).hostname
+    except ValueError:
+        host = None
+    return f"[host: {host or 'unknown'}] {text}"
+
+
+def _destination(value: Any) -> str:
+    """The text of one key field, with the host of each URL in it first."""
+    if isinstance(value, str):
+        return _with_host(value)
+    if isinstance(value, list | tuple) and all(isinstance(v, str) for v in value):
+        return ", ".join(_with_host(v) for v in value)
+    return _shown(value)
+
+
+def _attachment_names(value: Any) -> list[str]:
+    items = value if isinstance(value, list | tuple) else [value]
+    names: list[str] = []
+    for item in items:
+        if isinstance(item, Mapping):
+            name = (item.get("name") or item.get("filename") or item.get("file_name")
+                    or item.get("path") or item.get("id"))
+            names.append(_shown(name if name is not None else item))
+        else:
+            names.append(_shown(item))
+    return names
+
+
+def _split_call(value: Any, path: str, depth: int,
+                keys: list[tuple[str, str]], rest: dict[str, Any]) -> None:
+    """Move each key field and attachment field of *value* into *keys*, as
+    ``(path, text)``, and the rest into *rest*. A call nested past
+    :data:`_CALL_DEPTH` stays whole in *rest*, and its key fields count as
+    unseen (:func:`egress_call_view` refuses it)."""
+    if not isinstance(value, Mapping) or depth > _CALL_DEPTH:
+        rest[path or "(value)"] = value
+        return
+    for name in sorted(value, key=str):
+        inner = value[name]
+        where = f"{path}.{name}" if path else str(name)
+        low = str(name).lower()
+        if low in CALL_KEY_FIELDS:
+            keys.append((where, _destination(inner)))
+        elif low in CALL_ATTACHMENT_FIELDS:
+            keys.append((where, ", ".join(_attachment_names(inner))))
+        elif isinstance(inner, Mapping):
+            _split_call(inner, where, depth + 1, keys, rest)
+        else:
+            rest[where] = inner
+
+
+def _key_rank(path: str) -> tuple[int, str]:
+    leaf = path.rsplit(".", 1)[-1].lower()
+    order = (*CALL_KEY_FIELDS, *CALL_ATTACHMENT_FIELDS)
+    return (order.index(leaf) if leaf in order else len(order), path)
+
+
+def _hides_a_key_field(value: Any, depth: int = 0, hidden: bool = False) -> bool:
+    """True when a key field sits where the builder does not look: deeper
+    than :data:`_CALL_DEPTH`, or inside a list. The walk stops at 32 levels,
+    and a value deeper than that counts as hidden."""
+    if depth > 32:
+        return True
+    if isinstance(value, list | tuple):
+        return any(_hides_a_key_field(v, depth + 1, True) for v in value)
+    if not isinstance(value, Mapping):
+        return False
+    hidden = hidden or depth > _CALL_DEPTH
+    if hidden and any(str(k).lower() in (*CALL_KEY_FIELDS, *CALL_ATTACHMENT_FIELDS)
+                      for k in value):
+        return True
+    return any(_hides_a_key_field(v, depth + 1, hidden) for v in value.values())
+
+
+def egress_call_view(tool: str, arguments: Mapping[str, Any] | None,
+                     limit: int) -> str | None:
+    """What the member reads before they approve ONE egress call, or None.
+
+    The tool name first. Then each recipient field, the subject and each
+    attachment name, in full and in a fixed order (:data:`CALL_KEY_FIELDS`,
+    :data:`CALL_ATTACHMENT_FIELDS`). Then the other arguments as JSON in key
+    order, cut with "…" to :data:`CALL_OTHER_CHARS` and to *limit*.
+
+    None when the tool name and the key fields alone do not fit in *limit*,
+    or when a key field sits too deep to show. The caller then asks no yes:
+    the member could not see what the yes approves."""
+    import json
+
+    keys: list[tuple[str, str]] = []
+    rest: dict[str, Any] = {}
+    args = dict(arguments or {})
+    if _hides_a_key_field(args):
+        return None
+    _split_call(args, "", 0, keys, rest)
+    lines = [f"Tool: {tool}"]
+    lines.extend(f"{path}: {text}" for path, text in sorted(keys, key=lambda k: _key_rank(k[0])))
+    head = "\n".join(lines)
+    if len(head) > limit:
+        return None
+    if not rest:
+        return head
+    other = json.dumps(rest, ensure_ascii=False, sort_keys=True, default=str)
+    room = min(CALL_OTHER_CHARS, limit - len(head) - len("\nOther: "))
+    if room < 2:
+        return None  # the member could not see that the call holds more
+    if len(other) > room:
+        other = other[: room - 1] + "…"
+    return f"{head}\nOther: {other}"
+
+
+#: The answer to a call that the control refuses, when the run works with
+#: member data from a sandboxed turn (H-236). It names what is true of this
+#: run and claims nothing about the whole platform.
 EGRESS_WITHHELD_ANSWER = (
     "{name} is off in this run. This run works with member data from a "
     "sandboxed turn, so it may not use a tool that can send data off the "
     "platform. Read and compute with your other tools."
 )
+
+#: The same answer when the run works for a chat session that read text that
+#: a stranger wrote (EM-G11d, owner report of 2026-10-19). The chat had said
+#: "ask again from the Email app". That claim was not checked, and a run cannot
+#: check it. So this text names the kind of act, the reason, and the two ways
+#: on that are true. It names no other app (security review of #1173, P2).
+#: Only a run that another run called is held (``_tool_injection._run_no_egress``),
+#: so the text says that, and no more. Fence: ``tests/unit/test_no_egress_tool_audit.py``.
+EGRESS_HELD_MAIL_ANSWER = (
+    "{name} is off in this run. Another assistant called this run from a "
+    "conversation that read email from outside senders, and such text can "
+    "carry hidden instructions. So this run may not send, forward, fetch a "
+    "link or reach outside Metorite. Tell the member what you could not do, "
+    "and why. The member can do it by hand, or ask for it in a new "
+    "conversation that has not read outside email. Tools that act only inside "
+    "Metorite or in the member's own mailbox still work here."
+)
+
+#: The notes at the top of each ``no_egress`` run (:class:`EgressGuardProvider`),
+#: so the model knows what is held before it plans. Without one, the model saw
+#: only a shorter tool list and guessed a reason. One note for each cause, so
+#: a sandbox hold reads no text about mail.
+EGRESS_HOLD_NOTE_MAIL = (
+    "## Held in this run\n"
+    "Another assistant called this run from a conversation that read email "
+    "from outside senders, and such text can carry hidden instructions. So "
+    "this run holds no tool that sends email, forwards, fetches a link, "
+    "searches the web, or reaches outside Metorite in another way. If the "
+    "member asks for such an act, say that this run cannot do it, and say "
+    "why. Then say what the member can do: do it by hand, or ask for it in a "
+    "new conversation that has not read outside email. Do not say that "
+    "another app can or cannot do it, because this run cannot tell. The tools "
+    "that you hold act only inside Metorite or in the member's own mailbox, so "
+    "use them. For mail, a saved reply draft, a label and an archive still work."
+)
+EGRESS_HOLD_NOTE_SANDBOX = (
+    "## Held in this run\n"
+    "This run works with member data from a sandboxed turn. So this run holds "
+    "no tool that can send data off the platform. If the member asks for such "
+    "an act, say that this run cannot do it, and say why. Read and compute "
+    "with the tools that you hold."
+)
+
+
+def hold_is_for_mail(ctx: Mapping[str, Any] | None = None) -> bool:
+    """True when the hold of this ``no_egress`` run comes from stranger text.
+
+    That is so when the run's own agent reads stranger text
+    (:data:`UNTRUSTED_INPUT_AGENTS`), or when this process saw the chat
+    session marked (:func:`read_untrusted_answer`). The executor decides
+    ``no_egress`` for a marked session from the same process cache
+    (``_tool_injection._delegated_no_egress``), so the two agree. Else the
+    hold comes from a covered run (H-236). Both can be true. Then this
+    answers True, because the stranger text is what the member can act on.
+    It only picks a text. It never adds or removes a tool.
+    """
+    bound = ctx if ctx is not None else _bound_context()
+    if str((bound or {}).get("agent_name") or "") in UNTRUSTED_INPUT_AGENTS:
+        return True
+    return read_untrusted_answer(ctx)
+
+
+def egress_held_answer(name: str, ctx: Mapping[str, Any] | None = None) -> str:
+    """The answer to an act that a ``no_egress`` run may not do. *name* is a
+    tool name or a short name of the act. The text says why, for this run."""
+    template = EGRESS_HELD_MAIL_ANSWER if hold_is_for_mail(ctx) else EGRESS_WITHHELD_ANSWER
+    return template.format(name=name)
+
+
+def egress_hold_note(ctx: Mapping[str, Any] | None = None) -> str:
+    """The note at the top of a ``no_egress`` run, for this run's reason."""
+    return EGRESS_HOLD_NOTE_MAIL if hold_is_for_mail(ctx) else EGRESS_HOLD_NOTE_SANDBOX
 
 
 def _mcp_classes() -> tuple[type, ...]:
@@ -578,6 +817,62 @@ def has_explicit_open_world(item: Any) -> bool:
     return isinstance(hints, Mapping) and isinstance(hints.get("open_world"), bool)
 
 
+#: The sends that may stay in a held run (EM-CR, ``email_app_master_plan.md``
+#: §18), each with its parameters, EXACTLY. The owner asked on 2026-10-20 for
+#: a reply that the member confirms in the chat and that then completes, also
+#: in a chat that read outside mail. Such a tool sends ONE reply, and only
+#: after its card:
+#:
+#: * the gateway derives To and Cc from the original mail and the Reply or
+#:   Reply all choice that the MEMBER set on the card. The model names no
+#:   recipient;
+#: * the body is the one the member submitted on the card. The gateway sends
+#:   it only when its own record of the card answer matches
+#:   (``reply_card.take_reply_answer``);
+#: * it takes no file, no forward and no new recipient. Those stay with
+#:   ``send_email`` and ``forward_email``, which a held run does not hold.
+#:
+#: A recipient, a body or a file parameter breaks the pin, and the tool is an
+#: egress tool again. Fence: ``tests/unit/test_email_chat_reply.py``.
+CARD_BOUND_REPLY_TOOLS: Mapping[str, frozenset[str]] = {
+    "compose_reply": frozenset({"email_id", "account_id", "reply_all"}),
+}
+#: The annotation key of such a tool (``tool_annotations.annotate``).
+CARD_BOUND_KEY = "card_bound_reply"
+
+
+def _tool_params(item: Any) -> frozenset[str] | None:
+    """The parameter names of the callable under *item*, or None."""
+    import inspect
+
+    fn = getattr(item, "func", item)
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return None
+    return frozenset(params)
+
+
+def is_card_bound_reply(item: Any) -> bool:
+    """True for a send that may stay in a held run (:data:`CARD_BOUND_REPLY_TOOLS`).
+
+    Three tests, and each one fails closed: the name is on the list, the
+    tool's own annotation says :data:`CARD_BOUND_KEY`, and the callable's
+    parameters are the pinned set, no more and no fewer. A bare name reads
+    the registry, as :func:`is_egress_tool` does for a bare name.
+    """
+    name = item if isinstance(item, str) else tool_name(item)
+    allowed = CARD_BOUND_REPLY_TOOLS.get(name)
+    if allowed is None:
+        return False
+    hints = _risk_of(None if isinstance(item, str) else item, name)
+    if not (isinstance(hints, Mapping) and hints.get(CARD_BOUND_KEY) is True):
+        return False
+    if isinstance(item, str):
+        return True
+    return _tool_params(item) == allowed
+
+
 def is_egress_tool(item: Any) -> bool:
     """True unless *item* may stay in a ``no_egress`` run (H-236). Fails closed.
 
@@ -586,7 +881,8 @@ def is_egress_tool(item: Any) -> bool:
     repo that borrows a delegation name is judged like any other tool. An MCP
     tool, a store write, and a tool with no explicit ``open_world=False`` may
     not stay. A bare name reads the registry, so only a caller that resolved
-    the tool object first may pass one (the Copilot guard does).
+    the tool object first may pass one (the Copilot guard does). The one
+    send that may stay is a card-bound reply (:func:`is_card_bound_reply`).
     """
     if not isinstance(item, str) and _from_mcp(item):
         return True
@@ -595,6 +891,8 @@ def is_egress_tool(item: Any) -> bool:
         return False
     if not name or name in STORE_WRITES:
         return True
+    if is_card_bound_reply(item):
+        return False
     hints = _risk_of(None if isinstance(item, str) else item, name)
     return not (isinstance(hints, Mapping) and hints.get("open_world") is False)
 
@@ -626,7 +924,7 @@ def no_egress_for_this_run() -> bool:
 
 def _egress_answer(name: str) -> str:
     _log.info("egress.call_refused", tool=name)
-    return EGRESS_WITHHELD_ANSWER.format(name=name)
+    return egress_held_answer(name)
 
 
 class WithholdEgressTools(WithholdTools):
@@ -661,3 +959,9 @@ class EgressGuardProvider(ContextProvider):
         self, *, agent: Any, session: Any, context: Any, state: dict[str, Any],
     ) -> None:
         context.extend_middleware(SOURCE_ID, [WithholdEgressTools(), RefuseEgressTools()])
+        # The model reads what is held, and why, before it plans (owner
+        # report of 2026-10-19). A fault here costs the note, never the hold.
+        try:
+            context.extend_instructions(SOURCE_ID, egress_hold_note())
+        except Exception as exc:
+            _log.warning("egress.hold_note_failed", error=type(exc).__name__)

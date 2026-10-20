@@ -18,11 +18,13 @@ import { bindChatScope } from "@/lib/sessions";
 import {
   ASSISTANT_AGENT,
   ASSISTANT_PERSONA,
+  CHAT_FIRST_PERSONA_LINE,
   DOCK_DEFAULT,
   DOCK_MAX,
   DOCK_MIN,
   DOCK_MIN_VIEWPORT,
   STALE_CHAT_MS,
+  STRIP_TEXT_MAX,
   __resetAssistantForTests,
   assistantState,
   barMayJoin,
@@ -35,18 +37,24 @@ import {
   dataText,
   dockFloats,
   effectiveMode,
+  navigateAct,
+  modeOnOpen,
+  onChatLink,
   onPageChange,
   openAssistant,
   paneAt,
   paneForDelegate,
   publishAssistantFacts,
+  raiseOnNeed,
   setAssistantMode,
   setDockWidth,
   startsFresh,
+  stripShowsRun,
+  stripText,
   surfaceContext,
   switchTarget,
 } from "./assistant";
-import { shellChatOn } from "./chatFlag";
+import { chatFirstOn, shellChatOn } from "./chatFlag";
 import { shellSidebar } from "./shellNav";
 
 const SRC = fileURLToPath(new URL("../..", import.meta.url));
@@ -351,14 +359,130 @@ describe("the app switch (owner, 2026-10-12)", () => {
     ).toBeNull();
   });
 
-  it("stays in Calendar when the My Tasks specialist moves the member's time", () => {
-    expect(switchTarget({ name: "task_manager", pathname: "/calendar", sections: SECTIONS, done: new Set() })).toBeNull();
-    expect(switchTarget({ name: "task_manager", pathname: "/crm", sections: SECTIONS, done: new Set() })?.href).toBe("/tasks");
+  it("stays in My Tasks and Calendar when the Projects specialist does their work", () => {
+    expect(switchTarget({ name: "projects_assistant", pathname: "/calendar", sections: SECTIONS, done: new Set() })).toBeNull();
+    expect(switchTarget({ name: "projects_assistant", pathname: "/tasks", sections: SECTIONS, done: new Set() })).toBeNull();
+    expect(switchTarget({ name: "projects_assistant", pathname: "/crm", sections: SECTIONS, done: new Set() })?.href).toBe("/projects");
   });
 
   it("never moves to an app the member does not hold", () => {
     const noProjects = visibleSections(ALL.filter((f) => f !== "projects"), true);
     expect(switchTarget({ name: "projects_assistant", pathname: "/crm", sections: noProjects, done: new Set() })).toBeNull();
+  });
+});
+
+describe("the chat opens a page: show_in_app (WS-62 CF-3)", () => {
+  const live = {
+    open: true, threadId: "t1", activeId: "t1", path: "/projects?task=42", sections: SECTIONS,
+    phone: false, chatFirst: true, form: "dock" as const, canDock: true,
+  };
+  const projects = paneAt("/projects", SECTIONS);
+  const none = { push: false, dock: false, close: false, peek: false, pane: null };
+
+  it("the page line is dark: it is not in ASSISTANT_PERSONA, and the dock joins it behind chatFirstOn", () => {
+    expect(ASSISTANT_PERSONA).not.toContain("show_in_app");
+    expect(CHAT_FIRST_PERSONA_LINE).toContain("call show_in_app with its path");
+    expect(CHAT_FIRST_PERSONA_LINE).toContain("Then say what they will see, in one sentence.");
+    const dock = read("lib/shell/AssistantDock.tsx");
+    expect(dock).toContain("const personaText = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;");
+    expect(dock).toMatch(/onNavigate: \(\{ path, why, threadId \}\) => \{\s*\/\/[^\n]*\n\s*if \(!chatFirstOn\(\)\) return;/);
+  });
+
+  it("a desktop pushes the route and keeps the panel", () => {
+    expect(navigateAct(live)).toEqual({ push: true, dock: false, close: false, peek: false, pane: projects });
+  });
+
+  it("a desktop full view becomes the panel, so the page shows", () => {
+    expect(navigateAct({ ...live, form: "full" })).toEqual({ push: true, dock: true, close: false, peek: false, pane: projects });
+    expect(navigateAct({ ...live, form: "full", canDock: false })).toEqual({ push: true, dock: false, close: false, peek: false, pane: projects });
+  });
+
+  it("a phone pushes the route and the sheet drops to the peek strip (CF-1)", () => {
+    expect(navigateAct({ ...live, phone: true, form: "full", canDock: false })).toEqual({ push: true, dock: false, close: false, peek: true, pane: projects });
+  });
+
+  it("a phone with the flag off closes the sheet instead", () => {
+    expect(navigateAct({ ...live, phone: true, chatFirst: false, form: "full", canDock: false })).toEqual({ push: true, dock: false, close: true, peek: false, pane: projects });
+  });
+
+  it("moves nothing while the assistant is closed, or for another chat", () => {
+    expect(navigateAct({ ...live, open: false })).toEqual(none);
+    expect(navigateAct({ ...live, threadId: "other" })).toEqual(none);
+    expect(navigateAct({ ...live, threadId: undefined })).toEqual(none);
+    expect(navigateAct({ ...live, activeId: null })).toEqual(none);
+  });
+
+  it("checks the path again, and refuses one that leaves the app", () => {
+    for (const path of ["https://evil.example", "//evil.example", "/\\evil.example", "/api/x", "", undefined]) {
+      expect(navigateAct({ ...live, path }), String(path)).toEqual(none);
+    }
+    expect(navigateAct({ ...live, path: "/tasks#today" }).push).toBe(true);
+  });
+
+  it("refuses a dot segment that walks out of the pane (review of #1197, P0)", () => {
+    for (const path of ["/projects/../crm", "/projects/../../settings/organization", "/projects/%2e%2e/crm",
+      "/projects/../centers/sales", "/projects/../api/x", "/people/me/../../crm", "/projects/%252e%252e/crm"]) {
+      expect(navigateAct({ ...live, path }), path).toEqual(none);
+    }
+  });
+
+  it("the allowlist is the control: no pane, no move, except the root", () => {
+    for (const path of ["/connect/authorize", "/signup", "/settings/appearance", "/settings/organization", "/_next/x", "/centers/sales", "/nowhere"]) {
+      expect(navigateAct({ ...live, path }), path).toEqual(none);
+    }
+    expect(navigateAct({ ...live, path: "/" })).toEqual({ push: true, dock: false, close: false, peek: false, pane: null });
+    expect(navigateAct({ ...live, path: "/people/me" }).pane?.href).toBe("/people/me");
+  });
+
+  it("never moves to a pane the member does not hold", () => {
+    const noProjects = visibleSections(ALL.filter((f) => f !== "projects"), true);
+    expect(navigateAct({ ...live, sections: noProjects })).toEqual(none);
+    expect(navigateAct({ ...live, sections: noProjects, path: "/email" }).push).toBe(true);
+  });
+
+  it("the live loop emits onNavigate once, and the replay loop never does", () => {
+    const hook = read("hooks/useAgentChat.ts");
+    expect((hook.match(/emitAgentEvent\("onNavigate"/g) ?? []).length).toBe(1);
+    const reconnect = hook.indexOf("updLast((m) => applySubAgentEvent(m, evt));");
+    expect(reconnect).toBeGreaterThan(0);
+    expect(hook.indexOf('emitAgentEvent("onNavigate"')).toBeLessThan(reconnect);
+    // The event draws nothing in the transcript, on both loops.
+    expect((hook.match(/evtName !== NAVIGATE_EVENT/g) ?? []).length).toBe(2);
+  });
+
+  it("the dock acts through navigateAct, pushes the route and offers Go back", () => {
+    const dock = read("lib/shell/AssistantDock.tsx");
+    expect(dock).toMatch(/onNavigate: \(\{ path, why, threadId \}\) => \{[\s\S]{0,400}?navigateAct\(/);
+    expect(dock).toMatch(/if \(!act\.push \|\| !path\) return;\s*const back = live\.pathname \?\? "\/";\s*router\.push\(path\);/);
+    expect(dock).toMatch(/if \(act\.dock\) setAssistantMode\("dock"\);/);
+    expect(dock).toMatch(/if \(act\.close\) \{[\s\S]{0,200}?closeAssistant\(\);/);
+    expect(dock).toMatch(/title: label \? `Opened \$\{label\}` : "Opened a page"/);
+  });
+});
+
+describe("the chat-first flag needs the one assistant (WS-62, review of #1197 P1)", () => {
+  const KEYS = ["NEXT_PUBLIC_CHAT_FIRST", "NEXT_PUBLIC_SHELL_CHAT", "NEXT_PUBLIC_SHELL_BAR", "NEXT_PUBLIC_SHELL_NAV"] as const;
+  const set = (on: Partial<Record<(typeof KEYS)[number], boolean>>) => {
+    for (const k of KEYS) {
+      if (on[k]) process.env[k] = "1";
+      else delete process.env[k];
+    }
+  };
+  afterEach(() => set({}));
+
+  it("is on with the four, and off without its own flag or without the assistant", () => {
+    set({ NEXT_PUBLIC_CHAT_FIRST: true, NEXT_PUBLIC_SHELL_CHAT: true, NEXT_PUBLIC_SHELL_BAR: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(chatFirstOn()).toBe(true);
+    set({ NEXT_PUBLIC_SHELL_CHAT: true, NEXT_PUBLIC_SHELL_BAR: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(chatFirstOn()).toBe(false);
+    set({ NEXT_PUBLIC_CHAT_FIRST: true, NEXT_PUBLIC_SHELL_BAR: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(chatFirstOn()).toBe(false);
+    set({});
+    expect(chatFirstOn()).toBe(false);
+  });
+
+  it("its dev override key is the one CF-1 writes too", () => {
+    expect(read("lib/shell/chatFlag.ts")).toContain('flag(process.env.NEXT_PUBLIC_CHAT_FIRST, "cc-shell-chat-first")');
   });
 });
 
@@ -442,5 +566,211 @@ describe("the source keeps the flag's two sides apart", () => {
     const reconnect = hook.indexOf("updLast((m) => applySubAgentEvent(m, evt));");
     expect(reconnect).toBeGreaterThan(0);
     expect(hook.lastIndexOf('emitAgentEvent("onDelegate"')).toBeLessThan(reconnect);
+  });
+});
+
+describe("the peek strip, a third size on a phone (CF-1, chat_first_surface.md §4.1)", () => {
+  it("a phone draws the strip when asked, and the sheet for anything else", () => {
+    expect(effectiveMode("peek", 390, true)).toBe("peek");
+    expect(effectiveMode("full", 390, true)).toBe("full");
+    expect(effectiveMode("dock", 390, true)).toBe("full");
+  });
+
+  it("a desktop never draws the strip, and its two forms are unchanged (D-CF-1)", () => {
+    expect(effectiveMode("peek", 1440, false)).toBe("dock");
+    expect(effectiveMode("peek", DOCK_MIN_VIEWPORT - 1, false)).toBe("dock");
+    expect(effectiveMode("dock", 1440, false)).toBe("dock");
+    expect(effectiveMode("full", 1440, false)).toBe("full");
+  });
+
+  it("a pill link drops the sheet to the strip with the flag on, and closes it with the flag off", () => {
+    expect(onChatLink({ phone: true, chatFirst: true })).toBe("peek");
+    expect(onChatLink({ phone: true, chatFirst: false })).toBe("close");
+    expect(onChatLink({ phone: false, chatFirst: true })).toBeNull();
+    expect(onChatLink({ phone: false, chatFirst: false })).toBeNull();
+  });
+
+  it("a card that waits raises the strip to the sheet, and nothing else does", () => {
+    expect(raiseOnNeed({ phone: true, form: "peek", needsInput: true })).toBe("full");
+    expect(raiseOnNeed({ phone: true, form: "peek", needsInput: false })).toBeNull();
+    expect(raiseOnNeed({ phone: true, form: "full", needsInput: true })).toBeNull();
+    expect(raiseOnNeed({ phone: false, form: "peek", needsInput: true })).toBeNull();
+    expect(raiseOnNeed({ phone: false, form: "dock", needsInput: true })).toBeNull();
+  });
+
+  it("the dock raises only on a wait that BEGINS under the strip", () => {
+    const src = read("lib/shell/AssistantDock.tsx");
+    expect(src).toContain("const began = needsInput && !wasNeeding.current;");
+    expect(src).toContain('if (began && raiseOnNeed({ phone: true, form: "peek", needsInput }) === "full") onRaise();');
+    // The two existing sources: this tab's run state, and the one shared poller.
+    expect(src).toContain("const serverNeeds = useThreadNeedsInput(threadId || null);");
+    expect(src).toContain('run.phase === "waiting_for_you" || run.phase === "parked"');
+  });
+
+  it("the strip's line is the run status while a run goes on", () => {
+    expect(stripText({ phase: "working", statusText: "Asking Projects assistant · 12s", lastPreview: "Old words." })).toBe(
+      "Asking Projects assistant · 12s",
+    );
+    expect(stripText({ phase: "waiting_for_you", statusText: "Waiting for your answer", lastPreview: "Old words." })).toBe(
+      "Waiting for your answer",
+    );
+    // A parked card still waits on the member, so the strip says so.
+    expect(stripText({ phase: "parked", statusText: "Paused. Answer the card to go on", lastPreview: "Old words." })).toBe(
+      "Paused. Answer the card to go on",
+    );
+    // A run with no status text yet falls back to the last reply.
+    expect(stripText({ phase: "starting", statusText: "  ", lastPreview: "The due date is Friday." })).toBe(
+      "The due date is Friday.",
+    );
+  });
+
+  it("a run that ended gives way to the last reply at once, never \"Done · 0s\" (fix round on PR #1198)", () => {
+    // The status row still shows "Done" for a few seconds. The strip does not.
+    for (const [phase, status] of [["done", "Done · 0s"], ["stopped", "Stopped"], ["failed", null], ["idle", null]] as const) {
+      expect(stripText({ phase, statusText: status, lastPreview: "The due date is Friday." }), phase).toBe(
+        "The due date is Friday.",
+      );
+    }
+    expect(stripShowsRun("done")).toBe(false);
+    expect(stripShowsRun("stopped")).toBe(false);
+    expect(stripShowsRun("idle")).toBe(false);
+    expect(stripShowsRun("failed")).toBe(false);
+    for (const phase of ["starting", "working", "waiting_for_you", "finishing", "parked"] as const) {
+      expect(stripShowsRun(phase), phase).toBe(true);
+    }
+    // The dock feeds the phase, not "the row shows".
+    expect(read("lib/shell/AssistantDock.tsx")).toContain(
+      "const line = stripText({ phase: run.phase, statusText: view ? runViewText(view) : null, lastPreview });",
+    );
+  });
+
+  it("while idle, the line is the last reply, as plain words, cut at a whole word", () => {
+    expect(
+      stripText({ phase: "idle", statusText: null, lastPreview: "**Done.** I moved «Plan the release» to [the board](/projects)." }),
+    ).toBe("Done. I moved Plan the release to the board.");
+    expect(stripText({ phase: "idle", statusText: null, lastPreview: "## Plan\n- step_one is `ready`" })).toBe(
+      "Plan step_one is ready",
+    );
+    const long = "The release plan has five steps and each one names an owner a due date and the project it belongs to.";
+    const line = stripText({ phase: "idle", statusText: null, lastPreview: long });
+    expect(line.endsWith("\u2026")).toBe(true);
+    expect(line.length).toBeLessThanOrEqual(STRIP_TEXT_MAX + 1);
+    // A whole word: the cut never splits one.
+    expect(long.startsWith(line.slice(0, -1))).toBe(true);
+    expect(long.charAt(line.length - 1)).toBe(" ");
+  });
+
+  it("with no reply yet, the line is the assistant's name", () => {
+    expect(stripText({ phase: "idle", statusText: null, lastPreview: undefined })).toBe("Metorite");
+    expect(stripText({ phase: "idle", statusText: null, lastPreview: "   " })).toBe("Metorite");
+  });
+
+  it("a page change under the strip leaves it alone", () => {
+    expect(onPageChange({ open: true, form: "peek", canDock: false, phone: true })).toBeNull();
+  });
+
+  it("an open that asks for something raises the strip to the sheet (fix round on PR #1198)", () => {
+    const peek = { phone: true, open: true, current: "peek" as const };
+    // A run toast's or a card's "Open", words, a draft, a new chat, the Ask tab.
+    expect(modeOnOpen({ ...peek, opts: { sessionId: "t-1" } })).toBe("full");
+    expect(modeOnOpen({ ...peek, opts: { sessionId: null } })).toBe("full");
+    expect(modeOnOpen({ ...peek, opts: { text: "what is due" } })).toBe("full");
+    expect(modeOnOpen({ ...peek, opts: { draft: "a draft" } })).toBe("full");
+    expect(modeOnOpen({ ...peek, opts: { fresh: true } })).toBe("full");
+    expect(modeOnOpen({ ...peek, opts: { mode: "full" } })).toBe("full");
+    // A plain open asks for nothing, so the strip stays. Blank words are nothing.
+    expect(modeOnOpen({ ...peek, opts: {} })).toBe("peek");
+    expect(modeOnOpen({ ...peek, opts: { text: "   ", draft: "" } })).toBe("peek");
+  });
+
+  it("the desktop rule is unchanged: closed opens the side panel, open keeps its form", () => {
+    const desk = { phone: false } as const;
+    expect(modeOnOpen({ ...desk, open: false, current: "full", opts: {} })).toBe("dock");
+    expect(modeOnOpen({ ...desk, open: false, current: "full", opts: { sessionId: "t-1" } })).toBe("dock");
+    expect(modeOnOpen({ ...desk, open: false, current: "dock", opts: { mode: "full" } })).toBe("full");
+    expect(modeOnOpen({ ...desk, open: true, current: "full", opts: { sessionId: "t-1" } })).toBe("full");
+    expect(modeOnOpen({ ...desk, open: true, current: "dock", opts: { text: "hi" } })).toBe("dock");
+    // A phone sheet that is already full stays full.
+    expect(modeOnOpen({ phone: true, open: true, current: "full", opts: { sessionId: "t-1" } })).toBe("full");
+    // A phone from closed is the side panel in the store, which a phone draws as the sheet.
+    expect(modeOnOpen({ phone: true, open: false, current: "peek", opts: {} })).toBe("dock");
+  });
+
+  it("the store raises the strip on an open that names a chat, and keeps it on a plain open", () => {
+    openAssistant({ mode: "full" });
+    setAssistantMode("peek");
+    openAssistant();
+    expect(assistantState().mode).toBe("peek");
+    openAssistant({ sessionId: "t-2" });
+    expect(assistantState().mode).toBe("full");
+    expect(assistantState().sessionId).toBe("t-2");
+    setAssistantMode("peek");
+    openAssistant({ draft: "check this" });
+    expect(assistantState().mode).toBe("full");
+    closeAssistant();
+  });
+
+  it("every open from closed is still the side panel, after a strip", () => {
+    openAssistant({ mode: "full" });
+    setAssistantMode("peek");
+    expect(assistantState().mode).toBe("peek");
+    closeAssistant();
+    openAssistant();
+    expect(assistantState().mode).toBe("dock");
+  });
+});
+
+describe("the chat-first flag needs the one assistant (chat_first_surface.md §7)", () => {
+  const KEYS = ["NEXT_PUBLIC_CHAT_FIRST", "NEXT_PUBLIC_SHELL_CHAT", "NEXT_PUBLIC_SHELL_BAR", "NEXT_PUBLIC_SHELL_NAV"] as const;
+  const set = (on: Partial<Record<(typeof KEYS)[number], boolean>>) => {
+    for (const k of KEYS) {
+      if (on[k]) process.env[k] = "1";
+      else delete process.env[k];
+    }
+  };
+  afterEach(() => set({}));
+
+  it("is off by default, on with the assistant, and off without it", () => {
+    expect(chatFirstOn()).toBe(false);
+    set({ NEXT_PUBLIC_SHELL_CHAT: true, NEXT_PUBLIC_SHELL_BAR: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(chatFirstOn()).toBe(false);
+    set({ NEXT_PUBLIC_CHAT_FIRST: true, NEXT_PUBLIC_SHELL_CHAT: true, NEXT_PUBLIC_SHELL_BAR: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(chatFirstOn()).toBe(true);
+    set({ NEXT_PUBLIC_CHAT_FIRST: true, NEXT_PUBLIC_SHELL_BAR: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(chatFirstOn()).toBe(false);
+  });
+});
+
+describe("the strip in the dock's source: phone only, flag only", () => {
+  const dock = () => read("lib/shell/AssistantDock.tsx");
+
+  it("flag off: no handle, no minimize button, and no way to reach the strip", () => {
+    const src = dock();
+    expect(src).toContain("const [chatFirst] = useState(() => chatFirstOn());");
+    expect(src).toContain('const strip = phone && form === "peek";');
+    expect(src).toContain("{phone && chatFirst ? <SheetHandle onPeek={toPeek} /> : null}");
+    expect(src).toMatch(/\{phone && chatFirst \? \(\s*<Button[\s\S]{0,120}?icon="ChevronDown"\s*aria-label="Show as a strip"/);
+    // Every way into the strip: the flag-gated handle and chevron (`toPeek`),
+    // the pill rule's "peek", the delegation rule's "peek", and the
+    // navigate rule's "peek" (CF-3, `show_in_app`). All four read the flag.
+    expect((src.match(/setAssistantMode\("peek"\)/g) ?? []).length).toBe(4);
+    expect(src).toContain('if (act.peek) {');
+    expect(src).toContain('if (act === "peek") setAssistantMode("peek");');
+    expect(src).toContain('if (onChatLink({ phone: live.phone, chatFirst: live.chatFirst }) === "peek") setAssistantMode("peek");');
+  });
+
+  it("the strip is the same element: the body wrapper is there in every form", () => {
+    const src = dock();
+    expect(src).toContain("data-panel-form={motionForm}");
+    expect(src).toContain('const motionForm: PanelForm = phone ? (form === "peek" ? "peek" : "sheet") : form;');
+    expect(src).toMatch(/<div\s+data-assistant-body=""\s+inert=\{strip\}/);
+  });
+
+  it("the page's last row and the toasts move up while the strip shows", () => {
+    expect(dock()).toContain('document.documentElement.setAttribute(PEEK_ATTR, "");');
+    const css = read("app/globals.css");
+    expect(css).toContain(":root[data-assistant-peek] .pb-nav {");
+    expect(css).toContain(":root[data-assistant-peek] .toast-viewport-bottom {");
+    expect(css).toContain('.assistant-panel[data-moving][data-panel-form="peek"]');
   });
 });

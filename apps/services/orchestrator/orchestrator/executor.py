@@ -50,6 +50,7 @@ from acb_skills.loader import (
     AgentRuntimeUnsupported,
     is_copilot_agent,
     load_agent,
+    refuse_copilot_specialist,
 )
 
 # Max self-anneal retries before giving up and falling back to LLM recovery.
@@ -619,6 +620,99 @@ def _run_org_display_name() -> str:
     return name
 
 
+# ── The member's own name (owner report of 2026-10-19) ──────────────────────
+
+#: The agents whose per-turn context names the member. Each one writes mail
+#: that the member signs. The email assistant signed a draft "[your name]",
+#: because no context named the member.
+_MEMBER_NAME_AGENTS = frozenset({"email-assistant", "orchestrator"})
+#: The member's display name by ``(org, member)``, with the time it was read.
+_MEMBER_NAME_CACHE: dict[tuple[str, str], tuple[float, str]] = {}
+_MEMBER_NAME_TTL_SECONDS = 600.0
+_MEMBER_NAME_CACHE_MAX = 4096
+#: The same read as ``gateway.reach.whatsapp._NAME_SQL``: the member's display
+#: name in this org. The orchestrator cannot import a gateway module.
+_MEMBER_NAME_SQL = (
+    "SELECT NULLIF(btrim(display_name), '') FROM app_user "
+    "WHERE organization_id = CAST(:org AS uuid) AND lower(email) = lower(:m) "
+    "LIMIT 1"
+)
+
+
+def _read_member_display_name(org: str, member: str) -> str:
+    """``app_user.display_name`` of *member* in *org*, or ``""``. One read.
+
+    *org* is the run's tenant and *member* the run's verified member, both
+    from the run boundary and never from the payload (R5). It never raises.
+    The name is the member's own words, so it is folded to one short line
+    (:func:`_clean_org_name`) before it reaches a prompt.
+    """
+    opener = _opener_for_org(org)
+    if opener is None:
+        return ""
+    try:
+        from sqlalchemy import text  # noqa: PLC0415
+
+        with opener() as session:
+            row = session.execute(
+                text(_MEMBER_NAME_SQL), {"org": org, "m": member},
+            ).first()
+    except Exception:  # noqa: BLE001
+        return ""
+    return _clean_org_name(str(row[0] or "")) if row and row[0] else ""
+
+
+def _run_member_display_name() -> str:
+    """The display name of the run's verified member, or ``""``. Cached per
+    org and member for ``_MEMBER_NAME_TTL_SECONDS``, so a turn pays at most
+    one read."""
+    import time  # noqa: PLC0415
+
+    org = _current_run_org()
+    member = _verified_run_member()
+    if not (org and member):
+        return ""
+    key = (str(org), member)
+    now = time.monotonic()
+    hit = _MEMBER_NAME_CACHE.get(key)
+    if hit and now - hit[0] < _MEMBER_NAME_TTL_SECONDS:
+        return hit[1]
+    name = _read_member_display_name(str(org), member)
+    _MEMBER_NAME_CACHE.pop(key, None)
+    _MEMBER_NAME_CACHE[key] = (now, name)
+    while len(_MEMBER_NAME_CACHE) > _MEMBER_NAME_CACHE_MAX:
+        _MEMBER_NAME_CACHE.pop(next(iter(_MEMBER_NAME_CACHE)))
+    return name
+
+
+#: The two lines of :func:`_member_name_line`. A placeholder in a draft is
+#: the bug of the owner report, so each line forbids one by example.
+MEMBER_NAME_LINE = (
+    "The member: {name}. When you write an email or a message for the member, "
+    "sign it with this name. Never write a placeholder such as [your name]. A "
+    "mailbox that has a signature adds it when the mail is saved or sent, so "
+    "do not write a signature block."
+)
+MEMBER_NO_NAME_LINE = (
+    "The member has no display name in Metorite. When you write an email for "
+    "the member, end with a plain close and no name. Never write a placeholder "
+    "such as [your name]."
+)
+
+
+def _member_name_line(agent_name: str) -> str:
+    """The per-turn line that names the member, or ``""``.
+
+    Only for :data:`_MEMBER_NAME_AGENTS`, and only for a run with a verified
+    member (:func:`_verified_run_member`), so a webhook or a batch run with no
+    member gets no line. Fence: ``tests/unit/test_no_egress_tool_audit.py``.
+    """
+    if agent_name not in _MEMBER_NAME_AGENTS or not _verified_run_member():
+        return ""
+    name = _run_member_display_name()
+    return MEMBER_NAME_LINE.format(name=name) if name else MEMBER_NO_NAME_LINE
+
+
 # ── The member's number system (whatsapp_assistant_channel.md §13.10) ────────
 
 
@@ -1153,6 +1247,7 @@ async def wait_user_future(
     timeout: float,
     thread_id: str | None = None,
     slice_seconds: float = 60.0,
+    park_after: float | None = None,
 ) -> dict[str, Any]:
     """Await a parked HITL future, heartbeating the relay while waiting.
 
@@ -1171,6 +1266,13 @@ async def wait_user_future(
     ``CHAT_ASK_PARK_SECONDS`` with no answer it PARKS the run: the row stays
     open as ``parked``, the run ends, and this raises ``CancelledError``.
     Fence: ``tests/unit/test_pending_ask_flow.py``.
+
+    WS-53 §18.16 part 2: *park_after* parks sooner. The follow-up card of a
+    CRM answer (``crm_tools.follow_up_park_after``) comes AFTER the answer,
+    so the run has nothing left to wait for. Run b38bcd38 (2026-10-19) held
+    the run 419 s on that card. A refused early park tries again at the
+    normal window, so a card is never lost. With ``CHAT_DURABLE_ASKS`` off
+    there is no late path, and the wait is as before.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -1179,7 +1281,10 @@ async def wait_user_future(
 
     durable = pending_ask.durable_asks_enabled()
     rid = _request_id_of(fut) if durable else None
-    park_at = loop.time() + pending_ask.park_after_seconds() if rid else None
+    normal = pending_ask.park_after_seconds()
+    early = park_after is not None and park_after < normal
+    window = park_after if early else normal
+    park_at = loop.time() + window if rid else None
     answer: str | None = None
     try:
         while True:
@@ -1207,6 +1312,11 @@ async def wait_user_future(
                     park_at = None  # one attempt; a refusal keeps waiting
                     if await pending_ask.park(rid, tid, fut):
                         raise asyncio.CancelledError
+                    if early:
+                        # §18.16 part 2: the early park found no row yet.
+                        # Try once more at the normal window.
+                        early = False
+                        park_at = loop.time() + max(0.0, normal - window)
                 if tid:
                     try:
                         from orchestrator.stream_relay import touch_active
@@ -1477,6 +1587,9 @@ async def _run_sub_agent_streaming(
         # §15.4: a first-party-admin-only agent, delegated to by anyone else,
         # is refused as absent. The member is the PARENT run's (run binding).
         await _assert_may_run_agent(agent_name)
+        # D84, D92: a delegated run never takes the retired Copilot runtime.
+        # The label refuses before the load, so no clone and no import run.
+        refuse_copilot_specialist(agent_name, label=_runtime)
         with load_agent(agent_name, run_id=run_id, repo_name=_repo_name, local_path=_local_path) as loaded:
             mandatory = loaded.config.get("integrations", [])
             optional = loaded.config.get("optional_integrations", [])
@@ -1486,6 +1599,9 @@ async def _run_sub_agent_streaming(
             # Scope this sub-agent's creds to its run; restored in the finally.
             _integration_env_token = _bind_run_credentials(integrations)
             agents = loaded.build_agents()
+            # The object, whatever its label says (WS-43n): a Copilot agent
+            # does not run as a specialist. The caller gets the error text.
+            refuse_copilot_specialist(agent_name, built=agents)
             # Honour .github/agents/<name>.agent.md instructions for sub-agents
             # too, so a delegated Copilot SDK agent keeps its authored identity.
             _agent_md_spec = _apply_agent_md_overrides(
@@ -1549,6 +1665,12 @@ async def _run_sub_agent_streaming(
                 ),
                 organization_id=_resolve_sub_agent_org(),
             )
+            # H-363: the sub-run's git dir and HEAD before it, for the
+            # end-of-turn push step.
+            _sub_git_dir = _git_dir_for(
+                loaded.agent_dir, _sub_agent_dir, _sub_store_instance,
+            )
+            _sub_base_head = await _get_current_head(_sub_git_dir) if _sub_git_dir else ""
             # WS-43n: the label OR the object. A repo agent registered after
             # WS-43n gets "maf" when its config.json declares nothing, so the
             # label alone no longer finds every Copilot object (§15.5).
@@ -1596,6 +1718,12 @@ async def _run_sub_agent_streaming(
                 )),
                 host_shell_refused=_host_shell_refused(
                     agent_name, getattr(loaded, "config", None),
+                ),
+                # The push gate (2026-10-19): may this member push agent
+                # code? From the run binding. Fence:
+                # test_chat_autopush_reviewer_gate.py.
+                agent_push_allowed=await _agent_push_binding(
+                    _host_shell_refused(agent_name, getattr(loaded, "config", None)),
                 ),
                 # H-236: set from the parent's binding, never cleared here.
                 # The batch run of a MAF sub-agent reads it as its parent.
@@ -1752,6 +1880,13 @@ async def _run_sub_agent_streaming(
             # Anthropic multi-agent research: sub-agents explore with 10k+
             # tokens but the parent only needs a 1-2k summary.  Cap here to
             # prevent single sub-agent calls from bloating the orchestrator.
+            # H-363: the one end-of-turn push step. The parent reads the text.
+            _sub_push = await _settle_agent_push(
+                agent_name, _sub_git_dir, run_id,
+                since_sha=_sub_base_head or None,
+            )
+            if _sub_push:
+                text_parts.append(_sub_push)
             raw_result = "\n".join(text_parts)
             if not raw_result:
                 return f"({agent_name!r} returned an empty response)"
@@ -1780,8 +1915,12 @@ async def _run_sub_agent_streaming(
             "runId": run_id,
             "error": str(exc),
         })
-        return f"Sub-task to {agent_name!r} failed: {exc}"
+        _sub_drop = _drop_agent_push(run_id, "the sub-task failed")
+        return f"Sub-task to {agent_name!r} failed: {exc}" + (
+            f"\n{_sub_drop}" if _sub_drop else ""
+        )
     finally:
+        _drop_agent_push(run_id, "the sub-task did not finish")
         try:
             from acb_common import publish_activity
             publish_activity(
@@ -2035,6 +2174,60 @@ async def _first_party_admin_runs() -> tuple[bool, str]:
     if not (access.is_active and access.has(_FIRST_PARTY_ADMIN_PERMISSION)):
         return False, "not an admin of the first-party organization"
     return True, ""
+
+
+async def _agent_push_allowed() -> tuple[bool, str]:
+    """May the member of this run push agent code? ``(allowed, why)``.
+
+    The rule of the self-mutation queue's reviewer, in its one implementation
+    (``acb_auth.agent_operator.may_review_agent_commits``): ``agents:manage``
+    in the first-party org or in an org of ``AGENT_REGISTRY_ORGS``. The member
+    and the org come from the run binding only, never from the payload (R5), as in
+    :func:`_first_party_admin_runs`. Every failure answers no.
+
+    The run binds the answer as ``agent_push_allowed``. The Copilot permission
+    guard and ``run_script`` read it, and :func:`_detect_agent_commits` asks it
+    again before it records a pushed commit as approved.
+    Fence: ``tests/unit/test_chat_autopush_reviewer_gate.py``.
+    """
+    from acb_common import get_run_context
+
+    ctx = get_run_context()
+    member = str(ctx.get("user") or "").strip()
+    if not member or ctx.get("member_verified") != "1":
+        return False, "no verified member"
+    org = _current_run_org()
+    if not org:
+        return False, "no organization"
+    try:
+        from acb_auth import resolve_access
+        from acb_auth.agent_operator import may_review_agent_commits
+        access = await resolve_access(member)
+    except Exception as exc:
+        return False, f"the access check failed: {str(exc)[:120]}"
+    if not access.is_active:
+        return False, "not an active member"
+    if not await may_review_agent_commits(org, access.has):
+        return False, (
+            "not a reviewer of agent code (agents:manage in the first-party "
+            "org or an AGENT_REGISTRY_ORGS org)"
+        )
+    return True, ""
+
+
+async def _agent_push_binding(host_shell_refused: bool) -> bool:
+    """The ``agent_push_allowed`` value that a run boundary binds.
+
+    A run whose host shell is refused cannot run git, so it binds ``False``
+    and skips the access read.
+    """
+    if host_shell_refused:
+        return False
+    try:
+        allowed, _why = await _agent_push_allowed()
+    except Exception:
+        return False
+    return allowed
 
 
 async def _assert_may_run_agent(agent_name: str) -> None:
@@ -2517,14 +2710,243 @@ async def _commit_on_remote(agent_dir: str, commit_sha: str) -> bool:
         return False
 
 
+async def _push_reviewed_run(
+    agent_name: str, agent_dir: str, run_id: str, *, since_sha: str | None,
+) -> tuple[Any, ...]:
+    """Push THIS turn's commits of *agent_dir*, as the gateway (H-363).
+
+    The ONLY caller is :func:`_settle_agent_push`, after
+    :func:`_agent_push_allowed` said yes for this run. The credential is the
+    push token, and it reaches one git process in a gateway temp dir
+    (``acb_common.git_credentials.push``). The agent's shell never sees it.
+
+    The clone is shared, so it pushes only what this turn made:
+
+    * the turn's window is ``since_sha..HEAD``, and ``since_sha`` must still
+      be an ancestor of HEAD (no rewrite during the turn);
+    * every commit that would go out (``HEAD`` minus the remote branch,
+      after a fresh fetch) must be in that window. An earlier pending commit
+      of another run, or a SHA planted in ``.git/cc-commits-queue``, makes
+      it refuse, and a reviewer approves those on the Agents page.
+
+    Returns ``(pushed, text)``, and on a push ``(True, text, details)``.
+    The text is for the member, with no secret. *details* holds the repo,
+    the branch and the SHAs that went out, for the audit row of
+    :func:`_settle_agent_push`.
+    """
+    if not agent_dir or not _host_git_ok(agent_dir):
+        return False, "this turn has no workspace that Metorite may push from"
+    from acb_common import git_credentials as git_auth
+
+    if git_auth.pinned_remote(agent_dir) is None:
+        # A sub-agent's clone, or a restart: pin it from the registry. The
+        # seam refuses a push with no pin.
+        try:
+            from gateway.routes.agent import _pin_registry_clone
+            _pin_registry_clone(agent_name, agent_dir)
+        except Exception:
+            pass
+    if git_auth.pinned_remote(agent_dir) is None:
+        return False, "Metorite has no record of this agent's repository"
+    branch = await asyncio.to_thread(git_auth.current_branch, agent_dir)
+    if not branch:
+        return False, "the workspace is not on a branch"
+    if not since_sha:
+        return False, "Metorite could not tell which commits this turn made"
+
+    def _lines(*argv: str) -> list[str] | None:
+        return git_auth.git_lines(agent_dir, list(argv))
+
+    head_lines = await asyncio.to_thread(_lines, "rev-parse", "--verify", "-q", "HEAD")
+    if not head_lines:
+        return False, "the workspace has no commit"
+    head = head_lines[0]
+    rewritten = await asyncio.to_thread(
+        git_auth.git_lines, agent_dir, ["merge-base", "--is-ancestor", since_sha, head],
+    )
+    if rewritten is None:
+        return False, "the branch was rewritten during this turn"
+    window = await asyncio.to_thread(_lines, "rev-list", f"{since_sha}..{head}")
+    if not window:
+        return False, "this turn made no commit"
+    fetched = await asyncio.to_thread(git_auth.fetch, agent_dir)
+    if not fetched.ok:
+        return False, "Metorite could not read the remote branch"
+    tracking = f"refs/remotes/origin/{branch}"
+    has_tip = await asyncio.to_thread(_lines, "rev-parse", "--verify", "-q", tracking)
+    outgoing = await asyncio.to_thread(
+        _lines, "rev-list", head, *(["^" + tracking] if has_tip else ["--not", "--remotes=origin"]),
+    )
+    if outgoing is None:
+        return False, "Metorite could not list the commits to push"
+    remote = git_auth.pinned_remote(agent_dir)
+    details = {
+        "repo": f"{remote.owner}/{remote.repo}" if remote else "",
+        "branch": branch,
+        "shas": list(outgoing or [])[:50],
+    }
+    if not outgoing:
+        return True, f"the commits of this turn are already on {branch}", details
+    foreign = [sha for sha in outgoing if sha not in set(window)]
+    if foreign:
+        _log.warning(
+            "executor.agent_push_foreign_commits",
+            agent=agent_name, run_id=run_id, count=len(foreign),
+        )
+        return False, (
+            f"{len(foreign)} earlier commit(s) that this turn did not make would go "
+            "out too. A reviewer must approve them on the Agents page first"
+        )
+    result = await asyncio.to_thread(
+        functools.partial(
+            git_auth.push, agent_dir, src=head, branch=branch,
+            credential=git_auth.push_token(),
+        ),
+    )
+    if result.ok:
+        _log.info("executor.agent_push_done", agent=agent_name, run_id=run_id, branch=branch)
+        return True, f"{len(outgoing)} commit(s) to {branch}", details
+    _log.warning(
+        "executor.agent_push_failed",
+        agent=agent_name, run_id=run_id, branch=branch,
+        stderr=result.stderr.strip()[:300],
+    )
+    return False, "GitHub refused the push"
+
+
+#: The text of a chat push that did not happen, for the member.
+_NO_PUSH_TAIL = (
+    " Your commit stays local, and it waits for a reviewer on the Agents page."
+)
+
+
+async def _settle_agent_push(
+    agent_name: str,
+    agent_dir: str | None,
+    run_id: str,
+    *,
+    since_sha: str | None,
+    thread_id: str | None = None,
+) -> str | None:
+    """THE one end-of-turn step of a chat push (H-363). Every path calls it.
+
+    The run's shell holds no GitHub credential, so its own ``git push``
+    failed. When the run asked for a push
+    (``permission_policy.note_agent_push_request``), this asks the reviewer
+    rule again, from the run binding, and on a yes pushes this turn's
+    commits through :func:`_push_reviewed_run`. A run whose member is not a
+    reviewer gets no credential and no push.
+
+    Each run boundary calls it once, before its RUN_FINISHED (native MAF,
+    Copilot, Tier 2, batch, sub-agent). Returns the text for the member's
+    chat, or ``None`` when the run asked for no push.
+    Fence: ``tests/unit/test_clone_token_h363.py``.
+    """
+    try:
+        from acb_skills.permission_policy import take_agent_push_request
+        if not take_agent_push_request(run_id):
+            return None
+    except Exception:
+        return None
+    try:
+        allowed, why = await _agent_push_allowed()
+    except Exception as exc:
+        allowed, why = False, f"the push check failed: {str(exc)[:120]}"
+    if not allowed:
+        _log.warning(
+            "executor.agent_push_request_refused",
+            agent=agent_name, run_id=run_id, reason=why,
+        )
+        with contextlib.suppress(Exception):
+            record(AuditEvent(
+                actor=f"agent:{agent_name}", action="agent_push_request_refused",
+                target=f"agent:{agent_name}", payload={"run_id": run_id, "reason": why},
+                organization_id=_RUN_ORG.get(thread_id),
+            ))
+        return (
+            "Metorite did not push: only an admin of the first-party organization "
+            "or of a platform operator organization may push agent code."
+            + _NO_PUSH_TAIL
+        )
+    details: dict[str, Any] = {}
+    try:
+        pushed, text, *rest = await _push_reviewed_run(
+            agent_name, agent_dir or "", run_id, since_sha=since_sha,
+        )
+        details = dict(rest[0] or {}) if rest else {}
+    except Exception as exc:
+        _log.warning("executor.agent_push_error", agent=agent_name, error=str(exc)[:200])
+        pushed, text = False, "the push failed"
+    if pushed:
+        # The ONE audit row of a reviewer's chat push, on every run path
+        # (native MAF, Copilot, Tier 2, batch, sub-agent): who, which org,
+        # which repo and branch, and the SHAs that went out.
+        _audit_agent_push(agent_name, run_id, thread_id, details)
+        return f"Metorite pushed this turn's commits: {text}."
+    return f"Metorite did not push: {text}." + _NO_PUSH_TAIL
+
+
+def _audit_agent_push(
+    agent_name: str, run_id: str, thread_id: str | None, details: dict[str, Any],
+) -> None:
+    """Record a push that a reviewer's chat turn made (H-363). Never raises."""
+    try:
+        from acb_common import get_run_context
+
+        member = str(get_run_context().get("user") or "")
+        org = _RUN_ORG.get(thread_id) if thread_id else None
+        org = org or _current_run_org()
+        record(AuditEvent(
+            actor=f"agent:{agent_name}",
+            action="agent_push_by_reviewer",
+            target=f"agent:{agent_name}",
+            payload={
+                "run_id": run_id,
+                "member": member,
+                "repo": str(details.get("repo") or ""),
+                "branch": str(details.get("branch") or ""),
+                "shas": [str(x)[:40] for x in details.get("shas") or []],
+                "reviewed_by": "chat:autopush",
+            },
+            organization_id=org,
+        ))
+    except Exception as exc:
+        _log.warning("executor.agent_push_audit_failed", agent=agent_name, error=str(exc)[:200])
+
+
+def _drop_agent_push(run_id: str, why: str) -> str | None:
+    """Drop the push request of a turn that did not finish. No push happens.
+
+    A turn that fails or is cancelled pushes nothing. Returns the text for
+    the member when a request was pending, so a path that can still answer
+    says so in the chat. The ``finally`` of each run boundary calls it too,
+    for a cancel, where no answer can go out.
+    """
+    try:
+        from acb_skills.permission_policy import take_agent_push_request
+        if not take_agent_push_request(run_id):
+            return None
+    except Exception:
+        return None
+    _log.warning("executor.agent_push_dropped", run_id=run_id, reason=why)
+    return f"Metorite did not push, because {why}." + _NO_PUSH_TAIL
+
+
+def _push_note_events(note: str | None) -> list[dict[str, Any]]:
+    """The chat events of a push note: one text message, or none."""
+    return list(_text_message_events("\n\n" + note)) if note else []
+
+
 async def _install_push_guard(agent_dir: str) -> None:
     """Install git hooks for commit-gate workflow.
 
     Installs two hooks (idempotent — skips if already present):
 
     1. **pre-push**: Rejects all direct pushes.  The human-approval gateway
-       endpoint handles the push, or the operator may tell the agent to
-       ``git push --no-verify`` from chat to bypass this hook explicitly.
+       endpoint handles the push. A reviewer of agent code (the rule of
+       ``acb_auth.agent_operator``) may also tell the agent to push from chat
+       with ``--no-verify``. For every other member the permission guard
+       refuses that push (``agent_push_allowed``).
 
     2. **post-commit**: Appends the new commit SHA to ``.git/cc-commits-queue``.
        The post-run commit scanner reads this file to detect commits made
@@ -2550,7 +2972,7 @@ async def _install_push_guard(agent_dir: str) -> None:
             pre_push.write_text(
                 "#!/bin/sh\n"
                 "echo 'Direct push blocked: commits are queued for human approval'\n"
-                "echo 'Approve via the Metorite Control Plane inbox, or tell the agent you approve and it will push with --no-verify.'\n"
+                "echo 'Approve via the Metorite Control Plane inbox. Only a reviewer of agent code may tell the agent to push.'\n"
                 "exit 1\n",
                 encoding="utf-8",
             )
@@ -2649,6 +3071,9 @@ async def _detect_agent_commits(
             pass
 
         all_lines: list[str] = []
+        # The commits that THIS run made (phase 0 and phase 1). Only one of
+        # them can be a push of this run, so only these take the push gate.
+        _this_run_shas: set[str] = set()
 
         # ── Phase 0: queue-file scan (post-commit hook) ─────────────────
         # The post-commit hook appends each new SHA to this file.  We read
@@ -2691,6 +3116,7 @@ async def _detect_agent_commits(
                             except Exception:
                                 msg = sha[:12]
                             all_lines.append(f"{sha}|{msg}")
+                            _this_run_shas.add(sha)
                 # Truncate so SHAs are not re-registered on next scan.
                 queue_file.write_text("", encoding="utf-8")
             except Exception as exc:
@@ -2715,6 +3141,9 @@ async def _detect_agent_commits(
                 phase1 = stdout_bytes.decode(errors="replace").strip()
                 if phase1:
                     all_lines.extend(phase1.splitlines())
+                    _this_run_shas.update(
+                        ln.split("|", 1)[0].strip() for ln in phase1.splitlines()
+                    )
                     _log.info(
                         "executor.commits_since_sha",
                         agent=agent_name, count=len(phase1.splitlines()),
@@ -2797,6 +3226,10 @@ async def _detect_agent_commits(
             "initial: seeded from local source",
         )
 
+        # The push gate's answer, asked once per pass and only for a pushed
+        # commit of this run: ``(allowed, why)`` of ``_agent_push_allowed``.
+        _push_gate: tuple[bool, str] | None = None
+
         for raw_line in all_lines:
             parts = raw_line.split("|", 1)
             commit_sha = parts[0].strip()
@@ -2821,10 +3254,43 @@ async def _detect_agent_commits(
             diff_text = await _git_diff(agent_dir, commit_sha)
 
             # If the agent already pushed this commit (the user told it to
-            # "commit and push" in chat, so it ran `git push --no-verify`), it's
-            # on origin — record it as already-approved instead of queuing it for
-            # a redundant Control-Plane approval.
+            # "commit and push" in chat), it is on origin. It is recorded as
+            # approved ONLY when the member of this run passes the reviewer
+            # rule of the queue (2026-10-19). Otherwise it stays pending for a
+            # reviewer, and an audit line names the push that got past the
+            # permission guard. A pushed commit that this run did not make (a
+            # catch-up of an earlier run, or of a pull) keeps the earlier
+            # record. Fence: tests/unit/test_chat_autopush_reviewer_gate.py.
             pushed = await _commit_on_remote(agent_dir, commit_sha)
+            approved = pushed
+            if pushed and commit_sha in _this_run_shas:
+                if _push_gate is None:
+                    try:
+                        _push_gate = await _agent_push_allowed()
+                    except Exception as exc:
+                        _push_gate = (
+                            False, f"the push check failed: {str(exc)[:120]}",
+                        )
+                approved = _push_gate[0]
+                if not approved:
+                    _log.warning(
+                        "executor.agent_push_without_reviewer",
+                        agent=agent_name, run_id=run_id,
+                        commit_sha=commit_sha[:12], reason=_push_gate[1],
+                    )
+                    record(
+                        AuditEvent(
+                            actor=f"agent:{agent_name}",
+                            action="agent_push_without_reviewer",
+                            target=f"agent:{agent_name}",
+                            payload={
+                                "run_id": run_id,
+                                "commit_sha": commit_sha[:12],
+                                "reason": _push_gate[1],
+                            },
+                            organization_id=_RUN_ORG.get(thread_id),
+                        )
+                    )
 
             await _register_pending_commit(
                 agent_name=agent_name,
@@ -2834,8 +3300,8 @@ async def _detect_agent_commits(
                 commit_message=commit_message,
                 diff_text=diff_text,
                 test_summary="(agent self-improvement — no test run)",
-                status="approved" if pushed else "pending",
-                reviewed_by="chat:autopush" if pushed else None,
+                status="approved" if approved else "pending",
+                reviewed_by="chat:autopush" if approved else None,
                 # WS-29 slice 4: the tenant opener resolved on the event-loop
                 # frame above (flag OFF → get_session; ON+org → tenant_session;
                 # ON+no-org → None → the write fails closed + logs).
@@ -3105,9 +3571,27 @@ class _BatchRunInputs:
     integrations: frozenset[str] | None = None
 
 
+@dataclasses.dataclass
+class _BatchMcp:
+    """What the MCP servers of a batch run need (WS-47 WAC-P3).
+
+    The stream path injects the org's MCP servers with these same four
+    values (``run_agent_stream``). *organization_id* is the caller's
+    server-side stamp, never the payload (R11). *is_authorized* is the run's
+    one access lookup (``_integration_authorizer``). *member_present* is
+    True only when a member can answer a card. *opened* collects each tool
+    and client, and the run closes them in its ``finally``."""
+
+    organization_id: str | None
+    is_authorized: Any
+    member_present: bool
+    opened: list[Any] = dataclasses.field(default_factory=list)
+
+
 async def _assemble_batch_agents(
     loaded: Any, *, agent_name: str, no_egress: bool,
     held: frozenset[str] | None = None,
+    mcp: _BatchMcp | None = None,
 ) -> tuple[list[Any], Any, frozenset[str]]:
     """Build and arm the agents of a batch run.
 
@@ -3121,6 +3605,11 @@ async def _assemble_batch_agents(
     H-236 answer. *held* is the first attempt's tool names
     (:class:`_BatchRunInputs`). A retry passes it, and the agents then lose
     each tool outside it. Access is an intersection, never a union.
+
+    *mcp* (WS-47 WAC-P3) gives each agent the org's MCP servers, as the
+    stream path does, with the same org, access lookup and card rule. A
+    ``no_egress`` run gets none (H-236). A retry passes no *mcp*, so it
+    holds no server: a retry only narrows.
     """
     agents = loaded.build_agents()
     # Honour .github/agents/<name>.agent.md (instructions override).
@@ -3144,6 +3633,18 @@ async def _assemble_batch_agents(
     # CRM-Q32-5: the CRM facts block, read as the member.
     run_tools = await _add_crm_facts_block(agents, run_tools, no_egress=no_egress)
     _log_agent_tools_resolved(agent_name, agents, own_tools)
+    # WS-47 WAC-P3: the org's MCP servers, exactly as the stream path adds
+    # them. H-236: an MCP server reaches outside, so a no_egress run gets
+    # none. H-299: a tool that can change data waits for a member's card,
+    # and a run that cannot show one refuses it (`_maf_mcp`).
+    for _a in agents if mcp is not None and not no_egress else []:
+        await _inject_mcp_servers(
+            _a, agent_name,
+            organization_id=mcp.organization_id,
+            is_authorized=mcp.is_authorized,
+            opened=mcp.opened,
+            member_present=mcp.member_present,
+        )
     return agents, md_spec, frozenset(run_tools)
 
 
@@ -3382,6 +3883,8 @@ async def _run_agent_inner(
     # What the first attempt used. The self-anneal retry rebuilds from it, so
     # a retry can only narrow the tools of this run.
     _anneal_inputs = _BatchRunInputs()
+    # WS-47 WAC-P3: the MCP servers that this run opens. The finally closes them.
+    _batch_mcp: _BatchMcp | None = None
     try:
         _effective_agent_dir: str | None = None
         # The dir the git helpers, the self-anneal and the self-mutation use.
@@ -3394,6 +3897,7 @@ async def _run_agent_inner(
         # Checks dynamic agents (agents.json) first, then falls back to static registry.
         _registry_repo_name: str | None = None
         _registry_local_path: str | None = None
+        _registry_runtime: str | None = None
         try:
             from gateway.routes.agent import _AGENT_REGISTRY
             from gateway.routes.agent import _load_dynamic_agents
@@ -3407,6 +3911,7 @@ async def _run_agent_inner(
                 # or just "repo". Pass the full slug — load_agent splits when needed.
                 _registry_repo_name = raw_repo if raw_repo else None
                 _registry_local_path = _registry_entry.get("local_path")
+                _registry_runtime = _registry_entry.get("agent_runtime")
         except ImportError:
             pass
         _anneal_inputs = _BatchRunInputs(
@@ -3416,6 +3921,12 @@ async def _run_agent_inner(
         # §15.4: refused as absent unless a first-party admin runs it. An
         # AgentLoadError, so no self-anneal and no self-mutation follow.
         await _assert_may_run_agent(agent_name)
+        # D84, D92: a DELEGATED batch run (a parent context is bound, H-201
+        # P2-c) never takes the retired Copilot runtime. The label refuses
+        # before the load, and the object after the build (below).
+        # AgentRuntimeUnsupported: no self-anneal and no self-mutation.
+        if _parent_ctx:
+            refuse_copilot_specialist(agent_name, label=_registry_runtime)
         # WS-61 KB-4a: the orchestrator's Knowledge index block, as the
         # stream path reads it. The WhatsApp channel runs this path.
         await _prime_knowledge_index(agent_name)
@@ -3496,9 +4007,12 @@ async def _run_agent_inner(
             # user at tool-call time rather than blocking the entire run.
             mandatory_integrations: list[str] = loaded.config.get("integrations", [])
             optional_integrations: list[str] = loaded.config.get("optional_integrations", [])
+            # One access lookup for the run, as on the stream path. The
+            # integrations and the MCP servers (WAC-P3) read the same answer.
+            _authorizer = await _integration_authorizer(event_payload, thread_id)
             integrations, integration_warnings = build_integrations(
                 mandatory_integrations, optional_integrations, settings,
-                is_authorized=await _integration_authorizer(event_payload, thread_id),
+                is_authorized=_authorizer,
             )
             # The retry gets these credential names and no others.
             _anneal_inputs = dataclasses.replace(
@@ -3512,10 +4026,21 @@ async def _run_agent_inner(
                     unavailable=list(integration_warnings.keys()),
                 )
 
+            # WS-47 WAC-P3: a top-level run of a chat thread (a WhatsApp
+            # run) gets the org's MCP servers, as the stream path gives
+            # them. A delegated run and a run with no chat get none, as on
+            # the stream path, where only the top-level run injects them.
+            if not _parent_ctx.get("run_id") and not _batch_thread:
+                _batch_mcp = _BatchMcp(
+                    organization_id=organization_id,
+                    is_authorized=_authorizer,
+                    member_present=_authorizer is not None,
+                )
             # The one batch assembly. The self-anneal retry calls it too.
             agents, _batch_md_spec, _run_tools = await _assemble_batch_agents(
                 loaded, agent_name=agent_name,
                 no_egress=_no_egress,  # H-236: from the parent's binding
+                mcp=_batch_mcp,
             )
             # The retry narrows to what this attempt holds (never a union).
             _anneal_inputs = dataclasses.replace(
@@ -3525,6 +4050,8 @@ async def _run_agent_inner(
             # repo agent that declares no runtime is labelled "maf" (§15.5).
             if not _is_copilot_agent and any(is_copilot_agent(a) for a in agents):
                 _is_copilot_agent = True
+            if _parent_ctx:
+                refuse_copilot_specialist(agent_name, built=agents)
 
             # Set write_artifact context + ensure visible workspace dirs exist.
             # H-201 (§21.16): the context is THIS run's own ContextVar value.
@@ -3566,6 +4093,12 @@ async def _run_agent_inner(
                 )),
                 host_shell_refused=_host_shell_refused(
                     agent_name, loaded.config,
+                ),
+                # The push gate (2026-10-19): may this member push agent
+                # code? From the run binding. Fence:
+                # test_chat_autopush_reviewer_gate.py.
+                agent_push_allowed=await _agent_push_binding(
+                    _host_shell_refused(agent_name, loaded.config),
                 ),
                 # H-236: a delegated run of a covered parent sends nothing
                 # off the platform. Its own delegations inherit this.
@@ -3724,6 +4257,14 @@ async def _run_agent_inner(
                 _registry_runtime = _e.get("agent_runtime", "maf")
         except Exception:
             pass
+        # H-363: the one end-of-turn push step. A batch run has no chat, so
+        # the text goes to the log.
+        _push_text = await _settle_agent_push(
+            agent_name, _git_dir, run_id,
+            since_sha=_head_before or None, thread_id=thread_id,
+        )
+        if _push_text:
+            _log.info("executor.agent_push_result", agent=agent_name, text=_push_text)
         await _detect_agent_commits(
             agent_name, _git_dir, run_id,
             since_sha=_head_before if _head_before else None,
@@ -3877,6 +4418,8 @@ async def _run_agent_inner(
         ) from exc
 
     finally:
+        # H-363: a batch turn that failed pushes nothing. Drop its request.
+        _drop_agent_push(run_id, "the turn did not finish")
         # Drop this batch run's tenant record and release the async binding, so a
         # tenant left bound is never inherited by whatever runs next on this task
         # (WS-29 acb_graph slice 6a — mirrors run_agent_stream's finally).
@@ -3884,6 +4427,10 @@ async def _run_agent_inner(
         # run's org — a superseded same-thread run must not clobber a newer one.
         # H-201 part 3: and only an entry this run SET (_owned_org).
         _guarded_pop_run_org(thread_id, _owned_org)
+        # WS-47 WAC-P3: close each MCP tool and client this run opened, as
+        # the stream path does. It never raises.
+        if _batch_mcp is not None:
+            await _close_mcp_tools(_batch_mcp.opened)
         if _tenant_token is not None:
             try:
                 from acb_common.db import release_tenant
@@ -4367,6 +4914,9 @@ async def run_agent_stream(
                 await _relay_register_live(
                     thread_id, organization_id=organization_id,
                     actor=session_user, token=run_id,
+                    # The SAME run: keep the startedAt and runId that
+                    # run_detached wrote. Only the token changes.
+                    run_id=run_id, keep_run_facts=True,
                 )
 
         # Fresh per-thread emit ordinal for this run (P1-5): the stream was just
@@ -4483,6 +5033,9 @@ async def run_agent_stream(
             _git_dir = _git_dir_for(
                 loaded.agent_dir, _effective_ws, _store_instance,
             )
+            # H-363: the HEAD before this turn, for every tier. The end-of-turn
+            # push step pushes only the commits after it.
+            _run_base_head = await _get_current_head(_git_dir) if _git_dir else ""
             # H-201 (§21.16): a shared run's partition is its tenant key,
             # o:<org>, which exists only now. Stamp it, so the logs and the
             # presence snapshot show where this run works.
@@ -4531,6 +5084,12 @@ async def run_agent_stream(
                 )),
                 host_shell_refused=_host_shell_refused(
                     agent_name, loaded.config,
+                ),
+                # The push gate (2026-10-19): may this member push agent
+                # code? From the run binding. Fence:
+                # test_chat_autopush_reviewer_gate.py.
+                agent_push_allowed=await _agent_push_binding(
+                    _host_shell_refused(agent_name, loaded.config),
                 ),
                 # H-236: False for a top-level run. A covered run does not
                 # bind True for itself: its delegations compute it from
@@ -5143,6 +5702,10 @@ async def run_agent_stream(
                             "executor.native_maf_stream_idle_timeout",
                             agent=agent_name, idle_seconds=_native_idle_after,
                         )
+                        for _push_ev in _push_note_events(
+                            _drop_agent_push(run_id, "the turn stopped"),
+                        ):
+                            yield _sse(_push_ev)
                         yield _sse(run_error_event(
                             run_id=run_id, code="timeout",
                             where="native_maf_idle",
@@ -5159,6 +5722,12 @@ async def run_agent_stream(
                         await _finish_native_session(_session_turn)
                         # WS-53 CRM-Q33: the note of a CRM total that the
                         # answer left out goes in before the end.
+                        # H-363: the one end-of-turn push step.
+                        for _push_ev in _push_note_events(await _settle_agent_push(
+                            agent_name, _git_dir, run_id,
+                            since_sha=_run_base_head or None, thread_id=thread_id,
+                        )):
+                            yield _sse(_push_ev)
                         for _note_ev in _crm_note_events():
                             yield _sse(_note_ev)
                         # A loop trip already emitted its terminal RUN_ERROR
@@ -5866,6 +6435,12 @@ async def run_agent_stream(
                     # commit detection so the run records as 'completed' and
                     # the folded tool cards are preserved.
                 # WS-53 CRM-Q33: the note of a CRM total, when left out.
+                # H-363: the one end-of-turn push step.
+                for _push_ev in _push_note_events(await _settle_agent_push(
+                    agent_name, _git_dir, run_id,
+                    since_sha=_run_base_head or None, thread_id=thread_id,
+                )):
+                    yield _sse(_push_ev)
                 for _note_ev in _crm_note_events():
                     yield _sse(_note_ev)
                 yield _sse({"type": "RUN_FINISHED", "runId": run_id, "threadId": thread_id})
@@ -6326,6 +6901,12 @@ async def run_agent_stream(
                 if _t2_ev.get("type") == "TEXT_MESSAGE_CONTENT":
                     await asyncio.sleep(0)  # yield event loop so SSE flushes
             # WS-53 CRM-Q33: the note of a CRM total, when left out.
+            # H-363: the one end-of-turn push step.
+            for _push_ev in _push_note_events(await _settle_agent_push(
+                agent_name, _git_dir, run_id,
+                since_sha=_run_base_head or None, thread_id=thread_id,
+            )):
+                yield _sse(_push_ev)
             for _note_ev in _crm_note_events():
                 yield _sse(_note_ev)
             # RUN_FINISHED must be emitted INSIDE the try block — the finally
@@ -6340,9 +6921,14 @@ async def run_agent_stream(
         # The code names the failure for the member's chat, and the ref
         # finds this log line (owner report, 2026-10-08). Before, `code` was
         # the class name and the member read the raw repr.
+        for _push_ev in _push_note_events(_drop_agent_push(run_id, "the turn failed")):
+            yield _sse(_push_ev)
         yield _sse(run_error_event(exc, run_id=run_id, where="run_agent_stream"))
         return
     finally:
+        # H-363: a turn that was cancelled, or stopped on any other path,
+        # pushes nothing. The request goes, and the log says so.
+        _drop_agent_push(run_id, "the turn did not finish")
         try:
             # ── Live activity feed (E2): agent activation END ────────────────────
             # Clears this run from the "running now" panel and stamps duration +
@@ -6823,25 +7409,18 @@ async def _run_with_maf_agent(
             from agent_framework._types import \
                 Message as _Message
 
-            # Fold the integrations preamble into the leading system context so
-            # the assembler carries it as one system message (it emits a single
-            # leading system block).
-            system_parts: list[str] = []
-            system_context = event_payload.get("system_context") or ""
-            if system_context.strip():
-                system_parts.append(system_context.strip())
-            integration_warnings: dict[str, str] = event_payload.get("integration_warnings", {})
-            if integrations:
-                system_parts.append(
-                    "Connected integrations: " + ", ".join(sorted(integrations.keys())) + "."
-                )
-            if integration_warnings:
-                missing = ", ".join(sorted(integration_warnings.keys()))
-                system_parts.append(
-                    f"Missing integrations (not yet configured): {missing}. "
-                    "If the user task requires one of these, ask them to provide the credential. "
-                    "When they do, output: <<<SETUP:service_name:ENV_VAR_NAME=value>>>"
-                )
+            # The per-turn context blocks go in as the one leading system
+            # message (the assembler emits a single leading system block).
+            # WS-47 parity (2026-10-19): the SAME builder as the web stream
+            # path (`_context_preamble_parts`), so a WhatsApp run gets the
+            # org name, the Knowledge index and the number-system line too.
+            # This path built only the system context and the integrations.
+            # The memory block comes from the caller's `memory_context`, and
+            # a caller that pre-read none gets none: the web route and
+            # `bot_run` (WAC-P2) call `gateway.memory_preread` for it.
+            # Fence: tests/unit/test_wac_channel_parity.py.
+            system_parts = _context_preamble_parts(
+                event_payload, integrations, agent_name)
 
             _model = _active_run_model.get() or ""
             assembled = assemble_run_context(
@@ -7738,7 +8317,9 @@ def _context_preamble_parts(
     connected and missing integrations, the Knowledge index block of the
     orchestrator (:func:`_knowledge_index_block`, WS-61 KB-4a), then
     ``memory_context``, then ``system_context`` (which carries the persona),
-    and last the member's number-system line (:func:`run_number_system`). :func:`_build_event_message`
+    then the member's name line (:func:`_member_name_line`), the member's
+    number-system line (:func:`run_number_system`), and last today's date
+    (``acb_common.today.today_line``). :func:`_build_event_message`
     puts the history and the current turn after them. The structured path of
     WS-43t1 sends the same blocks through its per-run context provider
     (:func:`_run_context_text`). One builder, so the two paths cannot drift.
@@ -7783,6 +8364,14 @@ def _context_preamble_parts(
     if system_ctx:
         parts.append("## Current context\n" + system_ctx)
 
+    # The member's own name, for an agent that writes mail the member signs
+    # (owner report of 2026-10-19). From the run boundary, never the payload.
+    # After the current context and before the number-system line, so every
+    # block above keeps its place.
+    member_line = _member_name_line(agent_name)
+    if member_line:
+        parts.append(member_line)
+
     # The member's number system, one line (owner, 2026-10-19): lakh and
     # crore by default. From the run boundary, never from the payload (R5).
     # Last, so the blocks above keep their places. A run with no org (a
@@ -7792,6 +8381,14 @@ def _context_preamble_parts(
         from acb_common.number_system import prompt_line
 
         parts.append(prompt_line(run_number_system()))
+    # WS-53 §18.16 part 1: today's date, weekday and zone, on both channels.
+    # Two runs of 2026-10-19 read a month with no year as two different years
+    # because no run knew the date. Last, so each block above keeps its place.
+    from acb_common.today import today_line
+
+    line = today_line()
+    if line:
+        parts.append(line)
     return parts
 
 

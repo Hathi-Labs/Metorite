@@ -612,7 +612,7 @@ export function touchSession(id: string, messageCount?: number): void {
 }
 
 /** Truncate text at a word boundary, appending an ellipsis when cut. */
-function truncateAtWord(text: string, max: number): string {
+export function truncateAtWord(text: string, max: number): string {
   const clean = text.replace(/\s+/g, " ").trim();
   if (clean.length <= max) return clean;
   const slice = clean.slice(0, max);

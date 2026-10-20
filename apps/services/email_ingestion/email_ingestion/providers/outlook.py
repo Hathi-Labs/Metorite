@@ -1083,6 +1083,23 @@ class OutlookProvider(BaseEmailProvider):
         resp.raise_for_status()
         return self._parse_graph_message(resp.json())
 
+    async def get_reply_to(
+        self, provider_message_id: str, *,
+        folder: str | None = None, message_id: str | None = None,
+    ) -> list[str]:
+        """The Reply-To of one message (EM-CR). Graph names it ``replyTo``,
+        and the read selects nothing else. A Graph id is unique in the
+        mailbox, so *folder* and *message_id* change nothing."""
+        resp = await self._graph_read(
+            f"/me/messages/{provider_message_id}", params={"$select": "replyTo"})
+        resp.raise_for_status()
+        out: list[str] = []
+        for item in (resp.json() or {}).get("replyTo") or []:
+            addr = str(((item or {}).get("emailAddress") or {}).get("address") or "").strip()
+            if "@" in addr:
+                out.append(addr)
+        return out
+
     async def get_message_body(self, provider_message_id: str) -> EmailMessage:
         """The id and the body of a message, and no files (WS-17 EM-S1).
 

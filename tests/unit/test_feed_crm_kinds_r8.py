@@ -61,7 +61,8 @@ from tests.unit.test_email_keep_separate import (  # noqa: F401
     promoted,
 )
 from tests.unit.test_feed_measure_r8 import _as_owner
-from tests.unit.test_shell_needs_r8 import NOW, _Frozen
+from tests.unit.test_shell_needs_r8 import NOW as _SUITE_NOW
+from tests.unit.test_shell_needs_r8 import _Frozen as _SuiteFrozen
 
 pytestmark = _DB_GATE
 
@@ -73,6 +74,22 @@ IST = f"crm-ist-{TAG}@md3e.test"
 NYC = f"crm-ny-{TAG}@md3e.test"
 #: A member with 20 stale open tasks and one of today.
 HEAVY = f"crm-heavy-{TAG}@md3e.test"
+#: This suite's one instant: NOON (UTC) of the R8 suite's date. The seeds put
+#: follow-ups 1 to 5 hours before it and call them "due today". On the real
+#: instant, a run between 00:00 and 05:00 UTC put them on yesterday, and the
+#: "due today" check failed (CI, 2026-10-15 to 19). At noon each seed stays on
+#: the same UTC, Kolkata and New York date, whatever hour the run starts.
+NOW = _SUITE_NOW.replace(hour=12, minute=0, second=0, microsecond=0)
+
+
+class _Frozen(_SuiteFrozen):
+    """The lens read's "today" reads this suite's ``NOW``, not the suite's."""
+
+    @classmethod
+    def now(cls, tz=None):  # type: ignore[override]
+        return NOW.astimezone(tz) if tz else NOW.astimezone(UTC).replace(tzinfo=None)
+
+
 KOLKATA = ZoneInfo("Asia/Kolkata")
 NEW_YORK = ZoneInfo("America/New_York")
 #: The member's zone is UTC, so the local today is the UTC date of NOW.
@@ -143,9 +160,9 @@ def seeded(promoted):  # noqa: F811
             return str(c.execute(text(
                 "INSERT INTO crm_deals (organization_id, name, status_id, owner_email, "
                 "status_changed_at, expected_close_date) VALUES (CAST(:o AS uuid), :n, "
-                "CAST(:s AS uuid), :w, now() - make_interval(secs => :d), :c) RETURNING id"),
+                "CAST(:s AS uuid), :w, :at, :c) RETURNING id"),
                 {"o": org, "n": name, "s": stage(org, stage_name), "w": owner,
-                 "d": in_stage_days * 86400, "c": close}).scalar_one())
+                 "at": NOW - timedelta(days=in_stage_days), "c": close}).scalar_one())
 
         def lead(org: str, name: str) -> str:
             return str(c.execute(text(
