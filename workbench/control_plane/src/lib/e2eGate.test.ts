@@ -110,6 +110,25 @@ describe("the browser gate CI runs", () => {
   });
 });
 
+describe("the dev server of the browser suite", () => {
+  const read = (rel: string) => readFileSync(HERE(rel), "utf8");
+
+  it("writes no Turbopack disk cache, and says so in both files", () => {
+    // 🔴 Three runs of shard 1 stalled in 2026-10-18 and 2026-10-19: the dev
+    // server stopped answering at test 53. The cache cost 5.7 GB of disk and
+    // ran a compaction beside the tests. A cold CI run gains nothing from it.
+    expect(read("../../playwright.config.ts")).toMatch(/E2E_NO_TURBOPACK_CACHE:\s*"1"/);
+    expect(read("../../next.config.ts")).toMatch(
+      /turbopackFileSystemCacheForDev:\s*process\.env\.E2E_NO_TURBOPACK_CACHE\s*!==\s*"1"/,
+    );
+  });
+
+  it("has a watchdog that ends a run whose server stops answering", () => {
+    expect(WORKFLOW).toMatch(/scripts\/e2e_watchdog\.sh http:\/\/127\.0\.0\.1:3101\/chat/);
+    expect(WORKFLOW).toMatch(/wait "\$pw"/);
+  });
+});
+
 describe("the quarantine register", () => {
   it("names only specs that exist", () => {
     // A stale entry covers nothing and reads as coverage. It happens the first
